@@ -1,0 +1,22 @@
+# Local MCP server config — contains a session cookie, never commit
+.mcp.json
+
+# KMP app build artifacts
+app/local.properties
+app/.gradle/
+app/build/
+app/composeApp/build/
+app/.kotlin/
+
+# Release-build artifacts (produced by scripts/ + the release workflow)
+/build/
+/dist/
+
+# Signing material — NEVER commit a keystore or its passwords
+*.keystore
+*.jks
+keystore.properties
+
+# JVM crash logs
+hs_err_pid*.log
+replay_pid*.log

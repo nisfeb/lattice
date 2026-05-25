@@ -1,0 +1,200 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Gradle lives in app/ (the repo root also holds the Urbit desk/), so every
+# Gradle step sets working-directory: app.
+
+jobs:
+  # Single source of truth for the tag-vs-version check; outputs the parsed
+  # version for downstream jobs.
+  tagcheck:
+    runs-on: ubuntu-latest
+    outputs:
+      version_name: ${{ steps.parse.outputs.version_name }}
+      version_code: ${{ steps.parse.outputs.version_code }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: parse
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          GRADLE=app/composeApp/build.gradle.kts
+          VERSION_CODE=$(grep 'latticeVersionCode = ' "$GRADLE" | head -1 | grep -oE '[0-9]+')
+          VERSION_NAME=$(grep 'latticeVersionName = ' "$GRADLE" | head -1 | grep -oE '"[^"]+"' | tr -d '"')
+          if [ "$TAG" != "$VERSION_NAME" ]; then
+            echo "::error::Tag (v$TAG) does not match latticeVersionName ($VERSION_NAME) in $GRADLE"
+            exit 1
+          fi
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+
+  # Android APK build + sign. Runs only when the four signing secrets are set;
+  # otherwise the release ships desktop installers only (no debug-signed APK).
+  build-android:
+    needs: tagcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check keystore secret presence
+        id: chk
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::RELEASE_KEYSTORE_BASE64 not set — skipping Android APK"
+            echo "have_keystore=false" >> $GITHUB_OUTPUT
+          else
+            echo "have_keystore=true" >> $GITHUB_OUTPUT
+          fi
+      - name: Set up JDK 17
+        if: steps.chk.outputs.have_keystore == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - name: Decode keystore
+        if: steps.chk.outputs.have_keystore == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          : "${STORE_PASSWORD:?RELEASE_STORE_PASSWORD secret is not set}"
+          : "${KEY_ALIAS:?RELEASE_KEY_ALIAS secret is not set}"
+          : "${KEY_PASSWORD:?RELEASE_KEY_PASSWORD secret is not set}"
+          umask 077
+          mkdir -p "$HOME/.config/lattice"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$HOME/.config/lattice/release.keystore"
+          {
+            echo "storeFile=$HOME/.config/lattice/release.keystore"
+            echo "storePassword=$STORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > "$HOME/.config/lattice/keystore.properties"
+      - name: Build release APK
+        if: steps.chk.outputs.have_keystore == 'true'
+        working-directory: app
+        env:
+          RELEASE_KEYSTORE_PROPS: /home/runner/.config/lattice/keystore.properties
+        run: ./gradlew :composeApp:assembleRelease
+      - name: Stage APK
+        if: steps.chk.outputs.have_keystore == 'true'
+        env:
+          VERSION_NAME: ${{ needs.tagcheck.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          SRC=app/composeApp/build/outputs/apk/release/composeApp-release.apk
+          if [ ! -f "$SRC" ]; then
+            echo "::error::release APK not found at $SRC"; ls -la "$(dirname "$SRC")" || true; exit 1
+          fi
+          cp "$SRC" "lattice-$VERSION_NAME.apk"
+      - name: Upload Android APK
+        if: steps.chk.outputs.have_keystore == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: lattice-*.apk
+          if-no-files-found: error
+
+  # Desktop matrix: jpackage on each host so the per-OS toolchains are present
+  # (dpkg/fakeroot on Linux, hdiutil on macOS, WiX on Windows).
+  build-desktop:
+    needs: tagcheck
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: packageReleaseDeb
+            artifact_glob: app/composeApp/build/compose/binaries/main-release/deb/*.deb
+            artifact_name: linux-deb
+          - os: macos-latest
+            target: packageReleaseDmg
+            artifact_glob: app/composeApp/build/compose/binaries/main-release/dmg/*.dmg
+            artifact_name: macos-dmg
+          - os: windows-latest
+            target: packageReleaseMsi
+            artifact_glob: app/composeApp/build/compose/binaries/main-release/msi/*.msi
+            artifact_name: windows-msi
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - name: Build native package (${{ matrix.target }})
+        working-directory: app
+        run: ./gradlew :composeApp:${{ matrix.target }}
+        shell: bash
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_glob }}
+          if-no-files-found: error
+      # AppImage rides on the Linux runner (the script rebuilds the app-image,
+      # mostly cache hits). appimagetool runs with --appimage-extract-and-run
+      # so no FUSE is needed.
+      - name: Build AppImage (Linux only)
+        if: runner.os == 'Linux'
+        run: ./scripts/build-appimage.sh
+      - name: Upload AppImage (Linux only)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: dist/lattice-x86_64.AppImage
+          if-no-files-found: error
+
+  release:
+    needs: [tagcheck, build-android, build-desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Flatten artifact tree
+        run: |
+          set -euo pipefail
+          mkdir -p release-files
+          collisions=0
+          while IFS= read -r -d '' src; do
+            dest="release-files/$(basename "$src")"
+            if [ -e "$dest" ]; then
+              echo "::error::Artifact name collision: $src would overwrite $dest"
+              collisions=$((collisions + 1))
+            else
+              cp "$src" "$dest"
+            fi
+          done < <(find artifacts -type f \( \
+            -name '*.apk' -o -name '*.deb' -o -name '*.dmg' -o \
+            -name '*.msi' -o -name '*.AppImage' \
+          \) -print0)
+          if [ "$collisions" -gt 0 ]; then
+            echo "::error::$collisions artifact name collision(s) — refusing to publish"; exit 1
+          fi
+          # .deb, .dmg, .msi, .AppImage are required; the APK is optional
+          # (only present when the keystore secret is set).
+          required=$(find release-files -type f \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.msi' -o -name '*.AppImage' \) | wc -l)
+          if [ "$required" -lt 4 ]; then
+            echo "::error::Expected >=4 desktop installers (.deb/.dmg/.msi/.AppImage), got $required"
+            ls -la release-files/; exit 1
+          fi
+          ls -la release-files/
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-files/*
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

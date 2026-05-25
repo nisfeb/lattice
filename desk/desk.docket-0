@@ -1,0 +1,7 @@
+:~  title+'lattice'
+    info+'Cross-ship gemtext publishing'
+    color+0x0.0000
+    version+[0 0 1]
+    license+'MIT'
+    site+/apps/lattice
+==

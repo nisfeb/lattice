@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# cancel superseded runs on the same ref
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    name: app — compile + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # androidTarget makes Gradle require the Android SDK even for desktop tasks
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" >/dev/null
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Compile (desktop + android)
+        run: ./gradlew :composeApp:compileKotlinDesktop :composeApp:compileDebugKotlinAndroid --no-daemon --stacktrace
+
+      # headless Compose UI tests render via Skiko and need an X server
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Unit + integration + UI tests (desktop)
+        run: xvfb-run -a ./gradlew :composeApp:desktopTest --no-daemon --stacktrace
+
+      - name: Coverage verify (gate) + HTML report
+        run: xvfb-run -a ./gradlew :composeApp:koverVerifyJvm :composeApp:koverHtmlReportJvm --no-daemon --stacktrace
+
+      - name: Upload test + coverage reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: app-reports
+          path: |
+            app/composeApp/build/reports/tests/
+            app/composeApp/build/reports/kover/
+          if-no-files-found: ignore

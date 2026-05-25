@@ -1,0 +1,156 @@
+package io.nisfeb.lattice
+
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import io.nisfeb.lattice.bookmarks.BookmarkStore
+import io.nisfeb.lattice.social.FollowRepository
+import io.nisfeb.lattice.social.SubscriptionRepository
+import io.nisfeb.lattice.theme.SavedTheme
+import io.nisfeb.lattice.theme.ThemeRepository
+import io.nisfeb.lattice.theme.ThemeStore
+import io.nisfeb.lattice.ui.AddShipScreen
+import io.nisfeb.lattice.ui.AppScreen
+import io.nisfeb.lattice.ui.BrowserScreen
+import io.nisfeb.lattice.ui.DiscoverScreen
+import io.nisfeb.lattice.ui.LatticeTheme
+import io.nisfeb.lattice.ui.SettingsScreen
+import io.nisfeb.lattice.ui.UpdatesScreen
+import io.nisfeb.lattice.ui.WorkspaceScreen
+import io.nisfeb.lattice.urbit.LatticeClient
+import io.nisfeb.lattice.urbit.SessionStore
+import io.nisfeb.lattice.urbit.SettingsClient
+import io.nisfeb.lattice.urbit.UpdateEvent
+import io.nisfeb.lattice.urbit.UpdatesChannel
+import io.nisfeb.lattice.urbit.UrbitSession
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.retryWhen
+import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+
+@Composable
+fun App(sessionStore: SessionStore, bookmarkStore: BookmarkStore, themeStore: ThemeStore) {
+    val session = remember { UrbitSession(OkHttpClient(), sessionStore) }
+    val client = remember { LatticeClient(session) }
+    val settingsClient = remember { SettingsClient(session) }
+    val themeRepo = remember { ThemeRepository(themeStore, settingsClient) }
+    val followRepo = remember { FollowRepository(settingsClient) }
+    val subRepo = remember { SubscriptionRepository(settingsClient) }
+    val updatesChannel = remember { UpdatesChannel(session) }
+    val scope = rememberCoroutineScope()
+
+    var ship by remember { mutableStateOf(session.tryRestore()) }
+    var theme by remember { mutableStateOf(themeStore.load()) }
+    var savedThemes by remember { mutableStateOf(themeStore.loadSaved()) }
+    var follows by remember { mutableStateOf(emptyList<String>()) }
+    var subscriptions by remember { mutableStateOf(emptySet<String>()) }
+    var updates by remember { mutableStateOf(emptyList<UpdateEvent>()) }
+    var unread by remember { mutableStateOf(0) }
+    var screen by remember { mutableStateOf<AppScreen>(AppScreen.Browse) }
+    var editTarget by remember { mutableStateOf<String?>(null) }
+    var browseTarget by remember { mutableStateOf<String?>(null) }
+
+    // On login: pull synced prefs, re-arm desk subscriptions, and stream updates.
+    LaunchedEffect(ship) {
+        // Clear per-ship view state so a logout / account switch doesn't leak
+        // the previous ship's notifications or follow/subscribe lists.
+        updates = emptyList(); unread = 0
+        follows = emptyList(); subscriptions = emptySet()
+        if (ship != null) {
+            themeRepo.pull()?.let { savedThemes = it }
+            followRepo.pull()?.let { follows = it }
+            subRepo.pull()?.let { subs ->
+                subscriptions = subs.toSet()
+                subs.forEach { scope.launch { client.subscribe(it) } } // re-arm the keen-follow loop
+            }
+            updatesChannel.updates()
+                .retryWhen { _, _ -> delay(3000); true } // SSE drops (network, idle) → reconnect
+                .collect { ev ->
+                    updates = (listOf(ev) + updates).take(50)
+                    unread += 1
+                }
+        }
+    }
+
+    fun setFollows(list: List<String>) { follows = list; scope.launch { followRepo.push(list) } }
+    fun subscribe(url: String) {
+        subscriptions = subscriptions + url
+        scope.launch { subRepo.push(subscriptions.toList()); client.subscribe(url) }
+    }
+    fun unsubscribe(url: String) {
+        subscriptions = subscriptions - url
+        scope.launch { subRepo.push(subscriptions.toList()); client.unsubscribe(url) }
+    }
+
+    LatticeTheme(theme) {
+        Surface(modifier = Modifier.fillMaxSize()) {
+            val current = ship
+            if (current == null) {
+                AddShipScreen(session, onLoggedIn = { ship = it; screen = AppScreen.Browse })
+            } else when (screen) {
+                AppScreen.Browse -> BrowserScreen(
+                    client = client,
+                    bookmarkStore = bookmarkStore,
+                    theme = theme,
+                    homeShip = current,
+                    onLogout = { session.logout(); ship = null },
+                    onOpenSettings = { screen = AppScreen.Settings },
+                    onOpenFiles = { screen = AppScreen.Workspace },
+                    onEditPage = { editTarget = it; screen = AppScreen.Workspace },
+                    onOpenDiscover = { screen = AppScreen.Discover },
+                    openUrl = browseTarget,
+                    onConsumedOpenUrl = { browseTarget = null },
+                    subscriptions = subscriptions,
+                    onSubscribe = { subscribe(it) },
+                    onUnsubscribe = { unsubscribe(it) },
+                    onOpenUpdates = { unread = 0; screen = AppScreen.Updates },
+                    unreadUpdates = unread,
+                )
+                AppScreen.Workspace -> WorkspaceScreen(
+                    client = client,
+                    ship = current,
+                    vimMode = theme.vimMode,
+                    onClose = { screen = AppScreen.Browse },
+                    initialOpen = editTarget,
+                    onConsumedOpen = { editTarget = null },
+                )
+                AppScreen.Settings -> SettingsScreen(
+                    settings = theme,
+                    onChange = { theme = it; themeStore.save(it) },
+                    onClose = { screen = AppScreen.Browse },
+                    savedThemes = savedThemes,
+                    onSaveCurrent = { name ->
+                        val list = savedThemes.filterNot { it.name == name } + SavedTheme(name, theme)
+                        savedThemes = list
+                        scope.launch { themeRepo.push(list) }
+                    },
+                    onDeleteSaved = { name ->
+                        val list = savedThemes.filterNot { it.name == name }
+                        savedThemes = list
+                        scope.launch { themeRepo.push(list) }
+                    },
+                )
+                AppScreen.Discover -> DiscoverScreen(
+                    client = client,
+                    follows = follows,
+                    onFollow = { ship2 -> setFollows((follows + ship2).distinct().sorted()) },
+                    onUnfollow = { ship2 -> setFollows(follows - ship2) },
+                    onBrowse = { ship2 -> browseTarget = "urb://$ship2/"; screen = AppScreen.Browse },
+                    onClose = { screen = AppScreen.Browse },
+                )
+                AppScreen.Updates -> UpdatesScreen(
+                    updates = updates,
+                    onBrowse = { url -> browseTarget = url; screen = AppScreen.Browse },
+                    onClose = { screen = AppScreen.Browse },
+                )
+            }
+        }
+    }
+}

@@ -1,0 +1,54 @@
+name: nightly
+
+# Heavier suites that need a running ship. Not PR-gating: scheduled + manual.
+# Configure repo secrets to enable them (jobs no-op when unset):
+#   LATTICE_URL         e.g. https://test-ship.example.com
+#   LATTICE_CODE        the ship's +code
+#   LATTICE_PEER_SHIP   (optional) e.g. ~tyr — for the cross-ship fetch test
+#   LATTICE_MCP_COOKIE  (optional) "urbauth-~ship=..." cookie for the %mcp agent,
+#                       used to run the desk's Hoon unit tests via run-tests
+on:
+  schedule:
+    - cron: '0 7 * * *'   # 07:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    name: e2e — HTTP round-trip vs a live ship
+    runs-on: ubuntu-latest
+    env:
+      LATTICE_URL: ${{ secrets.LATTICE_URL }}
+      LATTICE_CODE: ${{ secrets.LATTICE_CODE }}
+      LATTICE_PEER_SHIP: ${{ secrets.LATTICE_PEER_SHIP }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: e2e.sh
+        if: ${{ env.LATTICE_URL != '' }}
+        run: ./scripts/e2e.sh
+      - name: skipped
+        if: ${{ env.LATTICE_URL == '' }}
+        run: echo "LATTICE_URL secret not set — skipping e2e."
+
+  desk-tests:
+    name: desk — Hoon unit tests via %mcp run-tests
+    runs-on: ubuntu-latest
+    env:
+      LATTICE_URL: ${{ secrets.LATTICE_URL }}
+      LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: run-tests (assumes the ship runs the current desk)
+        if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
+        run: |
+          set -uo pipefail
+          body='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run-tests","arguments":{"desk":"lattice","path":"/tests/lib"}}}'
+          out=$(curl -s -X POST "$LATTICE_URL/mcp" \
+            -H "Cookie: $LATTICE_MCP_COOKIE" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -d "$body")
+          echo "$out" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("result",{}).get("content",[{}])[0].get("text",""))' | tee results.txt
+          grep -q 'FAILED' results.txt && { echo "desk tests FAILED"; exit 1; } || echo "desk tests passed"
+      - name: skipped
+        if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
+        run: echo "ship/MCP secrets not set — skipping desk unit tests."
