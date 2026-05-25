@@ -1,0 +1,35 @@
+# Vendored kernel dependencies for the %lattice desk.
+#
+# The repo's desk/ holds only lattice's own source (app/lattice.hoon,
+# lib/lattice.hoon, sur/lattice.hoon, mar/gmi.hoon, the tests). The standard
+# base-dev libraries and marks a Gall desk needs to build and install are
+# pulled in here at build time by `peru sync` (run via build.sh), so they
+# aren't committed to the repo but are pinned to an exact urbit/urbit rev.
+#
+# Run `./build.sh` to assemble a complete, installable desk under dist/.
+
+imports:
+  base-dev: ./dist
+
+git module base-dev:
+  url:    https://github.com/urbit/urbit
+  reup:   master
+  export: pkg/base-dev
+  pick:
+    # libs the agent imports (default-agent, dbug, verb) + test harness + the
+    # template's skeleton (inert but kept for parity with a standard desk).
+    - pkg/base-dev/lib/dbug.hoon
+    - pkg/base-dev/lib/default-agent.hoon
+    - pkg/base-dev/lib/skeleton.hoon
+    - pkg/base-dev/lib/test.hoon
+    - pkg/base-dev/lib/verb.hoon
+    # marks the desk needs to build/commit/install (gmi is lattice's own).
+    - pkg/base-dev/mar/bill.hoon
+    - pkg/base-dev/mar/hoon.hoon
+    - pkg/base-dev/mar/kelvin.hoon
+    - pkg/base-dev/mar/mime.hoon
+    - pkg/base-dev/mar/noun.hoon
+    - pkg/base-dev/mar/txt.hoon
+    # sur for the verb wrapper.
+    - pkg/base-dev/sur/verb.hoon
+  rev: 41dd3b5f7c554ac615d0db9eaa5fe46071d47bc8

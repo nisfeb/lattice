@@ -1,58 +1,48 @@
-# %lattice — gemtext over Ames
+# %lattice — gemtext over Urbit
 
-Drop `.gmi` files into `lib/` and `|commit %lattice`. Each file becomes
-fetchable from any ship at `urb://~your-ship/path/to/file` (the `.gmi`
-extension is omitted from the URL). It's gemtext content cross-linked over
-Urbit's native primitives — no DNS, no TLS.
+The Gall agent. It publishes the `.gmi` files in your ship's `/pub` directory
+to the Urbit namespace, serves them to other ships over remote scry, and follows
+remote files you subscribe to. The browser/editor app (`../app`) drives it over
+its authenticated HTTP API at `/apps/lattice`.
+
+## Building & installing
+
+This directory holds **only lattice's own source**. The standard base-dev libs
+and marks a desk needs are vendored at build time by
+[`peru`](https://github.com/buildinspace/peru) (pinned in `../peru.yaml`), so
+build the installable desk with `../build.sh` rather than committing this
+directory directly:
+
+```dojo
+|new-desk %lattice
+|mount %lattice
+```
+```bash
+./build.sh -p ~/path/to/your-ship/lattice   # from the repo root
+```
+```dojo
+|commit %lattice
+|install our %lattice
+```
+
+`build.sh` assembles `desk/` + the vendored deps into `dist/` and copies that
+into the mounted desk. See the repo root README for the full picture.
 
 ## Files
 
-- `app/lattice.hoon` — the Gall agent. Watches `lib/` for Clay commits,
-  publishes each `.gmi` via `%grow` (and `%cull`s removed ones), and serves
-  `/apps/lattice/fetch` over Eyre.
+- `app/lattice.hoon` — the Gall agent. Watches the desk for Clay commits,
+  publishes each `/pub/*.gmi` via `%grow` (and `%cull`s removed ones), follows
+  subscribed remote files, and serves `/apps/lattice` over Eyre. Endpoints are
+  access-controlled (own-ship pokes/watches only; HTTP requires a session).
 - `mar/gmi.hoon` — the `%gmi` mark (`text/gemini`), backed by `@t`.
-- `mar/txt.hoon` — standard `%txt` mark; `%gmi`'s `grad %txt` depends on it.
 - `sur/lattice.hoon` — agent state.
-- `lib/` — your gemtext content. `lib/index.gmi` is the home page; if absent,
-  an auto-generated listing is served for `urb://~ship/`.
+- `tests/lib/lattice.hoon` — unit tests for the pure helpers in `lib/lattice`.
 
-## Publishing
+## Content lives in /pub
 
-Filesystem + `|commit` *is* the publish step:
-
-1. write `lib/notes/intro.gmi`
-2. `|commit %lattice`
-
-On each commit the agent diffs `lib/` by content hash and `%grow`s new or
-changed files, `%cull`s removed ones. It's now fetchable at
-`urb://~your-ship/notes/intro` from anywhere.
-
-## Endpoint
-
-```
-GET /apps/lattice/fetch?url=urb://~ship/path   ->   {"mark":"gmi","body":"…"}
-```
-
-For `~ship == self`, reads `/lib/<path>/gmi` from local Clay. For another
-ship, issues an Ames `%keen` remote scry and relays the answer. Requires a
-session cookie (standard Eyre auth); url-encode the `url` query value.
-
-Errors: `400` missing/bad url, `404` not found / peer has no value.
-
-## Install
-
-```
-> |mount %lattice
-> |install our %lattice
-```
-
-See `../docs/lattice-integration-test.md` for the end-to-end test recipe and
-the dev gotchas (state migration order, the `txt` mark dependency, the `//1`
-publication-path shape).
-
-## Status
-
-Local publish + fetch + index and **remote (`%keen`) cross-ship fetch** are
-all verified working (`~zod`↔`~tyr`). Peers must be introduced (`|hi`) before
-remote fetch works, and a missing remote path currently hangs (remote scry
-can't prove absence). See the integration recipe.
+Publish by writing gemtext to `/pub/<path>/gmi` on the desk (the app's editor
+does this for you). Each file becomes fetchable from any ship as
+`urb://~your-ship/<path>` — the `/pub` prefix and `.gmi` extension are dropped.
+`/pub/index.gmi` is your home page; if absent, an auto-generated listing is
+served for `urb://~ship/`. (Content is **not** kept in `/lib` — that's for the
+desk's source libraries.)

@@ -39,9 +39,25 @@ You run the desk on your ship and point the app at it.
 
 ### 1. The `%lattice` desk (on your ship)
 
-The agent source lives in [`desk/`](desk/). Install it onto a desk on your ship
-and start the `%lattice` agent. Once it's running it binds an HTTP endpoint at
-`/apps/lattice` and begins publishing whatever is in `/pub`.
+Build the desk with [`build.sh`](build.sh) and commit it to your ship. It
+vendors the standard kernel deps via [peru](https://github.com/buildinspace/peru)
+(so make sure `peru --version` works), assembles a complete desk under `dist/`,
+and — with `-p` — copies it into a mounted desk:
+
+```dojo
+|new-desk %lattice
+|mount %lattice
+```
+```bash
+./build.sh -p ~/path/to/your-ship/lattice
+```
+```dojo
+|commit %lattice
+|install our %lattice
+```
+
+Once installed, the agent binds an HTTP endpoint at `/apps/lattice` and begins
+publishing whatever is in `/pub`.
 
 > Endpoints are access-controlled: only your own ship can poke or subscribe to
 > the agent, and the HTTP API requires a valid ship session. Anything you put in

@@ -1,5 +1,0 @@
-# Hello from lattice
-
-This is the first gemtext file.
-
-=> urb://~zod/world  See more

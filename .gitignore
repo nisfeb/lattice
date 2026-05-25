@@ -20,3 +20,7 @@ keystore.properties
 # JVM crash logs
 hs_err_pid*.log
 replay_pid*.log
+
+# peru dependency vendoring
+.peru/
+dist-dev/

@@ -1,6 +1,0 @@
-# ~zod's lattice
-
-Welcome to this ship's gemtext space.
-
-=> /hello  Hello page
-=> /notes/2026/intro  Notes intro
