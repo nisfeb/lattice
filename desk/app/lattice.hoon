@@ -152,6 +152,12 @@
   ::  [cas] is the scotted case — %da now for the latest, %ud n for a revision.
   [%pass /keen/[eyre-id] %arvo %a %keen ~ ship (keen-path cas spur)]
 ::
+::  hard ceiling on a walk-to-latest probe. Without it, a peer that answers
+::  every %ud n keen within the sliding deadline keeps /walkto from ever firing
+::  and the walk climbs revisions forever (a single browse of a hostile ship
+::  becomes a perpetual keen loop). No real gemtext file has this many revs.
+++  walk-max  ^-(@ud 1.000)
+::
 ::  walk-to-latest cards: probe revisions on /walk/<eid>, with a behn deadline
 ::  on /walkto/<eid> that fires when the walk stalls (the next rev pends).
 ++  walk-keen-card
@@ -502,6 +508,12 @@
     ::  resolved rev (rev.u.fet+1): record content, probe the next, slide deadline
     =/  got=@ud   +(rev.u.fet)
     =/  body=@t   ;;(@t q.gag)
+    ?:  (gte got walk-max)
+      ::  runaway walk (a peer answering every revision) — stop and return the
+      ::  highest rev we reached rather than looping forever.
+      =.  fetches.state  (~(del by fetches.state) eid)
+      :_  this
+      [(walk-rest-card eid deadline.u.fet) (respond-json-cards eid 200 (mark-and-body p.gag body))]
     =/  nat=@da   (add now.bowl ~s2)
     =.  fetches.state
       (~(put by fetches.state) eid [ship.u.fet spur.u.fet got p.gag body nat])
@@ -557,6 +569,10 @@
       ?.  live  ~
       ~[[%give %fact ~[/updates] %json !>((update-json shp spur body))]]
     :_  this
+    ::  bound the follow loop like the walk: a peer answering every revision
+    ::  instantly would otherwise spin it without end. Deliver the last fact
+    ::  but stop re-arming past the ceiling (no real file has this many revs).
+    ?:  (gte seen walk-max)  facts
     (welp facts ~[(follow-card shp spur +(seen) now.bowl)])
   ==
 ::
