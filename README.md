@@ -113,6 +113,11 @@ web/    marketing pages (HTML + a gemtext page, fittingly)
 scripts/ build helpers
 ```
 
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE.md). Free to use, modify, and share for
+any noncommercial purpose; commercial use requires a separate license.
+
 ---
 
-Built by ~nisfeb.
+© lattice — built by ~nisfeb. PolyForm Noncommercial 1.0.0 licensed.

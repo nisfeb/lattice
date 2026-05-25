@@ -56,4 +56,5 @@ You'll need the %lattice desk running on your ship, then point the app at it wit
 
 ---
 
-Built by ~nisfeb.
+Built by ~nisfeb. PolyForm Noncommercial 1.0.0 licensed.
+=> https://polyformproject.org/licenses/noncommercial/1.0.0  License
