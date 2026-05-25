@@ -65,7 +65,6 @@
   =/  body=@t  (generate-index (list-gmi bowl))
   =/  h=@uvH   (sham body)
   ?:  =(h prev)  [~ prev]
-  ~&  >  "lattice: %grow manifest ({<~(wyt in (list-gmi bowl))>} files)"
   [~[[%pass /grow %grow manifest-spur gmi+body]] h]
 ::
 ++  publish-card
@@ -73,7 +72,6 @@
   ^-  card
   =/  body=@t    .^(@t %cx (welp (base-path bowl) pax))
   =/  spur=path  (snip (slag 1 pax))   ::  drop /pub prefix and trailing /gmi
-  ~&  >  "lattice: %grow {<spur>} ({<(met 3 body)>} bytes)"
   [%pass /grow %grow spur gmi+body]
 ::
 ++  unpublish-card
@@ -88,7 +86,6 @@
       (welp /(scot %p our.bowl)/lattice/(scot %da now.bowl)//1 spur)
     ==
   ?>  ?=(%ud -.cas)
-  ~&  >  "lattice: %cull {<spur>} (v{<p.cas>})"
   [%pass /tomb %cull [%ud p.cas] spur]
 ::
 ++  sync-cards
@@ -109,7 +106,6 @@
   ::  to-remove: previously-published paths no longer present
   =/  to-remove=(list path)
     ~(tap in (~(dif in ~(key by prev)) current))
-  ~&  >  "lattice: {<(lent to-grow)>} updated, {<(lent to-remove)>} removed"
   =/  grows=(list card)  (turn to-grow |=(p=path (publish-card bowl p)))
   =/  culls=(list card)  (turn to-remove |=(p=path (unpublish-card bowl p)))
   [(weld grows culls) next]
@@ -276,16 +272,23 @@
   ?:  &(=(meth %'POST') =(action 'save'))
     ?~  rel=(query-param inbound-request 'path')
       [(respond-json-cards eyre-id 400 '{"error":"missing path"}') st]
+    ::  +pub-path parses user input with +stab — guard against an invalid path.
+    =/  pp=(each path tang)  (mule |.((pub-path u.rel)))
+    ?:  ?=(%| -.pp)
+      [(respond-json-cards eyre-id 400 '{"error":"invalid path"}') st]
     =/  content=@t
       ?~(body.request.inbound-request '' q.u.body.request.inbound-request)
     :_  st
-    [(write-card bowl (pub-path u.rel) content) (respond-json-cards eyre-id 200 '{"ok":true}')]
+    [(write-card bowl p.pp content) (respond-json-cards eyre-id 200 '{"ok":true}')]
   ::  POST /apps/lattice/delete?path=<rel>
   ?:  &(=(meth %'POST') =(action 'delete'))
     ?~  rel=(query-param inbound-request 'path')
       [(respond-json-cards eyre-id 400 '{"error":"missing path"}') st]
+    =/  pp=(each path tang)  (mule |.((pub-path u.rel)))
+    ?:  ?=(%| -.pp)
+      [(respond-json-cards eyre-id 400 '{"error":"invalid path"}') st]
     :_  st
-    [(delete-card bowl (pub-path u.rel)) (respond-json-cards eyre-id 200 '{"ok":true}')]
+    [(delete-card bowl p.pp) (respond-json-cards eyre-id 200 '{"ok":true}')]
   ::  POST /apps/lattice/sub?url=urb://~ship/path — follow a remote file
   ?:  &(=(meth %'POST') =(action 'sub'))
     ?~  raw=(query-param inbound-request 'url')
@@ -339,7 +342,7 @@
 --
 ::
 %-  agent:dbug
-%+  verb  &
+%+  verb  |
 =|  state-3
 =*  state  -
 ^-  agent:gall
@@ -434,11 +437,9 @@
     ==
   ==
 ::
-++  on-agent
-  |=  [=wire =sign:agent:gall]
-  ^-  (quip card _this)
-  ~&  >  "lattice: agent sign on wire {<wire>}"
-  `this
+::  lattice uses ames keens + eyre, not gall subscriptions, so no agent signs
+::  are expected; ignore any quietly.
+++  on-agent  |=([wire sign:agent:gall] `this)
 ::
 ++  on-arvo
   |=  [=wire =sign-arvo]
@@ -451,16 +452,19 @@
   ::
       [%eyre %connect ~]
     ?>  ?=([%eyre %bound *] sign-arvo)
-    ~&  >  "lattice: eyre bound at /apps/lattice (accepted={<accepted.sign-arvo>})"
-    `this
+    ::  only surface a problem — a rejected bind means /apps/lattice is taken
+    ::  and the HTTP API won't work.
+    ?:  accepted.sign-arvo  `this
+    ~&(>>> "lattice: eyre bind /apps/lattice REJECTED — endpoint in use?" `this)
   ::
       [%keen @ta ~]
     ::  this kernel answers a %keen with %sage (sage = [spar gage]);
     ::  %tune is the older variant.
     ?>  ?=([%ames %sage *] sign-arvo)
     =/  eid=@ta  i.t.wire
-    ?~  pend=(~(get by pending.state) eid)
-      ~&(>>> "lattice: %sage for unknown eyre-id {<eid>}" `this)
+    ::  no pending entry → a late %sage after the &rev deadline already answered;
+    ::  ignore quietly.
+    ?~  pend=(~(get by pending.state) eid)  `this
     =.  pending.state  (~(del by pending.state) eid)
     [(sage-cards eid q.sage.sign-arvo) this]
   ::
@@ -527,33 +531,30 @@
     ?>  ?=([%ames %sage *] sign-arvo)
     ::  parse defensively: a stale keen (old wire format / cancelled sub) must
     ::  neither crash nor be mis-applied to the current cursor.
-    ?~  missued=(slaw %da i.t.wire)        ~&(>> "lattice: stale follow wire, dropping" `this)
+    ::  all the drops below are routine (unsub, duplicate/stale keens,
+    ::  tombstoned or malformed peer values) — handle quietly, no console noise.
+    ?~  missued=(slaw %da i.t.wire)        `this
     ?~  mrev=(slaw %ud i.t.t.wire)         `this
     ?~  mshp=(slaw %p i.t.t.t.wire)        `this
     =/  issued=@da  u.missued
     =/  rev=@ud     u.mrev
     =/  shp=ship    u.mshp
     =/  spur=path   t.t.t.t.wire
-    ?~  cur=(~(get by subs.state) [shp spur])
-      ~&(>> "lattice: %sage for unfollowed {<[shp spur]>}, dropping" `this)
-    ?.  =(rev +(u.cur))
-      ::  resolved a revision we're no longer waiting for (stale/duplicate keen)
-      ~&(>> "lattice: stale follow rev {<rev>} (at {<u.cur>}), dropping" `this)
+    ::  not (or no longer) subscribed → drop, don't re-arm.
+    ?~  cur=(~(get by subs.state) [shp spur])  `this
+    ::  resolved a revision we're no longer waiting for (stale/duplicate keen).
+    ?.  =(rev +(u.cur))  `this
     =/  gag  q.sage.sign-arvo
-    ?@  gag
-      ::  no value at this revision (tombstoned) — stop following this file
-      ~&(>> "lattice: follow {<[shp spur]>} got no value, stopping" `this)
-    ?^  q.gag
-      ::  the peer served a non-cord body; stop following (don't crash, and don't
-      ::  re-arm the same rev — it would resolve instantly into a hot loop).
-      ~&(>> "lattice: follow {<[shp spur]>} malformed value, stopping" `this)
+    ::  no value (tombstoned) or a non-cord body → stop following this file
+    ::  (don't re-arm the same rev — a bad value would hot-loop).
+    ?@  gag  `this
+    ?^  q.gag  `this
     =/  body=@t   ;;(@t q.gag)
     =/  seen=@ud  rev
     =.  subs.state  (~(put by subs.state) [shp spur] seen)
     =/  live=?  (gth (sub now.bowl issued) ~s10)
     =/  facts=(list card)
       ?.  live  ~
-      ~&  >  "lattice: update from {<shp>} {<spur>} (rev {<seen>})"
       ~[[%give %fact ~[/updates] %json !>((update-json shp spur body))]]
     :_  this
     (welp facts ~[(follow-card shp spur +(seen) now.bowl)])

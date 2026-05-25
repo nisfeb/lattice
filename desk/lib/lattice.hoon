@@ -16,7 +16,10 @@
     ?~  shp=(slaw %p (crip rest))  ~
     `[u.shp ~]
   ?~  shp=(slaw %p (crip (scag u.slash rest)))  ~
-  `[u.shp (stab (crip (slag u.slash rest)))]
+  ::  the path portion is user input; +stab crashes on an invalid knot (spaces,
+  ::  unicode, empty segments), so parse it crash-safely and reject on failure.
+  =/  pax=(each path tang)  (mule |.((stab (crip (slag u.slash rest)))))
+  ?:(?=(%| -.pax) ~ `[u.shp p.pax])
 ::
 ::  +pub-path: /pub/<rel>/gmi from a relative @t like "notes/2026/intro".
 ::  Content lives under /pub, separate from the desk's /lib source libraries.
