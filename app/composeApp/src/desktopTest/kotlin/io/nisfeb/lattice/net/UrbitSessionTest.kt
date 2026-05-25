@@ -43,6 +43,14 @@ class UrbitSessionTest {
         assertEquals(null, session.shipName)
     }
 
+    // Security: never send the +code/cookie in cleartext to a non-loopback host.
+    @Test fun loginRejectsCleartextRemoteHost() = runTest {
+        val session = UrbitSession(OkHttpClient(), FakeSessionStore())
+        val result = session.login("http://example.com", "lidlut-tabwed-pillex-ridrup")
+        assertTrue(result.isFailure)
+        assertEquals(null, session.shipName)
+    }
+
     @Test fun tryRestoreLoadsSavedSession() {
         val session = loggedInSession(server)
         assertEquals("~zod", session.shipName)

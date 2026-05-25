@@ -82,6 +82,7 @@ kover {
                     "io.nisfeb.lattice.theme.AndroidThemeStore*",
                     "io.nisfeb.lattice.urbit.FileSessionStore*",
                     "io.nisfeb.lattice.urbit.AndroidSessionStore*",
+                    "io.nisfeb.lattice.urbit.UpdatesChannel*",  // Eyre SSE transport, integration-tested
                     "io.nisfeb.lattice.resources.*",     // generated
                 )
             }
