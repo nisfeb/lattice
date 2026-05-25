@@ -7,4 +7,5 @@ sealed interface AppScreen {
     data object Settings : AppScreen
     data object Discover : AppScreen
     data object Updates : AppScreen
+    data object Bookmarks : AppScreen
 }

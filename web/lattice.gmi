@@ -22,7 +22,6 @@ Welcome. Everything here is a gemtext file in /pub.
 
 => urb://~nisfeb/notes/urbit  Notes on Urbit
 => urb://~nisfeb/now          What I'm doing now
-=> https://urbit.org         The wider web still works too
 ```
 
 ## What it does

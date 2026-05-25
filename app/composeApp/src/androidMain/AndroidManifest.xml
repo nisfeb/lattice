@@ -19,6 +19,17 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- urb:// deep links. Lets other apps (e.g. Talon) hand
+                 off an Urbit address for Lattice to browse. BROWSABLE
+                 so a urb:// tapped anywhere on the device resolves
+                 here; DEFAULT so an explicit ACTION_VIEW intent is
+                 matched. -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="urb" />
+            </intent-filter>
         </activity>
     </application>
 

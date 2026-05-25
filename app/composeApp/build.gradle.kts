@@ -181,7 +181,28 @@ compose.desktop {
             // jdk.crypto.ec (EC TLS) or https connections fail in the package.
             modules("java.naming", "jdk.crypto.ec")
             linux { iconFile.set(project.file("icons/lattice.png")) }
-            macOS { iconFile.set(project.file("icons/lattice.icns")) }
+            macOS {
+                iconFile.set(project.file("icons/lattice.icns"))
+                // Register the urb:// scheme on macOS via the .app
+                // bundle's Info.plist. Linux/Windows self-register at
+                // first run (SchemeRegistration); macOS association
+                // must be declared here at packaging time.
+                infoPlist {
+                    extraKeysRawXml = """
+                        <key>CFBundleURLTypes</key>
+                        <array>
+                          <dict>
+                            <key>CFBundleURLName</key>
+                            <string>io.nisfeb.lattice.urb</string>
+                            <key>CFBundleURLSchemes</key>
+                            <array>
+                              <string>urb</string>
+                            </array>
+                          </dict>
+                        </array>
+                    """.trimIndent()
+                }
+            }
             windows { iconFile.set(project.file("icons/lattice.ico")) }
         }
     }

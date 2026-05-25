@@ -10,9 +10,10 @@ class AndroidThemeStore(context: Context) : ThemeStore {
     private val json = Json { ignoreUnknownKeys = true }
     private val savedSer = ListSerializer(SavedTheme.serializer())
 
+    // Default to the Light preset for first launch (no saved theme).
     override fun load(): ThemeSettings =
         runCatching { json.decodeFromString<ThemeSettings>(prefs.getString("theme", null) ?: "") }
-            .getOrDefault(ThemeSettings())
+            .getOrDefault(ThemeSettings.Light)
 
     override fun save(settings: ThemeSettings) {
         prefs.edit().putString("theme", json.encodeToString(ThemeSettings.serializer(), settings)).apply()

@@ -18,6 +18,7 @@ import io.nisfeb.lattice.theme.ThemeRepository
 import io.nisfeb.lattice.theme.ThemeStore
 import io.nisfeb.lattice.ui.AddShipScreen
 import io.nisfeb.lattice.ui.AppScreen
+import io.nisfeb.lattice.ui.BookmarksScreen
 import io.nisfeb.lattice.ui.BrowserScreen
 import io.nisfeb.lattice.ui.DiscoverScreen
 import io.nisfeb.lattice.ui.LatticeTheme
@@ -36,7 +37,17 @@ import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
 @Composable
-fun App(sessionStore: SessionStore, bookmarkStore: BookmarkStore, themeStore: ThemeStore) {
+fun App(
+    sessionStore: SessionStore,
+    bookmarkStore: BookmarkStore,
+    themeStore: ThemeStore,
+    /** A urb:// URL to open on launch — set when another app (e.g.
+     *  Talon) hands off a link via the OS scheme handler. Navigates
+     *  the browser to it; consumed once so re-delivery of the same
+     *  value (a later onNewIntent / open-URI event) re-fires. */
+    initialUrl: String? = null,
+    onUrlConsumed: () -> Unit = {},
+) {
     val session = remember { UrbitSession(OkHttpClient(), sessionStore) }
     val client = remember { LatticeClient(session) }
     val settingsClient = remember { SettingsClient(session) }
@@ -56,6 +67,24 @@ fun App(sessionStore: SessionStore, bookmarkStore: BookmarkStore, themeStore: Th
     var screen by remember { mutableStateOf<AppScreen>(AppScreen.Browse) }
     var editTarget by remember { mutableStateOf<String?>(null) }
     var browseTarget by remember { mutableStateOf<String?>(null) }
+    // Browser tab state hoisted here so it survives the user visiting
+    // Settings / Files / Discover and coming back — BrowserScreen
+    // leaves the composition on those, which would otherwise discard
+    // its open tabs and reset to the home page.
+    val browserTabs = remember { androidx.compose.runtime.mutableStateListOf<io.nisfeb.lattice.ui.BrowserTab>() }
+    val browserActive = remember { mutableStateOf(0) }
+
+    // External urb:// handoff (OS scheme handler → MainActivity /
+    // desktop main). Navigate the browser to the link. browseTarget
+    // survives until BrowserScreen consumes it, so a handoff that
+    // arrives before login still lands once the user signs in.
+    LaunchedEffect(initialUrl) {
+        if (initialUrl != null && initialUrl.startsWith("urb://")) {
+            browseTarget = initialUrl
+            screen = AppScreen.Browse
+            onUrlConsumed()
+        }
+    }
 
     // On login: pull synced prefs, re-arm desk subscriptions, and stream updates.
     LaunchedEffect(ship) {
@@ -111,7 +140,10 @@ fun App(sessionStore: SessionStore, bookmarkStore: BookmarkStore, themeStore: Th
                     onSubscribe = { subscribe(it) },
                     onUnsubscribe = { unsubscribe(it) },
                     onOpenUpdates = { unread = 0; screen = AppScreen.Updates },
+                    onOpenBookmarks = { screen = AppScreen.Bookmarks },
                     unreadUpdates = unread,
+                    tabs = browserTabs,
+                    activeState = browserActive,
                 )
                 AppScreen.Workspace -> WorkspaceScreen(
                     client = client,
@@ -148,6 +180,11 @@ fun App(sessionStore: SessionStore, bookmarkStore: BookmarkStore, themeStore: Th
                 AppScreen.Updates -> UpdatesScreen(
                     updates = updates,
                     onBrowse = { url -> browseTarget = url; screen = AppScreen.Browse },
+                    onClose = { screen = AppScreen.Browse },
+                )
+                AppScreen.Bookmarks -> BookmarksScreen(
+                    bookmarkStore = bookmarkStore,
+                    onOpen = { url -> browseTarget = url; screen = AppScreen.Browse },
                     onClose = { screen = AppScreen.Browse },
                 )
             }
