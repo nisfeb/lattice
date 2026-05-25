@@ -11,8 +11,9 @@ class FileThemeStore(dir: File = defaultDir()) : ThemeStore {
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
     private val savedSer = ListSerializer(SavedTheme.serializer())
 
+    // Default to the Light preset for first launch (no saved theme).
     override fun load(): ThemeSettings =
-        runCatching { json.decodeFromString<ThemeSettings>(file.readText()) }.getOrDefault(ThemeSettings())
+        runCatching { json.decodeFromString<ThemeSettings>(file.readText()) }.getOrDefault(ThemeSettings.Light)
 
     override fun save(settings: ThemeSettings) {
         runCatching { file.writeText(json.encodeToString(ThemeSettings.serializer(), settings)) }

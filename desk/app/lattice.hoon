@@ -358,8 +358,12 @@
   ::  no &rev → walk to the latest revision. Remote scry has no "latest" query,
   ::  so keen rev 1,2,3… (recording the highest that resolves) until the next
   ::  rev pends; the /walkto behn deadline then answers with the best seen.
-  ::  Cold-route tolerant: a generous initial deadline, tightened once walking.
-  =/  at=@da  (add now.bowl ~s10)
+  ::  Cold-route tolerant: ~s30 lets a first-contact remote scry (never-seen
+  ::  peer — ames route still being established) resolve rev 1 before /walkto
+  ::  fires with an empty "best seen". Once a rev resolves the deadline slides
+  ::  to ~s2 per rev (see the %walk sage branch), so warm/local fetches stay
+  ::  snappy; only the cold first hop waits the full window.
+  =/  at=@da  (add now.bowl ~s30)
   =.  fetches.st  (~(put by fetches.st) eyre-id [shp spr 0 '' '' at])
   [~[(walk-keen-card eyre-id 1 shp spr) (walk-wait-card eyre-id at)] st]
 --

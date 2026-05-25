@@ -75,7 +75,8 @@ kover {
                 classes(
                     "io.nisfeb.lattice.ui.*",            // Compose screens/components
                     "io.nisfeb.lattice.App*",            // root composable
-                    "io.nisfeb.lattice.MainKt",          // desktop entry point
+                    "io.nisfeb.lattice.MainKt*",         // desktop entry point (+ its lambdas)
+                    "io.nisfeb.lattice.SchemeRegistration*", // desktop OS scheme registration
                     "io.nisfeb.lattice.Platform*",       // expect/actual flag
                     "io.nisfeb.lattice.bookmarks.*",     // per-platform IO
                     "io.nisfeb.lattice.theme.FileThemeStore*",
@@ -181,7 +182,28 @@ compose.desktop {
             // jdk.crypto.ec (EC TLS) or https connections fail in the package.
             modules("java.naming", "jdk.crypto.ec")
             linux { iconFile.set(project.file("icons/lattice.png")) }
-            macOS { iconFile.set(project.file("icons/lattice.icns")) }
+            macOS {
+                iconFile.set(project.file("icons/lattice.icns"))
+                // Register the urb:// scheme on macOS via the .app
+                // bundle's Info.plist. Linux/Windows self-register at
+                // first run (SchemeRegistration); macOS association
+                // must be declared here at packaging time.
+                infoPlist {
+                    extraKeysRawXml = """
+                        <key>CFBundleURLTypes</key>
+                        <array>
+                          <dict>
+                            <key>CFBundleURLName</key>
+                            <string>io.nisfeb.lattice.urb</string>
+                            <key>CFBundleURLSchemes</key>
+                            <array>
+                              <string>urb</string>
+                            </array>
+                          </dict>
+                        </array>
+                    """.trimIndent()
+                }
+            }
             windows { iconFile.set(project.file("icons/lattice.ico")) }
         }
     }
