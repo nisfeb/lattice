@@ -75,7 +75,7 @@ kover {
                 classes(
                     "io.nisfeb.lattice.ui.*",            // Compose screens/components
                     "io.nisfeb.lattice.App*",            // root composable
-                    "io.nisfeb.lattice.MainKt",          // desktop entry point
+                    "io.nisfeb.lattice.MainKt*",         // desktop entry point (+ its lambdas)
                     "io.nisfeb.lattice.SchemeRegistration*", // desktop OS scheme registration
                     "io.nisfeb.lattice.Platform*",       // expect/actual flag
                     "io.nisfeb.lattice.bookmarks.*",     // per-platform IO
