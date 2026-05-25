@@ -25,6 +25,7 @@ class MainActivity : ComponentActivity() {
         val sessions = AndroidSessionStore(applicationContext)
         val bookmarks = AndroidBookmarkStore(applicationContext)
         val themes = AndroidThemeStore(applicationContext)
+        val updates = (application as? LatticeApplication)?.updateState
         setContent {
             App(
                 sessions,
@@ -32,8 +33,16 @@ class MainActivity : ComponentActivity() {
                 themes,
                 initialUrl = pendingUrl,
                 onUrlConsumed = { pendingUrl = null },
+                updateState = updates,
             )
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Check for a new release on every foreground; HttpUpdateChecker's
+        // 12h throttle keeps the actual network hits sparse.
+        (application as? LatticeApplication)?.checkForUpdate()
     }
 
     override fun onNewIntent(intent: Intent) {

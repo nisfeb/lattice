@@ -81,23 +81,49 @@ jobs:
         env:
           RELEASE_KEYSTORE_PROPS: /home/runner/.config/lattice/keystore.properties
         run: ./gradlew :composeApp:assembleRelease
-      - name: Stage APK
+      - name: Stage APK + update manifest
         if: steps.chk.outputs.have_keystore == 'true'
         env:
           VERSION_NAME: ${{ needs.tagcheck.outputs.version_name }}
+          VERSION_CODE: ${{ needs.tagcheck.outputs.version_code }}
         run: |
           set -euo pipefail
           SRC=app/composeApp/build/outputs/apk/release/composeApp-release.apk
           if [ ! -f "$SRC" ]; then
             echo "::error::release APK not found at $SRC"; ls -la "$(dirname "$SRC")" || true; exit 1
           fi
-          cp "$SRC" "lattice-$VERSION_NAME.apk"
-      - name: Upload Android APK
+          OUT_APK="lattice-$VERSION_NAME.apk"
+          cp "$SRC" "$OUT_APK"
+          # latest.json — the in-app updater fetches this from
+          # releases/latest/download/latest.json, compares versionCode, then
+          # downloads `url` and verifies it against sha256. jq escapes the
+          # changelog safely (commit messages can contain anything).
+          SHA=$(sha256sum "$OUT_APK" | awk '{print $1}')
+          CHANGELOG="$(git log -1 --pretty=%B | tr '\n' ' ')"
+          jq -n \
+            --argjson versionCode "$VERSION_CODE" \
+            --arg     versionName "$VERSION_NAME" \
+            --arg     sha         "$SHA" \
+            --arg     changelog   "$CHANGELOG" \
+            '{
+              versionCode: $versionCode,
+              versionName: $versionName,
+              url: ("https://github.com/nisfeb/lattice/releases/download/v"
+                    + $versionName + "/lattice-" + $versionName + ".apk"),
+              sha256: $sha,
+              minSdk: 26,
+              changelog: $changelog,
+              mandatory: false
+            }' > latest.json
+          cat latest.json
+      - name: Upload Android APK + manifest
         if: steps.chk.outputs.have_keystore == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: android
-          path: lattice-*.apk
+          path: |
+            lattice-*.apk
+            latest.json
           if-no-files-found: error
 
   # Desktop matrix: jpackage on each host so the per-OS toolchains are present
@@ -176,7 +202,7 @@ jobs:
             fi
           done < <(find artifacts -type f \( \
             -name '*.apk' -o -name '*.deb' -o -name '*.dmg' -o \
-            -name '*.msi' -o -name '*.AppImage' \
+            -name '*.msi' -o -name '*.AppImage' -o -name 'latest.json' \
           \) -print0)
           if [ "$collisions" -gt 0 ]; then
             echo "::error::$collisions artifact name collision(s) — refusing to publish"; exit 1

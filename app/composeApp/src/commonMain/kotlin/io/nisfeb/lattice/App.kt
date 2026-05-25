@@ -1,9 +1,12 @@
 package io.nisfeb.lattice
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -25,8 +28,11 @@ import io.nisfeb.lattice.ui.BrowserTab
 import io.nisfeb.lattice.ui.DiscoverScreen
 import io.nisfeb.lattice.ui.LatticeTheme
 import io.nisfeb.lattice.ui.SettingsScreen
+import io.nisfeb.lattice.ui.UpdateBanner
 import io.nisfeb.lattice.ui.UpdatesScreen
 import io.nisfeb.lattice.ui.WorkspaceScreen
+import io.nisfeb.lattice.update.UpdateState
+import io.nisfeb.lattice.update.UpdateStatus
 import io.nisfeb.lattice.urbit.LatticeClient
 import io.nisfeb.lattice.urbit.SessionStore
 import io.nisfeb.lattice.urbit.SettingsClient
@@ -49,6 +55,9 @@ fun App(
      *  value (a later onNewIntent / open-URI event) re-fires. */
     initialUrl: String? = null,
     onUrlConsumed: () -> Unit = {},
+    /** Drives the in-app update banner. Wired on Android (download + sideload
+     *  install); null on desktop, where updates come via the installers. */
+    updateState: UpdateState? = null,
 ) {
     val session = remember { UrbitSession(OkHttpClient(), sessionStore) }
     val client = remember { LatticeClient(session) }
@@ -123,6 +132,23 @@ fun App(
 
     LatticeTheme(theme) {
         Surface(modifier = Modifier.fillMaxSize()) {
+          Column(modifier = Modifier.fillMaxSize()) {
+            if (updateState != null) {
+                val updateStatus by updateState.status.collectAsState()
+                UpdateBanner(
+                    status = updateStatus,
+                    onTap = {
+                        when (val s = updateStatus) {
+                            is UpdateStatus.Available -> updateState.startDownload(s.manifest)
+                            is UpdateStatus.Ready -> updateState.launchInstaller(s.apkPath)
+                            is UpdateStatus.Failed -> s.manifest?.let { updateState.startDownload(it) }
+                            else -> Unit
+                        }
+                    },
+                    onDismiss = { updateState.dismiss() },
+                )
+            }
+            Box(modifier = Modifier.weight(1f).fillMaxSize()) {
             val current = ship
             if (current == null) {
                 AddShipScreen(session, onLoggedIn = { ship = it; screen = AppScreen.Browse })
@@ -191,6 +217,8 @@ fun App(
                     onClose = { screen = AppScreen.Browse },
                 )
             }
+            }
+          }
         }
     }
 }
