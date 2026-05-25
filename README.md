@@ -59,6 +59,18 @@ and — with `-p` — copies it into a mounted desk:
 Once installed, the agent binds an HTTP endpoint at `/apps/lattice` and begins
 publishing whatever is in `/pub`.
 
+**Letting others install it from your ship.** The desk ships a docket, so you
+can distribute it over the network:
+
+```dojo
+:treaty|publish %lattice
+```
+
+Anyone can then install it with `|install ~your-ship %lattice` (or `|ally
+~your-ship` and find it in the App Store search). It shows up as a "Lattice"
+tile in their Landscape; the tile links to this repo (the real UI is the
+native app).
+
 > Endpoints are access-controlled: only your own ship can poke or subscribe to
 > the agent, and the HTTP API requires a valid ship session. Anything you put in
 > `/pub/*.gmi` is **public by design** (that's the point — it's a publishing

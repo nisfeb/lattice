@@ -126,6 +126,19 @@
       [%give %kick ~[pax] ~]
   ==
 ::
+::  +respond-redirect-cards: a 302 to [url]. The docket tile points at
+::  /apps/lattice (a site docket); a browser hitting the base path is sent to
+::  the project page rather than the JSON API's 400.
+++  respond-redirect-cards
+  |=  [eyre-id=@ta url=@t]
+  ^-  (list card)
+  =/  pax=path  /http-response/[eyre-id]
+  =/  hdr=response-header:http  [302 ['location' url]~]
+  :~  [%give %fact ~[pax] %http-response-header !>(hdr)]
+      [%give %fact ~[pax] %http-response-data !>(`(unit octs)`~)]
+      [%give %kick ~[pax] ~]
+  ==
+::
 ++  read-local
   |=  [=bowl:gall eyre-id=@ta pax=path]
   ^-  (list card)
@@ -268,6 +281,10 @@
     [(respond-json-cards eyre-id 403 '{"error":"unauthorized"}') st]
   =/  meth=@tas  method.request.inbound-request
   =/  action=@t  (req-action inbound-request)
+  ::  GET /apps/lattice (the docket tile's site) — redirect a browser to the
+  ::  project page (the real UI is the native app, not a web tile).
+  ?:  &(=(meth %'GET') =(action 'lattice'))
+    [(respond-redirect-cards eyre-id 'https://github.com/nisfeb/lattice') st]
   ::  GET /apps/lattice/list — the published file tree
   ?:  &(=(meth %'GET') =(action 'list'))
     [(respond-json-cards eyre-id 200 (list-files-json bowl)) st]

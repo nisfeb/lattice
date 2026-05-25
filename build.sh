@@ -70,9 +70,10 @@ copy_to_path() {
     echo "Error: target desk path '$target' does not exist (|mount it first)." >&2
     exit 1
   fi
-  echo "Cleaning desk at $target ..."
-  rm -rf "${target:?}"/*
-  echo "Copying dist/ → $target ..."
+  # Refresh the desk source but PRESERVE /pub — that's the ship's published
+  # gemtext content, which must survive an agent update/re-install.
+  echo "Refreshing desk at $target (preserving /pub) ..."
+  find "${target:?}" -mindepth 1 -maxdepth 1 ! -name pub -exec rm -rf {} +
   cp -r dist/. "$target"/
   echo "Copied. Now in dojo:  |commit %<desk>  then  |install our %<desk>"
 }
