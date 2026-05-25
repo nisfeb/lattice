@@ -42,7 +42,7 @@ class LatticeClient(private val session: UrbitSession) {
                     .addQueryParameter("url", urbUrl)
                     .build()
                 val request = Request.Builder().url(url).get().build()
-                session.http.newCall(request).execute().use { resp ->
+                fetchClient.newCall(request).execute().use { resp ->
                     val text = resp.body?.string().orEmpty()
                     val doc = json.decodeFromString<GmiDoc>(text)
                     if (doc.error != null) error(doc.error)
@@ -124,6 +124,17 @@ class LatticeClient(private val session: UrbitSession) {
     // The session client has no read timeout (SSE), so probes must be bounded:
     // a non-publishing ship's keen pends forever. callTimeout caps the whole call.
     private val probeClient by lazy { session.http.newBuilder().callTimeout(Duration.ofSeconds(8)).build() }
+
+    // A no-&rev fetch is the desk's walk-to-latest: on a cold ames route it holds
+    // the connection (sending nothing) until rev 1 resolves or the ~s30 deadline
+    // fires. Wait a touch longer than that so a first-contact browse actually
+    // lands instead of the client aborting first.
+    private val fetchClient by lazy {
+        session.http.newBuilder()
+            .readTimeout(Duration.ofSeconds(35))
+            .callTimeout(Duration.ofSeconds(40))
+            .build()
+    }
 
     /**
      * Does [ship] publish with lattice? Probes its discovery manifest — a

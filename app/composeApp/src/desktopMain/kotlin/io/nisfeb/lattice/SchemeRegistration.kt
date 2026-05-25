@@ -61,7 +61,7 @@ object SchemeRegistration {
             Type=Application
             Name=Lattice
             Comment=Browse gemtext over Urbit
-            Exec=$exec %u
+            Exec="$exec" %u
             Terminal=false
             Categories=Network;
             MimeType=x-scheme-handler/urb;

@@ -57,13 +57,13 @@ import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -110,8 +110,8 @@ fun BrowserScreen(
     // Hoisted by App so tabs + the active index survive this screen
     // leaving the composition (opening Settings, Files, etc.). Without
     // this the browser reset to the home page on every round-trip.
-    tabs: androidx.compose.runtime.snapshots.SnapshotStateList<BrowserTab>,
-    activeState: androidx.compose.runtime.MutableState<Int>,
+    tabs: SnapshotStateList<BrowserTab>,
+    activeState: MutableState<Int>,
 ) {
     val scope = rememberCoroutineScope()
     val home = "urb://$homeShip/"

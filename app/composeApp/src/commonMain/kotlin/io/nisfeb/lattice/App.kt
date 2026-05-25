@@ -5,6 +5,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -20,6 +21,7 @@ import io.nisfeb.lattice.ui.AddShipScreen
 import io.nisfeb.lattice.ui.AppScreen
 import io.nisfeb.lattice.ui.BookmarksScreen
 import io.nisfeb.lattice.ui.BrowserScreen
+import io.nisfeb.lattice.ui.BrowserTab
 import io.nisfeb.lattice.ui.DiscoverScreen
 import io.nisfeb.lattice.ui.LatticeTheme
 import io.nisfeb.lattice.ui.SettingsScreen
@@ -71,7 +73,7 @@ fun App(
     // Settings / Files / Discover and coming back — BrowserScreen
     // leaves the composition on those, which would otherwise discard
     // its open tabs and reset to the home page.
-    val browserTabs = remember { androidx.compose.runtime.mutableStateListOf<io.nisfeb.lattice.ui.BrowserTab>() }
+    val browserTabs = remember { mutableStateListOf<BrowserTab>() }
     val browserActive = remember { mutableStateOf(0) }
 
     // External urb:// handoff (OS scheme handler → MainActivity /
@@ -89,9 +91,10 @@ fun App(
     // On login: pull synced prefs, re-arm desk subscriptions, and stream updates.
     LaunchedEffect(ship) {
         // Clear per-ship view state so a logout / account switch doesn't leak
-        // the previous ship's notifications or follow/subscribe lists.
+        // the previous ship's notifications, follow/subscribe lists, or open tabs.
         updates = emptyList(); unread = 0
         follows = emptyList(); subscriptions = emptySet()
+        browserTabs.clear(); browserActive.value = 0
         if (ship != null) {
             themeRepo.pull()?.let { savedThemes = it }
             followRepo.pull()?.let { follows = it }
