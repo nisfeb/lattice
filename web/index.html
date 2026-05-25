@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>lattice — gemtext over Urbit</title>
+    <meta name="description" content="A small, fast gemtext browser and publisher for Urbit. Android, Linux, macOS, Windows. Pages addressed as urb://~ship/path, served peer-to-peer. Bring your own ship.">
+    <meta property="og:title" content="lattice — gemtext over Urbit">
+    <meta property="og:description" content="A small, fast gemtext browser and publisher for Urbit. Pages addressed as urb://~ship/path, served peer-to-peer between ships. Bring your own ship.">
+    <meta property="og:image" content="lattice.png">
+    <meta name="theme-color" content="#120041">
+    <link rel="icon" href="lattice.png" type="image/png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            /* Dark-mode brand palette — same hexes as the app's Lattice Dark theme. */
+            --cyan:    #5BEDF9; /* link / primary accent */
+            --lavender:#C9A8FF; /* visited / secondary accent */
+            --coral:   #FF6E8A;
+
+            --bg:          #120041; /* theme.background */
+            --surface:     #211056; /* theme.surface */
+            --surface-var: #2D1A6B;
+            --on-bg:       #FAF8FF;
+            --on-surface:  #EDE7FF;
+            --on-surf-var: #B6A8E0;
+            --outline:     #3D2A7A;
+            --outline-var: #271559;
+
+            --display: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+            --body:    'Inter', system-ui, -apple-system, sans-serif;
+            --mono:    'JetBrains Mono', ui-monospace, monospace;
+        }
+
+        * { box-sizing: border-box; }
+
+        html, body {
+            margin: 0;
+            padding: 0;
+            background: var(--bg);
+            color: var(--on-bg);
+            font-family: var(--body);
+            font-size: 16px;
+            line-height: 1.55;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        a {
+            color: var(--cyan);
+            text-decoration: underline;
+            text-underline-offset: 2px;
+            text-decoration-thickness: 1px;
+        }
+        a:hover { color: var(--lavender); }
+
+        code, .mono {
+            font-family: var(--mono);
+            font-size: 0.92em;
+        }
+
+        .wrap {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        /* ─── Hero ─── */
+        header.hero {
+            position: relative;
+            padding: 88px 0 64px;
+            background:
+                radial-gradient(ellipse at 28% 18%, rgba(91, 237, 249, 0.20) 0%, transparent 58%),
+                radial-gradient(ellipse at 82% 92%, rgba(201, 168, 255, 0.20) 0%, transparent 55%),
+                var(--bg);
+            border-bottom: 1px solid var(--outline);
+            overflow: hidden;
+        }
+        .hero-inner { display: flex; flex-direction: column; gap: 28px; }
+
+        .icon-wordmark { display: flex; align-items: center; gap: 18px; }
+        .icon-wordmark img { width: 64px; height: 64px; border-radius: 14px; display: block; }
+        .wordmark {
+            font-family: var(--mono);
+            font-weight: 500;
+            font-size: 34px;
+            letter-spacing: -0.01em;
+            line-height: 1;
+        }
+
+        h1 {
+            font-family: var(--display);
+            font-weight: 700;
+            font-size: clamp(36px, 6vw, 56px);
+            line-height: 1.05;
+            letter-spacing: -0.02em;
+            margin: 0;
+        }
+        h1 .accent { color: var(--cyan); }
+
+        .lede { font-size: 19px; color: var(--on-surf-var); max-width: 58ch; margin: 0; }
+        .lede .url { font-family: var(--mono); color: var(--lavender); font-size: 0.92em; }
+
+        .ctas { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+        .btn {
+            display: inline-flex; align-items: center; gap: 10px;
+            font-family: var(--body); font-weight: 600; font-size: 15px;
+            padding: 12px 20px; border-radius: 8px; text-decoration: none;
+            border: 1px solid transparent; transition: transform 0.05s ease;
+        }
+        .btn:active { transform: translateY(1px); }
+        .btn-primary { background: var(--cyan); color: #06121A; border-color: var(--cyan); }
+        .btn-primary:hover { background: var(--lavender); border-color: var(--lavender); color: #120026; }
+        .btn-secondary { background: transparent; color: var(--on-bg); border-color: var(--outline); }
+        .btn-secondary:hover { border-color: var(--on-surf-var); }
+
+        .meta-row {
+            display: flex; flex-wrap: wrap; gap: 16px 24px; margin-top: 4px;
+            color: var(--on-surf-var); font-size: 13px;
+        }
+        .meta-row strong { color: var(--on-surface); font-weight: 500; }
+
+        /* ─── Sections ─── */
+        section { padding: 64px 0; border-bottom: 1px solid var(--outline-var); }
+        section:last-of-type { border-bottom: none; }
+
+        h2 {
+            font-family: var(--display); font-weight: 700; font-size: 28px;
+            line-height: 1.2; letter-spacing: -0.01em; margin: 0 0 24px;
+        }
+        h3 { font-family: var(--body); font-weight: 600; font-size: 16px; margin: 24px 0 8px; color: var(--on-surface); }
+        p { margin: 0 0 16px; }
+        p:last-child { margin-bottom: 0; }
+
+        /* How-it-works two-step */
+        .steps { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; }
+        .steps .step {
+            background: var(--surface); border: 1px solid var(--outline-var);
+            border-radius: 6px; padding: 18px 20px;
+        }
+        .steps .step .n {
+            font-family: var(--mono); font-size: 12px; color: var(--cyan);
+            text-transform: uppercase; letter-spacing: 0.06em;
+        }
+        .steps .step .t { font-weight: 600; color: var(--on-surface); margin: 6px 0 4px; }
+        .steps .step .d { color: var(--on-surf-var); font-size: 14px; }
+        @media (max-width: 540px) { .steps { grid-template-columns: 1fr; } }
+
+        /* Feature list */
+        ul.features { list-style: none; padding: 0; margin: 0; display: grid; gap: 0; }
+        ul.features li {
+            padding: 14px 0; border-top: 1px solid var(--outline-var);
+            display: grid; grid-template-columns: minmax(160px, 1fr) 2.5fr; gap: 16px;
+            align-items: baseline;
+        }
+        ul.features li:last-child { border-bottom: 1px solid var(--outline-var); }
+        ul.features .name { font-weight: 600; color: var(--on-surface); }
+        ul.features .desc { color: var(--on-surf-var); }
+        @media (max-width: 540px) { ul.features li { grid-template-columns: 1fr; gap: 4px; } }
+
+        ul.disclaimers { list-style: none; padding: 0; margin: 0; }
+        ul.disclaimers li { padding: 8px 0 8px 18px; color: var(--on-surf-var); position: relative; }
+        ul.disclaimers li::before { content: "—"; position: absolute; left: 0; color: var(--outline); }
+
+        /* gemtext sample */
+        .gmi {
+            background: var(--surface); border: 1px solid var(--outline-var);
+            border-left: 3px solid var(--cyan); border-radius: 4px;
+            font-family: var(--mono); font-size: 13px; line-height: 1.7;
+            padding: 18px 20px; overflow-x: auto; color: var(--on-surface); margin-top: 8px;
+        }
+        .gmi .h { color: var(--cyan); }
+        .gmi .lnk { color: var(--lavender); }
+        .gmi .c { color: var(--on-surf-var); }
+
+        /* Download table */
+        .dl-grid { display: grid; gap: 0; margin: 8px 0 24px; }
+        .dl-row {
+            display: grid; grid-template-columns: minmax(140px, 1fr) 2fr auto; gap: 16px;
+            align-items: center; padding: 14px 0; border-top: 1px solid var(--outline-var);
+        }
+        .dl-row:last-child { border-bottom: 1px solid var(--outline-var); }
+        .dl-row .platform { font-weight: 600; color: var(--on-surface); }
+        .dl-row .desc { color: var(--on-surf-var); font-size: 14px; }
+        .dl-row .desc code { background: var(--surface-var); padding: 1px 6px; border-radius: 3px; }
+        .dl-row .dl-link {
+            font-family: var(--body); font-weight: 600; font-size: 14px; padding: 8px 14px;
+            border-radius: 6px; text-decoration: none; background: transparent;
+            color: var(--cyan); border: 1px solid var(--outline); white-space: nowrap;
+        }
+        .dl-row .dl-link:hover { border-color: var(--cyan); color: var(--lavender); }
+        @media (max-width: 600px) {
+            .dl-row { grid-template-columns: 1fr; gap: 6px; padding: 16px 0; }
+            .dl-row .dl-link { justify-self: start; }
+        }
+
+        .privacy-card {
+            border: 1px solid var(--outline); border-left: 3px solid var(--cyan);
+            background: var(--surface); padding: 20px 24px; border-radius: 4px;
+        }
+        .privacy-card h3 { margin-top: 0; }
+
+        .tech-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px; margin-top: 24px;
+        }
+        .tech-grid .cell { background: var(--surface); border: 1px solid var(--outline-var); padding: 14px 16px; border-radius: 4px; }
+        .tech-grid .cell .k { font-family: var(--mono); font-size: 12px; color: var(--on-surf-var); text-transform: uppercase; letter-spacing: 0.04em; }
+        .tech-grid .cell .v { font-weight: 500; color: var(--on-surface); margin-top: 4px; font-size: 15px; }
+
+        footer { padding: 32px 0 56px; color: var(--on-surf-var); font-size: 13px; }
+        footer .footer-row { display: flex; flex-wrap: wrap; gap: 8px 20px; justify-content: space-between; align-items: center; }
+        footer .patp { font-family: var(--mono); color: var(--on-surf-var); }
+    </style>
+</head>
+<body>
+
+<header class="hero">
+    <div class="wrap hero-inner">
+        <div class="icon-wordmark">
+            <img src="lattice.png" alt="lattice icon">
+            <span class="wordmark">lattice</span>
+        </div>
+
+        <h1>gemtext, <br>over <span class="accent">Urbit</span>.</h1>
+
+        <p class="lede">
+            A small, fast browser and publisher for gemtext — but the pages live on the
+            Urbit network. Every page is addressed as <span class="url">urb://~ship/path</span>
+            and travels peer-to-peer between ships. No DNS, no web server, no host in the
+            middle. <a href="https://urbit.org/overview/running-urbit">Bring your own ship</a>.
+        </p>
+
+        <div class="ctas">
+            <a class="btn btn-primary" href="#download">Download</a>
+            <a class="btn btn-secondary" href="https://github.com/nisfeb/lattice">Source&nbsp;on&nbsp;GitHub</a>
+        </div>
+
+        <div class="meta-row">
+            <span><strong>Android 8+</strong></span>
+            <span><strong>Linux · macOS · Windows</strong></span>
+            <span><strong>Peer-to-peer</strong> · no servers</span>
+            <span><strong>No analytics</strong></span>
+        </div>
+    </div>
+</header>
+
+<section>
+    <div class="wrap">
+        <h2>How it works</h2>
+        <p>
+            lattice is two pieces: a tiny Gall agent on your ship, and a native app you
+            point at it. Drop a gemtext file in your ship's <code>/pub</code> and anyone
+            on the network can read it — instantly, straight from your ship.
+        </p>
+        <div class="steps">
+            <div class="step">
+                <div class="n">the desk</div>
+                <div class="t">%lattice on your ship</div>
+                <div class="d">Publishes <code>/pub/*.gmi</code> to the Urbit namespace and serves it to other ships over remote scry. Follows files you subscribe to.</div>
+            </div>
+            <div class="step">
+                <div class="n">the app</div>
+                <div class="t">browse &amp; edit anywhere</div>
+                <div class="d">Android + desktop, one codebase. Reads <code>urb://</code> pages, edits your own, and gets live notifications when a followed file changes.</div>
+            </div>
+        </div>
+
+        <div class="gmi" aria-label="example gemtext page">
+<span class="h"># ~nisfeb's notebook</span>
+
+Welcome. Everything here is a gemtext file in /pub.
+
+<span class="lnk">=&gt; urb://~nisfeb/notes/urbit  Notes on Urbit</span>
+<span class="lnk">=&gt; urb://~nisfeb/now          What I'm doing now</span>
+<span class="c">=&gt; https://urbit.org         The wider web still works too</span>
+        </div>
+    </div>
+</section>
+
+<section>
+    <div class="wrap">
+        <h2>What it does</h2>
+        <ul class="features">
+            <li>
+                <span class="name">Browse <code>urb://</code></span>
+                <span class="desc">Fetch and read gemtext published by any ship, peer-to-peer over Urbit's remote scry. No server in the middle — the bytes come straight from the author's ship.</span>
+            </li>
+            <li>
+                <span class="name">Publish</span>
+                <span class="desc">Anything in <code>/pub/*.gmi</code> on your ship is instantly readable by anyone as <span class="mono">urb://~you/that/path</span>. Edit it from inside the app.</span>
+            </li>
+            <li>
+                <span class="name">Built-in editor</span>
+                <span class="desc">Write and edit your pages without leaving the app. Plain by default; flip on vim keybindings if that's your thing.</span>
+            </li>
+            <li>
+                <span class="name">Browser tabs</span>
+                <span class="desc">Multiple <code>urb://</code> pages open at once, <span class="mono">Ctrl+T</span> for a new one, bookmarks for the pages you keep coming back to.</span>
+            </li>
+            <li>
+                <span class="name">Follow &amp; subscribe</span>
+                <span class="desc">Follow ships to see what they publish; subscribe to a single file and get a live push the moment it changes — over an Eyre SSE channel, not polling.</span>
+            </li>
+            <li>
+                <span class="name">Discovery</span>
+                <span class="desc">Find other lattice publishers among the ships in your <code>%contacts</code>, via a small manifest each publisher exposes.</span>
+            </li>
+            <li>
+                <span class="name">Copy to your ship</span>
+                <span class="desc">Like a bookmark, but real: pull a remote file down onto your own ship at a path you choose.</span>
+            </li>
+            <li>
+                <span class="name">Fully themeable</span>
+                <span class="desc">Colors and fonts are yours to set. Ships with several built-in themes — Lattice Dark, Light, and more.</span>
+            </li>
+            <li>
+                <span class="name">Native everywhere</span>
+                <span class="desc">Android, Linux, macOS, Windows from one Kotlin / Compose Multiplatform codebase. Desktop builds bundle their own JRE.</span>
+            </li>
+        </ul>
+    </div>
+</section>
+
+<section>
+    <div class="wrap">
+        <h2>What it isn't</h2>
+        <ul class="disclaimers">
+            <li>Not a host. <a href="https://urbit.org/overview/running-urbit">Bring your own ship</a> — yours, a friend's, or a hosted one.</li>
+            <li>Not the HTTP web. Pages are Urbit-native (<span class="mono">urb://~ship/path</span>) and move between ships over remote scry, not over DNS and HTTP.</li>
+            <li>Not on the app stores. Sideload the APK and desktop installers from GitHub Releases.</li>
+            <li>Desktop builds are unsigned for now — Gatekeeper / SmartScreen will warn on first launch and you have to bypass it.</li>
+        </ul>
+    </div>
+</section>
+
+<section>
+    <div class="wrap">
+        <h2>Privacy</h2>
+        <div class="privacy-card">
+            <h3>The only server lattice talks to is your ship.</h3>
+            <p>
+                No analytics, no third-party SDKs, no telemetry. The app speaks to the Urbit
+                ship you point it at — that's the entire network surface. Your session never
+                leaves the device unencrypted: lattice refuses to send your <span class="mono">+code</span>
+                or cookie in cleartext to a remote ship, and stores it owner-only at rest.
+            </p>
+            <p>
+                Everything you put in <code>/pub</code> is public by design — that's the whole
+                point of a publishing tool. Nothing else on your ship is exposed.
+            </p>
+        </div>
+    </div>
+</section>
+
+<section>
+    <div class="wrap">
+        <h2>Under the hood</h2>
+        <p>
+            The <code>%lattice</code> Gall agent publishes via Clay → <span class="mono">%grow</span>
+            and answers remote scry; the app speaks an authenticated HTTP API to your ship over
+            OkHttp, with live updates on an Eyre SSE channel. Kotlin + Compose Multiplatform for
+            the UI, one shared codebase across Android and JVM desktop. Hoon unit tests on the
+            agent, a JVM test suite on the app, both gated in CI.
+        </p>
+        <div class="tech-grid">
+            <div class="cell"><div class="k">android</div><div class="v">8.0+ (API 26–35)</div></div>
+            <div class="cell"><div class="k">desktop</div><div class="v">Linux · macOS · Windows · JRE bundled</div></div>
+            <div class="cell"><div class="k">backend</div><div class="v">Your Urbit ship</div></div>
+            <div class="cell"><div class="k">transport</div><div class="v">Remote scry · peer-to-peer</div></div>
+        </div>
+    </div>
+</section>
+
+<section id="download">
+    <div class="wrap">
+        <h2>Download</h2>
+        <p>
+            Pick your platform. Direct links resolve to the latest tagged release; fall back to
+            the <a href="https://github.com/nisfeb/lattice/releases/latest">releases page</a> for
+            older versions and release notes. You'll also need the
+            <code>%lattice</code> desk running on your ship — see the
+            <a href="https://github.com/nisfeb/lattice#install">install notes</a>.
+        </p>
+
+        <h3 style="margin-top:32px;">Android</h3>
+        <p style="font-size:14px;color:var(--on-surf-var);">
+            Tap the APK; you may need to allow "Install unknown apps" for your browser or file
+            manager. Android 8+ (API 26).
+        </p>
+        <div class="dl-grid">
+            <div class="dl-row">
+                <span class="platform">.apk (any)</span>
+                <span class="desc">Single universal APK — works on every supported device.</span>
+                <a class="dl-link" data-asset-pattern="^lattice-[0-9.]+\.apk$"
+                   href="https://github.com/nisfeb/lattice/releases/latest">Download</a>
+            </div>
+        </div>
+
+        <h3 style="margin-top:32px;">Linux</h3>
+        <p style="font-size:14px;color:var(--on-surf-var);">
+            <code>chmod +x</code> the AppImage and run it; needs FUSE 2 (default on most
+            desktops). The .deb installs system-wide on Debian / Ubuntu and derivatives.
+        </p>
+        <div class="dl-grid">
+            <div class="dl-row">
+                <span class="platform">AppImage (any)</span>
+                <span class="desc">Portable, self-contained. Bundled JRE.</span>
+                <a class="dl-link"
+                   href="https://github.com/nisfeb/lattice/releases/latest/download/lattice-x86_64.AppImage">Download</a>
+            </div>
+            <div class="dl-row">
+                <span class="platform">.deb (Debian / Ubuntu)</span>
+                <span class="desc"><code>sudo apt install ./lattice_*.deb</code></span>
+                <a class="dl-link" data-asset-pattern="^lattice_[0-9.-]+_amd64\.deb$"
+                   href="https://github.com/nisfeb/lattice/releases/latest">Download</a>
+            </div>
+        </div>
+
+        <h3 style="margin-top:32px;">macOS</h3>
+        <p style="font-size:14px;color:var(--on-surf-var);">
+            Open the DMG and drag lattice to Applications. <strong>First launch:</strong>
+            right-click → Open → Open (unsigned, so a plain double-click is blocked by Gatekeeper).
+        </p>
+        <div class="dl-grid">
+            <div class="dl-row">
+                <span class="platform">.dmg</span>
+                <span class="desc">Disk image. Bundled JRE.</span>
+                <a class="dl-link" data-asset-pattern="^lattice-[0-9.]+\.dmg$"
+                   href="https://github.com/nisfeb/lattice/releases/latest">Download</a>
+            </div>
+        </div>
+
+        <h3 style="margin-top:32px;">Windows</h3>
+        <p style="font-size:14px;color:var(--on-surf-var);">
+            Double-click the MSI to install. SmartScreen may warn — "More info" → "Run anyway".
+        </p>
+        <div class="dl-grid">
+            <div class="dl-row">
+                <span class="platform">.msi</span>
+                <span class="desc">x64 installer. Bundled JRE.</span>
+                <a class="dl-link" data-asset-pattern="^lattice-[0-9.]+\.msi$"
+                   href="https://github.com/nisfeb/lattice/releases/latest">Download</a>
+            </div>
+        </div>
+
+        <p style="margin-top:32px;">
+            New to Urbit?
+            <a href="https://urbit.org/overview/running-urbit">urbit.org/overview/running-urbit</a>
+            walks you through booting a ship. Once you have its HTTP URL and <span class="mono">+code</span>,
+            log in inside lattice and you're browsing.
+        </p>
+
+        <div class="ctas" style="margin-top:24px;">
+            <a class="btn btn-secondary" href="https://github.com/nisfeb/lattice">Source&nbsp;&amp;&nbsp;issues</a>
+        </div>
+    </div>
+</section>
+
+<script>
+// Resolve data-asset-pattern links to direct GitHub Release asset URLs from the
+// latest release. Without JS the anchor falls through to the releases page.
+(function () {
+    const links = document.querySelectorAll('.dl-link[data-asset-pattern]');
+    if (links.length === 0) return;
+    fetch('https://api.github.com/repos/nisfeb/lattice/releases/latest', {
+        headers: { 'Accept': 'application/vnd.github+json' },
+    })
+        .then(r => r.ok ? r.json() : null)
+        .then(release => {
+            if (!release || !release.assets) return;
+            for (const link of links) {
+                const re = new RegExp(link.dataset.assetPattern);
+                const match = release.assets.find(a => re.test(a.name));
+                if (match) link.href = match.browser_download_url;
+            }
+        })
+        .catch(() => { /* leave fallback /releases/latest links in place */ });
+})();
+</script>
+
+<footer>
+    <div class="wrap footer-row">
+        <span>lattice — built by <span class="patp">~nisfeb</span>.</span>
+        <span><a href="https://github.com/nisfeb/lattice">github.com/nisfeb/lattice</a></span>
+    </div>
+</footer>
+
+</body>
+</html>

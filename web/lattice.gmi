@@ -1,0 +1,59 @@
+# lattice
+
+gemtext, over Urbit.
+
+A small, fast browser and publisher for gemtext — but the pages live on the Urbit network. Every page is addressed as urb://~ship/path and travels peer-to-peer between ships. No DNS, no web server, no host in the middle. Native on Android, Linux, macOS, and Windows.
+
+(You may well be reading this page through lattice right now.)
+
+## How it works
+
+lattice is two pieces: a tiny Gall agent on your ship, and a native app you point at it.
+
+* The desk — %lattice publishes the gemtext in your ship's /pub directory to the Urbit namespace and serves it to other ships over remote scry. It also follows files you subscribe to.
+* The app — browse, read, and edit anywhere. Android and desktop, one codebase. Live notifications when a followed file changes.
+
+Drop a file in /pub, and anyone on the network can read it — instantly, straight from your ship:
+
+```
+# ~nisfeb's notebook
+
+Welcome. Everything here is a gemtext file in /pub.
+
+=> urb://~nisfeb/notes/urbit  Notes on Urbit
+=> urb://~nisfeb/now          What I'm doing now
+=> https://urbit.org         The wider web still works too
+```
+
+## What it does
+
+* Browse urb:// — read gemtext published by any ship, peer-to-peer. The bytes come straight from the author's ship, not a server.
+* Publish — anything in /pub/*.gmi is instantly readable as urb://~you/that/path. Edit it from inside the app.
+* Built-in editor — write your pages without leaving lattice. Plain by default; optional vim keybindings.
+* Browser tabs — multiple urb:// pages at once, a keystroke for a new one, bookmarks for your regulars.
+* Follow & subscribe — follow ships to see what they publish; subscribe to a file and get a live push when it changes.
+* Discovery — find other lattice publishers among the ships in your %contacts.
+* Copy to your ship — like a bookmark, but real: pull a remote file onto your own ship.
+* Fully themeable — colors and fonts are yours to set.
+
+## What it isn't
+
+* Not a host. Bring your own ship — yours, a friend's, or a hosted one.
+* Not the HTTP web. Pages are Urbit-native and move between ships over remote scry, not over DNS and HTTP.
+* Not on the app stores. Sideload from GitHub Releases.
+
+## Privacy
+
+The only server lattice talks to is your ship. No analytics, no third-party SDKs, no telemetry. Your +code and session cookie are never sent in cleartext to a remote ship and are stored owner-only at rest. Everything in /pub is public by design; nothing else on your ship is exposed.
+
+## Get it
+
+=> https://github.com/nisfeb/lattice/releases/latest  Download (Android · Linux · macOS · Windows)
+=> https://github.com/nisfeb/lattice  Source on GitHub
+=> https://urbit.org/overview/running-urbit  New to Urbit? Boot a ship here
+
+You'll need the %lattice desk running on your ship, then point the app at it with your ship's URL and +code.
+
+---
+
+Built by ~nisfeb.
