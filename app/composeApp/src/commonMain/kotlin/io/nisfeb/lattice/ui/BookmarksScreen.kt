@@ -29,22 +29,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.nisfeb.lattice.bookmarks.Bookmark
-import io.nisfeb.lattice.bookmarks.BookmarkStore
 
 /**
  * Full-page bookmarks list with search — replaces the cramped dropdown
  * that overlapped the browser bar buttons. Tap a row to open it in the
  * browser; the trailing trash icon removes it. Filtering matches both
- * the title and the urb:// url, case-insensitively.
+ * the title and the urb:// url, case-insensitively. The list is hoisted
+ * (synced per ship); [onRemove] deletes by url.
  */
 @Composable
 fun BookmarksScreen(
-    bookmarkStore: BookmarkStore,
+    bookmarks: List<Bookmark>,
+    onRemove: (String) -> Unit,
     onOpen: (String) -> Unit,
     onClose: () -> Unit,
 ) {
-    // Local mirror of the store so deletes refresh the list in place.
-    var bookmarks by remember { mutableStateOf(bookmarkStore.all()) }
     var query by remember { mutableStateOf("") }
 
     val filtered = remember(bookmarks, query) {
@@ -94,10 +93,7 @@ fun BookmarksScreen(
                     BookmarkRow(
                         bm = bm,
                         onOpen = { onOpen(bm.url) },
-                        onDelete = {
-                            bookmarkStore.remove(bm.url)
-                            bookmarks = bookmarkStore.all()
-                        },
+                        onDelete = { onRemove(bm.url) },
                     )
                     HorizontalDivider()
                 }

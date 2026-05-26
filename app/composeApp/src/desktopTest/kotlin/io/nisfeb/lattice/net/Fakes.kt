@@ -1,5 +1,7 @@
 package io.nisfeb.lattice.net
 
+import io.nisfeb.lattice.bookmarks.Bookmark
+import io.nisfeb.lattice.bookmarks.BookmarkStore
 import io.nisfeb.lattice.theme.SavedTheme
 import io.nisfeb.lattice.theme.ThemeSettings
 import io.nisfeb.lattice.theme.ThemeStore
@@ -32,6 +34,13 @@ class FakeThemeStore : ThemeStore {
     override fun save(settings: ThemeSettings) { active = settings }
     override fun loadSaved() = saved
     override fun saveSaved(themes: List<SavedTheme>) { saved = themes }
+}
+
+/** In-memory BookmarkStore for tests. */
+class FakeBookmarkStore : BookmarkStore {
+    var list: List<Bookmark> = emptyList()
+    override fun all() = list
+    override fun save(list: List<Bookmark>) { this.list = list }
 }
 
 /** A UrbitSession already authenticated against [server] (~zod), via tryRestore. */

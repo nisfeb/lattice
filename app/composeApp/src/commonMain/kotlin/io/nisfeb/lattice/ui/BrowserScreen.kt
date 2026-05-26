@@ -83,7 +83,6 @@ import io.nisfeb.lattice.isDesktop
 import io.nisfeb.lattice.shareText
 import io.nisfeb.lattice.browser.UrlPaths
 import io.nisfeb.lattice.bookmarks.Bookmark
-import io.nisfeb.lattice.bookmarks.BookmarkStore
 import io.nisfeb.lattice.gemtext.GemtextParser
 import io.nisfeb.lattice.theme.ThemeSettings
 import io.nisfeb.lattice.urbit.LatticeClient
@@ -94,7 +93,9 @@ import kotlinx.coroutines.launch
 @Composable
 fun BrowserScreen(
     client: LatticeClient,
-    bookmarkStore: BookmarkStore,
+    bookmarks: List<Bookmark>,
+    onAddBookmark: (Bookmark) -> Unit,
+    onRemoveBookmark: (String) -> Unit,
     theme: ThemeSettings,
     homeShip: String,
     onLogout: () -> Unit,
@@ -119,7 +120,6 @@ fun BrowserScreen(
     val scope = rememberCoroutineScope()
     val home = "urb://$homeShip/"
     var active by activeState
-    var bookmarks by remember { mutableStateOf(bookmarkStore.all()) }
     val rootFocus = remember { FocusRequester() }
     var copyOpen by remember { mutableStateOf(false) }
     var copyDest by remember { mutableStateOf("") }
@@ -284,8 +284,7 @@ fun BrowserScreen(
                 current.isNotBlank(),
             ) {
                 if (current.isNotBlank()) {
-                    if (bookmarked) bookmarkStore.remove(current) else bookmarkStore.add(Bookmark(current, current))
-                    bookmarks = bookmarkStore.all()
+                    if (bookmarked) onRemoveBookmark(current) else onAddBookmark(Bookmark(current, current))
                 }
             },
             BarAction("copy", Icons.Filled.SaveAlt, "Copy to my ship", tab?.body?.isNotBlank() == true) {

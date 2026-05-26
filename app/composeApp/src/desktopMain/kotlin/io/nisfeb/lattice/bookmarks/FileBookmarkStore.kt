@@ -11,23 +11,12 @@ class FileBookmarkStore(ship: String, dir: File = defaultDir()) : BookmarkStore 
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
     private val ser = ListSerializer(Bookmark.serializer())
 
-    private fun read(): List<Bookmark> =
+    override fun all(): List<Bookmark> =
         runCatching { json.decodeFromString(ser, file.readText()) }.getOrDefault(emptyList())
 
-    private fun write(list: List<Bookmark>) {
+    override fun save(list: List<Bookmark>) {
         runCatching { file.writeText(json.encodeToString(ser, list)) }
     }
-
-    override fun all(): List<Bookmark> = read()
-
-    override fun add(bookmark: Bookmark) {
-        val list = read().filterNot { it.url == bookmark.url }
-        write(list + bookmark)
-    }
-
-    override fun remove(url: String) = write(read().filterNot { it.url == url })
-
-    override fun contains(url: String): Boolean = read().any { it.url == url }
 
     companion object {
         fun defaultDir(): File {

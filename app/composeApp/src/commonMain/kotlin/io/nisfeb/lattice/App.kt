@@ -18,6 +18,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.luminance
+import io.nisfeb.lattice.bookmarks.Bookmark
+import io.nisfeb.lattice.bookmarks.BookmarkRepository
 import io.nisfeb.lattice.bookmarks.BookmarkStore
 import io.nisfeb.lattice.share.SharedContent
 import io.nisfeb.lattice.social.FollowRepository
@@ -96,8 +98,10 @@ fun App(
     val themeStore: ThemeStore? = remember(ship) { ship?.let(createThemeStore) }
     val bookmarkStore: BookmarkStore? = remember(ship) { ship?.let(createBookmarkStore) }
     val themeRepo: ThemeRepository? = remember(themeStore) { themeStore?.let { ThemeRepository(it, settingsClient) } }
+    val bookmarkRepo: BookmarkRepository? = remember(bookmarkStore) { bookmarkStore?.let { BookmarkRepository(it, settingsClient) } }
     var theme by remember { mutableStateOf(themeStore?.load() ?: ThemeSettings.Light) }
     var savedThemes by remember { mutableStateOf(themeStore?.loadSaved() ?: emptyList<SavedTheme>()) }
+    var bookmarks by remember { mutableStateOf(bookmarkStore?.all() ?: emptyList<Bookmark>()) }
     var follows by remember { mutableStateOf(emptyList<String>()) }
     var subscriptions by remember { mutableStateOf(emptySet<String>()) }
     var updates by remember { mutableStateOf(emptyList<UpdateEvent>()) }
@@ -150,7 +154,9 @@ fun App(
         if (ship != null) {
             // Per-ship local cache first (instant, offline), then %settings sync.
             themeStore?.let { theme = it.load(); savedThemes = it.loadSaved() }
+            bookmarkStore?.let { bookmarks = it.all() }
             themeRepo?.pull()?.let { savedThemes = it }
+            bookmarkRepo?.pull()?.let { bookmarks = it }
             followRepo.pull()?.let { follows = it }
             subRepo.pull()?.let { subs ->
                 subscriptions = subs.toSet()
@@ -163,10 +169,11 @@ fun App(
                     unread += 1
                 }
         } else {
-            // Logged out: drop the previous ship's theme so the login screen
-            // and next ship don't inherit it.
+            // Logged out: drop the previous ship's local state so the login
+            // screen and next ship don't inherit it.
             theme = ThemeSettings.Light
             savedThemes = emptyList()
+            bookmarks = emptyList()
         }
     }
 
@@ -174,6 +181,15 @@ fun App(
     LaunchedEffect(ship) {
         agentMissing = false
         if (ship != null) agentMissing = !agentInstaller.isInstalled()
+    }
+
+    fun addBookmark(bm: Bookmark) {
+        bookmarks = bookmarks.filterNot { it.url == bm.url } + bm
+        scope.launch { bookmarkRepo?.push(bookmarks) }
+    }
+    fun removeBookmark(url: String) {
+        bookmarks = bookmarks.filterNot { it.url == url }
+        scope.launch { bookmarkRepo?.push(bookmarks) }
     }
 
     fun setFollows(list: List<String>) { follows = list; scope.launch { followRepo.push(list) } }
@@ -226,7 +242,9 @@ fun App(
             } else when (screen) {
                 AppScreen.Browse -> BrowserScreen(
                     client = client,
-                    bookmarkStore = bookmarkStore!!,
+                    bookmarks = bookmarks,
+                    onAddBookmark = { addBookmark(it) },
+                    onRemoveBookmark = { removeBookmark(it) },
                     theme = theme,
                     homeShip = current,
                     onLogout = { session.logout(); ship = null },
@@ -283,7 +301,8 @@ fun App(
                     onClose = { screen = AppScreen.Browse },
                 )
                 AppScreen.Bookmarks -> BookmarksScreen(
-                    bookmarkStore = bookmarkStore!!,
+                    bookmarks = bookmarks,
+                    onRemove = { removeBookmark(it) },
                     onOpen = { url -> browseTarget = url; screen = AppScreen.Browse },
                     onClose = { screen = AppScreen.Browse },
                 )
