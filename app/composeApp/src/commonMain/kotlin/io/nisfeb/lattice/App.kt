@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.luminance
 import io.nisfeb.lattice.bookmarks.Bookmark
 import io.nisfeb.lattice.bookmarks.BookmarkRepository
 import io.nisfeb.lattice.bookmarks.BookmarkStore
+import io.nisfeb.lattice.gemtext.GemtextParser
 import io.nisfeb.lattice.share.SharedContent
 import io.nisfeb.lattice.social.FollowRepository
 import io.nisfeb.lattice.social.SubscriptionRepository
@@ -165,8 +166,22 @@ fun App(
             updatesChannel.updates()
                 .retryWhen { _, _ -> delay(3000); true } // SSE drops (network, idle) → reconnect
                 .collect { ev ->
-                    updates = (listOf(ev) + updates).take(50)
-                    unread += 1
+                    val url = "urb://${ev.ship}/${ev.path.removePrefix("/")}"
+                    // Live/freshness: upgrade any open tab showing this page (the
+                    // browse watch streams newer revs of the page being viewed).
+                    browserTabs.forEach { t ->
+                        if (t.current == url) {
+                            t.body = ev.body
+                            t.lines = GemtextParser.parse(ev.body)
+                            t.visited = t.visited + url
+                        }
+                    }
+                    // Notify only for pages the user actually follows — browse-watch
+                    // pushes shouldn't spam the Updates list.
+                    if (url in subscriptions) {
+                        updates = (listOf(ev) + updates).take(50)
+                        unread += 1
+                    }
                 }
         } else {
             // Logged out: drop the previous ship's local state so the login

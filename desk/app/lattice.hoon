@@ -4,7 +4,7 @@
 /+  default-agent, dbug, verb, *lattice
 ::
 |%
-+$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4)
++$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5)
 +$  card  card:agent:gall
 ::
 ::  -- helper gates --
@@ -210,6 +210,38 @@
   ^-  card
   [%pass /walkto/[eyre-id] %arvo %b %rest at]
 ::
+::  browse-watch cards: after a no-rev fetch answers, keep keening upward on a
+::  /browse wire so newer revs of the page being viewed stream to /updates. The
+::  wire carries the awaited rev + ship + spur so a stale keen is recognised.
+++  browse-keen-card
+  |=  [=ship spur=path rev=@ud]
+  ^-  card
+  =/  wir=wire  :(welp /browse ~[(scot %ud rev)] ~[(scot %p ship)] spur)
+  [%pass wir %arvo %a %keen ~ ship (keen-path (scot %ud rev) spur)]
+::
+++  browse-yawn-card
+  |=  [=ship spur=path rev=@ud]
+  ^-  card
+  =/  wir=wire  :(welp /browse ~[(scot %ud rev)] ~[(scot %p ship)] spur)
+  [%pass wir %arvo %a %yawn ship (keen-path (scot %ud rev) spur)]
+::
+::  +rebrowse: cancel any prior browse watch and start one on [ship spur] from
+::  rev+1. Returns the cards + the new browse value.
+++  rebrowse
+  |=  [old=(unit [=ship spur=path rev=@ud]) shp=ship spr=path rev=@ud]
+  ^-  [(list card) (unit [=ship spur=path rev=@ud])]
+  =/  cancel=(list card)
+    ?~  old  ~
+    ~[(browse-yawn-card ship.u.old spur.u.old +(rev.u.old))]
+  [(snoc cancel (browse-keen-card shp spr +(rev))) `[shp spr rev]]
+::
+::  +cancel-browse: yawn an active browse watch (e.g. when a new fetch starts).
+++  cancel-browse
+  |=  old=(unit [=ship spur=path rev=@ud])
+  ^-  [(list card) (unit [=ship spur=path rev=@ud])]
+  ?~  old  [~ ~]
+  [~[(browse-yawn-card ship.u.old spur.u.old +(rev.u.old))] ~]
+::
 ++  sage-cards
   |=  [eyre-id=@ta gag=gage:mess:ames]
   ^-  (list card)
@@ -290,8 +322,8 @@
   (pairs:enjs:format ~[['ships' a+(turn ships |=(s=@t s+s))]])
 ::
 ++  handle-http
-  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-4]
-  ^-  [(list card) state-4]
+  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-5]
+  ^-  [(list card) state-5]
   ::  SECURITY: Eyre forwards ALL matching HTTP requests to us, authenticated or
   ::  not, and leaves enforcement to the agent. This is the owner's control plane
   ::  (mutates Clay, drives keens); public reads happen via remote scry, not here.
@@ -382,14 +414,16 @@
   ::  fires with an empty "best seen". Once a rev resolves the deadline slides
   ::  to ~s2 per rev (see the %walk sage branch), so warm/local fetches stay
   ::  snappy; only the cold first hop waits the full window.
+  ::  cancel any prior browse watch — we're navigating to a new page.
+  =^  bcards  browse.st  (cancel-browse browse.st)
   =/  at=@da  (add now.bowl ~s30)
   =.  fetches.st  (~(put by fetches.st) eyre-id [shp spr 0 '' '' at])
-  [~[(walk-keen-card eyre-id 1 shp spr) (walk-wait-card eyre-id at)] st]
+  [:(welp bcards ~[(walk-keen-card eyre-id 1 shp spr) (walk-wait-card eyre-id at)]) st]
 --
 ::
 %-  agent:dbug
 %+  verb  |
-=|  state-4
+=|  state-5
 =*  state  -
 ^-  agent:gall
 |_  =bowl:gall
@@ -419,11 +453,12 @@
   ^-  (quip card _this)
   =/  old=versioned-state  !<(versioned-state ole)
   ?-  -.old
-    %4  `this(state old)
-    %3  `this(state [%4 published.old pending.old subs.old fetches.old manifest.old `@uvH`0])
-    %2  `this(state [%4 published.old pending.old subs.old fetches.old `@uvH`0 `@uvH`0])
-    %1  `this(state [%4 published.old pending.old subs.old ~ `@uvH`0 `@uvH`0])
-    %0  `this(state [%4 published.old pending.old ~ ~ `@uvH`0 `@uvH`0])
+    %5  `this(state old)
+    %4  `this(state [%5 published.old pending.old subs.old fetches.old manifest.old home.old ~])
+    %3  `this(state [%5 published.old pending.old subs.old fetches.old manifest.old `@uvH`0 ~])
+    %2  `this(state [%5 published.old pending.old subs.old fetches.old `@uvH`0 `@uvH`0 ~])
+    %1  `this(state [%5 published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~])
+    %0  `this(state [%5 published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~])
   ==
 ::
 ++  on-poke
@@ -567,17 +602,23 @@
     ==
   ::
       [%walkto @ta ~]
-    ::  the walk stalled (next rev is pending) → answer with the best rev seen
-    ::  and cancel the still-pending keen.
+    ::  the walk stalled (next rev is pending) → answer with the best rev seen,
+    ::  cancel the still-pending /walk keen, and (if we got anything) hand off to
+    ::  a /browse watch that keeps keening upward so newer revs stream in.
     ?>  ?=([%behn %wake *] sign-arvo)
     =/  eid=@ta  i.t.wire
     ?~  fet=(~(get by fetches.state) eid)  `this
     =.  fetches.state  (~(del by fetches.state) eid)
-    =/  resp=(list card)
-      ?:  =(0 rev.u.fet)  (respond-json-cards eid 504 '{"error":"no response from peer"}')
-      (respond-json-cards eid 200 (mark-and-body mark.u.fet body.u.fet))
+    =/  yawn=card  (walk-yawn-card eid +(rev.u.fet) ship.u.fet spur.u.fet)
+    ?:  =(0 rev.u.fet)
+      ::  nothing resolved → no peer; nothing to watch.
+      :_  this
+      [yawn (respond-json-cards eid 504 '{"error":"no response from peer"}')]
+    =^  bcards  browse.state  (rebrowse browse.state ship.u.fet spur.u.fet rev.u.fet)
     :_  this
-    [(walk-yawn-card eid +(rev.u.fet) ship.u.fet spur.u.fet) resp]
+    :*  yawn
+        (weld bcards (respond-json-cards eid 200 (mark-and-body mark.u.fet body.u.fet)))
+    ==
   ::
       [%follow @ @ @ *]
     ::  a followed revision resolved → advance + re-arm the next rev. Only push
@@ -617,6 +658,36 @@
     ::  but stop re-arming past the ceiling (no real file has this many revs).
     ?:  (gte seen walk-max)  facts
     (welp facts ~[(follow-card shp spur +(seen) now.bowl)])
+  ::
+      [%browse @ @ *]
+    ::  the browse watch on the page being viewed resolved a newer revision →
+    ::  push it to /updates (so a stale first paint upgrades + live edits show)
+    ::  and keen the next. Unlike /follow this pushes catch-up too (the user
+    ::  needs the latest now), and is single-slot (state.browse).
+    ?>  ?=([%ames %sage *] sign-arvo)
+    ?~  marev=(slaw %ud i.t.wire)   `this
+    ?~  mashp=(slaw %p i.t.t.wire)  `this
+    =/  arev=@ud   u.marev
+    =/  ashp=ship  u.mashp
+    =/  aspur=path  t.t.t.wire
+    ::  only act on the current watch's awaited keen; ignore stale/cancelled ones.
+    ?~  cur=browse.state  `this
+    ?.  =([ashp aspur] [ship.u.cur spur.u.cur])  `this
+    ?.  =(arev +(rev.u.cur))  `this
+    =/  gag  q.sage.sign-arvo
+    ::  tombstoned / malformed value → stop watching (don't hot-loop).
+    ?@  gag  `this(browse.state ~)
+    ?^  q.gag  `this(browse.state ~)
+    =/  body=@t  ;;(@t q.gag)
+    ?:  (gte arev walk-max)
+      ::  ceiling: deliver the last update but stop climbing.
+      :_  this(browse.state ~)
+      ~[[%give %fact ~[/updates] %json !>((update-json ashp aspur body))]]
+    =.  browse.state  `[ashp aspur arev]
+    :_  this
+    :~  [%give %fact ~[/updates] %json !>((update-json ashp aspur body))]
+        (browse-keen-card ashp aspur +(arev))
+    ==
   ==
 ::
 ++  on-fail  on-fail:def

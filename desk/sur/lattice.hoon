@@ -51,6 +51,22 @@
       manifest=@uvH
       home=@uvH
   ==
+::  state-5 adds `browse`: a single transient watch on the remote page the user
+::  is currently viewing. After a no-rev fetch answers (best-so-far), we keep
+::  keening upward from there and push each newer revision to /updates — so a
+::  raced/stale first paint silently upgrades to the latest, and live edits
+::  appear while viewing. `rev` is the highest rev pushed; the open keen is
+::  rev+1. Replaced on each new browse, not persisted across upgrades.
++$  state-5
+  $:  %5
+      published=(map path @uvH)
+      pending=(map @ta [=ship =path])
+      subs=(map [=ship spur=path] last=@ud)
+      fetches=(map @ta walk)
+      manifest=@uvH
+      home=@uvH
+      browse=(unit [=ship spur=path rev=@ud])
+  ==
 ::  one in-flight walk-to-latest fetch (keyed by eyre-id).
 ::  rev = highest revision resolved so far (0 = none yet); deadline = the armed
 ::  behn timer's wake time (tracked so progress can %rest + re-arm it).
