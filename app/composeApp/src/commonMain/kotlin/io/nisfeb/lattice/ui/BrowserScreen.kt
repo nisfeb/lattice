@@ -135,6 +135,7 @@ fun BrowserScreen(
     fun load(tab: BrowserTab, url: String) {
         tab.job?.cancel()
         tab.error = null; tab.loading = true; tab.address = url
+        tab.listState = androidx.compose.foundation.lazy.LazyListState() // new page starts at top
         tab.job = scope.launch {
             client.fetch(url).fold(
                 onSuccess = { tab.body = it.body; tab.lines = GemtextParser.parse(it.body); tab.loading = false; tab.visited = tab.visited + url },
@@ -185,6 +186,14 @@ fun BrowserScreen(
     // open a URL requested from elsewhere (e.g. Discover → browse a ship)
     LaunchedEffect(openUrl) {
         if (openUrl != null) { openTab(openUrl); onConsumedOpenUrl() }
+    }
+    // A load whose coroutine was torn down (its scope died when the user left
+    // for another screen) leaves the tab stuck at loading=true with a dead job.
+    // Switching to / returning to it would show a permanent spinner, so re-run
+    // the fetch — the same one that completes instantly once the route is warm.
+    LaunchedEffect(active) {
+        val t = tabs.getOrNull(active) ?: return@LaunchedEffect
+        if (t.loading && t.job?.isActive != true && t.current.isNotBlank()) load(t, t.current)
     }
 
     val tab = tabs.getOrNull(active.coerceIn(0, maxOf(0, tabs.lastIndex)))
@@ -366,6 +375,7 @@ fun BrowserScreen(
                     visitedColor = theme.visitedColor,
                     visited = tab.visited,
                     bodyFont = theme.fontFamily,
+                    listState = tab.listState,
                     modifier = Modifier.fillMaxSize(),
                 )
             }

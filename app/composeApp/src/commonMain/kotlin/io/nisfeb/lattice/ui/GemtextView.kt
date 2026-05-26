@@ -6,7 +6,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -35,6 +37,7 @@ fun GemtextView(
     visitedColor: Color,
     visited: Set<String>,
     bodyFont: FontFamily = FontFamily.Default,
+    listState: LazyListState = rememberLazyListState(),
     modifier: Modifier = Modifier,
 ) {
     // Reading font applies to prose/links/headings; Pre blocks stay monospace.
@@ -42,7 +45,7 @@ fun GemtextView(
     val h1 = MaterialTheme.typography.headlineMedium.copy(fontFamily = bodyFont)
     val h2 = MaterialTheme.typography.titleLarge.copy(fontFamily = bodyFont)
     val h3 = MaterialTheme.typography.titleMedium.copy(fontFamily = bodyFont)
-    LazyColumn(modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+    LazyColumn(state = listState, modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         items(lines) { line ->
             when (line) {
                 is GemLine.Heading -> Text(
