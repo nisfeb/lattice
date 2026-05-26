@@ -78,6 +78,7 @@ kover {
                     "io.nisfeb.lattice.MainKt*",         // desktop entry point (+ its lambdas)
                     "io.nisfeb.lattice.SchemeRegistration*", // desktop OS scheme registration
                     "io.nisfeb.lattice.Platform*",       // expect/actual flag
+                    "io.nisfeb.lattice.FilePicker*",     // expect/actual native file dialogs (IO)
                     "io.nisfeb.lattice.SystemBars*",     // expect/actual system-bar icon appearance
                     "io.nisfeb.lattice.bookmarks.*",     // per-platform IO
                     "io.nisfeb.lattice.theme.FileThemeStore*",
@@ -103,8 +104,8 @@ kover {
 // Single source of truth for the app version. The release workflow parses
 // these two literals out of this file and checks them against the git tag,
 // so keep them as plain `val name = literal` declarations.
-val latticeVersionCode = 14
-val latticeVersionName = "0.3.11"
+val latticeVersionCode = 15
+val latticeVersionName = "0.3.12"
 
 // jpackage (Dmg/Msi) rejects a MAJOR version of 0, but we're pre-1.0. Map
 // "0.MINOR.PATCH" → "1.MINOR.PATCH" so desktop installer versions track the

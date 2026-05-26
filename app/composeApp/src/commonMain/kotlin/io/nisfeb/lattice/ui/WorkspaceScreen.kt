@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -17,6 +18,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -42,8 +45,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import io.nisfeb.lattice.backup.ContentArchive
 import io.nisfeb.lattice.copyToClipboard
 import io.nisfeb.lattice.isDesktop
+import io.nisfeb.lattice.rememberFileExporter
+import io.nisfeb.lattice.rememberFileImporter
 import io.nisfeb.lattice.resources.Res
 import io.nisfeb.lattice.resources.dejavusansmono
 import io.nisfeb.lattice.urbit.LatticeClient
@@ -71,6 +77,23 @@ fun WorkspaceScreen(
 
     fun refresh() = scope.launch { client.list().onSuccess { files = it } }
     LaunchedEffect(Unit) { refresh() }
+
+    // Backup/restore: content lives in agent state (state-6), so a nuke/reinstall
+    // wipes it — let the user export a JSON bundle and restore it later.
+    var status by remember { mutableStateOf<String?>(null) }
+    val exportFile = rememberFileExporter()
+    val importFile = rememberFileImporter { bundle ->
+        scope.launch {
+            ContentArchive.import(client, bundle)
+                .onSuccess { n -> refresh(); status = "Imported $n file(s)." }
+                .onFailure { status = "Import failed: ${it.message}" }
+        }
+    }
+    fun doExport() = scope.launch {
+        ContentArchive.export(client, ship)
+            .onSuccess { exportFile("lattice-${ship.removePrefix("~")}-backup.json", it) }
+            .onFailure { status = "Export failed: ${it.message}" }
+    }
 
     fun openFile(path: String) {
         val existing = buffers.indexOfFirst { it.path == path }
@@ -154,8 +177,23 @@ fun WorkspaceScreen(
             onMove = { moveOf = it; dialogName = it },
             onCopyLink = { val link = "urb://$ship/$it"; copyToClipboard(link); copiedLink = link },
             compact = isDesktop, activePath = buffers.getOrNull(active)?.path,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.weight(1f).fillMaxWidth(),
         )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TextButton(onClick = { doExport() }) {
+                Icon(Icons.Filled.FileDownload, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Export", style = MaterialTheme.typography.bodySmall)
+            }
+            TextButton(onClick = { importFile() }) {
+                Icon(Icons.Filled.FileUpload, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Import", style = MaterialTheme.typography.bodySmall)
+            }
+        }
     }
 
     @Composable
@@ -247,6 +285,14 @@ fun WorkspaceScreen(
     }
 
     // ── file-action dialogs ──
+    status?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { status = null },
+            confirmButton = { TextButton(onClick = { status = null }) { Text("OK") } },
+            title = { Text("Backup") },
+            text = { Text(msg) },
+        )
+    }
     copiedLink?.let { link ->
         AlertDialog(
             onDismissRequest = { copiedLink = null },
