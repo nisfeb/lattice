@@ -2,6 +2,7 @@ package io.nisfeb.lattice
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
@@ -82,11 +83,20 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        @Suppress("DEPRECATION")
-        val uri = intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri ?: return
+        val uri = extractStream(intent) ?: return
         val body = readText(uri) ?: return
         pendingShare = SharedContent(text = body, title = subject ?: displayName(uri))
     }
+
+    /** Versioned EXTRA_STREAM read: typed overload on API 33+, deprecated form
+     *  below — matching Talon's proven share receiver. */
+    private fun extractStream(intent: Intent): Uri? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+        }
 
     /** Read a shared text file (capped so a huge/binary file can't OOM us). */
     private fun readText(uri: Uri): String? = runCatching {
