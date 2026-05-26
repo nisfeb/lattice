@@ -42,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import io.nisfeb.lattice.copyToClipboard
 import io.nisfeb.lattice.isDesktop
 import io.nisfeb.lattice.resources.Res
 import io.nisfeb.lattice.resources.dejavusansmono
@@ -106,6 +107,8 @@ fun WorkspaceScreen(
     var dupOf by remember { mutableStateOf<String?>(null) }
     var moveOf by remember { mutableStateOf<String?>(null) }
     var dialogName by remember { mutableStateOf("") }
+    // The urb:// link just copied to the clipboard (shown in a brief confirmation).
+    var copiedLink by remember { mutableStateOf<String?>(null) }
 
     fun doDuplicate(src: String, dest: String) = scope.launch {
         client.fetch("urb://$ship/$src").onSuccess { client.save(dest, it.body).onSuccess { refresh() } }
@@ -149,6 +152,7 @@ fun WorkspaceScreen(
             onDelete = { confirmDelete = it },
             onDuplicate = { dupOf = it; dialogName = "$it-copy" },
             onMove = { moveOf = it; dialogName = it },
+            onCopyLink = { val link = "urb://$ship/$it"; copyToClipboard(link); copiedLink = link },
             compact = isDesktop, activePath = buffers.getOrNull(active)?.path,
             modifier = Modifier.fillMaxSize(),
         )
@@ -243,6 +247,14 @@ fun WorkspaceScreen(
     }
 
     // ── file-action dialogs ──
+    copiedLink?.let { link ->
+        AlertDialog(
+            onDismissRequest = { copiedLink = null },
+            confirmButton = { TextButton(onClick = { copiedLink = null }) { Text("OK") } },
+            title = { Text("Link copied") },
+            text = { Text(link) },
+        )
+    }
     confirmDelete?.let { path ->
         AlertDialog(
             onDismissRequest = { confirmDelete = null },

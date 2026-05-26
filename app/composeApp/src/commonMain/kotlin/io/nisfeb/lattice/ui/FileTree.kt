@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -55,6 +56,7 @@ fun FileTree(
     onDelete: (String) -> Unit,
     onDuplicate: (String) -> Unit,
     onMove: (String) -> Unit,
+    onCopyLink: (String) -> Unit,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
     activePath: String? = null,
@@ -105,6 +107,11 @@ fun FileTree(
                             Icon(Icons.Filled.MoreVert, "Actions for $name", modifier = Modifier.size(16.dp))
                         }
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Copy link") },
+                                leadingIcon = { Icon(Icons.Filled.Link, null) },
+                                onClick = { menuOpen = false; onCopyLink(full) },
+                            )
                             DropdownMenuItem(
                                 text = { Text("Duplicate") },
                                 leadingIcon = { Icon(Icons.Filled.ContentCopy, null) },

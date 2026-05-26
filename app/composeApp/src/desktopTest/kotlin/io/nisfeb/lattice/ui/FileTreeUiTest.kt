@@ -18,7 +18,7 @@ class FileTreeUiTest {
         var dir: String? = null
         setContent {
             MaterialTheme {
-                FileTree(files, dir = "", onDir = { dir = it }, onOpen = {}, onDelete = {}, onDuplicate = {}, onMove = {})
+                FileTree(files, dir = "", onDir = { dir = it }, onOpen = {}, onDelete = {}, onDuplicate = {}, onMove = {}, onCopyLink = {})
             }
         }
         onNodeWithText("notes/").performClick()
@@ -29,7 +29,7 @@ class FileTreeUiTest {
         var opened: String? = null
         setContent {
             MaterialTheme {
-                FileTree(files, dir = "", onDir = {}, onOpen = { opened = it }, onDelete = {}, onDuplicate = {}, onMove = {})
+                FileTree(files, dir = "", onDir = {}, onOpen = { opened = it }, onDelete = {}, onDuplicate = {}, onMove = {}, onCopyLink = {})
             }
         }
         onNodeWithText("hello").performClick()
@@ -40,11 +40,23 @@ class FileTreeUiTest {
         var deleted: String? = null
         setContent {
             MaterialTheme {
-                FileTree(files, dir = "", onDir = {}, onOpen = {}, onDelete = { deleted = it }, onDuplicate = {}, onMove = {})
+                FileTree(files, dir = "", onDir = {}, onOpen = {}, onDelete = { deleted = it }, onDuplicate = {}, onMove = {}, onCopyLink = {})
             }
         }
         onNodeWithContentDescription("Actions for hello").performClick()
         onNodeWithText("Delete").performClick()
         assertEquals("hello", deleted)
+    }
+
+    @Test fun ellipsisMenuCopyLinkFiresWithFullPath() = runComposeUiTest {
+        var linked: String? = null
+        setContent {
+            MaterialTheme {
+                FileTree(files, dir = "", onDir = {}, onOpen = {}, onDelete = {}, onDuplicate = {}, onMove = {}, onCopyLink = { linked = it })
+            }
+        }
+        onNodeWithContentDescription("Actions for hello").performClick()
+        onNodeWithText("Copy link").performClick()
+        assertEquals("hello", linked)
     }
 }
