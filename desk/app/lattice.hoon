@@ -150,8 +150,14 @@
   |=  [eyre-id=@ta status=@ud body=@t]
   ^-  (list card)
   =/  pax=path  /http-response/[eyre-id]
+  ::  CSP: restrict the page to our own origin. script/style are inline (our
+  ::  design), but connect-src 'self' blunts exfiltration if anything ever did
+  ::  inject — a script can't phone home to a third party.
+  =/  csp=@t
+    %-  crip
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'"
   =/  hdr=response-header:http
-    [status ['content-type' 'text/html; charset=utf-8']~]
+    [status ~[['content-type' 'text/html; charset=utf-8'] ['content-security-policy' csp]]]
   :~  [%give %fact ~[pax] %http-response-header !>(hdr)]
       [%give %fact ~[pax] %http-response-data !>(`(unit octs)`(some (as-octs:mimes:html body)))]
       [%give %kick ~[pax] ~]

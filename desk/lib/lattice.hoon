@@ -128,6 +128,16 @@
   ?~  slash=(find "/" t)  &
   (lth u.colon u.slash)
 ::
+::  +safe-ext: a link scheme safe to render as a clickable external <a> — only
+::  http(s)/mailto. Anything else (javascript:, data:, …) must not be linkable.
+++  safe-ext
+  |=  t=tape
+  ^-  ?
+  ?|  (has-prefix "https://" t)
+      (has-prefix "http://" t)
+      (has-prefix "mailto:" t)
+  ==
+::
 ::  +parse-urb-tape: "urb://~ship/a/b" → [ship="~ship" path="/a/b"] ("" path if none).
 ++  parse-urb-tape
   |=  t=tape
@@ -240,9 +250,15 @@
     =/  desc=tape  ?~(sp rest (ltrim (slag +(u.sp) rest)))
     =/  res  (resolve-href current raw)
     =/  anchor=tape
-      ?~  res
-        :(weld "<a href=\"" (esc raw) "\" target=\"_blank\" rel=\"noopener\">" (esc desc) "</a>")
-      :(weld "<a href=\"/apps/lattice?url=" (esc u.res) "\">" (esc desc) "</a>")
+      ?^  res
+        ::  internal: route a urb:// link back through the reader
+        :(weld "<a href=\"/apps/lattice?url=" (esc u.res) "\">" (esc desc) "</a>")
+      ?:  (safe-ext raw)
+        ::  external web/mail link — new tab, no referrer leak of our ship url
+        :(weld "<a href=\"" (esc raw) "\" target=\"_blank\" rel=\"noopener noreferrer\">" (esc desc) "</a>")
+      ::  any other scheme (javascript:, data:, …) is NOT linkable — a hostile
+      ::  page must not get a clickable javascript: href in our session. Show text.
+      (esc desc)
     $(lines t.lines, inlist |, out :(weld (shut out inlist) "<p class=\"link\">" anchor "</p>"))
   ?:  (has-prefix "* " ln)
     =/  o2  ?:(inlist out (weld out "<ul>"))
@@ -268,7 +284,7 @@
 ++  page-js
   ^-  tape
   %-  trip
-  'var SHIP=window.LS||"",URL=window.LU||"";function bmRead(cb){fetch("/~/scry/settings/desk/lattice.json",{headers:{accept:"application/json"}}).then(function(r){return r.ok?r.json():null;}).then(function(d){var raw=d&&((d.desk&&d.desk.bookmarks&&d.desk.bookmarks.list)||(d.bookmarks&&d.bookmarks.list));var list=[];try{if(raw)list=JSON.parse(raw);}catch(e){}cb(list);}).catch(function(){cb([]);});}function bmWrite(list,cb){var cid="lat-bm-"+Date.now()+"-"+Math.floor(Math.random()*99999);var body=[{id:1,action:"poke",ship:SHIP.replace("~",""),app:"settings",mark:"settings-event",json:{"put-entry":{desk:"lattice","bucket-key":"bookmarks","entry-key":"list",value:JSON.stringify(list)}}}];fetch("/~/channel/"+cid,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(){if(cb)cb();}).catch(function(){if(cb)cb();});}function bmToggle(){if(!URL)return;bmRead(function(list){var i=-1,k;for(k=0;k<list.length;k++){if(list[k].url===URL){i=k;break;}}if(i>=0)list.splice(i,1);else list.push({url:URL,title:URL});bmWrite(list,function(){location.reload();});});}function bmEsc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");}function bmInit(){var star=document.getElementById("bm"),listEl=document.getElementById("bmlist");bmRead(function(list){var k,on=false;if(star&&URL){for(k=0;k<list.length;k++){if(list[k].url===URL){on=true;break;}}star.textContent=on?"★":"☆";}if(listEl){listEl.innerHTML=list.length?list.map(function(b){return `<p class="link"><a href="/apps/lattice?url=${encodeURIComponent(b.url)}">${bmEsc(b.title||b.url)}</a></p>`;}).join(""):"<p>No bookmarks yet.</p>";}});}document.addEventListener("DOMContentLoaded",bmInit);'
+  'var B=document.body.dataset,SHIP=B.ship||"",URL=B.url||"";function bmRead(cb){fetch("/~/scry/settings/desk/lattice.json",{headers:{accept:"application/json"}}).then(function(r){return r.ok?r.json():null;}).then(function(d){var raw=d&&((d.desk&&d.desk.bookmarks&&d.desk.bookmarks.list)||(d.bookmarks&&d.bookmarks.list));var list=[];try{if(raw)list=JSON.parse(raw);}catch(e){}cb(list);}).catch(function(){cb([]);});}function bmWrite(list,cb){var cid="lat-bm-"+Date.now()+"-"+Math.floor(Math.random()*99999);var body=[{id:1,action:"poke",ship:SHIP.replace("~",""),app:"settings",mark:"settings-event",json:{"put-entry":{desk:"lattice","bucket-key":"bookmarks","entry-key":"list",value:JSON.stringify(list)}}}];fetch("/~/channel/"+cid,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(){if(cb)cb();}).catch(function(){if(cb)cb();});}function bmToggle(){if(!URL)return;bmRead(function(list){var i=-1,k;for(k=0;k<list.length;k++){if(list[k].url===URL){i=k;break;}}if(i>=0)list.splice(i,1);else list.push({url:URL,title:URL});bmWrite(list,function(){location.reload();});});}function bmEsc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");}function bmInit(){var star=document.getElementById("bm"),listEl=document.getElementById("bmlist");bmRead(function(list){var k,on=false;if(star&&URL){for(k=0;k<list.length;k++){if(list[k].url===URL){on=true;break;}}star.textContent=on?"★":"☆";}if(listEl){listEl.innerHTML=list.length?list.map(function(b){return `<p class="link"><a href="/apps/lattice?url=${encodeURIComponent(b.url)}">${bmEsc(b.title||b.url)}</a></p>`;}).join(""):"<p>No bookmarks yet.</p>";}});}document.addEventListener("DOMContentLoaded",bmInit);'
 ::
 ::  +render-page: wrap an HTML fragment in the reader chrome (address bar,
 ::  bookmark toggle, Bookmarks link, CSS, and the bookmark script). [ourpatp] is
@@ -280,7 +296,12 @@
   ;:  weld
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-    "<title>lattice</title><style>"  page-css  "</style></head><body>"
+    ::  ship + current url ride in body data-attributes (HTML-attribute context,
+    ::  which +esc handles correctly) rather than a <script> string, which
+    ::  HTML-escaping does NOT make safe (a \ or newline in the url would break
+    ::  out of a JS string literal).
+    "<title>lattice</title><style>"  page-css  "</style></head>"
+    "<body data-ship=\""  (esc ourpatp)  "\" data-url=\""  (esc current)  "\">"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
     "<input name=\"url\" value=\""  (esc current)
     "\" autocomplete=\"off\" autocapitalize=\"off\" spellcheck=\"false\">"
@@ -288,7 +309,6 @@
     "<button type=\"button\" id=\"bm\" onclick=\"bmToggle()\" title=\"Bookmark\">&#9734;</button>"
     "<a class=\"navbtn\" href=\"/apps/lattice?view=bookmarks\">Bookmarks</a>"
     "</form><main>"  inner  "</main>"
-    "<script>window.LS=\""  ourpatp  "\";window.LU=\""  (esc current)  "\";</script>"
     "<script>"  page-js  "</script></body></html>"
   ==
 ::

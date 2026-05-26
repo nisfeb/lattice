@@ -105,4 +105,25 @@
     (expect-eq !>(&) !>(!=(~ (find "<a href=\"/apps/lattice?url=urb://~zod/x\">Go</a>" lnk))))
     (expect-eq !>(&) !>(!=(~ (find "&lt;b&gt;" txt))))
   ==
+::
+++  test-safe-ext
+  ;:  weld
+    (expect-eq !>(&) !>((safe-ext "https://example.com")))
+    (expect-eq !>(&) !>((safe-ext "http://example.com")))
+    (expect-eq !>(&) !>((safe-ext "mailto:a@b")))
+    (expect-eq !>(|) !>((safe-ext "javascript:alert(1)")))
+    (expect-eq !>(|) !>((safe-ext "data:text/html,x")))
+  ==
+::
+::  SECURITY: a hostile page's javascript:/data: link must NOT become a clickable
+::  href in the (authenticated, same-origin) reader. A safe http link must.
+++  test-render-link-schemes
+  =/  js=tape   (render-gmi-html "urb://~zod/" '=> javascript:alert(1)  pwn')
+  =/  web=tape  (render-gmi-html "urb://~zod/" '=> https://example.com  site')
+  ;:  weld
+    (expect-eq !>(&) !>(=(~ (find "<a " js))))
+    (expect-eq !>(&) !>(=(~ (find "javascript" js))))
+    (expect-eq !>(&) !>(!=(~ (find "pwn" js))))
+    (expect-eq !>(&) !>(!=(~ (find "<a href=\"https://example.com\" target=\"_blank\" rel=\"noopener noreferrer\">site</a>" web))))
+  ==
 --
