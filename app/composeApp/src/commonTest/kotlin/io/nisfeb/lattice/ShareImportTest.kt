@@ -36,6 +36,14 @@ class ShareImportTest {
         assertEquals("shared/my-page", ShareImport.pathFor("My Page"))
     }
 
+    @Test fun `secureUrl upgrades http to https and leaves https untouched`() {
+        assertEquals("https://www.vatican.va/", ShareImport.secureUrl("http://www.vatican.va/"))
+        assertEquals("https://www.vatican.va/", ShareImport.secureUrl("HTTP://www.vatican.va/"))
+        assertEquals("https://example.com/x", ShareImport.secureUrl("https://example.com/x"))
+        // Only the leading scheme is rewritten, not http in the path/query.
+        assertEquals("https://a.com/?u=http://b.com", ShareImport.secureUrl("http://a.com/?u=http://b.com"))
+    }
+
     @Test fun `urbUrl composes ship and path`() {
         assertEquals("urb://~sampel-palnet/shared/x", ShareImport.urbUrl("~sampel-palnet", "shared/x"))
     }

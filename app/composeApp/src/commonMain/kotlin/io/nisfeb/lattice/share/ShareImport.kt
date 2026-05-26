@@ -20,6 +20,11 @@ object ShareImport {
     /** The urb:// URL a [path] on [ship] resolves to. */
     fun urbUrl(ship: String, path: String): String = "urb://$ship/$path"
 
+    /** Upgrade a clipped page URL to https. The app's network-security policy
+     *  forbids cleartext (to protect ship credentials), and virtually every site
+     *  serves — or redirects to — https, so we fetch securely rather than fail. */
+    fun secureUrl(url: String): String = url.replaceFirst(HTTP_RE, "https://")
+
     /** Wrap plain shared text as gemtext: a title heading (if any) then the body
      *  verbatim — text is already gemtext-compatible. */
     fun gemtextForText(title: String?, body: String): String {
@@ -49,6 +54,7 @@ object ShareImport {
     }
 
     private val WEB_URL_RE = Regex("""(?i)^https?://\S+$""")
+    private val HTTP_RE = Regex("(?i)^http://")
     private val NON_SLUG_RE = Regex("[^a-z0-9]+")
     private val DASHES_RE = Regex("-{2,}")
 }

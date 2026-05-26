@@ -61,7 +61,7 @@ fun ShareImportScreen(
             val title: String
             val gemtext: String
             if (isUrl) {
-                val clip = webClipper.clip(content.text.trim())
+                val clip = webClipper.clip(ShareImport.secureUrl(content.text.trim()))
                 title = clip.title
                 gemtext = clip.gemtext
             } else {
