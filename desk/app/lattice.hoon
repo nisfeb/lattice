@@ -269,7 +269,9 @@
   ^-  card
   [%pass /clay-save %arvo %c %info q.byk.bowl [%& ~[[full [%del ~]]]]]
 ::
-::  +contacts-json: the ships in our %contacts rolodex as {"ships":[...]}.
+::  +contacts-json: the ships in our %contacts BOOK as {"ships":[...]} — i.e. the
+::  contacts we've explicitly added, NOT the full rolodex (/v1/all includes every
+::  peer we've ever seen, thousands of ships, which is useless to probe).
 ::  Crash-safe (mule): {"ships":[]} when %contacts is absent or empty.
 ++  contacts-json
   |=  =bowl:gall
@@ -278,7 +280,7 @@
     %-  mule
     |.  ^-  json
     .^  json  %gx
-      (welp /(scot %p our.bowl)/contacts/(scot %da now.bowl) /v1/all/json)
+      (welp /(scot %p our.bowl)/contacts/(scot %da now.bowl) /v1/book/json)
     ==
   =/  ships=(list @t)
     ?.  ?=(%& -.res)  ~
