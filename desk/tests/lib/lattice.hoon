@@ -55,4 +55,54 @@
 ++  test-generate-index
   =/  want=@t  (of-wain:format ~['# Index' '' 'Files published on this ship:' '' '=> /hello  hello'])
   (expect-eq !>(want) !>((generate-index (sy ~[/pub/hello/gmi]))))
+::
+::  ── web reader (server-rendered HTML) ──
+::
+++  test-esc
+  (expect-eq !>("a&lt;b&gt;&amp;&quot;") !>((esc "a<b>&\"")))
+::
+++  test-foreign-scheme
+  ;:  weld
+    (expect-eq !>(&) !>((foreign-scheme "https://example.com")))
+    (expect-eq !>(&) !>((foreign-scheme "mailto:a@b")))
+    (expect-eq !>(|) !>((foreign-scheme "/a/b")))
+    (expect-eq !>(|) !>((foreign-scheme "notes/intro")))
+    (expect-eq !>(|) !>((foreign-scheme "urb://~zod/a")))
+  ==
+::
+++  test-normalize-tape
+  ;:  weld
+    (expect-eq !>("/a/c") !>((normalize-tape "/a/b/../c")))
+    (expect-eq !>("/a/b") !>((normalize-tape "/a/./b")))
+    (expect-eq !>("/x") !>((normalize-tape "/a/../x")))
+  ==
+::
+++  test-urb-of
+  ;:  weld
+    (expect-eq !>("urb://~zod/a/b") !>((urb-of ~zod /a/b)))
+    (expect-eq !>("urb://~zod/") !>((urb-of ~zod ~)))
+  ==
+::
+::  +resolve-href mirrors gemtext/UrbUrl.kt: absolute urb:// pass-through, an
+::  absolute /path against the current ship, a relative link against the current
+::  dir (with ../. normalized), and ~ for foreign/web links.
+++  test-resolve-href
+  ;:  weld
+    (expect-eq !>("urb://~tyr/x") !>((need (resolve-href "urb://~zod/a/b" "urb://~tyr/x"))))
+    (expect-eq !>("urb://~zod/index") !>((need (resolve-href "urb://~zod/notes/ok" "/index"))))
+    (expect-eq !>("urb://~zod/notes/intro") !>((need (resolve-href "urb://~zod/notes/ok" "intro"))))
+    (expect-eq !>("urb://~zod/a/x") !>((need (resolve-href "urb://~zod/a/b/c" "../x"))))
+    (expect-eq !>(&) !>(=(~ (resolve-href "urb://~zod/a" "https://example.com"))))
+    (expect-eq !>(&) !>(=(~ (resolve-href "urb://~zod/a" "mailto:a@b"))))
+  ==
+::
+++  test-render-gmi-html
+  =/  hdr=tape  (render-gmi-html "urb://~zod/" '# Title')
+  =/  lnk=tape  (render-gmi-html "urb://~zod/" '=> /x  Go')
+  =/  txt=tape  (render-gmi-html "urb://~zod/" 'a <b> here')
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "<h1>Title</h1>" hdr))))
+    (expect-eq !>(&) !>(!=(~ (find "<a href=\"/apps/lattice?url=urb://~zod/x\">Go</a>" lnk))))
+    (expect-eq !>(&) !>(!=(~ (find "&lt;b&gt;" txt))))
+  ==
 --
