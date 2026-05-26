@@ -85,4 +85,207 @@
   =/  header=(list @t)
     ~['# Index' '' 'Files published on this ship:' '']
   (of-wain:format (welp header lines))
+::
+::  ── web reader: render gemtext to a self-contained HTML page ──
+::  Served at GET /apps/lattice so the Landscape tile opens a browsable reader
+::  with no native client. Link resolution mirrors gemtext/UrbUrl.kt so the web
+::  and native browsers agree on where a link points.
+::
+::  +ltrim: drop leading spaces (link desc sits after the url's separator run).
+++  ltrim
+  |=  t=tape
+  ^-  tape
+  ?~  t  ~
+  ?:(=(' ' i.t) $(t t.t) t)
+::
+::  +esc: escape a tape for HTML text/attribute context.
+++  esc
+  |=  t=tape
+  ^-  tape
+  %-  zing
+  %+  turn  t
+  |=  c=@tD
+  ^-  tape
+  ?:  =('&' c)  "&amp;"
+  ?:  =('<' c)  "&lt;"
+  ?:  =('>' c)  "&gt;"
+  ?:  =('"' c)  "&quot;"
+  ~[c]
+::
+::  +has-prefix: does [t] start with [p]?
+++  has-prefix
+  |=  [p=tape t=tape]
+  ^-  ?
+  ?:  (lth (lent t) (lent p))  |
+  =(p (scag (lent p) t))
+::
+::  +foreign-scheme: a non-urb scheme (https:, mailto:, …) — a ':' before any '/'.
+++  foreign-scheme
+  |=  t=tape
+  ^-  ?
+  ?:  (has-prefix "urb://" t)  |
+  ?~  colon=(find ":" t)  |
+  ?~  slash=(find "/" t)  &
+  (lth u.colon u.slash)
+::
+::  +parse-urb-tape: "urb://~ship/a/b" → [ship="~ship" path="/a/b"] ("" path if none).
+++  parse-urb-tape
+  |=  t=tape
+  ^-  (unit [ship=tape path=tape])
+  ?.  (has-prefix "urb://" t)  ~
+  =/  rest  (slag 6 t)
+  ?~  slash=(find "/" rest)  `[rest ""]
+  `[(scag u.slash rest) (slag u.slash rest)]
+::
+::  +dir-of: the substring of [p] before its last '/', or "".
+++  dir-of
+  |=  p=tape
+  ^-  tape
+  =/  n  (lent p)
+  |-  ^-  tape
+  ?:  =(0 n)  ""
+  ?:  =('/' (snag (dec n) p))  (scag (dec n) p)
+  $(n (dec n))
+::
+::  +split-slash: split a tape on '/' into segments.
+++  split-slash
+  |=  t=tape
+  ^-  (list tape)
+  =|  cur=tape
+  =|  out=(list tape)
+  |-  ^-  (list tape)
+  ?~  t  (flop [(flop cur) out])
+  ?:  =('/' i.t)  $(t t.t, cur ~, out [(flop cur) out])
+  $(t t.t, cur [i.t cur])
+::
+::  +join-slash: join segments with '/'.
+++  join-slash
+  |=  l=(list tape)
+  ^-  tape
+  ?~  l  ""
+  ?~  t.l  i.l
+  :(weld i.l "/" $(l t.l))
+::
+::  +normalize-tape: resolve "." and ".." in a '/'-path, → "/normalized".
+++  normalize-tape
+  |=  p=tape
+  ^-  tape
+  =/  segs  (split-slash p)
+  =|  stack=(list tape)
+  |-  ^-  tape
+  ?~  segs  (weld "/" (join-slash (flop stack)))
+  ?:  ?|(=("" i.segs) =("." i.segs))  $(segs t.segs)
+  ?:  =(".." i.segs)
+    $(segs t.segs, stack ?~(stack ~ t.stack))
+  $(segs t.segs, stack [i.segs stack])
+::
+::  +resolve-href: a gemtext link found on [current] → some absolute urb:// url
+::  (navigable internally), or ~ for a foreign/web link (caller uses the raw href).
+++  resolve-href
+  |=  [current=tape link=tape]
+  ^-  (unit tape)
+  ?:  (has-prefix "urb://" link)  `link
+  ?:  (foreign-scheme link)  ~
+  ?~  cur=(parse-urb-tape current)  ~
+  =/  combined=tape
+    ?:  ?=([%'/' *] link)  link
+    :(weld (dir-of path.u.cur) "/" link)
+  `:(weld "urb://" ship.u.cur (normalize-tape combined))
+::
+::  +urb-of: rebuild a "urb://~ship/spur" tape from a ship + spur path.
+++  urb-of
+  |=  [=ship spur=path]
+  ^-  tape
+  =/  ps=tape  (trip (spat spur))
+  :(weld "urb://" (trip (scot %p ship)) ?:(=("" ps) "/" ps))
+::
+::  +render-gmi-html: gemtext body → an HTML fragment, resolving links against
+::  [current] (the url of the page being rendered).
+++  render-gmi-html
+  |=  [current=tape body=@t]
+  ^-  tape
+  ::  +shut: close an open <ul> (takes the current list state, no closure capture).
+  =/  shut  |=([o=tape il=?] ^-(tape ?:(il (weld o "</ul>") o)))
+  =/  lines=(list @t)  (to-wain:format body)
+  =|  out=tape
+  =/  pre=?  |           ::  NB: *? bunts to & (yes), so init these explicitly
+  =/  inlist=?  |
+  =|  prebuf=(list @t)   ::  buffered ``` lines (joined with +of-wain on close)
+  |-  ^-  tape
+  ?~  lines
+    =?  out  pre     :(weld out "<pre>" (esc (trip (of-wain:format (flop prebuf)))) "</pre>")
+    =?  out  inlist  (weld out "</ul>")
+    out
+  =/  ln=tape  (trip i.lines)
+  ?:  pre
+    ?.  =("```" ln)  $(lines t.lines, prebuf [i.lines prebuf])
+    %=  $
+      lines   t.lines
+      pre     |
+      prebuf  ~
+      out     :(weld out "<pre>" (esc (trip (of-wain:format (flop prebuf)))) "</pre>")
+    ==
+  ?:  =("```" ln)
+    $(lines t.lines, pre &, prebuf ~, out (shut out inlist), inlist |)
+  ?:  (has-prefix "### " ln)
+    $(lines t.lines, inlist |, out :(weld (shut out inlist) "<h3>" (esc (slag 4 ln)) "</h3>"))
+  ?:  (has-prefix "## " ln)
+    $(lines t.lines, inlist |, out :(weld (shut out inlist) "<h2>" (esc (slag 3 ln)) "</h2>"))
+  ?:  (has-prefix "# " ln)
+    $(lines t.lines, inlist |, out :(weld (shut out inlist) "<h1>" (esc (slag 2 ln)) "</h1>"))
+  ?:  (has-prefix "=> " ln)
+    =/  rest  (slag 3 ln)
+    =/  sp  (find " " rest)
+    =/  raw=tape   ?~(sp rest (scag u.sp rest))
+    =/  desc=tape  ?~(sp rest (ltrim (slag +(u.sp) rest)))
+    =/  res  (resolve-href current raw)
+    =/  anchor=tape
+      ?~  res
+        :(weld "<a href=\"" (esc raw) "\" target=\"_blank\" rel=\"noopener\">" (esc desc) "</a>")
+      :(weld "<a href=\"/apps/lattice?url=" (esc u.res) "\">" (esc desc) "</a>")
+    $(lines t.lines, inlist |, out :(weld (shut out inlist) "<p class=\"link\">" anchor "</p>"))
+  ?:  (has-prefix "* " ln)
+    =/  o2  ?:(inlist out (weld out "<ul>"))
+    $(lines t.lines, inlist &, out :(weld o2 "<li>" (esc (slag 2 ln)) "</li>"))
+  ?:  (has-prefix "> " ln)
+    $(lines t.lines, inlist |, out :(weld (shut out inlist) "<blockquote>" (esc (slag 2 ln)) "</blockquote>"))
+  ?:  =("" ln)
+    $(lines t.lines, inlist |, out (shut out inlist))
+  $(lines t.lines, inlist |, out :(weld (shut out inlist) "<p>" (esc ln) "</p>"))
+::
+::  A cord ('...'), not a tape ("..."), so the CSS braces are literal — `{` opens
+::  interpolation inside a tape.
+++  page-css
+  ^-  tape
+  %-  trip
+  '*{box-sizing:border-box}body{margin:0;font:16px/1.6 -apple-system,system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;position:sticky;top:0;background:inherit;border-bottom:1px solid #8884}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:6px 12px;font:inherit;cursor:pointer}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}h1{font-size:1.6rem}h2{font-size:1.3rem}h3{font-size:1.1rem}a{color:#1a6ed8}@media(prefers-color-scheme:dark){a{color:#6db3ff}}p.link{margin:.3rem 0}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}ul{padding-left:1.4rem}.err{color:#c0392b}'
+::
+::  +render-page: wrap an HTML fragment in the reader chrome (address bar + CSS).
+++  render-page
+  |=  [current=tape inner=tape]
+  ^-  @t
+  %-  crip
+  ;:  weld
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<title>lattice</title><style>"  page-css  "</style></head><body>"
+    "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
+    "<input name=\"url\" value=\""  (esc current)
+    "\" autocomplete=\"off\" autocapitalize=\"off\" spellcheck=\"false\">"
+    "<button type=\"submit\">Go</button></form><main>"
+    inner
+    "</main></body></html>"
+  ==
+::
+::  +render-doc: render a gemtext [body] fetched as [current] into a full page.
+++  render-doc
+  |=  [current=tape body=@t]
+  ^-  @t
+  (render-page current (render-gmi-html current body))
+::
+::  +render-error-page: a styled error page (bad url, 404, peer timeout).
+++  render-error-page
+  |=  [current=tape msg=tape]
+  ^-  @t
+  (render-page current :(weld "<p class=\"err\">" (esc msg) "</p>"))
 --

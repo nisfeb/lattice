@@ -146,6 +146,31 @@
       [%give %kick ~[pax] ~]
   ==
 ::
+++  respond-html-cards
+  |=  [eyre-id=@ta status=@ud body=@t]
+  ^-  (list card)
+  =/  pax=path  /http-response/[eyre-id]
+  =/  hdr=response-header:http
+    [status ['content-type' 'text/html; charset=utf-8']~]
+  :~  [%give %fact ~[pax] %http-response-header !>(hdr)]
+      [%give %fact ~[pax] %http-response-data !>(`(unit octs)`(some (as-octs:mimes:html body)))]
+      [%give %kick ~[pax] ~]
+  ==
+::
+::  +fetch-respond / +fetch-fail: answer a walk-to-latest fetch as HTML (web
+::  reader, fmt=%html) or JSON (native client). [target] is the urb:// url shown.
+++  fetch-respond
+  |=  [fmt=@ta eyre-id=@ta target=tape mark=@t body=@t]
+  ^-  (list card)
+  ?:  =(%html fmt)  (respond-html-cards eyre-id 200 (render-doc target body))
+  (respond-json-cards eyre-id 200 (mark-and-body mark body))
+::
+++  fetch-fail
+  |=  [fmt=@ta eyre-id=@ta target=tape status=@ud jerr=@t hmsg=tape]
+  ^-  (list card)
+  ?:  =(%html fmt)  (respond-html-cards eyre-id status (render-error-page target hmsg))
+  (respond-json-cards eyre-id status jerr)
+::
 ++  read-local
   |=  [content=(map path @t) eyre-id=@ta pax=path]
   ^-  (list card)
@@ -174,25 +199,27 @@
 ::
 ::  walk-to-latest cards: probe revisions on /walk/<eid>, with a behn deadline
 ::  on /walkto/<eid> that fires when the walk stalls (the next rev pends).
+::  [fmt] (%json native | %html web reader) rides in the wire so on-arvo answers
+::  the same walk in the format the caller asked for — no per-fetch state needed.
 ++  walk-keen-card
-  |=  [eyre-id=@ta rev=@ud =ship spur=path]
+  |=  [fmt=@ta eyre-id=@ta rev=@ud =ship spur=path]
   ^-  card
-  [%pass /walk/[eyre-id] %arvo %a %keen ~ ship (keen-path (scot %ud rev) spur)]
+  [%pass /walk/[fmt]/[eyre-id] %arvo %a %keen ~ ship (keen-path (scot %ud rev) spur)]
 ::
 ++  walk-yawn-card
-  |=  [eyre-id=@ta rev=@ud =ship spur=path]
+  |=  [fmt=@ta eyre-id=@ta rev=@ud =ship spur=path]
   ^-  card
-  [%pass /walk/[eyre-id] %arvo %a %yawn ship (keen-path (scot %ud rev) spur)]
+  [%pass /walk/[fmt]/[eyre-id] %arvo %a %yawn ship (keen-path (scot %ud rev) spur)]
 ::
 ++  walk-wait-card
-  |=  [eyre-id=@ta at=@da]
+  |=  [fmt=@ta eyre-id=@ta at=@da]
   ^-  card
-  [%pass /walkto/[eyre-id] %arvo %b %wait at]
+  [%pass /walkto/[fmt]/[eyre-id] %arvo %b %wait at]
 ::
 ++  walk-rest-card
-  |=  [eyre-id=@ta at=@da]
+  |=  [fmt=@ta eyre-id=@ta at=@da]
   ^-  card
-  [%pass /walkto/[eyre-id] %arvo %b %rest at]
+  [%pass /walkto/[fmt]/[eyre-id] %arvo %b %rest at]
 ::
 ::  browse-watch cards: after a no-rev fetch answers, keep keening upward on a
 ::  /browse wire so newer revs of the page being viewed stream to /updates. The
@@ -328,10 +355,30 @@
     [(respond-json-cards eyre-id 403 '{"error":"unauthorized"}') st]
   =/  meth=@tas  method.request.inbound-request
   =/  action=@t  (req-action inbound-request)
-  ::  GET /apps/lattice (the docket tile's site) — redirect a browser to the
-  ::  project page (the real UI is the native app, not a web tile).
+  ::  GET /apps/lattice[?url=urb://…] — the web reader (the Landscape tile). A
+  ::  no-JS HTML page so you can browse from a browser without a native client.
+  ::  Own pages render synchronously from state; remote pages walk-to-latest and
+  ::  answer HTML when they resolve (fmt=%html in the walk wire).
   ?:  &(=(meth %'GET') =(action 'lattice'))
-    [(respond-redirect-cards eyre-id 'https://github.com/nisfeb/lattice') st]
+    =/  raw=(unit @t)  (query-param inbound-request 'url')
+    =/  target=@t  ?~(raw (crip (urb-of our.bowl ~)) u.raw)
+    ?~  parsed=(parse-urb-url target)
+      [(respond-html-cards eyre-id 400 (render-error-page (trip target) "not a urb:// address")) st]
+    ?:  =(ship.u.parsed our.bowl)
+      =/  pax=path  path.u.parsed
+      ?:  =(~ pax)
+        [(respond-html-cards eyre-id 200 (render-doc (trip target) (home-body content.st))) st]
+      =/  full=path  :(welp /pub pax /gmi)
+      ?.  (~(has by content.st) full)
+        [(respond-html-cards eyre-id 404 (render-error-page (trip target) "that page is not published here")) st]
+      [(respond-html-cards eyre-id 200 (render-doc (trip target) (~(got by content.st) full))) st]
+    ::  remote → walk to latest, render HTML when it resolves
+    =/  shp=ship  ship.u.parsed
+    =/  spr=path  path.u.parsed
+    =/  at=@da  (add now.bowl ~s30)
+    =.  fetches.st  (~(put by fetches.st) eyre-id [shp spr 0 '' '' at])
+    :_  st
+    ~[(walk-keen-card %html eyre-id 1 shp spr) (walk-wait-card %html eyre-id at)]
   ::  GET /apps/lattice/list — the published file tree
   ?:  &(=(meth %'GET') =(action 'list'))
     [(respond-json-cards eyre-id 200 (list-files-json content.st)) st]
@@ -422,7 +469,7 @@
   =^  bcards  browse.st  (cancel-browse browse.st)
   =/  at=@da  (add now.bowl ~s30)
   =.  fetches.st  (~(put by fetches.st) eyre-id [shp spr 0 '' '' at])
-  [:(welp bcards ~[(walk-keen-card eyre-id 1 shp spr) (walk-wait-card eyre-id at)]) st]
+  [:(welp bcards ~[(walk-keen-card %json eyre-id 1 shp spr) (walk-wait-card %json eyre-id at)]) st]
 --
 ::
 %-  agent:dbug
@@ -564,28 +611,30 @@
     =.  pending.state  (~(del by pending.state) eid)
     [(respond-json-cards eid 504 '{"error":"no response from peer"}') this]
   ::
-      [%walk @ta ~]
+      [%walk @ta @ta ~]
     ::  a revision in a walk-to-latest fetch resolved (or returned no value).
     ?>  ?=([%ames %sage *] sign-arvo)
-    =/  eid=@ta  i.t.wire
+    =/  fmt=@ta  i.t.wire
+    =/  eid=@ta  i.t.t.wire
     ?~  fet=(~(get by fetches.state) eid)
       ::  the walk already finished (timer fired) — a late sage, ignore.
       `this
+    =/  target=tape  (urb-of ship.u.fet spur.u.fet)
     =/  gag  q.sage.sign-arvo
     ?@  gag
       ::  no value at the probed rev → the best so far is the latest. Answer it.
       =.  fetches.state  (~(del by fetches.state) eid)
       =/  resp=(list card)
-        ?:  =(0 rev.u.fet)  (respond-json-cards eid 404 '{"error":"not found"}')
-        (respond-json-cards eid 200 (mark-and-body mark.u.fet body.u.fet))
-      [[(walk-rest-card eid deadline.u.fet) resp] this]
+        ?:  =(0 rev.u.fet)  (fetch-fail fmt eid target 404 '{"error":"not found"}' "not found")
+        (fetch-respond fmt eid target mark.u.fet body.u.fet)
+      [[(walk-rest-card fmt eid deadline.u.fet) resp] this]
     ?^  q.gag
       ::  malformed (non-cord) value from the peer — answer best-so-far, stop.
       =.  fetches.state  (~(del by fetches.state) eid)
       =/  resp=(list card)
-        ?:  =(0 rev.u.fet)  (respond-json-cards eid 502 '{"error":"malformed remote value"}')
-        (respond-json-cards eid 200 (mark-and-body mark.u.fet body.u.fet))
-      [[(walk-rest-card eid deadline.u.fet) resp] this]
+        ?:  =(0 rev.u.fet)  (fetch-fail fmt eid target 502 '{"error":"malformed remote value"}' "malformed value from peer")
+        (fetch-respond fmt eid target mark.u.fet body.u.fet)
+      [[(walk-rest-card fmt eid deadline.u.fet) resp] this]
     ::  resolved rev (rev.u.fet+1): record content, probe the next, slide deadline
     =/  got=@ud   +(rev.u.fet)
     =/  body=@t   ;;(@t q.gag)
@@ -594,29 +643,35 @@
       ::  highest rev we reached rather than looping forever.
       =.  fetches.state  (~(del by fetches.state) eid)
       :_  this
-      [(walk-rest-card eid deadline.u.fet) (respond-json-cards eid 200 (mark-and-body p.gag body))]
+      [(walk-rest-card fmt eid deadline.u.fet) (fetch-respond fmt eid target p.gag body)]
     =/  nat=@da   (add now.bowl ~s2)
     =.  fetches.state
       (~(put by fetches.state) eid [ship.u.fet spur.u.fet got p.gag body nat])
     :_  this
-    :~  (walk-rest-card eid deadline.u.fet)
-        (walk-wait-card eid nat)
-        (walk-keen-card eid +(got) ship.u.fet spur.u.fet)
+    :~  (walk-rest-card fmt eid deadline.u.fet)
+        (walk-wait-card fmt eid nat)
+        (walk-keen-card fmt eid +(got) ship.u.fet spur.u.fet)
     ==
   ::
-      [%walkto @ta ~]
+      [%walkto @ta @ta ~]
     ::  the walk stalled (next rev is pending) → answer with the best rev seen,
-    ::  cancel the still-pending /walk keen, and (if we got anything) hand off to
-    ::  a /browse watch that keeps keening upward so newer revs stream in.
+    ::  cancel the still-pending /walk keen, and (for the native client) hand off
+    ::  to a /browse watch that keeps keening upward so newer revs stream in. The
+    ::  web reader (fmt=%html) has no SSE consumer, so it just answers.
     ?>  ?=([%behn %wake *] sign-arvo)
-    =/  eid=@ta  i.t.wire
+    =/  fmt=@ta  i.t.wire
+    =/  eid=@ta  i.t.t.wire
     ?~  fet=(~(get by fetches.state) eid)  `this
     =.  fetches.state  (~(del by fetches.state) eid)
-    =/  yawn=card  (walk-yawn-card eid +(rev.u.fet) ship.u.fet spur.u.fet)
+    =/  target=tape  (urb-of ship.u.fet spur.u.fet)
+    =/  yawn=card  (walk-yawn-card fmt eid +(rev.u.fet) ship.u.fet spur.u.fet)
     ?:  =(0 rev.u.fet)
       ::  nothing resolved → no peer; nothing to watch.
       :_  this
-      [yawn (respond-json-cards eid 504 '{"error":"no response from peer"}')]
+      [yawn (fetch-fail fmt eid target 504 '{"error":"no response from peer"}' "no response from peer")]
+    ?:  =(%html fmt)
+      :_  this
+      [yawn (fetch-respond fmt eid target mark.u.fet body.u.fet)]
     =^  bcards  browse.state  (rebrowse browse.state ship.u.fet spur.u.fet rev.u.fet)
     :_  this
     :*  yawn
