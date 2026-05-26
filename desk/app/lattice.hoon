@@ -4,7 +4,7 @@
 /+  default-agent, dbug, verb, *lattice
 ::
 |%
-+$  versioned-state  $%(state-0 state-1 state-2 state-3)
++$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4)
 +$  card  card:agent:gall
 ::
 ::  -- helper gates --
@@ -73,6 +73,27 @@
   =/  body=@t    .^(@t %cx (welp (base-path bowl) pax))
   =/  spur=path  (snip (slag 1 pax))   ::  drop /pub prefix and trailing /gmi
   [%pass /grow %grow spur gmi+body]
+::
+::  +home-body: the home page — authored /pub/index/gmi if present, else the
+::  generated file index. Same content read-local serves for our own home.
+++  home-body
+  |=  =bowl:gall
+  ^-  @t
+  =/  base  (base-path bowl)
+  =/  index-path=path  /pub/index/gmi
+  ?:  .^(? %cu (welp base index-path))
+    .^(@t %cx (welp base index-path))
+  (generate-index (list-gmi bowl))
+::
+::  +home-cards: (re)grow the home at the EMPTY spur when it changes, so a remote
+::  `urb://~ship/` (which keens the empty spur) resolves instead of pending.
+++  home-cards
+  |=  [=bowl:gall prev=@uvH]
+  ^-  [(list card) @uvH]
+  =/  body=@t  (home-body bowl)
+  =/  h=@uvH   (sham body)
+  ?:  =(h prev)  [~ prev]
+  [~[[%pass /grow %grow `path`~ gmi+body]] h]
 ::
 ++  unpublish-card
   |=  [=bowl:gall pax=path]
@@ -144,12 +165,8 @@
   ^-  (list card)
   =/  base  (base-path bowl)
   ?:  =(~ pax)
-    ::  empty path = home page: authored pub/index.gmi if present, else generated
-    =/  index-path=path  /pub/index/gmi
-    ?:  .^(? %cu (welp base index-path))
-      =/  body=@t  .^(@t %cx (welp base index-path))
-      (respond-json-cards eyre-id 200 (mark-and-body 'gmi' body))
-    (respond-json-cards eyre-id 200 (mark-and-body 'gmi' (generate-index (list-gmi bowl))))
+    ::  empty path = home page (same body we grow at the empty spur for remotes)
+    (respond-json-cards eyre-id 200 (mark-and-body 'gmi' (home-body bowl)))
   ::  non-empty path
   =/  full=path  :(welp /pub pax /gmi)
   ?.  .^(? %cu (welp base full))
@@ -271,8 +288,8 @@
   (pairs:enjs:format ~[['ships' a+(turn ships |=(s=@t s+s))]])
 ::
 ++  handle-http
-  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-3]
-  ^-  [(list card) state-3]
+  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-4]
+  ^-  [(list card) state-4]
   ::  SECURITY: Eyre forwards ALL matching HTTP requests to us, authenticated or
   ::  not, and leaves enforcement to the agent. This is the owner's control plane
   ::  (mutates Clay, drives keens); public reads happen via remote scry, not here.
@@ -370,7 +387,7 @@
 ::
 %-  agent:dbug
 %+  verb  |
-=|  state-3
+=|  state-4
 =*  state  -
 ^-  agent:gall
 |_  =bowl:gall
@@ -386,10 +403,11 @@
   ::  `published`, so it does NOT re-grow.)
   =^  pub-cards  published.state  (sync-cards bowl *(map path @uvH))
   =^  man-cards  manifest.state  (manifest-cards bowl `@uvH`0)
+  =^  home-cs    home.state      (home-cards bowl `@uvH`0)
   :_  this
   :*  (watch-clay-card bowl)
       (bind-eyre-card bowl)
-      (weld pub-cards man-cards)
+      :(weld pub-cards man-cards home-cs)
   ==
 ::
 ++  on-save  !>(state)
@@ -399,10 +417,11 @@
   ^-  (quip card _this)
   =/  old=versioned-state  !<(versioned-state ole)
   ?-  -.old
-    %3  `this(state old)
-    %2  `this(state [%3 published.old pending.old subs.old fetches.old `@uvH`0])
-    %1  `this(state [%3 published.old pending.old subs.old ~ `@uvH`0])
-    %0  `this(state [%3 published.old pending.old ~ ~ `@uvH`0])
+    %4  `this(state old)
+    %3  `this(state [%4 published.old pending.old subs.old fetches.old manifest.old `@uvH`0])
+    %2  `this(state [%4 published.old pending.old subs.old fetches.old `@uvH`0 `@uvH`0])
+    %1  `this(state [%4 published.old pending.old subs.old ~ `@uvH`0 `@uvH`0])
+    %0  `this(state [%4 published.old pending.old ~ ~ `@uvH`0 `@uvH`0])
   ==
 ::
 ++  on-poke
@@ -473,9 +492,10 @@
   ^-  (quip card _this)
   ?+  wire  ~&(>>> "lattice: unhandled arvo wire {<wire>}" `this)
       [%clay %lib ~]
-    =^  pub-cards  published.state  (sync-cards bowl published.state)
-    =^  man-cards  manifest.state  (manifest-cards bowl manifest.state)
-    [[(watch-clay-card bowl) (weld pub-cards man-cards)] this]
+    =^  pub-cards   published.state  (sync-cards bowl published.state)
+    =^  man-cards   manifest.state   (manifest-cards bowl manifest.state)
+    =^  home-cs     home.state       (home-cards bowl home.state)
+    [[(watch-clay-card bowl) :(weld pub-cards man-cards home-cs)] this]
   ::
       [%eyre %connect ~]
     ?>  ?=([%eyre %bound *] sign-arvo)

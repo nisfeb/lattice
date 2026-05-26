@@ -38,6 +38,19 @@
       fetches=(map @ta walk)
       manifest=@uvH
   ==
+::  state-4 adds `home`: the hash of the last-grown home page, grown at the
+::  *empty* spur. A remote `urb://~ship/` keens the empty spur, and nothing else
+::  publishes there (files live at /index, /manifest, /shared/…), so without
+::  this the home keen pends forever → "no response from peer". 0 = never grown.
++$  state-4
+  $:  %4
+      published=(map path @uvH)
+      pending=(map @ta [=ship =path])
+      subs=(map [=ship spur=path] last=@ud)
+      fetches=(map @ta walk)
+      manifest=@uvH
+      home=@uvH
+  ==
 ::  one in-flight walk-to-latest fetch (keyed by eyre-id).
 ::  rev = highest revision resolved so far (0 = none yet); deadline = the armed
 ::  behn timer's wake time (tracked so progress can %rest + re-arm it).
