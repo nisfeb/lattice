@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -54,11 +55,15 @@ fun DiscoverScreen(
     // Non-null while probing: which ship we're checking and how far along.
     var probing by remember { mutableStateOf<Probe?>(null) }
     var newPatp by remember { mutableStateOf("") }
+    // Bump to (re)run the probe. Keyed here — NOT on `follows` — so following a
+    // contact (which mutates follows) doesn't restart the whole probe. The user
+    // can re-probe on demand via the refresh button.
+    var probeNonce by remember { mutableStateOf(0) }
 
     // Probe contacts we don't already follow, bounded-concurrently (each probe
     // can take up to ~8s, so sequential would be far too slow). State writes all
     // land on the composition dispatcher, so the counter/list updates are safe.
-    LaunchedEffect(follows) {
+    LaunchedEffect(probeNonce) {
         found = emptyList()
         probing = null
         val contacts = client.contacts().getOrDefault(emptyList()).filter { it !in follows }
@@ -87,7 +92,10 @@ fun DiscoverScreen(
     Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-            Text("Discover", style = MaterialTheme.typography.titleLarge)
+            Text("Discover", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            IconButton(onClick = { if (probing == null) probeNonce++ }, enabled = probing == null) {
+                Icon(Icons.Filled.Refresh, "Re-probe contacts")
+            }
         }
         Row(
             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -124,7 +132,9 @@ fun DiscoverScreen(
             if (found.isNotEmpty()) {
                 items(found) { ship ->
                     ShipRow(ship, onClick = { onBrowse(ship) }) {
-                        TextButton(onClick = { onFollow(ship) }) { Text("Follow") }
+                        // Follow + drop from the found list locally (it moves to the
+                        // "Following" section) without restarting the probe.
+                        TextButton(onClick = { onFollow(ship); found = found - ship }) { Text("Follow") }
                     }
                 }
             } else if (p == null) {

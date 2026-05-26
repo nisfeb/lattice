@@ -104,8 +104,8 @@ kover {
 // Single source of truth for the app version. The release workflow parses
 // these two literals out of this file and checks them against the git tag,
 // so keep them as plain `val name = literal` declarations.
-val latticeVersionCode = 16
-val latticeVersionName = "0.3.13"
+val latticeVersionCode = 17
+val latticeVersionName = "0.3.14"
 
 // jpackage (Dmg/Msi) rejects a MAJOR version of 0, but we're pre-1.0. Map
 // "0.MINOR.PATCH" → "1.MINOR.PATCH" so desktop installer versions track the
