@@ -67,6 +67,24 @@
       home=@uvH
       browse=(unit [=ship spur=path rev=@ud])
   ==
+::  state-6 moves published CONTENT out of Clay /pub into agent state
+::  (`content`: full /pub/<spur>/gmi path → gemtext body). Files committed to a
+::  desk ARE that desk's distributable, so keeping pages in /pub meant
+::  `|install`ing the agent from a publisher copied the publisher's pages onto
+::  every installer. Agent state is per-ship and never part of a desk install,
+::  so content no longer rides along. The %5→%6 migration pulls any existing
+::  /pub into state and deletes it from the desk so the desk stops carrying it.
++$  state-6
+  $:  %6
+      content=(map path @t)
+      published=(map path @uvH)
+      pending=(map @ta [=ship =path])
+      subs=(map [=ship spur=path] last=@ud)
+      fetches=(map @ta walk)
+      manifest=@uvH
+      home=@uvH
+      browse=(unit [=ship spur=path rev=@ud])
+  ==
 ::  one in-flight walk-to-latest fetch (keyed by eyre-id).
 ::  rev = highest revision resolved so far (0 = none yet); deadline = the armed
 ::  behn timer's wake time (tracked so progress can %rest + re-arm it).

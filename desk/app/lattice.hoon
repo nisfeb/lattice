@@ -4,23 +4,18 @@
 /+  default-agent, dbug, verb, *lattice
 ::
 |%
-+$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5)
++$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6)
 +$  card  card:agent:gall
 ::
 ::  -- helper gates --
 ::
+::  +base-path / +walk-dir: read our own Clay desk. Used ONLY by the %5→%6
+::  migration, which pulls the legacy /pub content into state before deleting it.
+::  Published content now lives in state.content, not Clay (see state-6).
 ++  base-path
   |=  =bowl:gall
   ^-  path
   /(scot %p our.bowl)/[q.byk.bowl]/(scot %da now.bowl)
-::
-++  list-gmi
-  |=  =bowl:gall
-  ^-  (set path)
-  =/  base  (base-path bowl)
-  ::  content lives under /pub (NOT /lib — that's for the desk's source hoon
-  ::  libraries; mixing user gmi files in would pollute the source tree).
-  (walk-dir base /pub *(set path))
 ::
 ++  walk-dir
   |=  [base=path pre=path found=(set path)]
@@ -37,60 +32,48 @@
     ^$(base base, pre (snoc pre i.kids), found found)
   $(kids t.kids)
 ::
-++  watch-clay-card
-  |=  =bowl:gall
-  ^-  card
-  ::  Watch the desk revision (%w), which advances on EVERY commit — including
-  ::  pure content mutations. (%next %z /lib only re-fired on structural changes,
-  ::  so content edits weren't re-published.)
-  ::  wire name is a stable internal label — do NOT rename it, or an in-flight
-  ::  %next watch from a previous version orphans across upgrade (the old wire
-  ::  fires into the default handler and the watch is never re-armed).
-  [%pass /clay/lib %arvo %c %warp our.bowl q.byk.bowl `[%next %w [%da now.bowl] /]]
-::
-++  file-hash
-  |=  [=bowl:gall pax=path]
-  ^-  @uvH
-  (sham .^(@t %cx (welp (base-path bowl) pax)))
+::  +live-paths: the published file paths (full /pub/<spur>/gmi keys), from state.
+++  live-paths
+  |=  content=(map path @t)
+  ^-  (set path)
+  ~(key by content)
 ::
 ::  the reserved publication spur a remote ship probes to discover whether we
-::  publish (and to list our files). Not derived from a /lib file.
+::  publish (and to list our files).
 ++  manifest-spur  `path`/manifest
 ::
 ::  +manifest-cards: (re)grow the discovery manifest only when the file set
 ::  changes. Returns the cards + the new manifest hash. [prev] is the last hash.
 ++  manifest-cards
-  |=  [=bowl:gall prev=@uvH]
+  |=  [content=(map path @t) prev=@uvH]
   ^-  [(list card) @uvH]
-  =/  body=@t  (generate-index (list-gmi bowl))
+  =/  body=@t  (generate-index (live-paths content))
   =/  h=@uvH   (sham body)
   ?:  =(h prev)  [~ prev]
   [~[[%pass /grow %grow manifest-spur gmi+body]] h]
 ::
 ++  publish-card
-  |=  [=bowl:gall pax=path]
+  |=  [pax=path body=@t]
   ^-  card
-  =/  body=@t    .^(@t %cx (welp (base-path bowl) pax))
   =/  spur=path  (snip (slag 1 pax))   ::  drop /pub prefix and trailing /gmi
   [%pass /grow %grow spur gmi+body]
 ::
 ::  +home-body: the home page — authored /pub/index/gmi if present, else the
 ::  generated file index. Same content read-local serves for our own home.
 ++  home-body
-  |=  =bowl:gall
+  |=  content=(map path @t)
   ^-  @t
-  =/  base  (base-path bowl)
-  =/  index-path=path  /pub/index/gmi
-  ?:  .^(? %cu (welp base index-path))
-    .^(@t %cx (welp base index-path))
-  (generate-index (list-gmi bowl))
+  =/  idx=path  /pub/index/gmi
+  ?:  (~(has by content) idx)
+    (~(got by content) idx)
+  (generate-index (live-paths content))
 ::
 ::  +home-cards: (re)grow the home at the EMPTY spur when it changes, so a remote
 ::  `urb://~ship/` (which keens the empty spur) resolves instead of pending.
 ++  home-cards
-  |=  [=bowl:gall prev=@uvH]
+  |=  [content=(map path @t) prev=@uvH]
   ^-  [(list card) @uvH]
-  =/  body=@t  (home-body bowl)
+  =/  body=@t  (home-body content)
   =/  h=@uvH   (sham body)
   ?:  =(h prev)  [~ prev]
   [~[[%pass /grow %grow `path`~ gmi+body]] h]
@@ -109,15 +92,17 @@
   ?>  ?=(%ud -.cas)
   [%pass /tomb %cull [%ud p.cas] spur]
 ::
+::  +sync-cards: diff the content map against the last-published hashes; grow
+::  new/changed files, cull removed ones. Returns the cards + the new hashes.
 ++  sync-cards
-  |=  [=bowl:gall prev=(map path @uvH)]
+  |=  [=bowl:gall content=(map path @t) prev=(map path @uvH)]
   ^-  [(list card) (map path @uvH)]
-  =/  current=(set path)  (list-gmi bowl)
+  =/  current=(set path)  (live-paths content)
   =/  cur=(list path)  ~(tap in current)
   ::  hash every current file once
   =/  next=(map path @uvH)
     %-  ~(gas by *(map path @uvH))
-    (turn cur |=(p=path [p (file-hash bowl p)]))
+    (turn cur |=(p=path [p (sham (~(got by content) p))]))
   ::  to-grow: new files, or files whose content hash changed
   =/  to-grow=(list path)
     %+  skim  cur
@@ -127,7 +112,8 @@
   ::  to-remove: previously-published paths no longer present
   =/  to-remove=(list path)
     ~(tap in (~(dif in ~(key by prev)) current))
-  =/  grows=(list card)  (turn to-grow |=(p=path (publish-card bowl p)))
+  =/  grows=(list card)
+    (turn to-grow |=(p=path (publish-card p (~(got by content) p))))
   =/  culls=(list card)  (turn to-remove |=(p=path (unpublish-card bowl p)))
   [(weld grows culls) next]
 ::
@@ -161,18 +147,16 @@
   ==
 ::
 ++  read-local
-  |=  [=bowl:gall eyre-id=@ta pax=path]
+  |=  [content=(map path @t) eyre-id=@ta pax=path]
   ^-  (list card)
-  =/  base  (base-path bowl)
   ?:  =(~ pax)
     ::  empty path = home page (same body we grow at the empty spur for remotes)
-    (respond-json-cards eyre-id 200 (mark-and-body 'gmi' (home-body bowl)))
+    (respond-json-cards eyre-id 200 (mark-and-body 'gmi' (home-body content)))
   ::  non-empty path
   =/  full=path  :(welp /pub pax /gmi)
-  ?.  .^(? %cu (welp base full))
+  ?.  (~(has by content) full)
     (respond-json-cards eyre-id 404 '{"error":"not found"}')
-  =/  body=@t  .^(@t %cx (welp base full))
-  (respond-json-cards eyre-id 200 (mark-and-body 'gmi' body))
+  (respond-json-cards eyre-id 200 (mark-and-body 'gmi' (~(got by content) full)))
 ::
 ++  keen-card
   |=  [eyre-id=@ta cas=@ta =ship spur=path]
@@ -274,32 +258,17 @@
   ==
 ::
 ++  list-files-json
-  |=  =bowl:gall
+  |=  content=(map path @t)
   ^-  @t
   %-  en:json:html
   %-  pairs:enjs:format
   :_  ~
   :-  'files'
   :-  %a
-  %+  turn  ~(tap in (list-gmi bowl))
+  %+  turn  ~(tap in (live-paths content))
   |=  pax=path
   ::  /pub/notes/2026/intro/gmi → "notes/2026/intro"
   s+(crip (slag 1 (spud (snip (slag 1 pax)))))
-::
-::  +write-card: commit a gmi file to our own desk's Clay (%ins new / %mut existing)
-++  write-card
-  |=  [=bowl:gall full=path content=@t]
-  ^-  card
-  =/  =miso:clay
-    ?:  .^(? %cu (welp (base-path bowl) full))
-      [%mut gmi+!>(content)]
-    [%ins gmi+!>(content)]
-  [%pass /clay-save %arvo %c %info q.byk.bowl [%& ~[[full miso]]]]
-::
-++  delete-card
-  |=  [=bowl:gall full=path]
-  ^-  card
-  [%pass /clay-save %arvo %c %info q.byk.bowl [%& ~[[full [%del ~]]]]]
 ::
 ::  +contacts-json: the ships in our %contacts BOOK as {"ships":[...]} — i.e. the
 ::  contacts we've explicitly added, NOT the full rolodex (/v1/all includes every
@@ -321,12 +290,39 @@
   %-  en:json:html
   (pairs:enjs:format ~[['ships' a+(turn ships |=(s=@t s+s))]])
 ::
+::  +migrate-content: pull legacy Clay /pub gmi files into a content map. Used by
+::  the %5→%6 upgrade — afterwards /pub is deleted from the desk.
+++  migrate-content
+  |=  =bowl:gall
+  ^-  (map path @t)
+  =/  files=(set path)  (walk-dir (base-path bowl) /pub *(set path))
+  %-  ~(gas by *(map path @t))
+  %+  turn  ~(tap in files)
+  |=  p=path
+  [p .^(@t %cx (welp (base-path bowl) p))]
+::
+::  +clear-pub-cards: delete the legacy /pub files from Clay (so the desk no
+::  longer carries them, and installs no longer ship them) and leave the old
+::  clay-watch warp. Empty when there's nothing to clear.
+++  clear-pub-cards
+  |=  [=bowl:gall files=(set path)]
+  ^-  (list card)
+  =/  dels=(list [path miso:clay])
+    %+  turn  ~(tap in files)
+    |=(p=path [p [%del ~]])
+  =/  cards=(list card)
+    ::  drop the state-5 clay watch (/clay/lib %warp) — content no longer lives
+    ::  in Clay, so we don't re-publish on commit anymore.
+    ~[[%pass /clay/lib %arvo %c %warp our.bowl q.byk.bowl ~]]
+  ?~  dels  cards
+  [[%pass /clay-clear %arvo %c %info q.byk.bowl [%& dels]] cards]
+::
 ++  handle-http
-  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-5]
-  ^-  [(list card) state-5]
+  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-6]
+  ^-  [(list card) state-6]
   ::  SECURITY: Eyre forwards ALL matching HTTP requests to us, authenticated or
   ::  not, and leaves enforcement to the agent. This is the owner's control plane
-  ::  (mutates Clay, drives keens); public reads happen via remote scry, not here.
+  ::  (mutates state, drives keens); public reads happen via remote scry, not here.
   ::  Require a valid ship session for everything.
   ?.  authenticated.inbound-request
     [(respond-json-cards eyre-id 403 '{"error":"unauthorized"}') st]
@@ -338,7 +334,7 @@
     [(respond-redirect-cards eyre-id 'https://github.com/nisfeb/lattice') st]
   ::  GET /apps/lattice/list — the published file tree
   ?:  &(=(meth %'GET') =(action 'list'))
-    [(respond-json-cards eyre-id 200 (list-files-json bowl)) st]
+    [(respond-json-cards eyre-id 200 (list-files-json content.st)) st]
   ::  GET /apps/lattice/contacts — ship patps from our %contacts rolodex
   ?:  &(=(meth %'GET') =(action 'contacts'))
     [(respond-json-cards eyre-id 200 (contacts-json bowl)) st]
@@ -350,10 +346,14 @@
     =/  pp=(each path tang)  (mule |.((pub-path u.rel)))
     ?:  ?=(%| -.pp)
       [(respond-json-cards eyre-id 400 '{"error":"invalid path"}') st]
-    =/  content=@t
+    =/  body=@t
       ?~(body.request.inbound-request '' q.u.body.request.inbound-request)
+    =.  content.st  (~(put by content.st) p.pp body)
+    =^  pub-cards  published.st  (sync-cards bowl content.st published.st)
+    =^  man-cards  manifest.st   (manifest-cards content.st manifest.st)
+    =^  home-cs    home.st       (home-cards content.st home.st)
     :_  st
-    [(write-card bowl p.pp content) (respond-json-cards eyre-id 200 '{"ok":true}')]
+    :(welp pub-cards man-cards home-cs (respond-json-cards eyre-id 200 '{"ok":true}'))
   ::  POST /apps/lattice/delete?path=<rel>
   ?:  &(=(meth %'POST') =(action 'delete'))
     ?~  rel=(query-param inbound-request 'path')
@@ -361,8 +361,12 @@
     =/  pp=(each path tang)  (mule |.((pub-path u.rel)))
     ?:  ?=(%| -.pp)
       [(respond-json-cards eyre-id 400 '{"error":"invalid path"}') st]
+    =.  content.st  (~(del by content.st) p.pp)
+    =^  pub-cards  published.st  (sync-cards bowl content.st published.st)
+    =^  man-cards  manifest.st   (manifest-cards content.st manifest.st)
+    =^  home-cs    home.st       (home-cards content.st home.st)
     :_  st
-    [(delete-card bowl p.pp) (respond-json-cards eyre-id 200 '{"ok":true}')]
+    :(welp pub-cards man-cards home-cs (respond-json-cards eyre-id 200 '{"ok":true}'))
   ::  POST /apps/lattice/sub?url=urb://~ship/path — follow a remote file
   ?:  &(=(meth %'POST') =(action 'sub'))
     ?~  raw=(query-param inbound-request 'url')
@@ -393,7 +397,7 @@
   ?~  parsed=(parse-urb-url u.raw)
     [(respond-json-cards eyre-id 400 '{"error":"bad urb:// url"}') st]
   ?:  =(ship.u.parsed our.bowl)
-    [(read-local bowl eyre-id path.u.parsed) st]
+    [(read-local content.st eyre-id path.u.parsed) st]
   =/  shp=ship  ship.u.parsed
   =/  spr=path  path.u.parsed
   ::  &rev=N pins a specific publication revision (%ud N): one exact keen, with
@@ -423,7 +427,7 @@
 ::
 %-  agent:dbug
 %+  verb  |
-=|  state-5
+=|  state-6
 =*  state  -
 ^-  agent:gall
 |_  =bowl:gall
@@ -432,19 +436,12 @@
 ::
 ++  on-init
   ^-  (quip card _this)
-  ::  on-init runs on first install and after a nuke. A nuke wipes gall's
-  ::  publication CONTENT (only the revision counter persists), so we must
-  ::  re-grow everything to republish — the resulting revision bump is
-  ::  unavoidable. (A normal code upgrade runs on-load instead and keeps
-  ::  `published`, so it does NOT re-grow.)
-  =^  pub-cards  published.state  (sync-cards bowl *(map path @uvH))
-  =^  man-cards  manifest.state  (manifest-cards bowl `@uvH`0)
-  =^  home-cs    home.state      (home-cards bowl `@uvH`0)
+  ::  Fresh install: no content yet. Grow the (empty) discovery manifest + home
+  ::  so a remote probe resolves them instead of pending. Nothing else to grow.
+  =^  man-cards  manifest.state  (manifest-cards content.state `@uvH`0)
+  =^  home-cs    home.state      (home-cards content.state `@uvH`0)
   :_  this
-  :*  (watch-clay-card bowl)
-      (bind-eyre-card bowl)
-      :(weld pub-cards man-cards home-cs)
-  ==
+  [(bind-eyre-card bowl) (weld man-cards home-cs)]
 ::
 ++  on-save  !>(state)
 ::
@@ -452,14 +449,23 @@
   |=  ole=vase
   ^-  (quip card _this)
   =/  old=versioned-state  !<(versioned-state ole)
-  ?-  -.old
-    %5  `this(state old)
-    %4  `this(state [%5 published.old pending.old subs.old fetches.old manifest.old home.old ~])
-    %3  `this(state [%5 published.old pending.old subs.old fetches.old manifest.old `@uvH`0 ~])
-    %2  `this(state [%5 published.old pending.old subs.old fetches.old `@uvH`0 `@uvH`0 ~])
-    %1  `this(state [%5 published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~])
-    %0  `this(state [%5 published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~])
-  ==
+  ?:  ?=(%6 -.old)  `this(state old)
+  ::  Versions 0-5 stored published content in Clay /pub. Pull it into state,
+  ::  then delete /pub from the desk + drop the clay watch, so the desk stops
+  ::  carrying the content (and installs stop shipping the publisher's pages).
+  =/  content=(map path @t)  (migrate-content bowl)
+  =/  files=(set path)       ~(key by content)
+  =/  cards=(list card)      (clear-pub-cards bowl files)
+  =/  new=state-6
+    ?-  -.old
+      %5  [%6 content published.old pending.old subs.old fetches.old manifest.old home.old browse.old]
+      %4  [%6 content published.old pending.old subs.old fetches.old manifest.old home.old ~]
+      %3  [%6 content published.old pending.old subs.old fetches.old manifest.old `@uvH`0 ~]
+      %2  [%6 content published.old pending.old subs.old fetches.old `@uvH`0 `@uvH`0 ~]
+      %1  [%6 content published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~]
+      %0  [%6 content published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~]
+    ==
+  [cards this(state new)]
 ::
 ++  on-poke
   |=  =cage
@@ -508,7 +514,7 @@
     ==
   ::
       [%x %live-list ~]
-    =/  files=(set ^path)  (list-gmi bowl)
+    =/  files=(set ^path)  (live-paths content.state)
     :^  ~  ~  %json
     !>  ^-  json
     %-  pairs:enjs:format
@@ -528,11 +534,8 @@
   |=  [=wire =sign-arvo]
   ^-  (quip card _this)
   ?+  wire  ~&(>>> "lattice: unhandled arvo wire {<wire>}" `this)
-      [%clay %lib ~]
-    =^  pub-cards   published.state  (sync-cards bowl published.state)
-    =^  man-cards   manifest.state   (manifest-cards bowl manifest.state)
-    =^  home-cs     home.state       (home-cards bowl home.state)
-    [[(watch-clay-card bowl) :(weld pub-cards man-cards home-cs)] this]
+      ::  legacy state-5 clay watch — left in on-load; ignore any stray fire.
+      [%clay %lib ~]  `this
   ::
       [%eyre %connect ~]
     ?>  ?=([%eyre %bound *] sign-arvo)
