@@ -36,6 +36,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
+import io.nisfeb.lattice.LatticeBuild
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -161,6 +163,14 @@ fun SettingsScreen(
 
         Text("Preview", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
         ThemePreview(settings)
+
+        Text(
+            "Lattice ${LatticeBuild.versionName} (build ${LatticeBuild.versionCode})",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth().padding(top = 28.dp),
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
