@@ -78,6 +78,7 @@ kover {
                     "io.nisfeb.lattice.MainKt*",         // desktop entry point (+ its lambdas)
                     "io.nisfeb.lattice.SchemeRegistration*", // desktop OS scheme registration
                     "io.nisfeb.lattice.Platform*",       // expect/actual flag
+                    "io.nisfeb.lattice.SystemBars*",     // expect/actual system-bar icon appearance
                     "io.nisfeb.lattice.bookmarks.*",     // per-platform IO
                     "io.nisfeb.lattice.theme.FileThemeStore*",
                     "io.nisfeb.lattice.theme.AndroidThemeStore*",

@@ -17,6 +17,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.luminance
 import io.nisfeb.lattice.bookmarks.BookmarkStore
 import io.nisfeb.lattice.share.SharedContent
 import io.nisfeb.lattice.social.FollowRepository
@@ -160,6 +161,9 @@ fun App(
     }
 
     LatticeTheme(theme) {
+        // Match the system-bar icon color to the background showing through
+        // edge-to-edge: dark icons on a light background, light on dark.
+        SystemBarIcons(darkIcons = theme.backgroundColor.luminance() > 0.5f)
         // The Surface fills the screen (its color paints behind the status /
         // navigation bars edge-to-edge, so those areas read as the app
         // background), while the content Column is inset by the system bars so
