@@ -21,6 +21,8 @@ import androidx.compose.ui.graphics.luminance
 import io.nisfeb.lattice.bookmarks.Bookmark
 import io.nisfeb.lattice.bookmarks.BookmarkRepository
 import io.nisfeb.lattice.bookmarks.BookmarkStore
+import io.nisfeb.lattice.browser.CachedPage
+import io.nisfeb.lattice.browser.PageCache
 import io.nisfeb.lattice.gemtext.GemtextParser
 import io.nisfeb.lattice.share.SharedContent
 import io.nisfeb.lattice.social.FollowRepository
@@ -122,6 +124,8 @@ fun App(
     // its open tabs and reset to the home page.
     val browserTabs = remember { mutableStateListOf<BrowserTab>() }
     val browserActive = remember { mutableStateOf(0) }
+    // Per-ship page cache for instant (stale-while-revalidate) revisits.
+    val pageCache = remember(ship) { PageCache() }
 
     // External urb:// handoff (OS scheme handler → MainActivity /
     // desktop main). Navigate the browser to the link. browseTarget
@@ -167,12 +171,15 @@ fun App(
                 .retryWhen { _, _ -> delay(3000); true } // SSE drops (network, idle) → reconnect
                 .collect { ev ->
                     val url = "urb://${ev.ship}/${ev.path.removePrefix("/")}"
-                    // Live/freshness: upgrade any open tab showing this page (the
-                    // browse watch streams newer revs of the page being viewed).
+                    val lines = GemtextParser.parse(ev.body)
+                    // Live/freshness: refresh the cache and upgrade any open tab
+                    // showing this page (the browse watch streams newer revs of the
+                    // page being viewed).
+                    pageCache[url] = CachedPage(ev.body, lines)
                     browserTabs.forEach { t ->
                         if (t.current == url) {
                             t.body = ev.body
-                            t.lines = GemtextParser.parse(ev.body)
+                            t.lines = lines
                             t.visited = t.visited + url
                         }
                     }
@@ -277,6 +284,7 @@ fun App(
                     unreadUpdates = unread,
                     tabs = browserTabs,
                     activeState = browserActive,
+                    pageCache = pageCache,
                 )
                 AppScreen.Workspace -> WorkspaceScreen(
                     client = client,

@@ -81,6 +81,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import io.nisfeb.lattice.isDesktop
 import io.nisfeb.lattice.shareText
+import io.nisfeb.lattice.browser.CachedPage
+import io.nisfeb.lattice.browser.PageCache
 import io.nisfeb.lattice.browser.UrlPaths
 import io.nisfeb.lattice.bookmarks.Bookmark
 import io.nisfeb.lattice.gemtext.GemtextParser
@@ -116,6 +118,9 @@ fun BrowserScreen(
     // this the browser reset to the home page on every round-trip.
     tabs: SnapshotStateList<BrowserTab>,
     activeState: MutableState<Int>,
+    // Hoisted page cache (also App-level) so revisits — including after a
+    // round-trip through Settings/Files — render instantly from cache.
+    pageCache: PageCache,
 ) {
     val scope = rememberCoroutineScope()
     val home = "urb://$homeShip/"
@@ -135,8 +140,16 @@ fun BrowserScreen(
 
     fun load(tab: BrowserTab, url: String) {
         tab.job?.cancel()
-        tab.error = null; tab.loading = true; tab.address = url
-        tab.listState = androidx.compose.foundation.lazy.LazyListState() // new page starts at top
+        tab.error = null; tab.address = url
+        // Stale-while-revalidate: render any cached copy instantly (no spinner),
+        // then fetch in the background and swap in the latest when it arrives.
+        val cached = pageCache[url]
+        if (cached != null) {
+            tab.body = cached.body; tab.lines = cached.lines; tab.loading = false
+        } else {
+            tab.body = ""; tab.lines = emptyList(); tab.loading = true
+        }
+        tab.listState = androidx.compose.foundation.lazy.LazyListState() // navigate → top
         tab.job = scope.launch {
             var result = client.fetch(url)
             // The agent's 504 for a remote page whose ship didn't answer in time.
@@ -148,8 +161,22 @@ fun BrowserScreen(
                 result = client.fetch(url)
             }
             result.fold(
-                onSuccess = { tab.body = it.body; tab.lines = GemtextParser.parse(it.body); tab.loading = false; tab.visited = tab.visited + url },
-                onFailure = { tab.error = browseError(it.message, url); tab.loading = false },
+                onSuccess = {
+                    val newLines = GemtextParser.parse(it.body)
+                    pageCache[url] = CachedPage(it.body, newLines)
+                    tab.visited = tab.visited + url
+                    // Swap only when the content actually changed. listState is left
+                    // untouched, so the user's scroll is preserved across the swap
+                    // (Compose clamps it if the new page is shorter).
+                    if (it.body != tab.body) { tab.body = it.body; tab.lines = newLines }
+                    tab.loading = false
+                },
+                // Keep showing the cached copy on a failed revalidation; only show an
+                // error when there was nothing cached to fall back to.
+                onFailure = {
+                    if (cached == null) tab.error = browseError(it.message, url)
+                    tab.loading = false
+                },
             )
         }
     }
