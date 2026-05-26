@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Lattice brand indigo — matches the logo's own background, so the
+         foreground composite reads seamlessly inside the adaptive mask. -->
+    <color name="ic_launcher_background">#120041</color>
+</resources>
