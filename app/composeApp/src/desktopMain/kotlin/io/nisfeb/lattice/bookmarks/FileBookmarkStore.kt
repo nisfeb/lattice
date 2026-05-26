@@ -1,12 +1,13 @@
 package io.nisfeb.lattice.bookmarks
 
+import io.nisfeb.lattice.shipScope
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.io.File
 
-/** Desktop BookmarkStore backed by ~/.config/lattice/bookmarks.json. */
-class FileBookmarkStore(dir: File = defaultDir()) : BookmarkStore {
-    private val file = File(dir, "bookmarks.json").also { it.parentFile?.mkdirs() }
+/** Desktop BookmarkStore backed by per-ship ~/.config/lattice/<ship>/bookmarks.json. */
+class FileBookmarkStore(ship: String, dir: File = defaultDir()) : BookmarkStore {
+    private val file = File(File(dir, shipScope(ship)), "bookmarks.json").also { it.parentFile?.mkdirs() }
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
     private val ser = ListSerializer(Bookmark.serializer())
 

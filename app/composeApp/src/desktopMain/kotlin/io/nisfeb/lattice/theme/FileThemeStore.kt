@@ -1,13 +1,15 @@
 package io.nisfeb.lattice.theme
 
+import io.nisfeb.lattice.shipScope
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.io.File
 
-/** Desktop ThemeStore backed by ~/.config/lattice/{theme,saved-themes}.json. */
-class FileThemeStore(dir: File = defaultDir()) : ThemeStore {
-    private val file = File(dir, "theme.json").also { it.parentFile?.mkdirs() }
-    private val savedFile = File(dir, "saved-themes.json").also { it.parentFile?.mkdirs() }
+/** Desktop ThemeStore backed by per-ship ~/.config/lattice/<ship>/{theme,saved-themes}.json. */
+class FileThemeStore(ship: String, dir: File = defaultDir()) : ThemeStore {
+    private val shipDir = File(dir, shipScope(ship))
+    private val file = File(shipDir, "theme.json").also { it.parentFile?.mkdirs() }
+    private val savedFile = File(shipDir, "saved-themes.json").also { it.parentFile?.mkdirs() }
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
     private val savedSer = ListSerializer(SavedTheme.serializer())
 

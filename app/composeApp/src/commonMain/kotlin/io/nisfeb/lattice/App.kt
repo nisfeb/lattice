@@ -24,6 +24,7 @@ import io.nisfeb.lattice.social.FollowRepository
 import io.nisfeb.lattice.social.SubscriptionRepository
 import io.nisfeb.lattice.theme.SavedTheme
 import io.nisfeb.lattice.theme.ThemeRepository
+import io.nisfeb.lattice.theme.ThemeSettings
 import io.nisfeb.lattice.theme.ThemeStore
 import io.nisfeb.lattice.ui.AddShipScreen
 import io.nisfeb.lattice.ui.AppScreen
@@ -55,8 +56,10 @@ import okhttp3.OkHttpClient
 @Composable
 fun App(
     sessionStore: SessionStore,
-    bookmarkStore: BookmarkStore,
-    themeStore: ThemeStore,
+    /** Per-ship store factories: built for the active ship so bookmarks/theme
+     *  are scoped per ship (login as another ship → that ship's own data). */
+    createBookmarkStore: (String) -> BookmarkStore,
+    createThemeStore: (String) -> ThemeStore,
     /** A urb:// URL to open on launch — set when another app (e.g.
      *  Talon) hands off a link via the OS scheme handler. Navigates
      *  the browser to it; consumed once so re-delivery of the same
@@ -81,7 +84,6 @@ fun App(
     val session = remember { UrbitSession(httpClient, sessionStore) }
     val client = remember { LatticeClient(session) }
     val settingsClient = remember { SettingsClient(session) }
-    val themeRepo = remember { ThemeRepository(themeStore, settingsClient) }
     val followRepo = remember { FollowRepository(settingsClient) }
     val subRepo = remember { SubscriptionRepository(settingsClient) }
     val updatesChannel = remember { UpdatesChannel(session) }
@@ -89,8 +91,13 @@ fun App(
     val scope = rememberCoroutineScope()
 
     var ship by remember { mutableStateOf(session.tryRestore()) }
-    var theme by remember { mutableStateOf(themeStore.load()) }
-    var savedThemes by remember { mutableStateOf(themeStore.loadSaved()) }
+    // Per-ship local stores (null when logged out). Rebuilt on ship change so a
+    // login as another ship reads that ship's own bookmarks/theme.
+    val themeStore: ThemeStore? = remember(ship) { ship?.let(createThemeStore) }
+    val bookmarkStore: BookmarkStore? = remember(ship) { ship?.let(createBookmarkStore) }
+    val themeRepo: ThemeRepository? = remember(themeStore) { themeStore?.let { ThemeRepository(it, settingsClient) } }
+    var theme by remember { mutableStateOf(themeStore?.load() ?: ThemeSettings.Light) }
+    var savedThemes by remember { mutableStateOf(themeStore?.loadSaved() ?: emptyList<SavedTheme>()) }
     var follows by remember { mutableStateOf(emptyList<String>()) }
     var subscriptions by remember { mutableStateOf(emptySet<String>()) }
     var updates by remember { mutableStateOf(emptyList<UpdateEvent>()) }
@@ -141,7 +148,9 @@ fun App(
         follows = emptyList(); subscriptions = emptySet()
         browserTabs.clear(); browserActive.value = 0
         if (ship != null) {
-            themeRepo.pull()?.let { savedThemes = it }
+            // Per-ship local cache first (instant, offline), then %settings sync.
+            themeStore?.let { theme = it.load(); savedThemes = it.loadSaved() }
+            themeRepo?.pull()?.let { savedThemes = it }
             followRepo.pull()?.let { follows = it }
             subRepo.pull()?.let { subs ->
                 subscriptions = subs.toSet()
@@ -153,6 +162,11 @@ fun App(
                     updates = (listOf(ev) + updates).take(50)
                     unread += 1
                 }
+        } else {
+            // Logged out: drop the previous ship's theme so the login screen
+            // and next ship don't inherit it.
+            theme = ThemeSettings.Light
+            savedThemes = emptyList()
         }
     }
 
@@ -212,7 +226,7 @@ fun App(
             } else when (screen) {
                 AppScreen.Browse -> BrowserScreen(
                     client = client,
-                    bookmarkStore = bookmarkStore,
+                    bookmarkStore = bookmarkStore!!,
                     theme = theme,
                     homeShip = current,
                     onLogout = { session.logout(); ship = null },
@@ -241,18 +255,18 @@ fun App(
                 )
                 AppScreen.Settings -> SettingsScreen(
                     settings = theme,
-                    onChange = { theme = it; themeStore.save(it) },
+                    onChange = { theme = it; themeStore!!.save(it) },
                     onClose = { screen = AppScreen.Browse },
                     savedThemes = savedThemes,
                     onSaveCurrent = { name ->
                         val list = savedThemes.filterNot { it.name == name } + SavedTheme(name, theme)
                         savedThemes = list
-                        scope.launch { themeRepo.push(list) }
+                        scope.launch { themeRepo!!.push(list) }
                     },
                     onDeleteSaved = { name ->
                         val list = savedThemes.filterNot { it.name == name }
                         savedThemes = list
-                        scope.launch { themeRepo.push(list) }
+                        scope.launch { themeRepo!!.push(list) }
                     },
                 )
                 AppScreen.Discover -> DiscoverScreen(
@@ -269,7 +283,7 @@ fun App(
                     onClose = { screen = AppScreen.Browse },
                 )
                 AppScreen.Bookmarks -> BookmarksScreen(
-                    bookmarkStore = bookmarkStore,
+                    bookmarkStore = bookmarkStore!!,
                     onOpen = { url -> browseTarget = url; screen = AppScreen.Browse },
                     onClose = { screen = AppScreen.Browse },
                 )

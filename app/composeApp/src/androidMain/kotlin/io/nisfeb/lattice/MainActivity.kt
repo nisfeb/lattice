@@ -35,14 +35,12 @@ class MainActivity : ComponentActivity() {
         consumeUrbIntent(intent)
         consumeShareIntent(intent)
         val sessions = AndroidSessionStore(applicationContext)
-        val bookmarks = AndroidBookmarkStore(applicationContext)
-        val themes = AndroidThemeStore(applicationContext)
         val updates = (application as? LatticeApplication)?.updateState
         setContent {
             App(
                 sessions,
-                bookmarks,
-                themes,
+                createBookmarkStore = { AndroidBookmarkStore(applicationContext, it) },
+                createThemeStore = { AndroidThemeStore(applicationContext, it) },
                 initialUrl = pendingUrl,
                 onUrlConsumed = { pendingUrl = null },
                 updateState = updates,

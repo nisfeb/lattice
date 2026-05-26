@@ -1,12 +1,13 @@
 package io.nisfeb.lattice.theme
 
 import android.content.Context
+import io.nisfeb.lattice.shipScope
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
-/** Android ThemeStore backed by SharedPreferences. */
-class AndroidThemeStore(context: Context) : ThemeStore {
-    private val prefs = context.getSharedPreferences("lattice-theme", Context.MODE_PRIVATE)
+/** Android ThemeStore backed by per-ship SharedPreferences. */
+class AndroidThemeStore(context: Context, ship: String) : ThemeStore {
+    private val prefs = context.getSharedPreferences("lattice-theme.${shipScope(ship)}", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true }
     private val savedSer = ListSerializer(SavedTheme.serializer())
 

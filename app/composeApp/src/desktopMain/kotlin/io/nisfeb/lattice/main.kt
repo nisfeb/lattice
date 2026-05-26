@@ -67,8 +67,8 @@ fun main(args: Array<String>) {
         ) {
             App(
                 FileSessionStore(),
-                FileBookmarkStore(),
-                FileThemeStore(),
+                createBookmarkStore = { FileBookmarkStore(it) },
+                createThemeStore = { FileThemeStore(it) },
                 initialUrl = pendingUrl,
                 onUrlConsumed = { pendingUrl = null },
                 httpClient = http,
