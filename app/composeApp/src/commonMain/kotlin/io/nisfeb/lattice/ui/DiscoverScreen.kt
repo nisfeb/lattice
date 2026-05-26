@@ -18,6 +18,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -35,6 +36,8 @@ import io.nisfeb.lattice.urbit.LatticeClient
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /** Find and follow other lattice publishers: your follows, publishing contacts, and add-by-patp. */
 @Composable
@@ -46,16 +49,37 @@ fun DiscoverScreen(
     onBrowse: (String) -> Unit,
     onClose: () -> Unit,
 ) {
-    var suggested by remember { mutableStateOf<List<String>?>(null) }
+    // Publishers found among contacts (populated live as probes finish).
+    var found by remember { mutableStateOf<List<String>>(emptyList()) }
+    // Non-null while probing: which ship we're checking and how far along.
+    var probing by remember { mutableStateOf<Probe?>(null) }
     var newPatp by remember { mutableStateOf("") }
 
-    // probe contacts (that we don't already follow) in parallel
+    // Probe contacts we don't already follow, bounded-concurrently (each probe
+    // can take up to ~8s, so sequential would be far too slow). State writes all
+    // land on the composition dispatcher, so the counter/list updates are safe.
     LaunchedEffect(follows) {
-        suggested = null
+        found = emptyList()
+        probing = null
         val contacts = client.contacts().getOrDefault(emptyList()).filter { it !in follows }
-        suggested = coroutineScope {
-            contacts.map { s -> async { s to client.publishes(s) } }.awaitAll()
-        }.filter { it.second }.map { it.first }
+        if (contacts.isEmpty()) return@LaunchedEffect
+        probing = Probe(current = null, done = 0, total = contacts.size)
+        var done = 0
+        val gate = Semaphore(8)
+        coroutineScope {
+            contacts.map { s ->
+                async {
+                    gate.withPermit {
+                        probing = probing?.copy(current = s)
+                        val publishes = client.publishes(s)
+                        done += 1
+                        if (publishes) found = found + s
+                        probing = probing?.copy(done = done)
+                    }
+                }
+            }.awaitAll()
+        }
+        probing = null
     }
 
     fun normalize(p: String): String = p.trim().let { if (it.startsWith("~")) it else "~$it" }
@@ -95,15 +119,16 @@ fun DiscoverScreen(
                 }
             }
             item { Section("From your contacts") }
-            val sug = suggested
-            when {
-                sug == null -> item {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(8.dp)) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp))
-                        Text("  probing contacts…", style = MaterialTheme.typography.bodyMedium)
+            val p = probing
+            if (p != null) item { ProbeProgress(p) }
+            if (found.isNotEmpty()) {
+                items(found) { ship ->
+                    ShipRow(ship, onClick = { onBrowse(ship) }) {
+                        TextButton(onClick = { onFollow(ship) }) { Text("Follow") }
                     }
                 }
-                sug.isEmpty() -> item {
+            } else if (p == null) {
+                item {
                     Text(
                         "No publishing contacts found. Add a ship above, or share your follows so others can find you.",
                         style = MaterialTheme.typography.bodyMedium,
@@ -111,13 +136,36 @@ fun DiscoverScreen(
                         modifier = Modifier.padding(8.dp),
                     )
                 }
-                else -> items(sug) { ship ->
-                    ShipRow(ship, onClick = { onBrowse(ship) }) {
-                        TextButton(onClick = { onFollow(ship) }) { Text("Follow") }
-                    }
-                }
             }
         }
+    }
+}
+
+/** Live state of the contact probe: the ship currently being checked, and how
+ *  many of [total] have been processed. */
+private data class Probe(val current: String?, val done: Int, val total: Int)
+
+@Composable
+private fun ProbeProgress(p: Probe) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp, horizontal = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            Text(
+                "  Probing ${p.current ?: "contacts"}…",
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                modifier = Modifier.weight(1f).padding(start = 4.dp),
+            )
+            Text(
+                "${p.done}/${p.total}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        LinearProgressIndicator(
+            progress = { if (p.total == 0) 0f else p.done.toFloat() / p.total },
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+        )
     }
 }
 
