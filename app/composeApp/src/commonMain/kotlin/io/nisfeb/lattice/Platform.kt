@@ -10,3 +10,6 @@ expect val isDesktop: Boolean
  * when the OS shows its own UI and no extra confirmation is needed).
  */
 expect fun shareText(text: String): String?
+
+/** Put [text] on the system clipboard (e.g. a freshly-saved urb:// URL). */
+expect fun copyToClipboard(text: String)

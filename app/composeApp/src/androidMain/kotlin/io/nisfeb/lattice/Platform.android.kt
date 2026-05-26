@@ -1,6 +1,8 @@
 package io.nisfeb.lattice
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 
@@ -28,4 +30,9 @@ actual fun shareText(text: String): String? {
     }
     AndroidApp.context.startActivity(chooser)
     return null
+}
+
+actual fun copyToClipboard(text: String) {
+    val cm = AndroidApp.context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    cm.setPrimaryClip(ClipData.newPlainText("lattice", text))
 }

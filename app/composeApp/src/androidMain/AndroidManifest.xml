@@ -34,6 +34,14 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="urb" />
             </intent-filter>
+            <!-- Share target: receive a shared web page / URL / text, or a
+                 text file, and convert it to a gemtext file on the ship. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
         </activity>
 
         <!-- Serves the downloaded APK to the system package installer. -->

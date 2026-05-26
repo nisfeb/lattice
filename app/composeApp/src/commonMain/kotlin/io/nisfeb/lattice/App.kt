@@ -18,6 +18,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import io.nisfeb.lattice.bookmarks.BookmarkStore
+import io.nisfeb.lattice.share.SharedContent
 import io.nisfeb.lattice.social.FollowRepository
 import io.nisfeb.lattice.social.SubscriptionRepository
 import io.nisfeb.lattice.theme.SavedTheme
@@ -31,6 +32,7 @@ import io.nisfeb.lattice.ui.BrowserTab
 import io.nisfeb.lattice.ui.DiscoverScreen
 import io.nisfeb.lattice.ui.LatticeTheme
 import io.nisfeb.lattice.ui.SettingsScreen
+import io.nisfeb.lattice.ui.ShareImportScreen
 import io.nisfeb.lattice.ui.UpdateBanner
 import io.nisfeb.lattice.ui.UpdatesScreen
 import io.nisfeb.lattice.ui.WorkspaceScreen
@@ -61,6 +63,11 @@ fun App(
     /** Drives the in-app update banner. Wired on Android (download + sideload
      *  install); null on desktop, where updates come via the installers. */
     updateState: UpdateState? = null,
+    /** Content shared into Lattice from the OS share sheet (Android): a web URL
+     *  or text. Converted to gemtext, saved to the ship under `shared/<slug>`,
+     *  and the urb:// URL copied to the clipboard. Consumed once, like initialUrl. */
+    initialShare: SharedContent? = null,
+    onShareConsumed: () -> Unit = {},
     /** The root HTTP client. Owned by the platform entry point so desktop can
      *  tear it down on window close (its non-daemon dispatcher threads + the
      *  long-lived SSE connection otherwise keep the JVM alive after the window
@@ -87,6 +94,9 @@ fun App(
     var screen by remember { mutableStateOf<AppScreen>(AppScreen.Browse) }
     var editTarget by remember { mutableStateOf<String?>(null) }
     var browseTarget by remember { mutableStateOf<String?>(null) }
+    // Content shared into the app; survives until consumed by ShareImportScreen,
+    // so a share that arrives before login still imports once the user signs in.
+    var shareTarget by remember { mutableStateOf<SharedContent?>(null) }
     // Browser tab state hoisted here so it survives the user visiting
     // Settings / Files / Discover and coming back — BrowserScreen
     // leaves the composition on those, which would otherwise discard
@@ -103,6 +113,16 @@ fun App(
             browseTarget = initialUrl
             screen = AppScreen.Browse
             onUrlConsumed()
+        }
+    }
+
+    // Content shared into the app from the OS share sheet (Android). Route to
+    // the import screen; survives until login if the user isn't signed in yet.
+    LaunchedEffect(initialShare) {
+        if (initialShare != null) {
+            shareTarget = initialShare
+            screen = AppScreen.Import
+            onShareConsumed()
         }
     }
 
@@ -165,7 +185,7 @@ fun App(
             Box(modifier = Modifier.weight(1f).fillMaxSize()) {
             val current = ship
             if (current == null) {
-                AddShipScreen(session, onLoggedIn = { ship = it; screen = AppScreen.Browse })
+                AddShipScreen(session, onLoggedIn = { ship = it; if (shareTarget == null) screen = AppScreen.Browse })
             } else when (screen) {
                 AppScreen.Browse -> BrowserScreen(
                     client = client,
@@ -230,6 +250,22 @@ fun App(
                     onOpen = { url -> browseTarget = url; screen = AppScreen.Browse },
                     onClose = { screen = AppScreen.Browse },
                 )
+                AppScreen.Import -> {
+                    val shared = shareTarget
+                    if (shared == null) {
+                        // No payload (e.g. stale nav) — fall back to browsing.
+                        LaunchedEffect(Unit) { screen = AppScreen.Browse }
+                    } else {
+                        ShareImportScreen(
+                            client = client,
+                            homeShip = current,
+                            content = shared,
+                            onOpen = { url -> shareTarget = null; browseTarget = url; screen = AppScreen.Browse },
+                            onEdit = { path -> shareTarget = null; editTarget = path; screen = AppScreen.Workspace },
+                            onClose = { shareTarget = null; screen = AppScreen.Browse },
+                        )
+                    }
+                }
             }
             }
           }
