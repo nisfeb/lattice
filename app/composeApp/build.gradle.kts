@@ -85,6 +85,7 @@ kover {
                     "io.nisfeb.lattice.urbit.FileSessionStore*",
                     "io.nisfeb.lattice.urbit.AndroidSessionStore*",
                     "io.nisfeb.lattice.urbit.UpdatesChannel*",  // Eyre SSE transport, integration-tested
+                    "io.nisfeb.lattice.urbit.AgentInstaller*",  // kiln-install over Eyre (IO)
                     "io.nisfeb.lattice.share.WebClipper*",      // web fetch IO (OkHttp)
                     "io.nisfeb.lattice.share.SharedContent*",   // data holder
                     "io.nisfeb.lattice.resources.*",     // generated
