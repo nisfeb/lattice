@@ -4,12 +4,18 @@
 # Symptom: browsing another ship's page returns "no response from peer" even
 # though that ship is online and publishing — and you can read your own files.
 #
-# Cause: a publication whose LATEST revision is served but whose rev 1 is NOT
-# (a gap left in gall's remote-scry farm by a past nuke/reinstall — the farm
-# outlives agent state, so old tombstoned revs persist). lattice's fetch walks
-# revisions starting at %ud 1; it stalls on the unserved rev 1, the ~s30
-# deadline fires with "nothing seen", and the agent answers 504 — never
-# reaching the latest rev where the content actually is.
+# Cause: a publication whose LATEST revision is served by remote scry but whose
+# rev 1 is NOT. lattice's fetch walks revisions starting at %ud 1; it stalls on
+# the unserved rev 1, the ~s30 deadline fires with "nothing seen", and the
+# agent answers 504 — never reaching the latest rev where the content is.
+#
+# When does rev 1 stop being served? Two ways seen:
+#   - On kernels that serve ONLY the latest grown revision, ANY normally-edited
+#     file (now past rev 1) is affected — no nuke required. This is what the
+#     production ships (~ricsul-bilwyt, ~martyr-sanryg) hit.
+#   - On Vere 4.3 here, normal edits retain & serve all revs; the gappy fixture
+#     below (notes/2026/ok) lost its low revs via older churn.
+# Either way the failure mode is identical, and so is the fix.
 #
 # This is RED today. It goes GREEN once fetch targets the latest revision
 # directly instead of walking up from rev 1.
