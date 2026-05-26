@@ -1,6 +1,7 @@
 package io.nisfeb.lattice.theme
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import kotlinx.serialization.Serializable
 
 /**
@@ -16,6 +17,8 @@ data class ThemeSettings(
     val visited: String = "#C9A8FF",
     val accent: String = "#5BEDF9",
     val vimMode: Boolean = false,
+    /** Reading font for the gemtext view: "sans" | "serif" | "mono". */
+    val font: String = "sans",
 ) {
     val backgroundColor: Color get() = colorFromHex(background) ?: Color(0xFF120041)
     val surfaceColor: Color get() = colorFromHex(surface) ?: backgroundColor
@@ -23,6 +26,13 @@ data class ThemeSettings(
     val linkColor: Color get() = colorFromHex(link) ?: Color(0xFF5BEDF9)
     val visitedColor: Color get() = colorFromHex(visited) ?: Color(0xFFC9A8FF)
     val accentColor: Color get() = colorFromHex(accent) ?: linkColor
+
+    /** The reading font as a Compose family (built-ins — no bundled assets). */
+    val fontFamily: FontFamily get() = when (font) {
+        "serif" -> FontFamily.Serif
+        "mono" -> FontFamily.Monospace
+        else -> FontFamily.SansSerif
+    }
 
     companion object {
         val LatticeDark = ThemeSettings()
@@ -45,6 +55,13 @@ data class ThemeSettings(
             "Light" to Light,
             "Terminal" to Terminal,
             "Paper" to Paper,
+        )
+
+        /** Reading-font choices: (key, label) — key is stored in [font]. */
+        val fonts: List<Pair<String, String>> = listOf(
+            "sans" to "Sans-serif",
+            "serif" to "Serif",
+            "mono" to "Monospace",
         )
     }
 }

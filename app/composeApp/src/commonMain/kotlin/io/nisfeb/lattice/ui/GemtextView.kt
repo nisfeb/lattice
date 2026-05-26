@@ -34,28 +34,30 @@ fun GemtextView(
     linkColor: Color,
     visitedColor: Color,
     visited: Set<String>,
+    bodyFont: FontFamily = FontFamily.Default,
     modifier: Modifier = Modifier,
 ) {
+    // Reading font applies to prose/links/headings; Pre blocks stay monospace.
+    val body = MaterialTheme.typography.bodyLarge.copy(fontFamily = bodyFont)
+    val h1 = MaterialTheme.typography.headlineMedium.copy(fontFamily = bodyFont)
+    val h2 = MaterialTheme.typography.titleLarge.copy(fontFamily = bodyFont)
+    val h3 = MaterialTheme.typography.titleMedium.copy(fontFamily = bodyFont)
     LazyColumn(modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         items(lines) { line ->
             when (line) {
                 is GemLine.Heading -> Text(
                     line.text,
-                    style = when (line.level) {
-                        1 -> MaterialTheme.typography.headlineMedium
-                        2 -> MaterialTheme.typography.titleLarge
-                        else -> MaterialTheme.typography.titleMedium
-                    },
+                    style = when (line.level) { 1 -> h1; 2 -> h2; else -> h3 },
                     modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
                 )
 
                 is GemLine.Text ->
                     if (line.text.isBlank()) Text("", modifier = Modifier.padding(2.dp))
-                    else Text(line.text, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(vertical = 2.dp))
+                    else Text(line.text, style = body, modifier = Modifier.padding(vertical = 2.dp))
 
                 is GemLine.Bullet -> Text(
                     "•  ${line.text}",
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = body,
                     modifier = Modifier.padding(start = 8.dp, top = 2.dp, bottom = 2.dp),
                 )
 
@@ -66,7 +68,7 @@ fun GemtextView(
                 ) {
                     Text(
                         line.text,
-                        style = MaterialTheme.typography.bodyLarge.copy(fontStyle = FontStyle.Italic),
+                        style = body.copy(fontStyle = FontStyle.Italic),
                         modifier = Modifier.padding(8.dp),
                     )
                 }
@@ -89,10 +91,10 @@ fun GemtextView(
                     if (resolved != null) {
                         val color = if (resolved in visited) visitedColor else linkColor
                         Row(modifier = Modifier.fillMaxWidth().clickable { onNavigate(resolved) }.padding(vertical = 4.dp)) {
-                            Text("⇒ ", style = MaterialTheme.typography.bodyLarge, color = color)
+                            Text("⇒ ", style = body, color = color)
                             Text(
                                 label,
-                                style = MaterialTheme.typography.bodyLarge,
+                                style = body,
                                 color = color,
                                 textDecoration = TextDecoration.Underline,
                             )
@@ -101,7 +103,7 @@ fun GemtextView(
                         // Foreign scheme: inert, show the URL so it can be copied.
                         Column(modifier = Modifier.padding(vertical = 4.dp)) {
                             if (line.desc.isNotBlank())
-                                Text(line.desc, style = MaterialTheme.typography.bodyLarge)
+                                Text(line.desc, style = body)
                             Text(line.url, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
                         }
                     }

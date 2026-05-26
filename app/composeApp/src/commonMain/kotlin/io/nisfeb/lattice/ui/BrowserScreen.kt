@@ -347,6 +347,7 @@ fun BrowserScreen(
                     linkColor = theme.linkColor,
                     visitedColor = theme.visitedColor,
                     visited = tab.visited,
+                    bodyFont = theme.fontFamily,
                     modifier = Modifier.fillMaxSize(),
                 )
             }

@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
@@ -70,10 +71,21 @@ fun SettingsScreen(
             Switch(checked = settings.vimMode, onCheckedChange = { onChange(settings.copy(vimMode = it)) })
         }
 
+        Text("Reading font", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ThemeSettings.fonts.forEach { (key, label) ->
+                FilterChip(
+                    selected = settings.font == key,
+                    onClick = { onChange(settings.copy(font = key)) },
+                    label = { Text(label) },
+                )
+            }
+        }
+
         Text("Presets", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
         Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ThemeSettings.presets.forEach { (name, preset) ->
-                AssistChip(onClick = { onChange(preset.copy(vimMode = settings.vimMode)) }, label = { Text(name) })
+                AssistChip(onClick = { onChange(preset.copy(vimMode = settings.vimMode, font = settings.font)) }, label = { Text(name) })
             }
         }
 
@@ -83,8 +95,8 @@ fun SettingsScreen(
             FlowRow(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 savedThemes.forEach { saved ->
                     InputChip(
-                        selected = saved.settings.copy(vimMode = settings.vimMode) == settings,
-                        onClick = { onChange(saved.settings.copy(vimMode = settings.vimMode)) },
+                        selected = saved.settings.copy(vimMode = settings.vimMode, font = settings.font) == settings,
+                        onClick = { onChange(saved.settings.copy(vimMode = settings.vimMode, font = settings.font)) },
                         label = { Text(saved.name) },
                         trailingIcon = {
                             Icon(
@@ -160,15 +172,15 @@ private fun ThemePreview(s: ThemeSettings) {
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text("# Sample page", color = s.textColor, style = MaterialTheme.typography.titleLarge)
+            Text("# Sample page", color = s.textColor, style = MaterialTheme.typography.titleLarge.copy(fontFamily = s.fontFamily))
             Text(
                 "Body text in the chosen text color. Gemtext renders headings, text, links, quotes and preformatted blocks.",
                 color = s.textColor,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = s.fontFamily),
                 modifier = Modifier.padding(vertical = 6.dp),
             )
-            Text("⇒ an unvisited link", color = s.linkColor, style = MaterialTheme.typography.bodyLarge)
-            Text("⇒ a visited link", color = s.visitedColor, style = MaterialTheme.typography.bodyLarge)
+            Text("⇒ an unvisited link", color = s.linkColor, style = MaterialTheme.typography.bodyLarge.copy(fontFamily = s.fontFamily))
+            Text("⇒ a visited link", color = s.visitedColor, style = MaterialTheme.typography.bodyLarge.copy(fontFamily = s.fontFamily))
             Surface(
                 color = s.surfaceColor,
                 shape = RoundedCornerShape(4.dp),
