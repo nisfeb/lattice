@@ -10,8 +10,11 @@ import androidx.compose.runtime.setValue
 import io.nisfeb.lattice.bookmarks.AndroidBookmarkStore
 import io.nisfeb.lattice.theme.AndroidThemeStore
 import io.nisfeb.lattice.urbit.AndroidSessionStore
+import okhttp3.OkHttpClient
 
 class MainActivity : ComponentActivity() {
+
+    private val http = OkHttpClient()
 
     // Pending urb:// link from a VIEW intent (e.g. Talon handing off a
     // link). A mutableState so onNewIntent (app already running) flows
@@ -34,6 +37,7 @@ class MainActivity : ComponentActivity() {
                 initialUrl = pendingUrl,
                 onUrlConsumed = { pendingUrl = null },
                 updateState = updates,
+                httpClient = http,
             )
         }
     }

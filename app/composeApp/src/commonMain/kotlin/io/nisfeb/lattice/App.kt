@@ -58,8 +58,14 @@ fun App(
     /** Drives the in-app update banner. Wired on Android (download + sideload
      *  install); null on desktop, where updates come via the installers. */
     updateState: UpdateState? = null,
+    /** The root HTTP client. Owned by the platform entry point so desktop can
+     *  tear it down on window close (its non-daemon dispatcher threads + the
+     *  long-lived SSE connection otherwise keep the JVM alive after the window
+     *  closes). All derived clients (session, fetch, SSE) share its dispatcher
+     *  and connection pool via newBuilder(). */
+    httpClient: OkHttpClient = OkHttpClient(),
 ) {
-    val session = remember { UrbitSession(OkHttpClient(), sessionStore) }
+    val session = remember { UrbitSession(httpClient, sessionStore) }
     val client = remember { LatticeClient(session) }
     val settingsClient = remember { SettingsClient(session) }
     val themeRepo = remember { ThemeRepository(themeStore, settingsClient) }
