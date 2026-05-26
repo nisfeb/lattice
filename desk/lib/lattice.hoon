@@ -274,7 +274,7 @@
 ++  page-css
   ^-  tape
   %-  trip
-  '*{box-sizing:border-box}body{margin:0;font:16px/1.6 -apple-system,system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;position:sticky;top:0;background:inherit;border-bottom:1px solid #8884}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:6px 12px;font:inherit;cursor:pointer}.bar .navbtn{padding:6px 8px;text-decoration:none;color:inherit;align-self:center;white-space:nowrap}#bm{cursor:pointer}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}h1{font-size:1.6rem}h2{font-size:1.3rem}h3{font-size:1.1rem}a{color:#1a6ed8}@media(prefers-color-scheme:dark){a{color:#6db3ff}}p.link{margin:.3rem 0}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}ul{padding-left:1.4rem}.err{color:#c0392b}'
+  '*{box-sizing:border-box}body{margin:0;font:16px/1.6 -apple-system,system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;position:sticky;top:0;background:inherit;border-bottom:1px solid #8884}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:6px 12px;font:inherit;cursor:pointer}.bar .navbtn{padding:6px 8px;text-decoration:none;color:inherit;align-self:center;white-space:nowrap}#bm{cursor:pointer}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}h1{font-size:1.6rem}h2{font-size:1.3rem}h3{font-size:1.1rem}a{color:#1a6ed8}@media(prefers-color-scheme:dark){a{color:#6db3ff}}p.link{margin:.3rem 0}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}ul{padding-left:1.4rem}.err{color:#c0392b}.note{margin-top:2.5rem;padding-top:1rem;border-top:1px solid #8883;font-size:.85rem;color:#8a8a8a}'
 ::
 ::  +page-js: the reader's only client-side code — bookmark sync via the ship's
 ::  %settings (same place the native app uses: desk "lattice", bucket
@@ -317,6 +317,22 @@
   |=  [ourpatp=tape current=tape body=@t]
   ^-  @t
   (render-page ourpatp current (render-gmi-html current body))
+::
+::  +home-note: a subtle footer (own home page only) pointing at the native app,
+::  so nobody mistakes this lightweight reader for the only UI.
+++  home-note
+  ^-  tape
+  %-  zing
+  :~  "<p class=\"note\">You're using the lightweight web reader. "
+      "<a href=\"https://lattice.nisfeb.com\" target=\"_blank\" rel=\"noopener noreferrer\">"
+      "Try the full-featured native app &rarr;</a></p>"
+  ==
+::
+::  +render-home: like +render-doc but with the native-app note appended.
+++  render-home
+  |=  [ourpatp=tape current=tape body=@t]
+  ^-  @t
+  (render-page ourpatp current :(weld (render-gmi-html current body) home-note))
 ::
 ::  +render-error-page: a styled error page (bad url, 404, peer timeout).
 ++  render-error-page

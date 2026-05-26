@@ -4,7 +4,7 @@
     image+'https://raw.githubusercontent.com/nisfeb/lattice/main/web/lattice.png'
     base+'lattice'
     site+/apps/lattice
-    version+[0 3 7]
+    version+[0 3 8]
     website+'https://github.com/nisfeb/lattice'
     license+'PolyForm-Noncommercial-1.0.0'
 ==

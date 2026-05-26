@@ -377,7 +377,8 @@
     ?:  =(ship.u.parsed our.bowl)
       =/  pax=path  path.u.parsed
       ?:  =(~ pax)
-        [(respond-html-cards eyre-id 200 (render-doc ourpatp (trip target) (home-body content.st))) st]
+        ::  own home → render with the subtle "try the native app" footer
+        [(respond-html-cards eyre-id 200 (render-home ourpatp (trip target) (home-body content.st))) st]
       =/  full=path  :(welp /pub pax /gmi)
       ?.  (~(has by content.st) full)
         [(respond-html-cards eyre-id 404 (render-error-page ourpatp (trip target) "that page is not published here")) st]

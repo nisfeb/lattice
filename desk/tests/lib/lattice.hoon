@@ -106,6 +106,14 @@
     (expect-eq !>(&) !>(!=(~ (find "&lt;b&gt;" txt))))
   ==
 ::
+++  test-render-home
+  =/  h=tape  (trip (render-home "urb://~zod/" "urb://~zod/" '# Home'))
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "<h1>Home</h1>" h))))
+    (expect-eq !>(&) !>(!=(~ (find "native app" h))))
+    (expect-eq !>(&) !>(!=(~ (find "https://lattice.nisfeb.com" h))))
+  ==
+::
 ++  test-safe-ext
   ;:  weld
     (expect-eq !>(&) !>((safe-ext "https://example.com")))
