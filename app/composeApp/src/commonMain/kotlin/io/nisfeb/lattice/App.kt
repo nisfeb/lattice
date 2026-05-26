@@ -2,7 +2,10 @@ package io.nisfeb.lattice
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -137,8 +140,13 @@ fun App(
     }
 
     LatticeTheme(theme) {
+        // The Surface fills the screen (its color paints behind the status /
+        // navigation bars edge-to-edge, so those areas read as the app
+        // background), while the content Column is inset by the system bars so
+        // interactive UI never sits under them. On desktop systemBars is empty,
+        // so this is a no-op there.
         Surface(modifier = Modifier.fillMaxSize()) {
-          Column(modifier = Modifier.fillMaxSize()) {
+          Column(modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars)) {
             if (updateState != null) {
                 val updateStatus by updateState.status.collectAsState()
                 UpdateBanner(
