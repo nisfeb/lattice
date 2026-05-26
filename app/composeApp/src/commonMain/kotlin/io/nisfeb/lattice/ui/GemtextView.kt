@@ -22,6 +22,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import io.nisfeb.lattice.gemtext.GemLine
 import io.nisfeb.lattice.gemtext.UrbUrl
+import io.nisfeb.lattice.openInBrowser
 
 /**
  * Renders parsed gemtext. [currentUrl] is the page being shown (for relative
@@ -102,8 +103,24 @@ fun GemtextView(
                                 textDecoration = TextDecoration.Underline,
                             )
                         }
+                    } else if (line.url.startsWith("http://", true) || line.url.startsWith("https://", true)) {
+                        // Web link: open in the OS default browser.
+                        Column(
+                            modifier = Modifier.fillMaxWidth()
+                                .clickable { openInBrowser(line.url) }
+                                .padding(vertical = 4.dp),
+                        ) {
+                            Row {
+                                Text("⇒ ", style = body, color = linkColor)
+                                Text(label, style = body, color = linkColor, textDecoration = TextDecoration.Underline)
+                            }
+                            // When a label hides the URL, show it small so the
+                            // destination is visible before tapping.
+                            if (line.desc.isNotBlank())
+                                Text(line.url, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                        }
                     } else {
-                        // Foreign scheme: inert, show the URL so it can be copied.
+                        // Other foreign scheme (e.g. gemini://): inert, show the URL so it can be copied.
                         Column(modifier = Modifier.padding(vertical = 4.dp)) {
                             if (line.desc.isNotBlank())
                                 Text(line.desc, style = body)

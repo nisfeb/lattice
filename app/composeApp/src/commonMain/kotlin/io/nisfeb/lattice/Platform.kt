@@ -13,3 +13,6 @@ expect fun shareText(text: String): String?
 
 /** Put [text] on the system clipboard (e.g. a freshly-saved urb:// URL). */
 expect fun copyToClipboard(text: String)
+
+/** Open [url] (a web link) in the OS default browser. */
+expect fun openInBrowser(url: String)

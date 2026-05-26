@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 
 actual val isDesktop: Boolean = false
 
@@ -35,4 +36,9 @@ actual fun shareText(text: String): String? {
 actual fun copyToClipboard(text: String) {
     val cm = AndroidApp.context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     cm.setPrimaryClip(ClipData.newPlainText("lattice", text))
+}
+
+actual fun openInBrowser(url: String) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+    runCatching { AndroidApp.context.startActivity(intent) }
 }
