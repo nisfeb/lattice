@@ -258,11 +258,23 @@
 ++  page-css
   ^-  tape
   %-  trip
-  '*{box-sizing:border-box}body{margin:0;font:16px/1.6 -apple-system,system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;position:sticky;top:0;background:inherit;border-bottom:1px solid #8884}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:6px 12px;font:inherit;cursor:pointer}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}h1{font-size:1.6rem}h2{font-size:1.3rem}h3{font-size:1.1rem}a{color:#1a6ed8}@media(prefers-color-scheme:dark){a{color:#6db3ff}}p.link{margin:.3rem 0}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}ul{padding-left:1.4rem}.err{color:#c0392b}'
+  '*{box-sizing:border-box}body{margin:0;font:16px/1.6 -apple-system,system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;position:sticky;top:0;background:inherit;border-bottom:1px solid #8884}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:6px 12px;font:inherit;cursor:pointer}.bar .navbtn{padding:6px 8px;text-decoration:none;color:inherit;align-self:center;white-space:nowrap}#bm{cursor:pointer}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}h1{font-size:1.6rem}h2{font-size:1.3rem}h3{font-size:1.1rem}a{color:#1a6ed8}@media(prefers-color-scheme:dark){a{color:#6db3ff}}p.link{margin:.3rem 0}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}ul{padding-left:1.4rem}.err{color:#c0392b}'
 ::
-::  +render-page: wrap an HTML fragment in the reader chrome (address bar + CSS).
+::  +page-js: the reader's only client-side code — bookmark sync via the ship's
+::  %settings (same place the native app uses: desk "lattice", bucket
+::  "bookmarks", entry "list"; value is a JSON-stringified [{url,title}]). Read is
+::  a same-origin scry GET, write a channel poke. A single-quote cord, so it must
+::  contain no ' or \ (uses double-quotes + backtick templates; ★/☆ are literal).
+++  page-js
+  ^-  tape
+  %-  trip
+  'var SHIP=window.LS||"",URL=window.LU||"";function bmRead(cb){fetch("/~/scry/settings/desk/lattice.json",{headers:{accept:"application/json"}}).then(function(r){return r.ok?r.json():null;}).then(function(d){var raw=d&&((d.desk&&d.desk.bookmarks&&d.desk.bookmarks.list)||(d.bookmarks&&d.bookmarks.list));var list=[];try{if(raw)list=JSON.parse(raw);}catch(e){}cb(list);}).catch(function(){cb([]);});}function bmWrite(list,cb){var cid="lat-bm-"+Date.now()+"-"+Math.floor(Math.random()*99999);var body=[{id:1,action:"poke",ship:SHIP.replace("~",""),app:"settings",mark:"settings-event",json:{"put-entry":{desk:"lattice","bucket-key":"bookmarks","entry-key":"list",value:JSON.stringify(list)}}}];fetch("/~/channel/"+cid,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(){if(cb)cb();}).catch(function(){if(cb)cb();});}function bmToggle(){if(!URL)return;bmRead(function(list){var i=-1,k;for(k=0;k<list.length;k++){if(list[k].url===URL){i=k;break;}}if(i>=0)list.splice(i,1);else list.push({url:URL,title:URL});bmWrite(list,function(){location.reload();});});}function bmEsc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");}function bmInit(){var star=document.getElementById("bm"),listEl=document.getElementById("bmlist");bmRead(function(list){var k,on=false;if(star&&URL){for(k=0;k<list.length;k++){if(list[k].url===URL){on=true;break;}}star.textContent=on?"★":"☆";}if(listEl){listEl.innerHTML=list.length?list.map(function(b){return `<p class="link"><a href="/apps/lattice?url=${encodeURIComponent(b.url)}">${bmEsc(b.title||b.url)}</a></p>`;}).join(""):"<p>No bookmarks yet.</p>";}});}document.addEventListener("DOMContentLoaded",bmInit);'
+::
+::  +render-page: wrap an HTML fragment in the reader chrome (address bar,
+::  bookmark toggle, Bookmarks link, CSS, and the bookmark script). [ourpatp] is
+::  this ship's "~ship" (the script needs it to poke %settings).
 ++  render-page
-  |=  [current=tape inner=tape]
+  |=  [ourpatp=tape current=tape inner=tape]
   ^-  @t
   %-  crip
   ;:  weld
@@ -272,20 +284,29 @@
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
     "<input name=\"url\" value=\""  (esc current)
     "\" autocomplete=\"off\" autocapitalize=\"off\" spellcheck=\"false\">"
-    "<button type=\"submit\">Go</button></form><main>"
-    inner
-    "</main></body></html>"
+    "<button type=\"submit\">Go</button>"
+    "<button type=\"button\" id=\"bm\" onclick=\"bmToggle()\" title=\"Bookmark\">&#9734;</button>"
+    "<a class=\"navbtn\" href=\"/apps/lattice?view=bookmarks\">Bookmarks</a>"
+    "</form><main>"  inner  "</main>"
+    "<script>window.LS=\""  ourpatp  "\";window.LU=\""  (esc current)  "\";</script>"
+    "<script>"  page-js  "</script></body></html>"
   ==
 ::
 ::  +render-doc: render a gemtext [body] fetched as [current] into a full page.
 ++  render-doc
-  |=  [current=tape body=@t]
+  |=  [ourpatp=tape current=tape body=@t]
   ^-  @t
-  (render-page current (render-gmi-html current body))
+  (render-page ourpatp current (render-gmi-html current body))
 ::
 ::  +render-error-page: a styled error page (bad url, 404, peer timeout).
 ++  render-error-page
-  |=  [current=tape msg=tape]
+  |=  [ourpatp=tape current=tape msg=tape]
   ^-  @t
-  (render-page current :(weld "<p class=\"err\">" (esc msg) "</p>"))
+  (render-page ourpatp current :(weld "<p class=\"err\">" (esc msg) "</p>"))
+::
+::  +render-bookmarks: the bookmarks view — a shell the script fills from %settings.
+++  render-bookmarks
+  |=  ourpatp=tape
+  ^-  @t
+  (render-page ourpatp "" "<h1>Bookmarks</h1><div id=\"bmlist\"></div>")
 --

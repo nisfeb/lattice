@@ -160,15 +160,15 @@
 ::  +fetch-respond / +fetch-fail: answer a walk-to-latest fetch as HTML (web
 ::  reader, fmt=%html) or JSON (native client). [target] is the urb:// url shown.
 ++  fetch-respond
-  |=  [fmt=@ta eyre-id=@ta target=tape mark=@t body=@t]
+  |=  [fmt=@ta ourpatp=tape eyre-id=@ta target=tape mark=@t body=@t]
   ^-  (list card)
-  ?:  =(%html fmt)  (respond-html-cards eyre-id 200 (render-doc target body))
+  ?:  =(%html fmt)  (respond-html-cards eyre-id 200 (render-doc ourpatp target body))
   (respond-json-cards eyre-id 200 (mark-and-body mark body))
 ::
 ++  fetch-fail
-  |=  [fmt=@ta eyre-id=@ta target=tape status=@ud jerr=@t hmsg=tape]
+  |=  [fmt=@ta ourpatp=tape eyre-id=@ta target=tape status=@ud jerr=@t hmsg=tape]
   ^-  (list card)
-  ?:  =(%html fmt)  (respond-html-cards eyre-id status (render-error-page target hmsg))
+  ?:  =(%html fmt)  (respond-html-cards eyre-id status (render-error-page ourpatp target hmsg))
   (respond-json-cards eyre-id status jerr)
 ::
 ++  read-local
@@ -360,18 +360,22 @@
   ::  Own pages render synchronously from state; remote pages walk-to-latest and
   ::  answer HTML when they resolve (fmt=%html in the walk wire).
   ?:  &(=(meth %'GET') =(action 'lattice'))
+    =/  ourpatp=tape  (trip (scot %p our.bowl))
+    ::  GET /apps/lattice?view=bookmarks — the bookmarks view (script-filled).
+    ?:  =(`'bookmarks' (query-param inbound-request 'view'))
+      [(respond-html-cards eyre-id 200 (render-bookmarks ourpatp)) st]
     =/  raw=(unit @t)  (query-param inbound-request 'url')
     =/  target=@t  ?~(raw (crip (urb-of our.bowl ~)) u.raw)
     ?~  parsed=(parse-urb-url target)
-      [(respond-html-cards eyre-id 400 (render-error-page (trip target) "not a urb:// address")) st]
+      [(respond-html-cards eyre-id 400 (render-error-page ourpatp (trip target) "not a urb:// address")) st]
     ?:  =(ship.u.parsed our.bowl)
       =/  pax=path  path.u.parsed
       ?:  =(~ pax)
-        [(respond-html-cards eyre-id 200 (render-doc (trip target) (home-body content.st))) st]
+        [(respond-html-cards eyre-id 200 (render-doc ourpatp (trip target) (home-body content.st))) st]
       =/  full=path  :(welp /pub pax /gmi)
       ?.  (~(has by content.st) full)
-        [(respond-html-cards eyre-id 404 (render-error-page (trip target) "that page is not published here")) st]
-      [(respond-html-cards eyre-id 200 (render-doc (trip target) (~(got by content.st) full))) st]
+        [(respond-html-cards eyre-id 404 (render-error-page ourpatp (trip target) "that page is not published here")) st]
+      [(respond-html-cards eyre-id 200 (render-doc ourpatp (trip target) (~(got by content.st) full))) st]
     ::  remote → walk to latest, render HTML when it resolves
     =/  shp=ship  ship.u.parsed
     =/  spr=path  path.u.parsed
@@ -620,20 +624,21 @@
       ::  the walk already finished (timer fired) — a late sage, ignore.
       `this
     =/  target=tape  (urb-of ship.u.fet spur.u.fet)
+    =/  ourpatp=tape  (trip (scot %p our.bowl))
     =/  gag  q.sage.sign-arvo
     ?@  gag
       ::  no value at the probed rev → the best so far is the latest. Answer it.
       =.  fetches.state  (~(del by fetches.state) eid)
       =/  resp=(list card)
-        ?:  =(0 rev.u.fet)  (fetch-fail fmt eid target 404 '{"error":"not found"}' "not found")
-        (fetch-respond fmt eid target mark.u.fet body.u.fet)
+        ?:  =(0 rev.u.fet)  (fetch-fail fmt ourpatp eid target 404 '{"error":"not found"}' "not found")
+        (fetch-respond fmt ourpatp eid target mark.u.fet body.u.fet)
       [[(walk-rest-card fmt eid deadline.u.fet) resp] this]
     ?^  q.gag
       ::  malformed (non-cord) value from the peer — answer best-so-far, stop.
       =.  fetches.state  (~(del by fetches.state) eid)
       =/  resp=(list card)
-        ?:  =(0 rev.u.fet)  (fetch-fail fmt eid target 502 '{"error":"malformed remote value"}' "malformed value from peer")
-        (fetch-respond fmt eid target mark.u.fet body.u.fet)
+        ?:  =(0 rev.u.fet)  (fetch-fail fmt ourpatp eid target 502 '{"error":"malformed remote value"}' "malformed value from peer")
+        (fetch-respond fmt ourpatp eid target mark.u.fet body.u.fet)
       [[(walk-rest-card fmt eid deadline.u.fet) resp] this]
     ::  resolved rev (rev.u.fet+1): record content, probe the next, slide deadline
     =/  got=@ud   +(rev.u.fet)
@@ -643,7 +648,7 @@
       ::  highest rev we reached rather than looping forever.
       =.  fetches.state  (~(del by fetches.state) eid)
       :_  this
-      [(walk-rest-card fmt eid deadline.u.fet) (fetch-respond fmt eid target p.gag body)]
+      [(walk-rest-card fmt eid deadline.u.fet) (fetch-respond fmt ourpatp eid target p.gag body)]
     =/  nat=@da   (add now.bowl ~s2)
     =.  fetches.state
       (~(put by fetches.state) eid [ship.u.fet spur.u.fet got p.gag body nat])
@@ -664,14 +669,15 @@
     ?~  fet=(~(get by fetches.state) eid)  `this
     =.  fetches.state  (~(del by fetches.state) eid)
     =/  target=tape  (urb-of ship.u.fet spur.u.fet)
+    =/  ourpatp=tape  (trip (scot %p our.bowl))
     =/  yawn=card  (walk-yawn-card fmt eid +(rev.u.fet) ship.u.fet spur.u.fet)
     ?:  =(0 rev.u.fet)
       ::  nothing resolved → no peer; nothing to watch.
       :_  this
-      [yawn (fetch-fail fmt eid target 504 '{"error":"no response from peer"}' "no response from peer")]
+      [yawn (fetch-fail fmt ourpatp eid target 504 '{"error":"no response from peer"}' "no response from peer")]
     ?:  =(%html fmt)
       :_  this
-      [yawn (fetch-respond fmt eid target mark.u.fet body.u.fet)]
+      [yawn (fetch-respond fmt ourpatp eid target mark.u.fet body.u.fet)]
     =^  bcards  browse.state  (rebrowse browse.state ship.u.fet spur.u.fet rev.u.fet)
     :_  this
     :*  yawn
