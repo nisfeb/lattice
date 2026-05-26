@@ -87,6 +87,7 @@ import io.nisfeb.lattice.bookmarks.BookmarkStore
 import io.nisfeb.lattice.gemtext.GemtextParser
 import io.nisfeb.lattice.theme.ThemeSettings
 import io.nisfeb.lattice.urbit.LatticeClient
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Tabbed browser: address bar, back/forward/home, bookmarks, and the rendered page. */
@@ -137,9 +138,18 @@ fun BrowserScreen(
         tab.error = null; tab.loading = true; tab.address = url
         tab.listState = androidx.compose.foundation.lazy.LazyListState() // new page starts at top
         tab.job = scope.launch {
-            client.fetch(url).fold(
+            var result = client.fetch(url)
+            // The agent's 504 for a remote page whose ship didn't answer in time.
+            // On a cold Ames route the first attempt often warms the route, so a
+            // single retry frequently succeeds. (We can't tell a cold route from a
+            // truly-offline ship — both report this — so we retry exactly once.)
+            if (result.exceptionOrNull()?.message == COLD_ROUTE_PEER_ERROR) {
+                delay(1500)
+                result = client.fetch(url)
+            }
+            result.fold(
                 onSuccess = { tab.body = it.body; tab.lines = GemtextParser.parse(it.body); tab.loading = false; tab.visited = tab.visited + url },
-                onFailure = { tab.error = it.message ?: "failed to load"; tab.loading = false },
+                onFailure = { tab.error = browseError(it.message, url); tab.loading = false },
             )
         }
     }
@@ -432,6 +442,20 @@ fun BrowserScreen(
         )
     }
 }
+
+/** The %lattice agent's 504 body when a remote ship didn't answer the fetch
+ *  in time (offline, cold Ames route, or not publishing the page). */
+private const val COLD_ROUTE_PEER_ERROR = "no response from peer"
+
+/** Map a fetch failure to a user-facing message. The agent's terse
+ *  "no response from peer" becomes an actionable line naming the ship. */
+private fun browseError(message: String?, url: String): String =
+    if (message == COLD_ROUTE_PEER_ERROR) {
+        val ship = url.removePrefix("urb://").substringBefore('/').ifEmpty { "that ship" }
+        "No response from $ship — it may be offline, or isn't publishing this page with Lattice."
+    } else {
+        message ?: "failed to load"
+    }
 
 /** A right-side bar control, rendered inline as an icon or in the ⋮ overflow
  *  menu. [id] matches [ToolbarActions] so the inline/overflow preference is stable. */
