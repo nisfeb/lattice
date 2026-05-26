@@ -82,10 +82,35 @@ fun SettingsScreen(
             }
         }
 
+        Text("Toolbar actions", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+        Text(
+            "Switch off to move an action into the ⋮ overflow menu. (Actions also overflow automatically when the bar is too narrow.)",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        ToolbarActions.all.forEach { action ->
+            val inToolbar = action.id !in settings.overflowActions
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(action.icon, null, modifier = Modifier.size(20.dp))
+                Text(action.label, modifier = Modifier.weight(1f).padding(start = 12.dp))
+                Switch(
+                    checked = inToolbar,
+                    onCheckedChange = { show ->
+                        val next = if (show) settings.overflowActions - action.id
+                        else (settings.overflowActions + action.id).distinct()
+                        onChange(settings.copy(overflowActions = next))
+                    },
+                )
+            }
+        }
+
         Text("Presets", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
         Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ThemeSettings.presets.forEach { (name, preset) ->
-                AssistChip(onClick = { onChange(preset.copy(vimMode = settings.vimMode, font = settings.font)) }, label = { Text(name) })
+                AssistChip(onClick = { onChange(preset.copy(vimMode = settings.vimMode, font = settings.font, overflowActions = settings.overflowActions)) }, label = { Text(name) })
             }
         }
 
@@ -95,8 +120,8 @@ fun SettingsScreen(
             FlowRow(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 savedThemes.forEach { saved ->
                     InputChip(
-                        selected = saved.settings.copy(vimMode = settings.vimMode, font = settings.font) == settings,
-                        onClick = { onChange(saved.settings.copy(vimMode = settings.vimMode, font = settings.font)) },
+                        selected = saved.settings.copy(vimMode = settings.vimMode, font = settings.font, overflowActions = settings.overflowActions) == settings,
+                        onClick = { onChange(saved.settings.copy(vimMode = settings.vimMode, font = settings.font, overflowActions = settings.overflowActions)) },
                         label = { Text(saved.name) },
                         trailingIcon = {
                             Icon(

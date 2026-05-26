@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -79,6 +80,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import io.nisfeb.lattice.isDesktop
+import io.nisfeb.lattice.shareText
 import io.nisfeb.lattice.browser.UrlPaths
 import io.nisfeb.lattice.bookmarks.Bookmark
 import io.nisfeb.lattice.bookmarks.BookmarkStore
@@ -121,6 +123,9 @@ fun BrowserScreen(
     var copyOpen by remember { mutableStateOf(false) }
     var copyDest by remember { mutableStateOf("") }
     var copyMsg by remember { mutableStateOf<String?>(null) }
+    // Confirmation for share when the platform has no native UI (desktop copies
+    // the link to the clipboard); null on Android, where the share sheet shows.
+    var shareMsg by remember { mutableStateOf<String?>(null) }
     var overflowOpen by remember { mutableStateOf(false) }
     // Shown when the address bar gets a non-urb:// (web) address —
     // Lattice browses the Urbit network only, so we explain rather
@@ -248,9 +253,13 @@ fun BrowserScreen(
             }
         }
 
-        // right-side actions, in priority order (last ones overflow first)
-        val rightActions = listOf(
+        // right-side actions. Order here is the inline priority (when space is
+        // tight, later ones overflow first); the user can also pin any of them
+        // to the ⋮ menu via Settings (theme.overflowActions). Ids match
+        // ToolbarActions so the preference is stable.
+        val allActions = listOf(
             BarAction(
+                "bookmark",
                 if (bookmarked) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
                 if (bookmarked) "Remove bookmark" else "Add bookmark",
                 current.isNotBlank(),
@@ -260,32 +269,41 @@ fun BrowserScreen(
                     bookmarks = bookmarkStore.all()
                 }
             },
-            BarAction(Icons.Filled.SaveAlt, "Copy to my ship", tab?.body?.isNotBlank() == true) {
+            BarAction("copy", Icons.Filled.SaveAlt, "Copy to my ship", tab?.body?.isNotBlank() == true) {
                 copyDest = UrlPaths.defaultDest(current); copyOpen = true
             },
-            BarAction(Icons.Filled.Bookmarks, "Bookmarks", true) { onOpenBookmarks() },
-            BarAction(Icons.Filled.Edit, "Edit this page", editPath != null) { editPath?.let(onEditPage) },
+            BarAction("share", Icons.Filled.Share, "Share link", current.isNotBlank()) {
+                if (current.isNotBlank()) shareText(current)?.let { shareMsg = it }
+            },
+            BarAction("bookmarks", Icons.Filled.Bookmarks, "Bookmarks", true) { onOpenBookmarks() },
+            BarAction("edit", Icons.Filled.Edit, "Edit this page", editPath != null) { editPath?.let(onEditPage) },
             run {
                 val subbed = current in subscriptions
                 BarAction(
+                    "subscribe",
                     if (subbed) Icons.Filled.NotificationsActive else Icons.Filled.NotificationAdd,
                     if (subbed) "Unsubscribe" else "Subscribe to this page",
                     current.isNotBlank(),
                 ) { if (subbed) onUnsubscribe(current) else onSubscribe(current) }
             },
-            BarAction(Icons.Filled.Inbox, if (unreadUpdates > 0) "Updates ($unreadUpdates)" else "Updates", true) { onOpenUpdates() },
-            BarAction(Icons.Filled.Public, "Discover", true) { onOpenDiscover() },
-            BarAction(Icons.Filled.Folder, "Files", true) { onOpenFiles() },
-            BarAction(Icons.Filled.Settings, "Settings", true) { onOpenSettings() },
-            BarAction(Icons.AutoMirrored.Filled.Logout, "Disconnect", true) { onLogout() },
+            BarAction("updates", Icons.Filled.Inbox, if (unreadUpdates > 0) "Updates ($unreadUpdates)" else "Updates", true) { onOpenUpdates() },
+            BarAction("discover", Icons.Filled.Public, "Discover", true) { onOpenDiscover() },
+            BarAction("files", Icons.Filled.Folder, "Files", true) { onOpenFiles() },
+            BarAction("settings", Icons.Filled.Settings, "Settings", true) { onOpenSettings() },
+            BarAction("logout", Icons.AutoMirrored.Filled.Logout, "Disconnect", true) { onLogout() },
         )
+        // User-pinned overflow actions go to the ⋮ menu regardless of width;
+        // the rest stay inline (then spill to ⋮ as space runs out, below).
+        val rightActions = allActions.filter { it.id !in theme.overflowActions }
+        val pinnedOverflow = allActions.filter { it.id in theme.overflowActions }
 
         // navigation / address bar (acts on the active tab) — keeps the URL bar a
         // minimum width; right buttons collapse into a ⋮ menu when space is tight
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             val n = UrlPaths.inlineCount(maxWidth.value, ib.value, leftButtons = 3, reservedDp = 240f, count = rightActions.size)
             val inline = rightActions.take(n)
-            val overflow = rightActions.drop(n)
+            // Width-spilled inline actions, then the user-pinned ones.
+            val overflow = rightActions.drop(n) + pinnedOverflow
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = if (isDesktop) 2.dp else 4.dp),
@@ -389,6 +407,13 @@ fun BrowserScreen(
             text = { Text(msg) },
         )
     }
+    shareMsg?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { shareMsg = null },
+            confirmButton = { TextButton(onClick = { shareMsg = null }) { Text("OK") } },
+            text = { Text(msg) },
+        )
+    }
     addrMsg?.let { msg ->
         AlertDialog(
             onDismissRequest = { addrMsg = null },
@@ -398,8 +423,10 @@ fun BrowserScreen(
     }
 }
 
-/** A right-side bar control, rendered inline as an icon or in the ⋮ overflow menu. */
+/** A right-side bar control, rendered inline as an icon or in the ⋮ overflow
+ *  menu. [id] matches [ToolbarActions] so the inline/overflow preference is stable. */
 private data class BarAction(
+    val id: String,
     val icon: ImageVector,
     val label: String,
     val enabled: Boolean,

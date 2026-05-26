@@ -19,6 +19,10 @@ data class ThemeSettings(
     val vimMode: Boolean = false,
     /** Reading font for the gemtext view: "sans" | "serif" | "mono". */
     val font: String = "sans",
+    /** Browser-bar action ids the user pinned to the ⋮ overflow menu (see
+     *  [io.nisfeb.lattice.ui.ToolbarActions]); the rest stay inline, subject to
+     *  width. Empty = default layout (everything inline until space runs out). */
+    val overflowActions: List<String> = emptyList(),
 ) {
     val backgroundColor: Color get() = colorFromHex(background) ?: Color(0xFF120041)
     val surfaceColor: Color get() = colorFromHex(surface) ?: backgroundColor

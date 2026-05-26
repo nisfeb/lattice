@@ -39,6 +39,7 @@ class LatticeApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        AndroidApp.context = applicationContext
         updateState = UpdateState(
             scope = scope,
             runtime = object : UpdateRuntime {
