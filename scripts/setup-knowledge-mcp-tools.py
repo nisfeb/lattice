@@ -6,15 +6,18 @@ context (subject: mcp, spider, strand, io=strandio, strand-fail, ..zuse), so
 these tools need NO lattice-side dependency — they just scry lattice's
 on-peek (/know/...) and poke its %lattice-know mark.
 
-Connection comes from the repo's shared `.mcp.json` (the same file your MCP
-client uses), so there's nothing extra to configure:
+The /mcp endpoint comes from the repo's shared `.mcp.json` (the same file your
+MCP client uses). For auth you give the ship's web login code (`+code` in the
+dojo) and the script exchanges it for a session itself — you never fetch or
+paste a session cookie:
 
     python3 scripts/setup-knowledge-mcp-tools.py            # the lone server, or
     python3 scripts/setup-knowledge-mcp-tools.py <server>   # a named mcpServers entry
 
-Override ad hoc with env vars if needed (LATTICE_URL defaults to .../8082):
-
-    LATTICE_COOKIE='urbauth-~tyr=0v...' python3 scripts/setup-knowledge-mcp-tools.py
+The code is read WITHOUT echo (a hidden prompt), used only for the login request,
+and dropped immediately — it is never printed, logged, or stored. For unattended
+runs pass it via LATTICE_CODE (popped from the env at startup). LATTICE_URL
+overrides the endpoint; an existing LATTICE_COOKIE skips login entirely.
 
 NOTE: mcp-server stores tools in a *set*, with no overwrite or delete. Re-running
 adds fresh copies rather than replacing, so before re-registering on a ship that
@@ -22,14 +25,17 @@ already has these tools, reset its state: `|nuke %mcp-server` then
 `|revive %mcp-server` (reloads the default tools via on-init), then run this.
 Run this once after each lattice upgrade that changes a tool's behavior.
 """
+import getpass
 import json
 import os
 import sys
+import urllib.error
+import urllib.parse
 import urllib.request
 
 
-def _from_mcp_json(server):
-    """Resolve (endpoint, cookie) from the nearest .mcp.json, walking up from here."""
+def _endpoint_from_mcp_json(server):
+    """Resolve the /mcp endpoint URL from the nearest .mcp.json, walking up from here."""
     d = os.path.dirname(os.path.abspath(__file__))
     while True:
         path = os.path.join(d, ".mcp.json")
@@ -43,19 +49,47 @@ def _from_mcp_json(server):
             s = servers.get(name)
             if s is None:
                 sys.exit(f"server {name!r} not in {path}; have: {', '.join(servers)}")
-            return s.get("url", ""), s.get("headers", {}).get("Cookie", "")
+            return s.get("url", "")
         parent = os.path.dirname(d)
         if parent == d:
-            sys.exit("no .mcp.json found (and LATTICE_COOKIE not set)")
+            sys.exit("no .mcp.json found (set LATTICE_URL or LATTICE_COOKIE)")
         d = parent
 
 
+def _login(base):
+    """Exchange the ship's +code for a session cookie. The code is read without
+    echo and discarded as soon as the login request body is built — Python can't
+    zero an immutable str, but we hold no extra reference to it."""
+    code = os.environ.pop("LATTICE_CODE", None) or getpass.getpass("ship +code (hidden): ")
+    body = urllib.parse.urlencode({"password": code.strip()}).encode()
+    del code
+    req = urllib.request.Request(
+        base + "/~/login", data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            cookies = resp.headers.get_all("Set-Cookie") or []
+    except urllib.error.HTTPError as e:
+        sys.exit(f"login failed (HTTP {e.code}) — wrong +code?")
+    finally:
+        del body
+    for c in cookies:
+        if c.startswith("urbauth-"):
+            return c.split(";", 1)[0]
+    sys.exit("login succeeded but returned no urbauth cookie")
+
+
 _server = sys.argv[1] if len(sys.argv) > 1 else None
-if os.environ.get("LATTICE_COOKIE"):
-    ENDPOINT = os.environ.get("LATTICE_URL", "http://localhost:8082").rstrip("/") + "/mcp"
-    COOKIE = os.environ["LATTICE_COOKIE"]
+if os.environ.get("LATTICE_URL"):
+    ENDPOINT = os.environ["LATTICE_URL"].rstrip("/")
+    if not ENDPOINT.endswith("/mcp"):
+        ENDPOINT += "/mcp"
 else:
-    ENDPOINT, COOKIE = _from_mcp_json(_server)
+    ENDPOINT = _endpoint_from_mcp_json(_server)
+
+_base = ENDPOINT[:-len("/mcp")] if ENDPOINT.endswith("/mcp") else ENDPOINT
+COOKIE = os.environ.get("LATTICE_COOKIE") or _login(_base)
 
 # ── shared Hoon snippets ──────────────────────────────────────────────────
 # A read tool: scry lattice at PATH (must end /json) and return the JSON text.
@@ -208,7 +242,7 @@ def mcp(name, arguments):
 
 def main():
     if not COOKIE:
-        sys.exit("no session cookie (set headers.Cookie in .mcp.json or LATTICE_COOKIE)")
+        sys.exit("not authenticated (give a +code, or set LATTICE_COOKIE)")
     print(f"registering {len(TOOLS)} lattice tools -> {ENDPOINT}")
     for t in TOOLS:
         out = mcp("add-mcp-tool", {

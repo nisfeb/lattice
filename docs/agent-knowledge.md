@@ -44,18 +44,23 @@ dependency**):
 
 ### Setup
 
-Connection is read from the repo's shared `.mcp.json` (the same file your MCP
-client uses), so the command takes no extra config:
+The `/mcp` endpoint is read from the repo's shared `.mcp.json` (the same file
+your MCP client uses). For auth you give the ship's web login code (`+code` in
+the dojo) and the script exchanges it for a session itself — you never fetch or
+paste a session cookie:
 
 ```sh
 python3 scripts/setup-knowledge-mcp-tools.py            # the lone mcpServers entry
 python3 scripts/setup-knowledge-mcp-tools.py <server>   # or a named entry
+# → prompts: ship +code (hidden):
 ```
 
-(Override ad hoc with `LATTICE_COOKIE=… [LATTICE_URL=…]` if you're not using
-`.mcp.json`.) Requires `%lattice` `[0 3 9]`+ and the `%mcp-server` agent
-installed. Verified end-to-end on a fake ship: save → read → search →
-delete (soft) → restore all round-trip against the live store.
+The code is read **without echo**, used only for the login request, then dropped
+— it is never printed, logged, or stored. For unattended runs pass it via
+`LATTICE_CODE` (popped from the env at startup); `LATTICE_URL` overrides the
+endpoint and an existing `LATTICE_COOKIE` skips login. Requires `%lattice`
+`[0 3 9]`+ and the `%mcp-server` agent installed. Verified end-to-end on a fake
+ship: save → read → search → delete (soft) → restore all round-trip.
 
 ### Re-running / upgrades
 
