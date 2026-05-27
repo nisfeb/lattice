@@ -34,7 +34,9 @@ import io.nisfeb.lattice.theme.ThemeStore
 import io.nisfeb.lattice.ui.AddShipScreen
 import io.nisfeb.lattice.ui.AppScreen
 import io.nisfeb.lattice.ui.InstallAgentScreen
+import io.nisfeb.lattice.knowledge.KnowledgeClient
 import io.nisfeb.lattice.ui.BookmarksScreen
+import io.nisfeb.lattice.ui.KnowledgeScreen
 import io.nisfeb.lattice.ui.BrowserScreen
 import io.nisfeb.lattice.ui.BrowserTab
 import io.nisfeb.lattice.ui.DiscoverScreen
@@ -88,6 +90,7 @@ fun App(
 ) {
     val session = remember { UrbitSession(httpClient, sessionStore) }
     val client = remember { LatticeClient(session) }
+    val knowledgeClient = remember { KnowledgeClient(session) }
     val settingsClient = remember { SettingsClient(session) }
     val followRepo = remember { FollowRepository(settingsClient) }
     val subRepo = remember { SubscriptionRepository(settingsClient) }
@@ -281,6 +284,7 @@ fun App(
                     onUnsubscribe = { unsubscribe(it) },
                     onOpenUpdates = { unread = 0; screen = AppScreen.Updates },
                     onOpenBookmarks = { screen = AppScreen.Bookmarks },
+                    onOpenKnowledge = { screen = AppScreen.Knowledge },
                     unreadUpdates = unread,
                     tabs = browserTabs,
                     activeState = browserActive,
@@ -327,6 +331,10 @@ fun App(
                     bookmarks = bookmarks,
                     onRemove = { removeBookmark(it) },
                     onOpen = { url -> browseTarget = url; screen = AppScreen.Browse },
+                    onClose = { screen = AppScreen.Browse },
+                )
+                AppScreen.Knowledge -> KnowledgeScreen(
+                    client = knowledgeClient,
                     onClose = { screen = AppScreen.Browse },
                 )
                 AppScreen.Import -> {

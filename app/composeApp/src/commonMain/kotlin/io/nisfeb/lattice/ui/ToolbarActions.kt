@@ -2,6 +2,7 @@ package io.nisfeb.lattice.ui
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Edit
@@ -32,6 +33,7 @@ object ToolbarActions {
         Def("subscribe", "Subscribe", Icons.Filled.NotificationAdd),
         Def("updates", "Updates", Icons.Filled.Inbox),
         Def("discover", "Discover", Icons.Filled.Public),
+        Def("knowledge", "Knowledge", Icons.AutoMirrored.Filled.MenuBook),
         Def("files", "Files", Icons.Filled.Folder),
         Def("settings", "Settings", Icons.Filled.Settings),
         Def("logout", "Disconnect", Icons.AutoMirrored.Filled.Logout),
