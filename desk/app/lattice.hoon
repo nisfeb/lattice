@@ -425,6 +425,58 @@
     =^  home-cs    home.st       (home-cards content.st home.st)
     :_  st
     :(welp pub-cards man-cards home-cs (respond-json-cards eyre-id 200 '{"ok":true}'))
+  ::  ── private knowledge store: CRUD for the app (mirrors do-know / the peek) ──
+  ::  GET /apps/lattice/know-list  — live items (keys + metadata)
+  ?:  &(=(meth %'GET') =(action 'know-list'))
+    [(respond-json-cards eyre-id 200 (en:json:html (know-list-json know.st))) st]
+  ::  GET /apps/lattice/know-trash — soft-deleted items
+  ?:  &(=(meth %'GET') =(action 'know-trash'))
+    [(respond-json-cards eyre-id 200 (en:json:html (know-list-json trash.st))) st]
+  ::  GET /apps/lattice/know-read?key=<key> — one item with its body
+  ?:  &(=(meth %'GET') =(action 'know-read'))
+    ?~  k=(query-param inbound-request 'key')
+      [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
+    ?~  kp=(know-key u.k)
+      [(respond-json-cards eyre-id 400 '{"error":"invalid key"}') st]
+    ?~  e=(~(get by know.st) u.kp)
+      [(respond-json-cards eyre-id 404 '{"error":"not found"}') st]
+    [(respond-json-cards eyre-id 200 (en:json:html (know-entry-json u.kp u.e))) st]
+  ::  POST /apps/lattice/know-save?key=<key>  body=<text>
+  ?:  &(=(meth %'POST') =(action 'know-save'))
+    ?~  k=(query-param inbound-request 'key')
+      [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
+    =/  body=@t
+      ?~(body.request.inbound-request '' q.u.body.request.inbound-request)
+    [(respond-json-cards eyre-id 200 '{"ok":true}') (do-know now.bowl [%save u.k body] st)]
+  ::  POST /apps/lattice/know-delete?key=<key>  (soft → trash)
+  ?:  &(=(meth %'POST') =(action 'know-delete'))
+    ?~  k=(query-param inbound-request 'key')
+      [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
+    [(respond-json-cards eyre-id 200 '{"ok":true}') (do-know now.bowl [%del u.k] st)]
+  ::  POST /apps/lattice/know-restore?key=<key>
+  ?:  &(=(meth %'POST') =(action 'know-restore'))
+    ?~  k=(query-param inbound-request 'key')
+      [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
+    [(respond-json-cards eyre-id 200 '{"ok":true}') (do-know now.bowl [%restore u.k] st)]
+  ::  POST /apps/lattice/know-publish?key=<key>[&path=<rel>] — copy a private
+  ::  item into the PUBLISHED gemtext (grows it; default publish path = the key).
+  ?:  &(=(meth %'POST') =(action 'know-publish'))
+    ?~  k=(query-param inbound-request 'key')
+      [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
+    ?~  kp=(know-key u.k)
+      [(respond-json-cards eyre-id 400 '{"error":"invalid key"}') st]
+    ?~  e=(~(get by know.st) u.kp)
+      [(respond-json-cards eyre-id 404 '{"error":"not found"}') st]
+    =/  prel=@t  ?~(p=(query-param inbound-request 'path') u.k u.p)
+    =/  pp=(each path tang)  (mule |.((pub-path prel)))
+    ?:  ?=(%| -.pp)
+      [(respond-json-cards eyre-id 400 '{"error":"invalid path"}') st]
+    =.  content.st  (~(put by content.st) p.pp body.u.e)
+    =^  pub-cards  published.st  (sync-cards bowl content.st published.st)
+    =^  man-cards  manifest.st   (manifest-cards content.st manifest.st)
+    =^  home-cs    home.st       (home-cards content.st home.st)
+    :_  st
+    :(welp pub-cards man-cards home-cs (respond-json-cards eyre-id 200 '{"ok":true}'))
   ::  POST /apps/lattice/sub?url=urb://~ship/path — follow a remote file
   ?:  &(=(meth %'POST') =(action 'sub'))
     ?~  raw=(query-param inbound-request 'url')
