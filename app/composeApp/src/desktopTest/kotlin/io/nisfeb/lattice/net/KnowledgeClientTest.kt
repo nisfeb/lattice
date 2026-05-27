@@ -113,4 +113,38 @@ class KnowledgeClientTest {
         server.enqueue(MockResponse().setResponseCode(500))
         assertTrue(client.save("x", "y").isFailure)
     }
+
+    @Test fun listParsesTags() = runTest {
+        server.enqueue(MockResponse().setBody("""{"count":1,"keys":[{"key":"/a","updated":"~2026.1.1","bytes":3,"tags":["urbit","design"]}]}"""))
+        val items = client.list().getOrThrow()
+        assertEquals(listOf("urbit", "design"), items[0].tags)
+    }
+
+    @Test fun tagsParsesFacets() = runTest {
+        server.enqueue(MockResponse().setBody("""{"count":2,"tags":[{"tag":"urbit","count":3},{"tag":"design","count":1}]}"""))
+        val facets = client.tags().getOrThrow()
+        assertEquals(listOf("urbit", "design"), facets.map { it.tag })
+        assertEquals(3, facets[0].count)
+        assertEquals("/apps/lattice/know-tags", server.takeRequest().path)
+    }
+
+    @Test fun exploreBuildsQueryAndParses() = runTest {
+        server.enqueue(MockResponse().setBody("""{"count":1,"keys":[{"key":"/a","updated":"~2026.1.1","bytes":3,"tags":["urbit"]}]}"""))
+        val items = client.explore(tags = listOf("urbit", "design"), matchAll = true, query = "hoon").getOrThrow()
+        assertEquals(listOf("/a"), items.map { it.key })
+        val req = server.takeRequest()
+        assertTrue(req.path!!.startsWith("/apps/lattice/know-explore"))
+        assertEquals("urbit,design", req.requestUrl!!.queryParameter("tags"))
+        assertEquals("all", req.requestUrl!!.queryParameter("match"))
+        assertEquals("hoon", req.requestUrl!!.queryParameter("q"))
+    }
+
+    @Test fun exploreOmitsEmptyParams() = runTest {
+        server.enqueue(MockResponse().setBody("""{"count":0,"keys":[]}"""))
+        client.explore().getOrThrow()
+        val req = server.takeRequest()
+        assertEquals(null, req.requestUrl!!.queryParameter("tags"))
+        assertEquals(null, req.requestUrl!!.queryParameter("match"))
+        assertEquals(null, req.requestUrl!!.queryParameter("q"))
+    }
 }

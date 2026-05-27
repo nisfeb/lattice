@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Publish
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.VerticalSplit
 import androidx.compose.material3.AlertDialog
@@ -60,6 +61,7 @@ import io.nisfeb.lattice.backup.ContentArchive
 import io.nisfeb.lattice.copyToClipboard
 import io.nisfeb.lattice.isDesktop
 import io.nisfeb.lattice.knowledge.KnowledgeClient
+import io.nisfeb.lattice.knowledge.TagCount
 import io.nisfeb.lattice.rememberFileExporter
 import io.nisfeb.lattice.rememberFileImporter
 import io.nisfeb.lattice.resources.Res
@@ -106,12 +108,29 @@ fun WorkspaceScreen(
     val wb = remember { WorkspaceBuffers() }
     var status by remember { mutableStateOf<String?>(null) }
 
+    // Explore mode (Knowledge namespace): facet tags + a text query filter the
+    // active list. Empty selection + blank query = show everything.
+    var facets by remember { mutableStateOf<List<TagCount>>(emptyList()) }
+    var exploreTags by remember { mutableStateOf<List<String>>(emptyList()) }
+    var exploreQuery by remember { mutableStateOf("") }
+    var exploreMatchAll by remember { mutableStateOf(false) }
+    var exploreResults by remember { mutableStateOf<List<String>>(emptyList()) }
+    val exploreActive = exploreTags.isNotEmpty() || exploreQuery.isNotBlank()
+
     fun refreshPublic() = scope.launch { client.list().onSuccess { pubFiles = it } }
     fun refreshKnow() = scope.launch {
         knowledge.list().onSuccess { knowFiles = it.map { k -> k.key.removePrefix("/") } }
         knowledge.trash().onSuccess { trashFiles = it.map { k -> k.key.removePrefix("/") } }
+        knowledge.tags().onSuccess { facets = it }
     }
     LaunchedEffect(Unit) { refreshPublic(); refreshKnow() }
+    // Re-run the filter whenever its inputs (or the store) change.
+    LaunchedEffect(exploreTags, exploreQuery, exploreMatchAll, knowFiles) {
+        if (exploreActive) {
+            knowledge.explore(exploreTags, exploreMatchAll, exploreQuery)
+                .onSuccess { exploreResults = it.map { k -> k.key.removePrefix("/") } }
+        }
+    }
 
     val exportFile = rememberFileExporter()
     val importFile = rememberFileImporter { bundle ->
@@ -217,6 +236,46 @@ fun WorkspaceScreen(
                 FilterChip(selected = showTrash, onClick = { showTrash = true }, label = { Text("Trash (${trashFiles.size})") })
             }
         }
+        // Explore: search box + facet chips (Knowledge active view only).
+        if (ns == Source.Knowledge && !showTrash) {
+            OutlinedTextField(
+                value = exploreQuery, onValueChange = { exploreQuery = it }, singleLine = true,
+                placeholder = { Text("search notes", style = MaterialTheme.typography.bodySmall) },
+                leadingIcon = { Icon(Icons.Filled.Search, null, modifier = Modifier.size(16.dp)) },
+                trailingIcon = if (exploreActive) ({
+                    IconButton(onClick = { exploreQuery = ""; exploreTags = emptyList() }, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Filled.Close, "clear filter", modifier = Modifier.size(16.dp))
+                    }
+                }) else null,
+                textStyle = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+            )
+            if (facets.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    facets.forEach { f ->
+                        val on = f.tag in exploreTags
+                        FilterChip(
+                            selected = on,
+                            onClick = { exploreTags = if (on) exploreTags - f.tag else exploreTags + f.tag },
+                            label = { Text("${f.tag} ${f.count}", style = MaterialTheme.typography.bodySmall) },
+                        )
+                    }
+                }
+                if (exploreTags.size > 1) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        FilterChip(selected = !exploreMatchAll, onClick = { exploreMatchAll = false }, label = { Text("Any", style = MaterialTheme.typography.bodySmall) })
+                        FilterChip(selected = exploreMatchAll, onClick = { exploreMatchAll = true }, label = { Text("All", style = MaterialTheme.typography.bodySmall) })
+                    }
+                }
+            }
+        }
         if (!(ns == Source.Knowledge && showTrash)) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
@@ -236,8 +295,9 @@ fun WorkspaceScreen(
             }
         }
         val activeForNs = wb.activeIn(wb.focusedPane)?.let { if (it.source == ns) it.path else null }
+        val knowVisible = if (exploreActive) exploreResults else knowFiles
         FileTree(
-            files = if (ns == Source.Public) pubFiles else if (showTrash) trashFiles else knowFiles,
+            files = if (ns == Source.Public) pubFiles else if (showTrash) trashFiles else knowVisible,
             dir = if (ns == Source.Public) pubDir else knowDir,
             onDir = { if (ns == Source.Public) pubDir = it else knowDir = it },
             onOpen = {

@@ -16,7 +16,16 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 /** A knowledge item's metadata (list view). */
 @Serializable
-data class KnowItem(val key: String, val updated: String = "", val bytes: Int = 0)
+data class KnowItem(
+    val key: String,
+    val updated: String = "",
+    val bytes: Int = 0,
+    val tags: List<String> = emptyList(),
+)
+
+/** A tag and how many live items carry it (facet data). */
+@Serializable
+data class TagCount(val tag: String, val count: Int)
 
 /** A knowledge item with its body + tags. */
 @Serializable
@@ -50,15 +59,61 @@ class KnowledgeClient(private val session: UrbitSession) {
             val url = base().newBuilder().addPathSegments("apps/lattice/$action").build()
             session.http.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
                 if (!resp.isSuccessful) error("$action HTTP ${resp.code}")
+                parseItems(resp.body!!.string())
+            }
+        }
+    }
+
+    /** Parse the shared know-list JSON shape ({count, keys:[...]}) into items. */
+    private fun parseItems(bodyStr: String): List<KnowItem> {
+        val root = json.parseToJsonElement(bodyStr).jsonObject
+        return root["keys"]?.jsonArray?.map {
+            val o = it.jsonObject
+            KnowItem(
+                key = o["key"]!!.jsonPrimitive.content,
+                updated = o["updated"]?.jsonPrimitive?.contentOrNull ?: "",
+                bytes = o["bytes"]?.jsonPrimitive?.intOrNull ?: 0,
+                tags = o["tags"]?.jsonArray?.map { t -> t.jsonPrimitive.content } ?: emptyList(),
+            )
+        }?.sortedBy { it.key } ?: emptyList()
+    }
+
+    /**
+     * Filter the live store by [tags] (AND when [matchAll], else OR) and/or a
+     * case-insensitive [query] substring of the key or body. Served from the
+     * agent's state — works whether or not the %obelisk index is installed.
+     */
+    suspend fun explore(
+        tags: List<String> = emptyList(),
+        matchAll: Boolean = false,
+        query: String = "",
+    ): Result<List<KnowItem>> = withContext(Dispatchers.IO) {
+        runCatching {
+            var b = base().newBuilder().addPathSegments("apps/lattice/know-explore")
+            if (tags.isNotEmpty()) b = b.addQueryParameter("tags", tags.joinToString(","))
+            if (matchAll) b = b.addQueryParameter("match", "all")
+            if (query.isNotBlank()) b = b.addQueryParameter("q", query)
+            session.http.newCall(Request.Builder().url(b.build()).get().build()).execute().use { resp ->
+                if (!resp.isSuccessful) error("know-explore HTTP ${resp.code}")
+                parseItems(resp.body!!.string())
+            }
+        }
+    }
+
+    /** The tag vocabulary with per-tag item counts (facets), count-desc order. */
+    suspend fun tags(): Result<List<TagCount>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder().addPathSegments("apps/lattice/know-tags").build()
+            session.http.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
+                if (!resp.isSuccessful) error("know-tags HTTP ${resp.code}")
                 val root = json.parseToJsonElement(resp.body!!.string()).jsonObject
-                root["keys"]?.jsonArray?.map {
+                root["tags"]?.jsonArray?.map {
                     val o = it.jsonObject
-                    KnowItem(
-                        key = o["key"]!!.jsonPrimitive.content,
-                        updated = o["updated"]?.jsonPrimitive?.contentOrNull ?: "",
-                        bytes = o["bytes"]?.jsonPrimitive?.intOrNull ?: 0,
+                    TagCount(
+                        tag = o["tag"]!!.jsonPrimitive.content,
+                        count = o["count"]?.jsonPrimitive?.intOrNull ?: 0,
                     )
-                }?.sortedBy { it.key } ?: emptyList()
+                } ?: emptyList()
             }
         }
     }
