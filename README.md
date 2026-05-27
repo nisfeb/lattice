@@ -102,9 +102,12 @@ walks you through booting a ship.
 ## Connect an AI agent (MCP)
 
 lattice keeps a **private knowledge store** that AI agents can read and write
-over [MCP](https://modelcontextprotocol.io) — six tools (`lattice-save`,
-`lattice-read`, `lattice-list`, `lattice-search`, `lattice-delete`,
-`lattice-restore`). Anything an agent saves shows up in the app's Knowledge
+over [MCP](https://modelcontextprotocol.io) — ten tools: `lattice-save`,
+`lattice-read`, `lattice-list`, `lattice-search`, `lattice-explore`,
+`lattice-delete`, `lattice-restore`, `lattice-tags`, `lattice-tag`,
+`lattice-untag`. Agents can tag items and discover them by tag or substring
+(`lattice-explore`), the same faceted discovery the app's Knowledge **Explore**
+mode offers. Anything an agent saves or tags shows up in the app's Knowledge
 screen, and vice-versa. Full details: [docs/agent-knowledge.md](docs/agent-knowledge.md).
 
 You need the [`%mcp-server`](https://github.com/gwbtc/urbit-mcp) agent on the

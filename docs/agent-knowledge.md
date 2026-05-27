@@ -17,19 +17,27 @@ Read (scry, JSON, owner-local):
 
 | scry path | returns |
 |---|---|
-| `/x/know/list/json` | keys + metadata (no bodies) |
-| `/x/know/read/<key…>/json` | one item `{key, body, updated}` |
-| `/x/know/all/json` | all items with bodies |
+| `/x/know/list/json` | keys + metadata + tags (no bodies) |
+| `/x/know/read/<key…>/json` | one item `{key, body, updated, tags}` |
+| `/x/know/all/json` | all items with bodies + tags |
 | `/x/know/trash/json` | soft-deleted keys |
+| `/x/know/tags/json` | tag vocabulary + counts (facets) |
 
 Write (poke mark `%lattice-know`, `src==our`): `know-action` =
-`[%save key body]` / `[%del key]` / `[%restore key]`.
+`[%save key body]` / `[%del key]` / `[%restore key]` /
+`[%tag key tag]` / `[%untag key tag]`.
+
+Discovery is HTTP (owner-authenticated), not a scry — it takes query params:
+`GET /apps/lattice/know-explore?tags=a,b&match=all|any&q=text` filters the live
+store by a tag set (AND/OR) and a case-insensitive key/body substring, returning
+the `know-list` shape. (The `lattice-explore` MCP tool below filters
+`/x/know/all/json` client-side instead, so it needs no HTTP.)
 
 These work today with the generic `scry-agent` / `poke-our-agent` MCP tools.
 
 ## Dedicated MCP tools
 
-`scripts/setup-knowledge-mcp-tools.py` registers six clean-schema tools into a
+`scripts/setup-knowledge-mcp-tools.py` registers ten clean-schema tools into a
 running `%mcp-server` (compiled in its context, so **no lattice-side
 dependency**):
 
@@ -37,10 +45,20 @@ dependency**):
 |---|---|
 | `lattice-save` | `key`, `body` |
 | `lattice-read` | `key` |
-| `lattice-list` | — |
+| `lattice-list` | — (returns each item's tags too) |
 | `lattice-search` | `query` (case-insensitive substring over keys + bodies) |
+| `lattice-explore` | `tag` and/or `query` (ANDed) — tag-filtered discovery |
 | `lattice-delete` | `key` (soft) |
 | `lattice-restore` | `key` |
+| `lattice-tags` | — (tag vocabulary + counts; call before tagging) |
+| `lattice-tag` | `key`, `tag` (normalized lower-case) |
+| `lattice-untag` | `key`, `tag` |
+
+**Tagging & discovery.** Tags are free-form, normalized to lower-case, and
+cross-cut the path hierarchy. The intended agent flow: `lattice-tags` to see the
+existing vocabulary (reuse tags, curb near-duplicates), `lattice-tag` to label an
+item, then `lattice-explore` (or the app's Knowledge **Explore** mode) to pull
+everything under a tag or matching a substring.
 
 ### Setup
 
@@ -58,9 +76,11 @@ python3 scripts/setup-knowledge-mcp-tools.py <server>   # or a named entry
 The code is read **without echo**, used only for the login request, then dropped
 — it is never printed, logged, or stored. For unattended runs pass it via
 `LATTICE_CODE` (popped from the env at startup); `LATTICE_URL` overrides the
-endpoint and an existing `LATTICE_COOKIE` skips login. Requires `%lattice`
-`[0 3 9]`+ and the `%mcp-server` agent installed. Verified end-to-end on a fake
-ship: save → read → search → delete (soft) → restore all round-trip.
+endpoint and an existing `LATTICE_COOKIE` skips login. The save/read/list/
+search/delete/restore tools need `%lattice` `[0 3 9]`+; the tags + explore tools
+need `[0 3 12]`+. Requires the `%mcp-server` agent installed. Verified end-to-end
+on a fake ship: save → read → tag → explore → search → delete (soft) → restore
+all round-trip.
 
 ### Re-running / upgrades
 
