@@ -162,6 +162,64 @@
     (expect-eq !>(`@t`'foo bar') !>((norm-tag 'FOO BAR')))
   ==
 ::
+::  ── obelisk index mirror (urQL string builders; obelisk itself not required) ──
+++  test-obelisk-create-urql
+  =/  s=tape  obelisk-create-urql
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "CREATE DATABASE lattice;" s))))
+    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE knowledge (item @t, updated @da) PRIMARY KEY (item);" s))))
+    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE tags (item @t, tag @t) PRIMARY KEY (item, tag);" s))))
+  ==
+::
+++  test-obelisk-row-urql
+  =/  e=know-entry  ['body' ~2026.1.1 (sy ~['urbit' 'design']) ~]
+  =/  s=tape  (obelisk-row-urql "/a/b" e)
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "INSERT INTO knowledge (item, updated) VALUES ('/a/b', ~2026.1.1);" s))))
+    (expect-eq !>(&) !>(!=(~ (find "INSERT INTO tags (item, tag) VALUES ('/a/b', 'urbit');" s))))
+    (expect-eq !>(&) !>(!=(~ (find "INSERT INTO tags (item, tag) VALUES ('/a/b', 'design');" s))))
+  ==
+::
+++  test-obelisk-populate-urql
+  =/  st  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-8)
+  =/  s=tape  (obelisk-populate-urql know.st)
+  ;:  weld
+    ::  clears both tables before re-inserting (full rebuild)
+    (expect-eq !>(&) !>(!=(~ (find "TRUNCATE TABLE knowledge;TRUNCATE TABLE tags;" s))))
+    (expect-eq !>(&) !>(!=(~ (find "INSERT INTO knowledge (item, updated) VALUES ('/a/b'," s))))
+  ==
+::
+::  +mirror-urql: incremental per-action index update. save/restore = clear the
+::  item then re-insert it; del = clear it (never insert); tag/untag = touch the
+::  one tag row; bad/no-op key = empty.
+++  test-mirror-urql
+  =/  now  ~2026.1.1
+  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-8)
+  =/  st2  (do-know now [%tag '/a/b' 'urbit'] st1)
+  =/  m-save   (mirror-urql [%save '/a/b' 'hi'] st1)
+  =/  st-del   (do-know now [%del '/a/b'] st2)
+  =/  m-del    (mirror-urql [%del '/a/b'] st-del)
+  =/  m-tag    (mirror-urql [%tag '/a/b' 'Urbit'] st2)
+  =/  m-untag  (mirror-urql [%untag '/a/b' 'urbit'] st2)
+  =/  m-noop   (mirror-urql [%save 'bad key' 'x'] *state-8)
+  ;:  weld
+    ::  save = delete the stale row, then insert the current one
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM knowledge WHERE item = '/a/b';" m-save))))
+    (expect-eq !>(&) !>(!=(~ (find "INSERT INTO knowledge (item, updated) VALUES ('/a/b'," m-save))))
+    ::  del removes the item + its tags and never inserts
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM knowledge WHERE item = '/a/b';" m-del))))
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM tags WHERE item = '/a/b';" m-del))))
+    (expect-eq !>(&) !>(=(~ (find "INSERT" m-del))))
+    ::  tag normalizes (Urbit→urbit) and replaces just that one pair
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM tags WHERE item = '/a/b' AND tag = 'urbit';" m-tag))))
+    (expect-eq !>(&) !>(!=(~ (find "INSERT INTO tags (item, tag) VALUES ('/a/b', 'urbit');" m-tag))))
+    ::  untag deletes the one pair, no insert
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM tags WHERE item = '/a/b' AND tag = 'urbit';" m-untag))))
+    (expect-eq !>(&) !>(=(~ (find "INSERT" m-untag))))
+    ::  an invalid/no-op key mirrors nothing
+    (expect-eq !>("") !>(m-noop))
+  ==
+::
 ++  test-render-home
   =/  h=tape  (trip (render-home "urb://~zod/" "urb://~zod/" '# Home'))
   ;:  weld

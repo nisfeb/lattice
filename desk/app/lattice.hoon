@@ -122,6 +122,24 @@
   ^-  card
   [%pass /eyre/connect %arvo %e %connect [~ /apps/lattice] %lattice]
 ::
+::  +obelisk-poke: poke the (optional) %obelisk index agent with one urQL script
+::  (database %lattice). Fire-and-forget — obelisk has no scries; we don't await.
+++  obelisk-poke
+  |=  [=bowl:gall urql=tape]
+  ^-  card
+  [%pass /obelisk %agent [our.bowl %obelisk] %poke %obelisk-action !>([%tape2 %lattice urql])]
+::  +know-mutate: apply a know-action to the store AND emit its incremental
+::  obelisk mirror poke. The mirror is fire-and-forget (empty urQL → no card),
+::  so the knowledge store behaves identically whether or not %obelisk is
+::  installed. Shared by the HTTP CRUD endpoints and the %lattice-know poke.
+++  know-mutate
+  |=  [=bowl:gall act=know-action st=state-8]
+  ^-  (quip card state-8)
+  =/  new=state-8  (do-know now.bowl act st)
+  =/  urql=tape  (mirror-urql act new)
+  :_  new
+  ?~(urql ~ [(obelisk-poke bowl urql)]~)
+::
 ++  respond-json-cards
   |=  [eyre-id=@ta status=@ud body=@t]
   ^-  (list card)
@@ -450,31 +468,44 @@
       [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
     =/  body=@t
       ?~(body.request.inbound-request '' q.u.body.request.inbound-request)
-    [(respond-json-cards eyre-id 200 '{"ok":true}') (do-know now.bowl [%save u.k body] st)]
+    =^  mcards=(list card)  st  (know-mutate bowl [%save u.k body] st)
+    [(weld (respond-json-cards eyre-id 200 '{"ok":true}') mcards) st]
   ::  POST /apps/lattice/know-delete?key=<key>  (soft → trash)
   ?:  &(=(meth %'POST') =(action 'know-delete'))
     ?~  k=(query-param inbound-request 'key')
       [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
-    [(respond-json-cards eyre-id 200 '{"ok":true}') (do-know now.bowl [%del u.k] st)]
+    =^  mcards=(list card)  st  (know-mutate bowl [%del u.k] st)
+    [(weld (respond-json-cards eyre-id 200 '{"ok":true}') mcards) st]
   ::  POST /apps/lattice/know-restore?key=<key>
   ?:  &(=(meth %'POST') =(action 'know-restore'))
     ?~  k=(query-param inbound-request 'key')
       [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
-    [(respond-json-cards eyre-id 200 '{"ok":true}') (do-know now.bowl [%restore u.k] st)]
+    =^  mcards=(list card)  st  (know-mutate bowl [%restore u.k] st)
+    [(weld (respond-json-cards eyre-id 200 '{"ok":true}') mcards) st]
   ::  POST /apps/lattice/know-tag?key=<key>&tag=<tag>  — add a cross-cutting tag
   ?:  &(=(meth %'POST') =(action 'know-tag'))
     ?~  k=(query-param inbound-request 'key')
       [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
     ?~  t=(query-param inbound-request 'tag')
       [(respond-json-cards eyre-id 400 '{"error":"missing tag"}') st]
-    [(respond-json-cards eyre-id 200 '{"ok":true}') (do-know now.bowl [%tag u.k u.t] st)]
+    =^  mcards=(list card)  st  (know-mutate bowl [%tag u.k u.t] st)
+    [(weld (respond-json-cards eyre-id 200 '{"ok":true}') mcards) st]
   ::  POST /apps/lattice/know-untag?key=<key>&tag=<tag>  — remove a tag
   ?:  &(=(meth %'POST') =(action 'know-untag'))
     ?~  k=(query-param inbound-request 'key')
       [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
     ?~  t=(query-param inbound-request 'tag')
       [(respond-json-cards eyre-id 400 '{"error":"missing tag"}') st]
-    [(respond-json-cards eyre-id 200 '{"ok":true}') (do-know now.bowl [%untag u.k u.t] st)]
+    =^  mcards=(list card)  st  (know-mutate bowl [%untag u.k u.t] st)
+    [(weld (respond-json-cards eyre-id 200 '{"ok":true}') mcards) st]
+  ::  POST /apps/lattice/know-reindex — (re)build the obelisk index from state.
+  ::  No-op (ok:false) if %obelisk isn't installed; the store works without it.
+  ?:  &(=(meth %'POST') =(action 'know-reindex'))
+    =/  cards=(list card)
+      :~  (obelisk-poke bowl obelisk-create-urql)
+          (obelisk-poke bowl (obelisk-populate-urql know.st))
+      ==
+    [(weld (respond-json-cards eyre-id 200 '{"ok":true}') cards) st]
   ::  POST /apps/lattice/know-publish?key=<key>[&path=<rel>] — copy a private
   ::  item into the PUBLISHED gemtext (grows it; default publish path = the key).
   ?:  &(=(meth %'POST') =(action 'know-publish'))
@@ -630,7 +661,8 @@
   ::  enforced above, so only the owner's own automation can store/delete.
       %lattice-know
     =+  !<(act=know-action q.cage)
-    `this(state (do-know now.bowl act state))
+    =^  cards  state  (know-mutate bowl act state)
+    [cards this]
   ==
 ::
 ++  on-watch

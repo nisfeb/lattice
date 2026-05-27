@@ -436,6 +436,92 @@
       (pairs:enjs:format ~[['tag' s+t] ['count' (numb:enjs:format n)]])
   ==
 ::
+::  ── obelisk knowledge index (metadata-only mirror; no bodies, no vectors) ──
+::  obelisk (jackfoxy/obelisk) is an optional relational index for discovery. It
+::  has NO scries: we poke %obelisk-action [%tape2 %lattice <urql>] and don't
+::  await the result (mirror writes are fire-and-forget; rebuild via reindex).
+::
+::  Mirror writes are FIRE-AND-FORGET: if %obelisk isn't installed, gall just
+::  negative-acks the poke (on-agent ignores it) — the store works without it.
+::  +obelisk-create-urql: (re)create the schema. Atomic — fails harmlessly if it
+::  already exists, so it's safe to poke right before a populate.
+++  obelisk-create-urql
+  ^-  tape
+  %-  zing
+  :~  "CREATE DATABASE lattice;"
+      "CREATE TABLE knowledge (item @t, updated @da) PRIMARY KEY (item);"
+      "CREATE TABLE tags (item @t, tag @t) PRIMARY KEY (item, tag);"
+  ==
+::  +obelisk-row-urql: the INSERTs mirroring one live entry (the knowledge row +
+::  one tags row per tag). [k] is the item key as text.
+++  obelisk-row-urql
+  |=  [k=tape e=know-entry]
+  ^-  tape
+  %-  zing
+  :-  ;:(weld "INSERT INTO knowledge (item, updated) VALUES ('" k "', " (trip (scot %da updated.e)) ");")
+  %+  turn  ~(tap in tags.e)
+  |=(t=@t ;:(weld "INSERT INTO tags (item, tag) VALUES ('" k "', '" (trip t) "');"))
+::  +obelisk-populate-urql: rebuild the index from the live `know` map — clear
+::  both tables, then re-insert every item + its tags.
+++  obelisk-populate-urql
+  |=  know=(map path know-entry)
+  ^-  tape
+  %-  zing
+  :-  "TRUNCATE TABLE knowledge;TRUNCATE TABLE tags;"
+  %+  turn  ~(tap by know)
+  |=([kp=path e=know-entry] (obelisk-row-urql (trip (spat kp)) e))
+::  +obelisk-del-item-urql: remove one item and all its tag rows from the index.
+::  DELETE..WHERE is idempotent — deleting an absent item is a harmless no-op.
+++  obelisk-del-item-urql
+  |=  k=tape
+  ^-  tape
+  ;:  weld
+    "DELETE FROM knowledge WHERE item = '"  k  "';"
+    "DELETE FROM tags WHERE item = '"  k  "';"
+  ==
+::  +mirror-urql: incremental index update for ONE applied know-action. Reads the
+::  result entry from `st` (the POST-mutation state) so tag rows reflect the
+::  outcome. Returns "" when there's nothing to mirror (bad key / no-op / the
+::  action targeted a non-live item). Pair with a periodic +obelisk-populate-urql
+::  reindex to repair any drift.
+++  mirror-urql
+  |=  [act=know-action st=state-8]
+  ^-  tape
+  ::  upsert one item's row + tags from the post-mutation state (save/restore)
+  =/  upsert
+    |=  key=@t
+    ^-  tape
+    ?~  kp=(know-key key)  ""
+    ?~  live=(~(get by know.st) u.kp)  ""
+    =/  k=tape  (trip (spat u.kp))
+    (weld (obelisk-del-item-urql k) (obelisk-row-urql k u.live))
+  ::  narrow on the action tag first — `key` sits at a different axis per branch,
+  ::  so it can't be read off the bare `know-action` fork.
+  ?-  -.act
+      %save     (upsert key.act)
+      %restore  (upsert key.act)
+  ::
+      %del
+    ?~  kp=(know-key key.act)  ""
+    (obelisk-del-item-urql (trip (spat u.kp)))
+  ::
+      %tag
+    ?~  kp=(know-key key.act)  ""
+    ?.  (~(has by know.st) u.kp)  ""
+    =/  k=tape  (trip (spat u.kp))
+    =/  t=tape  (trip (norm-tag tag.act))
+    ;:  weld
+      "DELETE FROM tags WHERE item = '"  k  "' AND tag = '"  t  "';"
+      "INSERT INTO tags (item, tag) VALUES ('"  k  "', '"  t  "');"
+    ==
+  ::
+      %untag
+    ?~  kp=(know-key key.act)  ""
+    =/  k=tape  (trip (spat u.kp))
+    =/  t=tape  (trip (norm-tag tag.act))
+    ;:(weld "DELETE FROM tags WHERE item = '" k "' AND tag = '" t "';")
+  ==
+::
 ::  +do-know: apply a knowledge action. save = create/overwrite (+ untrash);
 ::  del = SOFT delete (move to recoverable trash); restore = trash → live.
 ::  Invalid keys / missing entries are no-ops. Never grows/publishes.
