@@ -23,7 +23,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Logout
-import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
@@ -113,7 +112,6 @@ fun BrowserScreen(
     onUnsubscribe: (String) -> Unit = {},
     onOpenUpdates: () -> Unit = {},
     onOpenBookmarks: () -> Unit = {},
-    onOpenKnowledge: () -> Unit = {},
     unreadUpdates: Int = 0,
     // Hoisted by App so tabs + the active index survive this screen
     // leaving the composition (opening Settings, Files, etc.). Without
@@ -335,7 +333,6 @@ fun BrowserScreen(
             },
             BarAction("updates", Icons.Filled.Inbox, if (unreadUpdates > 0) "Updates ($unreadUpdates)" else "Updates", true) { onOpenUpdates() },
             BarAction("discover", Icons.Filled.Public, "Discover", true) { onOpenDiscover() },
-            BarAction("knowledge", Icons.AutoMirrored.Filled.MenuBook, "Knowledge", true) { onOpenKnowledge() },
             BarAction("files", Icons.Filled.Folder, "Files", true) { onOpenFiles() },
             BarAction("settings", Icons.Filled.Settings, "Settings", true) { onOpenSettings() },
             BarAction("logout", Icons.AutoMirrored.Filled.Logout, "Disconnect", true) { onLogout() },
