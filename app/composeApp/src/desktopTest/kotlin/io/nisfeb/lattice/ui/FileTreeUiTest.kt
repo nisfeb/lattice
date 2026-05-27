@@ -1,5 +1,8 @@
 package io.nisfeb.lattice.ui
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -18,7 +21,7 @@ class FileTreeUiTest {
         var dir: String? = null
         setContent {
             MaterialTheme {
-                FileTree(files, dir = "", onDir = { dir = it }, onOpen = {}, onDelete = {}, onDuplicate = {}, onMove = {}, onCopyLink = {})
+                FileTree(files, dir = "", onDir = { dir = it }, onOpen = {}, actions = emptyList())
             }
         }
         onNodeWithText("notes/").performClick()
@@ -29,7 +32,7 @@ class FileTreeUiTest {
         var opened: String? = null
         setContent {
             MaterialTheme {
-                FileTree(files, dir = "", onDir = {}, onOpen = { opened = it }, onDelete = {}, onDuplicate = {}, onMove = {}, onCopyLink = {})
+                FileTree(files, dir = "", onDir = {}, onOpen = { opened = it }, actions = emptyList())
             }
         }
         onNodeWithText("hello").performClick()
@@ -40,7 +43,10 @@ class FileTreeUiTest {
         var deleted: String? = null
         setContent {
             MaterialTheme {
-                FileTree(files, dir = "", onDir = {}, onOpen = {}, onDelete = { deleted = it }, onDuplicate = {}, onMove = {}, onCopyLink = {})
+                FileTree(
+                    files, dir = "", onDir = {}, onOpen = {},
+                    actions = listOf(FileAction("Delete", Icons.Filled.Delete, danger = true) { deleted = it }),
+                )
             }
         }
         onNodeWithContentDescription("Actions for hello").performClick()
@@ -48,11 +54,14 @@ class FileTreeUiTest {
         assertEquals("hello", deleted)
     }
 
-    @Test fun ellipsisMenuCopyLinkFiresWithFullPath() = runComposeUiTest {
+    @Test fun ellipsisMenuActionFiresWithFullPath() = runComposeUiTest {
         var linked: String? = null
         setContent {
             MaterialTheme {
-                FileTree(files, dir = "", onDir = {}, onOpen = {}, onDelete = {}, onDuplicate = {}, onMove = {}, onCopyLink = { linked = it })
+                FileTree(
+                    files, dir = "", onDir = {}, onOpen = {},
+                    actions = listOf(FileAction("Copy link", Icons.Filled.Link) { linked = it }),
+                )
             }
         }
         onNodeWithContentDescription("Actions for hello").performClick()

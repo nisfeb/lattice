@@ -12,11 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -31,7 +27,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+
+/** A per-row action in the file tree's ⋮ menu. [onClick] receives the full path. */
+data class FileAction(
+    val label: String,
+    val icon: ImageVector,
+    val danger: Boolean = false,
+    val onClick: (String) -> Unit,
+)
 
 /** Split a flat list of `a/b/c` paths into the folders + files directly under [dir]. */
 fun listDir(files: List<String>, dir: String): Pair<List<String>, List<String>> {
@@ -53,10 +58,7 @@ fun FileTree(
     dir: String,
     onDir: (String) -> Unit,
     onOpen: (String) -> Unit,
-    onDelete: (String) -> Unit,
-    onDuplicate: (String) -> Unit,
-    onMove: (String) -> Unit,
-    onCopyLink: (String) -> Unit,
+    actions: List<FileAction>,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
     activePath: String? = null,
@@ -101,32 +103,22 @@ fun FileTree(
                         color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f),
                     )
-                    Box {
-                        var menuOpen by remember { mutableStateOf(false) }
-                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Filled.MoreVert, "Actions for $name", modifier = Modifier.size(16.dp))
-                        }
-                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Copy link") },
-                                leadingIcon = { Icon(Icons.Filled.Link, null) },
-                                onClick = { menuOpen = false; onCopyLink(full) },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Duplicate") },
-                                leadingIcon = { Icon(Icons.Filled.ContentCopy, null) },
-                                onClick = { menuOpen = false; onDuplicate(full) },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Move / rename") },
-                                leadingIcon = { Icon(Icons.Filled.DriveFileRenameOutline, null) },
-                                onClick = { menuOpen = false; onMove(full) },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
-                                leadingIcon = { Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error) },
-                                onClick = { menuOpen = false; onDelete(full) },
-                            )
+                    if (actions.isNotEmpty()) {
+                        Box {
+                            var menuOpen by remember { mutableStateOf(false) }
+                            IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Filled.MoreVert, "Actions for $name", modifier = Modifier.size(16.dp))
+                            }
+                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                actions.forEach { a ->
+                                    val tint = if (a.danger) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                                    DropdownMenuItem(
+                                        text = { Text(a.label, color = tint) },
+                                        leadingIcon = { Icon(a.icon, null, tint = tint) },
+                                        onClick = { menuOpen = false; a.onClick(full) },
+                                    )
+                                }
+                            }
                         }
                     }
                 }

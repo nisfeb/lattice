@@ -36,7 +36,7 @@ import io.nisfeb.lattice.ui.AppScreen
 import io.nisfeb.lattice.ui.InstallAgentScreen
 import io.nisfeb.lattice.knowledge.KnowledgeClient
 import io.nisfeb.lattice.ui.BookmarksScreen
-import io.nisfeb.lattice.ui.KnowledgeScreen
+import io.nisfeb.lattice.ui.Source
 import io.nisfeb.lattice.ui.BrowserScreen
 import io.nisfeb.lattice.ui.BrowserTab
 import io.nisfeb.lattice.ui.DiscoverScreen
@@ -113,6 +113,7 @@ fun App(
     var updates by remember { mutableStateOf(emptyList<UpdateEvent>()) }
     var unread by remember { mutableStateOf(0) }
     var screen by remember { mutableStateOf<AppScreen>(AppScreen.Browse) }
+    var workspaceTab by remember { mutableStateOf(Source.Public) }
     var editTarget by remember { mutableStateOf<String?>(null) }
     var browseTarget by remember { mutableStateOf<String?>(null) }
     // True when logged in but the %lattice agent isn't installed on the ship —
@@ -274,8 +275,8 @@ fun App(
                     homeShip = current,
                     onLogout = { session.logout(); ship = null },
                     onOpenSettings = { screen = AppScreen.Settings },
-                    onOpenFiles = { screen = AppScreen.Workspace },
-                    onEditPage = { editTarget = it; screen = AppScreen.Workspace },
+                    onOpenFiles = { workspaceTab = Source.Public; screen = AppScreen.Workspace },
+                    onEditPage = { editTarget = it; workspaceTab = Source.Public; screen = AppScreen.Workspace },
                     onOpenDiscover = { screen = AppScreen.Discover },
                     openUrl = browseTarget,
                     onConsumedOpenUrl = { browseTarget = null },
@@ -284,7 +285,7 @@ fun App(
                     onUnsubscribe = { unsubscribe(it) },
                     onOpenUpdates = { unread = 0; screen = AppScreen.Updates },
                     onOpenBookmarks = { screen = AppScreen.Bookmarks },
-                    onOpenKnowledge = { screen = AppScreen.Knowledge },
+                    onOpenKnowledge = { workspaceTab = Source.Knowledge; screen = AppScreen.Workspace },
                     unreadUpdates = unread,
                     tabs = browserTabs,
                     activeState = browserActive,
@@ -292,11 +293,13 @@ fun App(
                 )
                 AppScreen.Workspace -> WorkspaceScreen(
                     client = client,
+                    knowledge = knowledgeClient,
                     ship = current,
                     vimMode = theme.vimMode,
                     onClose = { screen = AppScreen.Browse },
                     initialOpen = editTarget,
                     onConsumedOpen = { editTarget = null },
+                    initialTab = workspaceTab,
                 )
                 AppScreen.Settings -> SettingsScreen(
                     settings = theme,
@@ -333,10 +336,6 @@ fun App(
                     onOpen = { url -> browseTarget = url; screen = AppScreen.Browse },
                     onClose = { screen = AppScreen.Browse },
                 )
-                AppScreen.Knowledge -> KnowledgeScreen(
-                    client = knowledgeClient,
-                    onClose = { screen = AppScreen.Browse },
-                )
                 AppScreen.Import -> {
                     val shared = shareTarget
                     if (shared == null) {
@@ -348,7 +347,7 @@ fun App(
                             homeShip = current,
                             content = shared,
                             onOpen = { url -> shareTarget = null; browseTarget = url; screen = AppScreen.Browse },
-                            onEdit = { path -> shareTarget = null; editTarget = path; screen = AppScreen.Workspace },
+                            onEdit = { path -> shareTarget = null; editTarget = path; workspaceTab = Source.Public; screen = AppScreen.Workspace },
                             onClose = { shareTarget = null; screen = AppScreen.Browse },
                         )
                     }
