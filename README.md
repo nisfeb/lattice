@@ -99,6 +99,62 @@ walks you through booting a ship.
 > session cookie in cleartext, so a non-local ship must be reached over
 > `https` (loopback `http` is fine for a ship on the same machine or a tunnel).
 
+## Connect an AI agent (MCP)
+
+lattice keeps a **private knowledge store** that AI agents can read and write
+over [MCP](https://modelcontextprotocol.io) — six tools (`lattice-save`,
+`lattice-read`, `lattice-list`, `lattice-search`, `lattice-delete`,
+`lattice-restore`). Anything an agent saves shows up in the app's Knowledge
+screen, and vice-versa. Full details: [docs/agent-knowledge.md](docs/agent-knowledge.md).
+
+You need the [`%mcp-server`](https://github.com/gwbtc/urbit-mcp) agent on the
+ship, and the ship reachable over `https` (put it behind a reverse proxy with
+TLS; don't expose the raw `--http-port`).
+
+**Authenticating — the part that trips people up.** Two different things, don't
+mix them:
+
+- **`+code`** — the 4 hyphenated words from `+code` in the dojo. Your master
+  login secret. Never paste it anywhere but a login prompt; never share it.
+- **session cookie** — `urbauth-~your-ship=0v…`, what `/~/login` *returns* once
+  you give it the `+code`. This is the revocable, expiring token your client and
+  tools actually use.
+
+Mint a cookie with a **verified** login — and check the status, because a *failed*
+login (wrong `+code`) still hands back a `Set-Cookie` (an unauthenticated stub),
+which is the #1 cause of "my cookie doesn't work":
+
+```bash
+read -rsp '+code: ' CODE && echo
+curl -sS -D - -o /dev/null -X POST https://your-ship.example.com/~/login \
+  --data-urlencode "password=$CODE" \
+| awk 'BEGIN{IGNORECASE=1} /^HTTP/{print "status:",$2} /^set-cookie/{print}'
+unset CODE
+```
+
+Only trust the cookie if `status:` is **200/204** (a `400` means a wrong `+code`).
+The `+code` is read with `-s` (no echo) and never leaves your machine.
+
+Then:
+
+1. **`.mcp.json`** (your MCP client's config) — add the server:
+   ```json
+   { "mcpServers": { "myship": {
+       "url": "https://your-ship.example.com/mcp",
+       "headers": { "Cookie": "urbauth-~your-ship=0v…" } } } }
+   ```
+2. **Register the tools once** — the script prompts for the `+code` the same
+   hidden way and authenticates itself:
+   ```bash
+   python3 scripts/setup-knowledge-mcp-tools.py myship
+   ```
+3. **Reconnect** your client and approve the server. Test with *"list my lattice
+   knowledge."*
+
+The cookie expires (and dies if the ship restarts) — just re-run the login to
+refresh it. Re-registering tools after a lattice upgrade needs a reset first; see
+[docs/agent-knowledge.md](docs/agent-knowledge.md).
+
 ## What it isn't
 
 - **Not a host.** Bring your own ship — yours, a friend's, or a hosted one.
