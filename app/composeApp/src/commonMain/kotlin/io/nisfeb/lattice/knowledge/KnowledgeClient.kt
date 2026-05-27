@@ -18,9 +18,14 @@ import okhttp3.RequestBody.Companion.toRequestBody
 @Serializable
 data class KnowItem(val key: String, val updated: String = "", val bytes: Int = 0)
 
-/** A knowledge item with its body. */
+/** A knowledge item with its body + tags. */
 @Serializable
-data class KnowEntry(val key: String, val body: String = "", val updated: String = "")
+data class KnowEntry(
+    val key: String,
+    val body: String = "",
+    val updated: String = "",
+    val tags: List<String> = emptyList(),
+)
 
 /**
  * CRUD over the ship's private knowledge store, via the %lattice agent's
@@ -70,6 +75,7 @@ class KnowledgeClient(private val session: UrbitSession) {
                     key = o["key"]!!.jsonPrimitive.content,
                     body = o["body"]?.jsonPrimitive?.contentOrNull ?: "",
                     updated = o["updated"]?.jsonPrimitive?.contentOrNull ?: "",
+                    tags = o["tags"]?.jsonArray?.map { t -> t.jsonPrimitive.content } ?: emptyList(),
                 )
             }
         }
@@ -83,6 +89,25 @@ class KnowledgeClient(private val session: UrbitSession) {
 
     /** Restore a soft-deleted item. */
     suspend fun restore(key: String): Result<Unit> = post("know-restore", key, null)
+
+    /** Add a cross-cutting tag (normalized lower-case by the agent). */
+    suspend fun tag(key: String, tag: String): Result<Unit> = tagPost("know-tag", key, tag)
+
+    /** Remove a tag. */
+    suspend fun untag(key: String, tag: String): Result<Unit> = tagPost("know-untag", key, tag)
+
+    private suspend fun tagPost(action: String, key: String, tag: String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val url = base().newBuilder()
+                    .addPathSegments("apps/lattice/$action")
+                    .addQueryParameter("key", key).addQueryParameter("tag", tag).build()
+                val req = Request.Builder().url(url).post("".toRequestBody(mediaType)).build()
+                session.http.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) error("$action HTTP ${resp.code}")
+                }
+            }
+        }
 
     /** Publish an item as a public gemtext page (defaults the page path to [key]). */
     suspend fun publish(key: String, path: String? = null): Result<Unit> = withContext(Dispatchers.IO) {

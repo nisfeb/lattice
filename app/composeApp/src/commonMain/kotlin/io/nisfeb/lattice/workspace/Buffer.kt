@@ -16,4 +16,6 @@ class Buffer(val path: String, val source: Source, val isNew: Boolean) {
     var loaded by mutableStateOf(isNew)
     var dirty by mutableStateOf(false)
     var pane by mutableStateOf(0)
+    // knowledge buffers only: the item's tags (edited via the tag bar).
+    var tags by mutableStateOf<List<String>>(emptyList())
 }

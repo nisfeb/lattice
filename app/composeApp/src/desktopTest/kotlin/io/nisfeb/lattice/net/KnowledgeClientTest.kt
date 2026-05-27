@@ -50,6 +50,28 @@ class KnowledgeClientTest {
         assertEquals("no such key", r.exceptionOrNull()?.message)
     }
 
+    @Test fun readParsesTags() = runTest {
+        server.enqueue(MockResponse().setBody("""{"key":"/a","body":"hi","updated":"~2026.1.1","tags":["urbit","design"]}"""))
+        val e = client.read("/a").getOrThrow()
+        assertEquals(listOf("urbit", "design"), e.tags)
+    }
+
+    @Test fun tagAndUntagPostKeyAndTag() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
+        client.tag("notes/x", "urbit").getOrThrow()
+        val t = server.takeRequest()
+        assertEquals("POST", t.method)
+        assertTrue(t.path!!.startsWith("/apps/lattice/know-tag"))
+        assertEquals("notes/x", t.requestUrl!!.queryParameter("key"))
+        assertEquals("urbit", t.requestUrl!!.queryParameter("tag"))
+
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
+        client.untag("notes/x", "urbit").getOrThrow()
+        val u = server.takeRequest()
+        assertTrue(u.path!!.startsWith("/apps/lattice/know-untag"))
+        assertEquals("urbit", u.requestUrl!!.queryParameter("tag"))
+    }
+
     @Test fun savePostsKeyAndBody() = runTest {
         server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
         client.save("notes/x", "body text").getOrThrow()

@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Public
@@ -35,6 +36,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -130,7 +132,7 @@ fun WorkspaceScreen(
         if (!b.loaded) scope.launch {
             when (source) {
                 Source.Public -> client.fetch("urb://$ship/$path").onSuccess { b.text = it.body }
-                Source.Knowledge -> knowledge.read(path).onSuccess { b.text = it.body }
+                Source.Knowledge -> knowledge.read(path).onSuccess { b.text = it.body; b.tags = it.tags }
             }
             b.loaded = true
         }
@@ -287,6 +289,49 @@ fun WorkspaceScreen(
         }
     }
 
+    // Tag bar for a knowledge buffer: existing tags as removable chips + an add
+    // field. Re-reads the entry after each change to reflect normalization/sort.
+    @Composable
+    fun tagBar(b: Buffer) {
+        var newTag by remember(b.path) { mutableStateOf("") }
+        fun reload() = scope.launch { knowledge.read(b.path).onSuccess { b.tags = it.tags } }
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Icon(Icons.Filled.Label, "tags", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            b.tags.forEach { t ->
+                InputChip(
+                    selected = false,
+                    onClick = {},
+                    label = { Text(t, style = MaterialTheme.typography.bodySmall) },
+                    trailingIcon = {
+                        Icon(
+                            Icons.Filled.Close, "remove $t",
+                            modifier = Modifier.size(14.dp).clickable {
+                                scope.launch { knowledge.untag(b.path, t).onSuccess { reload() } }
+                            },
+                        )
+                    },
+                )
+            }
+            OutlinedTextField(
+                value = newTag, onValueChange = { newTag = it }, singleLine = true,
+                placeholder = { Text("+tag", style = MaterialTheme.typography.bodySmall) },
+                textStyle = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.width(110.dp),
+            )
+            IconButton(
+                onClick = {
+                    val t = newTag.trim()
+                    if (t.isNotEmpty()) { newTag = ""; scope.launch { knowledge.tag(b.path, t).onSuccess { reload() } } }
+                },
+                enabled = newTag.isNotBlank(), modifier = Modifier.size(28.dp),
+            ) { Icon(Icons.Filled.Add, "add tag", modifier = Modifier.size(16.dp)) }
+        }
+    }
+
     @Composable
     fun paneTabs(p: Int) {
         Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
@@ -360,6 +405,7 @@ fun WorkspaceScreen(
                     )
                 }
             } else {
+                if (b.source == Source.Knowledge) tagBar(b)
                 bufferEditor(b, Modifier.fillMaxSize())
             }
         }
@@ -398,6 +444,7 @@ fun WorkspaceScreen(
                     Text(b.path + if (b.dirty) " •" else "", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                     IconButton(onClick = { save(b) }) { Icon(Icons.Filled.Save, "Save") }
                 }
+                if (b.source == Source.Knowledge) tagBar(b)
                 bufferEditor(b, Modifier.fillMaxSize())
             }
         }
