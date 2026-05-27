@@ -211,7 +211,7 @@ fun WorkspaceScreen(
         }
         if (ns == Source.Knowledge) {
             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                FilterChip(selected = !showTrash, onClick = { showTrash = false }, label = { Text("Live (${knowFiles.size})") })
+                FilterChip(selected = !showTrash, onClick = { showTrash = false }, label = { Text("Active (${knowFiles.size})") })
                 FilterChip(selected = showTrash, onClick = { showTrash = true }, label = { Text("Trash (${trashFiles.size})") })
             }
         }
