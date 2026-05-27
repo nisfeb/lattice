@@ -4,7 +4,7 @@
 /+  default-agent, dbug, verb, *lattice
 ::
 |%
-+$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7)
++$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7 state-8)
 +$  card  card:agent:gall
 ::
 ::  -- helper gates --
@@ -351,8 +351,8 @@
   [[%pass /clay-clear %arvo %c %info q.byk.bowl [%& dels]] cards]
 ::
 ++  handle-http
-  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-7]
-  ^-  [(list card) state-7]
+  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-8]
+  ^-  [(list card) state-8]
   ::  SECURITY: Eyre forwards ALL matching HTTP requests to us, authenticated or
   ::  not, and leaves enforcement to the agent. This is the owner's control plane
   ::  (mutates state, drives keens); public reads happen via remote scry, not here.
@@ -458,6 +458,20 @@
     ?~  k=(query-param inbound-request 'key')
       [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
     [(respond-json-cards eyre-id 200 '{"ok":true}') (do-know now.bowl [%restore u.k] st)]
+  ::  POST /apps/lattice/know-tag?key=<key>&tag=<tag>  — add a cross-cutting tag
+  ?:  &(=(meth %'POST') =(action 'know-tag'))
+    ?~  k=(query-param inbound-request 'key')
+      [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
+    ?~  t=(query-param inbound-request 'tag')
+      [(respond-json-cards eyre-id 400 '{"error":"missing tag"}') st]
+    [(respond-json-cards eyre-id 200 '{"ok":true}') (do-know now.bowl [%tag u.k u.t] st)]
+  ::  POST /apps/lattice/know-untag?key=<key>&tag=<tag>  — remove a tag
+  ?:  &(=(meth %'POST') =(action 'know-untag'))
+    ?~  k=(query-param inbound-request 'key')
+      [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
+    ?~  t=(query-param inbound-request 'tag')
+      [(respond-json-cards eyre-id 400 '{"error":"missing tag"}') st]
+    [(respond-json-cards eyre-id 200 '{"ok":true}') (do-know now.bowl [%untag u.k u.t] st)]
   ::  POST /apps/lattice/know-publish?key=<key>[&path=<rel>] — copy a private
   ::  item into the PUBLISHED gemtext (grows it; default publish path = the key).
   ?:  &(=(meth %'POST') =(action 'know-publish'))
@@ -537,7 +551,7 @@
 ::
 %-  agent:dbug
 %+  verb  |
-=|  state-7
+=|  state-8
 =*  state  -
 ^-  agent:gall
 |_  =bowl:gall
@@ -559,12 +573,22 @@
   |=  ole=vase
   ^-  (quip card _this)
   =/  old=versioned-state  !<(versioned-state ole)
-  ?:  ?=(%7 -.old)  `this(state old)
-  ::  %6 → %7: add the empty private knowledge store (know + trash).
+  ?:  ?=(%8 -.old)  `this(state old)
+  ::  %7 → %8: give every knowledge entry empty tags + a reserved (empty) vector.
+  ?:  ?=(%7 -.old)
+    =/  up=$-(know-entry-7 know-entry)  |=(e=know-entry-7 [body.e updated.e ~ ~])
+    :-  ~
+    %=  this  state
+      :*  %8  content.old  published.old  pending.old  subs.old  fetches.old
+          manifest.old  home.old  browse.old
+          (~(run by know.old) up)  (~(run by trash.old) up)
+      ==
+    ==
+  ::  %6 → %8: add the empty private knowledge store (know + trash).
   ?:  ?=(%6 -.old)
     :-  ~
     %=  this  state
-      :*  %7  content.old  published.old  pending.old  subs.old  fetches.old
+      :*  %8  content.old  published.old  pending.old  subs.old  fetches.old
           manifest.old  home.old  browse.old  ~  ~
       ==
     ==
@@ -574,14 +598,14 @@
   =/  content=(map path @t)  (migrate-content bowl)
   =/  files=(set path)       ~(key by content)
   =/  cards=(list card)      (clear-pub-cards bowl files)
-  =/  new=state-7
+  =/  new=state-8
     ?-  -.old
-      %5  [%7 content published.old pending.old subs.old fetches.old manifest.old home.old browse.old ~ ~]
-      %4  [%7 content published.old pending.old subs.old fetches.old manifest.old home.old ~ ~ ~]
-      %3  [%7 content published.old pending.old subs.old fetches.old manifest.old `@uvH`0 ~ ~ ~]
-      %2  [%7 content published.old pending.old subs.old fetches.old `@uvH`0 `@uvH`0 ~ ~ ~]
-      %1  [%7 content published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~ ~ ~]
-      %0  [%7 content published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~ ~ ~]
+      %5  [%8 content published.old pending.old subs.old fetches.old manifest.old home.old browse.old ~ ~]
+      %4  [%8 content published.old pending.old subs.old fetches.old manifest.old home.old ~ ~ ~]
+      %3  [%8 content published.old pending.old subs.old fetches.old manifest.old `@uvH`0 ~ ~ ~]
+      %2  [%8 content published.old pending.old subs.old fetches.old `@uvH`0 `@uvH`0 ~ ~ ~]
+      %1  [%8 content published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~ ~ ~]
+      %0  [%8 content published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~ ~ ~]
     ==
   [cards this(state new)]
 ::

@@ -359,6 +359,20 @@
   =/  res  (mule |.((stab (crip full))))
   ?:(?=(%& -.res) `p.res ~)
 ::
+::  +norm-tag: normalize a tag for matching — lower-case. Tags are free-form and
+::  multilingual; this just dedupes case variants (the set handles duplicates).
+++  norm-tag
+  |=  t=@t
+  ^-  @t
+  (crip (cass (trip t)))
+::  +tags-json: a set of tags as a sorted JSON string array, as ['tags' a+...].
+++  tags-json
+  |=  tags=(set @t)
+  ^-  [@t json]
+  :-  'tags'
+  :-  %a
+  (turn (sort ~(tap in tags) aor) |=(t=@t s+t))
+::
 ++  know-entry-json
   |=  [kp=path e=know-entry]
   ^-  json
@@ -366,6 +380,7 @@
   :~  ['key' s+(spat kp)]
       ['body' s+body.e]
       ['updated' s+(scot %da updated.e)]
+      (tags-json tags.e)
   ==
 ::
 ::  +know-list-json: keys + metadata (no bodies) — for listing/trash views.
@@ -383,6 +398,7 @@
       :~  ['key' s+(spat kp)]
           ['updated' s+(scot %da updated.e)]
           ['bytes' (numb:enjs:format (met 3 body.e))]
+          (tags-json tags.e)
       ==
   ==
 ::
@@ -401,13 +417,19 @@
 ::  del = SOFT delete (move to recoverable trash); restore = trash → live.
 ::  Invalid keys / missing entries are no-ops. Never grows/publishes.
 ++  do-know
-  |=  [now=@da act=know-action st=state-7]
-  ^-  state-7
+  |=  [now=@da act=know-action st=state-8]
+  ^-  state-8
   ?-  -.act
       %save
     ?~  kp=(know-key key.act)  st
+    ::  preserve tags/vector across a re-save (whether the key was live or trashed)
+    =/  prior=(unit know-entry)
+      ?^  e=(~(get by know.st) u.kp)  e
+      (~(get by trash.st) u.kp)
+    =/  =know-entry
+      [body.act now ?~(prior ~ tags.u.prior) ?~(prior ~ vector.u.prior)]
     %=  st
-      know   (~(put by know.st) u.kp [body.act now])
+      know   (~(put by know.st) u.kp know-entry)
       trash  (~(del by trash.st) u.kp)
     ==
   ::
@@ -426,5 +448,17 @@
       trash  (~(del by trash.st) u.kp)
       know   (~(put by know.st) u.kp u.e)
     ==
+  ::
+      %tag
+    ?~  kp=(know-key key.act)  st
+    ?~  e=(~(get by know.st) u.kp)  st
+    =.  tags.u.e  (~(put in tags.u.e) (norm-tag tag.act))
+    st(know (~(put by know.st) u.kp u.e))
+  ::
+      %untag
+    ?~  kp=(know-key key.act)  st
+    ?~  e=(~(get by know.st) u.kp)  st
+    =.  tags.u.e  (~(del in tags.u.e) (norm-tag tag.act))
+    st(know (~(put by know.st) u.kp u.e))
   ==
 --

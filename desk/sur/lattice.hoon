@@ -91,20 +91,54 @@
 ::  scryable, only readable by the owner (local on-peek / authenticated Eyre).
 ::  `trash` holds soft-deleted entries: agent deletes are recoverable (restore),
 ::  and permanent purge is not exposed to agents.
-+$  know-entry
+::  a reserved embedding slot for future semantic search. Vectors are computed
+::  off-ship (Urbit can't embed) and only comparable within one [model dim].
++$  know-vector
+  $:  model=@t
+      dim=@ud
+      vec=(list @rd)
+  ==
+::  historical entry shape (state-7) — kept so on-load can migrate it.
++$  know-entry-7
   $:  body=@t
       updated=@da
   ==
+::  current entry: adds cross-cutting `tags` (LLM-assigned, normalized for matching)
+::  and a reserved `vector` (unused for now — see state-8 / the knowledge index).
++$  know-entry
+  $:  body=@t
+      updated=@da
+      tags=(set @t)
+      vector=(unit know-vector)
+  ==
 ::  programmatic knowledge actions (poked to lattice by on-ship agents/MCP):
-::  save = create/overwrite; del = soft-delete (recoverable); restore = undo.
+::  save = create/overwrite (preserves existing tags); del = soft-delete
+::  (recoverable); restore = undo; tag/untag = add/remove a cross-cutting label.
 ::  Permanent purge is deliberately NOT here — agents can't destroy knowledge.
 +$  know-action
   $%  [%save key=@t body=@t]
       [%del key=@t]
       [%restore key=@t]
+      [%tag key=@t tag=@t]
+      [%untag key=@t tag=@t]
   ==
 +$  state-7
   $:  %7
+      content=(map path @t)
+      published=(map path @uvH)
+      pending=(map @ta [=ship =path])
+      subs=(map [=ship spur=path] last=@ud)
+      fetches=(map @ta walk)
+      manifest=@uvH
+      home=@uvH
+      browse=(unit [=ship spur=path rev=@ud])
+      know=(map path know-entry-7)
+      trash=(map path know-entry-7)
+  ==
+::  state-8 adds tags (+ a reserved embedding) to knowledge entries, for the
+::  index/explorer. Only the know/trash entry shape changes vs state-7.
++$  state-8
+  $:  %8
       content=(map path @t)
       published=(map path @uvH)
       pending=(map @ta [=ship =path])
