@@ -454,6 +454,16 @@
   ::  GET /apps/lattice/know-tags — the tag vocabulary + counts (facet data)
   ?:  &(=(meth %'GET') =(action 'know-tags'))
     [(respond-json-cards eyre-id 200 (en:json:html (know-tags-json know.st))) st]
+  ::  GET /apps/lattice/know-explore?tags=a,b&match=all|any&q=text — faceted
+  ::  filter over the live store. tags = comma-separated; match defaults to
+  ::  "any"; q = case-insensitive substring of the key or body. Returns the
+  ::  know-list shape. Served from state — independent of %obelisk.
+  ?:  &(=(meth %'GET') =(action 'know-explore'))
+    =/  tags=(set @t)  (parse-tags (fall (query-param inbound-request 'tags') ''))
+    =/  all=?  =('all' (fall (query-param inbound-request 'match') 'any'))
+    =/  q=@t   (fall (query-param inbound-request 'q') '')
+    =/  hits=(map path know-entry)  (know-explore know.st tags all q)
+    [(respond-json-cards eyre-id 200 (en:json:html (know-list-json hits))) st]
   ?:  &(=(meth %'GET') =(action 'know-read'))
     ?~  k=(query-param inbound-request 'key')
       [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]

@@ -436,6 +436,59 @@
       (pairs:enjs:format ~[['tag' s+t] ['count' (numb:enjs:format n)]])
   ==
 ::
+::  ── explore / discovery (served synchronously from the live store) ──
+::  Faceting is +know-tags-json (the vocabulary + counts). Filtering is below:
+::  obelisk-independent so the Explore UI works whether or not %obelisk is up.
+::
+::  +split-on: split a tape on a delimiter, dropping empty segments. Parses
+::  comma-separated query params, e.g. ?tags=urbit,design → ["urbit" "design"].
+++  split-on
+  |=  [sep=@tD t=tape]
+  ^-  (list tape)
+  =|  acc=(list tape)
+  =|  cur=tape
+  |-  ^-  (list tape)
+  ?~  t
+    %+  skip  (flop ?~(cur acc [(flop cur) acc]))
+    |=(s=tape =(~ s))
+  ?:  =(sep i.t)
+    $(t t.t, cur ~, acc ?~(cur acc [(flop cur) acc]))
+  $(t t.t, cur [i.t cur])
+::  +parse-tags: a comma-separated tag param → a set of normalized (lower-case)
+::  tags, matching how stored tags are normalized by +norm-tag.
+++  parse-tags
+  |=  raw=@t
+  ^-  (set @t)
+  (sy (turn (split-on ',' (trip raw)) |=(s=tape (norm-tag (crip s)))))
+::  +matches-explore: does one live entry pass the explore filter?
+::    tags  required tags (empty = no tag filter)
+::    all   & = entry must carry ALL tags;  | = ANY of them
+::    q     lower-cased substring sought in the key text or the body (empty = skip)
+++  matches-explore
+  |=  [kp=path e=know-entry tags=(set @t) all=? q=tape]
+  ^-  ?
+  ?&  ?|  =(~ tags)
+          ?:  all
+            (levy ~(tap in tags) |=(t=@t (~(has in tags.e) t)))
+          (lien ~(tap in tags) |=(t=@t (~(has in tags.e) t)))
+      ==
+      ?|  =(~ q)
+          ?|  !=(~ (find q (cass (trip (spat kp)))))
+              !=(~ (find q (cass (trip body.e))))
+          ==
+      ==
+  ==
+::  +know-explore: filter the live store by tags (AND/OR) and a text query.
+::  Returns a sub-map; format it with +know-list-json for the listing shape.
+++  know-explore
+  |=  [m=(map path know-entry) tags=(set @t) all=? q=@t]
+  ^-  (map path know-entry)
+  =/  ql=tape  (cass (trip q))
+  %-  malt
+  %+  skim  ~(tap by m)
+  |=  [kp=path e=know-entry]
+  (matches-explore kp e tags all ql)
+::
 ::  ── obelisk knowledge index (metadata-only mirror; no bodies, no vectors) ──
 ::  obelisk (jackfoxy/obelisk) is an optional relational index for discovery. It
 ::  has NO scries: we poke %obelisk-action [%tape2 %lattice <urql>] and don't

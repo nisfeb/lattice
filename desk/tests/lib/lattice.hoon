@@ -162,6 +162,53 @@
     (expect-eq !>(`@t`'foo bar') !>((norm-tag 'FOO BAR')))
   ==
 ::
+::  ── explore / discovery (synchronous filter over the live store) ──
+++  test-split-on
+  ;:  weld
+    (expect-eq !>(`(list tape)`~["a" "b" "c"]) !>((split-on ',' "a,b,c")))
+    ::  empty segments (leading/trailing/double commas) are dropped
+    (expect-eq !>(`(list tape)`~["a" "b"]) !>((split-on ',' ",a,,b,")))
+    (expect-eq !>(`(list tape)`~) !>((split-on ',' "")))
+    (expect-eq !>(`(list tape)`~["solo"]) !>((split-on ',' "solo")))
+  ==
+::
+++  test-parse-tags
+  ;:  weld
+    (expect-eq !>((sy ~['urbit' 'design'])) !>((parse-tags 'Urbit,DESIGN')))
+    (expect-eq !>(*(set @t)) !>((parse-tags '')))
+  ==
+::
+::  +know-explore: AND/OR tag filter + case-insensitive text search over key/body.
+++  test-know-explore
+  =/  now  ~2026.1.1
+  =/  s0   *state-8
+  =/  s1   (do-know now [%save '/notes/urbit-design' 'a note about Hoon'] s0)
+  =/  s2   (do-know now [%tag '/notes/urbit-design' 'urbit'] s1)
+  =/  s3   (do-know now [%tag '/notes/urbit-design' 'design'] s2)
+  =/  s4   (do-know now [%save '/notes/cooking' 'pasta recipe'] s3)
+  =/  s5   (do-know now [%tag '/notes/cooking' 'design'] s4)
+  =/  st   s5
+  ::  ANY of {urbit,design} → both entries (cooking has design)
+  =/  any-ud  (know-explore know.st (sy ~['urbit' 'design']) | '')
+  ::  ALL of {urbit,design} → only the urbit-design note
+  =/  all-ud  (know-explore know.st (sy ~['urbit' 'design']) & '')
+  ::  text query on body (case-insensitive)
+  =/  q-hoon  (know-explore know.st *(set @t) | 'HOON')
+  ::  text query on the key
+  =/  q-cook  (know-explore know.st *(set @t) | 'cooking')
+  ::  no filters → everything
+  =/  q-none  (know-explore know.st *(set @t) | '')
+  ;:  weld
+    (expect-eq !>(2) !>(~(wyt by any-ud)))
+    (expect-eq !>(1) !>(~(wyt by all-ud)))
+    (expect-eq !>(&) !>((~(has by all-ud) /notes/urbit-design)))
+    (expect-eq !>(1) !>(~(wyt by q-hoon)))
+    (expect-eq !>(&) !>((~(has by q-hoon) /notes/urbit-design)))
+    (expect-eq !>(1) !>(~(wyt by q-cook)))
+    (expect-eq !>(&) !>((~(has by q-cook) /notes/cooking)))
+    (expect-eq !>(2) !>(~(wyt by q-none)))
+  ==
+::
 ::  ── obelisk index mirror (urQL string builders; obelisk itself not required) ──
 ++  test-obelisk-create-urql
   =/  s=tape  obelisk-create-urql
