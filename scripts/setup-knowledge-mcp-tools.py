@@ -217,6 +217,33 @@ TOOLS = [
          required=["key"],
          tb=POKE.format(extra="", action="[%restore p.u.k]",
                         msg="Restored {<(trip p.u.k)>} from trash.")),
+    dict(name="lattice-tags",
+         desc="List the existing tag vocabulary with counts. Call this BEFORE "
+              "tagging so you reuse existing tags instead of creating near-duplicates.",
+         parameters={},
+         required=[],
+         tb=scry_tool("/know/tags/json")),
+    dict(name="lattice-tag",
+         desc="Add a cross-cutting tag to a knowledge item (for discovery). Tags "
+              "are normalized lower-case. Prefer reusing a tag from lattice-tags.",
+         parameters={"key": {"type": "string", "description": "The item's key."},
+                     "tag": {"type": "string", "description": "The tag to add."}},
+         required=["key", "tag"],
+         tb=POKE.format(extra="=/  tg=(unit argument:tool:mcp)  (~(get by args) 'tag')\n"
+                              "?~  tg  (strand-fail %missing-tag ~)\n"
+                              "?>  ?=([%string @t] u.tg)\n",
+                        action="[%tag p.u.k p.u.tg]",
+                        msg="Tagged {<(trip p.u.k)>}.")),
+    dict(name="lattice-untag",
+         desc="Remove a tag from a knowledge item.",
+         parameters={"key": {"type": "string", "description": "The item's key."},
+                     "tag": {"type": "string", "description": "The tag to remove."}},
+         required=["key", "tag"],
+         tb=POKE.format(extra="=/  tg=(unit argument:tool:mcp)  (~(get by args) 'tag')\n"
+                              "?~  tg  (strand-fail %missing-tag ~)\n"
+                              "?>  ?=([%string @t] u.tg)\n",
+                        action="[%untag p.u.k p.u.tg]",
+                        msg="Untagged {<(trip p.u.k)>}.")),
 ]
 
 def mcp(name, arguments):

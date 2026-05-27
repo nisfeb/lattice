@@ -433,6 +433,9 @@
   ?:  &(=(meth %'GET') =(action 'know-trash'))
     [(respond-json-cards eyre-id 200 (en:json:html (know-list-json trash.st))) st]
   ::  GET /apps/lattice/know-read?key=<key> — one item with its body
+  ::  GET /apps/lattice/know-tags — the tag vocabulary + counts (facet data)
+  ?:  &(=(meth %'GET') =(action 'know-tags'))
+    [(respond-json-cards eyre-id 200 (en:json:html (know-tags-json know.st))) st]
   ?:  &(=(meth %'GET') =(action 'know-read'))
     ?~  k=(query-param inbound-request 'key')
       [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
@@ -678,6 +681,7 @@
   ::  /x/know/read/<key…>/json
       [%x %know %list ~]   ``json+!>((know-list-json know.state))
       [%x %know %all ~]    ``json+!>((know-all-json know.state))
+      [%x %know %tags ~]   ``json+!>((know-tags-json know.state))
       [%x %know %trash ~]  ``json+!>((know-list-json trash.state))
       [%x %know %read *]
     =/  kp=^path  t.t.t.path

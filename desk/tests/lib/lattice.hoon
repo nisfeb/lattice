@@ -117,7 +117,7 @@
 ::  +do-know: save → live; del → SOFT (moves to recoverable trash, not gone);
 ::  restore → back to live. This is the delete gate.
 ++  test-do-know
-  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-7)
+  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-8)
   =/  st2  (do-know ~2026.1.1 [%del '/a/b'] st1)
   =/  st3  (do-know ~2026.1.1 [%restore '/a/b'] st2)
   ;:  weld
@@ -127,6 +127,39 @@
     (expect-eq !>('hi') !>(body:(need (~(get by trash.st2) /a/b))))
     ::  restore brought it back to live
     (expect-eq !>('hi') !>(body:(need (~(get by know.st3) /a/b))))
+  ==
+::
+::  tags: %tag adds (normalized lower-case), %untag removes, %save preserves them,
+::  and they survive a del→restore round-trip.
+++  test-do-know-tags
+  =/  now  ~2026.1.1
+  =/  st1  (do-know now [%save '/k' 'b'] *state-8)
+  =/  st2  (do-know now [%tag '/k' 'Urbit'] st1)
+  =/  st3  (do-know now [%tag '/k' 'design'] st2)
+  =/  st4  (do-know now [%save '/k' 'b2'] st3)
+  =/  st5  (do-know now [%untag '/k' 'design'] st4)
+  =/  st6  (do-know now [%del '/k'] st5)
+  =/  st7  (do-know now [%restore '/k'] st6)
+  ;:  weld
+    ::  fresh save → no tags
+    (expect-eq !>(*(set @t)) !>(tags:(need (~(get by know.st1) /k))))
+    ::  %tag normalizes Urbit → urbit
+    (expect-eq !>((sy ~['urbit'])) !>(tags:(need (~(get by know.st2) /k))))
+    (expect-eq !>((sy ~['design' 'urbit'])) !>(tags:(need (~(get by know.st3) /k))))
+    ::  %save updates the body but preserves tags
+    (expect-eq !>('b2') !>(body:(need (~(get by know.st4) /k))))
+    (expect-eq !>((sy ~['design' 'urbit'])) !>(tags:(need (~(get by know.st4) /k))))
+    ::  %untag removes one
+    (expect-eq !>((sy ~['urbit'])) !>(tags:(need (~(get by know.st5) /k))))
+    ::  tags survive del→restore
+    (expect-eq !>((sy ~['urbit'])) !>(tags:(need (~(get by trash.st6) /k))))
+    (expect-eq !>((sy ~['urbit'])) !>(tags:(need (~(get by know.st7) /k))))
+  ==
+::
+++  test-norm-tag
+  ;:  weld
+    (expect-eq !>(`@t`'urbit') !>((norm-tag 'Urbit')))
+    (expect-eq !>(`@t`'foo bar') !>((norm-tag 'FOO BAR')))
   ==
 ::
 ++  test-render-home

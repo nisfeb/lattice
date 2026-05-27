@@ -413,6 +413,29 @@
   %+  turn  ~(tap by m)
   |=([kp=path e=know-entry] (know-entry-json kp e))
 ::
+::  +know-tags-json: the tag vocabulary across the store as {count, tags:[{tag,
+::  count}]}, sorted by count desc then alpha. The vocabulary lets agents reuse
+::  existing tags (curb sprawl); the counts are the lattice-side facet data.
+++  know-tags-json
+  |=  m=(map path know-entry)
+  ^-  json
+  =/  all=(list @t)  (zing (turn ~(val by m) |=(e=know-entry ~(tap in tags.e))))
+  =/  counts=(map @t @ud)
+    %+  roll  all
+    |=  [t=@t acc=(map @t @ud)]
+    (~(put by acc) t +((~(gut by acc) t 0)))
+  %-  pairs:enjs:format
+  :~  ['count' (numb:enjs:format ~(wyt by counts))]
+      :-  'tags'
+      :-  %a
+      %+  turn
+        %+  sort  ~(tap by counts)
+        |=  [[a=@t x=@ud] [b=@t y=@ud]]
+        ?:(=(x y) (aor a b) (gth x y))
+      |=  [t=@t n=@ud]
+      (pairs:enjs:format ~[['tag' s+t] ['count' (numb:enjs:format n)]])
+  ==
+::
 ::  +do-know: apply a knowledge action. save = create/overwrite (+ untrash);
 ::  del = SOFT delete (move to recoverable trash); restore = trash → live.
 ::  Invalid keys / missing entries are no-ops. Never grows/publishes.
