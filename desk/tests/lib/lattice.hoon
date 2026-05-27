@@ -106,6 +106,29 @@
     (expect-eq !>(&) !>(!=(~ (find "&lt;b&gt;" txt))))
   ==
 ::
+++  test-know-key
+  ;:  weld
+    (expect-eq !>(`path`/a/b) !>((need (know-key 'a/b'))))
+    (expect-eq !>(`path`/a/b) !>((need (know-key '/a/b'))))
+    ::  a key with a space isn't a valid path-like key
+    (expect-eq !>(&) !>(=(~ (know-key 'a b'))))
+  ==
+::
+::  +do-know: save → live; del → SOFT (moves to recoverable trash, not gone);
+::  restore → back to live. This is the delete gate.
+++  test-do-know
+  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-7)
+  =/  st2  (do-know ~2026.1.1 [%del '/a/b'] st1)
+  =/  st3  (do-know ~2026.1.1 [%restore '/a/b'] st2)
+  ;:  weld
+    (expect-eq !>('hi') !>(body:(need (~(get by know.st1) /a/b))))
+    ::  del removed it from live but kept it in trash (recoverable)
+    (expect-eq !>(&) !>(=(~ (~(get by know.st2) /a/b))))
+    (expect-eq !>('hi') !>(body:(need (~(get by trash.st2) /a/b))))
+    ::  restore brought it back to live
+    (expect-eq !>('hi') !>(body:(need (~(get by know.st3) /a/b))))
+  ==
+::
 ++  test-render-home
   =/  h=tape  (trip (render-home "urb://~zod/" "urb://~zod/" '# Home'))
   ;:  weld

@@ -85,6 +85,37 @@
       home=@uvH
       browse=(unit [=ship spur=path rev=@ud])
   ==
+::  state-7 adds a PRIVATE knowledge store for programmatic agents (via the
+::  %mcp server). `know` is keyed by a path-like key (/projects/x/notes) → an
+::  entry. It is NEVER grown/published — unlike `content`, it is not remotely
+::  scryable, only readable by the owner (local on-peek / authenticated Eyre).
+::  `trash` holds soft-deleted entries: agent deletes are recoverable (restore),
+::  and permanent purge is not exposed to agents.
++$  know-entry
+  $:  body=@t
+      updated=@da
+  ==
+::  programmatic knowledge actions (poked to lattice by on-ship agents/MCP):
+::  save = create/overwrite; del = soft-delete (recoverable); restore = undo.
+::  Permanent purge is deliberately NOT here — agents can't destroy knowledge.
++$  know-action
+  $%  [%save key=@t body=@t]
+      [%del key=@t]
+      [%restore key=@t]
+  ==
++$  state-7
+  $:  %7
+      content=(map path @t)
+      published=(map path @uvH)
+      pending=(map @ta [=ship =path])
+      subs=(map [=ship spur=path] last=@ud)
+      fetches=(map @ta walk)
+      manifest=@uvH
+      home=@uvH
+      browse=(unit [=ship spur=path rev=@ud])
+      know=(map path know-entry)
+      trash=(map path know-entry)
+  ==
 ::  one in-flight walk-to-latest fetch (keyed by eyre-id).
 ::  rev = highest revision resolved so far (0 = none yet); deadline = the armed
 ::  behn timer's wake time (tracked so progress can %rest + re-arm it).

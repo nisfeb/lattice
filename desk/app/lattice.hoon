@@ -4,7 +4,7 @@
 /+  default-agent, dbug, verb, *lattice
 ::
 |%
-+$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6)
++$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7)
 +$  card  card:agent:gall
 ::
 ::  -- helper gates --
@@ -351,8 +351,8 @@
   [[%pass /clay-clear %arvo %c %info q.byk.bowl [%& dels]] cards]
 ::
 ++  handle-http
-  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-6]
-  ^-  [(list card) state-6]
+  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-7]
+  ^-  [(list card) state-7]
   ::  SECURITY: Eyre forwards ALL matching HTTP requests to us, authenticated or
   ::  not, and leaves enforcement to the agent. This is the owner's control plane
   ::  (mutates state, drives keens); public reads happen via remote scry, not here.
@@ -485,7 +485,7 @@
 ::
 %-  agent:dbug
 %+  verb  |
-=|  state-6
+=|  state-7
 =*  state  -
 ^-  agent:gall
 |_  =bowl:gall
@@ -507,21 +507,29 @@
   |=  ole=vase
   ^-  (quip card _this)
   =/  old=versioned-state  !<(versioned-state ole)
-  ?:  ?=(%6 -.old)  `this(state old)
+  ?:  ?=(%7 -.old)  `this(state old)
+  ::  %6 → %7: add the empty private knowledge store (know + trash).
+  ?:  ?=(%6 -.old)
+    :-  ~
+    %=  this  state
+      :*  %7  content.old  published.old  pending.old  subs.old  fetches.old
+          manifest.old  home.old  browse.old  ~  ~
+      ==
+    ==
   ::  Versions 0-5 stored published content in Clay /pub. Pull it into state,
   ::  then delete /pub from the desk + drop the clay watch, so the desk stops
   ::  carrying the content (and installs stop shipping the publisher's pages).
   =/  content=(map path @t)  (migrate-content bowl)
   =/  files=(set path)       ~(key by content)
   =/  cards=(list card)      (clear-pub-cards bowl files)
-  =/  new=state-6
+  =/  new=state-7
     ?-  -.old
-      %5  [%6 content published.old pending.old subs.old fetches.old manifest.old home.old browse.old]
-      %4  [%6 content published.old pending.old subs.old fetches.old manifest.old home.old ~]
-      %3  [%6 content published.old pending.old subs.old fetches.old manifest.old `@uvH`0 ~]
-      %2  [%6 content published.old pending.old subs.old fetches.old `@uvH`0 `@uvH`0 ~]
-      %1  [%6 content published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~]
-      %0  [%6 content published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~]
+      %5  [%7 content published.old pending.old subs.old fetches.old manifest.old home.old browse.old ~ ~]
+      %4  [%7 content published.old pending.old subs.old fetches.old manifest.old home.old ~ ~ ~]
+      %3  [%7 content published.old pending.old subs.old fetches.old manifest.old `@uvH`0 ~ ~ ~]
+      %2  [%7 content published.old pending.old subs.old fetches.old `@uvH`0 `@uvH`0 ~ ~ ~]
+      %1  [%7 content published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~ ~ ~]
+      %0  [%7 content published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~ ~ ~]
     ==
   [cards this(state new)]
 ::
@@ -538,6 +546,12 @@
     =+  !<([eyre-id=@ta =inbound-request:eyre] q.cage)
     =^  cards  state  (handle-http bowl eyre-id inbound-request state)
     [cards this]
+  ::
+  ::  programmatic knowledge writes (on-ship agents / MCP). src==our already
+  ::  enforced above, so only the owner's own automation can store/delete.
+      %lattice-know
+    =+  !<(act=know-action q.cage)
+    `this(state (do-know now.bowl act state))
   ==
 ::
 ++  on-watch
@@ -582,6 +596,18 @@
         %+  turn  ~(tap in files)
         |=(p=^path s+(spat p))
     ==
+  ::
+  ::  ── private knowledge store (owner-only: on-peek is local / auth-gated) ──
+  ::  scry via .../x/know/list/json, /x/know/all/json, /x/know/trash/json,
+  ::  /x/know/read/<key…>/json
+      [%x %know %list ~]   ``json+!>((know-list-json know.state))
+      [%x %know %all ~]    ``json+!>((know-all-json know.state))
+      [%x %know %trash ~]  ``json+!>((know-list-json trash.state))
+      [%x %know %read *]
+    =/  kp=^path  t.t.t.path
+    ?~  e=(~(get by know.state) kp)
+      ``json+!>(`json`(pairs:enjs:format ~[['error' s+'not found']]))
+    ``json+!>((know-entry-json kp u.e))
   ==
 ::
 ::  lattice uses ames keens + eyre, not gall subscriptions, so no agent signs

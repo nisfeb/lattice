@@ -26,6 +26,8 @@ git module base-dev:
     # marks the desk needs to build/commit/install (gmi is lattice's own).
     - pkg/base-dev/mar/bill.hoon
     - pkg/base-dev/mar/hoon.hoon
+    # json mark: the knowledge-store on-peek serves %json over %gx (agents/MCP).
+    - pkg/base-dev/mar/json.hoon
     - pkg/base-dev/mar/kelvin.hoon
     - pkg/base-dev/mar/mime.hoon
     - pkg/base-dev/mar/noun.hoon

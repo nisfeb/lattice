@@ -3,6 +3,7 @@
 ::  These are the bowl/scry-independent gates, split out of /app/lattice so they
 ::  can be unit-tested in /tests/lib/lattice without a running agent.
 ::
+/-  *lattice
 |%
 ::  +parse-urb-url: "urb://~ship/a/b" → [~ship /a/b]; bare ship → [~ship /]
 ++  parse-urb-url
@@ -345,4 +346,85 @@
   |=  ourpatp=tape
   ^-  @t
   (render-page ourpatp "" "<h1>Bookmarks</h1><div id=\"bmlist\"></div>")
+::
+::  ── private knowledge store (programmatic agent / MCP access; NOT published) ──
+::
+::  +know-key: parse an agent-supplied key ("projects/x/notes") to a path, or ~
+::  if it isn't a valid path-like key.
+++  know-key
+  |=  k=@t
+  ^-  (unit path)
+  =/  t=tape  (trip k)
+  =/  full=tape  ?:(?=([%'/' *] t) t ['/' t])
+  =/  res  (mule |.((stab (crip full))))
+  ?:(?=(%& -.res) `p.res ~)
+::
+++  know-entry-json
+  |=  [kp=path e=know-entry]
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['key' s+(spat kp)]
+      ['body' s+body.e]
+      ['updated' s+(scot %da updated.e)]
+  ==
+::
+::  +know-list-json: keys + metadata (no bodies) — for listing/trash views.
+++  know-list-json
+  |=  m=(map path know-entry)
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['count' (numb:enjs:format ~(wyt by m))]
+      :-  'keys'
+      :-  %a
+      %+  turn  ~(tap by m)
+      |=  [kp=path e=know-entry]
+      ^-  json
+      %-  pairs:enjs:format
+      :~  ['key' s+(spat kp)]
+          ['updated' s+(scot %da updated.e)]
+          ['bytes' (numb:enjs:format (met 3 body.e))]
+      ==
+  ==
+::
+::  +know-all-json: keys + bodies — for the search tool to filter client-side.
+++  know-all-json
+  |=  m=(map path know-entry)
+  ^-  json
+  %-  pairs:enjs:format
+  :_  ~
+  :-  'items'
+  :-  %a
+  %+  turn  ~(tap by m)
+  |=([kp=path e=know-entry] (know-entry-json kp e))
+::
+::  +do-know: apply a knowledge action. save = create/overwrite (+ untrash);
+::  del = SOFT delete (move to recoverable trash); restore = trash → live.
+::  Invalid keys / missing entries are no-ops. Never grows/publishes.
+++  do-know
+  |=  [now=@da act=know-action st=state-7]
+  ^-  state-7
+  ?-  -.act
+      %save
+    ?~  kp=(know-key key.act)  st
+    %=  st
+      know   (~(put by know.st) u.kp [body.act now])
+      trash  (~(del by trash.st) u.kp)
+    ==
+  ::
+      %del
+    ?~  kp=(know-key key.act)  st
+    ?~  e=(~(get by know.st) u.kp)  st
+    %=  st
+      know   (~(del by know.st) u.kp)
+      trash  (~(put by trash.st) u.kp u.e)
+    ==
+  ::
+      %restore
+    ?~  kp=(know-key key.act)  st
+    ?~  e=(~(get by trash.st) u.kp)  st
+    %=  st
+      trash  (~(del by trash.st) u.kp)
+      know   (~(put by know.st) u.kp u.e)
+    ==
+  ==
 --
