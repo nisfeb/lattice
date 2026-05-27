@@ -44,14 +44,31 @@ dependency**):
 
 ### Setup
 
-Point it at your ship with its authenticated cookie (the same session your MCP
-client uses), then run once (re-run after a lattice upgrade — `add-mcp-tool`
-overwrites by name):
+Connection is read from the repo's shared `.mcp.json` (the same file your MCP
+client uses), so the command takes no extra config:
 
 ```sh
-LATTICE_URL=https://your-ship.example.com \
-LATTICE_COOKIE='urbauth-~sampel-palnet=0v...' \
-python3 scripts/setup-knowledge-mcp-tools.py
+python3 scripts/setup-knowledge-mcp-tools.py            # the lone mcpServers entry
+python3 scripts/setup-knowledge-mcp-tools.py <server>   # or a named entry
 ```
 
-Requires `%lattice` `[0 3 9]`+ and the `%mcp-server` agent installed.
+(Override ad hoc with `LATTICE_COOKIE=… [LATTICE_URL=…]` if you're not using
+`.mcp.json`.) Requires `%lattice` `[0 3 9]`+ and the `%mcp-server` agent
+installed. Verified end-to-end on a fake ship: save → read → search →
+delete (soft) → restore all round-trip against the live store.
+
+### Re-running / upgrades
+
+`%mcp-server` keeps its tools in a **set** — there is no overwrite or delete, so
+running the script twice registers *duplicate* tools (and a stale duplicate can
+shadow the good one). To re-register cleanly after a lattice upgrade, reset the
+server's tool state first, then run the script:
+
+```
+|nuke %mcp-server      :: clears its state (you'll confirm y/N)
+|revive %mcp-server    :: re-runs on-init, reloading only the default tools
+```
+
+This wipes user-registered tools/prompts/resources on that ship — re-add any
+others afterwards. On the fakes the agent's desk is `%mcp` (`|nuke`/`|revive`
+the `%mcp-server` *agent*, not the desk).

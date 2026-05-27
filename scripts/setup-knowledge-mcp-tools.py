@@ -6,22 +6,56 @@ context (subject: mcp, spider, strand, io=strandio, strand-fail, ..zuse), so
 these tools need NO lattice-side dependency — they just scry lattice's
 on-peek (/know/...) and poke its %lattice-know mark.
 
-Usage:
-    LATTICE_URL=http://localhost:8082 \\
-    LATTICE_COOKIE='urbauth-~tyr=0v...' \\
-    python3 scripts/setup-knowledge-mcp-tools.py
+Connection comes from the repo's shared `.mcp.json` (the same file your MCP
+client uses), so there's nothing extra to configure:
 
-The cookie is the ship's authenticated session (same one your MCP client uses).
-Re-run after upgrading lattice if a tool's behavior changes; add-mcp-tool
-overwrites a tool of the same name.
+    python3 scripts/setup-knowledge-mcp-tools.py            # the lone server, or
+    python3 scripts/setup-knowledge-mcp-tools.py <server>   # a named mcpServers entry
+
+Override ad hoc with env vars if needed (LATTICE_URL defaults to .../8082):
+
+    LATTICE_COOKIE='urbauth-~tyr=0v...' python3 scripts/setup-knowledge-mcp-tools.py
+
+NOTE: mcp-server stores tools in a *set*, with no overwrite or delete. Re-running
+adds fresh copies rather than replacing, so before re-registering on a ship that
+already has these tools, reset its state: `|nuke %mcp-server` then
+`|revive %mcp-server` (reloads the default tools via on-init), then run this.
+Run this once after each lattice upgrade that changes a tool's behavior.
 """
 import json
 import os
 import sys
 import urllib.request
 
-URL = os.environ.get("LATTICE_URL", "http://localhost:8082").rstrip("/")
-COOKIE = os.environ.get("LATTICE_COOKIE", "")
+
+def _from_mcp_json(server):
+    """Resolve (endpoint, cookie) from the nearest .mcp.json, walking up from here."""
+    d = os.path.dirname(os.path.abspath(__file__))
+    while True:
+        path = os.path.join(d, ".mcp.json")
+        if os.path.isfile(path):
+            servers = json.load(open(path)).get("mcpServers", {})
+            if not servers:
+                sys.exit(f"no mcpServers in {path}")
+            name = server or (next(iter(servers)) if len(servers) == 1 else None)
+            if name is None:
+                sys.exit(f"multiple servers in {path}; pass one of: {', '.join(servers)}")
+            s = servers.get(name)
+            if s is None:
+                sys.exit(f"server {name!r} not in {path}; have: {', '.join(servers)}")
+            return s.get("url", ""), s.get("headers", {}).get("Cookie", "")
+        parent = os.path.dirname(d)
+        if parent == d:
+            sys.exit("no .mcp.json found (and LATTICE_COOKIE not set)")
+        d = parent
+
+
+_server = sys.argv[1] if len(sys.argv) > 1 else None
+if os.environ.get("LATTICE_COOKIE"):
+    ENDPOINT = os.environ.get("LATTICE_URL", "http://localhost:8082").rstrip("/") + "/mcp"
+    COOKIE = os.environ["LATTICE_COOKIE"]
+else:
+    ENDPOINT, COOKIE = _from_mcp_json(_server)
 
 # ── shared Hoon snippets ──────────────────────────────────────────────────
 # A read tool: scry lattice at PATH (must end /json) and return the JSON text.
@@ -154,7 +188,7 @@ TOOLS = [
 def mcp(name, arguments):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                        "params": {"name": name, "arguments": arguments}}).encode()
-    req = urllib.request.Request(f"{URL}/mcp", data=body, headers={
+    req = urllib.request.Request(ENDPOINT, data=body, headers={
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
         "Cookie": COOKIE})
@@ -174,7 +208,8 @@ def mcp(name, arguments):
 
 def main():
     if not COOKIE:
-        sys.exit("set LATTICE_COOKIE (the ship's urbauth cookie)")
+        sys.exit("no session cookie (set headers.Cookie in .mcp.json or LATTICE_COOKIE)")
+    print(f"registering {len(TOOLS)} lattice tools -> {ENDPOINT}")
     for t in TOOLS:
         out = mcp("add-mcp-tool", {
             "name": t["name"], "desc": t["desc"],
