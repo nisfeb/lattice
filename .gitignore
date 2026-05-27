@@ -24,3 +24,7 @@ replay_pid*.log
 # peru dependency vendoring
 .peru/
 dist-dev/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
