@@ -166,6 +166,53 @@ SEARCH = """
 (pairs:enjs:format ~[['type' s+'text'] ['text' s+(en:json:html out)]])
 """
 
+# Explore/discovery: filter the store by a tag and/or a substring. Reads the
+# same /know/all/json the search tool uses, so it needs no extra agent scry.
+EXPLORE = """
+|=  args=(map name:parameter:tool:mcp argument:tool:mcp)
+^-  shed:khan
+=/  m  (strand ,vase)
+^-  form:m
+=/  tagu=(unit argument:tool:mcp)  (~(get by args) 'tag')
+=/  qu=(unit argument:tool:mcp)    (~(get by args) 'query')
+=/  ftag=tape  ?~(tagu "" ?:(?=([%string @t] u.tagu) (cass (trip p.u.tagu)) ""))
+=/  ndl=tape   ?~(qu "" ?:(?=([%string @t] u.qu) (cass (trip p.u.qu)) ""))
+;<  =bowl:spider  bind:m  get-bowl:io
+=/  res
+  %-  mule
+  |.  ^-  json
+  .^(json %gx (welp /(scot %p our.bowl)/lattice/(scot %da now.bowl) /know/all/json))
+?.  ?=(%& -.res)  (strand-fail %lattice-scry-failed p.res)
+=/  jon=json  p.res
+=/  items=(list json)
+  ?.  ?=([%o *] jon)  ~
+  =/  it  (~(get by p.jon) 'items')
+  ?~(it ~ ?:(?=([%a *] u.it) p.u.it ~))
+=/  hits=(list json)
+  %+  murn  items
+  |=  item=json
+  ^-  (unit json)
+  ?.  ?=([%o *] item)  ~
+  =/  kj  (~(get by p.item) 'key')
+  =/  bj  (~(get by p.item) 'body')
+  =/  tj  (~(get by p.item) 'tags')
+  =/  kt=tape  ?~(kj "" ?:(?=([%s *] u.kj) (trip p.u.kj) ""))
+  =/  bt=tape  ?~(bj "" ?:(?=([%s *] u.bj) (trip p.u.bj) ""))
+  =/  tags=(list tape)
+    ?~  tj  ~
+    ?.  ?=([%a *] u.tj)  ~
+    %+  turn  p.u.tj
+    |=(j=json ?:(?=([%s *] j) (cass (trip p.j)) ""))
+  =/  tag-ok=?  ?|(=("" ftag) (lien tags |=(t=tape =(t ftag))))
+  =/  q-ok=?    ?|(=("" ndl) |(!=(~ (find ndl (cass kt))) !=(~ (find ndl (cass bt)))))
+  ?.  &(tag-ok q-ok)  ~
+  `(pairs:enjs:format ~[['key' s+(crip kt)] ['tags' a+(turn tags |=(t=tape s+(crip t)))]])
+%-  pure:m
+!>  ^-  json
+=/  out=json  (pairs:enjs:format ~[['count' (numb:enjs:format (lent hits))] ['matches' a+hits]])
+(pairs:enjs:format ~[['type' s+'text'] ['text' s+(en:json:html out)]])
+"""
+
 def scry_tool(path):
     scry = (".^(json %gx (welp /(scot %p our.bowl)/lattice/(scot %da now.bowl) "
             f"{path}))")
@@ -204,6 +251,15 @@ TOOLS = [
          parameters={"query": {"type": "string", "description": "Substring to search for."}},
          required=["query"],
          tb=SEARCH),
+    dict(name="lattice-explore",
+         desc="Discover knowledge items by tag and/or substring. Give `tag` to "
+              "find everything carrying that tag, `query` to match a substring of "
+              "the key or body, or both to AND them. Returns matching keys + their "
+              "tags. Use lattice-tags first to see the tag vocabulary.",
+         parameters={"tag": {"type": "string", "description": "A tag to filter by (normalized lower-case)."},
+                     "query": {"type": "string", "description": "Substring of the key or body."}},
+         required=[],
+         tb=EXPLORE),
     dict(name="lattice-delete",
          desc="Soft-delete a knowledge item (moves it to a recoverable trash; "
               "use lattice-restore to undo). Does not permanently destroy it.",
