@@ -36,7 +36,7 @@ import io.nisfeb.lattice.ui.AppScreen
 import io.nisfeb.lattice.ui.InstallAgentScreen
 import io.nisfeb.lattice.knowledge.KnowledgeClient
 import io.nisfeb.lattice.ui.BookmarksScreen
-import io.nisfeb.lattice.ui.Source
+import io.nisfeb.lattice.workspace.Source
 import io.nisfeb.lattice.ui.BrowserScreen
 import io.nisfeb.lattice.ui.BrowserTab
 import io.nisfeb.lattice.ui.DiscoverScreen

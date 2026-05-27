@@ -29,6 +29,8 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Publish
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.VerticalSplit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
@@ -44,12 +46,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -63,15 +63,20 @@ import io.nisfeb.lattice.rememberFileImporter
 import io.nisfeb.lattice.resources.Res
 import io.nisfeb.lattice.resources.dejavusansmono
 import io.nisfeb.lattice.urbit.LatticeClient
+import io.nisfeb.lattice.workspace.Buffer
+import io.nisfeb.lattice.workspace.Source
+import io.nisfeb.lattice.workspace.WorkspaceBuffers
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.Font
 
 /**
- * File manager + editor for BOTH stores: public gemtext pages (urb:// pages) and
- * the private knowledge store. A Pages/Knowledge toggle swaps which namespace the
- * tree shows; tabs from either store coexist in the same editor (open a note in
- * one tab while drafting a page in another). Save/delete dispatch by the buffer's
- * [Source]; public delete is hard, knowledge delete is soft (→ recoverable trash).
+ * File manager + editor for BOTH stores: public gemtext pages and the private
+ * knowledge store. A Pages/Knowledge toggle swaps which namespace the tree shows;
+ * tabs from either store coexist in the editor. On desktop the editor can SPLIT
+ * into two side-by-side panes — each its own tab group — so you can read a note
+ * in one pane while drafting a page in the other. Buffer/pane state lives in
+ * [WorkspaceBuffers]; save/delete dispatch by the buffer's [Source] (public hard,
+ * knowledge soft → recoverable trash).
  */
 @Composable
 fun WorkspaceScreen(
@@ -96,12 +101,10 @@ fun WorkspaceScreen(
     var pubDir by remember { mutableStateOf("") }
     var knowDir by remember { mutableStateOf("") }
     var newName by remember { mutableStateOf("") }
-    val buffers = remember { mutableListOf<Buffer>().toMutableStateList() }
-    var active by remember { mutableIntStateOf(-1) }
+    val wb = remember { WorkspaceBuffers() }
     var status by remember { mutableStateOf<String?>(null) }
 
     fun refreshPublic() = scope.launch { client.list().onSuccess { pubFiles = it } }
-    // knowledge keys come back with a leading '/'; the tree wants plain a/b paths.
     fun refreshKnow() = scope.launch {
         knowledge.list().onSuccess { knowFiles = it.map { k -> k.key.removePrefix("/") } }
         knowledge.trash().onSuccess { trashFiles = it.map { k -> k.key.removePrefix("/") } }
@@ -123,11 +126,8 @@ fun WorkspaceScreen(
     }
 
     fun openBuffer(path: String, source: Source) {
-        val existing = buffers.indexOfFirst { it.source == source && it.path == path }
-        if (existing >= 0) { active = existing; return }
-        val b = Buffer(path, source, isNew = false)
-        buffers.add(b); active = buffers.lastIndex
-        scope.launch {
+        val b = wb.open(path, source)
+        if (!b.loaded) scope.launch {
             when (source) {
                 Source.Public -> client.fetch("urb://$ship/$path").onSuccess { b.text = it.body }
                 Source.Knowledge -> knowledge.read(path).onSuccess { b.text = it.body }
@@ -139,15 +139,7 @@ fun WorkspaceScreen(
     fun newFile(name: String) {
         val base = if (ns == Source.Public) pubDir else knowDir
         val full = if (base.isEmpty()) name else "$base/$name"
-        buffers.add(Buffer(full, ns, isNew = true)); active = buffers.lastIndex
-    }
-
-    fun closeTab(i: Int) {
-        buffers.removeAt(i)
-        active = if (buffers.isEmpty()) -1 else active.coerceAtMost(buffers.lastIndex)
-    }
-    fun closeBufferFor(source: Source, path: String) {
-        buffers.indexOfFirst { it.source == source && it.path == path }.takeIf { it >= 0 }?.let { closeTab(it) }
+        wb.open(full, ns, isNew = true)
     }
 
     fun save(b: Buffer) = scope.launch {
@@ -159,7 +151,7 @@ fun WorkspaceScreen(
 
     fun deleteKnow(key: String) = scope.launch {
         knowledge.delete(key)
-            .onSuccess { closeBufferFor(Source.Knowledge, key); refreshKnow(); status = "Moved \"$key\" to trash." }
+            .onSuccess { wb.closeFor(Source.Knowledge, key); refreshKnow(); status = "Moved \"$key\" to trash." }
             .onFailure { status = "Delete failed: ${it.message}" }
     }
     fun restoreKnow(key: String) = scope.launch {
@@ -181,7 +173,7 @@ fun WorkspaceScreen(
     fun doMove(src: String, dest: String) = scope.launch {
         client.fetch("urb://$ship/$src").onSuccess {
             client.save(dest, it.body).onSuccess {
-                client.delete(src).onSuccess { closeBufferFor(Source.Public, src); refreshPublic() }
+                client.delete(src).onSuccess { wb.closeFor(Source.Public, src); refreshPublic() }
             }
         }
     }
@@ -241,7 +233,7 @@ fun WorkspaceScreen(
                 ) { Icon(Icons.Filled.Add, "New", modifier = Modifier.size(18.dp)) }
             }
         }
-        val activeForNs = buffers.getOrNull(active)?.let { if (it.source == ns) it.path else null }
+        val activeForNs = wb.activeIn(wb.focusedPane)?.let { if (it.source == ns) it.path else null }
         FileTree(
             files = if (ns == Source.Public) pubFiles else if (showTrash) trashFiles else knowFiles,
             dir = if (ns == Source.Public) pubDir else knowDir,
@@ -280,34 +272,29 @@ fun WorkspaceScreen(
     }
 
     @Composable
-    fun editorArea(modifier: Modifier) {
-        val b = buffers.getOrNull(active)
+    fun bufferEditor(b: Buffer, modifier: Modifier) {
         Box(modifier = modifier, contentAlignment = Alignment.Center) {
-            when {
-                b == null -> Text("Open or create a file", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                !b.loaded -> CircularProgressIndicator()
-                else -> key(b.source, b.path, vimMode) {
-                    if (vimMode) VimEditor(
-                        text = b.text, onText = { b.text = it; b.dirty = true },
-                        onSave = { save(b) }, onQuit = { closeTab(active) }, monoFamily = monoFamily,
-                    ) else PlainEditor(
-                        text = b.text, onText = { b.text = it; b.dirty = true },
-                        onSave = { save(b) }, monoFamily = monoFamily,
-                    )
-                }
+            if (!b.loaded) CircularProgressIndicator()
+            else key(b.source, b.path, vimMode) {
+                if (vimMode) VimEditor(
+                    text = b.text, onText = { b.text = it; b.dirty = true },
+                    onSave = { save(b) }, onQuit = { wb.close(b) }, monoFamily = monoFamily,
+                ) else PlainEditor(
+                    text = b.text, onText = { b.text = it; b.dirty = true },
+                    onSave = { save(b) }, monoFamily = monoFamily,
+                )
             }
         }
     }
 
     @Composable
-    fun tabs() {
-        if (buffers.isEmpty()) return
+    fun paneTabs(p: Int) {
         Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-            buffers.forEachIndexed { i, b ->
-                val sel = i == active
+            wb.inPane(p).forEach { b ->
+                val sel = wb.activeIn(p) === b
                 Surface(
                     color = if (sel) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.background,
-                    modifier = Modifier.clickable { active = i },
+                    modifier = Modifier.clickable { wb.select(p, b) },
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -324,7 +311,7 @@ fun WorkspaceScreen(
                             style = MaterialTheme.typography.bodyMedium,
                             color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                         )
-                        IconButton(onClick = { closeTab(i) }, modifier = Modifier.size(24.dp)) {
+                        IconButton(onClick = { wb.close(b) }, modifier = Modifier.size(24.dp)) {
                             Icon(Icons.Filled.Close, "Close", modifier = Modifier.size(14.dp))
                         }
                     }
@@ -333,27 +320,65 @@ fun WorkspaceScreen(
         }
     }
 
+    @Composable
+    fun editorPane(p: Int, modifier: Modifier) {
+        val b = wb.activeIn(p)
+        Column(modifier = modifier) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable { wb.focus(p) },
+            ) {
+                Box(Modifier.weight(1f)) { paneTabs(p) }
+                if (wb.splitCount == 2 && b != null) {
+                    IconButton(onClick = { wb.moveToOtherPane(b) }, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Filled.SwapHoriz, "Move to other pane", modifier = Modifier.size(18.dp))
+                    }
+                }
+                b?.let { ab ->
+                    IconButton(onClick = { save(ab) }, modifier = Modifier.size(36.dp)) {
+                        Icon(
+                            Icons.Filled.Save, "Save (Ctrl+S)", modifier = Modifier.size(20.dp),
+                            tint = if (ab.dirty) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                if (p == 0) {
+                    IconButton(onClick = { wb.setSplit(wb.splitCount == 1) }, modifier = Modifier.size(36.dp)) {
+                        Icon(
+                            Icons.Filled.VerticalSplit, if (wb.splitCount == 1) "Split editor" else "Merge editor",
+                            modifier = Modifier.size(20.dp),
+                            tint = if (wb.splitCount == 2) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            if (b == null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        if (wb.splitCount == 2) "Open a file in this pane" else "Open or create a file",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                bufferEditor(b, Modifier.fillMaxSize())
+            }
+        }
+    }
+
     if (isDesktop) {
         Row(modifier = Modifier.fillMaxSize()) {
             sidebar(Modifier.width(240.dp).fillMaxHeight())
             VerticalDivider()
-            Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    Box(Modifier.weight(1f)) { tabs() }
-                    buffers.getOrNull(active)?.let { ab ->
-                        IconButton(onClick = { save(ab) }, modifier = Modifier.size(36.dp)) {
-                            Icon(
-                                Icons.Filled.Save, "Save (Ctrl+S)", modifier = Modifier.size(20.dp),
-                                tint = if (ab.dirty) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
+            Row(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                editorPane(0, Modifier.weight(1f).fillMaxHeight())
+                if (wb.splitCount == 2) {
+                    VerticalDivider()
+                    editorPane(1, Modifier.weight(1f).fillMaxHeight())
                 }
-                editorArea(Modifier.fillMaxSize())
             }
         }
     } else {
-        val b = buffers.getOrNull(active)
+        val b = wb.activeIn(0)
         if (b == null) {
             sidebar(Modifier.fillMaxSize())
         } else {
@@ -362,7 +387,7 @@ fun WorkspaceScreen(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = { closeTab(active) }) {
+                    IconButton(onClick = { wb.close(b) }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Close file")
                     }
                     Icon(
@@ -373,7 +398,7 @@ fun WorkspaceScreen(
                     Text(b.path + if (b.dirty) " •" else "", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                     IconButton(onClick = { save(b) }) { Icon(Icons.Filled.Save, "Save") }
                 }
-                editorArea(Modifier.fillMaxSize())
+                bufferEditor(b, Modifier.fillMaxSize())
             }
         }
     }
@@ -403,7 +428,7 @@ fun WorkspaceScreen(
             confirmButton = {
                 TextButton(onClick = {
                     confirmDelete = null
-                    scope.launch { client.delete(path).onSuccess { closeBufferFor(Source.Public, path); refreshPublic() } }
+                    scope.launch { client.delete(path).onSuccess { wb.closeFor(Source.Public, path); refreshPublic() } }
                 }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
