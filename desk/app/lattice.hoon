@@ -140,6 +140,10 @@
   |=  [=bowl:gall eid=@ta urql=tape]
   ^-  card
   [%pass /oqp/[eid] %agent [our.bowl %obelisk] %poke %obelisk-action !>([%tape2 %lattice urql])]
+++  obelisk-leave-card
+  |=  [=bowl:gall eid=@ta]
+  ^-  card
+  [%pass /oqw/[eid] %agent [our.bowl %obelisk] %leave ~]
 ++  obelisk-qwait-card
   |=  [eid=@ta at=@da]
   ^-  card
@@ -658,14 +662,8 @@
   ^-  (quip card _this)
   =/  old=versioned-state  !<(versioned-state ole)
   ?:  ?=(%9 -.old)  `this(state old)
-  ::  %8 → %9: add the (empty) in-flight obelisk query slot.
-  ?:  ?=(%8 -.old)
-    :-  ~
-    %=  this  state
-      :*  %9  content.old  published.old  pending.old  subs.old  fetches.old
-          manifest.old  home.old  browse.old  know.old  trash.old  ~
-      ==
-    ==
+  ::  %8 → %9: add the (empty) in-flight obelisk query slot (see +migrate-8-9).
+  ?:  ?=(%8 -.old)  `this(state (migrate-8-9 old))
   ::  %7 → %9: give every knowledge entry empty tags + a reserved (empty) vector.
   ?:  ?=(%7 -.old)
     =/  up=$-(know-entry-7 know-entry)  |=(e=know-entry-7 [body.e updated.e ~ ~])
@@ -796,29 +794,33 @@
   =/  eid=@ta  i.t.wire
   ?.  =(eid eid.u.cur)  `this
   =/  clear=card  (obelisk-qrest-card eid deadline.u.cur)
+  ::  +finish: clear the in-flight query, rest the timer, optionally LEAVE the
+  ::  /server subscription (only when it's still open — the poke-nack path; on a
+  ::  %fact/%kick obelisk already kicked us, and a nacked %watch never subscribed).
   =/  finish
-    |=  [status=@ud body=@t]
+    |=  [leave=? status=@ud body=@t]
     ^-  (quip card _this)
     =.  oquery.state  ~
-    [[clear (respond-json-cards eid status body)] this]
+    =/  pre=(list card)  ?:(leave ~[clear (obelisk-leave-card bowl eid)] ~[clear])
+    [(weld pre (respond-json-cards eid status body)) this]
   ?-  i.wire
       %oqw
     ?+  -.sign  `this
         %watch-ack
       ?~  p.sign  `this   :: subscribed OK — await the result fact
-      (finish 503 '{"error":"obelisk not installed"}')
+      (finish | 503 '{"error":"obelisk not installed"}')
     ::
         %fact
-      (finish 200 (en:json:html (obelisk-result-json q.q.cage.sign)))
+      (finish | 200 (en:json:html (obelisk-result-json q.q.cage.sign)))
     ::
         %kick
-      (finish 502 '{"error":"obelisk closed the connection"}')
+      (finish | 502 '{"error":"obelisk closed the connection"}')
     ==
   ::
       %oqp
     ?.  ?=(%poke-ack -.sign)  `this
     ?~  p.sign  `this   :: poke accepted — the fact arrives on /oqw
-    (finish 503 '{"error":"obelisk rejected the query poke"}')
+    (finish & 503 '{"error":"obelisk rejected the query poke"}')
   ==
 ::
 ++  on-arvo
@@ -865,7 +867,10 @@
     ?~  cur  `this
     ?.  =(eid eid.u.cur)  `this
     =.  oquery.state  ~
-    [(respond-json-cards eid 504 '{"error":"obelisk query timed out"}') this]
+    ::  leave the /server watch we opened — obelisk never kicked us, so it'd leak.
+    :_  this
+    :-  (obelisk-leave-card bowl eid)
+    (respond-json-cards eid 504 '{"error":"obelisk query timed out"}')
   ::
       [%walk @ta @ta ~]
     ::  a revision in a walk-to-latest fetch resolved (or returned no value).

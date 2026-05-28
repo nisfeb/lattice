@@ -643,6 +643,14 @@
       ['columns' a+(turn cols |=(c=@t s+c))]
       ['rows' a+rows]
   ==
+::  +migrate-8-9: state-8 → state-9 — carry every field forward and add the
+::  (empty) in-flight obelisk-query slot. Pure, so on-load's upgrade is testable.
+++  migrate-8-9
+  |=  s=state-8
+  ^-  state-9
+  :*  %9  content.s  published.s  pending.s  subs.s  fetches.s
+      manifest.s  home.s  browse.s  know.s  trash.s  ~
+  ==
 ::
 ::  +do-know: apply a knowledge action. save = create/overwrite (+ untrash);
 ::  del = SOFT delete (move to recoverable trash); restore = trash → live.

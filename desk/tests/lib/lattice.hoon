@@ -162,6 +162,20 @@
     (expect-eq !>(`@t`'foo bar') !>((norm-tag 'FOO BAR')))
   ==
 ::
+::  +migrate-8-9: head becomes %9, all data carried forward, oquery starts empty.
+++  test-migrate-8-9
+  =/  e=know-entry  ['body' ~2026.1.1 (sy ~['x']) ~]
+  =/  s8=state-8  *state-8
+  =.  know.s8   (malt ~[[`path`/a/b e]])
+  =.  home.s8   `@uvH`42
+  =/  s9=state-9  (migrate-8-9 s8)
+  ;:  weld
+    (expect-eq !>(%9) !>(-.s9))
+    (expect-eq !>(e) !>((~(got by know.s9) /a/b)))
+    (expect-eq !>(`@uvH`42) !>(home.s9))
+    (expect-eq !>(*(unit [eid=@ta deadline=@da])) !>(oquery.s9))
+  ==
+::
 ::  ── explore / discovery (synchronous filter over the live store) ──
 ++  test-split-on
   ;:  weld
