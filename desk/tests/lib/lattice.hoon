@@ -357,6 +357,88 @@
   =/  bad=*  [%.y ~[[%results ~[[%result-set ~[[%vector ~]]]]]]]
   =/  j=tape  (trip (en:json:html (obelisk-result-json bad)))
   (expect-eq !>(&) !>(!=(~ (find "\"ok\":false" j))))
+::
+::  ── fuzzing (seeded + reproducible, dep-free via +og — cf. talon's Fuzz) ──
+::  +fz-noun: a pseudo-random noun (atoms + cells, to `depth`) from a seed.
+++  fz-noun
+  |=  [seed=@ depth=@ud]
+  ^-  *
+  =/  rng  ~(. og seed)
+  =^  r  rng  (rads:rng 10)
+  ?:  ?|(=(0 depth) (lth r 4))
+    =^  a  rng  (rads:rng 1.000.000)
+    a
+  =^  sa  rng  (rads:rng 0x1.0000.0000)
+  =^  sb  rng  (rads:rng 0x1.0000.0000)
+  [(fz-noun sa (dec depth)) (fz-noun sb (dec depth))]
+::  +fz-toks: parser-significant tokens (paths, schemes, gemtext, punctuation).
+++  fz-toks
+  ^-  (list @t)
+  :~  '' ' ' '/' '//' '../' './' 'a/b' '~zod' '~ricsul-bilwyt' 'a b'
+      'urb://' 'urb://~zod/a' 'urb://~zod' 'https://x' 'mailto:a@b'
+      'javascript:alert(1)' 'data:text/html,x' '=> /x  go' '# h' '```'
+      '<b>' '&' '"' '\\' ':' '%' '..' '/apps/lattice/save?path=x'
+  ==
+::  +fz-cord: a pseudo-random cord — a biased token, or random bytes.
+++  fz-cord
+  |=  seed=@
+  ^-  @t
+  =/  rng  ~(. og seed)
+  =^  pick  rng  (rads:rng 3)
+  ?:  =(0 pick)
+    =^  i  rng  (rads:rng (lent fz-toks))
+    (snag i fz-toks)
+  =^  nby  rng  (rads:rng 24)
+  =^  v  rng  (raws:rng (mul 8 +(nby)))
+  `@t`v
+::  +fz: run `check` over n seeded inputs; first failure → a tang with the seed.
+++  fz
+  |=  [n=@ud seed=@ check=$-(@ ?)]
+  ^-  tang
+  =/  rng  ~(. og seed)
+  |-  ^-  tang
+  ?:  =(0 n)  ~
+  =^  s  rng  (rads:rng 0x1.0000.0000.0000.0000)
+  ?.  (check s)
+    [leaf+"fuzz: invariant broke (top-seed={<seed>} input-seed={<s>})"]~
+  $(n (dec n))
+::
+::  obelisk-result-json must return a JSON OBJECT for ANY noun — the +mule
+::  fallback makes it total. 1k random nouns; a crash or non-object fails.
+++  test-fuzz-decoder
+  %+  fz  1.000  0xdec0.de5
+  |=  s=@
+  ^-  ?
+  =/  r  (mule |.(?=([%o *] (obelisk-result-json (fz-noun s 6)))))
+  ?:(?=(%& -.r) p.r |)
+::
+::  the parsers that read remote/fetched content must never crash on arbitrary
+::  input (they wrap their crashy bits in +mule / +rush).
+++  test-fuzz-parsers
+  %+  fz  1.000  0xc0ffee
+  |=  s=@
+  ^-  ?
+  =/  c=@t  (fz-cord s)
+  =/  r
+    %-  mule
+    |.
+    =+  (parse-urb-url c)
+    =+  (know-key c)
+    =+  (resolve-href "urb://~zod/a/b" (trip c))
+    =+  (render-gmi-html "urb://~zod/" c)
+    =+  (req-action (mock-req c))
+    =+  (query-param (mock-req c) 'path')
+    &
+  ?=(%& -.r)
+::
+::  +normalize-tape is idempotent: normalizing twice == normalizing once.
+++  test-fuzz-normalize-idempotent
+  %+  fz  500  0xfeed.face
+  |=  s=@
+  ^-  ?
+  =/  t=tape  (trip (fz-cord s))
+  =/  r  (mule |.(=((normalize-tape (normalize-tape t)) (normalize-tape t))))
+  ?:(?=(%& -.r) p.r |)
 ::  non-text auras render via +scot (a ud count → "5"); text columns stay raw.
 ++  test-obelisk-result-aura
   =/  vec=ob-vector  [%vector ~[[`@tas`'item' 't' 'k'] [`@tas`'n' 'ud' 5]]]
