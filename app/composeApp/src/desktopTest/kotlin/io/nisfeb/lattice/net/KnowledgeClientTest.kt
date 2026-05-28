@@ -114,6 +114,13 @@ class KnowledgeClientTest {
         assertTrue(client.save("x", "y").isFailure)
     }
 
+    @Test fun listToleratesUnknownFields() = runTest {
+        // the agent may add fields we don't model — parsing must ignore them, not throw.
+        server.enqueue(MockResponse().setBody("""{"count":1,"newfield":"x","keys":[{"key":"/a","updated":"~2026.1.1","bytes":3,"extra":42}]}"""))
+        val items = client.list().getOrThrow()
+        assertEquals(listOf("/a"), items.map { it.key })
+    }
+
     @Test fun listParsesTags() = runTest {
         server.enqueue(MockResponse().setBody("""{"count":1,"keys":[{"key":"/a","updated":"~2026.1.1","bytes":3,"tags":["urbit","design"]}]}"""))
         val items = client.list().getOrThrow()
