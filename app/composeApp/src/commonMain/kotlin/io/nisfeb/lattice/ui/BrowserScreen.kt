@@ -100,7 +100,11 @@ fun BrowserScreen(
     onRemoveBookmark: (String) -> Unit,
     theme: ThemeSettings,
     homeShip: String,
-    onLogout: () -> Unit,
+    /** All logged-in ships (for the picker dropdown). Always includes [homeShip]. */
+    ships: List<String>,
+    onSwitchShip: (String) -> Unit,
+    onAddShip: () -> Unit,
+    onLogoutCurrent: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenFiles: () -> Unit,
     onEditPage: (String) -> Unit,
@@ -335,7 +339,6 @@ fun BrowserScreen(
             BarAction("discover", Icons.Filled.Public, "Discover", true) { onOpenDiscover() },
             BarAction("files", Icons.Filled.Folder, "Files", true) { onOpenFiles() },
             BarAction("settings", Icons.Filled.Settings, "Settings", true) { onOpenSettings() },
-            BarAction("logout", Icons.AutoMirrored.Filled.Logout, "Disconnect", true) { onLogout() },
         )
         // User-pinned overflow actions go to the ⋮ menu regardless of width;
         // the rest stay inline (then spill to ⋮ as space runs out, below).
@@ -354,6 +357,11 @@ fun BrowserScreen(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = if (isDesktop) 2.dp else 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // "You are ~ship ▾" — picker for switching/adding/logging-out ships.
+                ShipPicker(
+                    activeShip = homeShip, ships = ships,
+                    onSwitch = onSwitchShip, onAdd = onAddShip, onLogoutCurrent = onLogoutCurrent,
+                )
                 barBtn({ tab?.let { if (it.canBack) { it.cursor--; load(it, it.history[it.cursor]) } } }, Icons.AutoMirrored.Filled.ArrowBack, "Back", tab?.canBack == true)
                 barBtn({ tab?.let { if (it.canForward) { it.cursor++; load(it, it.history[it.cursor]) } } }, Icons.AutoMirrored.Filled.ArrowForward, "Forward", tab?.canForward == true)
                 barBtn({ tab?.let { navigate(it, home) } }, Icons.Filled.Home, "Home")

@@ -12,6 +12,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,9 +29,16 @@ import io.nisfeb.lattice.urbit.UrbitSession
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.painterResource
 
-/** Sign in to a ship with its URL and +code. Calls [onLoggedIn] with the patp. */
+/** Sign in to a ship with its URL and +code. Calls [onLoggedIn] with the patp.
+ *  [onCancel] is supplied only when another ship is already logged in (the user
+ *  tapped "Add ship" from the picker) — pressing it restores that ship without
+ *  forcing a fresh login. Null on the first-ever login screen. */
 @Composable
-fun AddShipScreen(session: UrbitSession, onLoggedIn: (String) -> Unit) {
+fun AddShipScreen(
+    session: UrbitSession,
+    onLoggedIn: (String) -> Unit,
+    onCancel: (() -> Unit)? = null,
+) {
     val scope = rememberCoroutineScope()
     var url by remember { mutableStateOf("http://localhost:8081") }
     var code by remember { mutableStateOf("") }
@@ -70,6 +78,12 @@ fun AddShipScreen(session: UrbitSession, onLoggedIn: (String) -> Unit) {
             enabled = !busy && code.isNotBlank(),
             modifier = Modifier.padding(top = 16.dp),
         ) { Text("Connect") }
+
+        if (onCancel != null && !busy) {
+            TextButton(onClick = onCancel, modifier = Modifier.padding(top = 4.dp)) {
+                Text("Cancel")
+            }
+        }
 
         if (busy) CircularProgressIndicator(modifier = Modifier.padding(top = 16.dp))
         error?.let {

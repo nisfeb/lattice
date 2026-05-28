@@ -9,13 +9,17 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.luminance
 import io.nisfeb.lattice.bookmarks.Bookmark
@@ -68,86 +72,41 @@ fun App(
     createBookmarkStore: (String) -> BookmarkStore,
     createThemeStore: (String) -> ThemeStore,
     /** A urb:// URL to open on launch — set when another app (e.g.
-     *  Talon) hands off a link via the OS scheme handler. Navigates
-     *  the browser to it; consumed once so re-delivery of the same
-     *  value (a later onNewIntent / open-URI event) re-fires. */
+     *  Talon) hands off a link via the OS scheme handler. */
     initialUrl: String? = null,
     onUrlConsumed: () -> Unit = {},
-    /** Drives the in-app update banner. Wired on Android (download + sideload
-     *  install); null on desktop, where updates come via the installers. */
+    /** Drives the in-app update banner. */
     updateState: UpdateState? = null,
-    /** Content shared into Lattice from the OS share sheet (Android): a web URL
-     *  or text. Converted to gemtext, saved to the ship under `shared/<slug>`,
-     *  and the urb:// URL copied to the clipboard. Consumed once, like initialUrl. */
+    /** Content shared into Lattice from the OS share sheet (Android). */
     initialShare: SharedContent? = null,
     onShareConsumed: () -> Unit = {},
-    /** The root HTTP client. Owned by the platform entry point so desktop can
-     *  tear it down on window close (its non-daemon dispatcher threads + the
-     *  long-lived SSE connection otherwise keep the JVM alive after the window
-     *  closes). All derived clients (session, fetch, SSE) share its dispatcher
-     *  and connection pool via newBuilder(). */
+    /** The root HTTP client — owned by the platform entry point. */
     httpClient: OkHttpClient = OkHttpClient(),
 ) {
-    val session = remember { UrbitSession(httpClient, sessionStore) }
-    val client = remember { LatticeClient(session) }
-    val knowledgeClient = remember { KnowledgeClient(session) }
-    val settingsClient = remember { SettingsClient(session) }
-    val followRepo = remember { FollowRepository(settingsClient) }
-    val subRepo = remember { SubscriptionRepository(settingsClient) }
-    val updatesChannel = remember { UpdatesChannel(session) }
-    val latticeInstaller = remember {
-        AgentInstaller(session, AgentInstaller.LATTICE_DESK, AgentInstaller.LATTICE_SOURCE, AgentInstaller.latticeProbe(session))
-    }
-    // obelisk has no Eyre routes — detect it through lattice's query bridge. See
-    // +obeliskInstalledFromProbe: only the explicit "obelisk not installed" error
-    // means absent; every other failure (old lattice without know-query, 504
-    // timeout, stuck oquery, network) is "unknown → assume installed".
-    val obeliskInstaller = remember {
-        AgentInstaller(session, AgentInstaller.OBELISK_DESK, AgentInstaller.OBELISK_SOURCE) {
-            obeliskInstalledFromProbe(knowledgeClient.query("SELECT 1;"))
-        }
-    }
-    val scope = rememberCoroutineScope()
-
-    var ship by remember { mutableStateOf(session.tryRestore()) }
-    // Per-ship local stores (null when logged out). Rebuilt on ship change so a
-    // login as another ship reads that ship's own bookmarks/theme.
-    val themeStore: ThemeStore? = remember(ship) { ship?.let(createThemeStore) }
-    val bookmarkStore: BookmarkStore? = remember(ship) { ship?.let(createBookmarkStore) }
-    val themeRepo: ThemeRepository? = remember(themeStore) { themeStore?.let { ThemeRepository(it, settingsClient) } }
-    val bookmarkRepo: BookmarkRepository? = remember(bookmarkStore) { bookmarkStore?.let { BookmarkRepository(it, settingsClient) } }
-    var theme by remember { mutableStateOf(themeStore?.load() ?: ThemeSettings.Light) }
-    var savedThemes by remember { mutableStateOf(themeStore?.loadSaved() ?: emptyList<SavedTheme>()) }
-    var bookmarks by remember { mutableStateOf(bookmarkStore?.all() ?: emptyList<Bookmark>()) }
-    var follows by remember { mutableStateOf(emptyList<String>()) }
-    var subscriptions by remember { mutableStateOf(emptySet<String>()) }
-    var updates by remember { mutableStateOf(emptyList<UpdateEvent>()) }
-    var unread by remember { mutableStateOf(0) }
+    // ── App-level state: survives ship switches ─────────────────────────────
+    //
+    // The picker swaps `activeShip` and the `key(activeShip)` block below
+    // rebuilds every per-ship singleton (UrbitSession, clients, repos,
+    // installers, the updates SSE, agent-missing probes, themes/bookmarks).
+    // Mirrors talon's pattern — the rebuild kills the cross-ship-contamination
+    // class of bug at the source.
+    var activeShip by remember { mutableStateOf(sessionStore.active()?.ship) }
+    // When the user taps "Add ship", we set `activeShip=null` to mount the
+    // login screen and remember the prior ship here so a Cancel can restore it
+    // without forcing the user to re-pick from the (now empty) picker.
+    var pendingActiveShip by remember { mutableStateOf<String?>(null) }
     var screen by remember { mutableStateOf<AppScreen>(AppScreen.Browse) }
     var editTarget by remember { mutableStateOf<String?>(null) }
     var browseTarget by remember { mutableStateOf<String?>(null) }
-    // True when logged in but the %lattice agent isn't installed on the ship —
-    // gates the app behind an offer to install it from the publisher.
-    var agentMissing by remember { mutableStateOf(false) }
-    // True when %lattice is present but the optional %obelisk index isn't — offers
-    // (skippable) to install it after lattice. Obelisk powers the Explore tab.
-    var obeliskMissing by remember { mutableStateOf(false) }
-    // Content shared into the app; survives until consumed by ShareImportScreen,
-    // so a share that arrives before login still imports once the user signs in.
     var shareTarget by remember { mutableStateOf<SharedContent?>(null) }
-    // Browser tab state hoisted here so it survives the user visiting
-    // Settings / Files / Discover and coming back — BrowserScreen
-    // leaves the composition on those, which would otherwise discard
-    // its open tabs and reset to the home page.
-    val browserTabs = remember { mutableStateListOf<BrowserTab>() }
-    val browserActive = remember { mutableStateOf(0) }
-    // Per-ship page cache for instant (stale-while-revalidate) revisits.
-    val pageCache = remember(ship) { PageCache() }
 
-    // External urb:// handoff (OS scheme handler → MainActivity /
-    // desktop main). Navigate the browser to the link. browseTarget
-    // survives until BrowserScreen consumes it, so a handoff that
-    // arrives before login still lands once the user signs in.
+    // Per-ship UI state preserved IN-MEMORY across switches (lost on app quit).
+    // Switching ~zod → ~tyr → ~zod returns ~zod's tabs/scroll/cache intact.
+    val tabsByShip = remember { mutableStateMapOf<String, SnapshotStateList<BrowserTab>>() }
+    val tabsActiveByShip = remember { mutableStateMapOf<String, MutableState<Int>>() }
+    val pageCacheByShip = remember { mutableStateMapOf<String, PageCache>() }
+
+    // External urb:// handoff (OS scheme handler → MainActivity / desktop main).
     LaunchedEffect(initialUrl) {
         if (initialUrl != null && initialUrl.startsWith("urb://")) {
             browseTarget = initialUrl
@@ -156,8 +115,7 @@ fun App(
         }
     }
 
-    // Content shared into the app from the OS share sheet (Android). Route to
-    // the import screen; survives until login if the user isn't signed in yet.
+    // Content shared into the app from the OS share sheet (Android).
     LaunchedEffect(initialShare) {
         if (initialShare != null) {
             shareTarget = initialShare
@@ -166,15 +124,75 @@ fun App(
         }
     }
 
-    // On login: pull synced prefs, re-arm desk subscriptions, and stream updates.
-    LaunchedEffect(ship) {
-        // Clear per-ship view state so a logout / account switch doesn't leak
-        // the previous ship's notifications, follow/subscribe lists, or open tabs.
-        updates = emptyList(); unread = 0
-        follows = emptyList(); subscriptions = emptySet()
-        browserTabs.clear(); browserActive.value = 0
-        if (ship != null) {
-            // Per-ship local cache first (instant, offline), then %settings sync.
+    key(activeShip ?: "__loggedout__") {
+        // ── Per-ship singletons: rebuilt on switch ──────────────────────────
+        val session = remember {
+            // Pass the explicit ship — tryRestore() would otherwise fall back to
+            // sessionStore.active(), which (in normal flow) matches activeShip
+            // but isn't guaranteed to. The explicit form also re-asserts the
+            // active pointer on the store, keeping it in sync with the UI.
+            UrbitSession(httpClient, sessionStore).also { s ->
+                activeShip?.let { s.tryRestore(it) }
+            }
+        }
+        val client = remember { LatticeClient(session) }
+        val knowledgeClient = remember { KnowledgeClient(session) }
+        val settingsClient = remember { SettingsClient(session) }
+        val followRepo = remember { FollowRepository(settingsClient) }
+        val subRepo = remember { SubscriptionRepository(settingsClient) }
+        val updatesChannel = remember { UpdatesChannel(session) }
+        val latticeInstaller = remember {
+            AgentInstaller(
+                session,
+                AgentInstaller.LATTICE_DESK,
+                AgentInstaller.LATTICE_SOURCE,
+                AgentInstaller.latticeProbe(session),
+            )
+        }
+        // See +obeliskInstalledFromProbe — only the explicit "obelisk not installed"
+        // error means absent; every other failure is "unknown → assume installed".
+        val obeliskInstaller = remember {
+            AgentInstaller(session, AgentInstaller.OBELISK_DESK, AgentInstaller.OBELISK_SOURCE) {
+                obeliskInstalledFromProbe(knowledgeClient.query("SELECT 1;"))
+            }
+        }
+        val scope = rememberCoroutineScope()
+
+        // Per-ship local stores (null while logged out / adding a new ship).
+        val themeStore: ThemeStore? = remember { activeShip?.let(createThemeStore) }
+        val bookmarkStore: BookmarkStore? = remember { activeShip?.let(createBookmarkStore) }
+        val themeRepo: ThemeRepository? = remember(themeStore) {
+            themeStore?.let { ThemeRepository(it, settingsClient) }
+        }
+        val bookmarkRepo: BookmarkRepository? = remember(bookmarkStore) {
+            bookmarkStore?.let { BookmarkRepository(it, settingsClient) }
+        }
+        var theme by remember { mutableStateOf(themeStore?.load() ?: ThemeSettings.Light) }
+        var savedThemes by remember { mutableStateOf(themeStore?.loadSaved() ?: emptyList<SavedTheme>()) }
+        var bookmarks by remember { mutableStateOf(bookmarkStore?.all() ?: emptyList<Bookmark>()) }
+        var follows by remember { mutableStateOf(emptyList<String>()) }
+        var subscriptions by remember { mutableStateOf(emptySet<String>()) }
+        var updates by remember { mutableStateOf(emptyList<UpdateEvent>()) }
+        var unread by remember { mutableStateOf(0) }
+        var agentMissing by remember { mutableStateOf(false) }
+        var obeliskMissing by remember { mutableStateOf(false) }
+
+        // Browser tabs + page cache for the active ship: pulled from the
+        // App-level maps so they SURVIVE ship switches. When activeShip is null
+        // (login pending) we use throwaway empties — Browser isn't visible.
+        val browserTabs: SnapshotStateList<BrowserTab> =
+            activeShip?.let { tabsByShip.getOrPut(it) { mutableStateListOf() } }
+                ?: remember { mutableStateListOf() }
+        val browserActive: MutableState<Int> =
+            activeShip?.let { tabsActiveByShip.getOrPut(it) { mutableStateOf(0) } }
+                ?: remember { mutableStateOf(0) }
+        val pageCache: PageCache =
+            activeShip?.let { pageCacheByShip.getOrPut(it) { PageCache() } }
+                ?: remember { PageCache() }
+
+        // On ship entry: pull synced prefs, re-arm subscriptions, stream updates.
+        LaunchedEffect(Unit) {
+            if (activeShip == null) return@LaunchedEffect
             themeStore?.let { theme = it.load(); savedThemes = it.loadSaved() }
             bookmarkStore?.let { bookmarks = it.all() }
             themeRepo?.pull()?.let { savedThemes = it }
@@ -185,207 +203,222 @@ fun App(
                 subs.forEach { scope.launch { client.subscribe(it) } } // re-arm the keen-follow loop
             }
             updatesChannel.updates()
-                .retryWhen { _, _ -> delay(3000); true } // SSE drops (network, idle) → reconnect
+                .retryWhen { _, _ -> delay(3000); true } // SSE drops → reconnect
                 .collect { ev ->
                     val url = "urb://${ev.ship}/${ev.path.removePrefix("/")}"
                     val lines = GemtextParser.parse(ev.body)
-                    // Live/freshness: refresh the cache and upgrade any open tab
-                    // showing this page (the browse watch streams newer revs of the
-                    // page being viewed).
                     pageCache[url] = CachedPage(ev.body, lines)
                     browserTabs.forEach { t ->
                         if (t.current == url) {
-                            t.body = ev.body
-                            t.lines = lines
-                            t.visited = t.visited + url
+                            t.body = ev.body; t.lines = lines; t.visited = t.visited + url
                         }
                     }
-                    // Notify only for pages the user actually follows — browse-watch
-                    // pushes shouldn't spam the Updates list.
                     if (url in subscriptions) {
                         updates = (listOf(ev) + updates).take(50)
                         unread += 1
                     }
                 }
-        } else {
-            // Logged out: drop the previous ship's local state so the login
-            // screen and next ship don't inherit it.
-            theme = ThemeSettings.Light
-            savedThemes = emptyList()
-            bookmarks = emptyList()
         }
-    }
 
-    // Detect a missing %lattice agent on login so we can offer to install it; once
-    // lattice is present, check the optional %obelisk index too.
-    LaunchedEffect(ship) {
-        agentMissing = false
-        obeliskMissing = false
-        if (ship != null) {
+        // Detect missing %lattice / %obelisk on entry to this ship.
+        LaunchedEffect(Unit) {
+            if (activeShip == null) return@LaunchedEffect
             agentMissing = !latticeInstaller.isInstalled()
             if (!agentMissing) obeliskMissing = !obeliskInstaller.isInstalled()
         }
-    }
 
-    fun addBookmark(bm: Bookmark) {
-        bookmarks = bookmarks.filterNot { it.url == bm.url } + bm
-        scope.launch { bookmarkRepo?.push(bookmarks) }
-    }
-    fun removeBookmark(url: String) {
-        bookmarks = bookmarks.filterNot { it.url == url }
-        scope.launch { bookmarkRepo?.push(bookmarks) }
-    }
+        fun addBookmark(bm: Bookmark) {
+            bookmarks = bookmarks.filterNot { it.url == bm.url } + bm
+            scope.launch { bookmarkRepo?.push(bookmarks) }
+        }
+        fun removeBookmark(url: String) {
+            bookmarks = bookmarks.filterNot { it.url == url }
+            scope.launch { bookmarkRepo?.push(bookmarks) }
+        }
+        fun setFollows(list: List<String>) { follows = list; scope.launch { followRepo.push(list) } }
+        fun subscribe(url: String) {
+            subscriptions = subscriptions + url
+            scope.launch { subRepo.push(subscriptions.toList()); client.subscribe(url) }
+        }
+        fun unsubscribe(url: String) {
+            subscriptions = subscriptions - url
+            scope.launch { subRepo.push(subscriptions.toList()); client.unsubscribe(url) }
+        }
 
-    fun setFollows(list: List<String>) { follows = list; scope.launch { followRepo.push(list) } }
-    fun subscribe(url: String) {
-        subscriptions = subscriptions + url
-        scope.launch { subRepo.push(subscriptions.toList()); client.subscribe(url) }
-    }
-    fun unsubscribe(url: String) {
-        subscriptions = subscriptions - url
-        scope.launch { subRepo.push(subscriptions.toList()); client.unsubscribe(url) }
-    }
-
-    LatticeTheme(theme) {
-        // Match the system-bar icon color to the background showing through
-        // edge-to-edge: dark icons on a light background, light on dark.
-        SystemBarIcons(darkIcons = theme.backgroundColor.luminance() > 0.5f)
-        // The Surface fills the screen (its color paints behind the status /
-        // navigation bars edge-to-edge, so those areas read as the app
-        // background), while the content Column is inset by the system bars so
-        // interactive UI never sits under them. On desktop systemBars is empty,
-        // so this is a no-op there.
-        Surface(modifier = Modifier.fillMaxSize()) {
-          Column(modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars)) {
-            if (updateState != null) {
-                val updateStatus by updateState.status.collectAsState()
-                UpdateBanner(
-                    status = updateStatus,
-                    onTap = {
-                        when (val s = updateStatus) {
-                            is UpdateStatus.Available -> updateState.startDownload(s.manifest)
-                            is UpdateStatus.Ready -> updateState.launchInstaller(s.apkPath)
-                            is UpdateStatus.Failed -> s.manifest?.let { updateState.startDownload(it) }
-                            else -> Unit
-                        }
-                    },
-                    onDismiss = { updateState.dismiss() },
-                )
+        // ── Picker actions ──────────────────────────────────────────────────
+        // sessionStore.all() does file I/O on every call (FileSessionStore reads
+        // the JSON each time). Cache it for this key block — the list can only
+        // change via login / switch / logout, all of which mutate activeShip
+        // and force this key block to re-run from scratch.
+        val ships = remember(activeShip) { sessionStore.all().map { it.ship } }
+        fun onSwitchShip(s: String) {
+            if (s != activeShip) {
+                sessionStore.setActive(s)
+                activeShip = s
             }
-            Box(modifier = Modifier.weight(1f).fillMaxSize()) {
-            val current = ship
-            if (current == null) {
-                AddShipScreen(session, onLoggedIn = { ship = it; if (shareTarget == null) screen = AppScreen.Browse })
-            } else if (agentMissing) {
-                InstallAgentScreen(
-                    installer = latticeInstaller,
-                    sourceShip = AgentInstaller.LATTICE_SOURCE,
-                    onInstalled = {
-                        agentMissing = false
-                        scope.launch { obeliskMissing = !obeliskInstaller.isInstalled() }
-                    },
-                    onSkip = { agentMissing = false },
-                )
-            } else if (obeliskMissing) {
-                InstallAgentScreen(
-                    installer = obeliskInstaller,
-                    sourceShip = AgentInstaller.OBELISK_SOURCE,
-                    title = "Add the knowledge index (optional)",
-                    intro = "Obelisk powers the Explore tab's relational queries over your " +
-                        "knowledge index. The rest of Lattice works without it. Install it " +
-                        "from ${AgentInstaller.OBELISK_SOURCE}?",
-                    skipLabel = "Not now",
-                    onInstalled = { obeliskMissing = false },
-                    onSkip = { obeliskMissing = false },
-                )
-            } else when (screen) {
-                AppScreen.Browse -> BrowserScreen(
-                    client = client,
-                    bookmarks = bookmarks,
-                    onAddBookmark = { addBookmark(it) },
-                    onRemoveBookmark = { removeBookmark(it) },
-                    theme = theme,
-                    homeShip = current,
-                    onLogout = { session.logout(); ship = null },
-                    onOpenSettings = { screen = AppScreen.Settings },
-                    onOpenFiles = { screen = AppScreen.Workspace },
-                    onEditPage = { editTarget = it; screen = AppScreen.Workspace },
-                    onOpenDiscover = { screen = AppScreen.Discover },
-                    openUrl = browseTarget,
-                    onConsumedOpenUrl = { browseTarget = null },
-                    subscriptions = subscriptions,
-                    onSubscribe = { subscribe(it) },
-                    onUnsubscribe = { unsubscribe(it) },
-                    onOpenUpdates = { unread = 0; screen = AppScreen.Updates },
-                    onOpenBookmarks = { screen = AppScreen.Bookmarks },
-                    unreadUpdates = unread,
-                    tabs = browserTabs,
-                    activeState = browserActive,
-                    pageCache = pageCache,
-                )
-                AppScreen.Workspace -> WorkspaceScreen(
-                    client = client,
-                    knowledge = knowledgeClient,
-                    ship = current,
-                    vimMode = theme.vimMode,
-                    onClose = { screen = AppScreen.Browse },
-                    initialOpen = editTarget,
-                    onConsumedOpen = { editTarget = null },
-                )
-                AppScreen.Settings -> SettingsScreen(
-                    settings = theme,
-                    onChange = { theme = it; themeStore!!.save(it) },
-                    onClose = { screen = AppScreen.Browse },
-                    savedThemes = savedThemes,
-                    onSaveCurrent = { name ->
-                        val list = savedThemes.filterNot { it.name == name } + SavedTheme(name, theme)
-                        savedThemes = list
-                        scope.launch { themeRepo!!.push(list) }
-                    },
-                    onDeleteSaved = { name ->
-                        val list = savedThemes.filterNot { it.name == name }
-                        savedThemes = list
-                        scope.launch { themeRepo!!.push(list) }
-                    },
-                )
-                AppScreen.Discover -> DiscoverScreen(
-                    client = client,
-                    follows = follows,
-                    onFollow = { ship2 -> setFollows((follows + ship2).distinct().sorted()) },
-                    onUnfollow = { ship2 -> setFollows(follows - ship2) },
-                    onOpenUrl = { url -> browseTarget = url; screen = AppScreen.Browse },
-                    onClose = { screen = AppScreen.Browse },
-                )
-                AppScreen.Updates -> UpdatesScreen(
-                    updates = updates,
-                    onBrowse = { url -> browseTarget = url; screen = AppScreen.Browse },
-                    onClose = { screen = AppScreen.Browse },
-                )
-                AppScreen.Bookmarks -> BookmarksScreen(
-                    bookmarks = bookmarks,
-                    onRemove = { removeBookmark(it) },
-                    onOpen = { url -> browseTarget = url; screen = AppScreen.Browse },
-                    onClose = { screen = AppScreen.Browse },
-                )
-                AppScreen.Import -> {
-                    val shared = shareTarget
-                    if (shared == null) {
-                        // No payload (e.g. stale nav) — fall back to browsing.
-                        LaunchedEffect(Unit) { screen = AppScreen.Browse }
-                    } else {
-                        ShareImportScreen(
-                            client = client,
-                            homeShip = current,
-                            content = shared,
-                            onOpen = { url -> shareTarget = null; browseTarget = url; screen = AppScreen.Browse },
-                            onEdit = { path -> shareTarget = null; editTarget = path; screen = AppScreen.Workspace },
-                            onClose = { shareTarget = null; screen = AppScreen.Browse },
+        }
+        fun onAddShip() {
+            pendingActiveShip = activeShip
+            activeShip = null
+        }
+        fun onCancelAddShip() {
+            activeShip = pendingActiveShip
+            pendingActiveShip = null
+        }
+        fun onLogoutCurrent() {
+            val s = activeShip ?: return
+            sessionStore.remove(s)
+            // SessionStore.remove auto-promotes the next saved ship; null if none.
+            activeShip = sessionStore.activeShip()
+            // Drop the removed ship's in-memory UI state too.
+            tabsByShip.remove(s); tabsActiveByShip.remove(s); pageCacheByShip.remove(s)
+        }
+
+        LatticeTheme(theme) {
+            // Match system-bar icon color to the background showing through edge-to-edge.
+            SystemBarIcons(darkIcons = theme.backgroundColor.luminance() > 0.5f)
+            Surface(modifier = Modifier.fillMaxSize()) {
+                Column(modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars)) {
+                    if (updateState != null) {
+                        val updateStatus by updateState.status.collectAsState()
+                        UpdateBanner(
+                            status = updateStatus,
+                            onTap = {
+                                when (val s = updateStatus) {
+                                    is UpdateStatus.Available -> updateState.startDownload(s.manifest)
+                                    is UpdateStatus.Ready -> updateState.launchInstaller(s.apkPath)
+                                    is UpdateStatus.Failed -> s.manifest?.let { updateState.startDownload(it) }
+                                    else -> Unit
+                                }
+                            },
+                            onDismiss = { updateState.dismiss() },
                         )
+                    }
+                    Box(modifier = Modifier.weight(1f).fillMaxSize()) {
+                        val current = activeShip
+                        if (current == null) {
+                            AddShipScreen(
+                                session = session,
+                                onLoggedIn = {
+                                    activeShip = it
+                                    pendingActiveShip = null
+                                    if (shareTarget == null) screen = AppScreen.Browse
+                                },
+                                onCancel = if (pendingActiveShip != null) ::onCancelAddShip else null,
+                            )
+                        } else if (agentMissing) {
+                            InstallAgentScreen(
+                                installer = latticeInstaller,
+                                sourceShip = AgentInstaller.LATTICE_SOURCE,
+                                onInstalled = {
+                                    agentMissing = false
+                                    scope.launch { obeliskMissing = !obeliskInstaller.isInstalled() }
+                                },
+                                onSkip = { agentMissing = false },
+                            )
+                        } else if (obeliskMissing) {
+                            InstallAgentScreen(
+                                installer = obeliskInstaller,
+                                sourceShip = AgentInstaller.OBELISK_SOURCE,
+                                title = "Add the knowledge index (optional)",
+                                intro = "Obelisk powers the Explore tab's relational queries over your " +
+                                    "knowledge index. The rest of Lattice works without it. Install it " +
+                                    "from ${AgentInstaller.OBELISK_SOURCE}?",
+                                skipLabel = "Not now",
+                                onInstalled = { obeliskMissing = false },
+                                onSkip = { obeliskMissing = false },
+                            )
+                        } else when (screen) {
+                            AppScreen.Browse -> BrowserScreen(
+                                client = client,
+                                bookmarks = bookmarks,
+                                onAddBookmark = { addBookmark(it) },
+                                onRemoveBookmark = { removeBookmark(it) },
+                                theme = theme,
+                                homeShip = current,
+                                ships = ships,
+                                onSwitchShip = ::onSwitchShip,
+                                onAddShip = ::onAddShip,
+                                onLogoutCurrent = ::onLogoutCurrent,
+                                onOpenSettings = { screen = AppScreen.Settings },
+                                onOpenFiles = { screen = AppScreen.Workspace },
+                                onEditPage = { editTarget = it; screen = AppScreen.Workspace },
+                                onOpenDiscover = { screen = AppScreen.Discover },
+                                openUrl = browseTarget,
+                                onConsumedOpenUrl = { browseTarget = null },
+                                subscriptions = subscriptions,
+                                onSubscribe = { subscribe(it) },
+                                onUnsubscribe = { unsubscribe(it) },
+                                onOpenUpdates = { unread = 0; screen = AppScreen.Updates },
+                                onOpenBookmarks = { screen = AppScreen.Bookmarks },
+                                unreadUpdates = unread,
+                                tabs = browserTabs,
+                                activeState = browserActive,
+                                pageCache = pageCache,
+                            )
+                            AppScreen.Workspace -> WorkspaceScreen(
+                                client = client,
+                                knowledge = knowledgeClient,
+                                ship = current,
+                                vimMode = theme.vimMode,
+                                onClose = { screen = AppScreen.Browse },
+                                initialOpen = editTarget,
+                                onConsumedOpen = { editTarget = null },
+                            )
+                            AppScreen.Settings -> SettingsScreen(
+                                settings = theme,
+                                onChange = { theme = it; themeStore!!.save(it) },
+                                onClose = { screen = AppScreen.Browse },
+                                savedThemes = savedThemes,
+                                onSaveCurrent = { name ->
+                                    val list = savedThemes.filterNot { it.name == name } + SavedTheme(name, theme)
+                                    savedThemes = list
+                                    scope.launch { themeRepo!!.push(list) }
+                                },
+                                onDeleteSaved = { name ->
+                                    val list = savedThemes.filterNot { it.name == name }
+                                    savedThemes = list
+                                    scope.launch { themeRepo!!.push(list) }
+                                },
+                            )
+                            AppScreen.Discover -> DiscoverScreen(
+                                client = client,
+                                follows = follows,
+                                onFollow = { ship2 -> setFollows((follows + ship2).distinct().sorted()) },
+                                onUnfollow = { ship2 -> setFollows(follows - ship2) },
+                                onOpenUrl = { url -> browseTarget = url; screen = AppScreen.Browse },
+                                onClose = { screen = AppScreen.Browse },
+                            )
+                            AppScreen.Updates -> UpdatesScreen(
+                                updates = updates,
+                                onBrowse = { url -> browseTarget = url; screen = AppScreen.Browse },
+                                onClose = { screen = AppScreen.Browse },
+                            )
+                            AppScreen.Bookmarks -> BookmarksScreen(
+                                bookmarks = bookmarks,
+                                onRemove = { removeBookmark(it) },
+                                onOpen = { url -> browseTarget = url; screen = AppScreen.Browse },
+                                onClose = { screen = AppScreen.Browse },
+                            )
+                            AppScreen.Import -> {
+                                val shared = shareTarget
+                                if (shared == null) {
+                                    LaunchedEffect(Unit) { screen = AppScreen.Browse }
+                                } else {
+                                    ShareImportScreen(
+                                        client = client,
+                                        homeShip = current,
+                                        content = shared,
+                                        onOpen = { url -> shareTarget = null; browseTarget = url; screen = AppScreen.Browse },
+                                        onEdit = { path -> shareTarget = null; editTarget = path; screen = AppScreen.Workspace },
+                                        onClose = { shareTarget = null; screen = AppScreen.Browse },
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
-            }
-          }
         }
     }
 }
