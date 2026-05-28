@@ -237,6 +237,12 @@
   |=  body=@t
   ^-  (list path)
   =/  lines=(list @t)  (to-wain:format body)
+  ::  dedupe (first-occurrence order): a manifest with duplicate `=> /x`
+  ::  lines must not yield duplicate spurs. The crawler keys in-flight walks
+  ::  by (now, publisher, spur); duplicates spawned in one event would
+  ::  collide to a single eid, leaving an orphaned keen + behn timer. Dedup
+  ::  here removes that whole class of collision/leak at the source.
+  %-  dedupe-paths
   %+  murn  lines
   |=  ln=@t
   ^-  (unit path)
@@ -256,6 +262,19 @@
     %-  mule
     |.((stab (crip target)))
   ?:(?=(%& -.parsed) `p.parsed ~)
+::
+::  +dedupe-paths: drop duplicate paths, preserving first-occurrence order.
+::  (A set would lose order; the catalog doesn't strictly need order, but
+::  stable output keeps tests and the crawl deterministic.)
+++  dedupe-paths
+  |=  paths=(list path)
+  ^-  (list path)
+  =|  seen=(set path)
+  =|  out=(list path)
+  |-  ^-  (list path)
+  ?~  paths  (flop out)
+  ?:  (~(has in seen) i.paths)  $(paths t.paths)
+  $(paths t.paths, seen (~(put in seen) i.paths), out [i.paths out])
 ::
 ::  ════════════════════════════════════════════════════════════════════
 ::  Read-side query compilers.

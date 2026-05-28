@@ -425,6 +425,24 @@
   =/  want=(list path)  ~[/real]
   (expect-eq !>(want) !>((parse-manifest body)))
 ::
+::  Duplicate `=> /x` lines collapse to one spur (first-occurrence order).
+::  Critical: the crawler keys walks by (now, publisher, spur), so duplicate
+::  spurs spawned in one event would collide to one eid and orphan a keen.
+++  test-parse-manifest-dedupes
+  =/  body=@t
+    '=> /a  a\0a=> /b  b\0a=> /a  a-again\0a=> /c  c\0a=> /b  b-again\0a'
+  =/  want=(list path)  ~[/a /b /c]
+  (expect-eq !>(want) !>((parse-manifest body)))
+::
+::  +dedupe-paths directly: empty, no-dups, all-dups, order preservation.
+++  test-dedupe-paths
+  ;:  weld
+    (expect-eq !>(`(list path)`~) !>((dedupe-paths ~)))
+    (expect-eq !>(`(list path)`~[/a /b /c]) !>((dedupe-paths ~[/a /b /c])))
+    (expect-eq !>(`(list path)`~[/a]) !>((dedupe-paths ~[/a /a /a])))
+    (expect-eq !>(`(list path)`~[/x /y /z]) !>((dedupe-paths ~[/x /y /x /z /y /x])))
+  ==
+::
 ::  ════════════════════════════════════════════════════════════════════
 ::  Read-side query compilers.
 ::

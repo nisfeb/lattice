@@ -264,6 +264,14 @@
 ::  and the walk climbs revisions forever (a single browse of a hostile ship
 ::  becomes a perpetual keen loop). No real gemtext file has this many revs.
 ++  walk-max  ^-(@ud 1.000)
+::  +manifest-max: the most page walks one scan will spawn from a single
+::  publisher's manifest. Bounds breadth the way walk-max bounds depth — a
+::  hostile (or huge) publisher advertising a giant manifest must not make
+::  us arm an unbounded number of simultaneous keens + behn timers + state
+::  entries. Truncation past this is logged (see +cat-finalize), not silent.
+::  A bounded work-queue (K page walks in flight, draining the rest) is the
+::  proper long-term shape; this cap is the v1 blast-radius guard.
+++  manifest-max  ^-(@ud 1.024)
 ::
 ::  walk-to-latest cards: probe revisions on /walk/<eid>, with a behn deadline
 ::  on /walkto/<eid> that fires when the walk stalls (the next rev pends).
@@ -342,7 +350,12 @@
   ?:  =(0 rev.cw)  [~ ~]
   ?-  action.cw
       %manifest
-    =/  paths=(list path)  (parse-manifest body.cw)
+    ::  +parse-manifest dedupes; cap the breadth and LOG if we truncated, so a
+    ::  giant manifest can't fan out into unbounded keens/timers/state.
+    =/  all-paths=(list path)  (parse-manifest body.cw)
+    ~?  (gth (lent all-paths) manifest-max)
+      [%catalog-manifest-truncated publisher=publisher.cw seen=(lent all-paths) cap=manifest-max]
+    =/  paths=(list path)  (scag manifest-max all-paths)
     =/  walks=(list [eid=@ta walk=catalog-walk])
       %+  turn  paths
       |=  p=path
@@ -746,6 +759,12 @@
       [(respond-json-cards eyre-id 400 '{"error":"bad ship"}') st]
     ?:  =(u.pub our.bowl)
       [(respond-json-cards eyre-id 400 '{"error":"cannot crawl own ship"}') st]
+    ::  in-flight guard: if any walk (manifest or page) for this publisher is
+    ::  already running, don't start a second tree — a repeated scan (UI
+    ::  double-click, or deliberate amplification) would otherwise spawn a
+    ::  parallel fan-out. Idempotent: report success, the running scan stands.
+    ?:  (lien ~(val by catalog-walks.st) |=(w=catalog-walk =(publisher.w u.pub)))
+      [(respond-json-cards eyre-id 200 '{"ok":true,"note":"scan already in progress"}') st]
     =/  eid=@ta   (cat-mint-eid now.bowl u.pub /manifest)
     =/  at=@da    (add now.bowl ~s30)
     =/  cw=catalog-walk  [%manifest u.pub /manifest 0 '' '' at]
