@@ -73,6 +73,9 @@ import io.nisfeb.lattice.workspace.WorkspaceBuffers
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.Font
 
+/** Which top-level pane is showing: the two file stores, or the obelisk Explorer. */
+enum class WorkspaceTab { Pages, Knowledge, Explore }
+
 /**
  * File manager + editor for BOTH stores: public gemtext pages and the private
  * knowledge store. A Pages/Knowledge toggle swaps which namespace the tree shows;
@@ -96,7 +99,11 @@ fun WorkspaceScreen(
     val scope = rememberCoroutineScope()
     val monoFamily = FontFamily(Font(Res.font.dejavusansmono))
 
-    var ns by remember { mutableStateOf(initialTab) }
+    var tab by remember {
+        mutableStateOf(if (initialTab == Source.Knowledge) WorkspaceTab.Knowledge else WorkspaceTab.Pages)
+    }
+    // Source for the Pages/Knowledge file UI (Explore has no buffers; defaults Public).
+    val ns: Source = if (tab == WorkspaceTab.Knowledge) Source.Knowledge else Source.Public
     var showTrash by remember { mutableStateOf(false) }
 
     var pubFiles by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -227,9 +234,11 @@ fun WorkspaceScreen(
             IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to browser", modifier = Modifier.size(18.dp))
             }
-            FilterChip(selected = ns == Source.Public, onClick = { ns = Source.Public }, label = { Text("Pages") })
-            FilterChip(selected = ns == Source.Knowledge, onClick = { ns = Source.Knowledge }, label = { Text("Knowledge") })
+            FilterChip(selected = tab == WorkspaceTab.Pages, onClick = { tab = WorkspaceTab.Pages }, label = { Text("Pages") })
+            FilterChip(selected = tab == WorkspaceTab.Knowledge, onClick = { tab = WorkspaceTab.Knowledge }, label = { Text("Knowledge") })
+            FilterChip(selected = tab == WorkspaceTab.Explore, onClick = { tab = WorkspaceTab.Explore }, label = { Text("Explore") })
         }
+        if (tab != WorkspaceTab.Explore) {
         if (ns == Source.Knowledge) {
             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 FilterChip(selected = !showTrash, onClick = { showTrash = false }, label = { Text("Active (${knowFiles.size})") })
@@ -330,6 +339,7 @@ fun WorkspaceScreen(
                     Text("Import", style = MaterialTheme.typography.bodySmall)
                 }
             }
+        }
         }
     }
 
@@ -471,17 +481,36 @@ fun WorkspaceScreen(
         }
     }
 
+    // open a knowledge note from an Explore result row: switch to Knowledge + open.
+    fun openItem(key: String) { tab = WorkspaceTab.Knowledge; openBuffer(key, Source.Knowledge) }
+
     if (isDesktop) {
         Row(modifier = Modifier.fillMaxSize()) {
             sidebar(Modifier.width(240.dp).fillMaxHeight())
             VerticalDivider()
-            Row(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                editorPane(0, Modifier.weight(1f).fillMaxHeight())
-                if (wb.splitCount == 2) {
-                    VerticalDivider()
-                    editorPane(1, Modifier.weight(1f).fillMaxHeight())
+            if (tab == WorkspaceTab.Explore) {
+                ExploreView(knowledge, monoFamily, ::openItem, Modifier.weight(1f).fillMaxHeight())
+            } else {
+                Row(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    editorPane(0, Modifier.weight(1f).fillMaxHeight())
+                    if (wb.splitCount == 2) {
+                        VerticalDivider()
+                        editorPane(1, Modifier.weight(1f).fillMaxHeight())
+                    }
                 }
             }
+        }
+    } else if (tab == WorkspaceTab.Explore) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                FilterChip(selected = false, onClick = { tab = WorkspaceTab.Pages }, label = { Text("Pages") })
+                FilterChip(selected = false, onClick = { tab = WorkspaceTab.Knowledge }, label = { Text("Knowledge") })
+                FilterChip(selected = true, onClick = {}, label = { Text("Explore") })
+            }
+            ExploreView(knowledge, monoFamily, ::openItem, Modifier.weight(1f).fillMaxWidth())
         }
     } else {
         val b = wb.activeIn(0)

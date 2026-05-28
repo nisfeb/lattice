@@ -147,4 +147,32 @@ class KnowledgeClientTest {
         assertEquals(null, req.requestUrl!!.queryParameter("match"))
         assertEquals(null, req.requestUrl!!.queryParameter("q"))
     }
+
+    @Test fun queryParsesColumnsAndRows() = runTest {
+        server.enqueue(MockResponse().setBody("""{"ok":true,"action":"SELECT","relation":"lattice.dbo.knowledge","count":2,"columns":["item","updated"],"rows":[["/a","~2026.1.1"],["/b","~2026.1.2"]]}"""))
+        val r = client.query("FROM knowledge SELECT *;").getOrThrow()
+        assertEquals(listOf("item", "updated"), r.columns)
+        assertEquals(listOf(listOf("/a", "~2026.1.1"), listOf("/b", "~2026.1.2")), r.rows)
+        assertEquals(2, r.count)
+        assertEquals("lattice.dbo.knowledge", r.relation)
+        val req = server.takeRequest()
+        assertEquals("POST", req.method)
+        assertEquals("/apps/lattice/know-query", req.path)
+        assertEquals("FROM knowledge SELECT *;", req.body.readUtf8())
+    }
+
+    @Test fun querySurfacesObeliskError() = runTest {
+        server.enqueue(MockResponse().setBody("""{"ok":false,"error":"query parse miss"}"""))
+        val r = client.query("nonsense")
+        assertTrue(r.isFailure)
+        assertEquals("query parse miss", r.exceptionOrNull()?.message)
+    }
+
+    @Test fun reindexPostsToReindex() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
+        client.reindex().getOrThrow()
+        val req = server.takeRequest()
+        assertEquals("POST", req.method)
+        assertEquals("/apps/lattice/know-reindex", req.path)
+    }
 }

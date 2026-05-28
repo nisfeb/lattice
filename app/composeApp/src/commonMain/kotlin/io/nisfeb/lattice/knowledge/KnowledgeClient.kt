@@ -27,6 +27,15 @@ data class KnowItem(
 @Serializable
 data class TagCount(val tag: String, val count: Int)
 
+/** A urQL query result from the obelisk index (Explore pane). */
+data class QueryResult(
+    val columns: List<String>,
+    val rows: List<List<String>>,
+    val count: Int = 0,
+    val relation: String = "",
+    val action: String = "",
+)
+
 /** A knowledge item with its body + tags. */
 @Serializable
 data class KnowEntry(
@@ -114,6 +123,43 @@ class KnowledgeClient(private val session: UrbitSession) {
                         count = o["count"]?.jsonPrimitive?.intOrNull ?: 0,
                     )
                 } ?: emptyList()
+            }
+        }
+    }
+
+    /**
+     * Run one urQL query against the obelisk index (Explore pane). Returns the
+     * column/row table, or a failed Result carrying obelisk's error text when the
+     * query is rejected (ok:false), obelisk is absent (503), or it times out (504).
+     */
+    suspend fun query(urql: String): Result<QueryResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder().addPathSegments("apps/lattice/know-query").build()
+            val req = Request.Builder().url(url).post(urql.toRequestBody(mediaType)).build()
+            session.http.newCall(req).execute().use { resp ->
+                val o = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                o["error"]?.let { error(it.jsonPrimitive.content) }
+                if (!resp.isSuccessful) error("know-query HTTP ${resp.code}")
+                QueryResult(
+                    columns = o["columns"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),
+                    rows = o["rows"]?.jsonArray?.map { row ->
+                        row.jsonArray.map { it.jsonPrimitive.content }
+                    } ?: emptyList(),
+                    count = o["count"]?.jsonPrimitive?.intOrNull ?: 0,
+                    relation = o["relation"]?.jsonPrimitive?.contentOrNull ?: "",
+                    action = o["action"]?.jsonPrimitive?.contentOrNull ?: "",
+                )
+            }
+        }
+    }
+
+    /** Rebuild the obelisk index from the live store (Explore pane's Reindex). */
+    suspend fun reindex(): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder().addPathSegments("apps/lattice/know-reindex").build()
+            val req = Request.Builder().url(url).post("".toRequestBody(mediaType)).build()
+            session.http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) error("know-reindex HTTP ${resp.code}")
             }
         }
     }
