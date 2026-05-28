@@ -116,7 +116,7 @@ knowledge/tags tables).
 | url        | @t     | Full `urb://<publisher><path>` for convenience. |
 | title      | @t     | First `# ` heading, fallback to first non-blank line, fallback to last path segment. |
 | fetched    | @da    | When the row was last refreshed. |
-| hash       | @uvJ   | Sham over the body cord. Lets the crawler skip re-analyzing on no-change. |
+| hash       | @uvH   | `sham` over the body cord (128-bit). Matches `state.manifest`'s hash type. Lets the crawler skip re-analyzing on no-change. |
 | category   | @t     | `''` (empty cord) until classified. Singular: one primary category per page. |
 | cat_source | @t     | `''` / `rule` / `llm` / `rule-fallback` / `manual` / `imported`. `''` means not yet classified. |
 | confidence | @rs    | 0.0 by default; the LLM path writes 0.0–1.0. |
@@ -173,7 +173,7 @@ periodic sweep skip publishers whose manifest hash hasn't changed.
 |-----------|------|-------|
 | publisher | @p   | PK. |
 | scanned   | @da  | When the manifest was last fetched. |
-| hash      | @uvJ | Sham over the manifest body. |
+| hash      | @uvH | `sham` over the manifest body. |
 | raw       | @t   | The raw gemtext manifest, kept for diffing the next sweep. |
 
 ### `catalog_pending`

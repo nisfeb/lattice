@@ -38,7 +38,9 @@
 ::                               writes one of the non-empty values.
 ::    catalog_pages.confidence — 0.0 when no confidence value is set;
 ::                               the LLM path writes 0.0-1.0.
-::    catalog_pages.hash       — sham over the body cord; lets the
+::    catalog_pages.hash       — `sham` over the body cord (128-bit @uvH,
+::                               matching state.manifest's hash type so
+::                               the schemas stay congruent). Lets the
 ::                               crawler skip re-analyzing on no-change.
 ::    catalog_links.is_internal — 1 if target_url resolves to another
 ::                                catalog_pages row, 0 otherwise.
@@ -54,11 +56,11 @@
 ++  catalog-create-urql
   ^-  tape
   %-  zing
-  :~  "CREATE TABLE catalog_pages (source @p, publisher @p, path @t, url @t, title @t, fetched @da, hash @uvJ, category @t, cat_source @t, confidence @rs, word_count @ud, body_lines @ud) PRIMARY KEY (source, publisher, path);"
+  :~  "CREATE TABLE catalog_pages (source @p, publisher @p, path @t, url @t, title @t, fetched @da, hash @uvH, category @t, cat_source @t, confidence @rs, word_count @ud, body_lines @ud) PRIMARY KEY (source, publisher, path);"
       "CREATE TABLE catalog_headings (source @p, publisher @p, path @t, position @ud, depth @ud, text @t) PRIMARY KEY (source, publisher, path, position);"
       "CREATE TABLE catalog_links (source @p, publisher @p, path @t, position @ud, target_url @t, label @t, is_internal @ud) PRIMARY KEY (source, publisher, path, position);"
       "CREATE TABLE catalog_tags (source @p, publisher @p, path @t, tag @t) PRIMARY KEY (source, publisher, path, tag);"
-      "CREATE TABLE catalog_manifests (publisher @p, scanned @da, hash @uvJ, raw @t) PRIMARY KEY (publisher);"
+      "CREATE TABLE catalog_manifests (publisher @p, scanned @da, hash @uvH, raw @t) PRIMARY KEY (publisher);"
       "CREATE TABLE catalog_pending (source @p, publisher @p, path @t, queued @da, attempts @ud, reason @t) PRIMARY KEY (source, publisher, path);"
   ==
 --
