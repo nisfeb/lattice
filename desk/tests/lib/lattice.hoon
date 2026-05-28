@@ -314,4 +314,42 @@
     (expect-eq !>(&) !>(!=(~ (find "\"ok\":false" erj))))
     (expect-eq !>(&) !>(!=(~ (find "boom" erj))))
   ==
+::  a SELECT with zero rows → ok, empty columns/rows, count 0.
+++  test-obelisk-result-empty
+  =/  res=(list ob-cmd-result)
+    ~[[%results ~[[%action 'SELECT'] [%result-set ~] [%vector-count 0]]]]
+  =/  j=tape  (trip (en:json:html (obelisk-result-json [%.y res])))
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "\"ok\":true" j))))
+    (expect-eq !>(&) !>(!=(~ (find "\"columns\":[]" j))))
+    (expect-eq !>(&) !>(!=(~ (find "\"rows\":[]" j))))
+    (expect-eq !>(&) !>(!=(~ (find "\"count\":0" j))))
+  ==
+::  a write (INSERT/DELETE/TRUNCATE) returns %action with NO %result-set: ok,
+::  the action echoed, empty table.
+++  test-obelisk-result-write
+  =/  res=(list ob-cmd-result)
+    ~[[%results ~[[%action 'INSERT INTO knowledge'] [%vector-count 1]]]]
+  =/  j=tape  (trip (en:json:html (obelisk-result-json [%.y res])))
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "\"ok\":true" j))))
+    (expect-eq !>(&) !>(!=(~ (find "INSERT INTO knowledge" j))))
+    (expect-eq !>(&) !>(!=(~ (find "\"columns\":[]" j))))
+    (expect-eq !>(&) !>(!=(~ (find "\"count\":1" j))))
+  ==
+::  a result whose vector has an empty (illegal) cell list fails the clam — the
+::  +mule wrapper must yield an error object, NOT crash the agent.
+++  test-obelisk-result-malformed
+  =/  bad=*  [%.y ~[[%results ~[[%result-set ~[[%vector ~]]]]]]]
+  =/  j=tape  (trip (en:json:html (obelisk-result-json bad)))
+  (expect-eq !>(&) !>(!=(~ (find "\"ok\":false" j))))
+::  non-text auras render via +scot (a ud count → "5"); text columns stay raw.
+++  test-obelisk-result-aura
+  =/  vec=ob-vector  [%vector ~[[`@tas`'item' 't' 'k'] [`@tas`'n' 'ud' 5]]]
+  =/  res=(list ob-cmd-result)  ~[[%results ~[[%result-set ~[vec]]]]]
+  =/  j=tape  (trip (en:json:html (obelisk-result-json [%.y res])))
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "\"k\"" j))))
+    (expect-eq !>(&) !>(!=(~ (find "\"5\"" j))))
+  ==
 --

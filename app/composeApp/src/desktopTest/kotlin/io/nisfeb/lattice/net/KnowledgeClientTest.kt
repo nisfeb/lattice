@@ -168,6 +168,16 @@ class KnowledgeClientTest {
         assertEquals("query parse miss", r.exceptionOrNull()?.message)
     }
 
+    @Test fun queryFailsOnServerErrorWithoutErrorField() = runTest {
+        // 503/504 with a body that has no "error" field → fall through to the
+        // HTTP-status failure (the obelisk-absent / timeout paths return JSON with
+        // an error, but a bare status must still surface as a failed Result).
+        server.enqueue(MockResponse().setResponseCode(503).setBody("{}"))
+        val r = client.query("FROM knowledge SELECT *;")
+        assertTrue(r.isFailure)
+        assertTrue(r.exceptionOrNull()?.message?.contains("503") == true)
+    }
+
     @Test fun reindexPostsToReindex() = runTest {
         server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
         client.reindex().getOrThrow()
