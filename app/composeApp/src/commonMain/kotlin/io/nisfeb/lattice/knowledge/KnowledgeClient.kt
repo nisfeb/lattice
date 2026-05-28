@@ -27,6 +27,20 @@ data class KnowItem(
 @Serializable
 data class TagCount(val tag: String, val count: Int)
 
+/**
+ * Map a `SELECT 1;` probe through the lattice query bridge to obelisk presence.
+ * Only the agent's explicit "obelisk not installed" error counts as absent —
+ * every other failure (older lattice without know-query, the 504 timeout when
+ * gall holds a %watch to a not-running agent, a 429 stuck-oquery, a network
+ * glitch) is "unknown" and we assume installed, to avoid nagging users whose
+ * obelisk is already there.
+ */
+fun obeliskInstalledFromProbe(r: Result<QueryResult>): Boolean = when {
+    r.isSuccess -> true
+    r.exceptionOrNull()?.message == "obelisk not installed" -> false
+    else -> true
+}
+
 /** A urQL query result from the obelisk index (Explore pane). */
 data class QueryResult(
     val columns: List<String>,

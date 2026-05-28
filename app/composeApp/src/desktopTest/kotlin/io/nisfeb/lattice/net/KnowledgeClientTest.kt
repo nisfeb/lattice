@@ -1,6 +1,7 @@
 package io.nisfeb.lattice.net
 
 import io.nisfeb.lattice.knowledge.KnowledgeClient
+import io.nisfeb.lattice.knowledge.obeliskInstalledFromProbe
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -182,6 +183,23 @@ class KnowledgeClientTest {
         val r = client.query("nonsense")
         assertTrue(r.isFailure)
         assertEquals("query parse miss", r.exceptionOrNull()?.message)
+    }
+
+    @Test fun obeliskProbeOnlyTreatsExactErrorAsAbsent() = runTest {
+        // success → installed
+        server.enqueue(MockResponse().setBody("""{"ok":true,"action":"SELECT","relation":"","count":1,"columns":["x"],"rows":[["1"]]}"""))
+        assertEquals(true, obeliskInstalledFromProbe(client.query("SELECT 1;")))
+
+        // the agent's explicit absent signal → installed=false
+        server.enqueue(MockResponse().setBody("""{"ok":false,"error":"obelisk not installed"}"""))
+        assertEquals(false, obeliskInstalledFromProbe(client.query("SELECT 1;")))
+
+        // any other failure (old agent without know-query → 400 missing url param,
+        // a 504 timeout, etc.) is unknown → assume installed so we don't nag.
+        server.enqueue(MockResponse().setResponseCode(400).setBody("""{"error":"missing url param"}"""))
+        assertEquals(true, obeliskInstalledFromProbe(client.query("SELECT 1;")))
+        server.enqueue(MockResponse().setBody("""{"ok":false,"error":"obelisk query timed out"}"""))
+        assertEquals(true, obeliskInstalledFromProbe(client.query("SELECT 1;")))
     }
 
     @Test fun queryFailsOnServerErrorWithoutErrorField() = runTest {

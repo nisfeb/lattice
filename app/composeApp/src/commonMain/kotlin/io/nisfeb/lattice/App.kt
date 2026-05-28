@@ -35,6 +35,7 @@ import io.nisfeb.lattice.ui.AddShipScreen
 import io.nisfeb.lattice.ui.AppScreen
 import io.nisfeb.lattice.ui.InstallAgentScreen
 import io.nisfeb.lattice.knowledge.KnowledgeClient
+import io.nisfeb.lattice.knowledge.obeliskInstalledFromProbe
 import io.nisfeb.lattice.ui.BookmarksScreen
 import io.nisfeb.lattice.ui.BrowserScreen
 import io.nisfeb.lattice.ui.BrowserTab
@@ -97,11 +98,13 @@ fun App(
     val latticeInstaller = remember {
         AgentInstaller(session, AgentInstaller.LATTICE_DESK, AgentInstaller.LATTICE_SOURCE, AgentInstaller.latticeProbe(session))
     }
-    // obelisk has no Eyre routes — detect it through lattice's query bridge
-    // (a schema-independent `SELECT 1;` succeeds iff obelisk is installed).
+    // obelisk has no Eyre routes — detect it through lattice's query bridge. See
+    // +obeliskInstalledFromProbe: only the explicit "obelisk not installed" error
+    // means absent; every other failure (old lattice without know-query, 504
+    // timeout, stuck oquery, network) is "unknown → assume installed".
     val obeliskInstaller = remember {
         AgentInstaller(session, AgentInstaller.OBELISK_DESK, AgentInstaller.OBELISK_SOURCE) {
-            knowledgeClient.query("SELECT 1;").isSuccess
+            obeliskInstalledFromProbe(knowledgeClient.query("SELECT 1;"))
         }
     }
     val scope = rememberCoroutineScope()
