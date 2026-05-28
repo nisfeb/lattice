@@ -183,4 +183,24 @@
     (expect-eq !>(~) !>((parse-tag-line "")))
     (expect-eq !>(~) !>((parse-tag-line "#")))
   ==
+::
+::  ── per-page row caps (DoS guard) ───────────────────────────────────────
+::  A hostile page body of N heading/link/tag lines must not yield N rows.
+::  Each list is capped at its *-max; a body just over the cap clamps to it.
+++  test-analyze-caps-headings
+  =/  body=@t  (rap 3 (reap +(heading-max) '# h\0a'))
+  (expect-eq !>(heading-max) !>((lent headings:(analyze body))))
+::
+++  test-analyze-caps-links
+  =/  body=@t  (rap 3 (reap +(link-max) '=> /x  l\0a'))
+  (expect-eq !>(link-max) !>((lent links:(analyze body))))
+::
+++  test-analyze-caps-tags
+  =/  body=@t  (rap 3 (reap +(tag-max) '#t\0a'))
+  (expect-eq !>(tag-max) !>((lent tags:(analyze body))))
+::
+::  Under the cap, nothing is dropped (the cap doesn't truncate normal pages).
+++  test-analyze-under-cap-intact
+  =/  body=@t  '# a\0a## b\0a### c\0a'
+  (expect-eq !>(`@ud`3) !>((lent headings:(analyze body))))
 --

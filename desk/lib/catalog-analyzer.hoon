@@ -29,6 +29,16 @@
 +$  heading  [depth=@ud text=@t position=@ud]
 +$  link     [target=@t label=@t position=@ud]
 ::
+::  Per-page caps on extracted rows. A hostile page body (e.g. a megabyte
+::  of "# x\n") would otherwise yield one catalog-* INSERT per line — a
+::  single page amplifying into a huge urQL poke. These bound the analysis
+::  output (first-N by document order), so the row fan-out per page is
+::  bounded the way +manifest-max bounds the page fan-out per publisher.
+::  The crawler additionally caps the raw body size before analyzing.
+++  heading-max  ^-(@ud 512)
+++  link-max     ^-(@ud 1.024)
+++  tag-max      ^-(@ud 128)
+::
 ::  +analyze: single-pass fold over the body's lines.
 ::
 ::  Order of prefix checks matters — `### ` must be tested BEFORE `## `,
@@ -55,9 +65,12 @@
   =/  pos=@ud  0
   |-
   ?~  lines
-    =/  headings=(list heading)  (flop rev-headings)
-    =/  links=(list link)        (flop rev-links)
-    =/  tags=(list @t)           (flop rev-tags)
+    ::  cap each list (first-N by document order) so one hostile page can't
+    ::  fan out into an unbounded urQL poke. Title is taken before the cap so
+    ::  a page with only headings still gets its (first) heading as title.
+    =/  headings=(list heading)  (scag heading-max (flop rev-headings))
+    =/  links=(list link)        (scag link-max (flop rev-links))
+    =/  tags=(list @t)           (scag tag-max (flop rev-tags))
     =/  title=@t
       ?^  headings  text.i.headings
       first-non-blank

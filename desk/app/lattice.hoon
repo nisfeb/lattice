@@ -272,6 +272,12 @@
 ::  A bounded work-queue (K page walks in flight, draining the rest) is the
 ::  proper long-term shape; this cap is the v1 blast-radius guard.
 ++  manifest-max  ^-(@ud 1.024)
+::  +body-max: the largest page body (bytes) the crawler will analyze + index.
+::  A hostile publisher could serve a multi-megabyte page; analyzing + poking
+::  it as one obelisk row (plus per-line heading/link rows) would be a heavy,
+::  unbounded operation. Oversized pages are skipped + logged, not truncated
+::  (a clean skip beats a mid-line cut). 1 MiB is generous for gemtext.
+++  body-max  ^-(@ud 1.048.576)
 ::
 ::  walk-to-latest cards: probe revisions on /walk/<eid>, with a behn deadline
 ::  on /walkto/<eid> that fires when the walk stalls (the next rev pends).
@@ -371,6 +377,11 @@
     [cards walks]
   ::
       %page
+    ::  skip + log an oversized page rather than analyzing/indexing it — a
+    ::  hostile publisher must not turn one page into a giant obelisk poke.
+    ?:  (gth (met 3 body.cw) body-max)
+      ~&  [%catalog-page-too-large publisher=publisher.cw spur=spur.cw bytes=(met 3 body.cw)]
+      [~ ~]
     =/  =analysis  (analyze body.cw)
     =/  urql=tape
       (catalog-page-urql our.bowl publisher.cw spur.cw now.bowl analysis)
