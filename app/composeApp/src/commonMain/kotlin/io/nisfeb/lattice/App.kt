@@ -350,7 +350,7 @@ fun App(
                     follows = follows,
                     onFollow = { ship2 -> setFollows((follows + ship2).distinct().sorted()) },
                     onUnfollow = { ship2 -> setFollows(follows - ship2) },
-                    onBrowse = { ship2 -> browseTarget = "urb://$ship2/"; screen = AppScreen.Browse },
+                    onOpenUrl = { url -> browseTarget = url; screen = AppScreen.Browse },
                     onClose = { screen = AppScreen.Browse },
                 )
                 AppScreen.Updates -> UpdatesScreen(

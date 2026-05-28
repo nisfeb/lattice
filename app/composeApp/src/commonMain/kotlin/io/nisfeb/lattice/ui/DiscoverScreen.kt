@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
@@ -40,16 +41,21 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
-/** Find and follow other lattice publishers: your follows, publishing contacts, and add-by-patp. */
+/** Find and follow other lattice publishers: your follows, publishing contacts, and add-by-patp.
+ *  Each publisher row exposes a "Files" action that opens their /manifest — every
+ *  lattice ship publishes one (a gemtext list of all their pages), so this surfaces
+ *  the full catalog without having to crawl their home page's links. */
 @Composable
 fun DiscoverScreen(
     client: LatticeClient,
     follows: List<String>,
     onFollow: (String) -> Unit,
     onUnfollow: (String) -> Unit,
-    onBrowse: (String) -> Unit,
+    onOpenUrl: (String) -> Unit,
     onClose: () -> Unit,
 ) {
+    fun homeUrl(ship: String) = "urb://$ship/"
+    fun manifestUrl(ship: String) = "urb://$ship/manifest"
     // Publishers found among contacts (populated live as probes finish).
     var found by remember { mutableStateOf<List<String>>(emptyList()) }
     // Non-null while probing: which ship we're checking and how far along.
@@ -119,7 +125,10 @@ fun DiscoverScreen(
             if (follows.isNotEmpty()) {
                 item { Section("Following") }
                 items(follows) { ship ->
-                    ShipRow(ship, onClick = { onBrowse(ship) }) {
+                    ShipRow(ship, onClick = { onOpenUrl(homeUrl(ship)) }) {
+                        IconButton(onClick = { onOpenUrl(manifestUrl(ship)) }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.AutoMirrored.Filled.FormatListBulleted, "View $ship's files", modifier = Modifier.size(18.dp))
+                        }
                         IconButton(onClick = { onUnfollow(ship) }, modifier = Modifier.size(32.dp)) {
                             Icon(Icons.Filled.Close, "Unfollow $ship", modifier = Modifier.size(18.dp))
                         }
@@ -131,7 +140,10 @@ fun DiscoverScreen(
             if (p != null) item { ProbeProgress(p) }
             if (found.isNotEmpty()) {
                 items(found) { ship ->
-                    ShipRow(ship, onClick = { onBrowse(ship) }) {
+                    ShipRow(ship, onClick = { onOpenUrl(homeUrl(ship)) }) {
+                        IconButton(onClick = { onOpenUrl(manifestUrl(ship)) }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.AutoMirrored.Filled.FormatListBulleted, "View $ship's files", modifier = Modifier.size(18.dp))
+                        }
                         // Follow + drop from the found list locally (it moves to the
                         // "Following" section) without restarting the probe.
                         TextButton(onClick = { onFollow(ship); found = found - ship }) { Text("Follow") }
