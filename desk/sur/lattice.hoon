@@ -168,6 +168,32 @@
       trash=(map path know-entry)
       oquery=(unit [eid=@ta deadline=@da])
   ==
+::  state-10: adds the catalog scheduler slot. The catalog itself (rows for
+::  publishers/pages/headings/links/tags/etc.) lives in %obelisk under the
+::  `catalog_*` tables (see /lib/catalog and /docs/catalog.md). Here we
+::  only track agent-driving state:
+::    catalog-sweep — the next periodic manifest-sweep deadline; ~ means
+::                    no sweep armed yet (set when the first follow is
+::                    added, or by +on-init after the catalog schema
+::                    is poked). Behn re-arms it per sweep cycle.
+::  Crawler-driving fields (in-flight walks, per-publisher backoff state)
+::  land with the crawler PR — this state is just the minimal shape to
+::  carry the migration without another version bump before then.
++$  state-10
+  $:  %10
+      content=(map path @t)
+      published=(map path @uvH)
+      pending=(map @ta [=ship =path])
+      subs=(map [=ship spur=path] last=@ud)
+      fetches=(map @ta walk)
+      manifest=@uvH
+      home=@uvH
+      browse=(unit [=ship spur=path rev=@ud])
+      know=(map path know-entry)
+      trash=(map path know-entry)
+      oquery=(unit [eid=@ta deadline=@da])
+      catalog-sweep=(unit @da)
+  ==
 ::  one in-flight walk-to-latest fetch (keyed by eyre-id).
 ::  rev = highest revision resolved so far (0 = none yet); deadline = the armed
 ::  behn timer's wake time (tracked so progress can %rest + re-arm it).

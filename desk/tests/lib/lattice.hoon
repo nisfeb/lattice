@@ -117,7 +117,7 @@
 ::  +do-know: save → live; del → SOFT (moves to recoverable trash, not gone);
 ::  restore → back to live. This is the delete gate.
 ++  test-do-know
-  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-9)
+  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-10)
   =/  st2  (do-know ~2026.1.1 [%del '/a/b'] st1)
   =/  st3  (do-know ~2026.1.1 [%restore '/a/b'] st2)
   ;:  weld
@@ -133,7 +133,7 @@
 ::  and they survive a del→restore round-trip.
 ++  test-do-know-tags
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/k' 'b'] *state-9)
+  =/  st1  (do-know now [%save '/k' 'b'] *state-10)
   =/  st2  (do-know now [%tag '/k' 'Urbit'] st1)
   =/  st3  (do-know now [%tag '/k' 'design'] st2)
   =/  st4  (do-know now [%save '/k' 'b2'] st3)
@@ -176,6 +176,21 @@
     (expect-eq !>(*(unit [eid=@ta deadline=@da])) !>(oquery.s9))
   ==
 ::
+::  +migrate-9-10: head becomes %10, all state-9 data carried forward
+::  (including the oquery slot from migrate-8-9), catalog-sweep starts ~.
+++  test-migrate-9-10
+  =/  e=know-entry  ['body' ~2026.1.1 (sy ~['x']) ~]
+  =/  s9=state-9  *state-9
+  =.  know.s9   (malt ~[[`path`/a/b e]])
+  =.  home.s9   `@uvH`42
+  =/  s10=state-10  (migrate-9-10 s9)
+  ;:  weld
+    (expect-eq !>(%10) !>(-.s10))
+    (expect-eq !>(e) !>((~(got by know.s10) /a/b)))
+    (expect-eq !>(`@uvH`42) !>(home.s10))
+    (expect-eq !>(*(unit @da)) !>(catalog-sweep.s10))
+  ==
+::
 ::  ── explore / discovery (synchronous filter over the live store) ──
 ++  test-split-on
   ;:  weld
@@ -195,7 +210,7 @@
 ::  +know-explore: AND/OR tag filter + case-insensitive text search over key/body.
 ++  test-know-explore
   =/  now  ~2026.1.1
-  =/  s0   *state-9
+  =/  s0   *state-10
   =/  s1   (do-know now [%save '/notes/urbit-design' 'a note about Hoon'] s0)
   =/  s2   (do-know now [%tag '/notes/urbit-design' 'urbit'] s1)
   =/  s3   (do-know now [%tag '/notes/urbit-design' 'design'] s2)
@@ -258,7 +273,7 @@
   (expect-eq !>(&) !>(!=(~ (find ~[92 39] s))))
 ::
 ++  test-obelisk-populate-urql
-  =/  st  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-9)
+  =/  st  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-10)
   =/  s=tape  (obelisk-populate-urql know.st)
   ;:  weld
     ::  clears both tables before re-inserting (full rebuild)
@@ -271,14 +286,14 @@
 ::  one tag row; bad/no-op key = empty.
 ++  test-mirror-urql
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-9)
+  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-10)
   =/  st2  (do-know now [%tag '/a/b' 'urbit'] st1)
   =/  m-save   (mirror-urql [%save '/a/b' 'hi'] st1)
   =/  st-del   (do-know now [%del '/a/b'] st2)
   =/  m-del    (mirror-urql [%del '/a/b'] st-del)
   =/  m-tag    (mirror-urql [%tag '/a/b' 'Urbit'] st2)
   =/  m-untag  (mirror-urql [%untag '/a/b' 'urbit'] st2)
-  =/  m-noop   (mirror-urql [%save 'bad key' 'x'] *state-9)
+  =/  m-noop   (mirror-urql [%save 'bad key' 'x'] *state-10)
   ;:  weld
     ::  save = delete the stale row, then insert the current one
     (expect-eq !>(&) !>(!=(~ (find "DELETE FROM knowledge WHERE item = '/a/b';" m-save))))
