@@ -15,11 +15,13 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -78,15 +80,43 @@ fun ExploreView(
         it.startsWith("FROM", true) || it.startsWith("SELECT", true)
     }
 
+    // Hand-picked example queries — every entry is plain urQL the user can
+    // tweak in place. Limited by what obelisk supports today: no GROUP BY /
+    // aggregates / subqueries, so "tag counts" or "untagged notes" can't ride
+    // here as one-liners. Pure schema-inventory + a couple of practical filters.
+    val examples = listOf(
+        "All notes" to "FROM knowledge SELECT *;",
+        "All tags" to "FROM tags SELECT *;",
+        "Notes with tags" to "FROM knowledge AS k JOIN tags AS t ON k.item = t.item SELECT k.item, t.tag;",
+        "Recent notes (newest first)" to "FROM knowledge SELECT * ORDER BY updated DESC;",
+        "Filter by tag (edit the value)" to "FROM tags WHERE tag = 'urbit' SELECT item;",
+    )
+    var examplesOpen by remember { mutableStateOf(false) }
+
     Column(modifier = modifier.padding(8.dp)) {
-        // preset table views
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            AssistChip(onClick = { preset("FROM knowledge SELECT *;") }, label = { Text("knowledge") })
-            AssistChip(onClick = { preset("FROM tags SELECT *;") }, label = { Text("tags") })
-            AssistChip(
-                onClick = { preset("FROM knowledge AS k JOIN tags AS t ON k.item = t.item SELECT k.item, t.tag;") },
-                label = { Text("items + tags") },
-            )
+        Box {
+            Button(onClick = { examplesOpen = true }) {
+                Text("Examples")
+                Icon(Icons.Filled.ArrowDropDown, null, modifier = Modifier.width(20.dp))
+            }
+            DropdownMenu(expanded = examplesOpen, onDismissRequest = { examplesOpen = false }) {
+                examples.forEach { (name, q) ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(name, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    q,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                )
+                            }
+                        },
+                        onClick = { examplesOpen = false; preset(q) },
+                    )
+                }
+            }
         }
         OutlinedTextField(
             value = queryText,
