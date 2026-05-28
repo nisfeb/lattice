@@ -41,6 +41,10 @@ fun InstallAgentScreen(
     sourceShip: String,
     onInstalled: () -> Unit,
     onSkip: () -> Unit,
+    title: String = "Set up Lattice on your ship",
+    intro: String = "Lattice needs its agent installed on your ship to browse and " +
+        "publish gemtext. Install it from $sourceShip?",
+    skipLabel: String = "Skip",
 ) {
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf<InstallState>(InstallState.Prompt) }
@@ -73,13 +77,12 @@ fun InstallAgentScreen(
                 InstallState.Prompt -> {
                     Icon(Icons.Filled.CloudDownload, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
                     Text(
-                        "Set up Lattice on your ship",
+                        title,
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.padding(top = 16.dp),
                     )
                     Text(
-                        "Lattice needs its agent installed on your ship to browse and publish " +
-                            "gemtext. Install it from $sourceShip?",
+                        intro,
                         style = MaterialTheme.typography.bodyMedium,
                         textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -90,7 +93,7 @@ fun InstallAgentScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
                     ) {
                         Button(onClick = { start() }) { Text("Install") }
-                        TextButton(onClick = onSkip) { Text("Skip") }
+                        TextButton(onClick = onSkip) { Text(skipLabel) }
                     }
                 }
 
@@ -127,7 +130,7 @@ fun InstallAgentScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
                     ) {
                         Button(onClick = { start() }) { Text("Retry") }
-                        TextButton(onClick = onSkip) { Text("Skip") }
+                        TextButton(onClick = onSkip) { Text(skipLabel) }
                     }
                 }
             }

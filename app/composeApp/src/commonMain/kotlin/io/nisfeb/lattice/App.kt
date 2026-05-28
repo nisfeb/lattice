@@ -94,7 +94,16 @@ fun App(
     val followRepo = remember { FollowRepository(settingsClient) }
     val subRepo = remember { SubscriptionRepository(settingsClient) }
     val updatesChannel = remember { UpdatesChannel(session) }
-    val agentInstaller = remember { AgentInstaller(session) }
+    val latticeInstaller = remember {
+        AgentInstaller(session, AgentInstaller.LATTICE_DESK, AgentInstaller.LATTICE_SOURCE, AgentInstaller.latticeProbe(session))
+    }
+    // obelisk has no Eyre routes — detect it through lattice's query bridge
+    // (a schema-independent `SELECT 1;` succeeds iff obelisk is installed).
+    val obeliskInstaller = remember {
+        AgentInstaller(session, AgentInstaller.OBELISK_DESK, AgentInstaller.OBELISK_SOURCE) {
+            knowledgeClient.query("SELECT 1;").isSuccess
+        }
+    }
     val scope = rememberCoroutineScope()
 
     var ship by remember { mutableStateOf(session.tryRestore()) }
@@ -117,6 +126,9 @@ fun App(
     // True when logged in but the %lattice agent isn't installed on the ship —
     // gates the app behind an offer to install it from the publisher.
     var agentMissing by remember { mutableStateOf(false) }
+    // True when %lattice is present but the optional %obelisk index isn't — offers
+    // (skippable) to install it after lattice. Obelisk powers the Explore tab.
+    var obeliskMissing by remember { mutableStateOf(false) }
     // Content shared into the app; survives until consumed by ShareImportScreen,
     // so a share that arrives before login still imports once the user signs in.
     var shareTarget by remember { mutableStateOf<SharedContent?>(null) }
@@ -201,10 +213,15 @@ fun App(
         }
     }
 
-    // Detect a missing %lattice agent on login so we can offer to install it.
+    // Detect a missing %lattice agent on login so we can offer to install it; once
+    // lattice is present, check the optional %obelisk index too.
     LaunchedEffect(ship) {
         agentMissing = false
-        if (ship != null) agentMissing = !agentInstaller.isInstalled()
+        obeliskMissing = false
+        if (ship != null) {
+            agentMissing = !latticeInstaller.isInstalled()
+            if (!agentMissing) obeliskMissing = !obeliskInstaller.isInstalled()
+        }
     }
 
     fun addBookmark(bm: Bookmark) {
@@ -258,10 +275,25 @@ fun App(
                 AddShipScreen(session, onLoggedIn = { ship = it; if (shareTarget == null) screen = AppScreen.Browse })
             } else if (agentMissing) {
                 InstallAgentScreen(
-                    installer = agentInstaller,
-                    sourceShip = AgentInstaller.SOURCE_SHIP,
-                    onInstalled = { agentMissing = false },
+                    installer = latticeInstaller,
+                    sourceShip = AgentInstaller.LATTICE_SOURCE,
+                    onInstalled = {
+                        agentMissing = false
+                        scope.launch { obeliskMissing = !obeliskInstaller.isInstalled() }
+                    },
                     onSkip = { agentMissing = false },
+                )
+            } else if (obeliskMissing) {
+                InstallAgentScreen(
+                    installer = obeliskInstaller,
+                    sourceShip = AgentInstaller.OBELISK_SOURCE,
+                    title = "Add the knowledge index (optional)",
+                    intro = "Obelisk powers the Explore tab's relational queries over your " +
+                        "knowledge index. The rest of Lattice works without it. Install it " +
+                        "from ${AgentInstaller.OBELISK_SOURCE}?",
+                    skipLabel = "Not now",
+                    onInstalled = { obeliskMissing = false },
+                    onSkip = { obeliskMissing = false },
                 )
             } else when (screen) {
                 AppScreen.Browse -> BrowserScreen(

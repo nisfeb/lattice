@@ -14,7 +14,9 @@ import kotlin.test.assertEquals
 class AgentInstallerTest {
 
     @Test fun `installActions pokes hood kiln-install with the verified json shape`() {
-        val actions = AgentInstaller.installActions("sampel-palnet")
+        val actions = AgentInstaller.installActions(
+            "sampel-palnet", AgentInstaller.LATTICE_DESK, AgentInstaller.LATTICE_SOURCE,
+        )
         assertEquals(1, actions.size)
         val action = actions[0].jsonObject
 
@@ -29,5 +31,15 @@ class AgentInstallerTest {
         assertEquals("lattice", json["desk"]!!.jsonPrimitive.content)
         // Source ship parses via ;~(pfix sig ...) — must include the ~.
         assertEquals("~ricsul-bilwyt", json["ship"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun `installActions carries the obelisk desk and its publisher`() {
+        val actions = AgentInstaller.installActions(
+            "sampel-palnet", AgentInstaller.OBELISK_DESK, AgentInstaller.OBELISK_SOURCE,
+        )
+        val json = actions[0].jsonObject["json"]!!.jsonObject
+        assertEquals("obelisk", json["local"]!!.jsonPrimitive.content)
+        assertEquals("obelisk", json["desk"]!!.jsonPrimitive.content)
+        assertEquals("~dister-nomryg-nilref", json["ship"]!!.jsonPrimitive.content)
     }
 }
