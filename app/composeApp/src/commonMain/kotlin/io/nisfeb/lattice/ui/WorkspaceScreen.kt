@@ -1,5 +1,6 @@
 package io.nisfeb.lattice.ui
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -9,11 +10,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -28,6 +32,7 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Publish
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
@@ -35,6 +40,8 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.VerticalSplit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.InputChip
@@ -55,13 +62,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.nisfeb.lattice.backup.ContentArchive
 import io.nisfeb.lattice.copyToClipboard
 import io.nisfeb.lattice.isDesktop
 import io.nisfeb.lattice.knowledge.KnowledgeClient
-import io.nisfeb.lattice.knowledge.TagCount
 import io.nisfeb.lattice.rememberFileExporter
 import io.nisfeb.lattice.rememberFileImporter
 import io.nisfeb.lattice.resources.Res
@@ -115,26 +124,24 @@ fun WorkspaceScreen(
     val wb = remember { WorkspaceBuffers() }
     var status by remember { mutableStateOf<String?>(null) }
 
-    // Explore mode (Knowledge namespace): facet tags + a text query filter the
-    // active list. Empty selection + blank query = show everything.
-    var facets by remember { mutableStateOf<List<TagCount>>(emptyList()) }
-    var exploreTags by remember { mutableStateOf<List<String>>(emptyList()) }
+    // Knowledge sidebar text filter (key/body substring). The horizontally-
+    // scrolling facet chip row was removed for density — too long anyway —
+    // along with the Any/All toggle. Filtering is text-only here; tag-driven
+    // discovery moves to the Explore tab's urQL runner.
     var exploreQuery by remember { mutableStateOf("") }
-    var exploreMatchAll by remember { mutableStateOf(false) }
     var exploreResults by remember { mutableStateOf<List<String>>(emptyList()) }
-    val exploreActive = exploreTags.isNotEmpty() || exploreQuery.isNotBlank()
+    val exploreActive = exploreQuery.isNotBlank()
 
     fun refreshPublic() = scope.launch { client.list().onSuccess { pubFiles = it } }
     fun refreshKnow() = scope.launch {
         knowledge.list().onSuccess { knowFiles = it.map { k -> k.key.removePrefix("/") } }
         knowledge.trash().onSuccess { trashFiles = it.map { k -> k.key.removePrefix("/") } }
-        knowledge.tags().onSuccess { facets = it }
     }
     LaunchedEffect(Unit) { refreshPublic(); refreshKnow() }
-    // Re-run the filter whenever its inputs (or the store) change.
-    LaunchedEffect(exploreTags, exploreQuery, exploreMatchAll, knowFiles) {
+    // Re-run the text filter when its query or the store changes.
+    LaunchedEffect(exploreQuery, knowFiles) {
         if (exploreActive) {
-            knowledge.explore(exploreTags, exploreMatchAll, exploreQuery)
+            knowledge.explore(emptyList(), false, exploreQuery)
                 .onSuccess { exploreResults = it.map { k -> k.key.removePrefix("/") } }
         }
     }
@@ -229,120 +236,105 @@ fun WorkspaceScreen(
 
     @Composable
     fun sidebar(modifier: Modifier) = Column(modifier = modifier) {
+        // Slim top bar: back + overflow menu (Export/Import live here now —
+        // they're rare, so they don't deserve a permanent row).
+        var menuOpen by remember { mutableStateOf(false) }
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to browser", modifier = Modifier.size(18.dp))
             }
-            FilterChip(selected = tab == WorkspaceTab.Pages, onClick = { tab = WorkspaceTab.Pages }, label = { Text("Pages") })
-            FilterChip(selected = tab == WorkspaceTab.Knowledge, onClick = { tab = WorkspaceTab.Knowledge }, label = { Text("Knowledge") })
-            FilterChip(selected = tab == WorkspaceTab.Explore, onClick = { tab = WorkspaceTab.Explore }, label = { Text("Explore") })
+            Spacer(Modifier.weight(1f))
+            Box {
+                IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Filled.MoreVert, "Backup options", modifier = Modifier.size(18.dp))
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Export all") },
+                        leadingIcon = { Icon(Icons.Filled.FileDownload, null) },
+                        onClick = { menuOpen = false; doExport() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Import all") },
+                        leadingIcon = { Icon(Icons.Filled.FileUpload, null) },
+                        onClick = { menuOpen = false; importFile() },
+                    )
+                }
+            }
+        }
+        // Three equal-width tabs (icon over label). Replaces the FilterChip row
+        // that was overflowing the 240dp sidebar and clipping "Explore".
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            TabButton(tab == WorkspaceTab.Pages, Icons.Filled.Public, "Pages", { tab = WorkspaceTab.Pages }, Modifier.weight(1f))
+            TabButton(tab == WorkspaceTab.Knowledge, Icons.Filled.Lock, "Knowledge", { tab = WorkspaceTab.Knowledge }, Modifier.weight(1f))
+            TabButton(tab == WorkspaceTab.Explore, Icons.Filled.Search, "Explore", { tab = WorkspaceTab.Explore }, Modifier.weight(1f))
         }
         if (tab != WorkspaceTab.Explore) {
-        if (ns == Source.Knowledge) {
-            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                FilterChip(selected = !showTrash, onClick = { showTrash = false }, label = { Text("Active (${knowFiles.size})") })
-                FilterChip(selected = showTrash, onClick = { showTrash = true }, label = { Text("Trash (${trashFiles.size})") })
-            }
-        }
-        // Explore: search box + facet chips (Knowledge active view only).
-        if (ns == Source.Knowledge && !showTrash) {
-            OutlinedTextField(
-                value = exploreQuery, onValueChange = { exploreQuery = it }, singleLine = true,
-                placeholder = { Text("search notes", style = MaterialTheme.typography.bodySmall) },
-                leadingIcon = { Icon(Icons.Filled.Search, null, modifier = Modifier.size(16.dp)) },
-                trailingIcon = if (exploreActive) ({
-                    IconButton(onClick = { exploreQuery = ""; exploreTags = emptyList() }, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Filled.Close, "clear filter", modifier = Modifier.size(16.dp))
-                    }
-                }) else null,
-                textStyle = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
-            )
-            if (facets.isNotEmpty()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    facets.forEach { f ->
-                        val on = f.tag in exploreTags
-                        FilterChip(
-                            selected = on,
-                            onClick = { exploreTags = if (on) exploreTags - f.tag else exploreTags + f.tag },
-                            label = { Text("${f.tag} ${f.count}", style = MaterialTheme.typography.bodySmall) },
-                        )
-                    }
-                }
-                if (exploreTags.size > 1) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        FilterChip(selected = !exploreMatchAll, onClick = { exploreMatchAll = false }, label = { Text("Any", style = MaterialTheme.typography.bodySmall) })
-                        FilterChip(selected = exploreMatchAll, onClick = { exploreMatchAll = true }, label = { Text("All", style = MaterialTheme.typography.bodySmall) })
-                    }
+            if (ns == Source.Knowledge) {
+                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(selected = !showTrash, onClick = { showTrash = false }, label = { Text("Active ${knowFiles.size}") })
+                    FilterChip(selected = showTrash, onClick = { showTrash = true }, label = { Text("Trash ${trashFiles.size}") })
                 }
             }
-        }
-        if (!(ns == Source.Knowledge && showTrash)) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                OutlinedTextField(
-                    value = newName, onValueChange = { newName = it }, singleLine = true,
-                    placeholder = { Text(if (ns == Source.Public) "new page" else "new note", style = MaterialTheme.typography.bodySmall) },
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(1f),
+            // Compact text filter (Knowledge active view only) — facet chips +
+            // Any/All toggle removed for density; text search remains.
+            if (ns == Source.Knowledge && !showTrash) {
+                CompactField(
+                    value = exploreQuery,
+                    onChange = { exploreQuery = it },
+                    placeholder = "search notes",
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+                    trailing = if (exploreActive) ({
+                        IconButton(onClick = { exploreQuery = "" }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Filled.Close, "clear filter", modifier = Modifier.size(14.dp))
+                        }
+                    }) else null,
                 )
-                IconButton(
-                    onClick = { if (newName.isNotBlank()) { newFile(newName.trim()); newName = "" } },
-                    enabled = newName.isNotBlank(), modifier = Modifier.size(32.dp),
-                ) { Icon(Icons.Filled.Add, "New", modifier = Modifier.size(18.dp)) }
             }
-        }
-        val activeForNs = wb.activeIn(wb.focusedPane)?.let { if (it.source == ns) it.path else null }
-        val knowVisible = if (exploreActive) exploreResults else knowFiles
-        FileTree(
-            files = if (ns == Source.Public) pubFiles else if (showTrash) trashFiles else knowVisible,
-            dir = if (ns == Source.Public) pubDir else knowDir,
-            onDir = { if (ns == Source.Public) pubDir = it else knowDir = it },
-            onOpen = {
-                when {
-                    ns == Source.Public -> openBuffer(it, Source.Public)
-                    !showTrash -> openBuffer(it, Source.Knowledge)
+            if (!(ns == Source.Knowledge && showTrash)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    CompactField(
+                        value = newName,
+                        onChange = { newName = it },
+                        placeholder = if (ns == Source.Public) "new page" else "new note",
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(
+                        onClick = { if (newName.isNotBlank()) { newFile(newName.trim()); newName = "" } },
+                        enabled = newName.isNotBlank(), modifier = Modifier.size(28.dp),
+                    ) { Icon(Icons.Filled.Add, "New", modifier = Modifier.size(16.dp)) }
                 }
-            },
-            actions = when {
-                ns == Source.Public -> publicActions
-                showTrash -> knowTrashActions
-                else -> knowLiveActions
-            },
-            compact = isDesktop, activePath = activeForNs,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-        )
-        // one backup for everything — pages + the knowledge store (shown in both
-        // Pages and Knowledge; the bundle is the same either way).
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            TextButton(onClick = { doExport() }) {
-                Icon(Icons.Filled.FileDownload, null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Export all", style = MaterialTheme.typography.bodySmall)
             }
-            TextButton(onClick = { importFile() }) {
-                Icon(Icons.Filled.FileUpload, null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Import all", style = MaterialTheme.typography.bodySmall)
-            }
-        }
+            val activeForNs = wb.activeIn(wb.focusedPane)?.let { if (it.source == ns) it.path else null }
+            val knowVisible = if (exploreActive) exploreResults else knowFiles
+            FileTree(
+                files = if (ns == Source.Public) pubFiles else if (showTrash) trashFiles else knowVisible,
+                dir = if (ns == Source.Public) pubDir else knowDir,
+                onDir = { if (ns == Source.Public) pubDir = it else knowDir = it },
+                onOpen = {
+                    when {
+                        ns == Source.Public -> openBuffer(it, Source.Public)
+                        !showTrash -> openBuffer(it, Source.Knowledge)
+                    }
+                },
+                actions = when {
+                    ns == Source.Public -> publicActions
+                    showTrash -> knowTrashActions
+                    else -> knowLiveActions
+                },
+                compact = isDesktop, activePath = activeForNs,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+            )
         }
     }
 
@@ -638,5 +630,72 @@ fun WorkspaceScreen(
             },
             dismissButton = { TextButton(onClick = { publishKey = null }) { Text("Cancel") } },
         )
+    }
+}
+
+// A compact equal-width tab button (icon over short label) for the sidebar's
+// Pages/Knowledge/Explore strip — built ourselves because Material's FilterChip
+// row was overflowing the 240dp sidebar and clipping "Explore".
+@Composable
+private fun TabButton(
+    selected: Boolean,
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val bg = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
+    val fg = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+    Surface(
+        color = bg, contentColor = fg, shape = RoundedCornerShape(6.dp),
+        modifier = modifier.clickable(onClick = onClick),
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp),
+        ) {
+            Icon(icon, null, modifier = Modifier.size(18.dp))
+            Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+        }
+    }
+}
+
+// A compact single-line text field (~32dp) — much shorter than the default
+// OutlinedTextField (~56dp) so the sidebar doesn't burn vertical real estate.
+@Composable
+private fun CompactField(
+    value: String,
+    onChange: (String) -> Unit,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+    trailing: @Composable (() -> Unit)? = null,
+) {
+    Box(
+        modifier = modifier
+            .heightIn(min = 32.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(6.dp))
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.weight(1f)) {
+                BasicTextField(
+                    value = value,
+                    onValueChange = onChange,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (value.isEmpty()) {
+                    Text(
+                        placeholder,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            trailing?.invoke()
+        }
     }
 }
