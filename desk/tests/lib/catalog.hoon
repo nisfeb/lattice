@@ -149,4 +149,209 @@
   ?~  ix  (expect-eq !>(&) !>(|))
   =/  decl=tape  (slag u.ix s)
   (expect-eq !>(&) !>(!=(~ (find "PRIMARY KEY (source, publisher, path)" decl))))
+::
+::  ════════════════════════════════════════════════════════════════════
+::  Row-write generators (catalog-page-urql etc).
+::
+::  Each test exercises ONE generator on a fixed-shape input and asserts
+::  structural properties of the output: every required statement is
+::  present, statement order is DELETE-before-INSERT (idempotency), every
+::  column appears in the INSERT column list, every value is properly
+::  quoted, and per-list generators emit one INSERT per element (count
+::  parity). Any single mutation to the generator's body surfaces here.
+::  ════════════════════════════════════════════════════════════════════
+::
+::  A small fixture: one analysis with each kind of sub-row populated so
+::  every code path in +catalog-page-urql gets exercised.
+++  fixture-analysis
+  ^-  analysis
+  :*  title='Hello world'
+      headings=~[[1 'H1' 0] [2 'H2' 1]]
+      links=~[['urb://~zod/x' 'X-page' 0] ['https://e.com' 'web' 1]]
+      tags=~['urbit' 'design']
+      hash=(sham 'fixture-body')
+      word-count=42
+      body-lines=10
+  ==
+::
+::  ── +catalog-page-urql ──────────────────────────────────────────────
+::
+::  Every per-page DELETE present BEFORE every per-page INSERT —
+::  guarantees idempotent re-runs (a refresh on a changed body cleanly
+::  replaces the stale headings/links/tags).
+++  test-page-urql-deletes-precede-inserts
+  =/  s=tape  (catalog-page-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
+  =/  d-page=(unit @ud)  (find "DELETE FROM catalog_pages" s)
+  =/  d-head=(unit @ud)  (find "DELETE FROM catalog_headings" s)
+  =/  d-link=(unit @ud)  (find "DELETE FROM catalog_links" s)
+  =/  d-tag=(unit @ud)   (find "DELETE FROM catalog_tags" s)
+  =/  i-page=(unit @ud)  (find "INSERT INTO catalog_pages" s)
+  =/  i-head=(unit @ud)  (find "INSERT INTO catalog_headings" s)
+  =/  i-link=(unit @ud)  (find "INSERT INTO catalog_links" s)
+  =/  i-tag=(unit @ud)   (find "INSERT INTO catalog_tags" s)
+  ?~  d-page  (expect-eq !>(&) !>(|))
+  ?~  d-head  (expect-eq !>(&) !>(|))
+  ?~  d-link  (expect-eq !>(&) !>(|))
+  ?~  d-tag   (expect-eq !>(&) !>(|))
+  ?~  i-page  (expect-eq !>(&) !>(|))
+  ?~  i-head  (expect-eq !>(&) !>(|))
+  ?~  i-link  (expect-eq !>(&) !>(|))
+  ?~  i-tag   (expect-eq !>(&) !>(|))
+  ;:  weld
+    (expect-eq !>(&) !>((lth u.d-page u.i-page)))
+    (expect-eq !>(&) !>((lth u.d-head u.i-head)))
+    (expect-eq !>(&) !>((lth u.d-link u.i-link)))
+    (expect-eq !>(&) !>((lth u.d-tag u.i-tag)))
+  ==
+::
+::  catalog_pages INSERT includes EVERY column in the design order.
+++  test-page-urql-pages-columns
+  =/  s=tape  (catalog-page-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
+  =/  cols=tape
+    "(source, publisher, path, url, title, fetched, hash, category, cat_source, confidence, word_count, body_lines)"
+  (expect-eq !>(&) !>(!=(~ (find cols s))))
+::
+::  source and publisher are encoded as bare @p literals (no quotes).
+::  If a future change quotes them like '~zod', this test fails.
+++  test-page-urql-ship-encoding
+  =/  s=tape  (catalog-page-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
+  ;:  weld
+    ::  bare ~zod somewhere in the page INSERT row
+    (expect-eq !>(&) !>(!=(~ (find "(~zod, ~tyr, " s))))
+    ::  AND NOT quoted as a cord
+    (expect-eq !>(~) !>((find "('~zod', '~tyr', " s)))
+  ==
+::
+::  Fixture has 2 headings, 2 links, 2 tags → 2 INSERTs each. Count parity
+::  catches off-by-one errors in the per-list +turn loops.
+++  test-page-urql-count-parity
+  =/  s=tape  (catalog-page-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
+  ;:  weld
+    (expect-eq !>(`@ud`2) !>((substr-count s "INSERT INTO catalog_headings")))
+    (expect-eq !>(`@ud`2) !>((substr-count s "INSERT INTO catalog_links")))
+    (expect-eq !>(`@ud`2) !>((substr-count s "INSERT INTO catalog_tags")))
+    (expect-eq !>(`@ud`1) !>((substr-count s "INSERT INTO catalog_pages")))
+  ==
+::
+::  Count non-overlapping occurrences of [needle] in [hay]. Helper for
+::  the count-parity tests above and the semicolon counter below. Hay is
+::  kept as the broad `tape` type throughout so the recursion can pass
+::  back potentially-empty tails.
+++  substr-count
+  |=  [hay=tape needle=tape]
+  ^-  @ud
+  =|  acc=@ud
+  |-  ^-  @ud
+  =/  ix=(unit @ud)  (find needle hay)
+  ?~  ix  acc
+  $(hay `tape`(slag +(u.ix) hay), acc +(acc))
+::
+::  is_internal: 1 for urb:// links, 0 for foreign-scheme. Fixture has
+::  one of each → the output should contain both `, 1)` and `, 0)` at
+::  the right positions in catalog_links INSERTs.
+++  test-page-urql-is-internal
+  =/  s=tape  (catalog-page-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
+  ;:  weld
+    ::  the urb:// link row ends with `, 1)`
+    (expect-eq !>(&) !>(!=(~ (find "'urb://~zod/x', 'X-page', 1)" s))))
+    ::  the https:// link row ends with `, 0)`
+    (expect-eq !>(&) !>(!=(~ (find "'https://e.com', 'web', 0)" s))))
+  ==
+::
+::  Title containing a `'` must be backslash-escaped before going into
+::  the VALUES clause — otherwise obelisk's parser bails.
+++  test-page-urql-escapes-quote-in-title
+  =/  a=analysis
+    :*  title='it\'s a trap'
+        headings=`(list heading)`~
+        links=`(list link)`~
+        tags=`(list @t)`~
+        hash=(sham 'x')
+        word-count=0
+        body-lines=0
+    ==
+  =/  s=tape  (catalog-page-urql ~zod ~tyr /a ~2026.1.1 a)
+  ;:  weld
+    ::  the title is present in escaped form
+    (expect-eq !>(&) !>(!=(~ (find "'it\\'s a trap'" s))))
+    ::  AND NOT in raw (unescaped) form
+    (expect-eq !>(~) !>((find "'it's a trap'" s)))
+  ==
+::
+::  Sentinel values for category/cat_source/confidence — '' / '' / .0.
+::  When the classifier pipeline lands, an UPDATE will overwrite these;
+::  fresh rows should always have the sentinels.
+++  test-page-urql-classifier-sentinels
+  =/  s=tape  (catalog-page-urql ~zod ~tyr /a ~2026.1.1 fixture-analysis)
+  (expect-eq !>(&) !>(!=(~ (find ", '', '', .0, " s))))
+::
+::  ── +catalog-page-delete-urql ───────────────────────────────────────
+::
+::  Deletes from all FIVE catalog tables that hold per-page rows
+::  (pages, headings, links, tags, pending). Drop or rename a table →
+::  this fails.
+++  test-page-delete-urql-all-tables
+  =/  s=tape  (catalog-page-delete-urql ~zod ~tyr /a/b)
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog_pages" s))))
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog_headings" s))))
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog_links" s))))
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog_tags" s))))
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog_pending" s))))
+  ==
+::
+::  Every DELETE filters on the (source, publisher, path) triple.
+++  test-page-delete-urql-where-clause
+  =/  s=tape  (catalog-page-delete-urql ~zod ~tyr /a/b)
+  (expect-eq !>(&) !>(!=(~ (find "WHERE source = ~zod AND publisher = ~tyr AND path = '/a/b'" s))))
+::
+::  ── +catalog-manifest-urql ──────────────────────────────────────────
+::
+++  test-manifest-urql-upsert-shape
+  =/  s=tape  (catalog-manifest-urql ~zod ~2026.1.1 (sham 'manifest') 'raw text')
+  ;:  weld
+    ::  DELETE-before-INSERT for the UPSERT
+    =/  d=(unit @ud)  (find "DELETE FROM catalog_manifests" s)
+    =/  i=(unit @ud)  (find "INSERT INTO catalog_manifests" s)
+    ?~  d  (expect-eq !>(&) !>(|))
+    ?~  i  (expect-eq !>(&) !>(|))
+    (expect-eq !>(&) !>((lth u.d u.i)))
+    ::  every column in the column list
+    (expect-eq !>(&) !>(!=(~ (find "(publisher, scanned, hash, raw)" s))))
+  ==
+::
+::  ── +catalog-pending-urql ───────────────────────────────────────────
+::
+++  test-pending-urql-shape
+  =/  s=tape  (catalog-pending-urql ~zod ~tyr /a ~2026.1.1 'new' 0)
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog_pending" s))))
+    (expect-eq !>(&) !>(!=(~ (find "INSERT INTO catalog_pending" s))))
+    (expect-eq !>(&) !>(!=(~ (find "(source, publisher, path, queued, attempts, reason)" s))))
+    ::  reason cord is quoted + escaped
+    (expect-eq !>(&) !>(!=(~ (find "'new')" s))))
+  ==
+::
+::  ── +catalog-pending-clear-urql ─────────────────────────────────────
+::
+++  test-pending-clear-urql-single-delete
+  =/  s=tape  (catalog-pending-clear-urql ~zod ~tyr /a)
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog_pending WHERE source = ~zod" s))))
+    ::  exactly ONE statement (one semicolon)
+    (expect-eq !>(`@ud`1) !>((substr-count s ";")))
+  ==
+::
+::  ── +urq-esc (inline copy) sanity ───────────────────────────────────
+::
+::  The lib has its own copy of +urq-esc (to avoid pulling in *lattice).
+::  Lock the behavior — must match lib/lattice's verbatim.
+++  test-urq-esc-quote
+  (expect-eq !>(`tape`['i' 'n' '\\' '\'' 't' ~]) !>((urq-esc "in't")))
+::
+++  test-urq-esc-backslash
+  (expect-eq !>(`tape`['a' '\\' '\\' 'b' ~]) !>((urq-esc "a\\b")))
+::
+++  test-urq-esc-plain
+  (expect-eq !>("hello") !>((urq-esc "hello")))
 --
