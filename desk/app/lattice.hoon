@@ -1,10 +1,10 @@
 ::  /app/lattice - cross-ship gemtext publishing
 ::
 /-  *lattice
-/+  default-agent, dbug, verb, *lattice, *catalog
+/+  default-agent, dbug, verb, *lattice, *catalog, *catalog-analyzer
 ::
 |%
-+$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7 state-8 state-9 state-10)
++$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7 state-8 state-9 state-10 state-11)
 +$  card  card:agent:gall
 ::
 ::  -- helper gates --
@@ -157,9 +157,9 @@
 ::  so the knowledge store behaves identically whether or not %obelisk is
 ::  installed. Shared by the HTTP CRUD endpoints and the %lattice-know poke.
 ++  know-mutate
-  |=  [=bowl:gall act=know-action st=state-10]
-  ^-  (quip card state-10)
-  =/  new=state-10  (do-know now.bowl act st)
+  |=  [=bowl:gall act=know-action st=state-11]
+  ^-  (quip card state-11)
+  =/  new=state-11  (do-know now.bowl act st)
   =/  urql=tape  (mirror-urql act new)
   :_  new
   ?~(urql ~ [(obelisk-poke bowl urql)]~)
@@ -268,6 +268,81 @@
   |=  [fmt=@ta eyre-id=@ta at=@da]
   ^-  card
   [%pass /walkto/[fmt]/[eyre-id] %arvo %b %rest at]
+::
+::  ──  catalog walk cards  ─────────────────────────────────────────────
+::  Same walk-to-latest pattern as the interactive cards above, but on a
+::  distinct wire family (/cat-walk and /cat-wait) so the routing logic
+::  for catalog walks stays independent of interactive HTTP fetches.
+::  No fmt parameter — catalog walks always produce obelisk pokes, never
+::  an HTTP response.
+::
+++  cat-walk-keen-card
+  |=  [eid=@ta rev=@ud pub=@p spur=path]
+  ^-  card
+  [%pass /cat-walk/[eid] %arvo %a %keen ~ pub (keen-path (scot %ud rev) spur)]
+::
+++  cat-walk-yawn-card
+  |=  [eid=@ta rev=@ud pub=@p spur=path]
+  ^-  card
+  [%pass /cat-walk/[eid] %arvo %a %yawn pub (keen-path (scot %ud rev) spur)]
+::
+++  cat-walk-wait-card
+  |=  [eid=@ta at=@da]
+  ^-  card
+  [%pass /cat-wait/[eid] %arvo %b %wait at]
+::
+++  cat-walk-rest-card
+  |=  [eid=@ta at=@da]
+  ^-  card
+  [%pass /cat-wait/[eid] %arvo %b %rest at]
+::
+::  +cat-mint-eid: synthesize a collision-resistant per-walk id from the
+::  bowl's `now` + the (publisher, spur) being walked. Two simultaneous
+::  scans of the same (publisher, spur) at the same tick collide and the
+::  later one replaces the earlier; in practice now changes per call.
+++  cat-mint-eid
+  |=  [now=@da pub=@p spur=path]
+  ^-  @ta
+  (scot %uv (sham now pub spur))
+::
+::  +cat-finalize: one catalog walk completed (timeout or no-value at the
+::  next rev). Routes the result by action:
+::    %manifest → parse the body as gemtext, return per-page walks +
+::                cards to start them. The caller installs the walks in
+::                state and emits the cards.
+::    %page     → run the body through +analyze, build the per-page urQL
+::                via +catalog-page-urql, return a single obelisk poke.
+::  Returns ([cards new-walks-to-install]). A finalize on a zero-rev walk
+::  (peer never responded) yields nothing — the publisher is unreachable
+::  this sweep.
+::
+++  cat-finalize
+  |=  [=bowl:gall cw=catalog-walk]
+  ^-  [(list card) (list [eid=@ta walk=catalog-walk])]
+  ?:  =(0 rev.cw)  [~ ~]
+  ?-  action.cw
+      %manifest
+    =/  paths=(list path)  (parse-manifest body.cw)
+    =/  walks=(list [eid=@ta walk=catalog-walk])
+      %+  turn  paths
+      |=  p=path
+      :-  (cat-mint-eid now.bowl publisher.cw p)
+      [%page publisher.cw p 0 '' '' (add now.bowl ~s30)]
+    =/  cards=(list card)
+      %-  zing
+      %+  turn  walks
+      |=  w=[eid=@ta walk=catalog-walk]
+      :~  (cat-walk-keen-card eid.w 1 publisher.walk.w spur.walk.w)
+          (cat-walk-wait-card eid.w deadline.walk.w)
+      ==
+    [cards walks]
+  ::
+      %page
+    =/  =analysis  (analyze body.cw)
+    =/  urql=tape
+      (catalog-page-urql our.bowl publisher.cw spur.cw now.bowl analysis)
+    [~[(obelisk-poke bowl urql)] ~]
+  ==
 ::
 ::  browse-watch cards: after a no-rev fetch answers, keep keening upward on a
 ::  /browse wire so newer revs of the page being viewed stream to /updates. The
@@ -393,8 +468,8 @@
   [[%pass /clay-clear %arvo %c %info q.byk.bowl [%& dels]] cards]
 ::
 ++  handle-http
-  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-10]
-  ^-  [(list card) state-10]
+  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-11]
+  ^-  [(list card) state-11]
   ::  SECURITY: Eyre forwards ALL matching HTTP requests to us, authenticated or
   ::  not, and leaves enforcement to the agent. This is the owner's control plane
   ::  (mutates state, drives keens); public reads happen via remote scry, not here.
@@ -610,6 +685,26 @@
       [(respond-json-cards eyre-id 400 '{"error":"bad urb:// url"}') st]
     =.  subs.st  (~(del by subs.st) [ship.u.parsed path.u.parsed])
     [(respond-json-cards eyre-id 200 '{"ok":true}') st]
+  ::  POST /apps/lattice/catalog-scan?ship=~publisher — kick off a one-shot
+  ::  crawl of one publisher: walk /manifest, parse the result, walk every
+  ::  spur it lists, analyze each body, poke %obelisk with the catalog row
+  ::  inserts. Replies 200 immediately; the crawl runs in the background.
+  ?:  &(=(meth %'POST') =(action 'catalog-scan'))
+    ?~  raw=(query-param inbound-request 'ship')
+      [(respond-json-cards eyre-id 400 '{"error":"missing ship param"}') st]
+    ?~  pub=(slaw %p u.raw)
+      [(respond-json-cards eyre-id 400 '{"error":"bad ship"}') st]
+    ?:  =(u.pub our.bowl)
+      [(respond-json-cards eyre-id 400 '{"error":"cannot crawl own ship"}') st]
+    =/  eid=@ta   (cat-mint-eid now.bowl u.pub /manifest)
+    =/  at=@da    (add now.bowl ~s30)
+    =/  cw=catalog-walk  [%manifest u.pub /manifest 0 '' '' at]
+    =.  catalog-walks.st  (~(put by catalog-walks.st) eid cw)
+    :_  st
+    :*  (cat-walk-keen-card eid 1 u.pub /manifest)
+        (cat-walk-wait-card eid at)
+        (respond-json-cards eyre-id 200 '{"ok":true}')
+    ==
   ::  GET /apps/lattice/fetch?url=urb://~ship/path  (default)
   ?~  raw=(query-param inbound-request 'url')
     [(respond-json-cards eyre-id 400 '{"error":"missing url param"}') st]
@@ -646,7 +741,7 @@
 ::
 %-  agent:dbug
 %+  verb  |
-=|  state-10
+=|  state-11
 =*  state  -
 ^-  agent:gall
 |_  =bowl:gall
@@ -678,19 +773,23 @@
   ::  this lets a fresh %obelisk install (post-lattice) pick up the schema on
   ::  the next agent reload without a manual /know-reindex.
   =/  catalog-card=card  (obelisk-poke bowl catalog-create-urql)
-  ?:  ?=(%10 -.old)
+  ?:  ?=(%11 -.old)
     :_  this(state old)
     ~[catalog-card]
-  ::  %9 → %10: add the (empty) catalog-sweep slot (see +migrate-9-10).
+  ::  %10 → %11: add the (empty) in-flight catalog-walks map.
+  ?:  ?=(%10 -.old)
+    :_  this(state (migrate-10-11 old))
+    ~[catalog-card]
+  ::  %9 → %11: chain through 9→10 then 10→11.
   ?:  ?=(%9 -.old)
-    :_  this(state (migrate-9-10 old))
+    :_  this(state (migrate-10-11 (migrate-9-10 old)))
     ~[catalog-card]
-  ::  %8 → %10: chain the older migration through %9 first.
+  ::  %8 → %11: chain through 8→9 → 9→10 → 10→11.
   ?:  ?=(%8 -.old)
-    :_  this(state (migrate-9-10 (migrate-8-9 old)))
+    :_  this(state (migrate-10-11 (migrate-9-10 (migrate-8-9 old))))
     ~[catalog-card]
-  ::  %7 → %10: give every knowledge entry empty tags + reserved vector,
-  ::  then migrate-9-10.
+  ::  %7 → %11: give every knowledge entry empty tags + reserved vector,
+  ::  then chain 9→10 → 10→11.
   ?:  ?=(%7 -.old)
     =/  up=$-(know-entry-7 know-entry)  |=(e=know-entry-7 [body.e updated.e ~ ~])
     =/  s9=state-9
@@ -698,15 +797,15 @@
           manifest.old  home.old  browse.old
           (~(run by know.old) up)  (~(run by trash.old) up)  ~
       ==
-    :_  this(state (migrate-9-10 s9))
+    :_  this(state (migrate-10-11 (migrate-9-10 s9)))
     ~[catalog-card]
-  ::  %6 → %10: add the empty private knowledge store, then migrate-9-10.
+  ::  %6 → %11: add the empty private knowledge store, then chain.
   ?:  ?=(%6 -.old)
     =/  s9=state-9
       :*  %9  content.old  published.old  pending.old  subs.old  fetches.old
           manifest.old  home.old  browse.old  ~  ~  ~
       ==
-    :_  this(state (migrate-9-10 s9))
+    :_  this(state (migrate-10-11 (migrate-9-10 s9)))
     ~[catalog-card]
   ::  Versions 0-5 stored published content in Clay /pub. Pull it into state,
   ::  then delete /pub from the desk + drop the clay watch, so the desk stops
@@ -724,7 +823,7 @@
       %1  [%9 content published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
       %0  [%9 content published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
     ==
-  [(snoc cards catalog-card) this(state (migrate-9-10 new))]
+  [(snoc cards catalog-card) this(state (migrate-10-11 (migrate-9-10 new)))]
 ::
 ++  on-poke
   |=  =cage
@@ -967,6 +1066,80 @@
     :*  yawn
         (weld bcards (respond-json-cards eid 200 (mark-and-body mark.u.fet body.u.fet)))
     ==
+  ::
+      [%cat-walk @ta ~]
+    ::  one revision of a catalog walk resolved (or returned no value). Same
+    ::  walk-to-latest pattern as /walk above, but routes to obelisk on
+    ::  finalize instead of an HTTP response.
+    ?>  ?=([%ames %sage *] sign-arvo)
+    =/  eid=@ta  i.t.wire
+    ?~  cw=(~(get by catalog-walks.state) eid)  `this
+    =/  gag  q.sage.sign-arvo
+    ?@  gag
+      ::  no value at probed rev → finalize with the best so far.
+      =.  catalog-walks.state  (~(del by catalog-walks.state) eid)
+      =/  fin=[emit=(list card) add=(list [eid=@ta walk=catalog-walk])]
+        (cat-finalize bowl u.cw)
+      =.  catalog-walks.state
+        %+  roll  add.fin
+        |=  [w=[eid=@ta walk=catalog-walk] acc=_catalog-walks.state]
+        (~(put by acc) eid.w walk.w)
+      :_  this
+      [(cat-walk-rest-card eid deadline.u.cw) emit.fin]
+    ?^  q.gag
+      ::  malformed remote value — finalize with best so far.
+      =.  catalog-walks.state  (~(del by catalog-walks.state) eid)
+      =/  fin=[emit=(list card) add=(list [eid=@ta walk=catalog-walk])]
+        (cat-finalize bowl u.cw)
+      =.  catalog-walks.state
+        %+  roll  add.fin
+        |=  [w=[eid=@ta walk=catalog-walk] acc=_catalog-walks.state]
+        (~(put by acc) eid.w walk.w)
+      :_  this
+      [(cat-walk-rest-card eid deadline.u.cw) emit.fin]
+    ::  resolved rev (rev+1): record content, probe next, slide deadline.
+    =/  got=@ud   +(rev.u.cw)
+    =/  body=@t   ;;(@t q.gag)
+    ?:  (gte got walk-max)
+      ::  runaway walk — finalize with what we have.
+      =.  catalog-walks.state
+        (~(put by catalog-walks.state) eid u.cw(rev got, mark p.gag, body body))
+      =/  u-cw=catalog-walk  u.cw(rev got, mark p.gag, body body)
+      =.  catalog-walks.state  (~(del by catalog-walks.state) eid)
+      =/  fin=[emit=(list card) add=(list [eid=@ta walk=catalog-walk])]
+        (cat-finalize bowl u-cw)
+      =.  catalog-walks.state
+        %+  roll  add.fin
+        |=  [w=[eid=@ta walk=catalog-walk] acc=_catalog-walks.state]
+        (~(put by acc) eid.w walk.w)
+      :_  this
+      [(cat-walk-rest-card eid deadline.u.cw) emit.fin]
+    =/  nat=@da   (add now.bowl ~s2)
+    =.  catalog-walks.state
+      %+  ~(put by catalog-walks.state)  eid
+      [action.u.cw publisher.u.cw spur.u.cw got p.gag body nat]
+    :_  this
+    :*  (cat-walk-rest-card eid deadline.u.cw)
+        (cat-walk-wait-card eid nat)
+        ~[(cat-walk-keen-card eid +(got) publisher.u.cw spur.u.cw)]
+    ==
+  ::
+      [%cat-wait @ta ~]
+    ::  catalog walk deadline fired → finalize with the best rev seen, and
+    ::  yawn the still-pending keen on /cat-walk.
+    ?>  ?=([%behn %wake *] sign-arvo)
+    =/  eid=@ta  i.t.wire
+    ?~  cw=(~(get by catalog-walks.state) eid)  `this
+    =.  catalog-walks.state  (~(del by catalog-walks.state) eid)
+    =/  yawn=card
+      (cat-walk-yawn-card eid +(rev.u.cw) publisher.u.cw spur.u.cw)
+    =/  fin=[emit=(list card) add=(list [eid=@ta walk=catalog-walk])]
+      (cat-finalize bowl u.cw)
+    =.  catalog-walks.state
+      %+  roll  add.fin
+      |=  [w=[eid=@ta walk=catalog-walk] acc=_catalog-walks.state]
+      (~(put by acc) eid.w walk.w)
+    [[yawn emit.fin] this]
   ::
       [%follow @ @ @ *]
     ::  a followed revision resolved → advance + re-arm the next rev. Only push

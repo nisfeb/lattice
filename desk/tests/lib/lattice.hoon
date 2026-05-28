@@ -191,6 +191,23 @@
     (expect-eq !>(*(unit @da)) !>(catalog-sweep.s10))
   ==
 ::
+::  +migrate-10-11: head becomes %11, all state-10 data carried forward
+::  (including catalog-sweep), catalog-walks starts empty.
+++  test-migrate-10-11
+  =/  e=know-entry  ['body' ~2026.1.1 (sy ~['x']) ~]
+  =/  s10=state-10  *state-10
+  =.  know.s10   (malt ~[[`path`/a/b e]])
+  =.  home.s10   `@uvH`99
+  =.  catalog-sweep.s10  `~2026.6.1
+  =/  s11=state-11  (migrate-10-11 s10)
+  ;:  weld
+    (expect-eq !>(%11) !>(-.s11))
+    (expect-eq !>(e) !>((~(got by know.s11) /a/b)))
+    (expect-eq !>(`@uvH`99) !>(home.s11))
+    (expect-eq !>(`(unit @da)``~2026.6.1) !>(catalog-sweep.s11))
+    (expect-eq !>(*(map @ta catalog-walk)) !>(catalog-walks.s11))
+  ==
+::
 ::  ── explore / discovery (synchronous filter over the live store) ──
 ++  test-split-on
   ;:  weld

@@ -556,7 +556,7 @@
 ::  action targeted a non-live item). Pair with a periodic +obelisk-populate-urql
 ::  reindex to repair any drift.
 ++  mirror-urql
-  |=  [act=know-action st=state-10]
+  |=  [act=know-action st=state-11]
   ^-  tape
   ::  upsert one item's row + tags from the post-mutation state (save/restore)
   =/  upsert
@@ -679,13 +679,23 @@
   :*  %10  content.s  published.s  pending.s  subs.s  fetches.s
       manifest.s  home.s  browse.s  know.s  trash.s  oquery.s  ~
   ==
+::  +migrate-10-11: state-10 → state-11 — carry every field forward and add
+::  the (empty) in-flight catalog-walks map. Pure, so on-load's upgrade is
+::  testable.
+++  migrate-10-11
+  |=  s=state-10
+  ^-  state-11
+  :*  %11  content.s  published.s  pending.s  subs.s  fetches.s
+      manifest.s  home.s  browse.s  know.s  trash.s  oquery.s
+      catalog-sweep.s  ~
+  ==
 ::
 ::  +do-know: apply a knowledge action. save = create/overwrite (+ untrash);
 ::  del = SOFT delete (move to recoverable trash); restore = trash → live.
 ::  Invalid keys / missing entries are no-ops. Never grows/publishes.
 ++  do-know
-  |=  [now=@da act=know-action st=state-10]
-  ^-  state-10
+  |=  [now=@da act=know-action st=state-11]
+  ^-  state-11
   ?-  -.act
       %save
     ?~  kp=(know-key key.act)  st

@@ -194,6 +194,52 @@
       oquery=(unit [eid=@ta deadline=@da])
       catalog-sweep=(unit @da)
   ==
+::  state-11: adds the crawler's in-flight walk tracking. A catalog-scan
+::  is a tree of walks: the root walk fetches /manifest from a publisher;
+::  on completion it spawns per-page walks for every spur the manifest
+::  lists. Each walk's life cycle is tracked here, keyed by a synthesized
+::  eyre-id — sham(now, publisher, spur) for collision-free per-walk ids.
+::  The walks are evicted by the on-arvo handler when they finalize.
+::  Wires are /cat-walk/<eid> (keen probe responses) and /cat-wait/<eid>
+::  (the Behn deadline), distinct from the interactive walk wires so the
+::  routing logic for the two paths stays independent.
++$  state-11
+  $:  %11
+      content=(map path @t)
+      published=(map path @uvH)
+      pending=(map @ta [=ship =path])
+      subs=(map [=ship spur=path] last=@ud)
+      fetches=(map @ta walk)
+      manifest=@uvH
+      home=@uvH
+      browse=(unit [=ship spur=path rev=@ud])
+      know=(map path know-entry)
+      trash=(map path know-entry)
+      oquery=(unit [eid=@ta deadline=@da])
+      catalog-sweep=(unit @da)
+      catalog-walks=(map @ta catalog-walk)
+  ==
+::  +$ catalog-walk: one in-flight catalog walk-to-latest. Mirrors +$ walk
+::  but with action and publisher (vs ship) so the same walk-to-latest
+::  state machine can serve both manifest discovery and per-page fetches.
+::    action — %manifest = walking the publisher's /manifest spur, will
+::             parse the body as gemtext and spawn page walks on finalize.
+::           — %page     = walking one specific publication, will analyze
+::             the body and poke obelisk on finalize.
+::    publisher — the @p we're fetching from.
+::    spur — the path we're fetching (/manifest, or /notes/intro etc).
+::    rev — highest revision resolved so far (0 = none yet).
+::    deadline — the armed Behn timeout for this walk (slid as new revs
+::               resolve, matching the interactive walk pattern).
++$  catalog-walk
+  $:  action=?(%manifest %page)
+      publisher=@p
+      spur=path
+      rev=@ud
+      mark=@t
+      body=@t
+      deadline=@da
+  ==
 ::  one in-flight walk-to-latest fetch (keyed by eyre-id).
 ::  rev = highest revision resolved so far (0 = none yet); deadline = the armed
 ::  behn timer's wake time (tracked so progress can %rest + re-arm it).
