@@ -363,6 +363,19 @@
       (catalog-page-urql our.bowl publisher.cw spur.cw now.bowl analysis)
     [~[(obelisk-poke bowl urql)] ~]
   ==
+::  +cat-conclude: finish ONE catalog walk — drop it from the in-flight
+::  map, run +cat-finalize, and merge any page-walks it spawned BACK INTO
+::  the live map. Returns the finalize cards + the updated map; the caller
+::  prepends its own timer card (rest on a resolved finish, yawn on a
+::  deadline). Use +gas, NOT +roll seeded from `acc=_catalog-walks.state`
+::  — that seeds from the bunt (empty map) and would wipe every OTHER
+::  in-flight walk on each finalize (so in a multi-page crawl the pages
+::  wipe each other and only one survives).
+++  cat-conclude
+  |=  [=bowl:gall eid=@ta cw=catalog-walk walks=(map @ta catalog-walk)]
+  ^-  [(list card) (map @ta catalog-walk)]
+  =/  fin  (cat-finalize bowl cw)
+  [-.fin (~(gas by (~(del by walks) eid)) +.fin)]
 ::
 ::  browse-watch cards: after a no-rev fetch answers, keep keening upward on a
 ::  /browse wire so newer revs of the page being viewed stream to /updates. The
@@ -1114,43 +1127,23 @@
     =/  gag  q.sage.sign-arvo
     ?@  gag
       ::  no value at probed rev → finalize with the best so far.
-      =.  catalog-walks.state  (~(del by catalog-walks.state) eid)
-      =/  fin=[emit=(list card) add=(list [eid=@ta walk=catalog-walk])]
-        (cat-finalize bowl u.cw)
-      =.  catalog-walks.state
-        %+  roll  add.fin
-        |=  [w=[eid=@ta walk=catalog-walk] acc=_catalog-walks.state]
-        (~(put by acc) eid.w walk.w)
+      =^  emit  catalog-walks.state  (cat-conclude bowl eid u.cw catalog-walks.state)
       :_  this
-      [(cat-walk-rest-card eid deadline.u.cw) emit.fin]
+      [(cat-walk-rest-card eid deadline.u.cw) emit]
     ?^  q.gag
       ::  malformed remote value — finalize with best so far.
-      =.  catalog-walks.state  (~(del by catalog-walks.state) eid)
-      =/  fin=[emit=(list card) add=(list [eid=@ta walk=catalog-walk])]
-        (cat-finalize bowl u.cw)
-      =.  catalog-walks.state
-        %+  roll  add.fin
-        |=  [w=[eid=@ta walk=catalog-walk] acc=_catalog-walks.state]
-        (~(put by acc) eid.w walk.w)
+      =^  emit  catalog-walks.state  (cat-conclude bowl eid u.cw catalog-walks.state)
       :_  this
-      [(cat-walk-rest-card eid deadline.u.cw) emit.fin]
+      [(cat-walk-rest-card eid deadline.u.cw) emit]
     ::  resolved rev (rev+1): record content, probe next, slide deadline.
     =/  got=@ud   +(rev.u.cw)
     =/  body=@t   ;;(@t q.gag)
     ?:  (gte got walk-max)
-      ::  runaway walk — finalize with what we have.
-      =.  catalog-walks.state
-        (~(put by catalog-walks.state) eid u.cw(rev got, mark p.gag, body body))
+      ::  runaway walk — finalize with what we have (the rev we just got).
       =/  u-cw=catalog-walk  u.cw(rev got, mark p.gag, body body)
-      =.  catalog-walks.state  (~(del by catalog-walks.state) eid)
-      =/  fin=[emit=(list card) add=(list [eid=@ta walk=catalog-walk])]
-        (cat-finalize bowl u-cw)
-      =.  catalog-walks.state
-        %+  roll  add.fin
-        |=  [w=[eid=@ta walk=catalog-walk] acc=_catalog-walks.state]
-        (~(put by acc) eid.w walk.w)
+      =^  emit  catalog-walks.state  (cat-conclude bowl eid u-cw catalog-walks.state)
       :_  this
-      [(cat-walk-rest-card eid deadline.u.cw) emit.fin]
+      [(cat-walk-rest-card eid deadline.u.cw) emit]
     =/  nat=@da   (add now.bowl ~s2)
     =.  catalog-walks.state
       %+  ~(put by catalog-walks.state)  eid
@@ -1167,16 +1160,10 @@
     ?>  ?=([%behn %wake *] sign-arvo)
     =/  eid=@ta  i.t.wire
     ?~  cw=(~(get by catalog-walks.state) eid)  `this
-    =.  catalog-walks.state  (~(del by catalog-walks.state) eid)
     =/  yawn=card
       (cat-walk-yawn-card eid +(rev.u.cw) publisher.u.cw spur.u.cw)
-    =/  fin=[emit=(list card) add=(list [eid=@ta walk=catalog-walk])]
-      (cat-finalize bowl u.cw)
-    =.  catalog-walks.state
-      %+  roll  add.fin
-      |=  [w=[eid=@ta walk=catalog-walk] acc=_catalog-walks.state]
-      (~(put by acc) eid.w walk.w)
-    [[yawn emit.fin] this]
+    =^  emit  catalog-walks.state  (cat-conclude bowl eid u.cw catalog-walks.state)
+    [[yawn emit] this]
   ::
       [%follow @ @ @ *]
     ::  a followed revision resolved → advance + re-arm the next rev. Only push
