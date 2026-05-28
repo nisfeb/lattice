@@ -117,7 +117,7 @@
 ::  +do-know: save → live; del → SOFT (moves to recoverable trash, not gone);
 ::  restore → back to live. This is the delete gate.
 ++  test-do-know
-  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-8)
+  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-9)
   =/  st2  (do-know ~2026.1.1 [%del '/a/b'] st1)
   =/  st3  (do-know ~2026.1.1 [%restore '/a/b'] st2)
   ;:  weld
@@ -133,7 +133,7 @@
 ::  and they survive a del→restore round-trip.
 ++  test-do-know-tags
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/k' 'b'] *state-8)
+  =/  st1  (do-know now [%save '/k' 'b'] *state-9)
   =/  st2  (do-know now [%tag '/k' 'Urbit'] st1)
   =/  st3  (do-know now [%tag '/k' 'design'] st2)
   =/  st4  (do-know now [%save '/k' 'b2'] st3)
@@ -181,7 +181,7 @@
 ::  +know-explore: AND/OR tag filter + case-insensitive text search over key/body.
 ++  test-know-explore
   =/  now  ~2026.1.1
-  =/  s0   *state-8
+  =/  s0   *state-9
   =/  s1   (do-know now [%save '/notes/urbit-design' 'a note about Hoon'] s0)
   =/  s2   (do-know now [%tag '/notes/urbit-design' 'urbit'] s1)
   =/  s3   (do-know now [%tag '/notes/urbit-design' 'design'] s2)
@@ -228,7 +228,7 @@
   ==
 ::
 ++  test-obelisk-populate-urql
-  =/  st  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-8)
+  =/  st  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-9)
   =/  s=tape  (obelisk-populate-urql know.st)
   ;:  weld
     ::  clears both tables before re-inserting (full rebuild)
@@ -241,14 +241,14 @@
 ::  one tag row; bad/no-op key = empty.
 ++  test-mirror-urql
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-8)
+  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-9)
   =/  st2  (do-know now [%tag '/a/b' 'urbit'] st1)
   =/  m-save   (mirror-urql [%save '/a/b' 'hi'] st1)
   =/  st-del   (do-know now [%del '/a/b'] st2)
   =/  m-del    (mirror-urql [%del '/a/b'] st-del)
   =/  m-tag    (mirror-urql [%tag '/a/b' 'Urbit'] st2)
   =/  m-untag  (mirror-urql [%untag '/a/b' 'urbit'] st2)
-  =/  m-noop   (mirror-urql [%save 'bad key' 'x'] *state-8)
+  =/  m-noop   (mirror-urql [%save 'bad key' 'x'] *state-9)
   ;:  weld
     ::  save = delete the stale row, then insert the current one
     (expect-eq !>(&) !>(!=(~ (find "DELETE FROM knowledge WHERE item = '/a/b';" m-save))))
@@ -294,5 +294,24 @@
     (expect-eq !>(&) !>(=(~ (find "javascript" js))))
     (expect-eq !>(&) !>(!=(~ (find "pwn" js))))
     (expect-eq !>(&) !>(!=(~ (find "<a href=\"https://example.com\" target=\"_blank\" rel=\"noopener noreferrer\">site</a>" web))))
+  ==
+::
+::  +obelisk-result-json: decode obelisk's raw %noun query result. Success →
+::  {ok:true, columns, rows, count, relation}; [%.n tang] → {ok:false, error}.
+++  test-obelisk-result-json
+  =/  vec=ob-vector  [%vector ~[[`@tas`'item' 't' 'hi'] [`@tas`'updated' 'da' ~2026.1.1]]]
+  =/  good=(list ob-cmd-result)
+    ~[[%results ~[[%result-set ~[vec]] [%relation 'lattice.dbo.knowledge'] [%vector-count 1]]]]
+  =/  okj=tape  (trip (en:json:html (obelisk-result-json [%.y good])))
+  =/  erj=tape  (trip (en:json:html (obelisk-result-json [%.n `tang`~[leaf+"boom"]])))
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "\"ok\":true" okj))))
+    (expect-eq !>(&) !>(!=(~ (find "\"columns\":[\"item\",\"updated\"]" okj))))
+    ::  text auras render raw (not scot-escaped): the cell value is "hi"
+    (expect-eq !>(&) !>(!=(~ (find "\"hi\"" okj))))
+    (expect-eq !>(&) !>(!=(~ (find "\"count\":1" okj))))
+    (expect-eq !>(&) !>(!=(~ (find "lattice.dbo.knowledge" okj))))
+    (expect-eq !>(&) !>(!=(~ (find "\"ok\":false" erj))))
+    (expect-eq !>(&) !>(!=(~ (find "boom" erj))))
   ==
 --

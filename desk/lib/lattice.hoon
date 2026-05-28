@@ -538,7 +538,7 @@
 ::  action targeted a non-live item). Pair with a periodic +obelisk-populate-urql
 ::  reindex to repair any drift.
 ++  mirror-urql
-  |=  [act=know-action st=state-8]
+  |=  [act=know-action st=state-9]
   ^-  tape
   ::  upsert one item's row + tags from the post-mutation state (save/restore)
   =/  upsert
@@ -574,13 +574,82 @@
     =/  t=tape  (trip (norm-tag tag.act))
     ;:(weld "DELETE FROM tags WHERE item = '" k "' AND tag = '" t "';")
   ==
+::  +ob-err-json / +ob-tang-text: a {ok:false, error} object, and a tang → cord.
+++  ob-err-json
+  |=  msg=@t
+  ^-  json
+  (pairs:enjs:format ~[['ok' b+|] ['error' s+msg]])
+::  +ob-dime-cord: render one typed cell for display. Text auras (t/ta/tas) ARE
+::  their cord already — emit it raw (scot would knot-escape '/' etc.); other
+::  auras (da dates, ud numbers, …) render via +scot.
+++  ob-dime-cord
+  |=  d=ob-dime
+  ^-  @t
+  ?:  ?=(?(%t %ta %tas) p.d)  q.d
+  (scot d)
+++  ob-tang-text
+  |=  =tang
+  ^-  @t
+  %-  crip  %-  zing
+  (turn tang |=(t=tank (weld ~(ram re t) " ")))
+::  +obelisk-result-json: decode obelisk's raw %noun query result for the Explore
+::  pane. Success is [%.y (list ob-cmd-result)] → {ok, action, relation, count,
+::  columns:[…], rows:[[…]]}; error is [%.n tang] → {ok:false, error}. The raw
+::  noun is clammed inside a +mule so a malformed/changed result becomes an error
+::  object rather than crashing the agent.
+++  obelisk-result-json
+  |=  non=*
+  ^-  json
+  =/  res
+    %-  mule
+    |.  ^-  json
+    ?@  non  (ob-err-json 'empty obelisk result')
+    ?.  ;;(? -.non)
+      (ob-err-json (ob-tang-text ;;(tang +.non)))
+    (ob-results-json ;;((list ob-cmd-result) +.non))
+  ?:(?=(%& -.res) p.res (ob-err-json 'unreadable obelisk result'))
+::  +ob-results-json: flatten the cmd-results, pull the first %result-set's rows
+::  plus action/relation/count, and render each cell with +scot (aura-aware).
+++  ob-results-json
+  |=  crs=(list ob-cmd-result)
+  ^-  json
+  =/  rs=(list ob-result)  (zing (turn crs |=(c=ob-cmd-result +.c)))
+  =/  action=@t  ''
+  =/  relation=@t  ''
+  =/  count=(unit @ud)  ~
+  =/  vecs=(list ob-vector)  ~
+  |-
+  ?^  rs
+    %=  $
+      rs        t.rs
+      action    ?:(?=(%action -.i.rs) action.i.rs action)
+      relation  ?:(?=(%relation -.i.rs) relation.i.rs relation)
+      count     ?:(?=(%vector-count -.i.rs) `count.i.rs count)
+      vecs      ?:(?=(%result-set -.i.rs) +.i.rs vecs)
+    ==
+  =/  cols=(list @t)
+    ?~  vecs  ~
+    (turn `(list ob-cell)`+.i.vecs |=(c=ob-cell p.c))
+  =/  rows=(list json)
+    %+  turn  vecs
+    |=  v=ob-vector
+    ^-  json
+    a+(turn `(list ob-cell)`+.v |=(c=ob-cell s+(ob-dime-cord q.c)))
+  %-  pairs:enjs:format
+  :~  ['ok' b+&]
+      ['action' s+action]
+      ['relation' s+relation]
+      ['count' (numb:enjs:format ?~(count (lent vecs) u.count))]
+      ['columns' a+(turn cols |=(c=@t s+c))]
+      ['rows' a+rows]
+  ==
 ::
 ::  +do-know: apply a knowledge action. save = create/overwrite (+ untrash);
 ::  del = SOFT delete (move to recoverable trash); restore = trash → live.
 ::  Invalid keys / missing entries are no-ops. Never grows/publishes.
 ++  do-know
-  |=  [now=@da act=know-action st=state-8]
-  ^-  state-8
+  |=  [now=@da act=know-action st=state-9]
+  ^-  state-9
   ?-  -.act
       %save
     ?~  kp=(know-key key.act)  st

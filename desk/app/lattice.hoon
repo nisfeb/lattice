@@ -4,7 +4,7 @@
 /+  default-agent, dbug, verb, *lattice
 ::
 |%
-+$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7 state-8)
++$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7 state-8 state-9)
 +$  card  card:agent:gall
 ::
 ::  -- helper gates --
@@ -128,14 +128,34 @@
   |=  [=bowl:gall urql=tape]
   ^-  card
   [%pass /obelisk %agent [our.bowl %obelisk] %poke %obelisk-action !>([%tape2 %lattice urql])]
+::  Explore-pane async query bridge. obelisk has no scries: we watch its /server
+::  (wire /oqw/[eid]), poke the urQL (wire /oqp/[eid]), and answer the held HTTP
+::  request when the result %fact lands. Only one query runs at a time, so the
+::  next fact on /oqw is unambiguously this query's. /oqt/[eid] is the timeout.
+++  obelisk-watch-card
+  |=  [=bowl:gall eid=@ta]
+  ^-  card
+  [%pass /oqw/[eid] %agent [our.bowl %obelisk] %watch /server]
+++  obelisk-qpoke-card
+  |=  [=bowl:gall eid=@ta urql=tape]
+  ^-  card
+  [%pass /oqp/[eid] %agent [our.bowl %obelisk] %poke %obelisk-action !>([%tape2 %lattice urql])]
+++  obelisk-qwait-card
+  |=  [eid=@ta at=@da]
+  ^-  card
+  [%pass /oqt/[eid] %arvo %b %wait at]
+++  obelisk-qrest-card
+  |=  [eid=@ta at=@da]
+  ^-  card
+  [%pass /oqt/[eid] %arvo %b %rest at]
 ::  +know-mutate: apply a know-action to the store AND emit its incremental
 ::  obelisk mirror poke. The mirror is fire-and-forget (empty urQL → no card),
 ::  so the knowledge store behaves identically whether or not %obelisk is
 ::  installed. Shared by the HTTP CRUD endpoints and the %lattice-know poke.
 ++  know-mutate
-  |=  [=bowl:gall act=know-action st=state-8]
-  ^-  (quip card state-8)
-  =/  new=state-8  (do-know now.bowl act st)
+  |=  [=bowl:gall act=know-action st=state-9]
+  ^-  (quip card state-9)
+  =/  new=state-9  (do-know now.bowl act st)
   =/  urql=tape  (mirror-urql act new)
   :_  new
   ?~(urql ~ [(obelisk-poke bowl urql)]~)
@@ -369,8 +389,8 @@
   [[%pass /clay-clear %arvo %c %info q.byk.bowl [%& dels]] cards]
 ::
 ++  handle-http
-  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-8]
-  ^-  [(list card) state-8]
+  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-9]
+  ^-  [(list card) state-9]
   ::  SECURITY: Eyre forwards ALL matching HTTP requests to us, authenticated or
   ::  not, and leaves enforcement to the agent. This is the owner's control plane
   ::  (mutates state, drives keens); public reads happen via remote scry, not here.
@@ -516,6 +536,26 @@
           (obelisk-poke bowl (obelisk-populate-urql know.st))
       ==
     [(weld (respond-json-cards eyre-id 200 '{"ok":true}') cards) st]
+  ::  POST /apps/lattice/know-query  body=<urQL> — run one urQL query against the
+  ::  obelisk index and return {ok, action, relation, count, columns, rows}. ASYNC:
+  ::  hold this request (by eyre-id), watch obelisk /server + poke the query, and
+  ::  answer from on-agent when the result %fact arrives. Only one at a time.
+  ?:  &(=(meth %'POST') =(action 'know-query'))
+    ::  use a (non-refining) equality test, not ?^ — ?^ would narrow oquery.st to
+    ::  ~ in this branch and block the assignment below.
+    ?.  =(~ oquery.st)
+      [(respond-json-cards eyre-id 429 '{"error":"a query is already running"}') st]
+    =/  urql=tape
+      ?~(body.request.inbound-request "" (trip q.u.body.request.inbound-request))
+    ?:  =(~ urql)
+      [(respond-json-cards eyre-id 400 '{"error":"empty query"}') st]
+    =/  at=@da  (add now.bowl ~s30)
+    =.  oquery.st  `[eyre-id at]
+    :_  st
+    :~  (obelisk-watch-card bowl eyre-id)
+        (obelisk-qpoke-card bowl eyre-id urql)
+        (obelisk-qwait-card eyre-id at)
+    ==
   ::  POST /apps/lattice/know-publish?key=<key>[&path=<rel>] — copy a private
   ::  item into the PUBLISHED gemtext (grows it; default publish path = the key).
   ?:  &(=(meth %'POST') =(action 'know-publish'))
@@ -595,7 +635,7 @@
 ::
 %-  agent:dbug
 %+  verb  |
-=|  state-8
+=|  state-9
 =*  state  -
 ^-  agent:gall
 |_  =bowl:gall
@@ -617,23 +657,31 @@
   |=  ole=vase
   ^-  (quip card _this)
   =/  old=versioned-state  !<(versioned-state ole)
-  ?:  ?=(%8 -.old)  `this(state old)
-  ::  %7 → %8: give every knowledge entry empty tags + a reserved (empty) vector.
+  ?:  ?=(%9 -.old)  `this(state old)
+  ::  %8 → %9: add the (empty) in-flight obelisk query slot.
+  ?:  ?=(%8 -.old)
+    :-  ~
+    %=  this  state
+      :*  %9  content.old  published.old  pending.old  subs.old  fetches.old
+          manifest.old  home.old  browse.old  know.old  trash.old  ~
+      ==
+    ==
+  ::  %7 → %9: give every knowledge entry empty tags + a reserved (empty) vector.
   ?:  ?=(%7 -.old)
     =/  up=$-(know-entry-7 know-entry)  |=(e=know-entry-7 [body.e updated.e ~ ~])
     :-  ~
     %=  this  state
-      :*  %8  content.old  published.old  pending.old  subs.old  fetches.old
+      :*  %9  content.old  published.old  pending.old  subs.old  fetches.old
           manifest.old  home.old  browse.old
-          (~(run by know.old) up)  (~(run by trash.old) up)
+          (~(run by know.old) up)  (~(run by trash.old) up)  ~
       ==
     ==
-  ::  %6 → %8: add the empty private knowledge store (know + trash).
+  ::  %6 → %9: add the empty private knowledge store (know + trash).
   ?:  ?=(%6 -.old)
     :-  ~
     %=  this  state
-      :*  %8  content.old  published.old  pending.old  subs.old  fetches.old
-          manifest.old  home.old  browse.old  ~  ~
+      :*  %9  content.old  published.old  pending.old  subs.old  fetches.old
+          manifest.old  home.old  browse.old  ~  ~  ~
       ==
     ==
   ::  Versions 0-5 stored published content in Clay /pub. Pull it into state,
@@ -642,14 +690,14 @@
   =/  content=(map path @t)  (migrate-content bowl)
   =/  files=(set path)       ~(key by content)
   =/  cards=(list card)      (clear-pub-cards bowl files)
-  =/  new=state-8
+  =/  new=state-9
     ?-  -.old
-      %5  [%8 content published.old pending.old subs.old fetches.old manifest.old home.old browse.old ~ ~]
-      %4  [%8 content published.old pending.old subs.old fetches.old manifest.old home.old ~ ~ ~]
-      %3  [%8 content published.old pending.old subs.old fetches.old manifest.old `@uvH`0 ~ ~ ~]
-      %2  [%8 content published.old pending.old subs.old fetches.old `@uvH`0 `@uvH`0 ~ ~ ~]
-      %1  [%8 content published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~ ~ ~]
-      %0  [%8 content published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~ ~ ~]
+      %5  [%9 content published.old pending.old subs.old fetches.old manifest.old home.old browse.old ~ ~ ~]
+      %4  [%9 content published.old pending.old subs.old fetches.old manifest.old home.old ~ ~ ~ ~]
+      %3  [%9 content published.old pending.old subs.old fetches.old manifest.old `@uvH`0 ~ ~ ~ ~]
+      %2  [%9 content published.old pending.old subs.old fetches.old `@uvH`0 `@uvH`0 ~ ~ ~ ~]
+      %1  [%9 content published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
+      %0  [%9 content published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
     ==
   [cards this(state new)]
 ::
@@ -734,7 +782,44 @@
 ::
 ::  lattice uses ames keens + eyre, not gall subscriptions, so no agent signs
 ::  are expected; ignore any quietly.
-++  on-agent  |=([wire sign:agent:gall] `this)
+::  on-agent: the only gall subscription we keep is the Explore-pane obelisk
+::  query (wire /oqw = the /server watch, /oqp = the urQL poke). Everything else
+::  (mirror pokes on /obelisk, etc.) is fire-and-forget and ignored. The oquery
+::  guard means a signal for a stale/finished query is a no-op.
+++  on-agent
+  |=  [=wire =sign:agent:gall]
+  ^-  (quip card _this)
+  ?.  ?=([?(%oqw %oqp) @ta ~] wire)  `this
+  ::  copy into `cur` and refine that, so oquery.state stays assignable to ~.
+  =/  cur  oquery.state
+  ?~  cur  `this
+  =/  eid=@ta  i.t.wire
+  ?.  =(eid eid.u.cur)  `this
+  =/  clear=card  (obelisk-qrest-card eid deadline.u.cur)
+  =/  finish
+    |=  [status=@ud body=@t]
+    ^-  (quip card _this)
+    =.  oquery.state  ~
+    [[clear (respond-json-cards eid status body)] this]
+  ?-  i.wire
+      %oqw
+    ?+  -.sign  `this
+        %watch-ack
+      ?~  p.sign  `this   :: subscribed OK — await the result fact
+      (finish 503 '{"error":"obelisk not installed"}')
+    ::
+        %fact
+      (finish 200 (en:json:html (obelisk-result-json q.q.cage.sign)))
+    ::
+        %kick
+      (finish 502 '{"error":"obelisk closed the connection"}')
+    ==
+  ::
+      %oqp
+    ?.  ?=(%poke-ack -.sign)  `this
+    ?~  p.sign  `this   :: poke accepted — the fact arrives on /oqw
+    (finish 503 '{"error":"obelisk rejected the query poke"}')
+  ==
 ::
 ++  on-arvo
   |=  [=wire =sign-arvo]
@@ -769,6 +854,18 @@
     ?~  (~(get by pending.state) eid)  `this
     =.  pending.state  (~(del by pending.state) eid)
     [(respond-json-cards eid 504 '{"error":"no response from peer"}') this]
+  ::
+      [%oqt @ta ~]
+    ::  the obelisk query deadline fired. If the result already arrived, oquery is
+    ::  cleared and this is a no-op; otherwise answer the held request with 504.
+    ?>  ?=([%behn %wake *] sign-arvo)
+    =/  eid=@ta  i.t.wire
+    ::  copy into `cur` and refine that, so oquery.state stays assignable to ~.
+    =/  cur  oquery.state
+    ?~  cur  `this
+    ?.  =(eid eid.u.cur)  `this
+    =.  oquery.state  ~
+    [(respond-json-cards eid 504 '{"error":"obelisk query timed out"}') this]
   ::
       [%walk @ta @ta ~]
     ::  a revision in a walk-to-latest fetch resolved (or returned no value).

@@ -150,6 +150,24 @@
       know=(map path know-entry)
       trash=(map path know-entry)
   ==
+::  state-9 adds `oquery` — the single in-flight obelisk query (the Explore pane's
+::  urQL runner). obelisk has no scries, so a query is async: we hold the HTTP
+::  request here (by eyre-id) while we poke obelisk and await its result %fact.
+::  deadline = the armed behn timeout. Only one query runs at a time.
++$  state-9
+  $:  %9
+      content=(map path @t)
+      published=(map path @uvH)
+      pending=(map @ta [=ship =path])
+      subs=(map [=ship spur=path] last=@ud)
+      fetches=(map @ta walk)
+      manifest=@uvH
+      home=@uvH
+      browse=(unit [=ship spur=path rev=@ud])
+      know=(map path know-entry)
+      trash=(map path know-entry)
+      oquery=(unit [eid=@ta deadline=@da])
+  ==
 ::  one in-flight walk-to-latest fetch (keyed by eyre-id).
 ::  rev = highest revision resolved so far (0 = none yet); deadline = the armed
 ::  behn timer's wake time (tracked so progress can %rest + re-arm it).
@@ -161,4 +179,25 @@
       body=@t
       deadline=@da
   ==
+::  obelisk result decoding (Explore pane). obelisk gives query results as a
+::  bare %noun fact of shape [%.y (list ob-cmd-result)] (success) or [%.n tang]
+::  (error). These mirror obelisk's sur/ast.hoon result tree — just the subset
+::  the Explore table needs. We clam the raw noun to these inside a +mule, so
+::  lattice stays decoupled from obelisk's source and a shape change degrades to
+::  an error rather than a crash.
++$  ob-dime    [p=@tas q=@]               :: a typed atom: aura + value
++$  ob-cell    [p=@tas q=ob-dime]         :: column name + typed value
++$  ob-vector  [%vector (lest ob-cell)]   :: one row (non-empty list of cells)
++$  ob-result
+  $%  [%action action=@t]
+      [%relation relation=@t]
+      [%message msg=@t]
+      [%vector-count count=@ud]
+      [%server-time date=@da]
+      [%security-time date=@da]
+      [%schema-time date=@da]
+      [%data-time date=@da]
+      [%result-set (list ob-vector)]
+  ==
++$  ob-cmd-result  [%results (list ob-result)]
 --
