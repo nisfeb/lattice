@@ -17,12 +17,12 @@
 ++  test-creates-all-six-tables
   =/  s=tape  catalog-create-urql
   ;:  weld
-    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog_pages" s))))
-    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog_headings" s))))
-    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog_links" s))))
-    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog_tags" s))))
-    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog_manifests" s))))
-    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog_pending" s))))
+    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog-pages" s))))
+    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog-headings" s))))
+    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog-links" s))))
+    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog-tags" s))))
+    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog-manifests" s))))
+    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog-pending" s))))
   ==
 ::
 ::  One semicolon per CREATE TABLE statement -- catches a missing terminator
@@ -50,7 +50,7 @@
     ?:(=(`@tD`0 i.s) & $(s t.s))
   (expect-eq !>(|) !>(has-null))
 ::
-::  ── catalog_pages: every column + the federation-ready PK ─────────────
+::  ── catalog-pages: every column + the federation-ready PK ─────────────
 ::
 ++  test-pages-has-all-columns
   =/  s=tape  catalog-create-urql
@@ -61,12 +61,12 @@
     (expect-eq !>(&) !>(!=(~ (find "url @t" s))))
     (expect-eq !>(&) !>(!=(~ (find "title @t" s))))
     (expect-eq !>(&) !>(!=(~ (find "fetched @da" s))))
-    (expect-eq !>(&) !>(!=(~ (find "hash @uvH" s))))
+    (expect-eq !>(&) !>(!=(~ (find "hash @ud" s))))
     (expect-eq !>(&) !>(!=(~ (find "category @t" s))))
-    (expect-eq !>(&) !>(!=(~ (find "cat_source @t" s))))
+    (expect-eq !>(&) !>(!=(~ (find "cat-source @t" s))))
     (expect-eq !>(&) !>(!=(~ (find "confidence @rs" s))))
-    (expect-eq !>(&) !>(!=(~ (find "word_count @ud" s))))
-    (expect-eq !>(&) !>(!=(~ (find "body_lines @ud" s))))
+    (expect-eq !>(&) !>(!=(~ (find "word-count @ud" s))))
+    (expect-eq !>(&) !>(!=(~ (find "body-lines @ud" s))))
   ==
 ::
 ::  Natural key is (source, publisher, path) -- distinguishes locally-
@@ -74,22 +74,22 @@
 ++  test-pages-primary-key
   =/  s=tape  catalog-create-urql
   ;:  weld
-    (expect-eq !>(&) !>(!=(~ (find "catalog_pages" s))))
+    (expect-eq !>(&) !>(!=(~ (find "catalog-pages" s))))
     (expect-eq !>(&) !>(!=(~ (find "PRIMARY KEY (source, publisher, path)" s))))
   ==
 ::
-::  Hash type is @uvH -- matches +sham's return and state.manifest's type.
+::  Hash column is @ud (obelisk rejects @uv/@uvH value literals on INSERT).
 ::  If we ever change sham to a wider hash this test asserts the schema
 ::  follows, so the column type stays in lockstep with the hash function.
-++  test-pages-hash-is-uvh
+++  test-pages-hash-is-ud
   =/  s=tape  catalog-create-urql
   ;:  weld
-    (expect-eq !>(&) !>(!=(~ (find "hash @uvH" s))))
-    (expect-eq !>(~) !>((find "hash @uvJ" s)))   ::  not the wrong type
-    (expect-eq !>(~) !>((find "hash @uvK" s)))
+    (expect-eq !>(&) !>(!=(~ (find "hash @ud" s))))
+    (expect-eq !>(~) !>((find "hash @uv" s)))   ::  not the wrong type
+    (expect-eq !>(~) !>((find "hash @uvH" s)))
   ==
 ::
-::  ── catalog_headings (depth + position; PK includes position) ─────────
+::  ── catalog-headings (depth + position; PK includes position) ─────────
 ::
 ++  test-headings-has-all-columns
   =/  s=tape  catalog-create-urql
@@ -97,47 +97,47 @@
 ::
 ++  test-headings-primary-key
   =/  s=tape  catalog-create-urql
-  =/  ix=(unit @ud)  (find "catalog_headings" s)
+  =/  ix=(unit @ud)  (find "catalog-headings" s)
   ?~  ix  (expect-eq !>(&) !>(|))
   =/  decl=tape  (slag u.ix s)
   (expect-eq !>(&) !>(!=(~ (find "PRIMARY KEY (source, publisher, path, position)" decl))))
 ::
-::  ── catalog_links (target + label; PK includes position) ──────────────
+::  ── catalog-links (target + label; PK includes position) ──────────────
 ::
 ++  test-links-has-all-columns
   =/  s=tape  catalog-create-urql
-  (expect-eq !>(&) !>(!=(~ (find "target_url @t, label @t, is_internal @ud" s))))
+  (expect-eq !>(&) !>(!=(~ (find "target-url @t, label @t, is-internal @ud" s))))
 ::
 ++  test-links-primary-key
   =/  s=tape  catalog-create-urql
-  =/  ix=(unit @ud)  (find "catalog_links" s)
+  =/  ix=(unit @ud)  (find "catalog-links" s)
   ?~  ix  (expect-eq !>(&) !>(|))
   =/  decl=tape  (slag u.ix s)
   (expect-eq !>(&) !>(!=(~ (find "PRIMARY KEY (source, publisher, path, position)" decl))))
 ::
-::  ── catalog_tags (many-to-many; PK includes the tag) ──────────────────
+::  ── catalog-tags (many-to-many; PK includes the tag) ──────────────────
 ::
 ++  test-tags-primary-key
   =/  s=tape  catalog-create-urql
-  =/  ix=(unit @ud)  (find "catalog_tags" s)
+  =/  ix=(unit @ud)  (find "catalog-tags" s)
   ?~  ix  (expect-eq !>(&) !>(|))
   =/  decl=tape  (slag u.ix s)
   (expect-eq !>(&) !>(!=(~ (find "PRIMARY KEY (source, publisher, path, tag)" decl))))
 ::
-::  ── catalog_manifests (one row per publisher; cached for diffing) ─────
+::  ── catalog-manifests (one row per publisher; cached for diffing) ─────
 ::
 ++  test-manifests-has-all-columns
   =/  s=tape  catalog-create-urql
-  (expect-eq !>(&) !>(!=(~ (find "scanned @da, hash @uvH, raw @t" s))))
+  (expect-eq !>(&) !>(!=(~ (find "scanned @da, hash @ud, raw @t" s))))
 ::
 ++  test-manifests-primary-key
   =/  s=tape  catalog-create-urql
-  =/  ix=(unit @ud)  (find "catalog_manifests" s)
+  =/  ix=(unit @ud)  (find "catalog-manifests" s)
   ?~  ix  (expect-eq !>(&) !>(|))
   =/  decl=tape  (slag u.ix s)
   (expect-eq !>(&) !>(!=(~ (find "PRIMARY KEY (publisher)" decl))))
 ::
-::  ── catalog_pending (classifier queue; PK is page identity) ───────────
+::  ── catalog-pending (classifier queue; PK is page identity) ───────────
 ::
 ++  test-pending-has-all-columns
   =/  s=tape  catalog-create-urql
@@ -145,7 +145,7 @@
 ::
 ++  test-pending-primary-key
   =/  s=tape  catalog-create-urql
-  =/  ix=(unit @ud)  (find "catalog_pending" s)
+  =/  ix=(unit @ud)  (find "catalog-pending" s)
   ?~  ix  (expect-eq !>(&) !>(|))
   =/  decl=tape  (slag u.ix s)
   (expect-eq !>(&) !>(!=(~ (find "PRIMARY KEY (source, publisher, path)" decl))))
@@ -181,14 +181,14 @@
 ::  replaces the stale headings/links/tags).
 ++  test-page-urql-deletes-precede-inserts
   =/  s=tape  (catalog-page-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
-  =/  d-page=(unit @ud)  (find "DELETE FROM catalog_pages" s)
-  =/  d-head=(unit @ud)  (find "DELETE FROM catalog_headings" s)
-  =/  d-link=(unit @ud)  (find "DELETE FROM catalog_links" s)
-  =/  d-tag=(unit @ud)   (find "DELETE FROM catalog_tags" s)
-  =/  i-page=(unit @ud)  (find "INSERT INTO catalog_pages" s)
-  =/  i-head=(unit @ud)  (find "INSERT INTO catalog_headings" s)
-  =/  i-link=(unit @ud)  (find "INSERT INTO catalog_links" s)
-  =/  i-tag=(unit @ud)   (find "INSERT INTO catalog_tags" s)
+  =/  d-page=(unit @ud)  (find "DELETE FROM catalog-pages" s)
+  =/  d-head=(unit @ud)  (find "DELETE FROM catalog-headings" s)
+  =/  d-link=(unit @ud)  (find "DELETE FROM catalog-links" s)
+  =/  d-tag=(unit @ud)   (find "DELETE FROM catalog-tags" s)
+  =/  i-page=(unit @ud)  (find "INSERT INTO catalog-pages" s)
+  =/  i-head=(unit @ud)  (find "INSERT INTO catalog-headings" s)
+  =/  i-link=(unit @ud)  (find "INSERT INTO catalog-links" s)
+  =/  i-tag=(unit @ud)   (find "INSERT INTO catalog-tags" s)
   ?~  d-page  (expect-eq !>(&) !>(|))
   ?~  d-head  (expect-eq !>(&) !>(|))
   ?~  d-link  (expect-eq !>(&) !>(|))
@@ -204,11 +204,11 @@
     (expect-eq !>(&) !>((lth u.d-tag u.i-tag)))
   ==
 ::
-::  catalog_pages INSERT includes EVERY column in the design order.
+::  catalog-pages INSERT includes EVERY column in the design order.
 ++  test-page-urql-pages-columns
   =/  s=tape  (catalog-page-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
   =/  cols=tape
-    "(source, publisher, path, url, title, fetched, hash, category, cat_source, confidence, word_count, body_lines)"
+    "(source, publisher, path, url, title, fetched, hash, category, cat-source, confidence, word-count, body-lines)"
   (expect-eq !>(&) !>(!=(~ (find cols s))))
 ::
 ::  source and publisher are encoded as bare @p literals (no quotes).
@@ -227,10 +227,10 @@
 ++  test-page-urql-count-parity
   =/  s=tape  (catalog-page-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
   ;:  weld
-    (expect-eq !>(`@ud`2) !>((substr-count s "INSERT INTO catalog_headings")))
-    (expect-eq !>(`@ud`2) !>((substr-count s "INSERT INTO catalog_links")))
-    (expect-eq !>(`@ud`2) !>((substr-count s "INSERT INTO catalog_tags")))
-    (expect-eq !>(`@ud`1) !>((substr-count s "INSERT INTO catalog_pages")))
+    (expect-eq !>(`@ud`2) !>((substr-count s "INSERT INTO catalog-headings")))
+    (expect-eq !>(`@ud`2) !>((substr-count s "INSERT INTO catalog-links")))
+    (expect-eq !>(`@ud`2) !>((substr-count s "INSERT INTO catalog-tags")))
+    (expect-eq !>(`@ud`1) !>((substr-count s "INSERT INTO catalog-pages")))
   ==
 ::
 ::  Count non-overlapping occurrences of [needle] in [hay]. Helper for
@@ -246,9 +246,9 @@
   ?~  ix  acc
   $(hay `tape`(slag +(u.ix) hay), acc +(acc))
 ::
-::  is_internal: 1 for urb:// links, 0 for foreign-scheme. Fixture has
+::  is-internal: 1 for urb:// links, 0 for foreign-scheme. Fixture has
 ::  one of each → the output should contain both `, 1)` and `, 0)` at
-::  the right positions in catalog_links INSERTs.
+::  the right positions in catalog-links INSERTs.
 ++  test-page-urql-is-internal
   =/  s=tape  (catalog-page-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
   ;:  weld
@@ -278,7 +278,7 @@
     (expect-eq !>(~) !>((find "'it's a trap'" s)))
   ==
 ::
-::  Sentinel values for category/cat_source/confidence — '' / '' / .0.
+::  Sentinel values for category/cat-source/confidence — '' / '' / .0.
 ::  When the classifier pipeline lands, an UPDATE will overwrite these;
 ::  fresh rows should always have the sentinels.
 ++  test-page-urql-classifier-sentinels
@@ -293,11 +293,11 @@
 ++  test-page-delete-urql-all-tables
   =/  s=tape  (catalog-page-delete-urql ~zod ~tyr /a/b)
   ;:  weld
-    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog_pages" s))))
-    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog_headings" s))))
-    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog_links" s))))
-    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog_tags" s))))
-    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog_pending" s))))
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-pages" s))))
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-headings" s))))
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-links" s))))
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-tags" s))))
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-pending" s))))
   ==
 ::
 ::  Every DELETE filters on the (source, publisher, path) triple.
@@ -311,8 +311,8 @@
   =/  s=tape  (catalog-manifest-urql ~zod ~2026.1.1 (sham 'manifest') 'raw text')
   ;:  weld
     ::  DELETE-before-INSERT for the UPSERT
-    =/  d=(unit @ud)  (find "DELETE FROM catalog_manifests" s)
-    =/  i=(unit @ud)  (find "INSERT INTO catalog_manifests" s)
+    =/  d=(unit @ud)  (find "DELETE FROM catalog-manifests" s)
+    =/  i=(unit @ud)  (find "INSERT INTO catalog-manifests" s)
     ?~  d  (expect-eq !>(&) !>(|))
     ?~  i  (expect-eq !>(&) !>(|))
     (expect-eq !>(&) !>((lth u.d u.i)))
@@ -325,8 +325,8 @@
 ++  test-pending-urql-shape
   =/  s=tape  (catalog-pending-urql ~zod ~tyr /a ~2026.1.1 'new' 0)
   ;:  weld
-    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog_pending" s))))
-    (expect-eq !>(&) !>(!=(~ (find "INSERT INTO catalog_pending" s))))
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-pending" s))))
+    (expect-eq !>(&) !>(!=(~ (find "INSERT INTO catalog-pending" s))))
     (expect-eq !>(&) !>(!=(~ (find "(source, publisher, path, queued, attempts, reason)" s))))
     ::  reason cord is quoted + escaped
     (expect-eq !>(&) !>(!=(~ (find "'new')" s))))
@@ -337,7 +337,7 @@
 ++  test-pending-clear-urql-single-delete
   =/  s=tape  (catalog-pending-clear-urql ~zod ~tyr /a)
   ;:  weld
-    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog_pending WHERE source = ~zod" s))))
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-pending WHERE source = ~zod" s))))
     ::  exactly ONE statement (one semicolon)
     (expect-eq !>(`@ud`1) !>((substr-count s ";")))
   ==

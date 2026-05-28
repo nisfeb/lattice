@@ -39,7 +39,7 @@ Four stages, in order:
    headings with depth, outbound links with labels, explicit `#tag` lines,
    content hash, word count.
 3. **Index** — pokes obelisk with urQL `INSERT … VALUES …` and `UPDATE`
-   statements against the `catalog_*` tables (schema below).
+   statements against the `catalog-*` tables (schema below).
 4. **Surface** — Discover gets a search box that compiles to urQL; MCP
    tools expose query + classification surfaces for agents and external
    tooling.
@@ -100,13 +100,13 @@ Confidence and reasoning are first-class:
 
 ## Obelisk schema (`/desk/lib/catalog.hoon`)
 
-Six tables under `catalog_*`, in the existing `lattice` obelisk database.
+Six tables under `catalog-*`, in the existing `lattice` obelisk database.
 The CREATE TABLE generator lives in `+catalog-create-urql` and is safe to
 poke at every agent boot — CREATE is atomic in obelisk and fails harmlessly
 if a table already exists (same pattern as `+obelisk-create-urql` for the
 knowledge/tags tables).
 
-### `catalog_pages`
+### `catalog-pages`
 
 | Column     | Type   | Notes |
 |------------|--------|-------|
@@ -116,29 +116,29 @@ knowledge/tags tables).
 | url        | @t     | Full `urb://<publisher><path>` for convenience. |
 | title      | @t     | First `# ` heading, fallback to first non-blank line, fallback to last path segment. |
 | fetched    | @da    | When the row was last refreshed. |
-| hash       | @uvH   | `sham` over the body cord (128-bit). Matches `state.manifest`'s hash type. Lets the crawler skip re-analyzing on no-change. |
+| hash       | @ud    | `sham` over the body cord (128-bit), stored as @ud (obelisk rejects @uv/@uvH value literals; @ud round-trips, aura immaterial for equality). Lets the crawler skip re-analyzing on no-change. |
 | category   | @t     | `''` (empty cord) until classified. Singular: one primary category per page. |
-| cat_source | @t     | `''` / `rule` / `llm` / `rule-fallback` / `manual` / `imported`. `''` means not yet classified. |
+| cat-source | @t     | `''` / `rule` / `llm` / `rule-fallback` / `manual` / `imported`. `''` means not yet classified. |
 | confidence | @rs    | 0.0 by default; the LLM path writes 0.0–1.0. |
-| word_count | @ud    | For ranking and excerpt sizing. |
-| body_lines | @ud    | Quick "how big is this" without re-fetching. |
+| word-count | @ud    | For ranking and excerpt sizing. |
+| body-lines | @ud    | Quick "how big is this" without re-fetching. |
 
 **Primary key:** `(source, publisher, path)`.
 
-### `catalog_headings`
+### `catalog-headings`
 
 One row per heading on a page, ordered by position.
 
 | Column   | Type | Notes |
 |----------|------|-------|
-| source, publisher, path | (see pages) | Composite FK to `catalog_pages`. |
+| source, publisher, path | (see pages) | Composite FK to `catalog-pages`. |
 | position | @ud  | Heading's ordinal position on the page (0-indexed). Part of PK. |
 | depth    | @ud  | 1, 2, or 3 — matches gemtext `#`/`##`/`###`. |
 | text     | @t   | Heading text minus the leading `#`s. |
 
 **Primary key:** `(source, publisher, path, position)`.
 
-### `catalog_links`
+### `catalog-links`
 
 One row per outbound `=>` link on a page.
 
@@ -146,13 +146,13 @@ One row per outbound `=>` link on a page.
 |-------------|------|-------|
 | source, publisher, path | (see pages) | Composite FK. |
 | position    | @ud  | Link's ordinal position on the page. Part of PK. |
-| target_url  | @t   | The link target (`urb://…` or `http(s)://…`). |
+| target-url  | @t   | The link target (`urb://…` or `http(s)://…`). |
 | label       | @t   | The link's human label (whatever followed the target on the `=>` line). |
-| is_internal | @ud  | 1 if `target_url` resolves to another `catalog_pages` row, 0 otherwise. (@ud as boolean — obelisk's @f support is unverified at the schema-PR stage; will swap if confirmed.) |
+| is-internal | @ud  | 1 if `target-url` resolves to another `catalog-pages` row, 0 otherwise. (@ud as boolean — obelisk's @f support is unverified at the schema-PR stage; will swap if confirmed.) |
 
 **Primary key:** `(source, publisher, path, position)`.
 
-### `catalog_tags`
+### `catalog-tags`
 
 Many-to-many — tags on a page. Mirrors the existing `tags` table for
 knowledge items, but scoped to the catalog.
@@ -164,7 +164,7 @@ knowledge items, but scoped to the catalog.
 
 **Primary key:** `(source, publisher, path, tag)`.
 
-### `catalog_manifests`
+### `catalog-manifests`
 
 Cache of each publisher's last-seen `/manifest` snapshot — lets the
 periodic sweep skip publishers whose manifest hash hasn't changed.
@@ -173,10 +173,10 @@ periodic sweep skip publishers whose manifest hash hasn't changed.
 |-----------|------|-------|
 | publisher | @p   | PK. |
 | scanned   | @da  | When the manifest was last fetched. |
-| hash      | @uvH | `sham` over the manifest body. |
+| hash      | @ud  | `sham` over the manifest body (see catalog-pages.hash note). |
 | raw       | @t   | The raw gemtext manifest, kept for diffing the next sweep. |
 
-### `catalog_pending`
+### `catalog-pending`
 
 The classifier queue. Pages enter on first crawl with `reason='new'` and
 move out when `lattice-catalog-classify` arrives with sufficient
@@ -253,7 +253,7 @@ Phase 4 is v2.
 2. **`/catalog-query` complexity cap.** Public scry means anyone can run
    urQL against any publisher's catalog. Need a complexity cap to prevent
    denial-of-service via expensive queries — likely `LIMIT 100` ceiling,
-   no joins outside `catalog_*`, server-imposed timeout. Specifics in
+   no joins outside `catalog-*`, server-imposed timeout. Specifics in
    phase 4.
 3. **Refresh-on-update wire format.** The `/catalog` SSE-style stream
    needs a diff schema (`{path, action: add|update|delete, hash}`). Goes

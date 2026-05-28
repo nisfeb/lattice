@@ -5,7 +5,7 @@
 ::  by crawling publishers' /manifest endpoints and listening to per-ship
 ::  /catalog update streams. It lives in %obelisk alongside the existing
 ::  `knowledge`/`tags` tables (in the same `lattice` database), with a
-::  `catalog_*` prefix to keep the namespace clean.
+::  `catalog-*` prefix to keep the namespace clean.
 ::
 ::  See /docs/catalog.md for the design rationale, the pull-based
 ::  classifier pipeline that fills `category`/`tags` over time, and the
@@ -33,35 +33,40 @@
 ::  cross-corroboration and a future ranking signal.
 ::
 ::  Column-by-column notes:
-::    catalog_pages.category   — '' (empty cord) until classified.
-::    catalog_pages.cat_source — '' | 'rule' | 'llm' | 'rule-fallback' |
+::    catalog-pages.category   — '' (empty cord) until classified.
+::    catalog-pages.cat-source — '' | 'rule' | 'llm' | 'rule-fallback' |
 ::                               'manual' | 'imported'. '' = not yet
 ::                               classified; the classifier pipeline
 ::                               writes one of the non-empty values.
-::    catalog_pages.confidence — 0.0 when no confidence value is set;
+::    catalog-pages.confidence — 0.0 when no confidence value is set;
 ::                               the LLM path writes 0.0-1.0.
-::    catalog_pages.hash       — `sham` over the body cord (128-bit @uvH,
-::                               matching state.manifest's hash type so
-::                               the schemas stay congruent). Lets the
-::                               crawler skip re-analyzing on no-change.
-::    catalog_links.is_internal — 1 if target_url starts with "urb://"
+::    catalog-pages.hash       — `sham` over the body cord. Hoon-side it
+::                               stays @uvH (sham's return); the urQL column
+::                               is typed @ud and the value encoded via
+::                               +scot %ud, because obelisk's urQL accepts
+::                               neither a @uv column literal nor a `0v…`
+::                               value on INSERT — only @ud round-trips
+::                               losslessly through both. The hash is used
+::                               only for equality (skip-if-unchanged), so
+::                               the decimal aura is immaterial.
+::    catalog-links.is-internal — 1 if target-url starts with "urb://"
 ::                                (other-ship link); 0 for foreign-scheme
 ::                                links (http(s)/mailto/etc).
-::    catalog_manifests        — caches each publisher's last /manifest
+::    catalog-manifests        — caches each publisher's last /manifest
 ::                                hash for sweep diffing without re-fetch.
-::    catalog_pending          — the classifier queue. `reason` is one
+::    catalog-pending          — the classifier queue. `reason` is one
 ::                                of 'new' | 'changed' | 'requested' |
 ::                                'low-confidence'.
 ::
 ++  catalog-create-urql
   ^-  tape
   %-  zing
-  :~  "CREATE TABLE catalog_pages (source @p, publisher @p, path @t, url @t, title @t, fetched @da, hash @uvH, category @t, cat_source @t, confidence @rs, word_count @ud, body_lines @ud) PRIMARY KEY (source, publisher, path);"
-      "CREATE TABLE catalog_headings (source @p, publisher @p, path @t, position @ud, depth @ud, text @t) PRIMARY KEY (source, publisher, path, position);"
-      "CREATE TABLE catalog_links (source @p, publisher @p, path @t, position @ud, target_url @t, label @t, is_internal @ud) PRIMARY KEY (source, publisher, path, position);"
-      "CREATE TABLE catalog_tags (source @p, publisher @p, path @t, tag @t) PRIMARY KEY (source, publisher, path, tag);"
-      "CREATE TABLE catalog_manifests (publisher @p, scanned @da, hash @uvH, raw @t) PRIMARY KEY (publisher);"
-      "CREATE TABLE catalog_pending (source @p, publisher @p, path @t, queued @da, attempts @ud, reason @t) PRIMARY KEY (source, publisher, path);"
+  :~  "CREATE TABLE catalog-pages (source @p, publisher @p, path @t, url @t, title @t, fetched @da, hash @ud, category @t, cat-source @t, confidence @rs, word-count @ud, body-lines @ud) PRIMARY KEY (source, publisher, path);"
+      "CREATE TABLE catalog-headings (source @p, publisher @p, path @t, position @ud, depth @ud, text @t) PRIMARY KEY (source, publisher, path, position);"
+      "CREATE TABLE catalog-links (source @p, publisher @p, path @t, position @ud, target-url @t, label @t, is-internal @ud) PRIMARY KEY (source, publisher, path, position);"
+      "CREATE TABLE catalog-tags (source @p, publisher @p, path @t, tag @t) PRIMARY KEY (source, publisher, path, tag);"
+      "CREATE TABLE catalog-manifests (publisher @p, scanned @da, hash @ud, raw @t) PRIMARY KEY (publisher);"
+      "CREATE TABLE catalog-pending (source @p, publisher @p, path @t, queued @da, attempts @ud, reason @t) PRIMARY KEY (source, publisher, path);"
   ==
 ::
 ::  +catalog-page-urql: (re)write all the rows for one catalog page from
@@ -70,14 +75,14 @@
 ::  need to dedupe and a refresh on a changed body cleanly replaces the
 ::  stale headings/links/tags.
 ::
-::  `category`, `cat_source`, and `confidence` start at their sentinel
+::  `category`, `cat-source`, and `confidence` start at their sentinel
 ::  values (`''` / `''` / `.0`). The classifier pipeline fills them via
 ::  a separate UPDATE in a follow-up PR.
 ::
-::  `is_internal` is set to 1 when a link target starts with `urb://`
+::  `is-internal` is set to 1 when a link target starts with `urb://`
 ::  (best-effort heuristic — distinguishes intra-network links from
 ::  http(s)/mailto/etc without a cross-table lookup); the proper resolve
-::  against `catalog_pages` is a future-PR refinement.
+::  against `catalog-pages` is a future-PR refinement.
 ::
 ++  catalog-page-urql
   |=  [src=@p pub=@p pat=path now=@da =analysis]
@@ -89,7 +94,7 @@
   =/  url=tape   :(weld "urb://" pt pk)
   =/  ue=tape    (urq-esc url)
   =/  fet=tape   (trip (scot %da now))
-  =/  hsh=tape   (trip (scot %uv hash.analysis))
+  =/  hsh=tape   (trip (scot %ud hash.analysis))
   =/  ttl=tape   (urq-esc (trip title.analysis))
   =/  wc=tape    (trip (scot %ud word-count.analysis))
   =/  bl=tape    (trip (scot %ud body-lines.analysis))
@@ -98,14 +103,14 @@
     :(weld " WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
   =/  deletes=tape
     %-  zing
-    :~  (weld "DELETE FROM catalog_pages" where)
-        (weld "DELETE FROM catalog_headings" where)
-        (weld "DELETE FROM catalog_links" where)
-        (weld "DELETE FROM catalog_tags" where)
+    :~  (weld "DELETE FROM catalog-pages" where)
+        (weld "DELETE FROM catalog-headings" where)
+        (weld "DELETE FROM catalog-links" where)
+        (weld "DELETE FROM catalog-tags" where)
     ==
   =/  page-insert=tape
     %-  zing
-    :~  "INSERT INTO catalog_pages (source, publisher, path, url, title, fetched, hash, category, cat_source, confidence, word_count, body_lines) VALUES ("
+    :~  "INSERT INTO catalog-pages (source, publisher, path, url, title, fetched, hash, category, cat-source, confidence, word-count, body-lines) VALUES ("
         st  ", "  pt  ", '"  ek  "', '"  ue  "', '"  ttl  "', "
         fet  ", "  hsh  ", '', '', .0, "  wc  ", "  bl  ");"
     ==
@@ -118,7 +123,7 @@
     =/  d=tape   (trip (scot %ud depth.h))
     =/  p=tape   (trip (scot %ud position.h))
     %-  zing
-    :~  "INSERT INTO catalog_headings (source, publisher, path, position, depth, text) VALUES ("
+    :~  "INSERT INTO catalog-headings (source, publisher, path, position, depth, text) VALUES ("
         st  ", "  pt  ", '"  ek  "', "  p  ", "  d  ", '"  ht  "');"
     ==
   =/  link-inserts=tape
@@ -132,7 +137,7 @@
     =/  intr=tape
       ?:((has-prefix "urb://" (trip target.l)) "1" "0")
     %-  zing
-    :~  "INSERT INTO catalog_links (source, publisher, path, position, target_url, label, is_internal) VALUES ("
+    :~  "INSERT INTO catalog-links (source, publisher, path, position, target-url, label, is-internal) VALUES ("
         st  ", "  pt  ", '"  ek  "', "  p  ", '"  tt  "', '"  lt  "', "  intr  ");"
     ==
   =/  tag-inserts=tape
@@ -142,7 +147,7 @@
     ^-  tape
     =/  tg=tape  (urq-esc (trip t))
     %-  zing
-    :~  "INSERT INTO catalog_tags (source, publisher, path, tag) VALUES ("
+    :~  "INSERT INTO catalog-tags (source, publisher, path, tag) VALUES ("
         st  ", "  pt  ", '"  ek  "', '"  tg  "');"
     ==
   :(weld deletes page-insert heading-inserts link-inserts tag-inserts)
@@ -161,11 +166,11 @@
   =/  where=tape
     :(weld " WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
   %-  zing
-  :~  (weld "DELETE FROM catalog_pages" where)
-      (weld "DELETE FROM catalog_headings" where)
-      (weld "DELETE FROM catalog_links" where)
-      (weld "DELETE FROM catalog_tags" where)
-      (weld "DELETE FROM catalog_pending" where)
+  :~  (weld "DELETE FROM catalog-pages" where)
+      (weld "DELETE FROM catalog-headings" where)
+      (weld "DELETE FROM catalog-links" where)
+      (weld "DELETE FROM catalog-tags" where)
+      (weld "DELETE FROM catalog-pending" where)
   ==
 ::
 ::  +catalog-manifest-urql: refresh the cached manifest snapshot for one
@@ -177,11 +182,11 @@
   ^-  tape
   =/  pt=tape    (trip (scot %p pub))
   =/  scan=tape  (trip (scot %da now))
-  =/  h=tape     (trip (scot %uv hsh))
+  =/  h=tape     (trip (scot %ud hsh))
   =/  r=tape     (urq-esc (trip raw))
   %-  zing
-  :~  "DELETE FROM catalog_manifests WHERE publisher = "  pt  ";"
-      "INSERT INTO catalog_manifests (publisher, scanned, hash, raw) VALUES ("
+  :~  "DELETE FROM catalog-manifests WHERE publisher = "  pt  ";"
+      "INSERT INTO catalog-manifests (publisher, scanned, hash, raw) VALUES ("
       pt  ", "  scan  ", "  h  ", '"  r  "');"
   ==
 ::
@@ -201,8 +206,8 @@
   =/  where=tape
     :(weld " WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
   %-  zing
-  :~  (weld "DELETE FROM catalog_pending" where)
-      "INSERT INTO catalog_pending (source, publisher, path, queued, attempts, reason) VALUES ("
+  :~  (weld "DELETE FROM catalog-pending" where)
+      "INSERT INTO catalog-pending (source, publisher, path, queued, attempts, reason) VALUES ("
       st  ", "  pt  ", '"  ek  "', "  q  ", "  a  ", '"  r  "');"
   ==
 ::
@@ -216,7 +221,7 @@
   =/  st=tape  (trip (scot %p src))
   =/  pt=tape  (trip (scot %p pub))
   =/  ek=tape  (urq-esc (trip (spat pat)))
-  :(weld "DELETE FROM catalog_pending WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
+  :(weld "DELETE FROM catalog-pending WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
 ::
 ::  +parse-manifest: extract published page spurs from a /manifest gemtext
 ::  body. The publisher's +generate-index emits `=> /spur  label` lines for
