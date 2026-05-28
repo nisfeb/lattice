@@ -218,6 +218,40 @@
   =/  ek=tape  (urq-esc (trip (spat pat)))
   :(weld "DELETE FROM catalog_pending WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
 ::
+::  +parse-manifest: extract published page spurs from a /manifest gemtext
+::  body. The publisher's +generate-index emits `=> /spur  label` lines for
+::  every live publication; this is the inverse. Malformed lines (bad path
+::  syntax, foreign-scheme URL) are silently dropped so one bad line can't
+::  abort a whole sweep.
+::
+::  Returns the spur paths the publisher offers, each ready to walk
+::  individually via remote scry. The crawler iterates the result and
+::  schedules a per-page %keen for each, analyzing each body in turn.
+::
+++  parse-manifest
+  |=  body=@t
+  ^-  (list path)
+  =/  lines=(list @t)  (to-wain:format body)
+  %+  murn  lines
+  |=  ln=@t
+  ^-  (unit path)
+  =/  t=tape  (trip ln)
+  ?.  (has-prefix "=> " t)  ~
+  =/  rest=tape  (ltrim (slag 3 t))
+  ::  the target ends at the first whitespace (the label, if any, follows)
+  =/  sp=(unit @ud)  (find " " rest)
+  =/  target=tape  ?~(sp rest (scag u.sp rest))
+  ::  only accept /-rooted local paths; foreign-scheme links (http, mailto,
+  ::  urb://other-ship/x) aren't this publisher's content — skip them.
+  ?.  &(?=(^ target) =('/' i.target))  ~
+  ::  +stab crashes on invalid knot syntax (spaces, control bytes, empty
+  ::  segments) — wrap in mule so a bad line is a no-op rather than a sweep
+  ::  failure.
+  =/  parsed=(each path tang)
+    %-  mule
+    |.((stab (crip target)))
+  ?:(?=(%& -.parsed) `p.parsed ~)
+::
 ::  +urq-esc: backslash-escape ' and \ for obelisk's string-literal syntax.
 ::  Inlined from /lib/lattice so this lib has no /+ *lattice dependency
 ::  (would otherwise drag in state-10 and all the agent's deps). Behavior

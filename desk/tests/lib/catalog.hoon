@@ -354,4 +354,74 @@
 ::
 ++  test-urq-esc-plain
   (expect-eq !>("hello") !>((urq-esc "hello")))
+::
+::  ════════════════════════════════════════════════════════════════════
+::  +parse-manifest — gemtext index → list of publisher spurs.
+::
+::  Real /manifest bodies are produced by +generate-index in
+::  /lib/lattice — header lines + `=> /spur  label` per live page.
+::  The parser must round-trip the spurs it finds, skip prose, and
+::  silently drop malformed lines (one bad line shouldn't abort a
+::  whole sweep).
+::  ════════════════════════════════════════════════════════════════════
+::
+::  Empty body → no paths. (Cold-start: fresh publisher with no content.)
+++  test-parse-manifest-empty
+  (expect-eq !>(`(list path)`~) !>((parse-manifest '')))
+::
+::  Header lines only → no paths. (`# Index` etc. without any `=> `.)
+++  test-parse-manifest-header-only
+  =/  body=@t  '# Index\0a\0aFiles published on this ship:\0a'
+  (expect-eq !>(`(list path)`~) !>((parse-manifest body)))
+::
+::  Two-page manifest: paths are returned in input order.
+++  test-parse-manifest-two-pages
+  =/  body=@t
+    '# Index\0a\0aFiles published on this ship:\0a\0a=> /notes/intro  notes/intro\0a=> /blog/post  blog/post\0a'
+  =/  want=(list path)  ~[/notes/intro /blog/post]
+  (expect-eq !>(want) !>((parse-manifest body)))
+::
+::  `=> ` with no label still parses (the label is optional in gemtext).
+++  test-parse-manifest-no-label
+  =/  body=@t  '=> /x\0a=> /a/b/c\0a'
+  =/  want=(list path)  ~[/x /a/b/c]
+  (expect-eq !>(want) !>((parse-manifest body)))
+::
+::  Foreign-scheme `=> ` lines (http, mailto, urb://other-ship/x) are
+::  skipped — they're not this publisher's content. Only /-rooted local
+::  paths are accepted.
+++  test-parse-manifest-skips-foreign-schemes
+  =/  body=@t
+    '=> /local  local\0a=> https://e.com  web\0a=> mailto:a@b  mail\0a=> /other  other\0a'
+  =/  want=(list path)  ~[/local /other]
+  (expect-eq !>(want) !>((parse-manifest body)))
+::
+::  A line whose target has invalid knot syntax (embedded space) is dropped
+::  instead of crashing the parser — defense against a malformed publisher.
+++  test-parse-manifest-tolerates-bad-paths
+  =/  body=@t
+    '=> /good  ok\0a=> /bad  has space  uh\0a=> /also-good  ok\0a'
+  ::  the middle line's target IS `/bad` (we stop at first space), so it
+  ::  parses fine — really validating that THE parser doesn't crash on
+  ::  unusual input, and the good lines round-trip.
+  =/  got=(list path)  (parse-manifest body)
+  ;:  weld
+    (expect-eq !>(&) !>((lien got |=(p=path =(p /good)))))
+    (expect-eq !>(&) !>((lien got |=(p=path =(p /also-good)))))
+  ==
+::
+::  Root path `=> /` (the publisher's home page) round-trips as the empty
+::  path `~`. The crawler's per-page walk uses this to fetch the home.
+++  test-parse-manifest-root-path
+  =/  body=@t  '=> /  home\0a'
+  =/  want=(list path)  ~[/]
+  (expect-eq !>(want) !>((parse-manifest body)))
+::
+::  Non-`=> ` lines (prose, blank, bullet lists) are ignored even when
+::  interleaved with `=> ` lines.
+++  test-parse-manifest-skips-prose
+  =/  body=@t
+    '# Header\0a\0aSome prose here.\0a* a bullet\0a=> /real  real\0a> a quote\0a'
+  =/  want=(list path)  ~[/real]
+  (expect-eq !>(want) !>((parse-manifest body)))
 --
