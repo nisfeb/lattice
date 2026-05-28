@@ -142,13 +142,16 @@ fun WorkspaceScreen(
     val exportFile = rememberFileExporter()
     val importFile = rememberFileImporter { bundle ->
         scope.launch {
-            ContentArchive.import(client, bundle)
-                .onSuccess { n -> refreshPublic(); status = "Imported $n file(s)." }
+            ContentArchive.import(client, knowledge, bundle)
+                .onSuccess { n ->
+                    refreshPublic(); refreshKnow()
+                    status = "Imported ${n.files} page(s) and ${n.notes} note(s)."
+                }
                 .onFailure { status = "Import failed: ${it.message}" }
         }
     }
     fun doExport() = scope.launch {
-        ContentArchive.export(client, ship)
+        ContentArchive.export(client, knowledge, ship)
             .onSuccess { exportFile("lattice-${ship.removePrefix("~")}-backup.json", it) }
             .onFailure { status = "Export failed: ${it.message}" }
     }
@@ -323,21 +326,21 @@ fun WorkspaceScreen(
             compact = isDesktop, activePath = activeForNs,
             modifier = Modifier.weight(1f).fillMaxWidth(),
         )
-        if (ns == Source.Public) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                TextButton(onClick = { doExport() }) {
-                    Icon(Icons.Filled.FileDownload, null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Export", style = MaterialTheme.typography.bodySmall)
-                }
-                TextButton(onClick = { importFile() }) {
-                    Icon(Icons.Filled.FileUpload, null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Import", style = MaterialTheme.typography.bodySmall)
-                }
+        // one backup for everything — pages + the knowledge store (shown in both
+        // Pages and Knowledge; the bundle is the same either way).
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TextButton(onClick = { doExport() }) {
+                Icon(Icons.Filled.FileDownload, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Export all", style = MaterialTheme.typography.bodySmall)
+            }
+            TextButton(onClick = { importFile() }) {
+                Icon(Icons.Filled.FileUpload, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Import all", style = MaterialTheme.typography.bodySmall)
             }
         }
         }

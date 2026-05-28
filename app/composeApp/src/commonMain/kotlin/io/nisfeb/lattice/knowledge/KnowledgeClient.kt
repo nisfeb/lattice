@@ -164,6 +164,26 @@ class KnowledgeClient(private val session: UrbitSession) {
         }
     }
 
+    /** Every live item WITH its body + tags, in one request (for backup/export). */
+    suspend fun all(): Result<List<KnowEntry>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder().addPathSegments("apps/lattice/know-all").build()
+            session.http.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
+                if (!resp.isSuccessful) error("know-all HTTP ${resp.code}")
+                val root = json.parseToJsonElement(resp.body!!.string()).jsonObject
+                root["items"]?.jsonArray?.map {
+                    val o = it.jsonObject
+                    KnowEntry(
+                        key = o["key"]!!.jsonPrimitive.content,
+                        body = o["body"]?.jsonPrimitive?.contentOrNull ?: "",
+                        updated = o["updated"]?.jsonPrimitive?.contentOrNull ?: "",
+                        tags = o["tags"]?.jsonArray?.map { t -> t.jsonPrimitive.content } ?: emptyList(),
+                    )
+                } ?: emptyList()
+            }
+        }
+    }
+
     /** One item's full body, or a failed Result if absent. */
     suspend fun read(key: String): Result<KnowEntry> = withContext(Dispatchers.IO) {
         runCatching {

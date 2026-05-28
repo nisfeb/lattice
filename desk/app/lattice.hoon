@@ -476,6 +476,9 @@
   ::  GET /apps/lattice/know-trash — soft-deleted items
   ?:  &(=(meth %'GET') =(action 'know-trash'))
     [(respond-json-cards eyre-id 200 (en:json:html (know-list-json trash.st))) st]
+  ::  GET /apps/lattice/know-all — live items WITH bodies + tags (for backup).
+  ?:  &(=(meth %'GET') =(action 'know-all'))
+    [(respond-json-cards eyre-id 200 (en:json:html (know-all-json know.st))) st]
   ::  GET /apps/lattice/know-read?key=<key> — one item with its body
   ::  GET /apps/lattice/know-tags — the tag vocabulary + counts (facet data)
   ?:  &(=(meth %'GET') =(action 'know-tags'))

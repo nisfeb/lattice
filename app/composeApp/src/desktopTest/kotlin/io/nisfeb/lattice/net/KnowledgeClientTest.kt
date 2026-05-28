@@ -121,6 +121,15 @@ class KnowledgeClientTest {
         assertEquals(listOf("/a"), items.map { it.key })
     }
 
+    @Test fun allParsesBodiesAndTags() = runTest {
+        server.enqueue(MockResponse().setBody("""{"items":[{"key":"/a","body":"hi","updated":"~2026.1.1","tags":["x","y"]}]}"""))
+        val items = client.all().getOrThrow()
+        assertEquals("/a", items[0].key)
+        assertEquals("hi", items[0].body)
+        assertEquals(listOf("x", "y"), items[0].tags)
+        assertEquals("/apps/lattice/know-all", server.takeRequest().path)
+    }
+
     @Test fun listParsesTags() = runTest {
         server.enqueue(MockResponse().setBody("""{"count":1,"keys":[{"key":"/a","updated":"~2026.1.1","bytes":3,"tags":["urbit","design"]}]}"""))
         val items = client.list().getOrThrow()
