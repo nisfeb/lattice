@@ -446,8 +446,10 @@
     =/  pp=(each path tang)  (mule |.((pub-path u.rel)))
     ?:  ?=(%| -.pp)
       [(respond-json-cards eyre-id 400 '{"error":"invalid path"}') st]
-    =/  body=@t
-      ?~(body.request.inbound-request '' q.u.body.request.inbound-request)
+    ::  require a body — a bodyless POST must not silently blank the page.
+    ?~  body.request.inbound-request
+      [(respond-json-cards eyre-id 400 '{"error":"missing body"}') st]
+    =/  body=@t  q.u.body.request.inbound-request
     =.  content.st  (~(put by content.st) p.pp body)
     =^  pub-cards  published.st  (sync-cards bowl content.st published.st)
     =^  man-cards  manifest.st   (manifest-cards content.st manifest.st)
@@ -500,8 +502,10 @@
   ?:  &(=(meth %'POST') =(action 'know-save'))
     ?~  k=(query-param inbound-request 'key')
       [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
-    =/  body=@t
-      ?~(body.request.inbound-request '' q.u.body.request.inbound-request)
+    ::  require a body — a bodyless POST must not silently blank an existing note.
+    ?~  body.request.inbound-request
+      [(respond-json-cards eyre-id 400 '{"error":"missing body"}') st]
+    =/  body=@t  q.u.body.request.inbound-request
     =^  mcards=(list card)  st  (know-mutate bowl [%save u.k body] st)
     [(weld (respond-json-cards eyre-id 200 '{"ok":true}') mcards) st]
   ::  POST /apps/lattice/know-delete?key=<key>  (soft → trash)
