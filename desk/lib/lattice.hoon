@@ -496,6 +496,22 @@
 ::
 ::  Mirror writes are FIRE-AND-FORGET: if %obelisk isn't installed, gall just
 ::  negative-acks the poke (on-agent ignores it) — the store works without it.
+::  +urq-esc: escape a urQL single-quoted string literal. obelisk's parser uses
+::  BACKSLASH escaping (verified: 'it\'s' is accepted, 'it''s' is a parse error),
+::  so a quote (39) becomes \' and a backslash (92) becomes \\. A tag is free-form
+::  (norm-tag only lower-cases), so a value like it's would otherwise break or
+::  inject into the mirror query; keys are path-validated and can't contain either,
+::  but we escape them too as defense in depth.
+++  urq-esc
+  |=  s=tape
+  ^-  tape
+  %-  zing
+  %+  turn  s
+  |=  c=@tD
+  ^-  tape
+  ?:  =(c 39)  ~[`@tD`92 `@tD`39]   :: ' -> \'
+  ?:  =(c 92)  ~[`@tD`92 `@tD`92]   :: \ -> \\
+  ~[c]
 ::  +obelisk-create-urql: (re)create the schema. Atomic — fails harmlessly if it
 ::  already exists, so it's safe to poke right before a populate.
 ++  obelisk-create-urql
@@ -510,10 +526,11 @@
 ++  obelisk-row-urql
   |=  [k=tape e=know-entry]
   ^-  tape
+  =/  ek=tape  (urq-esc k)
   %-  zing
-  :-  ;:(weld "INSERT INTO knowledge (item, updated) VALUES ('" k "', " (trip (scot %da updated.e)) ");")
+  :-  ;:(weld "INSERT INTO knowledge (item, updated) VALUES ('" ek "', " (trip (scot %da updated.e)) ");")
   %+  turn  ~(tap in tags.e)
-  |=(t=@t ;:(weld "INSERT INTO tags (item, tag) VALUES ('" k "', '" (trip t) "');"))
+  |=(t=@t ;:(weld "INSERT INTO tags (item, tag) VALUES ('" ek "', '" (urq-esc (trip t)) "');"))
 ::  +obelisk-populate-urql: rebuild the index from the live `know` map — clear
 ::  both tables, then re-insert every item + its tags.
 ++  obelisk-populate-urql
@@ -528,9 +545,10 @@
 ++  obelisk-del-item-urql
   |=  k=tape
   ^-  tape
+  =/  ek=tape  (urq-esc k)
   ;:  weld
-    "DELETE FROM knowledge WHERE item = '"  k  "';"
-    "DELETE FROM tags WHERE item = '"  k  "';"
+    "DELETE FROM knowledge WHERE item = '"  ek  "';"
+    "DELETE FROM tags WHERE item = '"  ek  "';"
   ==
 ::  +mirror-urql: incremental index update for ONE applied know-action. Reads the
 ::  result entry from `st` (the POST-mutation state) so tag rows reflect the
@@ -561,8 +579,8 @@
       %tag
     ?~  kp=(know-key key.act)  ""
     ?.  (~(has by know.st) u.kp)  ""
-    =/  k=tape  (trip (spat u.kp))
-    =/  t=tape  (trip (norm-tag tag.act))
+    =/  k=tape  (urq-esc (trip (spat u.kp)))
+    =/  t=tape  (urq-esc (trip (norm-tag tag.act)))
     ;:  weld
       "DELETE FROM tags WHERE item = '"  k  "' AND tag = '"  t  "';"
       "INSERT INTO tags (item, tag) VALUES ('"  k  "', '"  t  "');"
@@ -570,8 +588,8 @@
   ::
       %untag
     ?~  kp=(know-key key.act)  ""
-    =/  k=tape  (trip (spat u.kp))
-    =/  t=tape  (trip (norm-tag tag.act))
+    =/  k=tape  (urq-esc (trip (spat u.kp)))
+    =/  t=tape  (urq-esc (trip (norm-tag tag.act)))
     ;:(weld "DELETE FROM tags WHERE item = '" k "' AND tag = '" t "';")
   ==
 ::  +ob-err-json / +ob-tang-text: a {ok:false, error} object, and a tang → cord.

@@ -241,6 +241,22 @@
     (expect-eq !>(&) !>(!=(~ (find "INSERT INTO tags (item, tag) VALUES ('/a/b', 'design');" s))))
   ==
 ::
+::  +urq-esc backslash-escapes ' and \ (obelisk's scheme) so a tag/key with a
+::  quote can't break or inject the mirror query. (' = 39, \ = 92)
+++  test-urq-esc
+  ;:  weld
+    ::  "it's" -> "it\'s" = chars i t \ ' s
+    (expect-eq !>(`tape`~[105 116 92 39 115]) !>((urq-esc "it's")))
+    (expect-eq !>("plain") !>((urq-esc "plain")))
+    ::  a lone backslash -> two backslashes
+    (expect-eq !>(`tape`~[92 92]) !>((urq-esc ~[92])))
+  ==
+::  a tag containing an apostrophe is backslash-escaped (\') in the mirror INSERT.
+++  test-obelisk-row-urql-escapes-quote
+  =/  e=know-entry  ['b' ~2026.1.1 (sy ~[(crip "it's")]) ~]
+  =/  s=tape  (obelisk-row-urql "/a" e)
+  (expect-eq !>(&) !>(!=(~ (find ~[92 39] s))))
+::
 ++  test-obelisk-populate-urql
   =/  st  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-9)
   =/  s=tape  (obelisk-populate-urql know.st)
