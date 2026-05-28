@@ -38,6 +38,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.nisfeb.lattice.knowledge.KnowledgeClient
 import io.nisfeb.lattice.knowledge.QueryResult
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -112,7 +113,9 @@ fun ExploreView(
                 Spacer(Modifier.width(4.dp))
                 Text("Run")
             }
-            TextButton(onClick = { scope.launch { knowledge.reindex(); run(queryText) } }, enabled = !loading) {
+            // reindex's create+populate pokes are fire-and-forget; give obelisk a
+            // moment to apply them before re-running, else the query races the rebuild.
+            TextButton(onClick = { scope.launch { knowledge.reindex(); delay(1500); run(queryText) } }, enabled = !loading) {
                 Icon(Icons.Filled.Refresh, null, modifier = Modifier.width(16.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("Reindex")
