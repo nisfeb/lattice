@@ -111,31 +111,6 @@ STUB = """
 # ── per-tool canned payloads ───────────────────────────────────────────────
 # Each payload is built with pairs:enjs:format — same idiom as the knowledge
 # tools' scry responses, so the payload shape doubles as the live-impl target.
-PAYLOAD_LIST = (
-    "(pairs:enjs:format ~["
-    "['stub' b+&] "
-    "['count' (numb:enjs:format 0)] "
-    "['pages' a+~]"
-    "])"
-)
-PAYLOAD_SEARCH = (
-    "(pairs:enjs:format ~["
-    "['stub' b+&] "
-    "['count' (numb:enjs:format 0)] "
-    "['matches' a+~]"
-    "])"
-)
-PAYLOAD_FETCH = (
-    "(pairs:enjs:format ~["
-    "['stub' b+&] "
-    "['url' s+''] "
-    "['title' s+''] "
-    "['body' s+''] "
-    "['headings' a+~] "
-    "['links' a+~] "
-    "['tags' a+~]"
-    "])"
-)
 PAYLOAD_PENDING = (
     "(pairs:enjs:format ~["
     "['stub' b+&] "
@@ -161,45 +136,19 @@ PAYLOAD_OK = (
 # ── tool definitions ───────────────────────────────────────────────────────
 # Naming convention: lattice-catalog-<verb>. Distinct from the existing
 # lattice-* (knowledge-store) tools — catalog is a different data domain.
+# NOTE: catalog READS are NOT MCP tools. The catalog lives in %obelisk,
+# which has no scry — and an MCP thread-builder is synchronous, so it
+# can't bridge obelisk's async poke+fact query. Reads are authenticated
+# HTTP endpoints on the lattice agent instead:
+#   GET /apps/lattice/catalog-list
+#   GET /apps/lattice/catalog-explore?category=&publisher=&source=
+#   GET /apps/lattice/catalog-fetch?url=
+#   GET /apps/lattice/catalog-by-tag?tag=
+# (see /docs/catalog.md "Read surface" and +catalog-*-urql in /lib/catalog).
+# Free-text substring search is client-side over catalog-list (obelisk has
+# no LIKE). The tools below are WRITES (pokes) + the pending/vocab reads,
+# which the classifier PR will implement; pokes work fine from a strand.
 TOOLS = [
-    # ── Reads ──────────────────────────────────────────────────────────────
-    dict(name="lattice-catalog-list",
-         desc="List catalog entries (keys + metadata, no bodies). Cheap "
-              "index call. Returns one row per (source, publisher, path).",
-         parameters={"limit":  {"type": "number",
-                                "description": "Max rows. Defaults to 50."},
-                     "offset": {"type": "number",
-                                "description": "Rows to skip. Defaults to 0."}},
-         required=[],
-         tb=STUB.format(payload=PAYLOAD_LIST)),
-    dict(name="lattice-catalog-search",
-         desc="Substring search across titles, headings, and link labels in "
-              "the catalog (case-insensitive). Returns matching URLs.",
-         parameters={"query": {"type": "string",
-                               "description": "Substring to search for."}},
-         required=["query"],
-         tb=STUB.format(payload=PAYLOAD_SEARCH)),
-    dict(name="lattice-catalog-explore",
-         desc="Filter catalog entries by category, tag, publisher, and/or "
-              "source ship. All filters AND-ed; omit any to drop that filter.",
-         parameters={"category":  {"type": "string",
-                                   "description": "Category name (normalized)."},
-                     "tag":       {"type": "string",
-                                   "description": "Tag (normalized lower-case)."},
-                     "publisher": {"type": "string",
-                                   "description": "Publisher @p with leading '~'."},
-                     "source":    {"type": "string",
-                                   "description": "Source @p (our or imported peer)."}},
-         required=[],
-         tb=STUB.format(payload=PAYLOAD_SEARCH)),
-    dict(name="lattice-catalog-fetch",
-         desc="Return the full catalog row for one URL: title, body, "
-              "headings, links, tags, category, and metadata. Avoids the "
-              "round-trip of re-walking remote scry to read the page.",
-         parameters={"url": {"type": "string",
-                             "description": "The urb:// URL of the entry."}},
-         required=["url"],
-         tb=STUB.format(payload=PAYLOAD_FETCH)),
     # ── Classifier pipeline ────────────────────────────────────────────────
     dict(name="lattice-catalog-pending",
          desc="Next N catalog entries awaiting classification, with title, "

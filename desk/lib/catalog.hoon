@@ -257,6 +257,96 @@
     |.((stab (crip target)))
   ?:(?=(%& -.parsed) `p.parsed ~)
 ::
+::  ════════════════════════════════════════════════════════════════════
+::  Read-side query compilers.
+::
+::  These build SELECT urQL for the catalog read HTTP endpoints. The
+::  lattice agent runs them through the same async obelisk bridge as
+::  /know-query (poke %obelisk-action, await the result %fact). Obelisk's
+::  urQL is FROM-first and — verified live against the installed obelisk —
+::  supports equality + comparison WHERE, AND-conjunction, and ORDER BY,
+::  but NOT LIKE, LIMIT, or COUNT. So:
+::    - filtering is equality-only (category / publisher / source);
+::    - free-text substring search is the CALLER's job, over the
+::      /catalog-list result (obelisk has no LIKE);
+::    - there's no row cap server-side (no LIMIT) — callers paginate.
+::
+::  @t values are single-quoted + +urq-esc'd (injection-safe). @p values
+::  (publisher, source) are emitted as BARE ship literals — obelisk's
+::  crud layer type-checks `publisher = ~zod`, and rejects a quoted
+::  `'~zod'`. Endpoints MUST pre-validate @p params via +slaw %p and pass
+::  the canonical (scot %p) form, so only well-formed ship literals reach
+::  the bare interpolation.
+::  ════════════════════════════════════════════════════════════════════
+::
+::  The column set every page-row query returns. Body/headings/links are
+::  NOT here — they're per-page detail fetched via +catalog-fetch-urql.
+++  catalog-list-cols
+  ^-  tape
+  "source, publisher, path, url, title, category, cat-source, word-count, fetched"
+::
+::  +catalog-list-urql: every catalog page, newest first. No LIMIT in
+::  obelisk's urQL; callers paginate client-side.
+++  catalog-list-urql
+  ^-  tape
+  ;:  weld
+    "FROM catalog-pages SELECT "  catalog-list-cols  " ORDER BY fetched DESC;"
+  ==
+::
+::  +catalog-explore-urql: filter pages by any combination of category /
+::  publisher / source, AND-ed. Each arg is a tape; "" drops that filter.
+::  `category` is a @t column (quoted + escaped); `publisher` and `source`
+::  are @p columns (bare ship literal — caller pre-validates via slaw %p).
+::  No filters → identical to +catalog-list-urql.
+++  catalog-explore-urql
+  |=  [category=tape publisher=tape source=tape]
+  ^-  tape
+  =/  fields=(list [col=tape typ=?(%t %p) val=tape])
+    :~  ["category" %t category]
+        ["publisher" %p publisher]
+        ["source" %p source]
+    ==
+  =/  clauses=(list tape)
+    %+  murn  fields
+    |=  [col=tape typ=?(%t %p) val=tape]
+    ^-  (unit tape)
+    ?:  =("" val)  ~
+    ?-  typ
+      %t  `:(weld col " = '" (urq-esc val) "'")
+      %p  `:(weld col " = " val)
+    ==
+  =/  where=tape
+    ?~  clauses  ""
+    (weld " WHERE " (catalog-join-and clauses))
+  ;:  weld
+    "FROM catalog-pages"  where  " SELECT "
+    catalog-list-cols  " ORDER BY fetched DESC;"
+  ==
+::
+::  +catalog-fetch-urql: the full row for one page, by its urb:// url.
+++  catalog-fetch-urql
+  |=  url=tape
+  ^-  tape
+  :(weld "FROM catalog-pages WHERE url = '" (urq-esc url) "' SELECT *;")
+::
+::  +catalog-by-tag-urql: the (source, publisher, path) of every page
+::  carrying `tag`. Queries the catalog-tags table; the caller resolves
+::  the keys to full rows via +catalog-fetch-urql (tag is in a separate
+::  table from pages, and obelisk's single-equality JOIN ON can't express
+::  the composite (source, publisher, path) key cleanly).
+++  catalog-by-tag-urql
+  |=  tag=tape
+  ^-  tape
+  :(weld "FROM catalog-tags WHERE tag = '" (urq-esc tag) "' SELECT source, publisher, path;")
+::
+::  +catalog-join-and: join WHERE conjuncts with " AND ". "" for empties.
+++  catalog-join-and
+  |=  clauses=(list tape)
+  ^-  tape
+  ?~  clauses  ""
+  ?~  t.clauses  i.clauses
+  :(weld i.clauses " AND " $(clauses t.clauses))
+::
 ::  +urq-esc: backslash-escape ' and \ for obelisk's string-literal syntax.
 ::  Inlined from /lib/lattice so this lib has no /+ *lattice dependency
 ::  (would otherwise drag in state-10 and all the agent's deps). Behavior

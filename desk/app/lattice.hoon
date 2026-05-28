@@ -152,6 +152,26 @@
   |=  [eid=@ta at=@da]
   ^-  card
   [%pass /oqt/[eid] %arvo %b %rest at]
+::  +kick-obelisk-query: start one async obelisk query — hold the HTTP
+::  request (by eyre-id in oquery), watch obelisk /server, poke the urQL,
+::  arm a timeout. The result %fact is answered in on-agent (generic JSON
+::  decode via +obelisk-result-json), so EVERY caller — /know-query and
+::  the catalog read endpoints — shares one code path and one in-flight
+::  slot. 429 if a query is already running; 400 on empty urQL.
+++  kick-obelisk-query
+  |=  [=bowl:gall eyre-id=@ta urql=tape st=state-11]
+  ^-  [(list card) state-11]
+  ?.  =(~ oquery.st)
+    [(respond-json-cards eyre-id 429 '{"error":"a query is already running"}') st]
+  ?:  =(~ urql)
+    [(respond-json-cards eyre-id 400 '{"error":"empty query"}') st]
+  =/  at=@da  (add now.bowl ~s30)
+  =.  oquery.st  `[eyre-id at]
+  :_  st
+  :~  (obelisk-watch-card bowl eyre-id)
+      (obelisk-qpoke-card bowl eyre-id urql)
+      (obelisk-qwait-card eyre-id at)
+  ==
 ::  +know-mutate: apply a know-action to the store AND emit its incremental
 ::  obelisk mirror poke. The mirror is fire-and-forget (empty urQL → no card),
 ::  so the knowledge store behaves identically whether or not %obelisk is
@@ -627,21 +647,38 @@
   ::  hold this request (by eyre-id), watch obelisk /server + poke the query, and
   ::  answer from on-agent when the result %fact arrives. Only one at a time.
   ?:  &(=(meth %'POST') =(action 'know-query'))
-    ::  use a (non-refining) equality test, not ?^ — ?^ would narrow oquery.st to
-    ::  ~ in this branch and block the assignment below.
-    ?.  =(~ oquery.st)
-      [(respond-json-cards eyre-id 429 '{"error":"a query is already running"}') st]
     =/  urql=tape
       ?~(body.request.inbound-request "" (trip q.u.body.request.inbound-request))
-    ?:  =(~ urql)
-      [(respond-json-cards eyre-id 400 '{"error":"empty query"}') st]
-    =/  at=@da  (add now.bowl ~s30)
-    =.  oquery.st  `[eyre-id at]
-    :_  st
-    :~  (obelisk-watch-card bowl eyre-id)
-        (obelisk-qpoke-card bowl eyre-id urql)
-        (obelisk-qwait-card eyre-id at)
-    ==
+    (kick-obelisk-query bowl eyre-id urql st)
+  ::  ── catalog reads (owner-only, via the same async obelisk bridge) ──
+  ::  All compile to urQL in /lib/catalog and run through +kick-obelisk-query,
+  ::  so the result JSON shape matches /know-query (ok, columns, rows).
+  ::  GET /apps/lattice/catalog-list — every catalog page, newest first.
+  ?:  &(=(meth %'GET') =(action 'catalog-list'))
+    (kick-obelisk-query bowl eyre-id catalog-list-urql st)
+  ::  GET /apps/lattice/catalog-explore?category=&publisher=&source=
+  ::  Equality filters, AND-ed; any omitted. publisher/source are @p — we
+  ::  +slaw-validate them and pass the canonical scot form so only a
+  ::  well-formed ship literal reaches the (bare, unquoted) interpolation.
+  ?:  &(=(meth %'GET') =(action 'catalog-explore'))
+    =/  cat=tape  ?~(c=(query-param inbound-request 'category') "" (trip u.c))
+    =/  pub=tape
+      ?~  p=(query-param inbound-request 'publisher')  ""
+      ?~(s=(slaw %p u.p) "" (trip (scot %p u.s)))
+    =/  src=tape
+      ?~  s=(query-param inbound-request 'source')  ""
+      ?~(sp=(slaw %p u.s) "" (trip (scot %p u.sp)))
+    (kick-obelisk-query bowl eyre-id (catalog-explore-urql cat pub src) st)
+  ::  GET /apps/lattice/catalog-fetch?url=urb://~ship/path — one full row.
+  ?:  &(=(meth %'GET') =(action 'catalog-fetch'))
+    ?~  url=(query-param inbound-request 'url')
+      [(respond-json-cards eyre-id 400 '{"error":"missing url param"}') st]
+    (kick-obelisk-query bowl eyre-id (catalog-fetch-urql (trip u.url)) st)
+  ::  GET /apps/lattice/catalog-by-tag?tag=<tag> — page keys carrying tag.
+  ?:  &(=(meth %'GET') =(action 'catalog-by-tag'))
+    ?~  tag=(query-param inbound-request 'tag')
+      [(respond-json-cards eyre-id 400 '{"error":"missing tag param"}') st]
+    (kick-obelisk-query bowl eyre-id (catalog-by-tag-urql (trip u.tag)) st)
   ::  POST /apps/lattice/know-publish?key=<key>[&path=<rel>] — copy a private
   ::  item into the PUBLISHED gemtext (grows it; default publish path = the key).
   ?:  &(=(meth %'POST') =(action 'know-publish'))

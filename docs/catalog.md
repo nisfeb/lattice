@@ -189,46 +189,62 @@ confidence.
 | attempts | @ud  | Times the classifier has tried (and either failed or come back below confidence). |
 | reason   | @t   | `new` / `changed` / `requested` / `low-confidence`. |
 
-## MCP tool surface (`/scripts/setup-catalog-mcp-tools.py`)
+## Read surface — HTTP endpoints (not MCP)
 
-Ten tools, namespaced as `lattice-catalog-*`. Registered separately from
-the knowledge-store tools (`setup-knowledge-mcp-tools.py`) so the install
-order is explicit:
+**Architecture correction.** The catalog read tools were originally specced
+as MCP `lattice-catalog-*` tools, mirroring the knowledge read tools. That
+turned out to be infeasible: the knowledge read tools work because the
+knowledge store lives in **lattice's own agent state**, which an MCP
+thread-builder can read synchronously via scry (`.^` on lattice's
+on-peek). The catalog lives in **obelisk**, and **obelisk has no scry** —
+it is queried only asynchronously (poke a urQL script, await a result
+`%fact`). An MCP thread-builder is synchronous, so it can't bridge that
+without lattice first mirroring the whole catalog back into scryable agent
+state (which would defeat the point of using obelisk).
 
-```
-|nuke %mcp-server  →  |revive %mcp-server
-  →  python3 scripts/setup-knowledge-mcp-tools.py
-  →  python3 scripts/setup-catalog-mcp-tools.py
-```
+So catalog reads are **authenticated HTTP endpoints on the lattice agent**,
+served from `handle-http` (owner-only; the same 403-gated path as every
+`/know-*` endpoint). They compile their params to urQL in `/lib/catalog`
+and run through `+kick-obelisk-query` — the same one-at-a-time async
+obelisk bridge `/know-query` uses — so the response JSON shape matches
+`/know-query`: `{ok, action, relation, count, columns, rows}`. The Kotlin
+Discover search box (and any agent) calls these over the authenticated
+session.
 
-### Reads
+| Endpoint | Params | urQL compiler | Notes |
+|----------|--------|---------------|-------|
+| `GET /apps/lattice/catalog-list` | — | `+catalog-list-urql` | Every page, `ORDER BY fetched DESC`. No server-side LIMIT (obelisk has none) — callers paginate. |
+| `GET /apps/lattice/catalog-explore` | `category?` `publisher?` `source?` | `+catalog-explore-urql` | Equality filters, AND-ed; any omitted. `publisher`/`source` are `@p` (slaw-validated, bare literal); `category` is `@t` (quoted + escaped). |
+| `GET /apps/lattice/catalog-fetch` | `url` | `+catalog-fetch-urql` | The one full page row (`SELECT *`). |
+| `GET /apps/lattice/catalog-by-tag` | `tag` | `+catalog-by-tag-urql` | `(source, publisher, path)` keys carrying the tag; resolve to rows via `catalog-fetch`. |
 
-| Tool | Args | Returns |
-|------|------|---------|
-| `lattice-catalog-list`    | `limit?`, `offset?` | `{count, pages: [...]}`. Cheap index call. |
-| `lattice-catalog-search`  | `query` | `{count, matches: [...]}`. Substring across title/headings/labels. |
-| `lattice-catalog-explore` | `category?`, `tag?`, `publisher?`, `source?` | `{count, matches: [...]}`. AND-ed filter. |
-| `lattice-catalog-fetch`   | `url` | `{url, title, body, headings, links, tags, category, …}` — full row. |
+**Free-text substring search is client-side.** Obelisk's urQL has no
+`LIKE`/substring predicate (verified live — only equality and comparison
+in `WHERE`). The Discover box fetches `/catalog-list` and filters titles
+locally. A per-publisher narrowing via `/catalog-explore?publisher=` keeps
+the candidate set small. Server-side full-text would need an obelisk
+feature that doesn't exist (or an in-agent post-filter on the query
+result — a deferred refinement).
 
-### Classifier pipeline
+### Still MCP (writes — pokes, which DO work without scry)
+
+The classifier-pipeline and maintenance tools remain MCP tools, because
+they are **writes** (pokes), which an MCP thread-builder can issue
+directly. These are still stubs in `setup-catalog-mcp-tools.py` pending
+the classifier PR:
 
 | Tool | Args | Returns |
 |------|------|---------|
 | `lattice-catalog-pending`    | `limit?` (default 10) | `{count, pages: [...], vocab: {categories, tags}}` |
 | `lattice-catalog-classify`   | `url`, `category`, `tags`, `confidence`, `reasoning?` | `{ok}` |
-| `lattice-catalog-vocab`      | — | `{categories, tags}`. Read-only; doesn't pop from queue. |
-| `lattice-catalog-reclassify` | `url`, `reason?` | `{ok}`. Re-queues one page. |
+| `lattice-catalog-vocab`      | — | `{categories, tags}` |
+| `lattice-catalog-reclassify` | `url`, `reason?` | `{ok}` |
+| `lattice-catalog-delete`     | `url` | `{ok}`. Soft-delete. |
+| `lattice-catalog-restore`    | `url` | `{ok}`. Undo. |
 
-### Maintenance
-
-| Tool | Args | Returns |
-|------|------|---------|
-| `lattice-catalog-delete`  | `url` | `{ok}`. Soft-delete. |
-| `lattice-catalog-restore` | `url` | `{ok}`. Undo. |
-
-**Stub semantics for this PR**: each tool's thread-builder returns canned
-JSON with `stub: true`. MCP clients can exercise the parameter shapes and
-response shapes today; the live implementations land with the crawler.
+(`pending`/`vocab` are reads, so they'll face the same scry constraint —
+they likely become HTTP endpoints too, or read from an in-agent queue
+cache. Resolved in the classifier PR.)
 
 ## Phased delivery
 

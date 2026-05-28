@@ -424,4 +424,82 @@
     '# Header\0a\0aSome prose here.\0a* a bullet\0a=> /real  real\0a> a quote\0a'
   =/  want=(list path)  ~[/real]
   (expect-eq !>(want) !>((parse-manifest body)))
+::
+::  ════════════════════════════════════════════════════════════════════
+::  Read-side query compilers.
+::
+::  These assert the urQL shape the read endpoints feed obelisk. The
+::  feature constraints (no LIKE, no LIMIT; equality + ORDER BY only)
+::  are baked into the generators, so these tests double as a record of
+::  what the installed obelisk accepts (verified live on ~tyr).
+::  ════════════════════════════════════════════════════════════════════
+::
+::  +catalog-list-urql: FROM-first, all list columns, newest-first order,
+::  no LIMIT clause (obelisk has none).
+++  test-list-urql-shape
+  =/  s=tape  catalog-list-urql
+  ;:  weld
+    (expect-eq !>(&) !>(=("FROM catalog-pages SELECT " (scag 26 s))))
+    (expect-eq !>(&) !>(!=(~ (find "ORDER BY fetched DESC;" s))))
+    (expect-eq !>(&) !>(!=(~ (find "source, publisher, path, url, title, category, cat-source, word-count, fetched" s))))
+    ::  obelisk has no LIMIT — must NOT emit one
+    (expect-eq !>(~) !>((find "LIMIT" s)))
+  ==
+::
+::  +catalog-explore-urql with NO filters == a plain list (no WHERE).
+++  test-explore-urql-no-filters
+  =/  s=tape  (catalog-explore-urql "" "" "")
+  ;:  weld
+    (expect-eq !>(~) !>((find "WHERE" s)))
+    (expect-eq !>(&) !>(!=(~ (find "FROM catalog-pages SELECT " s))))
+    (expect-eq !>(&) !>(!=(~ (find "ORDER BY fetched DESC;" s))))
+  ==
+::
+::  category is a @t column → quoted + escaped value.
+++  test-explore-urql-category
+  =/  s=tape  (catalog-explore-urql "essay" "" "")
+  (expect-eq !>(&) !>(!=(~ (find "WHERE category = 'essay' SELECT" s))))
+::
+::  publisher is a @p column → BARE ship literal, never quoted.
+++  test-explore-urql-publisher-bare
+  =/  s=tape  (catalog-explore-urql "" "~zod" "")
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "WHERE publisher = ~zod SELECT" s))))
+    (expect-eq !>(~) !>((find "publisher = '~zod'" s)))
+  ==
+::
+::  All three filters → AND-joined in declared order, @t quoted, @p bare.
+++  test-explore-urql-all-three
+  =/  s=tape  (catalog-explore-urql "essay" "~zod" "~tyr")
+  (expect-eq !>(&) !>(!=(~ (find "WHERE category = 'essay' AND publisher = ~zod AND source = ~tyr SELECT" s))))
+::
+::  A quote in the category value is backslash-escaped (no urQL breakout).
+++  test-explore-urql-escapes-quote
+  =/  s=tape  (catalog-explore-urql "it's" "" "")
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "category = 'it\\'s'" s))))
+    (expect-eq !>(~) !>((find "category = 'it's'" s)))
+  ==
+::
+::  +catalog-fetch-urql: one page by url, SELECT *, url quoted + escaped.
+++  test-fetch-urql-shape
+  =/  s=tape  (catalog-fetch-urql "urb://~zod/notes/x")
+  (expect-eq !>(&) !>(!=(~ (find "FROM catalog-pages WHERE url = 'urb://~zod/notes/x' SELECT *;" s))))
+::
+++  test-fetch-urql-escapes-quote
+  =/  s=tape  (catalog-fetch-urql "urb://~zod/it's")
+  (expect-eq !>(&) !>(!=(~ (find "url = 'urb://~zod/it\\'s'" s))))
+::
+::  +catalog-by-tag-urql: the key columns from catalog-tags, tag escaped.
+++  test-by-tag-urql-shape
+  =/  s=tape  (catalog-by-tag-urql "urbit")
+  (expect-eq !>(&) !>(!=(~ (find "FROM catalog-tags WHERE tag = 'urbit' SELECT source, publisher, path;" s))))
+::
+::  +catalog-join-and: 0 / 1 / many conjuncts.
+++  test-join-and
+  ;:  weld
+    (expect-eq !>("") !>((catalog-join-and ~)))
+    (expect-eq !>("a = 1") !>((catalog-join-and ~["a = 1"])))
+    (expect-eq !>("a = 1 AND b = 2 AND c = 3") !>((catalog-join-and ~["a = 1" "b = 2" "c = 3"])))
+  ==
 --
