@@ -208,6 +208,24 @@
     (expect-eq !>(*(map @ta catalog-walk)) !>(catalog-walks.s11))
   ==
 ::
+::  +migrate-11-12: head becomes %12, all state-11 data carried forward
+::  (incl. catalog-walks), sweep-queue starts empty.
+++  test-migrate-11-12
+  =/  e=know-entry  ['body' ~2026.1.1 (sy ~['x']) ~]
+  =/  cw=catalog-walk  [%manifest ~zod /manifest 1 'gmi' 'body' ~2026.6.1]
+  =/  s11=state-11  *state-11
+  =.  know.s11   (malt ~[[`path`/a/b e]])
+  =.  home.s11   `@uvH`77
+  =.  catalog-walks.s11  (malt ~[[`@ta`'w1' cw]])
+  =/  s12=state-12  (migrate-11-12 s11)
+  ;:  weld
+    (expect-eq !>(%12) !>(-.s12))
+    (expect-eq !>(e) !>((~(got by know.s12) /a/b)))
+    (expect-eq !>(`@uvH`77) !>(home.s12))
+    (expect-eq !>(cw) !>((~(got by catalog-walks.s12) 'w1')))
+    (expect-eq !>(*(list @p)) !>(sweep-queue.s12))
+  ==
+::
 ::  ── explore / discovery (synchronous filter over the live store) ──
 ++  test-split-on
   ;:  weld

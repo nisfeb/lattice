@@ -263,6 +263,20 @@
     |.((stab (crip target)))
   ?:(?=(%& -.parsed) `p.parsed ~)
 ::
+::  +sweep-publishers: the set of publisher ships to crawl in a periodic
+::  sweep, derived from the per-file follow map `subs` (keyed by [ship spur]).
+::  Unique ships, with our own ship dropped (can't crawl yourself). Order is
+::  unspecified (set tap); the sweep queue processes them sequentially. Typed
+::  with stdlib shapes only (@p, path) so this lib stays free of /+ *lattice.
+++  sweep-publishers
+  |=  [subs=(map [=ship spur=path] last=@ud) our=@p]
+  ^-  (list @p)
+  =/  ships=(set @p)
+    %-  ~(gas in *(set @p))
+    %+  turn  ~(tap in ~(key by subs))
+    |=([s=ship *] s)
+  ~(tap in (~(del in ships) our))
+::
 ::  +dedupe-paths: drop duplicate paths, preserving first-occurrence order.
 ::  (A set would lose order; the catalog doesn't strictly need order, but
 ::  stable output keeps tests and the crawl deterministic.)

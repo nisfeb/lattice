@@ -520,4 +520,25 @@
     (expect-eq !>("a = 1") !>((catalog-join-and ~["a = 1"])))
     (expect-eq !>("a = 1 AND b = 2 AND c = 3") !>((catalog-join-and ~["a = 1" "b = 2" "c = 3"])))
   ==
+::
+::  +sweep-publishers: unique follow ships, minus self.
+++  test-sweep-publishers
+  =/  empty=(map [=ship spur=path] @ud)  ~
+  =/  subs=(map [=ship spur=path] @ud)
+    %-  malt
+    ^-  (list [[=ship spur=path] @ud])
+    :~  [[~zod /notes/a] 0]
+        [[~zod /notes/b] 0]
+        [[~bus /blog] 0]
+        [[~nec /x] 0]
+    ==
+  =/  got=(list @p)  (sweep-publishers subs ~nec)
+  ;:  weld
+    (expect-eq !>(`(list @p)`~) !>((sweep-publishers empty ~nec)))
+    ::  ~zod appears once despite two spurs; ~nec (self) dropped; ~bus kept
+    (expect-eq !>(`@ud`2) !>((lent got)))
+    (expect-eq !>(&) !>((lien got |=(p=@p =(p ~zod)))))
+    (expect-eq !>(&) !>((lien got |=(p=@p =(p ~bus)))))
+    (expect-eq !>(|) !>((lien got |=(p=@p =(p ~nec)))))
+  ==
 --

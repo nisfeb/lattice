@@ -4,7 +4,7 @@
 /+  default-agent, dbug, verb, *lattice, *catalog, *catalog-analyzer
 ::
 |%
-+$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7 state-8 state-9 state-10 state-11)
++$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7 state-8 state-9 state-10 state-11 state-12)
 +$  card  card:agent:gall
 ::
 ::  -- helper gates --
@@ -159,8 +159,8 @@
 ::  the catalog read endpoints — shares one code path and one in-flight
 ::  slot. 429 if a query is already running; 400 on empty urQL.
 ++  kick-obelisk-query
-  |=  [=bowl:gall eyre-id=@ta urql=tape st=state-11]
-  ^-  [(list card) state-11]
+  |=  [=bowl:gall eyre-id=@ta urql=tape st=state-12]
+  ^-  [(list card) state-12]
   ?.  =(~ oquery.st)
     [(respond-json-cards eyre-id 429 '{"error":"a query is already running"}') st]
   ?:  =(~ urql)
@@ -177,9 +177,9 @@
 ::  so the knowledge store behaves identically whether or not %obelisk is
 ::  installed. Shared by the HTTP CRUD endpoints and the %lattice-know poke.
 ++  know-mutate
-  |=  [=bowl:gall act=know-action st=state-11]
-  ^-  (quip card state-11)
-  =/  new=state-11  (do-know now.bowl act st)
+  |=  [=bowl:gall act=know-action st=state-12]
+  ^-  (quip card state-12)
+  =/  new=state-12  (do-know now.bowl act st)
   =/  urql=tape  (mirror-urql act new)
   :_  new
   ?~(urql ~ [(obelisk-poke bowl urql)]~)
@@ -532,8 +532,8 @@
   [[%pass /clay-clear %arvo %c %info q.byk.bowl [%& dels]] cards]
 ::
 ++  handle-http
-  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-11]
-  ^-  [(list card) state-11]
+  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-12]
+  ^-  [(list card) state-12]
   ::  SECURITY: Eyre forwards ALL matching HTTP requests to us, authenticated or
   ::  not, and leaves enforcement to the agent. This is the owner's control plane
   ::  (mutates state, drives keens); public reads happen via remote scry, not here.
@@ -828,7 +828,7 @@
 ::
 %-  agent:dbug
 %+  verb  |
-=|  state-11
+=|  state-12
 =*  state  -
 ^-  agent:gall
 |_  =bowl:gall
@@ -860,23 +860,27 @@
   ::  this lets a fresh %obelisk install (post-lattice) pick up the schema on
   ::  the next agent reload without a manual /know-reindex.
   =/  catalog-card=card  (obelisk-poke bowl catalog-create-urql)
-  ?:  ?=(%11 -.old)
+  ?:  ?=(%12 -.old)
     :_  this(state old)
     ~[catalog-card]
-  ::  %10 → %11: add the (empty) in-flight catalog-walks map.
+  ::  %11 → %12: add the (empty) sequential sweep queue.
+  ?:  ?=(%11 -.old)
+    :_  this(state (migrate-11-12 old))
+    ~[catalog-card]
+  ::  %10 → %12: add the (empty) in-flight catalog-walks map, then 11→12.
   ?:  ?=(%10 -.old)
-    :_  this(state (migrate-10-11 old))
+    :_  this(state (migrate-11-12 (migrate-10-11 old)))
     ~[catalog-card]
-  ::  %9 → %11: chain through 9→10 then 10→11.
+  ::  %9 → %12: chain 9→10 → 10→11 → 11→12.
   ?:  ?=(%9 -.old)
-    :_  this(state (migrate-10-11 (migrate-9-10 old)))
+    :_  this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 old))))
     ~[catalog-card]
-  ::  %8 → %11: chain through 8→9 → 9→10 → 10→11.
+  ::  %8 → %12: chain 8→9 → 9→10 → 10→11 → 11→12.
   ?:  ?=(%8 -.old)
-    :_  this(state (migrate-10-11 (migrate-9-10 (migrate-8-9 old))))
+    :_  this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 (migrate-8-9 old)))))
     ~[catalog-card]
-  ::  %7 → %11: give every knowledge entry empty tags + reserved vector,
-  ::  then chain 9→10 → 10→11.
+  ::  %7 → %12: give every knowledge entry empty tags + reserved vector,
+  ::  then chain up.
   ?:  ?=(%7 -.old)
     =/  up=$-(know-entry-7 know-entry)  |=(e=know-entry-7 [body.e updated.e ~ ~])
     =/  s9=state-9
@@ -884,20 +888,20 @@
           manifest.old  home.old  browse.old
           (~(run by know.old) up)  (~(run by trash.old) up)  ~
       ==
-    :_  this(state (migrate-10-11 (migrate-9-10 s9)))
+    :_  this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 s9))))
     ~[catalog-card]
-  ::  %6 → %11: add the empty private knowledge store, then chain.
+  ::  %6 → %12: add the empty private knowledge store, then chain up.
   ?:  ?=(%6 -.old)
     =/  s9=state-9
       :*  %9  content.old  published.old  pending.old  subs.old  fetches.old
           manifest.old  home.old  browse.old  ~  ~  ~
       ==
-    :_  this(state (migrate-10-11 (migrate-9-10 s9)))
+    :_  this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 s9))))
     ~[catalog-card]
   ::  Versions 0-5 stored published content in Clay /pub. Pull it into state,
   ::  then delete /pub from the desk + drop the clay watch, so the desk stops
   ::  carrying the content (and installs stop shipping the publisher's pages).
-  ::  Finally, migrate the resulting state-9 to state-10.
+  ::  Finally, migrate the resulting state-9 up to state-12.
   =/  content=(map path @t)  (migrate-content bowl)
   =/  files=(set path)       ~(key by content)
   =/  cards=(list card)      (clear-pub-cards bowl files)
@@ -910,7 +914,7 @@
       %1  [%9 content published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
       %0  [%9 content published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
     ==
-  [(snoc cards catalog-card) this(state (migrate-10-11 (migrate-9-10 new)))]
+  [(snoc cards catalog-card) this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 new))))]
 ::
 ++  on-poke
   |=  =cage
