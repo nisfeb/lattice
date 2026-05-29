@@ -74,6 +74,12 @@ fun CatalogSearchScreen(
     val categories = remember(pages) {
         pages.mapNotNull { it.category.ifBlank { null } }.distinct().sorted()
     }
+    // If a reload drops the selected category (its last page was deleted, or the
+    // classifier re-labeled it), clear the now-orphaned filter — otherwise it
+    // silently matches nothing with no chip left to tap off.
+    LaunchedEffect(categories) {
+        if (category != null && category !in categories) category = null
+    }
     val results = remember(pages, query, category) {
         val q = query.trim().lowercase()
         pages.filter { p ->

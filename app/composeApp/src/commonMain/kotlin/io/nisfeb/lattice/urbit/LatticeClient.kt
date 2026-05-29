@@ -180,7 +180,14 @@ class LatticeClient(private val session: UrbitSession) {
     private suspend fun obeliskResult(url: HttpUrl): JsonObject {
         var attempt = 0
         while (true) {
-            val o = session.http.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
+            // Use fetchClient (35s read / 40s call), NOT session.http: a catalog
+            // read goes through the agent's async obelisk bridge, which HOLDS the
+            // HTTP response open (sending nothing) until obelisk answers or its
+            // ~s30 deadline fires. session.http's default 10s read timeout would
+            // abort first — and a SocketTimeoutException is not a 429, so the
+            // retry loop below wouldn't catch it; the load would spuriously fail
+            // on a large/slow catalog. The extended timeouts outlast the agent.
+            val o = fetchClient.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
                 if (resp.code == 429) return@use null
                 val obj = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
                 obj["error"]?.let { error(it.jsonPrimitive.content) }
