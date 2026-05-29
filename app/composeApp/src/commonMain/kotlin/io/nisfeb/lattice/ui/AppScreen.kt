@@ -6,6 +6,7 @@ sealed interface AppScreen {
     data object Workspace : AppScreen
     data object Settings : AppScreen
     data object Discover : AppScreen
+    data object Search : AppScreen
     data object Updates : AppScreen
     data object Bookmarks : AppScreen
     data object Import : AppScreen

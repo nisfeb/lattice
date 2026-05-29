@@ -43,6 +43,7 @@ import io.nisfeb.lattice.knowledge.obeliskInstalledFromProbe
 import io.nisfeb.lattice.ui.BookmarksScreen
 import io.nisfeb.lattice.ui.BrowserScreen
 import io.nisfeb.lattice.ui.BrowserTab
+import io.nisfeb.lattice.ui.CatalogSearchScreen
 import io.nisfeb.lattice.ui.DiscoverScreen
 import io.nisfeb.lattice.ui.LatticeTheme
 import io.nisfeb.lattice.ui.SettingsScreen
@@ -344,6 +345,7 @@ fun App(
                                 onOpenFiles = { screen = AppScreen.Workspace },
                                 onEditPage = { editTarget = it; screen = AppScreen.Workspace },
                                 onOpenDiscover = { screen = AppScreen.Discover },
+                                onOpenSearch = { screen = AppScreen.Search },
                                 openUrl = browseTarget,
                                 onConsumedOpenUrl = { browseTarget = null },
                                 subscriptions = subscriptions,
@@ -386,6 +388,11 @@ fun App(
                                 follows = follows,
                                 onFollow = { ship2 -> setFollows((follows + ship2).distinct().sorted()) },
                                 onUnfollow = { ship2 -> setFollows(follows - ship2) },
+                                onOpenUrl = { url -> browseTarget = url; screen = AppScreen.Browse },
+                                onClose = { screen = AppScreen.Browse },
+                            )
+                            AppScreen.Search -> CatalogSearchScreen(
+                                client = client,
                                 onOpenUrl = { url -> browseTarget = url; screen = AppScreen.Browse },
                                 onClose = { screen = AppScreen.Browse },
                             )

@@ -117,7 +117,7 @@
 ::  +do-know: save → live; del → SOFT (moves to recoverable trash, not gone);
 ::  restore → back to live. This is the delete gate.
 ++  test-do-know
-  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-9)
+  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-10)
   =/  st2  (do-know ~2026.1.1 [%del '/a/b'] st1)
   =/  st3  (do-know ~2026.1.1 [%restore '/a/b'] st2)
   ;:  weld
@@ -133,7 +133,7 @@
 ::  and they survive a del→restore round-trip.
 ++  test-do-know-tags
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/k' 'b'] *state-9)
+  =/  st1  (do-know now [%save '/k' 'b'] *state-10)
   =/  st2  (do-know now [%tag '/k' 'Urbit'] st1)
   =/  st3  (do-know now [%tag '/k' 'design'] st2)
   =/  st4  (do-know now [%save '/k' 'b2'] st3)
@@ -176,6 +176,50 @@
     (expect-eq !>(*(unit [eid=@ta deadline=@da])) !>(oquery.s9))
   ==
 ::
+::  +migrate-9-10: the SINGLE catalog migration (a released ship is at
+::  state-9; states 10-13 were collapsed before release). head becomes %10,
+::  EVERY state-9 field is carried forward verbatim, and the four catalog
+::  slots (catalog-sweep, catalog-walks, sweep-queue, catalog-pubpaths) start
+::  empty. Data-loss guard: we populate every state-9 field and assert each
+::  survives unchanged — a dropped/reordered field in migrate-9-10 (or a
+::  mismatched state-10 def) fails here.
+++  test-migrate-9-10
+  =/  e=know-entry  ['body' ~2026.1.1 (sy ~['x']) ~]
+  =/  w=walk  [~zod /a/b 3 'gmi' 'bd' ~2026.6.1]
+  =/  s9=state-9  *state-9
+  =.  content.s9    (malt ~[[`path`/page 'gemtext']])
+  =.  published.s9  (malt ~[[`path`/page `@uvH`5]])
+  =.  pending.s9    (malt ~[[`@ta`'e1' [~zod /x]]])
+  =.  subs.s9       (malt ~[[[`ship`~bus `path`/feed] `@ud`7]])
+  =.  fetches.s9    (malt ~[[`@ta`'f1' w]])
+  =.  manifest.s9   `@uvH`11
+  =.  home.s9       `@uvH`42
+  =.  browse.s9     `[~zod /p 2]
+  =.  know.s9       (malt ~[[`path`/a/b e]])
+  =.  trash.s9      (malt ~[[`path`/t e]])
+  =.  oquery.s9     `['q1' ~2026.6.1]
+  =/  s10=state-10  (migrate-9-10 s9)
+  ;:  weld
+    (expect-eq !>(%10) !>(-.s10))
+    ::  every state-9 field carried forward verbatim (no data loss)
+    (expect-eq !>(content.s9) !>(content.s10))
+    (expect-eq !>(published.s9) !>(published.s10))
+    (expect-eq !>(pending.s9) !>(pending.s10))
+    (expect-eq !>(subs.s9) !>(subs.s10))
+    (expect-eq !>(fetches.s9) !>(fetches.s10))
+    (expect-eq !>(manifest.s9) !>(manifest.s10))
+    (expect-eq !>(home.s9) !>(home.s10))
+    (expect-eq !>(browse.s9) !>(browse.s10))
+    (expect-eq !>(know.s9) !>(know.s10))
+    (expect-eq !>(trash.s9) !>(trash.s10))
+    (expect-eq !>(oquery.s9) !>(oquery.s10))
+    ::  the four catalog slots start empty
+    (expect-eq !>(*(unit @da)) !>(catalog-sweep.s10))
+    (expect-eq !>(*(map @ta catalog-walk)) !>(catalog-walks.s10))
+    (expect-eq !>(*(list @p)) !>(sweep-queue.s10))
+    (expect-eq !>(*(map @p (set path))) !>(catalog-pubpaths.s10))
+  ==
+::
 ::  ── explore / discovery (synchronous filter over the live store) ──
 ++  test-split-on
   ;:  weld
@@ -195,7 +239,7 @@
 ::  +know-explore: AND/OR tag filter + case-insensitive text search over key/body.
 ++  test-know-explore
   =/  now  ~2026.1.1
-  =/  s0   *state-9
+  =/  s0   *state-10
   =/  s1   (do-know now [%save '/notes/urbit-design' 'a note about Hoon'] s0)
   =/  s2   (do-know now [%tag '/notes/urbit-design' 'urbit'] s1)
   =/  s3   (do-know now [%tag '/notes/urbit-design' 'design'] s2)
@@ -245,11 +289,11 @@
 ::  quote can't break or inject the mirror query. (' = 39, \ = 92)
 ++  test-urq-esc
   ;:  weld
-    ::  "it's" -> "it\'s" = chars i t \ ' s
-    (expect-eq !>(`tape`~[105 116 92 39 115]) !>((urq-esc "it's")))
+    ::  "it's" -> i t \ ' s  (a backslash before the quote)
+    (expect-eq !>(`tape`['i' 't' '\\' '\'' 's' ~]) !>((urq-esc "it's")))
     (expect-eq !>("plain") !>((urq-esc "plain")))
     ::  a lone backslash -> two backslashes
-    (expect-eq !>(`tape`~[92 92]) !>((urq-esc ~[92])))
+    (expect-eq !>(`tape`['\\' '\\' ~]) !>((urq-esc `tape`['\\' ~])))
   ==
 ::  a tag containing an apostrophe is backslash-escaped (\') in the mirror INSERT.
 ++  test-obelisk-row-urql-escapes-quote
@@ -258,7 +302,7 @@
   (expect-eq !>(&) !>(!=(~ (find ~[92 39] s))))
 ::
 ++  test-obelisk-populate-urql
-  =/  st  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-9)
+  =/  st  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-10)
   =/  s=tape  (obelisk-populate-urql know.st)
   ;:  weld
     ::  clears both tables before re-inserting (full rebuild)
@@ -271,14 +315,14 @@
 ::  one tag row; bad/no-op key = empty.
 ++  test-mirror-urql
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-9)
+  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-10)
   =/  st2  (do-know now [%tag '/a/b' 'urbit'] st1)
   =/  m-save   (mirror-urql [%save '/a/b' 'hi'] st1)
   =/  st-del   (do-know now [%del '/a/b'] st2)
   =/  m-del    (mirror-urql [%del '/a/b'] st-del)
   =/  m-tag    (mirror-urql [%tag '/a/b' 'Urbit'] st2)
   =/  m-untag  (mirror-urql [%untag '/a/b' 'urbit'] st2)
-  =/  m-noop   (mirror-urql [%save 'bad key' 'x'] *state-9)
+  =/  m-noop   (mirror-urql [%save 'bad key' 'x'] *state-10)
   ;:  weld
     ::  save = delete the stale row, then insert the current one
     (expect-eq !>(&) !>(!=(~ (find "DELETE FROM knowledge WHERE item = '/a/b';" m-save))))
@@ -390,10 +434,13 @@
 ::  +fz-toks: parser-significant tokens (paths, schemes, gemtext, punctuation).
 ++  fz-toks
   ^-  (list @t)
-  :~  '' ' ' '/' '//' '../' './' 'a/b' '~zod' '~ricsul-bilwyt' 'a b'
-      'urb://' 'urb://~zod/a' 'urb://~zod' 'https://x' 'mailto:a@b'
-      'javascript:alert(1)' 'data:text/html,x' '=> /x  go' '# h' '```'
-      '<b>' '&' '"' '\\' ':' '%' '..' '/apps/lattice/save?path=x'
+  ::  +zing of single-line ~[..] groups: a tall :~ needs 2-space gaps, but
+  ::  ~[..] is wide form so single-space separators are fine.
+  %-  zing
+  :~  ~['' ' ' '/' '//' '../' './' 'a/b' '~zod' '~ricsul-bilwyt' 'a b']
+      ~['urb://' 'urb://~zod/a' 'urb://~zod' 'https://x' 'mailto:a@b']
+      ~['javascript:alert(1)' 'data:text/html,x' '=> /x  go' '# h' '```']
+      ~['<b>' '&' '"' '\\' ':' '%' '..' '/apps/lattice/save?path=x']
   ==
 ::  +fz-cord: a pseudo-random cord — a biased token, or random bytes.
 ++  fz-cord
@@ -421,40 +468,47 @@
 ::
 ::  obelisk-result-json must return a JSON OBJECT for ANY noun — the +mule
 ::  fallback makes it total. 1k random nouns; a crash or non-object fails.
+::  fz takes 3 args; call it WIDE (fz n seed check) with the check gate
+::  bound separately. Tall %^/%+ with an inline |= mis-parses here, and a
+::  dotted hex seed (0xdec0.de5) only parses tall — so: undotted seed, wide
+::  call, gate via =/ (no type spec — that also trips the parser).
 ++  test-fuzz-decoder
-  %+  fz  1.000  0xdec0.de5
-  |=  s=@
-  ^-  ?
-  =/  r  (mule |.(?=([%o *] (obelisk-result-json (fz-noun s 6)))))
-  ?:(?=(%& -.r) p.r |)
+  =/  check
+    |=  s=@
+    ^-  ?
+    =/  r  (mule |.(?=([%o *] (obelisk-result-json (fz-noun s 6)))))
+    ?:(?=(%& -.r) p.r |)
+  (fz 1.000 0xdead.beef check)
 ::
 ::  the parsers that read remote/fetched content must never crash on arbitrary
 ::  input (they wrap their crashy bits in +mule / +rush).
 ++  test-fuzz-parsers
-  %+  fz  1.000  0xc0ffee
-  |=  s=@
-  ^-  ?
-  =/  c=@t  (fz-cord s)
-  =/  r
-    %-  mule
-    |.
-    =+  (parse-urb-url c)
-    =+  (know-key c)
-    =+  (resolve-href "urb://~zod/a/b" (trip c))
-    =+  (render-gmi-html "urb://~zod/" c)
-    =+  (req-action (mock-req c))
-    =+  (query-param (mock-req c) 'path')
-    &
-  ?=(%& -.r)
+  =/  check
+    |=  s=@
+    ^-  ?
+    =/  c=@t  (fz-cord s)
+    =/  r
+      %-  mule
+      |.
+      =+  (parse-urb-url c)
+      =+  (know-key c)
+      =+  (resolve-href "urb://~zod/a/b" (trip c))
+      =+  (render-gmi-html "urb://~zod/" c)
+      =+  (req-action (mock-req c))
+      =+  (query-param (mock-req c) 'path')
+      &
+    ?=(%& -.r)
+  (fz 1.000 0xca11.ab1e check)
 ::
 ::  +normalize-tape is idempotent: normalizing twice == normalizing once.
 ++  test-fuzz-normalize-idempotent
-  %+  fz  500  0xfeed.face
-  |=  s=@
-  ^-  ?
-  =/  t=tape  (trip (fz-cord s))
-  =/  r  (mule |.(=((normalize-tape (normalize-tape t)) (normalize-tape t))))
-  ?:(?=(%& -.r) p.r |)
+  =/  check
+    |=  s=@
+    ^-  ?
+    =/  t=tape  (trip (fz-cord s))
+    =/  r  (mule |.(=((normalize-tape (normalize-tape t)) (normalize-tape t))))
+    ?:(?=(%& -.r) p.r |)
+  (fz 500 0xface.feed check)
 ::  non-text auras render via +scot (a ud count → "5"); text columns stay raw.
 ++  test-obelisk-result-aura
   =/  vec=ob-vector  [%vector ~[[`@tas`'item' 't' 'k'] [`@tas`'n' 'ud' 5]]]

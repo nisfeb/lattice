@@ -122,6 +122,16 @@
       [%tag key=@t tag=@t]
       [%untag key=@t tag=@t]
   ==
+::  programmatic catalog actions (poked to lattice by the LLM classifier via
+::  MCP). The catalog's READS are HTTP endpoints (obelisk has no scry, so an
+::  MCP thread can't query it), but a WRITE is a fire-and-forget poke an MCP
+::  tool can drive:
+::    classify — set category/cat-source/confidence on one of OUR rows,
+::               identified by its urb:// url. Mirrors the HTTP
+::               /catalog-classify endpoint exactly.
++$  catalog-action
+  $%  [%classify url=@t category=@t cat-source=@t confidence=@rs]
+  ==
 +$  state-7
   $:  %7
       content=(map path @t)
@@ -167,6 +177,74 @@
       know=(map path know-entry)
       trash=(map path know-entry)
       oquery=(unit [eid=@ta deadline=@da])
+  ==
+::  state-10: the content catalog. Adds everything the crawler + classifier
+::  need, in ONE state version — the catalog feature has never shipped, so a
+::  released ship (state-9) migrates straight to here; there are no
+::  intermediate catalog states in production. (During development the catalog
+::  grew across states 10-13 as each step was tested on the fakes; those were
+::  collapsed into this single state before release so production sees one
+::  migration, not four.) The catalog ROWS (pages/headings/links/tags/manifests/
+::  pending) live in %obelisk under the `catalog-*` tables (see /lib/catalog and
+::  /docs/catalog.md); the fields here are the agent-driving state:
+::    catalog-sweep    — next periodic manifest-sweep deadline (~ = none armed).
+::    catalog-walks    — in-flight catalog walk-to-latest tree, keyed by a
+::                       synthesized eyre-id (sham(now,publisher,spur)). A scan
+::                       is a root /manifest walk that spawns per-page walks;
+::                       wires /cat-walk/<eid> (keen) + /cat-wait/<eid> (behn).
+::    sweep-queue      — publishers still to crawl this auto-sweep cycle. The
+::                       sweep runs SEQUENTIALLY: start one publisher, advance
+::                       only when its walk tree drains, so peak concurrency is
+::                       one publisher's pages (<= manifest-max), not
+::                       follows * manifest-max.
+::    catalog-pubpaths — per-publisher cache of the current manifest path set.
+::                       Drives manifest-diff deletion (next sweep diffs new vs
+::                       stored, DELETEs vanished pages) and link is-internal
+::                       (a /-rooted link is internal iff it's a page the
+::                       publisher publishes). Bounded by follows * manifest-max.
++$  state-10
+  $:  %10
+      content=(map path @t)
+      published=(map path @uvH)
+      pending=(map @ta [=ship =path])
+      subs=(map [=ship spur=path] last=@ud)
+      fetches=(map @ta walk)
+      manifest=@uvH
+      home=@uvH
+      browse=(unit [=ship spur=path rev=@ud])
+      know=(map path know-entry)
+      trash=(map path know-entry)
+      oquery=(unit [eid=@ta deadline=@da])
+      catalog-sweep=(unit @da)
+      catalog-walks=(map @ta catalog-walk)
+      sweep-queue=(list @p)
+      catalog-pubpaths=(map @p (set path))
+  ==
+::  +$ catalog-walk: one in-flight catalog walk-to-latest. Mirrors +$ walk
+::  but with action and publisher (vs ship) so the same walk-to-latest
+::  state machine can serve both manifest discovery and per-page fetches.
+::    action — %manifest = walking the publisher's /manifest spur, will
+::             parse the body as gemtext and spawn page walks on finalize.
+::           — %page     = walking one specific publication, will analyze
+::             the body and poke obelisk on finalize.
+::    publisher — the @p we're fetching from.
+::    spur — the path we're fetching (/manifest, or /notes/intro etc).
+::    rev — highest revision resolved so far (0 = none yet).
+::    deadline — the armed Behn timeout for this walk (slid as new revs
+::               resolve, matching the interactive walk pattern).
+::    origin — %sweep (started by the periodic/manual sweep, drives the
+::             sequential sweep-queue) or %scan (a one-off manual
+::             /catalog-scan, must NOT advance the sweep). Page walks
+::             inherit their manifest walk's origin.
++$  catalog-walk
+  $:  action=?(%manifest %page)
+      publisher=@p
+      spur=path
+      rev=@ud
+      mark=@t
+      body=@t
+      deadline=@da
+      origin=?(%scan %sweep)
   ==
 ::  one in-flight walk-to-latest fetch (keyed by eyre-id).
 ::  rev = highest revision resolved so far (0 = none yet); deadline = the armed

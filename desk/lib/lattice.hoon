@@ -556,7 +556,7 @@
 ::  action targeted a non-live item). Pair with a periodic +obelisk-populate-urql
 ::  reindex to repair any drift.
 ++  mirror-urql
-  |=  [act=know-action st=state-9]
+  |=  [act=know-action st=state-10]
   ^-  tape
   ::  upsert one item's row + tags from the post-mutation state (save/restore)
   =/  upsert
@@ -669,13 +669,30 @@
   :*  %9  content.s  published.s  pending.s  subs.s  fetches.s
       manifest.s  home.s  browse.s  know.s  trash.s  ~
   ==
+::  +migrate-9-10: state-9 → state-10 — carry every state-9 field forward and
+::  add the four (empty) catalog slots: catalog-sweep, catalog-walks,
+::  sweep-queue, catalog-pubpaths. This is the ONLY catalog migration — the
+::  feature ships in one version, so a released ship (state-9) lands directly
+::  on state-10 (no intermediate catalog states in production). Pure, so
+::  on-load's upgrade is testable. The catalog schema poke + sweep-timer arm
+::  that pair with this migration are emitted from +on-load's card list (not
+::  here, since this gate is bowl-independent). An empty catalog-pubpaths
+::  baseline means the first post-upgrade sweep records sets with no
+::  diff-deletes (correct — there's no prior set to diff against).
+++  migrate-9-10
+  |=  s=state-9
+  ^-  state-10
+  :*  %10  content.s  published.s  pending.s  subs.s  fetches.s
+      manifest.s  home.s  browse.s  know.s  trash.s  oquery.s
+      ~  ~  ~  ~
+  ==
 ::
 ::  +do-know: apply a knowledge action. save = create/overwrite (+ untrash);
 ::  del = SOFT delete (move to recoverable trash); restore = trash → live.
 ::  Invalid keys / missing entries are no-ops. Never grows/publishes.
 ++  do-know
-  |=  [now=@da act=know-action st=state-9]
-  ^-  state-9
+  |=  [now=@da act=know-action st=state-10]
+  ^-  state-10
   ?-  -.act
       %save
     ?~  kp=(know-key key.act)  st
