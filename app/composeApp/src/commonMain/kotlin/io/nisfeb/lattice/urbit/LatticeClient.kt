@@ -171,6 +171,23 @@ class LatticeClient(private val session: UrbitSession) {
     }
 
     /**
+     * Trigger a one-shot crawl of every contact + follow (POST /catalog-sweep).
+     * Fire-and-forget: the agent replies immediately and the crawl runs in the
+     * background, so this returns as soon as the sweep is accepted (no held
+     * connection — unlike the obelisk reads). A no-op server-side if a sweep is
+     * already in progress.
+     */
+    suspend fun catalogSweep(): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder().addPathSegments("apps/lattice/catalog-sweep").build()
+            val req = Request.Builder().url(url).post(ByteArray(0).toRequestBody(mediaType)).build()
+            session.http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) error("catalog-sweep HTTP ${resp.code}")
+            }
+        }
+    }
+
+    /**
      * GET a catalog read endpoint and return the obelisk result object. The
      * catalog reads share ONE in-flight query slot on the agent and 429 when it
      * is busy (e.g. the Explore pane is mid-query); retry with a short backoff

@@ -177,6 +177,10 @@ fun App(
         var unread by remember { mutableStateOf(0) }
         var agentMissing by remember { mutableStateOf(false) }
         var obeliskMissing by remember { mutableStateOf(false) }
+        // Epoch-ms of the last manual catalog sweep (per ship; survives screen
+        // switches, so the Search screen's "Scan now" cooldown can't be reset
+        // by leaving and re-entering). 0 = never scanned this session.
+        var catalogLastScan by remember { mutableStateOf(0L) }
 
         // Browser tabs + page cache for the active ship: pulled from the
         // App-level maps so they SURVIVE ship switches. When activeShip is null
@@ -395,6 +399,11 @@ fun App(
                                 client = client,
                                 onOpenUrl = { url -> browseTarget = url; screen = AppScreen.Browse },
                                 onClose = { screen = AppScreen.Browse },
+                                lastScanMillis = catalogLastScan,
+                                onScanNow = {
+                                    catalogLastScan = System.currentTimeMillis()
+                                    scope.launch { client.catalogSweep() }
+                                },
                             )
                             AppScreen.Updates -> UpdatesScreen(
                                 updates = updates,

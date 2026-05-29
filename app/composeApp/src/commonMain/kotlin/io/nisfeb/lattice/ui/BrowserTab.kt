@@ -26,7 +26,6 @@ class BrowserTab {
 
     val current: String get() = history.getOrNull(cursor) ?: ""
     val canBack: Boolean get() = cursor > 0
-    val canForward: Boolean get() = cursor < history.lastIndex
 
     /** Short label for the tab strip, derived from the current url. */
     fun title(): String = UrlPaths.tabTitle(current)

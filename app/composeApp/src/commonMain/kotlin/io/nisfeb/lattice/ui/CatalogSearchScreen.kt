@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -36,6 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.nisfeb.lattice.urbit.CatalogPage
 import io.nisfeb.lattice.urbit.LatticeClient
+import kotlinx.coroutines.delay
 
 /**
  * Search the content catalog — the cross-publisher index the %lattice agent
@@ -50,6 +52,11 @@ fun CatalogSearchScreen(
     client: LatticeClient,
     onOpenUrl: (String) -> Unit,
     onClose: () -> Unit,
+    /** Epoch-ms of the last manual sweep (hoisted in App so it survives leaving
+     *  the screen); drives the "Scan now" cooldown. */
+    lastScanMillis: Long,
+    /** Fire a one-shot sweep of contacts + follows (App records the timestamp). */
+    onScanNow: () -> Unit,
 ) {
     var pages by remember { mutableStateOf<List<CatalogPage>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
@@ -93,6 +100,22 @@ fun CatalogSearchScreen(
         }
     }
 
+    // "Scan now" cooldown: a 10-minute floor between manual sweeps so the button
+    // can't be spammed into redundant background crawls (the periodic auto-sweep
+    // runs every ~6h regardless). nowMs ticks only while a cooldown is active, so
+    // the countdown stays live and the button re-enables when it elapses.
+    val cooldownMs = 10L * 60_000L
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(lastScanMillis) {
+        while (System.currentTimeMillis() - lastScanMillis < cooldownMs) {
+            nowMs = System.currentTimeMillis()
+            delay(5_000)
+        }
+        nowMs = System.currentTimeMillis()
+    }
+    val cooldownLeftMs = (lastScanMillis + cooldownMs - nowMs).coerceAtLeast(0L)
+    val canScan = cooldownLeftMs == 0L
+
     Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
@@ -114,6 +137,30 @@ fun CatalogSearchScreen(
             },
             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
         )
+
+        // Scan now + status. The sweep is fire-and-forget (runs server-side for
+        // a while), so after firing we show a crawling hint + a 10-min cooldown
+        // countdown on the button; results land as you ↻.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+        ) {
+            Button(onClick = onScanNow, enabled = canScan) {
+                Text(if (canScan) "Scan now" else "Scan in ${(cooldownLeftMs + 59_999L) / 60_000L}m")
+            }
+            Text(
+                text = if (canScan) {
+                    "${pages.size} ${if (pages.size == 1) "page" else "pages"} indexed"
+                } else {
+                    "Crawling your network — pull ↻ for new results"
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                modifier = Modifier.weight(1f),
+            )
+        }
 
         if (categories.isNotEmpty()) {
             LazyRow(

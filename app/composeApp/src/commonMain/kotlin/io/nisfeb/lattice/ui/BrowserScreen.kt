@@ -21,7 +21,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bookmark
@@ -45,6 +44,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalTextStyle
@@ -351,7 +351,7 @@ fun BrowserScreen(
         // navigation / address bar (acts on the active tab) — keeps the URL bar a
         // minimum width; right buttons collapse into a ⋮ menu when space is tight
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-            val n = UrlPaths.inlineCount(maxWidth.value, ib.value, leftButtons = 3, reservedDp = 240f, count = rightActions.size)
+            val n = UrlPaths.inlineCount(maxWidth.value, ib.value, leftButtons = 2, reservedDp = 240f, count = rightActions.size)
             val inline = rightActions.take(n)
             // Width-spilled inline actions, then the user-pinned ones.
             val overflow = rightActions.drop(n) + pinnedOverflow
@@ -360,13 +360,10 @@ fun BrowserScreen(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = if (isDesktop) 2.dp else 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // "You are ~ship ▾" — picker for switching/adding/logging-out ships.
-                ShipPicker(
-                    activeShip = homeShip, ships = ships,
-                    onSwitch = onSwitchShip, onAdd = onAddShip, onLogoutCurrent = onLogoutCurrent,
-                )
+                // Ship switching moved into the ⋮ menu (below) so the address
+                // bar isn't crowded on mobile. Forward is dropped — people just
+                // go back. Left side is now just Back + Home.
                 barBtn({ tab?.let { if (it.canBack) { it.cursor--; load(it, it.history[it.cursor]) } } }, Icons.AutoMirrored.Filled.ArrowBack, "Back", tab?.canBack == true)
-                barBtn({ tab?.let { if (it.canForward) { it.cursor++; load(it, it.history[it.cursor]) } } }, Icons.AutoMirrored.Filled.ArrowForward, "Forward", tab?.canForward == true)
                 barBtn({ tab?.let { navigate(it, home) } }, Icons.Filled.Home, "Home")
                 Surface(
                     shape = RoundedCornerShape(8.dp),
@@ -388,10 +385,19 @@ fun BrowserScreen(
                     }
                 }
                 inline.forEach { a -> barBtn(a.onClick, a.icon, a.label, a.enabled) }
+                // The ⋮ menu always shows now — it hosts the ship switcher
+                // (which moved off the toolbar) plus any width-spilled / pinned
+                // actions below a divider.
                 Box {
-                    if (overflow.isNotEmpty()) {
-                        barBtn({ overflowOpen = true }, Icons.Filled.MoreVert, "More", true)
-                        DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
+                    barBtn({ overflowOpen = true }, Icons.Filled.MoreVert, "More", true)
+                    DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
+                        ShipMenuItems(
+                            activeShip = homeShip, ships = ships,
+                            onSwitch = onSwitchShip, onAdd = onAddShip, onLogoutCurrent = onLogoutCurrent,
+                            closeMenu = { overflowOpen = false },
+                        )
+                        if (overflow.isNotEmpty()) {
+                            HorizontalDivider()
                             overflow.forEach { a ->
                                 DropdownMenuItem(
                                     text = { Text(a.label) },
