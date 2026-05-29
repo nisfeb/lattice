@@ -236,13 +236,10 @@
   =/  pt=tape    (trip (scot %p pub))
   =/  scan=tape  (trip (scot %da now))
   =/  h=tape     (trip (scot %ud hsh))
-  ::  `raw` is a multi-line gemtext manifest — the ONLY multi-line @t the
-  ::  catalog INSERTs. +urq-esc escapes ' and \ but passes newlines/control
-  ::  bytes through, and obelisk's urQL string lexer may terminate a literal at
-  ::  a raw newline (aborting the whole poke). Neutralize bytes < 32 to spaces
-  ::  before escaping so the snapshot INSERT can't parse-abort. (Page-row @t
-  ::  values derive from single gemtext lines, so they carry no newline.)
-  =/  r=tape     (urq-esc (turn (trip raw) |=(c=@tD ?:((lth c 32) ' ' c))))
+  ::  `raw` is a multi-line gemtext manifest — its newlines/control bytes are
+  ::  neutralized to spaces by +urq-esc (which all @t values flow through), so
+  ::  this INSERT can't parse-abort on a raw newline.
+  =/  r=tape     (urq-esc (trip raw))
   %-  zing
   :~  "DELETE FROM catalog-manifests WHERE publisher = "  pt  ";"
       "INSERT INTO catalog-manifests (publisher, scanned, hash, raw) VALUES ("
@@ -505,10 +502,15 @@
   ?~  t.clauses  i.clauses
   :(weld i.clauses " AND " $(clauses t.clauses))
 ::
-::  +urq-esc: backslash-escape ' and \ for obelisk's string-literal syntax.
-::  Inlined from /lib/lattice so this lib has no /+ *lattice dependency
-::  (would otherwise drag in state-10 and all the agent's deps). Behavior
-::  matches +urq-esc in lib/lattice verbatim.
+::  +urq-esc: make an arbitrary tape safe inside an obelisk single-quoted
+::  string literal. Backslash-escapes ' and \, AND replaces every control byte
+::  (< 32: newline, CR, tab, …) with a space — obelisk's urQL string lexer can
+::  terminate a literal at a raw control byte, aborting the whole poke, so any
+::  @t that might carry one (a multi-line manifest body, a CRLF-authored page's
+::  heading/title/link/tag) must be neutralized. Centralizing it here means
+::  every generator (page rows, manifest, classify, fetch, explore) is safe.
+::  (A superset of /lib/lattice's +urq-esc, whose knowledge values are
+::  single-token and so never hit the control-byte case.)
 ++  urq-esc
   |=  s=tape
   ^-  tape
@@ -516,6 +518,7 @@
   %+  turn  s
   |=  c=@tD
   ^-  tape
+  ?:  (lth c 32)  ~[' ']            :: control byte -> space (lexer-safe)
   ?:  =(c 39)  ~[`@tD`92 `@tD`39]   :: ' -> \'
   ?:  =(c 92)  ~[`@tD`92 `@tD`92]   :: \ -> \\
   ~[c]

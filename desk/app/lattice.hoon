@@ -316,11 +316,25 @@
 ++  begin-sweep
   |=  [=bowl:gall st=state-10]
   ^-  [(list card) state-10]
-  ::  use !=(~ …), not ?=(^ …): the latter narrows sweep-queue.st to empty
-  ::  for the rest of the gate, blocking the reassignment below.
-  ?:  ?|  !=(~ sweep-queue.st)  (gth ~(wyt by catalog-walks.st) 0)  ==
+  ::  No-op only if a SWEEP is already in progress — a non-empty queue, or a
+  ::  %sweep walk in flight. A one-off manual /catalog-scan (origin %scan) must
+  ::  NOT block the periodic sweep (else a long scan defers a whole cycle); the
+  ::  origin tag is what lets a scan and a sweep coexist. (use !=(~ …), not
+  ::  ?=(^ …): the latter narrows sweep-queue.st to empty for the rest of the
+  ::  gate, blocking the reassignment below.)
+  ?:  ?|  !=(~ sweep-queue.st)
+          (lien ~(val by catalog-walks.st) |=(w=catalog-walk ?=(%sweep origin.w)))
+      ==
     [~ st]
-  =/  pubs=(list @p)  (sweep-publishers subs.st (sweep-contacts bowl) our.bowl)
+  ::  Exclude any publisher currently being %scan-crawled from THIS cycle so it
+  ::  isn't double-crawled — it was just freshly indexed by the scan anyway.
+  ::  (Queued publishers can't start being scanned mid-sweep: the /catalog-scan
+  ::  guard rejects a scan of a sweep-queued publisher, so the advance is safe.)
+  =/  busy=(set @p)
+    %-  ~(gas in *(set @p))
+    (turn ~(val by catalog-walks.st) |=(w=catalog-walk publisher.w))
+  =/  pubs=(list @p)
+    (skip (sweep-publishers subs.st (sweep-contacts bowl) our.bowl) ~(has in busy))
   ?~  pubs  [~ st]
   =/  start  (start-catalog-scan now.bowl i.pubs %sweep)
   =.  catalog-walks.st  (~(put by catalog-walks.st) eid.walk.start cw.walk.start)
@@ -1058,15 +1072,20 @@
   ^-  (quip card _this)
   ::  Fresh install: no content yet. Grow the (empty) discovery manifest + home
   ::  so a remote probe resolves them instead of pending. Also poke %obelisk
-  ::  with the catalog CREATE TABLE statements -- harmless if %obelisk is not
-  ::  installed (the poke just dies); idempotent if the tables already exist.
+  ::  with the schema -- harmless if %obelisk is not installed (the poke just
+  ::  dies); idempotent if the tables already exist.
   =^  man-cards  manifest.state  (manifest-cards content.state `@uvH`0)
   =^  home-cs    home.state      (home-cards content.state `@uvH`0)
   ::  arm the first periodic catalog sweep.
   =/  sweep-at=@da  (add now.bowl sweep-interval)
   =.  catalog-sweep.state  `sweep-at
+  ::  Poke the obelisk schema: obelisk-create-urql FIRST (it has the
+  ::  `CREATE DATABASE lattice` the catalog tables need; on an existing db that
+  ::  statement harmlessly aborts its own poke, so it can't block the separate
+  ::  catalog-create poke), then catalog-create-urql.
   :_  this
   :*  (bind-eyre-card bowl)
+      (obelisk-poke bowl obelisk-create-urql)
       (obelisk-poke bowl catalog-create-urql)
       (arm-sweep-card sweep-at)
       (weld man-cards home-cs)
@@ -1078,32 +1097,48 @@
   |=  ole=vase
   ^-  (quip card _this)
   =/  old=versioned-state  !<(versioned-state ole)
-  ::  Every reload pokes %obelisk with the catalog CREATE TABLE statements.
-  ::  CREATE is atomic in obelisk and fails harmlessly on existing tables, so
-  ::  this lets a fresh %obelisk install (post-lattice) pick up the schema on
-  ::  the next agent reload without a manual /know-reindex.
-  =/  catalog-card=card  (obelisk-poke bowl catalog-create-urql)
-  ::  Boot cards: the catalog-schema poke, plus — on ANY upgrade INTO the
-  ::  catalog state (from a released ship, ≤ %9) — arm the periodic sweep.
-  ::  state-10 is the first version with the sweep machinery, so only a
-  ::  %10 → %10 reload already has the Behn timer in flight (it survives agent
-  ::  reload and the fire-handler re-arms it); arming again would stack a
-  ::  duplicate. So we skip the arm ONLY for the %10 reload.
+  ::  Every reload pokes %obelisk with the schema so the catalog + knowledge
+  ::  tables self-bootstrap whenever lattice loads with %obelisk present (no
+  ::  manual /know-reindex needed). obelisk-create-urql goes FIRST: it carries
+  ::  the `CREATE DATABASE lattice` the catalog tables require, and on a ship
+  ::  where the db already exists that statement aborts its OWN (separate) poke
+  ::  harmlessly — so it can never block the catalog-create poke. CREATE TABLE
+  ::  is idempotent-by-existence. Harmless if %obelisk isn't installed (the
+  ::  pokes just die).
+  =/  schema-cards=(list card)
+    :~  (obelisk-poke bowl obelisk-create-urql)
+        (obelisk-poke bowl catalog-create-urql)
+    ==
+  ::  Boot cards: the schema pokes, plus — on ANY upgrade INTO the catalog state
+  ::  (from a released ship, ≤ %9) — arm the periodic sweep. state-10 is the
+  ::  first version with the sweep machinery, so only a %10 → %10 reload already
+  ::  has the Behn timer in flight (it survives agent reload and the fire-handler
+  ::  re-arms it); arming again would stack a duplicate. So we skip the arm ONLY
+  ::  for the %10 reload.
   =/  armed=?  ?=(%10 -.old)
   =/  boot-cards=(list card)
-    ?:  armed  ~[catalog-card]
-    ~[catalog-card (arm-sweep-card (add now.bowl sweep-interval))]
+    ?:  armed  schema-cards
+    (weld schema-cards ~[(arm-sweep-card (add now.bowl sweep-interval))])
+  ::  When we arm the sweep here (an upgrade, armed=.n), record the deadline in
+  ::  state too, so catalog-sweep matches the in-flight timer instead of staying
+  ::  ~ ("none armed") until the first fire. No-op for the %10 reload (its state
+  ::  already holds the live deadline).
+  =/  ready
+    |=  s=state-10
+    ^-  state-10
+    ?:  armed  s
+    s(catalog-sweep `(add now.bowl sweep-interval))
   ::  %10 → %10 reload: state unchanged (catalog feature already running).
   ?:  ?=(%10 -.old)
     :_  this(state old)
     boot-cards
   ::  %9 → %10: the single catalog migration (carry all + 4 empty catalog slots).
   ?:  ?=(%9 -.old)
-    :_  this(state (migrate-9-10 old))
+    :_  this(state (ready (migrate-9-10 old)))
     boot-cards
   ::  %8 → %10: add the obelisk-query slot (8→9), then 9→10.
   ?:  ?=(%8 -.old)
-    :_  this(state (migrate-9-10 (migrate-8-9 old)))
+    :_  this(state (ready (migrate-9-10 (migrate-8-9 old))))
     boot-cards
   ::  %7 → %10: give every knowledge entry empty tags + reserved vector,
   ::  then chain up.
@@ -1114,7 +1149,7 @@
           manifest.old  home.old  browse.old
           (~(run by know.old) up)  (~(run by trash.old) up)  ~
       ==
-    :_  this(state (migrate-9-10 s9))
+    :_  this(state (ready (migrate-9-10 s9)))
     boot-cards
   ::  %6 → %10: add the empty private knowledge store, then chain up.
   ?:  ?=(%6 -.old)
@@ -1122,7 +1157,7 @@
       :*  %9  content.old  published.old  pending.old  subs.old  fetches.old
           manifest.old  home.old  browse.old  ~  ~  ~
       ==
-    :_  this(state (migrate-9-10 s9))
+    :_  this(state (ready (migrate-9-10 s9)))
     boot-cards
   ::  Versions 0-5 stored published content in Clay /pub. Pull it into state,
   ::  then delete /pub from the desk + drop the clay watch, so the desk stops
@@ -1140,7 +1175,7 @@
       %1  [%9 content published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
       %0  [%9 content published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
     ==
-  :_  this(state (migrate-9-10 new))
+  :_  this(state (ready (migrate-9-10 new)))
   (weld cards boot-cards)
 ::
 ++  on-poke

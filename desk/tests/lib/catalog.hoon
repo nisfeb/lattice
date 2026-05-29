@@ -374,7 +374,8 @@
 ::  ── +urq-esc (inline copy) sanity ───────────────────────────────────
 ::
 ::  The lib has its own copy of +urq-esc (to avoid pulling in *lattice).
-::  Lock the behavior — must match lib/lattice's verbatim.
+::  Lock the behavior — escapes ' and \, and replaces control bytes (< 32)
+::  with spaces so a raw newline/CR can't abort an obelisk poke.
 ++  test-urq-esc-quote
   (expect-eq !>(`tape`['i' 'n' '\\' '\'' 't' ~]) !>((urq-esc "in't")))
 ::
@@ -383,6 +384,17 @@
 ::
 ++  test-urq-esc-plain
   (expect-eq !>("hello") !>((urq-esc "hello")))
+::
+::  control bytes — newline (10), CR (13), tab (9) — become spaces, so a
+::  multi-line manifest or a CRLF-authored page can't terminate a literal early.
+++  test-urq-esc-strips-control
+  ;:  weld
+    (expect-eq !>(`tape`['a' ' ' 'b' ~]) !>((urq-esc `tape`['a' `@tD`10 'b' ~])))
+    (expect-eq !>(`tape`['a' ' ' 'b' ~]) !>((urq-esc `tape`['a' `@tD`13 'b' ~])))
+    (expect-eq !>(`tape`['x' ' ' 'y' ~]) !>((urq-esc `tape`['x' `@tD`9 'y' ~])))
+    ::  a CRLF pair collapses to two spaces; ' is still escaped alongside
+    (expect-eq !>(`tape`[' ' ' ' '\\' '\'' ~]) !>((urq-esc `tape`[`@tD`13 `@tD`10 '\'' ~])))
+  ==
 ::
 ::  ════════════════════════════════════════════════════════════════════
 ::  +parse-manifest — gemtext index → list of publisher spurs.
