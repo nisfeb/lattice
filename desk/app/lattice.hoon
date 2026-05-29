@@ -278,6 +278,33 @@
 ::  unbounded operation. Oversized pages are skipped + logged, not truncated
 ::  (a clean skip beats a mid-line cut). 1 MiB is generous for gemtext.
 ++  body-max  ^-(@ud 1.048.576)
+::  +sweep-interval: how often the periodic auto-sweep re-crawls every
+::  followed publisher. Generous — content moves slowly and a sweep is a
+::  lot of remote scry. The Behn timer on /catalog-sweep carries this.
+++  sweep-interval  ^-(@dr ~h6)
+::  +arm-sweep-card: (re)arm the periodic-sweep Behn timer for time [at].
+++  arm-sweep-card
+  |=  at=@da
+  ^-  card
+  [%pass /catalog-sweep %arvo %b %wait at]
+::  +begin-sweep: start a sweep cycle — enqueue every followed publisher and
+::  kick off the first one's manifest walk; the sequential driver in
+::  +cat-conclude advances to the next as each publisher's tree drains. No-op
+::  if a sweep is already in progress (walks in flight or a non-empty queue)
+::  or there are no follows. Does NOT touch the timer (the caller manages it).
+++  begin-sweep
+  |=  [=bowl:gall st=state-12]
+  ^-  [(list card) state-12]
+  ::  use !=(~ …), not ?=(^ …): the latter narrows sweep-queue.st to empty
+  ::  for the rest of the gate, blocking the reassignment below.
+  ?:  ?|  !=(~ sweep-queue.st)  (gth ~(wyt by catalog-walks.st) 0)  ==
+    [~ st]
+  =/  pubs=(list @p)  (sweep-publishers subs.st our.bowl)
+  ?~  pubs  [~ st]
+  =/  start  (start-catalog-scan now.bowl i.pubs)
+  =.  catalog-walks.st  (~(put by catalog-walks.st) eid.walk.start cw.walk.start)
+  =.  sweep-queue.st  t.pubs
+  [cards.start st]
 ::
 ::  walk-to-latest cards: probe revisions on /walk/<eid>, with a behn deadline
 ::  on /walkto/<eid> that fires when the walk stalls (the next rev pends).
@@ -338,6 +365,20 @@
   |=  [now=@da pub=@p spur=path]
   ^-  @ta
   (scot %uv (sham now pub spur))
+::
+::  +start-catalog-scan: kick off a publisher's manifest walk. Returns the
+::  walk entry to install + the cards (keen rev 1 + arm the deadline).
+::  Shared by the catalog-scan HTTP endpoint and the sweep driver.
+++  start-catalog-scan
+  |=  [now=@da pub=@p]
+  ^-  [walk=[eid=@ta cw=catalog-walk] cards=(list card)]
+  =/  eid=@ta   (cat-mint-eid now pub /manifest)
+  =/  at=@da    (add now ~s30)
+  =/  cw=catalog-walk  [%manifest pub /manifest 0 '' '' at]
+  :-  [eid cw]
+  :~  (cat-walk-keen-card eid 1 pub /manifest)
+      (cat-walk-wait-card eid at)
+  ==
 ::
 ::  +cat-finalize: one catalog walk completed (timeout or no-value at the
 ::  next rev). Routes the result by action:
@@ -403,10 +444,29 @@
 ::  in-flight walk on each finalize (so in a multi-page crawl the pages
 ::  wipe each other and only one survives).
 ++  cat-conclude
-  |=  [=bowl:gall eid=@ta cw=catalog-walk walks=(map @ta catalog-walk)]
-  ^-  [(list card) (map @ta catalog-walk)]
+  |=  $:  =bowl:gall
+          eid=@ta
+          cw=catalog-walk
+          walks=(map @ta catalog-walk)
+          queue=(list @p)
+      ==
+  ^-  [cards=(list card) walks=(map @ta catalog-walk) queue=(list @p)]
   =/  fin  (cat-finalize bowl cw)
-  [-.fin (~(gas by (~(del by walks) eid)) +.fin)]
+  ::  drop this walk, merge any page-walks it spawned into the live map
+  ::  (gas, not roll — see the comment on the original bug).
+  =/  walks2=(map @ta catalog-walk)  (~(gas by (~(del by walks) eid)) +.fin)
+  ::  sequential sweep advance: if this walk's publisher now has NO walks
+  ::  left (its whole tree drained), start the next queued publisher. Page
+  ::  walks the manifest just spawned are already in walks2, so a publisher
+  ::  mid-tree still shows walks and we don't advance early.
+  ?:  (lien ~(val by walks2) |=(w=catalog-walk =(publisher.w publisher.cw)))
+    [-.fin walks2 queue]
+  ?~  queue  [-.fin walks2 ~]
+  =/  nxt  (start-catalog-scan now.bowl i.queue)
+  :*  (weld -.fin cards.nxt)
+      (~(put by walks2) eid.walk.nxt cw.walk.nxt)
+      t.queue
+  ==
 ::
 ::  browse-watch cards: after a no-rev fetch answers, keep keening upward on a
 ::  /browse wire so newer revs of the page being viewed stream to /updates. The
@@ -783,15 +843,17 @@
     ::  parallel fan-out. Idempotent: report success, the running scan stands.
     ?:  (lien ~(val by catalog-walks.st) |=(w=catalog-walk =(publisher.w u.pub)))
       [(respond-json-cards eyre-id 200 '{"ok":true,"note":"scan already in progress"}') st]
-    =/  eid=@ta   (cat-mint-eid now.bowl u.pub /manifest)
-    =/  at=@da    (add now.bowl ~s30)
-    =/  cw=catalog-walk  [%manifest u.pub /manifest 0 '' '' at]
-    =.  catalog-walks.st  (~(put by catalog-walks.st) eid cw)
+    =/  start  (start-catalog-scan now.bowl u.pub)
+    =.  catalog-walks.st  (~(put by catalog-walks.st) eid.walk.start cw.walk.start)
     :_  st
-    :*  (cat-walk-keen-card eid 1 u.pub /manifest)
-        (cat-walk-wait-card eid at)
-        (respond-json-cards eyre-id 200 '{"ok":true}')
-    ==
+    (weld cards.start (respond-json-cards eyre-id 200 '{"ok":true}'))
+  ::  POST /apps/lattice/catalog-sweep — refresh EVERY followed publisher's
+  ::  catalog now (the same cycle the periodic timer runs). Sequential: starts
+  ::  the first publisher, queues the rest; each finishes before the next.
+  ::  No-op (with a note) if a sweep is already in progress.
+  ?:  &(=(meth %'POST') =(action 'catalog-sweep'))
+    =^  cards  st  (begin-sweep bowl st)
+    [(weld cards (respond-json-cards eyre-id 200 '{"ok":true}')) st]
   ::  GET /apps/lattice/fetch?url=urb://~ship/path  (default)
   ?~  raw=(query-param inbound-request 'url')
     [(respond-json-cards eyre-id 400 '{"error":"missing url param"}') st]
@@ -843,9 +905,13 @@
   ::  installed (the poke just dies); idempotent if the tables already exist.
   =^  man-cards  manifest.state  (manifest-cards content.state `@uvH`0)
   =^  home-cs    home.state      (home-cards content.state `@uvH`0)
+  ::  arm the first periodic catalog sweep.
+  =/  sweep-at=@da  (add now.bowl sweep-interval)
+  =.  catalog-sweep.state  `sweep-at
   :_  this
   :*  (bind-eyre-card bowl)
       (obelisk-poke bowl catalog-create-urql)
+      (arm-sweep-card sweep-at)
       (weld man-cards home-cs)
   ==
 ::
@@ -860,25 +926,33 @@
   ::  this lets a fresh %obelisk install (post-lattice) pick up the schema on
   ::  the next agent reload without a manual /know-reindex.
   =/  catalog-card=card  (obelisk-poke bowl catalog-create-urql)
+  ::  Boot cards: the catalog-schema poke, plus — on the FIRST load at
+  ::  state-12 (any upgrade from an older version) — arm the periodic sweep.
+  ::  A %12→%12 reload already has the Behn timer in flight (it survives
+  ::  agent reload and the fire-handler re-arms it), so we must NOT stack a
+  ::  duplicate.
+  =/  boot-cards=(list card)
+    ?:  ?=(%12 -.old)  ~[catalog-card]
+    ~[catalog-card (arm-sweep-card (add now.bowl sweep-interval))]
   ?:  ?=(%12 -.old)
     :_  this(state old)
-    ~[catalog-card]
+    boot-cards
   ::  %11 → %12: add the (empty) sequential sweep queue.
   ?:  ?=(%11 -.old)
     :_  this(state (migrate-11-12 old))
-    ~[catalog-card]
+    boot-cards
   ::  %10 → %12: add the (empty) in-flight catalog-walks map, then 11→12.
   ?:  ?=(%10 -.old)
     :_  this(state (migrate-11-12 (migrate-10-11 old)))
-    ~[catalog-card]
+    boot-cards
   ::  %9 → %12: chain 9→10 → 10→11 → 11→12.
   ?:  ?=(%9 -.old)
     :_  this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 old))))
-    ~[catalog-card]
+    boot-cards
   ::  %8 → %12: chain 8→9 → 9→10 → 10→11 → 11→12.
   ?:  ?=(%8 -.old)
     :_  this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 (migrate-8-9 old)))))
-    ~[catalog-card]
+    boot-cards
   ::  %7 → %12: give every knowledge entry empty tags + reserved vector,
   ::  then chain up.
   ?:  ?=(%7 -.old)
@@ -889,7 +963,7 @@
           (~(run by know.old) up)  (~(run by trash.old) up)  ~
       ==
     :_  this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 s9))))
-    ~[catalog-card]
+    boot-cards
   ::  %6 → %12: add the empty private knowledge store, then chain up.
   ?:  ?=(%6 -.old)
     =/  s9=state-9
@@ -897,7 +971,7 @@
           manifest.old  home.old  browse.old  ~  ~  ~
       ==
     :_  this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 s9))))
-    ~[catalog-card]
+    boot-cards
   ::  Versions 0-5 stored published content in Clay /pub. Pull it into state,
   ::  then delete /pub from the desk + drop the clay watch, so the desk stops
   ::  carrying the content (and installs stop shipping the publisher's pages).
@@ -914,7 +988,7 @@
       %1  [%9 content published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
       %0  [%9 content published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
     ==
-  [(snoc cards catalog-card) this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 new))))]
+  [(weld cards boot-cards) this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 new))))]
 ::
 ++  on-poke
   |=  =cage
@@ -1168,23 +1242,29 @@
     =/  gag  q.sage.sign-arvo
     ?@  gag
       ::  no value at probed rev → finalize with the best so far.
-      =^  emit  catalog-walks.state  (cat-conclude bowl eid u.cw catalog-walks.state)
+      =/  cc  (cat-conclude bowl eid u.cw catalog-walks.state sweep-queue.state)
+      =.  catalog-walks.state  walks.cc
+      =.  sweep-queue.state  queue.cc
       :_  this
-      [(cat-walk-rest-card eid deadline.u.cw) emit]
+      [(cat-walk-rest-card eid deadline.u.cw) cards.cc]
     ?^  q.gag
       ::  malformed remote value — finalize with best so far.
-      =^  emit  catalog-walks.state  (cat-conclude bowl eid u.cw catalog-walks.state)
+      =/  cc  (cat-conclude bowl eid u.cw catalog-walks.state sweep-queue.state)
+      =.  catalog-walks.state  walks.cc
+      =.  sweep-queue.state  queue.cc
       :_  this
-      [(cat-walk-rest-card eid deadline.u.cw) emit]
+      [(cat-walk-rest-card eid deadline.u.cw) cards.cc]
     ::  resolved rev (rev+1): record content, probe next, slide deadline.
     =/  got=@ud   +(rev.u.cw)
     =/  body=@t   ;;(@t q.gag)
     ?:  (gte got walk-max)
       ::  runaway walk — finalize with what we have (the rev we just got).
       =/  u-cw=catalog-walk  u.cw(rev got, mark p.gag, body body)
-      =^  emit  catalog-walks.state  (cat-conclude bowl eid u-cw catalog-walks.state)
+      =/  cc  (cat-conclude bowl eid u-cw catalog-walks.state sweep-queue.state)
+      =.  catalog-walks.state  walks.cc
+      =.  sweep-queue.state  queue.cc
       :_  this
-      [(cat-walk-rest-card eid deadline.u.cw) emit]
+      [(cat-walk-rest-card eid deadline.u.cw) cards.cc]
     =/  nat=@da   (add now.bowl ~s2)
     =.  catalog-walks.state
       %+  ~(put by catalog-walks.state)  eid
@@ -1203,8 +1283,19 @@
     ?~  cw=(~(get by catalog-walks.state) eid)  `this
     =/  yawn=card
       (cat-walk-yawn-card eid +(rev.u.cw) publisher.u.cw spur.u.cw)
-    =^  emit  catalog-walks.state  (cat-conclude bowl eid u.cw catalog-walks.state)
-    [[yawn emit] this]
+    =/  cc  (cat-conclude bowl eid u.cw catalog-walks.state sweep-queue.state)
+    =.  catalog-walks.state  walks.cc
+    =.  sweep-queue.state  queue.cc
+    [[yawn cards.cc] this]
+  ::
+      [%catalog-sweep ~]
+    ::  the periodic sweep timer fired → begin a sweep cycle (no-op if one is
+    ::  already running or there are no follows) and re-arm for next interval.
+    ?>  ?=([%behn %wake *] sign-arvo)
+    =^  cards  state  (begin-sweep bowl state)
+    =/  at=@da  (add now.bowl sweep-interval)
+    =.  catalog-sweep.state  `at
+    [(snoc cards (arm-sweep-card at)) this]
   ::
       [%follow @ @ @ *]
     ::  a followed revision resolved → advance + re-arm the next rev. Only push
