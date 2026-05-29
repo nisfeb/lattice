@@ -367,14 +367,21 @@
       |=  p=path
       :-  (cat-mint-eid now.bowl publisher.cw p)
       [%page publisher.cw p 0 '' '' (add now.bowl ~s30)]
-    =/  cards=(list card)
+    =/  spawn-cards=(list card)
       %-  zing
       %+  turn  walks
       |=  w=[eid=@ta walk=catalog-walk]
       :~  (cat-walk-keen-card eid.w 1 publisher.walk.w spur.walk.w)
           (cat-walk-wait-card eid.w deadline.walk.w)
       ==
-    [cards walks]
+    ::  Record this publisher's manifest snapshot in obelisk (publisher,
+    ::  scanned, hash, raw). Durable + queryable; the foundation a future
+    ::  sweep uses to diff against the next manifest (delete vanished pages)
+    ::  and to skip discovery when the page set is unchanged.
+    =/  write-card=card
+      %+  obelisk-poke  bowl
+      (catalog-manifest-urql publisher.cw now.bowl (sham body.cw) body.cw)
+    [[write-card spawn-cards] walks]
   ::
       %page
     ::  skip + log an oversized page rather than analyzing/indexing it — a
