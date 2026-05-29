@@ -69,22 +69,34 @@
       "CREATE TABLE catalog-pending (source @p, publisher @p, path @t, queued @da, attempts @ud, reason @t) PRIMARY KEY (source, publisher, path);"
   ==
 ::
-::  +catalog-page-urql: (re)write all the rows for one catalog page from
-::  an analyzer output. Idempotent — DELETEs any prior rows for the same
-::  `(source, publisher, path)` before INSERTing, so the crawler doesn't
-::  need to dedupe and a refresh on a changed body cleanly replaces the
-::  stale headings/links/tags.
+::  ── page writes: the two-poke upsert ───────────────────────────────
 ::
-::  `category`, `cat-source`, and `confidence` start at their sentinel
-::  values (`''` / `''` / `.0`). The classifier pipeline fills them via
-::  a separate UPDATE in a follow-up PR.
+::  A catalog page is written by TWO separate obelisk pokes, NOT one, so
+::  that re-crawling a page during a periodic sweep PRESERVES whatever
+::  classification (category / cat-source / confidence) the classifier set
+::  on it. The split is forced by obelisk's primitives (all verified live):
+::    - INSERT on an existing PRIMARY KEY ERRORS ("cannot add duplicate
+::      key") — it never replaces an existing row;
+::    - UPDATE on an absent row is a clean no-op;
+::    - any parse/crud error ABORTS the whole multi-statement poke.
+::  So the two operations CAN'T share one poke: the ensure-INSERT would
+::  abort the refresh-UPDATE on every already-indexed page. As separate
+::  pokes — in EITHER order — the end state is correct:
+::    +catalog-page-ensure-urql  — INSERT the row with REAL content and
+::      SENTINEL classification ('' / '' / .0). Succeeds for a new page;
+::      fails harmlessly (dup-key, no state change) for one already in the
+::      catalog. This is what puts a fresh page into the classifier
+::      worklist (category = '').
+::    +catalog-page-refresh-urql — UPDATE only the CONTENT columns (never
+::      category/cat-source/confidence) so a re-crawl can't clobber a
+::      classification; then DELETE+re-INSERT the page's headings/links/
+::      tags (pure derived content, safe to fully replace).
+::  Brand-new page: ensure inserts it (real content, sentinel class),
+::  refresh re-sets the same content + writes children. Existing page:
+::  ensure no-ops (dup), refresh refreshes content (class preserved) +
+::  replaces children. The crawler emits BOTH pokes per page.
 ::
-::  `is-internal` is set to 1 when a link target starts with `urb://`
-::  (best-effort heuristic — distinguishes intra-network links from
-::  http(s)/mailto/etc without a cross-table lookup); the proper resolve
-::  against `catalog-pages` is a future-PR refinement.
-::
-++  catalog-page-urql
+++  catalog-page-ensure-urql
   |=  [src=@p pub=@p pat=path now=@da =analysis]
   ^-  tape
   =/  st=tape    (trip (scot %p src))
@@ -98,21 +110,43 @@
   =/  ttl=tape   (urq-esc (trip title.analysis))
   =/  wc=tape    (trip (scot %ud word-count.analysis))
   =/  bl=tape    (trip (scot %ud body-lines.analysis))
-  ::  Reusable WHERE clause; applies to every per-page DELETE.
+  %-  zing
+  :~  "INSERT INTO catalog-pages (source, publisher, path, url, title, fetched, hash, category, cat-source, confidence, word-count, body-lines) VALUES ("
+      st  ", "  pt  ", '"  ek  "', '"  ue  "', '"  ttl  "', "
+      fet  ", "  hsh  ", '', '', .0, "  wc  ", "  bl  ");"
+  ==
+::
+++  catalog-page-refresh-urql
+  |=  [src=@p pub=@p pat=path now=@da =analysis pages=(set path)]
+  ^-  tape
+  =/  st=tape    (trip (scot %p src))
+  =/  pt=tape    (trip (scot %p pub))
+  =/  pk=tape    (trip (spat pat))
+  =/  ek=tape    (urq-esc pk)
+  =/  url=tape   :(weld "urb://" pt pk)
+  =/  ue=tape    (urq-esc url)
+  =/  fet=tape   (trip (scot %da now))
+  =/  hsh=tape   (trip (scot %ud hash.analysis))
+  =/  ttl=tape   (urq-esc (trip title.analysis))
+  =/  wc=tape    (trip (scot %ud word-count.analysis))
+  =/  bl=tape    (trip (scot %ud body-lines.analysis))
+  ::  WHERE clause shared by the content UPDATE and every child DELETE.
   =/  where=tape
     :(weld " WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
+  ::  UPDATE only content columns — category/cat-source/confidence are NOT
+  ::  named, so an existing classification survives the re-crawl. No-op if
+  ::  the row is absent (a brand-new page is created by the ensure-INSERT).
+  =/  update=tape
+    %-  zing
+    :~  "UPDATE catalog-pages SET url = '"  ue  "', title = '"  ttl
+        "', fetched = "  fet  ", hash = "  hsh
+        ", word-count = "  wc  ", body-lines = "  bl  where
+    ==
   =/  deletes=tape
     %-  zing
-    :~  (weld "DELETE FROM catalog-pages" where)
-        (weld "DELETE FROM catalog-headings" where)
+    :~  (weld "DELETE FROM catalog-headings" where)
         (weld "DELETE FROM catalog-links" where)
         (weld "DELETE FROM catalog-tags" where)
-    ==
-  =/  page-insert=tape
-    %-  zing
-    :~  "INSERT INTO catalog-pages (source, publisher, path, url, title, fetched, hash, category, cat-source, confidence, word-count, body-lines) VALUES ("
-        st  ", "  pt  ", '"  ek  "', '"  ue  "', '"  ttl  "', "
-        fet  ", "  hsh  ", '', '', .0, "  wc  ", "  bl  ");"
     ==
   =/  heading-inserts=tape
     %-  zing
@@ -135,7 +169,7 @@
     =/  lt=tape  (urq-esc (trip label.l))
     =/  p=tape   (trip (scot %ud position.l))
     =/  intr=tape
-      ?:((has-prefix "urb://" (trip target.l)) "1" "0")
+      ?:((link-internal (trip target.l) pages) "1" "0")
     %-  zing
     :~  "INSERT INTO catalog-links (source, publisher, path, position, target-url, label, is-internal) VALUES ("
         st  ", "  pt  ", '"  ek  "', "  p  ", '"  tt  "', '"  lt  "', "  intr  ");"
@@ -150,7 +184,26 @@
     :~  "INSERT INTO catalog-tags (source, publisher, path, tag) VALUES ("
         st  ", "  pt  ", '"  ek  "', '"  tg  "');"
     ==
-  :(weld deletes page-insert heading-inserts link-inserts tag-inserts)
+  :(weld update deletes heading-inserts link-inserts tag-inserts)
+::
+::  +link-internal: does a link target point into the network / to a known
+::  page on this publisher? Replaces the old "starts with urb://" heuristic,
+::  which marked every RELATIVE intra-ship link — the common case in real
+::  gemtext — as external (live crawl of ~zod showed is-internal=0 on every
+::  /-rooted link). A target is internal iff it is an explicit `urb://` link
+::  OR a /-rooted spur that resolves to a path in `pages` (the publisher's
+::  current manifest set, threaded in by the crawler). Foreign schemes
+::  (http(s), mailto, …) and dangling relative links (not in the manifest)
+::  are external. Bad knot syntax is treated as external (mule-guarded).
+++  link-internal
+  |=  [target=tape pages=(set path)]
+  ^-  ?
+  ?:  (has-prefix "urb://" target)  &
+  ?.  ?=(^ target)  |
+  ?.  =('/' i.target)  |
+  =/  parsed=(each path tang)  (mule |.((stab (crip target))))
+  ?:  ?=(%| -.parsed)  |
+  (~(has in pages) p.parsed)
 ::
 ::  +catalog-page-delete-urql: remove every row for one page across all
 ::  five catalog tables. Used when the crawler observes a path drop out
@@ -183,7 +236,13 @@
   =/  pt=tape    (trip (scot %p pub))
   =/  scan=tape  (trip (scot %da now))
   =/  h=tape     (trip (scot %ud hsh))
-  =/  r=tape     (urq-esc (trip raw))
+  ::  `raw` is a multi-line gemtext manifest — the ONLY multi-line @t the
+  ::  catalog INSERTs. +urq-esc escapes ' and \ but passes newlines/control
+  ::  bytes through, and obelisk's urQL string lexer may terminate a literal at
+  ::  a raw newline (aborting the whole poke). Neutralize bytes < 32 to spaces
+  ::  before escaping so the snapshot INSERT can't parse-abort. (Page-row @t
+  ::  values derive from single gemtext lines, so they carry no newline.)
+  =/  r=tape     (urq-esc (turn (trip raw) |=(c=@tD ?:((lth c 32) ' ' c))))
   %-  zing
   :~  "DELETE FROM catalog-manifests WHERE publisher = "  pt  ";"
       "INSERT INTO catalog-manifests (publisher, scanned, hash, raw) VALUES ("
@@ -263,19 +322,23 @@
     |.((stab (crip target)))
   ?:(?=(%& -.parsed) `p.parsed ~)
 ::
-::  +sweep-publishers: the set of publisher ships to crawl in a periodic
-::  sweep, derived from the per-file follow map `subs` (keyed by [ship spur]).
-::  Unique ships, with our own ship dropped (can't crawl yourself). Order is
-::  unspecified (set tap); the sweep queue processes them sequentially. Typed
-::  with stdlib shapes only (@p, path) so this lib stays free of /+ *lattice.
+::  +sweep-publishers: the set of publisher ships to crawl in a sweep. The
+::  UNION of (a) the ships we follow per-file (`subs`, keyed by [ship spur])
+::  and (b) every ship in our %contacts book (`contacts`). The catalog
+::  indexes everyone in the contact book even if we don't follow any of their
+::  files — so search covers contacts, not just follows. Our own ship is
+::  dropped (can't crawl yourself). Order is unspecified (set tap); the sweep
+::  queue processes them sequentially. Typed with stdlib shapes only (@p,
+::  path) so this lib stays free of /+ *lattice — the agent scrys %contacts
+::  and passes the ship set in.
 ++  sweep-publishers
-  |=  [subs=(map [=ship spur=path] last=@ud) our=@p]
+  |=  [subs=(map [=ship spur=path] last=@ud) contacts=(set @p) our=@p]
   ^-  (list @p)
-  =/  ships=(set @p)
+  =/  follow-ships=(set @p)
     %-  ~(gas in *(set @p))
     %+  turn  ~(tap in ~(key by subs))
     |=([s=ship *] s)
-  ~(tap in (~(del in ships) our))
+  ~(tap in (~(del in (~(uni in follow-ships) contacts)) our))
 ::
 ::  +dedupe-paths: drop duplicate paths, preserving first-occurrence order.
 ::  (A set would lose order; the catalog doesn't strictly need order, but
@@ -371,6 +434,68 @@
   |=  tag=tape
   ^-  tape
   :(weld "FROM catalog-tags WHERE tag = '" (urq-esc tag) "' SELECT source, publisher, path;")
+::
+::  ════════════════════════════════════════════════════════════════════
+::  Classifier pipeline.
+::
+::  The classifier is an external LLM (driven via MCP/HTTP) that reads the
+::  worklist + the existing taxonomy, decides a category for each page, and
+::  writes it back. obelisk can't be read from an MCP thread (no scry, the
+::  bridge is async), so the two READ helpers below are served by HTTP
+::  endpoints the classifier calls directly; the WRITE is exposed both as an
+::  HTTP endpoint and a poke action so an MCP tool can drive it.
+::  ════════════════════════════════════════════════════════════════════
+::
+::  +catalog-pending-list-urql: the worklist — every page not yet classified
+::  (category = ''), newest first. obelisk has no LIMIT, so the classifier
+::  takes a batch off the front and paginates client-side. This is a
+::  COMPUTED worklist, not a queue table: a fresh crawl INSERTs category=''
+::  (page appears here); +catalog-classify-urql sets a category (page drops
+::  off); the two-poke upsert preserves the category across re-sweeps (an
+::  already-classified page never reappears). No catalog-pending TABLE write
+::  is needed for the 'new' case — that table is reserved for future
+::  explicit-requeue reasons ('changed' / 'requested' / 'low-confidence').
+++  catalog-pending-list-urql
+  ^-  tape
+  ;:  weld
+    "FROM catalog-pages WHERE category = '' SELECT "
+    "source, publisher, path, url, title, word-count, fetched"
+    " ORDER BY fetched DESC;"
+  ==
+::
+::  +catalog-classify-urql: write a classification onto one page. A pure
+::  multi-column UPDATE (verified live) that names ONLY the classification
+::  columns, never content — so it composes cleanly with the crawler's
+::  content refresh in any interleaving. `cat-source` is the provenance
+::  ('llm' | 'rule' | 'manual' | 'imported'); `confidence` is 0.0-1.0 (@rs,
+::  emitted via +scot %rs — obelisk parses the `.85` float syntax). Targets
+::  exactly one row via the (source, publisher, path) natural key.
+++  catalog-classify-urql
+  |=  [src=@p pub=@p pat=path category=@t cat-source=@t confidence=@rs]
+  ^-  tape
+  =/  st=tape   (trip (scot %p src))
+  =/  pt=tape   (trip (scot %p pub))
+  =/  ek=tape   (urq-esc (trip (spat pat)))
+  =/  cat=tape  (urq-esc (trip category))
+  =/  cs=tape   (urq-esc (trip cat-source))
+  =/  cf=tape   (trip (scot %rs confidence))
+  ;:  weld
+    "UPDATE catalog-pages SET category = '"  cat
+    "', cat-source = '"  cs  "', confidence = "  cf
+    " WHERE source = "  st  " AND publisher = "  pt
+    " AND path = '"  ek  "';"
+  ==
+::
+::  +catalog-vocab-urql: the existing category vocabulary — the category
+::  column of every page. obelisk has no DISTINCT/GROUP BY (verified live),
+::  so this returns one row per page and the CALLER dedupes + drops the ''
+::  (unclassified) sentinel. The classifier reads this to reuse established
+::  categories instead of coining near-duplicates (the "let users/LLMs
+::  bootstrap their own taxonomy without bias" goal — we suggest the live
+::  vocabulary, we don't impose a fixed enum).
+++  catalog-vocab-urql
+  ^-  tape
+  "FROM catalog-pages SELECT category;"
 ::
 ::  +catalog-join-and: join WHERE conjuncts with " AND ". "" for empties.
 ++  catalog-join-and

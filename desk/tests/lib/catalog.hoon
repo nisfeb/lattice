@@ -174,63 +174,106 @@
       body-lines=10
   ==
 ::
-::  ── +catalog-page-urql ──────────────────────────────────────────────
+::  ── +catalog-page-ensure-urql / +catalog-page-refresh-urql ──────────
 ::
-::  Every per-page DELETE present BEFORE every per-page INSERT —
-::  guarantees idempotent re-runs (a refresh on a changed body cleanly
-::  replaces the stale headings/links/tags).
-++  test-page-urql-deletes-precede-inserts
-  =/  s=tape  (catalog-page-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
-  =/  d-page=(unit @ud)  (find "DELETE FROM catalog-pages" s)
+::  The page row is written by a two-poke upsert (see the lib): an
+::  ensure-INSERT (create-if-absent, harmless dup) + a refresh-UPDATE
+::  (content-only, so a re-crawl can't clobber a classification) that also
+::  DELETE+re-INSERTs the child rows. These pin both halves.
+::
+::  empty pages set for gates that take one — is-internal of a urb:// link
+::  doesn't consult the set (relative resolution is tested via +link-internal).
+++  no-pages  ^-((set path) ~)
+::
+::  ensure: a SINGLE INSERT INTO catalog-pages, every column, sentinel
+::  classification. No UPDATE, no DELETE — it's create-if-absent.
+++  test-ensure-urql-single-insert
+  =/  s=tape  (catalog-page-ensure-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
+  =/  cols=tape
+    "(source, publisher, path, url, title, fetched, hash, category, cat-source, confidence, word-count, body-lines)"
+  ;:  weld
+    (expect-eq !>(`@ud`1) !>((substr-count s "INSERT INTO catalog-pages")))
+    (expect-eq !>(~) !>((find "UPDATE " s)))
+    (expect-eq !>(~) !>((find "DELETE " s)))
+    ::  every column in design order
+    (expect-eq !>(&) !>(!=(~ (find cols s))))
+    ::  sentinel classification ('' / '' / .0)
+    (expect-eq !>(&) !>(!=(~ (find ", '', '', .0, " s))))
+    ::  bare @p literals (not quoted cords)
+    (expect-eq !>(&) !>(!=(~ (find "(~zod, ~tyr, " s))))
+    (expect-eq !>(~) !>((find "('~zod', '~tyr', " s)))
+  ==
+::
+::  ensure backslash-escapes a quote in the title before the VALUES clause.
+++  test-ensure-urql-escapes-quote-in-title
+  =/  a=analysis
+    :*  title='it\'s a trap'
+        headings=`(list heading)`~  links=`(list link)`~  tags=`(list @t)`~
+        hash=(sham 'x')  word-count=0  body-lines=0
+    ==
+  =/  s=tape  (catalog-page-ensure-urql ~zod ~tyr /a ~2026.1.1 a)
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "'it\\'s a trap'" s))))
+    (expect-eq !>(~) !>((find "'it's a trap'" s)))
+  ==
+::
+::  refresh: an UPDATE of catalog-pages that names ONLY content columns —
+::  never category/cat-source/confidence. THIS is what preserves a
+::  classification across a periodic re-crawl; the single most important
+::  invariant of the whole upsert. It must also NOT INSERT a page row.
+++  test-refresh-urql-update-omits-classification
+  =/  s=tape  (catalog-page-refresh-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis no-pages)
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "UPDATE catalog-pages SET " s))))
+    (expect-eq !>(&) !>(!=(~ (find "title = '" s))))
+    (expect-eq !>(&) !>(!=(~ (find "word-count = " s))))
+    ::  classification columns ABSENT from the entire refresh tape
+    (expect-eq !>(~) !>((find "category = " s)))
+    (expect-eq !>(~) !>((find "cat-source = " s)))
+    (expect-eq !>(~) !>((find "confidence = " s)))
+    ::  refresh never re-inserts the page row (ensure owns that)
+    (expect-eq !>(~) !>((find "INSERT INTO catalog-pages" s)))
+  ==
+::
+::  refresh fully replaces child rows: every child DELETE precedes its
+::  INSERTs (and there is NO catalog-pages DELETE — the row persists).
+++  test-refresh-urql-child-deletes-precede-inserts
+  =/  s=tape  (catalog-page-refresh-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis no-pages)
   =/  d-head=(unit @ud)  (find "DELETE FROM catalog-headings" s)
   =/  d-link=(unit @ud)  (find "DELETE FROM catalog-links" s)
   =/  d-tag=(unit @ud)   (find "DELETE FROM catalog-tags" s)
-  =/  i-page=(unit @ud)  (find "INSERT INTO catalog-pages" s)
   =/  i-head=(unit @ud)  (find "INSERT INTO catalog-headings" s)
   =/  i-link=(unit @ud)  (find "INSERT INTO catalog-links" s)
   =/  i-tag=(unit @ud)   (find "INSERT INTO catalog-tags" s)
-  ?~  d-page  (expect-eq !>(&) !>(|))
   ?~  d-head  (expect-eq !>(&) !>(|))
   ?~  d-link  (expect-eq !>(&) !>(|))
   ?~  d-tag   (expect-eq !>(&) !>(|))
-  ?~  i-page  (expect-eq !>(&) !>(|))
   ?~  i-head  (expect-eq !>(&) !>(|))
   ?~  i-link  (expect-eq !>(&) !>(|))
   ?~  i-tag   (expect-eq !>(&) !>(|))
   ;:  weld
-    (expect-eq !>(&) !>((lth u.d-page u.i-page)))
+    (expect-eq !>(~) !>((find "DELETE FROM catalog-pages" s)))
     (expect-eq !>(&) !>((lth u.d-head u.i-head)))
     (expect-eq !>(&) !>((lth u.d-link u.i-link)))
     (expect-eq !>(&) !>((lth u.d-tag u.i-tag)))
   ==
 ::
-::  catalog-pages INSERT includes EVERY column in the design order.
-++  test-page-urql-pages-columns
-  =/  s=tape  (catalog-page-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
-  =/  cols=tape
-    "(source, publisher, path, url, title, fetched, hash, category, cat-source, confidence, word-count, body-lines)"
-  (expect-eq !>(&) !>(!=(~ (find cols s))))
-::
-::  source and publisher are encoded as bare @p literals (no quotes).
-::  If a future change quotes them like '~zod', this test fails.
-++  test-page-urql-ship-encoding
-  =/  s=tape  (catalog-page-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
-  ;:  weld
-    ::  bare ~zod somewhere in the page INSERT row
-    (expect-eq !>(&) !>(!=(~ (find "(~zod, ~tyr, " s))))
-    ::  AND NOT quoted as a cord
-    (expect-eq !>(~) !>((find "('~zod', '~tyr', " s)))
-  ==
-::
-::  Fixture has 2 headings, 2 links, 2 tags → 2 INSERTs each. Count parity
-::  catches off-by-one errors in the per-list +turn loops.
-++  test-page-urql-count-parity
-  =/  s=tape  (catalog-page-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
+::  refresh child-row count parity (fixture: 2 headings, 2 links, 2 tags).
+++  test-refresh-urql-count-parity
+  =/  s=tape  (catalog-page-refresh-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis no-pages)
   ;:  weld
     (expect-eq !>(`@ud`2) !>((substr-count s "INSERT INTO catalog-headings")))
     (expect-eq !>(`@ud`2) !>((substr-count s "INSERT INTO catalog-links")))
     (expect-eq !>(`@ud`2) !>((substr-count s "INSERT INTO catalog-tags")))
-    (expect-eq !>(`@ud`1) !>((substr-count s "INSERT INTO catalog-pages")))
+  ==
+::
+::  is-internal in refresh output: the fixture's urb:// link → 1, https → 0
+::  (with an empty pages set — urb:// doesn't need set membership).
+++  test-refresh-urql-is-internal
+  =/  s=tape  (catalog-page-refresh-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis no-pages)
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "'urb://~zod/x', 'X-page', 1)" s))))
+    (expect-eq !>(&) !>(!=(~ (find "'https://e.com', 'web', 0)" s))))
   ==
 ::
 ::  Count non-overlapping occurrences of [needle] in [hay]. Helper for
@@ -246,44 +289,30 @@
   ?~  ix  acc
   $(hay `tape`(slag +(u.ix) hay), acc +(acc))
 ::
-::  is-internal: 1 for urb:// links, 0 for foreign-scheme. Fixture has
-::  one of each → the output should contain both `, 1)` and `, 0)` at
-::  the right positions in catalog-links INSERTs.
-++  test-page-urql-is-internal
-  =/  s=tape  (catalog-page-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis)
-  ;:  weld
-    ::  the urb:// link row ends with `, 1)`
-    (expect-eq !>(&) !>(!=(~ (find "'urb://~zod/x', 'X-page', 1)" s))))
-    ::  the https:// link row ends with `, 0)`
-    (expect-eq !>(&) !>(!=(~ (find "'https://e.com', 'web', 0)" s))))
-  ==
+::  ── +link-internal (the is-internal resolver) ──────────────────────
+::  urb:// is always internal; a /-rooted spur is internal iff it's in the
+::  publisher's manifest set; foreign schemes and dangling relative links
+::  are external; bad knot syntax is external (not a crash).
+++  test-link-internal-urb
+  (expect-eq !>(&) !>((link-internal "urb://~zod/x" *(set path))))
 ::
-::  Title containing a `'` must be backslash-escaped before going into
-::  the VALUES clause — otherwise obelisk's parser bails.
-++  test-page-urql-escapes-quote-in-title
-  =/  a=analysis
-    :*  title='it\'s a trap'
-        headings=`(list heading)`~
-        links=`(list link)`~
-        tags=`(list @t)`~
-        hash=(sham 'x')
-        word-count=0
-        body-lines=0
-    ==
-  =/  s=tape  (catalog-page-urql ~zod ~tyr /a ~2026.1.1 a)
-  ;:  weld
-    ::  the title is present in escaped form
-    (expect-eq !>(&) !>(!=(~ (find "'it\\'s a trap'" s))))
-    ::  AND NOT in raw (unescaped) form
-    (expect-eq !>(~) !>((find "'it's a trap'" s)))
-  ==
+++  test-link-internal-relative-in-set
+  =/  pages=(set path)  (silt ~[/notes/world /blog/intro])
+  (expect-eq !>(&) !>((link-internal "/notes/world" pages)))
 ::
-::  Sentinel values for category/cat-source/confidence — '' / '' / .0.
-::  When the classifier pipeline lands, an UPDATE will overwrite these;
-::  fresh rows should always have the sentinels.
-++  test-page-urql-classifier-sentinels
-  =/  s=tape  (catalog-page-urql ~zod ~tyr /a ~2026.1.1 fixture-analysis)
-  (expect-eq !>(&) !>(!=(~ (find ", '', '', .0, " s))))
+::  the regression this fixes: a relative link to a page the publisher
+::  DOES publish must be internal (the old urb://-only heuristic missed it).
+++  test-link-internal-relative-not-in-set
+  =/  pages=(set path)  (silt ~[/notes/world])
+  (expect-eq !>(|) !>((link-internal "/nope" pages)))
+::
+++  test-link-internal-http-external
+  =/  pages=(set path)  (silt ~[/notes/world])
+  (expect-eq !>(|) !>((link-internal "https://urbit.org" pages)))
+::
+++  test-link-internal-bad-syntax
+  ::  /-rooted but illegal knot (embedded space) → external, mule-guarded.
+  (expect-eq !>(|) !>((link-internal "/has space" *(set path))))
 ::
 ::  ── +catalog-page-delete-urql ───────────────────────────────────────
 ::
@@ -513,6 +542,53 @@
   =/  s=tape  (catalog-by-tag-urql "urbit")
   (expect-eq !>(&) !>(!=(~ (find "FROM catalog-tags WHERE tag = 'urbit' SELECT source, publisher, path;" s))))
 ::
+::  ════════════════════════════════════════════════════════════════════
+::  Classifier pipeline generators.
+::  ════════════════════════════════════════════════════════════════════
+::
+::  +catalog-pending-list-urql: the worklist filters category = '' and orders
+::  newest-first; obelisk has no LIMIT so none is emitted.
+++  test-pending-list-urql-shape
+  =/  s=tape  catalog-pending-list-urql
+  ;:  weld
+    ::  FROM-first, filters the unclassified sentinel, at the very start.
+    (expect-eq !>(`(unit @ud)`[~ 0]) !>((find "FROM catalog-pages WHERE category = ''" s)))
+    (expect-eq !>(&) !>(!=(~ (find "ORDER BY fetched DESC;" s))))
+    (expect-eq !>(~) !>((find "LIMIT" s)))
+  ==
+::
+::  +catalog-classify-urql: a pure UPDATE naming ONLY the classification
+::  columns (never content), keyed on (source, publisher, path). @rs
+::  confidence is emitted via +scot %rs as a `.85`-style float literal.
+++  test-classify-urql-shape
+  =/  s=tape  (catalog-classify-urql ~tyr ~zod /blog/intro 'essay' 'llm' .85)
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "UPDATE catalog-pages SET category = 'essay'" s))))
+    (expect-eq !>(&) !>(!=(~ (find "cat-source = 'llm'" s))))
+    (expect-eq !>(&) !>(!=(~ (find "confidence = .85" s))))
+    (expect-eq !>(&) !>(!=(~ (find "WHERE source = ~tyr AND publisher = ~zod AND path = '/blog/intro'" s))))
+    ::  must NOT touch content columns
+    (expect-eq !>(~) !>((find "title = " s)))
+    (expect-eq !>(~) !>((find "url = " s)))
+  ==
+::
+::  classify escapes a quote in the category cord (injection safety).
+++  test-classify-urql-escapes-quote
+  =/  s=tape  (catalog-classify-urql ~tyr ~zod /a 'a\'b' 'llm' .0)
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "category = 'a\\'b'" s))))
+    (expect-eq !>(~) !>((find "category = 'a'b'" s)))
+  ==
+::
+::  +catalog-vocab-urql: every page's category column, FROM-first, no
+::  DISTINCT (obelisk has none — the caller dedupes).
+++  test-vocab-urql-shape
+  =/  s=tape  catalog-vocab-urql
+  ;:  weld
+    (expect-eq !>(&) !>(=("FROM catalog-pages SELECT category;" s)))
+    (expect-eq !>(~) !>((find "DISTINCT" s)))
+  ==
+::
 ::  +catalog-join-and: 0 / 1 / many conjuncts.
 ++  test-join-and
   ;:  weld
@@ -521,7 +597,7 @@
     (expect-eq !>("a = 1 AND b = 2 AND c = 3") !>((catalog-join-and ~["a = 1" "b = 2" "c = 3"])))
   ==
 ::
-::  +sweep-publishers: unique follow ships, minus self.
+::  +sweep-publishers: UNION of follow ships and contacts, unique, minus self.
 ++  test-sweep-publishers
   =/  empty=(map [=ship spur=path] @ud)  ~
   =/  subs=(map [=ship spur=path] @ud)
@@ -532,13 +608,21 @@
         [[~bus /blog] 0]
         [[~nec /x] 0]
     ==
-  =/  got=(list @p)  (sweep-publishers subs ~nec)
+  ::  contacts: ~dev is a contact we don't follow; ~zod is both; ~nec is self.
+  =/  contacts=(set @p)  (sy ~[~dev ~zod ~nec])
+  =/  got=(list @p)  (sweep-publishers subs contacts ~nec)
   ;:  weld
-    (expect-eq !>(`(list @p)`~) !>((sweep-publishers empty ~nec)))
-    ::  ~zod appears once despite two spurs; ~nec (self) dropped; ~bus kept
-    (expect-eq !>(`@ud`2) !>((lent got)))
+    ::  no follows, no contacts → empty
+    (expect-eq !>(`(list @p)`~) !>((sweep-publishers empty *(set @p) ~nec)))
+    ::  union {~zod,~bus,~nec}(follows) ∪ {~dev,~zod,~nec}(contacts) minus ~nec
+    ::  = {~zod,~bus,~dev} — 3 ships, ~zod deduped, self dropped
+    (expect-eq !>(`@ud`3) !>((lent got)))
     (expect-eq !>(&) !>((lien got |=(p=@p =(p ~zod)))))
     (expect-eq !>(&) !>((lien got |=(p=@p =(p ~bus)))))
+    ::  ~dev is crawled even though it is only a CONTACT, never followed
+    (expect-eq !>(&) !>((lien got |=(p=@p =(p ~dev)))))
     (expect-eq !>(|) !>((lien got |=(p=@p =(p ~nec)))))
+    ::  a contact-only set with no follows still yields the contacts (minus self)
+    (expect-eq !>(`@ud`2) !>((lent (sweep-publishers empty (sy ~[~dev ~bus ~nec]) ~nec))))
   ==
 --

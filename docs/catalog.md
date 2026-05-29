@@ -31,18 +31,39 @@ publishers  ─/manifest─▶  crawler  ─remote-scry─▶  analyzer
 
 Four stages, in order:
 
-1. **Crawler** — discovers content by polling each follow's `/manifest`
-   (default every 6h) and listening to a per-publisher `/catalog` update
-   stream (added publisher-side in a later PR). New or changed paths get
-   queued for fetch.
+1. **Crawler** — discovers content by polling each publisher's `/manifest`
+   (default every 6h, `+sweep-interval`) and walking each listed spur to
+   latest via remote scry. The crawl set is the **union of the user's
+   %contacts book and their per-file follows** (`+sweep-publishers`) — so the
+   catalog indexes everyone in the contact book, not just publishers whose
+   files we follow. The periodic sweep processes publishers **sequentially**
+   (peak concurrency = one publisher's pages ≤ `manifest-max`); a one-off
+   manual `/catalog-scan` is tagged `origin=%scan` so it never advances the
+   sweep queue (only `%sweep` walks do). On each manifest finalize it
+   **diffs** the new path set against the publisher's last-known set (cached
+   in state as `catalog-pubpaths`) and DELETEs the catalog rows of any page
+   that vanished from the index — but it SKIPS that diff when the manifest
+   parse is empty or truncated (> `manifest-max`), so a transient/over-cap
+   fetch can't wrongly delete live pages.
 2. **Analyzer** — gemtext-aware structural extraction: title (first `#`),
    headings with depth, outbound links with labels, explicit `#tag` lines,
-   content hash, word count.
-3. **Index** — pokes obelisk with urQL `INSERT … VALUES …` and `UPDATE`
-   statements against the `catalog-*` tables (schema below).
-4. **Surface** — Discover gets a search box that compiles to urQL; MCP
-   tools expose query + classification surfaces for agents and external
-   tooling.
+   content hash, word count. A link is marked **internal** (`is-internal`)
+   iff it's an explicit `urb://` link or a `/`-rooted spur that resolves to
+   a page in the publisher's manifest set — so relative intra-publisher
+   links (the common case) are correctly graphed, not just `urb://` ones.
+3. **Index** — pokes obelisk against the `catalog-*` tables (schema below).
+   The page row uses a **two-poke upsert** (`+catalog-page-ensure-urql` +
+   `+catalog-page-refresh-urql`): an INSERT that no-ops harmlessly if the
+   row exists, plus an UPDATE of *content columns only*. This is what lets a
+   periodic re-crawl refresh a page **without clobbering its
+   classification** — critical because the sweep re-walks everything and
+   carries no per-page freshness state. Child rows (headings/links/tags) are
+   DELETE+re-INSERTed (pure derived content).
+4. **Surface** — catalog reads are authenticated HTTP endpoints on the
+   lattice agent (obelisk has no scry, so they can't be MCP); the LLM
+   classifier reads its worklist over HTTP and writes back via a poke
+   (HTTP or the `lattice-catalog-classify` MCP tool). Discover's search box
+   (a later PR) compiles to the same read endpoints.
 
 ## Federation model
 
@@ -71,32 +92,42 @@ populated (title, headings, links, hash) but `category = ''` and `tags
 parallel pipeline that fills in semantic columns over time.
 
 The classifier is **pulled by external clients**, not pushed by the ship.
-Lattice's MCP exposes a pair of tools:
+Because obelisk has no scry, the worklist + taxonomy READS are HTTP
+endpoints (an MCP thread is synchronous and can't bridge obelisk's async
+query); the WRITE is a poke, exposed both as HTTP and as an MCP tool:
 
-- `lattice-catalog-pending` — returns N pending pages plus the current
-  vocabulary (categories, tags). The vocabulary is empty at cold start
-  and grows as classifications come in.
-- `lattice-catalog-classify` — submit `{url, category, tags, confidence,
-  reasoning?}` for one page.
+- `GET /catalog-pending` — the worklist: every page still unclassified.
+  Implemented as the computed query `WHERE category = ''` — no separate
+  queue table to keep in sync. A fresh crawl INSERTs `category=''` (page
+  appears); a classify sets a category (page drops off); the two-poke
+  upsert preserves the category across re-sweeps (it never reappears).
+- `GET /catalog-vocab` — every page's category column (the caller dedupes
+  and drops `''`). The vocabulary is empty at cold start and grows as
+  classifications come in; the classifier reads it to reuse established
+  categories rather than coin near-duplicates.
+- `POST /catalog-classify?url=&category=&cat-source=&confidence=` /
+  `lattice-catalog-classify` MCP poke — set the category/cat-source/
+  confidence on one page (a pure obelisk UPDATE of the classification
+  columns). `cat-source` records provenance (`llm`/`rule`/`manual`).
 
-Any external classifier can drive the pipeline:
+Any external classifier can drive the loop — GET pending + vocab, decide,
+POST/poke each result back:
 - A **Claude Code session** the user invokes manually ("classify some
   pending catalog entries").
 - A **daemon** (Python script with an LLM API key) running in the
   background.
 - An **agent SDK script** writing to a self-curated taxonomy.
 
-Each pending response includes the current vocabulary, which the
-classifier prompts in to bias toward reuse — same `lattice-tags`-first
-idiom the know-store tools already use. Novel categories or tags enter a
-pending-review queue before joining the live vocabulary; the user is the
-curator, the LLM is the proposer.
+Categories are free-form (the "bootstrap your own taxonomy without bias"
+goal): the ship suggests the live vocabulary via `/catalog-vocab`, it does
+not impose a fixed enum.
 
-Confidence and reasoning are first-class:
-- `confidence < threshold` (settings, default 0.7) → flagged for review.
-- `reasoning` is shown next to the proposed category in the review UI so
-  the user can decide approve / rename / reject with the LLM's argument
-  in hand.
+**v1 scope:** classify sets the page's category (one axis); the `confidence`
+signal is stored. A pending-review queue for *novel* categories, an
+LLM-supplied `tags` axis, and a low-confidence review UI are deferred —
+the `catalog-pending` table + `reason` column are reserved for those
+explicit-requeue cases (`changed`/`requested`/`low-confidence`), which the
+v1 computed worklist (`category=''`) does not yet populate.
 
 ## Obelisk schema (`/desk/lib/catalog.hoon`)
 
@@ -178,9 +209,11 @@ periodic sweep skip publishers whose manifest hash hasn't changed.
 
 ### `catalog-pending`
 
-The classifier queue. Pages enter on first crawl with `reason='new'` and
-move out when `lattice-catalog-classify` arrives with sufficient
-confidence.
+The classifier queue, reserved for **explicit-requeue** reasons. In v1 the
+worklist is computed (`/catalog-pending` = `WHERE category=''`), so a fresh
+crawl does NOT write here — this table fills only when a future
+`changed`/`requested`/`low-confidence` requeue lands (deferred, see v1
+scope). The schema is in place so that work needs no migration.
 
 | Column   | Type | Notes |
 |----------|------|-------|
@@ -217,6 +250,8 @@ session.
 | `GET /apps/lattice/catalog-explore` | `category?` `publisher?` `source?` | `+catalog-explore-urql` | Equality filters, AND-ed; any omitted. `publisher`/`source` are `@p` (slaw-validated, bare literal); `category` is `@t` (quoted + escaped). |
 | `GET /apps/lattice/catalog-fetch` | `url` | `+catalog-fetch-urql` | The one full page row (`SELECT *`). |
 | `GET /apps/lattice/catalog-by-tag` | `tag` | `+catalog-by-tag-urql` | `(source, publisher, path)` keys carrying the tag; resolve to rows via `catalog-fetch`. |
+| `GET /apps/lattice/catalog-pending` | — | `+catalog-pending-list-urql` | The classifier worklist: pages with `category=''`, newest first. |
+| `GET /apps/lattice/catalog-vocab` | — | `+catalog-vocab-urql` | Every page's category (one row each; caller dedupes + drops `''`). |
 
 **Free-text substring search is client-side.** Obelisk's urQL has no
 `LIKE`/substring predicate (verified live — only equality and comparison
@@ -226,46 +261,43 @@ the candidate set small. Server-side full-text would need an obelisk
 feature that doesn't exist (or an in-agent post-filter on the query
 result — a deferred refinement).
 
-### Still MCP (writes — pokes, which DO work without scry)
+### The one MCP write (pokes DO work without scry)
 
-The classifier-pipeline and maintenance tools remain MCP tools, because
-they are **writes** (pokes), which an MCP thread-builder can issue
-directly. These are still stubs in `setup-catalog-mcp-tools.py` pending
-the classifier PR:
+`lattice-catalog-classify` is a real MCP tool (in `setup-catalog-mcp-tools.py`):
+it pokes `%lattice-catalog [%classify url category cat-source confidence]`,
+which an MCP thread-builder can issue synchronously (it's a write). It mirrors
+`POST /catalog-classify`. Reads (`pending`/`vocab`/etc.) are HTTP, per the
+scry constraint above — the original `pending`/`vocab`/`reclassify`/`delete`/
+`restore` stubs were dropped (reads moved to HTTP; re-queue + soft-delete are
+deferred — see v1 scope).
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `lattice-catalog-pending`    | `limit?` (default 10) | `{count, pages: [...], vocab: {categories, tags}}` |
-| `lattice-catalog-classify`   | `url`, `category`, `tags`, `confidence`, `reasoning?` | `{ok}` |
-| `lattice-catalog-vocab`      | — | `{categories, tags}` |
-| `lattice-catalog-reclassify` | `url`, `reason?` | `{ok}` |
-| `lattice-catalog-delete`     | `url` | `{ok}`. Soft-delete. |
-| `lattice-catalog-restore`    | `url` | `{ok}`. Undo. |
-
-(`pending`/`vocab` are reads, so they'll face the same scry constraint —
-they likely become HTTP endpoints too, or read from an in-agent queue
-cache. Resolved in the classifier PR.)
+| `lattice-catalog-classify` | `url`, `category`, `cat-source?` (`llm`), `confidence?` (`"0.85"`) | `{classified}` |
 
 ## Phased delivery
 
 | Phase | Scope | Status |
 |-------|-------|--------|
-| **0. Contract** | obelisk schema + MCP tool stubs + this doc | **this PR** |
-| **1. Crawler core** | `+catalog-create-urql` wired to agent boot, manifest sweep, analyzer (rule-based extraction), real implementations for the 4 read tools | next |
-| **2. Classifier pipeline** | pending queue, real implementations for the classifier-pipeline tools, pending-review UI, reference Python classifier daemon | after 1 |
-| **3. Push refresh** | publisher-side `on-watch /catalog` wire + subscriber fallback (manifest diff for older publishers) | overlaps 1 |
-| **4. Federation** | `/catalog-query/<urql>/json` public scry + `lattice-catalog-import` MCP tool + source-aware UI | after 1, 2 |
+| **0. Contract** | obelisk schema + MCP tool stubs + this doc | ✅ done |
+| **1. Crawler core** | schema wired to agent boot, sequential manifest sweep + auto-sweep, analyzer, 4 read endpoints, **manifest-diff deletion**, **is-internal link resolution**, periodic auto-sweep | ✅ done |
+| **2. Classifier pipeline** | `category=''` worklist (`/catalog-pending`), `/catalog-vocab`, `/catalog-classify` + `lattice-catalog-classify` MCP poke, **classification preserved across re-sweeps** (two-poke upsert) | ✅ done |
+| **2b. Classifier UX** | pending-review queue for novel categories, low-confidence review UI, LLM `tags` axis, reference Python classifier daemon | deferred |
+| **3. Push refresh** | publisher-side `on-watch /catalog` wire + subscriber fallback | overlaps 1 |
+| **4. Federation** | `/catalog-query/<urql>/json` public scry + `lattice-catalog-import` MCP tool + source-aware UI | v2 |
 
-Phases 1–3 ship as one user-visible v1 (catalog with local-only data).
+The whole local-only catalog backend (phases 0–2) ships as one PR; the
+Discover search UI (Kotlin client) is the remaining v1 user surface.
 Phase 4 is v2.
 
 ## Open implementation questions (not blocking this PR)
 
-1. **Obelisk type support.** The schema uses `@p` (ship), `@rs` (single
-   precision float), and `@ud` (unsigned decimal). The current
-   knowledge/tags tables only exercise `@t` and `@da`. If `@p` or `@rs`
-   isn't supported in obelisk's urQL, fall back to `@t` encoding and
-   coerce at read time. Will validate in phase 1.
+1. **Obelisk type support.** ✅ Resolved (validated live): `@p` (bare,
+   unquoted literal), `@rs` (`.85` float syntax), `@ud`, `@da`, `@t` all
+   work. `@uv`/`@uvH` value literals do NOT parse on INSERT, so the content
+   hash is typed `@ud` (`scot %ud`). No `LIKE`/`LIMIT`/`COUNT`/`DISTINCT`/
+   `GROUP BY`. INSERT errors on a duplicate PK (never replaces); UPDATE
+   no-ops on an absent row — together these shape the two-poke upsert.
 2. **`/catalog-query` complexity cap.** Public scry means anyone can run
    urQL against any publisher's catalog. Need a complexity cap to prevent
    denial-of-service via expensive queries — likely `LIMIT 100` ceiling,

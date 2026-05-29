@@ -117,7 +117,7 @@
 ::  +do-know: save → live; del → SOFT (moves to recoverable trash, not gone);
 ::  restore → back to live. This is the delete gate.
 ++  test-do-know
-  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-12)
+  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-10)
   =/  st2  (do-know ~2026.1.1 [%del '/a/b'] st1)
   =/  st3  (do-know ~2026.1.1 [%restore '/a/b'] st2)
   ;:  weld
@@ -133,7 +133,7 @@
 ::  and they survive a del→restore round-trip.
 ++  test-do-know-tags
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/k' 'b'] *state-12)
+  =/  st1  (do-know now [%save '/k' 'b'] *state-10)
   =/  st2  (do-know now [%tag '/k' 'Urbit'] st1)
   =/  st3  (do-know now [%tag '/k' 'design'] st2)
   =/  st4  (do-know now [%save '/k' 'b2'] st3)
@@ -176,54 +176,48 @@
     (expect-eq !>(*(unit [eid=@ta deadline=@da])) !>(oquery.s9))
   ==
 ::
-::  +migrate-9-10: head becomes %10, all state-9 data carried forward
-::  (including the oquery slot from migrate-8-9), catalog-sweep starts ~.
+::  +migrate-9-10: the SINGLE catalog migration (a released ship is at
+::  state-9; states 10-13 were collapsed before release). head becomes %10,
+::  EVERY state-9 field is carried forward verbatim, and the four catalog
+::  slots (catalog-sweep, catalog-walks, sweep-queue, catalog-pubpaths) start
+::  empty. Data-loss guard: we populate every state-9 field and assert each
+::  survives unchanged — a dropped/reordered field in migrate-9-10 (or a
+::  mismatched state-10 def) fails here.
 ++  test-migrate-9-10
   =/  e=know-entry  ['body' ~2026.1.1 (sy ~['x']) ~]
+  =/  w=walk  [~zod /a/b 3 'gmi' 'bd' ~2026.6.1]
   =/  s9=state-9  *state-9
-  =.  know.s9   (malt ~[[`path`/a/b e]])
-  =.  home.s9   `@uvH`42
+  =.  content.s9    (malt ~[[`path`/page 'gemtext']])
+  =.  published.s9  (malt ~[[`path`/page `@uvH`5]])
+  =.  pending.s9    (malt ~[[`@ta`'e1' [~zod /x]]])
+  =.  subs.s9       (malt ~[[[`ship`~bus `path`/feed] `@ud`7]])
+  =.  fetches.s9    (malt ~[[`@ta`'f1' w]])
+  =.  manifest.s9   `@uvH`11
+  =.  home.s9       `@uvH`42
+  =.  browse.s9     `[~zod /p 2]
+  =.  know.s9       (malt ~[[`path`/a/b e]])
+  =.  trash.s9      (malt ~[[`path`/t e]])
+  =.  oquery.s9     `['q1' ~2026.6.1]
   =/  s10=state-10  (migrate-9-10 s9)
   ;:  weld
     (expect-eq !>(%10) !>(-.s10))
-    (expect-eq !>(e) !>((~(got by know.s10) /a/b)))
-    (expect-eq !>(`@uvH`42) !>(home.s10))
+    ::  every state-9 field carried forward verbatim (no data loss)
+    (expect-eq !>(content.s9) !>(content.s10))
+    (expect-eq !>(published.s9) !>(published.s10))
+    (expect-eq !>(pending.s9) !>(pending.s10))
+    (expect-eq !>(subs.s9) !>(subs.s10))
+    (expect-eq !>(fetches.s9) !>(fetches.s10))
+    (expect-eq !>(manifest.s9) !>(manifest.s10))
+    (expect-eq !>(home.s9) !>(home.s10))
+    (expect-eq !>(browse.s9) !>(browse.s10))
+    (expect-eq !>(know.s9) !>(know.s10))
+    (expect-eq !>(trash.s9) !>(trash.s10))
+    (expect-eq !>(oquery.s9) !>(oquery.s10))
+    ::  the four catalog slots start empty
     (expect-eq !>(*(unit @da)) !>(catalog-sweep.s10))
-  ==
-::
-::  +migrate-10-11: head becomes %11, all state-10 data carried forward
-::  (including catalog-sweep), catalog-walks starts empty.
-++  test-migrate-10-11
-  =/  e=know-entry  ['body' ~2026.1.1 (sy ~['x']) ~]
-  =/  s10=state-10  *state-10
-  =.  know.s10   (malt ~[[`path`/a/b e]])
-  =.  home.s10   `@uvH`99
-  =.  catalog-sweep.s10  `~2026.6.1
-  =/  s11=state-11  (migrate-10-11 s10)
-  ;:  weld
-    (expect-eq !>(%11) !>(-.s11))
-    (expect-eq !>(e) !>((~(got by know.s11) /a/b)))
-    (expect-eq !>(`@uvH`99) !>(home.s11))
-    (expect-eq !>(`(unit @da)``~2026.6.1) !>(catalog-sweep.s11))
-    (expect-eq !>(*(map @ta catalog-walk)) !>(catalog-walks.s11))
-  ==
-::
-::  +migrate-11-12: head becomes %12, all state-11 data carried forward
-::  (incl. catalog-walks), sweep-queue starts empty.
-++  test-migrate-11-12
-  =/  e=know-entry  ['body' ~2026.1.1 (sy ~['x']) ~]
-  =/  cw=catalog-walk  [%manifest ~zod /manifest 1 'gmi' 'body' ~2026.6.1]
-  =/  s11=state-11  *state-11
-  =.  know.s11   (malt ~[[`path`/a/b e]])
-  =.  home.s11   `@uvH`77
-  =.  catalog-walks.s11  (malt ~[[`@ta`'w1' cw]])
-  =/  s12=state-12  (migrate-11-12 s11)
-  ;:  weld
-    (expect-eq !>(%12) !>(-.s12))
-    (expect-eq !>(e) !>((~(got by know.s12) /a/b)))
-    (expect-eq !>(`@uvH`77) !>(home.s12))
-    (expect-eq !>(cw) !>((~(got by catalog-walks.s12) 'w1')))
-    (expect-eq !>(*(list @p)) !>(sweep-queue.s12))
+    (expect-eq !>(*(map @ta catalog-walk)) !>(catalog-walks.s10))
+    (expect-eq !>(*(list @p)) !>(sweep-queue.s10))
+    (expect-eq !>(*(map @p (set path))) !>(catalog-pubpaths.s10))
   ==
 ::
 ::  ── explore / discovery (synchronous filter over the live store) ──
@@ -245,7 +239,7 @@
 ::  +know-explore: AND/OR tag filter + case-insensitive text search over key/body.
 ++  test-know-explore
   =/  now  ~2026.1.1
-  =/  s0   *state-12
+  =/  s0   *state-10
   =/  s1   (do-know now [%save '/notes/urbit-design' 'a note about Hoon'] s0)
   =/  s2   (do-know now [%tag '/notes/urbit-design' 'urbit'] s1)
   =/  s3   (do-know now [%tag '/notes/urbit-design' 'design'] s2)
@@ -308,7 +302,7 @@
   (expect-eq !>(&) !>(!=(~ (find ~[92 39] s))))
 ::
 ++  test-obelisk-populate-urql
-  =/  st  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-12)
+  =/  st  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-10)
   =/  s=tape  (obelisk-populate-urql know.st)
   ;:  weld
     ::  clears both tables before re-inserting (full rebuild)
@@ -321,14 +315,14 @@
 ::  one tag row; bad/no-op key = empty.
 ++  test-mirror-urql
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-12)
+  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-10)
   =/  st2  (do-know now [%tag '/a/b' 'urbit'] st1)
   =/  m-save   (mirror-urql [%save '/a/b' 'hi'] st1)
   =/  st-del   (do-know now [%del '/a/b'] st2)
   =/  m-del    (mirror-urql [%del '/a/b'] st-del)
   =/  m-tag    (mirror-urql [%tag '/a/b' 'Urbit'] st2)
   =/  m-untag  (mirror-urql [%untag '/a/b' 'urbit'] st2)
-  =/  m-noop   (mirror-urql [%save 'bad key' 'x'] *state-12)
+  =/  m-noop   (mirror-urql [%save 'bad key' 'x'] *state-10)
   ;:  weld
     ::  save = delete the stale row, then insert the current one
     (expect-eq !>(&) !>(!=(~ (find "DELETE FROM knowledge WHERE item = '/a/b';" m-save))))

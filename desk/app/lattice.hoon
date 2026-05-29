@@ -4,7 +4,7 @@
 /+  default-agent, dbug, verb, *lattice, *catalog, *catalog-analyzer
 ::
 |%
-+$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7 state-8 state-9 state-10 state-11 state-12)
++$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7 state-8 state-9 state-10)
 +$  card  card:agent:gall
 ::
 ::  -- helper gates --
@@ -159,8 +159,8 @@
 ::  the catalog read endpoints — shares one code path and one in-flight
 ::  slot. 429 if a query is already running; 400 on empty urQL.
 ++  kick-obelisk-query
-  |=  [=bowl:gall eyre-id=@ta urql=tape st=state-12]
-  ^-  [(list card) state-12]
+  |=  [=bowl:gall eyre-id=@ta urql=tape st=state-10]
+  ^-  [(list card) state-10]
   ?.  =(~ oquery.st)
     [(respond-json-cards eyre-id 429 '{"error":"a query is already running"}') st]
   ?:  =(~ urql)
@@ -177,9 +177,9 @@
 ::  so the knowledge store behaves identically whether or not %obelisk is
 ::  installed. Shared by the HTTP CRUD endpoints and the %lattice-know poke.
 ++  know-mutate
-  |=  [=bowl:gall act=know-action st=state-12]
-  ^-  (quip card state-12)
-  =/  new=state-12  (do-know now.bowl act st)
+  |=  [=bowl:gall act=know-action st=state-10]
+  ^-  (quip card state-10)
+  =/  new=state-10  (do-know now.bowl act st)
   =/  urql=tape  (mirror-urql act new)
   :_  new
   ?~(urql ~ [(obelisk-poke bowl urql)]~)
@@ -287,21 +287,42 @@
   |=  at=@da
   ^-  card
   [%pass /catalog-sweep %arvo %b %wait at]
-::  +begin-sweep: start a sweep cycle — enqueue every followed publisher and
-::  kick off the first one's manifest walk; the sequential driver in
-::  +cat-conclude advances to the next as each publisher's tree drains. No-op
-::  if a sweep is already in progress (walks in flight or a non-empty queue)
-::  or there are no follows. Does NOT touch the timer (the caller manages it).
+::  +sweep-contacts: the ship set from our %contacts BOOK (the contacts we
+::  explicitly added — /v1/book, not the full /v1/all rolodex). Crash-safe via
+::  +mule: empty set if %contacts is absent/empty. Book keys are ship patps as
+::  @t; +slaw %p validates each (murn drops anything malformed). The sweep
+::  unions this with the per-file follows so the catalog indexes every contact,
+::  not just publishers we follow.
+++  sweep-contacts
+  |=  =bowl:gall
+  ^-  (set @p)
+  =/  res
+    %-  mule
+    |.  ^-  json
+    .^  json  %gx
+      (welp /(scot %p our.bowl)/contacts/(scot %da now.bowl) /v1/book/json)
+    ==
+  ?.  ?=(%& -.res)  ~
+  ?.  ?=([%o *] p.res)  ~
+  %-  ~(gas in *(set @p))
+  %+  murn  ~(tap in ~(key by p.p.res))
+  |=(k=@t ^-((unit @p) (slaw %p k)))
+::
+::  +begin-sweep: start a sweep cycle — enqueue every contact + followed
+::  publisher and kick off the first one's manifest walk; the sequential driver
+::  in +cat-conclude advances to the next as each publisher's tree drains.
+::  No-op if a sweep is already in progress (walks in flight or a non-empty
+::  queue) or there are no publishers. Does NOT touch the timer (caller manages).
 ++  begin-sweep
-  |=  [=bowl:gall st=state-12]
-  ^-  [(list card) state-12]
+  |=  [=bowl:gall st=state-10]
+  ^-  [(list card) state-10]
   ::  use !=(~ …), not ?=(^ …): the latter narrows sweep-queue.st to empty
   ::  for the rest of the gate, blocking the reassignment below.
   ?:  ?|  !=(~ sweep-queue.st)  (gth ~(wyt by catalog-walks.st) 0)  ==
     [~ st]
-  =/  pubs=(list @p)  (sweep-publishers subs.st our.bowl)
+  =/  pubs=(list @p)  (sweep-publishers subs.st (sweep-contacts bowl) our.bowl)
   ?~  pubs  [~ st]
-  =/  start  (start-catalog-scan now.bowl i.pubs)
+  =/  start  (start-catalog-scan now.bowl i.pubs %sweep)
   =.  catalog-walks.st  (~(put by catalog-walks.st) eid.walk.start cw.walk.start)
   =.  sweep-queue.st  t.pubs
   [cards.start st]
@@ -368,13 +389,14 @@
 ::
 ::  +start-catalog-scan: kick off a publisher's manifest walk. Returns the
 ::  walk entry to install + the cards (keen rev 1 + arm the deadline).
-::  Shared by the catalog-scan HTTP endpoint and the sweep driver.
+::  Shared by the catalog-scan HTTP endpoint (origin %scan) and the sweep
+::  driver (origin %sweep). Only %sweep walks advance the sweep-queue.
 ++  start-catalog-scan
-  |=  [now=@da pub=@p]
+  |=  [now=@da pub=@p origin=?(%scan %sweep)]
   ^-  [walk=[eid=@ta cw=catalog-walk] cards=(list card)]
   =/  eid=@ta   (cat-mint-eid now pub /manifest)
   =/  at=@da    (add now ~s30)
-  =/  cw=catalog-walk  [%manifest pub /manifest 0 '' '' at]
+  =/  cw=catalog-walk  [%manifest pub /manifest 0 '' '' at origin]
   :-  [eid cw]
   :~  (cat-walk-keen-card eid 1 pub /manifest)
       (cat-walk-wait-card eid at)
@@ -392,22 +414,27 @@
 ::  this sweep.
 ::
 ++  cat-finalize
-  |=  [=bowl:gall cw=catalog-walk]
-  ^-  [(list card) (list [eid=@ta walk=catalog-walk])]
-  ?:  =(0 rev.cw)  [~ ~]
+  |=  [=bowl:gall cw=catalog-walk old-paths=(set path)]
+  ^-  $:  cards=(list card)
+          walks=(list [eid=@ta walk=catalog-walk])
+          paths=(unit (set path))
+      ==
+  ?:  =(0 rev.cw)  [~ ~ ~]
   ?-  action.cw
       %manifest
     ::  +parse-manifest dedupes; cap the breadth and LOG if we truncated, so a
     ::  giant manifest can't fan out into unbounded keens/timers/state.
     =/  all-paths=(list path)  (parse-manifest body.cw)
-    ~?  (gth (lent all-paths) manifest-max)
+    =/  over-cap=?  (gth (lent all-paths) manifest-max)
+    ~?  over-cap
       [%catalog-manifest-truncated publisher=publisher.cw seen=(lent all-paths) cap=manifest-max]
     =/  paths=(list path)  (scag manifest-max all-paths)
+    =/  new-set=(set path)  (silt paths)
     =/  walks=(list [eid=@ta walk=catalog-walk])
       %+  turn  paths
       |=  p=path
       :-  (cat-mint-eid now.bowl publisher.cw p)
-      [%page publisher.cw p 0 '' '' (add now.bowl ~s30)]
+      [%page publisher.cw p 0 '' '' (add now.bowl ~s30) origin.cw]
     =/  spawn-cards=(list card)
       %-  zing
       %+  turn  walks
@@ -416,24 +443,66 @@
           (cat-walk-wait-card eid.w deadline.walk.w)
       ==
     ::  Record this publisher's manifest snapshot in obelisk (publisher,
-    ::  scanned, hash, raw). Durable + queryable; the foundation a future
-    ::  sweep uses to diff against the next manifest (delete vanished pages)
-    ::  and to skip discovery when the page set is unchanged.
+    ::  scanned, hash, raw). Durable + queryable; complements the in-state
+    ::  path-set cache returned below (which drives the diff + is-internal).
     =/  write-card=card
       %+  obelisk-poke  bowl
       (catalog-manifest-urql publisher.cw now.bowl (sham body.cw) body.cw)
-    [[write-card spawn-cards] walks]
+    ::  Empty parse (rev>0 but no `=> ` lines yielded a valid spur) is treated
+    ::  as a transient / unparseable fetch — NOT "the publisher deleted
+    ::  everything". A remote scry can serve a stale-empty revision, and a
+    ::  manifest-format change would parse to nothing; either would otherwise
+    ::  make the diff below wipe the publisher's WHOLE catalog. So on an empty
+    ::  parse we skip the diff AND leave the path-set cache untouched (paths=~),
+    ::  so a recovered manifest next sweep still diffs against the last-good
+    ::  set. (A publisher that genuinely empties keeps slightly-stale rows
+    ::  until it republishes something — an acceptable trade for not nuking a
+    ::  whole catalog on one bad fetch.)
+    ?~  paths
+      [~[write-card] ~ ~]
+    ::  manifest-diff deletion: any page in the PRIOR manifest set (old-paths)
+    ::  that is gone from the new set has dropped out of the publisher's index
+    ::  — delete its catalog rows (pages/headings/links/tags/pending). On the
+    ::  first crawl old-paths is empty, so this is a no-op. Bounded by the prior
+    ::  set size (itself <= manifest-max).
+    ::
+    ::  BUT skip the diff entirely when the manifest was TRUNCATED (over-cap):
+    ::  new-set is then only the first manifest-max spurs, so a page beyond the
+    ::  cap — still live — would diff as "vanished" and have its rows (and any
+    ::  classification) wrongly deleted. With >manifest-max pages the retained
+    ::  window can also churn at the boundary between sweeps as the publisher's
+    ::  page set changes, repeatedly deleting live pages. Treating an over-cap
+    ::  manifest as authoritative-incomplete (no deletes) is the safe choice;
+    ::  the cost is that a genuinely-removed page on a >cap publisher keeps
+    ::  stale rows. We still spawn page walks + cache new-set (for is-internal).
+    =/  delete-cards=(list card)
+      ?:  over-cap  ~
+      %+  turn  ~(tap in (~(dif in old-paths) new-set))
+      |=  p=path
+      (obelisk-poke bowl (catalog-page-delete-urql our.bowl publisher.cw p))
+    :+  :(weld ~[write-card] delete-cards spawn-cards)
+      walks
+    `new-set
   ::
       %page
     ::  skip + log an oversized page rather than analyzing/indexing it — a
     ::  hostile publisher must not turn one page into a giant obelisk poke.
     ?:  (gth (met 3 body.cw) body-max)
       ~&  [%catalog-page-too-large publisher=publisher.cw spur=spur.cw bytes=(met 3 body.cw)]
-      [~ ~]
+      [~ ~ ~]
     =/  =analysis  (analyze body.cw)
-    =/  urql=tape
-      (catalog-page-urql our.bowl publisher.cw spur.cw now.bowl analysis)
-    [~[(obelisk-poke bowl urql)] ~]
+    ::  Two-poke upsert (see +catalog-page-ensure-urql / -refresh-urql): the
+    ::  ensure-INSERT is harmless-on-conflict, the refresh-UPDATE touches only
+    ::  content — so a periodic re-crawl never clobbers a classification.
+    ::  old-paths here is the publisher's CURRENT manifest set (stored when its
+    ::  manifest finalized, before these page walks), used to resolve which
+    ::  links are internal.
+    =/  ensure=tape  (catalog-page-ensure-urql our.bowl publisher.cw spur.cw now.bowl analysis)
+    =/  refresh=tape
+      (catalog-page-refresh-urql our.bowl publisher.cw spur.cw now.bowl analysis old-paths)
+    :+  ~[(obelisk-poke bowl ensure) (obelisk-poke bowl refresh)]
+      ~
+    ~
   ==
 ::  +cat-conclude: finish ONE catalog walk — drop it from the in-flight
 ::  map, run +cat-finalize, and merge any page-walks it spawned BACK INTO
@@ -449,24 +518,65 @@
           cw=catalog-walk
           walks=(map @ta catalog-walk)
           queue=(list @p)
+          pubpaths=(map @p (set path))
       ==
-  ^-  [cards=(list card) walks=(map @ta catalog-walk) queue=(list @p)]
-  =/  fin  (cat-finalize bowl cw)
+  ^-  $:  cards=(list card)
+          walks=(map @ta catalog-walk)
+          queue=(list @p)
+          pubpaths=(map @p (set path))
+      ==
+  ::  old-paths = the publisher's last-known manifest set (empty if never
+  ::  crawled). A %manifest finalize diffs against it (delete vanished) and
+  ::  returns the new set; a %page finalize reads it to mark internal links.
+  =/  old-paths=(set path)  (~(gut by pubpaths) publisher.cw ~)
+  =/  fin  (cat-finalize bowl cw old-paths)
+  ::  store the publisher's refreshed manifest set (manifest finalize only;
+  ::  paths.fin is ~ for a page finalize, leaving the cache untouched).
+  =/  pubpaths2=(map @p (set path))
+    ?~  paths.fin  pubpaths
+    (~(put by pubpaths) publisher.cw u.paths.fin)
   ::  drop this walk, merge any page-walks it spawned into the live map
   ::  (gas, not roll — see the comment on the original bug).
-  =/  walks2=(map @ta catalog-walk)  (~(gas by (~(del by walks) eid)) +.fin)
-  ::  sequential sweep advance: if this walk's publisher now has NO walks
+  =/  walks2=(map @ta catalog-walk)  (~(gas by (~(del by walks) eid)) walks.fin)
+  ::  A %scan walk (one-off manual /catalog-scan) must NEVER advance the
+  ::  sweep-queue: otherwise a manual scan of an unrelated publisher, finishing
+  ::  mid-sweep, would pop the next sweep publisher early and run two publishers
+  ::  concurrently (breaking the sequential one-publisher load bound). Only a
+  ::  %sweep walk's drain advances the queue. (The /catalog-scan guard already
+  ::  prevents a manual scan from targeting a walking/queued sweep publisher, so
+  ::  %scan and %sweep walks never share a publisher.)
+  ?:  =(%scan origin.cw)
+    [cards.fin walks2 queue pubpaths2]
+  ::  sequential sweep advance: if this %sweep walk's publisher now has NO walks
   ::  left (its whole tree drained), start the next queued publisher. Page
   ::  walks the manifest just spawned are already in walks2, so a publisher
   ::  mid-tree still shows walks and we don't advance early.
   ?:  (lien ~(val by walks2) |=(w=catalog-walk =(publisher.w publisher.cw)))
-    [-.fin walks2 queue]
-  ?~  queue  [-.fin walks2 ~]
-  =/  nxt  (start-catalog-scan now.bowl i.queue)
-  :*  (weld -.fin cards.nxt)
+    [cards.fin walks2 queue pubpaths2]
+  ?~  queue  [cards.fin walks2 ~ pubpaths2]
+  =/  nxt  (start-catalog-scan now.bowl i.queue %sweep)
+  :*  (weld cards.fin cards.nxt)
       (~(put by walks2) eid.walk.nxt cw.walk.nxt)
       t.queue
+      pubpaths2
   ==
+::
+::  +catalog-classify-cards: build the obelisk poke that writes a
+::  classification onto one of OUR catalog rows. Shared by the HTTP
+::  /catalog-classify endpoint and the %lattice-catalog poke action (the
+::  MCP path), so both validate + emit identically. The row key is
+::  (source = our, publisher + path from the url). Returns ~ if the url
+::  isn't a well-formed urb:// link (the caller turns that into a 400 /
+::  ignored poke). The UPDATE itself no-ops on a url that matches no row.
+++  catalog-classify-cards
+  |=  [=bowl:gall url=@t category=@t cat-source=@t confidence=@rs]
+  ^-  (list card)
+  ?~  parsed=(parse-urb-url url)  ~
+  =/  urql=tape
+    %:  catalog-classify-urql
+      our.bowl  ship.u.parsed  path.u.parsed  category  cat-source  confidence
+    ==
+  ~[(obelisk-poke bowl urql)]
 ::
 ::  browse-watch cards: after a no-rev fetch answers, keep keening upward on a
 ::  /browse wire so newer revs of the page being viewed stream to /updates. The
@@ -592,8 +702,8 @@
   [[%pass /clay-clear %arvo %c %info q.byk.bowl [%& dels]] cards]
 ::
 ++  handle-http
-  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-12]
-  ^-  [(list card) state-12]
+  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-10]
+  ^-  [(list card) state-10]
   ::  SECURITY: Eyre forwards ALL matching HTTP requests to us, authenticated or
   ::  not, and leaves enforcement to the agent. This is the owner's control plane
   ::  (mutates state, drives keens); public reads happen via remote scry, not here.
@@ -766,13 +876,20 @@
   ::  well-formed ship literal reaches the (bare, unquoted) interpolation.
   ?:  &(=(meth %'GET') =(action 'catalog-explore'))
     =/  cat=tape  ?~(c=(query-param inbound-request 'category') "" (trip u.c))
-    =/  pub=tape
-      ?~  p=(query-param inbound-request 'publisher')  ""
-      ?~(s=(slaw %p u.p) "" (trip (scot %p u.s)))
-    =/  src=tape
-      ?~  s=(query-param inbound-request 'source')  ""
-      ?~(sp=(slaw %p u.s) "" (trip (scot %p u.sp)))
-    (kick-obelisk-query bowl eyre-id (catalog-explore-urql cat pub src) st)
+    =/  pp=(unit @t)  (query-param inbound-request 'publisher')
+    =/  sp=(unit @t)  (query-param inbound-request 'source')
+    =/  pub=(unit @p)  ?~(pp ~ (slaw %p u.pp))
+    =/  src=(unit @p)  ?~(sp ~ (slaw %p u.sp))
+    ::  a present-but-unparseable @p filter is a 400 — NOT silently dropped to
+    ::  "" (which +catalog-explore-urql treats as "filter absent" and would
+    ::  return the FULL catalog, a broader result than the caller expressed).
+    ?:  &(?=(^ pp) ?=(~ pub))
+      [(respond-json-cards eyre-id 400 '{"error":"bad publisher"}') st]
+    ?:  &(?=(^ sp) ?=(~ src))
+      [(respond-json-cards eyre-id 400 '{"error":"bad source"}') st]
+    =/  pubt=tape  ?~(pub "" (trip (scot %p u.pub)))
+    =/  srct=tape  ?~(src "" (trip (scot %p u.src)))
+    (kick-obelisk-query bowl eyre-id (catalog-explore-urql cat pubt srct) st)
   ::  GET /apps/lattice/catalog-fetch?url=urb://~ship/path — one full row.
   ?:  &(=(meth %'GET') =(action 'catalog-fetch'))
     ?~  url=(query-param inbound-request 'url')
@@ -783,6 +900,41 @@
     ?~  tag=(query-param inbound-request 'tag')
       [(respond-json-cards eyre-id 400 '{"error":"missing tag param"}') st]
     (kick-obelisk-query bowl eyre-id (catalog-by-tag-urql (trip u.tag)) st)
+  ::  ── classifier pipeline (owner-only) ──
+  ::  GET /apps/lattice/catalog-pending — the worklist: pages not yet
+  ::  classified (category = ''), newest first. The LLM classifier reads a
+  ::  batch off the front.
+  ?:  &(=(meth %'GET') =(action 'catalog-pending'))
+    (kick-obelisk-query bowl eyre-id catalog-pending-list-urql st)
+  ::  GET /apps/lattice/catalog-vocab — the live category vocabulary (one row
+  ::  per page; caller dedupes + drops ''). Read this to reuse categories.
+  ?:  &(=(meth %'GET') =(action 'catalog-vocab'))
+    (kick-obelisk-query bowl eyre-id catalog-vocab-urql st)
+  ::  POST /apps/lattice/catalog-classify?url=urb://~pub/path&category=<c>
+  ::    [&cat-source=<s>][&confidence=<f>]
+  ::  Write a classification onto one of OUR catalog rows (source = our). A
+  ::  fire-and-forget obelisk UPDATE + immediate 200 (the same shape as
+  ::  /catalog-scan); the result isn't needed by the caller. cat-source
+  ::  defaults to 'manual', confidence to .0. Idempotent: a url that matches
+  ::  no row is a clean no-op (UPDATE on absent).
+  ?:  &(=(meth %'POST') =(action 'catalog-classify'))
+    ?~  raw=(query-param inbound-request 'url')
+      [(respond-json-cards eyre-id 400 '{"error":"missing url param"}') st]
+    ?~  cat=(query-param inbound-request 'category')
+      [(respond-json-cards eyre-id 400 '{"error":"missing category param"}') st]
+    =/  csrc=@t  ?~(s=(query-param inbound-request 'cat-source') 'manual' u.s)
+    ::  confidence: accept the common "0.7" decimal as well as Hoon's native
+    ::  @rs `.7` syntax (leading zero omitted). Anything unparseable → .0.
+    =/  conf=@rs
+      ?~  c=(query-param inbound-request 'confidence')  .0
+      =/  ct=tape  (trip u.c)
+      =/  norm=tape  ?:(=("0." (scag 2 ct)) (slag 1 ct) ct)
+      ?~(r=(slaw %rs (crip norm)) .0 u.r)
+    =/  cards=(list card)  (catalog-classify-cards bowl u.raw u.cat csrc conf)
+    ?~  cards
+      [(respond-json-cards eyre-id 400 '{"error":"bad urb:// url"}') st]
+    :_  st
+    (weld cards (respond-json-cards eyre-id 200 '{"ok":true}'))
   ::  POST /apps/lattice/know-publish?key=<key>[&path=<rel>] — copy a private
   ::  item into the PUBLISHED gemtext (grows it; default publish path = the key).
   ?:  &(=(meth %'POST') =(action 'know-publish'))
@@ -838,12 +990,17 @@
     ?:  =(u.pub our.bowl)
       [(respond-json-cards eyre-id 400 '{"error":"cannot crawl own ship"}') st]
     ::  in-flight guard: if any walk (manifest or page) for this publisher is
-    ::  already running, don't start a second tree — a repeated scan (UI
-    ::  double-click, or deliberate amplification) would otherwise spawn a
-    ::  parallel fan-out. Idempotent: report success, the running scan stands.
-    ?:  (lien ~(val by catalog-walks.st) |=(w=catalog-walk =(publisher.w u.pub)))
+    ::  already running, OR it is queued in an in-progress sweep, don't start a
+    ::  second tree — a repeated scan (UI double-click, or deliberate
+    ::  amplification) would otherwise spawn a parallel fan-out, and a scan of a
+    ::  sweep-queued publisher would be double-crawled when the sweep reaches it
+    ::  (the two trees mint different eids from different `now`, so the walk map
+    ::  doesn't de-dup them). Idempotent: report success, the pending crawl stands.
+    ?:  ?|  (lien ~(val by catalog-walks.st) |=(w=catalog-walk =(publisher.w u.pub)))
+            (lien sweep-queue.st |=(p=@p =(p u.pub)))
+        ==
       [(respond-json-cards eyre-id 200 '{"ok":true,"note":"scan already in progress"}') st]
-    =/  start  (start-catalog-scan now.bowl u.pub)
+    =/  start  (start-catalog-scan now.bowl u.pub %scan)
     =.  catalog-walks.st  (~(put by catalog-walks.st) eid.walk.start cw.walk.start)
     :_  st
     (weld cards.start (respond-json-cards eyre-id 200 '{"ok":true}'))
@@ -890,7 +1047,7 @@
 ::
 %-  agent:dbug
 %+  verb  |
-=|  state-12
+=|  state-10
 =*  state  -
 ^-  agent:gall
 |_  =bowl:gall
@@ -926,34 +1083,29 @@
   ::  this lets a fresh %obelisk install (post-lattice) pick up the schema on
   ::  the next agent reload without a manual /know-reindex.
   =/  catalog-card=card  (obelisk-poke bowl catalog-create-urql)
-  ::  Boot cards: the catalog-schema poke, plus — on the FIRST load at
-  ::  state-12 (any upgrade from an older version) — arm the periodic sweep.
-  ::  A %12→%12 reload already has the Behn timer in flight (it survives
-  ::  agent reload and the fire-handler re-arms it), so we must NOT stack a
-  ::  duplicate.
+  ::  Boot cards: the catalog-schema poke, plus — on ANY upgrade INTO the
+  ::  catalog state (from a released ship, ≤ %9) — arm the periodic sweep.
+  ::  state-10 is the first version with the sweep machinery, so only a
+  ::  %10 → %10 reload already has the Behn timer in flight (it survives agent
+  ::  reload and the fire-handler re-arms it); arming again would stack a
+  ::  duplicate. So we skip the arm ONLY for the %10 reload.
+  =/  armed=?  ?=(%10 -.old)
   =/  boot-cards=(list card)
-    ?:  ?=(%12 -.old)  ~[catalog-card]
+    ?:  armed  ~[catalog-card]
     ~[catalog-card (arm-sweep-card (add now.bowl sweep-interval))]
-  ?:  ?=(%12 -.old)
+  ::  %10 → %10 reload: state unchanged (catalog feature already running).
+  ?:  ?=(%10 -.old)
     :_  this(state old)
     boot-cards
-  ::  %11 → %12: add the (empty) sequential sweep queue.
-  ?:  ?=(%11 -.old)
-    :_  this(state (migrate-11-12 old))
-    boot-cards
-  ::  %10 → %12: add the (empty) in-flight catalog-walks map, then 11→12.
-  ?:  ?=(%10 -.old)
-    :_  this(state (migrate-11-12 (migrate-10-11 old)))
-    boot-cards
-  ::  %9 → %12: chain 9→10 → 10→11 → 11→12.
+  ::  %9 → %10: the single catalog migration (carry all + 4 empty catalog slots).
   ?:  ?=(%9 -.old)
-    :_  this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 old))))
+    :_  this(state (migrate-9-10 old))
     boot-cards
-  ::  %8 → %12: chain 8→9 → 9→10 → 10→11 → 11→12.
+  ::  %8 → %10: add the obelisk-query slot (8→9), then 9→10.
   ?:  ?=(%8 -.old)
-    :_  this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 (migrate-8-9 old)))))
+    :_  this(state (migrate-9-10 (migrate-8-9 old)))
     boot-cards
-  ::  %7 → %12: give every knowledge entry empty tags + reserved vector,
+  ::  %7 → %10: give every knowledge entry empty tags + reserved vector,
   ::  then chain up.
   ?:  ?=(%7 -.old)
     =/  up=$-(know-entry-7 know-entry)  |=(e=know-entry-7 [body.e updated.e ~ ~])
@@ -962,20 +1114,20 @@
           manifest.old  home.old  browse.old
           (~(run by know.old) up)  (~(run by trash.old) up)  ~
       ==
-    :_  this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 s9))))
+    :_  this(state (migrate-9-10 s9))
     boot-cards
-  ::  %6 → %12: add the empty private knowledge store, then chain up.
+  ::  %6 → %10: add the empty private knowledge store, then chain up.
   ?:  ?=(%6 -.old)
     =/  s9=state-9
       :*  %9  content.old  published.old  pending.old  subs.old  fetches.old
           manifest.old  home.old  browse.old  ~  ~  ~
       ==
-    :_  this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 s9))))
+    :_  this(state (migrate-9-10 s9))
     boot-cards
   ::  Versions 0-5 stored published content in Clay /pub. Pull it into state,
   ::  then delete /pub from the desk + drop the clay watch, so the desk stops
   ::  carrying the content (and installs stop shipping the publisher's pages).
-  ::  Finally, migrate the resulting state-9 up to state-12.
+  ::  Finally, migrate the resulting state-9 up to state-10.
   =/  content=(map path @t)  (migrate-content bowl)
   =/  files=(set path)       ~(key by content)
   =/  cards=(list card)      (clear-pub-cards bowl files)
@@ -988,7 +1140,8 @@
       %1  [%9 content published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
       %0  [%9 content published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
     ==
-  [(weld cards boot-cards) this(state (migrate-11-12 (migrate-10-11 (migrate-9-10 new))))]
+  :_  this(state (migrate-9-10 new))
+  (weld cards boot-cards)
 ::
 ++  on-poke
   |=  =cage
@@ -1010,6 +1163,17 @@
     =+  !<(act=know-action q.cage)
     =^  cards  state  (know-mutate bowl act state)
     [cards this]
+  ::
+  ::  programmatic catalog writes (the LLM classifier via MCP). src==our is
+  ::  enforced above. Reads stay on HTTP (obelisk is async); this is the one
+  ::  catalog WRITE an MCP tool can drive — a fire-and-forget classification.
+      %lattice-catalog
+    =+  !<(act=catalog-action q.cage)
+    ?-  -.act
+        %classify
+      :_  this
+      (catalog-classify-cards bowl url.act category.act cat-source.act confidence.act)
+    ==
   ==
 ::
 ++  on-watch
@@ -1242,33 +1406,53 @@
     =/  gag  q.sage.sign-arvo
     ?@  gag
       ::  no value at probed rev → finalize with the best so far.
-      =/  cc  (cat-conclude bowl eid u.cw catalog-walks.state sweep-queue.state)
+      =/  cc  (cat-conclude bowl eid u.cw catalog-walks.state sweep-queue.state catalog-pubpaths.state)
       =.  catalog-walks.state  walks.cc
       =.  sweep-queue.state  queue.cc
+      =.  catalog-pubpaths.state  pubpaths.cc
       :_  this
       [(cat-walk-rest-card eid deadline.u.cw) cards.cc]
     ?^  q.gag
       ::  malformed remote value — finalize with best so far.
-      =/  cc  (cat-conclude bowl eid u.cw catalog-walks.state sweep-queue.state)
+      =/  cc  (cat-conclude bowl eid u.cw catalog-walks.state sweep-queue.state catalog-pubpaths.state)
       =.  catalog-walks.state  walks.cc
       =.  sweep-queue.state  queue.cc
+      =.  catalog-pubpaths.state  pubpaths.cc
       :_  this
       [(cat-walk-rest-card eid deadline.u.cw) cards.cc]
     ::  resolved rev (rev+1): record content, probe next, slide deadline.
     =/  got=@ud   +(rev.u.cw)
     =/  body=@t   ;;(@t q.gag)
+    ::  Oversized-body guard. body-max is otherwise only checked at +cat-finalize
+    ::  (%page), i.e. AFTER the body is already sitting in catalog-walks.state —
+    ::  and one publisher's manifest fans out up to manifest-max concurrent page
+    ::  walks, so without this a hostile/large publisher serving big bodies would
+    ::  balloon the agent's persisted state with up to ~manifest-max oversized
+    ::  cords before any finalize culls them. Stop the walk here WITHOUT storing
+    ::  the body (rest the deadline + conclude on the best prior rev). Covers the
+    ::  manifest walk too (same branch), so an oversized manifest body is never
+    ::  stored/parsed either.
+    ?:  (gth (met 3 body) body-max)
+      ~&  [%catalog-walk-body-too-large action=action.u.cw publisher=publisher.u.cw spur=spur.u.cw bytes=(met 3 body)]
+      =/  cc  (cat-conclude bowl eid u.cw catalog-walks.state sweep-queue.state catalog-pubpaths.state)
+      =.  catalog-walks.state  walks.cc
+      =.  sweep-queue.state  queue.cc
+      =.  catalog-pubpaths.state  pubpaths.cc
+      :_  this
+      [(cat-walk-rest-card eid deadline.u.cw) cards.cc]
     ?:  (gte got walk-max)
       ::  runaway walk — finalize with what we have (the rev we just got).
       =/  u-cw=catalog-walk  u.cw(rev got, mark p.gag, body body)
-      =/  cc  (cat-conclude bowl eid u-cw catalog-walks.state sweep-queue.state)
+      =/  cc  (cat-conclude bowl eid u-cw catalog-walks.state sweep-queue.state catalog-pubpaths.state)
       =.  catalog-walks.state  walks.cc
       =.  sweep-queue.state  queue.cc
+      =.  catalog-pubpaths.state  pubpaths.cc
       :_  this
       [(cat-walk-rest-card eid deadline.u.cw) cards.cc]
     =/  nat=@da   (add now.bowl ~s2)
     =.  catalog-walks.state
       %+  ~(put by catalog-walks.state)  eid
-      [action.u.cw publisher.u.cw spur.u.cw got p.gag body nat]
+      [action.u.cw publisher.u.cw spur.u.cw got p.gag body nat origin.u.cw]
     :_  this
     :*  (cat-walk-rest-card eid deadline.u.cw)
         (cat-walk-wait-card eid nat)
@@ -1283,9 +1467,10 @@
     ?~  cw=(~(get by catalog-walks.state) eid)  `this
     =/  yawn=card
       (cat-walk-yawn-card eid +(rev.u.cw) publisher.u.cw spur.u.cw)
-    =/  cc  (cat-conclude bowl eid u.cw catalog-walks.state sweep-queue.state)
+    =/  cc  (cat-conclude bowl eid u.cw catalog-walks.state sweep-queue.state catalog-pubpaths.state)
     =.  catalog-walks.state  walks.cc
     =.  sweep-queue.state  queue.cc
+    =.  catalog-pubpaths.state  pubpaths.cc
     [[yawn cards.cc] this]
   ::
       [%catalog-sweep ~]

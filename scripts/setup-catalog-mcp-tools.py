@@ -1,15 +1,26 @@
 #!/usr/bin/env python3
-"""Register STUB catalog MCP tools on a lattice ship.
+"""Register the catalog classifier MCP tool on a lattice ship.
 
-These tools define the contract for the federated content catalog described
-in /docs/catalog.md. Each tool's thread-builder returns canned JSON with
-`stub: true` so MCP clients can exercise the parameter shapes and response
-shapes end-to-end BEFORE the catalog has any data — useful for client
-development, contract tests, and as locked-in design documentation.
+This registers `lattice-catalog-classify` — the one catalog operation an MCP
+client (an LLM classifier) drives via a poke. It is REAL, not a stub: it pokes
+the lattice agent with `%lattice-catalog [%classify ...]`, which runs an
+obelisk UPDATE setting the page's category/cat-source/confidence (see
++catalog-classify-cards / +catalog-classify-urql and /docs/catalog.md).
 
-A follow-up PR (the crawler) will swap each stub for a real implementation
-that scrys obelisk catalog paths (see /desk/lib/catalog.hoon for the schema)
-and pokes the lattice agent to mutate the queue.
+The catalog's READS are NOT MCP tools — the catalog lives in %obelisk, which
+has no scry, and an MCP thread-builder is synchronous so it can't bridge
+obelisk's async poke+fact query. The classifier reads its worklist + the
+live taxonomy over authenticated HTTP on the lattice agent instead:
+  GET /apps/lattice/catalog-pending   — pages with category='' (the worklist)
+  GET /apps/lattice/catalog-vocab     — existing categories (caller dedupes)
+  GET /apps/lattice/catalog-list      — every page, newest first
+  GET /apps/lattice/catalog-explore?category=&publisher=&source=
+  GET /apps/lattice/catalog-fetch?url=
+  GET /apps/lattice/catalog-by-tag?tag=
+So the classifier loop is: GET /catalog-pending + /catalog-vocab over HTTP,
+decide a category per page, then call this MCP tool (or POST /catalog-classify)
+to write each one back. Free-text search is client-side over /catalog-list
+(obelisk has no LIKE).
 
 NOTE: mcp-server stores tools in a *set*, with no overwrite or delete.
 Re-running adds duplicates rather than replacing, so before re-registering
@@ -93,120 +104,74 @@ else:
 _base = ENDPOINT[:-len("/mcp")] if ENDPOINT.endswith("/mcp") else ENDPOINT
 COOKIE = os.environ.get("LATTICE_COOKIE") or _login(_base)
 
-# ── stub thread-builder template ────────────────────────────────────────────
-# Returns canned JSON (with `stub: true`) so MCP clients can exercise the
-# response shape now. No bowl bind — stubs don't read any agent state.
-STUB = """
+# ── real classify thread-builder ────────────────────────────────────────────
+# Pokes the lattice agent with %lattice-catalog [%classify url category
+# cat-source confidence], which runs the obelisk UPDATE (see
+# +catalog-classify-cards in /app/lattice). url + category are required;
+# cat-source defaults to 'llm'; confidence accepts "0.85" or Hoon's ".85"
+# (normalized + slaw %rs, unparseable → .0). Mirrors POST /catalog-classify.
+POKE_CLASSIFY = r"""
 |=  args=(map name:parameter:tool:mcp argument:tool:mcp)
 ^-  shed:khan
 =/  m  (strand ,vase)
 ^-  form:m
-=/  payload=json
-  {payload}
+=/  u=(unit argument:tool:mcp)  (~(get by args) 'url')
+?~  u  (strand-fail %missing-url ~)
+?>  ?=([%string @t] u.u)
+=/  c=(unit argument:tool:mcp)  (~(get by args) 'category')
+?~  c  (strand-fail %missing-category ~)
+?>  ?=([%string @t] u.c)
+=/  cs=@t
+  =/  s=(unit argument:tool:mcp)  (~(get by args) 'cat-source')
+  ?~  s  'llm'
+  ?:(?=([%string @t] u.s) p.u.s 'llm')
+=/  conf=@rs
+  =/  f=(unit argument:tool:mcp)  (~(get by args) 'confidence')
+  ?~  f  .0
+  ?.  ?=([%string @t] u.f)  .0
+  =/  ct=tape  (trip p.u.f)
+  =/  norm=tape  ?:(=("0." (scag 2 ct)) (slag 1 ct) ct)
+  ?~(r=(slaw %rs (crip norm)) .0 u.r)
+;<  ~  bind:m  (poke-our:io %lattice %lattice-catalog !>([%classify p.u.u p.u.c cs conf]))
 %-  pure:m
 !>  ^-  json
-(pairs:enjs:format ~[['type' s+'text'] ['text' s+(en:json:html payload)]])
+(pairs:enjs:format ~[['type' s+'text'] ['text' s+(crip "classified")]])
 """
 
-# ── per-tool canned payloads ───────────────────────────────────────────────
-# Each payload is built with pairs:enjs:format — same idiom as the knowledge
-# tools' scry responses, so the payload shape doubles as the live-impl target.
-PAYLOAD_PENDING = (
-    "(pairs:enjs:format ~["
-    "['stub' b+&] "
-    "['count' (numb:enjs:format 0)] "
-    "['pages' a+~] "
-    "['vocab' (pairs:enjs:format ~[['categories' a+~] ['tags' a+~]])]"
-    "])"
-)
-PAYLOAD_VOCAB = (
-    "(pairs:enjs:format ~["
-    "['stub' b+&] "
-    "['categories' a+~] "
-    "['tags' a+~]"
-    "])"
-)
-PAYLOAD_OK = (
-    "(pairs:enjs:format ~["
-    "['stub' b+&] "
-    "['ok' b+&]"
-    "])"
-)
-
 # ── tool definitions ───────────────────────────────────────────────────────
-# Naming convention: lattice-catalog-<verb>. Distinct from the existing
-# lattice-* (knowledge-store) tools — catalog is a different data domain.
-# NOTE: catalog READS are NOT MCP tools. The catalog lives in %obelisk,
-# which has no scry — and an MCP thread-builder is synchronous, so it
-# can't bridge obelisk's async poke+fact query. Reads are authenticated
-# HTTP endpoints on the lattice agent instead:
-#   GET /apps/lattice/catalog-list
-#   GET /apps/lattice/catalog-explore?category=&publisher=&source=
-#   GET /apps/lattice/catalog-fetch?url=
-#   GET /apps/lattice/catalog-by-tag?tag=
+# Just the one real WRITE. catalog READS are NOT MCP tools: the catalog lives
+# in %obelisk, which has no scry, and an MCP thread-builder is synchronous so
+# it can't bridge obelisk's async poke+fact query. The classifier reads its
+# worklist + taxonomy over authenticated HTTP on the lattice agent:
+#   GET /apps/lattice/catalog-pending   (pages with category='' — the worklist)
+#   GET /apps/lattice/catalog-vocab     (existing categories; caller dedupes)
+#   GET /apps/lattice/catalog-list / -explore / -fetch / -by-tag
 # (see /docs/catalog.md "Read surface" and +catalog-*-urql in /lib/catalog).
 # Free-text substring search is client-side over catalog-list (obelisk has
-# no LIKE). The tools below are WRITES (pokes) + the pending/vocab reads,
-# which the classifier PR will implement; pokes work fine from a strand.
+# no LIKE). Re-queue / soft-delete of catalog rows are future work — v1
+# classification is a direct category set, preserved across re-sweeps by the
+# two-poke upsert (+catalog-page-ensure-urql / -refresh-urql).
 TOOLS = [
-    # ── Classifier pipeline ────────────────────────────────────────────────
-    dict(name="lattice-catalog-pending",
-         desc="Next N catalog entries awaiting classification, with title, "
-              "body, url, and the current vocabulary (categories + tags) "
-              "for reuse-biased classification. Vocab is bootstrapped from "
-              "zero — early calls see empty arrays.",
-         parameters={"limit": {"type": "number",
-                               "description": "Max pages. Defaults to 10."}},
-         required=[],
-         tb=STUB.format(payload=PAYLOAD_PENDING)),
     dict(name="lattice-catalog-classify",
-         desc="Submit a classification for one catalog entry. Novel "
-              "`category` or `tags` enter a pending-review queue before "
-              "joining the live vocabulary (the user is the curator).",
+         desc="Set the category of one catalog page (the catalog's index of a "
+              "published gemtext page). Reads come from GET /catalog-pending "
+              "(the unclassified worklist) + GET /catalog-vocab (reuse "
+              "existing categories rather than coining near-duplicates). "
+              "Categories are free-form — bootstrap your own taxonomy.",
          parameters={"url":        {"type": "string",
-                                    "description": "The urb:// URL of the entry."},
+                                    "description":
+                                    "The urb://~publisher/path URL of the page."},
                      "category":   {"type": "string",
-                                    "description": "Primary category."},
-                     "tags":       {"type": "array", "items": {"type": "string"},
-                                    "description": "Cross-cutting tags."},
-                     "confidence": {"type": "number",
-                                    "description": "Classifier confidence, 0.0-1.0."},
-                     "reasoning":  {"type": "string",
-                                    "description": "Optional human-readable rationale."}},
-         required=["url", "category", "tags", "confidence"],
-         tb=STUB.format(payload=PAYLOAD_OK)),
-    dict(name="lattice-catalog-vocab",
-         desc="Read the current vocabulary (categories + tags + counts) "
-              "without taking from the pending queue. Use to refresh the "
-              "classifier's view between batches.",
-         parameters={},
-         required=[],
-         tb=STUB.format(payload=PAYLOAD_VOCAB)),
-    dict(name="lattice-catalog-reclassify",
-         desc="Re-queue one catalog entry for classification — useful if "
-              "the body changed, the classifier disagreed, or the user "
-              "rejected a previous category.",
-         parameters={"url":    {"type": "string",
-                                "description": "The urb:// URL of the entry."},
-                     "reason": {"type": "string",
-                                "description": "Why re-queue (default: 'requested')."}},
-         required=["url"],
-         tb=STUB.format(payload=PAYLOAD_OK)),
-    # ── Maintenance ────────────────────────────────────────────────────────
-    dict(name="lattice-catalog-delete",
-         desc="Soft-delete one catalog entry (recoverable via "
-              "lattice-catalog-restore). Does not affect the published "
-              "page itself — only this catalog's index of it.",
-         parameters={"url": {"type": "string",
-                             "description": "The urb:// URL of the entry."}},
-         required=["url"],
-         tb=STUB.format(payload=PAYLOAD_OK)),
-    dict(name="lattice-catalog-restore",
-         desc="Undo a soft-delete on one catalog entry.",
-         parameters={"url": {"type": "string",
-                             "description": "The urb:// URL of the entry."}},
-         required=["url"],
-         tb=STUB.format(payload=PAYLOAD_OK)),
+                                    "description":
+                                    "The category to assign (free-form)."},
+                     "cat-source": {"type": "string",
+                                    "description":
+                                    "Provenance: 'llm' (default), 'rule', 'manual'."},
+                     "confidence": {"type": "string",
+                                    "description":
+                                    "Confidence 0.0-1.0 (e.g. \"0.85\"). Optional."}},
+         required=["url", "category"],
+         tb=POKE_CLASSIFY),
 ]
 
 
@@ -236,7 +201,7 @@ def mcp(name, arguments):
 def main():
     if not COOKIE:
         sys.exit("not authenticated (give a +code, or set LATTICE_COOKIE)")
-    print(f"registering {len(TOOLS)} catalog stub tools -> {ENDPOINT}")
+    print(f"registering {len(TOOLS)} catalog tool(s) -> {ENDPOINT}")
     for t in TOOLS:
         out = mcp("add-mcp-tool", {
             "name": t["name"], "desc": t["desc"],
