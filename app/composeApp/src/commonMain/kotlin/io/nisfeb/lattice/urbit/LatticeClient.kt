@@ -1,12 +1,15 @@
 package io.nisfeb.lattice.urbit
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -19,6 +22,47 @@ data class GmiDoc(
     val body: String = "",
     val error: String? = null,
 )
+
+/**
+ * One indexed page from the content catalog (a row of `catalog-list` /
+ * `catalog-explore`). [url] is the canonical urb:// link to open the page.
+ * Parsed positionally from the obelisk result's (columns, row) by name, so it
+ * tolerates column reordering or a missing column (→ "").
+ */
+data class CatalogPage(
+    val source: String,
+    val publisher: String,
+    val path: String,
+    val url: String,
+    val title: String,
+    val category: String,
+    val catSource: String,
+    val wordCount: Int,
+    val fetched: String,
+) {
+    /** Best human label: the page title, falling back to its path. */
+    val label: String get() = title.ifBlank { path }
+
+    companion object {
+        fun fromRow(columns: List<String>, cells: List<String>): CatalogPage {
+            fun col(name: String): String {
+                val i = columns.indexOf(name)
+                return if (i in cells.indices) cells[i] else ""
+            }
+            return CatalogPage(
+                source = col("source"),
+                publisher = col("publisher"),
+                path = col("path"),
+                url = col("url"),
+                title = col("title"),
+                category = col("category"),
+                catSource = col("cat-source"),
+                wordCount = col("word-count").toIntOrNull() ?: 0,
+                fetched = col("fetched"),
+            )
+        }
+    }
+}
 
 /**
  * Fetches gemtext via the active ship's %lattice agent. The session's
@@ -107,6 +151,49 @@ class LatticeClient(private val session: UrbitSession) {
 
     /** Stop following a remote file. */
     suspend fun unsubscribe(urbUrl: String): Result<Unit> = post("unsub", "url", urbUrl)
+
+    /**
+     * Every indexed page in the content catalog, newest-first. The agent has no
+     * server-side text search (obelisk has no LIKE), so callers filter the
+     * result client-side. One query loads the whole catalog; facets (category,
+     * publisher) are derived from the rows. A failed Result carries the agent's
+     * error text (e.g. obelisk absent).
+     */
+    suspend fun catalogList(): Result<List<CatalogPage>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder().addPathSegments("apps/lattice/catalog-list").build()
+            val o = obeliskResult(url)
+            val cols = o["columns"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList()
+            (o["rows"]?.jsonArray ?: kotlinx.serialization.json.JsonArray(emptyList())).map { rowEl ->
+                CatalogPage.fromRow(cols, rowEl.jsonArray.map { it.jsonPrimitive.content })
+            }
+        }
+    }
+
+    /**
+     * GET a catalog read endpoint and return the obelisk result object. The
+     * catalog reads share ONE in-flight query slot on the agent and 429 when it
+     * is busy (e.g. the Explore pane is mid-query); retry with a short backoff
+     * rather than failing the search. Throws on the agent's `{error}` envelope
+     * or a non-2xx (non-429) status.
+     */
+    private suspend fun obeliskResult(url: HttpUrl): JsonObject {
+        var attempt = 0
+        while (true) {
+            val o = session.http.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
+                if (resp.code == 429) return@use null
+                val obj = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                obj["error"]?.let { error(it.jsonPrimitive.content) }
+                if (!resp.isSuccessful) error("catalog HTTP ${resp.code}")
+                obj
+            }
+            if (o != null) return o
+            if (++attempt >= 5) error("catalog query busy (429) — try again")
+            delay(300L * attempt)
+        }
+    }
+
+    private fun base() = session.baseUrl ?: error("not logged in")
 
     /** Ship patps in our own %contacts rolodex (empty if none / not installed). */
     suspend fun contacts(): Result<List<String>> = withContext(Dispatchers.IO) {

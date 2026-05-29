@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NotificationAdd
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
@@ -109,6 +110,7 @@ fun BrowserScreen(
     onOpenFiles: () -> Unit,
     onEditPage: (String) -> Unit,
     onOpenDiscover: () -> Unit,
+    onOpenSearch: () -> Unit,
     openUrl: String? = null,
     onConsumedOpenUrl: () -> Unit = {},
     subscriptions: Set<String> = emptySet(),
@@ -337,6 +339,7 @@ fun BrowserScreen(
             },
             BarAction("updates", Icons.Filled.Inbox, if (unreadUpdates > 0) "Updates ($unreadUpdates)" else "Updates", true) { onOpenUpdates() },
             BarAction("discover", Icons.Filled.Public, "Discover", true) { onOpenDiscover() },
+            BarAction("search", Icons.Filled.Search, "Search", true) { onOpenSearch() },
             BarAction("files", Icons.Filled.Folder, "Files", true) { onOpenFiles() },
             BarAction("settings", Icons.Filled.Settings, "Settings", true) { onOpenSettings() },
         )

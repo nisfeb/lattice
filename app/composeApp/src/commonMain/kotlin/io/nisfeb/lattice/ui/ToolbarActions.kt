@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.NotificationAdd
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.SaveAlt
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -32,6 +33,7 @@ object ToolbarActions {
         Def("subscribe", "Subscribe", Icons.Filled.NotificationAdd),
         Def("updates", "Updates", Icons.Filled.Inbox),
         Def("discover", "Discover", Icons.Filled.Public),
+        Def("search", "Search", Icons.Filled.Search),
         Def("files", "Files", Icons.Filled.Folder),
         Def("settings", "Settings", Icons.Filled.Settings),
         Def("logout", "Disconnect", Icons.AutoMirrored.Filled.Logout),
