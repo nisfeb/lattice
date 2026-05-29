@@ -112,8 +112,8 @@ kover {
 // Single source of truth for the app version. The release workflow parses
 // these two literals out of this file and checks them against the git tag,
 // so keep them as plain `val name = literal` declarations.
-val latticeVersionCode = 26
-val latticeVersionName = "0.4.0"
+val latticeVersionCode = 27
+val latticeVersionName = "0.4.1"
 
 // Surface the version literals above to commonMain via a generated Kotlin file,
 // so the Settings screen can show it portably (single source of truth here).
