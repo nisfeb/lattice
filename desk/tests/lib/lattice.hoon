@@ -117,7 +117,7 @@
 ::  +do-know: save → live; del → SOFT (moves to recoverable trash, not gone);
 ::  restore → back to live. This is the delete gate.
 ++  test-do-know
-  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-10)
+  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-12)
   =/  st2  (do-know ~2026.1.1 [%del '/a/b'] st1)
   =/  st3  (do-know ~2026.1.1 [%restore '/a/b'] st2)
   ;:  weld
@@ -133,7 +133,7 @@
 ::  and they survive a del→restore round-trip.
 ++  test-do-know-tags
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/k' 'b'] *state-10)
+  =/  st1  (do-know now [%save '/k' 'b'] *state-12)
   =/  st2  (do-know now [%tag '/k' 'Urbit'] st1)
   =/  st3  (do-know now [%tag '/k' 'design'] st2)
   =/  st4  (do-know now [%save '/k' 'b2'] st3)
@@ -245,7 +245,7 @@
 ::  +know-explore: AND/OR tag filter + case-insensitive text search over key/body.
 ++  test-know-explore
   =/  now  ~2026.1.1
-  =/  s0   *state-10
+  =/  s0   *state-12
   =/  s1   (do-know now [%save '/notes/urbit-design' 'a note about Hoon'] s0)
   =/  s2   (do-know now [%tag '/notes/urbit-design' 'urbit'] s1)
   =/  s3   (do-know now [%tag '/notes/urbit-design' 'design'] s2)
@@ -295,11 +295,11 @@
 ::  quote can't break or inject the mirror query. (' = 39, \ = 92)
 ++  test-urq-esc
   ;:  weld
-    ::  "it's" -> "it\'s" = chars i t \ ' s
-    (expect-eq !>(`tape`~[105 116 92 39 115]) !>((urq-esc "it's")))
+    ::  "it's" -> i t \ ' s  (a backslash before the quote)
+    (expect-eq !>(`tape`['i' 't' '\\' '\'' 's' ~]) !>((urq-esc "it's")))
     (expect-eq !>("plain") !>((urq-esc "plain")))
     ::  a lone backslash -> two backslashes
-    (expect-eq !>(`tape`~[92 92]) !>((urq-esc ~[92])))
+    (expect-eq !>(`tape`['\\' '\\' ~]) !>((urq-esc `tape`['\\' ~])))
   ==
 ::  a tag containing an apostrophe is backslash-escaped (\') in the mirror INSERT.
 ++  test-obelisk-row-urql-escapes-quote
@@ -308,7 +308,7 @@
   (expect-eq !>(&) !>(!=(~ (find ~[92 39] s))))
 ::
 ++  test-obelisk-populate-urql
-  =/  st  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-10)
+  =/  st  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-12)
   =/  s=tape  (obelisk-populate-urql know.st)
   ;:  weld
     ::  clears both tables before re-inserting (full rebuild)
@@ -321,14 +321,14 @@
 ::  one tag row; bad/no-op key = empty.
 ++  test-mirror-urql
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-10)
+  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-12)
   =/  st2  (do-know now [%tag '/a/b' 'urbit'] st1)
   =/  m-save   (mirror-urql [%save '/a/b' 'hi'] st1)
   =/  st-del   (do-know now [%del '/a/b'] st2)
   =/  m-del    (mirror-urql [%del '/a/b'] st-del)
   =/  m-tag    (mirror-urql [%tag '/a/b' 'Urbit'] st2)
   =/  m-untag  (mirror-urql [%untag '/a/b' 'urbit'] st2)
-  =/  m-noop   (mirror-urql [%save 'bad key' 'x'] *state-10)
+  =/  m-noop   (mirror-urql [%save 'bad key' 'x'] *state-12)
   ;:  weld
     ::  save = delete the stale row, then insert the current one
     (expect-eq !>(&) !>(!=(~ (find "DELETE FROM knowledge WHERE item = '/a/b';" m-save))))
@@ -440,10 +440,13 @@
 ::  +fz-toks: parser-significant tokens (paths, schemes, gemtext, punctuation).
 ++  fz-toks
   ^-  (list @t)
-  :~  '' ' ' '/' '//' '../' './' 'a/b' '~zod' '~ricsul-bilwyt' 'a b'
-      'urb://' 'urb://~zod/a' 'urb://~zod' 'https://x' 'mailto:a@b'
-      'javascript:alert(1)' 'data:text/html,x' '=> /x  go' '# h' '```'
-      '<b>' '&' '"' '\\' ':' '%' '..' '/apps/lattice/save?path=x'
+  ::  +zing of single-line ~[..] groups: a tall :~ needs 2-space gaps, but
+  ::  ~[..] is wide form so single-space separators are fine.
+  %-  zing
+  :~  ~['' ' ' '/' '//' '../' './' 'a/b' '~zod' '~ricsul-bilwyt' 'a b']
+      ~['urb://' 'urb://~zod/a' 'urb://~zod' 'https://x' 'mailto:a@b']
+      ~['javascript:alert(1)' 'data:text/html,x' '=> /x  go' '# h' '```']
+      ~['<b>' '&' '"' '\\' ':' '%' '..' '/apps/lattice/save?path=x']
   ==
 ::  +fz-cord: a pseudo-random cord — a biased token, or random bytes.
 ++  fz-cord
@@ -471,40 +474,47 @@
 ::
 ::  obelisk-result-json must return a JSON OBJECT for ANY noun — the +mule
 ::  fallback makes it total. 1k random nouns; a crash or non-object fails.
+::  fz takes 3 args; call it WIDE (fz n seed check) with the check gate
+::  bound separately. Tall %^/%+ with an inline |= mis-parses here, and a
+::  dotted hex seed (0xdec0.de5) only parses tall — so: undotted seed, wide
+::  call, gate via =/ (no type spec — that also trips the parser).
 ++  test-fuzz-decoder
-  %+  fz  1.000  0xdec0.de5
-  |=  s=@
-  ^-  ?
-  =/  r  (mule |.(?=([%o *] (obelisk-result-json (fz-noun s 6)))))
-  ?:(?=(%& -.r) p.r |)
+  =/  check
+    |=  s=@
+    ^-  ?
+    =/  r  (mule |.(?=([%o *] (obelisk-result-json (fz-noun s 6)))))
+    ?:(?=(%& -.r) p.r |)
+  (fz 1.000 0xdead.beef check)
 ::
 ::  the parsers that read remote/fetched content must never crash on arbitrary
 ::  input (they wrap their crashy bits in +mule / +rush).
 ++  test-fuzz-parsers
-  %+  fz  1.000  0xc0ffee
-  |=  s=@
-  ^-  ?
-  =/  c=@t  (fz-cord s)
-  =/  r
-    %-  mule
-    |.
-    =+  (parse-urb-url c)
-    =+  (know-key c)
-    =+  (resolve-href "urb://~zod/a/b" (trip c))
-    =+  (render-gmi-html "urb://~zod/" c)
-    =+  (req-action (mock-req c))
-    =+  (query-param (mock-req c) 'path')
-    &
-  ?=(%& -.r)
+  =/  check
+    |=  s=@
+    ^-  ?
+    =/  c=@t  (fz-cord s)
+    =/  r
+      %-  mule
+      |.
+      =+  (parse-urb-url c)
+      =+  (know-key c)
+      =+  (resolve-href "urb://~zod/a/b" (trip c))
+      =+  (render-gmi-html "urb://~zod/" c)
+      =+  (req-action (mock-req c))
+      =+  (query-param (mock-req c) 'path')
+      &
+    ?=(%& -.r)
+  (fz 1.000 0xca11.ab1e check)
 ::
 ::  +normalize-tape is idempotent: normalizing twice == normalizing once.
 ++  test-fuzz-normalize-idempotent
-  %+  fz  500  0xfeed.face
-  |=  s=@
-  ^-  ?
-  =/  t=tape  (trip (fz-cord s))
-  =/  r  (mule |.(=((normalize-tape (normalize-tape t)) (normalize-tape t))))
-  ?:(?=(%& -.r) p.r |)
+  =/  check
+    |=  s=@
+    ^-  ?
+    =/  t=tape  (trip (fz-cord s))
+    =/  r  (mule |.(=((normalize-tape (normalize-tape t)) (normalize-tape t))))
+    ?:(?=(%& -.r) p.r |)
+  (fz 500 0xface.feed check)
 ::  non-text auras render via +scot (a ud count → "5"); text columns stay raw.
 ++  test-obelisk-result-aura
   =/  vec=ob-vector  [%vector ~[[`@tas`'item' 't' 'k'] [`@tas`'n' 'ud' 5]]]
