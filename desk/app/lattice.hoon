@@ -514,7 +514,13 @@
     =/  ensure=tape  (catalog-page-ensure-urql our.bowl publisher.cw spur.cw now.bowl analysis)
     =/  refresh=tape
       (catalog-page-refresh-urql our.bowl publisher.cw spur.cw now.bowl analysis old-paths)
-    :+  ~[(obelisk-poke bowl ensure) (obelisk-poke bowl refresh)]
+    ::  third poke: the inverted-index postings (feature B). Its OWN poke (not
+    ::  welded to ensure/refresh) so a bad term aborts only the index write —
+    ::  the page row + classification, already written above, are untouched. The
+    ::  body (body.cw) is read only by +analyze and is dropped with the walk; no
+    ::  body text reaches obelisk, only the derived (term, tf) postings.
+    =/  terms=tape  (catalog-page-terms-urql our.bowl publisher.cw spur.cw analysis)
+    :+  ~[(obelisk-poke bowl ensure) (obelisk-poke bowl refresh) (obelisk-poke bowl terms)]
       ~
     ~
   ==
@@ -914,6 +920,13 @@
     ?~  tag=(query-param inbound-request 'tag')
       [(respond-json-cards eyre-id 400 '{"error":"missing tag param"}') st]
     (kick-obelisk-query bowl eyre-id (catalog-by-tag-urql (trip u.tag)) st)
+  ::  GET /apps/lattice/catalog-search?term=<term> — page keys + in-page tf
+  ::  for one body term (feature B). The client normalizes each query word,
+  ::  fans out one call per word, then ranks (TF-IDF) + joins to catalog rows.
+  ?:  &(=(meth %'GET') =(action 'catalog-search'))
+    ?~  term=(query-param inbound-request 'term')
+      [(respond-json-cards eyre-id 400 '{"error":"missing term param"}') st]
+    (kick-obelisk-query bowl eyre-id (catalog-search-urql (trip u.term)) st)
   ::  ── classifier pipeline (owner-only) ──
   ::  GET /apps/lattice/catalog-pending — the worklist: pages not yet
   ::  classified (category = ''), newest first. The LLM classifier reads a

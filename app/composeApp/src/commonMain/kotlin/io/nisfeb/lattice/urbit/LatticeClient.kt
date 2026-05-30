@@ -65,6 +65,16 @@ data class CatalogPage(
 }
 
 /**
+ * One posting from the inverted index (a row of `catalog-search`): a page
+ * (publisher, path) whose body contains a query term, with [tf] = the term's
+ * in-page frequency. [url] reconstructs the canonical urb:// link so the
+ * posting can be joined back to a [CatalogPage].
+ */
+data class CatalogPosting(val publisher: String, val path: String, val tf: Int) {
+    val url: String get() = "urb://$publisher$path"
+}
+
+/**
  * Fetches gemtext via the active ship's %lattice agent. The session's
  * authenticated client carries the urbauth cookie, so a plain GET works.
  */
@@ -183,6 +193,32 @@ class LatticeClient(private val session: UrbitSession) {
             val req = Request.Builder().url(url).post(ByteArray(0).toRequestBody(mediaType)).build()
             session.http.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) error("catalog-sweep HTTP ${resp.code}")
+            }
+        }
+    }
+
+    /**
+     * Keyword search over page BODIES via the inverted index: every page whose
+     * body contains [term], with the term's in-page frequency. obelisk has no
+     * IN/OR, so this queries ONE term; callers fan out a multi-word query and
+     * combine (TF-IDF) client-side. [term] should be pre-normalized (lower-
+     * cased, punctuation-trimmed) to match the stored postings.
+     */
+    suspend fun catalogSearch(term: String): Result<List<CatalogPosting>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder()
+                .addPathSegments("apps/lattice/catalog-search")
+                .addQueryParameter("term", term).build()
+            val o = obeliskResult(url)
+            val cols = o["columns"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList()
+            val pi = cols.indexOf("publisher")
+            val pa = cols.indexOf("path")
+            val ti = cols.indexOf("tf")
+            (o["rows"]?.jsonArray ?: kotlinx.serialization.json.JsonArray(emptyList())).mapNotNull { rowEl ->
+                val cells = rowEl.jsonArray.map { it.jsonPrimitive.content }
+                val pub = cells.getOrNull(pi) ?: return@mapNotNull null
+                val path = cells.getOrNull(pa) ?: return@mapNotNull null
+                CatalogPosting(pub, path, cells.getOrNull(ti)?.toIntOrNull() ?: 0)
             }
         }
     }

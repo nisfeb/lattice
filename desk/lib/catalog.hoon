@@ -35,9 +35,13 @@
 ::  Column-by-column notes:
 ::    catalog-pages.category   — '' (empty cord) until classified.
 ::    catalog-pages.cat-source — '' | 'rule' | 'llm' | 'rule-fallback' |
-::                               'manual' | 'imported'. '' = not yet
-::                               classified; the classifier pipeline
-::                               writes one of the non-empty values.
+::                               'manual' | 'imported' | 'author'. '' = not
+::                               yet classified; the classifier pipeline (or,
+::                               for 'author', the crawler reading a page's
+::                               `%meta category:` line) writes a non-empty
+::                               value. 'author' is applied only while a page
+::                               is still unclassified, so it never clobbers
+::                               a 'manual'/'llm' label (see refresh-urql).
 ::    catalog-pages.confidence — 0.0 when no confidence value is set;
 ::                               the LLM path writes 0.0-1.0.
 ::    catalog-pages.hash       — `sham` over the body cord. Hoon-side it
@@ -67,6 +71,16 @@
       "CREATE TABLE catalog-tags (source @p, publisher @p, path @t, tag @t) PRIMARY KEY (source, publisher, path, tag);"
       "CREATE TABLE catalog-manifests (publisher @p, scanned @da, hash @ud, raw @t) PRIMARY KEY (publisher);"
       "CREATE TABLE catalog-pending (source @p, publisher @p, path @t, queued @da, attempts @ud, reason @t) PRIMARY KEY (source, publisher, path);"
+      ::  inverted index (feature B): one row per (page, content term). `tf` is
+      ::  the in-page term frequency. NO body text — a lossy, order-free
+      ::  bag-of-words; the page can't be reconstructed from these postings.
+      ::  Replaced wholesale per page on re-crawl (DELETE-then-INSERT).
+      "CREATE TABLE catalog-terms (source @p, publisher @p, path @t, term @t, tf @ud) PRIMARY KEY (source, publisher, path, term);"
+      ::  author-declared metadata (feature A): a per-page summary an author
+      ::  supplies via a `%meta summary:` line. (author-declared CATEGORY is
+      ::  written straight onto catalog-pages.category, so it has no column
+      ::  here.) Refreshed every crawl; one row per page when a summary exists.
+      "CREATE TABLE catalog-meta (source @p, publisher @p, path @t, summary @t) PRIMARY KEY (source, publisher, path);"
   ==
 ::
 ::  ── page writes: the two-poke upsert ───────────────────────────────
@@ -147,6 +161,7 @@
     :~  (weld "DELETE FROM catalog-headings" where)
         (weld "DELETE FROM catalog-links" where)
         (weld "DELETE FROM catalog-tags" where)
+        (weld "DELETE FROM catalog-meta" where)
     ==
   =/  heading-inserts=tape
     %-  zing
@@ -184,7 +199,29 @@
     :~  "INSERT INTO catalog-tags (source, publisher, path, tag) VALUES ("
         st  ", "  pt  ", '"  ek  "', '"  tg  "');"
     ==
-  :(weld update deletes heading-inserts link-inserts tag-inserts)
+  ::  feature A — adopt the author's `%meta category:` ONLY while the page is
+  ::  still unclassified: the WHERE carries `category = ''`, so this no-ops once
+  ::  any classifier (llm/manual) has set a label, and re-applies on re-crawl
+  ::  for a page still on the worklist. Empty tape when no category was declared.
+  =/  acat=tape  (urq-esc (trip author-category.analysis))
+  =/  author-update=tape
+    ?:  =('' author-category.analysis)  ""
+    %-  zing
+    :~  "UPDATE catalog-pages SET category = '"  acat
+        "', cat-source = 'author', confidence = .1"
+        " WHERE source = "  st  " AND publisher = "  pt
+        " AND path = '"  ek  "' AND category = '';"
+    ==
+  ::  feature A — the author summary (content, refreshed every crawl). Its
+  ::  DELETE is in `deletes` above; INSERT only when a summary was declared.
+  =/  meta-insert=tape
+    ?:  =('' summary.analysis)  ""
+    =/  sm=tape  (urq-esc (trip summary.analysis))
+    %-  zing
+    :~  "INSERT INTO catalog-meta (source, publisher, path, summary) VALUES ("
+        st  ", "  pt  ", '"  ek  "', '"  sm  "');"
+    ==
+  :(weld update author-update deletes heading-inserts link-inserts tag-inserts meta-insert)
 ::
 ::  +link-internal: does a link target point into the network / to a known
 ::  page on this publisher? Replaces the old "starts with urb://" heuristic,
@@ -224,7 +261,41 @@
       (weld "DELETE FROM catalog-links" where)
       (weld "DELETE FROM catalog-tags" where)
       (weld "DELETE FROM catalog-pending" where)
+      ::  the inverted-index postings + author summary for this page MUST be
+      ::  swept too, else a page that drops out of a publisher's manifest leaves
+      ::  orphaned term rows → "ghost" search hits to a page no longer in
+      ::  catalog-pages. (Bug found in the design review; fixed here.)
+      (weld "DELETE FROM catalog-terms" where)
+      (weld "DELETE FROM catalog-meta" where)
   ==
+::
+::  +catalog-page-terms-urql: replace one page's inverted-index postings. A
+::  DELETE-then-INSERT in a SINGLE poke (like +catalog-manifest-urql) — the
+::  leading DELETE clears the prior crawl's postings so the INSERTs can't hit a
+::  duplicate key (which would abort the poke). Emitted as its OWN obelisk poke,
+::  separate from the page ensure/refresh, so a pathological term aborts only
+::  the index write, never the page row. NO body text is stored — only the
+::  derived (term, tf) postings, an order-free bag-of-words.
+++  catalog-page-terms-urql
+  |=  [src=@p pub=@p pat=path =analysis]
+  ^-  tape
+  =/  st=tape   (trip (scot %p src))
+  =/  pt=tape   (trip (scot %p pub))
+  =/  ek=tape   (urq-esc (trip (spat pat)))
+  =/  where=tape
+    :(weld " WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
+  =/  inserts=tape
+    %-  zing
+    %+  turn  terms.analysis
+    |=  tm=term
+    ^-  tape
+    =/  tx=tape  (urq-esc (trip term.tm))
+    =/  f=tape   (trip (scot %ud tf.tm))
+    %-  zing
+    :~  "INSERT INTO catalog-terms (source, publisher, path, term, tf) VALUES ("
+        st  ", "  pt  ", '"  ek  "', '"  tx  "', "  f  ");"
+    ==
+  (weld (weld "DELETE FROM catalog-terms" where) inserts)
 ::
 ::  +catalog-manifest-urql: refresh the cached manifest snapshot for one
 ::  publisher. Two-statement UPSERT (DELETE then INSERT) since obelisk's
@@ -431,6 +502,18 @@
   |=  tag=tape
   ^-  tape
   :(weld "FROM catalog-tags WHERE tag = '" (urq-esc tag) "' SELECT source, publisher, path;")
+::
+::  +catalog-search-urql: the (source, publisher, path) + in-page frequency of
+::  every page whose body contains `term` (feature B). One equality WHERE —
+::  obelisk has no LIKE / IN / OR — so a multi-word query is N sequential
+::  single-term calls the CLIENT fans out, then ranks (TF-IDF, df = posting-row
+::  count) + joins the keys back to catalog-pages rows. Same key-then-resolve
+::  shape as +catalog-by-tag-urql. `term` must be pre-normalized by the caller
+::  (lower-cased, punctuation-trimmed) to match the stored postings.
+++  catalog-search-urql
+  |=  term=tape
+  ^-  tape
+  :(weld "FROM catalog-terms WHERE term = '" (urq-esc term) "' SELECT source, publisher, path, tf;")
 ::
 ::  ════════════════════════════════════════════════════════════════════
 ::  Classifier pipeline.

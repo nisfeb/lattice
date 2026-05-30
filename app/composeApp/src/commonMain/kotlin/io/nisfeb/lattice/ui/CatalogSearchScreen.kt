@@ -37,6 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.nisfeb.lattice.urbit.CatalogPage
 import io.nisfeb.lattice.urbit.LatticeClient
+import kotlin.math.ln
 import kotlinx.coroutines.delay
 
 /**
@@ -65,6 +66,11 @@ fun CatalogSearchScreen(
     var category by remember { mutableStateOf<String?>(null) }
     // Bump to reload the catalog (the agent re-serves the latest rows).
     var reloadNonce by remember { mutableStateOf(0) }
+    // Body keyword search over the inverted index: url -> TF-IDF score, filled by
+    // the debounced server search. Empty when the query is blank or has no
+    // indexable words. `searching` gates the in-progress hint.
+    var bodyScores by remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
+    var searching by remember { mutableStateOf(false) }
 
     LaunchedEffect(reloadNonce) {
         loading = true
@@ -87,16 +93,64 @@ fun CatalogSearchScreen(
     LaunchedEffect(categories) {
         if (category != null && category !in categories) category = null
     }
-    val results = remember(pages, query, category) {
+
+    // Debounced body keyword search over the inverted index. Splits the query
+    // into normalized words, fires ONE server search per word (obelisk has no
+    // OR), and combines them with TF-IDF: score(page) = Σ tf·idf where
+    // idf = ln(total / docFreq). Restarting on each keystroke cancels the prior
+    // in-flight search; the 300ms delay is the debounce. The local substring
+    // filter (below) still runs instantly — this only ADDS body-content matches.
+    LaunchedEffect(query, pages) {
+        val q = query.trim()
+        if (q.isBlank()) {
+            bodyScores = emptyMap()
+            searching = false
+            return@LaunchedEffect
+        }
+        delay(300)
+        val words = q.split(Regex("\\s+")).mapNotNull(::normalizeQueryTerm).distinct()
+        if (words.isEmpty()) {
+            bodyScores = emptyMap()
+            searching = false
+            return@LaunchedEffect
+        }
+        searching = true
+        val total = pages.size.coerceAtLeast(1)
+        val acc = HashMap<String, Double>()
+        for (w in words) {
+            val postings = client.catalogSearch(w).getOrDefault(emptyList())
+            val df = postings.size.coerceAtLeast(1)
+            val idf = ln(total.toDouble() / df.toDouble()).coerceAtLeast(0.01)
+            for (po in postings) acc[po.url] = (acc[po.url] ?: 0.0) + po.tf * idf
+        }
+        bodyScores = acc
+        searching = false
+    }
+
+    // Results = pages passing the category facet, ranked when a query is present:
+    // a title/path/publisher substring scores high; a body keyword (TF-IDF) match
+    // surfaces pages the substring filter alone would miss. Blank query → the
+    // whole facet in load (newest-first) order.
+    val results = remember(pages, query, category, bodyScores) {
         val q = query.trim().lowercase()
-        pages.filter { p ->
-            (category == null || p.category == category) &&
-                (
-                    q.isEmpty() ||
-                        p.title.lowercase().contains(q) ||
-                        p.path.lowercase().contains(q) ||
-                        p.publisher.lowercase().contains(q)
-                    )
+        val facet = pages.filter { category == null || it.category == category }
+        if (q.isEmpty()) {
+            facet
+        } else {
+            facet.mapNotNull { p ->
+                val titleHit = p.title.lowercase().contains(q)
+                val subHit = titleHit ||
+                    p.path.lowercase().contains(q) ||
+                    p.publisher.lowercase().contains(q)
+                val body = bodyScores[p.url] ?: 0.0
+                if (!subHit && body <= 0.0) {
+                    null
+                } else {
+                    val score = (if (titleHit) 1_000.0 else 0.0) +
+                        (if (subHit) 100.0 else 0.0) + body
+                    p to score
+                }
+            }.sortedByDescending { it.second }.map { it.first }
         }
     }
 
@@ -128,7 +182,7 @@ fun CatalogSearchScreen(
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
-            label = { Text("search titles, paths, ships") },
+            label = { Text("search titles, content, ships") },
             singleLine = true,
             trailingIcon = {
                 if (query.isNotEmpty()) {
@@ -209,12 +263,15 @@ fun CatalogSearchScreen(
                     "publishers in your contact book — or scan one now from a publisher's page.",
             )
 
+            results.isEmpty() && searching -> EmptyNote("Searching content…")
+
             results.isEmpty() -> EmptyNote("No pages match \"$query\".")
 
             else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
                 item {
                     Text(
-                        "${results.size} ${if (results.size == 1) "page" else "pages"}",
+                        "${results.size} ${if (results.size == 1) "page" else "pages"}" +
+                            if (searching) " · searching content…" else "",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp),
@@ -279,4 +336,11 @@ private fun EmptyNote(text: String) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.fillMaxWidth().padding(16.dp),
     )
+}
+
+/** Normalize a query word the way the analyzer normalizes body terms — lower-
+ *  case, trim edge punctuation, drop <3 chars — so it matches stored postings. */
+private fun normalizeQueryTerm(token: String): String? {
+    val t = token.lowercase().trim { !it.isLetterOrDigit() }
+    return if (t.length >= 3) t else null
 }
