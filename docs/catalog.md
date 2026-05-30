@@ -131,11 +131,13 @@ v1 computed worklist (`category=''`) does not yet populate.
 
 ## Obelisk schema (`/desk/lib/catalog.hoon`)
 
-Six tables under `catalog-*`, in the existing `lattice` obelisk database.
-The CREATE TABLE generator lives in `+catalog-create-urql` and is safe to
-poke at every agent boot — CREATE is atomic in obelisk and fails harmlessly
-if a table already exists (same pattern as `+obelisk-create-urql` for the
-knowledge/tags tables).
+Eight tables under `catalog-*`, in the existing `lattice` obelisk database.
+The schema lives in `+catalog-create-list` (one `CREATE TABLE` per element),
+and the agent pokes **each statement separately** at boot — CREATE on an
+*existing* table ERRORS ("duplicate key") and aborts the whole multi-statement
+poke, so a single joined poke would never create a table added after the
+existing ones on an in-place-upgraded ship. (`+catalog-create-urql` is the
+joined form, retained only for the whole-schema tests.)
 
 ### `catalog-pages`
 
@@ -149,7 +151,7 @@ knowledge/tags tables).
 | fetched    | @da    | When the row was last refreshed. |
 | hash       | @ud    | `sham` over the body cord (128-bit), stored as @ud (obelisk rejects @uv/@uvH value literals; @ud round-trips, aura immaterial for equality). Lets the crawler skip re-analyzing on no-change. |
 | category   | @t     | `''` (empty cord) until classified. Singular: one primary category per page. |
-| cat-source | @t     | `''` / `rule` / `llm` / `rule-fallback` / `manual` / `imported`. `''` means not yet classified. |
+| cat-source | @t     | `''` / `rule` / `llm` / `rule-fallback` / `manual` / `imported` / `author`. `''` = not yet classified; `author` = adopted from a publisher's `%meta category:` line (excluded from `+catalog-vocab-urql` so a peer can't seed the shared taxonomy). |
 | confidence | @rs    | 0.0 by default; the LLM path writes 0.0–1.0. |
 | word-count | @ud    | For ranking and excerpt sizing. |
 | body-lines | @ud    | Quick "how big is this" without re-fetching. |
@@ -222,6 +224,36 @@ scope). The schema is in place so that work needs no migration.
 | attempts | @ud  | Times the classifier has tried (and either failed or come back below confidence). |
 | reason   | @t   | `new` / `changed` / `requested` / `low-confidence`. |
 
+### `catalog-terms`
+
+The **inverted index** for body keyword search (feature B). One row per
+(page, content term). The crawler tokenizes each page body — reusing the
+analyzer's word-count tokenizer — into lower-cased, punctuation-trimmed,
+stop-word-filtered terms, deduped to a frequency and capped at the top 512
+by frequency. **No body text is stored**: a posting is an order-free
+`(term, tf)` projection you can't reconstruct a page from (stop words and
+all-but-top-512 terms dropped, positions gone) — strictly less recoverable
+than the verbatim heading/link text obelisk already keeps. Replaced
+wholesale per page on re-crawl (DELETE-then-INSERT, in its own poke).
+
+| Column   | Type | Notes |
+|----------|------|-------|
+| source, publisher, path | (see pages) | Composite FK. |
+| term     | @t   | A normalized content word. PK = (source, publisher, path, term). |
+| tf       | @ud  | The term's in-page frequency (the TF in client-side TF-IDF). |
+
+### `catalog-meta`
+
+Author-declared per-page metadata (feature A). Currently just `summary` —
+the author **category** is written straight onto `catalog-pages.category`,
+so it has no column here. Refreshed every crawl; one row per page that
+declares a summary.
+
+| Column   | Type | Notes |
+|----------|------|-------|
+| source, publisher, path | (see pages) | Composite PK. |
+| summary  | @t   | The `%meta summary:` value. |
+
 ## Read surface — HTTP endpoints (not MCP)
 
 **Architecture correction.** The catalog read tools were originally specced
@@ -252,14 +284,18 @@ session.
 | `GET /apps/lattice/catalog-by-tag` | `tag` | `+catalog-by-tag-urql` | `(source, publisher, path)` keys carrying the tag; resolve to rows via `catalog-fetch`. |
 | `GET /apps/lattice/catalog-pending` | — | `+catalog-pending-list-urql` | The classifier worklist: pages with `category=''`, newest first. |
 | `GET /apps/lattice/catalog-vocab` | — | `+catalog-vocab-urql` | Every page's category (one row each; caller dedupes + drops `''`). |
+| `GET /apps/lattice/catalog-search` | `term` | `+catalog-search-urql` | `(source, publisher, path, tf)` for every page whose body contains `term`. The agent re-normalizes `term` server-side (the same `+normalize-term` as the index) so the client can't drift; one equality lookup (no IN/OR); the client fans out a multi-word query + ranks by TF-IDF. |
+| `GET /apps/lattice/catalog-meta` | — | `+catalog-meta-list-urql` | `(source, publisher, path, summary)` for every author-declared `%meta summary:`; the client joins these onto the loaded rows as result snippets. |
 
-**Free-text substring search is client-side.** Obelisk's urQL has no
-`LIKE`/substring predicate (verified live — only equality and comparison
-in `WHERE`). The Discover box fetches `/catalog-list` and filters titles
-locally. A per-publisher narrowing via `/catalog-explore?publisher=` keeps
-the candidate set small. Server-side full-text would need an obelisk
-feature that doesn't exist (or an in-agent post-filter on the query
-result — a deferred refinement).
+**Body keyword search is server-indexed; substring search stays
+client-side.** Obelisk's urQL has no `LIKE`/substring predicate (only
+equality + comparison in `WHERE`), so title/path substring matching is done
+locally over `/catalog-list`. But body **content** search no longer needs
+`LIKE`: the crawler maintains an inverted index (`catalog-terms`), and
+`/catalog-search` serves single-term equality lookups. The Discover box
+normalizes each query word, fires one `/catalog-search` per word, and
+combines them with TF-IDF (idf = `ln(total/docFreq)`), merging the body
+matches with the instant local substring filter over already-loaded rows.
 
 ### The one MCP write (pokes DO work without scry)
 
@@ -275,6 +311,49 @@ deferred — see v1 scope).
 |------|------|---------|
 | `lattice-catalog-classify` | `url`, `category`, `cat-source?` (`llm`), `confidence?` (`"0.85"`) | `{classified}` |
 
+## Body keyword search + author metadata (B + A)
+
+**B — lexical body index.** The decisive property is that **the page body is
+never persisted**. The crawler already walks the body to compute
+`word-count`; the term index folds out of that same pass into `catalog-terms`
+as `(term, tf)` postings — a lossy, irreversible bag-of-words (lower-cased,
+stop-word/min-length filtered, deduped to a count, capped at the top 512 by
+frequency). Re-crawl replaces a page's postings wholesale; page-delete
+(manifest-diff, and an oversized-page skip) sweeps `catalog-terms` +
+`catalog-meta` too, so a vanished or no-longer-indexable page leaves no ghost
+search hits. Query is single-term equality (`/catalog-search`); the client
+fans a multi-word query out and ranks by TF-IDF, since obelisk has no
+`IN`/`OR`/`LIKE`.
+
+**Known limits (v1):** the tokenizer is ASCII byte-level — it lower-cases and
+edge-trims ASCII only and caps a term at 64 bytes, so non-ASCII (accented /
+CJK) words are mangled or dropped from the body index (the instant local
+title/path substring filter is still Unicode-aware). Multi-word body search is
+**OR** over the query words (any word's TF-IDF contributes), whereas the local
+substring filter matches the whole phrase — a deliberate recall/precision
+split. Author `category`/`summary` are likewise byte-capped (64 / 280).
+
+**A — author-declared metadata.** A page can carry a `%meta key: value`
+preamble (`%meta category:`, `%meta summary:`) — a prefix that collides with
+no existing gemtext syntax, so unmarked pages are unaffected, and which is
+excluded from the title, term index, and word-count. Author **tags** already
+flow through the existing `#tag` parse. The author **category** is adopted
+onto `catalog-pages.category` via an UPDATE guarded by `category=''`
+(`cat-source='author'`): it auto-classifies a new/unclassified page but
+**never clobbers** an `llm`/`manual` label across re-sweeps. Precedence:
+`manual > llm > author > rule > unclassified`. Summary lands in `catalog-meta`.
+
+Neither table needs a state migration: both self-bootstrap at on-init/on-load,
+where each catalog `CREATE TABLE` is poked **separately** — a joined CREATE
+poke aborts at the first already-existing table (CREATE on an existing table
+*errors*, "duplicate key", and a crud error aborts the whole multi-statement
+poke), so it would never create the new tables on an in-place upgrade. (This
+bit in live e2e testing — `catalog-terms`/`catalog-meta` silently uncreated on
+~tyr — and is fixed by `+catalog-create-list` + per-statement pokes.) They
+back-fill as the periodic sweep re-crawls. (`%meta` lines currently render as
+visible page text, like the existing `#tag` convention — a future renderer
+pass could hide both.)
+
 ## Phased delivery
 
 | Phase | Scope | Status |
@@ -283,6 +362,7 @@ deferred — see v1 scope).
 | **1. Crawler core** | schema wired to agent boot, sequential manifest sweep + auto-sweep, analyzer, 4 read endpoints, **manifest-diff deletion**, **is-internal link resolution**, periodic auto-sweep | ✅ done |
 | **2. Classifier pipeline** | `category=''` worklist (`/catalog-pending`), `/catalog-vocab`, `/catalog-classify` + `lattice-catalog-classify` MCP poke, **classification preserved across re-sweeps** (two-poke upsert) | ✅ done |
 | **2b. Classifier UX** | pending-review queue for novel categories, low-confidence review UI, LLM `tags` axis, reference Python classifier daemon | deferred |
+| **2c. Body search + author meta** | inverted index (`catalog-terms`) + `/catalog-search` + client TF-IDF; `%meta` author category/summary (`catalog-meta`) | ✅ done |
 | **3. Push refresh** | publisher-side `on-watch /catalog` wire + subscriber fallback | overlaps 1 |
 | **4. Federation** | `/catalog-query/<urql>/json` public scry + `lattice-catalog-import` MCP tool + source-aware UI | v2 |
 
@@ -298,6 +378,9 @@ Phase 4 is v2.
    hash is typed `@ud` (`scot %ud`). No `LIKE`/`LIMIT`/`COUNT`/`DISTINCT`/
    `GROUP BY`. INSERT errors on a duplicate PK (never replaces); UPDATE
    no-ops on an absent row — together these shape the two-poke upsert.
+   **`CREATE TABLE` on an existing table also errors** ("duplicate key") and
+   aborts the whole poke — so the schema is poked one `CREATE` per poke, never
+   joined (else adding a table never creates it on an upgraded ship).
 2. **`/catalog-query` complexity cap.** Public scry means anyone can run
    urQL against any publisher's catalog. Need a complexity cap to prevent
    denial-of-service via expensive queries — likely `LIMIT 100` ceiling,

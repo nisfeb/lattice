@@ -14,7 +14,7 @@
 |%
 ::  ── tables present (drop or rename a table → these fail) ──────────────
 ::
-++  test-creates-all-six-tables
+++  test-creates-all-eight-tables
   =/  s=tape  catalog-create-urql
   ;:  weld
     (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog-pages" s))))
@@ -23,18 +23,36 @@
     (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog-tags" s))))
     (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog-manifests" s))))
     (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog-pending" s))))
+    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog-terms" s))))
+    (expect-eq !>(&) !>(!=(~ (find "CREATE TABLE catalog-meta" s))))
   ==
 ::
 ::  One semicolon per CREATE TABLE statement -- catches a missing terminator
-::  before obelisk's parser does.
-++  test-six-semicolons
+::  before obelisk's parser does. Eight tables (added catalog-terms +
+::  catalog-meta for the lexical index + author metadata).
+++  test-eight-semicolons
   =/  s=tape  catalog-create-urql
   =/  sc=@ud
     =|  n=@ud
     |-
     ?~  s  n
     ?:(=(';' i.s) $(s t.s, n +(n)) $(s t.s))
-  (expect-eq !>(`@ud`6) !>(sc))
+  (expect-eq !>(`@ud`8) !>(sc))
+::
+::  +catalog-create-list is ONE create per element. Regression guard for the
+::  in-place-upgrade bug: the agent pokes each CREATE separately, because a
+::  joined CREATE poke aborts at the first already-existing table (CREATE on an
+::  existing table ERRORS) and never creates the ones after it — which silently
+::  dropped catalog-terms/catalog-meta on an upgraded ship.
+++  test-create-list-one-create-per-statement
+  =/  lst=(list tape)  catalog-create-list
+  ;:  weld
+    (expect-eq !>(`@ud`8) !>((lent lst)))
+    ::  each element holds exactly one statement terminator
+    (expect-eq !>(&) !>((levy lst |=(t=tape =(`@ud`1 (substr-count t ";"))))))
+    ::  the joined form equals catalog-create-urql (what the tests assert on)
+    (expect-eq !>(catalog-create-urql) !>(`tape`(zing lst)))
+  ==
 ::
 ::  Generator is deterministic -- two calls yield identical tapes.
 ++  test-deterministic
@@ -172,6 +190,9 @@
       hash=(sham 'fixture-body')
       word-count=42
       body-lines=10
+      terms=~
+      author-category=''
+      summary=''
   ==
 ::
 ::  ── +catalog-page-ensure-urql / +catalog-page-refresh-urql ──────────
@@ -210,6 +231,7 @@
     :*  title='it\'s a trap'
         headings=`(list heading)`~  links=`(list link)`~  tags=`(list @t)`~
         hash=(sham 'x')  word-count=0  body-lines=0
+        terms=~  author-category=''  summary=''
     ==
   =/  s=tape  (catalog-page-ensure-urql ~zod ~tyr /a ~2026.1.1 a)
   ;:  weld
@@ -316,9 +338,10 @@
 ::
 ::  ── +catalog-page-delete-urql ───────────────────────────────────────
 ::
-::  Deletes from all FIVE catalog tables that hold per-page rows
-::  (pages, headings, links, tags, pending). Drop or rename a table →
-::  this fails.
+::  Deletes from all SEVEN catalog tables that hold per-page rows (pages,
+::  headings, links, tags, pending, terms, meta). Drop or rename a table →
+::  this fails. catalog-terms + catalog-meta were added with the lexical
+::  index + author metadata; leaving them out orphans postings/summaries.
 ++  test-page-delete-urql-all-tables
   =/  s=tape  (catalog-page-delete-urql ~zod ~tyr /a/b)
   ;:  weld
@@ -327,6 +350,8 @@
     (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-links" s))))
     (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-tags" s))))
     (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-pending" s))))
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-terms" s))))
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-meta" s))))
   ==
 ::
 ::  Every DELETE filters on the (source, publisher, path) triple.
@@ -597,7 +622,10 @@
 ++  test-vocab-urql-shape
   =/  s=tape  catalog-vocab-urql
   ;:  weld
-    (expect-eq !>(&) !>(=("FROM catalog-pages SELECT category;" s)))
+    (expect-eq !>(&) !>(=("FROM catalog-pages WHERE cat-source != 'author' SELECT category;" s)))
+    ::  author-declared categories are excluded so a crawled peer can't seed the
+    ::  shared taxonomy the classifier reuses to label other pages.
+    (expect-eq !>(&) !>(!=(~ (find "cat-source != 'author'" s))))
     (expect-eq !>(~) !>((find "DISTINCT" s)))
   ==
 ::
@@ -636,5 +664,83 @@
     (expect-eq !>(|) !>((lien got |=(p=@p =(p ~nec)))))
     ::  a contact-only set with no follows still yields the contacts (minus self)
     (expect-eq !>(`@ud`2) !>((lent (sweep-publishers empty (sy ~[~dev ~bus ~nec]) ~nec))))
+  ==
+::
+::  ── +catalog-page-terms-urql (inverted index, feature B) ─────────────
+::  DELETE-then-INSERT replace: one DELETE clears the page's prior postings,
+::  one INSERT per (term, tf). NO body text is emitted — only the postings.
+++  fixture-terms-analysis
+  ^-  analysis
+  :*  title='Hello world'
+      headings=`(list heading)`~  links=`(list link)`~  tags=`(list @t)`~
+      hash=(sham 'x')  word-count=0  body-lines=0
+      terms=~[['lattice' 3] ['catalog' 1]]
+      author-category=''  summary=''
+  ==
+++  test-terms-urql-delete-then-insert
+  =/  s=tape  (catalog-page-terms-urql ~zod ~tyr /a/b fixture-terms-analysis)
+  =/  d=(unit @ud)  (find "DELETE FROM catalog-terms" s)
+  =/  i=(unit @ud)  (find "INSERT INTO catalog-terms" s)
+  ?~  d  (expect-eq !>(&) !>(|))
+  ?~  i  (expect-eq !>(&) !>(|))
+  ;:  weld
+    ::  the DELETE precedes the INSERTs (clears the slate so no dup-key abort)
+    (expect-eq !>(&) !>((lth u.d u.i)))
+    ::  one INSERT per posting (the fixture has 2)
+    (expect-eq !>(`@ud`2) !>((substr-count s "INSERT INTO catalog-terms")))
+    ::  the (term, tf) values land
+    (expect-eq !>(&) !>(!=(~ (find "'lattice', 3)" s))))
+    (expect-eq !>(&) !>(!=(~ (find "'catalog', 1)" s))))
+  ==
+::  empty terms → only the DELETE (clear stale), no INSERT.
+++  test-terms-urql-empty
+  =/  s=tape  (catalog-page-terms-urql ~zod ~tyr /a/b fixture-analysis)
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-terms" s))))
+    (expect-eq !>(~) !>((find "INSERT INTO catalog-terms" s)))
+  ==
+::
+::  ── +catalog-search-urql ──
+++  test-search-urql-shape
+  =/  s=tape  (catalog-search-urql "lattice")
+  (expect-eq !>(&) !>(=("FROM catalog-terms WHERE term = 'lattice' SELECT source, publisher, path, tf;" s)))
+++  test-search-urql-escapes-quote
+  =/  s=tape  (catalog-search-urql "it's")
+  (expect-eq !>(&) !>(!=(~ (find "term = 'it\\'s'" s))))
+::  +catalog-meta-list-urql: the author-summary reader (feature A read surface).
+++  test-meta-list-urql-shape
+  =/  s=tape  catalog-meta-list-urql
+  (expect-eq !>(&) !>(=("FROM catalog-meta SELECT source, publisher, path, summary;" s)))
+::
+::  ── refresh: author-declared category + summary (feature A) ──────────
+::  author-category is adopted via an UPDATE GUARDED by `category = ''` (so a
+::  re-sweep never clobbers an llm/manual label); summary writes to catalog-meta.
+++  fixture-authored-analysis
+  ^-  analysis
+  :*  title='Hello world'
+      headings=`(list heading)`~  links=`(list link)`~  tags=`(list @t)`~
+      hash=(sham 'x')  word-count=0  body-lines=0
+      terms=~  author-category='notes'  summary='A blurb'
+  ==
+++  test-refresh-urql-author-category
+  =/  s=tape  (catalog-page-refresh-urql ~zod ~tyr /a/b ~2026.1.1 fixture-authored-analysis no-pages)
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "category = 'notes', cat-source = 'author'" s))))
+    ::  the unclassified-only guard — never overwrites an existing classification
+    (expect-eq !>(&) !>(!=(~ (find "AND category = '';" s))))
+    ::  summary written to catalog-meta (after its DELETE)
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-meta" s))))
+    (expect-eq !>(&) !>(!=(~ (find "INSERT INTO catalog-meta" s))))
+    (expect-eq !>(&) !>(!=(~ (find "'A blurb')" s))))
+  ==
+::  no author metadata → refresh writes NO classification + no meta INSERT
+::  (additive: the authored path only appears when the page declares it).
+++  test-refresh-urql-no-author-metadata
+  =/  s=tape  (catalog-page-refresh-urql ~zod ~tyr /a/b ~2026.1.1 fixture-analysis no-pages)
+  ;:  weld
+    (expect-eq !>(~) !>((find "cat-source = 'author'" s)))
+    (expect-eq !>(~) !>((find "INSERT INTO catalog-meta" s)))
+    ::  but the catalog-meta DELETE always runs (clears any stale summary)
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM catalog-meta" s))))
   ==
 --

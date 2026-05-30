@@ -25,9 +25,13 @@
       hash=@uvH               ::  sham over the raw body cord
       word-count=@ud
       body-lines=@ud
+      terms=(list term)       ::  inverted-index postings: (term, tf), capped + ranked
+      author-category=@t      ::  `%meta category:` value, '' if none declared
+      summary=@t              ::  `%meta summary:` value, '' if none declared
   ==
 +$  heading  [depth=@ud text=@t position=@ud]
 +$  link     [target=@t label=@t position=@ud]
++$  term     [term=@t tf=@ud]   ::  one posting: a content word + its in-page frequency
 ::
 ::  Per-page caps on extracted rows. A hostile page body (e.g. a megabyte
 ::  of "# x\n") would otherwise yield one catalog-* INSERT per line — a
@@ -38,6 +42,19 @@
 ++  heading-max  ^-(@ud 512)
 ++  link-max     ^-(@ud 1.024)
 ++  tag-max      ^-(@ud 128)
+::  Per-page cap on inverted-index postings. A page's body is tokenized into a
+::  term->frequency map; we keep only the top-`term-max` terms by frequency
+::  (ties broken by term order, for determinism). This bounds the per-page
+::  obelisk fan-out the same way the caps above do, AND is one of the three
+::  lossy stages (with stop-word/min-length filtering and dedup-to-count) that
+::  make the index a non-reversible bag-of-words rather than a body copy.
+++  term-max     ^-(@ud 512)
+::  Upper bound on a SINGLE term's byte length, and on the author-declared
+::  category/summary. A hostile page with one giant space-free run would
+::  otherwise store a multi-KB "term"; real search words are short. Bytes, not
+::  codepoints — a crude DoS guard that keeps any one value bounded.
+++  term-len-max  ^-(@ud 64)
+++  summary-max   ^-(@ud 280)
 ::
 ::  +analyze: single-pass fold over the body's lines.
 ::
@@ -62,6 +79,14 @@
   =|  rev-tags=(list @t)
   =/  first-non-blank=@t  ''
   =/  word-count=@ud  0
+  ::  inverted-index accumulator: content word -> in-page frequency. Folded on
+  ::  the SAME body lines that feed +count-words, so the term index is a near-
+  ::  free byproduct of the word-count pass — the body is never re-traversed and
+  ::  never persisted; only the derived (term, tf) postings are.
+  =|  term-freqs=(map @t @ud)
+  ::  author-declared metadata (feature A), from `%meta key: value` preamble.
+  =/  author-cat=@t  ''
+  =/  summ=@t  ''
   =/  pos=@ud  0
   |-
   ?~  lines
@@ -74,8 +99,22 @@
     =/  title=@t
       ?^  headings  text.i.headings
       first-non-blank
-    [title headings links tags (sham body) word-count total-lines]
+    ::  rank the term map by frequency and keep the top `term-max` (lossy cap).
+    =/  terms=(list term)  (top-terms term-max term-freqs)
+    [title headings links tags (sham body) word-count total-lines terms author-cat summ]
   =/  ln=tape  (trip i.lines)
+  ::  ── author metadata: `%meta <key>: <value>` preamble ──
+  ::  Tested FIRST so a `%meta` line is never mistaken for a heading, never
+  ::  becomes the title, and never enters the term index or word-count.
+  ::  `%meta ` collides with no existing prefix, so unmarked pages are
+  ::  unaffected. Unknown keys are dropped (a no-op preamble line, not an error).
+  =/  meta=(unit [key=tape value=tape])  (parse-meta-line ln)
+  ?^  meta
+    ?:  =("category" key.u.meta)
+      $(lines t.lines, pos +(pos), author-cat (crip (scag term-len-max (trim-both value.u.meta))))
+    ?:  =("summary" key.u.meta)
+      $(lines t.lines, pos +(pos), summ (crip (scag summary-max (trim-both value.u.meta))))
+    $(lines t.lines, pos +(pos))
   ::  ── headings (longest-prefix-first, capped at depth 3) ──
   ?:  (has-prefix "### " ln)
     =/  text=tape  (slag 4 ln)
@@ -112,6 +151,7 @@
       pos         +(pos)
       rev-links   [[target label pos] rev-links]
       word-count  (add word-count (count-words rest))
+      term-freqs  (index-terms term-freqs rest)
     ==
   ::  ── tag-only line: every whitespace-separated token must be `#word`.
   ::  Lines like `Hello #tag` are body text (tags must be exclusive on the
@@ -134,6 +174,7 @@
     pos               +(pos)
     first-non-blank   fnb
     word-count        (add word-count (count-words trimmed))
+    term-freqs        (index-terms term-freqs trimmed)
   ==
 ::
 ::  +parse-tag-line: `~[tag1 tag2 …]` if the line is composed entirely of
@@ -198,4 +239,109 @@
   ^-  tape
   ?~  t  ~
   ?:(=(' ' i.t) $(t t.t) t)
+::
+::  ── inverted-index tokenization (feature B) ───────────────────────────
+::
+::  +parse-meta-line: `[key value]` if [ln] is a `%meta <key>: <value>`
+::  preamble line, `~` otherwise. The key is lower-cased + left-trimmed; the
+::  value is returned raw (the caller trims). A line without `%meta ` or
+::  without a `:` is not metadata.
+++  parse-meta-line
+  |=  ln=tape
+  ^-  (unit [key=tape value=tape])
+  ?.  (has-prefix "%meta " ln)  ~
+  =/  rest=tape  (slag 6 ln)
+  =/  cl=(unit @ud)  (find ":" rest)
+  ?~  cl  ~
+  =/  key=tape    (cass (ltrim (scag u.cl rest)))
+  =/  value=tape  (slag +(u.cl) rest)
+  `[key value]
+::
+::  +index-terms: fold every content word in [t] into the frequency map [m].
+::  Dropped tokens (too short / stop word) never enter the map; surviving
+::  tokens bump their count. This is the dedup-to-count (bag-of-words) stage.
+++  index-terms
+  |=  [m=(map @t @ud) t=tape]
+  ^-  (map @t @ud)
+  =/  toks=(list tape)  (split-space t)
+  |-  ^-  (map @t @ud)
+  ?~  toks  m
+  =/  nt=(unit @t)  (normalize-term i.toks)
+  ?~  nt  $(toks t.toks)
+  $(toks t.toks, m (~(put by m) u.nt +((~(gut by m) u.nt 0))))
+::
+::  +normalize-term: lower-case a raw token, strip leading/trailing
+::  punctuation, and drop it (~) if shorter than 3 chars or a stop word.
+::  Interior punctuation is kept, so `~ricsul-bilwyt` and hyphenated words
+::  survive as a searcher would type them.
+++  normalize-term
+  |=  tok=tape
+  ^-  (unit @t)
+  =/  trimmed=tape  (trim-punct (cass tok))
+  ?:  (lth (lent trimmed) 3)  ~
+  ?:  (gth (lent trimmed) term-len-max)  ~      ::  drop adversarial giant tokens
+  =/  c=@t  (crip trimmed)
+  ?:  (~(has in stop-words) c)  ~
+  `c
+::
+::  +trim-punct: drop non-alphanumeric characters from BOTH ends of a tape
+::  (leading via +trim-leading, trailing via flop/trim-leading/flop).
+++  trim-punct
+  |=  t=tape
+  ^-  tape
+  (flop (trim-leading (flop (trim-leading t))))
+::  +trim-both: drop leading AND trailing spaces (for %meta key/value cleanup;
+::  unlike +trim-punct it only strips spaces, keeping interior/edge punctuation
+::  like 'C++' intact).
+++  trim-both
+  |=  t=tape
+  ^-  tape
+  (flop (ltrim (flop (ltrim t))))
+::  +trim-leading: drop leading non-alphanumeric characters.
+++  trim-leading
+  |=  t=tape
+  ^-  tape
+  ?~  t  ~
+  ?:  (is-alnum i.t)  t
+  $(t t.t)
+::  +is-alnum: is [c] an ASCII letter or digit?
+++  is-alnum
+  |=  c=@tD
+  ^-  ?
+  ?|  &((gte c '0') (lte c '9'))
+      &((gte c 'a') (lte c 'z'))
+      &((gte c 'A') (lte c 'Z'))
+  ==
+::
+::  +top-terms: the [n] highest-frequency postings from [m], frequency-
+::  descending, ties broken by term order so the output is deterministic
+::  (and so the top-N cap selects the same terms every crawl).
+++  top-terms
+  |=  [n=@ud m=(map @t @ud)]
+  ^-  (list term)
+  %+  scag  n
+  %+  sort  ~(tap by m)
+  |=  [a=[t=@t f=@ud] b=[t=@t f=@ud]]
+  ^-  ?
+  ?:  =(f.a f.b)  (lth t.a t.b)
+  (gth f.a f.b)
+::
+::  +stop-words: a small fixed set of high-frequency English function words
+::  (3+ chars — shorter ones are already dropped by the min-length filter)
+::  excluded from the term index. Deliberately small + fixed so the analyzer
+::  stays pure and unit-testable; content words (man/new/old/…) are NOT here.
+++  stop-words
+  ^-  (set @t)
+  %-  ~(gas in *(set @t))
+  ^-  (list @t)
+  :~  'the'  'and'  'for'  'are'  'but'  'not'  'you'  'all'  'any'
+      'can'  'has'  'had'  'her'  'was'  'one'  'our'  'out'  'his'
+      'how'  'now'  'see'  'two'  'way'  'who'  'did'  'its'  'let'
+      'say'  'she'  'too'  'use'  'that'  'this'  'with'  'have'  'from'
+      'they'  'will'  'would'  'there'  'their'  'what'  'which'  'when'
+      'make'  'like'  'time'  'just'  'him'  'know'  'take'  'into'
+      'your'  'good'  'some'  'could'  'them'  'than'  'then'  'were'
+      'been'  'more'  'also'  'such'  'only'  'over'  'most'  'other'
+      'these'  'about'  'where'  'after'  'before'  'between'  'because'
+  ==
 --

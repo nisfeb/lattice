@@ -499,11 +499,16 @@
     `new-set
   ::
       %page
-    ::  skip + log an oversized page rather than analyzing/indexing it — a
-    ::  hostile publisher must not turn one page into a giant obelisk poke.
+    ::  An oversized page can't be safely analyzed/indexed — a hostile publisher
+    ::  must not turn one page into a giant obelisk poke. PURGE any rows it has
+    ::  from a prior (smaller) crawl so search can't keep returning stale
+    ::  postings/content for a body we can no longer index; a never-seen
+    ::  oversized page just no-ops the DELETE.
     ?:  (gth (met 3 body.cw) body-max)
       ~&  [%catalog-page-too-large publisher=publisher.cw spur=spur.cw bytes=(met 3 body.cw)]
-      [~ ~ ~]
+      :+  ~[(obelisk-poke bowl (catalog-page-delete-urql our.bowl publisher.cw spur.cw))]
+        ~
+      ~
     =/  =analysis  (analyze body.cw)
     ::  Two-poke upsert (see +catalog-page-ensure-urql / -refresh-urql): the
     ::  ensure-INSERT is harmless-on-conflict, the refresh-UPDATE touches only
@@ -514,7 +519,13 @@
     =/  ensure=tape  (catalog-page-ensure-urql our.bowl publisher.cw spur.cw now.bowl analysis)
     =/  refresh=tape
       (catalog-page-refresh-urql our.bowl publisher.cw spur.cw now.bowl analysis old-paths)
-    :+  ~[(obelisk-poke bowl ensure) (obelisk-poke bowl refresh)]
+    ::  third poke: the inverted-index postings (feature B). Its OWN poke (not
+    ::  welded to ensure/refresh) so a bad term aborts only the index write —
+    ::  the page row + classification, already written above, are untouched. The
+    ::  body (body.cw) is read only by +analyze and is dropped with the walk; no
+    ::  body text reaches obelisk, only the derived (term, tf) postings.
+    =/  terms=tape  (catalog-page-terms-urql our.bowl publisher.cw spur.cw analysis)
+    :+  ~[(obelisk-poke bowl ensure) (obelisk-poke bowl refresh) (obelisk-poke bowl terms)]
       ~
     ~
   ==
@@ -914,6 +925,25 @@
     ?~  tag=(query-param inbound-request 'tag')
       [(respond-json-cards eyre-id 400 '{"error":"missing tag param"}') st]
     (kick-obelisk-query bowl eyre-id (catalog-by-tag-urql (trip u.tag)) st)
+  ::  GET /apps/lattice/catalog-search?term=<term> — page keys + in-page tf
+  ::  for one body term (feature B). The client normalizes each query word,
+  ::  fans out one call per word, then ranks (TF-IDF) + joins to catalog rows.
+  ?:  &(=(meth %'GET') =(action 'catalog-search'))
+    ?~  term=(query-param inbound-request 'term')
+      [(respond-json-cards eyre-id 400 '{"error":"missing term param"}') st]
+    ::  Normalize the query term with the SAME +normalize-term the crawler used
+    ::  to build the index, so the client can never drift from the stored
+    ::  postings. A non-indexable term (too short / a stop word) matches nothing
+    ::  — return an empty result in the obelisk JSON shape, no query.
+    =/  norm=(unit @t)  (normalize-term (trip u.term))
+    ?~  norm
+      :_  st
+      (respond-json-cards eyre-id 200 '{"ok":true,"columns":["source","publisher","path","tf"],"rows":[]}')
+    (kick-obelisk-query bowl eyre-id (catalog-search-urql (trip u.norm)) st)
+  ::  GET /apps/lattice/catalog-meta — author-declared summaries (source,
+  ::  publisher, path, summary); the client joins these onto the loaded rows.
+  ?:  &(=(meth %'GET') =(action 'catalog-meta'))
+    (kick-obelisk-query bowl eyre-id catalog-meta-list-urql st)
   ::  ── classifier pipeline (owner-only) ──
   ::  GET /apps/lattice/catalog-pending — the worklist: pages not yet
   ::  classified (category = ''), newest first. The LLM classifier reads a
@@ -1081,14 +1111,15 @@
   =.  catalog-sweep.state  `sweep-at
   ::  Poke the obelisk schema: obelisk-create-urql FIRST (it has the
   ::  `CREATE DATABASE lattice` the catalog tables need; on an existing db that
-  ::  statement harmlessly aborts its own poke, so it can't block the separate
-  ::  catalog-create poke), then catalog-create-urql.
+  ::  statement harmlessly aborts its own poke), then each +catalog-create-list
+  ::  table as its OWN poke — a joined CREATE poke aborts at the first existing
+  ::  table and never creates the rest (see the note on +catalog-create-list).
   :_  this
-  :*  (bind-eyre-card bowl)
-      (obelisk-poke bowl obelisk-create-urql)
-      (obelisk-poke bowl catalog-create-urql)
-      (arm-sweep-card sweep-at)
-      (weld man-cards home-cs)
+  ;:  weld
+    ~[(bind-eyre-card bowl) (obelisk-poke bowl obelisk-create-urql)]
+    (turn catalog-create-list |=(u=tape (obelisk-poke bowl u)))
+    ~[(arm-sweep-card sweep-at)]
+    (weld man-cards home-cs)
   ==
 ::
 ++  on-save  !>(state)
@@ -1102,13 +1133,14 @@
   ::  manual /know-reindex needed). obelisk-create-urql goes FIRST: it carries
   ::  the `CREATE DATABASE lattice` the catalog tables require, and on a ship
   ::  where the db already exists that statement aborts its OWN (separate) poke
-  ::  harmlessly — so it can never block the catalog-create poke. CREATE TABLE
-  ::  is idempotent-by-existence. Harmless if %obelisk isn't installed (the
-  ::  pokes just die).
+  ::  harmlessly. Each catalog CREATE TABLE is poked SEPARATELY (not joined):
+  ::  CREATE on an existing table errors + aborts its poke, so a joined poke
+  ::  would abort at the first existing table and never create the rest (which
+  ::  silently dropped catalog-terms/catalog-meta on an in-place upgrade).
+  ::  Harmless if %obelisk isn't installed (the pokes just die).
   =/  schema-cards=(list card)
-    :~  (obelisk-poke bowl obelisk-create-urql)
-        (obelisk-poke bowl catalog-create-urql)
-    ==
+    :-  (obelisk-poke bowl obelisk-create-urql)
+    (turn catalog-create-list |=(u=tape (obelisk-poke bowl u)))
   ::  Boot cards: the schema pokes, plus — on ANY upgrade INTO the catalog state
   ::  (from a released ship, ≤ %9) — arm the periodic sweep. state-10 is the
   ::  first version with the sweep machinery, so only a %10 → %10 reload already

@@ -203,4 +203,95 @@
 ++  test-analyze-under-cap-intact
   =/  body=@t  '# a\0a## b\0a### c\0a'
   (expect-eq !>(`@ud`3) !>((lent headings:(analyze body))))
+::
+::  ── inverted-index term extraction (feature B) ──────────────────────────
+::  Body words → lower-cased, edge-punctuation-stripped, <3-char + stop words
+::  dropped, deduped to a per-term frequency (tf).
+++  test-terms-basic
+  =/  a=analysis  (analyze 'Lattice catalog catalog search')
+  =/  m=(map @t @ud)  (~(gas by *(map @t @ud)) terms.a)
+  ;:  weld
+    (expect-eq !>(`@ud`1) !>((~(got by m) 'lattice')))  ::  lower-cased
+    (expect-eq !>(`@ud`2) !>((~(got by m) 'catalog')))  ::  deduped to tf
+    (expect-eq !>(`@ud`1) !>((~(got by m) 'search')))
+  ==
+::  stop words ('the') and <3-char tokens ('is','on') never enter the index.
+++  test-terms-drops-stop-and-short
+  =/  a=analysis  (analyze 'the cat is on the mat')
+  =/  m=(map @t @ud)  (~(gas by *(map @t @ud)) terms.a)
+  ;:  weld
+    (expect-eq !>(~) !>((~(get by m) 'the')))
+    (expect-eq !>(~) !>((~(get by m) 'is')))
+    (expect-eq !>(~) !>((~(get by m) 'on')))
+    (expect-eq !>(`@ud`1) !>((~(got by m) 'cat')))
+    (expect-eq !>(`@ud`1) !>((~(got by m) 'mat')))
+  ==
+::  edge punctuation is trimmed; interior kept (so '~ricsul-bilwyt' survives).
+++  test-terms-trims-punctuation
+  =/  a=analysis  (analyze '(hello), world. ~ricsul-bilwyt')
+  =/  m=(map @t @ud)  (~(gas by *(map @t @ud)) terms.a)
+  ;:  weld
+    (expect-eq !>(`@ud`1) !>((~(got by m) 'hello')))
+    (expect-eq !>(`@ud`1) !>((~(got by m) 'world')))
+    (expect-eq !>(`@ud`1) !>((~(got by m) 'ricsul-bilwyt')))
+  ==
+::  the term index is capped at term-max distinct terms (DoS / poke-size guard).
+++  test-terms-cap
+  =/  body=tape
+    =/  i=@ud  0
+    =|  acc=tape
+    |-  ^-  tape
+    ?:  (gth i term-max)  acc                  ::  term-max+1 DISTINCT words
+    $(i +(i), acc :(weld acc "wrd" (scow %ud i) " "))
+  (expect-eq !>(term-max) !>((lent terms:(analyze (crip body)))))
+::
+::  ── author metadata: `%meta` preamble (feature A) ──────────────────────
+++  test-meta-category
+  =/  a=analysis  (analyze '%meta category: notes\0a# Title\0abody words here')
+  ;:  weld
+    (expect-eq !>('notes') !>(author-category.a))
+    (expect-eq !>('Title') !>(title.a))  ::  %meta line is NOT the title
+  ==
+++  test-meta-summary
+  =/  a=analysis  (analyze '%meta summary: A short blurb.\0a# T\0abody')
+  (expect-eq !>('A short blurb.') !>(summary.a))
+::  a %meta line is excluded from the term index (metadata, not prose).
+++  test-meta-not-indexed
+  =/  a=analysis  (analyze '%meta category: zzztopic\0abody text')
+  =/  m=(map @t @ud)  (~(gas by *(map @t @ud)) terms.a)
+  ;:  weld
+    (expect-eq !>('zzztopic') !>(author-category.a))
+    (expect-eq !>(~) !>((~(get by m) 'zzztopic')))
+    (expect-eq !>(~) !>((~(get by m) 'category')))
+    (expect-eq !>(`@ud`1) !>((~(got by m) 'body')))  ::  real body word indexed
+  ==
+::  no %meta → author-category/summary stay empty (backward compatible).
+++  test-meta-absent
+  =/  a=analysis  (analyze '# Title\0aplain body')
+  ;:  weld
+    (expect-eq !>('') !>(author-category.a))
+    (expect-eq !>('') !>(summary.a))
+  ==
+::  +parse-meta-line directly: only `%meta key: value` matches.
+++  test-parse-meta-line
+  ;:  weld
+    (expect-eq !>("category") !>(key:(need (parse-meta-line "%meta category: notes"))))
+    (expect-eq !>(" notes") !>(value:(need (parse-meta-line "%meta category: notes"))))
+    (expect-eq !>(~) !>((parse-meta-line "not meta")))
+    (expect-eq !>(~) !>((parse-meta-line "%meta nocolon")))
+  ==
+::  a single oversized token (no spaces) is dropped from the index — guards a
+::  hostile page from storing a multi-KB "term" (defeats the bag-of-words cap).
+++  test-terms-max-length
+  =/  big=@t  (rap 3 (reap 70 'x'))             ::  70 bytes > term-len-max (64)
+  (expect-eq !>(~) !>(terms:(analyze big)))
+::  %meta values are both-ends-trimmed and byte-capped.
+++  test-meta-trims-and-caps
+  =/  a=analysis  (analyze '%meta category:   notes  ')
+  =/  long=@t  (rap 3 (weld ~['%meta summary: '] (reap 400 'z')))
+  =/  b=analysis  (analyze long)
+  ;:  weld
+    (expect-eq !>('notes') !>(author-category.a))     ::  surrounding spaces gone
+    (expect-eq !>(summary-max) !>((met 3 summary.b)))  ::  capped at 280 bytes
+  ==
 --
