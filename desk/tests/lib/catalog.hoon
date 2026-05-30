@@ -39,6 +39,21 @@
     ?:(=(';' i.s) $(s t.s, n +(n)) $(s t.s))
   (expect-eq !>(`@ud`8) !>(sc))
 ::
+::  +catalog-create-list is ONE create per element. Regression guard for the
+::  in-place-upgrade bug: the agent pokes each CREATE separately, because a
+::  joined CREATE poke aborts at the first already-existing table (CREATE on an
+::  existing table ERRORS) and never creates the ones after it — which silently
+::  dropped catalog-terms/catalog-meta on an upgraded ship.
+++  test-create-list-one-create-per-statement
+  =/  lst=(list tape)  catalog-create-list
+  ;:  weld
+    (expect-eq !>(`@ud`8) !>((lent lst)))
+    ::  each element holds exactly one statement terminator
+    (expect-eq !>(&) !>((levy lst |=(t=tape =(`@ud`1 (substr-count t ";"))))))
+    ::  the joined form equals catalog-create-urql (what the tests assert on)
+    (expect-eq !>(catalog-create-urql) !>(`tape`(zing lst)))
+  ==
+::
 ::  Generator is deterministic -- two calls yield identical tapes.
 ++  test-deterministic
   (expect-eq !>(catalog-create-urql) !>(catalog-create-urql))

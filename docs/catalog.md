@@ -331,10 +331,16 @@ onto `catalog-pages.category` via an UPDATE guarded by `category=''`
 **never clobbers** an `llm`/`manual` label across re-sweeps. Precedence:
 `manual > llm > author > rule > unclassified`. Summary lands in `catalog-meta`.
 
-Neither table needs a migration: both self-bootstrap via the idempotent
-`CREATE TABLE` poked at on-init/on-load, and back-fill as the periodic sweep
-re-crawls. (`%meta` lines currently render as visible page text, like the
-existing `#tag` convention — a future renderer pass could hide both.)
+Neither table needs a state migration: both self-bootstrap at on-init/on-load,
+where each catalog `CREATE TABLE` is poked **separately** — a joined CREATE
+poke aborts at the first already-existing table (CREATE on an existing table
+*errors*, "duplicate key", and a crud error aborts the whole multi-statement
+poke), so it would never create the new tables on an in-place upgrade. (This
+bit in live e2e testing — `catalog-terms`/`catalog-meta` silently uncreated on
+~tyr — and is fixed by `+catalog-create-list` + per-statement pokes.) They
+back-fill as the periodic sweep re-crawls. (`%meta` lines currently render as
+visible page text, like the existing `#tag` convention — a future renderer
+pass could hide both.)
 
 ## Phased delivery
 
@@ -360,6 +366,9 @@ Phase 4 is v2.
    hash is typed `@ud` (`scot %ud`). No `LIKE`/`LIMIT`/`COUNT`/`DISTINCT`/
    `GROUP BY`. INSERT errors on a duplicate PK (never replaces); UPDATE
    no-ops on an absent row — together these shape the two-poke upsert.
+   **`CREATE TABLE` on an existing table also errors** ("duplicate key") and
+   aborts the whole poke — so the schema is poked one `CREATE` per poke, never
+   joined (else adding a table never creates it on an upgraded ship).
 2. **`/catalog-query` complexity cap.** Public scry means anyone can run
    urQL against any publisher's catalog. Need a complexity cap to prevent
    denial-of-service via expensive queries — likely `LIMIT 100` ceiling,

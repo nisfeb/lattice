@@ -20,10 +20,16 @@
 ::
 /+  *catalog-analyzer
 |%
-::  +catalog-create-urql: (re)create the catalog tables. CREATE TABLE is
-::  atomic in obelisk and fails harmlessly if a table already exists, so
-::  this is safe to poke at every agent boot — matching the existing
-::  +obelisk-create-urql pattern for the knowledge/tags tables.
+::  +catalog-create-list: the catalog tables' CREATE statements, ONE per list
+::  element. The agent MUST poke each element as its OWN obelisk poke (NOT the
+::  joined +catalog-create-urql): CREATE TABLE on an already-existing table
+::  ERRORS ("duplicate key") and — since any crud error aborts the whole
+::  multi-statement poke — a single joined CREATE poke aborts at the first
+::  existing table and NEVER creates the ones after it. (That left
+::  catalog-terms/catalog-meta uncreated on a ship upgraded in place; a fresh
+::  ship was fine only because no table existed yet to abort on.) Per statement
+::  it is idempotent: an existing table's CREATE aborts only its own poke, so
+::  every other table's poke still runs.
 ::
 ::  Natural keys throughout. `source` is the @p that vouches for the row:
 ::  `our` for content this ship crawled itself, another @p for catalog
@@ -62,9 +68,8 @@
 ::                                of 'new' | 'changed' | 'requested' |
 ::                                'low-confidence'.
 ::
-++  catalog-create-urql
-  ^-  tape
-  %-  zing
+++  catalog-create-list
+  ^-  (list tape)
   :~  "CREATE TABLE catalog-pages (source @p, publisher @p, path @t, url @t, title @t, fetched @da, hash @ud, category @t, cat-source @t, confidence @rs, word-count @ud, body-lines @ud) PRIMARY KEY (source, publisher, path);"
       "CREATE TABLE catalog-headings (source @p, publisher @p, path @t, position @ud, depth @ud, text @t) PRIMARY KEY (source, publisher, path, position);"
       "CREATE TABLE catalog-links (source @p, publisher @p, path @t, position @ud, target-url @t, label @t, is-internal @ud) PRIMARY KEY (source, publisher, path, position);"
@@ -82,6 +87,14 @@
       ::  here.) Refreshed every crawl; one row per page when a summary exists.
       "CREATE TABLE catalog-meta (source @p, publisher @p, path @t, summary @t) PRIMARY KEY (source, publisher, path);"
   ==
+::
+::  +catalog-create-urql: the joined schema as one tape — for TESTS that assert
+::  on the whole schema string. The AGENT does NOT poke this (it would abort at
+::  the first existing table); it pokes each +catalog-create-list element
+::  separately. See the note on +catalog-create-list.
+++  catalog-create-urql
+  ^-  tape
+  (zing catalog-create-list)
 ::
 ::  ── page writes: the two-poke upsert ───────────────────────────────
 ::

@@ -1094,14 +1094,15 @@
   =.  catalog-sweep.state  `sweep-at
   ::  Poke the obelisk schema: obelisk-create-urql FIRST (it has the
   ::  `CREATE DATABASE lattice` the catalog tables need; on an existing db that
-  ::  statement harmlessly aborts its own poke, so it can't block the separate
-  ::  catalog-create poke), then catalog-create-urql.
+  ::  statement harmlessly aborts its own poke), then each +catalog-create-list
+  ::  table as its OWN poke — a joined CREATE poke aborts at the first existing
+  ::  table and never creates the rest (see the note on +catalog-create-list).
   :_  this
-  :*  (bind-eyre-card bowl)
-      (obelisk-poke bowl obelisk-create-urql)
-      (obelisk-poke bowl catalog-create-urql)
-      (arm-sweep-card sweep-at)
-      (weld man-cards home-cs)
+  ;:  weld
+    ~[(bind-eyre-card bowl) (obelisk-poke bowl obelisk-create-urql)]
+    (turn catalog-create-list |=(u=tape (obelisk-poke bowl u)))
+    ~[(arm-sweep-card sweep-at)]
+    (weld man-cards home-cs)
   ==
 ::
 ++  on-save  !>(state)
@@ -1115,13 +1116,14 @@
   ::  manual /know-reindex needed). obelisk-create-urql goes FIRST: it carries
   ::  the `CREATE DATABASE lattice` the catalog tables require, and on a ship
   ::  where the db already exists that statement aborts its OWN (separate) poke
-  ::  harmlessly — so it can never block the catalog-create poke. CREATE TABLE
-  ::  is idempotent-by-existence. Harmless if %obelisk isn't installed (the
-  ::  pokes just die).
+  ::  harmlessly. Each catalog CREATE TABLE is poked SEPARATELY (not joined):
+  ::  CREATE on an existing table errors + aborts its poke, so a joined poke
+  ::  would abort at the first existing table and never create the rest (which
+  ::  silently dropped catalog-terms/catalog-meta on an in-place upgrade).
+  ::  Harmless if %obelisk isn't installed (the pokes just die).
   =/  schema-cards=(list card)
-    :~  (obelisk-poke bowl obelisk-create-urql)
-        (obelisk-poke bowl catalog-create-urql)
-    ==
+    :-  (obelisk-poke bowl obelisk-create-urql)
+    (turn catalog-create-list |=(u=tape (obelisk-poke bowl u)))
   ::  Boot cards: the schema pokes, plus — on ANY upgrade INTO the catalog state
   ::  (from a released ship, ≤ %9) — arm the periodic sweep. state-10 is the
   ::  first version with the sweep machinery, so only a %10 → %10 reload already
