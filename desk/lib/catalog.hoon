@@ -528,6 +528,13 @@
   ^-  tape
   :(weld "FROM catalog-terms WHERE term = '" (urq-esc term) "' SELECT source, publisher, path, tf;")
 ::
+::  +catalog-meta-list-urql: every author-declared summary (feature A), keyed by
+::  (source, publisher, path) so the client can join it onto the catalog rows it
+::  already loaded. One row per page that declares a `%meta summary:`.
+++  catalog-meta-list-urql
+  ^-  tape
+  "FROM catalog-meta SELECT source, publisher, path, summary;"
+::
 ::  ════════════════════════════════════════════════════════════════════
 ::  Classifier pipeline.
 ::
@@ -588,7 +595,11 @@
 ::  vocabulary, we don't impose a fixed enum).
 ++  catalog-vocab-urql
   ^-  tape
-  "FROM catalog-pages SELECT category;"
+  ::  EXCLUDE author-declared categories (cat-source='author'): a crawled
+  ::  publisher's `%meta category:` must NOT seed the shared taxonomy the
+  ::  classifier reuses to label OTHER pages — that would let one peer poison
+  ::  everyone's vocabulary (untrusted-content hardening from the PR review).
+  "FROM catalog-pages WHERE cat-source != 'author' SELECT category;"
 ::
 ::  +catalog-join-and: join WHERE conjuncts with " AND ". "" for empties.
 ++  catalog-join-and

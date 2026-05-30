@@ -224,6 +224,31 @@ class LatticeClient(private val session: UrbitSession) {
     }
 
     /**
+     * Author-declared summaries (rows of catalog-meta): url -> summary, for the
+     * search screen to join onto the catalog rows it already loaded. Best-effort
+     * (a failed Result just means no snippets); only non-blank summaries kept.
+     */
+    suspend fun catalogMeta(): Result<Map<String, String>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder().addPathSegments("apps/lattice/catalog-meta").build()
+            val o = obeliskResult(url)
+            val cols = o["columns"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList()
+            val pi = cols.indexOf("publisher")
+            val pa = cols.indexOf("path")
+            val si = cols.indexOf("summary")
+            val out = HashMap<String, String>()
+            (o["rows"]?.jsonArray ?: kotlinx.serialization.json.JsonArray(emptyList())).forEach { rowEl ->
+                val cells = rowEl.jsonArray.map { it.jsonPrimitive.content }
+                val pub = cells.getOrNull(pi) ?: return@forEach
+                val path = cells.getOrNull(pa) ?: return@forEach
+                val summary = cells.getOrNull(si).orEmpty()
+                if (summary.isNotBlank()) out["urb://$pub$path"] = summary
+            }
+            out
+        }
+    }
+
+    /**
      * GET a catalog read endpoint and return the obelisk result object. The
      * catalog reads share ONE in-flight query slot on the agent and 429 when it
      * is busy (e.g. the Explore pane is mid-query); retry with a short backoff

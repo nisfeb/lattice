@@ -280,4 +280,18 @@
     (expect-eq !>(~) !>((parse-meta-line "not meta")))
     (expect-eq !>(~) !>((parse-meta-line "%meta nocolon")))
   ==
+::  a single oversized token (no spaces) is dropped from the index — guards a
+::  hostile page from storing a multi-KB "term" (defeats the bag-of-words cap).
+++  test-terms-max-length
+  =/  big=@t  (rap 3 (reap 70 'x'))             ::  70 bytes > term-len-max (64)
+  (expect-eq !>(~) !>(terms:(analyze big)))
+::  %meta values are both-ends-trimmed and byte-capped.
+++  test-meta-trims-and-caps
+  =/  a=analysis  (analyze '%meta category:   notes  ')
+  =/  long=@t  (rap 3 (weld ~['%meta summary: '] (reap 400 'z')))
+  =/  b=analysis  (analyze long)
+  ;:  weld
+    (expect-eq !>('notes') !>(author-category.a))     ::  surrounding spaces gone
+    (expect-eq !>(summary-max) !>((met 3 summary.b)))  ::  capped at 280 bytes
+  ==
 --

@@ -622,7 +622,10 @@
 ++  test-vocab-urql-shape
   =/  s=tape  catalog-vocab-urql
   ;:  weld
-    (expect-eq !>(&) !>(=("FROM catalog-pages SELECT category;" s)))
+    (expect-eq !>(&) !>(=("FROM catalog-pages WHERE cat-source != 'author' SELECT category;" s)))
+    ::  author-declared categories are excluded so a crawled peer can't seed the
+    ::  shared taxonomy the classifier reuses to label other pages.
+    (expect-eq !>(&) !>(!=(~ (find "cat-source != 'author'" s))))
     (expect-eq !>(~) !>((find "DISTINCT" s)))
   ==
 ::
@@ -704,6 +707,10 @@
 ++  test-search-urql-escapes-quote
   =/  s=tape  (catalog-search-urql "it's")
   (expect-eq !>(&) !>(!=(~ (find "term = 'it\\'s'" s))))
+::  +catalog-meta-list-urql: the author-summary reader (feature A read surface).
+++  test-meta-list-urql-shape
+  =/  s=tape  catalog-meta-list-urql
+  (expect-eq !>(&) !>(=("FROM catalog-meta SELECT source, publisher, path, summary;" s)))
 ::
 ::  ── refresh: author-declared category + summary (feature A) ──────────
 ::  author-category is adopted via an UPDATE GUARDED by `category = ''` (so a

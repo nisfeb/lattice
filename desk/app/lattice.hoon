@@ -499,11 +499,16 @@
     `new-set
   ::
       %page
-    ::  skip + log an oversized page rather than analyzing/indexing it — a
-    ::  hostile publisher must not turn one page into a giant obelisk poke.
+    ::  An oversized page can't be safely analyzed/indexed — a hostile publisher
+    ::  must not turn one page into a giant obelisk poke. PURGE any rows it has
+    ::  from a prior (smaller) crawl so search can't keep returning stale
+    ::  postings/content for a body we can no longer index; a never-seen
+    ::  oversized page just no-ops the DELETE.
     ?:  (gth (met 3 body.cw) body-max)
       ~&  [%catalog-page-too-large publisher=publisher.cw spur=spur.cw bytes=(met 3 body.cw)]
-      [~ ~ ~]
+      :+  ~[(obelisk-poke bowl (catalog-page-delete-urql our.bowl publisher.cw spur.cw))]
+        ~
+      ~
     =/  =analysis  (analyze body.cw)
     ::  Two-poke upsert (see +catalog-page-ensure-urql / -refresh-urql): the
     ::  ensure-INSERT is harmless-on-conflict, the refresh-UPDATE touches only
@@ -926,7 +931,19 @@
   ?:  &(=(meth %'GET') =(action 'catalog-search'))
     ?~  term=(query-param inbound-request 'term')
       [(respond-json-cards eyre-id 400 '{"error":"missing term param"}') st]
-    (kick-obelisk-query bowl eyre-id (catalog-search-urql (trip u.term)) st)
+    ::  Normalize the query term with the SAME +normalize-term the crawler used
+    ::  to build the index, so the client can never drift from the stored
+    ::  postings. A non-indexable term (too short / a stop word) matches nothing
+    ::  — return an empty result in the obelisk JSON shape, no query.
+    =/  norm=(unit @t)  (normalize-term (trip u.term))
+    ?~  norm
+      :_  st
+      (respond-json-cards eyre-id 200 '{"ok":true,"columns":["source","publisher","path","tf"],"rows":[]}')
+    (kick-obelisk-query bowl eyre-id (catalog-search-urql (trip u.norm)) st)
+  ::  GET /apps/lattice/catalog-meta — author-declared summaries (source,
+  ::  publisher, path, summary); the client joins these onto the loaded rows.
+  ?:  &(=(meth %'GET') =(action 'catalog-meta'))
+    (kick-obelisk-query bowl eyre-id catalog-meta-list-urql st)
   ::  ── classifier pipeline (owner-only) ──
   ::  GET /apps/lattice/catalog-pending — the worklist: pages not yet
   ::  classified (category = ''), newest first. The LLM classifier reads a

@@ -71,6 +71,9 @@ fun CatalogSearchScreen(
     // indexable words. `searching` gates the in-progress hint.
     var bodyScores by remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
     var searching by remember { mutableStateOf(false) }
+    // Author-declared summaries (url -> summary) from catalog-meta, shown as a
+    // snippet under each result. Loaded alongside the catalog; best-effort.
+    var summaries by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     LaunchedEffect(reloadNonce) {
         loading = true
@@ -78,6 +81,7 @@ fun CatalogSearchScreen(
         client.catalogList()
             .onSuccess { pages = it }
             .onFailure { error = it.message ?: "couldn't load the catalog" }
+        client.catalogMeta().onSuccess { summaries = it }  // best-effort snippets
         loading = false
     }
 
@@ -277,14 +281,16 @@ fun CatalogSearchScreen(
                         modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp),
                     )
                 }
-                items(results) { page -> ResultRow(page, onClick = { onOpenUrl(page.url) }) }
+                items(results) { page ->
+                    ResultRow(page, summaries[page.url], onClick = { onOpenUrl(page.url) })
+                }
             }
         }
     }
 }
 
 @Composable
-private fun ResultRow(page: CatalogPage, onClick: () -> Unit) {
+private fun ResultRow(page: CatalogPage, summary: String?, onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -304,6 +310,16 @@ private fun ResultRow(page: CatalogPage, onClick: () -> Unit) {
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+        if (!summary.isNullOrBlank()) {
+            Text(
+                summary,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
         if (page.category.isNotBlank() || page.wordCount > 0) {
             Row(
                 modifier = Modifier.padding(top = 2.dp),
@@ -338,8 +354,10 @@ private fun EmptyNote(text: String) {
     )
 }
 
-/** Normalize a query word the way the analyzer normalizes body terms — lower-
- *  case, trim edge punctuation, drop <3 chars — so it matches stored postings. */
+/** Coarse client-side pre-filter for query words (lowercase, trim edge
+ *  punctuation, drop <3 chars) to skip pointless round-trips. NOT authoritative:
+ *  the agent re-normalizes every term server-side with its own +normalize-term,
+ *  so the index/query match never depends on this reproducing it exactly. */
 private fun normalizeQueryTerm(token: String): String? {
     val t = token.lowercase().trim { !it.isLetterOrDigit() }
     return if (t.length >= 3) t else null

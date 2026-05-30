@@ -131,11 +131,13 @@ v1 computed worklist (`category=''`) does not yet populate.
 
 ## Obelisk schema (`/desk/lib/catalog.hoon`)
 
-Six tables under `catalog-*`, in the existing `lattice` obelisk database.
-The CREATE TABLE generator lives in `+catalog-create-urql` and is safe to
-poke at every agent boot — CREATE is atomic in obelisk and fails harmlessly
-if a table already exists (same pattern as `+obelisk-create-urql` for the
-knowledge/tags tables).
+Eight tables under `catalog-*`, in the existing `lattice` obelisk database.
+The schema lives in `+catalog-create-list` (one `CREATE TABLE` per element),
+and the agent pokes **each statement separately** at boot — CREATE on an
+*existing* table ERRORS ("duplicate key") and aborts the whole multi-statement
+poke, so a single joined poke would never create a table added after the
+existing ones on an in-place-upgraded ship. (`+catalog-create-urql` is the
+joined form, retained only for the whole-schema tests.)
 
 ### `catalog-pages`
 
@@ -149,7 +151,7 @@ knowledge/tags tables).
 | fetched    | @da    | When the row was last refreshed. |
 | hash       | @ud    | `sham` over the body cord (128-bit), stored as @ud (obelisk rejects @uv/@uvH value literals; @ud round-trips, aura immaterial for equality). Lets the crawler skip re-analyzing on no-change. |
 | category   | @t     | `''` (empty cord) until classified. Singular: one primary category per page. |
-| cat-source | @t     | `''` / `rule` / `llm` / `rule-fallback` / `manual` / `imported`. `''` means not yet classified. |
+| cat-source | @t     | `''` / `rule` / `llm` / `rule-fallback` / `manual` / `imported` / `author`. `''` = not yet classified; `author` = adopted from a publisher's `%meta category:` line (excluded from `+catalog-vocab-urql` so a peer can't seed the shared taxonomy). |
 | confidence | @rs    | 0.0 by default; the LLM path writes 0.0–1.0. |
 | word-count | @ud    | For ranking and excerpt sizing. |
 | body-lines | @ud    | Quick "how big is this" without re-fetching. |
@@ -282,7 +284,8 @@ session.
 | `GET /apps/lattice/catalog-by-tag` | `tag` | `+catalog-by-tag-urql` | `(source, publisher, path)` keys carrying the tag; resolve to rows via `catalog-fetch`. |
 | `GET /apps/lattice/catalog-pending` | — | `+catalog-pending-list-urql` | The classifier worklist: pages with `category=''`, newest first. |
 | `GET /apps/lattice/catalog-vocab` | — | `+catalog-vocab-urql` | Every page's category (one row each; caller dedupes + drops `''`). |
-| `GET /apps/lattice/catalog-search` | `term` | `+catalog-search-urql` | `(source, publisher, path, tf)` for every page whose body contains `term`. One equality lookup (no IN/OR); the client fans out a multi-word query + ranks by TF-IDF. |
+| `GET /apps/lattice/catalog-search` | `term` | `+catalog-search-urql` | `(source, publisher, path, tf)` for every page whose body contains `term`. The agent re-normalizes `term` server-side (the same `+normalize-term` as the index) so the client can't drift; one equality lookup (no IN/OR); the client fans out a multi-word query + ranks by TF-IDF. |
+| `GET /apps/lattice/catalog-meta` | — | `+catalog-meta-list-urql` | `(source, publisher, path, summary)` for every author-declared `%meta summary:`; the client joins these onto the loaded rows as result snippets. |
 
 **Body keyword search is server-indexed; substring search stays
 client-side.** Obelisk's urQL has no `LIKE`/substring predicate (only
@@ -316,10 +319,19 @@ never persisted**. The crawler already walks the body to compute
 as `(term, tf)` postings — a lossy, irreversible bag-of-words (lower-cased,
 stop-word/min-length filtered, deduped to a count, capped at the top 512 by
 frequency). Re-crawl replaces a page's postings wholesale; page-delete
-(manifest-diff) sweeps `catalog-terms` + `catalog-meta` too, so a vanished
-page leaves no ghost search hits. Query is single-term equality
-(`/catalog-search`); the client fans a multi-word query out and ranks by
-TF-IDF, since obelisk has no `IN`/`OR`/`LIKE`.
+(manifest-diff, and an oversized-page skip) sweeps `catalog-terms` +
+`catalog-meta` too, so a vanished or no-longer-indexable page leaves no ghost
+search hits. Query is single-term equality (`/catalog-search`); the client
+fans a multi-word query out and ranks by TF-IDF, since obelisk has no
+`IN`/`OR`/`LIKE`.
+
+**Known limits (v1):** the tokenizer is ASCII byte-level — it lower-cases and
+edge-trims ASCII only and caps a term at 64 bytes, so non-ASCII (accented /
+CJK) words are mangled or dropped from the body index (the instant local
+title/path substring filter is still Unicode-aware). Multi-word body search is
+**OR** over the query words (any word's TF-IDF contributes), whereas the local
+substring filter matches the whole phrase — a deliberate recall/precision
+split. Author `category`/`summary` are likewise byte-capped (64 / 280).
 
 **A — author-declared metadata.** A page can carry a `%meta key: value`
 preamble (`%meta category:`, `%meta summary:`) — a prefix that collides with

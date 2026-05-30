@@ -49,6 +49,12 @@
 ::  lossy stages (with stop-word/min-length filtering and dedup-to-count) that
 ::  make the index a non-reversible bag-of-words rather than a body copy.
 ++  term-max     ^-(@ud 512)
+::  Upper bound on a SINGLE term's byte length, and on the author-declared
+::  category/summary. A hostile page with one giant space-free run would
+::  otherwise store a multi-KB "term"; real search words are short. Bytes, not
+::  codepoints — a crude DoS guard that keeps any one value bounded.
+++  term-len-max  ^-(@ud 64)
+++  summary-max   ^-(@ud 280)
 ::
 ::  +analyze: single-pass fold over the body's lines.
 ::
@@ -105,9 +111,9 @@
   =/  meta=(unit [key=tape value=tape])  (parse-meta-line ln)
   ?^  meta
     ?:  =("category" key.u.meta)
-      $(lines t.lines, pos +(pos), author-cat (crip (ltrim value.u.meta)))
+      $(lines t.lines, pos +(pos), author-cat (crip (scag term-len-max (trim-both value.u.meta))))
     ?:  =("summary" key.u.meta)
-      $(lines t.lines, pos +(pos), summ (crip (ltrim value.u.meta)))
+      $(lines t.lines, pos +(pos), summ (crip (scag summary-max (trim-both value.u.meta))))
     $(lines t.lines, pos +(pos))
   ::  ── headings (longest-prefix-first, capped at depth 3) ──
   ?:  (has-prefix "### " ln)
@@ -273,6 +279,7 @@
   ^-  (unit @t)
   =/  trimmed=tape  (trim-punct (cass tok))
   ?:  (lth (lent trimmed) 3)  ~
+  ?:  (gth (lent trimmed) term-len-max)  ~      ::  drop adversarial giant tokens
   =/  c=@t  (crip trimmed)
   ?:  (~(has in stop-words) c)  ~
   `c
@@ -283,6 +290,13 @@
   |=  t=tape
   ^-  tape
   (flop (trim-leading (flop (trim-leading t))))
+::  +trim-both: drop leading AND trailing spaces (for %meta key/value cleanup;
+::  unlike +trim-punct it only strips spaces, keeping interior/edge punctuation
+::  like 'C++' intact).
+++  trim-both
+  |=  t=tape
+  ^-  tape
+  (flop (ltrim (flop (ltrim t))))
 ::  +trim-leading: drop leading non-alphanumeric characters.
 ++  trim-leading
   |=  t=tape
