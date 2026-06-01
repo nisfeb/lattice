@@ -209,9 +209,17 @@ fun WorkspaceScreen(
         client.fetch("urb://$ship/$src").onSuccess { client.save(dest, it.body).onSuccess { refreshPublic() } }
     }
     fun doMove(src: String, dest: String) = scope.launch {
-        client.fetch("urb://$ship/$src").onSuccess {
-            client.save(dest, it.body).onSuccess {
-                client.delete(src).onSuccess { wb.closeFor(Source.Public, src); refreshPublic() }
+        if (ns == Source.Knowledge) {
+            // Knowledge has a real server-side move that preserves tags + the
+            // obelisk index — unlike the public-file copy+delete below.
+            knowledge.move(src, dest)
+                .onSuccess { wb.closeFor(Source.Knowledge, src); refreshKnow(); status = "Renamed \"$src\" → \"$dest\"." }
+                .onFailure { status = "Move failed: ${it.message}" }
+        } else {
+            client.fetch("urb://$ship/$src").onSuccess {
+                client.save(dest, it.body).onSuccess {
+                    client.delete(src).onSuccess { wb.closeFor(Source.Public, src); refreshPublic() }
+                }
             }
         }
     }
@@ -228,6 +236,7 @@ fun WorkspaceScreen(
     )
     val knowLiveActions = listOf(
         FileAction("Publish to page", Icons.Filled.Publish) { publishKey = it; publishPath = it },
+        FileAction("Move / rename", Icons.Filled.DriveFileRenameOutline) { moveOf = it; dialogName = it },
         FileAction("Delete (to trash)", Icons.Filled.Delete, danger = true) { deleteKnow(it) },
     )
     val knowTrashActions = listOf(

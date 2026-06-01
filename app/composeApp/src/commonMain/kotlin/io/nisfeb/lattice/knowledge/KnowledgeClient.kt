@@ -225,6 +225,21 @@ class KnowledgeClient(private val session: UrbitSession) {
     /** Restore a soft-deleted item. */
     suspend fun restore(key: String): Result<Unit> = post("know-restore", key, null)
 
+    /** Rename/move a live item to a new key, preserving its body + tags. Fails
+     *  if the source is absent (404) or the target key already exists (409). */
+    suspend fun move(from: String, to: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder()
+                .addPathSegments("apps/lattice/know-move")
+                .addQueryParameter("from", from).addQueryParameter("to", to).build()
+            val req = Request.Builder().url(url).post("".toRequestBody(mediaType)).build()
+            session.http.newCall(req).execute().use { resp ->
+                if (resp.code == 409) error("a knowledge item already exists at \"$to\"")
+                if (!resp.isSuccessful) error("know-move HTTP ${resp.code}")
+            }
+        }
+    }
+
     /** Add a cross-cutting tag (normalized lower-case by the agent). */
     suspend fun tag(key: String, tag: String): Result<Unit> = tagPost("know-tag", key, tag)
 
