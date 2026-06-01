@@ -156,6 +156,51 @@
     (expect-eq !>((sy ~['urbit'])) !>(tags:(need (~(get by know.st7) /k))))
   ==
 ::
+::  move = rename a live entry, preserving body + tags; the old key is gone
+::  (live AND trash).
+++  test-do-know-move
+  =/  now  ~2026.1.1
+  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-10)
+  =/  st2  (do-know now [%tag '/a/b' 'urbit'] st1)
+  =/  st3  (do-know now [%move '/a/b' '/c/d'] st2)
+  ;:  weld
+    (expect-eq !>('hi') !>(body:(need (~(get by know.st3) /c/d))))
+    (expect-eq !>((sy ~['urbit'])) !>(tags:(need (~(get by know.st3) /c/d))))
+    (expect-eq !>(~) !>((~(get by know.st3) /a/b)))
+    (expect-eq !>(~) !>((~(get by trash.st3) /a/b)))
+  ==
+::  move never clobbers an existing target — no-op, both keys intact.
+++  test-do-know-move-conflict
+  =/  now  ~2026.1.1
+  =/  st1  (do-know now [%save '/a/b' 'from'] *state-10)
+  =/  st2  (do-know now [%save '/c/d' 'to'] st1)
+  =/  st3  (do-know now [%move '/a/b' '/c/d'] st2)
+  ;:  weld
+    (expect-eq !>('from') !>(body:(need (~(get by know.st3) /a/b))))
+    (expect-eq !>('to') !>(body:(need (~(get by know.st3) /c/d))))
+  ==
+::  move of a missing source (or a same-key move) is a no-op.
+++  test-do-know-move-missing
+  =/  st1  (do-know ~2026.1.1 [%move '/nope' '/x'] *state-10)
+  =/  st2  (do-know ~2026.1.1 [%save '/k' 'b'] *state-10)
+  =/  st3  (do-know ~2026.1.1 [%move '/k' '/k'] st2)
+  ;:  weld
+    (expect-eq !>(~) !>((~(get by know.st1) /x)))
+    (expect-eq !>('b') !>(body:(need (~(get by know.st3) /k))))
+  ==
+::  mirror of a move: DELETE the old key's rows, INSERT the new key's row.
+++  test-mirror-move
+  =/  now  ~2026.1.1
+  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-10)
+  =/  st2  (do-know now [%move '/a/b' '/c/d'] st1)
+  =/  m    (mirror-urql [%move '/a/b' '/c/d'] st2)
+  ;:  weld
+    (expect-eq !>(&) !>(!=(~ (find "DELETE FROM knowledge WHERE item = '/a/b'" m))))
+    (expect-eq !>(&) !>(!=(~ (find "INSERT INTO knowledge (item, updated) VALUES ('/c/d'" m))))
+    ::  a no-op move (conflict) mirrors nothing
+    (expect-eq !>("") !>((mirror-urql [%move '/a/b' '/a/b'] st2)))
+  ==
+::
 ++  test-norm-tag
   ;:  weld
     (expect-eq !>(`@t`'urbit') !>((norm-tag 'Urbit')))

@@ -572,6 +572,18 @@
       %save     (upsert key.act)
       %restore  (upsert key.act)
   ::
+  ::  move = delete the old key's index rows + (re)insert the new key's row+tags.
+  ::  Guard on `from` being GONE from the live map (post-mutation): if it's still
+  ::  present the move was a no-op (bad/missing/same/conflict) and we mirror "".
+      %move
+    ?~  fp=(know-key from.act)  ""
+    ?~  tp=(know-key to.act)    ""
+    ?:  (~(has by know.st) u.fp)  ""
+    ?~  live=(~(get by know.st) u.tp)  ""
+    =/  fk=tape  (trip (spat u.fp))
+    =/  tk=tape  (trip (spat u.tp))
+    (weld (obelisk-del-item-urql fk) (obelisk-row-urql tk u.live))
+  ::
       %del
     ?~  kp=(know-key key.act)  ""
     (obelisk-del-item-urql (trip (spat u.kp)))
@@ -722,6 +734,19 @@
       trash  (~(del by trash.st) u.kp)
       know   (~(put by know.st) u.kp u.e)
     ==
+  ::
+  ::  move = rename a LIVE entry's key, preserving its body/tags/vector/updated.
+  ::  No-op on a bad key, a missing `from`, a same-key move, or when `to` is
+  ::  already live (never clobber an existing entry — the caller deletes it
+  ::  first). Trash is untouched (move a live entry only; restore then move).
+      %move
+    ?~  fp=(know-key from.act)  st
+    ?~  tp=(know-key to.act)    st
+    ?:  =(u.fp u.tp)  st
+    ?~  e=(~(get by know.st) u.fp)  st
+    ?:  (~(has by know.st) u.tp)  st
+    =/  pruned=(map path know-entry)  (~(del by know.st) u.fp)
+    st(know (~(put by pruned) u.tp u.e))
   ::
       %tag
     ?~  kp=(know-key key.act)  st

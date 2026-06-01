@@ -273,6 +273,18 @@ TOOLS = [
          required=["key"],
          tb=POKE.format(extra="", action="[%restore p.u.k]",
                         msg="Restored {<(trip p.u.k)>} from trash.")),
+    dict(name="lattice-move",
+         desc="Rename/move a knowledge item to a new key, preserving its body "
+              "and tags. No-op if the source is absent or the target key already "
+              "exists (delete the target first). Use to reorganize keys/paths.",
+         parameters={"key": {"type": "string", "description": "The item's current key."},
+                     "to": {"type": "string", "description": "The new key (path-like)."}},
+         required=["key", "to"],
+         tb=POKE.format(extra="=/  to=(unit argument:tool:mcp)  (~(get by args) 'to')\n"
+                              "?~  to  (strand-fail %missing-to ~)\n"
+                              "?>  ?=([%string @t] u.to)\n",
+                        action="[%move p.u.k p.u.to]",
+                        msg="Renamed {<(trip p.u.k)>} to {<(trip p.u.to)>}.")),
     dict(name="lattice-tags",
          desc="List the existing tag vocabulary with counts. Call this BEFORE "
               "tagging so you reuse existing tags instead of creating near-duplicates.",
