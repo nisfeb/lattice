@@ -24,8 +24,9 @@ Read (scry, JSON, owner-local):
 | `/x/know/tags/json` | tag vocabulary + counts (facets) |
 
 Write (poke mark `%lattice-know`, `src==our`): `know-action` =
-`[%save key body]` / `[%del key]` / `[%restore key]` /
-`[%tag key tag]` / `[%untag key tag]`.
+`[%save key body]` / `[%del key]` / `[%restore key]` / `[%move from to]` /
+`[%tag key tag]` / `[%untag key tag]`. `move` renames a live entry (preserving
+body/tags/vector); it no-ops if the target already exists (never clobbers).
 
 Discovery is HTTP (owner-authenticated), not a scry — it takes query params:
 `GET /apps/lattice/know-explore?tags=a,b&match=all|any&q=text` filters the live
@@ -37,7 +38,7 @@ These work today with the generic `scry-agent` / `poke-our-agent` MCP tools.
 
 ## Dedicated MCP tools
 
-`scripts/setup-knowledge-mcp-tools.py` registers ten clean-schema tools into a
+`scripts/setup-knowledge-mcp-tools.py` registers eleven clean-schema tools into a
 running `%mcp-server` (compiled in its context, so **no lattice-side
 dependency**):
 
@@ -50,6 +51,7 @@ dependency**):
 | `lattice-explore` | `tag` and/or `query` (ANDed) — tag-filtered discovery |
 | `lattice-delete` | `key` (soft) |
 | `lattice-restore` | `key` |
+| `lattice-move` | `key`, `to` (rename to a new key; preserves body + tags) |
 | `lattice-tags` | — (tag vocabulary + counts; call before tagging) |
 | `lattice-tag` | `key`, `tag` (normalized lower-case) |
 | `lattice-untag` | `key`, `tag` |

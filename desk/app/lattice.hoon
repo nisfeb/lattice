@@ -873,6 +873,24 @@
       [(respond-json-cards eyre-id 400 '{"error":"missing tag"}') st]
     =^  mcards=(list card)  st  (know-mutate bowl [%untag u.k u.t] st)
     [(weld (respond-json-cards eyre-id 200 '{"ok":true}') mcards) st]
+  ::  POST /apps/lattice/know-move?from=<key>&to=<key> — rename a LIVE entry,
+  ::  preserving its body/tags. 404 if `from` is absent, 409 if `to` already
+  ::  exists (we never clobber — delete the target first).
+  ?:  &(=(meth %'POST') =(action 'know-move'))
+    ?~  f=(query-param inbound-request 'from')
+      [(respond-json-cards eyre-id 400 '{"error":"missing from"}') st]
+    ?~  t=(query-param inbound-request 'to')
+      [(respond-json-cards eyre-id 400 '{"error":"missing to"}') st]
+    ?~  fp=(know-key u.f)
+      [(respond-json-cards eyre-id 400 '{"error":"bad from key"}') st]
+    ?~  tp=(know-key u.t)
+      [(respond-json-cards eyre-id 400 '{"error":"bad to key"}') st]
+    ?.  (~(has by know.st) u.fp)
+      [(respond-json-cards eyre-id 404 '{"error":"no such entry"}') st]
+    ?:  (~(has by know.st) u.tp)
+      [(respond-json-cards eyre-id 409 '{"error":"target already exists"}') st]
+    =^  mcards=(list card)  st  (know-mutate bowl [%move u.f u.t] st)
+    [(weld (respond-json-cards eyre-id 200 '{"ok":true}') mcards) st]
   ::  POST /apps/lattice/know-reindex — (re)build the obelisk index from state.
   ::  No-op (ok:false) if %obelisk isn't installed; the store works without it.
   ?:  &(=(meth %'POST') =(action 'know-reindex'))

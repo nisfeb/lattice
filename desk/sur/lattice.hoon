@@ -113,12 +113,14 @@
   ==
 ::  programmatic knowledge actions (poked to lattice by on-ship agents/MCP):
 ::  save = create/overwrite (preserves existing tags); del = soft-delete
-::  (recoverable); restore = undo; tag/untag = add/remove a cross-cutting label.
+::  (recoverable); restore = undo; move = rename a live entry's key (preserving
+::  body/tags/vector); tag/untag = add/remove a cross-cutting label.
 ::  Permanent purge is deliberately NOT here — agents can't destroy knowledge.
 +$  know-action
   $%  [%save key=@t body=@t]
       [%del key=@t]
       [%restore key=@t]
+      [%move from=@t to=@t]
       [%tag key=@t tag=@t]
       [%untag key=@t tag=@t]
   ==
