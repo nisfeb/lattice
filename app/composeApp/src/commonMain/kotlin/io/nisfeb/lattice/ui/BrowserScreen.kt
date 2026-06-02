@@ -80,6 +80,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import io.nisfeb.lattice.PlatformBackHandler
 import io.nisfeb.lattice.isDesktop
 import io.nisfeb.lattice.shareText
 import io.nisfeb.lattice.browser.CachedPage
@@ -240,6 +241,12 @@ fun BrowserScreen(
     }
 
     val tab = tabs.getOrNull(active.coerceIn(0, maxOf(0, tabs.lastIndex)))
+    // System back: step the active tab's history back (mirrors the toolbar Back
+    // button). Disabled at the start of history, so Back then falls through to
+    // the screen-level handler / the OS instead of being swallowed.
+    PlatformBackHandler(enabled = tab?.canBack == true) {
+        tab?.let { if (it.canBack) { it.cursor--; load(it, it.history[it.cursor]) } }
+    }
     val current = tab?.current.orEmpty()
     val bookmarked = bookmarks.any { it.url == current }
     val ownPrefix = "urb://$homeShip/"

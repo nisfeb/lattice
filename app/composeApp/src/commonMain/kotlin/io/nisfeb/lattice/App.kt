@@ -97,6 +97,13 @@ fun App(
     // without forcing the user to re-pick from the (now empty) picker.
     var pendingActiveShip by remember { mutableStateOf<String?>(null) }
     var screen by remember { mutableStateOf<AppScreen>(AppScreen.Browse) }
+    // System back (Android gesture/button): pop an open sub-screen back to
+    // Browse. On Browse, BrowserScreen's own handler pops tab history; only when
+    // logged in, on Browse, with no history left does Back fall through and
+    // close the app (instead of closing it on the very first back, the bug).
+    PlatformBackHandler(enabled = activeShip != null && screen != AppScreen.Browse) {
+        screen = AppScreen.Browse
+    }
     var editTarget by remember { mutableStateOf<String?>(null) }
     var browseTarget by remember { mutableStateOf<String?>(null) }
     var shareTarget by remember { mutableStateOf<SharedContent?>(null) }
