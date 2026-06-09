@@ -38,6 +38,35 @@ class LatticeClientTest {
         assertEquals("not found", r.exceptionOrNull()?.message)
     }
 
+    @Test fun fetchExplainsBodylessResponseAsMissingAgent() = runTest {
+        // Eyre answers a bare body-less 404 when nothing is bound at
+        // /apps/lattice (agent not installed / not running). Surface that as a
+        // readable error, not a kotlinx EOF parse failure.
+        server.enqueue(MockResponse().setResponseCode(404))
+        val r = client.fetch("urb://~zod/hello")
+        assertTrue(r.isFailure)
+        val msg = r.exceptionOrNull()?.message.orEmpty()
+        assertTrue("%lattice" in msg && "404" in msg, msg)
+    }
+
+    @Test fun fetchExplainsHtmlBodyAsStaleSession() = runTest {
+        // An expired urbauth cookie redirects to /~/login; following it lands on
+        // an HTML page. That means "log in again", not a JSON parse error.
+        server.enqueue(MockResponse().setBody("<!doctype html><html><body>login</body></html>"))
+        val r = client.fetch("urb://~zod/hello")
+        assertTrue(r.isFailure)
+        val msg = r.exceptionOrNull()?.message.orEmpty()
+        assertTrue("log in" in msg, msg)
+    }
+
+    @Test fun catalogListExplainsBodylessResponseAsMissingAgent() = runTest {
+        server.enqueue(MockResponse().setResponseCode(404))
+        val r = client.catalogList()
+        assertTrue(r.isFailure)
+        val msg = r.exceptionOrNull()?.message.orEmpty()
+        assertTrue("%lattice" in msg && "404" in msg, msg)
+    }
+
     @Test fun listParsesAndSorts() = runTest {
         server.enqueue(MockResponse().setBody("""{"files":["two","hello","notes/x"]}"""))
         assertEquals(listOf("hello", "notes/x", "two"), client.list().getOrThrow())

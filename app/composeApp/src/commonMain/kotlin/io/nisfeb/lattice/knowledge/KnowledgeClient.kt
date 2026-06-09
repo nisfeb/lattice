@@ -1,6 +1,7 @@
 package io.nisfeb.lattice.knowledge
 
 import io.nisfeb.lattice.urbit.UrbitSession
+import io.nisfeb.lattice.urbit.agentJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -151,7 +152,7 @@ class KnowledgeClient(private val session: UrbitSession) {
             val url = base().newBuilder().addPathSegments("apps/lattice/know-query").build()
             val req = Request.Builder().url(url).post(urql.toRequestBody(mediaType)).build()
             session.http.newCall(req).execute().use { resp ->
-                val o = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                val o = agentJson(json, resp.body?.string().orEmpty(), resp.code)
                 o["error"]?.let { error(it.jsonPrimitive.content) }
                 if (!resp.isSuccessful) error("know-query HTTP ${resp.code}")
                 QueryResult(
@@ -204,7 +205,7 @@ class KnowledgeClient(private val session: UrbitSession) {
             val url = base().newBuilder()
                 .addPathSegments("apps/lattice/know-read").addQueryParameter("key", key).build()
             session.http.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
-                val o = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                val o = agentJson(json, resp.body?.string().orEmpty(), resp.code)
                 o["error"]?.let { error(it.jsonPrimitive.content) }
                 KnowEntry(
                     key = o["key"]!!.jsonPrimitive.content,

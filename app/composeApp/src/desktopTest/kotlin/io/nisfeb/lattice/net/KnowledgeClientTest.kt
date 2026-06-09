@@ -212,6 +212,24 @@ class KnowledgeClientTest {
         assertTrue(r.exceptionOrNull()?.message?.contains("503") == true)
     }
 
+    @Test fun queryExplainsBodylessResponseAsMissingAgent() = runTest {
+        // Eyre's bare body-less 404 (agent not bound at /apps/lattice) must
+        // surface as a readable error, not a kotlinx EOF parse failure.
+        server.enqueue(MockResponse().setResponseCode(404))
+        val r = client.query("FROM knowledge SELECT *;")
+        assertTrue(r.isFailure)
+        val msg = r.exceptionOrNull()?.message.orEmpty()
+        assertTrue("%lattice" in msg && "404" in msg, msg)
+    }
+
+    @Test fun readExplainsBodylessResponseAsMissingAgent() = runTest {
+        server.enqueue(MockResponse().setResponseCode(404))
+        val r = client.read("/a")
+        assertTrue(r.isFailure)
+        val msg = r.exceptionOrNull()?.message.orEmpty()
+        assertTrue("%lattice" in msg && "404" in msg, msg)
+    }
+
     @Test fun reindexPostsToReindex() = runTest {
         server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
         client.reindex().getOrThrow()

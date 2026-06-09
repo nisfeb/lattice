@@ -6,6 +6,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -97,8 +98,8 @@ class LatticeClient(private val session: UrbitSession) {
                     .build()
                 val request = Request.Builder().url(url).get().build()
                 fetchClient.newCall(request).execute().use { resp ->
-                    val text = resp.body?.string().orEmpty()
-                    val doc = json.decodeFromString<GmiDoc>(text)
+                    val obj = agentJson(json, resp.body?.string().orEmpty(), resp.code)
+                    val doc = json.decodeFromJsonElement<GmiDoc>(obj)
                     if (doc.error != null) error(doc.error)
                     doc
                 }
@@ -267,7 +268,7 @@ class LatticeClient(private val session: UrbitSession) {
             // on a large/slow catalog. The extended timeouts outlast the agent.
             val o = fetchClient.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
                 if (resp.code == 429) return@use null
-                val obj = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                val obj = agentJson(json, resp.body?.string().orEmpty(), resp.code)
                 obj["error"]?.let { error(it.jsonPrimitive.content) }
                 if (!resp.isSuccessful) error("catalog HTTP ${resp.code}")
                 obj
