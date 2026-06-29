@@ -12,6 +12,23 @@ import okhttp3.Request
 import java.util.concurrent.ConcurrentHashMap
 
 /**
+ * Coerce a user-typed ship URL to one OkHttp's `toHttpUrl()` can parse.
+ * If no scheme is present, prepend `https://` — matches Talon's posture
+ * and means users only have to type `http://` when they explicitly want
+ * cleartext (e.g. a LAN ship / SSH tunnel). Trailing slashes are stripped
+ * so the saved-session entry is stable.
+ */
+internal fun normalizeShipUrl(input: String): String {
+    val trimmed = input.trim().trimEnd('/')
+    val lower = trimmed.lowercase()
+    return if (lower.startsWith("http://") || lower.startsWith("https://")) {
+        trimmed
+    } else {
+        "https://$trimmed"
+    }
+}
+
+/**
  * Holds the session cookie for one authenticated Urbit ship and owns the
  * OkHttp client used for requests. Call login() once; afterwards the
  * authenticated [http] client carries the cookie for fetch GETs.
@@ -33,23 +50,20 @@ class UrbitSession(
         private set
 
     /**
-     * Authenticates against shipUrl (e.g. "http://localhost:8081") using +code.
-     * Accepts a leading '+' and keeps dashes (Urbit's /~/login wants the code
-     * verbatim minus the '+'). Returns Result.success(ship) on success.
+     * Authenticates against shipUrl (e.g. "https://mything.arvo.network" or
+     * "http://localhost:8081") using +code. Accepts a leading '+' and keeps
+     * dashes (Urbit's /~/login wants the code verbatim minus the '+').
+     * Returns Result.success(ship) on success.
+     *
+     * If `shipUrl` has no scheme, `https://` is assumed — users only type
+     * `http://` when they explicitly want cleartext. Matches Talon: there's
+     * no app-level refusal of plaintext http (whether http reaches the wire
+     * is the platform's cleartext policy — see the Android manifest).
      */
     suspend fun login(shipUrl: String, code: String): Result<String> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val url = shipUrl.trimEnd('/').toHttpUrl()
-                // SECURITY: never send the +code / session cookie in cleartext to
-                // a remote host. http is allowed only for loopback (local dev /
-                // SSH tunnel); anything else must be https.
-                val host = url.host
-                val isLoopback = host == "localhost" || host == "127.0.0.1" ||
-                    host == "::1" || host == "[::1]"
-                if (!url.isHttps && !isLoopback) {
-                    error("refusing to log in over plaintext http to a remote host — use https")
-                }
+                val url = normalizeShipUrl(shipUrl).toHttpUrl()
                 val body = FormBody.Builder()
                     .add("password", code.trim().removePrefix("+"))
                     .build()

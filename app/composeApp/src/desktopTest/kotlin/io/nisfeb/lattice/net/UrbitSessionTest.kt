@@ -43,13 +43,10 @@ class UrbitSessionTest {
         assertEquals(null, session.shipName)
     }
 
-    // Security: never send the +code/cookie in cleartext to a non-loopback host.
-    @Test fun loginRejectsCleartextRemoteHost() = runTest {
-        val session = UrbitSession(OkHttpClient(), FakeSessionStore())
-        val result = session.login("http://example.com", "lidlut-tabwed-pillex-ridrup")
-        assertTrue(result.isFailure)
-        assertEquals(null, session.shipName)
-    }
+    // Matches Talon: no app-level refusal of plaintext http to a remote host.
+    // Whether cleartext reaches the wire is the platform's policy (Android
+    // manifest usesCleartextTraffic), not a login guard. normalizeShipUrl's
+    // scheme handling is pinned in NormalizeShipUrlTest.
 
     @Test fun tryRestoreLoadsSavedSession() {
         val session = loggedInSession(server)
