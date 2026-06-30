@@ -12,6 +12,7 @@
 ::  reach here: the deny-all weir chain gates every cross-ship dart.
 ::
 /<  lk  /lib/lattice-know.hoon
+/<  lp  /lib/lattice-pub.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -30,6 +31,8 @@
             [%fall %| /know/vault empty-dir:loader]
             [%fall %& [/know %index] [[/lattice %know-index] *know-index:lk]]
             [%fall %& [/know %trash] [[/lattice %know-index] *know-index:lk]]
+            [%fall %| /pub/vault empty-dir:loader]
+            [%fall %& [/pub %index] [[/lattice %pub-index] *pub-index:lp]]
         ==
       ==
     ::
@@ -46,11 +49,14 @@
         =/  root=path  path.here
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
-        ?.  =([/lattice %know-action] p.sage)
-          ~&  [%lattice-bad-mark p.sage]
-          $
         ;<  now=@da  bind:m  get-time:io
-        ;<  ~  bind:m  (apply root now !<(know-action:lk q.sage))
+        ?:  =([/lattice %know-action] p.sage)
+          ;<  ~  bind:m  (apply root now !<(know-action:lk q.sage))
+          $
+        ?:  =([/lattice %pub-action] p.sage)
+          ;<  ~  bind:m  (apply-pub root now !<(pub-action:lp q.sage))
+          $
+        ~&  [%lattice-bad-mark p.sage]
         $
       ==
     --
@@ -181,6 +187,50 @@
     =/  entries=(map path know-entry:lk)  (collect-entries ~ ball.p.seen)
     (put-file ix [/lattice %know-index] (derive-index:lk entries))
   ==
+::  +apply-pub: dispatch one public-page action. Mirror of +apply but for the
+::  /pub vault: a page is just a body, so save-page upserts and del-page culls,
+::  with no trash/restore. The derived /pub/index row carries the parity hash.
+::
+++  apply-pub
+  |=  [root=path now=@da act=pub-action:lp]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  vbase=path  (weld root /pub/vault)
+  =/  px=road:tarball  [%& %& (weld root /pub) %index]
+  ?-    -.act
+      %save-page
+    =/  key=path  (stab key.act)
+    =/  or=(unit vrail:lp)  (key-to-rail:lp vbase key)
+    ?~  or  ~&([%lattice-pub-bad-key key] (pure:m ~))
+    =/  road=road:tarball  [%& %& pax.u.or nom.u.or]
+    ;<  ~  bind:m  (ensure-dirs vbase (slag (lent vbase) pax.u.or))
+    ;<  ~  bind:m  (put-file road [/lattice %page] body.act)
+    ;<  ~  bind:m  (gain:io road %.y)
+    ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
+    (put-file px [/lattice %pub-index] (~(put by ix) key (to-pub-row:lp body.act now)))
+  ::
+      %del-page
+    =/  key=path  (stab key.act)
+    =/  or=(unit vrail:lp)  (key-to-rail:lp vbase key)
+    ?~  or  ~&([%lattice-pub-bad-key key] (pure:m ~))
+    =/  road=road:tarball  [%& %& pax.u.or nom.u.or]
+    ;<  exists=?  bind:m  (peek-exists:io road)
+    ?.  exists  ~&([%lattice-pub-del-missing key] (pure:m ~))
+    ::  cull tombs the grub (gain=%.y keeps the body in born history); drop its
+    ::  index row so it's no longer live. No trash row — pages have no restore.
+    ;<  ~  bind:m  (cull:io road)
+    ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
+    (put-file px [/lattice %pub-index] (~(del by ix) key))
+  ==
+::  +read-pub-index: peek the /pub/index grub. Empty if absent.
+::
+++  read-pub-index
+  |=  road=road:tarball
+  =/  m  (fiber:fiber:nexus ,pub-index:lp)
+  ^-  form:m
+  ;<  =seen:nexus  bind:m  (peek:io road ~)
+  ?.  ?=([%& %file *] seen)  (pure:m *pub-index:lp)
+  (pure:m !<(pub-index:lp (need-vase:tarball sang.p.seen)))
 ::  +retag: %tag / %untag — touch the entry's tag set + refresh its index row.
 ::
 ++  retag

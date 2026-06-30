@@ -249,6 +249,33 @@
       catalog-pubpaths=(map @p (set path))
       know-where=know-where
   ==
+::  state-12: adds the pub-where flag — the public-page analog of know-where.
+::  %state = serve/store published pages from the in-agent content map (all
+::  behavior through phase-1). %grubbery = the content map mirrors into the
+::  grubbery %lattice nexus /pub vault, HTTP reads serve from it, and %grow
+::  serving stays map-sourced (the content map is dual-written, never abandoned).
+::  Everything else is byte-identical to state-11.
++$  pub-where  know-where
++$  state-12
+  $:  %12
+      content=(map path @t)
+      published=(map path @uvH)
+      pending=(map @ta [=ship =path])
+      subs=(map [=ship spur=path] last=@ud)
+      fetches=(map @ta walk)
+      manifest=@uvH
+      home=@uvH
+      browse=(unit [=ship spur=path rev=@ud])
+      know=(map path know-entry)
+      trash=(map path know-entry)
+      oquery=(unit [eid=@ta deadline=@da])
+      catalog-sweep=(unit @da)
+      catalog-walks=(map @ta catalog-walk)
+      sweep-queue=(list @p)
+      catalog-pubpaths=(map @p (set path))
+      know-where=know-where
+      pub-where=pub-where
+  ==
 ::  +$ catalog-walk: one in-flight catalog walk-to-latest. Mirrors +$ walk
 ::  but with action and publisher (vs ship) so the same walk-to-latest
 ::  state machine can serve both manifest discovery and per-page fetches.

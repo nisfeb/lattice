@@ -5,7 +5,7 @@
 /+  grb=lattice-grubbery
 ::
 |%
-+$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7 state-8 state-9 state-10 state-11)
++$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7 state-8 state-9 state-10 state-11 state-12)
 +$  card  card:agent:gall
 ::
 ::  -- helper gates --
@@ -160,8 +160,8 @@
 ::  the catalog read endpoints — shares one code path and one in-flight
 ::  slot. 429 if a query is already running; 400 on empty urQL.
 ++  kick-obelisk-query
-  |=  [=bowl:gall eyre-id=@ta urql=tape st=state-11]
-  ^-  [(list card) state-11]
+  |=  [=bowl:gall eyre-id=@ta urql=tape st=state-12]
+  ^-  [(list card) state-12]
   ?.  =(~ oquery.st)
     [(respond-json-cards eyre-id 429 '{"error":"a query is already running"}') st]
   ?:  =(~ urql)
@@ -178,9 +178,9 @@
 ::  so the knowledge store behaves identically whether or not %obelisk is
 ::  installed. Shared by the HTTP CRUD endpoints and the %lattice-know poke.
 ++  know-mutate
-  |=  [=bowl:gall act=know-action st=state-11]
-  ^-  (quip card state-11)
-  =/  new=state-11  (do-know now.bowl act st)
+  |=  [=bowl:gall act=know-action st=state-12]
+  ^-  (quip card state-12)
+  =/  new=state-12  (do-know now.bowl act st)
   =/  urql=tape  (mirror-urql act new)
   =/  obe-cards=(list card)  ?~(urql ~ [(obelisk-poke bowl urql)]~)
   :_  new
@@ -192,11 +192,72 @@
 ::  per-poke ack tracking yet; /know-verify is the drift backstop — add an
 ::  ack-retry queue here if dual-write ever diverges in practice.
 ++  grubbery-write-cards
-  |=  [=bowl:gall act=know-action st=state-11]
+  |=  [=bowl:gall act=know-action st=state-12]
   ^-  (list card)
   ?.  =(%grubbery know-where.st)  ~
   =/  =wire  /grubbery-write/(scot %da now.bowl)
   [%pass wire %agent [our.bowl %grubbery] %poke (poke-cage:grb wire act)]~
+::  ── public-page dual-write + read routing (phase-2a, pub-where) ──
+::  +pub-write-cards: mirror one content-map mutation into the grubbery /pub
+::  vault. DEAD at pub-where=%state. NB: unlike the private vault, the content
+::  map is NEVER abandoned — %grow serving stays map-sourced (see on-poke/handle-
+::  http), so this poke is a pure shadow whose parity is checked by /pub-verify.
+::  act is a bare lattice-pub +pub-action noun ([%save-page key body] |
+::  [%del-page key]); the agent builds it structurally (no lattice-pub import).
+++  pub-write-cards
+  |=  [=bowl:gall act=* st=state-12]
+  ^-  (list card)
+  ?.  =(%grubbery pub-where.st)  ~
+  =/  =wire  /grubbery-pub-write/(scot %da now.bowl)
+  [%pass wire %agent [our.bowl %grubbery] %poke (page-action-cage:grb wire act)]~
+::  +verify-pub: byte-compare every content-map page against the /pub vault.
+::  Same shape/result as +verify-vault, so it reuses +verify-json.
+++  verify-pub
+  |=  [=bowl:gall content=(map path @t)]
+  ^-  [checked=@ud missing=(list path) mismatch=(list path)]
+  =/  idx=gpindex:grb  (read-pub-index:grb our.bowl now.bowl)
+  %+  roll  ~(tap by content)
+  |=  $:  [k=path v=@t]
+          acc=[checked=@ud missing=(list path) mismatch=(list path)]
+      ==
+  =.  checked.acc  +(checked.acc)
+  ?.  (~(has by idx) k)  acc(missing [k missing.acc])
+  =/  got=(unit @t)  (read-page:grb our.bowl now.bowl k)
+  ?~  got  acc(missing [k missing.acc])
+  ?:(=(v u.got) acc acc(mismatch [k mismatch.acc]))
+::  +pub-snapshot: read every live page back into a content-shaped (map path @t)
+::  via the index + per-key scry. Keyed identically to content.st, so the read
+::  endpoints consume it unchanged. ponytail: reads all bodies even for single-
+::  page/list reads — acceptable per phase-1's same trade-off; revisit if slow.
+++  pub-snapshot
+  |=  =bowl:gall
+  ^-  (map path @t)
+  =/  idx=gpindex:grb  (read-pub-index:grb our.bowl now.bowl)
+  %-  malt
+  %+  murn  ~(tap by idx)
+  |=  [k=path *]
+  ^-  (unit [path @t])
+  =/  got=(unit @t)  (read-page:grb our.bowl now.bowl k)
+  ?~(got ~ `[k u.got])
+::  +pub-src: the source for HTTP page reads — the vault snapshot at %grubbery
+::  (proving the vault in production), else the content map. The %grow / manifest
+::  / home emission deliberately does NOT use this — it stays content.st-sourced
+::  so the dense-monotonic-revision invariant is never perturbed.
+++  pub-src
+  |=  [=bowl:gall st=state-12]
+  ^-  (map path @t)
+  ?:  =(%grubbery pub-where.st)  (pub-snapshot bowl)
+  content.st
+::  +pub-migrate-cards: one save-page poke per content-map page — backfills the
+::  /pub vault from the maps. Pages carry no original timestamp, so save-page
+::  (stamped at the nexus) is the verbatim import; no trash to migrate.
+++  pub-migrate-cards
+  |=  [=bowl:gall content=(map path @t)]
+  ^-  (list card)
+  %+  turn  ~(tap by content)
+  |=  [k=path v=@t]
+  =/  =wire  (weld /grubbery-pub-migrate k)
+  [%pass wire %agent [our.bowl %grubbery] %poke (page-action-cage:grb wire [%save-page (spat k) v])]
 ::  +verify-vault: byte-compare every live entry's content against the grubbery
 ::  vault (read via the adapter scry). Returns counts + the keys that are absent
 ::  from the vault (missing) or whose content differs (mismatch). The caller
@@ -277,7 +338,7 @@
 ::  +know-src: the live knowledge source for reads — the vault snapshot at
 ::  %grubbery (source of truth post-cutover), else the in-agent map.
 ++  know-src
-  |=  [=bowl:gall st=state-11]
+  |=  [=bowl:gall st=state-12]
   ^-  (map path know-entry)
   ?:  =(%grubbery know-where.st)  (vault-snapshot bowl)
   know.st
@@ -432,8 +493,8 @@
 ::  No-op if a sweep is already in progress (walks in flight or a non-empty
 ::  queue) or there are no publishers. Does NOT touch the timer (caller manages).
 ++  begin-sweep
-  |=  [=bowl:gall st=state-11]
-  ^-  [(list card) state-11]
+  |=  [=bowl:gall st=state-12]
+  ^-  [(list card) state-12]
   ::  No-op only if a SWEEP is already in progress — a non-empty queue, or a
   ::  %sweep walk in flight. A one-off manual /catalog-scan (origin %scan) must
   ::  NOT block the periodic sweep (else a long scan defers a whole cycle); the
@@ -845,8 +906,8 @@
   [[%pass /clay-clear %arvo %c %info q.byk.bowl [%& dels]] cards]
 ::
 ++  handle-http
-  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-11]
-  ^-  [(list card) state-11]
+  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-12]
+  ^-  [(list card) state-12]
   ::  SECURITY: Eyre forwards ALL matching HTTP requests to us, authenticated or
   ::  not, and leaves enforcement to the agent. This is the owner's control plane
   ::  (mutates state, drives keens); public reads happen via remote scry, not here.
@@ -869,14 +930,17 @@
     ?~  parsed=(parse-urb-url target)
       [(respond-html-cards eyre-id 400 (render-error-page ourpatp (trip target) "not a urb:// address")) st]
     ?:  =(ship.u.parsed our.bowl)
+      ::  pub-where routes the page source: at %grubbery serve from the /pub vault
+      ::  (proving it in production), at %state from the content map. Bind once.
+      =/  csrc=(map path @t)  (pub-src bowl st)
       =/  pax=path  path.u.parsed
       ?:  =(~ pax)
         ::  own home → render with the subtle "try the native app" footer
-        [(respond-html-cards eyre-id 200 (render-home ourpatp (trip target) (home-body content.st))) st]
+        [(respond-html-cards eyre-id 200 (render-home ourpatp (trip target) (home-body csrc))) st]
       =/  full=path  :(welp /pub pax /gmi)
-      ?.  (~(has by content.st) full)
+      ?.  (~(has by csrc) full)
         [(respond-html-cards eyre-id 404 (render-error-page ourpatp (trip target) "that page is not published here")) st]
-      [(respond-html-cards eyre-id 200 (render-doc ourpatp (trip target) (~(got by content.st) full))) st]
+      [(respond-html-cards eyre-id 200 (render-doc ourpatp (trip target) (~(got by csrc) full))) st]
     ::  remote → walk to latest, render HTML when it resolves
     =/  shp=ship  ship.u.parsed
     =/  spr=path  path.u.parsed
@@ -886,7 +950,7 @@
     ~[(walk-keen-card %html eyre-id 1 shp spr) (walk-wait-card %html eyre-id at)]
   ::  GET /apps/lattice/list — the published file tree
   ?:  &(=(meth %'GET') =(action 'list'))
-    [(respond-json-cards eyre-id 200 (list-files-json content.st)) st]
+    [(respond-json-cards eyre-id 200 (list-files-json (pub-src bowl st))) st]
   ::  GET /apps/lattice/contacts — ship patps from our %contacts rolodex
   ?:  &(=(meth %'GET') =(action 'contacts'))
     [(respond-json-cards eyre-id 200 (contacts-json bowl)) st]
@@ -906,8 +970,9 @@
     =^  pub-cards  published.st  (sync-cards bowl content.st published.st)
     =^  man-cards  manifest.st   (manifest-cards content.st manifest.st)
     =^  home-cs    home.st       (home-cards content.st home.st)
+    =/  vault-cards=(list card)  (pub-write-cards bowl [%save-page (spat p.pp) body] st)
     :_  st
-    :(welp pub-cards man-cards home-cs (respond-json-cards eyre-id 200 '{"ok":true}'))
+    :(welp pub-cards man-cards home-cs vault-cards (respond-json-cards eyre-id 200 '{"ok":true}'))
   ::  POST /apps/lattice/delete?path=<rel>
   ?:  &(=(meth %'POST') =(action 'delete'))
     ?~  rel=(query-param inbound-request 'path')
@@ -919,8 +984,9 @@
     =^  pub-cards  published.st  (sync-cards bowl content.st published.st)
     =^  man-cards  manifest.st   (manifest-cards content.st manifest.st)
     =^  home-cs    home.st       (home-cards content.st home.st)
+    =/  vault-cards=(list card)  (pub-write-cards bowl [%del-page (spat p.pp)] st)
     :_  st
-    :(welp pub-cards man-cards home-cs (respond-json-cards eyre-id 200 '{"ok":true}'))
+    :(welp pub-cards man-cards home-cs vault-cards (respond-json-cards eyre-id 200 '{"ok":true}'))
   ::  ── private knowledge store: CRUD for the app (mirrors do-know / the peek) ──
   ::  Reads route on know-where: at %grubbery they serve from the vault (the
   ::  source of truth post-cutover); at %state from the in-agent maps. Writes
@@ -1109,6 +1175,54 @@
       ==
     :_  st(know-where %state)
     (respond-json-cards eyre-id 200 (en:json:html jon))
+  ::  ── public-page vault endpoints (phase-2a, mirror the know-* ones) ──
+  ::  POST /apps/lattice/pub-verify — parity check: every content-map page must
+  ::  byte-match the grubbery /pub vault. Owner-gated; 503 if grubbery absent.
+  ?:  &(=(meth %'POST') =(action 'pub-verify'))
+    ?.  (installed:grb our.bowl now.bowl)
+      [(respond-json-cards eyre-id 503 '{"error":"grubbery not installed"}') st]
+    [(respond-json-cards eyre-id 200 (verify-json (verify-pub bowl content.st))) st]
+  ::  POST /apps/lattice/pub-migrate — backfill the /pub vault from the content
+  ::  map (one save-page poke per page). Owner-gated; 503 if grubbery absent.
+  ::  Idempotent. No trash to migrate. Run /pub-verify after to confirm parity.
+  ?:  &(=(meth %'POST') =(action 'pub-migrate'))
+    ?.  (installed:grb our.bowl now.bowl)
+      [(respond-json-cards eyre-id 503 '{"error":"grubbery not installed"}') st]
+    =/  cards=(list card)  (pub-migrate-cards bowl content.st)
+    =/  body=@t  (migrate-json ~(wyt by content.st) 0)
+    [(weld (respond-json-cards eyre-id 200 body) cards) st]
+  ::  GET /apps/lattice/pub-where — report the active public-page backend.
+  ?:  &(=(meth %'GET') =(action 'pub-where'))
+    =/  jon=json  [%o (malt ~[['pub-where' [%s pub-where.st]]])]
+    [(respond-json-cards eyre-id 200 (en:json:html jon)) st]
+  ::  POST /apps/lattice/pub-cutover — flip the public-page backend to %grubbery.
+  ::  REFUSES (409) unless the /pub vault is at full parity with the content map.
+  ::  After this, HTTP page reads serve from the vault; %grow serving + the content
+  ::  map are UNCHANGED (the map is still dual-written — see pub-write-cards), so
+  ::  the cross-ship %grow invariant is untouched and rollback is instant.
+  ?:  &(=(meth %'POST') =(action 'pub-cutover'))
+    ?.  (installed:grb our.bowl now.bowl)
+      [(respond-json-cards eyre-id 503 '{"error":"grubbery not installed"}') st]
+    =/  res  (verify-pub bowl content.st)
+    ?.  =(0 (add (lent missing.res) (lent mismatch.res)))
+      [(respond-json-cards eyre-id 409 (verify-json res)) st]
+    =/  jon=json
+      %-  pairs:enjs:format
+      :~  ['ok' `json`[%b &]]
+          ['pub-where' `json`[%s %grubbery]]
+      ==
+    :_  st(pub-where %grubbery)
+    (respond-json-cards eyre-id 200 (en:json:html jon))
+  ::  POST /apps/lattice/pub-rollback — flip back to %state (always safe: the
+  ::  content map was never abandoned — it's been dual-written throughout).
+  ?:  &(=(meth %'POST') =(action 'pub-rollback'))
+    =/  jon=json
+      %-  pairs:enjs:format
+      :~  ['ok' `json`[%b &]]
+          ['pub-where' `json`[%s %state]]
+      ==
+    :_  st(pub-where %state)
+    (respond-json-cards eyre-id 200 (en:json:html jon))
   ::  POST /apps/lattice/know-query  body=<urQL> — run one urQL query against the
   ::  obelisk index and return {ok, action, relation, count, columns, rows}. ASYNC:
   ::  hold this request (by eyre-id), watch obelisk /server + poke the query, and
@@ -1224,8 +1338,9 @@
     =^  pub-cards  published.st  (sync-cards bowl content.st published.st)
     =^  man-cards  manifest.st   (manifest-cards content.st manifest.st)
     =^  home-cs    home.st       (home-cards content.st home.st)
+    =/  vault-cards=(list card)  (pub-write-cards bowl [%save-page (spat p.pp) body.u.e] st)
     :_  st
-    :(welp pub-cards man-cards home-cs (respond-json-cards eyre-id 200 '{"ok":true}'))
+    :(welp pub-cards man-cards home-cs vault-cards (respond-json-cards eyre-id 200 '{"ok":true}'))
   ::  POST /apps/lattice/sub?url=urb://~ship/path — follow a remote file
   ?:  &(=(meth %'POST') =(action 'sub'))
     ?~  raw=(query-param inbound-request 'url')
@@ -1289,7 +1404,7 @@
   ?~  parsed=(parse-urb-url u.raw)
     [(respond-json-cards eyre-id 400 '{"error":"bad urb:// url"}') st]
   ?:  =(ship.u.parsed our.bowl)
-    [(read-local content.st eyre-id path.u.parsed) st]
+    [(read-local (pub-src bowl st) eyre-id path.u.parsed) st]
   =/  shp=ship  ship.u.parsed
   =/  spr=path  path.u.parsed
   ::  &rev=N pins a specific publication revision (%ud N): one exact keen, with
@@ -1319,7 +1434,7 @@
 ::
 %-  agent:dbug
 %+  verb  |
-=|  state-11
+=|  state-12
 =*  state  -
 ^-  agent:gall
 |_  =bowl:gall
@@ -1338,6 +1453,9 @@
   ::  adapter stays dead until an explicit cutover. (The know-where bunt is
   ::  NOT %state, so set it; upgrades get %state via +migrate-10-11.)
   =.  know-where.state  %state
+  ::  same for the public-page backend (pub-where also bunts to %grubbery, not
+  ::  %state); fresh installs serve/store pages from the content map.
+  =.  pub-where.state  %state
   ::  arm the first periodic catalog sweep.
   =/  sweep-at=@da  (add now.bowl sweep-interval)
   =.  catalog-sweep.state  `sweep-at
@@ -1379,7 +1497,7 @@
   ::  has the Behn timer in flight (it survives agent reload and the fire-handler
   ::  re-arms it); arming again would stack a duplicate. So we skip the arm for
   ::  any %10/%11 old state (the %10→%11 upgrade carries the live timer too).
-  =/  armed=?  ?=(?(%10 %11) -.old)
+  =/  armed=?  ?=(?(%10 %11 %12) -.old)
   =/  boot-cards=(list card)
     ?:  armed  schema-cards
     (weld schema-cards ~[(arm-sweep-card (add now.bowl sweep-interval))])
@@ -1392,25 +1510,29 @@
     ^-  state-10
     ?:  armed  s
     s(catalog-sweep `(add now.bowl sweep-interval))
-  ::  %11 → %11 reload: state unchanged (flag + catalog already running).
-  ?:  ?=(%11 -.old)
+  ::  %12 → %12 reload: state unchanged (both flags + catalog already running).
+  ?:  ?=(%12 -.old)
     :_  this(state old)
     boot-cards
-  ::  %10 → %11: add the know-where flag (default %state). A %10 ship already
-  ::  has the live sweep timer (armed=.y), so no re-arm; behavior is unchanged.
+  ::  %11 → %12: add the pub-where flag (default %state). A %11 ship already has
+  ::  the live sweep timer (armed=.y), so no re-arm; behavior is unchanged.
+  ?:  ?=(%11 -.old)
+    :_  this(state (migrate-11-12 old))
+    boot-cards
+  ::  %10 → %12: add the know-where flag (10→11), then the pub-where flag (11→12).
   ?:  ?=(%10 -.old)
-    :_  this(state (migrate-10-11 old))
+    :_  this(state (migrate-11-12 (migrate-10-11 old)))
     boot-cards
-  ::  %9 → %11: the single catalog migration (carry all + 4 empty catalog slots),
-  ::  then add the flag.
+  ::  %9 → %12: the single catalog migration (carry all + 4 empty catalog slots),
+  ::  then add both flags.
   ?:  ?=(%9 -.old)
-    :_  this(state (migrate-10-11 (ready (migrate-9-10 old))))
+    :_  this(state (migrate-11-12 (migrate-10-11 (ready (migrate-9-10 old)))))
     boot-cards
-  ::  %8 → %11: add the obelisk-query slot (8→9), then 9→10, then 10→11.
+  ::  %8 → %12: add the obelisk-query slot (8→9), then chain up through both flags.
   ?:  ?=(%8 -.old)
-    :_  this(state (migrate-10-11 (ready (migrate-9-10 (migrate-8-9 old)))))
+    :_  this(state (migrate-11-12 (migrate-10-11 (ready (migrate-9-10 (migrate-8-9 old))))))
     boot-cards
-  ::  %7 → %11: give every knowledge entry empty tags + reserved vector,
+  ::  %7 → %12: give every knowledge entry empty tags + reserved vector,
   ::  then chain up.
   ?:  ?=(%7 -.old)
     =/  up=$-(know-entry-7 know-entry)  |=(e=know-entry-7 [body.e updated.e ~ ~])
@@ -1419,20 +1541,20 @@
           manifest.old  home.old  browse.old
           (~(run by know.old) up)  (~(run by trash.old) up)  ~
       ==
-    :_  this(state (migrate-10-11 (ready (migrate-9-10 s9))))
+    :_  this(state (migrate-11-12 (migrate-10-11 (ready (migrate-9-10 s9)))))
     boot-cards
-  ::  %6 → %11: add the empty private knowledge store, then chain up.
+  ::  %6 → %12: add the empty private knowledge store, then chain up.
   ?:  ?=(%6 -.old)
     =/  s9=state-9
       :*  %9  content.old  published.old  pending.old  subs.old  fetches.old
           manifest.old  home.old  browse.old  ~  ~  ~
       ==
-    :_  this(state (migrate-10-11 (ready (migrate-9-10 s9))))
+    :_  this(state (migrate-11-12 (migrate-10-11 (ready (migrate-9-10 s9)))))
     boot-cards
   ::  Versions 0-5 stored published content in Clay /pub. Pull it into state,
   ::  then delete /pub from the desk + drop the clay watch, so the desk stops
   ::  carrying the content (and installs stop shipping the publisher's pages).
-  ::  Finally, migrate the resulting state-9 up through state-10 to state-11.
+  ::  Finally, migrate the resulting state-9 up through state-10 to state-12.
   =/  content=(map path @t)  (migrate-content bowl)
   =/  files=(set path)       ~(key by content)
   =/  cards=(list card)      (clear-pub-cards bowl files)
@@ -1445,7 +1567,7 @@
       %1  [%9 content published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
       %0  [%9 content published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
     ==
-  :_  this(state (migrate-10-11 (ready (migrate-9-10 new))))
+  :_  this(state (migrate-11-12 (migrate-10-11 (ready (migrate-9-10 new)))))
   (weld cards boot-cards)
 ::
 ++  on-poke

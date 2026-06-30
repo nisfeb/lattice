@@ -35,4 +35,29 @@
     (expect-eq !>(%grubbery-load) !>(p.cg))
     (expect-eq !>(want) !>(got))
   ==
+::  +pub-vault-path: a content-map key maps to its page grub under the /pub vault,
+::  the leading `pub` stripped and the key's tail as the grub leaf.
+++  test-pub-vault-path
+  ;:  weld
+    %+  expect-eq
+      !>  `path`/apps/'lattice.lattice_app'/pub/vault/notes/intro/gmi
+      !>  (pub-vault-path /pub/notes/intro/gmi)
+    ::  the home page
+    %+  expect-eq
+      !>  `path`/apps/'lattice.lattice_app'/pub/vault/index/gmi
+      !>  (pub-vault-path /pub/index/gmi)
+  ==
+::  +page-action-cage: a %grubbery-load poke whose dart is a %poke at the nexus
+::  main.sig, blot /lattice/pub-action, carrying the pub-action noun verbatim.
+++  test-page-action-cage
+  =/  act  [%save-page '/pub/a/gmi' 'hi']
+  =/  cg=cage  (page-action-cage /lat-pub-write act)
+  =/  got=gload  !<(gload q.cg)
+  =/  want=gload
+    :-  [/lat-pub-write [%& [/apps/'lattice.lattice_app' %'main.sig']]]
+    [%poke [[/lattice %pub-action] act]]
+  ;:  weld
+    (expect-eq !>(%grubbery-load) !>(p.cg))
+    (expect-eq !>(want) !>(got))
+  ==
 --

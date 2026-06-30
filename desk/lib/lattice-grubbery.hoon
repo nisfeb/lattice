@@ -37,6 +37,10 @@
 ::  present scry — reading a MISSING grub directly faults .^ (and +mule does NOT
 ::  catch .^ faults), so callers must check the index before +read-entry.
 +$  gindex  (map path [updated=@da bytes=@ud tags=(set @t) restore=(unit @ud)])
+::  the pub nexus index grub's value shape (lattice-pub +pub-index): content-map
+::  key -> meta, no bodies. hash is (sham body) for parity diffing. Same one-scry
+::  discipline as gindex — read the index, never a (maybe-missing) page blind.
++$  gpindex  (map path [updated=@da bytes=@ud hash=@uvH])
 ::  ── nexus location ──
 ::  where the %lattice nexus lives inside grubbery's tree (its raw born path;
 ::  the neck-remapped HTTP form is apps/lattice.lattice_app, same path).
@@ -50,6 +54,17 @@
 ::  +index-path / +trash-path: the nexus derived-index grubs (key -> meta).
 ++  index-path  ^-(path (weld nexus-app /know/index))
 ++  trash-path  ^-(path (weld nexus-app /know/trash))
+::  +pub-vault-path: the grubbery tree path of a published page's grub. key is a
+::  content-map key (e.g. /pub/notes/intro/gmi); the leading `pub` is stripped
+::  (the base carries it) and the key's tail is the grub. -> .../pub/vault/
+::  notes/intro/gmi. Must stay in lockstep with +key-to-rail:lattice-pub.
+++  pub-vault-path
+  |=  key=path
+  ^-  path
+  =/  rest=path  ?:(?=([%pub *] key) (slag 1 key) key)
+  :(weld nexus-app /pub/vault rest)
+::  +pub-index-path: the pub derived-index grub (content-key -> meta).
+++  pub-index-path  ^-(path (weld nexus-app /pub/index))
 ::  +scry-base: /[our]/grubbery/[now] prefix for a %gx peek into grubbery.
 ++  scry-base
   |=  [our=@p now=@da]
@@ -100,6 +115,29 @@
     |.  ^-  gindex
     .^(gindex %gx :(weld (scry-base our now) /peek/file trash-path /know-index))
   ?:(?=(%& -.res) p.res ~)
+::  +read-page: scry one published page by its content-map key. ~ if absent,
+::  tombstoned, or grubbery is down/younger. The stored grub's mark is `page`
+::  (a bare cord body), so the molded read is exact. Like +read-entry, callers
+::  MUST gate this on +read-pub-index — reading a missing grub faults .^.
+++  read-page
+  |=  [our=@p now=@da key=path]
+  ^-  (unit @t)
+  =/  res
+    %-  mule
+    |.  ^-  @t
+    .^(@t %gx :(weld (scry-base our now) /peek/file (pub-vault-path key) /page))
+  ?:(?=(%& -.res) `p.res ~)
+::  +read-pub-index: the pub nexus live index (content-key -> meta). Always
+::  present once the nexus exists, so the scry doesn't fault — the safe way to
+::  learn the published key set without reading (maybe-missing) page grubs.
+++  read-pub-index
+  |=  [our=@p now=@da]
+  ^-  gpindex
+  =/  res
+    %-  mule
+    |.  ^-  gpindex
+    .^(gpindex %gx :(weld (scry-base our now) /peek/file pub-index-path /pub-index))
+  ?:(?=(%& -.res) p.res ~)
 ::  ── writes ──
 ::  +poke-cage: the [mark vase] to %poke at %grubbery to drive one know-action
 ::  through the nexus writer. dest is the nexus main.sig; blot /lattice
@@ -107,7 +145,7 @@
 ++  poke-cage
   |=  [=wire act=know-action]
   ^-  cage
-  (action-cage wire act)
+  (action-cage wire %know-action act)
 ::  +import-cage: a migration poke — write an entry VERBATIM (preserving its
 ::  updated/tags/vector) into the vault, live or trashed. The nexus's know-action
 ::  carries these import variants; we send the matching noun (the agent's
@@ -119,15 +157,23 @@
 ++  import-cage
   |=  [=wire imp=gimport]
   ^-  cage
-  (action-cage wire imp)
-::  +action-cage: build the [mark vase] to %poke at %grubbery driving one action
-::  (know-action OR an import) through the nexus writer. dest = the nexus
-::  main.sig; blot /lattice/know-action selects the writer's grab.
-++  action-cage
+  (action-cage wire %know-action imp)
+::  +page-action-cage: like +poke-cage but for a public-page write — the noun is
+::  a lattice-pub +pub-action ([%save-page key body] | [%del-page key]), selected
+::  by the /lattice/pub-action blot. The agent builds the noun structurally (it
+::  doesn't import lattice-pub), so this takes a bare noun.
+++  page-action-cage
   |=  [=wire act=*]
+  ^-  cage
+  (action-cage wire %pub-action act)
+::  +action-cage: build the [mark vase] to %poke at %grubbery driving one action
+::  (a know-action/import, or a pub-action) through the nexus writer. dest = the
+::  nexus main.sig; blot /lattice/[mark] selects the writer's grab for that action.
+++  action-cage
+  |=  [=wire mark=@tas act=*]
   ^-  cage
   =/  =gload
     :-  [wire [%& [nexus-app %'main.sig']]]
-    [%poke [[/lattice %know-action] act]]
+    [%poke [[/lattice mark] act]]
   [%grubbery-load !>(gload)]
 --

@@ -612,6 +612,24 @@ migrated ships, and graceful full-fetch with everyone else, with zero flag day.
 
 ## Staging
 
+> **Update 2026-06-30 (2a) — BUILT, additive & default-off (branch `feat/grubbery-pub-storage`,
+> off the phase-1 PR branch).** state-12 adds `pub-where`; `migrate-11-12` carries every field
+> forward and defaults `%state`. The content map dual-writes into a `/lattice/pub` vault at
+> `%grubbery`; owner endpoints `/pub-where /pub-verify /pub-migrate /pub-cutover /pub-rollback`
+> mirror the know-* set. **Safety refinement vs the plan:** the content map is never abandoned —
+> at `%grubbery` it is still dual-written, so `%grow`/manifest/home serving stays *map-sourced*
+> (the dense-monotonic-revision invariant is untouched) and only the HTTP page reads route to the
+> vault. Rollback is instant & lossless.
+>
+> **Verification:** both desks compile cleanly (lattice app+lib+sur+mar and the grubbery
+> nexus+marcs+`lattice-pub` all commit on `~tyr`); the lattice unit suite is green incl.
+> `test-migrate-11-12`, all `do-know`/`mirror-urql` (state-12 bump), all catalog. The pure
+> `lattice-pub`/adapter-cage unit assertions could NOT be run on `~tyr` — its `run-tests` fails to
+> build *any* test that imports a session-added `/lib` (the unchanged, zod-green phase-1
+> `lattice-grubbery` test fails there too), an environment quirk, not a code defect. Still owed:
+> run those pure tests on the zod harness, then the live cutover/rollback + `%grow`-continuity
+> probe on a real ship.
+
 - **2a** — `/lattice/pub` storage move behind a `pub-where=?(%state %grubbery)` flag, same
   import/export/verify/soak discipline as phase 1's vault. Serving stays on the unchanged gall
   `%grow` path throughout. No peer-visible change.

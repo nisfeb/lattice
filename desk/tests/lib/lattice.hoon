@@ -117,7 +117,7 @@
 ::  +do-know: save → live; del → SOFT (moves to recoverable trash, not gone);
 ::  restore → back to live. This is the delete gate.
 ++  test-do-know
-  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-11)
+  =/  st1  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-12)
   =/  st2  (do-know ~2026.1.1 [%del '/a/b'] st1)
   =/  st3  (do-know ~2026.1.1 [%restore '/a/b'] st2)
   ;:  weld
@@ -133,7 +133,7 @@
 ::  and they survive a del→restore round-trip.
 ++  test-do-know-tags
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/k' 'b'] *state-11)
+  =/  st1  (do-know now [%save '/k' 'b'] *state-12)
   =/  st2  (do-know now [%tag '/k' 'Urbit'] st1)
   =/  st3  (do-know now [%tag '/k' 'design'] st2)
   =/  st4  (do-know now [%save '/k' 'b2'] st3)
@@ -160,7 +160,7 @@
 ::  (live AND trash).
 ++  test-do-know-move
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-11)
+  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-12)
   =/  st2  (do-know now [%tag '/a/b' 'urbit'] st1)
   =/  st3  (do-know now [%move '/a/b' '/c/d'] st2)
   ;:  weld
@@ -172,7 +172,7 @@
 ::  move never clobbers an existing target — no-op, both keys intact.
 ++  test-do-know-move-conflict
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/a/b' 'from'] *state-11)
+  =/  st1  (do-know now [%save '/a/b' 'from'] *state-12)
   =/  st2  (do-know now [%save '/c/d' 'to'] st1)
   =/  st3  (do-know now [%move '/a/b' '/c/d'] st2)
   ;:  weld
@@ -181,8 +181,8 @@
   ==
 ::  move of a missing source (or a same-key move) is a no-op.
 ++  test-do-know-move-missing
-  =/  st1  (do-know ~2026.1.1 [%move '/nope' '/x'] *state-11)
-  =/  st2  (do-know ~2026.1.1 [%save '/k' 'b'] *state-11)
+  =/  st1  (do-know ~2026.1.1 [%move '/nope' '/x'] *state-12)
+  =/  st2  (do-know ~2026.1.1 [%save '/k' 'b'] *state-12)
   =/  st3  (do-know ~2026.1.1 [%move '/k' '/k'] st2)
   ;:  weld
     (expect-eq !>(~) !>((~(get by know.st1) /x)))
@@ -191,7 +191,7 @@
 ::  mirror of a move: DELETE the old key's rows, INSERT the new key's row.
 ++  test-mirror-move
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-11)
+  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-12)
   =/  st2  (do-know now [%move '/a/b' '/c/d'] st1)
   =/  m    (mirror-urql [%move '/a/b' '/c/d'] st2)
   ;:  weld
@@ -312,6 +312,53 @@
     (expect-eq !>(%state) !>(know-where.s11))
   ==
 ::
+::  +migrate-11-12: adds the pub-where flag (default %state), carries every
+::  state-11 field forward verbatim (incl. the know-where flag set in 11).
+++  test-migrate-11-12
+  =/  e=know-entry  ['body' ~2026.1.1 (sy ~['x']) ~]
+  =/  w=walk  [~zod /a/b 3 'gmi' 'bd' ~2026.6.1]
+  =/  cw=catalog-walk  [%page ~bus /n/i 2 'gmi' 'b' ~2026.6.2 %sweep]
+  =/  s11=state-11  *state-11
+  =.  content.s11           (malt ~[[`path`/page 'gemtext']])
+  =.  published.s11         (malt ~[[`path`/page `@uvH`5]])
+  =.  pending.s11           (malt ~[[`@ta`'e1' [~zod /x]]])
+  =.  subs.s11              (malt ~[[[`ship`~bus `path`/feed] `@ud`7]])
+  =.  fetches.s11           (malt ~[[`@ta`'f1' w]])
+  =.  manifest.s11          `@uvH`11
+  =.  home.s11              `@uvH`42
+  =.  browse.s11            `[~zod /p 2]
+  =.  know.s11              (malt ~[[`path`/a/b e]])
+  =.  trash.s11             (malt ~[[`path`/t e]])
+  =.  oquery.s11            `['q1' ~2026.6.1]
+  =.  catalog-sweep.s11     `~2026.6.3
+  =.  catalog-walks.s11     (malt ~[[`@ta`'cw1' cw]])
+  =.  sweep-queue.s11       ~[~zod ~bus]
+  =.  catalog-pubpaths.s11  (malt ~[[~zod (sy ~[`path`/page])]])
+  =.  know-where.s11        %grubbery
+  =/  s12=state-12  (migrate-11-12 s11)
+  ;:  weld
+    (expect-eq !>(%12) !>(-.s12))
+    ::  every state-11 field carried forward verbatim (no data loss)
+    (expect-eq !>(content.s11) !>(content.s12))
+    (expect-eq !>(published.s11) !>(published.s12))
+    (expect-eq !>(pending.s11) !>(pending.s12))
+    (expect-eq !>(subs.s11) !>(subs.s12))
+    (expect-eq !>(fetches.s11) !>(fetches.s12))
+    (expect-eq !>(manifest.s11) !>(manifest.s12))
+    (expect-eq !>(home.s11) !>(home.s12))
+    (expect-eq !>(browse.s11) !>(browse.s12))
+    (expect-eq !>(know.s11) !>(know.s12))
+    (expect-eq !>(trash.s11) !>(trash.s12))
+    (expect-eq !>(oquery.s11) !>(oquery.s12))
+    (expect-eq !>(catalog-sweep.s11) !>(catalog-sweep.s12))
+    (expect-eq !>(catalog-walks.s11) !>(catalog-walks.s12))
+    (expect-eq !>(sweep-queue.s11) !>(sweep-queue.s12))
+    (expect-eq !>(catalog-pubpaths.s11) !>(catalog-pubpaths.s12))
+    ::  know-where carried forward (not reset); pub-where defaults to %state
+    (expect-eq !>(%grubbery) !>(know-where.s12))
+    (expect-eq !>(%state) !>(pub-where.s12))
+  ==
+::
 ::  ── explore / discovery (synchronous filter over the live store) ──
 ++  test-split-on
   ;:  weld
@@ -331,7 +378,7 @@
 ::  +know-explore: AND/OR tag filter + case-insensitive text search over key/body.
 ++  test-know-explore
   =/  now  ~2026.1.1
-  =/  s0   *state-11
+  =/  s0   *state-12
   =/  s1   (do-know now [%save '/notes/urbit-design' 'a note about Hoon'] s0)
   =/  s2   (do-know now [%tag '/notes/urbit-design' 'urbit'] s1)
   =/  s3   (do-know now [%tag '/notes/urbit-design' 'design'] s2)
@@ -394,7 +441,7 @@
   (expect-eq !>(&) !>(!=(~ (find ~[92 39] s))))
 ::
 ++  test-obelisk-populate-urql
-  =/  st  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-11)
+  =/  st  (do-know ~2026.1.1 [%save '/a/b' 'hi'] *state-12)
   =/  s=tape  (obelisk-populate-urql know.st)
   ;:  weld
     ::  clears both tables before re-inserting (full rebuild)
@@ -407,14 +454,14 @@
 ::  one tag row; bad/no-op key = empty.
 ++  test-mirror-urql
   =/  now  ~2026.1.1
-  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-11)
+  =/  st1  (do-know now [%save '/a/b' 'hi'] *state-12)
   =/  st2  (do-know now [%tag '/a/b' 'urbit'] st1)
   =/  m-save   (mirror-urql [%save '/a/b' 'hi'] st1)
   =/  st-del   (do-know now [%del '/a/b'] st2)
   =/  m-del    (mirror-urql [%del '/a/b'] st-del)
   =/  m-tag    (mirror-urql [%tag '/a/b' 'Urbit'] st2)
   =/  m-untag  (mirror-urql [%untag '/a/b' 'urbit'] st2)
-  =/  m-noop   (mirror-urql [%save 'bad key' 'x'] *state-11)
+  =/  m-noop   (mirror-urql [%save 'bad key' 'x'] *state-12)
   ;:  weld
     ::  save = delete the stale row, then insert the current one
     (expect-eq !>(&) !>(!=(~ (find "DELETE FROM knowledge WHERE item = '/a/b';" m-save))))
