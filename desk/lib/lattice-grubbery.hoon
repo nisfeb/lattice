@@ -61,7 +61,7 @@
 ++  pub-vault-path
   |=  key=path
   ^-  path
-  =/  rest=path  ?:(?=([%pub *] key) (slag 1 key) key)
+  =/  rest=path  ?:(&(?=(^ key) =(%pub i.key)) t.key key)
   :(weld nexus-app /pub/vault rest)
 ::  +pub-index-path: the pub derived-index grub (content-key -> meta).
 ++  pub-index-path  ^-(path (weld nexus-app /pub/index))

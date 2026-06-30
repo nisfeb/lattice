@@ -621,14 +621,15 @@ migrated ships, and graceful full-fetch with everyone else, with zero flag day.
 > (the dense-monotonic-revision invariant is untouched) and only the HTTP page reads route to the
 > vault. Rollback is instant & lossless.
 >
-> **Verification:** both desks compile cleanly (lattice app+lib+sur+mar and the grubbery
-> nexus+marcs+`lattice-pub` all commit on `~tyr`); the lattice unit suite is green incl.
-> `test-migrate-11-12`, all `do-know`/`mirror-urql` (state-12 bump), all catalog. The pure
-> `lattice-pub`/adapter-cage unit assertions could NOT be run on `~tyr` — its `run-tests` fails to
-> build *any* test that imports a session-added `/lib` (the unchanged, zod-green phase-1
-> `lattice-grubbery` test fails there too), an environment quirk, not a code defect. Still owed:
-> run those pure tests on the zod harness, then the live cutover/rollback + `%grow`-continuity
-> probe on a real ship.
+> **Verification (on `~tyr`):** the full lib unit suite is GREEN — `lattice-pub` (4),
+> `lattice-grubbery` incl. the new pub-cage tests (5), `lattice` incl. `test-migrate-11-12` and all
+> `do-know`/`mirror-urql` (state-12), and all `catalog`. Two real compile bugs were caught and fixed
+> in the process (both surfaced only via `-build-file`, since `commit-desk` writes to clay without
+> type-checking and `run-tests` reports only pass/fail): (1) `strip-pub` used `?=([%pub *] key)` —
+> can't pattern-match a term against a path's `@ta` head; (2) `key-to-rail` ran `+scag` on a `?~`-
+> narrowed `rest`, and scag's `^+ b` cast then rejected its possibly-empty result. Still owed: a
+> compile check of the agent (`app`) and the nexus on a ship that can build them, then the live
+> cutover/rollback + `%grow`-continuity probe.
 
 - **2a** — `/lattice/pub` storage move behind a `pub-where=?(%state %grubbery)` flag, same
   import/export/verify/soak discipline as phase 1's vault. Serving stays on the unchanged gall
