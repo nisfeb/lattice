@@ -1,10 +1,11 @@
 ::  /app/lattice - cross-ship gemtext publishing
 ::
-/-  *lattice
-/+  default-agent, dbug, verb, *lattice, *catalog, *catalog-analyzer
+/-  *lattice, mcp
+/+  default-agent, dbug, verb, *lattice, *catalog, *catalog-analyzer, lattice-mcp-tools
+/+  grb=lattice-grubbery
 ::
 |%
-+$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7 state-8 state-9 state-10)
++$  versioned-state  $%(state-0 state-1 state-2 state-3 state-4 state-5 state-6 state-7 state-8 state-9 state-10 state-11)
 +$  card  card:agent:gall
 ::
 ::  -- helper gates --
@@ -159,8 +160,8 @@
 ::  the catalog read endpoints — shares one code path and one in-flight
 ::  slot. 429 if a query is already running; 400 on empty urQL.
 ++  kick-obelisk-query
-  |=  [=bowl:gall eyre-id=@ta urql=tape st=state-10]
-  ^-  [(list card) state-10]
+  |=  [=bowl:gall eyre-id=@ta urql=tape st=state-11]
+  ^-  [(list card) state-11]
   ?.  =(~ oquery.st)
     [(respond-json-cards eyre-id 429 '{"error":"a query is already running"}') st]
   ?:  =(~ urql)
@@ -177,12 +178,129 @@
 ::  so the knowledge store behaves identically whether or not %obelisk is
 ::  installed. Shared by the HTTP CRUD endpoints and the %lattice-know poke.
 ++  know-mutate
-  |=  [=bowl:gall act=know-action st=state-10]
-  ^-  (quip card state-10)
-  =/  new=state-10  (do-know now.bowl act st)
+  |=  [=bowl:gall act=know-action st=state-11]
+  ^-  (quip card state-11)
+  =/  new=state-11  (do-know now.bowl act st)
   =/  urql=tape  (mirror-urql act new)
+  =/  obe-cards=(list card)  ?~(urql ~ [(obelisk-poke bowl urql)]~)
   :_  new
-  ?~(urql ~ [(obelisk-poke bowl urql)]~)
+  (weld obe-cards (grubbery-write-cards bowl act st))
+::  +grubbery-write-cards: the dual-write hook. At know-where=%grubbery, mirror
+::  every mutation into the grubbery vault by poking the nexus writer; the maps
+::  stay authoritative through the soak (the parity check is /know-verify). DEAD
+::  at %state — returns ~, so behavior is bit-identical to 0.6.x. ponytail: no
+::  per-poke ack tracking yet; /know-verify is the drift backstop — add an
+::  ack-retry queue here if dual-write ever diverges in practice.
+++  grubbery-write-cards
+  |=  [=bowl:gall act=know-action st=state-11]
+  ^-  (list card)
+  ?.  =(%grubbery know-where.st)  ~
+  =/  =wire  /grubbery-write/(scot %da now.bowl)
+  [%pass wire %agent [our.bowl %grubbery] %poke (poke-cage:grb wire act)]~
+::  +verify-vault: byte-compare every live entry's content against the grubbery
+::  vault (read via the adapter scry). Returns counts + the keys that are absent
+::  from the vault (missing) or whose content differs (mismatch). The caller
+::  has already confirmed grubbery is installed.
+++  verify-vault
+  |=  [=bowl:gall know=(map path know-entry)]
+  ^-  [checked=@ud missing=(list path) mismatch=(list path)]
+  ::  read the vault key set ONCE from the always-present index; only read a
+  ::  body for keys the index confirms exist (reading a missing grub faults).
+  =/  idx=gindex:grb  (read-index:grb our.bowl now.bowl)
+  %+  roll  ~(tap by know)
+  |=  $:  [k=path e=know-entry]
+          acc=[checked=@ud missing=(list path) mismatch=(list path)]
+      ==
+  =.  checked.acc  +(checked.acc)
+  ?.  (~(has by idx) k)  acc(missing [k missing.acc])
+  =/  got=(unit know-entry)  (read-entry:grb our.bowl now.bowl k)
+  ?~  got  acc(missing [k missing.acc])
+  =/  match=?
+    ?&  =(body.e body.u.got)
+        =(tags.e tags.u.got)
+        =(vector.e vector.u.got)
+    ==
+  ?:(match acc acc(mismatch [k mismatch.acc]))
+::  +verify-json: render the parity result. ok=.y iff nothing missing/mismatched.
+++  verify-json
+  |=  res=[checked=@ud missing=(list path) mismatch=(list path)]
+  ^-  @t
+  %-  en:json:html
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['ok' [%b =(0 (add (lent missing.res) (lent mismatch.res)))]]
+      ['checked' (numb:enjs:format checked.res)]
+      ['missing' [%a (turn missing.res |=(p=path `json`[%s (spat p)]))]]
+      ['mismatch' [%a (turn mismatch.res |=(p=path `json`[%s (spat p)]))]]
+  ==
+::  +migrate-cards: one verbatim-import poke per live + trashed map entry. Keys
+::  pass as @t (the nexus +stab-parses them); each entry rides whole, so the
+::  vault preserves updated/tags/vector exactly.
+++  migrate-cards
+  |=  [=bowl:gall know=(map path know-entry) trash=(map path know-entry)]
+  ^-  (list card)
+  =/  live=(list card)
+    %+  turn  ~(tap by know)
+    |=  [k=path e=know-entry]
+    =/  =wire  (weld /grubbery-migrate k)
+    [%pass wire %agent [our.bowl %grubbery] %poke (import-cage:grb wire [%import (spat k) e])]
+  =/  dead=(list card)
+    %+  turn  ~(tap by trash)
+    |=  [k=path e=know-entry]
+    =/  =wire  (weld /grubbery-migrate-trash k)
+    [%pass wire %agent [our.bowl %grubbery] %poke (import-cage:grb wire [%import-trashed (spat k) e])]
+  (weld live dead)
+::  +migrate-json: the migrate response — counts of entries imported.
+++  migrate-json
+  |=  [live=@ud dead=@ud]
+  ^-  @t
+  %-  en:json:html
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['ok' [%b &]]
+      ['live' (numb:enjs:format live)]
+      ['trashed' (numb:enjs:format dead)]
+  ==
+::  +vault-snapshot: read every LIVE vault entry back into a (map path know-entry)
+::  via the index + per-key scry. The basis for /know-export-back; trashed
+::  entries are excluded (their grubs are culled — see the route comment).
+++  vault-snapshot
+  |=  =bowl:gall
+  ^-  (map path know-entry)
+  =/  idx=gindex:grb  (read-index:grb our.bowl now.bowl)
+  %-  malt
+  %+  murn  ~(tap by idx)
+  |=  [k=path *]
+  ^-  (unit [path know-entry])
+  =/  got=(unit know-entry)  (read-entry:grb our.bowl now.bowl k)
+  ?~(got ~ `[k u.got])
+::  +know-src: the live knowledge source for reads — the vault snapshot at
+::  %grubbery (source of truth post-cutover), else the in-agent map.
+++  know-src
+  |=  [=bowl:gall st=state-11]
+  ^-  (map path know-entry)
+  ?:  =(%grubbery know-where.st)  (vault-snapshot bowl)
+  know.st
+::  +index-list-json: render a vault index (key -> meta) as the know-list shape.
+::  Used for the trash view at %grubbery, where bodies are culled — the index
+::  still carries updated/bytes/tags, which is all the list shows.
+++  index-list-json
+  |=  ix=gindex:grb
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['count' (numb:enjs:format ~(wyt by ix))]
+      :-  'keys'
+      :-  %a
+      %+  turn  ~(tap by ix)
+      |=  [kp=path m=[updated=@da bytes=@ud tags=(set @t) restore=(unit @ud)]]
+      ^-  json
+      %-  pairs:enjs:format
+      :~  ['key' s+(spat kp)]
+          ['updated' s+(scot %da updated.m)]
+          ['bytes' (numb:enjs:format bytes.m)]
+          (tags-json tags.m)
+      ==
+  ==
 ::
 ++  respond-json-cards
   |=  [eyre-id=@ta status=@ud body=@t]
@@ -314,8 +432,8 @@
 ::  No-op if a sweep is already in progress (walks in flight or a non-empty
 ::  queue) or there are no publishers. Does NOT touch the timer (caller manages).
 ++  begin-sweep
-  |=  [=bowl:gall st=state-10]
-  ^-  [(list card) state-10]
+  |=  [=bowl:gall st=state-11]
+  ^-  [(list card) state-11]
   ::  No-op only if a SWEEP is already in progress — a non-empty queue, or a
   ::  %sweep walk in flight. A one-off manual /catalog-scan (origin %scan) must
   ::  NOT block the periodic sweep (else a long scan defers a whole cycle); the
@@ -727,8 +845,8 @@
   [[%pass /clay-clear %arvo %c %info q.byk.bowl [%& dels]] cards]
 ::
 ++  handle-http
-  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-10]
-  ^-  [(list card) state-10]
+  |=  [=bowl:gall eyre-id=@ta =inbound-request:eyre st=state-11]
+  ^-  [(list card) state-11]
   ::  SECURITY: Eyre forwards ALL matching HTTP requests to us, authenticated or
   ::  not, and leaves enforcement to the agent. This is the owner's control plane
   ::  (mutates state, drives keens); public reads happen via remote scry, not here.
@@ -804,35 +922,55 @@
     :_  st
     :(welp pub-cards man-cards home-cs (respond-json-cards eyre-id 200 '{"ok":true}'))
   ::  ── private knowledge store: CRUD for the app (mirrors do-know / the peek) ──
+  ::  Reads route on know-where: at %grubbery they serve from the vault (the
+  ::  source of truth post-cutover); at %state from the in-agent maps. Writes
+  ::  always run do-know (the maps stay synced as a rollback net through the soak)
+  ::  AND, at %grubbery, also poke the vault — see +know-mutate / +grubbery-write.
+  ::  +know-src reads the live vault snapshot once per request (index + per-key
+  ::  scry) at %grubbery. ponytail: know-list/know-tags only need metadata, so a
+  ::  per-key body scry is wasteful there — render from the index if it's slow.
   ::  GET /apps/lattice/know-list  — live items (keys + metadata)
   ?:  &(=(meth %'GET') =(action 'know-list'))
-    [(respond-json-cards eyre-id 200 (en:json:html (know-list-json know.st))) st]
-  ::  GET /apps/lattice/know-trash — soft-deleted items
+    [(respond-json-cards eyre-id 200 (en:json:html (know-list-json (know-src bowl st)))) st]
+  ::  GET /apps/lattice/know-trash — soft-deleted items (metadata only at
+  ::  %grubbery: the vault's trashed grubs are culled, so render from the trash
+  ::  index, which carries updated/bytes/tags).
   ?:  &(=(meth %'GET') =(action 'know-trash'))
-    [(respond-json-cards eyre-id 200 (en:json:html (know-list-json trash.st))) st]
+    =/  body=@t
+      ?:  =(%grubbery know-where.st)
+        (en:json:html (index-list-json (read-trash:grb our.bowl now.bowl)))
+      (en:json:html (know-list-json trash.st))
+    [(respond-json-cards eyre-id 200 body) st]
   ::  GET /apps/lattice/know-all — live items WITH bodies + tags (for backup).
   ?:  &(=(meth %'GET') =(action 'know-all'))
-    [(respond-json-cards eyre-id 200 (en:json:html (know-all-json know.st))) st]
+    [(respond-json-cards eyre-id 200 (en:json:html (know-all-json (know-src bowl st)))) st]
   ::  GET /apps/lattice/know-read?key=<key> — one item with its body
   ::  GET /apps/lattice/know-tags — the tag vocabulary + counts (facet data)
   ?:  &(=(meth %'GET') =(action 'know-tags'))
-    [(respond-json-cards eyre-id 200 (en:json:html (know-tags-json know.st))) st]
+    [(respond-json-cards eyre-id 200 (en:json:html (know-tags-json (know-src bowl st)))) st]
   ::  GET /apps/lattice/know-explore?tags=a,b&match=all|any&q=text — faceted
   ::  filter over the live store. tags = comma-separated; match defaults to
   ::  "any"; q = case-insensitive substring of the key or body. Returns the
-  ::  know-list shape. Served from state — independent of %obelisk.
+  ::  know-list shape.
   ?:  &(=(meth %'GET') =(action 'know-explore'))
     =/  tags=(set @t)  (parse-tags (fall (query-param inbound-request 'tags') ''))
     =/  all=?  =('all' (fall (query-param inbound-request 'match') 'any'))
     =/  q=@t   (fall (query-param inbound-request 'q') '')
-    =/  hits=(map path know-entry)  (know-explore know.st tags all q)
+    =/  hits=(map path know-entry)  (know-explore (know-src bowl st) tags all q)
     [(respond-json-cards eyre-id 200 (en:json:html (know-list-json hits))) st]
   ?:  &(=(meth %'GET') =(action 'know-read'))
     ?~  k=(query-param inbound-request 'key')
       [(respond-json-cards eyre-id 400 '{"error":"missing key"}') st]
     ?~  kp=(know-key u.k)
       [(respond-json-cards eyre-id 400 '{"error":"invalid key"}') st]
-    ?~  e=(~(get by know.st) u.kp)
+    =/  e=(unit know-entry)
+      ?.  =(%grubbery know-where.st)  (~(get by know.st) u.kp)
+      ::  index-gate: reading a vault grub that doesn't exist faults .^ (and
+      ::  +mule does NOT catch .^ faults), so confirm presence in the always-
+      ::  present index before reading the body — else a missing key 500s.
+      ?.  (~(has by (read-index:grb our.bowl now.bowl)) u.kp)  ~
+      (read-entry:grb our.bowl now.bowl u.kp)
+    ?~  e
       [(respond-json-cards eyre-id 404 '{"error":"not found"}') st]
     [(respond-json-cards eyre-id 200 (en:json:html (know-entry-json u.kp u.e))) st]
   ::  POST /apps/lattice/know-save?key=<key>  body=<text>
@@ -899,6 +1037,78 @@
           (obelisk-poke bowl (obelisk-populate-urql know.st))
       ==
     [(weld (respond-json-cards eyre-id 200 '{"ok":true}') cards) st]
+  ::  POST /apps/lattice/know-verify — parity check: every live entry's content
+  ::  (body/tags/vector) must match the grubbery vault. Owner-only (handle-http
+  ::  gates src). 503 if grubbery isn't installed. Read-only — the standing
+  ::  dual-write drift detector. `updated` is intentionally NOT compared: a
+  ::  dual-written entry's vault `updated` is the nexus's later processing time,
+  ::  not the agent's; verbatim `updated` fidelity is an %import concern (1b).
+  ?:  &(=(meth %'POST') =(action 'know-verify'))
+    ?.  (installed:grb our.bowl now.bowl)
+      [(respond-json-cards eyre-id 503 '{"error":"grubbery not installed"}') st]
+    [(respond-json-cards eyre-id 200 (verify-json (verify-vault bowl know.st))) st]
+  ::  POST /apps/lattice/know-migrate — backfill the grubbery vault from the
+  ::  in-agent maps: an %import poke per live entry, %import-trashed per trashed
+  ::  entry (both write VERBATIM, preserving updated/tags). Owner-gated; 503 if
+  ::  grubbery absent. Idempotent — re-import overwrites. ponytail: fires every
+  ::  poke in ONE event; fine for our store size, but a many-thousand-entry vault
+  ::  should batch ~50/behn-fire with a resumable cursor (see 1b) to bound event
+  ::  size. No ack tracking — run /know-verify after to confirm parity.
+  ?:  &(=(meth %'POST') =(action 'know-migrate'))
+    ?.  (installed:grb our.bowl now.bowl)
+      [(respond-json-cards eyre-id 503 '{"error":"grubbery not installed"}') st]
+    =/  cards=(list card)  (migrate-cards bowl know.st trash.st)
+    =/  body=@t  (migrate-json ~(wyt by know.st) ~(wyt by trash.st))
+    [(weld (respond-json-cards eyre-id 200 body) cards) st]
+  ::  POST /apps/lattice/know-export-back — snapshot every LIVE vault entry
+  ::  (body+tags+updated) as JSON, for rebuilding the maps on rollback. Reads the
+  ::  vault index + each body via scry. Owner-gated; 503 if grubbery absent.
+  ::  ponytail: TRASHED bodies are NOT exported — their live grub is culled, so a
+  ::  scry can't reach the firm revision; that needs a grubbery-side export fiber
+  ::  (peek-by-case of the restore cass). During the soak the frozen agent trash
+  ::  map still holds them, so live-only export is enough for tier-2 rollback now.
+  ?:  &(=(meth %'POST') =(action 'know-export-back'))
+    ?.  (installed:grb our.bowl now.bowl)
+      [(respond-json-cards eyre-id 503 '{"error":"grubbery not installed"}') st]
+    [(respond-json-cards eyre-id 200 (en:json:html (know-all-json (vault-snapshot bowl)))) st]
+  ::  GET /apps/lattice/know-where — report the active knowledge backend.
+  ?:  &(=(meth %'GET') =(action 'know-where'))
+    =/  jon=json  [%o (malt ~[['know-where' [%s know-where.st]]])]
+    [(respond-json-cards eyre-id 200 (en:json:html jon)) st]
+  ::  POST /apps/lattice/know-cutover — flip the backend to %grubbery. REFUSES
+  ::  (409) unless the vault is at full parity with the maps (every live body +
+  ::  every trashed key present), so we never cut over to an incomplete vault.
+  ::  After this, reads serve from the vault; writes still dual-write the maps
+  ::  (the rollback net) until the maps are dropped in 1d. Take an off-ship
+  ::  backup (GET /grubbery/api/tar of /lattice) BEFORE running this.
+  ?:  &(=(meth %'POST') =(action 'know-cutover'))
+    ?.  (installed:grb our.bowl now.bowl)
+      [(respond-json-cards eyre-id 503 '{"error":"grubbery not installed"}') st]
+    =/  res  (verify-vault bowl know.st)
+    =/  vt=gindex:grb  (read-trash:grb our.bowl now.bowl)
+    =/  trash-missing=(list path)
+      (skim ~(tap in ~(key by trash.st)) |=(k=path !(~(has by vt) k)))
+    ?.  ?&  =(0 (add (lent missing.res) (lent mismatch.res)))
+            =(0 (lent trash-missing))
+        ==
+      [(respond-json-cards eyre-id 409 (verify-json res(missing (weld missing.res trash-missing)))) st]
+    =/  jon=json
+      %-  pairs:enjs:format
+      :~  ['ok' `json`[%b &]]
+          ['know-where' `json`[%s %grubbery]]
+      ==
+    :_  st(know-where %grubbery)
+    (respond-json-cards eyre-id 200 (en:json:html jon))
+  ::  POST /apps/lattice/know-rollback — flip back to %state (always safe: the
+  ::  maps are the pre-cutover truth plus every dual-written mutation since).
+  ?:  &(=(meth %'POST') =(action 'know-rollback'))
+    =/  jon=json
+      %-  pairs:enjs:format
+      :~  ['ok' `json`[%b &]]
+          ['know-where' `json`[%s %state]]
+      ==
+    :_  st(know-where %state)
+    (respond-json-cards eyre-id 200 (en:json:html jon))
   ::  POST /apps/lattice/know-query  body=<urQL> — run one urQL query against the
   ::  obelisk index and return {ok, action, relation, count, columns, rows}. ASYNC:
   ::  hold this request (by eyre-id), watch obelisk /server + poke the query, and
@@ -1109,7 +1319,7 @@
 ::
 %-  agent:dbug
 %+  verb  |
-=|  state-10
+=|  state-11
 =*  state  -
 ^-  agent:gall
 |_  =bowl:gall
@@ -1124,6 +1334,10 @@
   ::  dies); idempotent if the tables already exist.
   =^  man-cards  manifest.state  (manifest-cards content.state `@uvH`0)
   =^  home-cs    home.state      (home-cards content.state `@uvH`0)
+  ::  fresh installs serve knowledge from the in-agent maps — the grubbery
+  ::  adapter stays dead until an explicit cutover. (The know-where bunt is
+  ::  NOT %state, so set it; upgrades get %state via +migrate-10-11.)
+  =.  know-where.state  %state
   ::  arm the first periodic catalog sweep.
   =/  sweep-at=@da  (add now.bowl sweep-interval)
   =.  catalog-sweep.state  `sweep-at
@@ -1161,11 +1375,11 @@
     (turn catalog-create-list |=(u=tape (obelisk-poke bowl u)))
   ::  Boot cards: the schema pokes, plus — on ANY upgrade INTO the catalog state
   ::  (from a released ship, ≤ %9) — arm the periodic sweep. state-10 is the
-  ::  first version with the sweep machinery, so only a %10 → %10 reload already
+  ::  first version with the sweep machinery, so a %10 (or %11) ship already
   ::  has the Behn timer in flight (it survives agent reload and the fire-handler
-  ::  re-arms it); arming again would stack a duplicate. So we skip the arm ONLY
-  ::  for the %10 reload.
-  =/  armed=?  ?=(%10 -.old)
+  ::  re-arms it); arming again would stack a duplicate. So we skip the arm for
+  ::  any %10/%11 old state (the %10→%11 upgrade carries the live timer too).
+  =/  armed=?  ?=(?(%10 %11) -.old)
   =/  boot-cards=(list card)
     ?:  armed  schema-cards
     (weld schema-cards ~[(arm-sweep-card (add now.bowl sweep-interval))])
@@ -1178,19 +1392,25 @@
     ^-  state-10
     ?:  armed  s
     s(catalog-sweep `(add now.bowl sweep-interval))
-  ::  %10 → %10 reload: state unchanged (catalog feature already running).
-  ?:  ?=(%10 -.old)
+  ::  %11 → %11 reload: state unchanged (flag + catalog already running).
+  ?:  ?=(%11 -.old)
     :_  this(state old)
     boot-cards
-  ::  %9 → %10: the single catalog migration (carry all + 4 empty catalog slots).
+  ::  %10 → %11: add the know-where flag (default %state). A %10 ship already
+  ::  has the live sweep timer (armed=.y), so no re-arm; behavior is unchanged.
+  ?:  ?=(%10 -.old)
+    :_  this(state (migrate-10-11 old))
+    boot-cards
+  ::  %9 → %11: the single catalog migration (carry all + 4 empty catalog slots),
+  ::  then add the flag.
   ?:  ?=(%9 -.old)
-    :_  this(state (ready (migrate-9-10 old)))
+    :_  this(state (migrate-10-11 (ready (migrate-9-10 old))))
     boot-cards
-  ::  %8 → %10: add the obelisk-query slot (8→9), then 9→10.
+  ::  %8 → %11: add the obelisk-query slot (8→9), then 9→10, then 10→11.
   ?:  ?=(%8 -.old)
-    :_  this(state (ready (migrate-9-10 (migrate-8-9 old))))
+    :_  this(state (migrate-10-11 (ready (migrate-9-10 (migrate-8-9 old)))))
     boot-cards
-  ::  %7 → %10: give every knowledge entry empty tags + reserved vector,
+  ::  %7 → %11: give every knowledge entry empty tags + reserved vector,
   ::  then chain up.
   ?:  ?=(%7 -.old)
     =/  up=$-(know-entry-7 know-entry)  |=(e=know-entry-7 [body.e updated.e ~ ~])
@@ -1199,20 +1419,20 @@
           manifest.old  home.old  browse.old
           (~(run by know.old) up)  (~(run by trash.old) up)  ~
       ==
-    :_  this(state (ready (migrate-9-10 s9)))
+    :_  this(state (migrate-10-11 (ready (migrate-9-10 s9))))
     boot-cards
-  ::  %6 → %10: add the empty private knowledge store, then chain up.
+  ::  %6 → %11: add the empty private knowledge store, then chain up.
   ?:  ?=(%6 -.old)
     =/  s9=state-9
       :*  %9  content.old  published.old  pending.old  subs.old  fetches.old
           manifest.old  home.old  browse.old  ~  ~  ~
       ==
-    :_  this(state (ready (migrate-9-10 s9)))
+    :_  this(state (migrate-10-11 (ready (migrate-9-10 s9))))
     boot-cards
   ::  Versions 0-5 stored published content in Clay /pub. Pull it into state,
   ::  then delete /pub from the desk + drop the clay watch, so the desk stops
   ::  carrying the content (and installs stop shipping the publisher's pages).
-  ::  Finally, migrate the resulting state-9 up to state-10.
+  ::  Finally, migrate the resulting state-9 up through state-10 to state-11.
   =/  content=(map path @t)  (migrate-content bowl)
   =/  files=(set path)       ~(key by content)
   =/  cards=(list card)      (clear-pub-cards bowl files)
@@ -1225,7 +1445,7 @@
       %1  [%9 content published.old pending.old subs.old ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
       %0  [%9 content published.old pending.old ~ ~ `@uvH`0 `@uvH`0 ~ ~ ~ ~]
     ==
-  :_  this(state (ready (migrate-9-10 new)))
+  :_  this(state (migrate-10-11 (ready (migrate-9-10 new))))
   (weld cards boot-cards)
 ::
 ++  on-poke
@@ -1280,6 +1500,11 @@
   |=  =path
   ^-  (unit (unit cage))
   ?+  path  ~
+  ::  MCP tool discovery: an MCP server reads our knowledge-store tools here as
+  ::  .^((list tool:mcp) %gx /=lattice=/mcp/tools/noun) or .../mcp/tools/json.
+      [%x %mcp %tools ~]
+    ``mcp-tools+!>(`(list tool:mcp)`tools:lattice-mcp-tools)
+  ::
       [%x %published ~]
     :^  ~  ~  %json
     !>  ^-  json

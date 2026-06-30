@@ -222,6 +222,33 @@
       sweep-queue=(list @p)
       catalog-pubpaths=(map @p (set path))
   ==
+::  where the private knowledge vault is read/written from. %state = the in-agent
+::  know/trash maps (the only behavior through 0.6.x). %grubbery = the grubbery
+::  %lattice nexus (post-cutover). The flag is the migration switch; at %state
+::  the grubbery adapter is dead code and behavior is bit-identical to state-10.
++$  know-where  ?(%state %grubbery)
+::  state-11: adds the know-where cutover flag. Everything else is byte-identical
+::  to state-10; the know/trash maps stay populated through the soak (state-11)
+::  and are only dropped in state-12, after grubbery proves itself.
++$  state-11
+  $:  %11
+      content=(map path @t)
+      published=(map path @uvH)
+      pending=(map @ta [=ship =path])
+      subs=(map [=ship spur=path] last=@ud)
+      fetches=(map @ta walk)
+      manifest=@uvH
+      home=@uvH
+      browse=(unit [=ship spur=path rev=@ud])
+      know=(map path know-entry)
+      trash=(map path know-entry)
+      oquery=(unit [eid=@ta deadline=@da])
+      catalog-sweep=(unit @da)
+      catalog-walks=(map @ta catalog-walk)
+      sweep-queue=(list @p)
+      catalog-pubpaths=(map @p (set path))
+      know-where=know-where
+  ==
 ::  +$ catalog-walk: one in-flight catalog walk-to-latest. Mirrors +$ walk
 ::  but with action and publisher (vs ship) so the same walk-to-latest
 ::  state machine can serve both manifest discovery and per-page fetches.
