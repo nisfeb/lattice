@@ -25,7 +25,7 @@ DEST="${1:-/home/sneagan/software/zod/grubbery}"
 if [ ! -d "$OVERLAY" ]; then echo "no overlay at $OVERLAY" >&2; exit 66; fi
 if [ ! -d "$DEST" ]; then echo "no grubbery desk root at $DEST" >&2; exit 67; fi
 
-mkdir -p "$DEST/gub/lib" "$DEST/lib" "$DEST/gub/nex/lattice" "$DEST/gub/mar/lattice" "$DEST/tests/lib"
+mkdir -p "$DEST/gub/lib" "$DEST/lib" "$DEST/gub/nex/lattice" "$DEST/gub/mar/lattice" "$DEST/gub/mar/clay" "$DEST/tests/lib"
 
 # Pure libs: into the tree (gub/lib, for the nexus) and the desk (lib, for tests).
 rsync -a "$OVERLAY/lib/" "$DEST/gub/lib/"
@@ -33,6 +33,9 @@ rsync -a "$OVERLAY/lib/" "$DEST/lib/"
 # Nexus + marks: into the gub tree only.
 [ -d "$OVERLAY/nex/lattice" ] && rsync -a "$OVERLAY/nex/lattice/" "$DEST/gub/nex/lattice/"
 [ -d "$OVERLAY/mar/lattice" ] && rsync -a "$OVERLAY/mar/lattice/" "$DEST/gub/mar/lattice/"
+# Cross-desk poke marcs (e.g. obelisk-action): into grubbery's gub/mar/clay tree
+# so handle-gall-poke can build the poke vase.
+[ -d "$OVERLAY/mar-clay" ] && rsync -a "$OVERLAY/mar-clay/" "$DEST/gub/mar/clay/"
 # Tests: desk-level.
 rsync -a "$OVERLAY/tests/" "$DEST/tests/"
 

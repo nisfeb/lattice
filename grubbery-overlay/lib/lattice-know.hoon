@@ -36,25 +36,20 @@
       [%import-trashed key=@t entry=know-entry]
   ==
 ::  derived per-entry index row (drives know-list / know-tags / know-explore
-::  without reading bodies). bytes = body byte-length. restore = the firm
-::  revision number to peek-at when undeleting — set only on trash rows, ~ on
-::  live rows.
+::  without reading bodies). bytes = body byte-length. restore is a RESERVED
+::  slot for a future revision-restore feature (peek-at the firm cass captured at
+::  delete time); the current soft-delete keeps the body grub live in the trash
+::  vault and restores it whole, so restore is always ~. Kept in the row shape so
+::  adding the feature later doesn't re-key the persisted know-index grub.
 ::
 +$  index-entry  [updated=@da bytes=@ud tags=(set @t) restore=(unit @ud)]
 +$  know-index   (map path index-entry)
-::  +to-index-entry: project a stored entry onto its (live) index row.
+::  +to-index-entry: project a stored entry onto its index row (restore always ~).
 ::
 ++  to-index-entry
   |=  e=know-entry
   ^-  index-entry
   [updated.e (met 3 body.e) tags.e ~]
-::  +to-trash-entry: a trash row — same projection plus the firm cass to
-::  restore from (captured at delete time).
-::
-++  to-trash-entry
-  |=  [e=know-entry cass=@ud]
-  ^-  index-entry
-  [updated.e (met 3 body.e) tags.e `cass]
 ::  +derive-index: index every live entry. Pure projection of the vault.
 ::
 ++  derive-index

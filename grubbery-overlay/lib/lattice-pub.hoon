@@ -24,6 +24,16 @@
 ::  derived per-page index row (no bodies). hash = (sham body), the parity key
 ::  the agent diffs its content-map against; updated/bytes are informational.
 ::
+::  Design note (review finding #20): consumers today read only the KEY set, so a
+::  namespace ball-walk (like +reindex does for know) could replace this index.
+::  We keep it hand-maintained anyway because `hash` is the reserved parity key
+::  for phase-2 federation sync (diffing our page set against a peer's) — deriving
+::  a key-list on demand would drop that column. Caveat: apply-pub writes the vault
+::  grub then the index row as two darts, so a crash between them can leave the
+::  index missing a live page (drops it from /list until a manual re-save); there
+::  is no auto-repair yet (derive-pub-index is unused). Add a pub arm to +reindex
+::  if that drift is ever observed in practice.
+::
 +$  pub-row    [updated=@da bytes=@ud hash=@uvH]
 +$  pub-index  (map path pub-row)
 ::  +to-pub-row: project a stored page onto its index row.
@@ -41,6 +51,15 @@
 ::  +vrail: a rail expressed structurally (== rail:tarball [p=path name=@ta]) so
 ::  this lib stays grubbery-free.
 ::
+::  +follows: the set of ships the crawler sweeps (one peek, always present).
+::  Just ships — the crawler re-crawls each fully per tick; per-follow cursors
+::  are a later refinement. +sub-action: the follow-writer's poke.
+::
++$  follows  (set @p)
++$  sub-action
+  $%  [%follow ship=@p]
+      [%unfollow ship=@p]
+  ==
 +$  vrail  [pax=path nom=@ta]
 ::  +key-to-rail: a content-map key (path) -> the vault rail holding its page,
 ::  rooted at [base]. Strips the leading `pub` element (redundant with base) and

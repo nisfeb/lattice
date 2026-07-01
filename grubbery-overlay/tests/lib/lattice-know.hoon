@@ -41,10 +41,6 @@
     (expect-eq !>(`index-entry`[~2026.1.1 5 (sy ~['ai' 'notes']) ~]) !>((to-index-entry e1)))
     (expect-eq !>(`index-entry`[~2026.2.2 2 ~ ~]) !>((to-index-entry e2)))
   ==
-::  +to-trash-entry adds the restore cass; live rows leave it ~.
-::
-++  test-to-trash-entry
-  (expect-eq !>(`index-entry`[~2026.1.1 5 (sy ~['ai' 'notes']) `7]) !>((to-trash-entry e1 7)))
 ::  +derive-index projects every entry, keyed identically.
 ::
 ++  test-derive-index
