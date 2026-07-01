@@ -427,7 +427,10 @@
       =/  v=@rs  ?~(r=(slaw %rs (crip lit)) .0 u.r)
       ::  clamp to [0,1] — shorthand like ".7" parses as 7.0 per @rs literal rules,
       ::  and confidence is a probability; an out-of-range value would corrupt
-      ::  ranking/display when scot'd back into catalog-pages.confidence.
+      ::  the stored/displayed value in catalog-pages.confidence. A NaN (".nan"
+      ::  parses fine) makes every rs comparison %.n, so it would slip past the
+      ::  range test — collapse it to .0 first (equ:rs v v is %.n only for NaN).
+      ?:  !(equ:rs v v)  .0
       ?:((lth:rs v .0) .0 ?:((gth:rs v .1) .1 v))
     ;<  our=@p  bind:m  get-our:io
     ;<  ~  bind:m
@@ -892,18 +895,26 @@
   ^-  form:m
   ;<  *  bind:m  (obelisk-query db urql)
   (pure:m ~)
-::  +catalog-init: create the lattice database, then all catalog-* tables in ONE
-::  atomic urQL script. Single script (not 8 pokes) because obelisk's kick after
-::  every poke races back-to-back statements in one fiber; one script is one
-::  obelisk event. ponytail: on a fresh db all 8 create; re-run on an existing
-::  db aborts at the first (dup) table harmlessly, but WON'T repair a partially
-::  created schema — drop+init for a clean rebuild.
+::  +catalog-init: create the lattice database, then each catalog table as its OWN
+::  poke (per catalog-create-list's contract — the joined catalog-create-urql would
+::  abort at the first already-existing table and never create the rest). Each
+::  catalog-run is a distinct obelisk event via obelisk-query (which re-establishes
+::  the sub per call), so there's no kick/resub race, and a re-run idempotently
+::  repairs a partial/evolved schema: existing tables error harmlessly (the ack is
+::  swallowed), missing ones get created.
 ::
 ++  catalog-init
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  ~  bind:m  (catalog-run %sys (weld "CREATE DATABASE " (trip catalog-db)))
-  (catalog-run catalog-db catalog-create-urql:cat)
+  (catalog-create-loop catalog-create-list:cat)
+++  catalog-create-loop
+  |=  stmts=(list tape)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  stmts  (pure:m ~)
+  ;<  ~  bind:m  (catalog-run catalog-db i.stmts)
+  (catalog-create-loop t.stmts)
 ::  +catalog-index-page: analyze one page body and write its catalog rows — the
 ::  two-poke page upsert (ensure INSERT + content refresh) plus the term index.
 ::  pat is the content-map key (/pub/.../gmi); the url is derived inside the urQL
@@ -1004,6 +1015,11 @@
   ::  cap the indexed fan-out per peer (untrusted); pages stays full for
   ::  internal-link detection. ponytail: index the first manifest-max keys;
   ::  add per-peer cursoring if a real follow legitimately exceeds it.
+  ::  RESIDUAL (review-3): this caps the expensive per-page work (peek + pokes),
+  ::  but read-pub-index-remote already clammed the peer's ENTIRE index into `ix`,
+  ::  so a hostile publisher can still force a transient allocation ~ its index
+  ::  size. Bounding that needs a byte-cap at the peek/clam boundary; deferred with
+  ::  the rest of the peer path until /follow is exercised.
   =/  keys=(list path)  (scag manifest-max ~(tap in pages))
   (catalog-scan-peer-loop our pub now keys pages 0)
 ++  catalog-scan-peer-loop
@@ -1203,7 +1219,9 @@
   =/  t=tape  (trip k)
   =/  full=tape  ?:(?=([%'/' *] t) t ['/' t])
   =/  res  (mule |.((stab (crip full))))
-  ?:(?=(%& -.res) `p.res ~)
+  ::  reject the empty key ('' -> stab '/' -> empty path), which would otherwise
+  ::  wrap as a valid unit and pass the routes' ?~ ko guard.
+  ?:(?=(%& -.res) ?~(p.res ~ `p.res) ~)
 ::  +app-base: the nexus's absolute tree path (its app dir, fixed by root.hoon).
 ::  Needed to build remote roads for peek-remote (rewritten to /sys/ames/ships/…).
 ::
@@ -1368,6 +1386,14 @@
     %'"'  "&quot;"
   ==
 ++  has-prefix  |=([pre=tape t=tape] =(pre (scag (lent pre) t)))
+::  +ltrim: drop leading spaces from a tape (gemtext allows extra whitespace
+::  after the "=> " sigil; the analyzer already strips it, render-gmi must too).
+::
+++  ltrim
+  |=  a=tape
+  ^-  tape
+  ?~  a  a
+  ?:(=(' ' i.a) $(a t.a) a)
 ::  +render-gmi: gemtext body -> HTML fragment (compact: headings, => links,
 ::  lists, blockquotes, ``` pre, paragraphs). urb:// links route back through
 ::  the reader; other links render as their description text only.
@@ -1397,10 +1423,10 @@
   ?:  (has-prefix "## " ln)   $(lines t.lines, out :(weld out "<h2>" (esc (slag 3 ln)) "</h2>"))
   ?:  (has-prefix "# " ln)    $(lines t.lines, out :(weld out "<h1>" (esc (slag 2 ln)) "</h1>"))
   ?:  (has-prefix "=> " ln)
-    =/  rest=tape  (slag 3 ln)
+    =/  rest=tape  (ltrim (slag 3 ln))
     =/  sp=(unit @ud)  (find " " rest)
     =/  raw=tape   ?~(sp rest (scag u.sp rest))
-    =/  desc=tape  ?~(sp rest (slag +(u.sp) rest))
+    =/  desc=tape  (ltrim ?~(sp rest (slag +(u.sp) rest)))
     =/  anchor=tape
       ?:  =("urb://" (scag 6 raw))
         :(weld "<a href=\"/apps/lattice?url=" (esc raw) "\">" (esc desc) "</a>")
