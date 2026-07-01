@@ -166,8 +166,8 @@
   ::  every route is owner-only (lattice is a personal store). Unauthenticated /
   ::  foreign requests carry src != our -> 403.
   ?.  =(src our)
-    ;<  ~  bind:m  (send-simple:srv eyre-id [[403 ~] `(as-octs:mimes:html 'Forbidden')])
-    (pure:m ~)
+    ::  JSON error, like every other route (was a bare text 'Forbidden').
+    (send-err eyre-id 403 'forbidden')
   =/  parsed  (parse-url:http-utils url.request.req)
   ::  drop the /apps/lattice prefix; the remainder is the route.
   =/  suffix=path  (slag 2 site.parsed)
@@ -332,8 +332,11 @@
       [%'GET' %catalog-by-tag]
     =/  tag=(unit @t)  (~(get by args) 'tag')
     ?~  tag  (send-err eyre-id 400 'missing tag param')
+    ::  case-fold the query tag: the analyzer stores catalog tags lowercased
+    ::  (collect-tag-tokens), and obelisk equality is exact, so an uppercase
+    ::  query would never match. Matches the norm-tag/normalize-term convention.
     ;<  cb=(each (list cmd-result:ast) tang)  bind:m
-      (obelisk-query catalog-db (catalog-by-tag-urql:cat (trip u.tag)))
+      (obelisk-query catalog-db (catalog-by-tag-urql:cat (cass (trip u.tag))))
     (send-json eyre-id (obelisk-json cb))
   ::  per-page classification metadata (source/publisher/path/summary).
       [%'GET' %catalog-meta]
@@ -421,7 +424,11 @@
       ::  full native literal (".0.7") alone — else "..0.7" fails to parse and the
       ::  documented native form silently coerces to .0.
       =/  lit=tape  ?:(?=([%'.' *] ct) ct ['.' ct])
-      ?~(r=(slaw %rs (crip lit)) .0 u.r)
+      =/  v=@rs  ?~(r=(slaw %rs (crip lit)) .0 u.r)
+      ::  clamp to [0,1] — shorthand like ".7" parses as 7.0 per @rs literal rules,
+      ::  and confidence is a probability; an out-of-range value would corrupt
+      ::  ranking/display when scot'd back into catalog-pages.confidence.
+      ?:((lth:rs v .0) .0 ?:((gth:rs v .1) .1 v))
     ;<  our=@p  bind:m  get-our:io
     ;<  ~  bind:m
       (catalog-run catalog-db (catalog-classify-urql:cat our ship.u.pu path.u.pu u.cat-v csrc conf))
@@ -767,7 +774,12 @@
   ^-  form:m
   ;<  =seen:nexus  bind:m  (peek:io [%& %| base] ~)
   ?.  ?=([%& %ball *] seen)  (pure:m ~)
-  =/  names=(list @ta)  (turn ~(tap by dir.ball.p.seen) |=([s=@ta *] s))
+  ::  result grubs are flat FILES at this node, so they live in contents.u.fil —
+  ::  NOT in dir (which holds only child *directories*, always empty here). Reading
+  ::  dir made the sweep a permanent no-op. Mirror collect-entries / read-know-map.
+  =/  names=(list @ta)
+    ?~  fil.ball.p.seen  ~
+    (turn ~(tap by contents.u.fil.ball.p.seen) |=([s=@ta *] s))
   |-
   ?~  names  (pure:m ~)
   ;<  *  bind:m  (cull-soft:io [%& %& base i.names])
@@ -869,6 +881,11 @@
 ::  sequential writes land reliably. ponytail: ceiling is one round-trip per
 ::  statement; batch into fewer scripts if crawl throughput ever demands it.
 ::
+::  KNOWN LIMIT (finding #13): the (each ... tang) result is discarded, so callers
+::  (catalog-classify, catalog-init, the /save+/delete sweeps) send {"ok":true}
+::  even when the obelisk write no-ops (e.g. classifying a URL absent from
+::  catalog-pages) or errors. Catalog writes are best-effort indexing; surface the
+::  result (502 on %|) here if a client ever needs a real applied/failed signal.
 ++  catalog-run
   |=  [db=@tas urql=tape]
   =/  m  (fiber:fiber:nexus ,~)
@@ -897,11 +914,21 @@
 ::  the low body-cap bytes (a no-op for a smaller body); analysis is lossy anyway.
 ::
 ++  body-cap  ^-(@ud 1.048.576)
+::  +manifest-max: max pages indexed from ONE followed peer per sweep. A hostile
+::  publisher could advertise an unbounded /pub/index; each page costs a 30s remote
+::  peek + 3 obelisk pokes, so cap the fan-out. Own pages (scan-self) are trusted
+::  and uncapped.
+++  manifest-max  ^-(@ud 1.024)
 ++  catalog-index-page
   |=  [src=@p pub=@p pat=path now=@da body=@t pages=(set path)]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  a  (catalog-analyze:cat (end [3 body-cap] body))
+  ::  KNOWN GAP (finding #8): these are 3 separate owner pokes, not one obelisk
+  ::  event, so a concurrent /delete of this same page can interleave and leave
+  ::  orphaned catalog-terms rows (ghost hits). Upgrade: fold ensure+refresh+terms
+  ::  into ONE urQL script (like catalog-init) so a page's write is atomic at the
+  ::  owner. Narrow race (concurrent index+delete of the SAME page); left for now.
   ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-ensure-urql:cat src pub pat now a))
   ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-refresh-urql:cat src pub pat now a pages))
   (catalog-run catalog-db (catalog-page-terms-urql:cat src pub pat a))
@@ -963,16 +990,22 @@
 ::  SELECT the stored content-keys for (source=our, publisher=pub) [add a
 ::  `FROM catalog-pages WHERE source=.. AND publisher=.. SELECT path;` gen, run it
 ::  via obelisk-query], diff against `pages`, and emit catalog-page-delete-urql for
-::  each dropped path. Deferred until /follow is actually exercised (this whole peer
-::  path is a no-op until then), so the reconcile can be verified against a real
-::  publish->unpublish, rather than shipping untested query+diff into the crawler.
+::  each dropped path. NOTE: this IS production-reachable — /follow is a live owner
+::  route and catalog-scan-peers runs on every ~h6 crawler tick — so once any peer
+::  is followed and unpublishes a page, ghost rows accumulate. Deferred (not
+::  unreachable) only so the reconcile can be verified against a real
+::  publish->unpublish before shipping untested query+diff into the crawler.
 ++  catalog-scan-peer
   |=  [our=@p pub=@p now=@da]
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
   ;<  ix=pub-index:lp  bind:m  (read-pub-index-remote pub)
   =/  pages=(set path)  ~(key by ix)
-  (catalog-scan-peer-loop our pub now ~(tap in pages) pages 0)
+  ::  cap the indexed fan-out per peer (untrusted); pages stays full for
+  ::  internal-link detection. ponytail: index the first manifest-max keys;
+  ::  add per-peer cursoring if a real follow legitimately exceeds it.
+  =/  keys=(list path)  (scag manifest-max ~(tap in pages))
+  (catalog-scan-peer-loop our pub now keys pages 0)
 ++  catalog-scan-peer-loop
   |=  [our=@p pub=@p now=@da keys=(list path) pages=(set path) cnt=@ud]
   =/  m  (fiber:fiber:nexus ,@ud)
@@ -1471,6 +1504,12 @@
   ?.  ok  ~&([%lattice-no-public-group ~] (pure:m ~))
   =/  wroad=road:tarball  [%& %& [/sys/ames/usergroups/public %'how.weir']]
   =/  pubdir=road:tarball  [%& %| (weld root /pub)]
+  ::  KNOWN RACE (finding #12): how.weir is the GLOBAL public usergroup weir shared
+  ::  by every grubbery app. This read-modify-write straddles a fiber yield, so two
+  ::  apps starting their writers concurrently can each read the same stale weir and
+  ::  clobber the other's road. Self-heals on the next writer (re)start (idempotent
+  ::  re-add), and on a personal ship concurrent app-writer starts are near-zero.
+  ::  Proper fix needs a grubbery-side atomic add-road op; left as-is (low, healing).
   ;<  cur=weir:nexus  bind:m  (read-weir wroad)
   =/  new=weir:nexus  cur(peek (~(put in peek.cur) pubdir))
   ?:  =(new cur)  (pure:m ~)
@@ -1550,8 +1589,15 @@
       %untag  (retag root key.act tag.act %.n)
   ::
       %move
-    =/  fk=path  (stab from.act)
-    =/  tk=path  (stab to.act)
+    ::  guard both keys: %move is reachable un-normalized via the direct grubbery
+    ::  poke API (mar know-action), bypassing the route's know-key check — a bad
+    ::  key would crash+park the single writer and swallow the next mutation.
+    =/  fko=(unit path)  (know-key from.act)
+    =/  tko=(unit path)  (know-key to.act)
+    ?~  fko  ~&([%lattice-move-bad-key from.act] (pure:m ~))
+    ?~  tko  ~&([%lattice-move-bad-key to.act] (pure:m ~))
+    =/  fk=path  u.fko
+    =/  tk=path  u.tko
     =/  froad=road:tarball  (entry-road vbase fk)
     =/  troad=road:tarball  (entry-road vbase tk)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry froad)
@@ -1754,16 +1800,24 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  vbase=path  (weld root /know/vault)
-  =/  key=path  (stab key-t)
+  ::  guard the key: %tag/%untag are reachable un-normalized via the direct
+  ::  grubbery poke API (mar know-action) — a bad key crashes+parks the writer.
+  =/  ko=(unit path)  (know-key key-t)
+  ?~  ko  ~&([%lattice-tag-bad-key key-t] (pure:m ~))
+  =/  key=path  u.ko
   =/  road=road:tarball  (entry-road vbase key)
   ;<  old=(unit know-entry:lk)  bind:m  (read-entry road)
   ?~  old  ~&([%lattice-tag-missing key] (pure:m ~))
   ::  case-fold the tag at the write boundary so explore (which normalizes the
   ::  query tag, +norm-tag) and the tag cloud agree — a stored 'Rust' would be
   ::  unreachable by an explore for 'rust'/'Rust' otherwise.
-  =/  tag=@t  (norm-tag tag)
+  =/  ftag=@t  (norm-tag tag)
   =/  e=know-entry:lk
-    ?:(add (add-tag:lk u.old tag) (del-tag:lk u.old tag))
+    ?:  add  (add-tag:lk u.old ftag)
+    ::  untag: drop BOTH the folded tag and the raw one — an entry tagged before
+    ::  the case-fold landed stored it un-folded (e.g. 'Rust'), so a folded-only
+    ::  del would leave it permanently unremovable.
+    (del-tag:lk (del-tag:lk u.old ftag) tag)
   ;<  ~  bind:m  (put-file road [/lattice %know-entry] e)
   =/  ix=road:tarball  [%& %& (weld root /know) %index]
   ;<  idx=know-index:lk  bind:m  (read-index ix)
