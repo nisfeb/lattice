@@ -8,7 +8,7 @@ Every step below was rehearsed on `~tyr`. Commands assume you run them from a
 shell on the production host; set the two variables first.
 
 ```sh
-SHIP=~ricsul-bilwyt
+export SHIP=~ricsul-bilwyt               # exported: the S1 heredoc reads it in a child shell
 CODE=<your +code for ~ricsul-bilwyt>     # `+code` in the ship's dojo
 BASE=http://localhost:8080               # ricsul's Eyre (adjust port if needed)
 CK=/tmp/ricsul-cookie.txt
@@ -19,11 +19,14 @@ curl -s -c $CK -X POST $BASE/~/login --data-urlencode "password=$CODE" -o /dev/n
 
 > **Fidelity note.** `know` entries carry `tags` + an original `updated`
 > timestamp the memory store depends on. The export (`/know-all`) and the
-> import (`/know-import`, backed by the nexus `%import` action) are byte-for-byte
-> lossless for `key`/`body`/`updated`/`tags` — proven by an idempotent
-> export→import→export round-trip on tyr. `pub` page timestamps are informational
-> and regenerated. The obelisk catalog is **derived** — rebuilt post-import, not
-> migrated.
+> import (`/know-import`, backed by the nexus `%import` action) are lossless for
+> `key`/`body`/`updated`. **Tags are normalized (lowercased) on import** —
+> `import-item` runs each tag through `norm-tag` (`app.hoon`), so a stored `Rust`
+> comes back as `rust`. This matches the nexus's own query/tag-cloud convention
+> (all tag lookups fold case), so it is a normalization, not a loss — but the
+> export is **not** byte-identical for mixed-case tags. `pub` page timestamps are
+> informational and regenerated. The obelisk catalog is **derived** — rebuilt
+> post-import, not migrated.
 
 ---
 
@@ -37,6 +40,17 @@ curl -s -c $CK -X POST $BASE/~/login --data-urlencode "password=$CODE" -o /dev/n
 - **P3.** The old `%lattice` still owns `/apps/lattice`. The nexus will use a
   **temp path** until cutover — grubbery's `bind-http` is additive and can't
   claim a path the old agent holds.
+
+> **Binding note (shapes cutover *and* rollback).** grubbery's `%bind` emits an
+> Eyre `%connect`, but its `%unbind` **does not** emit a matching `%disconnect`
+> (verified in `grubbery.hoon`). So once `%grubbery` binds a path, Eyre routes it
+> to `%grubbery` for as long as the agent is installed — `unbind-http` only drops
+> grubbery's *internal* handler (the path then 404s), it does **not** hand the
+> path back for another agent to claim. Consequences: (a) cutover requires the
+> old agent to *first* release `/apps/lattice` (via `|suspend`/`|uninstall`)
+> before grubbery can bind it; (b) rollback **cannot** hand `/apps/lattice` back
+> to a revived old agent while `%grubbery` runs — see S6 for the two real
+> rollback paths.
 
 ---
 
@@ -64,16 +78,16 @@ The old `/apps/lattice` keeps serving throughout S0–S5. No downtime yet.
 ## S1 — Export from the old agent
 
 ```sh
-# private knowledge (LIVE only — full fidelity: key/body/updated/tags)
+# private knowledge (LIVE only — key/body/updated verbatim; tags lowercased on re-import)
 curl -s -b $CK "$BASE/apps/lattice/know-all" > $WORK/know.json
 python3 -c "import json;print('know entries:',len(json.load(open('$WORK/know.json'))['items']))"
 
 # published pages: list keys, fetch each body, assemble a {path:body} map
 curl -s -b $CK "$BASE/apps/lattice/list" > $WORK/pub-list.json
 python3 - "$BASE" "$CK" <<'PY' > $WORK/pub.json
-import json,sys,subprocess
+import json,os,sys,subprocess
 base,ck=sys.argv[1],sys.argv[2]
-ship=subprocess.run(["bash","-lc","echo $SHIP"],capture_output=True,text=True).stdout.strip()
+ship=os.environ["SHIP"]   # inherited from the exported shell var; KeyError if unset
 files=json.load(open("/tmp/lattice-migrate/pub-list.json"))["files"]
 out={}
 for f in files:
@@ -112,26 +126,42 @@ PY
 curl -s -b $CK "$BASE/apps/lattice-new/know-all" > $WORK/know-new.json
 python3 - <<'PY'
 import json
-norm=lambda p:{x['key']:(x['body'],x['updated'],tuple(sorted(x['tags']))) for x in json.load(open(p))['items']}
+# tags are lowercased on import (norm-tag), so fold case on BOTH sides or
+# mixed-case source tags would falsely fail the gate.
+norm=lambda p:{x['key']:(x['body'],x['updated'],tuple(sorted(t.lower() for t in x['tags']))) for x in json.load(open(p))['items']}
 old,new=norm('/tmp/lattice-migrate/know.json'),norm('/tmp/lattice-migrate/know-new.json')
 print('know counts',len(old),'->',len(new))
 diffs=[k for k in old if old[k]!=new.get(k)]; missing=[k for k in old if k not in new]
 print('KNOW IDENTICAL:', not diffs and not missing and len(old)==len(new))
 print('  diffs',diffs[:10],'missing',missing[:10])
 PY
-# pub: key sets match
+# pub: key sets AND bodies match (fetch each new body, diff against the S1 export)
 curl -s -b $CK "$BASE/apps/lattice-new/list" > $WORK/pub-list-new.json
-python3 -c "import json;a=set(json.load(open('/tmp/lattice-migrate/pub-list.json'))['files']);b=set(json.load(open('/tmp/lattice-migrate/pub-list-new.json'))['files']);print('PUB IDENTICAL:',a==b);print('  only-old',a-b,'only-new',b-a)"
+python3 - "$BASE" "$CK" <<'PY'
+import json,os,subprocess,sys
+base,ck=sys.argv[1],sys.argv[2]; ship=os.environ["SHIP"]
+a=set(json.load(open("/tmp/lattice-migrate/pub-list.json"))["files"])
+b=set(json.load(open("/tmp/lattice-migrate/pub-list-new.json"))["files"])
+old=json.load(open("/tmp/lattice-migrate/pub.json"))   # {path:body} from S1
+new={}
+for f in b:
+    r=subprocess.run(["curl","-s","-b",ck,f"{base}/apps/lattice-new/fetch?url=urb://{ship}/{f}"],capture_output=True,text=True)
+    new[f]=json.loads(r.stdout)["body"]
+body_diffs=[f for f in a&b if old.get(f)!=new.get(f)]
+print("PUB KEYS IDENTICAL:",a==b,"| only-old",a-b,"| only-new",b-a)
+print("PUB BODIES IDENTICAL:",not body_diffs,"| body diffs",body_diffs[:10])
+PY
 ```
 
-**Do not proceed unless both print `IDENTICAL: True`.**
+**Do not proceed unless all three — `KNOW IDENTICAL`, `PUB KEYS IDENTICAL`,
+`PUB BODIES IDENTICAL` — print `True`.**
 
 ---
 
 ## S4 — Rebuild the catalog (derived, not migrated)
 
 ```sh
-curl -s -b $CK -X POST "$BASE/apps/lattice-new/catalog-init"    # creates the 8 tables (idempotent)
+curl -s -b $CK "$BASE/apps/lattice-new/catalog-init"            # GET route; creates the 8 tables (idempotent)
 curl -s -b $CK -X POST "$BASE/apps/lattice-new/catalog-sweep"   # re-indexes own pages -> {"indexed":N}
 curl -s -b $CK "$BASE/apps/lattice-new/catalog-list" | python3 -c "import sys,json;d=json.load(sys.stdin);r=[x for x in d if 'rows' in x];print('catalog rows',len(r[0]['rows']) if r else 0)"
 ```
@@ -172,9 +202,12 @@ The old agent must **release** `/apps/lattice` before the nexus can claim it
    ```hoon
    ;<  ~  bind:m  (bind-http:io [~ /apps/lattice])
    ```
-4. **Drop the temp binding** so `/apps/lattice-new` stops answering. Either add a
-   one-shot `(unbind-http:io [~ /apps/lattice-new])` before the new bind, or just
-   leave it — it harmlessly serves the same nexus. (Cleaner to unbind.)
+4. **Drop the temp binding.** Add a one-shot `(unbind-http:io [~ /apps/lattice-new])`
+   before the new bind. Note (per P3's binding note): this removes grubbery's
+   *handler* for `/apps/lattice-new` — the path then returns 404 — but Eyre still
+   routes it to `%grubbery`; the binding isn't truly released until `%grubbery` is
+   uninstalled. Leaving it unbound (404) or leaving it bound (harmlessly serves
+   the same nexus) are both fine; unbinding is cleaner.
 5. Confirm the MCP contract is live on the real path:
    ```sh
    curl -s -o /dev/null -w "lattice base %{http_code} (want 403)\n" $BASE/apps/lattice
@@ -182,7 +215,10 @@ The old agent must **release** `/apps/lattice` before the nexus can claim it
    ```
 
 Your `ricsul` MCP tools call `/apps/lattice/*` — **no MCP config change needed**;
-parity means they hit the nexus transparently.
+they hit the nexus transparently. One behavioral change to expect: tag writes are
+now case-folded (a `lattice-tag Rust` reads back as `rust`), consistent with the
+nexus's case-insensitive tag/query model. Keys, bodies, and `updated` timestamps
+are unchanged.
 
 ---
 
@@ -190,16 +226,36 @@ parity means they hit the nexus transparently.
 
 - Soak: exercise the `ricsul` MCP tools (`lattice-list`, `-read`, `-save`,
   `-search`, `-explore`, `-tag`) end to end.
-- **Rollback (if anything is wrong):** repoint the nexus bind back to
-  `/apps/lattice-new` and commit (frees `/apps/lattice`), then bring the old
-  agent back — `|revive %lattice` (if you suspended) or reinstall the desk (if
-  you uninstalled) → it rebinds `/apps/lattice`. The export was read-only, so the
-  old data was never mutated. Near-instant revert.
-- **Caveat — post-cutover writes are lost on rollback.** Once the nexus is live
-  (S5 done), every new write goes to the nexus; the old agent's snapshot is
-  frozen at cutover. Rolling back after new writes reverts to that frozen
-  snapshot and drops anything written since. Roll back early, or re-export from
-  the nexus first if you must preserve recent writes.
+
+**Rollback.** Per P3's binding note, you **cannot** hand `/apps/lattice` back to a
+revived old agent while `%grubbery` is running — grubbery's `unbind` never emits
+an Eyre `%disconnect`, so Eyre keeps routing `/apps/lattice` to `%grubbery`. That
+kills the "repoint the nexus and let the old agent rebind" move. There are two
+real rollback paths; pick by what's actually broken:
+
+- **A — Data rollback (default; nexus code is fine, data got corrupted).** Keep
+  the nexus bound to `/apps/lattice` and restore the *data* by re-importing the
+  pre-cutover export:
+  ```sh
+  curl -s -b $CK -X POST "$BASE/apps/lattice/know-import" --data-binary @$WORK/know.json
+  # re-run the S2 pub /save loop against /apps/lattice, then S4 catalog rebuild
+  ```
+  Fast, no downtime, no Eyre surgery. This is the rollback you'll almost always
+  want.
+- **B — Full revert to the old agent (nexus is fundamentally unusable).** The only
+  way to free `/apps/lattice` from grubbery at Eyre is to take `%grubbery` down:
+  `|suspend %grubbery` (or `|uninstall`), which releases **all** grubbery Eyre
+  bindings, then `|revive %lattice` so the old agent re-`%connect`s
+  `/apps/lattice`. **This takes every other grubbery-hosted app offline** for the
+  duration — heavy. Confirm on ricsul that suspending `%grubbery` actually frees
+  the binding (same class of ship-behavior as the S5 gate) before relying on this.
+
+- **Caveat — post-cutover writes are lost on either rollback.** Once the nexus is
+  live (S5 done), every new write goes to the nexus; the old agent's suspended
+  snapshot is frozen at cutover. Path B reverts to that frozen snapshot and drops
+  anything written since. Path A only restores what's in `$WORK` (also the cutover
+  snapshot). Either way: roll back early, or **re-export from the nexus first**
+  (`/apps/lattice/know-all` + the S1 pub loop) if you must preserve recent writes.
 
 ---
 

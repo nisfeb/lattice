@@ -1,5 +1,15 @@
 # Migrating lattice state & access control to grubbery
 
+> ⛔ **SUPERSEDED — historical design record, not the operative plan.** This doc
+> describes the **vault-first adapter** migration (keep the `%lattice` gall agent
+> as a façade; move state into grubbery behind `know-where`/`know-cutover`/
+> `know-rollback` flags with dual-write). That approach was **retired** in favor of
+> a from-scratch **native-nexus rewrite** — lattice is now a grubbery nexus
+> (`grubbery-overlay/nex/lattice/`), and the `*-where`/`*-cutover`/`*-rollback`
+> flag scaffolding described below **does not exist** in it. **To actually perform
+> the migration, use [`cutover-runbook.md`](./cutover-runbook.md).** Keep this file
+> for the design reasoning and the verified grubbery-mechanics research only.
+
 Status: **proposed plan, unblocked** — researched 2026-06-11 against grubbery @
 `~/software/groundwire/grubbery` and lattice 0.6.1. Every load-bearing claim about grubbery below
 was checked against its source; the four that came back "true, with corrections" are folded in,
