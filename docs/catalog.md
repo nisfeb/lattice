@@ -1,5 +1,19 @@
 # Catalog — federated network content index
 
+> **Backend status.** This describes the catalog design. The catalog *code*
+> (`catalog.hoon`, `catalog-analyzer.hoon`, the obelisk marks) now lives in
+> [`grubbery-overlay/lib/`](../grubbery-overlay/lib/) and the read endpoints are
+> served by the grubbery `lattice` nexus over the same `/apps/lattice/catalog-*`
+> HTTP routes (per-request fibers, not a monolithic `handle-http` arm). The
+> long-lived **crawler fiber** is still being brought up on the nexus; on the
+> legacy `desk/` agent the crawler runs on the Behn sweep timer described below.
+> Where this doc writes `/desk/lib/catalog.hoon` or `/lib/catalog`, read the
+> catalog lib — `desk/lib/catalog.hoon` on the legacy agent,
+> `grubbery-overlay/lib/catalog.hoon` in the nexus overlay. Obelisk state
+> references ("lattice's own agent state") describe the legacy agent; the nexus
+> keeps its knowledge in `know/vault` grubs but still pokes the external
+> `%obelisk` for the catalog index.
+
 ## Why
 
 `%lattice` lets a user follow publishers and subscribe to specific pages,

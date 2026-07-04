@@ -4,8 +4,12 @@ Migrate the live lattice on **`~ricsul-bilwyt`** from the standalone `%lattice`
 gall agent to the grubbery-native nexus. **Live-only** (trash dropped),
 **hard cutover** (brief downtime), old agent kept for rollback.
 
-Every step below was rehearsed on `~tyr`. Commands assume you run them from a
-shell on the production host; set the two variables first.
+The clean-case steps below were rehearsed on `~tyr` and the full cutover was
+**executed on `~ricsul-bilwyt` (2026-07)** — see **[Field notes](#field-notes--the-real-ricsul-bilwyt-cutover-2026-07)**
+for how the real run diverged. Short version: a prior deploy had already left
+grubbery holding `/apps/lattice`, so the old agent's HTTP was *shadowed* and the
+export went over **scry**, not HTTP (see **S1-alt**). Commands assume you run
+them from a shell on the production host; set the two variables first.
 
 ```sh
 export SHIP=~ricsul-bilwyt               # exported: the S1 heredoc reads it in a child shell
@@ -32,25 +36,54 @@ curl -s -c $CK -X POST $BASE/~/login --data-urlencode "password=$CODE" -o /dev/n
 
 ## Prerequisites
 
+- **P0. Grubbery is healthy and lean.** Two grubbery-level hazards make a cutover
+  install run for *hours* and must be cleared **before** anything else:
+  - **`contacts` `sync-ames`.** If grubbery's `contacts` app is mounted in
+    `lib/root.hoon`, its `/main.sig` runs `sync-ames` on every cold-start —
+    scrying the whole ames peer table and writing **one clay grub per peer,
+    serially** (~6.7k peers ≈ 2 h on `~ricsul-bilwyt`, re-run every reload).
+    Remove the `contacts` row from `root.hoon` if you don't need it.
+  - **`validate-marks` × grub count.** `+validate-marks` (grubbery `on-load`)
+    re-walks *every* grub once per changed mark — O(marks × grubs). The contacts
+    grubs bloat this to ~1 h per reload even after `contacts` is unmounted,
+    because the already-written peer grubs persist. Evict them with a clean
+    reinstall: `|nuke %grubbery` (clears state — the peer grubs go with it) → sync
+    the trimmed desk → `|commit %grubbery` → `|revive %grubbery`. The nexus grubs
+    you care about aren't installed yet, so nothing is lost. (Filed upstream:
+    `gwbtc/grubbery#4` validate-marks, `#5` contacts.)
 - **P1. Grubbery ≥ `a8d7738`** installed on `~ricsul-bilwyt` (the floor from
   `grubbery-migration.md`: weir read-gating + hash-verified merges). Verify, or
   install grubbery first.
 - **P2. Lattice desk deployed into grubbery** (the `grubbery-overlay/` tree
   synced into grubbery's `gub/`, same as the tyr harness).
-- **P3.** The old `%lattice` still owns `/apps/lattice`. The nexus will use a
-  **temp path** until cutover — grubbery's `bind-http` is additive and can't
-  claim a path the old agent holds.
+- **P3. Find out who actually owns `/apps/lattice`.** Two cases, and they change
+  how you export (S1 vs S1-alt). Probe it unauthenticated:
+  ```sh
+  curl -s -o /dev/null -w "%{http_code}\n" $BASE/apps/lattice/list
+  ```
+  - **`403` → clean case.** The old `%lattice` owns the path and gates the
+    request. Export over HTTP (**S1**). The nexus takes a **temp path**
+    (`/apps/lattice-new`) until cutover.
+  - **`404` → shadowed case** (what we hit on ricsul). A prior grubbery deploy
+    already bound `/apps/lattice`; per the binding note below that Eyre route is
+    stuck to `%grubbery` (no handler → 404), and the old agent **cannot serve
+    there** even though it's installed and running. Its HTTP export is impossible
+    → export over **scry (S1-alt)**. Upside: the S5 suspend-gate is moot — the
+    old agent already lost the path, so the nexus just binds `/apps/lattice` and
+    grubbery serves it (it already owns the route).
 
 > **Binding note (shapes cutover *and* rollback).** grubbery's `%bind` emits an
 > Eyre `%connect`, but its `%unbind` **does not** emit a matching `%disconnect`
-> (verified in `grubbery.hoon`). So once `%grubbery` binds a path, Eyre routes it
-> to `%grubbery` for as long as the agent is installed — `unbind-http` only drops
-> grubbery's *internal* handler (the path then 404s), it does **not** hand the
-> path back for another agent to claim. Consequences: (a) cutover requires the
-> old agent to *first* release `/apps/lattice` (via `|suspend`/`|uninstall`)
-> before grubbery can bind it; (b) rollback **cannot** hand `/apps/lattice` back
-> to a revived old agent while `%grubbery` runs — see S6 for the two real
-> rollback paths.
+> (verified in `grubbery.hoon`), and neither does `|nuke`/`|revive`. So once
+> `%grubbery` binds a path, Eyre routes it to `%grubbery` for as long as the agent
+> is installed — `unbind-http` only drops grubbery's *internal* handler (the path
+> then 404s), it does **not** hand the path back for another agent to claim.
+> Consequences: (a) in the **clean case**, cutover requires the old agent to
+> *first* release `/apps/lattice` (via `|suspend`/`|uninstall`) before grubbery
+> can bind it; in the **shadowed case** that release already happened, so you skip
+> the S5 suspend/gate; (b) rollback **cannot** hand `/apps/lattice` back to a
+> revived old agent while `%grubbery` runs — see S6 for the two real rollback
+> paths.
 
 ---
 
@@ -77,6 +110,8 @@ The old `/apps/lattice` keeps serving throughout S0–S5. No downtime yet.
 
 ## S1 — Export from the old agent
 
+**Clean case only** (P3 returned `403`). If P3 returned `404`, skip to **S1-alt**.
+
 ```sh
 # private knowledge (LIVE only — key/body/updated verbatim; tags lowercased on re-import)
 curl -s -b $CK "$BASE/apps/lattice/know-all" > $WORK/know.json
@@ -100,7 +135,54 @@ PY
 
 ---
 
-## S2 — Import into the nexus
+## S1-alt — Export by scry (shadowed binding)
+
+Use this when P3 returned **404** — the old agent's HTTP is shadowed by grubbery,
+so `curl /apps/lattice/*` can't reach it. The agent's state is still readable by
+local `%gx` scry while it's installed and running (even suspended? no — it must be
+`running`; `|revive %lattice` first if it isn't).
+
+**Knowledge (lossless).** The trailing `/json` is the mark — `%gx` strips it and
+matches the `[%x %know %all ~]` peek arm; without it, `%gx` treats `all` as the
+mark and the peek misses → `bail: 4`.
+
+```
+.^(json %gx /=lattice=/know/all/json)
+```
+
+The result is large; don't paste raw JSON (the terminal mangles newlines).
+Base64 it and read it off the host — two capture routes:
+
+```sh
+# A) loopback lens (if %lens answers on the insecure loopback port):
+curl -s -X POST http://127.0.0.1:<loopback-port> --data \
+ '{"source":{"dojo":"(en:base64:mimes:html (as-octs:mimes:html (en:json:html .^(json %gx /=lattice=/know/all/json))))"},"sink":{"stdout":null}}'
+# response is '<base64>' — strip the quotes, base64 -d -> the /know-all JSON.
+
+# B) tmux pipe-pane (if lens is wedged): tap the dojo pane to a file, run the
+#    base64 scry in it, then keep only [A-Za-z0-9+/=] from the capture and decode:
+tmux pipe-pane -t <session>:<win> -o 'cat >> /tmp/cap.txt'   # run scry, then:
+tmux pipe-pane -t <session>:<win>                            # toggle off
+python3 -c "import re,base64;t=open('/tmp/cap.txt').read();b=re.sub(r'[^A-Za-z0-9+/=]','',t[t.index(chr(39))+1:]);open('know.json','wb').write(base64.b64decode(b))"
+```
+
+**Published pages** are `%grow`n/gained grubs with **no read-peek** on the old
+agent. Add a temporary one (mirroring `[%x %published ~]`), commit, scry, revert:
+
+```hoon
+:: in the old agent's on-peek:
+[%x %content ~]
+  :^  ~  ~  %json  !>  ^-  json  :-  %o
+  %-  ~(gas by *(map @t json))
+  %+  turn  ~(tap by content.state)
+  |=([p=^path b=@t] [(spat p) s+b])
+```
+
+`|commit %lattice`, then `.^(json %gx /=lattice=/content/json)` (same base64
+capture) yields `{ "/pub/<rel>/gmi": "<body>", … }`. Strip `/pub`…`/gmi` to the
+`<rel>` and feed it to the S2 `/save` loop. Then **revert the peek** (or just let
+S7 retire the agent). The import side (S2) is identical — only the *export*
+changed.
 
 ```sh
 # knowledge: one lossless bulk POST (nexus parses the /know-all shape verbatim)
@@ -155,6 +237,39 @@ PY
 
 **Do not proceed unless all three — `KNOW IDENTICAL`, `PUB KEYS IDENTICAL`,
 `PUB BODIES IDENTICAL` — print `True`.**
+
+---
+
+## S3.5 — Restore the home page (required, or the app shows "page not found")
+
+The app loads its home screen by fetching the **empty** path —
+`GET /apps/lattice/fetch?url=urb://~ship/`. The old agent grew an authored home at
+the empty spur (`+home-cards`); the nexus's `read-page-body` returns `~` for an
+empty `rel` → **404**, so the app can't render its home. This bug is invisible to
+S3 (which only checks named pages) and only surfaces when the real client hits it.
+Two halves, both required:
+
+1. **Store the authored home as an `index` page.** The old home lived at
+   `/pub/index/gmi`. **Skip it in the S1/S2 pub loop** — the nexus *derives* its
+   own structured `/pub/index` — and save the authored body explicitly:
+   ```sh
+   curl -s -b $CK -X POST "$BASE/apps/lattice/save?path=index" --data-binary @home-body.gmi
+   ```
+2. **Resolve the empty spur to it.** In `read-page-body` (`gub/nex/lattice/app.hoon`),
+   map an empty `rel` to `/index` before the existing normalization:
+   ```hoon
+   =/  rel=path
+     ?:  ?=(~ rel)  /index               :: empty (home) spur -> authored /index page
+     ?.  ?&(=(%pub i.rel) =(%gmi (rear rel)))  rel
+     (snip (strip-pub:lp rel))
+   ```
+   Dropping the old `?=(^ rel)` guard is **required**: the `?:` already narrows
+   `rel` to non-null, so keeping it is a `mint-vain` that fails the whole nexus
+   compile (every lattice fiber then BANGs on spawn). `|commit %grubbery`, confirm:
+   ```sh
+   curl -s -o /dev/null -w "home fetch %{http_code} (want 200)\n" \
+     -b $CK "$BASE/apps/lattice/fetch?url=urb://~ship/"
+   ```
 
 ---
 
@@ -263,6 +378,37 @@ real rollback paths; pick by what's actually broken:
 
 After a clean soak, delete the old `%lattice` desk and agent for good. The nexus
 is now the sole lattice.
+
+---
+
+## Field notes — the real ~ricsul-bilwyt cutover (2026-07)
+
+What actually happened, versus the clean tyr rehearsal:
+
+- **Grubbery needed the P0 reinstall first.** `contacts` `sync-ames` + the bloated
+  `validate-marks` made installs run for hours. `|nuke %grubbery` → trim
+  `root.hoon` (drop `contacts`) → `|commit` → `|revive` cleared it; the nexus data
+  wasn't in yet, so nothing was lost.
+- **The old binding was already shadowed** (P3 → 404). A prior deploy had grubbery
+  bind `/apps/lattice`; that Eyre route stuck to `%grubbery` (survived `|nuke`),
+  so the old agent's HTTP was dead there and export went over **scry (S1-alt)**,
+  captured as base64 through the loopback `%lens` (and, once `%lens` wedged mid-run,
+  through `tmux pipe-pane`). The S5 suspend/gate was moot — the old agent had
+  already lost the path — so cutover was just: repoint the nexus bind
+  `/apps/lattice-new` → `/apps/lattice` and `|commit %grubbery`; grubbery already
+  owned the route, so its fiber respawn picked up the bind and served it.
+- **Result, verified byte-identical:** 135 `know` entries (337,537 bytes in ==
+  out), 3 published pages (2,965 / 12,376 / 308,797 bytes). Tags case-folded as
+  documented (S1 fidelity note); nothing else changed.
+- **Two bugs the live app surfaced**, both fixed:
+  1. The empty-path home fetch → **S3.5**.
+  2. `crawler.sig` crashes on its sweep poke (`nest-fail -need.@p -have.[path]` —
+     a one-element path used where a ship is needed). It **parks** (one-shot, no
+     loop, no CPU) and only degrades cross-ship catalog **discovery**; on-demand
+     `urb://` navigation is unaffected (App → `main.sig` → `read-page-body` →
+     `peek-remote`, which never touches the crawler). Appears pre-existing — the
+     `read-page-body` home fix returns a page body, never a ship — not a cutover
+     regression. **TODO:** fix the crawler's ship-parse.
 
 ---
 

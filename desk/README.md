@@ -1,4 +1,12 @@
-# %lattice — gemtext over Urbit
+# %lattice — gemtext over Urbit (legacy standalone agent)
+
+> **Legacy.** lattice's ship side now runs as a nexus inside the
+> [grubbery](https://github.com/gwbtc/grubbery) framework
+> ([`../grubbery-overlay`](../grubbery-overlay)); that's the recommended install
+> and where new work lands. This standalone `%lattice` Gall agent still builds
+> and runs — it's the simpler self-contained path and the migration rollback
+> fallback — but it's no longer the primary backend. See the repo root README's
+> Install section and [`../docs/cutover-runbook.md`](../docs/cutover-runbook.md).
 
 The Gall agent. It publishes the `.gmi` files in your ship's `/pub` directory
 to the Urbit namespace, serves them to other ships over remote scry, and follows

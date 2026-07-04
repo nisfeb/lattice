@@ -1,9 +1,11 @@
 # lattice — browser app
 
-Compose Multiplatform client for the `%lattice` gemtext network. Signs into a
-ship with `+code`, fetches pages via the ship's `%lattice` agent
+Compose Multiplatform client for the lattice gemtext network. Signs into a ship
+with `+code`, fetches pages via the ship's lattice HTTP endpoint
 (`GET /apps/lattice/fetch?url=urb://~ship/path`), and renders gemtext with
-working `urb://` links. Targets Android + desktop (Linux/macOS/Windows).
+working `urb://` links. Targets Android + desktop (Linux/macOS/Windows). The
+endpoint is served by the grubbery `lattice` nexus (or the legacy `%lattice`
+agent); the client works with either.
 
 ## Toolchain
 

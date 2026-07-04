@@ -1,5 +1,14 @@
 # %lattice integration test recipe
 
+> **Legacy backend.** This recipe verifies the standalone `%lattice` **desk**
+> (the legacy Gall agent) — its Clay `%grow`/`%cull` publishing, ames `%keen`
+> federation, and `state-N` migrations. It's accurate for that backend, which is
+> still built and tested, but the current ship side is the grubbery `lattice`
+> nexus. The nexus publishes via *gained grubs* (no `%grow`), federates via
+> `peek-remote` (no `%keen` walk-to-latest), and has no `state-N` migration
+> chain; to stand it up and verify a migration end-to-end, see
+> [`cutover-runbook.md`](./cutover-runbook.md).
+
 How to verify the `%lattice` desk end-to-end. Part A (single ship) and Part B
 (two ships, remote `%keen`) are both verified working.
 

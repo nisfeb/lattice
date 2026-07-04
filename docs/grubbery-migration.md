@@ -174,7 +174,9 @@ stage: the same gall agent owns the remote-scry namespace throughout.
    its own paths.
 4. **The `%lattice` gall agent must never be nuked or renamed** (this is true today, but easier
    to forget once it looks like "just an adapter"): gall `%grow` revision counters reset and
-   permanently strand non-migrated followers waiting on rev N+1.
+   permanently strand non-migrated followers waiting on rev N+1. *(Superseded: the native rewrite
+   drops `%grow` and the dense-revision invariant entirely, so this constraint no longer applies —
+   the standalone agent is meant to be retired, not preserved.)*
 5. **The private vault must never be remotely readable.** ✅ RESOLVED upstream (`04f3781`),
    re-verified on grubbery `a8d7738` (see verification note below): cross-ship
    `%peek`/`%want`/`%keep` arrive as a `%grubbery-load` poke and are gated by
@@ -674,6 +676,13 @@ migrated ships, and graceful full-fetch with everyone else, with zero flag day.
   storage and the wire protocol have to stay continuous across the move.
 
 ## Still permanent
+
+> ⛔ **Superseded by the native rewrite.** This section's premise — keep the gall
+> agent forever because grubbery has no `%keen` — was abandoned. The shipped
+> nexus makes a **clean break**: it publishes as *gained grubs* and federates via
+> `peek-remote` (one-shot remote scry of the latest gained version), with **no
+> `%keen` walk-to-latest and no dense-revision invariant**. Peers must run the
+> grubbery-native lattice; the standalone agent is retired, not permanent.
 
 Follows/subs stay in the agent (keen-lifecycle state, not documents). Grubbery has **no ames
 `%keen` service**, so the `%lattice` gall agent owns the served remote-scry namespace forever —

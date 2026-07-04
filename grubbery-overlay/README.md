@@ -1,29 +1,42 @@
 # grubbery-overlay
 
-Canonical source for the **lattice nexus** that runs inside the `%grubbery`
-framework (phase 1 of `docs/grubbery-migration.md`). The nexus *must* physically
-live in the `%grubbery` desk — grubbery's `sync-gub` only loads `gub/` from its
-own desk — so we keep the source here, in the lattice repo under our version
-control and tests, and **copy** it into a grubbery desk tree with
-`scripts/sync-overlay.sh`. This survives the grubbery dev's pushes to
+Canonical source for the **lattice nexus** — lattice's ship side, running inside
+the [`%grubbery`](https://github.com/gwbtc/grubbery) framework. This is the
+current backend (the standalone `desk/` Gall agent is legacy). To actually stand
+it up on a ship, see the repo root README's Install section and
+[`../docs/cutover-runbook.md`](../docs/cutover-runbook.md).
+
+The nexus *must* physically live in the `%grubbery` desk — grubbery's `sync-gub`
+only loads `gub/` from its own desk — so we keep the source here, in the lattice
+repo under our version control and tests, and **copy** it into a grubbery desk
+tree with `scripts/sync-overlay.sh`. This survives the grubbery dev's pushes to
 `gwbtc/grubbery`: re-sync after pulling.
 
 ## Layout
 
 ```
 grubbery-overlay/
-  lib/lattice-know.hoon        pure vault helpers — base+clay types only, no
-                               grubbery types, so the SAME file compiles in a
-                               desk /lib (for unit tests) and in gub/lib (for
-                               the nexus). This is where the TDD'd logic lives.
-  nex/lattice/app.hoon         the lattice nexus (on-load + main.sig writer)
-  mar/lattice/*.hoon           marks: know-entry, know-action, know-index
-  tests/lib/lattice-know.hoon  unit tests for the pure lib (run via run-tests)
+  lib/          pure helpers — base+clay types only (no grubbery types), so the
+                SAME file compiles in a desk /lib (for unit tests) and in gub/lib
+                (for the nexus). This is where the TDD'd logic lives:
+                  lattice-know      private-vault helpers (know grubs)
+                  lattice-pub       published-page helpers (pub grubs)
+                  catalog           catalog urQL / schema helpers
+                  catalog-analyzer  gemtext structural extraction
+                  obelisk-ast       obelisk query AST helpers
+  nex/lattice/app.hoon    the lattice nexus (on-load tree + main.sig writer +
+                          the HTTP dispatcher and per-request fibers)
+  mar/lattice/*.hoon      marks: know-{entry,action,index}, page, pub-{action,
+                          index}, sub-{action,follows}, obk-{req,res}
+  mar-clay/               cross-desk poke marks (grubbery-load, obelisk-action)
+                          copied into grubbery's gub/mar/clay
+  tests/lib/*.hoon        unit tests for the pure libs (lattice-know,
+                          lattice-pub), run via grubbery's run-tests
 ```
 
 `sync-overlay.sh` maps `lib/` → both `gub/lib/` (deployed; the nexus imports it)
-and `lib/` (so desk-level `/tests` can import it), `nex|mar` → `gub/`, and
-`tests/` → desk `tests/`.
+and `lib/` (so desk-level `/tests` can import it), `nex|mar` → `gub/`, `mar-clay`
+→ `gub/mar/clay`, and `tests/` → desk `tests/`.
 
 ## Bootstrap (instantiate the nexus)
 
@@ -36,9 +49,10 @@ grubbery's own `lib/root.hoon` on-load (re-apply after pulling the dev's pushes)
 ```
 
 On commit, root on-load `%make`s `/apps/lattice.lattice_app`, loads our nexus,
-and materializes `ver.ud`, `main.sig`, `know/index`, `know/trash`,
-`know/vault/`. The plan's alternative (a one-time `%make` dart, no root edit) is
-equivalent; the row is simpler and self-heals on reload.
+and materializes its persistent tree — `main.sig` (the writer), the `know/`
+private vault + indexes, the `pub/` published-pages tree (opened to foreign
+readers), and the HTTP binder. The plan's alternative (a one-time `%make` dart,
+no root edit) is equivalent; the row is simpler and self-heals on reload.
 
 ## Dev loop (test to the same standard as existing code)
 
