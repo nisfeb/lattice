@@ -29,8 +29,9 @@ You run the grubbery nexus on your ship and point the app at it.
 - **Editor** — a built-in gemtext editor for your pages, with optional vim
   keybindings (off by default — it edits like a normal textarea otherwise).
 - **Follow & subscribe** — follow ships to discover what they publish;
-  subscribe to a specific file and get a live notification the moment it
-  changes (pushed over an Eyre SSE channel).
+  subscribe to a specific file to get notified when it changes (your own
+  files push live over an Eyre SSE channel; changes on a followed remote ship
+  surface when the crawler next picks them up).
 - **Discovery** — find other lattice publishers among your `%contacts` via a
   small published manifest.
 - **Copy to your ship** — like a bookmark, but real: copy a remote file onto
