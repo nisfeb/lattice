@@ -1,13 +1,14 @@
 ::  mar/lattice/know-action: a write poked at the vault-manager fiber
 ::  (save/del/restore/move/tag/untag/reindex, plus import/import-trashed).
 ::
-::  Two entry paths: the %lattice agent pokes the full know-action as a NOUN dart
-::  (decoded by the `noun` grab — this is what /know-migrate's import pokes use);
-::  the json/mime grabs let an HTTP client drive the SIMPLE actions directly —
+::  Two entry paths: the writer receives the full know-action as a NOUN dart (the
+::  `noun` grab — this is how the nexus's own HTTP handlers, including the
+::  bulk-import path, drive the writer); the json/mime grabs let an HTTP client
+::  drive the SIMPLE actions directly —
 ::  POST /grubbery/api/poke/apps/lattice.lattice_app/main.sig
 ::  ?blot=/lattice/know-action with e.g. {"save":{"key":"/a","body":"hi"}}.
 ::  json deliberately omits import/import-trashed (they carry a whole know-entry
-::  and only ever arrive via the agent's noun dart, never as HTTP json).
+::  and only ever arrive as a noun dart, never as HTTP json).
 ::
 /<  lk  /lib/lattice-know.hoon
 =,  format

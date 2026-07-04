@@ -1,6 +1,5 @@
 ::  mar/lattice/know-entry: one stored knowledge entry (the vault grub).
-::  Payload is byte-identical to /sur/lattice's know-entry, so the bytes the
-::  nexus stores equal what the %lattice agent stores today.
+::  Payload is the know-entry shape defined in lib/lattice-know.
 ::
 /<  lk  /lib/lattice-know.hoon
 =,  format

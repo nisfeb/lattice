@@ -1,6 +1,6 @@
 ::  mar/lattice/pub-action: a write poked at the pub writer (save-page/del-page).
-::  The %lattice agent pokes it as a NOUN dart (the dual-write / pub-migrate
-::  path); the json grab lets an owner HTTP client drive a write directly.
+::  The writer receives it as a NOUN dart (the `noun` grab); the json grab lets
+::  an owner HTTP client drive a write directly.
 ::
 /<  lp  /lib/lattice-pub.hoon
 =,  format

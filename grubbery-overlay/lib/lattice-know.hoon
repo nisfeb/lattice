@@ -1,14 +1,14 @@
-::  Pure helpers for the grubbery-backed knowledge vault (phase-1 stage 0b).
+::  Pure helpers for the lattice nexus's private knowledge vault (know grubs).
 ::
 ::  Deliberately depends on base + clay types ONLY (path, @ta, @da, sets,
 ::  maps) — no grubbery tarball/nexus types — so the SAME file compiles both
-::  in the %lattice desk (where these arms are unit-tested) and synced into
-::  grubbery's gub/lib (where the %lattice nexus wraps them). The nexus casts
-::  our structural [pax nom] to a real rail:tarball.
+::  in a plain desk /lib (where these arms are unit-tested) and in grubbery's
+::  gub/lib (where the lattice nexus wraps them). The nexus casts our structural
+::  [pax nom] to a real rail:tarball.
 ::
 |%
-::  ==  Knowledge types — byte-identical to /sur/lattice's know-* so the marc
-::  payload the nexus stores equals what the %lattice agent stores today.
+::  ==  Knowledge types — the canonical know-* shapes the nexus stores and the
+::  HTTP reads emit.
 ::
 +$  know-vector  [model=@t dim=@ud vec=(list @rd)]
 +$  know-entry
@@ -27,11 +27,11 @@
       [%tag key=@t tag=@t]
       [%untag key=@t tag=@t]
       [%reindex ~]
-  ::  migration imports (driven by the agent's /know-migrate). Unlike %save,
-  ::  these write the entry VERBATIM — preserving its original updated/tags/
-  ::  vector — instead of stamping updated=now. %import lands a live entry;
-  ::  %import-trashed lands it then soft-deletes (so it sits in trash, body
-  ::  recoverable) for entries the agent had already trashed.
+  ::  verbatim imports (used by the bulk-import endpoint, POST /know-import).
+  ::  Unlike %save, these write the entry VERBATIM — preserving its original
+  ::  updated/tags/vector — instead of stamping updated=now. %import lands a
+  ::  live entry; %import-trashed lands it then soft-deletes (so it sits in
+  ::  trash, body recoverable).
       [%import key=@t entry=know-entry]
       [%import-trashed key=@t entry=know-entry]
   ==

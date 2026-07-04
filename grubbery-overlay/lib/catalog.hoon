@@ -297,6 +297,16 @@
       (weld "DELETE FROM catalog-terms" where)
       (weld "DELETE FROM catalog-meta" where)
   ==
+::  +catalog-peer-paths-urql: the content-key `path` of every catalog-pages row
+::  vouched by `src` for publisher `pub`. The crawler diffs this stored set
+::  against the publisher's CURRENT manifest to find pages that dropped out, then
+::  sweeps each via +catalog-page-delete-urql (ghost-row reconcile, finding #5).
+++  catalog-peer-paths-urql
+  |=  [src=@p pub=@p]
+  ^-  tape
+  =/  st=tape  (trip (scot %p src))
+  =/  pt=tape  (trip (scot %p pub))
+  :(weld "FROM catalog-pages WHERE source = " st " AND publisher = " pt " SELECT path;")
 ::
 ::  +catalog-page-terms-urql: replace one page's inverted-index postings. A
 ::  DELETE-then-INSERT in a SINGLE poke (like +catalog-manifest-urql) — the

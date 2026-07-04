@@ -1,6 +1,5 @@
-::  mar/lattice/page: one stored public page (a gemtext body). The vault grub
-::  the %lattice agent dual-writes and reads back at pub-where=%grubbery. Stored
-::  as the bare cord, byte-identical to the content-map value.
+::  mar/lattice/page: one stored public page (a gemtext body), stored as the
+::  bare cord. The vault grub the pub writer maintains.
 ::
 /<  lp  /lib/lattice-pub.hoon
 |_  p=page:lp

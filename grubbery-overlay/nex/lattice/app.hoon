@@ -182,9 +182,14 @@
       (send-html eyre-id (render-page "Bookmarks" "" "<h1>Bookmarks</h1><div id=\"bmlist\"></div>"))
     =/  raw=(unit @t)  (~(get by args) 'url')
     ?~  raw
-      ;<  ix=pub-index:lp  bind:m  (read-pub-index [%| 2 %& /pub %index])
-      ::  live home index: keep /pub/index so a publish/delete/edit auto-refreshes.
-      (send-html eyre-id (render-page "" (keep-url "pub/index") (home-index-html our ix)))
+      ::  authored home first: if the user published an /index page, serve it;
+      ::  else the generated listing. Both keep /pub/index so a publish/delete/
+      ::  edit auto-refreshes the open reader.
+      ;<  home=(unit @t)  bind:m  (read-page-body our /index)
+      ?~  home
+        ;<  ix=pub-index:lp  bind:m  (read-pub-index [%| 2 %& /pub %index])
+        (send-html eyre-id (render-page "" (keep-url "pub/index") (home-index-html our ix)))
+      (send-html eyre-id (render-page "" (keep-url "pub/index") (render-gmi u.home)))
     =/  pu=(unit [=ship =path])  (parse-urb-url u.raw)
     ?~  pu  (send-html eyre-id (render-page (trip u.raw) "" "<p class=\"err\">bad urb:// url</p>"))
     ;<  body=(unit @t)  bind:m  (read-page-body ship.u.pu path.u.pu)
@@ -232,7 +237,7 @@
   ::
       [%'GET' %know-explore]
     =/  tags=(set @t)  (parse-tags (~(gut by args) 'tags' ''))
-    ::  default 'any' (OR) to match the old agent's contract; only 'all' -> AND.
+    ::  default 'any' (OR); only 'all' -> AND.
     =/  all=?  =('all' (~(gut by args) 'match' 'any'))
     =/  q=@t  (~(gut by args) 'q' '')
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
@@ -295,7 +300,7 @@
     =/  nt=(unit @t)  (catalog-normalize-term:cat (trip u.term))
     ::  a non-indexable term (too short / stop word) matches nothing — return an
     ::  empty result (200), NOT a 400, so a client fanning out one call per query
-    ::  word doesn't error on a common stop word (parity with the old agent).
+    ::  word doesn't error on a common stop word.
     ?~  nt  (send-json eyre-id a+~[(pairs:enjs:format ~[['rows' a+~]])])
     =/  urql=tape  (catalog-search-urql:cat (trip u.nt))
     ;<  cs=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query catalog-db urql)
@@ -353,10 +358,10 @@
     ;<  cv=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db catalog-vocab-urql:cat)
     (send-json eyre-id (obelisk-json cv))
-  ::  candidate ships to follow. The old app scried the %contacts book (%gx);
-  ::  grubbery has no gall SCRY (only watch/poke), so there's no native book read,
-  ::  and crawler targets are now explicit via /follow. Route kept for contract
-  ::  shape; ponytail: bridge via a %contacts gall-watch if a live list is needed.
+  ::  candidate ships to follow. grubbery has no gall SCRY (only watch/poke), so
+  ::  the %contacts book can't be read here; crawler targets are set explicitly
+  ::  via /follow instead. Route kept for contract shape; ponytail: bridge via a
+  ::  %contacts gall-watch if a live list is needed.
       [%'GET' %contacts]
     (send-json eyre-id (pairs:enjs:format ~[['ships' a+~]]))
   ::  ── follows (crawler targets) ──
@@ -437,8 +442,8 @@
       (catalog-run catalog-db (catalog-classify-urql:cat our ship.u.pu path.u.pu u.cat-v csrc conf))
     (send-ok eyre-id)
   ::  ── catalog crawl triggers (POST) ──
-  ::  scan ONE publisher on demand. Unlike the old fire-and-forget crawl, this is
-  ::  synchronous (bounded by remote-timeout) and returns the indexed count.
+  ::  scan ONE publisher on demand: synchronous (bounded by remote-timeout),
+  ::  returns the indexed count.
       [%'POST' %catalog-scan]
     =/  raw=(unit @t)  (~(get by args) 'ship')
     ?~  raw  (send-err eyre-id 400 'missing ship param')
@@ -457,20 +462,20 @@
     ;<  peers=@ud  bind:m  (catalog-scan-peers our now)
     (send-json eyre-id (pairs:enjs:format ~[['indexed' (numb:enjs:format (add self peers))]]))
   ::  arbitrary urQL passthrough (body = the query), run against the lattice db.
-  ::  Mirrors the old /know-query obelisk escape hatch; owner-only like all routes.
+  ::  Owner-only like all routes.
       [%'POST' %know-query]
     =/  urql=@t  (req-body req)
     ;<  kq=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query catalog-db (trip urql))
     (send-json eyre-id (obelisk-json kq))
-  ::  bulk import for migration: body = a /know-all export; lands each entry
-  ::  VERBATIM (tags + original updated preserved) via %import. Owner-only.
+  ::  bulk import: body = a /know-all export; lands each entry VERBATIM (tags +
+  ::  original updated preserved) via %import. Owner-only.
       [%'POST' %know-import]
     =/  jon=(unit json)  (de:json:html (req-body req))
     ?~  jon  (send-err eyre-id 400 'bad json')
     =/  parsed=(each (list [@t know-entry:lk]) tang)  (mule |.((parse-import u.jon)))
     ?:  ?=(%| -.parsed)  (send-err eyre-id 400 'bad import shape')
     ::  reject the whole batch if any key is unparseable as a path — the writer
-    ::  would otherwise skip those entries (silent partial import during migration).
+    ::  would otherwise skip those entries (silent partial import).
     ?:  (lien p.parsed |=([k=@t *] ?=(~ (know-key k))))
       (send-err eyre-id 400 'invalid key in import')
     ;<  n=@ud  bind:m  (import-know-loop p.parsed 0)
@@ -594,7 +599,7 @@
         tags+(as:dejs:format so:dejs:format)
     ==
   ::  normalize imported tags to match the /know-tag write path (case-folded),
-  ::  so migrated entries stay reachable via explore.
+  ::  so imported entries stay reachable via explore.
   [key body updated (~(run in tags) norm-tag) ~]
 ++  parse-import
   |=  jon=json
@@ -619,6 +624,14 @@
   |=  [db=@tas urql=tape]
   =/  m  (fiber:fiber:nexus ,(unit tang))
   ^-  form:m
+  ::  guard: a LOCAL gall-poke makes grubbery resolve the target's mark with a
+  ::  %gd scry that BAILS when the agent isn't installed — bailing the whole
+  ::  event, which rolls back an in-progress nexus reload. gall-poke-or-nack
+  ::  can't catch that (the crash precedes the poke-ack). So confirm obelisk is
+  ::  running first via %gu, which answers %.n instead of bailing, and report it
+  ::  missing rather than poking a dead agent.
+  ;<  up=?  bind:m  (scry:io ? /gu/obelisk/$)
+  ?.  up  (pure:m `~[leaf+"obelisk not installed"])
   (gall-poke-or-nack:io %obelisk [%obelisk-action [%tape db urql]])
 ::  +obelisk-sub-base: the grubbery tree dir where obelisk's /server fact is
 ::  materialized by a %gall-watch subscription (grubbery gall-sub-dir). The
@@ -684,6 +697,12 @@
   |=  [db=@tas urql=tape]
   =/  m  (fiber:fiber:nexus ,(each (list cmd-result:ast) tang))
   ^-  form:m
+  ::  short-circuit when obelisk isn't installed: skip the sub/keep/poke churn
+  ::  (which would otherwise stall 4s in obelisk-ensure-sub waiting for a sub
+  ::  that can never go live) and return the missing-agent error directly. Same
+  ::  %gu liveness check obelisk-exec uses. See obelisk-exec for why this matters.
+  ;<  up=?  bind:m  (scry:io ? /gu/obelisk/$)
+  ?.  up  (pure:m [%| ~[leaf+"obelisk not installed"]])
   ;<  our=@p  bind:m  get-our:io
   =/  data-road=road:tarball  [%& %& (obelisk-sub-base our) %data]
   ;<  ~           bind:m  (obelisk-ensure-sub our)
@@ -875,6 +894,33 @@
   ?:  |(=('t' aura) =('ta' aura) =('tas' aura))
     s+q.q.c
   s+(scot aura q.q.c)
+::  +obelisk-col-cords: pull one column's raw dime values (as cords) out of a
+::  query result, across every result-set row. Used by the ghost-row reconcile
+::  to read back the `path` column. A `%| error` result yields the empty set, so
+::  callers treat "obelisk unreachable" as "nothing stored" (safe no-op).
+++  obelisk-col-cords
+  |=  [res=(each (list cmd-result:ast) tang) col=@tas]
+  ^-  (set @t)
+  ?.  ?=([%& *] res)  ~
+  =/  results=(list result:ast)  (zing (turn p.res |=(cr=cmd-result:ast +.cr)))
+  =|  out=(set @t)
+  |-  ^-  (set @t)
+  ?~  results  out
+  ?.  ?=([%result-set *] i.results)
+    $(results t.results)
+  =.  out  (obelisk-col-rows out col set.i.results)
+  $(results t.results)
+++  obelisk-col-rows
+  |=  [out=(set @t) col=@tas rows=(list vector:ast)]
+  ^-  (set @t)
+  ?~  rows  out
+  =/  cells=(list vector-cell:ast)  +.i.rows
+  =.  out
+    |-  ^-  (set @t)
+    ?~  cells  out
+    ?:  =(col p.i.cells)  (~(put in out) `@t`q.q.i.cells)
+    $(cells t.cells)
+  $(rows t.rows)
 ++  catalog-db  `@tas`%lattice
 ::  +catalog-run: run one urQL statement against the catalog db, waiting for it
 ::  to actually execute. Uses obelisk-query (not obelisk-exec) even for writes:
@@ -993,19 +1039,10 @@
   ;<  n=@ud  bind:m  (catalog-scan-peer our i.ships now)
   (catalog-scan-peers-loop our now t.ships (add cnt n))
 ::  +catalog-scan-peer: index one peer's published pages via peek-remote.
-::  KNOWN GAP (finding #5): this indexes the peer's CURRENT /pub/index but never
-::  reconciles against rows we stored on a prior sweep, so a page the peer
-::  UNPUBLISHES leaves ghost rows in catalog-pages/terms/headings/links/tags/meta
-::  forever (stale search hits that 404 on read). The self-delete path already has
-::  the tool: catalog-page-delete-urql. To close this, before/after the index loop
-::  SELECT the stored content-keys for (source=our, publisher=pub) [add a
-::  `FROM catalog-pages WHERE source=.. AND publisher=.. SELECT path;` gen, run it
-::  via obelisk-query], diff against `pages`, and emit catalog-page-delete-urql for
-::  each dropped path. NOTE: this IS production-reachable — /follow is a live owner
-::  route and catalog-scan-peers runs on every ~h6 crawler tick — so once any peer
-::  is followed and unpublishes a page, ghost rows accumulate. Deferred (not
-::  unreachable) only so the reconcile can be verified against a real
-::  publish->unpublish before shipping untested query+diff into the crawler.
+::  After indexing the peer's CURRENT manifest, +catalog-reconcile-peer sweeps
+::  the rows we stored on a PRIOR sweep for pages the peer has since UNPUBLISHED
+::  — otherwise their catalog-pages/terms/headings/links/tags/meta rows linger as
+::  stale search hits that 404 on read (finding #5). Runs every ~h6 crawler tick.
 ++  catalog-scan-peer
   |=  [our=@p pub=@p now=@da]
   =/  m  (fiber:fiber:nexus ,@ud)
@@ -1021,7 +1058,34 @@
   ::  size. Bounding that needs a byte-cap at the peek/clam boundary; deferred with
   ::  the rest of the peer path until /follow is exercised.
   =/  keys=(list path)  (scag manifest-max ~(tap in pages))
-  (catalog-scan-peer-loop our pub now keys pages 0)
+  ;<  cnt=@ud  bind:m  (catalog-scan-peer-loop our pub now keys pages 0)
+  ;<  ~        bind:m  (catalog-reconcile-peer our pub pages)
+  (pure:m cnt)
+::  +catalog-reconcile-peer: drop catalog rows for pages this publisher no longer
+::  lists. SELECT the stored `path`s for (source=our, publisher=pub), diff against
+::  the current manifest `pages`, and delete each dropped key from every table.
+::  Compares against the FULL `pages` (not the manifest-max-capped index slice) so
+::  a page beyond the cap is never mistaken for unpublished. On an unreachable
+::  obelisk the SELECT errors -> empty stored -> no deletes (safe no-op).
+++  catalog-reconcile-peer
+  |=  [our=@p pub=@p pages=(set path)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  qr=(each (list cmd-result:ast) tang)  bind:m
+    (obelisk-query catalog-db (catalog-peer-paths-urql:cat our pub))
+  =/  stored=(set @t)   (obelisk-col-cords qr %path)
+  ::  catalog-pages.path stores (spat content-key); compare on the same cords.
+  =/  current=(set @t)  (silt (turn ~(tap in pages) |=(p=path (spat p))))
+  =/  ghosts=(list @t)  ~(tap in (~(dif in stored) current))
+  (catalog-reconcile-loop our pub ghosts)
+++  catalog-reconcile-loop
+  |=  [our=@p pub=@p ghosts=(list @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  ghosts  (pure:m ~)
+  ;<  ~  bind:m
+    (catalog-run catalog-db (catalog-page-delete-urql:cat our pub (stab i.ghosts)))
+  (catalog-reconcile-loop our pub t.ghosts)
 ++  catalog-scan-peer-loop
   |=  [our=@p pub=@p now=@da keys=(list path) pages=(set path) cnt=@ud]
   =/  m  (fiber:fiber:nexus ,@ud)
@@ -1342,7 +1406,10 @@
   ::  rel (no leading pub / no trailing gmi) is untouched. ponytail: a page literally
   ::  published as "pub/…/gmi" would be mis-normalized — accepted, that key is absurd.
   =/  rel=path
-    ?.  ?&(?=(^ rel) =(%pub i.rel) =(%gmi (rear rel)))  rel
+    ::  the home spur (empty rel) is the authored /index page, so a fetch of
+    ::  urb://~ship/ (the app's home) resolves instead of 404ing.
+    ?:  ?=(~ rel)  /index
+    ?.  ?&(=(%pub i.rel) =(%gmi (rear rel)))  rel
     (snip (strip-pub:lp rel))
   ;<  our=@p  bind:m  get-our:io
   ::  own pages: ABSOLUTE road via app-base (the nexus's fixed tree path), so this
@@ -1479,10 +1546,10 @@
   |=  sub=tape
   ^-  tape
   (weld "/grubbery/api/keep/apps/lattice.lattice_app/" sub)
-::  +sse-script: reactive live-view client JS (finding #19). Streams grubbery's
+::  +sse-script: reactive live-view client JS. Streams grubbery's
 ::  keep-SSE for `keep`, skips the initial `old` snapshot events, and reloads on
 ::  any subsequent change — so an open reader / home index upgrades a stale first
-::  paint and shows live edits (the old agent's /updates channel). "" -> no script
+::  paint and shows live edits (the /updates live channel). "" -> no script
 ::  (remote pages, error shells). Built from single-quote cords so the JS braces
 ::  stay literal (only \\ needs escaping); mirrors counter.hoon's SSE parse loop.
 ::
@@ -1573,7 +1640,12 @@
     =/  key=path  u.ko
     =/  road=road:tarball  (entry-road vbase key)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry road)
-    =/  e=know-entry:lk  (merge-save:lk old body.act now)
+    ::  reviving a soft-deleted key: %del culled the live grub, so `old` is ~ and
+    ::  a fresh merge-save would drop the tags+vector the trashed copy still holds.
+    ::  Read the trash-vault entry too and fall back to it, so a re-save recovers
+    ::  them (the trash tomb is then cleared below, as for any re-save).
+    ;<  tomb=(unit know-entry:lk)  bind:m  (read-entry (entry-road tvbase key))
+    =/  e=know-entry:lk  (merge-save:lk ?^(old old tomb) body.act now)
     ;<  ~  bind:m  (ensure-dirs vbase key)
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] e)
     ;<  ~  bind:m  (gain:io road %.y)
@@ -1676,7 +1748,7 @@
     (put-file ix [/lattice %know-index] (~(put by idx) key (to-index-entry:lk u.old)))
   ::
       %import
-    ::  write a live entry VERBATIM (preserve updated/tags/vector) — migration,
+    ::  write a live entry VERBATIM (preserve updated/tags/vector) — an import,
     ::  not a user edit, so no merge-save now-stamp. Mirror of %save minus the
     ::  body merge; index row derives from the entry's own metadata.
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
@@ -1699,7 +1771,7 @@
     (put-file tx [/lattice %know-index] (~(del by trash) key))
   ::
       %import-trashed
-    ::  land a trashed entry straight into the trash vault (migration of an
+    ::  land a trashed entry straight into the trash vault (import of an
     ::  already-deleted entry). No live grub, no cull dance — just write + index.
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
     ::  would crash this single writer fiber, and rise-wait would then swallow the

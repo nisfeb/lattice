@@ -1,21 +1,22 @@
-::  Pure helpers for the grubbery-backed public-page store (phase-2 stage 2a).
+::  Pure helpers for the lattice nexus's public-page store (pub grubs).
 ::
 ::  Mirrors /lib/lattice-know but simpler: a page is just a gemtext body keyed by
-::  its publication path — the %lattice agent's content-map key, e.g.
-::  /pub/notes/intro/gmi. Pages are path->body, so there is no tag / move /
-::  restore / trash machinery — only upsert (%save-page) and remove (%del-page).
+::  its publication path, e.g. /pub/notes/intro/gmi. Pages are path->body, so
+::  there is no tag / move / restore / trash machinery — only upsert (%save-page)
+::  and remove (%del-page).
 ::
 ::  Like lattice-know, this depends on base + clay types ONLY (path, @ta, @da,
 ::  @uvH, maps), no grubbery tarball/nexus types, so the SAME file compiles both
-::  in the %lattice desk (where these arms are unit-tested) and synced into
-::  grubbery's gub/lib (where the %lattice nexus wraps them).
+::  in a plain desk /lib (where these arms are unit-tested) and in grubbery's
+::  gub/lib (where the lattice nexus wraps them).
 ::
 |%
-::  a stored page: the gemtext body, byte-identical to what content.st holds.
+::  a stored page: the gemtext body, stored as a bare cord.
 ::
 +$  page  @t
-::  public-page actions poked at the pub writer. Migration reuses %save-page —
-::  pages carry no original timestamp to preserve (unlike know imports).
+::  public-page actions poked at the pub writer. %save-page is an idempotent
+::  upsert; pages carry no timestamp or tags, so there's no separate import
+::  action (unlike know entries).
 ::
 +$  pub-action
   $%  [%save-page key=@t body=@t]
@@ -24,10 +25,10 @@
 ::  derived per-page index row (no bodies). hash = (sham body), the parity key
 ::  the agent diffs its content-map against; updated/bytes are informational.
 ::
-::  Design note (review finding #20): consumers today read only the KEY set, so a
-::  namespace ball-walk (like +reindex does for know) could replace this index.
-::  We keep it hand-maintained anyway because `hash` is the reserved parity key
-::  for phase-2 federation sync (diffing our page set against a peer's) — deriving
+::  Design note: consumers today read only the KEY set, so a namespace ball-walk
+::  (like +reindex does for know) could replace this index. We keep it
+::  hand-maintained anyway because `hash` is the reserved parity key for
+::  federation sync (diffing our page set against a peer's) — deriving
 ::  a key-list on demand would drop that column. Caveat: apply-pub writes the vault
 ::  grub then the index row as two darts, so a crash between them can leave the
 ::  index missing a live page (drops it from /list until a manual re-save); there
