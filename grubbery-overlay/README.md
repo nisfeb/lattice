@@ -1,9 +1,8 @@
 # grubbery-overlay
 
 Canonical source for the **lattice nexus** — lattice's ship side, running inside
-the [`%grubbery`](https://github.com/gwbtc/grubbery) framework. This is the
-current backend (the standalone `desk/` Gall agent is legacy). To actually stand
-it up on a ship, see the repo root README's Install section and
+the [`%grubbery`](https://github.com/gwbtc/grubbery) framework. To stand it up on
+a ship, see the repo root README's Install section and
 [`../docs/cutover-runbook.md`](../docs/cutover-runbook.md).
 
 The nexus *must* physically live in the `%grubbery` desk — grubbery's `sync-gub`

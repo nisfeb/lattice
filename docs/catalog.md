@@ -1,18 +1,15 @@
 # Catalog — federated network content index
 
 > **Backend status.** This describes the catalog design. The catalog *code*
-> (`catalog.hoon`, `catalog-analyzer.hoon`, the obelisk marks) now lives in
-> [`grubbery-overlay/lib/`](../grubbery-overlay/lib/) and the read endpoints are
-> served by the grubbery `lattice` nexus over the same `/apps/lattice/catalog-*`
-> HTTP routes (per-request fibers, not a monolithic `handle-http` arm). The
-> long-lived **crawler fiber** is still being brought up on the nexus; on the
-> legacy `desk/` agent the crawler runs on the Behn sweep timer described below.
-> Where this doc writes `/desk/lib/catalog.hoon` or `/lib/catalog`, read the
-> catalog lib — `desk/lib/catalog.hoon` on the legacy agent,
-> `grubbery-overlay/lib/catalog.hoon` in the nexus overlay. Obelisk state
-> references ("lattice's own agent state") describe the legacy agent; the nexus
-> keeps its knowledge in `know/vault` grubs but still pokes the external
-> `%obelisk` for the catalog index.
+> (`catalog.hoon`, `catalog-analyzer.hoon`, the obelisk marks) lives in
+> [`grubbery-overlay/lib/`](../grubbery-overlay/lib/), and the read endpoints are
+> served by the grubbery `lattice` nexus over the `/apps/lattice/catalog-*` HTTP
+> routes (per-request fibers). The long-lived **crawler fiber** is still being
+> brought up on the nexus. This doc predates the native rewrite, so read its
+> `/desk/lib/catalog.hoon` and `/lib/catalog` as
+> `grubbery-overlay/lib/catalog.hoon`, and its "lattice's own agent state" as the
+> nexus's `know/vault` grubs plus the external `%obelisk` it pokes for the catalog
+> index (the standalone agent it refers to has been retired).
 
 ## Why
 
@@ -143,7 +140,7 @@ the `catalog-pending` table + `reason` column are reserved for those
 explicit-requeue cases (`changed`/`requested`/`low-confidence`), which the
 v1 computed worklist (`category=''`) does not yet populate.
 
-## Obelisk schema (`/desk/lib/catalog.hoon`)
+## Obelisk schema (`grubbery-overlay/lib/catalog.hoon`)
 
 Eight tables under `catalog-*`, in the existing `lattice` obelisk database.
 The schema lives in `+catalog-create-list` (one `CREATE TABLE` per element),

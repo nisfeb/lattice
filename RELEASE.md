@@ -7,8 +7,9 @@ pushing a `v*` tag. Each release publishes:
   (Windows), and a portable `.AppImage` (Linux).
 - **Android APK** (only if signing secrets are set): `lattice-<version>.apk`.
 
-The Urbit side (`desk/`) is distributed separately as the `%lattice` desk; it is
-not part of these build artifacts.
+The Urbit side is the grubbery `lattice` nexus (source in `grubbery-overlay/`);
+it's installed on a ship separately (see the README) and is not part of these
+build artifacts.
 
 ## Cutting a release
 

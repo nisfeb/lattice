@@ -5,8 +5,8 @@ on:
     tags:
       - 'v*'
 
-# Gradle lives in app/ (the repo root also holds the Urbit desk/), so every
-# Gradle step sets working-directory: app.
+# Gradle lives in app/ (the ship-side nexus source is in grubbery-overlay/), so
+# every Gradle step sets working-directory: app.
 
 jobs:
   # Single source of truth for the tag-vs-version check; outputs the parsed

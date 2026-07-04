@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# End-to-end test of the %lattice desk over HTTP against a running ship.
+# End-to-end test of the lattice HTTP API against a running ship. Contract-based,
+# so it works against the grubbery `lattice` nexus (the endpoints are unchanged).
 #
 # Exercises the same path a real client uses: login, list, save (-> publish),
-# fetch local, delete, and (optionally) a cross-ship fetch via Ames %keen.
+# fetch local, delete, and (optionally) a cross-ship remote fetch.
 #
 # Usage:
 #   scripts/e2e.sh [ship-url] [code]

@@ -251,15 +251,15 @@
     <div class="wrap">
         <h2>How it works</h2>
         <p>
-            lattice is two pieces: a tiny Gall agent on your ship, and a native app you
-            point at it. Drop a gemtext file in your ship's <code>/pub</code> and anyone
-            on the network can read it — instantly, straight from your ship.
+            lattice is two pieces: a small publisher that runs on your ship, and a native
+            app you point at it. Publish a gemtext page and anyone on the network can read
+            it — instantly, straight from your ship.
         </p>
         <div class="steps">
             <div class="step">
-                <div class="n">the desk</div>
-                <div class="t">%lattice on your ship</div>
-                <div class="d">Publishes <code>/pub/*.gmi</code> to the Urbit namespace and serves it to other ships over remote scry. Follows files you subscribe to.</div>
+                <div class="n">the ship side</div>
+                <div class="t">lattice on your ship</div>
+                <div class="d">Publishes your pages to the Urbit namespace and serves them to other ships over remote scry. Follows files you subscribe to.</div>
             </div>
             <div class="step">
                 <div class="n">the app</div>
@@ -359,11 +359,12 @@ Welcome. Everything here is a gemtext file in /pub.
     <div class="wrap">
         <h2>Under the hood</h2>
         <p>
-            The <code>%lattice</code> Gall agent publishes via Clay → <span class="mono">%grow</span>
-            and answers remote scry; the app speaks an authenticated HTTP API to your ship over
-            OkHttp, with live updates on an Eyre SSE channel. Kotlin + Compose Multiplatform for
-            the UI, one shared codebase across Android and JVM desktop. Hoon unit tests on the
-            agent, a JVM test suite on the app, both gated in CI.
+            On your ship, lattice runs as a nexus in the <span class="mono">grubbery</span>
+            framework — publishing your pages to the Urbit namespace and answering remote scry.
+            The app speaks an authenticated HTTP API to your ship over OkHttp, with live updates
+            on an Eyre SSE channel. Kotlin + Compose Multiplatform for the UI, one shared codebase
+            across Android and JVM desktop. Hoon unit tests on the nexus, a JVM test suite on the
+            app, both gated in CI.
         </p>
         <div class="tech-grid">
             <div class="cell"><div class="k">android</div><div class="v">8.0+ (API 26–35)</div></div>

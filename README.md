@@ -11,8 +11,6 @@ lattice has two parts:
   [**grubbery**](https://github.com/gwbtc/grubbery) framework. It stores your
   pages as *published grubs* in grubbery's vault, serves them to other ships over
   remote scry, and follows remote files so you get notified when they change.
-  (The older standalone `%lattice` Gall agent under `desk/` is **legacy** — see
-  [Install](#install).)
 - **`app/`** — a Kotlin Multiplatform (Compose) browser/editor that talks to
   your ship over its local HTTP API.
 
@@ -95,12 +93,6 @@ sequenceDiagram
   about — following ships and searching a catalog of what they publish — is a
   separate background crawler.
 
-> **Backend note.** lattice's ship-side now runs as a nexus inside the
-> [**grubbery**](https://github.com/gwbtc/grubbery) framework rather than a
-> standalone Gall agent. The app's HTTP contract and `urb://` addressing are
-> unchanged; see [docs/cutover-runbook.md](docs/cutover-runbook.md) for the
-> migration.
-
 ## Install
 
 ### 1. The ship side (grubbery nexus)
@@ -144,30 +136,7 @@ existing `%lattice` agent's data into the nexus.
 > tool), your private knowledge store is owner-only, and the HTTP API requires a
 > valid ship session. Nothing else leaves your ship.
 
-### 2. The legacy `%lattice` desk
-
-The original standalone `%lattice` Gall agent under [`desk/`](desk/) still builds
-and runs — it's the simpler, self-contained path, but it's **no longer the
-recommended install** and new work lands on the grubbery nexus. Build it with
-[`build.sh`](build.sh) (it vendors kernel deps via
-[peru](https://github.com/buildinspace/peru), so `peru --version` must work):
-
-```dojo
-|new-desk %lattice
-|mount %lattice
-```
-```bash
-./build.sh -p ~/path/to/your-ship/lattice
-```
-```dojo
-|commit %lattice
-|install our %lattice
-```
-
-It binds the same `/apps/lattice` endpoint, so the app can't tell the two
-backends apart.
-
-### 3. The app
+### 2. The app
 
 Grab your platform from the
 [latest release](https://github.com/nisfeb/lattice/releases/latest):
@@ -259,7 +228,8 @@ refresh it. Re-registering tools after a lattice upgrade needs a reset first; se
 
 ## Building from source
 
-Gradle lives in [`app/`](app/) (the repo root also holds the Urbit `desk/`). A
+Gradle lives in [`app/`](app/); the ship-side nexus source is in
+[`grubbery-overlay/`](grubbery-overlay/). A
 full **JDK 17** is required — note that some distros ship `java-17-openjdk` as a
 JRE without `javac`; JDK 21 also works.
 
@@ -273,10 +243,10 @@ cd app
 ./scripts/build-appimage.sh
 ```
 
-The Hoon has unit tests: the nexus's pure lib under
+The nexus's pure lib has Hoon unit tests under
 [`grubbery-overlay/tests/`](grubbery-overlay/tests/) (run via grubbery's
-`run-tests`) and the legacy agent under [`desk/tests/`](desk/tests/). The app has
-a JVM test suite (`./gradlew :composeApp:desktopTest`). CI runs both on every PR.
+`run-tests`); the app has a JVM test suite (`./gradlew :composeApp:desktopTest`).
+CI runs both on every PR.
 
 ## Releases
 
@@ -287,9 +257,8 @@ installers (`.deb`/`.dmg`/`.msi`/`.AppImage`) and — when signing secrets are s
 ## Layout
 
 ```
-grubbery-overlay/  the lattice nexus — the current ship side (nex/ lib/ mar/ tests/)
+grubbery-overlay/  the lattice nexus — lattice's ship side (nex/ lib/ mar/ tests/)
 app/               Kotlin Multiplatform Compose app (Android + desktop)
-desk/              the legacy standalone %lattice Gall agent
 web/               marketing pages (HTML + a gemtext page, fittingly)
 scripts/           build + overlay-sync helpers
 docs/              deeper design docs (migration/cutover, catalog, MCP knowledge)
