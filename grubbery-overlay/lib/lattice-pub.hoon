@@ -56,10 +56,19 @@
 ::  Just ships — the crawler re-crawls each fully per tick; per-follow cursors
 ::  are a later refinement. +sub-action: the follow-writer's poke.
 ::
+::  +page-sub: one live per-file subscription — a specific remote page
+::  (urb://ship/pax). Stored as its own grub under /sub/pages/, whose per-sub
+::  keep fiber re-indexes the page into the catalog the moment the peer edits it
+::  (vs. waiting for the ~h6 crawler sweep). %sub-page / %unsub-page create and
+::  tear down that grub (and thus its keep).
+::
 +$  follows  (set @p)
++$  page-sub  [ship=@p pax=path]
 +$  sub-action
   $%  [%follow ship=@p]
       [%unfollow ship=@p]
+      [%sub-page =page-sub]
+      [%unsub-page =page-sub]
   ==
 +$  vrail  [pax=path nom=@ta]
 ::  +key-to-rail: a content-map key (path) -> the vault rail holding its page,

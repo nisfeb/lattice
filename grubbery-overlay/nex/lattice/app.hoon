@@ -61,6 +61,10 @@
         ::  /sub/follows: the crawler's follow set (ships to sweep). A covering
         ::  file row (not an empty-dir) so the set survives reload.
             [%fall %& [/sub %follows] [[/lattice %sub-follows] *follows:lp]]
+        ::  /sub/pages/: one grub per live per-file subscription. Each grub's
+        ::  on-file spawns a keep fiber that re-indexes that remote page whenever
+        ::  the peer edits it. /sub + /unsub make/cull these grubs.
+            [%fall %| /sub/pages empty-dir:loader]
             [%fall %& [/ %'crawler.sig'] [[/ %sig] ~]]
         ==
       ==
@@ -103,6 +107,29 @@
           [[%ui %requests ~] @]
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /ui/requests: failed")
         (handle-request name.rail)
+      ::  /sub/pages/*: one live per-file subscription. keep the peer's page grub
+      ::  and re-index it into the catalog on every change — so an edit lands now
+      ::  instead of waiting for the ~h6 crawler sweep. The keep is re-established
+      ::  from the stored page-sub on reload; culling the grub (via /unsub) tears
+      ::  down the fiber and its keep (delete -> sub-wipe).
+          [[%sub %pages ~] @]
+        ;<  ~  bind:m  (rise-wait:io prod "%lattice /sub/pages: failed")
+        ;<  ps=page-sub:lp  bind:m  (get-state-as:io ,page-sub:lp)
+        =/  rel=path  (page-rel pax.ps)
+        ::  keep the page's gmi FILE — that is the node the publisher GAINS (apply-pub
+        ::  gains the gmi grub, not its parent dir), so a keep on the file gets the
+        ::  publisher's %news on every edit. Keeping the parent dir would subscribe to
+        ::  an un-gained node and never fire.
+        =/  road=road:tarball
+          (remote-road [%& %& (weld (weld app-base /pub/vault) rel) %gmi] ship.ps)
+        ::  index once up front — don't gate the initial index on the (remote) keep
+        ::  handshake, so the page lands even if the subscription is slow to arm.
+        ;<  ~  bind:m  (index-remote-page ship.ps rel)
+        ;<  *  bind:m  (keep:io /page road ~)
+        |-
+        ;<  *  bind:m  (take-news:io /page)
+        ;<  ~  bind:m  (index-remote-page ship.ps rel)
+        $
       ::  /crawler.sig: periodic catalog sweep. Each tick re-indexes our own
       ::  published pages into obelisk (runs immediately on start, then every
       ::  interval). ponytail: full re-scan per tick (fine for a personal store);
@@ -368,6 +395,14 @@
       [%'GET' %follows]
     ;<  fs=follows:lp  bind:m  read-follows
     (send-json eyre-id a+(turn ~(tap in fs) |=(s=@p s+(scot %p s))))
+  ::  ── live per-file subscriptions ──
+      [%'GET' %subs]
+    ;<  ss=(list page-sub:lp)  bind:m  read-subs
+    %+  send-json  eyre-id
+    :-  %a
+    %+  turn  ss
+    |=  ps=page-sub:lp
+    (pairs:enjs:format ~[['ship' s+(scot %p ship.ps)] ['path' s+(spat pax.ps)]])
   ::  ── pub writes (POST) ──
       [%'POST' %save]
     =/  rel=(unit @t)  (~(get by args) 'path')
@@ -407,6 +442,26 @@
     =/  who=(unit @p)  (slaw %p u.shp)
     ?~  who  (send-err eyre-id 400 'bad ship')
     ;<  ~  bind:m  (poke-sub [%unfollow u.who])
+    (send-ok eyre-id)
+  ::  ── per-file subscribe writes (POST) ── url=urb://<ship>/<path> keeps that one
+  ::  page live: the crawler re-indexes it the moment the peer edits it, instead of
+  ::  waiting for the ~h6 sweep. /unsub tears the keep down.
+      [%'POST' %sub]
+    =/  raw=(unit @t)  (~(get by args) 'url')
+    ?~  raw  (send-err eyre-id 400 'missing url param')
+    =/  pu=(unit [=ship =path])  (parse-urb-url u.raw)
+    ?~  pu  (send-err eyre-id 400 'bad urb:// url')
+    ;<  our=@p  bind:m  get-our:io
+    ?:  =(ship.u.pu our)  (send-err eyre-id 400 'cannot subscribe to own ship')
+    ;<  ~  bind:m  (poke-sub [%sub-page ship.u.pu path.u.pu])
+    (send-ok eyre-id)
+  ::
+      [%'POST' %unsub]
+    =/  raw=(unit @t)  (~(get by args) 'url')
+    ?~  raw  (send-err eyre-id 400 'missing url param')
+    =/  pu=(unit [=ship =path])  (parse-urb-url u.raw)
+    ?~  pu  (send-err eyre-id 400 'bad urb:// url')
+    ;<  ~  bind:m  (poke-sub [%unsub-page ship.u.pu path.u.pu])
     (send-ok eyre-id)
   ::  ── catalog classify (POST) ──
   ::  write a classification onto one of OUR catalog rows. url=urb://<pub>/<path>
@@ -989,6 +1044,25 @@
   ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-ensure-urql:cat src pub pat now a))
   ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-refresh-urql:cat src pub pat now a pages))
   (catalog-run catalog-db (catalog-page-terms-urql:cat src pub pat a))
+::  +index-remote-page: re-index ONE remote page into the catalog on demand — the
+::  live-subscription counterpart of the crawler's per-page work. A /sub/pages keep
+::  fiber calls this whenever the peer edits the page (and once on subscribe), so
+::  the change lands immediately instead of waiting for the ~h6 sweep. rel is the
+::  normalized vault spur. Reads the peer's body + full index (for internal-link
+::  detection), then writes the page's catalog rows. No-op if the page is
+::  gone/unreachable, or if obelisk is absent (the obelisk-run-one guard swallows).
+::
+++  index-remote-page
+  |=  [pub=@p rel=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  our=@p   bind:m  get-our:io
+  ;<  now=@da  bind:m  get-time:io
+  ;<  body=(unit @t)  bind:m  (read-page-body pub rel)
+  ?~  body  (pure:m ~)
+  ;<  ix=pub-index:lp  bind:m  (read-pub-index-remote pub)
+  =/  pat=path  (weld /pub (snoc rel %gmi))
+  (catalog-index-page our pub pat now u.body ~(key by ix))
 ::  +catalog-scan-self: index every one of OUR OWN published pages into the
 ::  catalog (source = publisher = our). The local, peer-free slice of the crawler
 ::  — proves the analyze -> obelisk pipeline end to end. Returns the count indexed.
@@ -1391,6 +1465,19 @@
     ?.  ?&(?=([%wait @ ~] wak) =(until (slav %da i.t.wak)))  [%skip ~]
     [%done %wake ~]
   ==
+::  +page-rel: normalize a fetch/subscribe spur to the vault-relative page path.
+::  The home spur (empty) is the authored /index page (so urb://~ship/ resolves).
+::  A catalog url form (/pub/<spur>/gmi round-tripped from a search result) is
+::  stripped back to /<spur>. A plain vault spur is untouched (idempotent). Shared
+::  by read-page-body and the /sub keep fiber so the keep road, the read, and the
+::  catalog key all derive from the SAME normalized spur.
+::
+++  page-rel
+  |=  rel=path
+  ^-  path
+  ?:  ?=(~ rel)  /index
+  ?.  ?&(=(%pub i.rel) =(%gmi (rear rel)))  rel
+  (snip (strip-pub:lp rel))
 ::  +read-page-body: the gemtext of a published page, shared by /fetch and the
 ::  web reader. Own pages peek the local pub vault; remote pages use the bounded
 ::  peek-remote-wait (~ if absent, unreachable, or slow past remote-timeout).
@@ -1405,12 +1492,7 @@
   ::  trailing gmi back to the vault-relative /<spur> /fetch expects. A plain vault
   ::  rel (no leading pub / no trailing gmi) is untouched. ponytail: a page literally
   ::  published as "pub/…/gmi" would be mis-normalized — accepted, that key is absurd.
-  =/  rel=path
-    ::  the home spur (empty rel) is the authored /index page, so a fetch of
-    ::  urb://~ship/ (the app's home) resolves instead of 404ing.
-    ?:  ?=(~ rel)  /index
-    ?.  ?&(=(%pub i.rel) =(%gmi (rear rel)))  rel
-    (snip (strip-pub:lp rel))
+  =/  rel=path  (page-rel rel)
   ;<  our=@p  bind:m  get-our:io
   ::  own pages: ABSOLUTE road via app-base (the nexus's fixed tree path), so this
   ::  resolves the same from the depth-2 request fiber and the depth-0 crawler.
@@ -1877,20 +1959,50 @@
   ;<  =seen:nexus  bind:m  (peek:io [%& %& (weld app-base /sub) %follows] ~)
   ?.  ?=([%& %file *] seen)  (pure:m *follows:lp)
   (pure:m !<(follows:lp (need-vase:tarball sang.p.seen)))
-::  +apply-sub: follow/unfollow — read-modify-write the follow set. Runs in the
-::  writer fiber (serialised), so concurrent /follow requests don't race.
+::  +read-subs: every live per-file subscription. Peeks /sub/pages as a ball and
+::  reads each page-sub grub out of the dir node's contents (booms skipped).
+::
+++  read-subs
+  =/  m  (fiber:fiber:nexus ,(list page-sub:lp))
+  ^-  form:m
+  ;<  =seen:nexus  bind:m  (peek:io [%& %| (weld app-base /sub/pages)] ~)
+  ?.  ?=([%& %ball *] seen)  (pure:m ~)
+  =/  b=ball:tarball  ball.p.seen
+  ?~  fil.b  (pure:m ~)
+  =/  cs=(list [@ta [=sang:tarball gain=? bang=(unit tang)]])
+    ~(tap by contents.u.fil.b)
+  =|  out=(list page-sub:lp)
+  |-  ^-  form:m
+  ?~  cs  (pure:m (flop out))
+  ?:  (is-boom:tarball sang.i.cs)  $(cs t.cs)
+  $(cs t.cs, out [!<(page-sub:lp (need-vase:tarball sang.i.cs)) out])
+::  +apply-sub: mutate the crawler's subscriptions. Runs in the writer fiber
+::  (serialised), so concurrent /follow + /sub requests don't race. %follow /
+::  %unfollow read-modify-write the follow set; %sub-page / %unsub-page make/cull
+::  a per-page grub under /sub/pages/ (whose on-file fiber owns the live keep).
 ::
 ++  apply-sub
   |=  [root=path act=sub-action:lp]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  fs=follows:lp  bind:m  read-follows
-  =/  fs2=follows:lp
-    ?-  -.act
-      %follow    (~(put in fs) ship.act)
-      %unfollow  (~(del in fs) ship.act)
-    ==
-  (put-file [%& %& (weld root /sub) %follows] [/lattice %sub-follows] fs2)
+  ?:  ?=(?(%follow %unfollow) -.act)
+    ;<  fs=follows:lp  bind:m  read-follows
+    =/  fs2=follows:lp
+      ?-  -.act
+        %follow    (~(put in fs) ship.act)
+        %unfollow  (~(del in fs) ship.act)
+      ==
+    (put-file [%& %& (weld root /sub) %follows] [/lattice %sub-follows] fs2)
+  ::  a page grub's name is a deterministic hash of [ship pax], so /unsub culls the
+  ::  exact grub /sub created (and re-subscribing is an idempotent over).
+  =/  nom=@ta  (scot %uv (sham page-sub.act))
+  =/  road=road:tarball  [%& %& (weld root /sub/pages) nom]
+  ?:  ?=(%sub-page -.act)
+    (put-file road [/lattice %sub-page] page-sub.act)
+  ::  %unsub-page: cull only if present, so a stray /unsub can't veto-crash the writer.
+  ;<  exists=?  bind:m  (peek-exists:io road)
+  ?.  exists  (pure:m ~)
+  (cull:io road)
 ::  +retag: %tag / %untag — touch the entry's tag set + refresh its index row.
 ::
 ++  retag
