@@ -94,6 +94,39 @@
       "CREATE TABLE catalog-meta (source @p, publisher @p, path @t, summary @t) PRIMARY KEY (source, publisher, path);"
   ==
 ::
+::  ── private-knowledge obelisk index (metadata only) ────────────────
+::
+::  A parallel schema to the catalog tables, one row per private know entry
+::  (item path + updated) plus its tags. No bodies/vectors — just enough for
+::  the Explore pane to urQL over private notes. Rebuilt wholesale by
+::  /know-reindex (create tables, then TRUNCATE + re-INSERT the live vault), so
+::  it goes stale between reindexes, same as the retired agent's knowledge/tags.
+::
+++  know-index-create-list
+  ^-  (list tape)
+  :~  "CREATE TABLE knowledge (item @t, updated @da) PRIMARY KEY (item);"
+      "CREATE TABLE tags (item @t, tag @t) PRIMARY KEY (item, tag);"
+  ==
+::  +know-index-populate-urql: clear both tables, then one INSERT per entry (+ one
+::  per tag). Multi-statement; poked as a single obelisk write.
+::
+++  know-index-populate-urql
+  |=  rows=(list [item=@t updated=@da tags=(list @t)])
+  ^-  tape
+  =/  inserts=(list tape)
+    %-  zing
+    %+  turn  rows
+    |=  [item=@t updated=@da tags=(list @t)]
+    ^-  (list tape)
+    =/  ek=tape  (urq-esc (trip item))
+    =/  up=tape  (trip (scot %da updated))
+    :-  ;:(weld "INSERT INTO knowledge (item, updated) VALUES ('" ek "', " up ");")
+    %+  turn  tags
+    |=  tg=@t
+    ;:(weld "INSERT INTO tags (item, tag) VALUES ('" ek "', '" (urq-esc (trip tg)) "');")
+  %-  zing
+  (weld `(list tape)`~["TRUNCATE TABLE knowledge;" "TRUNCATE TABLE tags;"] inserts)
+::
 ::  ── page writes: the two-poke upsert ───────────────────────────────
 ::
 ::  A catalog page is written by TWO separate obelisk pokes, NOT one, so

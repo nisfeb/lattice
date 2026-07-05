@@ -838,6 +838,13 @@
     =/  urql=@t  (req-body req)
     ;<  kq=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query catalog-db (trip urql))
     (send-json eyre-id (obelisk-json kq))
+  ::  rebuild the obelisk knowledge index from the live vault (Explore pane's
+  ::  Reindex). Ack-blocking but the client treats it fire-and-forget; 502 only
+  ::  when obelisk is absent.
+      [%'POST' %know-reindex]
+    ;<  err=(unit tang)  bind:m  know-reindex
+    ?~  err  (send-ok eyre-id)
+    (send-err eyre-id 502 'obelisk did not ack (agent missing?)')
   ::  bulk import: body = a /know-all export; lands each entry VERBATIM (tags +
   ::  original updated preserved) via %import. Owner-only.
       [%'POST' %know-import]
@@ -1328,6 +1335,22 @@
   ?~  stmts  (pure:m ~)
   ;<  ~  bind:m  (catalog-run catalog-db i.stmts)
   (catalog-create-loop t.stmts)
+::  +know-reindex: rebuild the obelisk knowledge index from the live vault. Ensure
+::  the db + knowledge/tags tables exist (create errors swallowed, like catalog-init),
+::  then TRUNCATE + re-INSERT every entry in one write. Driven by POST /know-reindex
+::  (the Explore pane's Reindex button); the index is stale between reindexes.
+::
+++  know-reindex
+  =/  m  (fiber:fiber:nexus ,(unit tang))
+  ^-  form:m
+  ;<  entries=(map path know-entry:lk)  bind:m  read-know-map
+  ;<  ~  bind:m  (catalog-run %sys (weld "CREATE DATABASE " (trip catalog-db)))
+  ;<  ~  bind:m  (catalog-create-loop know-index-create-list:cat)
+  =/  rows=(list [item=@t updated=@da tags=(list @t)])
+    %+  turn  ~(tap by entries)
+    |=  [key=path e=know-entry:lk]
+    [(spat key) updated.e ~(tap in tags.e)]
+  (obelisk-exec catalog-db (know-index-populate-urql:cat rows))
 ::  +catalog-index-page: analyze one page body and write its catalog rows — the
 ::  two-poke page upsert (ensure INSERT + content refresh) plus the term index.
 ::  pat is the content-map key (/pub/.../gmi); the url is derived inside the urQL
