@@ -448,6 +448,78 @@
     ;<  our=@p  bind:m  get-our:io
     ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-delete-urql:cat our our p.pp))
     (send-ok eyre-id)
+  ::  ── pub version history ──
+  ::  every published page is a firm grub, so grubbery keeps every prior revision.
+  ::  list a page's revisions (rev = the opaque grub revision id, with its date —
+  ::  key the UI on the date, revs are not contiguous). read-at + restore ONLY ever
+  ::  pass a rev that came from this list: peek-at -> resolve-case BAILS the whole
+  ::  event on a missing case, so an unvalidated number would crash the request.
+      [%'GET' %pub-history]
+    =/  raw=(unit @t)  (~(get by args) 'path')
+    ?~  raw  (send-err eyre-id 400 'missing path')
+    =/  ro=(unit road:tarball)  (pub-road u.raw)
+    ?~  ro  (send-err eyre-id 400 'invalid path')
+    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+      (peep:io u.ro [%numb ~ ~])
+    ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    =/  revs=(list [ud=@ud da=@da])
+      %+  sort  (turn p.pe |=([c=cass:clay *] [ud.c da.c]))
+      |=  [a=[ud=@ud da=@da] b=[ud=@ud da=@da]]
+      (lth ud.a ud.b)
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['path' s+u.raw]
+        :-  'revisions'
+        :-  %a
+        %+  turn  revs
+        |=  [ud=@ud da=@da]
+        (pairs:enjs:format ~[['rev' (numb:enjs:format ud)] ['updated' s+(scot %da da)]])
+    ==
+  ::  a page's body AS OF a revision. rev must be one returned by /pub-history.
+      [%'GET' %pub-read-at]
+    =/  raw=(unit @t)  (~(get by args) 'path')
+    ?~  raw  (send-err eyre-id 400 'missing path')
+    =/  rv=(unit @t)  (~(get by args) 'rev')
+    ?~  rv  (send-err eyre-id 400 'missing rev')
+    =/  rev=(unit @ud)  (slaw %ud u.rv)
+    ?~  rev  (send-err eyre-id 400 'bad rev')
+    =/  ro=(unit road:tarball)  (pub-road u.raw)
+    ?~  ro  (send-err eyre-id 400 'invalid path')
+    ::  validate the rev against real history before peek-at (which bails on a miss).
+    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+      (peep:io u.ro [%numb ~ ~])
+    ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    ?.  (lien p.pe |=([c=cass:clay *] =(ud.c u.rev)))
+      (send-err eyre-id 404 'no such revision')
+    ;<  sn=seen:nexus  bind:m  (peek-at:io u.ro ~ [%ud u.rev])
+    ?.  ?=([%& %file *] sn)  (send-err eyre-id 404 'not found')
+    =/  body=@t  !<(@t (need-vase:tarball sang.p.sn))
+    %+  send-json  eyre-id
+    (pairs:enjs:format ~[['body' s+body] ['rev' (numb:enjs:format u.rev)] ['mark' s+'gmi']])
+  ::  restore a prior revision: read its body, then re-save through the writer so it
+  ::  lands as a fresh firm revision (index + gain stay consistent). Non-destructive
+  ::  — the current body is itself retained in history.
+      [%'POST' %pub-restore-rev]
+    =/  raw=(unit @t)  (~(get by args) 'path')
+    ?~  raw  (send-err eyre-id 400 'missing path')
+    =/  rv=(unit @t)  (~(get by args) 'rev')
+    ?~  rv  (send-err eyre-id 400 'missing rev')
+    =/  rev=(unit @ud)  (slaw %ud u.rv)
+    ?~  rev  (send-err eyre-id 400 'bad rev')
+    =/  ro=(unit road:tarball)  (pub-road u.raw)
+    ?~  ro  (send-err eyre-id 400 'invalid path')
+    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+      (peep:io u.ro [%numb ~ ~])
+    ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    ?.  (lien p.pe |=([c=cass:clay *] =(ud.c u.rev)))
+      (send-err eyre-id 404 'no such revision')
+    ;<  sn=seen:nexus  bind:m  (peek-at:io u.ro ~ [%ud u.rev])
+    ?.  ?=([%& %file *] sn)  (send-err eyre-id 404 'not found')
+    =/  body=@t  !<(@t (need-vase:tarball sang.p.sn))
+    =/  pp=(each path tang)  (mule |.((pub-path u.raw)))
+    ?:  ?=(%| -.pp)  (send-err eyre-id 400 'invalid path')
+    ;<  ~  bind:m  (poke-pub [%save-page (spat p.pp) body])
+    (send-ok eyre-id)
   ::  ── follow writes (POST) ──
       [%'POST' %follow]
     =/  shp=(unit @t)  (~(get by args) 'ship')
@@ -1199,6 +1271,19 @@
   |=  rel=@t
   ^-  path
   :(welp /pub (stab (crip (weld "/" (trip rel)))) /gmi)
+::  +pub-road: the ABSOLUTE vault road of a published page's gmi grub, from a raw
+::  url path. Built exactly as apply-pub writes it (pub-path -> key-to-rail), so
+::  history reads land on the same grub. ~ if the path is unparseable/degenerate.
+::  Used by the version-history routes to peep/peek-at a page's prior revisions.
+::
+++  pub-road
+  |=  raw=@t
+  ^-  (unit road:tarball)
+  =/  pp=(each path tang)  (mule |.((pub-path raw)))
+  ?:  ?=(%| -.pp)  ~
+  =/  vr=(unit vrail:lp)  (key-to-rail:lp (weld app-base /pub/vault) p.pp)
+  ?~  vr  ~
+  `[%& %& pax.u.vr nom.u.vr]
 ::  +req-body: the request body as a cord ('' if none).
 ::
 ++  req-body
