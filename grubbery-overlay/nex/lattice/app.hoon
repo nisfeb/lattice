@@ -520,6 +520,119 @@
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'invalid path')
     ;<  ~  bind:m  (poke-pub [%save-page (spat p.pp) body])
     (send-ok eyre-id)
+  ::  ── know version history ──
+  ::  every know entry is a firm grub, so grubbery keeps its prior revisions. A live
+  ::  key's history is under /know/vault; a deleted key's is under /know/trash-vault
+  ::  (see know-hist-road). read-at + restore only ever pass a rev returned here.
+      [%'GET' %know-history]
+    =/  raw=(unit @t)  (~(get by args) 'key')
+    ?~  raw  (send-err eyre-id 400 'missing key')
+    ;<  hr=(unit [road=road:tarball trashed=?])  bind:m  (know-hist-road u.raw)
+    ?~  hr  (send-err eyre-id 404 'not found')
+    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+      (peep:io road.u.hr [%numb ~ ~])
+    ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    =/  revs=(list [ud=@ud da=@da])
+      %+  sort  (turn p.pe |=([c=cass:clay *] [ud.c da.c]))
+      |=  [a=[ud=@ud da=@da] b=[ud=@ud da=@da]]
+      (lth ud.a ud.b)
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['key' s+u.raw]
+        ['trashed' b+trashed.u.hr]
+        :-  'revisions'
+        :-  %a
+        %+  turn  revs
+        |=  [ud=@ud da=@da]
+        (pairs:enjs:format ~[['rev' (numb:enjs:format ud)] ['updated' s+(scot %da da)]])
+    ==
+  ::  a know entry's full content (body/tags/updated) AS OF a revision.
+      [%'GET' %know-read-at]
+    =/  raw=(unit @t)  (~(get by args) 'key')
+    ?~  raw  (send-err eyre-id 400 'missing key')
+    =/  rv=(unit @t)  (~(get by args) 'rev')
+    ?~  rv  (send-err eyre-id 400 'missing rev')
+    =/  rev=(unit @ud)  (slaw %ud u.rv)
+    ?~  rev  (send-err eyre-id 400 'bad rev')
+    =/  ko=(unit path)  (know-key u.raw)
+    ?~  ko  (send-err eyre-id 400 'invalid key')
+    ;<  hr=(unit [road=road:tarball trashed=?])  bind:m  (know-hist-road u.raw)
+    ?~  hr  (send-err eyre-id 404 'not found')
+    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+      (peep:io road.u.hr [%numb ~ ~])
+    ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    ?.  (lien p.pe |=([c=cass:clay *] =(ud.c u.rev)))
+      (send-err eyre-id 404 'no such revision')
+    ;<  sn=seen:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
+    ?.  ?=([%& %file *] sn)  (send-err eyre-id 404 'not found')
+    =/  e=know-entry:lk  !<(know-entry:lk (need-vase:tarball sang.p.sn))
+    (send-json eyre-id (know-entry-json u.ko e))
+  ::  restore a prior revision: re-save it live via %import (preserves tags/vector),
+  ::  stamped updated=now so it sorts fresh in know-list (matches pub-restore). Works
+  ::  for a trashed key too — %import revives it live. Non-destructive: the current
+  ::  body stays in history.
+      [%'POST' %know-restore-rev]
+    =/  raw=(unit @t)  (~(get by args) 'key')
+    ?~  raw  (send-err eyre-id 400 'missing key')
+    =/  rv=(unit @t)  (~(get by args) 'rev')
+    ?~  rv  (send-err eyre-id 400 'missing rev')
+    =/  rev=(unit @ud)  (slaw %ud u.rv)
+    ?~  rev  (send-err eyre-id 400 'bad rev')
+    =/  ko=(unit path)  (know-key u.raw)
+    ?~  ko  (send-err eyre-id 400 'invalid key')
+    ;<  hr=(unit [road=road:tarball trashed=?])  bind:m  (know-hist-road u.raw)
+    ?~  hr  (send-err eyre-id 404 'not found')
+    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+      (peep:io road.u.hr [%numb ~ ~])
+    ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    ?.  (lien p.pe |=([c=cass:clay *] =(ud.c u.rev)))
+      (send-err eyre-id 404 'no such revision')
+    ;<  sn=seen:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
+    ?.  ?=([%& %file *] sn)  (send-err eyre-id 404 'not found')
+    =/  e=know-entry:lk  !<(know-entry:lk (need-vase:tarball sang.p.sn))
+    ;<  now=@da  bind:m  get-time:io
+    ;<  ~  bind:m  (poke-know [%import (spat u.ko) e(updated now)])
+    (send-ok eyre-id)
+  ::  prune a live key's history to the newest `keep` revisions (default 10, floor
+  ::  1). DESTRUCTIVE + IRREVERSIBLE: %lose hard-drops the picked revisions and
+  ::  decrements silo refs (shared content lobes survive by refcount). The current
+  ::  body is NEVER dropped — two guards: keep>=1 leaves the newest in the kept
+  ::  segment, and the top cass is explicitly removed from the drop set. Uses %pick
+  ::  (an explicit cass set), never an open %numb/%date range, so even a concurrent
+  ::  write can't widen the drop into the live rev. Runs in the request fiber (prune
+  ::  touches only old revs, not the know-index, so no writer serialization needed);
+  ::  a lose failure 500s this one request, it can't park the writer. Trashed keys
+  ::  are out of scope — targets the live vault only.
+      [%'POST' %know-prune]
+    =/  raw=(unit @t)  (~(get by args) 'key')
+    ?~  raw  (send-err eyre-id 400 'missing key')
+    =/  keep=(unit @ud)
+      =/  kp=(unit @t)  (~(get by args) 'keep')
+      ?~  kp  `10
+      =/  k=(unit @ud)  (slaw %ud u.kp)
+      ?~(k ~ `(max 1 u.k))
+    ?~  keep  (send-err eyre-id 400 'bad keep')
+    =/  ko=(unit path)  (know-key u.raw)
+    ?~  ko  (send-err eyre-id 400 'invalid key')
+    =/  road=road:tarball  (entry-road (weld app-base /know/vault) u.ko)
+    ;<  live=(unit know-entry:lk)  bind:m  (read-entry road)
+    ?~  live  (send-err eyre-id 404 'not found')
+    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+      (peep:io road [%numb ~ ~])
+    ?:  ?=(%| -.pe)  (send-err eyre-id 500 'peep failed')
+    =/  revs=(list cass:clay)
+      %+  sort  (turn p.pe |=([c=cass:clay *] c))
+      |=([a=cass:clay b=cass:clay] (lth ud.a ud.b))
+    =/  ntot=@ud  (lent revs)
+    ?:  (lte ntot u.keep)
+      (send-json eyre-id (pairs:enjs:format ~[['dropped' (numb:enjs:format 0)] ['kept' (numb:enjs:format ntot)]]))
+    =/  top=cass:clay  (rear revs)
+    =/  drop-set=(set cass:clay)  (~(del in (sy (scag (sub ntot u.keep) revs))) top)
+    ?:  =(~ drop-set)
+      (send-json eyre-id (pairs:enjs:format ~[['dropped' (numb:enjs:format 0)] ['kept' (numb:enjs:format ntot)]]))
+    ;<  ~  bind:m  (lose:io road [%pick drop-set])
+    =/  nd=@ud  ~(wyt in drop-set)
+    (send-json eyre-id (pairs:enjs:format ~[['dropped' (numb:enjs:format nd)] ['kept' (numb:enjs:format (sub ntot nd))]]))
   ::  ── follow writes (POST) ──
       [%'POST' %follow]
     =/  shp=(unit @t)  (~(get by args) 'ship')
@@ -1284,6 +1397,27 @@
   =/  vr=(unit vrail:lp)  (key-to-rail:lp (weld app-base /pub/vault) p.pp)
   ?~  vr  ~
   `[%& %& pax.u.vr nom.u.vr]
+::  +know-hist-road: the ABSOLUTE road of a know key's entry grub, for reading its
+::  revision history. A live key's grub is under /know/vault; a DELETED key was
+::  MOVED to /know/trash-vault (%del moves the grub, it doesn't tomb in place), so
+::  its history lives there instead — resolve live-first, then trash. peep + peek-at
+::  MUST use the same road: a rev from one road's history bails peek-at on the other.
+::  ~ if the key is unparseable or exists in neither vault. The `trashed` flag lets
+::  the UI label a deleted key's (shallow, one-snapshot) history.
+::
+++  know-hist-road
+  |=  raw=@t
+  =/  m  (fiber:fiber:nexus ,(unit [road=road:tarball trashed=?]))
+  ^-  form:m
+  =/  ko=(unit path)  (know-key raw)
+  ?~  ko  (pure:m ~)
+  =/  live=road:tarball   (entry-road (weld app-base /know/vault) u.ko)
+  =/  trash=road:tarball  (entry-road (weld app-base /know/trash-vault) u.ko)
+  ;<  el=(unit know-entry:lk)  bind:m  (read-entry live)
+  ?^  el  (pure:m `[live %.n])
+  ;<  et=(unit know-entry:lk)  bind:m  (read-entry trash)
+  ?^  et  (pure:m `[trash %.y])
+  (pure:m ~)
 ::  +req-body: the request body as a cord ('' if none).
 ::
 ++  req-body
