@@ -424,6 +424,34 @@
     %+  turn  ss
     |=  ps=page-sub:lp
     (pairs:enjs:format ~[['ship' s+(scot %p ship.ps)] ['path' s+(spat pax.ps)]])
+  ::  ── live update streams (keep-SSE discovery) ──
+  ::  hand the client grubbery's native keep endpoints for our subscribable grubs,
+  ::  so it can live-subscribe instead of polling /know-list, /list, /follows. Each
+  ::  is an SSE stream (Accept: text/event-stream) whose frames are
+  ::  'event: <old|add|upd|del> <name>' + 'data: <json>' — skip the initial `old`
+  ::  snapshot, then on add/upd upsert <name> with its data, on del drop it. know
+  ::  and pub are DIRECTORY subscriptions (one frame per changed entry/page);
+  ::  follows is the single follow-set grub.
+      [%'GET' %streams]
+    =/  base=tape  "/grubbery/api/keep/apps/lattice.lattice_app/"
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  :-  'streams'
+        %-  pairs:enjs:format
+        :~  ['know' s+(crip (weld base "know/vault?blot=/json"))]
+            ['pub' s+(crip (weld base "pub/vault?blot=/json"))]
+            ['follows' s+(crip (weld base "sub/follows?blot=/json"))]
+        ==
+        :-  'protocol'
+        :-  %s
+        =-  (crip -)
+        ;:  weld
+          "SSE; send Accept: text/event-stream. Each frame is "
+          "'event: <old|add|upd|del> <name>' then 'data: <json>'. "
+          "Skip the initial 'old' snapshot frames; on add/upd upsert "
+          "<name> with data, on del remove it."
+        ==
+    ==
   ::  ── pub writes (POST) ──
       [%'POST' %save]
     =/  rel=(unit @t)  (~(get by args) 'path')

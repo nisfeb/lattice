@@ -7,6 +7,9 @@
 ++  grow
   |%
   ++  noun  p
+  ::  json: the gemtext body as a JSON string, so keep-SSE (?blot=/json) streams a
+  ::  clean page body instead of a jammed noun.
+  ++  json  s+p
   --
 ++  grab
   |%
