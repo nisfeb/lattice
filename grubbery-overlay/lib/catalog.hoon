@@ -554,6 +554,34 @@
   ^-  tape
   :(weld "FROM catalog-terms WHERE term = '" (urq-esc term) "' SELECT source, publisher, path, tf;")
 ::
+::  +catalog-backlinks-urql: the pages that link TO `target` — every catalog-links
+::  row whose target-url equals it. `target` is matched VERBATIM against the
+::  authored link string the analyzer stored (the raw gemtext after `=> `, e.g.
+::  "urb://~pub/other" or "/other"), NOT a normalized catalog url — so the caller
+::  passes the form the author wrote. is-internal is returned so the client can tell
+::  namespace links from external ones. Same key-then-resolve shape as by-tag: the
+::  client joins (source, publisher, path) back to catalog-pages for titles.
+++  catalog-backlinks-urql
+  |=  target=tape
+  ^-  tape
+  ;:  weld
+    "FROM catalog-links WHERE target-url = '"  (urq-esc target)
+    "' SELECT source, publisher, path, label, is-internal, position;"
+  ==
+::  +catalog-toc-urql: one page's headings in document order — its table of
+::  contents. Keyed by (source, publisher, path); path is the (spat content-key)
+::  form the crawler stores (/pub/<spur>/gmi). ORDER BY position so the outline
+::  reads top-to-bottom. source is always the crawler ship (our).
+++  catalog-toc-urql
+  |=  [src=@p pub=@p pat=tape]
+  ^-  tape
+  =/  st=tape  (trip (scot %p src))
+  =/  pt=tape  (trip (scot %p pub))
+  ;:  weld
+    "FROM catalog-headings WHERE source = "  st  " AND publisher = "  pt
+    " AND path = '"  (urq-esc pat)  "' SELECT position, depth, text ORDER BY position;"
+  ==
+::
 ::  +catalog-meta-list-urql: every author-declared summary (feature A), keyed by
 ::  (source, publisher, path) so the client can join it onto the catalog rows it
 ::  already loaded. One row per page that declares a `%meta summary:`.

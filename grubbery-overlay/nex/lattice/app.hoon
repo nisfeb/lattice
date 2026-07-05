@@ -360,6 +360,27 @@
     ;<  cf=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db (catalog-fetch-urql:cat (trip u.url)))
     (send-json eyre-id (obelisk-json cf))
+  ::  backlinks: which pages link TO `url`. `url` is matched VERBATIM against the
+  ::  authored link target (what the author wrote after `=> ` — e.g. urb://~pub/x
+  ::  or /x), not a normalized catalog url. Returns (source, publisher, path) +
+  ::  label + is-internal; the client joins the keys back to catalog-pages rows.
+      [%'GET' %catalog-backlinks]
+    =/  url=(unit @t)  (~(get by args) 'url')
+    ?~  url  (send-err eyre-id 400 'missing url param')
+    ;<  cb=(each (list cmd-result:ast) tang)  bind:m
+      (obelisk-query catalog-db (catalog-backlinks-urql:cat (trip u.url)))
+    (send-json eyre-id (obelisk-json cb))
+  ::  table of contents: one page's headings in order. url is the catalog url
+  ::  (urb://<pub>/pub/<spur>/gmi); source is always us (the crawler).
+      [%'GET' %catalog-toc]
+    =/  url=(unit @t)  (~(get by args) 'url')
+    ?~  url  (send-err eyre-id 400 'missing url param')
+    =/  pu=(unit [=ship =path])  (parse-urb-url u.url)
+    ?~  pu  (send-err eyre-id 400 'bad urb:// url')
+    ;<  our=@p  bind:m  get-our:io
+    ;<  ct=(each (list cmd-result:ast) tang)  bind:m
+      (obelisk-query catalog-db (catalog-toc-urql:cat our ship.u.pu (trip (spat path.u.pu))))
+    (send-json eyre-id (obelisk-json ct))
   ::  page keys carrying a tag.
       [%'GET' %catalog-by-tag]
     =/  tag=(unit @t)  (~(get by args) 'tag')
