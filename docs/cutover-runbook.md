@@ -402,13 +402,17 @@ What actually happened, versus the clean tyr rehearsal:
   documented (S1 fidelity note); nothing else changed.
 - **Two bugs the live app surfaced**, both fixed:
   1. The empty-path home fetch → **S3.5**.
-  2. `crawler.sig` crashes on its sweep poke (`nest-fail -need.@p -have.[path]` —
-     a one-element path used where a ship is needed). It **parks** (one-shot, no
-     loop, no CPU) and only degrades cross-ship catalog **discovery**; on-demand
-     `urb://` navigation is unaffected (App → `main.sig` → `read-page-body` →
-     `peek-remote`, which never touches the crawler). Appears pre-existing — the
-     `read-page-body` home fix returns a page body, never a ship — not a cutover
-     regression. **TODO:** fix the crawler's ship-parse.
+  2. `crawler.sig` had crashed on its peer-sweep at an earlier snapshot
+     (`nest-fail -need.@p -have.[path]` — a path used where a ship was needed),
+     which parked the fiber and degraded cross-ship catalog **discovery**;
+     on-demand `urb://` navigation was unaffected (App → `main.sig` →
+     `read-page-body` → `peek-remote`, which never touches the crawler).
+     **Resolved in the current code** and verified on the harness: a single-peer
+     crawl (`POST /catalog-scan?ship=`), the full follow-loop sweep
+     (`POST /catalog-sweep` with a follow set), and an unreachable follow all
+     run clean — reachable peers index, an unreachable one times out to
+     `{"indexed":0}`, no crash or park. `@p` handling through `remote-road` /
+     `peek-remote-wait` / `catalog-scan-peer` is correct.
 
 ---
 
