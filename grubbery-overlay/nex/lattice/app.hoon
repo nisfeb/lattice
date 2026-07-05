@@ -520,6 +520,41 @@
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'invalid path')
     ;<  ~  bind:m  (poke-pub [%save-page (spat p.pp) body])
     (send-ok eyre-id)
+  ::  prune a page's history to the newest `keep` revisions (default 10, floor 1).
+  ::  Destructive + irreversible, same contract as /know-prune: %lose [%pick ...]
+  ::  drops the picked old revisions and decrements silo refs; the live rev is never
+  ::  dropped (keep>=1 keeps the newest, and the top cass is excluded from the drop
+  ::  set). Request-fiber + explicit cass set — no writer serialization, no open
+  ::  range. Shrinks what /pub-history lists; /pub-read-at on a dropped rev 404s.
+      [%'POST' %pub-prune]
+    =/  raw=(unit @t)  (~(get by args) 'path')
+    ?~  raw  (send-err eyre-id 400 'missing path')
+    =/  keep=(unit @ud)
+      =/  kp=(unit @t)  (~(get by args) 'keep')
+      ?~  kp  `10
+      =/  k=(unit @ud)  (slaw %ud u.kp)
+      ?~(k ~ `(max 1 u.k))
+    ?~  keep  (send-err eyre-id 400 'bad keep')
+    =/  ro=(unit road:tarball)  (pub-road u.raw)
+    ?~  ro  (send-err eyre-id 400 'invalid path')
+    ;<  ex=?  bind:m  (peek-exists:io u.ro)
+    ?.  ex  (send-err eyre-id 404 'not found')
+    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+      (peep:io u.ro [%numb ~ ~])
+    ?:  ?=(%| -.pe)  (send-err eyre-id 500 'peep failed')
+    =/  revs=(list cass:clay)
+      %+  sort  (turn p.pe |=([c=cass:clay *] c))
+      |=([a=cass:clay b=cass:clay] (lth ud.a ud.b))
+    =/  ntot=@ud  (lent revs)
+    ?:  (lte ntot u.keep)
+      (send-json eyre-id (pairs:enjs:format ~[['dropped' (numb:enjs:format 0)] ['kept' (numb:enjs:format ntot)]]))
+    =/  top=cass:clay  (rear revs)
+    =/  drop-set=(set cass:clay)  (~(del in (sy (scag (sub ntot u.keep) revs))) top)
+    ?:  =(~ drop-set)
+      (send-json eyre-id (pairs:enjs:format ~[['dropped' (numb:enjs:format 0)] ['kept' (numb:enjs:format ntot)]]))
+    ;<  ~  bind:m  (lose:io u.ro [%pick drop-set])
+    =/  nd=@ud  ~(wyt in drop-set)
+    (send-json eyre-id (pairs:enjs:format ~[['dropped' (numb:enjs:format nd)] ['kept' (numb:enjs:format (sub ntot nd))]]))
   ::  ── know version history ──
   ::  every know entry is a firm grub, so grubbery keeps its prior revisions. A live
   ::  key's history is under /know/vault; a deleted key's is under /know/trash-vault
