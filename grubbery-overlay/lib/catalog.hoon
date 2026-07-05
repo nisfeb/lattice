@@ -27,8 +27,8 @@
 ++  catalog-analyze  analyze
 ++  catalog-normalize-term  normalize-term
 ::  +catalog-create-list: the catalog tables' CREATE statements, ONE per list
-::  element. The agent MUST poke each element as its OWN obelisk poke (NOT the
-::  joined +catalog-create-urql): CREATE TABLE on an already-existing table
+::  element. The agent MUST poke each element as its OWN obelisk poke (NOT one
+::  joined poke): CREATE TABLE on an already-existing table
 ::  ERRORS ("duplicate key") and — since any crud error aborts the whole
 ::  multi-statement poke — a single joined CREATE poke aborts at the first
 ::  existing table and NEVER creates the ones after it. (That left
@@ -93,14 +93,6 @@
       ::  here.) Refreshed every crawl; one row per page when a summary exists.
       "CREATE TABLE catalog-meta (source @p, publisher @p, path @t, summary @t) PRIMARY KEY (source, publisher, path);"
   ==
-::
-::  +catalog-create-urql: the joined schema as one tape — for TESTS that assert
-::  on the whole schema string. The AGENT does NOT poke this (it would abort at
-::  the first existing table); it pokes each +catalog-create-list element
-::  separately. See the note on +catalog-create-list.
-++  catalog-create-urql
-  ^-  tape
-  (zing catalog-create-list)
 ::
 ::  ── page writes: the two-poke upsert ───────────────────────────────
 ::
@@ -309,7 +301,7 @@
   :(weld "FROM catalog-pages WHERE source = " st " AND publisher = " pt " SELECT path;")
 ::
 ::  +catalog-page-terms-urql: replace one page's inverted-index postings. A
-::  DELETE-then-INSERT in a SINGLE poke (like +catalog-manifest-urql) — the
+::  DELETE-then-INSERT in a SINGLE poke — the
 ::  leading DELETE clears the prior crawl's postings so the INSERTs can't hit a
 ::  duplicate key (which would abort the poke). Emitted as its OWN obelisk poke,
 ::  separate from the page ensure/refresh, so a pathological term aborts only
@@ -335,130 +327,6 @@
         st  ", "  pt  ", '"  ek  "', '"  tx  "', "  f  ");"
     ==
   (weld (weld "DELETE FROM catalog-terms" where) inserts)
-::
-::  +catalog-manifest-urql: refresh the cached manifest snapshot for one
-::  publisher. Two-statement UPSERT (DELETE then INSERT) since obelisk's
-::  urQL has no ON CONFLICT clause. Idempotent.
-::
-++  catalog-manifest-urql
-  |=  [pub=@p now=@da hsh=@uvH raw=@t]
-  ^-  tape
-  =/  pt=tape    (trip (scot %p pub))
-  =/  scan=tape  (trip (scot %da now))
-  =/  h=tape     (trip (scot %ud hsh))
-  ::  `raw` is a multi-line gemtext manifest — its newlines/control bytes are
-  ::  neutralized to spaces by +urq-esc (which all @t values flow through), so
-  ::  this INSERT can't parse-abort on a raw newline.
-  =/  r=tape     (urq-esc (trip raw))
-  %-  zing
-  :~  "DELETE FROM catalog-manifests WHERE publisher = "  pt  ";"
-      "INSERT INTO catalog-manifests (publisher, scanned, hash, raw) VALUES ("
-      pt  ", "  scan  ", "  h  ", '"  r  "');"
-  ==
-::
-::  +catalog-pending-urql: enqueue one page for classification. Idempotent
-::  via DELETE-then-INSERT — a second queue request for the same key
-::  replaces the prior row (e.g. bumps `attempts` or updates `reason`).
-::
-++  catalog-pending-urql
-  |=  [src=@p pub=@p pat=path now=@da reason=@t attempts=@ud]
-  ^-  tape
-  =/  st=tape   (trip (scot %p src))
-  =/  pt=tape   (trip (scot %p pub))
-  =/  ek=tape   (urq-esc (trip (spat pat)))
-  =/  q=tape    (trip (scot %da now))
-  =/  a=tape    (trip (scot %ud attempts))
-  =/  r=tape    (urq-esc (trip reason))
-  =/  where=tape
-    :(weld " WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
-  %-  zing
-  :~  (weld "DELETE FROM catalog-pending" where)
-      "INSERT INTO catalog-pending (source, publisher, path, queued, attempts, reason) VALUES ("
-      st  ", "  pt  ", '"  ek  "', "  q  ", "  a  ", '"  r  "');"
-  ==
-::
-::  +catalog-pending-clear-urql: pop one page off the pending queue.
-::  Called after a successful classification (or a manual dismissal).
-::  Idempotent — no-op on absent rows.
-::
-++  catalog-pending-clear-urql
-  |=  [src=@p pub=@p pat=path]
-  ^-  tape
-  =/  st=tape  (trip (scot %p src))
-  =/  pt=tape  (trip (scot %p pub))
-  =/  ek=tape  (urq-esc (trip (spat pat)))
-  :(weld "DELETE FROM catalog-pending WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
-::
-::  +parse-manifest: extract published page spurs from a /manifest gemtext
-::  body. The publisher's +generate-index emits `=> /spur  label` lines for
-::  every live publication; this is the inverse. Malformed lines (bad path
-::  syntax, foreign-scheme URL) are silently dropped so one bad line can't
-::  abort a whole sweep.
-::
-::  Returns the spur paths the publisher offers, each ready to walk
-::  individually via remote scry. The crawler iterates the result and
-::  schedules a per-page %keen for each, analyzing each body in turn.
-::
-++  parse-manifest
-  |=  body=@t
-  ^-  (list path)
-  =/  lines=(list @t)  (to-wain:format body)
-  ::  dedupe (first-occurrence order): a manifest with duplicate `=> /x`
-  ::  lines must not yield duplicate spurs. The crawler keys in-flight walks
-  ::  by (now, publisher, spur); duplicates spawned in one event would
-  ::  collide to a single eid, leaving an orphaned keen + behn timer. Dedup
-  ::  here removes that whole class of collision/leak at the source.
-  %-  dedupe-paths
-  %+  murn  lines
-  |=  ln=@t
-  ^-  (unit path)
-  =/  t=tape  (trip ln)
-  ?.  (has-prefix "=> " t)  ~
-  =/  rest=tape  (ltrim (slag 3 t))
-  ::  the target ends at the first whitespace (the label, if any, follows)
-  =/  sp=(unit @ud)  (find " " rest)
-  =/  target=tape  ?~(sp rest (scag u.sp rest))
-  ::  only accept /-rooted local paths; foreign-scheme links (http, mailto,
-  ::  urb://other-ship/x) aren't this publisher's content — skip them.
-  ?.  &(?=(^ target) =('/' i.target))  ~
-  ::  +stab crashes on invalid knot syntax (spaces, control bytes, empty
-  ::  segments) — wrap in mule so a bad line is a no-op rather than a sweep
-  ::  failure.
-  =/  parsed=(each path tang)
-    %-  mule
-    |.((stab (crip target)))
-  ?:(?=(%& -.parsed) `p.parsed ~)
-::
-::  +sweep-publishers: the set of publisher ships to crawl in a sweep. The
-::  UNION of (a) the ships we follow per-file (`subs`, keyed by [ship spur])
-::  and (b) every ship in our %contacts book (`contacts`). The catalog
-::  indexes everyone in the contact book even if we don't follow any of their
-::  files — so search covers contacts, not just follows. Our own ship is
-::  dropped (can't crawl yourself). Order is unspecified (set tap); the sweep
-::  queue processes them sequentially. Typed with stdlib shapes only (@p,
-::  path) so this lib stays free of /+ *lattice — the agent scrys %contacts
-::  and passes the ship set in.
-++  sweep-publishers
-  |=  [subs=(map [=ship spur=path] last=@ud) contacts=(set @p) our=@p]
-  ^-  (list @p)
-  =/  follow-ships=(set @p)
-    %-  ~(gas in *(set @p))
-    %+  turn  ~(tap in ~(key by subs))
-    |=([s=ship *] s)
-  ~(tap in (~(del in (~(uni in follow-ships) contacts)) our))
-::
-::  +dedupe-paths: drop duplicate paths, preserving first-occurrence order.
-::  (A set would lose order; the catalog doesn't strictly need order, but
-::  stable output keeps tests and the crawl deterministic.)
-++  dedupe-paths
-  |=  paths=(list path)
-  ^-  (list path)
-  =|  seen=(set path)
-  =|  out=(list path)
-  |-  ^-  (list path)
-  ?~  paths  (flop out)
-  ?:  (~(has in seen) i.paths)  $(paths t.paths)
-  $(paths t.paths, seen (~(put in seen) i.paths), out [i.paths out])
 ::
 ::  ════════════════════════════════════════════════════════════════════
 ::  Read-side query compilers.
