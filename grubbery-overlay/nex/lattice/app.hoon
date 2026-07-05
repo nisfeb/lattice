@@ -290,6 +290,54 @@
     ;<  body=(unit @t)  bind:m  (read-page-body ship.u.pu path.u.pu)
     ?~  body  (send-err eyre-id 404 'not found')
     (send-json eyre-id (mark-body-json 'gmi' u.body))
+  ::  ── cross-ship browse (federated read-only tree reader) ──
+  ::  list ANY grubbery ship's directory (not just lattice peers): ship=~x&path=/y.
+  ::  SHALLOW (one level) so a huge/hostile remote tree can't balloon memory;
+  ::  children past browse-fan-cap are dropped with `truncated`. Owner-only (the
+  ::  request handler already gates src=our) — never an open proxy. A denied
+  ::  (un-granted weir) or unreachable peer reads as 504, same as a timeout. No path
+  ::  = the ship's root (its app list).
+      [%'GET' %browse]
+    =/  shp-t=(unit @t)  (~(get by args) 'ship')
+    ?~  shp-t  (send-err eyre-id 400 'missing ship')
+    =/  shp=(unit @p)  (slaw %p u.shp-t)
+    ?~  shp  (send-err eyre-id 400 'bad ship')
+    =/  pp=(each path tang)  (mule |.((stab (~(gut by args) 'path' '/'))))
+    ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
+    =/  dir-road=road:tarball  [%& %| p.pp]
+    ;<  our=@p  bind:m  get-our:io
+    ?:  =(u.shp our)
+      ;<  sn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
+      ?.  ?=([%& %ball *] sn)  (send-err eyre-id 404 'not a directory')
+      (send-json eyre-id (browse-json u.shp p.pp ball.p.sn))
+    ;<  ms=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
+    ?~  ms  (send-err eyre-id 504 'unreachable or denied')
+    ?.  ?=([%& %ball *] u.ms)  (send-err eyre-id 404 'not a directory')
+    (send-json eyre-id (browse-json u.shp p.pp ball.p.u.ms))
+  ::  read ANY grubbery ship's file: ship=~x&path=/apps/foo/bar/name. The last path
+  ::  element is the file leaf. Body as JSON (text only; a non-cord body is 415).
+      [%'GET' %browse-file]
+    =/  shp-t=(unit @t)  (~(get by args) 'ship')
+    ?~  shp-t  (send-err eyre-id 400 'missing ship')
+    =/  shp=(unit @p)  (slaw %p u.shp-t)
+    ?~  shp  (send-err eyre-id 400 'bad ship')
+    =/  pt=(unit @t)  (~(get by args) 'path')
+    ?~  pt  (send-err eyre-id 400 'missing path')
+    =/  pp=(each path tang)  (mule |.((stab u.pt)))
+    ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
+    ::  =(~ ...) not ?=(~ ...): ?= narrows p.pp to a lest, and scag casts its result
+    ::  to the input type (^+), so the possibly-empty dir would nest-fail — the same
+    ::  footgun key-to-rail documents. Split via lent/scag/snag on the un-narrowed path.
+    ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
+    =/  n=@ud  (dec (lent p.pp))
+    =/  file-road=road:tarball  [%& %& (scag n p.pp) (snag n p.pp)]
+    ;<  our=@p  bind:m  get-our:io
+    ?:  =(u.shp our)
+      ;<  sn=seen:nexus  bind:m  (peek:io file-road ~)
+      (browse-file-respond eyre-id sn)
+    ;<  ms=(unit seen:nexus)  bind:m  (peek-remote-wait file-road u.shp)
+    ?~  ms  (send-err eyre-id 504 'unreachable or denied')
+    (browse-file-respond eyre-id u.ms)
   ::  ── obelisk bridge (catalog; step 5) ──
   ::  run a urQL write/DDL against %obelisk. GET /obelisk-exec?db=<db>&q=<urql>.
   ::  ponytail: GET for easy curl-testing the bridge; the real crawler drives this
@@ -1724,6 +1772,22 @@
   ;<  ~  bind:m  (send-dart:io %node pw (remote-road road shp) %peek ~ ~ %.y)
   ;<  ~  bind:m  (send-wait:io until)
   (take-peek-or-wake pw until)
+::  +peek-remote-shallow-wait: peek-remote-wait but deep=%.n — one directory level
+::  (files here + subdir names, no recursion). Used by the cross-ship browser: a
+::  deep (%.y) peek of a foreign DIR would materialize its whole subtree, so a huge
+::  or hostile tree could balloon memory before any render cap. Shallow bounds the
+::  pull to one level per request. (A file peek is unaffected — one node either way.)
+::
+++  peek-remote-shallow-wait
+  |=  [=road:tarball shp=@p]
+  =/  m  (fiber:fiber:nexus ,(unit seen:nexus))
+  ^-  form:m
+  ;<  now=@da  bind:m  get-time:io
+  =/  until=@da  (add now remote-timeout)
+  ;<  pw=wire  bind:m  (nonce:io /peek)
+  ;<  ~  bind:m  (send-dart:io %node pw (remote-road road shp) %peek ~ ~ %.n)
+  ;<  ~  bind:m  (send-wait:io until)
+  (take-peek-or-wake pw until)
 ::  +take-peek-or-wake: resolve on the matching %peek response OR our timer wake.
 ::  Sibling of take-news-or-wake; a %veto counts as give-up (~), like a timeout.
 ::
@@ -1814,6 +1878,48 @@
   =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.p.u.ms))))
   ?:  ?=(%| -.res)  (pure:m ~)
   (pure:m `p.res)
+::  +browse-json: render one directory level of a foreign (or own) grubbery tree as
+::  a JSON listing — subdirs first, then files. Each file carries its mark leaf. Both
+::  lists are capped at browse-fan-cap and `truncated` is set if either overflowed,
+::  so a hostile ship can't make the RESPONSE unbounded (the shallow peek already
+::  bounds the fetch). Names are the raw @ta segments; the client rebuilds child
+::  paths as <path>/<name>.
+::
+++  browse-fan-cap  ^-(@ud 1.024)
+++  browse-json
+  |=  [shp=@p pax=path b=ball:tarball]
+  ^-  json
+  =/  files=(list [nom=@ta con=[=sang:tarball gain=? bang=(unit tang)]])
+    ?~(fil.b ~ ~(tap by contents.u.fil.b))
+  =/  dirs=(list [nom=@ta kid=ball:tarball])  ~(tap by dir.b)
+  =/  dir-kids=(list json)
+    %+  turn  (scag browse-fan-cap dirs)
+    |=  [nom=@ta *]
+    (pairs:enjs:format ~[['name' s+nom] ['type' s+'dir']])
+  =/  file-kids=(list json)
+    %+  turn  (scag browse-fan-cap files)
+    |=  [nom=@ta con=[=sang:tarball gain=? bang=(unit tang)]]
+    (pairs:enjs:format ~[['name' s+nom] ['type' s+'file'] ['mark' s+name.p.sang.con]])
+  =/  truncated=?
+    |((gth (lent files) browse-fan-cap) (gth (lent dirs) browse-fan-cap))
+  %-  pairs:enjs:format
+  :~  ['ship' s+(scot %p shp)]
+      ['path' s+(spat pax)]
+      ['truncated' b+truncated]
+      ['children' a+(weld dir-kids file-kids)]
+  ==
+::  +browse-file-respond: send one foreign/own file's body as JSON. Cross-ship
+::  content is a boom (raw noun), so clam to @t in a mule — a non-text file (or a
+::  hostile non-cord body) is a clean 415, never a crash.
+::
+++  browse-file-respond
+  |=  [eyre-id=@ta sn=seen:nexus]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  ?=([%& %file *] sn)  (send-err eyre-id 404 'not a file')
+  =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.p.sn))))
+  ?:  ?=(%| -.res)  (send-err eyre-id 415 'not text')
+  (send-json eyre-id (pairs:enjs:format ~[['body' s+p.res] ['mark' s+name.p.sang.p.sn]]))
 ::  +send-html: a 200 text/html response.
 ::
 ++  send-html
