@@ -5,7 +5,7 @@
 ::    /main.sig            the action WRITER — takes %know-action / %pub-action
 ::                         pokes and serialises every mutation (avoids index races)
 ::    /know/vault/<key>/entry   one know-entry grub per key (private)
-::    /know/index, /know/trash  derived live + trash indexes
+::    /know/trash          derived trash index
 ::    /pub/vault/<spur>    published page grubs (public)
 ::    /pub/index           derived page index (parity hash)
 ::    /ui/main.sig         binds /apps/lattice; dispatches to per-request fibers
@@ -41,7 +41,6 @@
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
             [%fall %| /know/vault empty-dir:loader]
             [%fall %| /know/trash-vault empty-dir:loader]
-            [%fall %& [/know %index] [[/lattice %know-index] *know-index:lk]]
             [%fall %& [/know %trash] [[/lattice %know-index] *know-index:lk]]
             [%fall %| /pub/vault empty-dir:loader]
             [%fall %& [/pub %index] [[/lattice %pub-index] *pub-index:lp]]
@@ -227,17 +226,10 @@
     =/  rk=tape  ?:(=(ship.u.pu our) (keep-url "pub/index") "")
     (send-html eyre-id (render-page (trip u.raw) rk (render-gmi u.body)))
   ::  dispatch on [method action]. ponytail: read-know-map peeks the whole vault
-  ::  per request — fine for a personal store.
-  ::  KNOWN REDUNDANCY (finding #12): the writer also maintains /know/index on every
-  ::  mutation, but NO serving route reads it — list/tags/explore all peek the vault
-  ::  via read-know-map (the trash + pub indexes ARE read; the live know one is not).
-  ::  It is dead read-modify-write amplification, and %reindex repairs drift no read
-  ::  can observe. Next time this writer is touched, either DROP /know/index+%reindex
-  ::  or serve list/tags/explore FROM it (skips the full-vault peek at scale). Left
-  ::  as-is now: refactoring a verified write path for a personal-store nit isn't
-  ::  worth the churn. Writes poke the single writer fiber (serialised) and
-  ::  respond ok; the writer logs no-op cases (missing key etc.) rather than 404 —
-  ::  precise per-route error codes can follow if a client needs them.
+  ::  per request — fine for a personal store. Writes poke the single writer
+  ::  fiber (serialised) and respond ok; the writer logs no-op cases (missing key
+  ::  etc.) rather than 404 — precise per-route error codes can follow if a client
+  ::  needs them.
   =/  meth=@tas  method.request.req
   ?+    [meth (rear suffix)]
     (send-err eyre-id 404 'not found')
@@ -917,10 +909,6 @@
     ?.  (~(has by es) u.fko)  (send-err eyre-id 404 'from not found')
     ?:  (~(has by es) u.tko)  (send-err eyre-id 409 'to already exists')
     ;<  ~  bind:m  (poke-know [%move (spat u.fko) (spat u.tko)])
-    (send-ok eyre-id)
-  ::
-      [%'POST' %know-reindex]
-    ;<  ~  bind:m  (poke-know [%reindex ~])
     (send-ok eyre-id)
   ::
       [%'POST' %know-publish]
@@ -2118,7 +2106,6 @@
   ::  plain move-back — robust, no born-history/cass recovery. /know/trash is the
   ::  derived metadata index over it.
   =/  tvbase=path  (weld root /know/trash-vault)
-  =/  ix=road:tarball  [%& %& (weld root /know) %index]
   =/  tx=road:tarball  [%& %& (weld root /know) %trash]
   ?-    -.act
       %save
@@ -2140,9 +2127,6 @@
     ;<  ~  bind:m  (ensure-dirs vbase key)
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] e)
     ;<  ~  bind:m  (gain:io road %.y)
-    ;<  idx=know-index:lk  bind:m  (read-index ix)
-    ;<  ~  bind:m
-      (put-file ix [/lattice %know-index] (~(put by idx) key (to-index-entry:lk e)))
     ::  a re-saved key leaves trash; cull the orphaned trash-vault GRUB (not just
     ::  the index row) so a later %restore can't resurrect the stale tomb over the
     ::  live entry.
@@ -2169,8 +2153,6 @@
     ;<  ~  bind:m  (put-file troad [/lattice %know-entry] u.old)
     ;<  ~  bind:m  (gain:io troad %.y)
     ;<  ~  bind:m  (cull:io road)
-    ;<  idx=know-index:lk  bind:m  (read-index ix)
-    ;<  ~  bind:m  (put-file ix [/lattice %know-index] (~(del by idx) key))
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     (put-file tx [/lattice %know-index] (~(put by trash) key (to-index-entry:lk u.old)))
   ::
@@ -2200,9 +2182,6 @@
     ;<  ~  bind:m  (put-file troad [/lattice %know-entry] u.old)
     ;<  ~  bind:m  (gain:io troad %.y)
     ;<  ~  bind:m  (cull:io froad)
-    ;<  idx=know-index:lk  bind:m  (read-index ix)
-    =.  idx  (~(put by (~(del by idx) fk)) tk (to-index-entry:lk u.old))
-    ;<  ~  bind:m  (put-file ix [/lattice %know-index] idx)
     ::  if the target key was previously trashed, cull the orphan trash grub +
     ::  row so a later %restore can't resurrect it over the moved-in entry.
     ;<  trash=know-index:lk  bind:m  (read-index tx)
@@ -2234,9 +2213,7 @@
     ;<  ~  bind:m  (gain:io road %.y)
     ;<  ~  bind:m  (cull:io troad)
     ;<  trash=know-index:lk  bind:m  (read-index tx)
-    ;<  ~  bind:m  (put-file tx [/lattice %know-index] (~(del by trash) key))
-    ;<  idx=know-index:lk  bind:m  (read-index ix)
-    (put-file ix [/lattice %know-index] (~(put by idx) key (to-index-entry:lk u.old)))
+    (put-file tx [/lattice %know-index] (~(del by trash) key))
   ::
       %import
     ::  write a live entry VERBATIM (preserve updated/tags/vector) — an import,
@@ -2253,9 +2230,6 @@
     ;<  ~  bind:m  (ensure-dirs vbase key)
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] entry.act)
     ;<  ~  bind:m  (gain:io road %.y)
-    ;<  idx=know-index:lk  bind:m  (read-index ix)
-    ;<  ~  bind:m
-      (put-file ix [/lattice %know-index] (~(put by idx) key (to-index-entry:lk entry.act)))
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     ?.  (~(has by trash) key)  (pure:m ~)
     ;<  ~  bind:m  (cull:io (entry-road tvbase key))
@@ -2277,14 +2251,6 @@
     ;<  ~  bind:m  (gain:io troad %.y)
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     (put-file tx [/lattice %know-index] (~(put by trash) key (to-index-entry:lk entry.act)))
-  ::
-      %reindex
-    ::  rebuild the live index from the vault ball — repairs drift if the
-    ::  derived index ever diverges from the source-of-truth entry grubs.
-    ;<  =seen:nexus  bind:m  (peek:io [%& %| vbase] ~)
-    ?.  ?=([%& %ball *] seen)  ~&([%lattice-reindex-no-vault ~] (pure:m ~))
-    =/  entries=(map path know-entry:lk)  (collect-entries ~ ball.p.seen)
-    (put-file ix [/lattice %know-index] (derive-index:lk entries))
   ==
 ::  +apply-pub: dispatch one public-page action. Mirror of +apply but for the
 ::  /pub vault: a page is just a body, so save-page upserts and del-page culls,
@@ -2437,10 +2403,7 @@
     ::  the case-fold landed stored it un-folded (e.g. 'Rust'), so a folded-only
     ::  del would leave it permanently unremovable.
     (del-tag:lk (del-tag:lk u.old ftag) tag)
-  ;<  ~  bind:m  (put-file road [/lattice %know-entry] e)
-  =/  ix=road:tarball  [%& %& (weld root /know) %index]
-  ;<  idx=know-index:lk  bind:m  (read-index ix)
-  (put-file ix [/lattice %know-index] (~(put by idx) key (to-index-entry:lk e)))
+  (put-file road [/lattice %know-entry] e)
 ::  +entry-road: absolute road to a key's entry grub.
 ::
 ++  entry-road

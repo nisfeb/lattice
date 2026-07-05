@@ -1,5 +1,5 @@
 ::  mar/lattice/know-action: a write poked at the vault-manager fiber
-::  (save/del/restore/move/tag/untag/reindex, plus import/import-trashed).
+::  (save/del/restore/move/tag/untag, plus import/import-trashed).
 ::
 ::  Two entry paths: the writer receives the full know-action as a NOUN dart (the
 ::  `noun` grab — this is how the nexus's own HTTP handlers, including the
@@ -32,7 +32,6 @@
         move+(ot:dejs from+so:dejs to+so:dejs ~)
         tag+(ot:dejs key+so:dejs tag+so:dejs ~)
         untag+(ot:dejs key+so:dejs tag+so:dejs ~)
-        reindex+ul:dejs
     ==
   ++  mime
     |=  [=mite len=@ud tex=@t]

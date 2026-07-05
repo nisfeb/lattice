@@ -41,12 +41,6 @@
     (expect-eq !>(`index-entry`[~2026.1.1 5 (sy ~['ai' 'notes']) ~]) !>((to-index-entry e1)))
     (expect-eq !>(`index-entry`[~2026.2.2 2 ~ ~]) !>((to-index-entry e2)))
   ==
-::  +derive-index projects every entry, keyed identically.
-::
-++  test-derive-index
-  =/  in=(map path know-entry)  (my /a^e1 /b/c^e2 ~)
-  =/  want=know-index  (my /a^[~2026.1.1 5 (sy ~['ai' 'notes']) ~] /b/c^[~2026.2.2 2 ~ ~] ~)
-  (expect-eq !>(want) !>((derive-index in)))
 ::  +merge-save: new key -> [body now ~ ~]; existing -> keep tags+vector,
 ::  bump body+updated.
 ::

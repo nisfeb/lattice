@@ -26,7 +26,6 @@
       [%move from=@t to=@t]
       [%tag key=@t tag=@t]
       [%untag key=@t tag=@t]
-      [%reindex ~]
   ::  verbatim imports (used by the bulk-import endpoint, POST /know-import).
   ::  Unlike %save, these write the entry VERBATIM — preserving its original
   ::  updated/tags/vector — instead of stamping updated=now. %import lands a
@@ -35,8 +34,8 @@
       [%import key=@t entry=know-entry]
       [%import-trashed key=@t entry=know-entry]
   ==
-::  derived per-entry index row (drives know-list / know-tags / know-explore
-::  without reading bodies). bytes = body byte-length. restore is a RESERVED
+::  derived per-entry index row for the trash listing (know-trash) — lists
+::  soft-deleted entries without reading bodies. bytes = body byte-length. restore is a RESERVED
 ::  slot for a future revision-restore feature (peek-at the firm cass captured at
 ::  delete time); the current soft-delete keeps the body grub live in the trash
 ::  vault and restores it whole, so restore is always ~. Kept in the row shape so
@@ -50,12 +49,6 @@
   |=  e=know-entry
   ^-  index-entry
   [updated.e (met 3 body.e) tags.e ~]
-::  +derive-index: index every live entry. Pure projection of the vault.
-::
-++  derive-index
-  |=  entries=(map path know-entry)
-  ^-  know-index
-  (~(run by entries) to-index-entry)
 ::  +merge-save: body for %save. Preserves an existing entry's tags+vector
 ::  (save edits content only); a brand-new key starts untagged, no vector.
 ::
