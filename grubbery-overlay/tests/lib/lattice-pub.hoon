@@ -31,6 +31,12 @@
     ::  a pub-less key is REJECTED (~), not aliased onto /pub/a/gmi's grub — the
     ::  map must be injective or two index rows share one body.
     (expect-eq !>(`(unit vrail:lp)`~) !>((key-to-rail:lp base /a/gmi)))
+    ::  a non-gmi leaf is REJECTED (~): the reader only ever reads .../gmi, so such a
+    ::  grub would be unreadable and its index row divergent.
+    (expect-eq !>(`(unit vrail:lp)`~) !>((key-to-rail:lp base /pub/notes/intro)))
+    ::  an empty spur (/pub/gmi, from an empty publish path) is REJECTED (~): it
+    ::  collapses onto the vault root and the reader maps it back to /index.
+    (expect-eq !>(`(unit vrail:lp)`~) !>((key-to-rail:lp base /pub/gmi)))
   ==
 ::  +to-pub-row: project a page body onto its index row (now, bytes, sham).
 ::

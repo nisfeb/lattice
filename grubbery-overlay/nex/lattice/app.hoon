@@ -516,6 +516,9 @@
       [%'POST' %save]
     =/  rel=(unit @t)  (~(get by args) 'path')
     ?~  rel  (send-err eyre-id 400 'missing path')
+    ::  reject an EMPTY path value (?path=): pub-path('') is /pub/gmi, a degenerate
+    ::  key the reader maps back to /index — so it would mis-index and be unreadable.
+    ?:  =('' u.rel)  (send-err eyre-id 400 'missing path')
     =/  pp=(each path tang)  (mule |.((pub-path u.rel)))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'invalid path')
     =/  bod=@t  (req-body req)
@@ -2299,6 +2302,10 @@
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
     =/  key=path  u.ko
+    ::  a bodyless %save must not silently blank an existing note (merge-save keeps
+    ::  the tags but wipes the body). The /know-save route guards this; guard it here
+    ::  too so the direct know-action poke can't bypass it. skip+log, like a bad key.
+    ?:  =('' body.act)  ~&([%lattice-save-empty-body key] (pure:m ~))
     =/  road=road:tarball  (entry-road vbase key)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry road)
     ::  reviving a soft-deleted key: %del culled the live grub, so `old` is ~ and

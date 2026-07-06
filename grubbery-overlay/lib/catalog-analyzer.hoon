@@ -72,7 +72,11 @@
 ++  analyze
   |=  body=@t
   ^-  analysis
-  =/  lines=(list @t)  (to-wain:format body)
+  ::  strip a trailing CR per line: to-wain splits on LF only, but CRLF is the
+  ::  Gemini line terminator, so without this the CR rides into every heading /
+  ::  tag / link-target token and urq-esc turns it into a trailing space that
+  ::  breaks exact-match tag + backlink lookups (terms are spared by trim-punct).
+  =/  lines=(list @t)  (turn (to-wain:format body) drop-cr)
   =/  total-lines=@ud  (lent lines)
   =|  rev-headings=(list heading)
   =|  rev-links=(list link)
@@ -115,6 +119,12 @@
     ?:  =("summary" key.u.meta)
       $(lines t.lines, pos +(pos), summ (crip (scag summary-max (trim-both value.u.meta))))
     $(lines t.lines, pos +(pos))
+  ::  title fallback = the first non-blank NON-META line (trimmed). Set here, before
+  ::  the heading/link/tag/plain branches, so a heading-less page whose body is only
+  ::  `=>` link lines or `#tag` lines still gets a title instead of ''. A heading, if
+  ::  present, still takes precedence at assembly.
+  =/  fnb-line=tape  (ltrim ln)
+  =?  first-non-blank  &(=('' first-non-blank) ?=(^ fnb-line))  (crip fnb-line)
   ::  ── headings (longest-prefix-first, capped at depth 3) ──
   ?:  (has-prefix "### " ln)
     =/  text=tape  (slag 4 ln)
@@ -164,15 +174,13 @@
       pos       +(pos)
       rev-tags  (weld (flop u.tags-here) rev-tags)
     ==
-  ::  ── plain body line ──
+  ::  ── plain body line ── (first-non-blank already set above)
   =/  trimmed=tape  (ltrim ln)
   ?:  =("" trimmed)
     $(lines t.lines, pos +(pos))
-  =/  fnb=@t  ?:(=('' first-non-blank) (crip trimmed) first-non-blank)
   %=  $
     lines             t.lines
     pos               +(pos)
-    first-non-blank   fnb
     word-count        (add word-count (count-words trimmed))
     term-freqs        (index-terms term-freqs trimmed)
   ==
@@ -239,6 +247,16 @@
   ^-  tape
   ?~  t  ~
   ?:(=(' ' i.t) $(t t.t) t)
+::  +drop-cr: strip a single trailing carriage return (byte 13) left by +to-wain
+::  on a CRLF-terminated line. Line-ending normalization, applied once per line so
+::  every downstream token extractor sees clean content.
+++  drop-cr
+  |=  t=@t
+  ^-  @t
+  =/  len=@ud  (met 3 t)
+  ?:  =(0 len)  t
+  =/  last=@ud  (dec len)
+  ?:(=(13 (cut 3 [last 1] t)) (end [3 last] t) t)
 ::
 ::  ── inverted-index tokenization (feature B) ───────────────────────────
 ::

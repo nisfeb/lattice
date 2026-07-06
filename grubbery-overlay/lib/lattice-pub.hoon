@@ -80,17 +80,19 @@
 ++  key-to-rail
   |=  [base=path key=path]
   ^-  (unit vrail)
-  ::  REQUIRE the leading `pub` (redundant with base) so the map is INJECTIVE.
-  ::  Accepting a pub-less key made /pub/a/gmi and /a/gmi both map to [base/a %gmi]
-  ::  — two distinct index keys aliasing ONE vault grub (a silent index/vault
-  ::  divergence: two /list rows, one body; deleting one leaves the other a ghost).
+  ::  Only a CANONICAL pub key maps: /pub/<spur…>/gmi — the leading `pub` (redundant
+  ::  with base), a `gmi` leaf (what the reader always reads), and >=1 spur segment
+  ::  between. Rejecting anything else keeps the map injective (a pub-less key /a/gmi
+  ::  would alias /pub/a/gmi's grub) and refuses a key the reader can never read (a
+  ::  non-gmi leaf) or that collapses onto the vault root (empty spur).
+  ::  lent/lth guards, NOT ?~/?=: narrowing `rest` makes +scag's possibly-empty
+  ::  result nest-fail against a non-empty input type. dir = all-but-last, leaf = last.
   ?.  ?=([%pub *] key)  ~
   =/  rest=path  t.key
-  ::  =(~ rest) not ?~: ?~ would narrow rest to a non-empty lest, and +scag
-  ::  casts its result to its input's type (^+ b) — a narrowed input would make
-  ::  scag's possibly-empty result nest-fail. dir = all-but-last, leaf = last.
-  ?:  =(~ rest)  ~
-  =/  n=@ud  (dec (lent rest))
+  =/  len=@ud  (lent rest)
+  ?:  (lth len 2)  ~
+  =/  n=@ud  (dec len)
+  ?.  =(%gmi (snag n rest))  ~
   `[(weld base (scag n rest)) (snag n rest)]
 ::  +strip-pub: drop a leading `pub` element (the content map's keys are rooted
 ::  there; the vault base already carries it). Left unchanged if absent.
