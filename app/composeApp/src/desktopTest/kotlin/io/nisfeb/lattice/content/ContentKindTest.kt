@@ -27,4 +27,20 @@ class ContentKindTest {
         assertEquals(ContentKind.Text, classifyContent(mark = "weird", name = "x.zzz"))
         assertEquals(ContentKind.Text, classifyContent(mark = "", name = ""))
     }
+
+    @Test fun mdPathOverridesGmiMark() {
+        // A markdown page is stored as a gmi grub whose PATH ends .md — the
+        // extension must win so the reader renders markdown, not gemtext.
+        assertEquals(ContentKind.Markdown, classifyContent("gmi", "urb://~zod/notes/idea.md"))
+    }
+
+    @Test fun plainPageStaysGemtext() {
+        assertEquals(ContentKind.Gemtext, classifyContent("gmi", "urb://~zod/index"))
+    }
+
+    @Test fun dottedDirectoryIsNotAnExtension() {
+        // Only the last path segment counts — a dotted directory must not read
+        // as an extension.
+        assertEquals(ContentKind.Gemtext, classifyContent("gmi", "urb://~zod/v1.2/notes/idea"))
+    }
 }

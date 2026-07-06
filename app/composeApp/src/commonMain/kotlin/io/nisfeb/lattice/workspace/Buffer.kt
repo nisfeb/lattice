@@ -18,4 +18,6 @@ class Buffer(val path: String, val source: Source, val isNew: Boolean) {
     var pane by mutableStateOf(0)
     // knowledge buffers only: the item's tags (edited via the tag bar).
     var tags by mutableStateOf<List<String>>(emptyList())
+    // true = show the rendered preview instead of the editable text.
+    var preview by mutableStateOf(false)
 }

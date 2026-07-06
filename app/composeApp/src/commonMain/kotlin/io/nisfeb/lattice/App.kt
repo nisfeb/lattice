@@ -380,6 +380,7 @@ fun App(
                                 onClose = { screen = AppScreen.Browse },
                                 initialOpen = editTarget,
                                 onConsumedOpen = { editTarget = null },
+                                newFileMarkdown = theme.newFileFormat == "md",
                             )
                             AppScreen.Settings -> SettingsScreen(
                                 settings = theme,

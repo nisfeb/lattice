@@ -90,6 +90,7 @@ import io.nisfeb.lattice.browser.PageCache
 import io.nisfeb.lattice.browser.UrlPaths
 import io.nisfeb.lattice.content.ContentKind
 import io.nisfeb.lattice.content.classifyContent
+import io.nisfeb.lattice.markdown.Markdown
 import io.nisfeb.lattice.bookmarks.Bookmark
 import io.nisfeb.lattice.gemtext.GemtextParser
 import io.nisfeb.lattice.theme.ThemeSettings
@@ -439,9 +440,19 @@ fun BrowserScreen(
                     TextButton(onClick = { tab.job?.cancel(); tab.loading = false; tab.error = "cancelled" }) { Text("Cancel") }
                 }
                 tab.error != null -> Text("⚠ ${tab.error}", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(24.dp))
-                // Gemtext keeps its full reader (visited colours, per-tab scroll);
-                // a non-gemtext page (e.g. a markdown grub) routes to ContentView.
-                tab.mark.isBlank() || classifyContent(tab.mark, "") == ContentKind.Gemtext -> GemtextView(
+                // A page whose path says markdown (e.g. notes/idea.md) renders as
+                // markdown; everything else is gemtext, which keeps its full reader
+                // (visited colours, per-tab scroll). Pages are only ever one of the two.
+                classifyContent(tab.mark, current) == ContentKind.Markdown -> MarkdownView(
+                    blocks = Markdown.parse(tab.body),
+                    currentUrl = current,
+                    onNavigate = { tab.let { t -> navigate(t, it) } },
+                    linkColor = theme.linkColor,
+                    bodyFont = theme.fontFamily,
+                    listState = tab.listState,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                else -> GemtextView(
                     lines = tab.lines,
                     currentUrl = current,
                     onNavigate = { tab.let { t -> navigate(t, it) } },
@@ -450,16 +461,6 @@ fun BrowserScreen(
                     visited = tab.visited,
                     bodyFont = theme.fontFamily,
                     listState = tab.listState,
-                    modifier = Modifier.fillMaxSize(),
-                )
-                else -> ContentView(
-                    mark = tab.mark,
-                    name = "",
-                    body = tab.body,
-                    currentUrl = current,
-                    onNavigate = { tab.let { t -> navigate(t, it) } },
-                    linkColor = theme.linkColor,
-                    bodyFont = theme.fontFamily,
                     modifier = Modifier.fillMaxSize(),
                 )
             }

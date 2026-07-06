@@ -35,7 +35,9 @@ import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Publish
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Restore
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.VerticalSplit
@@ -76,6 +78,8 @@ import io.nisfeb.lattice.rememberFileExporter
 import io.nisfeb.lattice.rememberFileImporter
 import io.nisfeb.lattice.resources.Res
 import io.nisfeb.lattice.resources.dejavusansmono
+import io.nisfeb.lattice.content.ContentKind
+import io.nisfeb.lattice.content.classifyContent
 import io.nisfeb.lattice.urbit.LatticeClient
 import io.nisfeb.lattice.workspace.Buffer
 import io.nisfeb.lattice.workspace.Source
@@ -105,6 +109,8 @@ fun WorkspaceScreen(
     initialOpen: String? = null,
     onConsumedOpen: () -> Unit = {},
     initialTab: Source = Source.Public,
+    /** New files default to markdown (a ".md" name) instead of gemtext. */
+    newFileMarkdown: Boolean = false,
 ) {
     val scope = rememberCoroutineScope()
     val monoFamily = FontFamily(Font(Res.font.dejavusansmono))
@@ -176,8 +182,11 @@ fun WorkspaceScreen(
     }
 
     fun newFile(name: String) {
+        // Markdown default → give it a ".md" name (unless the user already typed a
+        // format extension) so it renders as markdown everywhere it's read.
+        val named = if (newFileMarkdown && !hasFormatExtension(name)) "$name.md" else name
         val base = if (ns == Source.Public) pubDir else knowDir
-        val full = if (base.isEmpty()) name else "$base/$name"
+        val full = if (base.isEmpty()) named else "$base/$named"
         wb.open(full, ns, isNew = true)
     }
 
@@ -355,6 +364,17 @@ fun WorkspaceScreen(
     fun bufferEditor(b: Buffer, modifier: Modifier) {
         Box(modifier = modifier, contentAlignment = Alignment.Center) {
             if (!b.loaded) CircularProgressIndicator()
+            else if (b.preview) ContentView(
+                // Force the buffer's format (markdown iff its name is .md, else
+                // gemtext) — pages/knowledge are only ever one of the two.
+                mark = if (isMarkdownPath(b.path)) "md" else "gmi",
+                name = "",
+                body = b.text,
+                currentUrl = "urb://$ship/${b.path}",
+                onNavigate = {},
+                linkColor = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.fillMaxSize(),
+            )
             else key(b.source, b.path, vimMode) {
                 if (vimMode) VimEditor(
                     text = b.text, onText = { b.text = it; b.dirty = true },
@@ -458,6 +478,14 @@ fun WorkspaceScreen(
                     }
                 }
                 b?.let { ab ->
+                    IconButton(onClick = { ab.preview = !ab.preview }, modifier = Modifier.size(36.dp)) {
+                        Icon(
+                            if (ab.preview) Icons.Filled.Edit else Icons.Filled.Visibility,
+                            if (ab.preview) "Back to editing" else "Preview rendered",
+                            modifier = Modifier.size(20.dp),
+                            tint = if (ab.preview) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     IconButton(onClick = { save(ab) }, modifier = Modifier.size(36.dp)) {
                         Icon(
                             Icons.Filled.Save, "Save (Ctrl+S)", modifier = Modifier.size(20.dp),
@@ -731,3 +759,10 @@ private fun CompactField(
         }
     }
 }
+
+/** True if [name]'s last segment already carries an extension (so a new-file
+ *  default shouldn't append its own). */
+private fun hasFormatExtension(name: String): Boolean = name.substringAfterLast('/').contains('.')
+
+/** True if [path] denotes a markdown file (its name ends .md/.markdown/…). */
+private fun isMarkdownPath(path: String): Boolean = classifyContent(mark = "", name = path) == ContentKind.Markdown

@@ -24,8 +24,10 @@ private val CODE = setOf(
 
 fun classifyContent(mark: String, name: String = ""): ContentKind {
     val m = mark.trim().lowercase()
-    val ext = name.substringAfterLast('.', "").lowercase()
-    val base = name.substringAfterLast('/').lowercase()  // "Makefile", "Dockerfile"
+    // Derive the extension from the last path segment only, so a dotted
+    // directory (e.g. urb://~zod/v1.2/notes/idea) doesn't read as an extension.
+    val base = name.substringAfterLast('/').lowercase()  // "idea.md", "Makefile"
+    val ext = base.substringAfterLast('.', "")
     return when {
         m in MARKDOWN || ext in MARKDOWN -> ContentKind.Markdown
         m in GEMTEXT || ext in GEMTEXT -> ContentKind.Gemtext
