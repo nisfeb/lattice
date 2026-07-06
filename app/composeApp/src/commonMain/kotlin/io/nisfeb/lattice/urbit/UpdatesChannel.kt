@@ -1,105 +1,94 @@
 package io.nisfeb.lattice.urbit
 
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
-import kotlinx.serialization.json.put
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import java.time.Duration
-import java.util.concurrent.atomic.AtomicLong
-import kotlin.random.Random
 
-/** A pushed change to a followed file (from the local %lattice agent's /updates). */
+/** A pushed change to one of our published pages (a live grubbery keep frame). */
 data class UpdateEvent(val ship: String, val path: String, val body: String)
 
 /**
- * Subscribes to the local %lattice agent's /updates over an Eyre channel (SSE)
- * and emits [UpdateEvent]s as followed files change. Minimal: one subscription,
- * acks events so Eyre can release them.
+ * Live updates for our own published pages, over grubbery's native keep-SSE.
+ *
+ * The retired gall agent pushed remote followed-page diffs on an Eyre channel at
+ * /updates; the grubbery nexus replaced that with /streams — keep-SSE endpoints
+ * for our subscribable directories (pub/know/follows). We subscribe to the `pub`
+ * stream: each add/upd frame is one of our pages changing (edited here or on
+ * another client), which keeps open tabs and the page cache live and drives the
+ * Updates feed. Frames are standard SSE — okhttp parses them — where the event
+ * field is "<old|add|upd|del> <name>" and data is the page body (a JSON string).
+ * The initial `old` snapshot and `del` frames are skipped.
+ *
+ * (Remote-subscription change pushes aren't exposed by /streams — those grubs are
+ * named by an opaque hash with no ship/path — so subscribe/unsubscribe still keep
+ * a fresh local mirror, but no longer push into this feed.)
  */
 class UpdatesChannel(private val session: UrbitSession) {
 
     private val json = Json { ignoreUnknownKeys = true }
-    private val media = "application/json".toMediaType()
 
     fun updates(): Flow<UpdateEvent> = channelFlow {
         val base = session.baseUrl ?: return@channelFlow
-        val ship = (session.shipName ?: return@channelFlow).removePrefix("~")
-        // A fresh channel id per (re)connect — Eyre treats a reused id as the
-        // same channel, so reconnecting after a drop must mint a new one.
-        val channelId = "lattice-updates-${System.currentTimeMillis()}-${Random.nextLong().toString(16).take(6)}"
-        val nextId = AtomicLong(1)
-        val channelUrl = base.newBuilder().addPathSegments("~/channel/$channelId").build()
+        val ship = session.shipName ?: return@channelFlow  // "~tyr" — the pub owner
 
-        suspend fun putActions(build: () -> JsonObject) = withContext(Dispatchers.IO) {
-            val req = Request.Builder().url(channelUrl)
-                .put(buildJsonArray { add(build()) }.toString().toRequestBody(media)).build()
-            runCatching { session.http.newCall(req).execute().use { } }
-        }
+        // Discover the pub keep endpoint from /streams (its path can change with
+        // the nexus's grub layout, so we don't hardcode it).
+        val streamsUrl = base.newBuilder().addPathSegments("apps/lattice/streams").build()
+        val pubKeep = withContext(Dispatchers.IO) {
+            runCatching {
+                session.http.newCall(Request.Builder().url(streamsUrl).get().build()).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    json.parseToJsonElement(resp.body!!.string()).jsonObject["streams"]
+                        ?.jsonObject?.get("pub")?.jsonPrimitive?.contentOrNull
+                }
+            }.getOrNull()
+        } ?: return@channelFlow
+        val keepUrl = base.resolve(pubKeep) ?: return@channelFlow
 
         // SSE must stay open indefinitely; the session client's default read
         // timeout would kill it, so use a no-read-timeout variant for the stream.
         val sseClient = session.http.newBuilder().readTimeout(Duration.ZERO).build()
 
-        val inbox = Channel<UpdateEvent>(Channel.UNLIMITED)
         val listener = object : EventSourceListener() {
             override fun onEvent(source: EventSource, id: String?, type: String?, data: String) {
-                val obj = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull() ?: return
-                if (obj["response"]?.jsonPrimitive?.contentOrNull == "diff") {
-                    (obj["json"] as? JsonObject)?.let { u ->
-                        val s = u["ship"]?.jsonPrimitive?.contentOrNull
-                        if (s != null) inbox.trySend(
-                            UpdateEvent(
-                                ship = s,
-                                path = u["path"]?.jsonPrimitive?.contentOrNull ?: "",
-                                body = u["body"]?.jsonPrimitive?.contentOrNull ?: "",
-                            ),
-                        )
-                    }
-                }
-                obj["id"]?.jsonPrimitive?.longOrNull?.let { evtId ->
-                    launch { putActions { buildJsonObject { put("id", nextId.getAndIncrement()); put("action", "ack"); put("event-id", evtId) } } }
-                }
+                // type = "<op> <name>", e.g. "upd /guides/urbit/gmi".
+                val t = type ?: return
+                val sp = t.indexOf(' ')
+                if (sp < 0) return
+                val op = t.substring(0, sp)
+                if (op != "add" && op != "upd") return  // skip `old` snapshot + `del`
+                // name → browsable path: strip the leading / and the /gmi mark
+                // suffix (matches what /list and /fetch use).
+                val path = t.substring(sp + 1).removePrefix("/").removeSuffix("/gmi")
+                // data is the page body as a JSON string.
+                val body = runCatching { json.parseToJsonElement(data).jsonPrimitive.content }.getOrNull() ?: return
+                // Deliver synchronously on the reader thread: nothing is buffered,
+                // so a disconnect right after a burst can't drop the last event.
+                trySendBlocking(UpdateEvent(ship = ship, path = path, body = body))
             }
-            override fun onFailure(source: EventSource, t: Throwable?, response: okhttp3.Response?) { inbox.close(t) }
-            // A server-side close (Eyre evicting the channel) is not a clean
-            // end-of-stream for us — close with an error so the collector's
-            // retryWhen reconnects rather than silently stopping updates.
-            override fun onClosed(source: EventSource) { inbox.close(java.io.IOException("SSE closed by server")) }
+            override fun onFailure(source: EventSource, t: Throwable?, response: okhttp3.Response?) {
+                close(t ?: java.io.IOException("SSE failed"))
+            }
+            // A server-side close (nexus reload / eviction) isn't a clean end for
+            // us — close with an error so the collector's retryWhen reconnects.
+            override fun onClosed(source: EventSource) { close(java.io.IOException("SSE closed by server")) }
         }
 
-        // The channel must exist before the SSE GET (a GET on a fresh id 404s),
-        // so PUT the subscribe first; facts are buffered until the stream opens.
-        putActions {
-            buildJsonObject {
-                put("id", nextId.getAndIncrement())
-                put("action", "subscribe")
-                put("ship", ship)
-                put("app", "lattice")
-                put("path", "/updates")
-            }
-        }
         val es = EventSources.createFactory(sseClient)
-            .newEventSource(Request.Builder().url(channelUrl).header("Accept", "text/event-stream").build(), listener)
+            .newEventSource(Request.Builder().url(keepUrl).header("Accept", "text/event-stream").build(), listener)
 
-        val forwarder = launch { for (u in inbox) send(u); close() }
-        awaitClose { es.cancel(); inbox.close(); forwarder.cancel() }
+        awaitClose { es.cancel() }
     }
 }

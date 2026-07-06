@@ -6,7 +6,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -74,6 +77,46 @@ data class CatalogPage(
 data class CatalogPosting(val publisher: String, val path: String, val tf: Int) {
     val url: String get() = "urb://$publisher$path"
 }
+
+/** A page that links TO another page (a row of `catalog-backlinks`): the linking
+ *  page's key + the authored link [label] and [position] in that page. [isInternal]
+ *  marks an urb:// (namespace) target vs an external one. [url] reconstructs the
+ *  linking page's canonical link so it can be opened / joined to a [CatalogPage]. */
+data class Backlink(
+    val source: String,
+    val publisher: String,
+    val path: String,
+    val label: String,
+    val isInternal: Boolean,
+    val position: Int,
+) {
+    val url: String get() = "urb://$publisher$path"
+}
+
+/** One heading in a page's table of contents (a row of `catalog-toc`), in
+ *  document order. [depth] 1 = top-level (#), 2 = ## … ; [text] is the heading. */
+data class Heading(val position: Int, val depth: Int, val text: String)
+
+/** A page key (a row of `catalog-by-tag`): (source, publisher, path). [url] is the
+ *  canonical urb:// link; join to a [CatalogPage] for its title. */
+data class PageRef(val source: String, val publisher: String, val path: String) {
+    val url: String get() = "urb://$publisher$path"
+}
+
+/** One entry in a cross-ship directory listing (a child of /browse). [type] is
+ *  "dir" or "file"; [mark] is the file's grub mark (blank for dirs). */
+data class BrowseChild(val name: String, val type: String, val mark: String = "") {
+    val isDir: Boolean get() = type == "dir"
+}
+
+/** A shallow (one-level) listing of a remote ship's directory tree (/browse).
+ *  [truncated] = the directory had more children than the server's fan cap. */
+data class BrowseListing(
+    val ship: String,
+    val path: String,
+    val truncated: Boolean,
+    val children: List<BrowseChild>,
+)
 
 /**
  * Fetches gemtext via the active ship's %lattice agent. The session's
@@ -164,6 +207,83 @@ class LatticeClient(private val session: UrbitSession) {
     suspend fun unsubscribe(urbUrl: String): Result<Unit> = post("unsub", "url", urbUrl)
 
     /**
+     * A published page's revision history (every prior save is a firm grub
+     * revision), oldest-first as pub-history returns. [path] is the same relative
+     * path used by [save] / [fetch]. Empty history is a failed Result (404).
+     */
+    suspend fun history(path: String): Result<List<Revision>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder()
+                .addPathSegments("apps/lattice/pub-history").addQueryParameter("path", path).build()
+            session.http.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
+                val o = agentJson(json, resp.body?.string().orEmpty(), resp.code)
+                o["error"]?.let { error(it.jsonPrimitive.content) }
+                if (!resp.isSuccessful) error("pub-history HTTP ${resp.code}")
+                o["revisions"]?.jsonArray?.map { el ->
+                    val r = el.jsonObject
+                    Revision(
+                        rev = r["rev"]?.jsonPrimitive?.intOrNull ?: 0,
+                        updated = r["updated"]?.jsonPrimitive?.contentOrNull ?: "",
+                    )
+                } ?: emptyList()
+            }
+        }
+    }
+
+    /** A page's body AS OF [rev]; [rev] must be one returned by [history]. */
+    suspend fun readAt(path: String, rev: Int): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder()
+                .addPathSegments("apps/lattice/pub-read-at")
+                .addQueryParameter("path", path).addQueryParameter("rev", rev.toString()).build()
+            session.http.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
+                val o = agentJson(json, resp.body?.string().orEmpty(), resp.code)
+                o["error"]?.let { error(it.jsonPrimitive.content) }
+                if (!resp.isSuccessful) error("pub-read-at HTTP ${resp.code}")
+                o["body"]?.jsonPrimitive?.contentOrNull ?: ""
+            }
+        }
+    }
+
+    /**
+     * Restore [rev] by re-saving its body as a fresh revision (non-destructive —
+     * the current body stays in history). [rev] must be one returned by [history].
+     */
+    suspend fun restoreRev(path: String, rev: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder()
+                .addPathSegments("apps/lattice/pub-restore-rev")
+                .addQueryParameter("path", path).addQueryParameter("rev", rev.toString()).build()
+            val req = Request.Builder().url(url).post(ByteArray(0).toRequestBody(mediaType)).build()
+            session.http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) error("pub-restore-rev HTTP ${resp.code}")
+            }
+        }
+    }
+
+    /**
+     * Prune a page's history to the newest [keep] revisions (default 10, floor 1).
+     * DESTRUCTIVE + irreversible; the live revision is never dropped. Returns how
+     * many were dropped vs kept.
+     */
+    suspend fun prune(path: String, keep: Int = 10): Result<PruneResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder()
+                .addPathSegments("apps/lattice/pub-prune")
+                .addQueryParameter("path", path).addQueryParameter("keep", keep.toString()).build()
+            val req = Request.Builder().url(url).post(ByteArray(0).toRequestBody(mediaType)).build()
+            session.http.newCall(req).execute().use { resp ->
+                val o = agentJson(json, resp.body?.string().orEmpty(), resp.code)
+                if (!resp.isSuccessful) error("pub-prune HTTP ${resp.code}")
+                PruneResult(
+                    dropped = o["dropped"]?.jsonPrimitive?.intOrNull ?: 0,
+                    kept = o["kept"]?.jsonPrimitive?.intOrNull ?: 0,
+                )
+            }
+        }
+    }
+
+    /**
      * Every indexed page in the content catalog, newest-first. The agent has no
      * server-side text search (obelisk has no LIKE), so callers filter the
      * result client-side. One query loads the whole catalog; facets (category,
@@ -250,6 +370,126 @@ class LatticeClient(private val session: UrbitSession) {
     }
 
     /**
+     * Backlinks for [url] — the pages that link TO it, in document order. [url] is
+     * matched VERBATIM against the authored link string (what the author wrote after
+     * `=> `, e.g. urb://~pub/x or /x), so pass the page's canonical urb:// url. Each
+     * result carries the linking page's key + the link text and whether it's a
+     * namespace (urb://) link. A failed Result carries the agent's error.
+     */
+    suspend fun catalogBacklinks(url: String): Result<List<Backlink>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val u = base().newBuilder()
+                .addPathSegments("apps/lattice/catalog-backlinks").addQueryParameter("url", url).build()
+            val (cols, rs) = catalogRows(obeliskResult(u))
+            val si = cols.indexOf("source"); val pi = cols.indexOf("publisher"); val pa = cols.indexOf("path")
+            val li = cols.indexOf("label"); val ii = cols.indexOf("is-internal"); val poi = cols.indexOf("position")
+            rs.mapNotNull { c ->
+                val pub = c.getOrNull(pi) ?: return@mapNotNull null
+                val path = c.getOrNull(pa) ?: return@mapNotNull null
+                Backlink(
+                    source = c.getOrNull(si).orEmpty(), publisher = pub, path = path,
+                    label = c.getOrNull(li).orEmpty(),
+                    isInternal = c.getOrNull(ii) == "1",
+                    position = c.getOrNull(poi)?.toIntOrNull() ?: 0,
+                )
+            }.sortedBy { it.position }
+        }
+    }
+
+    /**
+     * A page's table of contents — its headings in document order. [url] is the
+     * page's canonical urb:// url. Only OUR crawled pages have a TOC (the analyzer
+     * derives it), so a remote page returns empty. A failed Result carries the error.
+     */
+    suspend fun catalogToc(url: String): Result<List<Heading>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val u = base().newBuilder()
+                .addPathSegments("apps/lattice/catalog-toc").addQueryParameter("url", url).build()
+            val (cols, rs) = catalogRows(obeliskResult(u))
+            val poi = cols.indexOf("position"); val di = cols.indexOf("depth"); val ti = cols.indexOf("text")
+            rs.map { c ->
+                Heading(
+                    position = c.getOrNull(poi)?.toIntOrNull() ?: 0,
+                    depth = c.getOrNull(di)?.toIntOrNull() ?: 1,
+                    text = c.getOrNull(ti).orEmpty(),
+                )
+            }
+        }
+    }
+
+    /** Every catalog page carrying [tag] (case-folded server-side), as keys the
+     *  caller joins to full [CatalogPage] rows. A failed Result carries the error. */
+    suspend fun catalogByTag(tag: String): Result<List<PageRef>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val u = base().newBuilder()
+                .addPathSegments("apps/lattice/catalog-by-tag").addQueryParameter("tag", tag).build()
+            val (cols, rs) = catalogRows(obeliskResult(u))
+            val si = cols.indexOf("source"); val pi = cols.indexOf("publisher"); val pa = cols.indexOf("path")
+            rs.mapNotNull { c ->
+                val pub = c.getOrNull(pi) ?: return@mapNotNull null
+                val path = c.getOrNull(pa) ?: return@mapNotNull null
+                PageRef(c.getOrNull(si).orEmpty(), pub, path)
+            }
+        }
+    }
+
+    /** OUR unclassified pages (category = ''), newest-first — the classifier
+     *  worklist. Rows are partial (no category), parsed as [CatalogPage]. */
+    suspend fun catalogPending(): Result<List<CatalogPage>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val u = base().newBuilder().addPathSegments("apps/lattice/catalog-pending").build()
+            val (cols, rs) = catalogRows(obeliskResult(u))
+            rs.map { CatalogPage.fromRow(cols, it) }
+        }
+    }
+
+    /** The live category vocabulary — every category in use, deduped, '' dropped.
+     *  Author-declared categories are excluded server-side (taxonomy hardening). */
+    suspend fun catalogVocab(): Result<List<String>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val u = base().newBuilder().addPathSegments("apps/lattice/catalog-vocab").build()
+            val (cols, rs) = catalogRows(obeliskResult(u))
+            val ci = cols.indexOf("category")
+            rs.mapNotNull { it.getOrNull(ci)?.ifBlank { null } }.distinct().sorted()
+        }
+    }
+
+    /**
+     * Classify one of OUR pages: set its [category] on the catalog row. [url] is the
+     * page's catalog url (urb://<pub>/<path>). [catSource] is the provenance
+     * ('manual' by default); [confidence] 0.0–1.0 (defaulted server-side). Idempotent
+     * multi-column UPDATE — never touches page content.
+     */
+    suspend fun catalogClassify(
+        url: String,
+        category: String,
+        catSource: String = "manual",
+        confidence: Double? = null,
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val b = base().newBuilder().addPathSegments("apps/lattice/catalog-classify")
+                .addQueryParameter("url", url).addQueryParameter("category", category)
+                .addQueryParameter("cat-source", catSource)
+            confidence?.let { b.addQueryParameter("confidence", it.toString()) }
+            val req = Request.Builder().url(b.build()).post(ByteArray(0).toRequestBody(mediaType)).build()
+            session.http.newCall(req).execute().use { resp ->
+                val o = agentJson(json, resp.body?.string().orEmpty(), resp.code)
+                o["error"]?.let { error(it.jsonPrimitive.content) }
+                if (!resp.isSuccessful) error("catalog-classify HTTP ${resp.code}")
+            }
+        }
+    }
+
+    /** Split an obelisk result object into (column names, string cells per row).
+     *  Shared by the catalog reads; a missing/absent column resolves to "". */
+    private fun catalogRows(o: JsonObject): Pair<List<String>, List<List<String>>> {
+        val cols = o["columns"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList()
+        val rows = (o["rows"]?.jsonArray ?: kotlinx.serialization.json.JsonArray(emptyList()))
+            .map { r -> r.jsonArray.map { it.jsonPrimitive.content } }
+        return cols to rows
+    }
+
+    /**
      * GET a catalog read endpoint and return the obelisk result object. The
      * catalog reads share ONE in-flight query slot on the agent and 429 when it
      * is busy (e.g. the Explore pane is mid-query); retry with a short backoff
@@ -290,6 +530,58 @@ class LatticeClient(private val session: UrbitSession) {
                 if (!resp.isSuccessful) error("contacts HTTP ${resp.code}")
                 val root = json.parseToJsonElement(resp.body!!.string()).jsonObject
                 root["ships"]?.jsonArray?.map { it.jsonPrimitive.content }?.sorted() ?: emptyList()
+            }
+        }
+    }
+
+    /**
+     * List [ship]'s directory at [path] (shallow, one level) — the federated tree
+     * reader. [path] "/" is the ship's root (its app list). Owner-authenticated;
+     * an unreachable or permission-denied peer is a failed Result (504). Uses the
+     * extended-timeout client because a remote peek can hold until the ~s30 deadline.
+     */
+    suspend fun browse(ship: String, path: String = "/"): Result<BrowseListing> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder()
+                .addPathSegments("apps/lattice/browse")
+                .addQueryParameter("ship", ship).addQueryParameter("path", path).build()
+            fetchClient.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
+                val o = agentJson(json, resp.body?.string().orEmpty(), resp.code)
+                o["error"]?.let { error(it.jsonPrimitive.content) }
+                if (!resp.isSuccessful) error("browse HTTP ${resp.code}")
+                BrowseListing(
+                    ship = o["ship"]?.jsonPrimitive?.contentOrNull ?: ship,
+                    path = o["path"]?.jsonPrimitive?.contentOrNull ?: path,
+                    truncated = o["truncated"]?.jsonPrimitive?.booleanOrNull ?: false,
+                    children = o["children"]?.jsonArray?.map { el ->
+                        val c = el.jsonObject
+                        BrowseChild(
+                            name = c["name"]?.jsonPrimitive?.contentOrNull ?: "",
+                            type = c["type"]?.jsonPrimitive?.contentOrNull ?: "",
+                            mark = c["mark"]?.jsonPrimitive?.contentOrNull ?: "",
+                        )
+                    }?.sortedWith(compareByDescending<BrowseChild> { it.isDir }.thenBy { it.name }) ?: emptyList(),
+                )
+            }
+        }
+    }
+
+    /**
+     * Read one file on [ship] at the full [path] (its last element is the leaf).
+     * Text only — a non-cord/binary body is a 415 failed Result. Returns the same
+     * {mark, body} envelope as [fetch].
+     */
+    suspend fun browseFile(ship: String, path: String): Result<GmiDoc> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder()
+                .addPathSegments("apps/lattice/browse-file")
+                .addQueryParameter("ship", ship).addQueryParameter("path", path).build()
+            fetchClient.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
+                val obj = agentJson(json, resp.body?.string().orEmpty(), resp.code)
+                val doc = json.decodeFromJsonElement<GmiDoc>(obj)
+                if (doc.error != null) error(doc.error)
+                if (!resp.isSuccessful) error("browse-file HTTP ${resp.code}")
+                doc
             }
         }
     }

@@ -48,6 +48,7 @@ import io.nisfeb.lattice.ui.DiscoverScreen
 import io.nisfeb.lattice.ui.LatticeTheme
 import io.nisfeb.lattice.ui.SettingsScreen
 import io.nisfeb.lattice.ui.ShareImportScreen
+import io.nisfeb.lattice.ui.ShipBrowserScreen
 import io.nisfeb.lattice.ui.UpdateBanner
 import io.nisfeb.lattice.ui.UpdatesScreen
 import io.nisfeb.lattice.ui.WorkspaceScreen
@@ -225,10 +226,11 @@ fun App(
                             t.body = ev.body; t.lines = lines; t.visited = t.visited + url
                         }
                     }
-                    if (url in subscriptions) {
-                        updates = (listOf(ev) + updates).take(50)
-                        unread += 1
-                    }
+                    // Every pub keep frame is one of our pages changing — feed the
+                    // Updates list (the old remote-subscription gate no longer
+                    // applies; /streams carries our own pub/know/follows only).
+                    updates = (listOf(ev) + updates).take(50)
+                    unread += 1
                 }
         }
 
@@ -357,6 +359,7 @@ fun App(
                                 onEditPage = { editTarget = it; screen = AppScreen.Workspace },
                                 onOpenDiscover = { screen = AppScreen.Discover },
                                 onOpenSearch = { screen = AppScreen.Search },
+                                onOpenShipBrowser = { screen = AppScreen.ShipBrowser },
                                 openUrl = browseTarget,
                                 onConsumedOpenUrl = { browseTarget = null },
                                 subscriptions = subscriptions,
@@ -421,6 +424,12 @@ fun App(
                                 bookmarks = bookmarks,
                                 onRemove = { removeBookmark(it) },
                                 onOpen = { url -> browseTarget = url; screen = AppScreen.Browse },
+                                onClose = { screen = AppScreen.Browse },
+                            )
+                            AppScreen.ShipBrowser -> ShipBrowserScreen(
+                                client = client,
+                                homeShip = current,
+                                follows = follows,
                                 onClose = { screen = AppScreen.Browse },
                             )
                             AppScreen.Import -> {

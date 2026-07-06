@@ -237,4 +237,45 @@ class KnowledgeClientTest {
         assertEquals("POST", req.method)
         assertEquals("/apps/lattice/know-reindex", req.path)
     }
+
+    @Test fun historyParsesRevisionsAndTrashed() = runTest {
+        server.enqueue(MockResponse().setBody("""{"key":"/a","trashed":true,"revisions":[{"rev":1,"updated":"~2026.1.1"},{"rev":2,"updated":"~2026.1.2"}]}"""))
+        val h = client.history("/a").getOrThrow()
+        assertTrue(h.trashed)
+        assertEquals(listOf(1, 2), h.revisions.map { it.rev })
+        val req = server.takeRequest()
+        assertTrue(req.path!!.startsWith("/apps/lattice/know-history"))
+        assertEquals("/a", req.requestUrl!!.queryParameter("key"))
+    }
+
+    @Test fun readAtParsesEntry() = runTest {
+        server.enqueue(MockResponse().setBody("""{"key":"/a","body":"old body","updated":"~2026.1.1","tags":["x"]}"""))
+        val e = client.readAt("/a", 1).getOrThrow()
+        assertEquals("old body", e.body)
+        assertEquals(listOf("x"), e.tags)
+        val req = server.takeRequest()
+        assertTrue(req.path!!.startsWith("/apps/lattice/know-read-at"))
+        assertEquals("1", req.requestUrl!!.queryParameter("rev"))
+    }
+
+    @Test fun restoreRevPostsKeyAndRev() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
+        client.restoreRev("/a", 3).getOrThrow()
+        val req = server.takeRequest()
+        assertEquals("POST", req.method)
+        assertTrue(req.path!!.startsWith("/apps/lattice/know-restore-rev"))
+        assertEquals("/a", req.requestUrl!!.queryParameter("key"))
+        assertEquals("3", req.requestUrl!!.queryParameter("rev"))
+    }
+
+    @Test fun prunePostsKeepAndParsesCounts() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"dropped":2,"kept":10}"""))
+        val r = client.prune("/a", 10).getOrThrow()
+        assertEquals(2, r.dropped)
+        assertEquals(10, r.kept)
+        val req = server.takeRequest()
+        assertEquals("POST", req.method)
+        assertTrue(req.path!!.startsWith("/apps/lattice/know-prune"))
+        assertEquals("10", req.requestUrl!!.queryParameter("keep"))
+    }
 }

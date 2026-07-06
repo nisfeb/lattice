@@ -1,11 +1,14 @@
 package io.nisfeb.lattice.knowledge
 
+import io.nisfeb.lattice.urbit.PruneResult
+import io.nisfeb.lattice.urbit.Revision
 import io.nisfeb.lattice.urbit.UrbitSession
 import io.nisfeb.lattice.urbit.agentJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
@@ -59,6 +62,12 @@ data class KnowEntry(
     val updated: String = "",
     val tags: List<String> = emptyList(),
 )
+
+/**
+ * An entry's revision history + whether the key is currently trashed (a deleted
+ * key still has readable history under the trash vault). [revisions] oldest-first.
+ */
+data class KnowHistory(val revisions: List<Revision>, val trashed: Boolean)
 
 /**
  * CRUD over the ship's private knowledge store, via the %lattice agent's
@@ -212,6 +221,88 @@ class KnowledgeClient(private val session: UrbitSession) {
                     body = o["body"]?.jsonPrimitive?.contentOrNull ?: "",
                     updated = o["updated"]?.jsonPrimitive?.contentOrNull ?: "",
                     tags = o["tags"]?.jsonArray?.map { t -> t.jsonPrimitive.content } ?: emptyList(),
+                )
+            }
+        }
+    }
+
+    /**
+     * An entry's revision history (oldest-first) plus a `trashed` flag. Works for
+     * a live key (history under the vault) or a soft-deleted one (under the trash
+     * vault). A key that exists in neither is a failed Result (404).
+     */
+    suspend fun history(key: String): Result<KnowHistory> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder()
+                .addPathSegments("apps/lattice/know-history").addQueryParameter("key", key).build()
+            session.http.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
+                val o = agentJson(json, resp.body?.string().orEmpty(), resp.code)
+                o["error"]?.let { error(it.jsonPrimitive.content) }
+                if (!resp.isSuccessful) error("know-history HTTP ${resp.code}")
+                val revs = o["revisions"]?.jsonArray?.map { el ->
+                    val r = el.jsonObject
+                    Revision(
+                        rev = r["rev"]?.jsonPrimitive?.intOrNull ?: 0,
+                        updated = r["updated"]?.jsonPrimitive?.contentOrNull ?: "",
+                    )
+                } ?: emptyList()
+                KnowHistory(revs, o["trashed"]?.jsonPrimitive?.booleanOrNull ?: false)
+            }
+        }
+    }
+
+    /** An entry's full content (body/tags/updated) AS OF [rev]. */
+    suspend fun readAt(key: String, rev: Int): Result<KnowEntry> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder()
+                .addPathSegments("apps/lattice/know-read-at")
+                .addQueryParameter("key", key).addQueryParameter("rev", rev.toString()).build()
+            session.http.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
+                val o = agentJson(json, resp.body?.string().orEmpty(), resp.code)
+                o["error"]?.let { error(it.jsonPrimitive.content) }
+                KnowEntry(
+                    key = o["key"]!!.jsonPrimitive.content,
+                    body = o["body"]?.jsonPrimitive?.contentOrNull ?: "",
+                    updated = o["updated"]?.jsonPrimitive?.contentOrNull ?: "",
+                    tags = o["tags"]?.jsonArray?.map { t -> t.jsonPrimitive.content } ?: emptyList(),
+                )
+            }
+        }
+    }
+
+    /**
+     * Restore [rev] as a fresh live revision (re-imported, preserving tags; revives
+     * a trashed key too). Non-destructive — the current body stays in history.
+     */
+    suspend fun restoreRev(key: String, rev: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder()
+                .addPathSegments("apps/lattice/know-restore-rev")
+                .addQueryParameter("key", key).addQueryParameter("rev", rev.toString()).build()
+            val req = Request.Builder().url(url).post("".toRequestBody(mediaType)).build()
+            session.http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) error("know-restore-rev HTTP ${resp.code}")
+            }
+        }
+    }
+
+    /**
+     * Prune a live key's history to the newest [keep] revisions (default 10, floor
+     * 1). DESTRUCTIVE + irreversible; the current body is never dropped. Returns
+     * how many revisions were dropped vs kept.
+     */
+    suspend fun prune(key: String, keep: Int = 10): Result<PruneResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder()
+                .addPathSegments("apps/lattice/know-prune")
+                .addQueryParameter("key", key).addQueryParameter("keep", keep.toString()).build()
+            val req = Request.Builder().url(url).post("".toRequestBody(mediaType)).build()
+            session.http.newCall(req).execute().use { resp ->
+                val o = agentJson(json, resp.body?.string().orEmpty(), resp.code)
+                if (!resp.isSuccessful) error("know-prune HTTP ${resp.code}")
+                PruneResult(
+                    dropped = o["dropped"]?.jsonPrimitive?.intOrNull ?: 0,
+                    kept = o["kept"]?.jsonPrimitive?.intOrNull ?: 0,
                 )
             }
         }
