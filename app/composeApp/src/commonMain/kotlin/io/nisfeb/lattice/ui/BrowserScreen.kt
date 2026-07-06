@@ -95,6 +95,7 @@ import io.nisfeb.lattice.bookmarks.Bookmark
 import io.nisfeb.lattice.gemtext.GemtextParser
 import io.nisfeb.lattice.theme.ThemeSettings
 import io.nisfeb.lattice.urbit.LatticeClient
+import io.nisfeb.lattice.urbit.explainNetworkError
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -190,7 +191,7 @@ fun BrowserScreen(
                 // Keep showing the cached copy on a failed revalidation; only show an
                 // error when there was nothing cached to fall back to.
                 onFailure = {
-                    if (cached == null) tab.error = browseError(it.message, url)
+                    if (cached == null) tab.error = browseError(it, url)
                     tab.loading = false
                 },
             )
@@ -532,15 +533,11 @@ fun BrowserScreen(
  *  in time (offline, cold Ames route, or not publishing the page). */
 private const val COLD_ROUTE_PEER_ERROR = "no response from peer"
 
-/** Map a fetch failure to a user-facing message. The agent's terse
- *  "no response from peer" becomes an actionable line naming the ship. */
-private fun browseError(message: String?, url: String): String =
-    if (message == COLD_ROUTE_PEER_ERROR) {
-        val ship = url.removePrefix("urb://").substringBefore('/').ifEmpty { "that ship" }
-        "No response from $ship — it may be offline, or isn't publishing this page with Lattice."
-    } else {
-        message ?: "failed to load"
-    }
+/** Map a fetch failure to a user-facing message, named for the page's OWN ship
+ *  (from the url) — a timeout / refusal / DNS / TLS failure each gets its own
+ *  actionable line instead of an opaque okhttp string. */
+private fun browseError(t: Throwable?, url: String): String =
+    explainNetworkError(t, url.removePrefix("urb://").substringBefore('/'))
 
 /** A right-side bar control, rendered inline as an icon or in the ⋮ overflow
  *  menu. [id] matches [ToolbarActions] so the inline/overflow preference is stable. */

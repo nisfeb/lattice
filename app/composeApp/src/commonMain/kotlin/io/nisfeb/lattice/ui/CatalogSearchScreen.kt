@@ -40,6 +40,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.nisfeb.lattice.urbit.CatalogPage
 import io.nisfeb.lattice.urbit.LatticeClient
+import io.nisfeb.lattice.urbit.explainNetworkError
 import kotlin.math.ln
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -88,7 +89,7 @@ fun CatalogSearchScreen(
         error = null
         client.catalogList()
             .onSuccess { pages = it }
-            .onFailure { error = it.message ?: "couldn't load the catalog" }
+            .onFailure { error = explainNetworkError(it, null) }
         client.catalogMeta().onSuccess { summaries = it }  // best-effort snippets
         client.catalogVocab().onSuccess { vocab = it }      // category suggestions
         loading = false

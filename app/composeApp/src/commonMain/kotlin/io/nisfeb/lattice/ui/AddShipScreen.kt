@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import io.nisfeb.lattice.resources.Res
 import io.nisfeb.lattice.resources.wordmark
 import io.nisfeb.lattice.urbit.UrbitSession
+import io.nisfeb.lattice.urbit.explainNetworkError
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.painterResource
 
@@ -71,7 +72,17 @@ fun AddShipScreen(
                     busy = true; error = null
                     session.login(url, code).fold(
                         onSuccess = { busy = false; onLoggedIn(it) },
-                        onFailure = { busy = false; error = it.message ?: "login failed" },
+                        onFailure = {
+                            busy = false
+                            // Distinguish a rejected +code (the ship answered) from
+                            // a transport failure (couldn't reach the ship at all).
+                            val m = it.message.orEmpty()
+                            error = if ("login HTTP" in m || "urbauth cookie" in m) {
+                                "Login rejected — check your +code, and that the URL points at your ship."
+                            } else {
+                                explainNetworkError(it, url)
+                            }
+                        },
                     )
                 }
             },

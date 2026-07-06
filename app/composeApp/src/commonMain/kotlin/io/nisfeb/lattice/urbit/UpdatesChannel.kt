@@ -57,9 +57,12 @@ class UpdatesChannel(private val session: UrbitSession) {
         } ?: return@channelFlow
         val keepUrl = base.resolve(pubKeep) ?: return@channelFlow
 
-        // SSE must stay open indefinitely; the session client's default read
-        // timeout would kill it, so use a no-read-timeout variant for the stream.
-        val sseClient = session.http.newBuilder().readTimeout(Duration.ZERO).build()
+        // SSE must stay open indefinitely; clear BOTH the read timeout and the
+        // session client's per-call ceiling (which would otherwise cut the stream).
+        val sseClient = session.http.newBuilder()
+            .readTimeout(Duration.ZERO)
+            .callTimeout(Duration.ZERO)
+            .build()
 
         val listener = object : EventSourceListener() {
             override fun onEvent(source: EventSource, id: String?, type: String?, data: String) {

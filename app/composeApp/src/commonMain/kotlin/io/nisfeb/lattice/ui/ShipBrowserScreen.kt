@@ -38,6 +38,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.nisfeb.lattice.urbit.BrowseListing
 import io.nisfeb.lattice.urbit.LatticeClient
+import io.nisfeb.lattice.urbit.explainNetworkError
 import kotlinx.coroutines.launch
 
 private fun normShip(s: String): String = s.trim().let { if (it.isEmpty() || it.startsWith("~")) it else "~$it" }
@@ -79,7 +80,7 @@ fun ShipBrowserScreen(
             loading = true; error = null; openFile = null
             client.browse(s, p)
                 .onSuccess { listing = it; activeShip = s; path = it.path }
-                .onFailure { error = it.message; if (activeShip == null) listing = null }
+                .onFailure { error = explainNetworkError(it, s); if (activeShip == null) listing = null }
             loading = false
         }
     }
@@ -90,7 +91,7 @@ fun ShipBrowserScreen(
             loading = true; error = null
             client.browseFile(ship, joinPath(path, name))
                 .onSuccess { openFile = OpenFile(name, it.mark, it.body) }
-                .onFailure { error = it.message }
+                .onFailure { error = explainNetworkError(it, ship) }
             loading = false
         }
     }

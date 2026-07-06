@@ -42,7 +42,14 @@ class UrbitSession(
 ) {
 
     private val cookieJar = InMemoryCookieJar()
-    val http: OkHttpClient = parentClient.newBuilder().cookieJar(cookieJar).build()
+    // A hard per-call ceiling so a stalled request can't spin indefinitely — every
+    // call fails within ~20s with a timeout we can explain, rather than hanging on
+    // a connection the ship accepted but never answers. (fetchClient overrides this
+    // with a longer bound for cold-route peeks.)
+    val http: OkHttpClient = parentClient.newBuilder()
+        .cookieJar(cookieJar)
+        .callTimeout(java.time.Duration.ofSeconds(20))
+        .build()
 
     @Volatile var baseUrl: HttpUrl? = null
         private set

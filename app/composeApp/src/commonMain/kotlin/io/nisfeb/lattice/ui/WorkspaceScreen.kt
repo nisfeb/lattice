@@ -81,6 +81,7 @@ import io.nisfeb.lattice.resources.dejavusansmono
 import io.nisfeb.lattice.content.ContentKind
 import io.nisfeb.lattice.content.classifyContent
 import io.nisfeb.lattice.urbit.LatticeClient
+import io.nisfeb.lattice.urbit.explainNetworkError
 import io.nisfeb.lattice.workspace.Buffer
 import io.nisfeb.lattice.workspace.Source
 import io.nisfeb.lattice.workspace.WorkspaceBuffers
@@ -139,9 +140,15 @@ fun WorkspaceScreen(
     var exploreResults by remember { mutableStateOf<List<String>>(emptyList()) }
     val exploreActive = exploreQuery.isNotBlank()
 
-    fun refreshPublic() = scope.launch { client.list().onSuccess { pubFiles = it } }
+    // Surface a load failure instead of silently showing an empty tree — a
+    // timeout here is the same "can't reach the ship" the reader shows, not "no files".
+    fun refreshPublic() = scope.launch {
+        client.list().onSuccess { pubFiles = it }.onFailure { status = explainNetworkError(it, ship) }
+    }
     fun refreshKnow() = scope.launch {
-        knowledge.list().onSuccess { knowFiles = it.map { k -> k.key.removePrefix("/") } }
+        knowledge.list()
+            .onSuccess { knowFiles = it.map { k -> k.key.removePrefix("/") } }
+            .onFailure { status = explainNetworkError(it, ship) }
         knowledge.trash().onSuccess { trashFiles = it.map { k -> k.key.removePrefix("/") } }
     }
     LaunchedEffect(Unit) { refreshPublic(); refreshKnow() }
