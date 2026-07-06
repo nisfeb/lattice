@@ -84,6 +84,22 @@ fun SettingsScreen(
             }
         }
 
+        Text("New file format", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+        Text(
+            "The format a newly-created page or note defaults to. Markdown files get a .md name and render with markdown; you can still preview either from the editor.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ThemeSettings.newFileFormats.forEach { (key, label) ->
+                FilterChip(
+                    selected = settings.newFileFormat == key,
+                    onClick = { onChange(settings.copy(newFileFormat = key)) },
+                    label = { Text(label) },
+                )
+            }
+        }
+
         Text("Toolbar actions", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
         Text(
             "Switch off to move an action into the ⋮ overflow menu. (Actions also overflow automatically when the bar is too narrow.)",
@@ -112,7 +128,7 @@ fun SettingsScreen(
         Text("Presets", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
         Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ThemeSettings.presets.forEach { (name, preset) ->
-                AssistChip(onClick = { onChange(preset.copy(vimMode = settings.vimMode, font = settings.font, overflowActions = settings.overflowActions)) }, label = { Text(name) })
+                AssistChip(onClick = { onChange(preset.copy(vimMode = settings.vimMode, font = settings.font, newFileFormat = settings.newFileFormat, overflowActions = settings.overflowActions)) }, label = { Text(name) })
             }
         }
 
@@ -122,8 +138,8 @@ fun SettingsScreen(
             FlowRow(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 savedThemes.forEach { saved ->
                     InputChip(
-                        selected = saved.settings.copy(vimMode = settings.vimMode, font = settings.font, overflowActions = settings.overflowActions) == settings,
-                        onClick = { onChange(saved.settings.copy(vimMode = settings.vimMode, font = settings.font, overflowActions = settings.overflowActions)) },
+                        selected = saved.settings.copy(vimMode = settings.vimMode, font = settings.font, newFileFormat = settings.newFileFormat, overflowActions = settings.overflowActions) == settings,
+                        onClick = { onChange(saved.settings.copy(vimMode = settings.vimMode, font = settings.font, newFileFormat = settings.newFileFormat, overflowActions = settings.overflowActions)) },
                         label = { Text(saved.name) },
                         trailingIcon = {
                             Icon(

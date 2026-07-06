@@ -2,8 +2,9 @@ package io.nisfeb.lattice.browser
 
 import io.nisfeb.lattice.gemtext.GemLine
 
-/** A rendered page kept for instant re-display on revisit (stale-while-revalidate). */
-data class CachedPage(val body: String, val lines: List<GemLine>)
+/** A rendered page kept for instant re-display on revisit (stale-while-revalidate).
+ *  [mark] is the grub mark; blank is treated as gemtext (the common case). */
+data class CachedPage(val body: String, val lines: List<GemLine>, val mark: String = "")
 
 /**
  * Bounded, recency-ordered cache of fetched pages keyed by urb:// url. Read and

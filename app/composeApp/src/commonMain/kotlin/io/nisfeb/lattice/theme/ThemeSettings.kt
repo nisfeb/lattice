@@ -19,6 +19,9 @@ data class ThemeSettings(
     val vimMode: Boolean = false,
     /** Reading font for the gemtext view: "sans" | "serif" | "mono". */
     val font: String = "sans",
+    /** Format a newly-created file defaults to: "gmi" (gemtext) | "md" (markdown).
+     *  Markdown files get a ".md" name so they render as markdown everywhere. */
+    val newFileFormat: String = "gmi",
     /** Browser-bar action ids the user pinned to the ⋮ overflow menu (see
      *  [io.nisfeb.lattice.ui.ToolbarActions]); the rest stay inline, subject to
      *  width. Empty = default layout (everything inline until space runs out). */
@@ -66,6 +69,12 @@ data class ThemeSettings(
             "sans" to "Sans-serif",
             "serif" to "Serif",
             "mono" to "Monospace",
+        )
+
+        /** New-file format choices: (key, label) — key is stored in [newFileFormat]. */
+        val newFileFormats: List<Pair<String, String>> = listOf(
+            "gmi" to "Gemtext",
+            "md" to "Markdown",
         )
     }
 }

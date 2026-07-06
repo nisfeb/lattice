@@ -88,6 +88,9 @@ import io.nisfeb.lattice.shareText
 import io.nisfeb.lattice.browser.CachedPage
 import io.nisfeb.lattice.browser.PageCache
 import io.nisfeb.lattice.browser.UrlPaths
+import io.nisfeb.lattice.content.ContentKind
+import io.nisfeb.lattice.content.classifyContent
+import io.nisfeb.lattice.markdown.Markdown
 import io.nisfeb.lattice.bookmarks.Bookmark
 import io.nisfeb.lattice.gemtext.GemtextParser
 import io.nisfeb.lattice.theme.ThemeSettings
@@ -157,9 +160,9 @@ fun BrowserScreen(
         // then fetch in the background and swap in the latest when it arrives.
         val cached = pageCache[url]
         if (cached != null) {
-            tab.body = cached.body; tab.lines = cached.lines; tab.loading = false
+            tab.body = cached.body; tab.lines = cached.lines; tab.mark = cached.mark; tab.loading = false
         } else {
-            tab.body = ""; tab.lines = emptyList(); tab.loading = true
+            tab.body = ""; tab.lines = emptyList(); tab.mark = ""; tab.loading = true
         }
         tab.listState = androidx.compose.foundation.lazy.LazyListState() // navigate → top
         tab.job = scope.launch {
@@ -175,8 +178,9 @@ fun BrowserScreen(
             result.fold(
                 onSuccess = {
                     val newLines = GemtextParser.parse(it.body)
-                    pageCache[url] = CachedPage(it.body, newLines)
+                    pageCache[url] = CachedPage(it.body, newLines, it.mark)
                     tab.visited = tab.visited + url
+                    tab.mark = it.mark
                     // Swap only when the content actually changed. listState is left
                     // untouched, so the user's scroll is preserved across the swap
                     // (Compose clamps it if the new page is shorter).
@@ -436,6 +440,18 @@ fun BrowserScreen(
                     TextButton(onClick = { tab.job?.cancel(); tab.loading = false; tab.error = "cancelled" }) { Text("Cancel") }
                 }
                 tab.error != null -> Text("⚠ ${tab.error}", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(24.dp))
+                // A page whose path says markdown (e.g. notes/idea.md) renders as
+                // markdown; everything else is gemtext, which keeps its full reader
+                // (visited colours, per-tab scroll). Pages are only ever one of the two.
+                classifyContent(tab.mark, current) == ContentKind.Markdown -> MarkdownView(
+                    blocks = Markdown.parse(tab.body),
+                    currentUrl = current,
+                    onNavigate = { tab.let { t -> navigate(t, it) } },
+                    linkColor = theme.linkColor,
+                    bodyFont = theme.fontFamily,
+                    listState = tab.listState,
+                    modifier = Modifier.fillMaxSize(),
+                )
                 else -> GemtextView(
                     lines = tab.lines,
                     currentUrl = current,
