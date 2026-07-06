@@ -84,7 +84,7 @@
         ;<  ~  bind:m  (ensure-pub-weir root)
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
-        ;<  now=@da  bind:m  get-time:io
+        ;<  now=@da  bind:m  bowl-now
         ?:  =([/lattice %know-action] p.sage)
           ;<  ~  bind:m  (apply root now !<(know-action:lk q.sage))
           $
@@ -150,8 +150,8 @@
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /crawler: failed")
         |-
         ;<  *       bind:m  catalog-scan-self
-        ;<  our=@p  bind:m  get-our:io
-        ;<  now=@da  bind:m  get-time:io
+        ;<  our=@p  bind:m  bowl-our
+        ;<  now=@da  bind:m  bowl-now
         ;<  *       bind:m  (catalog-scan-peers our now)
         ::  drain stray timer-wakes while sleeping (finding #13) — a plain sleep
         ::  would let this sweep's early-resolved obelisk/peek timers accumulate.
@@ -198,7 +198,7 @@
   ^-  form:m
   ;<  [src=@p req=inbound-request:eyre]  bind:m
     (get-state-as:io ,[src=@p inbound-request:eyre])
-  ;<  our=@p  bind:m  get-our:io
+  ;<  our=@p  bind:m  bowl-our
   ::  every route is owner-only (lattice is a personal store). Unauthenticated /
   ::  foreign requests carry src != our -> 403.
   ?.  =(src our)
@@ -314,7 +314,7 @@
     =/  pp=(each path tang)  (mule |.((stab (~(gut by args) 'path' '/'))))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
     =/  dir-road=road:tarball  [%& %| p.pp]
-    ;<  our=@p  bind:m  get-our:io
+    ;<  our=@p  bind:m  bowl-our
     ?:  =(u.shp our)
       ;<  sn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
       ?.  ?=([%& %ball *] sn)  (send-err eyre-id 404 'not a directory')
@@ -340,7 +340,7 @@
     ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
     =/  n=@ud  (dec (lent p.pp))
     =/  file-road=road:tarball  [%& %& (scag n p.pp) (snag n p.pp)]
-    ;<  our=@p  bind:m  get-our:io
+    ;<  our=@p  bind:m  bowl-our
     ?:  =(u.shp our)
       ;<  sn=seen:nexus  bind:m  (peek:io file-road ~)
       (browse-file-respond eyre-id sn)
@@ -437,7 +437,7 @@
     ?~  url  (send-err eyre-id 400 'missing url param')
     =/  pu=(unit [=ship =path])  (parse-urb-url u.url)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
-    ;<  our=@p  bind:m  get-our:io
+    ;<  our=@p  bind:m  bowl-our
     ;<  ct=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db (catalog-toc-urql:cat our ship.u.pu (trip (spat path.u.pu))))
     (send-json eyre-id (obelisk-json ct))
@@ -536,7 +536,7 @@
     ::  page leaves no orphaned term postings / ghost search hits. Driven here (in
     ::  the request fiber) not the writer, so the obelisk round-trip can't stall
     ::  the single writer.
-    ;<  our=@p  bind:m  get-our:io
+    ;<  our=@p  bind:m  bowl-our
     ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-delete-urql:cat our our p.pp))
     (send-ok eyre-id)
   ::  ── pub version history ──
@@ -716,7 +716,7 @@
     ;<  sn=seen:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
     ?.  ?=([%& %file *] sn)  (send-err eyre-id 404 'not found')
     =/  e=know-entry:lk  !<(know-entry:lk (need-vase:tarball sang.p.sn))
-    ;<  now=@da  bind:m  get-time:io
+    ;<  now=@da  bind:m  bowl-now
     ;<  ~  bind:m  (poke-know [%import (spat u.ko) e(updated now)])
     (send-ok eyre-id)
   ::  prune a live key's history to the newest `keep` revisions (default 10, floor
@@ -783,7 +783,7 @@
     ?~  raw  (send-err eyre-id 400 'missing url param')
     =/  pu=(unit [=ship =path])  (parse-urb-url u.raw)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
-    ;<  our=@p  bind:m  get-our:io
+    ;<  our=@p  bind:m  bowl-our
     ?:  =(ship.u.pu our)  (send-err eyre-id 400 'cannot subscribe to own ship')
     ;<  ~  bind:m  (poke-sub [%sub-page ship.u.pu path.u.pu])
     (send-ok eyre-id)
@@ -824,7 +824,7 @@
       ::  range test — collapse it to .0 first (equ:rs v v is %.n only for NaN).
       ?:  !(equ:rs v v)  .0
       ?:((lth:rs v .0) .0 ?:((gth:rs v .1) .1 v))
-    ;<  our=@p  bind:m  get-our:io
+    ;<  our=@p  bind:m  bowl-our
     ;<  ~  bind:m
       (catalog-run catalog-db (catalog-classify-urql:cat our ship.u.pu path.u.pu u.cat-v csrc conf))
     (send-ok eyre-id)
@@ -836,16 +836,16 @@
     ?~  raw  (send-err eyre-id 400 'missing ship param')
     =/  pub=(unit @p)  (slaw %p u.raw)
     ?~  pub  (send-err eyre-id 400 'bad ship')
-    ;<  our=@p  bind:m  get-our:io
+    ;<  our=@p  bind:m  bowl-our
     ?:  =(u.pub our)  (send-err eyre-id 400 'cannot crawl own ship')
-    ;<  now=@da  bind:m  get-time:io
+    ;<  now=@da  bind:m  bowl-now
     ;<  n=@ud  bind:m  (catalog-scan-peer our u.pub now)
     (send-json eyre-id (pairs:enjs:format ~[['indexed' (numb:enjs:format n)]]))
   ::  sweep everything now: our own pages + every followed peer (synchronous).
       [%'POST' %catalog-sweep]
     ;<  self=@ud  bind:m  catalog-scan-self
-    ;<  our=@p   bind:m  get-our:io
-    ;<  now=@da  bind:m  get-time:io
+    ;<  our=@p   bind:m  bowl-our
+    ;<  now=@da  bind:m  bowl-now
     ;<  peers=@ud  bind:m  (catalog-scan-peers our now)
     (send-json eyre-id (pairs:enjs:format ~[['indexed' (numb:enjs:format (add self peers))]]))
   ::  arbitrary urQL passthrough (body = the query), run against the lattice db.
@@ -1021,7 +1021,7 @@
   ::  missing rather than poking a dead agent.
   ;<  up=?  bind:m  (typed-scry:io ? %loob /gu/obelisk/$)
   ?.  up  (pure:m `~[leaf+"obelisk not installed"])
-  (gall-poke-or-nack:io %obelisk [%obelisk-action [%tape db urql]])
+  (gall-poke-or-nack-safe %obelisk [%obelisk-action [%tape db urql]])
 ::  +obelisk-sub-base: the grubbery tree dir where obelisk's /server fact is
 ::  materialized by a %gall-watch subscription (grubbery gall-sub-dir). The
 ::  result lands at .../data, the live flag at .../live.
@@ -1064,7 +1064,7 @@
   |=  [=dude:gall =page]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  *  bind:m  (gall-poke-or-nack:io dude page)
+  ;<  *  bind:m  (gall-poke-or-nack-safe dude page)
   (pure:m ~)
 ++  obelisk-wait-live
   |=  [our=@p n=@ud]
@@ -1073,7 +1073,7 @@
   ?:  =(0 n)  (pure:m ~)
   ;<  live=?  bind:m  (obelisk-live our)
   ?:  live  (pure:m ~)
-  ;<  ~  bind:m  (sleep:io (div ~s1 10))
+  ;<  ~  bind:m  (sleep-safe (div ~s1 10))
   (obelisk-wait-live our (dec n))
 ::  +obelisk-run-one: run one urQL SELECT (or any script) against %obelisk and
 ::  return its result. obelisk answers on its /server subscription (no scries),
@@ -1092,7 +1092,7 @@
   ::  %gu liveness check obelisk-exec uses. See obelisk-exec for why this matters.
   ;<  up=?  bind:m  (typed-scry:io ? %loob /gu/obelisk/$)
   ?.  up  (pure:m [%| ~[leaf+"obelisk not installed"]])
-  ;<  our=@p  bind:m  get-our:io
+  ;<  our=@p  bind:m  bowl-our
   =/  data-road=road:tarball  [%& %& (obelisk-sub-base our) %data]
   ;<  ~           bind:m  (obelisk-ensure-sub our)
   ::  clear any stale result first: save-file suppresses no-op writes, so an
@@ -1108,7 +1108,7 @@
     (pure:m [%| u.err])
   ::  wait for the result wave, but arm a 15s timer so a down/unresponsive obelisk
   ::  returns an error rather than hanging the request fiber forever.
-  ;<  now=@da     bind:m  get-time:io
+  ;<  now=@da     bind:m  bowl-now
   =/  until=@da   (add now ~s15)
   ;<  ~           bind:m  (send-wait:io until)
   ::  match ONLY our own timer (take-news-or-wake-until), not any stale wake left
@@ -1129,7 +1129,7 @@
   ::  nonce echoed in the urQL + verified on read-back, or the dedicated-sub redesign
   ::  above. Cannot happen on a responsive local obelisk (results land in ms); only
   ::  under a wedged obelisk with concurrent catalog callers.
-  ;<  ~           bind:m  (sleep:io (div ~s1 2))
+  ;<  ~           bind:m  (sleep-safe (div ~s1 2))
   (pure:m res)
 ::  +obelisk-query: caller-facing entry (request fibers + crawler). Pokes the
 ::  obelisk owner (/cat/obelisk.sig) with the query + a unique result-grub rail,
@@ -1152,7 +1152,7 @@
   ::  exists, and culling a never-existent grub just spams grubbery's "no grub" log.
   ;<  *  bind:m  (keep:io rw res-road ~)
   ;<  ~  bind:m  (poke-obk [db urql res-dir nom])
-  ;<  now=@da  bind:m  get-time:io
+  ;<  now=@da  bind:m  bowl-now
   ::  the owner runs its own 15s obelisk wait; add margin for a queued owner.
   =/  until=@da  (add now ~s30)
   ;<  ~  bind:m  (send-wait:io until)
@@ -1208,12 +1208,12 @@
   |=  for=@dr
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  now=@da  bind:m  get-time:io
+  ;<  now=@da  bind:m  bowl-now
   =/  wake-at=@da  (add now for)
   ;<  ~  bind:m  (send-wait:io wake-at)
   |-
   ;<  ~  bind:m  take-wake-drain
-  ;<  chk=@da  bind:m  get-time:io
+  ;<  chk=@da  bind:m  bowl-now
   ?:  (gte chk wake-at)  (pure:m ~)
   $
 ::  +obk-read-res: read the owner's result grub (a local %& vase via obk-res mark).
@@ -1410,8 +1410,8 @@
   |=  [pub=@p rel=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  our=@p   bind:m  get-our:io
-  ;<  now=@da  bind:m  get-time:io
+  ;<  our=@p   bind:m  bowl-our
+  ;<  now=@da  bind:m  bowl-now
   ;<  body=(unit @t)  bind:m  (read-page-body pub rel)
   ?~  body  (pure:m ~)
   ;<  u-ix=(unit pub-index:lp)  bind:m  (read-pub-index-remote pub)
@@ -1425,8 +1425,8 @@
 ++  catalog-scan-self
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
-  ;<  our=@p       bind:m  get-our:io
-  ;<  now=@da      bind:m  get-time:io
+  ;<  our=@p       bind:m  bowl-our
+  ;<  now=@da      bind:m  bowl-now
   ::  ABSOLUTE road via app-base, not a drop-N relative road: scan-self runs from
   ::  both the depth-2 /ui/requests fiber AND the depth-0 /crawler.sig fiber, so a
   ::  relative road would resolve differently per caller.
@@ -1500,7 +1500,7 @@
   =/  keys=(list path)  (scag manifest-max ~(tap in pages))
   ::  bound this peer's page sweep by peer-budget (see +peer-budget) so one staller
   ::  can't monopolize the tick; deadline is fresh-now + budget, not the sweep's now.
-  ;<  t0=@da    bind:m  get-time:io
+  ;<  t0=@da    bind:m  bowl-now
   ;<  cnt=@ud   bind:m  (catalog-scan-peer-loop our pub now keys pages (add t0 peer-budget) 0)
   ;<  ~         bind:m  (catalog-reconcile-peer our pub pages)
   (pure:m cnt)
@@ -1545,7 +1545,7 @@
   ::  page peeks can't starve later peers. Overshoots by at most one remote-timeout
   ::  (the check is between peeks). ponytail: total worst case = follows*peer-budget;
   ::  add per-peer cursoring if a LEGIT peer's page set can't finish in one budget.
-  ;<  clk=@da  bind:m  get-time:io
+  ;<  clk=@da  bind:m  bowl-now
   ?:  (gte clk deadline)  ~&([%lattice-peer-budget-spent pub cnt] (pure:m cnt))
   =/  stripped=path  (strip-pub:lp i.keys)
   ?~  stripped  (catalog-scan-peer-loop our pub now t.keys pages deadline cnt)
@@ -1890,7 +1890,7 @@
   |=  [=road:tarball shp=@p]
   =/  m  (fiber:fiber:nexus ,(unit seen:nexus))
   ^-  form:m
-  ;<  now=@da  bind:m  get-time:io
+  ;<  now=@da  bind:m  bowl-now
   =/  until=@da  (add now remote-timeout)
   ;<  pw=wire  bind:m  (nonce:io /peek)
   ;<  ~  bind:m  (send-dart:io %node pw (remote-road road shp) %peek ~ ~ %.y)
@@ -1906,7 +1906,7 @@
   |=  [=road:tarball shp=@p]
   =/  m  (fiber:fiber:nexus ,(unit seen:nexus))
   ^-  form:m
-  ;<  now=@da  bind:m  get-time:io
+  ;<  now=@da  bind:m  bowl-now
   =/  until=@da  (add now remote-timeout)
   ;<  pw=wire  bind:m  (nonce:io /peek)
   ;<  ~  bind:m  (send-dart:io %node pw (remote-road road shp) %peek ~ ~ %.n)
@@ -1939,6 +1939,68 @@
     ?.  ?&(?=([%wait @ ~] wak) =(until (slav %da i.t.wak)))  [%skip ~]
     [%done ~]
   ==
+::  +bowl-our / +bowl-now: read our/now from /sys/bowl like get-our:io / get-time:io,
+::  but the take MARK-FILTERS the bowl reply — a stray poke (a queued %obk-req,
+::  %know-action, etc. buffered while this fiber was mid-work) is %skip'd back to the
+::  owning loop instead of being stolen. fiberio's get-our/get-time use a plain
+::  take-poke, so in a busy fiber (obelisk owner, crawler, writer) they grab a
+::  neighbour's message and nest-fail (-need.@p / -need.@da). The one grubbery peek
+::  turned into a poke-service means every our/now read must filter like this.
+::
+++  bowl-our
+  =/  m  (fiber:fiber:nexus ,ship)
+  ^-  form:m
+  ;<  ~  bind:m  (poke:io &+&+[/sys/bowl %'main.sig'] [[/ %bowl-req] %our])
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %poke * *]
+    ?.  =([/ %ship] p.sage.u.in)  [%skip ~]
+    [%done !<(ship q.sage.u.in)]
+  ==
+++  bowl-now
+  =/  m  (fiber:fiber:nexus ,@da)
+  ^-  form:m
+  ;<  ~  bind:m  (poke:io &+&+[/sys/bowl %'main.sig'] [[/ %bowl-req] %now])
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %poke * *]
+    ?.  =([/ %time] p.sage.u.in)  [%skip ~]
+    [%done !<(@da q.sage.u.in)]
+  ==
+::  +gall-poke-or-nack-safe / +sleep-safe: fiberio's gall-poke-or-nack and sleep,
+::  but sourcing our/now from bowl-our/bowl-now (mark-filtered) instead of fiberio's
+::  get-our/get-time (unfiltered take-poke). fiberio's own poke-ack / timer-wake
+::  takes ARE mark-filtered — only their internal get-our/get-time steal a queued
+::  poke in a busy fiber. The obelisk owner and crawler run these while an %obk-req
+::  is buffered, so the stolen poke nest-fails (-need.@p / -need.@da). These local
+::  copies keep the correct outer take and swap only the our/now read. No %veto
+::  branch: /sys/gall and /sys/bowl are own-ship runtime grubs (no weir, no veto).
+::
+++  gall-poke-or-nack-safe
+  |=  [=dude:gall =page]
+  =/  m  (fiber:fiber:nexus ,(unit tang))
+  ^-  form:m
+  ;<  our=@p  bind:m  bowl-our
+  ;<  ~  bind:m
+    (poke:io &+&+[/sys/gall %'main.sig'] [[/ %gall-poke] [[our dude] page]])
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %poke * *]
+    ?.  =([/ %poke-ack] p.sage.u.in)  [%skip ~]
+    [%done !<((unit tang) q.sage.u.in)]
+  ==
+++  sleep-safe
+  |=  for=@dr
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  now=@da  bind:m  bowl-now
+  (wait:io (add now for))
 ::  +take-news-or-wake-until: like fiberio's take-news-or-wake, but the timer-wake
 ::  branch matches ONLY our own `until` timer (mirrors take-peek-or-wake). fiberio's
 ::  version matches ANY %timer-wake, so a stale timer left armed by an earlier
@@ -2034,7 +2096,7 @@
   ::  rel (no leading pub / no trailing gmi) is untouched. ponytail: a page literally
   ::  published as "pub/…/gmi" would be mis-normalized — accepted, that key is absurd.
   =/  rel=path  (page-rel rel)
-  ;<  our=@p  bind:m  get-our:io
+  ;<  our=@p  bind:m  bowl-our
   ::  own pages: ABSOLUTE road via app-base (the nexus's fixed tree path), so this
   ::  resolves the same from the depth-2 request fiber and the depth-0 crawler.
   =/  road=road:tarball
