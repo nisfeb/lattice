@@ -21,7 +21,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ListAlt
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
@@ -112,6 +114,7 @@ fun BrowserScreen(
     onEditPage: (String) -> Unit,
     onOpenDiscover: () -> Unit,
     onOpenSearch: () -> Unit,
+    onOpenShipBrowser: () -> Unit = {},
     openUrl: String? = null,
     onConsumedOpenUrl: () -> Unit = {},
     subscriptions: Set<String> = emptySet(),
@@ -144,6 +147,8 @@ fun BrowserScreen(
     // Lattice browses the Urbit network only, so we explain rather
     // than fire a doomed fetch that 400s with "bad urb:// url".
     var addrMsg by remember { mutableStateOf<String?>(null) }
+    // Backlinks + outline for the current page, from our catalog index.
+    var insightsOpen by remember { mutableStateOf(false) }
 
     fun load(tab: BrowserTab, url: String) {
         tab.job?.cancel()
@@ -334,6 +339,9 @@ fun BrowserScreen(
                 if (current.isNotBlank()) shareText(current)?.let { shareMsg = it }
             },
             BarAction("bookmarks", Icons.Filled.Bookmarks, "Bookmarks", true) { onOpenBookmarks() },
+            BarAction("insights", Icons.AutoMirrored.Filled.ListAlt, "Links & outline", current.isNotBlank()) {
+                if (current.isNotBlank()) insightsOpen = true
+            },
             BarAction("edit", Icons.Filled.Edit, "Edit this page", editPath != null) { editPath?.let(onEditPage) },
             run {
                 val subbed = current in subscriptions
@@ -346,6 +354,7 @@ fun BrowserScreen(
             },
             BarAction("updates", Icons.Filled.Inbox, if (unreadUpdates > 0) "Updates ($unreadUpdates)" else "Updates", true) { onOpenUpdates() },
             BarAction("discover", Icons.Filled.Public, "Discover", true) { onOpenDiscover() },
+            BarAction("shipfiles", Icons.Filled.AccountTree, "Ship files", true) { onOpenShipBrowser() },
             BarAction("search", Icons.Filled.Search, "Search", true) { onOpenSearch() },
             BarAction("files", Icons.Filled.Folder, "Files", true) { onOpenFiles() },
             BarAction("settings", Icons.Filled.Settings, "Settings", true) { onOpenSettings() },
@@ -440,6 +449,16 @@ fun BrowserScreen(
                 )
             }
         }
+    }
+
+    // ── backlinks + outline dialog ──
+    if (insightsOpen && current.isNotBlank()) {
+        PageInsightsDialog(
+            url = current,
+            client = client,
+            onNavigate = { url -> tab?.let { navigate(it, url) } },
+            onClose = { insightsOpen = false },
+        )
     }
 
     // ── copy-to-my-ship dialog ──

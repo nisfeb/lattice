@@ -10,4 +10,5 @@ sealed interface AppScreen {
     data object Updates : AppScreen
     data object Bookmarks : AppScreen
     data object Import : AppScreen
+    data object ShipBrowser : AppScreen
 }

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
@@ -204,6 +205,7 @@ fun WorkspaceScreen(
     var copiedLink by remember { mutableStateOf<String?>(null) }
     var publishKey by remember { mutableStateOf<String?>(null) }
     var publishPath by remember { mutableStateOf("") }
+    var historyOf by remember { mutableStateOf<Pair<String, Source>?>(null) }
 
     fun doDuplicate(src: String, dest: String) = scope.launch {
         client.fetch("urb://$ship/$src").onSuccess { client.save(dest, it.body).onSuccess { refreshPublic() } }
@@ -230,12 +232,14 @@ fun WorkspaceScreen(
 
     val publicActions = listOf(
         FileAction("Copy link", Icons.Filled.Link) { val l = "urb://$ship/$it"; copyToClipboard(l); copiedLink = l },
+        FileAction("History", Icons.Filled.History) { historyOf = it to Source.Public },
         FileAction("Duplicate", Icons.Filled.ContentCopy) { dupOf = it; dialogName = "$it-copy" },
         FileAction("Move / rename", Icons.Filled.DriveFileRenameOutline) { moveOf = it; dialogName = it },
         FileAction("Delete", Icons.Filled.Delete, danger = true) { confirmDelete = it },
     )
     val knowLiveActions = listOf(
         FileAction("Publish to page", Icons.Filled.Publish) { publishKey = it; publishPath = it },
+        FileAction("History", Icons.Filled.History) { historyOf = it to Source.Knowledge },
         FileAction("Move / rename", Icons.Filled.DriveFileRenameOutline) { moveOf = it; dialogName = it },
         FileAction("Delete (to trash)", Icons.Filled.Delete, danger = true) { deleteKnow(it) },
     )
@@ -638,6 +642,25 @@ fun WorkspaceScreen(
                 }) { Text("Publish") }
             },
             dismissButton = { TextButton(onClick = { publishKey = null }) { Text("Cancel") } },
+        )
+    }
+    historyOf?.let { (histPath, histSource) ->
+        VersionHistoryDialog(
+            title = histPath,
+            source = histSource,
+            path = histPath,
+            client = client,
+            knowledge = knowledge,
+            onClose = { historyOf = null },
+            onRestored = {
+                when (histSource) {
+                    Source.Public -> refreshPublic()
+                    Source.Knowledge -> refreshKnow()
+                }
+                // if the restored item is open, re-fetch its now-current content
+                wb.bufferFor(histSource, histPath)?.let { b -> b.loaded = false; b.dirty = false; openBuffer(histPath, histSource) }
+            },
+            onStatus = { status = it },
         )
     }
 }

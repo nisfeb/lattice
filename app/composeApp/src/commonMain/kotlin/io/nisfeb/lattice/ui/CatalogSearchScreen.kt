@@ -13,8 +13,10 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
@@ -30,6 +32,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,6 +42,7 @@ import io.nisfeb.lattice.urbit.CatalogPage
 import io.nisfeb.lattice.urbit.LatticeClient
 import kotlin.math.ln
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Search the content catalog — the cross-publisher index the %lattice agent
@@ -74,6 +78,10 @@ fun CatalogSearchScreen(
     // Author-declared summaries (url -> summary) from catalog-meta, shown as a
     // snippet under each result. Loaded alongside the catalog; best-effort.
     var summaries by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    // The live category vocabulary (catalog-vocab), suggested when categorizing.
+    var vocab by remember { mutableStateOf<List<String>>(emptyList()) }
+    // The page whose category is being edited (classify dialog open when non-null).
+    var classifyPage by remember { mutableStateOf<CatalogPage?>(null) }
 
     LaunchedEffect(reloadNonce) {
         loading = true
@@ -82,6 +90,7 @@ fun CatalogSearchScreen(
             .onSuccess { pages = it }
             .onFailure { error = it.message ?: "couldn't load the catalog" }
         client.catalogMeta().onSuccess { summaries = it }  // best-effort snippets
+        client.catalogVocab().onSuccess { vocab = it }      // category suggestions
         loading = false
     }
 
@@ -95,7 +104,8 @@ fun CatalogSearchScreen(
     // classifier re-labeled it), clear the now-orphaned filter — otherwise it
     // silently matches nothing with no chip left to tap off.
     LaunchedEffect(categories) {
-        if (category != null && category !in categories) category = null
+        // "" is the Unclassified facet (never a real chip); keep it selectable.
+        if (category != null && category != "" && category !in categories) category = null
     }
 
     // Debounced body keyword search over the inverted index. Splits the query
@@ -220,7 +230,8 @@ fun CatalogSearchScreen(
             )
         }
 
-        if (categories.isNotEmpty()) {
+        val hasUnclassified = remember(pages) { pages.any { it.category.isBlank() } }
+        if (categories.isNotEmpty() || hasUnclassified) {
             LazyRow(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -231,6 +242,15 @@ fun CatalogSearchScreen(
                         onClick = { category = null },
                         label = { Text("All") },
                     )
+                }
+                if (hasUnclassified) {
+                    item {
+                        FilterChip(
+                            selected = category == "",
+                            onClick = { category = if (category == "") null else "" },
+                            label = { Text("Unclassified") },
+                        )
+                    }
                 }
                 items(categories) { c ->
                     FilterChip(
@@ -282,18 +302,92 @@ fun CatalogSearchScreen(
                     )
                 }
                 items(results) { page ->
-                    ResultRow(page, summaries[page.url], onClick = { onOpenUrl(page.url) })
+                    ResultRow(page, summaries[page.url], onClick = { onOpenUrl(page.url) }, onClassify = { classifyPage = page })
                 }
             }
         }
     }
+
+    classifyPage?.let { page ->
+        ClassifyDialog(
+            page = page,
+            vocab = vocab,
+            client = client,
+            onClose = { classifyPage = null },
+            onClassified = { classifyPage = null; reloadNonce++ },
+        )
+    }
+}
+
+/**
+ * Set (or change) a page's catalog category. Suggests the live vocabulary as
+ * chips and takes a free-typed category too — the classifier's own taxonomy is
+ * user-grown, so new categories are first-class. Writes via catalog-classify
+ * (cat-source 'manual'); the caller reloads on success.
+ */
+@Composable
+private fun ClassifyDialog(
+    page: CatalogPage,
+    vocab: List<String>,
+    client: LatticeClient,
+    onClose: () -> Unit,
+    onClassified: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var value by remember { mutableStateOf(page.category) }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = { if (!saving) onClose() },
+        title = { Text("Categorize") },
+        text = {
+            Column {
+                Text(page.label, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    label = { Text("category") },
+                    singleLine = true,
+                    enabled = !saving,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                )
+                if (vocab.isNotEmpty()) {
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        items(vocab) { c ->
+                            FilterChip(selected = value == c, onClick = { value = c }, label = { Text(c) })
+                        }
+                    }
+                }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 6.dp)) }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !saving && value.isNotBlank(),
+                onClick = {
+                    saving = true; error = null
+                    scope.launch {
+                        client.catalogClassify(page.url, value.trim())
+                            .onSuccess { onClassified() }
+                            .onFailure { error = it.message ?: "failed"; saving = false }
+                    }
+                },
+            ) { Text(if (saving) "Saving…" else "Save") }
+        },
+        dismissButton = { TextButton(enabled = !saving, onClick = onClose) { Text("Cancel") } },
+    )
 }
 
 @Composable
-private fun ResultRow(page: CatalogPage, summary: String?, onClick: () -> Unit) {
+private fun ResultRow(page: CatalogPage, summary: String?, onClick: () -> Unit, onClassify: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
     Column(
         modifier = Modifier
-            .fillMaxWidth()
+            .weight(1f)
             .clickable(onClick = onClick)
             .padding(vertical = 8.dp, horizontal = 4.dp),
     ) {
@@ -340,6 +434,10 @@ private fun ResultRow(page: CatalogPage, summary: String?, onClick: () -> Unit) 
                     )
                 }
             }
+        }
+    }
+        IconButton(onClick = onClassify) {
+            Icon(Icons.AutoMirrored.Filled.Label, contentDescription = "Categorize")
         }
     }
 }
