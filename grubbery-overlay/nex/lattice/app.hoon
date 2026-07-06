@@ -1019,7 +1019,7 @@
   ::  can't catch that (the crash precedes the poke-ack). So confirm obelisk is
   ::  running first via %gu, which answers %.n instead of bailing, and report it
   ::  missing rather than poking a dead agent.
-  ;<  up=?  bind:m  (scry:io ? /gu/obelisk/$)
+  ;<  up=?  bind:m  (typed-scry:io ? %loob /gu/obelisk/$)
   ?.  up  (pure:m `~[leaf+"obelisk not installed"])
   (gall-poke-or-nack:io %obelisk [%obelisk-action [%tape db urql]])
 ::  +obelisk-sub-base: the grubbery tree dir where obelisk's /server fact is
@@ -1090,7 +1090,7 @@
   ::  (which would otherwise stall 4s in obelisk-ensure-sub waiting for a sub
   ::  that can never go live) and return the missing-agent error directly. Same
   ::  %gu liveness check obelisk-exec uses. See obelisk-exec for why this matters.
-  ;<  up=?  bind:m  (scry:io ? /gu/obelisk/$)
+  ;<  up=?  bind:m  (typed-scry:io ? %loob /gu/obelisk/$)
   ?.  up  (pure:m [%| ~[leaf+"obelisk not installed"]])
   ;<  our=@p  bind:m  get-our:io
   =/  data-road=road:tarball  [%& %& (obelisk-sub-base our) %data]
