@@ -1,15 +1,17 @@
 # Agent knowledge store (MCP)
 
-A **private** knowledge store inside the `%lattice` agent for programmatic
-agents (via the [urbit-mcp-server](https://github.com/...) `%mcp` agent). It is
-kept entirely separate from lattice's published gemtext pages:
+A **private** knowledge store for programmatic agents (via the
+[urbit-mcp-server](https://github.com/...) `%mcp` agent), kept entirely separate
+from lattice's published gemtext pages:
 
-- Stored in agent **state** (`know` / `trash`), **never grown or published** —
-  not remotely scryable, owner-only (local `on-peek` + `src==our` pokes).
+- Stored as **`know/vault` grubs** in the grubbery `lattice` nexus: `gain=%.n`
+  (never published to the namespace) and behind an owner-only weir, so it's not
+  remotely scryable. (Earlier standalone-agent versions kept it in agent
+  **state** as `know`/`trash` maps — same contract, different backing store.)
 - Items are keyed by a **path-like key**, e.g. `projects/lattice/architecture`.
-- **Delete is soft**: `delete` moves an item to a recoverable `trash`; `restore`
-  brings it back. Permanent purge is **not** exposed to agents, so an agent
-  cannot destroy knowledge.
+- **Delete is soft**: `delete` culls an item into a recoverable `trash`;
+  `restore` brings it back. Permanent purge is **not** exposed to agents, so an
+  agent cannot destroy knowledge.
 
 ## Agent interface (the durable contract)
 
@@ -34,7 +36,13 @@ store by a tag set (AND/OR) and a case-insensitive key/body substring, returning
 the `know-list` shape. (The `lattice-explore` MCP tool below filters
 `/x/know/all/json` client-side instead, so it needs no HTTP.)
 
-These work today with the generic `scry-agent` / `poke-our-agent` MCP tools.
+> **Durable surface = the HTTP endpoints.** The scry paths and `%lattice-know`
+> poke mark above are the historical standalone-agent contract (driven by the
+> generic `scry-agent` / `poke-our-agent` MCP tools). That agent has been retired
+> in favor of the grubbery `lattice` nexus, which has no `%lattice` agent to scry
+> or poke — so the durable surface is the **HTTP endpoints** under
+> `/apps/lattice/` (`know-list`, `know-read`, `know-save`, …). The dedicated tools
+> below drive those endpoints; the JSON shapes above are unchanged.
 
 ## Dedicated MCP tools
 
@@ -78,11 +86,11 @@ python3 scripts/setup-knowledge-mcp-tools.py <server>   # or a named entry
 The code is read **without echo**, used only for the login request, then dropped
 — it is never printed, logged, or stored. For unattended runs pass it via
 `LATTICE_CODE` (popped from the env at startup); `LATTICE_URL` overrides the
-endpoint and an existing `LATTICE_COOKIE` skips login. The save/read/list/
-search/delete/restore tools need `%lattice` `[0 3 9]`+; the tags + explore tools
-need `[0 3 12]`+. Requires the `%mcp-server` agent installed. Verified end-to-end
-on a fake ship: save → read → tag → explore → search → delete (soft) → restore
-all round-trip.
+endpoint and an existing `LATTICE_COOKIE` skips login. The grubbery `lattice`
+nexus serves every `/apps/lattice/know-*` endpoint these tools use, so all
+eleven work against it (no per-tool kelvin gate as the old agent had). Requires
+the `%mcp-server` agent installed. Verified end-to-end on a fake ship: save →
+read → tag → explore → search → delete (soft) → restore all round-trip.
 
 ### Re-running / upgrades
 

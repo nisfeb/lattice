@@ -6,7 +6,8 @@ name: nightly
 #   LATTICE_CODE        the ship's +code
 #   LATTICE_PEER_SHIP   (optional) e.g. ~tyr — for the cross-ship fetch test
 #   LATTICE_MCP_COOKIE  (optional) "urbauth-~ship=..." cookie for the %mcp agent,
-#                       used to run the desk's Hoon unit tests via run-tests
+#                       used to run the nexus's Hoon unit tests (on the grubbery
+#                       desk, with the lattice overlay synced) via run-tests
 on:
   schedule:
     - cron: '0 7 * * *'   # 07:00 UTC daily
@@ -29,26 +30,26 @@ jobs:
         if: ${{ env.LATTICE_URL == '' }}
         run: echo "LATTICE_URL secret not set — skipping e2e."
 
-  desk-tests:
-    name: desk — Hoon unit tests via %mcp run-tests
+  nexus-tests:
+    name: nexus — Hoon unit tests via %mcp run-tests
     runs-on: ubuntu-latest
     env:
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
       LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
     steps:
       - uses: actions/checkout@v4
-      - name: run-tests (assumes the ship runs the current desk)
+      - name: run-tests (assumes the ship runs grubbery with the lattice overlay synced)
         if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
         run: |
           set -uo pipefail
-          body='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run-tests","arguments":{"desk":"lattice","path":"/tests/lib"}}}'
+          body='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run-tests","arguments":{"desk":"grubbery","path":"/tests/lib"}}}'
           out=$(curl -s -X POST "$LATTICE_URL/mcp" \
             -H "Cookie: $LATTICE_MCP_COOKIE" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json, text/event-stream" \
             -d "$body")
           echo "$out" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("result",{}).get("content",[{}])[0].get("text",""))' | tee results.txt
-          grep -q 'FAILED' results.txt && { echo "desk tests FAILED"; exit 1; } || echo "desk tests passed"
+          grep -q 'FAILED' results.txt && { echo "nexus tests FAILED"; exit 1; } || echo "nexus tests passed"
       - name: skipped
         if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
-        run: echo "ship/MCP secrets not set — skipping desk unit tests."
+        run: echo "ship/MCP secrets not set — skipping nexus unit tests."

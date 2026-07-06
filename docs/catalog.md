@@ -1,5 +1,16 @@
 # Catalog — federated network content index
 
+> **Backend status.** This describes the catalog design. The catalog *code*
+> (`catalog.hoon`, `catalog-analyzer.hoon`, the obelisk marks) lives in
+> [`grubbery-overlay/lib/`](../grubbery-overlay/lib/), and the read endpoints are
+> served by the grubbery `lattice` nexus over the `/apps/lattice/catalog-*` HTTP
+> routes (per-request fibers). The long-lived **crawler fiber** is still being
+> brought up on the nexus. This doc predates the native rewrite, so read its
+> `/desk/lib/catalog.hoon` and `/lib/catalog` as
+> `grubbery-overlay/lib/catalog.hoon`, and its "lattice's own agent state" as the
+> nexus's `know/vault` grubs plus the external `%obelisk` it pokes for the catalog
+> index (the standalone agent it refers to has been retired).
+
 ## Why
 
 `%lattice` lets a user follow publishers and subscribe to specific pages,
@@ -129,7 +140,7 @@ the `catalog-pending` table + `reason` column are reserved for those
 explicit-requeue cases (`changed`/`requested`/`low-confidence`), which the
 v1 computed worklist (`category=''`) does not yet populate.
 
-## Obelisk schema (`/desk/lib/catalog.hoon`)
+## Obelisk schema (`grubbery-overlay/lib/catalog.hoon`)
 
 Eight tables under `catalog-*`, in the existing `lattice` obelisk database.
 The schema lives in `+catalog-create-list` (one `CREATE TABLE` per element),

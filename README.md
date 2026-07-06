@@ -7,27 +7,29 @@ server, no host in the middle. Native on Android, Linux, macOS, and Windows.
 
 lattice has two parts:
 
-- **`desk/`** — the `%lattice` Gall agent. It publishes the gemtext files in
-  your ship's `/pub` directory to the Urbit namespace, serves them to other
-  ships over remote scry, and follows remote files so you get notified when
-  they change.
+- **ship side** — a `lattice` **nexus** running inside the
+  [**grubbery**](https://github.com/gwbtc/grubbery) framework. It stores your
+  pages as *published grubs* in grubbery's vault, serves them to other ships over
+  remote scry, and follows remote files so you get notified when they change.
 - **`app/`** — a Kotlin Multiplatform (Compose) browser/editor that talks to
   your ship over its local HTTP API.
 
-You run the desk on your ship and point the app at it.
+You run the grubbery nexus on your ship and point the app at it.
 
 ## What it does
 
 - **Browse `urb://`** — fetch and read gemtext published by any ship,
   peer-to-peer over Urbit's remote scry. Browser-style tabs (`Ctrl+T`),
   bookmarks, and history.
-- **Publish** — anything you drop in `/pub/*.gmi` on your ship is instantly
-  readable by anyone as `urb://~you/that/path`. Edit it from inside the app.
+- **Publish** — every page you save is written as a *published grub*: a signed
+  value in the Urbit namespace, instantly readable by anyone as
+  `urb://~you/that/path`. Write and edit pages from inside the app.
 - **Editor** — a built-in gemtext editor for your pages, with optional vim
   keybindings (off by default — it edits like a normal textarea otherwise).
 - **Follow & subscribe** — follow ships to discover what they publish;
-  subscribe to a specific file and get a live notification the moment it
-  changes (pushed over an Eyre SSE channel).
+  subscribe to a specific file to get notified when it changes (your own
+  files push live over an Eyre SSE channel; changes on a followed remote ship
+  surface when the crawler next picks them up).
 - **Discovery** — find other lattice publishers among your `%contacts` via a
   small published manifest.
 - **Copy to your ship** — like a bookmark, but real: copy a remote file onto
@@ -35,46 +37,104 @@ You run the desk on your ship and point the app at it.
 - **Fully themeable** — colors and fonts are configurable; ships with several
   built-in themes (Lattice Dark/Light and more).
 
+## How a page reaches your app
+
+Every published page is addressed `urb://~ship/path` and travels **peer-to-peer
+over Urbit's remote scry** — no DNS, no web server, no host in the middle. Here's
+the full path from a publisher's ship to your screen when you open a remote page.
+
+**Publishing (on `~remote`).** Saving a page writes its gemtext as a grub and
+**publishes it into the Urbit namespace** (a "gained" grub) — a signed value at a
+fixed address that other ships can read by remote scry. That publish step is what
+makes the page reachable at all; nothing else about your ship is exposed.
+
+**Reading (on your ship).** You tap `urb://~remote/page` in the app:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as lattice app
+    participant You as your ship
+    participant Ames as ames (Urbit P2P)
+    participant Peer as ~remote (publisher)
+    App->>You: GET /apps/lattice/fetch?url=urb://~remote/page
+    Note over You: parse url → [~remote, /page]<br/>spawn a per-request fiber
+    You->>Ames: remote scry — latest version of the page
+    Ames->>Peer: read the published (gained) grub
+    Peer-->>Ames: signed gemtext body
+    Ames-->>You: body — or nothing
+    Note over You: clam untrusted noun → text<br/>(malformed body → clean 404)
+    You-->>App: 200 — gemtext body as JSON
+    App->>App: render gemtext
+```
+
+1. **App → your ship.** The app calls *your* ship's local HTTP API over its
+   authenticated session. It never talks to the publisher directly.
+2. **Per-request handling.** Your ship parses the `urb://` URL into `[ship, path]`
+   and spawns a short-lived fiber for just this request.
+3. **Remote scry to the publisher.** Since the ship isn't yours, your ship issues
+   a one-shot **remote scry** to `~remote` for the *latest* published version of
+   that page, over ames (Urbit's peer-to-peer transport). The two ships talk
+   directly — there is no central server.
+4. **Untrusted by default.** The peer's reply is a raw signed noun. Your ship
+   converts it to text inside a guard: a malformed or hostile body yields a clean
+   404, never a crash. You're parsing a stranger's data, so it's treated as such.
+5. **Back to the app.** Your ship wraps the body as JSON and returns it; the app
+   renders the gemtext. **Your own pages skip the network** — they're read
+   straight from your ship's local store.
+
+**Two things worth knowing:**
+
+- **Latest-version, clean break.** A fetch reads the *current* published version
+  in one shot — no walk-to-latest, no revision chain. The publisher must be
+  running lattice for a peer read to resolve.
+- **On-demand vs. discovery.** Tapping a link you already have
+  (`urb://~remote/page`) is the live path above. *Finding* pages you don't know
+  about — following ships and searching a catalog of what they publish — is a
+  separate background crawler.
+
 ## Install
 
-### 1. The `%lattice` desk (on your ship)
+### 1. The ship side (grubbery nexus)
 
-Build the desk with [`build.sh`](build.sh) and commit it to your ship. It
-vendors the standard kernel deps via [peru](https://github.com/buildinspace/peru)
-(so make sure `peru --version` works), assembles a complete desk under `dist/`,
-and — with `-p` — copies it into a mounted desk:
+lattice's ship side runs as a **nexus** inside the
+[**grubbery**](https://github.com/gwbtc/grubbery) framework: one `%grubbery` Gall
+agent hosts a tree of "apps," and lattice is one of them. So installing means get
+grubbery, drop lattice's nexus into it, and commit.
 
-```dojo
-|new-desk %lattice
-|mount %lattice
-```
-```bash
-./build.sh -p ~/path/to/your-ship/lattice
-```
-```dojo
-|commit %lattice
-|install our %lattice
-```
+1. **Install grubbery** on your ship (`%grubbery`), following grubbery's own
+   install. Pin a recent commit — lattice is developed against grubbery's
+   `develop`.
 
-Once installed, the agent binds an HTTP endpoint at `/apps/lattice` and begins
-publishing whatever is in `/pub`.
+2. **Sync the lattice overlay** into your grubbery desk. The nexus source lives
+   in this repo under [`grubbery-overlay/`](grubbery-overlay/) and must be copied
+   into the `%grubbery` desk (grubbery only loads `gub/` from its own desk):
+   ```bash
+   ./scripts/sync-overlay.sh /path/to/your-ship/grubbery
+   ```
 
-**Letting others install it from your ship.** The desk ships a docket, so you
-can distribute it over the network:
+3. **Register the nexus** — add one idempotent row to grubbery's `lib/root.hoon`
+   on-load so a `/apps/lattice` directory carrying the nexus gets made (re-apply
+   after pulling grubbery updates):
+   ```hoon
+   [%fall %| /apps/'lattice.lattice_app' [`[`[/lattice %app] ~ %.n ~] ~]]
+   ```
 
-```dojo
-:treaty|publish %lattice
-```
+4. **Commit** the grubbery desk:
+   ```dojo
+   |commit %grubbery
+   ```
+   The nexus materializes its tree, binds an HTTP endpoint at `/apps/lattice`,
+   and starts serving. Pages you write become published grubs in the namespace.
 
-Anyone can then install it with `|install ~your-ship %lattice` (or `|ally
-~your-ship` and find it in the App Store search). It shows up as a "Lattice"
-tile in their Landscape; the tile links to this repo (the real UI is the
-native app).
+See [`grubbery-overlay/README.md`](grubbery-overlay/README.md) for the dev loop,
+and [`docs/cutover-runbook.md`](docs/cutover-runbook.md) if you're migrating an
+existing `%lattice` agent's data into the nexus.
 
-> Endpoints are access-controlled: only your own ship can poke or subscribe to
-> the agent, and the HTTP API requires a valid ship session. Anything you put in
-> `/pub/*.gmi` is **public by design** (that's the point — it's a publishing
-> tool); nothing else leaves your ship.
+> Access is enforced by grubbery **weirs** (per-directory ACLs): your published
+> pages are namespace-public by design (that's the point — it's a publishing
+> tool), your private knowledge store is owner-only, and the HTTP API requires a
+> valid ship session. Nothing else leaves your ship.
 
 ### 2. The app
 
@@ -168,7 +228,8 @@ refresh it. Re-registering tools after a lattice upgrade needs a reset first; se
 
 ## Building from source
 
-Gradle lives in [`app/`](app/) (the repo root also holds the Urbit `desk/`). A
+Gradle lives in [`app/`](app/); the ship-side nexus source is in
+[`grubbery-overlay/`](grubbery-overlay/). A
 full **JDK 17** is required — note that some distros ship `java-17-openjdk` as a
 JRE without `javac`; JDK 21 also works.
 
@@ -182,8 +243,10 @@ cd app
 ./scripts/build-appimage.sh
 ```
 
-The Hoon agent has unit tests under [`desk/tests/`](desk/tests/); the app has a
-JVM test suite (`./gradlew :composeApp:desktopTest`). CI runs both on every PR.
+The nexus's pure lib has Hoon unit tests under
+[`grubbery-overlay/tests/`](grubbery-overlay/tests/) (run via grubbery's
+`run-tests`); the app has a JVM test suite (`./gradlew :composeApp:desktopTest`).
+CI runs both on every PR.
 
 ## Releases
 
@@ -194,10 +257,11 @@ installers (`.deb`/`.dmg`/`.msi`/`.AppImage`) and — when signing secrets are s
 ## Layout
 
 ```
-desk/   the %lattice Gall agent (app/ lib/ sur/ mar/ tests/)
-app/    Kotlin Multiplatform Compose app (Android + desktop)
-web/    marketing pages (HTML + a gemtext page, fittingly)
-scripts/ build helpers
+grubbery-overlay/  the lattice nexus — lattice's ship side (nex/ lib/ mar/ tests/)
+app/               Kotlin Multiplatform Compose app (Android + desktop)
+web/               marketing pages (HTML + a gemtext page, fittingly)
+scripts/           build + overlay-sync helpers
+docs/              deeper design docs (migration/cutover, catalog, MCP knowledge)
 ```
 
 ## License

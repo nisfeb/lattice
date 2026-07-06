@@ -8,12 +8,12 @@ A small, fast browser and publisher for gemtext — but the pages live on the Ur
 
 ## How it works
 
-lattice is two pieces: a tiny Gall agent on your ship, and a native app you point at it.
+lattice is two pieces: a small publisher that runs on your ship, and a native app you point at it.
 
-* The desk — %lattice publishes the gemtext in your ship's /pub directory to the Urbit namespace and serves it to other ships over remote scry. It also follows files you subscribe to.
+* On your ship — lattice publishes your gemtext pages to the Urbit namespace and serves them to other ships over remote scry. It also follows files you subscribe to.
 * The app — browse, read, and edit anywhere. Android and desktop, one codebase. Live notifications when a followed file changes.
 
-Drop a file in /pub, and anyone on the network can read it — instantly, straight from your ship:
+Publish a page, and anyone on the network can read it — instantly, straight from your ship:
 
 ```
 # ~nisfeb's notebook
@@ -27,7 +27,7 @@ Welcome. Everything here is a gemtext file in /pub.
 ## What it does
 
 * Browse urb:// — read gemtext published by any ship, peer-to-peer. The bytes come straight from the author's ship, not a server.
-* Publish — anything in /pub/*.gmi is instantly readable as urb://~you/that/path. Edit it from inside the app.
+* Publish — every page you write is instantly readable as urb://~you/that/path. Write and edit it from inside the app.
 * Built-in editor — write your pages without leaving lattice. Plain by default; optional vim keybindings.
 * Browser tabs — multiple urb:// pages at once, a keystroke for a new one, bookmarks for your regulars.
 * Follow & subscribe — follow ships to see what they publish; subscribe to a file and get a live push when it changes.
@@ -43,7 +43,7 @@ Welcome. Everything here is a gemtext file in /pub.
 
 ## Privacy
 
-The only server lattice talks to is your ship. No analytics, no third-party SDKs, no telemetry. Your +code and session cookie are never sent in cleartext to a remote ship and are stored owner-only at rest. Everything in /pub is public by design; nothing else on your ship is exposed.
+The only server lattice talks to is your ship. No analytics, no third-party SDKs, no telemetry. Your +code and session cookie are never sent in cleartext to a remote ship and are stored owner-only at rest. Everything you publish is public by design; nothing else on your ship is exposed.
 
 ## Get it
 
@@ -51,7 +51,7 @@ The only server lattice talks to is your ship. No analytics, no third-party SDKs
 => https://github.com/nisfeb/lattice  Source on GitHub
 => https://urbit.org/overview/running-urbit  New to Urbit? Boot a ship here
 
-You'll need the %lattice desk running on your ship, then point the app at it with your ship's URL and +code.
+You'll need lattice running on your ship, then point the app at it with your ship's URL and +code.
 
 ---
 
