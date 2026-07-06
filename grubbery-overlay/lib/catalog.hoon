@@ -120,10 +120,17 @@
     ^-  (list tape)
     =/  ek=tape  (urq-esc (trip item))
     =/  up=tape  (trip (scot %da updated))
+    ::  DEDUP tags on the ESCAPED literal, like catalog-page-refresh-urql: urq-esc
+    ::  collapses control bytes (<32) to one space, so two tags differing only by
+    ::  an interior control byte escape to the SAME literal -> duplicate (item,tag)
+    ::  PK -> the whole TRUNCATE+INSERT reindex aborts, leaving the knowledge index
+    ::  truncated and permanently un-rebuildable. A set collapses those collisions.
+    =/  tag-lits=(set tape)
+      (~(gas in *(set tape)) (turn tags |=(t=@t (urq-esc (trip t)))))
     :-  ;:(weld "INSERT INTO knowledge (item, updated) VALUES ('" ek "', " up ");")
-    %+  turn  tags
-    |=  tg=@t
-    ;:(weld "INSERT INTO tags (item, tag) VALUES ('" ek "', '" (urq-esc (trip tg)) "');")
+    %+  turn  ~(tap in tag-lits)
+    |=  tg=tape
+    ;:(weld "INSERT INTO tags (item, tag) VALUES ('" ek "', '" tg "');")
   %-  zing
   (weld `(list tape)`~["TRUNCATE TABLE knowledge;" "TRUNCATE TABLE tags;"] inserts)
 ::

@@ -80,7 +80,12 @@
 ++  key-to-rail
   |=  [base=path key=path]
   ^-  (unit vrail)
-  =/  rest=path  (strip-pub key)
+  ::  REQUIRE the leading `pub` (redundant with base) so the map is INJECTIVE.
+  ::  Accepting a pub-less key made /pub/a/gmi and /a/gmi both map to [base/a %gmi]
+  ::  — two distinct index keys aliasing ONE vault grub (a silent index/vault
+  ::  divergence: two /list rows, one body; deleting one leaves the other a ghost).
+  ?.  ?=([%pub *] key)  ~
+  =/  rest=path  t.key
   ::  =(~ rest) not ?~: ?~ would narrow rest to a non-empty lest, and +scag
   ::  casts its result to its input's type (^+ b) — a narrowed input would make
   ::  scag's possibly-empty result nest-fail. dir = all-but-last, leaf = last.

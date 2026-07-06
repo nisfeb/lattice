@@ -28,6 +28,9 @@
     (expect-eq !>(`(unit vrail:lp)`[~ /lattice/pub/vault/index %gmi]) !>((key-to-rail:lp base /pub/index/gmi)))
     ::  empty / degenerate key has no leaf to name
     (expect-eq !>(`(unit vrail:lp)`~) !>((key-to-rail:lp base ~)))
+    ::  a pub-less key is REJECTED (~), not aliased onto /pub/a/gmi's grub — the
+    ::  map must be injective or two index rows share one body.
+    (expect-eq !>(`(unit vrail:lp)`~) !>((key-to-rail:lp base /a/gmi)))
   ==
 ::  +to-pub-row: project a page body onto its index row (now, bytes, sham).
 ::

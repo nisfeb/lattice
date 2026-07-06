@@ -126,12 +126,13 @@
         ;<  ~  bind:m  (index-remote-page ship.ps rel)
         ;<  *  bind:m  (keep:io /page road ~)
         |-
-        ::  take-news-or-wake, not take-news: index-remote-page's early-resolving
-        ::  obelisk/peek send-waits leave uncancellable timers armed; take-news would
-        ::  %skip those stray wakes and pile them in this long-lived fiber's skip
-        ::  queue forever (the same hazard sleep-draining handles for the crawler).
-        ::  A %wake is just drained; only a real %news re-indexes.
-        ;<  nw=news-or-wake:io  bind:m  (take-news-or-wake:io /page)
+        ::  take-news-or-wake-drain, not take-news: index-remote-page's early-
+        ::  resolving obelisk/peek send-waits leave uncancellable timers armed, and a
+        ::  timed-out remote peek's late %peek/%veto still arrives; plain take-news
+        ::  would %skip those and pile them in this long-lived fiber's skip queue
+        ::  forever. -drain consumes both. A %wake is just drained; only a real %news
+        ::  re-indexes.
+        ;<  nw=news-or-wake:io  bind:m  (take-news-or-wake-drain /page)
         ?-  -.nw
             %wake  $
             %news
@@ -1191,14 +1192,15 @@
   ?~  names  (pure:m ~)
   ;<  *  bind:m  (cull-soft:io [%& %& base i.names])
   $(names t.names)
-::  +sleep-draining: sleep for `for`, but consume the stray [/ %timer-wake] pokes
-::  that fire during the window (finding #13) instead of skipping+retaining them.
+::  +sleep-draining: sleep for `for`, but consume the stray inputs that land during
+::  the window (finding #13) instead of skipping+retaining them: both [/ %timer-wake]
+::  pokes AND the late %peek/%veto of a peek-remote-wait that already timed out.
 ::  Early-resolving obelisk-query / peek-remote-wait calls in this fiber leave their
-::  send-wait timers armed (fiberio has no timer-cancel); a plain +sleep (take-wake
-::  with a fixed `until`) skips those non-matching wakes, so they pile up in the
-::  crawler's skip queue forever. Here we arm one deadline, then take ANY wake
-::  (take-wake ~) in a loop, ending only once the clock reaches the deadline — so
-::  each stray is consumed as it fires rather than accumulating.
+::  send-wait timers armed (fiberio has no timer-cancel) and their peeks outstanding;
+::  a plain +sleep (take-wake with a fixed `until`) skips those non-matching inputs,
+::  so they pile up in the crawler's skip queue forever. Here we arm one deadline,
+::  then take-wake-drain ANY of them in a loop, ending only once the clock reaches the
+::  deadline — so each stray is consumed as it fires rather than accumulating.
 ++  sleep-draining
   |=  for=@dr
   =/  m  (fiber:fiber:nexus ,~)
@@ -1207,7 +1209,7 @@
   =/  wake-at=@da  (add now for)
   ;<  ~  bind:m  (send-wait:io wake-at)
   |-
-  ;<  ~  bind:m  (take-wake:io ~)
+  ;<  ~  bind:m  take-wake-drain
   ;<  chk=@da  bind:m  get-time:io
   ?:  (gte chk wake-at)  (pure:m ~)
   $
@@ -1493,8 +1495,11 @@
   ::  size. Bounding that needs a byte-cap at the peek/clam boundary; deferred with
   ::  the rest of the peer path until /follow is exercised.
   =/  keys=(list path)  (scag manifest-max ~(tap in pages))
-  ;<  cnt=@ud  bind:m  (catalog-scan-peer-loop our pub now keys pages 0)
-  ;<  ~        bind:m  (catalog-reconcile-peer our pub pages)
+  ::  bound this peer's page sweep by peer-budget (see +peer-budget) so one staller
+  ::  can't monopolize the tick; deadline is fresh-now + budget, not the sweep's now.
+  ;<  t0=@da    bind:m  get-time:io
+  ;<  cnt=@ud   bind:m  (catalog-scan-peer-loop our pub now keys pages (add t0 peer-budget) 0)
+  ;<  ~         bind:m  (catalog-reconcile-peer our pub pages)
   (pure:m cnt)
 ::  +catalog-reconcile-peer: drop catalog rows for pages this publisher no longer
 ::  lists. SELECT the stored `path`s for (source=our, publisher=pub), diff against
@@ -1529,23 +1534,35 @@
     (catalog-run catalog-db (catalog-page-delete-urql:cat our pub u.pp))
   (catalog-reconcile-loop our pub t.ghosts)
 ++  catalog-scan-peer-loop
-  |=  [our=@p pub=@p now=@da keys=(list path) pages=(set path) cnt=@ud]
+  |=  [our=@p pub=@p now=@da keys=(list path) pages=(set path) deadline=@da cnt=@ud]
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
   ?~  keys  (pure:m cnt)
+  ::  per-peer wall-clock budget (finding F): bail once spent so a peer stalling its
+  ::  page peeks can't starve later peers. Overshoots by at most one remote-timeout
+  ::  (the check is between peeks). ponytail: total worst case = follows*peer-budget;
+  ::  add per-peer cursoring if a LEGIT peer's page set can't finish in one budget.
+  ;<  clk=@da  bind:m  get-time:io
+  ?:  (gte clk deadline)  ~&([%lattice-peer-budget-spent pub cnt] (pure:m cnt))
   =/  stripped=path  (strip-pub:lp i.keys)
-  ?~  stripped  (catalog-scan-peer-loop our pub now t.keys pages cnt)
+  ?~  stripped  (catalog-scan-peer-loop our pub now t.keys pages deadline cnt)
   ;<  body=(unit @t)  bind:m  (read-page-body pub (snip `path`stripped))
-  ?~  body  (catalog-scan-peer-loop our pub now t.keys pages cnt)
+  ?~  body  (catalog-scan-peer-loop our pub now t.keys pages deadline cnt)
   ;<  ~  bind:m  (catalog-index-page our pub i.keys now u.body pages)
-  (catalog-scan-peer-loop our pub now t.keys pages (add cnt 1))
+  (catalog-scan-peer-loop our pub now t.keys pages deadline (add cnt 1))
 ::  +pub-path: a relative publish path ("notes/intro") -> content-map key
 ::  (/pub/notes/intro/gmi). Ported from /lib/lattice.
 ::
 ++  pub-path
   |=  rel=@t
   ^-  path
-  :(welp /pub (stab (crip (weld "/" (trip rel)))) /gmi)
+  ::  normalize to exactly ONE leading slash: a `rel` that already carries one
+  ::  (e.g. a /know-list key `/a/b` handed straight to /know-publish) would else
+  ::  weld to "//a/b", which +stab parses as an EMPTY leading knot -> the page is
+  ::  gained at a junk path that diverges from the natural relative form.
+  =/  raw=tape   (trip rel)
+  =/  bare=tape  ?~(raw raw ?:(=('/' i.raw) t.raw raw))
+  :(welp /pub (stab (crip (weld "/" bare))) /gmi)
 ::  +pub-road: the ABSOLUTE vault road of a published page's gmi grub, from a raw
 ::  url path. Built exactly as apply-pub writes it (pub-path -> key-to-rail), so
 ::  history reads land on the same grub. ~ if the path is unparseable/degenerate.
@@ -1839,6 +1856,13 @@
 ::  never resolves) — hanging /fetch and stalling the crawler's peer sweep.
 ::
 ++  remote-timeout  ^-(@dr ~s30)
+::  +peer-budget: wall-clock a single peer's page sweep may consume before we bail
+::  and move on. Without it, a peer that lists manifest-max pages but stalls each
+::  page peek (up to remote-timeout) could burn manifest-max * remote-timeout (~8.5h)
+::  and starve every later peer in the sequential sweep. A healthy peer answers in
+::  ms so this never bites; a staller is capped and re-scanned next tick.
+::
+++  peer-budget  ^-(@dr ~m30)
 ::  +remote-road: rewrite an absolute road into its /sys/ames mirror on `shp`, so
 ::  a %peek dart routes to that ship. Mirrors peek-remote's own rewrite (kept
 ::  local so peek-remote-wait doesn't fork fiberio just to add a deadline).
@@ -1896,7 +1920,13 @@
   :+  ~  q.state
   ?+  in  [%skip ~]
       ~  [%wait ~]
-      [~ %veto *]  [%done ~]
+      ::  a veto gives up (~) like a timeout, but ONLY for OUR peek's dart — gate on
+      ::  its wire, like the %peek branch, so a veto of some other dart can't resolve
+      ::  the peek we're actually awaiting. peek-remote-wait always sends a %node dart,
+      ::  so match that shape (wire sits at a consistent axis only within one branch).
+      [~ %veto %node * * *]
+    ?.  =(pwire wire.dart.u.in)  [%skip ~]
+    [%done ~]
       [~ %peek * *]
     ?.  =(pwire wire.u.in)  [%skip ~]
     [%done `seen.u.in]
@@ -1927,6 +1957,50 @@
     ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
     =/  wak=path  !<(path q.sage.u.in)
     ?.  ?&(?=([%wait @ ~] wak) =(until (slav %da i.t.wak)))  [%skip ~]
+    [%done %wake ~]
+  ==
+::  +take-wake-drain: like fiberio's take-wake ~, but also DRAINS a stray remote
+::  %peek/%veto — the late response of a peek-remote-wait that already timed out in
+::  this fiber (fiberio has no dart-cancel, so an abandoned peek's answer still
+::  arrives). fiberio's take-wake %skips a stray %peek (piling it in the skip queue
+::  forever) and CRASHES on a stray %veto; here both are consumed. Used by the
+::  crawler's sleep-draining loop, which re-checks the clock after each drain.
+++  take-wake-drain
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %poke * *]  ?:(=([/ %timer-wake] p.sage.u.in) [%done ~] [%skip ~])
+      [~ %peek * *]  [%done ~]
+      [~ %veto *]    [%done ~]
+  ==
+::  +take-news-or-wake-drain: take-news-or-wake that ALSO drains a stray remote
+::  %peek/%veto (as a %wake), so a /sub keep loop clears the late peeks its
+::  index-remote-page calls leave behind instead of piling them forever. A real
+::  %news on news-wire still re-indexes; anything else is skipped.
+++  take-news-or-wake-drain
+  |=  news-wire=wire
+  =/  m  (fiber:fiber:nexus ,news-or-wake:io)
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %news * *]
+    ?.  =(news-wire wire.u.in)  [%skip ~]
+    [%done %news wave.u.in]
+      [~ %poke * *]
+    ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
+    [%done %wake ~]
+      [~ %peek * *]  [%done %wake ~]
+      ::  drain a STALE peek's veto (a stray from a timed-out remote peek), but NOT a
+      ::  veto of THIS loop's own keep (news-wire) — that means the subscription died,
+      ::  and swallowing it as a keepalive would hide the failure. Gate on the dart
+      ::  wire like take-peek-or-wake; both are %node darts, told apart by wire.
+      [~ %veto %node * * *]
+    ?:  =(news-wire wire.dart.u.in)  [%skip ~]
     [%done %wake ~]
   ==
 ::  +page-rel: normalize a fetch/subscribe spur to the vault-relative page path.
