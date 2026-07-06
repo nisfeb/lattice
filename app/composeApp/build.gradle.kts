@@ -42,6 +42,12 @@ kotlin {
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.okhttp)
             implementation(libs.okhttp.sse)
+            // Coil 3: multiplatform async image loading for markdown web
+            // images. coil-network-okhttp wires the http fetcher (no loader
+            // setup needed); coil-svg adds vector rendering.
+            implementation(libs.coil.compose)
+            implementation(libs.coil.network.okhttp)
+            implementation(libs.coil.svg)
         }
         androidMain.dependencies {
             implementation(libs.androidx.activity.compose)

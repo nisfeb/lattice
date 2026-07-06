@@ -11,8 +11,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowUpward
@@ -145,9 +143,18 @@ fun ShipBrowserScreen(
                 Text("${f.name}  ·  ${f.mark}", style = MaterialTheme.typography.labelMedium)
             }
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                Text(f.body, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
-            }
+            // Render by type: markdown/gemtext get their rich views, code/text a
+            // selectable monospace view. urb:// links in a browsed file are inert
+            // (the file reader isn't a page browser); web links open externally.
+            ContentView(
+                mark = f.mark,
+                name = f.name,
+                body = f.body,
+                currentUrl = activeShip?.let { "urb://$it${joinPath(path, f.name)}" } ?: "",
+                onNavigate = {},
+                linkColor = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.fillMaxSize(),
+            )
         } else {
             listing?.let { l ->
                 if (l.truncated) {

@@ -16,6 +16,9 @@ class BrowserTab {
     var address by mutableStateOf("")
     var lines by mutableStateOf<List<GemLine>>(emptyList())
     var body by mutableStateOf("")
+    /** The fetched page's grub mark (e.g. "gmi", "md"); drives which renderer
+     *  the reader uses. Blank is treated as gemtext (pages are gemtext). */
+    var mark by mutableStateOf("")
     var loading by mutableStateOf(false)
     var error by mutableStateOf<String?>(null)
     var visited by mutableStateOf(setOf<String>())
