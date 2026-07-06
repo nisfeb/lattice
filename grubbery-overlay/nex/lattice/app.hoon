@@ -126,9 +126,18 @@
         ;<  ~  bind:m  (index-remote-page ship.ps rel)
         ;<  *  bind:m  (keep:io /page road ~)
         |-
-        ;<  *  bind:m  (take-news:io /page)
-        ;<  ~  bind:m  (index-remote-page ship.ps rel)
-        $
+        ::  take-news-or-wake, not take-news: index-remote-page's early-resolving
+        ::  obelisk/peek send-waits leave uncancellable timers armed; take-news would
+        ::  %skip those stray wakes and pile them in this long-lived fiber's skip
+        ::  queue forever (the same hazard sleep-draining handles for the crawler).
+        ::  A %wake is just drained; only a real %news re-indexes.
+        ;<  nw=news-or-wake:io  bind:m  (take-news-or-wake:io /page)
+        ?-  -.nw
+            %wake  $
+            %news
+          ;<  ~  bind:m  (index-remote-page ship.ps rel)
+          $
+        ==
       ::  /crawler.sig: periodic catalog sweep. Each tick re-indexes our own
       ::  published pages into obelisk (runs immediately on start, then every
       ::  interval). ponytail: full re-scan per tick (fine for a personal store);
@@ -345,9 +354,12 @@
     =/  db=@tas  (~(gut by args) 'db' 'sys')
     =/  q=(unit @t)  (~(get by args) 'q')
     ?~  q  (send-err eyre-id 400 'missing q param')
-    ;<  err=(unit tang)  bind:m  (obelisk-exec db (trip u.q))
-    ?~  err  (send-ok eyre-id)
-    (send-err eyre-id 502 'obelisk did not ack (agent missing?)')
+    ::  route through obelisk-query (the serializing obelisk owner), NOT raw
+    ::  obelisk-exec: a direct poke's result fact lands on the shared /server sub,
+    ::  where a concurrent owner-routed query could misread it as its own result.
+    ;<  res=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query db (trip u.q))
+    ?:  ?=(%| -.res)  (send-err eyre-id 502 'obelisk did not ack (agent missing?)')
+    (send-ok eyre-id)
   ::
       [%'GET' %obelisk-query]
     =/  db=@tas  (~(gut by args) 'db' 'sys')
@@ -842,9 +854,8 @@
   ::  Reindex). Ack-blocking but the client treats it fire-and-forget; 502 only
   ::  when obelisk is absent.
       [%'POST' %know-reindex]
-    ;<  err=(unit tang)  bind:m  know-reindex
-    ?~  err  (send-ok eyre-id)
-    (send-err eyre-id 502 'obelisk did not ack (agent missing?)')
+    ;<  ~  bind:m  know-reindex
+    (send-ok eyre-id)
   ::  bulk import: body = a /know-all export; lands each entry VERBATIM (tags +
   ::  original updated preserved) via %import. Owner-only.
       [%'POST' %know-import]
@@ -1341,7 +1352,7 @@
 ::  (the Explore pane's Reindex button); the index is stale between reindexes.
 ::
 ++  know-reindex
-  =/  m  (fiber:fiber:nexus ,(unit tang))
+  =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  entries=(map path know-entry:lk)  bind:m  read-know-map
   ;<  ~  bind:m  (catalog-run %sys (weld "CREATE DATABASE " (trip catalog-db)))
@@ -1350,7 +1361,10 @@
     %+  turn  ~(tap by entries)
     |=  [key=path e=know-entry:lk]
     [(spat key) updated.e ~(tap in tags.e)]
-  (obelisk-exec catalog-db (know-index-populate-urql:cat rows))
+  ::  populate via catalog-run (obelisk-query -> the serializing obelisk owner), NOT
+  ::  raw obelisk-exec: a direct poke's result fact lands on the shared /server sub,
+  ::  where a concurrent owner-routed query could misread it as its own result.
+  (catalog-run catalog-db (know-index-populate-urql:cat rows))
 ::  +catalog-index-page: analyze one page body and write its catalog rows — the
 ::  two-poke page upsert (ensure INSERT + content refresh) plus the term index.
 ::  pat is the content-map key (/pub/.../gmi); the url is derived inside the urQL
@@ -1395,7 +1409,8 @@
   ;<  now=@da  bind:m  get-time:io
   ;<  body=(unit @t)  bind:m  (read-page-body pub rel)
   ?~  body  (pure:m ~)
-  ;<  ix=pub-index:lp  bind:m  (read-pub-index-remote pub)
+  ;<  u-ix=(unit pub-index:lp)  bind:m  (read-pub-index-remote pub)
+  =/  ix=pub-index:lp  (fall u-ix *pub-index:lp)
   =/  pat=path  (weld /pub (snoc rel %gmi))
   (catalog-index-page our pub pat now u.body ~(key by ix))
 ::  +catalog-scan-self: index every one of OUR OWN published pages into the
@@ -1456,7 +1471,18 @@
   |=  [our=@p pub=@p now=@da]
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
-  ;<  ix=pub-index:lp  bind:m  (read-pub-index-remote pub)
+  ;<  u-ix=(unit pub-index:lp)  bind:m  (read-pub-index-remote pub)
+  ::  unreachable / malformed / vetoed peer -> ~ (NOT a genuine empty index). Index
+  ::  and reconcile NOTHING: reconciling against an empty set deletes every stored
+  ::  row for a merely-offline peer (a reachable-but-empty peer yields `~ *pub-index
+  ::  and reconciles correctly, dropping the pages it really unpublished).
+  ?~  u-ix  (pure:m 0)
+  ::  drop keys whose knots don't reparse. An untrusted peer can serve a path with a
+  ::  byte outside the knot charset (uppercase/space/control); it survives the clam,
+  ::  then stores lossily (false-ghosts a live page on reconcile) and crashes +stab.
+  ::  Keep only canonical keys (rush-guarded) so poison never enters the index.
+  =/  ix=pub-index:lp
+    (~(gas by *pub-index:lp) (skim ~(tap by u.u-ix) |=([k=path *] ?=(^ (rush (spat k) stap)))))
   =/  pages=(set path)  ~(key by ix)
   ::  cap the indexed fan-out per peer (untrusted); pages stays full for
   ::  internal-link detection. ponytail: index the first manifest-max keys;
@@ -1492,8 +1518,15 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?~  ghosts  (pure:m ~)
+  ::  ghosts are stored cords; a row written before ingest-filtering (a malicious
+  ::  peer, pre-upgrade) can hold an unparseable knot that would crash +stab and the
+  ::  sweep fiber. rush-guard: skip+log an unparseable ghost rather than crash.
+  =/  pp=(unit path)  (rush i.ghosts stap)
+  ?~  pp
+    ~&  [%lattice-reconcile-bad-ghost i.ghosts]
+    (catalog-reconcile-loop our pub t.ghosts)
   ;<  ~  bind:m
-    (catalog-run catalog-db (catalog-page-delete-urql:cat our pub (stab i.ghosts)))
+    (catalog-run catalog-db (catalog-page-delete-urql:cat our pub u.pp))
   (catalog-reconcile-loop our pub t.ghosts)
 ++  catalog-scan-peer-loop
   |=  [our=@p pub=@p now=@da keys=(list path) pages=(set path) cnt=@ud]
@@ -1612,7 +1645,13 @@
   =/  tools=(list [nom=@t des=@t params=(list [pn=@t pd=@t]) reqd=(list @t)])
     :~  ['know-list' 'List the ship knowledge items (keys + metadata, no bodies).' ~ ~]
         ['know-tags' 'List the tag vocabulary with per-tag item counts.' ~ ~]
-        ['know-explore' 'List every knowledge item with its body and tags (for filtering).' ~ ~]
+        :*  'know-explore'  'Filter knowledge items by tag and/or a body-substring query; returns matching keys + metadata + tags (no bodies).'
+            :~  ['tags' 'comma-separated tags to filter by (optional)']
+                ['match' 'any (OR, the default) or all (AND) across the given tags']
+                ['q' 'substring to match within item bodies (optional)']
+            ==
+            ~
+        ==
         :*  'know-read'  'Read one knowledge item (body + tags) by key, e.g. /projects/x.'
             ~[['key' 'item key/path, e.g. /projects/x']]  ~['key']
         ==
@@ -2202,7 +2241,7 @@
     ::  live entry.
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     ?.  (~(has by trash) key)  (pure:m ~)
-    ;<  ~  bind:m  (cull:io (entry-road tvbase key))
+    ;<  *  bind:m  (cull-soft:io (entry-road tvbase key))
     (put-file tx [/lattice %know-index] (~(del by trash) key))
   ::
       %del
@@ -2256,7 +2295,7 @@
     ::  row so a later %restore can't resurrect it over the moved-in entry.
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     ?.  (~(has by trash) tk)  (pure:m ~)
-    ;<  ~  bind:m  (cull:io (entry-road tvbase tk))
+    ;<  *  bind:m  (cull-soft:io (entry-road tvbase tk))
     (put-file tx [/lattice %know-index] (~(del by trash) tk))
   ::
       %restore
@@ -2302,7 +2341,7 @@
     ;<  ~  bind:m  (gain:io road %.y)
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     ?.  (~(has by trash) key)  (pure:m ~)
-    ;<  ~  bind:m  (cull:io (entry-road tvbase key))
+    ;<  *  bind:m  (cull-soft:io (entry-road tvbase key))
     (put-file tx [/lattice %know-index] (~(del by trash) key))
   ::
       %import-trashed
@@ -2383,18 +2422,21 @@
 ::
 ++  read-pub-index-remote
   |=  shp=@p
-  =/  m  (fiber:fiber:nexus ,pub-index:lp)
+  =/  m  (fiber:fiber:nexus ,(unit pub-index:lp))
   ^-  form:m
   ;<  ms=(unit seen:nexus)  bind:m
     (peek-remote-wait [%& %& (weld app-base /pub) %index] shp)
-  ?~  ms  (pure:m *pub-index:lp)
-  ?.  ?=([%& %file *] u.ms)  (pure:m *pub-index:lp)
+  ::  ~ means the read FAILED (timeout / not-a-file / bad clam) — distinct from a
+  ::  reachable peer with a genuinely empty index (`~ *pub-index). Callers use the
+  ::  difference: reconcile must NOT run on a failure (it would delete every row).
+  ?~  ms  (pure:m ~)
+  ?.  ?=([%& %file *] u.ms)  (pure:m ~)
   ::  CROSS-SHIP peek content is a boom (raw noun), not a vase — need-vase would
   ::  crash the crawler. Extract via sang-noun and clam in a mule so a malformed
-  ::  or hostile peer index yields an empty index instead of crashing the sweep.
+  ::  or hostile peer index yields ~ (treated as unreachable) instead of crashing.
   =/  res=(each pub-index:lp tang)
     (mule |.(;;(pub-index:lp (sang-noun:tarball sang.p.u.ms))))
-  ?:(?=(%| -.res) (pure:m *pub-index:lp) (pure:m p.res))
+  ?:(?=(%| -.res) (pure:m ~) (pure:m `p.res))
 ::  +read-follows: the crawler's follow set. ABSOLUTE road (app-base) so it reads
 ::  the same from the depth-2 request fiber and the depth-0 crawler fiber.
 ::

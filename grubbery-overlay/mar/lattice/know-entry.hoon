@@ -12,7 +12,7 @@
     ^-  ^json
     %-  pairs:enjs
     :~  body+s+body.e
-        updated+(numb:enjs `@`updated.e)
+        updated+s+(scot %da updated.e)
         tags+a+(turn ~(tap in tags.e) |=(t=@t s+t))
     ==
   --

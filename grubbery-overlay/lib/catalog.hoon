@@ -237,12 +237,17 @@
   ::  with `#Urbit #urbit` (or a repeated hashtag) would emit two INSERTs on the
   ::  same PK (source,publisher,path,tag); the 2nd dup-keys and ABORTS the whole
   ::  refresh poke, mis-indexing the page every crawl. A set collapses collisions.
+  ::  dedup on the ESCAPED literal, not the raw tag: urq-esc collapses control
+  ::  bytes (<32) to one space, so two raw tags differing only by an interior
+  ::  control byte escape to the SAME literal -> duplicate PK -> the whole refresh
+  ::  poke aborts. Escaping first, then setting, collapses those collisions too.
+  =/  tag-lits=(set tape)
+    (~(gas in *(set tape)) (turn tags.analysis |=(t=@t (urq-esc (trip t)))))
   =/  tag-inserts=tape
     %-  zing
-    %+  turn  ~(tap in (~(gas in *(set @t)) tags.analysis))
-    |=  t=@t
+    %+  turn  ~(tap in tag-lits)
+    |=  tg=tape
     ^-  tape
-    =/  tg=tape  (urq-esc (trip t))
     %-  zing
     :~  "INSERT INTO catalog-tags (source, publisher, path, tag) VALUES ("
         st  ", "  pt  ", '"  ek  "', '"  tg  "');"
@@ -348,16 +353,24 @@
   =/  ek=tape   (urq-esc (trip (spat pat)))
   =/  where=tape
     :(weld " WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
+  ::  dedup on the ESCAPED term literal (first tf wins): urq-esc collapses control
+  ::  bytes to a space, so two raw terms differing only by an interior control byte
+  ::  escape to the SAME literal -> duplicate PK -> the terms poke aborts. The
+  ::  analyzer deduped on the raw form, which doesn't cover post-escape collisions.
+  =/  term-map=(map tape @ud)
+    %+  roll  terms.analysis
+    |=  [tm=term acc=(map tape @ud)]
+    =/  tx=tape  (urq-esc (trip term.tm))
+    ?:  (~(has by acc) tx)  acc
+    (~(put by acc) tx tf.tm)
   =/  inserts=tape
     %-  zing
-    %+  turn  terms.analysis
-    |=  tm=term
+    %+  turn  ~(tap by term-map)
+    |=  [tx=tape f=@ud]
     ^-  tape
-    =/  tx=tape  (urq-esc (trip term.tm))
-    =/  f=tape   (trip (scot %ud tf.tm))
     %-  zing
     :~  "INSERT INTO catalog-terms (source, publisher, path, term, tf) VALUES ("
-        st  ", "  pt  ", '"  ek  "', '"  tx  "', "  f  ");"
+        st  ", "  pt  ", '"  ek  "', '"  tx  "', "  (trip (scot %ud f))  ");"
     ==
   (weld (weld "DELETE FROM catalog-terms" where) inserts)
 ::

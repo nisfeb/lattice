@@ -17,9 +17,9 @@
     ^-  [@t ^json]
     :-  (spat k)
     %-  pairs:enjs
-    :~  ['updated' (numb:enjs `@`updated.v)]
+    :~  ['updated' s+(scot %da updated.v)]
         ['bytes' (numb:enjs bytes.v)]
-        ['hash' (numb:enjs `@`hash.v)]
+        ['hash' s+(scot %uv hash.v)]
     ==
   --
 ++  grab

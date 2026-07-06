@@ -17,7 +17,7 @@
     :-  (spat k)
     %-  pairs:enjs
     =/  rows=(list [@t ^json])
-      :~  ['updated' (numb:enjs `@`updated.v)]
+      :~  ['updated' s+(scot %da updated.v)]
           ['bytes' (numb:enjs bytes.v)]
           ['tags' [%a (turn ~(tap in tags.v) |=(t=@t `^json`[%s t]))]]
       ==
