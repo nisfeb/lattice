@@ -584,24 +584,13 @@
   ?~  t.clauses  i.clauses
   :(weld i.clauses " AND " $(clauses t.clauses))
 ::
-::  +urq-esc: make an arbitrary tape safe inside an obelisk single-quoted
-::  string literal. Backslash-escapes ' and \, AND replaces every control byte
-::  (< 32: newline, CR, tab, …) with a space — obelisk's urQL string lexer can
-::  terminate a literal at a raw control byte, aborting the whole poke, so any
-::  @t that might carry one (a multi-line manifest body, a CRLF-authored page's
-::  heading/title/link/tag) must be neutralized. Centralizing it here means
-::  every generator (page rows, manifest, classify, fetch, explore) is safe.
-::  (A superset of /lib/lattice's +urq-esc, whose knowledge values are
-::  single-token and so never hit the control-byte case.)
-++  urq-esc
-  |=  s=tape
-  ^-  tape
-  %-  zing
-  %+  turn  s
-  |=  c=@tD
-  ^-  tape
-  ?:  (lth c 32)  ~[' ']            :: control byte -> space (lexer-safe)
-  ?:  =(c 39)  ~[`@tD`92 `@tD`39]   :: ' -> \'
-  ?:  =(c 92)  ~[`@tD`92 `@tD`92]   :: \ -> \\
-  ~[c]
+::  +urq-esc — the single escaper every generator above routes @t values
+::  through — lives in /lib/catalog-analyzer (bare-imported wholesale up
+::  top), NOT here: this lib's grubbery-only /< import keeps it out of
+::  clay's ford, so the escaper sits in the import-free analyzer lib where
+::  /tests/lib/catalog-analyzer can regression-test it. Contract (locked
+::  by those tests): \' is obelisk's ONLY lexer escape, so ' -> \' and
+::  backslashes/control bytes -> spaces, NEVER doubled — a doubled
+::  trailing \ would emit ...\', eat the caller's closing quote, and
+::  swallow the rest of the poke as string content (urQL injection).
 --

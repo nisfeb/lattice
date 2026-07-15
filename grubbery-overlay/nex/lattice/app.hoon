@@ -121,10 +121,19 @@
         ::  an un-gained node and never fire.
         =/  road=road:tarball
           (remote-road [%& %& (weld (weld app-base /pub/vault) rel) %gmi] ship.ps)
-        ::  index once up front — don't gate the initial index on the (remote) keep
-        ::  handshake, so the page lands even if the subscription is slow to arm.
-        ;<  ~  bind:m  (index-remote-page ship.ps rel)
+        ::  arm the keep BEFORE the initial index. keep:io's initial bond wave
+        ::  is consumed either way, so with the keep armed first a peer edit
+        ::  during the (slow: remote body/index peeks + owner round-trips)
+        ::  initial index always fires a real second wave — the index's inner
+        ::  takes %skip it, grubbery re-offers skipped inputs at the next bind,
+        ::  and the loop's take below consumes it and re-indexes. Indexing
+        ::  first opened a multi-second window where an edit fired no wave at
+        ::  all and was never re-indexed (a page-sub is not a follow, so no
+        ::  ~h6 sweep corrects it). Cost: the first index now waits for the
+        ::  (remote) keep handshake — a peer too slow to ack the keep would
+        ::  have timed out the index's body peek anyway.
         ;<  *  bind:m  (keep:io /page road ~)
+        ;<  ~  bind:m  (index-remote-page ship.ps rel)
         |-
         ::  take-news-or-wake-drain, not take-news: index-remote-page's early-
         ::  resolving obelisk/peek send-waits leave uncancellable timers armed, and a
@@ -297,8 +306,18 @@
     =/  pu=(unit [=ship =path])  (parse-urb-url u.raw)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
     ;<  body=(unit @t)  bind:m  (read-page-body ship.u.pu path.u.pu)
-    ?~  body  (send-err eyre-id 404 'not found')
-    (send-json eyre-id (mark-body-json 'gmi' u.body))
+    ?^  body  (send-json eyre-id (mark-body-json 'gmi' u.body))
+    ::  /manifest discovery fallback: the retired agent auto-published a manifest
+    ::  at this reserved spur, and the client still probes urb://<ship>/manifest
+    ::  to badge publishers (publishes()) + list their files. The grubbery-native
+    ::  store keeps no manifest grub, so synthesize one from the ship's pub index
+    ::  instead. An unreachable/denied index stays a 404, so a non-lattice ship
+    ::  never badges as a publisher; a page the user really published at
+    ::  /manifest was already served above.
+    ?.  =(/manifest path.u.pu)  (send-err eyre-id 404 'not found')
+    ;<  mix=(unit pub-index:lp)  bind:m  (read-pub-index-any ship.u.pu)
+    ?~  mix  (send-err eyre-id 404 'not found')
+    (send-json eyre-id (mark-body-json 'gmi' (manifest-gmi u.mix)))
   ::  ── cross-ship browse (federated read-only tree reader) ──
   ::  list ANY grubbery ship's directory (not just lattice peers): ship=~x&path=/y.
   ::  SHALLOW (one level) so a huge/hostile remote tree can't balloon memory;
@@ -359,7 +378,7 @@
     ::  obelisk-exec: a direct poke's result fact lands on the shared /server sub,
     ::  where a concurrent owner-routed query could misread it as its own result.
     ;<  res=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query db (trip u.q))
-    ?:  ?=(%| -.res)  (send-err eyre-id 502 'obelisk did not ack (agent missing?)')
+    ?:  ?=(%| -.res)  (send-obelisk eyre-id res)
     (send-ok eyre-id)
   ::
       [%'GET' %obelisk-query]
@@ -367,7 +386,7 @@
     =/  q=(unit @t)  (~(get by args) 'q')
     ?~  q  (send-err eyre-id 400 'missing q param')
     ;<  res=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query db (trip u.q))
-    (send-json eyre-id (obelisk-json res))
+    (send-obelisk eyre-id res)
   ::  ── catalog routes (step 5) ──
       [%'GET' %catalog-init]
     ;<  ~  bind:m  catalog-init
@@ -379,7 +398,7 @@
   ::
       [%'GET' %catalog-list]
     ;<  cl=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query catalog-db catalog-list-urql:cat)
-    (send-json eyre-id (obelisk-json cl))
+    (send-obelisk eyre-id cl)
   ::
       [%'GET' %catalog-search]
     =/  term=(unit @t)  (~(get by args) 'term')
@@ -387,17 +406,24 @@
     =/  nt=(unit @t)  (catalog-normalize-term:cat (trip u.term))
     ::  a non-indexable term (too short / stop word) matches nothing — return an
     ::  empty result (200), NOT a 400, so a client fanning out one call per query
-    ::  word doesn't error on a common stop word.
-    ?~  nt  (send-json eyre-id a+~[(pairs:enjs:format ~[['rows' a+~]])])
+    ::  word doesn't error on a common stop word. Same flat obelisk shape (and
+    ::  the same column set) the old agent hardcoded for this case.
+    ?~  nt
+      %+  send-json  eyre-id
+      %-  pairs:enjs:format
+      :~  ['ok' b+&]
+          ['columns' a+(turn ~['source' 'publisher' 'path' 'tf'] |=(c=@t s+c))]
+          ['rows' a+~]
+      ==
     =/  urql=tape  (catalog-search-urql:cat (trip u.nt))
     ;<  cs=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query catalog-db urql)
-    (send-json eyre-id (obelisk-json cs))
+    (send-obelisk eyre-id cs)
   ::
       [%'GET' %catalog-query]
     =/  cq=(unit @t)  (~(get by args) 'q')
     ?~  cq  (send-err eyre-id 400 'missing q param')
     ;<  cr=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query catalog-db (trip u.cq))
-    (send-json eyre-id (obelisk-json cr))
+    (send-obelisk eyre-id cr)
   ::  filtered catalog listing. category/publisher/source all optional; a present
   ::  but unparseable @p is a 400 (not silently dropped to "match all").
       [%'GET' %catalog-explore]
@@ -412,14 +438,14 @@
     =/  srct=tape  ?~(src "" (trip (scot %p u.src)))
     ;<  cx=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db (catalog-explore-urql:cat ct pubt srct))
-    (send-json eyre-id (obelisk-json cx))
+    (send-obelisk eyre-id cx)
   ::  one full catalog row by its url (urb://<pub>/<catalog-path>).
       [%'GET' %catalog-fetch]
     =/  url=(unit @t)  (~(get by args) 'url')
     ?~  url  (send-err eyre-id 400 'missing url param')
     ;<  cf=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db (catalog-fetch-urql:cat (trip u.url)))
-    (send-json eyre-id (obelisk-json cf))
+    (send-obelisk eyre-id cf)
   ::  backlinks: which pages link TO `url`. `url` is matched VERBATIM against the
   ::  authored link target (what the author wrote after `=> ` — e.g. urb://~pub/x
   ::  or /x), not a normalized catalog url. Returns (source, publisher, path) +
@@ -429,7 +455,7 @@
     ?~  url  (send-err eyre-id 400 'missing url param')
     ;<  cb=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db (catalog-backlinks-urql:cat (trip u.url)))
-    (send-json eyre-id (obelisk-json cb))
+    (send-obelisk eyre-id cb)
   ::  table of contents: one page's headings in order. url is the catalog url
   ::  (urb://<pub>/pub/<spur>/gmi); source is always us (the crawler).
       [%'GET' %catalog-toc]
@@ -440,7 +466,7 @@
     ;<  our=@p  bind:m  bowl-our
     ;<  ct=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db (catalog-toc-urql:cat our ship.u.pu (trip (spat path.u.pu))))
-    (send-json eyre-id (obelisk-json ct))
+    (send-obelisk eyre-id ct)
   ::  page keys carrying a tag.
       [%'GET' %catalog-by-tag]
     =/  tag=(unit @t)  (~(get by args) 'tag')
@@ -450,22 +476,22 @@
     ::  query would never match. Matches the norm-tag/normalize-term convention.
     ;<  cb=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db (catalog-by-tag-urql:cat (cass (trip u.tag))))
-    (send-json eyre-id (obelisk-json cb))
+    (send-obelisk eyre-id cb)
   ::  per-page classification metadata (source/publisher/path/summary).
       [%'GET' %catalog-meta]
     ;<  cm=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db catalog-meta-list-urql:cat)
-    (send-json eyre-id (obelisk-json cm))
+    (send-obelisk eyre-id cm)
   ::  the classifier worklist: OUR unclassified pages, newest first.
       [%'GET' %catalog-pending]
     ;<  cp=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db catalog-pending-list-urql:cat)
-    (send-json eyre-id (obelisk-json cp))
+    (send-obelisk eyre-id cp)
   ::  the live (crawler-derived) category vocabulary.
       [%'GET' %catalog-vocab]
     ;<  cv=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db catalog-vocab-urql:cat)
-    (send-json eyre-id (obelisk-json cv))
+    (send-obelisk eyre-id cv)
   ::  candidate ships to follow. grubbery has no gall SCRY (only watch/poke), so
   ::  the %contacts book can't be read here; crawler targets are set explicitly
   ::  via /follow instead. Route kept for contract shape; ponytail: bridge via a
@@ -841,19 +867,26 @@
     ;<  now=@da  bind:m  bowl-now
     ;<  n=@ud  bind:m  (catalog-scan-peer our u.pub now)
     (send-json eyre-id (pairs:enjs:format ~[['indexed' (numb:enjs:format n)]]))
-  ::  sweep everything now: our own pages + every followed peer (synchronous).
+  ::  sweep everything now: our own pages + every followed peer. Respond FIRST
+  ::  ({"ok":true}, the old agent's fire-and-forget contract — the client's 10s
+  ::  read timeout can't outlast a real sweep), THEN run the sweep in this same
+  ::  request fiber. Safe: a completed %simple response deletes the connection's
+  ::  conns entry in grubbery, so eyre's later leave takes the no-binding branch
+  ::  and no %handle-http-cancel can reach the dispatcher to cull this fiber
+  ::  mid-sweep (grubbery handle-eyre-action %send / on-leave %http-response).
       [%'POST' %catalog-sweep]
-    ;<  self=@ud  bind:m  catalog-scan-self
+    ;<  ~  bind:m  (send-ok eyre-id)
+    ;<  *  bind:m  catalog-scan-self
     ;<  our=@p   bind:m  bowl-our
     ;<  now=@da  bind:m  bowl-now
-    ;<  peers=@ud  bind:m  (catalog-scan-peers our now)
-    (send-json eyre-id (pairs:enjs:format ~[['indexed' (numb:enjs:format (add self peers))]]))
+    ;<  *  bind:m  (catalog-scan-peers our now)
+    (pure:m ~)
   ::  arbitrary urQL passthrough (body = the query), run against the lattice db.
   ::  Owner-only like all routes.
       [%'POST' %know-query]
     =/  urql=@t  (req-body req)
     ;<  kq=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query catalog-db (trip urql))
-    (send-json eyre-id (obelisk-json kq))
+    (send-obelisk eyre-id kq)
   ::  rebuild the obelisk knowledge index from the live vault (Explore pane's
   ::  Reindex). Ack-blocking but the client treats it fire-and-forget; 502 only
   ::  when obelisk is absent.
@@ -1139,6 +1172,24 @@
 ::  roads so it resolves identically from depth-2 request fibers and the depth-0
 ::  crawler.
 ::
+::  KNOWN LIMIT (review: unbounded born growth): every query mints a fresh
+::  unique-nonce rail, and grubbery never reclaims a rail's born hist skeleton —
+::  delete only appends a tomb ("NOT born - it's a high-water mark"), and %lose
+::  (drop-hist) rewrites matched entries as tombs IN PLACE, appending a fresh
+::  wavefront when the top matches, so no dart shrinks it (verified against
+::  drop-hist; adding %lose to these culls would reclaim nothing and grow the
+::  hist by one entry per call). Content lobes ARE reclaimed — the result grub
+::  is %temp, so cull's tomb-temp drops its ject ref — leaving ~one rail + two
+::  tombed hist entries of permanent skeleton per query. The nonce cannot be
+::  pooled or reused per caller: after a 30s owner timeout the owner may still
+::  write the OLD query's result to that rail, and a reused name would deliver
+::  it to the NEXT query's keep — cross-query contamination, the class of bug
+::  this owner routing exists to prevent. ponytail: ceiling is slow monotonic
+::  born growth (order 100s of bytes per obelisk round-trip; ~1.2k rails/day
+::  per 100 pages crawled on the ~h6 tick). Real fix is a fiber-to-fiber
+::  poke-back — the owner pokes the result straight to the caller's grub, no
+::  result rail at all — which needs a take-poke path in every waiting caller.
+::
 ++  obelisk-query
   |=  [db=@tas urql=tape]
   =/  m  (fiber:fiber:nexus ,(each (list cmd-result:ast) tang))
@@ -1176,9 +1227,11 @@
 ::  at owner startup: any grub sitting there is orphaned (finding #6) — a caller
 ::  that timed out (30s) or disconnected before the owner wrote its result, so the
 ::  owner re-created a grub nobody culls. Callers are ephemeral, so at owner (re)start
-::  nothing there is live. ponytail: startup sweep bounds the leak; on a fast local
-::  obelisk callers get their wave in ms and never orphan, so steady-state growth is
-::  ~0. Upgrade to a fiber-to-fiber poke-back (no shared grub) if it ever matters.
+::  nothing there is live. ponytail: startup sweep bounds the CONTENT leak (live
+::  orphans' lobes); the culled rails' born hist skeletons are permanent either way
+::  — see obelisk-query's KNOWN LIMIT. On a fast local obelisk callers get their
+::  wave in ms and never orphan, so steady-state orphan growth is ~0. Upgrade to a
+::  fiber-to-fiber poke-back (no shared grub) if it ever matters.
 ++  sweep-obk-out
   |=  base=path
   =/  m  (fiber:fiber:nexus ,~)
@@ -1245,45 +1298,89 @@
   =/  parsed  (mule |.(;;((each (list cmd-result:ast) tang) en)))
   ?:  ?=(%| -.parsed)  (pure:m [%| p.parsed])
   (pure:m p.parsed)
-::  +obelisk-json: render an obelisk result (or error) as JSON. Rows become
-::  objects keyed by column name; dime values scot'd by aura.
+::  +obelisk-json: render an obelisk result (or error) as JSON — the retired
+::  gall agent's FLAT-OBJECT contract, which the Kotlin client's catalog reads
+::  and the ship's MCP tools parse: success is {ok:true, action, relation,
+::  count, columns:[names], rows:[[cell,..]]} (rows are ORDERED ARRAYS, column
+::  order from the result-set's first vector); error is {ok:false, error}.
+::  Ported from the old lib's +ob-results-json (client contract, byte-for-byte).
 ::
 ++  obelisk-json
   |=  res=(each (list cmd-result:ast) tang)
   ^-  json
   ?:  ?=(%| -.res)
-    (frond:enjs:format 'error' s+(crip (zing (turn p.res |=(=tank ~(ram re tank))))))
+    (obelisk-err-json (obelisk-tang-text p.res))
   =/  results=(list result:ast)  (zing (turn p.res |=(cr=cmd-result:ast +.cr)))
-  :-  %a
-  %+  turn  results
-  |=  r=result:ast
-  ^-  json
-  ?-  -.r
-    %action         (frond:enjs:format 'action' s+action.r)
-    %relation       (frond:enjs:format 'relation' s+relation.r)
-    %message        (frond:enjs:format 'message' s+msg.r)
-    %vector-count   (frond:enjs:format 'count' (numb:enjs:format count.r))
-    %server-time    (frond:enjs:format 'server-time' s+(scot %da date.r))
-    %security-time  (frond:enjs:format 'security-time' s+(scot %da date.r))
-    %schema-time    (frond:enjs:format 'schema-time' s+(scot %da date.r))
-    %data-time      (frond:enjs:format 'data-time' s+(scot %da date.r))
-    %result-set     (frond:enjs:format 'rows' a+(turn set.r obelisk-row-json))
-  ==
-++  obelisk-row-json
-  |=  v=vector:ast
-  ^-  json
+  =/  action=@t  ''
+  =/  relation=@t  ''
+  =/  count=(unit @ud)  ~
+  =/  vecs=(list vector:ast)  ~
+  |-
+  ?^  results
+    %=  $
+      results   t.results
+      action    ?:(?=(%action -.i.results) action.i.results action)
+      relation  ?:(?=(%relation -.i.results) relation.i.results relation)
+      count     ?:(?=(%vector-count -.i.results) `count.i.results count)
+      vecs      ?:(?=(%result-set -.i.results) set.i.results vecs)
+    ==
+  =/  cols=(list @t)
+    ?~  vecs  ~
+    (turn `(lest vector-cell:ast)`+.i.vecs |=(c=vector-cell:ast p.c))
+  =/  rows=(list json)
+    %+  turn  vecs
+    |=  v=vector:ast
+    ^-  json
+    a+(turn `(lest vector-cell:ast)`+.v |=(c=vector-cell:ast s+(obelisk-cell-cord q.c)))
   %-  pairs:enjs:format
-  %+  turn  `(lest vector-cell:ast)`+.v
-  |=  c=vector-cell:ast
-  ^-  [@t json]
-  ::  text auras (t/ta/tas) hold the cord verbatim; scot would re-escape it
-  ::  ('Urbit Basics' -> ~~~55.rbit...). Emit the raw cord for those; scot the
-  ::  rest (@p/@ud/@da/@rs) so their aura syntax survives.
-  =/  aura=@ta  p.q.c
-  :-  p.c
-  ?:  |(=('t' aura) =('ta' aura) =('tas' aura))
-    s+q.q.c
-  s+(scot aura q.q.c)
+  :~  ['ok' b+&]
+      ['action' s+action]
+      ['relation' s+relation]
+      ['count' (numb:enjs:format ?~(count (lent vecs) u.count))]
+      ['columns' a+(turn cols |=(c=@t s+c))]
+      ['rows' a+rows]
+  ==
+::  +obelisk-cell-cord: render one typed cell for display. Text auras (t/ta/tas)
+::  hold the cord verbatim; scot would re-escape it ('Urbit Basics' ->
+::  ~~~55.rbit...). Emit the raw cord for those; scot the rest (@p/@ud/@da/@rs)
+::  so their aura syntax survives.
+++  obelisk-cell-cord
+  |=  d=dime
+  ^-  @t
+  ?:  |(=('t' p.d) =('ta' p.d) =('tas' p.d))
+    q.d
+  (scot d)
+::  +obelisk-err-json / +obelisk-tang-text: the old agent's {ok:false, error}
+::  envelope and its tang -> cord rendering. No per-tank separator, so the
+::  single-leaf 'obelisk not installed' stays EXACT — the client's obelisk
+::  presence probe string-matches that text.
+++  obelisk-err-json
+  |=  msg=@t
+  ^-  json
+  (pairs:enjs:format ~[['ok' b+|] ['error' s+msg]])
+++  obelisk-tang-text
+  |=  =tang
+  ^-  @t
+  (crip (zing (turn tang |=(=tank ~(ram re tank)))))
+::  +send-obelisk: answer a route with an obelisk query result under the OLD
+::  agent's status contract: 503 when obelisk is absent, 504 when the query or
+::  the owner timed out, 502 when the transport broke mid-flight (result grub
+::  missing), and 200 otherwise — including obelisk's own urQL error, which
+::  rides the 200 {ok:false, error} envelope exactly as the old agent's
+::  obelisk-result-json did. Transport failures are matched by their exact tang
+::  texts (all minted in this file: obelisk-run-one, obelisk-query, obk-read-res
+::  and obelisk-read-data); an unrecognized tang is obelisk's own query error.
+++  send-obelisk
+  |=  [eyre-id=@ta res=(each (list cmd-result:ast) tang)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  ?=(%& -.res)  (send-json eyre-id (obelisk-json res))
+  =/  txt=@t  (obelisk-tang-text p.res)
+  ?:  =('obelisk not installed' txt)  (send-err eyre-id 503 txt)
+  ?:  =('obelisk: owner timed out' txt)  (send-err eyre-id 504 txt)
+  ?:  =('obelisk: query timed out (agent down?)' txt)  (send-err eyre-id 504 txt)
+  ?:  =('obelisk: no result grub' txt)  (send-err eyre-id 502 txt)
+  (send-json eyre-id (obelisk-err-json txt))
 ::  +obelisk-col-cords: pull one column's raw dime values (as cords) out of a
 ::  query result, across every result-set row. Used by the ghost-row reconcile
 ::  to read back the `path` column. A `%| error` result yields the empty set, so
@@ -1838,6 +1935,24 @@
   |=  [mark=@t body=@t]
   ^-  json
   (pairs:enjs:format ~[['mark' s+mark] ['body' s+body]])
+::  +manifest-gmi: the discovery-manifest body — a generated gemtext index of a
+::  ship's published pages, served by /fetch's /manifest fallback. Ported from
+::  the old lib's +generate-index (the body the retired agent GREW at the
+::  reserved /manifest spur), keyed off the pub index instead of the content map.
+::
+++  manifest-gmi
+  |=  ix=pub-index:lp
+  ^-  @t
+  =/  lines=(list @t)
+    %+  turn  ~(tap in ~(key by ix))
+    |=  pax=path
+    ::  /pub/notes/2026/intro/gmi -> "=> /notes/2026/intro  notes/2026/intro"
+    =/  inner=path  (snip (slag 1 pax))
+    =/  shown=tape  (spud inner)
+    (crip "=> {shown}  {(slag 1 shown)}")
+  =/  header=(list @t)
+    ~['# Index' '' 'Files published on this ship:' '']
+  (of-wain:format (welp header lines))
 ::  +parse-urb-url: "urb://~ship/rel" -> [ship rel-path]. ~ on a malformed url
 ::  (ported from /lib/lattice; +stab is mule-guarded against bad knots).
 ::
@@ -2580,6 +2695,18 @@
   =/  res=(each pub-index:lp tang)
     (mule |.(;;(pub-index:lp (sang-noun:tarball sang.p.u.ms))))
   ?:(?=(%| -.res) (pure:m ~) (pure:m `p.res))
+::  +read-pub-index-any: a ship's pub index — local peek for our own ship, the
+::  bounded remote peek for a peer. ~ = unreachable/denied/absent (a reachable
+::  but empty peer yields `~ *pub-index). Used by /fetch's manifest fallback.
+::
+++  read-pub-index-any
+  |=  shp=@p
+  =/  m  (fiber:fiber:nexus ,(unit pub-index:lp))
+  ^-  form:m
+  ;<  our=@p  bind:m  bowl-our
+  ?.  =(shp our)  (read-pub-index-remote shp)
+  ;<  ix=pub-index:lp  bind:m  (read-pub-index [%& %& (weld app-base /pub) %index])
+  (pure:m `ix)
 ::  +read-follows: the crawler's follow set. ABSOLUTE road (app-base) so it reads
 ::  the same from the depth-2 request fiber and the depth-0 crawler fiber.
 ::

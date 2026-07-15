@@ -258,6 +258,38 @@
   =/  last=@ud  (dec len)
   ?:(=(13 (cut 3 [last 1] t)) (end [3 last] t) t)
 ::
+::  +urq-esc: make an arbitrary tape safe inside an obelisk single-quoted
+::  urQL string literal. obelisk's cord-literal lexer (its /lib/parse.hoon)
+::  has exactly ONE escape rule — the byte pair \' yields a literal quote —
+::  and takes every other byte, including a lone backslash, VERBATIM. There
+::  is NO \\ rule, so backslashes must never be doubled: doubling corrupts
+::  interior backslashes, and a value ENDING in \ would emit ...\' where the
+::  lexer's escape rule EATS the caller's closing quote — the literal never
+::  terminates and the rest of the multi-statement poke is swallowed as
+::  string content (urQL injection / whole-poke abort). So: ' becomes \',
+::  and every backslash AND control byte (< 32: newline, CR, tab, …)
+::  becomes a space — the lexer can also cut a literal at a raw control
+::  byte, so any @t that might carry one (a multi-line manifest body, a
+::  CRLF-authored page's heading/title/link/tag) must be neutralized.
+::  Spacing backslashes out means the only backslashes emitted are the \'
+::  pairs themselves, each bound to its own quote, so the caller's closing
+::  quote can never be consumed. Every urQL generator in /lib/catalog
+::  routes untrusted @t values through this one arm. It lives HERE (not
+::  /lib/catalog, its sole caller) because catalog's grubbery-only /<
+::  import keeps that lib out of clay's ford — this import-free lib is
+::  where the desk-level /tests can reach it.
+++  urq-esc
+  |=  s=tape
+  ^-  tape
+  %-  zing
+  %+  turn  s
+  |=  c=@tD
+  ^-  tape
+  ?:  (lth c 32)  ~[' ']            :: control byte -> space (lexer-safe)
+  ?:  =(c 92)  ~[' ']               :: \ -> space (obelisk has NO \\ rule)
+  ?:  =(c 39)  ~[`@tD`92 `@tD`39]   :: ' -> \'
+  ~[c]
+::
 ::  ── inverted-index tokenization (feature B) ───────────────────────────
 ::
 ::  +parse-meta-line: `[key value]` if [ln] is a `%meta <key>: <value>`
