@@ -69,6 +69,17 @@ class WorkspaceBuffers {
         if (activeByPane[p] === b) activeByPane[p] = buffers.firstOrNull { it.pane == p }
     }
 
+    /**
+     * Close [b] only if it has no unsaved edits. Returns false — leaving the
+     * buffer open — when [b] is dirty, so the caller can confirm the discard
+     * before calling [close] for real.
+     */
+    fun closeIfClean(b: Buffer): Boolean {
+        if (b.dirty) return false
+        close(b)
+        return true
+    }
+
     fun closeFor(source: Source, path: String) {
         bufferFor(source, path)?.let { close(it) }
     }

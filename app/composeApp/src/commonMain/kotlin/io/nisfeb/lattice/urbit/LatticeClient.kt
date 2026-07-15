@@ -206,6 +206,25 @@ class LatticeClient(private val session: UrbitSession) {
     /** Stop following a remote file. */
     suspend fun unsubscribe(urbUrl: String): Result<Unit> = post("unsub", "url", urbUrl)
 
+    /** The crawler's follow set on our ship — the publishers the catalog sweep
+     *  indexes (GET /follows). Patps with sigil, sorted. */
+    suspend fun follows(): Result<List<String>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = base().newBuilder().addPathSegments("apps/lattice/follows").build()
+            session.http.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
+                if (!resp.isSuccessful) error("follows HTTP ${resp.code}")
+                json.parseToJsonElement(resp.body!!.string()).jsonArray
+                    .map { it.jsonPrimitive.content }.sorted()
+            }
+        }
+    }
+
+    /** Add [ship] (patp with sigil) to the crawler's follow set. */
+    suspend fun follow(ship: String): Result<Unit> = post("follow", "ship", ship)
+
+    /** Remove [ship] from the crawler's follow set. */
+    suspend fun unfollow(ship: String): Result<Unit> = post("unfollow", "ship", ship)
+
     /**
      * A published page's revision history (every prior save is a firm grub
      * revision), oldest-first as pub-history returns. [path] is the same relative

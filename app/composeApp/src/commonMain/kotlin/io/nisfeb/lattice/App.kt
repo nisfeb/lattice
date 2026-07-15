@@ -61,6 +61,7 @@ import io.nisfeb.lattice.urbit.SettingsClient
 import io.nisfeb.lattice.urbit.UpdateEvent
 import io.nisfeb.lattice.urbit.UpdatesChannel
 import io.nisfeb.lattice.urbit.UrbitSession
+import io.nisfeb.lattice.workspace.WorkspaceBuffers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.launch
@@ -114,6 +115,10 @@ fun App(
     val tabsByShip = remember { mutableStateMapOf<String, SnapshotStateList<BrowserTab>>() }
     val tabsActiveByShip = remember { mutableStateMapOf<String, MutableState<Int>>() }
     val pageCacheByShip = remember { mutableStateMapOf<String, PageCache>() }
+    // Workspace editor buffers, hoisted like the browser tabs: WorkspaceScreen
+    // leaves the composition on every navigation away, so state kept inside it
+    // would silently discard open tabs AND unsaved edits.
+    val workspaceByShip = remember { mutableStateMapOf<String, WorkspaceBuffers>() }
 
     // External urb:// handoff (OS scheme handler → MainActivity / desktop main).
     LaunchedEffect(initialUrl) {
@@ -147,7 +152,7 @@ fun App(
         val client = remember { LatticeClient(session) }
         val knowledgeClient = remember { KnowledgeClient(session) }
         val settingsClient = remember { SettingsClient(session) }
-        val followRepo = remember { FollowRepository(settingsClient) }
+        val followRepo = remember { FollowRepository(client, settingsClient) }
         val subRepo = remember { SubscriptionRepository(settingsClient) }
         val updatesChannel = remember { UpdatesChannel(session) }
         val latticeInstaller = remember {
@@ -202,6 +207,9 @@ fun App(
         val pageCache: PageCache =
             activeShip?.let { pageCacheByShip.getOrPut(it) { PageCache() } }
                 ?: remember { PageCache() }
+        val workspaceBuffers: WorkspaceBuffers =
+            activeShip?.let { workspaceByShip.getOrPut(it) { WorkspaceBuffers() } }
+                ?: remember { WorkspaceBuffers() }
 
         // On ship entry: pull synced prefs, re-arm subscriptions, stream updates.
         LaunchedEffect(Unit) {
@@ -223,7 +231,10 @@ fun App(
                     pageCache[url] = CachedPage(ev.body, lines)
                     browserTabs.forEach { t ->
                         if (t.current == url) {
-                            t.body = ev.body; t.lines = lines; t.visited = t.visited + url
+                            // pushBody (not plain assignment) bumps the tab's body
+                            // generation so an in-flight revalidation fetch can't
+                            // overwrite this newer body with its older result.
+                            t.pushBody(ev.body, lines); t.visited = t.visited + url
                         }
                     }
                     // Every pub keep frame is one of our pages changing — feed the
@@ -286,6 +297,7 @@ fun App(
             activeShip = sessionStore.activeShip()
             // Drop the removed ship's in-memory UI state too.
             tabsByShip.remove(s); tabsActiveByShip.remove(s); pageCacheByShip.remove(s)
+            workspaceByShip.remove(s)
         }
 
         LatticeTheme(theme) {
@@ -377,6 +389,7 @@ fun App(
                                 knowledge = knowledgeClient,
                                 ship = current,
                                 vimMode = theme.vimMode,
+                                buffers = workspaceBuffers,
                                 onClose = { screen = AppScreen.Browse },
                                 initialOpen = editTarget,
                                 onConsumedOpen = { editTarget = null },

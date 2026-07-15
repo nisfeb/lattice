@@ -14,6 +14,10 @@ enum class Source { Public, Knowledge }
 class Buffer(val path: String, val source: Source, val isNew: Boolean) {
     var text by mutableStateOf("")
     var loaded by mutableStateOf(isNew)
+    // non-null = the initial fetch failed. The buffer stays un-loaded (and so
+    // un-savable) — an empty editor after a failed fetch must never be able to
+    // save over the real remote content.
+    var loadError by mutableStateOf<String?>(null)
     var dirty by mutableStateOf(false)
     var pane by mutableStateOf(0)
     // knowledge buffers only: the item's tags (edited via the tag bar).

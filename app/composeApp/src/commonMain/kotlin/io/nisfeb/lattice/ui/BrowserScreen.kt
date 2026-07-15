@@ -85,7 +85,6 @@ import androidx.compose.ui.unit.dp
 import io.nisfeb.lattice.PlatformBackHandler
 import io.nisfeb.lattice.isDesktop
 import io.nisfeb.lattice.shareText
-import io.nisfeb.lattice.browser.CachedPage
 import io.nisfeb.lattice.browser.PageCache
 import io.nisfeb.lattice.browser.UrlPaths
 import io.nisfeb.lattice.content.ContentKind
@@ -167,6 +166,10 @@ fun BrowserScreen(
         }
         tab.listState = androidx.compose.foundation.lazy.LazyListState() // navigate → top
         tab.job = scope.launch {
+            // Body generation before fetching: an SSE push that lands while the
+            // fetch is in flight bumps it, and applyFetch below then keeps this
+            // (older) result from clobbering the newer pushed content.
+            val gen = tab.bodyGen
             var result = client.fetch(url)
             // The agent's 504 for a remote page whose ship didn't answer in time.
             // On a cold Ames route the first attempt often warms the route, so a
@@ -177,17 +180,7 @@ fun BrowserScreen(
                 result = client.fetch(url)
             }
             result.fold(
-                onSuccess = {
-                    val newLines = GemtextParser.parse(it.body)
-                    pageCache[url] = CachedPage(it.body, newLines, it.mark)
-                    tab.visited = tab.visited + url
-                    tab.mark = it.mark
-                    // Swap only when the content actually changed. listState is left
-                    // untouched, so the user's scroll is preserved across the swap
-                    // (Compose clamps it if the new page is shorter).
-                    if (it.body != tab.body) { tab.body = it.body; tab.lines = newLines }
-                    tab.loading = false
-                },
+                onSuccess = { tab.applyFetch(url, it.body, GemtextParser.parse(it.body), it.mark, gen, pageCache) },
                 // Keep showing the cached copy on a failed revalidation; only show an
                 // error when there was nothing cached to fall back to.
                 onFailure = {
@@ -218,7 +211,9 @@ fun BrowserScreen(
     fun closeTab(i: Int) {
         tabs.getOrNull(i)?.job?.cancel()
         tabs.removeAt(i)
-        if (tabs.isEmpty()) newTab() else active = active.coerceIn(0, tabs.lastIndex)
+        // activeAfterClose keeps the user's tab selected — closing a tab left
+        // of the active one must not switch what's displayed.
+        if (tabs.isEmpty()) newTab() else active = activeAfterClose(i, active, tabs.lastIndex)
     }
 
     // Address-bar submit: navigate to a urb:// (or path) address, or

@@ -106,6 +106,9 @@ fun WorkspaceScreen(
     knowledge: KnowledgeClient,
     ship: String,
     vimMode: Boolean,
+    /** Hoisted to App level (like the browser tabs) so open tabs and unsaved
+     *  edits survive navigating away from the Workspace. */
+    buffers: WorkspaceBuffers,
     onClose: () -> Unit,
     initialOpen: String? = null,
     onConsumedOpen: () -> Unit = {},
@@ -129,7 +132,7 @@ fun WorkspaceScreen(
     var pubDir by remember { mutableStateOf("") }
     var knowDir by remember { mutableStateOf("") }
     var newName by remember { mutableStateOf("") }
-    val wb = remember { WorkspaceBuffers() }
+    val wb = buffers
     var status by remember { mutableStateOf<String?>(null) }
 
     // Knowledge sidebar text filter (key/body substring). The horizontally-
@@ -180,11 +183,17 @@ fun WorkspaceScreen(
     fun openBuffer(path: String, source: Source) {
         val b = wb.open(path, source)
         if (!b.loaded) scope.launch {
-            when (source) {
+            b.loadError = null
+            val res = when (source) {
                 Source.Public -> client.fetch("urb://$ship/$path").onSuccess { b.text = it.body }
                 Source.Knowledge -> knowledge.read(path).onSuccess { b.text = it.body; b.tags = it.tags }
             }
-            b.loaded = true
+            // Only a successful fetch marks the buffer loaded (→ editable +
+            // savable). A failed fetch shows the error with a Retry instead —
+            // an empty editor here would be indistinguishable from an empty
+            // file, and saving it would wipe the real remote content.
+            res.onSuccess { b.loaded = true }
+                .onFailure { b.loadError = explainNetworkError(it, ship) }
         }
     }
 
@@ -198,6 +207,9 @@ fun WorkspaceScreen(
     }
 
     fun save(b: Buffer) = scope.launch {
+        // A buffer whose content never arrived must not be savable — pushing
+        // its (empty) text would overwrite the real remote content.
+        if (!b.loaded) return@launch
         when (b.source) {
             Source.Public -> client.save(b.path, b.text).onSuccess { b.dirty = false; refreshPublic() }
             Source.Knowledge -> knowledge.save(b.path, b.text).onSuccess { b.dirty = false; refreshKnow() }
@@ -215,6 +227,7 @@ fun WorkspaceScreen(
 
     // dialogs
     var confirmDelete by remember { mutableStateOf<String?>(null) }
+    var confirmClose by remember { mutableStateOf<Buffer?>(null) }
     var dupOf by remember { mutableStateOf<String?>(null) }
     var moveOf by remember { mutableStateOf<String?>(null) }
     var dialogName by remember { mutableStateOf("") }
@@ -222,6 +235,13 @@ fun WorkspaceScreen(
     var publishKey by remember { mutableStateOf<String?>(null) }
     var publishPath by remember { mutableStateOf("") }
     var historyOf by remember { mutableStateOf<Pair<String, Source>?>(null) }
+
+    // Every user-initiated close (tab ×, mobile back arrow, vim :q) routes
+    // through here: a dirty buffer gets a discard confirmation instead of
+    // silently dropping its unsaved edits.
+    fun requestClose(b: Buffer) {
+        if (!wb.closeIfClean(b)) confirmClose = b
+    }
 
     fun doDuplicate(src: String, dest: String) = scope.launch {
         client.fetch("urb://$ship/$src").onSuccess { client.save(dest, it.body).onSuccess { refreshPublic() } }
@@ -370,7 +390,17 @@ fun WorkspaceScreen(
     @Composable
     fun bufferEditor(b: Buffer, modifier: Modifier) {
         Box(modifier = modifier, contentAlignment = Alignment.Center) {
-            if (!b.loaded) CircularProgressIndicator()
+            if (!b.loaded) {
+                val err = b.loadError
+                if (err == null) CircularProgressIndicator()
+                else Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(16.dp),
+                ) {
+                    Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                    TextButton(onClick = { openBuffer(b.path, b.source) }) { Text("Retry") }
+                }
+            }
             else if (b.preview) ContentView(
                 // Force the buffer's format (markdown iff its name is .md, else
                 // gemtext) — pages/knowledge are only ever one of the two.
@@ -385,7 +415,7 @@ fun WorkspaceScreen(
             else key(b.source, b.path, vimMode) {
                 if (vimMode) VimEditor(
                     text = b.text, onText = { b.text = it; b.dirty = true },
-                    onSave = { save(b) }, onQuit = { wb.close(b) }, monoFamily = monoFamily,
+                    onSave = { save(b) }, onQuit = { requestClose(b) }, monoFamily = monoFamily,
                 ) else PlainEditor(
                     text = b.text, onText = { b.text = it; b.dirty = true },
                     onSave = { save(b) }, monoFamily = monoFamily,
@@ -461,7 +491,7 @@ fun WorkspaceScreen(
                             style = MaterialTheme.typography.bodyMedium,
                             color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                         )
-                        IconButton(onClick = { wb.close(b) }, modifier = Modifier.size(24.dp)) {
+                        IconButton(onClick = { requestClose(b) }, modifier = Modifier.size(24.dp)) {
                             Icon(Icons.Filled.Close, "Close", modifier = Modifier.size(14.dp))
                         }
                     }
@@ -565,7 +595,7 @@ fun WorkspaceScreen(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = { wb.close(b) }) {
+                    IconButton(onClick = { requestClose(b) }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Close file")
                     }
                     Icon(
@@ -611,6 +641,25 @@ fun WorkspaceScreen(
                 }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+        )
+    }
+    confirmClose?.let { b ->
+        if (!b.dirty) {
+            // The buffer became clean while the confirm was pending — vim's :wq
+            // fires onSave and onQuit back-to-back, so the save lands after the
+            // dialog opened. Nothing left to discard: honor the quit.
+            LaunchedEffect(b) { confirmClose = null; wb.close(b) }
+        } else AlertDialog(
+            onDismissRequest = { confirmClose = null },
+            title = { Text("Discard unsaved changes?") },
+            text = { Text("\"${b.path}\" has unsaved changes. Close it without saving?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmClose = null
+                    wb.close(b)
+                }) { Text("Discard", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmClose = null }) { Text("Cancel") } },
         )
     }
     dupOf?.let { src ->

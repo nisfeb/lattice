@@ -119,6 +119,35 @@ class WorkspaceBuffersTest {
         assertTrue(wb.open("fresh", Source.Knowledge, isNew = true).loaded)
     }
 
+    @Test fun closeIfCleanRefusesDirtyBuffer() {
+        val wb = WorkspaceBuffers()
+        val b = wb.open("draft", Source.Knowledge)
+        b.dirty = true
+        assertFalse(wb.closeIfClean(b))       // dirty → caller must confirm the discard
+        assertEquals(1, wb.buffers.size)      // still open, nothing lost
+        assertSame(b, wb.activeIn(0))
+        b.dirty = false
+        assertTrue(wb.closeIfClean(b))        // clean → closes like close()
+        assertEquals(0, wb.buffers.size)
+        assertNull(wb.activeIn(0))
+    }
+
+    @Test fun failedLoadLeavesBufferUnloaded() {
+        val wb = WorkspaceBuffers()
+        val b = wb.open("about", Source.Public)
+        assertNull(b.loadError)               // no error until a fetch fails
+        // what openBuffer does on a fetch failure: record the error, do NOT
+        // mark loaded — an unloaded buffer must never become savable.
+        b.loadError = "Couldn't reach the ship"
+        assertFalse(b.loaded)
+        // retry: clear the error, then only success flips loaded
+        b.loadError = null
+        b.text = "real content"
+        b.loaded = true
+        assertNull(b.loadError)
+        assertTrue(b.loaded)
+    }
+
     @Test fun inPaneFiltersBySource() {
         val wb = WorkspaceBuffers()
         wb.open("p1", Source.Public)

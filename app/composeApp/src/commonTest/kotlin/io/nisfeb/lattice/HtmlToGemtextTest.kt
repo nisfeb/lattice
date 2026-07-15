@@ -38,6 +38,32 @@ class HtmlToGemtextTest {
         assertContains(gmi, "=> https://site.example/blog/page.html Page")
     }
 
+    @Test fun `relative links resolve against a path-less base url`() {
+        val gmi = HtmlToGemtext.convert(
+            """<a href="about.html">About</a>""",
+            baseUrl = "https://site.example",
+        )
+        assertContains(gmi, "=> https://site.example/about.html About")
+    }
+
+    @Test fun `relative links resolve against a base url with a bare trailing slash`() {
+        val gmi = HtmlToGemtext.convert(
+            """<a href="about.html">About</a>""",
+            baseUrl = "https://site.example/",
+        )
+        assertContains(gmi, "=> https://site.example/about.html About")
+    }
+
+    @Test fun `entities in href and src attributes are decoded`() {
+        val gmi = HtmlToGemtext.convert(
+            """<a href="https://example.com/story?id=1&amp;page=2">next</a>""" +
+                """<img src="https://example.com/pic?w=1&amp;h=2" alt="pic">""",
+        )
+        assertContains(gmi, "=> https://example.com/story?id=1&page=2 next")
+        assertContains(gmi, "=> https://example.com/pic?w=1&h=2 [image] pic")
+        assertFalse(gmi.contains("&amp;"))
+    }
+
     @Test fun `list items become bullets`() {
         val gmi = HtmlToGemtext.convert("<ul><li>one</li><li>two</li></ul>")
         assertContains(gmi, "* one")

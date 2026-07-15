@@ -169,7 +169,12 @@ object HtmlToGemtext {
                 Regex("^[a-zA-Z][a-zA-Z0-9+.-]*:").containsMatchIn(h) -> h     // absolute (has scheme)
                 h.startsWith("//") -> base.substringBefore("://", "https") + "://" + h.removePrefix("//")
                 h.startsWith("/") -> origin(base) + h
-                else -> base.substringBeforeLast('/', origin(base)) + "/" + h
+                else -> {
+                    // Directory of the base path, computed after the origin so the
+                    // scheme's "//" is never mistaken for a path separator.
+                    val org = origin(base)
+                    org + base.removePrefix(org).substringBeforeLast('/', "") + "/" + h
+                }
             }
         }
 
@@ -189,7 +194,7 @@ object HtmlToGemtext {
     private fun attr(tag: String, name: String): String {
         val m = Regex("""\b${Regex.escape(name)}\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))""", RegexOption.IGNORE_CASE).find(tag)
             ?: return ""
-        return m.groupValues[2].ifEmpty { m.groupValues[3].ifEmpty { m.groupValues[4] } }
+        return decodeEntities(m.groupValues[2].ifEmpty { m.groupValues[3].ifEmpty { m.groupValues[4] } })
     }
 
     private fun stripTags(s: String): String = s.replace(TAG_RE, "")

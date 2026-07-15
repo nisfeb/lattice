@@ -54,8 +54,9 @@ data class VimEngine(
 
     private fun clampNormal(r: Int, c: Int): VimEngine {
         val rr = r.coerceIn(0, lines.lastIndex)
-        val len = lines[rr].length
-        val cc = c.coerceIn(0, maxOf(0, if (mode == VimMode.INSERT) len else len - 1))
+        val line = lines[rr]
+        val len = line.length
+        val cc = line.snapToCharStart(c.coerceIn(0, maxOf(0, if (mode == VimMode.INSERT) len else len - 1)))
         return copy(row = rr, col = cc)
     }
 
@@ -63,8 +64,9 @@ data class VimEngine(
         val ls = newLines.ifEmpty { listOf("") }
         return copy(lines = ls, dirty = true).let {
             val rr = r.coerceIn(0, ls.lastIndex)
-            val len = ls[rr].length
-            it.copy(row = rr, col = c.coerceIn(0, maxOf(0, if (mode == VimMode.INSERT) len else len - 1)))
+            val line = ls[rr]
+            val len = line.length
+            it.copy(row = rr, col = line.snapToCharStart(c.coerceIn(0, maxOf(0, if (mode == VimMode.INSERT) len else len - 1))))
         }
     }
 
@@ -86,7 +88,8 @@ data class VimEngine(
         is VimKey.Backspace -> when {
             col > 0 -> {
                 val l = curLine
-                copy(lines = lines.replace(row, l.removeRange(col - 1, col)), col = col - 1, dirty = true)
+                val start = l.snapToCharStart(col - 1)
+                copy(lines = lines.replace(row, l.removeRange(start, col)), col = start, dirty = true)
             }
             row > 0 -> {
                 val prev = lines[row - 1]
@@ -128,16 +131,22 @@ data class VimEngine(
         if (c.isDigit() && !(c == '0' && count == 0)) {
             return copy(count = count * 10 + (c - '0'))
         }
-        // pending 'g' (gg)
+        // pending 'g' (gg — bare motion, or dgg/ygg/cgg with an operator pending)
         if (pendingG) {
-            return if (c == 'g') applyMotionOrOp(Motion.FileStart, n).copy(pendingG = false, count = 0)
-            else copy(pendingG = false, count = 0)
+            val op = pendingOp
+            return when {
+                c != 'g' -> reset()
+                op != null -> applyOperator(op, Motion.FileStart, n).reset()
+                else -> applyMotionOrOp(Motion.FileStart, n).copy(pendingG = false, count = 0)
+            }
         }
         // operator awaiting motion?
         pendingOp?.let { op ->
             val m = motionFor(c)
             return when {
                 c == op -> applyLinewise(op, n).reset()           // dd/yy/cc
+                c == 'G' -> applyOperator(op, Motion.FileEnd, n).reset()
+                c == 'g' -> copy(pendingG = true)
                 m != null -> applyOperator(op, m, n).reset()
                 else -> reset()                                    // invalid, cancel
             }
@@ -152,7 +161,7 @@ data class VimEngine(
             // mode entry
             'i' -> copy(mode = VimMode.INSERT, count = 0)
             'I' -> clampInsert(firstNonBlank(curLine)).copy(mode = VimMode.INSERT, count = 0)
-            'a' -> clampInsert(col + 1).copy(mode = VimMode.INSERT, count = 0)
+            'a' -> clampInsert(col + curLine.charWidthAt(col)).copy(mode = VimMode.INSERT, count = 0)
             'A' -> clampInsert(curLine.length).copy(mode = VimMode.INSERT, count = 0)
             'o' -> snapshot().let {
                 it.copy(lines = it.lines.replaceWith(row, listOf(curLine, "")), row = row + 1, col = 0, mode = VimMode.INSERT, dirty = true, count = 0)
@@ -200,12 +209,14 @@ data class VimEngine(
     }
 
     private fun moveOnce(m: Motion, n: Int): VimEngine = when (m) {
-        Motion.Left -> copy(col = maxOf(0, col - 1))
-        Motion.Right -> copy(col = minOf(maxOf(0, curLine.length - 1), col + 1))
+        Motion.Left -> copy(col = curLine.snapToCharStart(maxOf(0, col - 1)))
+        Motion.Right -> curLine.let { l ->
+            copy(col = minOf(l.snapToCharStart(maxOf(0, l.length - 1)), col + l.charWidthAt(col)))
+        }
         Motion.Up -> if (row > 0) clampNormal(row - 1, col) else this
         Motion.Down -> if (row < lines.lastIndex) clampNormal(row + 1, col) else this
         Motion.LineStart -> copy(col = 0)
-        Motion.LineEnd -> copy(col = maxOf(0, curLine.length - 1))
+        Motion.LineEnd -> copy(col = curLine.snapToCharStart(maxOf(0, curLine.length - 1)))
         Motion.WordFwd -> wordForward()
         Motion.WordBack -> wordBackward()
         Motion.WordEnd -> wordEnd()
@@ -240,7 +251,7 @@ data class VimEngine(
 
     private fun wordEnd(): VimEngine {
         val line = curLine
-        var x = col + 1
+        var x = col + line.charWidthAt(col)
         while (x < line.length && line[x].isWhitespace()) x++
         while (x + 1 < line.length && !line[x + 1].isWhitespace()) x++
         return clampNormal(row, minOf(x, maxOf(0, line.length - 1)))
@@ -251,7 +262,8 @@ data class VimEngine(
     private fun deleteChars(n: Int): VimEngine {
         val l = curLine
         if (l.isEmpty()) return this
-        val end = minOf(l.length, col + n)
+        var end = col
+        repeat(n) { if (end < l.length) end += l.charWidthAt(end) }
         val removed = l.substring(col, end)
         return copy(lines = lines.replace(row, l.removeRange(col, end)), yankText = removed, yankLines = null).clamp()
     }
@@ -278,7 +290,11 @@ data class VimEngine(
     private fun applyOperator(op: Char, m: Motion, n: Int): VimEngine {
         // line-oriented motions → linewise op
         if (m == Motion.Down || m == Motion.Up || m == Motion.FileStart || m == Motion.FileEnd) {
-            val target = moveOnce(m, if (m == Motion.FileEnd) (if (count == 0) lines.lastIndex + 1 else count) else n)
+            val target = when (m) {
+                Motion.FileEnd -> moveOnce(m, if (count == 0) lines.lastIndex + 1 else count)
+                Motion.FileStart -> moveOnce(m, n)
+                else -> { var s = this; repeat(n) { s = s.moveOnce(m, n) }; s }
+            }
             val lo = minOf(row, target.row); val hi = maxOf(row, target.row)
             return copy(row = lo).applyLinewise(op, hi - lo + 1)
         }
@@ -288,7 +304,7 @@ data class VimEngine(
         val from = col; val to = t.col
         val l = curLine
         val lo = minOf(from, to); val hi = when (m) {
-            Motion.WordEnd, Motion.LineEnd -> minOf(l.length, maxOf(from, to) + 1)
+            Motion.WordEnd, Motion.LineEnd -> minOf(l.length, maxOf(from, to) + l.charWidthAt(maxOf(from, to)))
             else -> maxOf(from, to)
         }
         if (t.row != row) return reset() // multi-line charwise not supported; cancel
@@ -308,7 +324,7 @@ data class VimEngine(
         // charwise within a line, else linewise across lines
         return if (ar == row) {
             val l = curLine
-            val lo = minOf(ac, col); val hi = minOf(l.length, maxOf(ac, col) + 1)
+            val lo = minOf(ac, col); val hi = minOf(l.length, maxOf(ac, col) + l.charWidthAt(maxOf(ac, col)))
             val removed = l.substring(lo, hi)
             when (op) {
                 'y' -> copy(mode = VimMode.NORMAL, visAnchor = null, yankText = removed, yankLines = null, col = lo)
@@ -328,10 +344,10 @@ data class VimEngine(
             val nl = it.lines.toMutableList().apply { addAll(at, yankLines) }
             it.withLines(nl, at, 0)
         }
-        yankText != null -> snapshot().let {
+        !yankText.isNullOrEmpty() -> snapshot().let {
             val l = curLine
-            val at = if (after && l.isNotEmpty()) col + 1 else col
-            it.copy(lines = it.lines.replace(row, l.substring(0, at) + yankText + l.substring(at)), col = at + yankText.length - 1, dirty = true)
+            val at = if (after && l.isNotEmpty()) col + l.charWidthAt(col) else col
+            it.copy(lines = it.lines.replace(row, l.substring(0, at) + yankText + l.substring(at)), col = at + yankText.snapToCharStart(yankText.length - 1), dirty = true)
         }
         else -> this
     }
@@ -346,6 +362,15 @@ data class VimEngine(
             VimEngine(lines = if (text.isEmpty()) listOf("") else text.split("\n"))
     }
 }
+
+// ── surrogate-pair-aware indexing (col is UTF-16 units, snapped to code-point starts) ──
+/** Snap a UTF-16 index to the start of the code point containing it. */
+private fun String.snapToCharStart(i: Int): Int =
+    if (i in 1 until length && this[i].isLowSurrogate() && this[i - 1].isHighSurrogate()) i - 1 else i
+
+/** UTF-16 width (1, or 2 for a surrogate pair) of the code point starting at [i]. */
+private fun String.charWidthAt(i: Int): Int =
+    if (i in 0 until length - 1 && this[i].isHighSurrogate() && this[i + 1].isLowSurrogate()) 2 else 1
 
 // ── small list helpers ──
 private fun List<String>.replace(i: Int, s: String): List<String> =
