@@ -10,7 +10,7 @@ app/.kotlin/
 
 # Release-build artifacts (produced by scripts/ + the release workflow)
 /build/
-/dist/
+/dist/*.AppImage
 
 # Signing material — NEVER commit a keystore or its passwords
 *.keystore

@@ -1,0 +1,10 @@
+:~  title+'Lattice'
+    info+'Browse and publish gemtext over Urbit'
+    color+0x12.0041
+    image+'https://raw.githubusercontent.com/nisfeb/lattice/main/web/lattice.png'
+    base+'lattice'
+    site+/apps/lattice
+    version+[0 3 13]
+    website+'https://github.com/nisfeb/lattice'
+    license+'PolyForm-Noncommercial-1.0.0'
+==
