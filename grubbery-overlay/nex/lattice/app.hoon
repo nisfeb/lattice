@@ -670,12 +670,28 @@
     ==
   ::  ── pub writes (POST) ──
   ::  ── programmable pages (docs/platform.md step 2) ──
+      [%'GET' %edit]
+    ::  the in-browser editor. No name -> new-page mode.
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name
+      (send-html eyre-id (render-page "" "" (edit-html our ~ '')))
+    ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
+    =/  pdir=path  (weld app-base /page/[`@ta`u.name])
+    ;<  csn=seen:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
+    ?.  ?=([%& %file *] csn)  (send-err eyre-id 404 'no such page')
+    =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.p.csn)))) '')
+    (send-html eyre-id (render-page "" "" (edit-html our [~ `@ta`u.name] src)))
       [%'POST' %page-save]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
     =/  src=@t  (req-body req)
     ?:  =('' src)  (send-err eyre-id 400 'missing body')
+    ::  ?new=1: create-only — 409 instead of silently overwriting an existing
+    ::  page (the editor's new-page mode sends it; caught by review).
+    ;<  ex=?  bind:m
+      (peek-exists:io [%& %& (weld app-base /page/[`@ta`u.name]) %code])
+    ?:  &((~(has by args) 'new') ex)  (send-err eyre-id 409 'page exists')
     ;<  ~  bind:m  (poke-eval [%make `@ta`u.name src])
     (send-ok eyre-id)
       [%'POST' %page-cmd]
@@ -2928,7 +2944,8 @@
     "\"><input name=\"cmd\" placeholder=\"command\" autocomplete=\"off\">"
     "<button type=\"submit\">send</button></form>"
     (share-controls-html name mode)
-    "<p><a href=\"?raw\">raw grubs</a></p>"
+    "<p><a href=\"/apps/lattice/edit?name="  (trip name)
+    "\">edit code</a> &middot; <a href=\"?raw\">raw grubs</a></p>"
   ==
 ::  +share-controls-html: the current sharing preset + one button per preset
 ::  (each a tiny form POSTing page-share). A clearweb page also shows its
@@ -3245,6 +3262,52 @@
   ;<  sn=seen:nexus  bind:m  (peek-shallow:io [%& %| (weld app-base /page)] ~)
   ?.  ?=([%& %ball *] sn)  (pure:m ~)
   (pure:m (sort (turn ~(tap by dir.ball.p.sn) head) aor))
+::  +edit-css / +edit-js / +edit-html: the in-browser page editor. Code pane +
+::  live preview (the page's own view in an iframe — it live-reloads itself via
+::  its SSE, so a successful save renders immediately). The editor page itself
+::  has NO auto-reload (that would eat unsaved edits): save goes through
+::  fetch(), and the compile result is read back from the /err grub. name=~ is
+::  new-page mode: a name field and a starter template, no preview yet.
+::
+++  edit-css
+  ^-  tape
+  %-  trip
+  '<style>main{max-width:96rem}.ed-wrap{display:grid;grid-template-columns:1fr 1fr;gap:12px;height:calc(100vh - 92px)}.ed-left{display:flex;flex-direction:column;gap:8px;min-width:0}.ed-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.ed-head input{padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.ed-head button{padding:6px 12px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;cursor:pointer}.ed-head button:hover{border-color:#1a6ed8}#st{font-size:.9rem;white-space:pre-wrap}#src{flex:1;width:100%;resize:none;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;padding:10px;border:1px solid #8886;border-radius:8px;background:#8881;color:inherit;white-space:pre;overflow:auto}.ed-prev{width:100%;height:100%;border:1px solid #8886;border-radius:8px;background:#fff}@media(max-width:900px){.ed-wrap{grid-template-columns:1fr;height:auto}#src{min-height:22rem}.ed-prev{min-height:24rem}}</style>'
+::  the starter template a new page opens with.
+::
+++  edit-template
+  ^-  tape
+  %-  trip
+  '|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]\0a^-  result\0a(text \'hello\')\0a'
+++  edit-html
+  |=  [our=@p name=(unit @ta) src=@t]
+  ^-  tape
+  =/  ship=tape  (scow %p our)
+  =/  nm=tape  ?~(name "" (trip u.name))
+  =/  view=tape
+    :(weld "/apps/lattice/x/" ship "/apps/lattice.lattice_app/page/" nm "/")
+  =/  code=tape  ?~(name edit-template (esc (trip src)))
+  ;:  weld
+    edit-css
+    "<div class=\"ed-wrap\"><div class=\"ed-left\"><div class=\"ed-head\">"
+    ?^  name
+      :(weld "<b>" (esc nm) "</b>")
+    "<input id=\"pname\" placeholder=\"page-name\" autofocus autocomplete=\"off\">"
+    "<button id=\"save\">save</button>"
+    ?~(name "" "<button id=\"del\">delete</button>")
+    ?~(name "" :(weld "<a href=\"" view "\">open</a>"))
+    "<span id=\"st\"></span></div>"
+    "<textarea id=\"src\" spellcheck=\"false\">"  code  "</textarea></div>"
+    ?~  name  ""
+    :(weld "<iframe class=\"ed-prev\" id=\"prev\" src=\"" view "\"></iframe>")
+    "</div>"
+    (trip '<script>(function(){var NAME="')
+    nm
+    (trip '";var ERR="')
+    (weld view "err?data")
+    %-  trip
+    '";var $=function(i){return document.getElementById(i)};var st=function(t,ok){var s=$("st");s.textContent=t;s.style.color=ok?"#27ae60":"#c0392b"};var ta=$("src");ta.addEventListener("keydown",function(e){if(e.key==="Tab"){e.preventDefault();var s=ta.selectionStart;ta.value=ta.value.slice(0,s)+"  "+ta.value.slice(ta.selectionEnd);ta.selectionStart=ta.selectionEnd=s+2}});var chk=async function(){var e=await fetch(ERR);var t=await e.text();if(t){st(t,false)}else{st("compiled ok",true);var p=$("prev");if(p){p.src=p.src}}};$("save").onclick=async function(){var name=NAME||($("pname")?$("pname").value.trim():"");if(!name){st("name required",false);return}st("saving...",true);var r=await fetch("/apps/lattice/page-save?name="+encodeURIComponent(name)+(NAME?"":"&new=1"),{method:"POST",body:ta.value});if(r.status===409){st("that page already exists - open it from home to edit",false);return}if(!r.ok){st("save failed: "+r.status,false);return}if(!NAME){location="/apps/lattice/edit?name="+encodeURIComponent(name);return}st("compiling...",true);setTimeout(chk,900);setTimeout(chk,2200)};if($("del")){$("del").onclick=async function(){if(!confirm("delete "+NAME+"?"))return;await fetch("/apps/lattice/page-del?name="+encodeURIComponent(NAME),{method:"POST"});location="/apps/lattice"}}window.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&e.key==="s"){e.preventDefault();$("save").onclick()}})})();</script>'
+  ==
 ::  +home-css: styling for the landing (nav cards + lists).
 ::
 ++  home-css
@@ -3268,7 +3331,11 @@
       `(list tape)`~["<ul class=\"pglist\">"]
       %+  turn  pages
       |=  nom=@ta
-      :(weld "<li><a href=\"" base (trip nom) "/\">" (esc (trip nom)) "</a></li>")
+      ;:  weld
+        "<li><a href=\""  base  (trip nom)  "/\">"  (esc (trip nom))  "</a>"
+        " <a class=\"muted\" href=\"/apps/lattice/edit?name="  (trip nom)
+        "\">edit</a></li>"
+      ==
       `(list tape)`~["</ul>"]
     ==
   =/  pub-keys=(list path)  ~(tap in ~(key by ix))
@@ -3288,6 +3355,8 @@
     "<h1>Lattice</h1>"
     "<p class=\"muted\">Programmable pages &amp; published notes &middot; "  ship  "</p>"
     "<div class=\"home-nav\">"
+    "<a class=\"navcard\" href=\"/apps/lattice/edit\">"
+    "<strong>New page</strong><span>Write a page in the browser</span></a>"
     "<a class=\"navcard\" href=\""  base
     "\"><strong>Pages</strong><span>Create &amp; run programmable pages</span></a>"
     "<a class=\"navcard\" href=\""  tree
@@ -3301,7 +3370,7 @@
 ++  web-css
   ^-  tape
   %-  trip
-  '*{box-sizing:border-box}body{margin:0;font:16px/1.6 system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:#1a6ed8}.err{color:#c0392b}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}'
+  '*{box-sizing:border-box}body{margin:0;font:16px/1.6 system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:#1a6ed8}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:#1a6ed8}.err{color:#c0392b}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}'
 ::  +render-page: wrap an HTML fragment in the reader chrome (address bar + CSS).
 ::
 ++  render-page
@@ -3313,6 +3382,7 @@
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
     "<title>lattice</title><style>"  web-css  "</style></head><body>"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
+    "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
     "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb://~ship/path\">"
     "<button type=\"submit\">Go</button></form><main>"  inner  "</main>"
     (sse-script keep)  "</body></html>"

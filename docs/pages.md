@@ -75,7 +75,14 @@ into your browser.)
 
 ## Writing and driving a page
 
-Everything is owner-only HTTP under `/apps/lattice`:
+**In the browser:** the landing page (`/apps/lattice`) has a **New page** card,
+and every page links to its editor (`/apps/lattice/edit?name=<name>`): code pane
+on the left (Tab indents, Ctrl/Cmd-S saves), the page's live view on the right,
+compile errors inline. New-page mode is create-only — a taken name is refused
+rather than overwritten.
+
+**Over HTTP** (the editor uses these same owner-only routes under
+`/apps/lattice`):
 
 ```
 POST /page-save?name=<name>     body = the hoon source    create/replace code
