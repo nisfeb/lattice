@@ -241,11 +241,32 @@
         ::  a poke got a decremented budget); a dep/timer tick starts fresh.
         =/  run-bud=@ud  ?:(fresh bud.cur poke-budget-max)
         ;<  ~  bind:m  (eval-run pdir p.bild cmd deps run-bud)
+        ::  eval-run recorded any timer request in the /wake grub (clamped, or ~
+        ::  if the page asked for no timer or its run failed); read it back.
+        ;<  wake=(unit @dr)  bind:m  (read-wake pdir)
         ::  persist the processed seq only when a command actually ran (a dep
         ::  tick leaves seq unchanged). /seen is not kept, so this fires no wave.
         =?  last  fresh  seq.cur
         ;<  ~  bind:m  ?:(fresh (write-eval-seen pdir seq.cur) (pure:m ~))
-        ;<  *  bind:m  (take-news-or-wake-drain /ev)
+        ::  wait for a dependency/command wave — or, if the page asked for a
+        ::  timer (`every`), for that timer, whichever comes first. Using
+        ::  -until keyed on this timer means an earlier stale timer is drained,
+        ::  so timers don't pile up across reruns.
+        ?~  wake
+          ;<  *  bind:m  (take-news-or-wake-drain /ev)
+          $
+        ::  anchor the timer to a FRESH now, read AFTER eval-run. The `now` above
+        ::  was captured before the (possibly slow) run; if the run took longer
+        ::  than u.wake, `(add now u.wake)` is already in the PAST, so behn fires
+        ::  immediately => zero real idle => a 100%-pinned tight loop (the timer
+        ::  can't outrun its own eval). Re-reading now guarantees >= u.wake
+        ::  (>= rerun-gap ~s1) of real idle between the end of one run and the
+        ::  next, so a heavy timer page stays responsive instead of pinning the
+        ::  loop. (Same bowl-now -> send-wait pattern used by the sub/pub loops.)
+        ;<  arm-now=@da  bind:m  bowl-now
+        =/  until=@da  (add arm-now u.wake)
+        ;<  ~  bind:m  (send-wait:io until)
+        ;<  *  bind:m  (take-news-or-wake-until /ev until)
         $
       ::  /crawler.sig: periodic catalog sweep. Each tick re-indexes our own
       ::  published pages into obelisk (runs immediately on start, then every
@@ -1284,6 +1305,17 @@
   ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %show] ~)
   ?.  ?=([%& %file *] sn)  (pure:m %text)
   (pure:m (fall (mole |.(;;(view-mode:pg (sang-noun:tarball sang.p.sn)))) %text))
+::  +read-wake: the timer request eval-run recorded (~ = no timer). eval-run
+::  writes it rather than returning it so its fiber payload stays ,~ (the loop
+::  reads it here). /wake is not on the /ev wire, so writing it is no self-wave.
+::
+++  read-wake
+  |=  pdir=path
+  =/  m  (fiber:fiber:nexus ,(unit @dr))
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %wake] ~)
+  ?.  ?=([%& %file *] sn)  (pure:m ~)
+  (pure:m (fall (mole |.(;;((unit @dr) (sang-noun:tarball sang.p.sn)))) ~))
 ::  +read-eval-cmd / +read-eval-deps: tolerant grub reads (absent or
 ::  malformed -> the zero value; a page never crashes its evaluator).
 ::
@@ -1387,7 +1419,9 @@
     %-  mule  |.
     ;;(result:pg q:(slam bild env))
   ?:  ?=(%| -.res)
-    (put-file [%& %& pdir %err] [/lattice %page] (crip "run failed: {<p.res>}"))
+    ;<  ~  bind:m  (put-file [%& %& pdir %err] [/lattice %page] (crip "run failed: {<p.res>}"))
+    ::  a broken run stops any timer.
+    (put-file [%& %& pdir %wake] [/lattice %eval-data] `(unit @dr)`~)
   ;<  ~  bind:m  (put-file [%& %& pdir %err] [/lattice %page] '')
   ;<  ~  bind:m
     ?~  dat.p.res  (pure:m ~)
@@ -1402,8 +1436,14 @@
   ::  send this run's page-to-page pokes with the run's remaining budget
   ::  (capped per run so one page can't flood the writer).
   ;<  ~  bind:m  (emit-pokes bud (scag poke-cap pokes.p.res))
-  ?:  =(dep.p.res deps)  (pure:m ~)
-  (put-file [%& %& pdir %deps] [/lattice %eval-deps] dep.p.res)
+  ;<  ~  bind:m
+    ?:  =(dep.p.res deps)  (pure:m ~)
+    (put-file [%& %& pdir %deps] [/lattice %eval-deps] dep.p.res)
+  ::  record the timer request for the loop to arm, clamped so it can't rerun
+  ::  faster than the rate window (~ = no timer). The loop reads /wake after
+  ::  this run; /wake is not on the /ev wire, so writing it is not a self-wave.
+  =/  wake=(unit @dr)  ?~(wake.p.res ~ `(max u.wake.p.res rerun-gap))
+  (put-file [%& %& pdir %wake] [/lattice %eval-data] wake)
 ::  +emit-pokes: deliver each [page-name command] to the writer (which bumps
 ::  that page's cmd grub), carrying a DECREMENTED budget so a poke chain (or
 ::  cycle) terminates at a fixed depth. bud=0 drops them — the chain ends. A

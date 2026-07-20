@@ -199,15 +199,41 @@ is raw.
 first run declares the dep; thereafter, incrementing `counter` re-runs doubler
 automatically — no command needed.
 
+## Timers — a page on a schedule
+
+Return `(every r dur)` and the platform re-runs your gate every `dur` (with
+`cmd=~`, like a dependency tick). A self-updating clock, a poller, a countdown.
+See ticker. The delay is clamped to a floor (`>= 1s`) so a page can't drive
+itself faster than the rate window.
+
+**A timer is sustained load.** Each tick is a real event (re-run + writes). The
+next tick is armed for `dur` *after the run finishes*, so there is always at
+least `dur` of real idle between runs — a timer whose gate is slower than its
+interval no longer pins the loop; it just runs at a high duty cycle and the ship
+stays responsive. Still: use the *slowest* interval that does the job (seconds,
+not sub-second), keep the gate light, and prefer a dependency tick over a timer
+when something else already changes on the cadence you want.
+
+## Pokes — one page drives another
+
+Return `(sends r pokes)` where `pokes` is a list of `[page-name command]`, and
+the platform sends each as a command to that page (bumping its `cmd`). A page
+reached via a poke gets a **decremented budget**, so a poke chain — a cycle
+included — terminates after a fixed depth (`poke-budget-max`) regardless of
+timing. One run emits at most `poke-cap` pokes. See relay/sink. This is the
+capped-authority dart: a page can drive other *pages*, but still can't poke
+arbitrary agents, make HTTP requests, or write outside the page tree.
+
 ## Known limits (today)
 
-- **No timers.** A page runs on a command or a dependency change, never on its
-  own schedule. A self-ticking clock needs a platform timer feature.
-- **No darts.** Page code returns data only; it can't yet poke other agents,
-  make HTTP requests, or write outside its own `data`. Capped-authority darts
-  are the next design step (see platform.md).
 - **Explicit dependencies.** No auto-tracing; declare what you read.
-- **Bounded compute only.** No execution timeout; a runaway page hangs the loop.
-- **Data renders escaped.** The web view HTML-escapes data (and the clearweb
-  surface even more so). Rich HTML-as-data (hawk's "data is the UI") is a later
-  refinement; today a page's data is shown as safe text.
+- **Bounded compute only.** No execution timeout; a runaway (non-terminating)
+  gate hangs the loop — the `mule` fence catches crashes, not divergence.
+- **Timer duty cycle isn't capped.** The next tick is armed after the run ends,
+  so a timer can never pin the loop, but a page whose gate is heavy relative to
+  its interval will still run at a high duty cycle (the rate cap keys on rerun
+  *rapidity*, not on how long each run takes). Keep timer gates light.
+- **Own HTML renders raw; peer HTML is always escaped.** Your own `html` page
+  data is inlined verbatim (escape dynamic values with `esc`); a *peer's* page
+  data browsed remotely is always escaped and served inert, so a foreign ship
+  can never inject markup into your origin.
