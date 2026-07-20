@@ -27,12 +27,12 @@ in the tree explorer at `/apps/lattice/x/~<you>/apps/lattice.lattice_app/page/<n
 
 ## The gate: the whole API
 
-Your `code` is one gate. Its sample and product are the entire contract —
-frozen:
+Your `code` is one gate. Its sample is fixed; its product is a `+result` from
+the page stdlib (`pg`, which is your compile subject):
 
 ```hoon
 |=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
-^-  [dat=(unit *) dep=(list path)]
+^-  result
 ```
 
 **Inputs (the sample):**
@@ -45,16 +45,33 @@ frozen:
 - `deps` — each declared dependency as `[path value]`, pre-resolved. A missing
   dependency's value is `~`.
 
-**Output (the product):**
+**Output (`+result`):** build it with the `pg` constructors — you name the
+render mode and pass the value:
 
-- `dat` — the new data. `~` means *no change* (nothing is written).
-- `dep` — your full dependency list this run. Return the same list to keep it;
-  return a different one to re-declare (the evaluator re-arms the keeps).
+| builder | data becomes | rendered as |
+|---|---|---|
+| `(text v)` | `v` | escaped text |
+| `(html v)` | `v` | **raw HTML** — your own page's markup |
+| `(gmi v)` | `v` | gemtext → HTML |
+| `(raw v)` | `v` | opaque noun, shown escaped |
+| `same` | *unchanged* | (no write) |
 
-The subject is the Hoon standard library — nothing else. No network, no
-filesystem, no darts (yet). If you need those, that is a platform feature, not
-a page. This is deliberate: a page is a pure function from `(command, state,
-dependencies, time)` to `(new state, dependencies)`.
+and chain modifiers: `(needs r deps)` sets dependencies, `(every r dur)` sets a
+timer, `(sends r pokes)` pokes other pages. `esc` HTML-escapes a cord — use it
+on any dynamic value you weld into `html`.
+
+The subject beneath `pg` is the Hoon standard library. A page is a pure
+function from `(command, state, dependencies, time)` to a `result`.
+
+## Rendering — data as its own UI
+
+A page's render mode (`text` / `html` / `gmi` / `raw`) decides how its data
+shows in the web view and on the clearweb surface. **`html` inlines your
+markup raw** — a page's data can *be* a styled interface (forms, layout), not
+just a value. This is your own code producing your own HTML; escape any
+untrusted/dynamic value with `esc` first. (A *peer's* page data is always
+escaped when you browse it remotely — a foreign ship can never inject markup
+into your browser.)
 
 ## Writing and driving a page
 
@@ -138,41 +155,46 @@ All verified on the harness. Full sources in
 
 ### counter — commands and state
 ```hoon
-|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
-^-  [dat=(unit *) dep=(list path)]
 =/  n=@ud  ?~(dat 0 (fall (rush ;;(@t u.dat) dim:ag) 0))
 =/  m=@ud  ?:(&(?=(^ cmd) =(u.cmd 'inc')) +(n) n)
-[`(crip (a-co:co m)) ~]
+(text (crip (a-co:co m)))
 ```
 `page-cmd?name=counter&cmd=inc` → `0`, `1`, `2`, …
+
+### card — data as HTML (`html` + `esc`)
+```hoon
+=/  msg=@t  ?~(cmd 'send a command to set my text' u.cmd)
+%-  html  %-  crip
+;:  weld
+  "<div style=\"padding:1rem;border:2px solid #1a6ed8;border-radius:8px\">"
+  "<h2>Card</h2><p>"  (trip (esc msg))  "</p></div>"
+==
+```
+renders a real styled box; the command value is `esc`-escaped, the box markup
+is raw.
 
 ### greeter — a command as input
 ```hoon
 =/  who=@t  ?~(cmd 'world' u.cmd)
-[`(cat 3 'hello, ' who) ~]
+(text (cat 3 'hello, ' who))
 ```
-no command → `hello, world`; `cmd=sneagan` → `hello, sneagan`.
 
 ### note — the command is the value
 ```hoon
-?~  cmd  [dat ~]
-[`u.cmd ~]
+?~(cmd same (text u.cmd))
 ```
-`cmd=buy milk` → data is `buy milk`.
 
 ### clock — using `now`
 ```hoon
-[`(scot %da now) ~]
+(text (scot %da now))
 ```
-data is the time of the last command (pages have no timer yet, so it updates
-when you poke it or a dependency changes).
 
 ### doubler — a derived page (dependencies)
 ```hoon
 =/  tgt=path  /apps/lattice.lattice_app/page/counter/data
-?~  deps  [~ ~[tgt]]
+?~  deps  (needs same ~[tgt])
 =/  v=@ud  (fall (rush ;;(@t +.i.deps) dim:ag) 0)
-[`(crip (a-co:co (mul 2 v))) ~[tgt]]
+(needs (text (crip (a-co:co (mul 2 v)))) ~[tgt])
 ```
 first run declares the dep; thereafter, incrementing `counter` re-runs doubler
 automatically — no command needed.

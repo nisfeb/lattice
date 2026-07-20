@@ -1,7 +1,6 @@
-::  counter — the "hello world" of pages. Command "inc" bumps the count.
-::  data is the count as a cord; a dep tick (empty command) leaves it.
+::  counter — commands and state. "inc" bumps the count; data is text.
 |=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
-^-  [dat=(unit *) dep=(list path)]
+^-  result
 =/  n=@ud  ?~(dat 0 (fall (rush ;;(@t u.dat) dim:ag) 0))
 =/  m=@ud  ?:(&(?=(^ cmd) =(u.cmd 'inc')) +(n) n)
-[`(crip (a-co:co m)) ~]
+(text (crip (a-co:co m)))

@@ -1,5 +1,5 @@
-::  greeter: the command is a name; data becomes "hello, <name>".
+::  greeter — a command as input. No command -> "hello, world".
 |=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
-^-  [dat=(unit *) dep=(list path)]
+^-  result
 =/  who=@t  ?~(cmd 'world' u.cmd)
-[`(cat 3 'hello, ' who) ~]
+(text (cat 3 'hello, ' who))

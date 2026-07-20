@@ -1,4 +1,4 @@
-::  clock: data is the time of the last command (pages have no timer yet).
+::  clock — data is the time of the last run.
 |=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
-^-  [dat=(unit *) dep=(list path)]
-[`(scot %da now) ~]
+^-  result
+(text (scot %da now))

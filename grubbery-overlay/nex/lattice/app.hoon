@@ -25,6 +25,7 @@
 /<  ast  /lib/obelisk-ast.hoon
 /<  cat  /lib/catalog.hoon
 /<  le   /lib/lattice-eval.hoon
+/<  pg   /lib/lattice-pg.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -202,10 +203,10 @@
         |-
         ;<  src=@t  bind:m  (get-state-as:io ,@t)
         =?  bild  !=(src held)
-          ::  ..ream, not ..add: the subject must be the FULL hoon stack
-          ::  (path/unit/list live in mold layers above the math core ..add
-          ::  captures; -find.path on every page otherwise).
-          (mule |.((slap !>(..ream) (ream src))))
+          ::  compile the page against the page stdlib (pg): its builders
+          ::  (text/html/needs/every/sends/esc) and the +result mold are in
+          ::  scope at the top, the full hoon/zuse stack beneath.
+          (mule |.((slap !>(pg) (ream src))))
         =.  held  src
         ?:  ?=(%| -.bild)
           ;<  ~  bind:m
@@ -1267,6 +1268,15 @@
   ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %share] ~)
   ?.  ?=([%& %file *] sn)  (pure:m %private)
   (pure:m (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.p.sn)))) %private))
+::  +read-show-mode: a page's render mode grub, %text if absent/malformed.
+::
+++  read-show-mode
+  |=  pdir=path
+  =/  m  (fiber:fiber:nexus ,view-mode:pg)
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %show] ~)
+  ?.  ?=([%& %file *] sn)  (pure:m %text)
+  (pure:m (fall (mole |.(;;(view-mode:pg (sang-noun:tarball sang.p.sn)))) %text))
 ::  +read-eval-cmd / +read-eval-deps: tolerant grub reads (absent or
 ::  malformed -> the zero value; a page never crashes its evaluator).
 ::
@@ -1357,15 +1367,17 @@
       !>(`@da`now)
       !>(`(list [path *])`dvs)
     ==
-  =/  res=(each [dat=(unit *) dep=(list path)] tang)
+  =/  res=(each result:pg tang)
     %-  mule  |.
-    ;;([dat=(unit *) dep=(list path)] q:(slam bild env))
+    ;;(result:pg q:(slam bild env))
   ?:  ?=(%| -.res)
     (put-file [%& %& pdir %err] [/lattice %page] (crip "run failed: {<p.res>}"))
   ;<  ~  bind:m  (put-file [%& %& pdir %err] [/lattice %page] '')
   ;<  ~  bind:m
     ?~  dat.p.res  (pure:m ~)
     ;<  ~  bind:m  (put-file [%& %& pdir %data] [/lattice %eval-data] u.dat.p.res)
+    ::  record the render mode next to the data (read by the page view).
+    ;<  ~  bind:m  (put-file [%& %& pdir %show] [/lattice %eval-data] show.p.res)
     ::  a shared page's data must stay gained across recomputes — gain is
     ::  per-revision (like apply-pub re-gaining on every save).
     ;<  mode=share-mode:le  bind:m  (read-share pdir)
@@ -2732,12 +2744,13 @@
   ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& pax %data] ~)
   ;<  esn=seen:nexus  bind:m  (peek:io [%& %& pax %err] ~)
   ;<  mode=share-mode:le  bind:m  (read-share pax)
+  ;<  vmode=view-mode:pg  bind:m  (read-show-mode pax)
   =/  err=@t
     ?.  ?=([%& %file *] esn)  ''
     (fall (mole |.(;;(@t (sang-noun:tarball sang.p.esn)))) '')
   =/  data-html=tape
     ?.  ?=([%& %file *] dsn)  "<p>no data yet</p>"
-    (page-data-html sang.p.dsn)
+    (render-shown sang.p.dsn vmode)
   ::  own lean SSE (no ?blot=/txt): a page dir's noun grubs render huge under
   ::  /txt on the initial snapshot, and the reload script reads only event
   ::  names, never the payload — so keep="" to render-page and append a
@@ -2759,9 +2772,10 @@
   ;<  mode=share-mode:le  bind:m  (read-share pdir)
   ?.  ?=(%clearweb mode)  (send-err eyre-id 404 'not found')
   ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& pdir %data] ~)
+  ;<  vmode=view-mode:pg  bind:m  (read-show-mode pdir)
   =/  data-html=tape
     ?.  ?=([%& %file *] dsn)  "<p>no data</p>"
-    (page-data-html sang.p.dsn)
+    (render-shown sang.p.dsn vmode)
   (send-html eyre-id (render-page "" "" data-html))
 ::  +page-data-html: render a page's data grub. A cord shows as text; any
 ::  other noun as its literal (a page's data mark is a bare noun).
@@ -2774,6 +2788,23 @@
   ?:  ?=(%& -.cord-res)
     :(weld "<pre>" (esc (trip p.cord-res)) "</pre>")
   :(weld "<pre>" (esc "{<nn>}") "</pre>")
+::  +render-shown: render an OWN page's data grub per its render mode. %html
+::  inlines raw — safe because this is only ever called on OUR OWN page data
+::  (render-page-view / serve-clearweb); a peer's page data is escaped by the
+::  explorer, never routed here. A non-cord value falls back to a noun literal.
+::
+++  render-shown
+  |=  [=sang:tarball mode=view-mode:pg]
+  ^-  tape
+  =/  nn=*  (sang-noun:tarball sang)
+  =/  cr=(each @t tang)  (mule |.(;;(@t nn)))
+  ?:  ?=(%| -.cr)  (page-data-html sang)
+  ?-  mode
+    %text  :(weld "<pre>" (esc (trip p.cr)) "</pre>")
+    %html  (trip p.cr)
+    %gmi   (render-gmi p.cr)
+    %noun  (page-data-html sang)
+  ==
 ::  +page-view-html: crumbs, error, data, and a command form (POSTs page-cmd
 ::  with web=1 so the route 303s back here). ?raw links to the grub listing.
 ::

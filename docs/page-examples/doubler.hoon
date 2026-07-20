@@ -1,9 +1,8 @@
-::  doubler — a DERIVED page. It declares the counter's data grub as a
-::  dependency; whenever the counter changes, grubbery re-runs this page
-::  (empty command) and it recomputes. No polling: the wave drives it.
+::  doubler — a DERIVED page. `needs` declares the counter's data as a
+::  dependency; when it changes, grubbery re-runs this page (empty command).
 |=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
-^-  [dat=(unit *) dep=(list path)]
+^-  result
 =/  tgt=path  /apps/[`@ta`'lattice.lattice_app']/page/counter/data
-?~  deps  [~ ~[tgt]]                       ::  first run: declare the dep
+?~  deps  (needs same ~[tgt])                 ::  first run: just declare the dep
 =/  v=@ud  (fall (rush ;;(@t +.i.deps) dim:ag) 0)
-[`(crip (a-co:co (mul 2 v))) ~[tgt]]
+(needs (text (crip (a-co:co (mul 2 v)))) ~[tgt])
