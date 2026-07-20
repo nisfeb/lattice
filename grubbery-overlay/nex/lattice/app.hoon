@@ -189,6 +189,16 @@
         =/  armed=(set path)  ~
         =/  held=@t  '=='
         =/  bild=(each vase tang)  [%| `tang`~[leaf+"not compiled"]]
+        ::  gen counts RAPID consecutive dep-tick reruns. A dep cycle or an
+        ::  always-changing page reruns as fast as the event loop allows and
+        ::  would livelock it; a legit reactive page reruns only when an
+        ::  upstream actually changes, spaced out in time. So gen accumulates
+        ::  only while reruns land closer together than `rerun-gap`, and resets
+        ::  on a command or a slow (legit) gap — capping runaways without ever
+        ::  parking a page that merely reacts to many updates over time. gen and
+        ::  last-now live in this fiber's loop across every wave.
+        =/  gen=@ud  0
+        =/  last-now=@da  `@da`0
         |-
         ;<  src=@t  bind:m  (get-state-as:io ,@t)
         =?  bild  !=(src held)
@@ -207,6 +217,21 @@
         =.  armed  na
         ;<  cur=eval-cmd:le  bind:m  (read-eval-cmd pdir)
         =/  fresh=?  (gth seq.cur last)
+        ;<  now=@da  bind:m  bowl-now
+        ::  rapid = this rerun landed within `rerun-gap` of the previous one
+        ::  (a runaway burst). A command or a slow gap resets the counter.
+        =/  rapid=?  &(!=(`@da`0 last-now) (lth (sub now last-now) rerun-gap))
+        =.  gen  ?:(|(fresh !rapid) 0 +(gen))
+        =.  last-now  now
+        ?:  (gth gen recompute-cap)
+          ::  a sustained rapid rerun burst — a cycle or an always-changing page.
+          ::  Stop producing data (that is what wakes our dependents), write err,
+          ::  and park until a command (or a settled gap) resets gen.
+          =/  msg=@t
+            'recompute limit hit (dependency cycle or always-changing page?); send a command to resume'
+          ;<  ~  bind:m  (put-file [%& %& pdir %err] [/lattice %page] msg)
+          ;<  *  bind:m  (take-news-or-wake-drain /ev)
+          $
         =/  cmd=(unit @t)  ?:(fresh `txt.cur ~)
         ;<  ~  bind:m  (eval-run pdir p.bild cmd deps)
         ::  persist the processed seq only when a command actually ran (a dep
@@ -1245,6 +1270,16 @@
 ::  +read-eval-cmd / +read-eval-deps: tolerant grub reads (absent or
 ::  malformed -> the zero value; a page never crashes its evaluator).
 ::
+::  +recompute-cap: max RAPID consecutive reruns before the evaluator parks a
+::  page (cycle / runaway guard). Only reruns closer together than +rerun-gap
+::  count, so a legit page reacting to spaced-out updates never hits it; 32 is
+::  far above any real reactive chain and keeps the runaway burst short.
+::
+++  recompute-cap  ^-(@ud 32)
+::  +rerun-gap: reruns landing closer than this are "rapid" (part of a runaway
+::  burst) and accumulate; a larger gap is a legit update and resets the count.
+::
+++  rerun-gap  ^-(@dr ~s1)
 ++  read-eval-cmd
   |=  pdir=path
   =/  m  (fiber:fiber:nexus ,eval-cmd:le)
@@ -2626,11 +2661,11 @@
       ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
       ?.  ?=([%& %file *] fn)  (send-err eyre-id 404 'not found')
       ?:  want-raw  (send-raw eyre-id sang.p.fn)
-      (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.fn)))
+      (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.fn %.y)))
     ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
     ?:  ?=([%& %file *] fn)
       ?:  want-raw  (send-raw eyre-id sang.p.fn)
-      (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.fn)))
+      (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.fn %.y)))
     ;<  dn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
     ?.  ?=([%& %ball *] dn)  (send-err eyre-id 404 'not found')
     (send-redirect eyre-id (weld base "/"))
@@ -2643,12 +2678,12 @@
     ?~  mf  (send-err eyre-id 504 'unreachable or denied')
     ?.  ?=([%& %file *] u.mf)  (send-err eyre-id 404 'not found')
     ?:  want-raw  (send-raw eyre-id sang.p.u.mf)
-    (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.u.mf)))
+    (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.u.mf %.n)))
   ;<  mf=(unit seen:nexus)  bind:m  (peek-remote-wait file-road u.shp)
   ?~  mf  (send-err eyre-id 504 'unreachable or denied')
   ?:  ?=([%& %file *] u.mf)
     ?:  want-raw  (send-raw eyre-id sang.p.u.mf)
-    (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.u.mf)))
+    (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.u.mf %.n)))
   ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
   ?~  md  (send-err eyre-id 504 'unreachable or denied')
   ?.  ?=([%& %ball *] u.md)  (send-err eyre-id 404 'not found')
@@ -2869,7 +2904,7 @@
 ::  mark. ?data is always offered for cord/octs bodies.
 ::
 ++  explore-file-html
-  |=  [shp=@p pax=path =sang:tarball]
+  |=  [shp=@p pax=path =sang:tarball local=?]
   ^-  tape
   =/  mk=@tas  name.p.sang
   =/  nn=*  (sang-noun:tarball sang)
@@ -2877,9 +2912,14 @@
   =/  body=tape
     ?:  ?=(%& -.cord-res)
       ::  %page is the lattice pub blot ([/lattice %page]) — gemtext bodies.
+      ::  %html inlines RAW — but only for our OWN grubs (local): a foreign
+      ::  ship's %html body is attacker-controlled, so escape it (stored XSS
+      ::  in the owner's browser otherwise; caught by review).
       ?+  mk  :(weld "<pre>" (esc (trip p.cord-res)) "</pre>")
         ?(%gmi %gemtext %page)  (render-gmi p.cord-res)
-        %html                   (trip p.cord-res)
+        %html
+      ?:  local  (trip p.cord-res)
+      :(weld "<pre>" (esc (trip p.cord-res)) "</pre>")
       ==
     =/  octs-res=(each [p=@ud q=@] tang)  (mule |.(;;([p=@ud q=@] nn)))
     ?:  ?=(%& -.octs-res)
