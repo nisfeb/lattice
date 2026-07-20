@@ -217,6 +217,11 @@
   ::  drop the /apps/lattice prefix; the remainder is the route.
   =/  suffix=path  (slag 2 site.parsed)
   =/  args=(map @t @t)  (malt args.parsed)
+  ::  /x/<ship>/<path...>: the server-rendered tree explorer (docs/platform.md,
+  ::  build step 1). Consumes the rest of the path, so it dispatches before the
+  ::  (rear suffix) route table below.
+  ?:  &(?=([%x *] suffix) =(%'GET' method.request.req))
+    (explore eyre-id t.suffix args url.request.req)
   ::  root: the web reader (Landscape tile). ?url=urb://ship/rel renders that
   ::  page; no url renders the home index of our published pages. ponytail:
   ::  compact gemtext->HTML (headings/links/quotes/lists/pre); the full reader's
@@ -2229,6 +2234,239 @@
   =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.p.u.ms))))
   ?:  ?=(%| -.res)  (pure:m ~)
   (pure:m `p.res)
+::  +explore: GET /x/<ship>/<path...> — the server-rendered tree explorer
+::  (docs/platform.md, build step 1). Directories render as listings with
+::  relative child links; trailing slash is forced on directory urls (hawk
+::  convention — relative hrefs resolve against the listing). Files render
+::  mark-aware; ?data serves the raw body with a mark-derived content-type.
+::  Own tree peeks locally; a foreign ship's gained tree via remote peek.
+::  Owner-only like every route (clearweb projection is build step 4).
+::  No trailing slash -> try file first (the common case for leaf urls), then
+::  dir + redirect; trailing slash -> dir first. Remote: an unreachable ship is
+::  504 on the FIRST wait (a ~ result means no answer, not wrong-kind), so the
+::  fallback attempt only runs when the ship answered with the wrong node kind.
+::
+++  explore
+  |=  [eyre-id=@ta rest=path args=(map @t @t) raw-url=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  our=@p  bind:m  bowl-our
+  ::  a trailing '/' parses as a trailing EMPTY knot (smeg matches ''), which
+  ::  would send every slashed dir url down the peek path as a child literally
+  ::  named '' -> 404 (caught by review). Trim trailing empties up front —
+  ::  `slashed` below still records that the url named a directory.
+  =/  rest=path
+    |-  ^-  path
+    ?:  &(?=(^ rest) =('' (rear `path`rest)))
+      $(rest (snip `path`rest))
+    rest
+  ?~  rest
+    (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p our) "/"))
+  =/  shp=(unit @p)  (slaw %p i.rest)
+  ?~  shp  (send-err eyre-id 400 'bad ship')
+  =/  pax=path  t.rest
+  =/  base=tape  (url-path-part raw-url)
+  =/  slashed=?  &(?=(^ base) =('/' (rear base)))
+  =/  want-raw=?  (~(has by args) 'data')
+  =/  dir-road=road:tarball  [%& %| pax]
+  ?~  pax
+    ::  ship root: always a directory
+    ?.  slashed  (send-redirect eyre-id (weld base "/"))
+    ?:  =(u.shp our)
+      ;<  dn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
+      ?.  ?=([%& %ball *] dn)  (send-err eyre-id 404 'not found')
+      (send-html eyre-id (render-page "" "" (explore-dir-html u.shp pax ball.p.dn)))
+    ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
+    ?~  md  (send-err eyre-id 504 'unreachable or denied')
+    ?.  ?=([%& %ball *] u.md)  (send-err eyre-id 404 'not found')
+    (send-html eyre-id (render-page "" "" (explore-dir-html u.shp pax ball.p.u.md)))
+  =/  file-road=road:tarball  [%& %& (snip `path`pax) (rear pax)]
+  ?:  =(u.shp our)
+    ?:  slashed
+      ;<  dn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
+      ?:  ?=([%& %ball *] dn)
+        (send-html eyre-id (render-page "" "" (explore-dir-html u.shp pax ball.p.dn)))
+      ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
+      ?.  ?=([%& %file *] fn)  (send-err eyre-id 404 'not found')
+      ?:  want-raw  (send-raw eyre-id sang.p.fn)
+      (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.fn)))
+    ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
+    ?:  ?=([%& %file *] fn)
+      ?:  want-raw  (send-raw eyre-id sang.p.fn)
+      (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.fn)))
+    ;<  dn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
+    ?.  ?=([%& %ball *] dn)  (send-err eyre-id 404 'not found')
+    (send-redirect eyre-id (weld base "/"))
+  ?:  slashed
+    ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
+    ?~  md  (send-err eyre-id 504 'unreachable or denied')
+    ?:  ?=([%& %ball *] u.md)
+      (send-html eyre-id (render-page "" "" (explore-dir-html u.shp pax ball.p.u.md)))
+    ;<  mf=(unit seen:nexus)  bind:m  (peek-remote-wait file-road u.shp)
+    ?~  mf  (send-err eyre-id 504 'unreachable or denied')
+    ?.  ?=([%& %file *] u.mf)  (send-err eyre-id 404 'not found')
+    ?:  want-raw  (send-raw eyre-id sang.p.u.mf)
+    (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.u.mf)))
+  ;<  mf=(unit seen:nexus)  bind:m  (peek-remote-wait file-road u.shp)
+  ?~  mf  (send-err eyre-id 504 'unreachable or denied')
+  ?:  ?=([%& %file *] u.mf)
+    ?:  want-raw  (send-raw eyre-id sang.p.u.mf)
+    (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.u.mf)))
+  ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
+  ?~  md  (send-err eyre-id 504 'unreachable or denied')
+  ?.  ?=([%& %ball *] u.md)  (send-err eyre-id 404 'not found')
+  (send-redirect eyre-id (weld base "/"))
+::  +url-path-part: the path portion of a raw request url (strip ?query).
+::
+++  url-path-part
+  |=  raw=@t
+  ^-  tape
+  =/  t=tape  (trip raw)
+  =/  q=(unit @ud)  (find "?" t)
+  ?~(q t (scag u.q t))
+::  +send-redirect: a 301 to `to` (used to force trailing slashes on dirs).
+::
+++  send-redirect
+  |=  [eyre-id=@ta to=tape]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  [[301 ['location' (crip to)]~] ~]
+::  +explore-crumbs: breadcrumb nav — absolute hrefs from the ship root down,
+::  each with a trailing slash. The leaf is linked too (self-link; harmless).
+::
+++  explore-crumbs
+  |=  [shp=@p pax=path]
+  ^-  tape
+  =/  base=tape  (weld "/apps/lattice/x/" (scow %p shp))
+  =/  out=tape
+    ;:  weld
+      "<nav class=\"crumbs\"><a href=\""
+      base
+      "/\">"
+      (esc (scow %p shp))
+      "</a>"
+    ==
+  =/  cur=tape  base
+  |-  ^-  tape
+  ?~  pax  (weld out "</nav>")
+  =.  cur  :(weld cur "/" (trip i.pax))
+  ::  esc the href too — remote segment names are attacker-chosen text.
+  =.  out  :(weld out " / <a href=\"" (esc cur) "/\">" (esc (trip i.pax)) "</a>")
+  $(pax t.pax)
+::  +explore-dir-html: one directory level as HTML — subdirs first, then files
+::  with their marks. Child hrefs are RELATIVE (dirs get a trailing slash), so
+::  they resolve against the forced-trailing-slash listing url. Capped at
+::  browse-fan-cap like browse-json, for the same unbounded-response reason.
+::
+++  explore-dir-html
+  |=  [shp=@p pax=path b=ball:tarball]
+  ^-  tape
+  =/  dirs=(list @ta)  (sort (turn ~(tap by dir.b) head) aor)
+  =/  files=(list [nom=@ta mk=@tas])
+    %+  sort
+      ?~  fil.b  ~
+      %+  turn  ~(tap by contents.u.fil.b)
+      |=  [nom=@ta con=[=sang:tarball gain=? bang=(unit tang)]]
+      [nom name.p.sang.con]
+    |=([a=[nom=@ta mk=@tas] b=[nom=@ta mk=@tas]] (aor nom.a nom.b))
+  =/  truncated=?
+    |((gth (lent dirs) browse-fan-cap) (gth (lent files) browse-fan-cap))
+  ;:  weld
+    (explore-crumbs shp pax)
+    "<ul class=\"tree\">"
+    ::  ^- tape on each zing: welding zing's uncast recursive product
+    ::  fuse-loops the compiler (caught by review; see +esc for the idiom).
+    ^-  tape
+    %-  zing
+    %+  turn  (scag browse-fan-cap dirs)
+    |=  n=@ta
+    =/  nm=tape  (esc (trip n))
+    :(weld "<li><a href=\"" nm "/\">" nm "/</a></li>")
+    ^-  tape
+    %-  zing
+    %+  turn  (scag browse-fan-cap files)
+    |=  [nom=@ta mk=@tas]
+    =/  nm=tape  (esc (trip nom))
+    ;:  weld
+      "<li><a href=\""  nm  "\">"  nm  "</a>"
+      " <span class=\"mark\">"  (esc (trip mk))  "</span></li>"
+    ==
+    "</ul>"
+    ?.(truncated "" "<p class=\"err\">listing truncated</p>")
+  ==
+::  +explore-file-html: one file, mark-aware. Cord bodies: gemtext renders,
+::  html inlines as-is (hawk's model — data is its own ui; this surface is
+::  owner-only until the clearweb step), everything else is an escaped <pre>.
+::  Non-cord bodies: octs get a byte count + raw link; opaque nouns just the
+::  mark. ?data is always offered for cord/octs bodies.
+::
+++  explore-file-html
+  |=  [shp=@p pax=path =sang:tarball]
+  ^-  tape
+  =/  mk=@tas  name.p.sang
+  =/  nn=*  (sang-noun:tarball sang)
+  =/  cord-res=(each @t tang)  (mule |.(;;(@t nn)))
+  =/  body=tape
+    ?:  ?=(%& -.cord-res)
+      ::  %page is the lattice pub blot ([/lattice %page]) — gemtext bodies.
+      ?+  mk  :(weld "<pre>" (esc (trip p.cord-res)) "</pre>")
+        ?(%gmi %gemtext %page)  (render-gmi p.cord-res)
+        %html                   (trip p.cord-res)
+      ==
+    =/  octs-res=(each [p=@ud q=@] tang)  (mule |.(;;([p=@ud q=@] nn)))
+    ?:  ?=(%& -.octs-res)
+      :(weld "<p>binary grub (" (a-co:co p.p.octs-res) " bytes)</p>")
+    "<p>opaque noun grub (not raw-servable)</p>"
+  ;:  weld
+    (explore-crumbs shp pax)
+    "<div class=\"meta\">mark "  (esc (trip mk))
+    " &middot; <a href=\"?data\">raw</a></div>"
+    body
+  ==
+::  +send-raw: ?data — the file body verbatim with a mark-derived content-type.
+::  Cords ship as their bytes; octs ship as-is; anything else is 415.
+::
+++  send-raw
+  |=  [eyre-id=@ta =sang:tarball]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  mk=@tas  name.p.sang
+  =/  nn=*  (sang-noun:tarball sang)
+  =/  cord-res=(each @t tang)  (mule |.(;;(@t nn)))
+  ?:  ?=(%& -.cord-res)
+    %+  send-simple:srv  eyre-id
+    [[200 ['content-type' (mark-mime mk)]~] `(as-octs:mimes:html p.cord-res)]
+  =/  octs-res=(each [p=@ud q=@] tang)  (mule |.(;;([p=@ud q=@] nn)))
+  ?:  ?=(%& -.octs-res)
+    ::  p is remote-attested (a boom carries the peer's raw noun) — a hostile
+    ::  length would become our content-length. Cap it: real octs may pad p
+    ::  past (met 3 q) for trailing zeros, but not by 16MiB (caught by review).
+    ?:  (gth p.p.octs-res (bex 24))
+      (send-err eyre-id 413 'too large')
+    %+  send-simple:srv  eyre-id
+    [[200 ['content-type' (mark-mime mk)]~] `p.octs-res]
+  (send-err eyre-id 415 'not raw-servable')
+::  +mark-mime: content-type for ?data by mark leaf. Unknown marks default to
+::  text/plain — cords are overwhelmingly text, and octs of unknown mark are
+::  rare enough not to earn octet-stream plumbing yet.
+::
+++  mark-mime
+  |=  mk=@tas
+  ^-  @t
+  ?+  mk  'text/plain'
+    %json          'application/json'
+    ?(%html %htm)  'text/html'
+    %gmi           'text/gemini'
+    ?(%md %markdown)  'text/markdown'
+    %css           'text/css'
+    %js            'text/javascript'
+    %png           'image/png'
+    ?(%jpg %jpeg)  'image/jpeg'
+    %gif           'image/gif'
+    %webp          'image/webp'
+    %svg           'image/svg+xml'
+  ==
 ::  +browse-json: render one directory level of a foreign (or own) grubbery tree as
 ::  a JSON listing — subdirs first, then files. Each file carries its mark leaf. Both
 ::  lists are capped at browse-fan-cap and `truncated` is set if either overflowed,
