@@ -2660,11 +2660,11 @@
         (render-page-view eyre-id u.shp pax u.pn)
       ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
       ?.  ?=([%& %file *] fn)  (send-err eyre-id 404 'not found')
-      ?:  want-raw  (send-raw eyre-id sang.p.fn)
+      ?:  want-raw  (send-raw eyre-id sang.p.fn %.y)
       (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.fn %.y)))
     ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
     ?:  ?=([%& %file *] fn)
-      ?:  want-raw  (send-raw eyre-id sang.p.fn)
+      ?:  want-raw  (send-raw eyre-id sang.p.fn %.y)
       (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.fn %.y)))
     ;<  dn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
     ?.  ?=([%& %ball *] dn)  (send-err eyre-id 404 'not found')
@@ -2677,12 +2677,12 @@
     ;<  mf=(unit seen:nexus)  bind:m  (peek-remote-wait file-road u.shp)
     ?~  mf  (send-err eyre-id 504 'unreachable or denied')
     ?.  ?=([%& %file *] u.mf)  (send-err eyre-id 404 'not found')
-    ?:  want-raw  (send-raw eyre-id sang.p.u.mf)
+    ?:  want-raw  (send-raw eyre-id sang.p.u.mf %.n)
     (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.u.mf %.n)))
   ;<  mf=(unit seen:nexus)  bind:m  (peek-remote-wait file-road u.shp)
   ?~  mf  (send-err eyre-id 504 'unreachable or denied')
   ?:  ?=([%& %file *] u.mf)
-    ?:  want-raw  (send-raw eyre-id sang.p.u.mf)
+    ?:  want-raw  (send-raw eyre-id sang.p.u.mf %.n)
     (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.u.mf %.n)))
   ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
   ?~  md  (send-err eyre-id 504 'unreachable or denied')
@@ -2935,15 +2935,25 @@
 ::  Cords ship as their bytes; octs ship as-is; anything else is 415.
 ::
 ++  send-raw
-  |=  [eyre-id=@ta =sang:tarball]
+  |=  [eyre-id=@ta =sang:tarball local=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  mk=@tas  name.p.sang
   =/  nn=*  (sang-noun:tarball sang)
+  ::  a FOREIGN grub's bytes are attacker-controlled: serving them with an
+  ::  active content-type (html/svg/js) executes the peer's markup in our own
+  ::  origin (residual XSS the round-1 inline-render fix missed). Only our OWN
+  ::  grubs get a mark-derived type; anything foreign is forced to an inert
+  ::  download (octet-stream + attachment + nosniff).
+  =/  heads=(list [@t @t])
+    ?:  local  ['content-type' (mark-mime mk)]~
+    :~  ['content-type' 'application/octet-stream']
+        ['content-disposition' 'attachment']
+        ['x-content-type-options' 'nosniff']
+    ==
   =/  cord-res=(each @t tang)  (mule |.(;;(@t nn)))
   ?:  ?=(%& -.cord-res)
-    %+  send-simple:srv  eyre-id
-    [[200 ['content-type' (mark-mime mk)]~] `(as-octs:mimes:html p.cord-res)]
+    (send-simple:srv eyre-id [[200 heads] `(as-octs:mimes:html p.cord-res)])
   =/  octs-res=(each [p=@ud q=@] tang)  (mule |.(;;([p=@ud q=@] nn)))
   ?:  ?=(%& -.octs-res)
     ::  p is remote-attested (a boom carries the peer's raw noun) — a hostile
@@ -2951,8 +2961,7 @@
     ::  past (met 3 q) for trailing zeros, but not by 16MiB (caught by review).
     ?:  (gth p.p.octs-res (bex 24))
       (send-err eyre-id 413 'too large')
-    %+  send-simple:srv  eyre-id
-    [[200 ['content-type' (mark-mime mk)]~] `p.octs-res]
+    (send-simple:srv eyre-id [[200 heads] `p.octs-res])
   (send-err eyre-id 415 'not raw-servable')
 ::  +mark-mime: content-type for ?data by mark leaf. Unknown marks default to
 ::  text/plain — cords are overwhelmingly text, and octs of unknown mark are
