@@ -1,0 +1,191 @@
+# Programmable pages — the manual
+
+The lattice platform (see [platform.md](platform.md)) turns your ship into a
+tree of programmable pages: each page is a small Hoon program whose output is
+its own web page, editable and drivable from any browser. This is the manual
+for writing them. Worked, verified examples live in
+[page-examples/](page-examples/).
+
+## A page is a directory
+
+Every page lives at `/page/<name>/` under the lattice nexus and is a directory
+of grubs (files):
+
+| grub | what | written by |
+|---|---|---|
+| `code` | your Hoon gate (source) | you (page-save) |
+| `data` | the gate's current output (any noun) | the evaluator |
+| `cmd` | the command inbox `[seq=@ud txt=@t]` | page-cmd |
+| `deps` | declared dependencies `(list path)` | you (via the gate) |
+| `err` | last compile/run failure text (`''` = healthy) | the evaluator |
+| `seen` | last processed command seq (internal) | the evaluator |
+| `share` | sharing preset (internal) | page-share |
+
+You write `code`. Everything else the platform maintains. Browse any of them
+in the tree explorer at `/apps/lattice/x/~<you>/apps/lattice.lattice_app/page/<name>/`
+(the `?raw` link on a page view shows the grubs).
+
+## The gate: the whole API
+
+Your `code` is one gate. Its sample and product are the entire contract —
+frozen:
+
+```hoon
+|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
+^-  [dat=(unit *) dep=(list path)]
+```
+
+**Inputs (the sample):**
+
+- `cmd` — the command that triggered this run, or `~` for a *dependency tick*
+  ("something you depend on changed; update if you need to").
+- `dat` — your page's current data (`~` if never produced). Read it to make an
+  update relative to the last value (a counter, an accumulator).
+- `now` — the time of this run.
+- `deps` — each declared dependency as `[path value]`, pre-resolved. A missing
+  dependency's value is `~`.
+
+**Output (the product):**
+
+- `dat` — the new data. `~` means *no change* (nothing is written).
+- `dep` — your full dependency list this run. Return the same list to keep it;
+  return a different one to re-declare (the evaluator re-arms the keeps).
+
+The subject is the Hoon standard library — nothing else. No network, no
+filesystem, no darts (yet). If you need those, that is a platform feature, not
+a page. This is deliberate: a page is a pure function from `(command, state,
+dependencies, time)` to `(new state, dependencies)`.
+
+## Writing and driving a page
+
+Everything is owner-only HTTP under `/apps/lattice`:
+
+```
+POST /page-save?name=<name>     body = the hoon source    create/replace code
+POST /page-cmd?name=<name>      cmd=<text> (query or form) send a command
+POST /page-del?name=<name>                                delete the page
+POST /page-share?name=<name>&mode=private|shared|clearweb  set sharing
+```
+
+`page-cmd` reads `cmd` from either the query string (programmatic callers) or a
+form-urlencoded POST body (browser forms). Each command bumps `cmd`'s seq, so an
+identical command still runs.
+
+Navigate the explorer to a page dir and you get the **live view**: the rendered
+data, any error, a command form, and the sharing controls — and it reloads
+itself (keep-SSE) whenever the page changes, so a command from one tab updates
+every open tab.
+
+## Commands
+
+A command is text. Your gate decides what it means. Common shapes:
+
+- a verb: `inc`, `reset` (see counter)
+- a payload: the whole command is the value (see note)
+- ignored: a page that only reacts to dependencies ignores `cmd`
+
+A command sent to a page whose code doesn't compile is **not lost** — once you
+fix the code, the pending command runs against the fixed version (exactly-once,
+tracked in `seen`).
+
+## Dependencies — the spreadsheet
+
+Return a `dep` list of grub paths and the platform keeps a subscription on each.
+When any of them changes, your gate re-runs with `cmd=~` and the fresh values in
+`deps`. This is push-based (no polling) and is how one page reacts to another —
+the tree behaves like a spreadsheet. See doubler.
+
+Dependencies are **explicit**: you declare them; the platform does not trace your
+reads. A page that forgets to declare a dep simply goes stale until poked —
+visible and debuggable (the `deps` grub is right there in the tree).
+
+Paths are absolute grub paths, e.g.
+`/apps/lattice.lattice_app/page/counter/data`.
+
+## Sharing
+
+Each page has a one-click preset (shown in its live view):
+
+- **private** (default) — only you, over authenticated HTTP.
+- **shared** — the `data` grub is published to the Urbit namespace and any ship
+  can read it over ames (the same federation the published pages use). Live: a
+  subscribing ship sees updates.
+- **clearweb** — shared, and the data is *also* served over unauthenticated HTTP
+  at `/apps/lattice/c/<name>`. This is the only public surface: it serves that
+  one page's rendered data, nothing else — no tree, no code, no other pages.
+
+Sharing is a permission on the page, not a different kind of page. A private
+note and a clearweb dashboard are the same machinery with a different grant.
+
+## Safety
+
+- Both **compile and run are fenced** (`mule`). A page that fails to compile or
+  crashes at runtime writes `err` and keeps its last good `data`. A broken page
+  never takes down the ship or other pages.
+- Page code runs in the ship's single event loop, so **the fence catches
+  crashes, not non-termination**. Don't write an infinite loop or an unbounded
+  recursion in a page — there is no timeout yet. Keep pages to bounded, total
+  computation. Heavy or long work is a future platform feature (threads), not a
+  page.
+- A divergent dependency cycle (A depends on B depends on A, each changing the
+  other) will spin; a *converging* one settles (identical output suppresses the
+  next write). Prefer converging derivations.
+
+## Worked examples
+
+All verified on the harness. Full sources in
+[page-examples/](page-examples/).
+
+### counter — commands and state
+```hoon
+|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
+^-  [dat=(unit *) dep=(list path)]
+=/  n=@ud  ?~(dat 0 (fall (rush ;;(@t u.dat) dim:ag) 0))
+=/  m=@ud  ?:(&(?=(^ cmd) =(u.cmd 'inc')) +(n) n)
+[`(crip (a-co:co m)) ~]
+```
+`page-cmd?name=counter&cmd=inc` → `0`, `1`, `2`, …
+
+### greeter — a command as input
+```hoon
+=/  who=@t  ?~(cmd 'world' u.cmd)
+[`(cat 3 'hello, ' who) ~]
+```
+no command → `hello, world`; `cmd=sneagan` → `hello, sneagan`.
+
+### note — the command is the value
+```hoon
+?~  cmd  [dat ~]
+[`u.cmd ~]
+```
+`cmd=buy milk` → data is `buy milk`.
+
+### clock — using `now`
+```hoon
+[`(scot %da now) ~]
+```
+data is the time of the last command (pages have no timer yet, so it updates
+when you poke it or a dependency changes).
+
+### doubler — a derived page (dependencies)
+```hoon
+=/  tgt=path  /apps/lattice.lattice_app/page/counter/data
+?~  deps  [~ ~[tgt]]
+=/  v=@ud  (fall (rush ;;(@t +.i.deps) dim:ag) 0)
+[`(crip (a-co:co (mul 2 v))) ~[tgt]]
+```
+first run declares the dep; thereafter, incrementing `counter` re-runs doubler
+automatically — no command needed.
+
+## Known limits (today)
+
+- **No timers.** A page runs on a command or a dependency change, never on its
+  own schedule. A self-ticking clock needs a platform timer feature.
+- **No darts.** Page code returns data only; it can't yet poke other agents,
+  make HTTP requests, or write outside its own `data`. Capped-authority darts
+  are the next design step (see platform.md).
+- **Explicit dependencies.** No auto-tracing; declare what you read.
+- **Bounded compute only.** No execution timeout; a runaway page hangs the loop.
+- **Data renders escaped.** The web view HTML-escapes data (and the clearweb
+  surface even more so). Rich HTML-as-data (hawk's "data is the UI") is a later
+  refinement; today a page's data is shown as safe text.
