@@ -683,16 +683,27 @@
   ::  ── pub writes (POST) ──
   ::  ── programmable pages (docs/platform.md step 2) ──
       [%'GET' %edit]
-    ::  the in-browser editor. No name -> new-page mode.
+    ::  the in-browser editor workspace (tree | code | preview | controls).
+    ::  No name -> new-page mode. The page list feeds the tree sidebar.
     =/  name=(unit @t)  (~(get by args) 'name')
+    ;<  pages=(list @ta)  bind:m  read-page-names
     ?~  name
-      (send-html eyre-id (render-page "" "" (edit-html our ~ '')))
+      (send-html eyre-id (edit-html our ~ '' pages %private ''))
     ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
     =/  pdir=path  (weld app-base /page/[`@ta`u.name])
-    ;<  csn=seen:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
-    ?.  ?=([%& %file *] csn)  (send-err eyre-id 404 'no such page')
-    =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.p.csn)))) '')
-    (send-html eyre-id (render-page (trip (en-urb our (weld page-prefix /[`@ta`u.name]))) "" (edit-html our [~ `@ta`u.name] src)))
+    ;<  dn=seen:nexus  bind:m  (peek-shallow:io [%& %| pdir] ~)
+    ?.  ?=([%& %ball *] dn)  (send-err eyre-id 404 'no such page')
+    =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+      ?~(fil.ball.p.dn ~ contents.u.fil.ball.p.dn)
+    ?.  (~(has by fils) %code)  (send-err eyre-id 404 'no such page')
+    =/  rd  |=(nom=@ta ^-(@t =/(v (~(get by fils) nom) ?~(v '' (fall (mole |.(;;(@t (sang-noun:tarball sang.u.v)))) '')))))
+    =/  src=@t  (rd %code)
+    =/  err=@t  (rd %err)
+    =/  mode=share-mode:le
+      =/  v  (~(get by fils) %share)
+      ?~  v  %private
+      (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.u.v)))) %private)
+    (send-html eyre-id (edit-html our [~ `@ta`u.name] src pages mode err))
       [%'POST' %page-save]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -2870,7 +2881,7 @@
         =/  pn=(unit @ta)  (page-dir-name pax)
         ?:  |(?=(~ pn) (~(has by args) 'raw'))
           (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.dn)))
-        (render-page-view eyre-id u.shp pax u.pn ball.p.dn)
+        (render-page-view eyre-id u.shp pax u.pn ball.p.dn (~(has by args) 'embed'))
       ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
       ?.  ?=([%& %file *] fn)  (send-err eyre-id 404 'not found')
       ?:  want-raw  (send-raw eyre-id sang.p.fn %.y)
@@ -2943,7 +2954,9 @@
   ::  the page dir — reuse it instead of peeking the same dir again. The ball
   ::  carries every grub's contents, so data+err+share+show all come from it with
   ::  zero further round-trips.
-  |=  [eyre-id=@ta shp=@p pax=path name=@ta b=ball:tarball]
+  ::  embed=%.y (?embed): the bare rendered data + SSE, no chrome/crumbs/controls
+  ::  — for the editor's live-preview iframe. Otherwise the full standalone view.
+  |=  [eyre-id=@ta shp=@p pax=path name=@ta b=ball:tarball embed=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
@@ -2970,9 +2983,26 @@
   ::  names, never the payload — so keep="" to render-page and append a
   ::  blot-free stream here.
   =/  keep=tape  (keep-url :(weld "page/" (trip name) "/data"))
+  ?:  embed
+    ::  bare preview: just the rendered data (+ any error) and the live stream.
+    =/  errh=tape  ?:(=('' err) "" :(weld "<pre class=\"err\">" (esc (trip err)) "</pre>"))
+    (send-html eyre-id (render-bare :(weld errh "<section class=\"data\">" data-html "</section>" (page-sse-script keep))))
   =/  inner=tape
     (weld (page-view-html shp pax name err data-html mode) (page-sse-script keep))
   (send-html eyre-id (render-page (trip (en-urb shp pax)) "" inner))
+::  +render-bare: a minimal HTML doc (shared reader CSS, no address-bar chrome) —
+::  for the editor preview iframe, which supplies its own layout.
+::
+++  render-bare
+  |=  inner=tape
+  ^-  @t
+  %-  crip
+  ;:  weld
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<style>"  web-css  (trip 'body{margin:0;padding:14px}')  "</style></head><body>"
+    inner  "</body></html>"
+  ==
 ::  +serve-clearweb: the public read of a %clearweb page's data. Read-only,
 ::  data grub only — a non-clearweb (or absent) page is a flat 404 so private
 ::  siblings never leak existence. No SSE (an anon keep would 403 anyway).
@@ -3381,41 +3411,99 @@
 ++  edit-css
   ^-  tape
   %-  trip
-  '<style>main{max-width:96rem}.ed-wrap{display:grid;grid-template-columns:1fr 1fr;gap:12px;height:calc(100vh - 92px)}.ed-left{display:flex;flex-direction:column;gap:8px;min-width:0}.ed-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.ed-head input{padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.ed-head button{padding:6px 12px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;cursor:pointer}.ed-head button:hover{border-color:#1a6ed8}#st{font-size:.9rem;white-space:pre-wrap}#src{flex:1;width:100%;resize:none;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;padding:10px;border:1px solid #8886;border-radius:8px;background:#8881;color:inherit;white-space:pre;overflow:auto}.ed-prev{width:100%;height:100%;border:1px solid #8886;border-radius:8px;background:#fff}@media(max-width:900px){.ed-wrap{grid-template-columns:1fr;height:auto}#src{min-height:22rem}.ed-prev{min-height:24rem}}</style>'
+  '<style>*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif;color:#111;background:#fafafa;height:100vh;overflow:hidden}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}a{color:#1a6ed8}.ws{display:grid;grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 300px;grid-template-rows:auto 1fr;height:100vh}.ws.nt{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 300px}.ws.nc{grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 0}.ws.nt.nc{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 0}.bar{grid-column:1/-1;grid-row:1;display:flex;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid #8884}.bar .grow{flex:1}.bar button,.bar input,.bar a{font:inherit;padding:5px 9px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;text-decoration:none;cursor:pointer}.bar input{cursor:text}.bar button:hover,.bar a:hover{border-color:#1a6ed8}.bar .ico{padding:5px 8px}.bar b{padding:0 4px}#st{border:0;background:0;font-size:.85rem;padding:0}.tree{grid-column:1;grid-row:2;overflow:auto;padding:10px;border-right:1px solid #8884}.ctl{grid-column:4;grid-row:2;overflow:auto;padding:10px;border-left:1px solid #8884}.ws.nt .tree,.ws.nc .ctl{display:none}.tree a{display:block;padding:5px 8px;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tree a:hover{background:#8881}.tree a.cur{background:#1a6ed822;color:#1a6ed8;font-weight:600}.tree .new{font-weight:600;margin-bottom:6px}.tree .sec{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:12px 4px 4px}#src{grid-column:2;grid-row:2;width:100%;height:100%;resize:none;border:0;border-right:1px solid #8884;font:13px/1.55 ui-monospace,Menlo,monospace;padding:12px;background:transparent;color:inherit;white-space:pre;overflow:auto;tab-size:2}.prev,.prev-empty{grid-column:3;grid-row:2;width:100%;height:100%;border:0}.prev{background:#fff}.prev-empty{display:flex;align-items:center;justify-content:center;color:#8a8a8a;text-align:center;padding:2rem}.ctl h3{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:14px 0 5px}.ctl h3:first-child{margin-top:0}.ctl .err{color:#c0392b;white-space:pre-wrap;font:11px/1.4 ui-monospace,monospace;max-height:9rem;overflow:auto}.ctl .ok{color:#27ae60;font-size:.85rem}.ctl .row{display:flex;gap:6px}.ctl input{flex:1;font:inherit;padding:6px 8px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;min-width:0}.ctl button{font:inherit;padding:6px 10px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;cursor:pointer}.ctl button:hover{border-color:#1a6ed8}.share{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}.share button.on{border-color:#1a6ed8;color:#1a6ed8}.del{margin-top:18px;color:#c0392b;border-color:#c0392b55!important;width:100%}@media(max-width:820px){body{overflow:auto;height:auto}.ws,.ws.nt,.ws.nc{grid-template-columns:1fr!important;height:auto}.bar{grid-column:1}.tree,#src,.prev,.prev-empty,.ctl{grid-column:1;grid-row:auto}#src{min-height:44vh;border-right:0;border-bottom:1px solid #8884}.prev,.prev-empty{min-height:44vh}.tree{border-right:0;border-bottom:1px solid #8884}.ctl{border-left:0;border-top:1px solid #8884}}</style>'
 ::  the starter template a new page opens with.
 ::
 ++  edit-template
   ^-  tape
   %-  trip
   '|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]\0a^-  result\0a(text \'hello\')\0a'
-++  edit-html
-  |=  [our=@p name=(unit @ta) src=@t]
+::  +share-btn: one sharing preset button (JS wires the click), marked .on if current.
+::
+++  share-btn
+  |=  [m=@tas label=tape cur=share-mode:le]
   ^-  tape
+  ;:  weld
+    "<button data-m=\""  (trip m)  "\""  ?:(=(m cur) " class=\"on\"" "")  ">"  label  "</button>"
+  ==
+::  +edit-html: the editor WORKSPACE (a full-viewport doc, no address-bar chrome).
+::  Toggleable tree sidebar (left), code (centre), live preview iframe (right),
+::  toggleable controls panel (far right: status, command, sharing, delete).
+::
+++  edit-html
+  |=  [our=@p name=(unit @ta) src=@t pages=(list @ta) mode=share-mode:le err=@t]
+  ^-  @t
   =/  ship=tape  (scow %p our)
   =/  nm=tape  ?~(name "" (trip u.name))
-  =/  view=tape
-    :(weld "/apps/lattice/x/" ship "/apps/lattice.lattice_app/page/" nm "/")
+  =/  view=tape  :(weld "/apps/lattice/x/" ship "/apps/lattice.lattice_app/page/" nm "/")
   =/  code=tape  ?~(name edit-template (esc (trip src)))
+  =/  tree-html=tape
+    %-  zing
+    ;:  weld
+      `(list tape)`~["<a class=\"new\" href=\"/apps/lattice/edit\">+ new page</a><div class=\"sec\">pages</div>"]
+      %+  turn  pages
+      |=  p=@ta
+      =/  pt=tape  (trip p)
+      ;:  weld
+        "<a href=\"/apps/lattice/edit?name="  pt  "\""
+        ?:(=(name `p) " class=\"cur\"" "")  ">"  (esc pt)  "</a>"
+      ==
+      `(list tape)`~[:(weld "<div class=\"sec\">tree</div><a href=\"/apps/lattice/x/" ship "/apps/lattice.lattice_app/page/\">browse pages &rarr;</a>")]
+    ==
+  =/  ctl-html=tape
+    ?~  name
+      "<p style=\"color:#8a8a8a\">Save this page, then command &amp; sharing controls appear here.</p>"
+    ;:  weld
+      "<h3>status</h3>"
+      ?:  =('' err)  "<div class=\"ok\" id=\"cerr\">compiled ok</div>"
+      :(weld "<div class=\"err\" id=\"cerr\">" (esc (trip err)) "</div>")
+      "<h3>command</h3><div class=\"row\"><input id=\"cmd\" placeholder=\"command\"><button id=\"csend\">send</button></div>"
+      "<h3>sharing</h3><div class=\"share\">"
+      (share-btn %private "private" mode)
+      (share-btn %shared "shared" mode)
+      (share-btn %clearweb "clearweb" mode)
+      "</div><div id=\"cwurl\">"
+      ?.  ?=(%clearweb mode)  ""
+      :(weld "<p>public: <a href=\"/apps/lattice/c/" nm "\" target=\"_blank\">/c/" nm "</a></p>")
+      "</div>"
+      "<h3>grubs</h3><a href=\""  view  "?raw\" target=\"_blank\">raw grubs &rarr;</a>"
+      "<button class=\"del\" id=\"del\">delete page</button>"
+    ==
+  %-  crip
   ;:  weld
-    edit-css
-    "<div class=\"ed-wrap\"><div class=\"ed-left\"><div class=\"ed-head\">"
-    ?^  name
-      :(weld "<b>" (esc nm) "</b>")
-    "<input id=\"pname\" placeholder=\"page-name\" autofocus autocomplete=\"off\">"
-    "<button id=\"save\">save</button>"
-    ?~(name "" "<button id=\"del\">delete</button>")
-    ?~(name "" :(weld "<a href=\"" view "\">open</a>"))
-    "<span id=\"st\"></span></div>"
-    "<textarea id=\"src\" spellcheck=\"false\">"  code  "</textarea></div>"
-    ?~  name  ""
-    :(weld "<iframe class=\"ed-prev\" id=\"prev\" src=\"" view "\"></iframe>")
-    "</div>"
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<title>edit"  ?~(name "" (weld " - " nm))  "</title>"  edit-css  "</head><body>"
+    "<div class=\"ws\" id=\"ws\"><div class=\"bar\">"
+    "<button class=\"ico\" id=\"tt\" title=\"toggle tree\">&#9776;</button>"
+    ?^(name :(weld "<b>" (esc nm) "</b>") "")
+    ?~(name "<input id=\"pname\" placeholder=\"page-name\" autocomplete=\"off\" autofocus>" "")
+    "<button id=\"save\">save</button><span id=\"st\"></span><span class=\"grow\"></span>"
+    ?~(name "" :(weld "<a href=\"" view "\" target=\"_blank\">open &#8599;</a>"))
+    "<button class=\"ico\" id=\"ct\" title=\"toggle panel\">&#9881;</button>"
+    "<a href=\"/apps/lattice\">home</a></div>"
+    "<div class=\"tree\">"  tree-html  "</div>"
+    "<textarea id=\"src\" spellcheck=\"false\">"  code  "</textarea>"
+    ?~  name  "<div class=\"prev-empty\">live preview appears here once saved</div>"
+    :(weld "<iframe class=\"prev\" id=\"prev\" src=\"" view "?embed\"></iframe>")
+    "<div class=\"ctl\">"  ctl-html  "</div></div>"
+    (edit-js nm view)
+    "</body></html>"
+  ==
+::  +edit-js: the editor client — toggles (localStorage), tab, ctrl/cmd-S, save +
+::  compile-check, and AJAX command/sharing/delete that reload the preview in
+::  place. Single-quote cord: uses double-quotes and backticks only (no ' or \).
+::
+++  edit-js
+  |=  [nm=tape view=tape]
+  ^-  tape
+  ;:  weld
     (trip '<script>(function(){var NAME="')
     nm
-    (trip '";var ERR="')
-    (weld view "err?data")
+    (trip '";var V="')
+    view
     %-  trip
-    '";var $=function(i){return document.getElementById(i)};var st=function(t,ok){var s=$("st");s.textContent=t;s.style.color=ok?"#27ae60":"#c0392b"};var ta=$("src");ta.addEventListener("keydown",function(e){if(e.key==="Tab"){e.preventDefault();var s=ta.selectionStart;ta.value=ta.value.slice(0,s)+"  "+ta.value.slice(ta.selectionEnd);ta.selectionStart=ta.selectionEnd=s+2}});var chk=async function(){var e=await fetch(ERR);var t=await e.text();if(t){st(t,false)}else{st("compiled ok",true);var p=$("prev");if(p){p.src=p.src}}};$("save").onclick=async function(){var name=NAME||($("pname")?$("pname").value.trim():"");if(!name){st("name required",false);return}st("saving...",true);var r=await fetch("/apps/lattice/page-save?name="+encodeURIComponent(name)+(NAME?"":"&new=1"),{method:"POST",body:ta.value});if(r.status===409){st("that page already exists - open it from home to edit",false);return}if(!r.ok){st("save failed: "+r.status,false);return}if(!NAME){location="/apps/lattice/edit?name="+encodeURIComponent(name);return}st("compiling...",true);setTimeout(chk,900);setTimeout(chk,2200)};if($("del")){$("del").onclick=async function(){if(!confirm("delete "+NAME+"?"))return;await fetch("/apps/lattice/page-del?name="+encodeURIComponent(NAME),{method:"POST"});location="/apps/lattice"}}window.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&e.key==="s"){e.preventDefault();$("save").onclick()}})})();</script>'
+    '";var $=function(i){return document.getElementById(i)};var ws=$("ws");function ap(){ws.classList.toggle("nt",localStorage.edNT==="1");ws.classList.toggle("nc",localStorage.edNC==="1")}ap();$("tt").onclick=function(){localStorage.edNT=localStorage.edNT==="1"?"0":"1";ap()};$("ct").onclick=function(){localStorage.edNC=localStorage.edNC==="1"?"0":"1";ap()};var st=function(t,ok){var s=$("st");s.textContent=t;s.style.color=ok?"#27ae60":"#c0392b"};var ta=$("src");ta.addEventListener("keydown",function(e){if(e.key==="Tab"){e.preventDefault();var s=ta.selectionStart;ta.value=ta.value.slice(0,s)+"  "+ta.value.slice(ta.selectionEnd);ta.selectionStart=ta.selectionEnd=s+2}});var rp=function(){var p=$("prev");if(p)p.src=p.src};var chk=async function(){if(!NAME)return;var t="";try{t=await (await fetch(V+"err?data")).text()}catch(x){}var c=$("cerr");if(t){st("error",false);if(c){c.textContent=t;c.className="err"}}else{st("compiled ok",true);if(c){c.textContent="compiled ok";c.className="ok"}rp()}};$("save").onclick=async function(){var name=NAME||($("pname")?$("pname").value.trim():"");if(!name){st("name required",false);return}st("saving...",true);var r=await fetch("/apps/lattice/page-save?name="+encodeURIComponent(name)+(NAME?"":"&new=1"),{method:"POST",body:ta.value});if(r.status===409){st("that page already exists",false);return}if(!r.ok){st("save failed "+r.status,false);return}if(!NAME){location="/apps/lattice/edit?name="+encodeURIComponent(name);return}st("compiling...",true);setTimeout(chk,800);setTimeout(chk,2000)};window.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&e.key==="s"){e.preventDefault();$("save").onclick()}});var cs=$("csend");if(cs){var run=async function(){var c=$("cmd").value;if(!c)return;await fetch("/apps/lattice/page-cmd?name="+encodeURIComponent(NAME),{method:"POST",body:"cmd="+encodeURIComponent(c)});$("cmd").value="";setTimeout(rp,600)};cs.onclick=run;$("cmd").addEventListener("keydown",function(e){if(e.key==="Enter")run()})}document.querySelectorAll(".share button").forEach(function(b){b.onclick=async function(){var m=b.getAttribute("data-m");await fetch("/apps/lattice/page-share?name="+encodeURIComponent(NAME)+"&mode="+m,{method:"POST"});document.querySelectorAll(".share button").forEach(function(x){x.className=x.getAttribute("data-m")===m?"on":""});$("cwurl").innerHTML=m==="clearweb"?`<p>public: <a href="/apps/lattice/c/${NAME}" target="_blank">/c/${NAME}</a></p>`:"";setTimeout(rp,500)}});var d=$("del");if(d){d.onclick=async function(){if(!confirm("delete "+NAME+"?"))return;await fetch("/apps/lattice/page-del?name="+encodeURIComponent(NAME),{method:"POST"});location="/apps/lattice"}}})();</script>'
   ==
 ::  +home-css: styling for the landing (nav cards + lists).
 ::
