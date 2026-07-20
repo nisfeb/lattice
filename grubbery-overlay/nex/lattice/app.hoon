@@ -3746,6 +3746,8 @@
     "<h1>Lattice</h1>"
     "<p class=\"muted\">Programmable pages &amp; published notes &middot; "  ship  "</p>"
     "<div class=\"home-nav\">"
+    "<a class=\"navcard\" href=\"/apps/lattice/edit?kind=md\">"
+    "<strong>New note</strong><span>Write in markdown, live preview</span></a>"
     "<a class=\"navcard\" href=\"/apps/lattice/edit\">"
     "<strong>New page</strong><span>Write a page in the browser</span></a>"
     "<a class=\"navcard\" href=\""  base
