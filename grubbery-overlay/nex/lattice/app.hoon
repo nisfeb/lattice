@@ -327,25 +327,28 @@
   ^-  form:m
   ;<  [src=@p req=inbound-request:eyre]  bind:m
     (get-state-as:io ,[src=@p inbound-request:eyre])
-  ;<  our=@p  bind:m  bowl-our
   =/  parsed  (parse-url:http-utils url.request.req)
   ::  drop the /apps/lattice prefix; the remainder is the route.
   =/  suffix=path  (slag 2 site.parsed)
   =/  args=(map @t @t)  (malt args.parsed)
   ::  clearweb: the ONLY unauthenticated surface. GET /c/<name> serves a
   ::  clearweb-tagged page's DATA, read-only — no tree nav, no code, no
-  ::  sibling grubs, no command form. Everything else requires src == our.
+  ::  sibling grubs, no command form. Everything else requires the owner.
   ?:  &(?=([%c @ ~] suffix) =(%'GET' method.request.req))
     (serve-clearweb eyre-id i.t.suffix)
-  ::  every OTHER route is owner-only (lattice is a personal store).
-  ?.  =(src our)
+  ::  owner gate. Eyre stamps a request authenticated to our web login with
+  ::  src=our, so `authenticated` (already in hand, synchronous) IS the src==our
+  ::  check — reading `our` via a /sys/bowl round trip (bowl-our) just to compare
+  ::  cost ~0.2s on EVERY request. Gate on the flag; `our` is then simply `src`.
+  ?.  authenticated.req
     ::  JSON error, like every other route (was a bare text 'Forbidden').
     (send-err eyre-id 403 'forbidden')
+  =/  our=@p  src
   ::  /x/<ship>/<path...>: the server-rendered tree explorer (docs/platform.md,
   ::  build step 1). Consumes the rest of the path, so it dispatches before the
   ::  (rear suffix) route table below.
   ?:  &(?=([%x *] suffix) =(%'GET' method.request.req))
-    (explore eyre-id t.suffix args url.request.req)
+    (explore eyre-id our t.suffix args url.request.req)
   ::  root: the web reader (Landscape tile). ?url=urb://ship/rel renders that
   ::  page; no url renders the home index of our published pages. ponytail:
   ::  compact gemtext->HTML (headings/links/quotes/lists/pre); the full reader's
@@ -475,7 +478,6 @@
     =/  pp=(each path tang)  (mule |.((stab (~(gut by args) 'path' '/'))))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
     =/  dir-road=road:tarball  [%& %| p.pp]
-    ;<  our=@p  bind:m  bowl-our
     ?:  =(u.shp our)
       ;<  sn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
       ?.  ?=([%& %ball *] sn)  (send-err eyre-id 404 'not a directory')
@@ -501,7 +503,6 @@
     ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
     =/  n=@ud  (dec (lent p.pp))
     =/  file-road=road:tarball  [%& %& (scag n p.pp) (snag n p.pp)]
-    ;<  our=@p  bind:m  bowl-our
     ?:  =(u.shp our)
       ;<  sn=seen:nexus  bind:m  (peek:io file-road ~)
       (browse-file-respond eyre-id sn)
@@ -605,7 +606,6 @@
     ?~  url  (send-err eyre-id 400 'missing url param')
     =/  pu=(unit [=ship =path])  (parse-urb-url u.url)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
-    ;<  our=@p  bind:m  bowl-our
     ;<  ct=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db (catalog-toc-urql:cat our ship.u.pu (trip (spat path.u.pu))))
     (send-obelisk eyre-id ct)
@@ -725,7 +725,6 @@
     ::  web=1 (a page-view form submit) -> 303 back to the page so the browser
     ::  lands on the live view; the JSON ok stays for programmatic callers.
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
-    ;<  our=@p  bind:m  bowl-our
     %+  send-see-other  eyre-id
     :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.name) "/")
       [%'POST' %page-del]
@@ -747,7 +746,6 @@
     ?.  ex  (send-err eyre-id 404 'no such page')
     ;<  ~  bind:m  (poke-eval [%share `@ta`u.name mode])
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
-    ;<  our=@p  bind:m  bowl-our
     %+  send-see-other  eyre-id
     :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.name) "/")
       [%'POST' %save]
@@ -773,7 +771,6 @@
     ::  page leaves no orphaned term postings / ghost search hits. Driven here (in
     ::  the request fiber) not the writer, so the obelisk round-trip can't stall
     ::  the single writer.
-    ;<  our=@p  bind:m  bowl-our
     ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-delete-urql:cat our our p.pp))
     (send-ok eyre-id)
   ::  ── pub version history ──
@@ -1020,7 +1017,6 @@
     ?~  raw  (send-err eyre-id 400 'missing url param')
     =/  pu=(unit [=ship =path])  (parse-urb-url u.raw)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
-    ;<  our=@p  bind:m  bowl-our
     ?:  =(ship.u.pu our)  (send-err eyre-id 400 'cannot subscribe to own ship')
     ;<  ~  bind:m  (poke-sub [%sub-page ship.u.pu path.u.pu])
     (send-ok eyre-id)
@@ -1061,7 +1057,6 @@
       ::  range test — collapse it to .0 first (equ:rs v v is %.n only for NaN).
       ?:  !(equ:rs v v)  .0
       ?:((lth:rs v .0) .0 ?:((gth:rs v .1) .1 v))
-    ;<  our=@p  bind:m  bowl-our
     ;<  ~  bind:m
       (catalog-run catalog-db (catalog-classify-urql:cat our ship.u.pu path.u.pu u.cat-v csrc conf))
     (send-ok eyre-id)
@@ -1073,7 +1068,6 @@
     ?~  raw  (send-err eyre-id 400 'missing ship param')
     =/  pub=(unit @p)  (slaw %p u.raw)
     ?~  pub  (send-err eyre-id 400 'bad ship')
-    ;<  our=@p  bind:m  bowl-our
     ?:  =(u.pub our)  (send-err eyre-id 400 'cannot crawl own ship')
     ;<  now=@da  bind:m  bowl-now
     ;<  n=@ud  bind:m  (catalog-scan-peer our u.pub now)
@@ -1088,7 +1082,6 @@
       [%'POST' %catalog-sweep]
     ;<  ~  bind:m  (send-ok eyre-id)
     ;<  *  bind:m  catalog-scan-self
-    ;<  our=@p   bind:m  bowl-our
     ;<  now=@da  bind:m  bowl-now
     ;<  *  bind:m  (catalog-scan-peers our now)
     (pure:m ~)
@@ -2829,10 +2822,12 @@
 ::  fallback attempt only runs when the ship answered with the wrong node kind.
 ::
 ++  explore
-  |=  [eyre-id=@ta rest=path args=(map @t @t) raw-url=@t]
+  ::  `our` is threaded from handle-request — bowl-our is a full /sys/bowl round
+  ::  trip (~0.2s) and the caller already paid it, so re-fetching it here doubled
+  ::  the cost of every explorer/page request.
+  |=  [eyre-id=@ta our=@p rest=path args=(map @t @t) raw-url=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  our=@p  bind:m  bowl-our
   ::  a trailing '/' parses as a trailing EMPTY knot (smeg matches ''), which
   ::  would send every slashed dir url down the peek path as a child literally
   ::  named '' -> 404 (caught by review). Trim trailing empties up front —
@@ -2875,7 +2870,7 @@
         =/  pn=(unit @ta)  (page-dir-name pax)
         ?:  |(?=(~ pn) (~(has by args) 'raw'))
           (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.dn)))
-        (render-page-view eyre-id u.shp pax u.pn)
+        (render-page-view eyre-id u.shp pax u.pn ball.p.dn)
       ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
       ?.  ?=([%& %file *] fn)  (send-err eyre-id 404 'not found')
       ?:  want-raw  (send-raw eyre-id sang.p.fn %.y)
@@ -2944,17 +2939,15 @@
 ::  grub so a command from ANY browser reloads every open view (step 3).
 ::
 ++  render-page-view
-  |=  [eyre-id=@ta shp=@p pax=path name=@ta]
+  ::  `b` is the page dir's ball, ALREADY peeked by the caller (explore) to detect
+  ::  the page dir — reuse it instead of peeking the same dir again. The ball
+  ::  carries every grub's contents, so data+err+share+show all come from it with
+  ::  zero further round-trips.
+  |=  [eyre-id=@ta shp=@p pax=path name=@ta b=ball:tarball]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ::  ONE peek of the page dir instead of four grub peeks: each peek:io is a
-  ::  fiber step (~0.2s of event-loop overhead on this ship), so folding
-  ::  data+err+share+show into a single shallow dir peek cuts page-view latency
-  ::  by ~3 round-trips. The dir ball carries every grub's contents.
-  ;<  dn=seen:nexus  bind:m  (peek-shallow:io [%& %| pax] ~)
   =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
-    ?.  ?=([%& %ball *] dn)  ~
-    ?~(fil.ball.p.dn ~ contents.u.fil.ball.p.dn)
+    ?~(fil.b ~ contents.u.fil.b)
   =/  grub  |=(nom=@ta ^-((unit sang:tarball) =/(v (~(get by fils) nom) ?~(v ~ `sang.u.v))))
   =/  mode=share-mode:le
     =/  sh=(unit sang:tarball)  (grub %share)
