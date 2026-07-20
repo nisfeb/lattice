@@ -24,6 +24,7 @@
 /<  lp   /lib/lattice-pub.hoon
 /<  ast  /lib/obelisk-ast.hoon
 /<  cat  /lib/catalog.hoon
+/<  le   /lib/lattice-eval.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -64,6 +65,9 @@
         ::  on-file spawns a keep fiber that re-indexes that remote page whenever
         ::  the peer edits it. /sub + /unsub make/cull these grubs.
             [%fall %| /sub/pages empty-dir:loader]
+        ::  /page/: programmable pages (docs/platform.md step 2). One dir per
+        ::  page; the code grub's on-file fiber is the evaluator.
+            [%fall %| /page empty-dir:loader]
             [%fall %& [/ %'crawler.sig'] [[/ %sig] ~]]
         ==
       ==
@@ -93,6 +97,9 @@
           $
         ?:  =([/lattice %sub-action] p.sage)
           ;<  ~  bind:m  (apply-sub root !<(sub-action:lp q.sage))
+          $
+        ?:  =([/lattice %eval-action] p.sage)
+          ;<  ~  bind:m  (apply-eval root !<(eval-action:le q.sage))
           $
         ~&  [%lattice-bad-mark p.sage]
         $
@@ -148,6 +155,62 @@
           ;<  ~  bind:m  (index-remote-page ship.ps rel)
           $
         ==
+      ::  /page/<name>/code: the page evaluator (docs/platform.md step 2). The
+      ::  fiber owns the page's code grub: compile the source (a gate) against
+      ::  the hoon stdlib, run it on commands (cmd grub, seq-bumped) and on
+      ::  dependency waves, write the product to the data grub. A compile or
+      ::  run crash writes err and keeps the last good data — a broken page
+      ::  never kills the fiber (mule everything). ponytail: dep keeps are
+      ::  armed and never dropped (a removed dep still ticks; save-file's
+      ::  no-op suppression bounds it); page code gets the hoon stdlib only
+      ::  (..add) and returns NO darts yet — the capped-authority %sand
+      ::  plumbing lands with darts (platform decision). A divergent dep
+      ::  cycle spins; a converging one terminates via no-op suppression.
+          [[%page @ ~] %code]
+        ;<  ~  bind:m  (rise-wait:io prod "%lattice /page eval: failed")
+        ;<  here=rail:tarball  bind:m  get-here-abs:io
+        =/  pdir=path  path.here
+        ::  one wire for everything: code (self), cmd inbox, deps grub, and
+        ::  each declared dep target. Any change wakes the loop.
+        ;<  *  bind:m  (keep:io /ev [%& %& pdir %code] ~)
+        ;<  *  bind:m  (keep:io /ev [%& %& pdir %cmd] ~)
+        ;<  *  bind:m  (keep:io /ev [%& %& pdir %deps] ~)
+        ::  `last` = last-PROCESSED cmd seq, persisted in the /seen grub (NOT
+        ::  inferred from the current cmd grub). A page-save on a compile-broken
+        ::  page respawns this fiber (put-file over /code), which re-inits `last`
+        ::  from /seen — so a command sent while broken (seq past /seen) still
+        ::  runs once the fix compiles, while a plain reload never replays an
+        ::  already-run command (both caught by review).
+        ;<  last=@ud  bind:m  (read-eval-seen pdir)
+        =/  armed=(set path)  ~
+        =/  held=@t  '=='
+        =/  bild=(each vase tang)  [%| `tang`~[leaf+"not compiled"]]
+        |-
+        ;<  src=@t  bind:m  (get-state-as:io ,@t)
+        =?  bild  !=(src held)
+          ::  ..ream, not ..add: the subject must be the FULL hoon stack
+          ::  (path/unit/list live in mold layers above the math core ..add
+          ::  captures; -find.path on every page otherwise).
+          (mule |.((slap !>(..ream) (ream src))))
+        =.  held  src
+        ?:  ?=(%| -.bild)
+          ;<  ~  bind:m
+            (put-file [%& %& pdir %err] [/lattice %page] (crip "compile failed: {<p.bild>}"))
+          ;<  *  bind:m  (take-news-or-wake-drain /ev)
+          $
+        ;<  deps=(list path)  bind:m  (read-eval-deps pdir)
+        ;<  na=(set path)  bind:m  (arm-eval-deps armed deps)
+        =.  armed  na
+        ;<  cur=eval-cmd:le  bind:m  (read-eval-cmd pdir)
+        =/  fresh=?  (gth seq.cur last)
+        =/  cmd=(unit @t)  ?:(fresh `txt.cur ~)
+        ;<  ~  bind:m  (eval-run pdir p.bild cmd deps)
+        ::  persist the processed seq only when a command actually ran (a dep
+        ::  tick leaves seq unchanged). /seen is not kept, so this fires no wave.
+        =?  last  fresh  seq.cur
+        ;<  ~  bind:m  ?:(fresh (write-eval-seen pdir seq.cur) (pure:m ~))
+        ;<  *  bind:m  (take-news-or-wake-drain /ev)
+        $
       ::  /crawler.sig: periodic catalog sweep. Each tick re-indexes our own
       ::  published pages into obelisk (runs immediately on start, then every
       ::  interval). ponytail: full re-scan per tick (fine for a personal store);
@@ -544,6 +607,32 @@
         ==
     ==
   ::  ── pub writes (POST) ──
+  ::  ── programmable pages (docs/platform.md step 2) ──
+      [%'POST' %page-save]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
+    =/  src=@t  (req-body req)
+    ?:  =('' src)  (send-err eyre-id 400 'missing body')
+    ;<  ~  bind:m  (poke-eval [%make `@ta`u.name src])
+    (send-ok eyre-id)
+      [%'POST' %page-cmd]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
+    ::  404 a command to a nonexistent page (the writer guards too, but this
+    ::  gives the client real feedback instead of a fire-and-forget 200).
+    ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base /page/[`@ta`u.name]) %code])
+    ?.  ex  (send-err eyre-id 404 'no such page')
+    =/  txt=@t  (~(gut by args) 'cmd' '')
+    ;<  ~  bind:m  (poke-eval [%cmd `@ta`u.name txt])
+    (send-ok eyre-id)
+      [%'POST' %page-del]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
+    ;<  ~  bind:m  (poke-eval [%del `@ta`u.name])
+    (send-ok eyre-id)
       [%'POST' %save]
     =/  rel=(unit @t)  (~(get by args) 'path')
     ?~  rel  (send-err eyre-id 400 'missing path')
@@ -1006,6 +1095,148 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %pub-action] act])
+::  +poke-eval: send an eval-action to the writer (serialized like all writes).
+::
+++  poke-eval
+  |=  act=eval-action:le
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %eval-action] act])
+::  +apply-eval: page create/command/delete, in the writer fiber.
+::
+++  apply-eval
+  |=  [root=path act=eval-action:le]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ::  name.act only resolves after ?- narrows the fork (%del is a 2-cell,
+  ::  the others 3-cells — the face sits at different axes).
+  ?-  -.act
+      %make
+    =/  pdir=path  (weld root /page/[name.act])
+    ;<  ~  bind:m  (ensure-dirs (weld root /page) /[name.act])
+    ::  cmd + deps before code — the code grub's fiber reads both at spawn.
+    ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %cmd])
+    ;<  ~  bind:m
+      ?:  ex  (pure:m ~)
+      (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[0 ''])
+    ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %deps])
+    ;<  ~  bind:m
+      ?:  ex  (pure:m ~)
+      (put-file [%& %& pdir %deps] [/lattice %eval-deps] `(list path)`~)
+    (put-file [%& %& pdir %code] [/lattice %page] src.act)
+      %cmd
+    =/  pdir=path  (weld root /page/[name.act])
+    ::  authoritative existence guard: no code grub -> no page (and no
+    ::  evaluator fiber), so writing a cmd grub would orphan it inside a
+    ::  possibly-culled dir and swallow the command (caught by review). The
+    ::  route also 404s, but this closes the create-then-poke race.
+    ;<  cx=?  bind:m  (peek-exists:io [%& %& pdir %code])
+    ?.  cx  (pure:m ~)
+    ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %cmd] ~)
+    =/  cur=eval-cmd:le
+      ?.  ?=([%& %file *] sn)  [0 '']
+      (fall (mole |.(;;(eval-cmd:le (sang-noun:tarball sang.p.sn)))) [0 ''])
+    (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[+(seq.cur) txt.act])
+      %del
+    ::  cull-soft on an absent dir veto-crashes the writer (as apply-sub's
+    ::  %unsub-page guards against) — no-op a delete of a gone page.
+    =/  pdir=path  (weld root /page/[name.act])
+    ;<  ex=?  bind:m  (peek-exists:io [%& %| pdir])
+    ?.  ex  (pure:m ~)
+    ;<  *  bind:m  (cull-soft:io [%& %| pdir])
+    (pure:m ~)
+  ==
+::  +read-eval-cmd / +read-eval-deps: tolerant grub reads (absent or
+::  malformed -> the zero value; a page never crashes its evaluator).
+::
+++  read-eval-cmd
+  |=  pdir=path
+  =/  m  (fiber:fiber:nexus ,eval-cmd:le)
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %cmd] ~)
+  ?.  ?=([%& %file *] sn)  (pure:m [0 ''])
+  (pure:m (fall (mole |.(;;(eval-cmd:le (sang-noun:tarball sang.p.sn)))) [0 '']))
+::  +read-eval-seen / +write-eval-seen: the last-PROCESSED command seq, stored
+::  as a bare @ud (reusing the eval-data marc — it's a noun grub). /seen is
+::  never kept, so writing it wakes no fiber. Absent -> 0.
+::
+++  read-eval-seen
+  |=  pdir=path
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %seen] ~)
+  ?.  ?=([%& %file *] sn)  (pure:m 0)
+  (pure:m (fall (mole |.(;;(@ud (sang-noun:tarball sang.p.sn)))) 0))
+++  write-eval-seen
+  |=  [pdir=path seq=@ud]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (put-file [%& %& pdir %seen] [/lattice %eval-data] seq)
+++  read-eval-deps
+  |=  pdir=path
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %deps] ~)
+  ?.  ?=([%& %file *] sn)  (pure:m ~)
+  (pure:m (fall (mole |.(;;((list path) (sang-noun:tarball sang.p.sn)))) ~))
+::  +arm-eval-deps: keep any dep target not yet armed (one wire, /ev). Deps
+::  name FILE paths; the last segment is the grub name.
+::
+++  arm-eval-deps
+  |=  [armed=(set path) deps=(list path)]
+  =/  m  (fiber:fiber:nexus ,(set path))
+  ^-  form:m
+  ?~  deps  (pure:m armed)
+  ?:  (~(has in armed) i.deps)  $(deps t.deps)
+  ?:  =(~ i.deps)  $(deps t.deps)
+  =/  n=@ud  (dec (lent i.deps))
+  ;<  *  bind:m  (keep:io /ev [%& %& (scag n i.deps) (snag n i.deps)] ~)
+  $(deps t.deps, armed (~(put in armed) i.deps))
+::  +read-dep-vals: resolve each dep to its current noun (~ if absent).
+::
+++  read-dep-vals
+  |=  deps=(list path)
+  =/  m  (fiber:fiber:nexus ,(list [path *]))
+  ^-  form:m
+  ?~  deps  (pure:m ~)
+  ?:  =(~ i.deps)  $(deps t.deps)
+  =/  n=@ud  (dec (lent i.deps))
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %& (scag n i.deps) (snag n i.deps)] ~)
+  ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
+  =/  val=*  ?.(?=([%& %file *] sn) ~ (sang-noun:tarball sang.p.sn))
+  (pure:m [[i.deps val] rest])
+::  +eval-run: one run of a compiled page — build the env vase (typed via
+::  slop, so the gate's declared sample nest-checks), slam inside mule,
+::  land the product. dat=~ means no change; a changed dep list is
+::  persisted (the deps grub is on the /ev wire, so the loop re-arms).
+::
+++  eval-run
+  |=  [pdir=path bild=vase cmd=(unit @t) deps=(list path)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  now=@da  bind:m  bowl-now
+  ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& pdir %data] ~)
+  =/  dat=(unit *)
+    ?.(?=([%& %file *] dsn) ~ `(sang-noun:tarball sang.p.dsn))
+  ;<  dvs=(list [path *])  bind:m  (read-dep-vals deps)
+  =/  env=vase
+    ;:  slop
+      !>(`(unit @t)`cmd)
+      !>(`(unit *)`dat)
+      !>(`@da`now)
+      !>(`(list [path *])`dvs)
+    ==
+  =/  res=(each [dat=(unit *) dep=(list path)] tang)
+    %-  mule  |.
+    ;;([dat=(unit *) dep=(list path)] q:(slam bild env))
+  ?:  ?=(%| -.res)
+    (put-file [%& %& pdir %err] [/lattice %page] (crip "run failed: {<p.res>}"))
+  ;<  ~  bind:m  (put-file [%& %& pdir %err] [/lattice %page] '')
+  ;<  ~  bind:m
+    ?~  dat.p.res  (pure:m ~)
+    (put-file [%& %& pdir %data] [/lattice %eval-data] u.dat.p.res)
+  ?:  =(dep.p.res deps)  (pure:m ~)
+  (put-file [%& %& pdir %deps] [/lattice %eval-deps] dep.p.res)
 ++  poke-sub
   |=  act=sub-action:lp
   =/  m  (fiber:fiber:nexus ,~)
