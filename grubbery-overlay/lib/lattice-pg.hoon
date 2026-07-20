@@ -13,7 +13,7 @@
 ::    %text  escaped text (default)   %html  raw HTML — your OWN page's markup
 ::    %gmi   gemtext rendered to HTML  %noun  opaque value, shown escaped
 ::
-+$  view-mode  ?(%text %html %gmi %noun)
++$  view-mode  ?(%text %html %gmi %md %noun)
 ::  +$  result: what a page gate produces.
 ::
 +$  result
@@ -28,6 +28,7 @@
 ++  text  |=(t=@t `result`[`t ~ %text ~ ~])   ::  data is escaped text
 ++  html  |=(h=@t `result`[`h ~ %html ~ ~])   ::  data is raw HTML (your own)
 ++  gmi   |=(g=@t `result`[`g ~ %gmi ~ ~])    ::  data is gemtext
+++  md    |=(m=@t `result`[`m ~ %md ~ ~])     ::  data is markdown
 ++  raw   |=(n=* `result`[`n ~ %noun ~ ~])    ::  data is an opaque noun
 ++  same  ^-(result [~ ~ %text ~ ~])          ::  no change to data
 ::  modifiers — chain onto a result:

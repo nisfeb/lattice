@@ -52,6 +52,7 @@ render mode and pass the value:
 |---|---|---|
 | `(text v)` | `v` | escaped text |
 | `(html v)` | `v` | **raw HTML** — your own page's markup |
+| `(md v)` | `v` | markdown → HTML (escaped; safe for notes/docs) |
 | `(gmi v)` | `v` | gemtext → HTML |
 | `(raw v)` | `v` | opaque noun, shown escaped |
 | `same` | *unchanged* | (no write) |
