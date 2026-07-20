@@ -2947,16 +2947,31 @@
   |=  [eyre-id=@ta shp=@p pax=path name=@ta]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& pax %data] ~)
-  ;<  esn=seen:nexus  bind:m  (peek:io [%& %& pax %err] ~)
-  ;<  mode=share-mode:le  bind:m  (read-share pax)
-  ;<  vmode=view-mode:pg  bind:m  (read-show-mode pax)
+  ::  ONE peek of the page dir instead of four grub peeks: each peek:io is a
+  ::  fiber step (~0.2s of event-loop overhead on this ship), so folding
+  ::  data+err+share+show into a single shallow dir peek cuts page-view latency
+  ::  by ~3 round-trips. The dir ball carries every grub's contents.
+  ;<  dn=seen:nexus  bind:m  (peek-shallow:io [%& %| pax] ~)
+  =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+    ?.  ?=([%& %ball *] dn)  ~
+    ?~(fil.ball.p.dn ~ contents.u.fil.ball.p.dn)
+  =/  grub  |=(nom=@ta ^-((unit sang:tarball) =/(v (~(get by fils) nom) ?~(v ~ `sang.u.v))))
+  =/  mode=share-mode:le
+    =/  sh=(unit sang:tarball)  (grub %share)
+    ?~  sh  %private
+    (fall (mole |.(;;(share-mode:le (sang-noun:tarball u.sh)))) %private)
+  =/  vmode=view-mode:pg
+    =/  sw=(unit sang:tarball)  (grub %show)
+    ?~  sw  %text
+    (fall (mole |.(;;(view-mode:pg (sang-noun:tarball u.sw)))) %text)
   =/  err=@t
-    ?.  ?=([%& %file *] esn)  ''
-    (fall (mole |.(;;(@t (sang-noun:tarball sang.p.esn)))) '')
+    =/  ce=(unit sang:tarball)  (grub %err)
+    ?~  ce  ''
+    (fall (mole |.(;;(@t (sang-noun:tarball u.ce)))) '')
   =/  data-html=tape
-    ?.  ?=([%& %file *] dsn)  "<p>no data yet</p>"
-    (render-shown sang.p.dsn vmode)
+    =/  cd=(unit sang:tarball)  (grub %data)
+    ?~  cd  "<p>no data yet</p>"
+    (render-shown u.cd vmode)
   ::  own lean SSE (no ?blot=/txt): a page dir's noun grubs render huge under
   ::  /txt on the initial snapshot, and the reload script reads only event
   ::  names, never the payload — so keep="" to render-page and append a
