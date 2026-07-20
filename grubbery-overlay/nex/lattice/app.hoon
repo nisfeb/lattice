@@ -363,17 +363,29 @@
       ?~  home
         ;<  pages=(list @ta)  bind:m  read-page-names
         ;<  ix=pub-index:lp    bind:m  (read-pub-index [%| 2 %& /pub %index])
-        (send-html eyre-id (render-page "" (keep-url "pub/index") (home-index-html our pages ix)))
-      (send-html eyre-id (render-page "" (keep-url "pub/index") (render-gmi u.home)))
-    =/  pu=(unit [=ship =path])  (parse-urb-url u.raw)
-    ?~  pu  (send-html eyre-id (render-page (trip u.raw) "" "<p class=\"err\">bad urb:// url</p>"))
-    ;<  body=(unit @t)  bind:m  (read-page-body ship.u.pu path.u.pu)
-    ?~  body
-      (send-html eyre-id (render-page (trip u.raw) "" "<p class=\"err\">not published here</p>"))
-    ::  own pages get a live reader (keep /pub/index — its per-page hash changes on
-    ::  every edit); remote pages stay static (can't keep a peer's grub).
-    =/  rk=tape  ?:(=(ship.u.pu our) (keep-url "pub/index") "")
-    (send-html eyre-id (render-page (trip u.raw) rk (render-gmi u.body)))
+        (send-html eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (home-index-html our pages ix)))
+      (send-html eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (render-gmi u.home)))
+    =/  ref=(unit referent)  (de-urb u.raw)
+    ?~  ref  (send-html eyre-id (render-page (trip u.raw) "" "<p class=\"err\">bad urb:// url</p>"))
+    ?-  -.u.ref
+        %tree
+      ::  redirect to the /x explorer projection, which renders the node and
+      ::  shows its canonical urb:// address. Preserve a trailing slash so a page
+      ::  dir goes straight to its live view (no extra dir-slash redirect).
+      =/  s=tape  (trip u.raw)
+      =/  slash=tape  ?:(&(?=(^ s) =('/' (rear s))) "/" "")
+      (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p ship.u.ref) (spud pax.u.ref) slash))
+    ::
+        %pub
+      ;<  body=(unit @t)  bind:m  (read-page-body ship.u.ref rel.u.ref)
+      =/  canon=tape  (trip (en-urb ship.u.ref (weld pub-prefix rel.u.ref)))
+      ?~  body
+        (send-html eyre-id (render-page canon "" "<p class=\"err\">not published here</p>"))
+      ::  own pages get a live reader (keep /pub/index — its per-page hash changes
+      ::  on every edit); remote pages stay static (can't keep a peer's grub).
+      =/  rk=tape  ?:(=(ship.u.ref our) (keep-url "pub/index") "")
+      (send-html eyre-id (render-page canon rk (render-gmi u.body)))
+    ==
   ::  dispatch on [method action]. ponytail: read-know-map peeks the whole vault
   ::  per request — fine for a personal store. Writes poke the single writer
   ::  fiber (serialised) and respond ok; the writer logs no-op cases (missing key
@@ -680,7 +692,7 @@
     ;<  csn=seen:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
     ?.  ?=([%& %file *] csn)  (send-err eyre-id 404 'no such page')
     =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.p.csn)))) '')
-    (send-html eyre-id (render-page "" "" (edit-html our [~ `@ta`u.name] src)))
+    (send-html eyre-id (render-page (trip (en-urb our (weld page-prefix /[`@ta`u.name]))) "" (edit-html our [~ `@ta`u.name] src)))
       [%'POST' %page-save]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -2473,6 +2485,77 @@
   ?~  shp=(slaw %p (crip (scag u.slash rest)))  ~
   =/  pax=(each path tang)  (mule |.((stab (crip (slag u.slash rest)))))
   ?:(?=(%| -.pax) ~ `[u.shp p.pax])
+::  ── urb:// address grammar v2 (docs/urls.md) ────────────────────────────────
+::  The first path component selects a fixed, code-versioned MOUNT (p/n/k/t); a
+::  multi-char first component is the frozen legacy pub form. Resolution is a
+::  PURE function of the url text — no lookups, no viewer context, no existence
+::  probes — so the same urb:// names the same referent from any ship, any year
+::  (referential transparency). Aliasing exists (/t/<abs> can name what /p/<name>
+::  names) but the canonicalizer +en-urb is pure too, and every index keys on it.
+::
+++  page-prefix  ^-(path (weld app-base /page))
+++  pub-prefix   ^-(path (weld app-base /pub/vault))
+++  know-prefix  ^-(path (weld app-base /know/vault))
+::  +referent: what a urb:// url resolves to. %pub reads gemtext (rel under the
+::  pub vault); %tree names a grubbery node served by the explorer (absolute).
+::
+++  referent  $%([%pub =ship rel=path] [%tree =ship pax=path])
+::  +strip-prefix: p with `base` removed, or ~ if p is not under base.
+::
+++  strip-prefix
+  |=  [base=path p=path]
+  ^-  (unit path)
+  ?.  &((gte (lent p) (lent base)) =(base (scag (lent base) p)))  ~
+  `(slag (lent base) p)
+::  +de-urb: parse a urb:// url into its referent (~ if malformed). Pure.
+::
+++  de-urb
+  |=  raw=@t
+  ^-  (unit referent)
+  =/  s=tape  (trip raw)
+  ?.  =("urb://" (scag 6 s))  ~
+  =/  rest=tape  (slag 6 s)
+  =/  cut=(unit @ud)  (find "/" rest)
+  =/  shp=(unit @p)  (slaw %p (crip ?~(cut rest (scag u.cut rest))))
+  ?~  shp  ~
+  ?~  cut  `[%pub u.shp /index]
+  =/  ta=tape  (slag +(u.cut) rest)
+  ?:  =("" ta)  `[%pub u.shp /index]
+  =/  parsed=(each path tang)  (mule |.((stab (crip (weld "/" ta)))))
+  ?:  ?=(%| -.parsed)  ~
+  =/  segs=path  p.parsed
+  ?~  segs  `[%pub u.shp /index]
+  ?.  =(1 (met 3 i.segs))
+    ::  multi-char first component -> frozen legacy pub form.
+    `[%pub u.shp segs]
+  ::  single-char first component -> a mount letter (else invalid: hard ~).
+  ?+  i.segs  ~
+    %p  `[%tree u.shp (weld page-prefix t.segs)]
+    %n  `[%pub u.shp t.segs]
+    %k  `[%tree u.shp (weld know-prefix t.segs)]
+    %t  `[%tree u.shp t.segs]
+  ==
+::  +en-urb: the canonical urb:// url for a tree node (ship + ABSOLUTE path).
+::  Inverse of +de-urb on referents: pages -> /p/, know -> /k/, published pages
+::  -> the bare form (unless a single-char top segment forces /n/), anything
+::  else -> the /t/ raw escape hatch. The ship root (~) is the raw-tree root.
+::
+++  en-urb
+  |=  [shp=@p pax=path]
+  ^-  @t
+  =/  pre=tape  (weld "urb://" (scow %p shp))
+  =/  seg  |=(rel=path ^-(tape ?~(rel "" (spud rel))))
+  =/  mp=(unit path)  (strip-prefix page-prefix pax)
+  ?^  mp  (crip :(weld pre "/p" (seg u.mp)))
+  =/  mk=(unit path)  (strip-prefix know-prefix pax)
+  ?^  mk  (crip :(weld pre "/k" (seg u.mk)))
+  =/  mn=(unit path)  (strip-prefix pub-prefix pax)
+  ?^  mn
+    =/  rel=path  u.mn
+    ?:  ?|(=(/index rel) ?=(~ rel))  (crip pre)
+    ?:  =(1 (met 3 i.rel))  (crip :(weld pre "/n" (seg rel)))
+    (crip :(weld pre (seg rel)))
+  (crip :(weld pre "/t" (seg pax)))
 ::  +remote-timeout: how long a remote peek waits before giving up. A dead or
 ::  offline peer would otherwise block the fiber forever (peek-remote -> take-peek
 ::  never resolves) — hanging /fetch and stalling the crawler's peer sweep.
@@ -2767,6 +2850,9 @@
   =/  base=tape  (url-path-part raw-url)
   =/  slashed=?  &(?=(^ base) =('/' (rear base)))
   =/  want-raw=?  (~(has by args) 'data')
+  ::  the canonical urb:// address for this node — shown in the chrome bar so any
+  ::  view is copy-shareable (the browser url stays the /x projection).
+  =/  canon=tape  (trip (en-urb u.shp pax))
   =/  dir-road=road:tarball  [%& %| pax]
   ?~  pax
     ::  ship root: always a directory
@@ -2774,11 +2860,11 @@
     ?:  =(u.shp our)
       ;<  dn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
       ?.  ?=([%& %ball *] dn)  (send-err eyre-id 404 'not found')
-      (send-html eyre-id (render-page "" "" (explore-dir-html u.shp pax ball.p.dn)))
+      (send-html eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.dn)))
     ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
     ?~  md  (send-err eyre-id 504 'unreachable or denied')
     ?.  ?=([%& %ball *] u.md)  (send-err eyre-id 404 'not found')
-    (send-html eyre-id (render-page "" "" (explore-dir-html u.shp pax ball.p.u.md)))
+    (send-html eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.u.md)))
   =/  file-road=road:tarball  [%& %& (snip `path`pax) (rear pax)]
   ?:  =(u.shp our)
     ?:  slashed
@@ -2788,16 +2874,16 @@
         ::  form + SSE), unless ?raw asks for the plain grub listing.
         =/  pn=(unit @ta)  (page-dir-name pax)
         ?:  |(?=(~ pn) (~(has by args) 'raw'))
-          (send-html eyre-id (render-page "" "" (explore-dir-html u.shp pax ball.p.dn)))
+          (send-html eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.dn)))
         (render-page-view eyre-id u.shp pax u.pn)
       ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
       ?.  ?=([%& %file *] fn)  (send-err eyre-id 404 'not found')
       ?:  want-raw  (send-raw eyre-id sang.p.fn %.y)
-      (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.fn %.y)))
+      (send-html eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.fn %.y)))
     ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
     ?:  ?=([%& %file *] fn)
       ?:  want-raw  (send-raw eyre-id sang.p.fn %.y)
-      (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.fn %.y)))
+      (send-html eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.fn %.y)))
     ;<  dn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
     ?.  ?=([%& %ball *] dn)  (send-err eyre-id 404 'not found')
     (send-redirect eyre-id (weld base "/"))
@@ -2805,17 +2891,17 @@
     ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
     ?~  md  (send-err eyre-id 504 'unreachable or denied')
     ?:  ?=([%& %ball *] u.md)
-      (send-html eyre-id (render-page "" "" (explore-dir-html u.shp pax ball.p.u.md)))
+      (send-html eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.u.md)))
     ;<  mf=(unit seen:nexus)  bind:m  (peek-remote-wait file-road u.shp)
     ?~  mf  (send-err eyre-id 504 'unreachable or denied')
     ?.  ?=([%& %file *] u.mf)  (send-err eyre-id 404 'not found')
     ?:  want-raw  (send-raw eyre-id sang.p.u.mf %.n)
-    (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.u.mf %.n)))
+    (send-html eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.u.mf %.n)))
   ;<  mf=(unit seen:nexus)  bind:m  (peek-remote-wait file-road u.shp)
   ?~  mf  (send-err eyre-id 504 'unreachable or denied')
   ?:  ?=([%& %file *] u.mf)
     ?:  want-raw  (send-raw eyre-id sang.p.u.mf %.n)
-    (send-html eyre-id (render-page "" "" (explore-file-html u.shp pax sang.p.u.mf %.n)))
+    (send-html eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.u.mf %.n)))
   ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
   ?~  md  (send-err eyre-id 504 'unreachable or denied')
   ?.  ?=([%& %ball *] u.md)  (send-err eyre-id 404 'not found')
@@ -2878,7 +2964,7 @@
   =/  keep=tape  (keep-url :(weld "page/" (trip name) "/data"))
   =/  inner=tape
     (weld (page-view-html shp pax name err data-html mode) (page-sse-script keep))
-  (send-html eyre-id (render-page "" "" inner))
+  (send-html eyre-id (render-page (trip (en-urb shp pax)) "" inner))
 ::  +serve-clearweb: the public read of a %clearweb page's data. Read-only,
 ::  data grub only — a non-clearweb (or absent) page is a flat 404 so private
 ::  siblings never leak existence. No SSE (an anon keep would 403 anyway).
@@ -3643,6 +3729,12 @@
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
     =/  key=path  u.ko
+    ::  a top-level single-char pub name would shadow a urb:// mount letter
+    ::  (p/n/k/t and the rest of the reserved 1-char space), so its bare
+    ::  canonical url could never resolve back to it. Refuse it — the whole
+    ::  single-char first-component space stays reserved to the protocol forever.
+    ?:  ?&(?=([@ ~] key) =(1 (met 3 i.key)))
+      ~&([%lattice-pub-name-reserved key] (pure:m ~))
     =/  or=(unit vrail:lp)  (key-to-rail:lp vbase key)
     ?~  or  ~&([%lattice-pub-bad-key key] (pure:m ~))
     =/  road=road:tarball  [%& %& pax.u.or nom.u.or]

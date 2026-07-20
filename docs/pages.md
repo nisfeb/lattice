@@ -127,6 +127,10 @@ Paths are absolute grub paths, e.g.
 `/apps/lattice.lattice_app/page/counter/data`. `data-of` builds one from a page
 name: `(data-of %counter)`.
 
+The address bar accepts short `urb://` names for all of this — `urb://~ship/p/counter`
+is a page, `urb://~ship/p/counter/data` a grub, `urb://~ship/t/<abs>` any tree
+node. Every view shows its canonical `urb://` to copy. See [urls.md](urls.md).
+
 ## Composition — a page inside a page
 
 A dependency on another page's **`/view`** gives you its *rendered HTML* instead
