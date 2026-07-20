@@ -363,8 +363,8 @@
       ?~  home
         ;<  pages=(list @ta)  bind:m  read-page-names
         ;<  ix=pub-index:lp    bind:m  (read-pub-index [%| 2 %& /pub %index])
-        (send-html eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (home-index-html our pages ix)))
-      (send-html eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (render-gmi u.home)))
+        (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (home-index-html our pages ix)))
+      (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (render-gmi u.home)))
     =/  ref=(unit referent)  (de-urb u.raw)
     ?~  ref  (send-html eyre-id (render-page (trip u.raw) "" "<p class=\"err\">bad urb:// url</p>"))
     ?-  -.u.ref
@@ -380,11 +380,11 @@
       ;<  body=(unit @t)  bind:m  (read-page-body ship.u.ref rel.u.ref)
       =/  canon=tape  (trip (en-urb ship.u.ref (weld pub-prefix rel.u.ref)))
       ?~  body
-        (send-html eyre-id (render-page canon "" "<p class=\"err\">not published here</p>"))
+        (send-view eyre-id (render-page canon "" "<p class=\"err\">not published here</p>"))
       ::  own pages get a live reader (keep /pub/index — its per-page hash changes
       ::  on every edit); remote pages stay static (can't keep a peer's grub).
       =/  rk=tape  ?:(=(ship.u.ref our) (keep-url "pub/index") "")
-      (send-html eyre-id (render-page canon rk (render-gmi u.body)))
+      (send-view eyre-id (render-page canon rk (render-gmi u.body)))
     ==
   ::  dispatch on [method action]. ponytail: read-know-map peeks the whole vault
   ::  per request — fine for a personal store. Writes poke the single writer
@@ -2860,11 +2860,11 @@
     ?:  =(u.shp our)
       ;<  dn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
       ?.  ?=([%& %ball *] dn)  (send-err eyre-id 404 'not found')
-      (send-html eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.dn)))
+      (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.dn)))
     ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
     ?~  md  (send-err eyre-id 504 'unreachable or denied')
     ?.  ?=([%& %ball *] u.md)  (send-err eyre-id 404 'not found')
-    (send-html eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.u.md)))
+    (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.u.md)))
   =/  file-road=road:tarball  [%& %& (snip `path`pax) (rear pax)]
   ?:  =(u.shp our)
     ?:  slashed
@@ -2874,16 +2874,16 @@
         ::  form + SSE), unless ?raw asks for the plain grub listing.
         =/  pn=(unit @ta)  (page-dir-name pax)
         ?:  |(?=(~ pn) (~(has by args) 'raw'))
-          (send-html eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.dn)))
+          (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.dn)))
         (render-page-view eyre-id u.shp pax u.pn)
       ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
       ?.  ?=([%& %file *] fn)  (send-err eyre-id 404 'not found')
       ?:  want-raw  (send-raw eyre-id sang.p.fn %.y)
-      (send-html eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.fn %.y)))
+      (send-view eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.fn %.y)))
     ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
     ?:  ?=([%& %file *] fn)
       ?:  want-raw  (send-raw eyre-id sang.p.fn %.y)
-      (send-html eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.fn %.y)))
+      (send-view eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.fn %.y)))
     ;<  dn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
     ?.  ?=([%& %ball *] dn)  (send-err eyre-id 404 'not found')
     (send-redirect eyre-id (weld base "/"))
@@ -2891,17 +2891,17 @@
     ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
     ?~  md  (send-err eyre-id 504 'unreachable or denied')
     ?:  ?=([%& %ball *] u.md)
-      (send-html eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.u.md)))
+      (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.u.md)))
     ;<  mf=(unit seen:nexus)  bind:m  (peek-remote-wait file-road u.shp)
     ?~  mf  (send-err eyre-id 504 'unreachable or denied')
     ?.  ?=([%& %file *] u.mf)  (send-err eyre-id 404 'not found')
     ?:  want-raw  (send-raw eyre-id sang.p.u.mf %.n)
-    (send-html eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.u.mf %.n)))
+    (send-view eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.u.mf %.n)))
   ;<  mf=(unit seen:nexus)  bind:m  (peek-remote-wait file-road u.shp)
   ?~  mf  (send-err eyre-id 504 'unreachable or denied')
   ?:  ?=([%& %file *] u.mf)
     ?:  want-raw  (send-raw eyre-id sang.p.u.mf %.n)
-    (send-html eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.u.mf %.n)))
+    (send-view eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.u.mf %.n)))
   ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
   ?~  md  (send-err eyre-id 504 'unreachable or denied')
   ?.  ?=([%& %ball *] u.md)  (send-err eyre-id 404 'not found')
@@ -3286,6 +3286,21 @@
   ^-  form:m
   %+  send-simple:srv  eyre-id
   :-  [200 ['content-type' 'text/html']~]
+  `(as-octs:mimes:html htm)
+::  +send-view: like +send-html but with a short private cache, for READ-ONLY
+::  navigable surfaces (home, tree explorer). A repeat visit inside the window is
+::  served from the browser cache instantly (like the back button's bfcache) —
+::  the ~0.7s grubbery render is skipped. Safe here because these surfaces have
+::  no command/save flow whose result must appear immediately, and any live SSE
+::  reload revalidates (browsers bypass max-age on reload), so real changes still
+::  land fresh. NOT used for page views (command form) or the editor (save flow).
+::
+++  send-view
+  |=  [eyre-id=@ta htm=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  :-  [200 ~[['content-type' 'text/html'] ['cache-control' 'private, max-age=5']]]
   `(as-octs:mimes:html htm)
 ::  +esc: HTML-escape a tape. +has-prefix: tape prefix test.
 ::
