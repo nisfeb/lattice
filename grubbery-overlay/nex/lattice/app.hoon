@@ -624,9 +624,19 @@
     ::  gives the client real feedback instead of a fire-and-forget 200).
     ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base /page/[`@ta`u.name]) %code])
     ?.  ex  (send-err eyre-id 404 'no such page')
-    =/  txt=@t  (~(gut by args) 'cmd' '')
+    ::  a browser form POSTs cmd in the (form-urlencoded) body; parse it as a
+    ::  query (same k=v&k=v grammar). Query cmd is the fallback for programmatic
+    ::  callers. name/web stay in the action-url query.
+    =/  form=(map @t @t)
+      (malt args:(parse-url:http-utils (crip (weld "/?" (trip (req-body req))))))
+    =/  txt=@t  (~(gut by form) 'cmd' (~(gut by args) 'cmd' ''))
     ;<  ~  bind:m  (poke-eval [%cmd `@ta`u.name txt])
-    (send-ok eyre-id)
+    ::  web=1 (a page-view form submit) -> 303 back to the page so the browser
+    ::  lands on the live view; the JSON ok stays for programmatic callers.
+    ?.  (~(has by args) 'web')  (send-ok eyre-id)
+    ;<  our=@p  bind:m  bowl-our
+    %+  send-see-other  eyre-id
+    :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.name) "/")
       [%'POST' %page-del]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -2516,7 +2526,12 @@
     ?:  slashed
       ;<  dn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
       ?:  ?=([%& %ball *] dn)
-        (send-html eyre-id (render-page "" "" (explore-dir-html u.shp pax ball.p.dn)))
+        ::  our own /page/<name>/ dir -> the live page view (data + command
+        ::  form + SSE), unless ?raw asks for the plain grub listing.
+        =/  pn=(unit @ta)  (page-dir-name pax)
+        ?:  |(?=(~ pn) (~(has by args) 'raw'))
+          (send-html eyre-id (render-page "" "" (explore-dir-html u.shp pax ball.p.dn)))
+        (render-page-view eyre-id u.shp pax u.pn)
       ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
       ?.  ?=([%& %file *] fn)  (send-err eyre-id 404 'not found')
       ?:  want-raw  (send-raw eyre-id sang.p.fn)
@@ -2563,6 +2578,91 @@
   ^-  form:m
   %+  send-simple:srv  eyre-id
   [[301 ['location' (crip to)]~] ~]
+::  +send-see-other: a 303 (POST -> GET redirect, for form command submits).
+::
+++  send-see-other
+  |=  [eyre-id=@ta to=tape]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  [[303 ['location' (crip to)]~] ~]
+::  +page-dir-name: is `pax` one of our own /page/<name>/ dirs? -> the name.
+::  Exactly app-base ++ /page/<name>; anything else (incl. deeper) is ~.
+::
+++  page-dir-name
+  |=  pax=path
+  ^-  (unit @ta)
+  ?.  ?=([@ @ %page @ ~] pax)  ~
+  ?.  =(`path`[i.pax i.t.pax ~] app-base)  ~
+  `i.t.t.t.pax
+::  +render-page-view: the live view of one of our programmable pages —
+::  rendered data + any error + a command form, with keep-SSE on the data
+::  grub so a command from ANY browser reloads every open view (step 3).
+::
+++  render-page-view
+  |=  [eyre-id=@ta shp=@p pax=path name=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& pax %data] ~)
+  ;<  esn=seen:nexus  bind:m  (peek:io [%& %& pax %err] ~)
+  =/  err=@t
+    ?.  ?=([%& %file *] esn)  ''
+    (fall (mole |.(;;(@t (sang-noun:tarball sang.p.esn)))) '')
+  =/  data-html=tape
+    ?.  ?=([%& %file *] dsn)  "<p>no data yet</p>"
+    (page-data-html sang.p.dsn)
+  ::  own lean SSE (no ?blot=/txt): a page dir's noun grubs render huge under
+  ::  /txt on the initial snapshot, and the reload script reads only event
+  ::  names, never the payload — so keep="" to render-page and append a
+  ::  blot-free stream here.
+  =/  keep=tape  (keep-url :(weld "page/" (trip name) "/data"))
+  =/  inner=tape  (weld (page-view-html shp pax name err data-html) (page-sse-script keep))
+  (send-html eyre-id (render-page "" "" inner))
+::  +page-data-html: render a page's data grub. A cord shows as text; any
+::  other noun as its literal (a page's data mark is a bare noun).
+::
+++  page-data-html
+  |=  =sang:tarball
+  ^-  tape
+  =/  nn=*  (sang-noun:tarball sang)
+  =/  cord-res=(each @t tang)  (mule |.(;;(@t nn)))
+  ?:  ?=(%& -.cord-res)
+    :(weld "<pre>" (esc (trip p.cord-res)) "</pre>")
+  :(weld "<pre>" (esc "{<nn>}") "</pre>")
+::  +page-view-html: crumbs, error, data, and a command form (POSTs page-cmd
+::  with web=1 so the route 303s back here). ?raw links to the grub listing.
+::
+++  page-view-html
+  |=  [shp=@p pax=path name=@ta err=@t data-html=tape]
+  ^-  tape
+  =/  post=tape  :(weld "/apps/lattice/page-cmd?name=" (trip name) "&web=1")
+  ;:  weld
+    (explore-crumbs shp pax)
+    ?:  =('' err)  ""
+    :(weld "<pre class=\"err\">" (esc (trip err)) "</pre>")
+    "<section class=\"data\">"
+    data-html
+    "</section>"
+    "<form class=\"cmd\" method=\"post\" action=\""
+    (esc post)
+    "\"><input name=\"cmd\" placeholder=\"command\" autocomplete=\"off\">"
+    "<button type=\"submit\">send</button></form>"
+    "<p><a href=\"?raw\">raw grubs</a></p>"
+  ==
+::  +page-sse-script: like +sse-script but WITHOUT ?blot=/txt — the page dir's
+::  noun grubs are megabytes under /txt on connect, and this only needs the
+::  event names to reload. Same reload-on-any-non-old-event loop otherwise.
+::
+++  page-sse-script
+  |=  keep=tape
+  ^-  tape
+  ?~  keep  ""
+  ;:  weld
+    (trip '<script>(function(){var K="')
+    keep
+    %-  trip
+    '";async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7)}if(!ev)continue;if(ev.slice(0,3)==="old")continue;location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
+  ==
 ::  +explore-crumbs: breadcrumb nav — absolute hrefs from the ship root down,
 ::  each with a trailing slash. The leaf is linked too (self-link; harmless).
 ::
