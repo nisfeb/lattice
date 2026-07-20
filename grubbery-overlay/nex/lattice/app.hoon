@@ -688,7 +688,10 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ;<  pages=(list @ta)  bind:m  read-page-names
     ?~  name
-      (send-html eyre-id (edit-html our ~ '' pages %private ''))
+      ::  ?kind=md opens a new markdown note (prose starter, wraps on save);
+      ::  otherwise a new hoon page.
+      =/  is-md=?  =('md' (~(gut by args) 'kind' ''))
+      (send-html eyre-id (edit-html our ~ '' pages %private '' is-md))
     ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
     =/  pdir=path  (weld app-base /page/[`@ta`u.name])
     ;<  dn=seen:nexus  bind:m  (peek-shallow:io [%& %| pdir] ~)
@@ -699,17 +702,26 @@
     =/  rd  |=(nom=@ta ^-(@t =/(v (~(get by fils) nom) ?~(v '' (fall (mole |.(;;(@t (sang-noun:tarball sang.u.v)))) '')))))
     =/  src=@t  (rd %code)
     =/  err=@t  (rd %err)
+    ::  a note round-trips: if /code matches the md-envelope, edit the raw
+    ::  markdown (not the generated hoon) and open the editor in markdown mode.
+    =/  un=(unit @t)  (unwrap-md src)
+    =/  is-md=?  ?=(^ un)
+    =/  disp=@t  ?~(un src u.un)
     =/  mode=share-mode:le
       =/  v  (~(get by fils) %share)
       ?~  v  %private
       (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.u.v)))) %private)
-    (send-html eyre-id (edit-html our [~ `@ta`u.name] src pages mode err))
+    (send-html eyre-id (edit-html our [~ `@ta`u.name] disp pages mode err is-md))
       [%'POST' %page-save]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
-    =/  src=@t  (req-body req)
-    ?:  =('' src)  (send-err eyre-id 400 'missing body')
+    =/  raw=@t  (req-body req)
+    ?:  =('' raw)  (send-err eyre-id 400 'missing body')
+    ::  ?md=1: the body is markdown prose, not hoon. Wrap it in the note gate
+    ::  `... (md 'prose')` so the whole compile/render/preview pipeline runs
+    ::  unchanged; edit reopens it as markdown via unwrap-md.
+    =/  src=@t  ?:((~(has by args) 'md') (wrap-md raw) raw)
     ::  ?new=1: create-only — 409 instead of silently overwriting an existing
     ::  page (the editor's new-page mode sends it; caught by review).
     ;<  ex=?  bind:m
@@ -717,6 +729,14 @@
     ?:  &((~(has by args) 'new') ex)  (send-err eyre-id 409 'page exists')
     ;<  ~  bind:m  (poke-eval [%make `@ta`u.name src])
     (send-ok eyre-id)
+      [%'POST' %page-preview]
+    ::  live markdown preview: render the POSTed body with the real render-md
+    ::  (the source-of-truth renderer, so no client/server drift) and return a
+    ::  bare HTML doc. Non-persisting — nothing is written, so the editor can
+    ::  preview a note as it is typed, before any save. Owner-gated like all
+    ::  non-clearweb routes.
+    =/  body=@t  (req-body req)
+    (send-html eyre-id (render-bare (render-md body)))
       [%'POST' %page-cmd]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -3464,6 +3484,52 @@
       :(weld "<a href=\"" (esc url) "\" target=\"_blank\" rel=\"noopener noreferrer\">" (md-inline txt) "</a>")
     $(t (slag +(u.ue) t.ap), out (weld out piece))
   $(t t.t, out (weld out (esc ~[c])))
+::  +md-envelope: the exact page-source shell a markdown note is stored in.
+::  The evaluator only knows Hoon gates, so a note IS a gate returning (md '...'):
+::  wrap-md escapes the prose into a single-quote cord and drops it in here;
+::  unwrap-md matches this shell to recover the prose for editing. Keep the two
+::  in lockstep with this string.
+::
+++  md-env-pre  "|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]  ^-  result  (md '"
+++  md-env-suf  "')"
+::  +wrap-md: raw markdown -> a page gate returning (md 'markdown'). Escapes the
+::  body for a single-quote hoon cord: \ -> \\, ' -> \', and any control byte
+::  (newline/tab/CR) -> \0a-style hex (a literal newline does NOT ream inside a
+::  cord). Everything else -- including { } < > backtick -- is literal in a
+::  single-quote cord and safe. Verified: wrap-md output reams; unwrap round-trips.
+::
+++  wrap-md
+  |=  body=@t
+  ^-  @t
+  =/  hx  |=(n=@ ^-(@tD ?:((lth n 10) (add '0' n) (add 87 n))))
+  =/  ec=tape
+    %-  zing
+    %+  turn  (trip body)
+    |=  c=@tD
+    ^-  tape
+    ?:  =(c 92)  "\\\\"
+    ?:  =(c 39)  ~[`@tD`92 `@tD`39]
+    ?:  (lth c 32)  ;:(weld "\\" ~[(hx (div c 16))] ~[(hx (mod c 16))])
+    ~[c]
+  (crip ;:(weld md-env-pre ec md-env-suf))
+::  +unwrap-md: page source -> the raw markdown if this page is a note (matches
+::  the md-envelope), else ~. Recovers the prose by evaluating the inner cord,
+::  reusing hoon's own unescaping. Fenced so a malformed body can't crash a read.
+::
+++  unwrap-md
+  |=  src=@t
+  ^-  (unit @t)
+  =/  s=tape  (trip src)
+  =/  ls=@ud  (lent s)
+  ?.  ?&  (gte ls (add (lent md-env-pre) (lent md-env-suf)))
+          =(md-env-pre (scag (lent md-env-pre) s))
+          =(md-env-suf (slag (sub ls (lent md-env-suf)) s))
+      ==
+    ~
+  =/  mid=tape  (scag (sub ls (add (lent md-env-pre) (lent md-env-suf))) (slag (lent md-env-pre) s))
+  =/  quoted=@t  (crip :(weld "'" mid "'"))
+  =/  r  (mule |.(;;(@t q:(slap !>(0) (ream quoted)))))
+  ?.(?=(%& -.r) ~ `p.r)
 ::  +render-md: a markdown body -> HTML fragment. Block level: # headings,
 ::  ``` fences, - lists, > quotes, --- rules, paragraphs; inline via md-inline.
 ::  Own-page content only (like render-gmi), so raw HTML in the source is escaped.
@@ -3533,6 +3599,12 @@
   ^-  tape
   %-  trip
   '|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]\0a^-  result\0a(text \'hello\')\0a'
+::  the starter a new markdown NOTE opens with (raw markdown, not hoon).
+::
+++  md-template
+  ^-  tape
+  %-  trip
+  '# My note\0a\0aStart writing in markdown. Use **bold**, *italic*, lists, and [links](https://urbit.org). The preview updates as you type.\0a'
 ::  +share-btn: one sharing preset button (JS wires the click), marked .on if current.
 ::
 ++  share-btn
@@ -3546,16 +3618,18 @@
 ::  toggleable controls panel (far right: status, command, sharing, delete).
 ::
 ++  edit-html
-  |=  [our=@p name=(unit @ta) src=@t pages=(list @ta) mode=share-mode:le err=@t]
+  |=  [our=@p name=(unit @ta) src=@t pages=(list @ta) mode=share-mode:le err=@t md=?]
   ^-  @t
   =/  ship=tape  (scow %p our)
   =/  nm=tape  ?~(name "" (trip u.name))
   =/  view=tape  :(weld "/apps/lattice/x/" ship "/apps/lattice.lattice_app/page/" nm "/")
-  =/  code=tape  ?~(name edit-template (esc (trip src)))
+  ::  new page opens on a starter (markdown prose or the hoon skeleton); an
+  ::  existing page shows its source (raw markdown for a note, via unwrap-md).
+  =/  code=tape  ?~(name ?:(md md-template edit-template) (esc (trip src)))
   =/  tree-html=tape
     %-  zing
     ;:  weld
-      `(list tape)`~["<a class=\"new\" href=\"/apps/lattice/edit\">+ new page</a><div class=\"sec\">pages</div>"]
+      `(list tape)`~["<a class=\"new\" href=\"/apps/lattice/edit?kind=md\">+ new note</a><a class=\"new\" href=\"/apps/lattice/edit\">+ new page</a><div class=\"sec\">pages</div>"]
       %+  turn  pages
       |=  p=@ta
       =/  pt=tape  (trip p)
@@ -3572,7 +3646,7 @@
       "<h3>status</h3>"
       ?:  =('' err)  "<div class=\"ok\" id=\"cerr\">compiled ok</div>"
       :(weld "<div class=\"err\" id=\"cerr\">" (esc (trip err)) "</div>")
-      "<h3>command</h3><div class=\"row\"><input id=\"cmd\" placeholder=\"command\"><button id=\"csend\">send</button></div>"
+      ?:(md "" "<h3>command</h3><div class=\"row\"><input id=\"cmd\" placeholder=\"command\"><button id=\"csend\">send</button></div>")
       "<h3>sharing</h3><div class=\"share\">"
       (share-btn %private "private" mode)
       (share-btn %shared "shared" mode)
@@ -3599,10 +3673,13 @@
     "<a href=\"/apps/lattice\">home</a></div>"
     "<div class=\"tree\">"  tree-html  "</div>"
     "<textarea id=\"src\" spellcheck=\"false\">"  code  "</textarea>"
+    ::  md: JS drives the preview via srcdoc (render-md, live as you type), so
+    ::  no src — works even before the first save. hoon: the ?embed server view.
+    ?:  md  "<iframe class=\"prev\" id=\"prev\"></iframe>"
     ?~  name  "<div class=\"prev-empty\">live preview appears here once saved</div>"
     :(weld "<iframe class=\"prev\" id=\"prev\" src=\"" view "?embed\"></iframe>")
     "<div class=\"ctl\">"  ctl-html  "</div></div>"
-    (edit-js nm view)
+    (edit-js nm view md)
     "</body></html>"
   ==
 ::  +edit-js: the editor client — toggles (localStorage), tab, ctrl/cmd-S, save +
@@ -3610,15 +3687,17 @@
 ::  place. Single-quote cord: uses double-quotes and backticks only (no ' or \).
 ::
 ++  edit-js
-  |=  [nm=tape view=tape]
+  |=  [nm=tape view=tape md=?]
   ^-  tape
   ;:  weld
     (trip '<script>(function(){var NAME="')
     nm
-    (trip '";var V="')
+    (trip '";var MD=')
+    ?:(md "true" "false")
+    (trip ';var V="')
     view
     %-  trip
-    '";var $=function(i){return document.getElementById(i)};var ws=$("ws");function ap(){ws.classList.toggle("nt",localStorage.edNT==="1");ws.classList.toggle("nc",localStorage.edNC==="1")}ap();$("tt").onclick=function(){localStorage.edNT=localStorage.edNT==="1"?"0":"1";ap()};$("ct").onclick=function(){localStorage.edNC=localStorage.edNC==="1"?"0":"1";ap()};var st=function(t,ok){var s=$("st");s.textContent=t;s.style.color=ok?"#27ae60":"#c0392b"};var ta=$("src");ta.addEventListener("keydown",function(e){if(e.key==="Tab"){e.preventDefault();var s=ta.selectionStart;ta.value=ta.value.slice(0,s)+"  "+ta.value.slice(ta.selectionEnd);ta.selectionStart=ta.selectionEnd=s+2}});var rp=function(){var p=$("prev");if(p)p.src=p.src};var chk=async function(){if(!NAME)return;var t="";try{t=await (await fetch(V+"err?data")).text()}catch(x){}var c=$("cerr");if(t){st("error",false);if(c){c.textContent=t;c.className="err"}}else{st("compiled ok",true);if(c){c.textContent="compiled ok";c.className="ok"}rp()}};$("save").onclick=async function(){var name=NAME||($("pname")?$("pname").value.trim():"");if(!name){st("name required",false);return}st("saving...",true);var r=await fetch("/apps/lattice/page-save?name="+encodeURIComponent(name)+(NAME?"":"&new=1"),{method:"POST",body:ta.value});if(r.status===409){st("that page already exists",false);return}if(!r.ok){st("save failed "+r.status,false);return}if(!NAME){location="/apps/lattice/edit?name="+encodeURIComponent(name);return}st("compiling...",true);setTimeout(chk,800);setTimeout(chk,2000)};window.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&e.key==="s"){e.preventDefault();$("save").onclick()}});var cs=$("csend");if(cs){var run=async function(){var c=$("cmd").value;if(!c)return;await fetch("/apps/lattice/page-cmd?name="+encodeURIComponent(NAME),{method:"POST",body:"cmd="+encodeURIComponent(c)});$("cmd").value="";setTimeout(rp,600)};cs.onclick=run;$("cmd").addEventListener("keydown",function(e){if(e.key==="Enter")run()})}document.querySelectorAll(".share button").forEach(function(b){b.onclick=async function(){var m=b.getAttribute("data-m");await fetch("/apps/lattice/page-share?name="+encodeURIComponent(NAME)+"&mode="+m,{method:"POST"});document.querySelectorAll(".share button").forEach(function(x){x.className=x.getAttribute("data-m")===m?"on":""});$("cwurl").innerHTML=m==="clearweb"?`<p>public: <a href="/apps/lattice/c/${NAME}" target="_blank">/c/${NAME}</a></p>`:"";setTimeout(rp,500)}});var d=$("del");if(d){d.onclick=async function(){if(!confirm("delete "+NAME+"?"))return;await fetch("/apps/lattice/page-del?name="+encodeURIComponent(NAME),{method:"POST"});location="/apps/lattice"}}})();</script>'
+    '";var $=function(i){return document.getElementById(i)};var ws=$("ws");function ap(){ws.classList.toggle("nt",localStorage.edNT==="1");ws.classList.toggle("nc",localStorage.edNC==="1")}ap();$("tt").onclick=function(){localStorage.edNT=localStorage.edNT==="1"?"0":"1";ap()};$("ct").onclick=function(){localStorage.edNC=localStorage.edNC==="1"?"0":"1";ap()};var st=function(t,ok){var s=$("st");s.textContent=t;s.style.color=ok?"#27ae60":"#c0392b"};var ta=$("src");ta.addEventListener("keydown",function(e){if(e.key==="Tab"){e.preventDefault();var s=ta.selectionStart;ta.value=ta.value.slice(0,s)+"  "+ta.value.slice(ta.selectionEnd);ta.selectionStart=ta.selectionEnd=s+2}});var prev=function(){var p=$("prev");if(!p)return;if(MD){fetch("/apps/lattice/page-preview",{method:"POST",body:ta.value}).then(function(r){return r.text()}).then(function(h){p.srcdoc=h}).catch(function(x){})}else{p.src=p.src}};if(MD){var tmr;ta.addEventListener("input",function(){clearTimeout(tmr);tmr=setTimeout(prev,400)});prev()}var chk=async function(){if(!NAME)return;var t="";try{t=await (await fetch(V+"err?data")).text()}catch(x){}var c=$("cerr");if(t){st("error",false);if(c){c.textContent=t;c.className="err"}}else{st(MD?"saved":"compiled ok",true);if(c){c.textContent="compiled ok";c.className="ok"}prev()}};$("save").onclick=async function(){var name=NAME||($("pname")?$("pname").value.trim():"");if(!name){st("name required",false);return}st("saving...",true);var r=await fetch("/apps/lattice/page-save?name="+encodeURIComponent(name)+(NAME?"":"&new=1")+(MD?"&md=1":""),{method:"POST",body:ta.value});if(r.status===409){st("that page already exists",false);return}if(!r.ok){st("save failed "+r.status,false);return}if(!NAME){location="/apps/lattice/edit?name="+encodeURIComponent(name)+(MD?"&kind=md":"");return}st(MD?"saved":"compiling...",true);setTimeout(chk,800);setTimeout(chk,2000)};window.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&e.key==="s"){e.preventDefault();$("save").onclick()}});var cs=$("csend");if(cs){var run=async function(){var c=$("cmd").value;if(!c)return;await fetch("/apps/lattice/page-cmd?name="+encodeURIComponent(NAME),{method:"POST",body:"cmd="+encodeURIComponent(c)});$("cmd").value="";setTimeout(prev,600)};cs.onclick=run;$("cmd").addEventListener("keydown",function(e){if(e.key==="Enter")run()})}document.querySelectorAll(".share button").forEach(function(b){b.onclick=async function(){var m=b.getAttribute("data-m");await fetch("/apps/lattice/page-share?name="+encodeURIComponent(NAME)+"&mode="+m,{method:"POST"});document.querySelectorAll(".share button").forEach(function(x){x.className=x.getAttribute("data-m")===m?"on":""});$("cwurl").innerHTML=m==="clearweb"?`<p>public: <a href="/apps/lattice/c/${NAME}" target="_blank">/c/${NAME}</a></p>`:"";setTimeout(prev,500)}});var d=$("del");if(d){d.onclick=async function(){if(!confirm("delete "+NAME+"?"))return;await fetch("/apps/lattice/page-del?name="+encodeURIComponent(NAME),{method:"POST"});location="/apps/lattice"}}})();</script>'
   ==
 ::  +home-css: styling for the landing (nav cards + lists).
 ::
