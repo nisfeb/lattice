@@ -361,8 +361,9 @@
       ::  edit auto-refreshes the open reader.
       ;<  home=(unit @t)  bind:m  (read-page-body our /index)
       ?~  home
-        ;<  ix=pub-index:lp  bind:m  (read-pub-index [%| 2 %& /pub %index])
-        (send-html eyre-id (render-page "" (keep-url "pub/index") (home-index-html our ix)))
+        ;<  pages=(list @ta)  bind:m  read-page-names
+        ;<  ix=pub-index:lp    bind:m  (read-pub-index [%| 2 %& /pub %index])
+        (send-html eyre-id (render-page "" (keep-url "pub/index") (home-index-html our pages ix)))
       (send-html eyre-id (render-page "" (keep-url "pub/index") (render-gmi u.home)))
     =/  pu=(unit [=ship =path])  (parse-urb-url u.raw)
     ?~  pu  (send-html eyre-id (render-page (trip u.raw) "" "<p class=\"err\">bad urb:// url</p>"))
@@ -3235,20 +3236,66 @@
     $(lines t.lines, out :(weld out "<blockquote>" (esc (slag 2 ln)) "</blockquote>"))
   ?:  =("" ln)  $(lines t.lines)
   $(lines t.lines, out :(weld out "<p>" (esc ln) "</p>"))
-::  +home-index-html: the home page — a list of our published page links.
+::  +read-page-names: the programmable-page names under /page (sorted, ~ if the
+::  dir is absent). Feeds the home landing so it always lists what you can open.
+::
+++  read-page-names
+  =/  m  (fiber:fiber:nexus ,(list @ta))
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek-shallow:io [%& %| (weld app-base /page)] ~)
+  ?.  ?=([%& %ball *] sn)  (pure:m ~)
+  (pure:m (sort (turn ~(tap by dir.ball.p.sn) head) aor))
+::  +home-css: styling for the landing (nav cards + lists).
+::
+++  home-css
+  ^-  tape
+  %-  trip
+  '<style>.muted{color:#8a8a8a}h1{margin:.2rem 0}.home-nav{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:12px;margin:1rem 0}.navcard{display:block;padding:14px 16px;border:1px solid #8886;border-radius:10px;text-decoration:none;color:inherit;background:#8881}.navcard:hover{border-color:#1a6ed8}.navcard strong{display:block;font-size:1.05rem;margin-bottom:2px}.navcard span{color:#8a8a8a;font-size:.9rem}ul.pglist{list-style:none;padding:0;margin:.4rem 0}ul.pglist li{padding:7px 2px;border-bottom:1px solid #8883}h2{font-size:1rem;color:#8a8a8a;margin:1.4rem 0 .2rem;text-transform:uppercase;letter-spacing:.03em}</style>'
+::  +home-index-html: the landing page. Always shows navigation (Pages,
+::  Explorer) plus a live list of your programmable pages and any published
+::  pages — so an empty store is still a way in, not a dead end.
 ::
 ++  home-index-html
-  |=  [our=@p ix=pub-index:lp]
+  |=  [our=@p pages=(list @ta) ix=pub-index:lp]
   ^-  tape
   =/  ship=tape  (scow %p our)
-  =/  keys=(list path)  ~(tap in ~(key by ix))
-  ?~  keys  "<p>No published pages yet.</p>"
-  %-  zing
-  :-  "<h1>lattice</h1>"
-  %+  turn  keys
-  |=  pax=path
-  =/  rel=tape  (slag 1 (spud (snip (slag 1 pax))))
-  :(weld "<p><a href=\"/apps/lattice?url=urb://" ship "/" rel "\">" rel "</a></p>")
+  =/  base=tape  :(weld "/apps/lattice/x/" ship "/apps/lattice.lattice_app/page/")
+  =/  tree=tape  :(weld "/apps/lattice/x/" ship "/")
+  =/  page-list=tape
+    ?~  pages  "<p class=\"muted\">No pages yet — open <b>Pages</b> above to make one.</p>"
+    %-  zing
+    ;:  weld
+      `(list tape)`~["<ul class=\"pglist\">"]
+      %+  turn  pages
+      |=  nom=@ta
+      :(weld "<li><a href=\"" base (trip nom) "/\">" (esc (trip nom)) "</a></li>")
+      `(list tape)`~["</ul>"]
+    ==
+  =/  pub-keys=(list path)  ~(tap in ~(key by ix))
+  =/  pub-list=tape
+    ?~  pub-keys  "<p class=\"muted\">Nothing published yet.</p>"
+    %-  zing
+    ;:  weld
+      `(list tape)`~["<ul class=\"pglist\">"]
+      %+  turn  pub-keys
+      |=  pax=path
+      =/  rel=tape  (slag 1 (spud (snip (slag 1 pax))))
+      :(weld "<li><a href=\"/apps/lattice?url=urb://" ship "/" rel "\">" (esc rel) "</a></li>")
+      `(list tape)`~["</ul>"]
+    ==
+  ;:  weld
+    home-css
+    "<h1>Lattice</h1>"
+    "<p class=\"muted\">Programmable pages &amp; published notes &middot; "  ship  "</p>"
+    "<div class=\"home-nav\">"
+    "<a class=\"navcard\" href=\""  base
+    "\"><strong>Pages</strong><span>Create &amp; run programmable pages</span></a>"
+    "<a class=\"navcard\" href=\""  tree
+    "\"><strong>Explorer</strong><span>Browse your whole grubbery tree</span></a>"
+    "</div>"
+    "<h2>Your pages</h2>"   page-list
+    "<h2>Published</h2>"    pub-list
+  ==
 ::  +web-css: minimal reader styling (single-quoted cord so braces are literal).
 ::
 ++  web-css
