@@ -682,6 +682,14 @@
     ==
   ::  ── pub writes (POST) ──
   ::  ── programmable pages (docs/platform.md step 2) ──
+      [%'GET' %'manifest.webmanifest']
+    (send-typed eyre-id 'application/manifest+json' 'no-cache' manifest-json)
+      [%'GET' %'sw.js']
+    (send-sw eyre-id sw-js)
+      [%'GET' %'icon.svg']
+    (send-typed eyre-id 'image/svg+xml' 'public, max-age=86400' icon-svg)
+      [%'GET' %'apple-touch-icon.png']
+    (send-png eyre-id apple-icon-b64)
       [%'GET' %edit]
     ::  the in-browser editor workspace (tree | code | preview | controls).
     ::  No name -> new-page mode. The page list feeds the tree sidebar.
@@ -3033,7 +3041,7 @@
   %-  crip
   ;:  weld
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
     "<style>"  web-css  (trip 'body{margin:0;padding:14px}')  "</style></head><body>"
     inner  "</body></html>"
   ==
@@ -3360,6 +3368,78 @@
   %+  send-simple:srv  eyre-id
   :-  [200 ~[['content-type' 'text/html'] ['cache-control' 'private, max-age=5']]]
   `(as-octs:mimes:html htm)
+::  ── PWA (installable app) ──────────────────────────────────────────────────
+::  Content-Type is an explicit header cord here (not mark-derived), so a
+::  manifest and a service worker are served with correct MIME by hand. All PWA
+::  routes sit AFTER the owner gate, so they're owner-only — the browser fetches
+::  them same-origin with the session cookie, which is the right posture for a
+::  private app (install is offered only inside an authed session).
+::
+++  send-typed
+  |=  [eyre-id=@ta ct=@t cc=@t body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  :-  [200 ~[['content-type' ct] ['cache-control' cc]]]
+  `(as-octs:mimes:html body)
+::  the service worker: extra Service-Worker-Allowed so its scope can be the
+::  whole /apps/lattice prefix (it is served from .../sw.js, default scope
+::  .../), and no-cache so an updated worker propagates.
+::
+++  send-sw
+  |=  [eyre-id=@ta body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  :_  `(as-octs:mimes:html body)
+  :-  200
+  :~  ['content-type' 'text/javascript']
+      ['cache-control' 'no-cache']
+      ['service-worker-allowed' '/apps/lattice']
+  ==
+::  a PNG from an embedded base64 constant (iOS apple-touch-icon must be a real
+::  raster; it ignores SVG + the manifest icons array).
+::
+++  send-png
+  |=  [eyre-id=@ta b64=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  :_  (de:base64:mimes:html b64)
+  [200 ~[['content-type' 'image/png'] ['cache-control' 'public, max-age=604800']]]
+::  scope + start_url both /apps/lattice (no trailing-slash mismatch). One SVG
+::  icon covers Android/desktop install; iOS uses the apple-touch-icon PNG.
+::
+++  manifest-json
+  ^-  @t
+  '{"id":"/apps/lattice","name":"Lattice","short_name":"Lattice","description":"Programmable pages and markdown notes on Urbit.","start_url":"/apps/lattice","scope":"/apps/lattice","display":"standalone","theme_color":"#1a6ed8","background_color":"#fafafa","icons":[{"src":"/apps/lattice/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"},{"src":"/apps/lattice/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"maskable"}]}'
+++  icon-svg
+  ^-  @t
+  '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" fill="#1a6ed8"/><g stroke="#ffffff" stroke-width="14" stroke-linecap="round" fill="#ffffff"><line x1="140" y1="140" x2="372" y2="140"/><line x1="140" y1="256" x2="372" y2="256"/><line x1="140" y1="372" x2="372" y2="372"/><line x1="140" y1="140" x2="140" y2="372"/><line x1="256" y1="140" x2="256" y2="372"/><line x1="372" y1="140" x2="372" y2="372"/><line x1="140" y1="140" x2="372" y2="372"/><line x1="372" y1="140" x2="140" y2="372"/><circle cx="140" cy="140" r="26"/><circle cx="256" cy="140" r="26"/><circle cx="372" cy="140" r="26"/><circle cx="140" cy="256" r="26"/><circle cx="256" cy="256" r="30"/><circle cx="372" cy="256" r="26"/><circle cx="140" cy="372" r="26"/><circle cx="256" cy="372" r="26"/><circle cx="372" cy="372" r="26"/></g></svg>'
+::  minimal service worker: only job is installability + a SAFE fetch strategy
+::  for an auth-gated, dynamic app. It does NOT precache (every route is
+::  auth-gated, so a logged-out install would 403 and abort). Static shell
+::  (icon/manifest) is cache-on-first-hit; everything else is network-first and
+::  never cached, so a stale authed page is never served offline.
+::
+++  sw-js
+  ^-  @t
+  'var V="lattice-v1";self.addEventListener("install",function(e){self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V}).map(function(k){return caches.delete(k)}))}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(u.pathname==="/apps/lattice/icon.svg"||u.pathname==="/apps/lattice/manifest.webmanifest"){e.respondWith(caches.open(V).then(function(c){return c.match(q).then(function(hit){return hit||fetch(q).then(function(r){c.put(q,r.clone());return r})})}));return}e.respondWith(fetch(q).catch(function(){if(q.mode==="navigate"){return new Response(`<!doctype html><meta name=viewport content="width=device-width"><body style="font:16px system-ui;padding:2rem;color:#888">offline - reconnect to reach lattice</body>`,{status:503,headers:{"content-type":"text/html"}})}return new Response("offline",{status:503})}))});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+++  apple-icon-b64
+  ^-  @t
+  'iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAABmJLR0QA/wD/AP+gvaeTAAARvUlEQVR4nO2deXQT94HHfxqd1mnZlm1kGRsXHAIBHINDuI80IaTBQOJsGgo0oVy7S0iy7b4FmjR9OUjfa7ZbQptwJXSBpWzAJJhuCG4WQ4Mhj8sOBHAcB2NsWZaEJcs6rGM0s8/r91zZ+CdrfqNrRr/Pn0LDT575zMzv/P4E+o0NAIMZCmLITzEYLAcmHPjJgYGC5cBAwXJgoGA5MFCwHBgoWA4MFCwHBgqWAwMFy4GBguXAQMFyYKBgOTBQsBwYKFgODBQsBwYKlgMDBcuBgYLlwEDBcmCgYDkwULAcGChYDgwULAcGCpYDAwXLgYGC5cBAwXJgoGA5MFCwHBgoWA4MFCwHBgqWAwMFy4GBguXAQBGBpEEpJUbnSrJVIoWU6HCQ7fZAS2cgPkXrVKJCnThH3Xs2zN3kbWvA6iTjU3RBplivFedqRG4fZXGSTR1+l48CyUHi5SAEYMlkdUWZevoYuVgoCP2nZqv/xFXXnjN2syMml0ouIVbMSC8vVU3KlwlCSqZp8PUdb1Wdc19tV48/JpcqRyNaPUf7xCRlYZYk9HM/SZ9r8hy50H3sSjdFg8QiSGzU5JRRae88kzMuTxrmOx4/teOUfdvJTjKqZ6uiTP3Lcl32/z8tYJgd5NtV1spL3VEsV0QIXnk8c908bZok3Dv9utG35bD5UnMPSBxC1dQNiSr7uYc1u1bpczXDPL3EQsG00fLJo2RfXHf7AlHwQ0QIfr00e0u5TiEdpsqllBELJ6k0cuGX37rpaJipkQv3rs57dqpm0DPyXrLVoooydYeD/KbNB1JNjn+YqvndslwhMcw56qcgSzLrPvnRS04yyPYqbX0m5/lZ2si/X1qYpteKT15zsSxXKhb89z/nT/1BWoTfFxKCBROUZgd5LUF+JEaOsqK03av0kZvRR45GpNeKP7/K6iKtmq19eUEm06MeMMg6XcGv73jZFL1t+Yh59yuYHjVnrOLLRo+pK04V5AQ3ZQkB2FqRM+xzdUgqytTTRsuRi9apRJuezEI7dku5LkslRC56ZrF86WQ1woESkeCdZ3IY3keclWPJZHX4Gmh4flmuQz72pQUZw9YzYCilxMZHGT9y+tm8CP1nP2CQlpeiiMU9OZ4uY/V3Plgg+0H2gOZfhIgIwRJ2p3jpFLUQ6YSNyZGUjJSxKfrpKWr+93OoZMSMMejvhT7Wzdcer3MyPWqcXqpVoL8XAAAZCuGq2doGE+PqYfmDbC/tzGK5UkrEuX8s3v0cJQWy//mXgniWyBue+PcWljXiZH+t5IbtdMKEoa93n89yyMJ2C2LCIEetSiMT7/Is3Qlor/MDc2wGmMIQ7yeV0RaFgdZmq/+6kXGtME8rfrCAVZMBAHDldk878/6o8XnSUTqUFlYobdE4dUktR0tnoNnqZ3mmXqu01Nx0Mz0qUymse3M0Wlu0jyAFfrrLaHMHAUMeGa/Yt9YAWPC9xd8adzkSUAM4wa7/29lD1X7nQTiw0xW8yG6Q88ItD4IZAICzjR6nl0rgSeOMHHvO2D0sJkl8UGPzk4hjb9urO1kNjlQjHu4L0LtqbMjlun3Uh2fsIBXkMDvIHacQ/9QgRZ+oZ9z91c/pBvfpBsbvoz5O3XB/+S3KE6uPqivOIOp8lA9O2RJSkU9Mw/L3J++euoFykYSEYP96Q36GGLnoDftMCLMP22yBVw6akAvVp4v2rTMwHYXu42/furdXoz91uCdHkAIb9pvqWlD6+wwZ4iMv5iP7YXcHV+02MmoWdjjIn+4y3nUGkc048uLIgiyUH1zX4l23tz26U+A4MNnHF6ArL3XnacWRjNCSFE2ETPJUpwkfn6g8ec3V3YNSd7nrCn56xflQkXxE+vCNtcu3e378flvL3UAUzQgO/HNgHL7gWLO33eOjU3GaYJACn191nW/qGZMrhV0nZw+17a+dWw5b5o9TpMuF0fLD7aMOfeW400k+YJCq04YejWu1BX5VaXn9qMWF2tAY0ow2W2Dp7+9YncGJBplUPLQidS3eF/eb9pyxB6kUnmDcT1G2ZO1c7YoZ6f2fNFv9r1Vaar/z9LVNRvSe6PxBc7XbbIGK7a1sOgAIASgpSNv0o6wZxX8fK65t9LzzF+vXd7xsHucwM/p/sEQkmFksf+Op7NBen31nu3afsd+y+EESkCwjHbcs/k8vD5jkfbPdV3PT3d9qNXWRFdtbb9/1R7H+AQCg6N5Oz0FNmNMN7rqW2JrRtwrh1A33zfYBXb3HrnQniRlJJEckxMiPqKOPwAxOwCU5OOGHni9mcE+OJPdDzyMzOClH0vqh55cZXJUjCf3Q884MDsuRVH7o+WgGt+VIEj/0PDWD83Ik3A89f83ggxwJ9EPPazN4IkdC/NDz3Qz+yBFnP/QpYAav5IibH/rUMINvcsTBD33KmMFDOWLqhz6VzOCnHDHyQ59iZvBWjsj9KM6VbPhhxvLpf59kBAD4yfT0DT/MGJMjSWUzkkgOIQHGGwasVdRrxZlKYez8KCmQHd6QX7N51OZFukFXvTBLvHmR7vSWUVWvjHyoKC12ZmSphHrtgP92fJ6UzZo8vk0T1KlELy3IWFKqvjdZJUiBi80926s7kRebwOYXun2UXBLJJF9A08Dlo1QyIrpmzB2r2PhYZllR2r3LFezu4CeXu9+rtsUtRTlJ5Xhhlnbzoqxhc7pON7hfOmBCXhwwpB/ItLEzQ6cSbVueO2fsMLGCbh+19bj1T192gcSRsNnnIkLwm2dzX16QKRENf/8WZkkWlajONnruulD8cHmpE1ddj01Qhs5fT4gZY/XSwxvyJ+YPv9hfIhI8Mk6ZoxHV3IxOPi4CCXu/vb5U95Npmsi/b8gQ//mfDJGsNAlT/2C5mtnlo9iYka0WHVhnMDBpLi2fnv7a4mwAUkmOijL1qtkMMoT7yFaLdr2gR07kzNWIlOzCcRQSArmOLCTA3jV5CHKvmatFCzDlpBxyCYGcJVpamPZ0GYPnTSivLs6OpAYaBoEAPQW1okyDnDb56mJd+BT9GJGAIlfOTA+/V0F4frEwE+HhUZwreTji0PEwTB8jHx3S/xEhhAD8fCF6wG2uRrRiBuItwTE5FpWo2Bxu6O2iYHyZF0xgVWgoj09QAoaUFqblDezPiPNJ40bsk04lmsQuyxcAsOnJrDMMez6eezhqd95z0zRMWw9zh2u4DktJQVqWSojcmOeGHIU6McsXPwBgxhg5+xhkZAqzJFtYBJmjQQh6y73r7OF1SO1wW+9gYOTE/dTFW45E9efwARrwXA4zDqnlzqmL95PqtjVA070dBmyo/c7DtEK6bFp6IVLw0r00W/1//soBmDB3rGI6u0oSRfeWC/gth9VJfn3HW8IuSfid41ameWICdtvhhHLwvOP9/2WW4PZVU0/VKyMBC+pbejqRxpU41s9RxXyrlFBabQGEnSWqv4layOtJ5jsB1rX0GO2BBJ40zsixv7aLTcb7u5/dRcjcaezwn29CTxHtp7bR8z3z5B2KBu+eQM/H7XCQB84xe5FxVQ6Pn3q7yop27OXbPUdRtwB+q8rKsq1E0+Dt44i/vPKiox4pWhMA8OYxa4w2xk7GUdnKS917mOc1W7rJtR+1I0d1WRwky22w3D7KhvriD1LghT1GhB1Ad9XYB6Wl8X8+xxufWg6cYzDNqdUWeO79tg7U91HfPNBBs/2YopQRbOavW7rJ5TvaGO2Msb+2660qC0i1mWA0Db647u50BaeOlg87GezUDffKnW3Is2zYZAgPIhr5uN1jRwy//YrTS71+1PK7zzsT2G2Y+AnGWSrhxkczl05RZww1wfjCLc+26k42ifRDmuHyUYqIJxg7fUG1TBjdCcaz71NsfCzjoSL5vXPNbe7g0Uvd71V3xr/tmnRy9CEkwMoZ6W9V5PR/Ut/Ss2Inys43oYRZVZChFL5argvfN3WpuefNY1ajPRCLfNy+vUj3r8sLnYHw6hHzvtquxAYX95Msw2BBqjeVNvST9i4ydma02gKttsAzf2gdnSNZMEG5bJom9No3W/0HzztOXnP1t1ortrcO8qNv/QtLP2zuYHsXWRKylerNdl+SmJFEi5qiToQrkZrM/j9+Yfuvgb0IfX2g34f0ZyRDvlT84accsVijZko9P3goR+xWL5pSzA++yRHrFc+mVPKDV3LEZy28KWX84I8c8UxJMKWGHzyRI/75GaYU8IMPciQqWcXEdz84L0diM3dMvPaD23IkQxqTib9+cFiOZDCD335wVY7kMYPHfnBSjmQzg69+cE+O5DSDl35wTI5kNoN/fnBJjuQ3g2d+JIscY3Ikg5KvxuVJ549T9O/2HiMzCAGYMipt7v0D8jPm3q+YXDhEQmh0/ZCKBY+MV4zLk4Z+Z+lkNUJyEG+nCc4slm9epIPlZTm91M4a2/Erzn3rDNE1Q0j05nT9fGEmLHPHaA+8e6LzyAUH8mKIIfNP22yBFTuNT5Yo183PgAXY1d/xbj1urW2MwiosrsohEwt+++Pcp6YMH5UXpGjhwBuZpRm5GtGHP8uLZMlufYv3Zx8akZdEDOnHvX/OkFRe6v7XQx2+AJ1ycmjkwoPrDWgrqtknxR5cb4g8C8XsIJd90NZgGjDFNT75yfUt3mU72hyeYArVOUSEYOfz+oSYkaEQfrQ6j1FKTo5G9J9r87JUwijWPyKkpEC24/kRIjbVH87J8fKCzFn3oeRVBCl6xQ701U0AgD+sHFGQybjJYMgQ/8eyEciFmrrIlTuNQaTKS98KF5AicuRoROvnM44v7kNICJ5gEbo4d6xi2ER6GPPHKWbfhx4KuLhUFUk9Y0j+8ZEMNsmtXJJjzRwtmzze9fMyIsnSH5KNj6EnxYLewxHvYKlYsHYe+t0vlxCr5yDeThyTY+EkxiGvoajSiJnFKK+kLJVwyihWIcYPFcnRss9nFstZruFeOJHVSUMj3g+rgkwx+31P3ngq+9mpjNsOeVoxy02QhAT409q8djvjZu0DA3u6ECjKluRniOPcERxvOfKi0X88SicZdpV6jCgtSCsNWb0YTwxxlyPer5WEVKz4QQ7vQ2oTEl/ED9zsYokQwCG1nMHC+5Dapg6/n6SR26J9HDjX9Zd6xtGL4/TSXy1huyXWrz+xIPSjlz+oWjZtwNa1TPGTdJOZ7yG1Lh91rsnDcouJnTX2W8zzHs9/1/Pio5n3blAaOZ2u4Ed/syPkZ5i6SJZynG308P+1AgA4coFVNl5dixfBDAAASdGfsIvl++RyN1qySpPZX888WDeUIxdTI4f02JXuG0bEEU4AAHKGKQDgvWob8v3n9FLvVaMHzW5FDTAFAFxr8x5PkQRjigabD5sDQZRRqMMXHGyCiK1OEvkivV1lZZPgVtvoqUSK1/WT9OaPzcgTjrgXNdneRRrt5OMMu4SvtnrXfNROsnvz1t/xZqsZbyV26CvHbz+7y6pgAE7ddM8qlo9IZ9YNuOlj81+/Qd+tnZM5pDeMPqOdnHe/IsKxyjMN7ud3G92+KNxBNTfdSplwcmGk4yy7T9tfqzSzzwMNUuCzq64J+dKCyAYQ/CT9i0PmQwy37+CDHACA60bf2UbPhHxZ+G5Tj5/aVt256WOzN0oT5mganG5wN1sDpYVpyrDjYR0O8t8+Nu84ZYtWUqwvQB+77KRouqRAJhaGuyuutXnX7TV9cT1qmz1wcoIxIQDlpeqnp6hnFg+OMv7e4j9x1fXhGXuM+n/SJMTy6ZrFpepJI2Whzy+K7k1BrapzHjjniFGXbrZatHqOduFEZVH2gKeIn6TPNnqOXHQcr3MmpJ6RXHL0o5ASY3Ik2WqRQkqYugJGOxm3caZMpbAou7fovhmjtyx+lhGokZOfIc7Tikaki90+ytxNNpn98e/P4IAcmGQjWRY1YZIQLAcGCpYDAwXLgYGC5cBAwXJgoGA5MFCwHBgoWA4MFCwHBgqWAwMFy4GBguXAQMFyYKBgOTBQsBwYKFgODBQsBwYKlgMDBcuBgYLlwEDBcmCgYDkwULAcGChYDgwULAcGCpYDAwXLgYGC5cBAwXJgoGA5MFCwHBgoWA4MFCwHBgqWAwMFy4EBMP4PMeLu8glB6VIAAAAASUVORK5CYII='
+::  +pwa-head: the <head> tags that make the app installable (manifest link,
+::  theme-color, apple meta + icon). NOT added to render-bare (the preview
+::  iframe is an inner document). +sw-register-script registers the worker.
+::
+++  pwa-head
+  ^-  tape
+  %-  trip
+  '<link rel="manifest" href="/apps/lattice/manifest.webmanifest"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#1a6ed8"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1a1a"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="Lattice"><link rel="apple-touch-icon" href="/apps/lattice/apple-touch-icon.png"><link rel="icon" href="/apps/lattice/icon.svg" type="image/svg+xml">'
+++  sw-register-script
+  ^-  tape
+  %-  trip
+  '<script>if("serviceWorker"in navigator){navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice"}).then(function(r){r.addEventListener("updatefound",function(){var w=r.installing;if(w)w.addEventListener("statechange",function(){if(w.state==="installed"&&navigator.serviceWorker.controller)w.postMessage("skipWaiting")})})}).catch(function(x){})}</script>'
 ::  +esc: HTML-escape a tape. +has-prefix: tape prefix test.
 ::
 ++  esc
@@ -3592,7 +3672,7 @@
 ++  edit-css
   ^-  tape
   %-  trip
-  '<style>*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif;color:#111;background:#fafafa;height:100vh;overflow:hidden}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}a{color:#1a6ed8}.ws{display:grid;grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 300px;grid-template-rows:auto 1fr;height:100vh}.ws.nt{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 300px}.ws.nc{grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 0}.ws.nt.nc{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 0}.bar{grid-column:1/-1;grid-row:1;display:flex;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid #8884}.bar .grow{flex:1}.bar button,.bar input,.bar a{font:inherit;padding:5px 9px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;text-decoration:none;cursor:pointer}.bar input{cursor:text}.bar button:hover,.bar a:hover{border-color:#1a6ed8}.bar .ico{padding:5px 8px}.bar b{padding:0 4px}#st{border:0;background:0;font-size:.85rem;padding:0}.tree{grid-column:1;grid-row:2;overflow:auto;padding:10px;border-right:1px solid #8884}.ctl{grid-column:4;grid-row:2;overflow:auto;padding:10px;border-left:1px solid #8884}.ws.nt .tree,.ws.nc .ctl{display:none}.tree a{display:block;padding:5px 8px;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tree a:hover{background:#8881}.tree a.cur{background:#1a6ed822;color:#1a6ed8;font-weight:600}.tree .new{font-weight:600;margin-bottom:6px}.tree .sec{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:12px 4px 4px}#src{grid-column:2;grid-row:2;width:100%;height:100%;resize:none;border:0;border-right:1px solid #8884;font:13px/1.55 ui-monospace,Menlo,monospace;padding:12px;background:transparent;color:inherit;white-space:pre;overflow:auto;tab-size:2}.prev,.prev-empty{grid-column:3;grid-row:2;width:100%;height:100%;border:0}.prev{background:#fff}.prev-empty{display:flex;align-items:center;justify-content:center;color:#8a8a8a;text-align:center;padding:2rem}.ctl h3{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:14px 0 5px}.ctl h3:first-child{margin-top:0}.ctl .err{color:#c0392b;white-space:pre-wrap;font:11px/1.4 ui-monospace,monospace;max-height:9rem;overflow:auto}.ctl .ok{color:#27ae60;font-size:.85rem}.ctl .row{display:flex;gap:6px}.ctl input{flex:1;font:inherit;padding:6px 8px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;min-width:0}.ctl button{font:inherit;padding:6px 10px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;cursor:pointer}.ctl button:hover{border-color:#1a6ed8}.share{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}.share button.on{border-color:#1a6ed8;color:#1a6ed8}.del{margin-top:18px;color:#c0392b;border-color:#c0392b55!important;width:100%}@media(max-width:820px){body{overflow:auto;height:auto}.ws,.ws.nt,.ws.nc{grid-template-columns:1fr!important;height:auto}.bar{grid-column:1}.tree,#src,.prev,.prev-empty,.ctl{grid-column:1;grid-row:auto}#src{min-height:44vh;border-right:0;border-bottom:1px solid #8884}.prev,.prev-empty{min-height:44vh}.tree{border-right:0;border-bottom:1px solid #8884}.ctl{border-left:0;border-top:1px solid #8884}}</style>'
+  '<style>*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif;color:#111;background:#fafafa;height:100vh;overflow:hidden}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}a{color:#1a6ed8}.ws{display:grid;grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 300px;grid-template-rows:auto 1fr;height:100vh}.ws.nt{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 300px}.ws.nc{grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 0}.ws.nt.nc{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 0}.bar{grid-column:1/-1;grid-row:1;display:flex;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid #8884}.bar .grow{flex:1}.bar button,.bar input,.bar a{font:inherit;padding:5px 9px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;text-decoration:none;cursor:pointer}.bar input{cursor:text}.bar button:hover,.bar a:hover{border-color:#1a6ed8}.bar .ico{padding:5px 8px}.bar b{padding:0 4px}#st{border:0;background:0;font-size:.85rem;padding:0}.tree{grid-column:1;grid-row:2;overflow:auto;padding:10px;border-right:1px solid #8884}.ctl{grid-column:4;grid-row:2;overflow:auto;padding:10px;border-left:1px solid #8884}.ws.nt .tree,.ws.nc .ctl{display:none}.tree a{display:block;padding:5px 8px;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tree a:hover{background:#8881}.tree a.cur{background:#1a6ed822;color:#1a6ed8;font-weight:600}.tree .new{font-weight:600;margin-bottom:6px}.tree .sec{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:12px 4px 4px}#src{grid-column:2;grid-row:2;width:100%;height:100%;resize:none;border:0;border-right:1px solid #8884;font:13px/1.55 ui-monospace,Menlo,monospace;padding:12px;background:transparent;color:inherit;white-space:pre;overflow:auto;tab-size:2}.ws.md #src{white-space:pre-wrap;overflow-wrap:break-word}.prev,.prev-empty{grid-column:3;grid-row:2;width:100%;height:100%;border:0}.prev{background:#fff}.prev-empty{display:flex;align-items:center;justify-content:center;color:#8a8a8a;text-align:center;padding:2rem}.ctl h3{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:14px 0 5px}.ctl h3:first-child{margin-top:0}.ctl .err{color:#c0392b;white-space:pre-wrap;font:11px/1.4 ui-monospace,monospace;max-height:9rem;overflow:auto}.ctl .ok{color:#27ae60;font-size:.85rem}.ctl .row{display:flex;gap:6px}.ctl input{flex:1;font:inherit;padding:6px 8px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;min-width:0}.ctl button{font:inherit;padding:6px 10px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;cursor:pointer}.ctl button:hover{border-color:#1a6ed8}.share{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}.share button.on{border-color:#1a6ed8;color:#1a6ed8}.del{margin-top:18px;color:#c0392b;border-color:#c0392b55!important;width:100%}.mtabs{display:none;grid-column:1;grid-row:2}@media(max-width:820px){body{overflow:auto;height:auto}.ws,.ws.nt,.ws.nc{grid-template-columns:1fr!important;grid-template-rows:auto auto 1fr!important;height:auto;min-height:100vh}.bar{grid-column:1;flex-wrap:wrap;padding-left:max(10px,env(safe-area-inset-left));padding-right:max(10px,env(safe-area-inset-right))}.bar .grow{display:none}.bar button,.bar a,.bar input{min-height:44px}.bar .ico{min-width:44px}#tt,#ct{display:none}.mtabs{display:flex;border-bottom:1px solid #8884}.mtabs button{flex:1;padding:11px;border:0;background:0;color:inherit;font:inherit;border-bottom:2px solid transparent;cursor:pointer}.mtabs button.on{border-bottom-color:#1a6ed8;color:#1a6ed8;font-weight:600}.tree,#src,.prev,.prev-empty,.ctl{grid-column:1;grid-row:3;border:0;display:none}.ws[data-mv=tree] .tree{display:block}.ws[data-mv=code] #src{display:block}.ws[data-mv=prev] .prev{display:block}.ws[data-mv=prev] .prev-empty{display:flex}.ws[data-mv=ctl] .ctl{display:block}#src{min-height:68vh;font-size:16px}.prev,.prev-empty{min-height:68vh}.ctl input{font-size:16px}.ctl,#src{padding-bottom:max(12px,env(safe-area-inset-bottom))}}</style>'
 ::  the starter template a new page opens with.
 ::
 ++  edit-template
@@ -3661,9 +3741,10 @@
   %-  crip
   ;:  weld
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+    pwa-head
     "<title>edit"  ?~(name "" (weld " - " nm))  "</title>"  edit-css  "</head><body>"
-    "<div class=\"ws\" id=\"ws\"><div class=\"bar\">"
+    :(weld "<div class=\"ws" ?:(md " md" "") "\" id=\"ws\" data-mv=\"code\"><div class=\"bar\">")
     "<button class=\"ico\" id=\"tt\" title=\"toggle tree\">&#9776;</button>"
     ?^(name :(weld "<b>" (esc nm) "</b>") "")
     ?~(name "<input id=\"pname\" placeholder=\"page-name\" autocomplete=\"off\" autofocus>" "")
@@ -3671,6 +3752,9 @@
     ?~(name "" :(weld "<a href=\"" view "\" target=\"_blank\">open &#8599;</a>"))
     "<button class=\"ico\" id=\"ct\" title=\"toggle panel\">&#9881;</button>"
     "<a href=\"/apps/lattice\">home</a></div>"
+    ::  mobile-only tab bar (hidden on desktop): one pane at a time so the
+    ::  on-screen keyboard never hides the preview. JS flips ws[data-mv].
+    "<div class=\"mtabs\"><button data-mv=\"code\" class=\"on\">Code</button><button data-mv=\"prev\">Preview</button><button data-mv=\"tree\">Pages</button><button data-mv=\"ctl\">Panel</button></div>"
     "<div class=\"tree\">"  tree-html  "</div>"
     "<textarea id=\"src\" spellcheck=\"false\">"  code  "</textarea>"
     ::  md: JS drives the preview via srcdoc (render-md, live as you type), so
@@ -3680,6 +3764,7 @@
     :(weld "<iframe class=\"prev\" id=\"prev\" src=\"" view "?embed\"></iframe>")
     "<div class=\"ctl\">"  ctl-html  "</div></div>"
     (edit-js nm view md)
+    sw-register-script
     "</body></html>"
   ==
 ::  +edit-js: the editor client — toggles (localStorage), tab, ctrl/cmd-S, save +
@@ -3697,14 +3782,14 @@
     (trip ';var V="')
     view
     %-  trip
-    '";var $=function(i){return document.getElementById(i)};var ws=$("ws");function ap(){ws.classList.toggle("nt",localStorage.edNT==="1");ws.classList.toggle("nc",localStorage.edNC==="1")}ap();$("tt").onclick=function(){localStorage.edNT=localStorage.edNT==="1"?"0":"1";ap()};$("ct").onclick=function(){localStorage.edNC=localStorage.edNC==="1"?"0":"1";ap()};var st=function(t,ok){var s=$("st");s.textContent=t;s.style.color=ok?"#27ae60":"#c0392b"};var ta=$("src");ta.addEventListener("keydown",function(e){if(e.key==="Tab"){e.preventDefault();var s=ta.selectionStart;ta.value=ta.value.slice(0,s)+"  "+ta.value.slice(ta.selectionEnd);ta.selectionStart=ta.selectionEnd=s+2}});var prev=function(){var p=$("prev");if(!p)return;if(MD){fetch("/apps/lattice/page-preview",{method:"POST",body:ta.value}).then(function(r){return r.text()}).then(function(h){p.srcdoc=h}).catch(function(x){})}else{p.src=p.src}};if(MD){var tmr;ta.addEventListener("input",function(){clearTimeout(tmr);tmr=setTimeout(prev,400)});prev()}var chk=async function(){if(!NAME)return;var t="";try{t=await (await fetch(V+"err?data")).text()}catch(x){}var c=$("cerr");if(t){st("error",false);if(c){c.textContent=t;c.className="err"}}else{st(MD?"saved":"compiled ok",true);if(c){c.textContent="compiled ok";c.className="ok"}prev()}};$("save").onclick=async function(){var name=NAME||($("pname")?$("pname").value.trim():"");if(!name){st("name required",false);return}st("saving...",true);var r=await fetch("/apps/lattice/page-save?name="+encodeURIComponent(name)+(NAME?"":"&new=1")+(MD?"&md=1":""),{method:"POST",body:ta.value});if(r.status===409){st("that page already exists",false);return}if(!r.ok){st("save failed "+r.status,false);return}if(!NAME){location="/apps/lattice/edit?name="+encodeURIComponent(name)+(MD?"&kind=md":"");return}st(MD?"saved":"compiling...",true);setTimeout(chk,800);setTimeout(chk,2000)};window.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&e.key==="s"){e.preventDefault();$("save").onclick()}});var cs=$("csend");if(cs){var run=async function(){var c=$("cmd").value;if(!c)return;await fetch("/apps/lattice/page-cmd?name="+encodeURIComponent(NAME),{method:"POST",body:"cmd="+encodeURIComponent(c)});$("cmd").value="";setTimeout(prev,600)};cs.onclick=run;$("cmd").addEventListener("keydown",function(e){if(e.key==="Enter")run()})}document.querySelectorAll(".share button").forEach(function(b){b.onclick=async function(){var m=b.getAttribute("data-m");await fetch("/apps/lattice/page-share?name="+encodeURIComponent(NAME)+"&mode="+m,{method:"POST"});document.querySelectorAll(".share button").forEach(function(x){x.className=x.getAttribute("data-m")===m?"on":""});$("cwurl").innerHTML=m==="clearweb"?`<p>public: <a href="/apps/lattice/c/${NAME}" target="_blank">/c/${NAME}</a></p>`:"";setTimeout(prev,500)}});var d=$("del");if(d){d.onclick=async function(){if(!confirm("delete "+NAME+"?"))return;await fetch("/apps/lattice/page-del?name="+encodeURIComponent(NAME),{method:"POST"});location="/apps/lattice"}}})();</script>'
+    '";var $=function(i){return document.getElementById(i)};var ws=$("ws");function ap(){ws.classList.toggle("nt",localStorage.edNT==="1");ws.classList.toggle("nc",localStorage.edNC==="1")}ap();$("tt").onclick=function(){localStorage.edNT=localStorage.edNT==="1"?"0":"1";ap()};$("ct").onclick=function(){localStorage.edNC=localStorage.edNC==="1"?"0":"1";ap()};var mt=document.querySelectorAll(".mtabs button");for(var mi=0;mi<mt.length;mi++){mt[mi].onclick=function(){var v=this.getAttribute("data-mv");ws.setAttribute("data-mv",v);for(var mj=0;mj<mt.length;mj++){mt[mj].className=mt[mj].getAttribute("data-mv")===v?"on":""}if(v==="prev")prev()}}var st=function(t,ok){var s=$("st");s.textContent=t;s.style.color=ok?"#27ae60":"#c0392b"};var ta=$("src");ta.addEventListener("keydown",function(e){if(e.key==="Tab"){e.preventDefault();var s=ta.selectionStart;ta.value=ta.value.slice(0,s)+"  "+ta.value.slice(ta.selectionEnd);ta.selectionStart=ta.selectionEnd=s+2}});var prev=function(){var p=$("prev");if(!p)return;if(MD){fetch("/apps/lattice/page-preview",{method:"POST",body:ta.value}).then(function(r){return r.text()}).then(function(h){p.srcdoc=h}).catch(function(x){})}else{p.src=p.src}};if(MD){var tmr;ta.addEventListener("input",function(){clearTimeout(tmr);tmr=setTimeout(prev,400)});prev()}var chk=async function(){if(!NAME)return;var t="";try{t=await (await fetch(V+"err?data")).text()}catch(x){}var c=$("cerr");if(t){st("error",false);if(c){c.textContent=t;c.className="err"}}else{st(MD?"saved":"compiled ok",true);if(c){c.textContent="compiled ok";c.className="ok"}prev()}};$("save").onclick=async function(){var name=NAME||($("pname")?$("pname").value.trim():"");if(!name){st("name required",false);return}st("saving...",true);var r=await fetch("/apps/lattice/page-save?name="+encodeURIComponent(name)+(NAME?"":"&new=1")+(MD?"&md=1":""),{method:"POST",body:ta.value});if(r.status===409){st("that page already exists",false);return}if(!r.ok){st("save failed "+r.status,false);return}if(!NAME){location="/apps/lattice/edit?name="+encodeURIComponent(name)+(MD?"&kind=md":"");return}st(MD?"saved":"compiling...",true);setTimeout(chk,800);setTimeout(chk,2000)};window.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&e.key==="s"){e.preventDefault();$("save").onclick()}});var cs=$("csend");if(cs){var run=async function(){var c=$("cmd").value;if(!c)return;await fetch("/apps/lattice/page-cmd?name="+encodeURIComponent(NAME),{method:"POST",body:"cmd="+encodeURIComponent(c)});$("cmd").value="";setTimeout(prev,600)};cs.onclick=run;$("cmd").addEventListener("keydown",function(e){if(e.key==="Enter")run()})}document.querySelectorAll(".share button").forEach(function(b){b.onclick=async function(){var m=b.getAttribute("data-m");await fetch("/apps/lattice/page-share?name="+encodeURIComponent(NAME)+"&mode="+m,{method:"POST"});document.querySelectorAll(".share button").forEach(function(x){x.className=x.getAttribute("data-m")===m?"on":""});$("cwurl").innerHTML=m==="clearweb"?`<p>public: <a href="/apps/lattice/c/${NAME}" target="_blank">/c/${NAME}</a></p>`:"";setTimeout(prev,500)}});var d=$("del");if(d){d.onclick=async function(){if(!confirm("delete "+NAME+"?"))return;await fetch("/apps/lattice/page-del?name="+encodeURIComponent(NAME),{method:"POST"});location="/apps/lattice"}}})();</script>'
   ==
 ::  +home-css: styling for the landing (nav cards + lists).
 ::
 ++  home-css
   ^-  tape
   %-  trip
-  '<style>.muted{color:#8a8a8a}h1{margin:.2rem 0}.home-nav{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:12px;margin:1rem 0}.navcard{display:block;padding:14px 16px;border:1px solid #8886;border-radius:10px;text-decoration:none;color:inherit;background:#8881}.navcard:hover{border-color:#1a6ed8}.navcard strong{display:block;font-size:1.05rem;margin-bottom:2px}.navcard span{color:#8a8a8a;font-size:.9rem}ul.pglist{list-style:none;padding:0;margin:.4rem 0}ul.pglist li{padding:7px 2px;border-bottom:1px solid #8883}h2{font-size:1rem;color:#8a8a8a;margin:1.4rem 0 .2rem;text-transform:uppercase;letter-spacing:.03em}</style>'
+  '<style>.muted{color:#8a8a8a}h1{margin:.2rem 0}.home-nav{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:12px;margin:1rem 0}.navcard{display:block;padding:14px 16px;border:1px solid #8886;border-radius:10px;text-decoration:none;color:inherit;background:#8881}.navcard:hover{border-color:#1a6ed8}.navcard strong{display:block;font-size:1.05rem;margin-bottom:2px}.navcard span{color:#8a8a8a;font-size:.9rem}ul.pglist{list-style:none;padding:0;margin:.4rem 0}ul.pglist li{padding:11px 2px;border-bottom:1px solid #8883;display:flex;justify-content:space-between;align-items:center;gap:12px}ul.pglist a{padding:4px 2px}h2{font-size:1rem;color:#8a8a8a;margin:1.4rem 0 .2rem;text-transform:uppercase;letter-spacing:.03em}</style>'
 ::  +home-index-html: the landing page. Always shows navigation (Pages,
 ::  Explorer) plus a live list of your programmable pages and any published
 ::  pages — so an empty store is still a way in, not a dead end.
@@ -3763,7 +3848,7 @@
 ++  web-css
   ^-  tape
   %-  trip
-  '*{box-sizing:border-box}body{margin:0;font:16px/1.6 system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:#1a6ed8}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:#1a6ed8}.err{color:#c0392b}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}'
+  '*{box-sizing:border-box}body{margin:0;font:16px/1.6 system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:#1a6ed8}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:#1a6ed8}.err{color:#c0392b}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}.bar{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}@media(max-width:520px){.bar{flex-wrap:wrap}.bar input{flex:1 1 100%;order:3}main{padding-top:12px;padding-bottom:12px}}'
 ::  +render-page: wrap an HTML fragment in the reader chrome (address bar + CSS).
 ::
 ++  render-page
@@ -3772,13 +3857,14 @@
   %-  crip
   ;:  weld
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+    pwa-head
     "<title>lattice</title><style>"  web-css  "</style></head><body>"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
     "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
     "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb://~ship/path\">"
     "<button type=\"submit\">Go</button></form><main>"  inner  "</main>"
-    (sse-script keep)  "</body></html>"
+    (sse-script keep)  sw-register-script  "</body></html>"
   ==
 ::  +keep-url: grubbery's native keep-SSE endpoint for one of our grubs.
 ::
