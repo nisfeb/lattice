@@ -219,10 +219,13 @@
         ;<  cur=eval-cmd:le  bind:m  (read-eval-cmd pdir)
         =/  fresh=?  (gth seq.cur last)
         ;<  now=@da  bind:m  bowl-now
-        ::  rapid = this rerun landed within `rerun-gap` of the previous one
-        ::  (a runaway burst). A command or a slow gap resets the counter.
+        ::  rapid = this rerun landed within `rerun-gap` of the previous one (a
+        ::  runaway burst — a DEPENDENCY cycle or an always-changing page reruns
+        ::  as fast as the loop allows). gen accumulates while rapid and resets
+        ::  on a settled gap. (Page-to-page POKE cycles are too slow per hop for
+        ::  this window — those are bounded by the poke budget instead.)
         =/  rapid=?  &(!=(`@da`0 last-now) (lth (sub now last-now) rerun-gap))
-        =.  gen  ?:(|(fresh !rapid) 0 +(gen))
+        =.  gen  ?:(rapid +(gen) 0)
         =.  last-now  now
         ?:  (gth gen recompute-cap)
           ::  a sustained rapid rerun burst — a cycle or an always-changing page.
@@ -234,7 +237,10 @@
           ;<  *  bind:m  (take-news-or-wake-drain /ev)
           $
         =/  cmd=(unit @t)  ?:(fresh `txt.cur ~)
-        ;<  ~  bind:m  (eval-run pdir p.bild cmd deps)
+        ::  poke budget for this run: a command carries one (a page reached via
+        ::  a poke got a decremented budget); a dep/timer tick starts fresh.
+        =/  run-bud=@ud  ?:(fresh bud.cur poke-budget-max)
+        ;<  ~  bind:m  (eval-run pdir p.bild cmd deps run-bud)
         ::  persist the processed seq only when a command actually ran (a dep
         ::  tick leaves seq unchanged). /seen is not kept, so this fires no wave.
         =?  last  fresh  seq.cur
@@ -664,7 +670,8 @@
     =/  form=(map @t @t)
       (malt args:(parse-url:http-utils (crip (weld "/?" (trip (req-body req))))))
     =/  txt=@t  (~(gut by form) 'cmd' (~(gut by args) 'cmd' ''))
-    ;<  ~  bind:m  (poke-eval [%cmd `@ta`u.name txt])
+    ::  a user command starts a fresh poke budget.
+    ;<  ~  bind:m  (poke-eval [%cmd `@ta`u.name txt poke-budget-max])
     ::  web=1 (a page-view form submit) -> 303 back to the page so the browser
     ::  lands on the live view; the JSON ok stays for programmatic callers.
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
@@ -1178,7 +1185,7 @@
     ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %cmd])
     ;<  ~  bind:m
       ?:  ex  (pure:m ~)
-      (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[0 ''])
+      (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[0 '' 0])
     ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %deps])
     ;<  ~  bind:m
       ?:  ex  (pure:m ~)
@@ -1194,9 +1201,9 @@
     ?.  cx  (pure:m ~)
     ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %cmd] ~)
     =/  cur=eval-cmd:le
-      ?.  ?=([%& %file *] sn)  [0 '']
-      (fall (mole |.(;;(eval-cmd:le (sang-noun:tarball sang.p.sn)))) [0 ''])
-    (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[+(seq.cur) txt.act])
+      ?.  ?=([%& %file *] sn)  [0 '' 0]
+      (fall (mole |.(;;(eval-cmd:le (sang-noun:tarball sang.p.sn)))) [0 '' 0])
+    (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[+(seq.cur) txt.act bud.act])
       %del
     ::  cull-soft on an absent dir veto-crashes the writer (as apply-sub's
     ::  %unsub-page guards against) — no-op a delete of a gone page. Also
@@ -1290,13 +1297,22 @@
 ::  burst) and accumulate; a larger gap is a legit update and resets the count.
 ::
 ++  rerun-gap  ^-(@dr ~s1)
+::  +poke-cap: max page-to-page pokes one run may emit (flood guard).
+::
+++  poke-cap  ^-(@ud 16)
+::  +poke-budget-max: max depth of a page-to-page poke chain. A user/dep/timer
+::  trigger starts a run with this budget; each poke it emits carries budget-1,
+::  so any chain — a cycle included — terminates after this many hops,
+::  independent of timing (poke round-trips are too slow for the rate cap).
+::
+++  poke-budget-max  ^-(@ud 8)
 ++  read-eval-cmd
   |=  pdir=path
   =/  m  (fiber:fiber:nexus ,eval-cmd:le)
   ^-  form:m
   ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %cmd] ~)
-  ?.  ?=([%& %file *] sn)  (pure:m [0 ''])
-  (pure:m (fall (mole |.(;;(eval-cmd:le (sang-noun:tarball sang.p.sn)))) [0 '']))
+  ?.  ?=([%& %file *] sn)  (pure:m [0 '' 0])
+  (pure:m (fall (mole |.(;;(eval-cmd:le (sang-noun:tarball sang.p.sn)))) [0 '' 0]))
 ::  +read-eval-seen / +write-eval-seen: the last-PROCESSED command seq, stored
 ::  as a bare @ud (reusing the eval-data marc — it's a noun grub). /seen is
 ::  never kept, so writing it wakes no fiber. Absent -> 0.
@@ -1352,7 +1368,7 @@
 ::  persisted (the deps grub is on the /ev wire, so the loop re-arms).
 ::
 ++  eval-run
-  |=  [pdir=path bild=vase cmd=(unit @t) deps=(list path)]
+  |=  [pdir=path bild=vase cmd=(unit @t) deps=(list path) bud=@ud]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  now=@da  bind:m  bowl-now
@@ -1383,8 +1399,25 @@
     ;<  mode=share-mode:le  bind:m  (read-share pdir)
     ?:  =(%private mode)  (pure:m ~)
     (gain:io [%& %& pdir %data] %.y)
+  ::  send this run's page-to-page pokes with the run's remaining budget
+  ::  (capped per run so one page can't flood the writer).
+  ;<  ~  bind:m  (emit-pokes bud (scag poke-cap pokes.p.res))
   ?:  =(dep.p.res deps)  (pure:m ~)
   (put-file [%& %& pdir %deps] [/lattice %eval-deps] dep.p.res)
+::  +emit-pokes: deliver each [page-name command] to the writer (which bumps
+::  that page's cmd grub), carrying a DECREMENTED budget so a poke chain (or
+::  cycle) terminates at a fixed depth. bud=0 drops them — the chain ends. A
+::  poke to a nonexistent page is a safe no-op (apply-eval %cmd guards on the
+::  code grub existing).
+::
+++  emit-pokes
+  |=  [bud=@ud pokes=(list [name=@ta txt=@t])]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  =(0 bud)  (pure:m ~)
+  ?~  pokes  (pure:m ~)
+  ;<  ~  bind:m  (poke-eval [%cmd name.i.pokes txt.i.pokes (dec bud)])
+  $(pokes t.pokes)
 ++  poke-sub
   |=  act=sub-action:lp
   =/  m  (fiber:fiber:nexus ,~)

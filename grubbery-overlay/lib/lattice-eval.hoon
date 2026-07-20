@@ -18,10 +18,10 @@
 ::  +$  eval-action: page writes poked at the writer fiber (main.sig).
 ::
 +$  eval-action
-  $%  [%make name=@ta src=@t]     ::  create a page / replace its code
-      [%cmd name=@ta txt=@t]      ::  send a command to a page
-      [%del name=@ta]             ::  delete a page
-      [%share name=@ta mode=share-mode]  ::  set a page's sharing preset
+  $%  [%make name=@ta src=@t]           ::  create a page / replace its code
+      [%cmd name=@ta txt=@t bud=@ud]    ::  send a command (bud = poke budget)
+      [%del name=@ta]                   ::  delete a page
+      [%share name=@ta mode=share-mode] ::  set a page's sharing preset
   ==
 ::  +$  share-mode: a page's sharing preset (docs/platform.md step 4).
 ::    %private  — not gained, owner-only (default).
@@ -33,6 +33,9 @@
 +$  share-mode  ?(%private %shared %clearweb)
 ::  +$  eval-cmd: the command inbox grub. seq bumps per command so an
 ::  identical command still fires a wave (save-file suppresses no-op writes).
+::  bud is the poke budget the run this command triggers may spend: a page
+::  reached via another page's poke gets a decremented budget, so a poke chain
+::  (or cycle) terminates at a fixed depth regardless of timing.
 ::
-+$  eval-cmd  [seq=@ud txt=@t]
++$  eval-cmd  [seq=@ud txt=@t bud=@ud]
 --
