@@ -86,6 +86,10 @@
         ::  open /pub to foreign readers (idempotent, union-not-clobber). know/
         ::  needs nothing — foreign access is deny-by-default.
         ;<  ~  bind:m  (ensure-pub-weir root)
+        ::  re-grant every shared page's data road (self-heal, like ensure-pub-weir):
+        ::  a page shared before the public usergroup existed skipped the grant;
+        ::  this re-applies it on the next writer start once the group is present.
+        ;<  ~  bind:m  (heal-share-weirs root)
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
         ;<  now=@da  bind:m  bowl-now
@@ -271,15 +275,19 @@
   ;<  [src=@p req=inbound-request:eyre]  bind:m
     (get-state-as:io ,[src=@p inbound-request:eyre])
   ;<  our=@p  bind:m  bowl-our
-  ::  every route is owner-only (lattice is a personal store). Unauthenticated /
-  ::  foreign requests carry src != our -> 403.
-  ?.  =(src our)
-    ::  JSON error, like every other route (was a bare text 'Forbidden').
-    (send-err eyre-id 403 'forbidden')
   =/  parsed  (parse-url:http-utils url.request.req)
   ::  drop the /apps/lattice prefix; the remainder is the route.
   =/  suffix=path  (slag 2 site.parsed)
   =/  args=(map @t @t)  (malt args.parsed)
+  ::  clearweb: the ONLY unauthenticated surface. GET /c/<name> serves a
+  ::  clearweb-tagged page's DATA, read-only — no tree nav, no code, no
+  ::  sibling grubs, no command form. Everything else requires src == our.
+  ?:  &(?=([%c @ ~] suffix) =(%'GET' method.request.req))
+    (serve-clearweb eyre-id i.t.suffix)
+  ::  every OTHER route is owner-only (lattice is a personal store).
+  ?.  =(src our)
+    ::  JSON error, like every other route (was a bare text 'Forbidden').
+    (send-err eyre-id 403 'forbidden')
   ::  /x/<ship>/<path...>: the server-rendered tree explorer (docs/platform.md,
   ::  build step 1). Consumes the rest of the path, so it dispatches before the
   ::  (rear suffix) route table below.
@@ -643,6 +651,22 @@
     ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
     ;<  ~  bind:m  (poke-eval [%del `@ta`u.name])
     (send-ok eyre-id)
+      [%'POST' %page-share]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
+    =/  mode=share-mode:le
+      ?+  (~(gut by args) 'mode' 'private')  %private
+        %shared    %shared
+        %clearweb  %clearweb
+      ==
+    ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base /page/[`@ta`u.name]) %code])
+    ?.  ex  (send-err eyre-id 404 'no such page')
+    ;<  ~  bind:m  (poke-eval [%share `@ta`u.name mode])
+    ?.  (~(has by args) 'web')  (send-ok eyre-id)
+    ;<  our=@p  bind:m  bowl-our
+    %+  send-see-other  eyre-id
+    :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.name) "/")
       [%'POST' %save]
     =/  rel=(unit @t)  (~(get by args) 'path')
     ?~  rel  (send-err eyre-id 400 'missing path')
@@ -1149,13 +1173,75 @@
     (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[+(seq.cur) txt.act])
       %del
     ::  cull-soft on an absent dir veto-crashes the writer (as apply-sub's
-    ::  %unsub-page guards against) — no-op a delete of a gone page.
+    ::  %unsub-page guards against) — no-op a delete of a gone page. Also
+    ::  drop the data road from the public weir so a deleted page leaves no
+    ::  dangling grant.
     =/  pdir=path  (weld root /page/[name.act])
     ;<  ex=?  bind:m  (peek-exists:io [%& %| pdir])
     ?.  ex  (pure:m ~)
+    ;<  ~  bind:m  (share-weir [%& %& pdir %data] %.n)
     ;<  *  bind:m  (cull-soft:io [%& %| pdir])
     (pure:m ~)
+      %share
+    =/  pdir=path  (weld root /page/[name.act])
+    ;<  cx=?  bind:m  (peek-exists:io [%& %& pdir %code])
+    ?.  cx  (pure:m ~)
+    =/  data-road=road:tarball  [%& %& pdir %data]
+    =/  pub=?  !=(%private mode.act)
+    ::  weir road first (covers the grub even before it exists); then gain the
+    ::  current data if present — the evaluator re-gains on each later write.
+    ;<  ~  bind:m  (share-weir data-road pub)
+    ;<  dx=?  bind:m  (peek-exists:io data-road)
+    ;<  ~  bind:m  ?:(dx (gain:io data-road pub) (pure:m ~))
+    (put-file [%& %& pdir %share] [/lattice %eval-data] mode.act)
   ==
+::  +share-weir: add/remove a grub's road in the public usergroup's peek
+::  weir — the same grant ensure-pub-weir uses for /pub. Absent group -> no-op.
+::  (same read-modify-write race as ensure-pub-weir, finding #12; self-heals.)
+::
+++  share-weir
+  |=  [road=road:tarball add=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  gdir=road:tarball  [%& %| /sys/ames/usergroups/public]
+  ;<  ok=?  bind:m  (peek-exists:io gdir)
+  ?.  ok  (pure:m ~)
+  =/  wroad=road:tarball  [%& %& [/sys/ames/usergroups/public %'how.weir']]
+  ;<  cur=weir:nexus  bind:m  (read-weir wroad)
+  =/  new=weir:nexus
+    ?:  add  cur(peek (~(put in peek.cur) road))
+    cur(peek (~(del in peek.cur) road))
+  ?:  =(new cur)  (pure:m ~)
+  (put-file wroad [/ %weir] new)
+::  +heal-share-weirs: on writer start, re-add every shared/clearweb page's
+::  data road to the public weir. Makes +share-weir self-healing (a page
+::  shared before the public usergroup existed gets its grant on the next
+::  writer start once a peer has connected), matching +ensure-pub-weir.
+::
+++  heal-share-weirs
+  |=  root=path
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek-shallow:io [%& %| (weld root /page)] ~)
+  ?.  ?=([%& %ball *] sn)  (pure:m ~)
+  =/  names=(list @ta)  (turn ~(tap by dir.ball.p.sn) head)
+  |-
+  ?~  names  (pure:m ~)
+  =/  pp=path  (weld root /page/[i.names])
+  ;<  mode=share-mode:le  bind:m  (read-share pp)
+  ;<  ~  bind:m
+    ?:  =(%private mode)  (pure:m ~)
+    (share-weir [%& %& pp %data] %.y)
+  $(names t.names)
+::  +read-share: a page's sharing preset grub, %private if absent/malformed.
+::
+++  read-share
+  |=  pdir=path
+  =/  m  (fiber:fiber:nexus ,share-mode:le)
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %share] ~)
+  ?.  ?=([%& %file *] sn)  (pure:m %private)
+  (pure:m (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.p.sn)))) %private))
 ::  +read-eval-cmd / +read-eval-deps: tolerant grub reads (absent or
 ::  malformed -> the zero value; a page never crashes its evaluator).
 ::
@@ -1244,7 +1330,12 @@
   ;<  ~  bind:m  (put-file [%& %& pdir %err] [/lattice %page] '')
   ;<  ~  bind:m
     ?~  dat.p.res  (pure:m ~)
-    (put-file [%& %& pdir %data] [/lattice %eval-data] u.dat.p.res)
+    ;<  ~  bind:m  (put-file [%& %& pdir %data] [/lattice %eval-data] u.dat.p.res)
+    ::  a shared page's data must stay gained across recomputes — gain is
+    ::  per-revision (like apply-pub re-gaining on every save).
+    ;<  mode=share-mode:le  bind:m  (read-share pdir)
+    ?:  =(%private mode)  (pure:m ~)
+    (gain:io [%& %& pdir %data] %.y)
   ?:  =(dep.p.res deps)  (pure:m ~)
   (put-file [%& %& pdir %deps] [/lattice %eval-deps] dep.p.res)
 ++  poke-sub
@@ -2605,6 +2696,7 @@
   ^-  form:m
   ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& pax %data] ~)
   ;<  esn=seen:nexus  bind:m  (peek:io [%& %& pax %err] ~)
+  ;<  mode=share-mode:le  bind:m  (read-share pax)
   =/  err=@t
     ?.  ?=([%& %file *] esn)  ''
     (fall (mole |.(;;(@t (sang-noun:tarball sang.p.esn)))) '')
@@ -2616,8 +2708,26 @@
   ::  names, never the payload — so keep="" to render-page and append a
   ::  blot-free stream here.
   =/  keep=tape  (keep-url :(weld "page/" (trip name) "/data"))
-  =/  inner=tape  (weld (page-view-html shp pax name err data-html) (page-sse-script keep))
+  =/  inner=tape
+    (weld (page-view-html shp pax name err data-html mode) (page-sse-script keep))
   (send-html eyre-id (render-page "" "" inner))
+::  +serve-clearweb: the public read of a %clearweb page's data. Read-only,
+::  data grub only — a non-clearweb (or absent) page is a flat 404 so private
+::  siblings never leak existence. No SSE (an anon keep would 403 anyway).
+::
+++  serve-clearweb
+  |=  [eyre-id=@ta name=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  ((sane %ta) name)  (send-err eyre-id 404 'not found')
+  =/  pdir=path  (weld app-base /page/[name])
+  ;<  mode=share-mode:le  bind:m  (read-share pdir)
+  ?.  ?=(%clearweb mode)  (send-err eyre-id 404 'not found')
+  ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& pdir %data] ~)
+  =/  data-html=tape
+    ?.  ?=([%& %file *] dsn)  "<p>no data</p>"
+    (page-data-html sang.p.dsn)
+  (send-html eyre-id (render-page "" "" data-html))
 ::  +page-data-html: render a page's data grub. A cord shows as text; any
 ::  other noun as its literal (a page's data mark is a bare noun).
 ::
@@ -2633,7 +2743,7 @@
 ::  with web=1 so the route 303s back here). ?raw links to the grub listing.
 ::
 ++  page-view-html
-  |=  [shp=@p pax=path name=@ta err=@t data-html=tape]
+  |=  [shp=@p pax=path name=@ta err=@t data-html=tape mode=share-mode:le]
   ^-  tape
   =/  post=tape  :(weld "/apps/lattice/page-cmd?name=" (trip name) "&web=1")
   ;:  weld
@@ -2647,7 +2757,33 @@
     (esc post)
     "\"><input name=\"cmd\" placeholder=\"command\" autocomplete=\"off\">"
     "<button type=\"submit\">send</button></form>"
+    (share-controls-html name mode)
     "<p><a href=\"?raw\">raw grubs</a></p>"
+  ==
+::  +share-controls-html: the current sharing preset + one button per preset
+::  (each a tiny form POSTing page-share). A clearweb page also shows its
+::  public URL.
+::
+++  share-controls-html
+  |=  [name=@ta mode=share-mode:le]
+  ^-  tape
+  =/  btn
+    |=  [m=@tas label=tape]
+    ^-  tape
+    =/  cur=?  =(m mode)
+    ;:  weld
+      "<form class=\"share\" method=\"post\" action=\"/apps/lattice/page-share?name="
+      (trip name)  "&mode="  (trip m)  "&web=1\"><button"
+      ?:(cur " disabled" "")  ">"  label  "</button></form>"
+    ==
+  ;:  weld
+    "<div class=\"sharing\"><span>sharing: "  (trip mode)  "</span> "
+    (btn %private "private")
+    (btn %shared "shared")
+    (btn %clearweb "clearweb")
+    ?.  ?=(%clearweb mode)  ""
+    :(weld "<p>public: <a href=\"/apps/lattice/c/" (trip name) "\">/apps/lattice/c/" (trip name) "</a></p>")
+    "</div>"
   ==
 ::  +page-sse-script: like +sse-script but WITHOUT ?blot=/txt — the page dir's
 ::  noun grubs are megabytes under /txt on connect, and this only needs the

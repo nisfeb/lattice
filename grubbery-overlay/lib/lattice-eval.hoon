@@ -21,7 +21,16 @@
   $%  [%make name=@ta src=@t]     ::  create a page / replace its code
       [%cmd name=@ta txt=@t]      ::  send a command to a page
       [%del name=@ta]             ::  delete a page
+      [%share name=@ta mode=share-mode]  ::  set a page's sharing preset
   ==
+::  +$  share-mode: a page's sharing preset (docs/platform.md step 4).
+::    %private  — not gained, owner-only (default).
+::    %shared   — data grub gained + public-usergroup peek: any ship reads
+::                it over ames (peek-remote), live.
+::    %clearweb — shared, and its data is also served over unauthenticated
+::                HTTP at /apps/lattice/c/<name>.
+::
++$  share-mode  ?(%private %shared %clearweb)
 ::  +$  eval-cmd: the command inbox grub. seq bumps per command so an
 ::  identical command still fires a wave (save-file suppresses no-op writes).
 ::
