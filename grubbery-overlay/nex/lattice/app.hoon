@@ -210,7 +210,7 @@
         =.  held  src
         ?:  ?=(%| -.bild)
           ;<  ~  bind:m
-            (put-file [%& %& pdir %err] [/lattice %page] (crip "compile failed: {<p.bild>}"))
+            (put-file [%& %& pdir %err] [/lattice %page] (render-tang 'compile failed:' p.bild))
           ;<  *  bind:m  (take-news-or-wake-drain /ev)
           $
         ;<  deps=(list path)  bind:m  (read-eval-deps pdir)
@@ -1216,6 +1216,20 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %pub-action] act])
+::  +render-tang: a compile/run-error tang as the readable multi-line text
+::  dojo would print — NOT a raw [i=[%palm ...]] noun dump. The page is
+::  compiled via (slap !>(pg) (ream src)), so slap stamps its own call site
+::  (nex/lattice/app.hoon:<...>) into the trace; those lines are noise to a
+::  page author, so we drop them and keep the actual error (`-find.cmd`,
+::  `syntax error`, `nest-fail`). Falls back to the raw trace if filtering
+::  would leave nothing.
+++  render-tang
+  |=  [lab=@t =tang]
+  ^-  @t
+  =/  rendered=wall  (zing (turn tang |=(=tank (~(win re tank) 0 78))))
+  =/  kept=wall  (skip rendered |=(l=tape ?=(^ (find "app.hoon" l))))
+  =/  out=wall  [(trip lab) ?~(kept rendered kept)]
+  (crip (of-wall:format out))
 ::  +poke-eval: send an eval-action to the writer (serialized like all writes).
 ::
 ++  poke-eval
@@ -1482,7 +1496,7 @@
     %-  mule  |.
     ;;(result:pg q:(slam bild env))
   ?:  ?=(%| -.res)
-    ;<  ~  bind:m  (put-file [%& %& pdir %err] [/lattice %page] (crip "run failed: {<p.res>}"))
+    ;<  ~  bind:m  (put-file [%& %& pdir %err] [/lattice %page] (render-tang 'run failed:' p.res))
     ::  a broken run stops any timer.
     (put-file [%& %& pdir %wake] [/lattice %eval-data] `(unit @dr)`~)
   ;<  ~  bind:m  (put-file [%& %& pdir %err] [/lattice %page] '')
