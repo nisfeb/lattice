@@ -1368,8 +1368,21 @@
   ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %deps] ~)
   ?.  ?=([%& %file *] sn)  (pure:m ~)
   (pure:m (fall (mole |.(;;((list path) (sang-noun:tarball sang.p.sn)))) ~))
+::  +view-src: if a dep path is a VIEW dependency on one of our OWN pages
+::  (/apps/lattice.lattice_app/page/<name>/view), the source page's dir; else ~.
+::  A view-dep resolves to the source page's RENDERED html rather than its raw
+::  data (composition, docs/pages.md). Own-tree only by construction — a foreign
+::  path never matches, so a peer's markup is never rendered into our origin.
+::
+++  view-src
+  |=  pax=path
+  ^-  (unit path)
+  ?.  ?=([@ @ %page @ %view ~] pax)  ~
+  ?.  =(`path`[i.pax i.t.pax ~] app-base)  ~
+  `(weld app-base /page/[i.t.t.t.pax])
 ::  +arm-eval-deps: keep any dep target not yet armed (one wire, /ev). Deps
-::  name FILE paths; the last segment is the grub name.
+::  name FILE paths; the last segment is the grub name. A view-dep instead
+::  keeps on the source page's data+show grubs (re-render me when it changes).
 ::
 ++  arm-eval-deps
   |=  [armed=(set path) deps=(list path)]
@@ -1378,10 +1391,18 @@
   ?~  deps  (pure:m armed)
   ?:  (~(has in armed) i.deps)  $(deps t.deps)
   ?:  =(~ i.deps)  $(deps t.deps)
+  =/  src=(unit path)  (view-src i.deps)
+  ?^  src
+    ;<  *  bind:m  (keep:io /ev [%& %& u.src %data] ~)
+    ;<  *  bind:m  (keep:io /ev [%& %& u.src %show] ~)
+    $(deps t.deps, armed (~(put in armed) i.deps))
   =/  n=@ud  (dec (lent i.deps))
   ;<  *  bind:m  (keep:io /ev [%& %& (scag n i.deps) (snag n i.deps)] ~)
   $(deps t.deps, armed (~(put in armed) i.deps))
-::  +read-dep-vals: resolve each dep to its current noun (~ if absent).
+::  +read-dep-vals: resolve each dep to its current value. A data dep gives the
+::  grub's raw noun (~ if absent); a VIEW dep gives the source page's RENDERED
+::  html fragment as a @t (composition — the fragment is welded into this page's
+::  own html). render-shown runs on our OWN page data only (view-src is own-tree).
 ::
 ++  read-dep-vals
   |=  deps=(list path)
@@ -1389,6 +1410,15 @@
   ^-  form:m
   ?~  deps  (pure:m ~)
   ?:  =(~ i.deps)  $(deps t.deps)
+  =/  src=(unit path)  (view-src i.deps)
+  ?^  src
+    ;<  dsn=seen:nexus       bind:m  (peek:io [%& %& u.src %data] ~)
+    ;<  vmode=view-mode:pg   bind:m  (read-show-mode u.src)
+    ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
+    =/  frag=@t
+      ?.  ?=([%& %file *] dsn)  ''
+      (crip (render-shown sang.p.dsn vmode))
+    (pure:m [[i.deps frag] rest])
   =/  n=@ud  (dec (lent i.deps))
   ;<  sn=seen:nexus  bind:m  (peek:io [%& %& (scag n i.deps) (snag n i.deps)] ~)
   ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)

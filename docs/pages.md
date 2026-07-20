@@ -117,7 +117,31 @@ reads. A page that forgets to declare a dep simply goes stale until poked —
 visible and debuggable (the `deps` grub is right there in the tree).
 
 Paths are absolute grub paths, e.g.
-`/apps/lattice.lattice_app/page/counter/data`.
+`/apps/lattice.lattice_app/page/counter/data`. `data-of` builds one from a page
+name: `(data-of %counter)`.
+
+## Composition — a page inside a page
+
+A dependency on another page's **`/view`** gives you its *rendered HTML* instead
+of its raw data — so a page can lay out the rendered views of other pages. Name
+it with `view-of` and pull the fragment out of `deps` with `shown`:
+
+```hoon
+%+  needs
+  (html (crip :(weld "<section>" (trip (shown deps %clock)) "</section>")))
+~[(view-of %clock)]
+```
+
+A view-dep re-renders your page whenever the embedded page's data *or* render
+mode changes — same reactive machinery as a data dep, so a dashboard stays live.
+See dashboard. Composition is **own-pages only**: `view-of` only resolves pages
+in your own tree, so a peer's markup is never rendered into your page (a foreign
+`/view` path silently yields nothing). Nesting works through stored data — if A
+embeds B and B embeds C, A shows B-including-C — with no runtime recursion.
+
+Embedding an *always-changing* page (a clock, a timer page) makes the container
+re-render at that cadence — bounded, but live churn. Compose pages that settle,
+or accept the refresh rate of the busiest thing you embed.
 
 ## Sharing
 
@@ -198,6 +222,21 @@ is raw.
 ```
 first run declares the dep; thereafter, incrementing `counter` re-runs doubler
 automatically — no command needed.
+
+### dashboard — composition (embedding rendered views)
+```hoon
+%+  needs
+  %-  html  %-  crip
+  ;:  weld
+    "<div style=\"display:grid;gap:12px\">"
+    "<section><h3>clock</h3>"    (trip (shown deps %clock))    "</section>"
+    "<section><h3>counter</h3>"  (trip (shown deps %counter))  "</section>"
+    "</div>"
+  ==
+~[(view-of %clock) (view-of %counter)]
+```
+lays out the *rendered* views of `clock` and `counter`; editing either re-renders
+the dashboard live.
 
 ## Timers — a page on a schedule
 

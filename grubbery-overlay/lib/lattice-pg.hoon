@@ -35,6 +35,24 @@
 ++  needs  |=([r=result d=(list path)] r(dep d))       ::  set dependencies
 ++  every  |=([r=result d=@dr] r(wake `d))             ::  re-run every d
 ++  sends  |=([r=result p=(list [@ta @t])] r(pokes p)) ::  poke pages
+::  composition — name another OWN page in a `needs` list to depend on it:
+::    data-of  its raw data value      view-of  its rendered view (html @t)
+::  A view-dep re-runs this page whenever the named page's data or render mode
+::  changes, and its rendered html arrives in `deps` (pull it out with +shown).
+::
+++  data-of  |=(name=@ta ^-(path /apps/'lattice.lattice_app'/page/[name]/data))
+++  view-of  |=(name=@ta ^-(path /apps/'lattice.lattice_app'/page/[name]/view))
+::  +shown: the rendered html fragment of a view-dep, by page name ('' until
+::  the first run that resolves it). Use it to lay out embedded page views.
+::
+++  shown
+  |=  [deps=(list [path *]) name=@ta]
+  ^-  @t
+  =/  p=path  (view-of name)
+  |-  ^-  @t
+  ?~  deps  ''
+  ?:  =(p -.i.deps)  (fall (mole |.(;;(@t +.i.deps))) '')
+  $(deps t.deps)
 ::  +esc: HTML-escape a cord — use it on any dynamic value you weld into html.
 ::
 ++  esc
