@@ -22,6 +22,7 @@
       [%cmd pax=path txt=@t bud=@ud]    ::  send a command (bud = poke budget)
       [%del pax=path]                   ::  delete a page
       [%share pax=path mode=share-mode] ::  set a page's sharing preset
+      [%mkdir pax=path]                 ::  create an (empty) folder at pax
   ==
 ::  +$  share-mode: a page's sharing preset (docs/platform.md step 4).
 ::    %private  — not gained, owner-only (default).
