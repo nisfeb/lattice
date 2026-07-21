@@ -289,7 +289,7 @@
     %+  turn  items
     |=  [id=tape num=@ud text=tape]
     ^-  tape
-    (zing ~["<li id=\"fn-" id "\">" (ib text *refm) "</li>"])
+    (zing ~["<li id=\"fn-" (esc id) "\">" (ib text *refm) "</li>"])
   (zing ~["<hr class=\"fn-sep\"><ol class=\"footnotes\">" lis "</ol>"])
 ::  +setext-under: '===' -> 1 (h1), '---' -> 2 (h2), else 0.
 ++  setext-under
