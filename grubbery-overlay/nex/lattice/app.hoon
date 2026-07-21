@@ -3799,7 +3799,7 @@
   ::  main-panes: folder mode shows a hint; else the code textarea + live preview.
   =/  main-panes=tape
     ?:  nfolder
-      "<div class=\"prev-empty\" style=\"grid-column:2/4;grid-row:2\">Name your folder above, then hit <b>create folder</b>.<br>You can add files inside it from the tree.</div>"
+      "<div class=\"prev-empty\" style=\"grid-column:2/4;grid-row:2\"><p>Name your folder above, then hit <b>create folder</b>.<br>You can add files inside it from the tree.</p></div>"
     ;:  weld
       "<textarea id=\"src\" spellcheck=\"false\">"  code  "</textarea>"
       ?:  ct  "<iframe class=\"prev\" id=\"prev\"></iframe>"
