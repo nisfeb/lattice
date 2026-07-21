@@ -854,6 +854,12 @@
     ?.  ((sane %tas) u.nm)   (send-err eyre-id 400 'bad template name')
     ;<  ~  bind:m  (poke-eval [%tmpl-save (pax-of u.from) `@tas`u.nm])
     (send-ok eyre-id)
+      [%'POST' %template-del]
+    =/  nm=(unit @t)  (~(get by args) 'name')
+    ?~  nm  (send-err eyre-id 400 'missing name')
+    ?.  ((sane %tas) u.nm)  (send-err eyre-id 400 'bad name')
+    ;<  ~  bind:m  (poke-eval [%tmpl-del `@tas`u.nm])
+    (send-ok eyre-id)
       [%'POST' %template-new]
     ::  instantiate a template into a new page-tree: template=<term>, name=<path>.
     =/  tmpl=(unit @t)  (~(get by args) 'template')
@@ -1362,6 +1368,14 @@
     ::  leave it inert (code grub only — templates are never evaluated).
     ::  (Instantiation is +instantiate-template — one make PER page, not a batch.)
     (copy-tree root [%page from.act] [%template /[name.act]] %.n)
+      %tmpl-del
+    ::  delete a template — cull its subtree. A shipped template comes back on
+    ::  the next writer start (ensure-shipped-templates), which is intended.
+    =/  tdir=path  (weld root (weld /template /[name.act]))
+    ;<  ex=?  bind:m  (peek-exists:io [%& %| tdir])
+    ?.  ex  (pure:m ~)
+    ;<  *  bind:m  (cull-soft:io [%& %| tdir])
+    (pure:m ~)
       %cmd
     =/  pdir=path  (weld root (weld /page pax.act))
     ::  authoritative existence guard: no code grub -> no page (and no
