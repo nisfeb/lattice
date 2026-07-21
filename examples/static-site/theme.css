@@ -1,0 +1,12 @@
+.site{font-family:system-ui,-apple-system,sans-serif;max-width:54rem;margin:1.5rem auto;padding:0 1.5rem;color:#1a1a1a}
+.site header{border-bottom:2px solid #1a6ed8;padding-bottom:1rem;margin-bottom:1.4rem}
+.site header h1{margin:0;font-size:2rem}
+.site header p{margin:.35rem 0 0;color:#777}
+.site .filter{width:100%;padding:.6rem .8rem;margin:1rem 0;font:inherit;border:1px solid #ccc;border-radius:8px;background:#fff;color:inherit}
+.site .nav{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(13rem,1fr));gap:1rem}
+.site .nav a{display:block;padding:1.1rem;border:1px solid #ddd;border-radius:12px;text-decoration:none;color:inherit;transition:transform .12s,box-shadow .12s,border-color .12s;background:#fff}
+.site .nav a:hover{border-color:#1a6ed8;transform:translateY(-2px);box-shadow:0 4px 16px #1a6ed81f}
+.site .nav a b{display:block;font-size:1.1rem;color:#1a6ed8;text-transform:capitalize}
+.site .nav a span{color:#999;font-size:.85rem}
+.site footer{margin:2.2rem 0;color:#aaa;font-size:.85rem}
+@media(prefers-color-scheme:dark){.site{color:#e6e6e6}.site .filter,.site .nav a{background:#242424;border-color:#444}.site header p{color:#999}}
