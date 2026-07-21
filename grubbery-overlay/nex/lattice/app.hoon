@@ -3878,7 +3878,7 @@
 ++  home-css
   ^-  tape
   %-  trip
-  '<style>*{scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}.muted{color:#8a8a8a}h1{margin:.2rem 0}.home-nav{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:12px;margin:1rem 0}.navcard{display:block;padding:14px 16px;border:1px solid #8886;border-radius:10px;text-decoration:none;color:inherit;background:#8881}.navcard:hover{border-color:#1a6ed8}.navcard strong{display:block;font-size:1.05rem;margin-bottom:2px}.navcard span{color:#8a8a8a;font-size:.9rem}ul.pglist{list-style:none;padding:0;margin:.4rem 0}ul.pglist li{padding:11px 2px;border-bottom:1px solid #8883;display:flex;justify-content:space-between;align-items:center;gap:12px}ul.pglist a{padding:4px 2px}h2{font-size:1rem;color:#8a8a8a;margin:1.4rem 0 .2rem;text-transform:uppercase;letter-spacing:.03em}</style>'
+  '<style>*{scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}.muted{color:#8a8a8a}h1{margin:.2rem 0}.apps{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:14px;margin:1.2rem 0}.appcard{display:flex;flex-direction:column;gap:5px;padding:20px;border:1px solid #8886;border-radius:12px;text-decoration:none;color:inherit;background:#8881}.appcard:hover{border-color:#1a6ed8}.appcard .ico{font-size:1.7rem;line-height:1}.appcard strong{font-size:1.2rem}.appcard .d{color:#8a8a8a;font-size:.9rem}.quick{display:flex;flex-wrap:wrap;gap:8px;margin:.5rem 0 .3rem}.quick a{padding:6px 12px;border:1px solid #8886;border-radius:8px;text-decoration:none;color:inherit;background:#8881;font-size:.9rem}.quick a:hover{border-color:#1a6ed8}ul.pglist{list-style:none;padding:0;margin:.4rem 0}ul.pglist li{padding:11px 2px;border-bottom:1px solid #8883;display:flex;justify-content:space-between;align-items:center;gap:12px}ul.pglist a{padding:4px 2px}h2{font-size:1rem;color:#8a8a8a;margin:1.4rem 0 .2rem;text-transform:uppercase;letter-spacing:.03em}</style>'
 ::  +home-index-html: the landing page. Always shows navigation (Pages,
 ::  Explorer) plus a live list of your programmable pages and any published
 ::  pages — so an empty store is still a way in, not a dead end.
@@ -3920,18 +3920,20 @@
     home-css
     "<h1>Lattice</h1>"
     "<p class=\"muted\">Programmable pages &amp; published notes &middot; "  ship  "</p>"
-    "<div class=\"home-nav\">"
-    "<a class=\"navcard\" href=\"/apps/lattice/edit?kind=md\">"
-    "<strong>New note</strong><span>Write in markdown, live preview</span></a>"
-    "<a class=\"navcard\" href=\"/apps/lattice/edit\">"
-    "<strong>New page</strong><span>Write a page in the browser</span></a>"
-    "<a class=\"navcard\" href=\""  base
-    "\"><strong>Pages</strong><span>Create &amp; run programmable pages</span></a>"
-    "<a class=\"navcard\" href=\""  tree
-    "\"><strong>Explorer</strong><span>Browse your whole grubbery tree</span></a>"
+    ::  the two apps: author on the left, read/browse on the right.
+    "<div class=\"apps\">"
+    "<a class=\"appcard\" href=\"/apps/lattice/edit\"><span class=\"ico\">&#9998;</span><strong>Editor</strong><span class=\"d\">Create, organize, and edit your pages, notes, and files in a tree.</span></a>"
+    :(weld "<a class=\"appcard\" href=\"" tree "\"><span class=\"ico\">&#127760;</span><strong>Browser</strong><span class=\"d\">Read and explore content &mdash; your published pages and other ships via urb://.</span></a>")
     "</div>"
-    "<h2>Your pages</h2>"   page-list
-    "<h2>Published</h2>"    pub-list
+    ::  editor section: quick-create + your programmable pages.
+    "<h2>Editor</h2>"
+    "<div class=\"quick\"><a href=\"/apps/lattice/edit?kind=md\">+ note</a><a href=\"/apps/lattice/edit\">+ page</a><a href=\"/apps/lattice/edit?newfolder=1\">+ folder</a></div>"
+    page-list
+    ::  browser section: browse the tree, visit peers, read what's published.
+    "<h2>Browser</h2>"
+    :(weld "<div class=\"quick\"><a href=\"" tree "\">Browse your tree &rarr;</a></div>")
+    "<p class=\"muted\">Enter a <b>urb://~ship/path</b> in the bar above to visit another ship.</p>"
+    pub-list
   ==
 ::  +web-css: minimal reader styling (single-quoted cord so braces are literal).
 ::
