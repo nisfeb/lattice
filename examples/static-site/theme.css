@@ -1,4 +1,8 @@
-.site{font-family:system-ui,-apple-system,sans-serif;max-width:54rem;margin:1.5rem auto;padding:0 1.5rem;color:#1a1a1a}
+/* A full-page theme for the standalone site. Because /site/index is an %html
+   clearweb page, it is served as a bare document and owns its own styling —
+   this stylesheet applies to the whole page (body and all), not a scoped box. */
+body{font-family:system-ui,-apple-system,sans-serif;color:#1a1a1a;background:#fafafa;margin:0}
+.site{max-width:54rem;margin:0 auto;padding:2rem 1.5rem}
 .site header{border-bottom:2px solid #1a6ed8;padding-bottom:1rem;margin-bottom:1.4rem}
 .site header h1{margin:0;font-size:2rem}
 .site header p{margin:.35rem 0 0;color:#777}
@@ -9,4 +13,4 @@
 .site .nav a b{display:block;font-size:1.1rem;color:#1a6ed8;text-transform:capitalize}
 .site .nav a span{color:#999;font-size:.85rem}
 .site footer{margin:2.2rem 0;color:#aaa;font-size:.85rem}
-@media(prefers-color-scheme:dark){.site{color:#e6e6e6}.site .filter,.site .nav a{background:#242424;border-color:#444}.site header p{color:#999}}
+@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#161616}.site .filter,.site .nav a{background:#242424;border-color:#444}.site header p{color:#999}}

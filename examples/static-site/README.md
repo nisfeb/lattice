@@ -1,60 +1,81 @@
 # Static site — a lattice example
 
-A small website built entirely out of ordinary lattice pages. **Nothing here
-is a feature of the app.** It's four kinds of page tied together by one
-general primitive: a page can depend on a *directory* and receive its tree.
+A small **public website** built entirely out of ordinary lattice pages, and
+published to the clear web with one action. **Nothing here is a feature of the
+app.** It's four kinds of page tied together by two general capabilities: a page
+can depend on a *directory* (to enumerate content), and any page can be shared
+*clearweb* (to serve over unauthenticated HTTP).
+
+Everything lives under one `/site` folder so a single `%share-tree` publishes it.
 
 ## The pieces
 
 | File | Page | Kind | Role |
 |------|------|------|------|
-| `content/*.md` | `content/intro`, `content/guide`, `content/about` | markdown | the content — each is a normal page, viewable at its own URL |
-| `theme.css` | `theme` | css | the theme, served as an asset at `/f/theme` |
-| `site.js` | `site-js` | javascript | a live nav filter, served at `/f/site-js` |
-| `site.hoon` | `site` | hoon | the builder — composes the content into a themed index |
+| `content/*.md` | `site/content/intro`, `.../guide`, `.../about` | markdown | the content — each is a normal page, viewable at its own URL |
+| `theme.css` | `site/theme` | css | the theme, served raw at `/c/site/theme` |
+| `site.js` | `site/app` | javascript | a live nav filter, served raw at `/c/site/app` |
+| `site.hoon` | `site/index` | hoon | the builder — composes the content into a themed index |
 
 ## How it works
 
-`site.hoon` declares one dependency — the `/content` **directory**:
+`site.hoon` depends on the `/site/content` **directory** and walks it with
+`tree-in` to build a nav automatically:
 
 ```hoon
-(needs (html body) ~[(dir-of /content)])
+=/  pages  (skim (tree-in deps /site/content) |=(e=entry page.e))
 ```
 
-Because that dep is a directory, the evaluator resolves it to a listing of
-every page under it, which `site.hoon` reads with `tree-in`:
+Every link — the nav entries, the theme, the script — is built with `pub-of`,
+which produces the **public** `/c/…` URL (the `/x` explorer path is owner-gated
+and would 403 for a visitor):
 
 ```hoon
-=/  pages  (skim (tree-in deps /content) |=(e=entry page.e))
+=/  url  (pub-of (weld /site/content pax.e))   ::  /apps/lattice/c/site/content/intro
 ```
 
-It turns that into a nav of cards, links a css theme (`<link href="/f/theme">`)
-and a js filter (`<script src="/f/site-js">`), and renders as `%html`.
+It emits an `%html` **fragment**. The public `/c/` surface wraps it in a bare
+standalone document (no lattice chrome, the page owns its own styling via the
+`<link>`); the owner's `/x` view inlines the same fragment. One stored
+representation, each surface supplies its own shell.
 
-The dependency is **live**: the builder keeps a subscription on the `/content`
-directory, so adding or removing a markdown page re-runs it and the index
-updates on its own — no build step, no hand-maintained list.
+The content dependency is **live**: adding a markdown page under
+`/site/content` re-runs the builder and the nav updates — then republish.
 
-Each content page is still an independent, shareable page at its own URL. The
-site is just a *lens* over them.
+## Publish / unpublish
+
+Publishing sets `%clearweb` on every page under `/site` in one serialized
+action, so the whole site goes public at once:
+
+```
+POST /apps/lattice/page-share-tree?name=site&mode=clearweb
+```
+
+Take it all down — with no dangling public pages — the same way:
+
+```
+POST /apps/lattice/page-share-tree?name=site&mode=private
+```
+
+The public site is then at **`/apps/lattice/c/site/index`**, navigable with no
+login. Each page is served chrome-less: `%html` raw (author owns the doc),
+markdown wrapped in a clean reader shell, css/js as their real content-type so
+they load as a real stylesheet / script.
 
 ## Reproduce it
 
-Run `./deploy.sh <base-url> <cookie-file>` (an authenticated session cookie),
-or create the pages by hand in the editor:
+`./deploy.sh <base-url> <cookie-file>` creates all the pages under `/site` and
+publishes them in one shot. Or build them by hand in the editor (a `site`
+folder, a markdown page per `content/*.md`, a `css` page `theme`, a `javascript`
+page `app`, and a hoon page `index`), then hit *clearweb* on the folder.
 
-1. New folder `content`, then a markdown page in it per `content/*.md`.
-2. A `css` file `theme` with `theme.css`.
-3. A `javascript` file `site-js` with `site.js`.
-4. A hoon page `site` with `site.hoon`.
+## The primitives it rests on
 
-Open `site` and you have a site. Add another page under `content/` and watch
-the index pick it up.
+- **Directory dependency** — `dir-of` / `tree-in` / the `entry` mold in
+  `lib/lattice-pg.hoon`; resolved in `read-dep-vals`, kept live in
+  `arm-eval-deps`. "Run a program over a structured tree."
+- **Standalone clearweb** — nested `/c/` paths and the chrome-less
+  `render-clearweb` shell in `nex/lattice/app.hoon`; `pub-of` for public links;
+  `%share-tree` to publish/unpublish a whole subtree.
 
-## The primitive it rests on
-
-`dir-of` (the dep path for a folder), `tree-in` (its listing from `deps`), and
-the `entry` mold live in `lib/lattice-pg.hoon`. The evaluator resolves a
-directory dep in `read-dep-vals` and keeps a live subscription on it in
-`arm-eval-deps`. That capability isn't about websites — it's "run a program
-over a structured tree," which also covers indexes, feeds, and dashboards.
+Neither is about websites — a site is just the first thing they compose into.
