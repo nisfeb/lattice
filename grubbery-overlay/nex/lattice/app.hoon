@@ -350,6 +350,11 @@
   ::  (rear suffix) route table below.
   ?:  &(?=([%x *] suffix) =(%'GET' method.request.req))
     (explore eyre-id our t.suffix args url.request.req)
+  ::  /f/<name>: serve a file's raw data as an asset, Content-Type from its
+  ::  render mode (js -> text/javascript, css -> text/css, ...), so an html file
+  ::  can import a js/css file by URL. Owner-gated (fetched with the session).
+  ?:  &(?=([%f @ ~] suffix) =(%'GET' method.request.req))
+    (serve-asset eyre-id i.t.suffix)
   ::  root: the web reader (Landscape tile). ?url=urb://ship/rel renders that
   ::  page; no url renders the home index of our published pages. ponytail:
   ::  compact gemtext->HTML (headings/links/quotes/lists/pre); the full reader's
@@ -697,10 +702,9 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ;<  pages=(list @ta)  bind:m  read-page-names
     ?~  name
-      ::  ?kind=md opens a new markdown note (prose starter, wraps on save);
-      ::  otherwise a new hoon page.
-      =/  is-md=?  =('md' (~(gut by args) 'kind' ''))
-      (send-html eyre-id (edit-html our ~ '' pages %private '' is-md))
+      ::  ?kind=<md|gmi|html|text|js|css> opens a new typed file; else a hoon page.
+      =/  kind=@tas  (kind-of (~(gut by args) 'kind' 'hoon'))
+      (send-html eyre-id (edit-html our ~ '' pages %private '' kind))
     ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
     =/  pdir=path  (weld app-base /page/[`@ta`u.name])
     ;<  dn=seen:nexus  bind:m  (peek-shallow:io [%& %| pdir] ~)
@@ -711,26 +715,27 @@
     =/  rd  |=(nom=@ta ^-(@t =/(v (~(get by fils) nom) ?~(v '' (fall (mole |.(;;(@t (sang-noun:tarball sang.u.v)))) '')))))
     =/  src=@t  (rd %code)
     =/  err=@t  (rd %err)
-    ::  a note round-trips: if /code matches the md-envelope, edit the raw
-    ::  markdown (not the generated hoon) and open the editor in markdown mode.
-    =/  un=(unit @t)  (unwrap-md src)
-    =/  is-md=?  ?=(^ un)
-    =/  disp=@t  ?~(un src u.un)
+    ::  a typed file round-trips: if /code matches the content envelope, edit the
+    ::  raw body (not the generated hoon) and open in that type's mode.
+    =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
+    =/  kind=@tas  ?~(un %hoon builder.u.un)
+    =/  disp=@t  ?~(un src body.u.un)
     =/  mode=share-mode:le
       =/  v  (~(get by fils) %share)
       ?~  v  %private
       (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.u.v)))) %private)
-    (send-html eyre-id (edit-html our [~ `@ta`u.name] disp pages mode err is-md))
+    (send-html eyre-id (edit-html our [~ `@ta`u.name] disp pages mode err kind))
       [%'POST' %page-save]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
     =/  raw=@t  (req-body req)
     ?:  =('' raw)  (send-err eyre-id 400 'missing body')
-    ::  ?md=1: the body is markdown prose, not hoon. Wrap it in the note gate
-    ::  `... (md 'prose')` so the whole compile/render/preview pipeline runs
-    ::  unchanged; edit reopens it as markdown via unwrap-md.
-    =/  src=@t  ?:((~(has by args) 'md') (wrap-md raw) raw)
+    ::  ?type=<builder>: the body is raw content, not hoon. Wrap it in
+    ::  `... (BUILDER 'content')` so the whole pipeline runs unchanged; edit
+    ::  reopens it via unwrap-content. Absent/unknown type -> raw hoon.
+    =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'hoon')
+    =/  src=@t  ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
     ::  ?new=1: create-only — 409 instead of silently overwriting an existing
     ::  page (the editor's new-page mode sends it; caught by review).
     ;<  ex=?  bind:m
@@ -745,7 +750,17 @@
     ::  preview a note as it is typed, before any save. Owner-gated like all
     ::  non-clearweb routes.
     =/  body=@t  (req-body req)
-    (send-html eyre-id (render-bare (render-md:gfm body)))
+    =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'md')
+    =/  inner=tape
+      ?+  ptype  (render-md:gfm body)
+        %md    (render-md:gfm body)
+        %gmi   (render-gmi body)
+        %html  (trip body)
+        %text  :(weld "<pre>" (esc (trip body)) "</pre>")
+        %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip body)) "</code></pre>")
+        %css   :(weld "<pre><code class=\"language-css\">" (esc (trip body)) "</code></pre>")
+      ==
+    (send-html eyre-id (render-bare inner))
       [%'POST' %page-cmd]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -3051,6 +3066,21 @@
     (trip '<script>document.addEventListener("click",function(e){var a=e.target.closest("a");if(a){var h=a.getAttribute("href");if(h&&h.charAt(0)==="#"){e.preventDefault();var el=document.getElementById(h.slice(1));if(el)el.scrollIntoView()}}})</script>')
     "</body></html>"
   ==
+::  +serve-asset: serve a file's raw /data grub with a Content-Type from its
+::  render mode (js/css/html/md/gmi), so an html file can import it by URL.
+::
+++  serve-asset
+  |=  [eyre-id=@ta name=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  ((sane %ta) name)  (send-err eyre-id 404 'not found')
+  =/  pdir=path  (weld app-base /page/[name])
+  ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& pdir %data] ~)
+  ?.  ?=([%& %file *] dsn)  (send-err eyre-id 404 'not found')
+  ;<  vmode=view-mode:pg  bind:m  (read-show-mode pdir)
+  =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.p.dsn))))
+  ?:  ?=(%| -.res)  (send-err eyre-id 415 'not servable')
+  (send-typed eyre-id (mime-of vmode) 'no-cache' p.res)
 ::  +serve-clearweb: the public read of a %clearweb page's data. Read-only,
 ::  data grub only — a non-clearweb (or absent) page is a flat 404 so private
 ::  siblings never leak existence. No SSE (an anon keep would 403 anyway).
@@ -3096,6 +3126,8 @@
     %html  (trip p.cr)
     %gmi   (render-gmi p.cr)
     %md    (render-md:gfm p.cr)
+    %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip p.cr)) "</code></pre>")
+    %css   :(weld "<pre><code class=\"language-css\">" (esc (trip p.cr)) "</code></pre>")
     %noun  (page-data-html sang)
   ==
 ::  +page-view-html: crumbs, error, data, and a command form (POSTs page-cmd
@@ -3519,16 +3551,13 @@
 ::  unwrap-md matches this shell to recover the prose for editing. Keep the two
 ::  in lockstep with this string.
 ::
-++  md-env-pre  "|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]  ^-  result  (md '"
-++  md-env-suf  "')"
-::  +wrap-md: raw markdown -> a page gate returning (md 'markdown'). Escapes the
-::  body for a single-quote hoon cord: \ -> \\, ' -> \', and any control byte
-::  (newline/tab/CR) -> \0a-style hex (a literal newline does NOT ream inside a
-::  cord). Everything else -- including { } < > backtick -- is literal in a
-::  single-quote cord and safe. Verified: wrap-md output reams; unwrap round-trips.
+++  content-env-pre  "|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]  ^-  result  ("
+::  +wrap-content: raw body -> a page gate `... (BUILDER 'body')`. builder is a
+::  pg constructor (md/gmi/html/text/js/css). Escapes body for a single-quote
+::  hoon cord: \ -> \\, ' -> \', control bytes -> \0a hex.
 ::
-++  wrap-md
-  |=  body=@t
+++  wrap-content
+  |=  [builder=@tas body=@t]
   ^-  @t
   =/  hx  |=(n=@ ^-(@tD ?:((lth n 10) (add '0' n) (add 87 n))))
   =/  ec=tape
@@ -3540,25 +3569,46 @@
     ?:  =(c 39)  ~[`@tD`92 `@tD`39]
     ?:  (lth c 32)  ;:(weld "\\" ~[(hx (div c 16))] ~[(hx (mod c 16))])
     ~[c]
-  (crip ;:(weld md-env-pre ec md-env-suf))
-::  +unwrap-md: page source -> the raw markdown if this page is a note (matches
-::  the md-envelope), else ~. Recovers the prose by evaluating the inner cord,
-::  reusing hoon's own unescaping. Fenced so a malformed body can't crash a read.
+  (crip ;:(weld content-env-pre (trip builder) " '" ec "')"))
+::  +unwrap-content: page source -> [builder body] if it matches the content
+::  envelope, else ~ (a hand-written hoon page). Backward compatible with old
+::  (md '...') notes. Fenced so a malformed body can't crash a read.
 ::
-++  unwrap-md
+++  unwrap-content
   |=  src=@t
-  ^-  (unit @t)
+  ^-  (unit [builder=@tas body=@t])
   =/  s=tape  (trip src)
-  =/  ls=@ud  (lent s)
-  ?.  ?&  (gte ls (add (lent md-env-pre) (lent md-env-suf)))
-          =(md-env-pre (scag (lent md-env-pre) s))
-          =(md-env-suf (slag (sub ls (lent md-env-suf)) s))
-      ==
-    ~
-  =/  mid=tape  (scag (sub ls (add (lent md-env-pre) (lent md-env-suf))) (slag (lent md-env-pre) s))
+  ?.  (has-prefix content-env-pre s)  ~
+  =/  aft=tape  (slag (lent content-env-pre) s)
+  =/  sp  (find " '" aft)
+  ?~  sp  ~
+  =/  builder=tape  (scag u.sp aft)
+  =/  rest=tape  (slag (add u.sp 2) aft)
+  =/  ls=@ud  (lent rest)
+  ?.  (gte ls 2)  ~
+  ?.  =("')" (slag (sub ls 2) rest))  ~
+  =/  mid=tape  (scag (sub ls 2) rest)
   =/  quoted=@t  (crip :(weld "'" mid "'"))
   =/  r  (mule |.(;;(@t q:(slap !>(0) (ream quoted)))))
-  ?.(?=(%& -.r) ~ `p.r)
+  ?.  ?=(%& -.r)  ~
+  `[`@tas`(crip builder) p.r]
+::  +content-builders: the pg constructors an editor file wraps its body in.
+::  md/gmi/html render to a view; text/js/css are shown as code + served raw.
+::
+++  content-builders  `(set @tas)`(sy ~[%md %gmi %html %text %js %css])
+::  +kind-of: a ?kind= param -> a valid editor kind (a content builder or %hoon).
+++  kind-of  |=(k=@t ^-(@tas ?:((~(has in content-builders) `@tas`k) `@tas`k %hoon)))
+::  +mime-of: the Content-Type an asset file (/f/<name>) is served with.
+++  mime-of
+  |=  builder=@tas
+  ^-  @t
+  ?+  builder  'text/plain; charset=utf-8'
+    %js    'text/javascript; charset=utf-8'
+    %css   'text/css; charset=utf-8'
+    %html  'text/html; charset=utf-8'
+    %md    'text/markdown; charset=utf-8'
+    %gmi   'text/gemini; charset=utf-8'
+  ==
 ::  +read-page-names: the programmable-page names under /page (sorted, ~ if the
 ::  dir is absent). Feeds the home landing so it always lists what you can open.
 ::
@@ -3578,7 +3628,7 @@
 ++  edit-css
   ^-  tape
   %-  trip
-  '<style>*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}body{margin:0;font:15px/1.5 system-ui,sans-serif;color:#111;background:#fafafa;height:100vh;overflow:hidden}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}a{color:#1a6ed8}.ws{display:grid;grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 300px;grid-template-rows:auto 1fr;height:100vh}.ws.nt{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 300px}.ws.nc{grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 0}.ws.nt.nc{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 0}.bar{grid-column:1/-1;grid-row:1;display:flex;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid #8884}.bar .grow{flex:1}.bar button,.bar input,.bar a{font:inherit;padding:5px 9px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;text-decoration:none;cursor:pointer}.bar input{cursor:text}.bar button:hover,.bar a:hover{border-color:#1a6ed8}.bar .ico{padding:5px 8px}.bar b{padding:0 4px}#st{border:0;background:0;font-size:.85rem;padding:0}.tree{grid-column:1;grid-row:2;overflow:auto;padding:10px;border-right:1px solid #8884}.ctl{grid-column:4;grid-row:2;overflow:auto;padding:10px;border-left:1px solid #8884}.ws.nt .tree,.ws.nc .ctl{display:none}.tree a{display:block;padding:5px 8px;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tree a:hover{background:#8881}.tree a.cur{background:#1a6ed822;color:#1a6ed8;font-weight:600}.tree .new{font-weight:600;margin-bottom:6px}.tree .sec{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:12px 4px 4px}#src{grid-column:2;grid-row:2;width:100%;height:100%;resize:none;border:0;border-right:1px solid #8884;font:13px/1.55 ui-monospace,Menlo,monospace;padding:12px;background:transparent;color:inherit;white-space:pre;overflow:auto;tab-size:2}.ws.md #src{white-space:pre-wrap;overflow-wrap:break-word}.prev,.prev-empty{grid-column:3;grid-row:2;width:100%;height:100%;border:0}.prev{background:#fff}.prev-empty{display:flex;align-items:center;justify-content:center;color:#8a8a8a;text-align:center;padding:2rem}.ctl h3{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:14px 0 5px}.ctl h3:first-child{margin-top:0}.ctl .err{color:#c0392b;white-space:pre-wrap;font:11px/1.4 ui-monospace,monospace;max-height:9rem;overflow:auto}.ctl .ok{color:#27ae60;font-size:.85rem}.ctl .row{display:flex;gap:6px}.ctl input{flex:1;font:inherit;padding:6px 8px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;min-width:0}.ctl button{font:inherit;padding:6px 10px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;cursor:pointer}.ctl button:hover{border-color:#1a6ed8}.share{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}.share button.on{border-color:#1a6ed8;color:#1a6ed8}.del{margin-top:18px;color:#c0392b;border-color:#c0392b55!important;width:100%}.mtabs{display:none;grid-column:1;grid-row:2}@media(max-width:820px){body{overflow:auto;height:auto}.ws,.ws.nt,.ws.nc{grid-template-columns:1fr!important;grid-template-rows:auto auto 1fr!important;height:auto;min-height:100vh}.bar{grid-column:1;flex-wrap:wrap;padding-left:max(10px,env(safe-area-inset-left));padding-right:max(10px,env(safe-area-inset-right))}.bar .grow{display:none}.bar button,.bar a,.bar input{min-height:44px}.bar .ico{min-width:44px}#tt,#ct{display:none}.mtabs{display:flex;border-bottom:1px solid #8884}.mtabs button{flex:1;padding:11px;border:0;background:0;color:inherit;font:inherit;border-bottom:2px solid transparent;cursor:pointer}.mtabs button.on{border-bottom-color:#1a6ed8;color:#1a6ed8;font-weight:600}.tree,#src,.prev,.prev-empty,.ctl{grid-column:1;grid-row:3;border:0;display:none}.ws[data-mv=tree] .tree{display:block}.ws[data-mv=code] #src{display:block}.ws[data-mv=prev] .prev{display:block}.ws[data-mv=prev] .prev-empty{display:flex}.ws[data-mv=ctl] .ctl{display:block}#src{min-height:68vh;font-size:16px}.prev,.prev-empty{min-height:68vh}.ctl input{font-size:16px}.ctl,#src{padding-bottom:max(12px,env(safe-area-inset-bottom))}}</style>'
+  '<style>*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}body{margin:0;font:15px/1.5 system-ui,sans-serif;color:#111;background:#fafafa;height:100vh;overflow:hidden}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}a{color:#1a6ed8}.ws{display:grid;grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 300px;grid-template-rows:auto 1fr;height:100vh}.ws.nt{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 300px}.ws.nc{grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 0}.ws.nt.nc{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 0}.bar{grid-column:1/-1;grid-row:1;display:flex;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid #8884}.bar .grow{flex:1}.bar button,.bar input,.bar a{font:inherit;padding:5px 9px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;text-decoration:none;cursor:pointer}.bar input{cursor:text}.bar button:hover,.bar a:hover{border-color:#1a6ed8}.bar .ico{padding:5px 8px}.bar b{padding:0 4px}#st{border:0;background:0;font-size:.85rem;padding:0}.tree{grid-column:1;grid-row:2;overflow:auto;padding:10px;border-right:1px solid #8884}.ctl{grid-column:4;grid-row:2;overflow:auto;padding:10px;border-left:1px solid #8884}.ws.nt .tree,.ws.nc .ctl{display:none}.tree a{display:block;padding:5px 8px;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tree a:hover{background:#8881}.tree a.cur{background:#1a6ed822;color:#1a6ed8;font-weight:600}.tree .new{font-weight:600;margin-bottom:6px}.tree .sec{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:12px 4px 4px}#src{grid-column:2;grid-row:2;width:100%;height:100%;resize:none;border:0;border-right:1px solid #8884;font:13px/1.55 ui-monospace,Menlo,monospace;padding:12px;background:transparent;color:inherit;white-space:pre;overflow:auto;tab-size:2}.ws.wrap #src{white-space:pre-wrap;overflow-wrap:break-word}.prev,.prev-empty{grid-column:3;grid-row:2;width:100%;height:100%;border:0}.prev{background:#fff}.prev-empty{display:flex;align-items:center;justify-content:center;color:#8a8a8a;text-align:center;padding:2rem}.ctl h3{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:14px 0 5px}.ctl h3:first-child{margin-top:0}.ctl .err{color:#c0392b;white-space:pre-wrap;font:11px/1.4 ui-monospace,monospace;max-height:9rem;overflow:auto}.ctl .ok{color:#27ae60;font-size:.85rem}.ctl .row{display:flex;gap:6px}.ctl input{flex:1;font:inherit;padding:6px 8px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;min-width:0}.ctl button{font:inherit;padding:6px 10px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;cursor:pointer}.ctl button:hover{border-color:#1a6ed8}.share{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}.share button.on{border-color:#1a6ed8;color:#1a6ed8}.del{margin-top:18px;color:#c0392b;border-color:#c0392b55!important;width:100%}.mtabs{display:none;grid-column:1;grid-row:2}@media(max-width:820px){body{overflow:auto;height:auto}.ws,.ws.nt,.ws.nc{grid-template-columns:1fr!important;grid-template-rows:auto auto 1fr!important;height:auto;min-height:100vh}.bar{grid-column:1;flex-wrap:wrap;padding-left:max(10px,env(safe-area-inset-left));padding-right:max(10px,env(safe-area-inset-right))}.bar .grow{display:none}.bar button,.bar a,.bar input{min-height:44px}.bar .ico{min-width:44px}#tt,#ct{display:none}.mtabs{display:flex;border-bottom:1px solid #8884}.mtabs button{flex:1;padding:11px;border:0;background:0;color:inherit;font:inherit;border-bottom:2px solid transparent;cursor:pointer}.mtabs button.on{border-bottom-color:#1a6ed8;color:#1a6ed8;font-weight:600}.tree,#src,.prev,.prev-empty,.ctl{grid-column:1;grid-row:3;border:0;display:none}.ws[data-mv=tree] .tree{display:block}.ws[data-mv=code] #src{display:block}.ws[data-mv=prev] .prev{display:block}.ws[data-mv=prev] .prev-empty{display:flex}.ws[data-mv=ctl] .ctl{display:block}#src{min-height:68vh;font-size:16px}.prev,.prev-empty{min-height:68vh}.ctl input{font-size:16px}.ctl,#src{padding-bottom:max(12px,env(safe-area-inset-bottom))}}</style>'
 ::  the starter template a new page opens with.
 ::
 ++  edit-template
@@ -3591,6 +3641,19 @@
   ^-  tape
   %-  trip
   '# My note\0a\0aStart writing in markdown. Use **bold**, *italic*, lists, and [links](https://urbit.org). The preview updates as you type.\0a'
+::  +starter-for: the starter body a new file of the given kind opens with.
+::
+++  starter-for
+  |=  kind=@tas
+  ^-  tape
+  ?+  kind  edit-template
+    %md    md-template
+    %gmi   (trip '# Gemtext\0a\0aLines are text. A link line starts with => :\0a=> https://urbit.org  Urbit\0a')
+    %html  (trip '<h1>Hello</h1>\0a<p>Raw HTML — style it, script it, import assets.</p>\0a<!-- import a js file you made: <script src="/apps/lattice/f/app"></script> -->\0a')
+    %text  (trip 'Plain text, shown exactly as typed.\0a')
+    %js    (trip '// A JavaScript asset. Import it into an html file with:\0a//   <script src="/apps/lattice/f/NAME"></script>\0aconsole.log("hello from lattice");\0a')
+    %css   (trip '/* A CSS asset. Import it into an html file with:\0a   <link rel="stylesheet" href="/apps/lattice/f/NAME"> */\0abody { font-family: system-ui, sans-serif; }\0a')
+  ==
 ::  +share-btn: one sharing preset button (JS wires the click), marked .on if current.
 ::
 ++  share-btn
@@ -3604,18 +3667,21 @@
 ::  toggleable controls panel (far right: status, command, sharing, delete).
 ::
 ++  edit-html
-  |=  [our=@p name=(unit @ta) src=@t pages=(list @ta) mode=share-mode:le err=@t md=?]
+  |=  [our=@p name=(unit @ta) src=@t pages=(list @ta) mode=share-mode:le err=@t kind=@tas]
   ^-  @t
   =/  ship=tape  (scow %p our)
   =/  nm=tape  ?~(name "" (trip u.name))
   =/  view=tape  :(weld "/apps/lattice/x/" ship "/apps/lattice.lattice_app/page/" nm "/")
-  ::  new page opens on a starter (markdown prose or the hoon skeleton); an
-  ::  existing page shows its source (raw markdown for a note, via unwrap-md).
-  =/  code=tape  ?~(name ?:(md md-template edit-template) (esc (trip src)))
+  ::  ct: a content file (its body is wrapped on save). wrap: soft-wrap prose.
+  =/  ct=?  !=(%hoon kind)
+  =/  wrap=?  |(=(%md kind) =(%gmi kind) =(%text kind))
+  ::  new file opens on a per-kind starter; an existing file shows its body
+  ::  (raw content for a typed file, via unwrap-content). Escaped for the textarea.
+  =/  code=tape  ?~(name (esc (starter-for kind)) (esc (trip src)))
   =/  tree-html=tape
     %-  zing
     ;:  weld
-      `(list tape)`~["<a class=\"new\" href=\"/apps/lattice/edit?kind=md\">+ new note</a><a class=\"new\" href=\"/apps/lattice/edit\">+ new page</a><div class=\"sec\">pages</div>"]
+      `(list tape)`~["<select class=\"new\" onchange=\"if(this.value)location.href='/apps/lattice/edit?kind='+this.value\"><option value=\"\">+ new file&hellip;</option><option value=\"md\">markdown</option><option value=\"gmi\">gemtext</option><option value=\"html\">html</option><option value=\"text\">text</option><option value=\"js\">javascript</option><option value=\"css\">css</option><option value=\"hoon\">hoon page</option></select><div class=\"sec\">files</div>"]
       %+  turn  pages
       |=  p=@ta
       =/  pt=tape  (trip p)
@@ -3632,7 +3698,7 @@
       "<h3>status</h3>"
       ?:  =('' err)  "<div class=\"ok\" id=\"cerr\">compiled ok</div>"
       :(weld "<div class=\"err\" id=\"cerr\">" (esc (trip err)) "</div>")
-      ?:(md "" "<h3>command</h3><div class=\"row\"><input id=\"cmd\" placeholder=\"command\"><button id=\"csend\">send</button></div>")
+      ?:(ct "" "<h3>command</h3><div class=\"row\"><input id=\"cmd\" placeholder=\"command\"><button id=\"csend\">send</button></div>")
       "<h3>sharing</h3><div class=\"share\">"
       (share-btn %private "private" mode)
       (share-btn %shared "shared" mode)
@@ -3650,7 +3716,7 @@
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
     pwa-head
     "<title>edit"  ?~(name "" (weld " - " nm))  "</title>"  edit-css  "</head><body>"
-    :(weld "<div class=\"ws" ?:(md " md" "") "\" id=\"ws\" data-mv=\"code\"><div class=\"bar\">")
+    :(weld "<div class=\"ws" ?:(wrap " wrap" "") "\" id=\"ws\" data-mv=\"code\"><div class=\"bar\">")
     "<button class=\"ico\" id=\"tt\" title=\"toggle tree\">&#9776;</button>"
     ?^(name :(weld "<b>" (esc nm) "</b>") "")
     ?~(name "<input id=\"pname\" placeholder=\"page-name\" autocomplete=\"off\" autofocus>" "")
@@ -3665,11 +3731,11 @@
     "<textarea id=\"src\" spellcheck=\"false\">"  code  "</textarea>"
     ::  md: JS drives the preview via srcdoc (render-md, live as you type), so
     ::  no src — works even before the first save. hoon: the ?embed server view.
-    ?:  md  "<iframe class=\"prev\" id=\"prev\"></iframe>"
+    ?:  ct  "<iframe class=\"prev\" id=\"prev\"></iframe>"
     ?~  name  "<div class=\"prev-empty\">live preview appears here once saved</div>"
     :(weld "<iframe class=\"prev\" id=\"prev\" src=\"" view "?embed\"></iframe>")
     "<div class=\"ctl\">"  ctl-html  "</div></div>"
-    (edit-js nm view md)
+    (edit-js nm view kind)
     sw-register-script
     "</body></html>"
   ==
@@ -3678,17 +3744,17 @@
 ::  place. Single-quote cord: uses double-quotes and backticks only (no ' or \).
 ::
 ++  edit-js
-  |=  [nm=tape view=tape md=?]
+  |=  [nm=tape view=tape kind=@tas]
   ^-  tape
   ;:  weld
     (trip '<script>(function(){var NAME="')
     nm
-    (trip '";var MD=')
-    ?:(md "true" "false")
-    (trip ';var V="')
+    (trip '";var KIND="')
+    (trip kind)
+    (trip '";var CONTENT=KIND!=="hoon";var V="')
     view
     %-  trip
-    '";var $=function(i){return document.getElementById(i)};var ws=$("ws");function ap(){ws.classList.toggle("nt",localStorage.edNT==="1");ws.classList.toggle("nc",localStorage.edNC==="1")}ap();$("tt").onclick=function(){localStorage.edNT=localStorage.edNT==="1"?"0":"1";ap()};$("ct").onclick=function(){localStorage.edNC=localStorage.edNC==="1"?"0":"1";ap()};var mt=document.querySelectorAll(".mtabs button");for(var mi=0;mi<mt.length;mi++){mt[mi].onclick=function(){var v=this.getAttribute("data-mv");ws.setAttribute("data-mv",v);for(var mj=0;mj<mt.length;mj++){mt[mj].className=mt[mj].getAttribute("data-mv")===v?"on":""}if(v==="prev")prev()}}var st=function(t,ok){var s=$("st");s.textContent=t;s.style.color=ok?"#27ae60":"#c0392b"};var ta=$("src");ta.addEventListener("keydown",function(e){if(e.key==="Tab"){e.preventDefault();var s=ta.selectionStart;ta.value=ta.value.slice(0,s)+"  "+ta.value.slice(ta.selectionEnd);ta.selectionStart=ta.selectionEnd=s+2}});var prev=function(){var p=$("prev");if(!p)return;if(MD){fetch("/apps/lattice/page-preview",{method:"POST",body:ta.value}).then(function(r){return r.text()}).then(function(h){p.srcdoc=h}).catch(function(x){})}else{p.src=p.src}};if(MD){var tmr;ta.addEventListener("input",function(){clearTimeout(tmr);tmr=setTimeout(prev,400)});prev()}var chk=async function(){if(!NAME)return;var t="";try{t=await (await fetch(V+"err?data")).text()}catch(x){}var c=$("cerr");if(t){st("error",false);if(c){c.textContent=t;c.className="err"}}else{st(MD?"saved":"compiled ok",true);if(c){c.textContent="compiled ok";c.className="ok"}prev()}};$("save").onclick=async function(){var name=NAME||($("pname")?$("pname").value.trim():"");if(!name){st("name required",false);return}st("saving...",true);var r=await fetch("/apps/lattice/page-save?name="+encodeURIComponent(name)+(NAME?"":"&new=1")+(MD?"&md=1":""),{method:"POST",body:ta.value});if(r.status===409){st("that page already exists",false);return}if(!r.ok){st("save failed "+r.status,false);return}if(!NAME){location="/apps/lattice/edit?name="+encodeURIComponent(name)+(MD?"&kind=md":"");return}st(MD?"saved":"compiling...",true);setTimeout(chk,800);setTimeout(chk,2000)};window.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&e.key==="s"){e.preventDefault();$("save").onclick()}});var cs=$("csend");if(cs){var run=async function(){var c=$("cmd").value;if(!c)return;await fetch("/apps/lattice/page-cmd?name="+encodeURIComponent(NAME),{method:"POST",body:"cmd="+encodeURIComponent(c)});$("cmd").value="";setTimeout(prev,600)};cs.onclick=run;$("cmd").addEventListener("keydown",function(e){if(e.key==="Enter")run()})}document.querySelectorAll(".share button").forEach(function(b){b.onclick=async function(){var m=b.getAttribute("data-m");await fetch("/apps/lattice/page-share?name="+encodeURIComponent(NAME)+"&mode="+m,{method:"POST"});document.querySelectorAll(".share button").forEach(function(x){x.className=x.getAttribute("data-m")===m?"on":""});$("cwurl").innerHTML=m==="clearweb"?`<p>public: <a href="/apps/lattice/c/${NAME}" target="_blank">/c/${NAME}</a></p>`:"";setTimeout(prev,500)}});var d=$("del");if(d){d.onclick=async function(){if(!confirm("delete "+NAME+"?"))return;await fetch("/apps/lattice/page-del?name="+encodeURIComponent(NAME),{method:"POST"});location="/apps/lattice"}}})();</script>'
+    '";var $=function(i){return document.getElementById(i)};var ws=$("ws");function ap(){ws.classList.toggle("nt",localStorage.edNT==="1");ws.classList.toggle("nc",localStorage.edNC==="1")}ap();$("tt").onclick=function(){localStorage.edNT=localStorage.edNT==="1"?"0":"1";ap()};$("ct").onclick=function(){localStorage.edNC=localStorage.edNC==="1"?"0":"1";ap()};var mt=document.querySelectorAll(".mtabs button");for(var mi=0;mi<mt.length;mi++){mt[mi].onclick=function(){var v=this.getAttribute("data-mv");ws.setAttribute("data-mv",v);for(var mj=0;mj<mt.length;mj++){mt[mj].className=mt[mj].getAttribute("data-mv")===v?"on":""}if(v==="prev")prev()}}var st=function(t,ok){var s=$("st");s.textContent=t;s.style.color=ok?"#27ae60":"#c0392b"};var ta=$("src");ta.addEventListener("keydown",function(e){if(e.key==="Tab"){e.preventDefault();var s=ta.selectionStart;ta.value=ta.value.slice(0,s)+"  "+ta.value.slice(ta.selectionEnd);ta.selectionStart=ta.selectionEnd=s+2}});var prev=function(){var p=$("prev");if(!p)return;if(CONTENT){fetch("/apps/lattice/page-preview?type="+KIND,{method:"POST",body:ta.value}).then(function(r){return r.text()}).then(function(h){p.srcdoc=h}).catch(function(x){})}else{p.src=p.src}};if(CONTENT){var tmr;ta.addEventListener("input",function(){clearTimeout(tmr);tmr=setTimeout(prev,400)});prev()}var chk=async function(){if(!NAME)return;var t="";try{t=await (await fetch(V+"err?data")).text()}catch(x){}var c=$("cerr");if(t){st("error",false);if(c){c.textContent=t;c.className="err"}}else{st(CONTENT?"saved":"compiled ok",true);if(c){c.textContent="compiled ok";c.className="ok"}prev()}};$("save").onclick=async function(){var name=NAME||($("pname")?$("pname").value.trim():"");if(!name){st("name required",false);return}st("saving...",true);var r=await fetch("/apps/lattice/page-save?name="+encodeURIComponent(name)+(NAME?"":"&new=1")+(CONTENT?"&type="+KIND:""),{method:"POST",body:ta.value});if(r.status===409){st("that page already exists",false);return}if(!r.ok){st("save failed "+r.status,false);return}if(!NAME){location="/apps/lattice/edit?name="+encodeURIComponent(name)+(CONTENT?"&kind="+KIND:"");return}st(CONTENT?"saved":"compiling...",true);setTimeout(chk,800);setTimeout(chk,2000)};window.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&e.key==="s"){e.preventDefault();$("save").onclick()}});var cs=$("csend");if(cs){var run=async function(){var c=$("cmd").value;if(!c)return;await fetch("/apps/lattice/page-cmd?name="+encodeURIComponent(NAME),{method:"POST",body:"cmd="+encodeURIComponent(c)});$("cmd").value="";setTimeout(prev,600)};cs.onclick=run;$("cmd").addEventListener("keydown",function(e){if(e.key==="Enter")run()})}document.querySelectorAll(".share button").forEach(function(b){b.onclick=async function(){var m=b.getAttribute("data-m");await fetch("/apps/lattice/page-share?name="+encodeURIComponent(NAME)+"&mode="+m,{method:"POST"});document.querySelectorAll(".share button").forEach(function(x){x.className=x.getAttribute("data-m")===m?"on":""});$("cwurl").innerHTML=m==="clearweb"?`<p>public: <a href="/apps/lattice/c/${NAME}" target="_blank">/c/${NAME}</a></p>`:"";setTimeout(prev,500)}});var d=$("del");if(d){d.onclick=async function(){if(!confirm("delete "+NAME+"?"))return;await fetch("/apps/lattice/page-del?name="+encodeURIComponent(NAME),{method:"POST"});location="/apps/lattice"}}})();</script>'
   ==
 ::  +home-css: styling for the landing (nav cards + lists).
 ::
