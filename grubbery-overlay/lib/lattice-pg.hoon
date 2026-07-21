@@ -77,6 +77,34 @@
   ?~  deps  ~
   ?:  =(p -.i.deps)  (fall (mole |.(;;((list entry) +.i.deps))) ~)
   $(deps t.deps)
+::  +folder-index: a ready-made builder BODY — list every page in `dir` as a nav
+::  of links (skipping the conventional `index` page itself, so a folder's index
+::  can live inside it). It depends on `dir`, so it stays live as pages come and
+::  go. This is the whole "auto-index": a page whose gate is only
+::    (folder-index deps /my/folder)
+::  lists /my/folder with no other code. The clearweb serving layer themes it.
+::
+++  folder-index
+  |=  [deps=(list [path *]) dir=path]
+  ^-  result
+  =/  title=tape  ?~(dir "index" (trip (rear `path`dir)))
+  =/  items=(list entry)
+    %+  skim  (tree-in deps dir)
+    |=(e=entry &(page.e ?!(=(/index pax.e))))
+  =/  cards=tape
+    %-  zing
+    %+  turn  items
+    |=  e=entry
+    ;:  weld
+      "<li><a href=\""  (pub-of (weld dir pax.e))  "\">"  (slag 1 (spud pax.e))  "</a></li>"
+    ==
+  =/  body=@t
+    %-  crip
+    ;:  weld
+      "<div class=\"site\"><header><h1>"  title  "</h1></header><ul class=\"nav\">"
+      cards  "</ul></div>"
+    ==
+  (needs (html body) ~[(dir-of dir)])
 ::  +esc: HTML-escape a cord — use it on any dynamic value you weld into html.
 ::
 ++  esc

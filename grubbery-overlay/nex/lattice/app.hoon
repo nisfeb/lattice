@@ -734,12 +734,17 @@
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     =/  raw=@t  (req-body req)
-    ?:  =('' raw)  (send-err eyre-id 400 'missing body')
+    ::  ?type=index: no body — the code is generated from the page's own path
+    ::  (it lists its own folder). Otherwise a body is required.
+    =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'hoon')
+    =/  is-index=?  =(%index ptype)
+    ?:  &(?!(is-index) =('' raw))  (send-err eyre-id 400 'missing body')
     ::  ?type=<builder>: the body is raw content, not hoon. Wrap it in
     ::  `... (BUILDER 'content')` so the whole pipeline runs unchanged; edit
     ::  reopens it via unwrap-content. Absent/unknown type -> raw hoon.
-    =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'hoon')
-    =/  src=@t  ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
+    =/  src=@t
+      ?:  is-index  (make-folder-index (pax-of u.name))
+      ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
     ::  ?new=1: create-only — 409 instead of silently overwriting an existing
     ::  page (the editor's new-page mode sends it; caught by review).
     ;<  ex=?  bind:m
@@ -771,6 +776,7 @@
         %text  :(weld "<pre>" (esc (trip body)) "</pre>")
         %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip body)) "</code></pre>")
         %css   :(weld "<pre><code class=\"language-css\">" (esc (trip body)) "</code></pre>")
+        %index  "<div style=\"color:#8a8a8a;text-align:center;padding:2rem\"><p><b>Folder index</b></p><p>Lists the pages in this page's folder automatically, once you name it (e.g. blog/index) and save. Live as pages come and go.</p></div>"
       ==
     (send-html eyre-id (render-bare inner))
       [%'POST' %page-cmd]
@@ -3701,6 +3707,15 @@
 ::  in lockstep with this string.
 ::
 ++  content-env-pre  "|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]  ^-  result  ("
+::  +make-folder-index: the generated code for an `index`-type page — a gate
+::  whose whole body is `(folder-index deps /its/folder)`. The folder is the
+::  page's OWN parent (snip its path), so creating an index page in a folder
+::  auto-lists that folder with no hoon written by the user.
+::
+++  make-folder-index
+  |=  pax=path
+  ^-  @t
+  (crip :(weld content-env-pre "folder-index deps " (spud (snip `path`pax)) ")"))
 ::  +wrap-content: raw body -> a page gate `... (BUILDER 'body')`. builder is a
 ::  pg constructor (md/gmi/html/text/js/css). Escapes body for a single-quote
 ::  hoon cord: \ -> \\, ' -> \', control bytes -> \0a hex.
@@ -3761,7 +3776,7 @@
 ::  +pax-str: a page path -> its slash-separated string (no leading slash).
 ++  pax-str  |=(px=path ^-(tape ?~(px "" (slag 1 (trip (spat px))))))
 ::  +kind-of: a ?kind= param -> a valid editor kind (a content builder or %hoon).
-++  kind-of  |=(k=@t ^-(@tas ?:((~(has in content-builders) `@tas`k) `@tas`k %hoon)))
+++  kind-of  |=(k=@t ^-(@tas ?:(|((~(has in content-builders) `@tas`k) =(%index k)) `@tas`k %hoon)))
 ::  +mime-of: the Content-Type an asset file (/f/<name>) is served with.
 ++  mime-of
   |=  builder=@tas
@@ -3844,6 +3859,7 @@
     %text  (trip 'Plain text, shown exactly as typed.\0a')
     %js    (trip '// A JavaScript asset. Import it into an html file with:\0a//   <script src="/apps/lattice/f/NAME"></script>\0aconsole.log("hello from lattice");\0a')
     %css   (trip '/* A CSS asset. Import it into an html file with:\0a   <link rel="stylesheet" href="/apps/lattice/f/NAME"> */\0abody { font-family: system-ui, sans-serif; }\0a')
+    %index  (trip 'This page lists the pages in its own folder, automatically.\0a\0aName it like  blog/index  and save — the text here is ignored; the\0alisting is generated from the folder and stays live as pages come and go.\0a')
   ==
 ::  +share-btn: one sharing preset button (JS wires the click), marked .on if current.
 ::
@@ -3909,7 +3925,7 @@
     ?:  nfolder
       :(weld "<input id=\"pname\" value=\"" prefill "\" placeholder=\"folder name (a/b for nested)\" autocomplete=\"off\" autofocus>")
     =/  kinds=(list [@tas tape])
-      ~[[%md "markdown"] [%gmi "gemtext"] [%html "html"] [%text "text"] [%js "javascript"] [%css "css"] [%hoon "hoon page"]]
+      ~[[%md "markdown"] [%gmi "gemtext"] [%html "html"] [%text "text"] [%js "javascript"] [%css "css"] [%index "folder index"] [%hoon "hoon page"]]
     =/  opts=tape
       %-  zing
       %+  turn  kinds
