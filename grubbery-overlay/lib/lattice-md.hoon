@@ -3,6 +3,7 @@
 ::
 |%
 +$  refm  (map tape [url=tape title=tape])
++$  footm  (map tape [num=@ud text=tape])
 ::  +esc: HTML-escape a tape.
 ++  esc
   |=  t=tape
@@ -27,7 +28,7 @@
 ++  ltrm  |=(t=tape ^-(tape ?~(t t ?:(=(' ' i.t) $(t t.t) t))))
 ++  rtrm  |=(t=tape (flop (ltrm (flop t))))
 ++  trim  |=(t=tape (rtrm (ltrm t)))
-++  lead  |=(t=tape =|(n=@ud |-(^-(@ud ?~(t n ?:(=(' ' i.t) $(t t.t, n +(n)) n))))))
+++  lead  |=(t=tape =|(n=@ud |-(^-(@ud ?~(t n ?:(|(=(' ' i.t) =(`@tD`9 i.t)) $(t t.t, n +(n)) n))))))
 ::  +allrun: is `t` (after trimming) n>=need repeats of char set `cs`, nonempty?
 ++  allrun
   |=  [t=tape cs=tape need=@ud]
@@ -52,6 +53,9 @@
   |=  [inner=tape url=tape title=tape]
   ^-  tape
   ?.  (safe-url url)  inner
+  ::  a footnote reference (rewritten to #fn-id by sub-foot-refs) is superscript.
+  ?:  (has "#fn-" url)
+    :(weld "<sup class=\"fnref\"><a href=\"" (esc url) "\">" inner "</a></sup>")
   =/  ti=tape  ?~(title "" :(weld " title=\"" (esc title) "\""))
   ;:  weld
     "<a href=\""  (esc url)  "\""  ti
@@ -230,6 +234,63 @@
   ?^  rd
     $(lines t.lines, refs (~(put by refs) key.u.rd [url.u.rd title.u.rd]))
   $(lines t.lines, kept [i.lines kept])
+::  ── footnotes ─────────────────────────────────────────────────────────────
+::  +is-foot-def: a `[^id]: text` footnote definition line -> [id text].
+++  is-foot-def
+  |=  ln=tape
+  ^-  (unit [id=tape text=tape])
+  =/  s=tape  (trim ln)
+  ?.  (has "[^" s)  ~
+  =/  close  (find "]:" s)
+  ?~  close  ~
+  =/  id=tape  (sc (sub u.close 2) (sl 2 s))
+  ?~  id  ~
+  `[id (trim (sl (add u.close 2) s))]
+::  +collect-footnotes: pull `[^id]: text` definitions out and number them (in
+::  order). The refs themselves are rewritten to links by +sub-foot-refs.
+++  collect-footnotes
+  |=  lines=(list tape)
+  ^-  [footm (list tape)]
+  =|  foot=footm
+  =|  kept=(list tape)
+  =/  n=@ud  0
+  |-  ^-  [footm (list tape)]
+  ?~  lines  [foot (flop kept)]
+  =/  fd  (is-foot-def i.lines)
+  ?^  fd
+    $(lines t.lines, n +(n), foot (~(put by foot) id.u.fd [+(n) text.u.fd]))
+  $(lines t.lines, kept [i.lines kept])
+::  +sub-foot-refs: rewrite each `[^id]` reference whose id has a definition to
+::  a `[num](#fn-id)` link (which +ib renders and +a-html superscripts).
+++  sub-foot-refs
+  |=  [t=tape foot=footm]
+  ^-  tape
+  ?~  t  ""
+  ?:  &(=('[' i.t) ?=(^ t.t) =('^' i.t.t))
+    =/  aft=tape  (sl 2 t)
+    =/  close  (find "]" aft)
+    ?~  close  (weld "[^" (sub-foot-refs t.t.t foot))
+    =/  id=tape  (sc u.close aft)
+    =/  hit  (~(get by foot) id)
+    ?~  hit  (weld "[^" (sub-foot-refs aft foot))
+    %+  weld  :(weld "[" (a-co:co num.u.hit) "](#fn-" id ")")
+    (sub-foot-refs (sl +(u.close) aft) foot)
+  (weld ~[i.t] (sub-foot-refs t.t foot))
+::  +render-footnotes: the numbered footnote list appended to the document.
+++  render-footnotes
+  |=  foot=footm
+  ^-  tape
+  ?:  =(0 ~(wyt by foot))  ""
+  =/  items
+    %+  sort  ~(tap by foot)
+    |=([a=[id=tape num=@ud text=tape] b=[id=tape num=@ud text=tape]] (lth num.a num.b))
+  =/  lis=tape
+    %-  zing
+    %+  turn  items
+    |=  [id=tape num=@ud text=tape]
+    ^-  tape
+    (zing ~["<li id=\"fn-" id "\">" (ib text *refm) "</li>"])
+  (zing ~["<hr class=\"fn-sep\"><ol class=\"footnotes\">" lis "</ol>"])
 ::  +setext-under: '===' -> 1 (h1), '---' -> 2 (h2), else 0.
 ++  setext-under
   |=  s=tape
@@ -535,7 +596,10 @@
   |=  body=@t
   ^-  tape
   =/  lines0=(list tape)  (turn (to-wain:format body) trip)
-  =/  cr=[refm (list tape)]  (collect-refs lines0)
-  (rb +.cr -.cr)
+  =/  fn=[footm (list tape)]  (collect-footnotes lines0)
+  =/  foot=footm  -.fn
+  =/  lines1=(list tape)  (turn +.fn |=(l=tape (sub-foot-refs l foot)))
+  =/  cr=[refm (list tape)]  (collect-refs lines1)
+  (weld (rb +.cr -.cr) (render-footnotes foot))
 --
 

@@ -52,4 +52,7 @@
 ++  test-escape     (yes ?!((has "<em>" (r '\\*x\\*'))))
 ++  test-safe-js    (yes ?!((has "<a href" (r '[t](javascript:alert(1))'))))
 ++  test-html-esc   (yes (has "&lt;script&gt;" (r 'a <script> b')))
+++  test-foot-ref   (yes (has "<sup" (r 'x[^a] y\0a\0a[^a]: a note')))
+++  test-foot-num   (yes (has ">1</a>" (r 'x[^a] y\0a\0a[^a]: a note')))
+++  test-foot-list  (yes (has "class=\"footnotes\"" (r 'x[^a] y\0a\0a[^a]: a note')))
 --
