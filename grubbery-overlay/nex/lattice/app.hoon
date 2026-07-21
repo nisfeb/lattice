@@ -3144,20 +3144,22 @@
     "</body></html>"
   ==
 ::  +render-clearweb: the standalone public shell for a %clearweb page — a bare
-::  html document with NO lattice chrome (no address bar), no scripts, no forced
-::  css. An %html page passes css="" and owns its styling (its own <link>/
-::  <style>); md/gmi/text get the reader stylesheet. The public mirror of
-::  +render-page, which is the owner's authenticated explorer chrome.
+::  html document, NO lattice chrome. `head` is raw <head> content (the theme
+::  <link> or a <style>), placed in the HEAD so it is render-blocking: the page
+::  paints WITH its background and never flashes white on navigation. A
+::  color-scheme meta makes even the pre-CSS canvas follow the OS theme. The
+::  public mirror of +render-page (the owner's authenticated explorer chrome).
 ::
 ++  render-clearweb
-  |=  [title=tape css=tape inner=tape]
+  |=  [title=tape head=tape inner=tape]
   ^-  @t
   %-  crip
   ;:  weld
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+    "<meta name=\"color-scheme\" content=\"light dark\">"
     "<title>"  (esc title)  "</title>"
-    ?:(=("" css) "" :(weld "<style>" css "</style>"))
+    head
     "</head><body>"  inner  "</body></html>"
   ==
 ::  +serve-asset: serve a file's raw /data grub with a Content-Type from its
@@ -3222,24 +3224,25 @@
     ?:  ?=(%| -.res)  (send-err eyre-id 415 'not servable')
     (send-typed eyre-id (mime-of vmode) 'no-cache' p.res)
   =/  inner=tape  (render-shown sang.p.dsn vmode)
-  ::  %html owns its own styling (its fragment carries its own <link>/<style>).
-  ?:  ?=(%html vmode)
-    (send-html eyre-id (render-clearweb (pax-str pax) "" inner))
-  ::  a rendered page (md/gmi/text/noun) auto-wears the nearest `theme` css up
-  ::  the folder tree — linked, so a browser caches it across the whole site —
-  ::  with a home link back to that site's index. No theme -> the reader style.
+  ::  Every rendered/html page auto-wears the nearest `theme` css up the folder
+  ::  tree, LINKED IN THE HEAD (render-blocking -> no white flash on nav, browser-
+  ::  cached across the site). A rendered page (md/gmi/text/noun) also gets a
+  ::  "page" wrapper + a home link; %html owns its own body layout. With no theme,
+  ::  %html gets nothing (it owns its styling) and md/gmi/text get the reader css.
   ;<  tf=(unit path)  bind:m  (find-theme pax)
-  ?~  tf
-    (send-html eyre-id (render-clearweb (pax-str pax) web-css inner))
-  =/  wrapped=tape
+  =/  head=tape
+    ?^  tf  :(weld "<link rel=\"stylesheet\" href=\"/apps/lattice/c" (spud (weld u.tf /theme)) "\">")
+    ?:(?=(%html vmode) "" :(weld "<style>" web-css "</style>"))
+  =/  body=tape
+    ?:  ?=(%html vmode)  inner
+    ?~  tf  inner
     ;:  weld
-      "<link rel=\"stylesheet\" href=\"/apps/lattice/c"  (spud (weld u.tf /theme))  "\">"
       "<main class=\"page\"><p class=\"home\"><a href=\"/apps/lattice/c"
       (spud (weld u.tf /index))  "\">&larr; home</a></p>"
       inner
       "</main>"
     ==
-  (send-html eyre-id (render-clearweb (pax-str pax) "" wrapped))
+  (send-html eyre-id (render-clearweb (pax-str pax) head body))
 ::  +page-data-html: render a page's data grub. A cord shows as text; any
 ::  other noun as its literal (a page's data mark is a bare noun).
 ::

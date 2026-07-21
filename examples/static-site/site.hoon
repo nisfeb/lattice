@@ -3,8 +3,10 @@
 ::  Everything lives under the /site folder, so ONE `%share-tree /site clearweb`
 ::  publishes the whole thing (and mode=private takes it all down). The builder
 ::  depends on the /site/content DIRECTORY, walks it with tree-in, and links
-::  every page — and the theme and script — with pub-of, the public /c/ url, so
-::  a logged-out visitor can navigate (the /x explorer path is owner-gated).
+::  every page (and the script) with pub-of, the public /c/ url, so a logged-out
+::  visitor can navigate (the /x explorer path is owner-gated). The theme is
+::  applied automatically by the clearweb serving layer (nearest `theme` up the
+::  tree), so the builder need not link it.
 ::
 ::  It emits an %html FRAGMENT: the public /c surface wraps it in a bare
 ::  standalone document (no lattice chrome), and the owner's /x view inlines the
@@ -25,7 +27,6 @@
 =/  body=@t
   %-  crip
   ;:  weld
-    "<link rel=\"stylesheet\" href=\""  (pub-of /site/theme)  "\">"
     "<div class=\"site\"><header><h1>My Site</h1>"
     "<p>Built live from /site/content and published to the clear web.</p></header>"
     "<input class=\"filter\" placeholder=\"filter pages&hellip;\" autocomplete=\"off\">"
