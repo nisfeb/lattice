@@ -24,6 +24,7 @@
       [%share pax=path mode=share-mode] ::  set a page's sharing preset
       [%share-tree pax=path mode=share-mode] ::  set every page under pax
       [%mkdir pax=path]                 ::  create an (empty) folder at pax
+      [%tmpl-save from=path name=@tas]  ::  save page-tree `from` as template `name`
   ==
 ::  +$  share-mode: a page's sharing preset (docs/platform.md step 4).
 ::    %private  — not gained, owner-only (default).

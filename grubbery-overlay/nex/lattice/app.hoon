@@ -70,6 +70,10 @@
         ::  /page/: programmable pages (docs/platform.md step 2). One dir per
         ::  page; the code grub's on-file fiber is the evaluator.
             [%fall %| /page empty-dir:loader]
+        ::  /template/: reusable page-tree templates (inert code grubs, never
+        ::  evaluated — no [%page ...] on-file match). Covered so saved and
+        ::  shipped templates survive reload, like /page and /know/vault.
+            [%fall %| /template empty-dir:loader]
             [%fall %& [/ %'crawler.sig'] [[/ %sig] ~]]
         ==
       ==
@@ -835,6 +839,29 @@
       ==
     ;<  ~  bind:m  (poke-eval [%share-tree (pax-of u.name) mode])
     (send-ok eyre-id)
+      [%'POST' %template-save]
+    ::  save a page-tree as a reusable template: from=<page path>, name=<term>.
+    =/  from=(unit @t)  (~(get by args) 'from')
+    =/  nm=(unit @t)    (~(get by args) 'name')
+    ?~  from  (send-err eyre-id 400 'missing from')
+    ?~  nm    (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.from)  (send-err eyre-id 400 'bad from')
+    ?.  ((sane %tas) u.nm)   (send-err eyre-id 400 'bad template name')
+    ;<  ~  bind:m  (poke-eval [%tmpl-save (pax-of u.from) `@tas`u.nm])
+    (send-ok eyre-id)
+      [%'POST' %template-new]
+    ::  instantiate a template into a new page-tree: template=<term>, name=<path>.
+    =/  tmpl=(unit @t)  (~(get by args) 'template')
+    =/  nm=(unit @t)    (~(get by args) 'name')
+    ?~  tmpl  (send-err eyre-id 400 'missing template')
+    ?~  nm    (send-err eyre-id 400 'missing name')
+    ?.  ((sane %tas) u.tmpl)  (send-err eyre-id 400 'bad template')
+    ?.  (valid-name u.nm)     (send-err eyre-id 400 'bad name')
+    ;<  ex=?  bind:m
+      (peek-exists:io [%& %& (weld app-base (weld /page (pax-of u.nm))) %code])
+    ?:  ex  (send-err eyre-id 409 'a page by that name exists')
+    ;<  ~  bind:m  (instantiate-template `@tas`u.tmpl (pax-of u.nm))
+    (send-ok eyre-id)
       [%'POST' %save]
     =/  rel=(unit @t)  (~(get by args) 'path')
     ?~  rel  (send-err eyre-id 400 'missing path')
@@ -1323,18 +1350,13 @@
   ::  the others 3-cells — the face sits at different axes).
   ?-  -.act
       %make
-    =/  pdir=path  (weld root (weld /page pax.act))
-    ;<  ~  bind:m  (ensure-dirs (weld root /page) pax.act)
-    ::  cmd + deps before code — the code grub's fiber reads both at spawn.
-    ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %cmd])
-    ;<  ~  bind:m
-      ?:  ex  (pure:m ~)
-      (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[0 '' 0])
-    ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %deps])
-    ;<  ~  bind:m
-      ?:  ex  (pure:m ~)
-      (put-file [%& %& pdir %deps] [/lattice %eval-deps] `(list path)`~)
-    (put-file [%& %& pdir %code] [/lattice %page] src.act)
+    (make-page root pax.act src.act)
+      %tmpl-save
+    ::  save a page-tree as a template: copy every page's CODE under
+    ::  /template/<name>, rewriting its own root path to the template root, and
+    ::  leave it inert (code grub only — templates are never evaluated).
+    ::  (Instantiation is +instantiate-template — one make PER page, not a batch.)
+    (copy-tree root [%page from.act] [%template /[name.act]] %.n)
       %cmd
     =/  pdir=path  (weld root (weld /page pax.act))
     ::  authoritative existence guard: no code grub -> no page (and no
@@ -1397,6 +1419,101 @@
   ;<  dx=?  bind:m  (peek-exists:io data-road)
   ;<  ~  bind:m  ?:(dx (gain:io data-road pub) (pure:m ~))
   (put-file [%& %& pdir %share] [/lattice %eval-data] mode)
+::  +make-page: create a page at `pax` under /page with the given code — the
+::  shared body of the %make action and template instantiation. cmd + deps
+::  first (the code grub's fiber reads both at spawn), then the code.
+::
+++  make-page
+  |=  [root=path pax=path src=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  pdir=path  (weld root (weld /page pax))
+  ;<  ~  bind:m  (ensure-dirs (weld root /page) pax)
+  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %cmd])
+  ;<  ~  bind:m
+    ?:  ex  (pure:m ~)
+    (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[0 '' 0])
+  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %deps])
+  ;<  ~  bind:m
+    ?:  ex  (pure:m ~)
+    (put-file [%& %& pdir %deps] [/lattice %eval-deps] `(list path)`~)
+  (put-file [%& %& pdir %code] [/lattice %page] src)
+::  +rewrite-root: replace the path-prefix `from` with `to` in code, only where
+::  `from` ends at a path boundary (/ ) space " ] , or end) — so a short root
+::  can't clobber a longer path that merely starts with it.
+::
+++  rewrite-root
+  |=  [hay=tape from=tape to=tape]
+  ^-  tape
+  ?~  from  hay
+  =/  i  (find from hay)
+  ?~  i  hay
+  =/  aft=tape  (slag (add u.i (lent from)) hay)
+  =/  bnd=?  ?~(aft %.y ?=(?(%'/' %')' %' ' %'"' %']' %',') i.aft))
+  %+  weld  (scag u.i hay)
+  %+  weld  ?:(bnd to from)
+  $(hay aft)
+::  +copy-tree: copy every PAGE under src (a [base rel] like [%page /mysite] or
+::  [%template /site]) to dst, rewriting the source root path to the dest root in
+::  each page's code. live=%.y -> dest is under /page and each page is MADE
+::  (evaluated); %.n -> an inert code grub (a template).
+::
+++  copy-tree
+  |=  [root=path src=[base=@tas rel=path] dst=[base=@tas rel=path] live=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  src-root=path  (weld root (weld /[base.src] rel.src))
+  =/  from-str=tape  (spud rel.src)
+  =/  to-str=tape    (spud rel.dst)
+  ;<  dn=seen:nexus  bind:m  (peek:io [%& %| src-root] ~)
+  ?.  ?=([%& %ball *] dn)  (pure:m ~)
+  =/  rels=(list path)
+    %+  murn  (collect-tree ball.p.dn ~)
+    |=([pax=path page=?] ?:(page `pax ~))
+  |-  ^-  form:m
+  ?~  rels  (pure:m ~)
+  ;<  cn=seen:nexus  bind:m  (peek:io [%& %& (weld src-root i.rels) %code] ~)
+  =/  code=@t
+    ?.  ?=([%& %file *] cn)  ''
+    (fall (mole |.(;;(@t (sang-noun:tarball sang.p.cn)))) '')
+  =/  newcode=@t  (crip (rewrite-root (trip code) from-str to-str))
+  ;<  ~  bind:m
+    ?:  live
+      (make-page root (weld rel.dst i.rels) newcode)
+    =/  ddir=path  (weld root (weld /[base.dst] (weld rel.dst i.rels)))
+    ;<  ~  bind:m  (ensure-dirs (weld root /[base.dst]) (weld rel.dst i.rels))
+    (put-file [%& %& ddir %code] [/lattice %page] newcode)
+  $(rels t.rels)
+::  +instantiate-template: create a live page-tree from a template. Runs in a
+::  REQUEST fiber and pokes one %make PER page (a separate writer transaction
+::  each), in sorted order — so every page commits before the next and its
+::  evaluator spawns against a settled tree. This is why it is NOT a batch
+::  writer action: pages made in one transaction arm dep-keeps that never
+::  establish (the tree isn't committed yet), leaving the copies non-reactive.
+::
+++  instantiate-template
+  |=  [name=@tas to=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  troot=path    (weld app-base (weld /template /[name]))
+  =/  from-str=tape  (spud /[name])
+  =/  to-str=tape    (spud to)
+  ;<  dn=seen:nexus  bind:m  (peek:io [%& %| troot] ~)
+  ?.  ?=([%& %ball *] dn)  (pure:m ~)
+  =/  rels=(list path)
+    %+  sort
+      %+  murn  (collect-tree ball.p.dn ~)
+      |=([pax=path page=?] ?:(page `pax ~))
+    aor
+  |-  ^-  form:m
+  ?~  rels  (pure:m ~)
+  ;<  cn=seen:nexus  bind:m  (peek:io [%& %& (weld troot i.rels) %code] ~)
+  =/  code=@t
+    ?.  ?=([%& %file *] cn)  ''
+    (fall (mole |.(;;(@t (sang-noun:tarball sang.p.cn)))) '')
+  =/  newcode=@t  (crip (rewrite-root (trip code) from-str to-str))
+  ;<  ~  bind:m  (poke-eval [%make (weld to i.rels) newcode])
+  $(rels t.rels)
 ::  +share-weir: add/remove a grub's road in the public usergroup's peek
 ::  weir — the same grant ensure-pub-weir uses for /pub. Absent group -> no-op.
 ::  (same read-modify-write race as ensure-pub-weir, finding #12; self-heals.)
