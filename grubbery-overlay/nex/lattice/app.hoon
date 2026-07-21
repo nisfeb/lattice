@@ -3044,7 +3044,12 @@
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
     "<style>"  web-css  (trip 'body{margin:0;padding:14px}')  "</style></head><body>"
-    inner  "</body></html>"
+    inner
+    ::  a srcdoc preview has no URL of its own, so a bare #anchor (footnote) link
+    ::  would resolve against the PARENT (the editor) and load it into the frame.
+    ::  Intercept in-page # links and scroll within the frame instead.
+    (trip '<script>document.addEventListener("click",function(e){var a=e.target.closest("a");if(a){var h=a.getAttribute("href");if(h&&h.charAt(0)==="#"){e.preventDefault();var el=document.getElementById(h.slice(1));if(el)el.scrollIntoView()}}})</script>')
+    "</body></html>"
   ==
 ::  +serve-clearweb: the public read of a %clearweb page's data. Read-only,
 ::  data grub only — a non-clearweb (or absent) page is a flat 404 so private
