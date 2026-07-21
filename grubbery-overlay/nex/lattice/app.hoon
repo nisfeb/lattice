@@ -27,6 +27,7 @@
 /<  le   /lib/lattice-eval.hoon
 /<  pg   /lib/lattice-pg.hoon
 /<  gfm  /lib/lattice-md.hoon
+/<  tpl  /lib/lattice-templates.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -96,6 +97,9 @@
         ::  a page shared before the public usergroup existed skipped the grant;
         ::  this re-applies it on the next writer start once the group is present.
         ;<  ~  bind:m  (heal-share-weirs root)
+        ::  lay down the built-in page-tree templates (idempotent; skips if the
+        ::  user already has them). Users instantiate a copy under /page.
+        ;<  ~  bind:m  (ensure-shipped-templates root)
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
         ;<  now=@da  bind:m  bowl-now
@@ -1514,6 +1518,35 @@
   =/  newcode=@t  (crip (rewrite-root (trip code) from-str to-str))
   ;<  ~  bind:m  (poke-eval [%make (weld to i.rels) newcode])
   $(rels t.rels)
+::  +page-code: the stored hoon code for a page of a given kind — an index-type
+::  page's generated auto-index, a content builder's wrapped body, else raw hoon.
+::  Shared by page-save and template laydown.
+::
+++  page-code
+  |=  [pax=path kind=@tas body=@t]
+  ^-  @t
+  ?:  =(%index kind)  (make-folder-index pax)
+  ?:((~(has in content-builders) kind) (wrap-content kind body) body)
+::  +ensure-shipped-templates: on writer start, lay down the built-in templates
+::  under /template/ if absent (idempotent, never overwrites — a user can edit
+::  or replace them). Writes inert code grubs; the tree is covered by an on-load
+::  row so it survives reload.
+::
+++  ensure-shipped-templates
+  |=  root=path
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ex=?  bind:m  (peek-exists:io [%& %| (weld root /template/site)])
+  ?:  ex  (pure:m ~)
+  =/  pages=(list [rel=path kind=@tas body=@t])  site:tpl
+  |-  ^-  form:m
+  ?~  pages  (pure:m ~)
+  =/  prel=path  (weld /site rel.i.pages)
+  =/  code=@t  (page-code prel kind.i.pages body.i.pages)
+  =/  pdir=path  (weld root (weld /template prel))
+  ;<  ~  bind:m  (ensure-dirs (weld root /template) prel)
+  ;<  ~  bind:m  (put-file [%& %& pdir %code] [/lattice %page] code)
+  $(pages t.pages)
 ::  +share-weir: add/remove a grub's road in the public usergroup's peek
 ::  weir — the same grant ensure-pub-weir uses for /pub. Absent group -> no-op.
 ::  (same read-modify-write race as ensure-pub-weir, finding #12; self-heals.)
