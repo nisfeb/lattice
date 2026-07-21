@@ -3508,63 +3508,6 @@
     $(lines t.lines, out :(weld out "<blockquote>" (esc (slag 2 ln)) "</blockquote>"))
   ?:  =("" ln)  $(lines t.lines)
   $(lines t.lines, out :(weld out "<p>" (esc ln) "</p>"))
-::  +find-sub: index of the first occurrence of `ndl` in `hay` (~ if absent).
-::
-++  find-sub
-  |=  [ndl=tape hay=tape]
-  ^-  (unit @ud)
-  =/  ln=@ud  (lent ndl)
-  ?:  =(0 ln)  `0
-  =/  n=@ud  0
-  |-  ^-  (unit @ud)
-  =/  seg=tape  (slag n hay)
-  ?:  (lth (lent seg) ln)  ~
-  ?:  =(ndl (scag ln seg))  `n
-  $(n +(n))
-::  +md-inline: one line of markdown INLINE formatting -> HTML. Escapes text and
-::  applies `code`, **bold**, *italic*, and [text](url) links (safe schemes only:
-::  http(s), root-relative, #anchor, urb://). Anything else is escaped literally.
-::
-++  md-inline
-  |=  t=tape
-  ^-  tape
-  =|  out=tape
-  |-  ^-  tape
-  ?~  t  out
-  =/  c=@tD  i.t
-  ?:  =('`' c)
-    =/  e=(unit @ud)  (find "`" t.t)
-    ?~  e  $(t t.t, out (weld out "&#96;"))
-    $(t (slag +(u.e) t.t), out :(weld out "<code>" (esc (scag u.e t.t)) "</code>"))
-  ?:  (has-prefix "**" t)
-    =/  rest=tape  (slag 1 t.t)
-    =/  e=(unit @ud)  (find-sub "**" rest)
-    ?~  e  $(t t.t, out (weld out "*"))
-    $(t (slag (add 2 u.e) rest), out :(weld out "<strong>" (md-inline (scag u.e rest)) "</strong>"))
-  ?:  =('*' c)
-    =/  e=(unit @ud)  (find "*" t.t)
-    ?~  e  $(t t.t, out (weld out "*"))
-    $(t (slag +(u.e) t.t), out :(weld out "<em>" (md-inline (scag u.e t.t)) "</em>"))
-  ?:  =('[' c)
-    =/  ce=(unit @ud)  (find "]" t.t)
-    ?~  ce  $(t t.t, out (weld out (esc "[")))
-    =/  ap=tape  (slag +(u.ce) t.t)
-    ?.  &(?=(^ ap) =('(' i.ap))  $(t t.t, out (weld out (esc "[")))
-    =/  ue=(unit @ud)  (find ")" t.ap)
-    ?~  ue  $(t t.t, out (weld out (esc "[")))
-    =/  txt=tape  (scag u.ce t.t)
-    =/  url=tape  (scag u.ue t.ap)
-    =/  safe=?
-      ?|  =("http" (scag 4 url))
-          =("urb:" (scag 4 url))
-          &(?=(^ url) =('/' i.url))
-          &(?=(^ url) =('#' i.url))
-      ==
-    =/  piece=tape
-      ?.  safe  (md-inline txt)
-      :(weld "<a href=\"" (esc url) "\" target=\"_blank\" rel=\"noopener noreferrer\">" (md-inline txt) "</a>")
-    $(t (slag +(u.ue) t.ap), out (weld out piece))
-  $(t t.t, out (weld out (esc ~[c])))
 ::  +md-envelope: the exact page-source shell a markdown note is stored in.
 ::  The evaluator only knows Hoon gates, so a note IS a gate returning (md '...'):
 ::  wrap-md escapes the prose into a single-quote cord and drops it in here;
@@ -3611,49 +3554,6 @@
   =/  quoted=@t  (crip :(weld "'" mid "'"))
   =/  r  (mule |.(;;(@t q:(slap !>(0) (ream quoted)))))
   ?.(?=(%& -.r) ~ `p.r)
-::  +render-md: a markdown body -> HTML fragment. Block level: # headings,
-::  ``` fences, - lists, > quotes, --- rules, paragraphs; inline via md-inline.
-::  Own-page content only (like render-gmi), so raw HTML in the source is escaped.
-::
-++  render-md
-  |=  body=@t
-  ^-  tape
-  =/  lines=(list @t)  (to-wain:format body)
-  =|  out=tape
-  =/  inpre=?  |
-  =|  prebuf=(list @t)
-  =/  inlist=?  |
-  |-  ^-  tape
-  ?~  lines
-    =.  out
-      ?:(inpre :(weld out "<pre>" (esc (trip (of-wain:format (flop prebuf)))) "</pre>") out)
-    ?:(inlist (weld out "</ul>") out)
-  =/  ln=tape  (trip i.lines)
-  ?:  inpre
-    ?.  (has-prefix "```" ln)  $(lines t.lines, prebuf [i.lines prebuf])
-    %=  $
-      lines   t.lines
-      inpre   |
-      prebuf  ~
-      out     :(weld out "<pre>" (esc (trip (of-wain:format (flop prebuf)))) "</pre>")
-    ==
-  ::  close an open list before any non-list block.
-  =/  pc=tape  ?:(inlist "</ul>" "")
-  ?:  (has-prefix "```" ln)   $(lines t.lines, inpre &, prebuf ~, inlist |, out (weld out pc))
-  ?:  (has-prefix "###### " ln)  $(lines t.lines, inlist |, out :(weld out pc "<h6>" (md-inline (slag 7 ln)) "</h6>"))
-  ?:  (has-prefix "##### " ln)   $(lines t.lines, inlist |, out :(weld out pc "<h5>" (md-inline (slag 6 ln)) "</h5>"))
-  ?:  (has-prefix "#### " ln)    $(lines t.lines, inlist |, out :(weld out pc "<h4>" (md-inline (slag 5 ln)) "</h4>"))
-  ?:  (has-prefix "### " ln)     $(lines t.lines, inlist |, out :(weld out pc "<h3>" (md-inline (slag 4 ln)) "</h3>"))
-  ?:  (has-prefix "## " ln)      $(lines t.lines, inlist |, out :(weld out pc "<h2>" (md-inline (slag 3 ln)) "</h2>"))
-  ?:  (has-prefix "# " ln)       $(lines t.lines, inlist |, out :(weld out pc "<h1>" (md-inline (slag 2 ln)) "</h1>"))
-  ?:  ?|((has-prefix "- " ln) (has-prefix "* " ln) (has-prefix "+ " ln))
-    =/  item=tape  (md-inline (slag 2 ln))
-    ?:  inlist  $(lines t.lines, out :(weld out "<li>" item "</li>"))
-    $(lines t.lines, inlist &, out :(weld out "<ul><li>" item "</li>"))
-  ?:  (has-prefix "> " ln)  $(lines t.lines, inlist |, out :(weld out pc "<blockquote>" (md-inline (slag 2 ln)) "</blockquote>"))
-  ?:  ?|(=("---" ln) =("***" ln) =("___" ln))  $(lines t.lines, inlist |, out :(weld out pc "<hr>"))
-  ?:  =("" ln)  $(lines t.lines, inlist |, out (weld out pc))
-  $(lines t.lines, inlist |, out :(weld out pc "<p>" (md-inline ln) "</p>"))
 ::  +read-page-names: the programmable-page names under /page (sorted, ~ if the
 ::  dir is absent). Feeds the home landing so it always lists what you can open.
 ::
