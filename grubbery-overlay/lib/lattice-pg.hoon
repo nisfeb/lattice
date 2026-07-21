@@ -56,6 +56,22 @@
   ?~  deps  ''
   ?:  =(p -.i.deps)  (fall (mole |.(;;(@t +.i.deps))) '')
   $(deps t.deps)
+::  composition over a DIRECTORY — name a folder in a `needs` list to depend on
+::  its whole subtree. The dep resolves to a +tree listing: every page/folder
+::  under it (paths RELATIVE to the folder), so a page can walk a structured
+::  tree — build a nav/index, a feed, a dashboard. Re-runs when the tree changes.
+::    dir-of  the dep path for a folder      tree-in  its listing, from `deps`
+::
++$  entry  [pax=path page=?]  ::  a listed node: a page (%.y) or a folder (%.n)
+++  dir-of  |=(rel=path ^-(path (weld /apps/'lattice.lattice_app'/page rel)))
+++  tree-in
+  |=  [deps=(list [path *]) rel=path]
+  ^-  (list entry)
+  =/  p=path  (dir-of rel)
+  |-  ^-  (list entry)
+  ?~  deps  ~
+  ?:  =(p -.i.deps)  (fall (mole |.(;;((list entry) +.i.deps))) ~)
+  $(deps t.deps)
 ::  +esc: HTML-escape a cord — use it on any dynamic value you weld into html.
 ::
 ++  esc

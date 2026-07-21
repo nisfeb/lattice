@@ -1504,7 +1504,17 @@
     ;<  *  bind:m  (keep:io /ev [%& %& u.src %show] ~)
     $(deps t.deps, armed (~(put in armed) i.deps))
   =/  n=@ud  (dec (lent i.deps))
-  ;<  *  bind:m  (keep:io /ev [%& %& (scag n i.deps) (snag n i.deps)] ~)
+  =/  file-road=road:tarball  [%& %& (scag n i.deps) (snag n i.deps)]
+  ;<  fsn=seen:nexus  bind:m  (peek:io file-road ~)
+  ?:  ?=([%& %file *] fsn)
+    ;<  *  bind:m  (keep:io /ev file-road ~)
+    $(deps t.deps, armed (~(put in armed) i.deps))
+  ::  not a file: a DIRECTORY dep keeps on the dir road so a child add/remove
+  ::  re-runs us. If it is neither (a not-yet-created grub), keep the file road
+  ::  so a later write of that grub still fires. Mirrors read-dep-vals.
+  ;<  dsn=seen:nexus  bind:m  (peek:io [%& %| i.deps] ~)
+  =/  keep-road=road:tarball  ?:(?=([%& %ball *] dsn) [%& %| i.deps] file-road)
+  ;<  *  bind:m  (keep:io /ev keep-road ~)
   $(deps t.deps, armed (~(put in armed) i.deps))
 ::  +read-dep-vals: resolve each dep to its current value. A data dep gives the
 ::  grub's raw noun (~ if absent); a VIEW dep gives the source page's RENDERED
@@ -1528,8 +1538,16 @@
     (pure:m [[i.deps frag] rest])
   =/  n=@ud  (dec (lent i.deps))
   ;<  sn=seen:nexus  bind:m  (peek:io [%& %& (scag n i.deps) (snag n i.deps)] ~)
+  ?:  ?=([%& %file *] sn)
+    ::  a file grub -> its raw noun.
+    ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
+    (pure:m [[i.deps (sang-noun:tarball sang.p.sn)] rest])
+  ::  not a file -> a DIRECTORY dep resolves to its tree listing (a
+  ::  (list [pax=path page=?]) of pages+folders under it, paths relative to the
+  ::  dir), so a page can enumerate a structured subtree. ~ if it is neither.
+  ;<  dn=seen:nexus  bind:m  (peek:io [%& %| i.deps] ~)
   ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
-  =/  val=*  ?.(?=([%& %file *] sn) ~ (sang-noun:tarball sang.p.sn))
+  =/  val=*  ?.(?=([%& %ball *] dn) ~ (collect-tree ball.p.dn ~))
   (pure:m [[i.deps val] rest])
 ::  +eval-run: one run of a compiled page — build the env vase (typed via
 ::  slop, so the gate's declared sample nest-checks), slam inside mule,
