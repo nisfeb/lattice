@@ -72,6 +72,25 @@ served, lattice renders it to HTML, wraps it in `<main class="page">` with a
 theme is CSS you pick or write, not markup. A page with no `theme` above it
 falls back to the default reader stylesheet.
 
+### Adding sections (a blog, docs, …)
+
+A section is just another folder with its own index. To add a blog:
+
+1. Make a `site/blog` folder and write markdown pages in it.
+2. Add an **index** page — in the editor's file-type menu pick **folder index**,
+   name it `site/blog/index`, and save (no body). It generates a one-line
+   builder, `(folder-index deps /site/blog)`, that lists the folder as a live
+   nav — you write no code.
+3. Optionally drop a `site/blog/theme` (css) to give the blog its own look; the
+   nearest theme up the tree wins, so blog pages use it while `site/content`
+   keeps `site/theme`.
+4. Republish with the same one action — `%share-tree /site clearweb` covers the
+   new folder.
+
+`folder-index` is an ordinary page-stdlib helper (like `md`/`html`/`tree-in`) —
+the `index` file type just scaffolds the one-liner from the page's own path.
+Nothing in the app lists a directory; the auto-index is a normal page.
+
 ## Reproduce it
 
 `./deploy.sh <base-url> <cookie-file>` creates all the pages under `/site` and
@@ -81,6 +100,8 @@ page `app`, and a hoon page `index`), then hit *clearweb* on the folder.
 
 ## The primitives it rests on
 
+- **Auto-index** — `folder-index` (pg) + the `index` file type: a folder lists
+  itself with no builder written.
 - **Directory dependency** — `dir-of` / `tree-in` / the `entry` mold in
   `lib/lattice-pg.hoon`; resolved in `read-dep-vals`, kept live in
   `arm-eval-deps`. "Run a program over a structured tree."
