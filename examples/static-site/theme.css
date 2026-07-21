@@ -13,4 +13,15 @@ body{font-family:system-ui,-apple-system,sans-serif;color:#1a1a1a;background:#fa
 .site .nav a b{display:block;font-size:1.1rem;color:#1a6ed8;text-transform:capitalize}
 .site .nav a span{color:#999;font-size:.85rem}
 .site footer{margin:2.2rem 0;color:#aaa;font-size:.85rem}
+/* Content pages: markdown auto-wrapped by lattice in <main class="page"> with a
+   home link. The author only writes markdown; this styles the rendered result. */
+.page{max-width:44rem;margin:0 auto;padding:1.5rem}
+.page .home{margin:0 0 1.5rem;font-size:.9rem}
+.page .home a{color:#1a6ed8;text-decoration:none}
+.page a{color:#1a6ed8}
+.page h1,.page h2{border-bottom:1px solid #eee;padding-bottom:.2rem}
+.page pre{background:#f4f4f4;padding:.8rem;border-radius:8px;overflow-x:auto}
+.page code{background:#f4f4f4;padding:.1em .3em;border-radius:4px}
+.page pre code{background:none;padding:0}
+@media(prefers-color-scheme:dark){.page h1,.page h2{border-color:#333}.page pre,.page code{background:#242424}}
 @media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#161616}.site .filter,.site .nav a{background:#242424;border-color:#444}.site header p{color:#999}}

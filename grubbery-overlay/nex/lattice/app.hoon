@@ -3175,9 +3175,27 @@
   =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.p.dsn))))
   ?:  ?=(%| -.res)  (send-err eyre-id 415 'not servable')
   (send-typed eyre-id (mime-of vmode) 'no-cache' p.res)
-::  +serve-clearweb: the public read of a %clearweb page's data. Read-only,
-::  data grub only — a non-clearweb (or absent) page is a flat 404 so private
-::  siblings never leak existence. No SSE (an anon keep would 403 anyway).
+::  +find-theme: the nearest folder AT or ABOVE pax's parent holding a clearweb
+::  css `theme` page — so a rendered clearweb page auto-inherits a site theme
+::  (nearest wins; a subfolder theme overrides). ~ if none up to the root.
+::  ponytail: a few peeks per rendered request; the theme link is then browser-
+::  cached across the site. Add a cache here only if it ever measures hot.
+::
+++  find-theme
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,(unit path))
+  ^-  form:m
+  =/  anc=path  (snip `path`pax)
+  |-  ^-  form:m
+  =/  tdir=path  (weld app-base (weld /page (weld anc /theme)))
+  ;<  mode=share-mode:le  bind:m  (read-share tdir)
+  ;<  show=view-mode:pg   bind:m  (read-show-mode tdir)
+  ?:  &(?=(%clearweb mode) ?=(%css show))  (pure:m `anc)
+  ?~  anc  (pure:m ~)
+  $(anc (snip `path`anc))
+::  +serve-clearweb: the public read of a %clearweb page. Read-only, data grub
+::  only — a non-clearweb (or absent) page is a flat 404 so private siblings
+::  never leak existence. No SSE (an anon keep would 403 anyway).
 ::
 ++  serve-clearweb
   |=  [eyre-id=@ta pax=path]
@@ -3204,10 +3222,24 @@
     ?:  ?=(%| -.res)  (send-err eyre-id 415 'not servable')
     (send-typed eyre-id (mime-of vmode) 'no-cache' p.res)
   =/  inner=tape  (render-shown sang.p.dsn vmode)
-  ::  %html owns its own styling (its fragment carries a <link>/<style>); the
-  ::  rendered modes (md/gmi/text/noun) get the reader stylesheet.
-  =/  css=tape  ?:(?=(%html vmode) "" web-css)
-  (send-html eyre-id (render-clearweb (pax-str pax) css inner))
+  ::  %html owns its own styling (its fragment carries its own <link>/<style>).
+  ?:  ?=(%html vmode)
+    (send-html eyre-id (render-clearweb (pax-str pax) "" inner))
+  ::  a rendered page (md/gmi/text/noun) auto-wears the nearest `theme` css up
+  ::  the folder tree — linked, so a browser caches it across the whole site —
+  ::  with a home link back to that site's index. No theme -> the reader style.
+  ;<  tf=(unit path)  bind:m  (find-theme pax)
+  ?~  tf
+    (send-html eyre-id (render-clearweb (pax-str pax) web-css inner))
+  =/  wrapped=tape
+    ;:  weld
+      "<link rel=\"stylesheet\" href=\"/apps/lattice/c"  (spud (weld u.tf /theme))  "\">"
+      "<main class=\"page\"><p class=\"home\"><a href=\"/apps/lattice/c"
+      (spud (weld u.tf /index))  "\">&larr; home</a></p>"
+      inner
+      "</main>"
+    ==
+  (send-html eyre-id (render-clearweb (pax-str pax) "" wrapped))
 ::  +page-data-html: render a page's data grub. A cord shows as text; any
 ::  other noun as its literal (a page's data mark is a bare noun).
 ::

@@ -58,9 +58,19 @@ POST /apps/lattice/page-share-tree?name=site&mode=private
 ```
 
 The public site is then at **`/apps/lattice/c/site/index`**, navigable with no
-login. Each page is served chrome-less: `%html` raw (author owns the doc),
-markdown wrapped in a clean reader shell, css/js as their real content-type so
-they load as a real stylesheet / script.
+login. Each page is served chrome-less: `%html` raw (the builder owns its doc),
+css/js as their real content-type, and **markdown auto-wrapped in your theme** —
+you write only markdown and it is rendered into themed HTML on publication.
+
+### Auto-theming markdown (no HTML authoring)
+
+A page named `theme` (a `css` page) styles every page in its folder and below;
+the nearest one up the tree wins (drop a `theme` at `site/` to theme the whole
+site, or a `site/blog/theme` to override just the blog). When a markdown page is
+served, lattice renders it to HTML, wraps it in `<main class="page">` with a
+`&larr; home` link, and links that theme — so you never touch HTML, and the
+theme is CSS you pick or write, not markup. A page with no `theme` above it
+falls back to the default reader stylesheet.
 
 ## Reproduce it
 
