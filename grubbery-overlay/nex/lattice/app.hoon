@@ -335,8 +335,8 @@
   ::  clearweb: the ONLY unauthenticated surface. GET /c/<name> serves a
   ::  clearweb-tagged page's DATA, read-only — no tree nav, no code, no
   ::  sibling grubs, no command form. Everything else requires the owner.
-  ?:  &(?=([%c @ ~] suffix) =(%'GET' method.request.req))
-    (serve-clearweb eyre-id i.t.suffix)
+  ?:  &(?=([%c ^] suffix) =(%'GET' method.request.req))
+    (serve-clearweb eyre-id t.suffix)
   ::  owner gate. Eyre stamps a request authenticated to our web login with
   ::  src=our, so `authenticated` (already in hand, synchronous) IS the src==our
   ::  check — reading `our` via a /sys/bowl round trip (bowl-our) just to compare
@@ -3104,6 +3104,23 @@
     (trip '<script>document.addEventListener("click",function(e){var a=e.target.closest("a");if(a){var h=a.getAttribute("href");if(h&&h.charAt(0)==="#"){e.preventDefault();var el=document.getElementById(h.slice(1));if(el)el.scrollIntoView()}}})</script>')
     "</body></html>"
   ==
+::  +render-clearweb: the standalone public shell for a %clearweb page — a bare
+::  html document with NO lattice chrome (no address bar), no scripts, no forced
+::  css. An %html page passes css="" and owns its styling (its own <link>/
+::  <style>); md/gmi/text get the reader stylesheet. The public mirror of
+::  +render-page, which is the owner's authenticated explorer chrome.
+::
+++  render-clearweb
+  |=  [title=tape css=tape inner=tape]
+  ^-  @t
+  %-  crip
+  ;:  weld
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+    "<title>"  (esc title)  "</title>"
+    ?:(=("" css) "" :(weld "<style>" css "</style>"))
+    "</head><body>"  inner  "</body></html>"
+  ==
 ::  +serve-asset: serve a file's raw /data grub with a Content-Type from its
 ::  render mode (js/css/html/md/gmi), so an html file can import it by URL.
 ::
@@ -3124,19 +3141,34 @@
 ::  siblings never leak existence. No SSE (an anon keep would 403 anyway).
 ::
 ++  serve-clearweb
-  |=  [eyre-id=@ta name=@ta]
+  |=  [eyre-id=@ta pax=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ?.  ((sane %ta) name)  (send-err eyre-id 404 'not found')
-  =/  pdir=path  (weld app-base /page/[name])
+  ::  same per-segment gate as name-pax/serve-asset: non-empty %ta knots only,
+  ::  so a trailing '/' ('' segment) and '.'/'..' 404 — no traversal, no folder
+  ::  listing. (The route's [%c ^] already rejects a bare /c/.) The per-leaf
+  ::  %clearweb check below is the only public/private gate.
+  ?.  (levy pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
+    (send-err eyre-id 404 'not found')
+  =/  pdir=path  (weld app-base (weld /page pax))
   ;<  mode=share-mode:le  bind:m  (read-share pdir)
   ?.  ?=(%clearweb mode)  (send-err eyre-id 404 'not found')
   ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& pdir %data] ~)
   ;<  vmode=view-mode:pg  bind:m  (read-show-mode pdir)
-  =/  data-html=tape
-    ?.  ?=([%& %file *] dsn)  "<p>no data</p>"
-    (render-shown sang.p.dsn vmode)
-  (send-html eyre-id (render-page "" "" data-html))
+  ?.  ?=([%& %file *] dsn)
+    (send-html eyre-id (render-clearweb (pax-str pax) "" "<p>no data</p>"))
+  ::  css/js serve RAW (a public page links them as a stylesheet/script, so they
+  ::  must NOT go through render-shown's <pre><code> wrap); everything else
+  ::  renders per its view-mode into a bare, chrome-less standalone document.
+  ?:  ?=(?(%css %js) vmode)
+    =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.p.dsn))))
+    ?:  ?=(%| -.res)  (send-err eyre-id 415 'not servable')
+    (send-typed eyre-id (mime-of vmode) 'no-cache' p.res)
+  =/  inner=tape  (render-shown sang.p.dsn vmode)
+  ::  %html owns its own styling (its fragment carries a <link>/<style>); the
+  ::  rendered modes (md/gmi/text/noun) get the reader stylesheet.
+  =/  css=tape  ?:(?=(%html vmode) "" web-css)
+  (send-html eyre-id (render-clearweb (pax-str pax) css inner))
 ::  +page-data-html: render a page's data grub. A cord shows as text; any
 ::  other noun as its literal (a page's data mark is a bare noun).
 ::
