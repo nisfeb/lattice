@@ -379,8 +379,9 @@
       ;<  home=(unit @t)  bind:m  (read-page-body our /index)
       ?~  home
         ;<  pages=(list path)  bind:m  read-page-names
+        ;<  tmpls=(list @ta)   bind:m  read-template-names
         ;<  ix=pub-index:lp    bind:m  (read-pub-index [%| 2 %& /pub %index])
-        (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (home-index-html our pages ix)))
+        (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (home-index-html our pages tmpls ix)))
       (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (render-gmi u.home)))
     =/  ref=(unit referent)  (de-urb u.raw)
     ?~  ref  (send-html eyre-id (render-page (trip u.raw) "" "<p class=\"err\">bad urb:// url</p>"))
@@ -3950,6 +3951,15 @@
   %-  pure:m
   %+  sort  (collect-tree ball.p.sn ~)
   |=([a=[pax=path page=?] b=[pax=path page=?]] (aor pax.a pax.b))
+::  +read-template-names: the top-level template names under /template (the
+::  things you can New-from-template). Sorted; ~ if none.
+::
+++  read-template-names
+  =/  m  (fiber:fiber:nexus ,(list @ta))
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek-shallow:io [%& %| (weld app-base /template)] ~)
+  ?.  ?=([%& %ball *] sn)  (pure:m ~)
+  (pure:m (sort (turn ~(tap by dir.ball.p.sn) head) aor))
 ::  +read-page-names: just the page paths (folders dropped) — the home landing
 ::  lists what you can open.
 ::
@@ -4174,11 +4184,33 @@
 ::  pages — so an empty store is still a way in, not a dead end.
 ::
 ++  home-index-html
-  |=  [our=@p pages=(list path) ix=pub-index:lp]
+  |=  [our=@p pages=(list path) tmpls=(list @ta) ix=pub-index:lp]
   ^-  tape
   =/  ship=tape  (scow %p our)
   =/  base=tape  :(weld "/apps/lattice/x/" ship "/apps/lattice.lattice_app/page/")
   =/  tree=tape  :(weld "/apps/lattice/x/" ship "/")
+  ::  New-from-template: a chip per template; JS prompts for a name, POSTs
+  ::  /template-new (slow — one page per writer round-trip), then opens the new
+  ::  site. No chip if there are no templates.
+  =/  tmpl-section=tape
+    ?~  tmpls  ""
+    %-  zing
+    ;:  weld
+      `(list tape)`~["<h2>Start from a template</h2><div class=\"quick\">"]
+      %+  turn  tmpls
+      |=(t=@ta :(weld "<a href=\"#\" class=\"tmpl\" data-t=\"" (trip t) "\">" (trip t) " &rarr;</a>"))
+      `(list tape)`~["</div><span id=\"tstat\" class=\"muted\"></span>"]
+    ==
+  ::  single-quote cords: double-quote tapes interpolate {...}, which would eat
+  ::  the JS braces. So build the script from single-quote cords (no ' or \).
+  =/  tmpl-script=tape
+    ?~  tmpls  ""
+    ;:  weld
+      %-  trip
+      '<script>document.querySelectorAll(".tmpl").forEach(function(a){a.onclick=async function(e){e.preventDefault();var t=a.getAttribute("data-t");var n=prompt("Name for your new "+t+":",t);if(!n)return;n=n.trim();if(!n)return;var s=document.getElementById("tstat");s.textContent="creating "+n+"... (this can take a moment)";var r=await fetch("/apps/lattice/template-new?template="+encodeURIComponent(t)+"&name="+encodeURIComponent(n),{method:"POST"});if(r.status===409){s.textContent=n+" already exists";return}if(!r.ok){s.textContent="failed ("+r.status+")";return}location="/apps/lattice/x/'
+      ship
+      (trip '/apps/lattice.lattice_app/page/"+n+"/index/"}})</script>')
+    ==
   =/  page-list=tape
     ?~  pages  "<p class=\"muted\">No pages yet — open <b>Pages</b> above to make one.</p>"
     %-  zing
@@ -4219,6 +4251,9 @@
     "<h2>Editor</h2>"
     "<div class=\"quick\"><a href=\"/apps/lattice/edit?kind=md\">+ note</a><a href=\"/apps/lattice/edit\">+ page</a><a href=\"/apps/lattice/edit?newfolder=1\">+ folder</a></div>"
     page-list
+    ::  start-from-a-template (whole page-trees, e.g. a static site).
+    tmpl-section
+    tmpl-script
     ::  browser section: browse the tree, visit peers, read what's published.
     "<h2>Browser</h2>"
     :(weld "<div class=\"quick\"><a href=\"" tree "\">Browse your tree &rarr;</a></div>")
