@@ -64,6 +64,11 @@
 ::
 +$  entry  [pax=path page=?]  ::  a listed node: a page (%.y) or a folder (%.n)
 ++  dir-of  |=(rel=path ^-(path (weld /apps/'lattice.lattice_app'/page rel)))
+::  +pub-of: the PUBLIC (clearweb) url of a page, by its slash path — link
+::  between published pages with it so a logged-out visitor can navigate (the
+::  /x explorer path is owner-gated). The page must itself be shared %clearweb.
+::
+++  pub-of  |=(rel=path ^-(tape (weld "/apps/lattice/c" (spud rel))))
 ++  tree-in
   |=  [deps=(list [path *]) rel=path]
   ^-  (list entry)

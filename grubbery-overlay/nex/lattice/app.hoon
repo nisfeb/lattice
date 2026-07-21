@@ -815,6 +815,20 @@
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
     %+  send-see-other  eyre-id
     :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.name) "/")
+      [%'POST' %page-share-tree]
+    ::  publish/unpublish a whole subtree at once: set `mode` on every page
+    ::  under a folder. name is the folder path; mode=clearweb publishes a site,
+    ::  mode=private takes it all down.
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    =/  mode=share-mode:le
+      ?+  (~(gut by args) 'mode' 'private')  %private
+        %shared    %shared
+        %clearweb  %clearweb
+      ==
+    ;<  ~  bind:m  (poke-eval [%share-tree (pax-of u.name) mode])
+    (send-ok eyre-id)
       [%'POST' %save]
     =/  rel=(unit @t)  (~(get by args) 'path')
     ?~  rel  (send-err eyre-id 400 'missing path')
@@ -1340,22 +1354,43 @@
     ;<  *  bind:m  (cull-soft:io [%& %| pdir])
     (pure:m ~)
       %share
-    =/  pdir=path  (weld root (weld /page pax.act))
-    ;<  cx=?  bind:m  (peek-exists:io [%& %& pdir %code])
-    ?.  cx  (pure:m ~)
-    =/  data-road=road:tarball  [%& %& pdir %data]
-    =/  pub=?  !=(%private mode.act)
-    ::  weir road first (covers the grub even before it exists); then gain the
-    ::  current data if present — the evaluator re-gains on each later write.
-    ;<  ~  bind:m  (share-weir data-road pub)
-    ;<  dx=?  bind:m  (peek-exists:io data-road)
-    ;<  ~  bind:m  ?:(dx (gain:io data-road pub) (pure:m ~))
-    (put-file [%& %& pdir %share] [/lattice %eval-data] mode.act)
+    (apply-share (weld root (weld /page pax.act)) mode.act)
+      %share-tree
+    ::  publish/unpublish a whole subtree: apply the mode to every PAGE under
+    ::  pax (folders have no /data grub, so skip them). Idempotent, so
+    ::  re-publishing is safe; a %private sweep revokes each page's weir too.
+    =/  base=path  (weld root (weld /page pax.act))
+    ;<  dn=seen:nexus  bind:m  (peek:io [%& %| base] ~)
+    ?.  ?=([%& %ball *] dn)  (pure:m ~)
+    =/  rels=(list path)
+      %+  murn  (collect-tree ball.p.dn ~)
+      |=([pax=path page=?] ?:(page `pax ~))
+    |-  ^-  form:m
+    ?~  rels  (pure:m ~)
+    ;<  ~  bind:m  (apply-share (weld base i.rels) mode.act)
+    $(rels t.rels)
       %mkdir
     ::  create an empty folder (and any missing parents). ensure-dirs is
     ::  idempotent, so mkdir over an existing page/folder is a harmless no-op.
     (ensure-dirs (weld root /page) pax.act)
   ==
+::  +apply-share: set one page's sharing preset — the shared body of the %share
+::  and %share-tree eval-actions, so per-page and per-tree can't drift. weir road
+::  first (covers the grub before it exists), then gain the current data if any
+::  (the evaluator re-gains on each later write). Idempotent.
+::
+++  apply-share
+  |=  [pdir=path mode=share-mode:le]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  cx=?  bind:m  (peek-exists:io [%& %& pdir %code])
+  ?.  cx  (pure:m ~)
+  =/  data-road=road:tarball  [%& %& pdir %data]
+  =/  pub=?  !=(%private mode)
+  ;<  ~  bind:m  (share-weir data-road pub)
+  ;<  dx=?  bind:m  (peek-exists:io data-road)
+  ;<  ~  bind:m  ?:(dx (gain:io data-road pub) (pure:m ~))
+  (put-file [%& %& pdir %share] [/lattice %eval-data] mode)
 ::  +share-weir: add/remove a grub's road in the public usergroup's peek
 ::  weir — the same grant ensure-pub-weir uses for /pub. Absent group -> no-op.
 ::  (same read-modify-write race as ensure-pub-weir, finding #12; self-heals.)
@@ -1383,17 +1418,21 @@
   |=  root=path
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  sn=seen:nexus  bind:m  (peek-shallow:io [%& %| (weld root /page)] ~)
+  ::  DEEP peek + recursive walk so NESTED clearweb pages re-heal too (a shallow
+  ::  top-level walk would leave a nested public page ungranted after restart).
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %| (weld root /page)] ~)
   ?.  ?=([%& %ball *] sn)  (pure:m ~)
-  =/  names=(list @ta)  (turn ~(tap by dir.ball.p.sn) head)
-  |-
-  ?~  names  (pure:m ~)
-  =/  pp=path  (weld root /page/[i.names])
+  =/  rels=(list path)
+    %+  murn  (collect-tree ball.p.sn ~)
+    |=([pax=path page=?] ?:(page `pax ~))
+  |-  ^-  form:m
+  ?~  rels  (pure:m ~)
+  =/  pp=path  (weld (weld root /page) i.rels)
   ;<  mode=share-mode:le  bind:m  (read-share pp)
   ;<  ~  bind:m
     ?:  =(%private mode)  (pure:m ~)
     (share-weir [%& %& pp %data] %.y)
-  $(names t.names)
+  $(rels t.rels)
 ::  +read-share: a page's sharing preset grub, %private if absent/malformed.
 ::
 ++  read-share
