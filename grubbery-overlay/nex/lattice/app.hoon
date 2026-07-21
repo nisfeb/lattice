@@ -704,9 +704,11 @@
     ?~  name
       ::  ?kind=<md|gmi|html|text|js|css> opens a new typed file; else a hoon page.
       ::  ?into=<folder> pre-fills the name field so the new file lands in it.
+      ::  ?newfolder opens the in-editor "new folder" mode (name field, no code).
       =/  kind=@tas  (kind-of (~(gut by args) 'kind' 'hoon'))
       =/  into=@t  (~(gut by args) 'into' '')
-      (send-html eyre-id (edit-html our ~ '' tree %private '' kind into))
+      =/  nfolder=?  (~(has by args) 'newfolder')
+      (send-html eyre-id (edit-html our ~ '' tree %private '' kind into nfolder))
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     =/  pdir=path  (weld app-base (weld /page (pax-of u.name)))
     ;<  dn=seen:nexus  bind:m  (peek-shallow:io [%& %| pdir] ~)
@@ -726,7 +728,7 @@
       =/  v  (~(get by fils) %share)
       ?~  v  %private
       (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.u.v)))) %private)
-    (send-html eyre-id (edit-html our [~ `@ta`u.name] disp tree mode err kind ''))
+    (send-html eyre-id (edit-html our [~ `@ta`u.name] disp tree mode err kind '' %.n))
       [%'POST' %page-save]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -3693,7 +3695,7 @@
 ++  edit-css
   ^-  tape
   %-  trip
-  '<style>*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}body{margin:0;font:15px/1.5 system-ui,sans-serif;color:#111;background:#fafafa;height:100vh;overflow:hidden}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}a{color:#1a6ed8}.ws{display:grid;grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 300px;grid-template-rows:auto 1fr;height:100vh}.ws.nt{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 300px}.ws.nc{grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 0}.ws.nt.nc{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 0}.bar{grid-column:1/-1;grid-row:1;display:flex;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid #8884}.bar .grow{flex:1}.bar button,.bar input,.bar a{font:inherit;padding:5px 9px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;text-decoration:none;cursor:pointer}.bar input{cursor:text}.bar button:hover,.bar a:hover{border-color:#1a6ed8}.bar .ico{padding:5px 8px}.bar b{padding:0 4px}#st{border:0;background:0;font-size:.85rem;padding:0}.tree{grid-column:1;grid-row:2;overflow:auto;padding:10px;border-right:1px solid #8884}.ctl{grid-column:4;grid-row:2;overflow:auto;padding:10px;border-left:1px solid #8884}.ws.nt .tree,.ws.nc .ctl{display:none}.tree a{display:block;padding:5px 8px;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tree a:hover{background:#8881}.tree a.cur{background:#1a6ed822;color:#1a6ed8;font-weight:600}.tree .newbtns{display:flex;gap:6px;margin-bottom:8px}.tree .nf{flex:1;text-align:center;padding:5px 8px;font:inherit;font-weight:600;font-size:.82rem;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;cursor:pointer;text-decoration:none}.tree .nf:hover{border-color:#1a6ed8}.tree .fld{display:flex;align-items:center;gap:2px;padding:5px 8px;white-space:nowrap;color:#8a8a8a;font-weight:600}.tree .fld .ftog{display:flex;align-items:center;gap:4px;flex:1;min-width:0;cursor:pointer;overflow:hidden;text-overflow:ellipsis}.tree .fld .cx{display:inline-block;width:.9em;font-size:.7rem;color:#8a8a8a;flex:none;user-select:none}.tree .fld .addf{margin-left:auto;color:#1a6ed8;text-decoration:none;font-weight:700;padding:0 6px;border-radius:4px;flex:none}.tree .fld .addf:hover{background:#1a6ed822}.tree .sec{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:12px 4px 4px}#src{grid-column:2;grid-row:2;width:100%;height:100%;resize:none;border:0;border-right:1px solid #8884;font:13px/1.55 ui-monospace,Menlo,monospace;padding:12px;background:transparent;color:inherit;white-space:pre;overflow:auto;tab-size:2}.ws.wrap #src{white-space:pre-wrap;overflow-wrap:break-word}.prev,.prev-empty{grid-column:3;grid-row:2;width:100%;height:100%;border:0}.prev{background:#fafafa}@media(prefers-color-scheme:dark){.prev{background:#1a1a1a}}.prev-empty{display:flex;align-items:center;justify-content:center;color:#8a8a8a;text-align:center;padding:2rem}.ctl h3{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:14px 0 5px}.ctl h3:first-child{margin-top:0}.ctl .err{color:#c0392b;white-space:pre-wrap;font:11px/1.4 ui-monospace,monospace;max-height:9rem;overflow:auto}.ctl .ok{color:#27ae60;font-size:.85rem}.ctl .row{display:flex;gap:6px}.ctl input{flex:1;font:inherit;padding:6px 8px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;min-width:0}.ctl button{font:inherit;padding:6px 10px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;cursor:pointer}.ctl button:hover{border-color:#1a6ed8}.share{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}.share button.on{border-color:#1a6ed8;color:#1a6ed8}.del{margin-top:18px;color:#c0392b;border-color:#c0392b55!important;width:100%}.mtabs{display:none;grid-column:1;grid-row:2}@media(max-width:820px){body{overflow:auto;height:auto}.ws,.ws.nt,.ws.nc{grid-template-columns:1fr!important;grid-template-rows:auto auto 1fr!important;height:auto;min-height:100vh}.bar{grid-column:1;flex-wrap:wrap;padding-left:max(10px,env(safe-area-inset-left));padding-right:max(10px,env(safe-area-inset-right))}.bar .grow{display:none}.bar button,.bar a,.bar input{min-height:44px}.bar .ico{min-width:44px}#tt,#ct{display:none}.mtabs{display:flex;border-bottom:1px solid #8884}.mtabs button{flex:1;padding:11px;border:0;background:0;color:inherit;font:inherit;border-bottom:2px solid transparent;cursor:pointer}.mtabs button.on{border-bottom-color:#1a6ed8;color:#1a6ed8;font-weight:600}.tree,#src,.prev,.prev-empty,.ctl{grid-column:1;grid-row:3;border:0;display:none}.ws[data-mv=tree] .tree{display:block}.ws[data-mv=code] #src{display:block}.ws[data-mv=prev] .prev{display:block}.ws[data-mv=prev] .prev-empty{display:flex}.ws[data-mv=ctl] .ctl{display:block}#src{min-height:68vh;font-size:16px}.prev,.prev-empty{min-height:68vh}.ctl input{font-size:16px}.ctl,#src{padding-bottom:max(12px,env(safe-area-inset-bottom))}}</style>'
+  '<style>*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}body{margin:0;font:15px/1.5 system-ui,sans-serif;color:#111;background:#fafafa;height:100vh;overflow:hidden}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}a{color:#1a6ed8}.ws{display:grid;grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 300px;grid-template-rows:auto 1fr;height:100vh}.ws.nt{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 300px}.ws.nc{grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 0}.ws.nt.nc{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 0}.bar{grid-column:1/-1;grid-row:1;display:flex;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid #8884}.bar .grow{flex:1}.bar button,.bar input,.bar a,.bar select{font:inherit;padding:5px 9px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;text-decoration:none;cursor:pointer}.bar select{color-scheme:light dark}.bar input{cursor:text}.bar button:hover,.bar a:hover{border-color:#1a6ed8}.bar .ico{padding:5px 8px}.bar b{padding:0 4px}#st{border:0;background:0;font-size:.85rem;padding:0}.tree{grid-column:1;grid-row:2;overflow:auto;padding:10px;border-right:1px solid #8884}.ctl{grid-column:4;grid-row:2;overflow:auto;padding:10px;border-left:1px solid #8884}.ws.nt .tree,.ws.nc .ctl{display:none}.tree a{display:block;padding:5px 8px;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tree a:hover{background:#8881}.tree a.cur{background:#1a6ed822;color:#1a6ed8;font-weight:600}.tree .newbtns{display:flex;gap:6px;margin-bottom:8px}.tree .nf{flex:1;text-align:center;padding:5px 8px;font:inherit;font-weight:600;font-size:.82rem;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;cursor:pointer;text-decoration:none}.tree .nf:hover{border-color:#1a6ed8}.tree .fld{display:flex;align-items:center;gap:2px;padding:5px 8px;white-space:nowrap;color:#8a8a8a;font-weight:600}.tree .fld .ftog{display:flex;align-items:center;gap:4px;flex:1;min-width:0;cursor:pointer;overflow:hidden;text-overflow:ellipsis}.tree .fld .cx{display:inline-block;width:.9em;font-size:.7rem;color:#8a8a8a;flex:none;user-select:none}.tree .fld .addf{margin-left:auto;color:#1a6ed8;text-decoration:none;font-weight:700;padding:0 6px;border-radius:4px;flex:none}.tree .fld .addf:hover{background:#1a6ed822}.tree .sec{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:12px 4px 4px}#src{grid-column:2;grid-row:2;width:100%;height:100%;resize:none;border:0;border-right:1px solid #8884;font:13px/1.55 ui-monospace,Menlo,monospace;padding:12px;background:transparent;color:inherit;white-space:pre;overflow:auto;tab-size:2}.ws.wrap #src{white-space:pre-wrap;overflow-wrap:break-word}.prev,.prev-empty{grid-column:3;grid-row:2;width:100%;height:100%;border:0}.prev{background:#fafafa}@media(prefers-color-scheme:dark){.prev{background:#1a1a1a}}.prev-empty{display:flex;align-items:center;justify-content:center;color:#8a8a8a;text-align:center;padding:2rem}.ctl h3{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:14px 0 5px}.ctl h3:first-child{margin-top:0}.ctl .err{color:#c0392b;white-space:pre-wrap;font:11px/1.4 ui-monospace,monospace;max-height:9rem;overflow:auto}.ctl .ok{color:#27ae60;font-size:.85rem}.ctl .row{display:flex;gap:6px}.ctl input{flex:1;font:inherit;padding:6px 8px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;min-width:0}.ctl button{font:inherit;padding:6px 10px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;cursor:pointer}.ctl button:hover{border-color:#1a6ed8}.share{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}.share button.on{border-color:#1a6ed8;color:#1a6ed8}.del{margin-top:18px;color:#c0392b;border-color:#c0392b55!important;width:100%}.mtabs{display:none;grid-column:1;grid-row:2}@media(max-width:820px){body{overflow:auto;height:auto}.ws,.ws.nt,.ws.nc{grid-template-columns:1fr!important;grid-template-rows:auto auto 1fr!important;height:auto;min-height:100vh}.bar{grid-column:1;flex-wrap:wrap;padding-left:max(10px,env(safe-area-inset-left));padding-right:max(10px,env(safe-area-inset-right))}.bar .grow{display:none}.bar button,.bar a,.bar input{min-height:44px}.bar .ico{min-width:44px}#tt,#ct{display:none}.mtabs{display:flex;border-bottom:1px solid #8884}.mtabs button{flex:1;padding:11px;border:0;background:0;color:inherit;font:inherit;border-bottom:2px solid transparent;cursor:pointer}.mtabs button.on{border-bottom-color:#1a6ed8;color:#1a6ed8;font-weight:600}.tree,#src,.prev,.prev-empty,.ctl{grid-column:1;grid-row:3;border:0;display:none}.ws[data-mv=tree] .tree{display:block}.ws[data-mv=code] #src{display:block}.ws[data-mv=prev] .prev{display:block}.ws[data-mv=prev] .prev-empty{display:flex}.ws[data-mv=ctl] .ctl{display:block}#src{min-height:68vh;font-size:16px}.prev,.prev-empty{min-height:68vh}.ctl input{font-size:16px}.ctl,#src{padding-bottom:max(12px,env(safe-area-inset-bottom))}}</style>'
 ::  the starter template a new page opens with.
 ::
 ++  edit-template
@@ -3733,7 +3735,7 @@
 ::
 ++  edit-html
   |=  $:  our=@p  name=(unit @ta)  src=@t  tree=(list [pax=path page=?])
-          mode=share-mode:le  err=@t  kind=@tas  into=@t
+          mode=share-mode:le  err=@t  kind=@tas  into=@t  nfolder=?
       ==
   ^-  @t
   =/  ship=tape  (scow %p our)
@@ -3753,7 +3755,7 @@
   =/  tree-html=tape
     %-  zing
     ;:  weld
-      `(list tape)`~["<div class=\"newbtns\"><button class=\"nf\" id=\"nf\">+ folder</button><a class=\"nf\" href=\"/apps/lattice/edit\">+ file</a></div><div class=\"sec\">files</div>"]
+      `(list tape)`~["<div class=\"newbtns\"><a class=\"nf\" href=\"/apps/lattice/edit?newfolder=1\">+ folder</a><a class=\"nf\" href=\"/apps/lattice/edit\">+ file</a></div><div class=\"sec\">files</div>"]
       %+  turn  tree
       |=  [px=path page=?]
       =/  segs=(list @ta)  px
@@ -3776,9 +3778,12 @@
       ==
       `(list tape)`~[:(weld "<div class=\"sec\">tree</div><a href=\"/apps/lattice/x/" ship "/apps/lattice.lattice_app/page/\">browse pages &rarr;</a>")]
     ==
-  ::  new-mode bar: a type picker (its reload keeps ?into=) + the prefilled name.
+  ::  new-mode bar: the folder-name field (folder mode) or a type picker (its
+  ::  reload keeps ?into=) + the prefilled file-name field.
   =/  new-bar=tape
     ?^  name  ""
+    ?:  nfolder
+      :(weld "<input id=\"pname\" value=\"" prefill "\" placeholder=\"folder name (a/b for nested)\" autocomplete=\"off\" autofocus>")
     =/  kinds=(list [@tas tape])
       ~[[%md "markdown"] [%gmi "gemtext"] [%html "html"] [%text "text"] [%js "javascript"] [%css "css"] [%hoon "hoon page"]]
     =/  opts=tape
@@ -3791,7 +3796,19 @@
       into-q  "'\">"  opts  "</select>"
       "<input id=\"pname\" value=\""  prefill  "\" placeholder=\"name or folder/name\" autocomplete=\"off\" autofocus>"
     ==
+  ::  main-panes: folder mode shows a hint; else the code textarea + live preview.
+  =/  main-panes=tape
+    ?:  nfolder
+      "<div class=\"prev-empty\" style=\"grid-column:2/4;grid-row:2\">Name your folder above, then hit <b>create folder</b>.<br>You can add files inside it from the tree.</div>"
+    ;:  weld
+      "<textarea id=\"src\" spellcheck=\"false\">"  code  "</textarea>"
+      ?:  ct  "<iframe class=\"prev\" id=\"prev\"></iframe>"
+      ?~  name  "<div class=\"prev-empty\">live preview appears here once saved</div>"
+      :(weld "<iframe class=\"prev\" id=\"prev\" src=\"" view "?embed\"></iframe>")
+    ==
   =/  ctl-html=tape
+    ?:  nfolder
+      "<p style=\"color:#8a8a8a\">A folder has no settings. Create it, then add files inside it.</p>"
     ?~  name
       "<p style=\"color:#8a8a8a\">Save this page, then command &amp; sharing controls appear here.</p>"
     ;:  weld
@@ -3820,7 +3837,8 @@
     "<button class=\"ico\" id=\"tt\" title=\"toggle tree\">&#9776;</button>"
     ?^(name :(weld "<b>" (esc nm) "</b>") "")
     new-bar
-    "<button id=\"save\">save</button><span id=\"st\"></span><span class=\"grow\"></span>"
+    ?:(nfolder "<button id=\"save\">create folder</button>" "<button id=\"save\">save</button>")
+    "<span id=\"st\"></span><span class=\"grow\"></span>"
     ?~(name "" :(weld "<a href=\"" view "\" target=\"_blank\">open &#8599;</a>"))
     "<button class=\"ico\" id=\"ct\" title=\"toggle panel\">&#9881;</button>"
     "<a href=\"/apps/lattice\">home</a></div>"
@@ -3828,14 +3846,11 @@
     ::  on-screen keyboard never hides the preview. JS flips ws[data-mv].
     "<div class=\"mtabs\"><button data-mv=\"code\" class=\"on\">Code</button><button data-mv=\"prev\">Preview</button><button data-mv=\"tree\">Pages</button><button data-mv=\"ctl\">Panel</button></div>"
     "<div class=\"tree\">"  tree-html  "</div>"
-    "<textarea id=\"src\" spellcheck=\"false\">"  code  "</textarea>"
-    ::  md: JS drives the preview via srcdoc (render-md, live as you type), so
-    ::  no src — works even before the first save. hoon: the ?embed server view.
-    ?:  ct  "<iframe class=\"prev\" id=\"prev\"></iframe>"
-    ?~  name  "<div class=\"prev-empty\">live preview appears here once saved</div>"
-    :(weld "<iframe class=\"prev\" id=\"prev\" src=\"" view "?embed\"></iframe>")
+    ::  folder mode shows a hint; else code textarea + live preview (md drives it
+    ::  via srcdoc, live as you type; hoon uses the ?embed server view).
+    main-panes
     "<div class=\"ctl\">"  ctl-html  "</div></div>"
-    (edit-js nm view kind)
+    (edit-js nm view kind nfolder)
     sw-register-script
     "</body></html>"
   ==
@@ -3844,17 +3859,19 @@
 ::  place. Single-quote cord: uses double-quotes and backticks only (no ' or \).
 ::
 ++  edit-js
-  |=  [nm=tape view=tape kind=@tas]
+  |=  [nm=tape view=tape kind=@tas nfolder=?]
   ^-  tape
   ;:  weld
     (trip '<script>(function(){var NAME="')
     nm
     (trip '";var KIND="')
     (trip kind)
-    (trip '";var CONTENT=KIND!=="hoon";var V="')
+    (trip '";var MKDIR=')
+    ?:(nfolder "true" "false")
+    (trip ';var CONTENT=KIND!=="hoon";var V="')
     view
     %-  trip
-    '";var $=function(i){return document.getElementById(i)};var ws=$("ws");function ap(){ws.classList.toggle("nt",localStorage.edNT==="1");ws.classList.toggle("nc",localStorage.edNC==="1")}ap();$("tt").onclick=function(){localStorage.edNT=localStorage.edNT==="1"?"0":"1";ap()};$("ct").onclick=function(){localStorage.edNC=localStorage.edNC==="1"?"0":"1";ap()};var nf=$("nf");if(nf){nf.onclick=async function(){var n=prompt("New folder (use a/b for nested):");if(!n)return;n=n.trim();if(!n)return;var r=await fetch("/apps/lattice/folder-new?name="+encodeURIComponent(n),{method:"POST"});if(!r.ok){alert("could not create folder ("+r.status+")");return}location.href="/apps/lattice/edit?into="+encodeURIComponent(n)}};function trApply(){var c=[];try{c=JSON.parse(localStorage.edColl||"[]")}catch(e){}var rs=document.querySelectorAll(".tree [data-path]");for(var i=0;i<rs.length;i++){var p=rs[i].getAttribute("data-path");var hide=false;for(var j=0;j<c.length;j++){if(p.indexOf(c[j]+"/")===0){hide=true;break}}rs[i].style.display=hide?"none":"";if(rs[i].className.indexOf("fld")>=0){var cx=rs[i].querySelector(".cx");if(cx)cx.innerHTML=c.indexOf(p)>=0?"&#9656;":"&#9662;"}}}var ftgs=document.querySelectorAll(".tree .fld .ftog");for(var fi=0;fi<ftgs.length;fi++){ftgs[fi].onclick=function(){var p=this.parentNode.getAttribute("data-path");var c=[];try{c=JSON.parse(localStorage.edColl||"[]")}catch(e){}var k=c.indexOf(p);if(k>=0)c.splice(k,1);else c.push(p);localStorage.edColl=JSON.stringify(c);trApply()}}trApply();var mt=document.querySelectorAll(".mtabs button");for(var mi=0;mi<mt.length;mi++){mt[mi].onclick=function(){var v=this.getAttribute("data-mv");ws.setAttribute("data-mv",v);for(var mj=0;mj<mt.length;mj++){mt[mj].className=mt[mj].getAttribute("data-mv")===v?"on":""}if(v==="prev")prev()}}var st=function(t,ok){var s=$("st");s.textContent=t;s.style.color=ok?"#27ae60":"#c0392b"};var ta=$("src");ta.addEventListener("keydown",function(e){if(e.key==="Tab"){e.preventDefault();var s=ta.selectionStart;ta.value=ta.value.slice(0,s)+"  "+ta.value.slice(ta.selectionEnd);ta.selectionStart=ta.selectionEnd=s+2}});var prev=function(){var p=$("prev");if(!p)return;if(CONTENT){fetch("/apps/lattice/page-preview?type="+KIND,{method:"POST",body:ta.value}).then(function(r){return r.text()}).then(function(h){p.srcdoc=h}).catch(function(x){})}else{p.src=p.src}};if(CONTENT){var tmr;ta.addEventListener("input",function(){clearTimeout(tmr);tmr=setTimeout(prev,400)});prev()}var chk=async function(){if(!NAME)return;var t="";try{t=await (await fetch(V+"err?data")).text()}catch(x){}var c=$("cerr");if(t){st("error",false);if(c){c.textContent=t;c.className="err"}}else{st(CONTENT?"saved":"compiled ok",true);if(c){c.textContent="compiled ok";c.className="ok"}prev()}};$("save").onclick=async function(){var name=NAME||($("pname")?$("pname").value.trim():"");if(!name){st("name required",false);return}st("saving...",true);var r=await fetch("/apps/lattice/page-save?name="+encodeURIComponent(name)+(NAME?"":"&new=1")+(CONTENT?"&type="+KIND:""),{method:"POST",body:ta.value});if(r.status===409){st("that page already exists",false);return}if(!r.ok){st("save failed "+r.status,false);return}if(!NAME){location="/apps/lattice/edit?name="+encodeURIComponent(name)+(CONTENT?"&kind="+KIND:"");return}st(CONTENT?"saved":"compiling...",true);setTimeout(chk,800);setTimeout(chk,2000)};window.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&e.key==="s"){e.preventDefault();$("save").onclick()}});var cs=$("csend");if(cs){var run=async function(){var c=$("cmd").value;if(!c)return;await fetch("/apps/lattice/page-cmd?name="+encodeURIComponent(NAME),{method:"POST",body:"cmd="+encodeURIComponent(c)});$("cmd").value="";setTimeout(prev,600)};cs.onclick=run;$("cmd").addEventListener("keydown",function(e){if(e.key==="Enter")run()})}document.querySelectorAll(".share button").forEach(function(b){b.onclick=async function(){var m=b.getAttribute("data-m");await fetch("/apps/lattice/page-share?name="+encodeURIComponent(NAME)+"&mode="+m,{method:"POST"});document.querySelectorAll(".share button").forEach(function(x){x.className=x.getAttribute("data-m")===m?"on":""});$("cwurl").innerHTML=m==="clearweb"?`<p>public: <a href="/apps/lattice/c/${NAME}" target="_blank">/c/${NAME}</a></p>`:"";setTimeout(prev,500)}});var d=$("del");if(d){d.onclick=async function(){if(!confirm("delete "+NAME+"?"))return;await fetch("/apps/lattice/page-del?name="+encodeURIComponent(NAME),{method:"POST"});location="/apps/lattice"}}})();</script>'
+    '";var $=function(i){return document.getElementById(i)};var ws=$("ws");function ap(){ws.classList.toggle("nt",localStorage.edNT==="1");ws.classList.toggle("nc",localStorage.edNC==="1")}ap();$("tt").onclick=function(){localStorage.edNT=localStorage.edNT==="1"?"0":"1";ap()};$("ct").onclick=function(){localStorage.edNC=localStorage.edNC==="1"?"0":"1";ap()};function trApply(){var c=[];try{c=JSON.parse(localStorage.edColl||"[]")}catch(e){}var rs=document.querySelectorAll(".tree [data-path]");for(var i=0;i<rs.length;i++){var p=rs[i].getAttribute("data-path");var hide=false;for(var j=0;j<c.length;j++){if(p.indexOf(c[j]+"/")===0){hide=true;break}}rs[i].style.display=hide?"none":"";if(rs[i].className.indexOf("fld")>=0){var cx=rs[i].querySelector(".cx");if(cx)cx.innerHTML=c.indexOf(p)>=0?"&#9656;":"&#9662;"}}}var ftgs=document.querySelectorAll(".tree .fld .ftog");for(var fi=0;fi<ftgs.length;fi++){ftgs[fi].onclick=function(){var p=this.parentNode.getAttribute("data-path");var c=[];try{c=JSON.parse(localStorage.edColl||"[]")}catch(e){}var k=c.indexOf(p);if(k>=0)c.splice(k,1);else c.push(p);localStorage.edColl=JSON.stringify(c);trApply()}}trApply();var mt=document.querySelectorAll(".mtabs button");for(var mi=0;mi<mt.length;mi++){mt[mi].onclick=function(){var v=this.getAttribute("data-mv");ws.setAttribute("data-mv",v);for(var mj=0;mj<mt.length;mj++){mt[mj].className=mt[mj].getAttribute("data-mv")===v?"on":""}if(v==="prev")prev()}}var st=function(t,ok){var s=$("st");s.textContent=t;s.style.color=ok?"#27ae60":"#c0392b"};var ta=$("src");if(ta){ta.addEventListener("keydown",function(e){if(e.key==="Tab"){e.preventDefault();var s=ta.selectionStart;ta.value=ta.value.slice(0,s)+"  "+ta.value.slice(ta.selectionEnd);ta.selectionStart=ta.selectionEnd=s+2}})}var prev=function(){var p=$("prev");if(!p)return;if(CONTENT){fetch("/apps/lattice/page-preview?type="+KIND,{method:"POST",body:ta.value}).then(function(r){return r.text()}).then(function(h){p.srcdoc=h}).catch(function(x){})}else{p.src=p.src}};if(CONTENT){var tmr;ta.addEventListener("input",function(){clearTimeout(tmr);tmr=setTimeout(prev,400)});prev()}var chk=async function(){if(!NAME)return;var t="";try{t=await (await fetch(V+"err?data")).text()}catch(x){}var c=$("cerr");if(t){st("error",false);if(c){c.textContent=t;c.className="err"}}else{st(CONTENT?"saved":"compiled ok",true);if(c){c.textContent="compiled ok";c.className="ok"}prev()}};$("save").onclick=async function(){var name=NAME||($("pname")?$("pname").value.trim():"");if(!name){st("name required",false);return}if(MKDIR){st("creating...",true);var rf=await fetch("/apps/lattice/folder-new?name="+encodeURIComponent(name),{method:"POST"});if(!rf.ok){st("create failed "+rf.status,false);return}location="/apps/lattice/edit?into="+encodeURIComponent(name);return}st("saving...",true);var r=await fetch("/apps/lattice/page-save?name="+encodeURIComponent(name)+(NAME?"":"&new=1")+(CONTENT?"&type="+KIND:""),{method:"POST",body:ta.value});if(r.status===409){st("that page already exists",false);return}if(!r.ok){st("save failed "+r.status,false);return}if(!NAME){location="/apps/lattice/edit?name="+encodeURIComponent(name)+(CONTENT?"&kind="+KIND:"");return}st(CONTENT?"saved":"compiling...",true);setTimeout(chk,800);setTimeout(chk,2000)};window.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&e.key==="s"){e.preventDefault();$("save").onclick()}});var cs=$("csend");if(cs){var run=async function(){var c=$("cmd").value;if(!c)return;await fetch("/apps/lattice/page-cmd?name="+encodeURIComponent(NAME),{method:"POST",body:"cmd="+encodeURIComponent(c)});$("cmd").value="";setTimeout(prev,600)};cs.onclick=run;$("cmd").addEventListener("keydown",function(e){if(e.key==="Enter")run()})}document.querySelectorAll(".share button").forEach(function(b){b.onclick=async function(){var m=b.getAttribute("data-m");await fetch("/apps/lattice/page-share?name="+encodeURIComponent(NAME)+"&mode="+m,{method:"POST"});document.querySelectorAll(".share button").forEach(function(x){x.className=x.getAttribute("data-m")===m?"on":""});$("cwurl").innerHTML=m==="clearweb"?`<p>public: <a href="/apps/lattice/c/${NAME}" target="_blank">/c/${NAME}</a></p>`:"";setTimeout(prev,500)}});var d=$("del");if(d){d.onclick=async function(){if(!confirm("delete "+NAME+"?"))return;await fetch("/apps/lattice/page-del?name="+encodeURIComponent(NAME),{method:"POST"});location="/apps/lattice"}}})();</script>'
   ==
 ::  +home-css: styling for the landing (nav cards + lists).
 ::
