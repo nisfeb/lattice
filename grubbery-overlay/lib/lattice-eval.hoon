@@ -18,10 +18,10 @@
 ::  +$  eval-action: page writes poked at the writer fiber (main.sig).
 ::
 +$  eval-action
-  $%  [%make name=@ta src=@t]           ::  create a page / replace its code
-      [%cmd name=@ta txt=@t bud=@ud]    ::  send a command (bud = poke budget)
-      [%del name=@ta]                   ::  delete a page
-      [%share name=@ta mode=share-mode] ::  set a page's sharing preset
+  $%  [%make pax=path src=@t]           ::  create a page / replace its code
+      [%cmd pax=path txt=@t bud=@ud]    ::  send a command (bud = poke budget)
+      [%del pax=path]                   ::  delete a page
+      [%share pax=path mode=share-mode] ::  set a page's sharing preset
   ==
 ::  +$  share-mode: a page's sharing preset (docs/platform.md step 4).
 ::    %private  — not gained, owner-only (default).

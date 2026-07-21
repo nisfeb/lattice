@@ -172,7 +172,7 @@
       ::  (..add) and returns NO darts yet — the capped-authority %sand
       ::  plumbing lands with darts (platform decision). A divergent dep
       ::  cycle spins; a converging one terminates via no-op suppression.
-          [[%page @ ~] %code]
+          [[%page @ *] %code]
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /page eval: failed")
         ;<  here=rail:tarball  bind:m  get-here-abs:io
         =/  pdir=path  path.here
@@ -353,8 +353,8 @@
   ::  /f/<name>: serve a file's raw data as an asset, Content-Type from its
   ::  render mode (js -> text/javascript, css -> text/css, ...), so an html file
   ::  can import a js/css file by URL. Owner-gated (fetched with the session).
-  ?:  &(?=([%f @ ~] suffix) =(%'GET' method.request.req))
-    (serve-asset eyre-id i.t.suffix)
+  ?:  &(?=([%f ^] suffix) =(%'GET' method.request.req))
+    (serve-asset eyre-id t.suffix)
   ::  root: the web reader (Landscape tile). ?url=urb://ship/rel renders that
   ::  page; no url renders the home index of our published pages. ponytail:
   ::  compact gemtext->HTML (headings/links/quotes/lists/pre); the full reader's
@@ -370,7 +370,7 @@
       ::  edit auto-refreshes the open reader.
       ;<  home=(unit @t)  bind:m  (read-page-body our /index)
       ?~  home
-        ;<  pages=(list @ta)  bind:m  read-page-names
+        ;<  pages=(list path)  bind:m  read-page-names
         ;<  ix=pub-index:lp    bind:m  (read-pub-index [%| 2 %& /pub %index])
         (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (home-index-html our pages ix)))
       (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (render-gmi u.home)))
@@ -700,13 +700,13 @@
     ::  the in-browser editor workspace (tree | code | preview | controls).
     ::  No name -> new-page mode. The page list feeds the tree sidebar.
     =/  name=(unit @t)  (~(get by args) 'name')
-    ;<  pages=(list @ta)  bind:m  read-page-names
+    ;<  pages=(list path)  bind:m  read-page-names
     ?~  name
       ::  ?kind=<md|gmi|html|text|js|css> opens a new typed file; else a hoon page.
       =/  kind=@tas  (kind-of (~(gut by args) 'kind' 'hoon'))
       (send-html eyre-id (edit-html our ~ '' pages %private '' kind))
-    ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
-    =/  pdir=path  (weld app-base /page/[`@ta`u.name])
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    =/  pdir=path  (weld app-base (weld /page (pax-of u.name)))
     ;<  dn=seen:nexus  bind:m  (peek-shallow:io [%& %| pdir] ~)
     ?.  ?=([%& %ball *] dn)  (send-err eyre-id 404 'no such page')
     =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
@@ -728,7 +728,7 @@
       [%'POST' %page-save]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
-    ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     =/  raw=@t  (req-body req)
     ?:  =('' raw)  (send-err eyre-id 400 'missing body')
     ::  ?type=<builder>: the body is raw content, not hoon. Wrap it in
@@ -739,9 +739,9 @@
     ::  ?new=1: create-only — 409 instead of silently overwriting an existing
     ::  page (the editor's new-page mode sends it; caught by review).
     ;<  ex=?  bind:m
-      (peek-exists:io [%& %& (weld app-base /page/[`@ta`u.name]) %code])
+      (peek-exists:io [%& %& (weld app-base (weld /page (pax-of u.name))) %code])
     ?:  &((~(has by args) 'new') ex)  (send-err eyre-id 409 'page exists')
-    ;<  ~  bind:m  (poke-eval [%make `@ta`u.name src])
+    ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
     (send-ok eyre-id)
       [%'POST' %page-preview]
     ::  live markdown preview: render the POSTed body with the real render-md
@@ -764,10 +764,10 @@
       [%'POST' %page-cmd]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
-    ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     ::  404 a command to a nonexistent page (the writer guards too, but this
     ::  gives the client real feedback instead of a fire-and-forget 200).
-    ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base /page/[`@ta`u.name]) %code])
+    ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base (weld /page (pax-of u.name))) %code])
     ?.  ex  (send-err eyre-id 404 'no such page')
     ::  a browser form POSTs cmd in the (form-urlencoded) body; parse it as a
     ::  query (same k=v&k=v grammar). Query cmd is the fallback for programmatic
@@ -776,7 +776,7 @@
       (malt args:(parse-url:http-utils (crip (weld "/?" (trip (req-body req))))))
     =/  txt=@t  (~(gut by form) 'cmd' (~(gut by args) 'cmd' ''))
     ::  a user command starts a fresh poke budget.
-    ;<  ~  bind:m  (poke-eval [%cmd `@ta`u.name txt poke-budget-max])
+    ;<  ~  bind:m  (poke-eval [%cmd (pax-of u.name) txt poke-budget-max])
     ::  web=1 (a page-view form submit) -> 303 back to the page so the browser
     ::  lands on the live view; the JSON ok stays for programmatic callers.
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
@@ -785,21 +785,21 @@
       [%'POST' %page-del]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
-    ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
-    ;<  ~  bind:m  (poke-eval [%del `@ta`u.name])
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ;<  ~  bind:m  (poke-eval [%del (pax-of u.name)])
     (send-ok eyre-id)
       [%'POST' %page-share]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
-    ?.  ((sane %ta) u.name)  (send-err eyre-id 400 'bad name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     =/  mode=share-mode:le
       ?+  (~(gut by args) 'mode' 'private')  %private
         %shared    %shared
         %clearweb  %clearweb
       ==
-    ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base /page/[`@ta`u.name]) %code])
+    ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base (weld /page (pax-of u.name))) %code])
     ?.  ex  (send-err eyre-id 404 'no such page')
-    ;<  ~  bind:m  (poke-eval [%share `@ta`u.name mode])
+    ;<  ~  bind:m  (poke-eval [%share (pax-of u.name) mode])
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
     %+  send-see-other  eyre-id
     :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.name) "/")
@@ -1291,8 +1291,8 @@
   ::  the others 3-cells — the face sits at different axes).
   ?-  -.act
       %make
-    =/  pdir=path  (weld root /page/[name.act])
-    ;<  ~  bind:m  (ensure-dirs (weld root /page) /[name.act])
+    =/  pdir=path  (weld root (weld /page pax.act))
+    ;<  ~  bind:m  (ensure-dirs (weld root /page) pax.act)
     ::  cmd + deps before code — the code grub's fiber reads both at spawn.
     ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %cmd])
     ;<  ~  bind:m
@@ -1304,7 +1304,7 @@
       (put-file [%& %& pdir %deps] [/lattice %eval-deps] `(list path)`~)
     (put-file [%& %& pdir %code] [/lattice %page] src.act)
       %cmd
-    =/  pdir=path  (weld root /page/[name.act])
+    =/  pdir=path  (weld root (weld /page pax.act))
     ::  authoritative existence guard: no code grub -> no page (and no
     ::  evaluator fiber), so writing a cmd grub would orphan it inside a
     ::  possibly-culled dir and swallow the command (caught by review). The
@@ -1321,14 +1321,14 @@
     ::  %unsub-page guards against) — no-op a delete of a gone page. Also
     ::  drop the data road from the public weir so a deleted page leaves no
     ::  dangling grant.
-    =/  pdir=path  (weld root /page/[name.act])
+    =/  pdir=path  (weld root (weld /page pax.act))
     ;<  ex=?  bind:m  (peek-exists:io [%& %| pdir])
     ?.  ex  (pure:m ~)
     ;<  ~  bind:m  (share-weir [%& %& pdir %data] %.n)
     ;<  *  bind:m  (cull-soft:io [%& %| pdir])
     (pure:m ~)
       %share
-    =/  pdir=path  (weld root /page/[name.act])
+    =/  pdir=path  (weld root (weld /page pax.act))
     ;<  cx=?  bind:m  (peek-exists:io [%& %& pdir %code])
     ?.  cx  (pure:m ~)
     =/  data-road=road:tarball  [%& %& pdir %data]
@@ -1577,7 +1577,7 @@
   ^-  form:m
   ?:  =(0 bud)  (pure:m ~)
   ?~  pokes  (pure:m ~)
-  ;<  ~  bind:m  (poke-eval [%cmd name.i.pokes txt.i.pokes (dec bud)])
+  ;<  ~  bind:m  (poke-eval [%cmd ~[name.i.pokes] txt.i.pokes (dec bud)])
   $(pokes t.pokes)
 ++  poke-sub
   |=  act=sub-action:lp
@@ -3070,11 +3070,11 @@
 ::  render mode (js/css/html/md/gmi), so an html file can import it by URL.
 ::
 ++  serve-asset
-  |=  [eyre-id=@ta name=@ta]
+  |=  [eyre-id=@ta pax=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ?.  ((sane %ta) name)  (send-err eyre-id 404 'not found')
-  =/  pdir=path  (weld app-base /page/[name])
+  ?.  (levy pax |=(seg=@ta ((sane %ta) seg)))  (send-err eyre-id 404 'not found')
+  =/  pdir=path  (weld app-base (weld /page pax))
   ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& pdir %data] ~)
   ?.  ?=([%& %file *] dsn)  (send-err eyre-id 404 'not found')
   ;<  vmode=view-mode:pg  bind:m  (read-show-mode pdir)
@@ -3596,6 +3596,21 @@
 ::  md/gmi/html render to a view; text/js/css are shown as code + served raw.
 ::
 ++  content-builders  `(set @tas)`(sy ~[%md %gmi %html %text %js %css])
+::  +name-pax: a ?name= value (slash-separated, e.g. notes/todo) -> a validated
+::  page path under /page, or ~. Each segment must be a non-empty @ta knot.
+::
+++  name-pax
+  |=  n=@t
+  ^-  (unit path)
+  =/  r  (mule |.(`path`(stab (crip (weld "/" (trip n))))))
+  ?.  ?=(%& -.r)  ~
+  ?~  p.r  ~
+  ?.  (levy `path`p.r |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))  ~
+  `p.r
+++  valid-name  |=(n=@t ^-(? ?=(^ (name-pax n))))
+++  pax-of  |=(n=@t ^-(path (need (name-pax n))))
+::  +pax-str: a page path -> its slash-separated string (no leading slash).
+++  pax-str  |=(px=path ^-(tape ?~(px "" (slag 1 (trip (spat px))))))
 ::  +kind-of: a ?kind= param -> a valid editor kind (a content builder or %hoon).
 ++  kind-of  |=(k=@t ^-(@tas ?:((~(has in content-builders) `@tas`k) `@tas`k %hoon)))
 ::  +mime-of: the Content-Type an asset file (/f/<name>) is served with.
@@ -3613,11 +3628,23 @@
 ::  dir is absent). Feeds the home landing so it always lists what you can open.
 ::
 ++  read-page-names
-  =/  m  (fiber:fiber:nexus ,(list @ta))
+  =/  m  (fiber:fiber:nexus ,(list path))
   ^-  form:m
-  ;<  sn=seen:nexus  bind:m  (peek-shallow:io [%& %| (weld app-base /page)] ~)
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %| (weld app-base /page)] ~)
   ?.  ?=([%& %ball *] sn)  (pure:m ~)
-  (pure:m (sort (turn ~(tap by dir.ball.p.sn) head) aor))
+  (pure:m (sort (collect-pages ball.p.sn ~) aor))
+::  +collect-pages: walk a page-tree ball. A dir with a /code grub IS a page
+::  (emit its path); otherwise a folder (recurse). Paths are relative to /page.
+::
+++  collect-pages
+  |=  [b=ball:tarball rel=path]
+  ^-  (list path)
+  =/  fils  ?~(fil.b ~ contents.u.fil.b)
+  ?:  (~(has by fils) %code)  ~[rel]
+  %-  zing
+  %+  turn  ~(tap by dir.b)
+  |=  [nom=@ta kid=ball:tarball]
+  (collect-pages kid (weld rel /[nom]))
 ::  +edit-css / +edit-js / +edit-html: the in-browser page editor. Code pane +
 ::  live preview (the page's own view in an iframe — it live-reloads itself via
 ::  its SSE, so a successful save renders immediately). The editor page itself
@@ -3667,7 +3694,7 @@
 ::  toggleable controls panel (far right: status, command, sharing, delete).
 ::
 ++  edit-html
-  |=  [our=@p name=(unit @ta) src=@t pages=(list @ta) mode=share-mode:le err=@t kind=@tas]
+  |=  [our=@p name=(unit @ta) src=@t pages=(list path) mode=share-mode:le err=@t kind=@tas]
   ^-  @t
   =/  ship=tape  (scow %p our)
   =/  nm=tape  ?~(name "" (trip u.name))
@@ -3683,11 +3710,11 @@
     ;:  weld
       `(list tape)`~["<select class=\"new\" onchange=\"if(this.value)location.href='/apps/lattice/edit?kind='+this.value\"><option value=\"\">+ new file&hellip;</option><option value=\"md\">markdown</option><option value=\"gmi\">gemtext</option><option value=\"html\">html</option><option value=\"text\">text</option><option value=\"js\">javascript</option><option value=\"css\">css</option><option value=\"hoon\">hoon page</option></select><div class=\"sec\">files</div>"]
       %+  turn  pages
-      |=  p=@ta
-      =/  pt=tape  (trip p)
+      |=  px=path
+      =/  pt=tape  (pax-str px)
       ;:  weld
         "<a href=\"/apps/lattice/edit?name="  pt  "\""
-        ?:(=(name `p) " class=\"cur\"" "")  ">"  (esc pt)  "</a>"
+        ?:(=(nm pt) " class=\"cur\"" "")  ">"  (esc pt)  "</a>"
       ==
       `(list tape)`~[:(weld "<div class=\"sec\">tree</div><a href=\"/apps/lattice/x/" ship "/apps/lattice.lattice_app/page/\">browse pages &rarr;</a>")]
     ==
@@ -3719,7 +3746,7 @@
     :(weld "<div class=\"ws" ?:(wrap " wrap" "") "\" id=\"ws\" data-mv=\"code\"><div class=\"bar\">")
     "<button class=\"ico\" id=\"tt\" title=\"toggle tree\">&#9776;</button>"
     ?^(name :(weld "<b>" (esc nm) "</b>") "")
-    ?~(name "<input id=\"pname\" placeholder=\"page-name\" autocomplete=\"off\" autofocus>" "")
+    ?~(name "<input id=\"pname\" placeholder=\"name or folder/name\" autocomplete=\"off\" autofocus>" "")
     "<button id=\"save\">save</button><span id=\"st\"></span><span class=\"grow\"></span>"
     ?~(name "" :(weld "<a href=\"" view "\" target=\"_blank\">open &#8599;</a>"))
     "<button class=\"ico\" id=\"ct\" title=\"toggle panel\">&#9881;</button>"
@@ -3767,7 +3794,7 @@
 ::  pages — so an empty store is still a way in, not a dead end.
 ::
 ++  home-index-html
-  |=  [our=@p pages=(list @ta) ix=pub-index:lp]
+  |=  [our=@p pages=(list path) ix=pub-index:lp]
   ^-  tape
   =/  ship=tape  (scow %p our)
   =/  base=tape  :(weld "/apps/lattice/x/" ship "/apps/lattice.lattice_app/page/")
@@ -3778,10 +3805,11 @@
     ;:  weld
       `(list tape)`~["<ul class=\"pglist\">"]
       %+  turn  pages
-      |=  nom=@ta
+      |=  px=path
+      =/  pt=tape  (pax-str px)
       ;:  weld
-        "<li><a href=\""  base  (trip nom)  "/\">"  (esc (trip nom))  "</a>"
-        " <a class=\"muted\" href=\"/apps/lattice/edit?name="  (trip nom)
+        "<li><a href=\""  base  pt  "/\">"  (esc pt)  "</a>"
+        " <a class=\"muted\" href=\"/apps/lattice/edit?name="  pt
         "\">edit</a></li>"
       ==
       `(list tape)`~["</ul>"]
