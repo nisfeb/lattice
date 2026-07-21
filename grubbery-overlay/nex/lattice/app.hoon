@@ -1454,7 +1454,11 @@
   =/  i  (find from hay)
   ?~  i  hay
   =/  aft=tape  (slag (add u.i (lent from)) hay)
-  =/  bnd=?  ?~(aft %.y ?=(?(%'/' %')' %' ' %'"' %']' %',') i.aft))
+  ::  a path literal ends at end-of-code, any whitespace/control (space, TAB,
+  ::  NEWLINE, CR — all <= ' '), or a structural close/open ( ) ( [ ] " , ).
+  =/  bnd=?
+    ?~  aft  %.y
+    ?|((lte i.aft ' ') ?=(?(%'/' %')' %'(' %'[' %']' %'"' %',') i.aft))
   %+  weld  (scag u.i hay)
   %+  weld  ?:(bnd to from)
   $(hay aft)
@@ -1537,14 +1541,17 @@
   |=  root=path
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  ex=?  bind:m  (peek-exists:io [%& %| (weld root /template/site)])
-  ?:  ex  (pure:m ~)
   =/  pages=(list [rel=path kind=@tas body=@t])  site:tpl
   |-  ^-  form:m
   ?~  pages  (pure:m ~)
   =/  prel=path  (weld /site rel.i.pages)
-  =/  code=@t  (page-code prel kind.i.pages body.i.pages)
   =/  pdir=path  (weld root (weld /template prel))
+  ::  per-page: skip a page that already exists (never overwrite a user edit;
+  ::  and a laydown interrupted after some pages completes on the next start),
+  ::  else write it.
+  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
+  ?:  ex  $(pages t.pages)
+  =/  code=@t  (page-code prel kind.i.pages body.i.pages)
   ;<  ~  bind:m  (ensure-dirs (weld root /template) prel)
   ;<  ~  bind:m  (put-file [%& %& pdir %code] [/lattice %page] code)
   $(pages t.pages)
