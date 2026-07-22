@@ -28,6 +28,8 @@
 /<  pg   /lib/lattice-pg.hoon
 /<  gfm  /lib/lattice-md.hoon
 /<  tpl  /lib/lattice-templates.hoon
+/<  lc   /lib/lattice-comment.hoon
+/<  lb   /lib/lattice-bookmark.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -75,6 +77,14 @@
         ::  evaluated — no [%page ...] on-file match). Covered so saved and
         ::  shipped templates survive reload, like /page and /know/vault.
             [%fall %| /template empty-dir:loader]
+        ::  /comments/<page>/<id>: one grub per page comment (Urbit-ships-only).
+        ::  Page content stays under /page (owner-only weir); comments are the one
+        ::  area other ships may append to (via the public inbox fiber, added with
+        ::  the cross-ship path). The owner writer (main.sig) also writes here.
+            [%fall %| /comments empty-dir:loader]
+        ::  /bookmarks: the browser's saved-page list (newest first). A covering
+        ::  file row (like /sub/follows) so it survives reload.
+            [%fall %& [/ %bookmarks] [[/lattice %bookmarks] *bookmarks:lb]]
             [%fall %& [/ %'crawler.sig'] [[/ %sig] ~]]
         ==
       ==
@@ -114,6 +124,15 @@
           $
         ?:  =([/lattice %eval-action] p.sage)
           ;<  ~  bind:m  (apply-eval root !<(eval-action:le q.sage))
+          $
+        ::  the owner commenting on their own page: author is us. (Other ships
+        ::  comment via the public inbox fiber, not this owner-only writer.)
+        ?:  =([/lattice %comment-action] p.sage)
+          ;<  our=@p  bind:m  bowl-our
+          ;<  ~  bind:m  (apply-comment root our now !<(comment-action:lc q.sage))
+          $
+        ?:  =([/lattice %bookmark-action] p.sage)
+          ;<  ~  bind:m  (apply-bookmark root !<(bookmark-action:lb q.sage))
           $
         ~&  [%lattice-bad-mark p.sage]
         $
@@ -368,9 +387,6 @@
   ::  compact gemtext->HTML (headings/links/quotes/lists/pre); the full reader's
   ::  link-resolution + bookmark sync can follow.
   ?~  suffix
-    ::  ?view=bookmarks: the bookmarks reader shell (client-JS fills #bmlist).
-    ?:  =(`'bookmarks' (~(get by args) 'view'))
-      (send-html eyre-id (render-page "Bookmarks" "" "<h1>Bookmarks</h1><div id=\"bmlist\"></div>"))
     =/  raw=(unit @t)  (~(get by args) 'url')
     ?~  raw
       ::  authored home first: if the user published an /index page, serve it;
@@ -378,13 +394,15 @@
       ::  edit auto-refreshes the open reader.
       ;<  home=(unit @t)  bind:m  (read-page-body our /index)
       ?~  home
-        ;<  pages=(list path)  bind:m  read-page-names
-        ;<  tmpls=(list @ta)   bind:m  read-template-names
-        ;<  ix=pub-index:lp    bind:m  (read-pub-index [%| 2 %& /pub %index])
-        (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (home-index-html our pages tmpls ix)))
+        ;<  recent=(list [pax=path prev=@t])  bind:m  (read-recent 10)
+        ;<  bms=bookmarks:lb  bind:m  read-bookmarks
+        (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (home-index-html our recent bms)))
       (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (render-gmi u.home)))
     =/  ref=(unit referent)  (de-urb u.raw)
-    ?~  ref  (send-html eyre-id (render-page (trip u.raw) "" "<p class=\"err\">bad urb:// url</p>"))
+    ::  omnibar: input that isn't a urb:// address is a SEARCH query — serve a
+    ::  results page that queries the obelisk content catalog (client-side, via
+    ::  the /catalog-search JSON api, which is built for exactly this fan-out).
+    ?~  ref  (send-html eyre-id (render-page (trip u.raw) "" (search-results-html u.raw)))
     ?-  -.u.ref
         %tree
       ::  redirect to the /x explorer projection, which renders the node and
@@ -455,6 +473,66 @@
     =/  e=(unit know-entry:lk)  (~(get by es) u.ko)
     ?~  e  (send-err eyre-id 404 'not found')
     (send-json eyre-id (know-entry-json u.ko u.e))
+  ::
+  ::  page-source: raw editable source + kind + revision for one page, so a
+  ::  filesystem client (lattice-fs) never parses the wrap envelope. Mirrors what
+  ::  /edit computes: unwrap the code grub server-side, report the derived kind.
+  ::  err is read separately via /x/<our>/…/page/<name>/err?data (as the editor
+  ::  does), so this stays a single peek.
+      [%'GET' %page-source]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    =/  pax=path  (pax-of u.name)
+    =/  pdir=path  (weld app-base (weld /page pax))
+    ;<  cn=seen:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
+    ?.  ?=([%& %file *] cn)  (send-err eyre-id 404 'no such page')
+    =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.p.cn)))) '')
+    =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
+    =/  gen=?  =((make-folder-index pax) src)
+    =/  kind=@tas  ?:(gen %index ?~(un %hoon builder.u.un))
+    =/  body=@t    ?~(un src body.u.un)
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['kind' s+kind]
+        ['body' s+body]
+        ['size' (numb:enjs:format (met 3 body))]
+        ['rev' (numb:enjs:format ud.cass.p.cn)]
+        ['mtime' s+(scot %da da.cass.p.cn)]
+    ==
+  ::
+  ::  page-tree: the whole /page tree in one call, each page carrying kind+size+
+  ::  mtime so a client can build `<name>.<ext>` filenames without N fetches.
+  ::  Browse can't help (every code grub's mark is `page`, kind-blind). Walks
+  ::  read-tree, then per-page peeks the code grub (the read-recent pattern):
+  ::  O(pages) local peeks, one HTTP round-trip.
+      [%'GET' %page-tree]
+    ;<  tree=(list [pax=path page=?])  bind:m  read-tree
+    =|  acc=(list json)
+    |-  ^-  form:m
+    ?~  tree
+      (send-json eyre-id (pairs:enjs:format ~[['nodes' a+(flop acc)]]))
+    =*  nod  i.tree
+    ?.  page.nod
+      =/  j=json  (pairs:enjs:format ~[['path' s+(crip (pax-str pax.nod))] ['page' b+|]])
+      $(tree t.tree, acc [j acc])
+    =/  pdir=path  (weld app-base (weld /page pax.nod))
+    ;<  cn=seen:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
+    ?.  ?=([%& %file *] cn)                       ::  raced delete — drop
+      $(tree t.tree)
+    =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.p.cn)))) '')
+    =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
+    =/  gen=?  =((make-folder-index pax.nod) src)
+    =/  kind=@tas  ?:(gen %index ?~(un %hoon builder.u.un))
+    =/  body=@t    ?~(un src body.u.un)
+    =/  j=json
+      %-  pairs:enjs:format
+      :~  ['path' s+(crip (pax-str pax.nod))]  ['page' b+&]  ['kind' s+kind]
+          ['size' (numb:enjs:format (met 3 body))]
+          ['rev' (numb:enjs:format ud.cass.p.cn)]
+          ['mtime' s+(scot %da da.cass.p.cn)]
+      ==
+    $(tree t.tree, acc [j acc])
   ::
       [%'GET' %fetch]
     ::  read a published page. url=urb://~ship/rel. Own pages peek the local pub
@@ -830,6 +908,46 @@
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
     %+  send-see-other  eyre-id
     :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.name) "/")
+      ::  owner: turn comments on/off at a page or folder (on=1 / on=0). The
+      ::  nearest flag at/above a page decides, so a folder toggles a whole site.
+      [%'POST' %page-comments]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ;<  ex=?  bind:m  (peek-exists:io [%& %| (weld app-base (weld /page (pax-of u.name)))])
+    ?.  ex  (send-err eyre-id 404 'no such page or folder')
+    ;<  ~  bind:m  (poke-eval [%comments (pax-of u.name) =('1' (~(gut by args) 'on' '0'))])
+    (send-ok eyre-id)
+      ::  owner commenting on their OWN page (author = us). Other ships comment
+      ::  through the public inbox fiber. body is the raw POST body.
+      [%'POST' %comment]
+    =/  page=(unit @t)  (~(get by args) 'page')
+    ?~  page  (send-err eyre-id 400 'missing page')
+    ?.  (valid-name u.page)  (send-err eyre-id 400 'bad page')
+    ::  the box POSTs a form (body=<urlencoded>); parse it like page-cmd does.
+    =/  fargs=(map @t @t)
+      (malt args:(parse-url:http-utils (crip (weld "/?" (trip (req-body req))))))
+    =/  body=@t  (~(gut by fargs) 'body' '')
+    ?:  =('' body)  (send-err eyre-id 400 'missing body')
+    ;<  ~  bind:m  (poke-comment [(pax-of u.page) body])
+    ::  303 back to the page (target=_top on the box), so it reloads with the new
+    ::  comment. The write is a separate transaction, so a stale reload just needs
+    ::  a refresh — acceptable, like page-cmd.
+    %+  send-see-other  eyre-id
+    :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.page) "/")
+      ::  bookmark the current browser url (title defaults to the url). Newest
+      ::  first, deduped by url. Shown under Browser on the home page.
+      [%'POST' %bookmark]
+    =/  url=(unit @t)  (~(get by args) 'url')
+    ?~  url  (send-err eyre-id 400 'missing url')
+    =/  title=@t  (~(gut by args) 'title' u.url)
+    ;<  ~  bind:m  (poke-bookmark [%add u.url title])
+    (send-ok eyre-id)
+      [%'POST' %unbookmark]
+    =/  url=(unit @t)  (~(get by args) 'url')
+    ?~  url  (send-err eyre-id 400 'missing url')
+    ;<  ~  bind:m  (poke-bookmark [%del u.url])
+    (send-ok eyre-id)
       [%'POST' %page-share-tree]
     ::  publish/unpublish a whole subtree at once: set `mode` on every page
     ::  under a folder. name is the folder path; mode=clearweb publishes a site,
@@ -1204,6 +1322,8 @@
   ::  conns entry in grubbery, so eyre's later leave takes the no-binding branch
   ::  and no %handle-http-cancel can reach the dispatcher to cull this fiber
   ::  mid-sweep (grubbery handle-eyre-action %send / on-leave %http-response).
+      [%'GET' %settings]
+    (send-html eyre-id (render-page "" "" settings-html))
       [%'POST' %catalog-sweep]
     ;<  ~  bind:m  (send-ok eyre-id)
     ;<  *  bind:m  catalog-scan-self
@@ -1351,6 +1471,21 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %eval-action] act])
+::  +poke-comment: hand a comment to the owner writer (author = us). The public
+::  inbox fiber pokes apply-comment directly with the sender ship instead.
+::
+++  poke-comment
+  |=  act=comment-action:lc
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %comment-action] act])
+::  +poke-bookmark: add/remove a browser bookmark via the owner writer.
+::
+++  poke-bookmark
+  |=  act=bookmark-action:lb
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %bookmark-action] act])
 ::  +apply-eval: page create/command/delete, in the writer fiber.
 ::
 ++  apply-eval
@@ -1420,7 +1555,122 @@
     ::  create an empty folder (and any missing parents). ensure-dirs is
     ::  idempotent, so mkdir over an existing page/folder is a harmless no-op.
     (ensure-dirs (weld root /page) pax.act)
+      %comments
+    ::  set the comments on/off flag at pax (a page or folder). The nearest flag
+    ::  at/above a page decides, so this enables/disables a whole subtree or one
+    ::  page. Owner-only (an eval-action), unlike the public comment-add path.
+    =/  fdir=path  (weld root (weld /page pax.act))
+    ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
+    ?.  ex  (pure:m ~)
+    (put-file [%& %& fdir %comment-on] [/lattice %comment-flag] on.act)
   ==
+::  +apply-comment: store one comment under /comments/<page>/<id>. `author` is us
+::  (owner writer) or the poking ship (public inbox) — NEVER from the payload,
+::  which can't be trusted. Rejected unless the page path is sane and has comments
+::  enabled; the body is required and length-capped. Bodies are stored raw and
+::  HTML-escaped at render time (they are other ships' text).
+::
+++  apply-comment
+  |=  [root=path author=@p now=@da act=comment-action:lc]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  =('' body.act)  (pure:m ~)
+  ::  reject an empty page path (levy is vacuously true on ~) so a comment can't
+  ::  land loose in the /comments root. Value-eq, not ?=, so page.act keeps its
+  ::  general `path` type (a ?= refinement makes the levy below mull-grow).
+  ?:  =(~ page.act)  (pure:m ~)
+  ?.  (levy page.act |=(s=@ta &(!=(%$ s) ((sane %ta) s))))  (pure:m ~)
+  ;<  on=?  bind:m  (comments-on page.act)
+  ?.  on  (pure:m ~)
+  =/  body=@t
+    ?:((gth (met 3 body.act) max-body:lc) (end [3 max-body:lc] body.act) body.act)
+  =/  =comment:lc  [author now body]
+  =/  id=@ta  (scot %uv (sham comment))
+  =/  cbase=path  (weld root /comments)
+  ;<  ~  bind:m  (ensure-dirs cbase page.act)
+  (put-file [%& %& (weld cbase page.act) id] [/lattice %comment] comment)
+::  +comments-on: is `page` comments-enabled? The nearest `comment-on` flag grub
+::  AT or ABOVE it in /page wins (like find-theme); absent everywhere = off. One
+::  flag on a site folder enables all its pages; a page can override its own.
+::
+++  comments-on
+  |=  page=path
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  |-  ^-  form:m
+  =/  fdir=path  (weld app-base (weld /page page))
+  ;<  =seen:nexus  bind:m  (peek:io [%& %& fdir %comment-on] ~)
+  ?:  ?=([%& %file *] seen)
+    (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.p.seen)))) %.n))
+  ?~  page  (pure:m %.n)
+  $(page (snip `path`page))
+::  +apply-bookmark: add (prepend, dedup by url, cap) or delete a bookmark. Runs
+::  in the writer since it read-modify-writes the single /bookmarks grub.
+::
+++  apply-bookmark
+  |=  [root=path act=bookmark-action:lb]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  cur=bookmarks:lb  bind:m  read-bookmarks
+  =/  new=bookmarks:lb
+    ?-  -.act
+        %add
+      ::  cast the prepend to the general list type — scag on a lest (non-empty
+      ::  list) mull-grows.
+      =/  kept=bookmarks:lb  (skip cur |=(b=bookmark:lb =(url.b url.bookmark.act)))
+      (scag cap:lb `bookmarks:lb`[bookmark.act kept])
+        %del  (skip cur |=(b=bookmark:lb =(url.b url.act)))
+    ==
+  (put-file [%& %& root %bookmarks] [/lattice %bookmarks] new)
+::  +read-bookmarks: the stored bookmark list (newest first; ~ if none yet).
+::
+++  read-bookmarks
+  =/  m  (fiber:fiber:nexus ,bookmarks:lb)
+  ^-  form:m
+  ;<  =seen:nexus  bind:m  (peek:io [%& %& app-base %bookmarks] ~)
+  ?.  ?=([%& %file *] seen)  (pure:m ~)
+  (pure:m (fall (mole |.(!<(bookmarks:lb (need-vase:tarball sang.p.seen)))) ~))
+::  +read-recent: the up-to-`n` most-recently-edited pages, [path preview]. mtime
+::  is each code grub's latest revision date (cass.da), read per page — O(pages)
+::  peeks on a home load, fine for a personal ship; add an index if it ever bites.
+::
+++  read-recent
+  |=  n=@ud
+  =/  m  (fiber:fiber:nexus ,(list [pax=path prev=@t]))
+  ^-  form:m
+  ;<  pages=(list path)  bind:m  read-page-names
+  =|  acc=(list [pax=path when=@da code=@t])
+  |-  ^-  form:m
+  ?^  pages
+    =/  cdir=path  (weld app-base (weld /page i.pages))
+    ;<  =seen:nexus  bind:m  (peek:io [%& %& cdir %code] ~)
+    ?.  ?=([%& %file *] seen)
+      $(pages t.pages)
+    =/  code=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.p.seen)))) '')
+    $(pages t.pages, acc [[i.pages da.cass.p.seen code] acc])
+  =/  sorted=(list [pax=path when=@da code=@t])
+    %+  sort  acc
+    |=  [a=[pax=path when=@da code=@t] b=[pax=path when=@da code=@t]]
+    (gth when.a when.b)
+  %-  pure:m
+  %+  turn  (scag n sorted)
+  |=([pax=path when=@da code=@t] [pax (preview-of code)])
+::  +preview-of: a one-line, ~140-char plaintext preview of a page's source —
+::  leading markdown '#'/spaces dropped, whitespace flattened to single spaces.
+::
+++  preview-of
+  |=  code=@t
+  ^-  @t
+  ::  a content page (md/css/js/gmi/text) stores its raw body wrapped in a builder
+  ::  gate; unwrap it so the preview is the actual content, not the hoon wrapper
+  ::  (a raw hoon builder has nothing to unwrap — preview its source as-is).
+  =/  raw=@t
+    =/  un=(unit [builder=@tas body=@t])  (unwrap-content code)
+    ?~(un code body.u.un)
+  =/  in=tape  (trip raw)
+  =.  in  |-(?~(in in ?:(?=(?(%'#' %' ') i.in) $(in t.in) in)))
+  =/  flat=tape  (turn (scag 200 in) |=(c=@tD ?:((lte c ' ') ' ' c)))
+  (crip (scag 140 flat))
 ::  +apply-share: set one page's sharing preset — the shared body of the %share
 ::  and %share-tree eval-actions, so per-page and per-tree can't drift. weir road
 ::  first (covers the grub before it exists), then gain the current data if any
@@ -1465,17 +1715,32 @@
   |=  [hay=tape from=tape to=tape]
   ^-  tape
   ?~  from  hay
+  ::  `bef` carries the char immediately preceding `hay` in the original code, so
+  ::  the recursion doesn't mistake a mid-path match at the head of `aft` for a
+  ::  path start (else '/site/site' would rewrite both segments).
+  =/  bef=(unit @t)  ~
+  |-  ^-  tape
   =/  i  (find from hay)
   ?~  i  hay
+  =/  pre=tape  (scag u.i hay)
   =/  aft=tape  (slag (add u.i (lent from)) hay)
   ::  a path literal ends at end-of-code, any whitespace/control (space, TAB,
   ::  NEWLINE, CR — all <= ' '), or a structural close/open ( ) ( [ ] " , ).
   =/  bnd=?
     ?~  aft  %.y
     ?|((lte i.aft ' ') ?=(?(%'/' %')' %'(' %'[' %']' %'"' %',') i.aft))
-  %+  weld  (scag u.i hay)
-  %+  weld  ?:(bnd to from)
-  $(hay aft)
+  ::  `from` starts with '/', so the match always lands on a '/'; but that '/'
+  ::  must be the START of a path literal, not a separator mid-path. So require a
+  ::  boundary BEFORE it too — start-of-code, whitespace/control, or a structural
+  ::  open ( [ " , — else '/data/site' (or the 2nd seg of '/site/site') would be
+  ::  clobbered. Path-segment chars and '/' before => reject (mid-path match).
+  =/  pc=(unit @t)  ?~(pre bef `(rear pre))
+  =/  pbnd=?
+    ?~  pc  %.y
+    ?|((lte u.pc ' ') ?=(?(%'(' %'[' %'"' %',') u.pc))
+  =/  out=tape  (weld pre ?:(&(bnd pbnd) to from))
+  %+  weld  out
+  $(hay aft, bef ?~(out bef `(rear out)))
 ::  +copy-tree: copy every PAGE under src (a [base rel] like [%page /mysite] or
 ::  [%template /site]) to dst, rewriting the source root path to the dest root in
 ::  each page's code. live=%.y -> dest is under /page and each page is MADE
@@ -3193,7 +3458,7 @@
           ?~(fil.ball.p.dn ~ contents.u.fil.ball.p.dn)
         ?:  |(?=(~ pn) ?!((~(has by fils) %code)) (~(has by args) 'raw'))
           (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.dn)))
-        (render-page-view eyre-id u.shp pax u.pn ball.p.dn (~(has by args) 'embed'))
+        (render-page-view eyre-id u.shp pax u.pn ball.p.dn (~(has by args) 'embed') %.y)
       ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
       ?.  ?=([%& %file *] fn)  (send-err eyre-id 404 'not found')
       ?:  want-raw  (send-raw eyre-id sang.p.fn %.y)
@@ -3209,7 +3474,15 @@
     ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
     ?~  md  (send-err eyre-id 504 'unreachable or denied')
     ?:  ?=([%& %ball *] u.md)
-      (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.u.md)))
+      ::  a peer's /page/<name>/ dir renders as the clearweb-style page — sandboxed
+      ::  (untrusted html/js), unthemed, read-only — unless ?raw asks for the plain
+      ::  grub listing. A plain folder (no /code grub) still browses as a listing.
+      =/  pn=(unit @t)  (page-dir-name pax)
+      =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+        ?~(fil.ball.p.u.md ~ contents.u.fil.ball.p.u.md)
+      ?:  |(?=(~ pn) ?!((~(has by fils) %code)) (~(has by args) 'raw'))
+        (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.u.md)))
+      (render-page-view eyre-id u.shp pax u.pn ball.p.u.md %.n %.n)
     ;<  mf=(unit seen:nexus)  bind:m  (peek-remote-wait file-road u.shp)
     ?~  mf  (send-err eyre-id 504 'unreachable or denied')
     ?.  ?=([%& %file *] u.mf)  (send-err eyre-id 404 'not found')
@@ -3269,16 +3542,15 @@
   ::  zero further round-trips.
   ::  embed=%.y (?embed): the bare rendered data + SSE, no chrome/crumbs/controls
   ::  — for the editor's live-preview iframe. Otherwise the full standalone view.
-  |=  [eyre-id=@ta shp=@p pax=path name=@t b=ball:tarball embed=?]
+  ::  local=%.n: a PEER's page (browsed over ames) — rendered in a SANDBOXED frame
+  ::  (its html/js is untrusted), no theme peek (that would read OUR tree), no Edit
+  ::  button, no live keep. local=%.y: our own page, fully themed + editable + live.
+  |=  [eyre-id=@ta shp=@p pax=path name=@t b=ball:tarball embed=? local=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
     ?~(fil.b ~ contents.u.fil.b)
   =/  grub  |=(nom=@ta ^-((unit sang:tarball) =/(v (~(get by fils) nom) ?~(v ~ `sang.u.v))))
-  =/  mode=share-mode:le
-    =/  sh=(unit sang:tarball)  (grub %share)
-    ?~  sh  %private
-    (fall (mole |.(;;(share-mode:le (sang-noun:tarball u.sh)))) %private)
   =/  vmode=view-mode:pg
     =/  sw=(unit sang:tarball)  (grub %show)
     ?~  sw  %text
@@ -3287,22 +3559,61 @@
     =/  ce=(unit sang:tarball)  (grub %err)
     ?~  ce  ''
     (fall (mole |.(;;(@t (sang-noun:tarball u.ce)))) '')
-  =/  data-html=tape
-    =/  cd=(unit sang:tarball)  (grub %data)
-    ?~  cd  "<p>no data yet</p>"
-    (render-shown u.cd vmode)
+  =/  cd=(unit sang:tarball)  (grub %data)
   ::  own lean SSE (no ?blot=/txt): a page dir's noun grubs render huge under
   ::  /txt on the initial snapshot, and the reload script reads only event
-  ::  names, never the payload — so keep="" to render-page and append a
-  ::  blot-free stream here.
+  ::  names, never the payload — so keep="" to render-* and append a blot-free
+  ::  stream here.
   =/  keep=tape  (keep-url :(weld "page/" (trip name) "/data"))
   ?:  embed
     ::  bare preview: just the rendered data (+ any error) and the live stream.
+    =/  data-html=tape  ?~(cd "<p>no data yet</p>" (render-shown u.cd vmode))
     =/  errh=tape  ?:(=('' err) "" :(weld "<pre class=\"err\">" (esc (trip err)) "</pre>"))
     (send-html eyre-id (render-bare :(weld errh "<section class=\"data\">" data-html "</section>" (page-sse-script keep))))
-  =/  inner=tape
-    (weld (page-view-html shp pax name err data-html mode) (page-sse-script keep))
-  (send-html eyre-id (render-page (trip (en-urb shp pax)) "" inner))
+  ::  standalone browser view: the page rendered exactly as it would publish. For
+  ::  our own page the nearest theme is inlined (owner-gated, so it need not be
+  ::  clearweb-shared) and it gets an Edit button + live-reload; a peer's page is
+  ::  sandboxed and unthemed. No sharing/command controls — those live in the
+  ::  editor. `rel` strips the app-base/page/ prefix to the page-relative path that
+  ::  find-theme-css/clearweb-doc expect (the same shape serve-clearweb passes).
+  =/  rel=path  (slag 3 pax)
+  ;<  head=tape  bind:m  (browser-head local vmode rel)
+  ::  comments live in OUR tree, so only show them on OUR OWN pages — a peer's
+  ::  page at a path that collides with one of ours must NOT surface our comments
+  ::  or toggle. (Reading a peer's own comments waits for the cross-ship path.)
+  ;<  ocon=?  bind:m  (comments-on rel)
+  =/  con=?  &(local ocon)
+  ::  our own view also gets a comment box (posts to /comment as us). A peer's box
+  ::  — which posts to OUR nexus, which then pokes the peer — comes with the
+  ::  cross-ship path.
+  =/  box=tape
+    ?.  con  ""
+    ;:  weld
+      "<form class=\"cbox\" method=\"post\" target=\"_top\" action=\"/apps/lattice/comment?page="
+      (trip name)
+      "\"><textarea name=\"body\" placeholder=\"Comment as "
+      (scow %p shp)
+      "\" required></textarea><button type=\"submit\">Post</button></form>"
+    ==
+  ;<  extra=tape  bind:m  (render-comments rel con box)
+  ::  cap a hostile PEER's data (own data is trusted): a big cord, OR any non-cord
+  ::  noun (page-data-html would pretty-print it unbounded). Bounds the render
+  ::  doubling + response, like explore-file-html's 1MB preview cap.
+  =/  toobig=?
+    ?:  local  %.n
+    ?~  cd  %.n
+    =/  r=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball u.cd))))
+    ?|(?=(%| -.r) (gth (met 3 p.r) (bex 20)))
+  =/  doc=@t
+    ?:  toobig  (render-clearweb (pax-str rel) head "<p>page too large or not previewable</p>")
+    ?~  cd  (render-clearweb (pax-str rel) head "<p>no data yet</p>")
+    (clearweb-doc rel u.cd vmode head ?!(?=(%html vmode)) ~ extra)
+  %-  send-html
+  :-  eyre-id
+  %^    render-browser-page
+      (trip (en-urb shp pax))
+    doc
+  [?:(local `name ~) ?!(local) ?:(local keep "")]
 ::  +render-bare: a minimal HTML doc (shared reader CSS, no address-bar chrome) —
 ::  for the editor preview iframe, which supplies its own layout.
 ::
@@ -3373,6 +3684,116 @@
   ?:  &(?=(%clearweb mode) ?=(%css show))  (pure:m `anc)
   ?~  anc  (pure:m ~)
   $(anc (snip `path`anc))
+::  +clearweb-doc: the standalone chrome-less document for a page — theme in the
+::  <head>, body per view-mode. %html inlines raw (owns its own layout); a
+::  md/gmi/text/noun body is wrapped in <main class="page"> (with an optional home
+::  link) when `wrap`; css/js show as a code block. `head` is the caller's theme
+::  <head> (a <link>, inline <style>, or the default reader css). Shared by
+::  serve-clearweb (/c/, links a shared theme) and the browser page view (owner-
+::  gated, inlines any theme). On PEER data it is only ever rendered inside a
+::  sandboxed frame — the sandbox, not escaping, is what neutralizes hostile html.
+::
+++  clearweb-doc
+  |=  [pax=path =sang:tarball vmode=view-mode:pg head=tape wrap=? home=(unit tape) extra=tape]
+  ^-  @t
+  ::  `extra` (a rendered comment thread + optional box) is appended after the
+  ::  page content — inside the themed wrapper for md/gmi/text, or after the raw
+  ::  body for %html.
+  =/  inner=tape  (weld (render-shown sang vmode) extra)
+  =/  body=tape
+    ?:  ?=(%html vmode)  inner
+    ?.  wrap  inner
+    =/  hlink=tape
+      ?~  home  ""
+      :(weld "<p class=\"home\"><a href=\"" (esc u.home) "\">&larr; home</a></p>")
+    :(weld "<main class=\"page\">" hlink inner "</main>")
+  (render-clearweb (pax-str pax) head body)
+::  +render-comments: the comment thread for `page` (page-relative path) as escaped
+::  html, oldest first. `box` is an optional trailing comment form (browser views
+::  only). "" when the page has no comments and no box. Read here (a peek) rather
+::  than in the pure +clearweb-doc; the result is passed in as its `extra`.
+::
+++  render-comments
+  |=  [page=path on=? box=tape]
+  =/  m  (fiber:fiber:nexus ,tape)
+  ^-  form:m
+  ?.  on  (pure:m "")
+  ;<  =seen:nexus  bind:m  (peek:io [%& %| (weld app-base (weld /comments page))] ~)
+  =/  cs=(list comment:lc)
+    ?.  ?=([%& %ball *] seen)  ~
+    =/  b=ball:tarball  ball.p.seen
+    =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+      ?~(fil.b ~ contents.u.fil.b)
+    %+  murn  ~(val by fils)
+    |=  [s=sang:tarball gain=? bang=(unit tang)]
+    ^-  (unit comment:lc)
+    (mole |.(;;(comment:lc (sang-noun:tarball s))))
+  =/  sorted=(list comment:lc)
+    (sort cs |=([a=comment:lc b=comment:lc] (lth when.a when.b)))
+  ?:  &(?=(~ sorted) =("" box))  (pure:m "")
+  =/  thread=tape
+    ?~  sorted  ""
+    ;:  weld
+      "<section class=\"comments\"><h3>"  (a-co:co (lent sorted))
+      ?:(=(1 (lent sorted)) " comment</h3>" " comments</h3>")
+      ^-  tape
+      (zing (turn sorted comment-html))
+      "</section>"
+    ==
+  ::  single-quote cord: a double-quote tape would interpolate the css { } braces.
+  %-  pure:m
+  ;:  weld
+    %-  trip
+    '<style>.comments{margin-top:2rem;border-top:1px solid #8886;padding-top:1rem}.comment{margin:.7rem 0;padding:.5rem .8rem;background:#8881;border-radius:8px}.cmeta{margin:0;font-size:.85em;opacity:.7}.cbody{margin:.2rem 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.cbox{margin-top:1rem;display:flex;gap:6px}.cbox textarea{flex:1;min-height:3rem;font:inherit;padding:6px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbox button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}</style>'
+    thread
+    box
+  ==
+::  +comment-html: one stored comment as escaped html (author + body).
+::
+++  comment-html
+  |=  c=comment:lc
+  ^-  tape
+  ;:  weld
+    "<article class=\"comment\"><p class=\"cmeta\">"  (scow %p author.c)
+    "</p><p class=\"cbody\">"  (esc (trip body.c))  "</p></article>"
+  ==
+::  +find-theme-css: the nearest `theme` css page AT/ABOVE pax's parent, as inline
+::  css text — for the owner-gated browser view, which (unlike /c/) themes a page
+::  whose theme need not be clearweb-shared, so it inlines rather than links. ~ if
+::  none up to the root. A nearer theme whose data is unreadable is skipped.
+::
+++  find-theme-css
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  =/  anc=path  (snip `path`pax)
+  |-  ^-  form:m
+  =/  tdir=path  (weld app-base (weld /page (weld anc /theme)))
+  ;<  show=view-mode:pg  bind:m  (read-show-mode tdir)
+  ?:  ?=(%css show)
+    ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& tdir %data] ~)
+    =/  css=(unit @t)
+      ?.  ?=([%& %file *] dsn)  ~
+      =/  r=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.p.dsn))))
+      ?:(?=(%& -.r) `p.r ~)
+    ?^  css  (pure:m css)
+    ?~  anc  (pure:m ~)
+    $(anc (snip `path`anc))
+  ?~  anc  (pure:m ~)
+  $(anc (snip `path`anc))
+::  +browser-head: the <head> theme content for the browser page view. Our own
+::  page (local) inlines its nearest theme; a peer's page skips the theme peek
+::  (that would read OUR tree) and falls back to the default reader css. Its own
+::  monad type so it can produce a tape (render-page-view's monad returns ~).
+::
+++  browser-head
+  |=  [local=? vmode=view-mode:pg rel=path]
+  =/  m  (fiber:fiber:nexus ,tape)
+  ^-  form:m
+  =/  dflt=tape  ?:(?=(%html vmode) "" :(weld "<style>" web-css "</style>"))
+  ?.  local  (pure:m dflt)
+  ;<  tcss=(unit @t)  bind:m  (find-theme-css rel)
+  (pure:m ?^(tcss :(weld "<style>" (trip u.tcss) "</style>") dflt))
 ::  +serve-clearweb: the public read of a %clearweb page. Read-only, data grub
 ::  only — a non-clearweb (or absent) page is a flat 404 so private siblings
 ::  never leak existence. No SSE (an anon keep would 403 anyway).
@@ -3401,7 +3822,6 @@
     =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.p.dsn))))
     ?:  ?=(%| -.res)  (send-err eyre-id 415 'not servable')
     (send-typed eyre-id (mime-of vmode) 'no-cache' p.res)
-  =/  inner=tape  (render-shown sang.p.dsn vmode)
   ::  Every rendered/html page auto-wears the nearest `theme` css up the folder
   ::  tree, LINKED IN THE HEAD (render-blocking -> no white flash on nav, browser-
   ::  cached across the site). A rendered page (md/gmi/text/noun) also gets a
@@ -3411,16 +3831,13 @@
   =/  head=tape
     ?^  tf  :(weld "<link rel=\"stylesheet\" href=\"/apps/lattice/c" (spud (weld u.tf /theme)) "\">")
     ?:(?=(%html vmode) "" :(weld "<style>" web-css "</style>"))
-  =/  body=tape
-    ?:  ?=(%html vmode)  inner
-    ?~  tf  inner
-    ;:  weld
-      "<main class=\"page\"><p class=\"home\"><a href=\"/apps/lattice/c"
-      (spud (weld u.tf /index))  "\">&larr; home</a></p>"
-      inner
-      "</main>"
-    ==
-  (send-html eyre-id (render-clearweb (pax-str pax) head body))
+  =/  home=(unit tape)
+    ?~(tf ~ `(weld "/apps/lattice/c" (spud (weld u.tf /index))))
+  ::  a public clearweb visitor is anonymous (no ship), so the thread is read-only
+  ::  here — no comment box (box=""). Commenting happens from a ship's browser.
+  ;<  con=?    bind:m  (comments-on pax)
+  ;<  cmts=tape  bind:m  (render-comments pax con "")
+  (send-html eyre-id (clearweb-doc pax sang.p.dsn vmode head ?=(^ tf) home cmts))
 ::  +page-data-html: render a page's data grub. A cord shows as text; any
 ::  other noun as its literal (a page's data mark is a bare noun).
 ::
@@ -3451,53 +3868,6 @@
     %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip p.cr)) "</code></pre>")
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip p.cr)) "</code></pre>")
     %noun  (page-data-html sang)
-  ==
-::  +page-view-html: crumbs, error, data, and a command form (POSTs page-cmd
-::  with web=1 so the route 303s back here). ?raw links to the grub listing.
-::
-++  page-view-html
-  |=  [shp=@p pax=path name=@t err=@t data-html=tape mode=share-mode:le]
-  ^-  tape
-  =/  post=tape  :(weld "/apps/lattice/page-cmd?name=" (trip name) "&web=1")
-  ;:  weld
-    (explore-crumbs shp pax)
-    ?:  =('' err)  ""
-    :(weld "<pre class=\"err\">" (esc (trip err)) "</pre>")
-    "<section class=\"data\">"
-    data-html
-    "</section>"
-    "<form class=\"cmd\" method=\"post\" action=\""
-    (esc post)
-    "\"><input name=\"cmd\" placeholder=\"command\" autocomplete=\"off\">"
-    "<button type=\"submit\">send</button></form>"
-    (share-controls-html name mode)
-    "<p><a href=\"/apps/lattice/edit?name="  (trip name)
-    "\">edit code</a> &middot; <a href=\"?raw\">raw grubs</a></p>"
-  ==
-::  +share-controls-html: the current sharing preset + one button per preset
-::  (each a tiny form POSTing page-share). A clearweb page also shows its
-::  public URL.
-::
-++  share-controls-html
-  |=  [name=@t mode=share-mode:le]
-  ^-  tape
-  =/  btn
-    |=  [m=@tas label=tape]
-    ^-  tape
-    =/  cur=?  =(m mode)
-    ;:  weld
-      "<form class=\"share\" method=\"post\" action=\"/apps/lattice/page-share?name="
-      (trip name)  "&mode="  (trip m)  "&web=1\"><button"
-      ?:(cur " disabled" "")  ">"  label  "</button></form>"
-    ==
-  ;:  weld
-    "<div class=\"sharing\"><span>sharing: "  (trip mode)  "</span> "
-    (btn %private "private")
-    (btn %shared "shared")
-    (btn %clearweb "clearweb")
-    ?.  ?=(%clearweb mode)  ""
-    :(weld "<p>public: <a href=\"/apps/lattice/c/" (trip name) "\">/apps/lattice/c/" (trip name) "</a></p>")
-    "</div>"
   ==
 ::  +page-sse-script: like +sse-script but WITHOUT ?blot=/txt — the page dir's
 ::  noun grubs are megabytes under /txt on connect, and this only needs the
@@ -3972,17 +4342,9 @@
   %-  pure:m
   %+  sort  (collect-tree ball.p.sn ~)
   |=([a=[pax=path page=?] b=[pax=path page=?]] (aor pax.a pax.b))
-::  +read-template-names: the top-level template names under /template (the
-::  things you can New-from-template). Sorted; ~ if none.
-::
-++  read-template-names
-  =/  m  (fiber:fiber:nexus ,(list @ta))
-  ^-  form:m
-  ;<  sn=seen:nexus  bind:m  (peek-shallow:io [%& %| (weld app-base /template)] ~)
-  ?.  ?=([%& %ball *] sn)  (pure:m ~)
-  (pure:m (sort (turn ~(tap by dir.ball.p.sn) head) aor))
 ::  +read-page-names: just the page paths (folders dropped) — the home landing
-::  lists what you can open.
+::  lists what you can open. (+read-template-names was removed with the home
+::  redesign, which no longer lists templates.)
 ::
 ++  read-page-names
   =/  m  (fiber:fiber:nexus ,(list path))
@@ -4054,6 +4416,22 @@
 ::  Toggleable tree sidebar (left), code (centre), live preview iframe (right),
 ::  toggleable controls panel (far right: status, command, sharing, delete).
 ::
+::  +vim-script / +vim-b64: the editor's vim mode (designed + verified separately
+::  as a self-contained IIFE). Stored base64 because its JS has \n and ' that a
+::  Hoon cord would mangle; decoded + run at load. Owner-only self-served editor
+::  code, so eval is not a trust boundary. Toggle persists in localStorage.edVim.
+::
+++  vim-script
+  ^-  tape
+  ;:  weld
+    "<script>eval(decodeURIComponent(escape(atob('"
+    vim-b64
+    "'))))</script>"
+  ==
+++  vim-b64
+  ^-  tape
+  %-  trip
+  'LyogPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICBWSU0gTU9ERSBmb3IgdGhlIGxhdHRpY2UgY29kZSBlZGl0b3IuCiAgIFNlbGYtY29udGFpbmVkIHZhbmlsbGEgSlMsIG5vIGRlcGVuZGVuY2llcy4gT3BlcmF0ZXMgb24gPHRleHRhcmVhIGlkPSJzcmMiPi4KICAgSW5saW5lIHRoaXMgSU5TSURFIChvciByaWdodCBhZnRlcikgdGhlIGV4aXN0aW5nIGVkaXRvciBJSUZFOyBpdCByZS1mZXRjaGVzCiAgIGB0YWAgaXRzZWxmIHNvIG9yZGVyaW5nIGlzIG5vdCBjcml0aWNhbC4KICAgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PSAqLwooZnVuY3Rpb24gdmltTW9kZSgpewogICJ1c2Ugc3RyaWN0IjsKCiAgdmFyIHRhID0gZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoInNyYyIpOwogIGlmKCF0YSkgcmV0dXJuOwoKICAvKiAtLS0tIHBlcnNpc3RlZCBvbi9vZmYgZmxhZyAoc2FtZSBwYXR0ZXJuIGFzIGVkTlQgLyBlZE5DKSAtLS0tICovCiAgdmFyIExTID0gImVkVmltIjsKICBmdW5jdGlvbiB2aW1PbigpeyByZXR1cm4gbG9jYWxTdG9yYWdlLmdldEl0ZW0oTFMpID09PSAiMSI7IH0gICAvLyBkZWZhdWx0IE9GRgoKICAvKiAtLS0tIG1vZGUgaW5kaWNhdG9yIGVsZW1lbnQgKGNyZWF0ZWQgb25jZSwgbGl2ZXMgYnkgdGhlIHN0YXR1cyBiYXIpIC0tLS0gKi8KICB2YXIgaW5kID0gZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoInZpbUluZCIpOwogIGlmKCFpbmQpewogICAgaW5kID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgic3BhbiIpOwogICAgaW5kLmlkID0gInZpbUluZCI7CiAgICBpbmQuc3R5bGUuY3NzVGV4dCA9CiAgICAgICJkaXNwbGF5Om5vbmU7bWFyZ2luLWxlZnQ6OHB4O3BhZGRpbmc6MXB4IDZweDtib3JkZXItcmFkaXVzOjNweDsiKwogICAgICAiZm9udDoxMXB4LzEuNiBtb25vc3BhY2U7Zm9udC13ZWlnaHQ6Ym9sZDtsZXR0ZXItc3BhY2luZzouNXB4OyIrCiAgICAgICJjb2xvcjojZmZmO2JhY2tncm91bmQ6IzY2Njt2ZXJ0aWNhbC1hbGlnbjptaWRkbGU7IjsKICAgIHZhciBzdEVsID0gZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoInN0Iik7CiAgICBpZihzdEVsICYmIHN0RWwucGFyZW50Tm9kZSkgc3RFbC5wYXJlbnROb2RlLmluc2VydEJlZm9yZShpbmQsIHN0RWwubmV4dFNpYmxpbmcpOwogICAgZWxzZSBkb2N1bWVudC5ib2R5LmFwcGVuZENoaWxkKGluZCk7CiAgfQoKICAvKiAtLS0tIHN0YXRlIC0tLS0gKi8KICB2YXIgTU9ERSA9ICJub3JtYWwiOyAgICAgICAgLy8gIm5vcm1hbCIgfCAiaW5zZXJ0IiB8ICJ2aXN1YWwiCiAgdmFyIHBlbmRpbmcgPSAiIjsgICAgICAgICAgIC8vIHBlbmRpbmcgb3BlcmF0b3IvcHJlZml4OiBkIGMgeSBnIHIgZiBGIHQgVAogIHZhciBjb3VudCA9ICIiOyAgICAgICAgICAgICAvLyBudW1lcmljIGNvdW50IHByZWZpeCAoZGlnaXRzIGFzIGEgc3RyaW5nKQogIHZhciByZWcgPSAiIjsgICAgICAgICAgICAgICAvLyBzaW5nbGUgdW5uYW1lZCByZWdpc3RlciBjb250ZW50cwogIHZhciByZWdMaW5ld2lzZSA9IGZhbHNlOyAgICAvLyB3YXMgdGhlIHJlZ2lzdGVyIGNhcHR1cmVkIGxpbmV3aXNlPwogIHZhciB2aXNBbmNob3IgPSAwOyAgICAgICAgICAvLyBzZWxlY3Rpb24gYW5jaG9yIGluZGV4IGZvciB2aXN1YWwgbW9kZQogIHZhciB2aXNDYXJldCA9IDA7ICAgICAgICAgICAvLyBtb3ZpbmcgaGVhZCBvZiB0aGUgdmlzdWFsIHNlbGVjdGlvbgogIHZhciBjbWRBY3RpdmUgPSBmYWxzZTsgICAgICAvLyBleCBjb21tYW5kLWxpbmUgKDopIGFjdGl2ZT8KICB2YXIgY21kQnVmID0gIiI7ICAgICAgICAgICAgLy8gdGhlIHR5cGVkIGV4IGNvbW1hbmQgKHdpdGhvdXQgdGhlIGxlYWRpbmcgOikKCiAgLyogLS0tLSBmaXJlIGlucHV0IHNvIHRoZSBsaXZlIGNvbnRlbnQgcHJldmlldyByZWZyZXNoZXMgLS0tLSAqLwogIGZ1bmN0aW9uIGZpcmVJbnB1dCgpeyB0YS5kaXNwYXRjaEV2ZW50KG5ldyBFdmVudCgiaW5wdXQiLCB7IGJ1YmJsZXM6dHJ1ZSB9KSk7IH0KCiAgLyogLS0tLSBpbmRpY2F0b3IgLS0tLSAqLwogIGZ1bmN0aW9uIHNldEluZCgpewogICAgaWYoIXZpbU9uKCkpeyBpbmQuc3R5bGUuZGlzcGxheSA9ICJub25lIjsgcmV0dXJuOyB9CiAgICBpbmQuc3R5bGUuZGlzcGxheSA9ICJpbmxpbmUtYmxvY2siOwogICAgaWYoY21kQWN0aXZlKXsgaW5kLnRleHRDb250ZW50ID0gIjoiICsgY21kQnVmOyBpbmQuc3R5bGUuYmFja2dyb3VuZCA9ICIjNDU1YTY0IjsgcmV0dXJuOyB9CiAgICB2YXIgbGFiZWwsIGJnOwogICAgaWYoTU9ERSA9PT0gImluc2VydCIpeyBsYWJlbCA9ICItLSBJTlNFUlQgLS0iOyBiZyA9ICIjMmU3ZDMyIjsgfQogICAgZWxzZSBpZihNT0RFID09PSAidmlzdWFsIil7IGxhYmVsID0gIi0tIFZJU1VBTCAtLSI7IGJnID0gIiM4ZTI0YWEiOyB9CiAgICBlbHNlIHsgbGFiZWwgPSAiLS0gTk9STUFMIC0tIjsgYmcgPSAiIzE1NjVjMCI7IH0KICAgIGlmKHBlbmRpbmcgfHwgY291bnQpIGxhYmVsICs9ICIgIiArIGNvdW50ICsgcGVuZGluZzsKICAgIGluZC50ZXh0Q29udGVudCA9IGxhYmVsOwogICAgaW5kLnN0eWxlLmJhY2tncm91bmQgPSBiZzsKICB9CgogIC8qIC0tLS0gY2FyZXQgLyBidWZmZXIgaGVscGVycyAtLS0tICovCiAgZnVuY3Rpb24gdmFsKCl7IHJldHVybiB0YS52YWx1ZTsgfQogIGZ1bmN0aW9uIHBvcygpeyByZXR1cm4gdGEuc2VsZWN0aW9uU3RhcnQ7IH0KICBmdW5jdGlvbiBzZXRQb3MocCl7IHAgPSBjbGFtcChwLCAwLCB2YWwoKS5sZW5ndGgpOyB0YS5zZWxlY3Rpb25TdGFydCA9IHRhLnNlbGVjdGlvbkVuZCA9IHA7IH0KICBmdW5jdGlvbiBzZXRTZWwoYSwgYil7IHRhLnNlbGVjdGlvblN0YXJ0ID0gYTsgdGEuc2VsZWN0aW9uRW5kID0gYjsgfQogIGZ1bmN0aW9uIGNsYW1wKG4sIGxvLCBoaSl7IHJldHVybiBuIDwgbG8gPyBsbyA6IChuID4gaGkgPyBoaSA6IG4pOyB9CgogIGZ1bmN0aW9uIGxpbmVTdGFydChwKXsgdmFyIHYgPSB2YWwoKTsgdmFyIGkgPSB2Lmxhc3RJbmRleE9mKCJcbiIsIHAgLSAxKTsgcmV0dXJuIGkgKyAxOyB9CiAgZnVuY3Rpb24gbGluZUVuZChwKXsgdmFyIHYgPSB2YWwoKTsgdmFyIGkgPSB2LmluZGV4T2YoIlxuIiwgcCk7IHJldHVybiBpIDwgMCA/IHYubGVuZ3RoIDogaTsgfQogIGZ1bmN0aW9uIGxpbmVUZXh0KHApeyByZXR1cm4gdmFsKCkuc2xpY2UobGluZVN0YXJ0KHApLCBsaW5lRW5kKHApKTsgfQogIGZ1bmN0aW9uIGNvbChwKXsgcmV0dXJuIHAgLSBsaW5lU3RhcnQocCk7IH0KICAvLyBJbiBOT1JNQUwgbW9kZSB0aGUgY2FyZXQgcmVzdHMgT04gYSBjaGFyLCBzbyBtYXggY29sdW1uIGlzIGxpbmVFbmQtMQogIC8vICh1bmxlc3MgdGhlIGxpbmUgaXMgZW1wdHksIHdoZXJlIGl0IHNpdHMgYXQgbGluZVN0YXJ0KS4KICBmdW5jdGlvbiBsaW5lTGFzdENvbChwKXsgdmFyIHMgPSBsaW5lU3RhcnQocCksIGUgPSBsaW5lRW5kKHApOyByZXR1cm4gZSA+IHMgPyBlIC0gMSA6IHM7IH0KICBmdW5jdGlvbiBub3JtQ2xhbXAocCl7CiAgICB2YXIgbHMgPSBsaW5lU3RhcnQocCksIGxlID0gbGluZUVuZChwKTsKICAgIGlmKGxlID09PSBscykgcmV0dXJuIGxzOyAgICAgICAgICAgICAgLy8gZW1wdHkgbGluZQogICAgcmV0dXJuIGNsYW1wKHAsIGxzLCBsZSAtIDEpOwogIH0KICBmdW5jdGlvbiBmaXJzdE5vbkJsYW5rKHApewogICAgdmFyIGxzID0gbGluZVN0YXJ0KHApLCBsZSA9IGxpbmVFbmQocCksIHYgPSB2YWwoKSwgaSA9IGxzOwogICAgd2hpbGUoaSA8IGxlICYmICh2W2ldID09PSAiICIgfHwgdltpXSA9PT0gIlx0IikpIGkrKzsKICAgIHJldHVybiBpIDwgbGUgPyBpIDogbHM7CiAgfQogIC8vIEtlZXAgY2FyZXQgbGVnYWwgZm9yIHRoZSBjdXJyZW50IG1vZGUuCiAgZnVuY3Rpb24gZml4Q2FyZXQoKXsKICAgIGlmKE1PREUgPT09ICJpbnNlcnQiKSByZXR1cm47CiAgICB2YXIgcCA9IHBvcygpLCBsYXN0ID0gbGluZUxhc3RDb2wocCk7CiAgICBpZihwID4gbGFzdCkgc2V0UG9zKGxhc3QpOwogIH0KCiAgLyogPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICAgIEVESVQgUFJJTUlUSVZFUyDigJQgdXNlIGV4ZWNDb21tYW5kIHNvIG5hdGl2ZSB1bmRvICsgcHJldmlldyBib3RoIHdvcmsuCiAgICAgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PSAqLwogIGZ1bmN0aW9uIHRyeUV4ZWMoY21kLCBhcmcpewogICAgdHJ5ewogICAgICBpZihjbWQgPT09ICJpbnNlcnRUZXh0IikgcmV0dXJuIGRvY3VtZW50LmV4ZWNDb21tYW5kKCJpbnNlcnRUZXh0IiwgZmFsc2UsIGFyZyk7CiAgICAgIGlmKGNtZCA9PT0gImRlbGV0ZSIpIHJldHVybiBkb2N1bWVudC5leGVjQ29tbWFuZCgiZGVsZXRlIiwgZmFsc2UsIG51bGwpOwogICAgfWNhdGNoKGUpe30KICAgIHJldHVybiBmYWxzZTsKICB9CiAgLy8gUmVwbGFjZSBbYSxiKSB3aXRoIHRleHQuIGV4ZWNDb21tYW5kIGtlZXBzIHRoZSBuYXRpdmUgdW5kbyBzdGFjazsgc2V0UmFuZ2VUZXh0CiAgLy8gaXMgdGhlIGZhbGxiYWNrLiBBbHdheXMgZmlyZXMgaW5wdXQgZm9yIHRoZSBsaXZlIHByZXZpZXcuCiAgZnVuY3Rpb24gcmVwbGFjZVJhbmdlKGEsIGIsIHRleHQsIGNhcmV0KXsKICAgIGEgPSBjbGFtcChhLCAwLCB2YWwoKS5sZW5ndGgpOwogICAgYiA9IGNsYW1wKGIsIDAsIHZhbCgpLmxlbmd0aCk7CiAgICBpZihhID4gYil7IHZhciB0ID0gYTsgYSA9IGI7IGIgPSB0OyB9CiAgICB0YS5mb2N1cygpOwogICAgc2V0U2VsKGEsIGIpOwogICAgdmFyIG9rID0gZmFsc2U7CiAgICBpZihhID09PSBiKXsKICAgICAgaWYodGV4dC5sZW5ndGgpIG9rID0gdHJ5RXhlYygiaW5zZXJ0VGV4dCIsIHRleHQpIHx8IHRhLnNldFJhbmdlVGV4dCh0ZXh0LCBhLCBiLCAiZW5kIikgPT09IHVuZGVmaW5lZDsKICAgICAgZWxzZSBvayA9IHRydWU7CiAgICB9IGVsc2UgaWYodGV4dC5sZW5ndGggPT09IDApewogICAgICBvayA9IHRyeUV4ZWMoImRlbGV0ZSIpIHx8ICh0YS5zZXRSYW5nZVRleHQoIiIsIGEsIGIsICJlbmQiKSA9PT0gdW5kZWZpbmVkKTsKICAgIH0gZWxzZSB7CiAgICAgIG9rID0gdHJ5RXhlYygiaW5zZXJ0VGV4dCIsIHRleHQpIHx8ICh0YS5zZXRSYW5nZVRleHQodGV4dCwgYSwgYiwgImVuZCIpID09PSB1bmRlZmluZWQpOwogICAgfQogICAgaWYodHlwZW9mIGNhcmV0ID09PSAibnVtYmVyIikgc2V0UG9zKGNhcmV0KTsKICAgIGZpcmVJbnB1dCgpOwogICAgcmV0dXJuIG9rOwogIH0KICBmdW5jdGlvbiBpbnNlcnRBdChwLCB0ZXh0KXsgcmVwbGFjZVJhbmdlKHAsIHAsIHRleHQsIHAgKyB0ZXh0Lmxlbmd0aCk7IH0KICBmdW5jdGlvbiBkZWxldGVSYW5nZShhLCBiLCBjYXJldCl7IHJlcGxhY2VSYW5nZShhLCBiLCAiIiwgdHlwZW9mIGNhcmV0ID09PSAibnVtYmVyIiA/IGNhcmV0IDogTWF0aC5taW4oYSwgYikpOyB9CgogIC8qIC0tLS0gcmVnaXN0ZXIgLS0tLSAqLwogIGZ1bmN0aW9uIHlhbmsoYSwgYiwgbGluZXdpc2UpewogICAgdmFyIHYgPSB2YWwoKTsgYSA9IGNsYW1wKGEsIDAsIHYubGVuZ3RoKTsgYiA9IGNsYW1wKGIsIDAsIHYubGVuZ3RoKTsKICAgIGlmKGEgPiBiKXsgdmFyIHQgPSBhOyBhID0gYjsgYiA9IHQ7IH0KICAgIHZhciB0ZXh0ID0gdi5zbGljZShhLCBiKTsKICAgIGlmKGxpbmV3aXNlICYmIHRleHQuY2hhckF0KHRleHQubGVuZ3RoIC0gMSkgIT09ICJcbiIpIHRleHQgKz0gIlxuIjsKICAgIHJlZyA9IHRleHQ7IHJlZ0xpbmV3aXNlID0gISFsaW5ld2lzZTsKICB9CgogIC8qID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KICAgICBNT0RFIFNXSVRDSElORwogICAgID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0gKi8KICBmdW5jdGlvbiB0b0luc2VydCgpeyBNT0RFID0gImluc2VydCI7IHBlbmRpbmcgPSAiIjsgY291bnQgPSAiIjsgc2V0SW5kKCk7IH0KICBmdW5jdGlvbiB0b05vcm1hbCgpewogICAgaWYoTU9ERSA9PT0gImluc2VydCIpeyAgICAgICAgICAgICAgICAgLy8gdmltIHN0ZXBzIGNhcmV0IGxlZnQgd2hlbiBsZWF2aW5nIGluc2VydAogICAgICB2YXIgcCA9IHBvcygpLCBscyA9IGxpbmVTdGFydChwKTsKICAgICAgaWYocCA+IGxzKSBzZXRQb3MocCAtIDEpOwogICAgfQogICAgTU9ERSA9ICJub3JtYWwiOyBwZW5kaW5nID0gIiI7IGNvdW50ID0gIiI7IGZpeENhcmV0KCk7IHNldEluZCgpOwogIH0KICBmdW5jdGlvbiB0b1Zpc3VhbCgpeyBNT0RFID0gInZpc3VhbCI7IHZpc0FuY2hvciA9IHBvcygpOyB2aXNDYXJldCA9IHBvcygpOyBwZW5kaW5nID0gIiI7IGNvdW50ID0gIiI7IHZpc1N5bmMoKTsgc2V0SW5kKCk7IH0KCiAgLyogPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICAgIFZJU1VBTCBzZWxlY3Rpb24gaGVscGVycyAoY2hhcndpc2UsIGluY2x1c2l2ZSBvZiBjaGFyIHVuZGVyIGNhcmV0KQogICAgID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0gKi8KICBmdW5jdGlvbiB2aXNSYW5nZSgpewogICAgdmFyIGEgPSB2aXNBbmNob3IsIGIgPSB2aXNDYXJldDsKICAgIHZhciBsbyA9IE1hdGgubWluKGEsIGIpLCBoaSA9IE1hdGgubWF4KGEsIGIpICsgMTsKICAgIHJldHVybiBbbG8sIGNsYW1wKGhpLCAwLCB2YWwoKS5sZW5ndGgpXTsKICB9CiAgLy8gU2hvdyB0aGUgc2VsZWN0aW9uLCBidXQgbGVhdmUgdGhlIGxvZ2ljYWwgY2FyZXQgKHZpc0NhcmV0KSBhcyB0aGUgbW92aW5nIGhlYWQuCiAgZnVuY3Rpb24gdmlzU3luYygpewogICAgaWYoTU9ERSAhPT0gInZpc3VhbCIpIHJldHVybjsKICAgIHZhciByID0gdmlzUmFuZ2UoKTsKICAgIC8vIHB1dCB0aGUgRE9NIGNhcmV0IEFUIHZpc0NhcmV0IHNvIHBvcygpLWJhc2VkIG1vdGlvbnMgcmVhZCB0aGUgcmlnaHQgc3BvdCwKICAgIC8vIHRoZW4gZXh0ZW5kIHRoZSB2aXNpYmxlIHNlbGVjdGlvbiB0byBjb3ZlciB0aGUgcmFuZ2UuCiAgICBpZih2aXNDYXJldCA+PSB2aXNBbmNob3IpIHNldFNlbChyWzBdLCByWzFdKTsKICAgIGVsc2Ugc2V0U2VsKHJbMF0sIHJbMV0pOwogICAgLy8ga2VlcCBzZWxlY3Rpb25TdGFydCBhdCB2aXNDYXJldCBzaWRlIGZvciBtb3Rpb24gcmVhZHMgaXMgbm90IG5lZWRlZDsKICAgIC8vIHZpc3VhbCBoYW5kbGVyIHVzZXMgdmlzQ2FyZXQgZGlyZWN0bHkuCiAgfQoKICAvKiA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09CiAgICAgTU9USU9OUwogICAgID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0gKi8KICBmdW5jdGlvbiBjaGFyQ2xhc3MoYyl7CiAgICBpZihjID09PSB1bmRlZmluZWQgfHwgYyA9PT0gIlxuIikgcmV0dXJuICJubCI7CiAgICBpZihjID09PSAiICIgfHwgYyA9PT0gIlx0IikgcmV0dXJuICJzcCI7CiAgICBpZigvW0EtWmEtejAtOV9dLy50ZXN0KGMpKSByZXR1cm4gInciOwogICAgcmV0dXJuICJwIjsgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gcHVuY3R1YXRpb24KICB9CiAgZnVuY3Rpb24gd29yZEZ3ZChwLCBuKXsKICAgIHZhciB2ID0gdmFsKCksIGxlbiA9IHYubGVuZ3RoOwogICAgZm9yKHZhciBrID0gMDsgayA8IG47IGsrKyl7CiAgICAgIGlmKHAgPj0gbGVuKSBicmVhazsKICAgICAgdmFyIGNscyA9IGNoYXJDbGFzcyh2W3BdKTsKICAgICAgaWYoY2xzICE9PSAic3AiICYmIGNscyAhPT0gIm5sIikgd2hpbGUocCA8IGxlbiAmJiBjaGFyQ2xhc3ModltwXSkgPT09IGNscykgcCsrOwogICAgICB3aGlsZShwIDwgbGVuICYmIChjaGFyQ2xhc3ModltwXSkgPT09ICJzcCIgfHwgY2hhckNsYXNzKHZbcF0pID09PSAibmwiKSkgcCsrOwogICAgfQogICAgcmV0dXJuIGNsYW1wKHAsIDAsIGxlbik7CiAgfQogIGZ1bmN0aW9uIHdvcmRCYWNrKHAsIG4pewogICAgdmFyIHYgPSB2YWwoKTsKICAgIGZvcih2YXIgayA9IDA7IGsgPCBuOyBrKyspewogICAgICBpZihwIDw9IDApIGJyZWFrOwogICAgICBwLS07CiAgICAgIHdoaWxlKHAgPiAwICYmIChjaGFyQ2xhc3ModltwXSkgPT09ICJzcCIgfHwgY2hhckNsYXNzKHZbcF0pID09PSAibmwiKSkgcC0tOwogICAgICBpZihwIDw9IDApeyBwID0gMDsgYnJlYWs7IH0KICAgICAgdmFyIGNscyA9IGNoYXJDbGFzcyh2W3BdKTsKICAgICAgd2hpbGUocCA+IDAgJiYgY2hhckNsYXNzKHZbcCAtIDFdKSA9PT0gY2xzKSBwLS07CiAgICB9CiAgICByZXR1cm4gY2xhbXAocCwgMCwgdi5sZW5ndGgpOwogIH0KICBmdW5jdGlvbiB3b3JkRW5kKHAsIG4pewogICAgdmFyIHYgPSB2YWwoKSwgbGVuID0gdi5sZW5ndGg7CiAgICBmb3IodmFyIGsgPSAwOyBrIDwgbjsgaysrKXsKICAgICAgaWYocCA+PSBsZW4gLSAxKXsgcCA9IGxlbiAtIDEgPCAwID8gMCA6IGxlbiAtIDE7IGJyZWFrOyB9CiAgICAgIHArKzsKICAgICAgd2hpbGUocCA8IGxlbiAmJiAoY2hhckNsYXNzKHZbcF0pID09PSAic3AiIHx8IGNoYXJDbGFzcyh2W3BdKSA9PT0gIm5sIikpIHArKzsKICAgICAgaWYocCA+PSBsZW4peyBwID0gbGVuIC0gMTsgYnJlYWs7IH0KICAgICAgdmFyIGNscyA9IGNoYXJDbGFzcyh2W3BdKTsKICAgICAgd2hpbGUocCArIDEgPCBsZW4gJiYgY2hhckNsYXNzKHZbcCArIDFdKSA9PT0gY2xzKSBwKys7CiAgICB9CiAgICByZXR1cm4gY2xhbXAocCwgMCwgbGVuKTsKICB9CiAgLy8gY3cgYmVoYXZlcyBsaWtlIGNlOiBjaGFuZ2UgdG8gZW5kIG9mIGN1cnJlbnQgd29yZCwgZG8gbm90IGVhdCB0cmFpbGluZyBzcGFjZS4KICBmdW5jdGlvbiBjaGFuZ2VXb3JkRW5kKHAsIG4pewogICAgdmFyIHYgPSB2YWwoKTsKICAgIGlmKGNoYXJDbGFzcyh2W3BdKSA9PT0gInNwIiB8fCBjaGFyQ2xhc3ModltwXSkgPT09ICJubCIpIHJldHVybiB3b3JkRndkKHAsIG4pOwogICAgcmV0dXJuIGNsYW1wKHdvcmRFbmQocCwgbikgKyAxLCBwLCB2Lmxlbmd0aCk7CiAgfQogIC8vIHZlcnRpY2FsIG1vdmUgcHJlc2VydmluZyBjb2x1bW4uIGRlbHRhPjAgZG93biwgZGVsdGE8MCB1cC4KICBmdW5jdGlvbiB2ZXJ0aWNhbChwLCBkZWx0YSl7CiAgICB2YXIgdiA9IHZhbCgpLCBjID0gY29sKHApLCBjdXIgPSBwOwogICAgaWYoZGVsdGEgPiAwKXsKICAgICAgZm9yKHZhciBpID0gMDsgaSA8IGRlbHRhOyBpKyspewogICAgICAgIHZhciBlID0gbGluZUVuZChjdXIpOwogICAgICAgIGlmKGUgPj0gdi5sZW5ndGgpIGJyZWFrOyAgICAgICAgICAvLyBsYXN0IGxpbmUKICAgICAgICBjdXIgPSBlICsgMTsKICAgICAgfQogICAgfSBlbHNlIHsKICAgICAgZm9yKHZhciBqID0gMDsgaiA8IC1kZWx0YTsgaisrKXsKICAgICAgICB2YXIgcyA9IGxpbmVTdGFydChjdXIpOwogICAgICAgIGlmKHMgPT09IDApIGJyZWFrOyAgICAgICAgICAgICAgICAvLyBmaXJzdCBsaW5lCiAgICAgICAgY3VyID0gbGluZVN0YXJ0KHMgLSAxKTsKICAgICAgfQogICAgfQogICAgdmFyIG5zID0gbGluZVN0YXJ0KGN1ciksIG1heGMgPSBNT0RFID09PSAidmlzdWFsIiA/IGxpbmVFbmQoY3VyKSA6IGxpbmVMYXN0Q29sKGN1cik7CiAgICByZXR1cm4gY2xhbXAobnMgKyBjLCBucywgbWF4Yyk7CiAgfQogIGZ1bmN0aW9uIHBhcmFGd2QocCwgbil7CiAgICB2YXIgdiA9IHZhbCgpLCBsZW4gPSB2Lmxlbmd0aCwgaSA9IHA7CiAgICBmb3IodmFyIGsgPSAwOyBrIDwgbjsgaysrKXsKICAgICAgdmFyIGUgPSBsaW5lRW5kKGkpOyBpID0gZSA+PSBsZW4gPyBsZW4gOiBlICsgMTsKICAgICAgd2hpbGUoaSA8IGxlbil7CiAgICAgICAgdmFyIGxzID0gbGluZVN0YXJ0KGkpLCBsZSA9IGxpbmVFbmQoaSk7CiAgICAgICAgaWYobGUgPT09IGxzKSBicmVhazsgICAgICAgICAgICAgIC8vIGJsYW5rIGxpbmUKICAgICAgICBpID0gbGUgPj0gbGVuID8gbGVuIDogbGUgKyAxOwogICAgICB9CiAgICB9CiAgICByZXR1cm4gY2xhbXAoaSwgMCwgbGVuKTsKICB9CiAgZnVuY3Rpb24gcGFyYUJhY2socCwgbil7CiAgICB2YXIgaSA9IHA7CiAgICBmb3IodmFyIGsgPSAwOyBrIDwgbjsgaysrKXsKICAgICAgdmFyIHMgPSBsaW5lU3RhcnQoaSk7CiAgICAgIGkgPSBzID4gMCA/IHMgLSAxIDogMDsKICAgICAgaSA9IGxpbmVTdGFydChpKTsKICAgICAgd2hpbGUoaSA+IDApewogICAgICAgIHZhciBscyA9IGxpbmVTdGFydChpKSwgbGUgPSBsaW5lRW5kKGkpOwogICAgICAgIGlmKGxlID09PSBscykgYnJlYWs7ICAgICAgICAgICAgICAvLyBibGFuayBsaW5lCiAgICAgICAgaSA9IGxpbmVTdGFydChpIC0gMSk7CiAgICAgIH0KICAgIH0KICAgIHJldHVybiBjbGFtcChpLCAwLCB2YWwoKS5sZW5ndGgpOwogIH0KICAvLyBmL0YvdC9UIHdpdGhpbiB0aGUgY3VycmVudCBsaW5lCiAgZnVuY3Rpb24gZmluZENoYXIocCwgY2gsIGZvcndhcmQsIHRpbGwpewogICAgdmFyIHYgPSB2YWwoKSwgbHMgPSBsaW5lU3RhcnQocCksIGxlID0gbGluZUVuZChwKTsKICAgIGlmKGZvcndhcmQpewogICAgICBmb3IodmFyIGkgPSBwICsgMTsgaSA8IGxlOyBpKyspIGlmKHZbaV0gPT09IGNoKSByZXR1cm4gdGlsbCA/IGkgLSAxIDogaTsKICAgIH0gZWxzZSB7CiAgICAgIGZvcih2YXIgaiA9IHAgLSAxOyBqID49IGxzOyBqLS0pIGlmKHZbal0gPT09IGNoKSByZXR1cm4gdGlsbCA/IGogKyAxIDogajsKICAgIH0KICAgIHJldHVybiAtMTsKICB9CiAgZnVuY3Rpb24gbGFzdExpbmVTdGFydCgpeyB2YXIgdiA9IHZhbCgpOyB2YXIgaSA9IHYubGFzdEluZGV4T2YoIlxuIik7IHJldHVybiBpID09PSAtMSA/IDAgOiBpICsgMTsgfQogIC8vIDEtYmFzZWQgbGluZSBhZGRyZXNzaW5nOyByZXR1cm5zIGZpcnN0Tm9uQmxhbmsgb2YgdGhhdCBsaW5lLgogIGZ1bmN0aW9uIGdvdG9MaW5lKGxpbmVObyl7CiAgICB2YXIgdiA9IHZhbCgpLCBpZHggPSAwLCBjdXIgPSAxOwogICAgaWYobGluZU5vIDw9IDEpIHJldHVybiBmaXJzdE5vbkJsYW5rKDApOwogICAgd2hpbGUoY3VyIDwgbGluZU5vKXsKICAgICAgdmFyIG5sID0gdi5pbmRleE9mKCJcbiIsIGlkeCk7CiAgICAgIGlmKG5sID09PSAtMSkgcmV0dXJuIGZpcnN0Tm9uQmxhbmsobGluZVN0YXJ0KHYubGVuZ3RoKSk7CiAgICAgIGlkeCA9IG5sICsgMTsgY3VyKys7CiAgICB9CiAgICByZXR1cm4gZmlyc3ROb25CbGFuayhpZHgpOwogIH0KCiAgLyogPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICAgIExJTkVXSVNFIHNwYW4gaGVscGVycyAoZm9yIGRkL2NjL3l5L2RqL2RrIGFuZCBvcGVyYXRvciBsaW5ld2lzZSBtb3Rpb25zKQogICAgID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0gKi8KICAvLyBbc3RhcnQsIGVuZF0gY292ZXJpbmcgYGNudGAgd2hvbGUgbGluZXMgc3RhcnRpbmcgYXQgdGhlIGxpbmUgb2YgcCwKICAvLyB3aGVyZSBlbmQgaW5jbHVkZXMgdGhlIHRyYWlsaW5nIG5ld2xpbmUgb2YgdGhlIGxhc3QgbGluZSB3aGVuIHByZXNlbnQuCiAgZnVuY3Rpb24gbGluZVNwYW4ocCwgY250KXsKICAgIHZhciBzdGFydCA9IGxpbmVTdGFydChwKSwgZW5kID0gc3RhcnQsIHYgPSB2YWwoKTsKICAgIGZvcih2YXIgayA9IDA7IGsgPCBjbnQ7IGsrKyl7CiAgICAgIHZhciBsZSA9IGxpbmVFbmQoZW5kKTsKICAgICAgaWYobGUgPCB2Lmxlbmd0aCkgZW5kID0gbGUgKyAxOyAgICAgLy8gaW5jbHVkZSB0aGUgbmV3bGluZQogICAgICBlbHNlIHsgZW5kID0gbGU7IGJyZWFrOyB9CiAgICB9CiAgICByZXR1cm4gW3N0YXJ0LCBlbmRdOwogIH0KICAvLyBMaW5ld2lzZSB5YW5rIG9mIGNudCBsaW5lcyBmcm9tIHAuCiAgZnVuY3Rpb24gbGluZXdpc2VZYW5rKHAsIGNudCl7CiAgICB2YXIgc3AgPSBsaW5lU3BhbihwLCBjbnQpOwogICAgeWFuayhzcFswXSwgc3BbMV0sIHRydWUpOwogIH0KICAvLyBMaW5ld2lzZSBkZWxldGUgb2YgY250IGxpbmVzIGZyb20gcDsgY2FyZXQgLT4gZmlyc3Qgbm9uLWJsYW5rIG9mIHJlc3VsdGluZyBsaW5lLgogIC8vIEhhbmRsZXMgdGhlIGxhc3QtbGluZSBjYXNlIChlYXQgdGhlIHByZWNlZGluZyBuZXdsaW5lIHNvIG5vIGJsYW5rIGxpbmUgbGluZ2VycykuCiAgZnVuY3Rpb24gbGluZXdpc2VEZWxldGUocCwgY250KXsKICAgIHZhciB2ID0gdmFsKCksIHNwID0gbGluZVNwYW4ocCwgY250KSwgYSA9IHNwWzBdLCBiID0gc3BbMV07CiAgICB5YW5rKGEsIGIsIHRydWUpOwogICAgaWYoYiA+PSB2Lmxlbmd0aCAmJiBhID4gMCAmJiB2W2EgLSAxXSA9PT0gIlxuIikgYSA9IGEgLSAxOyAgIC8vIGxhc3QgbGluZTogZWF0IHByZWNlZGluZyBcbgogICAgZGVsZXRlUmFuZ2UoYSwgYiwgMCk7CiAgICBzZXRQb3MoZmlyc3ROb25CbGFuayhjbGFtcChhLCAwLCB2YWwoKS5sZW5ndGgpKSk7CiAgfQogIC8vIExpbmV3aXNlIGNoYW5nZSBvZiBjbnQgbGluZXM6IGJsYW5rIHRoZSBibG9jayBkb3duIHRvIG9uZSBlbXB0eSBsaW5lLCBlbnRlciBpbnNlcnQuCiAgZnVuY3Rpb24gbGluZXdpc2VDaGFuZ2UocCwgY250KXsKICAgIHZhciBzcCA9IGxpbmVTcGFuKHAsIGNudCksIGEgPSBzcFswXSwgYiA9IHNwWzFdLCB2ID0gdmFsKCk7CiAgICB5YW5rKGEsIGIsIHRydWUpOwogICAgLy8ga2VlcCBvbmUgbGluZTogZHJvcCB0aGUgdHJhaWxpbmcgbmV3bGluZSBmcm9tIHRoZSBkZWxldGUgc3BhbiBpZiBwcmVzZW50CiAgICB2YXIgZGVsVG8gPSAoYiA+IGEgJiYgdltiIC0gMV0gPT09ICJcbiIpID8gYiAtIDEgOiBiOwogICAgZGVsZXRlUmFuZ2UoYSwgZGVsVG8sIGEpOwogICAgc2V0UG9zKGEpOwogICAgdG9JbnNlcnQoKTsKICB9CgogIC8qID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KICAgICBQQVNURQogICAgID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0gKi8KICBmdW5jdGlvbiBwYXN0ZShhZnRlcil7CiAgICBpZihyZWcgPT09ICIiKSByZXR1cm47CiAgICB2YXIgcCA9IHBvcygpLCB2ID0gdmFsKCk7CiAgICBpZihyZWdMaW5ld2lzZSl7CiAgICAgIHZhciB0ZXh0ID0gcmVnOwogICAgICBpZih0ZXh0LmNoYXJBdCh0ZXh0Lmxlbmd0aCAtIDEpICE9PSAiXG4iKSB0ZXh0ICs9ICJcbiI7CiAgICAgIGlmKGFmdGVyKXsKICAgICAgICB2YXIgbGUgPSBsaW5lRW5kKHApOwogICAgICAgIGlmKGxlID49IHYubGVuZ3RoKXsKICAgICAgICAgIC8vIGxhc3QgbGluZSwgbm8gdHJhaWxpbmcgbmV3bGluZTogcHJlcGVuZCBhIG5ld2xpbmUsIGRyb3AgcmVnJ3MgdHJhaWxpbmcgb25lCiAgICAgICAgICBpbnNlcnRBdCh2Lmxlbmd0aCwgIlxuIiArIHRleHQucmVwbGFjZSgvXG4kLywgIiIpKTsKICAgICAgICAgIHNldFBvcyhmaXJzdE5vbkJsYW5rKGxpbmVTdGFydCh2YWwoKS5sZW5ndGgpKSk7CiAgICAgICAgfSBlbHNlIHsKICAgICAgICAgIGluc2VydEF0KGxlICsgMSwgdGV4dCk7CiAgICAgICAgICBzZXRQb3MoZmlyc3ROb25CbGFuayhsZSArIDEpKTsKICAgICAgICB9CiAgICAgIH0gZWxzZSB7CiAgICAgICAgdmFyIGxzID0gbGluZVN0YXJ0KHApOwogICAgICAgIGluc2VydEF0KGxzLCB0ZXh0KTsKICAgICAgICBzZXRQb3MoZmlyc3ROb25CbGFuayhscykpOwogICAgICB9CiAgICB9IGVsc2UgewogICAgICB2YXIgYXQgPSBhZnRlciA/ICh2Lmxlbmd0aCA9PT0gMCB8fCB2W3BdID09PSAiXG4iID8gcCA6IHAgKyAxKSA6IHA7CiAgICAgIGluc2VydEF0KGF0LCByZWcpOwogICAgICBzZXRQb3Mobm9ybUNsYW1wKGF0ICsgcmVnLmxlbmd0aCAtIDEpKTsKICAgIH0KICB9CgogIC8qID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KICAgICBPUEVSQVRPUiArIE1PVElPTiAoY2hhcndpc2UpIOKAlCByZXR1cm5zIHtlbmQsIGxpbmV3aXNlfSBvciBudWxsLgogICAgID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0gKi8KICBmdW5jdGlvbiBvcGVyYXRvck1vdGlvbihvcCwga2V5LCBuKXsKICAgIHZhciBwID0gcG9zKCk7CiAgICBzd2l0Y2goa2V5KXsKICAgICAgY2FzZSAidyI6IHJldHVybiB7IGVuZDogb3AgPT09ICJjIiA/IGNoYW5nZVdvcmRFbmQocCwgbikgOiB3b3JkRndkKHAsIG4pLCBsaW5ld2lzZTpmYWxzZSB9OwogICAgICBjYXNlICJiIjogcmV0dXJuIHsgZW5kOiB3b3JkQmFjayhwLCBuKSwgbGluZXdpc2U6ZmFsc2UgfTsKICAgICAgY2FzZSAiZSI6IHJldHVybiB7IGVuZDogd29yZEVuZChwLCBuKSArIDEsIGxpbmV3aXNlOmZhbHNlIH07CiAgICAgIGNhc2UgImgiOiByZXR1cm4geyBlbmQ6IE1hdGgubWF4KGxpbmVTdGFydChwKSwgcCAtIG4pLCBsaW5ld2lzZTpmYWxzZSB9OwogICAgICBjYXNlICJsIjogY2FzZSAiICI6IHJldHVybiB7IGVuZDogTWF0aC5taW4obGluZUVuZChwKSwgcCArIG4pLCBsaW5ld2lzZTpmYWxzZSB9OwogICAgICBjYXNlICIwIjogcmV0dXJuIHsgZW5kOiBsaW5lU3RhcnQocCksIGxpbmV3aXNlOmZhbHNlIH07CiAgICAgIGNhc2UgIl4iOiByZXR1cm4geyBlbmQ6IGZpcnN0Tm9uQmxhbmsocCksIGxpbmV3aXNlOmZhbHNlIH07CiAgICAgIGNhc2UgIiQiOiByZXR1cm4geyBlbmQ6IGxpbmVFbmQodmVydGljYWwocCwgbiAtIDEpKSwgbGluZXdpc2U6ZmFsc2UgfTsKICAgICAgLy8gbGluZXdpc2UgbW90aW9ucyBvbiBhbiBvcGVyYXRvcjogZGogLyBkayAoYW5kIGNjLWlzaCB2aWEgY291bnQgYXJlIGhhbmRsZWQgZWxzZXdoZXJlKQogICAgICBjYXNlICJqIjogcmV0dXJuIHsgbGluZXdpc2VGcm9tOiBwLCBsaW5ld2lzZUNvdW50OiBuICsgMSwgbGluZXdpc2U6dHJ1ZSB9OwogICAgICBjYXNlICJrIjogewogICAgICAgIHZhciB0b3AgPSBwOwogICAgICAgIGZvcih2YXIgaSA9IDA7IGkgPCBuOyBpKyspeyB2YXIgbHMgPSBsaW5lU3RhcnQodG9wKTsgaWYobHMgPT09IDApIGJyZWFrOyB0b3AgPSBsaW5lU3RhcnQobHMgLSAxKTsgfQogICAgICAgIHJldHVybiB7IGxpbmV3aXNlRnJvbTogdG9wLCBsaW5ld2lzZUNvdW50OiBjb3VudExpbmVzKHRvcCwgcCkgKyAxLCBsaW5ld2lzZTp0cnVlIH07CiAgICAgIH0KICAgICAgY2FzZSAiRyI6IHsKICAgICAgICB2YXIgZGVzdFN0YXJ0ID0gY291bnQgPyBsaW5lU3RhcnQoZ290b0xpbmUocGFyc2VJbnQoY291bnQsIDEwKSkpIDogbGFzdExpbmVTdGFydCgpOwogICAgICAgIHZhciBsbyA9IE1hdGgubWluKHAsIGRlc3RTdGFydCk7CiAgICAgICAgcmV0dXJuIHsgbGluZXdpc2VGcm9tOiBsbywgbGluZXdpc2VDb3VudDogY291bnRMaW5lcyhsbywgTWF0aC5tYXgocCwgZGVzdFN0YXJ0KSkgKyAxLCBsaW5ld2lzZTp0cnVlIH07CiAgICAgIH0KICAgICAgZGVmYXVsdDogcmV0dXJuIG51bGw7CiAgICB9CiAgfQogIGZ1bmN0aW9uIGNvdW50TGluZXMoYSwgYil7CiAgICB2YXIgbG8gPSBNYXRoLm1pbihhLCBiKSwgaGkgPSBNYXRoLm1heChhLCBiKSwgYyA9IDAsIHYgPSB2YWwoKTsKICAgIGZvcih2YXIgaSA9IGxvOyBpIDwgaGk7IGkrKykgaWYodltpXSA9PT0gIlxuIikgYysrOwogICAgcmV0dXJuIGM7CiAgfQogIGZ1bmN0aW9uIGFwcGx5Q2hhck9wKG9wLCBhLCBiKXsKICAgIGlmKGEgPiBiKXsgdmFyIHQgPSBhOyBhID0gYjsgYiA9IHQ7IH0KICAgIHlhbmsoYSwgYiwgZmFsc2UpOwogICAgaWYob3AgPT09ICJ5Iil7IHNldFBvcyhub3JtQ2xhbXAoYSkpOyByZXR1cm47IH0KICAgIGRlbGV0ZVJhbmdlKGEsIGIsIGEpOwogICAgaWYob3AgPT09ICJjIil7IHNldFBvcyhhKTsgdG9JbnNlcnQoKTsgfQogICAgZWxzZSBmaXhDYXJldCgpOwogIH0KICBmdW5jdGlvbiBhcHBseUxpbmV3aXNlT3Aob3AsIGZyb20sIGNudCl7CiAgICBpZihvcCA9PT0gInkiKXsgbGluZXdpc2VZYW5rKGZyb20sIGNudCk7IHNldFBvcyhmaXJzdE5vbkJsYW5rKGxpbmVTdGFydChmcm9tKSkpOyB9CiAgICBlbHNlIGlmKG9wID09PSAiYyIpeyBzZXRQb3MoZnJvbSk7IGxpbmV3aXNlQ2hhbmdlKGZyb20sIGNudCk7IH0KICAgIGVsc2UgbGluZXdpc2VEZWxldGUoZnJvbSwgY250KTsgICAvLyBjYXJldCBoYW5kbGluZyBpbnNpZGUKICB9CgogIC8qID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KICAgICBDT1VOVCBoZWxwZXIKICAgICA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09ICovCiAgZnVuY3Rpb24gZWZmKCl7IHJldHVybiBjb3VudCA9PT0gIiIgPyAxIDogcGFyc2VJbnQoY291bnQsIDEwKTsgfQogIGZ1bmN0aW9uIHJlc2V0KCl7IHBlbmRpbmcgPSAiIjsgY291bnQgPSAiIjsgfQoKICAvKiA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09CiAgICAgRVggQ09NTUFORCBMSU5FICAoIDp3ICA6d2EgIDp3YXEgIC4uLiBhbGwgc2F2ZSB0aGUgZmlsZSApCiAgICAgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PSAqLwogIGZ1bmN0aW9uIGNtZFNhdmUoKXsKICAgIHZhciBzYiA9IGRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCJzYXZlIik7ICAgLy8gdGhlIGVkaXRvcidzIFNhdmUgYnV0dG9uCiAgICBpZighc2IpIHJldHVybjsKICAgIGlmKHR5cGVvZiBzYi5vbmNsaWNrID09PSAiZnVuY3Rpb24iKSBzYi5vbmNsaWNrKCk7IGVsc2Ugc2IuY2xpY2soKTsKICB9CiAgZnVuY3Rpb24gcnVuQ21kKHJhdyl7CiAgICB2YXIgYyA9IHJhdy50cmltKCk7CiAgICBpZihjLmNoYXJBdChjLmxlbmd0aCAtIDEpID09PSAiISIpIGMgPSBjLnNsaWNlKDAsIC0xKTsgICAvLyB0b2xlcmF0ZSBhIGZvcmNlICEKICAgIC8vIDp3IGFuZCBpdHMgYWxpYXNlcyAoOndhLCA6d2FxLCBhbmQgdGhlIGNvbW1vbiA6d3EgLyA6eCkgYWxsIGp1c3Qgc2F2ZS4KICAgIGlmKGMgPT09ICJ3IiB8fCBjID09PSAid2EiIHx8IGMgPT09ICJ3YXEiIHx8IGMgPT09ICJ3cSIgfHwgYyA9PT0gIngiKXsgY21kU2F2ZSgpOyByZXR1cm47IH0KICAgIGlmKGMgPT09ICIiKSByZXR1cm47CiAgICB2YXIgc3QgPSBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgic3QiKTsKICAgIGlmKHN0KSBzdC50ZXh0Q29udGVudCA9ICJub3QgYW4gZWRpdG9yIGNvbW1hbmQ6IDoiICsgYzsKICB9CiAgZnVuY3Rpb24gY21kS2V5KGUpewogICAgdmFyIGsgPSBlLmtleTsKICAgIGlmKGsgPT09ICJFc2NhcGUiIHx8IChlLmN0cmxLZXkgJiYgayA9PT0gIlsiKSl7IGNtZEFjdGl2ZSA9IGZhbHNlOyBzZXRJbmQoKTsgcmV0dXJuOyB9CiAgICBpZihrID09PSAiRW50ZXIiKXsgdmFyIGMgPSBjbWRCdWY7IGNtZEFjdGl2ZSA9IGZhbHNlOyBzZXRJbmQoKTsgcnVuQ21kKGMpOyByZXR1cm47IH0KICAgIGlmKGsgPT09ICJCYWNrc3BhY2UiKXsKICAgICAgaWYoY21kQnVmLmxlbmd0aCA9PT0gMCkgY21kQWN0aXZlID0gZmFsc2U7ICAgLy8gYmFja3NwYWNlIHBhc3QgdGhlIDogZXhpdHMKICAgICAgZWxzZSBjbWRCdWYgPSBjbWRCdWYuc2xpY2UoMCwgLTEpOwogICAgICBzZXRJbmQoKTsgcmV0dXJuOwogICAgfQogICAgaWYoay5sZW5ndGggPT09IDEgJiYgIWUuY3RybEtleSAmJiAhZS5tZXRhS2V5ICYmICFlLmFsdEtleSl7IGNtZEJ1ZiArPSBrOyBzZXRJbmQoKTsgfQogIH0KCiAgLyogPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICAgIE5PUk1BTCAvIFZJU1VBTCBrZXkgaGFuZGxpbmcuIFJldHVybnMgdHJ1ZSBpZiBjb25zdW1lZC4KICAgICA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09ICovCiAgZnVuY3Rpb24gaGFuZGxlS2V5KGUpewogICAgdmFyIGsgPSBlLmtleTsKCiAgICAvLyBFc2MgLyBDdHJsLVsgLT4gY2xlYXIgcGVuZGluZywgZHJvcCB0byBOT1JNQUwgZnJvbSB2aXN1YWwKICAgIGlmKGsgPT09ICJFc2NhcGUiIHx8IChlLmN0cmxLZXkgJiYgayA9PT0gIlsiKSl7CiAgICAgIGlmKE1PREUgPT09ICJ2aXN1YWwiKXsgdmFyIGMgPSBwb3MoKTsgTU9ERSA9ICJub3JtYWwiOyBzZXRQb3Mobm9ybUNsYW1wKGMpKTsgfQogICAgICByZXNldCgpOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICB9CiAgICAvLyBDdHJsLVIgcmVkbwogICAgaWYoZS5jdHJsS2V5ICYmIChrID09PSAiciIgfHwgayA9PT0gIlIiKSl7CiAgICAgIHRyeXsgZG9jdW1lbnQuZXhlY0NvbW1hbmQoInJlZG8iKTsgfWNhdGNoKHgpe30KICAgICAgZmlyZUlucHV0KCk7IHJlc2V0KCk7IGZpeENhcmV0KCk7IHNldEluZCgpOyByZXR1cm4gdHJ1ZTsKICAgIH0KCiAgICAvLyAtLS0tIHBlbmRpbmcgc2luZ2xlLWNoYXIgY29uc3VtZXJzOiByLCBmL0YvdC9UIC0tLS0KICAgIGlmKHBlbmRpbmcgPT09ICJyIil7CiAgICAgIHZhciBuMCA9IGVmZigpOyBwZW5kaW5nID0gIiI7CiAgICAgIGlmKGsubGVuZ3RoID09PSAxKXsKICAgICAgICB2YXIgcDAgPSBwb3MoKSwgbGUwID0gbGluZUVuZChwMCk7CiAgICAgICAgaWYocDAgKyBuMCA8PSBsZTApewogICAgICAgICAgdmFyIHJlcCA9ICIiOyBmb3IodmFyIHJpID0gMDsgcmkgPCBuMDsgcmkrKykgcmVwICs9IGs7CiAgICAgICAgICByZXBsYWNlUmFuZ2UocDAsIHAwICsgbjAsIHJlcCwgcDAgKyBuMCAtIDEpOwogICAgICAgIH0KICAgICAgfQogICAgICBjb3VudCA9ICIiOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICB9CiAgICBpZihwZW5kaW5nID09PSAiZiIgfHwgcGVuZGluZyA9PT0gIkYiIHx8IHBlbmRpbmcgPT09ICJ0IiB8fCBwZW5kaW5nID09PSAiVCIpewogICAgICB2YXIgZndkID0gKHBlbmRpbmcgPT09ICJmIiB8fCBwZW5kaW5nID09PSAidCIpOwogICAgICB2YXIgdGlsbCA9IChwZW5kaW5nID09PSAidCIgfHwgcGVuZGluZyA9PT0gIlQiKTsKICAgICAgdmFyIG5GID0gZWZmKCk7IHBlbmRpbmcgPSAiIjsKICAgICAgaWYoay5sZW5ndGggPT09IDEpewogICAgICAgIHZhciBiYXNlID0gKE1PREUgPT09ICJ2aXN1YWwiKSA/IHZpc0NhcmV0IDogcG9zKCk7CiAgICAgICAgdmFyIHRhcmdldCA9IGJhc2U7CiAgICAgICAgZm9yKHZhciBjaSA9IDA7IGNpIDwgbkY7IGNpKyspewogICAgICAgICAgdmFyIHIgPSBmaW5kQ2hhcih0YXJnZXQsIGssIGZ3ZCwgdGlsbCk7CiAgICAgICAgICBpZihyID09PSAtMSl7IHRhcmdldCA9IGJhc2U7IGJyZWFrOyB9CiAgICAgICAgICB0YXJnZXQgPSByOwogICAgICAgIH0KICAgICAgICBpZih0YXJnZXQgIT09IGJhc2UpewogICAgICAgICAgaWYoTU9ERSA9PT0gInZpc3VhbCIpeyB2aXNDYXJldCA9IHRhcmdldDsgdmlzU3luYygpOyB9CiAgICAgICAgICBlbHNlIHsgc2V0UG9zKHRhcmdldCk7IGZpeENhcmV0KCk7IH0KICAgICAgICB9CiAgICAgIH0KICAgICAgY291bnQgPSAiIjsgc2V0SW5kKCk7IHJldHVybiB0cnVlOwogICAgfQogICAgaWYocGVuZGluZyA9PT0gImciKXsKICAgICAgcGVuZGluZyA9ICIiOwogICAgICBpZihrID09PSAiZyIpewogICAgICAgIHZhciBkZXN0ID0gY291bnQgPyBnb3RvTGluZShlZmYoKSkgOiBmaXJzdE5vbkJsYW5rKDApOwogICAgICAgIGlmKE1PREUgPT09ICJ2aXN1YWwiKXsgdmlzQ2FyZXQgPSBkZXN0OyB2aXNTeW5jKCk7IH0KICAgICAgICBlbHNlIHsgc2V0UG9zKGRlc3QpOyBmaXhDYXJldCgpOyB9CiAgICAgIH0KICAgICAgY291bnQgPSAiIjsgc2V0SW5kKCk7IHJldHVybiB0cnVlOwogICAgfQoKICAgIC8vIC0tLS0gZGlnaXRzIC0+IGNvdW50ICgwIGlzIGEgbW90aW9uIHdoZW4gY291bnQgaXMgZW1wdHkpIC0tLS0KICAgIGlmKC9eWzAtOV0kLy50ZXN0KGspICYmICEoayA9PT0gIjAiICYmIGNvdW50ID09PSAiIikpewogICAgICBjb3VudCArPSBrOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICB9CgogICAgdmFyIG4gPSBlZmYoKTsKCiAgICAvLyAtLS0tIG9wZXJhdG9yIHBlbmRpbmcgKGQgLyBjIC8geSkgLS0tLQogICAgaWYocGVuZGluZyA9PT0gImQiIHx8IHBlbmRpbmcgPT09ICJjIiB8fCBwZW5kaW5nID09PSAieSIpewogICAgICB2YXIgb3AgPSBwZW5kaW5nOwogICAgICAvLyBkb3VibGVkIG9wZXJhdG9yID0gbGluZXdpc2UgKGRkLCBjYywgeXkpCiAgICAgIGlmKChvcCA9PT0gImQiICYmIGsgPT09ICJkIikgfHwgKG9wID09PSAiYyIgJiYgayA9PT0gImMiKSB8fCAob3AgPT09ICJ5IiAmJiBrID09PSAieSIpKXsKICAgICAgICByZXNldCgpOyBhcHBseUxpbmV3aXNlT3Aob3AsIHBvcygpLCBuKTsgc2V0SW5kKCk7IHJldHVybiB0cnVlOwogICAgICB9CiAgICAgIHZhciBtdiA9IG9wZXJhdG9yTW90aW9uKG9wLCBrLCBuKTsKICAgICAgcmVzZXQoKTsKICAgICAgaWYobXYgPT09IG51bGwpeyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7IH0gICAgICAgIC8vIHVua25vd24gbW90aW9uIGNhbmNlbHMKICAgICAgaWYobXYubGluZXdpc2UpIGFwcGx5TGluZXdpc2VPcChvcCwgbXYubGluZXdpc2VGcm9tLCBtdi5saW5ld2lzZUNvdW50KTsKICAgICAgZWxzZSBhcHBseUNoYXJPcChvcCwgcG9zKCksIG12LmVuZCk7CiAgICAgIHNldEluZCgpOyByZXR1cm4gdHJ1ZTsKICAgIH0KCiAgICAvLyAtLS0tIFZJU1VBTDogbW90aW9ucyBtb3ZlIHZpc0NhcmV0ICh0aGUgaGVhZCkgYW5kIGV4dGVuZCB0aGUgc2VsZWN0aW9uIC0tLS0KICAgIGlmKE1PREUgPT09ICJ2aXN1YWwiKXsKICAgICAgdmFyIHZjID0gdmlzQ2FyZXQsIG1vdmVkID0gbnVsbDsKICAgICAgc3dpdGNoKGspewogICAgICAgIGNhc2UgImgiOiBjYXNlICJBcnJvd0xlZnQiOiAgbW92ZWQgPSBjbGFtcCh2YyAtIG4sIDAsIHZhbCgpLmxlbmd0aCk7IGJyZWFrOwogICAgICAgIGNhc2UgImwiOiBjYXNlICJBcnJvd1JpZ2h0IjogY2FzZSAiICI6IG1vdmVkID0gY2xhbXAodmMgKyBuLCAwLCB2YWwoKS5sZW5ndGgpOyBicmVhazsKICAgICAgICBjYXNlICJqIjogY2FzZSAiQXJyb3dEb3duIjogIG1vdmVkID0gdmVydGljYWwodmMsIG4pOyBicmVhazsKICAgICAgICBjYXNlICJrIjogY2FzZSAiQXJyb3dVcCI6ICAgIG1vdmVkID0gdmVydGljYWwodmMsIC1uKTsgYnJlYWs7CiAgICAgICAgY2FzZSAidyI6IG1vdmVkID0gd29yZEZ3ZCh2Yywgbik7IGJyZWFrOwogICAgICAgIGNhc2UgImIiOiBtb3ZlZCA9IHdvcmRCYWNrKHZjLCBuKTsgYnJlYWs7CiAgICAgICAgY2FzZSAiZSI6IG1vdmVkID0gd29yZEVuZCh2Yywgbik7IGJyZWFrOwogICAgICAgIGNhc2UgIjAiOiBtb3ZlZCA9IGxpbmVTdGFydCh2Yyk7IGJyZWFrOwogICAgICAgIGNhc2UgIl4iOiBtb3ZlZCA9IGZpcnN0Tm9uQmxhbmsodmMpOyBicmVhazsKICAgICAgICBjYXNlICIkIjogbW92ZWQgPSBsaW5lRW5kKHZjKTsgYnJlYWs7CiAgICAgICAgY2FzZSAieyI6IG1vdmVkID0gcGFyYUJhY2sodmMsIG4pOyBicmVhazsKICAgICAgICBjYXNlICJ9IjogbW92ZWQgPSBwYXJhRndkKHZjLCBuKTsgYnJlYWs7CiAgICAgICAgY2FzZSAiRyI6IG1vdmVkID0gY291bnQgPyBnb3RvTGluZShuKSA6IGZpcnN0Tm9uQmxhbmsobGFzdExpbmVTdGFydCgpKTsgYnJlYWs7CiAgICAgICAgY2FzZSAiZyI6IHBlbmRpbmcgPSAiZyI7IHNldEluZCgpOyByZXR1cm4gdHJ1ZTsKICAgICAgICBjYXNlICJmIjogY2FzZSAiRiI6IGNhc2UgInQiOiBjYXNlICJUIjogcGVuZGluZyA9IGs7IHNldEluZCgpOyByZXR1cm4gdHJ1ZTsKICAgICAgfQogICAgICBpZihtb3ZlZCAhPT0gbnVsbCl7IHZpc0NhcmV0ID0gY2xhbXAobW92ZWQsIDAsIHZhbCgpLmxlbmd0aCk7IHZpc1N5bmMoKTsgcmVzZXQoKTsgc2V0SW5kKCk7IHJldHVybiB0cnVlOyB9CgogICAgICB2YXIgcjIgPSB2aXNSYW5nZSgpLCBhID0gcjJbMF0sIGIgPSByMlsxXTsKICAgICAgc3dpdGNoKGspewogICAgICAgIGNhc2UgImQiOiBjYXNlICJ4IjogeWFuayhhLCBiLCBmYWxzZSk7IGRlbGV0ZVJhbmdlKGEsIGIsIGEpOyBNT0RFID0gIm5vcm1hbCI7IHNldFBvcyhub3JtQ2xhbXAoYSkpOyByZXNldCgpOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICAgICAgY2FzZSAiYyI6IGNhc2UgInMiOiB5YW5rKGEsIGIsIGZhbHNlKTsgZGVsZXRlUmFuZ2UoYSwgYiwgYSk7IE1PREUgPSAibm9ybWFsIjsgc2V0UG9zKGEpOyByZXNldCgpOyB0b0luc2VydCgpOyByZXR1cm4gdHJ1ZTsKICAgICAgICBjYXNlICJ5IjogeWFuayhhLCBiLCBmYWxzZSk7IE1PREUgPSAibm9ybWFsIjsgc2V0UG9zKG5vcm1DbGFtcChhKSk7IHJlc2V0KCk7IHNldEluZCgpOyByZXR1cm4gdHJ1ZTsKICAgICAgICBjYXNlICJwIjogewogICAgICAgICAgLy8gcGFzdGUgb3ZlciBzZWxlY3Rpb246IHNuYXBzaG90IHJlZ2lzdGVyIEJFRk9SRSB0aGUgZGVsZXRlIGNsb2JiZXJzIGl0CiAgICAgICAgICB2YXIgc1RleHQgPSByZWcsIHNMaW5lID0gcmVnTGluZXdpc2U7CiAgICAgICAgICBkZWxldGVSYW5nZShhLCBiLCBhKTsKICAgICAgICAgIHJlZyA9IHNUZXh0OyByZWdMaW5ld2lzZSA9IHNMaW5lOwogICAgICAgICAgTU9ERSA9ICJub3JtYWwiOyBzZXRQb3MoYSA+IDAgPyBhIC0gMSA6IGEpOyBwYXN0ZSh0cnVlKTsKICAgICAgICAgIHJlc2V0KCk7IHNldEluZCgpOyByZXR1cm4gdHJ1ZTsKICAgICAgICB9CiAgICAgICAgY2FzZSAidiI6IE1PREUgPSAibm9ybWFsIjsgc2V0UG9zKG5vcm1DbGFtcCh2aXNDYXJldCkpOyByZXNldCgpOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICAgIH0KICAgICAgLy8gc3dhbGxvdyBhbnkgb3RoZXIgcHJpbnRhYmxlIGtleSBpbiB2aXN1YWwKICAgICAgaWYoay5sZW5ndGggPT09IDEgJiYgIWUuY3RybEtleSAmJiAhZS5tZXRhS2V5ICYmICFlLmFsdEtleSl7IHJlc2V0KCk7IHNldEluZCgpOyByZXR1cm4gdHJ1ZTsgfQogICAgICByZXNldCgpOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICB9CgogICAgLy8gLS0tLSBOT1JNQUw6IHNpbmdsZS1rZXkgY29tbWFuZHMgLS0tLQogICAgdmFyIHAgPSBwb3MoKTsKICAgIHN3aXRjaChrKXsKICAgICAgLy8gbW90aW9ucwogICAgICBjYXNlICJoIjogY2FzZSAiQXJyb3dMZWZ0IjogIHNldFBvcyhjbGFtcChwIC0gbiwgbGluZVN0YXJ0KHApLCBwKSk7IGZpeENhcmV0KCk7IGJyZWFrOwogICAgICBjYXNlICJsIjogY2FzZSAiQXJyb3dSaWdodCI6IGNhc2UgIiAiOiBzZXRQb3MoY2xhbXAocCArIG4sIHAsIGxpbmVMYXN0Q29sKHApKSk7IGJyZWFrOwogICAgICBjYXNlICJqIjogY2FzZSAiQXJyb3dEb3duIjogIHNldFBvcyh2ZXJ0aWNhbChwLCBuKSk7IGJyZWFrOwogICAgICBjYXNlICJrIjogY2FzZSAiQXJyb3dVcCI6ICAgIHNldFBvcyh2ZXJ0aWNhbChwLCAtbikpOyBicmVhazsKICAgICAgY2FzZSAidyI6IHNldFBvcyhub3JtQ2xhbXAod29yZEZ3ZChwLCBuKSkpOyBicmVhazsKICAgICAgY2FzZSAiYiI6IHNldFBvcyhub3JtQ2xhbXAod29yZEJhY2socCwgbikpKTsgYnJlYWs7CiAgICAgIGNhc2UgImUiOiBzZXRQb3Mobm9ybUNsYW1wKHdvcmRFbmQocCwgbikpKTsgYnJlYWs7CiAgICAgIGNhc2UgIjAiOiBzZXRQb3MobGluZVN0YXJ0KHApKTsgYnJlYWs7CiAgICAgIGNhc2UgIl4iOiBzZXRQb3MoZmlyc3ROb25CbGFuayhwKSk7IGJyZWFrOwogICAgICBjYXNlICIkIjogeyB2YXIgbHAgPSB2ZXJ0aWNhbChwLCBuIC0gMSk7IHNldFBvcyhsaW5lTGFzdENvbChscCkpOyBicmVhazsgfQogICAgICBjYXNlICJ7Ijogc2V0UG9zKG5vcm1DbGFtcChwYXJhQmFjayhwLCBuKSkpOyBicmVhazsKICAgICAgY2FzZSAifSI6IHNldFBvcyhub3JtQ2xhbXAocGFyYUZ3ZChwLCBuKSkpOyBicmVhazsKICAgICAgY2FzZSAiRyI6IHNldFBvcyhjb3VudCA/IGdvdG9MaW5lKG4pIDogZmlyc3ROb25CbGFuayhsYXN0TGluZVN0YXJ0KCkpKTsgYnJlYWs7CiAgICAgIGNhc2UgImciOiBwZW5kaW5nID0gImciOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICAgIGNhc2UgImYiOiBjYXNlICJGIjogY2FzZSAidCI6IGNhc2UgIlQiOiBwZW5kaW5nID0gazsgc2V0SW5kKCk7IHJldHVybiB0cnVlOwoKICAgICAgLy8gZW50ZXIgaW5zZXJ0CiAgICAgIGNhc2UgImkiOiB0b0luc2VydCgpOyBicmVhazsKICAgICAgY2FzZSAiYSI6IGlmKGxpbmVUZXh0KHApLmxlbmd0aCkgc2V0UG9zKHAgKyAxKTsgdG9JbnNlcnQoKTsgYnJlYWs7CiAgICAgIGNhc2UgIkkiOiBzZXRQb3MoZmlyc3ROb25CbGFuayhwKSk7IHRvSW5zZXJ0KCk7IGJyZWFrOwogICAgICBjYXNlICJBIjogc2V0UG9zKGxpbmVFbmQocCkpOyB0b0luc2VydCgpOyBicmVhazsKICAgICAgY2FzZSAibyI6IHsgdmFyIGxlID0gbGluZUVuZChwKTsgaW5zZXJ0QXQobGUsICJcbiIpOyBzZXRQb3MobGUgKyAxKTsgdG9JbnNlcnQoKTsgYnJlYWs7IH0KICAgICAgY2FzZSAiTyI6IHsgdmFyIGxzID0gbGluZVN0YXJ0KHApOyBpbnNlcnRBdChscywgIlxuIik7IHNldFBvcyhscyk7IHRvSW5zZXJ0KCk7IGJyZWFrOyB9CgogICAgICAvLyBvcGVyYXRvcnMgKHBlbmRpbmcpCiAgICAgIGNhc2UgImQiOiBwZW5kaW5nID0gImQiOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICAgIGNhc2UgImMiOiBwZW5kaW5nID0gImMiOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICAgIGNhc2UgInkiOiBwZW5kaW5nID0gInkiOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICAgIGNhc2UgInIiOiBwZW5kaW5nID0gInIiOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CgogICAgICAvLyB3aG9sZS1saW5lIC8gZW5kLW9mLWxpbmUgZWRpdHMKICAgICAgY2FzZSAiRCI6IHsgdmFyIGxlMiA9IGxpbmVFbmQocCk7IHlhbmsocCwgbGUyLCBmYWxzZSk7IGRlbGV0ZVJhbmdlKHAsIGxlMiwgcCk7IGZpeENhcmV0KCk7IGJyZWFrOyB9CiAgICAgIGNhc2UgIkMiOiB7IHZhciBsZTMgPSBsaW5lRW5kKHApOyB5YW5rKHAsIGxlMywgZmFsc2UpOyBkZWxldGVSYW5nZShwLCBsZTMsIHApOyBzZXRQb3MocCk7IHRvSW5zZXJ0KCk7IGJyZWFrOyB9CiAgICAgIGNhc2UgInMiOiB7CiAgICAgICAgdmFyIGxlNCA9IGxpbmVFbmQocCksIGVuZDQgPSBjbGFtcChwICsgbiwgcCwgbGU0KTsKICAgICAgICBpZihlbmQ0ID4gcCkgeWFuayhwLCBlbmQ0LCBmYWxzZSk7CiAgICAgICAgZGVsZXRlUmFuZ2UocCwgZW5kNCwgcCk7IHNldFBvcyhwKTsgdG9JbnNlcnQoKTsKICAgICAgICBicmVhazsKICAgICAgfQogICAgICBjYXNlICJTIjogbGluZXdpc2VDaGFuZ2UocCwgbik7IGJyZWFrOwoKICAgICAgLy8gY2hhciBkZWxldGVzCiAgICAgIGNhc2UgIngiOiB7CiAgICAgICAgdmFyIGxlNSA9IGxpbmVFbmQocCksIGVuZDUgPSBjbGFtcChwICsgbiwgcCwgbGU1KTsKICAgICAgICBpZihlbmQ1ID4gcCl7IHlhbmsocCwgZW5kNSwgZmFsc2UpOyBkZWxldGVSYW5nZShwLCBlbmQ1LCBwKTsgZml4Q2FyZXQoKTsgfQogICAgICAgIGJyZWFrOwogICAgICB9CiAgICAgIGNhc2UgIlgiOiB7CiAgICAgICAgdmFyIGxzNiA9IGxpbmVTdGFydChwKSwgc3RhcnQ2ID0gY2xhbXAocCAtIG4sIGxzNiwgcCk7CiAgICAgICAgaWYoc3RhcnQ2IDwgcCl7IHlhbmsoc3RhcnQ2LCBwLCBmYWxzZSk7IGRlbGV0ZVJhbmdlKHN0YXJ0NiwgcCwgc3RhcnQ2KTsgfQogICAgICAgIGJyZWFrOwogICAgICB9CgogICAgICAvLyBwYXN0ZQogICAgICBjYXNlICJwIjogcGFzdGUodHJ1ZSk7IGJyZWFrOwogICAgICBjYXNlICJQIjogcGFzdGUoZmFsc2UpOyBicmVhazsKCiAgICAgIC8vIHZpc3VhbAogICAgICBjYXNlICJ2IjogdG9WaXN1YWwoKTsgYnJlYWs7CgogICAgICAvLyBleCBjb21tYW5kIGxpbmUgKDp3IC8gOndhIC8gOndhcSAuLi4pCiAgICAgIGNhc2UgIjoiOiBjbWRBY3RpdmUgPSB0cnVlOyBjbWRCdWYgPSAiIjsgcGVuZGluZyA9ICIiOyBjb3VudCA9ICIiOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CgogICAgICAvLyB1bmRvCiAgICAgIGNhc2UgInUiOiB0cnl7IGRvY3VtZW50LmV4ZWNDb21tYW5kKCJ1bmRvIik7IH1jYXRjaCh4KXt9IGZpcmVJbnB1dCgpOyBmaXhDYXJldCgpOyBicmVhazsKCiAgICAgIGRlZmF1bHQ6CiAgICAgICAgLy8gc3dhbGxvdyBhbnkgb3RoZXIgcHJpbnRhYmxlIGtleSBzbyBpdCBuZXZlciB0eXBlcyBpbnRvIHRoZSBidWZmZXIKICAgICAgICByZXNldCgpOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICB9CiAgICByZXNldCgpOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgfQoKICAvKiA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09CiAgICAgVEhFIFRFWFRBUkVBIEtFWURPV04gTElTVEVORVIgKGNhcHR1cmUgcGhhc2Ug4oCUIHJ1bnMgYmVmb3JlIHRoZSBUYWIgaGFuZGxlcikKICAgICA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09ICovCiAgdGEuYWRkRXZlbnRMaXN0ZW5lcigia2V5ZG93biIsIGZ1bmN0aW9uKGUpewogICAgaWYoIXZpbU9uKCkpIHJldHVybjsgICAgICAgICAgICAgICAgICAgIC8vIHZpbSBvZmY6IG5hdGl2ZSB0ZXh0YXJlYSAoVGFiLCB0eXBpbmcpIHVuY2hhbmdlZAoKICAgIC8vIE5ldmVyIGludGVyY2VwdCBzYXZlIOKAlCBsZXQgdGhlIHdpbmRvdy1sZXZlbCBDdHJsL0NtZC1TIGhhbmRsZXIgcnVuLgogICAgaWYoKGUubWV0YUtleSB8fCBlLmN0cmxLZXkpICYmIChlLmtleSA9PT0gInMiIHx8IGUua2V5ID09PSAiUyIpKSByZXR1cm47CgogICAgaWYoTU9ERSA9PT0gImluc2VydCIpewogICAgICAvLyBpbnNlcnQgbW9kZTogb25seSBFc2MgLyBDdHJsLVsgaXMgc3BlY2lhbDsgZXZlcnl0aGluZyBlbHNlIChpbmNsLiBUYWI9MnNwKSBuYXRpdmUKICAgICAgaWYoZS5rZXkgPT09ICJFc2NhcGUiIHx8IChlLmN0cmxLZXkgJiYgZS5rZXkgPT09ICJbIikpeyBlLnByZXZlbnREZWZhdWx0KCk7IHRvTm9ybWFsKCk7IH0KICAgICAgcmV0dXJuOwogICAgfQoKICAgIC8vIGV4IGNvbW1hbmQgbGluZSAoOncgZXRjLik6IG93biB0aGUga2V5Ym9hcmQgdW50aWwgRW50ZXIgcnVucyBpdCBvciBFc2MgY2FuY2Vscy4KICAgIGlmKGNtZEFjdGl2ZSl7CiAgICAgIGUucHJldmVudERlZmF1bHQoKTsKICAgICAgZS5zdG9wUHJvcGFnYXRpb24oKTsKICAgICAgY21kS2V5KGUpOwogICAgICByZXR1cm47CiAgICB9CgogICAgLy8gTk9STUFMIC8gVklTVUFMOiB3ZSBvd24gdGhlIGtleWJvYXJkLiBDb25zdW1lIGV2ZXJ5dGhpbmcgKHNvIFRhYiwgbGV0dGVycywKICAgIC8vIGV0Yy4gbmV2ZXIgcmVhY2ggdGhlIGJ1YmJsZS1waGFzZSBUYWIgaGFuZGxlciBvciB0eXBlIGludG8gdGhlIGJ1ZmZlcikuCiAgICBoYW5kbGVLZXkoZSk7CiAgICBlLnByZXZlbnREZWZhdWx0KCk7CiAgICBlLnN0b3BQcm9wYWdhdGlvbigpOwogIH0sIHRydWUpOwoKICAvLyBLZWVwIGNhcmV0IGxlZ2FsIHdoZW4gZm9jdXMgbGFuZHMgb24gdGhlIHRleHRhcmVhIHdoaWxlIGluIG5vcm1hbC92aXN1YWwuCiAgdGEuYWRkRXZlbnRMaXN0ZW5lcigiZm9jdXMiLCBmdW5jdGlvbigpeyBpZih2aW1PbigpICYmIE1PREUgIT09ICJpbnNlcnQiKSBmaXhDYXJldCgpOyB9KTsKCiAgLyogPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICAgIFRPR0dMRSBCVVRUT04gKyBsb2NhbFN0b3JhZ2UgKHNhbWUgZmxpcC1mbGFnLXRoZW4tcmVhcHBseSBwYXR0ZXJuIGFzIGVkTlQpCiAgICAgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PSAqLwogIGZ1bmN0aW9uIGFwcGx5VmltKCl7CiAgICBpZih2aW1PbigpKXsKICAgICAgTU9ERSA9IChNT0RFID09PSAiaW5zZXJ0IikgPyAiaW5zZXJ0IiA6ICJub3JtYWwiOwogICAgICB0YS5jbGFzc0xpc3QuYWRkKCJ2aW0tb24iKTsKICAgICAgZml4Q2FyZXQoKTsKICAgIH0gZWxzZSB7CiAgICAgIE1PREUgPSAibm9ybWFsIjsgcmVzZXQoKTsgY21kQWN0aXZlID0gZmFsc2U7CiAgICAgIHRhLmNsYXNzTGlzdC5yZW1vdmUoInZpbS1vbiIpOwogICAgfQogICAgc2V0SW5kKCk7CiAgICBpZihidG4pIGJ0bi50ZXh0Q29udGVudCA9ICJ2aW06ICIgKyAodmltT24oKSA/ICJvbiIgOiAib2ZmIik7CiAgfQogIC8vIEdsb2JhbCBzbyBhbiBleHBsaWNpdCB0ZW1wbGF0ZSBidXR0b24gYG9uY2xpY2s9InZpbVRvZ2dsZSgpImAgY2FuIGRyaXZlIGl0LgogIHdpbmRvdy52aW1Ub2dnbGUgPSBmdW5jdGlvbigpewogICAgbG9jYWxTdG9yYWdlLnNldEl0ZW0oTFMsIHZpbU9uKCkgPyAiMCIgOiAiMSIpOwogICAgTU9ERSA9ICJub3JtYWwiOyByZXNldCgpOwogICAgYXBwbHlWaW0oKTsKICAgIHRhLmZvY3VzKCk7CiAgICB2YXIgc3RFbDIgPSBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgic3QiKTsKICAgIGlmKHN0RWwyKSBzdEVsMi50ZXh0Q29udGVudCA9ICJ2aW0gIiArICh2aW1PbigpID8gIm9uIiA6ICJvZmYiKTsKICB9OwoKICB2YXIgYnRuID0gZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoInZpbVRvZ2dsZSIpOwogIGlmKCFidG4pewogICAgYnRuID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgiYnV0dG9uIik7CiAgICBidG4uaWQgPSAidmltVG9nZ2xlIjsKICAgIGJ0bi50eXBlID0gImJ1dHRvbiI7CiAgICBidG4uY2xhc3NOYW1lID0gImJhciI7CiAgICB2YXIgYW55QnRuID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcigiYnV0dG9uLmJhciIpOwogICAgaWYoYW55QnRuICYmIGFueUJ0bi5wYXJlbnROb2RlKSBhbnlCdG4ucGFyZW50Tm9kZS5hcHBlbmRDaGlsZChidG4pOwogICAgZWxzZSBpZih0YS5wYXJlbnROb2RlKSB0YS5wYXJlbnROb2RlLmluc2VydEJlZm9yZShidG4sIHRhKTsKICB9CiAgYnRuLm9uY2xpY2sgPSB3aW5kb3cudmltVG9nZ2xlOwoKICAvLyBQZXJzaXN0IGFuIGV4cGxpY2l0IGRlZmF1bHQgb2YgT0ZGIG9uIGZpcnN0IHJ1bi4KICBpZihsb2NhbFN0b3JhZ2UuZ2V0SXRlbShMUykgPT09IG51bGwpIGxvY2FsU3RvcmFnZS5zZXRJdGVtKExTLCAiMCIpOwogIGFwcGx5VmltKCk7Cn0pKCk7Cg=='
 ++  edit-html
   |=  $:  our=@p  name=(unit @ta)  src=@t  tree=(list [pax=path page=?])
           mode=share-mode:le  err=@t  kind=@tas  into=@t  nfolder=?
@@ -4161,6 +4539,7 @@
     ?:(nfolder "<button id=\"save\">create folder</button>" "<button id=\"save\">save</button>")
     "<span id=\"st\"></span><span class=\"grow\"></span>"
     ?~(name "" :(weld "<a href=\"" view "\" target=\"_blank\">open &#8599;</a>"))
+    "<button id=\"vimToggle\" type=\"button\" title=\"toggle vim mode\">vim: off</button>"
     "<button class=\"ico\" id=\"ct\" title=\"toggle panel\">&#9881;</button>"
     "<a href=\"/apps/lattice\">home</a></div>"
     ::  mobile-only tab bar (hidden on desktop): one pane at a time so the
@@ -4172,6 +4551,7 @@
     main-panes
     "<div class=\"ctl\">"  ctl-html  "</div></div>"
     (edit-js nm view kind nfolder)
+    vim-script
     sw-register-script
     "</body></html>"
   ==
@@ -4199,94 +4579,112 @@
 ++  home-css
   ^-  tape
   %-  trip
-  '<style>*{scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}.muted{color:#8a8a8a}h1{margin:.2rem 0}.apps{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:14px;margin:1.2rem 0}.appcard{display:flex;flex-direction:column;gap:5px;padding:20px;border:1px solid #8886;border-radius:12px;text-decoration:none;color:inherit;background:#8881}.appcard:hover{border-color:#1a6ed8}.appcard .ico{font-size:1.7rem;line-height:1}.appcard strong{font-size:1.2rem}.appcard .d{color:#8a8a8a;font-size:.9rem}.quick{display:flex;flex-wrap:wrap;gap:8px;margin:.5rem 0 .3rem}.quick a{padding:6px 12px;border:1px solid #8886;border-radius:8px;text-decoration:none;color:inherit;background:#8881;font-size:.9rem}.quick a:hover{border-color:#1a6ed8}ul.pglist{list-style:none;padding:0;margin:.4rem 0}ul.pglist li{padding:11px 2px;border-bottom:1px solid #8883;display:flex;justify-content:space-between;align-items:center;gap:12px}ul.pglist a{padding:4px 2px}h2{font-size:1rem;color:#8a8a8a;margin:1.4rem 0 .2rem;text-transform:uppercase;letter-spacing:.03em}</style>'
+  '<style>*{scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}.muted{color:#8a8a8a}h1{margin:.2rem 0}.apps{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:14px;margin:1.2rem 0}.appcard{display:flex;flex-direction:column;gap:5px;padding:20px;border:1px solid #8886;border-radius:12px;text-decoration:none;color:inherit;background:#8881}.appcard:hover{border-color:#1a6ed8}.appcard .ico{font-size:1.7rem;line-height:1}.appcard strong{font-size:1.2rem}.appcard .d{color:#8a8a8a;font-size:.9rem}.quick{display:flex;flex-wrap:wrap;gap:8px;margin:.5rem 0 .3rem}.quick a{padding:6px 12px;border:1px solid #8886;border-radius:8px;text-decoration:none;color:inherit;background:#8881;font-size:.9rem}.quick a:hover{border-color:#1a6ed8}ul.pglist{list-style:none;padding:0;margin:.4rem 0}ul.pglist li{padding:11px 2px;border-bottom:1px solid #8883;display:flex;justify-content:space-between;align-items:center;gap:12px}ul.pglist a{padding:4px 2px}h2{font-size:1rem;color:#8a8a8a;margin:1.4rem 0 .2rem;text-transform:uppercase;letter-spacing:.03em}.apps{align-items:start}.col{display:flex;flex-direction:column}.qh{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:1.1rem 0 .2rem;font-weight:600}ul.qlist{list-style:none;padding:0;margin:0}ul.qlist li{border-bottom:1px solid #8883}ul.qlist a{display:block;padding:9px 6px;text-decoration:none;color:inherit;border-radius:6px}ul.qlist a:hover{background:#8881}.qname{display:block;font-weight:500;color:#1a6ed8}.qprev{display:block;font-size:.84rem;color:#8a8a8a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.05rem}</style>'
+::  +search-results-html: the omnibar search results page. A heading + a #results
+::  div filled by client JS that fans out ONE /catalog-search call per query word
+::  (obelisk has no OR/LIKE, so the client unions the per-term hits and ranks by
+::  words-matched then tf), and links each hit to the reader. Built with the DOM
+::  API (textContent) so catalog text is XSS-safe; single-quote cord so the JS
+::  braces stay literal (no ' or \ inside). Obelisk down -> a graceful message.
+::
+++  search-results-html
+  |=  q=@t
+  ^-  tape
+  ;:  weld
+    "<h1>Search</h1>"
+    "<p class=\"muted\">Catalog results for &ldquo;"  (esc (trip q))  "&rdquo;.</p>"
+    "<div id=\"results\" class=\"muted\">Searching&hellip;</div>"
+    %-  trip
+    '<script>(function(){var p=new URLSearchParams(location.search);var q=(p.get("url")||"").trim();var out=document.getElementById("results");if(!q){out.textContent="";return}var words=q.toLowerCase().split(/[^a-z0-9]+/).filter(function(w){return w.length>=2});if(!words.length){out.textContent="Type at least one search word (2+ letters).";return}Promise.all(words.map(function(w){return fetch("/apps/lattice/catalog-search?term="+encodeURIComponent(w)).then(function(r){return r.ok?r.json():{rows:[]}}).catch(function(){return{rows:[]}})})).then(function(res){var hits={};res.forEach(function(j){var c=j.columns||[];var pi=c.indexOf("publisher"),xi=c.indexOf("path"),ti=c.indexOf("tf");(j.rows||[]).forEach(function(row){var pub=row[pi],path=row[xi],tf=parseInt(row[ti],10)||0;if(!pub||!path)return;var k=pub+"|"+path;if(!hits[k])hits[k]={pub:pub,path:path,terms:0,tf:0};hits[k].terms++;hits[k].tf+=tf})});var list=Object.keys(hits).map(function(k){return hits[k]});list.sort(function(a,b){return b.terms-a.terms||b.tf-a.tf});out.textContent="";out.className="";if(!list.length){out.className="muted";out.textContent="No catalog pages match that.";return}var ul=document.createElement("ul");ul.className="qlist";list.slice(0,50).forEach(function(h){var li=document.createElement("li");var a=document.createElement("a");a.href="/apps/lattice?url="+encodeURIComponent("urb://"+h.pub+"/"+h.path);var n=document.createElement("span");n.className="qname";n.textContent=h.path;var s=document.createElement("span");s.className="qprev";s.textContent=h.pub+"  ·  "+h.terms+(h.terms>1?" terms":" term")+", tf "+h.tf;a.appendChild(n);a.appendChild(s);li.appendChild(a);ul.appendChild(li)});out.appendChild(ul)}).catch(function(){out.className="muted";out.textContent="Catalog search is unavailable (obelisk not responding)."})})();</script>'
+  ==
+::  +settings-html: the settings page. One maintenance action so far — a manual
+::  content-catalog sweep. The crawler auto-sweeps every ~6h (and a followed
+::  peer's edits index live), but a newly published page isn't searchable until
+::  the next sweep, so this forces one now. POSTs /catalog-sweep, which acks
+::  immediately and (re)indexes in the background. Single-quote cords so the css
+::  and js braces stay literal (no ' or \ inside).
+::
+++  settings-html
+  ^-  tape
+  ;:  weld
+    %-  trip
+    '<style>.btn{padding:8px 16px;font:inherit;border:1px solid #8886;border-radius:8px;background:transparent;color:inherit;cursor:pointer}.btn:hover{border-color:#1a6ed8}.btn:disabled{opacity:.5;cursor:default}</style>'
+    "<h1>Settings</h1>"
+    "<h2>Content catalog</h2>"
+    "<p class=\"muted\">Published pages are indexed for search automatically about every 6 hours (and a followed peer's edits index live). Sweep now to (re)index all of your published pages and followed peers immediately &mdash; e.g. after publishing something you want searchable right away.</p>"
+    "<p><button type=\"button\" id=\"sweep\" class=\"btn\">Sweep catalog now</button> <span id=\"swst\" class=\"muted\"></span></p>"
+    %-  trip
+    '<script>(function(){var b=document.getElementById("sweep");var s=document.getElementById("swst");b.onclick=function(){b.disabled=true;s.textContent="sweeping...";fetch("/apps/lattice/catalog-sweep",{method:"POST"}).then(function(r){s.textContent=r.ok?"started — pages are being (re)indexed in the background.":"failed ("+r.status+")";b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
+  ==
 ::  +home-index-html: the landing page. Always shows navigation (Pages,
 ::  Explorer) plus a live list of your programmable pages and any published
 ::  pages — so an empty store is still a way in, not a dead end.
 ::
 ++  home-index-html
-  |=  [our=@p pages=(list path) tmpls=(list @ta) ix=pub-index:lp]
+  |=  [our=@p recent=(list [pax=path prev=@t]) bms=bookmarks:lb]
   ^-  tape
   =/  ship=tape  (scow %p our)
-  =/  base=tape  :(weld "/apps/lattice/x/" ship "/apps/lattice.lattice_app/page/")
   =/  tree=tape  :(weld "/apps/lattice/x/" ship "/")
-  ::  New-from-template: a chip per template; JS prompts for a name, POSTs
-  ::  /template-new (slow — one page per writer round-trip), then opens the new
-  ::  site. No chip if there are no templates.
-  =/  tmpl-section=tape
-    ?~  tmpls  ""
+  ::  under Editor: the 10 most recently edited pages — name + a preview, each
+  ::  linking straight into the editor.
+  =/  recent-list=tape
+    ?~  recent  "<p class=\"muted\">No pages yet.</p>"
     %-  zing
     ;:  weld
-      `(list tape)`~["<h2>Start from a template</h2><div class=\"quick\">"]
-      %+  turn  tmpls
-      |=(t=@ta :(weld "<a href=\"#\" class=\"tmpl\" data-t=\"" (trip t) "\">" (trip t) " &rarr;</a>"))
-      `(list tape)`~["</div><span id=\"tstat\" class=\"muted\"></span>"]
-    ==
-  ::  single-quote cords: double-quote tapes interpolate {...}, which would eat
-  ::  the JS braces. So build the script from single-quote cords (no ' or \).
-  =/  tmpl-script=tape
-    ?~  tmpls  ""
-    ;:  weld
-      %-  trip
-      '<script>document.querySelectorAll(".tmpl").forEach(function(a){a.onclick=async function(e){e.preventDefault();var t=a.getAttribute("data-t");var n=prompt("Name for your new "+t+":",t);if(!n)return;n=n.trim();if(!n)return;var s=document.getElementById("tstat");s.textContent="creating "+n+"... (this can take a moment)";var r=await fetch("/apps/lattice/template-new?template="+encodeURIComponent(t)+"&name="+encodeURIComponent(n),{method:"POST"});if(r.status===409){s.textContent=n+" already exists";return}if(!r.ok){s.textContent="failed ("+r.status+")";return}location="/apps/lattice/x/'
-      ship
-      (trip '/apps/lattice.lattice_app/page/"+n+"/index/"}})</script>')
-    ==
-  =/  page-list=tape
-    ?~  pages  "<p class=\"muted\">No pages yet — open <b>Pages</b> above to make one.</p>"
-    %-  zing
-    ;:  weld
-      `(list tape)`~["<ul class=\"pglist\">"]
-      %+  turn  pages
-      |=  px=path
-      =/  pt=tape  (pax-str px)
+      `(list tape)`~["<ul class=\"qlist\">"]
+      %+  turn  recent
+      |=  [pax=path prev=@t]
+      =/  pt=tape  (pax-str pax)
       ;:  weld
-        "<li><a href=\""  base  pt  "/\">"  (esc pt)  "</a>"
-        " <a class=\"muted\" href=\"/apps/lattice/edit?name="  pt
-        "\">edit</a></li>"
+        "<li><a href=\"/apps/lattice/edit?name="  (esc pt)  "\">"
+        "<span class=\"qname\">"  (esc pt)  "</span>"
+        ?:  =('' prev)  ""
+        :(weld "<span class=\"qprev\">" (esc (trip prev)) "</span>")
+        "</a></li>"
       ==
       `(list tape)`~["</ul>"]
     ==
-  =/  pub-keys=(list path)  ~(tap in ~(key by ix))
-  =/  pub-list=tape
-    ?~  pub-keys  "<p class=\"muted\">Nothing published yet.</p>"
+  ::  under Browser: the last 10 bookmarks — the title opens the saved url via the
+  ::  reader (which resolves the urb:// address back to the /x view).
+  =/  bm-list=tape
+    ?~  bms
+      "<p class=\"muted\">No bookmarks yet &mdash; open a page in the Browser and hit &#9734;.</p>"
     %-  zing
     ;:  weld
-      `(list tape)`~["<ul class=\"pglist\">"]
-      %+  turn  pub-keys
-      |=  pax=path
-      =/  rel=tape  (slag 1 (spud (snip (slag 1 pax))))
-      :(weld "<li><a href=\"/apps/lattice?url=urb://" ship "/" rel "\">" (esc rel) "</a></li>")
+      `(list tape)`~["<ul class=\"qlist\">"]
+      %+  turn  bms
+      |=  b=bookmark:lb
+      ;:  weld
+        "<li><a href=\"/apps/lattice?url="  (esc (trip url.b))  "\">"
+        "<span class=\"qname\">"  (esc (trip title.b))  "</span>"
+        "</a></li>"
+      ==
       `(list tape)`~["</ul>"]
     ==
   ;:  weld
     home-css
     "<h1>Lattice</h1>"
-    "<p class=\"muted\">Programmable pages &amp; published notes &middot; "  ship  "</p>"
-    ::  the two apps: author on the left, read/browse on the right.
+    "<p class=\"muted\">Programmable pages &amp; published notes &middot; "  ship
+    " &middot; <a href=\"/apps/lattice/settings\">settings</a></p>"
+    ::  two columns: each app card with its quick links below it.
     "<div class=\"apps\">"
+    "<div class=\"col\">"
     "<a class=\"appcard\" href=\"/apps/lattice/edit\"><span class=\"ico\">&#9998;</span><strong>Editor</strong><span class=\"d\">Create, organize, and edit your pages, notes, and files in a tree.</span></a>"
-    :(weld "<a class=\"appcard\" href=\"" tree "\"><span class=\"ico\">&#127760;</span><strong>Browser</strong><span class=\"d\">Read and explore content &mdash; your published pages and other ships via urb://.</span></a>")
+    "<h3 class=\"qh\">Recent</h3>"
+    recent-list
     "</div>"
-    ::  editor section: quick-create + your programmable pages.
-    "<h2>Editor</h2>"
-    "<div class=\"quick\"><a href=\"/apps/lattice/edit?kind=md\">+ note</a><a href=\"/apps/lattice/edit\">+ page</a><a href=\"/apps/lattice/edit?newfolder=1\">+ folder</a></div>"
-    page-list
-    ::  start-from-a-template (whole page-trees, e.g. a static site).
-    tmpl-section
-    tmpl-script
-    ::  browser section: browse the tree, visit peers, read what's published.
-    "<h2>Browser</h2>"
-    :(weld "<div class=\"quick\"><a href=\"" tree "\">Browse your tree &rarr;</a></div>")
-    "<p class=\"muted\">Enter a <b>urb://~ship/path</b> in the bar above to visit another ship.</p>"
-    pub-list
+    :(weld "<div class=\"col\"><a class=\"appcard\" href=\"" tree "\"><span class=\"ico\">&#127760;</span><strong>Browser</strong><span class=\"d\">Read and explore content &mdash; your published pages and other ships via urb://.</span></a>")
+    "<h3 class=\"qh\">Bookmarks</h3>"
+    bm-list
+    "</div>"
+    "</div>"
   ==
 ::  +web-css: minimal reader styling (single-quoted cord so braces are literal).
 ::
 ++  web-css
   ^-  tape
   %-  trip
-  '*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{background:#fafafa}body{margin:0;font:16px/1.6 system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){html{background:#1a1a1a}body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:#1a6ed8}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:#1a6ed8}.err{color:#c0392b}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}code{background:#8881;padding:.1em .3em;border-radius:4px;font-size:.9em}pre code{background:0;padding:0}table{border-collapse:collapse;margin:.7rem 0;display:block;overflow-x:auto;max-width:100%}th,td{border:1px solid #8887;padding:6px 11px}th{background:#8881;font-weight:600;text-align:left}img{max-width:100%;height:auto}del{opacity:.7}ul,ol{padding-left:1.5rem}li{margin:.15rem 0}sup.fnref{font-size:.72em}sup.fnref a{text-decoration:none}hr.fn-sep{margin-top:2rem}.footnotes{font-size:.88em;color:#8a8a8a}.footnotes li{margin:.25rem 0}.bar{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}@media(max-width:520px){.bar{flex-wrap:wrap}.bar input{flex:1 1 100%;order:3}main{padding-top:12px;padding-bottom:12px}}'
+  '*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{background:#fafafa}body{margin:0;font:16px/1.6 system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){html{background:#1a1a1a}body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:#1a6ed8}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}.bar button:hover{border-color:#1a6ed8}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:#1a6ed8}.err{color:#c0392b}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}code{background:#8881;padding:.1em .3em;border-radius:4px;font-size:.9em}pre code{background:0;padding:0}table{border-collapse:collapse;margin:.7rem 0;display:block;overflow-x:auto;max-width:100%}th,td{border:1px solid #8887;padding:6px 11px}th{background:#8881;font-weight:600;text-align:left}img{max-width:100%;height:auto}del{opacity:.7}ul,ol{padding-left:1.5rem}li{margin:.15rem 0}sup.fnref{font-size:.72em}sup.fnref a{text-decoration:none}hr.fn-sep{margin-top:2rem}.footnotes{font-size:.88em;color:#8a8a8a}.footnotes li{margin:.25rem 0}.bar{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}@media(max-width:520px){.bar{flex-wrap:wrap}.bar input{flex:1 1 100%;order:3}main{padding-top:12px;padding-bottom:12px}}'
 ::  +render-page: wrap an HTML fragment in the reader chrome (address bar + CSS).
 ::
 ++  render-page
@@ -4300,9 +4698,45 @@
     "<title>lattice</title><style>"  web-css  "</style></head><body>"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
     "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
-    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb://~ship/path\">"
+    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search the catalog\">"
     "<button type=\"submit\">Go</button></form><main>"  inner  "</main>"
     (sse-script keep)  sw-register-script  "</body></html>"
+  ==
+::  +render-browser-page: the browser's page view — the address bar (+ an Edit
+::  button when `edit` names an editable own page) above the page rendered in a
+::  viewport-filling iframe, so the page's theme owns its whole document (no
+::  collision with the chrome css) and looks as it would on the clear web.
+::  `sandbox` locks the frame (no scripts/same-origin) for untrusted peer content;
+::  `keep` is the data-grub SSE url ("" = none) so an owner edit live-reloads the
+::  view. The clearweb-parity replacement for the old dev page-view chrome.
+::
+++  render-browser-page
+  |=  [current=tape doc=@t edit=(unit @t) sandbox=? keep=tape]
+  ^-  @t
+  =/  editbtn=tape
+    ?~  edit  ""
+    :(weld "<a class=\"eb\" href=\"/apps/lattice/edit?name=" (trip u.edit) "\">&#9998; edit</a>")
+  %-  crip
+  ;:  weld
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+    pwa-head
+    "<title>lattice</title><style>"  web-css
+    (trip 'html,body{height:100%}body.bp{display:flex;flex-direction:column;margin:0}.bp main{max-width:none;margin:0;padding:0;flex:1;display:flex}.bp .pf{flex:1;width:100%;border:0}.bar .eb,.bar .bm{display:flex;align-items:center;gap:.3em;padding:0 12px;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;background:transparent;cursor:pointer;font-size:1rem}.bar .eb:hover,.bar .bm:hover{border-color:#1a6ed8}')
+    "</style></head><body class=\"bp\">"
+    "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
+    "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
+    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search the catalog\">"
+    editbtn
+    "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
+    "<button type=\"submit\">Go</button></form>"
+    "<main><iframe class=\"pf\""  ?:(sandbox " sandbox=\"\"" "")
+    " srcdoc=\""  (esc (trip doc))  "\"></iframe></main>"
+    ::  bookmark button: POST the address-bar url to /bookmark (owner-gated, same
+    ::  origin). single-quote cord so the js braces stay literal.
+    %-  trip
+    '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})}})();</script>'
+    (page-sse-script keep)  sw-register-script  "</body></html>"
   ==
 ::  +keep-url: grubbery's native keep-SSE endpoint for one of our grubs.
 ::
