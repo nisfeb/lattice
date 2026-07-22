@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""lattice-fs — mount the lattice page tree as a local filesystem.
+
+  lattice-fs auth                 log in once, store the session cookie
+  lattice-fs mount <dir>          mount the page tree at <dir> (foreground)
+  lattice-fs errors <page>        print a page's latest evaluator error ('' clean)
+
+Config (env):
+  LATTICE_URL    nexus base, default http://localhost:8080
+  LATTICE_CODE   +code for unattended re-auth (else prompted, hidden)
+  cookie stored at ~/.config/lattice-fs/cookie (mode 600)
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from grubbery_fs.auth import NexusClient           # noqa: E402
+from lattice_fs.projection import LatticeProjection  # noqa: E402
+
+
+def _client():
+    base = os.environ.get("LATTICE_URL", "http://localhost:8080")
+    ck = os.path.join(os.path.expanduser("~"), ".config", "lattice-fs", "cookie")
+    return NexusClient(base, ck)
+
+
+def _projection(c):
+    c.connect()
+    return LatticeProjection(c, c.ship())
+
+
+def cmd_auth(_args):
+    c = _client()
+    c.login()
+    print(f"logged in as {c.ship()}; cookie stored.")
+
+
+def cmd_errors(args):
+    if not args:
+        sys.exit("usage: lattice-fs errors <page>")
+    proj = _projection(_client())
+    out = proj.errors(args[0])
+    if out:
+        print(out)
+
+
+def cmd_mount(args):
+    if not args:
+        sys.exit("usage: lattice-fs mount <dir>")
+    from fuse import FUSE
+    from grubbery_fs.core import GrubberyFS
+    mnt = args[0]
+    os.makedirs(mnt, exist_ok=True)
+    proj = _projection(_client())
+    proj.connect()
+    print(f"mounting lattice ({proj.our}) at {mnt} — Ctrl-C to unmount")
+    # atomic_o_trunc: O_TRUNC arrives through open() (not a separate truncate),
+    #   so a `>`/editor overwrite coalesces into one page-save (empty-body 400 avoided).
+    # default_permissions: kernel enforces perms from the uid/gid/mode getattr
+    #   reports, so files read as owner-writable — rm/nvim don't prompt, and the
+    #   0444 on generated %index pages is enforced kernel-side too.
+    FUSE(GrubberyFS(proj), mnt, foreground=True, nothreads=False,
+         atomic_o_trunc=True, default_permissions=True)
+
+
+def main():
+    cmds = {"auth": cmd_auth, "mount": cmd_mount, "errors": cmd_errors}
+    if len(sys.argv) < 2 or sys.argv[1] not in cmds:
+        sys.exit(__doc__)
+    cmds[sys.argv[1]](sys.argv[2:])
+
+
+if __name__ == "__main__":
+    main()
