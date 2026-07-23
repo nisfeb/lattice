@@ -5,8 +5,6 @@
 use crate::projection::{Node, PErr, Projection};
 use crate::transport::Transport;
 
-pub const APP: &str = "lattice.lattice_app";
-
 pub struct LatticeProjection {
     t: Box<dyn Transport>,
     ship: String,
@@ -65,10 +63,9 @@ impl Projection for LatticeProjection {
     }
 
     fn errors(&self, rel: &str) -> Result<String, PErr> {
-        // read the err grub via the generic /x/ proxy (?data), as the web editor
-        // does. '' = clean; a missing err grub (page never ran) reads as clean.
-        let path = format!("/apps/lattice/x/{}/apps/{}/page/{}/err", self.ship, APP, rel);
-        match self.t.get_bytes(&path, &[("data", "")]) {
+        // page-errors returns the err grub text (plain text), '' = clean or no
+        // such page. Symmetric across transports (Eyre and lick both hit it).
+        match self.t.get_bytes("/apps/lattice/page-errors", &[("name", rel)]) {
             Ok(b) => Ok(String::from_utf8_lossy(&b).trim().to_string()),
             Err(e) if e.code == 404 => Ok(String::new()),
             Err(e) => Err(e.into()),

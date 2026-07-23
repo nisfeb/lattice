@@ -86,6 +86,10 @@
         ::  file row (like /sub/follows) so it survives reload.
             [%fall %& [/ %bookmarks] [[/lattice %bookmarks] *bookmarks:lb]]
             [%fall %& [/ %'crawler.sig'] [[/ %sig] ~]]
+        ::  /fs.sig: a lick (unix-socket) port exposing the filesystem ops to a
+        ::  local FUSE client (lattice-fs) — the native-transport twin of the
+        ::  HTTP page-tree/page-source/page-save routes.
+            [%fall %& [/ %'fs.sig'] [[/ %sig] ~]]
         ==
       ==
     ::
@@ -314,6 +318,34 @@
         ::  would let this sweep's early-resolved obelisk/peek timers accumulate.
         ;<  ~  bind:m  (sleep-draining ~h6)
         $
+      ::  /fs.sig: the lick (local IPC) port for the FUSE client. Serve-loop is
+      ::  generic (spin the socket, take each inbound frame, dispatch, spit the
+      ::  reply) — the only lattice-specific part is +fs-op. Wire format (per
+      ::  gub/man/lick-echo): 0x00 + LE-u32 len + jam([mark noun]); request noun
+      ::  is [verb path query body], reply is [status body]. Requests are
+      ::  synchronous (one in flight), so no seq de-dup is needed. Auth is
+      ::  filesystem-presence: the socket lives in the pier.
+          [~ %'fs.sig']
+        ;<  ~  bind:m  (rise-wait:io prod "%lattice fs port: failed")
+        ;<  ~  bind:m  (lick-spin:io fs-port)
+        ;<  *  bind:m  (keep:io /in [%& %& (weld /sys/lick fs-port) %in] ~)
+        |-
+        ;<  *  bind:m  (take-news:io /in)
+        ;<  =seen:nexus  bind:m  (peek:io [%& %& (weld /sys/lick fs-port) %in] ~)
+        ?.  ?=([%& %file *] seen)  $
+        ::  in-grub is [seq mark noun]. The runtime types noun as *, so extract it
+        ::  generally (like lick-echo) THEN clam it to [verb path query body] — a
+        ::  direct !< to the specific tuple nest-fails on the * and would hang.
+        =/  raw=(unit [seq=@ud mark=@tas noun=*])
+          (mole |.(!<([seq=@ud mark=@tas noun=*] (need-vase:tarball sang.p.seen))))
+        ?~  raw  $
+        =/  req=(unit [verb=@t path=@t query=@t body=@t])
+          (mole |.(;;([@t @t @t @t] noun.u.raw)))
+        ?~  req  $
+        ;<  [status=@ud rbody=@t]  bind:m
+          (fs-op verb.u.req path.u.req query.u.req body.u.req)
+        ;<  ~  bind:m  (lick-spit:io fs-port %res [status rbody])
+        $
       ::  /cat/obelisk.sig: the serializing obelisk OWNER (finding #1). Owns the
       ::  single /server sub; takes %obk-req pokes one at a time, runs the query
       ::  (obelisk-run-one), and writes the result to the caller's grub — so no two
@@ -482,24 +514,19 @@
       [%'GET' %page-source]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
-    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    =/  pax=path  (pax-of u.name)
-    =/  pdir=path  (weld app-base (weld /page pax))
-    ;<  cn=seen:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
-    ?.  ?=([%& %file *] cn)  (send-err eyre-id 404 'no such page')
-    =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.p.cn)))) '')
-    =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
-    =/  gen=?  =((make-folder-index pax) src)
-    =/  kind=@tas  ?:(gen %index ?~(un %hoon builder.u.un))
-    =/  body=@t    ?~(un src body.u.un)
-    %+  send-json  eyre-id
-    %-  pairs:enjs:format
-    :~  ['kind' s+kind]
-        ['body' s+body]
-        ['size' (numb:enjs:format (met 3 body))]
-        ['rev' (numb:enjs:format ud.cass.p.cn)]
-        ['mtime' s+(scot %da da.cass.p.cn)]
+    ;<  r=(each json [code=@ud msg=@t])  bind:m  (fs-source-result u.name)
+    ?-  -.r
+      %&  (send-json eyre-id p.r)
+      %|  (send-err eyre-id code.p.r msg.p.r)
     ==
+  ::
+  ::  page-errors: a page's latest evaluator error as plain text ('' = clean).
+  ::  The lattice-fs nvim glue reads this to populate the quickfix list.
+      [%'GET' %page-errors]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ;<  t=@t  bind:m  (fs-err-text u.name)
+    (send-typed eyre-id 'text/plain' 'no-cache' t)
   ::
   ::  page-tree: the whole /page tree in one call, each page carrying kind+size+
   ::  mtime so a client can build `<name>.<ext>` filenames without N fetches.
@@ -507,32 +534,8 @@
   ::  read-tree, then per-page peeks the code grub (the read-recent pattern):
   ::  O(pages) local peeks, one HTTP round-trip.
       [%'GET' %page-tree]
-    ;<  tree=(list [pax=path page=?])  bind:m  read-tree
-    =|  acc=(list json)
-    |-  ^-  form:m
-    ?~  tree
-      (send-json eyre-id (pairs:enjs:format ~[['nodes' a+(flop acc)]]))
-    =*  nod  i.tree
-    ?.  page.nod
-      =/  j=json  (pairs:enjs:format ~[['path' s+(crip (pax-str pax.nod))] ['page' b+|]])
-      $(tree t.tree, acc [j acc])
-    =/  pdir=path  (weld app-base (weld /page pax.nod))
-    ;<  cn=seen:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
-    ?.  ?=([%& %file *] cn)                       ::  raced delete — drop
-      $(tree t.tree)
-    =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.p.cn)))) '')
-    =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
-    =/  gen=?  =((make-folder-index pax.nod) src)
-    =/  kind=@tas  ?:(gen %index ?~(un %hoon builder.u.un))
-    =/  body=@t    ?~(un src body.u.un)
-    =/  j=json
-      %-  pairs:enjs:format
-      :~  ['path' s+(crip (pax-str pax.nod))]  ['page' b+&]  ['kind' s+kind]
-          ['size' (numb:enjs:format (met 3 body))]
-          ['rev' (numb:enjs:format ud.cass.p.cn)]
-          ['mtime' s+(scot %da da.cass.p.cn)]
-      ==
-    $(tree t.tree, acc [j acc])
+    ;<  j=json  bind:m  fs-tree-json
+    (send-json eyre-id j)
   ::
       [%'GET' %fetch]
     ::  read a published page. url=urb://~ship/rel. Own pages peek the local pub
@@ -2821,6 +2824,180 @@
   %+  send-simple:srv  eyre-id
   :-  [code ['content-type' 'application/json']~]
   `(as-octs:mimes:html (en:json:html (pairs:enjs:format ~[['error' s+msg]])))
+::
+::  ── lattice-fs shared handler (HTTP routes + lick port both call these) ──
+::
+::  The filesystem client speaks ONE request shape, `[verb path query body]`,
+::  and gets back `[status body]` (HTTP-style code + a cord). The HTTP routes
+::  and the /fs.sig lick port are thin adapters over the same arms below, so a
+::  single Rust client works over either transport with identical semantics.
+::
+::  +fs-tree-json: the whole /page tree as JSON (GET /page-tree + lick %page-tree).
+++  fs-tree-json
+  =/  m  (fiber:fiber:nexus ,json)
+  ^-  form:m
+  ;<  tree=(list [pax=path page=?])  bind:m  read-tree
+  =|  acc=(list json)
+  |-  ^-  form:m
+  ?~  tree  (pure:m (pairs:enjs:format ~[['nodes' a+(flop acc)]]))
+  =*  nod  i.tree
+  ?.  page.nod
+    =/  j=json  (pairs:enjs:format ~[['path' s+(crip (pax-str pax.nod))] ['page' b+|]])
+    $(tree t.tree, acc [j acc])
+  =/  pdir=path  (weld app-base (weld /page pax.nod))
+  ;<  cn=seen:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
+  ?.  ?=([%& %file *] cn)  $(tree t.tree)     ::  raced delete — drop
+  =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.p.cn)))) '')
+  =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
+  =/  gen=?  =((make-folder-index pax.nod) src)
+  =/  kind=@tas  ?:(gen %index ?~(un %hoon builder.u.un))
+  =/  body=@t  ?~(un src body.u.un)
+  =/  j=json
+    %-  pairs:enjs:format
+    :~  ['path' s+(crip (pax-str pax.nod))]  ['page' b+&]  ['kind' s+kind]
+        ['size' (numb:enjs:format (met 3 body))]
+        ['rev' (numb:enjs:format ud.cass.p.cn)]
+        ['mtime' s+(scot %da da.cass.p.cn)]
+    ==
+  $(tree t.tree, acc [j acc])
+::  +fs-source-result: a page's source as (each json [code msg]) — the json on
+::  %&, an HTTP-style [code msg] error on %|.
+++  fs-source-result
+  |=  name=@t
+  =/  m  (fiber:fiber:nexus ,(each json [code=@ud msg=@t]))
+  ^-  form:m
+  ?.  (valid-name name)  (pure:m [%| 400 'bad name'])
+  =/  pax=path  (pax-of name)
+  =/  pdir=path  (weld app-base (weld /page pax))
+  ;<  cn=seen:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
+  ?.  ?=([%& %file *] cn)  (pure:m [%| 404 'no such page'])
+  =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.p.cn)))) '')
+  =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
+  =/  gen=?  =((make-folder-index pax) src)
+  =/  kind=@tas  ?:(gen %index ?~(un %hoon builder.u.un))
+  =/  body=@t  ?~(un src body.u.un)
+  %-  pure:m
+  :-  %&
+  %-  pairs:enjs:format
+  :~  ['kind' s+kind]  ['body' s+body]
+      ['size' (numb:enjs:format (met 3 body))]
+      ['rev' (numb:enjs:format ud.cass.p.cn)]
+      ['mtime' s+(scot %da da.cass.p.cn)]
+  ==
+::  +fs-err-text: a page's latest evaluator error ('' = clean or no such page).
+++  fs-err-text
+  |=  name=@t
+  =/  m  (fiber:fiber:nexus ,@t)
+  ^-  form:m
+  ?.  (valid-name name)  (pure:m '')
+  =/  pdir=path  (weld app-base (weld /page (pax-of name)))
+  ;<  en=seen:nexus  bind:m  (peek:io [%& %& pdir %err] ~)
+  ?.  ?=([%& %file *] en)  (pure:m '')
+  (pure:m (fall (mole |.(;;(@t (sang-noun:tarball sang.p.en)))) ''))
+::  +fs-poke-eval: poke the writer (main.sig) with an eval-action. Called from the
+::  /fs.sig fiber, which sits at the app root as a sibling of main.sig — so the
+::  road is a fixed up-0 (unlike +poke-eval's up-2 from /ui/requests).
+++  fs-poke-eval
+  |=  act=eval-action:le
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (poke:io [%| 0 %& ~ %'main.sig'] [[/lattice %eval-action] act])
+::  +fs-save: create/overwrite a page (POST /page-save + lick %page-save).
+::  Mirrors the HTTP route: index generates its own body; a content type wraps
+::  the body; ?new rejects an existing page with 409.
+++  fs-save
+  |=  [name=@t ptype=@tas new=? raw=@t]
+  =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
+  ^-  form:m
+  ?.  (valid-name name)  (pure:m [400 'bad name'])
+  =/  is-index=?  =(%index ptype)
+  ?:  &(?!(is-index) =('' raw))  (pure:m [400 'missing body'])
+  =/  src=@t
+    ?:  is-index  (make-folder-index (pax-of name))
+    ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
+  ;<  ex=?  bind:m
+    (peek-exists:io [%& %& (weld app-base (weld /page (pax-of name))) %code])
+  ?:  &(new ex)  (pure:m [409 'page exists'])
+  ;<  ~  bind:m  (fs-poke-eval [%make (pax-of name) src])
+  (pure:m [200 ''])
+::  +fs-mkdir / +fs-del: folder create / page-or-folder delete.
+++  fs-mkdir
+  |=  name=@t
+  =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
+  ^-  form:m
+  ?.  (valid-name name)  (pure:m [400 'bad name'])
+  ;<  ~  bind:m  (fs-poke-eval [%mkdir (pax-of name)])
+  (pure:m [200 ''])
+++  fs-del
+  |=  name=@t
+  =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
+  ^-  form:m
+  ?.  (valid-name name)  (pure:m [400 'bad name'])
+  ;<  ~  bind:m  (fs-poke-eval [%del (pax-of name)])
+  (pure:m [200 ''])
+::  +fs-op: the shared request dispatcher. `path`'s last segment selects the op;
+::  `query` is "k=v&k=v" (raw, page names are @ta so need no url-decode). Returns
+::  [status body] — for the lick port to spit, and for the HTTP routes to send.
+++  fs-op
+  |=  [verb=@t path=@t query=@t body=@t]
+  =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
+  ^-  form:m
+  =/  q=(map @t @t)  (parse-q query)
+  =/  act=@tas  (fall (mole |.(`@tas`(rear (stab path)))) %$)
+  ?+    act  (pure:m [404 'no such op'])
+      %page-tree
+    ;<  j=json  bind:m  fs-tree-json
+    (pure:m [200 (en:json:html j)])
+      %page-source
+    =/  name=(unit @t)  (~(get by q) 'name')
+    ?~  name  (pure:m [400 'missing name'])
+    ;<  r=(each json [code=@ud msg=@t])  bind:m  (fs-source-result u.name)
+    ?-  -.r
+      %&  (pure:m [200 (en:json:html p.r)])
+      %|  (pure:m [code.p.r msg.p.r])
+    ==
+      %page-errors
+    =/  name=(unit @t)  (~(get by q) 'name')
+    ?~  name  (pure:m [400 'missing name'])
+    ;<  t=@t  bind:m  (fs-err-text u.name)
+    (pure:m [200 t])
+      %page-save
+    =/  name=(unit @t)  (~(get by q) 'name')
+    ?~  name  (pure:m [400 'missing name'])
+    =/  ptype=@tas  `@tas`(~(gut by q) 'type' 'hoon')
+    (fs-save u.name ptype (~(has by q) 'new') body)
+      %folder-new
+    =/  name=(unit @t)  (~(get by q) 'name')
+    ?~  name  (pure:m [400 'missing name'])
+    (fs-mkdir u.name)
+      %page-del
+    =/  name=(unit @t)  (~(get by q) 'name')
+    ?~  name  (pure:m [400 'missing name'])
+    (fs-del u.name)
+  ==
+::  +fs-port: the lick unix-socket port; vere serves it at the pier path
+::  .urb/dev/grubbery/lattice/fs.
+++  fs-port  ^-  path  /lattice/fs
+::  +fs-split-on: split a tape on a delimiter char, dropping the delimiter.
+++  fs-split-on
+  |=  [t=tape c=@tD]
+  ^-  (list tape)
+  =/  i=(unit @ud)  (find ~[c] t)
+  ?~  i  ~[t]
+  [(scag u.i t) $(t (slag +(u.i) t))]
+::  +parse-q: "a=1&b=2" -> a map (values NOT url-decoded; the lick client sends
+::  page names raw and they are @ta, so contain no & or =).
+++  parse-q
+  |=  q=@t
+  ^-  (map @t @t)
+  ?:  =('' q)  ~
+  %-  malt
+  %+  turn  (fs-split-on (trip q) '&')
+  |=  p=tape
+  ^-  [@t @t]
+  =/  i=(unit @ud)  (find "=" p)
+  ?~  i  [(crip p) '']
+  [(crip (scag u.i p)) (crip (slag +(u.i) p))]
 ::  +read-know-map: peek the whole know vault into a (map path know-entry).
 ::
 ++  read-know-map
