@@ -24,6 +24,12 @@
 /<  lp   /lib/lattice-pub.hoon
 /<  ast  /lib/obelisk-ast.hoon
 /<  cat  /lib/catalog.hoon
+/<  le   /lib/lattice-eval.hoon
+/<  pg   /lib/lattice-pg.hoon
+/<  gfm  /lib/lattice-md.hoon
+/<  tpl  /lib/lattice-templates.hoon
+/<  lc   /lib/lattice-comment.hoon
+/<  lb   /lib/lattice-bookmark.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -64,7 +70,26 @@
         ::  on-file spawns a keep fiber that re-indexes that remote page whenever
         ::  the peer edits it. /sub + /unsub make/cull these grubs.
             [%fall %| /sub/pages empty-dir:loader]
+        ::  /page/: programmable pages (docs/platform.md step 2). One dir per
+        ::  page; the code grub's on-file fiber is the evaluator.
+            [%fall %| /page empty-dir:loader]
+        ::  /template/: reusable page-tree templates (inert code grubs, never
+        ::  evaluated — no [%page ...] on-file match). Covered so saved and
+        ::  shipped templates survive reload, like /page and /know/vault.
+            [%fall %| /template empty-dir:loader]
+        ::  /comments/<page>/<id>: one grub per page comment (Urbit-ships-only).
+        ::  Page content stays under /page (owner-only weir); comments are the one
+        ::  area other ships may append to (via the public inbox fiber, added with
+        ::  the cross-ship path). The owner writer (main.sig) also writes here.
+            [%fall %| /comments empty-dir:loader]
+        ::  /bookmarks: the browser's saved-page list (newest first). A covering
+        ::  file row (like /sub/follows) so it survives reload.
+            [%fall %& [/ %bookmarks] [[/lattice %bookmarks] *bookmarks:lb]]
             [%fall %& [/ %'crawler.sig'] [[/ %sig] ~]]
+        ::  /fs.sig: a lick (unix-socket) port exposing the filesystem ops to a
+        ::  local FUSE client (lattice-fs) — the native-transport twin of the
+        ::  HTTP page-tree/page-source/page-save routes.
+            [%fall %& [/ %'fs.sig'] [[/ %sig] ~]]
         ==
       ==
     ::
@@ -82,6 +107,13 @@
         ::  open /pub to foreign readers (idempotent, union-not-clobber). know/
         ::  needs nothing — foreign access is deny-by-default.
         ;<  ~  bind:m  (ensure-pub-weir root)
+        ::  re-grant every shared page's data road (self-heal, like ensure-pub-weir):
+        ::  a page shared before the public usergroup existed skipped the grant;
+        ::  this re-applies it on the next writer start once the group is present.
+        ;<  ~  bind:m  (heal-share-weirs root)
+        ::  lay down the built-in page-tree templates (idempotent; skips if the
+        ::  user already has them). Users instantiate a copy under /page.
+        ;<  ~  bind:m  (ensure-shipped-templates root)
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
         ;<  now=@da  bind:m  bowl-now
@@ -93,6 +125,18 @@
           $
         ?:  =([/lattice %sub-action] p.sage)
           ;<  ~  bind:m  (apply-sub root !<(sub-action:lp q.sage))
+          $
+        ?:  =([/lattice %eval-action] p.sage)
+          ;<  ~  bind:m  (apply-eval root !<(eval-action:le q.sage))
+          $
+        ::  the owner commenting on their own page: author is us. (Other ships
+        ::  comment via the public inbox fiber, not this owner-only writer.)
+        ?:  =([/lattice %comment-action] p.sage)
+          ;<  our=@p  bind:m  bowl-our
+          ;<  ~  bind:m  (apply-comment root our now !<(comment-action:lc q.sage))
+          $
+        ?:  =([/lattice %bookmark-action] p.sage)
+          ;<  ~  bind:m  (apply-bookmark root !<(bookmark-action:lb q.sage))
           $
         ~&  [%lattice-bad-mark p.sage]
         $
@@ -148,6 +192,114 @@
           ;<  ~  bind:m  (index-remote-page ship.ps rel)
           $
         ==
+      ::  /page/<name>/code: the page evaluator (docs/platform.md step 2). The
+      ::  fiber owns the page's code grub: compile the source (a gate) against
+      ::  the hoon stdlib, run it on commands (cmd grub, seq-bumped) and on
+      ::  dependency waves, write the product to the data grub. A compile or
+      ::  run crash writes err and keeps the last good data — a broken page
+      ::  never kills the fiber (mule everything). ponytail: dep keeps are
+      ::  armed and never dropped (a removed dep still ticks; save-file's
+      ::  no-op suppression bounds it); page code gets the hoon stdlib only
+      ::  (..add) and returns NO darts yet — the capped-authority %sand
+      ::  plumbing lands with darts (platform decision). A divergent dep
+      ::  cycle spins; a converging one terminates via no-op suppression.
+          [[%page @ *] %code]
+        ;<  ~  bind:m  (rise-wait:io prod "%lattice /page eval: failed")
+        ;<  here=rail:tarball  bind:m  get-here-abs:io
+        =/  pdir=path  path.here
+        ::  one wire for everything: code (self), cmd inbox, deps grub, and
+        ::  each declared dep target. Any change wakes the loop.
+        ;<  *  bind:m  (keep:io /ev [%& %& pdir %code] ~)
+        ;<  *  bind:m  (keep:io /ev [%& %& pdir %cmd] ~)
+        ;<  *  bind:m  (keep:io /ev [%& %& pdir %deps] ~)
+        ::  `last` = last-PROCESSED cmd seq, persisted in the /seen grub (NOT
+        ::  inferred from the current cmd grub). A page-save on a compile-broken
+        ::  page respawns this fiber (put-file over /code), which re-inits `last`
+        ::  from /seen — so a command sent while broken (seq past /seen) still
+        ::  runs once the fix compiles, while a plain reload never replays an
+        ::  already-run command (both caught by review).
+        ;<  last=@ud  bind:m  (read-eval-seen pdir)
+        =/  armed=(set path)  ~
+        =/  held=@t  '=='
+        =/  bild=(each vase tang)  [%| `tang`~[leaf+"not compiled"]]
+        ::  gen counts RAPID consecutive dep-tick reruns. A dep cycle or an
+        ::  always-changing page reruns as fast as the event loop allows and
+        ::  would livelock it; a legit reactive page reruns only when an
+        ::  upstream actually changes, spaced out in time. So gen accumulates
+        ::  only while reruns land closer together than `rerun-gap`, and resets
+        ::  on a command or a slow (legit) gap — capping runaways without ever
+        ::  parking a page that merely reacts to many updates over time. gen and
+        ::  last-now live in this fiber's loop across every wave.
+        =/  gen=@ud  0
+        =/  last-now=@da  `@da`0
+        |-
+        ;<  src=@t  bind:m  (get-state-as:io ,@t)
+        =?  bild  !=(src held)
+          ::  compile the page against the page stdlib (pg): its builders
+          ::  (text/html/needs/every/sends/esc) and the +result mold are in
+          ::  scope at the top, the full hoon/zuse stack beneath.
+          (mule |.((slap !>(pg) (ream src))))
+        =.  held  src
+        ?:  ?=(%| -.bild)
+          ;<  ~  bind:m
+            (put-file [%& %& pdir %err] [/lattice %page] (render-tang 'compile failed:' p.bild))
+          ;<  *  bind:m  (take-news-or-wake-drain /ev)
+          $
+        ;<  deps=(list path)  bind:m  (read-eval-deps pdir)
+        ;<  na=(set path)  bind:m  (arm-eval-deps armed deps)
+        =.  armed  na
+        ;<  cur=eval-cmd:le  bind:m  (read-eval-cmd pdir)
+        =/  fresh=?  (gth seq.cur last)
+        ;<  now=@da  bind:m  bowl-now
+        ::  rapid = this rerun landed within `rerun-gap` of the previous one (a
+        ::  runaway burst — a DEPENDENCY cycle or an always-changing page reruns
+        ::  as fast as the loop allows). gen accumulates while rapid and resets
+        ::  on a settled gap. (Page-to-page POKE cycles are too slow per hop for
+        ::  this window — those are bounded by the poke budget instead.)
+        =/  rapid=?  &(!=(`@da`0 last-now) (lth (sub now last-now) rerun-gap))
+        =.  gen  ?:(rapid +(gen) 0)
+        =.  last-now  now
+        ?:  (gth gen recompute-cap)
+          ::  a sustained rapid rerun burst — a cycle or an always-changing page.
+          ::  Stop producing data (that is what wakes our dependents), write err,
+          ::  and park until a command (or a settled gap) resets gen.
+          =/  msg=@t
+            'recompute limit hit (dependency cycle or always-changing page?); send a command to resume'
+          ;<  ~  bind:m  (put-file [%& %& pdir %err] [/lattice %page] msg)
+          ;<  *  bind:m  (take-news-or-wake-drain /ev)
+          $
+        =/  cmd=(unit @t)  ?:(fresh `txt.cur ~)
+        ::  poke budget for this run: a command carries one (a page reached via
+        ::  a poke got a decremented budget); a dep/timer tick starts fresh.
+        =/  run-bud=@ud  ?:(fresh bud.cur poke-budget-max)
+        ;<  ~  bind:m  (eval-run pdir p.bild cmd deps run-bud)
+        ::  eval-run recorded any timer request in the /wake grub (clamped, or ~
+        ::  if the page asked for no timer or its run failed); read it back.
+        ;<  wake=(unit @dr)  bind:m  (read-wake pdir)
+        ::  persist the processed seq only when a command actually ran (a dep
+        ::  tick leaves seq unchanged). /seen is not kept, so this fires no wave.
+        =?  last  fresh  seq.cur
+        ;<  ~  bind:m  ?:(fresh (write-eval-seen pdir seq.cur) (pure:m ~))
+        ::  wait for a dependency/command wave — or, if the page asked for a
+        ::  timer (`every`), for that timer, whichever comes first. Using
+        ::  -until keyed on this timer means an earlier stale timer is drained,
+        ::  so timers don't pile up across reruns.
+        ?~  wake
+          ;<  *  bind:m  (take-news-or-wake-drain /ev)
+          $
+        ::  anchor the timer to a FRESH now, read AFTER eval-run. The `now` above
+        ::  was captured before the (possibly slow) run; if the run took longer
+        ::  than u.wake, `(add now u.wake)` is already in the PAST, so behn fires
+        ::  immediately => zero real idle => a 100%-pinned tight loop (the timer
+        ::  can't outrun its own eval). Re-reading now guarantees >= u.wake
+        ::  (>= rerun-gap ~s1) of real idle between the end of one run and the
+        ::  next, so a heavy timer page stays responsive instead of pinning the
+        ::  loop. (Same bowl-now -> send-wait pattern used by the sub/pub loops.)
+        ;<  arm-now=@da  bind:m  bowl-now
+        =/  until=@da  (add arm-now u.wake)
+        ;<  ~  bind:m  (send-wait:io until)
+        ;<  *  bind:m  (take-news-or-wake-until /ev until)
+        $
       ::  /crawler.sig: periodic catalog sweep. Each tick re-indexes our own
       ::  published pages into obelisk (runs immediately on start, then every
       ::  interval). ponytail: full re-scan per tick (fine for a personal store);
@@ -166,6 +318,14 @@
         ::  would let this sweep's early-resolved obelisk/peek timers accumulate.
         ;<  ~  bind:m  (sleep-draining ~h6)
         $
+      ::  /fs.sig: the lick (local IPC) port for the FUSE client. The serve-loop
+      ::  is generic — +lick-serve:io (fiberio) spins the socket, decodes each
+      ::  [verb path query body] frame, and spits back [status body]. The only
+      ::  lattice-specific part is the +fs-op handler. Auth is filesystem-presence:
+      ::  the socket lives in the pier.
+          [~ %'fs.sig']
+        ;<  ~  bind:m  (rise-wait:io prod "%lattice fs port: failed")
+        (lick-serve:io fs-port fs-op)
       ::  /cat/obelisk.sig: the serializing obelisk OWNER (finding #1). Owns the
       ::  single /server sub; takes %obk-req pokes one at a time, runs the query
       ::  (obelisk-run-one), and writes the result to the caller's grub — so no two
@@ -207,24 +367,38 @@
   ^-  form:m
   ;<  [src=@p req=inbound-request:eyre]  bind:m
     (get-state-as:io ,[src=@p inbound-request:eyre])
-  ;<  our=@p  bind:m  bowl-our
-  ::  every route is owner-only (lattice is a personal store). Unauthenticated /
-  ::  foreign requests carry src != our -> 403.
-  ?.  =(src our)
-    ::  JSON error, like every other route (was a bare text 'Forbidden').
-    (send-err eyre-id 403 'forbidden')
   =/  parsed  (parse-url:http-utils url.request.req)
   ::  drop the /apps/lattice prefix; the remainder is the route.
   =/  suffix=path  (slag 2 site.parsed)
   =/  args=(map @t @t)  (malt args.parsed)
+  ::  clearweb: the ONLY unauthenticated surface. GET /c/<name> serves a
+  ::  clearweb-tagged page's DATA, read-only — no tree nav, no code, no
+  ::  sibling grubs, no command form. Everything else requires the owner.
+  ?:  &(?=([%c ^] suffix) =(%'GET' method.request.req))
+    (serve-clearweb eyre-id t.suffix)
+  ::  owner gate. Eyre stamps a request authenticated to our web login with
+  ::  src=our, so `authenticated` (already in hand, synchronous) IS the src==our
+  ::  check — reading `our` via a /sys/bowl round trip (bowl-our) just to compare
+  ::  cost ~0.2s on EVERY request. Gate on the flag; `our` is then simply `src`.
+  ?.  authenticated.req
+    ::  JSON error, like every other route (was a bare text 'Forbidden').
+    (send-err eyre-id 403 'forbidden')
+  =/  our=@p  src
+  ::  /x/<ship>/<path...>: the server-rendered tree explorer (docs/platform.md,
+  ::  build step 1). Consumes the rest of the path, so it dispatches before the
+  ::  (rear suffix) route table below.
+  ?:  &(?=([%x *] suffix) =(%'GET' method.request.req))
+    (explore eyre-id our t.suffix args url.request.req)
+  ::  /f/<name>: serve a file's raw data as an asset, Content-Type from its
+  ::  render mode (js -> text/javascript, css -> text/css, ...), so an html file
+  ::  can import a js/css file by URL. Owner-gated (fetched with the session).
+  ?:  &(?=([%f ^] suffix) =(%'GET' method.request.req))
+    (serve-asset eyre-id t.suffix)
   ::  root: the web reader (Landscape tile). ?url=urb://ship/rel renders that
   ::  page; no url renders the home index of our published pages. ponytail:
   ::  compact gemtext->HTML (headings/links/quotes/lists/pre); the full reader's
   ::  link-resolution + bookmark sync can follow.
   ?~  suffix
-    ::  ?view=bookmarks: the bookmarks reader shell (client-JS fills #bmlist).
-    ?:  =(`'bookmarks' (~(get by args) 'view'))
-      (send-html eyre-id (render-page "Bookmarks" "" "<h1>Bookmarks</h1><div id=\"bmlist\"></div>"))
     =/  raw=(unit @t)  (~(get by args) 'url')
     ?~  raw
       ::  authored home first: if the user published an /index page, serve it;
@@ -232,18 +406,34 @@
       ::  edit auto-refreshes the open reader.
       ;<  home=(unit @t)  bind:m  (read-page-body our /index)
       ?~  home
-        ;<  ix=pub-index:lp  bind:m  (read-pub-index [%| 2 %& /pub %index])
-        (send-html eyre-id (render-page "" (keep-url "pub/index") (home-index-html our ix)))
-      (send-html eyre-id (render-page "" (keep-url "pub/index") (render-gmi u.home)))
-    =/  pu=(unit [=ship =path])  (parse-urb-url u.raw)
-    ?~  pu  (send-html eyre-id (render-page (trip u.raw) "" "<p class=\"err\">bad urb:// url</p>"))
-    ;<  body=(unit @t)  bind:m  (read-page-body ship.u.pu path.u.pu)
-    ?~  body
-      (send-html eyre-id (render-page (trip u.raw) "" "<p class=\"err\">not published here</p>"))
-    ::  own pages get a live reader (keep /pub/index — its per-page hash changes on
-    ::  every edit); remote pages stay static (can't keep a peer's grub).
-    =/  rk=tape  ?:(=(ship.u.pu our) (keep-url "pub/index") "")
-    (send-html eyre-id (render-page (trip u.raw) rk (render-gmi u.body)))
+        ;<  recent=(list [pax=path prev=@t])  bind:m  (read-recent 10)
+        ;<  bms=bookmarks:lb  bind:m  read-bookmarks
+        (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (home-index-html our recent bms)))
+      (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (render-gmi u.home)))
+    =/  ref=(unit referent)  (de-urb u.raw)
+    ::  omnibar: input that isn't a urb:// address is a SEARCH query — serve a
+    ::  results page that queries the obelisk content catalog (client-side, via
+    ::  the /catalog-search JSON api, which is built for exactly this fan-out).
+    ?~  ref  (send-html eyre-id (render-page (trip u.raw) "" (search-results-html u.raw)))
+    ?-  -.u.ref
+        %tree
+      ::  redirect to the /x explorer projection, which renders the node and
+      ::  shows its canonical urb:// address. Preserve a trailing slash so a page
+      ::  dir goes straight to its live view (no extra dir-slash redirect).
+      =/  s=tape  (trip u.raw)
+      =/  slash=tape  ?:(&(?=(^ s) =('/' (rear s))) "/" "")
+      (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p ship.u.ref) (spud pax.u.ref) slash))
+    ::
+        %pub
+      ;<  body=(unit @t)  bind:m  (read-page-body ship.u.ref rel.u.ref)
+      =/  canon=tape  (trip (en-urb ship.u.ref (weld pub-prefix rel.u.ref)))
+      ?~  body
+        (send-view eyre-id (render-page canon "" "<p class=\"err\">not published here</p>"))
+      ::  own pages get a live reader (keep /pub/index — its per-page hash changes
+      ::  on every edit); remote pages stay static (can't keep a peer's grub).
+      =/  rk=tape  ?:(=(ship.u.ref our) (keep-url "pub/index") "")
+      (send-view eyre-id (render-page canon rk (render-gmi u.body)))
+    ==
   ::  dispatch on [method action]. ponytail: read-know-map peeks the whole vault
   ::  per request — fine for a personal store. Writes poke the single writer
   ::  fiber (serialised) and respond ok; the writer logs no-op cases (missing key
@@ -296,6 +486,37 @@
     ?~  e  (send-err eyre-id 404 'not found')
     (send-json eyre-id (know-entry-json u.ko u.e))
   ::
+  ::  page-source: raw editable source + kind + revision for one page, so a
+  ::  filesystem client (lattice-fs) never parses the wrap envelope. Mirrors what
+  ::  /edit computes: unwrap the code grub server-side, report the derived kind.
+  ::  err is read separately via /x/<our>/…/page/<name>/err?data (as the editor
+  ::  does), so this stays a single peek.
+      [%'GET' %page-source]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ;<  r=(each json [code=@ud msg=@t])  bind:m  (fs-source-result u.name)
+    ?-  -.r
+      %&  (send-json eyre-id p.r)
+      %|  (send-err eyre-id code.p.r msg.p.r)
+    ==
+  ::
+  ::  page-errors: a page's latest evaluator error as plain text ('' = clean).
+  ::  The lattice-fs nvim glue reads this to populate the quickfix list.
+      [%'GET' %page-errors]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ;<  t=@t  bind:m  (fs-err-text u.name)
+    (send-typed eyre-id 'text/plain' 'no-cache' t)
+  ::
+  ::  page-tree: the whole /page tree in one call, each page carrying kind+size+
+  ::  mtime so a client can build `<name>.<ext>` filenames without N fetches.
+  ::  Browse can't help (every code grub's mark is `page`, kind-blind). Walks
+  ::  read-tree, then per-page peeks the code grub (the read-recent pattern):
+  ::  O(pages) local peeks, one HTTP round-trip.
+      [%'GET' %page-tree]
+    ;<  j=json  bind:m  fs-tree-json
+    (send-json eyre-id j)
+  ::
       [%'GET' %fetch]
     ::  read a published page. url=urb://~ship/rel. Own pages peek the local pub
     ::  vault; remote pages use grubbery peek-remote (clean break: the peer must
@@ -333,7 +554,6 @@
     =/  pp=(each path tang)  (mule |.((stab (~(gut by args) 'path' '/'))))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
     =/  dir-road=road:tarball  [%& %| p.pp]
-    ;<  our=@p  bind:m  bowl-our
     ?:  =(u.shp our)
       ;<  sn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
       ?.  ?=([%& %ball *] sn)  (send-err eyre-id 404 'not a directory')
@@ -359,7 +579,6 @@
     ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
     =/  n=@ud  (dec (lent p.pp))
     =/  file-road=road:tarball  [%& %& (scag n p.pp) (snag n p.pp)]
-    ;<  our=@p  bind:m  bowl-our
     ?:  =(u.shp our)
       ;<  sn=seen:nexus  bind:m  (peek:io file-road ~)
       (browse-file-respond eyre-id sn)
@@ -463,7 +682,6 @@
     ?~  url  (send-err eyre-id 400 'missing url param')
     =/  pu=(unit [=ship =path])  (parse-urb-url u.url)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
-    ;<  our=@p  bind:m  bowl-our
     ;<  ct=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db (catalog-toc-urql:cat our ship.u.pu (trip (spat path.u.pu))))
     (send-obelisk eyre-id ct)
@@ -539,6 +757,223 @@
         ==
     ==
   ::  ── pub writes (POST) ──
+  ::  ── programmable pages (docs/platform.md step 2) ──
+      [%'GET' %'manifest.webmanifest']
+    (send-typed eyre-id 'application/manifest+json' 'no-cache' manifest-json)
+      [%'GET' %'sw.js']
+    (send-sw eyre-id sw-js)
+      [%'GET' %'icon.svg']
+    (send-typed eyre-id 'image/svg+xml' 'public, max-age=86400' icon-svg)
+      [%'GET' %'apple-touch-icon.png']
+    (send-png eyre-id apple-icon-b64)
+      [%'GET' %edit]
+    ::  the in-browser editor workspace (tree | code | preview | controls).
+    ::  No name -> new-page mode. The page list feeds the tree sidebar.
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ;<  tree=(list [pax=path page=?])  bind:m  read-tree
+    ?~  name
+      ::  ?kind=<md|gmi|html|text|js|css> opens a new typed file; else a hoon page.
+      ::  ?into=<folder> pre-fills the name field so the new file lands in it.
+      ::  ?newfolder opens the in-editor "new folder" mode (name field, no code).
+      =/  kind=@tas  (kind-of (~(gut by args) 'kind' 'hoon'))
+      =/  into=@t  (~(gut by args) 'into' '')
+      =/  nfolder=?  (~(has by args) 'newfolder')
+      (send-html eyre-id (edit-html our ~ '' tree %private '' kind into nfolder))
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    =/  pdir=path  (weld app-base (weld /page (pax-of u.name)))
+    ;<  dn=seen:nexus  bind:m  (peek-shallow:io [%& %| pdir] ~)
+    ?.  ?=([%& %ball *] dn)  (send-err eyre-id 404 'no such page')
+    =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+      ?~(fil.ball.p.dn ~ contents.u.fil.ball.p.dn)
+    ?.  (~(has by fils) %code)  (send-err eyre-id 404 'no such page')
+    =/  rd  |=(nom=@ta ^-(@t =/(v (~(get by fils) nom) ?~(v '' (fall (mole |.(;;(@t (sang-noun:tarball sang.u.v)))) '')))))
+    =/  src=@t  (rd %code)
+    =/  err=@t  (rd %err)
+    ::  a typed file round-trips: if /code matches the content envelope, edit the
+    ::  raw body (not the generated hoon) and open in that type's mode.
+    =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
+    =/  kind=@tas  ?~(un %hoon builder.u.un)
+    =/  disp=@t  ?~(un src body.u.un)
+    =/  mode=share-mode:le
+      =/  v  (~(get by fils) %share)
+      ?~  v  %private
+      (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.u.v)))) %private)
+    (send-html eyre-id (edit-html our [~ `@ta`u.name] disp tree mode err kind '' %.n))
+      [%'POST' %page-save]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    =/  raw=@t  (req-body req)
+    ::  ?type=index: no body — the code is generated from the page's own path
+    ::  (it lists its own folder). Otherwise a body is required.
+    =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'hoon')
+    =/  is-index=?  =(%index ptype)
+    ?:  &(?!(is-index) =('' raw))  (send-err eyre-id 400 'missing body')
+    ::  ?type=<builder>: the body is raw content, not hoon. Wrap it in
+    ::  `... (BUILDER 'content')` so the whole pipeline runs unchanged; edit
+    ::  reopens it via unwrap-content. Absent/unknown type -> raw hoon.
+    =/  src=@t
+      ?:  is-index  (make-folder-index (pax-of u.name))
+      ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
+    ::  ?new=1: create-only — 409 instead of silently overwriting an existing
+    ::  page (the editor's new-page mode sends it; caught by review).
+    ;<  ex=?  bind:m
+      (peek-exists:io [%& %& (weld app-base (weld /page (pax-of u.name))) %code])
+    ?:  &((~(has by args) 'new') ex)  (send-err eyre-id 409 'page exists')
+    ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
+    (send-ok eyre-id)
+      [%'POST' %folder-new]
+    ::  create an empty folder (nested ok, e.g. "a/b"). The tree shows it and
+    ::  ?into= drops new files inside. Idempotent over an existing page/folder.
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ;<  ~  bind:m  (poke-eval [%mkdir (pax-of u.name)])
+    (send-ok eyre-id)
+      [%'POST' %page-preview]
+    ::  live markdown preview: render the POSTed body with the real render-md
+    ::  (the source-of-truth renderer, so no client/server drift) and return a
+    ::  bare HTML doc. Non-persisting — nothing is written, so the editor can
+    ::  preview a note as it is typed, before any save. Owner-gated like all
+    ::  non-clearweb routes.
+    =/  body=@t  (req-body req)
+    =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'md')
+    =/  inner=tape
+      ?+  ptype  (render-md:gfm body)
+        %md    (render-md:gfm body)
+        %gmi   (render-gmi body)
+        %html  (trip body)
+        %text  :(weld "<pre>" (esc (trip body)) "</pre>")
+        %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip body)) "</code></pre>")
+        %css   :(weld "<pre><code class=\"language-css\">" (esc (trip body)) "</code></pre>")
+        %index  "<div style=\"color:#8a8a8a;text-align:center;padding:2rem\"><p><b>Folder index</b></p><p>Lists the pages in this page's folder automatically, once you name it (e.g. blog/index) and save. Live as pages come and go.</p></div>"
+      ==
+    (send-html eyre-id (render-bare inner))
+      [%'POST' %page-cmd]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ::  404 a command to a nonexistent page (the writer guards too, but this
+    ::  gives the client real feedback instead of a fire-and-forget 200).
+    ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base (weld /page (pax-of u.name))) %code])
+    ?.  ex  (send-err eyre-id 404 'no such page')
+    ::  a browser form POSTs cmd in the (form-urlencoded) body; parse it as a
+    ::  query (same k=v&k=v grammar). Query cmd is the fallback for programmatic
+    ::  callers. name/web stay in the action-url query.
+    =/  form=(map @t @t)
+      (malt args:(parse-url:http-utils (crip (weld "/?" (trip (req-body req))))))
+    =/  txt=@t  (~(gut by form) 'cmd' (~(gut by args) 'cmd' ''))
+    ::  a user command starts a fresh poke budget.
+    ;<  ~  bind:m  (poke-eval [%cmd (pax-of u.name) txt poke-budget-max])
+    ::  web=1 (a page-view form submit) -> 303 back to the page so the browser
+    ::  lands on the live view; the JSON ok stays for programmatic callers.
+    ?.  (~(has by args) 'web')  (send-ok eyre-id)
+    %+  send-see-other  eyre-id
+    :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.name) "/")
+      [%'POST' %page-del]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ;<  ~  bind:m  (poke-eval [%del (pax-of u.name)])
+    (send-ok eyre-id)
+      [%'POST' %page-share]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    =/  mode=share-mode:le
+      ?+  (~(gut by args) 'mode' 'private')  %private
+        %shared    %shared
+        %clearweb  %clearweb
+      ==
+    ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base (weld /page (pax-of u.name))) %code])
+    ?.  ex  (send-err eyre-id 404 'no such page')
+    ;<  ~  bind:m  (poke-eval [%share (pax-of u.name) mode])
+    ?.  (~(has by args) 'web')  (send-ok eyre-id)
+    %+  send-see-other  eyre-id
+    :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.name) "/")
+      ::  owner: turn comments on/off at a page or folder (on=1 / on=0). The
+      ::  nearest flag at/above a page decides, so a folder toggles a whole site.
+      [%'POST' %page-comments]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ;<  ex=?  bind:m  (peek-exists:io [%& %| (weld app-base (weld /page (pax-of u.name)))])
+    ?.  ex  (send-err eyre-id 404 'no such page or folder')
+    ;<  ~  bind:m  (poke-eval [%comments (pax-of u.name) =('1' (~(gut by args) 'on' '0'))])
+    (send-ok eyre-id)
+      ::  owner commenting on their OWN page (author = us). Other ships comment
+      ::  through the public inbox fiber. body is the raw POST body.
+      [%'POST' %comment]
+    =/  page=(unit @t)  (~(get by args) 'page')
+    ?~  page  (send-err eyre-id 400 'missing page')
+    ?.  (valid-name u.page)  (send-err eyre-id 400 'bad page')
+    ::  the box POSTs a form (body=<urlencoded>); parse it like page-cmd does.
+    =/  fargs=(map @t @t)
+      (malt args:(parse-url:http-utils (crip (weld "/?" (trip (req-body req))))))
+    =/  body=@t  (~(gut by fargs) 'body' '')
+    ?:  =('' body)  (send-err eyre-id 400 'missing body')
+    ;<  ~  bind:m  (poke-comment [(pax-of u.page) body])
+    ::  303 back to the page (target=_top on the box), so it reloads with the new
+    ::  comment. The write is a separate transaction, so a stale reload just needs
+    ::  a refresh — acceptable, like page-cmd.
+    %+  send-see-other  eyre-id
+    :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.page) "/")
+      ::  bookmark the current browser url (title defaults to the url). Newest
+      ::  first, deduped by url. Shown under Browser on the home page.
+      [%'POST' %bookmark]
+    =/  url=(unit @t)  (~(get by args) 'url')
+    ?~  url  (send-err eyre-id 400 'missing url')
+    =/  title=@t  (~(gut by args) 'title' u.url)
+    ;<  ~  bind:m  (poke-bookmark [%add u.url title])
+    (send-ok eyre-id)
+      [%'POST' %unbookmark]
+    =/  url=(unit @t)  (~(get by args) 'url')
+    ?~  url  (send-err eyre-id 400 'missing url')
+    ;<  ~  bind:m  (poke-bookmark [%del u.url])
+    (send-ok eyre-id)
+      [%'POST' %page-share-tree]
+    ::  publish/unpublish a whole subtree at once: set `mode` on every page
+    ::  under a folder. name is the folder path; mode=clearweb publishes a site,
+    ::  mode=private takes it all down.
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    =/  mode=share-mode:le
+      ?+  (~(gut by args) 'mode' 'private')  %private
+        %shared    %shared
+        %clearweb  %clearweb
+      ==
+    ;<  ~  bind:m  (poke-eval [%share-tree (pax-of u.name) mode])
+    (send-ok eyre-id)
+      [%'POST' %template-save]
+    ::  save a page-tree as a reusable template: from=<page path>, name=<term>.
+    =/  from=(unit @t)  (~(get by args) 'from')
+    =/  nm=(unit @t)    (~(get by args) 'name')
+    ?~  from  (send-err eyre-id 400 'missing from')
+    ?~  nm    (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.from)  (send-err eyre-id 400 'bad from')
+    ?.  ((sane %tas) u.nm)   (send-err eyre-id 400 'bad template name')
+    ;<  ~  bind:m  (poke-eval [%tmpl-save (pax-of u.from) `@tas`u.nm])
+    (send-ok eyre-id)
+      [%'POST' %template-del]
+    =/  nm=(unit @t)  (~(get by args) 'name')
+    ?~  nm  (send-err eyre-id 400 'missing name')
+    ?.  ((sane %tas) u.nm)  (send-err eyre-id 400 'bad name')
+    ;<  ~  bind:m  (poke-eval [%tmpl-del `@tas`u.nm])
+    (send-ok eyre-id)
+      [%'POST' %template-new]
+    ::  instantiate a template into a new page-tree: template=<term>, name=<path>.
+    =/  tmpl=(unit @t)  (~(get by args) 'template')
+    =/  nm=(unit @t)    (~(get by args) 'name')
+    ?~  tmpl  (send-err eyre-id 400 'missing template')
+    ?~  nm    (send-err eyre-id 400 'missing name')
+    ?.  ((sane %tas) u.tmpl)  (send-err eyre-id 400 'bad template')
+    ?.  (valid-name u.nm)     (send-err eyre-id 400 'bad name')
+    ;<  ex=?  bind:m
+      (peek-exists:io [%& %& (weld app-base (weld /page (pax-of u.nm))) %code])
+    ?:  ex  (send-err eyre-id 409 'a page by that name exists')
+    ;<  ~  bind:m  (instantiate-template `@tas`u.tmpl (pax-of u.nm))
+    (send-ok eyre-id)
       [%'POST' %save]
     =/  rel=(unit @t)  (~(get by args) 'path')
     ?~  rel  (send-err eyre-id 400 'missing path')
@@ -562,7 +997,6 @@
     ::  page leaves no orphaned term postings / ghost search hits. Driven here (in
     ::  the request fiber) not the writer, so the obelisk round-trip can't stall
     ::  the single writer.
-    ;<  our=@p  bind:m  bowl-our
     ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-delete-urql:cat our our p.pp))
     (send-ok eyre-id)
   ::  ── pub version history ──
@@ -809,7 +1243,6 @@
     ?~  raw  (send-err eyre-id 400 'missing url param')
     =/  pu=(unit [=ship =path])  (parse-urb-url u.raw)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
-    ;<  our=@p  bind:m  bowl-our
     ?:  =(ship.u.pu our)  (send-err eyre-id 400 'cannot subscribe to own ship')
     ;<  ~  bind:m  (poke-sub [%sub-page ship.u.pu path.u.pu])
     (send-ok eyre-id)
@@ -850,7 +1283,6 @@
       ::  range test — collapse it to .0 first (equ:rs v v is %.n only for NaN).
       ?:  !(equ:rs v v)  .0
       ?:((lth:rs v .0) .0 ?:((gth:rs v .1) .1 v))
-    ;<  our=@p  bind:m  bowl-our
     ;<  ~  bind:m
       (catalog-run catalog-db (catalog-classify-urql:cat our ship.u.pu path.u.pu u.cat-v csrc conf))
     (send-ok eyre-id)
@@ -862,7 +1294,6 @@
     ?~  raw  (send-err eyre-id 400 'missing ship param')
     =/  pub=(unit @p)  (slaw %p u.raw)
     ?~  pub  (send-err eyre-id 400 'bad ship')
-    ;<  our=@p  bind:m  bowl-our
     ?:  =(u.pub our)  (send-err eyre-id 400 'cannot crawl own ship')
     ;<  now=@da  bind:m  bowl-now
     ;<  n=@ud  bind:m  (catalog-scan-peer our u.pub now)
@@ -874,10 +1305,11 @@
   ::  conns entry in grubbery, so eyre's later leave takes the no-binding branch
   ::  and no %handle-http-cancel can reach the dispatcher to cull this fiber
   ::  mid-sweep (grubbery handle-eyre-action %send / on-leave %http-response).
+      [%'GET' %settings]
+    (send-html eyre-id (render-page "" "" settings-html))
       [%'POST' %catalog-sweep]
     ;<  ~  bind:m  (send-ok eyre-id)
     ;<  *  bind:m  catalog-scan-self
-    ;<  our=@p   bind:m  bowl-our
     ;<  now=@da  bind:m  bowl-now
     ;<  *  bind:m  (catalog-scan-peers our now)
     (pure:m ~)
@@ -1001,6 +1433,651 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %pub-action] act])
+::  +render-tang: a compile/run-error tang as the readable multi-line text
+::  dojo would print — NOT a raw [i=[%palm ...]] noun dump. The page is
+::  compiled via (slap !>(pg) (ream src)), so slap stamps its own call site
+::  (nex/lattice/app.hoon:<...>) into the trace; those lines are noise to a
+::  page author, so we drop them and keep the actual error (`-find.cmd`,
+::  `syntax error`, `nest-fail`). Falls back to the raw trace if filtering
+::  would leave nothing.
+++  render-tang
+  |=  [lab=@t =tang]
+  ^-  @t
+  =/  rendered=wall  (zing (turn tang |=(=tank (~(win re tank) 0 78))))
+  =/  kept=wall  (skip rendered |=(l=tape ?=(^ (find "app.hoon" l))))
+  =/  out=wall  [(trip lab) ?~(kept rendered kept)]
+  (crip (of-wall:format out))
+::  +poke-eval: send an eval-action to the writer (serialized like all writes).
+::
+++  poke-eval
+  |=  act=eval-action:le
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %eval-action] act])
+::  +poke-comment: hand a comment to the owner writer (author = us). The public
+::  inbox fiber pokes apply-comment directly with the sender ship instead.
+::
+++  poke-comment
+  |=  act=comment-action:lc
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %comment-action] act])
+::  +poke-bookmark: add/remove a browser bookmark via the owner writer.
+::
+++  poke-bookmark
+  |=  act=bookmark-action:lb
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %bookmark-action] act])
+::  +apply-eval: page create/command/delete, in the writer fiber.
+::
+++  apply-eval
+  |=  [root=path act=eval-action:le]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ::  name.act only resolves after ?- narrows the fork (%del is a 2-cell,
+  ::  the others 3-cells — the face sits at different axes).
+  ?-  -.act
+      %make
+    (make-page root pax.act src.act)
+      %tmpl-save
+    ::  save a page-tree as a template: copy every page's CODE under
+    ::  /template/<name>, rewriting its own root path to the template root, and
+    ::  leave it inert (code grub only — templates are never evaluated).
+    ::  (Instantiation is +instantiate-template — one make PER page, not a batch.)
+    (copy-tree root [%page from.act] [%template /[name.act]] %.n)
+      %tmpl-del
+    ::  delete a template — cull its subtree. A shipped template comes back on
+    ::  the next writer start (ensure-shipped-templates), which is intended.
+    =/  tdir=path  (weld root (weld /template /[name.act]))
+    ;<  ex=?  bind:m  (peek-exists:io [%& %| tdir])
+    ?.  ex  (pure:m ~)
+    ;<  *  bind:m  (cull-soft:io [%& %| tdir])
+    (pure:m ~)
+      %cmd
+    =/  pdir=path  (weld root (weld /page pax.act))
+    ::  authoritative existence guard: no code grub -> no page (and no
+    ::  evaluator fiber), so writing a cmd grub would orphan it inside a
+    ::  possibly-culled dir and swallow the command (caught by review). The
+    ::  route also 404s, but this closes the create-then-poke race.
+    ;<  cx=?  bind:m  (peek-exists:io [%& %& pdir %code])
+    ?.  cx  (pure:m ~)
+    ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %cmd] ~)
+    =/  cur=eval-cmd:le
+      ?.  ?=([%& %file *] sn)  [0 '' 0]
+      (fall (mole |.(;;(eval-cmd:le (sang-noun:tarball sang.p.sn)))) [0 '' 0])
+    (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[+(seq.cur) txt.act bud.act])
+      %del
+    ::  cull-soft on an absent dir veto-crashes the writer (as apply-sub's
+    ::  %unsub-page guards against) — no-op a delete of a gone page. Also
+    ::  drop the data road from the public weir so a deleted page leaves no
+    ::  dangling grant.
+    =/  pdir=path  (weld root (weld /page pax.act))
+    ;<  ex=?  bind:m  (peek-exists:io [%& %| pdir])
+    ?.  ex  (pure:m ~)
+    ;<  ~  bind:m  (share-weir [%& %& pdir %data] %.n)
+    ;<  *  bind:m  (cull-soft:io [%& %| pdir])
+    (pure:m ~)
+      %share
+    (apply-share (weld root (weld /page pax.act)) mode.act)
+      %share-tree
+    ::  publish/unpublish a whole subtree: apply the mode to every PAGE under
+    ::  pax (folders have no /data grub, so skip them). Idempotent, so
+    ::  re-publishing is safe; a %private sweep revokes each page's weir too.
+    =/  base=path  (weld root (weld /page pax.act))
+    ;<  dn=seen:nexus  bind:m  (peek:io [%& %| base] ~)
+    ?.  ?=([%& %ball *] dn)  (pure:m ~)
+    =/  rels=(list path)
+      %+  murn  (collect-tree ball.p.dn ~)
+      |=([pax=path page=?] ?:(page `pax ~))
+    |-  ^-  form:m
+    ?~  rels  (pure:m ~)
+    ;<  ~  bind:m  (apply-share (weld base i.rels) mode.act)
+    $(rels t.rels)
+      %mkdir
+    ::  create an empty folder (and any missing parents). ensure-dirs is
+    ::  idempotent, so mkdir over an existing page/folder is a harmless no-op.
+    (ensure-dirs (weld root /page) pax.act)
+      %comments
+    ::  set the comments on/off flag at pax (a page or folder). The nearest flag
+    ::  at/above a page decides, so this enables/disables a whole subtree or one
+    ::  page. Owner-only (an eval-action), unlike the public comment-add path.
+    =/  fdir=path  (weld root (weld /page pax.act))
+    ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
+    ?.  ex  (pure:m ~)
+    (put-file [%& %& fdir %comment-on] [/lattice %comment-flag] on.act)
+  ==
+::  +apply-comment: store one comment under /comments/<page>/<id>. `author` is us
+::  (owner writer) or the poking ship (public inbox) — NEVER from the payload,
+::  which can't be trusted. Rejected unless the page path is sane and has comments
+::  enabled; the body is required and length-capped. Bodies are stored raw and
+::  HTML-escaped at render time (they are other ships' text).
+::
+++  apply-comment
+  |=  [root=path author=@p now=@da act=comment-action:lc]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  =('' body.act)  (pure:m ~)
+  ::  reject an empty page path (levy is vacuously true on ~) so a comment can't
+  ::  land loose in the /comments root. Value-eq, not ?=, so page.act keeps its
+  ::  general `path` type (a ?= refinement makes the levy below mull-grow).
+  ?:  =(~ page.act)  (pure:m ~)
+  ?.  (levy page.act |=(s=@ta &(!=(%$ s) ((sane %ta) s))))  (pure:m ~)
+  ;<  on=?  bind:m  (comments-on page.act)
+  ?.  on  (pure:m ~)
+  =/  body=@t
+    ?:((gth (met 3 body.act) max-body:lc) (end [3 max-body:lc] body.act) body.act)
+  =/  =comment:lc  [author now body]
+  =/  id=@ta  (scot %uv (sham comment))
+  =/  cbase=path  (weld root /comments)
+  ;<  ~  bind:m  (ensure-dirs cbase page.act)
+  (put-file [%& %& (weld cbase page.act) id] [/lattice %comment] comment)
+::  +comments-on: is `page` comments-enabled? The nearest `comment-on` flag grub
+::  AT or ABOVE it in /page wins (like find-theme); absent everywhere = off. One
+::  flag on a site folder enables all its pages; a page can override its own.
+::
+++  comments-on
+  |=  page=path
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  |-  ^-  form:m
+  =/  fdir=path  (weld app-base (weld /page page))
+  ;<  =seen:nexus  bind:m  (peek:io [%& %& fdir %comment-on] ~)
+  ?:  ?=([%& %file *] seen)
+    (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.p.seen)))) %.n))
+  ?~  page  (pure:m %.n)
+  $(page (snip `path`page))
+::  +apply-bookmark: add (prepend, dedup by url, cap) or delete a bookmark. Runs
+::  in the writer since it read-modify-writes the single /bookmarks grub.
+::
+++  apply-bookmark
+  |=  [root=path act=bookmark-action:lb]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  cur=bookmarks:lb  bind:m  read-bookmarks
+  =/  new=bookmarks:lb
+    ?-  -.act
+        %add
+      ::  cast the prepend to the general list type — scag on a lest (non-empty
+      ::  list) mull-grows.
+      =/  kept=bookmarks:lb  (skip cur |=(b=bookmark:lb =(url.b url.bookmark.act)))
+      (scag cap:lb `bookmarks:lb`[bookmark.act kept])
+        %del  (skip cur |=(b=bookmark:lb =(url.b url.act)))
+    ==
+  (put-file [%& %& root %bookmarks] [/lattice %bookmarks] new)
+::  +read-bookmarks: the stored bookmark list (newest first; ~ if none yet).
+::
+++  read-bookmarks
+  =/  m  (fiber:fiber:nexus ,bookmarks:lb)
+  ^-  form:m
+  ;<  =seen:nexus  bind:m  (peek:io [%& %& app-base %bookmarks] ~)
+  ?.  ?=([%& %file *] seen)  (pure:m ~)
+  (pure:m (fall (mole |.(!<(bookmarks:lb (need-vase:tarball sang.p.seen)))) ~))
+::  +read-recent: the up-to-`n` most-recently-edited pages, [path preview]. mtime
+::  is each code grub's latest revision date (cass.da), read per page — O(pages)
+::  peeks on a home load, fine for a personal ship; add an index if it ever bites.
+::
+++  read-recent
+  |=  n=@ud
+  =/  m  (fiber:fiber:nexus ,(list [pax=path prev=@t]))
+  ^-  form:m
+  ;<  pages=(list path)  bind:m  read-page-names
+  =|  acc=(list [pax=path when=@da code=@t])
+  |-  ^-  form:m
+  ?^  pages
+    =/  cdir=path  (weld app-base (weld /page i.pages))
+    ;<  =seen:nexus  bind:m  (peek:io [%& %& cdir %code] ~)
+    ?.  ?=([%& %file *] seen)
+      $(pages t.pages)
+    =/  code=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.p.seen)))) '')
+    $(pages t.pages, acc [[i.pages da.cass.p.seen code] acc])
+  =/  sorted=(list [pax=path when=@da code=@t])
+    %+  sort  acc
+    |=  [a=[pax=path when=@da code=@t] b=[pax=path when=@da code=@t]]
+    (gth when.a when.b)
+  %-  pure:m
+  %+  turn  (scag n sorted)
+  |=([pax=path when=@da code=@t] [pax (preview-of code)])
+::  +preview-of: a one-line, ~140-char plaintext preview of a page's source —
+::  leading markdown '#'/spaces dropped, whitespace flattened to single spaces.
+::
+++  preview-of
+  |=  code=@t
+  ^-  @t
+  ::  a content page (md/css/js/gmi/text) stores its raw body wrapped in a builder
+  ::  gate; unwrap it so the preview is the actual content, not the hoon wrapper
+  ::  (a raw hoon builder has nothing to unwrap — preview its source as-is).
+  =/  raw=@t
+    =/  un=(unit [builder=@tas body=@t])  (unwrap-content code)
+    ?~(un code body.u.un)
+  =/  in=tape  (trip raw)
+  =.  in  |-(?~(in in ?:(?=(?(%'#' %' ') i.in) $(in t.in) in)))
+  =/  flat=tape  (turn (scag 200 in) |=(c=@tD ?:((lte c ' ') ' ' c)))
+  (crip (scag 140 flat))
+::  +apply-share: set one page's sharing preset — the shared body of the %share
+::  and %share-tree eval-actions, so per-page and per-tree can't drift. weir road
+::  first (covers the grub before it exists), then gain the current data if any
+::  (the evaluator re-gains on each later write). Idempotent.
+::
+++  apply-share
+  |=  [pdir=path mode=share-mode:le]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  cx=?  bind:m  (peek-exists:io [%& %& pdir %code])
+  ?.  cx  (pure:m ~)
+  =/  data-road=road:tarball  [%& %& pdir %data]
+  =/  pub=?  !=(%private mode)
+  ;<  ~  bind:m  (share-weir data-road pub)
+  ;<  dx=?  bind:m  (peek-exists:io data-road)
+  ;<  ~  bind:m  ?:(dx (gain:io data-road pub) (pure:m ~))
+  (put-file [%& %& pdir %share] [/lattice %eval-data] mode)
+::  +make-page: create a page at `pax` under /page with the given code — the
+::  shared body of the %make action and template instantiation. cmd + deps
+::  first (the code grub's fiber reads both at spawn), then the code.
+::
+++  make-page
+  |=  [root=path pax=path src=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  pdir=path  (weld root (weld /page pax))
+  ;<  ~  bind:m  (ensure-dirs (weld root /page) pax)
+  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %cmd])
+  ;<  ~  bind:m
+    ?:  ex  (pure:m ~)
+    (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[0 '' 0])
+  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %deps])
+  ;<  ~  bind:m
+    ?:  ex  (pure:m ~)
+    (put-file [%& %& pdir %deps] [/lattice %eval-deps] `(list path)`~)
+  (put-file [%& %& pdir %code] [/lattice %page] src)
+::  +rewrite-root: replace the path-prefix `from` with `to` in code, only where
+::  `from` ends at a path boundary (/ ) space " ] , or end) — so a short root
+::  can't clobber a longer path that merely starts with it.
+::
+++  rewrite-root
+  |=  [hay=tape from=tape to=tape]
+  ^-  tape
+  ?~  from  hay
+  ::  `bef` carries the char immediately preceding `hay` in the original code, so
+  ::  the recursion doesn't mistake a mid-path match at the head of `aft` for a
+  ::  path start (else '/site/site' would rewrite both segments).
+  =/  bef=(unit @t)  ~
+  |-  ^-  tape
+  =/  i  (find from hay)
+  ?~  i  hay
+  =/  pre=tape  (scag u.i hay)
+  =/  aft=tape  (slag (add u.i (lent from)) hay)
+  ::  a path literal ends at end-of-code, any whitespace/control (space, TAB,
+  ::  NEWLINE, CR — all <= ' '), or a structural close/open ( ) ( [ ] " , ).
+  =/  bnd=?
+    ?~  aft  %.y
+    ?|((lte i.aft ' ') ?=(?(%'/' %')' %'(' %'[' %']' %'"' %',') i.aft))
+  ::  `from` starts with '/', so the match always lands on a '/'; but that '/'
+  ::  must be the START of a path literal, not a separator mid-path. So require a
+  ::  boundary BEFORE it too — start-of-code, whitespace/control, or a structural
+  ::  open ( [ " , — else '/data/site' (or the 2nd seg of '/site/site') would be
+  ::  clobbered. Path-segment chars and '/' before => reject (mid-path match).
+  =/  pc=(unit @t)  ?~(pre bef `(rear pre))
+  =/  pbnd=?
+    ?~  pc  %.y
+    ?|((lte u.pc ' ') ?=(?(%'(' %'[' %'"' %',') u.pc))
+  =/  out=tape  (weld pre ?:(&(bnd pbnd) to from))
+  %+  weld  out
+  $(hay aft, bef ?~(out bef `(rear out)))
+::  +copy-tree: copy every PAGE under src (a [base rel] like [%page /mysite] or
+::  [%template /site]) to dst, rewriting the source root path to the dest root in
+::  each page's code. live=%.y -> dest is under /page and each page is MADE
+::  (evaluated); %.n -> an inert code grub (a template).
+::
+++  copy-tree
+  |=  [root=path src=[base=@tas rel=path] dst=[base=@tas rel=path] live=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  src-root=path  (weld root (weld /[base.src] rel.src))
+  =/  from-str=tape  (spud rel.src)
+  =/  to-str=tape    (spud rel.dst)
+  ;<  dn=seen:nexus  bind:m  (peek:io [%& %| src-root] ~)
+  ?.  ?=([%& %ball *] dn)  (pure:m ~)
+  =/  rels=(list path)
+    %+  murn  (collect-tree ball.p.dn ~)
+    |=([pax=path page=?] ?:(page `pax ~))
+  |-  ^-  form:m
+  ?~  rels  (pure:m ~)
+  ;<  cn=seen:nexus  bind:m  (peek:io [%& %& (weld src-root i.rels) %code] ~)
+  =/  code=@t
+    ?.  ?=([%& %file *] cn)  ''
+    (fall (mole |.(;;(@t (sang-noun:tarball sang.p.cn)))) '')
+  =/  newcode=@t  (crip (rewrite-root (trip code) from-str to-str))
+  ;<  ~  bind:m
+    ?:  live
+      (make-page root (weld rel.dst i.rels) newcode)
+    =/  ddir=path  (weld root (weld /[base.dst] (weld rel.dst i.rels)))
+    ;<  ~  bind:m  (ensure-dirs (weld root /[base.dst]) (weld rel.dst i.rels))
+    (put-file [%& %& ddir %code] [/lattice %page] newcode)
+  $(rels t.rels)
+::  +instantiate-template: create a live page-tree from a template. Runs in a
+::  REQUEST fiber and pokes one %make PER page (a separate writer transaction
+::  each), in sorted order — so every page commits before the next and its
+::  evaluator spawns against a settled tree. This is why it is NOT a batch
+::  writer action: pages made in one transaction arm dep-keeps that never
+::  establish (the tree isn't committed yet), leaving the copies non-reactive.
+::
+++  instantiate-template
+  |=  [name=@tas to=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  troot=path    (weld app-base (weld /template /[name]))
+  =/  from-str=tape  (spud /[name])
+  =/  to-str=tape    (spud to)
+  ;<  dn=seen:nexus  bind:m  (peek:io [%& %| troot] ~)
+  ?.  ?=([%& %ball *] dn)  (pure:m ~)
+  =/  rels=(list path)
+    %+  sort
+      %+  murn  (collect-tree ball.p.dn ~)
+      |=([pax=path page=?] ?:(page `pax ~))
+    aor
+  |-  ^-  form:m
+  ?~  rels  (pure:m ~)
+  ;<  cn=seen:nexus  bind:m  (peek:io [%& %& (weld troot i.rels) %code] ~)
+  =/  code=@t
+    ?.  ?=([%& %file *] cn)  ''
+    (fall (mole |.(;;(@t (sang-noun:tarball sang.p.cn)))) '')
+  =/  newcode=@t  (crip (rewrite-root (trip code) from-str to-str))
+  ;<  ~  bind:m  (poke-eval [%make (weld to i.rels) newcode])
+  $(rels t.rels)
+::  +page-code: the stored hoon code for a page of a given kind — an index-type
+::  page's generated auto-index, a content builder's wrapped body, else raw hoon.
+::  Shared by page-save and template laydown.
+::
+++  page-code
+  |=  [pax=path kind=@tas body=@t]
+  ^-  @t
+  ?:  =(%index kind)  (make-folder-index pax)
+  ?:((~(has in content-builders) kind) (wrap-content kind body) body)
+::  +ensure-shipped-templates: on writer start, lay down the built-in templates
+::  under /template/ if absent (idempotent, never overwrites — a user can edit
+::  or replace them). Writes inert code grubs; the tree is covered by an on-load
+::  row so it survives reload.
+::
+++  ensure-shipped-templates
+  |=  root=path
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  pages=(list [rel=path kind=@tas body=@t])  site:tpl
+  |-  ^-  form:m
+  ?~  pages  (pure:m ~)
+  =/  prel=path  (weld /site rel.i.pages)
+  =/  pdir=path  (weld root (weld /template prel))
+  ::  per-page: skip a page that already exists (never overwrite a user edit;
+  ::  and a laydown interrupted after some pages completes on the next start),
+  ::  else write it.
+  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
+  ?:  ex  $(pages t.pages)
+  =/  code=@t  (page-code prel kind.i.pages body.i.pages)
+  ;<  ~  bind:m  (ensure-dirs (weld root /template) prel)
+  ;<  ~  bind:m  (put-file [%& %& pdir %code] [/lattice %page] code)
+  $(pages t.pages)
+::  +share-weir: add/remove a grub's road in the public usergroup's peek
+::  weir — the same grant ensure-pub-weir uses for /pub. Absent group -> no-op.
+::  (same read-modify-write race as ensure-pub-weir, finding #12; self-heals.)
+::
+++  share-weir
+  |=  [road=road:tarball add=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  gdir=road:tarball  [%& %| /sys/ames/usergroups/public]
+  ;<  ok=?  bind:m  (peek-exists:io gdir)
+  ?.  ok  (pure:m ~)
+  =/  wroad=road:tarball  [%& %& [/sys/ames/usergroups/public %'how.weir']]
+  ;<  cur=weir:nexus  bind:m  (read-weir wroad)
+  =/  new=weir:nexus
+    ?:  add  cur(peek (~(put in peek.cur) road))
+    cur(peek (~(del in peek.cur) road))
+  ?:  =(new cur)  (pure:m ~)
+  (put-file wroad [/ %weir] new)
+::  +heal-share-weirs: on writer start, re-add every shared/clearweb page's
+::  data road to the public weir. Makes +share-weir self-healing (a page
+::  shared before the public usergroup existed gets its grant on the next
+::  writer start once a peer has connected), matching +ensure-pub-weir.
+::
+++  heal-share-weirs
+  |=  root=path
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ::  DEEP peek + recursive walk so NESTED clearweb pages re-heal too (a shallow
+  ::  top-level walk would leave a nested public page ungranted after restart).
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %| (weld root /page)] ~)
+  ?.  ?=([%& %ball *] sn)  (pure:m ~)
+  =/  rels=(list path)
+    %+  murn  (collect-tree ball.p.sn ~)
+    |=([pax=path page=?] ?:(page `pax ~))
+  |-  ^-  form:m
+  ?~  rels  (pure:m ~)
+  =/  pp=path  (weld (weld root /page) i.rels)
+  ;<  mode=share-mode:le  bind:m  (read-share pp)
+  ;<  ~  bind:m
+    ?:  =(%private mode)  (pure:m ~)
+    (share-weir [%& %& pp %data] %.y)
+  $(rels t.rels)
+::  +read-share: a page's sharing preset grub, %private if absent/malformed.
+::
+++  read-share
+  |=  pdir=path
+  =/  m  (fiber:fiber:nexus ,share-mode:le)
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %share] ~)
+  ?.  ?=([%& %file *] sn)  (pure:m %private)
+  (pure:m (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.p.sn)))) %private))
+::  +read-show-mode: a page's render mode grub, %text if absent/malformed.
+::
+++  read-show-mode
+  |=  pdir=path
+  =/  m  (fiber:fiber:nexus ,view-mode:pg)
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %show] ~)
+  ?.  ?=([%& %file *] sn)  (pure:m %text)
+  (pure:m (fall (mole |.(;;(view-mode:pg (sang-noun:tarball sang.p.sn)))) %text))
+::  +read-wake: the timer request eval-run recorded (~ = no timer). eval-run
+::  writes it rather than returning it so its fiber payload stays ,~ (the loop
+::  reads it here). /wake is not on the /ev wire, so writing it is no self-wave.
+::
+++  read-wake
+  |=  pdir=path
+  =/  m  (fiber:fiber:nexus ,(unit @dr))
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %wake] ~)
+  ?.  ?=([%& %file *] sn)  (pure:m ~)
+  (pure:m (fall (mole |.(;;((unit @dr) (sang-noun:tarball sang.p.sn)))) ~))
+::  +read-eval-cmd / +read-eval-deps: tolerant grub reads (absent or
+::  malformed -> the zero value; a page never crashes its evaluator).
+::
+::  +recompute-cap: max RAPID consecutive reruns before the evaluator parks a
+::  page (cycle / runaway guard). Only reruns closer together than +rerun-gap
+::  count, so a legit page reacting to spaced-out updates never hits it; 32 is
+::  far above any real reactive chain and keeps the runaway burst short.
+::
+++  recompute-cap  ^-(@ud 32)
+::  +rerun-gap: reruns landing closer than this are "rapid" (part of a runaway
+::  burst) and accumulate; a larger gap is a legit update and resets the count.
+::
+++  rerun-gap  ^-(@dr ~s1)
+::  +poke-cap: max page-to-page pokes one run may emit (flood guard).
+::
+++  poke-cap  ^-(@ud 16)
+::  +poke-budget-max: max depth of a page-to-page poke chain. A user/dep/timer
+::  trigger starts a run with this budget; each poke it emits carries budget-1,
+::  so any chain — a cycle included — terminates after this many hops,
+::  independent of timing (poke round-trips are too slow for the rate cap).
+::
+++  poke-budget-max  ^-(@ud 8)
+++  read-eval-cmd
+  |=  pdir=path
+  =/  m  (fiber:fiber:nexus ,eval-cmd:le)
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %cmd] ~)
+  ?.  ?=([%& %file *] sn)  (pure:m [0 '' 0])
+  (pure:m (fall (mole |.(;;(eval-cmd:le (sang-noun:tarball sang.p.sn)))) [0 '' 0]))
+::  +read-eval-seen / +write-eval-seen: the last-PROCESSED command seq, stored
+::  as a bare @ud (reusing the eval-data marc — it's a noun grub). /seen is
+::  never kept, so writing it wakes no fiber. Absent -> 0.
+::
+++  read-eval-seen
+  |=  pdir=path
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %seen] ~)
+  ?.  ?=([%& %file *] sn)  (pure:m 0)
+  (pure:m (fall (mole |.(;;(@ud (sang-noun:tarball sang.p.sn)))) 0))
+++  write-eval-seen
+  |=  [pdir=path seq=@ud]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (put-file [%& %& pdir %seen] [/lattice %eval-data] seq)
+++  read-eval-deps
+  |=  pdir=path
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %& pdir %deps] ~)
+  ?.  ?=([%& %file *] sn)  (pure:m ~)
+  (pure:m (fall (mole |.(;;((list path) (sang-noun:tarball sang.p.sn)))) ~))
+::  +view-src: if a dep path is a VIEW dependency on one of our OWN pages
+::  (/apps/lattice.lattice_app/page/<name>/view), the source page's dir; else ~.
+::  A view-dep resolves to the source page's RENDERED html rather than its raw
+::  data (composition, docs/pages.md). Own-tree only by construction — a foreign
+::  path never matches, so a peer's markup is never rendered into our origin.
+::
+++  view-src
+  |=  pax=path
+  ^-  (unit path)
+  ?.  ?=([@ @ %page @ %view ~] pax)  ~
+  ?.  =(`path`[i.pax i.t.pax ~] app-base)  ~
+  `(weld app-base /page/[i.t.t.t.pax])
+::  +arm-eval-deps: keep any dep target not yet armed (one wire, /ev). Deps
+::  name FILE paths; the last segment is the grub name. A view-dep instead
+::  keeps on the source page's data+show grubs (re-render me when it changes).
+::
+++  arm-eval-deps
+  |=  [armed=(set path) deps=(list path)]
+  =/  m  (fiber:fiber:nexus ,(set path))
+  ^-  form:m
+  ?~  deps  (pure:m armed)
+  ?:  (~(has in armed) i.deps)  $(deps t.deps)
+  ?:  =(~ i.deps)  $(deps t.deps)
+  =/  src=(unit path)  (view-src i.deps)
+  ?^  src
+    ;<  *  bind:m  (keep:io /ev [%& %& u.src %data] ~)
+    ;<  *  bind:m  (keep:io /ev [%& %& u.src %show] ~)
+    $(deps t.deps, armed (~(put in armed) i.deps))
+  =/  n=@ud  (dec (lent i.deps))
+  =/  file-road=road:tarball  [%& %& (scag n i.deps) (snag n i.deps)]
+  ;<  fsn=seen:nexus  bind:m  (peek:io file-road ~)
+  ?:  ?=([%& %file *] fsn)
+    ;<  *  bind:m  (keep:io /ev file-road ~)
+    $(deps t.deps, armed (~(put in armed) i.deps))
+  ::  not a file: a DIRECTORY dep keeps on the dir road so a child add/remove
+  ::  re-runs us. If it is neither (a not-yet-created grub), keep the file road
+  ::  so a later write of that grub still fires. Mirrors read-dep-vals.
+  ;<  dsn=seen:nexus  bind:m  (peek:io [%& %| i.deps] ~)
+  =/  keep-road=road:tarball  ?:(?=([%& %ball *] dsn) [%& %| i.deps] file-road)
+  ;<  *  bind:m  (keep:io /ev keep-road ~)
+  $(deps t.deps, armed (~(put in armed) i.deps))
+::  +read-dep-vals: resolve each dep to its current value. A data dep gives the
+::  grub's raw noun (~ if absent); a VIEW dep gives the source page's RENDERED
+::  html fragment as a @t (composition — the fragment is welded into this page's
+::  own html). render-shown runs on our OWN page data only (view-src is own-tree).
+::
+++  read-dep-vals
+  |=  deps=(list path)
+  =/  m  (fiber:fiber:nexus ,(list [path *]))
+  ^-  form:m
+  ?~  deps  (pure:m ~)
+  ?:  =(~ i.deps)  $(deps t.deps)
+  =/  src=(unit path)  (view-src i.deps)
+  ?^  src
+    ;<  dsn=seen:nexus       bind:m  (peek:io [%& %& u.src %data] ~)
+    ;<  vmode=view-mode:pg   bind:m  (read-show-mode u.src)
+    ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
+    =/  frag=@t
+      ?.  ?=([%& %file *] dsn)  ''
+      (crip (render-shown sang.p.dsn vmode))
+    (pure:m [[i.deps frag] rest])
+  =/  n=@ud  (dec (lent i.deps))
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %& (scag n i.deps) (snag n i.deps)] ~)
+  ?:  ?=([%& %file *] sn)
+    ::  a file grub -> its raw noun.
+    ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
+    (pure:m [[i.deps (sang-noun:tarball sang.p.sn)] rest])
+  ::  not a file -> a DIRECTORY dep resolves to its tree listing (a
+  ::  (list [pax=path page=?]) of pages+folders under it, paths relative to the
+  ::  dir), so a page can enumerate a structured subtree. ~ if it is neither.
+  ;<  dn=seen:nexus  bind:m  (peek:io [%& %| i.deps] ~)
+  ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
+  =/  val=*  ?.(?=([%& %ball *] dn) ~ (collect-tree ball.p.dn ~))
+  (pure:m [[i.deps val] rest])
+::  +eval-run: one run of a compiled page — build the env vase (typed via
+::  slop, so the gate's declared sample nest-checks), slam inside mule,
+::  land the product. dat=~ means no change; a changed dep list is
+::  persisted (the deps grub is on the /ev wire, so the loop re-arms).
+::
+++  eval-run
+  |=  [pdir=path bild=vase cmd=(unit @t) deps=(list path) bud=@ud]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  now=@da  bind:m  bowl-now
+  ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& pdir %data] ~)
+  =/  dat=(unit *)
+    ?.(?=([%& %file *] dsn) ~ `(sang-noun:tarball sang.p.dsn))
+  ;<  dvs=(list [path *])  bind:m  (read-dep-vals deps)
+  =/  env=vase
+    ;:  slop
+      !>(`(unit @t)`cmd)
+      !>(`(unit *)`dat)
+      !>(`@da`now)
+      !>(`(list [path *])`dvs)
+    ==
+  =/  res=(each result:pg tang)
+    %-  mule  |.
+    ;;(result:pg q:(slam bild env))
+  ?:  ?=(%| -.res)
+    ;<  ~  bind:m  (put-file [%& %& pdir %err] [/lattice %page] (render-tang 'run failed:' p.res))
+    ::  a broken run stops any timer.
+    (put-file [%& %& pdir %wake] [/lattice %eval-data] `(unit @dr)`~)
+  ;<  ~  bind:m  (put-file [%& %& pdir %err] [/lattice %page] '')
+  ;<  ~  bind:m
+    ?~  dat.p.res  (pure:m ~)
+    ;<  ~  bind:m  (put-file [%& %& pdir %data] [/lattice %eval-data] u.dat.p.res)
+    ::  record the render mode next to the data (read by the page view).
+    ;<  ~  bind:m  (put-file [%& %& pdir %show] [/lattice %eval-data] show.p.res)
+    ::  a shared page's data must stay gained across recomputes — gain is
+    ::  per-revision (like apply-pub re-gaining on every save).
+    ;<  mode=share-mode:le  bind:m  (read-share pdir)
+    ?:  =(%private mode)  (pure:m ~)
+    (gain:io [%& %& pdir %data] %.y)
+  ::  send this run's page-to-page pokes with the run's remaining budget
+  ::  (capped per run so one page can't flood the writer).
+  ;<  ~  bind:m  (emit-pokes bud (scag poke-cap pokes.p.res))
+  ;<  ~  bind:m
+    ?:  =(dep.p.res deps)  (pure:m ~)
+    (put-file [%& %& pdir %deps] [/lattice %eval-deps] dep.p.res)
+  ::  record the timer request for the loop to arm, clamped so it can't rerun
+  ::  faster than the rate window (~ = no timer). The loop reads /wake after
+  ::  this run; /wake is not on the /ev wire, so writing it is not a self-wave.
+  =/  wake=(unit @dr)  ?~(wake.p.res ~ `(max u.wake.p.res rerun-gap))
+  (put-file [%& %& pdir %wake] [/lattice %eval-data] wake)
+::  +emit-pokes: deliver each [page-name command] to the writer (which bumps
+::  that page's cmd grub), carrying a DECREMENTED budget so a poke chain (or
+::  cycle) terminates at a fixed depth. bud=0 drops them — the chain ends. A
+::  poke to a nonexistent page is a safe no-op (apply-eval %cmd guards on the
+::  code grub existing).
+::
+++  emit-pokes
+  |=  [bud=@ud pokes=(list [name=@ta txt=@t])]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  =(0 bud)  (pure:m ~)
+  ?~  pokes  (pure:m ~)
+  ;<  ~  bind:m  (poke-eval [%cmd ~[name.i.pokes] txt.i.pokes (dec bud)])
+  $(pokes t.pokes)
 ++  poke-sub
   |=  act=sub-action:lp
   =/  m  (fiber:fiber:nexus ,~)
@@ -1727,6 +2804,180 @@
   %+  send-simple:srv  eyre-id
   :-  [code ['content-type' 'application/json']~]
   `(as-octs:mimes:html (en:json:html (pairs:enjs:format ~[['error' s+msg]])))
+::
+::  ── lattice-fs shared handler (HTTP routes + lick port both call these) ──
+::
+::  The filesystem client speaks ONE request shape, `[verb path query body]`,
+::  and gets back `[status body]` (HTTP-style code + a cord). The HTTP routes
+::  and the /fs.sig lick port are thin adapters over the same arms below, so a
+::  single Rust client works over either transport with identical semantics.
+::
+::  +fs-tree-json: the whole /page tree as JSON (GET /page-tree + lick %page-tree).
+++  fs-tree-json
+  =/  m  (fiber:fiber:nexus ,json)
+  ^-  form:m
+  ;<  tree=(list [pax=path page=?])  bind:m  read-tree
+  =|  acc=(list json)
+  |-  ^-  form:m
+  ?~  tree  (pure:m (pairs:enjs:format ~[['nodes' a+(flop acc)]]))
+  =*  nod  i.tree
+  ?.  page.nod
+    =/  j=json  (pairs:enjs:format ~[['path' s+(crip (pax-str pax.nod))] ['page' b+|]])
+    $(tree t.tree, acc [j acc])
+  =/  pdir=path  (weld app-base (weld /page pax.nod))
+  ;<  cn=seen:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
+  ?.  ?=([%& %file *] cn)  $(tree t.tree)     ::  raced delete — drop
+  =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.p.cn)))) '')
+  =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
+  =/  gen=?  =((make-folder-index pax.nod) src)
+  =/  kind=@tas  ?:(gen %index ?~(un %hoon builder.u.un))
+  =/  body=@t  ?~(un src body.u.un)
+  =/  j=json
+    %-  pairs:enjs:format
+    :~  ['path' s+(crip (pax-str pax.nod))]  ['page' b+&]  ['kind' s+kind]
+        ['size' (numb:enjs:format (met 3 body))]
+        ['rev' (numb:enjs:format ud.cass.p.cn)]
+        ['mtime' s+(scot %da da.cass.p.cn)]
+    ==
+  $(tree t.tree, acc [j acc])
+::  +fs-source-result: a page's source as (each json [code msg]) — the json on
+::  %&, an HTTP-style [code msg] error on %|.
+++  fs-source-result
+  |=  name=@t
+  =/  m  (fiber:fiber:nexus ,(each json [code=@ud msg=@t]))
+  ^-  form:m
+  ?.  (valid-name name)  (pure:m [%| 400 'bad name'])
+  =/  pax=path  (pax-of name)
+  =/  pdir=path  (weld app-base (weld /page pax))
+  ;<  cn=seen:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
+  ?.  ?=([%& %file *] cn)  (pure:m [%| 404 'no such page'])
+  =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.p.cn)))) '')
+  =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
+  =/  gen=?  =((make-folder-index pax) src)
+  =/  kind=@tas  ?:(gen %index ?~(un %hoon builder.u.un))
+  =/  body=@t  ?~(un src body.u.un)
+  %-  pure:m
+  :-  %&
+  %-  pairs:enjs:format
+  :~  ['kind' s+kind]  ['body' s+body]
+      ['size' (numb:enjs:format (met 3 body))]
+      ['rev' (numb:enjs:format ud.cass.p.cn)]
+      ['mtime' s+(scot %da da.cass.p.cn)]
+  ==
+::  +fs-err-text: a page's latest evaluator error ('' = clean or no such page).
+++  fs-err-text
+  |=  name=@t
+  =/  m  (fiber:fiber:nexus ,@t)
+  ^-  form:m
+  ?.  (valid-name name)  (pure:m '')
+  =/  pdir=path  (weld app-base (weld /page (pax-of name)))
+  ;<  en=seen:nexus  bind:m  (peek:io [%& %& pdir %err] ~)
+  ?.  ?=([%& %file *] en)  (pure:m '')
+  (pure:m (fall (mole |.(;;(@t (sang-noun:tarball sang.p.en)))) ''))
+::  +fs-poke-eval: poke the writer (main.sig) with an eval-action. Called from the
+::  /fs.sig fiber, which sits at the app root as a sibling of main.sig — so the
+::  road is a fixed up-0 (unlike +poke-eval's up-2 from /ui/requests).
+++  fs-poke-eval
+  |=  act=eval-action:le
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (poke:io [%| 0 %& ~ %'main.sig'] [[/lattice %eval-action] act])
+::  +fs-save: create/overwrite a page (POST /page-save + lick %page-save).
+::  Mirrors the HTTP route: index generates its own body; a content type wraps
+::  the body; ?new rejects an existing page with 409.
+++  fs-save
+  |=  [name=@t ptype=@tas new=? raw=@t]
+  =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
+  ^-  form:m
+  ?.  (valid-name name)  (pure:m [400 'bad name'])
+  =/  is-index=?  =(%index ptype)
+  ?:  &(?!(is-index) =('' raw))  (pure:m [400 'missing body'])
+  =/  src=@t
+    ?:  is-index  (make-folder-index (pax-of name))
+    ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
+  ;<  ex=?  bind:m
+    (peek-exists:io [%& %& (weld app-base (weld /page (pax-of name))) %code])
+  ?:  &(new ex)  (pure:m [409 'page exists'])
+  ;<  ~  bind:m  (fs-poke-eval [%make (pax-of name) src])
+  (pure:m [200 ''])
+::  +fs-mkdir / +fs-del: folder create / page-or-folder delete.
+++  fs-mkdir
+  |=  name=@t
+  =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
+  ^-  form:m
+  ?.  (valid-name name)  (pure:m [400 'bad name'])
+  ;<  ~  bind:m  (fs-poke-eval [%mkdir (pax-of name)])
+  (pure:m [200 ''])
+++  fs-del
+  |=  name=@t
+  =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
+  ^-  form:m
+  ?.  (valid-name name)  (pure:m [400 'bad name'])
+  ;<  ~  bind:m  (fs-poke-eval [%del (pax-of name)])
+  (pure:m [200 ''])
+::  +fs-op: the shared request dispatcher. `path`'s last segment selects the op;
+::  `query` is "k=v&k=v" (raw, page names are @ta so need no url-decode). Returns
+::  [status body] — for the lick port to spit, and for the HTTP routes to send.
+++  fs-op
+  |=  [verb=@t path=@t query=@t body=@t]
+  =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
+  ^-  form:m
+  =/  q=(map @t @t)  (parse-q query)
+  =/  act=@tas  (fall (mole |.(`@tas`(rear (stab path)))) %$)
+  ?+    act  (pure:m [404 'no such op'])
+      %page-tree
+    ;<  j=json  bind:m  fs-tree-json
+    (pure:m [200 (en:json:html j)])
+      %page-source
+    =/  name=(unit @t)  (~(get by q) 'name')
+    ?~  name  (pure:m [400 'missing name'])
+    ;<  r=(each json [code=@ud msg=@t])  bind:m  (fs-source-result u.name)
+    ?-  -.r
+      %&  (pure:m [200 (en:json:html p.r)])
+      %|  (pure:m [code.p.r msg.p.r])
+    ==
+      %page-errors
+    =/  name=(unit @t)  (~(get by q) 'name')
+    ?~  name  (pure:m [400 'missing name'])
+    ;<  t=@t  bind:m  (fs-err-text u.name)
+    (pure:m [200 t])
+      %page-save
+    =/  name=(unit @t)  (~(get by q) 'name')
+    ?~  name  (pure:m [400 'missing name'])
+    =/  ptype=@tas  `@tas`(~(gut by q) 'type' 'hoon')
+    (fs-save u.name ptype (~(has by q) 'new') body)
+      %folder-new
+    =/  name=(unit @t)  (~(get by q) 'name')
+    ?~  name  (pure:m [400 'missing name'])
+    (fs-mkdir u.name)
+      %page-del
+    =/  name=(unit @t)  (~(get by q) 'name')
+    ?~  name  (pure:m [400 'missing name'])
+    (fs-del u.name)
+  ==
+::  +fs-port: the lick unix-socket port; vere serves it at the pier path
+::  .urb/dev/grubbery/lattice/fs.
+++  fs-port  ^-  path  /lattice/fs
+::  +fs-split-on: split a tape on a delimiter char, dropping the delimiter.
+++  fs-split-on
+  |=  [t=tape c=@tD]
+  ^-  (list tape)
+  =/  i=(unit @ud)  (find ~[c] t)
+  ?~  i  ~[t]
+  [(scag u.i t) $(t (slag +(u.i) t))]
+::  +parse-q: "a=1&b=2" -> a map (values NOT url-decoded; the lick client sends
+::  page names raw and they are @ta, so contain no & or =).
+++  parse-q
+  |=  q=@t
+  ^-  (map @t @t)
+  ?:  =('' q)  ~
+  %-  malt
+  %+  turn  (fs-split-on (trip q) '&')
+  |=  p=tape
+  ^-  [@t @t]
+  =/  i=(unit @ud)  (find "=" p)
+  ?~  i  [(crip p) '']
+  [(crip (scag u.i p)) (crip (slag +(u.i) p))]
 ::  +read-know-map: peek the whole know vault into a (map path know-entry).
 ::
 ++  read-know-map
@@ -1969,6 +3220,77 @@
   ?~  shp=(slaw %p (crip (scag u.slash rest)))  ~
   =/  pax=(each path tang)  (mule |.((stab (crip (slag u.slash rest)))))
   ?:(?=(%| -.pax) ~ `[u.shp p.pax])
+::  ── urb:// address grammar v2 (docs/urls.md) ────────────────────────────────
+::  The first path component selects a fixed, code-versioned MOUNT (p/n/k/t); a
+::  multi-char first component is the frozen legacy pub form. Resolution is a
+::  PURE function of the url text — no lookups, no viewer context, no existence
+::  probes — so the same urb:// names the same referent from any ship, any year
+::  (referential transparency). Aliasing exists (/t/<abs> can name what /p/<name>
+::  names) but the canonicalizer +en-urb is pure too, and every index keys on it.
+::
+++  page-prefix  ^-(path (weld app-base /page))
+++  pub-prefix   ^-(path (weld app-base /pub/vault))
+++  know-prefix  ^-(path (weld app-base /know/vault))
+::  +referent: what a urb:// url resolves to. %pub reads gemtext (rel under the
+::  pub vault); %tree names a grubbery node served by the explorer (absolute).
+::
+++  referent  $%([%pub =ship rel=path] [%tree =ship pax=path])
+::  +strip-prefix: p with `base` removed, or ~ if p is not under base.
+::
+++  strip-prefix
+  |=  [base=path p=path]
+  ^-  (unit path)
+  ?.  &((gte (lent p) (lent base)) =(base (scag (lent base) p)))  ~
+  `(slag (lent base) p)
+::  +de-urb: parse a urb:// url into its referent (~ if malformed). Pure.
+::
+++  de-urb
+  |=  raw=@t
+  ^-  (unit referent)
+  =/  s=tape  (trip raw)
+  ?.  =("urb://" (scag 6 s))  ~
+  =/  rest=tape  (slag 6 s)
+  =/  cut=(unit @ud)  (find "/" rest)
+  =/  shp=(unit @p)  (slaw %p (crip ?~(cut rest (scag u.cut rest))))
+  ?~  shp  ~
+  ?~  cut  `[%pub u.shp /index]
+  =/  ta=tape  (slag +(u.cut) rest)
+  ?:  =("" ta)  `[%pub u.shp /index]
+  =/  parsed=(each path tang)  (mule |.((stab (crip (weld "/" ta)))))
+  ?:  ?=(%| -.parsed)  ~
+  =/  segs=path  p.parsed
+  ?~  segs  `[%pub u.shp /index]
+  ?.  =(1 (met 3 i.segs))
+    ::  multi-char first component -> frozen legacy pub form.
+    `[%pub u.shp segs]
+  ::  single-char first component -> a mount letter (else invalid: hard ~).
+  ?+  i.segs  ~
+    %p  `[%tree u.shp (weld page-prefix t.segs)]
+    %n  `[%pub u.shp t.segs]
+    %k  `[%tree u.shp (weld know-prefix t.segs)]
+    %t  `[%tree u.shp t.segs]
+  ==
+::  +en-urb: the canonical urb:// url for a tree node (ship + ABSOLUTE path).
+::  Inverse of +de-urb on referents: pages -> /p/, know -> /k/, published pages
+::  -> the bare form (unless a single-char top segment forces /n/), anything
+::  else -> the /t/ raw escape hatch. The ship root (~) is the raw-tree root.
+::
+++  en-urb
+  |=  [shp=@p pax=path]
+  ^-  @t
+  =/  pre=tape  (weld "urb://" (scow %p shp))
+  =/  seg  |=(rel=path ^-(tape ?~(rel "" (spud rel))))
+  =/  mp=(unit path)  (strip-prefix page-prefix pax)
+  ?^  mp  (crip :(weld pre "/p" (seg u.mp)))
+  =/  mk=(unit path)  (strip-prefix know-prefix pax)
+  ?^  mk  (crip :(weld pre "/k" (seg u.mk)))
+  =/  mn=(unit path)  (strip-prefix pub-prefix pax)
+  ?^  mn
+    =/  rel=path  u.mn
+    ?:  ?|(=(/index rel) ?=(~ rel))  (crip pre)
+    ?:  =(1 (met 3 i.rel))  (crip :(weld pre "/n" (seg rel)))
+    (crip :(weld pre (seg rel)))
+  (crip :(weld pre "/t" (seg pax)))
 ::  +remote-timeout: how long a remote peek waits before giving up. A dead or
 ::  offline peer would otherwise block the fiber forever (peek-remote -> take-peek
 ::  never resolves) — hanging /fetch and stalling the crawler's peer sweep.
@@ -2229,6 +3551,649 @@
   =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.p.u.ms))))
   ?:  ?=(%| -.res)  (pure:m ~)
   (pure:m `p.res)
+::  +explore: GET /x/<ship>/<path...> — the server-rendered tree explorer
+::  (docs/platform.md, build step 1). Directories render as listings with
+::  relative child links; trailing slash is forced on directory urls (hawk
+::  convention — relative hrefs resolve against the listing). Files render
+::  mark-aware; ?data serves the raw body with a mark-derived content-type.
+::  Own tree peeks locally; a foreign ship's gained tree via remote peek.
+::  Owner-only like every route (clearweb projection is build step 4).
+::  No trailing slash -> try file first (the common case for leaf urls), then
+::  dir + redirect; trailing slash -> dir first. Remote: an unreachable ship is
+::  504 on the FIRST wait (a ~ result means no answer, not wrong-kind), so the
+::  fallback attempt only runs when the ship answered with the wrong node kind.
+::
+++  explore
+  ::  `our` is threaded from handle-request — bowl-our is a full /sys/bowl round
+  ::  trip (~0.2s) and the caller already paid it, so re-fetching it here doubled
+  ::  the cost of every explorer/page request.
+  |=  [eyre-id=@ta our=@p rest=path args=(map @t @t) raw-url=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ::  a trailing '/' parses as a trailing EMPTY knot (smeg matches ''), which
+  ::  would send every slashed dir url down the peek path as a child literally
+  ::  named '' -> 404 (caught by review). Trim trailing empties up front —
+  ::  `slashed` below still records that the url named a directory.
+  =/  rest=path
+    |-  ^-  path
+    ?:  &(?=(^ rest) =('' (rear `path`rest)))
+      $(rest (snip `path`rest))
+    rest
+  ?~  rest
+    (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p our) "/"))
+  =/  shp=(unit @p)  (slaw %p i.rest)
+  ?~  shp  (send-err eyre-id 400 'bad ship')
+  =/  pax=path  t.rest
+  =/  base=tape  (url-path-part raw-url)
+  =/  slashed=?  &(?=(^ base) =('/' (rear base)))
+  =/  want-raw=?  (~(has by args) 'data')
+  ::  the canonical urb:// address for this node — shown in the chrome bar so any
+  ::  view is copy-shareable (the browser url stays the /x projection).
+  =/  canon=tape  (trip (en-urb u.shp pax))
+  =/  dir-road=road:tarball  [%& %| pax]
+  ?~  pax
+    ::  ship root: always a directory
+    ?.  slashed  (send-redirect eyre-id (weld base "/"))
+    ?:  =(u.shp our)
+      ;<  dn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
+      ?.  ?=([%& %ball *] dn)  (send-err eyre-id 404 'not found')
+      (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.dn)))
+    ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
+    ?~  md  (send-err eyre-id 504 'unreachable or denied')
+    ?.  ?=([%& %ball *] u.md)  (send-err eyre-id 404 'not found')
+    (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.u.md)))
+  =/  file-road=road:tarball  [%& %& (snip `path`pax) (rear pax)]
+  ?:  =(u.shp our)
+    ?:  slashed
+      ;<  dn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
+      ?:  ?=([%& %ball *] dn)
+        ::  our own /page/<name>/ dir -> the live page view (data + command
+        ::  form + SSE), unless ?raw asks for the plain grub listing. A page has
+        ::  a /code grub; a plain folder does not, so a folder just browses.
+        =/  pn=(unit @t)  (page-dir-name pax)
+        =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+          ?~(fil.ball.p.dn ~ contents.u.fil.ball.p.dn)
+        ?:  |(?=(~ pn) ?!((~(has by fils) %code)) (~(has by args) 'raw'))
+          (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.dn)))
+        (render-page-view eyre-id u.shp pax u.pn ball.p.dn (~(has by args) 'embed') %.y)
+      ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
+      ?.  ?=([%& %file *] fn)  (send-err eyre-id 404 'not found')
+      ?:  want-raw  (send-raw eyre-id sang.p.fn %.y)
+      (send-view eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.fn %.y)))
+    ;<  fn=seen:nexus  bind:m  (peek:io file-road ~)
+    ?:  ?=([%& %file *] fn)
+      ?:  want-raw  (send-raw eyre-id sang.p.fn %.y)
+      (send-view eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.fn %.y)))
+    ;<  dn=seen:nexus  bind:m  (peek-shallow:io dir-road ~)
+    ?.  ?=([%& %ball *] dn)  (send-err eyre-id 404 'not found')
+    (send-redirect eyre-id (weld base "/"))
+  ?:  slashed
+    ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
+    ?~  md  (send-err eyre-id 504 'unreachable or denied')
+    ?:  ?=([%& %ball *] u.md)
+      ::  a peer's /page/<name>/ dir renders as the clearweb-style page — sandboxed
+      ::  (untrusted html/js), unthemed, read-only — unless ?raw asks for the plain
+      ::  grub listing. A plain folder (no /code grub) still browses as a listing.
+      =/  pn=(unit @t)  (page-dir-name pax)
+      =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+        ?~(fil.ball.p.u.md ~ contents.u.fil.ball.p.u.md)
+      ?:  |(?=(~ pn) ?!((~(has by fils) %code)) (~(has by args) 'raw'))
+        (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.p.u.md)))
+      (render-page-view eyre-id u.shp pax u.pn ball.p.u.md %.n %.n)
+    ;<  mf=(unit seen:nexus)  bind:m  (peek-remote-wait file-road u.shp)
+    ?~  mf  (send-err eyre-id 504 'unreachable or denied')
+    ?.  ?=([%& %file *] u.mf)  (send-err eyre-id 404 'not found')
+    ?:  want-raw  (send-raw eyre-id sang.p.u.mf %.n)
+    (send-view eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.u.mf %.n)))
+  ;<  mf=(unit seen:nexus)  bind:m  (peek-remote-wait file-road u.shp)
+  ?~  mf  (send-err eyre-id 504 'unreachable or denied')
+  ?:  ?=([%& %file *] u.mf)
+    ?:  want-raw  (send-raw eyre-id sang.p.u.mf %.n)
+    (send-view eyre-id (render-page canon "" (explore-file-html u.shp pax sang.p.u.mf %.n)))
+  ;<  md=(unit seen:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
+  ?~  md  (send-err eyre-id 504 'unreachable or denied')
+  ?.  ?=([%& %ball *] u.md)  (send-err eyre-id 404 'not found')
+  (send-redirect eyre-id (weld base "/"))
+::  +url-path-part: the path portion of a raw request url (strip ?query).
+::
+++  url-path-part
+  |=  raw=@t
+  ^-  tape
+  =/  t=tape  (trip raw)
+  =/  q=(unit @ud)  (find "?" t)
+  ?~(q t (scag u.q t))
+::  +send-redirect: a 301 to `to` (used to force trailing slashes on dirs).
+::
+++  send-redirect
+  |=  [eyre-id=@ta to=tape]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  [[301 ['location' (crip to)]~] ~]
+::  +send-see-other: a 303 (POST -> GET redirect, for form command submits).
+::
+++  send-see-other
+  |=  [eyre-id=@ta to=tape]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  [[303 ['location' (crip to)]~] ~]
+::  +page-dir-name: is `pax` under our own /page/ tree? -> the slash-joined
+::  name (e.g. 'projects/plan'). app-base ++ /page ++ >=1 seg, at any depth;
+::  the caller checks for a /code grub to tell a page from a plain folder.
+::
+++  page-dir-name
+  |=  pax=path
+  ^-  (unit @t)
+  ?.  ?=([@ @ %page @ *] pax)  ~
+  ?.  =(`path`[i.pax i.t.pax ~] app-base)  ~
+  `(crip (pax-str `path`t.t.t.pax))
+::  +render-page-view: the live view of one of our programmable pages —
+::  rendered data + any error + a command form, with keep-SSE on the data
+::  grub so a command from ANY browser reloads every open view (step 3).
+::
+++  render-page-view
+  ::  `b` is the page dir's ball, ALREADY peeked by the caller (explore) to detect
+  ::  the page dir — reuse it instead of peeking the same dir again. The ball
+  ::  carries every grub's contents, so data+err+share+show all come from it with
+  ::  zero further round-trips.
+  ::  embed=%.y (?embed): the bare rendered data + SSE, no chrome/crumbs/controls
+  ::  — for the editor's live-preview iframe. Otherwise the full standalone view.
+  ::  local=%.n: a PEER's page (browsed over ames) — rendered in a SANDBOXED frame
+  ::  (its html/js is untrusted), no theme peek (that would read OUR tree), no Edit
+  ::  button, no live keep. local=%.y: our own page, fully themed + editable + live.
+  |=  [eyre-id=@ta shp=@p pax=path name=@t b=ball:tarball embed=? local=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+    ?~(fil.b ~ contents.u.fil.b)
+  =/  grub  |=(nom=@ta ^-((unit sang:tarball) =/(v (~(get by fils) nom) ?~(v ~ `sang.u.v))))
+  =/  vmode=view-mode:pg
+    =/  sw=(unit sang:tarball)  (grub %show)
+    ?~  sw  %text
+    (fall (mole |.(;;(view-mode:pg (sang-noun:tarball u.sw)))) %text)
+  =/  err=@t
+    =/  ce=(unit sang:tarball)  (grub %err)
+    ?~  ce  ''
+    (fall (mole |.(;;(@t (sang-noun:tarball u.ce)))) '')
+  =/  cd=(unit sang:tarball)  (grub %data)
+  ::  own lean SSE (no ?blot=/txt): a page dir's noun grubs render huge under
+  ::  /txt on the initial snapshot, and the reload script reads only event
+  ::  names, never the payload — so keep="" to render-* and append a blot-free
+  ::  stream here.
+  =/  keep=tape  (keep-url :(weld "page/" (trip name) "/data"))
+  ?:  embed
+    ::  bare preview: just the rendered data (+ any error) and the live stream.
+    =/  data-html=tape  ?~(cd "<p>no data yet</p>" (render-shown u.cd vmode))
+    =/  errh=tape  ?:(=('' err) "" :(weld "<pre class=\"err\">" (esc (trip err)) "</pre>"))
+    (send-html eyre-id (render-bare :(weld errh "<section class=\"data\">" data-html "</section>" (page-sse-script keep))))
+  ::  standalone browser view: the page rendered exactly as it would publish. For
+  ::  our own page the nearest theme is inlined (owner-gated, so it need not be
+  ::  clearweb-shared) and it gets an Edit button + live-reload; a peer's page is
+  ::  sandboxed and unthemed. No sharing/command controls — those live in the
+  ::  editor. `rel` strips the app-base/page/ prefix to the page-relative path that
+  ::  find-theme-css/clearweb-doc expect (the same shape serve-clearweb passes).
+  =/  rel=path  (slag 3 pax)
+  ;<  head=tape  bind:m  (browser-head local vmode rel)
+  ::  comments live in OUR tree, so only show them on OUR OWN pages — a peer's
+  ::  page at a path that collides with one of ours must NOT surface our comments
+  ::  or toggle. (Reading a peer's own comments waits for the cross-ship path.)
+  ;<  ocon=?  bind:m  (comments-on rel)
+  =/  con=?  &(local ocon)
+  ::  our own view also gets a comment box (posts to /comment as us). A peer's box
+  ::  — which posts to OUR nexus, which then pokes the peer — comes with the
+  ::  cross-ship path.
+  =/  box=tape
+    ?.  con  ""
+    ;:  weld
+      "<form class=\"cbox\" method=\"post\" target=\"_top\" action=\"/apps/lattice/comment?page="
+      (trip name)
+      "\"><textarea name=\"body\" placeholder=\"Comment as "
+      (scow %p shp)
+      "\" required></textarea><button type=\"submit\">Post</button></form>"
+    ==
+  ;<  extra=tape  bind:m  (render-comments rel con box)
+  ::  cap a hostile PEER's data (own data is trusted): a big cord, OR any non-cord
+  ::  noun (page-data-html would pretty-print it unbounded). Bounds the render
+  ::  doubling + response, like explore-file-html's 1MB preview cap.
+  =/  toobig=?
+    ?:  local  %.n
+    ?~  cd  %.n
+    =/  r=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball u.cd))))
+    ?|(?=(%| -.r) (gth (met 3 p.r) (bex 20)))
+  =/  doc=@t
+    ?:  toobig  (render-clearweb (pax-str rel) head "<p>page too large or not previewable</p>")
+    ?~  cd  (render-clearweb (pax-str rel) head "<p>no data yet</p>")
+    (clearweb-doc rel u.cd vmode head ?!(?=(%html vmode)) ~ extra)
+  %-  send-html
+  :-  eyre-id
+  %^    render-browser-page
+      (trip (en-urb shp pax))
+    doc
+  [?:(local `name ~) ?!(local) ?:(local keep "")]
+::  +render-bare: a minimal HTML doc (shared reader CSS, no address-bar chrome) —
+::  for the editor preview iframe, which supplies its own layout.
+::
+++  render-bare
+  |=  inner=tape
+  ^-  @t
+  %-  crip
+  ;:  weld
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+    "<style>"  web-css  (trip 'body{margin:0;padding:14px}')  "</style></head><body>"
+    inner
+    ::  a srcdoc preview has no URL of its own, so a bare #anchor (footnote) link
+    ::  would resolve against the PARENT (the editor) and load it into the frame.
+    ::  Intercept in-page # links and scroll within the frame instead.
+    (trip '<script>document.addEventListener("click",function(e){var a=e.target.closest("a");if(a){var h=a.getAttribute("href");if(h&&h.charAt(0)==="#"){e.preventDefault();var el=document.getElementById(h.slice(1));if(el)el.scrollIntoView()}}})</script>')
+    "</body></html>"
+  ==
+::  +render-clearweb: the standalone public shell for a %clearweb page — a bare
+::  html document, NO lattice chrome. `head` is raw <head> content (the theme
+::  <link> or a <style>), placed in the HEAD so it is render-blocking: the page
+::  paints WITH its background and never flashes white on navigation. A
+::  color-scheme meta makes even the pre-CSS canvas follow the OS theme. The
+::  public mirror of +render-page (the owner's authenticated explorer chrome).
+::
+++  render-clearweb
+  |=  [title=tape head=tape inner=tape]
+  ^-  @t
+  %-  crip
+  ;:  weld
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+    "<meta name=\"color-scheme\" content=\"light dark\">"
+    "<title>"  (esc title)  "</title>"
+    head
+    "</head><body>"  inner  "</body></html>"
+  ==
+::  +serve-asset: serve a file's raw /data grub with a Content-Type from its
+::  render mode (js/css/html/md/gmi), so an html file can import it by URL.
+::
+++  serve-asset
+  |=  [eyre-id=@ta pax=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  (levy pax |=(seg=@ta ((sane %ta) seg)))  (send-err eyre-id 404 'not found')
+  =/  pdir=path  (weld app-base (weld /page pax))
+  ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& pdir %data] ~)
+  ?.  ?=([%& %file *] dsn)  (send-err eyre-id 404 'not found')
+  ;<  vmode=view-mode:pg  bind:m  (read-show-mode pdir)
+  =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.p.dsn))))
+  ?:  ?=(%| -.res)  (send-err eyre-id 415 'not servable')
+  (send-typed eyre-id (mime-of vmode) 'no-cache' p.res)
+::  +find-theme: the nearest folder AT or ABOVE pax's parent holding a clearweb
+::  css `theme` page — so a rendered clearweb page auto-inherits a site theme
+::  (nearest wins; a subfolder theme overrides). ~ if none up to the root.
+::  ponytail: a few peeks per rendered request; the theme link is then browser-
+::  cached across the site. Add a cache here only if it ever measures hot.
+::
+++  find-theme
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,(unit path))
+  ^-  form:m
+  =/  anc=path  (snip `path`pax)
+  |-  ^-  form:m
+  =/  tdir=path  (weld app-base (weld /page (weld anc /theme)))
+  ;<  mode=share-mode:le  bind:m  (read-share tdir)
+  ;<  show=view-mode:pg   bind:m  (read-show-mode tdir)
+  ?:  &(?=(%clearweb mode) ?=(%css show))  (pure:m `anc)
+  ?~  anc  (pure:m ~)
+  $(anc (snip `path`anc))
+::  +clearweb-doc: the standalone chrome-less document for a page — theme in the
+::  <head>, body per view-mode. %html inlines raw (owns its own layout); a
+::  md/gmi/text/noun body is wrapped in <main class="page"> (with an optional home
+::  link) when `wrap`; css/js show as a code block. `head` is the caller's theme
+::  <head> (a <link>, inline <style>, or the default reader css). Shared by
+::  serve-clearweb (/c/, links a shared theme) and the browser page view (owner-
+::  gated, inlines any theme). On PEER data it is only ever rendered inside a
+::  sandboxed frame — the sandbox, not escaping, is what neutralizes hostile html.
+::
+++  clearweb-doc
+  |=  [pax=path =sang:tarball vmode=view-mode:pg head=tape wrap=? home=(unit tape) extra=tape]
+  ^-  @t
+  ::  `extra` (a rendered comment thread + optional box) is appended after the
+  ::  page content — inside the themed wrapper for md/gmi/text, or after the raw
+  ::  body for %html.
+  =/  inner=tape  (weld (render-shown sang vmode) extra)
+  =/  body=tape
+    ?:  ?=(%html vmode)  inner
+    ?.  wrap  inner
+    =/  hlink=tape
+      ?~  home  ""
+      :(weld "<p class=\"home\"><a href=\"" (esc u.home) "\">&larr; home</a></p>")
+    :(weld "<main class=\"page\">" hlink inner "</main>")
+  (render-clearweb (pax-str pax) head body)
+::  +render-comments: the comment thread for `page` (page-relative path) as escaped
+::  html, oldest first. `box` is an optional trailing comment form (browser views
+::  only). "" when the page has no comments and no box. Read here (a peek) rather
+::  than in the pure +clearweb-doc; the result is passed in as its `extra`.
+::
+++  render-comments
+  |=  [page=path on=? box=tape]
+  =/  m  (fiber:fiber:nexus ,tape)
+  ^-  form:m
+  ?.  on  (pure:m "")
+  ;<  =seen:nexus  bind:m  (peek:io [%& %| (weld app-base (weld /comments page))] ~)
+  =/  cs=(list comment:lc)
+    ?.  ?=([%& %ball *] seen)  ~
+    =/  b=ball:tarball  ball.p.seen
+    =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+      ?~(fil.b ~ contents.u.fil.b)
+    %+  murn  ~(val by fils)
+    |=  [s=sang:tarball gain=? bang=(unit tang)]
+    ^-  (unit comment:lc)
+    (mole |.(;;(comment:lc (sang-noun:tarball s))))
+  =/  sorted=(list comment:lc)
+    (sort cs |=([a=comment:lc b=comment:lc] (lth when.a when.b)))
+  ?:  &(?=(~ sorted) =("" box))  (pure:m "")
+  =/  thread=tape
+    ?~  sorted  ""
+    ;:  weld
+      "<section class=\"comments\"><h3>"  (a-co:co (lent sorted))
+      ?:(=(1 (lent sorted)) " comment</h3>" " comments</h3>")
+      ^-  tape
+      (zing (turn sorted comment-html))
+      "</section>"
+    ==
+  ::  single-quote cord: a double-quote tape would interpolate the css { } braces.
+  %-  pure:m
+  ;:  weld
+    %-  trip
+    '<style>.comments{margin-top:2rem;border-top:1px solid #8886;padding-top:1rem}.comment{margin:.7rem 0;padding:.5rem .8rem;background:#8881;border-radius:8px}.cmeta{margin:0;font-size:.85em;opacity:.7}.cbody{margin:.2rem 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.cbox{margin-top:1rem;display:flex;gap:6px}.cbox textarea{flex:1;min-height:3rem;font:inherit;padding:6px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbox button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}</style>'
+    thread
+    box
+  ==
+::  +comment-html: one stored comment as escaped html (author + body).
+::
+++  comment-html
+  |=  c=comment:lc
+  ^-  tape
+  ;:  weld
+    "<article class=\"comment\"><p class=\"cmeta\">"  (scow %p author.c)
+    "</p><p class=\"cbody\">"  (esc (trip body.c))  "</p></article>"
+  ==
+::  +find-theme-css: the nearest `theme` css page AT/ABOVE pax's parent, as inline
+::  css text — for the owner-gated browser view, which (unlike /c/) themes a page
+::  whose theme need not be clearweb-shared, so it inlines rather than links. ~ if
+::  none up to the root. A nearer theme whose data is unreadable is skipped.
+::
+++  find-theme-css
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  =/  anc=path  (snip `path`pax)
+  |-  ^-  form:m
+  =/  tdir=path  (weld app-base (weld /page (weld anc /theme)))
+  ;<  show=view-mode:pg  bind:m  (read-show-mode tdir)
+  ?:  ?=(%css show)
+    ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& tdir %data] ~)
+    =/  css=(unit @t)
+      ?.  ?=([%& %file *] dsn)  ~
+      =/  r=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.p.dsn))))
+      ?:(?=(%& -.r) `p.r ~)
+    ?^  css  (pure:m css)
+    ?~  anc  (pure:m ~)
+    $(anc (snip `path`anc))
+  ?~  anc  (pure:m ~)
+  $(anc (snip `path`anc))
+::  +browser-head: the <head> theme content for the browser page view. Our own
+::  page (local) inlines its nearest theme; a peer's page skips the theme peek
+::  (that would read OUR tree) and falls back to the default reader css. Its own
+::  monad type so it can produce a tape (render-page-view's monad returns ~).
+::
+++  browser-head
+  |=  [local=? vmode=view-mode:pg rel=path]
+  =/  m  (fiber:fiber:nexus ,tape)
+  ^-  form:m
+  =/  dflt=tape  ?:(?=(%html vmode) "" :(weld "<style>" web-css "</style>"))
+  ?.  local  (pure:m dflt)
+  ;<  tcss=(unit @t)  bind:m  (find-theme-css rel)
+  (pure:m ?^(tcss :(weld "<style>" (trip u.tcss) "</style>") dflt))
+::  +serve-clearweb: the public read of a %clearweb page. Read-only, data grub
+::  only — a non-clearweb (or absent) page is a flat 404 so private siblings
+::  never leak existence. No SSE (an anon keep would 403 anyway).
+::
+++  serve-clearweb
+  |=  [eyre-id=@ta pax=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ::  same per-segment gate as name-pax/serve-asset: non-empty %ta knots only,
+  ::  so a trailing '/' ('' segment) and '.'/'..' 404 — no traversal, no folder
+  ::  listing. (The route's [%c ^] already rejects a bare /c/.) The per-leaf
+  ::  %clearweb check below is the only public/private gate.
+  ?.  (levy pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
+    (send-err eyre-id 404 'not found')
+  =/  pdir=path  (weld app-base (weld /page pax))
+  ;<  mode=share-mode:le  bind:m  (read-share pdir)
+  ?.  ?=(%clearweb mode)  (send-err eyre-id 404 'not found')
+  ;<  dsn=seen:nexus  bind:m  (peek:io [%& %& pdir %data] ~)
+  ;<  vmode=view-mode:pg  bind:m  (read-show-mode pdir)
+  ?.  ?=([%& %file *] dsn)
+    (send-html eyre-id (render-clearweb (pax-str pax) "" "<p>no data</p>"))
+  ::  css/js serve RAW (a public page links them as a stylesheet/script, so they
+  ::  must NOT go through render-shown's <pre><code> wrap); everything else
+  ::  renders per its view-mode into a bare, chrome-less standalone document.
+  ?:  ?=(?(%css %js) vmode)
+    =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.p.dsn))))
+    ?:  ?=(%| -.res)  (send-err eyre-id 415 'not servable')
+    (send-typed eyre-id (mime-of vmode) 'no-cache' p.res)
+  ::  Every rendered/html page auto-wears the nearest `theme` css up the folder
+  ::  tree, LINKED IN THE HEAD (render-blocking -> no white flash on nav, browser-
+  ::  cached across the site). A rendered page (md/gmi/text/noun) also gets a
+  ::  "page" wrapper + a home link; %html owns its own body layout. With no theme,
+  ::  %html gets nothing (it owns its styling) and md/gmi/text get the reader css.
+  ;<  tf=(unit path)  bind:m  (find-theme pax)
+  =/  head=tape
+    ?^  tf  :(weld "<link rel=\"stylesheet\" href=\"/apps/lattice/c" (spud (weld u.tf /theme)) "\">")
+    ?:(?=(%html vmode) "" :(weld "<style>" web-css "</style>"))
+  =/  home=(unit tape)
+    ?~(tf ~ `(weld "/apps/lattice/c" (spud (weld u.tf /index))))
+  ::  a public clearweb visitor is anonymous (no ship), so the thread is read-only
+  ::  here — no comment box (box=""). Commenting happens from a ship's browser.
+  ;<  con=?    bind:m  (comments-on pax)
+  ;<  cmts=tape  bind:m  (render-comments pax con "")
+  (send-html eyre-id (clearweb-doc pax sang.p.dsn vmode head ?=(^ tf) home cmts))
+::  +page-data-html: render a page's data grub. A cord shows as text; any
+::  other noun as its literal (a page's data mark is a bare noun).
+::
+++  page-data-html
+  |=  =sang:tarball
+  ^-  tape
+  =/  nn=*  (sang-noun:tarball sang)
+  =/  cord-res=(each @t tang)  (mule |.(;;(@t nn)))
+  ?:  ?=(%& -.cord-res)
+    :(weld "<pre>" (esc (trip p.cord-res)) "</pre>")
+  :(weld "<pre>" (esc "{<nn>}") "</pre>")
+::  +render-shown: render an OWN page's data grub per its render mode. %html
+::  inlines raw — safe because this is only ever called on OUR OWN page data
+::  (render-page-view / serve-clearweb); a peer's page data is escaped by the
+::  explorer, never routed here. A non-cord value falls back to a noun literal.
+::
+++  render-shown
+  |=  [=sang:tarball mode=view-mode:pg]
+  ^-  tape
+  =/  nn=*  (sang-noun:tarball sang)
+  =/  cr=(each @t tang)  (mule |.(;;(@t nn)))
+  ?:  ?=(%| -.cr)  (page-data-html sang)
+  ?-  mode
+    %text  :(weld "<pre>" (esc (trip p.cr)) "</pre>")
+    %html  (trip p.cr)
+    %gmi   (render-gmi p.cr)
+    %md    (render-md:gfm p.cr)
+    %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip p.cr)) "</code></pre>")
+    %css   :(weld "<pre><code class=\"language-css\">" (esc (trip p.cr)) "</code></pre>")
+    %noun  (page-data-html sang)
+  ==
+::  +page-sse-script: like +sse-script but WITHOUT ?blot=/txt — the page dir's
+::  noun grubs are megabytes under /txt on connect, and this only needs the
+::  event names to reload. Same reload-on-any-non-old-event loop otherwise.
+::
+++  page-sse-script
+  |=  keep=tape
+  ^-  tape
+  ?~  keep  ""
+  ;:  weld
+    (trip '<script>(function(){var K="')
+    keep
+    %-  trip
+    '";async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7)}if(!ev)continue;if(ev.slice(0,3)==="old")continue;location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
+  ==
+::  +explore-crumbs: breadcrumb nav — absolute hrefs from the ship root down,
+::  each with a trailing slash. The leaf is linked too (self-link; harmless).
+::
+++  explore-crumbs
+  |=  [shp=@p pax=path]
+  ^-  tape
+  =/  base=tape  (weld "/apps/lattice/x/" (scow %p shp))
+  =/  out=tape
+    ;:  weld
+      "<nav class=\"crumbs\"><a href=\""
+      base
+      "/\">"
+      (esc (scow %p shp))
+      "</a>"
+    ==
+  =/  cur=tape  base
+  |-  ^-  tape
+  ?~  pax  (weld out "</nav>")
+  =.  cur  :(weld cur "/" (trip i.pax))
+  ::  esc the href too — remote segment names are attacker-chosen text.
+  =.  out  :(weld out " / <a href=\"" (esc cur) "/\">" (esc (trip i.pax)) "</a>")
+  $(pax t.pax)
+::  +explore-dir-html: one directory level as HTML — subdirs first, then files
+::  with their marks. Child hrefs are RELATIVE (dirs get a trailing slash), so
+::  they resolve against the forced-trailing-slash listing url. Capped at
+::  browse-fan-cap like browse-json, for the same unbounded-response reason.
+::
+++  explore-dir-html
+  |=  [shp=@p pax=path b=ball:tarball]
+  ^-  tape
+  =/  dirs=(list @ta)  (sort (turn ~(tap by dir.b) head) aor)
+  =/  files=(list [nom=@ta mk=@tas])
+    %+  sort
+      ?~  fil.b  ~
+      %+  turn  ~(tap by contents.u.fil.b)
+      |=  [nom=@ta con=[=sang:tarball gain=? bang=(unit tang)]]
+      [nom name.p.sang.con]
+    |=([a=[nom=@ta mk=@tas] b=[nom=@ta mk=@tas]] (aor nom.a nom.b))
+  =/  truncated=?
+    |((gth (lent dirs) browse-fan-cap) (gth (lent files) browse-fan-cap))
+  ;:  weld
+    (explore-crumbs shp pax)
+    "<ul class=\"tree\">"
+    ::  ^- tape on each zing: welding zing's uncast recursive product
+    ::  fuse-loops the compiler (caught by review; see +esc for the idiom).
+    ^-  tape
+    %-  zing
+    %+  turn  (scag browse-fan-cap dirs)
+    |=  n=@ta
+    =/  nm=tape  (esc (trip n))
+    :(weld "<li><a href=\"" nm "/\">" nm "/</a></li>")
+    ^-  tape
+    %-  zing
+    %+  turn  (scag browse-fan-cap files)
+    |=  [nom=@ta mk=@tas]
+    =/  nm=tape  (esc (trip nom))
+    ;:  weld
+      "<li><a href=\""  nm  "\">"  nm  "</a>"
+      " <span class=\"mark\">"  (esc (trip mk))  "</span></li>"
+    ==
+    "</ul>"
+    ?.(truncated "" "<p class=\"err\">listing truncated</p>")
+  ==
+::  +explore-file-html: one file, mark-aware. Cord bodies: gemtext renders,
+::  html inlines as-is (hawk's model — data is its own ui; this surface is
+::  owner-only until the clearweb step), everything else is an escaped <pre>.
+::  Non-cord bodies: octs get a byte count + raw link; opaque nouns just the
+::  mark. ?data is always offered for cord/octs bodies.
+::
+++  explore-file-html
+  |=  [shp=@p pax=path =sang:tarball local=?]
+  ^-  tape
+  =/  mk=@tas  name.p.sang
+  =/  nn=*  (sang-noun:tarball sang)
+  =/  cord-res=(each @t tang)  (mule |.(;;(@t nn)))
+  =/  body=tape
+    ?:  ?=(%& -.cord-res)
+      ::  cap the rendered preview: esc+weld would double a multi-MB body into
+      ::  one response. ponytail: peek already loaded it; this bounds the render
+      ::  doubling, and ?data still serves the full bytes.
+      ?:  (gth (met 3 p.cord-res) (bex 20))
+        "<p>file too large to preview &mdash; <a href=\"?data\">view raw</a></p>"
+      ::  %page is the lattice pub blot ([/lattice %page]) — gemtext bodies.
+      ::  %html inlines RAW — but only for our OWN grubs (local): a foreign
+      ::  ship's %html body is attacker-controlled, so escape it (stored XSS
+      ::  in the owner's browser otherwise; caught by review).
+      ?+  mk  :(weld "<pre>" (esc (trip p.cord-res)) "</pre>")
+        ?(%gmi %gemtext %page)  (render-gmi p.cord-res)
+        %html
+      ?:  local  (trip p.cord-res)
+      :(weld "<pre>" (esc (trip p.cord-res)) "</pre>")
+      ==
+    =/  octs-res=(each [p=@ud q=@] tang)  (mule |.(;;([p=@ud q=@] nn)))
+    ?:  ?=(%& -.octs-res)
+      :(weld "<p>binary grub (" (a-co:co p.p.octs-res) " bytes)</p>")
+    "<p>opaque noun grub (not raw-servable)</p>"
+  ;:  weld
+    (explore-crumbs shp pax)
+    "<div class=\"meta\">mark "  (esc (trip mk))
+    " &middot; <a href=\"?data\">raw</a></div>"
+    body
+  ==
+::  +send-raw: ?data — the file body verbatim with a mark-derived content-type.
+::  Cords ship as their bytes; octs ship as-is; anything else is 415.
+::
+++  send-raw
+  |=  [eyre-id=@ta =sang:tarball local=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  mk=@tas  name.p.sang
+  =/  nn=*  (sang-noun:tarball sang)
+  ::  a FOREIGN grub's bytes are attacker-controlled: serving them with an
+  ::  active content-type (html/svg/js) executes the peer's markup in our own
+  ::  origin (residual XSS the round-1 inline-render fix missed). Only our OWN
+  ::  grubs get a mark-derived type; anything foreign is forced to an inert
+  ::  download (octet-stream + attachment + nosniff).
+  =/  heads=(list [@t @t])
+    ?:  local  ['content-type' (mark-mime mk)]~
+    :~  ['content-type' 'application/octet-stream']
+        ['content-disposition' 'attachment']
+        ['x-content-type-options' 'nosniff']
+    ==
+  =/  cord-res=(each @t tang)  (mule |.(;;(@t nn)))
+  ?:  ?=(%& -.cord-res)
+    (send-simple:srv eyre-id [[200 heads] `(as-octs:mimes:html p.cord-res)])
+  =/  octs-res=(each [p=@ud q=@] tang)  (mule |.(;;([p=@ud q=@] nn)))
+  ?:  ?=(%& -.octs-res)
+    ::  p is remote-attested (a boom carries the peer's raw noun) — a hostile
+    ::  length would become our content-length. Cap it: real octs may pad p
+    ::  past (met 3 q) for trailing zeros, but not by 16MiB (caught by review).
+    ?:  (gth p.p.octs-res (bex 24))
+      (send-err eyre-id 413 'too large')
+    (send-simple:srv eyre-id [[200 heads] `p.octs-res])
+  (send-err eyre-id 415 'not raw-servable')
+::  +mark-mime: content-type for ?data by mark leaf. Unknown marks default to
+::  text/plain — cords are overwhelmingly text, and octs of unknown mark are
+::  rare enough not to earn octet-stream plumbing yet.
+::
+++  mark-mime
+  |=  mk=@tas
+  ^-  @t
+  ?+  mk  'text/plain'
+    %json          'application/json'
+    ?(%html %htm)  'text/html'
+    %gmi           'text/gemini'
+    ?(%md %markdown)  'text/markdown'
+    %css           'text/css'
+    %js            'text/javascript'
+    %png           'image/png'
+    ?(%jpg %jpeg)  'image/jpeg'
+    %gif           'image/gif'
+    %webp          'image/webp'
+    %svg           'image/svg+xml'
+  ==
 ::  +browse-json: render one directory level of a foreign (or own) grubbery tree as
 ::  a JSON listing — subdirs first, then files. Each file carries its mark leaf. Both
 ::  lists are capped at browse-fan-cap and `truncated` is set if either overflowed,
@@ -2280,6 +4245,93 @@
   %+  send-simple:srv  eyre-id
   :-  [200 ['content-type' 'text/html']~]
   `(as-octs:mimes:html htm)
+::  +send-view: like +send-html but with a short private cache, for READ-ONLY
+::  navigable surfaces (home, tree explorer). A repeat visit inside the window is
+::  served from the browser cache instantly (like the back button's bfcache) —
+::  the ~0.7s grubbery render is skipped. Safe here because these surfaces have
+::  no command/save flow whose result must appear immediately, and any live SSE
+::  reload revalidates (browsers bypass max-age on reload), so real changes still
+::  land fresh. NOT used for page views (command form) or the editor (save flow).
+::
+++  send-view
+  |=  [eyre-id=@ta htm=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  :-  [200 ~[['content-type' 'text/html'] ['cache-control' 'private, max-age=5']]]
+  `(as-octs:mimes:html htm)
+::  ── PWA (installable app) ──────────────────────────────────────────────────
+::  Content-Type is an explicit header cord here (not mark-derived), so a
+::  manifest and a service worker are served with correct MIME by hand. All PWA
+::  routes sit AFTER the owner gate, so they're owner-only — the browser fetches
+::  them same-origin with the session cookie, which is the right posture for a
+::  private app (install is offered only inside an authed session).
+::
+++  send-typed
+  |=  [eyre-id=@ta ct=@t cc=@t body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  :-  [200 ~[['content-type' ct] ['cache-control' cc]]]
+  `(as-octs:mimes:html body)
+::  the service worker: extra Service-Worker-Allowed so its scope can be the
+::  whole /apps/lattice prefix (it is served from .../sw.js, default scope
+::  .../), and no-cache so an updated worker propagates.
+::
+++  send-sw
+  |=  [eyre-id=@ta body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  :_  `(as-octs:mimes:html body)
+  :-  200
+  :~  ['content-type' 'text/javascript']
+      ['cache-control' 'no-cache']
+      ['service-worker-allowed' '/apps/lattice']
+  ==
+::  a PNG from an embedded base64 constant (iOS apple-touch-icon must be a real
+::  raster; it ignores SVG + the manifest icons array).
+::
+++  send-png
+  |=  [eyre-id=@ta b64=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  :_  (de:base64:mimes:html b64)
+  [200 ~[['content-type' 'image/png'] ['cache-control' 'public, max-age=604800']]]
+::  scope + start_url both /apps/lattice (no trailing-slash mismatch). One SVG
+::  icon covers Android/desktop install; iOS uses the apple-touch-icon PNG.
+::
+++  manifest-json
+  ^-  @t
+  '{"id":"/apps/lattice","name":"Lattice","short_name":"Lattice","description":"Programmable pages and markdown notes on Urbit.","start_url":"/apps/lattice","scope":"/apps/lattice","display":"standalone","theme_color":"#1a6ed8","background_color":"#fafafa","icons":[{"src":"/apps/lattice/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"},{"src":"/apps/lattice/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"maskable"}]}'
+++  icon-svg
+  ^-  @t
+  '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" fill="#1a6ed8"/><g stroke="#ffffff" stroke-width="14" stroke-linecap="round" fill="#ffffff"><line x1="140" y1="140" x2="372" y2="140"/><line x1="140" y1="256" x2="372" y2="256"/><line x1="140" y1="372" x2="372" y2="372"/><line x1="140" y1="140" x2="140" y2="372"/><line x1="256" y1="140" x2="256" y2="372"/><line x1="372" y1="140" x2="372" y2="372"/><line x1="140" y1="140" x2="372" y2="372"/><line x1="372" y1="140" x2="140" y2="372"/><circle cx="140" cy="140" r="26"/><circle cx="256" cy="140" r="26"/><circle cx="372" cy="140" r="26"/><circle cx="140" cy="256" r="26"/><circle cx="256" cy="256" r="30"/><circle cx="372" cy="256" r="26"/><circle cx="140" cy="372" r="26"/><circle cx="256" cy="372" r="26"/><circle cx="372" cy="372" r="26"/></g></svg>'
+::  minimal service worker: only job is installability + a SAFE fetch strategy
+::  for an auth-gated, dynamic app. It does NOT precache (every route is
+::  auth-gated, so a logged-out install would 403 and abort). Static shell
+::  (icon/manifest) is cache-on-first-hit; everything else is network-first and
+::  never cached, so a stale authed page is never served offline.
+::
+++  sw-js
+  ^-  @t
+  'var V="lattice-v1";self.addEventListener("install",function(e){self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V}).map(function(k){return caches.delete(k)}))}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(u.pathname==="/apps/lattice/icon.svg"||u.pathname==="/apps/lattice/manifest.webmanifest"){e.respondWith(caches.open(V).then(function(c){return c.match(q).then(function(hit){return hit||fetch(q).then(function(r){c.put(q,r.clone());return r})})}));return}e.respondWith(fetch(q).catch(function(){if(q.mode==="navigate"){return new Response(`<!doctype html><meta name=viewport content="width=device-width"><body style="font:16px system-ui;padding:2rem;color:#888">offline - reconnect to reach lattice</body>`,{status:503,headers:{"content-type":"text/html"}})}return new Response("offline",{status:503})}))});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+++  apple-icon-b64
+  ^-  @t
+  'iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAABmJLR0QA/wD/AP+gvaeTAAARvUlEQVR4nO2deXQT94HHfxqd1mnZlm1kGRsXHAIBHINDuI80IaTBQOJsGgo0oVy7S0iy7b4FmjR9OUjfa7ZbQptwJXSBpWzAJJhuCG4WQ4Mhj8sOBHAcB2NsWZaEJcs6rGM0s8/r91zZ+CdrfqNrRr/Pn0LDT575zMzv/P4E+o0NAIMZCmLITzEYLAcmHPjJgYGC5cBAwXJgoGA5MFCwHBgoWA4MFCwHBgqWAwMFy4GBguXAQMFyYKBgOTBQsBwYKFgODBQsBwYKlgMDBcuBgYLlwEDBcmCgYDkwULAcGChYDgwULAcGCpYDAwXLgYGC5cBAwXJgoGA5MFCwHBgoWA4MFCwHBgqWAwMFy4GBguXAQBGBpEEpJUbnSrJVIoWU6HCQ7fZAS2cgPkXrVKJCnThH3Xs2zN3kbWvA6iTjU3RBplivFedqRG4fZXGSTR1+l48CyUHi5SAEYMlkdUWZevoYuVgoCP2nZqv/xFXXnjN2syMml0ouIVbMSC8vVU3KlwlCSqZp8PUdb1Wdc19tV48/JpcqRyNaPUf7xCRlYZYk9HM/SZ9r8hy50H3sSjdFg8QiSGzU5JRRae88kzMuTxrmOx4/teOUfdvJTjKqZ6uiTP3Lcl32/z8tYJgd5NtV1spL3VEsV0QIXnk8c908bZok3Dv9utG35bD5UnMPSBxC1dQNiSr7uYc1u1bpczXDPL3EQsG00fLJo2RfXHf7AlHwQ0QIfr00e0u5TiEdpsqllBELJ6k0cuGX37rpaJipkQv3rs57dqpm0DPyXrLVoooydYeD/KbNB1JNjn+YqvndslwhMcw56qcgSzLrPvnRS04yyPYqbX0m5/lZ2si/X1qYpteKT15zsSxXKhb89z/nT/1BWoTfFxKCBROUZgd5LUF+JEaOsqK03av0kZvRR45GpNeKP7/K6iKtmq19eUEm06MeMMg6XcGv73jZFL1t+Yh59yuYHjVnrOLLRo+pK04V5AQ3ZQkB2FqRM+xzdUgqytTTRsuRi9apRJuezEI7dku5LkslRC56ZrF86WQ1woESkeCdZ3IY3keclWPJZHX4Gmh4flmuQz72pQUZw9YzYCilxMZHGT9y+tm8CP1nP2CQlpeiiMU9OZ4uY/V3Plgg+0H2gOZfhIgIwRJ2p3jpFLUQ6YSNyZGUjJSxKfrpKWr+93OoZMSMMejvhT7Wzdcer3MyPWqcXqpVoL8XAAAZCuGq2doGE+PqYfmDbC/tzGK5UkrEuX8s3v0cJQWy//mXgniWyBue+PcWljXiZH+t5IbtdMKEoa93n89yyMJ2C2LCIEetSiMT7/Is3Qlor/MDc2wGmMIQ7yeV0RaFgdZmq/+6kXGtME8rfrCAVZMBAHDldk878/6o8XnSUTqUFlYobdE4dUktR0tnoNnqZ3mmXqu01Nx0Mz0qUymse3M0Wlu0jyAFfrrLaHMHAUMeGa/Yt9YAWPC9xd8adzkSUAM4wa7/29lD1X7nQTiw0xW8yG6Q88ItD4IZAICzjR6nl0rgSeOMHHvO2D0sJkl8UGPzk4hjb9urO1kNjlQjHu4L0LtqbMjlun3Uh2fsIBXkMDvIHacQ/9QgRZ+oZ9z91c/pBvfpBsbvoz5O3XB/+S3KE6uPqivOIOp8lA9O2RJSkU9Mw/L3J++euoFykYSEYP96Q36GGLnoDftMCLMP22yBVw6akAvVp4v2rTMwHYXu42/furdXoz91uCdHkAIb9pvqWlD6+wwZ4iMv5iP7YXcHV+02MmoWdjjIn+4y3nUGkc048uLIgiyUH1zX4l23tz26U+A4MNnHF6ArL3XnacWRjNCSFE2ETPJUpwkfn6g8ec3V3YNSd7nrCn56xflQkXxE+vCNtcu3e378flvL3UAUzQgO/HNgHL7gWLO33eOjU3GaYJACn191nW/qGZMrhV0nZw+17a+dWw5b5o9TpMuF0fLD7aMOfeW400k+YJCq04YejWu1BX5VaXn9qMWF2tAY0ow2W2Dp7+9YncGJBplUPLQidS3eF/eb9pyxB6kUnmDcT1G2ZO1c7YoZ6f2fNFv9r1Vaar/z9LVNRvSe6PxBc7XbbIGK7a1sOgAIASgpSNv0o6wZxX8fK65t9LzzF+vXd7xsHucwM/p/sEQkmFksf+Op7NBen31nu3afsd+y+EESkCwjHbcs/k8vD5jkfbPdV3PT3d9qNXWRFdtbb9/1R7H+AQCg6N5Oz0FNmNMN7rqW2JrRtwrh1A33zfYBXb3HrnQniRlJJEckxMiPqKOPwAxOwCU5OOGHni9mcE+OJPdDzyMzOClH0vqh55cZXJUjCf3Q884MDsuRVH7o+WgGt+VIEj/0PDWD83Ik3A89f83ggxwJ9EPPazN4IkdC/NDz3Qz+yBFnP/QpYAav5IibH/rUMINvcsTBD33KmMFDOWLqhz6VzOCnHDHyQ59iZvBWjsj9KM6VbPhhxvLpf59kBAD4yfT0DT/MGJMjSWUzkkgOIQHGGwasVdRrxZlKYez8KCmQHd6QX7N51OZFukFXvTBLvHmR7vSWUVWvjHyoKC12ZmSphHrtgP92fJ6UzZo8vk0T1KlELy3IWFKqvjdZJUiBi80926s7kRebwOYXun2UXBLJJF9A08Dlo1QyIrpmzB2r2PhYZllR2r3LFezu4CeXu9+rtsUtRTlJ5Xhhlnbzoqxhc7pON7hfOmBCXhwwpB/ItLEzQ6cSbVueO2fsMLGCbh+19bj1T192gcSRsNnnIkLwm2dzX16QKRENf/8WZkkWlajONnruulD8cHmpE1ddj01Qhs5fT4gZY/XSwxvyJ+YPv9hfIhI8Mk6ZoxHV3IxOPi4CCXu/vb5U95Npmsi/b8gQ//mfDJGsNAlT/2C5mtnlo9iYka0WHVhnMDBpLi2fnv7a4mwAUkmOijL1qtkMMoT7yFaLdr2gR07kzNWIlOzCcRQSArmOLCTA3jV5CHKvmatFCzDlpBxyCYGcJVpamPZ0GYPnTSivLs6OpAYaBoEAPQW1okyDnDb56mJd+BT9GJGAIlfOTA+/V0F4frEwE+HhUZwreTji0PEwTB8jHx3S/xEhhAD8fCF6wG2uRrRiBuItwTE5FpWo2Bxu6O2iYHyZF0xgVWgoj09QAoaUFqblDezPiPNJ40bsk04lmsQuyxcAsOnJrDMMez6eezhqd95z0zRMWw9zh2u4DktJQVqWSojcmOeGHIU6McsXPwBgxhg5+xhkZAqzJFtYBJmjQQh6y73r7OF1SO1wW+9gYOTE/dTFW45E9efwARrwXA4zDqnlzqmL95PqtjVA070dBmyo/c7DtEK6bFp6IVLw0r00W/1//soBmDB3rGI6u0oSRfeWC/gth9VJfn3HW8IuSfid41ameWICdtvhhHLwvOP9/2WW4PZVU0/VKyMBC+pbejqRxpU41s9RxXyrlFBabQGEnSWqv4layOtJ5jsB1rX0GO2BBJ40zsixv7aLTcb7u5/dRcjcaezwn29CTxHtp7bR8z3z5B2KBu+eQM/H7XCQB84xe5FxVQ6Pn3q7yop27OXbPUdRtwB+q8rKsq1E0+Dt44i/vPKiox4pWhMA8OYxa4w2xk7GUdnKS917mOc1W7rJtR+1I0d1WRwky22w3D7KhvriD1LghT1GhB1Ad9XYB6Wl8X8+xxufWg6cYzDNqdUWeO79tg7U91HfPNBBs/2YopQRbOavW7rJ5TvaGO2Msb+2660qC0i1mWA0Db647u50BaeOlg87GezUDffKnW3Is2zYZAgPIhr5uN1jRwy//YrTS71+1PK7zzsT2G2Y+AnGWSrhxkczl05RZww1wfjCLc+26k42ifRDmuHyUYqIJxg7fUG1TBjdCcaz71NsfCzjoSL5vXPNbe7g0Uvd71V3xr/tmnRy9CEkwMoZ6W9V5PR/Ut/Ss2Inys43oYRZVZChFL5argvfN3WpuefNY1ajPRCLfNy+vUj3r8sLnYHw6hHzvtquxAYX95Msw2BBqjeVNvST9i4ydma02gKttsAzf2gdnSNZMEG5bJom9No3W/0HzztOXnP1t1ortrcO8qNv/QtLP2zuYHsXWRKylerNdl+SmJFEi5qiToQrkZrM/j9+Yfuvgb0IfX2g34f0ZyRDvlT84accsVijZko9P3goR+xWL5pSzA++yRHrFc+mVPKDV3LEZy28KWX84I8c8UxJMKWGHzyRI/75GaYU8IMPciQqWcXEdz84L0diM3dMvPaD23IkQxqTib9+cFiOZDCD335wVY7kMYPHfnBSjmQzg69+cE+O5DSDl35wTI5kNoN/fnBJjuQ3g2d+JIscY3Ikg5KvxuVJ549T9O/2HiMzCAGYMipt7v0D8jPm3q+YXDhEQmh0/ZCKBY+MV4zLk4Z+Z+lkNUJyEG+nCc4slm9epIPlZTm91M4a2/Erzn3rDNE1Q0j05nT9fGEmLHPHaA+8e6LzyAUH8mKIIfNP22yBFTuNT5Yo183PgAXY1d/xbj1urW2MwiosrsohEwt+++Pcp6YMH5UXpGjhwBuZpRm5GtGHP8uLZMlufYv3Zx8akZdEDOnHvX/OkFRe6v7XQx2+AJ1ycmjkwoPrDWgrqtknxR5cb4g8C8XsIJd90NZgGjDFNT75yfUt3mU72hyeYArVOUSEYOfz+oSYkaEQfrQ6j1FKTo5G9J9r87JUwijWPyKkpEC24/kRIjbVH87J8fKCzFn3oeRVBCl6xQ701U0AgD+sHFGQybjJYMgQ/8eyEciFmrrIlTuNQaTKS98KF5AicuRoROvnM44v7kNICJ5gEbo4d6xi2ER6GPPHKWbfhx4KuLhUFUk9Y0j+8ZEMNsmtXJJjzRwtmzze9fMyIsnSH5KNj6EnxYLewxHvYKlYsHYe+t0vlxCr5yDeThyTY+EkxiGvoajSiJnFKK+kLJVwyihWIcYPFcnRss9nFstZruFeOJHVSUMj3g+rgkwx+31P3ngq+9mpjNsOeVoxy02QhAT409q8djvjZu0DA3u6ECjKluRniOPcERxvOfKi0X88SicZdpV6jCgtSCsNWb0YTwxxlyPer5WEVKz4QQ7vQ2oTEl/ED9zsYokQwCG1nMHC+5Dapg6/n6SR26J9HDjX9Zd6xtGL4/TSXy1huyXWrz+xIPSjlz+oWjZtwNa1TPGTdJOZ7yG1Lh91rsnDcouJnTX2W8zzHs9/1/Pio5n3blAaOZ2u4Ed/syPkZ5i6SJZynG308P+1AgA4coFVNl5dixfBDAAASdGfsIvl++RyN1qySpPZX888WDeUIxdTI4f02JXuG0bEEU4AAHKGKQDgvWob8v3n9FLvVaMHzW5FDTAFAFxr8x5PkQRjigabD5sDQZRRqMMXHGyCiK1OEvkivV1lZZPgVtvoqUSK1/WT9OaPzcgTjrgXNdneRRrt5OMMu4SvtnrXfNROsnvz1t/xZqsZbyV26CvHbz+7y6pgAE7ddM8qlo9IZ9YNuOlj81+/Qd+tnZM5pDeMPqOdnHe/IsKxyjMN7ud3G92+KNxBNTfdSplwcmGk4yy7T9tfqzSzzwMNUuCzq64J+dKCyAYQ/CT9i0PmQwy37+CDHACA60bf2UbPhHxZ+G5Tj5/aVt256WOzN0oT5mganG5wN1sDpYVpyrDjYR0O8t8+Nu84ZYtWUqwvQB+77KRouqRAJhaGuyuutXnX7TV9cT1qmz1wcoIxIQDlpeqnp6hnFg+OMv7e4j9x1fXhGXuM+n/SJMTy6ZrFpepJI2Whzy+K7k1BrapzHjjniFGXbrZatHqOduFEZVH2gKeIn6TPNnqOXHQcr3MmpJ6RXHL0o5ASY3Ik2WqRQkqYugJGOxm3caZMpbAou7fovhmjtyx+lhGokZOfIc7Tikaki90+ytxNNpn98e/P4IAcmGQjWRY1YZIQLAcGCpYDAwXLgYGC5cBAwXJgoGA5MFCwHBgoWA4MFCwHBgqWAwMFy4GBguXAQMFyYKBgOTBQsBwYKFgODBQsBwYKlgMDBcuBgYLlwEDBcmCgYDkwULAcGChYDgwULAcGCpYDAwXLgYGC5cBAwXJgoGA5MFCwHBgoWA4MFCwHBgqWAwMFy4EBMP4PMeLu8glB6VIAAAAASUVORK5CYII='
+::  +pwa-head: the <head> tags that make the app installable (manifest link,
+::  theme-color, apple meta + icon). NOT added to render-bare (the preview
+::  iframe is an inner document). +sw-register-script registers the worker.
+::
+++  pwa-head
+  ^-  tape
+  %-  trip
+  '<link rel="manifest" href="/apps/lattice/manifest.webmanifest"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#1a6ed8"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1a1a"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="Lattice"><link rel="apple-touch-icon" href="/apps/lattice/apple-touch-icon.png"><link rel="icon" href="/apps/lattice/icon.svg" type="image/svg+xml">'
+++  sw-register-script
+  ^-  tape
+  %-  trip
+  '<script>if("serviceWorker"in navigator){navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice"}).then(function(r){r.addEventListener("updatefound",function(){var w=r.installing;if(w)w.addEventListener("statechange",function(){if(w.state==="installed"&&navigator.serviceWorker.controller)w.postMessage("skipWaiting")})})}).catch(function(x){})}</script>'
 ::  +esc: HTML-escape a tape. +has-prefix: tape prefix test.
 ::
 ++  esc
@@ -2347,26 +4399,449 @@
     $(lines t.lines, out :(weld out "<blockquote>" (esc (slag 2 ln)) "</blockquote>"))
   ?:  =("" ln)  $(lines t.lines)
   $(lines t.lines, out :(weld out "<p>" (esc ln) "</p>"))
-::  +home-index-html: the home page — a list of our published page links.
+::  +md-envelope: the exact page-source shell a markdown note is stored in.
+::  The evaluator only knows Hoon gates, so a note IS a gate returning (md '...'):
+::  wrap-md escapes the prose into a single-quote cord and drops it in here;
+::  unwrap-md matches this shell to recover the prose for editing. Keep the two
+::  in lockstep with this string.
+::
+++  content-env-pre  "|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]  ^-  result  ("
+::  +make-folder-index: the generated code for an `index`-type page — a gate
+::  whose whole body is `(folder-index deps /its/folder)`. The folder is the
+::  page's OWN parent (snip its path), so creating an index page in a folder
+::  auto-lists that folder with no hoon written by the user.
+::
+++  make-folder-index
+  |=  pax=path
+  ^-  @t
+  (crip :(weld content-env-pre "folder-index deps " (spud (snip `path`pax)) ")"))
+::  +wrap-content: raw body -> a page gate `... (BUILDER 'body')`. builder is a
+::  pg constructor (md/gmi/html/text/js/css). Escapes body for a single-quote
+::  hoon cord: \ -> \\, ' -> \', control bytes -> \0a hex.
+::
+++  wrap-content
+  |=  [builder=@tas body=@t]
+  ^-  @t
+  =/  hx  |=(n=@ ^-(@tD ?:((lth n 10) (add '0' n) (add 87 n))))
+  =/  ec=tape
+    %-  zing
+    %+  turn  (trip body)
+    |=  c=@tD
+    ^-  tape
+    ?:  =(c 92)  "\\\\"
+    ?:  =(c 39)  ~[`@tD`92 `@tD`39]
+    ?:  (lth c 32)  ;:(weld "\\" ~[(hx (div c 16))] ~[(hx (mod c 16))])
+    ~[c]
+  (crip ;:(weld content-env-pre (trip builder) " '" ec "')"))
+::  +unwrap-content: page source -> [builder body] if it matches the content
+::  envelope, else ~ (a hand-written hoon page). Backward compatible with old
+::  (md '...') notes. Fenced so a malformed body can't crash a read.
+::
+++  unwrap-content
+  |=  src=@t
+  ^-  (unit [builder=@tas body=@t])
+  =/  s=tape  (trip src)
+  ?.  (has-prefix content-env-pre s)  ~
+  =/  aft=tape  (slag (lent content-env-pre) s)
+  =/  sp  (find " '" aft)
+  ?~  sp  ~
+  =/  builder=tape  (scag u.sp aft)
+  =/  rest=tape  (slag (add u.sp 2) aft)
+  =/  ls=@ud  (lent rest)
+  ?.  (gte ls 2)  ~
+  ?.  =("')" (slag (sub ls 2) rest))  ~
+  =/  mid=tape  (scag (sub ls 2) rest)
+  =/  quoted=@t  (crip :(weld "'" mid "'"))
+  =/  r  (mule |.(;;(@t q:(slap !>(0) (ream quoted)))))
+  ?.  ?=(%& -.r)  ~
+  `[`@tas`(crip builder) p.r]
+::  +content-builders: the pg constructors an editor file wraps its body in.
+::  md/gmi/html render to a view; text/js/css are shown as code + served raw.
+::
+++  content-builders  `(set @tas)`(sy ~[%md %gmi %html %text %js %css])
+::  +name-pax: a ?name= value (slash-separated, e.g. notes/todo) -> a validated
+::  page path under /page, or ~. Each segment must be a non-empty @ta knot.
+::
+++  name-pax
+  |=  n=@t
+  ^-  (unit path)
+  =/  r  (mule |.(`path`(stab (crip (weld "/" (trip n))))))
+  ?.  ?=(%& -.r)  ~
+  ?~  p.r  ~
+  ?.  (levy `path`p.r |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))  ~
+  `p.r
+++  valid-name  |=(n=@t ^-(? ?=(^ (name-pax n))))
+++  pax-of  |=(n=@t ^-(path (need (name-pax n))))
+::  +pax-str: a page path -> its slash-separated string (no leading slash).
+++  pax-str  |=(px=path ^-(tape ?~(px "" (slag 1 (trip (spat px))))))
+::  +kind-of: a ?kind= param -> a valid editor kind (a content builder or %hoon).
+++  kind-of  |=(k=@t ^-(@tas ?:(|((~(has in content-builders) `@tas`k) =(%index k)) `@tas`k %hoon)))
+::  +mime-of: the Content-Type an asset file (/f/<name>) is served with.
+++  mime-of
+  |=  builder=@tas
+  ^-  @t
+  ?+  builder  'text/plain; charset=utf-8'
+    %js    'text/javascript; charset=utf-8'
+    %css   'text/css; charset=utf-8'
+    %html  'text/html; charset=utf-8'
+    %md    'text/markdown; charset=utf-8'
+    %gmi   'text/gemini; charset=utf-8'
+  ==
+::  +read-tree: every node under /page (sorted) as [path page=?] — page=%.y is a
+::  programmable page (a dir with a /code grub), page=%.n a plain folder (incl.
+::  empty ones, made by +folder-new). Feeds the editor's nested tree sidebar.
+::
+++  read-tree
+  =/  m  (fiber:fiber:nexus ,(list [pax=path page=?]))
+  ^-  form:m
+  ;<  sn=seen:nexus  bind:m  (peek:io [%& %| (weld app-base /page)] ~)
+  ?.  ?=([%& %ball *] sn)  (pure:m ~)
+  %-  pure:m
+  %+  sort  (collect-tree ball.p.sn ~)
+  |=([a=[pax=path page=?] b=[pax=path page=?]] (aor pax.a pax.b))
+::  +read-page-names: just the page paths (folders dropped) — the home landing
+::  lists what you can open. (+read-template-names was removed with the home
+::  redesign, which no longer lists templates.)
+::
+++  read-page-names
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  ;<  tree=(list [pax=path page=?])  bind:m  read-tree
+  (pure:m (murn tree |=([pax=path page=?] ?:(page `pax ~))))
+::  +collect-tree: walk a page-tree ball. A dir with a /code grub IS a page; any
+::  other non-root dir is a folder. Recurse through pages too (a page can also be
+::  a parent of nested pages). Paths are relative to /page.
+::
+++  collect-tree
+  |=  [b=ball:tarball rel=path]
+  ^-  (list [pax=path page=?])
+  =/  fils  ?~(fil.b ~ contents.u.fil.b)
+  =/  kids=(list [pax=path page=?])
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=  [nom=@ta kid=ball:tarball]
+    (collect-tree kid (weld rel /[nom]))
+  ?:  (~(has by fils) %code)  [[rel &] kids]
+  ?~  rel  kids
+  [[rel |] kids]
+::  +edit-css / +edit-js / +edit-html: the in-browser page editor. Code pane +
+::  live preview (the page's own view in an iframe — it live-reloads itself via
+::  its SSE, so a successful save renders immediately). The editor page itself
+::  has NO auto-reload (that would eat unsaved edits): save goes through
+::  fetch(), and the compile result is read back from the /err grub. name=~ is
+::  new-page mode: a name field and a starter template, no preview yet.
+::
+++  edit-css
+  ^-  tape
+  %-  trip
+  '<style>*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}body{margin:0;font:15px/1.5 system-ui,sans-serif;color:#111;background:#fafafa;height:100vh;overflow:hidden}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}a{color:#1a6ed8}.ws{display:grid;grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 300px;grid-template-rows:auto 1fr;height:100vh}.ws.nt{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 300px}.ws.nc{grid-template-columns:210px minmax(0,1.15fr) minmax(0,1fr) 0}.ws.nt.nc{grid-template-columns:0 minmax(0,1.15fr) minmax(0,1fr) 0}.bar{grid-column:1/-1;grid-row:1;display:flex;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid #8884}.bar .grow{flex:1}.bar button,.bar input,.bar a,.bar select{font:inherit;padding:5px 9px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;text-decoration:none;cursor:pointer}.bar select{color-scheme:light dark}.bar select option{background:#fafafa;color:#111}@media(prefers-color-scheme:dark){.bar select option{background:#242424;color:#e6e6e6}}.bar input{cursor:text}.bar button:hover,.bar a:hover{border-color:#1a6ed8}.bar .ico{padding:5px 8px}.bar b{padding:0 4px}#st{border:0;background:0;font-size:.85rem;padding:0}.tree{grid-column:1;grid-row:2;overflow:auto;padding:10px;border-right:1px solid #8884}.ctl{grid-column:4;grid-row:2;overflow:auto;padding:10px;border-left:1px solid #8884}.ws.nt .tree,.ws.nc .ctl{display:none}.tree a{display:block;padding:5px 8px;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tree a:hover{background:#8881}.tree a.cur{background:#1a6ed822;color:#1a6ed8;font-weight:600}.tree .newbtns{display:flex;gap:6px;margin-bottom:8px}.tree .nf{flex:1;text-align:center;padding:5px 8px;font:inherit;font-weight:600;font-size:.82rem;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;cursor:pointer;text-decoration:none}.tree .nf:hover{border-color:#1a6ed8}.tree .fld{display:flex;align-items:center;gap:2px;padding:5px 8px;white-space:nowrap;color:#8a8a8a;font-weight:600}.tree .fld .ftog{display:flex;align-items:center;gap:4px;flex:1;min-width:0;cursor:pointer;overflow:hidden;text-overflow:ellipsis}.tree .fld .cx{display:inline-block;width:.9em;font-size:.7rem;color:#8a8a8a;flex:none;user-select:none}.tree .fld .addf{margin-left:auto;color:#1a6ed8;text-decoration:none;font-weight:700;padding:0 6px;border-radius:4px;flex:none}.tree .fld .addf:hover{background:#1a6ed822}.tree .sec{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:12px 4px 4px}#src{grid-column:2;grid-row:2;width:100%;height:100%;resize:none;border:0;border-right:1px solid #8884;font:13px/1.55 ui-monospace,Menlo,monospace;padding:12px;background:transparent;color:inherit;white-space:pre;overflow:auto;tab-size:2}.ws.wrap #src{white-space:pre-wrap;overflow-wrap:break-word}.prev,.prev-empty{grid-column:3;grid-row:2;width:100%;height:100%;border:0}.prev{background:#fafafa}@media(prefers-color-scheme:dark){.prev{background:#1a1a1a}}.prev-empty{display:flex;align-items:center;justify-content:center;color:#8a8a8a;text-align:center;padding:2rem}.ctl h3{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:14px 0 5px}.ctl h3:first-child{margin-top:0}.ctl .err{color:#c0392b;white-space:pre-wrap;font:11px/1.4 ui-monospace,monospace;max-height:9rem;overflow:auto}.ctl .ok{color:#27ae60;font-size:.85rem}.ctl .row{display:flex;gap:6px}.ctl input{flex:1;font:inherit;padding:6px 8px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;min-width:0}.ctl button{font:inherit;padding:6px 10px;border:1px solid #8886;border-radius:6px;background:#8881;color:inherit;cursor:pointer}.ctl button:hover{border-color:#1a6ed8}.share{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}.share button.on{border-color:#1a6ed8;color:#1a6ed8}.del{margin-top:18px;color:#c0392b;border-color:#c0392b55!important;width:100%}.mtabs{display:none;grid-column:1;grid-row:2}@media(max-width:820px){body{overflow:auto;height:auto}.ws,.ws.nt,.ws.nc{grid-template-columns:1fr!important;grid-template-rows:auto auto 1fr!important;height:auto;min-height:100vh}.bar{grid-column:1;flex-wrap:wrap;padding-left:max(10px,env(safe-area-inset-left));padding-right:max(10px,env(safe-area-inset-right))}.bar .grow{display:none}.bar button,.bar a,.bar input{min-height:44px}.bar .ico{min-width:44px}#tt,#ct{display:none}.mtabs{display:flex;border-bottom:1px solid #8884}.mtabs button{flex:1;padding:11px;border:0;background:0;color:inherit;font:inherit;border-bottom:2px solid transparent;cursor:pointer}.mtabs button.on{border-bottom-color:#1a6ed8;color:#1a6ed8;font-weight:600}.tree,#src,.prev,.prev-empty,.ctl{grid-column:1;grid-row:3;border:0;display:none}.ws[data-mv=tree] .tree{display:block}.ws[data-mv=code] #src{display:block}.ws[data-mv=prev] .prev{display:block}.ws[data-mv=prev] .prev-empty{display:flex}.ws[data-mv=ctl] .ctl{display:block}#src{min-height:68vh;font-size:16px}.prev,.prev-empty{min-height:68vh}.ctl input{font-size:16px}.ctl,#src{padding-bottom:max(12px,env(safe-area-inset-bottom))}}</style>'
+::  the starter template a new page opens with.
+::
+++  edit-template
+  ^-  tape
+  %-  trip
+  '|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]\0a^-  result\0a(text \'hello\')\0a'
+::  the starter a new markdown NOTE opens with (raw markdown, not hoon).
+::
+++  md-template
+  ^-  tape
+  %-  trip
+  '# My note\0a\0aStart writing in markdown. Use **bold**, *italic*, lists, and [links](https://urbit.org). The preview updates as you type.\0a'
+::  +starter-for: the starter body a new file of the given kind opens with.
+::
+++  starter-for
+  |=  kind=@tas
+  ^-  tape
+  ?+  kind  edit-template
+    %md    md-template
+    %gmi   (trip '# Gemtext\0a\0aLines are text. A link line starts with => :\0a=> https://urbit.org  Urbit\0a')
+    %html  (trip '<h1>Hello</h1>\0a<p>Raw HTML — style it, script it, import assets.</p>\0a<!-- import a js file you made: <script src="/apps/lattice/f/app"></script> -->\0a')
+    %text  (trip 'Plain text, shown exactly as typed.\0a')
+    %js    (trip '// A JavaScript asset. Import it into an html file with:\0a//   <script src="/apps/lattice/f/NAME"></script>\0aconsole.log("hello from lattice");\0a')
+    %css   (trip '/* A CSS asset. Import it into an html file with:\0a   <link rel="stylesheet" href="/apps/lattice/f/NAME"> */\0abody { font-family: system-ui, sans-serif; }\0a')
+    %index  (trip 'This page lists the pages in its own folder, automatically.\0a\0aName it like  blog/index  and save — the text here is ignored; the\0alisting is generated from the folder and stays live as pages come and go.\0a')
+  ==
+::  +share-btn: one sharing preset button (JS wires the click), marked .on if current.
+::
+++  share-btn
+  |=  [m=@tas label=tape cur=share-mode:le]
+  ^-  tape
+  ;:  weld
+    "<button data-m=\""  (trip m)  "\""  ?:(=(m cur) " class=\"on\"" "")  ">"  label  "</button>"
+  ==
+::  +edit-html: the editor WORKSPACE (a full-viewport doc, no address-bar chrome).
+::  Toggleable tree sidebar (left), code (centre), live preview iframe (right),
+::  toggleable controls panel (far right: status, command, sharing, delete).
+::
+::  +vim-script / +vim-b64: the editor's vim mode (designed + verified separately
+::  as a self-contained IIFE). Stored base64 because its JS has \n and ' that a
+::  Hoon cord would mangle; decoded + run at load. Owner-only self-served editor
+::  code, so eval is not a trust boundary. Toggle persists in localStorage.edVim.
+::
+++  vim-script
+  ^-  tape
+  ;:  weld
+    "<script>eval(decodeURIComponent(escape(atob('"
+    vim-b64
+    "'))))</script>"
+  ==
+++  vim-b64
+  ^-  tape
+  %-  trip
+  'LyogPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICBWSU0gTU9ERSBmb3IgdGhlIGxhdHRpY2UgY29kZSBlZGl0b3IuCiAgIFNlbGYtY29udGFpbmVkIHZhbmlsbGEgSlMsIG5vIGRlcGVuZGVuY2llcy4gT3BlcmF0ZXMgb24gPHRleHRhcmVhIGlkPSJzcmMiPi4KICAgSW5saW5lIHRoaXMgSU5TSURFIChvciByaWdodCBhZnRlcikgdGhlIGV4aXN0aW5nIGVkaXRvciBJSUZFOyBpdCByZS1mZXRjaGVzCiAgIGB0YWAgaXRzZWxmIHNvIG9yZGVyaW5nIGlzIG5vdCBjcml0aWNhbC4KICAgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PSAqLwooZnVuY3Rpb24gdmltTW9kZSgpewogICJ1c2Ugc3RyaWN0IjsKCiAgdmFyIHRhID0gZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoInNyYyIpOwogIGlmKCF0YSkgcmV0dXJuOwoKICAvKiAtLS0tIHBlcnNpc3RlZCBvbi9vZmYgZmxhZyAoc2FtZSBwYXR0ZXJuIGFzIGVkTlQgLyBlZE5DKSAtLS0tICovCiAgdmFyIExTID0gImVkVmltIjsKICBmdW5jdGlvbiB2aW1PbigpeyByZXR1cm4gbG9jYWxTdG9yYWdlLmdldEl0ZW0oTFMpID09PSAiMSI7IH0gICAvLyBkZWZhdWx0IE9GRgoKICAvKiAtLS0tIG1vZGUgaW5kaWNhdG9yIGVsZW1lbnQgKGNyZWF0ZWQgb25jZSwgbGl2ZXMgYnkgdGhlIHN0YXR1cyBiYXIpIC0tLS0gKi8KICB2YXIgaW5kID0gZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoInZpbUluZCIpOwogIGlmKCFpbmQpewogICAgaW5kID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgic3BhbiIpOwogICAgaW5kLmlkID0gInZpbUluZCI7CiAgICBpbmQuc3R5bGUuY3NzVGV4dCA9CiAgICAgICJkaXNwbGF5Om5vbmU7bWFyZ2luLWxlZnQ6OHB4O3BhZGRpbmc6MXB4IDZweDtib3JkZXItcmFkaXVzOjNweDsiKwogICAgICAiZm9udDoxMXB4LzEuNiBtb25vc3BhY2U7Zm9udC13ZWlnaHQ6Ym9sZDtsZXR0ZXItc3BhY2luZzouNXB4OyIrCiAgICAgICJjb2xvcjojZmZmO2JhY2tncm91bmQ6IzY2Njt2ZXJ0aWNhbC1hbGlnbjptaWRkbGU7IjsKICAgIHZhciBzdEVsID0gZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoInN0Iik7CiAgICBpZihzdEVsICYmIHN0RWwucGFyZW50Tm9kZSkgc3RFbC5wYXJlbnROb2RlLmluc2VydEJlZm9yZShpbmQsIHN0RWwubmV4dFNpYmxpbmcpOwogICAgZWxzZSBkb2N1bWVudC5ib2R5LmFwcGVuZENoaWxkKGluZCk7CiAgfQoKICAvKiAtLS0tIHN0YXRlIC0tLS0gKi8KICB2YXIgTU9ERSA9ICJub3JtYWwiOyAgICAgICAgLy8gIm5vcm1hbCIgfCAiaW5zZXJ0IiB8ICJ2aXN1YWwiCiAgdmFyIHBlbmRpbmcgPSAiIjsgICAgICAgICAgIC8vIHBlbmRpbmcgb3BlcmF0b3IvcHJlZml4OiBkIGMgeSBnIHIgZiBGIHQgVAogIHZhciBjb3VudCA9ICIiOyAgICAgICAgICAgICAvLyBudW1lcmljIGNvdW50IHByZWZpeCAoZGlnaXRzIGFzIGEgc3RyaW5nKQogIHZhciByZWcgPSAiIjsgICAgICAgICAgICAgICAvLyBzaW5nbGUgdW5uYW1lZCByZWdpc3RlciBjb250ZW50cwogIHZhciByZWdMaW5ld2lzZSA9IGZhbHNlOyAgICAvLyB3YXMgdGhlIHJlZ2lzdGVyIGNhcHR1cmVkIGxpbmV3aXNlPwogIHZhciB2aXNBbmNob3IgPSAwOyAgICAgICAgICAvLyBzZWxlY3Rpb24gYW5jaG9yIGluZGV4IGZvciB2aXN1YWwgbW9kZQogIHZhciB2aXNDYXJldCA9IDA7ICAgICAgICAgICAvLyBtb3ZpbmcgaGVhZCBvZiB0aGUgdmlzdWFsIHNlbGVjdGlvbgogIHZhciBjbWRBY3RpdmUgPSBmYWxzZTsgICAgICAvLyBleCBjb21tYW5kLWxpbmUgKDopIGFjdGl2ZT8KICB2YXIgY21kQnVmID0gIiI7ICAgICAgICAgICAgLy8gdGhlIHR5cGVkIGV4IGNvbW1hbmQgKHdpdGhvdXQgdGhlIGxlYWRpbmcgOikKCiAgLyogLS0tLSBmaXJlIGlucHV0IHNvIHRoZSBsaXZlIGNvbnRlbnQgcHJldmlldyByZWZyZXNoZXMgLS0tLSAqLwogIGZ1bmN0aW9uIGZpcmVJbnB1dCgpeyB0YS5kaXNwYXRjaEV2ZW50KG5ldyBFdmVudCgiaW5wdXQiLCB7IGJ1YmJsZXM6dHJ1ZSB9KSk7IH0KCiAgLyogLS0tLSBpbmRpY2F0b3IgLS0tLSAqLwogIGZ1bmN0aW9uIHNldEluZCgpewogICAgaWYoIXZpbU9uKCkpeyBpbmQuc3R5bGUuZGlzcGxheSA9ICJub25lIjsgcmV0dXJuOyB9CiAgICBpbmQuc3R5bGUuZGlzcGxheSA9ICJpbmxpbmUtYmxvY2siOwogICAgaWYoY21kQWN0aXZlKXsgaW5kLnRleHRDb250ZW50ID0gIjoiICsgY21kQnVmOyBpbmQuc3R5bGUuYmFja2dyb3VuZCA9ICIjNDU1YTY0IjsgcmV0dXJuOyB9CiAgICB2YXIgbGFiZWwsIGJnOwogICAgaWYoTU9ERSA9PT0gImluc2VydCIpeyBsYWJlbCA9ICItLSBJTlNFUlQgLS0iOyBiZyA9ICIjMmU3ZDMyIjsgfQogICAgZWxzZSBpZihNT0RFID09PSAidmlzdWFsIil7IGxhYmVsID0gIi0tIFZJU1VBTCAtLSI7IGJnID0gIiM4ZTI0YWEiOyB9CiAgICBlbHNlIHsgbGFiZWwgPSAiLS0gTk9STUFMIC0tIjsgYmcgPSAiIzE1NjVjMCI7IH0KICAgIGlmKHBlbmRpbmcgfHwgY291bnQpIGxhYmVsICs9ICIgIiArIGNvdW50ICsgcGVuZGluZzsKICAgIGluZC50ZXh0Q29udGVudCA9IGxhYmVsOwogICAgaW5kLnN0eWxlLmJhY2tncm91bmQgPSBiZzsKICB9CgogIC8qIC0tLS0gY2FyZXQgLyBidWZmZXIgaGVscGVycyAtLS0tICovCiAgZnVuY3Rpb24gdmFsKCl7IHJldHVybiB0YS52YWx1ZTsgfQogIGZ1bmN0aW9uIHBvcygpeyByZXR1cm4gdGEuc2VsZWN0aW9uU3RhcnQ7IH0KICBmdW5jdGlvbiBzZXRQb3MocCl7IHAgPSBjbGFtcChwLCAwLCB2YWwoKS5sZW5ndGgpOyB0YS5zZWxlY3Rpb25TdGFydCA9IHRhLnNlbGVjdGlvbkVuZCA9IHA7IH0KICBmdW5jdGlvbiBzZXRTZWwoYSwgYil7IHRhLnNlbGVjdGlvblN0YXJ0ID0gYTsgdGEuc2VsZWN0aW9uRW5kID0gYjsgfQogIGZ1bmN0aW9uIGNsYW1wKG4sIGxvLCBoaSl7IHJldHVybiBuIDwgbG8gPyBsbyA6IChuID4gaGkgPyBoaSA6IG4pOyB9CgogIGZ1bmN0aW9uIGxpbmVTdGFydChwKXsgdmFyIHYgPSB2YWwoKTsgdmFyIGkgPSB2Lmxhc3RJbmRleE9mKCJcbiIsIHAgLSAxKTsgcmV0dXJuIGkgKyAxOyB9CiAgZnVuY3Rpb24gbGluZUVuZChwKXsgdmFyIHYgPSB2YWwoKTsgdmFyIGkgPSB2LmluZGV4T2YoIlxuIiwgcCk7IHJldHVybiBpIDwgMCA/IHYubGVuZ3RoIDogaTsgfQogIGZ1bmN0aW9uIGxpbmVUZXh0KHApeyByZXR1cm4gdmFsKCkuc2xpY2UobGluZVN0YXJ0KHApLCBsaW5lRW5kKHApKTsgfQogIGZ1bmN0aW9uIGNvbChwKXsgcmV0dXJuIHAgLSBsaW5lU3RhcnQocCk7IH0KICAvLyBJbiBOT1JNQUwgbW9kZSB0aGUgY2FyZXQgcmVzdHMgT04gYSBjaGFyLCBzbyBtYXggY29sdW1uIGlzIGxpbmVFbmQtMQogIC8vICh1bmxlc3MgdGhlIGxpbmUgaXMgZW1wdHksIHdoZXJlIGl0IHNpdHMgYXQgbGluZVN0YXJ0KS4KICBmdW5jdGlvbiBsaW5lTGFzdENvbChwKXsgdmFyIHMgPSBsaW5lU3RhcnQocCksIGUgPSBsaW5lRW5kKHApOyByZXR1cm4gZSA+IHMgPyBlIC0gMSA6IHM7IH0KICBmdW5jdGlvbiBub3JtQ2xhbXAocCl7CiAgICB2YXIgbHMgPSBsaW5lU3RhcnQocCksIGxlID0gbGluZUVuZChwKTsKICAgIGlmKGxlID09PSBscykgcmV0dXJuIGxzOyAgICAgICAgICAgICAgLy8gZW1wdHkgbGluZQogICAgcmV0dXJuIGNsYW1wKHAsIGxzLCBsZSAtIDEpOwogIH0KICBmdW5jdGlvbiBmaXJzdE5vbkJsYW5rKHApewogICAgdmFyIGxzID0gbGluZVN0YXJ0KHApLCBsZSA9IGxpbmVFbmQocCksIHYgPSB2YWwoKSwgaSA9IGxzOwogICAgd2hpbGUoaSA8IGxlICYmICh2W2ldID09PSAiICIgfHwgdltpXSA9PT0gIlx0IikpIGkrKzsKICAgIHJldHVybiBpIDwgbGUgPyBpIDogbHM7CiAgfQogIC8vIEtlZXAgY2FyZXQgbGVnYWwgZm9yIHRoZSBjdXJyZW50IG1vZGUuCiAgZnVuY3Rpb24gZml4Q2FyZXQoKXsKICAgIGlmKE1PREUgPT09ICJpbnNlcnQiKSByZXR1cm47CiAgICB2YXIgcCA9IHBvcygpLCBsYXN0ID0gbGluZUxhc3RDb2wocCk7CiAgICBpZihwID4gbGFzdCkgc2V0UG9zKGxhc3QpOwogIH0KCiAgLyogPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICAgIEVESVQgUFJJTUlUSVZFUyDigJQgdXNlIGV4ZWNDb21tYW5kIHNvIG5hdGl2ZSB1bmRvICsgcHJldmlldyBib3RoIHdvcmsuCiAgICAgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PSAqLwogIGZ1bmN0aW9uIHRyeUV4ZWMoY21kLCBhcmcpewogICAgdHJ5ewogICAgICBpZihjbWQgPT09ICJpbnNlcnRUZXh0IikgcmV0dXJuIGRvY3VtZW50LmV4ZWNDb21tYW5kKCJpbnNlcnRUZXh0IiwgZmFsc2UsIGFyZyk7CiAgICAgIGlmKGNtZCA9PT0gImRlbGV0ZSIpIHJldHVybiBkb2N1bWVudC5leGVjQ29tbWFuZCgiZGVsZXRlIiwgZmFsc2UsIG51bGwpOwogICAgfWNhdGNoKGUpe30KICAgIHJldHVybiBmYWxzZTsKICB9CiAgLy8gUmVwbGFjZSBbYSxiKSB3aXRoIHRleHQuIGV4ZWNDb21tYW5kIGtlZXBzIHRoZSBuYXRpdmUgdW5kbyBzdGFjazsgc2V0UmFuZ2VUZXh0CiAgLy8gaXMgdGhlIGZhbGxiYWNrLiBBbHdheXMgZmlyZXMgaW5wdXQgZm9yIHRoZSBsaXZlIHByZXZpZXcuCiAgZnVuY3Rpb24gcmVwbGFjZVJhbmdlKGEsIGIsIHRleHQsIGNhcmV0KXsKICAgIGEgPSBjbGFtcChhLCAwLCB2YWwoKS5sZW5ndGgpOwogICAgYiA9IGNsYW1wKGIsIDAsIHZhbCgpLmxlbmd0aCk7CiAgICBpZihhID4gYil7IHZhciB0ID0gYTsgYSA9IGI7IGIgPSB0OyB9CiAgICB0YS5mb2N1cygpOwogICAgc2V0U2VsKGEsIGIpOwogICAgdmFyIG9rID0gZmFsc2U7CiAgICBpZihhID09PSBiKXsKICAgICAgaWYodGV4dC5sZW5ndGgpIG9rID0gdHJ5RXhlYygiaW5zZXJ0VGV4dCIsIHRleHQpIHx8IHRhLnNldFJhbmdlVGV4dCh0ZXh0LCBhLCBiLCAiZW5kIikgPT09IHVuZGVmaW5lZDsKICAgICAgZWxzZSBvayA9IHRydWU7CiAgICB9IGVsc2UgaWYodGV4dC5sZW5ndGggPT09IDApewogICAgICBvayA9IHRyeUV4ZWMoImRlbGV0ZSIpIHx8ICh0YS5zZXRSYW5nZVRleHQoIiIsIGEsIGIsICJlbmQiKSA9PT0gdW5kZWZpbmVkKTsKICAgIH0gZWxzZSB7CiAgICAgIG9rID0gdHJ5RXhlYygiaW5zZXJ0VGV4dCIsIHRleHQpIHx8ICh0YS5zZXRSYW5nZVRleHQodGV4dCwgYSwgYiwgImVuZCIpID09PSB1bmRlZmluZWQpOwogICAgfQogICAgaWYodHlwZW9mIGNhcmV0ID09PSAibnVtYmVyIikgc2V0UG9zKGNhcmV0KTsKICAgIGZpcmVJbnB1dCgpOwogICAgcmV0dXJuIG9rOwogIH0KICBmdW5jdGlvbiBpbnNlcnRBdChwLCB0ZXh0KXsgcmVwbGFjZVJhbmdlKHAsIHAsIHRleHQsIHAgKyB0ZXh0Lmxlbmd0aCk7IH0KICBmdW5jdGlvbiBkZWxldGVSYW5nZShhLCBiLCBjYXJldCl7IHJlcGxhY2VSYW5nZShhLCBiLCAiIiwgdHlwZW9mIGNhcmV0ID09PSAibnVtYmVyIiA/IGNhcmV0IDogTWF0aC5taW4oYSwgYikpOyB9CgogIC8qIC0tLS0gcmVnaXN0ZXIgLS0tLSAqLwogIGZ1bmN0aW9uIHlhbmsoYSwgYiwgbGluZXdpc2UpewogICAgdmFyIHYgPSB2YWwoKTsgYSA9IGNsYW1wKGEsIDAsIHYubGVuZ3RoKTsgYiA9IGNsYW1wKGIsIDAsIHYubGVuZ3RoKTsKICAgIGlmKGEgPiBiKXsgdmFyIHQgPSBhOyBhID0gYjsgYiA9IHQ7IH0KICAgIHZhciB0ZXh0ID0gdi5zbGljZShhLCBiKTsKICAgIGlmKGxpbmV3aXNlICYmIHRleHQuY2hhckF0KHRleHQubGVuZ3RoIC0gMSkgIT09ICJcbiIpIHRleHQgKz0gIlxuIjsKICAgIHJlZyA9IHRleHQ7IHJlZ0xpbmV3aXNlID0gISFsaW5ld2lzZTsKICB9CgogIC8qID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KICAgICBNT0RFIFNXSVRDSElORwogICAgID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0gKi8KICBmdW5jdGlvbiB0b0luc2VydCgpeyBNT0RFID0gImluc2VydCI7IHBlbmRpbmcgPSAiIjsgY291bnQgPSAiIjsgc2V0SW5kKCk7IH0KICBmdW5jdGlvbiB0b05vcm1hbCgpewogICAgaWYoTU9ERSA9PT0gImluc2VydCIpeyAgICAgICAgICAgICAgICAgLy8gdmltIHN0ZXBzIGNhcmV0IGxlZnQgd2hlbiBsZWF2aW5nIGluc2VydAogICAgICB2YXIgcCA9IHBvcygpLCBscyA9IGxpbmVTdGFydChwKTsKICAgICAgaWYocCA+IGxzKSBzZXRQb3MocCAtIDEpOwogICAgfQogICAgTU9ERSA9ICJub3JtYWwiOyBwZW5kaW5nID0gIiI7IGNvdW50ID0gIiI7IGZpeENhcmV0KCk7IHNldEluZCgpOwogIH0KICBmdW5jdGlvbiB0b1Zpc3VhbCgpeyBNT0RFID0gInZpc3VhbCI7IHZpc0FuY2hvciA9IHBvcygpOyB2aXNDYXJldCA9IHBvcygpOyBwZW5kaW5nID0gIiI7IGNvdW50ID0gIiI7IHZpc1N5bmMoKTsgc2V0SW5kKCk7IH0KCiAgLyogPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICAgIFZJU1VBTCBzZWxlY3Rpb24gaGVscGVycyAoY2hhcndpc2UsIGluY2x1c2l2ZSBvZiBjaGFyIHVuZGVyIGNhcmV0KQogICAgID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0gKi8KICBmdW5jdGlvbiB2aXNSYW5nZSgpewogICAgdmFyIGEgPSB2aXNBbmNob3IsIGIgPSB2aXNDYXJldDsKICAgIHZhciBsbyA9IE1hdGgubWluKGEsIGIpLCBoaSA9IE1hdGgubWF4KGEsIGIpICsgMTsKICAgIHJldHVybiBbbG8sIGNsYW1wKGhpLCAwLCB2YWwoKS5sZW5ndGgpXTsKICB9CiAgLy8gU2hvdyB0aGUgc2VsZWN0aW9uLCBidXQgbGVhdmUgdGhlIGxvZ2ljYWwgY2FyZXQgKHZpc0NhcmV0KSBhcyB0aGUgbW92aW5nIGhlYWQuCiAgZnVuY3Rpb24gdmlzU3luYygpewogICAgaWYoTU9ERSAhPT0gInZpc3VhbCIpIHJldHVybjsKICAgIHZhciByID0gdmlzUmFuZ2UoKTsKICAgIC8vIHB1dCB0aGUgRE9NIGNhcmV0IEFUIHZpc0NhcmV0IHNvIHBvcygpLWJhc2VkIG1vdGlvbnMgcmVhZCB0aGUgcmlnaHQgc3BvdCwKICAgIC8vIHRoZW4gZXh0ZW5kIHRoZSB2aXNpYmxlIHNlbGVjdGlvbiB0byBjb3ZlciB0aGUgcmFuZ2UuCiAgICBpZih2aXNDYXJldCA+PSB2aXNBbmNob3IpIHNldFNlbChyWzBdLCByWzFdKTsKICAgIGVsc2Ugc2V0U2VsKHJbMF0sIHJbMV0pOwogICAgLy8ga2VlcCBzZWxlY3Rpb25TdGFydCBhdCB2aXNDYXJldCBzaWRlIGZvciBtb3Rpb24gcmVhZHMgaXMgbm90IG5lZWRlZDsKICAgIC8vIHZpc3VhbCBoYW5kbGVyIHVzZXMgdmlzQ2FyZXQgZGlyZWN0bHkuCiAgfQoKICAvKiA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09CiAgICAgTU9USU9OUwogICAgID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0gKi8KICBmdW5jdGlvbiBjaGFyQ2xhc3MoYyl7CiAgICBpZihjID09PSB1bmRlZmluZWQgfHwgYyA9PT0gIlxuIikgcmV0dXJuICJubCI7CiAgICBpZihjID09PSAiICIgfHwgYyA9PT0gIlx0IikgcmV0dXJuICJzcCI7CiAgICBpZigvW0EtWmEtejAtOV9dLy50ZXN0KGMpKSByZXR1cm4gInciOwogICAgcmV0dXJuICJwIjsgICAgICAgICAgICAgICAgICAgICAgICAgICAgLy8gcHVuY3R1YXRpb24KICB9CiAgZnVuY3Rpb24gd29yZEZ3ZChwLCBuKXsKICAgIHZhciB2ID0gdmFsKCksIGxlbiA9IHYubGVuZ3RoOwogICAgZm9yKHZhciBrID0gMDsgayA8IG47IGsrKyl7CiAgICAgIGlmKHAgPj0gbGVuKSBicmVhazsKICAgICAgdmFyIGNscyA9IGNoYXJDbGFzcyh2W3BdKTsKICAgICAgaWYoY2xzICE9PSAic3AiICYmIGNscyAhPT0gIm5sIikgd2hpbGUocCA8IGxlbiAmJiBjaGFyQ2xhc3ModltwXSkgPT09IGNscykgcCsrOwogICAgICB3aGlsZShwIDwgbGVuICYmIChjaGFyQ2xhc3ModltwXSkgPT09ICJzcCIgfHwgY2hhckNsYXNzKHZbcF0pID09PSAibmwiKSkgcCsrOwogICAgfQogICAgcmV0dXJuIGNsYW1wKHAsIDAsIGxlbik7CiAgfQogIGZ1bmN0aW9uIHdvcmRCYWNrKHAsIG4pewogICAgdmFyIHYgPSB2YWwoKTsKICAgIGZvcih2YXIgayA9IDA7IGsgPCBuOyBrKyspewogICAgICBpZihwIDw9IDApIGJyZWFrOwogICAgICBwLS07CiAgICAgIHdoaWxlKHAgPiAwICYmIChjaGFyQ2xhc3ModltwXSkgPT09ICJzcCIgfHwgY2hhckNsYXNzKHZbcF0pID09PSAibmwiKSkgcC0tOwogICAgICBpZihwIDw9IDApeyBwID0gMDsgYnJlYWs7IH0KICAgICAgdmFyIGNscyA9IGNoYXJDbGFzcyh2W3BdKTsKICAgICAgd2hpbGUocCA+IDAgJiYgY2hhckNsYXNzKHZbcCAtIDFdKSA9PT0gY2xzKSBwLS07CiAgICB9CiAgICByZXR1cm4gY2xhbXAocCwgMCwgdi5sZW5ndGgpOwogIH0KICBmdW5jdGlvbiB3b3JkRW5kKHAsIG4pewogICAgdmFyIHYgPSB2YWwoKSwgbGVuID0gdi5sZW5ndGg7CiAgICBmb3IodmFyIGsgPSAwOyBrIDwgbjsgaysrKXsKICAgICAgaWYocCA+PSBsZW4gLSAxKXsgcCA9IGxlbiAtIDEgPCAwID8gMCA6IGxlbiAtIDE7IGJyZWFrOyB9CiAgICAgIHArKzsKICAgICAgd2hpbGUocCA8IGxlbiAmJiAoY2hhckNsYXNzKHZbcF0pID09PSAic3AiIHx8IGNoYXJDbGFzcyh2W3BdKSA9PT0gIm5sIikpIHArKzsKICAgICAgaWYocCA+PSBsZW4peyBwID0gbGVuIC0gMTsgYnJlYWs7IH0KICAgICAgdmFyIGNscyA9IGNoYXJDbGFzcyh2W3BdKTsKICAgICAgd2hpbGUocCArIDEgPCBsZW4gJiYgY2hhckNsYXNzKHZbcCArIDFdKSA9PT0gY2xzKSBwKys7CiAgICB9CiAgICByZXR1cm4gY2xhbXAocCwgMCwgbGVuKTsKICB9CiAgLy8gY3cgYmVoYXZlcyBsaWtlIGNlOiBjaGFuZ2UgdG8gZW5kIG9mIGN1cnJlbnQgd29yZCwgZG8gbm90IGVhdCB0cmFpbGluZyBzcGFjZS4KICBmdW5jdGlvbiBjaGFuZ2VXb3JkRW5kKHAsIG4pewogICAgdmFyIHYgPSB2YWwoKTsKICAgIGlmKGNoYXJDbGFzcyh2W3BdKSA9PT0gInNwIiB8fCBjaGFyQ2xhc3ModltwXSkgPT09ICJubCIpIHJldHVybiB3b3JkRndkKHAsIG4pOwogICAgcmV0dXJuIGNsYW1wKHdvcmRFbmQocCwgbikgKyAxLCBwLCB2Lmxlbmd0aCk7CiAgfQogIC8vIHZlcnRpY2FsIG1vdmUgcHJlc2VydmluZyBjb2x1bW4uIGRlbHRhPjAgZG93biwgZGVsdGE8MCB1cC4KICBmdW5jdGlvbiB2ZXJ0aWNhbChwLCBkZWx0YSl7CiAgICB2YXIgdiA9IHZhbCgpLCBjID0gY29sKHApLCBjdXIgPSBwOwogICAgaWYoZGVsdGEgPiAwKXsKICAgICAgZm9yKHZhciBpID0gMDsgaSA8IGRlbHRhOyBpKyspewogICAgICAgIHZhciBlID0gbGluZUVuZChjdXIpOwogICAgICAgIGlmKGUgPj0gdi5sZW5ndGgpIGJyZWFrOyAgICAgICAgICAvLyBsYXN0IGxpbmUKICAgICAgICBjdXIgPSBlICsgMTsKICAgICAgfQogICAgfSBlbHNlIHsKICAgICAgZm9yKHZhciBqID0gMDsgaiA8IC1kZWx0YTsgaisrKXsKICAgICAgICB2YXIgcyA9IGxpbmVTdGFydChjdXIpOwogICAgICAgIGlmKHMgPT09IDApIGJyZWFrOyAgICAgICAgICAgICAgICAvLyBmaXJzdCBsaW5lCiAgICAgICAgY3VyID0gbGluZVN0YXJ0KHMgLSAxKTsKICAgICAgfQogICAgfQogICAgdmFyIG5zID0gbGluZVN0YXJ0KGN1ciksIG1heGMgPSBNT0RFID09PSAidmlzdWFsIiA/IGxpbmVFbmQoY3VyKSA6IGxpbmVMYXN0Q29sKGN1cik7CiAgICByZXR1cm4gY2xhbXAobnMgKyBjLCBucywgbWF4Yyk7CiAgfQogIGZ1bmN0aW9uIHBhcmFGd2QocCwgbil7CiAgICB2YXIgdiA9IHZhbCgpLCBsZW4gPSB2Lmxlbmd0aCwgaSA9IHA7CiAgICBmb3IodmFyIGsgPSAwOyBrIDwgbjsgaysrKXsKICAgICAgdmFyIGUgPSBsaW5lRW5kKGkpOyBpID0gZSA+PSBsZW4gPyBsZW4gOiBlICsgMTsKICAgICAgd2hpbGUoaSA8IGxlbil7CiAgICAgICAgdmFyIGxzID0gbGluZVN0YXJ0KGkpLCBsZSA9IGxpbmVFbmQoaSk7CiAgICAgICAgaWYobGUgPT09IGxzKSBicmVhazsgICAgICAgICAgICAgIC8vIGJsYW5rIGxpbmUKICAgICAgICBpID0gbGUgPj0gbGVuID8gbGVuIDogbGUgKyAxOwogICAgICB9CiAgICB9CiAgICByZXR1cm4gY2xhbXAoaSwgMCwgbGVuKTsKICB9CiAgZnVuY3Rpb24gcGFyYUJhY2socCwgbil7CiAgICB2YXIgaSA9IHA7CiAgICBmb3IodmFyIGsgPSAwOyBrIDwgbjsgaysrKXsKICAgICAgdmFyIHMgPSBsaW5lU3RhcnQoaSk7CiAgICAgIGkgPSBzID4gMCA/IHMgLSAxIDogMDsKICAgICAgaSA9IGxpbmVTdGFydChpKTsKICAgICAgd2hpbGUoaSA+IDApewogICAgICAgIHZhciBscyA9IGxpbmVTdGFydChpKSwgbGUgPSBsaW5lRW5kKGkpOwogICAgICAgIGlmKGxlID09PSBscykgYnJlYWs7ICAgICAgICAgICAgICAvLyBibGFuayBsaW5lCiAgICAgICAgaSA9IGxpbmVTdGFydChpIC0gMSk7CiAgICAgIH0KICAgIH0KICAgIHJldHVybiBjbGFtcChpLCAwLCB2YWwoKS5sZW5ndGgpOwogIH0KICAvLyBmL0YvdC9UIHdpdGhpbiB0aGUgY3VycmVudCBsaW5lCiAgZnVuY3Rpb24gZmluZENoYXIocCwgY2gsIGZvcndhcmQsIHRpbGwpewogICAgdmFyIHYgPSB2YWwoKSwgbHMgPSBsaW5lU3RhcnQocCksIGxlID0gbGluZUVuZChwKTsKICAgIGlmKGZvcndhcmQpewogICAgICBmb3IodmFyIGkgPSBwICsgMTsgaSA8IGxlOyBpKyspIGlmKHZbaV0gPT09IGNoKSByZXR1cm4gdGlsbCA/IGkgLSAxIDogaTsKICAgIH0gZWxzZSB7CiAgICAgIGZvcih2YXIgaiA9IHAgLSAxOyBqID49IGxzOyBqLS0pIGlmKHZbal0gPT09IGNoKSByZXR1cm4gdGlsbCA/IGogKyAxIDogajsKICAgIH0KICAgIHJldHVybiAtMTsKICB9CiAgZnVuY3Rpb24gbGFzdExpbmVTdGFydCgpeyB2YXIgdiA9IHZhbCgpOyB2YXIgaSA9IHYubGFzdEluZGV4T2YoIlxuIik7IHJldHVybiBpID09PSAtMSA/IDAgOiBpICsgMTsgfQogIC8vIDEtYmFzZWQgbGluZSBhZGRyZXNzaW5nOyByZXR1cm5zIGZpcnN0Tm9uQmxhbmsgb2YgdGhhdCBsaW5lLgogIGZ1bmN0aW9uIGdvdG9MaW5lKGxpbmVObyl7CiAgICB2YXIgdiA9IHZhbCgpLCBpZHggPSAwLCBjdXIgPSAxOwogICAgaWYobGluZU5vIDw9IDEpIHJldHVybiBmaXJzdE5vbkJsYW5rKDApOwogICAgd2hpbGUoY3VyIDwgbGluZU5vKXsKICAgICAgdmFyIG5sID0gdi5pbmRleE9mKCJcbiIsIGlkeCk7CiAgICAgIGlmKG5sID09PSAtMSkgcmV0dXJuIGZpcnN0Tm9uQmxhbmsobGluZVN0YXJ0KHYubGVuZ3RoKSk7CiAgICAgIGlkeCA9IG5sICsgMTsgY3VyKys7CiAgICB9CiAgICByZXR1cm4gZmlyc3ROb25CbGFuayhpZHgpOwogIH0KCiAgLyogPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICAgIExJTkVXSVNFIHNwYW4gaGVscGVycyAoZm9yIGRkL2NjL3l5L2RqL2RrIGFuZCBvcGVyYXRvciBsaW5ld2lzZSBtb3Rpb25zKQogICAgID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0gKi8KICAvLyBbc3RhcnQsIGVuZF0gY292ZXJpbmcgYGNudGAgd2hvbGUgbGluZXMgc3RhcnRpbmcgYXQgdGhlIGxpbmUgb2YgcCwKICAvLyB3aGVyZSBlbmQgaW5jbHVkZXMgdGhlIHRyYWlsaW5nIG5ld2xpbmUgb2YgdGhlIGxhc3QgbGluZSB3aGVuIHByZXNlbnQuCiAgZnVuY3Rpb24gbGluZVNwYW4ocCwgY250KXsKICAgIHZhciBzdGFydCA9IGxpbmVTdGFydChwKSwgZW5kID0gc3RhcnQsIHYgPSB2YWwoKTsKICAgIGZvcih2YXIgayA9IDA7IGsgPCBjbnQ7IGsrKyl7CiAgICAgIHZhciBsZSA9IGxpbmVFbmQoZW5kKTsKICAgICAgaWYobGUgPCB2Lmxlbmd0aCkgZW5kID0gbGUgKyAxOyAgICAgLy8gaW5jbHVkZSB0aGUgbmV3bGluZQogICAgICBlbHNlIHsgZW5kID0gbGU7IGJyZWFrOyB9CiAgICB9CiAgICByZXR1cm4gW3N0YXJ0LCBlbmRdOwogIH0KICAvLyBMaW5ld2lzZSB5YW5rIG9mIGNudCBsaW5lcyBmcm9tIHAuCiAgZnVuY3Rpb24gbGluZXdpc2VZYW5rKHAsIGNudCl7CiAgICB2YXIgc3AgPSBsaW5lU3BhbihwLCBjbnQpOwogICAgeWFuayhzcFswXSwgc3BbMV0sIHRydWUpOwogIH0KICAvLyBMaW5ld2lzZSBkZWxldGUgb2YgY250IGxpbmVzIGZyb20gcDsgY2FyZXQgLT4gZmlyc3Qgbm9uLWJsYW5rIG9mIHJlc3VsdGluZyBsaW5lLgogIC8vIEhhbmRsZXMgdGhlIGxhc3QtbGluZSBjYXNlIChlYXQgdGhlIHByZWNlZGluZyBuZXdsaW5lIHNvIG5vIGJsYW5rIGxpbmUgbGluZ2VycykuCiAgZnVuY3Rpb24gbGluZXdpc2VEZWxldGUocCwgY250KXsKICAgIHZhciB2ID0gdmFsKCksIHNwID0gbGluZVNwYW4ocCwgY250KSwgYSA9IHNwWzBdLCBiID0gc3BbMV07CiAgICB5YW5rKGEsIGIsIHRydWUpOwogICAgaWYoYiA+PSB2Lmxlbmd0aCAmJiBhID4gMCAmJiB2W2EgLSAxXSA9PT0gIlxuIikgYSA9IGEgLSAxOyAgIC8vIGxhc3QgbGluZTogZWF0IHByZWNlZGluZyBcbgogICAgZGVsZXRlUmFuZ2UoYSwgYiwgMCk7CiAgICBzZXRQb3MoZmlyc3ROb25CbGFuayhjbGFtcChhLCAwLCB2YWwoKS5sZW5ndGgpKSk7CiAgfQogIC8vIExpbmV3aXNlIGNoYW5nZSBvZiBjbnQgbGluZXM6IGJsYW5rIHRoZSBibG9jayBkb3duIHRvIG9uZSBlbXB0eSBsaW5lLCBlbnRlciBpbnNlcnQuCiAgZnVuY3Rpb24gbGluZXdpc2VDaGFuZ2UocCwgY250KXsKICAgIHZhciBzcCA9IGxpbmVTcGFuKHAsIGNudCksIGEgPSBzcFswXSwgYiA9IHNwWzFdLCB2ID0gdmFsKCk7CiAgICB5YW5rKGEsIGIsIHRydWUpOwogICAgLy8ga2VlcCBvbmUgbGluZTogZHJvcCB0aGUgdHJhaWxpbmcgbmV3bGluZSBmcm9tIHRoZSBkZWxldGUgc3BhbiBpZiBwcmVzZW50CiAgICB2YXIgZGVsVG8gPSAoYiA+IGEgJiYgdltiIC0gMV0gPT09ICJcbiIpID8gYiAtIDEgOiBiOwogICAgZGVsZXRlUmFuZ2UoYSwgZGVsVG8sIGEpOwogICAgc2V0UG9zKGEpOwogICAgdG9JbnNlcnQoKTsKICB9CgogIC8qID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KICAgICBQQVNURQogICAgID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0gKi8KICBmdW5jdGlvbiBwYXN0ZShhZnRlcil7CiAgICBpZihyZWcgPT09ICIiKSByZXR1cm47CiAgICB2YXIgcCA9IHBvcygpLCB2ID0gdmFsKCk7CiAgICBpZihyZWdMaW5ld2lzZSl7CiAgICAgIHZhciB0ZXh0ID0gcmVnOwogICAgICBpZih0ZXh0LmNoYXJBdCh0ZXh0Lmxlbmd0aCAtIDEpICE9PSAiXG4iKSB0ZXh0ICs9ICJcbiI7CiAgICAgIGlmKGFmdGVyKXsKICAgICAgICB2YXIgbGUgPSBsaW5lRW5kKHApOwogICAgICAgIGlmKGxlID49IHYubGVuZ3RoKXsKICAgICAgICAgIC8vIGxhc3QgbGluZSwgbm8gdHJhaWxpbmcgbmV3bGluZTogcHJlcGVuZCBhIG5ld2xpbmUsIGRyb3AgcmVnJ3MgdHJhaWxpbmcgb25lCiAgICAgICAgICBpbnNlcnRBdCh2Lmxlbmd0aCwgIlxuIiArIHRleHQucmVwbGFjZSgvXG4kLywgIiIpKTsKICAgICAgICAgIHNldFBvcyhmaXJzdE5vbkJsYW5rKGxpbmVTdGFydCh2YWwoKS5sZW5ndGgpKSk7CiAgICAgICAgfSBlbHNlIHsKICAgICAgICAgIGluc2VydEF0KGxlICsgMSwgdGV4dCk7CiAgICAgICAgICBzZXRQb3MoZmlyc3ROb25CbGFuayhsZSArIDEpKTsKICAgICAgICB9CiAgICAgIH0gZWxzZSB7CiAgICAgICAgdmFyIGxzID0gbGluZVN0YXJ0KHApOwogICAgICAgIGluc2VydEF0KGxzLCB0ZXh0KTsKICAgICAgICBzZXRQb3MoZmlyc3ROb25CbGFuayhscykpOwogICAgICB9CiAgICB9IGVsc2UgewogICAgICB2YXIgYXQgPSBhZnRlciA/ICh2Lmxlbmd0aCA9PT0gMCB8fCB2W3BdID09PSAiXG4iID8gcCA6IHAgKyAxKSA6IHA7CiAgICAgIGluc2VydEF0KGF0LCByZWcpOwogICAgICBzZXRQb3Mobm9ybUNsYW1wKGF0ICsgcmVnLmxlbmd0aCAtIDEpKTsKICAgIH0KICB9CgogIC8qID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KICAgICBPUEVSQVRPUiArIE1PVElPTiAoY2hhcndpc2UpIOKAlCByZXR1cm5zIHtlbmQsIGxpbmV3aXNlfSBvciBudWxsLgogICAgID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0gKi8KICBmdW5jdGlvbiBvcGVyYXRvck1vdGlvbihvcCwga2V5LCBuKXsKICAgIHZhciBwID0gcG9zKCk7CiAgICBzd2l0Y2goa2V5KXsKICAgICAgY2FzZSAidyI6IHJldHVybiB7IGVuZDogb3AgPT09ICJjIiA/IGNoYW5nZVdvcmRFbmQocCwgbikgOiB3b3JkRndkKHAsIG4pLCBsaW5ld2lzZTpmYWxzZSB9OwogICAgICBjYXNlICJiIjogcmV0dXJuIHsgZW5kOiB3b3JkQmFjayhwLCBuKSwgbGluZXdpc2U6ZmFsc2UgfTsKICAgICAgY2FzZSAiZSI6IHJldHVybiB7IGVuZDogd29yZEVuZChwLCBuKSArIDEsIGxpbmV3aXNlOmZhbHNlIH07CiAgICAgIGNhc2UgImgiOiByZXR1cm4geyBlbmQ6IE1hdGgubWF4KGxpbmVTdGFydChwKSwgcCAtIG4pLCBsaW5ld2lzZTpmYWxzZSB9OwogICAgICBjYXNlICJsIjogY2FzZSAiICI6IHJldHVybiB7IGVuZDogTWF0aC5taW4obGluZUVuZChwKSwgcCArIG4pLCBsaW5ld2lzZTpmYWxzZSB9OwogICAgICBjYXNlICIwIjogcmV0dXJuIHsgZW5kOiBsaW5lU3RhcnQocCksIGxpbmV3aXNlOmZhbHNlIH07CiAgICAgIGNhc2UgIl4iOiByZXR1cm4geyBlbmQ6IGZpcnN0Tm9uQmxhbmsocCksIGxpbmV3aXNlOmZhbHNlIH07CiAgICAgIGNhc2UgIiQiOiByZXR1cm4geyBlbmQ6IGxpbmVFbmQodmVydGljYWwocCwgbiAtIDEpKSwgbGluZXdpc2U6ZmFsc2UgfTsKICAgICAgLy8gbGluZXdpc2UgbW90aW9ucyBvbiBhbiBvcGVyYXRvcjogZGogLyBkayAoYW5kIGNjLWlzaCB2aWEgY291bnQgYXJlIGhhbmRsZWQgZWxzZXdoZXJlKQogICAgICBjYXNlICJqIjogcmV0dXJuIHsgbGluZXdpc2VGcm9tOiBwLCBsaW5ld2lzZUNvdW50OiBuICsgMSwgbGluZXdpc2U6dHJ1ZSB9OwogICAgICBjYXNlICJrIjogewogICAgICAgIHZhciB0b3AgPSBwOwogICAgICAgIGZvcih2YXIgaSA9IDA7IGkgPCBuOyBpKyspeyB2YXIgbHMgPSBsaW5lU3RhcnQodG9wKTsgaWYobHMgPT09IDApIGJyZWFrOyB0b3AgPSBsaW5lU3RhcnQobHMgLSAxKTsgfQogICAgICAgIHJldHVybiB7IGxpbmV3aXNlRnJvbTogdG9wLCBsaW5ld2lzZUNvdW50OiBjb3VudExpbmVzKHRvcCwgcCkgKyAxLCBsaW5ld2lzZTp0cnVlIH07CiAgICAgIH0KICAgICAgY2FzZSAiRyI6IHsKICAgICAgICB2YXIgZGVzdFN0YXJ0ID0gY291bnQgPyBsaW5lU3RhcnQoZ290b0xpbmUocGFyc2VJbnQoY291bnQsIDEwKSkpIDogbGFzdExpbmVTdGFydCgpOwogICAgICAgIHZhciBsbyA9IE1hdGgubWluKHAsIGRlc3RTdGFydCk7CiAgICAgICAgcmV0dXJuIHsgbGluZXdpc2VGcm9tOiBsbywgbGluZXdpc2VDb3VudDogY291bnRMaW5lcyhsbywgTWF0aC5tYXgocCwgZGVzdFN0YXJ0KSkgKyAxLCBsaW5ld2lzZTp0cnVlIH07CiAgICAgIH0KICAgICAgZGVmYXVsdDogcmV0dXJuIG51bGw7CiAgICB9CiAgfQogIGZ1bmN0aW9uIGNvdW50TGluZXMoYSwgYil7CiAgICB2YXIgbG8gPSBNYXRoLm1pbihhLCBiKSwgaGkgPSBNYXRoLm1heChhLCBiKSwgYyA9IDAsIHYgPSB2YWwoKTsKICAgIGZvcih2YXIgaSA9IGxvOyBpIDwgaGk7IGkrKykgaWYodltpXSA9PT0gIlxuIikgYysrOwogICAgcmV0dXJuIGM7CiAgfQogIGZ1bmN0aW9uIGFwcGx5Q2hhck9wKG9wLCBhLCBiKXsKICAgIGlmKGEgPiBiKXsgdmFyIHQgPSBhOyBhID0gYjsgYiA9IHQ7IH0KICAgIHlhbmsoYSwgYiwgZmFsc2UpOwogICAgaWYob3AgPT09ICJ5Iil7IHNldFBvcyhub3JtQ2xhbXAoYSkpOyByZXR1cm47IH0KICAgIGRlbGV0ZVJhbmdlKGEsIGIsIGEpOwogICAgaWYob3AgPT09ICJjIil7IHNldFBvcyhhKTsgdG9JbnNlcnQoKTsgfQogICAgZWxzZSBmaXhDYXJldCgpOwogIH0KICBmdW5jdGlvbiBhcHBseUxpbmV3aXNlT3Aob3AsIGZyb20sIGNudCl7CiAgICBpZihvcCA9PT0gInkiKXsgbGluZXdpc2VZYW5rKGZyb20sIGNudCk7IHNldFBvcyhmaXJzdE5vbkJsYW5rKGxpbmVTdGFydChmcm9tKSkpOyB9CiAgICBlbHNlIGlmKG9wID09PSAiYyIpeyBzZXRQb3MoZnJvbSk7IGxpbmV3aXNlQ2hhbmdlKGZyb20sIGNudCk7IH0KICAgIGVsc2UgbGluZXdpc2VEZWxldGUoZnJvbSwgY250KTsgICAvLyBjYXJldCBoYW5kbGluZyBpbnNpZGUKICB9CgogIC8qID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KICAgICBDT1VOVCBoZWxwZXIKICAgICA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09ICovCiAgZnVuY3Rpb24gZWZmKCl7IHJldHVybiBjb3VudCA9PT0gIiIgPyAxIDogcGFyc2VJbnQoY291bnQsIDEwKTsgfQogIGZ1bmN0aW9uIHJlc2V0KCl7IHBlbmRpbmcgPSAiIjsgY291bnQgPSAiIjsgfQoKICAvKiA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09CiAgICAgRVggQ09NTUFORCBMSU5FICAoIDp3ICA6d2EgIDp3YXEgIC4uLiBhbGwgc2F2ZSB0aGUgZmlsZSApCiAgICAgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PSAqLwogIGZ1bmN0aW9uIGNtZFNhdmUoKXsKICAgIHZhciBzYiA9IGRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCJzYXZlIik7ICAgLy8gdGhlIGVkaXRvcidzIFNhdmUgYnV0dG9uCiAgICBpZighc2IpIHJldHVybjsKICAgIGlmKHR5cGVvZiBzYi5vbmNsaWNrID09PSAiZnVuY3Rpb24iKSBzYi5vbmNsaWNrKCk7IGVsc2Ugc2IuY2xpY2soKTsKICB9CiAgZnVuY3Rpb24gcnVuQ21kKHJhdyl7CiAgICB2YXIgYyA9IHJhdy50cmltKCk7CiAgICBpZihjLmNoYXJBdChjLmxlbmd0aCAtIDEpID09PSAiISIpIGMgPSBjLnNsaWNlKDAsIC0xKTsgICAvLyB0b2xlcmF0ZSBhIGZvcmNlICEKICAgIC8vIDp3IGFuZCBpdHMgYWxpYXNlcyAoOndhLCA6d2FxLCBhbmQgdGhlIGNvbW1vbiA6d3EgLyA6eCkgYWxsIGp1c3Qgc2F2ZS4KICAgIGlmKGMgPT09ICJ3IiB8fCBjID09PSAid2EiIHx8IGMgPT09ICJ3YXEiIHx8IGMgPT09ICJ3cSIgfHwgYyA9PT0gIngiKXsgY21kU2F2ZSgpOyByZXR1cm47IH0KICAgIGlmKGMgPT09ICIiKSByZXR1cm47CiAgICB2YXIgc3QgPSBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgic3QiKTsKICAgIGlmKHN0KSBzdC50ZXh0Q29udGVudCA9ICJub3QgYW4gZWRpdG9yIGNvbW1hbmQ6IDoiICsgYzsKICB9CiAgZnVuY3Rpb24gY21kS2V5KGUpewogICAgdmFyIGsgPSBlLmtleTsKICAgIGlmKGsgPT09ICJFc2NhcGUiIHx8IChlLmN0cmxLZXkgJiYgayA9PT0gIlsiKSl7IGNtZEFjdGl2ZSA9IGZhbHNlOyBzZXRJbmQoKTsgcmV0dXJuOyB9CiAgICBpZihrID09PSAiRW50ZXIiKXsgdmFyIGMgPSBjbWRCdWY7IGNtZEFjdGl2ZSA9IGZhbHNlOyBzZXRJbmQoKTsgcnVuQ21kKGMpOyByZXR1cm47IH0KICAgIGlmKGsgPT09ICJCYWNrc3BhY2UiKXsKICAgICAgaWYoY21kQnVmLmxlbmd0aCA9PT0gMCkgY21kQWN0aXZlID0gZmFsc2U7ICAgLy8gYmFja3NwYWNlIHBhc3QgdGhlIDogZXhpdHMKICAgICAgZWxzZSBjbWRCdWYgPSBjbWRCdWYuc2xpY2UoMCwgLTEpOwogICAgICBzZXRJbmQoKTsgcmV0dXJuOwogICAgfQogICAgaWYoay5sZW5ndGggPT09IDEgJiYgIWUuY3RybEtleSAmJiAhZS5tZXRhS2V5ICYmICFlLmFsdEtleSl7IGNtZEJ1ZiArPSBrOyBzZXRJbmQoKTsgfQogIH0KCiAgLyogPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICAgIE5PUk1BTCAvIFZJU1VBTCBrZXkgaGFuZGxpbmcuIFJldHVybnMgdHJ1ZSBpZiBjb25zdW1lZC4KICAgICA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09ICovCiAgZnVuY3Rpb24gaGFuZGxlS2V5KGUpewogICAgdmFyIGsgPSBlLmtleTsKCiAgICAvLyBFc2MgLyBDdHJsLVsgLT4gY2xlYXIgcGVuZGluZywgZHJvcCB0byBOT1JNQUwgZnJvbSB2aXN1YWwKICAgIGlmKGsgPT09ICJFc2NhcGUiIHx8IChlLmN0cmxLZXkgJiYgayA9PT0gIlsiKSl7CiAgICAgIGlmKE1PREUgPT09ICJ2aXN1YWwiKXsgdmFyIGMgPSBwb3MoKTsgTU9ERSA9ICJub3JtYWwiOyBzZXRQb3Mobm9ybUNsYW1wKGMpKTsgfQogICAgICByZXNldCgpOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICB9CiAgICAvLyBDdHJsLVIgcmVkbwogICAgaWYoZS5jdHJsS2V5ICYmIChrID09PSAiciIgfHwgayA9PT0gIlIiKSl7CiAgICAgIHRyeXsgZG9jdW1lbnQuZXhlY0NvbW1hbmQoInJlZG8iKTsgfWNhdGNoKHgpe30KICAgICAgZmlyZUlucHV0KCk7IHJlc2V0KCk7IGZpeENhcmV0KCk7IHNldEluZCgpOyByZXR1cm4gdHJ1ZTsKICAgIH0KCiAgICAvLyAtLS0tIHBlbmRpbmcgc2luZ2xlLWNoYXIgY29uc3VtZXJzOiByLCBmL0YvdC9UIC0tLS0KICAgIGlmKHBlbmRpbmcgPT09ICJyIil7CiAgICAgIHZhciBuMCA9IGVmZigpOyBwZW5kaW5nID0gIiI7CiAgICAgIGlmKGsubGVuZ3RoID09PSAxKXsKICAgICAgICB2YXIgcDAgPSBwb3MoKSwgbGUwID0gbGluZUVuZChwMCk7CiAgICAgICAgaWYocDAgKyBuMCA8PSBsZTApewogICAgICAgICAgdmFyIHJlcCA9ICIiOyBmb3IodmFyIHJpID0gMDsgcmkgPCBuMDsgcmkrKykgcmVwICs9IGs7CiAgICAgICAgICByZXBsYWNlUmFuZ2UocDAsIHAwICsgbjAsIHJlcCwgcDAgKyBuMCAtIDEpOwogICAgICAgIH0KICAgICAgfQogICAgICBjb3VudCA9ICIiOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICB9CiAgICBpZihwZW5kaW5nID09PSAiZiIgfHwgcGVuZGluZyA9PT0gIkYiIHx8IHBlbmRpbmcgPT09ICJ0IiB8fCBwZW5kaW5nID09PSAiVCIpewogICAgICB2YXIgZndkID0gKHBlbmRpbmcgPT09ICJmIiB8fCBwZW5kaW5nID09PSAidCIpOwogICAgICB2YXIgdGlsbCA9IChwZW5kaW5nID09PSAidCIgfHwgcGVuZGluZyA9PT0gIlQiKTsKICAgICAgdmFyIG5GID0gZWZmKCk7IHBlbmRpbmcgPSAiIjsKICAgICAgaWYoay5sZW5ndGggPT09IDEpewogICAgICAgIHZhciBiYXNlID0gKE1PREUgPT09ICJ2aXN1YWwiKSA/IHZpc0NhcmV0IDogcG9zKCk7CiAgICAgICAgdmFyIHRhcmdldCA9IGJhc2U7CiAgICAgICAgZm9yKHZhciBjaSA9IDA7IGNpIDwgbkY7IGNpKyspewogICAgICAgICAgdmFyIHIgPSBmaW5kQ2hhcih0YXJnZXQsIGssIGZ3ZCwgdGlsbCk7CiAgICAgICAgICBpZihyID09PSAtMSl7IHRhcmdldCA9IGJhc2U7IGJyZWFrOyB9CiAgICAgICAgICB0YXJnZXQgPSByOwogICAgICAgIH0KICAgICAgICBpZih0YXJnZXQgIT09IGJhc2UpewogICAgICAgICAgaWYoTU9ERSA9PT0gInZpc3VhbCIpeyB2aXNDYXJldCA9IHRhcmdldDsgdmlzU3luYygpOyB9CiAgICAgICAgICBlbHNlIHsgc2V0UG9zKHRhcmdldCk7IGZpeENhcmV0KCk7IH0KICAgICAgICB9CiAgICAgIH0KICAgICAgY291bnQgPSAiIjsgc2V0SW5kKCk7IHJldHVybiB0cnVlOwogICAgfQogICAgaWYocGVuZGluZyA9PT0gImciKXsKICAgICAgcGVuZGluZyA9ICIiOwogICAgICBpZihrID09PSAiZyIpewogICAgICAgIHZhciBkZXN0ID0gY291bnQgPyBnb3RvTGluZShlZmYoKSkgOiBmaXJzdE5vbkJsYW5rKDApOwogICAgICAgIGlmKE1PREUgPT09ICJ2aXN1YWwiKXsgdmlzQ2FyZXQgPSBkZXN0OyB2aXNTeW5jKCk7IH0KICAgICAgICBlbHNlIHsgc2V0UG9zKGRlc3QpOyBmaXhDYXJldCgpOyB9CiAgICAgIH0KICAgICAgY291bnQgPSAiIjsgc2V0SW5kKCk7IHJldHVybiB0cnVlOwogICAgfQoKICAgIC8vIC0tLS0gZGlnaXRzIC0+IGNvdW50ICgwIGlzIGEgbW90aW9uIHdoZW4gY291bnQgaXMgZW1wdHkpIC0tLS0KICAgIGlmKC9eWzAtOV0kLy50ZXN0KGspICYmICEoayA9PT0gIjAiICYmIGNvdW50ID09PSAiIikpewogICAgICBjb3VudCArPSBrOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICB9CgogICAgdmFyIG4gPSBlZmYoKTsKCiAgICAvLyAtLS0tIG9wZXJhdG9yIHBlbmRpbmcgKGQgLyBjIC8geSkgLS0tLQogICAgaWYocGVuZGluZyA9PT0gImQiIHx8IHBlbmRpbmcgPT09ICJjIiB8fCBwZW5kaW5nID09PSAieSIpewogICAgICB2YXIgb3AgPSBwZW5kaW5nOwogICAgICAvLyBkb3VibGVkIG9wZXJhdG9yID0gbGluZXdpc2UgKGRkLCBjYywgeXkpCiAgICAgIGlmKChvcCA9PT0gImQiICYmIGsgPT09ICJkIikgfHwgKG9wID09PSAiYyIgJiYgayA9PT0gImMiKSB8fCAob3AgPT09ICJ5IiAmJiBrID09PSAieSIpKXsKICAgICAgICByZXNldCgpOyBhcHBseUxpbmV3aXNlT3Aob3AsIHBvcygpLCBuKTsgc2V0SW5kKCk7IHJldHVybiB0cnVlOwogICAgICB9CiAgICAgIHZhciBtdiA9IG9wZXJhdG9yTW90aW9uKG9wLCBrLCBuKTsKICAgICAgcmVzZXQoKTsKICAgICAgaWYobXYgPT09IG51bGwpeyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7IH0gICAgICAgIC8vIHVua25vd24gbW90aW9uIGNhbmNlbHMKICAgICAgaWYobXYubGluZXdpc2UpIGFwcGx5TGluZXdpc2VPcChvcCwgbXYubGluZXdpc2VGcm9tLCBtdi5saW5ld2lzZUNvdW50KTsKICAgICAgZWxzZSBhcHBseUNoYXJPcChvcCwgcG9zKCksIG12LmVuZCk7CiAgICAgIHNldEluZCgpOyByZXR1cm4gdHJ1ZTsKICAgIH0KCiAgICAvLyAtLS0tIFZJU1VBTDogbW90aW9ucyBtb3ZlIHZpc0NhcmV0ICh0aGUgaGVhZCkgYW5kIGV4dGVuZCB0aGUgc2VsZWN0aW9uIC0tLS0KICAgIGlmKE1PREUgPT09ICJ2aXN1YWwiKXsKICAgICAgdmFyIHZjID0gdmlzQ2FyZXQsIG1vdmVkID0gbnVsbDsKICAgICAgc3dpdGNoKGspewogICAgICAgIGNhc2UgImgiOiBjYXNlICJBcnJvd0xlZnQiOiAgbW92ZWQgPSBjbGFtcCh2YyAtIG4sIDAsIHZhbCgpLmxlbmd0aCk7IGJyZWFrOwogICAgICAgIGNhc2UgImwiOiBjYXNlICJBcnJvd1JpZ2h0IjogY2FzZSAiICI6IG1vdmVkID0gY2xhbXAodmMgKyBuLCAwLCB2YWwoKS5sZW5ndGgpOyBicmVhazsKICAgICAgICBjYXNlICJqIjogY2FzZSAiQXJyb3dEb3duIjogIG1vdmVkID0gdmVydGljYWwodmMsIG4pOyBicmVhazsKICAgICAgICBjYXNlICJrIjogY2FzZSAiQXJyb3dVcCI6ICAgIG1vdmVkID0gdmVydGljYWwodmMsIC1uKTsgYnJlYWs7CiAgICAgICAgY2FzZSAidyI6IG1vdmVkID0gd29yZEZ3ZCh2Yywgbik7IGJyZWFrOwogICAgICAgIGNhc2UgImIiOiBtb3ZlZCA9IHdvcmRCYWNrKHZjLCBuKTsgYnJlYWs7CiAgICAgICAgY2FzZSAiZSI6IG1vdmVkID0gd29yZEVuZCh2Yywgbik7IGJyZWFrOwogICAgICAgIGNhc2UgIjAiOiBtb3ZlZCA9IGxpbmVTdGFydCh2Yyk7IGJyZWFrOwogICAgICAgIGNhc2UgIl4iOiBtb3ZlZCA9IGZpcnN0Tm9uQmxhbmsodmMpOyBicmVhazsKICAgICAgICBjYXNlICIkIjogbW92ZWQgPSBsaW5lRW5kKHZjKTsgYnJlYWs7CiAgICAgICAgY2FzZSAieyI6IG1vdmVkID0gcGFyYUJhY2sodmMsIG4pOyBicmVhazsKICAgICAgICBjYXNlICJ9IjogbW92ZWQgPSBwYXJhRndkKHZjLCBuKTsgYnJlYWs7CiAgICAgICAgY2FzZSAiRyI6IG1vdmVkID0gY291bnQgPyBnb3RvTGluZShuKSA6IGZpcnN0Tm9uQmxhbmsobGFzdExpbmVTdGFydCgpKTsgYnJlYWs7CiAgICAgICAgY2FzZSAiZyI6IHBlbmRpbmcgPSAiZyI7IHNldEluZCgpOyByZXR1cm4gdHJ1ZTsKICAgICAgICBjYXNlICJmIjogY2FzZSAiRiI6IGNhc2UgInQiOiBjYXNlICJUIjogcGVuZGluZyA9IGs7IHNldEluZCgpOyByZXR1cm4gdHJ1ZTsKICAgICAgfQogICAgICBpZihtb3ZlZCAhPT0gbnVsbCl7IHZpc0NhcmV0ID0gY2xhbXAobW92ZWQsIDAsIHZhbCgpLmxlbmd0aCk7IHZpc1N5bmMoKTsgcmVzZXQoKTsgc2V0SW5kKCk7IHJldHVybiB0cnVlOyB9CgogICAgICB2YXIgcjIgPSB2aXNSYW5nZSgpLCBhID0gcjJbMF0sIGIgPSByMlsxXTsKICAgICAgc3dpdGNoKGspewogICAgICAgIGNhc2UgImQiOiBjYXNlICJ4IjogeWFuayhhLCBiLCBmYWxzZSk7IGRlbGV0ZVJhbmdlKGEsIGIsIGEpOyBNT0RFID0gIm5vcm1hbCI7IHNldFBvcyhub3JtQ2xhbXAoYSkpOyByZXNldCgpOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICAgICAgY2FzZSAiYyI6IGNhc2UgInMiOiB5YW5rKGEsIGIsIGZhbHNlKTsgZGVsZXRlUmFuZ2UoYSwgYiwgYSk7IE1PREUgPSAibm9ybWFsIjsgc2V0UG9zKGEpOyByZXNldCgpOyB0b0luc2VydCgpOyByZXR1cm4gdHJ1ZTsKICAgICAgICBjYXNlICJ5IjogeWFuayhhLCBiLCBmYWxzZSk7IE1PREUgPSAibm9ybWFsIjsgc2V0UG9zKG5vcm1DbGFtcChhKSk7IHJlc2V0KCk7IHNldEluZCgpOyByZXR1cm4gdHJ1ZTsKICAgICAgICBjYXNlICJwIjogewogICAgICAgICAgLy8gcGFzdGUgb3ZlciBzZWxlY3Rpb246IHNuYXBzaG90IHJlZ2lzdGVyIEJFRk9SRSB0aGUgZGVsZXRlIGNsb2JiZXJzIGl0CiAgICAgICAgICB2YXIgc1RleHQgPSByZWcsIHNMaW5lID0gcmVnTGluZXdpc2U7CiAgICAgICAgICBkZWxldGVSYW5nZShhLCBiLCBhKTsKICAgICAgICAgIHJlZyA9IHNUZXh0OyByZWdMaW5ld2lzZSA9IHNMaW5lOwogICAgICAgICAgTU9ERSA9ICJub3JtYWwiOyBzZXRQb3MoYSA+IDAgPyBhIC0gMSA6IGEpOyBwYXN0ZSh0cnVlKTsKICAgICAgICAgIHJlc2V0KCk7IHNldEluZCgpOyByZXR1cm4gdHJ1ZTsKICAgICAgICB9CiAgICAgICAgY2FzZSAidiI6IE1PREUgPSAibm9ybWFsIjsgc2V0UG9zKG5vcm1DbGFtcCh2aXNDYXJldCkpOyByZXNldCgpOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICAgIH0KICAgICAgLy8gc3dhbGxvdyBhbnkgb3RoZXIgcHJpbnRhYmxlIGtleSBpbiB2aXN1YWwKICAgICAgaWYoay5sZW5ndGggPT09IDEgJiYgIWUuY3RybEtleSAmJiAhZS5tZXRhS2V5ICYmICFlLmFsdEtleSl7IHJlc2V0KCk7IHNldEluZCgpOyByZXR1cm4gdHJ1ZTsgfQogICAgICByZXNldCgpOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICB9CgogICAgLy8gLS0tLSBOT1JNQUw6IHNpbmdsZS1rZXkgY29tbWFuZHMgLS0tLQogICAgdmFyIHAgPSBwb3MoKTsKICAgIHN3aXRjaChrKXsKICAgICAgLy8gbW90aW9ucwogICAgICBjYXNlICJoIjogY2FzZSAiQXJyb3dMZWZ0IjogIHNldFBvcyhjbGFtcChwIC0gbiwgbGluZVN0YXJ0KHApLCBwKSk7IGZpeENhcmV0KCk7IGJyZWFrOwogICAgICBjYXNlICJsIjogY2FzZSAiQXJyb3dSaWdodCI6IGNhc2UgIiAiOiBzZXRQb3MoY2xhbXAocCArIG4sIHAsIGxpbmVMYXN0Q29sKHApKSk7IGJyZWFrOwogICAgICBjYXNlICJqIjogY2FzZSAiQXJyb3dEb3duIjogIHNldFBvcyh2ZXJ0aWNhbChwLCBuKSk7IGJyZWFrOwogICAgICBjYXNlICJrIjogY2FzZSAiQXJyb3dVcCI6ICAgIHNldFBvcyh2ZXJ0aWNhbChwLCAtbikpOyBicmVhazsKICAgICAgY2FzZSAidyI6IHNldFBvcyhub3JtQ2xhbXAod29yZEZ3ZChwLCBuKSkpOyBicmVhazsKICAgICAgY2FzZSAiYiI6IHNldFBvcyhub3JtQ2xhbXAod29yZEJhY2socCwgbikpKTsgYnJlYWs7CiAgICAgIGNhc2UgImUiOiBzZXRQb3Mobm9ybUNsYW1wKHdvcmRFbmQocCwgbikpKTsgYnJlYWs7CiAgICAgIGNhc2UgIjAiOiBzZXRQb3MobGluZVN0YXJ0KHApKTsgYnJlYWs7CiAgICAgIGNhc2UgIl4iOiBzZXRQb3MoZmlyc3ROb25CbGFuayhwKSk7IGJyZWFrOwogICAgICBjYXNlICIkIjogeyB2YXIgbHAgPSB2ZXJ0aWNhbChwLCBuIC0gMSk7IHNldFBvcyhsaW5lTGFzdENvbChscCkpOyBicmVhazsgfQogICAgICBjYXNlICJ7Ijogc2V0UG9zKG5vcm1DbGFtcChwYXJhQmFjayhwLCBuKSkpOyBicmVhazsKICAgICAgY2FzZSAifSI6IHNldFBvcyhub3JtQ2xhbXAocGFyYUZ3ZChwLCBuKSkpOyBicmVhazsKICAgICAgY2FzZSAiRyI6IHNldFBvcyhjb3VudCA/IGdvdG9MaW5lKG4pIDogZmlyc3ROb25CbGFuayhsYXN0TGluZVN0YXJ0KCkpKTsgYnJlYWs7CiAgICAgIGNhc2UgImciOiBwZW5kaW5nID0gImciOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICAgIGNhc2UgImYiOiBjYXNlICJGIjogY2FzZSAidCI6IGNhc2UgIlQiOiBwZW5kaW5nID0gazsgc2V0SW5kKCk7IHJldHVybiB0cnVlOwoKICAgICAgLy8gZW50ZXIgaW5zZXJ0CiAgICAgIGNhc2UgImkiOiB0b0luc2VydCgpOyBicmVhazsKICAgICAgY2FzZSAiYSI6IGlmKGxpbmVUZXh0KHApLmxlbmd0aCkgc2V0UG9zKHAgKyAxKTsgdG9JbnNlcnQoKTsgYnJlYWs7CiAgICAgIGNhc2UgIkkiOiBzZXRQb3MoZmlyc3ROb25CbGFuayhwKSk7IHRvSW5zZXJ0KCk7IGJyZWFrOwogICAgICBjYXNlICJBIjogc2V0UG9zKGxpbmVFbmQocCkpOyB0b0luc2VydCgpOyBicmVhazsKICAgICAgY2FzZSAibyI6IHsgdmFyIGxlID0gbGluZUVuZChwKTsgaW5zZXJ0QXQobGUsICJcbiIpOyBzZXRQb3MobGUgKyAxKTsgdG9JbnNlcnQoKTsgYnJlYWs7IH0KICAgICAgY2FzZSAiTyI6IHsgdmFyIGxzID0gbGluZVN0YXJ0KHApOyBpbnNlcnRBdChscywgIlxuIik7IHNldFBvcyhscyk7IHRvSW5zZXJ0KCk7IGJyZWFrOyB9CgogICAgICAvLyBvcGVyYXRvcnMgKHBlbmRpbmcpCiAgICAgIGNhc2UgImQiOiBwZW5kaW5nID0gImQiOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICAgIGNhc2UgImMiOiBwZW5kaW5nID0gImMiOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICAgIGNhc2UgInkiOiBwZW5kaW5nID0gInkiOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICAgIGNhc2UgInIiOiBwZW5kaW5nID0gInIiOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CgogICAgICAvLyB3aG9sZS1saW5lIC8gZW5kLW9mLWxpbmUgZWRpdHMKICAgICAgY2FzZSAiRCI6IHsgdmFyIGxlMiA9IGxpbmVFbmQocCk7IHlhbmsocCwgbGUyLCBmYWxzZSk7IGRlbGV0ZVJhbmdlKHAsIGxlMiwgcCk7IGZpeENhcmV0KCk7IGJyZWFrOyB9CiAgICAgIGNhc2UgIkMiOiB7IHZhciBsZTMgPSBsaW5lRW5kKHApOyB5YW5rKHAsIGxlMywgZmFsc2UpOyBkZWxldGVSYW5nZShwLCBsZTMsIHApOyBzZXRQb3MocCk7IHRvSW5zZXJ0KCk7IGJyZWFrOyB9CiAgICAgIGNhc2UgInMiOiB7CiAgICAgICAgdmFyIGxlNCA9IGxpbmVFbmQocCksIGVuZDQgPSBjbGFtcChwICsgbiwgcCwgbGU0KTsKICAgICAgICBpZihlbmQ0ID4gcCkgeWFuayhwLCBlbmQ0LCBmYWxzZSk7CiAgICAgICAgZGVsZXRlUmFuZ2UocCwgZW5kNCwgcCk7IHNldFBvcyhwKTsgdG9JbnNlcnQoKTsKICAgICAgICBicmVhazsKICAgICAgfQogICAgICBjYXNlICJTIjogbGluZXdpc2VDaGFuZ2UocCwgbik7IGJyZWFrOwoKICAgICAgLy8gY2hhciBkZWxldGVzCiAgICAgIGNhc2UgIngiOiB7CiAgICAgICAgdmFyIGxlNSA9IGxpbmVFbmQocCksIGVuZDUgPSBjbGFtcChwICsgbiwgcCwgbGU1KTsKICAgICAgICBpZihlbmQ1ID4gcCl7IHlhbmsocCwgZW5kNSwgZmFsc2UpOyBkZWxldGVSYW5nZShwLCBlbmQ1LCBwKTsgZml4Q2FyZXQoKTsgfQogICAgICAgIGJyZWFrOwogICAgICB9CiAgICAgIGNhc2UgIlgiOiB7CiAgICAgICAgdmFyIGxzNiA9IGxpbmVTdGFydChwKSwgc3RhcnQ2ID0gY2xhbXAocCAtIG4sIGxzNiwgcCk7CiAgICAgICAgaWYoc3RhcnQ2IDwgcCl7IHlhbmsoc3RhcnQ2LCBwLCBmYWxzZSk7IGRlbGV0ZVJhbmdlKHN0YXJ0NiwgcCwgc3RhcnQ2KTsgfQogICAgICAgIGJyZWFrOwogICAgICB9CgogICAgICAvLyBwYXN0ZQogICAgICBjYXNlICJwIjogcGFzdGUodHJ1ZSk7IGJyZWFrOwogICAgICBjYXNlICJQIjogcGFzdGUoZmFsc2UpOyBicmVhazsKCiAgICAgIC8vIHZpc3VhbAogICAgICBjYXNlICJ2IjogdG9WaXN1YWwoKTsgYnJlYWs7CgogICAgICAvLyBleCBjb21tYW5kIGxpbmUgKDp3IC8gOndhIC8gOndhcSAuLi4pCiAgICAgIGNhc2UgIjoiOiBjbWRBY3RpdmUgPSB0cnVlOyBjbWRCdWYgPSAiIjsgcGVuZGluZyA9ICIiOyBjb3VudCA9ICIiOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CgogICAgICAvLyB1bmRvCiAgICAgIGNhc2UgInUiOiB0cnl7IGRvY3VtZW50LmV4ZWNDb21tYW5kKCJ1bmRvIik7IH1jYXRjaCh4KXt9IGZpcmVJbnB1dCgpOyBmaXhDYXJldCgpOyBicmVhazsKCiAgICAgIGRlZmF1bHQ6CiAgICAgICAgLy8gc3dhbGxvdyBhbnkgb3RoZXIgcHJpbnRhYmxlIGtleSBzbyBpdCBuZXZlciB0eXBlcyBpbnRvIHRoZSBidWZmZXIKICAgICAgICByZXNldCgpOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgICB9CiAgICByZXNldCgpOyBzZXRJbmQoKTsgcmV0dXJuIHRydWU7CiAgfQoKICAvKiA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09CiAgICAgVEhFIFRFWFRBUkVBIEtFWURPV04gTElTVEVORVIgKGNhcHR1cmUgcGhhc2Ug4oCUIHJ1bnMgYmVmb3JlIHRoZSBUYWIgaGFuZGxlcikKICAgICA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09ICovCiAgdGEuYWRkRXZlbnRMaXN0ZW5lcigia2V5ZG93biIsIGZ1bmN0aW9uKGUpewogICAgaWYoIXZpbU9uKCkpIHJldHVybjsgICAgICAgICAgICAgICAgICAgIC8vIHZpbSBvZmY6IG5hdGl2ZSB0ZXh0YXJlYSAoVGFiLCB0eXBpbmcpIHVuY2hhbmdlZAoKICAgIC8vIE5ldmVyIGludGVyY2VwdCBzYXZlIOKAlCBsZXQgdGhlIHdpbmRvdy1sZXZlbCBDdHJsL0NtZC1TIGhhbmRsZXIgcnVuLgogICAgaWYoKGUubWV0YUtleSB8fCBlLmN0cmxLZXkpICYmIChlLmtleSA9PT0gInMiIHx8IGUua2V5ID09PSAiUyIpKSByZXR1cm47CgogICAgaWYoTU9ERSA9PT0gImluc2VydCIpewogICAgICAvLyBpbnNlcnQgbW9kZTogb25seSBFc2MgLyBDdHJsLVsgaXMgc3BlY2lhbDsgZXZlcnl0aGluZyBlbHNlIChpbmNsLiBUYWI9MnNwKSBuYXRpdmUKICAgICAgaWYoZS5rZXkgPT09ICJFc2NhcGUiIHx8IChlLmN0cmxLZXkgJiYgZS5rZXkgPT09ICJbIikpeyBlLnByZXZlbnREZWZhdWx0KCk7IHRvTm9ybWFsKCk7IH0KICAgICAgcmV0dXJuOwogICAgfQoKICAgIC8vIGV4IGNvbW1hbmQgbGluZSAoOncgZXRjLik6IG93biB0aGUga2V5Ym9hcmQgdW50aWwgRW50ZXIgcnVucyBpdCBvciBFc2MgY2FuY2Vscy4KICAgIGlmKGNtZEFjdGl2ZSl7CiAgICAgIGUucHJldmVudERlZmF1bHQoKTsKICAgICAgZS5zdG9wUHJvcGFnYXRpb24oKTsKICAgICAgY21kS2V5KGUpOwogICAgICByZXR1cm47CiAgICB9CgogICAgLy8gTk9STUFMIC8gVklTVUFMOiB3ZSBvd24gdGhlIGtleWJvYXJkLiBDb25zdW1lIGV2ZXJ5dGhpbmcgKHNvIFRhYiwgbGV0dGVycywKICAgIC8vIGV0Yy4gbmV2ZXIgcmVhY2ggdGhlIGJ1YmJsZS1waGFzZSBUYWIgaGFuZGxlciBvciB0eXBlIGludG8gdGhlIGJ1ZmZlcikuCiAgICBoYW5kbGVLZXkoZSk7CiAgICBlLnByZXZlbnREZWZhdWx0KCk7CiAgICBlLnN0b3BQcm9wYWdhdGlvbigpOwogIH0sIHRydWUpOwoKICAvLyBLZWVwIGNhcmV0IGxlZ2FsIHdoZW4gZm9jdXMgbGFuZHMgb24gdGhlIHRleHRhcmVhIHdoaWxlIGluIG5vcm1hbC92aXN1YWwuCiAgdGEuYWRkRXZlbnRMaXN0ZW5lcigiZm9jdXMiLCBmdW5jdGlvbigpeyBpZih2aW1PbigpICYmIE1PREUgIT09ICJpbnNlcnQiKSBmaXhDYXJldCgpOyB9KTsKCiAgLyogPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQogICAgIFRPR0dMRSBCVVRUT04gKyBsb2NhbFN0b3JhZ2UgKHNhbWUgZmxpcC1mbGFnLXRoZW4tcmVhcHBseSBwYXR0ZXJuIGFzIGVkTlQpCiAgICAgPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PSAqLwogIGZ1bmN0aW9uIGFwcGx5VmltKCl7CiAgICBpZih2aW1PbigpKXsKICAgICAgTU9ERSA9IChNT0RFID09PSAiaW5zZXJ0IikgPyAiaW5zZXJ0IiA6ICJub3JtYWwiOwogICAgICB0YS5jbGFzc0xpc3QuYWRkKCJ2aW0tb24iKTsKICAgICAgZml4Q2FyZXQoKTsKICAgIH0gZWxzZSB7CiAgICAgIE1PREUgPSAibm9ybWFsIjsgcmVzZXQoKTsgY21kQWN0aXZlID0gZmFsc2U7CiAgICAgIHRhLmNsYXNzTGlzdC5yZW1vdmUoInZpbS1vbiIpOwogICAgfQogICAgc2V0SW5kKCk7CiAgICBpZihidG4pIGJ0bi50ZXh0Q29udGVudCA9ICJ2aW06ICIgKyAodmltT24oKSA/ICJvbiIgOiAib2ZmIik7CiAgfQogIC8vIEdsb2JhbCBzbyBhbiBleHBsaWNpdCB0ZW1wbGF0ZSBidXR0b24gYG9uY2xpY2s9InZpbVRvZ2dsZSgpImAgY2FuIGRyaXZlIGl0LgogIHdpbmRvdy52aW1Ub2dnbGUgPSBmdW5jdGlvbigpewogICAgbG9jYWxTdG9yYWdlLnNldEl0ZW0oTFMsIHZpbU9uKCkgPyAiMCIgOiAiMSIpOwogICAgTU9ERSA9ICJub3JtYWwiOyByZXNldCgpOwogICAgYXBwbHlWaW0oKTsKICAgIHRhLmZvY3VzKCk7CiAgICB2YXIgc3RFbDIgPSBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgic3QiKTsKICAgIGlmKHN0RWwyKSBzdEVsMi50ZXh0Q29udGVudCA9ICJ2aW0gIiArICh2aW1PbigpID8gIm9uIiA6ICJvZmYiKTsKICB9OwoKICB2YXIgYnRuID0gZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoInZpbVRvZ2dsZSIpOwogIGlmKCFidG4pewogICAgYnRuID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgiYnV0dG9uIik7CiAgICBidG4uaWQgPSAidmltVG9nZ2xlIjsKICAgIGJ0bi50eXBlID0gImJ1dHRvbiI7CiAgICBidG4uY2xhc3NOYW1lID0gImJhciI7CiAgICB2YXIgYW55QnRuID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcigiYnV0dG9uLmJhciIpOwogICAgaWYoYW55QnRuICYmIGFueUJ0bi5wYXJlbnROb2RlKSBhbnlCdG4ucGFyZW50Tm9kZS5hcHBlbmRDaGlsZChidG4pOwogICAgZWxzZSBpZih0YS5wYXJlbnROb2RlKSB0YS5wYXJlbnROb2RlLmluc2VydEJlZm9yZShidG4sIHRhKTsKICB9CiAgYnRuLm9uY2xpY2sgPSB3aW5kb3cudmltVG9nZ2xlOwoKICAvLyBQZXJzaXN0IGFuIGV4cGxpY2l0IGRlZmF1bHQgb2YgT0ZGIG9uIGZpcnN0IHJ1bi4KICBpZihsb2NhbFN0b3JhZ2UuZ2V0SXRlbShMUykgPT09IG51bGwpIGxvY2FsU3RvcmFnZS5zZXRJdGVtKExTLCAiMCIpOwogIGFwcGx5VmltKCk7Cn0pKCk7Cg=='
+++  edit-html
+  |=  $:  our=@p  name=(unit @ta)  src=@t  tree=(list [pax=path page=?])
+          mode=share-mode:le  err=@t  kind=@tas  into=@t  nfolder=?
+      ==
+  ^-  @t
+  =/  ship=tape  (scow %p our)
+  =/  nm=tape  ?~(name "" (trip u.name))
+  =/  view=tape  :(weld "/apps/lattice/x/" ship "/apps/lattice.lattice_app/page/" nm "/")
+  ::  ct: a content file (its body is wrapped on save). wrap: soft-wrap prose.
+  =/  ct=?  !=(%hoon kind)
+  =/  wrap=?  |(=(%md kind) =(%gmi kind) =(%text kind))
+  ::  new file opens on a per-kind starter; an existing file shows its body
+  ::  (raw content for a typed file, via unwrap-content). Escaped for the textarea.
+  =/  code=tape  ?~(name (esc (starter-for kind)) (esc (trip src)))
+  ::  ?into=<folder>: the new file lands in that folder (prefilled name, and the
+  ::  type-picker reload keeps the folder). into is a valid-name path, so safe raw.
+  =/  into-q=tape  ?~(into "" (weld "&into=" (trip into)))
+  =/  prefill=tape  ?:(=('' into) "" (esc (weld (trip into) "/")))
+  ::  the nested file tree: folders (incl. empty ones) with their files indented.
+  =/  tree-html=tape
+    %-  zing
+    ;:  weld
+      `(list tape)`~["<div class=\"newbtns\"><a class=\"nf\" href=\"/apps/lattice/edit?newfolder=1\">+ folder</a><a class=\"nf\" href=\"/apps/lattice/edit\">+ file</a></div><div class=\"sec\">files</div>"]
+      %+  turn  tree
+      |=  [px=path page=?]
+      =/  segs=(list @ta)  px
+      =/  depth=@ud  ?~(segs 0 (dec (lent `(list @ta)`segs)))
+      =/  leaf=tape  ?~(segs "" (trip (rear `(list @ta)`segs)))
+      =/  full=tape  (pax-str px)
+      =/  pad=tape  (a-co:co (add 8 (mul depth 14)))
+      ?:  page
+        ;:  weld
+          "<a class=\"pg"  ?:(=(nm full) " cur" "")  "\" data-path=\""  full
+          "\" style=\"padding-left:"  pad  "px\" href=\"/apps/lattice/edit?name="
+          full  "\">"  (esc leaf)  "</a>"
+        ==
+      ;:  weld
+        "<div class=\"fld\" data-path=\""  full  "\" style=\"padding-left:"  pad
+        "px\"><span class=\"ftog\"><span class=\"cx\">&#9662;</span> &#128193; "
+        (esc leaf)  "</span>"
+        "<a class=\"addf\" title=\"new file here\" href=\"/apps/lattice/edit?into="
+        full  "\">+</a></div>"
+      ==
+      `(list tape)`~[:(weld "<div class=\"sec\">tree</div><a href=\"/apps/lattice/x/" ship "/apps/lattice.lattice_app/page/\">browse pages &rarr;</a>")]
+    ==
+  ::  new-mode bar: the folder-name field (folder mode) or a type picker (its
+  ::  reload keeps ?into=) + the prefilled file-name field.
+  =/  new-bar=tape
+    ?^  name  ""
+    ?:  nfolder
+      :(weld "<input id=\"pname\" value=\"" prefill "\" placeholder=\"folder name (a/b for nested)\" autocomplete=\"off\" autofocus>")
+    =/  kinds=(list [@tas tape])
+      ~[[%md "markdown"] [%gmi "gemtext"] [%html "html"] [%text "text"] [%js "javascript"] [%css "css"] [%index "folder index"] [%hoon "hoon page"]]
+    =/  opts=tape
+      %-  zing
+      %+  turn  kinds
+      |=  [k=@tas lbl=tape]
+      ;:  weld  "<option value=\""  (trip k)  "\""  ?:(=(k kind) " selected" "")  ">"  lbl  "</option>"  ==
+    ;:  weld
+      "<select id=\"kpick\" onchange=\"if(this.value)location.href='/apps/lattice/edit?kind='+this.value+'"
+      into-q  "'\">"  opts  "</select>"
+      "<input id=\"pname\" value=\""  prefill  "\" placeholder=\"name or folder/name\" autocomplete=\"off\" autofocus>"
+    ==
+  ::  main-panes: folder mode shows a hint; else the code textarea + live preview.
+  =/  main-panes=tape
+    ?:  nfolder
+      "<div class=\"prev-empty\" style=\"grid-column:2/4;grid-row:2\"><p>Name your folder above, then hit <b>create folder</b>.<br>You can add files inside it from the tree.</p></div>"
+    ;:  weld
+      "<textarea id=\"src\" spellcheck=\"false\">"  code  "</textarea>"
+      ?:  ct  "<iframe class=\"prev\" id=\"prev\"></iframe>"
+      ?~  name  "<div class=\"prev-empty\">live preview appears here once saved</div>"
+      :(weld "<iframe class=\"prev\" id=\"prev\" src=\"" view "?embed\"></iframe>")
+    ==
+  =/  ctl-html=tape
+    ?:  nfolder
+      "<p style=\"color:#8a8a8a\">A folder has no settings. Create it, then add files inside it.</p>"
+    ?~  name
+      "<p style=\"color:#8a8a8a\">Save this page, then command &amp; sharing controls appear here.</p>"
+    ;:  weld
+      "<h3>status</h3>"
+      ?:  =('' err)  "<div class=\"ok\" id=\"cerr\">compiled ok</div>"
+      :(weld "<div class=\"err\" id=\"cerr\">" (esc (trip err)) "</div>")
+      ?:(ct "" "<h3>command</h3><div class=\"row\"><input id=\"cmd\" placeholder=\"command\"><button id=\"csend\">send</button></div>")
+      "<h3>sharing</h3><div class=\"share\">"
+      (share-btn %private "private" mode)
+      (share-btn %shared "shared" mode)
+      (share-btn %clearweb "clearweb" mode)
+      "</div><div id=\"cwurl\">"
+      ?.  ?=(%clearweb mode)  ""
+      :(weld "<p>public: <a href=\"/apps/lattice/c/" nm "\" target=\"_blank\">/c/" nm "</a></p>")
+      "</div>"
+      "<h3>grubs</h3><a href=\""  view  "?raw\" target=\"_blank\">raw grubs &rarr;</a>"
+      "<button class=\"del\" id=\"del\">delete page</button>"
+    ==
+  %-  crip
+  ;:  weld
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+    pwa-head
+    "<title>edit"  ?~(name "" (weld " - " nm))  "</title>"  edit-css  "</head><body>"
+    :(weld "<div class=\"ws" ?:(wrap " wrap" "") "\" id=\"ws\" data-mv=\"code\"><div class=\"bar\">")
+    "<button class=\"ico\" id=\"tt\" title=\"toggle tree\">&#9776;</button>"
+    ?^(name :(weld "<b>" (esc nm) "</b>") "")
+    new-bar
+    ?:(nfolder "<button id=\"save\">create folder</button>" "<button id=\"save\">save</button>")
+    "<span id=\"st\"></span><span class=\"grow\"></span>"
+    ?~(name "" :(weld "<a href=\"" view "\" target=\"_blank\">open &#8599;</a>"))
+    "<button id=\"vimToggle\" type=\"button\" title=\"toggle vim mode\">vim: off</button>"
+    "<button class=\"ico\" id=\"ct\" title=\"toggle panel\">&#9881;</button>"
+    "<a href=\"/apps/lattice\">home</a></div>"
+    ::  mobile-only tab bar (hidden on desktop): one pane at a time so the
+    ::  on-screen keyboard never hides the preview. JS flips ws[data-mv].
+    "<div class=\"mtabs\"><button data-mv=\"code\" class=\"on\">Code</button><button data-mv=\"prev\">Preview</button><button data-mv=\"tree\">Pages</button><button data-mv=\"ctl\">Panel</button></div>"
+    "<div class=\"tree\">"  tree-html  "</div>"
+    ::  folder mode shows a hint; else code textarea + live preview (md drives it
+    ::  via srcdoc, live as you type; hoon uses the ?embed server view).
+    main-panes
+    "<div class=\"ctl\">"  ctl-html  "</div></div>"
+    (edit-js nm view kind nfolder)
+    vim-script
+    sw-register-script
+    "</body></html>"
+  ==
+::  +edit-js: the editor client — toggles (localStorage), tab, ctrl/cmd-S, save +
+::  compile-check, and AJAX command/sharing/delete that reload the preview in
+::  place. Single-quote cord: uses double-quotes and backticks only (no ' or \).
+::
+++  edit-js
+  |=  [nm=tape view=tape kind=@tas nfolder=?]
+  ^-  tape
+  ;:  weld
+    (trip '<script>(function(){var NAME="')
+    nm
+    (trip '";var KIND="')
+    (trip kind)
+    (trip '";var MKDIR=')
+    ?:(nfolder "true" "false")
+    (trip ';var CONTENT=KIND!=="hoon";var V="')
+    view
+    %-  trip
+    '";var $=function(i){return document.getElementById(i)};var ws=$("ws");function ap(){ws.classList.toggle("nt",localStorage.edNT==="1");ws.classList.toggle("nc",localStorage.edNC==="1")}ap();$("tt").onclick=function(){localStorage.edNT=localStorage.edNT==="1"?"0":"1";ap()};$("ct").onclick=function(){localStorage.edNC=localStorage.edNC==="1"?"0":"1";ap()};var pn=$("pname");if(pn&&pn.value){var pl=pn.value.length;pn.focus();pn.setSelectionRange(pl,pl)}function trApply(){var c=[];try{c=JSON.parse(localStorage.edColl||"[]")}catch(e){}var rs=document.querySelectorAll(".tree [data-path]");for(var i=0;i<rs.length;i++){var p=rs[i].getAttribute("data-path");var hide=false;for(var j=0;j<c.length;j++){if(p.indexOf(c[j]+"/")===0){hide=true;break}}rs[i].style.display=hide?"none":"";if(rs[i].className.indexOf("fld")>=0){var cx=rs[i].querySelector(".cx");if(cx)cx.innerHTML=c.indexOf(p)>=0?"&#9656;":"&#9662;"}}}var ftgs=document.querySelectorAll(".tree .fld .ftog");for(var fi=0;fi<ftgs.length;fi++){ftgs[fi].onclick=function(){var p=this.parentNode.getAttribute("data-path");var c=[];try{c=JSON.parse(localStorage.edColl||"[]")}catch(e){}var k=c.indexOf(p);if(k>=0)c.splice(k,1);else c.push(p);localStorage.edColl=JSON.stringify(c);trApply()}}trApply();var mt=document.querySelectorAll(".mtabs button");for(var mi=0;mi<mt.length;mi++){mt[mi].onclick=function(){var v=this.getAttribute("data-mv");ws.setAttribute("data-mv",v);for(var mj=0;mj<mt.length;mj++){mt[mj].className=mt[mj].getAttribute("data-mv")===v?"on":""}if(v==="prev")prev()}}var st=function(t,ok){var s=$("st");s.textContent=t;s.style.color=ok?"#27ae60":"#c0392b"};var ta=$("src");if(ta){ta.addEventListener("keydown",function(e){if(e.key==="Tab"){e.preventDefault();var s=ta.selectionStart;ta.value=ta.value.slice(0,s)+"  "+ta.value.slice(ta.selectionEnd);ta.selectionStart=ta.selectionEnd=s+2}})}var prev=function(){var p=$("prev");if(!p)return;if(CONTENT){fetch("/apps/lattice/page-preview?type="+KIND,{method:"POST",body:ta.value}).then(function(r){return r.text()}).then(function(h){p.srcdoc=h}).catch(function(x){})}else{p.src=p.src}};if(CONTENT){var tmr;ta.addEventListener("input",function(){clearTimeout(tmr);tmr=setTimeout(prev,400)});prev()}var chk=async function(){if(!NAME)return;var t="";try{t=await (await fetch(V+"err?data")).text()}catch(x){}var c=$("cerr");if(t){st("error",false);if(c){c.textContent=t;c.className="err"}}else{st(CONTENT?"saved":"compiled ok",true);if(c){c.textContent="compiled ok";c.className="ok"}prev()}};$("save").onclick=async function(){var name=NAME||($("pname")?$("pname").value.trim():"");if(!name){st("name required",false);return}if(MKDIR){st("creating...",true);var rf=await fetch("/apps/lattice/folder-new?name="+encodeURIComponent(name),{method:"POST"});if(!rf.ok){st("create failed "+rf.status,false);return}location="/apps/lattice/edit?into="+encodeURIComponent(name);return}st("saving...",true);var r=await fetch("/apps/lattice/page-save?name="+encodeURIComponent(name)+(NAME?"":"&new=1")+(CONTENT?"&type="+KIND:""),{method:"POST",body:ta.value});if(r.status===409){st("that page already exists",false);return}if(!r.ok){st("save failed "+r.status,false);return}if(!NAME){location="/apps/lattice/edit?name="+encodeURIComponent(name)+(CONTENT?"&kind="+KIND:"");return}st(CONTENT?"saved":"compiling...",true);setTimeout(chk,800);setTimeout(chk,2000)};window.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&e.key==="s"){e.preventDefault();$("save").onclick()}});var cs=$("csend");if(cs){var run=async function(){var c=$("cmd").value;if(!c)return;await fetch("/apps/lattice/page-cmd?name="+encodeURIComponent(NAME),{method:"POST",body:"cmd="+encodeURIComponent(c)});$("cmd").value="";setTimeout(prev,600)};cs.onclick=run;$("cmd").addEventListener("keydown",function(e){if(e.key==="Enter")run()})}document.querySelectorAll(".share button").forEach(function(b){b.onclick=async function(){var m=b.getAttribute("data-m");await fetch("/apps/lattice/page-share?name="+encodeURIComponent(NAME)+"&mode="+m,{method:"POST"});document.querySelectorAll(".share button").forEach(function(x){x.className=x.getAttribute("data-m")===m?"on":""});$("cwurl").innerHTML=m==="clearweb"?`<p>public: <a href="/apps/lattice/c/${NAME}" target="_blank">/c/${NAME}</a></p>`:"";setTimeout(prev,500)}});var d=$("del");if(d){d.onclick=async function(){if(!confirm("delete "+NAME+"?"))return;await fetch("/apps/lattice/page-del?name="+encodeURIComponent(NAME),{method:"POST"});location="/apps/lattice"}}})();</script>'
+  ==
+::  +home-css: styling for the landing (nav cards + lists).
+::
+++  home-css
+  ^-  tape
+  %-  trip
+  '<style>*{scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}.muted{color:#8a8a8a}h1{margin:.2rem 0}.apps{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:14px;margin:1.2rem 0}.appcard{display:flex;flex-direction:column;gap:5px;padding:20px;border:1px solid #8886;border-radius:12px;text-decoration:none;color:inherit;background:#8881}.appcard:hover{border-color:#1a6ed8}.appcard .ico{font-size:1.7rem;line-height:1}.appcard strong{font-size:1.2rem}.appcard .d{color:#8a8a8a;font-size:.9rem}.quick{display:flex;flex-wrap:wrap;gap:8px;margin:.5rem 0 .3rem}.quick a{padding:6px 12px;border:1px solid #8886;border-radius:8px;text-decoration:none;color:inherit;background:#8881;font-size:.9rem}.quick a:hover{border-color:#1a6ed8}ul.pglist{list-style:none;padding:0;margin:.4rem 0}ul.pglist li{padding:11px 2px;border-bottom:1px solid #8883;display:flex;justify-content:space-between;align-items:center;gap:12px}ul.pglist a{padding:4px 2px}h2{font-size:1rem;color:#8a8a8a;margin:1.4rem 0 .2rem;text-transform:uppercase;letter-spacing:.03em}.apps{align-items:start}.col{display:flex;flex-direction:column}.qh{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:1.1rem 0 .2rem;font-weight:600}ul.qlist{list-style:none;padding:0;margin:0}ul.qlist li{border-bottom:1px solid #8883}ul.qlist a{display:block;padding:9px 6px;text-decoration:none;color:inherit;border-radius:6px}ul.qlist a:hover{background:#8881}.qname{display:block;font-weight:500;color:#1a6ed8}.qprev{display:block;font-size:.84rem;color:#8a8a8a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.05rem}</style>'
+::  +search-results-html: the omnibar search results page. A heading + a #results
+::  div filled by client JS that fans out ONE /catalog-search call per query word
+::  (obelisk has no OR/LIKE, so the client unions the per-term hits and ranks by
+::  words-matched then tf), and links each hit to the reader. Built with the DOM
+::  API (textContent) so catalog text is XSS-safe; single-quote cord so the JS
+::  braces stay literal (no ' or \ inside). Obelisk down -> a graceful message.
+::
+++  search-results-html
+  |=  q=@t
+  ^-  tape
+  ;:  weld
+    "<h1>Search</h1>"
+    "<p class=\"muted\">Catalog results for &ldquo;"  (esc (trip q))  "&rdquo;.</p>"
+    "<div id=\"results\" class=\"muted\">Searching&hellip;</div>"
+    %-  trip
+    '<script>(function(){var p=new URLSearchParams(location.search);var q=(p.get("url")||"").trim();var out=document.getElementById("results");if(!q){out.textContent="";return}var words=q.toLowerCase().split(/[^a-z0-9]+/).filter(function(w){return w.length>=2});if(!words.length){out.textContent="Type at least one search word (2+ letters).";return}Promise.all(words.map(function(w){return fetch("/apps/lattice/catalog-search?term="+encodeURIComponent(w)).then(function(r){return r.ok?r.json():{rows:[]}}).catch(function(){return{rows:[]}})})).then(function(res){var hits={};res.forEach(function(j){var c=j.columns||[];var pi=c.indexOf("publisher"),xi=c.indexOf("path"),ti=c.indexOf("tf");(j.rows||[]).forEach(function(row){var pub=row[pi],path=row[xi],tf=parseInt(row[ti],10)||0;if(!pub||!path)return;var k=pub+"|"+path;if(!hits[k])hits[k]={pub:pub,path:path,terms:0,tf:0};hits[k].terms++;hits[k].tf+=tf})});var list=Object.keys(hits).map(function(k){return hits[k]});list.sort(function(a,b){return b.terms-a.terms||b.tf-a.tf});out.textContent="";out.className="";if(!list.length){out.className="muted";out.textContent="No catalog pages match that.";return}var ul=document.createElement("ul");ul.className="qlist";list.slice(0,50).forEach(function(h){var li=document.createElement("li");var a=document.createElement("a");a.href="/apps/lattice?url="+encodeURIComponent("urb://"+h.pub+"/"+h.path);var n=document.createElement("span");n.className="qname";n.textContent=h.path;var s=document.createElement("span");s.className="qprev";s.textContent=h.pub+"  ·  "+h.terms+(h.terms>1?" terms":" term")+", tf "+h.tf;a.appendChild(n);a.appendChild(s);li.appendChild(a);ul.appendChild(li)});out.appendChild(ul)}).catch(function(){out.className="muted";out.textContent="Catalog search is unavailable (obelisk not responding)."})})();</script>'
+  ==
+::  +settings-html: the settings page. One maintenance action so far — a manual
+::  content-catalog sweep. The crawler auto-sweeps every ~6h (and a followed
+::  peer's edits index live), but a newly published page isn't searchable until
+::  the next sweep, so this forces one now. POSTs /catalog-sweep, which acks
+::  immediately and (re)indexes in the background. Single-quote cords so the css
+::  and js braces stay literal (no ' or \ inside).
+::
+++  settings-html
+  ^-  tape
+  ;:  weld
+    %-  trip
+    '<style>.btn{padding:8px 16px;font:inherit;border:1px solid #8886;border-radius:8px;background:transparent;color:inherit;cursor:pointer}.btn:hover{border-color:#1a6ed8}.btn:disabled{opacity:.5;cursor:default}</style>'
+    "<h1>Settings</h1>"
+    "<h2>Content catalog</h2>"
+    "<p class=\"muted\">Published pages are indexed for search automatically about every 6 hours (and a followed peer's edits index live). Sweep now to (re)index all of your published pages and followed peers immediately &mdash; e.g. after publishing something you want searchable right away.</p>"
+    "<p><button type=\"button\" id=\"sweep\" class=\"btn\">Sweep catalog now</button> <span id=\"swst\" class=\"muted\"></span></p>"
+    %-  trip
+    '<script>(function(){var b=document.getElementById("sweep");var s=document.getElementById("swst");b.onclick=function(){b.disabled=true;s.textContent="sweeping...";fetch("/apps/lattice/catalog-sweep",{method:"POST"}).then(function(r){s.textContent=r.ok?"started — pages are being (re)indexed in the background.":"failed ("+r.status+")";b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
+  ==
+::  +home-index-html: the landing page. Always shows navigation (Pages,
+::  Explorer) plus a live list of your programmable pages and any published
+::  pages — so an empty store is still a way in, not a dead end.
 ::
 ++  home-index-html
-  |=  [our=@p ix=pub-index:lp]
+  |=  [our=@p recent=(list [pax=path prev=@t]) bms=bookmarks:lb]
   ^-  tape
   =/  ship=tape  (scow %p our)
-  =/  keys=(list path)  ~(tap in ~(key by ix))
-  ?~  keys  "<p>No published pages yet.</p>"
-  %-  zing
-  :-  "<h1>lattice</h1>"
-  %+  turn  keys
-  |=  pax=path
-  =/  rel=tape  (slag 1 (spud (snip (slag 1 pax))))
-  :(weld "<p><a href=\"/apps/lattice?url=urb://" ship "/" rel "\">" rel "</a></p>")
+  =/  tree=tape  :(weld "/apps/lattice/x/" ship "/")
+  ::  under Editor: the 10 most recently edited pages — name + a preview, each
+  ::  linking straight into the editor.
+  =/  recent-list=tape
+    ?~  recent  "<p class=\"muted\">No pages yet.</p>"
+    %-  zing
+    ;:  weld
+      `(list tape)`~["<ul class=\"qlist\">"]
+      %+  turn  recent
+      |=  [pax=path prev=@t]
+      =/  pt=tape  (pax-str pax)
+      ;:  weld
+        "<li><a href=\"/apps/lattice/edit?name="  (esc pt)  "\">"
+        "<span class=\"qname\">"  (esc pt)  "</span>"
+        ?:  =('' prev)  ""
+        :(weld "<span class=\"qprev\">" (esc (trip prev)) "</span>")
+        "</a></li>"
+      ==
+      `(list tape)`~["</ul>"]
+    ==
+  ::  under Browser: the last 10 bookmarks — the title opens the saved url via the
+  ::  reader (which resolves the urb:// address back to the /x view).
+  =/  bm-list=tape
+    ?~  bms
+      "<p class=\"muted\">No bookmarks yet &mdash; open a page in the Browser and hit &#9734;.</p>"
+    %-  zing
+    ;:  weld
+      `(list tape)`~["<ul class=\"qlist\">"]
+      %+  turn  bms
+      |=  b=bookmark:lb
+      ;:  weld
+        "<li><a href=\"/apps/lattice?url="  (esc (trip url.b))  "\">"
+        "<span class=\"qname\">"  (esc (trip title.b))  "</span>"
+        "</a></li>"
+      ==
+      `(list tape)`~["</ul>"]
+    ==
+  ;:  weld
+    home-css
+    "<h1>Lattice</h1>"
+    "<p class=\"muted\">Programmable pages &amp; published notes &middot; "  ship
+    " &middot; <a href=\"/apps/lattice/settings\">settings</a></p>"
+    ::  two columns: each app card with its quick links below it.
+    "<div class=\"apps\">"
+    "<div class=\"col\">"
+    "<a class=\"appcard\" href=\"/apps/lattice/edit\"><span class=\"ico\">&#9998;</span><strong>Editor</strong><span class=\"d\">Create, organize, and edit your pages, notes, and files in a tree.</span></a>"
+    "<h3 class=\"qh\">Recent</h3>"
+    recent-list
+    "</div>"
+    :(weld "<div class=\"col\"><a class=\"appcard\" href=\"" tree "\"><span class=\"ico\">&#127760;</span><strong>Browser</strong><span class=\"d\">Read and explore content &mdash; your published pages and other ships via urb://.</span></a>")
+    "<h3 class=\"qh\">Bookmarks</h3>"
+    bm-list
+    "</div>"
+    "</div>"
+  ==
 ::  +web-css: minimal reader styling (single-quoted cord so braces are literal).
 ::
 ++  web-css
   ^-  tape
   %-  trip
-  '*{box-sizing:border-box}body{margin:0;font:16px/1.6 system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:#1a6ed8}.err{color:#c0392b}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}'
+  '*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{background:#fafafa}body{margin:0;font:16px/1.6 system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){html{background:#1a1a1a}body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:#1a6ed8}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}.bar button:hover{border-color:#1a6ed8}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:#1a6ed8}.err{color:#c0392b}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}code{background:#8881;padding:.1em .3em;border-radius:4px;font-size:.9em}pre code{background:0;padding:0}table{border-collapse:collapse;margin:.7rem 0;display:block;overflow-x:auto;max-width:100%}th,td{border:1px solid #8887;padding:6px 11px}th{background:#8881;font-weight:600;text-align:left}img{max-width:100%;height:auto}del{opacity:.7}ul,ol{padding-left:1.5rem}li{margin:.15rem 0}sup.fnref{font-size:.72em}sup.fnref a{text-decoration:none}hr.fn-sep{margin-top:2rem}.footnotes{font-size:.88em;color:#8a8a8a}.footnotes li{margin:.25rem 0}.bar{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}@media(max-width:520px){.bar{flex-wrap:wrap}.bar input{flex:1 1 100%;order:3}main{padding-top:12px;padding-bottom:12px}}'
 ::  +render-page: wrap an HTML fragment in the reader chrome (address bar + CSS).
 ::
 ++  render-page
@@ -2375,12 +4850,50 @@
   %-  crip
   ;:  weld
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+    pwa-head
     "<title>lattice</title><style>"  web-css  "</style></head><body>"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
-    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb://~ship/path\">"
+    "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
+    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search the catalog\">"
     "<button type=\"submit\">Go</button></form><main>"  inner  "</main>"
-    (sse-script keep)  "</body></html>"
+    (sse-script keep)  sw-register-script  "</body></html>"
+  ==
+::  +render-browser-page: the browser's page view — the address bar (+ an Edit
+::  button when `edit` names an editable own page) above the page rendered in a
+::  viewport-filling iframe, so the page's theme owns its whole document (no
+::  collision with the chrome css) and looks as it would on the clear web.
+::  `sandbox` locks the frame (no scripts/same-origin) for untrusted peer content;
+::  `keep` is the data-grub SSE url ("" = none) so an owner edit live-reloads the
+::  view. The clearweb-parity replacement for the old dev page-view chrome.
+::
+++  render-browser-page
+  |=  [current=tape doc=@t edit=(unit @t) sandbox=? keep=tape]
+  ^-  @t
+  =/  editbtn=tape
+    ?~  edit  ""
+    :(weld "<a class=\"eb\" href=\"/apps/lattice/edit?name=" (trip u.edit) "\">&#9998; edit</a>")
+  %-  crip
+  ;:  weld
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+    pwa-head
+    "<title>lattice</title><style>"  web-css
+    (trip 'html,body{height:100%}body.bp{display:flex;flex-direction:column;margin:0}.bp main{max-width:none;margin:0;padding:0;flex:1;display:flex}.bp .pf{flex:1;width:100%;border:0}.bar .eb,.bar .bm{display:flex;align-items:center;gap:.3em;padding:0 12px;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;background:transparent;cursor:pointer;font-size:1rem}.bar .eb:hover,.bar .bm:hover{border-color:#1a6ed8}')
+    "</style></head><body class=\"bp\">"
+    "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
+    "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
+    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search the catalog\">"
+    editbtn
+    "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
+    "<button type=\"submit\">Go</button></form>"
+    "<main><iframe class=\"pf\""  ?:(sandbox " sandbox=\"\"" "")
+    " srcdoc=\""  (esc (trip doc))  "\"></iframe></main>"
+    ::  bookmark button: POST the address-bar url to /bookmark (owner-gated, same
+    ::  origin). single-quote cord so the js braces stay literal.
+    %-  trip
+    '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})}})();</script>'
+    (page-sse-script keep)  sw-register-script  "</body></html>"
   ==
 ::  +keep-url: grubbery's native keep-SSE endpoint for one of our grubs.
 ::
@@ -2638,6 +5151,12 @@
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
     =/  key=path  u.ko
+    ::  a top-level single-char pub name would shadow a urb:// mount letter
+    ::  (p/n/k/t and the rest of the reserved 1-char space), so its bare
+    ::  canonical url could never resolve back to it. Refuse it — the whole
+    ::  single-char first-component space stays reserved to the protocol forever.
+    ?:  ?&(?=([@ ~] key) =(1 (met 3 i.key)))
+      ~&([%lattice-pub-name-reserved key] (pure:m ~))
     =/  or=(unit vrail:lp)  (key-to-rail:lp vbase key)
     ?~  or  ~&([%lattice-pub-bad-key key] (pure:m ~))
     =/  road=road:tarball  [%& %& pax.u.or nom.u.or]
