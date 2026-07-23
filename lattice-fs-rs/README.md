@@ -52,12 +52,13 @@ unchanged (it just calls `lattice-fs errors <page>`).
 
 ## Status
 
-- **Eyre**: complete, verified on a real mount (reads, all writes incl.
-  shrinking truncate, mkdir/mv/rm/rmdir, index-readonly, nvim `:w`, broken→errors).
-- **lick**: client complete. jam/cue is verified against the canonical Urbit
-  vectors + round-trips + KB atoms (`cargo test`). End-to-end needs the nexus
-  `fs` lick-port fiber (models on `gub/nex/lick-echo`), which dispatches the same
-  `[verb path query body] -> [status body]` protocol the transport speaks.
+Both transports verified end-to-end on the harness — a full mount matrix
+(ls/cat/create/edit-with-truncate/mv/rm/index-readonly/broken→errors) over each:
+
+- **Eyre**: HTTP + cookie auth.
+- **lick**: unix socket, no cookie. The nexus serves it from a `/fs.sig` lick
+  port (`grubbery-overlay/nex/lattice/app.hoon`); jam/cue is verified against the
+  canonical Urbit vectors + round-trips + KB atoms (`cargo test`).
 
 ## Wire protocol (lick)
 
