@@ -318,34 +318,14 @@
         ::  would let this sweep's early-resolved obelisk/peek timers accumulate.
         ;<  ~  bind:m  (sleep-draining ~h6)
         $
-      ::  /fs.sig: the lick (local IPC) port for the FUSE client. Serve-loop is
-      ::  generic (spin the socket, take each inbound frame, dispatch, spit the
-      ::  reply) — the only lattice-specific part is +fs-op. Wire format (per
-      ::  gub/man/lick-echo): 0x00 + LE-u32 len + jam([mark noun]); request noun
-      ::  is [verb path query body], reply is [status body]. Requests are
-      ::  synchronous (one in flight), so no seq de-dup is needed. Auth is
-      ::  filesystem-presence: the socket lives in the pier.
+      ::  /fs.sig: the lick (local IPC) port for the FUSE client. The serve-loop
+      ::  is generic — +lick-serve:io (fiberio) spins the socket, decodes each
+      ::  [verb path query body] frame, and spits back [status body]. The only
+      ::  lattice-specific part is the +fs-op handler. Auth is filesystem-presence:
+      ::  the socket lives in the pier.
           [~ %'fs.sig']
         ;<  ~  bind:m  (rise-wait:io prod "%lattice fs port: failed")
-        ;<  ~  bind:m  (lick-spin:io fs-port)
-        ;<  *  bind:m  (keep:io /in [%& %& (weld /sys/lick fs-port) %in] ~)
-        |-
-        ;<  *  bind:m  (take-news:io /in)
-        ;<  =seen:nexus  bind:m  (peek:io [%& %& (weld /sys/lick fs-port) %in] ~)
-        ?.  ?=([%& %file *] seen)  $
-        ::  in-grub is [seq mark noun]. The runtime types noun as *, so extract it
-        ::  generally (like lick-echo) THEN clam it to [verb path query body] — a
-        ::  direct !< to the specific tuple nest-fails on the * and would hang.
-        =/  raw=(unit [seq=@ud mark=@tas noun=*])
-          (mole |.(!<([seq=@ud mark=@tas noun=*] (need-vase:tarball sang.p.seen))))
-        ?~  raw  $
-        =/  req=(unit [verb=@t path=@t query=@t body=@t])
-          (mole |.(;;([@t @t @t @t] noun.u.raw)))
-        ?~  req  $
-        ;<  [status=@ud rbody=@t]  bind:m
-          (fs-op verb.u.req path.u.req query.u.req body.u.req)
-        ;<  ~  bind:m  (lick-spit:io fs-port %res [status rbody])
-        $
+        (lick-serve:io fs-port fs-op)
       ::  /cat/obelisk.sig: the serializing obelisk OWNER (finding #1). Owns the
       ::  single /server sub; takes %obk-req pokes one at a time, runs the query
       ::  (obelisk-run-one), and writes the result to the caller's grub — so no two
