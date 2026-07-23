@@ -1,0 +1,16 @@
+[package]
+name = "lattice-fs"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "lattice-fs"
+path = "src/main.rs"
+
+[dependencies]
+# no libfuse-dev on this box: mount via fusermount3 instead of linking libfuse
+fuser = { version = "0.18", default-features = false }
+serde_json = "1"
+# loopback http only — drop tls/json/cookies default features
+ureq = { version = "2", default-features = false }
+libc = "0.2"
