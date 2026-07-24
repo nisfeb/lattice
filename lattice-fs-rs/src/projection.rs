@@ -2,6 +2,8 @@
 //! Projection trait the core drives. All app semantics live in an impl
 //! (see lattice.rs); the core never names markdown, hoon, or a route.
 
+use std::collections::HashMap;
+
 use crate::transport::TErr;
 
 /// A projection failure carrying a POSIX errno for the core to return to FUSE.
@@ -44,6 +46,13 @@ pub struct Node {
 pub trait Projection: Send + Sync {
     fn list(&self) -> Result<Vec<Node>, PErr>;
     fn read(&self, rel: &str) -> Result<Vec<u8>, PErr>;
+
+    /// Bulk warm: the whole tree AND every page body in one round-trip. The core
+    /// calls this to fill the read cache so grep/cat run from RAM. lattice serves
+    /// it from a single page-dump peek, falling back to list()+read() on an old
+    /// nexus that lacks the route.
+    fn dump(&self) -> Result<(Vec<Node>, HashMap<String, Vec<u8>>), PErr>;
+
     fn errors(&self, rel: &str) -> Result<String, PErr>;
     fn write(&self, rel: &str, kind: &str, data: &[u8], create: bool) -> Result<(), PErr>;
     fn mkdir(&self, rel: &str) -> Result<(), PErr>;

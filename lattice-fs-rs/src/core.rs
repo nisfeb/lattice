@@ -20,7 +20,8 @@ use fuser::{
 use crate::projection::{Node, PErr, Projection};
 
 const TTL: Duration = Duration::from_secs(1); // kernel attr/entry cache
-const TREE_TTL: Duration = Duration::from_secs(5); // our vtree refresh floor
+const TREE_TTL: Duration = Duration::from_secs(5); // our vtree refresh floor (watch() is a no-op; this is the only floor)
+const READ_CACHE_MAX: usize = 256 * 1024 * 1024; // body-cache ceiling; past it, degrade to lazy read
 
 #[derive(Clone, Copy, PartialEq)]
 enum VKind {
@@ -49,6 +50,10 @@ struct State {
     vt: HashMap<String, VEntry>, // vpath -> entry
     vt_ts: Option<Instant>,
     read_cache: HashMap<String, Vec<u8>>, // rel -> bytes
+    read_cache_bytes: usize,              // running total, for the READ_CACHE_MAX ceiling
+    warm: bool,                           // a dump has landed at least once
+    refresh_pending: bool,                // a background refresh is already in flight
+    write_gen: u64,                       // bumped on every mutation; guards stale dump swaps
     handles: HashMap<u64, Handle>,        // fh -> handle
     next_fh: u64,
     pending_trunc: HashMap<u64, u64>, // ino -> size (handle-less truncate deferred to open)
@@ -74,6 +79,10 @@ impl GrubberyFs {
             vt: HashMap::new(),
             vt_ts: None,
             read_cache: HashMap::new(),
+            read_cache_bytes: 0,
+            warm: false,
+            refresh_pending: false,
+            write_gen: 0,
             handles: HashMap::new(),
             next_fh: 1,
             pending_trunc: HashMap::new(),
@@ -91,6 +100,24 @@ impl GrubberyFs {
             };
             wproj.watch(&on_change);
         });
+        // warm thread: one page-dump seeds the whole vtree + every body up front,
+        // so grep/cat run from RAM. Async — new() returns immediately. No writer
+        // exists yet at mount, so this swap needs no generation guard. If a FUSE op
+        // beats it, ensure_fresh() cold-blocks on the same one dump (not N reads).
+        let west = st.clone();
+        let wproj2 = proj.clone();
+        std::thread::spawn(move || {
+            if let Ok((nodes, bodies)) = wproj2.dump() {
+                let vt = build_vt(&nodes, |k| wproj2.ext_for_kind(k));
+                let bytes: usize = bodies.iter().map(|(k, b)| k.len() + b.len()).sum();
+                let mut s = west.lock().unwrap();
+                s.vt = vt;
+                s.vt_ts = Some(Instant::now());
+                s.read_cache = bodies;
+                s.read_cache_bytes = bytes;
+                s.warm = true;
+            }
+        });
         GrubberyFs {
             proj,
             st,
@@ -99,35 +126,84 @@ impl GrubberyFs {
         }
     }
 
-    /// Rebuild the vtree if stale. Calls projection.list() OUTSIDE the lock, then
-    /// swaps the result in — a network hiccup keeps the stale tree.
+    /// Freshness on the FUSE path WITHOUT blocking it. Cold start (nothing warm
+    /// yet) blocks once on a single dump so the first op isn't empty. Steady state
+    /// serves the current (possibly stale) vtree and kicks a background dump when
+    /// past TREE_TTL, coalesced by refresh_pending. The background swap is
+    /// discarded if a write moved write_gen while the dump was in flight — else a
+    /// stale snapshot would resurrect an edited body or a just-deleted entry.
     fn ensure_fresh(&self) {
-        let stale = {
-            let s = self.st.lock().unwrap();
-            s.vt_ts.map_or(true, |t| t.elapsed() > TREE_TTL)
+        if !self.st.lock().unwrap().warm {
+            return self.refresh_blocking();
+        }
+        let go = {
+            let mut s = self.st.lock().unwrap();
+            let stale = s.vt_ts.map_or(true, |t| t.elapsed() > TREE_TTL);
+            if stale && !s.refresh_pending {
+                s.refresh_pending = true;
+                true
+            } else {
+                false
+            }
         };
-        if !stale {
+        if !go {
+            return; // serve the current vtree — zero network on the FUSE path
+        }
+        let st = self.st.clone();
+        let proj = self.proj.clone();
+        std::thread::spawn(move || {
+            let start_gen = st.lock().unwrap().write_gen;
+            let built = proj.dump().map(|(nodes, bodies)| {
+                let vt = build_vt(&nodes, |k| proj.ext_for_kind(k));
+                let bytes: usize = bodies.iter().map(|(k, b)| k.len() + b.len()).sum();
+                (vt, bodies, bytes)
+            });
+            let mut s = st.lock().unwrap();
+            s.refresh_pending = false;
+            if let Ok((vt, bodies, bytes)) = built {
+                if s.write_gen == start_gen {
+                    s.vt = vt;
+                    s.vt_ts = Some(Instant::now());
+                    s.read_cache = bodies;
+                    s.read_cache_bytes = bytes;
+                }
+            }
+        });
+    }
+
+    /// Cold path only: block until the first dump lands (mount just came up). No-op
+    /// if the warm thread already won the race.
+    fn refresh_blocking(&self) {
+        if self.st.lock().unwrap().warm {
             return;
         }
-        if let Ok(nodes) = self.proj.list() {
+        if let Ok((nodes, bodies)) = self.proj.dump() {
             let vt = build_vt(&nodes, |k| self.proj.ext_for_kind(k));
+            let bytes: usize = bodies.iter().map(|(k, b)| k.len() + b.len()).sum();
             let mut s = self.st.lock().unwrap();
             s.vt = vt;
             s.vt_ts = Some(Instant::now());
+            s.read_cache = bodies;
+            s.read_cache_bytes = bytes;
+            s.warm = true;
         }
     }
 
-    /// Read-through body cache. Fetches OUTSIDE the lock.
+    /// Read-through body cache. Fetches OUTSIDE the lock. After a warm dump every
+    /// rel is already present, so this fetch only fires for a page created since
+    /// the last dump. Skip-past-cap: always serve the bytes, but stop caching once
+    /// past READ_CACHE_MAX so an oversized tree degrades to lazy read, never OOMs.
     fn body(&self, rel: &str) -> Result<Vec<u8>, PErr> {
         if let Some(b) = self.st.lock().unwrap().read_cache.get(rel) {
             return Ok(b.clone());
         }
         let data = self.proj.read(rel)?;
-        self.st
-            .lock()
-            .unwrap()
-            .read_cache
-            .insert(rel.to_string(), data.clone());
+        let mut s = self.st.lock().unwrap();
+        let add = rel.len() + data.len();
+        if s.read_cache_bytes + add <= READ_CACHE_MAX {
+            s.read_cache_bytes += add;
+            s.read_cache.insert(rel.to_string(), data.clone());
+        }
         Ok(data)
     }
 
@@ -199,7 +275,10 @@ impl GrubberyFs {
             h.new = false;
         }
         s.vt_ts = None;
-        s.read_cache.remove(&rel);
+        s.write_gen += 1; // supersede any in-flight dump swap (stale-swap guard)
+        if let Some(old) = s.read_cache.remove(&rel) {
+            s.read_cache_bytes = s.read_cache_bytes.saturating_sub(rel.len() + old.len());
+        }
         Ok(())
     }
 }
@@ -733,6 +812,7 @@ impl Filesystem for GrubberyFs {
                 let ino = ino_for(&mut s, &path);
                 s.vt.insert(path, VEntry { kind: VKind::Dir, node: None });
                 s.vt_ts = None;
+                s.write_gen += 1;
                 drop(s);
                 let attr = dir_attr(ino, SystemTime::now(), self.uid, self.gid);
                 reply.entry(&TTL, &attr, Generation(0));
@@ -761,6 +841,7 @@ impl Filesystem for GrubberyFs {
                 let mut s = self.st.lock().unwrap();
                 s.vt.remove(&path);
                 s.vt_ts = None;
+                s.write_gen += 1;
                 drop(s);
                 reply.ok();
             }
@@ -787,6 +868,7 @@ impl Filesystem for GrubberyFs {
                 let mut s = self.st.lock().unwrap();
                 s.vt.remove(&path);
                 s.vt_ts = None;
+                s.write_gen += 1;
                 drop(s);
                 reply.ok();
             }
@@ -833,6 +915,7 @@ impl Filesystem for GrubberyFs {
                 let mut s = self.st.lock().unwrap();
                 s.vt.remove(&src_path);
                 s.vt_ts = None;
+                s.write_gen += 1;
                 drop(s);
                 reply.ok();
             }
