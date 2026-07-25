@@ -175,9 +175,19 @@ fn parse_dump(v: &Value) -> Result<(Vec<Node>, HashMap<String, Vec<u8>>), PErr> 
         let kind = n.get("kind").and_then(|k| k.as_str()).unwrap_or("hoon").to_string();
         let mtime = da_to_unix(n.get("mtime").and_then(|m| m.as_str()).unwrap_or(""));
         let readonly = kind == "index";
-        let body = n.get("body").and_then(|b| b.as_str()).unwrap_or("").as_bytes().to_vec();
-        let size = body.len() as u64;
-        bodies.insert(rel.clone(), body);
+        // A present `body` is inlined: cache it, and derive size from the actual
+        // bytes (the st_size guard). A missing `body` means the server omitted an
+        // oversized page (dump-inline-max) — don't cache it (body() reads it on
+        // demand), and trust the reported `size`, like list() already does.
+        let size = match n.get("body").and_then(|b| b.as_str()) {
+            Some(s) => {
+                let body = s.as_bytes().to_vec();
+                let sz = body.len() as u64;
+                bodies.insert(rel.clone(), body);
+                sz
+            }
+            None => n.get("size").and_then(|s| s.as_u64()).unwrap_or(0),
+        };
         out.push(Node { rel, is_dir: false, is_page: true, kind, size, mtime, readonly });
     }
     Ok((out, bodies))
@@ -254,6 +264,25 @@ mod tests {
         assert!(page.is_page && !page.is_dir);
         assert_eq!(bodies["note"], b"# hi\nhello");
         assert_eq!(page.size, bodies["note"].len() as u64); // NOT 999
+    }
+
+    #[test]
+    fn dump_omitted_body_not_cached() {
+        // an oversized page the server omitted: no "body" field, only "size".
+        // it must NOT be cached (body() reads it on demand), and its Node.size
+        // must come from the reported field (there are no bytes to measure).
+        let v = serde_json::json!({"nodes": [
+            {"path": "small", "page": true, "kind": "md", "mtime": "~2026.7.20",
+             "body": "hi", "size": 2},
+            {"path": "big", "page": true, "kind": "md", "mtime": "~2026.7.20",
+             "size": 500000}, // no "body" — omitted by dump-inline-max
+        ]});
+        let (nodes, bodies) = parse_dump(&v).unwrap();
+        assert!(bodies.contains_key("small")); // small inlined + cached
+        assert!(!bodies.contains_key("big")); // large omitted -> lazy read
+        let big = nodes.iter().find(|n| n.rel == "big").unwrap();
+        assert!(big.is_page);
+        assert_eq!(big.size, 500000); // trusts the reported size
     }
 
     #[test]

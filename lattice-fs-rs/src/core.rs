@@ -109,11 +109,11 @@ impl GrubberyFs {
         std::thread::spawn(move || {
             if let Ok((nodes, bodies)) = wproj2.dump() {
                 let vt = build_vt(&nodes, |k| wproj2.ext_for_kind(k));
-                let bytes: usize = bodies.iter().map(|(k, b)| k.len() + b.len()).sum();
+                let (cache, bytes) = cap_bodies(bodies, READ_CACHE_MAX);
                 let mut s = west.lock().unwrap();
                 s.vt = vt;
                 s.vt_ts = Some(Instant::now());
-                s.read_cache = bodies;
+                s.read_cache = cache;
                 s.read_cache_bytes = bytes;
                 s.warm = true;
             }
@@ -155,16 +155,16 @@ impl GrubberyFs {
             let start_gen = st.lock().unwrap().write_gen;
             let built = proj.dump().map(|(nodes, bodies)| {
                 let vt = build_vt(&nodes, |k| proj.ext_for_kind(k));
-                let bytes: usize = bodies.iter().map(|(k, b)| k.len() + b.len()).sum();
-                (vt, bodies, bytes)
+                let (cache, bytes) = cap_bodies(bodies, READ_CACHE_MAX);
+                (vt, cache, bytes)
             });
             let mut s = st.lock().unwrap();
             s.refresh_pending = false;
-            if let Ok((vt, bodies, bytes)) = built {
+            if let Ok((vt, cache, bytes)) = built {
                 if s.write_gen == start_gen {
                     s.vt = vt;
                     s.vt_ts = Some(Instant::now());
-                    s.read_cache = bodies;
+                    s.read_cache = cache;
                     s.read_cache_bytes = bytes;
                 }
             }
@@ -179,11 +179,11 @@ impl GrubberyFs {
         }
         if let Ok((nodes, bodies)) = self.proj.dump() {
             let vt = build_vt(&nodes, |k| self.proj.ext_for_kind(k));
-            let bytes: usize = bodies.iter().map(|(k, b)| k.len() + b.len()).sum();
+            let (cache, bytes) = cap_bodies(bodies, READ_CACHE_MAX);
             let mut s = self.st.lock().unwrap();
             s.vt = vt;
             s.vt_ts = Some(Instant::now());
-            s.read_cache = bodies;
+            s.read_cache = cache;
             s.read_cache_bytes = bytes;
             s.warm = true;
         }
@@ -373,6 +373,26 @@ fn file_attr(ino: u64, size: u64, mtime: SystemTime, readonly: bool, uid: u32, g
 }
 
 /// Build the virtual tree from a node list (port of the Python _build).
+/// Cap a warm dump's bodies at `limit` bytes so a large tree can't OOM the
+/// client: keep bodies until the running total would exceed the cap, drop the
+/// rest (body() lazily fetches those on demand). Deterministic across runs by
+/// caching smallest-first, so the cache holds as many whole files as fit.
+fn cap_bodies(bodies: HashMap<String, Vec<u8>>, limit: usize) -> (HashMap<String, Vec<u8>>, usize) {
+    let mut entries: Vec<(String, Vec<u8>)> = bodies.into_iter().collect();
+    entries.sort_by_key(|(k, b)| (k.len() + b.len(), k.clone()));
+    let mut out = HashMap::new();
+    let mut bytes = 0usize;
+    for (k, b) in entries {
+        let add = k.len() + b.len();
+        if bytes + add > limit {
+            continue;
+        }
+        bytes += add;
+        out.insert(k, b);
+    }
+    (out, bytes)
+}
+
 fn build_vt(nodes: &[Node], ext_for: impl Fn(&str) -> &'static str) -> HashMap<String, VEntry> {
     let parents: HashSet<&str> = nodes
         .iter()
@@ -931,5 +951,38 @@ fn resize(buf: &mut Vec<u8>, sz: u64) {
         buf.truncate(sz);
     } else if buf.len() < sz {
         buf.resize(sz, 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cap_bodies;
+    use std::collections::HashMap;
+
+    #[test]
+    fn cap_bodies_bounds_the_cache() {
+        // three 100-byte bodies (key ~1 byte each), cap at 250 bytes -> only two
+        // whole files fit; the cache never exceeds the cap, and it degrades by
+        // dropping files (not truncating one), so overflow reads lazily later.
+        let mut b = HashMap::new();
+        b.insert("a".to_string(), vec![0u8; 100]);
+        b.insert("b".to_string(), vec![0u8; 100]);
+        b.insert("c".to_string(), vec![0u8; 100]);
+        let (cache, bytes) = cap_bodies(b, 250);
+        assert_eq!(cache.len(), 2);
+        assert!(bytes <= 250);
+        // every cached entry is a whole body, never a partial
+        for v in cache.values() {
+            assert_eq!(v.len(), 100);
+        }
+    }
+
+    #[test]
+    fn cap_bodies_keeps_all_when_under_cap() {
+        let mut b = HashMap::new();
+        b.insert("x".to_string(), vec![0u8; 10]);
+        b.insert("y".to_string(), vec![0u8; 10]);
+        let (cache, _) = cap_bodies(b, 1_000_000);
+        assert_eq!(cache.len(), 2);
     }
 }

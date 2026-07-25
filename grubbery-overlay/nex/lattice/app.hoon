@@ -2852,6 +2852,11 @@
 ::  parallel wave carries rev+mtime per grub (nexus: wave). One HTTP round-trip,
 ::  O(pages) local peeks — warms a filesystem client's whole read-cache so
 ::  rg/grep never touch the network again.
+::  +dump-inline-max: bodies larger than this (256 KB) are NOT inlined in
+::  page-dump — the client fetches them on demand via page-source. Keeps one
+::  warm dump bounded per file, so a few big pages can't balloon the payload
+::  or the client's RAM cache. The node still carries an accurate `size`.
+++  dump-inline-max  ^~((mul 256 1.024))
 ++  fs-dump-json
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
@@ -2889,15 +2894,21 @@
   =/  gen=?  =((make-folder-index rel) src)
   =/  kind=@tas  ?:(gen %index ?~(un %hoon builder.u.un))
   =/  body=@t  ?~(un src body.u.un)
+  =/  bsize=@ud  (met 3 body)
+  ::  omit the body inline for oversized pages (see +dump-inline-max); `size`
+  ::  stays accurate so FUSE st_size is right and the client reads on demand.
+  =/  head=(list [@t json])
+    :~  ['path' s+(crip (pax-str rel))]  ['page' b+&]  ['kind' s+kind]  ==
+  =/  body-row=(list [@t json])
+    ?:((gth bsize dump-inline-max) ~ ~[['body' s+body]])
+  =/  tail=(list [@t json])
+    :~  ['size' (numb:enjs:format bsize)]
+        ['rev' (numb:enjs:format ud.cs)]
+        ['mtime' s+(scot %da da.cs)]
+    ==
   :_  kids
   :-  rel
-  %-  pairs:enjs:format
-  :~  ['path' s+(crip (pax-str rel))]  ['page' b+&]  ['kind' s+kind]
-      ['body' s+body]
-      ['size' (numb:enjs:format (met 3 body))]
-      ['rev' (numb:enjs:format ud.cs)]
-      ['mtime' s+(scot %da da.cs)]
-  ==
+  (pairs:enjs:format :(weld head body-row tail))
 ::  +fs-source-result: a page's source as (each json [code msg]) — the json on
 ::  %&, an HTTP-style [code msg] error on %|.
 ++  fs-source-result
