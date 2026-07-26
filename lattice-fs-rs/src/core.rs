@@ -20,7 +20,8 @@ use fuser::{
 use crate::projection::{Node, PErr, Projection};
 
 const TTL: Duration = Duration::from_secs(1); // kernel attr/entry cache
-const TREE_TTL: Duration = Duration::from_secs(5); // our vtree refresh floor
+const TREE_TTL: Duration = Duration::from_secs(5); // our vtree refresh floor (watch() is a no-op; this is the only floor)
+const READ_CACHE_MAX: usize = 256 * 1024 * 1024; // body-cache ceiling; past it, degrade to lazy read
 
 #[derive(Clone, Copy, PartialEq)]
 enum VKind {
@@ -35,11 +36,12 @@ struct VEntry {
 }
 
 struct Handle {
-    rel: String,
+    rel: String, // page rel, OR the vpath for a scratch handle
     kind: String,
     buf: Vec<u8>,
     dirty: bool,
     new: bool,
+    scratch: bool, // an editor temp file: commit to the scratch map, never the ship
 }
 
 struct State {
@@ -49,9 +51,14 @@ struct State {
     vt: HashMap<String, VEntry>, // vpath -> entry
     vt_ts: Option<Instant>,
     read_cache: HashMap<String, Vec<u8>>, // rel -> bytes
+    read_cache_bytes: usize,              // running total, for the READ_CACHE_MAX ceiling
+    warm: bool,                           // a dump has landed at least once
+    refresh_pending: bool,                // a background refresh is already in flight
+    write_gen: u64,                       // bumped on every mutation; guards stale dump swaps
     handles: HashMap<u64, Handle>,        // fh -> handle
     next_fh: u64,
     pending_trunc: HashMap<u64, u64>, // ino -> size (handle-less truncate deferred to open)
+    scratch: HashMap<String, Vec<u8>>, // vpath -> bytes for ephemeral editor temp files
 }
 
 pub struct GrubberyFs {
@@ -74,9 +81,14 @@ impl GrubberyFs {
             vt: HashMap::new(),
             vt_ts: None,
             read_cache: HashMap::new(),
+            read_cache_bytes: 0,
+            warm: false,
+            refresh_pending: false,
+            write_gen: 0,
             handles: HashMap::new(),
             next_fh: 1,
             pending_trunc: HashMap::new(),
+            scratch: HashMap::new(),
         }));
         // watch thread: invalidate on external change. Best-effort (Eyre is a
         // no-op) — the 5s TTL poll is the guaranteed freshness floor.
@@ -91,6 +103,24 @@ impl GrubberyFs {
             };
             wproj.watch(&on_change);
         });
+        // warm thread: one page-dump seeds the whole vtree + every body up front,
+        // so grep/cat run from RAM. Async — new() returns immediately. No writer
+        // exists yet at mount, so this swap needs no generation guard. If a FUSE op
+        // beats it, ensure_fresh() cold-blocks on the same one dump (not N reads).
+        let west = st.clone();
+        let wproj2 = proj.clone();
+        std::thread::spawn(move || {
+            if let Ok((nodes, bodies)) = wproj2.dump() {
+                let vt = build_vt(&nodes, |k| wproj2.ext_for_kind(k));
+                let (cache, bytes) = cap_bodies(bodies, READ_CACHE_MAX);
+                let mut s = west.lock().unwrap();
+                s.vt = vt;
+                s.vt_ts = Some(Instant::now());
+                s.read_cache = cache;
+                s.read_cache_bytes = bytes;
+                s.warm = true;
+            }
+        });
         GrubberyFs {
             proj,
             st,
@@ -99,35 +129,84 @@ impl GrubberyFs {
         }
     }
 
-    /// Rebuild the vtree if stale. Calls projection.list() OUTSIDE the lock, then
-    /// swaps the result in — a network hiccup keeps the stale tree.
+    /// Freshness on the FUSE path WITHOUT blocking it. Cold start (nothing warm
+    /// yet) blocks once on a single dump so the first op isn't empty. Steady state
+    /// serves the current (possibly stale) vtree and kicks a background dump when
+    /// past TREE_TTL, coalesced by refresh_pending. The background swap is
+    /// discarded if a write moved write_gen while the dump was in flight — else a
+    /// stale snapshot would resurrect an edited body or a just-deleted entry.
     fn ensure_fresh(&self) {
-        let stale = {
-            let s = self.st.lock().unwrap();
-            s.vt_ts.map_or(true, |t| t.elapsed() > TREE_TTL)
+        if !self.st.lock().unwrap().warm {
+            return self.refresh_blocking();
+        }
+        let go = {
+            let mut s = self.st.lock().unwrap();
+            let stale = s.vt_ts.map_or(true, |t| t.elapsed() > TREE_TTL);
+            if stale && !s.refresh_pending {
+                s.refresh_pending = true;
+                true
+            } else {
+                false
+            }
         };
-        if !stale {
+        if !go {
+            return; // serve the current vtree — zero network on the FUSE path
+        }
+        let st = self.st.clone();
+        let proj = self.proj.clone();
+        std::thread::spawn(move || {
+            let start_gen = st.lock().unwrap().write_gen;
+            let built = proj.dump().map(|(nodes, bodies)| {
+                let vt = build_vt(&nodes, |k| proj.ext_for_kind(k));
+                let (cache, bytes) = cap_bodies(bodies, READ_CACHE_MAX);
+                (vt, cache, bytes)
+            });
+            let mut s = st.lock().unwrap();
+            s.refresh_pending = false;
+            if let Ok((vt, cache, bytes)) = built {
+                if s.write_gen == start_gen {
+                    s.vt = vt;
+                    s.vt_ts = Some(Instant::now());
+                    s.read_cache = cache;
+                    s.read_cache_bytes = bytes;
+                }
+            }
+        });
+    }
+
+    /// Cold path only: block until the first dump lands (mount just came up). No-op
+    /// if the warm thread already won the race.
+    fn refresh_blocking(&self) {
+        if self.st.lock().unwrap().warm {
             return;
         }
-        if let Ok(nodes) = self.proj.list() {
+        if let Ok((nodes, bodies)) = self.proj.dump() {
             let vt = build_vt(&nodes, |k| self.proj.ext_for_kind(k));
+            let (cache, bytes) = cap_bodies(bodies, READ_CACHE_MAX);
             let mut s = self.st.lock().unwrap();
             s.vt = vt;
             s.vt_ts = Some(Instant::now());
+            s.read_cache = cache;
+            s.read_cache_bytes = bytes;
+            s.warm = true;
         }
     }
 
-    /// Read-through body cache. Fetches OUTSIDE the lock.
+    /// Read-through body cache. Fetches OUTSIDE the lock. After a warm dump every
+    /// rel is already present, so this fetch only fires for a page created since
+    /// the last dump. Skip-past-cap: always serve the bytes, but stop caching once
+    /// past READ_CACHE_MAX so an oversized tree degrades to lazy read, never OOMs.
     fn body(&self, rel: &str) -> Result<Vec<u8>, PErr> {
         if let Some(b) = self.st.lock().unwrap().read_cache.get(rel) {
             return Ok(b.clone());
         }
         let data = self.proj.read(rel)?;
-        self.st
-            .lock()
-            .unwrap()
-            .read_cache
-            .insert(rel.to_string(), data.clone());
+        let mut s = self.st.lock().unwrap();
+        let add = rel.len() + data.len();
+        if s.read_cache_bytes + add <= READ_CACHE_MAX {
+            s.read_cache_bytes += add;
+            s.read_cache.insert(rel.to_string(), data.clone());
+        }
         Ok(data)
     }
 
@@ -185,13 +264,24 @@ impl GrubberyFs {
 
     /// Commit an fh's buffer through the projection (one POST), then invalidate.
     fn commit(&self, fh: u64) -> Result<(), PErr> {
-        let (rel, kind, buf, new) = {
+        let (rel, kind, buf, new, scratch) = {
             let s = self.st.lock().unwrap();
             match s.handles.get(&fh) {
-                Some(h) if h.dirty => (h.rel.clone(), h.kind.clone(), h.buf.clone(), h.new),
+                Some(h) if h.dirty => (h.rel.clone(), h.kind.clone(), h.buf.clone(), h.new, h.scratch),
                 _ => return Ok(()),
             }
         };
+        // scratch handle: persist to the in-memory map, never the ship. rel is
+        // the vpath for a scratch handle.
+        if scratch {
+            let mut s = self.st.lock().unwrap();
+            s.scratch.insert(rel, buf);
+            if let Some(h) = s.handles.get_mut(&fh) {
+                h.dirty = false;
+                h.new = false;
+            }
+            return Ok(());
+        }
         self.proj.write(&rel, &kind, &buf, new)?;
         let mut s = self.st.lock().unwrap();
         if let Some(h) = s.handles.get_mut(&fh) {
@@ -199,12 +289,37 @@ impl GrubberyFs {
             h.new = false;
         }
         s.vt_ts = None;
-        s.read_cache.remove(&rel);
+        s.write_gen += 1; // supersede any in-flight dump swap (stale-swap guard)
+        if let Some(old) = s.read_cache.remove(&rel) {
+            s.read_cache_bytes = s.read_cache_bytes.saturating_sub(rel.len() + old.len());
+        }
         Ok(())
     }
 }
 
 // ---------- free helpers ----------
+
+/// Editor scratch/temp files that must NEVER map onto a page. A backup like
+/// `foo.md~` otherwise resolves (last-dot strip) to page `foo`, so removing the
+/// backup deletes the page — the sidecar data-loss bug. Rule: a known page
+/// extension, or no extension (a bare hoon page), is a real file; anything else
+/// — an unknown extension, or a trailing `~` — is an editor temp, handled
+/// ephemerally in the FUSE layer and never sent to the ship. Covers vim/emacs
+/// backups (`foo.md~`), swap files (`.foo.md.swp`), and atomic-save temps.
+fn is_scratch(name: &str) -> bool {
+    if name.ends_with('~') {
+        return true;
+    }
+    match name.rsplit_once('.') {
+        Some((_, ext)) => !matches!(ext, "md" | "gmi" | "html" | "txt" | "js" | "css" | "hoon"),
+        None => false,
+    }
+}
+
+/// The leaf (filename) of a vpath.
+fn leaf_of(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
 
 fn err(e: i32) -> Errno {
     Errno::from_i32(e)
@@ -294,6 +409,26 @@ fn file_attr(ino: u64, size: u64, mtime: SystemTime, readonly: bool, uid: u32, g
 }
 
 /// Build the virtual tree from a node list (port of the Python _build).
+/// Cap a warm dump's bodies at `limit` bytes so a large tree can't OOM the
+/// client: keep bodies until the running total would exceed the cap, drop the
+/// rest (body() lazily fetches those on demand). Deterministic across runs by
+/// caching smallest-first, so the cache holds as many whole files as fit.
+fn cap_bodies(bodies: HashMap<String, Vec<u8>>, limit: usize) -> (HashMap<String, Vec<u8>>, usize) {
+    let mut entries: Vec<(String, Vec<u8>)> = bodies.into_iter().collect();
+    entries.sort_by_key(|(k, b)| (k.len() + b.len(), k.clone()));
+    let mut out = HashMap::new();
+    let mut bytes = 0usize;
+    for (k, b) in entries {
+        let add = k.len() + b.len();
+        if bytes + add > limit {
+            continue;
+        }
+        bytes += add;
+        out.insert(k, b);
+    }
+    (out, bytes)
+}
+
 fn build_vt(nodes: &[Node], ext_for: impl Fn(&str) -> &'static str) -> HashMap<String, VEntry> {
     let parents: HashSet<&str> = nodes
         .iter()
@@ -345,6 +480,20 @@ impl Filesystem for GrubberyFs {
             }
         };
         let child = join(&parent_path, &name);
+        // scratch file: it lives in the map, not the vtree.
+        if is_scratch(&name) {
+            match s.scratch.get(&child) {
+                Some(bytes) => {
+                    let sz = bytes.len() as u64;
+                    let ino = ino_for(&mut s, &child);
+                    drop(s);
+                    let attr = file_attr(ino, sz, SystemTime::now(), false, self.uid, self.gid);
+                    reply.entry(&TTL, &attr, Generation(0));
+                }
+                None => reply.error(err(libc::ENOENT)),
+            }
+            return;
+        }
         let e = match s.vt.get(&child).cloned() {
             Some(e) => e,
             None => {
@@ -374,6 +523,18 @@ impl Filesystem for GrubberyFs {
                 return;
             }
         };
+        if is_scratch(leaf_of(&path)) {
+            match s.scratch.get(&path) {
+                Some(bytes) => {
+                    let sz = bytes.len() as u64;
+                    drop(s);
+                    let attr = file_attr(ino.0, sz, SystemTime::now(), false, self.uid, self.gid);
+                    reply.attr(&TTL, &attr);
+                }
+                None => reply.error(err(libc::ENOENT)),
+            }
+            return;
+        }
         let e = match s.vt.get(&path).cloned() {
             Some(e) => e,
             None => {
@@ -507,6 +668,18 @@ impl Filesystem for GrubberyFs {
                 }
             })
             .collect();
+        // editor temp files live in the scratch map, not the vtree — list them too
+        // so an editor sees its own backup/swap while it's working.
+        for vp in s.scratch.keys() {
+            let par = match vp.rfind('/') {
+                Some(0) => "/".to_string(),
+                Some(i) => vp[..i].to_string(),
+                None => "/".to_string(),
+            };
+            if par == base {
+                kids.push((vp.clone(), FileType::RegularFile));
+            }
+        }
         kids.sort_by(|a, b| a.0.cmp(&b.0));
         let mut list: Vec<(u64, FileType, String)> = vec![
             (ino.0, FileType::Directory, ".".to_string()),
@@ -528,6 +701,29 @@ impl Filesystem for GrubberyFs {
 
     fn open(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
         self.ensure_fresh();
+        // scratch file: serve its bytes from the in-memory map, never the ship.
+        {
+            let mut s = self.st.lock().unwrap();
+            let path = match s.to_path.get(&ino.0) {
+                Some(p) => p.clone(),
+                None => {
+                    reply.error(err(libc::ENOENT));
+                    return;
+                }
+            };
+            if is_scratch(leaf_of(&path)) {
+                let buf = s.scratch.get(&path).cloned().unwrap_or_default();
+                let fh = s.next_fh;
+                s.next_fh += 1;
+                s.handles.insert(
+                    fh,
+                    Handle { rel: path, kind: String::new(), buf, dirty: false, new: false, scratch: true },
+                );
+                drop(s);
+                reply.opened(FileHandle(fh), FopenFlags::empty());
+                return;
+            }
+        }
         let (rel, kind, pending) = {
             let s = self.st.lock().unwrap();
             let path = match s.to_path.get(&ino.0) {
@@ -572,7 +768,7 @@ impl Filesystem for GrubberyFs {
         s.pending_trunc.remove(&ino.0);
         let fh = s.next_fh;
         s.next_fh += 1;
-        s.handles.insert(fh, Handle { rel, kind, buf, dirty, new: false });
+        s.handles.insert(fh, Handle { rel, kind, buf, dirty, new: false, scratch: false });
         drop(s);
         reply.opened(FileHandle(fh), FopenFlags::empty());
     }
@@ -684,13 +880,42 @@ impl Filesystem for GrubberyFs {
             }
         };
         let path = join(&parent_path, &name);
+        // editor temp file: keep it entirely in the FUSE layer (never a page).
+        if is_scratch(&name) {
+            let ino = ino_for(&mut s, &path);
+            s.scratch.entry(path.clone()).or_default();
+            let fh = s.next_fh;
+            s.next_fh += 1;
+            s.handles.insert(
+                fh,
+                Handle {
+                    rel: path,
+                    kind: String::new(),
+                    buf: Vec::new(),
+                    dirty: true,
+                    new: true,
+                    scratch: true,
+                },
+            );
+            drop(s);
+            let attr = file_attr(ino, 0, SystemTime::now(), false, self.uid, self.gid);
+            reply.created(&TTL, &attr, Generation(0), FileHandle(fh), FopenFlags::empty());
+            return;
+        }
         let (rel, kind) = self.rel_kind_of(&s, &path);
         let ino = ino_for(&mut s, &path);
         let fh = s.next_fh;
         s.next_fh += 1;
         s.handles.insert(
             fh,
-            Handle { rel: rel.clone(), kind: kind.clone(), buf: Vec::new(), dirty: true, new: true },
+            Handle {
+                rel: rel.clone(),
+                kind: kind.clone(),
+                buf: Vec::new(),
+                dirty: true,
+                new: true,
+                scratch: false,
+            },
         );
         // optimistic vt entry so getattr/lookup work before the flush
         let node = Node {
@@ -733,6 +958,7 @@ impl Filesystem for GrubberyFs {
                 let ino = ino_for(&mut s, &path);
                 s.vt.insert(path, VEntry { kind: VKind::Dir, node: None });
                 s.vt_ts = None;
+                s.write_gen += 1;
                 drop(s);
                 let attr = dir_attr(ino, SystemTime::now(), self.uid, self.gid);
                 reply.entry(&TTL, &attr, Generation(0));
@@ -744,7 +970,7 @@ impl Filesystem for GrubberyFs {
     fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         let name = name.to_string_lossy().to_string();
         let (path, rel) = {
-            let s = self.st.lock().unwrap();
+            let mut s = self.st.lock().unwrap();
             let parent_path = match s.to_path.get(&parent.0) {
                 Some(p) => p.clone(),
                 None => {
@@ -753,6 +979,15 @@ impl Filesystem for GrubberyFs {
                 }
             };
             let path = join(&parent_path, &name);
+            // scratch file: drop it from the FUSE layer only — NEVER proj.delete,
+            // which (via the last-dot strip) would delete the page it shadows.
+            if is_scratch(&name) {
+                s.scratch.remove(&path);
+                s.vt.remove(&path);
+                drop(s);
+                reply.ok();
+                return;
+            }
             let (rel, _) = self.rel_kind_of(&s, &path);
             (path, rel)
         };
@@ -761,6 +996,7 @@ impl Filesystem for GrubberyFs {
                 let mut s = self.st.lock().unwrap();
                 s.vt.remove(&path);
                 s.vt_ts = None;
+                s.write_gen += 1;
                 drop(s);
                 reply.ok();
             }
@@ -787,6 +1023,7 @@ impl Filesystem for GrubberyFs {
                 let mut s = self.st.lock().unwrap();
                 s.vt.remove(&path);
                 s.vt_ts = None;
+                s.write_gen += 1;
                 drop(s);
                 reply.ok();
             }
@@ -806,7 +1043,9 @@ impl Filesystem for GrubberyFs {
     ) {
         let name = name.to_string_lossy().to_string();
         let newname = newname.to_string_lossy().to_string();
-        let (src_path, src_rel, dst_rel) = {
+        let src_scratch = is_scratch(&name);
+        let dst_scratch = is_scratch(&newname);
+        let (src_path, dst_path, src_rel, dst_rel, dst_kind) = {
             let s = self.st.lock().unwrap();
             let pp = match s.to_path.get(&parent.0) {
                 Some(p) => p.clone(),
@@ -825,14 +1064,59 @@ impl Filesystem for GrubberyFs {
             let src_path = join(&pp, &name);
             let dst_path = join(&npp, &newname);
             let (src_rel, _) = self.rel_kind_of(&s, &src_path);
-            let (dst_rel, _) = self.rel_kind_of(&s, &dst_path);
-            (src_path, src_rel, dst_rel)
+            let (dst_rel, dst_kind) = self.rel_kind_of(&s, &dst_path);
+            (src_path, dst_path, src_rel, dst_rel, dst_kind)
         };
+        // Any rename touching a scratch name must never delete/clobber the page it
+        // shadows. Handle the editor patterns explicitly:
+        if src_scratch || dst_scratch {
+            let res: Result<(), PErr> = if src_scratch && dst_scratch {
+                // temp -> temp: move within the scratch map
+                let v = self.st.lock().unwrap().scratch.remove(&src_path).unwrap_or_default();
+                self.st.lock().unwrap().scratch.insert(dst_path.clone(), v);
+                Ok(())
+            } else if src_scratch {
+                // atomic save: temp -> real page. Promote the scratch bytes.
+                let v = self.st.lock().unwrap().scratch.remove(&src_path).unwrap_or_default();
+                self.proj.write(&dst_rel, &dst_kind, &v, true)
+            } else {
+                // backup-by-rename: page -> temp name. Snapshot the page's current
+                // body into the scratch map and KEEP the page (the editor rewrites
+                // it next); never delete it, so there is no data-loss window.
+                let v = self.body(&src_rel).unwrap_or_default();
+                self.st.lock().unwrap().scratch.insert(dst_path.clone(), v);
+                Ok(())
+            };
+            match res {
+                Ok(()) => {
+                    let mut s = self.st.lock().unwrap();
+                    // src no longer exists under its old name only when it moved
+                    // OUT of the page/scratch namespace (not the page->backup case).
+                    if src_scratch {
+                        s.scratch.remove(&src_path);
+                        s.vt.remove(&src_path);
+                    }
+                    if !src_scratch {
+                        // page -> temp: the page stays; refresh so the new content lands
+                        s.vt_ts = None;
+                    }
+                    if src_scratch && !dst_scratch {
+                        s.vt_ts = None;
+                        s.write_gen += 1;
+                    }
+                    drop(s);
+                    reply.ok();
+                }
+                Err(e) => reply.error(err(e.errno)),
+            }
+            return;
+        }
         match self.proj.mv(&src_rel, &dst_rel) {
             Ok(()) => {
                 let mut s = self.st.lock().unwrap();
                 s.vt.remove(&src_path);
                 s.vt_ts = None;
+                s.write_gen += 1;
                 drop(s);
                 reply.ok();
             }
@@ -848,5 +1132,59 @@ fn resize(buf: &mut Vec<u8>, sz: u64) {
         buf.truncate(sz);
     } else if buf.len() < sz {
         buf.resize(sz, 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cap_bodies, is_scratch};
+    use std::collections::HashMap;
+
+    #[test]
+    fn scratch_classifies_editor_temp_files() {
+        // real pages — must NOT be scratch (they map to a page and persist)
+        for real in ["foo.md", "foo.gmi", "foo.html", "foo.txt", "foo.js", "foo.css", "foo.hoon", "notes"] {
+            assert!(!is_scratch(real), "{real} should be a real page file");
+        }
+        // editor temp files — MUST be scratch (never map onto a page)
+        for tmp in [
+            "foo.md~",       // vim/emacs backup — the reported data-loss case
+            "foo.gmi~",
+            ".foo.md.swp",   // vim swap
+            ".foo.md.swo",
+            "foo.swp",
+            "foo.tmp",
+            "foo.bak",
+            "4913.tmp",
+        ] {
+            assert!(is_scratch(tmp), "{tmp} should be an ephemeral scratch file");
+        }
+    }
+
+    #[test]
+    fn cap_bodies_bounds_the_cache() {
+        // three 100-byte bodies (key ~1 byte each), cap at 250 bytes -> only two
+        // whole files fit; the cache never exceeds the cap, and it degrades by
+        // dropping files (not truncating one), so overflow reads lazily later.
+        let mut b = HashMap::new();
+        b.insert("a".to_string(), vec![0u8; 100]);
+        b.insert("b".to_string(), vec![0u8; 100]);
+        b.insert("c".to_string(), vec![0u8; 100]);
+        let (cache, bytes) = cap_bodies(b, 250);
+        assert_eq!(cache.len(), 2);
+        assert!(bytes <= 250);
+        // every cached entry is a whole body, never a partial
+        for v in cache.values() {
+            assert_eq!(v.len(), 100);
+        }
+    }
+
+    #[test]
+    fn cap_bodies_keeps_all_when_under_cap() {
+        let mut b = HashMap::new();
+        b.insert("x".to_string(), vec![0u8; 10]);
+        b.insert("y".to_string(), vec![0u8; 10]);
+        let (cache, _) = cap_bodies(b, 1_000_000);
+        assert_eq!(cache.len(), 2);
     }
 }
