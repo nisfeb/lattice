@@ -83,6 +83,11 @@
         ::  /bookmarks: the browser's saved-page list (newest first). A covering
         ::  file row (like /sub/follows) so it survives reload.
             [%fall %& [/ %bookmarks] [[/lattice %bookmarks] *bookmarks:lb]]
+        ::  /rev: a tiny change beacon bumped on every writer mutation. Open web
+        ::  readers keep-SSE this one small grub (no-blot) and reload on any change
+        ::  — a lightweight live-update signal that doesn't stream a page's heavy
+        ::  compiled grub, and works where grubbery's ?blot=/txt keep does not.
+            [%fall %& [/beacon %rev] [[/ %json] (numb:enjs:format 0)]]
             [%fall %& [/ %'crawler.sig'] [[/ %sig] ~]]
         ::  /fs.sig: a lick (unix-socket) port exposing the filesystem ops to a
         ::  local FUSE client (lattice-fs) — the native-transport twin of the
@@ -114,28 +119,9 @@
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
         ;<  now=@da  bind:m  bowl-now
-        ?:  =([/lattice %know-action] p.sage)
-          ;<  ~  bind:m  (apply root now !<(know-action:lk q.sage))
-          $
-        ?:  =([/lattice %pub-action] p.sage)
-          ;<  ~  bind:m  (apply-pub root now !<(pub-action:lp q.sage))
-          $
-        ?:  =([/lattice %sub-action] p.sage)
-          ;<  ~  bind:m  (apply-sub root !<(sub-action:lp q.sage))
-          $
-        ?:  =([/lattice %eval-action] p.sage)
-          ;<  ~  bind:m  (apply-eval root !<(eval-action:le q.sage))
-          $
-        ::  the owner commenting on their own page: author is us. (Other ships
-        ::  comment via the public inbox fiber, not this owner-only writer.)
-        ?:  =([/lattice %comment-action] p.sage)
-          ;<  our=@p  bind:m  bowl-our
-          ;<  ~  bind:m  (apply-comment root our now !<(comment-action:lc q.sage))
-          $
-        ?:  =([/lattice %bookmark-action] p.sage)
-          ;<  ~  bind:m  (apply-bookmark root !<(bookmark-action:lb q.sage))
-          $
-        ~&  [%lattice-bad-mark p.sage]
+        ;<  ~  bind:m  (apply-action root now sage)
+        ::  bump the change beacon so open readers live-reload (see +bump-rev).
+        ;<  ~  bind:m  (bump-rev now)
         $
       ::  /ui/main.sig: bind the HTTP endpoint and dispatch each request into a
       ::  per-request fiber under /ui/requests (same pattern as counter).
@@ -405,8 +391,8 @@
       ?~  home
         ;<  recent=(list [pax=path prev=@t])  bind:m  (read-recent 10)
         ;<  bms=bookmarks:lb  bind:m  read-bookmarks
-        (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (home-index-html our recent bms)))
-      (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "pub/index") (render-gmi u.home)))
+        (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") (home-index-html our recent bms)))
+      (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") (render-gmi u.home)))
     =/  ref=(unit referent)  (de-urb u.raw)
     ::  omnibar: input that isn't a urb:// address is a SEARCH query — serve a
     ::  results page that queries the obelisk content catalog (client-side, via
@@ -428,7 +414,7 @@
         (send-view eyre-id (render-page canon "" "<p class=\"err\">not published here</p>"))
       ::  own pages get a live reader (keep /pub/index — its per-page hash changes
       ::  on every edit); remote pages stay static (can't keep a peer's grub).
-      =/  rk=tape  ?:(=(ship.u.ref our) (keep-url "pub/index") "")
+      =/  rk=tape  ?:(=(ship.u.ref our) (keep-url "beacon/rev") "")
       (send-view eyre-id (render-page canon rk (render-gmi u.body)))
     ==
   ::  dispatch on [method action]. ponytail: read-know-map peeks the whole vault
@@ -1451,6 +1437,41 @@
   =/  kept=wall  (skip rendered |=(l=tape ?=(^ (find "app.hoon" l))))
   =/  out=wall  [(trip lab) ?~(kept rendered kept)]
   (crip (of-wall:format out))
+::  +apply-action: the writer's action dispatch, split out of the take-poke loop
+::  so every mutation runs through one place (and is followed by a +bump-rev).
+::
+++  apply-action
+  |=  [root=path now=@da =sage:tarball]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  =([/lattice %know-action] p.sage)
+    (apply root now !<(know-action:lk q.sage))
+  ?:  =([/lattice %pub-action] p.sage)
+    (apply-pub root now !<(pub-action:lp q.sage))
+  ?:  =([/lattice %sub-action] p.sage)
+    (apply-sub root !<(sub-action:lp q.sage))
+  ?:  =([/lattice %eval-action] p.sage)
+    (apply-eval root !<(eval-action:le q.sage))
+  ::  the owner commenting on their own page: author is us. (Other ships comment
+  ::  via the public inbox fiber, not this owner-only writer.)
+  ?:  =([/lattice %comment-action] p.sage)
+    ;<  our=@p  bind:m  bowl-our
+    (apply-comment root our now !<(comment-action:lc q.sage))
+  ?:  =([/lattice %bookmark-action] p.sage)
+    (apply-bookmark root !<(bookmark-action:lb q.sage))
+  ~&([%lattice-bad-mark p.sage] (pure:m ~))
+::  +bump-rev: write `now` to the /rev change beacon. A distinct value each call
+::  (bowl-now is monotonic) guarantees a keep-SSE news event fires, so every open
+::  reader watching /rev live-reloads. Cheap: /rev is one json number, not a page.
+::
+++  bump-rev
+  |=  now=@da
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ::  the beacon must be NESTED (under /beacon): grubbery's keep-SSE does not
+  ::  stream a grub at the nexus root (verified — /rev and /bookmarks keeps stay
+  ::  silent; nested grubs like /pub/index stream fine). Gain is not required.
+  (put-file [%& %& (weld app-base /beacon) %rev] [/ %json] (numb:enjs:format `@ud`now))
 ::  +poke-eval: send an eval-action to the writer (serialized like all writes).
 ::
 ++  poke-eval
@@ -3793,7 +3814,7 @@
   ::  /txt on the initial snapshot, and the reload script reads only event
   ::  names, never the payload — so keep="" to render-* and append a blot-free
   ::  stream here.
-  =/  keep=tape  (keep-url :(weld "page/" (trip name) "/data"))
+  =/  keep=tape  (keep-url "beacon/rev")
   ?:  embed
     ::  bare preview: just the rendered data (+ any error) and the live stream.
     =/  data-html=tape  ?~(cd "<p>no data yet</p>" (render-shown u.cd vmode))
@@ -4988,7 +5009,7 @@
     (trip '<script>(function(){var K="')
     keep
     %-  trip
-    '";async function c(){try{var r=await fetch(K+"?blot=/txt",{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7)}if(!ev)continue;if(ev.slice(0,3)==="old")continue;location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
+    '";async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7)}if(!ev)continue;if(ev.slice(0,3)==="old")continue;location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
   ==
 ::  +lattice-page: placeholder web reader (replaced by the live SSE view in
 ::  step 6).
