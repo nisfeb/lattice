@@ -51,7 +51,18 @@ lattice-fs mount ~/notes-mnt --root notes        # mounts /page/notes as the roo
 `--root notes` (or `page/notes`, or the full `/apps/lattice.lattice_app/page/notes`) filters
 the tree to that sub-root and strips the prefix, so `~/notes-mnt/todo.md` is `notes/todo` on
 the ship; a write there lands under `notes/`. No `--root` mounts the whole `/page` tree.
-(Rooting at a *different* nexus's ball tree is not wired up yet.)
+
+**Mounting any other nexus / ball tree** — give `--root` an absolute ball path:
+
+```bash
+lattice-fs mount ~/obelisk-mnt --root /apps/obelisk.obelisk_app   # browse another nexus
+```
+
+This uses grubbery's generic ball API (`/grubbery/api/tree` + `/grubbery/api/file`), so it
+works for *any* tree, not just lattice. Grubs appear as `<name>.txt` and read as their
+semantic value (`?blot=/json`: an `@t` grub's source, a struct's JSON) — grep/cat friendly.
+**Read-only** for now (writes return `EROFS`); weir-governed write is a planned follow-up.
+Generic mounts run over HTTP (Eyre), not lick — set a cookie, don't set `LATTICE_SOCK`.
 
 **Things an agent must know about the mount:**
 
