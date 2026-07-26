@@ -12,16 +12,66 @@ use crate::transport::Transport;
 pub struct LatticeProjection {
     t: Box<dyn Transport>,
     ship: String,
+    root: String, // sub-root under /page ("" = whole tree, "notes" = mount /page/notes)
 }
 
 impl LatticeProjection {
-    pub fn new(t: Box<dyn Transport>) -> Result<Self, PErr> {
+    pub fn new(t: Box<dyn Transport>, root: &str) -> Result<Self, PErr> {
         let ship = t.ship()?;
-        Ok(Self { t, ship })
+        Ok(Self { t, ship, root: root.trim_matches('/').to_string() })
     }
 
     pub fn ship(&self) -> &str {
         &self.ship
+    }
+
+    /// A client-visible rel -> the server-side page name (root-prefixed).
+    fn full(&self, rel: &str) -> String {
+        if self.root.is_empty() {
+            rel.to_string()
+        } else if rel.is_empty() {
+            self.root.clone()
+        } else {
+            format!("{}/{}", self.root, rel)
+        }
+    }
+
+    /// A server-side page path -> the client-visible rel, or None if it's outside
+    /// the mounted sub-root. The sub-root dir itself maps to "" (the mount root).
+    fn strip(&self, path: &str) -> Option<String> {
+        if self.root.is_empty() {
+            return Some(path.to_string());
+        }
+        if path == self.root {
+            return Some(String::new());
+        }
+        path.strip_prefix(&format!("{}/", self.root)).map(str::to_string)
+    }
+
+    /// Filter a full-tree dump down to the mounted sub-root, stripping the prefix
+    /// from both node rels and body keys. No-op when the whole tree is mounted.
+    fn remap_dump(
+        &self,
+        nodes: Vec<Node>,
+        bodies: HashMap<String, Vec<u8>>,
+    ) -> (Vec<Node>, HashMap<String, Vec<u8>>) {
+        if self.root.is_empty() {
+            return (nodes, bodies);
+        }
+        let mut on = Vec::new();
+        let mut ob = HashMap::new();
+        for n in nodes {
+            match self.strip(&n.rel) {
+                Some(rel) if !rel.is_empty() => {
+                    if let Some(b) = bodies.get(&n.rel) {
+                        ob.insert(rel.clone(), b.clone());
+                    }
+                    on.push(Node { rel, ..n });
+                }
+                _ => {}
+            }
+        }
+        (on, ob)
     }
 }
 
@@ -34,7 +84,12 @@ impl Projection for LatticeProjection {
             .ok_or_else(|| PErr::new(libc::EIO, "page-tree: no nodes"))?;
         let mut out = Vec::with_capacity(nodes.len());
         for n in nodes {
-            let rel = n.get("path").and_then(|p| p.as_str()).unwrap_or("").to_string();
+            let path = n.get("path").and_then(|p| p.as_str()).unwrap_or("").to_string();
+            // keep only nodes under the mounted sub-root, with the prefix stripped
+            let rel = match self.strip(&path) {
+                Some(r) if !r.is_empty() => r,
+                _ => continue,
+            };
             let is_page = n.get("page").and_then(|p| p.as_bool()).unwrap_or(false);
             if !is_page {
                 out.push(Node {
@@ -58,7 +113,8 @@ impl Projection for LatticeProjection {
     }
 
     fn read(&self, rel: &str) -> Result<Vec<u8>, PErr> {
-        let v = self.t.get_json("/apps/lattice/page-source", &[("name", rel)])?;
+        let name = self.full(rel);
+        let v = self.t.get_json("/apps/lattice/page-source", &[("name", &name)])?;
         let body = v
             .get("body")
             .and_then(|b| b.as_str())
@@ -84,13 +140,15 @@ impl Projection for LatticeProjection {
             }
             Err(e) => return Err(e.into()),
         };
-        parse_dump(&v)
+        let (nodes, bodies) = parse_dump(&v)?;
+        Ok(self.remap_dump(nodes, bodies))
     }
 
     fn errors(&self, rel: &str) -> Result<String, PErr> {
         // page-errors returns the err grub text (plain text), '' = clean or no
         // such page. Symmetric across transports (Eyre and lick both hit it).
-        match self.t.get_bytes("/apps/lattice/page-errors", &[("name", rel)]) {
+        let name = self.full(rel);
+        match self.t.get_bytes("/apps/lattice/page-errors", &[("name", &name)]) {
             Ok(b) => Ok(String::from_utf8_lossy(&b).trim().to_string()),
             Err(e) if e.code == 404 => Ok(String::new()),
             Err(e) => Err(e.into()),
@@ -103,7 +161,8 @@ impl Projection for LatticeProjection {
             "md" | "gmi" | "html" | "text" | "js" | "css" => kind,
             _ => "hoon",
         };
-        let mut q: Vec<(&str, &str)> = vec![("name", rel), ("type", ptype)];
+        let name = self.full(rel);
+        let mut q: Vec<(&str, &str)> = vec![("name", &name), ("type", ptype)];
         let mut body = data.to_vec();
         if create {
             q.push(("new", "1"));
@@ -118,18 +177,18 @@ impl Projection for LatticeProjection {
     }
 
     fn mkdir(&self, rel: &str) -> Result<(), PErr> {
-        self.t.post("/apps/lattice/folder-new", &[("name", rel)], b"")?;
+        self.t.post("/apps/lattice/folder-new", &[("name", &self.full(rel))], b"")?;
         Ok(())
     }
 
     fn delete(&self, rel: &str) -> Result<(), PErr> {
-        self.t.post("/apps/lattice/page-del", &[("name", rel)], b"")?;
+        self.t.post("/apps/lattice/page-del", &[("name", &self.full(rel))], b"")?;
         Ok(())
     }
 
     fn mv(&self, src: &str, dst: &str) -> Result<(), PErr> {
         // no server rename: read source + create dst + delete src.
-        let v = self.t.get_json("/apps/lattice/page-source", &[("name", src)])?;
+        let v = self.t.get_json("/apps/lattice/page-source", &[("name", &self.full(src))])?;
         let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("hoon").to_string();
         let body = v
             .get("body")
