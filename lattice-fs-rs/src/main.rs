@@ -11,6 +11,7 @@
 #[path = "core.rs"]
 mod vfs;
 mod eyre;
+mod generic;
 mod lattice;
 mod lick;
 mod projection;
@@ -19,6 +20,7 @@ mod transport;
 use std::sync::Arc;
 
 use eyre::EyreTransport;
+use generic::GenericProjection;
 use lattice::LatticeProjection;
 use lick::LickTransport;
 use projection::Projection;
@@ -70,15 +72,17 @@ fn resolve_root(val: &str) -> Root {
     Root::Lattice(rel.strip_prefix("page/").unwrap_or(rel).to_string())
 }
 
-fn make_projection(root: &str) -> Result<LatticeProjection, String> {
+fn make_projection(root: &str) -> Result<Arc<dyn Projection>, String> {
     match resolve_root(root) {
         Root::Lattice(sub) => {
-            LatticeProjection::new(make_transport()?, &sub).map_err(|e| e.msg)
+            Ok(Arc::new(LatticeProjection::new(make_transport()?, &sub).map_err(|e| e.msg)?))
         }
-        Root::Generic(path) => Err(format!(
-            "generic (non-lattice) root '/{path}' isn't supported yet — \
-             only lattice sub-trees for now (e.g. --root notes)"
-        )),
+        // The generic ball API is HTTP-only (not on the lick fs.sig port), so a
+        // generic root always uses the Eyre transport regardless of LATTICE_SOCK.
+        Root::Generic(path) => {
+            let t = Box::new(EyreTransport::new(&base_url(), &cookie_path()));
+            Ok(Arc::new(GenericProjection::new(t, &path).map_err(|e| e.msg)?))
+        }
     }
 }
 
@@ -100,7 +104,7 @@ fn cmd_errors(name: &str, root: &str) -> Result<(), String> {
 
 fn cmd_mount(mnt: &str, root: &str) -> Result<(), String> {
     let proj = make_projection(root)?;
-    let ship = proj.ship().to_string();
+    let ship = proj.ship();
     std::fs::create_dir_all(mnt).ok();
     // Config is #[non_exhaustive] -> build via default() + field assignment.
     let mut config = fuser::Config::default();
@@ -114,7 +118,7 @@ fn cmd_mount(mnt: &str, root: &str) -> Result<(), String> {
     // require allow_other, which we don't want — a foreground mount unmounts on exit.)
     config.acl = fuser::SessionACL::Owner;
     println!("mounting lattice ({ship}) at {mnt} — Ctrl-C to unmount");
-    fuser::mount(GrubberyFs::new(Arc::new(proj)), mnt, &config).map_err(|e| e.to_string())
+    fuser::mount(GrubberyFs::new(proj), mnt, &config).map_err(|e| e.to_string())
 }
 
 /// Read a +code from the tty without echo. Returns None if LATTICE_CODE is set

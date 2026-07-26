@@ -21,10 +21,6 @@ impl LatticeProjection {
         Ok(Self { t, ship, root: root.trim_matches('/').to_string() })
     }
 
-    pub fn ship(&self) -> &str {
-        &self.ship
-    }
-
     /// A client-visible rel -> the server-side page name (root-prefixed).
     fn full(&self, rel: &str) -> String {
         if self.root.is_empty() {
@@ -76,6 +72,10 @@ impl LatticeProjection {
 }
 
 impl Projection for LatticeProjection {
+    fn ship(&self) -> String {
+        self.ship.clone()
+    }
+
     fn list(&self) -> Result<Vec<Node>, PErr> {
         let v = self.t.get_json("/apps/lattice/page-tree", &[])?;
         let nodes = v

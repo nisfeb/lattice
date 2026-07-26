@@ -44,6 +44,9 @@ pub struct Node {
 }
 
 pub trait Projection: Send + Sync {
+    /// Our ship @p (e.g. "~tyr"), for the mount banner.
+    fn ship(&self) -> String;
+
     fn list(&self) -> Result<Vec<Node>, PErr>;
     fn read(&self, rel: &str) -> Result<Vec<u8>, PErr>;
 
