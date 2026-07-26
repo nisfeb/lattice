@@ -41,6 +41,18 @@ export LATTICE_SHIP=tyr              # ship name, no ~
 Then: `ls ~/lattice-mnt`, `rg pattern ~/lattice-mnt`, `cat ~/lattice-mnt/foo.md`, or write
 `echo '# hi' > ~/lattice-mnt/foo.md` (a write is one page-save on flush).
 
+**Mounting a sub-tree** (`--root`, or `LATTICE_ROOT`): when the tree gets large, root the
+mount at a sub-path so you only see (and warm) that slice — full page semantics preserved:
+
+```bash
+lattice-fs mount ~/notes-mnt --root notes        # mounts /page/notes as the root
+```
+
+`--root notes` (or `page/notes`, or the full `/apps/lattice.lattice_app/page/notes`) filters
+the tree to that sub-root and strips the prefix, so `~/notes-mnt/todo.md` is `notes/todo` on
+the ship; a write there lands under `notes/`. No `--root` mounts the whole `/page` tree.
+(Rooting at a *different* nexus's ball tree is not wired up yet.)
+
 **Things an agent must know about the mount:**
 
 - **Freshness is a 5-second poll.** External edits (browser, another client) show up within
