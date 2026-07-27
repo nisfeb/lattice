@@ -50,7 +50,7 @@ export LATTICE_SHIP='~tyr'
 target/release/lattice-fs mount ~/lattice
 ```
 
-The nvim glue in `../lattice-fs/nvim/lattice-fs.lua` applies unchanged (it just
+The nvim glue in `nvim/lattice-fs.lua` applies unchanged (it just
 calls `lattice-fs errors <page>`).
 
 ## Mount modes

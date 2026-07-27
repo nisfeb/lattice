@@ -1,109 +1,45 @@
-# Agent knowledge store (MCP)
+# The knowledge store, for agents
 
-A **private** knowledge store for programmatic agents (via the
-[urbit-mcp-server](https://github.com/...) `%mcp` agent), kept entirely separate
-from lattice's published gemtext pages:
+Lattice keeps a **private, tagged knowledge store** on the ship — the memory
+your AI agents share with you. Path-like keys (`user/ai-models`), per-entry
+tags, history, and a restorable trash.
 
-- Stored as **`know/vault` grubs** in the grubbery `lattice` nexus: `gain=%.n`
-  (never published to the namespace) and behind an owner-only weir, so it's not
-  remotely scryable. (Earlier standalone-agent versions kept it in agent
-  **state** as `know`/`trash` maps — same contract, different backing store.)
-- Items are keyed by a **path-like key**, e.g. `projects/lattice/architecture`.
-- **Delete is soft**: `delete` culls an item into a recoverable `trash`;
-  `restore` brings it back. Permanent purge is **not** exposed to agents, so an
-  agent cannot destroy knowledge.
+## MCP tools — compiled into the ship
 
-## Agent interface (the durable contract)
+Eleven tools ship WITH the lattice desk (`grubbery-overlay/lib/mcp/
+lattice-*.hoon`), are compiled into grubbery's ball on commit, execute in-ship
+against the vault directly, and are served by grubbery's own MCP endpoint at
+`<ship>/grubbery/mcp`. Nothing to install, register, or refresh — they survive
+restarts, redeploys, and ball resets.
 
-Read (scry, JSON, owner-local):
-
-| scry path | returns |
+| tool | does |
 |---|---|
-| `/x/know/list/json` | keys + metadata + tags (no bodies) |
-| `/x/know/read/<key…>/json` | one item `{key, body, updated, tags}` |
-| `/x/know/all/json` | all items with bodies + tags |
-| `/x/know/trash/json` | soft-deleted keys |
-| `/x/know/tags/json` | tag vocabulary + counts (facets) |
+| `lattice-list` | keys + tags + metadata, no bodies |
+| `lattice-read` | one entry's body |
+| `lattice-search` | substring across keys and bodies |
+| `lattice-explore` | filter by tag and/or substring |
+| `lattice-tags` | tag vocabulary with counts |
+| `lattice-save` | create/overwrite (re-save restores a deleted key) |
+| `lattice-move` | rename a key, history preserved |
+| `lattice-tag` / `lattice-untag` | cross-cutting tags |
+| `lattice-delete` / `lattice-restore` | soft-delete / undo |
 
-Write (poke mark `%lattice-know`, `src==our`): `know-action` =
-`[%save key body]` / `[%del key]` / `[%restore key]` / `[%move from to]` /
-`[%tag key tag]` / `[%untag key tag]`. `move` renames a live entry (preserving
-body/tags/vector); it no-ops if the target already exists (never clobbers).
+Client config — a session cookie is the only auth:
 
-Discovery is HTTP (owner-authenticated), not a scry — it takes query params:
-`GET /apps/lattice/know-explore?tags=a,b&match=all|any&q=text` filters the live
-store by a tag set (AND/OR) and a case-insensitive key/body substring, returning
-the `know-list` shape. (The `lattice-explore` MCP tool below filters
-`/x/know/all/json` client-side instead, so it needs no HTTP.)
-
-> **Durable surface = the HTTP endpoints.** The scry paths and `%lattice-know`
-> poke mark above are the historical standalone-agent contract (driven by the
-> generic `scry-agent` / `poke-our-agent` MCP tools). That agent has been retired
-> in favor of the grubbery `lattice` nexus, which has no `%lattice` agent to scry
-> or poke — so the durable surface is the **HTTP endpoints** under
-> `/apps/lattice/` (`know-list`, `know-read`, `know-save`, …). The dedicated tools
-> below drive those endpoints; the JSON shapes above are unchanged.
-
-## Dedicated MCP tools
-
-`scripts/setup-knowledge-mcp-tools.py` registers eleven clean-schema tools into a
-running `%mcp-server` (compiled in its context, so **no lattice-side
-dependency**):
-
-| tool | params |
-|---|---|
-| `lattice-save` | `key`, `body` |
-| `lattice-read` | `key` |
-| `lattice-list` | — (returns each item's tags too) |
-| `lattice-search` | `query` (case-insensitive substring over keys + bodies) |
-| `lattice-explore` | `tag` and/or `query` (ANDed) — tag-filtered discovery |
-| `lattice-delete` | `key` (soft) |
-| `lattice-restore` | `key` |
-| `lattice-move` | `key`, `to` (rename to a new key; preserves body + tags) |
-| `lattice-tags` | — (tag vocabulary + counts; call before tagging) |
-| `lattice-tag` | `key`, `tag` (normalized lower-case) |
-| `lattice-untag` | `key`, `tag` |
-
-**Tagging & discovery.** Tags are free-form, normalized to lower-case, and
-cross-cut the path hierarchy. The intended agent flow: `lattice-tags` to see the
-existing vocabulary (reuse tags, curb near-duplicates), `lattice-tag` to label an
-item, then `lattice-explore` (or the app's Knowledge **Explore** mode) to pull
-everything under a tag or matching a substring.
-
-### Setup
-
-The `/mcp` endpoint is read from the repo's shared `.mcp.json` (the same file
-your MCP client uses). For auth you give the ship's web login code (`+code` in
-the dojo) and the script exchanges it for a session itself — you never fetch or
-paste a session cookie:
-
-```sh
-python3 scripts/setup-knowledge-mcp-tools.py            # the lone mcpServers entry
-python3 scripts/setup-knowledge-mcp-tools.py <server>   # or a named entry
-# → prompts: ship +code (hidden):
+```json
+{ "mcpServers": { "myship": {
+    "url": "https://your-ship.example.com/grubbery/mcp",
+    "headers": { "Cookie": "urbauth-~your-ship=0v…" } } } }
 ```
 
-The code is read **without echo**, used only for the login request, then dropped
-— it is never printed, logged, or stored. For unattended runs pass it via
-`LATTICE_CODE` (popped from the env at startup); `LATTICE_URL` overrides the
-endpoint and an existing `LATTICE_COOKIE` skips login. The grubbery `lattice`
-nexus serves every `/apps/lattice/know-*` endpoint these tools use, so all
-eleven work against it (no per-tool kelvin gate as the old agent had). Requires
-the `%mcp-server` agent installed. Verified end-to-end on a fake ship: save →
-read → tag → explore → search → delete (soft) → restore all round-trip.
+A ship restart expires the cookie; mint a fresh one at `/~/login` (see the
+README's MCP section for the no-echo flow) and update the header.
 
-### Re-running / upgrades
+## HTTP twins
 
-`%mcp-server` keeps its tools in a **set** — there is no overwrite or delete, so
-running the script twice registers *duplicate* tools (and a stale duplicate can
-shadow the good one). To re-register cleanly after a lattice upgrade, reset the
-server's tool state first, then run the script:
-
-```
-|nuke %mcp-server      :: clears its state (you'll confirm y/N)
-|revive %mcp-server    :: re-runs on-init, reloading only the default tools
-```
-
-This wipes user-registered tools/prompts/resources on that ship — re-add any
-others afterwards. On the fakes the agent's desk is `%mcp` (`|nuke`/`|revive`
-the `%mcp-server` *agent*, not the desk).
+Every tool has an owner-gated HTTP route under `/apps/lattice/know-*`
+(`know-list`, `know-read?key=`, `know-save?key=` with the body as POST data,
+`know-move?from=&to=`, `know-tag`/`know-untag?key=&tag=`, `know-delete`/
+`know-restore?key=`, `know-explore?tags=&match=&q=`, `know-history?key=`,
+`know-all` for a full export). The web app's knowledge mode, the /know view,
+and the MCP tools all converge on the same vault through the same writer.

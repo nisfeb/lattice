@@ -25,11 +25,6 @@ pub fn cord(s: &str) -> Noun {
     Noun::Atom(trim(s.as_bytes().to_vec()))
 }
 
-#[allow(dead_code)]
-pub fn num(n: u64) -> Noun {
-    Noun::Atom(trim(n.to_le_bytes().to_vec()))
-}
-
 pub fn cell(h: Noun, t: Noun) -> Noun {
     Noun::Cell(Box::new(h), Box::new(t))
 }
@@ -356,6 +351,10 @@ impl Transport for LickTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn num(n: u64) -> Noun {
+        Noun::Atom(trim(n.to_le_bytes().to_vec()))
+    }
 
     fn atom(n: u64) -> Noun {
         num(n)
