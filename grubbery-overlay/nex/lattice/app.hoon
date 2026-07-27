@@ -28,6 +28,9 @@
 /<  pg   /lib/lattice-pg.hoon
 /<  gfm  /lib/lattice-md.hoon
 /<  tpl  /lib/lattice-templates.hoon
+::  imports resolve relative to THIS file's dir (/nex/lattice), not /nex —
+::  guestbook writes `guestbook/icon.svg` only because its source sits AT /nex.
+/<  icon  icon.svg
 /<  lc   /lib/lattice-comment.hoon
 /<  lb   /lib/lattice-bookmark.hoon
 =<  ^-  nexus:nexus
@@ -51,8 +54,12 @@
             :~  title+s+'Lattice'
                 info+s+'Pages, knowledge & catalog'
                 color+s+'#4a7c59'
+                ::  the tiles icon route matches the app SLUG (name before the
+                ::  first dot), not the folder name.
+                image+s+'/grubbery/tiles/icon/lattice'
                 href+s+'/apps/lattice'
             ==
+            [%over %& [/ %'icon.svg'] [[/ %mime] icon]]
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
             [%fall %| /know/vault empty-dir:loader]
             [%fall %| /know/trash-vault empty-dir:loader]
