@@ -1,6 +1,7 @@
 /* lattice app — flat green identity */
 * { box-sizing: border-box; }
 :root {
+  color-scheme: light dark;
   --green: #4a7c59; --green-deep: #3a6347;
   --bg: #fafafa; --text: #1a1a1a; --muted: #8a8a8a;
   --border: #8886; --border-soft: #8883; --surface: #8881;
@@ -37,7 +38,6 @@ a { color: var(--green); }
 .bar input, .bar select, .bar button { font: inherit; padding: 5px 9px;
   border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
   color: inherit; }
-.bar select { color-scheme: light dark; }
 .bar input { min-width: 16rem; cursor: text; }
 .bar button { cursor: pointer; }
 .bar button:hover, .bar .home:hover { border-color: var(--green); }
