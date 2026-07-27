@@ -259,7 +259,11 @@ builds with `cargo build --release` in [`lattice-fs-rs/`](lattice-fs-rs/).
 The nexus's pure lib has Hoon unit tests under
 [`grubbery-overlay/tests/`](grubbery-overlay/tests/), run via grubbery's
 `run-tests`. The FUSE client has a 19-assertion ship-verified regression
-matrix (`scripts/fs-matrix.sh`).
+matrix (`scripts/fs-matrix.sh`). Three integration matrices exercise a
+running harness ship end to end: `scripts/ui-matrix.mjs` drives the web
+app through headless Chromium, `scripts/api-matrix.sh` walks the HTTP
+routes, and `scripts/mcp-matrix.sh` round-trips all eleven knowledge
+tools over MCP.
 
 ## Layout
 
