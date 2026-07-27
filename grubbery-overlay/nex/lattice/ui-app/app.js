@@ -623,10 +623,17 @@
     for (const t of tags) mk('#' + t, t);
   }
 
+  const kColl = () => {
+    try { return JSON.parse(localStorage.knowColl || '[]'); } catch { return []; }
+  };
+  const setKColl = (c) => { localStorage.knowColl = JSON.stringify(c); };
+
   function renderKnowTree() {
     const shown = knowTag ? knowKeys.filter((k) => k.tags.includes(knowTag)) : knowKeys;
     const keys = shown.map((k) => k.key.replace(/^\//, '')).sort();
     treeList.textContent = '';
+    const coll = kColl();
+    const folded = (path) => coll.some((c) => path !== c && path.startsWith(c + '/'));
     const seen = new Set();
     for (const key of keys) {
       const parts = key.split('/');
@@ -637,12 +644,26 @@
         const row = document.createElement('div');
         row.className = 'fld';
         row.style.marginLeft = (d * 14) + 'px';
-        row.textContent = '\u{1F4C1} ' + parts[d];
+        if (folded(dir)) row.style.display = 'none';
+        const cx = document.createElement('span');
+        cx.className = 'cx';
+        cx.textContent = coll.includes(dir) ? '▸' : '▾';
+        const label = document.createElement('span');
+        label.textContent = '\u{1F4C1} ' + parts[d];
+        row.append(cx, label);
+        row.onclick = () => {
+          const c = kColl();
+          const i = c.indexOf(dir);
+          if (i >= 0) c.splice(i, 1); else c.push(dir);
+          setKColl(c);
+          renderKnowTree();
+        };
         treeList.appendChild(row);
       }
       const row = document.createElement('a');
       row.className = 'pg' + (key === current ? ' cur' : '');
       row.style.marginLeft = ((parts.length - 1) * 14) + 'px';
+      if (folded(key)) row.style.display = 'none';
       row.href = '#';
       row.textContent = parts[parts.length - 1];
       row.onclick = (e) => { e.preventDefault(); openKnow(key); };
