@@ -33,6 +33,9 @@
 ::  guestbook writes `guestbook/icon.svg` only because its source sits AT /nex.
 /<  icon  icon.svg
 /<  pjs  prism.js
+/<  uih  ui-app/index.html
+/<  uij  ui-app/app.js
+/<  uic  ui-app/app.css
 /<  lc   /lib/lattice-comment.hoon
 /<  lb   /lib/lattice-bookmark.hoon
 =<  ^-  nexus:nexus
@@ -63,6 +66,12 @@
             ==
             [%over %& [/ %'icon.svg'] [[/ %mime] icon]]
             [%over %& [/ %'prism.js'] [[/ %mime] pjs]]
+        ::  the lattice-hosted UI (docs/ui-migration/PLAN.md): real files in
+        ::  ui-app/, laid as grubs, served at /apps/lattice/app — the core
+        ::  stays lean (assets in cords wedge every request fiber).
+            [%over %& [/app %'index.html'] [[/ %mime] uih]]
+            [%over %& [/app %'app.js'] [[/ %mime] uij]]
+            [%over %& [/app %'app.css'] [[/ %mime] uic]]
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
             [%fall %| /know/vault empty-dir:loader]
             [%fall %| /know/trash-vault empty-dir:loader]
@@ -420,6 +429,9 @@
   ::  the reader. Owner-only like every non-clearweb route (gated above).
   ?:  &(?=([%know *] suffix) =(%'GET' method.request.req))
     (serve-know eyre-id t.suffix args)
+  ::  /app[/asset]: the lattice-hosted UI (grub-served; see ui-app/).
+  ?:  &(?=([%app *] suffix) =(%'GET' method.request.req))
+    (serve-ui eyre-id t.suffix)
   ::  root: the web reader (Landscape tile). ?url=urb://ship/rel renders that
   ::  page; no url renders the home index of our published pages. ponytail:
   ::  compact gemtext->HTML (headings/links/quotes/lists/pre); the full reader's
@@ -3131,6 +3143,28 @@
   ;<  seen=view:nexus  bind:m  (peek:io [%| 2 %| /know/vault] ~)
   ?.  ?=([%ball *] seen)  (pure:m ~)
   (pure:m (collect-entries ~ ball.seen))
+::  +serve-ui: stream a ui-app asset grub. MIME from the (whitelisted) name;
+::  anything unknown 404s. Assets are grubs so the request-fiber core stays
+::  small — never serve big blobs from core constants.
+::
+++  serve-ui
+  |=  [eyre-id=@ta rest=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  nam=@ta  ?~(rest %'index.html' i.rest)
+  =/  ct=(unit @t)
+    ?:  =(%'index.html' nam)  `'text/html'
+    ?:  =(%'app.js' nam)      `'text/javascript'
+    ?:  =(%'app.css' nam)     `'text/css'
+    ~
+  ?~  ct  (send-err eyre-id 404 'not found')
+  ;<  pv=view:nexus  bind:m  (peek:io [%& %& (weld app-base /app) nam] ~)
+  ?.  ?=([%file *] pv)  (send-err eyre-id 404 'not found')
+  =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
+  ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
+  %+  send-simple:srv  eyre-id
+  :-  [200 ~[['content-type' u.ct] ['cache-control' 'no-cache']]]
+  `q.p.res
 ::  +serve-know: the private knowledge view (builders in /lib/lattice-know-view).
 ::  The keep on /beacon/rev live-reloads an open view whenever the writer
 ::  mutates the store, so a memory saved by a session appears without a refresh.
