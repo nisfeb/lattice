@@ -197,6 +197,7 @@
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
     refreshPreview();
     if (!CONTENT()) checkErrors();
+    if (isMobile()) setMv('code');
   }
 
   function newFile(into) {
@@ -561,15 +562,16 @@
   $('ctlt').onclick = () => flip('appNC');
   applyToggles();
 
-  for (const b of document.querySelectorAll('.mtabs button')) {
-    b.onclick = () => {
-      ws.dataset.mv = b.dataset.mv;
-      for (const x of document.querySelectorAll('.mtabs button'))
-        x.className = x === b ? 'on' : '';
-      if (b.dataset.mv === 'prev') refreshPreview();
-    };
-  }
-  ws.dataset.mv = 'code';
+  const isMobile = () => matchMedia('(max-width: 820px)').matches;
+  const setMv = (v) => {
+    ws.dataset.mv = v;
+    for (const x of document.querySelectorAll('.mtabs button'))
+      x.className = x.dataset.mv === v ? 'on' : '';
+    if (v === 'prev') refreshPreview();
+  };
+  for (const b of document.querySelectorAll('.mtabs button'))
+    b.onclick = () => setMv(b.dataset.mv);
+  setMv('code');
 
   // ── live tree refresh (beacon keep-SSE) ──────────────────────────────────
   // The writer bumps /beacon/rev on every mutation; skip the initial snapshot
@@ -653,6 +655,7 @@
     renderKnowTags(d.tags || []);
     $('kupd').textContent = 'updated ' + (d.updated || '');
     st('memory · ' + (d.tags || []).map((t) => '#' + t).join(' '));
+    if (isMobile()) setMv('code');
   }
 
   function renderKnowTags(tags) {
@@ -724,6 +727,11 @@
     render();
     if (m === 'know') loadKnow(); else loadTree();
     history.replaceState(null, '', '/apps/lattice/app' + (m === 'know' ? '?view=know' : ''));
+    // the toggle's visible result is the tree listing — make sure it can be
+    // seen: un-hide the pane on desktop, jump to the tree tab on mobile.
+    if (localStorage.appNT === '1') { localStorage.appNT = '0'; applyToggles(); }
+    if (isMobile()) setMv('tree');
+    st(m === 'know' ? 'knowledge — pick a memory from the tree' : 'pages');
   }
   $('modet').onclick = () => setMode(mode === 'know' ? 'pages' : 'know');
 
