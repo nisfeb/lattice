@@ -1026,6 +1026,18 @@ impl Filesystem for GrubberyFs {
             };
             join(&parent_path, &name)
         };
+        // POSIX: a non-empty directory is ENOTEMPTY. Without this, rmdir of a
+        // populated lattice folder would pass straight to page-del and take the
+        // whole subtree with it (rm -r still works: it empties, then rmdirs).
+        {
+            let s = self.st.lock().unwrap();
+            let prefix = format!("{path}/");
+            if s.vt.keys().any(|k| k.starts_with(&prefix)) {
+                drop(s);
+                reply.error(err(libc::ENOTEMPTY));
+                return;
+            }
+        }
         let rel = path.trim_start_matches('/').to_string();
         match self.proj.delete(&rel) {
             Ok(()) => {
