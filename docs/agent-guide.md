@@ -58,10 +58,20 @@ the ship; a write there lands under `notes/`. No `--root` mounts the whole `/pag
 lattice-fs mount ~/obelisk-mnt --root /apps/obelisk.obelisk_app   # browse another nexus
 ```
 
-This uses grubbery's generic ball API (`/grubbery/api/tree` + `/grubbery/api/file`), so it
-works for *any* tree, not just lattice. Grubs appear as `<name>.txt` and read as their
-semantic value (`?blot=/json`: an `@t` grub's source, a struct's JSON) — grep/cat friendly.
-**Read-only** for now (writes return `EROFS`); weir-governed write is a planned follow-up.
+This uses grubbery's generic ball API (`/grubbery/api/tree` + `/grubbery/api/file`) plus its
+`edit_file`/`delete_grub` MCP tools, so it works for *any* tree, not just lattice. Grubs appear
+as `<name>.txt` and read as their text form (`?blot=/txt`, falling back to `/json` for a grub
+with no text tube) — grep/cat friendly.
+
+**Read + overwrite + rm.** You can `cat`/`grep`, overwrite an existing grub (an editor save, or
+`echo … > file`), and `rm` it — the overwrite goes through grubbery's own in-place `edit_file`
+(blot preserved, atomic; a rejected conversion leaves the old grub intact), the same "writable
+file" path the ship's operator has. What it does **not** do: create a *new* grub (the target
+mark can't be inferred from bytes → `EROFS`), `mkdir`, or rename. And **append/partial writes
+(`>>`, `tee -a`) are unreliable** — a grub's mark may normalize its text (hoon strips a trailing
+newline), so the byte length seen as a file need not match the stored bytes and an append lands
+at the wrong offset. Edit by whole-file overwrite, not append. A grub whose mark has no text
+tube reads (via `/json`) but fails the edit cleanly (`EIO`) rather than corrupting.
 Generic mounts run over HTTP (Eyre), not lick — set a cookie, don't set `LATTICE_SOCK`.
 
 **Things an agent must know about the mount:**
