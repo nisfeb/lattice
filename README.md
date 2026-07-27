@@ -48,7 +48,7 @@ other ships over remote scry, and followed remote files push you updates.
 - **Publish** — every page you save is written as a *published grub*: a signed
   value in the Urbit namespace, instantly readable by anyone as
   `urb://~you/that/path`. Write and edit pages from inside the app.
-- **Editor** — a built-in gemtext editor for your pages, with optional vim
+- **Editor** — a built-in editor for your pages, with optional vim
   keybindings (off by default — it edits like a normal textarea otherwise).
 - **Follow & subscribe** — follow ships to discover what they publish;
   subscribe to a specific file to get notified when it changes (your own
@@ -137,19 +137,20 @@ grubbery, drop lattice's nexus into it, and commit.
    ./scripts/sync-overlay.sh /path/to/your-ship/grubbery
    ```
 
-3. **Register the nexus** — add one idempotent row to grubbery's `lib/root.hoon`
-   on-load so a `/apps/lattice` directory carrying the nexus gets made (re-apply
-   after pulling grubbery updates):
-   ```hoon
-   [%fall %| /apps/'lattice.lattice_app' [`[`[/lattice %app] ~ %.n ~] ~]]
-   ```
-
-4. **Commit** the grubbery desk:
+3. **Commit** the grubbery desk:
    ```dojo
    |commit %grubbery
    ```
+
+4. **Install the app** — committing the source does *not* install it; an app is
+   a folder in grubbery's ball. Create it once with grubbery's MCP
+   `create_folder` tool (the `nexus` param is mandatory and stab-parsed):
+   ```json
+   create_folder {"path":"/apps","name":"lattice.lattice_app","nexus":"/lattice/app"}
+   ```
    The nexus materializes its tree, binds an HTTP endpoint at `/apps/lattice`,
    and starts serving. Pages you write become published grubs in the namespace.
+   (Full deploy/ops detail: [docs/grubbery-ops.md](docs/grubbery-ops.md).)
 
 See [`grubbery-overlay/README.md`](grubbery-overlay/README.md) for the dev loop,
 and [`docs/cutover-runbook.md`](docs/cutover-runbook.md) if you're migrating an
@@ -225,19 +226,17 @@ unset CODE
 Only trust the cookie if `status:` is **200/204** (a `400` means a wrong `+code`).
 The `+code` is read with `-s` (no echo) and never leaves your machine.
 
-Then:
+Then point your MCP client at the ship — that's the whole setup, since the
+tools live in the ship already:
 
-1. **`.mcp.json`** (your MCP client's config) — add the server:
-   ```json
-   { "mcpServers": { "myship": {
-       "url": "https://your-ship.example.com/mcp",
-       "headers": { "Cookie": "urbauth-~your-ship=0v…" } } } }
-   ```
-2. **Register the tools once** — the script prompts for the `+code` the same
-   hidden way and authenticates itself:
-   ```bash
-   python3 scripts/setup-knowledge-mcp-tools.py myship
-   ```
+```json
+{ "mcpServers": { "myship": {
+    "url": "https://your-ship.example.com/grubbery/mcp",
+    "headers": { "Cookie": "urbauth-~your-ship=0v…" } } } }
+```
+
+When the ship restarts, the cookie expires — mint a fresh one the same way and
+update the header. (There is nothing else to re-register.)
 3. **Reconnect** your client and approve the server. Test with *"list my lattice
    knowledge."*
 
