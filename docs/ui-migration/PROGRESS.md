@@ -26,4 +26,10 @@
       edit-template, md-template, starter-for, share-btn, edit-html, edit-js
       (210 lines of cords); /apps/lattice/edit now redirects to the app
       preserving ?name/?into; home + browser edit links point at the app.
-- [ ] M7 /know in the app
+- [x] M7 Knowledge in the app — a full mode (bar toggle / ?view=know): keys as
+      a folder tree, tag chips filtering, read/EDIT/save entries (beyond the
+      read-only server view), tag/untag, soft-delete. The server-rendered /know
+      (lattice-know-view) STAYS as the lightweight read-only surface linked
+      from the home Knowledge card — both noted deliberately, per plan.
+
+MIGRATION COMPLETE — all seven milestones merged.
