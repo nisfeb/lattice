@@ -17,5 +17,13 @@
       preview/controls), wrap + tree + controls toggles persisted in
       localStorage, and EventSource on the /beacon/rev keep refreshing the tree
       (debounced) on every writer mutation.
-- [ ] M6 Parity audit + cord deletion + docs
+- [x] M6 Parity audit + cord deletion — every old-editor capability confirmed
+      in the app (tree/collapse/into/newfolder, save+409, Cmd+S, Tab, Prism,
+      preview, errors, cmd, share incl. mode read, delete, upload+drag-drop,
+      mobile tabs, wrap/tree/ctl toggles). Intentional differences: computed-
+      page preview shows live /f data (not the /x-embedded view); new pages
+      start empty (no hoon starter templates). DELETED: edit-css,
+      edit-template, md-template, starter-for, share-btn, edit-html, edit-js
+      (210 lines of cords); /apps/lattice/edit now redirects to the app
+      preserving ?name/?into; home + browser edit links point at the app.
 - [ ] M7 /know in the app
