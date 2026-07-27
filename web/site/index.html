@@ -4,9 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>lattice — your knowledge, on your ship</title>
-    <meta name="description" content="A personal knowledge platform on your Urbit ship: pages in markdown, gemtext, HTML or programmable Hoon; a private tagged memory you share with your AI; full-text search; peer-to-peer publishing. Native app, web, filesystem, MCP.">
+    <meta name="description" content="A personal knowledge platform on your Urbit ship: pages in markdown, gemtext, HTML or programmable Hoon; a private tagged memory you share with your AI; full-text search; peer-to-peer publishing. Web, filesystem, MCP.">
     <meta property="og:title" content="lattice — your knowledge, on your ship">
-    <meta property="og:description" content="Pages, private knowledge, and AI memory on your Urbit ship. Search everything, publish peer-to-peer, reach it from the app, the web, your filesystem, or an agent.">
+    <meta property="og:description" content="Pages, private knowledge, and AI memory on your Urbit ship. Search everything, publish peer-to-peer, reach it from the web, your filesystem, or an agent.">
     <meta name="theme-color" content="#4a7c59">
     <link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="%234a7c59"/><g stroke="%23e9f1ec" stroke-width="3" stroke-linecap="round" fill="none"><path d="M8 24 24 8M8 40 40 8M8 56 56 8M24 56 56 24M40 56 56 40"/><path d="M40 8 56 24M24 8 56 40M8 8 56 56M8 24 40 56M8 40 24 56"/></g></svg>'>
     <style>
@@ -203,14 +203,13 @@
         </p>
 
         <div class="ctas">
-            <a class="btn btn-primary" href="#download">Download</a>
+            <a class="btn btn-primary" href="#get-started">Get&nbsp;started</a>
             <a class="btn btn-secondary" href="https://github.com/nisfeb/lattice">Source&nbsp;on&nbsp;GitHub</a>
         </div>
 
         <div class="meta-row">
-            <span><strong>Android 8+</strong></span>
-            <span><strong>Linux · macOS · Windows</strong></span>
-            <span><strong>App · Web · Filesystem · MCP</strong></span>
+            <span><strong>Web · Filesystem · MCP</strong></span>
+            <span><strong>Installable PWA</strong> · served by your ship</span>
             <span><strong>Peer-to-peer</strong> · no servers</span>
             <span><strong>Open source</strong> · PolyForm Noncommercial</span>
         </div>
@@ -234,7 +233,7 @@
             <div class="step">
                 <div class="n">the surfaces</div>
                 <div class="t">browse &amp; edit anywhere</div>
-                <div class="d">A native app (Android + desktop), a web workspace with live preview and drag-and-drop upload, an installable PWA — and a FUSE client that mounts your pages as plain files.</div>
+                <div class="d">A web workspace with live preview and drag-and-drop upload, an installable PWA — and a FUSE client that mounts your pages as plain files. lattice hosts its own client; there is nothing to install.</div>
             </div>
             <div class="step">
                 <div class="n">the agents</div>
@@ -269,7 +268,7 @@ Welcome. Everything here is a gemtext file in /pub.
             </li>
             <li>
                 <span class="name">Search everything</span>
-                <span class="desc">A full-text catalog over your pages and the ships you follow — from the app or the web omnibar.</span>
+                <span class="desc">A full-text catalog over your pages and the ships you follow — right from the reader’s omnibar.</span>
             </li>
             <li>
                 <span class="name">A real filesystem</span>
@@ -292,8 +291,8 @@ Welcome. Everything here is a gemtext file in /pub.
                 <span class="desc">A three-pane editor with tree, live preview, and drag-and-drop upload of files or whole directories. Installs as a PWA with the flat-green tile you are looking at.</span>
             </li>
             <li>
-                <span class="name">Native everywhere</span>
-                <span class="desc">Android, Linux, macOS, Windows from one Kotlin / Compose codebase, fully themeable, with bundled JRE on desktop.</span>
+                <span class="name">Share whole sites</span>
+                <span class="desc">Share a folder and everything under it goes clearweb-public at <span class="mono">/c/&lt;folder&gt;/</span>, theme inherited — a site, published and unpublished in one click.</span>
             </li>
         </ul>
     </div>
@@ -305,8 +304,7 @@ Welcome. Everything here is a gemtext file in /pub.
         <ul class="disclaimers">
             <li>Not a host. <a href="https://urbit.org/overview/running-urbit">Bring your own ship</a> — yours, a friend's, or a hosted one.</li>
             <li>Not the HTTP web. Pages are Urbit-native (<span class="mono">urb://~ship/path</span>) and move between ships over remote scry, not over DNS and HTTP.</li>
-            <li>Not on the app stores. Sideload the APK and desktop installers from GitHub Releases.</li>
-            <li>Desktop builds are unsigned for now — Gatekeeper / SmartScreen will warn on first launch and you have to bypass it.</li>
+            <li>Not an app to install. The client is served by your ship; the only local piece is the optional filesystem client.</li>
         </ul>
     </div>
 </section>
@@ -317,7 +315,7 @@ Welcome. Everything here is a gemtext file in /pub.
         <div class="privacy-card">
             <h3>The only server lattice talks to is your ship.</h3>
             <p>
-                No analytics, no third-party SDKs, no telemetry. The app speaks to the Urbit
+                No analytics, no third-party SDKs, no telemetry. Every client speaks only to the Urbit
                 ship you point it at — that's the entire network surface. Your session never
                 leaves the device unencrypted: lattice refuses to send your <span class="mono">+code</span>
                 or cookie in cleartext to a remote ship, and stores it owner-only at rest.
@@ -337,97 +335,51 @@ Welcome. Everything here is a gemtext file in /pub.
             On your ship, lattice runs as a nexus in the <span class="mono">grubbery</span>
             framework — pages and knowledge live as grubs in the vault, published pages answer
             remote scry, and the MCP knowledge tools are compiled into the same ball they serve.
-            The native app is Kotlin + Compose Multiplatform over an authenticated HTTP API with
-            live SSE updates; the filesystem client is Rust over a pluggable transport (HTTP or
-            grubbery's local IPC). Hoon unit tests on the nexus, a JVM suite on the app, a
-            19-assertion ship-verified regression matrix on the filesystem client.
+            The web client is itself hosted on lattice — editor, reader, and PWA are grubs
+            in the same ball they edit, over an authenticated HTTP API with live SSE updates.
+            The filesystem client is Rust over a pluggable transport (HTTP or grubbery's
+            local IPC). Hoon unit tests on the nexus, a 19-assertion ship-verified
+            regression matrix on the filesystem client.
         </p>
         <div class="tech-grid">
-            <div class="cell"><div class="k">android</div><div class="v">8.0+ (API 26–35)</div></div>
-            <div class="cell"><div class="k">desktop</div><div class="v">Linux · macOS · Windows · JRE bundled</div></div>
+            <div class="cell"><div class="k">clients</div><div class="v">Web + PWA · FUSE · MCP</div></div>
+            <div class="cell"><div class="k">served from</div><div class="v">your ship — no separate host</div></div>
             <div class="cell"><div class="k">backend</div><div class="v">Your Urbit ship</div></div>
             <div class="cell"><div class="k">transport</div><div class="v">Remote scry · peer-to-peer</div></div>
         </div>
     </div>
 </section>
 
-<section id="download">
+<section id="get-started">
     <div class="wrap">
-        <h2>Download</h2>
+        <h2>Get started</h2>
         <p>
-            Pick your platform. Direct links resolve to the latest tagged release; fall back to
-            the <a href="https://github.com/nisfeb/lattice/releases/latest">releases page</a> for
-            older versions and release notes. You'll also need the
-            lattice nexus in your ship's grubbery desk — see the
-            <a href="https://github.com/nisfeb/lattice#install">install notes</a>.
-        </p>
-
-        <h3 style="margin-top:32px;">Android</h3>
-        <p class="dl-note">
-            Tap the APK; you may need to allow "Install unknown apps" for your browser or file
-            manager. Android 8+ (API 26).
+            lattice hosts its own client — there is nothing to download. Put the nexus on
+            your ship (see the <a href="https://github.com/nisfeb/lattice#install">install
+            notes</a>), log in at your ship's web login, and open:
         </p>
         <div class="dl-grid">
             <div class="dl-row">
-                <span class="platform">.apk (any)</span>
-                <span class="desc">Single universal APK — works on every supported device.</span>
-                <a class="dl-link" data-asset-pattern="^lattice-[0-9.]+\.apk$"
-                   href="https://github.com/nisfeb/lattice/releases/latest">Download</a>
+                <span class="platform mono">/apps/lattice</span>
+                <span class="desc">The reader — your pages, the urb:// omnibar, catalog search, ships you follow.</span>
+            </div>
+            <div class="dl-row">
+                <span class="platform mono">/apps/lattice/app</span>
+                <span class="desc">The workspace — editor with highlighting and live preview, sharing, uploads, knowledge browser.</span>
             </div>
         </div>
-
-        <h3 style="margin-top:32px;">Linux</h3>
-        <p class="dl-note">
-            <code>chmod +x</code> the AppImage and run it; needs FUSE 2 (default on most
-            desktops). The .deb installs system-wide on Debian / Ubuntu and derivatives.
+        <p class="dl-note" style="margin-top:16px;">
+            On a phone, use your browser's <em>Install app / Add to Home Screen</em> — lattice
+            is a full PWA with its own icon and standalone window. Prefer real files? Build the
+            FUSE client (<span class="mono">cargo build --release</span> in
+            <span class="mono">lattice-fs-rs/</span>) and mount your page tree.
         </p>
-        <div class="dl-grid">
-            <div class="dl-row">
-                <span class="platform">AppImage (any)</span>
-                <span class="desc">Portable, self-contained. Bundled JRE.</span>
-                <a class="dl-link"
-                   href="https://github.com/nisfeb/lattice/releases/latest/download/lattice-x86_64.AppImage">Download</a>
-            </div>
-            <div class="dl-row">
-                <span class="platform">.deb (Debian / Ubuntu)</span>
-                <span class="desc"><code>sudo apt install ./lattice_*.deb</code></span>
-                <a class="dl-link" data-asset-pattern="^lattice_[0-9.-]+_amd64\.deb$"
-                   href="https://github.com/nisfeb/lattice/releases/latest">Download</a>
-            </div>
-        </div>
-
-        <h3 style="margin-top:32px;">macOS</h3>
-        <p class="dl-note">
-            Open the DMG and drag lattice to Applications. <strong>First launch:</strong>
-            right-click → Open → Open (unsigned, so a plain double-click is blocked by Gatekeeper).
-        </p>
-        <div class="dl-grid">
-            <div class="dl-row">
-                <span class="platform">.dmg</span>
-                <span class="desc">Disk image. Bundled JRE.</span>
-                <a class="dl-link" data-asset-pattern="^lattice-[0-9.]+\.dmg$"
-                   href="https://github.com/nisfeb/lattice/releases/latest">Download</a>
-            </div>
-        </div>
-
-        <h3 style="margin-top:32px;">Windows</h3>
-        <p class="dl-note">
-            Double-click the MSI to install. SmartScreen may warn — "More info" → "Run anyway".
-        </p>
-        <div class="dl-grid">
-            <div class="dl-row">
-                <span class="platform">.msi</span>
-                <span class="desc">x64 installer. Bundled JRE.</span>
-                <a class="dl-link" data-asset-pattern="^lattice-[0-9.]+\.msi$"
-                   href="https://github.com/nisfeb/lattice/releases/latest">Download</a>
-            </div>
-        </div>
 
         <p style="margin-top:32px;">
             New to Urbit?
             <a href="https://urbit.org/overview/running-urbit">urbit.org/overview/running-urbit</a>
             walks you through booting a ship. Once you have its HTTP URL and <span class="mono">+code</span>,
-            log in inside lattice and you're browsing.
+            log in and you're browsing.
         </p>
 
         <div class="ctas" style="margin-top:24px;">
@@ -435,28 +387,6 @@ Welcome. Everything here is a gemtext file in /pub.
         </div>
     </div>
 </section>
-
-<script>
-// Resolve data-asset-pattern links to direct GitHub Release asset URLs from the
-// latest release. Without JS the anchor falls through to the releases page.
-(function () {
-    const links = document.querySelectorAll('.dl-link[data-asset-pattern]');
-    if (links.length === 0) return;
-    fetch('https://api.github.com/repos/nisfeb/lattice/releases/latest', {
-        headers: { 'Accept': 'application/vnd.github+json' },
-    })
-        .then(r => r.ok ? r.json() : null)
-        .then(release => {
-            if (!release || !release.assets) return;
-            for (const link of links) {
-                const re = new RegExp(link.dataset.assetPattern);
-                const match = release.assets.find(a => re.test(a.name));
-                if (match) link.href = match.browser_download_url;
-            }
-        })
-        .catch(() => { /* leave fallback /releases/latest links in place */ });
-})();
-</script>
 
 <footer>
     <div class="wrap footer-row">

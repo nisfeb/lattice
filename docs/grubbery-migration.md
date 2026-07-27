@@ -67,7 +67,7 @@ Why this subsystem first:
   history (`born`/`silo`) makes our trash/restore maps redundant and gives every note a full,
   per-save revision history for free — plus point-in-time reads (`%peek` with `case=[%ud rev]` or
   `[%da date]`) and range pruning (`%lose`).
-- It has **zero coupling to either external contract**. The Kotlin app only sees `/apps/lattice`
+- It has **zero coupling to either external contract**. HTTP clients only see `/apps/lattice`
   HTTP endpoints (which stay in the agent), and the ship-to-ship remote-scry/follow/manifest
   protocol never touches the knowledge store (`know` is never grown — `sur/lattice.hoon:88-93`).
 - The agent's `+do-know` action vocabulary is already a single funnel, so the adapter seam exists
@@ -151,7 +151,7 @@ stage: the same gall agent owns the remote-scry namespace throughout.
 
 | Surface | Today | After |
 |---|---|---|
-| Kotlin app HTTP | Eyre + agent's `authenticated` 403 | unchanged (agent façade) |
+| Client HTTP | Eyre + agent's `authenticated` 403 | unchanged (agent façade) |
 | Owner pokes | `src=our` check in agent | unchanged; agent → grubbery rides owner's no-weir path |
 | Foreign ships, knowledge (writes) | unreachable (never grown) | deny-all weir chain (default empty usergroup roads) |
 | Foreign ships, knowledge (reads) | unreachable | deny-all weir chain — remote `%peek`/`%want` gated by `allowed:hc` since `04f3781` (RESOLVED) |
@@ -494,7 +494,7 @@ and nothing is at risk.
 - Verify (key sets, per-entry body hashes, trash metadata), take an **off-ship backup**
   (`GET /grubbery/api/tar` of `/lattice`), then flip `know-where=%grubbery` — a single atomic
   state write; maps freeze.
-- `updated` timestamps ride inside the marc, so the Kotlin app sees identical values; born cass
+- `updated` timestamps ride inside the marc, so HTTP clients see identical values; born cass
   *dates* for imported entries are import-time and must be documented as non-user-facing.
 
 ### Stage 1c — soak, with defined abort criteria

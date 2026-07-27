@@ -283,8 +283,8 @@ served from `handle-http` (owner-only; the same 403-gated path as every
 `/know-*` endpoint). They compile their params to urQL in `/lib/catalog`
 and run through `+kick-obelisk-query` — the same one-at-a-time async
 obelisk bridge `/know-query` uses — so the response JSON shape matches
-`/know-query`: `{ok, action, relation, count, columns, rows}`. The Kotlin
-Discover search box (and any agent) calls these over the authenticated
+`/know-query`: `{ok, action, relation, count, columns, rows}`. The web
+reader's search box (and any agent) calls these over the authenticated
 session.
 
 | Endpoint | Params | urQL compiler | Notes |
@@ -378,7 +378,7 @@ pass could hide both.)
 | **4. Federation** | `/catalog-query/<urql>/json` public scry + `lattice-catalog-import` MCP tool + source-aware UI | v2 |
 
 The whole local-only catalog backend (phases 0–2) ships as one PR; the
-Discover search UI (Kotlin client) is the remaining v1 user surface.
+web reader's search box is the v1 user surface.
 Phase 4 is v2.
 
 ## Open implementation questions (not blocking this PR)

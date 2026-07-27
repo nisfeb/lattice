@@ -239,8 +239,7 @@ Subsumption, not replacement:
   "peers whose trees I follow".
 - The reader/explorer routes generalize from pub-only to any readable subtree
   (`/browse` is most of the way there).
-- The Kotlin client becomes optional; the browser is the client. The Compose Android
-  shell survives only as the mobile `urb://` intent-filter wrapper, if wanted.
+- The browser is the client (the Kotlin client is retired; the PWA covers mobile).
 
 Migration is additive: nothing in the current tree moves; `.code` shows up beside
 files that want it.

@@ -10,11 +10,9 @@ middle.
 
 One store, every surface:
 
-- **native app** ([`app/`](app/)) — a Kotlin Multiplatform (Compose)
-  browser/editor for Android, Linux, macOS, and Windows.
 - **web** — a reader, a workspace editor (live preview, drag-and-drop upload of
-  files or whole directories), a knowledge browser at `/know`, and an
-  installable PWA — all served straight from the ship.
+  files or whole directories), a knowledge browser, and an installable PWA —
+  all served straight from the ship. lattice hosts its own client.
 - **filesystem** ([`lattice-fs-rs/`](lattice-fs-rs/)) — a Rust FUSE client that
   mounts your page tree as local files: `rg` everything at RAM speed, edit in
   your own editor, and mount any other grubbery app tree too.
@@ -37,19 +35,21 @@ other ships over remote scry, and followed remote files push you updates.
   (folders, tag filters, live updates); drive it from the app, HTTP, MCP, or
   the FUSE mount.
 - **Search** — an obelisk-backed catalog gives full-text search across your
-  pages and the ships you follow, from the app or the web omnibar.
+  pages and the ships you follow, from the reader's omnibar.
 - **A real filesystem** — `lattice-fs` mounts your pages as files over HTTP or
   grubbery's local IPC. A cold mount warms in one round-trip, so `grep`/`cat`
   run from RAM; editor saves round-trip safely (backup/swap files never touch
   the ship).
 - **Browse `urb://`** — fetch and read gemtext published by any ship,
-  peer-to-peer over Urbit's remote scry. Browser-style tabs (`Ctrl+T`),
-  bookmarks, and history.
+  peer-to-peer over Urbit's remote scry, from the web reader.
 - **Publish** — every page you save is written as a *published grub*: a signed
   value in the Urbit namespace, instantly readable by anyone as
-  `urb://~you/that/path`. Write and edit pages from inside the app.
-- **Editor** — a built-in editor for your pages, with optional vim
-  keybindings (off by default — it edits like a normal textarea otherwise).
+  `urb://~you/that/path`. Pages and whole folders can also go
+  clearweb-public, served over plain HTTP at `/c/<path>` — share a folder
+  and you've published a site.
+- **Editor** — a web workspace with syntax highlighting for every page kind,
+  live preview, compile errors for Hoon pages, folder-level share/move/delete,
+  and drag-and-drop upload of files or whole directories.
 - **Follow & subscribe** — follow ships to discover what they publish;
   subscribe to a specific file to get notified when it changes (your own
   files push live over an Eyre SSE channel; changes on a followed remote ship
@@ -58,10 +58,10 @@ other ships over remote scry, and followed remote files push you updates.
   small published manifest.
 - **Copy to your ship** — like a bookmark, but real: copy a remote file onto
   your own ship at a path of your choosing.
-- **Fully themeable** — colors and fonts are configurable; ships with several
-  built-in themes (Lattice Dark/Light and more).
+- **Light and dark** — every surface (reader, editor, PWA) follows your
+  system theme.
 
-## How a page reaches your app
+## How a page reaches your screen
 
 Every published page is addressed `urb://~ship/path` and travels **peer-to-peer
 over Urbit's remote scry** — no DNS, no web server, no host in the middle. Here's
@@ -72,12 +72,12 @@ the full path from a publisher's ship to your screen when you open a remote page
 fixed address that other ships can read by remote scry. That publish step is what
 makes the page reachable at all; nothing else about your ship is exposed.
 
-**Reading (on your ship).** You tap `urb://~remote/page` in the app:
+**Reading (on your ship).** You tap `urb://~remote/page` in the reader:
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant App as lattice app
+    participant App as web reader
     participant You as your ship
     participant Ames as ames (Urbit P2P)
     participant Peer as ~remote (publisher)
@@ -92,8 +92,8 @@ sequenceDiagram
     App->>App: render gemtext
 ```
 
-1. **App → your ship.** The app calls *your* ship's local HTTP API over its
-   authenticated session. It never talks to the publisher directly.
+1. **Reader → your ship.** The reader calls *your* ship's local HTTP API over
+   its authenticated session. It never talks to the publisher directly.
 2. **Per-request handling.** Your ship parses the `urb://` URL into `[ship, path]`
    and spawns a short-lived fiber for just this request.
 3. **Remote scry to the publisher.** Since the ship isn't yours, your ship issues
@@ -103,9 +103,9 @@ sequenceDiagram
 4. **Untrusted by default.** The peer's reply is a raw signed noun. Your ship
    converts it to text inside a guard: a malformed or hostile body yields a clean
    404, never a crash. You're parsing a stranger's data, so it's treated as such.
-5. **Back to the app.** Your ship wraps the body as JSON and returns it; the app
-   renders the gemtext. **Your own pages skip the network** — they're read
-   straight from your ship's local store.
+5. **Back to the reader.** Your ship wraps the body as JSON and returns it; the
+   reader renders the gemtext. **Your own pages skip the network** — they're
+   read straight from your ship's local store.
 
 **Two things worth knowing:**
 
@@ -161,28 +161,20 @@ existing `%lattice` agent's data into the nexus.
 > tool), your private knowledge store is owner-only, and the HTTP API requires a
 > valid ship session. Nothing else leaves your ship.
 
-### 2. The app
+### 2. The client
 
-Grab your platform from the
-[latest release](https://github.com/nisfeb/lattice/releases/latest):
+There is nothing to install — lattice hosts its own client. Log into your
+ship's web login (`/~/login` with your `+code`) and open:
 
-| Platform | File | How to install |
-|---|---|---|
-| Android | `lattice-X.Y.Z.apk` | Tap to install; you may need to allow "Install unknown apps". Android 8+ (API 26). |
-| Linux (any) | `lattice-x86_64.AppImage` | `chmod +x lattice-x86_64.AppImage && ./lattice-x86_64.AppImage`. Needs FUSE 2 (default on most desktops). |
-| Debian / Ubuntu | `lattice_*_amd64.deb` | `sudo apt install ./lattice_*_amd64.deb` |
-| macOS | `lattice-*.dmg` | Open the DMG, drag lattice to Applications. **First launch:** right-click → Open → Open (unsigned, so Gatekeeper blocks a plain double-click). |
-| Windows | `lattice-*.msi` | Double-click. SmartScreen may warn — "More info" → "Run anyway". |
+- **`/apps/lattice`** — the reader: your pages, the `urb://` omnibar,
+  catalog search, and the ships you follow.
+- **`/apps/lattice/app`** — the workspace: tree, editor with highlighting
+  and live preview, sharing controls, uploads, and the knowledge browser.
 
-Desktop builds bundle their own JRE, so you don't need Java installed.
-
-Open the app, enter your ship's URL and `+code`, and you're browsing. New to
-Urbit? [urbit.org/overview/running-urbit](https://urbit.org/overview/running-urbit)
+On a phone, use your browser's *Install app / Add to Home Screen* — it's a
+full PWA with its own icon and standalone window. New to Urbit?
+[urbit.org/overview/running-urbit](https://urbit.org/overview/running-urbit)
 walks you through booting a ship.
-
-> **Connecting to a remote ship:** lattice refuses to send your `+code` or
-> session cookie in cleartext, so a non-local ship must be reached over
-> `https` (loopback `http` is fine for a ship on the same machine or a tunnel).
 
 ## Connect an AI agent (MCP)
 
@@ -191,9 +183,9 @@ over [MCP](https://modelcontextprotocol.io) — eleven tools: `lattice-save`,
 `lattice-read`, `lattice-list`, `lattice-search`, `lattice-explore`,
 `lattice-delete`, `lattice-restore`, `lattice-move`, `lattice-tags`,
 `lattice-tag`, `lattice-untag`. Agents can tag items and discover them by tag or substring
-(`lattice-explore`), the same faceted discovery the app's Knowledge **Explore**
-mode offers. Anything an agent saves or tags shows up in the app's Knowledge
-screen, and vice-versa. Full details: [docs/agent-knowledge.md](docs/agent-knowledge.md).
+(`lattice-explore`), the same faceted discovery the web app's knowledge mode
+offers. Anything an agent saves or tags shows up in the knowledge browser,
+and vice-versa. Full details: [docs/agent-knowledge.md](docs/agent-knowledge.md).
 
 The tools are **compiled into the ship itself** — they ship with the lattice
 desk (`lib/mcp/lattice-*.hoon`), execute in-ship against the vault directly,
@@ -248,48 +240,32 @@ refresh it. Re-registering tools after a lattice upgrade needs a reset first; se
 
 - **Not a host.** Bring your own ship — yours, a friend's, or a hosted one.
 - **Not the HTTP web.** Pages are Urbit-native (`urb://~ship/path`) and move
-  between ships over remote scry, not over DNS/HTTP.
-- **Not on the app stores.** Sideload the APK / installers from GitHub Releases.
-- **Desktop builds are unsigned** for now — your OS will warn on first launch.
+  between ships over remote scry, not over DNS/HTTP — except what you
+  *choose* to publish clearweb, which your ship serves itself at `/c/<path>`.
+- **Not an app to install.** The client is served by your ship; the only
+  local piece is the optional FUSE client.
 
 ## Building from source
 
-Gradle lives in [`app/`](app/); the ship-side nexus source is in
-[`grubbery-overlay/`](grubbery-overlay/). A
-full **JDK 17** is required — note that some distros ship `java-17-openjdk` as a
-JRE without `javac`; JDK 21 also works.
-
-```bash
-cd app
-./gradlew :composeApp:run                  # run the desktop app
-./gradlew :composeApp:assembleDebug        # debug APK
-./gradlew :composeApp:assembleRelease      # release APK (signed if keystore set)
-./gradlew :composeApp:packageReleaseDeb    # desktop installer (host OS only)
-# Portable Linux AppImage (from the repo root):
-./scripts/build-appimage.sh
-```
+The ship-side nexus source is in [`grubbery-overlay/`](grubbery-overlay/) —
+sync it into a grubbery desk and commit (see Install above). The FUSE client
+builds with `cargo build --release` in [`lattice-fs-rs/`](lattice-fs-rs/).
 
 The nexus's pure lib has Hoon unit tests under
 [`grubbery-overlay/tests/`](grubbery-overlay/tests/) (run via grubbery's
-`run-tests`); the app has a JVM test suite (`./gradlew :composeApp:desktopTest`).
-CI runs both on every PR.
-
-## Releases
-
-Tagging `v*` triggers `.github/workflows/release.yml`, which builds the desktop
-installers (`.deb`/`.dmg`/`.msi`/`.AppImage`) and — when signing secrets are set
-— the Android APK, then publishes a GitHub Release. See [RELEASE.md](RELEASE.md).
+`run-tests`); the FUSE client has a 19-assertion ship-verified regression
+matrix (`scripts/fs-matrix.sh`).
 
 ## Layout
 
 ```
 grubbery-overlay/  the lattice nexus — ship side (nex/ lib/ mar/ tests/),
-                   including the in-ship MCP knowledge tools (lib/mcp/)
-app/               Kotlin Multiplatform Compose app (Android + desktop)
+                   the web client (nex/lattice/ui-app/), and the in-ship
+                   MCP knowledge tools (lib/mcp/)
 lattice-fs-rs/     Rust FUSE client — mount the page tree as a filesystem
 web/               the website (self-contained HTML + a gemtext edition,
                    organized to be uploaded to and hosted on lattice itself)
-scripts/           build + overlay-sync helpers, fs regression matrix
+scripts/           overlay-sync helpers, fs regression matrix
 docs/              agent guide, grubbery ops, catalog, cutover runbooks
 ```
 
