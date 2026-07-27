@@ -42,6 +42,17 @@
       ::  (grubbery's loader has no read-side ver gate — matches obelisk).
       %+  spin:loader  ball
       :~  (manifest:loader 0)
+        ::  tile.json: the launcher (tiles nexus) lists only apps that carry
+        ::  one — without it lattice is invisible in the grubbery home UI.
+        ::  %over so the tile stays current across reloads.
+            :^  %over  %&  [/ %'tile.json']
+            :-  [/ %json]
+            %-  pairs:enjs:format
+            :~  title+s+'Lattice'
+                info+s+'Pages, knowledge & catalog'
+                color+s+'#4a7c59'
+                href+s+'/apps/lattice'
+            ==
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
             [%fall %| /know/vault empty-dir:loader]
             [%fall %| /know/trash-vault empty-dir:loader]
