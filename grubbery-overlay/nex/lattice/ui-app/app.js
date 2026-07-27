@@ -353,6 +353,44 @@
     Promise.all(ps).then(() => { if (out.length) uploadItems(out); });
   });
 
+  // ── layout toggles + mobile tabs ─────────────────────────────────────────
+  const ws = $('ws');
+  const applyToggles = () => {
+    ws.classList.toggle('nt', localStorage.appNT === '1');
+    ws.classList.toggle('nc', localStorage.appNC === '1');
+    ws.classList.toggle('wrap', localStorage.appWrap === '1');
+    $('wrapt').className = 'ico' + (localStorage.appWrap === '1' ? ' on' : '');
+    $('treet').className = 'ico' + (localStorage.appNT === '1' ? ' on' : '');
+    $('ctlt').className = 'ico' + (localStorage.appNC === '1' ? ' on' : '');
+  };
+  const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
+  $('wrapt').onclick = () => flip('appWrap');
+  $('treet').onclick = () => flip('appNT');
+  $('ctlt').onclick = () => flip('appNC');
+  applyToggles();
+
+  for (const b of document.querySelectorAll('.mtabs button')) {
+    b.onclick = () => {
+      ws.dataset.mv = b.dataset.mv;
+      for (const x of document.querySelectorAll('.mtabs button'))
+        x.className = x === b ? 'on' : '';
+      if (b.dataset.mv === 'prev') refreshPreview();
+    };
+  }
+  ws.dataset.mv = 'code';
+
+  // ── live tree refresh (beacon keep-SSE) ──────────────────────────────────
+  // The writer bumps /beacon/rev on every mutation; skip the initial snapshot
+  // ('old') events and refresh the tree on real changes, debounced.
+  try {
+    const es = new EventSource('/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev');
+    let beaconTimer = null;
+    es.addEventListener('upd', () => {
+      clearTimeout(beaconTimer);
+      beaconTimer = setTimeout(loadTree, 300);
+    });
+  } catch {}
+
   // ── boot ─────────────────────────────────────────────────────────────────
   loadTree().then(() => {
     const name = qs.get('name');
