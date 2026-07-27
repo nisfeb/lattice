@@ -48,6 +48,13 @@ a { color: var(--green); }
   border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
   color: inherit; }
 .bar input { min-width: 16rem; cursor: text; }
+/* flatten the native select to match the inputs/buttons: no OS widget
+   chrome, a muted chevron drawn in (works on both themes). */
+.bar select { appearance: none; -webkit-appearance: none; cursor: pointer;
+  padding-right: 27px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888888' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 9px center; }
+.bar select:hover { border-color: var(--green); }
 .bar button { cursor: pointer; }
 .bar button:hover, .bar .home:hover { border-color: var(--green); }
 .bar .grow { flex: 1; }

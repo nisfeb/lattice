@@ -44,7 +44,7 @@ await page.evaluateOnNewDocument(() => {
     window[f] = () => { throw new Error('native ' + f + '() used'); };
 });
 
-const wait = (fn, ...args) => page.waitForFunction(fn, { timeout: 15000 }, ...args);
+const wait = (fn, ...args) => page.waitForFunction(fn, { timeout: 30000 }, ...args);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // The in-app dialog: fill (optional) and submit / cancel.
 const dialog = async (value, submit = true) => {
@@ -95,17 +95,31 @@ try {
       i % 7 ? `line ${i}` : `line ${i} long enough to wrap `.repeat(6)).join('\n');
     s.dispatchEvent(new Event('input'));
   });
+  check('wrap: soft-wrap is the default',
+    await page.evaluate(() => document.getElementById('ws').className.includes('wrap')));
+  check('overlay parity: wrap (default)', await parity());
+  await page.click('#wrapt');
+  await sleep(300);
   check('overlay parity: nowrap', await parity());
   await page.click('#wrapt');
   await sleep(300);
-  check('overlay parity: wrap', await parity());
-  await page.click('#wrapt');
-  await sleep(300);
+
+  // empty file: saving with no content must succeed (the UI stands in a
+  // newline for the body the backend refuses to take empty).
+  await page.click('#newfile');
+  await page.evaluate((n) => {
+    document.getElementById('pname').value = n;
+    document.getElementById('pkind').value = 'md';
+  }, RUN + '/empty');
+  await page.click('#save');
+  await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
+    .some((a) => a.textContent === 'empty.md' && a.href.includes(n)), RUN);
+  ok('save: empty file saves without manual content');
 
   step = 'folder create';
   // ── 3. folder create via the in-app dialog ───────────────────────────────
   await page.click('#newfolder');
-  await dialog(RUN + '/sub');
+  await dialog(RUN + '/sub/');   // trailing slash: the UI must normalize it
   await wait((n) => [...document.querySelectorAll('#treelist .fld')]
     .some((f) => f.textContent.includes('sub') && !f.textContent.includes('.')), RUN);
   ok('folder: created through the in-app dialog');

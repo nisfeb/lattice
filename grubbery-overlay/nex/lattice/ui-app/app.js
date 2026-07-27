@@ -227,8 +227,10 @@
   }
 
   async function newFolder() {
-    const name = await ask('folder name (e.g. notes or notes/sub)',
+    const raw = await ask('folder name (e.g. notes or notes/sub)',
       folderCtx ? folderCtx + '/' : '', 'create');
+    if (!raw) return;
+    const name = raw.trim().replace(/^\/+|\/+$/g, '');
     if (!name) return;
     const r = await fetch(api + '/folder-new?name=' + encodeURIComponent(name), { method: 'POST' });
     if (!r.ok) { st('folder failed ' + r.status, false); return; }
@@ -244,7 +246,7 @@
     st('saving…');
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + pkind.value + (creating ? '&new=1' : '');
-    const r = await fetch(url, { method: 'POST', body: src.value });
+    const r = await fetch(url, { method: 'POST', body: src.value || '\n' });
     if (r.status === 409) { st('that page already exists', false); return; }
     if (!r.ok) { st('save failed ' + r.status, false); return; }
     current = name;
@@ -433,7 +435,7 @@
       let r = null;
       try {
         r = await fetch(api + '/page-save?name=' + encodeURIComponent(list[i].name) +
-          '&type=' + list[i].kind, { method: 'POST', body: await list[i].file.text() });
+          '&type=' + list[i].kind, { method: 'POST', body: (await list[i].file.text()) || '\n' });
       } catch {}
       if (!r || !r.ok) {
         fails++;
@@ -556,6 +558,9 @@
 
   // ── layout toggles + mobile tabs ─────────────────────────────────────────
   const ws = $('ws');
+  // soft-wrap is the default (long lines running off-screen are unusable on
+  // mobile); the toggle still turns it off, and a saved preference wins.
+  if (!('appWrap' in localStorage)) localStorage.appWrap = '1';
   const applyToggles = () => {
     ws.classList.toggle('nt', localStorage.appNT === '1');
     ws.classList.toggle('nc', localStorage.appNC === '1');
