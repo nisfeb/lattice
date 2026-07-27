@@ -51,6 +51,14 @@ a { color: var(--green); }
   font-size: .82rem; border: 1px solid var(--border); border-radius: 6px;
   background: var(--surface); color: inherit; cursor: pointer; }
 .tree .nf:hover { border-color: var(--green); }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
+.chips a { padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px;
+  font-size: .78rem; text-decoration: none; color: inherit; background: var(--surface);
+  cursor: pointer; }
+.chips a.on, .chips a:hover { border-color: var(--green); color: var(--green); }
+.ws.know .prev, .ws.know #sharesec, .ws.know #cmdrow, .ws.know #pkind { display: none; }
+.ws.know .edwrap { grid-column: 2 / 4; }
+#modet.on { border-color: var(--green); color: var(--green); }
 .uppanel { margin: 8px 0; padding: 9px 10px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--surface); font-size: .78rem;
   word-break: break-all; }

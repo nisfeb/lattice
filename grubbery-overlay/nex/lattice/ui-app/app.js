@@ -157,11 +157,14 @@
     else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
   }
 
-  $('save').onclick = save;
+  $('save').onclick = () => (mode === 'know' ? saveKnow() : save());
   $('newfile').onclick = () => newFile('');
   $('newfolder').onclick = newFolder;
   window.addEventListener('keydown', (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); save(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+      e.preventDefault();
+      if (mode === 'know') saveKnow(); else save();
+    }
   });
   src.addEventListener('keydown', (e) => {
     if (e.key === 'Tab') {
@@ -245,6 +248,7 @@
 
   // ── delete ───────────────────────────────────────────────────────────────
   $('del').onclick = async () => {
+    if (mode === 'know') { deleteKnow(); return; }
     if (!current) { st('nothing to delete', false); return; }
     if (!confirm('delete ' + current + '?')) return;
     const r = await fetch(api + '/page-del?name=' + encodeURIComponent(current), { method: 'POST' });
@@ -391,12 +395,159 @@
     });
   } catch {}
 
+  // ── knowledge mode ───────────────────────────────────────────────────────
+  // The same workspace, pointed at the private memory store: browse keys as a
+  // tree, filter by tag chips, read/edit/save entries, tag/untag, delete.
+  let mode = 'pages';
+  let knowKeys = [];        // [{key, tags, updated, bytes}] from know-list
+  let knowTag = '';         // active tag filter ('' = all)
+  const chipsEl = $('chips'), knowMeta = $('knowmeta'), ktagsEl = $('ktags');
+
+  async function loadKnow() {
+    const r = await fetch(api + '/know-list');
+    if (!r.ok) { st('know-list failed ' + r.status, false); return; }
+    knowKeys = (await r.json()).keys;
+    renderKnowChips();
+    renderKnowTree();
+  }
+
+  function renderKnowChips() {
+    const tags = [...new Set(knowKeys.flatMap((k) => k.tags))].sort();
+    chipsEl.textContent = '';
+    const mk = (label, val) => {
+      const a = document.createElement('a');
+      a.textContent = label;
+      a.className = (knowTag === val) ? 'on' : '';
+      a.onclick = () => { knowTag = val; renderKnowChips(); renderKnowTree(); };
+      chipsEl.appendChild(a);
+    };
+    mk('all', '');
+    for (const t of tags) mk('#' + t, t);
+  }
+
+  function renderKnowTree() {
+    const shown = knowTag ? knowKeys.filter((k) => k.tags.includes(knowTag)) : knowKeys;
+    const keys = shown.map((k) => k.key.replace(/^\//, '')).sort();
+    treeList.textContent = '';
+    const seen = new Set();
+    for (const key of keys) {
+      const parts = key.split('/');
+      for (let d = 0; d < parts.length - 1; d++) {
+        const dir = parts.slice(0, d + 1).join('/');
+        if (seen.has(dir)) continue;
+        seen.add(dir);
+        const row = document.createElement('div');
+        row.className = 'fld';
+        row.style.marginLeft = (d * 14) + 'px';
+        row.textContent = '\u{1F4C1} ' + parts[d];
+        treeList.appendChild(row);
+      }
+      const row = document.createElement('a');
+      row.className = 'pg' + (key === current ? ' cur' : '');
+      row.style.marginLeft = ((parts.length - 1) * 14) + 'px';
+      row.href = '#';
+      row.textContent = parts[parts.length - 1];
+      row.onclick = (e) => { e.preventDefault(); openKnow(key); };
+      treeList.appendChild(row);
+    }
+  }
+
+  async function openKnow(key) {
+    const r = await fetch(api + '/know-read?key=' + encodeURIComponent(key));
+    if (!r.ok) { st('open failed ' + r.status, false); return; }
+    const d = await r.json();
+    current = key;
+    pname.value = key;
+    pname.readOnly = true;
+    src.value = d.body;
+    render(); sync();
+    renderKnowTree();
+    renderKnowTags(d.tags || []);
+    $('kupd').textContent = 'updated ' + (d.updated || '');
+    st('memory · ' + (d.tags || []).map((t) => '#' + t).join(' '));
+  }
+
+  function renderKnowTags(tags) {
+    ktagsEl.textContent = '';
+    for (const t of tags.sort()) {
+      const a = document.createElement('a');
+      a.textContent = '#' + t + ' \u00d7';
+      a.onclick = async () => {
+        await fetch(api + '/know-untag?key=' + encodeURIComponent(current) +
+          '&tag=' + encodeURIComponent(t), { method: 'POST' });
+        openKnow(current);
+        loadKnow();
+      };
+      ktagsEl.appendChild(a);
+    }
+  }
+
+  $('ktagadd').onclick = async () => {
+    const t = $('ktag').value.trim();
+    if (!t || !current || mode !== 'know') return;
+    await fetch(api + '/know-tag?key=' + encodeURIComponent(current) +
+      '&tag=' + encodeURIComponent(t), { method: 'POST' });
+    $('ktag').value = '';
+    openKnow(current);
+    loadKnow();
+  };
+
+  async function saveKnow() {
+    const key = pname.value.trim().replace(/^\/+|\/+$/g, '');
+    if (!key) { st('key required', false); return; }
+    if (!src.value) { st('empty body', false); return; }
+    const r = await fetch(api + '/know-save?key=' + encodeURIComponent(key),
+      { method: 'POST', body: src.value });
+    if (!r.ok) { st('save failed ' + r.status, false); return; }
+    current = key;
+    pname.readOnly = true;
+    st('memory saved');
+    loadKnow();
+  }
+
+  async function deleteKnow() {
+    if (!current) return;
+    if (!confirm('delete memory ' + current + '? (soft-delete, restorable)')) return;
+    await fetch(api + '/know-delete?key=' + encodeURIComponent(current), { method: 'POST' });
+    current = null;
+    pname.value = '';
+    pname.readOnly = false;
+    src.value = '';
+    render();
+    st('memory deleted (restorable via know-restore)');
+    loadKnow();
+  }
+
+  function setMode(m) {
+    mode = m;
+    ws.classList.toggle('know', m === 'know');
+    $('modet').className = m === 'know' ? 'on' : '';
+    $('modet').innerHTML = m === 'know' ? '\u270e pages' : '\u25c6 knowledge';
+    chipsEl.hidden = m !== 'know';
+    knowMeta.hidden = m !== 'know';
+    $('treesec').textContent = m === 'know' ? 'memories' : 'files';
+    $('del').textContent = m === 'know' ? 'delete memory' : 'delete page';
+    current = null;
+    pname.value = '';
+    pname.readOnly = false;
+    pname.placeholder = m === 'know' ? 'memory key (e.g. user/preferences)' : 'page name (e.g. notes/todo)';
+    src.value = '';
+    render();
+    if (m === 'know') loadKnow(); else loadTree();
+    history.replaceState(null, '', '/apps/lattice/app' + (m === 'know' ? '?view=know' : ''));
+  }
+  $('modet').onclick = () => setMode(mode === 'know' ? 'pages' : 'know');
+
   // ── boot ─────────────────────────────────────────────────────────────────
-  loadTree().then(() => {
-    const name = qs.get('name');
-    const into = qs.get('into');
-    if (name) openPage(name);
-    else if (into) newFile(into);
-    else newFile('');
-  });
+  if (qs.get('view') === 'know') {
+    setMode('know');
+  } else {
+    loadTree().then(() => {
+      const name = qs.get('name');
+      const into = qs.get('into');
+      if (name) openPage(name);
+      else if (into) newFile(into);
+      else newFile('');
+    });
+  }
 })();

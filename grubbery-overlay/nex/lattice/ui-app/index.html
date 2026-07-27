@@ -11,6 +11,7 @@
 <div class="ws" id="ws">
   <header class="bar">
     <a class="home" href="/apps/lattice" title="lattice home">&#8962;</a>
+    <button id="modet" title="switch pages / knowledge">&#9670; knowledge</button>
     <input id="pname" placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
     <select id="pkind" title="page kind">
       <option value="md">md</option>
@@ -50,7 +51,8 @@
       <div class="upbar"><div id="upfill"></div></div>
       <div id="uperr" class="uperr"></div>
     </div>
-    <div class="sec">files</div>
+    <div id="chips" class="chips" hidden></div>
+    <div class="sec" id="treesec">files</div>
     <div id="treelist"></div>
   </aside>
   <div class="edwrap">
@@ -65,6 +67,13 @@
       <h3>command</h3>
       <div class="row"><input id="cmd" placeholder="command" autocomplete="off"><button id="csend">send</button></div>
     </div>
+    <div id="knowmeta" hidden>
+      <h3>tags</h3>
+      <div id="ktags" class="chips"></div>
+      <div class="row"><input id="ktag" placeholder="add tag" autocomplete="off"><button id="ktagadd">tag</button></div>
+      <div id="kupd" class="muted"></div>
+    </div>
+    <div id="sharesec">
     <h3>sharing</h3>
     <div class="share" id="share">
       <button data-m="private">private</button>
@@ -72,6 +81,7 @@
       <button data-m="clearweb">clearweb</button>
     </div>
     <div id="cwurl" class="muted"></div>
+    </div>
     <button id="del" class="del">delete page</button>
   </aside>
 </div>
