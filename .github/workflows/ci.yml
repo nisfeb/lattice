@@ -1,0 +1,39 @@
+name: CI
+
+# PR-gating checks that need no ship: the Rust FUSE client's unit tests and
+# static checks on the web client + scripts. Ship-dependent suites (Hoon unit
+# tests, the ui/api/mcp integration matrices) run in nightly.yml.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fs-client:
+    name: lattice-fs — cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: fuse build deps
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+      - name: cargo test
+        working-directory: lattice-fs-rs
+        run: cargo test --release
+
+  static:
+    name: web client + scripts — static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: JS parses (the served client and the ui matrix)
+        run: |
+          node --check grubbery-overlay/nex/lattice/ui-app/app.js
+          node --check scripts/ui-matrix.mjs
+      - name: shell scripts parse
+        run: |
+          for f in scripts/*.sh; do bash -n "$f"; done

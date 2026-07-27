@@ -3,11 +3,14 @@ name: nightly
 # Heavier suites that need a running ship. Not PR-gating: scheduled + manual.
 # Configure repo secrets to enable them (jobs no-op when unset):
 #   LATTICE_URL         e.g. https://test-ship.example.com
-#   LATTICE_CODE        the ship's +code
+#                       ⚠ point this at a HARNESS ship, never production —
+#                       the matrices write and delete scratch pages/memories.
+#   LATTICE_CODE        the ship's +code (e2e mints its own cookie from it)
 #   LATTICE_PEER_SHIP   (optional) e.g. ~tyr — for the cross-ship fetch test
-#   LATTICE_MCP_COOKIE  (optional) "urbauth-~ship=..." cookie for the %mcp agent,
-#                       used to run the nexus's Hoon unit tests (on the grubbery
-#                       desk, with the lattice overlay synced) via run-tests
+#   LATTICE_MCP_COOKIE  "urbauth-~ship=0v…" session cookie, used by the Hoon
+#                       test runner and the three integration matrices. A ship
+#                       restart expires it; re-set the secret when that happens.
+
 on:
   schedule:
     - cron: '0 7 * * *'   # 07:00 UTC daily
@@ -31,25 +34,98 @@ jobs:
         run: echo "LATTICE_URL secret not set — skipping e2e."
 
   nexus-tests:
-    name: nexus — Hoon unit tests via %mcp run-tests
+    name: nexus — Hoon unit tests via dojo -test
     runs-on: ubuntu-latest
     env:
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
       LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
     steps:
       - uses: actions/checkout@v4
-      - name: run-tests (assumes the ship runs grubbery with the lattice overlay synced)
+      # The in-ball run_tests tool 500s on current grubbery builds, so drive
+      # the dojo -test thread per test file instead: ok=%.y is the pass signal
+      # (per-test detail goes to the pier's terminal, which CI can't see).
+      # Assumes the ship runs grubbery with the lattice overlay synced.
+      - name: dojo -test per test file
         if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
         run: |
           set -uo pipefail
-          body='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run-tests","arguments":{"desk":"grubbery","path":"/tests/lib"}}}'
-          out=$(curl -s -X POST "$LATTICE_URL/mcp" \
-            -H "Cookie: $LATTICE_MCP_COOKIE" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json, text/event-stream" \
-            -d "$body")
-          echo "$out" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("result",{}).get("content",[{}])[0].get("text",""))' | tee results.txt
-          grep -q 'FAILED' results.txt && { echo "nexus tests FAILED"; exit 1; } || echo "nexus tests passed"
+          fail=0
+          for f in grubbery-overlay/tests/lib/*.hoon; do
+            name=$(basename "$f" .hoon)
+            body=$(python3 - "$name" <<'PY'
+          import json, sys
+          cmd = "-test /=grubbery=/tests/lib/" + sys.argv[1] + " ~"
+          print(json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"run_dojo","arguments":{"command":cmd}}}))
+          PY
+          )
+            out=$(curl -s -m 550 -X POST "$LATTICE_URL/grubbery/mcp" \
+              -H "Cookie: $LATTICE_MCP_COOKIE" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json, text/event-stream" \
+              -d "$body" \
+              | python3 -c 'import sys,json;print(json.load(sys.stdin).get("result",{}).get("content",[{}])[0].get("text",""))')
+            if printf '%s' "$out" | grep -q 'ok=%.y'; then
+              echo "  ok   - $name"
+            else
+              echo "  FAIL - $name: $(printf '%s' "$out" | head -c 200)"
+              fail=1
+            fi
+          done
+          exit "$fail"
       - name: skipped
         if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
-        run: echo "ship/MCP secrets not set — skipping nexus unit tests."
+        run: echo "ship/cookie secrets not set — skipping nexus unit tests."
+
+  api-matrix:
+    name: api — HTTP route matrix
+    runs-on: ubuntu-latest
+    env:
+      LATTICE_URL: ${{ secrets.LATTICE_URL }}
+      LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: api-matrix.sh
+        if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
+        run: |
+          printf '%s' "$LATTICE_MCP_COOKIE" > /tmp/ship-cookie
+          LATTICE_COOKIE=/tmp/ship-cookie ./scripts/api-matrix.sh
+      - name: skipped
+        if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
+        run: echo "ship/cookie secrets not set — skipping the api matrix."
+
+  mcp-matrix:
+    name: mcp — knowledge-tool matrix
+    runs-on: ubuntu-latest
+    env:
+      LATTICE_URL: ${{ secrets.LATTICE_URL }}
+      LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: mcp-matrix.sh
+        if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
+        run: |
+          printf '%s' "$LATTICE_MCP_COOKIE" > /tmp/ship-cookie
+          LATTICE_COOKIE=/tmp/ship-cookie ./scripts/mcp-matrix.sh
+      - name: skipped
+        if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
+        run: echo "ship/cookie secrets not set — skipping the mcp matrix."
+
+  ui-matrix:
+    name: ui — headless-browser matrix
+    runs-on: ubuntu-latest
+    env:
+      LATTICE_URL: ${{ secrets.LATTICE_URL }}
+      LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: ui-matrix.mjs
+        if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
+        run: |
+          npm i --no-save --no-audit --no-fund puppeteer-core
+          printf '%s' "$LATTICE_MCP_COOKIE" > /tmp/ship-cookie
+          LATTICE_COOKIE=/tmp/ship-cookie CHROME="$(command -v google-chrome)" \
+            node scripts/ui-matrix.mjs
+      - name: skipped
+        if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
+        run: echo "ship/cookie secrets not set — skipping the ui matrix."
