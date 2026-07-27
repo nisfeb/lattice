@@ -312,6 +312,13 @@ impl LickTransport {
 
     /// Build `[verb path query body]` and unpack the `[status body]` reply.
     fn exchange(&self, verb: &str, path: &str, query: &[(&str, &str)], body: &[u8]) -> Result<Vec<u8>, TErr> {
+        // The nexus splits the query on raw '&'/'=' (no url-decoding — page names
+        // are @ta and can't contain them). A value carrying either would silently
+        // retarget the op (`rm 'a&b.md'` becoming a delete of page `a`), so refuse
+        // it here; the server would reject the name anyway.
+        if query.iter().any(|(_, v)| v.contains('&') || v.contains('=')) {
+            return Err(TErr::new(400, "lick: '&'/'=' not allowed in a page name"));
+        }
         let qs = query
             .iter()
             .map(|(k, v)| format!("{k}={v}"))

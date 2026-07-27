@@ -187,7 +187,9 @@ impl Projection for LatticeProjection {
     }
 
     fn mv(&self, src: &str, dst: &str) -> Result<(), PErr> {
-        // no server rename: read source + create dst + delete src.
+        // no server rename: read source + save dst + delete src. create=false:
+        // page-save without new=1 creates OR overwrites, giving POSIX clobber
+        // semantics (create=true would 409 when the destination exists).
         let v = self.t.get_json("/apps/lattice/page-source", &[("name", &self.full(src))])?;
         let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("hoon").to_string();
         let body = v
@@ -196,7 +198,7 @@ impl Projection for LatticeProjection {
             .unwrap_or("")
             .as_bytes()
             .to_vec();
-        self.write(dst, &kind, &body, true)?;
+        self.write(dst, &kind, &body, false)?;
         self.delete(src)?;
         Ok(())
     }
