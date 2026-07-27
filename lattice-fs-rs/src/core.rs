@@ -19,7 +19,12 @@ use fuser::{
 
 use crate::projection::{Node, PErr, Projection};
 
-const TTL: Duration = Duration::from_secs(1); // kernel attr/entry cache
+const TTL: Duration = Duration::from_secs(1); // kernel entry/dir-attr cache
+// Files get a zero attr cache so the kernel re-stats before it computes an
+// O_APPEND offset from the size — otherwise an append within TTL of a prior write
+// seeks to a stale EOF and corrupts the file. Cheap: getattr is served from RAM
+// and the read hot-path uses the body cache, not stat.
+const FILE_TTL: Duration = Duration::from_secs(0);
 const TREE_TTL: Duration = Duration::from_secs(5); // our vtree refresh floor (watch() is a no-op; this is the only floor)
 const READ_CACHE_MAX: usize = 256 * 1024 * 1024; // body-cache ceiling; past it, degrade to lazy read
 
@@ -359,11 +364,13 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-fn dirty_size(s: &State, rel: &str) -> Option<u64> {
-    s.handles
-        .values()
-        .find(|h| h.dirty && h.rel == rel)
-        .map(|h| h.buf.len() as u64)
+// An open handle's buffer is the authoritative current content (loaded fresh via
+// body() at open, or truncated/written since) — report its length regardless of
+// the dirty flag. The vtree node's size can lag a write (the re-dump is async), so
+// an append that opened right after a write would otherwise seek to a stale offset
+// and corrupt the file.
+fn open_size(s: &State, rel: &str) -> Option<u64> {
+    s.handles.values().find(|h| h.rel == rel).map(|h| h.buf.len() as u64)
 }
 
 fn dir_attr(ino: u64, mtime: SystemTime, uid: u32, gid: u32) -> FileAttr {
@@ -504,13 +511,14 @@ impl Filesystem for GrubberyFs {
         let ino = ino_for(&mut s, &child);
         let ov = if e.kind == VKind::File {
             let (rel, _) = self.rel_kind_of(&s, &child);
-            dirty_size(&s, &rel)
+            open_size(&s, &rel)
         } else {
             None
         };
+        let ttl = if e.kind == VKind::File { &FILE_TTL } else { &TTL };
         drop(s);
         let attr = self.mk_attr(ino, &e, ov);
-        reply.entry(&TTL, &attr, Generation(0));
+        reply.entry(ttl, &attr, Generation(0));
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
@@ -544,13 +552,14 @@ impl Filesystem for GrubberyFs {
         };
         let ov = if e.kind == VKind::File {
             let (rel, _) = self.rel_kind_of(&s, &path);
-            dirty_size(&s, &rel)
+            open_size(&s, &rel)
         } else {
             None
         };
+        let ttl = if e.kind == VKind::File { &FILE_TTL } else { &TTL };
         drop(s);
         let attr = self.mk_attr(ino.0, &e, ov);
-        reply.attr(&TTL, &attr);
+        reply.attr(ttl, &attr);
     }
 
     #[allow(clippy::too_many_arguments)]
