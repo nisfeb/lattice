@@ -57,6 +57,7 @@
 
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
+  let dirty = false;       // unsaved local edits — auto-refresh never clobbers them
   let curFolder = null;    // selected folder path — right-pane ops target it
   let folderCtx = '';      // folder uploads land in (last into / open page's dir)
   let nodes = [];          // last page-tree
@@ -77,7 +78,7 @@
     hl.innerHTML = (g ? Prism.highlight(src.value, g, lang) : esc(src.value)) + '\n';
   };
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
-  src.addEventListener('input', () => { render(); sync(); });
+  src.addEventListener('input', () => { dirty = true; render(); sync(); });
   src.addEventListener('scroll', sync);
   pkind.addEventListener('change', render);
 
@@ -197,6 +198,7 @@
     pname.readOnly = true;
     if (LMAP[d.kind] || d.kind === 'text') pkind.value = d.kind === 'text' ? 'text' : d.kind;
     src.value = d.body;
+    dirty = false;
     render(); sync();
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
     renderTree();
@@ -216,6 +218,7 @@
     pname.readOnly = false;
     pname.value = into ? into + '/' : '';
     src.value = '';
+    dirty = false;
     render();
     history.replaceState(null, '', '/apps/lattice/app');
     renderTree();
@@ -251,6 +254,7 @@
     if (!r.ok) { st('save failed ' + r.status, false); return; }
     current = name;
     pname.readOnly = true;
+    dirty = false;
     st(CONTENT() ? 'saved' : 'compiling\u2026');
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
     loadTree();
@@ -586,17 +590,56 @@
     b.onclick = () => setMv(b.dataset.mv);
   setMv('code');
 
-  // ── live tree refresh (beacon keep-SSE) ──────────────────────────────────
-  // The writer bumps /beacon/rev on every mutation; skip the initial snapshot
-  // ('old') events and refresh the tree on real changes, debounced.
+  // ── live refresh (beacon keep-SSE + focus + idle poll) ───────────────────
+  // The writer bumps /beacon/rev on every mutation. On a real change refresh
+  // the tree AND the open page — so an edit made on another device shows up
+  // here without a reload. Local unsaved edits always win: `dirty` blocks the
+  // content swap until the page is saved or reopened.
+  async function refreshOpen() {
+    if (!current || curFolder || dirty || document.hidden) return;
+    const url = mode === 'know'
+      ? api + '/know-read?key=' + encodeURIComponent(current)
+      : api + '/page-source?name=' + encodeURIComponent(current);
+    let d = null;
+    try {
+      const r = await fetch(url);
+      if (!r.ok) return;
+      d = await r.json();
+    } catch { return; }
+    if (dirty || !current) return;      // started typing while we fetched
+    if (d.body === src.value) return;
+    const top = src.scrollTop;
+    src.value = d.body;
+    render();
+    src.scrollTop = top;
+    sync();
+    if (mode === 'know') {
+      renderKnowTags(d.tags || []);
+      st('memory updated from ship');
+    } else {
+      showShare(d.share || 'private');
+      refreshPreview();
+      st('updated from ship \u00b7 rev ' + d.rev);
+    }
+  }
+  const refreshAll = () => {
+    if (document.hidden) return;
+    if (mode === 'know') loadKnow(); else loadTree();
+    refreshOpen();
+  };
   try {
     const es = new EventSource('/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev');
     let beaconTimer = null;
     es.addEventListener('upd', () => {
       clearTimeout(beaconTimer);
-      beaconTimer = setTimeout(loadTree, 300);
+      beaconTimer = setTimeout(refreshAll, 300);
     });
   } catch {}
+  // coming back to the tab/window is the moment staleness shows — catch it
+  // directly, plus a gentle 30s idle poll in case the SSE stream died.
+  window.addEventListener('focus', refreshAll);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(); });
+  setInterval(refreshOpen, 30000);
 
   // ── knowledge mode ───────────────────────────────────────────────────────
   // The same workspace, pointed at the private memory store: browse keys as a
@@ -694,6 +737,7 @@
     pname.value = key;
     pname.readOnly = true;
     src.value = d.body;
+    dirty = false;
     render(); sync();
     renderKnowTree();
     renderKnowTags(d.tags || []);
@@ -736,6 +780,7 @@
     if (!r.ok) { st('save failed ' + r.status, false); return; }
     current = key;
     pname.readOnly = true;
+    dirty = false;
     st('memory saved');
     loadKnow();
   }

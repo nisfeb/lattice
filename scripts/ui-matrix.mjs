@@ -81,6 +81,33 @@ try {
   check('open: body round-trips',
     await page.evaluate(() => document.getElementById('src').value) === '# ui matrix probe');
 
+  // live refresh: an edit made elsewhere (here: straight through the API,
+  // as if from another device) must land in the open editor without a
+  // reload — the beacon drives it; local edits would have blocked it.
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) + '&type=md',
+      { method: 'POST', body: '# updated elsewhere' });
+  }, RUN + '/hello');
+  await wait(() => document.getElementById('src').value === '# updated elsewhere');
+  ok('live: open page updates when edited elsewhere');
+
+  // ...but never over local unsaved edits: type locally, change remotely,
+  // and the local text must survive.
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = '# my unsaved local edit';
+    s.dispatchEvent(new Event('input'));          // marks dirty
+  });
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) + '&type=md',
+      { method: 'POST', body: '# remote change that must NOT clobber' });
+  }, RUN + '/hello');
+  await sleep(3000);                              // beacon + debounce window
+  check('live: unsaved local edits are never clobbered',
+    await page.evaluate(() => document.getElementById('src').value) === '# my unsaved local edit');
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2' });
+  await wait(() => document.getElementById('src').value.length > 0);
+
   // overlay geometry parity: the highlight layer must occupy exactly the
   // textarea's box in both wrap modes, or the caret drifts off its line on
   // long pages (bites wherever scrollbars consume layout, e.g. Firefox).
