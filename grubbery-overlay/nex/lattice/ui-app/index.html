@@ -37,6 +37,23 @@
     <pre id="hl" aria-hidden="true"></pre>
     <textarea id="src" spellcheck="false" placeholder="open a page from the tree, or name a new one and start typing"></textarea>
   </div>
+  <iframe class="prev" id="prev" title="live preview"></iframe>
+  <aside class="ctl">
+    <h3>status</h3>
+    <div id="cerr" class="ok">&nbsp;</div>
+    <div id="cmdrow">
+      <h3>command</h3>
+      <div class="row"><input id="cmd" placeholder="command" autocomplete="off"><button id="csend">send</button></div>
+    </div>
+    <h3>sharing</h3>
+    <div class="share" id="share">
+      <button data-m="private">private</button>
+      <button data-m="public">public</button>
+      <button data-m="clearweb">clearweb</button>
+    </div>
+    <div id="cwurl" class="muted"></div>
+    <button id="del" class="del">delete page</button>
+  </aside>
 </div>
 <script src="/apps/lattice/prism.js"></script>
 <script src="/apps/lattice/app/app.js"></script>

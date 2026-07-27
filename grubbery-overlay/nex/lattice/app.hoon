@@ -3005,6 +3005,7 @@
   =/  pdir=path  (weld app-base (weld /page pax))
   ;<  cn=view:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
   ?.  ?=([%file *] cn)  (pure:m [%| 404 'no such page'])
+  ;<  mode=share-mode:le  bind:m  (read-share pdir)
   =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cn)))) '')
   =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
   =/  gen=?  =((make-folder-index pax) src)
@@ -3017,6 +3018,7 @@
       ['size' (numb:enjs:format (met 3 body))]
       ['rev' (numb:enjs:format ud.cass.cn)]
       ['mtime' s+(scot %da da.cass.cn)]
+      ['share' s+mode]
   ==
 ::  +fs-err-text: a page's latest evaluator error ('' = clean or no such page).
 ++  fs-err-text
