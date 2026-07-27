@@ -1,23 +1,47 @@
 # lattice
 
-A small, fast **gemtext browser and publisher for [Urbit](https://urbit.org)**.
-Think Gemini, but the pages live on the Urbit network: every page is addressed
-as `urb://~ship/path` and travels peer-to-peer between ships — no DNS, no web
-server, no host in the middle. Native on Android, Linux, macOS, and Windows.
+**A personal knowledge platform on your [Urbit](https://urbit.org) ship.**
+Pages in markdown, gemtext, or HTML — or programmable pages in Hoon that
+compute their own content. A private, tagged knowledge store that you and your
+AI agents share. Full-text search across all of it. And publishing that is
+peer-to-peer: every published page is addressed as `urb://~ship/path` and
+travels ship-to-ship over remote scry — no DNS, no web server, no host in the
+middle.
 
-lattice has two parts:
+One store, every surface:
 
-- **ship side** — a `lattice` **nexus** running inside the
-  [**grubbery**](https://github.com/gwbtc/grubbery) framework. It stores your
-  pages as *published grubs* in grubbery's vault, serves them to other ships over
-  remote scry, and follows remote files so you get notified when they change.
-- **`app/`** — a Kotlin Multiplatform (Compose) browser/editor that talks to
-  your ship over its local HTTP API.
+- **native app** ([`app/`](app/)) — a Kotlin Multiplatform (Compose)
+  browser/editor for Android, Linux, macOS, and Windows.
+- **web** — a reader, a workspace editor (live preview, drag-and-drop upload of
+  files or whole directories), a knowledge browser at `/know`, and an
+  installable PWA — all served straight from the ship.
+- **filesystem** ([`lattice-fs-rs/`](lattice-fs-rs/)) — a Rust FUSE client that
+  mounts your page tree as local files: `rg` everything at RAM speed, edit in
+  your own editor, and mount any other grubbery app tree too.
+- **AI agents** — eleven MCP knowledge tools compiled into the ship itself and
+  served at `/grubbery/mcp`. Your assistant's memory lives on your ship,
+  not in someone's cloud.
 
-You run the grubbery nexus on your ship and point the app at it.
+The ship side is a `lattice` **nexus** running inside the
+[**grubbery**](https://github.com/gwbtc/grubbery) framework: pages and
+knowledge live as grubs in grubbery's vault, published pages are served to
+other ships over remote scry, and followed remote files push you updates.
 
 ## What it does
 
+- **Pages, not just gemtext** — write in markdown, gemtext, HTML, plain text,
+  JS, or CSS; or write a page in Hoon and it *computes* its content
+  (programmable pages with commands, state, and dependencies on other pages).
+- **Knowledge store** — a private, tagged note store with per-entry history
+  and a trash you can restore from. Browse it at `/apps/lattice/know`
+  (folders, tag filters, live updates); drive it from the app, HTTP, MCP, or
+  the FUSE mount.
+- **Search** — an obelisk-backed catalog gives full-text search across your
+  pages and the ships you follow, from the app or the web omnibar.
+- **A real filesystem** — `lattice-fs` mounts your pages as files over HTTP or
+  grubbery's local IPC. A cold mount warms in one round-trip, so `grep`/`cat`
+  run from RAM; editor saves round-trip safely (backup/swap files never touch
+  the ship).
 - **Browse `urb://`** — fetch and read gemtext published by any ship,
   peer-to-peer over Urbit's remote scry. Browser-style tabs (`Ctrl+T`),
   bookmarks, and history.
@@ -162,17 +186,20 @@ walks you through booting a ship.
 ## Connect an AI agent (MCP)
 
 lattice keeps a **private knowledge store** that AI agents can read and write
-over [MCP](https://modelcontextprotocol.io) — ten tools: `lattice-save`,
+over [MCP](https://modelcontextprotocol.io) — eleven tools: `lattice-save`,
 `lattice-read`, `lattice-list`, `lattice-search`, `lattice-explore`,
-`lattice-delete`, `lattice-restore`, `lattice-tags`, `lattice-tag`,
-`lattice-untag`. Agents can tag items and discover them by tag or substring
+`lattice-delete`, `lattice-restore`, `lattice-move`, `lattice-tags`,
+`lattice-tag`, `lattice-untag`. Agents can tag items and discover them by tag or substring
 (`lattice-explore`), the same faceted discovery the app's Knowledge **Explore**
 mode offers. Anything an agent saves or tags shows up in the app's Knowledge
 screen, and vice-versa. Full details: [docs/agent-knowledge.md](docs/agent-knowledge.md).
 
-You need the [`%mcp-server`](https://github.com/gwbtc/urbit-mcp) agent on the
-ship, and the ship reachable over `https` (put it behind a reverse proxy with
-TLS; don't expose the raw `--http-port`).
+The tools are **compiled into the ship itself** — they ship with the lattice
+desk (`lib/mcp/lattice-*.hoon`), execute in-ship against the vault directly,
+and are served by grubbery's own MCP endpoint at `<ship>/grubbery/mcp`.
+Nothing to install or register, and they survive restarts and redeploys. Make
+the ship reachable over `https` (a reverse proxy with TLS; don't expose the
+raw `--http-port`).
 
 **Authenticating — the part that trips people up.** Two different things, don't
 mix them:
@@ -257,11 +284,14 @@ installers (`.deb`/`.dmg`/`.msi`/`.AppImage`) and — when signing secrets are s
 ## Layout
 
 ```
-grubbery-overlay/  the lattice nexus — lattice's ship side (nex/ lib/ mar/ tests/)
+grubbery-overlay/  the lattice nexus — ship side (nex/ lib/ mar/ tests/),
+                   including the in-ship MCP knowledge tools (lib/mcp/)
 app/               Kotlin Multiplatform Compose app (Android + desktop)
-web/               marketing pages (HTML + a gemtext page, fittingly)
-scripts/           build + overlay-sync helpers
-docs/              deeper design docs (migration/cutover, catalog, MCP knowledge)
+lattice-fs-rs/     Rust FUSE client — mount the page tree as a filesystem
+web/               the website (self-contained HTML + a gemtext edition,
+                   organized to be uploaded to and hosted on lattice itself)
+scripts/           build + overlay-sync helpers, fs regression matrix
+docs/              agent guide, grubbery ops, catalog, cutover runbooks
 ```
 
 ## License
