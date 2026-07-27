@@ -226,6 +226,12 @@ impl Projection for GenericProjection {
     }
 
     fn delete(&self, rel: &str) -> Result<(), PErr> {
+        // Folders need delete_folder — delete_grub silently no-ops on them (it
+        // even claims "Deleted"). Only empty dirs get here: the core's rmdir
+        // returns ENOTEMPTY for populated ones.
+        if self.nodes()?.iter().any(|(r, is_dir)| *is_dir && r == rel) {
+            return self.mcp("delete_folder", json!({"path": format!("/{}/{}", self.root, rel)}));
+        }
         let (path, name) = self.dir_and_name(rel);
         self.mcp("delete_grub", json!({"path": path, "name": name}))
     }
