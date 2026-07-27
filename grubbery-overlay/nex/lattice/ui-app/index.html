@@ -3,26 +3,42 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>lattice app</title>
+<title>lattice</title>
 <link rel="stylesheet" href="/apps/lattice/app/app.css">
 <link rel="icon" href="/apps/lattice/icon.svg" type="image/svg+xml">
 </head>
 <body>
-<header class="bar">
-  <a class="home" href="/apps/lattice" title="lattice home">&#8962;</a>
-  <strong>lattice app</strong>
-  <span id="status" class="muted">loading…</span>
-</header>
-<main id="main">
-  <h1>Hello from the lattice-hosted UI</h1>
-  <p class="muted">This page is a grub. Its HTML, JS, and CSS live as real files
-  in the repo, are laid into the ball by on-load, and are served straight from
-  the ship — no cords involved.</p>
-  <section id="tree-section">
-    <h2>your page tree</h2>
-    <ul id="tree" class="qlist"></ul>
-  </section>
-</main>
+<div class="ws" id="ws">
+  <header class="bar">
+    <a class="home" href="/apps/lattice" title="lattice home">&#8962;</a>
+    <input id="pname" placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
+    <select id="pkind" title="page kind">
+      <option value="md">md</option>
+      <option value="gmi">gmi</option>
+      <option value="html">html</option>
+      <option value="text">txt</option>
+      <option value="js">js</option>
+      <option value="css">css</option>
+      <option value="hoon">hoon</option>
+    </select>
+    <button id="save">save</button>
+    <span id="status" class="muted"></span>
+    <span class="grow"></span>
+  </header>
+  <aside class="tree" id="tree">
+    <div class="newbtns">
+      <button class="nf" id="newfile">+ file</button>
+      <button class="nf" id="newfolder">+ folder</button>
+    </div>
+    <div class="sec">files</div>
+    <div id="treelist"></div>
+  </aside>
+  <div class="edwrap">
+    <pre id="hl" aria-hidden="true"></pre>
+    <textarea id="src" spellcheck="false" placeholder="open a page from the tree, or name a new one and start typing"></textarea>
+  </div>
+</div>
+<script src="/apps/lattice/prism.js"></script>
 <script src="/apps/lattice/app/app.js"></script>
 </body>
 </html>

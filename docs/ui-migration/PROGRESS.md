@@ -2,7 +2,9 @@
 
 - [x] M1 Scaffold — ui-app/ files, on-load rows, /apps/lattice/app serves;
       hello-world fetches page-tree and renders the tree count + list.
-- [ ] M2 Editor core
+- [x] M2 Editor core — tree pane (collapse in localStorage, per-folder + buttons,
+      into-context), Prism-overlaid editor, open via page-source, save with kind
+      (create &new=1 / overwrite), Cmd+S, Tab-insert, URL state (?name / ?into).
 - [ ] M3 Preview / errors / command / share / delete
 - [ ] M4 Upload
 - [ ] M5 Mobile + toggles + beacon refresh
