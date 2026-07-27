@@ -25,7 +25,8 @@ const TTL: Duration = Duration::from_secs(1); // kernel entry/dir-attr cache
 // seeks to a stale EOF and corrupts the file. Cheap: getattr is served from RAM
 // and the read hot-path uses the body cache, not stat.
 const FILE_TTL: Duration = Duration::from_secs(0);
-const TREE_TTL: Duration = Duration::from_secs(5); // our vtree refresh floor (watch() is a no-op; this is the only floor)
+const TREE_TTL: Duration = Duration::from_secs(5);
+const RECENT_TTL: Duration = Duration::from_secs(10); // grace window for the recent-mutation ledger // our vtree refresh floor (watch() is a no-op; this is the only floor)
 const READ_CACHE_MAX: usize = 256 * 1024 * 1024; // body-cache ceiling; past it, degrade to lazy read
 
 #[derive(Clone, Copy, PartialEq)]
@@ -64,6 +65,12 @@ struct State {
     next_fh: u64,
     pending_trunc: HashMap<u64, u64>, // ino -> size (handle-less truncate deferred to open)
     scratch: HashMap<String, Vec<u8>>, // vpath -> bytes for ephemeral editor temp files
+    // vpath -> (when, alive). The ship acks a save before a BRAND-NEW page is
+    // visible to page-dump, so a snapshot taken in that window lacks it (and,
+    // symmetrically, may still carry a just-deleted one). Swaps consult this
+    // ledger: within RECENT_TTL a snapshot can't evict a created entry or
+    // resurrect a deleted one. Entries age out; steady state is empty.
+    recent: HashMap<String, (Instant, bool)>,
 }
 
 pub struct GrubberyFs {
@@ -94,6 +101,7 @@ impl GrubberyFs {
             next_fh: 1,
             pending_trunc: HashMap::new(),
             scratch: HashMap::new(),
+            recent: HashMap::new(),
         }));
         // watch thread: invalidate on external change. Best-effort (Eyre is a
         // no-op) — the 5s TTL poll is the guaranteed freshness floor.
@@ -123,11 +131,7 @@ impl GrubberyFs {
                 let (cache, bytes) = cap_bodies(bodies, READ_CACHE_MAX);
                 let mut s = west.lock().unwrap();
                 if s.write_gen == start_gen {
-                    s.vt = vt;
-                    s.vt_ts = Some(Instant::now());
-                    s.read_cache = cache;
-                    s.read_cache_bytes = bytes;
-                    s.warm = true;
+                    apply_swap(&mut s, vt, cache, bytes);
                 }
             }
         });
@@ -175,10 +179,7 @@ impl GrubberyFs {
             s.refresh_pending = false;
             if let Ok((vt, cache, bytes)) = built {
                 if s.write_gen == start_gen {
-                    s.vt = vt;
-                    s.vt_ts = Some(Instant::now());
-                    s.read_cache = cache;
-                    s.read_cache_bytes = bytes;
+                    apply_swap(&mut s, vt, cache, bytes);
                 }
             }
         });
@@ -194,11 +195,7 @@ impl GrubberyFs {
             let vt = build_vt(&nodes, |k| self.proj.ext_for_kind(k));
             let (cache, bytes) = cap_bodies(bodies, READ_CACHE_MAX);
             let mut s = self.st.lock().unwrap();
-            s.vt = vt;
-            s.vt_ts = Some(Instant::now());
-            s.read_cache = cache;
-            s.read_cache_bytes = bytes;
-            s.warm = true;
+            apply_swap(&mut s, vt, cache, bytes);
         }
     }
 
@@ -321,8 +318,14 @@ impl GrubberyFs {
         }
         s.vt_ts = None;
         s.write_gen += 1; // supersede any in-flight dump swap (stale-swap guard)
-        if let Some(old) = s.read_cache.remove(&rel) {
-            s.read_cache_bytes = s.read_cache_bytes.saturating_sub(rel.len() + old.len());
+        // The buffer IS the page's content now — install it rather than evicting,
+        // so a read in the ship's brief new-page-visibility window never sees
+        // empty/stale bytes (and post-write reads skip a round-trip entirely).
+        match s.read_cache.insert(rel.clone(), buf.clone()) {
+            Some(old) => {
+                s.read_cache_bytes = s.read_cache_bytes.saturating_sub(old.len()) + buf.len();
+            }
+            None => s.read_cache_bytes += rel.len() + buf.len(),
         }
         Ok(())
     }
@@ -460,6 +463,49 @@ fn cap_bodies(bodies: HashMap<String, Vec<u8>>, limit: usize) -> (HashMap<String
         out.insert(k, b);
     }
     (out, bytes)
+}
+
+/// Install a freshly-dumped snapshot — as a MERGE, not a blind replace. The
+/// recent-mutation ledger overrides the snapshot both ways: a just-created
+/// entry the (lagging) snapshot lacks is carried forward from the old vt (with
+/// its cached body), and a just-deleted one it still carries is stripped.
+fn apply_swap(
+    s: &mut State,
+    mut vt: HashMap<String, VEntry>,
+    mut cache: HashMap<String, Vec<u8>>,
+    mut bytes: usize,
+) {
+    s.recent.retain(|_, (t, _)| t.elapsed() < RECENT_TTL);
+    for (path, (_, alive)) in &s.recent {
+        if *alive {
+            if !vt.contains_key(path) {
+                if let Some(e) = s.vt.get(path) {
+                    vt.insert(path.clone(), e.clone());
+                }
+            }
+            // carry the cached body when the snapshot has none for this rel —
+            // the old cache holds the exact bytes of the recent write.
+            if let Some(rel) = vt.get(path).and_then(|e| e.node.as_ref()).map(|n| n.rel.clone()) {
+                if !cache.contains_key(&rel) {
+                    if let Some(b) = s.read_cache.get(&rel) {
+                        bytes += rel.len() + b.len();
+                        cache.insert(rel, b.clone());
+                    }
+                }
+            }
+        } else if let Some(gone) = vt.remove(path) {
+            if let Some(n) = gone.node {
+                if let Some(b) = cache.remove(&n.rel) {
+                    bytes = bytes.saturating_sub(n.rel.len() + b.len());
+                }
+            }
+        }
+    }
+    s.vt = vt;
+    s.vt_ts = Some(Instant::now());
+    s.read_cache = cache;
+    s.read_cache_bytes = bytes;
+    s.warm = true;
 }
 
 fn build_vt(nodes: &[Node], ext_for: impl Fn(&str) -> &'static str) -> HashMap<String, VEntry> {
@@ -952,6 +998,7 @@ impl Filesystem for GrubberyFs {
                 scratch: false,
             },
         );
+        s.recent.insert(path.clone(), (Instant::now(), true));
         // optimistic vt entry so getattr/lookup work before the flush
         let node = Node {
             rel,
@@ -991,6 +1038,7 @@ impl Filesystem for GrubberyFs {
             Ok(()) => {
                 let mut s = self.st.lock().unwrap();
                 let ino = ino_for(&mut s, &path);
+                s.recent.insert(path.clone(), (Instant::now(), true));
                 s.vt.insert(path, VEntry { kind: VKind::Dir, node: None });
                 s.vt_ts = None;
                 s.write_gen += 1;
@@ -1029,6 +1077,7 @@ impl Filesystem for GrubberyFs {
         match self.proj.delete(&rel) {
             Ok(()) => {
                 let mut s = self.st.lock().unwrap();
+                s.recent.insert(path.clone(), (Instant::now(), false));
                 s.vt.remove(&path);
                 s.vt_ts = None;
                 s.write_gen += 1;
@@ -1068,6 +1117,7 @@ impl Filesystem for GrubberyFs {
         match self.proj.delete(&rel) {
             Ok(()) => {
                 let mut s = self.st.lock().unwrap();
+                s.recent.insert(path.clone(), (Instant::now(), false));
                 s.vt.remove(&path);
                 s.vt_ts = None;
                 s.write_gen += 1;
@@ -1152,6 +1202,7 @@ impl Filesystem for GrubberyFs {
                         s.vt_ts = None;
                     }
                     if src_scratch && !dst_scratch {
+                        s.recent.insert(dst_path.clone(), (Instant::now(), true));
                         s.vt_ts = None;
                         s.write_gen += 1;
                     }
@@ -1165,6 +1216,7 @@ impl Filesystem for GrubberyFs {
         match self.proj.mv(&src_rel, &dst_rel) {
             Ok(()) => {
                 let mut s = self.st.lock().unwrap();
+                s.recent.insert(src_path.clone(), (Instant::now(), false));
                 s.vt.remove(&src_path);
                 s.vt_ts = None;
                 s.write_gen += 1;
