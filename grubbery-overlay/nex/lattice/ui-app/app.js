@@ -632,6 +632,16 @@
     const shown = knowTag ? knowKeys.filter((k) => k.tags.includes(knowTag)) : knowKeys;
     const keys = shown.map((k) => k.key.replace(/^\//, '')).sort();
     treeList.textContent = '';
+    if (!keys.length) {
+      const empty = document.createElement('div');
+      empty.className = 'muted';
+      empty.style.padding = '4px 8px';
+      empty.textContent = knowTag
+        ? 'no memories tagged #' + knowTag
+        : 'no memories yet — name one above and save';
+      treeList.appendChild(empty);
+      return;
+    }
     const coll = kColl();
     const folded = (path) => coll.some((c) => path !== c && path.startsWith(c + '/'));
     const seen = new Set();
