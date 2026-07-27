@@ -3128,11 +3128,13 @@
   ;<  es=(map path know-entry:lk)  bind:m  read-know-map
   ?~  rest
     =/  tsel=(unit @t)  (~(get by args) 'tag')
-    (send-view eyre-id (render-page "know" (keep-url "beacon/rev") (know-index-html:lkv es tsel)))
-  =/  e=(unit know-entry:lk)  (~(get by es) `path`rest)
-  ?~  e
+    ?^  tsel
+      (send-view eyre-id (render-page "know" (keep-url "beacon/rev") (know-flat-html:lkv es u.tsel)))
+    (send-view eyre-id (render-page "know" (keep-url "beacon/rev") (know-dir-html:lkv es ~ ~ (tag-chips:lkv es ''))))
+  =/  page=(unit tape)  (know-node-html:lkv es `path`rest)
+  ?~  page
     (send-view eyre-id (render-page "know" "" "<p class=\"err\">no such entry</p>"))
-  (send-view eyre-id (render-page (weld "know" (spud rest)) (keep-url "beacon/rev") (know-entry-html:lkv rest u.e)))
+  (send-view eyre-id (render-page (weld "know" (spud rest)) (keep-url "beacon/rev") u.page))
 ::  ── JSON renderers (ported from /lib/lattice; client contract, byte-for-byte) ──
 ::
 ++  tags-json
