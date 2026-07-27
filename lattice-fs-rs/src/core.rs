@@ -104,26 +104,31 @@ impl GrubberyFs {
                 if let Ok(mut s) = wst.lock() {
                     s.vt_ts = None;
                     s.read_cache.clear();
+                    s.read_cache_bytes = 0; // else the stale total blocks re-caching
                 }
             };
             wproj.watch(&on_change);
         });
         // warm thread: one page-dump seeds the whole vtree + every body up front,
-        // so grep/cat run from RAM. Async — new() returns immediately. No writer
-        // exists yet at mount, so this swap needs no generation guard. If a FUSE op
+        // so grep/cat run from RAM. Async — new() returns immediately. If a FUSE op
         // beats it, ensure_fresh() cold-blocks on the same one dump (not N reads).
+        // Generation-guarded: if that cold path won AND a write already landed, this
+        // (older) snapshot must not swap in and resurrect the pre-write body.
         let west = st.clone();
         let wproj2 = proj.clone();
         std::thread::spawn(move || {
+            let start_gen = west.lock().unwrap().write_gen;
             if let Ok((nodes, bodies)) = wproj2.dump() {
                 let vt = build_vt(&nodes, |k| wproj2.ext_for_kind(k));
                 let (cache, bytes) = cap_bodies(bodies, READ_CACHE_MAX);
                 let mut s = west.lock().unwrap();
-                s.vt = vt;
-                s.vt_ts = Some(Instant::now());
-                s.read_cache = cache;
-                s.read_cache_bytes = bytes;
-                s.warm = true;
+                if s.write_gen == start_gen {
+                    s.vt = vt;
+                    s.vt_ts = Some(Instant::now());
+                    s.read_cache = cache;
+                    s.read_cache_bytes = bytes;
+                    s.warm = true;
+                }
             }
         });
         GrubberyFs {
@@ -1066,7 +1071,7 @@ impl Filesystem for GrubberyFs {
         let newname = newname.to_string_lossy().to_string();
         let src_scratch = is_scratch(&name);
         let dst_scratch = is_scratch(&newname);
-        let (src_path, dst_path, src_rel, dst_rel, dst_kind) = {
+        let (src_path, dst_path, src_rel, dst_rel, dst_kind, dst_exists) = {
             let s = self.st.lock().unwrap();
             let pp = match s.to_path.get(&parent.0) {
                 Some(p) => p.clone(),
@@ -1086,7 +1091,8 @@ impl Filesystem for GrubberyFs {
             let dst_path = join(&npp, &newname);
             let (src_rel, _) = self.rel_kind_of(&s, &src_path);
             let (dst_rel, dst_kind) = self.rel_kind_of(&s, &dst_path);
-            (src_path, dst_path, src_rel, dst_rel, dst_kind)
+            let dst_exists = s.vt.contains_key(&dst_path);
+            (src_path, dst_path, src_rel, dst_rel, dst_kind, dst_exists)
         };
         // Any rename touching a scratch name must never delete/clobber the page it
         // shadows. Handle the editor patterns explicitly:
@@ -1098,8 +1104,11 @@ impl Filesystem for GrubberyFs {
                 Ok(())
             } else if src_scratch {
                 // atomic save: temp -> real page. Promote the scratch bytes.
+                // create only when the destination doesn't exist — an atomic save
+                // ONTO an existing page is an overwrite (create=true would 409 on
+                // lattice / EROFS on generic, failing every VS Code-style save).
                 let v = self.st.lock().unwrap().scratch.remove(&src_path).unwrap_or_default();
-                self.proj.write(&dst_rel, &dst_kind, &v, true)
+                self.proj.write(&dst_rel, &dst_kind, &v, !dst_exists)
             } else {
                 // backup-by-rename: page -> temp name. Snapshot the page's current
                 // body into the scratch map and KEEP the page (the editor rewrites

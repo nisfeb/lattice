@@ -80,8 +80,10 @@ set a cookie and don't set `LATTICE_SOCK`.
   degrades to lazy read, never OOMs.
 - **Editor-safe.** Backup/swap/atomic-save temps (`foo.md~`, `.foo.md.swp`) live
   only in the FUSE layer and never touch the ship.
-- **Live updates.** Over lick, external edits push in via a beacon (no reload);
-  Eyre falls back to a 5 s freshness poll.
+- **Fresh within 5 s.** External edits (browser, another client) appear on the
+  next filesystem access after a 5 s TTL poll — both transports. (The change
+  beacon that live-reloads the *web reader* doesn't drive the mount yet; a
+  lick push stream is the planned upgrade.)
 - **Lattice mode is fully read-write.** `ls`, `cat`, `rg`, `nvim`+`:w`, create,
   `mkdir`, `mv`, `rm`. New files' kind comes from the extension (`.md`→md,
   `.hoon`→hoon, …); generated `%index` pages are read-only; per-page evaluator
