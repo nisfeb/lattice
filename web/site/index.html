@@ -3,15 +3,15 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>lattice — your knowledge, on your ship</title>
+    <title>lattice: your knowledge, on your ship</title>
     <meta name="description" content="A personal knowledge platform on your Urbit ship: pages in markdown, gemtext, HTML or programmable Hoon; a private tagged memory you share with your AI; full-text search; peer-to-peer publishing. Web, filesystem, MCP.">
-    <meta property="og:title" content="lattice — your knowledge, on your ship">
+    <meta property="og:title" content="lattice: your knowledge, on your ship">
     <meta property="og:description" content="Pages, private knowledge, and AI memory on your Urbit ship. Search everything, publish peer-to-peer, reach it from the web, your filesystem, or an agent.">
     <meta name="theme-color" content="#4a7c59">
     <link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="%234a7c59"/><g stroke="%23e9f1ec" stroke-width="3" stroke-linecap="round" fill="none"><path d="M8 24 24 8M8 40 40 8M8 56 56 8M24 56 56 24M40 56 56 40"/><path d="M40 8 56 24M24 8 56 40M8 8 56 56M8 24 40 56M8 40 24 56"/></g></svg>'>
     <style>
         :root {
-            /* Flat green identity — same green + mist as the app tile / PWA icon. */
+            /* Flat green identity. Same green + mist as the app tile / PWA icon. */
             --green:      #4a7c59;
             --green-deep: #3a6347;
             --mist:       #e9f1ec;
@@ -195,10 +195,10 @@
         <h1>your knowledge, <br>on your <span class="accent">ship</span>.</h1>
 
         <p class="lede">
-            Pages in markdown, gemtext, or HTML — or Hoon pages that compute their own
+            Pages in markdown, gemtext, or HTML, or Hoon pages that compute their own
             content. A private, tagged memory you share with your AI. Search across all of
             it, and publish any of it peer-to-peer as
-            <span class="url">urb://~ship/path</span> — no DNS, no web server, no host in
+            <span class="url">urb://~ship/path</span>. No DNS, no web server, no host in
             the middle. <a href="https://urbit.org/overview/running-urbit">Bring your own ship</a>.
         </p>
 
@@ -221,7 +221,7 @@
         <h2>How it works</h2>
         <p>
             One store on your ship, and every surface you would want on top of it.
-            Publish a page and anyone on the network can read it — instantly, straight
+            Publish a page and anyone on the network can read it instantly, straight
             from your ship. Save a memory and your assistant recalls it next session.
         </p>
         <div class="steps">
@@ -233,12 +233,12 @@
             <div class="step">
                 <div class="n">the surfaces</div>
                 <div class="t">browse &amp; edit anywhere</div>
-                <div class="d">A web workspace with live preview and drag-and-drop upload, an installable PWA — and a FUSE client that mounts your pages as plain files. lattice hosts its own client; there is nothing to install.</div>
+                <div class="d">A web workspace with live preview and drag-and-drop upload, an installable PWA, and a FUSE client that mounts your pages as plain files. lattice hosts its own client. There is nothing to install.</div>
             </div>
             <div class="step">
                 <div class="n">the agents</div>
                 <div class="t">your AI remembers here</div>
-                <div class="d">MCP knowledge tools are compiled into the ship and served at <code>/grubbery/mcp</code> — your assistant reads and writes the same tagged memory you browse at <code>/know</code>.</div>
+                <div class="d">MCP knowledge tools are compiled into the ship and served at <code>/grubbery/mcp</code>. Your assistant reads and writes the same tagged memory you browse in the workspace.</div>
             </div>
         </div>
 
@@ -260,7 +260,7 @@ Welcome. Everything here is a gemtext file in /pub.
         <ul class="features">
             <li>
                 <span class="name">Pages that run</span>
-                <span class="desc">Markdown, gemtext, HTML, JS, CSS — or write a page in Hoon and it computes its content: commands, state, and dependencies on other pages, with live preview in the editor.</span>
+                <span class="desc">Markdown, gemtext, HTML, JS, CSS. Or write a page in Hoon and it computes its content, with commands, state, and dependencies on other pages, live-previewed in the editor.</span>
             </li>
             <li>
                 <span class="name">Knowledge &amp; AI memory</span>
@@ -268,7 +268,7 @@ Welcome. Everything here is a gemtext file in /pub.
             </li>
             <li>
                 <span class="name">Search everything</span>
-                <span class="desc">A full-text catalog over your pages and the ships you follow — right from the reader’s omnibar.</span>
+                <span class="desc">A full-text catalog over your pages and the ships you follow, right from the reader’s omnibar.</span>
             </li>
             <li>
                 <span class="name">A real filesystem</span>
@@ -280,7 +280,7 @@ Welcome. Everything here is a gemtext file in /pub.
             </li>
             <li>
                 <span class="name">Publish</span>
-                <span class="desc">Anything you publish is instantly readable by anyone as <span class="mono">urb://~you/that/path</span> — and a page can also go clearweb-public, served over HTTP from your ship.</span>
+                <span class="desc">Anything you publish is instantly readable by anyone as <span class="mono">urb://~you/that/path</span>. A page can also go clearweb-public, served over HTTP from your ship.</span>
             </li>
             <li>
                 <span class="name">Follow &amp; subscribe</span>
@@ -292,7 +292,7 @@ Welcome. Everything here is a gemtext file in /pub.
             </li>
             <li>
                 <span class="name">Share whole sites</span>
-                <span class="desc">Share a folder and everything under it goes clearweb-public at <span class="mono">/c/&lt;folder&gt;/</span>, theme inherited — a site, published and unpublished in one click.</span>
+                <span class="desc">Share a folder and everything under it goes clearweb-public at <span class="mono">/c/&lt;folder&gt;/</span> with the theme inherited. A site, published and unpublished in one click.</span>
             </li>
         </ul>
     </div>
@@ -302,7 +302,7 @@ Welcome. Everything here is a gemtext file in /pub.
     <div class="wrap">
         <h2>What it isn't</h2>
         <ul class="disclaimers">
-            <li>Not a host. <a href="https://urbit.org/overview/running-urbit">Bring your own ship</a> — yours, a friend's, or a hosted one.</li>
+            <li>Not a host. <a href="https://urbit.org/overview/running-urbit">Bring your own ship</a>: yours, a friend's, or a hosted one.</li>
             <li>Not the HTTP web. Pages are Urbit-native (<span class="mono">urb://~ship/path</span>) and move between ships over remote scry, not over DNS and HTTP.</li>
             <li>Not an app to install. The client is served by your ship; the only local piece is the optional filesystem client.</li>
         </ul>
@@ -316,12 +316,12 @@ Welcome. Everything here is a gemtext file in /pub.
             <h3>The only server lattice talks to is your ship.</h3>
             <p>
                 No analytics, no third-party SDKs, no telemetry. Every client speaks only to the Urbit
-                ship you point it at — that's the entire network surface. Your session never
+                ship you point it at. That's the entire network surface. Your session never
                 leaves the device unencrypted: lattice refuses to send your <span class="mono">+code</span>
                 or cookie in cleartext to a remote ship, and stores it owner-only at rest.
             </p>
             <p>
-                Everything you put in <code>/pub</code> is public by design — that's the whole
+                Everything you put in <code>/pub</code> is public by design. That's the whole
                 point of a publishing tool. Nothing else on your ship is exposed.
             </p>
         </div>
@@ -333,9 +333,9 @@ Welcome. Everything here is a gemtext file in /pub.
         <h2>Under the hood</h2>
         <p>
             On your ship, lattice runs as a nexus in the <span class="mono">grubbery</span>
-            framework — pages and knowledge live as grubs in the vault, published pages answer
+            framework. Pages and knowledge live as grubs in the vault, published pages answer
             remote scry, and the MCP knowledge tools are compiled into the same ball they serve.
-            The web client is itself hosted on lattice — editor, reader, and PWA are grubs
+            The web client is itself hosted on lattice. The editor, reader, and PWA are grubs
             in the same ball they edit, over an authenticated HTTP API with live SSE updates.
             The filesystem client is Rust over a pluggable transport (HTTP or grubbery's
             local IPC). Hoon unit tests on the nexus, a 19-assertion ship-verified
@@ -343,7 +343,7 @@ Welcome. Everything here is a gemtext file in /pub.
         </p>
         <div class="tech-grid">
             <div class="cell"><div class="k">clients</div><div class="v">Web + PWA · FUSE · MCP</div></div>
-            <div class="cell"><div class="k">served from</div><div class="v">your ship — no separate host</div></div>
+            <div class="cell"><div class="k">served from</div><div class="v">your ship, no separate host</div></div>
             <div class="cell"><div class="k">backend</div><div class="v">Your Urbit ship</div></div>
             <div class="cell"><div class="k">transport</div><div class="v">Remote scry · peer-to-peer</div></div>
         </div>
@@ -354,22 +354,22 @@ Welcome. Everything here is a gemtext file in /pub.
     <div class="wrap">
         <h2>Get started</h2>
         <p>
-            lattice hosts its own client — there is nothing to download. Put the nexus on
+            lattice hosts its own client, so there is nothing to download. Put the nexus on
             your ship (see the <a href="https://github.com/nisfeb/lattice#install">install
             notes</a>), log in at your ship's web login, and open:
         </p>
         <div class="dl-grid">
             <div class="dl-row">
                 <span class="platform mono">/apps/lattice</span>
-                <span class="desc">The reader — your pages, the urb:// omnibar, catalog search, ships you follow.</span>
+                <span class="desc">The reader. Your pages, the urb:// omnibar, catalog search, ships you follow.</span>
             </div>
             <div class="dl-row">
                 <span class="platform mono">/apps/lattice/app</span>
-                <span class="desc">The workspace — editor with highlighting and live preview, sharing, uploads, knowledge browser.</span>
+                <span class="desc">The workspace. Editor with highlighting and live preview, sharing, uploads, knowledge browser.</span>
             </div>
         </div>
         <p class="dl-note" style="margin-top:16px;">
-            On a phone, use your browser's <em>Install app / Add to Home Screen</em> — lattice
+            On a phone, use your browser's <em>Install app / Add to Home Screen</em>. lattice
             is a full PWA with its own icon and standalone window. Prefer real files? Build the
             FUSE client (<span class="mono">cargo build --release</span> in
             <span class="mono">lattice-fs-rs/</span>) and mount your page tree.
@@ -390,7 +390,7 @@ Welcome. Everything here is a gemtext file in /pub.
 
 <footer>
     <div class="wrap footer-row">
-        <span>© lattice — built by <span class="patp">~nisfeb</span>. PolyForm Noncommercial 1.0.0 licensed.</span>
+        <span>© lattice, built by <span class="patp">~nisfeb</span>. PolyForm Noncommercial 1.0.0 licensed.</span>
         <span><a href="lattice">gemtext edition</a> · <a href="https://github.com/nisfeb/lattice">github.com/nisfeb/lattice</a></span>
     </div>
 </footer>

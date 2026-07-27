@@ -1,16 +1,16 @@
 # The knowledge store, for agents
 
-Lattice keeps a **private, tagged knowledge store** on the ship — the memory
-your AI agents share with you. Path-like keys (`user/ai-models`), per-entry
-tags, history, and a restorable trash.
+Lattice keeps a **private, tagged knowledge store** on the ship. It is the
+memory your AI agents share with you. Path-like keys (`user/ai-models`),
+per-entry tags, history, and a restorable trash.
 
-## MCP tools — compiled into the ship
+## MCP tools, compiled into the ship
 
 Eleven tools ship WITH the lattice desk (`grubbery-overlay/lib/mcp/
-lattice-*.hoon`), are compiled into grubbery's ball on commit, execute in-ship
-against the vault directly, and are served by grubbery's own MCP endpoint at
-`<ship>/grubbery/mcp`. Nothing to install, register, or refresh — they survive
-restarts, redeploys, and ball resets.
+lattice-*.hoon`). They are compiled into grubbery's ball on commit, execute
+in-ship against the vault directly, and are served by grubbery's own MCP
+endpoint at `<ship>/grubbery/mcp`. There is nothing to install, register, or
+refresh. They survive restarts, redeploys, and ball resets.
 
 | tool | does |
 |---|---|
@@ -24,7 +24,7 @@ restarts, redeploys, and ball resets.
 | `lattice-tag` / `lattice-untag` | cross-cutting tags |
 | `lattice-delete` / `lattice-restore` | soft-delete / undo |
 
-Client config — a session cookie is the only auth:
+Client config, with a session cookie as the only auth:
 
 ```json
 { "mcpServers": { "myship": {
@@ -32,7 +32,7 @@ Client config — a session cookie is the only auth:
     "headers": { "Cookie": "urbauth-~your-ship=0v…" } } } }
 ```
 
-A ship restart expires the cookie; mint a fresh one at `/~/login` (see the
+A ship restart expires the cookie. Mint a fresh one at `/~/login` (see the
 README's MCP section for the no-echo flow) and update the header.
 
 ## HTTP twins
