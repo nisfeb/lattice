@@ -61,6 +61,7 @@ a { color: var(--green); }
   background: var(--surface); color: inherit; cursor: pointer; }
 .tree .nf:hover { border-color: var(--green); }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
+.chips[hidden] { display: none; }
 .chips a { padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px;
   font-size: .78rem; text-decoration: none; color: inherit; background: var(--surface);
   cursor: pointer; }

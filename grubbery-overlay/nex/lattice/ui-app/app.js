@@ -5,6 +5,14 @@
   const pname = $('pname'), pkind = $('pkind'), status = $('status');
   const src = $('src'), hl = $('hl'), treeList = $('treelist');
   const prev = $('prev'), cerr = $('cerr'), cwurl = $('cwurl');
+  // blank preview: about:blank defaults to light color-scheme, which
+  // mismatches the app's declared scheme and makes the iframe an opaque
+  // white canvas in dark theme — declare the scheme so it stays transparent
+  // and the pane's theme background shows through.
+  const prevBlank = () => {
+    prev.removeAttribute('src');
+    prev.srcdoc = '<style>:root{color-scheme:light dark}</style>';
+  };
 
   const st = (msg, ok = true) => {
     status.textContent = msg;
@@ -163,7 +171,7 @@
     pname.readOnly = true;
     src.value = '';
     render();
-    prev.removeAttribute('srcdoc'); prev.src = 'about:blank';
+    prevBlank();
     cerr.textContent = ' '; cerr.className = 'ok';
     history.replaceState(null, '', '/apps/lattice/app?into=' + encodeURIComponent(path));
     renderTree();
@@ -213,7 +221,7 @@
     renderTree();
     pname.focus();
     st('new page — name it, write, save');
-    prev.removeAttribute('srcdoc'); prev.src = 'about:blank';
+    prevBlank();
     showShare('private');
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
   }
@@ -713,7 +721,7 @@
     mode = m;
     ws.classList.toggle('know', m === 'know');
     $('modet').className = m === 'know' ? 'on' : '';
-    $('modet').innerHTML = m === 'know' ? '\u270e pages' : '\u25c6 knowledge';
+    $('modet').innerHTML = m === 'know' ? '\u25c6 knowledge' : '\u270e pages';
     chipsEl.hidden = m !== 'know';
     knowMeta.hidden = m !== 'know';
     $('treesec').textContent = m === 'know' ? 'memories' : 'files';
