@@ -126,7 +126,14 @@ a { color: var(--green); }
 #src { resize: none; background: transparent; color: transparent;
   caret-color: var(--text); overflow: auto; z-index: 1; outline: none; }
 #src::placeholder { color: var(--muted); }
-#hl { overflow: hidden; color: var(--text); z-index: 0; }
+/* #hl scrolls like #src (overflow auto, NOT hidden) so both layers have
+   identical scrollbar geometry — with classic scrollbars an overflow-hidden
+   overlay is wider than the textarea, wrap points diverge, and the caret
+   drifts off its line on long pages. Its scrollbars stay invisible (src's
+   render on top); only the reserved space matters. */
+#hl { overflow: auto; color: var(--text); z-index: 0;
+  scrollbar-color: transparent transparent; }
+#hl::-webkit-scrollbar-thumb { background: transparent; }
 .ws.wrap #src, .ws.wrap #hl { white-space: pre-wrap; overflow-wrap: break-word; }
 
 @media (max-width: 820px) {

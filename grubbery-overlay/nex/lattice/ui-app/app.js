@@ -77,7 +77,7 @@
     hl.innerHTML = (g ? Prism.highlight(src.value, g, lang) : esc(src.value)) + '\n';
   };
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
-  src.addEventListener('input', render);
+  src.addEventListener('input', () => { render(); sync(); });
   src.addEventListener('scroll', sync);
   pkind.addEventListener('change', render);
 

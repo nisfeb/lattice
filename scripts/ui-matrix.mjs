@@ -81,6 +81,27 @@ try {
   check('open: body round-trips',
     await page.evaluate(() => document.getElementById('src').value) === '# ui matrix probe');
 
+  // overlay geometry parity: the highlight layer must occupy exactly the
+  // textarea's box in both wrap modes, or the caret drifts off its line on
+  // long pages (bites wherever scrollbars consume layout, e.g. Firefox).
+  const parity = () => page.evaluate(() => {
+    const s = document.getElementById('src'), h = document.getElementById('hl');
+    return s.clientWidth === h.clientWidth && s.clientHeight === h.clientHeight
+      && Math.abs(s.scrollHeight - h.scrollHeight) <= 1;
+  });
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = Array.from({ length: 300 }, (_, i) =>
+      i % 7 ? `line ${i}` : `line ${i} long enough to wrap `.repeat(6)).join('\n');
+    s.dispatchEvent(new Event('input'));
+  });
+  check('overlay parity: nowrap', await parity());
+  await page.click('#wrapt');
+  await sleep(300);
+  check('overlay parity: wrap', await parity());
+  await page.click('#wrapt');
+  await sleep(300);
+
   step = 'folder create';
   // ── 3. folder create via the in-app dialog ───────────────────────────────
   await page.click('#newfolder');
