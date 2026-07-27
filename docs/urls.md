@@ -63,7 +63,10 @@ bookmarks, keys on the canonical form, so aliasing never splits state.
 
 ## Implementation
 
-- `+de-urb` (app.hoon): `@t → (unit referent)`, referent = `%pub`/`%tree`.
+- The codec lives in `grubbery-overlay/lib/lattice-urls.hoon`, a pure,
+  import-free lib. The round-trip laws above are enforced by
+  `grubbery-overlay/tests/lib/lattice-urls.hoon`.
+- `+de-urb`: `@t → (unit referent)`, referent = `%pub`/`%tree`.
 - `+en-urb`: `[ship path] → @t`, the canonical URL for a tree node.
 - The address bar (`GET /apps/lattice?url=…`) resolves via `de-urb`. `%pub`
   is read and rendered inline. `%tree` redirects to the `/x` explorer

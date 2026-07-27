@@ -25,6 +25,7 @@
 /<  ast  /lib/obelisk-ast.hoon
 /<  cat  /lib/catalog.hoon
 /<  le   /lib/lattice-eval.hoon
+/<  lu   /lib/lattice-urls.hoon
 /<  pg   /lib/lattice-pg.hoon
 /<  gfm  /lib/lattice-md.hoon
 /<  tpl  /lib/lattice-templates.hoon
@@ -177,7 +178,7 @@
         ::  publisher's %news on every edit. Keeping the parent dir would subscribe to
         ::  an un-gained node and never fire.
         =/  road=road:tarball
-          (remote-road [%& %& (weld (weld app-base /pub/vault) rel) %gmi] ship.ps)
+          (remote-road [%& %& (weld (weld app-base:lu /pub/vault) rel) %gmi] ship.ps)
         ::  arm the keep BEFORE the initial index. keep:io's initial bond wave
         ::  is consumed either way, so with the keep armed first a peer edit
         ::  during the (slow: remote body/index peeks + owner round-trips)
@@ -346,9 +347,9 @@
           [[%cat ~] %'obelisk.sig']
         ;<  ~  bind:m  (rise-wait:io prod "%lattice obelisk owner: failed")
         ::  ensure the result-grub dir exists once, so per-query put-files land.
-        ;<  ~  bind:m  (ensure-dirs (weld app-base /cat) /obk-out)
+        ;<  ~  bind:m  (ensure-dirs (weld app-base:lu /cat) /obk-out)
         ::  clear any orphaned result grubs from a prior run (finding #6).
-        ;<  ~  bind:m  (sweep-obk-out (weld app-base /cat/obk-out))
+        ;<  ~  bind:m  (sweep-obk-out (weld app-base:lu /cat/obk-out))
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
         ::  obelisk-run-one arms a 15s wait per call and can't cancel it, so a
@@ -449,7 +450,7 @@
         ;<  kes=(map path know-entry:lk)  bind:m  read-know-map
         (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") (home-index-html our recent bms (know-quick-html:lkv kes 6))))
       (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") (render-gmi u.home)))
-    =/  ref=(unit referent)  (de-urb u.raw)
+    =/  ref=(unit referent:lu)  (de-urb:lu u.raw)
     ::  omnibar: input that isn't a urb:// address is a SEARCH query — serve a
     ::  results page that queries the obelisk content catalog (client-side, via
     ::  the /catalog-search JSON api, which is built for exactly this fan-out).
@@ -465,7 +466,7 @@
     ::
         %pub
       ;<  body=(unit @t)  bind:m  (read-page-body ship.u.ref rel.u.ref)
-      =/  canon=tape  (trip (en-urb ship.u.ref (weld pub-prefix rel.u.ref)))
+      =/  canon=tape  (trip (en-urb:lu ship.u.ref (weld pub-prefix:lu rel.u.ref)))
       ?~  body
         (send-view eyre-id (render-page canon "" "<p class=\"err\">not published here</p>"))
       ::  own pages get a live reader (keep /pub/index — its per-page hash changes
@@ -563,7 +564,7 @@
     ::  gets the latest gained content, so there's no walk-to-latest.
     =/  raw=(unit @t)  (~(get by args) 'url')
     ?~  raw  (send-err eyre-id 400 'missing url param')
-    =/  pu=(unit [=ship =path])  (parse-urb-url u.raw)
+    =/  pu=(unit [=ship =path])  (parse-urb-url:lu u.raw)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
     ;<  body=(unit @t)  bind:m  (read-page-body ship.u.pu path.u.pu)
     ?^  body  (send-json eyre-id (mark-body-json 'gmi' u.body))
@@ -719,7 +720,7 @@
       [%'GET' %catalog-toc]
     =/  url=(unit @t)  (~(get by args) 'url')
     ?~  url  (send-err eyre-id 400 'missing url param')
-    =/  pu=(unit [=ship =path])  (parse-urb-url u.url)
+    =/  pu=(unit [=ship =path])  (parse-urb-url:lu u.url)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
     ;<  ct=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db (catalog-toc-urql:cat our ship.u.pu (trip (spat path.u.pu))))
@@ -798,7 +799,7 @@
   ::  ── pub writes (POST) ──
   ::  ── programmable pages (docs/platform.md step 2) ──
       [%'GET' %'prism.js']
-    ;<  pv=view:nexus  bind:m  (peek:io [%& %& app-base %'prism.js'] ~)
+    ;<  pv=view:nexus  bind:m  (peek:io [%& %& app-base:lu %'prism.js'] ~)
     ?.  ?=([%file *] pv)  (send-err eyre-id 404 'not found')
     =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
     ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
@@ -843,7 +844,7 @@
     ::  ?new=1: create-only — 409 instead of silently overwriting an existing
     ::  page (the editor's new-page mode sends it; caught by review).
     ;<  ex=?  bind:m
-      (peek-exists:io [%& %& (weld app-base (weld /page (pax-of u.name))) %code])
+      (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.name))) %code])
     ?:  &((~(has by args) 'new') ex)  (send-err eyre-id 409 'page exists')
     ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
     (send-ok eyre-id)
@@ -880,7 +881,7 @@
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     ::  404 a command to a nonexistent page (the writer guards too, but this
     ::  gives the client real feedback instead of a fire-and-forget 200).
-    ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base (weld /page (pax-of u.name))) %code])
+    ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.name))) %code])
     ?.  ex  (send-err eyre-id 404 'no such page')
     ::  a browser form POSTs cmd in the (form-urlencoded) body; parse it as a
     ::  query (same k=v&k=v grammar). Query cmd is the fallback for programmatic
@@ -910,7 +911,7 @@
         %shared    %shared
         %clearweb  %clearweb
       ==
-    ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base (weld /page (pax-of u.name))) %code])
+    ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.name))) %code])
     ?.  ex  (send-err eyre-id 404 'no such page')
     ;<  ~  bind:m  (poke-eval [%share (pax-of u.name) mode])
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
@@ -922,7 +923,7 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    ;<  ex=?  bind:m  (peek-exists:io [%& %| (weld app-base (weld /page (pax-of u.name)))])
+    ;<  ex=?  bind:m  (peek-exists:io [%& %| (weld app-base:lu (weld /page (pax-of u.name)))])
     ?.  ex  (send-err eyre-id 404 'no such page or folder')
     ;<  ~  bind:m  (poke-eval [%comments (pax-of u.name) =('1' (~(gut by args) 'on' '0'))])
     (send-ok eyre-id)
@@ -995,7 +996,7 @@
     ?.  ((sane %tas) u.tmpl)  (send-err eyre-id 400 'bad template')
     ?.  (valid-name u.nm)     (send-err eyre-id 400 'bad name')
     ;<  ex=?  bind:m
-      (peek-exists:io [%& %& (weld app-base (weld /page (pax-of u.nm))) %code])
+      (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.nm))) %code])
     ?:  ex  (send-err eyre-id 409 'a page by that name exists')
     ;<  ~  bind:m  (instantiate-template `@tas`u.tmpl (pax-of u.nm))
     (send-ok eyre-id)
@@ -1225,7 +1226,7 @@
     ?~  keep  (send-err eyre-id 400 'bad keep')
     =/  ko=(unit path)  (know-key u.raw)
     ?~  ko  (send-err eyre-id 400 'invalid key')
-    =/  road=road:tarball  (entry-road (weld app-base /know/vault) u.ko)
+    =/  road=road:tarball  (entry-road (weld app-base:lu /know/vault) u.ko)
     ;<  live=(unit know-entry:lk)  bind:m  (read-entry road)
     ?~  live  (send-err eyre-id 404 'not found')
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
@@ -1266,7 +1267,7 @@
       [%'POST' %sub]
     =/  raw=(unit @t)  (~(get by args) 'url')
     ?~  raw  (send-err eyre-id 400 'missing url param')
-    =/  pu=(unit [=ship =path])  (parse-urb-url u.raw)
+    =/  pu=(unit [=ship =path])  (parse-urb-url:lu u.raw)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
     ?:  =(ship.u.pu our)  (send-err eyre-id 400 'cannot subscribe to own ship')
     ;<  ~  bind:m  (poke-sub [%sub-page ship.u.pu path.u.pu])
@@ -1275,7 +1276,7 @@
       [%'POST' %unsub]
     =/  raw=(unit @t)  (~(get by args) 'url')
     ?~  raw  (send-err eyre-id 400 'missing url param')
-    =/  pu=(unit [=ship =path])  (parse-urb-url u.raw)
+    =/  pu=(unit [=ship =path])  (parse-urb-url:lu u.raw)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
     ;<  ~  bind:m  (poke-sub [%unsub-page ship.u.pu path.u.pu])
     (send-ok eyre-id)
@@ -1288,7 +1289,7 @@
     ?~  raw  (send-err eyre-id 400 'missing url param')
     =/  cat-v=(unit @t)  (~(get by args) 'category')
     ?~  cat-v  (send-err eyre-id 400 'missing category param')
-    =/  pu=(unit [=ship =path])  (parse-urb-url u.raw)
+    =/  pu=(unit [=ship =path])  (parse-urb-url:lu u.raw)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
     =/  csrc=@t  (~(gut by args) 'cat-source' 'manual')
     =/  conf=@rs
@@ -1506,7 +1507,7 @@
   ::  the beacon must be NESTED (under /beacon): grubbery's keep-SSE does not
   ::  stream a grub at the nexus root (verified — /rev and /bookmarks keeps stay
   ::  silent; nested grubs like /pub/index stream fine). Gain is not required.
-  (put-file [%& %& (weld app-base /beacon) %rev] [/ %json] (numb:enjs:format `@ud`now))
+  (put-file [%& %& (weld app-base:lu /beacon) %rev] [/ %json] (numb:enjs:format `@ud`now))
 ::  +poke-eval: send an eval-action to the writer (serialized like all writes).
 ::
 ++  poke-eval
@@ -1641,7 +1642,7 @@
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   |-  ^-  form:m
-  =/  fdir=path  (weld app-base (weld /page page))
+  =/  fdir=path  (weld app-base:lu (weld /page page))
   ;<  seen=view:nexus  bind:m  (peek:io [%& %& fdir %comment-on] ~)
   ?:  ?=([%file *] seen)
     (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.seen)))) %.n))
@@ -1670,7 +1671,7 @@
 ++  read-bookmarks
   =/  m  (fiber:fiber:nexus ,bookmarks:lb)
   ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %& app-base %bookmarks] ~)
+  ;<  seen=view:nexus  bind:m  (peek:io [%& %& app-base:lu %bookmarks] ~)
   ?.  ?=([%file *] seen)  (pure:m ~)
   (pure:m (fall (mole |.(!<(bookmarks:lb (need-vase:tarball sang.seen)))) ~))
 ::  +read-recent: the up-to-`n` most-recently-edited pages, [path preview]. mtime
@@ -1685,7 +1686,7 @@
   =|  acc=(list [pax=path when=@da code=@t])
   |-  ^-  form:m
   ?^  pages
-    =/  cdir=path  (weld app-base (weld /page i.pages))
+    =/  cdir=path  (weld app-base:lu (weld /page i.pages))
     ;<  seen=view:nexus  bind:m  (peek:io [%& %& cdir %code] ~)
     ?.  ?=([%file *] seen)
       $(pages t.pages)
@@ -1826,7 +1827,7 @@
   |=  [name=@tas to=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  troot=path    (weld app-base (weld /template /[name]))
+  =/  troot=path    (weld app-base:lu (weld /template /[name]))
   =/  from-str=tape  (spud /[name])
   =/  to-str=tape    (spud to)
   ;<  dn=view:nexus  bind:m  (peek:io [%& %| troot] ~)
@@ -2010,8 +2011,8 @@
   |=  pax=path
   ^-  (unit path)
   ?.  ?=([@ @ %page @ %view ~] pax)  ~
-  ?.  =(`path`[i.pax i.t.pax ~] app-base)  ~
-  `(weld app-base /page/[i.t.t.t.pax])
+  ?.  =(`path`[i.pax i.t.pax ~] app-base:lu)  ~
+  `(weld app-base:lu /page/[i.t.t.t.pax])
 ::  +arm-eval-deps: keep any dep target not yet armed (one wire, /ev). Deps
 ::  name FILE paths; the last segment is the grub name. A view-dep instead
 ::  keeps on the source page's data+show grubs (re-render me when it changes).
@@ -2333,7 +2334,7 @@
   ^-  form:m
   ;<  rw=wire  bind:m  (nonce:io /obk-res)
   =/  nom=@ta  (rear rw)
-  =/  res-dir=path  (weld app-base /cat/obk-out)
+  =/  res-dir=path  (weld app-base:lu /cat/obk-out)
   =/  res-road=road:tarball  [%& %& res-dir nom]
   ::  keep our (fresh, unique-nonce) result grub BEFORE poking, so the owner's
   ::  create-wave can't be missed. No pre-cull: the name is unique so nothing stale
@@ -2359,7 +2360,7 @@
   |=  req=obk-req:ast
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (poke:io [%& %& (weld app-base /cat) %'obelisk.sig'] [[/lattice %obk-req] req])
+  (poke:io [%& %& (weld app-base:lu /cat) %'obelisk.sig'] [[/lattice %obk-req] req])
 ::  +sweep-obk-out: cull every result grub currently under /cat/obk-out. Run once
 ::  at owner startup: any grub sitting there is orphaned (finding #6) — a caller
 ::  that timed out (30s) or disconnected before the owner wrote its result, so the
@@ -2664,7 +2665,7 @@
   ::  ABSOLUTE road via app-base, not a drop-N relative road: scan-self runs from
   ::  both the depth-2 /ui/requests fiber AND the depth-0 /crawler.sig fiber, so a
   ::  relative road would resolve differently per caller.
-  ;<  ix=pub-index:lp  bind:m  (read-pub-index [%& %& (weld app-base /pub) %index])
+  ;<  ix=pub-index:lp  bind:m  (read-pub-index [%& %& (weld app-base:lu /pub) %index])
   =/  pages=(set path)  ~(key by ix)
   (catalog-scan-loop our now ~(tap in pages) pages 0)
 ++  catalog-scan-loop
@@ -2810,7 +2811,7 @@
   ^-  (unit road:tarball)
   =/  pp=(each path tang)  (mule |.((pub-path raw)))
   ?:  ?=(%| -.pp)  ~
-  =/  vr=(unit vrail:lp)  (key-to-rail:lp (weld app-base /pub/vault) p.pp)
+  =/  vr=(unit vrail:lp)  (key-to-rail:lp (weld app-base:lu /pub/vault) p.pp)
   ?~  vr  ~
   `[%& %& pax.u.vr nom.u.vr]
 ::  +know-hist-road: the ABSOLUTE road of a know key's entry grub, for reading its
@@ -2827,8 +2828,8 @@
   ^-  form:m
   =/  ko=(unit path)  (know-key raw)
   ?~  ko  (pure:m ~)
-  =/  live=road:tarball   (entry-road (weld app-base /know/vault) u.ko)
-  =/  trash=road:tarball  (entry-road (weld app-base /know/trash-vault) u.ko)
+  =/  live=road:tarball   (entry-road (weld app-base:lu /know/vault) u.ko)
+  =/  trash=road:tarball  (entry-road (weld app-base:lu /know/trash-vault) u.ko)
   ;<  el=(unit know-entry:lk)  bind:m  (read-entry live)
   ?^  el  (pure:m `[live %.n])
   ;<  et=(unit know-entry:lk)  bind:m  (read-entry trash)
@@ -2884,7 +2885,7 @@
   ?.  page.nod
     =/  j=json  (pairs:enjs:format ~[['path' s+(crip (pax-str pax.nod))] ['page' b+|]])
     $(tree t.tree, acc [j acc])
-  =/  pdir=path  (weld app-base (weld /page pax.nod))
+  =/  pdir=path  (weld app-base:lu (weld /page pax.nod))
   ;<  cn=view:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
   ?.  ?=([%file *] cn)  $(tree t.tree)     ::  raced delete — drop
   ;<  shr=share-mode:le  bind:m  (read-share pdir)
@@ -2918,7 +2919,7 @@
 ++  fs-dump-json
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
-  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base /page)] ~)
+  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
   ?.  ?=([%ball *] sn)  (pure:m (pairs:enjs:format ~[['nodes' a+~]]))
   =/  nodes=(list [pax=path j=json])  (dump-walk ball.sn wave.sn ~)
   =/  srt  (sort nodes |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
@@ -2975,7 +2976,7 @@
   ^-  form:m
   ?.  (valid-name name)  (pure:m [%| 400 'bad name'])
   =/  pax=path  (pax-of name)
-  =/  pdir=path  (weld app-base (weld /page pax))
+  =/  pdir=path  (weld app-base:lu (weld /page pax))
   ;<  cn=view:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
   ?.  ?=([%file *] cn)  (pure:m [%| 404 'no such page'])
   ;<  mode=share-mode:le  bind:m  (read-share pdir)
@@ -2999,7 +3000,7 @@
   =/  m  (fiber:fiber:nexus ,@t)
   ^-  form:m
   ?.  (valid-name name)  (pure:m '')
-  =/  pdir=path  (weld app-base (weld /page (pax-of name)))
+  =/  pdir=path  (weld app-base:lu (weld /page (pax-of name)))
   ;<  en=view:nexus  bind:m  (peek:io [%& %& pdir %err] ~)
   ?.  ?=([%file *] en)  (pure:m '')
   (pure:m (fall (mole |.(;;(@t (sang-noun:tarball sang.en)))) ''))
@@ -3025,7 +3026,7 @@
     ?:  is-index  (make-folder-index (pax-of name))
     ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
   ;<  ex=?  bind:m
-    (peek-exists:io [%& %& (weld app-base (weld /page (pax-of name))) %code])
+    (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of name))) %code])
   ?:  &(new ex)  (pure:m [409 'page exists'])
   ;<  ~  bind:m  (fs-poke-eval [%make (pax-of name) src])
   (pure:m [200 ''])
@@ -3133,7 +3134,7 @@
     ?:  =(%'app.css' nam)     `'text/css'
     ~
   ?~  ct  (send-err eyre-id 404 'not found')
-  ;<  pv=view:nexus  bind:m  (peek:io [%& %& (weld app-base /app) nam] ~)
+  ;<  pv=view:nexus  bind:m  (peek:io [%& %& (weld app-base:lu /app) nam] ~)
   ?.  ?=([%file *] pv)  (send-err eyre-id 404 'not found')
   =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
   ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
@@ -3304,10 +3305,6 @@
   ::  reject the empty key ('' -> stab '/' -> empty path), which would otherwise
   ::  wrap as a valid unit and pass the routes' ?~ ko guard.
   ?:(?=(%& -.res) ?~(p.res ~ `p.res) ~)
-::  +app-base: the nexus's absolute tree path (its app dir, fixed by root.hoon).
-::  Needed to build remote roads for peek-remote (rewritten to /sys/ames/ships/…).
-::
-++  app-base  `path`/apps/'lattice.lattice_app'
 ::  +mark-body-json: the {mark, body} fetch response shape (client contract).
 ::
 ++  mark-body-json
@@ -3332,93 +3329,6 @@
   =/  header=(list @t)
     ~['# Index' '' 'Files published on this ship:' '']
   (of-wain:format (welp header lines))
-::  +parse-urb-url: "urb://~ship/rel" -> [ship rel-path]. ~ on a malformed url
-::  (ported from /lib/lattice; +stab is mule-guarded against bad knots).
-::
-++  parse-urb-url
-  |=  raw=@t
-  ^-  (unit [=ship =path])
-  =/  s=tape  (trip raw)
-  ?.  =("urb://" (scag 6 s))  ~
-  =/  rest=tape  (slag 6 s)
-  =/  slash=(unit @ud)  (find "/" rest)
-  ?~  slash
-    ?~  shp=(slaw %p (crip rest))  ~
-    `[u.shp ~]
-  ?~  shp=(slaw %p (crip (scag u.slash rest)))  ~
-  =/  pax=(each path tang)  (mule |.((stab (crip (slag u.slash rest)))))
-  ?:(?=(%| -.pax) ~ `[u.shp p.pax])
-::  ── urb:// address grammar v2 (docs/urls.md) ────────────────────────────────
-::  The first path component selects a fixed, code-versioned MOUNT (p/n/k/t); a
-::  multi-char first component is the frozen legacy pub form. Resolution is a
-::  PURE function of the url text — no lookups, no viewer context, no existence
-::  probes — so the same urb:// names the same referent from any ship, any year
-::  (referential transparency). Aliasing exists (/t/<abs> can name what /p/<name>
-::  names) but the canonicalizer +en-urb is pure too, and every index keys on it.
-::
-++  page-prefix  ^-(path (weld app-base /page))
-++  pub-prefix   ^-(path (weld app-base /pub/vault))
-++  know-prefix  ^-(path (weld app-base /know/vault))
-::  +referent: what a urb:// url resolves to. %pub reads gemtext (rel under the
-::  pub vault); %tree names a grubbery node served by the explorer (absolute).
-::
-++  referent  $%([%pub =ship rel=path] [%tree =ship pax=path])
-::  +strip-prefix: p with `base` removed, or ~ if p is not under base.
-::
-++  strip-prefix
-  |=  [base=path p=path]
-  ^-  (unit path)
-  ?.  &((gte (lent p) (lent base)) =(base (scag (lent base) p)))  ~
-  `(slag (lent base) p)
-::  +de-urb: parse a urb:// url into its referent (~ if malformed). Pure.
-::
-++  de-urb
-  |=  raw=@t
-  ^-  (unit referent)
-  =/  s=tape  (trip raw)
-  ?.  =("urb://" (scag 6 s))  ~
-  =/  rest=tape  (slag 6 s)
-  =/  cut=(unit @ud)  (find "/" rest)
-  =/  shp=(unit @p)  (slaw %p (crip ?~(cut rest (scag u.cut rest))))
-  ?~  shp  ~
-  ?~  cut  `[%pub u.shp /index]
-  =/  ta=tape  (slag +(u.cut) rest)
-  ?:  =("" ta)  `[%pub u.shp /index]
-  =/  parsed=(each path tang)  (mule |.((stab (crip (weld "/" ta)))))
-  ?:  ?=(%| -.parsed)  ~
-  =/  segs=path  p.parsed
-  ?~  segs  `[%pub u.shp /index]
-  ?.  =(1 (met 3 i.segs))
-    ::  multi-char first component -> frozen legacy pub form.
-    `[%pub u.shp segs]
-  ::  single-char first component -> a mount letter (else invalid: hard ~).
-  ?+  i.segs  ~
-    %p  `[%tree u.shp (weld page-prefix t.segs)]
-    %n  `[%pub u.shp t.segs]
-    %k  `[%tree u.shp (weld know-prefix t.segs)]
-    %t  `[%tree u.shp t.segs]
-  ==
-::  +en-urb: the canonical urb:// url for a tree node (ship + ABSOLUTE path).
-::  Inverse of +de-urb on referents: pages -> /p/, know -> /k/, published pages
-::  -> the bare form (unless a single-char top segment forces /n/), anything
-::  else -> the /t/ raw escape hatch. The ship root (~) is the raw-tree root.
-::
-++  en-urb
-  |=  [shp=@p pax=path]
-  ^-  @t
-  =/  pre=tape  (weld "urb://" (scow %p shp))
-  =/  seg  |=(rel=path ^-(tape ?~(rel "" (spud rel))))
-  =/  mp=(unit path)  (strip-prefix page-prefix pax)
-  ?^  mp  (crip :(weld pre "/p" (seg u.mp)))
-  =/  mk=(unit path)  (strip-prefix know-prefix pax)
-  ?^  mk  (crip :(weld pre "/k" (seg u.mk)))
-  =/  mn=(unit path)  (strip-prefix pub-prefix pax)
-  ?^  mn
-    =/  rel=path  u.mn
-    ?:  ?|(=(/index rel) ?=(~ rel))  (crip pre)
-    ?:  =(1 (met 3 i.rel))  (crip :(weld pre "/n" (seg rel)))
-    (crip :(weld pre (seg rel)))
-  (crip :(weld pre "/t" (seg pax)))
 ::  +remote-timeout: how long a remote peek waits before giving up. A dead or
 ::  offline peer would otherwise block the fiber forever (peek-remote -> take-peek
 ::  never resolves) — hanging /fetch and stalling the crawler's peer sweep.
@@ -3665,7 +3575,7 @@
   ::  own pages: ABSOLUTE road via app-base (the nexus's fixed tree path), so this
   ::  resolves the same from the depth-2 request fiber and the depth-0 crawler.
   =/  road=road:tarball
-    [%& %& (weld (weld app-base /pub/vault) rel) %gmi]
+    [%& %& (weld (weld app-base:lu /pub/vault) rel) %gmi]
   ?:  =(shp our)
     ;<  seen=view:nexus  bind:m  (peek:io road ~)
     ?.  ?=([%file *] seen)  (pure:m ~)
@@ -3717,7 +3627,7 @@
   =/  want-raw=?  (~(has by args) 'data')
   ::  the canonical urb:// address for this node — shown in the chrome bar so any
   ::  view is copy-shareable (the browser url stays the /x projection).
-  =/  canon=tape  (trip (en-urb u.shp pax))
+  =/  canon=tape  (trip (en-urb:lu u.shp pax))
   =/  dir-road=road:tarball  [%& %| pax]
   ?~  pax
     ::  ship root: always a directory
@@ -3814,7 +3724,7 @@
   |=  pax=path
   ^-  (unit @t)
   ?.  ?=([@ @ %page @ *] pax)  ~
-  ?.  =(`path`[i.pax i.t.pax ~] app-base)  ~
+  ?.  =(`path`[i.pax i.t.pax ~] app-base:lu)  ~
   `(crip (pax-str `path`t.t.t.pax))
 ::  +render-page-view: the live view of one of our programmable pages —
 ::  rendered data + any error + a command form, with keep-SSE on the data
@@ -3896,7 +3806,7 @@
   %-  send-html
   :-  eyre-id
   %^    render-browser-page
-      (trip (en-urb shp pax))
+      (trip (en-urb:lu shp pax))
     doc
   [?:(local `name ~) ?!(local) ?:(local keep "")]
 ::  +render-bare: a minimal HTML doc (shared reader CSS, no address-bar chrome) —
@@ -3944,7 +3854,7 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?.  (levy pax |=(seg=@ta ((sane %ta) seg)))  (send-err eyre-id 404 'not found')
-  =/  pdir=path  (weld app-base (weld /page pax))
+  =/  pdir=path  (weld app-base:lu (weld /page pax))
   ;<  dsn=view:nexus  bind:m  (peek:io [%& %& pdir %data] ~)
   ?.  ?=([%file *] dsn)  (send-err eyre-id 404 'not found')
   ;<  vmode=view-mode:pg  bind:m  (read-show-mode pdir)
@@ -3963,7 +3873,7 @@
   ^-  form:m
   =/  anc=path  (snip `path`pax)
   |-  ^-  form:m
-  =/  tdir=path  (weld app-base (weld /page (weld anc /theme)))
+  =/  tdir=path  (weld app-base:lu (weld /page (weld anc /theme)))
   ;<  mode=share-mode:le  bind:m  (read-share tdir)
   ;<  show=view-mode:pg   bind:m  (read-show-mode tdir)
   ?:  &(?=(%clearweb mode) ?=(%css show))  (pure:m `anc)
@@ -4003,7 +3913,7 @@
   =/  m  (fiber:fiber:nexus ,tape)
   ^-  form:m
   ?.  on  (pure:m "")
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %| (weld app-base (weld /comments page))] ~)
+  ;<  seen=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu (weld /comments page))] ~)
   =/  cs=(list comment:lc)
     ?.  ?=([%ball *] seen)  ~
     =/  b=ball:tarball  ball.seen
@@ -4053,7 +3963,7 @@
   ^-  form:m
   =/  anc=path  (snip `path`pax)
   |-  ^-  form:m
-  =/  tdir=path  (weld app-base (weld /page (weld anc /theme)))
+  =/  tdir=path  (weld app-base:lu (weld /page (weld anc /theme)))
   ;<  show=view-mode:pg  bind:m  (read-show-mode tdir)
   ?:  ?=(%css show)
     ;<  dsn=view:nexus  bind:m  (peek:io [%& %& tdir %data] ~)
@@ -4093,7 +4003,7 @@
   ::  %clearweb check below is the only public/private gate.
   ?.  (levy pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
     (send-err eyre-id 404 'not found')
-  =/  pdir=path  (weld app-base (weld /page pax))
+  =/  pdir=path  (weld app-base:lu (weld /page pax))
   ;<  mode=share-mode:le  bind:m  (read-share pdir)
   ?.  ?=(%clearweb mode)  (send-err eyre-id 404 'not found')
   ;<  dsn=view:nexus  bind:m  (peek:io [%& %& pdir %data] ~)
@@ -4626,7 +4536,7 @@
 ++  read-tree
   =/  m  (fiber:fiber:nexus ,(list [pax=path page=?]))
   ^-  form:m
-  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base /page)] ~)
+  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
   ?.  ?=([%ball *] sn)  (pure:m ~)
   %-  pure:m
   %+  sort  (collect-tree ball.sn ~)
@@ -5139,7 +5049,7 @@
   =/  m  (fiber:fiber:nexus ,(unit pub-index:lp))
   ^-  form:m
   ;<  ms=(unit view:nexus)  bind:m
-    (peek-remote-wait [%& %& (weld app-base /pub) %index] shp)
+    (peek-remote-wait [%& %& (weld app-base:lu /pub) %index] shp)
   ::  ~ means the read FAILED (timeout / not-a-file / bad clam) — distinct from a
   ::  reachable peer with a genuinely empty index (`~ *pub-index). Callers use the
   ::  difference: reconcile must NOT run on a failure (it would delete every row).
@@ -5161,7 +5071,7 @@
   ^-  form:m
   ;<  our=@p  bind:m  bowl-our
   ?.  =(shp our)  (read-pub-index-remote shp)
-  ;<  ix=pub-index:lp  bind:m  (read-pub-index [%& %& (weld app-base /pub) %index])
+  ;<  ix=pub-index:lp  bind:m  (read-pub-index [%& %& (weld app-base:lu /pub) %index])
   (pure:m `ix)
 ::  +read-follows: the crawler's follow set. ABSOLUTE road (app-base) so it reads
 ::  the same from the depth-2 request fiber and the depth-0 crawler fiber.
@@ -5169,7 +5079,7 @@
 ++  read-follows
   =/  m  (fiber:fiber:nexus ,follows:lp)
   ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %& (weld app-base /sub) %follows] ~)
+  ;<  seen=view:nexus  bind:m  (peek:io [%& %& (weld app-base:lu /sub) %follows] ~)
   ?.  ?=([%file *] seen)  (pure:m *follows:lp)
   (pure:m !<(follows:lp (need-vase:tarball sang.seen)))
 ::  +read-subs: every live per-file subscription. Peeks /sub/pages as a ball and
@@ -5178,7 +5088,7 @@
 ++  read-subs
   =/  m  (fiber:fiber:nexus ,(list page-sub:lp))
   ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %| (weld app-base /sub/pages)] ~)
+  ;<  seen=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /sub/pages)] ~)
   ?.  ?=([%ball *] seen)  (pure:m ~)
   =/  b=ball:tarball  ball.seen
   ?~  fil.b  (pure:m ~)
