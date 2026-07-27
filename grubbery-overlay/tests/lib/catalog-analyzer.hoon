@@ -57,4 +57,29 @@
     ::  a run of backslashes: one space each, no pairing survives
     (expect-eq !>(`tape`['x' ' ' ' ' 'y' ~]) !>((urq-esc:ca "x\\\\y")))
   ==
+::  ── +normalize-term: the search-index tokenizer's normalizer ──
+::  The server re-normalizes query terms through this same gate
+::  (/catalog-search), so client and index can never drift.
+::
+++  test-normalize-term-case-and-trim
+  ;:  weld
+    ::  lower-cased
+    (expect-eq !>(`(unit @t)``'rust') !>((normalize-term:ca "Rust")))
+    ::  edge punctuation trimmed from both ends
+    (expect-eq !>(`(unit @t)``'hello') !>((normalize-term:ca "(hello)!")))
+    ::  interior punctuation survives (C-3PO stays one term)
+    (expect-eq !>(`(unit @t)``'c-3po') !>((normalize-term:ca "C-3PO")))
+  ==
+::
+++  test-normalize-term-drops
+  ;:  weld
+    ::  under 3 chars after trimming
+    (expect-eq !>(`(unit @t)`~) !>((normalize-term:ca "ab")))
+    (expect-eq !>(`(unit @t)`~) !>((normalize-term:ca "C++")))
+    ::  stop words
+    (expect-eq !>(`(unit @t)`~) !>((normalize-term:ca "the")))
+    (expect-eq !>(`(unit @t)`~) !>((normalize-term:ca "and")))
+    ::  adversarial giant token (over term-len-max = 64)
+    (expect-eq !>(`(unit @t)`~) !>((normalize-term:ca (reap 70 'a'))))
+  ==
 --
