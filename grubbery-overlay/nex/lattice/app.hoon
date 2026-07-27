@@ -532,6 +532,56 @@
       %&  (send-json eyre-id p.r)
       %|  (send-err eyre-id code.p.r msg.p.r)
     ==
+  ::  page-history: every stored revision of a page, newest first. The /page
+  ::  code grub's born history is permanent (%firm), and autosave makes it
+  ::  dense — version history for free, no extra storage machinery.
+      [%'GET' %page-history]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    =/  pdir=path  (weld app-base:lu (weld /page (pax-of u.name)))
+    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+      (peep:io [%& %& pdir %code] [%numb ~ ~])
+    ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    =/  revs=(list [ud=@ud da=@da])
+      %+  sort  (turn p.pe |=([c=cass:clay *] [ud.c da.c]))
+      |=([a=[ud=@ud da=@da] b=[ud=@ud da=@da]] (gth ud.a ud.b))
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['name' s+u.name]
+        :-  'revisions'
+        :-  %a
+        %+  turn  revs
+        |=  [ud=@ud da=@da]
+        (pairs:enjs:format ~[['rev' (numb:enjs:format ud)] ['updated' s+(scot %da da)]])
+    ==
+  ::  page-source-at: a page's source AS OF a revision. Read-only view;
+  ::  restoring = the client re-saves the old body as a fresh revision, so
+  ::  nothing is ever destroyed. The rev is validated against real history
+  ::  first because peek-at bails outright on a miss.
+      [%'GET' %page-source-at]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    =/  rv=(unit @ud)  (slaw %ud (~(gut by args) 'rev' ''))
+    ?~  rv  (send-err eyre-id 400 'bad rev')
+    =/  pdir=path  (weld app-base:lu (weld /page (pax-of u.name)))
+    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+      (peep:io [%& %& pdir %code] [%numb ~ ~])
+    ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    ?.  (lien p.pe |=([c=cass:clay *] =(ud.c u.rv)))
+      (send-err eyre-id 404 'no such revision')
+    ;<  sn=view:nexus  bind:m  (peek-at:io [%& %& pdir %code] ~ [%ud u.rv])
+    ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
+    =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.sn)))) '')
+    =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
+    =/  kind=@tas  ?~(un %hoon builder.u.un)
+    =/  body=@t  ?~(un src body.u.un)
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['body' s+body]  ['kind' s+kind]
+        ['rev' (numb:enjs:format u.rv)]
+    ==
   ::
   ::  page-errors: a page's latest evaluator error as plain text ('' = clean).
   ::  The lattice-fs nvim glue reads this to populate the quickfix list.
@@ -1750,7 +1800,13 @@
   ;<  ~  bind:m
     ?:  ex  (pure:m ~)
     (put-file [%& %& pdir %deps] [/lattice %eval-deps] `(list path)`~)
-  (put-file [%& %& pdir %code] [/lattice %page] src)
+  ;<  ~  bind:m  (put-file [%& %& pdir %code] [/lattice %page] src)
+  ::  gain the code grub so every save is a kept %firm revision — that is
+  ::  what page-history / page-source-at read. Privacy is unchanged: gain
+  ::  makes a grub namespace-addressable but cross-ship reads stay weir-gated
+  ::  deny-all, the same model the know vault uses (every private entry
+  ::  gained, for exactly this history).
+  (gain:io [%& %& pdir %code] %.y)
 ::  +rewrite-root: replace the path-prefix `from` with `to` in code, only where
 ::  `from` ends at a path boundary (/ ) space " ] , or end) — so a short root
 ::  can't clobber a longer path that merely starts with it.

@@ -58,6 +58,7 @@
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits — auto-refresh never clobbers them
+  let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curFolder = null;    // selected folder path — right-pane ops target it
   let folderCtx = '';      // folder uploads land in (last into / open page's dir)
   let nodes = [];          // last page-tree
@@ -172,6 +173,8 @@
   function selectFolder(path) {
     current = null;
     curFolder = path;
+    exitRev();
+    $('histsec').hidden = true;
     folderCtx = path;
     pname.value = path;
     pname.readOnly = true;
@@ -208,6 +211,8 @@
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
     renderTree();
     st(d.kind + ' · rev ' + d.rev);
+    exitRev();
+    loadHistory();
     showShare(d.share || 'private');
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
     refreshPreview();
@@ -219,6 +224,8 @@
     folderCtx = into || '';
     current = null;
     curFolder = null;
+    exitRev();
+    $('histsec').hidden = true;
     setCtlLabels();
     pname.readOnly = false;
     pname.value = into ? into + '/' : '';
@@ -269,7 +276,7 @@
 
   let autoTimer = null;
   async function autosave() {
-    if (!current || curFolder || !dirty) return;
+    if (!current || curFolder || !dirty || viewingRev !== null) return;
     const sent = src.value;
     const url = mode === 'know'
       ? api + '/know-save?key=' + encodeURIComponent(current)
@@ -556,6 +563,59 @@
     else if (curFolder === oldPath) selectFolder(newPath);
   }
 
+  // ── version history (born keeps every save; autosave makes it dense) ────
+  const histSec = $('histsec'), histList = $('histlist'), histView = $('histview');
+  const exitRev = () => {
+    viewingRev = null;
+    src.readOnly = false;
+    histView.hidden = true;
+  };
+  async function loadHistory() {
+    histSec.hidden = true;
+    histList.textContent = '';
+    if (!current || mode === 'know') return;
+    const r = await fetch(api + '/page-history?name=' + encodeURIComponent(current));
+    if (!r.ok) return;
+    const revs = (await r.json()).revisions || [];
+    if (revs.length < 2) return;         // a single revision is just "now"
+    histSec.hidden = false;
+    for (const v of revs.slice(0, 30)) {
+      const a = document.createElement('a');
+      // ~2026.7.27..19.12.23..xxxx -> 7.27 19:12
+      const m = (v.updated || '').match(/\.(\d+\.\d+)\.\.(\d+)\.(\d+)/);
+      a.textContent = '#' + v.rev + (m ? ' \u00b7 ' + m[1] + ' ' + m[2] + ':' + m[3] : '');
+      a.className = v.rev === viewingRev ? 'on' : '';
+      a.onclick = () => openRev(v.rev);
+      histList.appendChild(a);
+    }
+  }
+  async function openRev(rev) {
+    const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(current) +
+      '&rev=' + rev);
+    if (!r.ok) { st('revision load failed ' + r.status, false); return; }
+    const d = await r.json();
+    viewingRev = rev;
+    dirty = false;
+    src.value = d.body;
+    src.readOnly = true;
+    render(); sync();
+    histView.hidden = false;
+    for (const a of histList.children)
+      a.className = a.textContent.split(' ')[0] === '#' + rev ? 'on' : '';
+    st('viewing rev ' + rev + ' \u00b7 read-only');
+    if (CONTENT()) refreshPreview();
+  }
+  $('hback').onclick = () => { exitRev(); openPage(current); };
+  $('hrestore').onclick = async () => {
+    if (viewingRev === null) return;
+    const rev = viewingRev;
+    exitRev();
+    dirty = true;          // the historical body is now an unsaved local edit
+    await save();
+    st('restored rev ' + rev + ' as the newest revision');
+    loadHistory();
+  };
+
   $('mv').onclick = async () => {
     if (curFolder) { moveFolder(curFolder); return; }
     if (!current) { st('open something first', false); return; }
@@ -616,7 +676,7 @@
   // here without a reload. Local unsaved edits always win: `dirty` blocks the
   // content swap until the page is saved or reopened.
   async function refreshOpen() {
-    if (!current || curFolder || dirty || document.hidden) return;
+    if (!current || curFolder || dirty || document.hidden || viewingRev !== null) return;
     const url = mode === 'know'
       ? api + '/know-read?key=' + encodeURIComponent(current)
       : api + '/page-source?name=' + encodeURIComponent(current);

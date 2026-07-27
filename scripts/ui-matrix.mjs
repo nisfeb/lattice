@@ -91,6 +91,27 @@ try {
   await wait(() => document.getElementById('src').value === '# updated elsewhere');
   ok('live: open page updates when edited elsewhere');
 
+  // version history: the earlier remote edit left ≥2 revisions; the panel
+  // lists them, viewing one is read-only, restoring re-saves it as newest.
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2' });
+  await wait(() => !document.getElementById('histsec').hidden);
+  ok('history: panel appears once a page has revisions');
+  await page.evaluate(() => {                      // open the OLDEST revision
+    const chips = document.querySelectorAll('#histlist a');
+    chips[chips.length - 1].click();
+  });
+  await wait(() => document.getElementById('src').readOnly);
+  const histBody = await page.evaluate(() => document.getElementById('src').value);
+  check('history: viewing a revision is read-only and shows old content',
+    histBody === '# ui matrix probe', JSON.stringify(histBody).slice(0, 40));
+  await page.click('#hrestore');
+  await wait(() => !document.getElementById('src').readOnly);
+  await page.waitForFunction(async (n) => {
+    const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n));
+    return (await r.json()).body === '# ui matrix probe';
+  }, { timeout: 30000 }, RUN + '/hello');
+  ok('history: restore re-saves the old revision as newest');
+
   // autosave: a 2s typing pause persists the draft, with no UI churn —
   // the server copy converges on what was typed.
   await page.evaluate(() => {
