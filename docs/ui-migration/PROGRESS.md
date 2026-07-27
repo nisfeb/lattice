@@ -5,7 +5,10 @@
 - [x] M2 Editor core — tree pane (collapse in localStorage, per-folder + buttons,
       into-context), Prism-overlaid editor, open via page-source, save with kind
       (create &new=1 / overwrite), Cmd+S, Tab-insert, URL state (?name / ?into).
-- [ ] M3 Preview / errors / command / share / delete
+- [x] M3 Preview / errors / command / share / delete — content kinds via
+      page-preview srcdoc (debounced), computed kinds via live /f/<name> iframe;
+      page-errors polling after hoon saves; page-cmd box; share buttons with
+      clearweb URL (page-source now returns share mode); confirmed delete.
 - [ ] M4 Upload
 - [ ] M5 Mobile + toggles + beacon refresh
 - [ ] M6 Parity audit + cord deletion + docs
