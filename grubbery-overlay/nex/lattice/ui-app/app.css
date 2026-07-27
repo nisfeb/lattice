@@ -11,6 +11,15 @@
 }
 html, body { margin: 0; height: 100vh; background: var(--bg); color: var(--text);
   font: 15px/1.5 system-ui, sans-serif; overflow: hidden; }
+/* flat scrollbars matching the UI: thin, trackless, muted thumb.
+   scrollbar-color covers Firefox + Chrome 121+; the -webkit rules cover
+   Safari and older Chrome (ignored wherever scrollbar-color wins). */
+html { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px;
+  border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--green); }
 a { color: var(--green); }
 .muted { color: var(--muted); }
 
