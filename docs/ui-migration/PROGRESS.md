@@ -9,7 +9,10 @@
       page-preview srcdoc (debounced), computed kinds via live /f/<name> iframe;
       page-errors polling after hoon saves; page-cmd box; share buttons with
       clearweb URL (page-source now returns share mode); confirmed delete.
-- [ ] M4 Upload
+- [x] M4 Upload — files/dir pickers + window-wide drag-and-drop with directory
+      entry walking, kind-mapped + name-sanitized, folders pre-created, progress
+      panel (fill bar, per-file, error list survives failures), lands in the
+      current folder context.
 - [ ] M5 Mobile + toggles + beacon refresh
 - [ ] M6 Parity audit + cord deletion + docs
 - [ ] M7 /know in the app

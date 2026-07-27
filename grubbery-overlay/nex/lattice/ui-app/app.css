@@ -38,6 +38,14 @@ a { color: var(--green); }
   font-size: .82rem; border: 1px solid var(--border); border-radius: 6px;
   background: var(--surface); color: inherit; cursor: pointer; }
 .tree .nf:hover { border-color: var(--green); }
+.uppanel { margin: 8px 0; padding: 9px 10px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--surface); font-size: .78rem;
+  word-break: break-all; }
+.upbar { height: 6px; border-radius: 3px; background: var(--border-soft);
+  margin: 6px 0; overflow: hidden; }
+#upfill { height: 100%; width: 0; background: var(--green); transition: width .25s; }
+.uperr { color: #c0392b; white-space: pre-wrap; }
+.tree.dragover { outline: 2px dashed var(--green); outline-offset: -6px; }
 .tree .sec { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em;
   color: var(--muted); margin: 10px 4px 4px; }
 .tree a.pg { display: block; padding: 4px 8px; border-radius: 6px;
