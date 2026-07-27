@@ -13,6 +13,9 @@
       entry walking, kind-mapped + name-sanitized, folders pre-created, progress
       panel (fill bar, per-file, error list survives failures), lands in the
       current folder context.
-- [ ] M5 Mobile + toggles + beacon refresh
+- [x] M5 Mobile + toggles + beacon refresh — pane tabs under 820px (tree/code/
+      preview/controls), wrap + tree + controls toggles persisted in
+      localStorage, and EventSource on the /beacon/rev keep refreshing the tree
+      (debounced) on every writer mutation.
 - [ ] M6 Parity audit + cord deletion + docs
 - [ ] M7 /know in the app
