@@ -3,10 +3,10 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>lattice — gemtext over Urbit</title>
-    <meta name="description" content="A small, fast gemtext browser and publisher for Urbit. Android, Linux, macOS, Windows. Pages addressed as urb://~ship/path, served peer-to-peer. Bring your own ship.">
-    <meta property="og:title" content="lattice — gemtext over Urbit">
-    <meta property="og:description" content="A small, fast gemtext browser and publisher for Urbit. Pages addressed as urb://~ship/path, served peer-to-peer between ships. Bring your own ship.">
+    <title>lattice — your knowledge, on your ship</title>
+    <meta name="description" content="A personal knowledge platform on your Urbit ship: pages in markdown, gemtext, HTML or programmable Hoon; a private tagged memory you share with your AI; full-text search; peer-to-peer publishing. Native app, web, filesystem, MCP.">
+    <meta property="og:title" content="lattice — your knowledge, on your ship">
+    <meta property="og:description" content="Pages, private knowledge, and AI memory on your Urbit ship. Search everything, publish peer-to-peer, reach it from the app, the web, your filesystem, or an agent.">
     <meta name="theme-color" content="#4a7c59">
     <link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="%234a7c59"/><g stroke="%23e9f1ec" stroke-width="3" stroke-linecap="round" fill="none"><path d="M8 24 24 8M8 40 40 8M8 56 56 8M24 56 56 24M40 56 56 40"/><path d="M40 8 56 24M24 8 56 40M8 8 56 56M8 24 40 56M8 40 24 56"/></g></svg>'>
     <style>
@@ -192,13 +192,14 @@
             <span class="wordmark">lattice</span>
         </div>
 
-        <h1>gemtext, <br>over <span class="accent">Urbit</span>.</h1>
+        <h1>your knowledge, <br>on your <span class="accent">ship</span>.</h1>
 
         <p class="lede">
-            A small, fast browser and publisher for gemtext — but the pages live on the
-            Urbit network. Every page is addressed as <span class="url">urb://~ship/path</span>
-            and travels peer-to-peer between ships. No DNS, no web server, no host in the
-            middle. <a href="https://urbit.org/overview/running-urbit">Bring your own ship</a>.
+            Pages in markdown, gemtext, or HTML — or Hoon pages that compute their own
+            content. A private, tagged memory you share with your AI. Search across all of
+            it, and publish any of it peer-to-peer as
+            <span class="url">urb://~ship/path</span> — no DNS, no web server, no host in
+            the middle. <a href="https://urbit.org/overview/running-urbit">Bring your own ship</a>.
         </p>
 
         <div class="ctas">
@@ -209,6 +210,7 @@
         <div class="meta-row">
             <span><strong>Android 8+</strong></span>
             <span><strong>Linux · macOS · Windows</strong></span>
+            <span><strong>App · Web · Filesystem · MCP</strong></span>
             <span><strong>Peer-to-peer</strong> · no servers</span>
             <span><strong>Open source</strong> · PolyForm Noncommercial</span>
         </div>
@@ -219,9 +221,9 @@
     <div class="wrap">
         <h2>How it works</h2>
         <p>
-            lattice is two pieces: a small publisher that runs on your ship, and a native
-            app you point at it. Publish a gemtext page and anyone on the network can read
-            it — instantly, straight from your ship.
+            One store on your ship, and every surface you would want on top of it.
+            Publish a page and anyone on the network can read it — instantly, straight
+            from your ship. Save a memory and your assistant recalls it next session.
         </p>
         <div class="steps">
             <div class="step">
@@ -230,9 +232,14 @@
                 <div class="d">Publishes your pages to the Urbit namespace and serves them to other ships over remote scry. Follows files you subscribe to.</div>
             </div>
             <div class="step">
-                <div class="n">the app</div>
+                <div class="n">the surfaces</div>
                 <div class="t">browse &amp; edit anywhere</div>
-                <div class="d">Android + desktop, one codebase. Reads <code>urb://</code> pages, edits your own, and gets live notifications when a followed file changes.</div>
+                <div class="d">A native app (Android + desktop), a web workspace with live preview and drag-and-drop upload, an installable PWA — and a FUSE client that mounts your pages as plain files.</div>
+            </div>
+            <div class="step">
+                <div class="n">the agents</div>
+                <div class="t">your AI remembers here</div>
+                <div class="d">MCP knowledge tools are compiled into the ship and served at <code>/grubbery/mcp</code> — your assistant reads and writes the same tagged memory you browse at <code>/know</code>.</div>
             </div>
         </div>
 
@@ -253,40 +260,40 @@ Welcome. Everything here is a gemtext file in /pub.
         <h2>What it does</h2>
         <ul class="features">
             <li>
+                <span class="name">Pages that run</span>
+                <span class="desc">Markdown, gemtext, HTML, JS, CSS — or write a page in Hoon and it computes its content: commands, state, and dependencies on other pages, with live preview in the editor.</span>
+            </li>
+            <li>
+                <span class="name">Knowledge &amp; AI memory</span>
+                <span class="desc">A private, tagged note store with history and trash. Browse it at <code>/know</code>; your agents read and write the same store over MCP, served by the ship itself.</span>
+            </li>
+            <li>
+                <span class="name">Search everything</span>
+                <span class="desc">A full-text catalog over your pages and the ships you follow — from the app or the web omnibar.</span>
+            </li>
+            <li>
+                <span class="name">A real filesystem</span>
+                <span class="desc">Mount your pages as local files with <code>lattice-fs</code>. A cold mount warms in one round-trip, so grep runs from RAM; edit in your own editor and saves round-trip safely.</span>
+            </li>
+            <li>
                 <span class="name">Browse <code>urb://</code></span>
-                <span class="desc">Fetch and read gemtext published by any ship, peer-to-peer over Urbit's remote scry. No server in the middle — the bytes come straight from the author's ship.</span>
+                <span class="desc">Fetch and read pages published by any ship, peer-to-peer over Urbit remote scry. The bytes come straight from the author.</span>
             </li>
             <li>
                 <span class="name">Publish</span>
-                <span class="desc">Anything in <code>/pub/*.gmi</code> on your ship is instantly readable by anyone as <span class="mono">urb://~you/that/path</span>. Edit it from inside the app.</span>
-            </li>
-            <li>
-                <span class="name">Built-in editor</span>
-                <span class="desc">Write and edit your pages without leaving the app. Plain by default; flip on vim keybindings if that's your thing.</span>
-            </li>
-            <li>
-                <span class="name">Browser tabs</span>
-                <span class="desc">Multiple <code>urb://</code> pages open at once, <span class="mono">Ctrl+T</span> for a new one, bookmarks for the pages you keep coming back to.</span>
+                <span class="desc">Anything you publish is instantly readable by anyone as <span class="mono">urb://~you/that/path</span> — and a page can also go clearweb-public, served over HTTP from your ship.</span>
             </li>
             <li>
                 <span class="name">Follow &amp; subscribe</span>
-                <span class="desc">Follow ships to see what they publish; subscribe to a single file and get a live push the moment it changes — over an Eyre SSE channel, not polling.</span>
+                <span class="desc">Follow ships to see what they publish; subscribe to a file for a live push when it changes. Discover publishers via <code>%contacts</code>; copy any remote file onto your own ship.</span>
             </li>
             <li>
-                <span class="name">Discovery</span>
-                <span class="desc">Find other lattice publishers among the ships in your <code>%contacts</code>, via a small manifest each publisher exposes.</span>
-            </li>
-            <li>
-                <span class="name">Copy to your ship</span>
-                <span class="desc">Like a bookmark, but real: pull a remote file down onto your own ship at a path you choose.</span>
-            </li>
-            <li>
-                <span class="name">Fully themeable</span>
-                <span class="desc">Colors and fonts are yours to set. Ships with several built-in themes — Lattice Dark, Light, and more.</span>
+                <span class="name">Web workspace</span>
+                <span class="desc">A three-pane editor with tree, live preview, and drag-and-drop upload of files or whole directories. Installs as a PWA with the flat-green tile you are looking at.</span>
             </li>
             <li>
                 <span class="name">Native everywhere</span>
-                <span class="desc">Android, Linux, macOS, Windows from one Kotlin / Compose Multiplatform codebase. Desktop builds bundle their own JRE.</span>
+                <span class="desc">Android, Linux, macOS, Windows from one Kotlin / Compose codebase, fully themeable, with bundled JRE on desktop.</span>
             </li>
         </ul>
     </div>
@@ -328,11 +335,12 @@ Welcome. Everything here is a gemtext file in /pub.
         <h2>Under the hood</h2>
         <p>
             On your ship, lattice runs as a nexus in the <span class="mono">grubbery</span>
-            framework — publishing your pages to the Urbit namespace and answering remote scry.
-            The app speaks an authenticated HTTP API to your ship over OkHttp, with live updates
-            on an Eyre SSE channel. Kotlin + Compose Multiplatform for the UI, one shared codebase
-            across Android and JVM desktop. Hoon unit tests on the nexus, a JVM test suite on the
-            app, both gated in CI.
+            framework — pages and knowledge live as grubs in the vault, published pages answer
+            remote scry, and the MCP knowledge tools are compiled into the same ball they serve.
+            The native app is Kotlin + Compose Multiplatform over an authenticated HTTP API with
+            live SSE updates; the filesystem client is Rust over a pluggable transport (HTTP or
+            grubbery's local IPC). Hoon unit tests on the nexus, a JVM suite on the app, a
+            19-assertion ship-verified regression matrix on the filesystem client.
         </p>
         <div class="tech-grid">
             <div class="cell"><div class="k">android</div><div class="v">8.0+ (API 26–35)</div></div>

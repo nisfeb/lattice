@@ -1,59 +1,48 @@
 # lattice
 
-gemtext, over Urbit.
+your knowledge, on your ship.
 
-A small, fast browser and publisher for gemtext — but the pages live on the Urbit network. Every page is addressed as urb://~ship/path and travels peer-to-peer between ships. No DNS, no web server, no host in the middle. Native on Android, Linux, macOS, and Windows.
+Pages in markdown, gemtext, or HTML — or Hoon pages that compute their own content. A private, tagged memory you share with your AI. Full-text search across all of it, and peer-to-peer publishing: every published page is addressed as urb://~ship/path and travels ship-to-ship over remote scry. No DNS, no web server, no host in the middle.
 
 (You may well be reading this page through lattice right now.)
 
-## How it works
+## One store, every surface
 
-lattice is two pieces: a small publisher that runs on your ship, and a native app you point at it.
+* The ship — a lattice nexus in the grubbery framework. Pages and knowledge live as grubs in the vault; published pages answer remote scry; followed files push you updates.
+* The app — native on Android, Linux, macOS, and Windows from one codebase. Browse urb://, edit your pages, get live notifications.
+* The web — a reader, a workspace editor with live preview and drag-and-drop upload, a knowledge browser at /know, and an installable PWA — served straight from the ship.
+* The filesystem — lattice-fs mounts your pages as local files. grep runs from RAM; edit in your own editor.
+* The agents — MCP knowledge tools compiled into the ship, served at /grubbery/mcp. Your assistant's memory lives on your ship.
 
-* On your ship — lattice publishes your gemtext pages to the Urbit namespace and serves them to other ships over remote scry. It also follows files you subscribe to.
-* The app — browse, read, and edit anywhere. Android and desktop, one codebase. Live notifications when a followed file changes.
+## What pages look like
 
 Publish a page, and anyone on the network can read it — instantly, straight from your ship:
 
 ```
 # ~nisfeb's notebook
 
-Welcome. Everything here is a gemtext file in /pub.
+Welcome. Everything here is a page on my ship.
 
 => urb://~nisfeb/notes/urbit  Notes on Urbit
 => urb://~nisfeb/now          What I'm doing now
 ```
 
-## What it does
-
-* Browse urb:// — read gemtext published by any ship, peer-to-peer. The bytes come straight from the author's ship, not a server.
-* Publish — every page you write is instantly readable as urb://~you/that/path. Write and edit it from inside the app.
-* Built-in editor — write your pages without leaving lattice. Plain by default; optional vim keybindings.
-* Browser tabs — multiple urb:// pages at once, a keystroke for a new one, bookmarks for your regulars.
-* Follow & subscribe — follow ships to see what they publish; subscribe to a file and get a live push when it changes.
-* Discovery — find other lattice publishers among the ships in your %contacts.
-* Copy to your ship — like a bookmark, but real: pull a remote file onto your own ship.
-* Fully themeable — colors and fonts are yours to set.
+A page can also be Hoon that computes its content — state, commands, dependencies on other pages — or go clearweb-public, served over plain HTTP from your ship.
 
 ## What it isn't
 
 * Not a host. Bring your own ship — yours, a friend's, or a hosted one.
-* Not the HTTP web. Pages are Urbit-native and move between ships over remote scry, not over DNS and HTTP.
-* Not on the app stores. Sideload from GitHub Releases.
+* Not the HTTP web. Published pages are Urbit-native and move between ships over remote scry.
+* Not on the app stores. Sideload the APK and desktop installers from GitHub Releases.
 
 ## Privacy
 
-The only server lattice talks to is your ship. No analytics, no third-party SDKs, no telemetry. Your +code and session cookie are never sent in cleartext to a remote ship and are stored owner-only at rest. Everything you publish is public by design; nothing else on your ship is exposed.
+The only server lattice talks to is your ship. No analytics, no third-party SDKs, no telemetry. Published pages are public by design; the knowledge store is private by default — foreign access is deny-by-default at the ship.
 
 ## Get it
 
-=> https://github.com/nisfeb/lattice/releases/latest  Download (Android · Linux · macOS · Windows)
+=> https://github.com/nisfeb/lattice/releases/latest  Downloads (Android, Linux, macOS, Windows)
 => https://github.com/nisfeb/lattice  Source on GitHub
-=> https://urbit.org/overview/running-urbit  New to Urbit? Boot a ship here
+=> https://urbit.org/overview/running-urbit  New to Urbit? Boot a ship
 
-You'll need lattice running on your ship, then point the app at it with your ship's URL and +code.
-
----
-
-Built by ~nisfeb. PolyForm Noncommercial 1.0.0 licensed.
-=> https://polyformproject.org/licenses/noncommercial/1.0.0  License
+© lattice — built by ~nisfeb. PolyForm Noncommercial 1.0.0.
