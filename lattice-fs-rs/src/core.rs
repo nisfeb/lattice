@@ -212,10 +212,15 @@ impl GrubberyFs {
         }
         let data = self.proj.read(rel)?;
         let mut s = self.st.lock().unwrap();
-        let add = rel.len() + data.len();
-        if s.read_cache_bytes + add <= READ_CACHE_MAX {
-            s.read_cache_bytes += add;
-            s.read_cache.insert(rel.to_string(), data.clone());
+        // re-check under the lock: a concurrent body() for the same rel may have
+        // fetched and inserted while we were on the wire — inserting again would
+        // double-count the bytes and slowly rot the cap accounting.
+        if !s.read_cache.contains_key(rel) {
+            let add = rel.len() + data.len();
+            if s.read_cache_bytes + add <= READ_CACHE_MAX {
+                s.read_cache_bytes += add;
+                s.read_cache.insert(rel.to_string(), data.clone());
+            }
         }
         Ok(data)
     }
@@ -297,6 +302,22 @@ impl GrubberyFs {
         if let Some(h) = s.handles.get_mut(&fh) {
             h.dirty = false;
             h.new = false;
+        }
+        // Update the vt node's size NOW — the re-dump is async, and until it lands
+        // stat would report the pre-write size (create() seeds 0). The kernel
+        // computes an O_APPEND offset from that stale size, so an append following
+        // a write would land at the wrong offset and overwrite instead of append.
+        let n = buf.len() as u64;
+        let mt = now_secs();
+        for e in s.vt.values_mut() {
+            if e.kind == VKind::File {
+                if let Some(node) = e.node.as_mut() {
+                    if node.rel == rel {
+                        node.size = n;
+                        node.mtime = mt;
+                    }
+                }
+            }
         }
         s.vt_ts = None;
         s.write_gen += 1; // supersede any in-flight dump swap (stale-swap guard)

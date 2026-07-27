@@ -74,6 +74,19 @@ impl GenericProjection {
             let msg = err.get("message").and_then(Value::as_str).unwrap_or("mcp error");
             return Err(PErr::new(libc::EIO, msg.to_string()));
         }
+        // MCP also signals tool failure as result.isError with the message in
+        // content — treat that as an error too, not a silent success.
+        let res = v.get("result");
+        if res.and_then(|r| r.get("isError")).and_then(Value::as_bool) == Some(true) {
+            let msg = res
+                .and_then(|r| r.get("content"))
+                .and_then(Value::as_array)
+                .and_then(|c| c.first())
+                .and_then(|c| c.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or("mcp tool error");
+            return Err(PErr::new(libc::EIO, msg.to_string()));
+        }
         Ok(())
     }
 
