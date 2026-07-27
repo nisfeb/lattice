@@ -77,7 +77,7 @@
     <h3>sharing</h3>
     <div class="share" id="share">
       <button data-m="private">private</button>
-      <button data-m="public">public</button>
+      <button data-m="shared">shared</button>
       <button data-m="clearweb">clearweb</button>
     </div>
     <div id="cwurl" class="muted"></div>
@@ -85,6 +85,16 @@
     <button id="mv" class="mvbtn">move / rename</button>
     <button id="del" class="del">delete page</button>
   </aside>
+</div>
+<div class="dlg" id="dlg" hidden>
+  <form class="dlgbox" id="dlgform">
+    <div id="dlgmsg"></div>
+    <input id="dlginput" autocomplete="off" spellcheck="false">
+    <div class="dlgbtns">
+      <button type="button" id="dlgcancel">cancel</button>
+      <button type="submit" id="dlgok">ok</button>
+    </div>
+  </form>
 </div>
 <script src="/apps/lattice/prism.js"></script>
 <script src="/apps/lattice/app/app.js"></script>

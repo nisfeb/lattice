@@ -152,3 +152,24 @@ a { color: var(--green); }
 #hl .token.italic { font-style: italic; }
 #hl .token.punctuation, #hl .token.operator { opacity: .75; }
 #hl .token.url { text-decoration: underline; }
+
+/* in-app dialog (no browser-native popups, ever) */
+.dlg { position: fixed; inset: 0; background: #0008; display: grid;
+  place-items: center; z-index: 50; }
+.dlg[hidden] { display: none; }
+.dlgbox { background: var(--bg); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px; width: min(400px, 92vw);
+  display: grid; gap: 12px; box-shadow: 0 8px 30px #0004; }
+#dlgmsg { overflow-wrap: break-word; }
+#dlginput { font: inherit; padding: 6px 9px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--surface); color: inherit; width: 100%; }
+#dlginput[hidden] { display: none; }
+.dlgbtns { display: flex; gap: 8px; justify-content: flex-end; }
+.dlgbtns button { font: inherit; padding: 6px 14px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--surface); color: inherit; cursor: pointer; }
+#dlgok { background: var(--green); border-color: var(--green); color: #fff; }
+
+/* folder selection + clearweb indicator */
+.tree .fld { cursor: pointer; }
+.tree .fld.cur > span:nth-child(2) { color: var(--green); font-weight: 600; }
+.tree .fld .cw { color: #1a6ed8; margin-left: 5px; font-size: .85em; }

@@ -2887,6 +2887,7 @@
   =/  pdir=path  (weld app-base (weld /page pax.nod))
   ;<  cn=view:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
   ?.  ?=([%file *] cn)  $(tree t.tree)     ::  raced delete — drop
+  ;<  shr=share-mode:le  bind:m  (read-share pdir)
   =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cn)))) '')
   =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
   =/  gen=?  =((make-folder-index pax.nod) src)
@@ -2898,6 +2899,7 @@
         ['size' (numb:enjs:format (met 3 body))]
         ['rev' (numb:enjs:format ud.cass.cn)]
         ['mtime' s+(scot %da da.cass.cn)]
+        ['share' s+shr]
     ==
   $(tree t.tree, acc [j acc])
 ::  [page-dump deploy marker DPMARK7]

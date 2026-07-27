@@ -11,8 +11,45 @@
     status.style.color = ok ? '' : '#c0392b';
   };
 
+  // ── in-app dialogs — NEVER browser-native prompt/confirm/alert ───────────
+  const dlg = $('dlg'), dlgMsg = $('dlgmsg'), dlgIn = $('dlginput');
+  let dlgDone = null;
+  const dlgClose = (v) => {
+    if (!dlgDone) return;
+    dlg.hidden = true;
+    const d = dlgDone; dlgDone = null; d(v);
+  };
+  const dlgOpen = (msg, okLabel) => {
+    dlgMsg.textContent = msg;
+    $('dlgok').textContent = okLabel || 'ok';
+    dlg.hidden = false;
+    return new Promise((res) => { dlgDone = res; });
+  };
+  // ask: text-input dialog → string | null (cancel)
+  const ask = (msg, value, okLabel) => {
+    dlgIn.hidden = false;
+    dlgIn.value = value || '';
+    const p = dlgOpen(msg, okLabel);
+    dlgIn.focus(); dlgIn.select();
+    return p;
+  };
+  // askConfirm: yes/no dialog → boolean
+  const askConfirm = (msg, okLabel) => {
+    dlgIn.hidden = true;
+    const p = dlgOpen(msg, okLabel);
+    $('dlgok').focus();
+    return p.then((v) => v !== null);
+  };
+  $('dlgform').onsubmit = (e) => { e.preventDefault(); dlgClose(dlgIn.hidden ? '' : dlgIn.value); };
+  $('dlgcancel').onclick = () => dlgClose(null);
+  dlg.onclick = (e) => { if (e.target === dlg) dlgClose(null); };
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !dlg.hidden) dlgClose(null);
+  });
+
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
+  let curFolder = null;    // selected folder path — right-pane ops target it
   let folderCtx = '';      // folder uploads land in (last into / open page's dir)
   let nodes = [];          // last page-tree
   const qs = new URLSearchParams(location.search);
@@ -61,38 +98,36 @@
         row.textContent = n.path.split('/').pop() + '.' + extOf(n.kind);
         row.onclick = (e) => { e.preventDefault(); openPage(n.path); };
       } else {
-        row.className = 'fld';
+        row.className = 'fld' + (n.path === curFolder ? ' cur' : '');
         const cx = document.createElement('span');
         cx.className = 'cx';
         cx.textContent = coll.includes(n.path) ? '▸' : '▾';
-        const label = document.createElement('span');
-        label.textContent = '\u{1F4C1} ' + n.path.split('/').pop();
-        const add = document.createElement('a');
-        add.className = 'addf';
-        add.textContent = '+';
-        add.title = 'new file in ' + n.path;
-        add.href = '#';
-        add.onclick = (e) => { e.preventDefault(); e.stopPropagation(); newFile(n.path); };
-        const mvf = document.createElement('a');
-        mvf.className = 'mvf';
-        mvf.textContent = '\u270e';
-        mvf.title = 'move / rename ' + n.path;
-        mvf.href = '#';
-        mvf.onclick = (e) => { e.preventDefault(); e.stopPropagation(); moveFolder(n.path); };
-        const shf = document.createElement('a');
-        shf.className = 'mvf';
-        shf.textContent = '\u{1F310}';
-        shf.title = 'share tree ' + n.path;
-        shf.href = '#';
-        shf.onclick = (e) => { e.preventDefault(); e.stopPropagation(); shareFolder(n.path); };
-        row.append(cx, label, shf, mvf, add);
-        row.onclick = () => {
+        cx.onclick = (e) => {
+          e.stopPropagation();
           const c = collapsed();
           const i = c.indexOf(n.path);
           if (i >= 0) c.splice(i, 1); else c.push(n.path);
           setCollapsed(c);
           renderTree();
         };
+        const label = document.createElement('span');
+        label.textContent = '\u{1F4C1} ' + n.path.split('/').pop();
+        row.append(cx, label);
+        if (treeShare(n.path) === 'clearweb') {
+          const cw = document.createElement('span');
+          cw.className = 'cw';
+          cw.textContent = '\u{1F310}';
+          cw.title = n.path + ' is clearweb public';
+          row.append(cw);
+        }
+        const add = document.createElement('a');
+        add.className = 'addf';
+        add.textContent = '+';
+        add.title = 'new file in ' + n.path;
+        add.href = '#';
+        add.onclick = (e) => { e.preventDefault(); e.stopPropagation(); newFile(n.path); };
+        row.append(add);
+        row.onclick = () => selectFolder(n.path);
       }
       treeList.appendChild(row);
     }
@@ -100,6 +135,43 @@
 
   const extOf = (kind) => ({ md: 'md', gmi: 'gmi', html: 'html', text: 'txt',
                              js: 'js', css: 'css', index: 'md' }[kind] || 'hoon');
+
+  // ── folder selection ─────────────────────────────────────────────────────
+  // A folder's share state is derived from its pages: uniform → that mode,
+  // differing → 'mixed', empty → 'private'.
+  const treeShare = (path) => {
+    const pages = nodes.filter((n) => n.page && n.path.startsWith(path + '/'));
+    if (!pages.length) return 'private';
+    const s = pages[0].share || 'private';
+    return pages.every((p) => (p.share || 'private') === s) ? s : 'mixed';
+  };
+
+  const pageCount = (path) =>
+    nodes.filter((n) => n.page && n.path.startsWith(path + '/')).length;
+
+  const setCtlLabels = () => {
+    const t = mode === 'know' ? 'memory' : curFolder ? 'folder' : 'page';
+    $('del').textContent = 'delete ' + t;
+    $('mv').textContent = t === 'page' ? 'move / rename' : 'move / rename ' + t;
+  };
+
+  function selectFolder(path) {
+    current = null;
+    curFolder = path;
+    folderCtx = path;
+    pname.value = path;
+    pname.readOnly = true;
+    src.value = '';
+    render();
+    prev.removeAttribute('srcdoc'); prev.src = 'about:blank';
+    cerr.textContent = ' '; cerr.className = 'ok';
+    history.replaceState(null, '', '/apps/lattice/app?into=' + encodeURIComponent(path));
+    renderTree();
+    setCtlLabels();
+    showShare(treeShare(path));
+    const c = pageCount(path);
+    st('folder · ' + c + ' page' + (c === 1 ? '' : 's'));
+  }
 
   // ── open / new / save ────────────────────────────────────────────────────
   const setFolderCtx = (name) =>
@@ -111,6 +183,8 @@
     if (!r.ok) { st('open failed ' + r.status, false); return; }
     const d = await r.json();
     current = name;
+    curFolder = null;
+    setCtlLabels();
     pname.value = name;
     pname.readOnly = true;
     if (LMAP[d.kind] || d.kind === 'text') pkind.value = d.kind === 'text' ? 'text' : d.kind;
@@ -128,6 +202,8 @@
   function newFile(into) {
     folderCtx = into || '';
     current = null;
+    curFolder = null;
+    setCtlLabels();
     pname.readOnly = false;
     pname.value = into ? into + '/' : '';
     src.value = '';
@@ -142,7 +218,8 @@
   }
 
   async function newFolder() {
-    const name = prompt('folder name (e.g. notes or notes/sub)');
+    const name = await ask('folder name (e.g. notes or notes/sub)',
+      folderCtx ? folderCtx + '/' : '', 'create');
     if (!name) return;
     const r = await fetch(api + '/folder-new?name=' + encodeURIComponent(name), { method: 'POST' });
     if (!r.ok) { st('folder failed ' + r.status, false); return; }
@@ -151,6 +228,7 @@
   }
 
   async function save() {
+    if (curFolder) { st('folder selected — open a page to edit', false); return; }
     const name = pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!name) { st('name required', false); return; }
     const creating = current === null;
@@ -227,22 +305,38 @@
     }
   }
 
-  // ── sharing ──────────────────────────────────────────────────────────────
-  function showShare(mode) {
+  // ── sharing (pages and folder trees share one panel) ─────────────────────
+  function showShare(m) {
     for (const b of document.querySelectorAll('.share button'))
-      b.className = b.dataset.m === mode ? 'on' : '';
-    cwurl.innerHTML = mode === 'clearweb' && current
-      ? 'public: <a href="' + api + '/c/' + current + '" target="_blank">/c/' + current + '</a>'
+      b.className = b.dataset.m === m ? 'on' : '';
+    const target = curFolder || current;
+    const suffix = curFolder ? '/' : '';
+    cwurl.innerHTML =
+      m === 'clearweb' && target
+        ? 'public: <a href="' + api + '/c/' + target + suffix +
+          '" target="_blank">/c/' + target + suffix + '</a>'
+      : m === 'mixed' ? 'mixed — pages under this folder differ'
       : '';
   }
   for (const b of document.querySelectorAll('.share button')) {
     b.onclick = async () => {
+      const m = b.dataset.m;
+      if (curFolder) {
+        const r = await fetch(api + '/page-share-tree?name=' + encodeURIComponent(curFolder) +
+          '&mode=' + m, { method: 'POST' });
+        if (!r.ok) { st('share failed ' + r.status, false); return; }
+        showShare(m);
+        st(m === 'clearweb' ? 'published tree at /c/' + curFolder + '/' : 'tree set ' + m);
+        loadTree();
+        return;
+      }
       if (!current) { st('save the page first', false); return; }
       const r = await fetch(api + '/page-share?name=' + encodeURIComponent(current) +
-        '&mode=' + b.dataset.m, { method: 'POST' });
+        '&mode=' + m, { method: 'POST' });
       if (!r.ok) { st('share failed ' + r.status, false); return; }
-      showShare(b.dataset.m);
-      st('sharing: ' + b.dataset.m);
+      showShare(m);
+      st('sharing: ' + m);
+      loadTree();
     };
   }
 
@@ -261,8 +355,21 @@
   // ── delete ───────────────────────────────────────────────────────────────
   $('del').onclick = async () => {
     if (mode === 'know') { deleteKnow(); return; }
+    if (curFolder) {
+      const path = curFolder;
+      const c = pageCount(path);
+      const what = 'delete folder ' + path +
+        (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it?' : '?');
+      if (!(await askConfirm(what, 'delete'))) return;
+      const r = await fetch(api + '/page-del?name=' + encodeURIComponent(path), { method: 'POST' });
+      if (!r.ok) { st('delete failed ' + r.status, false); return; }
+      newFile('');
+      loadTree();
+      st('deleted ' + path);
+      return;
+    }
     if (!current) { st('nothing to delete', false); return; }
-    if (!confirm('delete ' + current + '?')) return;
+    if (!(await askConfirm('delete ' + current + '?', 'delete'))) return;
     const r = await fetch(api + '/page-del?name=' + encodeURIComponent(current), { method: 'POST' });
     if (!r.ok) { st('delete failed ' + r.status, false); return; }
     newFile('');
@@ -388,7 +495,7 @@
   }
 
   async function moveFolder(oldPath) {
-    const to = prompt('move folder ' + oldPath + ' to:', oldPath);
+    const to = await ask('move / rename folder ' + oldPath + ' to:', oldPath, 'move');
     if (!to || to === oldPath) return;
     const newPath = to.trim().replace(/^\/+|\/+$/g, '');
     if (!newPath) return;
@@ -409,26 +516,16 @@
     if (current && (current === oldPath || current.startsWith(oldPath + '/')))
       current = mapped(current);
     st('moved ' + oldPath + ' \u2192 ' + newPath + ' (' + moved + ' pages)');
-    loadTree();
+    await loadTree();
     if (current) openPage(current);
-  }
-
-  async function shareFolder(path) {
-    const mode = prompt('share tree ' + path + ' as (private / shared / clearweb):', 'clearweb');
-    if (!mode) return;
-    const m = mode.trim().toLowerCase();
-    if (!['private', 'shared', 'clearweb'].includes(m)) { st('mode must be private, shared, or clearweb', false); return; }
-    const r = await fetch(api + '/page-share-tree?name=' + encodeURIComponent(path) +
-      '&mode=' + m, { method: 'POST' });
-    if (!r.ok) { st('share failed ' + r.status, false); return; }
-    st(m === 'clearweb' ? 'published: ' + location.origin + '/c/' + path + '/'
-                        : 'tree set ' + m);
-    if (current) openPage(current);
+    else if (curFolder === oldPath) selectFolder(newPath);
   }
 
   $('mv').onclick = async () => {
+    if (curFolder) { moveFolder(curFolder); return; }
     if (!current) { st('open something first', false); return; }
-    const to = prompt('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:', current);
+    const to = await ask('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
+      current, 'move');
     if (!to || to === current) return;
     const newName = to.trim().replace(/^\/+|\/+$/g, '');
     if (!newName) return;
@@ -598,7 +695,7 @@
 
   async function deleteKnow() {
     if (!current) return;
-    if (!confirm('delete memory ' + current + '? (soft-delete, restorable)')) return;
+    if (!(await askConfirm('delete memory ' + current + '? (soft-delete, restorable)', 'delete'))) return;
     await fetch(api + '/know-delete?key=' + encodeURIComponent(current), { method: 'POST' });
     current = null;
     pname.value = '';
@@ -617,8 +714,8 @@
     chipsEl.hidden = m !== 'know';
     knowMeta.hidden = m !== 'know';
     $('treesec').textContent = m === 'know' ? 'memories' : 'files';
-    $('del').textContent = m === 'know' ? 'delete memory' : 'delete page';
-    $('mv').textContent = m === 'know' ? 'move / rename memory' : 'move / rename';
+    curFolder = null;
+    setCtlLabels();
     current = null;
     pname.value = '';
     pname.readOnly = false;
@@ -638,6 +735,7 @@
       const name = qs.get('name');
       const into = qs.get('into');
       if (name) openPage(name);
+      else if (into && nodes.some((n) => !n.page && n.path === into)) selectFolder(into);
       else if (into) newFile(into);
       else newFile('');
     });
