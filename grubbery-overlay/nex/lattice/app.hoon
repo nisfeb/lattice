@@ -28,6 +28,7 @@
 /<  pg   /lib/lattice-pg.hoon
 /<  gfm  /lib/lattice-md.hoon
 /<  tpl  /lib/lattice-templates.hoon
+/<  lkv  /lib/lattice-know-view.hoon
 ::  imports resolve relative to THIS file's dir (/nex/lattice), not /nex —
 ::  guestbook writes `guestbook/icon.svg` only because its source sits AT /nex.
 /<  icon  icon.svg
@@ -377,6 +378,20 @@
   ::  sibling grubs, no command form. Everything else requires the owner.
   ?:  &(?=([%c ^] suffix) =(%'GET' method.request.req))
     (serve-clearweb eyre-id t.suffix)
+  ::  PWA assets: also unauthenticated. Browsers fetch the manifest and the
+  ::  apple-touch-icon WITHOUT credentials (only Chrome honors
+  ::  crossorigin=use-credentials, iOS never sends cookies for icons) — behind
+  ::  the owner gate they 403 and the install silently degrades to a bookmark
+  ::  with no standalone display. Nothing here is private: the app's name,
+  ::  colors, icons, and a generic caching worker.
+  ?:  &(=(%'GET' method.request.req) =(`path`[%'manifest.webmanifest' ~] suffix))
+    (send-typed eyre-id 'application/manifest+json' 'no-cache' manifest-json)
+  ?:  &(=(%'GET' method.request.req) =(`path`[%'sw.js' ~] suffix))
+    (send-sw eyre-id sw-js)
+  ?:  &(=(%'GET' method.request.req) =(`path`[%'icon.svg' ~] suffix))
+    (send-typed eyre-id 'image/svg+xml' 'public, max-age=86400' icon-svg)
+  ?:  &(=(%'GET' method.request.req) =(`path`[%'apple-touch-icon.png' ~] suffix))
+    (send-png eyre-id apple-icon-b64)
   ::  owner gate. Eyre stamps a request authenticated to our web login with
   ::  src=our, so `authenticated` (already in hand, synchronous) IS the src==our
   ::  check — reading `our` via a /sys/bowl round trip (bowl-our) just to compare
@@ -395,6 +410,10 @@
   ::  can import a js/css file by URL. Owner-gated (fetched with the session).
   ?:  &(?=([%f ^] suffix) =(%'GET' method.request.req))
     (serve-asset eyre-id t.suffix)
+  ::  /know[/<key…>]: the private knowledge view — browse the memory store in
+  ::  the reader. Owner-only like every non-clearweb route (gated above).
+  ?:  &(?=([%know *] suffix) =(%'GET' method.request.req))
+    (serve-know eyre-id t.suffix args)
   ::  root: the web reader (Landscape tile). ?url=urb://ship/rel renders that
   ::  page; no url renders the home index of our published pages. ponytail:
   ::  compact gemtext->HTML (headings/links/quotes/lists/pre); the full reader's
@@ -3097,6 +3116,22 @@
   ;<  seen=view:nexus  bind:m  (peek:io [%| 2 %| /know/vault] ~)
   ?.  ?=([%ball *] seen)  (pure:m ~)
   (pure:m (collect-entries ~ ball.seen))
+::  +serve-know: the private knowledge view (builders in /lib/lattice-know-view).
+::  The keep on /beacon/rev live-reloads an open view whenever the writer
+::  mutates the store, so a memory saved by a session appears without a refresh.
+::
+++  serve-know
+  |=  [eyre-id=@ta rest=path args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  es=(map path know-entry:lk)  bind:m  read-know-map
+  ?~  rest
+    =/  tsel=(unit @t)  (~(get by args) 'tag')
+    (send-view eyre-id (render-page "know" (keep-url "beacon/rev") (know-index-html:lkv es tsel)))
+  =/  e=(unit know-entry:lk)  (~(get by es) `path`rest)
+  ?~  e
+    (send-view eyre-id (render-page "know" "" "<p class=\"err\">no such entry</p>"))
+  (send-view eyre-id (render-page (weld "know" (spud rest)) (keep-url "beacon/rev") (know-entry-html:lkv rest u.e)))
 ::  ── JSON renderers (ported from /lib/lattice; client contract, byte-for-byte) ──
 ::
 ++  tags-json
@@ -4438,7 +4473,7 @@
 ++  pwa-head
   ^-  tape
   %-  trip
-  '<link rel="manifest" href="/apps/lattice/manifest.webmanifest"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#1a6ed8"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1a1a"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="Lattice"><link rel="apple-touch-icon" href="/apps/lattice/apple-touch-icon.png"><link rel="icon" href="/apps/lattice/icon.svg" type="image/svg+xml">'
+  '<link rel="manifest" href="/apps/lattice/manifest.webmanifest" crossorigin="use-credentials"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#1a6ed8"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1a1a"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="Lattice"><link rel="apple-touch-icon" href="/apps/lattice/apple-touch-icon.png"><link rel="icon" href="/apps/lattice/icon.svg" type="image/svg+xml">'
 ++  sw-register-script
   ^-  tape
   %-  trip
@@ -4951,8 +4986,15 @@
 ::
 ++  web-css
   ^-  tape
+  %+  weld  know-css
   %-  trip
   '*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{background:#fafafa}body{margin:0;font:16px/1.6 system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){html{background:#1a1a1a}body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:#1a6ed8}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}.bar button:hover{border-color:#1a6ed8}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:#1a6ed8}.err{color:#c0392b}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}code{background:#8881;padding:.1em .3em;border-radius:4px;font-size:.9em}pre code{background:0;padding:0}table{border-collapse:collapse;margin:.7rem 0;display:block;overflow-x:auto;max-width:100%}th,td{border:1px solid #8887;padding:6px 11px}th{background:#8881;font-weight:600;text-align:left}img{max-width:100%;height:auto}del{opacity:.7}ul,ol{padding-left:1.5rem}li{margin:.15rem 0}sup.fnref{font-size:.72em}sup.fnref a{text-decoration:none}hr.fn-sep{margin-top:2rem}.footnotes{font-size:.88em;color:#8a8a8a}.footnotes li{margin:.25rem 0}.bar{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}@media(max-width:520px){.bar{flex-wrap:wrap}.bar input{flex:1 1 100%;order:3}main{padding-top:12px;padding-bottom:12px}}'
+::  +know-css: styles for the knowledge view (single-quote cord: braces literal).
+::
+++  know-css
+  ^-  tape
+  %-  trip
+  '.know-count{color:#8a8a8a;font-size:.9em}.know-chips{display:flex;flex-wrap:wrap;gap:6px;margin:.7rem 0}.know-chips a{border:1px solid #8886;border-radius:999px;padding:2px 10px;font-size:.85em;text-decoration:none;color:inherit}.know-chips a.on{border-color:#1a6ed8;color:#1a6ed8}.know-list{list-style:none;padding:0}.know-list li{margin:.45rem 0;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}.know-list .kt{font-size:.78em;color:#8a8a8a}.know-meta{color:#8a8a8a;font-size:.88em}.know-body{white-space:pre-wrap}'
 ::  +render-page: wrap an HTML fragment in the reader chrome (address bar + CSS).
 ::
 ++  render-page
