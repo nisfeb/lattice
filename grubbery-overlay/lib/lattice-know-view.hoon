@@ -28,6 +28,43 @@
   =/  t=tape  (scow %da d)
   =/  i=(unit @ud)  (find ".." t)
   ?~(i t (scag u.i t))
+::  +preview: first line of a body, capped for a one-line .qprev row.
+++  preview
+  |=  t=tape
+  ^-  tape
+  =/  nl=(unit @ud)  (find "\0a" t)
+  =/  one=tape  ?~(nl t (scag u.nl t))
+  ?.  (gth (lent one) 90)  one
+  (weld (scag 90 one) "&hellip;")
+::  +recent-know: newest n entries.
+++  recent-know
+  |=  [es=(map path know-entry:lk) n=@ud]
+  ^-  (list (pair path know-entry:lk))
+  %+  scag  n
+  %+  sort  ~(tap by es)
+  |=  [a=(pair path know-entry:lk) b=(pair path know-entry:lk)]
+  (gth updated.q.a updated.q.b)
+::  +know-quick-html: the home page's "Recent memories" qlist (house style,
+::  mirrors the Editor/Browser quick lists).
+++  know-quick-html
+  |=  [es=(map path know-entry:lk) n=@ud]
+  ^-  tape
+  =/  entries=(list (pair path know-entry:lk))  (recent-know es n)
+  ?~  entries  "<p class=\"muted\">No memories yet.</p>"
+  =/  items=tape
+    %-  zing
+    %+  turn  entries
+    |=  p=(pair path know-entry:lk)
+    =/  href=tape  (spud p.p)
+    =/  disp=tape  (esc (slag 1 (spud p.p)))
+    =/  prev=tape  (esc (preview (trip body.q.p)))
+    ;:  weld
+      "<li><a href=\"/apps/lattice/know"  href  "\">"
+      "<span class=\"qname\">"  disp  "</span>"
+      "<span class=\"qprev\">"  prev  "</span>"
+      "</a></li>"
+    ==
+  :(weld "<ul class=\"qlist\">" items "</ul>")
 ::  +know-index-html: entry list, newest first, with tag-chip filtering.
 ++  know-index-html
   |=  [es=(map path know-entry:lk) tsel=(unit @t)]
@@ -55,17 +92,17 @@
     %-  zing
     %+  turn  all-tags
     |=  t=@t
-    =/  on=tape  ?:(=(t sel) "on" "")
+    =/  on=tape  ?:(=(t sel) " class=\"on\"" "")
     =/  et=tape  (esc (trip t))
     ;:  weld
-      "<a href=\"/apps/lattice/know?tag="  et  "\" class=\""  on
-      "\">"  et  "</a>"
+      "<a href=\"/apps/lattice/know?tag="  et  "\""  on  ">#"  et  "</a>"
     ==
-  =/  all-on=tape  ?:(=('' sel) "on" "")
+  =/  all-on=tape  ?:(=('' sel) " class=\"on\"" "")
   =/  chips=tape
     ;:  weld
-      "<a href=\"/apps/lattice/know\" class=\""  all-on  "\">all</a>"
+      "<div class=\"quick\"><a href=\"/apps/lattice/know\""  all-on  ">all</a>"
       tag-links
+      "</div>"
     ==
   =/  items=tape
     %-  zing
@@ -78,18 +115,21 @@
       %+  turn  (sort ~(tap in tags.q.p) aor)
       |=(t=@t :(weld "#" (esc (trip t)) " "))
     =/  dt=tape  (da-short updated.q.p)
+    =/  prev=tape  (esc (preview (trip body.q.p)))
     ;:  weld
-      "<li><a href=\"/apps/lattice/know"  href  "\">"  disp
-      "</a><span class=\"kt\">"  tl  dt  "</span></li>"
+      "<li><a href=\"/apps/lattice/know"  href  "\">"
+      "<span class=\"qname\">"  disp  "</span>"
+      "<span class=\"qprev\">"  tl  ?:(=("" tl) "" "&middot; ")  dt  " &middot; "  prev  "</span>"
+      "</a></li>"
     ==
   =/  cnt=tape  (scow %ud (lent shown))
   =/  what=tape  ?:(=('' sel) " entries" " tagged")
   ;:  weld
-    "<section class=\"know\"><h1>knowledge</h1><p class=\"know-count\">"
-    cnt  what
-    "</p><nav class=\"know-chips\">"  chips  "</nav><ul class=\"know-list\">"
+    "<h1>Knowledge</h1><p class=\"muted\">"
+    cnt  what  " &middot; the private memory store"
+    "</p>"  chips  "<ul class=\"qlist\">"
     items
-    "</ul></section>"
+    "</ul>"
   ==
 ::  +know-entry-html: one entry — key, updated, tag chips, escaped body.
 ++  know-entry-html
@@ -101,18 +141,17 @@
     |=  t=@t
     =/  et=tape  (esc (trip t))
     ;:  weld
-      "<a href=\"/apps/lattice/know?tag="  et  "\">"  et  "</a>"
+      "<a href=\"/apps/lattice/know?tag="  et  "\">#"  et  "</a>"
     ==
   =/  title=tape  (esc (slag 1 (spud kp)))
   =/  upd=tape  (esc (scow %da updated.e))
   =/  body=tape  (esc (trip body.e))
   ;:  weld
-    "<section class=\"know\">"
-    "<p><a href=\"/apps/lattice/know\">&#8592; knowledge</a></p>"
+    "<p class=\"muted\"><a href=\"/apps/lattice/know\">&#8592; knowledge</a></p>"
     "<h1>"  title  "</h1>"
-    "<p class=\"know-meta\">updated "  upd  "</p>"
-    "<nav class=\"know-chips\">"  chips  "</nav>"
+    "<p class=\"muted\">updated "  upd  "</p>"
+    "<div class=\"quick\">"  chips  "</div>"
     "<pre class=\"know-body\">"  body  "</pre>"
-    "</section>"
   ==
+
 --

@@ -428,7 +428,8 @@
       ?~  home
         ;<  recent=(list [pax=path prev=@t])  bind:m  (read-recent 10)
         ;<  bms=bookmarks:lb  bind:m  read-bookmarks
-        (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") (home-index-html our recent bms)))
+        ;<  kes=(map path know-entry:lk)  bind:m  read-know-map
+        (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") (home-index-html our recent bms (know-quick-html:lkv kes 6))))
       (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") (render-gmi u.home)))
     =/  ref=(unit referent)  (de-urb u.raw)
     ::  omnibar: input that isn't a urb:// address is a SEARCH query — serve a
@@ -4924,7 +4925,7 @@
 ::  pages — so an empty store is still a way in, not a dead end.
 ::
 ++  home-index-html
-  |=  [our=@p recent=(list [pax=path prev=@t]) bms=bookmarks:lb]
+  |=  [our=@p recent=(list [pax=path prev=@t]) bms=bookmarks:lb know=tape]
   ^-  tape
   =/  ship=tape  (scow %p our)
   =/  tree=tape  :(weld "/apps/lattice/x/" ship "/")
@@ -4980,6 +4981,11 @@
     "<h3 class=\"qh\">Bookmarks</h3>"
     bm-list
     "</div>"
+    "<div class=\"col\">"
+    "<a class=\"appcard\" href=\"/apps/lattice/know\"><span class=\"ico\">&#128218;</span><strong>Knowledge</strong><span class=\"d\">The private memory store &mdash; tagged notes your assistant recalls and saves.</span></a>"
+    "<h3 class=\"qh\">Recent memories</h3>"
+    know
+    "</div>"
     "</div>"
   ==
 ::  +web-css: minimal reader styling (single-quoted cord so braces are literal).
@@ -4994,7 +5000,7 @@
 ++  know-css
   ^-  tape
   %-  trip
-  '.know-count{color:#8a8a8a;font-size:.9em}.know-chips{display:flex;flex-wrap:wrap;gap:6px;margin:.7rem 0}.know-chips a{border:1px solid #8886;border-radius:999px;padding:2px 10px;font-size:.85em;text-decoration:none;color:inherit}.know-chips a.on{border-color:#1a6ed8;color:#1a6ed8}.know-list{list-style:none;padding:0}.know-list li{margin:.45rem 0;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}.know-list .kt{font-size:.78em;color:#8a8a8a}.know-meta{color:#8a8a8a;font-size:.88em}.know-body{white-space:pre-wrap}'
+  '.muted{color:#8a8a8a}.quick{display:flex;flex-wrap:wrap;gap:8px;margin:.5rem 0 .3rem}.quick a{padding:6px 12px;border:1px solid #8886;border-radius:8px;text-decoration:none;color:inherit;background:#8881;font-size:.9rem}.quick a:hover{border-color:#1a6ed8}.quick a.on{border-color:#1a6ed8;color:#1a6ed8}ul.qlist{list-style:none;padding:0;margin:.4rem 0}ul.qlist li{border-bottom:1px solid #8883;margin:0}ul.qlist a{display:block;padding:9px 6px;text-decoration:none;color:inherit;border-radius:6px}ul.qlist a:hover{background:#8881}.qname{display:block;font-weight:500;color:#1a6ed8}.qprev{display:block;font-size:.84rem;color:#8a8a8a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.05rem}.know-body{white-space:pre-wrap}'
 ::  +render-page: wrap an HTML fragment in the reader chrome (address bar + CSS).
 ::
 ++  render-page
