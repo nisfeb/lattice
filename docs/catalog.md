@@ -310,7 +310,7 @@ matches with the instant local substring filter over already-loaded rows.
 
 ### The one MCP write (pokes DO work without scry)
 
-`lattice-catalog-classify` is a real MCP tool (in `setup-catalog-mcp-tools.py`):
+`lattice-catalog-classify` was a registered MCP tool (registration retired with the external-registrar architecture; reintroduce in-ball under lib/mcp/ if needed):
 it pokes `%lattice-catalog [%classify url category cat-source confidence]`,
 which an MCP thread-builder can issue synchronously (it's a write). It mirrors
 `POST /catalog-classify`. Reads (`pending`/`vocab`/etc.) are HTTP, per the

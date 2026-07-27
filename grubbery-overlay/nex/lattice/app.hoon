@@ -498,13 +498,6 @@
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
     (send-json eyre-id (know-tags-json es))
   ::
-  ::  MCP tool discovery: an external MCP server GETs this to learn the
-  ::  knowledge-store tools, then drives each via its own know-* HTTP route.
-  ::  Reproduces the retired agent's /mcp/tools scry; execution moved to HTTP,
-  ::  so the tool defs carry no khan thread-builder — just name/desc/schema.
-      [%'GET' %mcp-tools]
-    (send-json eyre-id mcp-tools-json)
-  ::
       [%'GET' %know-trash]
     ;<  tx=know-index:lk  bind:m  (read-index [%| 2 %& /know %trash])
     (send-json eyre-id (index-list-json tx))
@@ -3182,52 +3175,6 @@
       ['updated' s+(scot %da updated.e)]
       (tags-json tags.e)
   ==
-::  +mcp-tools-json: the knowledge-store MCP tool catalog served at GET /mcp-tools.
-::  Static name/description/input-schema per tool (all params are strings); an MCP
-::  server discovers these and drives each via its matching know-* HTTP route. The
-::  six tools mirror the retired agent's /mcp/tools scry.
-::
-++  mcp-tools-json
-  ^-  json
-  =/  tools=(list [nom=@t des=@t params=(list [pn=@t pd=@t]) reqd=(list @t)])
-    :~  ['know-list' 'List the ship knowledge items (keys + metadata, no bodies).' ~ ~]
-        ['know-tags' 'List the tag vocabulary with per-tag item counts.' ~ ~]
-        :*  'know-explore'  'Filter knowledge items by tag and/or a body-substring query; returns matching keys + metadata + tags (no bodies).'
-            :~  ['tags' 'comma-separated tags to filter by (optional)']
-                ['match' 'any (OR, the default) or all (AND) across the given tags']
-                ['q' 'substring to match within item bodies (optional)']
-            ==
-            ~
-        ==
-        :*  'know-read'  'Read one knowledge item (body + tags) by key, e.g. /projects/x.'
-            ~[['key' 'item key/path, e.g. /projects/x']]  ~['key']
-        ==
-        :*  'know-save'  'Create or overwrite a knowledge item.'
-            ~[['key' 'item key/path'] ['body' 'item body text']]  ~['key' 'body']
-        ==
-        :*  'know-delete'  'Soft-delete a knowledge item (recoverable from trash).'
-            ~[['key' 'item key/path']]  ~['key']
-        ==
-    ==
-  =-  (pairs:enjs:format ~[['tools' a+-]])
-  ^-  (list json)
-  %+  turn  tools
-  |=  [nom=@t des=@t params=(list [pn=@t pd=@t]) reqd=(list @t)]
-  ^-  json
-  =/  props=(map @t json)
-    %-  malt
-    %+  turn  params
-    |=  [pn=@t pd=@t]
-    ^-  [@t json]
-    [pn (pairs:enjs:format ~[['type' s+'string'] ['description' s+pd]])]
-  =/  schema=json
-    %-  pairs:enjs:format
-    :~  ['type' s+'object']
-        ['properties' o+props]
-        ['required' a+(turn reqd |=(r=@t s+r))]
-    ==
-  (pairs:enjs:format ~[['name' s+nom] ['description' s+des] ['inputSchema' schema]])
-::
 ++  know-list-json
   |=  es=(map path know-entry:lk)
   ^-  json
@@ -4659,8 +4606,6 @@
 ++  pax-of  |=(n=@t ^-(path (need (name-pax n))))
 ::  +pax-str: a page path -> its slash-separated string (no leading slash).
 ++  pax-str  |=(px=path ^-(tape ?~(px "" (slag 1 (trip (spat px))))))
-::  +kind-of: a ?kind= param -> a valid editor kind (a content builder or %hoon).
-++  kind-of  |=(k=@t ^-(@tas ?:(|((~(has in content-builders) `@tas`k) =(%index k)) `@tas`k %hoon)))
 ::  +mime-of: the Content-Type an asset file (/f/<name>) is served with.
 ++  mime-of
   |=  builder=@tas
