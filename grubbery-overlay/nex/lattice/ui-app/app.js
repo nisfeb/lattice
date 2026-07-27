@@ -79,7 +79,13 @@
         mvf.title = 'move / rename ' + n.path;
         mvf.href = '#';
         mvf.onclick = (e) => { e.preventDefault(); e.stopPropagation(); moveFolder(n.path); };
-        row.append(cx, label, mvf, add);
+        const shf = document.createElement('a');
+        shf.className = 'mvf';
+        shf.textContent = '\u{1F310}';
+        shf.title = 'share tree ' + n.path;
+        shf.href = '#';
+        shf.onclick = (e) => { e.preventDefault(); e.stopPropagation(); shareFolder(n.path); };
+        row.append(cx, label, shf, mvf, add);
         row.onclick = () => {
           const c = collapsed();
           const i = c.indexOf(n.path);
@@ -404,6 +410,19 @@
       current = mapped(current);
     st('moved ' + oldPath + ' \u2192 ' + newPath + ' (' + moved + ' pages)');
     loadTree();
+    if (current) openPage(current);
+  }
+
+  async function shareFolder(path) {
+    const mode = prompt('share tree ' + path + ' as (private / shared / clearweb):', 'clearweb');
+    if (!mode) return;
+    const m = mode.trim().toLowerCase();
+    if (!['private', 'shared', 'clearweb'].includes(m)) { st('mode must be private, shared, or clearweb', false); return; }
+    const r = await fetch(api + '/page-share-tree?name=' + encodeURIComponent(path) +
+      '&mode=' + m, { method: 'POST' });
+    if (!r.ok) { st('share failed ' + r.status, false); return; }
+    st(m === 'clearweb' ? 'published: ' + location.origin + '/c/' + path + '/'
+                        : 'tree set ' + m);
     if (current) openPage(current);
   }
 
