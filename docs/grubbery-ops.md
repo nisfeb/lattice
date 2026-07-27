@@ -138,6 +138,14 @@ scripts/sync-overlay.sh <pier>/grubbery   # overlay -> gub/lib, gub/nex/lattice,
 
 `sync-gub` then runs: `validate-marks` → `build-code` → `reload-changed-nexuses`.
 
+> **After ANY grubbery core update, re-run `sync-overlay.sh` BEFORE the
+> commit.** Grubbery updates and the lattice overlay write into the same
+> desk, and a fresh grubbery sync does not carry the overlay. Committing
+> without re-laying it culls every lattice file from clay: the bins vanish,
+> all lattice fibers die, and every route hangs until the proxy 504s. This
+> took production down once (2026-07-28). Data in the ball is unaffected;
+> recovery is re-sync + `|commit`.
+
 The nexus layout that works (it matches obelisk/indexer/git) is a directory with
 `app.hoon`, i.e. `gub/nex/lattice/app.hoon`. No companion `.hoon` file is required.
 

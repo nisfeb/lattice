@@ -39,4 +39,14 @@ rsync -a "$OVERLAY/lib/" "$DEST/lib/"
 # Tests: desk-level.
 rsync -a "$OVERLAY/tests/" "$DEST/tests/"
 
-echo "synced overlay -> $DEST"
+# Print what actually landed — a grubbery core update wipes none of its own
+# apps but knows nothing about this overlay, so any grubbery re-sync MUST be
+# followed by this script before committing the desk. Zero counts here mean
+# the next |commit will cull lattice from clay and take the app down.
+NEX=$(find "$DEST/gub/nex/lattice" -type f | wc -l)
+LIB=$(ls "$DEST/gub/lib" | grep -c '^lattice' || true)
+echo "synced overlay -> $DEST (nex/lattice: $NEX files, lattice libs: $LIB)"
+if [ "$NEX" -eq 0 ] || [ "$LIB" -eq 0 ]; then
+  echo "WARNING: overlay did not land — do NOT commit the desk" >&2
+  exit 68
+fi
