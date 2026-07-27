@@ -30,6 +30,17 @@
       <button class="nf" id="newfile">+ file</button>
       <button class="nf" id="newfolder">+ folder</button>
     </div>
+    <div class="newbtns">
+      <button class="nf" id="upfiles">&#8613; files</button>
+      <button class="nf" id="updir">&#8613; dir</button>
+    </div>
+    <input type="file" id="fpick" multiple hidden>
+    <input type="file" id="dpick" webkitdirectory hidden>
+    <div id="uppanel" class="uppanel" hidden>
+      <div id="upmsg"></div>
+      <div class="upbar"><div id="upfill"></div></div>
+      <div id="uperr" class="uperr"></div>
+    </div>
     <div class="sec">files</div>
     <div id="treelist"></div>
   </aside>
