@@ -3126,6 +3126,8 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  es=(map path know-entry:lk)  bind:m  read-know-map
+  ::  tolerate accidental double slashes (/know//feedback): drop empty segments.
+  =.  rest  (skip rest |=(s=@ta =('' s)))
   ?~  rest
     =/  tsel=(unit @t)  (~(get by args) 'tag')
     ?^  tsel

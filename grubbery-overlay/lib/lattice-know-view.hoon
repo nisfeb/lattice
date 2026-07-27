@@ -156,7 +156,9 @@
     %+  turn  dirs
     |=  d=(pair @ta @ud)
     =/  seg=tape  (trip p.d)
-    =/  href=tape  :(weld "/apps/lattice/know" (spud at) "/" seg)
+    ::  (spud ~) is "/", which would double the slash on root-level links.
+    =/  base=tape  ?~(at "" (spud at))
+    =/  href=tape  :(weld "/apps/lattice/know" base "/" seg)
     =/  eseg=tape  (esc seg)
     =/  cnt=tape  (scow %ud q.d)
     ;:  weld
