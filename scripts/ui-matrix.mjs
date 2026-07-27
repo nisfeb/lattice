@@ -91,6 +91,25 @@ try {
   await wait(() => document.getElementById('src').value === '# updated elsewhere');
   ok('live: open page updates when edited elsewhere');
 
+  // autosave: a 2s typing pause persists the draft, with no UI churn —
+  // the server copy converges on what was typed.
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = '# autosaved content';
+    s.setSelectionRange(5, 5);
+    s.dispatchEvent(new Event('input'));
+  });
+  await page.waitForFunction(async (n) => {
+    const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n));
+    return (await r.json()).body === '# autosaved content';
+  }, { timeout: 30000 }, RUN + '/hello');
+  ok('autosave: 2s pause persists the draft');
+  check('autosave: text and caret untouched',
+    await page.evaluate(() => {
+      const s = document.getElementById('src');
+      return s.value === '# autosaved content' && s.selectionStart === 5;
+    }));
+
   // ...but never over local unsaved edits: type locally, change remotely,
   // and the local text must survive.
   await page.evaluate(() => {

@@ -78,7 +78,12 @@
     hl.innerHTML = (g ? Prism.highlight(src.value, g, lang) : esc(src.value)) + '\n';
   };
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
-  src.addEventListener('input', () => { dirty = true; render(); sync(); });
+  src.addEventListener('input', () => {
+    dirty = true;
+    render(); sync();
+    clearTimeout(autoTimer);
+    autoTimer = setTimeout(autosave, 2000);
+  });
   src.addEventListener('scroll', sync);
   pkind.addEventListener('change', render);
 
@@ -260,6 +265,21 @@
     loadTree();
     if (CONTENT()) { refreshPreview(); cerr.textContent = 'saved'; cerr.className = 'ok'; }
     else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
+  }
+
+  let autoTimer = null;
+  async function autosave() {
+    if (!current || curFolder || !dirty) return;
+    const sent = src.value;
+    const url = mode === 'know'
+      ? api + '/know-save?key=' + encodeURIComponent(current)
+      : api + '/page-save?name=' + encodeURIComponent(current) + '&type=' + pkind.value;
+    let r = null;
+    try { r = await fetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
+    if (!r || !r.ok) { st('autosave failed' + (r ? ' ' + r.status : ''), false); return; }
+    if (src.value === sent) dirty = false;   // typed during the request? stay dirty
+    st('autosaved');
+    if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
   }
 
   $('save').onclick = () => (mode === 'know' ? saveKnow() : save());
