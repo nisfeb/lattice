@@ -73,7 +73,13 @@
         add.title = 'new file in ' + n.path;
         add.href = '#';
         add.onclick = (e) => { e.preventDefault(); e.stopPropagation(); newFile(n.path); };
-        row.append(cx, label, add);
+        const mvf = document.createElement('a');
+        mvf.className = 'mvf';
+        mvf.textContent = '\u270e';
+        mvf.title = 'move / rename ' + n.path;
+        mvf.href = '#';
+        mvf.onclick = (e) => { e.preventDefault(); e.stopPropagation(); moveFolder(n.path); };
+        row.append(cx, label, mvf, add);
         row.onclick = () => {
           const c = collapsed();
           const i = c.indexOf(n.path);
@@ -357,6 +363,72 @@
     Promise.all(ps).then(() => { if (out.length) uploadItems(out); });
   });
 
+  // ── move / rename ────────────────────────────────────────────────────────
+  // No server rename route for pages: move = read source, save at the new
+  // name (same kind), delete the old — the same pattern the FUSE client uses.
+  // Folders move every descendant (structure first, then pages), then delete
+  // the old folder. Memories use the know-move route (history preserved).
+  async function movePage(oldName, newName) {
+    const r = await fetch(api + '/page-source?name=' + encodeURIComponent(oldName));
+    if (!r.ok) { st('read failed ' + r.status, false); return false; }
+    const d = await r.json();
+    const kind = d.kind === 'index' ? 'md' : d.kind;
+    const w = await fetch(api + '/page-save?name=' + encodeURIComponent(newName) +
+      '&type=' + kind, { method: 'POST', body: d.body });
+    if (!w.ok) { st('save failed ' + w.status + ' at ' + newName, false); return false; }
+    const x = await fetch(api + '/page-del?name=' + encodeURIComponent(oldName), { method: 'POST' });
+    if (!x.ok) { st('cleanup failed ' + x.status + ' (copy exists at ' + newName + ')', false); return false; }
+    return true;
+  }
+
+  async function moveFolder(oldPath) {
+    const to = prompt('move folder ' + oldPath + ' to:', oldPath);
+    if (!to || to === oldPath) return;
+    const newPath = to.trim().replace(/^\/+|\/+$/g, '');
+    if (!newPath) return;
+    const under = nodes.filter((n) => n.path === oldPath || n.path.startsWith(oldPath + '/'));
+    const mapped = (p) => newPath + p.slice(oldPath.length);
+    st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
+    for (const n of under.filter((n) => !n.page).sort((a, b) => a.path.localeCompare(b.path))) {
+      try { await fetch(api + '/folder-new?name=' + encodeURIComponent(mapped(n.path)), { method: 'POST' }); }
+      catch {}
+    }
+    let moved = 0;
+    for (const n of under.filter((n) => n.page)) {
+      if (!(await movePage(n.path, mapped(n.path)))) return;
+      moved++;
+      st('moving\u2026 ' + moved + ' page' + (moved === 1 ? '' : 's'));
+    }
+    await fetch(api + '/page-del?name=' + encodeURIComponent(oldPath), { method: 'POST' });
+    if (current && (current === oldPath || current.startsWith(oldPath + '/')))
+      current = mapped(current);
+    st('moved ' + oldPath + ' \u2192 ' + newPath + ' (' + moved + ' pages)');
+    loadTree();
+    if (current) openPage(current);
+  }
+
+  $('mv').onclick = async () => {
+    if (!current) { st('open something first', false); return; }
+    const to = prompt('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:', current);
+    if (!to || to === current) return;
+    const newName = to.trim().replace(/^\/+|\/+$/g, '');
+    if (!newName) return;
+    if (mode === 'know') {
+      const r = await fetch(api + '/know-move?from=' + encodeURIComponent(current) +
+        '&to=' + encodeURIComponent(newName), { method: 'POST' });
+      if (!r.ok) { st('move failed ' + r.status, false); return; }
+      st('moved to ' + newName);
+      openKnow(newName);
+      loadKnow();
+      return;
+    }
+    if (await movePage(current, newName)) {
+      st('moved to ' + newName);
+      loadTree();
+      openPage(newName);
+    }
+  };
+
   // ── layout toggles + mobile tabs ─────────────────────────────────────────
   const ws = $('ws');
   const applyToggles = () => {
@@ -527,6 +599,7 @@
     knowMeta.hidden = m !== 'know';
     $('treesec').textContent = m === 'know' ? 'memories' : 'files';
     $('del').textContent = m === 'know' ? 'delete memory' : 'delete page';
+    $('mv').textContent = m === 'know' ? 'move / rename memory' : 'move / rename';
     current = null;
     pname.value = '';
     pname.readOnly = false;

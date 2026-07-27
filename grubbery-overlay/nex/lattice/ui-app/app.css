@@ -104,8 +104,12 @@ a { color: var(--green); }
 .share { display: flex; flex-wrap: wrap; gap: 5px; }
 .share button.on { border-color: var(--green); color: var(--green); }
 #cwurl { font-size: .85rem; margin-top: 6px; word-break: break-all; }
-.del { margin-top: 18px; color: #c0392b; border-color: #c0392b55 !important;
+.mvbtn { margin-top: 18px; width: 100%; }
+.del { margin-top: 8px; color: #c0392b; border-color: #c0392b55 !important;
   width: 100%; }
+.tree .fld .mvf { color: var(--muted); text-decoration: none; padding: 0 4px;
+  border-radius: 4px; flex: none; }
+.tree .fld .mvf:hover { color: var(--green); background: #4a7c5922; }
 #src, #hl { position: absolute; inset: 0; margin: 0; border: 0; width: 100%;
   height: 100%; font: 13px/1.55 ui-monospace, Menlo, Consolas, monospace;
   padding: 12px; white-space: pre; tab-size: 2; }
