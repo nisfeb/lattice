@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lattice app</title>
+<link rel="stylesheet" href="/apps/lattice/app/app.css">
+<link rel="icon" href="/apps/lattice/icon.svg" type="image/svg+xml">
+</head>
+<body>
+<header class="bar">
+  <a class="home" href="/apps/lattice" title="lattice home">&#8962;</a>
+  <strong>lattice app</strong>
+  <span id="status" class="muted">loading…</span>
+</header>
+<main id="main">
+  <h1>Hello from the lattice-hosted UI</h1>
+  <p class="muted">This page is a grub. Its HTML, JS, and CSS live as real files
+  in the repo, are laid into the ball by on-load, and are served straight from
+  the ship — no cords involved.</p>
+  <section id="tree-section">
+    <h2>your page tree</h2>
+    <ul id="tree" class="qlist"></ul>
+  </section>
+</main>
+<script src="/apps/lattice/app/app.js"></script>
+</body>
+</html>

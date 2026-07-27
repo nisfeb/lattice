@@ -1,0 +1,24 @@
+/* lattice app — flat green identity, shared ground with the reader */
+* { box-sizing: border-box; }
+:root {
+  --green: #4a7c59; --green-deep: #3a6347;
+  --bg: #fafafa; --text: #1a1a1a; --muted: #8a8a8a;
+  --border: #8886; --surface: #8881;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1a1a1a; --text: #e6e6e6; }
+}
+html, body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, sans-serif; }
+a { color: var(--green); }
+.muted { color: var(--muted); }
+.bar { display: flex; gap: 10px; align-items: center; padding: 8px 12px;
+  border-bottom: 1px solid var(--border); }
+.bar .home { display: flex; align-items: center; padding: 2px 10px;
+  font-size: 1.15rem; border: 1px solid var(--border); border-radius: 6px;
+  text-decoration: none; color: inherit; }
+.bar .home:hover { border-color: var(--green); }
+main { max-width: 46rem; margin: 0 auto; padding: 16px; }
+.qlist { list-style: none; padding: 0; margin: .4rem 0; }
+.qlist li { border-bottom: 1px solid #8883; padding: 8px 4px; }
+.qlist .kind { float: right; color: var(--muted); font-size: .82rem; }
