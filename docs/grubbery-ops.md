@@ -56,6 +56,12 @@ Install it with the MCP `create_folder` tool:
 create_folder {"path":"/apps","name":"lattice.lattice_app","nexus":"/lattice/app"}
 ```
 
+> **The `nexus` param is NOT optional here, and it is a leading-slash path.** The
+> folder *name* does not encode the nexus: omitting `nexus` creates a plain folder
+> (`neck: null` in `/grubbery/api/tree`, no on-load, routes 404) — `delete_folder`
+> it and recreate with `nexus` set. The tool description's `"claw.app"`-style
+> examples are stale; the value is parsed with `stab`, so use `"/lattice/app"`.
+
 Verify with `browse {"path":"/apps/lattice.lattice_app"}` — it prints `Nexus: /lattice/app`
 and, once `on-load` has run, the laid-down tree (`ui/`, `man/`, `manifest.json`, …). A
 folder that shows the nexus line but **no children** means `on-load` has not run yet —
