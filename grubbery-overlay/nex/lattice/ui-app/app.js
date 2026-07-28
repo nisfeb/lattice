@@ -175,6 +175,7 @@
     curFolder = path;
     exitRev();
     $('histsec').hidden = true;
+    $('linksec').hidden = true;
     folderCtx = path;
     pname.value = path;
     pname.readOnly = true;
@@ -213,6 +214,7 @@
     st(d.kind + ' · rev ' + d.rev);
     exitRev();
     loadHistory();
+    loadBacklinks();
     showShare(d.share || 'private');
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
     refreshPreview();
@@ -226,6 +228,7 @@
     curFolder = null;
     exitRev();
     $('histsec').hidden = true;
+    $('linksec').hidden = true;
     setCtlLabels();
     pname.readOnly = false;
     pname.value = into ? into + '/' : '';
@@ -561,6 +564,25 @@
     await loadTree();
     if (current) openPage(current);
     else if (curFolder === oldPath) selectFolder(newPath);
+  }
+
+  // ── backlinks: pages that wikilink [[this page]] ─────────────────────────
+  const linkSec = $('linksec'), linkList = $('linklist');
+  async function loadBacklinks() {
+    linkSec.hidden = true;
+    linkList.textContent = '';
+    if (!current || mode === 'know') return;
+    const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(current));
+    if (!r.ok) return;
+    const links = ((await r.json()).links || []).filter((p) => p !== current);
+    if (!links.length) return;
+    linkSec.hidden = false;
+    for (const pth of links) {
+      const a = document.createElement('a');
+      a.textContent = pth;
+      a.onclick = () => openPage(pth);
+      linkList.appendChild(a);
+    }
   }
 
   // ── version history (born keeps every save; autosave makes it dense) ────

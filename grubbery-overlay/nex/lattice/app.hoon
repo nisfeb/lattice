@@ -582,6 +582,29 @@
     :~  ['body' s+body]  ['kind' s+kind]
         ['rev' (numb:enjs:format u.rv)]
     ==
+  ::  page-backlinks: every page whose body wikilinks [[name]]. A tree walk
+  ::  plus one code peek per page (the fs-tree pattern) — O(pages) local
+  ::  peeks, no external index, so it works even where obelisk doesn't.
+      [%'GET' %page-backlinks]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    =/  needle=tape  :(weld "[[" (trip u.name) "]]")
+    ;<  tree=(list [pax=path page=?])  bind:m  read-tree
+    =|  acc=(list json)
+    |-  ^-  form:m
+    ?~  tree
+      (send-json eyre-id (pairs:enjs:format ~[['links' a+(flop acc)]]))
+    =*  nod  i.tree
+    ?.  page.nod  $(tree t.tree)
+    =/  pdir=path  (weld app-base:lu (weld /page pax.nod))
+    ;<  cn=view:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
+    ?.  ?=([%file *] cn)  $(tree t.tree)
+    =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cn)))) '')
+    =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
+    =/  bod=@t  ?~(un src body.u.un)
+    ?~  (find needle (trip bod))  $(tree t.tree)
+    $(tree t.tree, acc [s+(crip (pax-str pax.nod)) acc])
   ::
   ::  page-errors: a page's latest evaluator error as plain text ('' = clean).
   ::  The lattice-fs nvim glue reads this to populate the quickfix list.
@@ -914,9 +937,10 @@
     ::  non-clearweb routes.
     =/  body=@t  (req-body req)
     =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'md')
+    =/  wlb=@t  (crip (wikilinkify (trip body) "/apps/lattice/app?name="))
     =/  inner=tape
-      ?+  ptype  (render-md:gfm body)
-        %md    (render-md:gfm body)
+      ?+  ptype  (render-md:gfm wlb)
+        %md    (render-md:gfm wlb)
         %gmi   (render-gmi body)
         %html  (trip body)
         %text  :(weld "<pre>" (esc (trip body)) "</pre>")
@@ -2116,7 +2140,7 @@
     ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
     =/  frag=@t
       ?.  ?=([%file *] dsn)  ''
-      (crip (render-shown sang.dsn vmode))
+      (crip (render-shown sang.dsn vmode "/apps/lattice/c/"))
     (pure:m [[i.deps frag] rest])
   =/  n=@ud  (dec (lent i.deps))
   ;<  sn=view:nexus  bind:m  (peek:io [%& %& (scag n i.deps) (snag n i.deps)] ~)
@@ -3818,7 +3842,7 @@
   =/  keep=tape  (keep-url "beacon/rev")
   ?:  embed
     ::  bare preview: just the rendered data (+ any error) and the live stream.
-    =/  data-html=tape  ?~(cd "<p>no data yet</p>" (render-shown u.cd vmode))
+    =/  data-html=tape  ?~(cd "<p>no data yet</p>" (render-shown u.cd vmode "/apps/lattice/app?name="))
     =/  errh=tape  ?:(=('' err) "" :(weld "<pre class=\"err\">" (esc (trip err)) "</pre>"))
     (send-html eyre-id (render-bare :(weld errh "<section class=\"data\">" data-html "</section>" (page-sse-script keep))))
   ::  standalone browser view: the page rendered exactly as it would publish. For
@@ -3950,7 +3974,7 @@
   ::  `extra` (a rendered comment thread + optional box) is appended after the
   ::  page content — inside the themed wrapper for md/gmi/text, or after the raw
   ::  body for %html.
-  =/  inner=tape  (weld (render-shown sang vmode) extra)
+  =/  inner=tape  (weld (render-shown sang vmode "/apps/lattice/c/") extra)
   =/  body=tape
     ?:  ?=(%html vmode)  inner
     ?.  wrap  inner
@@ -4105,8 +4129,35 @@
 ::  (render-page-view / serve-clearweb); a peer's page data is escaped by the
 ::  explorer, never routed here. A non-cord value falls back to a noun literal.
 ::
+::  +wikilinkify: rewrite [[page-name]] into a standard markdown link
+::  [page-name](<base>page-name) BEFORE rendering, so wikilinks work on every
+::  md surface. Only path-ish names rewrite (a-z 0-9 - / . _ ~); anything
+::  else passes through untouched. `base` is the surface's link root: the
+::  editor for owner views, /c/ for clearweb.
+::
+++  wikilinkify
+  |=  [t=tape base=tape]
+  ^-  tape
+  ?~  t  ~
+  ?.  =("[[" (scag 2 `tape`t))  [i.t $(t t.t)]
+  =/  aft=tape  (slag 2 `tape`t)
+  =/  end=(unit @ud)  (find "]]" aft)
+  ?~  end  [i.t $(t t.t)]
+  =/  name=tape  (scag u.end aft)
+  =/  okc=?
+    ?~  name  %.n
+    %+  levy  `tape`name
+    |=  c=@tD
+    ?|  &((gte c 'a') (lte c 'z'))
+        &((gte c '0') (lte c '9'))
+        =(c '-')  =(c '/')  =(c '.')  =(c '_')  =(c '~')
+    ==
+  ?.  okc  [i.t $(t t.t)]
+  =/  rest=tape  (slag (add u.end 2) aft)
+  =/  tail=tape  $(t rest)
+  :(weld "[" name "](" base name ")" tail)
 ++  render-shown
-  |=  [=sang:tarball mode=view-mode:pg]
+  |=  [=sang:tarball mode=view-mode:pg base=tape]
   ^-  tape
   =/  nn=*  (sang-noun:tarball sang)
   =/  cr=(each @t tang)  (mule |.(;;(@t nn)))
@@ -4115,7 +4166,8 @@
     %text  :(weld "<pre>" (esc (trip p.cr)) "</pre>")
     %html  (trip p.cr)
     %gmi   (render-gmi p.cr)
-    %md    (render-md:gfm p.cr)
+    %md    =/  wl=@t  (crip (wikilinkify (trip p.cr) base))
+           (render-md:gfm wl)
     %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip p.cr)) "</code></pre>")
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip p.cr)) "</code></pre>")
     %noun  (page-data-html sang)

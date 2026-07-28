@@ -131,6 +131,22 @@ try {
       return s.value === '# autosaved content' && s.selectionStart === 5;
     }));
 
+  // wikilinks render in the preview; backlinks list the linking page
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n + '/linker') + '&type=md&new=1',
+      { method: 'POST', body: 'see [[' + n + '/hello]]' });
+  }, RUN);
+  await page.goto(APP + '?name=' + RUN + '/linker', { waitUntil: 'networkidle2' });
+  await wait(() => (document.getElementById('prev').srcdoc || '').includes('/apps/lattice/app?name='));
+  ok('wikilinks: preview renders [[x]] as an editor link');
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2' });
+  await wait(() => !document.getElementById('linksec').hidden);
+  check('backlinks: panel lists the linking page',
+    (await page.evaluate(() => document.querySelector('#linklist a').textContent)) === RUN + '/linker');
+  await page.evaluate(async (n) => {   // done with the linker — keep later folder ops light
+    await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n + '/linker'), { method: 'POST' });
+  }, RUN);
+
   // ...but never over local unsaved edits: type locally, change remotely,
   // and the local text must survive.
   await page.evaluate(() => {

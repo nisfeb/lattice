@@ -74,7 +74,7 @@ a { color: var(--green); }
   cursor: pointer; }
 .chips a.on, .chips a:hover { border-color: var(--green); color: var(--green); }
 .ws.know .prev, .ws.know #sharesec, .ws.know #cmdrow, .ws.know #pkind,
-.ws.know #histsec { display: none; }
+.ws.know #histsec, .ws.know #linksec { display: none; }
 #histview { margin-bottom: 8px; }
 .ws.know .edwrap { grid-column: 2 / 4; }
 #modet.on { border-color: var(--green); color: var(--green); }
