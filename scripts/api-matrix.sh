@@ -122,6 +122,27 @@ rm -f /tmp/apimx-big-$$.txt
 is "  submit to a nonexistent page -> 404"  404 "$(code -X POST "$B/f/$P/ghost" --data-binary 'entry=x')"
 tc=$(code -X POST "$B/f/$P/../../etc" --data-binary 'entry=x')
 case "$tc" in 200|303) bad "  path traversal refused" "accepted with $tc" ;; *) ok "  path traversal refused ($tc)" ;; esac
+echo "==> form limits: absolute cap + cooldown"
+is "set cap=2 gap=0"       200 "$(sc -X POST "$B/page-forms?name=$P/note&on=1&cap=2&gap=0")"
+# an earlier assertion in this file already submitted once — start from zero
+is "zero the counter first" 200 "$(sc -X POST "$B/page-forms-reset?name=$P/note")"
+sleep 2
+has "status reports the cap" '"cap":2' "$(G "$B/page-forms?name=$P/note")"
+is "  submission 1 -> 303"  303 "$(code -X POST "$B/f/$P/note" --data-binary 'entry=1')"
+sleep 2
+is "  submission 2 -> 303"  303 "$(code -X POST "$B/f/$P/note" --data-binary 'entry=2')"
+sleep 2
+is "  over the cap -> 429"  429 "$(code -X POST "$B/f/$P/note" --data-binary 'entry=3')"
+is "reset the counter"      200 "$(sc -X POST "$B/page-forms-reset?name=$P/note")"
+sleep 2
+has "  counter is zero"    '"count":0' "$(G "$B/page-forms?name=$P/note")"
+is "set gap=30 cap=0"      200 "$(sc -X POST "$B/page-forms?name=$P/note&on=1&cap=0&gap=30")"
+sleep 2
+is "  first submission -> 303" 303 "$(code -X POST "$B/f/$P/note" --data-binary 'entry=x')"
+is "  inside cooldown -> 429"  429 "$(code -X POST "$B/f/$P/note" --data-binary 'entry=y')"
+is "page-forms-reset gated"    403 "$(code -X POST "$B/page-forms-reset?name=$P/note")"
+is "clear limits"          200 "$(sc -X POST "$B/page-forms?name=$P/note&on=1&cap=0&gap=0")"
+
 is "private again"         200 "$(sc -X POST "$B/page-share-tree?name=$P&mode=private")"
 
 echo "==> auth boundary on the NEW owner routes"

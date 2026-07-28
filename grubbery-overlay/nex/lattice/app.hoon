@@ -1009,7 +1009,37 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    ;<  ~  bind:m  (poke-eval [%forms (pax-of u.name) =('1' (~(gut by args) 'on' '0'))])
+    ::  cap=0 (default) means no absolute limit; gap is in SECONDS, 0 = none.
+    =/  cap=@ud  (fall (rush (~(gut by args) 'cap' '0') dim:ag) 0)
+    =/  gaps=@ud  (fall (rush (~(gut by args) 'gap' '0') dim:ag) 0)
+    ;<  ~  bind:m
+      %-  poke-eval
+      :^  %forms  (pax-of u.name)  =('1' (~(gut by args) 'on' '0'))
+      [cap (mul gaps ~s1)]
+    (send-ok eyre-id)
+      ::  owner: a page's form limits and how much of the cap is used.
+      [%'GET' %page-forms]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ;<  on=?             bind:m  (forms-on (pax-of u.name))
+    ;<  cfg=form-cfg:le  bind:m  (read-form-cfg (pax-of u.name))
+    ;<  use=form-use:le  bind:m  (read-form-use (pax-of u.name))
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['on' b+on]
+        ['cap' (numb:enjs:format cap.cfg)]
+        ['gap' (numb:enjs:format (div gap.cfg ~s1))]
+        ['count' (numb:enjs:format count.use)]
+        ['remaining' (numb:enjs:format ?:(=(0 cap.cfg) 0 (sub cap.cfg (min count.use cap.cfg))))]
+    ==
+      ::  owner: zero a page's submission counter (a cap you cannot reset is a
+      ::  one-shot switch, not a limit).
+      [%'POST' %page-forms-reset]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ;<  ~  bind:m  (poke-eval [%form-reset (pax-of u.name)])
     (send-ok eyre-id)
       ::  owner: turn comments on/off at a page or folder (on=1 / on=0). The
       ::  nearest flag at/above a page decides, so a folder toggles a whole site.
@@ -1715,7 +1745,22 @@
     =/  fdir=path  (weld root (weld /page pax.act))
     ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
     ?.  ex  (pure:m ~)
-    (put-file [%& %& fdir %forms-on] [/lattice %comment-flag] on.act)
+    ;<  ~  bind:m  (put-file [%& %& fdir %forms-on] [/lattice %comment-flag] on.act)
+    (put-file [%& %& fdir %forms-cfg] [/lattice %eval-data] `form-cfg:le`[cap.act gap.act])
+      %form-hit
+    ::  one accepted public submission: bump the tally. Runs in the writer so
+    ::  concurrent submissions serialize (the cap check itself happens in the
+    ::  request fiber, so a burst can overshoot by the number in flight).
+    =/  fdir=path  (weld root (weld /page pax.act))
+    ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
+    ?.  ex  (pure:m ~)
+    ;<  u=form-use:le  bind:m  (read-form-use pax.act)
+    (put-file [%& %& fdir %forms-use] [/lattice %eval-data] `form-use:le`[+(count.u) now.act])
+      %form-reset
+    =/  fdir=path  (weld root (weld /page pax.act))
+    ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
+    ?.  ex  (pure:m ~)
+    (put-file [%& %& fdir %forms-use] [/lattice %eval-data] `form-use:le`[0 *@da])
   ==
 ::  +apply-comment: store one comment under /comments/<page>/<id>. `author` is us
 ::  (owner writer) or the poking ship (public inbox) — NEVER from the payload,
@@ -4189,6 +4234,30 @@
     (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.seen)))) %.n))
   ?~  page  (pure:m %.n)
   $(page (snip `path`page))
+::  +read-form-cfg: a page's form limits, nearest-wins up the tree (like the
+::  on/off flag), so a folder can set the policy for a whole site.
+::
+++  read-form-cfg
+  |=  page=path
+  =/  m  (fiber:fiber:nexus ,form-cfg:le)
+  ^-  form:m
+  |-  ^-  form:m
+  =/  fdir=path  (weld app-base:lu (weld /page page))
+  ;<  seen=view:nexus  bind:m  (peek:io [%& %& fdir %'forms-cfg'] ~)
+  ?:  ?=([%file *] seen)
+    (pure:m (fall (mole |.(;;(form-cfg:le (sang-noun:tarball sang.seen)))) [0 *@dr]))
+  ?~  page  (pure:m [0 *@dr])
+  $(page (snip `path`page))
+::  +read-form-use: a page's submission tally. EXACT — never inherited.
+::
+++  read-form-use
+  |=  page=path
+  =/  m  (fiber:fiber:nexus ,form-use:le)
+  ^-  form:m
+  =/  fdir=path  (weld app-base:lu (weld /page page))
+  ;<  seen=view:nexus  bind:m  (peek:io [%& %& fdir %'forms-use'] ~)
+  ?.  ?=([%file *] seen)  (pure:m [0 *@da])
+  (pure:m (fall (mole |.(;;(form-use:le (sang-noun:tarball sang.seen)))) [0 *@da]))
 ::  +serve-form: accept a public form POST for a page and deliver it as a
 ::  command. Requires clearweb + forms-on; the body is capped, and the reply
 ::  is a redirect back to the page so a plain <form> works with no JS.
@@ -4207,7 +4276,22 @@
   ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
   ?.  ex  (send-err eyre-id 404 'not found')
   ?:  (gth (met 3 body) form-body-max)  (send-err eyre-id 413 'too large')
+  ::  the two owner-set limits. Both are checked HERE rather than in the writer
+  ::  so a refused submission gets an honest 429 instead of a 303 that pretends
+  ::  it landed; the cost is that a simultaneous burst can overshoot the cap by
+  ::  the number of requests in flight.
+  ;<  cfg=form-cfg:le  bind:m  (read-form-cfg pax)
+  ;<  use=form-use:le  bind:m  (read-form-use pax)
+  ;<  now=@da  bind:m  bowl-now
+  ?:  &(?!(=(0 cap.cfg)) (gte count.use cap.cfg))
+    (send-err eyre-id 429 'submission limit reached')
+  ::  cooldown. Guard the subtraction: a clock adjustment could leave `last` in
+  ::  the future, and (sub now last) would underflow and crash the fiber.
+  =/  since=@dr  ?:((gth last.use now) *@dr (sub now last.use))
+  ?:  &(?!(=(*@dr gap.cfg)) (lth since gap.cfg))
+    (send-err eyre-id 429 'too soon, try again shortly')
   ;<  ~  bind:m  (poke-eval [%cmd pax body 0])
+  ;<  ~  bind:m  (poke-eval [%form-hit pax now])
   %+  send-see-other  eyre-id
   :(weld "/apps/lattice/c" (spud pax))
 ::  +form-body-max: cap on a public submission (8 KB). A public write surface

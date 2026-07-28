@@ -27,8 +27,19 @@
       [%tmpl-save from=path name=@tas]  ::  save page-tree `from` as template `name`
       [%tmpl-del name=@tas]             ::  delete template `name`
       [%comments pax=path on=?]         ::  turn comments on/off at pax (page or folder)
-      [%forms pax=path on=?]            ::  turn public form submissions on/off at pax
+      [%forms pax=path on=? cap=@ud gap=@dr]  ::  public forms: on/off + limits
+      [%form-hit pax=path now=@da]      ::  record one accepted submission
+      [%form-reset pax=path]            ::  zero a page's submission counter
   ==
+::  +$  form-cfg: a page's public-form limits. cap=0 means no absolute limit;
+::  gap=0 means no cooldown. Set by the owner (page-forms), read by serve-form
+::  with the same nearest-wins walk as the on/off flag, so a folder can carry
+::  the policy for a whole site.
++$  form-cfg  [cap=@ud gap=@dr]
+::  +$  form-use: a page's submission tally. Per-page and exact (never
+::  inherited) — a folder-level cap that shared one counter across every page
+::  under it would be surprising in both directions.
++$  form-use  [count=@ud last=@da]
 ::  +$  share-mode: a page's sharing preset (docs/platform.md step 4).
 ::    %private  — not gained, owner-only (default).
 ::    %shared   — data grub gained + public-usergroup peek: any ship reads

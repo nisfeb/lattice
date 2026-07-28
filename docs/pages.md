@@ -284,13 +284,24 @@ submission with `esc` before rendering.
 Standing limits on this surface, since it is the only public write:
 
 - Submissions are capped at 8 KB.
-- **Each accepted submission that changes the page's output costs one permanent
-  revision of the page's data.** Page *source* history self-prunes; page *data*
-  history does not, so a busy public form grows the pier over time. Turn the
-  flag off when a form has served its purpose.
-- Rate is throttled but the total is not: submissions coalesce in the page's
-  single command slot and a page that reruns too fast is parked, so the ceiling
-  is roughly one accepted submission per second, unbounded over time.
+- Two limits you set, both optional:
+  `POST /page-forms?name=<page>&on=1&cap=<n>&gap=<seconds>`
+  - `cap` is the **absolute number of submissions** the page will accept.
+    0 (the default) means no limit. Over the cap the surface returns `429`.
+  - `gap` is the **minimum seconds between submissions**. 0 means no
+    cooldown. Inside the window the surface returns `429`.
+  Both are read with the same nearest-wins walk as the on/off flag, so a
+  folder can set the policy for a whole site.
+- `GET /page-forms?name=<page>` reports `{on, cap, gap, count, remaining}`,
+  and `POST /page-forms-reset?name=<page>` zeroes the counter — a cap you
+  cannot reset would be a one-shot switch rather than a limit.
+- Submissions also coalesce in the page's single command slot, and a page
+  that reruns too fast is parked, so the practical ceiling is about one
+  accepted submission per second even with no `gap` set.
+- Both limits are checked when the request arrives rather than in the writer,
+  so a refused submission gets an honest `429` instead of a redirect that
+  pretends it landed. The trade is that a simultaneous burst can overshoot
+  the cap by the number of requests in flight.
 - A submission carries **poke budget 0**, so it can never start a poke
   chain into other pages.
 - The page's gate decides what the text means. Escape it with `esc`
