@@ -247,6 +247,29 @@ try {
     .some((a) => a.textContent === 'empty.md' && a.href.includes(n)), RUN);
   ok('save: empty file saves without manual content');
 
+  // new-from-template: a core creation path (it was lost in the UI migration
+  // and restored). Exercises the choice dialog, instantiation, and the open.
+  step = 'template';
+  await page.click('#newtmpl');
+  await wait(() => !document.getElementById('dlg').hidden && !document.getElementById('dlgsel').hidden);
+  check('template: picker lists the shipped templates',
+    (await page.evaluate(() => [...document.querySelectorAll('#dlgsel option')].map((o) => o.value)))
+      .includes('guestbook'));
+  await page.select('#dlgsel', 'guestbook');
+  await page.click('#dlgok');
+  await wait(() => !document.getElementById('dlginput').hidden);
+  await page.evaluate((v) => { document.getElementById('dlginput').value = v; }, RUN + '/gb');
+  await page.click('#dlgok');
+  await wait((n) => (document.getElementById('status').textContent || '').includes('created ' + n),
+    RUN + '/gb');
+  check('template: instantiates and opens the new page',
+    (await page.evaluate(() => document.getElementById('pname').value)) === RUN + '/gb');
+  check('template: self-reference rewritten to the new path',
+    (await page.evaluate(() => document.getElementById('src').value)).includes('/' + RUN + '/gb'));
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n), { method: 'POST' });
+  }, RUN + '/gb');
+
   step = 'folder create';
   // ── 3. folder create via the in-app dialog ───────────────────────────────
   await page.click('#newfolder');

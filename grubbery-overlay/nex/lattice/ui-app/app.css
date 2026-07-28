@@ -190,6 +190,10 @@ a { color: var(--green); }
 #dlginput { font: inherit; padding: 6px 9px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--surface); color: inherit; width: 100%; }
 #dlginput[hidden] { display: none; }
+#dlgsel { font: inherit; padding: 6px 9px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--surface); color: inherit; width: 100%;
+  cursor: pointer; }
+#dlgsel[hidden] { display: none; }
 .dlgbtns { display: flex; gap: 8px; justify-content: flex-end; }
 .dlgbtns button { font: inherit; padding: 6px 14px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--surface); color: inherit; cursor: pointer; }

@@ -20,7 +20,7 @@
   };
 
   // ── in-app dialogs — NEVER browser-native prompt/confirm/alert ───────────
-  const dlg = $('dlg'), dlgMsg = $('dlgmsg'), dlgIn = $('dlginput');
+  const dlg = $('dlg'), dlgMsg = $('dlgmsg'), dlgIn = $('dlginput'), dlgSel = $('dlgsel');
   let dlgDone = null;
   const dlgClose = (v) => {
     if (!dlgDone) return;
@@ -35,6 +35,7 @@
   };
   // ask: text-input dialog → string | null (cancel)
   const ask = (msg, value, okLabel) => {
+    dlgSel.hidden = true;
     dlgIn.hidden = false;
     dlgIn.value = value || '';
     const p = dlgOpen(msg, okLabel);
@@ -43,12 +44,30 @@
   };
   // askConfirm: yes/no dialog → boolean
   const askConfirm = (msg, okLabel) => {
+    dlgSel.hidden = true;
     dlgIn.hidden = true;
     const p = dlgOpen(msg, okLabel);
     $('dlgok').focus();
     return p.then((v) => v !== null);
   };
-  $('dlgform').onsubmit = (e) => { e.preventDefault(); dlgClose(dlgIn.hidden ? '' : dlgIn.value); };
+  // askChoice: pick one of a list -> the chosen value, or null on cancel
+  const askChoice = (msg, options, okLabel) => {
+    dlgIn.hidden = true;
+    dlgSel.hidden = false;
+    dlgSel.textContent = '';
+    for (const o of options) {
+      const el = document.createElement('option');
+      el.value = o; el.textContent = o;
+      dlgSel.appendChild(el);
+    }
+    const p = dlgOpen(msg, okLabel);
+    dlgSel.focus();
+    return p.then((v) => (v === null ? null : dlgSel.value));
+  };
+  $('dlgform').onsubmit = (e) => {
+    e.preventDefault();
+    dlgClose(!dlgSel.hidden ? dlgSel.value : dlgIn.hidden ? '' : dlgIn.value);
+  };
   $('dlgcancel').onclick = () => dlgClose(null);
   dlg.onclick = (e) => { if (e.target === dlg) dlgClose(null); };
   window.addEventListener('keydown', (e) => {
@@ -306,6 +325,43 @@
   }
 
   $('save').onclick = () => (mode === 'know' ? saveKnow() : save());
+  // ── new page-tree from a template ────────────────────────────────────────
+  // Templates stamp out a whole tree (the `site` template is four pages), and
+  // each page is its own writer round-trip, so this is deliberately slow and
+  // says so. Instantiation rewrites the template's self-references to the name
+  // you choose.
+  async function newFromTemplate() {
+    let names = [];
+    try {
+      const r = await fetch(api + '/template-list');
+      if (r.ok) names = (await r.json()).templates || [];
+    } catch {}
+    if (!names.length) { st('no templates available', false); return; }
+    const tmpl = await askChoice('start from which template?', names, 'next');
+    if (!tmpl) return;
+    const raw = await ask('name for the new ' + tmpl,
+      folderCtx ? folderCtx + '/' + tmpl : tmpl, 'create');
+    if (!raw) return;
+    const name = raw.trim().replace(/^\/+|\/+$/g, '');
+    if (!name) return;
+    st('creating ' + name + ' from ' + tmpl + '\u2026 (one save per page)');
+    let r = null;
+    try {
+      r = await fetch(api + '/template-new?template=' + encodeURIComponent(tmpl) +
+        '&name=' + encodeURIComponent(name), { method: 'POST' });
+    } catch {}
+    if (r && r.status === 409) { st('a page by that name exists', false); return; }
+    if (!r || !r.ok) { st('template failed' + (r ? ' ' + r.status : ''), false); return; }
+    await loadTree();
+    // a multi-page template lands as a folder: open its index if it made one,
+    // else the page itself, else just select the new folder.
+    const has = (p) => nodes.some((n) => n.page && n.path === p);
+    if (has(name)) await openPage(name);
+    else if (has(name + '/index')) await openPage(name + '/index');
+    else if (nodes.some((n) => !n.page && n.path === name)) selectFolder(name);
+    st('created ' + name + ' from ' + tmpl);
+  }
+  $('newtmpl').onclick = newFromTemplate;
   $('newfile').onclick = () => newFile('');
   $('newfolder').onclick = newFolder;
   window.addEventListener('keydown', (e) => {
