@@ -48,4 +48,33 @@
       @media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#161616}.site .nav a{background:#242424;border-color:#444}.page h1,.page h2{border-color:#333}}
       '''
   ==
+::  +guestbook: a public page anyone can sign. The logic lives in
+::  +guestbook:lattice-pg (like +folder-index), so this template is a single
+::  call and a fix to the builder reaches every guestbook ever created. The
+::  path below is the template NAME, which instantiation rewrites to wherever
+::  you create it, so the form always posts back to its own page.
+::
+::  Two owner actions turn it on — never implicit, this is the only public
+::  write surface:
+::    POST /page-share?name=<your-page>&mode=clearweb
+::    POST /page-forms?name=<your-page>&on=1&cap=200&gap=10
+::
+++  guestbook
+  ^-  (list [rel=path kind=@tas body=@t])
+  :~  :-  ~
+      :-  %hoon
+      '''
+      |=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
+      ^-  result
+      (guestbook cmd dat /guestbook "Guestbook")
+      '''
+  ==
+::  +shipped: every template the app lays down on writer start, by name. Adding
+::  one here is all it takes — the laydown walks this list.
+::
+++  shipped
+  ^-  (list [name=@tas pages=(list [rel=path kind=@tas body=@t])])
+  :~  [%site site]
+      [%guestbook guestbook]
+  ==
 --

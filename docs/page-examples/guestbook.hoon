@@ -1,37 +1,18 @@
-::  guestbook — a public form feeding a programmable page.
+::  guestbook — a public page anyone can sign.
 ::
-::  Anyone can sign it from the clearweb page; each submission arrives as a
-::  command (see +form-of / +form-html in /lib/lattice-pg). The page keeps the
-::  signed entries in its own data by carrying prior <li> items forward, and
-::  escapes every submission before rendering it.
+::  The whole page is one call: +guestbook in /lib/lattice-pg does the work
+::  (renders the form, folds each submission into the page's own data, escapes
+::  everything it shows). Pass the page's OWN path so the form posts back to it.
 ::
-::  Setup: save as a hoon page, then
-::    POST /page-share?name=guestbook&mode=clearweb
-::    POST /page-forms?name=guestbook&on=1
+::  This is what the `guestbook` TEMPLATE creates for you, with the path filled
+::  in — `POST /template-new?template=guestbook&name=<your-page>`.
+::
+::  Then two owner actions turn it on (never implicit — this is the only public
+::  write surface):
+::    POST /page-share?name=<your-page>&mode=clearweb
+::    POST /page-forms?name=<your-page>&on=1&cap=200&gap=10
+::  cap = total submissions accepted (0 = unlimited), gap = seconds between them.
 ::
 |=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
 ^-  result
-::  prior entries: the <li> run between the list markers in our own last html
-=/  prev=tape
-  ?~  dat  ""
-  =/  old=tape  (trip ;;(@t u.dat))
-  =/  a=(unit @ud)  (find "<ul>" old)
-  ?~  a  ""
-  =/  rest=tape  (slag (add u.a 4) old)
-  =/  b=(unit @ud)  (find "</ul>" rest)
-  ?~(b "" (scag u.b rest))
-::  a submission is "entry=<text>" (urlencoded form body); take the value
-=/  entry=tape
-  ?~  cmd  ""
-  =/  raw=tape  (trip u.cmd)
-  =/  eq=(unit @ud)  (find "=" raw)
-  ?~(eq raw (slag +(u.eq) raw))
-=/  item=tape
-  ?:  =("" entry)  ""
-  :(weld "<li>" (trip (esc (crip entry))) "</li>")
-%-  html  %-  crip
-;:  weld
-  "<h1>Guestbook</h1>"
-  (form-html /guestbook "sign")
-  "<ul>"  item  prev  "</ul>"
-==
+(guestbook cmd dat /guestbook "Guestbook")

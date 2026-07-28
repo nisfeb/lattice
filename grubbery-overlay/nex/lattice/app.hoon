@@ -1111,6 +1111,17 @@
     ?.  ((sane %tas) u.nm)  (send-err eyre-id 400 'bad name')
     ;<  ~  bind:m  (poke-eval [%tmpl-del `@tas`u.nm])
     (send-ok eyre-id)
+      ::  what templates exist, so a client can offer them by name.
+      [%'GET' %template-list]
+    ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /template)] ~)
+    =/  names=(list @ta)
+      ?.  ?=([%ball *] sn)  ~
+      (turn ~(tap by dir.ball.sn) |=([nom=@ta *] nom))
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  :-  'templates'
+        a+(turn (sort names aor) |=(n=@ta s+`@t`n))
+    ==
       [%'POST' %template-new]
     ::  instantiate a template into a new page-tree: template=<term>, name=<path>.
     =/  tmpl=(unit @t)  (~(get by args) 'template')
@@ -2065,10 +2076,20 @@
   |=  root=path
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  pages=(list [rel=path kind=@tas body=@t])  site:tpl
+  ::  flatten every shipped template into one [<name>/<rel> kind body] list, so
+  ::  adding a template is a one-line change in /lib/lattice-templates.
+  =/  pages=(list [prel=path kind=@tas body=@t])
+    %-  zing
+    %+  turn  shipped:tpl
+    |=  [nm=@tas ps=(list [rel=path kind=@tas body=@t])]
+    ^-  (list [path @tas @t])
+    %+  turn  ps
+    |=  [rel=path kind=@tas body=@t]
+    ^-  [path @tas @t]
+    [(weld /[nm] rel) kind body]
   |-  ^-  form:m
   ?~  pages  (pure:m ~)
-  =/  prel=path  (weld /site rel.i.pages)
+  =/  prel=path  prel.i.pages
   =/  pdir=path  (weld root (weld /template prel))
   ::  per-page: skip a page that already exists (never overwrite a user edit;
   ::  and a laydown interrupted after some pages completes on the next start),

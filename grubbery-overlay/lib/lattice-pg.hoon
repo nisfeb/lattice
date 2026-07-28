@@ -125,6 +125,51 @@
       cards  "</ul></div>"
     ==
   (needs (html body) ~[(dir-of dir)])
+::  +guestbook: a ready-made builder BODY — a public page anyone can sign,
+::  same shape as +folder-index. A page whose whole gate is
+::    (guestbook cmd dat /my/page "Guestbook")
+::  renders its own form, folds each submission into its own data, and escapes
+::  every submission before showing it.
+::
+::  `rel` is the page's OWN path: the form posts back to it. The logic lives
+::  here rather than being copied into each page so a fix reaches every
+::  guestbook, and so your page stays three lines you can actually read.
+::
+::  Submissions only arrive once the OWNER opts the page in — it must be
+::  shared %clearweb and have public forms enabled (page-forms), with whatever
+::  cap and cooldown you set. Until then this renders as an inert form.
+::
+++  guestbook
+  |=  [cmd=(unit @t) dat=(unit *) rel=path title=tape]
+  ^-  result
+  ::  prior entries: the <li> run between our own last render's list markers.
+  ::  The page's data IS its state — there is no store to keep in sync.
+  =/  prev=tape
+    ?~  dat  ""
+    =/  old=tape  (trip ;;(@t u.dat))
+    =/  a=(unit @ud)  (find "<ul>" old)
+    ?~  a  ""
+    =/  rest=tape  (slag (add u.a 4) old)
+    =/  b=(unit @ud)  (find "</ul>" rest)
+    ?~(b "" (scag u.b rest))
+  ::  a submission arrives as the form body, "entry=<text>"
+  =/  entry=tape
+    ?~  cmd  ""
+    =/  raw=tape  (trip u.cmd)
+    =/  eq=(unit @ud)  (find "=" raw)
+    ?~(eq raw (slag +(u.eq) raw))
+  ::  esc EVERY submission: this is untrusted, unauthenticated public input
+  =/  item=tape
+    ?:  =("" entry)  ""
+    :(weld "<li>" (trip (esc (crip entry))) "</li>")
+  =/  body=@t
+    %-  crip
+    ;:  weld
+      "<div class=\"page\"><h1>"  title  "</h1>"
+      (form-html rel "sign")
+      "<ul class=\"guestbook\">"  item  prev  "</ul></div>"
+    ==
+  (html body)
 ::  +esc: HTML-escape a cord — use it on any dynamic value you weld into html.
 ::
 ++  esc

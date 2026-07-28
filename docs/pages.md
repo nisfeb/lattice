@@ -277,9 +277,24 @@ the markup with the stdlib helpers: `form-of` gives the action URL and
 (weld "<h1>Guestbook</h1>" (form-html /guestbook "sign"))
 ```
 
-The worked example is [page-examples/guestbook.hoon](page-examples/guestbook.hoon):
-it carries prior entries forward in its own data and escapes every
-submission with `esc` before rendering.
+`+guestbook` is a ready-made builder for the common case, in the same shape
+as `folder-index` — your whole page is one call:
+
+```hoon
+(guestbook cmd dat /my/page "Guestbook")
+```
+
+It renders the form, folds each submission into the page's own data, and
+escapes everything it shows. A **`guestbook` template** creates exactly that
+page with the path filled in:
+
+```
+POST /template-new?template=guestbook&name=<your-page>
+```
+
+The logic lives in the stdlib rather than being copied into each page, so a
+fix reaches every guestbook and your page stays three readable lines. Source:
+[page-examples/guestbook.hoon](page-examples/guestbook.hoon).
 
 Standing limits on this surface, since it is the only public write:
 
