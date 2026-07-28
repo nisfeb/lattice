@@ -291,6 +291,18 @@ Standing limits on this surface, since it is the only public write:
 - Turning the flag off (`on=0`) stops submissions immediately, and a page
   that is not clearweb refuses them outright.
 
+## Version history
+
+Every save of a page is a kept revision. `GET /page-history?name=` lists
+them, `GET /page-source-at?name=&rev=` reads one, and the editor's history
+panel views and restores them (a restore re-saves the old body as a fresh
+newest revision, so nothing is destroyed). Autosave means every typing
+pause is a recoverable version.
+
+History self-prunes on save past the newest **50** revisions per page
+(`+history-keep` in app.hoon), so the deep undo buffer stays bounded
+instead of archiving every keystroke forever.
+
 ## Timers: a page on a schedule
 
 Return `(every r dur)` and the platform re-runs your gate every `dur`, with

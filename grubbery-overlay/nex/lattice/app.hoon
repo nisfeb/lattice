@@ -1834,6 +1834,10 @@
 ::  shared body of the %make action and template instantiation. cmd + deps
 ::  first (the code grub's fiber reads both at spawn), then the code.
 ::
+::  +history-keep: revisions retained per page. Deep enough to undo a bad
+::  day; bounded so autosave's one-revision-per-pause cadence cannot grow
+::  the pier without limit. Pruning happens on every save (+make-page).
+++  history-keep  50
 ++  make-page
   |=  [root=path pax=path src=@t]
   =/  m  (fiber:fiber:nexus ,~)
@@ -1854,7 +1858,19 @@
   ::  makes a grub namespace-addressable but cross-ship reads stay weir-gated
   ::  deny-all, the same model the know vault uses (every private entry
   ::  gained, for exactly this history).
-  (gain:io [%& %& pdir %code] %.y)
+  ;<  ~  bind:m  (gain:io [%& %& pdir %code] %.y)
+  ::  prune the history tail past +history-keep. Autosave writes a revision
+  ::  per typing pause, so without this the pier archives every keystroke
+  ::  forever; with it a page keeps a deep undo buffer at bounded cost.
+  ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+    (peep:io [%& %& pdir %code] [%numb ~ ~])
+  ?:  ?=(%| -.pe)  (pure:m ~)
+  ?:  (lte (lent p.pe) history-keep)  (pure:m ~)
+  =/  revs=(list @ud)
+    (sort (turn p.pe |=([c=cass:clay *] ud.c)) gth)
+  =/  cut=@ud  (snag (dec history-keep) revs)
+  ?:  =(0 cut)  (pure:m ~)
+  (lose:io [%& %& pdir %code] [%numb ~ `(dec cut)])
 ::  +rewrite-root: replace the path-prefix `from` with `to` in code, only where
 ::  `from` ends at a path boundary (/ ) space " ] , or end) — so a short root
 ::  can't clobber a longer path that merely starts with it.
