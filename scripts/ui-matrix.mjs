@@ -76,7 +76,7 @@ try {
   ok('save: new md page appears in tree');
   check('highlight: Prism overlay rendered',
     await page.evaluate(() => document.querySelectorAll('#hl .token').length > 0));
-  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2' });
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
   await wait(() => document.getElementById('src').value.length > 0);
   check('open: body round-trips',
     await page.evaluate(() => document.getElementById('src').value) === '# ui matrix probe');
@@ -93,7 +93,7 @@ try {
 
   // version history: the earlier remote edit left ≥2 revisions; the panel
   // lists them, viewing one is read-only, restoring re-saves it as newest.
-  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2' });
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
   await wait(() => !document.getElementById('histsec').hidden);
   ok('history: panel appears once a page has revisions');
   await page.evaluate(() => {                      // open the OLDEST revision
@@ -111,6 +111,49 @@ try {
     return (await r.json()).body === '# ui matrix probe';
   }, { timeout: 30000 }, RUN + '/hello');
   ok('history: restore re-saves the old revision as newest');
+
+  // REGRESSION GUARDS for the adversarial review's findings.
+  // F2 (data loss): text typed DURING a save must survive — the save must not
+  // mark the editor clean, or the refresh echo swaps the stale server body in.
+  await page.evaluate((n) => {
+    const s = document.getElementById('src');
+    s.value = 'BASE BODY'; s.dispatchEvent(new Event('input'));
+  }, RUN);
+  await page.evaluate(() => document.getElementById('save').click());
+  await page.evaluate(() => {                       // type while the save is in flight
+    const s = document.getElementById('src');
+    s.value = 'BASE BODY + TYPED DURING SAVE';
+    s.dispatchEvent(new Event('input'));
+  });
+  await sleep(6000);                                // save lands, beacon + refresh fire
+  check('F2: text typed during a save is not clobbered',
+    (await page.evaluate(() => document.getElementById('src').value)) === 'BASE BODY + TYPED DURING SAVE',
+    await page.evaluate(() => document.getElementById('src').value));
+
+  // F4/F13: while viewing a revision, save is refused and Tab cannot edit
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
+  await wait(() => !document.getElementById('histsec').hidden);
+  await page.evaluate(() => document.querySelectorAll('#histlist a')[document.querySelectorAll('#histlist a').length - 1].click());
+  await wait(() => document.getElementById('src').readOnly);
+  const revBody = await page.evaluate(() => document.getElementById('src').value);
+  await page.evaluate(() => document.getElementById('save').click());
+  await sleep(1200);
+  check('F4: save while viewing a revision is refused',
+    (await page.evaluate(() => document.getElementById('status').textContent)).includes('restore'));
+  await page.focus('#src');
+  await page.keyboard.press('Tab');
+  check('F13: Tab cannot edit the read-only historical view',
+    (await page.evaluate(() => document.getElementById('src').value)) === revBody);
+
+  // F12: leaving to knowledge mode must not leak readOnly into the memory editor
+  await page.click('#modet');
+  await wait(() => document.getElementById('ws').className.includes('know'));
+  check('F12: knowledge editor is not left read-only after a revision view',
+    !(await page.evaluate(() => document.getElementById('src').readOnly)));
+  check('F12: stale history panel hidden after mode switch',
+    await page.evaluate(() => document.getElementById('histsec').hidden));
+  await page.click('#modet');
+  await wait(() => !document.getElementById('ws').className.includes('know'));
 
   // autosave: a 2s typing pause persists the draft, with no UI churn —
   // the server copy converges on what was typed.
@@ -139,7 +182,7 @@ try {
   await page.goto(APP + '?name=' + RUN + '/linker', { waitUntil: 'networkidle2' });
   await wait(() => (document.getElementById('prev').srcdoc || '').includes('/apps/lattice/app?name='));
   ok('wikilinks: preview renders [[x]] as an editor link');
-  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2' });
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
   await wait(() => !document.getElementById('linksec').hidden);
   check('backlinks: panel lists the linking page',
     (await page.evaluate(() => document.querySelector('#linklist a').textContent)) === RUN + '/linker');
@@ -161,7 +204,7 @@ try {
   await sleep(3000);                              // beacon + debounce window
   check('live: unsaved local edits are never clobbered',
     await page.evaluate(() => document.getElementById('src').value) === '# my unsaved local edit');
-  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2' });
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
   await wait(() => document.getElementById('src').value.length > 0);
 
   // overlay geometry parity: the highlight layer must occupy exactly the

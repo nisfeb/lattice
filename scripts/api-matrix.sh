@@ -92,6 +92,42 @@ is "page-save gated"    403 "$(code -X POST "$B/page-save?name=$P/evil&type=md" 
 is "manifest public (PWA)" 200 "$(code "$B/manifest.webmanifest")"
 is "icon-192 public (PWA)"      200 "$(code "$B/icon-192.png")"
 
+echo "==> version history + backlinks (new routes)"
+is "page-history"          200 "$(sc "$B/page-history?name=$P/note")"
+has "history has revisions" '"revisions"' "$(G "$B/page-history?name=$P/note")"
+R1=$(G "$B/page-history?name=$P/note" | python3 -c 'import json,sys; print(json.load(sys.stdin)["revisions"][-1]["rev"])')
+has "page-source-at reads a revision" '"body"' "$(G "$B/page-source-at?name=$P/note&rev=$R1")"
+is "page-source-at bad rev"    400 "$(sc "$B/page-source-at?name=$P/note&rev=notanumber")"
+is "page-source-at absent rev" 404 "$(sc "$B/page-source-at?name=$P/note&rev=999999")"
+is "page-backlinks"        200 "$(sc "$B/page-backlinks?name=$P/note")"
+has "backlinks shape"      '"links"' "$(G "$B/page-backlinks?name=$P/note")"
+
+echo "==> public forms: the unauthenticated write surface"
+# the gate walk is the security boundary — every refusal below must hold
+is "forms flag on"         200 "$(sc -X POST "$B/page-forms?name=$P/note&on=1")"
+sleep 2
+is "  submit to a NON-clearweb page -> 404" 404 "$(code -X POST "$B/f/$P/note" --data-binary 'entry=x')"
+is "clearweb on"           200 "$(sc -X POST "$B/page-share-tree?name=$P&mode=clearweb")"
+sleep 2
+is "  submit with clearweb+flag -> 303"     303 "$(code -X POST "$B/f/$P/note" --data-binary 'entry=probe')"
+is "forms flag off"        200 "$(sc -X POST "$B/page-forms?name=$P/note&on=0")"
+sleep 2
+is "  submit with forms OFF -> 403"         403 "$(code -X POST "$B/f/$P/note" --data-binary 'entry=x')"
+is "forms flag back on"    200 "$(sc -X POST "$B/page-forms?name=$P/note&on=1")"
+sleep 2
+python3 -c "print('entry=' + 'x'*9000)" > /tmp/apimx-big-$$.txt
+is "  oversize body -> 413"                 413 "$(code -X POST "$B/f/$P/note" --data-binary @/tmp/apimx-big-$$.txt)"
+rm -f /tmp/apimx-big-$$.txt
+is "  submit to a nonexistent page -> 404"  404 "$(code -X POST "$B/f/$P/ghost" --data-binary 'entry=x')"
+is "  path traversal refused"               404 "$(code -X POST "$B/f/$P/../../etc" --data-binary 'entry=x')"
+is "private again"         200 "$(sc -X POST "$B/page-share-tree?name=$P&mode=private")"
+
+echo "==> auth boundary on the NEW owner routes"
+is "page-history gated"     403 "$(code "$B/page-history?name=$P/note")"
+is "page-source-at gated"   403 "$(code "$B/page-source-at?name=$P/note&rev=1")"
+is "page-backlinks gated"   403 "$(code "$B/page-backlinks?name=$P/note")"
+is "page-forms gated"       403 "$(code -X POST "$B/page-forms?name=$P/note&on=1")"
+
 echo "==> recursive folder delete"
 is "page-del on folder" 200 "$(sc -X POST "$B/page-del?name=$P")"
 sleep 2

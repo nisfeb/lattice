@@ -284,6 +284,13 @@ submission with `esc` before rendering.
 Standing limits on this surface, since it is the only public write:
 
 - Submissions are capped at 8 KB.
+- **Each accepted submission that changes the page's output costs one permanent
+  revision of the page's data.** Page *source* history self-prunes; page *data*
+  history does not, so a busy public form grows the pier over time. Turn the
+  flag off when a form has served its purpose.
+- Rate is throttled but the total is not: submissions coalesce in the page's
+  single command slot and a page that reruns too fast is parked, so the ceiling
+  is roughly one accepted submission per second, unbounded over time.
 - A submission carries **poke budget 0**, so it can never start a poke
   chain into other pages.
 - The page's gate decides what the text means. Escape it with `esc`
@@ -300,8 +307,15 @@ newest revision, so nothing is destroyed). Autosave means every typing
 pause is a recoverable version.
 
 History self-prunes on save past the newest **50** revisions per page
-(`+history-keep` in app.hoon), so the deep undo buffer stays bounded
-instead of archiving every keystroke forever.
+(`+history-keep` in app.hoon), so the stored *content* stays bounded instead of
+archiving every keystroke forever. Two honest caveats:
+
+- Pruning covers a page's **source**. A page's computed `data` is a separate
+  grub with its own history, which the prune does not cover.
+- With autosave writing a revision per typing pause, 50 revisions is roughly
+  50 pauses — minutes of active writing. It is a deep undo buffer for the
+  current session, not a long-term archive.
+- Deleting a page does not remove its stored revisions.
 
 ## Timers: a page on a schedule
 

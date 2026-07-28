@@ -59,6 +59,8 @@
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits — auto-refresh never clobbers them
   let viewingRev = null;   // non-null: a read-only historical revision is shown
+  let curKind = null;      // the OPEN page's server kind; 'index' has no select
+                           // option, so pkind.value would silently convert it
   let curFolder = null;    // selected folder path — right-pane ops target it
   let folderCtx = '';      // folder uploads land in (last into / open page's dir)
   let nodes = [];          // last page-tree
@@ -86,7 +88,7 @@
     autoTimer = setTimeout(autosave, 2000);
   });
   src.addEventListener('scroll', sync);
-  pkind.addEventListener('change', render);
+  pkind.addEventListener('change', () => { curKind = pkind.value; render(); });
 
   // ── tree ─────────────────────────────────────────────────────────────────
   async function loadTree() {
@@ -173,6 +175,7 @@
   function selectFolder(path) {
     current = null;
     curFolder = path;
+    curKind = null;
     exitRev();
     $('histsec').hidden = true;
     $('linksec').hidden = true;
@@ -205,6 +208,7 @@
     setCtlLabels();
     pname.value = name;
     pname.readOnly = true;
+    curKind = d.kind;
     if (LMAP[d.kind] || d.kind === 'text') pkind.value = d.kind === 'text' ? 'text' : d.kind;
     src.value = d.body;
     dirty = false;
@@ -226,6 +230,7 @@
     folderCtx = into || '';
     current = null;
     curFolder = null;
+    curKind = null;
     exitRev();
     $('histsec').hidden = true;
     $('linksec').hidden = true;
@@ -256,20 +261,27 @@
     loadTree();
   }
 
-  async function save() {
+  async function save(kindOverride) {
     if (curFolder) { st('folder selected — open a page to edit', false); return; }
+    if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     const name = pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!name) { st('name required', false); return; }
     const creating = current === null;
     st('saving…');
+    // capture the exact body being sent: keystrokes landing during the round-trip
+    // must NOT be marked clean, or the next refresh swaps the stale server copy
+    // in and the typed text is lost (same guard autosave has always had).
+    const sent = src.value;
+    const kind = kindOverride || curKind || pkind.value;
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
-      '&type=' + pkind.value + (creating ? '&new=1' : '');
-    const r = await fetch(url, { method: 'POST', body: src.value || '\n' });
+      '&type=' + kind + (creating ? '&new=1' : '');
+    const r = await fetch(url, { method: 'POST', body: sent || '\n' });
     if (r.status === 409) { st('that page already exists', false); return; }
     if (!r.ok) { st('save failed ' + r.status, false); return; }
     current = name;
+    curKind = kind;
     pname.readOnly = true;
-    dirty = false;
+    if (src.value === sent) dirty = false;
     st(CONTENT() ? 'saved' : 'compiling\u2026');
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
     loadTree();
@@ -283,7 +295,8 @@
     const sent = src.value;
     const url = mode === 'know'
       ? api + '/know-save?key=' + encodeURIComponent(current)
-      : api + '/page-save?name=' + encodeURIComponent(current) + '&type=' + pkind.value;
+      : api + '/page-save?name=' + encodeURIComponent(current) +
+        '&type=' + (curKind || pkind.value);
     let r = null;
     try { r = await fetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
     if (!r || !r.ok) { st('autosave failed' + (r ? ' ' + r.status : ''), false); return; }
@@ -304,6 +317,7 @@
   src.addEventListener('keydown', (e) => {
     if (e.key === 'Tab') {
       e.preventDefault();
+      if (src.readOnly) return;   // readOnly blocks typing, not scripted edits
       const s = src.selectionStart;
       src.value = src.value.slice(0, s) + '  ' + src.value.slice(src.selectionEnd);
       src.selectionStart = src.selectionEnd = s + 2;
@@ -587,8 +601,10 @@
 
   // ── version history (born keeps every save; autosave makes it dense) ────
   const histSec = $('histsec'), histList = $('histlist'), histView = $('histview');
+  let revKind = null;
   const exitRev = () => {
     viewingRev = null;
+    revKind = null;
     src.readOnly = false;
     histView.hidden = true;
   };
@@ -617,6 +633,7 @@
     if (!r.ok) { st('revision load failed ' + r.status, false); return; }
     const d = await r.json();
     viewingRev = rev;
+    revKind = d.kind === 'index' ? 'md' : d.kind;   // restore under the REVISION's kind
     dirty = false;
     src.value = d.body;
     src.readOnly = true;
@@ -630,10 +647,10 @@
   $('hback').onclick = () => { exitRev(); openPage(current); };
   $('hrestore').onclick = async () => {
     if (viewingRev === null) return;
-    const rev = viewingRev;
+    const rev = viewingRev, kind = revKind;
     exitRev();
     dirty = true;          // the historical body is now an unsaved local edit
-    await save();
+    await save(kind);      // under the revision's OWN kind, not the current select
     st('restored rev ' + rev + ' as the newest revision');
     loadHistory();
   };
@@ -699,6 +716,11 @@
   // content swap until the page is saved or reopened.
   async function refreshOpen() {
     if (!current || curFolder || dirty || document.hidden || viewingRev !== null) return;
+    // remember WHAT we are fetching: by the time it lands the user may have opened
+    // another page, switched mode, selected a folder, or entered history view —
+    // applying a stale body then would show the wrong content or, across modes,
+    // autosave a page body over a memory.
+    const wasCurrent = current, wasMode = mode;
     const url = mode === 'know'
       ? api + '/know-read?key=' + encodeURIComponent(current)
       : api + '/page-source?name=' + encodeURIComponent(current);
@@ -708,7 +730,8 @@
       if (!r.ok) return;
       d = await r.json();
     } catch { return; }
-    if (dirty || !current) return;      // started typing while we fetched
+    if (dirty || current !== wasCurrent || mode !== wasMode) return;
+    if (curFolder || viewingRev !== null) return;
     if (d.body === src.value) return;
     const top = src.scrollTop;
     src.value = d.body;
@@ -877,12 +900,14 @@
     const key = pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!key) { st('key required', false); return; }
     if (!src.value) { st('empty body', false); return; }
+    if (viewingRev !== null) { st('viewing a revision — use restore', false); return; }
+    const sent = src.value;
     const r = await fetch(api + '/know-save?key=' + encodeURIComponent(key),
-      { method: 'POST', body: src.value });
+      { method: 'POST', body: sent });
     if (!r.ok) { st('save failed ' + r.status, false); return; }
     current = key;
     pname.readOnly = true;
-    dirty = false;
+    if (src.value === sent) dirty = false;
     st('memory saved');
     loadKnow();
   }
@@ -902,6 +927,10 @@
 
   function setMode(m) {
     mode = m;
+    curKind = null;
+    exitRev();                       // else readOnly leaks into the memory editor
+    $('histsec').hidden = true;
+    $('linksec').hidden = true;
     ws.classList.toggle('know', m === 'know');
     $('modet').className = m === 'know' ? 'on' : '';
     $('modet').innerHTML = m === 'know' ? '\u25c6 knowledge' : '\u270e pages';

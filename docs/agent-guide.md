@@ -135,6 +135,25 @@ curl -s -X POST -H "$CK" --data-binary '# Todo
 > `.md` page. Omitting it stores the body as raw hoon (kind `hoon`), which over FUSE changes
 > the file's extension.
 
+### History and links
+
+| Route | Params | Returns |
+|---|---|---|
+| `GET /page-history?name=<p>` | `name` | `{name, revisions:[{rev,updated}]}`, newest first. Every save is a revision; autosave makes them dense. Pruned to the newest 50. |
+| `GET /page-source-at?name=<p>&rev=<n>` | `name`, `rev` | that revision's `{body, kind, rev}`. Restoring = re-saving the old body, so nothing is destroyed. |
+| `GET /page-backlinks?name=<p>` | `name` | `{links:[path]}` — pages whose body contains `[[<name>]]`. |
+
+`[[page-name]]` in a markdown body renders as a link (names may use
+`a-z 0-9 - / . _ ~`; anything else is left verbatim).
+
+### Public forms (the one unauthenticated write)
+
+`POST /apps/lattice/f/<page>` delivers a body as a command to that page. It
+requires the page to be **clearweb** AND to carry a forms flag set by the owner
+via `POST /page-forms?name=<p>&on=1` (nearest-flag-wins up the folder tree).
+Bodies over 8 KB are refused; submissions carry poke budget 0. Everything else
+in this guide is owner-gated.
+
 ### Published pages & federation
 
 `POST /save?path=<p>` (body = content) writes a *published* page under `pub/`, which is
