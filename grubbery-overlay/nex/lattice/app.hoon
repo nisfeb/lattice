@@ -390,6 +390,13 @@
   ::  sibling grubs, no command form. Everything else requires the owner.
   ?:  &(?=([%c ^] suffix) =(%'GET' method.request.req))
     (serve-clearweb eyre-id t.suffix)
+  ::  public form submissions: POST /f/<page>. The ONLY unauthenticated WRITE,
+  ::  and it is opt-in twice over — the page must be %clearweb AND carry a
+  ::  /forms-on flag (owner-set). The body becomes one command to that page,
+  ::  with poke budget 0 so a submission can never start a poke chain. The
+  ::  gate is +serve-form; nothing else public can write.
+  ?:  &(?=([%f ^] suffix) =(%'POST' method.request.req))
+    (serve-form eyre-id t.suffix (req-body req))
   ::  PWA assets: also unauthenticated. Browsers fetch the manifest and the
   ::  apple-touch-icon WITHOUT credentials (only Chrome honors
   ::  crossorigin=use-credentials, iOS never sends cookies for icons) — behind
@@ -991,6 +998,15 @@
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
     %+  send-see-other  eyre-id
     :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.name) "/")
+      ::  owner: turn PUBLIC FORM submissions on/off at a page or folder. Same
+      ::  nearest-flag-wins shape as comments. Off by default: a page is only
+      ::  publicly writable when the owner says so AND it is clearweb.
+      [%'POST' %page-forms]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ;<  ~  bind:m  (poke-eval [%forms (pax-of u.name) =('1' (~(gut by args) 'on' '0'))])
+    (send-ok eyre-id)
       ::  owner: turn comments on/off at a page or folder (on=1 / on=0). The
       ::  nearest flag at/above a page decides, so a folder toggles a whole site.
       [%'POST' %page-comments]
@@ -1681,6 +1697,14 @@
     ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
     ?.  ex  (pure:m ~)
     (put-file [%& %& fdir %comment-on] [/lattice %comment-flag] on.act)
+      %forms
+    ::  set the public-form flag at pax. Same nearest-flag-wins shape as
+    ::  %comments, and equally owner-only: this is the switch that makes a
+    ::  clearweb page publicly writable, so it is never implicit.
+    =/  fdir=path  (weld root (weld /page pax.act))
+    ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
+    ?.  ex  (pure:m ~)
+    (put-file [%& %& fdir %forms-on] [/lattice %comment-flag] on.act)
   ==
 ::  +apply-comment: store one comment under /comments/<page>/<id>. `author` is us
 ::  (owner writer) or the poking ship (public inbox) — NEVER from the payload,
@@ -4073,6 +4097,45 @@
 ::  only — a non-clearweb (or absent) page is a flat 404 so private siblings
 ::  never leak existence. No SSE (an anon keep would 403 anyway).
 ::
+::  +forms-on: is public form submission enabled at or above this page? Same
+::  nearest-flag-wins walk as +comments-on, so a folder opts in a whole site.
+::
+++  forms-on
+  |=  page=path
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  |-  ^-  form:m
+  =/  fdir=path  (weld app-base:lu (weld /page page))
+  ;<  seen=view:nexus  bind:m  (peek:io [%& %& fdir %forms-on] ~)
+  ?:  ?=([%file *] seen)
+    (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.seen)))) %.n))
+  ?~  page  (pure:m %.n)
+  $(page (snip `path`page))
+::  +serve-form: accept a public form POST for a page and deliver it as a
+::  command. Requires clearweb + forms-on; the body is capped, and the reply
+::  is a redirect back to the page so a plain <form> works with no JS.
+::
+++  serve-form
+  |=  [eyre-id=@ta pax=path body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  (levy pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
+    (send-err eyre-id 404 'not found')
+  =/  pdir=path  (weld app-base:lu (weld /page pax))
+  ;<  mode=share-mode:le  bind:m  (read-share pdir)
+  ?.  ?=(%clearweb mode)  (send-err eyre-id 404 'not found')
+  ;<  on=?  bind:m  (forms-on pax)
+  ?.  on  (send-err eyre-id 403 'forms not enabled')
+  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
+  ?.  ex  (send-err eyre-id 404 'not found')
+  ?:  (gth (met 3 body) form-body-max)  (send-err eyre-id 413 'too large')
+  ;<  ~  bind:m  (poke-eval [%cmd pax body 0])
+  %+  send-see-other  eyre-id
+  :(weld "/apps/lattice/c" (spud pax))
+::  +form-body-max: cap on a public submission (8 KB). A public write surface
+::  needs a size bound; the page's own gate decides what the text means.
+::
+++  form-body-max  ^~((mul 8 1.024))
 ++  serve-clearweb
   |=  [eyre-id=@ta pax=path]
   =/  m  (fiber:fiber:nexus ,~)

@@ -69,6 +69,26 @@
 ::  /x explorer path is owner-gated). The page must itself be shared %clearweb.
 ::
 ++  pub-of  |=(rel=path ^-(tape (weld "/apps/lattice/c" (spud rel))))
+::  +form-of: the public submission URL for a page — POST here from a plain
+::  <form> on a clearweb page and the body arrives as a command to that page.
+::  Requires the owner to have enabled forms (page-forms) on the page or a
+::  folder above it; the page's own gate decides what the submission means.
+::  A submission carries poke budget 0, so it can never start a poke chain.
+::
+++  form-of  |=(rel=path ^-(tape (weld "/apps/lattice/f" (spud rel))))
+::  +form-html: a ready-made single-field form posting to +form-of. `label`
+::  is the button text. Drop it into an html page body:
+::    (weld "<h1>Guestbook</h1>" (form-html /guestbook "sign"))
+::
+++  form-html
+  |=  [rel=path label=tape]
+  ^-  tape
+  ;:  weld
+    "<form method=\"post\" action=\""  (form-of rel)  "\" class=\"lattice-form\">"
+    "<input name=\"entry\" autocomplete=\"off\" required>"
+    "<button type=\"submit\">"  label  "</button>"
+    "</form>"
+  ==
 ++  tree-in
   |=  [deps=(list [path *]) rel=path]
   ^-  (list entry)

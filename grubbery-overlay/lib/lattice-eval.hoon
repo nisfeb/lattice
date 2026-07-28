@@ -27,6 +27,7 @@
       [%tmpl-save from=path name=@tas]  ::  save page-tree `from` as template `name`
       [%tmpl-del name=@tas]             ::  delete template `name`
       [%comments pax=path on=?]         ::  turn comments on/off at pax (page or folder)
+      [%forms pax=path on=?]            ::  turn public form submissions on/off at pax
   ==
 ::  +$  share-mode: a page's sharing preset (docs/platform.md step 4).
 ::    %private  — not gained, owner-only (default).

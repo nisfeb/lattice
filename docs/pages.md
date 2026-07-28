@@ -257,6 +257,40 @@ doubler automatically, with no command needed.
 This lays out the *rendered* views of `clock` and `counter`. Editing either
 re-renders the dashboard live.
 
+## Public forms: anyone can write to a page
+
+A clearweb page can carry a real `<form>` that anonymous visitors submit.
+Each submission arrives as a **command** to the page, so the form, the
+store, and the results view collapse into one gate.
+
+It is opt-in twice, and both switches are owner-only:
+
+1. the page is shared `clearweb`, and
+2. public forms are enabled on it (or a folder above it):
+   `POST /page-forms?name=<page>&on=1`.
+
+Then `POST /apps/lattice/f/<page>` delivers the body as a command. Build
+the markup with the stdlib helpers: `form-of` gives the action URL and
+`form-html` a ready-made single-field form.
+
+```hoon
+(weld "<h1>Guestbook</h1>" (form-html /guestbook "sign"))
+```
+
+The worked example is [page-examples/guestbook.hoon](page-examples/guestbook.hoon):
+it carries prior entries forward in its own data and escapes every
+submission with `esc` before rendering.
+
+Standing limits on this surface, since it is the only public write:
+
+- Submissions are capped at 8 KB.
+- A submission carries **poke budget 0**, so it can never start a poke
+  chain into other pages.
+- The page's gate decides what the text means. Escape it with `esc`
+  before welding it into `html`, exactly as with any other input.
+- Turning the flag off (`on=0`) stops submissions immediately, and a page
+  that is not clearweb refuses them outright.
+
 ## Timers: a page on a schedule
 
 Return `(every r dur)` and the platform re-runs your gate every `dur`, with
