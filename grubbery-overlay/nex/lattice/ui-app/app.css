@@ -139,6 +139,24 @@ select, option { color-scheme: light dark; }
 .tree .fld .mvf { color: var(--muted); text-decoration: none; padding: 0 4px;
   border-radius: 4px; flex: none; }
 .tree .fld .mvf:hover { color: var(--green); background: #4a7c5922; }
+/* wikilink autocomplete. #acmirror is an offscreen clone of the textarea's
+   text geometry used only to locate the caret — the editor soft-wraps, so a
+   monospace column calculation would be wrong on any wrapped line. */
+#acmirror { position: absolute; visibility: hidden; pointer-events: none;
+  top: 0; left: 0; white-space: pre-wrap; overflow-wrap: break-word; }
+.ac { position: absolute; z-index: 3; min-width: 13rem; max-width: 26rem;
+  max-height: 13rem; overflow-y: auto; padding: 4px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 24px #0003; font: 13px/1.5 ui-monospace, monospace; }
+.ac[hidden] { display: none; }
+.ac .row { display: flex; align-items: baseline; gap: 6px; padding: 4px 8px;
+  border-radius: 5px; cursor: pointer; white-space: nowrap; }
+.ac .row.on { background: #4a7c5922; }
+.ac .row .nm { color: var(--text); font-weight: 600; }
+.ac .row .dir { color: var(--muted); font-size: .85em; overflow: hidden;
+  text-overflow: ellipsis; }
+.ac .row .hit { color: var(--green); }
+.ac .hint { padding: 3px 8px 1px; color: var(--muted); font-size: .78em; }
 #src, #hl { position: absolute; inset: 0; margin: 0; border: 0; width: 100%;
   height: 100%; font: 13px/1.55 ui-monospace, Menlo, Consolas, monospace;
   padding: 12px; white-space: pre; tab-size: 2; }

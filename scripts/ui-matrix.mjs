@@ -249,6 +249,35 @@ try {
 
   // new-from-template: a core creation path (it was lost in the UI migration
   // and restored). Exercises the choice dialog, instantiation, and the open.
+  // wikilink autocomplete: opens on [[, ranks siblings first, Tab completes.
+  step = 'autocomplete';
+  await page.evaluate((n) => {
+    const s = document.getElementById('src');
+    s.value = 'see '; s.setSelectionRange(4, 4); s.dispatchEvent(new Event('input'));
+  }, RUN);
+  await page.focus('#src');
+  await page.keyboard.type('[[');
+  await wait(() => !document.getElementById('ac').hidden);
+  ok('autocomplete: opens on [[');
+  const sibling = RUN + '/hello';
+  await page.keyboard.type('hell');
+  await wait(() => [...document.querySelectorAll('#ac .row')].length > 0);
+  check('autocomplete: ranks the matching page first',
+    (await page.evaluate(() => {
+      const r = document.querySelector('#ac .row');
+      return (r.querySelector('.dir').textContent + '/' + r.querySelector('.nm').textContent)
+        .replace(/^\/+/, '');
+    })) === sibling, sibling);
+  await page.keyboard.press('Tab');
+  await wait((s) => document.getElementById('src').value === 'see [[' + s + ']]', sibling);
+  ok('autocomplete: Tab completes the full path');
+  check('autocomplete: closes after completing',
+    await page.evaluate(() => document.getElementById('ac').hidden));
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = ''; s.dispatchEvent(new Event('input'));
+  });
+
   step = 'template';
   await page.click('#newtmpl');
   await wait(() => !document.getElementById('dlg').hidden && !document.getElementById('dlgsel').hidden);

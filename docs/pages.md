@@ -277,6 +277,22 @@ the markup with the stdlib helpers: `form-of` gives the action URL and
 (weld "<h1>Guestbook</h1>" (form-html /guestbook "sign"))
 ```
 
+### Writing wikilinks
+
+A wikilink name is the **full page path from the root**, not a relative one —
+`[[wiki/notes/todo]]` links to that page whether you write it from
+`wiki/notes/index` (a sibling) or from anywhere else. `[[todo]]` means a
+top-level page called `todo`, and `[[../x]]` does not resolve.
+
+The editor makes that cheap: type `[[` and a list of your pages appears at the
+caret, filtered as you type and ranked with siblings of the page you are
+editing first. **Tab** completes the highlighted one to its full path and
+closes the brackets, arrows move the selection, Escape dismisses. It reads the
+page tree the editor already holds, so there is no request and no index.
+
+Names may use `a-z 0-9 - / . _ ~`. Anything else is left as literal text, which
+is also how you write `[[not a link]]` on purpose.
+
 `+guestbook` is a ready-made builder for the common case, in the same shape
 as `folder-index` — your whole page is one call:
 
