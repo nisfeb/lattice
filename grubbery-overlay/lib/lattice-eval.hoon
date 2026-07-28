@@ -30,6 +30,7 @@
       [%forms pax=path on=? cap=@ud gap=@dr]  ::  public forms: on/off + limits
       [%form-hit pax=path now=@da]      ::  record one accepted submission
       [%form-reset pax=path]            ::  zero a page's submission counter
+      [%legacy-seen imported=@ud]       ::  retired %lattice agent dealt with
   ==
 ::  +$  form-cfg: a page's public-form limits. cap=0 means no absolute limit;
 ::  gap=0 means no cooldown. Set by the owner (page-forms), read by serve-form

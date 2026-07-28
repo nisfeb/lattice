@@ -1369,6 +1369,78 @@
   $('modet').onclick = () => setMode(mode === 'know' ? 'pages' : 'know');
 
   // ── boot ─────────────────────────────────────────────────────────────────
+  // ── legacy agent import (one-time offer) ─────────────────────────────────
+  // A ship upgraded from the pre-grubbery %lattice gall agent may still have
+  // it installed with knowledge this store never saw. Ask once, in-app, then
+  // never again: the server marker is authoritative (it survives a new
+  // browser), and the localStorage flag keeps resolved installs from spending
+  // a request on the check at all.
+  async function legacyCheck() {
+    if (localStorage.latLegacy === 'done') return;
+    let d = null;
+    try { d = await (await fetch(api + '/legacy-status')).json(); } catch { return; }
+    if (!d) return;
+    // ONLY the server's marker is permanent. 'absent' can mean the agent is
+    // merely suspended (|revive brings it back), and caching that as done
+    // would silently strand the user's data forever. Never infer permanence
+    // from a negative or transient answer.
+    if (d.reason === 'resolved') { localStorage.latLegacy = 'done'; return; }
+    if (!d.prompt) return;
+    // ask at most once per browser SESSION, so declining does not re-prompt on
+    // every boot (nor cost a request) while still returning next session
+    if (sessionStorage.latLegacyAsked === '1') return;
+    sessionStorage.latLegacyAsked = '1';
+    const choice = await askChoice(
+      'An older lattice agent is still installed on this ship, from before ' +
+      'this store existed. Import the memories it holds?\n\nAnything already ' +
+      'here is left exactly as it is, and nothing is removed from the old agent.',
+      ['import them now', 'not now', 'never ask again'], 'ok');
+    if (choice === 'not now' || choice === null) return;   // ask again next boot
+    if (choice === 'never ask again') {
+      await mutate(api + '/legacy-dismiss');
+      localStorage.latLegacy = 'done';
+      st('legacy import dismissed');
+      return;
+    }
+    st('importing memories from the old agent… this can take a while');
+    let r = null;
+    try { r = await mutate(api + '/legacy-migrate'); } catch {}
+    if (!r || !r.ok) {
+      // the import can outlive the request (one serial writer poke per entry).
+      // Ask the server what actually happened before reporting a failure.
+      let after = null;
+      try { after = await (await fetch(api + '/legacy-status')).json(); } catch {}
+      if (after && after.reason === 'resolved') {
+        localStorage.latLegacy = 'done';
+        knowGen++;
+        if (mode === 'know') loadKnow();
+        st('legacy import completed');
+        return;
+      }
+      st('legacy import failed' + (r ? ' ' + r.status : '') + ' — nothing was removed from the old agent', false);
+      return;
+    }
+    const res = await r.json();
+    localStorage.latLegacy = 'done';
+    knowGen++;
+    st('imported ' + res.imported + ' memories from the old agent');
+    if (mode === 'know') loadKnow();
+    // NEVER advise retiring the old agent while it still holds pages: this
+    // import moves knowledge only (the agent exposes no arm for page bodies),
+    // so an uninstall on that advice would destroy them permanently.
+    const kept = res.imported + ' ' + (res.imported === 1 ? 'memory' : 'memories') +
+      (res.skipped ? ' (' + res.skipped + ' already here, left untouched)' : '');
+    await askConfirm(
+      res.pages
+        ? 'Imported ' + kept + '.\n\nThe old agent still holds ' + res.pages + ' ' +
+          (res.pages === 1 ? 'page' : 'pages') + ' that CANNOT be imported yet — it ' +
+          'does not expose page contents. Leave it installed, or those pages are ' +
+          'lost. Do not run |uninstall %lattice yet.'
+        : 'Imported ' + kept + '.\n\nThe old agent holds nothing else, so it is ' +
+          'safe to retire from the dojo:\n\n    |uninstall %lattice',
+      'got it');
+  }
+
   // paint from the last session's snapshot before the network answers: the
   // tree and (when it matches ?name) the page body + preview appear at 0ms,
   // then loadTree/refreshOpen reconcile in the background — local edits win,
@@ -1388,6 +1460,7 @@
   }
   if (qs.get('view') === 'know') {
     setMode('know');
+    legacyCheck();
   } else {
     const painted = bootSnap();
     loadTree().then(() => {
@@ -1400,6 +1473,7 @@
       else if (into && nodes.some((n) => !n.page && n.path === into)) selectFolder(into);
       else if (into) newFile(into);
       else newFile('');
+      legacyCheck();
     });
   }
 })();

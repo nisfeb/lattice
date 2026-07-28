@@ -74,6 +74,8 @@
             [%over %& [/app %'index.html'] [[/ %mime] uih]]
             [%over %& [/app %'app.js'] [[/ %mime] uij]]
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
+        ::  /legacy: the retired-agent marker lives here (see +legacy-mark-road)
+            [%fall %| /legacy empty-dir:loader]
             [%fall %| /know/vault empty-dir:loader]
             [%fall %| /know/trash-vault empty-dir:loader]
             [%fall %& [/know %trash] [[/lattice %know-index] *know-index:lk]]
@@ -1506,6 +1508,67 @@
       [%'POST' %know-reindex]
     ;<  ~  bind:m  know-reindex
     (send-ok eyre-id)
+  ::  ── legacy agent migration (see the +legacy-live block) ────────────────
+  ::  legacy-status: should the UI offer to import from a retired %lattice
+  ::  gall agent? One %gu liveness scry and nothing else — see below. The
+  ::  client asks once per browser session and never again once resolved.
+      [%'GET' %legacy-status]
+    ;<  done=?  bind:m  legacy-resolved
+    ?:  done
+      (send-json eyre-id (pairs:enjs:format ~[['prompt' b+|] ['reason' s+'resolved']]))
+    ::  %gu ONLY. This route runs on the editor's boot path, and a %gx against
+    ::  an agent whose version lacks the arm does not fail gracefully — it
+    ::  unwinds the Arvo event. Liveness is the one thing %gu can answer
+    ::  safely, so the counts (and every peek that could bail) move behind the
+    ::  user's explicit click in /legacy-migrate.
+    ;<  up=?  bind:m  legacy-live
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['prompt' b+up]
+        ['reason' s+?:(up 'agent-present' 'absent')]
+    ==
+  ::  legacy-migrate: copy the retired agent's knowledge in. Entries whose key
+  ::  ALREADY exists here are SKIPPED, never overwritten — the live store is
+  ::  always the newer one, and a legacy body must never revert an edit made
+  ::  since. That also makes a re-run harmless.
+      [%'POST' %legacy-migrate]
+    ;<  done=?  bind:m  legacy-resolved
+    ?:  done  (send-err eyre-id 409 'already resolved')
+    ;<  up=?  bind:m  legacy-live
+    ?.  up  (send-err eyre-id 404 'no legacy agent')
+    ;<  aj=json  bind:m  (legacy-peek /gx/lattice/know/all/json)
+    =/  parsed=(each (list [@t know-entry:lk]) tang)  (mule |.((parse-import aj)))
+    ?:  ?=(%| -.parsed)  (send-err eyre-id 502 'bad legacy export shape')
+    ::  FAIL CLOSED. +read-know-map maps ANY unreadable view onto the empty
+    ::  map, which is indistinguishable from a legitimately empty store — and
+    ::  "empty" would mean every legacy entry imports over live data. Use the
+    ::  unit-returning read so a genuine read FAILURE refuses the import, while
+    ::  a real (readable) empty store still migrates normally.
+    ;<  esu=(unit (map path know-entry:lk))  bind:m  read-know-vault-safe
+    ?~  esu  (send-err eyre-id 503 'local store unreadable; import refused')
+    =/  es=(map path know-entry:lk)  u.esu
+    ::  skip anything we already hold LIVE or in TRASH — importing over a
+    ::  soft-deleted key would resurrect what the user deleted here.
+    ;<  tx=know-index:lk  bind:m  (read-index [%| 2 %& /know %trash])
+    =/  fresh=(list [@t know-entry:lk])
+      %+  skim  p.parsed
+      |=  [k=@t *]
+      =/  ko=(unit path)  (know-key k)
+      ?~(ko %.n ?!(|((~(has by es) u.ko) (~(has by tx) u.ko))))
+    ;<  n=@ud  bind:m  (import-know-loop fresh 0)
+    ;<  ~  bind:m  (poke-eval [%legacy-seen n])
+    ;<  pcount=@ud  bind:m  legacy-pages
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['imported' (numb:enjs:format n)]
+        ['skipped' (numb:enjs:format (sub (lent p.parsed) (lent fresh)))]
+        ['pages' (numb:enjs:format pcount)]
+    ==
+  ::  legacy-dismiss: the user declined. Same marker as a completed import, so
+  ::  the prompt never returns.
+      [%'POST' %legacy-dismiss]
+    ;<  ~  bind:m  (poke-eval [%legacy-seen 0])
+    (send-ok eyre-id)
   ::  bulk import: body = a /know-all export; lands each entry VERBATIM (tags +
   ::  original updated preserved) via %import. Owner-only.
       [%'POST' %know-import]
@@ -1600,6 +1663,51 @@
     ;<  ~  bind:m  (poke-pub [%save-page (spat p.pp) body.u.e])
     (send-ok eyre-id)
   ==
+::  ── legacy %lattice gall agent (pre-grubbery) ─────────────────────────────
+::  A ship that ran the standalone agent before the nexus may still have it
+::  installed, holding knowledge the nexus never saw. We offer a one-time
+::  in-app import rather than migrating silently: the entries are the user's,
+::  and which store they want them in is their call.
+::
+::  DETECTION IS %gu, NEVER a bare %gx. A %gx against an absent agent BAILS,
+::  and a bail here crashes the whole Arvo event (the same trap documented on
+::  +obelisk-exec). %gu answers %.n instead. So: liveness first, peek second.
+::
+++  legacy-live
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  (typed-scry:io ? %loob /gu/lattice/$)
+::  +legacy-peek: read one of the retired agent's export arms. ONLY call this
+::  behind a +legacy-live check.
+++  legacy-peek
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,json)
+  ^-  form:m
+  (typed-scry:io json %json pax)
+::  +legacy-mark: the "done with the old agent" marker. Its EXISTENCE is the
+::  whole signal (the body is detail for humans), so the read is a peek-exists
+::  and can never mis-parse. Written on a completed import AND on an explicit
+::  dismissal, so neither path ever prompts again.
+++  legacy-mark-road  ^-(road:tarball [%& %& (weld app-base:lu /legacy) %state])
+++  legacy-resolved
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  (peek-exists:io legacy-mark-road)
+::  +legacy-pages: how many PAGES the retired agent still holds. This import
+::  moves knowledge only — the old agent exposes no arm for page BODIES
+::  (%published and %live-list give paths and hashes, nothing more) — so pages
+::  stay behind. We count them because a user who retires the agent while pages
+::  remain loses them permanently, and the completion dialog has to say so.
+::  Called ONLY from /legacy-migrate, never on the boot path: like every %gx it
+::  can bail on an agent whose version lacks the arm, so it stays behind the
+::  user's explicit click.
+++  legacy-pages
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  pj=json  bind:m  (legacy-peek /gx/lattice/live-list/json)
+  =/  r=(each @ud tang)
+    (mule |.(((ot:dejs:format count+ni:dejs:format ~) pj)))
+  (pure:m ?:(?=(%| -.r) 0 p.r))
 ::  +poke-know / +poke-pub: poke the single writer fiber (root /main.sig) with a
 ::  typed action; grubbery vales the noun through the action marc. The writer
 ::  serialises all mutations, so concurrent requests can't race the index.
@@ -1702,6 +1810,11 @@
     ::  leave it inert (code grub only — templates are never evaluated).
     ::  (Instantiation is +instantiate-template — one make PER page, not a batch.)
     (copy-tree root [%page from.act] [%template /[name.act]] %.n)
+      %legacy-seen
+    ::  one marker for both outcomes (imported N, or dismissed with 0): its
+    ::  existence is what silences the prompt. See +legacy-mark-road.
+    %^  put-file  [%& %& (weld root /legacy) %state]  [/ %json]
+    (pairs:enjs:format ~[['imported' (numb:enjs:format imported.act)]])
       %tmpl-del
     ::  delete a template — cull its subtree. A shipped template comes back on
     ::  the next writer start (ensure-shipped-templates), which is intended.
@@ -3497,6 +3610,15 @@
   ;<  seen=view:nexus  bind:m  (peek:io [%| 2 %| /know/vault] ~)
   ?.  ?=([%ball *] seen)  (pure:m ~)
   (pure:m (collect-entries ~ ball.seen))
+::  +read-know-vault-safe: +read-know-map, but distinguishing "the vault is
+::  empty" from "the vault could not be read" (~). Callers that would OVERWRITE
+::  based on absence must use this one — see the legacy import.
+++  read-know-vault-safe
+  =/  m  (fiber:fiber:nexus ,(unit (map path know-entry:lk)))
+  ^-  form:m
+  ;<  seen=view:nexus  bind:m  (peek:io [%| 2 %| /know/vault] ~)
+  ?.  ?=([%ball *] seen)  (pure:m ~)
+  (pure:m `(collect-entries ~ ball.seen))
 ::  +serve-ui: stream a ui-app asset grub. MIME from the (whitelisted) name;
 ::  anything unknown 404s. Assets are grubs so the request-fiber core stays
 ::  small — never serve big blobs from core constants.
