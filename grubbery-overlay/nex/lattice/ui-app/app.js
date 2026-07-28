@@ -95,7 +95,15 @@
   // pier), so the rules here are: never re-fetch what this client already
   // knows, patch `nodes`/`knowKeys` locally after our own writes, and snapshot
   // to localStorage so the next boot paints before the network answers.
-  const snapTree = () => { try { localStorage.appTree = JSON.stringify(nodes); } catch {} };
+  // generation counters: a list fetch issued BEFORE a local patch must not
+  // land AFTER it and clobber newer local state with a stale server snapshot
+  // (the own-write echo is suppressed, so nothing would correct it until the
+  // 30s poll). Bumped on every local mutation; stale responses are dropped.
+  let treeGen = 0, knowGen = 0;
+  const snapTree = () => {
+    treeGen++;
+    try { localStorage.appTree = JSON.stringify(nodes); } catch {}
+  };
   const snapPage = (name, d) => {
     try {
       localStorage.appPage = JSON.stringify(
@@ -159,9 +167,12 @@
 
   // ── tree ─────────────────────────────────────────────────────────────────
   async function loadTree() {
+    const gen = treeGen;
     const r = await fetch(api + '/page-tree');
     if (!r.ok) { st('tree failed ' + r.status, false); return; }
-    nodes = (await r.json()).nodes;
+    const d = await r.json();
+    if (gen !== treeGen) return;   // a local patch superseded this response
+    nodes = d.nodes;
     snapTree();
     renderTree();
   }
@@ -1031,6 +1042,7 @@
         '&to=' + encodeURIComponent(newName));
       if (!r.ok) { st('move failed ' + r.status, false); return; }
       // the body is already in the editor — rename in place, no refetch
+      knowGen++;
       const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
       if (k) k.key = newName;
       current = newName;
@@ -1147,9 +1159,12 @@
   const chipsEl = $('chips'), knowMeta = $('knowmeta'), ktagsEl = $('ktags');
 
   async function loadKnow() {
+    const gen = knowGen;
     const r = await fetch(api + '/know-list');
     if (!r.ok) { st('know-list failed ' + r.status, false); return; }
-    knowKeys = (await r.json()).keys;
+    const d = await r.json();
+    if (gen !== knowGen) return;   // a local patch superseded this response
+    knowKeys = d.keys;
     renderKnowChips();
     renderKnowTree();
   }
@@ -1258,6 +1273,7 @@
           '&tag=' + encodeURIComponent(t));
         if (!r.ok) { st('untag failed ' + r.status, false); return; }
         // this client made the change \u2014 patch the list it already holds
+        knowGen++;
         const k = knowEntry(current);
         if (k) k.tags = k.tags.filter((x) => x !== t);
         renderKnowTags(k ? k.tags : []);
@@ -1276,6 +1292,7 @@
       '&tag=' + encodeURIComponent(t));
     if (!r.ok) { st('tag failed ' + r.status, false); return; }
     $('ktag').value = '';
+    knowGen++;
     const k = knowEntry(current);
     if (k && !k.tags.includes(t)) k.tags.push(t);
     renderKnowTags(k ? k.tags : [t]);
@@ -1295,6 +1312,7 @@
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
     st('memory saved');
+    knowGen++;
     const k = knowEntry(key);
     if (k) k.bytes = sent.length;
     else knowKeys.push({ key, tags: [], updated: '', bytes: sent.length });
@@ -1314,6 +1332,7 @@
     src.value = '';
     render();
     st('memory deleted (restorable via know-restore)');
+    knowGen++;
     knowKeys = knowKeys.filter((x) => x.key.replace(/^\//, '') !== doomed);
     renderKnowChips();
     renderKnowTree();
