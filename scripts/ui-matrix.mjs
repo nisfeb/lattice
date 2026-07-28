@@ -44,7 +44,9 @@ await page.evaluateOnNewDocument(() => {
     window[f] = () => { throw new Error('native ' + f + '() used'); };
 });
 
-const wait = (fn, ...args) => page.waitForFunction(fn, { timeout: 30000 }, ...args);
+// the harness pier is slow (a page save is 2-4s, a folder move is one save
+// per page), so integration waits get a generous budget
+const wait = (fn, ...args) => page.waitForFunction(fn, { timeout: 90000 }, ...args);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // The in-app dialog: fill (optional) and submit / cancel.
 const dialog = async (value, submit = true) => {
@@ -154,6 +156,9 @@ try {
     await page.evaluate(() => document.getElementById('histsec').hidden));
   await page.click('#modet');
   await wait(() => !document.getElementById('ws').className.includes('know'));
+  // setMode clears the open page, so reopen it for the autosave check below
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
+  await wait(() => document.getElementById('src').value.length > 0);
 
   // autosave: a 2s typing pause persists the draft, with no UI churn —
   // the server copy converges on what was typed.

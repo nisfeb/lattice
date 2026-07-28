@@ -566,11 +566,15 @@
   ::  restoring = the client re-saves the old body as a fresh revision, so
   ::  nothing is ever destroyed. The rev is validated against real history
   ::  first because peek-at bails outright on a miss.
+      ::  NB: numeric URL params parse with +dim:ag, NOT +slaw %ud — slaw wants
+      ::  hoon's dotted numeral syntax (1.000), so every rev >= 1000 silently
+      ::  failed to parse and 400'd. With autosave, revision numbers pass 1000
+      ::  within a few sessions.
       [%'GET' %page-source-at]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    =/  rv=(unit @ud)  (slaw %ud (~(gut by args) 'rev' ''))
+    =/  rv=(unit @ud)  (rush (~(gut by args) 'rev' '') dim:ag)
     ?~  rv  (send-err eyre-id 400 'bad rev')
     =/  pdir=path  (weld app-base:lu (weld /page (pax-of u.name)))
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
@@ -1148,7 +1152,7 @@
     ?~  raw  (send-err eyre-id 400 'missing path')
     =/  rv=(unit @t)  (~(get by args) 'rev')
     ?~  rv  (send-err eyre-id 400 'missing rev')
-    =/  rev=(unit @ud)  (slaw %ud u.rv)
+    =/  rev=(unit @ud)  (rush u.rv dim:ag)
     ?~  rev  (send-err eyre-id 400 'bad rev')
     =/  ro=(unit road:tarball)  (pub-road u.raw)
     ?~  ro  (send-err eyre-id 400 'invalid path')
@@ -1171,7 +1175,7 @@
     ?~  raw  (send-err eyre-id 400 'missing path')
     =/  rv=(unit @t)  (~(get by args) 'rev')
     ?~  rv  (send-err eyre-id 400 'missing rev')
-    =/  rev=(unit @ud)  (slaw %ud u.rv)
+    =/  rev=(unit @ud)  (rush u.rv dim:ag)
     ?~  rev  (send-err eyre-id 400 'bad rev')
     =/  ro=(unit road:tarball)  (pub-road u.raw)
     ?~  ro  (send-err eyre-id 400 'invalid path')
@@ -1199,7 +1203,7 @@
     =/  keep=(unit @ud)
       =/  kp=(unit @t)  (~(get by args) 'keep')
       ?~  kp  `10
-      =/  k=(unit @ud)  (slaw %ud u.kp)
+      =/  k=(unit @ud)  (rush u.kp dim:ag)
       ?~(k ~ `(max 1 u.k))
     ?~  keep  (send-err eyre-id 400 'bad keep')
     =/  ro=(unit road:tarball)  (pub-road u.raw)
@@ -1254,7 +1258,7 @@
     ?~  raw  (send-err eyre-id 400 'missing key')
     =/  rv=(unit @t)  (~(get by args) 'rev')
     ?~  rv  (send-err eyre-id 400 'missing rev')
-    =/  rev=(unit @ud)  (slaw %ud u.rv)
+    =/  rev=(unit @ud)  (rush u.rv dim:ag)
     ?~  rev  (send-err eyre-id 400 'bad rev')
     =/  ko=(unit path)  (know-key u.raw)
     ?~  ko  (send-err eyre-id 400 'invalid key')
@@ -1278,7 +1282,7 @@
     ?~  raw  (send-err eyre-id 400 'missing key')
     =/  rv=(unit @t)  (~(get by args) 'rev')
     ?~  rv  (send-err eyre-id 400 'missing rev')
-    =/  rev=(unit @ud)  (slaw %ud u.rv)
+    =/  rev=(unit @ud)  (rush u.rv dim:ag)
     ?~  rev  (send-err eyre-id 400 'bad rev')
     =/  ko=(unit path)  (know-key u.raw)
     ?~  ko  (send-err eyre-id 400 'invalid key')
@@ -1311,7 +1315,7 @@
     =/  keep=(unit @ud)
       =/  kp=(unit @t)  (~(get by args) 'keep')
       ?~  kp  `10
-      =/  k=(unit @ud)  (slaw %ud u.kp)
+      =/  k=(unit @ud)  (rush u.kp dim:ag)
       ?~(k ~ `(max 1 u.k))
     ?~  keep  (send-err eyre-id 400 'bad keep')
     =/  ko=(unit path)  (know-key u.raw)

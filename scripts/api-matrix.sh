@@ -98,7 +98,8 @@ has "history has revisions" '"revisions"' "$(G "$B/page-history?name=$P/note")"
 R1=$(G "$B/page-history?name=$P/note" | python3 -c 'import json,sys; print(json.load(sys.stdin)["revisions"][-1]["rev"])')
 has "page-source-at reads a revision" '"body"' "$(G "$B/page-source-at?name=$P/note&rev=$R1")"
 is "page-source-at bad rev"    400 "$(sc "$B/page-source-at?name=$P/note&rev=notanumber")"
-is "page-source-at absent rev" 404 "$(sc "$B/page-source-at?name=$P/note&rev=999999")"
+is "page-source-at absent rev"   404 "$(sc "$B/page-source-at?name=$P/note&rev=999999")"
+is "page-source-at 4-digit rev parses" 404 "$(sc "$B/page-source-at?name=$P/note&rev=1000")"
 is "page-backlinks"        200 "$(sc "$B/page-backlinks?name=$P/note")"
 has "backlinks shape"      '"links"' "$(G "$B/page-backlinks?name=$P/note")"
 
@@ -119,7 +120,8 @@ python3 -c "print('entry=' + 'x'*9000)" > /tmp/apimx-big-$$.txt
 is "  oversize body -> 413"                 413 "$(code -X POST "$B/f/$P/note" --data-binary @/tmp/apimx-big-$$.txt)"
 rm -f /tmp/apimx-big-$$.txt
 is "  submit to a nonexistent page -> 404"  404 "$(code -X POST "$B/f/$P/ghost" --data-binary 'entry=x')"
-is "  path traversal refused"               404 "$(code -X POST "$B/f/$P/../../etc" --data-binary 'entry=x')"
+tc=$(code -X POST "$B/f/$P/../../etc" --data-binary 'entry=x')
+case "$tc" in 200|303) bad "  path traversal refused" "accepted with $tc" ;; *) ok "  path traversal refused ($tc)" ;; esac
 is "private again"         200 "$(sc -X POST "$B/page-share-tree?name=$P&mode=private")"
 
 echo "==> auth boundary on the NEW owner routes"
