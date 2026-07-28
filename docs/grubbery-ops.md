@@ -499,6 +499,20 @@ found a different way:
 | `peek` returns `view` not `seen`; `%peek` sign field | did not compile | `check_bin` `-find` loop |
 | `loader` `ver`→`manifest` | did not compile | `check_bin` `-find` loop |
 | bowl server `/sys/bowl`→`/sys/bowl.sig` | compiles, writer wedges at runtime | marker-grub instrumentation |
+| usergroup dirs gained a `.grp` suffix | compiles, runs, **silently does nothing** | adversarial code review |
+
+The fourth is the nastiest shape of all: grubbery stores usergroups at
+`/sys/ames/usergroups/<name>.grp` (`+grp-storage-path`), and lattice granted
+share weirs at `/sys/ames/usergroups/public`. That directory does not exist, so
+the `peek-exists` guard in `+share-weir` / `+ensure-pub-weir` failed and every
+grant returned early **as a no-op**. Nothing logged, nothing crashed, sharing
+appeared to work — but no foreign ship could read a shared page. Clearweb (plain
+HTTP) was unaffected, which is why it survived so long.
+
+The lesson to carry: a drift that fails to compile costs an afternoon; a drift
+that turns a security-relevant write into a silent no-op can hide for months.
+When a framework call is *supposed* to change permissions, assert the change
+afterwards (read the weir back) rather than trusting the write.
 
 A nexus carried across grubbery versions needs **all three** checked: recompile
 against the target libs (compile drifts), then **exercise every runtime path**. A

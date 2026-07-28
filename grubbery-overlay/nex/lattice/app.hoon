@@ -2002,14 +2002,23 @@
 ::  weir — the same grant ensure-pub-weir uses for /pub. Absent group -> no-op.
 ::  (same read-modify-write race as ensure-pub-weir, finding #12; self-heals.)
 ::
+::  +public-grp: the public usergroup's storage dir. Grubbery names usergroup
+::  dirs with a `.grp` suffix (+grp-storage-path in app/grubbery.hoon) — a
+::  FOURTH framework drift past seen->view, loader ver->manifest and
+::  bowl->bowl.sig. We wrote to /usergroups/public, which does not exist, so
+::  the peek-exists guard below failed and EVERY share grant silently no-opped:
+::  cross-ship reads of shared/clearweb pages were denied. Clearweb over HTTP
+::  was unaffected, which is why it went unnoticed.
+::
+++  public-grp  ^-(path /sys/ames/usergroups/'public.grp')
 ++  share-weir
   |=  [road=road:tarball add=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  gdir=road:tarball  [%& %| /sys/ames/usergroups/public]
+  =/  gdir=road:tarball  [%& %| public-grp]
   ;<  ok=?  bind:m  (peek-exists:io gdir)
   ?.  ok  (pure:m ~)
-  =/  wroad=road:tarball  [%& %& [/sys/ames/usergroups/public %'how.weir']]
+  =/  wroad=road:tarball  [%& %& [public-grp %'how.weir']]
   ;<  cur=weir:nexus  bind:m  (read-weir wroad)
   =/  new=weir:nexus
     ?:  add  cur(peek (~(put in peek.cur) road))
@@ -2180,6 +2189,11 @@
     ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
     =/  frag=@t
       ?.  ?=([%file *] dsn)  ''
+      ::  a composed view fragment is rendered ONCE at eval time and stored in
+      ::  the composing page's data, then served on both surfaces — so no base
+      ::  is universally right. /c/ is the useful one: composition (dashboards,
+      ::  indexes) is what gets published. Wikilinks inside an embedded
+      ::  fragment therefore always point at the public surface.
       (crip (render-shown sang.dsn vmode "/apps/lattice/c/"))
     (pure:m [[i.deps frag] rest])
   =/  n=@ud  (dec (lent i.deps))
@@ -3922,7 +3936,12 @@
   =/  doc=@t
     ?:  toobig  (render-clearweb (pax-str rel) head "<p>page too large or not previewable</p>")
     ?~  cd  (render-clearweb (pax-str rel) head "<p>no data yet</p>")
-    (clearweb-doc rel u.cd vmode head ?!(?=(%html vmode)) ~ extra)
+    ::  our own page view links into the editor; a peer's page keeps the
+    ::  public form (we cannot link into their editor).
+    %-  clearweb-doc
+    :*  rel  u.cd  vmode  head  ?!(?=(%html vmode))  ~  extra
+        ?:(local "/apps/lattice/app?name=" "/apps/lattice/c/")
+    ==
   %-  send-html
   :-  eyre-id
   %^    render-browser-page
@@ -4009,12 +4028,15 @@
 ::  sandboxed frame — the sandbox, not escaping, is what neutralizes hostile html.
 ::
 ++  clearweb-doc
-  |=  [pax=path =sang:tarball vmode=view-mode:pg head=tape wrap=? home=(unit tape) extra=tape]
+  |=  [pax=path =sang:tarball vmode=view-mode:pg head=tape wrap=? home=(unit tape) extra=tape base=tape]
   ^-  @t
   ::  `extra` (a rendered comment thread + optional box) is appended after the
   ::  page content — inside the themed wrapper for md/gmi/text, or after the raw
   ::  body for %html.
-  =/  inner=tape  (weld (render-shown sang vmode "/apps/lattice/c/") extra)
+  ::  `base` is the wikilink target root: /c/ on the public surface, the editor
+  ::  on an owner view. Hardcoding /c/ here made every wikilink on the owner's
+  ::  own page view dead, since pages are private by default.
+  =/  inner=tape  (weld (render-shown sang vmode base) extra)
   =/  body=tape
     ?:  ?=(%html vmode)  inner
     ?.  wrap  inner
@@ -4191,7 +4213,8 @@
   ::  here — no comment box (box=""). Commenting happens from a ship's browser.
   ;<  con=?    bind:m  (comments-on pax)
   ;<  cmts=tape  bind:m  (render-comments pax con "")
-  (send-html eyre-id (clearweb-doc pax sang.dsn vmode head ?=(^ tf) home cmts))
+  %+  send-html  eyre-id
+  (clearweb-doc pax sang.dsn vmode head ?=(^ tf) home cmts "/apps/lattice/c/")
 ::  +page-data-html: render a page's data grub. A cord shows as text; any
 ::  other noun as its literal (a page's data mark is a bare noun).
 ::
@@ -4214,25 +4237,37 @@
 ::  else passes through untouched. `base` is the surface's link root: the
 ::  editor for owner views, /c/ for clearweb.
 ::
+++  wiki-name-len
+  |=  t=tape
+  ^-  @ud
+  =|  n=@ud
+  |-  ^-  @ud
+  ?~  t  n
+  ?.  ?|  &((gte i.t 'a') (lte i.t 'z'))
+          &((gte i.t '0') (lte i.t '9'))
+          =(i.t '-')  =(i.t '/')  =(i.t '.')  =(i.t '_')  =(i.t '~')
+      ==
+    n
+  $(t t.t, n +(n))
 ++  wikilinkify
   |=  [t=tape base=tape]
   ^-  tape
+  |-  ^-  tape
   ?~  t  ~
   ?.  =("[[" (scag 2 `tape`t))  [i.t $(t t.t)]
+  ::  scan ONLY the legal-charset run, then require "]]" immediately after, so a
+  ::  candidate costs the length of its name. The previous version searched the
+  ::  whole remaining document for "]]" at every "[[" and, on a miss, dropped a
+  ::  single character and searched again — quadratic. A body of repeated "[["
+  ::  with no closer took ~6.5s at 40KB and, through the render route, wedged
+  ::  the ship for hours from an UNAUTHENTICATED page view. This version is flat
+  ::  (~0.5s at 100KB) and byte-identical on every edge case tested.
   =/  aft=tape  (slag 2 `tape`t)
-  =/  end=(unit @ud)  (find "]]" aft)
-  ?~  end  [i.t $(t t.t)]
-  =/  name=tape  (scag u.end aft)
-  =/  okc=?
-    ?~  name  %.n
-    %+  levy  `tape`name
-    |=  c=@tD
-    ?|  &((gte c 'a') (lte c 'z'))
-        &((gte c '0') (lte c '9'))
-        =(c '-')  =(c '/')  =(c '.')  =(c '_')  =(c '~')
-    ==
-  ?.  okc  [i.t $(t t.t)]
-  =/  rest=tape  (slag (add u.end 2) aft)
+  =/  n=@ud  (wiki-name-len aft)
+  ?:  =(0 n)  [i.t $(t t.t)]
+  ?.  =("]]" (scag 2 (slag n aft)))  [i.t $(t t.t)]
+  =/  name=tape  (scag n aft)
+  =/  rest=tape  (slag (add n 2) aft)
   =/  tail=tape  $(t rest)
   :(weld "[" name "](" base name ")" tail)
 ++  render-shown
@@ -4981,10 +5016,10 @@
   |=  root=path
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  gdir=road:tarball  [%& %| /sys/ames/usergroups/public]
+  =/  gdir=road:tarball  [%& %| public-grp]
   ;<  ok=?  bind:m  (peek-exists:io gdir)
   ?.  ok  ~&([%lattice-no-public-group ~] (pure:m ~))
-  =/  wroad=road:tarball  [%& %& [/sys/ames/usergroups/public %'how.weir']]
+  =/  wroad=road:tarball  [%& %& [public-grp %'how.weir']]
   =/  pubdir=road:tarball  [%& %| (weld root /pub)]
   ::  KNOWN RACE (finding #12): how.weir is the GLOBAL public usergroup weir shared
   ::  by every grubbery app. This read-modify-write straddles a fiber yield, so two

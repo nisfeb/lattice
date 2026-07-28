@@ -67,8 +67,34 @@
   ?.  (safe-url url)  (esc alt)
   =/  ti=tape  ?~(title "" :(weld " title=\"" (esc title) "\""))
   :(weld "<img src=\"" (esc url) "\" alt=\"" (esc alt) "\"" ti " loading=\"lazy\">")
+::  +scan-cap: how far an INLINE scan looks for its closing delimiter before
+::  giving up and treating the opener as literal text.
+::
+::  Every unmatched inline delimiter used to cost a scan of the whole rest of
+::  the paragraph, at EVERY position — so a paragraph of repeated "[[" (or
+::  "**", or backticks) was quadratic. That is reachable from an
+::  unauthenticated page render: 20KB of "[[" wedged the ship for hours.
+::  Capping the lookahead bounds the worst case to cap*n instead of n^2.
+::  2K is far longer than any real link text, code span or emphasis run, so
+::  no realistic document renders differently.
+++  scan-cap  ^~((mul 2 1.024))
+::  +link-scan-cap: lookahead for a link's ( ) or [ref] tail. Reached only
+::  after a bracket matched, so a tight bound is safe — real URLs and
+::  reference labels are far shorter — and it stops "[a](" spam from costing
+::  a full-tail scan per link.
+++  link-scan-cap  ^~(512)
+::  +find-cap: (find nedl hay), giving up after +scan-cap characters.
+++  find-cap
+  |=  [nedl=tape hay=tape cap=@ud]
+  ^-  (unit @ud)
+  =|  i=@ud
+  |-  ^-  (unit @ud)
+  ?:  (gth i cap)  ~
+  ?~  hay  ~
+  ?:  =(nedl (scag (lent nedl) `tape`hay))  `i
+  $(hay t.hay, i +(i))
 ::  +match-bracket: index of the ] that closes the [ at position 0 (t is after
-::  the opening [), honoring one level of nested [].
+::  the opening [), honoring one level of nested []. Capped by +scan-cap.
 ++  match-bracket
   |=  t=tape
   ^-  (unit @ud)
@@ -85,7 +111,7 @@
   ^-  (unit [url=tape title=tape rest=tape])
   ?~  t  ~
   ?.  =('(' i.t)  ~
-  =/  close  (find ")" t.t)
+  =/  close  (find-cap ")" t.t link-scan-cap)
   ?~  close  ~
   =/  guts=tape  (trim (sc u.close t.t))
   =/  rest=tape  (sl +(u.close) t.t)
@@ -104,7 +130,7 @@
   ^-  (unit [url=tape title=tape rest=tape])
   ?~  t  ~
   ?.  =('[' i.t)  ~
-  =/  close  (find "]" t.t)
+  =/  close  (find-cap "]" t.t link-scan-cap)
   ?~  close  ~
   =/  key0=tape  (sc u.close t.t)
   =/  rest=tape  (sl +(u.close) t.t)
@@ -116,93 +142,110 @@
 ++  ib
   |=  [t=tape refs=refm]
   ^-  tape
+  (ib-in t refs *(set @tD))
+::  +ib-in: +ib carrying `no` — the set of closing characters a previous scan
+::  has PROVED absent from the rest of this tape.
+::
+::  The asymmetric delimiters ('[' needs ']', '<http' needs '>') were quadratic:
+::  with no closer anywhere, every opener scanned the whole remaining paragraph
+::  and failed, at every position. That is reachable from an unauthenticated
+::  render — 20KB of '[[' wedged the ship for hours. A failed scan is conclusive
+::  for the whole remaining tape (and for every suffix of it), so we record the
+::  closer and skip the scan from then on. Output is byte-identical: the flag
+::  only skips scans whose answer is already known. Symmetric delimiters (**,
+::  ~~, backtick) are self-limiting — a repeated delimiter is its own closer —
+::  and stay on the capped +find-cap.
+++  ib-in
+  |=  [t=tape refs=refm no=(set @tD)]
+  ^-  tape
   ?~  t  ""
   =/  c=@tD  i.t
   ::  backslash escape
   ?:  ?&(=('\\' c) ?=(^ t.t))
-    (weld (esc ~[i.t.t]) (ib t.t.t refs))
+    (weld (esc ~[i.t.t]) (ib-in t.t.t refs no))
   ::  code span (single or double backtick)
   ?:  =('`' c)
     =/  dbl=?  &(?=(^ t.t) =('`' i.t.t))
     =/  op=tape  ?:(dbl "``" "`")
     =/  aft=tape  (sl (lent op) t)
-    =/  close  (find op aft)
-    ?~  close  (weld "`" (ib t.t refs))
+    =/  close  (find-cap op aft scan-cap)
+    ?~  close  (weld "`" (ib-in t.t refs no))
     =/  code=tape  (sc u.close aft)
     %+  weld  :(weld "<code>" (esc (trim code)) "</code>")
-    (ib (sl (add u.close (lent op)) aft) refs)
+    (ib-in (sl (add u.close (lent op)) aft) refs no)
   ::  image ![alt](url) or ![alt][ref]
   ?:  ?&(=('!' c) ?=(^ t.t) =('[' i.t.t))
     =/  aft=tape  (sl 2 t)          :: after ![
     =/  mb  (match-bracket aft)
-    ?~  mb  (weld "!" (ib t.t refs))
+    ?~  mb  (weld "!" (ib-in t.t refs no))
     =/  alt=tape  (sc u.mb aft)
     =/  post=tape  (sl +(u.mb) aft)  :: after ]
     =/  p  (take-paren post)
     ?^  p
-      (weld (img-html alt url.u.p title.u.p) (ib rest.u.p refs))
+      (weld (img-html alt url.u.p title.u.p) (ib-in rest.u.p refs no))
     =/  r  (take-ref post alt refs)
     ?^  r
-      (weld (img-html alt url.u.r title.u.r) (ib rest.u.r refs))
-    (weld "!" (ib t.t refs))
+      (weld (img-html alt url.u.r title.u.r) (ib-in rest.u.r refs no))
+    (weld "!" (ib-in t.t refs no))
   ::  autolink <http...>
-  ?:  ?&(=('<' c) |((has "<http" t) (has "<https" t)))
+  ?:  ?&(=('<' c) |((has "<http" t) (has "<https" t)) ?!((~(has in no) '>')))
     =/  close  (find ">" t.t)
-    ?~  close  (weld "&lt;" (ib t.t refs))
+    ?~  close  (weld "&lt;" (ib-in t.t refs (~(put in no) '>')))
     =/  url=tape  (sc u.close t.t)
     %+  weld  (a-html (esc url) url "")
-    (ib (sl +(u.close) t.t) refs)
+    (ib-in (sl +(u.close) t.t) refs no)
   ::  link [text](url) or [text][ref] or [ref]
   ?:  =('[' c)
+    ?:  (~(has in no) ']')  (weld "[" (ib-in t.t refs no))
     =/  mb  (match-bracket t.t)
-    ?~  mb  (weld "[" (ib t.t refs))
+    ?~  mb  (weld "[" (ib-in t.t refs (~(put in no) ']')))
     =/  txt=tape  (sc u.mb t.t)
     =/  post=tape  (sl +(u.mb) t.t)
     =/  p  (take-paren post)
     ?^  p
-      (weld (a-html (ib txt refs) url.u.p title.u.p) (ib rest.u.p refs))
+      (weld (a-html (ib-in txt refs no) url.u.p title.u.p) (ib-in rest.u.p refs no))
     =/  r  (take-ref post txt refs)
     ?^  r
-      (weld (a-html (ib txt refs) url.u.r title.u.r) (ib rest.u.r refs))
-    (weld "[" (ib t.t refs))
+      (weld (a-html (ib-in txt refs no) url.u.r title.u.r) (ib-in rest.u.r refs no))
+    (weld "[" (ib-in t.t refs no))
   ::  bold+italic ***text***
   ?:  (has "***" t)
     =/  aft=tape  (sl 3 t)
-    =/  cl  (find "***" aft)
-    ?~  cl  (weld (esc ~[c]) (ib t.t refs))
-    %+  weld  :(weld "<strong><em>" (ib (sc u.cl aft) refs) "</em></strong>")
-    (ib (sl (add u.cl 3) aft) refs)
+    =/  cl  (find-cap "***" aft scan-cap)
+    ?~  cl  (weld (esc ~[c]) (ib-in t.t refs no))
+    %+  weld  :(weld "<strong><em>" (ib-in (sc u.cl aft) refs no) "</em></strong>")
+    (ib-in (sl (add u.cl 3) aft) refs no)
   ::  bold **text** or __text__
   ?:  |((has "**" t) (has "__" t))
     =/  d=tape  (sc 2 t)
     =/  aft=tape  (sl 2 t)
-    =/  cl  (find d aft)
-    ?~  cl  (weld (esc ~[c]) (ib t.t refs))
-    %+  weld  :(weld "<strong>" (ib (sc u.cl aft) refs) "</strong>")
-    (ib (sl (add u.cl 2) aft) refs)
+    =/  cl  (find-cap d aft scan-cap)
+    ?~  cl  (weld (esc ~[c]) (ib-in t.t refs no))
+    %+  weld  :(weld "<strong>" (ib-in (sc u.cl aft) refs no) "</strong>")
+    (ib-in (sl (add u.cl 2) aft) refs no)
   ::  strikethrough ~~text~~
   ?:  (has "~~" t)
     =/  aft=tape  (sl 2 t)
-    =/  cl  (find "~~" aft)
-    ?~  cl  (weld (esc ~[c]) (ib t.t refs))
-    %+  weld  :(weld "<del>" (ib (sc u.cl aft) refs) "</del>")
-    (ib (sl (add u.cl 2) aft) refs)
+    =/  cl  (find-cap "~~" aft scan-cap)
+    ?~  cl  (weld (esc ~[c]) (ib-in t.t refs no))
+    %+  weld  :(weld "<del>" (ib-in (sc u.cl aft) refs no) "</del>")
+    (ib-in (sl (add u.cl 2) aft) refs no)
   ::  italic *text* (asterisk: no intraword restriction)
   ?:  =('*' c)
-    =/  cl  (find "*" t.t)
-    ?~  cl  (weld "*" (ib t.t refs))
-    ?:  =(0 u.cl)  (weld "*" (ib t.t refs))
-    %+  weld  :(weld "<em>" (ib (sc u.cl t.t) refs) "</em>")
-    (ib (sl +(u.cl) t.t) refs)
+    =/  cl  (find-cap "*" t.t scan-cap)
+    ?~  cl  (weld "*" (ib-in t.t refs no))
+    ?:  =(0 u.cl)  (weld "*" (ib-in t.t refs no))
+    %+  weld  :(weld "<em>" (ib-in (sc u.cl t.t) refs no) "</em>")
+    (ib-in (sl +(u.cl) t.t) refs no)
   ::  italic _text_ (underscore: only at a left word boundary)
   ?:  =('_' c)
-    =/  cl  (find "_" t.t)
-    ?~  cl  (weld "_" (ib t.t refs))
-    ?:  =(0 u.cl)  (weld "_" (ib t.t refs))
-    %+  weld  :(weld "<em>" (ib (sc u.cl t.t) refs) "</em>")
-    (ib (sl +(u.cl) t.t) refs)
+    =/  cl  (find-cap "_" t.t scan-cap)
+    ?~  cl  (weld "_" (ib-in t.t refs no))
+    ?:  =(0 u.cl)  (weld "_" (ib-in t.t refs no))
+    %+  weld  :(weld "<em>" (ib-in (sc u.cl t.t) refs no) "</em>")
+    (ib-in (sl +(u.cl) t.t) refs no)
   ::  literal char
-  (weld (esc ~[c]) (ib t.t refs))
+  (weld (esc ~[c]) (ib-in t.t refs no))
 ::  ── block level ────────────────────────────────────────────────────────────
 ::  +is-ref-def: a `[label]: url "title"` reference definition line -> entry.
 ++  is-ref-def
