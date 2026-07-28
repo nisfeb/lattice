@@ -191,21 +191,20 @@ sketches live in the review transcript.
 
 ## Measured results (tyr, same method as the baselines)
 
-After tiers 1, 2 and 4 landed in lattice, plus the four stateless framework
-fixes (upstream PRs #20-#23):
+After tiers 1, 2 and 4 landed in lattice, plus all seven framework fixes
+(upstream PRs gwbtc/grubbery #20 through #24):
 
 | Route | Baseline | After | Change |
 |---|---|---|---|
-| Lattice static floor (icon.svg) | 1.80s | 0.85s | -53% |
-| page-tree | 2.31s | 0.88s | -62% |
-| Page open (source + preview) | ~3.7s, 2 requests | 0.84s, 1 request | -77% |
-| page-preview | 1.80s | 0.97s | -46% |
-| page-save overwrite | 3.70s | 1.65s | -55% |
-| Grubbery bare 405 | 1.15s | 0.52s | -55% |
+| Lattice static floor (icon.svg) | 1.80s | 0.78s | -57% |
+| page-tree | 2.31s | 0.83s | -64% |
+| Page open (source + preview) | ~3.7s, 2 requests | 0.82s, 1 request | -78% |
+| page-save overwrite | 3.70s | 1.30s | -65% |
+| Grubbery bare 405 | 1.15s | 0.20s | -83% |
 
-The floor now sits at the ~0.9s tyr gall-poke bound (tier 5), so further
-request-level gains on this harness need either the remaining state-carrying
-framework fixes or the vere-level experiments. Request-count wins stack on
-top of these: warm editor boot is one page-tree request after the service
-worker installs, page open is one request, saves no longer echo, and a
-rename is one request.
+The lattice floor now sits on the ~0.75s tyr gall-poke bound (tier 5), so
+further request-level gains on this harness need the vere-level experiments.
+Request-count wins stack on top: warm editor boot is one page-tree request
+after the service worker installs, page open is one request, saves no longer
+echo, and a rename is one request. The tier-3 state bump (%0 to %1: marcs,
+nexi, transient eyre conns) migrated live on a populated pier.
