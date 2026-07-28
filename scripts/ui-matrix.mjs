@@ -273,6 +273,24 @@ try {
   ok('autocomplete: Tab completes the full path');
   check('autocomplete: closes after completing',
     await page.evaluate(() => document.getElementById('ac').hidden));
+  // a scripted edit must behave exactly like typing: preview refreshes and
+  // the buffer is dirty so autosave persists it
+  await wait((s) => (document.getElementById('prev').srcdoc || '').includes(s), sibling);
+  ok('autocomplete: completion refreshes the preview');
+  // Tab-indent is the other scripted edit — it used to show in the editor and
+  // never reach the ship. Autosave firing is the observable proof it is now
+  // treated as a real edit (asserting ship state here races the slow pier).
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = 'Z'; s.setSelectionRange(0, 0); s.dispatchEvent(new Event('input'));
+  });
+  await wait(() => document.getElementById('status').textContent === 'autosaved');
+  await page.evaluate(() => { document.getElementById('status').textContent = 'idle'; });
+  await page.focus('#src');
+  await page.keyboard.press('Tab');
+  await wait(() => document.getElementById('status').textContent === 'autosaved');
+  check('Tab indent counts as an edit (autosaves)',
+    (await page.evaluate(() => document.getElementById('src').value)) === '  Z');
   await page.evaluate(() => {
     const s = document.getElementById('src');
     s.value = ''; s.dispatchEvent(new Event('input'));

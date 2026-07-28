@@ -100,6 +100,12 @@
     hl.innerHTML = (g ? Prism.highlight(src.value, g, lang) : esc(src.value)) + '\n';
   };
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
+  // +edited: announce a PROGRAMMATIC change to the editor exactly as if it had
+  // been typed. Setting src.value fires no input event, so anything that only
+  // called render() silently skipped the dirty flag, autosave and the preview
+  // — a Tab indent was shown but never saved, and a live refresh reverted it.
+  // Always route scripted edits through here.
+  const edited = () => src.dispatchEvent(new Event('input'));
   src.addEventListener('input', () => {
     dirty = true;
     render(); sync();
@@ -388,7 +394,7 @@
       const s = src.selectionStart;
       src.value = src.value.slice(0, s) + '  ' + src.value.slice(src.selectionEnd);
       src.selectionStart = src.selectionEnd = s + 2;
-      render();
+      edited();
     }
   });
 
@@ -501,10 +507,7 @@
     const caret = before.length + path.length + 2;
     src.setSelectionRange(caret, caret);
     acClose();
-    dirty = true;
-    render(); sync();
-    clearTimeout(autoTimer);
-    autoTimer = setTimeout(autosave, 2000);
+    edited();
   }
 
   src.addEventListener('input', acScan);
