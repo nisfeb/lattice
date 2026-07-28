@@ -21,6 +21,20 @@ html { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
   border: 2px solid transparent; background-clip: padding-box; }
 ::-webkit-scrollbar-thumb:hover { background: var(--green); }
 a { color: var(--green); }
+/* EVERY select gets the flat identity, styled on the element rather than
+   per-instance so a newly added one cannot ship with OS widget chrome:
+   no native appearance, our border/background/radius, a muted chevron drawn
+   in as an inline SVG (inherits on both themes). */
+select { appearance: none; -webkit-appearance: none; cursor: pointer;
+  font: inherit; color: inherit; padding: 5px 27px 5px 9px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background-color: var(--surface);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888888' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 9px center; }
+select:hover, select:focus { border-color: var(--green); }
+/* the popup list itself is OS-drawn; color-scheme is what makes it follow
+   the theme instead of rendering white-on-white in dark mode. */
+select, option { color-scheme: light dark; }
 .muted { color: var(--muted); }
 
 .ws { display: grid; height: 100vh;
@@ -44,17 +58,13 @@ a { color: var(--green); }
 .bar .home { display: flex; align-items: center; padding: 3px 11px;
   font-size: 1.15rem; border: 1px solid var(--border); border-radius: 6px;
   text-decoration: none; color: inherit; }
-.bar input, .bar select, .bar button { font: inherit; padding: 5px 9px;
+/* NB: select is deliberately excluded — the global `select` rule owns its
+   padding (it reserves room for the chevron) and `background` shorthand here
+   would wipe the chevron image. */
+.bar input, .bar button { font: inherit; padding: 5px 9px;
   border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
   color: inherit; }
 .bar input { min-width: 16rem; cursor: text; }
-/* flatten the native select to match the inputs/buttons: no OS widget
-   chrome, a muted chevron drawn in (works on both themes). */
-.bar select { appearance: none; -webkit-appearance: none; cursor: pointer;
-  padding-right: 27px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888888' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 9px center; }
-.bar select:hover { border-color: var(--green); }
 .bar button { cursor: pointer; }
 .bar button:hover, .bar .home:hover { border-color: var(--green); }
 .bar .grow { flex: 1; }
@@ -190,9 +200,7 @@ a { color: var(--green); }
 #dlginput { font: inherit; padding: 6px 9px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--surface); color: inherit; width: 100%; }
 #dlginput[hidden] { display: none; }
-#dlgsel { font: inherit; padding: 6px 9px; border: 1px solid var(--border);
-  border-radius: 6px; background: var(--surface); color: inherit; width: 100%;
-  cursor: pointer; }
+#dlgsel { width: 100%; }
 #dlgsel[hidden] { display: none; }
 .dlgbtns { display: flex; gap: 8px; justify-content: flex-end; }
 .dlgbtns button { font: inherit; padding: 6px 14px; border: 1px solid var(--border);
