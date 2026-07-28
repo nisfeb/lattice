@@ -83,7 +83,36 @@
   let curFolder = null;    // selected folder path — right-pane ops target it
   let folderCtx = '';      // folder uploads land in (last into / open page's dir)
   let nodes = [];          // last page-tree
+  let saving = false;      // a save round-trip is in flight — never overlap them:
+  let savePending = false; // the pier serializes, so a second save just queues
+                           // 3.7s of stale-body work behind the first
+  let echoUntil = 0;       // our own save bumps the beacon; ignore that echo or
+                           // every save triggers a tree+source refetch of content
+                           // this client just wrote (~4s of pier time each)
   const qs = new URLSearchParams(location.search);
+
+  // every request to the ship costs ~2s and they serialize (single-threaded
+  // pier), so the rules here are: never re-fetch what this client already
+  // knows, patch `nodes`/`knowKeys` locally after our own writes, and snapshot
+  // to localStorage so the next boot paints before the network answers.
+  const snapTree = () => { try { localStorage.appTree = JSON.stringify(nodes); } catch {} };
+  const snapPage = (name, d) => {
+    try {
+      localStorage.appPage = JSON.stringify(
+        { name, body: d.body, kind: d.kind, share: d.share || 'private',
+          rev: d.rev, html: typeof d.html === 'string' ? d.html : undefined });
+    } catch {}
+  };
+
+  // every client-initiated write bumps the change beacon; hold the echo window
+  // open while the request is in flight (a folder move pokes the writer many
+  // times) plus a short tail, so the SSE handler never refetches what this
+  // client just did itself.
+  async function mutate(url, opts) {
+    echoUntil = Date.now() + 60000;
+    try { return await fetch(url, opts || { method: 'POST' }); }
+    finally { echoUntil = Date.now() + 4000; }
+  }
 
   const collapsed = () => {
     try { return JSON.parse(localStorage.appColl || '[]'); } catch { return []; }
@@ -100,6 +129,19 @@
     hl.innerHTML = (g ? Prism.highlight(src.value, g, lang) : esc(src.value)) + '\n';
   };
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
+  // per-keystroke highlight throttle: Prism re-tokenizes the WHOLE document on
+  // every render, which drops frames on large pages. Coalesce to one render per
+  // frame; past ~60KB fall back to a trailing debounce (even one full highlight
+  // per frame is too heavy there).
+  let hlRaf = 0, hlTimer = 0;
+  const scheduleRender = () => {
+    if (src.value.length > 60000) {
+      clearTimeout(hlTimer);
+      hlTimer = setTimeout(() => { render(); sync(); }, 120);
+    } else if (!hlRaf) {
+      hlRaf = requestAnimationFrame(() => { hlRaf = 0; render(); sync(); });
+    }
+  };
   // +edited: announce a PROGRAMMATIC change to the editor exactly as if it had
   // been typed. Setting src.value fires no input event, so anything that only
   // called render() silently skipped the dirty flag, autosave and the preview
@@ -108,7 +150,7 @@
   const edited = () => src.dispatchEvent(new Event('input'));
   src.addEventListener('input', () => {
     dirty = true;
-    render(); sync();
+    scheduleRender();
     clearTimeout(autoTimer);
     autoTimer = setTimeout(autosave, 2000);
   });
@@ -120,13 +162,44 @@
     const r = await fetch(api + '/page-tree');
     if (!r.ok) { st('tree failed ' + r.status, false); return; }
     nodes = (await r.json()).nodes;
+    snapTree();
     renderTree();
+  }
+
+  // selection changes only move the `cur` class — never rebuild the pane's DOM
+  // for that. rowByPath is rebuilt by renderTree/renderKnowTree.
+  let rowByPath = new Map();
+  function markCurrent() {
+    for (const [p, row] of rowByPath)
+      row.classList.toggle('cur',
+        row.classList.contains('pg') ? p === current : p === curFolder);
+  }
+
+  // local `nodes` patching: this client performed the write, so it already
+  // knows the outcome — applying it locally replaces a page-tree refetch.
+  const hasNode = (path) => nodes.some((n) => n.path === path);
+  function addFolderNodes(path) {
+    const parts = path.split('/');
+    for (let i = 1; i <= parts.length; i++) {
+      const dir = parts.slice(0, i).join('/');
+      if (!hasNode(dir)) nodes.push({ path: dir, page: false });
+    }
+  }
+  function addTreeNode(name, kind) {
+    if (name.includes('/')) addFolderNodes(name.slice(0, name.lastIndexOf('/')));
+    const n = nodes.find((x) => x.path === name && x.page);
+    if (n) n.kind = kind;
+    else nodes.push({ path: name, page: true, kind, share: 'private' });
+  }
+  function dropTreeNodes(path) {
+    nodes = nodes.filter((n) => n.path !== path && !n.path.startsWith(path + '/'));
   }
 
   function renderTree() {
     const coll = collapsed();
     const byPath = [...nodes].sort((a, b) => a.path.localeCompare(b.path));
     treeList.textContent = '';
+    rowByPath = new Map();
     for (const n of byPath) {
       const depth = n.path.split('/').length - 1;
       const parent = n.path.includes('/') ? n.path.slice(0, n.path.lastIndexOf('/')) : '';
@@ -171,6 +244,7 @@
         row.append(add);
         row.onclick = () => selectFolder(n.path);
       }
+      rowByPath.set(n.path, row);
       treeList.appendChild(row);
     }
   }
@@ -212,7 +286,7 @@
     prevBlank();
     cerr.textContent = ' '; cerr.className = 'ok';
     history.replaceState(null, '', '/apps/lattice/app?into=' + encodeURIComponent(path));
-    renderTree();
+    markCurrent();
     setCtlLabels();
     showShare(treeShare(path));
     const c = pageCount(path);
@@ -223,11 +297,19 @@
   const setFolderCtx = (name) =>
     { folderCtx = name.includes('/') ? name.slice(0, name.lastIndexOf('/')) : ''; };
 
+  // opening a page is ONE request: page-source?render=1 carries the rendered
+  // preview for content kinds, so the separate page-preview POST is skipped.
+  // History and backlinks load lazily on panel expand — they were 2 more ~2s
+  // round-trips paid on every open whether or not anyone looked at them.
   async function openPage(name) {
     setFolderCtx(name);
-    const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name));
+    const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
     if (!r.ok) { st('open failed ' + r.status, false); return; }
     const d = await r.json();
+    snapPage(name, d);
+    applyPage(name, d);
+  }
+  function applyPage(name, d) {
     current = name;
     curFolder = null;
     setCtlLabels();
@@ -239,14 +321,14 @@
     dirty = false;
     render(); sync();
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
-    renderTree();
+    markCurrent();
     st(d.kind + ' · rev ' + d.rev);
     exitRev();
-    loadHistory();
-    loadBacklinks();
+    resetPanels();
     showShare(d.share || 'private');
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
-    refreshPreview();
+    if (typeof d.html === 'string') { prev.removeAttribute('src'); prev.srcdoc = d.html; }
+    else refreshPreview();
     if (!CONTENT()) checkErrors();
     if (isMobile()) setMv('code');
   }
@@ -280,10 +362,12 @@
     if (!raw) return;
     const name = raw.trim().replace(/^\/+|\/+$/g, '');
     if (!name) return;
-    const r = await fetch(api + '/folder-new?name=' + encodeURIComponent(name), { method: 'POST' });
+    const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name));
     if (!r.ok) { st('folder failed ' + r.status, false); return; }
     st('folder created');
-    loadTree();
+    addFolderNodes(name);
+    snapTree();
+    renderTree();
   }
 
   async function save(kindOverride) {
@@ -292,6 +376,8 @@
     const name = pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!name) { st('name required', false); return; }
     const creating = current === null;
+    if (saving) { savePending = true; return; }
+    saving = true;
     st('saving…');
     // capture the exact body being sent: keystrokes landing during the round-trip
     // must NOT be marked clean, or the next refresh swaps the stale server copy
@@ -300,23 +386,35 @@
     const kind = kindOverride || curKind || pkind.value;
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '');
-    const r = await fetch(url, { method: 'POST', body: sent || '\n' });
-    if (r.status === 409) { st('that page already exists', false); return; }
-    if (!r.ok) { st('save failed ' + r.status, false); return; }
+    let r = null;
+    try { r = await fetch(url, { method: 'POST', body: sent || '\n' }); }
+    finally { saving = false; echoUntil = Date.now() + 4000; }
+    if (r && r.status === 409) { st('that page already exists', false); return; }
+    if (!r || !r.ok) { st('save failed' + (r ? ' ' + r.status : ''), false); return; }
     current = name;
     curKind = kind;
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
     st(CONTENT() ? 'saved' : 'compiling\u2026');
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
-    loadTree();
-    if (CONTENT()) { refreshPreview(); cerr.textContent = 'saved'; cerr.className = 'ok'; }
+    // only a CREATE changes the tree — refetching it after every save was a
+    // 2.3s pier round-trip to learn nothing. Patch the local copy on create.
+    if (creating) { addTreeNode(name, kind); snapTree(); renderTree(); }
+    // the preview already shows this exact body (the input debounce rendered
+    // it); re-POSTing it after the save was a duplicate 1.8s render.
+    if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
     else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
+    if (savePending) { savePending = false; if (dirty) autosave(); }
   }
 
   let autoTimer = null;
   async function autosave() {
     if (!current || curFolder || !dirty || viewingRev !== null) return;
+    // never overlap saves: the pier serializes, so a second in-flight save is
+    // 3.7s of stale-body work queued behind the first, delaying every preview
+    // behind it. Coalesce to one trailing save instead.
+    if (saving) { savePending = true; return; }
+    saving = true;
     const sent = src.value;
     const url = mode === 'know'
       ? api + '/know-save?key=' + encodeURIComponent(current)
@@ -324,10 +422,13 @@
         '&type=' + (curKind || pkind.value);
     let r = null;
     try { r = await fetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
+    saving = false;
+    echoUntil = Date.now() + 4000;
     if (!r || !r.ok) { st('autosave failed' + (r ? ' ' + r.status : ''), false); return; }
     if (src.value === sent) dirty = false;   // typed during the request? stay dirty
     st('autosaved');
     if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
+    if (savePending) { savePending = false; if (dirty) autosave(); }
   }
 
   $('save').onclick = () => (mode === 'know' ? saveKnow() : save());
@@ -353,8 +454,8 @@
     st('creating ' + name + ' from ' + tmpl + '\u2026 (one save per page)');
     let r = null;
     try {
-      r = await fetch(api + '/template-new?template=' + encodeURIComponent(tmpl) +
-        '&name=' + encodeURIComponent(name), { method: 'POST' });
+      r = await mutate(api + '/template-new?template=' + encodeURIComponent(tmpl) +
+        '&name=' + encodeURIComponent(name));
     } catch {}
     if (r && r.status === 409) { st('a page by that name exists', false); return; }
     if (!r || !r.ok) { st('template failed' + (r ? ' ' + r.status : ''), false); return; }
@@ -437,23 +538,36 @@
 
   // caret position, measured through a mirror that shares the textarea's
   // geometry — correct on wrapped lines, where a column calculation is not.
-  function caretXY() {
+  let acAnchor = null;   // {start, left, top, lh} - raw mirror offsets at ac.start
+  const acCtx = document.createElement('canvas').getContext('2d');
+  function acMeasureAnchor(pos) {
     const cs = getComputedStyle(src);
     for (const k of ['fontFamily', 'fontSize', 'lineHeight', 'padding', 'letterSpacing',
                      'whiteSpace', 'overflowWrap', 'tabSize'])
       acMirror.style[k] = cs[k];
     acMirror.style.width = src.clientWidth + 'px';
-    acMirror.textContent = src.value.slice(0, src.selectionStart);
+    acMirror.textContent = src.value.slice(0, pos);
     const mark = document.createElement('span');
     mark.textContent = '\u200b';
     acMirror.appendChild(mark);
-    const x = mark.offsetLeft - src.scrollLeft;
-    const y = mark.offsetTop - src.scrollTop + parseFloat(cs.lineHeight || '18');
+    const a = { start: pos, left: mark.offsetLeft, top: mark.offsetTop,
+                lh: parseFloat(cs.lineHeight || '18') };
     acMirror.textContent = '';
+    acCtx.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
+    return a;
+  }
+  // the full-prefix mirror layout is expensive on large documents, so it runs
+  // once per [[ site; while the dropdown stays open only the short query after
+  // the anchor changes, and its width comes from measureText, not a relayout.
+  function caretXY() {
+    if (!acAnchor || acAnchor.start !== ac.start) acAnchor = acMeasureAnchor(ac.start);
+    const q = src.value.slice(ac.start, src.selectionStart);
+    const x = acAnchor.left + acCtx.measureText(q).width - src.scrollLeft;
+    const y = acAnchor.top - src.scrollTop + acAnchor.lh;
     return [x, y];
   }
 
-  const acClose = () => { ac.open = false; acEl.hidden = true; };
+  const acClose = () => { ac.open = false; acEl.hidden = true; acAnchor = null; };
 
   function acRender() {
     acEl.textContent = '';
@@ -520,6 +634,11 @@
   const CONTENT = () => ['md', 'gmi', 'html', 'text'].includes(pkind.value);
   let prevTimer = null;
   async function refreshPreview() {
+    // a hidden pane renders to nobody, but the POST still costs ~2s of pier
+    // time and delays the autosave queued behind it (worst on mobile, where
+    // the code tab hides the preview entirely).
+    if (document.hidden) return;
+    if (isMobile() && ws.dataset.mv !== 'prev') return;
     if (CONTENT()) {
       try {
         const r = await fetch(api + '/page-preview?type=' + pkind.value,
@@ -570,21 +689,29 @@
     b.onclick = async () => {
       const m = b.dataset.m;
       if (curFolder) {
-        const r = await fetch(api + '/page-share-tree?name=' + encodeURIComponent(curFolder) +
-          '&mode=' + m, { method: 'POST' });
+        const r = await mutate(api + '/page-share-tree?name=' + encodeURIComponent(curFolder) +
+          '&mode=' + m);
         if (!r.ok) { st('share failed ' + r.status, false); return; }
         showShare(m);
         st(m === 'clearweb' ? 'published tree at /c/' + curFolder + '/' : 'tree set ' + m);
-        loadTree();
+        // share-tree sets every page under the folder — mirror that locally
+        // instead of refetching the tree to learn what we just did.
+        for (const n of nodes)
+          if (n.page && n.path.startsWith(curFolder + '/')) n.share = m;
+        snapTree();
+        renderTree();
         return;
       }
       if (!current) { st('save the page first', false); return; }
-      const r = await fetch(api + '/page-share?name=' + encodeURIComponent(current) +
-        '&mode=' + m, { method: 'POST' });
+      const r = await mutate(api + '/page-share?name=' + encodeURIComponent(current) +
+        '&mode=' + m);
       if (!r.ok) { st('share failed ' + r.status, false); return; }
       showShare(m);
       st('sharing: ' + m);
-      loadTree();
+      const n = nodes.find((x) => x.page && x.path === current);
+      if (n) n.share = m;
+      snapTree();
+      renderTree();
     };
   }
 
@@ -592,7 +719,7 @@
   async function sendCmd() {
     const c = $('cmd').value;
     if (!c || !current) return;
-    await fetch(api + '/page-cmd?name=' + encodeURIComponent(current),
+    await mutate(api + '/page-cmd?name=' + encodeURIComponent(current),
       { method: 'POST', body: 'cmd=' + encodeURIComponent(c) });
     $('cmd').value = '';
     setTimeout(refreshPreview, 600);
@@ -609,19 +736,22 @@
       const what = 'delete folder ' + path +
         (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it?' : '?');
       if (!(await askConfirm(what, 'delete'))) return;
-      const r = await fetch(api + '/page-del?name=' + encodeURIComponent(path), { method: 'POST' });
+      const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
       if (!r.ok) { st('delete failed ' + r.status, false); return; }
+      dropTreeNodes(path);
+      snapTree();
       newFile('');
-      loadTree();
       st('deleted ' + path);
       return;
     }
     if (!current) { st('nothing to delete', false); return; }
     if (!(await askConfirm('delete ' + current + '?', 'delete'))) return;
-    const r = await fetch(api + '/page-del?name=' + encodeURIComponent(current), { method: 'POST' });
+    const doomed = current;
+    const r = await mutate(api + '/page-del?name=' + encodeURIComponent(doomed));
     if (!r.ok) { st('delete failed ' + r.status, false); return; }
+    dropTreeNodes(doomed);
+    snapTree();
     newFile('');
-    loadTree();
     st('deleted');
   };
 
@@ -662,8 +792,12 @@
     upShow();
     upProg(0, list.length, '');
     if (skipped) upErr.textContent = `skipped ${skipped} unsupported\n`;
+    // only create folders the tree does not already have — each folder-new is
+    // a ~2s writer round-trip, and re-uploading into an existing tree used to
+    // pay it for every directory.
     for (const d of [...dirs].sort()) {
-      try { await fetch(api + '/folder-new?name=' + encodeURIComponent(d), { method: 'POST' }); }
+      if (hasNode(d)) continue;
+      try { await mutate(api + '/folder-new?name=' + encodeURIComponent(d)); }
       catch {}
     }
     let fails = 0;
@@ -671,17 +805,20 @@
       upProg(i, list.length, list[i].name);
       let r = null;
       try {
-        r = await fetch(api + '/page-save?name=' + encodeURIComponent(list[i].name) +
+        r = await mutate(api + '/page-save?name=' + encodeURIComponent(list[i].name) +
           '&type=' + list[i].kind, { method: 'POST', body: (await list[i].file.text()) || '\n' });
       } catch {}
       if (!r || !r.ok) {
         fails++;
         upErr.textContent += `failed: ${list[i].name}${r ? ' (' + r.status + ')' : ''}\n`;
+      } else {
+        addTreeNode(list[i].name, list[i].kind);
       }
     }
     upProg(list.length, list.length, '');
     upMsg.textContent = fails ? `done with ${fails} failures` : `uploaded ${list.length} files`;
-    loadTree();
+    snapTree();
+    renderTree();
     if (!fails) setTimeout(() => { upPanel.hidden = true; }, 2500);
   }
 
@@ -725,20 +862,18 @@
   });
 
   // ── move / rename ────────────────────────────────────────────────────────
-  // No server rename route for pages: move = read source, save at the new
-  // name (same kind), delete the old — the same pattern the FUSE client uses.
-  // Folders move every descendant (structure first, then pages), then delete
-  // the old folder. Memories use the know-move route (history preserved).
+  // page-move does the whole thing server-side (copy + share carry-over +
+  // delete, wikilink self-references rewritten) in ONE request — the old
+  // client choreography was 3 round-trips per page plus one per folder.
+  // Memories use the know-move route (history preserved).
   async function movePage(oldName, newName) {
-    const r = await fetch(api + '/page-source?name=' + encodeURIComponent(oldName));
-    if (!r.ok) { st('read failed ' + r.status, false); return false; }
-    const d = await r.json();
-    const kind = d.kind === 'index' ? 'md' : d.kind;
-    const w = await fetch(api + '/page-save?name=' + encodeURIComponent(newName) +
-      '&type=' + kind, { method: 'POST', body: d.body });
-    if (!w.ok) { st('save failed ' + w.status + ' at ' + newName, false); return false; }
-    const x = await fetch(api + '/page-del?name=' + encodeURIComponent(oldName), { method: 'POST' });
-    if (!x.ok) { st('cleanup failed ' + x.status + ' (copy exists at ' + newName + ')', false); return false; }
+    const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldName) +
+      '&to=' + encodeURIComponent(newName));
+    if (!r.ok) { st('move failed ' + r.status, false); return false; }
+    for (const n of nodes) if (n.page && n.path === oldName) n.path = newName;
+    if (newName.includes('/')) addFolderNodes(newName.slice(0, newName.lastIndexOf('/')));
+    snapTree();
+    renderTree();
     return true;
   }
 
@@ -747,39 +882,44 @@
     if (!to || to === oldPath) return;
     const newPath = to.trim().replace(/^\/+|\/+$/g, '');
     if (!newPath) return;
-    const under = nodes.filter((n) => n.path === oldPath || n.path.startsWith(oldPath + '/'));
     const mapped = (p) => newPath + p.slice(oldPath.length);
     st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
-    for (const n of under.filter((n) => !n.page).sort((a, b) => a.path.localeCompare(b.path))) {
-      try { await fetch(api + '/folder-new?name=' + encodeURIComponent(mapped(n.path)), { method: 'POST' }); }
-      catch {}
-    }
+    const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldPath) +
+      '&to=' + encodeURIComponent(newPath));
+    if (!r.ok) { st('move failed ' + r.status, false); return; }
     let moved = 0;
-    for (const n of under.filter((n) => n.page)) {
-      if (!(await movePage(n.path, mapped(n.path)))) return;
-      moved++;
-      st('moving\u2026 ' + moved + ' page' + (moved === 1 ? '' : 's'));
-    }
-    await fetch(api + '/page-del?name=' + encodeURIComponent(oldPath), { method: 'POST' });
+    for (const n of nodes)
+      if (n.path === oldPath || n.path.startsWith(oldPath + '/')) {
+        if (n.page) moved++;
+        n.path = mapped(n.path);
+      }
+    if (newPath.includes('/')) addFolderNodes(newPath.slice(0, newPath.lastIndexOf('/')));
     if (current && (current === oldPath || current.startsWith(oldPath + '/')))
       current = mapped(current);
+    snapTree();
+    renderTree();
     st('moved ' + oldPath + ' \u2192 ' + newPath + ' (' + moved + ' pages)');
-    await loadTree();
     if (current) openPage(current);
     else if (curFolder === oldPath) selectFolder(newPath);
   }
 
   // ── backlinks: pages that wikilink [[this page]] ─────────────────────────
+  // fetched ONLY when the panel is expanded — this and history were two more
+  // ~2s round-trips paid on every page open whether or not anyone looked.
   const linkSec = $('linksec'), linkList = $('linklist');
   async function loadBacklinks() {
-    linkSec.hidden = true;
     linkList.textContent = '';
     if (!current || mode === 'know') return;
     const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(current));
     if (!r.ok) return;
     const links = ((await r.json()).links || []).filter((p) => p !== current);
-    if (!links.length) return;
-    linkSec.hidden = false;
+    if (!links.length) {
+      const d = document.createElement('div');
+      d.className = 'muted';
+      d.textContent = 'nothing links here yet';
+      linkList.appendChild(d);
+      return;
+    }
     for (const pth of links) {
       const a = document.createElement('a');
       a.textContent = pth;
@@ -787,6 +927,36 @@
       linkList.appendChild(a);
     }
   }
+
+  // collapsed-by-default panels; first expand does the fetch
+  let histOpen = false, linksOpen = false;
+  const panelArrow = (el, base, open) => { el.textContent = base + (open ? ' ▾' : ' ▸'); };
+  function resetPanels() {
+    histOpen = false; linksOpen = false;
+    histList.textContent = ''; linkList.textContent = '';
+    histList.hidden = true; linkList.hidden = true;
+    histView.hidden = true;
+    const on = !!current && mode !== 'know';
+    histSec.hidden = !on;
+    linkSec.hidden = !on;
+    panelArrow($('histh'), 'history', false);
+    panelArrow($('linkh'), 'linked from', false);
+  }
+  $('histh').onclick = () => {
+    if (histSec.hidden) return;
+    histOpen = !histOpen;
+    panelArrow($('histh'), 'history', histOpen);
+    histList.hidden = !histOpen;
+    if (!histOpen) histView.hidden = true;
+    else if (!histList.childElementCount) loadHistory();
+  };
+  $('linkh').onclick = () => {
+    if (linkSec.hidden) return;
+    linksOpen = !linksOpen;
+    panelArrow($('linkh'), 'linked from', linksOpen);
+    linkList.hidden = !linksOpen;
+    if (linksOpen && !linkList.childElementCount) loadBacklinks();
+  };
 
   // ── version history (born keeps every save; autosave makes it dense) ────
   const histSec = $('histsec'), histList = $('histlist'), histView = $('histview');
@@ -798,14 +968,18 @@
     histView.hidden = true;
   };
   async function loadHistory() {
-    histSec.hidden = true;
     histList.textContent = '';
     if (!current || mode === 'know') return;
     const r = await fetch(api + '/page-history?name=' + encodeURIComponent(current));
     if (!r.ok) return;
     const revs = (await r.json()).revisions || [];
-    if (revs.length < 2) return;         // a single revision is just "now"
-    histSec.hidden = false;
+    if (revs.length < 2) {               // a single revision is just "now"
+      const d = document.createElement('div');
+      d.className = 'muted';
+      d.textContent = 'no history yet';
+      histList.appendChild(d);
+      return;
+    }
     for (const v of revs.slice(0, 30)) {
       const a = document.createElement('a');
       // ~2026.7.27..19.12.23..xxxx -> 7.27 19:12
@@ -853,17 +1027,21 @@
     const newName = to.trim().replace(/^\/+|\/+$/g, '');
     if (!newName) return;
     if (mode === 'know') {
-      const r = await fetch(api + '/know-move?from=' + encodeURIComponent(current) +
-        '&to=' + encodeURIComponent(newName), { method: 'POST' });
+      const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
+        '&to=' + encodeURIComponent(newName));
       if (!r.ok) { st('move failed ' + r.status, false); return; }
+      // the body is already in the editor — rename in place, no refetch
+      const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
+      if (k) k.key = newName;
+      current = newName;
+      pname.value = newName;
+      renderKnowChips();
+      renderKnowTree();
       st('moved to ' + newName);
-      openKnow(newName);
-      loadKnow();
       return;
     }
     if (await movePage(current, newName)) {
       st('moved to ' + newName);
-      loadTree();
       openPage(newName);
     }
   };
@@ -931,6 +1109,7 @@
       renderKnowTags(d.tags || []);
       st('memory updated from ship');
     } else {
+      snapPage(current, d);
       showShare(d.share || 'private');
       refreshPreview();
       st('updated from ship \u00b7 rev ' + d.rev);
@@ -945,6 +1124,10 @@
     const es = new EventSource('/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev');
     let beaconTimer = null;
     es.addEventListener('upd', () => {
+      // our own save bumps the beacon too — refetching tree + source to learn
+      // about content this client just wrote was ~4s of pier time per save.
+      // A remote edit inside the echo window is caught by the 30s poll/focus.
+      if (Date.now() < echoUntil) return;
       clearTimeout(beaconTimer);
       beaconTimer = setTimeout(refreshAll, 300);
     });
@@ -994,6 +1177,7 @@
     const shown = knowTag ? knowKeys.filter((k) => k.tags.includes(knowTag)) : knowKeys;
     const keys = shown.map((k) => k.key.replace(/^\//, '')).sort();
     treeList.textContent = '';
+    rowByPath = new Map();
     if (!keys.length) {
       const empty = document.createElement('div');
       empty.className = 'muted';
@@ -1039,9 +1223,13 @@
       row.href = '#';
       row.textContent = parts[parts.length - 1];
       row.onclick = (e) => { e.preventDefault(); openKnow(key); };
+      rowByPath.set(key, row);
       treeList.appendChild(row);
     }
   }
+  // one knowKeys entry by (normalized) key — keys may carry a leading slash
+  const knowEntry = (key) =>
+    knowKeys.find((x) => x.key.replace(/^\//, '') === key);
 
   async function openKnow(key) {
     const r = await fetch(api + '/know-read?key=' + encodeURIComponent(key));
@@ -1053,7 +1241,7 @@
     src.value = d.body;
     dirty = false;
     render(); sync();
-    renderKnowTree();
+    markCurrent();
     renderKnowTags(d.tags || []);
     $('kupd').textContent = 'updated ' + (d.updated || '');
     st('memory · ' + (d.tags || []).map((t) => '#' + t).join(' '));
@@ -1066,23 +1254,32 @@
       const a = document.createElement('a');
       a.textContent = '#' + t + ' \u00d7';
       a.onclick = async () => {
-        await fetch(api + '/know-untag?key=' + encodeURIComponent(current) +
-          '&tag=' + encodeURIComponent(t), { method: 'POST' });
-        openKnow(current);
-        loadKnow();
+        const r = await mutate(api + '/know-untag?key=' + encodeURIComponent(current) +
+          '&tag=' + encodeURIComponent(t));
+        if (!r.ok) { st('untag failed ' + r.status, false); return; }
+        // this client made the change \u2014 patch the list it already holds
+        const k = knowEntry(current);
+        if (k) k.tags = k.tags.filter((x) => x !== t);
+        renderKnowTags(k ? k.tags : []);
+        renderKnowChips();
+        renderKnowTree();
       };
       ktagsEl.appendChild(a);
     }
   }
 
   $('ktagadd').onclick = async () => {
-    const t = $('ktag').value.trim();
+    // the writer case-folds tags; fold here too so the local patch matches
+    const t = $('ktag').value.trim().toLowerCase();
     if (!t || !current || mode !== 'know') return;
-    await fetch(api + '/know-tag?key=' + encodeURIComponent(current) +
-      '&tag=' + encodeURIComponent(t), { method: 'POST' });
+    const r = await mutate(api + '/know-tag?key=' + encodeURIComponent(current) +
+      '&tag=' + encodeURIComponent(t));
+    if (!r.ok) { st('tag failed ' + r.status, false); return; }
     $('ktag').value = '';
-    openKnow(current);
-    loadKnow();
+    const k = knowEntry(current);
+    if (k && !k.tags.includes(t)) k.tags.push(t);
+    renderKnowTags(k ? k.tags : [t]);
+    renderKnowChips();
   };
 
   async function saveKnow() {
@@ -1091,27 +1288,35 @@
     if (!src.value) { st('empty body', false); return; }
     if (viewingRev !== null) { st('viewing a revision — use restore', false); return; }
     const sent = src.value;
-    const r = await fetch(api + '/know-save?key=' + encodeURIComponent(key),
+    const r = await mutate(api + '/know-save?key=' + encodeURIComponent(key),
       { method: 'POST', body: sent });
     if (!r.ok) { st('save failed ' + r.status, false); return; }
     current = key;
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
     st('memory saved');
-    loadKnow();
+    const k = knowEntry(key);
+    if (k) k.bytes = sent.length;
+    else knowKeys.push({ key, tags: [], updated: '', bytes: sent.length });
+    renderKnowChips();
+    renderKnowTree();
   }
 
   async function deleteKnow() {
     if (!current) return;
     if (!(await askConfirm('delete memory ' + current + '? (soft-delete, restorable)', 'delete'))) return;
-    await fetch(api + '/know-delete?key=' + encodeURIComponent(current), { method: 'POST' });
+    const doomed = current;
+    const r = await mutate(api + '/know-delete?key=' + encodeURIComponent(doomed));
+    if (!r.ok) { st('delete failed ' + r.status, false); return; }
     current = null;
     pname.value = '';
     pname.readOnly = false;
     src.value = '';
     render();
     st('memory deleted (restorable via know-restore)');
-    loadKnow();
+    knowKeys = knowKeys.filter((x) => x.key.replace(/^\//, '') !== doomed);
+    renderKnowChips();
+    renderKnowTree();
   }
 
   function setMode(m) {
@@ -1145,13 +1350,34 @@
   $('modet').onclick = () => setMode(mode === 'know' ? 'pages' : 'know');
 
   // ── boot ─────────────────────────────────────────────────────────────────
+  // paint from the last session's snapshot before the network answers: the
+  // tree and (when it matches ?name) the page body + preview appear at 0ms,
+  // then loadTree/refreshOpen reconcile in the background — local edits win,
+  // same rules as any live refresh.
+  function bootSnap() {
+    let t = null, p = null;
+    try {
+      t = JSON.parse(localStorage.appTree || 'null');
+      p = JSON.parse(localStorage.appPage || 'null');
+    } catch {}
+    if (!t || !t.length) return false;
+    nodes = t;
+    renderTree();
+    const name = qs.get('name');
+    if (name && p && p.name === name) applyPage(name, p);
+    return true;
+  }
   if (qs.get('view') === 'know') {
     setMode('know');
   } else {
+    const painted = bootSnap();
     loadTree().then(() => {
       const name = qs.get('name');
       const into = qs.get('into');
-      if (name) openPage(name);
+      if (name) {
+        if (painted && current === name) refreshOpen();
+        else openPage(name);
+      }
       else if (into && nodes.some((n) => !n.page && n.path === into)) selectFolder(into);
       else if (into) newFile(into);
       else newFile('');

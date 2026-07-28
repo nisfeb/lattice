@@ -103,6 +103,27 @@ is "page-source-at 4-digit rev parses" 404 "$(sc "$B/page-source-at?name=$P/note
 is "page-backlinks"        200 "$(sc "$B/page-backlinks?name=$P/note")"
 has "backlinks shape"      '"links"' "$(G "$B/page-backlinks?name=$P/note")"
 
+echo "==> page-source render=1 (editor single-request open)"
+has "render=1 carries html" '"html"' "$(G "$B/page-source?name=$P/note&render=1")"
+r=$(G "$B/page-source?name=$P/note")
+if printf '%s' "$r" | grep -qF '"html"'; then bad "plain page-source omits html"; else ok "plain page-source omits html"; fi
+
+echo "==> page-move (server-side rename, one request)"
+is "seed a page to move"   200 "$(sc -X POST "$B/page-save?name=$P/mv-src&type=md&new=1" --data-binary "see [[$P/mv-src]]")"
+is "single page move"      200 "$(sc -X POST "$B/page-move?from=$P/mv-src&to=$P/mv-dst")"
+sleep 2
+is "  old name gone"       404 "$(sc "$B/page-source?name=$P/mv-src")"
+has "  body moved + self-wikilink rewritten" "[[$P/mv-dst]]" "$(G "$B/page-source?name=$P/mv-dst")"
+is "folder move"           200 "$(sc -X POST "$B/folder-new?name=$P/mvdir")"
+is "  page inside"         200 "$(sc -X POST "$B/page-save?name=$P/mvdir/x&type=md&new=1" --data-binary 'inside')"
+is "  move the folder"     200 "$(sc -X POST "$B/page-move?from=$P/mvdir&to=$P/mvdir2")"
+sleep 2
+has "  page landed"        'inside' "$(G "$B/page-source?name=$P/mvdir2/x")"
+is "  old folder gone"     NO-NODE "$(G "$B/page-tree" | node_field "$P/mvdir/x" kind)"
+is "move under itself 400" 400 "$(sc -X POST "$B/page-move?from=$P/mvdir2&to=$P/mvdir2/sub")"
+is "move missing 404"      404 "$(sc -X POST "$B/page-move?from=$P/ghost-move&to=$P/anywhere")"
+is "page-move gated"       403 "$(code -X POST "$B/page-move?from=$P/mvdir2&to=$P/free")"
+
 echo "==> public forms: the unauthenticated write surface"
 # the gate walk is the security boundary — every refusal below must hold
 is "forms flag on"         200 "$(sc -X POST "$B/page-forms?name=$P/note&on=1")"

@@ -36,7 +36,6 @@
 /<  pjs  prism.js
 /<  uih  ui-app/index.html
 /<  uij  ui-app/app.js
-/<  uic  ui-app/app.css
 /<  lc   /lib/lattice-comment.hoon
 /<  lb   /lib/lattice-bookmark.hoon
 =<  ^-  nexus:nexus
@@ -70,9 +69,10 @@
         ::  the lattice-hosted UI (docs/ui-migration/PLAN.md): real files in
         ::  ui-app/, laid as grubs, served at /apps/lattice/app — the core
         ::  stays lean (assets in cords wedge every request fiber).
+        ::  css is inlined in index.html (every asset request costs ~2s on the
+        ::  serialized pier, so the shell ships as one document + one script).
             [%over %& [/app %'index.html'] [[/ %mime] uih]]
             [%over %& [/app %'app.js'] [[/ %mime] uij]]
-            [%over %& [/app %'app.css'] [[/ %mime] uic]]
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
             [%fall %| /know/vault empty-dir:loader]
             [%fall %| /know/trash-vault empty-dir:loader]
@@ -450,7 +450,7 @@
       ::  authored home first: if the user published an /index page, serve it;
       ::  else the generated listing. Both keep /pub/index so a publish/delete/
       ::  edit auto-refreshes the open reader.
-      ;<  home=(unit @t)  bind:m  (read-page-body our /index)
+      ;<  home=(unit @t)  bind:m  (read-page-body our our /index)
       ?~  home
         ;<  recent=(list [pax=path prev=@t])  bind:m  (read-recent 10)
         ;<  bms=bookmarks:lb  bind:m  read-bookmarks
@@ -472,7 +472,7 @@
       (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p ship.u.ref) (spud pax.u.ref) slash))
     ::
         %pub
-      ;<  body=(unit @t)  bind:m  (read-page-body ship.u.ref rel.u.ref)
+      ;<  body=(unit @t)  bind:m  (read-page-body our ship.u.ref rel.u.ref)
       =/  canon=tape  (trip (en-urb:lu ship.u.ref (weld pub-prefix:lu rel.u.ref)))
       ?~  body
         (send-view eyre-id (render-page canon "" "<p class=\"err\">not published here</p>"))
@@ -521,8 +521,14 @@
       [%'GET' %know-read]
     =/  ko=(unit path)  (know-key (~(gut by args) 'key' ''))
     ?~  ko  (send-err eyre-id 400 'bad key')
-    ;<  es=(map path know-entry:lk)  bind:m  read-know-map
-    =/  e=(unit know-entry:lk)  (~(get by es) u.ko)
+    ::  peek just the one entry grub — hydrating the whole vault to serve a
+    ::  single memory made this route degrade linearly with the store's size.
+    ;<  kn=view:nexus  bind:m
+      (peek:io [%| 2 %& (weld /know/vault u.ko) entry-leaf:lk] ~)
+    ?.  ?=([%file *] kn)  (send-err eyre-id 404 'not found')
+    ?:  (is-boom:tarball sang.kn)  (send-err eyre-id 404 'not found')
+    =/  e=(unit know-entry:lk)
+      (mole |.(!<(know-entry:lk (need-vase:tarball sang.kn))))
     ?~  e  (send-err eyre-id 404 'not found')
     (send-json eyre-id (know-entry-json u.ko u.e))
   ::
@@ -534,7 +540,8 @@
       [%'GET' %page-source]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
-    ;<  r=(each json [code=@ud msg=@t])  bind:m  (fs-source-result u.name)
+    ;<  r=(each json [code=@ud msg=@t])  bind:m
+      (fs-source-result u.name =('1' (~(gut by args) 'render' '0')))
     ?-  -.r
       %&  (send-json eyre-id p.r)
       %|  (send-err eyre-id code.p.r msg.p.r)
@@ -593,29 +600,31 @@
     :~  ['body' s+body]  ['kind' s+kind]
         ['rev' (numb:enjs:format u.rv)]
     ==
-  ::  page-backlinks: every page whose body wikilinks [[name]]. A tree walk
-  ::  plus one code peek per page (the fs-tree pattern) — O(pages) local
-  ::  peeks, no external index, so it works even where obelisk doesn't.
+  ::  page-backlinks: every page whose body wikilinks [[name]]. ONE deep peek
+  ::  (the ball already carries every code grub), then a local scan per page —
+  ::  no external index, so it works even where obelisk doesn't; no per-page
+  ::  darts, so it stays flat as pages accumulate.
       [%'GET' %page-backlinks]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     =/  needle=tape  :(weld "[[" (trip u.name) "]]")
-    ;<  tree=(list [pax=path page=?])  bind:m  read-tree
-    =|  acc=(list json)
-    |-  ^-  form:m
-    ?~  tree
-      (send-json eyre-id (pairs:enjs:format ~[['links' a+(flop acc)]]))
-    =*  nod  i.tree
-    ?.  page.nod  $(tree t.tree)
-    =/  pdir=path  (weld app-base:lu (weld /page pax.nod))
-    ;<  cn=view:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
-    ?.  ?=([%file *] cn)  $(tree t.tree)
-    =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cn)))) '')
-    =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
-    =/  bod=@t  ?~(un src body.u.un)
-    ?~  (find needle (trip bod))  $(tree t.tree)
-    $(tree t.tree, acc [s+(crip (pax-str pax.nod)) acc])
+    ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
+    ?.  ?=([%ball *] sn)
+      (send-json eyre-id (pairs:enjs:format ~[['links' a+~]]))
+    =/  pages=(list [pax=path when=@da code=@t])  (recent-walk ball.sn wave.sn ~)
+    ::  sorted by path like the old walk; murn preserves input order
+    =/  srt=(list [pax=path when=@da code=@t])
+      (sort pages |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
+    =/  links=(list json)
+      %+  murn  srt
+      |=  [pax=path when=@da code=@t]
+      ^-  (unit json)
+      =/  un=(unit [builder=@tas body=@t])  (unwrap-content code)
+      =/  bod=@t  ?~(un code body.u.un)
+      ?~  (find needle (trip bod))  ~
+      `[%s (crip (pax-str pax))]
+    (send-json eyre-id (pairs:enjs:format ~[['links' a+links]]))
   ::
   ::  page-errors: a page's latest evaluator error as plain text ('' = clean).
   ::  The lattice-fs nvim glue reads this to populate the quickfix list.
@@ -650,7 +659,7 @@
     ?~  raw  (send-err eyre-id 400 'missing url param')
     =/  pu=(unit [=ship =path])  (parse-urb-url:lu u.raw)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
-    ;<  body=(unit @t)  bind:m  (read-page-body ship.u.pu path.u.pu)
+    ;<  body=(unit @t)  bind:m  (read-page-body our ship.u.pu path.u.pu)
     ?^  body  (send-json eyre-id (mark-body-json 'gmi' u.body))
     ::  /manifest discovery fallback: the retired agent auto-published a manifest
     ::  at this reserved spur, and the client still probes urb://<ship>/manifest
@@ -926,8 +935,11 @@
       ?:  is-index  (make-folder-index (pax-of u.name))
       ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
     ::  ?new=1: create-only — 409 instead of silently overwriting an existing
-    ::  page (the editor's new-page mode sends it; caught by review).
+    ::  page (the editor's new-page mode sends it; caught by review). Only the
+    ::  new=1 path pays the existence peek — a plain overwrite (every autosave)
+    ::  never used the answer.
     ;<  ex=?  bind:m
+      ?.  (~(has by args) 'new')  (pure:(fiber:fiber:nexus ,?) %.n)
       (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.name))) %code])
     ?:  &((~(has by args) 'new') ex)  (send-err eyre-id 409 'page exists')
     ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
@@ -948,18 +960,7 @@
     ::  non-clearweb routes.
     =/  body=@t  (req-body req)
     =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'md')
-    =/  wlb=@t  (crip (wikilinkify (trip body) "/apps/lattice/app?name="))
-    =/  inner=tape
-      ?+  ptype  (render-md:gfm wlb)
-        %md    (render-md:gfm wlb)
-        %gmi   (render-gmi body)
-        %html  (trip body)
-        %text  :(weld "<pre>" (esc (trip body)) "</pre>")
-        %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip body)) "</code></pre>")
-        %css   :(weld "<pre><code class=\"language-css\">" (esc (trip body)) "</code></pre>")
-        %index  "<div style=\"color:#8a8a8a;text-align:center;padding:2rem\"><p><b>Folder index</b></p><p>Lists the pages in this page's folder automatically, once you name it (e.g. blog/index) and save. Live as pages come and go.</p></div>"
-      ==
-    (send-html eyre-id (render-bare inner))
+    (send-html eyre-id (render-bare (preview-inner ptype body)))
       [%'POST' %page-cmd]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -987,6 +988,25 @@
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     ;<  ~  bind:m  (poke-eval [%del (pax-of u.name)])
     (send-ok eyre-id)
+  ::  page-move: server-side move/rename of a page or a whole folder subtree.
+  ::  Replaces the old client choreography (page-source + page-save + page-del
+  ::  per page, folder-new per folder — 3N+M round-trips at ~2s each) with one
+  ::  request. Share modes carry over; wikilink self-references are rewritten
+  ::  the same way template instantiation rewrites its root.
+      [%'POST' %page-move]
+    =/  from=(unit @t)  (~(get by args) 'from')
+    =/  to=(unit @t)    (~(get by args) 'to')
+    ?~  from  (send-err eyre-id 400 'missing from')
+    ?~  to    (send-err eyre-id 400 'missing to')
+    ?.  &((valid-name u.from) (valid-name u.to))  (send-err eyre-id 400 'bad name')
+    ?:  =(u.from u.to)  (send-err eyre-id 400 'same name')
+    =/  pf=path  (pax-of u.from)
+    =/  pt=path  (pax-of u.to)
+    ?:  &((gth (lent pt) (lent pf)) =(pf `path`(scag (lent pf) `path`pt)))
+      (send-err eyre-id 400 'cannot move under itself')
+    ;<  n=(unit @ud)  bind:m  (move-pages pf pt)
+    ?~  n  (send-err eyre-id 404 'no such page or folder')
+    (send-json eyre-id (pairs:enjs:format ~[['moved' (numb:enjs:format u.n)]]))
       [%'POST' %page-share]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -1847,23 +1867,35 @@
   |=  n=@ud
   =/  m  (fiber:fiber:nexus ,(list [pax=path prev=@t]))
   ^-  form:m
-  ;<  pages=(list path)  bind:m  read-page-names
-  =|  acc=(list [pax=path when=@da code=@t])
-  |-  ^-  form:m
-  ?^  pages
-    =/  cdir=path  (weld app-base:lu (weld /page i.pages))
-    ;<  seen=view:nexus  bind:m  (peek:io [%& %& cdir %code] ~)
-    ?.  ?=([%file *] seen)
-      $(pages t.pages)
-    =/  code=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.seen)))) '')
-    $(pages t.pages, acc [[i.pages da.cass.seen code] acc])
+  ::  ONE deep peek: the ball carries every code grub and the wave every cass.
+  ::  The old shape listed the names then re-peeked each page — O(pages)
+  ::  serialized darts on every home load, just to pick the newest n.
+  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
+  ?.  ?=([%ball *] sn)  (pure:m ~)
   =/  sorted=(list [pax=path when=@da code=@t])
-    %+  sort  acc
+    %+  sort  (recent-walk ball.sn wave.sn ~)
     |=  [a=[pax=path when=@da code=@t] b=[pax=path when=@da code=@t]]
     (gth when.a when.b)
   %-  pure:m
-  %+  turn  (scag n sorted)
+  %+  turn  `(list [pax=path when=@da code=@t])`(scag n sorted)
   |=([pax=path when=@da code=@t] [pax (preview-of code)])
+::  +recent-walk: every page's [path mtime code] straight from a deep-peek
+::  ball+wave, no per-page darts (same technique as +tree-walk/+dump-walk).
+++  recent-walk
+  |=  [b=ball:tarball w=wave:nexus rel=path]
+  ^-  (list [pax=path when=@da code=@t])
+  =/  fils  ?~(fil.b ~ contents.u.fil.b)
+  =/  wfil=(map @ta cass:clay)  ?~(fil.w ~ file.u.fil.w)
+  =/  kids=(list [pax=path when=@da code=@t])
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=  [nom=@ta kb=ball:tarball]
+    (recent-walk kb (fall (~(get by dir.w) nom) *wave:nexus) (weld rel /[nom]))
+  ?.  (~(has by fils) %code)  kids
+  =/  cd  (~(got by fils) %code)
+  =/  cs=cass:clay  (fall (~(get by wfil) %code) *cass:clay)
+  :_  kids
+  [rel da.cs (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) '')]
 ::  +preview-of: a one-line, ~140-char plaintext preview of a page's source —
 ::  leading markdown '#'/spaces dropped, whitespace flattened to single spaces.
 ::
@@ -1946,14 +1978,15 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  pdir=path  (weld root (weld /page pax))
-  ;<  ~  bind:m  (ensure-dirs (weld root /page) pax)
-  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %cmd])
+  ::  ONE existence probe. An overwrite (code present) already has its dirs,
+  ::  cmd and deps from creation — the old per-save re-probing of each was
+  ::  3+ wasted darts on every autosave. A half-created page (crash between
+  ::  scaffold and code) just re-runs the scaffold: put-file is idempotent.
+  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
   ;<  ~  bind:m
     ?:  ex  (pure:m ~)
-    (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[0 '' 0])
-  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %deps])
-  ;<  ~  bind:m
-    ?:  ex  (pure:m ~)
+    ;<  ~  bind:m  (ensure-dirs (weld root /page) pax)
+    ;<  ~  bind:m  (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[0 '' 0])
     (put-file [%& %& pdir %deps] [/lattice %eval-deps] `(list path)`~)
   ;<  ~  bind:m  (put-file [%& %& pdir %code] [/lattice %page] src)
   ::  gain the code grub so every save is a kept %firm revision — that is
@@ -2028,6 +2061,78 @@
     ;<  ~  bind:m  (ensure-dirs (weld root /[base.dst]) (weld rel.dst i.rels))
     (put-file [%& %& ddir %code] [/lattice %page] newcode)
   $(rels t.rels)
+::  +rewrite-wikilinks: rewrite [[from]] and [[from/...]] references in code
+::  text to the new name — the bare-name form wikilinks use (+rewrite-root
+::  only covers /slash-prefixed hoon path literals). Boundary-checked so a
+::  [[fromX]] page is never clobbered by a move of [[from]].
+::
+++  rewrite-wikilinks
+  |=  [hay=tape from=tape to=tape]
+  ^-  tape
+  ?~  from  hay
+  =/  ndl=tape  (weld "[[" from)
+  =/  nl=@ud  (lent ndl)
+  |-  ^-  tape
+  =/  i  (find ndl hay)
+  ?~  i  hay
+  =/  pre=tape  (scag u.i hay)
+  =/  aft=tape  (slag (add u.i nl) hay)
+  ?.  ?|(?=(~ aft) =(']' i.aft) =('/' i.aft))
+    (weld (weld pre ndl) $(hay aft))
+  (weld (weld pre (weld "[[" to)) $(hay aft))
+::  +move-pages: move a page or a whole folder subtree under /page from src to
+::  dst. Copies each page's code (share mode carried over, wikilink
+::  self-references rewritten like template instantiation rewrites its root),
+::  then deletes the source. Runs in a REQUEST fiber with one writer poke per
+::  action — the same reasoning as +instantiate-template: a batch make in one
+::  writer transaction arms dep-keeps that never establish. Returns ~ when
+::  nothing exists at src; `count is the number of pages moved (0 = an empty
+::  folder, still a successful move).
+::
+++  move-pages
+  |=  [from=path to=path]
+  =/  m  (fiber:fiber:nexus ,(unit @ud))
+  ^-  form:m
+  =/  sdir=path  (weld app-base:lu (weld /page from))
+  =/  from-str=tape   (spud from)
+  =/  to-str=tape     (spud to)
+  =/  from-bare=tape  (pax-str from)
+  =/  to-bare=tape    (pax-str to)
+  ;<  dn=view:nexus  bind:m  (peek:io [%& %| sdir] ~)
+  ?.  ?=([%ball *] dn)  (pure:m ~)
+  =/  all=(list [pax=path page=?])  (collect-tree ball.dn ~)
+  =/  dirs=(list path)
+    (sort (murn all |=([pax=path page=?] ?:(page ~ `pax))) aor)
+  =/  rels=(list path)
+    (sort (murn all |=([pax=path page=?] ?:(page `pax ~))) aor)
+  ::  structure first, parents before children — preserves empty subfolders
+  =/  todo=(list eval-action:le)
+    [[%mkdir to] (turn dirs |=(p=path `eval-action:le`[%mkdir (weld to p)]))]
+  =/  count=@ud  0
+  |-  ^-  form:m
+  ?^  todo
+    ;<  ~  bind:m  (poke-eval i.todo)
+    $(todo t.todo)
+  ?~  rels
+    ;<  ~  bind:m  (poke-eval [%del from])
+    (pure:m `count)
+  =/  pdir=path  (weld sdir i.rels)
+  ;<  cn=view:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
+  =/  code=@t
+    ?.  ?=([%file *] cn)  ''
+    (fall (mole |.(;;(@t (sang-noun:tarball sang.cn)))) '')
+  ;<  mode=share-mode:le  bind:m  (read-share pdir)
+  =/  dst=path  (weld to i.rels)
+  =/  newcode=@t
+    %-  crip
+    %^  rewrite-wikilinks
+        (rewrite-root (trip code) from-str to-str)
+      from-bare
+    to-bare
+  =/  acts=(list eval-action:le)
+    :-  [%make dst newcode]
+    ?:(=(%private mode) ~ [%share dst mode]~)
+  $(todo acts, rels t.rels, count +(count))
 ::  +instantiate-template: create a live page-tree from a template. Runs in a
 ::  REQUEST fiber and pokes one %make PER page (a separate writer transaction
 ::  each), in sorted order — so every page commits before the next and its
@@ -2887,7 +2992,7 @@
   ^-  form:m
   ;<  our=@p   bind:m  bowl-our
   ;<  now=@da  bind:m  bowl-now
-  ;<  body=(unit @t)  bind:m  (read-page-body pub rel)
+  ;<  body=(unit @t)  bind:m  (read-page-body our pub rel)
   ?~  body  (pure:m ~)
   ;<  u-ix=(unit pub-index:lp)  bind:m  (read-pub-index-remote pub)
   =/  ix=pub-index:lp  (fall u-ix *pub-index:lp)
@@ -2917,7 +3022,7 @@
   ?~  stripped  (catalog-scan-loop our now t.keys pages cnt)
   ::  content key /pub/a/gmi -> vault rel /a (strip leading pub, trailing gmi)
   =/  rel=path  (snip `path`stripped)
-  ;<  body=(unit @t)  bind:m  (read-page-body our rel)
+  ;<  body=(unit @t)  bind:m  (read-page-body our our rel)
   ?~  body  (catalog-scan-loop our now t.keys pages cnt)
   ;<  ~  bind:m  (catalog-index-page our our i.keys now u.body pages)
   (catalog-scan-loop our now t.keys pages (add cnt 1))
@@ -3024,7 +3129,7 @@
   ?:  (gte clk deadline)  ~&([%lattice-peer-budget-spent pub cnt] (pure:m cnt))
   =/  stripped=path  (strip-pub:lp i.keys)
   ?~  stripped  (catalog-scan-peer-loop our pub now t.keys pages deadline cnt)
-  ;<  body=(unit @t)  bind:m  (read-page-body pub (snip `path`stripped))
+  ;<  body=(unit @t)  bind:m  (read-page-body our pub (snip `path`stripped))
   ?~  body  (catalog-scan-peer-loop our pub now t.keys pages deadline cnt)
   ;<  ~  bind:m  (catalog-index-page our pub i.keys now u.body pages)
   (catalog-scan-peer-loop our pub now t.keys pages deadline (add cnt 1))
@@ -3113,36 +3218,59 @@
 ::  and the /fs.sig lick port are thin adapters over the same arms below, so a
 ::  single Rust client works over either transport with identical semantics.
 ::
-::  +fs-tree-json: the whole /page tree as JSON (GET /page-tree + lick %page-tree).
+::  +fs-tree-json: the whole /page tree as JSON (GET /page-tree + lick
+::  %page-tree), from ONE deep peek. The ball already carries every code AND
+::  share grub (and the wave every grub's cass), so the old shape — deep peek,
+::  discard the ball, then TWO more darts per page (code re-peek + read-share)
+::  — was pure waste that degraded the route linearly as pages accumulate.
+::  Walk in place, exactly like +fs-dump-json.
 ++  fs-tree-json
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
-  ;<  tree=(list [pax=path page=?])  bind:m  read-tree
-  =|  acc=(list json)
-  |-  ^-  form:m
-  ?~  tree  (pure:m (pairs:enjs:format ~[['nodes' a+(flop acc)]]))
-  =*  nod  i.tree
-  ?.  page.nod
-    =/  j=json  (pairs:enjs:format ~[['path' s+(crip (pax-str pax.nod))] ['page' b+|]])
-    $(tree t.tree, acc [j acc])
-  =/  pdir=path  (weld app-base:lu (weld /page pax.nod))
-  ;<  cn=view:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
-  ?.  ?=([%file *] cn)  $(tree t.tree)     ::  raced delete — drop
-  ;<  shr=share-mode:le  bind:m  (read-share pdir)
-  =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cn)))) '')
+  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
+  ?.  ?=([%ball *] sn)  (pure:m (pairs:enjs:format ~[['nodes' a+~]]))
+  =/  nodes=(list [pax=path j=json])  (tree-walk ball.sn wave.sn ~)
+  =/  srt  (sort nodes |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
+  (pure:m (pairs:enjs:format ~[['nodes' a+(turn srt |=([* j=json] j))]]))
+::  +tree-walk: +dump-walk's twin without bodies — path+kind+size+rev+mtime+
+::  share per page, folders as bare nodes. share comes from the /share grub in
+::  the same ball (absent -> %private, the same rule as +read-share).
+++  tree-walk
+  |=  [b=ball:tarball w=wave:nexus rel=path]
+  ^-  (list [pax=path j=json])
+  =/  fils  ?~(fil.b ~ contents.u.fil.b)
+  =/  wfil=(map @ta cass:clay)  ?~(fil.w ~ file.u.fil.w)
+  =/  kids=(list [pax=path j=json])
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=  [nom=@ta kb=ball:tarball]
+    =/  kw=wave:nexus  (fall (~(get by dir.w) nom) *wave:nexus)
+    (tree-walk kb kw (weld rel /[nom]))
+  ?.  (~(has by fils) %code)
+    ?~  rel  kids
+    :_  kids
+    :-  rel
+    (pairs:enjs:format ~[['path' s+(crip (pax-str rel))] ['page' b+|]])
+  =/  cd  (~(got by fils) %code)
+  =/  cs=cass:clay  (fall (~(get by wfil) %code) *cass:clay)
+  =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) '')
+  =/  sd  (~(get by fils) %share)
+  =/  shr=share-mode:le
+    ?~  sd  %private
+    (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.u.sd)))) %private)
   =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
-  =/  gen=?  =((make-folder-index pax.nod) src)
+  =/  gen=?  =((make-folder-index rel) src)
   =/  kind=@tas  ?:(gen %index ?~(un %hoon builder.u.un))
   =/  body=@t  ?~(un src body.u.un)
-  =/  j=json
-    %-  pairs:enjs:format
-    :~  ['path' s+(crip (pax-str pax.nod))]  ['page' b+&]  ['kind' s+kind]
-        ['size' (numb:enjs:format (met 3 body))]
-        ['rev' (numb:enjs:format ud.cass.cn)]
-        ['mtime' s+(scot %da da.cass.cn)]
-        ['share' s+shr]
-    ==
-  $(tree t.tree, acc [j acc])
+  :_  kids
+  :-  rel
+  %-  pairs:enjs:format
+  :~  ['path' s+(crip (pax-str rel))]  ['page' b+&]  ['kind' s+kind]
+      ['size' (numb:enjs:format (met 3 body))]
+      ['rev' (numb:enjs:format ud.cs)]
+      ['mtime' s+(scot %da da.cs)]
+      ['share' s+shr]
+  ==
 ::  [page-dump deploy marker DPMARK7]
 ::  +fs-dump-json: page-tree PLUS every page's body, in ONE deep peek. +read-tree
 ::  does this exact peek then discards the ball and re-peeks each %code grub (see
@@ -3211,7 +3339,7 @@
 ::  +fs-source-result: a page's source as (each json [code msg]) — the json on
 ::  %&, an HTTP-style [code msg] error on %|.
 ++  fs-source-result
-  |=  name=@t
+  |=  [name=@t render=?]
   =/  m  (fiber:fiber:nexus ,(each json [code=@ud msg=@t]))
   ^-  form:m
   ?.  (valid-name name)  (pure:m [%| 400 'bad name'])
@@ -3225,15 +3353,25 @@
   =/  gen=?  =((make-folder-index pax) src)
   =/  kind=@tas  ?:(gen %index ?~(un %hoon builder.u.un))
   =/  body=@t  ?~(un src body.u.un)
+  ::  render=1 (the editor's page open): include the rendered preview, so
+  ::  opening a page is ONE request instead of page-source + page-preview.
+  =/  html-row=(list [@t json])
+    ?.  &(render |((~(has in content-builders) kind) =(%index kind)))  ~
+    ~[['html' s+(render-bare (preview-inner kind body))]]
   %-  pure:m
   :-  %&
   %-  pairs:enjs:format
-  :~  ['kind' s+kind]  ['body' s+body]
-      ['size' (numb:enjs:format (met 3 body))]
-      ['rev' (numb:enjs:format ud.cass.cn)]
-      ['mtime' s+(scot %da da.cass.cn)]
-      ['share' s+mode]
-  ==
+  %+  weld
+    ::  the cast homogenizes the row literal — weld is wet, and a bare :~ of
+    ::  mixed [@t json-case] cells mull-grows against the first row's type
+    ^-  (list [@t json])
+    :~  ['kind' s+kind]  ['body' s+body]
+        ['size' (numb:enjs:format (met 3 body))]
+        ['rev' (numb:enjs:format ud.cass.cn)]
+        ['mtime' s+(scot %da da.cass.cn)]
+        ['share' s+mode]
+    ==
+  html-row
 ::  +fs-err-text: a page's latest evaluator error ('' = clean or no such page).
 ++  fs-err-text
   |=  name=@t
@@ -3304,7 +3442,7 @@
       %page-source
     =/  name=(unit @t)  (~(get by q) 'name')
     ?~  name  (pure:m [400 'missing name'])
-    ;<  r=(each json [code=@ud msg=@t])  bind:m  (fs-source-result u.name)
+    ;<  r=(each json [code=@ud msg=@t])  bind:m  (fs-source-result u.name %.n)
     ?-  -.r
       %&  (pure:m [200 (en:json:html p.r)])
       %|  (pure:m [code.p.r msg.p.r])
@@ -3371,7 +3509,6 @@
   =/  ct=(unit @t)
     ?:  =(%'index.html' nam)  `'text/html'
     ?:  =(%'app.js' nam)      `'text/javascript'
-    ?:  =(%'app.css' nam)     `'text/css'
     ~
   ?~  ct  (send-err eyre-id 404 'not found')
   ;<  pv=view:nexus  bind:m  (peek:io [%& %& (weld app-base:lu /app) nam] ~)
@@ -3801,9 +3938,12 @@
 ::  peek-remote-wait (~ if absent, unreachable, or slow past remote-timeout).
 ::
 ++  read-page-body
-  |=  [shp=@p rel=path]
+  |=  [our=@p shp=@p rel=path]
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
+  ::  `our` is a parameter, not a bowl-our bind — callers already hold it (the
+  ::  owner gate's src, or their own binding), and the /sys/bowl round trip
+  ::  cost ~0.2s on every reader view for a value that never changes.
   ::  tolerate a catalog-row url form: catalog stores url as urb://<pub>/pub/<spur>/gmi
   ::  (the content-map key), so a client that round-trips a /catalog-* result into
   ::  /fetch or the reader passes rel=/pub/<spur>/gmi. Strip the leading pub +
@@ -3811,7 +3951,6 @@
   ::  rel (no leading pub / no trailing gmi) is untouched. ponytail: a page literally
   ::  published as "pub/…/gmi" would be mis-normalized — accepted, that key is absurd.
   =/  rel=path  (page-rel rel)
-  ;<  our=@p  bind:m  bowl-our
   ::  own pages: ABSOLUTE road via app-base (the nexus's fixed tree path), so this
   ::  resolves the same from the depth-2 request fiber and the depth-0 crawler.
   =/  road=road:tarball
@@ -4054,6 +4193,23 @@
       (trip (en-urb:lu shp pax))
     doc
   [?:(local `name ~) ?!(local) ?:(local keep "")]
+::  +preview-inner: the rendered-preview HTML fragment for a page kind — the
+::  single renderer behind POST /page-preview AND page-source?render=1, so the
+::  editor preview can never drift from the reader. Wikilinkify only runs for
+::  the markdown paths (it reads [[...]] syntax the other kinds do not have).
+::
+++  preview-inner
+  |=  [ptype=@tas body=@t]
+  ^-  tape
+  ?+  ptype  (render-md:gfm (crip (wikilinkify (trip body) "/apps/lattice/app?name=")))
+    %md    (render-md:gfm (crip (wikilinkify (trip body) "/apps/lattice/app?name=")))
+    %gmi   (render-gmi body)
+    %html  (trip body)
+    %text  :(weld "<pre>" (esc (trip body)) "</pre>")
+    %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip body)) "</code></pre>")
+    %css   :(weld "<pre><code class=\"language-css\">" (esc (trip body)) "</code></pre>")
+    %index  "<div style=\"color:#8a8a8a;text-align:center;padding:2rem\"><p><b>Folder index</b></p><p>Lists the pages in this page's folder automatically, once you name it (e.g. blog/index) and save. Live as pages come and go.</p></div>"
+  ==
 ::  +render-bare: a minimal HTML doc (shared reader CSS, no address-bar chrome) —
 ::  for the editor preview iframe, which supplies its own layout.
 ::
@@ -4728,15 +4884,17 @@
 ++  icon-svg
   ^-  @t
   '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" fill="#1a6ed8"/><g stroke="#ffffff" stroke-width="14" stroke-linecap="round" fill="#ffffff"><line x1="140" y1="140" x2="372" y2="140"/><line x1="140" y1="256" x2="372" y2="256"/><line x1="140" y1="372" x2="372" y2="372"/><line x1="140" y1="140" x2="140" y2="372"/><line x1="256" y1="140" x2="256" y2="372"/><line x1="372" y1="140" x2="372" y2="372"/><line x1="140" y1="140" x2="372" y2="372"/><line x1="372" y1="140" x2="140" y2="372"/><circle cx="140" cy="140" r="26"/><circle cx="256" cy="140" r="26"/><circle cx="372" cy="140" r="26"/><circle cx="140" cy="256" r="26"/><circle cx="256" cy="256" r="30"/><circle cx="372" cy="256" r="26"/><circle cx="140" cy="372" r="26"/><circle cx="256" cy="372" r="26"/><circle cx="372" cy="372" r="26"/></g></svg>'
-::  minimal service worker: only job is installability + a SAFE fetch strategy
-::  for an auth-gated, dynamic app. It does NOT precache (every route is
-::  auth-gated, so a logged-out install would 403 and abort). Static shell
-::  (icon/manifest) is cache-on-first-hit; everything else is network-first and
-::  never cached, so a stale authed page is never served offline.
+::  the service worker: stale-while-revalidate for the app SHELL (editor HTML,
+::  app.js, prism, icons, manifest) — a warm boot serves every asset from the
+::  SW cache at 0ms and refreshes it in the background, so it is at most one
+::  load behind a deploy. The /app HTML is cached by pathname, so ?name= deep
+::  links share one entry. API routes stay network-only: every one is
+::  auth-gated and dynamic, and a stale authed response must never be served.
+::  No precache — a logged-out install would 403 and abort.
 ::
 ++  sw-js
   ^-  @t
-  'var V="lattice-v1";self.addEventListener("install",function(e){self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V}).map(function(k){return caches.delete(k)}))}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(u.pathname==="/apps/lattice/icon.svg"||u.pathname==="/apps/lattice/manifest.webmanifest"){e.respondWith(caches.open(V).then(function(c){return c.match(q).then(function(hit){return hit||fetch(q).then(function(r){c.put(q,r.clone());return r})})}));return}e.respondWith(fetch(q).catch(function(){if(q.mode==="navigate"){return new Response(`<!doctype html><meta name=viewport content="width=device-width"><body style="font:16px system-ui;padding:2rem;color:#888">offline - reconnect to reach lattice</body>`,{status:503,headers:{"content-type":"text/html"}})}return new Response("offline",{status:503})}))});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+  'var V="lattice-v2";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V}).map(function(k){return caches.delete(k)}))}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){var net=fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r}).catch(function(){return hit||new Response("offline",{status:503})});return hit||net})}));return}e.respondWith(fetch(q).catch(function(){if(q.mode==="navigate"){return new Response(`<!doctype html><meta name=viewport content="width=device-width"><body style="font:16px system-ui;padding:2rem;color:#888">offline - reconnect to reach lattice</body>`,{status:503,headers:{"content-type":"text/html"}})}return new Response("offline",{status:503})}))});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
 ++  icon-192-b64
   ^-  @t
   'iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAYAAABS3GwHAAAABmJLR0QA/wD/AP+gvaeTAAATCUlEQVR4nO2df1RU553Gn5cZ5KegRiEWVFQgSgCNdlNNKtq025aatklT/JHGbntqs7sN2dNsTHc3EuVEuhq12bNi0xPbPWvSpIj0x6ZJpbtNcjQeT7CgBqMYJRoVxUqMRQQULjPvnnfIGFFg5s7c9973nfl+/oni5d4n33kehrk/npfBRkpKSlyXp8XMcnFXIQe/DYzngrMp4EgCw2gASQBG2KmJsJ1eAF3g+CsYusD4CYAdZZwd49zbmHTMc6CmpsZjlxgm+wDF5d/KhOH9JmP88wArApAi+5iE1lwCw1vg7I0Ybvz6tR/XnNUuACWPlSR0Jbq+Cca+DeAeADEyjkNEPB5wvMli8GKXK+7XO8u3XlU6AAvKS5IT+2K/x8F/xIBPWblvIur5EGDP9RrGf7z+TM0lpQIw++GHY9PTLv8QwL8CGGPFPgliCC5y4N/b2kZu2rdliwGnA7DwqSXzOGfPAcgPd18EYYKjDKz0DxW/eh1OBGBB+XfiE42en4DhH+34ME0Qg8A5sBmX2p+oraztQQiEZNwvly/Jiulj2wB8JpTvJwgr4WD7ve6Yxf9b/tL70gOwsOzBL3Dw39DpTEIxLnHgG7UVVW+a+SZTpyfvXbnkfg7+KpmfUJBUBtQWr1yy2Mw3uYLdcOFTDz7MgRcBxIYkjyDk42KMfSO7KP/c+28d2h/UNwSzUXHZ0vsAvGAmMAThEIyBLcyZX/Be81uHDgfcONAGxWVL72HADgBxlkkkCPn0cni/WltR/X8hB+DesgdzvOAN9Ds/oSmXOLyzayuqj5v+EFz8aHGcBxCnOunmNUJXUhliqoWXTQeApYx6loHPkiaNIOxhNlJHbTD1K9DHtzfsoiu8RITAOcPnatdUCU8P/w6woHyBm3O2mcxPRBCMcWwWN20GDEBi3/jHABTaJo0g7CE/Pa2jdNhfgcT9/Al97pMMuCXco00ePwk5GVN9f24+exwfnDsFnbg7fw5m5fT/HNjffBB7DtVBJ3TXP1mCfzjw0RV3X9bO8prOQQOwsOzBf+Hg68I5SMKIePz9V7+LGVPyBny98UQTfv6HF9B1tRsqc0vKGKxa9gRSEpMHfL2juxNPv7gBH12+CJXRXX9SfCK+v/DvBvXP86/+N670hvdQGAdW1FZU/cT/d9f1tzfHevuqAIwM5wClX1+OGVNvv+nrt44eh7ysaWg4egBGX9jPMUgb/trvPYXkhMSb/i0udgQ+WzAXuxr3kH6J81+xqBTTJmQP6p/McRmoOyIuS4UOAwpnzp7+XFNdU9+AzwAJnt5FAMaHs/Mp47MGNb+frPQJvv9B8T+qGkLTym/9MxLi4ofcJjEu3rcN6ZdnfuGRoRDeEh4Lk1u7kl33+/9yLQCM82Xh7jknc0rAbVQMgX/448ekB9xWbEP67Te/GY8FhLNlAwJw78qSDACfg02oFAIzw/dD+p2dvwV88WPP9wfAA3eJFXd6Np85oZWJwhk+6Xdm/mY8NgwxnpjY+68FoL+0KnxOnDuJxuMB70BVwkRW/OQh/fbOX3hLeMwauOirgkvUFRpjXeLK79Cf/kxw8MRh3J41DaOSU4PaXmxn99khK992Sb898z95vgWVv9sCw+M7eRM2DBg/M336RtfEBwo+zcAetWSvgE9g/Xv7kTcxF6NHjgraRPmT81B/TH4IEuMSsGLRI5h860TL9kn65c7/VNsZbKz5KbqtvYYU3zfO9XtX7vzCrwD4mpV79oXg6AFTIUhNSkF+1nSpIfhk+JMs3zfplzN/Yf4N2zej60oXJFDnyikqWCKunFu9Z9VCEMrwWz5sRXtne9C/zpF+rcwvfg864souKihlwG0y9q9KCEId/vrtldhzaC/pj0Tz+y4H4ENXblHBvwEIfAVI0xCEO3zSbzg6f5kwoEf8CiQKbYNzZog4ZSKrhk/6DUfnLw9+RQTgKXErkOxD2W0iq4dP+g1H5y8H5hEBWGNX349dJpI1fNJvODp/Cbj8AbAN2SaSPXzSbzg6f4txiwCU231UWSaya/ik33B0/lbiSABkmMju4ZN+w9H5ax8AK03k1PBJv+Ho/LUPgBUminW5HR0+6Xdra34B+0rZUg4F8P0UKXnE1wYQLGcutMLj9WJSWqbjwyf9+plfiXeAcH6SpiSOxKikFCWGT/r1M79SAQjVRCoNn/TrZX7lAiDLRHYOn/TrY34lA2C1iZwYPunXw/zKBsAqEzk5fNIP5c2vdACuN1G+iWeM/bRcaMX66kpHh0/6K5U2v+llUnWCab54Pem3B6XfAfxXGLNCeIBdnCKV/YxxIEj/dEfnr3UArHiA3Y4H1YeC9MPR+WsdACvbG5x4EUi/PiFQLgAyqkvsfBFIv14hUCoA1NszNNQ7FOEBoN6ewFDvUIQGgHp7qDcpagNAvT3UmxS1AaDenn6od8iIvgBQb89AqHfIiJ4AUG/P4FDvkBH5AaDenuGh3iEDERsA6u0JDuodMhBxAaDeHnNQ75CBiAkA9faEBvUOGdA+AE6XJlFvj969SYbkEEjtBXLa/Ddpod4hreZ/uu2sb5UemU+VSXsHUMn8Aurt0W/+qTa8E0gJgFgHduVDj2PiON9q9EGvA7tRDN/apTBvehEajr3jW5fY7DPGgSD9cuYvQjAzuwB7jzRICYHlARgzcjTWLl+FMSaaHOwwjx8xRLEot5UhIP1y5z8yIRkLZs5D3eF6XOm9CqUDsG75aiQnJCppHhkhIP32zD/W7cbcvDvxx/o3oGwA5hXMxZy82Uqbx8oQkH575x83YgQuXm7H6bYzULIW5Y6cwqC3bWk765j5/YhjCw3ibINZSL8z8zfjMaV7gZToZP+YUBqESL91ONngZGkADjQfDHrbiWkZWLGo1HfGyCnEsYWGCWnBn63yQ/qdmb8Zj9kegN3vvo2Ors6gt89Kn+BYCPzDFxpChfTbO3/hLeExpc8C/fnIPswrvMv3qT0YxAcg8UFIfCCyqzLDCvP7If32zL+75ypWv7BO/dOgQuCuxj2YmVPoO3+rmomsNL8f0i93/q0Xz2PV1rXo6L4MLa4ECxPXNdWbuuwtTJQ/OU/qZe9Pbs8w3zUaCNIvZ/7i9oxntm2SdrZQ2r1Aqt37Qb1D+s3/lA3rC0i9HVqVEFDvkJ7z32DD4hrSnwdwOgTUO6T3/CPiiTDqvQnNRNSbFEHPBFPvjbkQUG9SBLZCUO9NcCGg3qQI7gWi3pvhQ0C9SfbiSDMc9d4MHgLqTYqiblDqvRkYAupNisJ2aOq96Q8B9SZF8foA1Nujd29PrMP6le4FMgP19ujX23PmQis8Xi8mpWVqaX4l3gH8UG+Pfr09KYkjMSopRVvzKxWAUF8ElYZP+vUyv3IBkGUiO4dP+vUxv5IBsNpETgyf9OthfmUDYJWJnBw+6Yfy5lc6ANebKD+E8qqWC61YXy23WTgQpL9SafM72gskG+Zo20z4kH57UPodwH+FNCuEZ3jFKTq7FlkYCtI/3dH5ax2AUG4PcHKlkRsh/XB0/loHwArzOPkikH59QqBcAKw0jxMvAunXKwRKBUCGeex8EUi/fiFQJgDU26Nfb0/Lh61o72w3tdyRaiFQIgDU26Nnb8/67ZXYc2iv471PWgeAenv07u0xFCk/0zIA1HvTD/UmGdEXAOq9GQj1JhnREwDqvRkc6k0yIj8A1HszPNSbZCBiA0C9N8FBvUkGIi4A1HtjDupNMhAxAaDem9Cg3iQD2gfA6X543Xtvol2/ITkEUnuBnDZ/JPXeRKP+021nfVebtVwiSSXzR0LvTTTqT7XhnUBKAMRSmCsfehwTxwW/AvjJ8y3YKIYvaTVA/4vQcOwd35KsZp8xDgTplzN/EYKZ2QXYe6RBSggsD8CYkaOxdvkqjDHR5GCHefyIIYr1iK0MAemXO3+x3vSCmfNQd7he/YWy1y1fjeSERCXNIyMEpN+e+ce63Zibdyf+WP8GlA3AvIK5mJM3W2nzWBkC0m/v/ONGjMDFy+043XYGStai3JFTGPS2LW1nHTO/H3FsoUGcbTAL6Xdm/mY8pnQvkBKd7B8TSoMQ6bcOJxucLA3AgeaDQW87MS0DKxaV+s4YOYU4ttAwIS34s1V+SL8z8zfjMdsDsPvdt9HR1Rn09lnpExwLgX/4QkOokH575y+8JTym9FmgPx/Zh3mFd/k+tQeD+AAkPgiJD0R2PR5nhfn9kH575t/dcxWrX1in/mlQIXBX4x7MzCn0nb9VzURWmt8P6Zc7/9aL57Fq61p0dF+GFleChYnrmupNXfYWJsqfnGdTb4/5rtFAkH458xe3ZzyzbZO0s4XS7gVS7d4P3XtvolH/KRvWF5B6O7QqIdC99yZa9W+wYXEN6c8DOB0C3Xtvol1/RDwRRr03oZmIepMi6Jlg6r0xFwLqTYrAVgjqvQkuBNSbFMG9QNR7M3wIqDcpCprhqPdm8BBQb1IUdYNS783AEFBvUhS2Q1PvTX8IqDcpitcHiPbeG9LvLFJ7gcwQjb03pN95HH8HiObeG9LvPMoEIFQTqXR5nfSrcXuDtgGQZSI7h0/69TG/kgGw2kRODJ/062F+ZQNglYmcHD7ph/LmVzoA15soP4TyqpYLrVhfLbdZOBCkv1Jp8zvaCyQb5mjbTPiQfntQ+h3Af4U0K4RneMUpRqcXYyb905VYDFvLAIRye4BKK5KTfii1IrxWAbDCPE6+CKRfnxAoFwArzePEi0D69QqBUgGQYR47XwTSr18IlAlANPbekH7nUSIA0dp7Q/oNINoDEO29N6TfQNQGgHpv+qHeJCP6AkC9NwOh3iQjegJAvTeDQ71JhiMBeFL8164DUu/N8FBvkgEb6REBeAxAgh1Ho96b4KDeJAM20S4C8AOxvoPsI1HvjTmoN8mAfPh5EYDvAkiXeRjqvQkN6k0yIBd2ypVdVFDMgNtkHcLpfnjq7dG7N8mQGALO8LYrt6hgFoC7I9H84b4IhVPycNftdyIr3dyaVqRfjxAwhldcuUWF4tX9WqSa3w/19ug3/1TZIWDsv1xT5+e5Gdj3I9n8fqi3R7/5p0oMgcvrXeO6Iz3vvDE25p8AxFtl/icWP2pqKcyT51uwUQxf0lKYN74IDcfe8a1LbPZB+6Eg/XLnL0KQN+k21L+33/f9FtGeeMzzuKupqYnnzC8QnwEs+SD8yNeXY9qEbCXN40f8JBGLclsRAtJvz/zFdpljP4W6Iw2wAs5Q+8rPqrf1t0Jw9oYVO50yPgszpt6utHn8iGOKYwsNoUL67Z2/8JbwmBUwzn2e9wXA7fbWAPCEu9OczClamMeKEJB+Z+ZvxmPD4IHb85trAfh9+bZWcLwJm1DBPOG8CKRfrXfiEPjTjvKav9xQjMV/Ge5em8+c0Mo8N74I5y6eD7it2Ib0OxeCYDwWEPaJ168FoDs2voYDreHs98S5k2g8flgr8/sRmn788rPo7rk65DZXeq76tiH9zoRAeEt4LEz+ktTp+Z3/L9dugz65852+3KIC8fe/DWfvjccPITMtE7eOHjfw6yeasPl/fq6kea4/O7G3aR/m5P0N4mJHDPi3ju5OlL/4DC51dUBVIkF/w9EDyBiXMah/nn9tK/rCPQ3KsfqV9dW7/X8dUKD5xRXLktzxfSJiY8M7CnxLBeVkTPX9ufnscXxw7hR04u78OZiVU+j78/7mg9hzqA46obv+yRL8w4GPrrj7snaW13T6v3ZTg2xx2dLHGbAx7KMRhHKwH+6o+NV/DtsOfcV9TmzQaKsugpDPofNtyc/d+MWbArCzfGefl6O0/x2DICICzhlK923ZctPNRIM+C/z+7kOns4sKbmHAZ2yRRxBy2VRbUfW8uQUyLrU/AWCfTFUEIR9en+Tu+9FQ/zpkAGora3s4vItFFKRpIwi5tLsQu7imvKY3pCWSaiuqj8eA3wdg6KtDBKEmvYjBolcrfvlBWGuEvVaxbSc4W2LFzXIEYRNextlDO56u+lOgDYMqxGre/e7R7KL8cwxs4WDXDghCITxg+IcdFVUvBbOxKTMXly29jwFVVj09RhAW0wOGb+9YU7U92G8w/dO8uGzpPQz4rXhSzbQ8gpBHewz4/b5f2WWuE1xbUfUmOJsBcL1uLiEimX0c3k+bNT9CLcVt3v3upewZE15CfHwqA+6kzwWEQ4i7FTYlufuWvPL09guh7CDsD7RfXrn0szEMPwXQf+shQdjDQc5iflC75uU94ewk7Fp0cdtExj1jfxHrTW4H2GzRjBLuPgliGC4A7Mlu97nlrz/9atj3SFt6SrP/eQLPcoCL2ygyrNw3EfW0Aexn3M2erS1/2bKneqSc019Q/p34BKP3AYAvYwxfsHMBDiKi8IgH2MUzvN2u+N/uLN9q+R0J0i9qfenJh8bHuLwPMM4/D2A+gNGyj0lozV8B7AL466K6xN/eIAtbr+qWlJS4rubEzOhzsZngyAVjuYxjMjhSwHyLdCQDGPgwKxFp9ALoBEc7GDo4wwfg/BgDO+ryehvjm72NNTU1tt128/9nBV/uJPutQAAAAABJRU5ErkJggg=='
@@ -4785,17 +4943,23 @@
 ::  lists, blockquotes, ``` pre, paragraphs). urb:// links route back through
 ::  the reader; other links render as their description text only.
 ::
+::  output accumulates as a list of per-line chunks zinged once at the end —
+::  welding each line onto one growing tape re-copied the whole document per
+::  line (quadratic in document size, the same class as the fixed wikilinkify
+::  quadratic, on the unauthenticated reader path).
 ++  render-gmi
   |=  body=@t
   ^-  tape
   =/  lines=(list @t)  (to-wain:format body)
-  =|  out=tape
+  =|  acc=(list tape)
   =/  pre=?  |
   =|  prebuf=(list @t)
   |-  ^-  tape
   ?~  lines
-    ?:  pre  :(weld out "<pre>" (esc (trip (of-wain:format (flop prebuf)))) "</pre>")
-    out
+    ?:  pre
+      %-  zing  %-  flop
+      [:(weld "<pre>" (esc (trip (of-wain:format (flop prebuf)))) "</pre>") acc]
+    (zing (flop acc))
   =/  ln=tape  (trip i.lines)
   ?:  pre
     ?.  =("```" ln)  $(lines t.lines, prebuf [i.lines prebuf])
@@ -4803,12 +4967,12 @@
       lines   t.lines
       pre     |
       prebuf  ~
-      out     :(weld out "<pre>" (esc (trip (of-wain:format (flop prebuf)))) "</pre>")
+      acc     [:(weld "<pre>" (esc (trip (of-wain:format (flop prebuf)))) "</pre>") acc]
     ==
   ?:  =("```" ln)  $(lines t.lines, pre &, prebuf ~)
-  ?:  (has-prefix "### " ln)  $(lines t.lines, out :(weld out "<h3>" (esc (slag 4 ln)) "</h3>"))
-  ?:  (has-prefix "## " ln)   $(lines t.lines, out :(weld out "<h2>" (esc (slag 3 ln)) "</h2>"))
-  ?:  (has-prefix "# " ln)    $(lines t.lines, out :(weld out "<h1>" (esc (slag 2 ln)) "</h1>"))
+  ?:  (has-prefix "### " ln)  $(lines t.lines, acc [:(weld "<h3>" (esc (slag 4 ln)) "</h3>") acc])
+  ?:  (has-prefix "## " ln)   $(lines t.lines, acc [:(weld "<h2>" (esc (slag 3 ln)) "</h2>") acc])
+  ?:  (has-prefix "# " ln)    $(lines t.lines, acc [:(weld "<h1>" (esc (slag 2 ln)) "</h1>") acc])
   ?:  (has-prefix "=> " ln)
     =/  rest=tape  (ltrim (slag 3 ln))
     =/  sp=(unit @ud)  (find " " rest)
@@ -4820,11 +4984,11 @@
       ?:  |(=("http://" (scag 7 raw)) =("https://" (scag 8 raw)))
         :(weld "<a href=\"" (esc raw) "\" target=\"_blank\" rel=\"noopener noreferrer\">" (esc desc) "</a>")
       (esc desc)
-    $(lines t.lines, out :(weld out "<p>" anchor "</p>"))
+    $(lines t.lines, acc [:(weld "<p>" anchor "</p>") acc])
   ?:  (has-prefix "> " ln)
-    $(lines t.lines, out :(weld out "<blockquote>" (esc (slag 2 ln)) "</blockquote>"))
+    $(lines t.lines, acc [:(weld "<blockquote>" (esc (slag 2 ln)) "</blockquote>") acc])
   ?:  =("" ln)  $(lines t.lines)
-  $(lines t.lines, out :(weld out "<p>" (esc ln) "</p>"))
+  $(lines t.lines, acc [:(weld "<p>" (esc ln) "</p>") acc])
 ::  +md-envelope: the exact page-source shell a markdown note is stored in.
 ::  The evaluator only knows Hoon gates, so a note IS a gate returning (md '...'):
 ::  wrap-md escapes the prose into a single-quote cord and drops it in here;
@@ -4877,10 +5041,37 @@
   ?.  (gte ls 2)  ~
   ?.  =("')" (slag (sub ls 2) rest))  ~
   =/  mid=tape  (scag (sub ls 2) rest)
-  =/  quoted=@t  (crip :(weld "'" mid "'"))
-  =/  r  (mule |.(;;(@t q:(slap !>(0) (ream quoted)))))
-  ?.  ?=(%& -.r)  ~
-  `[`@tas`(crip builder) p.r]
+  =/  dec=(unit tape)  (unesc-content mid)
+  ?~  dec  ~
+  `[`@tas`(crip builder) (crip u.dec)]
+::  +unesc-content: decode +wrap-content's escaping directly — a linear scan
+::  instead of the old ream+slap (a full hoon parse + eval per page read,
+::  which every page-tree/page-dump/home request paid per page). The scheme
+::  is exactly what +wrap-content emits: \\ -> backslash, \' -> quote,
+::  \XX -> hex byte (controls). Anything else malformed yields ~, and the
+::  caller treats the page as raw hoon — same as a failed parse did.
+++  unesc-content
+  |=  ec=tape
+  ^-  (unit tape)
+  =|  out=tape
+  |-  ^-  (unit tape)
+  ?~  ec  `(flop out)
+  ?.  =('\\' i.ec)  $(ec t.ec, out [i.ec out])
+  ?~  t.ec  ~
+  ?:  =('\\' i.t.ec)  $(ec t.t.ec, out ['\\' out])
+  ?:  =('\'' i.t.ec)  $(ec t.t.ec, out ['\'' out])
+  ?~  t.t.ec  ~
+  =/  h1=(unit @)  (de-hex i.t.ec)
+  =/  h2=(unit @)  (de-hex i.t.t.ec)
+  ?~  h1  ~
+  ?~  h2  ~
+  $(ec t.t.t.ec, out [`@tD`(add (mul 16 u.h1) u.h2) out])
+++  de-hex
+  |=  c=@tD
+  ^-  (unit @)
+  ?:  &((gte c '0') (lte c '9'))  `(sub c '0')
+  ?:  &((gte c 'a') (lte c 'f'))  `(add 10 (sub c 'a'))
+  ~
 ::  +content-builders: the pg constructors an editor file wraps its body in.
 ::  md/gmi/html render to a view; text/js/css are shown as code + served raw.
 ::
@@ -5564,13 +5755,15 @@
   (pure:m !<(know-index:lk (need-vase:tarball sang.seen)))
 ::  +put-file: create-or-overwrite a grub (over = %make force=%.y).
 ::
+::  +put-file: one dart, no probe — %over's %make-with-force creates when the
+::  rail is missing and overwrites when it exists (grubbery skips its exists
+::  check entirely under force), so the old peek-exists round-trip before
+::  every single write was pure waste on the hottest path in the app.
 ++  put-file
   |=  [road=road:tarball =blot:tarball noun=*]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  exists=?  bind:m  (peek-exists:io road)
-  ?:  exists  (over:io road [blot noun])
-  (make:io road |+[[blot noun] ~])
+  (over:io road [blot noun])
 ::  +ensure-dirs: make each cumulative dir base/seg1, base/seg1/seg2 ... so a
 ::  deep key's entry has a parent. ponytail: empty key-dirs are left behind on
 ::  delete — add pruning if the tree clutters.

@@ -173,11 +173,15 @@
     =/  code=tape  (sc u.close aft)
     %+  weld  :(weld "<code>" (esc (trim code)) "</code>")
     (ib-in (sl (add u.close (lent op)) aft) refs no)
-  ::  image ![alt](url) or ![alt][ref]
+  ::  image ![alt](url) or ![alt][ref] — same no-set guard as the link branch
+  ::  below: a failed bracket scan is conclusive for the whole remaining tape,
+  ::  so record it instead of re-scanning at every later '![' (20KB of "!["
+  ::  was the same unauthenticated quadratic the link fix closed).
   ?:  ?&(=('!' c) ?=(^ t.t) =('[' i.t.t))
+    ?:  (~(has in no) ']')  (weld "!" (ib-in t.t refs no))
     =/  aft=tape  (sl 2 t)          :: after ![
     =/  mb  (match-bracket aft)
-    ?~  mb  (weld "!" (ib-in t.t refs no))
+    ?~  mb  (weld "!" (ib-in t.t refs (~(put in no) ']')))
     =/  alt=tape  (sc u.mb aft)
     =/  post=tape  (sl +(u.mb) aft)  :: after ]
     =/  p  (take-paren post)
@@ -308,17 +312,23 @@
 ++  sub-foot-refs
   |=  [t=tape foot=footm]
   ^-  tape
+  ::  no definitions -> nothing can rewrite: skip the whole-document pass that
+  ::  every footnote-free md render used to pay.
+  ?:  =(0 ~(wyt by foot))  t
+  |-  ^-  tape
   ?~  t  ""
   ?:  &(=('[' i.t) ?=(^ t.t) =('^' i.t.t))
     =/  aft=tape  (sl 2 t)
-    =/  close  (find "]" aft)
-    ?~  close  (weld "[^" (sub-foot-refs t.t.t foot))
+    ::  capped: a footnote id is short, and the uncapped find made 20KB of
+    ::  "[^" spam quadratic on the unauthenticated render path.
+    =/  close  (find-cap "]" aft link-scan-cap)
+    ?~  close  (weld "[^" $(t t.t.t))
     =/  id=tape  (sc u.close aft)
     =/  hit  (~(get by foot) id)
-    ?~  hit  (weld "[^" (sub-foot-refs aft foot))
+    ?~  hit  (weld "[^" $(t aft))
     %+  weld  :(weld "[" (a-co:co num.u.hit) "](#fn-" id ")")
-    (sub-foot-refs (sl +(u.close) aft) foot)
-  (weld ~[i.t] (sub-foot-refs t.t foot))
+    $(t (sl +(u.close) aft))
+  (weld ~[i.t] $(t t.t))
 ::  +render-footnotes: the numbered footnote list appended to the document.
 ++  render-footnotes
   |=  foot=footm
@@ -441,13 +451,10 @@
     ?:  r  " style=\"text-align:right\""
     ?:  l  " style=\"text-align:left\""
     ""
-  =/  al  |=(i=@ud ^-(tape ?:((lth i (lent aligns)) (snl i aligns) "")))
-  =/  hcells=tape
-    %-  zing
-    %+  turn  (gulf 0 (dec (max 1 (lent heads))))
-    |=  i=@ud
-    ^-  tape
-    :(weld "<th" (al i) ">" (ib (snl i heads) refs) "</th>")
+  ::  cells and aligns walk together — the old gulf+snag indexing re-walked
+  ::  both lists per column, O(columns^2) per row on the unauthenticated
+  ::  render path (a single 20KB row was ~100M steps).
+  =/  hcells=tape  (zing (cells-html heads aligns refs "th"))
   =/  hd=tape  (zing ~["<thead><tr>" hcells "</tr></thead>"])
   =/  trr  (take-table-rows t.t.lines)
   =/  rows=(list tape)  -.trr
@@ -457,14 +464,17 @@
     %+  turn  rows
     |=  r=tape
     ^-  tape
-    =/  cells=(list tape)  (split-row r)
-    =/  tds=tape
-      %-  zing
-      %+  turn  (gulf 0 (dec (max 1 (lent cells))))
-      |=(i=@ud ^-(tape :(weld "<td" (al i) ">" (ib (snl i cells) refs) "</td>")))
+    =/  tds=tape  (zing (cells-html (split-row r) aligns refs "td"))
     (zing ~["<tr>" tds "</tr>"])
   =/  bd=tape  (zing ~["<tbody>" brows "</tbody>"])
   [(zing ~["<table>" hd bd "</table>"]) rest]
+::  +cells-html: one <th>/<td> per cell, cells and aligns consumed in step.
+++  cells-html
+  |=  [cells=(list tape) aligns=(list tape) refs=refm tag=tape]
+  ^-  (list tape)
+  ?~  cells  ~
+  :_  $(cells t.cells, aligns ?~(aligns ~ t.aligns))
+  :(weld "<" tag ?~(aligns "" i.aligns) ">" (ib i.cells refs) "</" tag ">")
 ++  take-table-rows
   |=  lines=(list tape)
   ^-  [(list tape) (list tape)]
@@ -546,44 +556,49 @@
         =/  merged=tape  :(weld body.i.items " " (trim i.lines))
         $(lines t.lines, blanks 0, items [i.items(body merged) t.items])
       [(render items) lines]
-  ::  +render: flat-stack nesting via deferred </li>.
+  ::  +render: flat-stack nesting via deferred </li>. Output accumulates as a
+  ::  LIST of chunks zinged once at the end — the old shape welded every item
+  ::  onto one growing tape, re-copying the whole document per item (quadratic
+  ::  in list size, reachable from the unauthenticated render).
   ++  render
     |=  its=(list [ind=@ud ord=? task=(unit ?) body=tape])
     ^-  tape
     =/  seq  (flop its)
     =/  stack=(list [ind=@ud ord=?])  ~
-    =/  out=tape  ""
+    =/  acc=(list tape)  ~
     |-  ^-  tape
     ?~  seq
-      ?~  stack  out
-      $(stack t.stack, out :(weld out "</li>" ?:(ord.i.stack "</ol>" "</ul>")))
+      ?~  stack  (zing (flop acc))
+      $(stack t.stack, acc [:(weld "</li>" ?:(ord.i.stack "</ol>" "</ul>")) acc])
     =/  it  i.seq
-    =/  aj  (adjust out stack ind.it ord.it)
-    =.  out  -.aj
+    =/  aj  (adjust stack ind.it ord.it)
+    =.  acc  (weld (flop -.aj) acc)
     =.  stack  +.aj
     =/  cb=tape
       ?~  task.it  ""
       ?:(u.task.it "<input type=\"checkbox\" checked disabled> " "<input type=\"checkbox\" disabled> ")
-    =.  out  :(weld out "<li>" cb (ib body.it refs))
+    =.  acc  [:(weld "<li>" cb (ib body.it refs)) acc]
     $(seq t.seq)
-  ::  +adjust: close/open lists so the top of the stack matches [ind ord].
+  ::  +adjust: the chunks to emit (in order) + the new stack, so the top of
+  ::  the stack matches [ind ord].
   ++  adjust
-    |=  [out=tape stack=(list [ind=@ud ord=?]) ind=@ud ord=?]
-    ^-  [tape (list [ind=@ud ord=?])]
-    |-  ^-  [tape (list [ind=@ud ord=?])]
+    |=  [stack=(list [ind=@ud ord=?]) ind=@ud ord=?]
+    ^-  [(list tape) (list [ind=@ud ord=?])]
+    =/  acc=(list tape)  ~
+    |-  ^-  [(list tape) (list [ind=@ud ord=?])]
     ?~  stack
-      [:(weld out ?:(ord "<ol>" "<ul>")) [ind ord]~]
+      [(flop [?:(ord "<ol>" "<ul>") acc]) [ind ord]~]
     ?:  (lth ind ind.i.stack)
-      $(out :(weld out "</li>" ?:(ord.i.stack "</ol>" "</ul>")), stack t.stack)
+      $(acc [:(weld "</li>" ?:(ord.i.stack "</ol>" "</ul>")) acc], stack t.stack)
     ?:  =(ind ind.i.stack)
       ::  same indent, same marker kind: next item of the same list.
       ?:  =(ord ord.i.stack)
-        [:(weld out "</li>") stack]
+        [(flop ["</li>" acc]) stack]
       ::  same indent, marker kind changed (bullet<->number): GFM starts a new
       ::  list — close this one and open the other.
       :_  [[ind ord] t.stack]
-      :(weld out "</li>" ?:(ord.i.stack "</ol>" "</ul>") ?:(ord "<ol>" "<ul>"))
-    [:(weld out ?:(ord "<ol>" "<ul>")) [[ind ord] stack]]
+      (flop [:(weld "</li>" ?:(ord.i.stack "</ol>" "</ul>") ?:(ord "<ol>" "<ul>")) acc])
+    [(flop [?:(ord "<ol>" "<ul>") acc]) [[ind ord] stack]]
   --
 ::  +rb: render a list of block lines to HTML.
 ++  rb
@@ -635,10 +650,23 @@
 ++  hash-strip  |=(t=tape (rtrm (flop (ltrm-hash (flop (rtrm t))))))
 ++  ltrm-hash  |=(t=tape ^-(tape ?~(t t ?:(|(=('#' i.t) =(' ' i.t)) $(t t.t) t))))
 ::  +render-md: markdown body -> HTML fragment.
+::  +cap-quote-depth: bound a line's leading '>' run at 32. +take-quote strips
+::  ONE '>' per full re-render pass, so an adversarial 20KB line of '>' was
+::  ~400M steps (quadratic in depth) on the unauthenticated render; capping
+::  the depth bounds it at 32 passes and is byte-identical below the cap.
+++  cap-quote-depth
+  |=  l=tape
+  ^-  tape
+  =/  n=@ud  0
+  =/  s=tape  l
+  |-  ^-  tape
+  ?:  &(?=(^ s) =('>' i.s))  $(s t.s, n +(n))
+  ?:  (lte n 32)  l
+  (weld `tape`(reap 32 '>') `tape`s)
 ++  render-md
   |=  body=@t
   ^-  tape
-  =/  lines0=(list tape)  (turn (to-wain:format body) trip)
+  =/  lines0=(list tape)  (turn (turn (to-wain:format body) trip) cap-quote-depth)
   =/  fn=[footm (list tape)]  (collect-footnotes lines0)
   =/  foot=footm  -.fn
   =/  lines1=(list tape)  (turn +.fn |=(l=tape (sub-foot-refs l foot)))

@@ -59,6 +59,21 @@ let step = 'boot';
 try {
   // ── 1. boot: tree renders ─────────────────────────────────────────────────
   await page.setViewport({ width: 1400, height: 900 });
+  // per-run isolation: the browser profile can persist across runs, and the
+  // editor's localStorage boot snapshot would paint a PREVIOUS run's tree
+  // (stale RUN ids) — a real user's snapshot is their own last session, but
+  // each matrix run is a fresh namespace.
+  // plain-text 404 on the app origin: navigating to a JSON file trips
+  // chromium's internal viewer (a getEventId pageerror)
+  await page.goto(APP + '/no-such-asset', { timeout: 20000 });
+  await page.evaluate(async () => {
+    localStorage.clear();
+    // the profile can persist: drop any service worker + caches from a
+    // previous run/deploy so every run boots as a fresh visitor
+    const regs = await navigator.serviceWorker.getRegistrations();
+    for (const r of regs) await r.unregister();
+    if (window.caches) for (const k of await caches.keys()) await caches.delete(k);
+  });
   await page.goto(APP, { waitUntil: 'networkidle2', timeout: 20000 });
   await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
   ok('boot: tree renders');
@@ -97,7 +112,10 @@ try {
   // lists them, viewing one is read-only, restoring re-saves it as newest.
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
   await wait(() => !document.getElementById('histsec').hidden);
-  ok('history: panel appears once a page has revisions');
+  // history is lazy now: revisions fetch on first header expand
+  await page.click('#histh');
+  await wait(() => document.querySelectorAll('#histlist a').length >= 2);
+  ok('history: panel lists revisions after expanding');
   await page.evaluate(() => {                      // open the OLDEST revision
     const chips = document.querySelectorAll('#histlist a');
     chips[chips.length - 1].click();
@@ -135,6 +153,8 @@ try {
   // F4/F13: while viewing a revision, save is refused and Tab cannot edit
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
   await wait(() => !document.getElementById('histsec').hidden);
+  await page.click('#histh');
+  await wait(() => document.querySelectorAll('#histlist a').length >= 2);
   await page.evaluate(() => document.querySelectorAll('#histlist a')[document.querySelectorAll('#histlist a').length - 1].click());
   await wait(() => document.getElementById('src').readOnly);
   const revBody = await page.evaluate(() => document.getElementById('src').value);
@@ -189,6 +209,8 @@ try {
   ok('wikilinks: preview renders [[x]] as an editor link');
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
   await wait(() => !document.getElementById('linksec').hidden);
+  await page.click('#linkh');                       // backlinks fetch lazily on expand
+  await wait(() => !!document.querySelector('#linklist a'));
   check('backlinks: panel lists the linking page',
     (await page.evaluate(() => document.querySelector('#linklist a').textContent)) === RUN + '/linker');
   await page.evaluate(async (n) => {   // done with the linker — keep later folder ops light
@@ -262,12 +284,12 @@ try {
   const sibling = RUN + '/hello';
   await page.keyboard.type('hell');
   await wait(() => [...document.querySelectorAll('#ac .row')].length > 0);
-  check('autocomplete: ranks the matching page first',
-    (await page.evaluate(() => {
-      const r = document.querySelector('#ac .row');
-      return (r.querySelector('.dir').textContent + '/' + r.querySelector('.nm').textContent)
-        .replace(/^\/+/, '');
-    })) === sibling, sibling);
+  const acFirst = await page.evaluate(() => {
+    const r = document.querySelector('#ac .row');
+    return (r.querySelector('.dir').textContent + '/' + r.querySelector('.nm').textContent)
+      .replace(/^\/+/, '');
+  });
+  check('autocomplete: ranks the matching page first', acFirst === sibling, acFirst + ' != ' + sibling);
   await page.keyboard.press('Tab');
   await wait((s) => document.getElementById('src').value === 'see [[' + s + ']]', sibling);
   ok('autocomplete: Tab completes the full path');
