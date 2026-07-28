@@ -1671,6 +1671,13 @@
     ;<  ex=?  bind:m  (peek-exists:io [%& %| pdir])
     ?.  ex  (pure:m ~)
     ;<  ~  bind:m  (share-weir [%& %& pdir %data] %.n)
+    ::  cull tombs the CURRENT revision but leaves every stored %firm one, so
+    ::  a deleted page's bodies stayed readable via page-history and could be
+    ::  resurrected onto the next page created with the same name. Drop them
+    ::  first. (A folder delete culls the subtree; each page's own delete
+    ::  prunes its own history, so this covers the page case exactly.)
+    ;<  ~  bind:m  (prune-hist [%& %& pdir %code] 0)
+    ;<  ~  bind:m  (prune-hist [%& %& pdir %data] 0)
     ;<  *  bind:m  (cull-soft:io [%& %| pdir])
     (pure:m ~)
       %share
@@ -1838,10 +1845,46 @@
 ::  shared body of the %make action and template instantiation. cmd + deps
 ::  first (the code grub's fiber reads both at spawn), then the code.
 ::
-::  +history-keep: revisions retained per page. Deep enough to undo a bad
-::  day; bounded so autosave's one-revision-per-pause cadence cannot grow
-::  the pier without limit. Pruning happens on every save (+make-page).
+::  +history-keep / +know-keep / +data-keep: revisions retained per grub.
+::  Autosave writes one revision per typing pause, so every GAINED grub needs
+::  a ceiling or the pier archives every keystroke forever.
+::    page source / know entries — the user-facing history surfaces, so deep
+::    enough to undo a bad session.
+::    page data — recomputed on every command, dependency wave, timer tick and
+::    public form submission, with NO history UI. Keep only enough to debug.
 ++  history-keep  50
+++  know-keep     50
+++  data-keep     3
+::  +prune-hist: drop a grub's revision tail past `keep`.
+::
+::  Uses +born (metadata only: cass + tags + tombstone flag) rather than +peep,
+::  which hydrates every stored BODY just to count them — on a 50-revision page
+::  that is 50 full documents read per save. Tombstones are filtered so the
+::  count matches what +peep-based callers and page-history report.
+::
+++  prune-hist
+  |=  [road=road:tarball keep=@ud]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  bo=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m  (born:io road)
+  ?:  ?=(%| -.bo)  (pure:m ~)
+  =/  l  p.bo
+  =/  live=(list @ud)
+    |-  ^-  (list @ud)
+    ?~  l  ~
+    ?:  tomb.i.l  $(l t.l)
+    [ud.cass.i.l $(l t.l)]
+  ::  keep=0 means drop the lot (used by delete). Guard it explicitly: the
+  ::  general path below computes (dec keep), and dec 0 crashes — which would
+  ::  have taken the writer down on every page delete.
+  ?:  =(0 keep)
+    ?~  live  (pure:m ~)
+    (lose:io road [%numb ~ ~])
+  ?:  (lte (lent live) keep)  (pure:m ~)
+  =/  revs=(list @ud)  (sort live gth)
+  =/  cut=@ud  (snag (dec keep) revs)
+  ?:  =(0 cut)  (pure:m ~)
+  (lose:io road [%numb ~ `(dec cut)])
 ++  make-page
   |=  [root=path pax=path src=@t]
   =/  m  (fiber:fiber:nexus ,~)
@@ -1863,18 +1906,7 @@
   ::  deny-all, the same model the know vault uses (every private entry
   ::  gained, for exactly this history).
   ;<  ~  bind:m  (gain:io [%& %& pdir %code] %.y)
-  ::  prune the history tail past +history-keep. Autosave writes a revision
-  ::  per typing pause, so without this the pier archives every keystroke
-  ::  forever; with it a page keeps a deep undo buffer at bounded cost.
-  ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
-    (peep:io [%& %& pdir %code] [%numb ~ ~])
-  ?:  ?=(%| -.pe)  (pure:m ~)
-  ?:  (lte (lent p.pe) history-keep)  (pure:m ~)
-  =/  revs=(list @ud)
-    (sort (turn p.pe |=([c=cass:clay *] ud.c)) gth)
-  =/  cut=@ud  (snag (dec history-keep) revs)
-  ?:  =(0 cut)  (pure:m ~)
-  (lose:io [%& %& pdir %code] [%numb ~ `(dec cut)])
+  (prune-hist [%& %& pdir %code] history-keep)
 ::  +rewrite-root: replace the path-prefix `from` with `to` in code, only where
 ::  `from` ends at a path boundary (/ ) space " ] , or end) — so a short root
 ::  can't clobber a longer path that merely starts with it.
@@ -2251,7 +2283,11 @@
     ::  per-revision (like apply-pub re-gaining on every save).
     ;<  mode=share-mode:le  bind:m  (read-share pdir)
     ?:  =(%private mode)  (pure:m ~)
-    (gain:io [%& %& pdir %data] %.y)
+    ;<  ~  bind:m  (gain:io [%& %& pdir %data] %.y)
+    ::  a gained data grub keeps EVERY recompute forever otherwise: a timer
+    ::  page, or a public form anyone can submit to, would grow the pier
+    ::  without bound. Data has no history UI, so keep only a debugging tail.
+    (prune-hist [%& %& pdir %data] data-keep)
   ::  send this run's page-to-page pokes with the run's remaining budget
   ::  (capped per run so one page can't flood the writer).
   ;<  ~  bind:m  (emit-pokes bud (scag poke-cap pokes.p.res))
@@ -4258,6 +4294,21 @@
   ^-  tape
   |-  ^-  tape
   ?~  t  ~
+  ::  code is verbatim: skip a ``` fence or a ` span whole, so a wikilink
+  ::  inside a code sample stays literal text. Without this there was no way
+  ::  to SHOW [[x]] in a document — including documenting this syntax.
+  ?:  =("```" (scag 3 `tape`t))
+    =/  aft=tape  (slag 3 `tape`t)
+    =/  end=(unit @ud)  (find "```" aft)
+    ?~  end  t
+    =/  n=@ud  (add u.end 3)
+    (weld (scag 3 `tape`t) (weld (scag n aft) $(t (slag n aft))))
+  ?:  =('`' i.t)
+    =/  aft=tape  (slag 1 `tape`t)
+    =/  end=(unit @ud)  (find "`" aft)
+    ?~  end  [i.t $(t t.t)]
+    =/  n=@ud  (add u.end 1)
+    (weld "`" (weld (scag n aft) $(t (slag n aft))))
   ?.  =("[[" (scag 2 `tape`t))  [i.t $(t t.t)]
   ::  scan ONLY the legal-charset run, then require "]]" immediately after, so a
   ::  candidate costs the length of its name. The previous version searched the
@@ -5080,6 +5131,9 @@
     ;<  ~  bind:m  (ensure-dirs vbase key)
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] e)
     ;<  ~  bind:m  (gain:io road %.y)
+    ::  memories are gained too, and autosave saves one revision per typing
+    ::  pause — the same ceiling pages get, or the vault grows forever.
+    ;<  ~  bind:m  (prune-hist road know-keep)
     ::  a re-saved key leaves trash; cull the orphaned trash-vault GRUB (not just
     ::  the index row) so a later %restore can't resurrect the stale tomb over the
     ::  live entry.
