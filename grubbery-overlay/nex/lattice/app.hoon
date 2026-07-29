@@ -38,6 +38,7 @@
 /<  uij  ui-app/app.js
 /<  lc   /lib/lattice-comment.hoon
 /<  lb   /lib/lattice-bookmark.hoon
+/<  lcl  /lib/lattice-clip.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -1103,6 +1104,57 @@
     ?~  url  (send-err eyre-id 400 'missing url')
     ;<  ~  bind:m  (poke-bookmark [%del u.url])
     (send-ok eyre-id)
+  ::  ── /clip: archive a clearweb page AS a lattice page ───────────────────
+  ::  A bookmark stores a link; this stores the page. The ship fetches the url
+  ::  itself over iris, converts the html to markdown, and writes a normal
+  ::  private page under clips/ — editable, searchable and shareable like any
+  ::  other, because it IS any other.
+  ::
+  ::  GET, not POST, because the whole point is that a bookmarklet reaches it
+  ::  by top-level navigation: eyre's session cookie carries no SameSite
+  ::  attribute, so a navigation sends it where a cross-site POST would not.
+  ::  That does leave it CSRF-reachable (an <img src=…/clip?url=> on a hostile
+  ::  page would archive a page of the attacker's choosing), which is noise in
+  ::  the owner's own tree, not disclosure — the fetched body never travels
+  ::  back to the attacker. +http-url is the real boundary: it keeps `file:`
+  ::  and friends away from iris on both the initial url and the redirect.
+      [%'GET' %clip]
+    =/  url=(unit @t)  (~(get by args) 'url')
+    ?~  url  (send-err eyre-id 400 'missing url')
+    ?.  (http-url u.url)  (send-err eyre-id 400 'url must be http:// or https://')
+    ;<  got=(unit @t)  bind:m  (fetch-url u.url)
+    ?~  got  (send-err eyre-id 502 'could not fetch that page')
+    =/  ttl=@t  (fall (page-title:lcl u.got) u.url)
+    ;<  free=(unit path)  bind:m  (clip-free (clip-slug u.url))
+    ?~  free  (send-err eyre-id 409 'that url is already archived 10 times')
+    ;<  now=@da  bind:m  bowl-now
+    =/  dt  (yore now)
+    =/  pad  |=(n=@ud ^-(tape ?:((lth n 10) ['0' (a-co:co n)] (a-co:co n))))
+    =/  day=tape  :(weld (a-co:co y.dt) "-" (pad m.dt) "-" (pad d.t.dt))
+    ::  provenance header: where it came from and when. An archive with no
+    ::  source url is just an unattributed copy of someone else's writing.
+    =/  nl=tape  (trip '\0a')
+    =/  body=@t
+      %-  crip
+      ;:  weld
+        "# "  (trip ttl)  nl  nl
+        "*archived from <"  (trip u.url)  "> on "  day  "*"  nl  nl
+        "---"  nl  nl
+        (trip (to-md:lcl u.got))
+      ==
+    ;<  ~  bind:m  (poke-eval [%make u.free (wrap-content %gmi body)])
+    ::  private by default — deliberately. Archiving someone else's page and
+    ::  republishing it to the clearweb in one click is not a default anyone
+    ::  should get by accident; the share control is one click away.
+    =/  nom=tape  (pax-str u.free)
+    %+  send-html  eyre-id
+    %^  render-page  ""  ""
+    ;:  weld
+      "<h1>Archived</h1>"
+      "<p>"  (esc (trip ttl))  "</p>"
+      "<p class=\"muted\">saved privately as <code>"  (esc nom)  "</code></p>"
+      "<p><a href=\"/apps/lattice/app\">open in the editor</a></p>"
+    ==
       [%'POST' %page-share-tree]
     ::  publish/unpublish a whole subtree at once: set `mode` on every page
     ::  under a folder. name is the folder path; mode=clearweb publishes a site,
@@ -1932,6 +1984,86 @@
   ?:  =('' body)  $(rels t.rels)
   ;<  ~  bind:m  (poke-eval [%make i.rels (wrap-content %gmi body)])
   $(rels t.rels, made +(made))
+::  ── web archiving (the /clip bookmarklet) ──────────────────────────────
+::  +fetch-url: GET a clearweb url through iris, following at most one redirect.
+::  Returns ~ on ANY failure (dead host, non-200, empty body) rather than
+::  bailing: a request fiber that crashes leaves the browser hanging on a dead
+::  connection, so every failure has to come back as a value the route can 502.
+++  fetch-url
+  |=  url=@t
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  =/  hed  ^-((list [@t @t]) ~[['User-Agent' 'lattice-clip']])
+  ;<  ~  bind:m  (send-request:io [%'GET' url hed ~])
+  ;<  res=client-response:iris  bind:m  take-client-response:io
+  ?.  ?=(%finished -.res)  (pure:m ~)
+  =/  status=@ud  status-code.response-header.res
+  ?:  ?|(=(status 301) =(status 302) =(status 307) =(status 308))
+    =/  loc=(unit @t)
+      (~(get by (malt headers.response-header.res)) 'location')
+    ?~  loc  (pure:m ~)
+    ?.  (http-url u.loc)  (pure:m ~)
+    ;<  ~  bind:m  (send-request:io [%'GET' u.loc hed ~])
+    ;<  r2=client-response:iris  bind:m  take-client-response:io
+    ?.  ?=(%finished -.r2)  (pure:m ~)
+    ?.  =(200 status-code.response-header.r2)  (pure:m ~)
+    ?~  full-file.r2  (pure:m ~)
+    (pure:m `q.data.u.full-file.r2)
+  ?.  =(200 status)  (pure:m ~)
+  ?~  full-file.res  (pure:m ~)
+  (pure:m `q.data.u.full-file.res)
+::  +http-url: is this an http(s) url? The ship fetches whatever /clip is
+::  handed, so this is the trust boundary — it keeps `file:`, `data:` and any
+::  other iris-reachable scheme out, and it also gates the redirect target
+::  (an http redirect to file:/// would otherwise walk right past the check).
+++  http-url
+  |=  url=@t
+  ^-  ?
+  =/  t=tape  (cass (trip url))
+  ?|  =("http://" (scag 7 t))
+      =("https://" (scag 8 t))
+  ==
+::  +clip-slug: url -> a filename-safe slug. Host + path, lowercased, every run
+::  of non-alphanumerics collapsed to a single hyphen.
+++  clip-slug
+  |=  url=@t
+  ^-  @t
+  =/  t=tape  (cass (trip url))
+  =.  t  ?:(=("http://" (scag 7 t)) (slag 7 t) t)
+  =.  t  ?:(=("https://" (scag 8 t)) (slag 8 t) t)
+  ::  cap the INPUT rather than counting output — a long query string can't
+  ::  produce an unusable page name, and there is no length counter to keep.
+  =.  t  (scag 60 t)
+  ::  one pass, accumulating REVERSED — never weld onto a growing tape.
+  ::  `dash` starts set so leading separators are dropped; a trailing hyphen
+  ::  is popped at the end.
+  =/  acc=tape  ~
+  =/  dash=?  &
+  |-  ^-  @t
+  ?~  t
+    =/  fin=tape  ?:(&(dash ?=(^ acc)) `tape`t.acc acc)
+    =/  out=tape  (flop fin)
+    ?~(out 'clip' (crip `tape`out))
+  =/  c=@tD  i.t
+  ?:  ?|(?&((gte c 'a') (lte c 'z')) ?&((gte c '0') (lte c '9')))
+    $(t t.t, acc [c acc], dash |)
+  ?:  dash  $(t t.t)
+  $(t t.t, acc ['-' acc], dash &)
+::  +clip-free: first unused page rel under clips/ for this slug. Never
+::  overwrites an existing archive — a re-clip of the same url lands beside the
+::  old one. Gives up after -9 rather than looping forever.
+++  clip-free
+  |=  slug=@t
+  =/  m  (fiber:fiber:nexus ,(unit path))
+  ^-  form:m
+  =|  n=@ud
+  |-  ^-  form:m
+  ?:  (gth n 9)  (pure:m ~)
+  =/  nom=@t  ?:(=(0 n) slug (crip :(weld (trip slug) "-" (a-co:co +(n)))))
+  =/  rel=path  ~[%clips nom]
+  ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base:lu (weld /page rel)) %code])
+  ?.  ex  (pure:m `rel)
+  $(n +(n))
 ::  +poke-know / +poke-pub: poke the single writer fiber (root /main.sig) with a
 ::  typed action; grubbery vales the noun through the action marc. The writer
 ::  serialises all mutations, so concurrent requests can't race the index.
@@ -1974,7 +2106,7 @@
   ?:  =([/lattice %sub-action] p.sage)
     (apply-sub root !<(sub-action:lp q.sage))
   ?:  =([/lattice %eval-action] p.sage)
-    (apply-eval root !<(eval-action:le q.sage))
+    (apply-eval root now !<(eval-action:le q.sage))
   ::  the owner commenting on their own page: author is us. (Other ships comment
   ::  via the public inbox fiber, not this owner-only writer.)
   ?:  =([/lattice %comment-action] p.sage)
@@ -2020,7 +2152,7 @@
 ::  +apply-eval: page create/command/delete, in the writer fiber.
 ::
 ++  apply-eval
-  |=  [root=path act=eval-action:le]
+  |=  [root=path now=@da act=eval-action:le]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ::  name.act only resolves after ?- narrows the fork (%del is a 2-cell,
@@ -2081,12 +2213,13 @@
     ::  resurrected onto the next page created with the same name. Drop them
     ::  first. (A folder delete culls the subtree; each page's own delete
     ::  prunes its own history, so this covers the page case exactly.)
-    ;<  ~  bind:m  (prune-hist [%& %& pdir %code] 0)
-    ;<  ~  bind:m  (prune-hist [%& %& pdir %data] 0)
+    ::  keep=0 drops everything, so the window is irrelevant here
+    ;<  ~  bind:m  (prune-hist [%& %& pdir %code] 0 ~s0)
+    ;<  ~  bind:m  (prune-hist [%& %& pdir %data] 0 ~s0)
     ;<  *  bind:m  (cull-soft:io [%& %| pdir])
     (pure:m ~)
       %share
-    (apply-share (weld root (weld /page pax.act)) mode.act)
+    (apply-share root now pax.act mode.act)
       %share-tree
     ::  publish/unpublish a whole subtree: apply the mode to every PAGE under
     ::  pax (folders have no /data grub, so skip them). Idempotent, so
@@ -2099,7 +2232,7 @@
       |=([pax=path page=?] ?:(page `pax ~))
     |-  ^-  form:m
     ?~  rels  (pure:m ~)
-    ;<  ~  bind:m  (apply-share (weld base i.rels) mode.act)
+    ;<  ~  bind:m  (apply-share root now (weld pax.act i.rels) mode.act)
     $(rels t.rels)
       %mkdir
     ::  create an empty folder (and any missing parents). ensure-dirs is
@@ -2261,10 +2394,23 @@
 ::  first (covers the grub before it exists), then gain the current data if any
 ::  (the evaluator re-gains on each later write). Idempotent.
 ::
+::  +apply-share: set a page's sharing preset, and make BOTH surfaces match it.
+::
+::  %private   — on neither: no vault copy (so no ship can read it over ames),
+::               data grub un-gained, no /c/ route.
+::  %shared    — vault copy published + gained, so peers resolve urb://…/<name>.
+::  %clearweb  — the same, PLUS the unauthenticated /c/ route.
+::
+::  Setting the preset used to touch only the data grub's gain/weir, which is
+::  not the surface anyone browses: urb:// resolves through /pub/vault. So a
+::  clearweb page was reachable on the web and 404 over ames, and a page could
+::  sit in the vault (readable by any ship, since ensure-pub-weir opens /pub)
+::  while still labelled private. Drive the vault from the preset instead.
 ++  apply-share
-  |=  [pdir=path mode=share-mode:le]
+  |=  [root=path now=@da rel=path mode=share-mode:le]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  =/  pdir=path  (weld root (weld /page rel))
   ;<  cx=?  bind:m  (peek-exists:io [%& %& pdir %code])
   ?.  cx  (pure:m ~)
   =/  data-road=road:tarball  [%& %& pdir %data]
@@ -2272,7 +2418,17 @@
   ;<  ~  bind:m  (share-weir data-road pub)
   ;<  dx=?  bind:m  (peek-exists:io data-road)
   ;<  ~  bind:m  ?:(dx (gain:io data-road pub) (pure:m ~))
-  (put-file [%& %& pdir %share] [/lattice %eval-data] mode)
+  ;<  ~  bind:m  (put-file [%& %& pdir %share] [/lattice %eval-data] mode)
+  =/  key=@t  (spat (pub-path (crip (pax-str rel))))
+  ?.  pub  (apply-pub root now [%del-page key])
+  ::  publish the page's own output. A page whose data is not a cord (a
+  ::  computed noun) has no gemtext form, so it keeps its preset without a
+  ::  vault copy rather than publishing something meaningless.
+  ;<  dn=view:nexus  bind:m  (peek:io data-road ~)
+  ?.  ?=([%file *] dn)  (pure:m ~)
+  =/  body=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.dn))))
+  ?~  body  (pure:m ~)
+  (apply-pub root now [%save-page key u.body])
 ::  +make-page: create a page at `pax` under /page with the given code — the
 ::  shared body of the %make action and template instantiation. cmd + deps
 ::  first (the code grub's fiber reads both at spawn), then the code.
@@ -2287,6 +2443,18 @@
 ++  history-keep  50
 ++  know-keep     50
 ++  data-keep     3
+::  +history-window: two revisions closer together than this are keystroke-scale
+::  intermediates, not history — the trail behind the head gets collapsed so the
+::  KEPT revisions stay roughly this far apart. Nothing is ever lost from the
+::  document: every save still writes, and the head is always current; only the
+::  superseded intermediates go.
+::
+::  A count-only cap was not enough. Editing through the lattice-fs mount turns
+::  one editor save into several write() calls (the kernel picks the chunking,
+::  not us), each a %make and each a revision — so all 50 slots filled in
+::  seconds and "history" spanned under a minute. Throttling here rather than in
+::  the editor's debounce covers every writer: browser, fs mount, MCP, raw API.
+++  history-window  ~m5
 ::  +prune-hist: drop a grub's revision tail past `keep`.
 ::
 ::  Uses +born (metadata only: cass + tags + tombstone flag) rather than +peep,
@@ -2295,26 +2463,50 @@
 ::  count matches what +peep-based callers and page-history report.
 ::
 ++  prune-hist
-  |=  [road=road:tarball keep=@ud]
+  |=  [road=road:tarball keep=@ud window=@dr]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  bo=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m  (born:io road)
   ?:  ?=(%| -.bo)  (pure:m ~)
-  =/  l  p.bo
-  =/  live=(list @ud)
-    |-  ^-  (list @ud)
-    ?~  l  ~
-    ?:  tomb.i.l  $(l t.l)
-    [ud.cass.i.l $(l t.l)]
+  ::  live revisions, NEWEST FIRST — both passes below want that order, and one
+  ::  +born read feeds both so a save costs no extra dart than it used to.
+  =/  live=(list cass:clay)
+    %+  sort
+      %+  murn  p.bo
+      |=  [c=cass:clay tags=(set @t) tomb=?]
+      ^-  (unit cass:clay)
+      ?:(tomb ~ `c)
+    |=([a=cass:clay b=cass:clay] (gth ud.a ud.b))
   ::  keep=0 means drop the lot (used by delete). Guard it explicitly: the
   ::  general path below computes (dec keep), and dec 0 crashes — which would
   ::  have taken the writer down on every page delete.
   ?:  =(0 keep)
     ?~  live  (pure:m ~)
     (lose:io road [%numb ~ ~])
-  ?:  (lte (lent live) keep)  (pure:m ~)
-  =/  revs=(list @ud)  (sort live gth)
-  =/  cut=@ud  (snag (dec keep) revs)
+  ::  ── time coalesce ──
+  ::  live is [head, prev, anchor, ...]. Drop `prev` when it sits inside one
+  ::  window of `anchor`, i.e. it is an intermediate between two kept points.
+  ::
+  ::  Comparing prev against the HEAD instead is the obvious version and it is
+  ::  wrong: the thing compared against is replaced on every save, so a long
+  ::  continuous editing session would collapse to a single revision and you
+  ::  could never step back. Anchoring on the revision BEFORE prev keeps one
+  ::  revision per window no matter how fast the writes arrive.
+  =/  victim=(unit cass:clay)
+    ?.  ?=([* * * *] live)  ~
+    =/  prev=cass:clay    i.t.live
+    =/  anchor=cass:clay  i.t.t.live
+    ?:  (lth (sub da.prev da.anchor) window)  `prev
+    ~
+  ;<  ~  bind:m
+    ?~  victim  (pure:m ~)
+    (lose:io road [%pick (sy ~[u.victim])])
+  ::  count cap, as a backstop, over what the coalesce left behind
+  =/  kept=(list cass:clay)
+    ?~  victim  live
+    (skip live |=(c=cass:clay =(ud.c ud.u.victim)))
+  ?:  (lte (lent kept) keep)  (pure:m ~)
+  =/  cut=@ud  ud:(snag (dec keep) kept)
   ?:  =(0 cut)  (pure:m ~)
   (lose:io road [%numb ~ `(dec cut)])
 ++  make-page
@@ -2339,7 +2531,7 @@
   ::  deny-all, the same model the know vault uses (every private entry
   ::  gained, for exactly this history).
   ;<  ~  bind:m  (gain:io [%& %& pdir %code] %.y)
-  (prune-hist [%& %& pdir %code] history-keep)
+  (prune-hist [%& %& pdir %code] history-keep history-window)
 ::  +rewrite-root: replace the path-prefix `from` with `to` in code, only where
 ::  `from` ends at a path boundary (/ ) space " ] , or end) — so a short root
 ::  can't clobber a longer path that merely starts with it.
@@ -2802,7 +2994,8 @@
     ::  a gained data grub keeps EVERY recompute forever otherwise: a timer
     ::  page, or a public form anyone can submit to, would grow the pier
     ::  without bound. Data has no history UI, so keep only a debugging tail.
-    (prune-hist [%& %& pdir %data] data-keep)
+    ::  data has no history UI and keep=3 already; no window needed
+    (prune-hist [%& %& pdir %data] data-keep ~s0)
   ::  send this run's page-to-page pokes with the run's remaining budget
   ::  (capped per run so one page can't flood the writer).
   ;<  ~  bind:m  (emit-pokes bud (scag poke-cap pokes.p.res))
@@ -5061,9 +5254,57 @@
       ?:  local  (trip p.cord-res)
       :(weld "<pre>" (esc (trip p.cord-res)) "</pre>")
       ==
+    ::  a %json grub holds a json NOUN. Re-encode it rather than calling it
+    ::  opaque — and check this BEFORE the octs shape, because some json nouns
+    ::  coincidentally nest as [@ud @] and were reported as "binary grub".
+    ?:  =(%json mk)
+      =/  jr=(each json tang)  (mule |.(;;(json nn)))
+      ?:  ?=(%& -.jr)
+        :(weld "<pre>" (esc (trip (en:json:html p.jr))) "</pre>")
+      "<p>malformed json grub &middot; <a href=\"?data\">open raw</a></p>"
     =/  octs-res=(each [p=@ud q=@] tang)  (mule |.(;;([p=@ud q=@] nn)))
     ?:  ?=(%& -.octs-res)
       :(weld "<p>binary grub (" (a-co:co p.p.octs-res) " bytes)</p>")
+    ::  %mime grubs are an app's own assets (html/css/js/images). Show them as
+    ::  what they are rather than "opaque noun": HTML in a FRAME, never inlined
+    ::  — inlining would run the asset's scripts in our origin with the owner's
+    ::  session. Foreign frames get no scripts at all.
+    =/  mime-res=(each mime tang)  (mule |.(;;(mime nn)))
+    ?:  ?=(%& -.mime-res)
+      =/  mt=path  p.p.mime-res
+      =/  n=@ud   p.q.p.mime-res
+      ?:  ?=([%text %html *] mt)
+        %+  weld
+          ::  OUR OWN asset: same-origin, so the app can authenticate its own
+          ::  data fetches and actually work — without it the frame gets an
+          ::  opaque origin, requests go out cookieless, and e.g. a calendar
+          ::  renders its chrome with no events. This is our own installed
+          ::  code, already running on this ship, so it is not new exposure.
+          ::  A FOREIGN asset stays fully sandboxed: no scripts at all.
+          ?:  local  "<iframe class=\"rawf\" src=\"?data\" sandbox=\"allow-scripts allow-forms allow-same-origin allow-popups\"></iframe>"
+          "<iframe class=\"rawf\" src=\"?data\" sandbox=\"\"></iframe>"
+        :(weld "<p class=\"muted\">" (spud mt) " &middot; " (a-co:co n) " bytes &middot; <a href=\"?data\">open raw</a></p>")
+      ::  <img> renders svg WITHOUT executing its scripts, so it is safe for
+      ::  foreign content too — unlike an inline <svg> or an iframe.
+      ?:  ?=([%image *] mt)
+        :(weld "<p><img src=\"?data\" alt=\"\"></p>" (mime-note mt n))
+      ?:  ?=([%audio *] mt)
+        :(weld "<p><audio controls src=\"?data\"></audio></p>" (mime-note mt n))
+      ?:  ?=([%video *] mt)
+        :(weld "<p><video controls class=\"rawf\" src=\"?data\"></video></p>" (mime-note mt n))
+      ?:  ?=([%application %pdf *] mt)
+        :(weld "<iframe class=\"rawf\" src=\"?data\" sandbox=\"\"></iframe>" (mime-note mt n))
+      ::  text-ish assets (css, js, json, markdown, plain) are the bulk of an
+      ::  app's tree — show the CONTENT, not just a size and a link.
+      =/  txt=(unit @t)  (mime-text mt q.p.mime-res)
+      ?^  txt
+        %+  weld
+          ?+  mt  :(weld "<pre>" (esc (trip u.txt)) "</pre>")
+            [%text %markdown *]  (render-md:gfm u.txt)
+            [%text %gemini *]    (render-gmi u.txt)
+          ==
+        (mime-note mt n)
+      :(weld "<p>" (mime-note mt n) "</p>")
     "<p>opaque noun grub (not raw-servable)</p>"
   ;:  weld
     (explore-crumbs shp pax)
@@ -5091,6 +5332,23 @@
         ['content-disposition' 'attachment']
         ['x-content-type-options' 'nosniff']
     ==
+  ::  a %mime grub carries its OWN type ([mite octs]) — an app's asset, e.g.
+  ::  calendar.html. Serve it with that type so it renders as itself instead of
+  ::  falling through to 415. Foreign grubs keep the inert-download headers
+  ::  above: the type comes from the grub, so it is attacker-controlled too.
+  =/  mime-res=(each mime tang)  (mule |.(;;(mime nn)))
+  ?:  ?=(%& -.mime-res)
+    ?:  (gth p.q.p.mime-res (bex 24))
+      (send-err eyre-id 413 'too large')
+    =/  mheads=(list [@t @t])
+      ?.  local  heads
+      ['content-type' (mite-type p.p.mime-res)]~
+    (send-simple:srv eyre-id [[200 mheads] `q.p.mime-res])
+  ::  %json: re-encode the noun so ?data yields actual JSON text
+  ?:  =(%json mk)
+    =/  jr=(each json tang)  (mule |.(;;(json nn)))
+    ?:  ?=(%| -.jr)  (send-err eyre-id 415 'malformed json')
+    (send-simple:srv eyre-id [[200 heads] `(as-octs:mimes:html (en:json:html p.jr))])
   =/  cord-res=(each @t tang)  (mule |.(;;(@t nn)))
   ?:  ?=(%& -.cord-res)
     (send-simple:srv eyre-id [[200 heads] `(as-octs:mimes:html p.cord-res)])
@@ -5103,6 +5361,33 @@
       (send-err eyre-id 413 'too large')
     (send-simple:srv eyre-id [[200 heads] `p.octs-res])
   (send-err eyre-id 415 'not raw-servable')
+::  +mime-note: the "what this is" line under a rendered mime grub.
+++  mime-note
+  |=  [mt=path n=@ud]
+  ^-  tape
+  :(weld "<p class=\"muted\">" (spud mt) " &middot; " (a-co:co n) " bytes &middot; <a href=\"?data\">open raw</a></p>")
+::  +mime-text: a mime grub's body as text, when the type is textual. ~ for
+::  binary types, so the caller can fall back to a size line. Capped so a
+::  multi-MB asset cannot double into one response through esc+weld.
+++  mime-text
+  |=  [mt=path oc=octs]
+  ^-  (unit @t)
+  ?.  ?|  ?=([%text *] mt)
+          ?=([%application %json *] mt)
+          ?=([%application %javascript *] mt)
+          ?=([%application %'x-javascript' *] mt)
+      ==
+    ~
+  ?:  (gth p.oc (bex 20))  ~
+  `q.oc
+::  +mite-type: a mime grub's own mite (/text/html) -> 'text/html'. Empty
+::  mite falls back to octet-stream rather than guessing.
+++  mite-type
+  |=  mt=path
+  ^-  @t
+  ?~  mt  'application/octet-stream'
+  =/  segs=(list tape)  (turn `(list @ta)`mt trip)
+  (crip (zing (join "/" segs)))
 ::  +mark-mime: content-type for ?data by mark leaf. Unknown marks default to
 ::  text/plain — cords are overwhelmingly text, and octs of unknown mark are
 ::  rare enough not to earn octet-stream plumbing yet.
@@ -5531,8 +5816,16 @@
     "<h2>Content catalog</h2>"
     "<p class=\"muted\">Published pages are indexed for search automatically about every 6 hours (and a followed peer's edits index live). Sweep now to (re)index all of your published pages and followed peers immediately &mdash; e.g. after publishing something you want searchable right away.</p>"
     "<p><button type=\"button\" id=\"sweep\" class=\"btn\">Sweep catalog now</button> <span id=\"swst\" class=\"muted\"></span></p>"
+    "<h2>Archive a web page</h2>"
+    "<p class=\"muted\">Drag this to your bookmarks bar. On any web page, click it and your ship fetches that page, converts it to markdown and files it privately under <code>clips/</code> &mdash; a real lattice page you can edit, search and share.</p>"
+    "<p><a id=\"clipbm\" class=\"btn\" href=\"#\">Clip to lattice</a></p>"
     %-  trip
     '<script>(function(){var b=document.getElementById("sweep");var s=document.getElementById("swst");b.onclick=function(){b.disabled=true;s.textContent="sweeping...";fetch("/apps/lattice/catalog-sweep",{method:"POST"}).then(function(r){s.textContent=r.ok?"started — pages are being (re)indexed in the background.":"failed ("+r.status+")";b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
+    ::  the bookmarklet href is built client-side because settings-html has no
+    ::  idea what host the browser reached us on (ship domain, localhost, a
+    ::  reverse proxy) — location.origin is the only thing that knows.
+    %-  trip
+    '<script>(function(){var a=document.getElementById("clipbm");a.href="javascript:(function(){location.href=\'"+location.origin+"/apps/lattice/clip?url=\'+encodeURIComponent(location.href)})()";a.onclick=function(e){e.preventDefault()}})();</script>'
   ==
 ::  +home-index-html: the landing page. Always shows navigation (Pages,
 ::  Explorer) plus a live list of your programmable pages and any published
@@ -5608,7 +5901,7 @@
   ^-  tape
   %+  weld  know-css
   %-  trip
-  '*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{background:#fafafa}body{margin:0;font:16px/1.6 system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){html{background:#1a1a1a}body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:#1a6ed8}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}.bar button:hover{border-color:#1a6ed8}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:#1a6ed8}.err{color:#c0392b}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}code{background:#8881;padding:.1em .3em;border-radius:4px;font-size:.9em}pre code{background:0;padding:0}table{border-collapse:collapse;margin:.7rem 0;display:block;overflow-x:auto;max-width:100%}th,td{border:1px solid #8887;padding:6px 11px}th{background:#8881;font-weight:600;text-align:left}img{max-width:100%;height:auto}del{opacity:.7}ul,ol{padding-left:1.5rem}li{margin:.15rem 0}sup.fnref{font-size:.72em}sup.fnref a{text-decoration:none}hr.fn-sep{margin-top:2rem}.footnotes{font-size:.88em;color:#8a8a8a}.footnotes li{margin:.25rem 0}.bar{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}@media(max-width:520px){.bar{flex-wrap:wrap}.bar input{flex:1 1 100%;order:3}main{padding-top:12px;padding-bottom:12px}}'
+  '*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{background:#fafafa}body{margin:0;font:16px/1.6 system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){html{background:#1a1a1a}body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:#1a6ed8}.bar a.nav{display:flex;align-items:center;padding:0 11px;font-size:1.05rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap}.bar a.nav:hover{border-color:#1a6ed8}.rawf{width:100%;height:70vh;border:1px solid #8886;border-radius:6px;background:#fff}.muted{color:#8a8a8a;font-size:.9em}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}.bar button:hover{border-color:#1a6ed8}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:#1a6ed8}.err{color:#c0392b}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}code{background:#8881;padding:.1em .3em;border-radius:4px;font-size:.9em}pre code{background:0;padding:0}table{border-collapse:collapse;margin:.7rem 0;display:block;overflow-x:auto;max-width:100%}th,td{border:1px solid #8887;padding:6px 11px}th{background:#8881;font-weight:600;text-align:left}img{max-width:100%;height:auto}del{opacity:.7}ul,ol{padding-left:1.5rem}li{margin:.15rem 0}sup.fnref{font-size:.72em}sup.fnref a{text-decoration:none}hr.fn-sep{margin-top:2rem}.footnotes{font-size:.88em;color:#8a8a8a}.footnotes li{margin:.25rem 0}.bar{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}@media(max-width:520px){.bar{flex-wrap:wrap}.bar input{flex:1 1 100%;order:3}main{padding-top:12px;padding-bottom:12px}}'
 ::  +know-css: styles for the knowledge view (single-quote cord: braces literal).
 ::
 ++  know-css
@@ -5628,6 +5921,10 @@
     "<title>lattice</title><style>"  web-css  "</style></head><body>"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
     "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
+    ::  an authored /index takes over the home view, and the generated home was
+    ::  the ONLY way to the editor, browser and knowledge — so carry them here.
+    "<a class=\"nav\" href=\"/apps/lattice/app\" title=\"editor\">&#9998;</a>"
+    "<a class=\"nav\" href=\"/apps/lattice/know\" title=\"knowledge\">&#9670;</a>"
     "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search the catalog\">"
     "<button type=\"submit\">Go</button></form><main>"  inner  "</main>"
     (sse-script keep)  sw-register-script  "</body></html>"
@@ -5782,7 +6079,8 @@
     ;<  ~  bind:m  (gain:io road %.y)
     ::  memories are gained too, and autosave saves one revision per typing
     ::  pause — the same ceiling pages get, or the vault grows forever.
-    ;<  ~  bind:m  (prune-hist road know-keep)
+    ::  know entries are a user-facing history surface too, so same window
+    ;<  ~  bind:m  (prune-hist road know-keep history-window)
     ::  a re-saved key leaves trash; cull the orphaned trash-vault GRUB (not just
     ::  the index row) so a later %restore can't resurrect the stale tomb over the
     ::  live entry.
