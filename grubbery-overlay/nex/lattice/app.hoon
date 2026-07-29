@@ -1556,13 +1556,69 @@
       =/  ko=(unit path)  (know-key k)
       ?~(ko %.n ?!(|((~(has by es) u.ko) (~(has by tx) u.ko))))
     ;<  n=@ud  bind:m  (import-know-loop fresh 0)
-    ;<  ~  bind:m  (poke-eval [%legacy-seen n])
-    ;<  pcount=@ud  bind:m  legacy-pages
+    ::  ── pages ────────────────────────────────────────────────────────────
+    ::  Scoped to the rels the agent itself reports. ~ means we could not read
+    ::  its page list at all: treat that as UNKNOWN, never as "no pages", or
+    ::  the completion dialog would clear an agent that still holds the only
+    ::  copy of them.
+    ;<  prels=(unit (list path))  bind:m  legacy-page-rels
+    =/  want=(list path)  ?~(prels ~ u.prels)
+    ::  never let a legacy body land on a page we already have: %save-page is
+    ::  an unconditional upsert in the writer, so a name collision would
+    ::  overwrite the user's own published body. Drop collisions before
+    ::  triggering and report them as left-behind.
+    ;<  live-pages=(list path)  bind:m  (page-sources-present want)
+    ::  A legacy name can also collide with a page this nexus published but
+    ::  never had a source for (POST /save, know-publish). %save-page is an
+    ::  unconditional upsert, so triggering would overwrite the user's body.
+    ::  Anything ALREADY in the vault is therefore off limits — unless a prior
+    ::  run of this migration is what put it there.
+    ;<  prior=(list path)  bind:m  legacy-triggered
+    ;<  in-vault=(list path)  bind:m  (vault-present want)
+    =/  has  |=([l=(list path) r=path] (lien l |=(x=path =(x r))))
+    =/  theirs=(list path)
+      (skip in-vault |=(r=path (has prior r)))
+    =/  fresh-pages=(list path)
+      %+  skip  want
+      |=(r=path |((has live-pages r) (has theirs r)))
+    =/  nil  (fiber:fiber:nexus ,~)
+    ::  record provenance BEFORE triggering, so a retry knows these vault
+    ::  entries are ours even if it crashes midway
+    ;<  ~  bind:m
+      ?:  =(~ fresh-pages)  (pure:nil ~)
+      (poke-eval [%legacy-pages (weld prior fresh-pages)])
+    ;<  ~  bind:m  ?:(=(~ fresh-pages) (pure:nil ~) legacy-pub-migrate)
+    ::  poll for arrivals instead of sleeping a fixed window: each page is its
+    ::  own writer transaction, so the time needed scales with the count.
+    ;<  landed=(list path)  bind:m
+      ?:  =(~ fresh-pages)  (pure:(fiber:fiber:nexus ,(list path)) ~)
+      (await-vault fresh-pages (add 10 (mul 2 (lent fresh-pages))))
+    ;<  promoted=@ud  bind:m  (promote-pages landed)
+    ::  ONLY claim the migration is finished when nothing is left behind. A
+    ::  short count leaves the marker UNWRITTEN so the offer returns and the
+    ::  user can retry — the knowledge import is idempotent (skip-existing),
+    ::  so a retry costs nothing and finishes the pages.
+    =/  page-total=@ud  (lent want)
+    ::  "complete" means: we could read the page list, and every page we were
+    ::  allowed to move actually landed AND was promoted. Collisions count as
+    ::  NOT complete — those pages stay only in the old agent, so the agent
+    ::  must not be cleared for retirement.
+    =/  done=?
+      ?&  ?=(^ prels)
+          =(promoted (lent fresh-pages))
+          =(0 (lent live-pages))
+          =(0 (lent theirs))
+      ==
+    ;<  ~  bind:m  ?:(done (poke-eval [%legacy-seen n]) (pure:nil ~))
     %+  send-json  eyre-id
     %-  pairs:enjs:format
     :~  ['imported' (numb:enjs:format n)]
         ['skipped' (numb:enjs:format (sub (lent p.parsed) (lent fresh)))]
-        ['pages' (numb:enjs:format pcount)]
+        ['pages' (numb:enjs:format page-total)]
+        ['pagesImported' (numb:enjs:format promoted)]
+        ['pagesCollided' (numb:enjs:format (add (lent live-pages) (lent theirs)))]
+        ['pagesKnown' b+?=(^ prels)]
+        ['complete' b+done]
     ==
   ::  legacy-dismiss: the user declined. Same marker as a completed import, so
   ::  the prompt never returns.
@@ -1708,6 +1764,132 @@
   =/  r=(each @ud tang)
     (mule |.(((ot:dejs:format count+ni:dejs:format ~) pj)))
   (pure:m ?:(?=(%| -.r) 0 p.r))
+::  ── legacy PAGE migration ─────────────────────────────────────────────────
+::  The retired agent exposes no scry arm for page BODIES, and %grow'n content
+::  is not served on %gx (both verified). It does still carry its phase-1
+::  endpoint POST /pub-migrate, which emits one `%save-page` poke per page at
+::  this nexus's writer — a native pub-action, so bodies land in /pub/vault.
+::  That endpoint is HTTP-only and grubbery shadows /apps/lattice, so we hand
+::  the agent the request as a poke.
+::
+::  EVERYTHING here is scoped to the page paths the agent itself reports. An
+::  earlier draft promoted the whole vault and derived its counts from it,
+::  which conflated the user's OWN published pages with legacy arrivals and
+::  could report success while pages were still only in the old agent.
+::
+::  +legacy-key-rel: a legacy content key ('/pub/index/gmi') -> the nexus page
+::  rel (/index). ~ for anything that is not that shape.
+++  legacy-key-rel
+  |=  k=@t
+  ^-  (unit path)
+  =/  pu=(unit path)  (mole |.(`path`(stab k)))
+  ?~  pu  ~
+  ?.  ?=([%pub *] u.pu)  ~
+  ?~  t.u.pu  ~
+  ::  re-widen after the ?~: scag/rear are wet gates and mull-grow against the
+  ::  narrowed (non-null) type, which is a nest-fail at the call site.
+  =/  r=path  `path`t.u.pu
+  ?.  =(%gmi (rear r))  ~
+  ?:  =(1 (lent r))  ~
+  `(scag (dec (lent r)) r)
+::  +legacy-page-rels: the pages the retired agent holds, as nexus rels. A
+::  shape mismatch yields ~, which callers MUST treat as "unknown", never as
+::  "none" — reporting zero pages is what would wrongly clear the agent for
+::  uninstall.
+++  legacy-page-rels
+  =/  m  (fiber:fiber:nexus ,(unit (list path)))
+  ^-  form:m
+  ;<  pj=json  bind:m  (legacy-peek /gx/lattice/live-list/json)
+  =/  r=(each (list @t) tang)
+    (mule |.(((ot:dejs:format paths+(ar:dejs:format so:dejs:format) ~) pj)))
+  ?:  ?=(%| -.r)  (pure:m ~)
+  (pure:m `(murn p.r legacy-key-rel))
+::  +legacy-triggered: page rels a previous run already triggered. These are
+::  known to be migration-origin, so a vault entry for one of them is ours to
+::  promote rather than a pre-existing page of the user's to protect.
+++  legacy-triggered
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  ;<  sn=view:nexus  bind:m
+    (peek:io [%& %& (weld app-base:lu /legacy) %pages] ~)
+  ?.  ?=([%file *] sn)  (pure:m ~)
+  =/  j=(unit json)  (mole |.(;;(json (sang-noun:tarball sang.sn))))
+  ?~  j  (pure:m ~)
+  =/  r=(each (list @t) tang)  (mule |.(((ar:dejs:format so:dejs:format) u.j)))
+  ?:  ?=(%| -.r)  (pure:m ~)
+  (pure:m (murn p.r |=(c=@t (mole |.(`path`(stab c))))))
+::  +legacy-pub-migrate: ask the agent to emit its page bodies. Its only gate
+::  is authenticated.inbound-request, which we set because the poke genuinely
+::  IS the owner (gall enforces src==our on its side). Its reply goes to an
+::  eyre-id Eyre never issued and is dropped — noisy, harmless.
+++  legacy-pub-migrate
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  our=@p  bind:m  bowl-our
+  =/  req=inbound-request:eyre
+    :+  %.y  %.y
+    :-  [%ipv4 .0.0.0.0]
+    ::  %'POST' as a TERM — method:http is a term union and a cord does not
+    ::  nest into it.
+    [%'POST' '/apps/lattice/pub-migrate' ~ ~]
+  (gall-poke:io [our %lattice] [%handle-http-request [`@ta`'lattice-legacy-migrate' req]])
+::  +await-vault: wait for `rels` to appear in the vault, checking every 2s up
+::  to `tries`. Replaces a fixed sleep: the arrivals are one writer
+::  transaction per page, so the time needed scales with page count, and a
+::  fixed window would strand the tail.
+++  await-vault
+  |=  [rels=(list path) tries=@ud]
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  |-  ^-  form:m
+  ;<  here=(list path)  bind:m  (vault-present rels)
+  ?:  =((lent here) (lent rels))  (pure:m here)
+  ?:  =(0 tries)  (pure:m here)
+  ;<  ~  bind:m  (sleep:io ~s2)
+  $(tries (dec tries))
+::  +vault-present: which of `rels` currently have a vault body.
+++  vault-present
+  |=  rels=(list path)
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  ?~  rels  (pure:m ~)
+  ;<  ex=?  bind:m
+    (peek-exists:io [%& %& (weld (weld app-base:lu /pub/vault) i.rels) %gmi])
+  ;<  rest=(list path)  bind:m  $(rels t.rels)
+  (pure:m ?:(ex [i.rels rest] rest))
+::  +page-sources-present: which of `rels` already exist as editable pages.
+::  Used to refuse a legacy page whose name collides with one of ours, since
+::  the writer's %save-page is an unconditional upsert.
+++  page-sources-present
+  |=  rels=(list path)
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  ?~  rels  (pure:m ~)
+  ;<  ex=?  bind:m
+    (peek-exists:io [%& %& (weld app-base:lu (weld /page i.rels)) %code])
+  ;<  rest=(list path)  bind:m  $(rels t.rels)
+  (pure:m ?:(ex [i.rels rest] rest))
+::  +promote-pages: create an editable /page source for each named rel that
+::  has a vault body and no source yet. SCOPED to the rels passed in - never
+::  walks the whole vault, so it can neither resurrect a page the user deleted
+::  nor manufacture pages from their own published-only content.
+++  promote-pages
+  |=  rels=(list path)
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  =|  made=@ud
+  |-  ^-  form:m
+  ?~  rels  (pure:m made)
+  =/  pdir=path  (weld app-base:lu (weld /page i.rels))
+  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
+  ?:  ex  $(rels t.rels)
+  ;<  vn=view:nexus  bind:m
+    (peek:io [%& %& (weld (weld app-base:lu /pub/vault) i.rels) %gmi] ~)
+  ?.  ?=([%file *] vn)  $(rels t.rels)
+  =/  body=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.vn)))) '')
+  ?:  =('' body)  $(rels t.rels)
+  ;<  ~  bind:m  (poke-eval [%make i.rels (wrap-content %gmi body)])
+  $(rels t.rels, made +(made))
 ::  +poke-know / +poke-pub: poke the single writer fiber (root /main.sig) with a
 ::  typed action; grubbery vales the noun through the action marc. The writer
 ::  serialises all mutations, so concurrent requests can't race the index.
@@ -1810,6 +1992,13 @@
     ::  leave it inert (code grub only — templates are never evaluated).
     ::  (Instantiation is +instantiate-template — one make PER page, not a batch.)
     (copy-tree root [%page from.act] [%template /[name.act]] %.n)
+      %legacy-pages
+    ::  remember which page rels THIS migration triggered. Provenance matters:
+    ::  a legacy page name may collide with a page the nexus published itself,
+    ::  and only this record distinguishes "we put it in the vault" from "it
+    ::  was already the user's".
+    %^  put-file  [%& %& (weld root /legacy) %pages]  [/ %json]
+    a+(turn rels.act |=(r=path s+(crip (pax-str r))))
       %legacy-seen
     ::  one marker for both outcomes (imported N, or dismissed with 0): its
     ::  existence is what silences the prompt. See +legacy-mark-road.

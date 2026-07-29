@@ -1402,7 +1402,7 @@
       st('legacy import dismissed');
       return;
     }
-    st('importing memories from the old agent… this can take a while');
+    st('importing from the old agent… this can take a few minutes');
     let r = null;
     try { r = await mutate(api + '/legacy-migrate'); } catch {}
     if (!r || !r.ok) {
@@ -1421,24 +1421,39 @@
       return;
     }
     const res = await r.json();
-    localStorage.latLegacy = 'done';
+    // only latch when the SERVER says it finished; a partial run deliberately
+    // leaves its marker unwritten so the offer returns and can be retried
+    if (res.complete) localStorage.latLegacy = 'done';
+    else delete sessionStorage.latLegacyAsked;
     knowGen++;
     st('imported ' + res.imported + ' memories from the old agent');
-    if (mode === 'know') loadKnow();
+    if (mode === 'know') loadKnow(); else loadTree();
     // NEVER advise retiring the old agent while it still holds pages: this
     // import moves knowledge only (the agent exposes no arm for page bodies),
     // so an uninstall on that advice would destroy them permanently.
     const kept = res.imported + ' ' + (res.imported === 1 ? 'memory' : 'memories') +
       (res.skipped ? ' (' + res.skipped + ' already here, left untouched)' : '');
-    await askConfirm(
-      res.pages
-        ? 'Imported ' + kept + '.\n\nThe old agent still holds ' + res.pages + ' ' +
-          (res.pages === 1 ? 'page' : 'pages') + ' that CANNOT be imported yet — it ' +
-          'does not expose page contents. Leave it installed, or those pages are ' +
-          'lost. Do not run |uninstall %lattice yet.'
-        : 'Imported ' + kept + '.\n\nThe old agent holds nothing else, so it is ' +
-          'safe to retire from the dojo:\n\n    |uninstall %lattice',
-      'got it');
+    const got = res.pagesImported || 0;
+    let msg = 'Imported ' + kept + (got ? ', and ' + got + ' ' + (got === 1 ? 'page' : 'pages') : '') + '.';
+    // The agent is cleared for retirement ONLY when the server says the whole
+    // migration completed. Never infer it from a count: an unreadable page
+    // list reads as zero pages, and telling someone to uninstall on that
+    // would destroy the only copy of them.
+    if (!res.complete) {
+      const left = [];
+      if (!res.pagesKnown) left.push('its page list could not be read');
+      else if ((res.pages || 0) > got + (res.pagesCollided || 0))
+        left.push(((res.pages || 0) - got - (res.pagesCollided || 0)) + ' page(s) did not arrive in time');
+      if (res.pagesCollided) left.push(res.pagesCollided + ' page(s) share a name with pages you already have, so they were left alone');
+      msg += '\n\nNot everything moved: ' + left.join('; ') + '.' +
+        '\n\nThe old agent still holds the only copy — do NOT run ' +
+        '|uninstall %lattice. Reopen the editor to retry; you will be asked again.';
+    } else {
+      msg += '\n\nEverything it held is now here. Once you have checked your ' +
+        'pages and memories, you can retire it from the dojo:\n\n    |uninstall %lattice';
+    }
+    await askConfirm(msg, 'got it');
+    loadTree();
   }
 
   // paint from the last session's snapshot before the network answers: the
