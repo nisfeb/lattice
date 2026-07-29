@@ -464,7 +464,7 @@
     ::  omnibar: input that isn't a urb:// address is a SEARCH query — serve a
     ::  results page that queries the obelisk content catalog (client-side, via
     ::  the /catalog-search JSON api, which is built for exactly this fan-out).
-    ?~  ref  (send-html eyre-id (render-page (trip u.raw) "" (search-results-html u.raw)))
+    ?~  ref  (send-html eyre-id (render-page (trip u.raw) "" (search-results-html u.raw our)))
     ?-  -.u.ref
         %tree
       ::  redirect to the /x explorer projection, which renders the node and
@@ -1559,6 +1559,39 @@
   ::  when obelisk is absent.
       [%'POST' %know-reindex]
     ;<  ~  bind:m  know-reindex
+    (send-ok eyre-id)
+  ::  ── unified search (the omnibar's private half) ─────────────────────────
+  ::  content-search: own pages + knowledge entries carrying `term`, each row
+  ::  labelled with the visibility recorded at index time. Same JSON shape as
+  ::  /catalog-search so the omnibar can fan out over both identically.
+  ::
+  ::  Owner-gated like every route below the gate — which is what makes it safe
+  ::  to return private rows at all. The results page is served from the root
+  ::  route, also behind the gate; the only unauthenticated surfaces (clearweb
+  ::  /c/, public form POST /f/, PWA assets) dispatch above it.
+      [%'GET' %content-search]
+    =/  term=(unit @t)  (~(get by args) 'term')
+    ?~  term  (send-err eyre-id 400 'missing term param')
+    =/  nt=(unit @t)  (catalog-normalize-term:cat (trip u.term))
+    ::  a non-indexable term (too short / stop word) matches nothing — 200 with
+    ::  no rows, NOT a 400, so a client fanning out one call per query word
+    ::  doesn't error on a common stop word. Mirrors /catalog-search.
+    ?~  nt
+      %+  send-json  eyre-id
+      %-  pairs:enjs:format
+      :~  ['ok' b+&]
+          ['columns' a+(turn ~['scope' 'key' 'tf'] |=(c=@t s+c))]
+          ['rows' a+~]
+      ==
+    ;<  cs=(each (list cmd-result:ast) tang)  bind:m
+      (obelisk-query catalog-db (content-search-urql:cat (trip u.nt)))
+    (send-obelisk eyre-id cs)
+  ::  search-reindex: rebuild content-terms from the live tree + know vault.
+  ::  Blocking (the client treats it fire-and-forget), like /know-reindex.
+      [%'POST' %search-reindex]
+    ;<  ok=?  bind:m  content-reindex
+    ?.  ok
+      (send-err eyre-id 502 'obelisk is not answering — nothing was indexed')
     (send-ok eyre-id)
   ::  ── legacy agent migration (see the +legacy-live block) ────────────────
   ::  legacy-status: should the UI offer to import from a retired %lattice
@@ -3772,6 +3805,80 @@
 ::  +tree-walk: +dump-walk's twin without bodies — path+kind+size+rev+mtime+
 ::  share per page, folders as bare nodes. share comes from the /share grub in
 ::  the same ball (absent -> %private, the same rule as +read-share).
+::  +index-walk: every page in the ball as [rel body share], from the SAME single
+::  deep peek +tree-walk uses. That ball already carries each page's code and
+::  share grub, so indexing the whole tree costs one dart, not two per page.
+::  Folders and body-less nodes are skipped; an absent /share grub means
+::  %private, the same rule as +read-share.
+++  index-walk
+  |=  [b=ball:tarball rel=path]
+  ^-  (list [rel=path body=@t shr=share-mode:le])
+  =/  fils  ?~(fil.b ~ contents.u.fil.b)
+  =/  kids=(list [rel=path body=@t shr=share-mode:le])
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=  [nom=@ta kb=ball:tarball]
+    (index-walk kb (weld rel /[nom]))
+  ?~  rel  kids
+  ?.  (~(has by fils) %code)  kids
+  =/  cd  (~(got by fils) %code)
+  =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) '')
+  =/  sd  (~(get by fils) %share)
+  =/  shr=share-mode:le
+    ?~  sd  %private
+    (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.u.sd)))) %private)
+  =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
+  =/  body=@t  ?~(un src body.u.un)
+  :_  kids
+  [rel body shr]
+::  +scope-of: a page's share preset -> the label a search result carries.
+::  %shared is reported as %urbit, not "public": those pages ARE reachable by
+::  any ship that knows the address but invisible to a browser, and collapsing
+::  the two into one badge would misrepresent where the content is exposed.
+++  scope-of
+  |=  shr=share-mode:le
+  ^-  @t
+  ?-  shr
+    %clearweb  'clearweb'
+    %shared    'urbit'
+    %private   'private'
+  ==
+::  +content-reindex: rebuild content-terms from the live tree + know vault.
+::  Two reads total (one deep page peek, one know-map read), then a single
+::  TRUNCATE+INSERT.
+::
+::  Returns whether obelisk actually ACCEPTED the write. The populate deliberately
+::  goes through +obelisk-query rather than +catalog-run: catalog-run discards the
+::  result, so on a ship with no obelisk installed this arm completed "fine" and
+::  the settings button reported "your pages and notes are searchable" having
+::  written nothing at all. A reindex that indexed nothing must not report success.
+++  content-reindex
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
+  =/  pages=(list [rel=path body=@t shr=share-mode:le])
+    ?.  ?=([%ball *] sn)  ~
+    (index-walk ball.sn ~)
+  ;<  entries=(map path know-entry:lk)  bind:m  read-know-map
+  =/  page-rows=(list [scope=@t key=@t terms=(list [term=@t tf=@ud])])
+    %+  turn  pages
+    |=  [rel=path body=@t shr=share-mode:le]
+    :+  (scope-of shr)  (crip (pax-str rel))
+    ::  same cap the crawler applies to a page body before analysis
+    %+  top-terms:cat  term-max:cat
+    (index-terms:cat *(map @t @ud) (trip (end [3 body-cap] body)))
+  =/  know-rows=(list [scope=@t key=@t terms=(list [term=@t tf=@ud])])
+    %+  turn  ~(tap by entries)
+    |=  [key=path e=know-entry:lk]
+    :+  'knowledge'  (spat key)
+    %+  top-terms:cat  term-max:cat
+    (index-terms:cat *(map @t @ud) (trip (end [3 body-cap] body.e)))
+  ;<  ~  bind:m  (catalog-run %sys (weld "CREATE DATABASE " (trip catalog-db)))
+  ;<  ~  bind:m  (catalog-create-loop content-index-create-list:cat)
+  ;<  r=(each (list cmd-result:ast) tang)  bind:m
+    %+  obelisk-query  catalog-db
+    (content-index-populate-urql:cat (weld page-rows know-rows))
+  (pure:m ?=(%& -.r))
 ++  tree-walk
   |=  [b=ball:tarball w=wave:nexus rel=path]
   ^-  (list [pax=path j=json])
@@ -5790,15 +5897,35 @@
 ::  API (textContent) so catalog text is XSS-safe; single-quote cord so the JS
 ::  braces stay literal (no ' or \ inside). Obelisk down -> a graceful message.
 ::
+::  +search-results-html: the omnibar results page. Fans out over BOTH indexes
+::  per query word — /content-search (our pages + knowledge, scope recorded at
+::  index time) and /catalog-search (the crawler's, for peers) — and labels every
+::  hit with where it lives. Catalog rows published by US are dropped: they are
+::  in content-terms already with a truthful clearweb/urbit badge, and keeping
+::  both would double every own-page hit.
+::
+::  The badge is load-bearing, not decoration. These results mix content that is
+::  on the open web with private notes, on a screen the owner may be sharing, so
+::  each row states its exposure: clearweb (open web), urbit (other ships only),
+::  private (nobody), knowledge (private note), or the peer's @p.
+::
+::  `our` is interpolated because the client needs it to recognise its own rows.
 ++  search-results-html
-  |=  q=@t
+  |=  [q=@t our=@p]
   ^-  tape
   ;:  weld
     "<h1>Search</h1>"
-    "<p class=\"muted\">Catalog results for &ldquo;"  (esc (trip q))  "&rdquo;.</p>"
+    "<p class=\"muted\">Results for &ldquo;"  (esc (trip q))  "&rdquo; across your pages, notes and followed peers.</p>"
     "<div id=\"results\" class=\"muted\">Searching&hellip;</div>"
+    :(weld "<script>var OUR=\"" (scow %p our) "\";</script>")
     %-  trip
-    '<script>(function(){var p=new URLSearchParams(location.search);var q=(p.get("url")||"").trim();var out=document.getElementById("results");if(!q){out.textContent="";return}var words=q.toLowerCase().split(/[^a-z0-9]+/).filter(function(w){return w.length>=2});if(!words.length){out.textContent="Type at least one search word (2+ letters).";return}Promise.all(words.map(function(w){return fetch("/apps/lattice/catalog-search?term="+encodeURIComponent(w)).then(function(r){return r.ok?r.json():{rows:[]}}).catch(function(){return{rows:[]}})})).then(function(res){var hits={};res.forEach(function(j){var c=j.columns||[];var pi=c.indexOf("publisher"),xi=c.indexOf("path"),ti=c.indexOf("tf");(j.rows||[]).forEach(function(row){var pub=row[pi],path=row[xi],tf=parseInt(row[ti],10)||0;if(!pub||!path)return;var k=pub+"|"+path;if(!hits[k])hits[k]={pub:pub,path:path,terms:0,tf:0};hits[k].terms++;hits[k].tf+=tf})});var list=Object.keys(hits).map(function(k){return hits[k]});list.sort(function(a,b){return b.terms-a.terms||b.tf-a.tf});out.textContent="";out.className="";if(!list.length){out.className="muted";out.textContent="No catalog pages match that.";return}var ul=document.createElement("ul");ul.className="qlist";list.slice(0,50).forEach(function(h){var li=document.createElement("li");var a=document.createElement("a");a.href="/apps/lattice?url="+encodeURIComponent("urb://"+h.pub+"/"+h.path);var n=document.createElement("span");n.className="qname";n.textContent=h.path;var s=document.createElement("span");s.className="qprev";s.textContent=h.pub+"  ·  "+h.terms+(h.terms>1?" terms":" term")+", tf "+h.tf;a.appendChild(n);a.appendChild(s);li.appendChild(a);ul.appendChild(li)});out.appendChild(ul)}).catch(function(){out.className="muted";out.textContent="Catalog search is unavailable (obelisk not responding)."})})();</script>'
+    '<style>.qbadge{display:inline-block;padding:1px 7px;margin-right:.5em;border-radius:999px;border:1px solid #8886;font-size:.75rem;vertical-align:middle;white-space:nowrap}.qbadge.clearweb{border-color:#1a6ed8;color:#1a6ed8}.qbadge.urbit{border-color:#7a5af8;color:#7a5af8}.qbadge.private{border-color:#8a8a8a;color:#8a8a8a}.qbadge.knowledge{border-color:#0a9a6a;color:#0a9a6a}.qbadge.peer{border-color:#c07000;color:#c07000}</style>'
+    ::  one fan-out per query word over BOTH indexes; see the arm comment. The
+    ::  minified source lives in scratch as search.js — it is checked with
+    ::  `node --check` before being pasted here, and contains no single quote or
+    ::  backslash so it needs no cord escaping.
+    %-  trip
+    '<script>(function(){var p=new URLSearchParams(location.search);var q=(p.get("url")||"").trim();var out=document.getElementById("results");if(!q){out.textContent="";return}var words=q.toLowerCase().split(/[^a-z0-9]+/).filter(function(w){return w.length>=2});if(!words.length){out.textContent="Type at least one search word (2+ letters).";return}function get(u){return fetch(u).then(function(r){return r.ok?r.json():{rows:[]}}).catch(function(){return{rows:[]}})}var calls=[];words.forEach(function(w){calls.push(get("/apps/lattice/content-search?term="+encodeURIComponent(w)).then(function(j){return{kind:"own",j:j}}));calls.push(get("/apps/lattice/catalog-search?term="+encodeURIComponent(w)).then(function(j){return{kind:"cat",j:j}}));});Promise.all(calls).then(function(res){var hits={};function bump(scope,key,tf){var k=scope+"|"+key;if(!hits[k])hits[k]={scope:scope,key:key,terms:0,tf:0};hits[k].terms++;hits[k].tf+=tf;}res.forEach(function(r){var c=r.j.columns||[];var rows=r.j.rows||[];if(r.kind==="own"){var si=c.indexOf("scope"),ki=c.indexOf("key"),ti=c.indexOf("tf");rows.forEach(function(row){var s=row[si],k=row[ki];if(!s||!k)return;bump(s,k,parseInt(row[ti],10)||0);});}else{var pi=c.indexOf("publisher"),xi=c.indexOf("path"),ti2=c.indexOf("tf");rows.forEach(function(row){var pub=row[pi],path=row[xi];if(!pub||!path)return;if(pub===OUR)return;bump(pub,path,parseInt(row[ti2],10)||0);});}});var list=Object.keys(hits).map(function(k){return hits[k]});list.sort(function(a,b){return b.terms-a.terms||b.tf-a.tf});out.textContent="";out.className="";if(!list.length){out.className="muted";out.textContent="Nothing matches that.";return}var ul=document.createElement("ul");ul.className="qlist";list.slice(0,50).forEach(function(h){var peer=h.scope.charAt(0)==="~";var cls=peer?"peer":h.scope;var href;if(peer){href="/apps/lattice?url="+encodeURIComponent("urb://"+h.scope+"/"+h.key)}else if(h.scope==="knowledge"){href="/apps/lattice/app?view=know&name="+encodeURIComponent(h.key)}else if(h.scope==="private"){href="/apps/lattice/app?name="+encodeURIComponent(h.key)}else{href="/apps/lattice?url="+encodeURIComponent("urb://"+OUR+"/"+h.key)}var li=document.createElement("li");var a=document.createElement("a");a.href=href;var b=document.createElement("span");b.className="qbadge "+cls;b.textContent=peer?h.scope:h.scope;var n=document.createElement("span");n.className="qname";n.textContent=h.key;var s=document.createElement("span");s.className="qprev";s.textContent=h.terms+(h.terms>1?" terms":" term")+", tf "+h.tf;a.appendChild(b);a.appendChild(n);a.appendChild(s);li.appendChild(a);ul.appendChild(li);});out.appendChild(ul);}).catch(function(){out.className="muted";out.textContent="Search is unavailable (obelisk not responding).";});})();</script>'
   ==
 ::  +settings-html: the settings page. One maintenance action so far — a manual
 ::  content-catalog sweep. The crawler auto-sweeps every ~6h (and a followed
@@ -5816,6 +5943,11 @@
     "<h2>Content catalog</h2>"
     "<p class=\"muted\">Published pages are indexed for search automatically about every 6 hours (and a followed peer's edits index live). Sweep now to (re)index all of your published pages and followed peers immediately &mdash; e.g. after publishing something you want searchable right away.</p>"
     "<p><button type=\"button\" id=\"sweep\" class=\"btn\">Sweep catalog now</button> <span id=\"swst\" class=\"muted\"></span></p>"
+    "<h2>Search index</h2>"
+    "<p class=\"muted\">The omnibar searches your published pages, your private page sources and your knowledge entries, labelling each result with where it lives. That private half is rebuilt on demand rather than continuously, so reindex after a batch of edits to make them findable.</p>"
+    "<p><button type=\"button\" id=\"sreidx\" class=\"btn\">Reindex my content</button> <span id=\"srst\" class=\"muted\"></span></p>"
+    %-  trip
+    '<script>(function(){var b=document.getElementById("sreidx");var s=document.getElementById("srst");b.onclick=function(){b.disabled=true;s.textContent="reindexing...";fetch("/apps/lattice/search-reindex",{method:"POST"}).then(function(r){s.textContent=r.ok?"done - your pages and notes are searchable.":"failed ("+r.status+")";b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
     "<h2>Archive a web page</h2>"
     "<p class=\"muted\">Drag this to your bookmarks bar. On any web page, click it and your ship fetches that page, converts it to markdown and files it privately under <code>clips/</code> &mdash; a real lattice page you can edit, search and share.</p>"
     "<p><a id=\"clipbm\" class=\"btn\" href=\"#\">Clip to lattice</a></p>"

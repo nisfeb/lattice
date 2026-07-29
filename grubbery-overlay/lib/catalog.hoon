@@ -134,6 +134,71 @@
   %-  zing
   (weld `(list tape)`~["TRUNCATE TABLE knowledge;" "TRUNCATE TABLE tags;"] inserts)
 ::
+::  ── unified own-content term index (the omnibar's private half) ─────
+::
+::  catalog-terms is the CRAWLER's index: published pages, ours and peers'. It
+::  cannot answer "search everything I can see", because a private page source
+::  is never crawled and the knowledge index above stores no body text at all.
+::
+::  content-terms is the other half: full-text terms for every item THIS ship
+::  owns, with its visibility recorded AT INDEX TIME so a result can be labelled
+::  without a per-result peek (which would be one dart per hit):
+::    %clearweb   page published to the open web, and over ames
+::    %urbit      page shared over ames only — other ships can read it, browsers cannot
+::    %private    page source that is not published anywhere
+::    %knowledge  private know-vault entry
+::
+::  Peers keep coming from catalog-terms, so a search fans out over both and the
+::  caller drops catalog rows whose publisher is us (they are in content-terms
+::  already, better labelled). Rebuilt wholesale by /search-reindex, so it goes
+::  stale between reindexes — the same contract as the knowledge index.
+::
+++  content-index-create-list
+  ^-  (list tape)
+  :~  "CREATE TABLE content-terms (scope @t, key @t, term @t, tf @ud) PRIMARY KEY (scope, key, term);"
+  ==
+::  +content-index-populate-urql: clear the table, then one INSERT per
+::  (scope, key, term).
+::
+::  Dedup on the ESCAPED term literal, exactly like +catalog-page-terms-urql:
+::  urq-esc collapses control bytes (<32) to one space, so two raw terms
+::  differing only by an interior control byte escape to the SAME literal ->
+::  duplicate PRIMARY KEY -> the whole TRUNCATE+INSERT aborts, leaving the index
+::  truncated and permanently un-rebuildable. (scope, key) pairs are unique by
+::  construction — one walk of the page tree plus one of the know vault — and
+::  scope is part of the key, so a page rel and a know key cannot collide.
+::
+++  content-index-populate-urql
+  |=  rows=(list [scope=@t key=@t terms=(list [term=@t tf=@ud])])
+  ^-  tape
+  =/  inserts=(list tape)
+    %-  zing
+    %+  turn  rows
+    |=  [scope=@t key=@t terms=(list [term=@t tf=@ud])]
+    ^-  (list tape)
+    =/  sx=tape  (urq-esc (trip scope))
+    =/  kx=tape  (urq-esc (trip key))
+    =/  term-map=(map tape @ud)
+      %+  roll  terms
+      |=  [t=[term=@t tf=@ud] acc=(map tape @ud)]
+      =/  tx=tape  (urq-esc (trip term.t))
+      ?:  (~(has by acc) tx)  acc
+      (~(put by acc) tx tf.t)
+    %+  turn  ~(tap by term-map)
+    |=  [tx=tape f=@ud]
+    ^-  tape
+    %-  zing
+    :~  "INSERT INTO content-terms (scope, key, term, tf) VALUES ('"
+        sx  "', '"  kx  "', '"  tx  "', "  (trip (scot %ud f))  ");"
+    ==
+  %-  zing
+  (weld `(list tape)`~["TRUNCATE TABLE content-terms;"] inserts)
+::  +content-search-urql: every own item carrying `term`, with its scope.
+++  content-search-urql
+  |=  term=tape
+  ^-  tape
+  :(weld "FROM content-terms WHERE term = '" (urq-esc term) "' SELECT scope, key, tf;")
+::
 ::  ── page writes: the two-poke upsert ───────────────────────────────
 ::
 ::  A catalog page is written by TWO separate obelisk pokes, NOT one, so
