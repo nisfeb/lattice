@@ -228,6 +228,16 @@ select, option { color-scheme: light dark; }
   border-radius: 6px; background: var(--surface); color: inherit; width: 100%; }
 #dlginput[hidden] { display: none; }
 #dlgsel { width: 100%; }
+/* choice list: real buttons in the app's own style. A <select> opens an
+   OS-drawn list — a browser-native popup — which this UI never uses. */
+.dlgopts { display: grid; gap: 6px; }
+.dlgopts[hidden] { display: none; }
+.dlgopt { font: inherit; text-align: left; padding: 9px 12px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: inherit; }
+.dlgopt:hover, .dlgopt:focus { border-color: var(--green); color: var(--green);
+  outline: none; }
+.dlgopt.on { border-color: var(--green); }
 #dlgsel[hidden] { display: none; }
 .dlgbtns { display: flex; gap: 8px; justify-content: flex-end; }
 .dlgbtns button { font: inherit; padding: 6px 14px; border: 1px solid var(--border);
@@ -345,6 +355,7 @@ select, option { color-scheme: light dark; }
 <div class="dlg" id="dlg" hidden>
   <form class="dlgbox" id="dlgform">
     <div id="dlgmsg"></div>
+    <div id="dlgopts" class="dlgopts" hidden></div>
     <select id="dlgsel" hidden></select>
     <input id="dlginput" autocomplete="off" spellcheck="false">
     <div class="dlgbtns">

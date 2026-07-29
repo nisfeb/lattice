@@ -320,12 +320,12 @@ try {
 
   step = 'template';
   await page.click('#newtmpl');
-  await wait(() => !document.getElementById('dlg').hidden && !document.getElementById('dlgsel').hidden);
+  await wait(() => !document.getElementById('dlg').hidden && !document.getElementById('dlgopts').hidden);
   check('template: picker lists the shipped templates',
-    (await page.evaluate(() => [...document.querySelectorAll('#dlgsel option')].map((o) => o.value)))
+    (await page.evaluate(() => [...document.querySelectorAll('#dlgopt, .dlgopt')].map((o) => o.dataset.val)))
       .includes('guestbook'));
-  await page.select('#dlgsel', 'guestbook');
-  await page.click('#dlgok');
+  await page.evaluate(() => [...document.querySelectorAll('.dlgopt')]
+    .find((b) => b.dataset.val === 'guestbook').click());
   await wait(() => !document.getElementById('dlginput').hidden);
   await page.evaluate((v) => { document.getElementById('dlginput').value = v; }, RUN + '/gb');
   await page.click('#dlgok');

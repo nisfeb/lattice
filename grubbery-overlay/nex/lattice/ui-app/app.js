@@ -50,19 +50,71 @@
     $('dlgok').focus();
     return p.then((v) => v !== null);
   };
-  // askChoice: pick one of a list -> the chosen value, or null on cancel
+  // askChoice: pick one of a list -> the chosen value, or null on cancel.
+  // Rendered as real buttons in the app's own style, NEVER a <select>: a
+  // select opens an OS-drawn list, which is a browser-native popup, and this
+  // UI does not use those anywhere.
+  // Build the option container if the served HTML predates it. The service
+  // worker caches index.html and app.js independently, so a browser can hold
+  // new JS against a stale shell; assuming the element exists made the whole
+  // dialog throw (and silently killed the legacy prompt) on that skew.
+  // …and its styles, for the same reason.
+  if (!document.getElementById('dlgopt-css')) {
+    const st = document.createElement('style');
+    st.id = 'dlgopt-css';
+    st.textContent = '.dlgopts{display:grid;gap:6px}.dlgopts[hidden]{display:none}' +
+      '.dlgopt{font:inherit;text-align:left;padding:9px 12px;cursor:pointer;' +
+      'border:1px solid var(--border);border-radius:6px;background:var(--surface);' +
+      'color:inherit}.dlgopt:hover,.dlgopt:focus{border-color:var(--green);' +
+      'color:var(--green);outline:none}.dlgopt.on{border-color:var(--green)}';
+    document.head.appendChild(st);
+  }
+  const dlgOpts = (() => {
+    let el = $('dlgopts');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'dlgopts';
+      el.className = 'dlgopts';
+      el.hidden = true;
+      dlgSel.parentNode.insertBefore(el, dlgSel);
+    }
+    return el;
+  })();
   const askChoice = (msg, options, okLabel) => {
     dlgIn.hidden = true;
-    dlgSel.hidden = false;
-    dlgSel.textContent = '';
-    for (const o of options) {
-      const el = document.createElement('option');
-      el.value = o; el.textContent = o;
-      dlgSel.appendChild(el);
-    }
+    dlgSel.hidden = true;
+    dlgOpts.textContent = '';
+    dlgOpts.hidden = false;
+    $('dlgok').hidden = true;          // each option is its own commit button
     const p = dlgOpen(msg, okLabel);
-    dlgSel.focus();
-    return p.then((v) => (v === null ? null : dlgSel.value));
+    const btns = options.map((o, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'dlgopt' + (i === 0 ? ' on' : '');
+      b.textContent = o;
+      b.dataset.val = o;
+      b.onclick = () => dlgClose(o);
+      dlgOpts.appendChild(b);
+      return b;
+    });
+    if (btns[0]) btns[0].focus();
+    // arrow keys move between options; Enter takes the focused one
+    dlgOpts.onkeydown = (e) => {
+      const i = btns.indexOf(document.activeElement);
+      if (i < 0) return;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const n = (i + (e.key === 'ArrowDown' ? 1 : btns.length - 1)) % btns.length;
+        for (const b of btns) b.classList.remove('on');
+        btns[n].classList.add('on');
+        btns[n].focus();
+      }
+    };
+    return p.then((v) => {
+      dlgOpts.hidden = true;
+      $('dlgok').hidden = false;
+      return v;
+    });
   };
   $('dlgform').onsubmit = (e) => {
     e.preventDefault();
@@ -1386,16 +1438,21 @@
     // from a negative or transient answer.
     if (d.reason === 'resolved') { localStorage.latLegacy = 'done'; return; }
     if (!d.prompt) return;
-    // ask at most once per browser SESSION, so declining does not re-prompt on
-    // every boot (nor cost a request) while still returning next session
+    // Quiet for the session only once the user has actually DECLINED. Setting
+    // this merely because the dialog was shown meant dismissing it (Esc, click
+    // outside, or a reload mid-dialog) locked the offer out of that tab
+    // entirely, with no way back short of a new tab.
     if (sessionStorage.latLegacyAsked === '1') return;
-    sessionStorage.latLegacyAsked = '1';
     const choice = await askChoice(
       'An older lattice agent is still installed on this ship, from before ' +
       'this store existed. Import the memories it holds?\n\nAnything already ' +
       'here is left exactly as it is, and nothing is removed from the old agent.',
       ['import them now', 'not now', 'never ask again'], 'ok');
-    if (choice === 'not now' || choice === null) return;   // ask again next boot
+    if (choice === null) return;            // dismissed — offer again next load
+    if (choice === 'not now') {             // explicitly declined — quiet until
+      sessionStorage.latLegacyAsked = '1';  // the next browser session
+      return;
+    }
     if (choice === 'never ask again') {
       await mutate(api + '/legacy-dismiss');
       localStorage.latLegacy = 'done';
