@@ -397,6 +397,10 @@
   // History and backlinks load lazily on panel expand — they were 2 more ~2s
   // round-trips paid on every open whether or not anyone looked at them.
   async function openPage(name) {
+    // leaving grub mode: clear the flag or the save button would keep writing
+    // to the grub while the editor shows a page
+    grubPath = null;
+    src.readOnly = false;
     setFolderCtx(name);
     const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
     if (!r.ok) { st('open failed ' + r.status, false); return; }
@@ -504,6 +508,8 @@
 
   let autoTimer = null;
   async function autosave() {
+    // a grub has no `current`, so route before the page-mode guard below
+    if (grubPath) { if (dirty) saveGrub(); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
     // never overlap saves: the pier serializes, so a second in-flight save is
     // 3.7s of stale-body work queued behind the first, delaying every preview
@@ -526,7 +532,60 @@
     if (savePending) { savePending = false; if (dirty) autosave(); }
   }
 
-  $('save').onclick = () => (mode === 'know' ? saveKnow() : save());
+  // ── editing an arbitrary grub (?grub=<ball path>) ────────────────────────
+  // Any file in the ball, not just a lattice page: an app's html/js/css/hoon.
+  // Deliberately NOT a third setMode branch — that function is wired into the
+  // tree, kind picker, chips and history panes, and a third mode would mean
+  // touching every one of them. This is a thin overlay: same textarea and save
+  // button, its own two endpoints.
+  let grubPath = null;
+  async function openGrub(p) {
+    grubPath = p;
+    current = null;
+    curFolder = null;
+    pname.value = p;
+    pname.readOnly = true;
+    $('histsec').hidden = true;
+    $('linksec').hidden = true;
+    st('loading ' + p + '…');
+    let r = null;
+    try { r = await fetch(api + '/grub-source?path=' + encodeURIComponent(p)); } catch {}
+    if (!r || !r.ok) { st('could not open ' + p + (r ? ' (' + r.status + ')' : ''), false); return; }
+    const d = await r.json();
+    src.value = d.text || '';
+    // a binary/opaque grub has no text form — show it, never offer to save it
+    src.readOnly = !d.editable;
+    dirty = false;
+    render();
+    st(d.editable ? 'grub ' + d.blot : 'read-only — ' + d.blot + ' has no text form');
+  }
+  async function saveGrub() {
+    if (!grubPath || src.readOnly) return;
+    if (saving) { savePending = true; return; }
+    saving = true;
+    st('saving…');
+    const sent = src.value;
+    let r = null;
+    try {
+      r = await fetch(api + '/grub-save?path=' + encodeURIComponent(grubPath),
+                      { method: 'POST', body: sent });
+    } catch {}
+    saving = false;
+    if (!r || !r.ok) {
+      // the mark can reject the source; show ITS error, since the stored grub
+      // still holds the previous content and the user needs to know why
+      let msg = r ? ' ' + r.status : '';
+      if (r) { try { const j = await r.json(); if (j && j.error) msg = ': ' + j.error; } catch {} }
+      st('save rejected' + msg, false);
+      return;
+    }
+    if (src.value === sent) dirty = false;
+    st('saved');
+    if (savePending) { savePending = false; if (dirty) saveGrub(); }
+  }
+
+  $('save').onclick = () =>
+    (grubPath ? saveGrub() : mode === 'know' ? saveKnow() : save());
   // ── new page-tree from a template ────────────────────────────────────────
   // Templates stamp out a whole tree (the `site` template is four pages), and
   // each page is its own writer round-trip, so this is deliberately slow and
@@ -1583,7 +1642,12 @@
     if (name && p && p.name === name) applyPage(name, p);
     return true;
   }
-  if (qs.get('view') === 'know') {
+  if (qs.get('grub')) {
+    // arrived from the explorer's edit link: open that ball path directly. The
+    // tree still lists lattice pages, so clicking one leaves grub mode.
+    loadTree();
+    openGrub(qs.get('grub'));
+  } else if (qs.get('view') === 'know') {
     setMode('know');
     legacyCheck();
   } else {

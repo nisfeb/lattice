@@ -1560,6 +1560,70 @@
       [%'POST' %know-reindex]
     ;<  ~  bind:m  know-reindex
     (send-ok eyre-id)
+  ::  ── editing arbitrary grubs (write apps in the editor) ──────────────────
+  ::  grub-source: any grub's editable text. `editable` is false for a binary
+  ::  or opaque grub — the client shows it read-only rather than offering a save
+  ::  that would corrupt it.
+      [%'GET' %grub-source]
+    =/  raw=(unit @t)  (~(get by args) 'path')
+    ?~  raw  (send-err eyre-id 400 'missing path')
+    =/  ro=(unit [rod=road:tarball nom=@ta])  (grub-road u.raw)
+    ?~  ro  (send-err eyre-id 400 'invalid path')
+    ;<  vn=view:nexus  bind:m  (peek:io rod.u.ro ~)
+    ?.  ?=([%file *] vn)  (send-err eyre-id 404 'no such grub')
+    =/  txt=(unit @t)  (grub-text sang.vn)
+    =/  blot=tape  (spud (rail-to-path:tarball p.sang.vn))
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['path' s+u.raw]
+        ['blot' s+(crip blot)]
+        ['editable' b+?=(^ txt)]
+        ['text' s+(fall txt '')]
+    ==
+  ::  grub-save: overwrite an existing grub, or create one with new=1. The
+  ::  extension picks the mark; conversion happens before the write, so bad
+  ::  source is a 400 and the stored grub is untouched.
+      [%'POST' %grub-save]
+    =/  raw=(unit @t)  (~(get by args) 'path')
+    ?~  raw  (send-err eyre-id 400 'missing path')
+    =/  ro=(unit [rod=road:tarball nom=@ta])  (grub-road u.raw)
+    ?~  ro  (send-err eyre-id 400 'invalid path')
+    =/  fresh=?  =('1' (~(gut by args) 'new' '0'))
+    ::  a full peek, not peek-exists: an overwrite needs the grub's CURRENT blot
+    ::  (and content-type, if it is a mime grub) so the save cannot retype it.
+    ;<  vn=view:nexus  bind:m  (peek:io rod.u.ro ~)
+    =/  ex=?  ?=([%file *] vn)
+    ?:  &(fresh ex)      (send-err eyre-id 409 'already exists')
+    ?:  &(!fresh !ex)    (send-err eyre-id 404 'no such grub')
+    =/  body=@t  (req-body req)
+    ;<  bk=(each bask:tarball tang)  bind:m
+      ?.  ?=([%file *] vn)
+        ::  new file: nothing to preserve, so the extension picks the mark
+        (grub-bask nom.u.ro body)
+      (grub-bask-into p.sang.vn (grub-mime-type sang.vn) body)
+    ?:  ?=(%| -.bk)
+      ::  the mark rejected the source. Report it so the editor can show it; the
+      ::  grub still holds its previous content.
+      ::  +obelisk-tang-text is a generic tang -> cord despite the name.
+      (send-err eyre-id 400 (obelisk-tang-text p.bk))
+    ;<  ~  bind:m
+      ?:  ex  (over:io rod.u.ro p.bk)
+      (make:io rod.u.ro |+[p.bk ~])
+    (send-ok eyre-id)
+  ::  grub-folder: create a directory — how a NEW app starts, since an app is
+  ::  just a folder of grubs under /apps.
+      [%'POST' %grub-folder]
+    =/  raw=(unit @t)  (~(get by args) 'path')
+    ?~  raw  (send-err eyre-id 400 'missing path')
+    =/  pp=(each path tang)  (mule |.((stab u.raw)))
+    ?:  ?=(%| -.pp)  (send-err eyre-id 400 'invalid path')
+    ?~  p.pp  (send-err eyre-id 400 'invalid path')
+    ;<  ex=?  bind:m  (peek-exists:io [%& %| p.pp])
+    ?:  ex  (send-err eyre-id 409 'already exists')
+    ::  +ensure-dirs walks the whole chain, so a new app's nested folders come
+    ::  up in one call and it is idempotent if a parent already exists.
+    ;<  ~  bind:m  (ensure-dirs ~ p.pp)
+    (send-ok eyre-id)
   ::  ── unified search (the omnibar's private half) ─────────────────────────
   ::  content-search: own pages + knowledge entries carrying `term`, each row
   ::  labelled with the visibility recorded at index time. Same JSON shape as
@@ -2017,6 +2081,117 @@
   ?:  =('' body)  $(rels t.rels)
   ;<  ~  bind:m  (poke-eval [%make i.rels (wrap-content %gmi body)])
   $(rels t.rels, made +(made))
+::  ── editing arbitrary grubs (write apps in the lattice editor) ─────────
+::
+::  The editor's own pages are /page/<rel>/code grubs. These arms let it open
+::  and save ANY grub in the ball, so an app's html/js/css/hoon can be written
+::  here instead of uploaded.
+::
+::  The write is the delicate part. `over` handed a mime bask does NOT reliably
+::  convert to the target blot: with no warm tube it silently REPLACES the
+::  grub's blot with /mime. Verified on a scratch grub — writing hoon source
+::  over a /hoon grub left `[mark: /mime]`, after which every later save was
+::  refused ("blot differs"), so a single typo permanently changed the file's
+::  type and locked out the fix. So the conversion is done HERE, explicitly:
+::  fetch the extension's tube, apply it inside +mule, and only write once it
+::  has produced a value. A tube failure (unparseable hoon) becomes a 400 with
+::  the error and leaves the grub untouched — which also avoids `over`'s other
+::  trap, that a failed dart fails the whole request fiber and grubbery emits
+::  no response for it, hanging the browser.
+::
+::  +grub-road: a ball path -> the road of the grub at it, plus its filename
+::  (the caller needs the name to pick a mark, and digging it back out of a
+::  road means three `p.`s through two `each`es). ~ for the root or a path
+::  `stab` cannot parse.
+++  grub-road
+  |=  raw=@t
+  ^-  (unit [rod=road:tarball nom=@ta])
+  ::  accept both `/apps/x/y` and `apps/x/y` — +stab needs the leading slash,
+  ::  and a hand-typed or link-built path is easy to get wrong either way.
+  ::  NOT (cat 3 '/' raw): `cat` is the face of the imported catalog library,
+  ::  which shadows the stdlib gate — the same collision `lk` caused before.
+  ::  +end takes an explicit bite here, as it does everywhere else in this file.
+  =/  abs=@t  ?:(=('/' (end [3 1] raw)) raw (crip ['/' (trip raw)]))
+  =/  pp=(each path tang)  (mule |.((stab abs)))
+  ?:  ?=(%| -.pp)  ~
+  ?~  p.pp  ~
+  =/  p=path  `path`p.pp
+  =/  nom=@ta  (rear p)
+  `[[%& %& (snip p) nom] nom]
+::  +grub-ext: a filename's extension, '' when it has none. Used to pick the
+::  mark to convert into, the same rule the explorer's upload uses.
+++  grub-ext
+  |=  nom=@ta
+  ^-  @ta
+  =/  t=tape  (flop (trip nom))
+  =/  pre=tape
+    |-  ^-  tape
+    ?~  t  ~
+    ?:  =('.' i.t)  ~
+    [i.t $(t t.t)]
+  ::  no dot at all -> no extension (flop consumed the whole name)
+  ?:  =((lent pre) (met 3 nom))  ''
+  (crip (flop pre))
+::  +grub-text: a grub's editable text, or ~ when it has none. A cord grub
+::  (hoon, md, css, js — the %hoon mark stores SOURCE, not an AST) reads
+::  directly; a mime grub goes through +mime-text, which refuses binary.
+++  grub-text
+  |=  =sang:tarball
+  ^-  (unit @t)
+  =/  nn=*  (sang-noun:tarball sang)
+  =/  c=(each @t tang)  (mule |.(;;(@t nn)))
+  ?:  ?=(%& -.c)  `p.c
+  =/  mm=(each mime tang)  (mule |.(;;(mime nn)))
+  ?.  ?=(%& -.mm)  ~
+  (mime-text p.p.mm q.p.mm)
+::  +grub-mime-type: a mime grub's content-type, ~ if it is not a mime grub.
+::  Needed so an overwrite can put the type back exactly as it was.
+++  grub-mime-type
+  |=  =sang:tarball
+  ^-  (unit path)
+  =/  mm=(each mime tang)  (mule |.(;;(mime (sang-noun:tarball sang))))
+  ?.  ?=(%& -.mm)  ~
+  `p.p.mm
+::  +grub-bask-into: text -> a bask carrying `dst`, the blot the grub ALREADY
+::  has. An overwrite must not change a file's type: the existing calendar.html
+::  is a /mime grub, while a freshly created .html gets the `html` mark, so
+::  deciding the blot from the extension would silently retype another app's
+::  file on the first save. A mime grub also keeps its own content-type rather
+::  than being reset to text/plain.
+++  grub-bask-into
+  |=  [dst=blot:tarball orig=(unit path) body=@t]
+  =/  m  (fiber:fiber:nexus ,(each bask:tarball tang))
+  ^-  form:m
+  ?:  =([/ %mime] dst)
+    =/  mt=path  (fall orig /text/plain)
+    (pure:m [%& [/ %mime] [mt (as-octs:mimes:html body)]])
+  =/  mim=mime  [/text/plain (as-octs:mimes:html body)]
+  ;<  tu=(unit tube:clay)  bind:m
+    (get-tube:io [%& %| /code] [[/ %mime] dst])
+  ?~  tu
+    =/  d=tape  (spud (rail-to-path:tarball dst))
+    (pure:m [%| ~[leaf+(weld "no mime -> " d) leaf+"conversion available"]])
+  =/  out=(each vase tang)  (mule |.((u.tu !>(mim))))
+  ?:  ?=(%| -.out)  (pure:m [%| p.out])
+  (pure:m [%& dst q.p.out])
+::  +grub-bask: text -> a bask carrying the right blot for `nom`'s extension.
+::  Only for a NEW file, where there is no existing blot to preserve.
+::  %| is a conversion failure (bad hoon), reported to the caller verbatim.
+::  An extension with no mark stores as mime, which is correct for a plain
+::  asset and is also what the explorer's upload does.
+++  grub-bask
+  |=  [nom=@ta body=@t]
+  =/  m  (fiber:fiber:nexus ,(each bask:tarball tang))
+  ^-  form:m
+  =/  mim=mime  [/text/plain (as-octs:mimes:html body)]
+  =/  ext=@ta  (grub-ext nom)
+  ?:  =('' ext)  (pure:m [%& [/ %mime] mim])
+  ;<  tu=(unit tube:clay)  bind:m
+    (get-tube:io [%& %| /code] [[/ %mime] [/ ext]])
+  ?~  tu  (pure:m [%& [/ %mime] mim])
+  =/  out=(each vase tang)  (mule |.((u.tu !>(mim))))
+  ?:  ?=(%| -.out)  (pure:m [%| p.out])
+  (pure:m [%& [/ ext] q.p.out])
 ::  ── web archiving (the /clip bookmarklet) ──────────────────────────────
 ::  +fetch-url: GET a clearweb url through iris, following at most one redirect.
 ::  Returns ~ on ANY failure (dead host, non-200, empty body) rather than
@@ -5413,10 +5588,19 @@
         (mime-note mt n)
       :(weld "<p>" (mime-note mt n) "</p>")
     "<p>opaque noun grub (not raw-servable)</p>"
+  ::  edit link: only for OUR ball (a peer's grubs are not ours to write) and
+  ::  only when the grub has recoverable text — a binary or opaque grub would
+  ::  be destroyed by a text round-trip, so it gets no edit affordance at all.
+  =/  editable=?  &(local ?=(^ (grub-text sang)))
+  =/  edit-link=tape
+    ?.  editable  ""
+    ::  +spud, not +pax-str: the route parses this with +stab, which requires the
+    ::  leading slash. pax-str omits it, so every edit link 400'd.
+    :(weld " &middot; <a href=\"/apps/lattice/app?grub=" (esc (spud pax)) "\">edit</a>")
   ;:  weld
     (explore-crumbs shp pax)
     "<div class=\"meta\">mark "  (esc (trip mk))
-    " &middot; <a href=\"?data\">raw</a></div>"
+    " &middot; <a href=\"?data\">raw</a>"  edit-link  "</div>"
     body
   ==
 ::  +send-raw: ?data — the file body verbatim with a mark-derived content-type.
