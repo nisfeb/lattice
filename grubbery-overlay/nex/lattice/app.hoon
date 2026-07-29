@@ -6241,6 +6241,11 @@
     ::  the ONLY way to the editor, browser and knowledge — so carry them here.
     "<a class=\"nav\" href=\"/apps/lattice/app\" title=\"editor\">&#9998;</a>"
     "<a class=\"nav\" href=\"/apps/lattice/know\" title=\"knowledge\">&#9670;</a>"
+    ::  settings lives here and NOT only on the home index: an authored /index
+    ::  replaces that whole view, which is exactly what orphaned the settings
+    ::  page (and the editor link before it). The bar survives an authored home,
+    ::  so anything that must stay reachable belongs in it.
+    "<a class=\"nav\" href=\"/apps/lattice/settings\" title=\"settings\">&#9881;</a>"
     "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search the catalog\">"
     "<button type=\"submit\">Go</button></form><main>"  inner  "</main>"
     (sse-script keep)  sw-register-script  "</body></html>"
