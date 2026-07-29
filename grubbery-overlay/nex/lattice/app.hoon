@@ -1582,18 +1582,19 @@
       %+  skip  want
       |=(r=path |((has live-pages r) (has theirs r)))
     =/  nil  (fiber:fiber:nexus ,~)
-    ::  record provenance BEFORE triggering, so a retry knows these vault
-    ::  entries are ours even if it crashes midway
+    ::  read the bodies directly (see +legacy-page-bodies) and write each one
+    ::  as a normal page. No poke, no waiting on another agent's cards, and no
+    ::  window in which arrivals can be missed: what we read is what we write.
+    ;<  bodies=(unit (list [rel=path body=@t]))  bind:m
+      ?:  =(~ fresh-pages)
+        (pure:(fiber:fiber:nexus ,(unit (list [rel=path body=@t]))) `~)
+      legacy-page-bodies
     ;<  ~  bind:m
       ?:  =(~ fresh-pages)  (pure:nil ~)
       (poke-eval [%legacy-pages (weld prior fresh-pages)])
-    ;<  ~  bind:m  ?:(=(~ fresh-pages) (pure:nil ~) legacy-pub-migrate)
-    ::  poll for arrivals instead of sleeping a fixed window: each page is its
-    ::  own writer transaction, so the time needed scales with the count.
-    ;<  landed=(list path)  bind:m
-      ?:  =(~ fresh-pages)  (pure:(fiber:fiber:nexus ,(list path)) ~)
-      (await-vault fresh-pages (add 10 (mul 2 (lent fresh-pages))))
-    ;<  promoted=@ud  bind:m  (promote-pages landed)
+    ;<  promoted=@ud  bind:m
+      ?~  bodies  (pure:(fiber:fiber:nexus ,@ud) 0)
+      (write-legacy-pages (skim u.bodies |=([r=path *] (has fresh-pages r))) 0)
     ::  ONLY claim the migration is finished when nothing is left behind. A
     ::  short count leaves the marker UNWRITTEN so the offer returns and the
     ::  user can retry — the knowledge import is idempotent (skip-existing),
@@ -1605,6 +1606,7 @@
     ::  must not be cleared for retirement.
     =/  done=?
       ?&  ?=(^ prels)
+          ?=(^ bodies)
           =(promoted (lent fresh-pages))
           =(0 (lent live-pages))
           =(0 (lent theirs))
@@ -1617,6 +1619,11 @@
         ['pages' (numb:enjs:format page-total)]
         ['pagesImported' (numb:enjs:format promoted)]
         ['pagesCollided' (numb:enjs:format (add (lent live-pages) (lent theirs)))]
+        ::  why the trigger failed, when it did — the difference between
+        ::  "no pages arrived" and knowing the poke was refused
+        :-  'pageError'
+        ?~  bodies  s+'could not read the old agent\'s pages'
+        ~
         ['pagesKnown' b+?=(^ prels)]
         ['complete' b+done]
     ==
@@ -1818,21 +1825,35 @@
   =/  r=(each (list @t) tang)  (mule |.(((ar:dejs:format so:dejs:format) u.j)))
   ?:  ?=(%| -.r)  (pure:m ~)
   (pure:m (murn p.r |=(c=@t (mole |.(`path`(stab c))))))
-::  +legacy-pub-migrate: ask the agent to emit its page bodies. Its only gate
-::  is authenticated.inbound-request, which we set because the poke genuinely
-::  IS the owner (gall enforces src==our on its side). Its reply goes to an
-::  eyre-id Eyre never issued and is dropped — noisy, harmless.
-++  legacy-pub-migrate
-  =/  m  (fiber:fiber:nexus ,~)
+::  +legacy-page-bodies: the retired agent's page bodies, by SCRY.
+::
+::  The deployed agents carry a `[%x %content ~]` peek that dumps the content
+::  map as {spat-key: gemtext} — the temporary migration arm from the original
+::  cutover. That is the same %gx mechanism the knowledge import uses, and it
+::  needs nothing from the agent beyond a read.
+::
+::  This replaces an earlier design that poked the agent's own /pub-migrate
+::  endpoint. That endpoint does not exist in the deployed version (state-10
+::  has no pub-migrate at all), so the poke was delivered, matched no route,
+::  404'd, emitted nothing, and acked positively — a silent no-op that cost a
+::  long debugging cycle. Read what the agent actually exposes.
+::
+++  legacy-page-bodies
+  =/  m  (fiber:fiber:nexus ,(unit (list [rel=path body=@t])))
   ^-  form:m
-  ;<  our=@p  bind:m  bowl-our
-  =/  req=inbound-request:eyre
-    :+  %.y  %.y
-    :-  [%ipv4 .0.0.0.0]
-    ::  %'POST' as a TERM — method:http is a term union and a cord does not
-    ::  nest into it.
-    [%'POST' '/apps/lattice/pub-migrate' ~ ~]
-  (gall-poke:io [our %lattice] [%handle-http-request [`@ta`'lattice-legacy-migrate' req]])
+  ;<  cj=json  bind:m  (legacy-peek /gx/lattice/content/json)
+  =/  r=(each (map @t @t) tang)
+    (mule |.(((om:dejs:format so:dejs:format) cj)))
+  ?:  ?=(%| -.r)  (pure:m ~)
+  %-  pure:m
+  :-  ~
+  %+  murn  ~(tap by p.r)
+  |=  [k=@t v=@t]
+  ^-  (unit [path @t])
+  =/  ko=(unit path)  (legacy-key-rel k)
+  ?~  ko  ~
+  ?:  =('' v)  ~
+  `[u.ko v]
 ::  +await-vault: wait for `rels` to appear in the vault, checking every 2s up
 ::  to `tries`. Replaces a fixed sleep: the arrivals are one writer
 ::  transaction per page, so the time needed scales with page count, and a
@@ -1869,6 +1890,27 @@
     (peek-exists:io [%& %& (weld app-base:lu (weld /page i.rels)) %code])
   ;<  rest=(list path)  bind:m  $(rels t.rels)
   (pure:m ?:(ex [i.rels rest] rest))
+::  +write-legacy-pages: create an editable page per legacy body. Skips any
+::  rel that already has a source — the collision guard runs before this, but
+::  the check is cheap and this must never overwrite a page of the user's.
+++  write-legacy-pages
+  |=  [items=(list [rel=path body=@t]) made=@ud]
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ?~  items  (pure:m made)
+  =/  pdir=path  (weld app-base:lu (weld /page rel.i.items))
+  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
+  ?:  ex  $(items t.items)
+  ::  the editable source…
+  ;<  ~  bind:m  (poke-eval [%make rel.i.items (wrap-content %gmi body.i.items)])
+  ::  …AND publish it. These pages were PUBLISHED in the old agent — that is
+  ::  what made the urb:// links between them resolve. Creating only the source
+  ::  leaves the vault empty, so every internal link 404s and the pages look
+  ::  migrated but broken. %save-page writes the vault grub and gains it,
+  ::  restoring exactly the visibility they already had.
+  ;<  ~  bind:m
+    (poke-pub [%save-page (spat (pub-path (crip (pax-str rel.i.items)))) body.i.items])
+  $(items t.items, made +(made))
 ::  +promote-pages: create an editable /page source for each named rel that
 ::  has a vault body and no source yet. SCOPED to the rels passed in - never
 ::  walks the whole vault, so it can neither resurrect a page the user deleted

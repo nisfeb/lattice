@@ -14,9 +14,41 @@
     prev.srcdoc = '<style>:root{color-scheme:light dark}</style>';
   };
 
+  // Long operations (a legacy import, a template's page-per-save) need to look
+  // ALIVE, not just print a line and appear hung. The spinner and its keyframes
+  // are built here rather than in the shell so a stale cached index.html cannot
+  // leave the JS referencing an element that does not exist.
+  const spinner = (() => {
+    if (!document.getElementById('spin-css')) {
+      const s = document.createElement('style');
+      s.id = 'spin-css';
+      s.textContent = '@keyframes latspin{to{transform:rotate(360deg)}}' +
+        '#spin{display:none;width:11px;height:11px;margin-right:6px;flex:none;' +
+        'border:2px solid var(--border);border-top-color:var(--green);' +
+        'border-radius:50%;animation:latspin .7s linear infinite;' +
+        'vertical-align:-1px}' +
+        '#spin.on{display:inline-block}' +
+        '@media (prefers-reduced-motion:reduce){#spin{animation-duration:2.4s}}';
+      document.head.appendChild(s);
+    }
+    let el = document.getElementById('spin');
+    if (!el) {
+      el = document.createElement('span');
+      el.id = 'spin';
+      status.parentNode.insertBefore(el, status);
+    }
+    return el;
+  })();
   const st = (msg, ok = true) => {
+    spinner.classList.remove('on');          // any plain status ends the spin
     status.textContent = msg;
     status.style.color = ok ? '' : '#c0392b';
+  };
+  // stWork: a status that keeps spinning until the next plain st()
+  const stWork = (msg) => {
+    status.textContent = msg;
+    status.style.color = '';
+    spinner.classList.add('on');
   };
 
   // ── in-app dialogs — NEVER browser-native prompt/confirm/alert ───────────
@@ -514,7 +546,7 @@
     if (!raw) return;
     const name = raw.trim().replace(/^\/+|\/+$/g, '');
     if (!name) return;
-    st('creating ' + name + ' from ' + tmpl + '\u2026 (one save per page)');
+    stWork('creating ' + name + ' from ' + tmpl + '\u2026 (one save per page)');
     let r = null;
     try {
       r = await mutate(api + '/template-new?template=' + encodeURIComponent(tmpl) +
@@ -1459,7 +1491,7 @@
       st('legacy import dismissed');
       return;
     }
-    st('importing from the old agent… this can take a few minutes');
+    stWork('importing from the old agent… this can take a few minutes');
     let r = null;
     try { r = await mutate(api + '/legacy-migrate'); } catch {}
     if (!r || !r.ok) {
@@ -1474,7 +1506,28 @@
         st('legacy import completed');
         return;
       }
-      st('legacy import failed' + (r ? ' ' + r.status : '') + ' — nothing was removed from the old agent', false);
+      // 504/502 is the reverse proxy giving up, not the ship failing: the
+      // import keeps running server-side and is usually PARTLY done. Say what
+      // landed, and name the cause, because the fix is a proxy setting.
+      const cut = r && (r.status === 504 || r.status === 502);
+      let listed = null;
+      try { listed = await (await fetch(api + '/know-list')).json(); } catch {}
+      const have = listed && listed.keys ? listed.keys.length : null;
+      st((cut ? 'the connection timed out mid-import' : 'legacy import failed' + (r ? ' ' + r.status : '')) +
+         (have !== null ? ' — ' + have + ' memories are here now' : '') +
+         ' · nothing was removed from the old agent · run it again to finish', false);
+      if (cut) {
+        await askConfirm(
+          'The request was cut off before it finished — the ship kept working, ' +
+          'so some of it landed' + (have !== null ? ' (' + have + ' memories now here)' : '') +
+          '.\n\nNothing was lost and nothing was removed from the old agent. ' +
+          'Run the import again to finish; anything already here is skipped, ' +
+          'so it cannot duplicate.\n\nIf this keeps happening, the reverse ' +
+          'proxy in front of this ship is closing long requests — raise ' +
+          'proxy_read_timeout for it (nginx defaults to 60s).',
+          'got it');
+        delete sessionStorage.latLegacyAsked;   // let it offer again immediately
+      }
       return;
     }
     const res = await r.json();
