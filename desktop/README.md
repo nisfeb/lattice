@@ -29,6 +29,11 @@ Linux). Drag-and-drop upload works too; the shell's own drag-drop
 interception is disabled for the workspace window so the UI's HTML5 drop
 handler receives the files.
 
+Ship links and `urb://` addresses stay in the app (`urb://` resolves through
+the ship's reader); only truly external links open in your system browser. Ctrl/Cmd +/- zooms the workspace. Closing
+the manager window while the workspace is open just hides it — it comes
+back when the workspace closes.
+
 If a previous run died without unmounting ("Transport endpoint is not
 connected" on remount), clear the stale mountpoint with
 `fusermount3 -u <dir>`.
