@@ -1,5 +1,12 @@
 # UI migration — HTML-in-hoon → lattice-hosted app
 
+> **Superseded layout note (2026-07-30):** the client was restructured into
+> light-DOM web components built from `ui-app/src/` — see
+> `ui-app/README.md` and
+> `docs/superpowers/plans/2026-07-30-ui-web-components.md`. `app.js` is now
+> a built artifact (`scripts/build-ui.mjs`); everything below about the
+> serving architecture still holds.
+
 Settled architecture (do not relitigate):
 - UI source: real files in `grubbery-overlay/nex/lattice/ui-app/` (index.html,
   app.js, app.css). No cords, no escaping, normal tooling.
