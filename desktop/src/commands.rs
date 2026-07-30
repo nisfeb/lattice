@@ -4,7 +4,7 @@
 
 use std::sync::Mutex;
 
-use lattice_fs::{default_cookie_path, EyreTransport};
+use lattice_fs::{default_cookie_path, EyreTransport, Transport};
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 use crate::config;
