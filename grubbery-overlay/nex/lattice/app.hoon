@@ -38,6 +38,7 @@
 /<  uij  ui-app/app.js
 /<  lc   /lib/lattice-comment.hoon
 /<  lb   /lib/lattice-bookmark.hoon
+/<  lh   /lib/lattice-history.hoon
 /<  lcl  /lib/lattice-clip.hoon
 =<  ^-  nexus:nexus
     |%
@@ -117,6 +118,9 @@
         ::  /bookmarks: the browser's saved-page list (newest first). A covering
         ::  file row (like /sub/follows) so it survives reload.
             [%fall %& [/ %bookmarks] [[/lattice %bookmarks] *bookmarks:lb]]
+        ::  /history: pages seen in the reader (newest first). Same covering-row
+        ::  shape as /bookmarks. Entries expire after lattice-history's ttl.
+            [%fall %& [/ %history] [[/lattice %history] *history:lh]]
         ::  /rev: a tiny change beacon bumped on every writer mutation. Open web
         ::  readers keep-SSE this one small grub (no-blot) and reload on any change
         ::  — a lightweight live-update signal that doesn't stream a page's heavy
@@ -155,7 +159,14 @@
         ;<  now=@da  bind:m  bowl-now
         ;<  ~  bind:m  (apply-action root now sage)
         ::  bump the change beacon so open readers live-reload (see +bump-rev).
-        ;<  ~  bind:m  (bump-rev now)
+        ::
+        ::  EXCEPT for history. Every page view records a visit, and bumping the
+        ::  beacon on each one would make browsing live-reload every other open
+        ::  reader — a reload storm produced by nothing the reader can see.
+        ::  History is not content; it does not belong on the content beacon.
+        ;<  ~  bind:m
+          ?:  =([/lattice %history-action] p.sage)  (pure:m ~)
+          (bump-rev now)
         $
       ::  /ui/main.sig: bind the HTTP endpoint and dispatch each request into a
       ::  per-request fiber under /ui/requests (same pattern as counter).
@@ -482,7 +493,14 @@
       ::  own pages get a live reader (keep /pub/index — its per-page hash changes
       ::  on every edit); remote pages stay static (can't keep a peer's grub).
       =/  rk=tape  ?:(=(ship.u.ref our) (keep-url "beacon/rev") "")
-      (send-view eyre-id (render-page canon rk (render-gmi u.body)))
+      ::  Respond FIRST, then record the visit. A history write is a poke to the
+      ::  serialised writer; doing it before the response would put a write on
+      ::  the critical path of every page READ, which is exactly what the perf
+      ::  pass took out. Safe to continue after send: a completed %simple
+      ::  response drops the connection's conns entry, so no later cancel can
+      ::  cull this fiber (the same reasoning /catalog-sweep relies on).
+      ;<  ~  bind:m  (send-view eyre-id (render-page canon rk (render-gmi u.body)))
+      (poke-history [%visit u.raw (page-title-of u.body u.raw)])
     ==
   ::  dispatch on [method action]. ponytail: read-know-map peeks the whole vault
   ::  per request — fine for a personal store. Writes poke the single writer
@@ -1098,6 +1116,68 @@
     ?~  url  (send-err eyre-id 400 'missing url')
     =/  title=@t  (~(gut by args) 'title' u.url)
     ;<  ~  bind:m  (poke-bookmark [%add u.url title])
+    (send-ok eyre-id)
+  ::  ── omnibar completions ─────────────────────────────────────────────────
+  ::  Bookmarks and history matching `q`, for the address bar's dropdown.
+  ::  Bookmarks rank above history (you chose to keep them), then by hits, then
+  ::  recency. Matching is a case-insensitive substring over url AND title, so
+  ::  typing a remembered word finds a page whose address you never learned.
+      [%'GET' %omni-suggest]
+    =/  q=@t  (~(gut by args) 'q' '')
+    ;<  bms=bookmarks:lb  bind:m  read-bookmarks
+    ;<  his=history:lh    bind:m  read-history
+    =/  needle=tape  (cass (trip q))
+    =/  hit=$-([@t @t] ?)
+      |=  [u=@t t=@t]
+      ^-  ?
+      ?:  =("" needle)  &
+      |(?=(^ (find needle (cass (trip u)))) ?=(^ (find needle (cass (trip t)))))
+    =/  brows=(list [@t @t @t @ud])
+      %+  turn  (skim bms |=(b=bookmark:lb (hit url.b title.b)))
+      |=(b=bookmark:lb [url.b title.b 'bookmark' 0])
+    ::  a url that is bookmarked is not also offered as history
+    =/  marked=(set @t)  (~(gas in *(set @t)) (turn bms |=(b=bookmark:lb url.b)))
+    =/  hrows=(list [@t @t @t @ud])
+      %+  turn
+        %+  skim  his
+        |=(v=visit:lh &(!(~(has in marked) url.v) (hit url.v title.v)))
+      |=(v=visit:lh [url.v title.v 'history' hits.v])
+    =/  rows=(list [@t @t @t @ud])  (scag 12 (weld brows hrows))
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['ok' b+&]
+        :-  'items'
+        :-  %a
+        %+  turn  rows
+        |=  [u=@t t=@t src=@t n=@ud]
+        %-  pairs:enjs:format
+        :~  ['url' s+u]  ['title' s+t]  ['source' s+src]
+            ['hits' (numb:enjs:format n)]
+        ==
+    ==
+  ::  the visit list itself, newest first — for a history page or a client that
+  ::  wants more than the dropdown's twelve.
+      [%'GET' %history]
+    ;<  his=history:lh  bind:m  read-history
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['ok' b+&]
+        :-  'items'
+        :-  %a
+        %+  turn  his
+        |=  v=visit:lh
+        %-  pairs:enjs:format
+        :~  ['url' s+url.v]  ['title' s+title.v]
+            ['last' s+(scot %da last.v)]  ['hits' (numb:enjs:format hits.v)]
+        ==
+    ==
+      [%'POST' %history-forget]
+    =/  url=(unit @t)  (~(get by args) 'url')
+    ?~  url  (send-err eyre-id 400 'missing url')
+    ;<  ~  bind:m  (poke-history [%forget u.url])
+    (send-ok eyre-id)
+      [%'POST' %history-clear]
+    ;<  ~  bind:m  (poke-history [%clear ~])
     (send-ok eyre-id)
       [%'POST' %unbookmark]
     =/  url=(unit @t)  (~(get by args) 'url')
@@ -2458,6 +2538,8 @@
     (apply-comment root our now !<(comment-action:lc q.sage))
   ?:  =([/lattice %bookmark-action] p.sage)
     (apply-bookmark root !<(bookmark-action:lb q.sage))
+  ?:  =([/lattice %history-action] p.sage)
+    (apply-history root now !<(history-action:lh q.sage))
   ~&([%lattice-bad-mark p.sage] (pure:m ~))
 ::  +bump-rev: write `now` to the /rev change beacon. A distinct value each call
 ::  (bowl-now is monotonic) guarantees a keep-SSE news event fires, so every open
@@ -2493,6 +2575,12 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %bookmark-action] act])
+::  +poke-history: record/forget a visit via the owner writer.
+++  poke-history
+  |=  act=history-action:lh
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %history-action] act])
 ::  +apply-eval: page create/command/delete, in the writer fiber.
 ::
 ++  apply-eval
@@ -2672,6 +2760,63 @@
         %del  (skip cur |=(b=bookmark:lb =(url.b url.act)))
     ==
   (put-file [%& %& root %bookmarks] [/lattice %bookmarks] new)
+::  +apply-history: record a visit, forget one, or clear. Runs in the writer.
+::
+::  Expiry happens HERE, on write, not on read: a read must never be a write
+::  (the reader serves unauthenticated clearweb traffic), and pruning on every
+::  mutation keeps the list bounded without a timer to maintain.
+::
+++  apply-history
+  |=  [root=path now=@da act=history-action:lh]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  cur=history:lh  bind:m  read-history
+  ::  drop anything past the ttl before applying the action, so every write
+  ::  also collects the garbage the previous fortnight left behind
+  =/  live=history:lh  (skim cur |=(v=visit:lh (fresh:lh now v)))
+  =/  new=history:lh
+    ?-  -.act
+        %clear   ~
+        %forget  (skip live |=(v=visit:lh =(url.v url.act)))
+        %visit
+      ::  a revisit moves to the front and increments; it does not duplicate.
+      =/  prior=(unit visit:lh)
+        =/  hit=history:lh  (skim live |=(v=visit:lh =(url.v url.act)))
+        ?~(hit ~ `i.hit)
+      =/  hits=@ud  ?~(prior 1 +(hits.u.prior))
+      ::  keep the FIRST title we saw if the new one is empty — a share-sheet or
+      ::  bare-url visit should not blank out a title recorded earlier.
+      =/  ttl=@t  ?:(=('' title.act) ?~(prior url.act title.u.prior) title.act)
+      =/  kept=history:lh  (skip live |=(v=visit:lh =(url.v url.act)))
+      ::  cast before scag: scag on a lest (non-empty list) mull-grows — the
+      ::  same trap +apply-bookmark documents.
+      (scag cap:lh `history:lh`[[url.act ttl now hits] kept])
+    ==
+  (put-file [%& %& root %history] [/lattice %history] new)
+::  +page-title-of: a page's display title for history — its first heading line,
+::  falling back to the url. Gemtext and markdown both open a heading with '#',
+::  so one rule covers every page kind the reader serves.
+++  page-title-of
+  |=  [body=@t fallback=@t]
+  ^-  @t
+  =/  lines=(list @t)  (to-wain:format body)
+  |-  ^-  @t
+  ?~  lines  fallback
+  ?.  =('#' (end [3 1] i.lines))  $(lines t.lines)
+  =/  t=tape  (trip i.lines)
+  =/  txt=tape
+    |-  ^-  tape
+    ?~  t  ~
+    ?:  |(=('#' i.t) =(' ' i.t))  $(t t.t)
+    t
+  ?~(txt fallback (crip `tape`txt))
+::  +read-history: the stored visit list (newest first; ~ if none yet).
+++  read-history
+  =/  m  (fiber:fiber:nexus ,history:lh)
+  ^-  form:m
+  ;<  seen=view:nexus  bind:m  (peek:io [%& %& app-base:lu %history] ~)
+  ?.  ?=([%file *] seen)  (pure:m ~)
+  (pure:m (fall (mole |.(!<(history:lh (need-vase:tarball sang.seen)))) ~))
 ::  +read-bookmarks: the stored bookmark list (newest first; ~ if none yet).
 ::
 ++  read-bookmarks
@@ -6427,6 +6572,15 @@
     "<a class=\"nav\" href=\"/apps/lattice/settings\" title=\"settings\">&#9881;</a>"
     "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search the catalog\">"
     "<button type=\"submit\">Go</button></form><main>"  inner  "</main>"
+    ::  omnibar completions. A STYLED list, deliberately — <datalist> is the
+    ::  one-line version and renders as an OS-drawn dropdown that ignores every
+    ::  style here, which is not acceptable in this UI.
+    %-  trip
+    '<style>.bar{position:relative}.omni{position:absolute;left:8px;right:8px;top:100%;z-index:40;background:var(--bg,#fff);border:1px solid #8886;border-radius:8px;overflow:hidden;box-shadow:0 6px 24px #0003;max-height:60vh;overflow-y:auto}.omnirow{display:flex;align-items:baseline;gap:.6em;padding:7px 10px;cursor:pointer;border-bottom:1px solid #8882}.omnirow:last-child{border-bottom:0}.omnirow:hover,.omnirow.on{background:#1a6ed822}.omnisrc{flex:none;font-size:.7rem;padding:1px 6px;border-radius:999px;border:1px solid #8886;opacity:.8}.omnisrc.bookmark{border-color:#1a6ed8;color:#1a6ed8}.omnittl{flex:none;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.omniurl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.6;font-size:.85rem}@media(prefers-color-scheme:dark){.omni{background:#1f1f1f}}@media(max-width:520px){.omnittl{max-width:50%}.omniurl{display:none}}</style>'
+    "<script>"
+    %-  trip
+    '(function(){var bar=document.querySelector(".bar");var inp=bar?bar.querySelector("input[name=url]"):null;if(!inp)return;var box=document.createElement("div");box.className="omni";box.hidden=true;bar.appendChild(box);var items=[],sel=-1,timer=null,seq=0;function hide(){box.hidden=true;sel=-1;}function pick(i){if(i<0||i>=items.length)return;inp.value=items[i].url;hide();bar.submit();}function draw(){box.textContent="";if(!items.length){hide();return}items.forEach(function(it,i){var row=document.createElement("div");row.className="omnirow"+(i===sel?" on":"");var b=document.createElement("span");b.className="omnisrc "+it.source;b.textContent=it.source==="bookmark"?"saved":"visited";var t=document.createElement("span");t.className="omnittl";t.textContent=it.title||it.url;var u=document.createElement("span");u.className="omniurl";u.textContent=it.url;row.appendChild(b);row.appendChild(t);row.appendChild(u);row.addEventListener("mousedown",function(e){e.preventDefault();pick(i)});box.appendChild(row);});box.hidden=false;}function fetchSug(){var q=inp.value.trim();var my=++seq;fetch("/apps/lattice/omni-suggest?q="+encodeURIComponent(q)).then(function(r){return r.ok?r.json():{items:[]}}).then(function(j){if(my!==seq)return;items=(j.items||[]);sel=-1;draw();}).catch(function(){if(my===seq){items=[];hide()}});}inp.addEventListener("input",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("focus",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("blur",function(){setTimeout(hide,120)});inp.addEventListener("keydown",function(e){if(box.hidden)return;if(e.key==="ArrowDown"){e.preventDefault();sel=Math.min(sel+1,items.length-1);draw()}else if(e.key==="ArrowUp"){e.preventDefault();sel=Math.max(sel-1,-1);draw()}else if(e.key==="Enter"){if(sel>=0){e.preventDefault();pick(sel)}}else if(e.key==="Escape"){hide()}});})();'
+    "</script>"
     (sse-script keep)  sw-register-script  "</body></html>"
   ==
 ::  +render-browser-page: the browser's page view — the address bar (+ an Edit
