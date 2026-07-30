@@ -35,7 +35,11 @@
       ::  run a urQL script against the obelisk db and PERSIST the new state.
       ::  Writes have to be serialised — +exec is read-modify-write over one
       ::  grub — so they go through the writer like every other mutation.
-      [%obelisk db=@tas urql=@t]
+      ::  quiet marks a script whose FAILURE is expected and meaningless — the
+      ::  CREATE DATABASE / CREATE TABLE repairs, which error whenever the object
+      ::  already exists (obelisk has no IF NOT EXISTS). Only the caller knows
+      ::  that, so it has to travel with the action.
+      [%obelisk db=@tas urql=@t quiet=?]
   ==
 ::  +$  form-cfg: a page's public-form limits. cap=0 means no absolute limit;
 ::  gap=0 means no cooldown. Set by the owner (page-forms), read by serve-form
