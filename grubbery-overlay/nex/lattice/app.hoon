@@ -23,6 +23,8 @@
 /<  lk   /lib/lattice-know.hoon
 /<  lp   /lib/lattice-pub.hoon
 /<  ast  /lib/obelisk-ast.hoon
+/<  obl  /lib/obelisk.hoon
+/<  sst  /lib/server-state.hoon
 /<  cat  /lib/catalog.hoon
 /<  le   /lib/lattice-eval.hoon
 /<  lu   /lib/lattice-urls.hoon
@@ -75,6 +77,11 @@
         ::  serialized pier, so the shell ships as one document + one script).
             [%over %& [/app %'index.html'] [[/ %mime] uih]]
             [%over %& [/app %'app.js'] [[/ %mime] uij]]
+        ::  /db.lattice: the obelisk database itself, a grub this nexus owns.
+        ::  grubbery ships obelisk as a LIBRARY (+exec:obl is a pure function),
+        ::  so there is no separate agent and no owner fiber — the catalog is
+        ::  just state we hold and hand to the engine.
+            [%fall %& [/ %'db.lattice'] [[/obelisk %server] *db-state:sst]]
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
         ::  /legacy: the retired-agent marker lives here (see +legacy-mark-road)
             [%fall %| /legacy empty-dir:loader]
@@ -90,12 +97,6 @@
             [%fall %| /ui/requests empty-dir:loader]
         ::  cat/ = catalog crawler state + derived index; sub/ = follows (one grub
         ::  per followed url); crawler.sig = the long-lived sweep fiber.
-        ::  cat/obelisk.sig = the serializing obelisk OWNER (finding #1): every
-        ::  obelisk query routes through it, so only ONE is ever in flight against
-        ::  the single shared /server sub (no cross-caller result contamination).
-        ::  cat/obk-out/ holds one ephemeral result grub per in-flight caller.
-            [%fall %& [/cat %'obelisk.sig'] [[/ %sig] ~]]
-            [%fall %| /cat/obk-out empty-dir:loader]
         ::  /sub/follows: the crawler's follow set (ships to sweep). A covering
         ::  file row (not an empty-dir) so the set survives reload.
             [%fall %& [/sub %follows] [[/lattice %sub-follows] *follows:lp]]
@@ -354,29 +355,6 @@
           [~ %'fs.sig']
         ;<  ~  bind:m  (rise-wait:io prod "%lattice fs port: failed")
         (lick-serve:io fs-port fs-op)
-      ::  /cat/obelisk.sig: the serializing obelisk OWNER (finding #1). Owns the
-      ::  single /server sub; takes %obk-req pokes one at a time, runs the query
-      ::  (obelisk-run-one), and writes the result to the caller's grub — so no two
-      ::  obelisk round-trips are ever interleaved on the shared sub.
-          [[%cat ~] %'obelisk.sig']
-        ;<  ~  bind:m  (rise-wait:io prod "%lattice obelisk owner: failed")
-        ::  ensure the result-grub dir exists once, so per-query put-files land.
-        ;<  ~  bind:m  (ensure-dirs (weld app-base:lu /cat) /obk-out)
-        ::  clear any orphaned result grubs from a prior run (finding #6).
-        ;<  ~  bind:m  (sweep-obk-out (weld app-base:lu /cat/obk-out))
-        |-
-        ;<  =sage:tarball  bind:m  take-poke:io
-        ::  obelisk-run-one arms a 15s wait per call and can't cancel it, so a
-        ::  finished query's timer fires here as a [/ %timer-wake] poke — ignore it.
-        ?:  =([/ %timer-wake] p.sage)  $
-        ?.  =([/lattice %obk-req] p.sage)
-          ~&([%lattice-obk-bad-req p.sage] $)
-        =/  req=obk-req:ast  !<(obk-req:ast q.sage)
-        ;<  res=(each (list cmd-result:ast) tang)  bind:m
-          (obelisk-run-one db.req urql.req)
-        ;<  ~  bind:m
-          (put-file [%& %& res-pax.req res-nom.req] [/lattice %obk-res] res)
-        $
       ==
     --
 |%
@@ -747,11 +725,10 @@
     =/  db=@tas  (~(gut by args) 'db' 'sys')
     =/  q=(unit @t)  (~(get by args) 'q')
     ?~  q  (send-err eyre-id 400 'missing q param')
-    ::  route through obelisk-query (the serializing obelisk owner), NOT raw
-    ::  obelisk-exec: a direct poke's result fact lands on the shared /server sub,
-    ::  where a concurrent owner-routed query could misread it as its own result.
-    ;<  res=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query db (trip u.q))
-    ?:  ?=(%| -.res)  (send-obelisk eyre-id res)
+    ::  a WRITE route, so it goes to the writer via +catalog-run. Run on
+    ::  +obelisk-query it would execute against a read-only copy of the db and
+    ::  discard the result — reporting success for a change that never landed.
+    ;<  ~  bind:m  (catalog-run db (trip u.q))
     (send-ok eyre-id)
   ::
       [%'GET' %obelisk-query]
@@ -1651,6 +1628,12 @@
   ::  Owner-only like all routes.
       [%'POST' %know-query]
     =/  urql=@t  (req-body req)
+    ::  a passthrough takes whatever the caller typed, so it can be either. A
+    ::  mutation run on +obelisk-query executes and is thrown away, which is the
+    ::  worst possible answer: {"ok":true} for a write that did not happen.
+    ?.  (urql-read (trip urql))
+      ;<  ~  bind:m  (catalog-run catalog-db (trip urql))
+      (send-ok eyre-id)
     ;<  kq=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query catalog-db (trip urql))
     (send-obelisk eyre-id kq)
   ::  rebuild the obelisk knowledge index from the live vault (Explore pane's
@@ -1752,9 +1735,7 @@
   ::  search-reindex: rebuild content-terms from the live tree + know vault.
   ::  Blocking (the client treats it fire-and-forget), like /know-reindex.
       [%'POST' %search-reindex]
-    ;<  ok=?  bind:m  content-reindex
-    ?.  ok
-      (send-err eyre-id 502 'obelisk is not answering — nothing was indexed')
+    ;<  ~  bind:m  content-reindex
     (send-ok eyre-id)
   ::  ── legacy agent migration (see the +legacy-live block) ────────────────
   ::  legacy-status: should the UI offer to import from a retired %lattice
@@ -2598,6 +2579,20 @@
     ::  leave it inert (code grub only — templates are never evaluated).
     ::  (Instantiation is +instantiate-template — one make PER page, not a batch.)
     (copy-tree root [%page from.act] [%template /[name.act]] %.n)
+      %obelisk
+    ::  the WRITE path: read the db, run the script, persist the new state.
+    ::  Read-modify-write over one grub, so it only happens here — the writer
+    ::  serialises every lattice mutation already.
+    ;<  st=db-state:sst  bind:m  read-db
+    ;<  our=@p  bind:m  bowl-our
+    =/  out=(each [(list cmd-result:ast) db-state:sst] tang)
+      (mule |.((exec:obl st now our db.act (trip urql.act))))
+    ?:  ?=(%| -.out)
+      ::  a failed statement leaves the database untouched, which is what makes
+      ::  +catalog-init idempotent: re-CREATEing an existing table errors and
+      ::  the rest of the run is unaffected.
+      ~&([%lattice-obelisk-failed p.out] (pure:m ~))
+    (put-file [%& %& root %'db.lattice'] [/obelisk %server] +.p.out)
       %legacy-pages
     ::  remember which page rels THIS migration triggered. Provenance matters:
     ::  a legacy page name may collide with a page the nexus published itself,
@@ -3617,167 +3612,54 @@
   ?:  live  (pure:m ~)
   ;<  ~  bind:m  (sleep-safe (div ~s1 10))
   (obelisk-wait-live our (dec n))
-::  +obelisk-run-one: run one urQL SELECT (or any script) against %obelisk and
-::  return its result. obelisk answers on its /server subscription (no scries),
-::  which grubbery materializes at .../data. We keep that grub, poke, take the
-::  result wave, then read + clam it. Called ONLY by the obelisk owner fiber
-::  (/cat/obelisk.sig), which guarantees one-in-flight; callers reach it via
-::  +obelisk-query -> owner poke. See finding #1.
-::
-++  obelisk-run-one
-  |=  [db=@tas urql=tape]
-  =/  m  (fiber:fiber:nexus ,(each (list cmd-result:ast) tang))
-  ^-  form:m
-  ::  short-circuit when obelisk isn't installed: skip the sub/keep/poke churn
-  ::  (which would otherwise stall 4s in obelisk-ensure-sub waiting for a sub
-  ::  that can never go live) and return the missing-agent error directly. Same
-  ::  %gu liveness check obelisk-exec uses. See obelisk-exec for why this matters.
-  ;<  up=?  bind:m  (typed-scry:io ? %loob /gu/obelisk/$)
-  ?.  up  (pure:m [%| ~[leaf+"obelisk not installed"]])
-  ;<  our=@p  bind:m  bowl-our
-  =/  data-road=road:tarball  [%& %& (obelisk-sub-base our) %data]
-  ;<  ~           bind:m  (obelisk-ensure-sub our)
-  ::  clear any stale result first: save-file suppresses no-op writes, so an
-  ::  identical result to last time would never fire a wave (fiber would hang).
-  ::  Culling guarantees the next fact is a fresh create -> always a wave.
-  ;<  *           bind:m  (cull-soft:io data-road)
-  ::  keep the data grub (initial wave consumed), then poke; the fact write fires
-  ::  the next wave. keep before poke so we can't miss the fact.
-  ;<  *           bind:m  (keep:io /obelisk-q data-road ~)
-  ;<  err=(unit tang)  bind:m  (obelisk-exec db urql)
-  ?^  err
-    ;<  ~  bind:m  (drop:io /obelisk-q data-road)
-    (pure:m [%| u.err])
-  ::  wait for the result wave, but arm a 15s timer so a down/unresponsive obelisk
-  ::  returns an error rather than hanging the request fiber forever.
-  ;<  now=@da     bind:m  bowl-now
-  =/  until=@da   (add now ~s15)
-  ;<  ~           bind:m  (send-wait:io until)
-  ::  match ONLY our own timer (take-news-or-wake-until), not any stale wake left
-  ::  by a prior query in this fiber — see finding #5.
-  ;<  nw=news-or-wake:io  bind:m  (take-news-or-wake-until /obelisk-q until)
-  ;<  ~           bind:m  (drop:io /obelisk-q data-road)
-  ?:  ?=(%wake -.nw)
-    (pure:m [%| ~[leaf+"obelisk: query timed out (agent down?)"]])
-  ;<  res=(each (list cmd-result:ast) tang)  bind:m  (obelisk-read-data data-road)
-  ::  settle: obelisk kicks /server right after the fact; let grubbery process
-  ::  that kick + auto-resub (live n->y) so a back-to-back query's ensure-sub
-  ::  sees a stable sub rather than a stale live=y that's about to be torn down.
-  ::  ponytail: fixed 0.5s; the real fix is a dedicated obelisk fiber serialising
-  ::  queries through one long-lived sub (build if crawl throughput needs it).
-  ::  KNOWN LIMIT (finding #2): the shared /server fact carries no query id, so if
-  ::  obelisk takes >15s (this call times out) and then delivers that late result
-  ::  during the NEXT query's wait, the next caller reads the stale rows. Needs a
-  ::  nonce echoed in the urQL + verified on read-back, or the dedicated-sub redesign
-  ::  above. Cannot happen on a responsive local obelisk (results land in ms); only
-  ::  under a wedged obelisk with concurrent catalog callers.
-  ;<  ~           bind:m  (sleep-safe (div ~s1 2))
-  (pure:m res)
-::  +obelisk-query: caller-facing entry (request fibers + crawler). Pokes the
-::  obelisk owner (/cat/obelisk.sig) with the query + a unique result-grub rail,
-::  keeps that grub, and waits for the owner to write the answer there. Routing
-::  every query through the one owner serialises access to the shared /server sub,
-::  so concurrent callers never read each other's results (finding #1). Absolute
-::  roads so it resolves identically from depth-2 request fibers and the depth-0
-::  crawler.
-::
-::  KNOWN LIMIT (review: unbounded born growth): every query mints a fresh
-::  unique-nonce rail, and grubbery never reclaims a rail's born hist skeleton —
-::  delete only appends a tomb ("NOT born - it's a high-water mark"), and %lose
-::  (drop-hist) rewrites matched entries as tombs IN PLACE, appending a fresh
-::  wavefront when the top matches, so no dart shrinks it (verified against
-::  drop-hist; adding %lose to these culls would reclaim nothing and grow the
-::  hist by one entry per call). Content lobes ARE reclaimed — the result grub
-::  is %temp, so cull's tomb-temp drops its ject ref — leaving ~one rail + two
-::  tombed hist entries of permanent skeleton per query. The nonce cannot be
-::  pooled or reused per caller: after a 30s owner timeout the owner may still
-::  write the OLD query's result to that rail, and a reused name would deliver
-::  it to the NEXT query's keep — cross-query contamination, the class of bug
-::  this owner routing exists to prevent. ponytail: ceiling is slow monotonic
-::  born growth (order 100s of bytes per obelisk round-trip; ~1.2k rails/day
-::  per 100 pages crawled on the ~h6 tick). Real fix is a fiber-to-fiber
-::  poke-back — the owner pokes the result straight to the caller's grub, no
-::  result rail at all — which needs a take-poke path in every waiting caller.
-::
+::  +urql-read: is this script a pure query? obelisk's selections are FROM-first,
+::  so a script that starts with anything else (INSERT/DELETE/UPDATE/CREATE/
+::  TRUNCATE/DROP) mutates the db and has to be routed to the writer.
+++  urql-read
+  |=  s=tape
+  ^-  ?
+  =/  t=tape
+    |-  ^-  tape
+    ?~  s  ~
+    ?:  (lte i.s ' ')  $(s t.s)
+    s
+  =("from" (cass (scag 4 t)))
 ++  obelisk-query
   |=  [db=@tas urql=tape]
   =/  m  (fiber:fiber:nexus ,(each (list cmd-result:ast) tang))
   ^-  form:m
-  ;<  rw=wire  bind:m  (nonce:io /obk-res)
-  =/  nom=@ta  (rear rw)
-  =/  res-dir=path  (weld app-base:lu /cat/obk-out)
-  =/  res-road=road:tarball  [%& %& res-dir nom]
-  ::  keep our (fresh, unique-nonce) result grub BEFORE poking, so the owner's
-  ::  create-wave can't be missed. No pre-cull: the name is unique so nothing stale
-  ::  exists, and culling a never-existent grub just spams grubbery's "no grub" log.
-  ;<  *  bind:m  (keep:io rw res-road ~)
-  ::  a wedged owner reports rather than hanging. The keep is already up, so it
-  ::  has to be dropped and the (never-written) result grub swept before leaving,
-  ::  or every failed query leaks a subscription.
-  ;<  perr=(unit tang)  bind:m  (poke-obk [db urql res-dir nom])
-  ?^  perr
-    ;<  ~  bind:m  (drop:io rw res-road)
-    ;<  *  bind:m  (cull-soft:io res-road)
-    (pure:m [%| u.perr])
+  ::  Read the database out of our own grub and run the query IN PROCESS.
+  ::
+  ::  +exec:obl is a pure function — [state now our db script] -> results — so a
+  ::  query needs no agent, no subscription, and no poke to another fiber. That
+  ::  is the whole reason the old owner apparatus existed, and all of it is gone.
+  ::  A peek is enough, and peeks are the one thing that has worked reliably
+  ::  here throughout.
+  ::
+  ::  WRITES: this arm DISCARDS the returned state, so it is read-only. Anything
+  ::  that mutates the catalog goes through +catalog-run, which routes to the
+  ::  single writer — the same serialisation every other lattice mutation uses.
   ;<  now=@da  bind:m  bowl-now
-  ::  the owner runs its own 15s obelisk wait; add margin for a queued owner.
-  =/  until=@da  (add now ~s30)
-  ;<  ~  bind:m  (send-wait:io until)
-  ;<  nw=news-or-wake:io  bind:m  (take-news-or-wake-until rw until)
-  ;<  ~  bind:m  (drop:io rw res-road)
-  ?:  ?=(%wake -.nw)
-    ;<  *  bind:m  (cull-soft:io res-road)
-    (pure:m [%| ~[leaf+"obelisk: owner timed out"]])
-  ;<  res=(each (list cmd-result:ast) tang)  bind:m  (obk-read-res res-road)
-  ;<  *  bind:m  (cull-soft:io res-road)
-  (pure:m res)
-::  +poke-obk: poke the obelisk owner with a query request. Absolute road so it
-::  works from any caller depth (request fiber or crawler).
-::
-::  +poke-soft, NOT +poke. A plain poke waits for the owner's ack forever, and
-::  obelisk-query only arms its 30s timer AFTER that ack — so a wedged owner made
-::  every search request hang indefinitely rather than erroring. Measured: 300s
-::  with no response. poke-soft carries its own 5s timer and hands back the
-::  reason, which is the difference between "search is broken" and a dead tab.
-++  poke-obk
-  |=  req=obk-req:ast
-  =/  m  (fiber:fiber:nexus ,(unit tang))
+  ;<  our=@p   bind:m  bowl-our
+  ;<  st=db-state:sst  bind:m  read-db
+  ::  the engine bails on a malformed script rather than returning an error, so
+  ::  it runs inside +mule and a parse failure becomes a value.
+  =/  out=(each [(list cmd-result:ast) db-state:sst] tang)
+    (mule |.((exec:obl st now our db urql)))
+  ?:  ?=(%| -.out)  (pure:m [%| p.out])
+  (pure:m [%& -.p.out])
+::  +read-db: the obelisk database grub. A fresh (empty) state if it is missing,
+::  so a first query on a new ship reports "no such table" rather than crashing.
+++  read-db
+  =/  m  (fiber:fiber:nexus ,db-state:sst)
   ^-  form:m
-  (poke-soft:io [%& %& (weld app-base:lu /cat) %'obelisk.sig'] [[/lattice %obk-req] req])
-::  +sweep-obk-out: cull every result grub currently under /cat/obk-out. Run once
-::  at owner startup: any grub sitting there is orphaned (finding #6) — a caller
-::  that timed out (30s) or disconnected before the owner wrote its result, so the
-::  owner re-created a grub nobody culls. Callers are ephemeral, so at owner (re)start
-::  nothing there is live. ponytail: startup sweep bounds the CONTENT leak (live
-::  orphans' lobes); the culled rails' born hist skeletons are permanent either way
-::  — see obelisk-query's KNOWN LIMIT. On a fast local obelisk callers get their
-::  wave in ms and never orphan, so steady-state orphan growth is ~0. Upgrade to a
-::  fiber-to-fiber poke-back (no shared grub) if it ever matters.
-++  sweep-obk-out
-  |=  base=path
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %| base] ~)
-  ?.  ?=([%ball *] seen)  (pure:m ~)
-  ::  result grubs are flat FILES at this node, so they live in contents.u.fil —
-  ::  NOT in dir (which holds only child *directories*, always empty here). Reading
-  ::  dir made the sweep a permanent no-op. Mirror collect-entries / read-know-map.
-  =/  names=(list @ta)
-    ?~  fil.ball.seen  ~
-    (turn ~(tap by contents.u.fil.ball.seen) |=([s=@ta *] s))
-  |-
-  ?~  names  (pure:m ~)
-  ;<  *  bind:m  (cull-soft:io [%& %& base i.names])
-  $(names t.names)
-::  +sleep-draining: sleep for `for`, but consume the stray inputs that land during
-::  the window (finding #13) instead of skipping+retaining them: both [/ %timer-wake]
-::  pokes AND the late %peek/%veto of a peek-remote-wait that already timed out.
-::  Early-resolving obelisk-query / peek-remote-wait calls in this fiber leave their
-::  send-wait timers armed (fiberio has no timer-cancel) and their peeks outstanding;
-::  a plain +sleep (take-wake with a fixed `until`) skips those non-matching inputs,
-::  so they pile up in the crawler's skip queue forever. Here we arm one deadline,
-::  then take-wake-drain ANY of them in a loop, ending only once the clock reaches the
-::  deadline — so each stray is consumed as it fires rather than accumulating.
+  ;<  here=rail:tarball  bind:m  get-here-abs:io
+  =/  deep=@ud  (lent path.here)
+  =/  base=@ud  (lent app-base:lu)
+  =/  up=@ud  ?:((lth deep base) 0 (sub deep base))
+  ;<  vn=view:nexus  bind:m  (peek:io [%| up %& / %'db.lattice'] ~)
+  ?.  ?=([%file *] vn)  (pure:m *db-state:sst)
+  (pure:m (fall (mole |.(!<(db-state:sst (need-vase:tarball sang.vn)))) *db-state:sst))
 ++  sleep-draining
   |=  for=@dr
   =/  m  (fiber:fiber:nexus ,~)
@@ -3790,42 +3672,6 @@
   ;<  chk=@da  bind:m  bowl-now
   ?:  (gte chk wake-at)  (pure:m ~)
   $
-::  +obk-read-res: read the owner's result grub (a local %& vase via obk-res mark).
-::
-++  obk-read-res
-  |=  res-road=road:tarball
-  =/  m  (fiber:fiber:nexus ,(each (list cmd-result:ast) tang))
-  ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io res-road ~)
-  ?.  ?=([%file *] seen)
-    (pure:m [%| ~[leaf+"obelisk: no result grub"]])
-  =/  parsed  (mule |.(!<((each (list cmd-result:ast) tang) (need-vase:tarball sang.seen))))
-  ?:  ?=(%| -.parsed)  (pure:m [%| p.parsed])
-  (pure:m p.parsed)
-::  +obelisk-read-data: read the materialized /server fact grub. grubbery has no
-::  marc:tarball for %noun (gub/mar/noun is a clay mark), so the fact is stored
-::  page-wrapped as [%noun <each-noun>]; unwrap that (or accept a bare each if a
-::  marc ever validates it) and clam to obelisk's result type.
-::
-++  obelisk-read-data
-  |=  data-road=road:tarball
-  =/  m  (fiber:fiber:nexus ,(each (list cmd-result:ast) tang))
-  ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io data-road ~)
-  ?.  ?=([%file *] seen)
-    (pure:m [%| ~[leaf+"obelisk: no result grub"]])
-  =/  raw=*  q:(need-vase:tarball sang.seen)
-  =/  en=*  ?:(&(?=(^ raw) =(%noun -.raw)) +.raw raw)
-  =/  parsed  (mule |.(;;((each (list cmd-result:ast) tang) en)))
-  ?:  ?=(%| -.parsed)  (pure:m [%| p.parsed])
-  (pure:m p.parsed)
-::  +obelisk-json: render an obelisk result (or error) as JSON — the retired
-::  gall agent's FLAT-OBJECT contract, which the Kotlin client's catalog reads
-::  and the ship's MCP tools parse: success is {ok:true, action, relation,
-::  count, columns:[names], rows:[[cell,..]]} (rows are ORDERED ARRAYS, column
-::  order from the result-set's first vector); error is {ok:false, error}.
-::  Ported from the old lib's +ob-results-json (client contract, byte-for-byte).
-::
 ++  obelisk-json
   |=  res=(each (list cmd-result:ast) tang)
   ^-  json
@@ -3843,7 +3689,7 @@
       action    ?:(?=(%action -.i.results) action.i.results action)
       relation  ?:(?=(%relation -.i.results) relation.i.results relation)
       count     ?:(?=(%vector-count -.i.results) `count.i.results count)
-      vecs      ?:(?=(%result-set -.i.results) set.i.results vecs)
+      vecs      ?:(?=(%result-set -.i.results) +.i.results vecs)
     ==
   =/  cols=(list @t)
     ?~  vecs  ~
@@ -3916,7 +3762,7 @@
   ?~  results  out
   ?.  ?=([%result-set *] i.results)
     $(results t.results)
-  =.  out  (obelisk-col-rows out col set.i.results)
+  =.  out  (obelisk-col-rows out col +.i.results)
   $(results t.results)
 ++  obelisk-col-rows
   |=  [out=(set @t) col=@tas rows=(list vector:ast)]
@@ -3930,25 +3776,25 @@
     $(cells t.cells)
   $(rows t.rows)
 ++  catalog-db  `@tas`%lattice
-::  +catalog-run: run one urQL statement against the catalog db, waiting for it
-::  to actually execute. Uses obelisk-query (not obelisk-exec) even for writes:
-::  obelisk kicks its /server subscribers after every poke, so with a live sub
-::  a fire-and-forget obelisk-exec in a SEQUENCE races the kick/resub cycle and
-::  silently drops statements. obelisk-query re-establishes the sub per call, so
-::  sequential writes land reliably. ponytail: ceiling is one round-trip per
-::  statement; batch into fewer scripts if crawl throughput ever demands it.
+::  +catalog-run: run one urQL statement against the catalog db. Obelisk is a
+::  LIBRARY now (+exec is a pure function over db state), not a separate agent, so
+::  a write is a read-modify-write over one grub and has to be serialised — it
+::  goes to the writer as an %obelisk eval-action, the same path every other
+::  lattice mutation takes.
 ::
-::  KNOWN LIMIT (finding #13): the (each ... tang) result is discarded, so callers
-::  (catalog-classify, catalog-init, the /save+/delete sweeps) send {"ok":true}
-::  even when the obelisk write no-ops (e.g. classifying a URL absent from
-::  catalog-pages) or errors. Catalog writes are best-effort indexing; surface the
-::  result (502 on %|) here if a client ever needs a real applied/failed signal.
+::  KNOWN LIMIT (finding #13): the result is not returned to the caller, so
+::  callers (catalog-classify, catalog-init, the /save+/delete sweeps) send
+::  {"ok":true} even when the write no-ops or errors. A failed statement is logged
+::  by the writer (%lattice-obelisk-failed) and leaves the db untouched, which is
+::  what makes re-running +catalog-init a safe schema repair.
 ++  catalog-run
   |=  [db=@tas urql=tape]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  *  bind:m  (obelisk-query db urql)
-  (pure:m ~)
+  ::  WRITES go to the writer. +obelisk-query is read-only by construction (it
+  ::  throws away the state +exec returns), so a CREATE/INSERT run through it
+  ::  would execute and then vanish.
+  (poke-eval [%obelisk db (crip urql)])
 ::  +catalog-init: create the lattice database, then each catalog table as its OWN
 ::  poke (per catalog-create-list's contract — the joined catalog-create-urql would
 ::  abort at the first already-existing table and never create the rest). Each
@@ -4315,13 +4161,13 @@
 ::  Two reads total (one deep page peek, one know-map read), then a single
 ::  TRUNCATE+INSERT.
 ::
-::  Returns whether obelisk actually ACCEPTED the write. The populate deliberately
-::  goes through +obelisk-query rather than +catalog-run: catalog-run discards the
-::  result, so on a ship with no obelisk installed this arm completed "fine" and
-::  the settings button reported "your pages and notes are searchable" having
-::  written nothing at all. A reindex that indexed nothing must not report success.
+::  The populate goes through +catalog-run (the writer) like every other write.
+::  It used to run on +obelisk-query so it could return an accepted/failed ack,
+::  which mattered when obelisk was a separate agent that could be absent. Obelisk
+::  is compiled into this app now — it cannot be missing — and that path discards
+::  the state it produces, so the ack described a write that was thrown away.
 ++  content-reindex
-  =/  m  (fiber:fiber:nexus ,?)
+  =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
   =/  pages=(list [rel=path body=@t shr=share-mode:le])
@@ -4343,10 +4189,8 @@
     (index-terms:cat *(map @t @ud) (trip (end [3 body-cap] body.e)))
   ;<  ~  bind:m  (catalog-run %sys (weld "CREATE DATABASE " (trip catalog-db)))
   ;<  ~  bind:m  (catalog-create-loop content-index-create-list:cat)
-  ;<  r=(each (list cmd-result:ast) tang)  bind:m
-    %+  obelisk-query  catalog-db
-    (content-index-populate-urql:cat (weld page-rows know-rows))
-  (pure:m ?=(%& -.r))
+  %+  catalog-run  catalog-db
+  (content-index-populate-urql:cat (weld page-rows know-rows))
 ++  tree-walk
   |=  [b=ball:tarball w=wave:nexus rel=path]
   ^-  (list [pax=path j=json])

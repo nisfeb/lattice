@@ -32,6 +32,10 @@
       [%form-reset pax=path]            ::  zero a page's submission counter
       [%legacy-seen imported=@ud]       ::  retired %lattice agent dealt with
       [%legacy-pages rels=(list path)]  ::  page rels this migration triggered
+      ::  run a urQL script against the obelisk db and PERSIST the new state.
+      ::  Writes have to be serialised — +exec is read-modify-write over one
+      ::  grub — so they go through the writer like every other mutation.
+      [%obelisk db=@tas urql=@t]
   ==
 ::  +$  form-cfg: a page's public-form limits. cap=0 means no absolute limit;
 ::  gap=0 means no cooldown. Set by the owner (page-forms), read by serve-form
