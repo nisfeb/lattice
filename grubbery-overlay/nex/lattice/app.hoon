@@ -3823,14 +3823,17 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  ~  bind:m  (catalog-run %sys (weld "CREATE DATABASE " (trip catalog-db)))
-  (catalog-create-loop catalog-create-list:cat)
-++  catalog-create-loop
+  (catalog-run-loop catalog-create-list:cat)
+::  +catalog-run-loop: run a sequence of scripts, each as its own poke/event.
+::  Used for the CREATE lists and for the chunked reindex populates (+chunk-rows),
+::  which must not land in a single event.
+++  catalog-run-loop
   |=  stmts=(list tape)
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?~  stmts  (pure:m ~)
   ;<  ~  bind:m  (catalog-run catalog-db i.stmts)
-  (catalog-create-loop t.stmts)
+  (catalog-run-loop t.stmts)
 ::  +know-reindex: rebuild the obelisk knowledge index from the live vault. Ensure
 ::  the db + knowledge/tags tables exist (create errors swallowed, like catalog-init),
 ::  then TRUNCATE + re-INSERT every entry in one write. Driven by POST /know-reindex
@@ -3841,15 +3844,14 @@
   ^-  form:m
   ;<  entries=(map path know-entry:lk)  bind:m  read-know-map
   ;<  ~  bind:m  (catalog-run %sys (weld "CREATE DATABASE " (trip catalog-db)))
-  ;<  ~  bind:m  (catalog-create-loop know-index-create-list:cat)
+  ;<  ~  bind:m  (catalog-run-loop know-index-create-list:cat)
   =/  rows=(list [item=@t updated=@da tags=(list @t)])
     %+  turn  ~(tap by entries)
     |=  [key=path e=know-entry:lk]
     [(spat key) updated.e ~(tap in tags.e)]
-  ::  populate via catalog-run (obelisk-query -> the serializing obelisk owner), NOT
-  ::  raw obelisk-exec: a direct poke's result fact lands on the shared /server sub,
-  ::  where a concurrent owner-routed query could misread it as its own result.
-  (catalog-run catalog-db (know-index-populate-urql:cat rows))
+  ::  chunked: one poke per script, so a big vault cannot build the whole index in
+  ::  a single Arvo event. See +chunk-rows in lib/catalog.hoon.
+  (catalog-run-loop (know-index-populate-urql:cat rows))
 ::  +catalog-index-page: analyze one page body and write its catalog rows — the
 ::  two-poke page upsert (ensure INSERT + content refresh) plus the term index.
 ::  pat is the content-map key (/pub/.../gmi); the url is derived inside the urQL
@@ -4204,8 +4206,8 @@
     %+  top-terms:cat  term-max:cat
     (index-terms:cat *(map @t @ud) (trip (end [3 body-cap] body.e)))
   ;<  ~  bind:m  (catalog-run %sys (weld "CREATE DATABASE " (trip catalog-db)))
-  ;<  ~  bind:m  (catalog-create-loop content-index-create-list:cat)
-  %+  catalog-run  catalog-db
+  ;<  ~  bind:m  (catalog-run-loop content-index-create-list:cat)
+  %-  catalog-run-loop
   (content-index-populate-urql:cat (weld page-rows know-rows))
 ++  tree-walk
   |=  [b=ball:tarball w=wave:nexus rel=path]
@@ -4773,8 +4775,8 @@
     [%done ~]
   ==
 ::  +bowl-our / +bowl-now: read our/now from /sys/bowl like get-our:io / get-time:io,
-::  but the take MARK-FILTERS the bowl reply — a stray poke (a queued %obk-req,
-::  %know-action, etc. buffered while this fiber was mid-work) is %skip'd back to the
+::  but the take MARK-FILTERS the bowl reply — a stray poke (a queued %know-action,
+::  %eval-action, etc. buffered while this fiber was mid-work) is %skip'd back to the
 ::  owning loop instead of being stolen. fiberio's get-our/get-time use a plain
 ::  take-poke, so in a busy fiber (obelisk owner, crawler, writer) they grab a
 ::  neighbour's message and nest-fail (-need.@p / -need.@da). The one grubbery peek
@@ -4808,8 +4810,8 @@
 ::  but sourcing our/now from bowl-our/bowl-now (mark-filtered) instead of fiberio's
 ::  get-our/get-time (unfiltered take-poke). fiberio's own poke-ack / timer-wake
 ::  takes ARE mark-filtered — only their internal get-our/get-time steal a queued
-::  poke in a busy fiber. The obelisk owner and crawler run these while an %obk-req
-::  is buffered, so the stolen poke nest-fails (-need.@p / -need.@da). These local
+::  poke in a busy fiber. The writer and crawler run these while another action is
+::  buffered, so the stolen poke nest-fails (-need.@p / -need.@da). These local
 ::  copies keep the correct outer take and swap only the our/now read. No %veto
 ::  branch: /sys/gall and /sys/bowl are own-ship runtime grubs (no weir, no veto).
 ::

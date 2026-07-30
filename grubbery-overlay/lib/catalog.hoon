@@ -102,22 +102,49 @@
 ::  /know-reindex (create tables, then TRUNCATE + re-INSERT the live vault), so
 ::  it goes stale between reindexes, same as the retired agent's knowledge/tags.
 ::
+::  +chunk-rows: split VALUES tuples into complete multi-row INSERT statements.
+::
+::  WHY MULTI-ROW: obelisk's +update-file (gub/lib/obelisk/crud.hoon) rebuilds a
+::  table's ENTIRE indexed-rows list once per STATEMENT, by tapping the whole
+::  primary index. One INSERT per row therefore costs O(R) each and O(R^2) for a
+::  full rebuild. A multi-row INSERT is ONE statement, so a chunk pays that cost
+::  once no matter how many tuples it carries.
+::
+::  WHY CHUNKED and not one giant statement: each chunk is a separate script, so
+::  the caller sends it as its own poke and no single Arvo event has to build the
+::  whole index. A reindex of a real vault is tens of thousands of rows; in one
+::  event that blocks the ship.
+::
+++  chunk-max  ^-(@ud 500)
+++  chunk-rows
+  |=  [head=tape tuples=(list tape)]
+  ^-  (list tape)
+  =/  rest=(list tape)  tuples
+  |-  ^-  (list tape)
+  ?~  rest  ~
+  ::  scag/slag/zing are WET: hand them the widened copy, never the face the ?~
+  ::  just narrowed, or the cast lands on the product and mull-grows.
+  =/  all=(list tape)  rest
+  ::  bound to a face, not inlined into the weld — see +catalog-page-terms-urql.
+  =/  vals=tape  (zing (scag chunk-max all))
+  :-  :(weld head vals ";")
+  $(rest (slag chunk-max all))
 ++  know-index-create-list
   ^-  (list tape)
   :~  "CREATE TABLE knowledge (item @t, updated @da) PRIMARY KEY (item);"
       "CREATE TABLE tags (item @t, tag @t) PRIMARY KEY (item, tag);"
   ==
-::  +know-index-populate-urql: clear both tables, then one INSERT per entry (+ one
-::  per tag). Multi-statement; poked as a single obelisk write.
+::  +know-index-populate-urql: clear both tables, then refill them with chunked
+::  multi-row INSERTs. Returns one script PER POKE (see +chunk-rows) — knowledge
+::  and tags are separate tables, so they cannot share a statement.
 ::
 ++  know-index-populate-urql
   |=  rows=(list [item=@t updated=@da tags=(list @t)])
-  ^-  tape
-  =/  inserts=(list tape)
-    %-  zing
+  ^-  (list tape)
+  =/  pairs=(list [tape (list tape)])
     %+  turn  rows
     |=  [item=@t updated=@da tags=(list @t)]
-    ^-  (list tape)
+    ^-  [tape (list tape)]
     =/  ek=tape  (urq-esc (trip item))
     =/  up=tape  (trip (scot %da updated))
     ::  DEDUP tags on the ESCAPED literal, like catalog-page-refresh-urql: urq-esc
@@ -127,12 +154,18 @@
     ::  truncated and permanently un-rebuildable. A set collapses those collisions.
     =/  tag-lits=(set tape)
       (~(gas in *(set tape)) (turn tags |=(t=@t (urq-esc (trip t)))))
-    :-  ;:(weld "INSERT INTO knowledge (item, updated) VALUES ('" ek "', " up ");")
+    :-  ;:(weld "('" ek "', " up ") ")
     %+  turn  ~(tap in tag-lits)
     |=  tg=tape
-    ;:(weld "INSERT INTO tags (item, tag) VALUES ('" ek "', '" tg "');")
-  %-  zing
-  (weld `(list tape)`~["TRUNCATE TABLE knowledge;" "TRUNCATE TABLE tags;"] inserts)
+    ;:(weld "('" ek "', '" tg "') ")
+  =/  know-tuples=(list tape)  (turn pairs |=([k=tape t=(list tape)] k))
+  =/  tag-tuples=(list tape)
+    (zing `(list (list tape))`(turn pairs |=([k=tape t=(list tape)] t)))
+  ;:  weld
+    `(list tape)`~["TRUNCATE TABLE knowledge;" "TRUNCATE TABLE tags;"]
+    (chunk-rows "INSERT INTO knowledge (item, updated) VALUES " know-tuples)
+    (chunk-rows "INSERT INTO tags (item, tag) VALUES " tag-tuples)
+  ==
 ::
 ::  ── unified own-content term index (the omnibar's private half) ─────
 ::
@@ -170,7 +203,7 @@
 ::
 ++  content-index-populate-urql
   |=  rows=(list [scope=@t key=@t terms=(list [term=@t tf=@ud])])
-  ^-  tape
+  ^-  (list tape)
   =/  inserts=(list tape)
     %-  zing
     %+  turn  rows
@@ -188,11 +221,10 @@
     |=  [tx=tape f=@ud]
     ^-  tape
     %-  zing
-    :~  "INSERT INTO content-terms (scope, key, term, tf) VALUES ('"
-        sx  "', '"  kx  "', '"  tx  "', "  (trip (scot %ud f))  ");"
+    :~  "('"  sx  "', '"  kx  "', '"  tx  "', "  (trip (scot %ud f))  ") "
     ==
-  %-  zing
-  (weld `(list tape)`~["TRUNCATE TABLE content-terms;"] inserts)
+  %+  weld  `(list tape)`~["TRUNCATE TABLE content-terms;"]
+  (chunk-rows "INSERT INTO content-terms (scope, key, term, tf) VALUES " inserts)
 ::  +content-search-urql: every own item carrying `term`, with its scope.
 ++  content-search-urql
   |=  term=tape
@@ -435,16 +467,26 @@
     =/  tx=tape  (urq-esc (trip term.tm))
     ?:  (~(has by acc) tx)  acc
     (~(put by acc) tx tf.tm)
-  =/  inserts=tape
-    %-  zing
+  ::  ONE multi-row INSERT, not one per term: this runs on the crawler's hot path
+  ::  for every page, and obelisk rebuilds the whole term index per statement (see
+  ::  +chunk-rows). Bounded by term-max (512), so it needs no chunking.
+  =/  tuples=(list tape)
     %+  turn  ~(tap by term-map)
     |=  [tx=tape f=@ud]
     ^-  tape
     %-  zing
-    :~  "INSERT INTO catalog-terms (source, publisher, path, term, tf) VALUES ("
-        st  ", "  pt  ", '"  ek  "', '"  tx  "', "  (trip (scot %ud f))  ");"
+    :~  "("  st  ", "  pt  ", '"  ek  "', '"  tx  "', "  (trip (scot %ud f))  ") "
     ==
-  (weld (weld "DELETE FROM catalog-terms" where) inserts)
+  =/  del=tape  (weld "DELETE FROM catalog-terms" where)
+  ?~  tuples  del
+  =/  all=(list tape)  tuples
+  ::  bind the zing to a tape face FIRST: a raw zing/turn product sitting in weld
+  ::  position beside tape literals fuse-loops the compiler.
+  =/  vals=tape  (zing all)
+  ;:  weld  del
+      "INSERT INTO catalog-terms (source, publisher, path, term, tf) VALUES "
+      vals  ";"
+  ==
 ::
 ::  ════════════════════════════════════════════════════════════════════
 ::  Read-side query compilers.

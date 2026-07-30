@@ -27,6 +27,29 @@ if [ ! -d "$DEST" ]; then echo "no grubbery desk root at $DEST" >&2; exit 67; fi
 
 mkdir -p "$DEST/gub/lib" "$DEST/lib" "$DEST/gub/nex/lattice" "$DEST/gub/mar/lattice" "$DEST/gub/mar/clay" "$DEST/tests/lib"
 
+# SHADOW CHECK. gub/lib is SHARED with grubbery's own libraries, and rsync has no
+# --delete, so an overlay file silently overwrites a grubbery file of the same
+# name and no later sync ever puts it back. This is not hypothetical: a 28-line
+# lib/obelisk-ast.hoon here clobbered grubbery's real 1208-line one on every sync
+# and broke grubbery's whole obelisk integration on every ship it touched. Nothing
+# reported it, because the overwritten file compiles fine on its own.
+#
+# The overlay owns lattice-*.hoon, catalog*.hoon and everything under nex/lattice.
+# Anything else landing on top of an EXISTING destination file is a collision and
+# must be deliberate, so refuse and make the human look.
+SHADOW=0
+for f in "$OVERLAY"/lib/*.hoon; do
+  [ -e "$f" ] || continue
+  b="$(basename "$f")"
+  case "$b" in lattice-*|catalog*) continue ;; esac
+  if [ -e "$DEST/gub/lib/$b" ] && ! cmp -s "$f" "$DEST/gub/lib/$b"; then
+    echo "REFUSING: overlay lib/$b would overwrite a different gub/lib/$b" >&2
+    echo "  If that file belongs to grubbery, the overlay must not ship it." >&2
+    SHADOW=1
+  fi
+done
+[ "$SHADOW" -eq 0 ] || exit 69
+
 # Pure libs: into the tree (gub/lib, for the nexus) and the desk (lib, for tests).
 rsync -a "$OVERLAY/lib/" "$DEST/gub/lib/"
 rsync -a "$OVERLAY/lib/" "$DEST/lib/"
