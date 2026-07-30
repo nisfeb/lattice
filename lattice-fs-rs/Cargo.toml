@@ -3,6 +3,10 @@ name = "lattice-fs"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "lattice_fs"
+path = "src/lib.rs"
+
 [[bin]]
 name = "lattice-fs"
 path = "src/main.rs"
