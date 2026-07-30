@@ -147,6 +147,27 @@ pub fn open_workspace(app: &AppHandle) -> Result<(), String> {
                 return true;
             }
             let cfg = config::load(&handle);
+            // urb:// names stay in the app — the ship's reader resolves them
+            // (GET /apps/lattice?url=…), so navigate there instead
+            if u.scheme() == "urb" {
+                if let Ok(mut t) = tauri::Url::parse(&cfg.url) {
+                    t.set_path("/apps/lattice");
+                    t.query_pairs_mut().clear().append_pair("url", u.as_str());
+                    let h = handle.clone();
+                    // off-thread so the queued navigate never re-enters the
+                    // policy callback we are currently inside
+                    std::thread::spawn(move || {
+                        let h2 = h.clone();
+                        h.run_on_main_thread(move || {
+                            if let Some(w) = h2.get_webview_window("workspace") {
+                                w.navigate(t).ok();
+                            }
+                        })
+                        .ok();
+                    });
+                }
+                return false;
+            }
             if tauri::Url::parse(&cfg.url).is_ok_and(|ship| ship.origin() == u.origin()) {
                 return true;
             }

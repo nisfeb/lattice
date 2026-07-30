@@ -29,8 +29,8 @@ Linux). Drag-and-drop upload works too; the shell's own drag-drop
 interception is disabled for the workspace window so the UI's HTML5 drop
 handler receives the files.
 
-External links (like the clearweb share link) open in your system browser;
-the workspace stays on the ship. Ctrl/Cmd +/- zooms the workspace. Closing
+Ship links and `urb://` addresses stay in the app (`urb://` resolves through
+the ship's reader); only truly external links open in your system browser. Ctrl/Cmd +/- zooms the workspace. Closing
 the manager window while the workspace is open just hides it — it comes
 back when the workspace closes.
 
