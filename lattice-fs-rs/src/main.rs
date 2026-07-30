@@ -7,25 +7,20 @@
 //! Config (env): LATTICE_URL (default http://localhost:8080),
 //!               LATTICE_CODE (+code for unattended auth),
 //!               cookie at ~/.config/lattice-fs/cookie (mode 600).
-
-#[path = "core.rs"]
-mod vfs;
-mod eyre;
-mod generic;
-mod lattice;
-mod lick;
-mod projection;
-mod transport;
+//!
+//! The projections, transports, and mount helpers live in the lattice_fs
+//! library (src/lib.rs); this binary is CLI parsing plus the lick branch.
 
 use std::sync::Arc;
 
-use eyre::EyreTransport;
-use generic::GenericProjection;
-use lattice::LatticeProjection;
-use lick::LickTransport;
-use projection::Projection;
-use transport::Transport;
-use vfs::GrubberyFs;
+use lattice_fs::eyre::EyreTransport;
+use lattice_fs::generic::GenericProjection;
+use lattice_fs::lattice::LatticeProjection;
+use lattice_fs::lick::LickTransport;
+use lattice_fs::projection::Projection;
+use lattice_fs::transport::Transport;
+use lattice_fs::vfs::GrubberyFs;
+use lattice_fs::{default_cookie_path as cookie_path, mount_config, resolve_root, Root};
 
 /// Pick a transport: lick when LATTICE_SOCK is set (native local IPC, no cookie),
 /// else Eyre HTTP. Both drive the same projection.
@@ -39,37 +34,8 @@ fn make_transport() -> Result<Box<dyn Transport>, String> {
     }
 }
 
-fn cookie_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    format!("{home}/.config/lattice-fs/cookie")
-}
-
 fn base_url() -> String {
     std::env::var("LATTICE_URL").unwrap_or_else(|_| "http://localhost:8080".into())
-}
-
-/// Where to root the mounted tree. A value like `notes` or `page/notes` or the
-/// full ball path `/apps/lattice.lattice_app/page/notes` mounts a lattice
-/// sub-tree (keeps all page semantics). Any other absolute ball path
-/// (`/apps/obelisk.obelisk_app`, …) is a generic tree — a different nexus.
-enum Root {
-    Lattice(String), // sub-root under /page ("" = whole tree)
-    Generic(String), // full ball path
-}
-
-fn resolve_root(val: &str) -> Root {
-    let v = val.trim();
-    if v.is_empty() {
-        return Root::Lattice(String::new());
-    }
-    if let Some(rest) = v.strip_prefix("/apps/lattice.lattice_app/page") {
-        return Root::Lattice(rest.trim_matches('/').to_string());
-    }
-    if v.starts_with('/') {
-        return Root::Generic(v.trim_matches('/').to_string());
-    }
-    let rel = v.trim_matches('/');
-    Root::Lattice(rel.strip_prefix("page/").unwrap_or(rel).to_string())
 }
 
 fn make_projection(root: &str) -> Result<Arc<dyn Projection>, String> {
@@ -106,17 +72,7 @@ fn cmd_mount(mnt: &str, root: &str) -> Result<(), String> {
     let proj = make_projection(root)?;
     let ship = proj.ship();
     std::fs::create_dir_all(mnt).ok();
-    // Config is #[non_exhaustive] -> build via default() + field assignment.
-    let mut config = fuser::Config::default();
-    config.mount_options = vec![
-        fuser::MountOption::FSName("lattice".to_string()),
-        // kernel enforces perms from the uid/gid/mode we report: files read as
-        // owner-writable (rm/nvim don't prompt), 0444 index pages are write-denied.
-        fuser::MountOption::DefaultPermissions,
-    ];
-    // Owner ACL: only the mounting user reaches the mount. (AutoUnmount would
-    // require allow_other, which we don't want — a foreground mount unmounts on exit.)
-    config.acl = fuser::SessionACL::Owner;
+    let config = mount_config();
     println!("mounting lattice ({ship}) at {mnt} — Ctrl-C to unmount");
     fuser::mount(GrubberyFs::new(proj), mnt, &config).map_err(|e| e.to_string())
 }
