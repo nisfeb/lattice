@@ -1,10 +1,12 @@
-// lattice app — M2: editor core (tree, Prism editor, save).
+/* BUILT FILE — do not edit. Source: ui-app/src/, build: scripts/build-ui.mjs */
 (function () {
+'use strict';
+// ── src/10-shell.js ───────────────────────────────────────────────────────
+// lattice app — served from ui-app/src/, built by scripts/build-ui.mjs
   const $ = (id) => document.getElementById(id);
   const api = '/apps/lattice';
-  const pname = $('pname'), pkind = $('pkind'), status = $('status');
-  const src = $('src'), hl = $('hl'), treeList = $('treelist');
-  const prev = $('prev'), cerr = $('cerr'), cwurl = $('cwurl');
+  let pname, pkind, status, spinner;   // assigned by <lat-bar>   (12-bar.js)
+  let prev;                            // assigned by <lat-preview> (60-preview.js)
   // blank preview: about:blank defaults to light color-scheme, which
   // mismatches the app's declared scheme and makes the iframe an opaque
   // white canvas in dark theme — declare the scheme so it stays transparent
@@ -13,32 +15,6 @@
     prev.removeAttribute('src');
     prev.srcdoc = '<style>:root{color-scheme:light dark}</style>';
   };
-
-  // Long operations (a legacy import, a template's page-per-save) need to look
-  // ALIVE, not just print a line and appear hung. The spinner and its keyframes
-  // are built here rather than in the shell so a stale cached index.html cannot
-  // leave the JS referencing an element that does not exist.
-  const spinner = (() => {
-    if (!document.getElementById('spin-css')) {
-      const s = document.createElement('style');
-      s.id = 'spin-css';
-      s.textContent = '@keyframes latspin{to{transform:rotate(360deg)}}' +
-        '#spin{display:none;width:11px;height:11px;margin-right:6px;flex:none;' +
-        'border:2px solid var(--border);border-top-color:var(--green);' +
-        'border-radius:50%;animation:latspin .7s linear infinite;' +
-        'vertical-align:-1px}' +
-        '#spin.on{display:inline-block}' +
-        '@media (prefers-reduced-motion:reduce){#spin{animation-duration:2.4s}}';
-      document.head.appendChild(s);
-    }
-    let el = document.getElementById('spin');
-    if (!el) {
-      el = document.createElement('span');
-      el.id = 'spin';
-      status.parentNode.insertBefore(el, status);
-    }
-    return el;
-  })();
   const st = (msg, ok = true) => {
     spinner.classList.remove('on');          // any plain status ends the spin
     status.textContent = msg;
@@ -51,8 +27,71 @@
     spinner.classList.add('on');
   };
 
+// ── src/12-bar.js ─────────────────────────────────────────────────────────
+  // ── top bar + mobile tabs: <lat-bar>, <lat-tabs> ─────────────────────────
+  // The spinner is part of the bar's own markup now (its CSS lives in the
+  // shell stylesheet) — the old inject-styles-and-synthesize-elements guards
+  // existed only because the shell and JS could cache-skew apart.
+  customElements.define('lat-bar', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<header class="bar">
+  <a class="home" href="/apps/lattice" title="lattice home">&#8962;</a>
+  <button id="modet" title="switch pages / knowledge">&#9998; pages</button>
+  <input id="pname" placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
+  <select id="pkind" title="page kind">
+    <option value="md">md</option>
+    <option value="gmi">gmi</option>
+    <option value="html">html</option>
+    <option value="text">txt</option>
+    <option value="js">js</option>
+    <option value="css">css</option>
+    <option value="hoon">hoon</option>
+  </select>
+  <button id="save">save</button>
+  <span id="spin"></span><span id="status" class="muted"></span>
+  <span class="grow"></span>
+  <button id="wrapt" class="ico" title="toggle line wrap">&#8617;</button>
+  <button id="treet" class="ico" title="toggle tree pane">&#9776;</button>
+  <button id="ctlt" class="ico" title="toggle controls pane">&#9881;</button>
+</header>`;
+      pname = $('pname'); pkind = $('pkind');
+      status = $('status'); spinner = $('spin');
+    }
+  });
+  customElements.define('lat-tabs', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<nav class="mtabs" id="mtabs">
+  <button data-mv="tree">tree</button>
+  <button data-mv="code" class="on">code</button>
+  <button data-mv="prev">preview</button>
+  <button data-mv="ctl">controls</button>
+</nav>`;
+    }
+  });
+  // stale-shell guard: replace a cached pre-component shell's literal bar and
+  // tabs. The bar relies on source order for its grid row, so it is PREPENDED.
+  if (!document.querySelector('lat-bar')) {
+    for (const sel of ['header.bar', 'nav.mtabs']) {
+      const stale = document.querySelector(sel);
+      if (stale) stale.remove();
+    }
+    const wsEl = document.getElementById('ws');
+    const tabs = document.createElement('lat-tabs');
+    const bar = document.createElement('lat-bar');
+    tabs.style.display = 'contents';
+    bar.style.display = 'contents';
+    wsEl.prepend(tabs);
+    wsEl.prepend(bar);
+  }
+
+// ── src/15-dialog.js ──────────────────────────────────────────────────────
   // ── in-app dialogs — NEVER browser-native prompt/confirm/alert ───────────
-  const dlg = $('dlg'), dlgMsg = $('dlgmsg'), dlgIn = $('dlginput'), dlgSel = $('dlgsel');
+  // <lat-dialog> owns the dialog's markup AND wiring: the shell only carries
+  // the tag, so the served HTML can never be missing an element this file
+  // expects (the old cache-skew guards existed exactly for that gap).
+  let dlg, dlgMsg, dlgIn, dlgSel, dlgOpts;
   let dlgDone = null;
   const dlgClose = (v) => {
     if (!dlgDone) return;
@@ -86,32 +125,6 @@
   // Rendered as real buttons in the app's own style, NEVER a <select>: a
   // select opens an OS-drawn list, which is a browser-native popup, and this
   // UI does not use those anywhere.
-  // Build the option container if the served HTML predates it. The service
-  // worker caches index.html and app.js independently, so a browser can hold
-  // new JS against a stale shell; assuming the element exists made the whole
-  // dialog throw (and silently killed the legacy prompt) on that skew.
-  // …and its styles, for the same reason.
-  if (!document.getElementById('dlgopt-css')) {
-    const st = document.createElement('style');
-    st.id = 'dlgopt-css';
-    st.textContent = '.dlgopts{display:grid;gap:6px}.dlgopts[hidden]{display:none}' +
-      '.dlgopt{font:inherit;text-align:left;padding:9px 12px;cursor:pointer;' +
-      'border:1px solid var(--border);border-radius:6px;background:var(--surface);' +
-      'color:inherit}.dlgopt:hover,.dlgopt:focus{border-color:var(--green);' +
-      'color:var(--green);outline:none}.dlgopt.on{border-color:var(--green)}';
-    document.head.appendChild(st);
-  }
-  const dlgOpts = (() => {
-    let el = $('dlgopts');
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'dlgopts';
-      el.className = 'dlgopts';
-      el.hidden = true;
-      dlgSel.parentNode.insertBefore(el, dlgSel);
-    }
-    return el;
-  })();
   const askChoice = (msg, options, okLabel) => {
     dlgIn.hidden = true;
     dlgSel.hidden = true;
@@ -148,16 +161,45 @@
       return v;
     });
   };
-  $('dlgform').onsubmit = (e) => {
-    e.preventDefault();
-    dlgClose(!dlgSel.hidden ? dlgSel.value : dlgIn.hidden ? '' : dlgIn.value);
-  };
-  $('dlgcancel').onclick = () => dlgClose(null);
-  dlg.onclick = (e) => { if (e.target === dlg) dlgClose(null); };
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !dlg.hidden) dlgClose(null);
+  customElements.define('lat-dialog', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<div class="dlg" id="dlg" hidden>
+  <form class="dlgbox" id="dlgform">
+    <div id="dlgmsg"></div>
+    <div id="dlgopts" class="dlgopts" hidden></div>
+    <select id="dlgsel" hidden></select>
+    <input id="dlginput" autocomplete="off" spellcheck="false">
+    <div class="dlgbtns">
+      <button type="button" id="dlgcancel">cancel</button>
+      <button type="submit" id="dlgok">ok</button>
+    </div>
+  </form>
+</div>`;
+      dlg = $('dlg'); dlgMsg = $('dlgmsg'); dlgIn = $('dlginput');
+      dlgSel = $('dlgsel'); dlgOpts = $('dlgopts');
+      $('dlgform').onsubmit = (e) => {
+        e.preventDefault();
+        dlgClose(!dlgSel.hidden ? dlgSel.value : dlgIn.hidden ? '' : dlgIn.value);
+      };
+      $('dlgcancel').onclick = () => dlgClose(null);
+      dlg.onclick = (e) => { if (e.target === dlg) dlgClose(null); };
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !dlg.hidden) dlgClose(null);
+      });
+    }
   });
+  // stale-shell guard: a cached index.html predating <lat-dialog> still
+  // carries the literal #dlg block, which would shadow the component's ids.
+  // Swap it out so dialogs keep working during the skew window (the service
+  // worker caches the shell and this file independently).
+  if (!document.querySelector('lat-dialog')) {
+    const stale = document.getElementById('dlg');
+    if (stale) stale.remove();
+    document.body.appendChild(document.createElement('lat-dialog'));
+  }
 
+// ── src/20-state.js ───────────────────────────────────────────────────────
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits — auto-refresh never clobbers them
@@ -211,7 +253,9 @@
   };
   const setCollapsed = (c) => { localStorage.appColl = JSON.stringify(c); };
 
-  // ── highlighting (Prism overlay) ─────────────────────────────────────────
+// ── src/25-editor.js ──────────────────────────────────────────────────────
+  // ── editor pane: <lat-editor> + highlighting (Prism overlay) ─────────────
+  let src, hl;   // assigned when <lat-editor> upgrades (below, synchronously)
   const LMAP = { md: 'markdown', gmi: 'gemtext', html: 'markup',
                  js: 'javascript', css: 'css', hoon: 'hoon' };
   const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
@@ -240,16 +284,77 @@
   // — a Tab indent was shown but never saved, and a live refresh reverted it.
   // Always route scripted edits through here.
   const edited = () => src.dispatchEvent(new Event('input'));
-  src.addEventListener('input', () => {
-    dirty = true;
-    scheduleRender();
-    clearTimeout(autoTimer);
-    autoTimer = setTimeout(autosave, 2000);
+  customElements.define('lat-editor', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<div class="edwrap">
+  <div id="acmirror" aria-hidden="true"></div>
+  <div id="ac" class="ac" hidden role="listbox" aria-label="page suggestions"></div>
+  <pre id="hl" aria-hidden="true"></pre>
+  <textarea id="src" spellcheck="false" placeholder="open a page from the tree, or name a new one and start typing"></textarea>
+</div>`;
+      src = $('src'); hl = $('hl');
+      src.addEventListener('input', () => {
+        dirty = true;
+        scheduleRender();
+        clearTimeout(autoTimer);
+        autoTimer = setTimeout(autosave, 2000);
+      });
+      src.addEventListener('scroll', sync);
+    }
   });
-  src.addEventListener('scroll', sync);
+  // stale-shell guard: a cached index.html predating <lat-editor> still has
+  // the literal .edwrap block (and lacks the lat-* display rule) — swap it.
+  if (!document.querySelector('lat-editor')) {
+    const stale = document.querySelector('.edwrap');
+    if (stale) stale.remove();
+    const el = document.createElement('lat-editor');
+    el.style.display = 'contents';
+    document.getElementById('ws').appendChild(el);
+  }
   pkind.addEventListener('change', () => { curKind = pkind.value; render(); });
 
-  // ── tree ─────────────────────────────────────────────────────────────────
+// ── src/30-tree.js ────────────────────────────────────────────────────────
+  // ── tree pane: <lat-tree> ────────────────────────────────────────────────
+  // The pane's buttons are wired where their handlers live (45-templates,
+  // 70-upload) — those files run after this component upgrades, so their
+  // $-lookups find the rendered elements.
+  let treeList;
+  customElements.define('lat-tree', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<aside class="tree" id="tree">
+  <div class="newbtns">
+    <button class="nf" id="newfile">+ file</button>
+    <button class="nf" id="newfolder">+ folder</button>
+    <button class="nf" id="newtmpl">+ template</button>
+  </div>
+  <div class="newbtns">
+    <button class="nf" id="upfiles">&#8613; files</button>
+    <button class="nf" id="updir">&#8613; dir</button>
+  </div>
+  <input type="file" id="fpick" multiple hidden>
+  <input type="file" id="dpick" webkitdirectory hidden>
+  <div id="uppanel" class="uppanel" hidden>
+    <div id="upmsg"></div>
+    <div class="upbar"><div id="upfill"></div></div>
+    <div id="uperr" class="uperr"></div>
+  </div>
+  <div id="chips" class="chips" hidden></div>
+  <div class="sec" id="treesec">files</div>
+  <div id="treelist"></div>
+</aside>`;
+      treeList = $('treelist');
+    }
+  });
+  // stale-shell guard: swap a cached pre-component shell's literal pane
+  if (!document.querySelector('lat-tree')) {
+    const stale = document.getElementById('tree');
+    if (stale) stale.remove();
+    const el = document.createElement('lat-tree');
+    el.style.display = 'contents';
+    document.getElementById('ws').appendChild(el);
+  }
   async function loadTree() {
     const gen = treeGen;
     const r = await fetch(api + '/page-tree');
@@ -388,6 +493,7 @@
     st('folder · ' + c + ' page' + (c === 1 ? '' : 's'));
   }
 
+// ── src/35-pages.js ───────────────────────────────────────────────────────
   // ── open / new / save ────────────────────────────────────────────────────
   const setFolderCtx = (name) =>
     { folderCtx = name.includes('/') ? name.slice(0, name.lastIndexOf('/')) : ''; };
@@ -538,6 +644,7 @@
     if (savePending) { savePending = false; if (dirty) autosave(); }
   }
 
+// ── src/40-grub.js ────────────────────────────────────────────────────────
   // ── editing an arbitrary grub (?grub=<ball path>) ────────────────────────
   // Any file in the ball, not just a lattice page: an app's html/js/css/hoon.
   // Deliberately NOT a third setMode branch — that function is wired into the
@@ -590,6 +697,7 @@
     if (savePending) { savePending = false; if (dirty) saveGrub(); }
   }
 
+// ── src/45-templates.js ───────────────────────────────────────────────────
   $('save').onclick = () =>
     (grubPath ? saveGrub() : mode === 'know' ? saveKnow() : save());
   // ── new page-tree from a template ────────────────────────────────────────
@@ -664,6 +772,7 @@
     }
   });
 
+// ── src/55-autocomplete.js ────────────────────────────────────────────────
   // ── wikilink autocomplete ────────────────────────────────────────────────
   // Typing `[[` opens a list of pages from the tree we already hold — no
   // request, no index. Wikilink names are absolute page paths, so a sibling
@@ -793,9 +902,25 @@
   src.addEventListener('click', acClose);
   src.addEventListener('blur', acClose);
 
-  // ── preview ──────────────────────────────────────────────────────────────
+// ── src/60-preview.js ─────────────────────────────────────────────────────
+  // ── preview pane: <lat-preview> ──────────────────────────────────────────
   // Content kinds render through page-preview (srcdoc); computed kinds (hoon,
   // js, css) show the page's live DATA via /f/<name>, refreshed after save/cmd.
+  customElements.define('lat-preview', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML =
+        '<iframe class="prev" id="prev" title="live preview"></iframe>';
+      prev = $('prev');
+    }
+  });
+  // stale-shell guard: swap a cached pre-component shell's literal iframe
+  if (!document.querySelector('lat-preview')) {
+    const stale = document.querySelector('iframe.prev');
+    if (stale) stale.remove();
+    const el = document.createElement('lat-preview');
+    el.style.display = 'contents';
+    document.getElementById('ws').appendChild(el);
+  }
   const CONTENT = () => ['md', 'gmi', 'html', 'text'].includes(pkind.value);
   let prevTimer = null;
   async function refreshPreview() {
@@ -837,47 +962,41 @@
     }
   }
 
-  // ── sharing (pages and folder trees share one panel) ─────────────────────
-  function showShare(m) {
-    for (const b of document.querySelectorAll('.share button'))
-      b.className = b.dataset.m === m ? 'on' : '';
-    const target = curFolder || current;
-    const suffix = curFolder ? '/' : '';
-    cwurl.innerHTML =
-      m === 'clearweb' && target
-        ? 'public: <a href="' + api + '/c/' + target + suffix +
-          '" target="_blank">/c/' + target + suffix + '</a>'
-      : m === 'mixed' ? 'mixed — pages under this folder differ'
-      : '';
-  }
-  for (const b of document.querySelectorAll('.share button')) {
-    b.onclick = async () => {
-      const m = b.dataset.m;
-      if (curFolder) {
-        const r = await mutate(api + '/page-share-tree?name=' + encodeURIComponent(curFolder) +
-          '&mode=' + m);
-        if (!r.ok) { st('share failed ' + r.status, false); return; }
-        showShare(m);
-        st(m === 'clearweb' ? 'published tree at /c/' + curFolder + '/' : 'tree set ' + m);
-        // share-tree sets every page under the folder — mirror that locally
-        // instead of refetching the tree to learn what we just did.
-        for (const n of nodes)
-          if (n.page && n.path.startsWith(curFolder + '/')) n.share = m;
-        snapTree();
-        renderTree();
-        return;
-      }
-      if (!current) { st('save the page first', false); return; }
-      const r = await mutate(api + '/page-share?name=' + encodeURIComponent(current) +
-        '&mode=' + m);
-      if (!r.ok) { st('share failed ' + r.status, false); return; }
-      showShare(m);
-      st('sharing: ' + m);
-      const n = nodes.find((x) => x.page && x.path === current);
-      if (n) n.share = m;
-      snapTree();
-      renderTree();
-    };
+// ── src/65-ctl.js ─────────────────────────────────────────────────────────
+  // ── controls pane: <lat-ctl> frame ───────────────────────────────────────
+  // Renders the pane skeleton with one tag per panel; the panel components
+  // (lat-knowtags 68, lat-share 66, lat-history/lat-links 77) upgrade when
+  // their own files run, in file order. Button handlers wired below in this
+  // file (and in later files) find their elements because the frame renders
+  // here first.
+  let cerr;
+  customElements.define('lat-ctl', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<aside class="ctl">
+  <h3>status</h3>
+  <div id="cerr" class="ok">&nbsp;</div>
+  <div id="cmdrow">
+    <h3>command</h3>
+    <div class="row"><input id="cmd" placeholder="command" autocomplete="off"><button id="csend">send</button></div>
+  </div>
+  <lat-knowtags></lat-knowtags>
+  <lat-share></lat-share>
+  <lat-history></lat-history>
+  <lat-links></lat-links>
+  <button id="mv" class="mvbtn">move / rename</button>
+  <button id="del" class="del">delete page</button>
+</aside>`;
+      cerr = $('cerr');
+    }
+  });
+  // stale-shell guard: swap a cached pre-component shell's literal pane
+  if (!document.querySelector('lat-ctl')) {
+    const stale = document.querySelector('aside.ctl');
+    if (stale) stale.remove();
+    const el = document.createElement('lat-ctl');
+    el.style.display = 'contents';
+    document.getElementById('ws').appendChild(el);
   }
 
   // ── command box ──────────────────────────────────────────────────────────
@@ -920,6 +1039,83 @@
     st('deleted');
   };
 
+// ── src/66-share.js ───────────────────────────────────────────────────────
+  // ── sharing panel: <lat-share> (pages and folder trees share it) ─────────
+  let cwurl;
+  customElements.define('lat-share', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<div id="sharesec">
+<h3>sharing</h3>
+<div class="share" id="share">
+  <button data-m="private">private</button>
+  <button data-m="shared">shared</button>
+  <button data-m="clearweb">clearweb</button>
+</div>
+<div id="cwurl" class="muted"></div>
+</div>`;
+      cwurl = $('cwurl');
+    }
+  });
+  function showShare(m) {
+    for (const b of document.querySelectorAll('.share button'))
+      b.className = b.dataset.m === m ? 'on' : '';
+    const target = curFolder || current;
+    const suffix = curFolder ? '/' : '';
+    cwurl.innerHTML =
+      m === 'clearweb' && target
+        ? 'public: <a href="' + api + '/c/' + target + suffix +
+          '" target="_blank">/c/' + target + suffix + '</a>'
+      : m === 'mixed' ? 'mixed — pages under this folder differ'
+      : '';
+  }
+  for (const b of document.querySelectorAll('.share button')) {
+    b.onclick = async () => {
+      const m = b.dataset.m;
+      if (curFolder) {
+        const r = await mutate(api + '/page-share-tree?name=' + encodeURIComponent(curFolder) +
+          '&mode=' + m);
+        if (!r.ok) { st('share failed ' + r.status, false); return; }
+        showShare(m);
+        st(m === 'clearweb' ? 'published tree at /c/' + curFolder + '/' : 'tree set ' + m);
+        // share-tree sets every page under the folder — mirror that locally
+        // instead of refetching the tree to learn what we just did.
+        for (const n of nodes)
+          if (n.page && n.path.startsWith(curFolder + '/')) n.share = m;
+        snapTree();
+        renderTree();
+        return;
+      }
+      if (!current) { st('save the page first', false); return; }
+      const r = await mutate(api + '/page-share?name=' + encodeURIComponent(current) +
+        '&mode=' + m);
+      if (!r.ok) { st('share failed ' + r.status, false); return; }
+      showShare(m);
+      st('sharing: ' + m);
+      const n = nodes.find((x) => x.page && x.path === current);
+      if (n) n.share = m;
+      snapTree();
+      renderTree();
+    };
+  }
+
+// ── src/68-knowtags.js ────────────────────────────────────────────────────
+  // ── knowledge tags panel: <lat-knowtags> ─────────────────────────────────
+  // Wiring and rendering live in 95-know.js (they are know-mode logic); this
+  // component only owns the markup. 95 runs later, so its $-lookups resolve.
+  customElements.define('lat-knowtags', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<div id="knowmeta" hidden>
+  <h3>tags</h3>
+  <div id="ktags" class="chips"></div>
+  <div class="row"><input id="ktag" placeholder="add tag" autocomplete="off"><button id="ktagadd">tag</button></div>
+  <div id="kupd" class="muted"></div>
+</div>`;
+    }
+  });
+
+// ── src/70-upload.js ──────────────────────────────────────────────────────
   // ── upload (pickers + drag-and-drop, progress panel) ─────────────────────
   const KMAP = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
                  js: 'js', css: 'css', hoon: 'hoon' };
@@ -1026,6 +1222,7 @@
     Promise.all(ps).then(() => { if (out.length) uploadItems(out); });
   });
 
+// ── src/75-move.js ────────────────────────────────────────────────────────
   // ── move / rename ────────────────────────────────────────────────────────
   // page-move does the whole thing server-side (copy + share carry-over +
   // delete, wikilink self-references rewritten) in ONE request — the old
@@ -1067,6 +1264,33 @@
     if (current) openPage(current);
     else if (curFolder === oldPath) selectFolder(newPath);
   }
+
+// ── src/77-history.js ─────────────────────────────────────────────────────
+  // ── history + backlinks panels: <lat-history>, <lat-links> ───────────────
+  // Defined here (before this file's own $-lookups) — they upgrade inside the
+  // <lat-ctl> frame rendered at 65.
+  customElements.define('lat-history', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<div id="histsec" hidden>
+  <h3 id="histh">history &#9656;</h3>
+  <div id="histview" class="row" hidden>
+    <button id="hrestore">restore</button>
+    <button id="hback">back to latest</button>
+  </div>
+  <div id="histlist" class="chips"></div>
+</div>`;
+    }
+  });
+  customElements.define('lat-links', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<div id="linksec" hidden>
+  <h3 id="linkh">linked from &#9656;</h3>
+  <div id="linklist" class="chips"></div>
+</div>`;
+    }
+  });
 
   // ── backlinks: pages that wikilink [[this page]] ─────────────────────────
   // fetched ONLY when the panel is expanded — this and history were two more
@@ -1212,6 +1436,7 @@
     }
   };
 
+// ── src/85-layout.js ──────────────────────────────────────────────────────
   // ── layout toggles + mobile tabs ─────────────────────────────────────────
   const ws = $('ws');
   // soft-wrap is the default (long lines running off-screen are unusable on
@@ -1242,6 +1467,7 @@
     b.onclick = () => setMv(b.dataset.mv);
   setMv('code');
 
+// ── src/90-sync.js ────────────────────────────────────────────────────────
   // ── live refresh (beacon keep-SSE + focus + idle poll) ───────────────────
   // The writer bumps /beacon/rev on every mutation. On a real change refresh
   // the tree AND the open page — so an edit made on another device shows up
@@ -1311,6 +1537,7 @@
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(); });
   setInterval(refreshOpen, 30000);
 
+// ── src/95-know.js ────────────────────────────────────────────────────────
   // ── knowledge mode ───────────────────────────────────────────────────────
   // The same workspace, pointed at the private memory store: browse keys as a
   // tree, filter by tag chips, read/edit/save entries, tag/untag, delete.
@@ -1529,7 +1756,7 @@
   }
   $('modet').onclick = () => setMode(mode === 'know' ? 'pages' : 'know');
 
-  // ── boot ─────────────────────────────────────────────────────────────────
+// ── src/98-legacy.js ──────────────────────────────────────────────────────
   // ── legacy agent import (one-time offer) ─────────────────────────────────
   // A ship upgraded from the pre-grubbery %lattice gall agent may still have
   // it installed with knowledge this store never saw. Ask once, in-app, then
@@ -1643,6 +1870,8 @@
     loadTree();
   }
 
+// ── src/99-boot.js ────────────────────────────────────────────────────────
+  // ── boot ─────────────────────────────────────────────────────────────────
   // paint from the last session's snapshot before the network answers: the
   // tree and (when it matches ?name) the page body + preview appear at 0ms,
   // then loadTree/refreshOpen reconcile in the background — local edits win,

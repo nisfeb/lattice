@@ -78,6 +78,13 @@ select, option { color-scheme: light dark; }
 .bar button:hover, .bar .home:hover { border-color: var(--green); }
 .bar .grow { flex: 1; }
 #status { font-size: .85rem; }
+@keyframes latspin { to { transform: rotate(360deg); } }
+#spin { display: none; width: 11px; height: 11px; margin-right: 6px; flex: none;
+  border: 2px solid var(--border); border-top-color: var(--green);
+  border-radius: 50%; animation: latspin .7s linear infinite;
+  vertical-align: -1px; }
+#spin.on { display: inline-block; }
+@media (prefers-reduced-motion: reduce) { #spin { animation-duration: 2.4s; } }
 
 .tree { grid-row: 3; overflow: auto; padding: 10px;
   border-right: 1px solid var(--border-soft); }
@@ -253,6 +260,12 @@ select, option { color-scheme: light dark; }
 #histh, #linkh { cursor: pointer; user-select: none; }
 #histh:hover, #linkh:hover { color: var(--green); }
 #histlist[hidden], #linklist[hidden] { display: none; }
+
+/* custom-element wrappers are invisible to layout: their inner divs stay
+   direct grid items of .ws (and .dlg stays a fixed overlay). Without this,
+   custom elements default to display:inline and break the grid. */
+lat-dialog, lat-bar, lat-tabs, lat-tree, lat-editor, lat-preview, lat-ctl,
+lat-share, lat-history, lat-links, lat-knowtags { display: contents; }
 </style>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='512' height='512' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%231a6ed8'/%3E%3Cg stroke='%23ffffff' stroke-width='14' stroke-linecap='round' fill='%23ffffff'%3E%3Cline x1='140' y1='140' x2='372' y2='140'/%3E%3Cline x1='140' y1='256' x2='372' y2='256'/%3E%3Cline x1='140' y1='372' x2='372' y2='372'/%3E%3Cline x1='140' y1='140' x2='140' y2='372'/%3E%3Cline x1='256' y1='140' x2='256' y2='372'/%3E%3Cline x1='372' y1='140' x2='372' y2='372'/%3E%3Cline x1='140' y1='140' x2='372' y2='372'/%3E%3Cline x1='372' y1='140' x2='140' y2='372'/%3E%3Ccircle cx='140' cy='140' r='26'/%3E%3Ccircle cx='256' cy='140' r='26'/%3E%3Ccircle cx='372' cy='140' r='26'/%3E%3Ccircle cx='140' cy='256' r='26'/%3E%3Ccircle cx='256' cy='256' r='30'/%3E%3Ccircle cx='372' cy='256' r='26'/%3E%3Ccircle cx='140' cy='372' r='26'/%3E%3Ccircle cx='256' cy='372' r='26'/%3E%3Ccircle cx='372' cy='372' r='26'/%3E%3C/g%3E%3C/svg%3E" type="image/svg+xml">
 <link rel="manifest" href="/apps/lattice/manifest.webmanifest">
@@ -260,110 +273,14 @@ select, option { color-scheme: light dark; }
 </head>
 <body>
 <div class="ws" id="ws">
-  <header class="bar">
-    <a class="home" href="/apps/lattice" title="lattice home">&#8962;</a>
-    <button id="modet" title="switch pages / knowledge">&#9998; pages</button>
-    <input id="pname" placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
-    <select id="pkind" title="page kind">
-      <option value="md">md</option>
-      <option value="gmi">gmi</option>
-      <option value="html">html</option>
-      <option value="text">txt</option>
-      <option value="js">js</option>
-      <option value="css">css</option>
-      <option value="hoon">hoon</option>
-    </select>
-    <button id="save">save</button>
-    <span id="status" class="muted"></span>
-    <span class="grow"></span>
-    <button id="wrapt" class="ico" title="toggle line wrap">&#8617;</button>
-    <button id="treet" class="ico" title="toggle tree pane">&#9776;</button>
-    <button id="ctlt" class="ico" title="toggle controls pane">&#9881;</button>
-  </header>
-  <nav class="mtabs" id="mtabs">
-    <button data-mv="tree">tree</button>
-    <button data-mv="code" class="on">code</button>
-    <button data-mv="prev">preview</button>
-    <button data-mv="ctl">controls</button>
-  </nav>
-  <aside class="tree" id="tree">
-    <div class="newbtns">
-      <button class="nf" id="newfile">+ file</button>
-      <button class="nf" id="newfolder">+ folder</button>
-      <button class="nf" id="newtmpl">+ template</button>
-    </div>
-    <div class="newbtns">
-      <button class="nf" id="upfiles">&#8613; files</button>
-      <button class="nf" id="updir">&#8613; dir</button>
-    </div>
-    <input type="file" id="fpick" multiple hidden>
-    <input type="file" id="dpick" webkitdirectory hidden>
-    <div id="uppanel" class="uppanel" hidden>
-      <div id="upmsg"></div>
-      <div class="upbar"><div id="upfill"></div></div>
-      <div id="uperr" class="uperr"></div>
-    </div>
-    <div id="chips" class="chips" hidden></div>
-    <div class="sec" id="treesec">files</div>
-    <div id="treelist"></div>
-  </aside>
-  <div class="edwrap">
-    <div id="acmirror" aria-hidden="true"></div>
-    <div id="ac" class="ac" hidden role="listbox" aria-label="page suggestions"></div>
-    <pre id="hl" aria-hidden="true"></pre>
-    <textarea id="src" spellcheck="false" placeholder="open a page from the tree, or name a new one and start typing"></textarea>
-  </div>
-  <iframe class="prev" id="prev" title="live preview"></iframe>
-  <aside class="ctl">
-    <h3>status</h3>
-    <div id="cerr" class="ok">&nbsp;</div>
-    <div id="cmdrow">
-      <h3>command</h3>
-      <div class="row"><input id="cmd" placeholder="command" autocomplete="off"><button id="csend">send</button></div>
-    </div>
-    <div id="knowmeta" hidden>
-      <h3>tags</h3>
-      <div id="ktags" class="chips"></div>
-      <div class="row"><input id="ktag" placeholder="add tag" autocomplete="off"><button id="ktagadd">tag</button></div>
-      <div id="kupd" class="muted"></div>
-    </div>
-    <div id="sharesec">
-    <h3>sharing</h3>
-    <div class="share" id="share">
-      <button data-m="private">private</button>
-      <button data-m="shared">shared</button>
-      <button data-m="clearweb">clearweb</button>
-    </div>
-    <div id="cwurl" class="muted"></div>
-    </div>
-    <div id="histsec" hidden>
-      <h3 id="histh">history &#9656;</h3>
-      <div id="histview" class="row" hidden>
-        <button id="hrestore">restore</button>
-        <button id="hback">back to latest</button>
-      </div>
-      <div id="histlist" class="chips"></div>
-    </div>
-    <div id="linksec" hidden>
-      <h3 id="linkh">linked from &#9656;</h3>
-      <div id="linklist" class="chips"></div>
-    </div>
-    <button id="mv" class="mvbtn">move / rename</button>
-    <button id="del" class="del">delete page</button>
-  </aside>
+  <lat-bar></lat-bar>
+  <lat-tabs></lat-tabs>
+  <lat-tree></lat-tree>
+  <lat-editor></lat-editor>
+  <lat-preview></lat-preview>
+  <lat-ctl></lat-ctl>
 </div>
-<div class="dlg" id="dlg" hidden>
-  <form class="dlgbox" id="dlgform">
-    <div id="dlgmsg"></div>
-    <div id="dlgopts" class="dlgopts" hidden></div>
-    <select id="dlgsel" hidden></select>
-    <input id="dlginput" autocomplete="off" spellcheck="false">
-    <div class="dlgbtns">
-      <button type="button" id="dlgcancel">cancel</button>
-      <button type="submit" id="dlgok">ok</button>
-    </div>
-  </form>
-</div>
+<lat-dialog></lat-dialog>
 <script src="/apps/lattice/prism.js"></script>
 <script>if("serviceWorker"in navigator)navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice"});</script>
 <script src="/apps/lattice/app/app.js"></script>

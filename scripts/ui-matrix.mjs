@@ -78,6 +78,12 @@ try {
   await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
   ok('boot: tree renders');
 
+  // every <lat-*> tag must have upgraded to its class — a connectedCallback
+  // that throws leaves a dead pane that fails nothing else at boot
+  check('boot: custom elements upgraded', await page.evaluate(() =>
+    [...document.querySelectorAll('*')].filter((e) => e.tagName.includes('-'))
+      .every((e) => e.constructor !== HTMLElement)));
+
   step = 'new page';
   // ── 2. new page: type, save, appears in tree, round-trips ────────────────
   await page.click('#newfile');
