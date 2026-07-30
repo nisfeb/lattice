@@ -1186,8 +1186,21 @@
   const fromFileList = (fl) =>
     [...fl].map((f) => ({ file: f, rel: f.webkitRelativePath || f.name }));
 
-  $('upfiles').onclick = () => $('fpick').click();
-  $('updir').onclick = () => $('dpick').click();
+  // desktop shell: webkit2gtk has no webkitdirectory (folder picks are dead
+  // on Linux), so the tauri pick_upload command opens the native dialog and
+  // hands back {rel, text} for user-picked files. Browsers keep the inputs.
+  const deskPick = window.__TAURI__ && (async (dir) => {
+    try {
+      const picked = await window.__TAURI__.core.invoke('pick_upload',
+        { dir, exts: Object.keys(KMAP) });
+      if (picked.length)
+        uploadItems(picked.map((p) => ({ file: { text: async () => p.text }, rel: p.rel })));
+    } catch (e) {
+      upShow(); upMsg.textContent = ''; upErr.textContent = 'native picker failed: ' + e;
+    }
+  });
+  $('upfiles').onclick = deskPick ? () => deskPick(false) : () => $('fpick').click();
+  $('updir').onclick = deskPick ? () => deskPick(true) : () => $('dpick').click();
   $('fpick').onchange = () => { if ($('fpick').files.length) uploadItems(fromFileList($('fpick').files)); };
   $('dpick').onchange = () => { if ($('dpick').files.length) uploadItems(fromFileList($('dpick').files)); };
 
