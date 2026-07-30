@@ -1121,40 +1121,33 @@
       [%'GET' %clip]
     =/  url=(unit @t)  (~(get by args) 'url')
     ?~  url  (send-err eyre-id 400 'missing url')
-    ?.  (http-url u.url)  (send-err eyre-id 400 'url must be http:// or https://')
-    ;<  got=(unit @t)  bind:m  (fetch-url u.url)
-    ?~  got  (send-err eyre-id 502 'could not fetch that page')
-    =/  ttl=@t  (fall (page-title:lcl u.got) u.url)
-    ;<  free=(unit path)  bind:m  (clip-free (clip-slug u.url))
-    ?~  free  (send-err eyre-id 409 'that url is already archived 10 times')
-    ;<  now=@da  bind:m  bowl-now
-    =/  dt  (yore now)
-    =/  pad  |=(n=@ud ^-(tape ?:((lth n 10) ['0' (a-co:co n)] (a-co:co n))))
-    =/  day=tape  :(weld (a-co:co y.dt) "-" (pad m.dt) "-" (pad d.t.dt))
-    ::  provenance header: where it came from and when. An archive with no
-    ::  source url is just an unattributed copy of someone else's writing.
-    =/  nl=tape  (trip '\0a')
-    =/  body=@t
-      %-  crip
+    (clip-page eyre-id u.url)
+  ::  ── /share: the PWA's share-target ─────────────────────────────────────
+  ::  Same archive as /clip, reached from the mobile share sheet instead of a
+  ::  bookmarklet. Declared in the manifest as a GET target, so the OS performs
+  ::  a top-level navigation and the eyre session cookie rides along exactly as
+  ::  it does for the bookmarklet.
+  ::
+  ::  The url can arrive in ANY of three params. Android overwhelmingly shares a
+  ::  page as `text` (often "Some Title https://example.com/x"), iOS and
+  ::  well-behaved apps use `url`, and some senders put it in `title`. Taking
+  ::  only `url` would make the share sheet appear to do nothing on the platform
+  ::  most likely to use it, so all three are searched for the first http(s)
+  ::  token.
+      [%'GET' %share]
+    =/  cand=(list @t)
+      %+  murn  ~['url' 'text' 'title']
+      |=(k=@t (~(get by args) k))
+    =/  found=(unit @t)  (first-url cand)
+    ?~  found
+      %+  send-html  eyre-id
+      %^  render-page  ""  ""
       ;:  weld
-        "# "  (trip ttl)  nl  nl
-        "*archived from <"  (trip u.url)  "> on "  day  "*"  nl  nl
-        "---"  nl  nl
-        (trip (to-md:lcl u.got))
+        "<h1>Nothing to archive</h1>"
+        "<p class=\"muted\">That share didn&rsquo;t contain a web address.</p>"
+        "<p><a href=\"/apps/lattice\">back to lattice</a></p>"
       ==
-    ;<  ~  bind:m  (poke-eval [%make u.free (wrap-content %gmi body)])
-    ::  private by default — deliberately. Archiving someone else's page and
-    ::  republishing it to the clearweb in one click is not a default anyone
-    ::  should get by accident; the share control is one click away.
-    =/  nom=tape  (pax-str u.free)
-    %+  send-html  eyre-id
-    %^  render-page  ""  ""
-    ;:  weld
-      "<h1>Archived</h1>"
-      "<p>"  (esc (trip ttl))  "</p>"
-      "<p class=\"muted\">saved privately as <code>"  (esc nom)  "</code></p>"
-      "<p><a href=\"/apps/lattice/app\">open in the editor</a></p>"
-    ==
+    (clip-page eyre-id u.found)
       [%'POST' %page-share-tree]
     ::  publish/unpublish a whole subtree at once: set `mode` on every page
     ::  under a folder. name is the folder path; mode=clearweb publishes a site,
@@ -2220,6 +2213,80 @@
   ?.  =(200 status)  (pure:m ~)
   ?~  full-file.res  (pure:m ~)
   (pure:m `q.data.u.full-file.res)
+::  +clip-page: fetch a url, convert it, file it under clips/, and render the
+::  confirmation. Shared by /clip (bookmarklet) and /share (PWA share target) —
+::  the two differ only in how the url reaches us.
+++  clip-page
+  |=  [eyre-id=@ta url=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  (http-url url)  (send-err eyre-id 400 'url must be http:// or https://')
+  ;<  got=(unit @t)  bind:m  (fetch-url url)
+  ?~  got  (send-err eyre-id 502 'could not fetch that page')
+  =/  ttl=@t  (fall (page-title:lcl u.got) url)
+  ;<  free=(unit path)  bind:m  (clip-free (clip-slug url))
+  ?~  free  (send-err eyre-id 409 'that url is already archived 10 times')
+  ;<  now=@da  bind:m  bowl-now
+  =/  dt  (yore now)
+  =/  pad  |=(n=@ud ^-(tape ?:((lth n 10) ['0' (a-co:co n)] (a-co:co n))))
+  =/  day=tape  :(weld (a-co:co y.dt) "-" (pad m.dt) "-" (pad d.t.dt))
+  ::  provenance header: where it came from and when. An archive with no
+  ::  source url is just an unattributed copy of someone else's writing.
+  =/  nl=tape  (trip '\0a')
+  =/  body=@t
+    %-  crip
+    ;:  weld
+      "# "  (trip ttl)  nl  nl
+      "*archived from <"  (trip url)  "> on "  day  "*"  nl  nl
+      "---"  nl  nl
+      (trip (to-md:lcl u.got))
+    ==
+  ;<  ~  bind:m  (poke-eval [%make u.free (wrap-content %gmi body)])
+  ::  private by default — deliberately. Archiving someone else's page and
+  ::  republishing it to the clearweb in one click is not a default anyone
+  ::  should get by accident; the share control is one click away.
+  =/  nom=tape  (pax-str u.free)
+  %+  send-html  eyre-id
+  %^  render-page  ""  ""
+  ;:  weld
+    "<h1>Archived</h1>"
+    "<p>"  (esc (trip ttl))  "</p>"
+    "<p class=\"muted\">saved privately as <code>"  (esc nom)  "</code></p>"
+    "<p><a href=\"/apps/lattice/app\">open in the editor</a></p>"
+  ==
+::  +first-url: the first http(s) token across some candidate strings. A share
+::  sheet rarely hands over a bare url — Android typically sends
+::  "Page Title https://example.com/x" as `text` — so the url has to be picked
+::  out of surrounding prose rather than assumed to be the whole field.
+++  first-url
+  |=  cands=(list @t)
+  ^-  (unit @t)
+  |-  ^-  (unit @t)
+  ?~  cands  ~
+  =/  hit=(unit @t)  (url-in (trip i.cands))
+  ?^  hit  hit
+  $(cands t.cands)
+::  +url-in: scan a tape for the first http:// or https:// run, ending at
+::  whitespace. ~ when there is none.
+++  url-in
+  |=  t=tape
+  ^-  (unit @t)
+  |-  ^-  (unit @t)
+  ?~  t  ~
+  ::  widened copy: the run-scan below walks the same text, and a second ?~ on
+  ::  the face this ?~ already narrowed is a vain branch
+  =/  tt=tape  `tape`t
+  ?.  ?|  =("http://" (scag 7 tt))
+          =("https://" (scag 8 tt))
+      ==
+    $(t t.t)
+  =/  run=tape
+    =/  s=tape  tt
+    |-  ^-  tape
+    ?~  s  ~
+    ?:  ?|(=(' ' i.s) =(`@tD`9 i.s) =(`@tD`10 i.s) =(`@tD`13 i.s))  ~
+    [i.s $(s t.s)]
+  ?~(run ~ `(crip `tape`run))
 ::  +http-url: is this an http(s) url? The ship fetches whatever /clip is
 ::  handed, so this is the trust boundary — it keeps `file:`, `data:` and any
 ::  other iris-reachable scheme out, and it also gates the redirect target
@@ -5809,7 +5876,14 @@
 ::
 ++  manifest-json
   ^-  @t
-  '{"id":"/apps/lattice","name":"Lattice","short_name":"Lattice","description":"Programmable pages and markdown notes on Urbit.","start_url":"/apps/lattice","scope":"/apps/lattice","display":"standalone","theme_color":"#1a6ed8","background_color":"#fafafa","icons":[{"src":"/apps/lattice/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/apps/lattice/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"},{"src":"/apps/lattice/icon-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"},{"src":"/apps/lattice/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}'
+  ::  share_target makes the installed PWA appear in the mobile share sheet;
+  ::  sharing a page to Lattice archives it, same as the bookmarklet. GET (not
+  ::  POST) deliberately: the OS then performs a top-level NAVIGATION, which
+  ::  carries the eyre session cookie — a POST share target would be a
+  ::  cross-site form post and arrive unauthenticated. The action must sit
+  ::  inside `scope`. All three params are declared because senders disagree
+  ::  about which one carries the url (see +first-url).
+  '{"id":"/apps/lattice","name":"Lattice","short_name":"Lattice","description":"Programmable pages and markdown notes on Urbit.","start_url":"/apps/lattice","scope":"/apps/lattice","display":"standalone","theme_color":"#1a6ed8","background_color":"#fafafa","share_target":{"action":"/apps/lattice/share","method":"GET","params":{"title":"title","text":"text","url":"url"}},"icons":[{"src":"/apps/lattice/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/apps/lattice/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"},{"src":"/apps/lattice/icon-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"},{"src":"/apps/lattice/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}'
 ++  icon-svg
   ^-  @t
   '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" fill="#1a6ed8"/><g stroke="#ffffff" stroke-width="14" stroke-linecap="round" fill="#ffffff"><line x1="140" y1="140" x2="372" y2="140"/><line x1="140" y1="256" x2="372" y2="256"/><line x1="140" y1="372" x2="372" y2="372"/><line x1="140" y1="140" x2="140" y2="372"/><line x1="256" y1="140" x2="256" y2="372"/><line x1="372" y1="140" x2="372" y2="372"/><line x1="140" y1="140" x2="372" y2="372"/><line x1="372" y1="140" x2="140" y2="372"/><circle cx="140" cy="140" r="26"/><circle cx="256" cy="140" r="26"/><circle cx="372" cy="140" r="26"/><circle cx="140" cy="256" r="26"/><circle cx="256" cy="256" r="30"/><circle cx="372" cy="256" r="26"/><circle cx="140" cy="372" r="26"/><circle cx="256" cy="372" r="26"/><circle cx="372" cy="372" r="26"/></g></svg>'
