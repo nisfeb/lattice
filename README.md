@@ -17,6 +17,9 @@ One store, every surface:
 - **filesystem** ([`lattice-fs-rs/`](lattice-fs-rs/)): a Rust FUSE client that
   mounts your page tree as local files. `rg` everything at RAM speed, edit in
   your own editor, and mount any other grubbery app tree too.
+- **desktop** ([`desktop/`](desktop/)): a Tauri shell that wraps the
+  ship-served web client and manages `lattice-fs` mounts — one login, one
+  window, clean unmounts on quit. Linux + macOS.
 - **AI agents**: eleven MCP knowledge tools compiled into the ship itself and
   served at `/grubbery/mcp`. Your assistant's memory lives on your ship,
   not in someone's cloud.
