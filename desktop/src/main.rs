@@ -12,6 +12,28 @@ use tauri::Manager;
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .on_window_event(|win, ev| match ev {
+            // closing the manager while the workspace lives on used to orphan
+            // the app (no way back to mounts/connect until relaunch) — hide it
+            // instead. Closing it as the last window still exits normally.
+            tauri::WindowEvent::CloseRequested { api, .. }
+                if win.label() == "manager"
+                    && win.app_handle().get_webview_window("workspace").is_some() =>
+            {
+                win.hide().ok();
+                api.prevent_close();
+            }
+            // workspace gone -> bring the (possibly hidden) manager back, so
+            // the app never runs on with zero visible windows
+            tauri::WindowEvent::Destroyed if win.label() == "workspace" => {
+                if let Some(m) = win.app_handle().get_webview_window("manager") {
+                    m.show().ok();
+                    m.set_focus().ok();
+                }
+            }
+            _ => {}
+        })
         .manage(commands::PendingLogin(Mutex::new(None)))
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
         .setup(|app| {

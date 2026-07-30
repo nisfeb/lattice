@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "workspace-remote",
+  "description": "The workspace webview shows the ship-served lattice client (any user-configured URL, so the pattern is any host). It gets exactly two things: pick_upload, which opens a native dialog and returns only what the user picked (a hostile page gets nothing without the user choosing files in a visible OS dialog), and opener's default urls, so target=_blank links (the clearweb share link) open in the system browser.",
+  "windows": ["workspace"],
+  "remote": {
+    "urls": ["http://*", "http://*:*", "https://*", "https://*:*"]
+  },
+  "permissions": ["allow-pick-upload", "opener:default"]
+}
