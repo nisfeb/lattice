@@ -2186,33 +2186,58 @@
   ?:  ?=(%| -.out)  (pure:m [%| p.out])
   (pure:m [%& [/ ext] q.p.out])
 ::  ── web archiving (the /clip bookmarklet) ──────────────────────────────
-::  +fetch-url: GET a clearweb url through iris, following at most one redirect.
-::  Returns ~ on ANY failure (dead host, non-200, empty body) rather than
-::  bailing: a request fiber that crashes leaves the browser hanging on a dead
-::  connection, so every failure has to come back as a value the route can 502.
+::  +fetch-hops: redirect hops to follow. One was not enough — an ordinary site
+::  chains http->https->www->canonical, and stopping at the first hop reported
+::  "could not fetch" for pages that were perfectly reachable.
+++  fetch-hops  ^-(@ud 5)
+::  +fetch-url: GET a clearweb url through iris, following redirects.
+::
+::  Returns the body, or a REASON — never bails. A request fiber that crashes
+::  leaves the browser hanging on a dead connection, so every failure comes back
+::  as a value. And the reason is carried out rather than flattened to ~: a bare
+::  "could not fetch that page" is useless to whoever is standing there, since
+::  a 403 from a bot-blocking site, a timeout and a dead host all need different
+::  responses from the user.
 ++  fetch-url
   |=  url=@t
-  =/  m  (fiber:fiber:nexus ,(unit @t))
+  =/  m  (fiber:fiber:nexus ,(each @t @t))
   ^-  form:m
-  =/  hed  ^-((list [@t @t]) ~[['User-Agent' 'lattice-clip']])
-  ;<  ~  bind:m  (send-request:io [%'GET' url hed ~])
+  =/  hed=(list [@t @t])
+    :~  ['User-Agent' 'lattice-clip']
+        ::  honest content negotiation — some sites serve a readable document
+        ::  only when asked for one. NOT a browser UA: pretending to be Chrome
+        ::  to get past bot mitigation is evasion, and this fetches on the
+        ::  owner's behalf under their own name.
+        ['Accept' 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8']
+    ==
+  =|  hops=@ud
+  =/  cur=@t  url
+  |-  ^-  form:m
+  ?:  (gth hops fetch-hops)
+    (pure:m [%| 'that page redirects too many times'])
+  ;<  ~  bind:m  (send-request:io [%'GET' cur hed ~])
   ;<  res=client-response:iris  bind:m  take-client-response:io
-  ?.  ?=(%finished -.res)  (pure:m ~)
+  ?.  ?=(%finished -.res)
+    (pure:m [%| 'the request did not complete (host unreachable, or timed out)'])
   =/  status=@ud  status-code.response-header.res
-  ?:  ?|(=(status 301) =(status 302) =(status 307) =(status 308))
+  ?:  ?|  =(status 301)  =(status 302)  =(status 303)
+          =(status 307)  =(status 308)
+      ==
     =/  loc=(unit @t)
       (~(get by (malt headers.response-header.res)) 'location')
-    ?~  loc  (pure:m ~)
-    ?.  (http-url u.loc)  (pure:m ~)
-    ;<  ~  bind:m  (send-request:io [%'GET' u.loc hed ~])
-    ;<  r2=client-response:iris  bind:m  take-client-response:io
-    ?.  ?=(%finished -.r2)  (pure:m ~)
-    ?.  =(200 status-code.response-header.r2)  (pure:m ~)
-    ?~  full-file.r2  (pure:m ~)
-    (pure:m `q.data.u.full-file.r2)
-  ?.  =(200 status)  (pure:m ~)
-  ?~  full-file.res  (pure:m ~)
-  (pure:m `q.data.u.full-file.res)
+    ?~  loc  (pure:m [%| 'the site redirected without saying where'])
+    ?.  (http-url u.loc)
+      ::  a relative Location needs the base url resolved against it; say so
+      ::  rather than reporting a generic failure
+      (pure:m [%| 'the site redirected to a relative address, which is not supported yet'])
+    $(cur u.loc, hops +(hops))
+  ?.  =(200 status)
+    =/  s=tape  (a-co:co status)
+    ?:  |(=(status 403) =(status 401) =(status 429))
+      (pure:m [%| (crip (weld "the site refused the request (" (weld s ") — many publishers block automated fetches")))])
+    (pure:m [%| (crip (weld "the site answered " s))])
+  ?~  full-file.res  (pure:m [%| 'the site sent an empty page'])
+  (pure:m [%& q.data.u.full-file.res])
 ::  +clip-page: fetch a url, convert it, file it under clips/, and render the
 ::  confirmation. Shared by /clip (bookmarklet) and /share (PWA share target) —
 ::  the two differ only in how the url reaches us.
@@ -2221,9 +2246,9 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?.  (http-url url)  (send-err eyre-id 400 'url must be http:// or https://')
-  ;<  got=(unit @t)  bind:m  (fetch-url url)
-  ?~  got  (send-err eyre-id 502 'could not fetch that page')
-  =/  ttl=@t  (fall (page-title:lcl u.got) url)
+  ;<  got=(each @t @t)  bind:m  (fetch-url url)
+  ?:  ?=(%| -.got)  (send-err eyre-id 502 p.got)
+  =/  ttl=@t  (fall (page-title:lcl p.got) url)
   ;<  free=(unit path)  bind:m  (clip-free (clip-slug url))
   ?~  free  (send-err eyre-id 409 'that url is already archived 10 times')
   ;<  now=@da  bind:m  bowl-now
@@ -2239,7 +2264,7 @@
       "# "  (trip ttl)  nl  nl
       "*archived from <"  (trip url)  "> on "  day  "*"  nl  nl
       "---"  nl  nl
-      (trip (to-md:lcl u.got))
+      (trip (to-md:lcl p.got))
     ==
   ;<  ~  bind:m  (poke-eval [%make u.free (wrap-content %gmi body)])
   ::  private by default — deliberately. Archiving someone else's page and
