@@ -30,8 +30,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: JS parses (the served client and the ui matrix)
+      - name: UI builds and the served artifact is current
         run: |
+          node scripts/build-ui.mjs
+          git diff --exit-code grubbery-overlay/nex/lattice/ui-app/app.js
           node --check grubbery-overlay/nex/lattice/ui-app/app.js
           node --check scripts/ui-matrix.mjs
       - name: shell scripts parse

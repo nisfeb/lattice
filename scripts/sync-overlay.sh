@@ -53,8 +53,9 @@ done
 # Pure libs: into the tree (gub/lib, for the nexus) and the desk (lib, for tests).
 rsync -a "$OVERLAY/lib/" "$DEST/gub/lib/"
 rsync -a "$OVERLAY/lib/" "$DEST/lib/"
-# Nexus + marks: into the gub tree only.
-[ -d "$OVERLAY/nex/lattice" ] && rsync -a "$OVERLAY/nex/lattice/" "$DEST/gub/nex/lattice/"
+# Nexus + marks: into the gub tree only. ui-app/src is build SOURCE — only the
+# built app.js ships; the desk must not carry files the ball never loads.
+[ -d "$OVERLAY/nex/lattice" ] && rsync -a --exclude 'ui-app/src' "$OVERLAY/nex/lattice/" "$DEST/gub/nex/lattice/"
 [ -d "$OVERLAY/mar/lattice" ] && rsync -a "$OVERLAY/mar/lattice/" "$DEST/gub/mar/lattice/"
 # Cross-desk poke marcs (e.g. obelisk-action): into grubbery's gub/mar/clay tree
 # so handle-gall-poke can build the poke vase.
