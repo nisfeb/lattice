@@ -22,3 +22,13 @@
     status.style.color = '';
     spinner.classList.add('on');
   };
+  // desktop shell: wry denies target=_blank new windows (the clearweb share
+  // link would be a dead click) — route them to the system browser instead
+  if (window.__TAURI__)
+    document.addEventListener('click', (e) => {
+      const a = e.target.closest && e.target.closest('a[target="_blank"]');
+      if (a && a.href) {
+        e.preventDefault();
+        window.__TAURI__.core.invoke('plugin:opener|open_url', { url: a.href });
+      }
+    });

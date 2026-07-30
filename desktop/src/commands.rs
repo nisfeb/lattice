@@ -129,12 +129,31 @@ pub fn open_workspace(app: &AppHandle) -> Result<(), String> {
         w.set_focus().ok();
         return Ok(());
     }
+    let handle = app.clone();
     WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("login.html".into()))
         .title("lattice — workspace")
         .inner_size(1200.0, 800.0)
         // tauri's own drag-drop interception would swallow the HTML5 drop
         // events the ship UI's drag-to-upload listens for
         .disable_drag_drop_handler()
+        // a webview without browser chrome has no other way to zoom
+        .zoom_hotkeys_enabled(true)
+        // keep the workspace on the ship (or the shell's own pages); any
+        // other top-level navigation opens in the system browser — the
+        // webview has no back button or url bar to escape from
+        .on_navigation(move |u| {
+            // local shell pages: tauri:// (macOS) or http://tauri.localhost (Linux)
+            if u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost") {
+                return true;
+            }
+            let cfg = config::load(&handle);
+            if tauri::Url::parse(&cfg.url).is_ok_and(|ship| ship.origin() == u.origin()) {
+                return true;
+            }
+            use tauri_plugin_opener::OpenerExt;
+            handle.opener().open_url(u.as_str(), None::<&str>).ok();
+            false
+        })
         .build()
         .map_err(|e| e.to_string())?;
     Ok(())
