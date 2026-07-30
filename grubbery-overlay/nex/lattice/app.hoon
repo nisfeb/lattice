@@ -42,6 +42,7 @@
 /<  lb   /lib/lattice-bookmark.hoon
 /<  lh   /lib/lattice-history.hoon
 /<  lcl  /lib/lattice-clip.hoon
+/<  li   /lib/lattice-index.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -127,6 +128,11 @@
         ::  — a lightweight live-update signal that doesn't stream a page's heavy
         ::  compiled grub, and works where grubbery's ?blot=/txt keep does not.
             [%fall %& [/beacon %rev] [[/ %json] (numb:enjs:format 0)]]
+        ::  /idx: the grub-native term index (docs/native-index.md). 256 bucket
+        ::  grubs, each term -> (key -> [scope tf]). ONE covering %fall row: a
+        ::  nexus reload rewrites its whole covered subtree, so without a row
+        ::  here the whole index is deleted on every load.
+            [%fall %| /idx/b empty-dir:loader]
             [%fall %& [/ %'crawler.sig'] [[/ %sig] ~]]
         ::  /fs.sig: a lick (unix-socket) port exposing the filesystem ops to a
         ::  local FUSE client (lattice-fs) — the native-transport twin of the
@@ -1729,9 +1735,21 @@
           ['columns' a+(turn ~['scope' 'key' 'tf'] |=(c=@t s+c))]
           ['rows' a+~]
       ==
-    ;<  cs=(each (list cmd-result:ast) tang)  bind:m
-      (obelisk-query catalog-db (content-search-urql:cat (trip u.nt)))
-    (send-obelisk eyre-id cs)
+    ::  ONE peek of ONE bucket, whatever the corpus size. The bucket is named by
+    ::  hashing the term, so this never reads the /idx directory — a directory
+    ::  peek would materialise the whole index (docs/native-index.md).
+    ;<  hits=(list [scope=@t key=@t tf=@ud])  bind:m  (index-look u.nt)
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['ok' b+&]
+        ['columns' a+(turn ~['scope' 'key' 'tf'] |=(c=@t s+c))]
+        ['count' (numb:enjs:format (lent hits))]
+      :-  'rows'
+      :-  %a
+      %+  turn  hits
+      |=  [scope=@t key=@t tf=@ud]
+      a+~[s+scope s+key s+(scot %ud tf)]
+    ==
   ::  search-reindex: rebuild content-terms from the live tree + know vault.
   ::  Blocking (the client treats it fire-and-forget), like /know-reindex.
       [%'POST' %search-reindex]
@@ -4215,10 +4233,73 @@
     :+  'knowledge'  (spat key)
     %+  top-terms:cat  term-max:cat
     (index-terms:cat *(map @t @ud) (trip (end [3 body-cap] body.e)))
-  ;<  ~  bind:m  (catalog-run-quiet %sys (weld "CREATE DATABASE " (trip catalog-db)))
-  ;<  ~  bind:m  (catalog-run-loop & content-index-create-list:cat)
-  %+  catalog-run-loop  |
-  (content-index-populate-urql:cat (weld page-rows know-rows))
+  ::  flatten to (scope, key, term, tf) and write the WHOLE index as ONE bole.
+  ::
+  ::  This is the entire point of the change. The obelisk version sent ~200 pokes,
+  ::  each peeking and rewriting the whole database — and since every local dart
+  ::  drains inside ONE Arvo event, that was one enormous event, which is why it
+  ::  wedged HTTP rather than merely being slow. A bole is a single %make dart
+  ::  with a single tree hash: O(rows) once.
+  =/  rows=(list [scope=@t key=@t term=@t tf=@ud])
+    %-  zing
+    %+  turn  (weld page-rows know-rows)
+    |=  [scope=@t key=@t terms=(list [term=@t tf=@ud])]
+    ^-  (list [scope=@t key=@t term=@t tf=@ud])
+    %+  turn  terms
+    |=  [term=@t tf=@ud]
+    [scope key term tf]
+  (index-write (group:li rows))
+::  +index-write: replace the whole term index with one dart.
+::
+::  EVERY bucket is emitted, including empty ones, so a rebuild after documents
+::  were deleted cannot leave a stale bucket behind holding their postings.
+++  index-write
+  |=  full=(map @ta bucket:li)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  contents=(map @ta [=bask:tarball gain=?])
+    %-  ~(gas by *(map @ta [bask:tarball ?]))
+    %+  turn  all-names:li
+    |=  nm=@ta
+    ^-  [@ta [bask:tarball ?]]
+    [nm [[/lattice %index-bucket] (~(gut by full) nm *bucket:li)] %.n]
+  =/  bol=bole:tarball  [`[~ ~ %.n contents] ~]
+  ::  a bole targets a DIRECTORY, so the road is an absolute fold [%& %| path] —
+  ::  a rail hangs the fiber forever, because the dart never resolves and +make
+  ::  waits on a made that cannot arrive.
+  ::
+  ::  Buckets live under /idx/b, not /idx, because +sync-bole DELETES anything in
+  ::  the directory that the bole omits. Keeping them in their own covered dir
+  ::  means a rebuild can never take out a sibling.
+  ::  make-soft, not make: +make waits for a made that never arrives if the dart
+  ::  is refused, so a bad road or a rejected bole hangs the request fiber
+  ::  forever — which is exactly how this failed the first time. Soft turns that
+  ::  into a tang we can see.
+  ::  CULL FIRST. fiberio only exposes a forced write for single files (over /
+  ::  over-as); make and make-soft always send force=%.n, so a bole aimed at a
+  ::  directory that already exists silently no-ops — it reports success and
+  ::  writes nothing. Removing the directory makes the bole the creating write.
+  ::
+  ::  Safe because /idx/b holds only derived postings and the whole point of this
+  ::  arm is to replace all of them; the on-load %fall row recreates the dir if a
+  ::  reload lands in the gap.
+  =/  dst=road:tarball  [%& %| (weld app-base:lu /idx/b)]
+  ;<  *  bind:m  (cull-soft:io dst)
+  ;<  err=(unit tang)  bind:m  (make-soft:io dst &+bol)
+  ?~  err  (pure:m ~)
+  ~&([%lattice-index-write-failed u.err] (pure:m ~))
+::  +index-look: the postings for one term. One peek of one bucket — the bucket
+::  name is computed from the term, so cost is independent of corpus size.
+++  index-look
+  |=  term=@t
+  =/  m  (fiber:fiber:nexus ,(list [scope=@t key=@t tf=@ud]))
+  ^-  form:m
+  ;<  vn=view:nexus  bind:m
+    (peek:io [%& %& (weld app-base:lu /idx/b) (name-of:li term)] ~)
+  ?.  ?=([%file *] vn)  (pure:m ~)
+  =/  bk=bucket:li
+    (fall (mole |.(!<(bucket:li (need-vase:tarball sang.vn)))) *bucket:li)
+  (pure:m (look:li bk term))
 ++  tree-walk
   |=  [b=ball:tarball w=wave:nexus rel=path]
   ^-  (list [pax=path j=json])
