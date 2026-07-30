@@ -22,6 +22,13 @@ workspace webview and the fuse cookie (`~/.config/lattice-fs/cookie` — the
 `lattice-fs` CLI shares it). Mounts persist and remount on launch; quitting
 the app unmounts cleanly.
 
+Uploads in the workspace use the OS-native file/folder picker (the web
+client detects the shell and invokes the `pick_upload` command — webkit2gtk
+has no `webkitdirectory`, so the browser folder picker would be dead on
+Linux). Drag-and-drop upload works too; the shell's own drag-drop
+interception is disabled for the workspace window so the UI's HTML5 drop
+handler receives the files.
+
 If a previous run died without unmounting ("Transport endpoint is not
 connected" on remount), clear the stale mountpoint with
 `fusermount3 -u <dir>`.

@@ -11,6 +11,7 @@ use tauri::Manager;
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(commands::PendingLogin(Mutex::new(None)))
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
         .setup(|app| {
@@ -42,6 +43,7 @@ fn main() {
             commands::connect,
             commands::take_login,
             commands::get_config,
+            commands::pick_upload,
             mounts::status,
             mounts::add_mount,
             mounts::remove_mount,
