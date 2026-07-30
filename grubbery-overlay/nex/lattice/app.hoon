@@ -2541,6 +2541,19 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %eval-action] act])
+::  +poke-eval-abs: like +poke-eval, but an ABSOLUTE road to the writer.
+::
+::  +poke-eval's up-2 is only correct from /ui/requests. +catalog-run is reached
+::  from fibers at three different depths — /ui/requests (up-2), /crawler.sig at
+::  the app root (up-0, like /fs.sig), and the /sub keep fibers — so no fixed hop
+::  count serves them all. An absolute road is depth-independent; a relative one
+::  from the crawler overshoots the app root and the poke nacks, killing the sweep.
+::
+++  poke-eval-abs
+  |=  act=eval-action:le
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (poke:io &+&+[app-base:lu %'main.sig'] [[/lattice %eval-action] act])
 ::  +poke-comment: hand a comment to the owner writer (author = us). The public
 ::  inbox fiber pokes apply-comment directly with the sender ship instead.
 ::
@@ -3794,7 +3807,10 @@
   ::  WRITES go to the writer. +obelisk-query is read-only by construction (it
   ::  throws away the state +exec returns), so a CREATE/INSERT run through it
   ::  would execute and then vanish.
-  (poke-eval [%obelisk db (crip urql)])
+  ::
+  ::  ABSOLUTE road: the crawler reaches this arm from the app root, where
+  ::  +poke-eval's up-2 overshoots and nacks. See +poke-eval-abs.
+  (poke-eval-abs [%obelisk db (crip urql)])
 ::  +catalog-init: create the lattice database, then each catalog table as its OWN
 ::  poke (per catalog-create-list's contract — the joined catalog-create-urql would
 ::  abort at the first already-existing table and never create the rest). Each
