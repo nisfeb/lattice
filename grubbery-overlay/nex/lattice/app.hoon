@@ -2303,7 +2303,11 @@
       "---"  nl  nl
       (trip (to-md:lcl got))
     ==
-  ;<  ~  bind:m  (poke-eval [%make u.free (wrap-content %gmi body)])
+  ::  %md, NOT %gmi. The converter emits markdown; filing it as gemtext meant
+  ::  the preview ran the gemtext renderer over it, so headings, bold, italics
+  ::  and links all came out as literal punctuation. (The two %gmi calls in the
+  ::  legacy migration are correct — those pages really are gemtext.)
+  ;<  ~  bind:m  (poke-eval [%make u.free (wrap-content %md body)])
   ::  private by default — deliberately. Archiving someone else's page and
   ::  republishing it to the clearweb in one click is not a default anyone
   ::  should get by accident; the share control is one click away.
