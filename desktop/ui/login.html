@@ -14,7 +14,7 @@
       const f = document.createElement('form');
       f.method = 'post';
       f.action = url + '/~/login';
-      for (const [k, v] of [['password', code], ['redirect', '/apps/lattice/']]) {
+      for (const [k, v] of [['password', code], ['redirect', '/apps/lattice']]) {
         const i = document.createElement('input');
         i.type = 'hidden'; i.name = k; i.value = v;
         f.appendChild(i);
@@ -25,7 +25,7 @@
       // relaunch: webview cookie usually still valid — go straight in.
       // If it expired, eyre shows its own login page; or reconnect from the manager.
       const cfg = await invoke('get_config');
-      location.href = cfg.url + '/apps/lattice/';
+      location.href = cfg.url + '/apps/lattice';
     }
   })();
 </script>
