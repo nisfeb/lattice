@@ -2314,7 +2314,10 @@
     "<h1>Archived</h1>"
     "<p>"  (esc (trip ttl))  "</p>"
     "<p class=\"muted\">saved privately as <code>"  (esc nom)  "</code></p>"
-    "<p><a href=\"/apps/lattice/app\">open in the editor</a></p>"
+    ::  ?name= — without it this opened the editor's default view rather than
+    ::  the thing just archived. The slug is [a-z0-9-] joined by /, so it needs
+    ::  no percent-encoding; esc is for the html context.
+    "<p><a href=\"/apps/lattice/app?name="  (esc nom)  "\">open in the editor</a></p>"
   ==
 ::  +first-url: the first http(s) token across some candidate strings. A share
 ::  sheet rarely hands over a bare url — Android typically sends
