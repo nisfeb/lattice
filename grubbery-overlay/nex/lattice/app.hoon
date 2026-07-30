@@ -1122,6 +1122,32 @@
     =/  url=(unit @t)  (~(get by args) 'url')
     ?~  url  (send-err eyre-id 400 'missing url')
     (clip-page eyre-id u.url)
+  ::  ── /clip-paste + /clip-html: archive what the BROWSER can see ─────────
+  ::  Some publishers refuse the ship (403 to any automated fetch), and a
+  ::  paywalled or logged-in page is never fetchable server-side at all. In
+  ::  both cases the browser is already holding the rendered page, legitimately,
+  ::  so the html comes from there instead — no request to the site is made.
+  ::
+  ::  It takes two routes because of the session cookie. Eyre sets it with no
+  ::  SameSite attribute, which browsers treat as Lax: a top-level GET
+  ::  navigation carries it, a cross-site POST does not. So the bookmarklet
+  ::  cannot POST the html from the article page — it would arrive
+  ::  unauthenticated. Instead it OPENS /clip-paste (top-level GET, cookie
+  ::  rides along), then postMessages the html to that tab, which is same-origin
+  ::  with the api and can POST it to /clip-html normally.
+      [%'GET' %clip-paste]
+    =/  url=(unit @t)  (~(get by args) 'url')
+    ?~  url  (send-err eyre-id 400 'missing url')
+    (send-html eyre-id (clip-paste-html u.url))
+  ::  the html arrives as the request body; `url` is only provenance and the
+  ::  slug source. Nothing is fetched here.
+      [%'POST' %clip-html]
+    =/  url=(unit @t)  (~(get by args) 'url')
+    ?~  url  (send-err eyre-id 400 'missing url')
+    ?.  (http-url u.url)  (send-err eyre-id 400 'url must be http:// or https://')
+    =/  body=@t  (req-body req)
+    ?:  =('' body)  (send-err eyre-id 400 'no page content was sent')
+    (archive-html eyre-id u.url body)
   ::  ── /share: the PWA's share-target ─────────────────────────────────────
   ::  Same archive as /clip, reached from the mobile share sheet instead of a
   ::  bookmarklet. Declared in the manifest as a GET target, so the OS performs
@@ -2248,7 +2274,18 @@
   ?.  (http-url url)  (send-err eyre-id 400 'url must be http:// or https://')
   ;<  got=(each @t @t)  bind:m  (fetch-url url)
   ?:  ?=(%| -.got)  (send-err eyre-id 502 p.got)
-  =/  ttl=@t  (fall (page-title:lcl p.got) url)
+  (archive-html eyre-id url p.got)
+::  +archive-html: convert html we already hold and file it under clips/.
+::  Split out of +clip-page so the browser can supply the html directly (see
+::  /clip-html): a publisher that refuses the SHIP still renders the page fine
+::  in the browser that is authorised to read it, and paywalled or logged-in
+::  pages are only ever available that way.
+++  archive-html
+  |=  [eyre-id=@ta url=@t html=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  got=@t  html
+  =/  ttl=@t  (fall (page-title:lcl got) url)
   ;<  free=(unit path)  bind:m  (clip-free (clip-slug url))
   ?~  free  (send-err eyre-id 409 'that url is already archived 10 times')
   ;<  now=@da  bind:m  bowl-now
@@ -2264,7 +2301,7 @@
       "# "  (trip ttl)  nl  nl
       "*archived from <"  (trip url)  "> on "  day  "*"  nl  nl
       "---"  nl  nl
-      (trip (to-md:lcl p.got))
+      (trip (to-md:lcl got))
     ==
   ;<  ~  bind:m  (poke-eval [%make u.free (wrap-content %gmi body)])
   ::  private by default — deliberately. Archiving someone else's page and
@@ -6210,6 +6247,31 @@
     %-  trip
     '<script>(function(){var p=new URLSearchParams(location.search);var q=(p.get("url")||"").trim();var out=document.getElementById("results");if(!q){out.textContent="";return}var words=q.toLowerCase().split(/[^a-z0-9]+/).filter(function(w){return w.length>=2});if(!words.length){out.textContent="Type at least one search word (2+ letters).";return}function get(u){return fetch(u).then(function(r){return r.ok?r.json():{rows:[]}}).catch(function(){return{rows:[]}})}var calls=[];words.forEach(function(w){calls.push(get("/apps/lattice/content-search?term="+encodeURIComponent(w)).then(function(j){return{kind:"own",j:j}}));calls.push(get("/apps/lattice/catalog-search?term="+encodeURIComponent(w)).then(function(j){return{kind:"cat",j:j}}));});Promise.all(calls).then(function(res){var hits={};function bump(scope,key,tf){var k=scope+"|"+key;if(!hits[k])hits[k]={scope:scope,key:key,terms:0,tf:0};hits[k].terms++;hits[k].tf+=tf;}res.forEach(function(r){var c=r.j.columns||[];var rows=r.j.rows||[];if(r.kind==="own"){var si=c.indexOf("scope"),ki=c.indexOf("key"),ti=c.indexOf("tf");rows.forEach(function(row){var s=row[si],k=row[ki];if(!s||!k)return;bump(s,k,parseInt(row[ti],10)||0);});}else{var pi=c.indexOf("publisher"),xi=c.indexOf("path"),ti2=c.indexOf("tf");rows.forEach(function(row){var pub=row[pi],path=row[xi];if(!pub||!path)return;if(pub===OUR)return;bump(pub,path,parseInt(row[ti2],10)||0);});}});var list=Object.keys(hits).map(function(k){return hits[k]});list.sort(function(a,b){return b.terms-a.terms||b.tf-a.tf});out.textContent="";out.className="";if(!list.length){out.className="muted";out.textContent="Nothing matches that.";return}var ul=document.createElement("ul");ul.className="qlist";list.slice(0,50).forEach(function(h){var peer=h.scope.charAt(0)==="~";var cls=peer?"peer":h.scope;var href;if(peer){href="/apps/lattice?url="+encodeURIComponent("urb://"+h.scope+"/"+h.key)}else if(h.scope==="knowledge"){href="/apps/lattice/app?view=know&name="+encodeURIComponent(h.key)}else if(h.scope==="private"){href="/apps/lattice/app?name="+encodeURIComponent(h.key)}else{href="/apps/lattice?url="+encodeURIComponent("urb://"+OUR+"/"+h.key)}var li=document.createElement("li");var a=document.createElement("a");a.href=href;var b=document.createElement("span");b.className="qbadge "+cls;b.textContent=peer?h.scope:h.scope;var n=document.createElement("span");n.className="qname";n.textContent=h.key;var s=document.createElement("span");s.className="qprev";s.textContent=h.terms+(h.terms>1?" terms":" term")+", tf "+h.tf;a.appendChild(b);a.appendChild(n);a.appendChild(s);li.appendChild(a);ul.appendChild(li);});out.appendChild(ul);}).catch(function(){out.className="muted";out.textContent="Search is unavailable (obelisk not responding).";});})();</script>'
   ==
+::  +clip-paste-html: the landing page the send-page bookmarklet opens. Its only
+::  job is to be same-origin with the api: it receives the html over
+::  postMessage from the tab that opened it and POSTs it to /clip-html, then
+::  replaces itself with the archive confirmation.
+::
+::  The sender is the article page, so its origin is arbitrary and cannot be
+::  whitelisted. What IS checked is that the message came from window.opener,
+::  and the payload shape. Worth being clear about the residual exposure: a
+::  hostile page the user clicks the bookmarklet on could send content other
+::  than what is displayed. That is the same trust as /clip (junk in your own
+::  tree, nothing disclosed), but here the content is arbitrary rather than
+::  fetched, so it is a step further.
+++  clip-paste-html
+  |=  url=@t
+  ^-  @t
+  %^  render-page  ""  ""
+  ;:  weld
+    "<h1>Archiving from your browser</h1>"
+    "<p class=\"muted\">"  (esc (trip url))  "</p>"
+    "<div id=\"pst\" class=\"muted\">waiting for the page&hellip;</div>"
+    "<script>"
+    %-  trip
+    '(function(){var out=document.getElementById("pst");var p=new URLSearchParams(location.search);var u=p.get("url")||"";var done=false;function show(m,bad){out.textContent=m;out.className=bad?"err":"";}function send(html){if(done)return; done=true;show("archiving…");fetch("/apps/lattice/clip-html?url="+encodeURIComponent(u),{method:"POST",body:html}).then(function(r){if(r.ok){return r.text().then(function(t){document.open();document.write(t);document.close();});}return r.json().catch(function(){return{}}).then(function(j){show("could not archive"+(j.error?": "+j.error:" ("+r.status+")"),true);});}).catch(function(){show("could not archive (network error)",true);});}window.addEventListener("message",function(e){if(e.source!==window.opener)return;var d=e.data;if(!d||d.lattice!==1||typeof d.html!=="string")return;send(d.html);});try{if(window.opener)window.opener.postMessage({lattice:"ready"},"*");}catch(x){}setTimeout(function(){if(!done)show("nothing arrived from the page — try the bookmarklet again",true);},15000);})();'
+    "</script>"
+  ==
 ::  +settings-html: the settings page. One maintenance action so far — a manual
 ::  content-catalog sweep. The crawler auto-sweeps every ~6h (and a followed
 ::  peer's edits index live), but a newly published page isn't searchable until
@@ -6234,6 +6296,17 @@
     "<h2>Archive a web page</h2>"
     "<p class=\"muted\">Drag this to your bookmarks bar. On any web page, click it and your ship fetches that page, converts it to markdown and files it privately under <code>clips/</code> &mdash; a real lattice page you can edit, search and share.</p>"
     "<p><a id=\"clipbm\" class=\"btn\" href=\"#\">Clip to lattice</a></p>"
+    "<p class=\"muted\">Some publishers refuse automated fetches (you&rsquo;ll see a 403), and a paywalled or logged-in page is never fetchable by the ship at all. Use this second bookmark for those: it sends the page <em>your browser is already showing</em>, so nothing is requested from the site.</p>"
+    "<p><a id=\"sendbm\" class=\"btn\" href=\"#\">Send page to lattice</a></p>"
+    ::  the bookmarklet source lives in a text/plain block with an __O__
+    ::  placeholder rather than being built inside the wiring script: nesting a
+    ::  quoted js program inside another quoted js string needs backslash
+    ::  escaping, which then needs hoon escaping on top. This keeps both free of
+    ::  single quotes and backslashes.
+    %-  trip
+    '<script type="text/plain" id="bmsrc">(function(){var h=document.documentElement.outerHTML;var o=__O__;var w=window.open(o+"/apps/lattice/clip-paste?url="+encodeURIComponent(location.href),"_blank");if(!w){alert("Allow popups for this site to send the page to lattice.");return}var n=0;var t=setInterval(function(){n++;try{w.postMessage({lattice:1,html:h},o)}catch(e){}if(n>40)clearInterval(t)},250);window.addEventListener("message",function(e){if(e.data&&e.data.lattice==="ready"){try{w.postMessage({lattice:1,html:h},o)}catch(x){}}})})()</script>'
+    %-  trip
+    '<script>(function(){var a=document.getElementById("sendbm");var s=document.getElementById("bmsrc").textContent.trim().replace("__O__",JSON.stringify(location.origin));a.href="javascript:"+s;a.onclick=function(e){e.preventDefault()}})();</script>'
     %-  trip
     '<script>(function(){var b=document.getElementById("sweep");var s=document.getElementById("swst");b.onclick=function(){b.disabled=true;s.textContent="sweeping...";fetch("/apps/lattice/catalog-sweep",{method:"POST"}).then(function(r){s.textContent=r.ok?"started — pages are being (re)indexed in the background.":"failed ("+r.status+")";b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
     ::  the bookmarklet href is built client-side because settings-html has no
