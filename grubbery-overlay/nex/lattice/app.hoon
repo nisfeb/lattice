@@ -3711,7 +3711,14 @@
   ::  create-wave can't be missed. No pre-cull: the name is unique so nothing stale
   ::  exists, and culling a never-existent grub just spams grubbery's "no grub" log.
   ;<  *  bind:m  (keep:io rw res-road ~)
-  ;<  ~  bind:m  (poke-obk [db urql res-dir nom])
+  ::  a wedged owner reports rather than hanging. The keep is already up, so it
+  ::  has to be dropped and the (never-written) result grub swept before leaving,
+  ::  or every failed query leaks a subscription.
+  ;<  perr=(unit tang)  bind:m  (poke-obk [db urql res-dir nom])
+  ?^  perr
+    ;<  ~  bind:m  (drop:io rw res-road)
+    ;<  *  bind:m  (cull-soft:io res-road)
+    (pure:m [%| u.perr])
   ;<  now=@da  bind:m  bowl-now
   ::  the owner runs its own 15s obelisk wait; add margin for a queued owner.
   =/  until=@da  (add now ~s30)
@@ -3727,11 +3734,16 @@
 ::  +poke-obk: poke the obelisk owner with a query request. Absolute road so it
 ::  works from any caller depth (request fiber or crawler).
 ::
+::  +poke-soft, NOT +poke. A plain poke waits for the owner's ack forever, and
+::  obelisk-query only arms its 30s timer AFTER that ack — so a wedged owner made
+::  every search request hang indefinitely rather than erroring. Measured: 300s
+::  with no response. poke-soft carries its own 5s timer and hands back the
+::  reason, which is the difference between "search is broken" and a dead tab.
 ++  poke-obk
   |=  req=obk-req:ast
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,(unit tang))
   ^-  form:m
-  (poke:io [%& %& (weld app-base:lu /cat) %'obelisk.sig'] [[/lattice %obk-req] req])
+  (poke-soft:io [%& %& (weld app-base:lu /cat) %'obelisk.sig'] [[/lattice %obk-req] req])
 ::  +sweep-obk-out: cull every result grub currently under /cat/obk-out. Run once
 ::  at owner startup: any grub sitting there is orphaned (finding #6) — a caller
 ::  that timed out (30s) or disconnected before the owner wrote its result, so the
