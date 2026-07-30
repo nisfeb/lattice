@@ -508,8 +508,14 @@
 
   let autoTimer = null;
   async function autosave() {
-    // a grub has no `current`, so route before the page-mode guard below
-    if (grubPath) { if (dirty) saveGrub(); return; }
+    // GRUB MODE IS EXPLICIT-SAVE ONLY. Autosaving a lattice page is fine — it is
+    // your own note and the editor has always worked that way. Autosaving
+    // another app's source is not: a half-typed edit to calendar.html would go
+    // live 2s after you paused, and the 5-minute history window may not have
+    // kept a revision fine-grained enough to step back to. Save/Cmd+S only.
+    // The 2s debounce still fires — it just reports instead of writing, so the
+    // moment you stop typing you can see the edit is not yet on the ship.
+    if (grubPath) { if (dirty) st('unsaved — press Save or Cmd+S'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
     // never overlap saves: the pier serializes, so a second in-flight save is
     // 3.7s of stale-body work queued behind the first, delaying every preview
@@ -628,7 +634,12 @@
   window.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {
       e.preventDefault();
-      if (mode === 'know') saveKnow(); else save();
+      // grubPath first: it is the only mode with no `current`, and page save()
+      // would write to the wrong place (or nowhere) while a grub is open.
+      // Cmd+S matters more here than elsewhere — grub mode has no autosave.
+      if (grubPath) saveGrub();
+      else if (mode === 'know') saveKnow();
+      else save();
     }
   });
   src.addEventListener('keydown', (e) => {
