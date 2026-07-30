@@ -102,6 +102,35 @@
 ::  /know-reindex (create tables, then TRUNCATE + re-INSERT the live vault), so
 ::  it goes stale between reindexes, same as the retired agent's knowledge/tags.
 ::
+::  +urq-da: a @da literal obelisk will actually accept.
+::
+::  scot ZERO-PADS the day (~2026.06.09), and obelisk's parser SILENTLY DROPS a
+::  row whose day carries a leading zero: no error, ok:true, nothing written. That
+::  is the worst shape a bug can take here, and it hid for as long as it did
+::  because the dev ship's only two entries both fall on day 28.
+::
+::  Verified against the live engine: ~2026.6.09 and ~2026.06.09 are dropped,
+::  ~2026.6.9 and ~2026.06.19 land. So the DAY is what matters; the month pads
+::  harmlessly and is stripped only for symmetry, and the time fields are left
+::  exactly as scot wrote them.
+++  nopad
+  |=  s=tape
+  ^-  tape
+  ?.  ?=([@ @ ~] s)  s
+  ?.  =('0' i.s)  s
+  t.s
+++  urq-da
+  |=  when=@da
+  ^-  tape
+  =/  t=tape  (trip (scot %da when))
+  ::  bail out unchanged on anything that is not scot's ~YYYY.MM.DD.. shape
+  ::  (pre-1000 or BC dates print differently) — a wrong date beats a crash.
+  ?.  (gte (lent t) 11)  t
+  ?.  ?&(=('.' (snag 5 t)) =('.' (snag 8 t)))  t
+  ;:  weld
+    (scag 5 t)  "."  (nopad (swag [6 2] t))
+    "."  (nopad (swag [9 2] t))  (slag 11 t)
+  ==
 ::  +chunk-rows: split VALUES tuples into complete multi-row INSERT statements.
 ::
 ::  WHY MULTI-ROW: obelisk's +update-file (gub/lib/obelisk/crud.hoon) rebuilds a
@@ -146,7 +175,7 @@
     |=  [item=@t updated=@da tags=(list @t)]
     ^-  [tape (list tape)]
     =/  ek=tape  (urq-esc (trip item))
-    =/  up=tape  (trip (scot %da updated))
+    =/  up=tape  (urq-da updated)
     ::  DEDUP tags on the ESCAPED literal, like catalog-page-refresh-urql: urq-esc
     ::  collapses control bytes (<32) to one space, so two tags differing only by
     ::  an interior control byte escape to the SAME literal -> duplicate (item,tag)
@@ -267,7 +296,7 @@
   =/  ek=tape    (urq-esc pk)
   =/  url=tape   :(weld "urb://" pt pk)
   =/  ue=tape    (urq-esc url)
-  =/  fet=tape   (trip (scot %da now))
+  =/  fet=tape   (urq-da now)
   =/  hsh=tape   (trip (scot %ud hash.analysis))
   =/  ttl=tape   (urq-esc (trip title.analysis))
   =/  wc=tape    (trip (scot %ud word-count.analysis))
@@ -287,7 +316,7 @@
   =/  ek=tape    (urq-esc pk)
   =/  url=tape   :(weld "urb://" pt pk)
   =/  ue=tape    (urq-esc url)
-  =/  fet=tape   (trip (scot %da now))
+  =/  fet=tape   (urq-da now)
   =/  hsh=tape   (trip (scot %ud hash.analysis))
   =/  ttl=tape   (urq-esc (trip title.analysis))
   =/  wc=tape    (trip (scot %ud word-count.analysis))
