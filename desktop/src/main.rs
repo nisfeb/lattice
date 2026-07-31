@@ -44,6 +44,19 @@ fn main() {
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
         .setup(|app| {
             let handle = app.handle().clone();
+            // LATTICE_AUTOCONNECT="url,+code": drive the real connect flow
+            // without a display — the headless test harness's entry point.
+            if let Ok(spec) = std::env::var("LATTICE_AUTOCONNECT") {
+                if let Some((u, c)) = spec.split_once(',') {
+                    let h = handle.clone();
+                    let (u, c) = (u.to_string(), c.to_string());
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                        let r = tauri::async_runtime::block_on(commands::connect(h, u, c));
+                        commands::dlog(&format!("autoconnect: {r:?}"));
+                    });
+                }
+            }
             let cfg = config::load(&handle);
             if !cfg.url.is_empty() {
                 // off-thread: open_workspace polls the webview cookie jar,
