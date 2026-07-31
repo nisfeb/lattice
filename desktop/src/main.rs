@@ -2,6 +2,7 @@
 
 mod commands;
 mod config;
+mod local;
 mod mounts;
 mod proxy;
 
@@ -9,6 +10,26 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use tauri::Manager;
+
+/// Restore saved mounts. Each one carries how it is reached (a lick socket, or
+/// HTTP against the configured ship), so a local-pier mount survives a restart
+/// with no session in play. A failure is reported and skipped: one dead pier
+/// must not cost the other mounts.
+fn remount(handle: &tauri::AppHandle, cfg: &config::Config) {
+    let map = handle.state::<mounts::MountMap>();
+    let mut m = map.0.lock().unwrap();
+    for spec in &cfg.mounts {
+        mounts::heal_mountpoint(&spec.mountpoint);
+        match mounts::projection_for(handle, &spec.root, &spec.sock, &spec.ship)
+            .and_then(|p| lattice_fs::spawn(p, &spec.mountpoint).map_err(|e| e.to_string()))
+        {
+            Ok(s) => {
+                m.insert(spec.mountpoint.clone(), (spec.root.clone(), s));
+            }
+            Err(e) => eprintln!("remount {} failed: {e}", spec.mountpoint),
+        }
+    }
+}
 
 fn main() {
     // webkit2gtk's dmabuf renderer crashes some Wayland stacks outright
@@ -79,32 +100,18 @@ fn main() {
             if cfg.url.is_empty() {
                 // first run: the single window opens on the connect page
                 commands::show_manager(&handle)?;
-            }
-            if !cfg.url.is_empty() {
+            } else {
                 // off-thread: bridge setup does network work that must not
                 // block the main loop
                 let h = handle.clone();
                 std::thread::spawn(move || {
                     commands::open_workspace(&h, false).ok();
                 });
-                let map = handle.state::<mounts::MountMap>();
-                let mut m = map.0.lock().unwrap();
-                for spec in &cfg.mounts {
-                    mounts::heal_mountpoint(&spec.mountpoint);
-                    match lattice_fs::projection_http(
-                        &cfg.url,
-                        &lattice_fs::default_cookie_path(),
-                        &spec.root,
-                    )
-                    .and_then(|p| lattice_fs::spawn(p, &spec.mountpoint).map_err(|e| e.to_string()))
-                    {
-                        Ok(s) => {
-                            m.insert(spec.mountpoint.clone(), (spec.root.clone(), s));
-                        }
-                        Err(e) => eprintln!("remount {} failed: {e}", spec.mountpoint),
-                    }
-                }
             }
+            // remount OUTSIDE the url check: a lick mount is a local pier and
+            // needs no configured ship at all, so it must come back on launch
+            // even when nothing is connected over HTTP.
+            remount(&handle, &cfg);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -117,6 +124,7 @@ fn main() {
             mounts::add_mount,
             mounts::remove_mount,
             mounts::list_mounts,
+            local::local_ships,
         ])
         .build(tauri::generate_context!())
         .expect("error building lattice desktop")

@@ -54,6 +54,25 @@ load-bearing, not cosmetic: the port is part of the webview's origin, and all
 web storage is keyed by origin, so an ephemeral port gave every launch an
 empty cache and made the desktop app slower than the same UI in a browser.
 
+## Local ships (lick)
+
+The connection page lists urbit piers found on this machine and offers to
+mount them over **lick** — the unix-socket transport — with no URL, no +code
+and no cookie: the socket lives inside the pier, so being able to open it is
+the authorization. This is independent of the HTTP connection, so you can
+mount a local ship's tree without connecting the workspace to it.
+
+Detection is pure filesystem, which is why it needs no process scanning and
+behaves the same on macOS:
+
+    <pier>/.urb/                          it is a pier
+    <pier>/.urb/conn.sock                 vere is running
+    <pier>/.urb/dev/grubbery/lattice/fs   lattice's lick port is bound
+
+A pier missing the last two is listed with the reason rather than a button
+that would fail. Only lattice page roots mount over lick — the generic ball
+API is served over HTTP only.
+
 If a previous run died without unmounting ("Transport endpoint is not
 connected" on remount), clear the stale mountpoint with
 `fusermount3 -u <dir>`.

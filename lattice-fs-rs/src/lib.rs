@@ -64,6 +64,30 @@ pub fn projection_http(
     }
 }
 
+/// Build a projection over the lick (unix-socket) transport — a ship running
+/// on THIS machine. No cookie and no +code: the socket lives inside the pier,
+/// so being able to open it is the authorization.
+///
+/// Lattice roots only. The generic ball API is HTTP-only (it is not served on
+/// the fs.sig lick port), so a generic root is refused here rather than
+/// mounting something that would fail on every read.
+pub fn projection_lick(
+    sock_path: &str,
+    our: &str,
+    root: &str,
+) -> Result<Arc<dyn Projection>, String> {
+    match resolve_root(root) {
+        Root::Lattice(sub) => {
+            let t = Box::new(lick::LickTransport::new(sock_path, our));
+            Ok(Arc::new(lattice::LatticeProjection::new(t, &sub).map_err(|e| e.msg)?))
+        }
+        Root::Generic(path) => Err(format!(
+            "/{path} is a generic ball path, which is only served over HTTP — \
+             mount a lattice page root over lick, or connect to this ship by URL"
+        )),
+    }
+}
+
 /// The one mount Config both the CLI and the shell use: kernel-enforced
 /// perms from the uid/gid/mode we report, owner-only ACL.
 pub fn mount_config() -> fuser::Config {

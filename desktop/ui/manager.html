@@ -84,6 +84,12 @@
     </div>
   </form>
 
+  <h2>on this machine</h2>
+  <p class="muted" style="margin:.2rem 0 .8rem">Ships running here can be
+  mounted directly over lick &mdash; no URL, no +code. The socket lives inside
+  the pier, so being able to open it <em>is</em> the permission.</p>
+  <div id="local" class="muted">looking&hellip;</div>
+
   <h2>mounts</h2>
   <p class="muted" style="margin:.2rem 0 .8rem">Project the page tree as local
   files — edit in your own editor, search with your own tools.</p>
@@ -167,13 +173,78 @@
       const li = document.createElement('li');
       const c = document.createElement('code');
       c.textContent = m.mountpoint + (m.root ? '  ←  ' + m.root : '');
+      if (m.sock) {
+        const tag = document.createElement('span');
+        tag.className = 'muted';
+        tag.textContent = 'lick · ' + (m.ship || 'local');
+        li.appendChild(c); li.appendChild(tag);
+      } else {
+        li.appendChild(c);
+      }
       const b = document.createElement('button');
       b.textContent = 'unmount';
       b.onclick = () => invoke('remove_mount', { mountpoint: m.mountpoint }).then(refreshMounts);
-      li.appendChild(c); li.appendChild(b);
+      li.appendChild(b);
       ul.appendChild(li);
     }
   }
+
+  // Detected local piers. A ship is only offered for lick when its lattice
+  // socket actually exists — a stopped pier, or one whose lattice is not up,
+  // is listed with the reason rather than a button that would fail.
+  async function refreshLocal() {
+    const host = $('local');
+    let ships = [];
+    try { ships = await invoke('local_ships'); } catch (e) { ships = []; }
+    host.textContent = '';
+    if (!ships.length) {
+      host.className = 'muted';
+      host.textContent = 'no piers found under your home directory.';
+      return;
+    }
+    host.className = '';
+    const ul = document.createElement('ul');
+    for (const s of ships) {
+      const li = document.createElement('li');
+      const c = document.createElement('code');
+      c.textContent = s.ship;
+      const why = document.createElement('span');
+      why.className = 'muted';
+      why.style.flex = '1';
+      why.textContent = s.lick ? s.pier
+        : s.running ? s.pier + ' — lattice not running'
+        : s.pier + ' — stopped';
+      li.appendChild(c); li.appendChild(why);
+      if (s.lick) {
+        const b = document.createElement('button');
+        b.className = 'primary';
+        b.textContent = 'mount';
+        b.onclick = async () => {
+          const mp = mountpointFor(s.ship);
+          if (!mp) return;
+          b.disabled = true;
+          try {
+            await invoke('add_mount',
+              { mountpoint: mp, root: '', sock: s.sock, ship: s.ship });
+            $('mount-status').textContent = '';
+            refreshMounts();
+          } catch (err) {
+            $('mount-status').textContent = String(err);
+          }
+          b.disabled = false;
+        };
+        li.appendChild(b);
+      }
+      ul.appendChild(li);
+    }
+    host.appendChild(ul);
+  }
+  // whatever is typed in the mountpoint box wins; otherwise ~/<ship>, so the
+  // common case is one click.
+  function mountpointFor(ship) {
+    return $('mp').value.trim() || '~/' + ship.replace(/^~/, '');
+  }
+  refreshLocal();
   invoke('status').then((s) => {
     if (!s.fuse_available) {
       const h = $('fuse-hint');

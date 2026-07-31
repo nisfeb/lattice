@@ -16,6 +16,14 @@ pub struct Config {
 pub struct MountSpec {
     pub mountpoint: String,
     pub root: String,
+    /// lick socket inside a local pier. Empty = mount over HTTP against the
+    /// configured ship, which is what every pre-lick config has — hence
+    /// serde(default), so an existing config.json still loads.
+    #[serde(default)]
+    pub sock: String,
+    /// @p label for a lick mount, display only
+    #[serde(default)]
+    pub ship: String,
 }
 
 pub fn load_at(p: &Path) -> Config {
@@ -60,7 +68,12 @@ mod tests {
         let p = dir.join("config.json");
         let c = Config {
             url: "http://localhost:8080".into(),
-            mounts: vec![MountSpec { mountpoint: "/tmp/l".into(), root: "notes".into() }],
+            mounts: vec![MountSpec {
+                mountpoint: "/tmp/l".into(),
+                root: "notes".into(),
+                sock: String::new(),
+                ship: String::new(),
+            }],
         };
         save_at(&p, &c).unwrap();
         let back = load_at(&p);
