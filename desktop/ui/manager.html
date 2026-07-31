@@ -48,6 +48,28 @@
   .dot.on { background: var(--green); }
   .dot.off { background: #d68910; }
   .dot.err { background: #c0392b; }
+  /* ship-software checklist + install log */
+  #stack-list li { gap: 10px; }
+  .tick { width: 1.1em; flex: none; text-align: center; }
+  .tick.yes { color: var(--green); }
+  .tick.no { color: #d68910; }
+  pre.cmd, #log { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px; overflow-x: auto;
+    font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; margin: .5rem 0; }
+  #log { max-height: 15rem; overflow-y: auto; white-space: pre-wrap;
+    word-break: break-word; }
+  #log .ln { display: block; }
+  #log .ln.new { animation: fadein .35s ease-out; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(2px); } }
+  @media (prefers-reduced-motion: reduce) { #log .ln.new { animation: none; } }
+  .chip { font-size: .78rem; padding: 2px 9px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted); }
+  .chip.running { border-color: var(--green); color: var(--green); }
+  .chip.ok { background: var(--green); border-color: var(--green-deep); color: #fff; }
+  .chip.failed { border-color: #c0392b; color: #c0392b; }
+  /* the row is flex, so a two-word label wraps mid-button without this */
+  #need-grubbery button { white-space: nowrap; }
+  #need-grubbery input { margin-bottom: 0; }
 </style>
 <main>
   <div class="top">
@@ -83,6 +105,41 @@
       <span id="connect-status" class="muted"></span>
     </div>
   </form>
+
+  <!-- What the ship is missing, and what to do about it. Shown only when
+       something IS missing: a fully-installed ship should not be nagged. -->
+  <div id="stack" hidden>
+    <h2>ship software</h2>
+    <ul id="stack-list"></ul>
+
+    <div id="need-mcp" hidden>
+      <p class="err">%mcp is not installed on this ship.</p>
+      <p class="muted">lattice installs the rest through %mcp, so it has to go
+      on first — and it cannot install itself. From your ship's dojo:</p>
+      <pre class="cmd">|install ~nisfeb %mcp</pre>
+      <p class="muted">Then press check again.</p>
+      <button id="recheck">check again</button>
+    </div>
+
+    <div id="need-grubbery" hidden>
+      <p class="muted">%grubbery is missing. lattice runs as a nexus inside it,
+      so it is installed first, over Ames from a publishing ship.</p>
+      <div class="row">
+        <input id="dist" spellcheck="false" autocomplete="off">
+        <button id="go-grubbery" class="primary">install %grubbery</button>
+      </div>
+      <p class="muted" style="margin:.4rem 0 0">This takes a few minutes — the
+      whole desk transfers over Ames.</p>
+    </div>
+
+    <div id="runlog" hidden>
+      <div class="row" style="margin:.6rem 0 .4rem">
+        <span id="run-state" class="chip">running</span>
+        <span id="run-secs" class="muted"></span>
+      </div>
+      <pre id="log"></pre>
+    </div>
+  </div>
 
   <h2>on this machine</h2>
   <p class="muted" style="margin:.2rem 0 .8rem">Ships running here can be
@@ -245,6 +302,82 @@
     return $('mp').value.trim() || '~/' + ship.replace(/^~/, '');
   }
   refreshLocal();
+
+  // ── what the ship is missing ─────────────────────────────────────────────
+  // Only shown when something is actually absent. Probed after login, because
+  // a configured url says nothing about what is installed behind it.
+  const DEFAULT_DIST = '~nisfeb';
+  async function refreshStack() {
+    let s = null;
+    try { s = await invoke('stack_status'); } catch { return; }
+    if (!s || !s.checked) return;
+    const rows = [
+      ['%mcp', s.mcp, s.mcp_server || 'the bootstrap — installs everything else'],
+      ['%grubbery', s.grubbery, 'the framework lattice runs inside'],
+      ['lattice', s.lattice, 'the app itself'],
+    ];
+    const ul = $('stack-list');
+    ul.textContent = '';
+    for (const [name, on, note] of rows) {
+      const li = document.createElement('li');
+      const t = document.createElement('span');
+      t.className = 'tick ' + (on ? 'yes' : 'no');
+      t.textContent = on ? '✓' : '○';
+      const n = document.createElement('code');
+      n.textContent = name;
+      const d = document.createElement('span');
+      d.className = 'muted';
+      d.style.flex = '1';
+      d.textContent = on ? note : 'not installed';
+      li.appendChild(t); li.appendChild(n); li.appendChild(d);
+      ul.appendChild(li);
+    }
+    // everything present: say nothing at all
+    const done = s.mcp && s.grubbery && s.lattice;
+    $('stack').hidden = done;
+    $('need-mcp').hidden = s.mcp;
+    // grubbery needs %mcp to install it, so never offer that button first
+    $('need-grubbery').hidden = !(s.mcp && !s.grubbery);
+    if (!$('dist').value) $('dist').value = DEFAULT_DIST;
+  }
+  $('recheck').onclick = refreshStack;
+
+  const logEl = () => $('log');
+  function logLine(text) {
+    const el = document.createElement('span');
+    el.className = 'ln new';
+    el.textContent = text;
+    logEl().appendChild(el);
+    logEl().scrollTop = logEl().scrollHeight;
+  }
+  // the install runs for minutes, so the shell streams progress rather than
+  // leaving a dead button behind
+  window.__TAURI__.event.listen('install-progress', (e) => {
+    const p = e.payload || {};
+    if (p.line) logLine(p.line);
+    const chip = $('run-state');
+    chip.textContent = p.state || 'running';
+    chip.className = 'chip ' + (p.state || 'running');
+    $('run-secs').textContent = p.secs != null ? p.secs + 's' : '';
+  });
+
+  $('go-grubbery').onclick = async () => {
+    const btn = $('go-grubbery');
+    btn.disabled = true;
+    $('runlog').hidden = false;
+    logEl().textContent = '';
+    try {
+      await invoke('install_grubbery', { ship: $('dist').value.trim() });
+      logLine('done — rechecking the ship');
+      await refreshStack();
+    } catch (err) {
+      logLine(String(err));
+      $('run-state').textContent = 'failed';
+      $('run-state').className = 'chip failed';
+    }
+    btn.disabled = false;
+  };
+  refreshStack();
   invoke('status').then((s) => {
     if (!s.fuse_available) {
       const h = $('fuse-hint');

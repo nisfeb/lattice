@@ -2,6 +2,7 @@
 
 mod commands;
 mod config;
+mod install;
 mod local;
 mod mounts;
 mod proxy;
@@ -134,6 +135,7 @@ fn main() {
             mounts::list_mounts,
             local::local_ships,
             stack::stack_status,
+            install::install_grubbery,
         ])
         .build(tauri::generate_context!())
         .expect("error building lattice desktop")
