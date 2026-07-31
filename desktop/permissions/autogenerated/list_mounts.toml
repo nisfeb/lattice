@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-mounts"
+description = "Enables the list_mounts command without any pre-configured scope."
+commands.allow = ["list_mounts"]
+
+[[permission]]
+identifier = "deny-list-mounts"
+description = "Denies the list_mounts command without any pre-configured scope."
+commands.deny = ["list_mounts"]
