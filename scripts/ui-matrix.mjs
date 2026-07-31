@@ -256,6 +256,10 @@ try {
   });
   check('wrap: soft-wrap is the default',
     await page.evaluate(() => document.getElementById('ws').className.includes('wrap')));
+  // settle before measuring: 300 lines have to re-highlight and re-layout, and
+  // the nowrap check below already sleeps for exactly this reason. Without it
+  // the geometries are compared mid-reflow and disagree for a frame.
+  await sleep(300);
   check('overlay parity: wrap (default)', await parity());
   await page.click('#wrapt');
   await sleep(300);
@@ -338,7 +342,12 @@ try {
   await wait((n) => (document.getElementById('status').textContent || '').includes('created ' + n),
     RUN + '/gb');
   check('template: instantiates and opens the new page',
-    (await page.evaluate(() => document.getElementById('pname').value)) === RUN + '/gb');
+    (await page.evaluate(() => document.getElementById('pname').value)) === RUN + '/gb',
+    'pname=' + JSON.stringify(await page.evaluate(() => document.getElementById('pname').value)) +
+    ' status=' + JSON.stringify(await page.evaluate(() => document.getElementById('status').textContent)) +
+    ' tree=' + JSON.stringify(await page.evaluate((n) =>
+      [...document.querySelectorAll('#treelist a.pg, #treelist .fld')]
+        .map((e) => e.textContent).filter((t) => t.includes('gb')), RUN)));
   check('template: self-reference rewritten to the new path',
     (await page.evaluate(() => document.getElementById('src').value)).includes('/' + RUN + '/gb'));
   await page.evaluate(async (n) => {

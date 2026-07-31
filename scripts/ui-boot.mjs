@@ -111,6 +111,35 @@ try {
   check('the page opened during load is STILL open afterwards',
     after.body === BODY, JSON.stringify(after));
   check('and the name field still names it', after.name === PAGE, after.name);
+  // ── 3. mobile: land on the tree, and do not summon the keyboard ─────────
+  step = 'mobile defaults';
+  await page.setRequestInterception(false);
+  await page.setViewport({ width: 390, height: 780, isMobile: true });
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
+  await sleep(2500);
+  const mob = await page.evaluate(() => ({
+    mv: document.getElementById('ws').dataset.mv,
+    focused: document.activeElement && document.activeElement.id,
+  }));
+  check('mobile: lands on the tree, not an empty editor', mob.mv === 'tree', JSON.stringify(mob));
+  check('mobile: does not focus the name field (no keyboard)',
+    mob.focused !== 'pname', 'activeElement=' + mob.focused);
+
+  // opening a file still moves to the editor, and a remembered file resumes
+  step = 'mobile open';
+  await page.evaluate((n) => {
+    [...document.querySelectorAll('#treelist a.pg')]
+      .find((a) => a.href.includes(encodeURIComponent(n))).click();
+  }, PAGE);
+  await wait((b) => document.getElementById('src').value === b, BODY);
+  check('mobile: opening a page switches to the editor',
+    await page.evaluate(() => document.getElementById('ws').dataset.mv) === 'code');
+  await page.goto(APP + '?name=' + encodeURIComponent(PAGE),
+    { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait((b) => document.getElementById('src').value === b, BODY);
+  check('mobile: a remembered file resumes in the editor',
+    await page.evaluate(() => document.getElementById('ws').dataset.mv) === 'code');
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 140), false);
 } finally {

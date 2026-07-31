@@ -9,7 +9,15 @@
   //   3. no body (oversized page, or a tree we never loaded) -> as before.
   // History and backlinks stay lazy on panel expand — they were 2 more ~2s
   // round-trips paid on every open whether or not anyone looked at them.
+  // Which open is current. Opening a page is an explicit user act, so the ONLY
+  // reason to discard a landed response is that the user opened something else
+  // while it was in flight — not that the editor was dirty, and not that
+  // `current` had not been set yet. Guarding on those meant an explicit open
+  // was silently dropped: after an unsaved edit, clicking another file did
+  // nothing, and a page absent from the local tree never applied at all.
+  let openSeq = 0;
   async function openPage(name) {
+    const my = ++openSeq;
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
     grubPath = null;
@@ -30,9 +38,8 @@
     } catch { if (!painted) st('open failed', false); return; }
     pageCache.set(name, d);
     snapPage(name, d);
-    // the user may have moved to another page, or started typing, while this
-    // was in flight — same rule the live refresh uses: local edits win.
-    if (current !== name || dirty || viewingRev !== null) return;
+    // a later openPage supersedes this one; anything else still applies
+    if (my !== openSeq) return;
     applyPage(name, d);
   }
   function applyPage(name, d, quiet) {
@@ -59,7 +66,11 @@
     if (isMobile()) setMv('code');
   }
 
-  function newFile(into) {
+  // focusName: only when the USER asked for a new file. Boot calls this to
+  // land on an empty page, and focusing the name field there summons the
+  // phone keyboard before you have done anything — you arrive at the app
+  // already typing a filename you did not ask to type.
+  function newFile(into, focusName = true) {
     folderCtx = into || '';
     current = null;
     curFolder = null;
@@ -75,7 +86,7 @@
     render();
     history.replaceState(null, '', '/apps/lattice/app');
     renderTree();
-    pname.focus();
+    if (focusName) pname.focus();
     st('new page — name it, write, save');
     prevBlank();
     showShare('private');
@@ -131,7 +142,7 @@
     // cached render is stale by definition — drop it and let it re-render.
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
-    if (nd) { nd.body = sent; nd.kind = kind; snapTree(); }
+    if (nd) { nd.body = sent; nd.kind = kind; persistTree(); }
     // the preview already shows this exact body (the input debounce rendered
     // it); re-POSTing it after the save was a duplicate 1.8s render.
     if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
@@ -169,7 +180,7 @@
     if (mode !== 'know') {
       pageCache.delete(current);
       const nd = nodes.find((n) => n.page && n.path === current);
-      if (nd) { nd.body = sent; snapTree(); }
+      if (nd) { nd.body = sent; persistTree(); }
     }
     st('autosaved');
     if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);

@@ -55,8 +55,9 @@
         else openPage(name);
       }
       else if (into && nodes.some((n) => !n.page && n.path === into)) selectFolder(into);
-      else if (into) newFile(into);
-      else newFile('');
+      // no focus: boot did not ask for a new file, the user did not either
+      else if (into) newFile(into, false);
+      else newFile('', false);
       legacyCheck();
       loadPanels();
     });

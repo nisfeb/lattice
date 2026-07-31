@@ -24,6 +24,15 @@
   // (the own-write echo is suppressed, so nothing would correct it until the
   // 30s poll). Bumped on every local mutation; stale responses are dropped.
   let treeGen = 0, knowGen = 0;
+  // persistTree: save the tree WITHOUT bumping the generation. The counter
+  // exists so a STRUCTURAL local patch (a page created, moved, deleted) is not
+  // overwritten by a list fetch that was issued before it. A body-only update
+  // changes no structure, so bumping for one just discards a legitimate
+  // in-flight refresh — which silently lost pages created while an autosave
+  // was in flight.
+  const persistTree = () => {
+    try { localStorage.appTree = JSON.stringify(nodes); } catch {}
+  };
   // rendered page-source answers, by name. The tree dump already carries every
   // body, so this only adds what the dump lacks — `share` and the rendered
   // `html` — which makes re-opening a page cost ZERO requests instead of a
@@ -31,8 +40,8 @@
   // clears it) or when this client writes the page.
   const pageCache = new Map();
   const snapTree = () => {
-    treeGen++;
-    try { localStorage.appTree = JSON.stringify(nodes); } catch {}
+    treeGen++;                 // structural change: supersede in-flight fetches
+    persistTree();
   };
   const snapPage = (name, d) => {
     try {
