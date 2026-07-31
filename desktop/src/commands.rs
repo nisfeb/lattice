@@ -8,6 +8,14 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::config;
 
+/// stderr diagnostics, on when LATTICE_LOG is set — costs nothing otherwise
+/// and makes "it 403s on my machine" debuggable from a pasted terminal log.
+pub fn dlog(msg: &str) {
+    if std::env::var_os("LATTICE_LOG").is_some() {
+        eprintln!("lattice: {msg}");
+    }
+}
+
 /// Log the Rust side in (stores the shared fuse cookie), remember the url,
 /// open the workspace, get the manager out of the way. Async: the blocking
 /// login and the cookie-settle poll in open_workspace must run off the main
@@ -16,8 +24,11 @@ use crate::config;
 pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String, String> {
     let url = url.trim().trim_end_matches('/').to_string();
     let t = EyreTransport::new(&url, &default_cookie_path());
+    dlog(&format!("connect: logging in at {url}"));
     t.login(Some(code)).map_err(|e| e.msg)?;
+    dlog(&format!("connect: cookie stored at {}", default_cookie_path()));
     let ship = t.ship().map_err(|e| e.msg)?;
+    dlog(&format!("connect: ship {ship}"));
     let mut cfg = config::load(&app);
     cfg.url = url;
     config::save(&app, &cfg)?;
@@ -132,15 +143,17 @@ pub fn open_workspace(app: &AppHandle) -> Result<(), String> {
                 c.set_path("/");
                 c.set_http_only(true);
                 c.set_secure(ship_page.scheme() == "https");
-                w.set_cookie(c).map_err(|e| e.to_string())?;
+                dlog(&format!("set_cookie {name}: {:?}", w.set_cookie(c)));
                 // the jar add is async on webkit — navigating before it lands
                 // sends the request cookieless and the ship 403s. Wait until
                 // the jar actually returns it (caller is off the main thread).
-                for _ in 0..50 {
-                    let seen = w
-                        .cookies_for_url(ship_page.clone())
+                for i in 0..50 {
+                    let got = w.cookies_for_url(ship_page.clone());
+                    let seen = got
+                        .as_ref()
                         .map(|cs| cs.iter().any(|c| c.name() == name))
                         .unwrap_or(false);
+                    dlog(&format!("jar poll {i}: seen={seen}"));
                     if seen {
                         break;
                     }
@@ -149,6 +162,7 @@ pub fn open_workspace(app: &AppHandle) -> Result<(), String> {
             }
         }
     }
+    dlog(&format!("navigate: {ship_page}"));
     w.navigate(ship_page).map_err(|e| e.to_string())?;
     w.set_focus().ok();
     Ok(())
