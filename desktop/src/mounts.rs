@@ -46,30 +46,55 @@ pub fn status() -> Status {
     Status { fuse_available, hint }
 }
 
+/// Build the projection for a mount. A `sock` selects lick — a ship on this
+/// machine, reachable with no URL, no +code and no cookie, because opening the
+/// socket inside the pier IS the authorization. Otherwise HTTP against the
+/// configured ship, which does need a session.
+pub fn projection_for(
+    app: &AppHandle,
+    root: &str,
+    sock: &str,
+    ship: &str,
+) -> Result<std::sync::Arc<dyn lattice_fs::Projection>, String> {
+    if !sock.is_empty() {
+        if !std::path::Path::new(sock).exists() {
+            return Err(format!(
+                "{sock} is gone — that ship is not running, or its lattice is not up"
+            ));
+        }
+        return lattice_fs::projection_lick(sock, ship, root);
+    }
+    let cfg = config::load(app);
+    if cfg.url.is_empty() {
+        return Err("connect to a ship first, or mount a ship running on this machine".into());
+    }
+    projection_http(&cfg.url, &default_cookie_path(), root)
+}
+
 #[tauri::command]
 pub fn add_mount(
     app: AppHandle,
     map: State<MountMap>,
     mountpoint: String,
     root: String,
+    sock: Option<String>,
+    ship: Option<String>,
 ) -> Result<(), String> {
     let mountpoint = expand_home(mountpoint.trim());
+    let sock = sock.unwrap_or_default();
+    let ship = ship.unwrap_or_default();
     let mut m = map.0.lock().unwrap();
     if m.contains_key(&mountpoint) {
         return Err(format!("{mountpoint} is already mounted"));
     }
-    let cfg = config::load(&app);
-    if cfg.url.is_empty() {
-        return Err("connect to a ship first".into());
-    }
+    let proj = projection_for(&app, &root, &sock, &ship)?;
     heal_mountpoint(&mountpoint);
-    let proj = projection_http(&cfg.url, &default_cookie_path(), &root)?;
     let session = lattice_fs::spawn(proj, &mountpoint).map_err(|e| e.to_string())?;
     m.insert(mountpoint.clone(), (root.clone(), session));
     // persist for auto-remount on launch
     let mut cfg = config::load(&app);
     cfg.mounts.retain(|s| s.mountpoint != mountpoint);
-    cfg.mounts.push(MountSpec { mountpoint, root });
+    cfg.mounts.push(MountSpec { mountpoint, root, sock, ship });
     config::save(&app, &cfg)
 }
 
@@ -89,12 +114,23 @@ pub fn remove_mount(
 }
 
 #[tauri::command]
-pub fn list_mounts(map: State<MountMap>) -> Vec<MountSpec> {
+pub fn list_mounts(app: AppHandle, map: State<MountMap>) -> Vec<MountSpec> {
+    // the live sessions are the truth about what is mounted; the config
+    // carries how each one is reached, so the list can say "over lick".
+    let cfg = config::load(&app);
     map.0
         .lock()
         .unwrap()
         .iter()
-        .map(|(mp, (root, _))| MountSpec { mountpoint: mp.clone(), root: root.clone() })
+        .map(|(mp, (root, _))| {
+            let saved = cfg.mounts.iter().find(|s| &s.mountpoint == mp);
+            MountSpec {
+                mountpoint: mp.clone(),
+                root: root.clone(),
+                sock: saved.map(|s| s.sock.clone()).unwrap_or_default(),
+                ship: saved.map(|s| s.ship.clone()).unwrap_or_default(),
+            }
+        })
         .collect()
 }
 
