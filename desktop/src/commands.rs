@@ -138,9 +138,13 @@ pub fn open_workspace(app: &AppHandle, code: Option<&str>) -> Result<(), String>
     let login: tauri::Url = format!("{}/~/login?redirect=/apps/lattice", cfg.url)
         .parse()
         .map_err(|e| format!("{e}"))?;
+    // the workspace's FIRST document must already be the ship: stricter
+    // webkits pin the window's "site for cookies" to its first origin, and a
+    // tauri.localhost splash there made every later ship navigation
+    // third-party (cookie withheld -> 403 on link clicks like /settings)
     let w = match app.get_webview_window("workspace") {
         Some(w) => w,
-        None => new_workspace(app)?,
+        None => new_workspace(app, login.clone())?,
     };
     if code.is_some() {
         // fresh connect = clean slate: a service worker or cache installed
@@ -181,9 +185,9 @@ pub fn open_workspace(app: &AppHandle, code: Option<&str>) -> Result<(), String>
     Ok(())
 }
 
-fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
+fn new_workspace(app: &AppHandle, initial: tauri::Url) -> Result<tauri::WebviewWindow, String> {
     let handle = app.clone();
-    let w = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("login.html".into()))
+    let w = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::External(initial))
         .title("lattice — workspace")
         .inner_size(1200.0, 800.0)
         // tauri's own drag-drop interception would swallow the HTML5 drop
