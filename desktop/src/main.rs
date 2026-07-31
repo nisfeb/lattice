@@ -63,7 +63,7 @@ fn main() {
                 // which must not block the main loop
                 let h = handle.clone();
                 std::thread::spawn(move || {
-                    commands::open_workspace(&h).ok();
+                    commands::open_workspace(&h, None).ok();
                 });
                 let map = handle.state::<mounts::MountMap>();
                 let mut m = map.0.lock().unwrap();
