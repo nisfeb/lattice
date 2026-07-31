@@ -109,7 +109,7 @@ fn prewarm(base: &str) {
 /// handshake to the ship for every asset, which dominated remote loads.
 /// Several idle connections per host, because a page load fetches in
 /// parallel and the SSE beacon permanently occupies one connection.
-fn agent() -> &'static ureq::Agent {
+pub fn agent() -> &'static ureq::Agent {
     static A: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
     A.get_or_init(|| {
         ureq::AgentBuilder::new()

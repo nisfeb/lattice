@@ -74,7 +74,7 @@ try {
     for (const r of regs) await r.unregister();
     if (window.caches) for (const k of await caches.keys()) await caches.delete(k);
   });
-  await page.goto(APP, { waitUntil: 'networkidle2', timeout: 20000 });
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
   ok('boot: tree renders');
 
@@ -99,7 +99,7 @@ try {
   ok('save: new md page appears in tree');
   check('highlight: Prism overlay rendered',
     await page.evaluate(() => document.querySelectorAll('#hl .token').length > 0));
-  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.length > 0);
   check('open: body round-trips',
     await page.evaluate(() => document.getElementById('src').value) === '# ui matrix probe');
@@ -116,7 +116,7 @@ try {
 
   // version history: the earlier remote edit left ≥2 revisions; the panel
   // lists them, viewing one is read-only, restoring re-saves it as newest.
-  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => !document.getElementById('histsec').hidden);
   // history is lazy now: revisions fetch on first header expand
   await page.click('#histh');
@@ -157,7 +157,7 @@ try {
     await page.evaluate(() => document.getElementById('src').value));
 
   // F4/F13: while viewing a revision, save is refused and Tab cannot edit
-  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => !document.getElementById('histsec').hidden);
   await page.click('#histh');
   await wait(() => document.querySelectorAll('#histlist a').length >= 2);
@@ -183,7 +183,7 @@ try {
   await page.click('#modet');
   await wait(() => !document.getElementById('ws').className.includes('know'));
   // setMode clears the open page, so reopen it for the autosave check below
-  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.length > 0);
 
   // autosave: a 2s typing pause persists the draft, with no UI churn —
@@ -210,10 +210,10 @@ try {
     await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n + '/linker') + '&type=md&new=1',
       { method: 'POST', body: 'see [[' + n + '/hello]]' });
   }, RUN);
-  await page.goto(APP + '?name=' + RUN + '/linker', { waitUntil: 'networkidle2' });
+  await page.goto(APP + '?name=' + RUN + '/linker', { waitUntil: 'domcontentloaded' });
   await wait(() => (document.getElementById('prev').srcdoc || '').includes('/apps/lattice/app?name='));
   ok('wikilinks: preview renders [[x]] as an editor link');
-  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => !document.getElementById('linksec').hidden);
   await page.click('#linkh');                       // backlinks fetch lazily on expand
   await wait(() => !!document.querySelector('#linklist a'));
@@ -237,7 +237,7 @@ try {
   await sleep(3000);                              // beacon + debounce window
   check('live: unsaved local edits are never clobbered',
     await page.evaluate(() => document.getElementById('src').value) === '# my unsaved local edit');
-  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'networkidle2', timeout: 60000 });
+  await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.length > 0);
 
   // overlay geometry parity: the highlight layer must occupy exactly the
@@ -429,7 +429,7 @@ try {
 
   step = 'cleanup deletes';
   // ── 9. delete the test page + folder via dialogs ─────────────────────────
-  await page.goto(APP + '?name=' + RUN + '-moved/hello', { waitUntil: 'networkidle2' });
+  await page.goto(APP + '?name=' + RUN + '-moved/hello', { waitUntil: 'domcontentloaded' });
   await wait(() => document.getElementById('src').value.length > 0);
   await page.click('#del');
   await dialog(null);
@@ -451,7 +451,7 @@ try {
   step = 'mobile';
   // ── 10. mobile: toggle reveals the tree, opening jumps to the editor ─────
   await page.setViewport({ width: 390, height: 780, isMobile: true });
-  await page.goto(APP, { waitUntil: 'networkidle2' });
+  await page.goto(APP, { waitUntil: 'domcontentloaded' });
   await page.click('#modet');
   await wait(() => document.getElementById('ws').dataset.mv === 'tree');
   check('mobile: mode toggle jumps to the tree pane',
@@ -466,7 +466,7 @@ try {
   // ── 11. dark theme: blank preview shows the theme background ─────────────
   await page.setViewport({ width: 1200, height: 800 });
   await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
-  await page.goto(APP, { waitUntil: 'networkidle2' });
+  await page.goto(APP, { waitUntil: 'domcontentloaded' });
   await sleep(600);
   const shot = await page.screenshot({ encoding: 'base64' });
   const px = await page.evaluate(async (b64) => {

@@ -129,17 +129,53 @@ try {
   }, GROUP);
   check('acl: adds a ship and it round-trips through the ship', true);
 
-  // the narrow editor panel reads the same permGroups — it must agree
-  step = 'acl consistency';
-  const inNarrow = await page.evaluate((g) =>
-    document.getElementById('permlist').textContent.includes(g), GROUP);
-  check('acl: narrow peers panel shows the same group', inNarrow);
+  // With no page open there is nothing to grant ON, so the panel must say so
+  // rather than offer toggles that would have no target. (That the list shows
+  // the group once a page IS open is asserted by the per-file test below.)
+  step = 'share panel with no page open';
+  await page.evaluate(() => document.getElementById('aclclose').click());
+  const idle = await page.evaluate(() =>
+    document.getElementById('grouplist').textContent);
+  check('share panel asks for a page before offering group toggles',
+    /open a page/.test(idle), JSON.stringify(idle).slice(0, 60));
+
+  // ── per-file group access: grant read on the open page, via the group ────
+  step = 'per-file group grant';
+  await page.evaluate(async (n, b) => fetch('/apps/lattice/page-save?name=' +
+    encodeURIComponent(n) + '&type=md&new=1', { method: 'POST', body: b }),
+    GROUP + '/target', '# grant probe');
+  await sleep(5000);
+  await page.goto(APP + '?name=' + encodeURIComponent(GROUP + '/target'),
+    { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForFunction((g) =>
+    document.getElementById('grouplist').textContent.includes(g),
+    { timeout: 90000 }, GROUP);
+  // click that group's "read" toggle
+  await page.evaluate((g) => {
+    const row = [...document.querySelectorAll('#grouplist .grow-row')]
+      .find((r) => r.querySelector('.gname').textContent === g);
+    [...row.querySelectorAll('button')].find((b) => b.textContent === 'read').click();
+  }, GROUP);
+  await sleep(6000);
+  const granted = await page.evaluate(async (g, path) => {
+    const gs = await (await fetch('/apps/lattice/share-groups')).json();
+    const me = gs.find((x) => x.name === g);
+    return !!me && me.peek.includes(path);
+  }, GROUP, '/apps/lattice.lattice_app/page/' + GROUP + '/target');
+  check('per-file group grant reaches the ship as a read rule', granted);
+  const lit = await page.evaluate((g) => {
+    const row = [...document.querySelectorAll('#grouplist .grow-row')]
+      .find((r) => r.querySelector('.gname').textContent === g);
+    return [...row.querySelectorAll('button')].find((b) => b.textContent === 'read').className;
+  }, GROUP);
+  check('and the toggle reads back as on', /on/.test(lit), lit);
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 140), false);
 } finally {
   try {
     await page.evaluate(async (g) => {
       await fetch('/apps/lattice/share-group-del?name=' + encodeURIComponent(g), { method: 'POST' });
+      await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(g + '/target'), { method: 'POST' });
       localStorage.removeItem('latFont'); localStorage.removeItem('latFontSize');
     }, GROUP);
   } catch {}

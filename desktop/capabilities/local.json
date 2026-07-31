@@ -6,6 +6,9 @@
   "permissions": [
     "allow-connect",
     "allow-local-ships",
+    "allow-stack-status",
+    "allow-install-grubbery",
+    "core:event:default",
     "allow-connection-status",
     "allow-get-config",
     "allow-go-home",
