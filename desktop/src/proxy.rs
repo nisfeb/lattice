@@ -12,44 +12,73 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use lattice_fs::default_cookie_path;
 
-/// port of the running bridge, if any
-pub struct Bridge(pub Mutex<Option<(String, u16)>>);
+/// the ship base the bridge currently relays to, and the port it listens on
+pub struct Bridge(pub Mutex<Option<(Arc<Mutex<String>>, u16)>>);
 
-/// Start (or reuse) the bridge for `ship_base`; returns the local base URL.
-pub fn ensure(state: &Bridge, ship_base: &str) -> Result<String, String> {
-    let mut guard = state.0.lock().unwrap();
-    if let Some((base, port)) = guard.as_ref() {
-        if base == ship_base {
-            return Ok(format!("http://127.0.0.1:{port}"));
+/// The webview's origin includes this port, and ALL web storage — the service
+/// worker cache, localStorage — is keyed by origin. Binding port 0 gave every
+/// launch a brand-new empty origin, so the desktop app re-downloaded the whole
+/// UI on every start and never got the client's paint-from-snapshot: it was
+/// measurably slower than the same UI in a browser, which keeps its origin.
+/// A deterministic port is a stable origin, so the cache survives a restart.
+const PORT_BASE: u16 = 41863;
+const PORT_SPAN: u16 = 16;
+
+fn bind_stable() -> Result<(TcpListener, u16), String> {
+    let mut last = String::new();
+    for port in PORT_BASE..PORT_BASE + PORT_SPAN {
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Ok(l) => return Ok((l, port)),
+            Err(e) => last = e.to_string(),
         }
-        // ship changed: the old forwarder keeps serving old connections
-        // harmlessly; we just start a fresh one for the new base
     }
-    let listener =
-        TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("bridge bind: {e}"))?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    Err(format!(
+        "bridge bind: no free port in {PORT_BASE}..{}: {last}",
+        PORT_BASE + PORT_SPAN
+    ))
+}
+
+/// Start (or re-point) the bridge for `ship_base`; returns the local base URL.
+pub fn ensure(state: &Bridge, ship_base: &str) -> Result<String, String> {
     let base = ship_base.trim_end_matches('/').to_string();
-    let ship = base.clone();
+    let mut guard = state.0.lock().unwrap();
+    if let Some((cur, port)) = guard.as_ref() {
+        // Re-point the SAME listener instead of binding another one: the port
+        // is part of the webview's origin, so rebinding would discard the
+        // cache keyed to it. A ship change always comes from connect(), which
+        // clears browsing data, so no ship is served another's cached shell.
+        *cur.lock().unwrap() = base.clone();
+        let port = *port;
+        prewarm(&base);
+        return Ok(format!("http://127.0.0.1:{port}"));
+    }
+    let (listener, port) = bind_stable()?;
+    let shared = Arc::new(Mutex::new(base.clone()));
+    let ship = shared.clone();
     std::thread::spawn(move || {
         for conn in listener.incoming().flatten() {
-            let ship = ship.clone();
+            let ship = ship.lock().unwrap().clone();
             std::thread::spawn(move || {
                 let _ = serve(conn, &ship);
             });
         }
     });
-    *guard = Some((base, port));
-    // pre-warm one ship connection so the first paint doesn't pay the
-    // TCP+TLS handshake on top of the pier round-trip
-    let warm = format!("{}/apps/lattice/icon.svg", ship_base.trim_end_matches('/'));
+    *guard = Some((shared, port));
+    prewarm(&base);
+    Ok(format!("http://127.0.0.1:{port}"))
+}
+
+/// pre-warm one ship connection so the first paint doesn't pay the TCP+TLS
+/// handshake on top of the pier round-trip
+fn prewarm(base: &str) {
+    let warm = format!("{base}/apps/lattice/icon.svg");
     std::thread::spawn(move || {
         let _ = agent().get(&warm).call();
     });
-    Ok(format!("http://127.0.0.1:{port}"))
 }
 
 /// one shared agent: its pool keeps ship connections (and TLS sessions)

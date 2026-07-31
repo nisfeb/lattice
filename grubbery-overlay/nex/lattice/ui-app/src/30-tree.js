@@ -38,13 +38,29 @@
     el.style.display = 'contents';
     document.getElementById('ws').appendChild(el);
   }
+  // page-dump, not page-tree: it returns the same nodes PLUS every page's body
+  // inline from ONE deep peek, and measures FASTER than page-tree (which
+  // re-peeks each code grub). Those bodies are what make opening a page cost
+  // zero requests — see openPage. Bodies over 256KB are omitted by the server;
+  // such a node has no `body` and falls back to the per-page fetch.
+  // ponytail: whole-store payload (~55KB today). If the tree ever grows past
+  // a megabyte, page it or go back to page-tree plus a lazy body cache.
   async function loadTree() {
     const gen = treeGen;
-    const r = await fetch(api + '/page-tree');
+    const r = await fetch(api + '/page-dump');
     if (!r.ok) { st('tree failed ' + r.status, false); return; }
     const d = await r.json();
     if (gen !== treeGen) return;   // a local patch superseded this response
     nodes = d.nodes;
+    // drop only the cached renders the dump says have moved FORWARD. Blanket-
+    // clearing on every change cost every other page its cache; and comparing
+    // for mere inequality evicted good entries whenever the dump trailed
+    // page-source by a revision, which it does right after a write (the
+    // evaluator settles after the writer).
+    for (const [name, c] of pageCache) {
+      const n = nodes.find((x) => x.page && x.path === name);
+      if (!n || (typeof n.rev === 'number' && n.rev > c.rev)) pageCache.delete(name);
+    }
     snapTree();
     renderTree();
   }

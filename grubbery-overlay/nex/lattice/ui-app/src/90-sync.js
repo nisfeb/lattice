@@ -29,6 +29,8 @@
     // to patch the preview from a response that does not contain one.
     if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent); return; }
     if (d.body === src.value) return;
+    // the ship's copy moved under us: this page's cached render is stale
+    if (mode !== 'know') pageCache.delete(wasCurrent);
     const top = src.scrollTop;
     src.value = d.body;
     render();
@@ -46,6 +48,9 @@
   }
   const refreshAll = () => {
     if (document.hidden) return;
+    // NB: stale cached renders are dropped by loadTree, which prunes against
+    // the revs in the fresh dump. Clearing the whole cache here instead meant
+    // one page's edit cost every other page its cache.
     if (mode === 'know') loadKnow(); else loadTree();
     refreshOpen();
   };

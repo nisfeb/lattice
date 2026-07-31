@@ -136,4 +136,6 @@
     await permSave({ name: v, ships: [], peek: [], make: [] });
     $('permname').value = '';
   };
-  loadPerms();
+  // NOT called here: at parse time this put a pier round-trip AHEAD of the
+  // tree and the open page, and the pier serializes — nothing about reading or
+  // editing needs the group list. Boot calls it once the editor is usable.

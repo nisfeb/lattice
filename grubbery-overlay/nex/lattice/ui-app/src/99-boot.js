@@ -16,14 +16,20 @@
     if (name && p && p.name === name) applyPage(name, p);
     return true;
   }
+  // the control-panel lists (sharing groups, shared-with-me) are never needed
+  // to read or edit anything, so they load AFTER the editor is usable. Issued
+  // at parse time they were two pier round-trips queued ahead of the tree, and
+  // the pier serializes — pure delay on the only requests that matter.
+  const loadPanels = () => { loadPerms(); loadShared(); };
   if (qs.get('grub')) {
     // arrived from the explorer's edit link: open that ball path directly. The
     // tree still lists lattice pages, so clicking one leaves grub mode.
-    loadTree();
+    loadTree().then(loadPanels);
     openGrub(qs.get('grub'), qs.get('ship'));
   } else if (qs.get('view') === 'know') {
     setMode('know');
     legacyCheck();
+    loadPanels();
   } else {
     const painted = bootSnap();
     loadTree().then(() => {
@@ -37,5 +43,6 @@
       else if (into) newFile(into);
       else newFile('');
       legacyCheck();
+      loadPanels();
     });
   }

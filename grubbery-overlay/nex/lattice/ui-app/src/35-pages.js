@@ -2,9 +2,12 @@
   const setFolderCtx = (name) =>
     { folderCtx = name.includes('/') ? name.slice(0, name.lastIndexOf('/')) : ''; };
 
-  // opening a page is ONE request: page-source?render=1 carries the rendered
-  // preview for content kinds, so the separate page-preview POST is skipped.
-  // History and backlinks load lazily on panel expand — they were 2 more ~2s
+  // Opening a page should cost nothing. Three tiers, cheapest first:
+  //   1. seen this session -> pageCache has the rendered answer: 0 requests.
+  //   2. body came with the tree dump -> paint the editor NOW, then fetch
+  //      render=1 only to fill in `share` and the preview.
+  //   3. no body (oversized page, or a tree we never loaded) -> as before.
+  // History and backlinks stay lazy on panel expand — they were 2 more ~2s
   // round-trips paid on every open whether or not anyone looked at them.
   async function openPage(name) {
     // leaving grub mode: clear the flag or the save button would keep writing
@@ -12,13 +15,27 @@
     grubPath = null;
     src.readOnly = false;
     setFolderCtx(name);
-    const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
-    if (!r.ok) { st('open failed ' + r.status, false); return; }
-    const d = await r.json();
+    const hit = pageCache.get(name);
+    if (hit) { applyPage(name, hit); snapPage(name, hit); return; }
+    const node = nodes.find((n) => n.page && n.path === name);
+    const painted = !!node && typeof node.body === 'string';
+    // `quiet`: the render=1 request below carries the preview and the error
+    // report, so painting must not also fire refreshPreview/checkErrors.
+    if (painted) applyPage(name, node, true);
+    let d = null;
+    try {
+      const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
+      if (!r.ok) { if (!painted) st('open failed ' + r.status, false); return; }
+      d = await r.json();
+    } catch { if (!painted) st('open failed', false); return; }
+    pageCache.set(name, d);
     snapPage(name, d);
+    // the user may have moved to another page, or started typing, while this
+    // was in flight — same rule the live refresh uses: local edits win.
+    if (current !== name || dirty || viewingRev !== null) return;
     applyPage(name, d);
   }
-  function applyPage(name, d) {
+  function applyPage(name, d, quiet) {
     current = name;
     curFolder = null;
     setCtlLabels();
@@ -37,8 +54,8 @@
     showShare(d.share || 'private');
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
     if (typeof d.html === 'string') { prev.removeAttribute('src'); prev.srcdoc = d.html; }
-    else refreshPreview();
-    if (!CONTENT()) checkErrors();
+    else if (!quiet) refreshPreview();
+    if (!CONTENT() && !quiet) checkErrors();
     if (isMobile()) setMv('code');
   }
 
@@ -109,6 +126,12 @@
     // only a CREATE changes the tree — refetching it after every save was a
     // 2.3s pier round-trip to learn nothing. Patch the local copy on create.
     if (creating) { addTreeNode(name, kind); snapTree(); renderTree(); }
+    // we know exactly what we just wrote: patch the local copies so reopening
+    // this page paints the saved text, not the dump's pre-save body. The
+    // cached render is stale by definition — drop it and let it re-render.
+    pageCache.delete(name);
+    const nd = nodes.find((n) => n.page && n.path === name);
+    if (nd) { nd.body = sent; nd.kind = kind; snapTree(); }
     // the preview already shows this exact body (the input debounce rendered
     // it); re-POSTing it after the save was a duplicate 1.8s render.
     if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
@@ -143,6 +166,11 @@
     echoUntil = Date.now() + 4000;
     if (!r || !r.ok) { st('autosave failed' + (r ? ' ' + r.status : ''), false); return; }
     if (src.value === sent) dirty = false;   // typed during the request? stay dirty
+    if (mode !== 'know') {
+      pageCache.delete(current);
+      const nd = nodes.find((n) => n.page && n.path === current);
+      if (nd) { nd.body = sent; snapTree(); }
+    }
     st('autosaved');
     if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
     if (savePending) { savePending = false; if (dirty) autosave(); }

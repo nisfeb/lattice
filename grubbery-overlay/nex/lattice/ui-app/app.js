@@ -238,6 +238,12 @@
   // (the own-write echo is suppressed, so nothing would correct it until the
   // 30s poll). Bumped on every local mutation; stale responses are dropped.
   let treeGen = 0, knowGen = 0;
+  // rendered page-source answers, by name. The tree dump already carries every
+  // body, so this only adds what the dump lacks — `share` and the rendered
+  // `html` — which makes re-opening a page cost ZERO requests instead of a
+  // ~0.5s round-trip. Dropped whenever the ship reports a change (the beacon
+  // clears it) or when this client writes the page.
+  const pageCache = new Map();
   const snapTree = () => {
     treeGen++;
     try { localStorage.appTree = JSON.stringify(nodes); } catch {}
@@ -367,13 +373,29 @@
     el.style.display = 'contents';
     document.getElementById('ws').appendChild(el);
   }
+  // page-dump, not page-tree: it returns the same nodes PLUS every page's body
+  // inline from ONE deep peek, and measures FASTER than page-tree (which
+  // re-peeks each code grub). Those bodies are what make opening a page cost
+  // zero requests — see openPage. Bodies over 256KB are omitted by the server;
+  // such a node has no `body` and falls back to the per-page fetch.
+  // ponytail: whole-store payload (~55KB today). If the tree ever grows past
+  // a megabyte, page it or go back to page-tree plus a lazy body cache.
   async function loadTree() {
     const gen = treeGen;
-    const r = await fetch(api + '/page-tree');
+    const r = await fetch(api + '/page-dump');
     if (!r.ok) { st('tree failed ' + r.status, false); return; }
     const d = await r.json();
     if (gen !== treeGen) return;   // a local patch superseded this response
     nodes = d.nodes;
+    // drop only the cached renders the dump says have moved FORWARD. Blanket-
+    // clearing on every change cost every other page its cache; and comparing
+    // for mere inequality evicted good entries whenever the dump trailed
+    // page-source by a revision, which it does right after a write (the
+    // evaluator settles after the writer).
+    for (const [name, c] of pageCache) {
+      const n = nodes.find((x) => x.page && x.path === name);
+      if (!n || (typeof n.rev === 'number' && n.rev > c.rev)) pageCache.delete(name);
+    }
     snapTree();
     renderTree();
   }
@@ -510,9 +532,12 @@
   const setFolderCtx = (name) =>
     { folderCtx = name.includes('/') ? name.slice(0, name.lastIndexOf('/')) : ''; };
 
-  // opening a page is ONE request: page-source?render=1 carries the rendered
-  // preview for content kinds, so the separate page-preview POST is skipped.
-  // History and backlinks load lazily on panel expand — they were 2 more ~2s
+  // Opening a page should cost nothing. Three tiers, cheapest first:
+  //   1. seen this session -> pageCache has the rendered answer: 0 requests.
+  //   2. body came with the tree dump -> paint the editor NOW, then fetch
+  //      render=1 only to fill in `share` and the preview.
+  //   3. no body (oversized page, or a tree we never loaded) -> as before.
+  // History and backlinks stay lazy on panel expand — they were 2 more ~2s
   // round-trips paid on every open whether or not anyone looked at them.
   async function openPage(name) {
     // leaving grub mode: clear the flag or the save button would keep writing
@@ -520,13 +545,27 @@
     grubPath = null;
     src.readOnly = false;
     setFolderCtx(name);
-    const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
-    if (!r.ok) { st('open failed ' + r.status, false); return; }
-    const d = await r.json();
+    const hit = pageCache.get(name);
+    if (hit) { applyPage(name, hit); snapPage(name, hit); return; }
+    const node = nodes.find((n) => n.page && n.path === name);
+    const painted = !!node && typeof node.body === 'string';
+    // `quiet`: the render=1 request below carries the preview and the error
+    // report, so painting must not also fire refreshPreview/checkErrors.
+    if (painted) applyPage(name, node, true);
+    let d = null;
+    try {
+      const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
+      if (!r.ok) { if (!painted) st('open failed ' + r.status, false); return; }
+      d = await r.json();
+    } catch { if (!painted) st('open failed', false); return; }
+    pageCache.set(name, d);
     snapPage(name, d);
+    // the user may have moved to another page, or started typing, while this
+    // was in flight — same rule the live refresh uses: local edits win.
+    if (current !== name || dirty || viewingRev !== null) return;
     applyPage(name, d);
   }
-  function applyPage(name, d) {
+  function applyPage(name, d, quiet) {
     current = name;
     curFolder = null;
     setCtlLabels();
@@ -545,8 +584,8 @@
     showShare(d.share || 'private');
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
     if (typeof d.html === 'string') { prev.removeAttribute('src'); prev.srcdoc = d.html; }
-    else refreshPreview();
-    if (!CONTENT()) checkErrors();
+    else if (!quiet) refreshPreview();
+    if (!CONTENT() && !quiet) checkErrors();
     if (isMobile()) setMv('code');
   }
 
@@ -617,6 +656,12 @@
     // only a CREATE changes the tree — refetching it after every save was a
     // 2.3s pier round-trip to learn nothing. Patch the local copy on create.
     if (creating) { addTreeNode(name, kind); snapTree(); renderTree(); }
+    // we know exactly what we just wrote: patch the local copies so reopening
+    // this page paints the saved text, not the dump's pre-save body. The
+    // cached render is stale by definition — drop it and let it re-render.
+    pageCache.delete(name);
+    const nd = nodes.find((n) => n.page && n.path === name);
+    if (nd) { nd.body = sent; nd.kind = kind; snapTree(); }
     // the preview already shows this exact body (the input debounce rendered
     // it); re-POSTing it after the save was a duplicate 1.8s render.
     if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
@@ -651,6 +696,11 @@
     echoUntil = Date.now() + 4000;
     if (!r || !r.ok) { st('autosave failed' + (r ? ' ' + r.status : ''), false); return; }
     if (src.value === sent) dirty = false;   // typed during the request? stay dirty
+    if (mode !== 'know') {
+      pageCache.delete(current);
+      const nd = nodes.find((n) => n.page && n.path === current);
+      if (nd) { nd.body = sent; snapTree(); }
+    }
     st('autosaved');
     if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
     if (savePending) { savePending = false; if (dirty) autosave(); }
@@ -1303,7 +1353,9 @@
     await permSave({ name: v, ships: [], peek: [], make: [] });
     $('permname').value = '';
   };
-  loadPerms();
+  // NOT called here: at parse time this put a pier round-trip AHEAD of the
+  // tree and the open page, and the pier serializes — nothing about reading or
+  // editing needs the group list. Boot calls it once the editor is usable.
 
 // ── src/68-knowtags.js ────────────────────────────────────────────────────
   // ── knowledge tags panel: <lat-knowtags> ─────────────────────────────────
@@ -1368,7 +1420,7 @@
       host.appendChild(row);
     }
   }
-  loadShared();
+  // deferred to boot, same reason as loadPerms — see 67-perms.js.
 
 // ── src/70-upload.js ──────────────────────────────────────────────────────
   // ── upload (pickers + drag-and-drop, progress panel) ─────────────────────
@@ -1767,6 +1819,8 @@
     // to patch the preview from a response that does not contain one.
     if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent); return; }
     if (d.body === src.value) return;
+    // the ship's copy moved under us: this page's cached render is stale
+    if (mode !== 'know') pageCache.delete(wasCurrent);
     const top = src.scrollTop;
     src.value = d.body;
     render();
@@ -1784,6 +1838,9 @@
   }
   const refreshAll = () => {
     if (document.hidden) return;
+    // NB: stale cached renders are dropped by loadTree, which prunes against
+    // the revs in the fresh dump. Clearing the whole cache here instead meant
+    // one page's edit cost every other page its cache.
     if (mode === 'know') loadKnow(); else loadTree();
     refreshOpen();
   };
@@ -2157,14 +2214,20 @@
     if (name && p && p.name === name) applyPage(name, p);
     return true;
   }
+  // the control-panel lists (sharing groups, shared-with-me) are never needed
+  // to read or edit anything, so they load AFTER the editor is usable. Issued
+  // at parse time they were two pier round-trips queued ahead of the tree, and
+  // the pier serializes — pure delay on the only requests that matter.
+  const loadPanels = () => { loadPerms(); loadShared(); };
   if (qs.get('grub')) {
     // arrived from the explorer's edit link: open that ball path directly. The
     // tree still lists lattice pages, so clicking one leaves grub mode.
-    loadTree();
+    loadTree().then(loadPanels);
     openGrub(qs.get('grub'), qs.get('ship'));
   } else if (qs.get('view') === 'know') {
     setMode('know');
     legacyCheck();
+    loadPanels();
   } else {
     const painted = bootSnap();
     loadTree().then(() => {
@@ -2178,6 +2241,7 @@
       else if (into) newFile(into);
       else newFile('');
       legacyCheck();
+      loadPanels();
     });
   }
 })();

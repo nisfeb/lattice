@@ -41,6 +41,13 @@ Ctrl/Cmd +/- zooms the workspace. The app is a single window: it opens on
 the connection page until a ship is configured, then lives on the ship UI;
 `lattice → connection & mounts…` in the menu returns to the settings page.
 
+Once configured it opens straight on the editor — landing on the reader made
+reaching the editor a second full page load. The bridge listens on a fixed
+port (41863, or the next free one in a 16-wide range). That is deliberate and
+load-bearing, not cosmetic: the port is part of the webview's origin, and all
+web storage is keyed by origin, so an ephemeral port gave every launch an
+empty cache and made the desktop app slower than the same UI in a browser.
+
 If a previous run died without unmounting ("Transport endpoint is not
 connected" on remount), clear the stale mountpoint with
 `fusermount3 -u <dir>`.

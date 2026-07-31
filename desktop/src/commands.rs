@@ -159,7 +159,11 @@ pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
         return Err("connect to a ship first".into());
     }
     let local = crate::proxy::ensure(app.state::<crate::proxy::Bridge>().inner(), &cfg.url)?;
-    let home: tauri::Url = format!("{local}/apps/lattice")
+    // land on the editor, not the reader. This is a workspace: opening the
+    // reader first made reaching the editor a SECOND full document load
+    // (16KB shell + 124KB of JS), so "first click" cost a whole page load.
+    // urb:// links still route to the reader — see the navigation guard.
+    let home: tauri::Url = format!("{local}/apps/lattice/app")
         .parse()
         .map_err(|e| format!("{e}"))?;
     // the bridge means the webview needs no cookies, so the window may be
