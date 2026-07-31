@@ -66,7 +66,7 @@ fi
 say "staging (same six mappings as sync-overlay.sh; never add --delete)"
 rsync -a -e "$SSH" "$OVERLAY/lib/"         "$RIC:$RDESK/gub/lib/"
 rsync -a -e "$SSH" "$OVERLAY/lib/"         "$RIC:$RDESK/lib/"
-rsync -a -e "$SSH" "$OVERLAY/nex/lattice/" "$RIC:$RDESK/gub/nex/lattice/"
+rsync -a -e "$SSH" --exclude 'ui-app/src' "$OVERLAY/nex/lattice/" "$RIC:$RDESK/gub/nex/lattice/"
 rsync -a -e "$SSH" "$OVERLAY/mar/lattice/" "$RIC:$RDESK/gub/mar/lattice/"
 [ -d "$OVERLAY/mar-clay" ] && rsync -a -e "$SSH" "$OVERLAY/mar-clay/" "$RIC:$RDESK/gub/mar/clay/"
 rsync -a -e "$SSH" "$OVERLAY/tests/"       "$RIC:$RDESK/tests/"
