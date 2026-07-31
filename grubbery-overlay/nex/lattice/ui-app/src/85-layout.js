@@ -26,4 +26,9 @@
   };
   for (const b of document.querySelectorAll('.mtabs button'))
     b.onclick = () => setMv(b.dataset.mv);
-  setMv('code');
+  // On a phone the code pane is the wrong place to land: with no file open it
+  // is an empty box, and the tree is how you get anywhere. Start on the tree
+  // and let opening a file move us — applyPage switches to 'code' on mobile,
+  // so a remembered or ?name page still lands in the editor. Desktop shows
+  // every pane at once, so 'code' remains right there.
+  setMv(isMobile() ? 'tree' : 'code');

@@ -272,6 +272,15 @@
   // (the own-write echo is suppressed, so nothing would correct it until the
   // 30s poll). Bumped on every local mutation; stale responses are dropped.
   let treeGen = 0, knowGen = 0;
+  // persistTree: save the tree WITHOUT bumping the generation. The counter
+  // exists so a STRUCTURAL local patch (a page created, moved, deleted) is not
+  // overwritten by a list fetch that was issued before it. A body-only update
+  // changes no structure, so bumping for one just discards a legitimate
+  // in-flight refresh — which silently lost pages created while an autosave
+  // was in flight.
+  const persistTree = () => {
+    try { localStorage.appTree = JSON.stringify(nodes); } catch {}
+  };
   // rendered page-source answers, by name. The tree dump already carries every
   // body, so this only adds what the dump lacks — `share` and the rendered
   // `html` — which makes re-opening a page cost ZERO requests instead of a
@@ -279,8 +288,8 @@
   // clears it) or when this client writes the page.
   const pageCache = new Map();
   const snapTree = () => {
-    treeGen++;
-    try { localStorage.appTree = JSON.stringify(nodes); } catch {}
+    treeGen++;                 // structural change: supersede in-flight fetches
+    persistTree();
   };
   const snapPage = (name, d) => {
     try {
@@ -573,7 +582,15 @@
   //   3. no body (oversized page, or a tree we never loaded) -> as before.
   // History and backlinks stay lazy on panel expand — they were 2 more ~2s
   // round-trips paid on every open whether or not anyone looked at them.
+  // Which open is current. Opening a page is an explicit user act, so the ONLY
+  // reason to discard a landed response is that the user opened something else
+  // while it was in flight — not that the editor was dirty, and not that
+  // `current` had not been set yet. Guarding on those meant an explicit open
+  // was silently dropped: after an unsaved edit, clicking another file did
+  // nothing, and a page absent from the local tree never applied at all.
+  let openSeq = 0;
   async function openPage(name) {
+    const my = ++openSeq;
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
     grubPath = null;
@@ -594,9 +611,8 @@
     } catch { if (!painted) st('open failed', false); return; }
     pageCache.set(name, d);
     snapPage(name, d);
-    // the user may have moved to another page, or started typing, while this
-    // was in flight — same rule the live refresh uses: local edits win.
-    if (current !== name || dirty || viewingRev !== null) return;
+    // a later openPage supersedes this one; anything else still applies
+    if (my !== openSeq) return;
     applyPage(name, d);
   }
   function applyPage(name, d, quiet) {
@@ -623,7 +639,11 @@
     if (isMobile()) setMv('code');
   }
 
-  function newFile(into) {
+  // focusName: only when the USER asked for a new file. Boot calls this to
+  // land on an empty page, and focusing the name field there summons the
+  // phone keyboard before you have done anything — you arrive at the app
+  // already typing a filename you did not ask to type.
+  function newFile(into, focusName = true) {
     folderCtx = into || '';
     current = null;
     curFolder = null;
@@ -639,7 +659,7 @@
     render();
     history.replaceState(null, '', '/apps/lattice/app');
     renderTree();
-    pname.focus();
+    if (focusName) pname.focus();
     st('new page — name it, write, save');
     prevBlank();
     showShare('private');
@@ -695,7 +715,7 @@
     // cached render is stale by definition — drop it and let it re-render.
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
-    if (nd) { nd.body = sent; nd.kind = kind; snapTree(); }
+    if (nd) { nd.body = sent; nd.kind = kind; persistTree(); }
     // the preview already shows this exact body (the input debounce rendered
     // it); re-POSTing it after the save was a duplicate 1.8s render.
     if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
@@ -733,7 +753,7 @@
     if (mode !== 'know') {
       pageCache.delete(current);
       const nd = nodes.find((n) => n.page && n.path === current);
-      if (nd) { nd.body = sent; snapTree(); }
+      if (nd) { nd.body = sent; persistTree(); }
     }
     st('autosaved');
     if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
@@ -1096,10 +1116,6 @@
 <aside class="ctl">
   <h3>status</h3>
   <div id="cerr" class="ok">&nbsp;</div>
-  <div id="cmdrow">
-    <h3>command</h3>
-    <div class="row"><input id="cmd" placeholder="command" autocomplete="off"><button id="csend">send</button></div>
-  </div>
   <lat-knowtags></lat-knowtags>
   <lat-share></lat-share>
   <lat-shared></lat-shared>
@@ -1120,17 +1136,10 @@
     document.getElementById('ws').appendChild(el);
   }
 
-  // ── command box ──────────────────────────────────────────────────────────
-  async function sendCmd() {
-    const c = $('cmd').value;
-    if (!c || !current) return;
-    await mutate(api + '/page-cmd?name=' + encodeURIComponent(current),
-      { method: 'POST', body: 'cmd=' + encodeURIComponent(c) });
-    $('cmd').value = '';
-    setTimeout(refreshPreview, 600);
-  }
-  $('csend').onclick = sendCmd;
-  $('cmd').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendCmd(); });
+  // NB: the command box is gone from this panel. It POSTed to /page-cmd, the
+  // input channel for a programmable page. The ROUTE stays — public form
+  // submissions (POST /f/<page>) go through the same handler — but nothing in
+  // the editor sends to it now.
 
   // ── delete ───────────────────────────────────────────────────────────────
   $('del').onclick = async () => {
@@ -2032,7 +2041,12 @@
   };
   for (const b of document.querySelectorAll('.mtabs button'))
     b.onclick = () => setMv(b.dataset.mv);
-  setMv('code');
+  // On a phone the code pane is the wrong place to land: with no file open it
+  // is an empty box, and the tree is how you get anywhere. Start on the tree
+  // and let opening a file move us — applyPage switches to 'code' on mobile,
+  // so a remembered or ?name page still lands in the editor. Desktop shows
+  // every pane at once, so 'code' remains right there.
+  setMv(isMobile() ? 'tree' : 'code');
 
 // ── src/90-sync.js ────────────────────────────────────────────────────────
   // ── live refresh (beacon keep-SSE + focus + idle poll) ───────────────────
@@ -2500,8 +2514,9 @@
         else openPage(name);
       }
       else if (into && nodes.some((n) => !n.page && n.path === into)) selectFolder(into);
-      else if (into) newFile(into);
-      else newFile('');
+      // no focus: boot did not ask for a new file, the user did not either
+      else if (into) newFile(into, false);
+      else newFile('', false);
       legacyCheck();
       loadPanels();
     });

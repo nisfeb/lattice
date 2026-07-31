@@ -13,10 +13,6 @@
 <aside class="ctl">
   <h3>status</h3>
   <div id="cerr" class="ok">&nbsp;</div>
-  <div id="cmdrow">
-    <h3>command</h3>
-    <div class="row"><input id="cmd" placeholder="command" autocomplete="off"><button id="csend">send</button></div>
-  </div>
   <lat-knowtags></lat-knowtags>
   <lat-share></lat-share>
   <lat-shared></lat-shared>
@@ -37,17 +33,10 @@
     document.getElementById('ws').appendChild(el);
   }
 
-  // ── command box ──────────────────────────────────────────────────────────
-  async function sendCmd() {
-    const c = $('cmd').value;
-    if (!c || !current) return;
-    await mutate(api + '/page-cmd?name=' + encodeURIComponent(current),
-      { method: 'POST', body: 'cmd=' + encodeURIComponent(c) });
-    $('cmd').value = '';
-    setTimeout(refreshPreview, 600);
-  }
-  $('csend').onclick = sendCmd;
-  $('cmd').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendCmd(); });
+  // NB: the command box is gone from this panel. It POSTed to /page-cmd, the
+  // input channel for a programmable page. The ROUTE stays — public form
+  // submissions (POST /f/<page>) go through the same handler — but nothing in
+  // the editor sends to it now.
 
   // ── delete ───────────────────────────────────────────────────────────────
   $('del').onclick = async () => {
