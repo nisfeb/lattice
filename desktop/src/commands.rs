@@ -142,6 +142,12 @@ pub fn open_workspace(app: &AppHandle, code: Option<&str>) -> Result<(), String>
         Some(w) => w,
         None => new_workspace(app)?,
     };
+    if code.is_some() {
+        // fresh connect = clean slate: a service worker or cache installed
+        // during a broken or unauthenticated session otherwise keeps serving
+        // stale responses and makes every later fix look like "no change"
+        dlog(&format!("clear browsing data: {:?}", w.clear_all_browsing_data()));
+    }
     dlog(&format!("navigate: {login}"));
     w.navigate(login).map_err(|e| e.to_string())?;
     if let Some(code) = code {
