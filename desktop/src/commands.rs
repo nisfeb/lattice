@@ -199,6 +199,13 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
             if u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost") {
                 return true;
             }
+            // in-page pseudo-navigations (the preview iframe is srcdoc-based;
+            // some webkits run every frame through this policy hook) — never
+            // route these to the system opener, it popups "Could not read
+            // file about:src:doc."
+            if matches!(u.scheme(), "about" | "blob" | "data") {
+                return true;
+            }
             let cfg = config::load(&handle);
             // urb:// names stay in the app — the ship's reader resolves them
             // (GET /apps/lattice?url=…), so navigate there instead
@@ -224,8 +231,12 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
             if tauri::Url::parse(&cfg.url).is_ok_and(|ship| ship.origin() == u.origin()) {
                 return true;
             }
-            use tauri_plugin_opener::OpenerExt;
-            handle.opener().open_url(u.as_str(), None::<&str>).ok();
+            // only things a system handler can sensibly open leave the app;
+            // anything else is silently blocked (an opener error is a popup)
+            if matches!(u.scheme(), "http" | "https" | "mailto" | "tel") {
+                use tauri_plugin_opener::OpenerExt;
+                handle.opener().open_url(u.as_str(), None::<&str>).ok();
+            }
             false
         })
         .build()
