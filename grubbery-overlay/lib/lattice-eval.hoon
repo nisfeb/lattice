@@ -38,6 +38,8 @@
       ::  already exists (obelisk has no IF NOT EXISTS). Only the caller knows
       ::  that, so it has to travel with the action.
       [%obelisk db=@tas urql=@t quiet=?]
+      [%legacy-seen imported=@ud]       ::  retired %lattice agent dealt with
+      [%legacy-pages rels=(list path)]  ::  page rels this migration triggered
   ==
 ::  +$  form-cfg: a page's public-form limits. cap=0 means no absolute limit;
 ::  gap=0 means no cooldown. Set by the owner (page-forms), read by serve-form

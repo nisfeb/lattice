@@ -85,10 +85,7 @@
         ::  just state we hold and hand to the engine.
             [%fall %& [/ %'db.lattice'] [[/obelisk %server] *db-state:sst]]
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
-        ::  /legacy: provenance grubs from the one-time gall-agent import
-        ::  (2026-07, resolved everywhere). The import code is gone; this row
-        ::  stays because removing a covering row DELETES its subtree on
-        ::  reload, and these records are proof of what was migrated.
+        ::  /legacy: the retired-agent marker lives here (see +legacy-mark-road)
             [%fall %| /legacy empty-dir:loader]
             [%fall %| /know/vault empty-dir:loader]
             [%fall %| /know/trash-vault empty-dir:loader]
@@ -1972,6 +1969,130 @@
       [%'POST' %search-reindex]
     ;<  ~  bind:m  content-reindex
     (send-ok eyre-id)
+  ::  ── legacy agent migration (see the +legacy-live block) ────────────────
+  ::  legacy-status: should the UI offer to import from a retired %lattice
+  ::  gall agent? One %gu liveness scry and nothing else — see below. The
+  ::  client asks once per browser session and never again once resolved.
+      [%'GET' %legacy-status]
+    ;<  done=?  bind:m  legacy-resolved
+    ?:  done
+      (send-json eyre-id (pairs:enjs:format ~[['prompt' b+|] ['reason' s+'resolved']]))
+    ::  %gu ONLY. This route runs on the editor's boot path, and a %gx against
+    ::  an agent whose version lacks the arm does not fail gracefully — it
+    ::  unwinds the Arvo event. Liveness is the one thing %gu can answer
+    ::  safely, so the counts (and every peek that could bail) move behind the
+    ::  user's explicit click in /legacy-migrate.
+    ;<  up=?  bind:m  legacy-live
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['prompt' b+up]
+        ['reason' s+?:(up 'agent-present' 'absent')]
+    ==
+  ::  legacy-migrate: copy the retired agent's knowledge in. Entries whose key
+  ::  ALREADY exists here are SKIPPED, never overwritten — the live store is
+  ::  always the newer one, and a legacy body must never revert an edit made
+  ::  since. That also makes a re-run harmless.
+      [%'POST' %legacy-migrate]
+    ;<  done=?  bind:m  legacy-resolved
+    ?:  done  (send-err eyre-id 409 'already resolved')
+    ;<  up=?  bind:m  legacy-live
+    ?.  up  (send-err eyre-id 404 'no legacy agent')
+    ;<  aj=json  bind:m  (legacy-peek /gx/lattice/know/all/json)
+    =/  parsed=(each (list [@t know-entry:lk]) tang)  (mule |.((parse-import aj)))
+    ?:  ?=(%| -.parsed)  (send-err eyre-id 502 'bad legacy export shape')
+    ::  FAIL CLOSED. +read-know-map maps ANY unreadable view onto the empty
+    ::  map, which is indistinguishable from a legitimately empty store — and
+    ::  "empty" would mean every legacy entry imports over live data. Use the
+    ::  unit-returning read so a genuine read FAILURE refuses the import, while
+    ::  a real (readable) empty store still migrates normally.
+    ;<  esu=(unit (map path know-entry:lk))  bind:m  read-know-vault-safe
+    ?~  esu  (send-err eyre-id 503 'local store unreadable; import refused')
+    =/  es=(map path know-entry:lk)  u.esu
+    ::  skip anything we already hold LIVE or in TRASH — importing over a
+    ::  soft-deleted key would resurrect what the user deleted here.
+    ;<  tx=know-index:lk  bind:m  (read-index [%| 2 %& /know %trash])
+    =/  fresh=(list [@t know-entry:lk])
+      %+  skim  p.parsed
+      |=  [k=@t *]
+      =/  ko=(unit path)  (know-key k)
+      ?~(ko %.n ?!(|((~(has by es) u.ko) (~(has by tx) u.ko))))
+    ;<  n=@ud  bind:m  (import-know-loop fresh 0)
+    ::  ── pages ────────────────────────────────────────────────────────────
+    ::  Scoped to the rels the agent itself reports. ~ means we could not read
+    ::  its page list at all: treat that as UNKNOWN, never as "no pages", or
+    ::  the completion dialog would clear an agent that still holds the only
+    ::  copy of them.
+    ;<  prels=(unit (list path))  bind:m  legacy-page-rels
+    =/  want=(list path)  ?~(prels ~ u.prels)
+    ::  never let a legacy body land on a page we already have: %save-page is
+    ::  an unconditional upsert in the writer, so a name collision would
+    ::  overwrite the user's own published body. Drop collisions before
+    ::  triggering and report them as left-behind.
+    ;<  live-pages=(list path)  bind:m  (page-sources-present want)
+    ::  A legacy name can also collide with a page this nexus published but
+    ::  never had a source for (POST /save, know-publish). %save-page is an
+    ::  unconditional upsert, so triggering would overwrite the user's body.
+    ::  Anything ALREADY in the vault is therefore off limits — unless a prior
+    ::  run of this migration is what put it there.
+    ;<  prior=(list path)  bind:m  legacy-triggered
+    ;<  in-vault=(list path)  bind:m  (vault-present want)
+    =/  has  |=([l=(list path) r=path] (lien l |=(x=path =(x r))))
+    =/  theirs=(list path)
+      (skip in-vault |=(r=path (has prior r)))
+    =/  fresh-pages=(list path)
+      %+  skip  want
+      |=(r=path |((has live-pages r) (has theirs r)))
+    =/  nil  (fiber:fiber:nexus ,~)
+    ::  read the bodies directly (see +legacy-page-bodies) and write each one
+    ::  as a normal page. No poke, no waiting on another agent's cards, and no
+    ::  window in which arrivals can be missed: what we read is what we write.
+    ;<  bodies=(unit (list [rel=path body=@t]))  bind:m
+      ?:  =(~ fresh-pages)
+        (pure:(fiber:fiber:nexus ,(unit (list [rel=path body=@t]))) `~)
+      legacy-page-bodies
+    ;<  ~  bind:m
+      ?:  =(~ fresh-pages)  (pure:nil ~)
+      (poke-eval [%legacy-pages (weld prior fresh-pages)])
+    ;<  promoted=@ud  bind:m
+      ?~  bodies  (pure:(fiber:fiber:nexus ,@ud) 0)
+      (write-legacy-pages (skim u.bodies |=([r=path *] (has fresh-pages r))) 0)
+    ::  ONLY claim the migration is finished when nothing is left behind. A
+    ::  short count leaves the marker UNWRITTEN so the offer returns and the
+    ::  user can retry — the knowledge import is idempotent (skip-existing),
+    ::  so a retry costs nothing and finishes the pages.
+    =/  page-total=@ud  (lent want)
+    ::  "complete" means: we could read the page list, and every page we were
+    ::  allowed to move actually landed AND was promoted. Collisions count as
+    ::  NOT complete — those pages stay only in the old agent, so the agent
+    ::  must not be cleared for retirement.
+    =/  done=?
+      ?&  ?=(^ prels)
+          ?=(^ bodies)
+          =(promoted (lent fresh-pages))
+          =(0 (lent live-pages))
+          =(0 (lent theirs))
+      ==
+    ;<  ~  bind:m  ?:(done (poke-eval [%legacy-seen n]) (pure:nil ~))
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['imported' (numb:enjs:format n)]
+        ['skipped' (numb:enjs:format (sub (lent p.parsed) (lent fresh)))]
+        ['pages' (numb:enjs:format page-total)]
+        ['pagesImported' (numb:enjs:format promoted)]
+        ['pagesCollided' (numb:enjs:format (add (lent live-pages) (lent theirs)))]
+        ::  why the trigger failed, when it did — the difference between
+        ::  "no pages arrived" and knowing the poke was refused
+        :-  'pageError'
+        ?~  bodies  s+'could not read the old agent\'s pages'
+        ~
+        ['pagesKnown' b+?=(^ prels)]
+        ['complete' b+done]
+    ==
+  ::  legacy-dismiss: the user declined. Same marker as a completed import, so
+  ::  the prompt never returns.
+      [%'POST' %legacy-dismiss]
+    ;<  ~  bind:m  (poke-eval [%legacy-seen 0])
+    (send-ok eyre-id)
   ::  bulk import: body = a /know-all export; lands each entry VERBATIM (tags +
   ::  original updated preserved) via %import. Owner-only.
       [%'POST' %know-import]
@@ -2066,6 +2187,230 @@
     ;<  ~  bind:m  (poke-pub [%save-page (spat p.pp) body.u.e])
     (send-ok eyre-id)
   ==
+::  ── legacy %lattice gall agent (pre-grubbery) ─────────────────────────────
+::  A ship that ran the standalone agent before the nexus may still have it
+::  installed, holding knowledge the nexus never saw. We offer a one-time
+::  in-app import rather than migrating silently: the entries are the user's,
+::  and which store they want them in is their call.
+::
+::  DETECTION IS %gu, NEVER a bare %gx. A %gx against an absent agent BAILS,
+::  and a bail here crashes the whole Arvo event. %gu answers %.n
+::  instead. So: liveness first, peek second.
+::
+++  legacy-live
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  (typed-scry:io ? %loob /gu/lattice/$)
+::  +legacy-peek: read one of the retired agent's export arms. ONLY call this
+::  behind a +legacy-live check.
+++  legacy-peek
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,json)
+  ^-  form:m
+  (typed-scry:io json %json pax)
+::  +legacy-mark: the "done with the old agent" marker. Its EXISTENCE is the
+::  whole signal (the body is detail for humans), so the read is a peek-exists
+::  and can never mis-parse. Written on a completed import AND on an explicit
+::  dismissal, so neither path ever prompts again.
+++  legacy-mark-road  ^-(road:tarball [%& %& (weld app-base:lu /legacy) %state])
+++  legacy-resolved
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  (peek-exists:io legacy-mark-road)
+::  +legacy-pages: how many PAGES the retired agent still holds. This import
+::  moves knowledge only — the old agent exposes no arm for page BODIES
+::  (%published and %live-list give paths and hashes, nothing more) — so pages
+::  stay behind. We count them because a user who retires the agent while pages
+::  remain loses them permanently, and the completion dialog has to say so.
+::  Called ONLY from /legacy-migrate, never on the boot path: like every %gx it
+::  can bail on an agent whose version lacks the arm, so it stays behind the
+::  user's explicit click.
+++  legacy-pages
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  pj=json  bind:m  (legacy-peek /gx/lattice/live-list/json)
+  =/  r=(each @ud tang)
+    (mule |.(((ot:dejs:format count+ni:dejs:format ~) pj)))
+  (pure:m ?:(?=(%| -.r) 0 p.r))
+::  ── legacy PAGE migration ─────────────────────────────────────────────────
+::  The retired agent exposes no scry arm for page BODIES, and %grow'n content
+::  is not served on %gx (both verified). It does still carry its phase-1
+::  endpoint POST /pub-migrate, which emits one `%save-page` poke per page at
+::  this nexus's writer — a native pub-action, so bodies land in /pub/vault.
+::  That endpoint is HTTP-only and grubbery shadows /apps/lattice, so we hand
+::  the agent the request as a poke.
+::
+::  EVERYTHING here is scoped to the page paths the agent itself reports. An
+::  earlier draft promoted the whole vault and derived its counts from it,
+::  which conflated the user's OWN published pages with legacy arrivals and
+::  could report success while pages were still only in the old agent.
+::
+::  +legacy-key-rel: a legacy content key ('/pub/index/gmi') -> the nexus page
+::  rel (/index). ~ for anything that is not that shape.
+++  legacy-key-rel
+  |=  k=@t
+  ^-  (unit path)
+  =/  pu=(unit path)  (mole |.(`path`(stab k)))
+  ?~  pu  ~
+  ?.  ?=([%pub *] u.pu)  ~
+  ?~  t.u.pu  ~
+  ::  re-widen after the ?~: scag/rear are wet gates and mull-grow against the
+  ::  narrowed (non-null) type, which is a nest-fail at the call site.
+  =/  r=path  `path`t.u.pu
+  ?.  =(%gmi (rear r))  ~
+  ?:  =(1 (lent r))  ~
+  `(scag (dec (lent r)) r)
+::  +legacy-page-rels: the pages the retired agent holds, as nexus rels. A
+::  shape mismatch yields ~, which callers MUST treat as "unknown", never as
+::  "none" — reporting zero pages is what would wrongly clear the agent for
+::  uninstall.
+++  legacy-page-rels
+  =/  m  (fiber:fiber:nexus ,(unit (list path)))
+  ^-  form:m
+  ;<  pj=json  bind:m  (legacy-peek /gx/lattice/live-list/json)
+  =/  r=(each (list @t) tang)
+    (mule |.(((ot:dejs:format paths+(ar:dejs:format so:dejs:format) ~) pj)))
+  ?:  ?=(%| -.r)  (pure:m ~)
+  (pure:m `(murn p.r legacy-key-rel))
+::  +legacy-triggered: page rels a previous run already triggered. These are
+::  known to be migration-origin, so a vault entry for one of them is ours to
+::  promote rather than a pre-existing page of the user's to protect.
+++  legacy-triggered
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  ;<  sn=view:nexus  bind:m
+    (peek:io [%& %& (weld app-base:lu /legacy) %pages] ~)
+  ?.  ?=([%file *] sn)  (pure:m ~)
+  =/  j=(unit json)  (mole |.(;;(json (sang-noun:tarball sang.sn))))
+  ?~  j  (pure:m ~)
+  =/  r=(each (list @t) tang)  (mule |.(((ar:dejs:format so:dejs:format) u.j)))
+  ?:  ?=(%| -.r)  (pure:m ~)
+  (pure:m (murn p.r |=(c=@t (mole |.(`path`(stab c))))))
+::  +legacy-page-bodies: the retired agent's page bodies, by SCRY.
+::
+::  The deployed agents carry a `[%x %content ~]` peek that dumps the content
+::  map as {spat-key: gemtext} — the temporary migration arm from the original
+::  cutover. That is the same %gx mechanism the knowledge import uses, and it
+::  needs nothing from the agent beyond a read.
+::
+::  This replaces an earlier design that poked the agent's own /pub-migrate
+::  endpoint. That endpoint does not exist in the deployed version (state-10
+::  has no pub-migrate at all), so the poke was delivered, matched no route,
+::  404'd, emitted nothing, and acked positively — a silent no-op that cost a
+::  long debugging cycle. Read what the agent actually exposes.
+::
+++  legacy-page-bodies
+  =/  m  (fiber:fiber:nexus ,(unit (list [rel=path body=@t])))
+  ^-  form:m
+  ;<  cj=json  bind:m  (legacy-peek /gx/lattice/content/json)
+  =/  r=(each (map @t @t) tang)
+    (mule |.(((om:dejs:format so:dejs:format) cj)))
+  ?:  ?=(%| -.r)  (pure:m ~)
+  %-  pure:m
+  :-  ~
+  %+  murn  ~(tap by p.r)
+  |=  [k=@t v=@t]
+  ^-  (unit [path @t])
+  =/  ko=(unit path)  (legacy-key-rel k)
+  ?~  ko  ~
+  ?:  =('' v)  ~
+  `[u.ko v]
+::  +await-vault: wait for `rels` to appear in the vault, checking every 2s up
+::  to `tries`. Replaces a fixed sleep: the arrivals are one writer
+::  transaction per page, so the time needed scales with page count, and a
+::  fixed window would strand the tail.
+++  await-vault
+  |=  [rels=(list path) tries=@ud]
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  |-  ^-  form:m
+  ;<  here=(list path)  bind:m  (vault-present rels)
+  ?:  =((lent here) (lent rels))  (pure:m here)
+  ?:  =(0 tries)  (pure:m here)
+  ;<  ~  bind:m  (sleep:io ~s2)
+  $(tries (dec tries))
+::  +vault-present: which of `rels` currently have a vault body.
+++  vault-present
+  |=  rels=(list path)
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  ?~  rels  (pure:m ~)
+  ;<  ex=?  bind:m
+    (peek-exists:io [%& %& (weld (weld app-base:lu /pub/vault) i.rels) %gmi])
+  ;<  rest=(list path)  bind:m  $(rels t.rels)
+  (pure:m ?:(ex [i.rels rest] rest))
+::  +page-sources-present: which of `rels` already exist as editable pages.
+::  Used to refuse a legacy page whose name collides with one of ours, since
+::  the writer's %save-page is an unconditional upsert.
+++  page-sources-present
+  |=  rels=(list path)
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  ?~  rels  (pure:m ~)
+  ;<  ex=?  bind:m
+    (peek-exists:io [%& %& (weld app-base:lu (weld /page i.rels)) %code])
+  ;<  rest=(list path)  bind:m  $(rels t.rels)
+  (pure:m ?:(ex [i.rels rest] rest))
+::  +write-legacy-pages: create an editable page per legacy body. Skips any
+::  rel that already has a source — the collision guard runs before this, but
+::  the check is cheap and this must never overwrite a page of the user's.
+++  write-legacy-pages
+  |=  [items=(list [rel=path body=@t]) made=@ud]
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ?~  items  (pure:m made)
+  =/  pdir=path  (weld app-base:lu (weld /page rel.i.items))
+  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
+  ?:  ex  $(items t.items)
+  ::  the editable source…
+  ;<  ~  bind:m  (poke-eval [%make rel.i.items (wrap-content %gmi body.i.items)])
+  ::  …AND publish it. These pages were PUBLISHED in the old agent — that is
+  ::  what made the urb:// links between them resolve. Creating only the source
+  ::  leaves the vault empty, so every internal link 404s and the pages look
+  ::  migrated but broken. %save-page writes the vault grub and gains it,
+  ::  restoring exactly the visibility they already had.
+  ;<  ~  bind:m
+    (poke-pub [%save-page (spat (pub-path (crip (pax-str rel.i.items)))) body.i.items])
+  $(items t.items, made +(made))
+::  +promote-pages: create an editable /page source for each named rel that
+::  has a vault body and no source yet. SCOPED to the rels passed in - never
+::  walks the whole vault, so it can neither resurrect a page the user deleted
+::  nor manufacture pages from their own published-only content.
+++  promote-pages
+  |=  rels=(list path)
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  =|  made=@ud
+  |-  ^-  form:m
+  ?~  rels  (pure:m made)
+  =/  pdir=path  (weld app-base:lu (weld /page i.rels))
+  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
+  ?:  ex  $(rels t.rels)
+  ;<  vn=view:nexus  bind:m
+    (peek:io [%& %& (weld (weld app-base:lu /pub/vault) i.rels) %gmi] ~)
+  ?.  ?=([%file *] vn)  $(rels t.rels)
+  =/  body=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.vn)))) '')
+  ?:  =('' body)  $(rels t.rels)
+  ;<  ~  bind:m  (poke-eval [%make i.rels (wrap-content %gmi body)])
+  $(rels t.rels, made +(made))
+::  ── editing arbitrary grubs (write apps in the lattice editor) ─────────
+::
+::  The editor's own pages are /page/<rel>/code grubs. These arms let it open
+::  and save ANY grub in the ball, so an app's html/js/css/hoon can be written
+::  here instead of uploaded.
+::
+::  The write is the delicate part. `over` handed a mime bask does NOT reliably
+::  convert to the target blot: with no warm tube it silently REPLACES the
+::  grub's blot with /mime. Verified on a scratch grub — writing hoon source
+::  over a /hoon grub left `[mark: /mime]`, after which every later save was
+::  refused ("blot differs"), so a single typo permanently changed the file's
+::  type and locked out the fix. So the conversion is done HERE, explicitly:
+::  fetch the extension's tube, apply it inside +mule, and only write once it
+::  has produced a value. A tube failure (unparseable hoon) becomes a 400 with
+::  the error and leaves the grub untouched — which also avoids `over`'s other
+::  trap, that a failed dart fails the whole request fiber and grubbery emits
+::  no response for it, hanging the browser.
+::
 ::  +grub-road: a ball path -> the road of the grub at it, plus its filename
 ::  (the caller needs the name to pick a mark, and digging it back out of a
 ::  road means three `p.`s through two `each`es). ~ for the root or a path
@@ -2502,6 +2847,18 @@
       ?:  quiet.act  (pure:m ~)
       ~&([%lattice-obelisk-failed db.act p.out] (pure:m ~))
     (put-file [%& %& root %'db.lattice'] [/obelisk %server] +.p.out)
+      %legacy-pages
+    ::  remember which page rels THIS migration triggered. Provenance matters:
+    ::  a legacy page name may collide with a page the nexus published itself,
+    ::  and only this record distinguishes "we put it in the vault" from "it
+    ::  was already the user's".
+    %^  put-file  [%& %& (weld root /legacy) %pages]  [/ %json]
+    a+(turn rels.act |=(r=path s+(crip (pax-str r))))
+      %legacy-seen
+    ::  one marker for both outcomes (imported N, or dismissed with 0): its
+    ::  existence is what silences the prompt. See +legacy-mark-road.
+    %^  put-file  [%& %& (weld root /legacy) %state]  [/ %json]
+    (pairs:enjs:format ~[['imported' (numb:enjs:format imported.act)]])
       %tmpl-del
     ::  delete a template — cull its subtree. A shipped template comes back on
     ::  the next writer start (ensure-shipped-templates), which is intended.

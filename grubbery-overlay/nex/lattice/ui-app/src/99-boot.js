@@ -23,6 +23,7 @@
     openGrub(qs.get('grub'), qs.get('ship'));
   } else if (qs.get('view') === 'know') {
     setMode('know');
+    legacyCheck();
   } else {
     const painted = bootSnap();
     loadTree().then(() => {
@@ -35,5 +36,6 @@
       else if (into && nodes.some((n) => !n.page && n.path === into)) selectFolder(into);
       else if (into) newFile(into);
       else newFile('');
+      legacyCheck();
     });
   }
