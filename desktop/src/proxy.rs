@@ -72,6 +72,29 @@ pub fn ensure(state: &Bridge, ship_base: &str) -> Result<String, String> {
     Ok(format!("http://127.0.0.1:{port}"))
 }
 
+/// Is the stored session actually good for `base`? Hits an owner-gated route
+/// with the fuse cookie: 200 means logged in, 403 means the cookie is stale or
+/// belongs to another ship. Nothing cheaper is honest — the cookie FILE
+/// existing says only that we logged in once, which is exactly the state the
+/// connection page used to misreport. Doubles as a connection warm-up.
+pub fn probe(base: &str) -> Result<bool, String> {
+    let url = format!("{}/apps/lattice/legacy-status", base.trim_end_matches('/'));
+    let mut req = agent().get(&url);
+    if let Ok(ck) = std::fs::read_to_string(default_cookie_path()) {
+        let ck = ck.trim().to_string();
+        if !ck.is_empty() {
+            req = req.set("cookie", &ck);
+        }
+    }
+    match req.call() {
+        Ok(r) => Ok(r.status() == 200),
+        // a 403/redirect is a live ship that does not know us: not connected,
+        // but not an error either — only a transport failure is an error.
+        Err(ureq::Error::Status(_, _)) => Ok(false),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// pre-warm one ship connection so the first paint doesn't pay the TCP+TLS
 /// handshake on top of the pier round-trip
 fn prewarm(base: &str) {

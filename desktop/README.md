@@ -22,6 +22,12 @@ workspace webview and the fuse cookie (`~/.config/lattice-fs/cookie` — the
 `lattice-fs` CLI shares it). Mounts persist and remount on launch; quitting
 the app unmounts cleanly.
 
+The connection page reports the live state — connected (and to which ship),
+signed out, or unreachable — by making a real authenticated request, not by
+checking whether a URL is configured. It offers the login form only when
+logging in is actually what you need; `reconnect` and `change ship` are there
+when you want it anyway.
+
 The workspace webview talks to the ship through a localhost bridge: every
 request is relayed by the app with the session attached Rust-side, so the
 webview itself holds no cookies and webkit cookie policies (which vary by

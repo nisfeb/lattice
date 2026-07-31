@@ -73,6 +73,47 @@ pub fn get_config(app: AppHandle) -> config::Config {
 }
 
 #[derive(serde::Serialize)]
+pub struct ConnStatus {
+    pub url: String,
+    /// the ship we are logged in to, when the session actually works
+    pub ship: Option<String>,
+    pub connected: bool,
+    /// set when we could not reach the ship at all (as opposed to being
+    /// reachable but unauthenticated) — the two need different advice
+    pub error: Option<String>,
+}
+
+/// What the connection page shows. A configured URL is NOT the same as being
+/// logged in, which is exactly what the page used to get wrong: it rendered
+/// the login form whenever it had nothing better to say, so an already-
+/// connected ship looked logged out. Async: this makes a real request.
+#[tauri::command]
+pub async fn connection_status(app: AppHandle) -> ConnStatus {
+    let cfg = config::load(&app);
+    if cfg.url.is_empty() {
+        return ConnStatus { url: String::new(), ship: None, connected: false, error: None };
+    }
+    match crate::proxy::probe(&cfg.url) {
+        Ok(true) => {
+            // name the ship only when the session is real, so the page never
+            // claims a ship it cannot actually reach
+            let t = EyreTransport::new(&cfg.url, &default_cookie_path());
+            let ship = t.ship().ok();
+            dlog(&format!("status: connected to {:?}", ship));
+            ConnStatus { url: cfg.url, ship, connected: true, error: None }
+        }
+        Ok(false) => {
+            dlog("status: reachable but not authenticated");
+            ConnStatus { url: cfg.url, ship: None, connected: false, error: None }
+        }
+        Err(e) => {
+            dlog(&format!("status: unreachable: {e}"));
+            ConnStatus { url: cfg.url, ship: None, connected: false, error: Some(e) }
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
 pub struct PickedFile {
     /// slash-separated path relative to the pick, folder name included for
     /// folder picks — mirrors webkitRelativePath so the web upload path
