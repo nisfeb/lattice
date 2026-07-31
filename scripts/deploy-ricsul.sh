@@ -50,6 +50,14 @@ cd "$REPO"
 [ -z "$(git status --porcelain)" ] || { echo "repo is dirty — commit first" >&2; exit 69; }
 echo "repo clean at $(git rev-parse --short HEAD)"
 
+# Ricsul runs MAIN. A feature branch can lag main (one deployed tonight was
+# missing a merged feature and silently clobbered it on the ship).
+git fetch origin --quiet
+if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+  echo "HEAD is not origin/main — deploy from latest main (or edit this check if you mean it)" >&2
+  exit 70
+fi
+
 say "current state on ricsul"
 $SSH "$RIC" "
   echo -n 'gub/lib/obelisk-ast.hoon: '; wc -l < $RDESK/gub/lib/obelisk-ast.hoon
