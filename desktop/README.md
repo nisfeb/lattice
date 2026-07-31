@@ -22,6 +22,12 @@ workspace webview and the fuse cookie (`~/.config/lattice-fs/cookie` — the
 `lattice-fs` CLI shares it). Mounts persist and remount on launch; quitting
 the app unmounts cleanly.
 
+The workspace webview talks to the ship through a localhost bridge: every
+request is relayed by the app with the session attached Rust-side, so the
+webview itself holds no cookies and webkit cookie policies (which vary by
+build and silently drop cookies on cross-site flows) can never
+unauthenticate a view.
+
 Uploads in the workspace use the OS-native file/folder picker (the web
 client detects the shell and invokes the `pick_upload` command — webkit2gtk
 has no `webkitdirectory`, so the browser folder picker would be dead on
