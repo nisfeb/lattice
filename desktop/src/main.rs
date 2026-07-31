@@ -25,37 +25,12 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .on_window_event(|win, ev| match ev {
-            // closing the manager while the workspace lives on used to orphan
-            // the app (no way back to mounts/connect until relaunch) — hide it
-            // instead. Closing it as the last window still exits normally.
-            tauri::WindowEvent::CloseRequested { api, .. }
-                if win.label() == "manager"
-                    && win.app_handle().get_webview_window("workspace").is_some() =>
-            {
-                win.hide().ok();
-                api.prevent_close();
-            }
-            // workspace gone -> bring the (possibly hidden) manager back, so
-            // the app never runs on with zero visible windows
-            tauri::WindowEvent::Destroyed if win.label() == "workspace" => {
-                if let Some(m) = win.app_handle().get_webview_window("manager") {
-                    m.show().ok();
-                    m.set_focus().ok();
-                }
-            }
-            _ => {}
-        })
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
         .manage(proxy::Bridge(Mutex::new(None)))
         .on_menu_event(|app, ev| {
-            // the manager (connect + mounts) hides once the workspace is up —
-            // this is its way back
+            // single-window app: the manager is a page in the workspace
             if ev.id().as_ref() == "manager" {
-                if let Some(m) = app.get_webview_window("manager") {
-                    m.show().ok();
-                    m.set_focus().ok();
-                }
+                commands::show_manager(app).ok();
             }
         })
         .setup(|app| {
@@ -76,6 +51,13 @@ fn main() {
                         std::thread::sleep(std::time::Duration::from_secs(3));
                         let r = tauri::async_runtime::block_on(commands::connect(h.clone(), u, c));
                         commands::dlog(&format!("autoconnect: {r:?}"));
+                        // LATTICE_AUTOMANAGER=1: after connect, drive the
+                        // menu's ship-page -> manager-page navigation — the
+                        // headless check for the app-protocol round trip
+                        if std::env::var_os("LATTICE_AUTOMANAGER").is_some() {
+                            std::thread::sleep(std::time::Duration::from_secs(8));
+                            commands::show_manager(&h).ok();
+                        }
                         // LATTICE_AUTONAV=/path: follow the connect with a
                         // fresh top-level navigation — the headless harness's
                         // regression check for the 403-on-navigation class
@@ -94,9 +76,13 @@ fn main() {
                 }
             }
             let cfg = config::load(&handle);
+            if cfg.url.is_empty() {
+                // first run: the single window opens on the connect page
+                commands::show_manager(&handle)?;
+            }
             if !cfg.url.is_empty() {
-                // off-thread: open_workspace polls the webview cookie jar,
-                // which must not block the main loop
+                // off-thread: bridge setup does network work that must not
+                // block the main loop
                 let h = handle.clone();
                 std::thread::spawn(move || {
                     commands::open_workspace(&h, false).ok();
@@ -124,6 +110,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::connect,
             commands::get_config,
+            commands::go_home,
             commands::pick_upload,
             mounts::status,
             mounts::add_mount,

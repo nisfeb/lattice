@@ -7,6 +7,7 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "connect",
             "get_config",
+            "go_home",
             "pick_upload",
             "status",
             "add_mount",

@@ -1,0 +1,127 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>lattice — connection &amp; mounts</title>
+<style>
+  /* mirrors the lattice app's flat green identity (ui-app/index.html) */
+  * { box-sizing: border-box; }
+  :root {
+    color-scheme: light dark;
+    --green: #4a7c59; --green-deep: #3a6347;
+    --bg: #fafafa; --text: #1a1a1a; --muted: #8a8a8a;
+    --border: #8886; --border-soft: #8883; --surface: #8881;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1a1a1a; --text: #e6e6e6; }
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 2.5rem 1.5rem; }
+  h1 { font-size: 1.5rem; margin: 0 0 1.5rem; }
+  h2 { font-size: 1rem; margin: 2rem 0 .6rem; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+  input, button {
+    font: inherit; color: inherit; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+  }
+  input { width: 100%; margin-bottom: .5rem; background: transparent; }
+  input:focus { outline: none; border-color: var(--green); }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--green); }
+  button.primary { background: var(--green); border-color: var(--green-deep); color: #fff; }
+  button.primary:hover { background: var(--green-deep); }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .muted { color: var(--muted); }
+  .err { color: #c0392b; white-space: pre-wrap; }
+  ul { list-style: none; padding: 0; margin: .5rem 0; }
+  li { display: flex; gap: 8px; align-items: center; padding: 8px 0;
+    border-bottom: 1px solid var(--border-soft); }
+  li code { flex: 1; font-size: .9em; }
+  .top { display: flex; justify-content: space-between; align-items: baseline; }
+</style>
+<main>
+  <div class="top">
+    <h1>lattice</h1>
+    <button id="back" class="primary" hidden>open lattice &rarr;</button>
+  </div>
+
+  <h2>ship</h2>
+  <form id="connect">
+    <input id="url" placeholder="https://your-ship.example.com" required>
+    <input id="code" type="password" placeholder="+code" required>
+    <div class="row">
+      <button class="primary">connect</button>
+      <span id="connect-status" class="muted"></span>
+    </div>
+  </form>
+
+  <h2>mounts</h2>
+  <p class="muted" style="margin:.2rem 0 .8rem">Project the page tree as local
+  files — edit in your own editor, search with your own tools.</p>
+  <p id="fuse-hint" class="err" hidden></p>
+  <ul id="mount-list"></ul>
+  <form id="add-mount">
+    <input id="mp" placeholder="~/lattice (mountpoint)" required>
+    <input id="mroot" placeholder="root (blank = whole tree)">
+    <div class="row">
+      <button>mount</button>
+      <span id="mount-status" class="err"></span>
+    </div>
+  </form>
+</main>
+<script>
+  const invoke = window.__TAURI__.core.invoke;
+  const $ = (id) => document.getElementById(id);
+
+  invoke('get_config').then((c) => {
+    if (c.url) { $('url').value = c.url; $('back').hidden = false; }
+  });
+  $('back').onclick = () => invoke('go_home');
+
+  $('connect').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const s = $('connect-status');
+    s.textContent = 'connecting…'; s.className = 'muted';
+    try {
+      const ship = await invoke('connect', { url: $('url').value, code: $('code').value });
+      s.textContent = 'connected as ' + ship;
+      $('code').value = '';
+      $('back').hidden = false;
+    } catch (err) {
+      s.textContent = String(err); s.className = 'err';
+    }
+  });
+
+  async function refreshMounts() {
+    const list = await invoke('list_mounts');
+    const ul = $('mount-list');
+    ul.textContent = '';
+    for (const m of list) {
+      const li = document.createElement('li');
+      const c = document.createElement('code');
+      c.textContent = m.mountpoint + (m.root ? '  ←  ' + m.root : '');
+      const b = document.createElement('button');
+      b.textContent = 'unmount';
+      b.onclick = () => invoke('remove_mount', { mountpoint: m.mountpoint }).then(refreshMounts);
+      li.appendChild(c); li.appendChild(b);
+      ul.appendChild(li);
+    }
+  }
+  invoke('status').then((s) => {
+    if (!s.fuse_available) {
+      const h = $('fuse-hint');
+      h.textContent = s.hint; h.hidden = false;
+      document.querySelector('#add-mount button').disabled = true;
+    }
+  });
+  $('add-mount').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const st = $('mount-status');
+    st.textContent = '';
+    try {
+      await invoke('add_mount', { mountpoint: $('mp').value, root: $('mroot').value });
+      $('mp').value = ''; $('mroot').value = '';
+      refreshMounts();
+    } catch (err) { st.textContent = String(err); }
+  });
+  refreshMounts();
+</script>

@@ -32,12 +32,39 @@ pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String
     cfg.url = url;
     config::save(&app, &cfg)?;
     open_workspace(&app, true)?;
-    // connected: the workspace is the app now; the manager comes back when
-    // the workspace closes (on_window_event in main.rs)
-    if let Some(m) = app.get_webview_window("manager") {
-        m.hide().ok();
-    }
     Ok(ship)
+}
+
+/// manager page's "open lattice" button — back to the ship UI.
+#[tauri::command]
+pub fn go_home(app: AppHandle) -> Result<(), String> {
+    open_workspace(&app, false)
+}
+
+/// Show the connection & mounts page IN the workspace window (single-window
+/// app: the manager is a page, not a second window). Local shell pages live
+/// at tauri://localhost on macOS but http://tauri.localhost on Linux.
+pub fn show_manager(app: &AppHandle) -> Result<(), String> {
+    let (w, created) = ensure_workspace(app)?;
+    if !created {
+        let url: tauri::Url = "tauri://localhost/manager.html"
+            .parse()
+            .map_err(|e| format!("{e}"))?;
+        w.navigate(url).map_err(|e| e.to_string())?;
+    }
+    w.set_focus().ok();
+    Ok(())
+}
+
+/// The single window is always BORN on manager.html: the app-page protocol
+/// handler only attaches to webviews created on an app URL, and a window
+/// born on the bridge origin cannot navigate back to the shell's pages
+/// ("Could not connect to tauri.localhost").
+fn ensure_workspace(app: &AppHandle) -> Result<(tauri::WebviewWindow, bool), String> {
+    match app.get_webview_window("workspace") {
+        Some(w) => Ok((w, false)),
+        None => Ok((new_workspace(app)?, true)),
+    }
 }
 
 #[tauri::command]
@@ -135,10 +162,9 @@ pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
     let home: tauri::Url = format!("{local}/apps/lattice")
         .parse()
         .map_err(|e| format!("{e}"))?;
-    let w = match app.get_webview_window("workspace") {
-        Some(w) => w,
-        None => new_workspace(app, home.clone())?,
-    };
+    // the bridge means the webview needs no cookies, so the window may be
+    // born on the local manager page and freely navigate to the ship
+    let (w, _) = ensure_workspace(app)?;
     if fresh {
         dlog(&format!("clear browsing data: {:?}", w.clear_all_browsing_data()));
     }
@@ -148,9 +174,9 @@ pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn new_workspace(app: &AppHandle, initial: tauri::Url) -> Result<tauri::WebviewWindow, String> {
+fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     let handle = app.clone();
-    let w = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::External(initial))
+    let w = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("manager.html".into()))
         .title("lattice — workspace")
         .inner_size(1200.0, 800.0)
         // tauri's own drag-drop interception would swallow the HTML5 drop
