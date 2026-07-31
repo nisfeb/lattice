@@ -31,7 +31,7 @@ pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String
     let mut cfg = config::load(&app);
     cfg.url = url;
     config::save(&app, &cfg)?;
-    open_workspace(&app, Some(&code))?;
+    open_workspace(&app, true)?;
     // connected: the workspace is the app now; the manager comes back when
     // the workspace closes (on_window_event in main.rs)
     if let Some(m) = app.get_webview_window("manager") {
@@ -120,67 +120,30 @@ fn push_file(path: &std::path::Path, rel: String, out: &mut Vec<PickedFile>) {
     }
 }
 
-/// Open (or reuse) the workspace and log its webview in. With a +code, the
-/// webview is driven through the ship's OWN /~/login page: navigate there,
-/// fill the form via eval, submit. Eyre then sets the session cookie
-/// first-party in the jar the network session actually uses — the only
-/// arrangement webkit reliably honors. (Injecting the fuse cookie via
-/// set_cookie looked right in cookies_for_url but was never attached to
-/// real-domain requests; localhost ships masked it in every dev test.)
-/// Without a code (relaunch), navigate straight to /~/login with a redirect:
-/// a live jar session passes through instantly, a dead one shows eyre's own
-/// login form, and the manager's connect flow remains the recovery path.
-pub fn open_workspace(app: &AppHandle, code: Option<&str>) -> Result<(), String> {
+/// Open (or reuse) the workspace on the localhost bridge. The webview only
+/// ever talks to 127.0.0.1; the bridge relays to the ship with the fuse
+/// session cookie attached Rust-side, so no webkit cookie behavior — site
+/// pinning, third-party policy, SW-mediated fetch — can ever unauthenticate
+/// a view again. `fresh` (a new connect) also clears browsing data so stale
+/// service workers and caches from earlier sessions cannot linger.
+pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
     let cfg = config::load(app);
     if cfg.url.is_empty() {
         return Err("connect to a ship first".into());
     }
-    let login: tauri::Url = format!("{}/~/login?redirect=/apps/lattice", cfg.url)
+    let local = crate::proxy::ensure(app.state::<crate::proxy::Bridge>().inner(), &cfg.url)?;
+    let home: tauri::Url = format!("{local}/apps/lattice")
         .parse()
         .map_err(|e| format!("{e}"))?;
-    // the workspace's FIRST document must already be the ship: stricter
-    // webkits pin the window's "site for cookies" to its first origin, and a
-    // tauri.localhost splash there made every later ship navigation
-    // third-party (cookie withheld -> 403 on link clicks like /settings)
     let w = match app.get_webview_window("workspace") {
         Some(w) => w,
-        None => new_workspace(app, login.clone())?,
+        None => new_workspace(app, home.clone())?,
     };
-    if code.is_some() {
-        // fresh connect = clean slate: a service worker or cache installed
-        // during a broken or unauthenticated session otherwise keeps serving
-        // stale responses and makes every later fix look like "no change"
+    if fresh {
         dlog(&format!("clear browsing data: {:?}", w.clear_all_browsing_data()));
     }
-    dlog(&format!("navigate: {login}"));
-    w.navigate(login).map_err(|e| e.to_string())?;
-    if let Some(code) = code {
-        // +codes are [a-z-] only; anything else never left the Rust login alive
-        if !code.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
-            return Err("malformed +code".into());
-        }
-        // the page needs time to load and eval is fire-and-forget, so retry
-        // the fill; the __lat guard makes it submit once, and after the
-        // redirect there is no password field left to match.
-        let fill = format!(
-            "(function(){{var p=document.querySelector('input[type=password],input[name=password]');\
-             if(p&&p.form&&!window.__lat){{window.__lat=1;p.value='{code}';p.form.submit();}}}})()"
-        );
-        for i in 0..10 {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-            dlog(&format!("login fill attempt {i}"));
-            w.eval(&fill).ok();
-        }
-        // diagnostic only: whether eyre's cookie made it into the jar this
-        // webview reports — the load-bearing question on machines where
-        // non-public pages still 403 after login
-        if let Ok(base) = cfg.url.parse::<tauri::Url>() {
-            let names = w
-                .cookies_for_url(base)
-                .map(|cs| cs.iter().map(|c| c.name().to_string()).collect::<Vec<_>>());
-            dlog(&format!("post-login jar: {names:?}"));
-        }
-    }
+    dlog(&format!("navigate: {home}"));
+    w.navigate(home).map_err(|e| e.to_string())?;
     w.set_focus().ok();
     Ok(())
 }
@@ -195,7 +158,7 @@ fn new_workspace(app: &AppHandle, initial: tauri::Url) -> Result<tauri::WebviewW
         .disable_drag_drop_handler()
         // a webview without browser chrome has no other way to zoom
         .zoom_hotkeys_enabled(true)
-        // keep the workspace on the ship (or the shell's own pages); any
+        // keep the workspace on the bridge (or the shell's own pages); any
         // other top-level navigation opens in the system browser — the
         // webview has no back button or url bar to escape from
         .on_navigation(move |u| {
@@ -210,30 +173,51 @@ fn new_workspace(app: &AppHandle, initial: tauri::Url) -> Result<tauri::WebviewW
             if matches!(u.scheme(), "about" | "blob" | "data") {
                 return true;
             }
-            let cfg = config::load(&handle);
+            let bridge = handle
+                .state::<crate::proxy::Bridge>()
+                .inner()
+                .0
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|(_, p)| *p);
+            if u.host_str() == Some("127.0.0.1") && u.port() == bridge {
+                return true;
+            }
+            // renavigate the workspace ourselves, off-thread so the queued
+            // navigate never re-enters the policy callback we are inside
+            let renav = |t: tauri::Url| {
+                let h = handle.clone();
+                std::thread::spawn(move || {
+                    let h2 = h.clone();
+                    h.run_on_main_thread(move || {
+                        if let Some(w) = h2.get_webview_window("workspace") {
+                            w.navigate(t).ok();
+                        }
+                    })
+                    .ok();
+                });
+            };
+            let local = bridge.map(|p| format!("http://127.0.0.1:{p}"));
             // urb:// names stay in the app — the ship's reader resolves them
-            // (GET /apps/lattice?url=…), so navigate there instead
-            if u.scheme() == "urb" {
-                if let Ok(mut t) = tauri::Url::parse(&cfg.url) {
-                    t.set_path("/apps/lattice");
+            if let (Some(local), "urb") = (&local, u.scheme()) {
+                if let Ok(mut t) = format!("{local}/apps/lattice").parse::<tauri::Url>() {
                     t.query_pairs_mut().clear().append_pair("url", u.as_str());
-                    let h = handle.clone();
-                    // off-thread so the queued navigate never re-enters the
-                    // policy callback we are currently inside
-                    std::thread::spawn(move || {
-                        let h2 = h.clone();
-                        h.run_on_main_thread(move || {
-                            if let Some(w) = h2.get_webview_window("workspace") {
-                                w.navigate(t).ok();
-                            }
-                        })
-                        .ok();
-                    });
+                    renav(t);
                 }
                 return false;
             }
+            // absolute links to the ship's real origin re-route through the
+            // bridge — hitting the ship directly would arrive cookieless
+            let cfg = config::load(&handle);
             if tauri::Url::parse(&cfg.url).is_ok_and(|ship| ship.origin() == u.origin()) {
-                return true;
+                if let Some(local) = &local {
+                    let pq = &u.as_str()[u.origin().ascii_serialization().len()..];
+                    if let Ok(t) = format!("{local}{pq}").parse::<tauri::Url>() {
+                        renav(t);
+                    }
+                }
+                return false;
             }
             // only things a system handler can sensibly open leave the app;
             // anything else is silently blocked (an opener error is a popup)

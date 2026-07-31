@@ -3,6 +3,7 @@
 mod commands;
 mod config;
 mod mounts;
+mod proxy;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -42,6 +43,7 @@ fn main() {
             _ => {}
         })
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
+        .manage(proxy::Bridge(Mutex::new(None)))
         .setup(|app| {
             let handle = app.handle().clone();
             // LATTICE_AUTOCONNECT="url,+code": drive the real connect flow
@@ -52,8 +54,22 @@ fn main() {
                     let (u, c) = (u.to_string(), c.to_string());
                     std::thread::spawn(move || {
                         std::thread::sleep(std::time::Duration::from_secs(3));
-                        let r = tauri::async_runtime::block_on(commands::connect(h, u, c));
+                        let r = tauri::async_runtime::block_on(commands::connect(h.clone(), u, c));
                         commands::dlog(&format!("autoconnect: {r:?}"));
+                        // LATTICE_AUTONAV=/path: follow the connect with a
+                        // fresh top-level navigation — the headless harness's
+                        // regression check for the 403-on-navigation class
+                        if let Ok(nav) = std::env::var("LATTICE_AUTONAV") {
+                            std::thread::sleep(std::time::Duration::from_secs(8));
+                            if let Some(w) = h.get_webview_window("workspace") {
+                                if let Ok(cur) = w.url() {
+                                    let t = format!("{}://{}:{}{nav}",
+                                        cur.scheme(), cur.host_str().unwrap_or(""), cur.port().unwrap_or(80));
+                                    commands::dlog(&format!("autonav: {t}"));
+                                    w.navigate(t.parse().unwrap()).ok();
+                                }
+                            }
+                        }
                     });
                 }
             }
@@ -63,7 +79,7 @@ fn main() {
                 // which must not block the main loop
                 let h = handle.clone();
                 std::thread::spawn(move || {
-                    commands::open_workspace(&h, None).ok();
+                    commands::open_workspace(&h, false).ok();
                 });
                 let map = handle.state::<mounts::MountMap>();
                 let mut m = map.0.lock().unwrap();
