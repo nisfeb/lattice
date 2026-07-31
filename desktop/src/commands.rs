@@ -161,6 +161,15 @@ pub fn open_workspace(app: &AppHandle, code: Option<&str>) -> Result<(), String>
             dlog(&format!("login fill attempt {i}"));
             w.eval(&fill).ok();
         }
+        // diagnostic only: whether eyre's cookie made it into the jar this
+        // webview reports — the load-bearing question on machines where
+        // non-public pages still 403 after login
+        if let Ok(base) = cfg.url.parse::<tauri::Url>() {
+            let names = w
+                .cookies_for_url(base)
+                .map(|cs| cs.iter().map(|c| c.name().to_string()).collect::<Vec<_>>());
+            dlog(&format!("post-login jar: {names:?}"));
+        }
     }
     w.set_focus().ok();
     Ok(())
