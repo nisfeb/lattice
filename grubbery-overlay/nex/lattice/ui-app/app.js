@@ -1196,8 +1196,16 @@
     const shp = $('shwith').value.trim();
     if (!current) { st('open a page first', false); return; }
     if (!shp) { st('enter a ship', false); return; }
+    // NAME the page rather than saying "this page". The editor's target can
+    // change from eleven places (mode toggle, grub mode, memory open, rename,
+    // …) and only four of them route through showShare, so a clear-on-change
+    // hook is whack-a-mole — a fuzz run caught the message surviving the
+    // pages/knowledge toggle. A message that names its own subject cannot go
+    // false no matter what the editor does next, which is the property that
+    // actually matters for a permissions UI.
+    const page = current;
     $('shres').textContent = 'granting…';
-    const r = await mutate(api + '/share-file?name=' + encodeURIComponent(current) +
+    const r = await mutate(api + '/share-file?name=' + encodeURIComponent(page) +
       '&ship=' + encodeURIComponent(shp) + '&mode=' + mode);
     if (!r || !r.ok) {
       let msg = r ? r.status : 'network';
@@ -1207,7 +1215,7 @@
       return;
     }
     const j = await r.json();
-    $('shres').textContent = shp + ' can now ' + mode + ' this page' +
+    $('shres').textContent = shp + ' can now ' + mode + ' ' + page +
       (j.notified ? ' — notified.' : ' — could not notify (offline?); the grant holds.');
     loadPerms();          // the peers panel shows the auto-group
   };

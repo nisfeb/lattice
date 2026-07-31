@@ -16,7 +16,6 @@ import {
   extract,
   always,
   now,
-  next,
   eventually,
   actions,
   weighted,
@@ -167,17 +166,24 @@ export const savingResolves = always(
   ),
 );
 
-// The grant result says "~ship can now edit THIS PAGE", so it must never
-// outlive the page it described. Found by a soak: the message survived every
-// tree click, so the panel told the user a page was shared that never was.
-// Fixed by clearing #shres in showShare (every target change routes there).
+// A grant result must NAME the page it granted, never describe "this page".
+// Two fuzz runs drove this: first the message survived tree clicks (fixed by
+// clearing it in showShare), then it survived the pages/knowledge toggle —
+// because the editor's target changes from eleven places and only four route
+// through showShare. So the invariant is not "clear it in time", it is "the
+// claim must be self-describing": whatever a grant resolves to must contain
+// the page that was open when it was requested, or be cleared.
 const openTarget = extract(
   (state) => state.document.getElementById("pname")?.value ?? "",
 );
-export const grantStatusFollowsPage = always(() => {
+export const grantNamesItsPage = always(() => {
   const page = openTarget.current;
-  return now(() => shresText.current !== "").implies(
-    next(() => openTarget.current === page || shresText.current === ""),
+  return now(() => shresText.current.startsWith("granting")).implies(
+    eventually(
+      () =>
+        shresText.current === "" ||
+        (page !== "" && shresText.current.includes(page)),
+    ).within(30, "seconds"),
   );
 });
 
