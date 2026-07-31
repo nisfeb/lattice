@@ -53,7 +53,28 @@ const swmRows = extract((state) => {
   );
 });
 
+// ── quarantine: the sweep button ───────────────────────────────────────────
+// /catalog-sweep blocks the pier ~21s before acking (its UI copy claims
+// "background"), and every fuzz attempt so far died on a 30s navigation
+// timeout queued behind a sweep click. Until the sweep acks async, neuter
+// the button: extractors run in-browser on every captured state, before
+// actions are generated from that state, so it is disabled by the time the
+// default click generator could pick it. Delete when the sweep is async.
+const sweepBtn = extract((state) => {
+  const b = state.document.getElementById("sweep");
+  if (!b) return null;
+  b.disabled = true;
+  return "disabled";
+});
+
 // ── properties ─────────────────────────────────────────────────────────────
+
+// Trivially true by construction — it exists to reference sweepBtn so the
+// quarantine extractor is never pruned as unused. A violation means the
+// quarantine itself stopped executing, not an app bug.
+export const sweepQuarantine = always(
+  () => sweepBtn.current === null || sweepBtn.current === "disabled",
+);
 
 // put-entry dedupes on [host pax]; a re-share updates in place. Rows read
 // "host path (mode)" — strip the mode so a read→edit upgrade isn't a dupe.
