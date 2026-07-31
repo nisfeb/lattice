@@ -13,9 +13,13 @@ use tauri::Manager;
 fn main() {
     // webkit2gtk's dmabuf renderer crashes some Wayland stacks outright
     // ("Error 71 (Protocol error) dispatching to Wayland display"). Opt out
-    // unless the user has set it themselves.
+    // there — but ONLY there: the fallback is software rendering, and paying
+    // it on X11/XWayland sessions made the whole UI feel sluggish for nothing.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+        && std::env::var_os("WAYLAND_DISPLAY").is_some()
+        && std::env::var_os("GDK_BACKEND").is_none_or(|b| b != "x11")
+    {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
     tauri::Builder::default()

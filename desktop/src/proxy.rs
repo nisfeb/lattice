@@ -43,15 +43,28 @@ pub fn ensure(state: &Bridge, ship_base: &str) -> Result<String, String> {
         }
     });
     *guard = Some((base, port));
+    // pre-warm one ship connection so the first paint doesn't pay the
+    // TCP+TLS handshake on top of the pier round-trip
+    let warm = format!("{}/apps/lattice/icon.svg", ship_base.trim_end_matches('/'));
+    std::thread::spawn(move || {
+        let _ = agent().get(&warm).call();
+    });
     Ok(format!("http://127.0.0.1:{port}"))
 }
 
 /// one shared agent: its pool keeps ship connections (and TLS sessions)
 /// alive across requests — a per-request agent paid a fresh TCP+TLS
-/// handshake to the ship for every asset, which dominated remote loads
+/// handshake to the ship for every asset, which dominated remote loads.
+/// Several idle connections per host, because a page load fetches in
+/// parallel and the SSE beacon permanently occupies one connection.
 fn agent() -> &'static ureq::Agent {
     static A: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
-    A.get_or_init(|| ureq::AgentBuilder::new().redirects(0).build())
+    A.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .redirects(0)
+            .max_idle_connections_per_host(6)
+            .build()
+    })
 }
 
 fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
@@ -64,8 +77,11 @@ fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
         (Some(m), Some(t)) => (m.to_string(), t.to_string()),
         _ => return Ok(()),
     };
-    // headers: keep what the page sent except hop-by-hop, host, cookies and
-    // encoding (we want an identity body we can stream through untouched)
+    // headers: keep what the page sent except hop-by-hop, host and cookies.
+    // Accept-Encoding passes THROUGH: ureq (no gzip feature) hands us the
+    // compressed body verbatim and Content-Encoding rides back with it, so
+    // the webview decodes — stripping it made every WAN transfer identity,
+    // which is a real tax on app.js and page-tree vs a plain browser.
     let mut headers: Vec<(String, String)> = Vec::new();
     let mut content_len = 0usize;
     loop {
@@ -83,7 +99,7 @@ fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
         }
         if matches!(
             kl.as_str(),
-            "host" | "connection" | "cookie" | "accept-encoding" | "content-length"
+            "host" | "connection" | "cookie" | "content-length"
                 | "upgrade" | "keep-alive" | "proxy-connection" | "transfer-encoding"
         ) {
             continue;
