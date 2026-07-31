@@ -14,6 +14,17 @@
 #   cookie: ~/.config/lattice-fs/cookie (tyr). Override with LATTICE_COOKIE_FILE.
 #   base:   http://localhost:8080 (tyr). Override with LATTICE_URL.
 #   spec:   scripts/bombadil-spec.js. Override with LATTICE_SPEC ("" = defaults only).
+#   start:  /apps/lattice/app. Override with LATTICE_START.
+#
+# The broad spec explores everything but verifies the share flow only
+# WEAKLY: it navigates every ~200ms while a grant takes ~2s, so the fetch's
+# JS context usually dies before it resolves and properties about the result
+# pass vacuously (observed: 1083 events, 0 grant results rendered). For a
+# real gate on that flow use the focused spec, which exports no default
+# actions and so cannot navigate away:
+#
+#   LATTICE_SPEC=scripts/bombadil-share-focus.js \
+#   LATTICE_START='/apps/lattice/app?name=index' scripts/bombadil.sh 3
 #
 # Server-state oracle: bombadil only sees the DOM, but our worst failures are
 # server-side (weir widened, evaluator fiber crash, body emptied). So this
@@ -40,6 +51,7 @@ OUT="${2:-/tmp/bombadil-lattice-$(date +%s)}"
 BASE="${LATTICE_URL:-http://localhost:8080}"
 CK="$(cat "${LATTICE_COOKIE_FILE:-$HOME/.config/lattice-fs/cookie}")"
 SPEC="${LATTICE_SPEC-$(dirname "$0")/bombadil-spec.js}"
+START="${LATTICE_START:-/apps/lattice/app}"
 case "$BASE" in
   *sneagan.com*|*ricsul*) echo "refusing: that looks like production" >&2; exit 66;;
 esac
@@ -58,7 +70,7 @@ while :; do
   [ "$LEFT" -ge 30 ] || break
   N=$(( N + 1 ))
   set +e
-  bombadil browser test "$BASE/apps/lattice/app" ${SPEC:+"$SPEC"} \
+  bombadil browser test "$BASE$START" ${SPEC:+"$SPEC"} \
     --header "Cookie=$CK" \
     --time-limit "${LEFT}s" --headless --no-sandbox \
     --output-path "$OUT/run-$N"
