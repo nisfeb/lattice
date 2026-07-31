@@ -160,6 +160,21 @@ select, option { color-scheme: light dark; }
 #cerr.ok { color: #27ae60; font-size: .85rem; }
 .share { display: flex; flex-wrap: wrap; gap: 5px; }
 .share button.on { border-color: var(--green); color: var(--green); }
+/* per-file group access: one row per group, read/edit toggles on the right.
+   Group EDITING is the ACL pane's job — this is only "point it at this file". */
+.grouphead { display: flex; align-items: baseline; gap: 8px; }
+.grouphead a { margin-left: auto; font-size: .78rem; text-transform: none;
+  letter-spacing: 0; cursor: pointer; text-decoration: none; }
+.grouphead a:hover { text-decoration: underline; }
+.grow-row { display: flex; align-items: center; gap: 5px; padding: 3px 0; }
+.grow-row .gname { flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.grow-row button { font: inherit; font-size: .8rem; padding: 3px 9px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+  color: inherit; cursor: pointer; }
+.grow-row button:hover { border-color: var(--green); }
+.grow-row button.on { border-color: var(--green); color: var(--green);
+  background: #4a7c5922; }
 #cwurl { font-size: .85rem; margin-top: 6px; word-break: break-all; }
 .mvbtn { margin-top: 18px; width: 100%; }
 .del { margin-top: 8px; color: #c0392b; border-color: #c0392b55 !important;

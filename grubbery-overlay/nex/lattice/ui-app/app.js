@@ -1084,6 +1084,8 @@
   // ── controls pane: <lat-ctl> frame ───────────────────────────────────────
   // Renders the pane skeleton with one tag per panel; the panel components
   // (lat-knowtags 68, lat-share 66, lat-history/lat-links 77) upgrade when
+  // NB: no lat-perms — group EDITING lives in the full-window ACL pane now;
+  // this column only points existing groups at the open file (66-share).
   // their own files run, in file order. Button handlers wired below in this
   // file (and in later files) find their elements because the frame renders
   // here first.
@@ -1100,7 +1102,6 @@
   </div>
   <lat-knowtags></lat-knowtags>
   <lat-share></lat-share>
-  <lat-perms></lat-perms>
   <lat-shared></lat-shared>
   <lat-history></lat-history>
   <lat-links></lat-links>
@@ -1173,8 +1174,11 @@
   <button data-m="clearweb">clearweb</button>
 </div>
 <div id="cwurl" class="muted"></div>
+<h3>give a ship access</h3>
 <div class="row"><input id="shwith" placeholder="~ship" autocomplete="off"><button id="shread">read</button><button id="shedit">edit</button></div>
 <div id="shres" class="muted"></div>
+<h3 class="grouphead">give a group access <a id="aclopen" title="create and edit groups">manage &rarr;</a></h3>
+<div id="grouplist" class="muted"></div>
 </div>`;
       cwurl = $('cwurl');
     }
@@ -1188,6 +1192,9 @@
     $('shres').textContent = '';
     for (const b of document.querySelectorAll('.share button'))
       b.className = b.dataset.m === m ? 'on' : '';
+    // the group toggles are about THIS file, so they follow the same
+    // every-target-change hook the grant message does
+    renderGroupAccess();
     const target = curFolder || current;
     const suffix = curFolder ? '/' : '';
     cwurl.innerHTML =
@@ -1261,32 +1268,106 @@
   $('shread').onclick = () => shareWith('read');
   $('shedit').onclick = () => shareWith('edit');
 
-// ── src/67-perms.js ───────────────────────────────────────────────────────
-  // ── permission editor: <lat-perms> — who can read/edit which files ───────
-  // Backed by grubbery usergroups via /share-groups. The vocabulary here is
-  // read (= weir peek) and edit (= weir make); poke grants and non-directory
-  // rules are real but dojo territory — the server preserves them verbatim on
-  // every save, and this panel only says how many exist.
-  customElements.define('lat-perms', class extends HTMLElement {
-    connectedCallback() {
-      this.innerHTML = `
-<div id="permsec">
-<h3>peers</h3>
-<div id="permlist" class="muted">loading…</div>
-<div class="row"><input id="permname" placeholder="new group (e.g. friends)" autocomplete="off"><button id="permadd">group</button></div>
-</div>`;
+  // ── per-file group access ────────────────────────────────────────────────
+  // The same read/edit grant as the ship row above, but pointed at a group
+  // rather than one ship. This pane only SETS existing groups on this file;
+  // creating and editing the groups themselves is the ACL pane's job (there is
+  // a link), which is what took the busy chip editor out of this narrow
+  // column. Grants go through permSave, so both surfaces agree.
+  //
+  // A group's grant on a page is the page's own ball path in its peek/make —
+  // exactly what the server's share-file writes, so a per-ship grant and a
+  // per-group grant are the same kind of rule and read back the same way.
+  const pagePath = (name) => '/apps/lattice.lattice_app/page/' + name;
+
+  function renderGroupAccess() {
+    const host = $('grouplist');
+    if (!host) return;
+    host.textContent = '';
+    const target = curFolder || current;
+    if (!target) {
+      host.className = 'muted';
+      host.textContent = 'open a page to grant access.';
+      return;
     }
-  });
+    if (!permsLoaded) {
+      host.className = 'muted';
+      host.textContent = 'loading groups…';
+      return;
+    }
+    if (!permGroups.length) {
+      host.className = 'muted';
+      host.textContent = 'no groups yet — use manage → to make one.';
+      return;
+    }
+    host.className = '';
+    const path = pagePath(target);
+    for (const g of permGroups) {
+      const row = document.createElement('div');
+      row.className = 'grow-row';
+      const nm = document.createElement('span');
+      nm.className = 'gname';
+      nm.textContent = g.name;
+      row.appendChild(nm);
+      const mk = (label, on, fn) => {
+        const b = document.createElement('button');
+        b.textContent = label;
+        if (on) b.className = 'on';
+        b.onclick = fn;
+        row.appendChild(b);
+      };
+      const canRead = g.peek.includes(path);
+      const canEdit = g.make.includes(path);
+      mk('read', canRead, () => {
+        if (canRead) {
+          // dropping read drops edit: edit without read cannot be exercised
+          g.peek = g.peek.filter((x) => x !== path);
+          g.make = g.make.filter((x) => x !== path);
+        } else g.peek.push(path);
+        permSave(g);
+      });
+      mk('edit', canEdit, () => {
+        if (canEdit) g.make = g.make.filter((x) => x !== path);
+        else {
+          if (!g.peek.includes(path)) g.peek.push(path);   // edit implies read
+          g.make.push(path);
+        }
+        permSave(g);
+      });
+      host.appendChild(row);
+    }
+  }
+  $('aclopen').onclick = () => aclOpen();
+
+// ── src/67-perms.js ───────────────────────────────────────────────────────
+  // ── usergroups: the shared data layer ────────────────────────────────────
+  // No UI of its own any more. The busy chip editor that used to live in the
+  // editor's narrow right column moved to the full-window ACL pane (72-acl.js);
+  // the right column now only SETS existing groups on the open file (66-share).
+  // Both surfaces read permGroups and write through permSave, so they cannot
+  // disagree about what is in force.
+  //
+  // Backed by grubbery usergroups via /share-groups. The vocabulary is read
+  // (= weir peek) and edit (= weir make); poke grants and non-directory rules
+  // are real but dojo territory — the server preserves them verbatim on every
+  // save, and the ACL pane reports how many exist.
   let permGroups = [];
+  // "no groups yet" and "not loaded yet" are different claims, and the group
+  // list is deferred off boot's critical path — so without this the panel
+  // asserts you have no groups for the second or two before the answer lands.
+  let permsLoaded = false;
   async function loadPerms() {
     let r = null;
     try { r = await fetch(api + '/share-groups'); } catch {}
-    if (!r || !r.ok) { $('permlist').textContent = 'could not load groups (' + (r ? r.status : 'network') + ')'; return; }
+    if (!r || !r.ok) {
+      st('could not load groups (' + (r ? r.status : 'network') + ')', false);
+      return;
+    }
     permGroups = await r.json();
-    renderPerms();
-    // the full pane (72-acl.js) renders the same permGroups — repaint it from
-    // the same load so the two surfaces can never show different ACLs
+    permsLoaded = true;
+    // every surface that renders groups repaints from this one load
     if (typeof renderAcl === 'function') renderAcl();
+    if (typeof renderGroupAccess === 'function') renderGroupAccess();
   }
   async function permSave(g) {
     const r = await fetch(api + '/share-group-save?name=' + encodeURIComponent(g.name), {
@@ -1299,113 +1380,10 @@
       st('permissions: ' + msg, false);
     }
     // re-read either way: the server is the authority, and a failed save must
-    // snap the panel back to what is actually in force rather than show the
+    // snap the panels back to what is actually in force rather than show the
     // grant the user believes they made.
     loadPerms();
   }
-  function chipRow(host, items, label, onDel) {
-    const row = document.createElement('div');
-    row.className = 'chips';
-    if (label) {
-      const l = document.createElement('span');
-      l.className = 'muted';
-      l.textContent = label;
-      row.appendChild(l);
-    }
-    for (const it of items) {
-      const a = document.createElement('a');
-      a.textContent = it + ' ×';
-      a.title = 'remove';
-      a.onclick = () => onDel(it);
-      row.appendChild(a);
-    }
-    host.appendChild(row);
-    return row;
-  }
-  function renderPerms() {
-    const host = $('permlist');
-    host.textContent = '';
-    host.className = '';
-    if (!permGroups.length) {
-      host.className = 'muted';
-      host.textContent = 'no groups yet — a group names ships and what they may read or edit.';
-      return;
-    }
-    for (const g of permGroups) {
-      const box = document.createElement('div');
-      box.className = 'grp';
-      const h = document.createElement('div');
-      const b = document.createElement('b');
-      b.textContent = g.name;
-      const del = document.createElement('button');
-      del.textContent = '×';
-      del.className = 'ico';
-      del.title = 'delete group';
-      del.onclick = async () => {
-        if (!(await askConfirm('delete group ' + g.name + ' and every grant it carries?', 'delete'))) return;
-        await fetch(api + '/share-group-del?name=' + encodeURIComponent(g.name), { method: 'POST' }).catch(() => null);
-        loadPerms();
-      };
-      h.appendChild(b); h.appendChild(del);
-      box.appendChild(h);
-      chipRow(box, g.ships, 'ships', (v) => { g.ships = g.ships.filter((x) => x !== v); permSave(g); });
-      const srow = document.createElement('div');
-      srow.className = 'row';
-      const sin = document.createElement('input');
-      sin.placeholder = '~ship';
-      const sadd = document.createElement('button');
-      sadd.textContent = 'add ship';
-      sadd.onclick = () => {
-        const v = sin.value.trim();
-        if (!v) return;
-        if (!g.ships.includes(v)) { g.ships.push(v); permSave(g); }
-        sin.value = '';
-      };
-      srow.appendChild(sin); srow.appendChild(sadd);
-      box.appendChild(srow);
-      chipRow(box, g.peek, 'read', (v) => { g.peek = g.peek.filter((x) => x !== v); permSave(g); });
-      chipRow(box, g.make, 'edit', (v) => { g.make = g.make.filter((x) => x !== v); permSave(g); });
-      const prow = document.createElement('div');
-      prow.className = 'row';
-      const pin = document.createElement('input');
-      pin.placeholder = '/apps/lattice.lattice_app/pub';
-      const radd = document.createElement('button');
-      radd.textContent = '+read';
-      const eadd = document.createElement('button');
-      eadd.textContent = '+edit';
-      const addPath = (edit) => {
-        const v = pin.value.trim();
-        if (!v) { st('enter a path to grant', false); return; }
-        if (!g.peek.includes(v)) g.peek.push(v);           // edit implies read
-        if (edit && !g.make.includes(v)) g.make.push(v);
-        permSave(g);
-        pin.value = '';
-      };
-      radd.onclick = () => addPath(false);
-      eadd.onclick = () => addPath(true);
-      prow.appendChild(pin); prow.appendChild(radd); prow.appendChild(eadd);
-      box.appendChild(prow);
-      if ((g.poke && g.poke.length) || g.opaque) {
-        const m = document.createElement('div');
-        m.className = 'muted';
-        const parts = [];
-        if (g.poke && g.poke.length) parts.push(g.poke.length + ' poke');
-        if (g.opaque) parts.push(g.opaque + ' advanced');
-        m.textContent = parts.join(' + ') + ' rule(s) managed outside this panel — preserved on save.';
-        box.appendChild(m);
-      }
-      host.appendChild(box);
-    }
-  }
-  $('permadd').onclick = async () => {
-    const v = $('permname').value.trim();
-    if (!v) return;
-    await permSave({ name: v, ships: [], peek: [], make: [] });
-    $('permname').value = '';
-  };
-  // NOT called here: at parse time this put a pier round-trip AHEAD of the
-  // tree and the open page, and the pier serializes — nothing about reading or
-  // editing needs the group list. Boot calls it once the editor is usable.
 
 // ── src/68-knowtags.js ────────────────────────────────────────────────────
   // ── knowledge tags panel: <lat-knowtags> ─────────────────────────────────

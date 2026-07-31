@@ -1,6 +1,8 @@
   // ── controls pane: <lat-ctl> frame ───────────────────────────────────────
   // Renders the pane skeleton with one tag per panel; the panel components
   // (lat-knowtags 68, lat-share 66, lat-history/lat-links 77) upgrade when
+  // NB: no lat-perms — group EDITING lives in the full-window ACL pane now;
+  // this column only points existing groups at the open file (66-share).
   // their own files run, in file order. Button handlers wired below in this
   // file (and in later files) find their elements because the frame renders
   // here first.
@@ -17,7 +19,6 @@
   </div>
   <lat-knowtags></lat-knowtags>
   <lat-share></lat-share>
-  <lat-perms></lat-perms>
   <lat-shared></lat-shared>
   <lat-history></lat-history>
   <lat-links></lat-links>

@@ -11,8 +11,11 @@
   <button data-m="clearweb">clearweb</button>
 </div>
 <div id="cwurl" class="muted"></div>
+<h3>give a ship access</h3>
 <div class="row"><input id="shwith" placeholder="~ship" autocomplete="off"><button id="shread">read</button><button id="shedit">edit</button></div>
 <div id="shres" class="muted"></div>
+<h3 class="grouphead">give a group access <a id="aclopen" title="create and edit groups">manage &rarr;</a></h3>
+<div id="grouplist" class="muted"></div>
 </div>`;
       cwurl = $('cwurl');
     }
@@ -26,6 +29,9 @@
     $('shres').textContent = '';
     for (const b of document.querySelectorAll('.share button'))
       b.className = b.dataset.m === m ? 'on' : '';
+    // the group toggles are about THIS file, so they follow the same
+    // every-target-change hook the grant message does
+    renderGroupAccess();
     const target = curFolder || current;
     const suffix = curFolder ? '/' : '';
     cwurl.innerHTML =
@@ -98,3 +104,74 @@
   };
   $('shread').onclick = () => shareWith('read');
   $('shedit').onclick = () => shareWith('edit');
+
+  // ── per-file group access ────────────────────────────────────────────────
+  // The same read/edit grant as the ship row above, but pointed at a group
+  // rather than one ship. This pane only SETS existing groups on this file;
+  // creating and editing the groups themselves is the ACL pane's job (there is
+  // a link), which is what took the busy chip editor out of this narrow
+  // column. Grants go through permSave, so both surfaces agree.
+  //
+  // A group's grant on a page is the page's own ball path in its peek/make —
+  // exactly what the server's share-file writes, so a per-ship grant and a
+  // per-group grant are the same kind of rule and read back the same way.
+  const pagePath = (name) => '/apps/lattice.lattice_app/page/' + name;
+
+  function renderGroupAccess() {
+    const host = $('grouplist');
+    if (!host) return;
+    host.textContent = '';
+    const target = curFolder || current;
+    if (!target) {
+      host.className = 'muted';
+      host.textContent = 'open a page to grant access.';
+      return;
+    }
+    if (!permsLoaded) {
+      host.className = 'muted';
+      host.textContent = 'loading groups…';
+      return;
+    }
+    if (!permGroups.length) {
+      host.className = 'muted';
+      host.textContent = 'no groups yet — use manage → to make one.';
+      return;
+    }
+    host.className = '';
+    const path = pagePath(target);
+    for (const g of permGroups) {
+      const row = document.createElement('div');
+      row.className = 'grow-row';
+      const nm = document.createElement('span');
+      nm.className = 'gname';
+      nm.textContent = g.name;
+      row.appendChild(nm);
+      const mk = (label, on, fn) => {
+        const b = document.createElement('button');
+        b.textContent = label;
+        if (on) b.className = 'on';
+        b.onclick = fn;
+        row.appendChild(b);
+      };
+      const canRead = g.peek.includes(path);
+      const canEdit = g.make.includes(path);
+      mk('read', canRead, () => {
+        if (canRead) {
+          // dropping read drops edit: edit without read cannot be exercised
+          g.peek = g.peek.filter((x) => x !== path);
+          g.make = g.make.filter((x) => x !== path);
+        } else g.peek.push(path);
+        permSave(g);
+      });
+      mk('edit', canEdit, () => {
+        if (canEdit) g.make = g.make.filter((x) => x !== path);
+        else {
+          if (!g.peek.includes(path)) g.peek.push(path);   // edit implies read
+          g.make.push(path);
+        }
+        permSave(g);
+      });
+      host.appendChild(row);
+    }
+  }
+  $('aclopen').onclick = () => aclOpen();
