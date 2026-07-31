@@ -1,7 +1,6 @@
 //! Connect flow: one +code entry logs in both sides — the Rust login stores
-//! the shared fuse cookie, and open_workspace mirrors that cookie into the
-//! webview's jar. One session, no second login. (The old cross-site
-//! form-POST login died silently under webkitgtk's cookie policy.)
+//! the shared fuse cookie, and open_workspace drives the webview through the
+//! ship's own /~/login form so eyre sets its session cookie first-party.
 
 use lattice_fs::{default_cookie_path, EyreTransport, Transport};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -25,14 +24,14 @@ pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String
     let url = url.trim().trim_end_matches('/').to_string();
     let t = EyreTransport::new(&url, &default_cookie_path());
     dlog(&format!("connect: logging in at {url}"));
-    t.login(Some(code)).map_err(|e| e.msg)?;
+    t.login(Some(code.clone())).map_err(|e| e.msg)?;
     dlog(&format!("connect: cookie stored at {}", default_cookie_path()));
     let ship = t.ship().map_err(|e| e.msg)?;
     dlog(&format!("connect: ship {ship}"));
     let mut cfg = config::load(&app);
     cfg.url = url;
     config::save(&app, &cfg)?;
-    open_workspace(&app)?;
+    open_workspace(&app, Some(&code))?;
     // connected: the workspace is the app now; the manager comes back when
     // the workspace closes (on_window_event in main.rs)
     if let Some(m) = app.get_webview_window("manager") {
@@ -121,56 +120,55 @@ fn push_file(path: &std::path::Path, rel: String, out: &mut Vec<PickedFile>) {
     }
 }
 
-pub fn open_workspace(app: &AppHandle) -> Result<(), String> {
+/// Open (or reuse) the workspace and log its webview in. With a +code, the
+/// webview is driven through the ship's OWN /~/login page: navigate there,
+/// fill the form via eval, submit. Eyre then sets the session cookie
+/// first-party in the jar the network session actually uses — the only
+/// arrangement webkit reliably honors. (Injecting the fuse cookie via
+/// set_cookie looked right in cookies_for_url but was never attached to
+/// real-domain requests; localhost ships masked it in every dev test.)
+/// Without a code (relaunch), navigate straight to /~/login with a redirect:
+/// a live jar session passes through instantly, a dead one shows eyre's own
+/// login form, and the manager's connect flow remains the recovery path.
+pub fn open_workspace(app: &AppHandle, code: Option<&str>) -> Result<(), String> {
     let cfg = config::load(app);
     if cfg.url.is_empty() {
         return Err("connect to a ship first".into());
     }
-    let ship_page: tauri::Url = format!("{}/apps/lattice", cfg.url)
+    let login: tauri::Url = format!("{}/~/login?redirect=/apps/lattice", cfg.url)
         .parse()
         .map_err(|e| format!("{e}"))?;
     let w = match app.get_webview_window("workspace") {
         Some(w) => w,
         None => new_workspace(app)?,
     };
-    // mirror the fuse cookie into the webview's jar: one login covers both
-    // sides, and no cross-site request is involved anywhere.
-    if let Ok(line) = std::fs::read_to_string(default_cookie_path()) {
-        if let Some((name, val)) = line.trim().split_once('=') {
-            if let Some(host) = ship_page.host_str() {
-                let mut c = tauri::webview::Cookie::new(name.to_string(), val.to_string());
-                c.set_domain(host.to_string());
-                c.set_path("/");
-                c.set_http_only(true);
-                c.set_secure(ship_page.scheme() == "https");
-                dlog(&format!("set_cookie {name}: {:?}", w.set_cookie(c)));
-                // the jar add is async on webkit — navigating before it lands
-                // sends the request cookieless and the ship 403s. Wait until
-                // the jar actually returns it (caller is off the main thread).
-                for i in 0..50 {
-                    let got = w.cookies_for_url(ship_page.clone());
-                    let seen = got
-                        .as_ref()
-                        .map(|cs| cs.iter().any(|c| c.name() == name))
-                        .unwrap_or(false);
-                    dlog(&format!("jar poll {i}: seen={seen}"));
-                    if seen {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-            }
+    dlog(&format!("navigate: {login}"));
+    w.navigate(login).map_err(|e| e.to_string())?;
+    if let Some(code) = code {
+        // +codes are [a-z-] only; anything else never left the Rust login alive
+        if !code.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+            return Err("malformed +code".into());
+        }
+        // the page needs time to load and eval is fire-and-forget, so retry
+        // the fill; the __lat guard makes it submit once, and after the
+        // redirect there is no password field left to match.
+        let fill = format!(
+            "(function(){{var p=document.querySelector('input[type=password],input[name=password]');\
+             if(p&&p.form&&!window.__lat){{window.__lat=1;p.value='{code}';p.form.submit();}}}})()"
+        );
+        for i in 0..10 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            dlog(&format!("login fill attempt {i}"));
+            w.eval(&fill).ok();
         }
     }
-    dlog(&format!("navigate: {ship_page}"));
-    w.navigate(ship_page).map_err(|e| e.to_string())?;
     w.set_focus().ok();
     Ok(())
 }
 
 fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     let handle = app.clone();
-    WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("login.html".into()))
+    let w = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("login.html".into()))
         .title("lattice — workspace")
         .inner_size(1200.0, 800.0)
         // tauri's own drag-drop interception would swallow the HTML5 drop
@@ -216,5 +214,6 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
             false
         })
         .build()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(w)
 }
