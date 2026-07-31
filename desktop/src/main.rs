@@ -41,7 +41,6 @@ fn main() {
             }
             _ => {}
         })
-        .manage(commands::PendingLogin(Mutex::new(None)))
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
         .setup(|app| {
             let handle = app.handle().clone();
@@ -70,7 +69,6 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::connect,
-            commands::take_login,
             commands::get_config,
             commands::pick_upload,
             mounts::status,

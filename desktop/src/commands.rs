@@ -1,43 +1,26 @@
 //! Connect flow: one +code entry logs in both sides — the Rust login stores
-//! the shared fuse cookie, and login.html re-posts the code to eyre so the
-//! webview gets its own session cookie.
-
-use std::sync::Mutex;
+//! the shared fuse cookie, and open_workspace mirrors that cookie into the
+//! webview's jar. One session, no second login. (The old cross-site
+//! form-POST login died silently under webkitgtk's cookie policy.)
 
 use lattice_fs::{default_cookie_path, EyreTransport, Transport};
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::config;
 
-/// (url, code) waiting for login.html to collect it. Held in memory only,
-/// taken exactly once.
-pub struct PendingLogin(pub Mutex<Option<(String, String)>>);
-
 /// Log the Rust side in (stores the shared fuse cookie), remember the url,
-/// stash the code for the webview's own form-POST login, open the workspace.
+/// open the workspace.
 #[tauri::command]
-pub fn connect(
-    app: AppHandle,
-    pending: State<PendingLogin>,
-    url: String,
-    code: String,
-) -> Result<String, String> {
+pub fn connect(app: AppHandle, url: String, code: String) -> Result<String, String> {
     let url = url.trim().trim_end_matches('/').to_string();
     let t = EyreTransport::new(&url, &default_cookie_path());
-    t.login(Some(code.clone())).map_err(|e| e.msg)?;
+    t.login(Some(code)).map_err(|e| e.msg)?;
     let ship = t.ship().map_err(|e| e.msg)?;
     let mut cfg = config::load(&app);
-    cfg.url = url.clone();
+    cfg.url = url;
     config::save(&app, &cfg)?;
-    *pending.0.lock().unwrap() = Some((url, code));
     open_workspace(&app)?;
     Ok(ship)
-}
-
-/// login.html pulls the pending (url, code) — once.
-#[tauri::command]
-pub fn take_login(pending: State<PendingLogin>) -> Option<(String, String)> {
-    pending.0.lock().unwrap().take()
 }
 
 #[tauri::command]
@@ -121,14 +104,37 @@ fn push_file(path: &std::path::Path, rel: String, out: &mut Vec<PickedFile>) {
 }
 
 pub fn open_workspace(app: &AppHandle) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("workspace") {
-        // an already-open workspace may hold a stale session — reload through
-        // login.html so a pending (url, code) gets used
-        w.navigate("tauri://localhost/login.html".parse().map_err(|e| format!("{e}"))?)
-            .map_err(|e| e.to_string())?;
-        w.set_focus().ok();
-        return Ok(());
+    let cfg = config::load(app);
+    if cfg.url.is_empty() {
+        return Err("connect to a ship first".into());
     }
+    let ship_page: tauri::Url = format!("{}/apps/lattice", cfg.url)
+        .parse()
+        .map_err(|e| format!("{e}"))?;
+    let w = match app.get_webview_window("workspace") {
+        Some(w) => w,
+        None => new_workspace(app)?,
+    };
+    // mirror the fuse cookie into the webview's jar: one login covers both
+    // sides, and no cross-site request is involved anywhere.
+    if let Ok(line) = std::fs::read_to_string(default_cookie_path()) {
+        if let Some((name, val)) = line.trim().split_once('=') {
+            if let Some(host) = ship_page.host_str() {
+                let mut c = tauri::webview::Cookie::new(name.to_string(), val.to_string());
+                c.set_domain(host.to_string());
+                c.set_path("/");
+                c.set_http_only(true);
+                c.set_secure(ship_page.scheme() == "https");
+                w.set_cookie(c).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    w.navigate(ship_page).map_err(|e| e.to_string())?;
+    w.set_focus().ok();
+    Ok(())
+}
+
+fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     let handle = app.clone();
     WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("login.html".into()))
         .title("lattice — workspace")
@@ -176,6 +182,5 @@ pub fn open_workspace(app: &AppHandle) -> Result<(), String> {
             false
         })
         .build()
-        .map_err(|e| e.to_string())?;
-    Ok(())
+        .map_err(|e| e.to_string())
 }

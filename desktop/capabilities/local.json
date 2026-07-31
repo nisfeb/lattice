@@ -5,7 +5,6 @@
   "windows": ["manager", "workspace"],
   "permissions": [
     "allow-connect",
-    "allow-take-login",
     "allow-get-config",
     "allow-pick-upload",
     "allow-status",
