@@ -1091,6 +1091,12 @@
     }
   });
   function showShare(m) {
+    // the grant result names "this page", so it MUST NOT outlive the page it
+    // was about — every target change (page open, new file, folder select,
+    // beacon sync) routes through here. A fuzz run caught it claiming
+    // "~nec can now edit this page" while a different page was open, which
+    // is a permissions UI telling the user something false.
+    $('shres').textContent = '';
     for (const b of document.querySelectorAll('.share button'))
       b.className = b.dataset.m === m ? 'on' : '';
     const target = curFolder || current;

@@ -12,7 +12,15 @@
 //
 // Extractor thunks run INSIDE the browser: no closing over spec-level
 // helpers, define everything you need inside the function.
-import { extract, always, now, eventually, actions, weighted } from "@antithesishq/bombadil";
+import {
+  extract,
+  always,
+  now,
+  next,
+  eventually,
+  actions,
+  weighted,
+} from "@antithesishq/bombadil";
 export * from "@antithesishq/bombadil/browser/defaults";
 
 // ponytail: grantee hardcoded to ~nec (the second dev ship). Parameterize
@@ -158,6 +166,20 @@ export const savingResolves = always(
     ),
   ),
 );
+
+// The grant result says "~ship can now edit THIS PAGE", so it must never
+// outlive the page it described. Found by a soak: the message survived every
+// tree click, so the panel told the user a page was shared that never was.
+// Fixed by clearing #shres in showShare (every target change routes there).
+const openTarget = extract(
+  (state) => state.document.getElementById("pname")?.value ?? "",
+);
+export const grantStatusFollowsPage = always(() => {
+  const page = openTarget.current;
+  return now(() => shresText.current !== "").implies(
+    next(() => openTarget.current === page || shresText.current === ""),
+  );
+});
 
 export const grantingResolves = always(
   now(() => shresText.current.startsWith("granting")).implies(
