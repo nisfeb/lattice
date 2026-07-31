@@ -100,6 +100,7 @@ fn main() {
                 let map = handle.state::<mounts::MountMap>();
                 let mut m = map.0.lock().unwrap();
                 for spec in &cfg.mounts {
+                    mounts::heal_mountpoint(&spec.mountpoint);
                     match lattice_fs::projection_http(
                         &cfg.url,
                         &lattice_fs::default_cookie_path(),
