@@ -43,6 +43,7 @@
 /<  lh   /lib/lattice-history.hoon
 /<  lcl  /lib/lattice-clip.hoon
 /<  li   /lib/lattice-index.hoon
+/<  ls   /lib/lattice-share.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -133,6 +134,14 @@
         ::  nexus reload rewrites its whole covered subtree, so without a row
         ::  here the whole index is deleted on every load.
             [%fall %| /idx/b empty-dir:loader]
+        ::  /shared: notices other ships sent about files they granted us (see
+        ::  /lib/lattice-share — claims, not capabilities). /shares.sig is the
+        ::  inbox fiber that takes those pokes; the /public usergroup carries a
+        ::  poke road for it (+ensure-shares-inbox) so ANY ship may notify,
+        ::  which is safe because the list is capped and sender identity comes
+        ::  from the transport.
+            [%fall %& [/ %shared] [[/lattice %shared] *shared:ls]]
+            [%fall %& [/ %'shares.sig'] [[/ %sig] ~]]
             [%fall %& [/ %'crawler.sig'] [[/ %sig] ~]]
         ::  /fs.sig: a lick (unix-socket) port exposing the filesystem ops to a
         ::  local FUSE client (lattice-fs) — the native-transport twin of the
@@ -158,6 +167,7 @@
         ::  a page shared before the public usergroup existed skipped the grant;
         ::  this re-applies it on the next writer start once the group is present.
         ;<  ~  bind:m  (heal-share-weirs root)
+        ;<  ~  bind:m  ensure-shares-inbox
         ::  lay down the built-in page-tree templates (idempotent; skips if the
         ::  user already has them). Users instantiate a copy under /page.
         ;<  ~  bind:m  (ensure-shipped-templates root)
@@ -174,6 +184,21 @@
         ;<  ~  bind:m
           ?:  =([/lattice %history-action] p.sage)  (pure:m ~)
           (bump-rev now)
+        $
+      ::  /shares.sig: the cross-ship share-notice inbox. Foreign ships %add;
+      ::  only our own UI may %del (sender is read from the TRANSPORT, so a
+      ::  forged payload cannot curate our list). Same take-poke loop shape as
+      ::  the writer below.
+          [~ %'shares.sig']
+        ;<  ~  bind:m  (rise-wait:io prod "%lattice /shares: failed")
+        ::  root is NOT ambient in on-file — each case that needs it derives it
+        ::  from its own rail, exactly as the writer above does.
+        ;<  here=rail:tarball  bind:m  get-here-abs:io
+        =/  root=path  path.here
+        |-
+        ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
+        ;<  now=@da  bind:m  bowl-now
+        ;<  ~  bind:m  (apply-share-notice root from sage now)
         $
       ::  /ui/main.sig: bind the HTTP endpoint and dispatch each request into a
       ::  per-request fiber under /ui/requests (same pattern as counter).
@@ -759,16 +784,24 @@
       ::  anyway, so the revision check below would misread it as a denial.
       (send-ok eyre-id)
     =/  ud0=@ud  ud.cass.u.ms
-    ::  the file's EXISTING blot types the write: mime grubs keep their own
-    ::  content-type; everything else ships as text/plain with the destination
-    ::  blot, so THEIR mark converts and validates it (same contract as
-    ::  +grub-bask-into locally, minus the local tube — conversion is remote).
+    ::  rebuild the noun in the grub's OWN shape (cord / wain / mime) and send
+    ::  it under its OWN blot, with NO destination conversion. Converting
+    ::  mime->blot at the destination needs the target marc to carry a mime
+    ::  grab, and lattice's own %page marc doesn't — a missing tube drops the
+    ::  make SILENTLY on their side (found live: the save 403'd on the
+    ::  revision check while a blot-converted remote_over "landed" an empty
+    ::  body). Shape-preserving nouns need no tube; their marc just re-clams.
     =/  dst=blot:tarball  p.sang.u.ms
+    =/  nn=*  (sang-noun:tarball sang.u.ms)
+    ?:  &(?=(~ (mole |.(;;(@t nn)))) ?=(~ (mole |.(;;(wain nn)))) !=([/ %mime] dst))
+      (send-err eyre-id 415 'grub shape not editable as text')
     =/  bd=[b=bask:tarball d=(unit blot:tarball)]
-      ?:  =([/ %mime] dst)
-        =/  mt=path  (fall (grub-mime-type sang.u.ms) /text/plain)
-        [[[/ %mime] `mime`[mt (as-octs:mimes:html body)]] ~]
-      [[[/ %mime] `mime`[/text/plain (as-octs:mimes:html body)]] `dst]
+      ?:  ?=(^ (mole |.(;;(@t nn))))
+        [[dst `*`body] ~]
+      ?:  ?=(^ (mole |.(;;(wain nn))))
+        [[dst `*`(to-wain:format body)] ~]
+      =/  mt=path  (fall (grub-mime-type sang.u.ms) /text/plain)
+      [[[/ %mime] `*``mime`[mt (as-octs:mimes:html body)]] ~]
     ;<  nak=(unit tang)  bind:m
       (remote-load-poke u.shp [[/remote-save %& dir nam] %make %.y |+[b.bd d.bd]])
     ?^  nak
@@ -843,6 +876,73 @@
     =/  who=(set @p)  (~(gas in *(set @p)) (murn ships same))
     ;<  ~  bind:m  (over:io [%& %& gdir %'who.ships'] [[/ %ships] who])
     ;<  ~  bind:m  (over:io [%& %& gdir %'how.weir'] [[/ %weir] weir])
+    (send-ok eyre-id)
+  ::  share-file: the per-file shortcut — grant a ship read or edit on ONE
+  ::  page, and tell them. The grant goes into an auto-group named after the
+  ::  ship (visible and editable in the peers panel like any other group);
+  ::  the notice is best-effort and the response says whether it arrived,
+  ::  because the grant is durable either way.
+      [%'POST' %share-file]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    =/  shp-t=(unit @t)  (~(get by args) 'ship')
+    ?~  shp-t  (send-err eyre-id 400 'missing ship')
+    =/  shp=(unit @p)  (slaw %p u.shp-t)
+    ?~  shp  (send-err eyre-id 400 'bad ship')
+    ?:  =(u.shp our)  (send-err eyre-id 400 'that is you')
+    =/  mode=@t  (~(gut by args) 'mode' 'read')
+    ?.  |(=('read' mode) =('edit' mode))  (send-err eyre-id 400 'mode: read or edit')
+    =/  pdir=path  (weld app-base:lu (weld /page (pax-of u.name)))
+    ;<  pe=?  bind:m  (peek-exists:io [%& %| pdir])
+    ?.  pe  (send-err eyre-id 404 'no such page')
+    =/  droad=road:tarball  [%& %| pdir]
+    =/  gname=@t  (crip (slag 1 (scow %p u.shp)))
+    ;<  ~  bind:m
+      %-  ug-merge
+      :^    gname
+          (~(gas in *(set @p)) ~[u.shp])
+        (~(gas in *(set road:tarball)) ~[droad])
+      ?.  =('edit' mode)  ~
+      (~(gas in *(set road:tarball)) ~[droad])
+    ::  what the peer should OPEN: the page's code grub, not the dir.
+    =/  npax=path  (snoc pdir %code)
+    ;<  told=?  bind:m
+      %^  remote-load-poke-wait  u.shp
+        :-  [/share-notice %& app-base:lu %'shares.sig']
+        [%poke [/lattice %share-notice] `action:ls`[%add npax mode]]
+      ~s15
+    %+  send-json  eyre-id
+    (pairs:enjs:format ~[['ok' b+&] ['notified' b+told]])
+  ::  shared-with-me: the notices other ships sent us. Claims, not
+  ::  capabilities — opening one is what proves the grant is still real.
+      [%'GET' %shared-with-me]
+    ;<  sn=view:nexus  bind:m  (peek:io [%& %& app-base:lu %shared] ~)
+    =/  sh=shared:ls
+      ?.  ?=([%file *] sn)  ~
+      (fall (mole |.(;;(shared:ls (sang-noun:tarball sang.sn)))) ~)
+    %+  send-json  eyre-id
+    :-  %a
+    %+  turn  sh
+    |=  e=entry:ls
+    %-  pairs:enjs:format
+    :~  ['host' s+(scot %p host.e)]
+        ['path' s+(spat pax.e)]
+        ['mode' s+mode.e]
+        ['when' s+(scot %da when.e)]
+    ==
+      [%'POST' %shared-with-me-del]
+    =/  hp-t=(unit @t)  (~(get by args) 'host')
+    ?~  hp-t  (send-err eyre-id 400 'missing host')
+    =/  hp=(unit @p)  (slaw %p u.hp-t)
+    ?~  hp  (send-err eyre-id 400 'bad host')
+    =/  pt=(unit @t)  (~(get by args) 'path')
+    ?~  pt  (send-err eyre-id 400 'missing path')
+    =/  pp=(each path tang)  (mule |.((stab u.pt)))
+    ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
+    ;<  ~  bind:m
+      %+  poke:io  &+&+[app-base:lu %'shares.sig']
+      [[/lattice %share-notice] `action:ls`[%del u.hp p.pp]]
     (send-ok eyre-id)
       [%'POST' %share-group-del]
     =/  gname=(unit @t)  (~(get by args) 'name')
@@ -5048,6 +5148,103 @@
         ['opaque' (numb:enjs:format :(add opaque.pk opaque.mk opaque.po))]
     ==
   (share-groups-loop t.names [gj out])
+::  +apply-share-notice: one inbox poke. Everything about it is defensive:
+::  the payload is soft-cast (any ship can send anything), the path must be
+::  under /apps, the mode must be one of ours, and %del from a foreign ship is
+::  dropped — the transport decides who the sender is, never the payload.
+::
+++  apply-share-notice
+  |=  [root=path =from:fiber:nexus =sage:tarball now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  src=(unit @p)  (get-poke-src:io from)
+  ::  a poke's sage is [blot VASE] (unlike a peek's sang, whose q is an each) —
+  ::  the payload noun is q.q.sage. Gate on the blot first so a stray poke of
+  ::  some other mark is ignored rather than misparsed.
+  ?.  =([/lattice %share-notice] p.sage)  (pure:m ~)
+  =/  na=(unit action:ls)  (mole |.(;;(action:ls q.q.sage)))
+  ?~  na  (pure:m ~)
+  ;<  sn=view:nexus  bind:m  (peek:io [%& %& root %shared] ~)
+  =/  cur=shared:ls
+    ?.  ?=([%file *] sn)  ~
+    (fall (mole |.(;;(shared:ls (sang-noun:tarball sang.sn)))) ~)
+  ?-    -.u.na
+      %add
+    ?~  src  (pure:m ~)                      ::  own %add is meaningless
+    ?.  ?=([%apps *] pax.u.na)  (pure:m ~)
+    ?.  |(=('read' mode.u.na) =('edit' mode.u.na))  (pure:m ~)
+    %^  put-file  [%& %& root %shared]  [/lattice %shared]
+    (put-entry:ls cur [u.src pax.u.na mode.u.na now])
+  ::
+      %del
+    ?^  src  (pure:m ~)                      ::  curation is owner-only
+    %^  put-file  [%& %& root %shared]  [/lattice %shared]
+    (del-entry:ls cur host.u.na pax.u.na)
+  ==
+::  +ensure-shares-inbox: the /public usergroup carries a poke road for our
+::  shares inbox, so any ship may send a notice. Idempotent, run at writer
+::  boot like +heal-share-weirs; a no-op until /public first exists.
+::
+++  ensure-shares-inbox
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ok=?  bind:m  (peek-exists:io [%& %| public-grp])
+  ?.  ok  (pure:m ~)
+  =/  wroad=road:tarball  [%& %& [public-grp %'how.weir']]
+  ;<  cur=weir:nexus  bind:m  (read-weir wroad)
+  =/  iroad=road:tarball  [%& %& app-base:lu %'shares.sig']
+  ?:  (~(has in poke.cur) iroad)  (pure:m ~)
+  (put-file wroad [/ %weir] cur(poke (~(put in poke.cur) iroad)))
+::  +ug-merge: fold ships and grants INTO a usergroup, creating it if absent.
+::  The per-file share flow uses this (one auto-group per ship, named after
+::  it) so repeated shares accumulate instead of replacing.
+::
+++  ug-merge
+  |=  [gname=@t ships=(set @p) pk=(set road:tarball) mk=(set road:tarball)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
+  ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
+  =/  cur=(set @p)
+    ?.  ?=([%file *] wv)  ~
+    (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
+  ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
+  =/  =weir:nexus
+    :+  (~(uni in make.old) mk)
+      poke.old
+    (~(uni in peek.old) pk)
+  ;<  ~  bind:m  (over:io [%& %& gdir %'who.ships'] [[/ %ships] (~(uni in cur) ships)])
+  ;<  ~  bind:m  (over:io [%& %& gdir %'how.weir'] [[/ %weir] weir])
+  (pure:m ~)
+::  +remote-load-poke-wait: +remote-load-poke with a deadline. %.y = acked in
+::  time. An offline ship never acks a gall poke, and a share notice must not
+::  hang the save that triggered it — the GRANT is already durable by the time
+::  this runs; the notice is best-effort and says so in the response.
+::
+++  remote-load-poke-wait
+  |=  [target=@p req=load:remo:nexus timeout=@dr]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  now=@da  bind:m  bowl-now
+  =/  until=@da  (add now timeout)
+  ;<  ~  bind:m
+    %+  poke:io  &+&+[/sys/gall %'main.sig']
+    [[/ %gall-poke] [[target %grubbery] grubbery-load+req]]
+  ;<  ~  bind:m  (send-wait:io until)
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %veto *]
+    [%done %.n]
+      [~ %pack *]
+    [%done ?=(~ err.u.in)]
+      [~ %poke * *]
+    ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
+    =/  wak=path  !<(path q.sage.u.in)
+    ?.  ?&(?=([%wait @ ~] wak) =(until (slav %da i.t.wak)))  [%skip ~]
+    [%done %.n]
+  ==
 ::  +remote-load-poke: send a %grubbery-load to another ship and wait for the
 ::  gall ack. Modeled on +gall-poke-or-nack (fiberio), which is our-ship-only;
 ::  a bare +gall-poke:io would CRASH the request fiber on a remote nack, taking

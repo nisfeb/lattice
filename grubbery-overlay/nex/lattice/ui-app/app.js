@@ -1012,6 +1012,7 @@
   <lat-knowtags></lat-knowtags>
   <lat-share></lat-share>
   <lat-perms></lat-perms>
+  <lat-shared></lat-shared>
   <lat-history></lat-history>
   <lat-links></lat-links>
   <button id="mv" class="mvbtn">move / rename</button>
@@ -1083,6 +1084,8 @@
   <button data-m="clearweb">clearweb</button>
 </div>
 <div id="cwurl" class="muted"></div>
+<div class="row"><input id="shwith" placeholder="~ship" autocomplete="off"><button id="shread">read</button><button id="shedit">edit</button></div>
+<div id="shres" class="muted"></div>
 </div>`;
       cwurl = $('cwurl');
     }
@@ -1128,6 +1131,32 @@
       renderTree();
     };
   }
+
+  // ── per-file share-with: grant one ship read/edit on the OPEN page ───────
+  // Writes through the same usergroups as the peers panel (an auto-group named
+  // after the ship), then notifies them; the response says whether the notice
+  // arrived — the grant is durable either way.
+  const shareWith = async (mode) => {
+    const shp = $('shwith').value.trim();
+    if (!current) { st('open a page first', false); return; }
+    if (!shp) { st('enter a ship', false); return; }
+    $('shres').textContent = 'granting…';
+    const r = await mutate(api + '/share-file?name=' + encodeURIComponent(current) +
+      '&ship=' + encodeURIComponent(shp) + '&mode=' + mode);
+    if (!r || !r.ok) {
+      let msg = r ? r.status : 'network';
+      if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
+      $('shres').textContent = '';
+      st('share failed: ' + msg, false);
+      return;
+    }
+    const j = await r.json();
+    $('shres').textContent = shp + ' can now ' + mode + ' this page' +
+      (j.notified ? ' — notified.' : ' — could not notify (offline?); the grant holds.');
+    loadPerms();          // the peers panel shows the auto-group
+  };
+  $('shread').onclick = () => shareWith('read');
+  $('shedit').onclick = () => shareWith('edit');
 
 // ── src/67-perms.js ───────────────────────────────────────────────────────
   // ── permission editor: <lat-perms> — who can read/edit which files ───────
@@ -1285,6 +1314,55 @@
 </div>`;
     }
   });
+
+// ── src/69-shared.js ──────────────────────────────────────────────────────
+  // ── shared with me: <lat-shared> — files other ships granted us ──────────
+  // Fed by their share notices (claims, not capabilities — the entry proves
+  // itself when opened, and a stale one can just be removed).
+  customElements.define('lat-shared', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<div id="swmsec">
+<h3>shared with me</h3>
+<div id="swmlist" class="muted">loading…</div>
+</div>`;
+    }
+  });
+  async function loadShared() {
+    let r = null;
+    try { r = await fetch(api + '/shared-with-me'); } catch {}
+    if (!r || !r.ok) { $('swmlist').textContent = 'could not load'; return; }
+    const items = await r.json();
+    const host = $('swmlist');
+    host.textContent = '';
+    if (!items.length) {
+      host.className = 'muted';
+      host.textContent = 'nothing yet — when a peer shares a file with you it appears here.';
+      return;
+    }
+    host.className = '';
+    for (const it of items) {
+      const row = document.createElement('div');
+      row.className = 'chips';
+      const a = document.createElement('a');
+      a.textContent = it.host + ' ' + it.path.replace(/^\/apps\/lattice\.lattice_app\//, '') +
+        ' (' + it.mode + ')';
+      a.title = 'open in the editor';
+      a.href = '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
+        '&ship=' + encodeURIComponent(it.host);
+      const x = document.createElement('a');
+      x.textContent = '×';
+      x.title = 'remove from this list (does not touch their grant)';
+      x.onclick = async () => {
+        await fetch(api + '/shared-with-me-del?host=' + encodeURIComponent(it.host) +
+          '&path=' + encodeURIComponent(it.path), { method: 'POST' }).catch(() => null);
+        loadShared();
+      };
+      row.appendChild(a); row.appendChild(x);
+      host.appendChild(row);
+    }
+  }
+  loadShared();
 
 // ── src/70-upload.js ──────────────────────────────────────────────────────
   // ── upload (pickers + drag-and-drop, progress panel) ─────────────────────

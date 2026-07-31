@@ -11,6 +11,8 @@
   <button data-m="clearweb">clearweb</button>
 </div>
 <div id="cwurl" class="muted"></div>
+<div class="row"><input id="shwith" placeholder="~ship" autocomplete="off"><button id="shread">read</button><button id="shedit">edit</button></div>
+<div id="shres" class="muted"></div>
 </div>`;
       cwurl = $('cwurl');
     }
@@ -56,3 +58,29 @@
       renderTree();
     };
   }
+
+  // ── per-file share-with: grant one ship read/edit on the OPEN page ───────
+  // Writes through the same usergroups as the peers panel (an auto-group named
+  // after the ship), then notifies them; the response says whether the notice
+  // arrived — the grant is durable either way.
+  const shareWith = async (mode) => {
+    const shp = $('shwith').value.trim();
+    if (!current) { st('open a page first', false); return; }
+    if (!shp) { st('enter a ship', false); return; }
+    $('shres').textContent = 'granting…';
+    const r = await mutate(api + '/share-file?name=' + encodeURIComponent(current) +
+      '&ship=' + encodeURIComponent(shp) + '&mode=' + mode);
+    if (!r || !r.ok) {
+      let msg = r ? r.status : 'network';
+      if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
+      $('shres').textContent = '';
+      st('share failed: ' + msg, false);
+      return;
+    }
+    const j = await r.json();
+    $('shres').textContent = shp + ' can now ' + mode + ' this page' +
+      (j.notified ? ' — notified.' : ' — could not notify (offline?); the grant holds.');
+    loadPerms();          // the peers panel shows the auto-group
+  };
+  $('shread').onclick = () => shareWith('read');
+  $('shedit').onclick = () => shareWith('edit');
