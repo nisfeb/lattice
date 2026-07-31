@@ -208,3 +208,39 @@ Request-count wins stack on top: warm editor boot is one page-tree request
 after the service worker installs, page open is one request, saves no longer
 echo, and a rename is one request. The tier-3 state bump (%0 to %1: marcs,
 nexi, transient eyre conns) migrated live on a populated pier.
+
+## Addendum 2026-07-30: regression scare, two refutations, a production number
+
+Re-measured after the obelisk in-process port, the browser-history feature and
+the bucket index landed. Serial curl on tyr read 1.1-1.6s for the icon floor
+against the review's 0.78s — an apparent ~0.5s regression. Investigated by
+live A/B on the harness (desk-commit an older app.hoon, measure, restore).
+
+What the experiments established:
+
+- **Grub count does not tax the floor.** With all 256 /idx/b bucket grubs
+  freshly rebuilt vs the index empty: no measurable difference. The
+  permanent-fiber-slot ceiling is about memory, not per-request time.
+- **Compiled-core size does not tax the floor.** app.hoon padded with 3.000
+  dead arms (7.069 -> 10.073 lines, desk v204): no measurable difference. No
+  surviving per-request nest against the whole core.
+- **The apparent regression tracks machine load, not code.** An early rollback
+  of the bucket-index commit looked ~0.2s faster, but later same-code samples
+  drifted to the same values as background load fell (load avg 1.3 -> 0.8;
+  several active sessions and builds on this box). The 0.78s baseline was
+  taken on an idle machine. tyr floors are only comparable idle — interleave
+  A/B samples in time before believing any delta under ~0.3s.
+- **Production is fine.** ~ricsul-bilwyt (urbit.sneagan.com, idle host)
+  serves the icon floor in 0.51-0.88s over TLS and a real WAN — at the
+  review-era tyr floor. User-felt latency there is still bounded by the
+  tier-5 poke cost, not by anything that landed since.
+
+No code fix warranted. The open levers stand: tier-5 experiments (vere 4.5
+vs 4.6, --keep-cache-limit), and one new tier-1 item —
+
+29. **Uploads pay one page-save per file, serialized.** A 20-file drop is
+    ~20 requests. The bucket-index rebuild already demonstrates the fix
+    shape: one request carrying N files, written as ONE bole (one %make
+    dart, one tree hash), plus local tree patching in the client. Collapses
+    a folder upload to a single request. Hoon-side; the evaluator-respawn
+    caveats in +instantiate-template do not apply to plain content kinds.
