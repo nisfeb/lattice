@@ -781,6 +781,76 @@
     ?.  landed
       (send-err eyre-id 403 'write did not land — no make permission on that path?')
     (send-ok eyre-id)
+  ::  ── sharing groups: the permission editor (see +share-groups-json) ──
+      [%'GET' %share-groups]
+    ;<  j=json  bind:m  share-groups-json
+    (send-json eyre-id j)
+  ::  save = replace a group's ships and its UI-managed grants. Body JSON:
+  ::  {ships: ["~nec"], peek: ["/apps/..."], make: ["/apps/..."]}.
+  ::
+  ::  PRESERVED, never replaced: the poke set (the editor has no business
+  ::  granting eval power) and any road shape the editor can't render — both
+  ::  carried through from the stored weir verbatim.
+      [%'POST' %share-group-save]
+    =/  gname=(unit @t)  (~(get by args) 'name')
+    ?~  gname  (send-err eyre-id 400 'missing name')
+    ?.  ((sane %tas) u.gname)
+      (send-err eyre-id 400 'group name: lowercase letters, digits, hyphens')
+    =/  jon=(unit json)  (de:json:html (req-body req))
+    ?~  jon  (send-err eyre-id 400 'bad json')
+    =/  pr=(each [ships=(list @t) peek=(list @t) make=(list @t)] tang)
+      %-  mule  |.
+      %.  u.jon
+      %-  ot:dejs:format
+      :~  ships+(ar:dejs:format so:dejs:format)
+          peek+(ar:dejs:format so:dejs:format)
+          make+(ar:dejs:format so:dejs:format)
+      ==
+    ?:  ?=(%| -.pr)  (send-err eyre-id 400 'expected {ships, peek, make}')
+    =/  ships=(list (unit @p))  (turn ships.p.pr |=(t=@t (slaw %p t)))
+    ?:  (lien ships |=(u=(unit @p) ?=(~ u)))
+      ::  a typo'd ship silently dropped = someone believes they granted
+      ::  access and did not. Reject the whole save instead.
+      (send-err eyre-id 400 'bad ship name in list')
+    =/  parse-paths
+      |=  ts=(list @t)
+      ^-  (unit (list path))
+      =|  out=(list path)
+      |-  ^-  (unit (list path))
+      ?~  ts  `(flop out)
+      =/  pp=(each path tang)  (mule |.((stab i.ts)))
+      ?:  ?=(%| -.pp)  ~
+      ::  grants stay under /apps. A peek grant on /sys leaks ACLs and silo
+      ::  internals; a make grant there lets a peer edit your usergroups. The
+      ::  dojo can still do it deliberately; this editor will not do it by
+      ::  accident.
+      ?.  ?=([%apps *] p.pp)  ~
+      $(ts t.ts, out [p.pp out])
+    =/  pkp=(unit (list path))  (parse-paths peek.p.pr)
+    =/  mkp=(unit (list path))  (parse-paths make.p.pr)
+    ?:  |(?=(~ pkp) ?=(~ mkp))
+      (send-err eyre-id 400 'grant paths must be absolute and under /apps')
+    =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
+    ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
+    =/  to-roads
+      |=  ps=(list path)
+      ^-  (set road:tarball)
+      (~(gas in *(set road:tarball)) (turn ps |=(p=path [%& %| p])))
+    =/  =weir:nexus
+      :+  (~(uni in (ug-keep make.old)) (to-roads u.mkp))
+        poke.old
+      (~(uni in (ug-keep peek.old)) (to-roads u.pkp))
+    =/  who=(set @p)  (~(gas in *(set @p)) (murn ships same))
+    ;<  ~  bind:m  (over:io [%& %& gdir %'who.ships'] [[/ %ships] who])
+    ;<  ~  bind:m  (over:io [%& %& gdir %'how.weir'] [[/ %weir] weir])
+    (send-ok eyre-id)
+      [%'POST' %share-group-del]
+    =/  gname=(unit @t)  (~(get by args) 'name')
+    ?~  gname  (send-err eyre-id 400 'missing name')
+    ?.  ((sane %tas) u.gname)  (send-err eyre-id 400 'bad name')
+    =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
+    ;<  *  bind:m  (cull-soft:io [%& %| gdir])
+    (send-ok eyre-id)
   ::  ── obelisk bridge (catalog; step 5) ──
   ::  run a urQL write/DDL against %obelisk. GET /obelisk-exec?db=<db>&q=<urql>.
   ::  ponytail: GET for easy curl-testing the bridge; the real crawler drives this
@@ -4904,6 +4974,80 @@
 ::  +take-peek-or-wake: resolve on the matching %peek response OR our timer wake.
 ::  Sibling of take-news-or-wake; a %veto counts as give-up (~), like a timeout.
 ::
+::  ── sharing groups (the permission editor's backend) ────────────────────
+::  A grubbery usergroup is a directory /sys/ames/usergroups/<name>.grp/ with
+::  two grubs: who.ships (set @p, blot [/ %ships]) and how.weir (weir:nexus,
+::  blot [/ %weir]). Grubbery recomputes effective weirs on any change, so
+::  writing the grubs IS the whole API — the same primitive its own MCP tools
+::  use. The editor speaks read=peek / edit=make; poke is deliberately never
+::  exposed: a poke grant on main.sig is full eval power, not "edit a file".
+::
+++  ug-base  `path`/sys/ames/usergroups
+::  +ug-dirfold-paths: the roads a UI can render (absolute dir folds), plus a
+::  count of the ones it can't. The count matters: the editor must SAY it is
+::  preserving rules it doesn't show, or a user auditing their ACL is misled.
+++  ug-dirfold-paths
+  |=  rs=(set road:tarball)
+  ^-  [ps=(list @t) opaque=@ud]
+  %+  roll  ~(tap in rs)
+  |=  [r=road:tarball acc=[ps=(list @t) opaque=@ud]]
+  ?:  ?=([%& %| *] r)  [[(spat p.p.r) ps.acc] opaque.acc]
+  [ps.acc +(opaque.acc)]
+::  +ug-keep: the roads the UI does NOT manage, carried through a save
+::  verbatim. Silently dropping an ACL rule the editor couldn't render would
+::  be this feature's worst possible bug.
+++  ug-keep
+  |=  rs=(set road:tarball)
+  ^-  (set road:tarball)
+  %-  ~(gas in *(set road:tarball))
+  (skip ~(tap in rs) |=(r=road:tarball ?=([%& %| *] r)))
+::  +ug-read-weir: a group's stored weir, bunt if absent/undecodable.
+++  ug-read-weir
+  |=  gdir=path
+  =/  m  (fiber:fiber:nexus ,weir:nexus)
+  ^-  form:m
+  ;<  hv=view:nexus  bind:m  (peek:io [%& %& gdir %'how.weir'] ~)
+  ?.  ?=([%file *] hv)  (pure:m *weir:nexus)
+  (pure:m (fall (mole |.(;;(weir:nexus (sang-noun:tarball sang.hv)))) *weir:nexus))
+::  +share-groups-json: every usergroup, decoded for the editor.
+++  share-groups-json
+  =/  m  (fiber:fiber:nexus ,json)
+  ^-  form:m
+  ;<  dn=view:nexus  bind:m  (peek-shallow:io [%& %| ug-base] ~)
+  ?.  ?=([%ball *] dn)  (pure:m a+~)
+  (share-groups-loop (sort ~(tap in ~(key by dir.ball.dn)) aor) ~)
+::  a named arm, not |- — a $() after a ;< bind recurses the bind's inner
+::  gate, not the trap. Every fiber loop in this file is shaped this way.
+++  share-groups-loop
+  |=  [names=(list @ta) out=(list json)]
+  =/  m  (fiber:fiber:nexus ,json)
+  ^-  form:m
+  ?~  names  (pure:m a+(flop out))
+  =/  nt=tape  (trip i.names)
+  ?.  &((gth (lent nt) 4) =(".grp" (slag (sub (lent nt) 4) nt)))
+    (share-groups-loop t.names out)
+  =/  base=@t  (crip (scag (sub (lent nt) 4) nt))
+  =/  gdir=path  (snoc ug-base i.names)
+  ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
+  =/  ships=(list @p)
+    ?.  ?=([%file *] wv)  ~
+    %+  fall
+      (mole |.((sort ~(tap in ;;((set @p) (sang-noun:tarball sang.wv))) lth)))
+    ~
+  ;<  w=weir:nexus  bind:m  (ug-read-weir gdir)
+  =/  pk  (ug-dirfold-paths peek.w)
+  =/  mk  (ug-dirfold-paths make.w)
+  =/  po  (ug-dirfold-paths poke.w)
+  =/  gj=json
+    %-  pairs:enjs:format
+    :~  ['name' s+base]
+        ['ships' a+(turn ships |=(s=@p s+(scot %p s)))]
+        ['peek' a+(turn ps.pk |=(t=@t s+t))]
+        ['make' a+(turn ps.mk |=(t=@t s+t))]
+        ['poke' a+(turn ps.po |=(t=@t s+t))]
+        ['opaque' (numb:enjs:format :(add opaque.pk opaque.mk opaque.po))]
+    ==
+  (share-groups-loop t.names [gj out])
 ::  +remote-load-poke: send a %grubbery-load to another ship and wait for the
 ::  gall ack. Modeled on +gall-poke-or-nack (fiberio), which is our-ship-only;
 ::  a bare +gall-poke:io would CRASH the request fiber on a remote nack, taking
