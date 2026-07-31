@@ -46,6 +46,14 @@ pub fn ensure(state: &Bridge, ship_base: &str) -> Result<String, String> {
     Ok(format!("http://127.0.0.1:{port}"))
 }
 
+/// one shared agent: its pool keeps ship connections (and TLS sessions)
+/// alive across requests — a per-request agent paid a fresh TCP+TLS
+/// handshake to the ship for every asset, which dominated remote loads
+fn agent() -> &'static ureq::Agent {
+    static A: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    A.get_or_init(|| ureq::AgentBuilder::new().redirects(0).build())
+}
+
 fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
     client.set_nodelay(true).ok();
     let mut reader = BufReader::new(client.try_clone()?);
@@ -88,8 +96,7 @@ fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
     }
     crate::commands::dlog(&format!("bridge: {method} {target}"));
 
-    let agent = ureq::AgentBuilder::new().redirects(0).build();
-    let mut req = agent.request(&method, &format!("{ship}{target}"));
+    let mut req = agent().request(&method, &format!("{ship}{target}"));
     for (k, v) in &headers {
         req = req.set(k, v);
     }
