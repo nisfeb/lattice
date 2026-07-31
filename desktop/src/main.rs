@@ -44,7 +44,23 @@ fn main() {
         })
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
         .manage(proxy::Bridge(Mutex::new(None)))
+        .on_menu_event(|app, ev| {
+            // the manager (connect + mounts) hides once the workspace is up —
+            // this is its way back
+            if ev.id().as_ref() == "manager" {
+                if let Some(m) = app.get_webview_window("manager") {
+                    m.show().ok();
+                    m.set_focus().ok();
+                }
+            }
+        })
         .setup(|app| {
+            // one menu, one item: mounts lived in an unreachable window once
+            // the manager auto-hid after connect
+            let sub = tauri::menu::SubmenuBuilder::new(app, "lattice")
+                .text("manager", "connection && mounts…")
+                .build()?;
+            app.set_menu(tauri::menu::MenuBuilder::new(app).items(&[&sub]).build()?)?;
             let handle = app.handle().clone();
             // LATTICE_AUTOCONNECT="url,+code": drive the real connect flow
             // without a display — the headless test harness's entry point.
