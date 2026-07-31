@@ -1842,7 +1842,22 @@
       [%'GET' %settings]
     (send-html eyre-id (render-page "" "" settings-html))
       [%'POST' %catalog-sweep]
+    ::  ACK, YIELD, THEN SCAN. This already acked first, but a fiber's
+    ::  effects only flush when it YIELDS, and +catalog-scan-self never does
+    ::  — it runs to completion inside a single event. So the response sat
+    ::  behind the whole scan and the button spun ~21s (measured; ~107s once
+    ::  the store grew) while the page claimed the work was already
+    ::  backgrounded. The one-second sleep ends the event, the ack goes out,
+    ::  and the scan resumes on the wake.
+    ::
+    ::  Handing this to /crawler.sig would be tidier — one sweeper, and it
+    ::  owns the ~h6 tick — but an internal poke is only acked once the
+    ::  target fiber reaches a take, and pokes sent to the crawler never
+    ::  produced a scan (verified: page-tree held ~1.8s throughout, where a
+    ::  real scan stalls it for a minute-plus). Not worth a silent no-op
+    ::  button until that is understood.
     ;<  ~  bind:m  (send-ok eyre-id)
+    ;<  ~  bind:m  (sleep-draining ~s1)
     ;<  *  bind:m  catalog-scan-self
     ;<  now=@da  bind:m  bowl-now
     ;<  *  bind:m  (catalog-scan-peers our now)
