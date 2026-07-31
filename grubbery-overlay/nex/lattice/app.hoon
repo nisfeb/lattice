@@ -2603,7 +2603,9 @@
   ::  the others 3-cells — the face sits at different axes).
   ?-  -.act
       %make
-    (make-page root pax.act src.act)
+    ;<  ~  bind:m  (make-page root pax.act src.act)
+    ::  a shared page's vault copy follows every write, not just the share click
+    (republish-if-shared root now pax.act src.act)
       %tmpl-save
     ::  save a page-tree as a template: copy every page's CODE under
     ::  /template/<name>, rewriting its own root path to the template root, and
@@ -2948,6 +2950,34 @@
   =/  body=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.dn))))
   ?~  body  (pure:m ~)
   (apply-pub root now [%save-page key u.body])
+::  +republish-if-shared: refresh a page's published vault copy after a write.
+::  urb:// names a LIVE page (docs/urls.md), but until this arm the vault copy
+::  was a snapshot taken only when the share preset was SET — every later edit
+::  left urb:// readers (own front door included) on the stale body forever.
+::
+::  The body comes from the make's own src (unwrapped), NOT the data grub:
+::  the evaluator recomputes data AFTER the writer moves on, so a data peek
+::  here publishes the PREVIOUS revision (verified: one save behind).
+::  ponytail: computed (hoon/index) pages keep share-time snapshots — their
+::  body lands async; a data-keep publisher fiber is the upgrade path.
+::  Non-content saves cost nothing; private content pages cost one peek.
+::
+++  republish-if-shared
+  |=  [root=path now=@da rel=path src=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
+  ?~  un  (pure:m ~)
+  =/  pdir=path  (weld root (weld /page rel))
+  ;<  sx=?  bind:m  (peek-exists:io [%& %& pdir %share])
+  ?.  sx  (pure:m ~)
+  ;<  sv=view:nexus  bind:m  (peek:io [%& %& pdir %share] ~)
+  ?.  ?=([%file *] sv)  (pure:m ~)
+  =/  mode=(unit share-mode:le)
+    (mole |.(;;(share-mode:le (sang-noun:tarball sang.sv))))
+  ?~  mode  (pure:m ~)
+  ?:  ?=(%private u.mode)  (pure:m ~)
+  (apply-pub root now [%save-page (spat (pub-path (crip (pax-str rel)))) body.u.un])
 ::  +make-page: create a page at `pax` under /page with the given code — the
 ::  shared body of the %make action and template instantiation. cmd + deps
 ::  first (the code grub's fiber reads both at spawn), then the code.
