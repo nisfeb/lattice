@@ -244,3 +244,84 @@ vs 4.6, --keep-cache-limit), and one new tier-1 item —
     dart, one tree hash), plus local tree patching in the client. Collapses
     a folder upload to a single request. Hoon-side; the evaluator-respawn
     caveats in +instantiate-template do not apply to plain content kinds.
+
+---
+
+## 2026-07-31 — desktop boot and file toggling
+
+sneagan: "5 seconds from first click until the editor is loaded and 1 second
+or more toggling between files even if the file was already opened."
+Measured against ~ricsul-bilwyt (urbit.sneagan.com) from the laptop.
+
+**The binding constraint is request COUNT, not bytes.**
+
+| probe | ttfb | ship-side |
+|---|---|---|
+| ping RTT | 34ms | — |
+| `/~/name` (plain eyre, 14 bytes) | 150ms | ~115ms |
+| `/apps/lattice/icon.svg` (870 hardcoded bytes) | ~445ms | ~410ms |
+| `/apps/lattice/app/app.js` (98.8KB) | 567ms | ~410ms + ~100ms transfer |
+
+Size is irrelevant; the floor is per-request. And **the pier serializes**: six
+requests in parallel measured 2.62s against 2.75s in series, so fetching wider
+buys nothing. ~300ms of each lattice request is our own per-request fiber
+dispatch, not Urbit — `icon.svg` is a compile-time constant returned before the
+auth gate and before any peek, yet costs 3x a plain eyre route. That last item
+is the highest-leverage number in the system and is deliberately NOT addressed
+here (it is grubbery-side surgery); everything below reduces the count instead.
+
+Cold editor load was ~12 serialized requests (reader home, `/app` doc,
+prism.js, app.js, manifest, icon-192, sw.js, share-groups, shared-with-me,
+page-tree, legacy-status, page-source) — 12 x ~450ms = the reported 5s.
+Toggling was 1-2 requests because `openPage` had no body cache at all and
+localStorage held exactly one page.
+
+Fixed, in descending order of payoff:
+
+30. **The desktop bridge bound an ephemeral port.** `TcpListener::bind(("127.
+    0.0.1", 0))` gave every launch a different port, hence a different web
+    ORIGIN, hence an empty service-worker cache and empty localStorage every
+    single start. The desktop could never reuse anything and never got
+    `bootSnap()`'s paint-from-snapshot — which is precisely why it felt slower
+    than the same UI in a browser, where the origin is stable. Now a
+    deterministic port (41863, probing a 16-wide range), and the listener is
+    re-pointed rather than rebound when the ship changes.
+31. **The app opened on the reader.** Reaching the editor was a SECOND full
+    document load (16KB shell + 124KB of JS), so "first click" cost a whole
+    page load. The desktop now opens `/apps/lattice/app` directly; `urb://`
+    links still route to the reader through the navigation guard.
+32. **`page-tree` replaced by `page-dump` on boot.** The dump returns the same
+    nodes PLUS every page body from ONE deep peek, and measured FASTER than
+    page-tree (0.95s vs 1.16s — page-tree re-peeks each code grub). Those
+    bodies are what make a toggle free. No hoon change: the route already
+    existed for the FUSE client.
+33. **`openPage` now has three tiers.** Cached render -> 0 requests; body from
+    the dump -> paint the editor immediately and fetch only to fill `share`
+    and the preview; nothing -> as before. Re-opening a page costs nothing.
+34. **share-groups and shared-with-me deferred.** Issued at parse time they
+    put two round-trips AHEAD of the tree on a serialized pier; neither is
+    needed to read or edit. Boot calls them once the editor is usable.
+35. **Shell revalidation deferred 5s in the service worker.** The shell and
+    app.js are `no-cache`, so a warm boot still re-fetched both; served from
+    cache at 0ms, they nonetheless queued ahead of `page-dump`. On a cache hit
+    the revalidation is now held behind a `waitUntil` timer, so page-dump wins
+    the pier. Verified: it moved from 3rd to 2nd request, with both shell
+    revalidations landing last.
+
+Net on a warm desktop launch: the critical path is ONE request (page-dump),
+with the tree and last page painted from localStorage before it. Re-opening a
+page is zero requests.
+
+Cache invalidation is rev-based, and pruning only on FORWARD movement matters:
+comparing revs for mere inequality evicted good entries whenever the dump
+trailed page-source by one revision, which it does right after a write (the
+evaluator settles after the writer). That bug showed up as a flaky check
+before it showed up as a slow toggle.
+
+Checked by `scripts/ui-perf.mjs` (headless Chromium, asserts request COUNTS —
+wall-clock on a shared harness ship is noise). `scripts/ui-matrix.mjs` still
+passes. Both run against tyr; never production.
+
+Still open: item 29 (batch upload), the ~300ms fiber dispatch above, and
+URL-versioning the bundle so app.js could be `immutable` and skip
+revalidation entirely rather than merely deferring it.

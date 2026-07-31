@@ -24,6 +24,12 @@
   // (the own-write echo is suppressed, so nothing would correct it until the
   // 30s poll). Bumped on every local mutation; stale responses are dropped.
   let treeGen = 0, knowGen = 0;
+  // rendered page-source answers, by name. The tree dump already carries every
+  // body, so this only adds what the dump lacks — `share` and the rendered
+  // `html` — which makes re-opening a page cost ZERO requests instead of a
+  // ~0.5s round-trip. Dropped whenever the ship reports a change (the beacon
+  // clears it) or when this client writes the page.
+  const pageCache = new Map();
   const snapTree = () => {
     treeGen++;
     try { localStorage.appTree = JSON.stringify(nodes); } catch {}

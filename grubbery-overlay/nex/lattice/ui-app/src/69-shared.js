@@ -44,4 +44,4 @@
       host.appendChild(row);
     }
   }
-  loadShared();
+  // deferred to boot, same reason as loadPerms — see 67-perms.js.
