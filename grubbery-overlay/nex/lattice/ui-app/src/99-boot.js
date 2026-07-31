@@ -32,9 +32,24 @@
     loadPanels();
   } else {
     const painted = bootSnap();
+    // what the snapshot painted, if anything — the baseline for "did the USER
+    // do something while the dump was in flight?"
+    const bootCurrent = current;
     loadTree().then(() => {
       const name = qs.get('name');
       const into = qs.get('into');
+      // The tree paints from localStorage at 0ms, so it is clickable long
+      // before this resolves. Anything boot does by default would then land on
+      // top of the user's own action — opening a page and having it close a
+      // second later, which is exactly what the trailing newFile('') did.
+      // Compare against bootCurrent, not against null: a snapshot-painted page
+      // is not a user action and still wants its refreshOpen reconcile.
+      const touched = current !== bootCurrent || curFolder !== null || dirty;
+      if (touched) {
+        legacyCheck();
+        loadPanels();
+        return;
+      }
       if (name) {
         if (painted && current === name) refreshOpen();
         else openPage(name);

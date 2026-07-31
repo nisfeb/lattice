@@ -1024,6 +1024,11 @@
       this.innerHTML =
         '<iframe class="prev" id="prev" title="live preview"></iframe>';
       prev = $('prev');
+      // blank it NOW, not when the first page opens. An iframe with no srcdoc
+      // is an opaque white canvas, and the first thing that used to call
+      // prevBlank was boot's trailing newFile() — so the pane sat white for
+      // the whole load and then popped to the theme background.
+      prevBlank();
     }
   });
   // stale-shell guard: swap a cached pre-component shell's literal iframe
@@ -2494,9 +2499,24 @@
     loadPanels();
   } else {
     const painted = bootSnap();
+    // what the snapshot painted, if anything — the baseline for "did the USER
+    // do something while the dump was in flight?"
+    const bootCurrent = current;
     loadTree().then(() => {
       const name = qs.get('name');
       const into = qs.get('into');
+      // The tree paints from localStorage at 0ms, so it is clickable long
+      // before this resolves. Anything boot does by default would then land on
+      // top of the user's own action — opening a page and having it close a
+      // second later, which is exactly what the trailing newFile('') did.
+      // Compare against bootCurrent, not against null: a snapshot-painted page
+      // is not a user action and still wants its refreshOpen reconcile.
+      const touched = current !== bootCurrent || curFolder !== null || dirty;
+      if (touched) {
+        legacyCheck();
+        loadPanels();
+        return;
+      }
       if (name) {
         if (painted && current === name) refreshOpen();
         else openPage(name);

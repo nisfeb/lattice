@@ -6,6 +6,11 @@
       this.innerHTML =
         '<iframe class="prev" id="prev" title="live preview"></iframe>';
       prev = $('prev');
+      // blank it NOW, not when the first page opens. An iframe with no srcdoc
+      // is an opaque white canvas, and the first thing that used to call
+      // prevBlank was boot's trailing newFile() — so the pane sat white for
+      // the whole load and then popped to the theme background.
+      prevBlank();
     }
   });
   // stale-shell guard: swap a cached pre-component shell's literal iframe
