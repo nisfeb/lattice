@@ -85,7 +85,10 @@
         ::  just state we hold and hand to the engine.
             [%fall %& [/ %'db.lattice'] [[/obelisk %server] *db-state:sst]]
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
-        ::  /legacy: the retired-agent marker lives here (see +legacy-mark-road)
+        ::  /legacy: provenance grubs from the one-time gall-agent import
+        ::  (2026-07, resolved everywhere). The import code is gone; this row
+        ::  stays because removing a covering row DELETES its subtree on
+        ::  reload, and these records are proof of what was migrated.
             [%fall %| /legacy empty-dir:loader]
             [%fall %| /know/vault empty-dir:loader]
             [%fall %| /know/trash-vault empty-dir:loader]
@@ -951,20 +954,6 @@
     =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
     ;<  *  bind:m  (cull-soft:io [%& %| gdir])
     (send-ok eyre-id)
-  ::  ── obelisk bridge (catalog; step 5) ──
-  ::  run a urQL write/DDL against %obelisk. GET /obelisk-exec?db=<db>&q=<urql>.
-  ::  ponytail: GET for easy curl-testing the bridge; the real crawler drives this
-  ::  arm internally and search reads via obelisk-query.
-      [%'GET' %obelisk-exec]
-    =/  db=@tas  (~(gut by args) 'db' 'sys')
-    =/  q=(unit @t)  (~(get by args) 'q')
-    ?~  q  (send-err eyre-id 400 'missing q param')
-    ::  a WRITE route, so it goes to the writer via +catalog-run. Run on
-    ::  +obelisk-query it would execute against a read-only copy of the db and
-    ::  discard the result — reporting success for a change that never landed.
-    ;<  ~  bind:m  (catalog-run db (trip u.q))
-    (send-ok eyre-id)
-  ::
       [%'GET' %obelisk-query]
     =/  db=@tas  (~(gut by args) 'db' 'sys')
     =/  q=(unit @t)  (~(get by args) 'q')
@@ -1983,130 +1972,6 @@
       [%'POST' %search-reindex]
     ;<  ~  bind:m  content-reindex
     (send-ok eyre-id)
-  ::  ── legacy agent migration (see the +legacy-live block) ────────────────
-  ::  legacy-status: should the UI offer to import from a retired %lattice
-  ::  gall agent? One %gu liveness scry and nothing else — see below. The
-  ::  client asks once per browser session and never again once resolved.
-      [%'GET' %legacy-status]
-    ;<  done=?  bind:m  legacy-resolved
-    ?:  done
-      (send-json eyre-id (pairs:enjs:format ~[['prompt' b+|] ['reason' s+'resolved']]))
-    ::  %gu ONLY. This route runs on the editor's boot path, and a %gx against
-    ::  an agent whose version lacks the arm does not fail gracefully — it
-    ::  unwinds the Arvo event. Liveness is the one thing %gu can answer
-    ::  safely, so the counts (and every peek that could bail) move behind the
-    ::  user's explicit click in /legacy-migrate.
-    ;<  up=?  bind:m  legacy-live
-    %+  send-json  eyre-id
-    %-  pairs:enjs:format
-    :~  ['prompt' b+up]
-        ['reason' s+?:(up 'agent-present' 'absent')]
-    ==
-  ::  legacy-migrate: copy the retired agent's knowledge in. Entries whose key
-  ::  ALREADY exists here are SKIPPED, never overwritten — the live store is
-  ::  always the newer one, and a legacy body must never revert an edit made
-  ::  since. That also makes a re-run harmless.
-      [%'POST' %legacy-migrate]
-    ;<  done=?  bind:m  legacy-resolved
-    ?:  done  (send-err eyre-id 409 'already resolved')
-    ;<  up=?  bind:m  legacy-live
-    ?.  up  (send-err eyre-id 404 'no legacy agent')
-    ;<  aj=json  bind:m  (legacy-peek /gx/lattice/know/all/json)
-    =/  parsed=(each (list [@t know-entry:lk]) tang)  (mule |.((parse-import aj)))
-    ?:  ?=(%| -.parsed)  (send-err eyre-id 502 'bad legacy export shape')
-    ::  FAIL CLOSED. +read-know-map maps ANY unreadable view onto the empty
-    ::  map, which is indistinguishable from a legitimately empty store — and
-    ::  "empty" would mean every legacy entry imports over live data. Use the
-    ::  unit-returning read so a genuine read FAILURE refuses the import, while
-    ::  a real (readable) empty store still migrates normally.
-    ;<  esu=(unit (map path know-entry:lk))  bind:m  read-know-vault-safe
-    ?~  esu  (send-err eyre-id 503 'local store unreadable; import refused')
-    =/  es=(map path know-entry:lk)  u.esu
-    ::  skip anything we already hold LIVE or in TRASH — importing over a
-    ::  soft-deleted key would resurrect what the user deleted here.
-    ;<  tx=know-index:lk  bind:m  (read-index [%| 2 %& /know %trash])
-    =/  fresh=(list [@t know-entry:lk])
-      %+  skim  p.parsed
-      |=  [k=@t *]
-      =/  ko=(unit path)  (know-key k)
-      ?~(ko %.n ?!(|((~(has by es) u.ko) (~(has by tx) u.ko))))
-    ;<  n=@ud  bind:m  (import-know-loop fresh 0)
-    ::  ── pages ────────────────────────────────────────────────────────────
-    ::  Scoped to the rels the agent itself reports. ~ means we could not read
-    ::  its page list at all: treat that as UNKNOWN, never as "no pages", or
-    ::  the completion dialog would clear an agent that still holds the only
-    ::  copy of them.
-    ;<  prels=(unit (list path))  bind:m  legacy-page-rels
-    =/  want=(list path)  ?~(prels ~ u.prels)
-    ::  never let a legacy body land on a page we already have: %save-page is
-    ::  an unconditional upsert in the writer, so a name collision would
-    ::  overwrite the user's own published body. Drop collisions before
-    ::  triggering and report them as left-behind.
-    ;<  live-pages=(list path)  bind:m  (page-sources-present want)
-    ::  A legacy name can also collide with a page this nexus published but
-    ::  never had a source for (POST /save, know-publish). %save-page is an
-    ::  unconditional upsert, so triggering would overwrite the user's body.
-    ::  Anything ALREADY in the vault is therefore off limits — unless a prior
-    ::  run of this migration is what put it there.
-    ;<  prior=(list path)  bind:m  legacy-triggered
-    ;<  in-vault=(list path)  bind:m  (vault-present want)
-    =/  has  |=([l=(list path) r=path] (lien l |=(x=path =(x r))))
-    =/  theirs=(list path)
-      (skip in-vault |=(r=path (has prior r)))
-    =/  fresh-pages=(list path)
-      %+  skip  want
-      |=(r=path |((has live-pages r) (has theirs r)))
-    =/  nil  (fiber:fiber:nexus ,~)
-    ::  read the bodies directly (see +legacy-page-bodies) and write each one
-    ::  as a normal page. No poke, no waiting on another agent's cards, and no
-    ::  window in which arrivals can be missed: what we read is what we write.
-    ;<  bodies=(unit (list [rel=path body=@t]))  bind:m
-      ?:  =(~ fresh-pages)
-        (pure:(fiber:fiber:nexus ,(unit (list [rel=path body=@t]))) `~)
-      legacy-page-bodies
-    ;<  ~  bind:m
-      ?:  =(~ fresh-pages)  (pure:nil ~)
-      (poke-eval [%legacy-pages (weld prior fresh-pages)])
-    ;<  promoted=@ud  bind:m
-      ?~  bodies  (pure:(fiber:fiber:nexus ,@ud) 0)
-      (write-legacy-pages (skim u.bodies |=([r=path *] (has fresh-pages r))) 0)
-    ::  ONLY claim the migration is finished when nothing is left behind. A
-    ::  short count leaves the marker UNWRITTEN so the offer returns and the
-    ::  user can retry — the knowledge import is idempotent (skip-existing),
-    ::  so a retry costs nothing and finishes the pages.
-    =/  page-total=@ud  (lent want)
-    ::  "complete" means: we could read the page list, and every page we were
-    ::  allowed to move actually landed AND was promoted. Collisions count as
-    ::  NOT complete — those pages stay only in the old agent, so the agent
-    ::  must not be cleared for retirement.
-    =/  done=?
-      ?&  ?=(^ prels)
-          ?=(^ bodies)
-          =(promoted (lent fresh-pages))
-          =(0 (lent live-pages))
-          =(0 (lent theirs))
-      ==
-    ;<  ~  bind:m  ?:(done (poke-eval [%legacy-seen n]) (pure:nil ~))
-    %+  send-json  eyre-id
-    %-  pairs:enjs:format
-    :~  ['imported' (numb:enjs:format n)]
-        ['skipped' (numb:enjs:format (sub (lent p.parsed) (lent fresh)))]
-        ['pages' (numb:enjs:format page-total)]
-        ['pagesImported' (numb:enjs:format promoted)]
-        ['pagesCollided' (numb:enjs:format (add (lent live-pages) (lent theirs)))]
-        ::  why the trigger failed, when it did — the difference between
-        ::  "no pages arrived" and knowing the poke was refused
-        :-  'pageError'
-        ?~  bodies  s+'could not read the old agent\'s pages'
-        ~
-        ['pagesKnown' b+?=(^ prels)]
-        ['complete' b+done]
-    ==
-  ::  legacy-dismiss: the user declined. Same marker as a completed import, so
-  ::  the prompt never returns.
-      [%'POST' %legacy-dismiss]
-    ;<  ~  bind:m  (poke-eval [%legacy-seen 0])
-    (send-ok eyre-id)
   ::  bulk import: body = a /know-all export; lands each entry VERBATIM (tags +
   ::  original updated preserved) via %import. Owner-only.
       [%'POST' %know-import]
@@ -2201,230 +2066,6 @@
     ;<  ~  bind:m  (poke-pub [%save-page (spat p.pp) body.u.e])
     (send-ok eyre-id)
   ==
-::  ── legacy %lattice gall agent (pre-grubbery) ─────────────────────────────
-::  A ship that ran the standalone agent before the nexus may still have it
-::  installed, holding knowledge the nexus never saw. We offer a one-time
-::  in-app import rather than migrating silently: the entries are the user's,
-::  and which store they want them in is their call.
-::
-::  DETECTION IS %gu, NEVER a bare %gx. A %gx against an absent agent BAILS,
-::  and a bail here crashes the whole Arvo event (the same trap documented on
-::  +obelisk-exec). %gu answers %.n instead. So: liveness first, peek second.
-::
-++  legacy-live
-  =/  m  (fiber:fiber:nexus ,?)
-  ^-  form:m
-  (typed-scry:io ? %loob /gu/lattice/$)
-::  +legacy-peek: read one of the retired agent's export arms. ONLY call this
-::  behind a +legacy-live check.
-++  legacy-peek
-  |=  pax=path
-  =/  m  (fiber:fiber:nexus ,json)
-  ^-  form:m
-  (typed-scry:io json %json pax)
-::  +legacy-mark: the "done with the old agent" marker. Its EXISTENCE is the
-::  whole signal (the body is detail for humans), so the read is a peek-exists
-::  and can never mis-parse. Written on a completed import AND on an explicit
-::  dismissal, so neither path ever prompts again.
-++  legacy-mark-road  ^-(road:tarball [%& %& (weld app-base:lu /legacy) %state])
-++  legacy-resolved
-  =/  m  (fiber:fiber:nexus ,?)
-  ^-  form:m
-  (peek-exists:io legacy-mark-road)
-::  +legacy-pages: how many PAGES the retired agent still holds. This import
-::  moves knowledge only — the old agent exposes no arm for page BODIES
-::  (%published and %live-list give paths and hashes, nothing more) — so pages
-::  stay behind. We count them because a user who retires the agent while pages
-::  remain loses them permanently, and the completion dialog has to say so.
-::  Called ONLY from /legacy-migrate, never on the boot path: like every %gx it
-::  can bail on an agent whose version lacks the arm, so it stays behind the
-::  user's explicit click.
-++  legacy-pages
-  =/  m  (fiber:fiber:nexus ,@ud)
-  ^-  form:m
-  ;<  pj=json  bind:m  (legacy-peek /gx/lattice/live-list/json)
-  =/  r=(each @ud tang)
-    (mule |.(((ot:dejs:format count+ni:dejs:format ~) pj)))
-  (pure:m ?:(?=(%| -.r) 0 p.r))
-::  ── legacy PAGE migration ─────────────────────────────────────────────────
-::  The retired agent exposes no scry arm for page BODIES, and %grow'n content
-::  is not served on %gx (both verified). It does still carry its phase-1
-::  endpoint POST /pub-migrate, which emits one `%save-page` poke per page at
-::  this nexus's writer — a native pub-action, so bodies land in /pub/vault.
-::  That endpoint is HTTP-only and grubbery shadows /apps/lattice, so we hand
-::  the agent the request as a poke.
-::
-::  EVERYTHING here is scoped to the page paths the agent itself reports. An
-::  earlier draft promoted the whole vault and derived its counts from it,
-::  which conflated the user's OWN published pages with legacy arrivals and
-::  could report success while pages were still only in the old agent.
-::
-::  +legacy-key-rel: a legacy content key ('/pub/index/gmi') -> the nexus page
-::  rel (/index). ~ for anything that is not that shape.
-++  legacy-key-rel
-  |=  k=@t
-  ^-  (unit path)
-  =/  pu=(unit path)  (mole |.(`path`(stab k)))
-  ?~  pu  ~
-  ?.  ?=([%pub *] u.pu)  ~
-  ?~  t.u.pu  ~
-  ::  re-widen after the ?~: scag/rear are wet gates and mull-grow against the
-  ::  narrowed (non-null) type, which is a nest-fail at the call site.
-  =/  r=path  `path`t.u.pu
-  ?.  =(%gmi (rear r))  ~
-  ?:  =(1 (lent r))  ~
-  `(scag (dec (lent r)) r)
-::  +legacy-page-rels: the pages the retired agent holds, as nexus rels. A
-::  shape mismatch yields ~, which callers MUST treat as "unknown", never as
-::  "none" — reporting zero pages is what would wrongly clear the agent for
-::  uninstall.
-++  legacy-page-rels
-  =/  m  (fiber:fiber:nexus ,(unit (list path)))
-  ^-  form:m
-  ;<  pj=json  bind:m  (legacy-peek /gx/lattice/live-list/json)
-  =/  r=(each (list @t) tang)
-    (mule |.(((ot:dejs:format paths+(ar:dejs:format so:dejs:format) ~) pj)))
-  ?:  ?=(%| -.r)  (pure:m ~)
-  (pure:m `(murn p.r legacy-key-rel))
-::  +legacy-triggered: page rels a previous run already triggered. These are
-::  known to be migration-origin, so a vault entry for one of them is ours to
-::  promote rather than a pre-existing page of the user's to protect.
-++  legacy-triggered
-  =/  m  (fiber:fiber:nexus ,(list path))
-  ^-  form:m
-  ;<  sn=view:nexus  bind:m
-    (peek:io [%& %& (weld app-base:lu /legacy) %pages] ~)
-  ?.  ?=([%file *] sn)  (pure:m ~)
-  =/  j=(unit json)  (mole |.(;;(json (sang-noun:tarball sang.sn))))
-  ?~  j  (pure:m ~)
-  =/  r=(each (list @t) tang)  (mule |.(((ar:dejs:format so:dejs:format) u.j)))
-  ?:  ?=(%| -.r)  (pure:m ~)
-  (pure:m (murn p.r |=(c=@t (mole |.(`path`(stab c))))))
-::  +legacy-page-bodies: the retired agent's page bodies, by SCRY.
-::
-::  The deployed agents carry a `[%x %content ~]` peek that dumps the content
-::  map as {spat-key: gemtext} — the temporary migration arm from the original
-::  cutover. That is the same %gx mechanism the knowledge import uses, and it
-::  needs nothing from the agent beyond a read.
-::
-::  This replaces an earlier design that poked the agent's own /pub-migrate
-::  endpoint. That endpoint does not exist in the deployed version (state-10
-::  has no pub-migrate at all), so the poke was delivered, matched no route,
-::  404'd, emitted nothing, and acked positively — a silent no-op that cost a
-::  long debugging cycle. Read what the agent actually exposes.
-::
-++  legacy-page-bodies
-  =/  m  (fiber:fiber:nexus ,(unit (list [rel=path body=@t])))
-  ^-  form:m
-  ;<  cj=json  bind:m  (legacy-peek /gx/lattice/content/json)
-  =/  r=(each (map @t @t) tang)
-    (mule |.(((om:dejs:format so:dejs:format) cj)))
-  ?:  ?=(%| -.r)  (pure:m ~)
-  %-  pure:m
-  :-  ~
-  %+  murn  ~(tap by p.r)
-  |=  [k=@t v=@t]
-  ^-  (unit [path @t])
-  =/  ko=(unit path)  (legacy-key-rel k)
-  ?~  ko  ~
-  ?:  =('' v)  ~
-  `[u.ko v]
-::  +await-vault: wait for `rels` to appear in the vault, checking every 2s up
-::  to `tries`. Replaces a fixed sleep: the arrivals are one writer
-::  transaction per page, so the time needed scales with page count, and a
-::  fixed window would strand the tail.
-++  await-vault
-  |=  [rels=(list path) tries=@ud]
-  =/  m  (fiber:fiber:nexus ,(list path))
-  ^-  form:m
-  |-  ^-  form:m
-  ;<  here=(list path)  bind:m  (vault-present rels)
-  ?:  =((lent here) (lent rels))  (pure:m here)
-  ?:  =(0 tries)  (pure:m here)
-  ;<  ~  bind:m  (sleep:io ~s2)
-  $(tries (dec tries))
-::  +vault-present: which of `rels` currently have a vault body.
-++  vault-present
-  |=  rels=(list path)
-  =/  m  (fiber:fiber:nexus ,(list path))
-  ^-  form:m
-  ?~  rels  (pure:m ~)
-  ;<  ex=?  bind:m
-    (peek-exists:io [%& %& (weld (weld app-base:lu /pub/vault) i.rels) %gmi])
-  ;<  rest=(list path)  bind:m  $(rels t.rels)
-  (pure:m ?:(ex [i.rels rest] rest))
-::  +page-sources-present: which of `rels` already exist as editable pages.
-::  Used to refuse a legacy page whose name collides with one of ours, since
-::  the writer's %save-page is an unconditional upsert.
-++  page-sources-present
-  |=  rels=(list path)
-  =/  m  (fiber:fiber:nexus ,(list path))
-  ^-  form:m
-  ?~  rels  (pure:m ~)
-  ;<  ex=?  bind:m
-    (peek-exists:io [%& %& (weld app-base:lu (weld /page i.rels)) %code])
-  ;<  rest=(list path)  bind:m  $(rels t.rels)
-  (pure:m ?:(ex [i.rels rest] rest))
-::  +write-legacy-pages: create an editable page per legacy body. Skips any
-::  rel that already has a source — the collision guard runs before this, but
-::  the check is cheap and this must never overwrite a page of the user's.
-++  write-legacy-pages
-  |=  [items=(list [rel=path body=@t]) made=@ud]
-  =/  m  (fiber:fiber:nexus ,@ud)
-  ^-  form:m
-  ?~  items  (pure:m made)
-  =/  pdir=path  (weld app-base:lu (weld /page rel.i.items))
-  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
-  ?:  ex  $(items t.items)
-  ::  the editable source…
-  ;<  ~  bind:m  (poke-eval [%make rel.i.items (wrap-content %gmi body.i.items)])
-  ::  …AND publish it. These pages were PUBLISHED in the old agent — that is
-  ::  what made the urb:// links between them resolve. Creating only the source
-  ::  leaves the vault empty, so every internal link 404s and the pages look
-  ::  migrated but broken. %save-page writes the vault grub and gains it,
-  ::  restoring exactly the visibility they already had.
-  ;<  ~  bind:m
-    (poke-pub [%save-page (spat (pub-path (crip (pax-str rel.i.items)))) body.i.items])
-  $(items t.items, made +(made))
-::  +promote-pages: create an editable /page source for each named rel that
-::  has a vault body and no source yet. SCOPED to the rels passed in - never
-::  walks the whole vault, so it can neither resurrect a page the user deleted
-::  nor manufacture pages from their own published-only content.
-++  promote-pages
-  |=  rels=(list path)
-  =/  m  (fiber:fiber:nexus ,@ud)
-  ^-  form:m
-  =|  made=@ud
-  |-  ^-  form:m
-  ?~  rels  (pure:m made)
-  =/  pdir=path  (weld app-base:lu (weld /page i.rels))
-  ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
-  ?:  ex  $(rels t.rels)
-  ;<  vn=view:nexus  bind:m
-    (peek:io [%& %& (weld (weld app-base:lu /pub/vault) i.rels) %gmi] ~)
-  ?.  ?=([%file *] vn)  $(rels t.rels)
-  =/  body=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.vn)))) '')
-  ?:  =('' body)  $(rels t.rels)
-  ;<  ~  bind:m  (poke-eval [%make i.rels (wrap-content %gmi body)])
-  $(rels t.rels, made +(made))
-::  ── editing arbitrary grubs (write apps in the lattice editor) ─────────
-::
-::  The editor's own pages are /page/<rel>/code grubs. These arms let it open
-::  and save ANY grub in the ball, so an app's html/js/css/hoon can be written
-::  here instead of uploaded.
-::
-::  The write is the delicate part. `over` handed a mime bask does NOT reliably
-::  convert to the target blot: with no warm tube it silently REPLACES the
-::  grub's blot with /mime. Verified on a scratch grub — writing hoon source
-::  over a /hoon grub left `[mark: /mime]`, after which every later save was
-::  refused ("blot differs"), so a single typo permanently changed the file's
-::  type and locked out the fix. So the conversion is done HERE, explicitly:
-::  fetch the extension's tube, apply it inside +mule, and only write once it
-::  has produced a value. A tube failure (unparseable hoon) becomes a 400 with
-::  the error and leaves the grub untouched — which also avoids `over`'s other
-::  trap, that a failed dart fails the whole request fiber and grubbery emits
-::  no response for it, hanging the browser.
-::
 ::  +grub-road: a ball path -> the road of the grub at it, plus its filename
 ::  (the caller needs the name to pick a mark, and digging it back out of a
 ::  road means three `p.`s through two `each`es). ~ for the root or a path
@@ -2861,18 +2502,6 @@
       ?:  quiet.act  (pure:m ~)
       ~&([%lattice-obelisk-failed db.act p.out] (pure:m ~))
     (put-file [%& %& root %'db.lattice'] [/obelisk %server] +.p.out)
-      %legacy-pages
-    ::  remember which page rels THIS migration triggered. Provenance matters:
-    ::  a legacy page name may collide with a page the nexus published itself,
-    ::  and only this record distinguishes "we put it in the vault" from "it
-    ::  was already the user's".
-    %^  put-file  [%& %& (weld root /legacy) %pages]  [/ %json]
-    a+(turn rels.act |=(r=path s+(crip (pax-str r))))
-      %legacy-seen
-    ::  one marker for both outcomes (imported N, or dismissed with 0): its
-    ::  existence is what silences the prompt. See +legacy-mark-road.
-    %^  put-file  [%& %& (weld root /legacy) %state]  [/ %json]
-    (pairs:enjs:format ~[['imported' (numb:enjs:format imported.act)]])
       %tmpl-del
     ::  delete a template — cull its subtree. A shipped template comes back on
     ::  the next writer start (ensure-shipped-templates), which is intended.
@@ -3808,78 +3437,6 @@
   ?~  items  (pure:m cnt)
   ;<  ~  bind:m  (poke-know [%import key.i.items entry.i.items])
   (import-know-loop t.items (add cnt 1))
-::  +obelisk-exec: run one urQL script against %obelisk (write path — INSERT/DDL
-::  for the catalog). Fire-and-forget: obelisk wraps queries in a mule and always
-::  positive-acks; the real per-query result comes on its /server subscription
-::  (see obelisk-query). ~ = delivered, `tang = gall could not deliver (obelisk
-::  missing). db is the default database the script runs against.
-::
-++  obelisk-exec
-  |=  [db=@tas urql=tape]
-  =/  m  (fiber:fiber:nexus ,(unit tang))
-  ^-  form:m
-  ::  guard: a LOCAL gall-poke makes grubbery resolve the target's mark with a
-  ::  %gd scry that BAILS when the agent isn't installed — bailing the whole
-  ::  event, which rolls back an in-progress nexus reload. gall-poke-or-nack
-  ::  can't catch that (the crash precedes the poke-ack). So confirm obelisk is
-  ::  running first via %gu, which answers %.n instead of bailing, and report it
-  ::  missing rather than poking a dead agent.
-  ;<  up=?  bind:m  (typed-scry:io ? %loob /gu/obelisk/$)
-  ?.  up  (pure:m `~[leaf+"obelisk not installed"])
-  (gall-poke-or-nack-safe %obelisk [%obelisk-action [%tape db urql]])
-::  +obelisk-sub-base: the grubbery tree dir where obelisk's /server fact is
-::  materialized by a %gall-watch subscription (grubbery gall-sub-dir). The
-::  result lands at .../data, the live flag at .../live.
-::
-++  obelisk-sub-base
-  |=  our=@p
-  ^-  path
-  /sys/gall/subs/(scot %p our)/obelisk/server
-::  +obelisk-live: is the obelisk /server subscription established (watch-ack'd)?
-::
-++  obelisk-live
-  |=  our=@p
-  =/  m  (fiber:fiber:nexus ,?)
-  ^-  form:m
-  =/  road=road:tarball  [%& %& (obelisk-sub-base our) %live]
-  ;<  ex=?  bind:m  (peek-exists:io road)
-  ?.  ex  (pure:m %.n)
-  ;<  seen=view:nexus  bind:m  (peek:io road ~)
-  ?.  ?=([%file *] seen)  (pure:m %.n)
-  (pure:m !<(? (need-vase:tarball sang.seen)))
-::  +obelisk-ensure-sub: make sure we're subscribed to obelisk /server before a
-::  query. obelisk kicks all /server subscribers after each result, so grubbery
-::  auto-resubscribes — this waits for the (re)subscription to go live, poking a
-::  fresh %gall-watch only if none is in flight.
-::
-++  obelisk-ensure-sub
-  |=  our=@p
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  live=?  bind:m  (obelisk-live our)
-  ?:  live  (pure:m ~)
-  =/  road=road:tarball  [%& %& (obelisk-sub-base our) %live]
-  ;<  ex=?  bind:m  (peek-exists:io road)
-  ::  never subscribed -> poke %gall-watch; else a resub is already in flight.
-  ;<  ~  bind:m
-    ?:  ex  (pure:m ~)
-    (gall-poke-or-nack-drop %grubbery [%gall-watch [our %obelisk /server]])
-  (obelisk-wait-live our 40)
-++  gall-poke-or-nack-drop
-  |=  [=dude:gall =page]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  *  bind:m  (gall-poke-or-nack-safe dude page)
-  (pure:m ~)
-++  obelisk-wait-live
-  |=  [our=@p n=@ud]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ?:  =(0 n)  (pure:m ~)
-  ;<  live=?  bind:m  (obelisk-live our)
-  ?:  live  (pure:m ~)
-  ;<  ~  bind:m  (sleep-safe (div ~s1 10))
-  (obelisk-wait-live our (dec n))
 ::  +urql-read: is this script a pure query? obelisk's selections are FROM-first,
 ::  so a script that starts with anything else (INSERT/DELETE/UPDATE/CREATE/
 ::  TRUNCATE/DROP) mutates the db and has to be routed to the writer.
@@ -4797,7 +4354,7 @@
   (pure:m (collect-entries ~ ball.seen))
 ::  +read-know-vault-safe: +read-know-map, but distinguishing "the vault is
 ::  empty" from "the vault could not be read" (~). Callers that would OVERWRITE
-::  based on absence must use this one — see the legacy import.
+::  based on absence must use this one.
 ++  read-know-vault-safe
   =/  m  (fiber:fiber:nexus ,(unit (map path know-entry:lk)))
   ^-  form:m
@@ -5115,17 +4672,13 @@
   ^-  form:m
   ;<  dn=view:nexus  bind:m  (peek-shallow:io [%& %| ug-base] ~)
   ?.  ?=([%ball *] dn)  (pure:m a+~)
-  (share-groups-loop (sort ~(tap in ~(key by dir.ball.dn)) aor) ~)
-::  a named arm, not |- — a $() after a ;< bind recurses the bind's inner
-::  gate, not the trap. Every fiber loop in this file is shaped this way.
-++  share-groups-loop
-  |=  [names=(list @ta) out=(list json)]
-  =/  m  (fiber:fiber:nexus ,json)
-  ^-  form:m
+  =/  names=(list @ta)  (sort ~(tap in ~(key by dir.ball.dn)) aor)
+  =|  out=(list json)
+  |-  ^-  form:m
   ?~  names  (pure:m a+(flop out))
   =/  nt=tape  (trip i.names)
   ?.  &((gth (lent nt) 4) =(".grp" (slag (sub (lent nt) 4) nt)))
-    (share-groups-loop t.names out)
+    $(names t.names)
   =/  base=@t  (crip (scag (sub (lent nt) 4) nt))
   =/  gdir=path  (snoc ug-base i.names)
   ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
@@ -5147,7 +4700,7 @@
         ['poke' a+(turn ps.po |=(t=@t s+t))]
         ['opaque' (numb:enjs:format :(add opaque.pk opaque.mk opaque.po))]
     ==
-  (share-groups-loop t.names [gj out])
+  $(names t.names, out [gj out])
 ::  +apply-share-notice: one inbox poke. Everything about it is defensive:
 ::  the payload is soft-cast (any ship can send anything), the path must be
 ::  under /apps, the mode must be one of ours, and %del from a foreign ship is
@@ -5325,36 +4878,6 @@
     ?.  =([/ %time] p.sage.u.in)  [%skip ~]
     [%done !<(@da q.sage.u.in)]
   ==
-::  +gall-poke-or-nack-safe / +sleep-safe: fiberio's gall-poke-or-nack and sleep,
-::  but sourcing our/now from bowl-our/bowl-now (mark-filtered) instead of fiberio's
-::  get-our/get-time (unfiltered take-poke). fiberio's own poke-ack / timer-wake
-::  takes ARE mark-filtered — only their internal get-our/get-time steal a queued
-::  poke in a busy fiber. The writer and crawler run these while another action is
-::  buffered, so the stolen poke nest-fails (-need.@p / -need.@da). These local
-::  copies keep the correct outer take and swap only the our/now read. No %veto
-::  branch: /sys/gall and /sys/bowl are own-ship runtime grubs (no weir, no veto).
-::
-++  gall-poke-or-nack-safe
-  |=  [=dude:gall =page]
-  =/  m  (fiber:fiber:nexus ,(unit tang))
-  ^-  form:m
-  ;<  our=@p  bind:m  bowl-our
-  ;<  ~  bind:m
-    (poke:io &+&+[/sys/gall %'main.sig'] [[/ %gall-poke] [[our dude] page]])
-  |=  input:fiber:nexus
-  :+  ~  q.state
-  ?+  in  [%skip ~]
-      ~  [%wait ~]
-      [~ %poke * *]
-    ?.  =([/ %poke-ack] p.sage.u.in)  [%skip ~]
-    [%done !<((unit tang) q.sage.u.in)]
-  ==
-++  sleep-safe
-  |=  for=@dr
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  now=@da  bind:m  bowl-now
-  (wait:io (add now for))
 ::  +take-news-or-wake-until: like fiberio's take-news-or-wake, but the timer-wake
 ::  branch matches ONLY our own `until` timer (mirrors take-peek-or-wake). fiberio's
 ::  version matches ANY %timer-wake, so a stale timer left armed by an earlier

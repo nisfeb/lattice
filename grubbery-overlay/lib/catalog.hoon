@@ -215,50 +215,6 @@
 ::  already, better labelled). Rebuilt wholesale by /search-reindex, so it goes
 ::  stale between reindexes — the same contract as the knowledge index.
 ::
-++  content-index-create-list
-  ^-  (list tape)
-  :~  "CREATE TABLE content-terms (scope @t, key @t, term @t, tf @ud) PRIMARY KEY (scope, key, term);"
-  ==
-::  +content-index-populate-urql: clear the table, then one INSERT per
-::  (scope, key, term).
-::
-::  Dedup on the ESCAPED term literal, exactly like +catalog-page-terms-urql:
-::  urq-esc collapses control bytes (<32) to one space, so two raw terms
-::  differing only by an interior control byte escape to the SAME literal ->
-::  duplicate PRIMARY KEY -> the whole TRUNCATE+INSERT aborts, leaving the index
-::  truncated and permanently un-rebuildable. (scope, key) pairs are unique by
-::  construction — one walk of the page tree plus one of the know vault — and
-::  scope is part of the key, so a page rel and a know key cannot collide.
-::
-++  content-index-populate-urql
-  |=  rows=(list [scope=@t key=@t terms=(list [term=@t tf=@ud])])
-  ^-  (list tape)
-  =/  inserts=(list tape)
-    %-  zing
-    %+  turn  rows
-    |=  [scope=@t key=@t terms=(list [term=@t tf=@ud])]
-    ^-  (list tape)
-    =/  sx=tape  (urq-esc (trip scope))
-    =/  kx=tape  (urq-esc (trip key))
-    =/  term-map=(map tape @ud)
-      %+  roll  terms
-      |=  [t=[term=@t tf=@ud] acc=(map tape @ud)]
-      =/  tx=tape  (urq-esc (trip term.t))
-      ?:  (~(has by acc) tx)  acc
-      (~(put by acc) tx tf.t)
-    %+  turn  ~(tap by term-map)
-    |=  [tx=tape f=@ud]
-    ^-  tape
-    %-  zing
-    :~  "('"  sx  "', '"  kx  "', '"  tx  "', "  (trip (scot %ud f))  ") "
-    ==
-  %+  weld  `(list tape)`~["TRUNCATE TABLE content-terms;"]
-  (chunk-rows "INSERT INTO content-terms (scope, key, term, tf) VALUES " inserts)
-::  +content-search-urql: every own item carrying `term`, with its scope.
-++  content-search-urql
-  |=  term=tape
-  ^-  tape
-  :(weld "FROM content-terms WHERE term = '" (urq-esc term) "' SELECT scope, key, tf;")
 ::
 ::  ── page writes: the two-poke upsert ───────────────────────────────
 ::

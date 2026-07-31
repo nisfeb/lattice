@@ -30,8 +30,6 @@
       [%forms pax=path on=? cap=@ud gap=@dr]  ::  public forms: on/off + limits
       [%form-hit pax=path now=@da]      ::  record one accepted submission
       [%form-reset pax=path]            ::  zero a page's submission counter
-      [%legacy-seen imported=@ud]       ::  retired %lattice agent dealt with
-      [%legacy-pages rels=(list path)]  ::  page rels this migration triggered
       ::  run a urQL script against the obelisk db and PERSIST the new state.
       ::  Writes have to be serialised — +exec is read-modify-write over one
       ::  grub — so they go through the writer like every other mutation.

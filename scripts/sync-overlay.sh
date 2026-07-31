@@ -20,7 +20,10 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OVERLAY="$HERE/../grubbery-overlay"
-DEST="${1:-/home/sneagan/software/zod/grubbery}"
+# DEST is REQUIRED. The old default pointed at ~zod — a scratch ship that gets
+# rebuilt and renamed; an implicit deploy target is how code lands on the wrong
+# pier. Say where it goes.
+DEST="${1:?usage: sync-overlay.sh <grubbery-desk-root>}"
 
 if [ ! -d "$OVERLAY" ]; then echo "no overlay at $OVERLAY" >&2; exit 66; fi
 if [ ! -d "$DEST" ]; then echo "no grubbery desk root at $DEST" >&2; exit 67; fi
