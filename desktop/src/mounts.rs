@@ -62,6 +62,7 @@ pub fn add_mount(
     if cfg.url.is_empty() {
         return Err("connect to a ship first".into());
     }
+    heal_mountpoint(&mountpoint);
     let proj = projection_http(&cfg.url, &default_cookie_path(), &root)?;
     let session = lattice_fs::spawn(proj, &mountpoint).map_err(|e| e.to_string())?;
     m.insert(mountpoint.clone(), (root.clone(), session));
@@ -95,6 +96,26 @@ pub fn list_mounts(map: State<MountMap>) -> Vec<MountSpec> {
         .iter()
         .map(|(mp, (root, _))| MountSpec { mountpoint: mp.clone(), root: root.clone() })
         .collect()
+}
+
+/// Make a mountpoint usable: detach a stale fuse mount left by a run that
+/// died without unmounting ("Transport endpoint is not connected", os 107),
+/// and create the directory if it does not exist yet.
+pub fn heal_mountpoint(mountpoint: &str) {
+    match std::fs::metadata(mountpoint) {
+        Err(e) if e.raw_os_error() == Some(107) => {
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("umount").arg(mountpoint).status();
+            #[cfg(not(target_os = "macos"))]
+            let _ = std::process::Command::new("fusermount3")
+                .args(["-u", mountpoint])
+                .status();
+        }
+        Err(_) => {
+            let _ = std::fs::create_dir_all(mountpoint);
+        }
+        Ok(_) => {}
+    }
 }
 
 fn expand_home(p: &str) -> String {
