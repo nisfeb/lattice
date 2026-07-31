@@ -10,6 +10,13 @@ use std::sync::Mutex;
 use tauri::Manager;
 
 fn main() {
+    // webkit2gtk's dmabuf renderer crashes some Wayland stacks outright
+    // ("Error 71 (Protocol error) dispatching to Wayland display"). Opt out
+    // unless the user has set it themselves.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
