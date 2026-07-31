@@ -723,6 +723,64 @@
     ;<  ms=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
     ?~  ms  (send-err eyre-id 504 'unreachable or denied')
     (browse-file-respond eyre-id u.ms)
+  ::  remote-save: overwrite a file on ANOTHER ship — the editor's save button
+  ::  pointed across ames. POST /remote-save?ship=~nec&path=/a/b/c, body = the
+  ::  new text. The write is a %grubbery-load %make applied on THEIR side as a
+  ::  dart from /sys/ames/ships/<us>/ship.sig, so their weir decides it.
+  ::
+  ::  VERIFIED BY REVISION, not trusted: the gall ack says the poke was
+  ::  processed, but a weir denial after the ack is silent. We peek the file's
+  ::  cass before and after — no bump, no save, and the editor says so instead
+  ::  of lying "saved". (Content equality can't be the check: their mark may
+  ::  normalize the body, e.g. wain round-trips and trailing newlines.)
+      [%'POST' %remote-save]
+    =/  shp-t=(unit @t)  (~(get by args) 'ship')
+    ?~  shp-t  (send-err eyre-id 400 'missing ship')
+    =/  shp=(unit @p)  (slaw %p u.shp-t)
+    ?~  shp  (send-err eyre-id 400 'bad ship')
+    ?:  =(u.shp our)  (send-err eyre-id 400 'own ship: use /grub-save')
+    =/  pt=(unit @t)  (~(get by args) 'path')
+    ?~  pt  (send-err eyre-id 400 'missing path')
+    =/  pp=(each path tang)  (mule |.((stab u.pt)))
+    ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
+    ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
+    =/  n=@ud  (dec (lent p.pp))
+    =/  dir=path  (scag n p.pp)
+    =/  nam=@ta  (snag n p.pp)
+    =/  body=@t  (req-body req)
+    =/  file-road=road:tarball  [%& %& dir nam]
+    ;<  ms=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
+    ?~  ms  (send-err eyre-id 504 'unreachable or denied')
+    ::  v1 edits EXISTING files only. Remote create needs a make grant plus a
+    ::  blot decision the client can't make for a tree it doesn't own.
+    ?.  ?=([%file *] u.ms)  (send-err eyre-id 404 'no such file on that ship')
+    ?:  =((grub-text sang.u.ms) `body)
+      ::  no-op save: nothing to send, and grubbery skips unchanged writes
+      ::  anyway, so the revision check below would misread it as a denial.
+      (send-ok eyre-id)
+    =/  ud0=@ud  ud.cass.u.ms
+    ::  the file's EXISTING blot types the write: mime grubs keep their own
+    ::  content-type; everything else ships as text/plain with the destination
+    ::  blot, so THEIR mark converts and validates it (same contract as
+    ::  +grub-bask-into locally, minus the local tube — conversion is remote).
+    =/  dst=blot:tarball  p.sang.u.ms
+    =/  bd=[b=bask:tarball d=(unit blot:tarball)]
+      ?:  =([/ %mime] dst)
+        =/  mt=path  (fall (grub-mime-type sang.u.ms) /text/plain)
+        [[[/ %mime] `mime`[mt (as-octs:mimes:html body)]] ~]
+      [[[/ %mime] `mime`[/text/plain (as-octs:mimes:html body)]] `dst]
+    ;<  nak=(unit tang)  bind:m
+      (remote-load-poke u.shp [[/remote-save %& dir nam] %make %.y |+[b.bd d.bd]])
+    ?^  nak
+      (send-err eyre-id 502 'remote rejected the write')
+    ;<  vs=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
+    =/  landed=?
+      ?~  vs  |
+      ?.  ?=([%file *] u.vs)  |
+      (gth ud.cass.u.vs ud0)
+    ?.  landed
+      (send-err eyre-id 403 'write did not land — no make permission on that path?')
+    (send-ok eyre-id)
   ::  ── obelisk bridge (catalog; step 5) ──
   ::  run a urQL write/DDL against %obelisk. GET /obelisk-exec?db=<db>&q=<urql>.
   ::  ponytail: GET for easy curl-testing the bridge; the real crawler drives this
@@ -2239,6 +2297,11 @@
   =/  nn=*  (sang-noun:tarball sang)
   =/  c=(each @t tang)  (mule |.(;;(@t nn)))
   ?:  ?=(%& -.c)  `p.c
+  ::  a /txt grub is a wain, not a cord — without this branch every remote
+  ::  ship's .txt file rendered as "binary grub" and got no edit affordance.
+  ::  Checked BEFORE mime: a wain coincidentally nests in nothing else here.
+  =/  wn=(each wain tang)  (mule |.(;;(wain nn)))
+  ?:  ?=(%& -.wn)  `(of-wain:format p.wn)
   =/  mm=(each mime tang)  (mule |.(;;(mime nn)))
   ?.  ?=(%& -.mm)  ~
   (mime-text p.p.mm q.p.mm)
@@ -4841,6 +4904,30 @@
 ::  +take-peek-or-wake: resolve on the matching %peek response OR our timer wake.
 ::  Sibling of take-news-or-wake; a %veto counts as give-up (~), like a timeout.
 ::
+::  +remote-load-poke: send a %grubbery-load to another ship and wait for the
+::  gall ack. Modeled on +gall-poke-or-nack (fiberio), which is our-ship-only;
+::  a bare +gall-poke:io would CRASH the request fiber on a remote nack, taking
+::  the HTTP response with it. ~ = acked; `tang = nacked (their side crashed or
+::  refused). NOTE an ack is not proof the write LANDED — a weir denial on
+::  their side is applied after the ack, silently — so /remote-save verifies
+::  by revision number afterwards.
+::
+++  remote-load-poke
+  |=  [target=@p req=load:remo:nexus]
+  =/  m  (fiber:fiber:nexus ,(unit tang))
+  ^-  form:m
+  ;<  ~  bind:m
+    %+  poke:io  &+&+[/sys/gall %'main.sig']
+    [[/ %gall-poke] [[target %grubbery] grubbery-load+req]]
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %veto *]
+    [%done `~[leaf+"vetoed locally"]]
+      [~ %pack *]
+    [%done err.u.in]
+  ==
 ++  take-peek-or-wake
   |=  [pwire=wire until=@da]
   =/  m  (fiber:fiber:nexus ,(unit view:nexus))
@@ -5764,7 +5851,14 @@
   ^-  tape
   =/  mk=@tas  name.p.sang
   =/  nn=*  (sang-noun:tarball sang)
-  =/  cord-res=(each @t tang)  (mule |.(;;(@t nn)))
+  ::  fold /txt wains into the cord path up front so they preview and cap like
+  ::  any text file instead of falling through to "binary grub".
+  =/  cord-res=(each @t tang)
+    =/  c=(each @t tang)  (mule |.(;;(@t nn)))
+    ?:  ?=(%& -.c)  c
+    =/  wn=(each wain tang)  (mule |.(;;(wain nn)))
+    ?:  ?=(%& -.wn)  [%& (of-wain:format p.wn)]
+    c
   =/  body=tape
     ?:  ?=(%& -.cord-res)
       ::  cap the rendered preview: esc+weld would double a multi-MB body into
@@ -5834,15 +5928,20 @@
         (mime-note mt n)
       :(weld "<p>" (mime-note mt n) "</p>")
     "<p>opaque noun grub (not raw-servable)</p>"
-  ::  edit link: only for OUR ball (a peer's grubs are not ours to write) and
-  ::  only when the grub has recoverable text — a binary or opaque grub would
-  ::  be destroyed by a text round-trip, so it gets no edit affordance at all.
-  =/  editable=?  &(local ?=(^ (grub-text sang)))
+  ::  edit link: any grub with recoverable text. A remote link carries the ship
+  ::  and saves go back over ames as weir-gated writes — whether the peer
+  ::  ACCEPTS the write is their weir's decision at save time, which the editor
+  ::  surfaces; hiding the affordance here would be guessing their ACL for them.
+  ::  Binary/opaque grubs get no link — a text round-trip would destroy them.
+  =/  editable=?  ?=(^ (grub-text sang))
   =/  edit-link=tape
     ?.  editable  ""
     ::  +spud, not +pax-str: the route parses this with +stab, which requires the
     ::  leading slash. pax-str omits it, so every edit link 400'd.
-    :(weld " &middot; <a href=\"/apps/lattice/app?grub=" (esc (spud pax)) "\">edit</a>")
+    =/  ship-arg=tape
+      ?:  local  ""
+      :(weld "&ship=" (scow %p shp))
+    :(weld " &middot; <a href=\"/apps/lattice/app?grub=" (esc (spud pax)) ship-arg "\">edit</a>")
   ;:  weld
     (explore-crumbs shp pax)
     "<div class=\"meta\">mark "  (esc (trip mk))
@@ -5984,9 +6083,17 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not a file')
-  =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.sn))))
-  ?:  ?=(%| -.res)  (send-err eyre-id 415 'not text')
-  (send-json eyre-id (pairs:enjs:format ~[['body' s+p.res] ['mark' s+name.p.sang.sn]]))
+  ::  +grub-text, not a bare @t clam: cord bodies, /txt wains and mime grubs
+  ::  are all text a remote editor can round-trip. editable mirrors
+  ::  /grub-source's contract so the client can grey out what it must not save.
+  =/  txt=(unit @t)  (grub-text sang.sn)
+  ?~  txt  (send-err eyre-id 415 'not text')
+  %+  send-json  eyre-id
+  %-  pairs:enjs:format
+  :~  ['body' s+u.txt]
+      ['mark' s+name.p.sang.sn]
+      ['editable' b+&]
+  ==
 ::  +send-html: a 200 text/html response.
 ::
 ++  send-html

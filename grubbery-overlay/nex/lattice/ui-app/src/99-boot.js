@@ -20,7 +20,7 @@
     // arrived from the explorer's edit link: open that ball path directly. The
     // tree still lists lattice pages, so clicking one leaves grub mode.
     loadTree();
-    openGrub(qs.get('grub'));
+    openGrub(qs.get('grub'), qs.get('ship'));
   } else if (qs.get('view') === 'know') {
     setMode('know');
     legacyCheck();
