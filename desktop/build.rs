@@ -7,6 +7,7 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "connect",
             "local_ships",
+            "stack_status",
             "connection_status",
             "get_config",
             "go_home",

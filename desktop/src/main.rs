@@ -5,6 +5,7 @@ mod config;
 mod local;
 mod mounts;
 mod proxy;
+mod stack;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -79,6 +80,13 @@ fn main() {
                             std::thread::sleep(std::time::Duration::from_secs(8));
                             commands::show_manager(&h).ok();
                         }
+                        // LATTICE_AUTOSTACK=1: report what is installed on the
+                        // ship we just logged in to — the headless check for
+                        // the %mcp / %grubbery / lattice probe.
+                        if std::env::var_os("LATTICE_AUTOSTACK").is_some() {
+                            let s = tauri::async_runtime::block_on(stack::stack_status(h.clone()));
+                            let _ = s;
+                        }
                         // LATTICE_AUTONAV=/path: follow the connect with a
                         // fresh top-level navigation — the headless harness's
                         // regression check for the 403-on-navigation class
@@ -125,6 +133,7 @@ fn main() {
             mounts::remove_mount,
             mounts::list_mounts,
             local::local_ships,
+            stack::stack_status,
         ])
         .build(tauri::generate_context!())
         .expect("error building lattice desktop")

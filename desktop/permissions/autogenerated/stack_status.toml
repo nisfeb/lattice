@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stack-status"
+description = "Enables the stack_status command without any pre-configured scope."
+commands.allow = ["stack_status"]
+
+[[permission]]
+identifier = "deny-stack-status"
+description = "Denies the stack_status command without any pre-configured scope."
+commands.deny = ["stack_status"]
