@@ -9,9 +9,11 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use crate::config;
 
 /// Log the Rust side in (stores the shared fuse cookie), remember the url,
-/// open the workspace.
+/// open the workspace, get the manager out of the way. Async: the blocking
+/// login and the cookie-settle poll in open_workspace must run off the main
+/// thread (a main-thread wait would deadlock the webview's async cookie add).
 #[tauri::command]
-pub fn connect(app: AppHandle, url: String, code: String) -> Result<String, String> {
+pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String, String> {
     let url = url.trim().trim_end_matches('/').to_string();
     let t = EyreTransport::new(&url, &default_cookie_path());
     t.login(Some(code)).map_err(|e| e.msg)?;
@@ -20,6 +22,11 @@ pub fn connect(app: AppHandle, url: String, code: String) -> Result<String, Stri
     cfg.url = url;
     config::save(&app, &cfg)?;
     open_workspace(&app)?;
+    // connected: the workspace is the app now; the manager comes back when
+    // the workspace closes (on_window_event in main.rs)
+    if let Some(m) = app.get_webview_window("manager") {
+        m.hide().ok();
+    }
     Ok(ship)
 }
 
@@ -126,6 +133,19 @@ pub fn open_workspace(app: &AppHandle) -> Result<(), String> {
                 c.set_http_only(true);
                 c.set_secure(ship_page.scheme() == "https");
                 w.set_cookie(c).map_err(|e| e.to_string())?;
+                // the jar add is async on webkit — navigating before it lands
+                // sends the request cookieless and the ship 403s. Wait until
+                // the jar actually returns it (caller is off the main thread).
+                for _ in 0..50 {
+                    let seen = w
+                        .cookies_for_url(ship_page.clone())
+                        .map(|cs| cs.iter().any(|c| c.name() == name))
+                        .unwrap_or(false);
+                    if seen {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
             }
         }
     }

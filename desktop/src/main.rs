@@ -46,8 +46,12 @@ fn main() {
             let handle = app.handle().clone();
             let cfg = config::load(&handle);
             if !cfg.url.is_empty() {
-                // login.html's no-pending branch navigates straight to the ship
-                commands::open_workspace(&handle).ok();
+                // off-thread: open_workspace polls the webview cookie jar,
+                // which must not block the main loop
+                let h = handle.clone();
+                std::thread::spawn(move || {
+                    commands::open_workspace(&h).ok();
+                });
                 let map = handle.state::<mounts::MountMap>();
                 let mut m = map.0.lock().unwrap();
                 for spec in &cfg.mounts {
