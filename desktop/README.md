@@ -36,9 +36,10 @@ interception is disabled for the workspace window so the UI's HTML5 drop
 handler receives the files.
 
 Ship links and `urb://` addresses stay in the app (`urb://` resolves through
-the ship's reader); only truly external links open in your system browser. Ctrl/Cmd +/- zooms the workspace. Closing
-the manager window while the workspace is open just hides it — it comes
-back when the workspace closes.
+the ship's reader); only truly external links open in your system browser.
+Ctrl/Cmd +/- zooms the workspace. The app is a single window: it opens on
+the connection page until a ship is configured, then lives on the ship UI;
+`lattice → connection & mounts…` in the menu returns to the settings page.
 
 If a previous run died without unmounting ("Transport endpoint is not
 connected" on remount), clear the stale mountpoint with

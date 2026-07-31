@@ -8,15 +8,7 @@
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [
-      {
-        "label": "manager",
-        "title": "lattice",
-        "url": "index.html",
-        "width": 480,
-        "height": 600
-      }
-    ]
+    "windows": []
   },
   "bundle": {
     "active": true,
