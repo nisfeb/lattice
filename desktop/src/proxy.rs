@@ -86,6 +86,7 @@ fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
     if content_len > 0 {
         reader.read_exact(&mut body)?;
     }
+    crate::commands::dlog(&format!("bridge: {method} {target}"));
 
     let agent = ureq::AgentBuilder::new().redirects(0).build();
     let mut req = agent.request(&method, &format!("{ship}{target}"));
