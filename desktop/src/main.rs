@@ -109,6 +109,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::connect,
+            commands::connection_status,
             commands::get_config,
             commands::go_home,
             commands::pick_upload,

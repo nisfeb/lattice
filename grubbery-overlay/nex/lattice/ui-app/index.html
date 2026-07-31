@@ -14,6 +14,13 @@
   --green: #4a7c59; --green-deep: #3a6347;
   --bg: #fafafa; --text: #1a1a1a; --muted: #8a8a8a;
   --border: #8886; --border-soft: #8883; --surface: #8881;
+  /* editor typography, overridden from the settings page (see 05-prefs.js).
+     BOTH #src and #hl derive from these two vars and nothing else: the
+     textarea and its highlight overlay must have byte-identical metrics or
+     the caret drifts off its line on wrapped text. Never set a size or family
+     on one of them alone. */
+  --ed-font: ui-monospace, Menlo, Consolas, monospace;
+  --ed-size: 13px;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #1a1a1a; --text: #e6e6e6; }
@@ -176,7 +183,7 @@ select, option { color-scheme: light dark; }
 .ac .row .hit { color: var(--green); }
 .ac .hint { padding: 3px 8px 1px; color: var(--muted); font-size: .78em; }
 #src, #hl { position: absolute; inset: 0; margin: 0; border: 0; width: 100%;
-  height: 100%; font: 13px/1.55 ui-monospace, Menlo, Consolas, monospace;
+  height: 100%; font: var(--ed-size)/1.55 var(--ed-font);
   padding: 12px; white-space: pre; tab-size: 2; }
 #src { resize: none; background: transparent; color: transparent;
   caret-color: var(--text); overflow: auto; z-index: 1; outline: none; }
@@ -205,7 +212,9 @@ select, option { color-scheme: light dark; }
   .ws[data-mv="code"] .edwrap { display: block; min-height: 68vh; }
   .ws[data-mv="prev"] .prev { display: block; min-height: 68vh; }
   .ws[data-mv="ctl"] .ctl { display: block; }
-  #src, #hl { font-size: 16px; }
+  /* never below 16px on mobile — a smaller textarea font makes iOS zoom on
+     focus. Still one rule for both layers, so the metrics stay identical. */
+  #src, #hl { font-size: max(16px, var(--ed-size)); }
 }
 
 #hl .token.comment, #hl .token.blockquote, #hl .token.pre, #hl .token.prolog,
@@ -224,6 +233,45 @@ select, option { color-scheme: light dark; }
 #hl .token.italic { font-style: italic; }
 #hl .token.punctuation, #hl .token.operator { opacity: .75; }
 #hl .token.url { text-decoration: underline; }
+
+/* access-control pane: the peers panel given room to work in. A full-window
+   overlay rather than a third setMode branch — setMode is wired into the
+   tree/editor lifecycle, and access control has nothing to do with either. */
+.aclwrap { position: fixed; inset: 0; z-index: 45; background: var(--bg);
+  display: flex; flex-direction: column; }
+.aclwrap[hidden] { display: none; }
+.aclbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  border-bottom: 1px solid var(--border-soft); }
+.aclbar h2 { font-size: 1.05rem; margin: 0; }
+.aclbar .grow { flex: 1; }
+.aclbody { flex: 1; overflow: auto; padding: 14px; }
+/* the shell's .row is scoped to .ctl, so this pane states its own */
+.aclbody > .row { display: flex; gap: 8px; max-width: 1100px; margin: 0 auto 14px; }
+.aclbody > .row input { flex: 1; max-width: 30rem; font: inherit; padding: 7px 10px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+  color: inherit; }
+.aclbody > .row input:focus { outline: none; border-color: var(--green); }
+.aclbody > .row button { font: inherit; padding: 7px 14px; cursor: pointer;
+  border: 1px solid var(--green-deep); border-radius: 6px;
+  background: var(--green); color: #fff; }
+.aclgrid { display: grid; gap: 14px; max-width: 1100px; margin: 0 auto;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); }
+.aclcard { border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+  background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
+.aclcard > header { display: flex; align-items: center; gap: 8px; }
+.aclcard > header b { flex: 1; font-size: 1rem; overflow-wrap: anywhere; }
+.aclcard h4 { margin: 0; font-size: .7rem; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.aclcard .row { display: flex; gap: 6px; }
+.aclcard input, .aclcard button { font: inherit; padding: 5px 9px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
+  color: inherit; }
+.aclcard input { flex: 1; min-width: 0; }
+.aclcard button { cursor: pointer; white-space: nowrap; }
+.aclcard button:hover { border-color: var(--green); }
+.aclnote { color: var(--muted); font-size: .8rem; }
+.aclempty { color: var(--muted); text-align: center; padding: 2rem; }
+.acl-del { color: #c0392b; border-color: #c0392b55 !important; }
 
 /* in-app dialog (no browser-native popups, ever) */
 .dlg { position: fixed; inset: 0; background: #0008; display: grid;
@@ -267,7 +315,7 @@ select, option { color-scheme: light dark; }
    direct grid items of .ws (and .dlg stays a fixed overlay). Without this,
    custom elements default to display:inline and break the grid. */
 lat-dialog, lat-bar, lat-tabs, lat-tree, lat-editor, lat-preview, lat-ctl,
-lat-share, lat-history, lat-links, lat-knowtags { display: contents; }
+lat-share, lat-history, lat-links, lat-knowtags, lat-acl { display: contents; }
 </style>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='512' height='512' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%231a6ed8'/%3E%3Cg stroke='%23ffffff' stroke-width='14' stroke-linecap='round' fill='%23ffffff'%3E%3Cline x1='140' y1='140' x2='372' y2='140'/%3E%3Cline x1='140' y1='256' x2='372' y2='256'/%3E%3Cline x1='140' y1='372' x2='372' y2='372'/%3E%3Cline x1='140' y1='140' x2='140' y2='372'/%3E%3Cline x1='256' y1='140' x2='256' y2='372'/%3E%3Cline x1='372' y1='140' x2='372' y2='372'/%3E%3Cline x1='140' y1='140' x2='372' y2='372'/%3E%3Cline x1='372' y1='140' x2='140' y2='372'/%3E%3Ccircle cx='140' cy='140' r='26'/%3E%3Ccircle cx='256' cy='140' r='26'/%3E%3Ccircle cx='372' cy='140' r='26'/%3E%3Ccircle cx='140' cy='256' r='26'/%3E%3Ccircle cx='256' cy='256' r='30'/%3E%3Ccircle cx='372' cy='256' r='26'/%3E%3Ccircle cx='140' cy='372' r='26'/%3E%3Ccircle cx='256' cy='372' r='26'/%3E%3Ccircle cx='372' cy='372' r='26'/%3E%3C/g%3E%3C/svg%3E" type="image/svg+xml">
 <link rel="manifest" href="/apps/lattice/manifest.webmanifest">
@@ -282,6 +330,7 @@ lat-share, lat-history, lat-links, lat-knowtags { display: contents; }
   <lat-preview></lat-preview>
   <lat-ctl></lat-ctl>
 </div>
+<lat-acl></lat-acl>
 <lat-dialog></lat-dialog>
 <script src="/apps/lattice/prism.js"></script>
 <script>if("serviceWorker"in navigator)navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice"});</script>

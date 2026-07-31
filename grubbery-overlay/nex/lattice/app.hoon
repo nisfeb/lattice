@@ -6792,7 +6792,11 @@
   ^-  tape
   ;:  weld
     %-  trip
-    '<style>.btn{padding:8px 16px;font:inherit;border:1px solid #8886;border-radius:8px;background:transparent;color:inherit;cursor:pointer}.btn:hover{border-color:#1a6ed8}.btn:disabled{opacity:.5;cursor:default}</style>'
+    ::  color-scheme on the form controls is what stops the OS drawing them
+    ::  light-on-dark: the app's rule is that no control ships with foreign
+    ::  widget chrome. The native select arrow is kept (appearance:none with no
+    ::  replacement chevron would leave no affordance at all).
+    '<style>.btn{padding:8px 16px;font:inherit;border:1px solid #8886;border-radius:8px;background:transparent;color:inherit;cursor:pointer}.btn:hover{border-color:#1a6ed8}.btn:disabled{opacity:.5;cursor:default}select,option,input[type=range]{color-scheme:light dark}select{font:inherit;color:inherit;background:transparent;border:1px solid #8886;border-radius:6px;padding:5px 8px;cursor:pointer}select:hover,select:focus{border-color:#1a6ed8;outline:none}input[type=range]{vertical-align:middle;accent-color:#1a6ed8;cursor:pointer}label{color:#8a8a8a}</style>'
     "<h1>Settings</h1>"
     "<h2>Content catalog</h2>"
     "<p class=\"muted\">Published pages are indexed for search automatically about every 6 hours (and a followed peer's edits index live). Sweep now to (re)index all of your published pages and followed peers immediately &mdash; e.g. after publishing something you want searchable right away.</p>"
@@ -6802,6 +6806,19 @@
     "<p><button type=\"button\" id=\"sreidx\" class=\"btn\">Reindex my content</button> <span id=\"srst\" class=\"muted\"></span></p>"
     %-  trip
     '<script>(function(){var b=document.getElementById("sreidx");var s=document.getElementById("srst");b.onclick=function(){b.disabled=true;s.textContent="reindexing...";fetch("/apps/lattice/search-reindex",{method:"POST"}).then(function(r){s.textContent=r.ok?"done - your pages and notes are searchable.":"failed ("+r.status+")";b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
+    ::  typography: a CLIENT-ONLY preference. It writes localStorage and the
+    ::  editor (ui-app/src/05-prefs.js) applies it to --ed-font / --ed-size, so
+    ::  changing it costs zero requests and never touches the pier. An editor
+    ::  open in another tab updates through the storage event, no reload.
+    "<h2>Typography</h2>"
+    "<p class=\"muted\">Font and size for the editor. Saved in this browser only &mdash; it never touches your ship, so it costs no round-trip. An editor open in another tab picks the change up immediately.</p>"
+    "<p><label for=\"fontsel\">Font </label><select id=\"fontsel\"><option value=\"mono\">Monospace (default)</option><option value=\"system\">System sans</option><option value=\"serif\">Serif</option><option value=\"humanist\">Coding (Iosevka, JetBrains Mono)</option></select> <label for=\"fontsize\">Size </label><input type=\"range\" id=\"fontsize\" min=\"9\" max=\"32\" step=\"1\"> <span id=\"fontsizeo\" class=\"muted\"></span> <button type=\"button\" id=\"fontreset\" class=\"btn\">Reset</button></p>"
+    ::  NB: no curly braces in this tape — hoon interpolates "{...}" inside a
+    ::  double-quoted tape, so a literal brace is a syntax error here. (The
+    ::  script below is a single-quoted cord, which is literal, braces and all.)
+    "<p id=\"fontsample\" style=\"border:1px solid #8886;border-radius:8px;padding:12px\">The quick brown fox jumps over the lazy dog &middot; 0123456789 &middot; il1 O0 &middot; |= ^- @ud</p>"
+    %-  trip
+    '<script>(function(){var f=document.getElementById("fontsel"),s=document.getElementById("fontsize"),o=document.getElementById("fontsizeo"),p=document.getElementById("fontsample");var M={mono:"ui-monospace, Menlo, Consolas, monospace",system:"system-ui, sans-serif",serif:"Georgia, Times New Roman, serif",humanist:"Iosevka, JetBrains Mono, Fira Code, ui-monospace, monospace"};function draw(){p.style.fontFamily=M[f.value]||M.mono;p.style.fontSize=s.value+"px";o.textContent=s.value+"px"}function save(){try{localStorage.latFont=f.value;localStorage.latFontSize=s.value}catch(e){}draw()}try{f.value=localStorage.latFont||"mono";s.value=localStorage.latFontSize||"13"}catch(e){}if(!M[f.value])f.value="mono";if(!(s.value>=9))s.value="13";draw();f.onchange=save;s.oninput=save;document.getElementById("fontreset").onclick=function(){try{localStorage.removeItem("latFont");localStorage.removeItem("latFontSize")}catch(e){}f.value="mono";s.value="13";draw()}})();</script>'
     "<h2>Archive a web page</h2>"
     "<p class=\"muted\">Drag this to your bookmarks bar. On any web page, click it and your ship fetches that page, converts it to markdown and files it privately under <code>clips/</code> &mdash; a real lattice page you can edit, search and share.</p>"
     "<p><a id=\"clipbm\" class=\"btn\" href=\"#\">Clip to lattice</a></p>"

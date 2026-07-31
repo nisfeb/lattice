@@ -20,6 +20,9 @@
     if (!r || !r.ok) { $('permlist').textContent = 'could not load groups (' + (r ? r.status : 'network') + ')'; return; }
     permGroups = await r.json();
     renderPerms();
+    // the full pane (72-acl.js) renders the same permGroups — repaint it from
+    // the same load so the two surfaces can never show different ACLs
+    if (typeof renderAcl === 'function') renderAcl();
   }
   async function permSave(g) {
     const r = await fetch(api + '/share-group-save?name=' + encodeURIComponent(g.name), {

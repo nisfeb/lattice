@@ -37,19 +37,49 @@
     border-bottom: 1px solid var(--border-soft); }
   li code { flex: 1; font-size: .9em; }
   .top { display: flex; justify-content: space-between; align-items: baseline; }
+  .conn { border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+    background: var(--surface); }
+  .conn .row { align-items: center; gap: 10px; }
+  .mono { font: 12px/1.5 ui-monospace, monospace; overflow-wrap: anywhere; }
+  /* state at a glance: green connected, amber reachable-but-logged-out, red
+     unreachable. Colour is never the only signal — the text says it too. */
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none;
+    background: var(--muted); }
+  .dot.on { background: var(--green); }
+  .dot.off { background: #d68910; }
+  .dot.err { background: #c0392b; }
 </style>
 <main>
   <div class="top">
     <h1>lattice</h1>
-    <button id="back" class="primary" hidden>open lattice &rarr;</button>
   </div>
 
   <h2>ship</h2>
-  <form id="connect">
+  <!-- the connected state is its own panel. Showing the login form whenever
+       there was nothing better to say is what made an already-connected ship
+       look logged out; the form is now revealed only when it is actually
+       needed, or on request. -->
+  <div id="conn" class="conn" hidden>
+    <div class="row">
+      <span id="dot" class="dot"></span>
+      <div>
+        <div id="conn-ship"><b>checking…</b></div>
+        <div id="conn-url" class="muted mono"></div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:.7rem">
+      <button id="open" class="primary" hidden>open lattice &rarr;</button>
+      <button id="relog" hidden>reconnect</button>
+      <button id="switch">change ship</button>
+    </div>
+  </div>
+
+  <form id="connect" hidden>
     <input id="url" placeholder="https://your-ship.example.com" required>
     <input id="code" type="password" placeholder="+code" required>
     <div class="row">
       <button class="primary">connect</button>
+      <button type="button" id="cancel" hidden>cancel</button>
       <span id="connect-status" class="muted"></span>
     </div>
   </form>
@@ -72,10 +102,48 @@
   const invoke = window.__TAURI__.core.invoke;
   const $ = (id) => document.getElementById(id);
 
-  invoke('get_config').then((c) => {
-    if (c.url) { $('url').value = c.url; $('back').hidden = false; }
-  });
-  $('back').onclick = () => invoke('go_home');
+  // Show the login form only when logging in is actually the thing to do.
+  // `connected` comes from a real authenticated request, not from "we have a
+  // url in the config" — a stored url proves we logged in once, which is
+  // precisely the state that used to render as logged out.
+  const showForm = (on, cancelable) => {
+    $('connect').hidden = !on;
+    $('cancel').hidden = !cancelable;
+    if (on) $('code').focus();
+  };
+  async function refreshConn() {
+    $('conn').hidden = false;
+    const s = await invoke('connection_status');
+    $('url').value = s.url || $('url').value;
+    $('conn-url').textContent = s.url || '';
+    const dot = $('dot'), ship = $('conn-ship');
+    if (s.connected) {
+      dot.className = 'dot on';
+      ship.innerHTML = '<b>connected</b> as ' + (s.ship || 'your ship');
+      $('open').hidden = false; $('relog').hidden = true; $('switch').hidden = false;
+      showForm(false, false);
+    } else if (s.error) {
+      dot.className = 'dot err';
+      ship.innerHTML = '<b>cannot reach this ship</b>';
+      $('conn-url').textContent = (s.url || '') + ' — ' + s.error;
+      $('open').hidden = true; $('relog').hidden = false; $('switch').hidden = false;
+      showForm(false, false);
+    } else if (s.url) {
+      dot.className = 'dot off';
+      ship.innerHTML = '<b>signed out</b> — enter your +code to reconnect';
+      $('open').hidden = true; $('relog').hidden = true; $('switch').hidden = false;
+      showForm(true, false);
+    } else {
+      // never configured: the form IS the page, and there is nothing to cancel
+      $('conn').hidden = true;
+      showForm(true, false);
+    }
+  }
+  refreshConn();
+  $('open').onclick = () => invoke('go_home');
+  $('relog').onclick = () => showForm(true, true);
+  $('switch').onclick = () => { $('url').value = ''; showForm(true, true); $('url').focus(); };
+  $('cancel').onclick = () => { showForm(false, false); refreshConn(); };
 
   $('connect').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -85,7 +153,7 @@
       const ship = await invoke('connect', { url: $('url').value, code: $('code').value });
       s.textContent = 'connected as ' + ship;
       $('code').value = '';
-      $('back').hidden = false;
+      refreshConn();
     } catch (err) {
       s.textContent = String(err); s.className = 'err';
     }
