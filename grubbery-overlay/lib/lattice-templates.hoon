@@ -48,6 +48,29 @@
       @media(prefers-color-scheme:dark){body{color:#e6e6e6;background:#161616}.site .nav a{background:#242424;border-color:#444}.page h1,.page h2{border-color:#333}}
       '''
   ==
+::  +where: a page that shares your live location for a bounded time. The
+::  logic lives in +live-location:lattice-pg, so this template is one call and
+::  a fix reaches every page ever made from it.
+::
+::  It needs NO sharing switches to work — it is a private page until you
+::  publish it, and that asymmetry is deliberate: turning location sharing on
+::  should be a thing you do, never a default you inherit.
+::
+::  Update it from your phone (iOS Shortcuts, Tasker, curl — anything that can
+::  POST with your session cookie):
+::    POST /apps/lattice/page-cmd?name=<your-page>   body: cmd=<lat>,<lon>,<acc>,<minutes>
+::    POST /apps/lattice/page-cmd?name=<your-page>   body: cmd=stop
+::
+++  where
+  ^-  (list [rel=path kind=@tas body=@t])
+  :~  :-  ~
+      :-  %hoon
+      '''
+      |=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
+      ^-  result
+      (live-location cmd dat now /where "Where I am")
+      '''
+  ==
 ::  +guestbook: a public page anyone can sign. The logic lives in
 ::  +guestbook:lattice-pg (like +folder-index), so this template is a single
 ::  call and a fix to the builder reaches every guestbook ever created. The
@@ -76,5 +99,6 @@
   ^-  (list [name=@tas pages=(list [rel=path kind=@tas body=@t])])
   :~  [%site site]
       [%guestbook guestbook]
+      [%where where]
   ==
 --
