@@ -121,17 +121,17 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Signing is opt-in: with these secrets set the macOS bundles are
-          # signed and notarised, without them the build still succeeds and
-          # produces an UNSIGNED dmg that Gatekeeper will quarantine on first
-          # open. That tradeoff is deliberate — an unsigned build people can
-          # right-click-open beats no build at all.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # No APPLE_* vars here on purpose. `${{ secrets.X }}` for a secret
+          # that does not exist renders an EMPTY STRING, which is not the same
+          # as not setting the variable — tauri saw APPLE_CERTIFICATE present,
+          # tried to import it, and the first v0.8.0-rc1 macOS build died with
+          # "failed to run command security import". Passing nothing produces
+          # an unsigned bundle, which is the intended default.
+          #
+          # To sign later, add the block below AND the matching repo secrets —
+          # both, or the same failure returns:
+          #   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD
+          #   APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
         with:
           projectPath: desktop
           args: --target ${{ matrix.target }}
