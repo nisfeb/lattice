@@ -1188,6 +1188,45 @@
       ?^  into  (weld "/apps/lattice/app?into=" (trip u.into))
       "/apps/lattice/app"
     (send-redirect eyre-id target)
+  ::  page-save-batch: N files in ONE request and ONE writer transaction.
+  ::  Body is a JSON array of {name, type, body}. An upload used to be one
+  ::  request per file, and each pays the pier's ~0.5s floor serially, so a
+  ::  20-file folder drop was ~20 round-trips of overhead to do work that is
+  ::  identical here. Every name is validated BEFORE anything is written: a
+  ::  batch that half-applies and then rejects file 14 is worse than one that
+  ::  refuses up front, because the client cannot tell what landed.
+      [%'POST' %page-save-batch]
+    =/  jon=(unit json)  (de:json:html (req-body req))
+    ?~  jon  (send-err eyre-id 400 'bad json')
+    =/  pr=(each (list [nam=@t typ=@t bod=@t]) tang)
+      %-  mule  |.
+      %.  u.jon
+      %-  ar:dejs:format
+      %-  ot:dejs:format
+      :~  name+so:dejs:format
+          type+so:dejs:format
+          body+so:dejs:format
+      ==
+    ?:  ?=(%| -.pr)  (send-err eyre-id 400 'expected [{name, type, body}]')
+    =/  items=(list [nam=@t typ=@t bod=@t])  p.pr
+    ?:  =(0 (lent items))  (send-err eyre-id 400 'empty batch')
+    ::  bounded: one transaction the writer cannot be talked into running
+    ::  forever. The client chunks above this.
+    ?:  (gth (lent items) 200)  (send-err eyre-id 400 'batch too large (max 200)')
+    ?.  (levy items |=([nam=@t *] (valid-name nam)))
+      (send-err eyre-id 400 'bad page name in batch')
+    =/  pages=(list [pax=path src=@t])
+      %+  turn  items
+      |=  [nam=@t typ=@t bod=@t]
+      =/  ptype=@tas  `@tas`typ
+      :-  (pax-of nam)
+      ?:  =(%index ptype)  (make-folder-index (pax-of nam))
+      ?:  (~(has in content-builders) ptype)  (wrap-content ptype bod)
+      bod
+    ;<  ~  bind:m  (poke-eval [%make-many pages])
+    %+  send-json  eyre-id
+    (pairs:enjs:format ~[['ok' b+&] ['saved' (numb:enjs:format (lent items))]])
+  ::
       [%'POST' %page-save]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -1333,6 +1372,29 @@
     (send-ok eyre-id)
       ::  owner: turn comments on/off at a page or folder (on=1 / on=0). The
       ::  nearest flag at/above a page decides, so a folder toggles a whole site.
+  ::  comments-inbox: what other ships have said, across every page. Comments
+  ::  arrive from anyone the page is open to and the workspace had no view of
+  ::  them at all — you had to visit each published page in the reader to find
+  ::  out anyone had replied.
+      [%'GET' %comments-inbox]
+    ;<  j=json  bind:m  comments-inbox-json
+    (send-json eyre-id j)
+  ::
+  ::  moderation: remove one comment. Owner-only like every non-clearweb route.
+  ::  Deleting the grub is the whole operation — the reader renders from the
+  ::  same tree, so it disappears there too.
+      [%'POST' %comment-del]
+    =/  pg=(unit @t)  (~(get by args) 'page')
+    ?~  pg  (send-err eyre-id 400 'missing page')
+    ?.  (valid-name u.pg)  (send-err eyre-id 400 'bad page')
+    =/  id=(unit @t)  (~(get by args) 'id')
+    ?~  id  (send-err eyre-id 400 'missing id')
+    ?.  ((sane %ta) u.id)  (send-err eyre-id 400 'bad id')
+    =/  croad=road:tarball
+      [%& %& (weld (weld app-base:lu /comments) (pax-of u.pg)) `@ta`u.id]
+    ;<  *  bind:m  (cull-soft:io croad)
+    (send-ok eyre-id)
+  ::
       [%'POST' %page-comments]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -2892,6 +2954,16 @@
     ;<  ~  bind:m  (make-page root pax.act src.act)
     ::  a shared page's vault copy follows every write, not just the share click
     (republish-if-shared root now pax.act src.act)
+      %make-many
+    ::  Same work as %make, once per page, but inside ONE writer transaction.
+    ::  The saving is the ~0.5s pier floor an upload used to pay per FILE; the
+    ::  per-page darts are unchanged, so a batch is exactly as durable as the
+    ::  saves it replaces. Bounded by the route, not here.
+    |-  ^-  form:m
+    ?~  pages.act  (pure:m ~)
+    ;<  ~  bind:m  (make-page root pax.i.pages.act src.i.pages.act)
+    ;<  ~  bind:m  (republish-if-shared root now pax.i.pages.act src.i.pages.act)
+    $(pages.act t.pages.act)
       %tmpl-save
     ::  save a page-tree as a template: copy every page's CODE under
     ::  /template/<name>, rewriting its own root path to the template root, and
@@ -5831,6 +5903,52 @@
       :(weld "<p class=\"home\"><a href=\"" (esc u.home) "\">&larr; home</a></p>")
     :(weld "<main class=\"page\">" hlink inner "</main>")
   (render-clearweb (pax-str pax) head body)
+::  +comment-walk: every comment under /comments, with the page it belongs to.
+::  Recurses the ball once rather than per-page — the owner wants "what came
+::  in", which is a question about the whole tree, not about a page they
+::  already know to look at.
+++  comment-walk
+  |=  [b=ball:tarball rel=path]
+  ^-  (list [pax=path id=@ta c=comment:lc])
+  =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+    ?~(fil.b ~ contents.u.fil.b)
+  =/  here=(list [pax=path id=@ta c=comment:lc])
+    ?~  rel  ~                      ::  a comment cannot live in the root
+    %+  murn  ~(tap by fils)
+    |=  [id=@ta s=sang:tarball gain=? bang=(unit tang)]
+    ^-  (unit [path @ta comment:lc])
+    =/  c=(unit comment:lc)  (mole |.(;;(comment:lc (sang-noun:tarball s))))
+    ?~  c  ~
+    `[rel id u.c]
+  %-  zing
+  :-  here
+  %+  turn  ~(tap by dir.b)
+  |=  [nom=@ta kb=ball:tarball]
+  (comment-walk kb (weld rel /[nom]))
+::  +comments-inbox-json: the owner's view of comments across every page.
+::  Newest first and capped: this is a list other ships append to, so it is
+::  bounded on read for the same reason the shares inbox is bounded on write.
+++  comments-inbox-json
+  =/  m  (fiber:fiber:nexus ,json)
+  ^-  form:m
+  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /comments)] ~)
+  ?.  ?=([%ball *] sn)  (pure:m (pairs:enjs:format ~[['items' a+~]]))
+  =/  all=(list [pax=path id=@ta c=comment:lc])  (comment-walk ball.sn ~)
+  =/  sorted=(list [pax=path id=@ta c=comment:lc])
+    %+  sort  all
+    |=  [a=[* * c=comment:lc] b=[* * c=comment:lc]]
+    (gth when.c.a when.c.b)
+  =/  js=(list json)
+    %+  turn  (scag 200 sorted)
+    |=  [pax=path id=@ta c=comment:lc]
+    %-  pairs:enjs:format
+    :~  ['page' s+(crip (pax-str pax))]
+        ['id' s+id]
+        ['author' s+(scot %p author.c)]
+        ['when' s+(scot %da when.c)]
+        ['body' s+body.c]
+    ==
+  (pure:m (pairs:enjs:format ~[['items' a+js] ['total' (numb:enjs:format (lent all))]]))
 ::  +render-comments: the comment thread for `page` (page-relative path) as escaped
 ::  html, oldest first. `box` is an optional trailing comment form (browser views
 ::  only). "" when the page has no comments and no box. Read here (a peek) rather

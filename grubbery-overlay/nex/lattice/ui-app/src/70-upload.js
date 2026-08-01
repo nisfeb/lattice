@@ -43,20 +43,35 @@
       try { await mutate(api + '/folder-new?name=' + encodeURIComponent(d)); }
       catch {}
     }
-    let fails = 0;
-    for (let i = 0; i < list.length; i++) {
-      upProg(i, list.length, list[i].name);
+    // ONE request per chunk, not one per file: every request pays the pier's
+    // ~0.5s floor serially, so a 20-file drop used to be ~20 round-trips of
+    // pure overhead doing work the server can batch. Chunked because the
+    // route bounds a single transaction (200) and a whole folder should not
+    // become one unbounded write.
+    const CHUNK = 50;
+    let fails = 0, done = 0;
+    for (let i = 0; i < list.length; i += CHUNK) {
+      const part = list.slice(i, i + CHUNK);
+      upProg(done, list.length, part[0].name);
       let r = null;
       try {
-        r = await mutate(api + '/page-save?name=' + encodeURIComponent(list[i].name) +
-          '&type=' + list[i].kind, { method: 'POST', body: (await list[i].file.text()) || '\n' });
+        const payload = [];
+        for (const it of part)
+          payload.push({ name: it.name, type: it.kind, body: (await it.file.text()) || '\n' });
+        r = await mutate(api + '/page-save-batch',
+          { method: 'POST', body: JSON.stringify(payload) });
       } catch {}
       if (!r || !r.ok) {
-        fails++;
-        upErr.textContent += `failed: ${list[i].name}${r ? ' (' + r.status + ')' : ''}\n`;
+        // the batch is all-or-nothing, so report the whole chunk rather than
+        // implying some of it landed
+        fails += part.length;
+        let msg = r ? r.status : 'network';
+        if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
+        upErr.textContent += `failed: ${part.length} file(s) — ${msg}\n`;
       } else {
-        addTreeNode(list[i].name, list[i].kind);
+        for (const it of part) addTreeNode(it.name, it.kind);
       }
+      done += part.length;
     }
     upProg(list.length, list.length, '');
     upMsg.textContent = fails ? `done with ${fails} failures` : `uploaded ${list.length} files`;

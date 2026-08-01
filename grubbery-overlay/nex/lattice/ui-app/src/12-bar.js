@@ -24,6 +24,7 @@
   <button id="wrapt" class="ico" title="toggle line wrap">&#8617;</button>
   <!-- a KEY, not U+26BF: that codepoint has almost no font coverage and
        rendered as an empty box, which is worse than no button at all. -->
+  <button id="cmt" class="ico" title="comments from other ships">&#128172;</button>
   <button id="aclt" class="ico" title="access control &mdash; groups, sharing, banned ships">&#128273;</button>
   <button id="treet" class="ico" title="toggle tree pane">&#9776;</button>
   <button id="ctlt" class="ico" title="toggle controls pane">&#9881;</button>
