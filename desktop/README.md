@@ -80,3 +80,26 @@ connected" on remount), clear the stale mountpoint with
 Windows: the app itself is Tauri and would build, but mounting needs a
 WinFsp backend for the `Projection` trait (`fuser` is unix-only) — planned,
 not yet implemented.
+
+## Releases
+
+Push a version tag and CI builds every supported platform:
+
+    # bump "version" in tauri.conf.json first — CI refuses a tag that
+    # disagrees with it, so the bundles can never be stamped with the
+    # wrong version
+    git tag v0.2.0 && git push origin v0.2.0
+
+`.github/workflows/release.yml` runs the test suites, then builds on
+ubuntu-22.04 (`.deb` + `.AppImage`, x86_64), macos-14 (`.dmg`, Apple
+Silicon) and macos-13 (`.dmg`, Intel), and attaches the bundles to a
+**draft** release for a human to publish. `workflow_dispatch` builds the
+same set without a tag.
+
+Ubuntu 22.04 rather than the newest runner on purpose: a bundle's glibc
+floor is whatever it was built against, so building on the newest image
+silently drops every older distro.
+
+macOS bundles are unsigned unless the `APPLE_*` signing secrets are set —
+they work, but need right-click → Open the first time. Windows is not built
+(see above); it would fail at compile, not at bundling.
