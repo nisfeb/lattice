@@ -1,0 +1,142 @@
+name: release
+
+# Build the desktop app for every supported platform and attach the bundles to
+# a GitHub release. Triggered by a version tag (v1.2.3), or by hand.
+#
+# Windows is deliberately absent. It is not an oversight and not a TODO in this
+# file: the app depends on lattice-fs, which mounts through `fuser`, and fuser
+# is unix-only — the crate does not compile on Windows at all. Shipping a
+# Windows build means writing a WinFsp backend for the Projection trait first
+# (see desktop/README.md). A job here would only fail loudly every release.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: 'create the release as a draft'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write        # needed to create the release and upload assets
+
+jobs:
+  # A tag that disagrees with the version tauri stamps into the bundles would
+  # ship "lattice 0.1.0" from a tag called v0.4.0 — wrong in the filename, the
+  # About box and the .deb metadata, and invisible until someone reports it.
+  # Fail before spending 20 minutes of matrix build time.
+  verify:
+    name: version + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tag matches tauri.conf.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          conf=$(node -p "require('./desktop/tauri.conf.json').version")
+          echo "tag=$tag  tauri.conf.json=$conf"
+          if [ "$tag" != "$conf" ]; then
+            echo "::error::tag v$tag does not match desktop/tauri.conf.json version $conf — bump the config, or retag" >&2
+            exit 1
+          fi
+      # Tag pushes do not run ci.yml (it gates on branches), so a release could
+      # otherwise ship code no test ever saw.
+      - name: build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse3-dev pkg-config libgtk-3-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libsoup-3.0-dev
+      - name: cargo test — lattice-fs
+        working-directory: lattice-fs-rs
+        run: cargo test
+      - name: cargo test — desktop
+        working-directory: desktop
+        run: cargo test
+      - name: the served UI artifact is current
+        run: |
+          node scripts/build-ui.mjs
+          git diff --exit-code grubbery-overlay/nex/lattice/ui-app/app.js
+
+  build:
+    needs: verify
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false     # one platform failing should not hide the others
+      matrix:
+        include:
+          # 22.04, not latest: the glibc a bundle is built against is the
+          # OLDEST it runs on, so building on the newest ubuntu quietly drops
+          # support for every still-supported distro below it.
+          - os: ubuntu-22.04
+            label: linux-x86_64 (deb + appimage)
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            label: macos-aarch64 (dmg)
+            target: aarch64-apple-darwin
+          - os: macos-13
+            label: macos-x86_64 (dmg)
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop -> target
+
+      - name: linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse3-dev pkg-config libgtk-3-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libsoup-3.0-dev libxdo-dev libssl-dev file
+
+      # No macFUSE step, and no libfuse on Linux either: fuser is pulled in with
+      # default-features = false, so nothing links libfuse at build time — the
+      # mount goes through fusermount3 at RUNTIME instead. Installing a kernel
+      # extension cask in CI would be a hang risk for no build-time benefit.
+
+      - name: build and upload
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signing is opt-in: with these secrets set the macOS bundles are
+          # signed and notarised, without them the build still succeeds and
+          # produces an UNSIGNED dmg that Gatekeeper will quarantine on first
+          # open. That tradeoff is deliberate — an unsigned build people can
+          # right-click-open beats no build at all.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: desktop
+          args: --target ${{ matrix.target }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('untagged-{0}', github.sha) }}
+          releaseName: lattice ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+          # Draft by default: a release is outward-facing and irreversible once
+          # people have the URL. A human publishes it.
+          releaseDraft: true
+          prerelease: false
+          releaseBody: |
+            Desktop builds of the lattice client.
+
+            - **Linux**: `.deb` or `.AppImage` (x86_64). Needs `fuse3` for mounting.
+            - **macOS**: `.dmg` for Apple Silicon and Intel. Needs
+              [macFUSE](https://macfuse.github.io) for mounting. Unsigned
+              builds need right-click → Open the first time.
+
+            Windows is not built: mounting needs a WinFsp backend that does not
+            exist yet — see `desktop/README.md`.
