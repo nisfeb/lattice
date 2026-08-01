@@ -127,6 +127,12 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # pkg-config refuses to answer when target != host unless told it is
+          # allowed, so the Intel-from-arm64 build died in fuser's build script
+          # before compiling a line. Safe here specifically because macFUSE
+          # ships UNIVERSAL libraries — the .pc it finds describes a binary
+          # that really does contain x86_64. No effect on a native build.
+          PKG_CONFIG_ALLOW_CROSS: '1'
           # No APPLE_* vars here on purpose. `${{ secrets.X }}` for a secret
           # that does not exist renders an EMPTY STRING, which is not the same
           # as not setting the variable — tauri saw APPLE_CERTIFICATE present,
