@@ -365,6 +365,60 @@
       (trip (esc (crip (snag 0 next))))  ","  (trip (esc (crip (snag 1 next))))
       "\"></iframe>"
     ==
+  ::  +loc-control: the buttons that actually send a position.
+  ::
+  ::  This page had no way to update itself from the app — it was driven only
+  ::  by POST /page-cmd, i.e. by curl. A page that shares your location should
+  ::  have a button that shares your location.
+  ::
+  ::  The script is a single-quoted CORD, not a tape: hoon interpolates {...}
+  ::  inside a double-quoted tape, so JS braces cannot live in one. It also
+  ::  uses only double quotes internally, since the cord delimiter is the
+  ::  single quote. The page name is passed via data-page rather than being
+  ::  spliced into the script, which keeps the cord entirely static.
+  ::
+  ::  NB: the control renders for anyone viewing the page. /page-cmd is
+  ::  owner-authenticated, so a visitor pressing it gets a 403 rather than
+  ::  moving your position — but it is worth knowing it is visible if you
+  ::  publish the page.
+  =/  loc-control=tape
+    ;:  weld
+      "<div id=\"locctl\" data-page=\""  (trip (esc (crip (slag 1 (spud rel)))))  "\" "
+      "style=\"margin:.8rem 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap\">"
+      "<button id=\"locgo\">share my location</button>"
+      "<select id=\"locmins\">"
+      "<option value=\"15\">15 min</option>"
+      "<option value=\"60\" selected>1 hour</option>"
+      "<option value=\"480\">8 hours</option>"
+      "</select>"
+      "<label><input type=\"checkbox\" id=\"loccoarse\"> coarse (~1 km)</label>"
+      "<label><input type=\"checkbox\" id=\"loclive\"> keep updating</label>"
+      "<button id=\"locstop\">stop</button>"
+      "<span id=\"locmsg\" class=\"muted\"></span>"
+      "</div>"
+      "<script>"
+      %-  trip
+      '''
+      (function(){
+      var el=document.getElementById("locctl");
+      var P=el.getAttribute("data-page");
+      var m=document.getElementById("locmsg");
+      function post(c){return fetch("/apps/lattice/page-cmd?name="+encodeURIComponent(P),{method:"POST",body:"cmd="+encodeURIComponent(c)});}
+      function fx(n){return document.getElementById("loccoarse").checked?n.toFixed(2):n.toFixed(5);}
+      function send(p){return post(fx(p.coords.latitude)+","+fx(p.coords.longitude)+","+Math.round(p.coords.accuracy)+","+document.getElementById("locmins").value);}
+      function fail(e){m.textContent="location error: "+e.message;}
+      document.getElementById("locgo").onclick=function(){
+      m.textContent="getting position...";
+      navigator.geolocation.getCurrentPosition(function(p){send(p).then(function(){location.reload();});},fail,{enableHighAccuracy:true,timeout:15000});};
+      document.getElementById("locstop").onclick=function(){post("stop").then(function(){location.reload();});};
+      var w=null;
+      document.getElementById("loclive").onchange=function(e){
+      if(e.target.checked){m.textContent="updating live";w=navigator.geolocation.watchPosition(function(p){send(p);},fail,{enableHighAccuracy:true});}
+      else{if(w!==null)navigator.geolocation.clearWatch(w);w=null;m.textContent="";}};
+      })();
+      '''
+      "</script>"
+    ==
   =/  body=@t
     %-  crip
     ;:  weld
@@ -392,6 +446,7 @@
         "\">open in a map</a></p>"
         ==
       ==
+      loc-control
       ::  Machine-readable state for the next run — but ONLY while the share
       ::  is live. Carrying it past expiry meant the page said "not sharing"
       ::  while the coordinates sat in an HTML comment for anyone who viewed
