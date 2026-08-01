@@ -101,11 +101,10 @@ jobs:
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
             libsoup-3.0-dev libxdo-dev libssl-dev file
 
-      # macFUSE supplies the headers fuser links against. Without it the build
-      # fails on macOS with a missing fuse.h rather than anything about tauri.
-      - name: macfuse
-        if: runner.os == 'macOS'
-        run: brew install --cask macfuse || true
+      # No macFUSE step, and no libfuse on Linux either: fuser is pulled in with
+      # default-features = false, so nothing links libfuse at build time — the
+      # mount goes through fusermount3 at RUNTIME instead. Installing a kernel
+      # extension cask in CI would be a hang risk for no build-time benefit.
 
       - name: build and upload
         uses: tauri-apps/tauri-action@v0
