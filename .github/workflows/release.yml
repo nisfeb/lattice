@@ -78,8 +78,14 @@ jobs:
           - os: macos-14
             label: macos-aarch64 (dmg)
             target: aarch64-apple-darwin
-          - os: macos-13
-            label: macos-x86_64 (dmg)
+          # Cross-compiled on the SAME arm64 runner rather than on macos-13.
+          # In v0.8.0-rc1 the macos-13 job sat queued for hours and never
+          # started — GitHub's Intel macOS capacity is scarce — so depending on
+          # it means never shipping an Intel build. Apple Silicon hosts
+          # x86_64-apple-darwin fine, and macFUSE ships universal libraries, so
+          # the link works.
+          - os: macos-14
+            label: macos-x86_64 (dmg, cross from arm64)
             target: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v4
