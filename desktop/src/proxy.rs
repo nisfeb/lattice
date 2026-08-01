@@ -119,6 +119,24 @@ pub fn agent() -> &'static ureq::Agent {
     })
 }
 
+/// Headers the webview sent that must NOT be relayed on.
+///
+/// `cookie` is the load-bearing one: the whole point of the bridge is that the
+/// webview holds no session and we attach ours Rust-side, so forwarding a page
+/// cookie would put webkit's cookie behaviour back in the auth path. The rest
+/// are hop-by-hop (they describe the webview↔bridge connection, not the
+/// bridge↔ship one) plus `content-length`, which ureq recomputes.
+///
+/// NB: accept-encoding is deliberately NOT dropped — it rides through so the
+/// ship can gzip and the webview decodes, which matters on every WAN load.
+fn drop_request_header(lower_name: &str) -> bool {
+    matches!(
+        lower_name,
+        "host" | "connection" | "cookie" | "content-length"
+            | "upgrade" | "keep-alive" | "proxy-connection" | "transfer-encoding"
+    )
+}
+
 fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
     client.set_nodelay(true).ok();
     let mut reader = BufReader::new(client.try_clone()?);
@@ -149,11 +167,7 @@ fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
         if kl == "content-length" {
             content_len = v.parse().unwrap_or(0);
         }
-        if matches!(
-            kl.as_str(),
-            "host" | "connection" | "cookie" | "content-length"
-                | "upgrade" | "keep-alive" | "proxy-connection" | "transfer-encoding"
-        ) {
+        if drop_request_header(&kl) {
             continue;
         }
         headers.push((k.to_string(), v.to_string()));
@@ -223,4 +237,47 @@ fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_webviews_cookie_is_never_relayed() {
+        // the bridge exists so the webview holds NO session; forwarding its
+        // cookie would put webkit's cookie behaviour back in the auth path,
+        // which is the entire class of bug this design removed.
+        assert!(drop_request_header("cookie"));
+        // hop-by-hop headers describe the webview<->bridge hop, not ours
+        for h in ["host", "connection", "content-length", "upgrade",
+                  "keep-alive", "proxy-connection", "transfer-encoding"] {
+            assert!(drop_request_header(h), "{h} must not be relayed");
+        }
+        // accept-encoding MUST ride through: the ship gzips and the webview
+        // decodes. Dropping it made every WAN transfer identity-encoded.
+        assert!(!drop_request_header("accept-encoding"));
+        for h in ["accept", "user-agent", "referer", "if-none-match", "range"] {
+            assert!(!drop_request_header(h), "{h} should reach the ship");
+        }
+    }
+
+    #[test]
+    fn the_bridge_port_is_deterministic() {
+        // The port is part of the webview's ORIGIN, and web storage is keyed by
+        // origin. A moving port gave every launch an empty cache, which is what
+        // made the desktop app slower than the same UI in a browser. So the
+        // first bind must be PORT_BASE, and a taken port must step by one
+        // rather than fall back to an ephemeral one.
+        let (first, p1) = bind_stable().expect("a free port in the range");
+        assert_eq!(p1, PORT_BASE, "first bind must be the deterministic port");
+        let (second, p2) = bind_stable().expect("the range has room");
+        assert_eq!(p2, PORT_BASE + 1, "a taken port steps by one, stays stable");
+        drop(first);
+        drop(second);
+        // and with the range free again we are back to the same origin
+        let (third, p3) = bind_stable().expect("free again");
+        assert_eq!(p3, PORT_BASE, "the origin is recoverable, not drifting");
+        drop(third);
+    }
 }
