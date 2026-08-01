@@ -1099,6 +1099,11 @@
     } else {
       cerr.textContent = CONTENT() ? 'saved' : 'compiled ok';
       cerr.className = 'ok';
+      // clear the STATUS too, not just the error box. save() sets
+      // 'compiling…' for computed kinds and only checkErrors can resolve it,
+      // so without this every hoon/js/css page sat at "compiling…" forever
+      // and looked wedged when it had in fact compiled fine.
+      if (!CONTENT()) st('compiled ok');
       refreshPreview();
     }
   }
