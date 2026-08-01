@@ -49,7 +49,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      # No magic-nix-cache: it authenticates against FlakeHub and hard-fails
+      # without an account. Builds are uncached and slower; correctness first.
       # `nix flake check` also evaluates the devShells, so a typo'd package
       # attribute fails here rather than the first time someone runs it.
       - name: flake evaluates

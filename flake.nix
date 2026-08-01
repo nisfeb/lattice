@@ -8,7 +8,10 @@
       # Hand-rolled rather than pulling in flake-utils: two lines, one fewer
       # input to keep pinned.
       linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
-      allSystems = linuxSystems ++ [ "x86_64-darwin" "aarch64-darwin" ];
+      # No x86_64-darwin: nixpkgs 26.11 dropped it, and `nix flake check
+      # --all-systems` evaluates every system listed, so naming it fails the
+      # check outright. Intel macs take the .dmg from a release.
+      allSystems = linuxSystems ++ [ "aarch64-darwin" ];
       forSystems = systems: f:
         nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
 
