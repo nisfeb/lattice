@@ -111,6 +111,63 @@ jobs:
         if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
         run: echo "ship/cookie secrets not set — skipping the mcp matrix."
 
+  ui-boot:
+    name: ui — boot UX + mobile defaults
+    runs-on: ubuntu-latest
+    env:
+      LATTICE_URL: ${{ secrets.LATTICE_URL }}
+      LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: ui-boot.mjs
+        if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
+        run: |
+          npm i --no-save --no-audit --no-fund puppeteer-core
+          printf '%s' "$LATTICE_MCP_COOKIE" > /tmp/ship-cookie
+          LATTICE_COOKIE=/tmp/ship-cookie CHROME="$(command -v google-chrome)" \
+            node scripts/ui-boot.mjs
+      - name: skipped
+        if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
+        run: echo "ship/cookie secrets not set — skipping ui-boot."
+
+  ui-perf:
+    name: ui — request counts (perf contract)
+    runs-on: ubuntu-latest
+    env:
+      LATTICE_URL: ${{ secrets.LATTICE_URL }}
+      LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: ui-perf.mjs
+        if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
+        run: |
+          npm i --no-save --no-audit --no-fund puppeteer-core
+          printf '%s' "$LATTICE_MCP_COOKIE" > /tmp/ship-cookie
+          LATTICE_COOKIE=/tmp/ship-cookie CHROME="$(command -v google-chrome)" \
+            node scripts/ui-perf.mjs
+      - name: skipped
+        if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
+        run: echo "ship/cookie secrets not set — skipping ui-perf."
+
+  ui-acl-prefs:
+    name: ui — typography, ACL pane, banlist
+    runs-on: ubuntu-latest
+    env:
+      LATTICE_URL: ${{ secrets.LATTICE_URL }}
+      LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: ui-acl-prefs.mjs
+        if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
+        run: |
+          npm i --no-save --no-audit --no-fund puppeteer-core
+          printf '%s' "$LATTICE_MCP_COOKIE" > /tmp/ship-cookie
+          LATTICE_COOKIE=/tmp/ship-cookie CHROME="$(command -v google-chrome)" \
+            node scripts/ui-acl-prefs.mjs
+      - name: skipped
+        if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
+        run: echo "ship/cookie secrets not set — skipping ui-acl-prefs."
+
   ui-matrix:
     name: ui — headless-browser matrix
     runs-on: ubuntu-latest

@@ -84,6 +84,36 @@ try {
     [...document.querySelectorAll('*')].filter((e) => e.tagName.includes('-'))
       .every((e) => e.constructor !== HTMLElement)));
 
+  // Icon buttons must actually RENDER. The access-control button shipped as
+  // U+26BF, which almost no font covers, so it drew as an empty .notdef box —
+  // the only entry to groups, sharing and the banlist looked like a blank
+  // square. Every check we had asserted the element EXISTED, which it did.
+  // Compare each glyph's rendering against a guaranteed-unassigned codepoint:
+  // identical pixels means the font had nothing and drew tofu.
+  const tofu = await page.evaluate(() => {
+    const c = document.createElement('canvas');
+    c.width = 48; c.height = 48;
+    const x = c.getContext('2d');
+    const draw = (s) => {
+      x.clearRect(0, 0, 48, 48);
+      x.font = '24px ' + getComputedStyle(document.body).fontFamily;
+      x.fillText(s, 6, 32);
+      return c.toDataURL();
+    };
+    const control = draw('\u{10FFFF}');   // unassigned forever: always .notdef
+    const blank = draw(' ');
+    const bad = [];
+    for (const b of document.querySelectorAll('.bar button.ico, .bar a.home, .bar a.nav')) {
+      const t = (b.textContent || '').trim();
+      if (!t) continue;
+      const px = draw(t);
+      if (px === control || px === blank) bad.push((b.id || b.className) + '=' + t);
+    }
+    return bad;
+  });
+  check('boot: every bar icon renders a real glyph (no tofu)',
+    tofu.length === 0, tofu.join(', '));
+
   step = 'new page';
   // ── 2. new page: type, save, appears in tree, round-trips ────────────────
   await page.click('#newfile');
@@ -327,6 +357,33 @@ try {
     const s = document.getElementById('src');
     s.value = ''; s.dispatchEvent(new Event('input'));
   });
+
+  // Opening a page is an EXPLICIT act and must not be blocked by editor state.
+  // A guard that skipped the open when `dirty` was set shipped once: with
+  // unsaved edits, clicking another file silently did nothing. It surfaced
+  // three steps away (a template failing to open) rather than here, so this
+  // asserts the invariant directly.
+  step = 'open while dirty';
+  await page.evaluate((n) => fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
+    '&type=md&new=1', { method: 'POST', body: '# other' }), RUN + '/other');
+  await sleep(3000);
+  // the client does not learn about a page created behind its back until it
+  // refreshes; focus is the cheapest way to force one deterministically
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
+    .some((a) => a.href.includes(encodeURIComponent(n))), RUN + '/other');
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = '# UNSAVED EDIT'; s.dispatchEvent(new Event('input'));
+  });
+  await page.evaluate((n) => {
+    [...document.querySelectorAll('#treelist a.pg')]
+      .find((a) => a.href.includes(encodeURIComponent(n))).click();
+  }, RUN + '/other');
+  await sleep(4000);
+  check('open: a dirty editor does not block opening another page',
+    await page.evaluate(() => document.getElementById('src').value) === '# other',
+    JSON.stringify(await page.evaluate(() => document.getElementById('src').value)));
 
   step = 'template';
   await page.click('#newtmpl');

@@ -25,6 +25,24 @@ jobs:
         working-directory: lattice-fs-rs
         run: cargo test --release
 
+  desktop:
+    name: desktop — cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # tauri pulls the webkit stack in at COMPILE time, so the deps are needed
+      # even though every test here is pure logic (pier detection, ship-name
+      # shape, config round-trip, eyre binding classification).
+      - name: tauri + fuse build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse3-dev pkg-config libgtk-3-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libsoup-3.0-dev
+      - name: cargo test
+        working-directory: desktop
+        run: cargo test
+
   static:
     name: web client + scripts — static checks
     runs-on: ubuntu-latest
@@ -35,7 +53,9 @@ jobs:
           node scripts/build-ui.mjs
           git diff --exit-code grubbery-overlay/nex/lattice/ui-app/app.js
           node --check grubbery-overlay/nex/lattice/ui-app/app.js
-          node --check scripts/ui-matrix.mjs
-      - name: shell scripts parse
+      # every suite, not just ui-matrix: a syntax error in one that CI never
+      # parsed is a suite that silently stops testing anything.
+      - name: test scripts parse
         run: |
+          for f in scripts/*.mjs; do node --check "$f"; done
           for f in scripts/*.sh; do bash -n "$f"; done

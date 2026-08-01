@@ -111,7 +111,43 @@ try {
   check('the page opened during load is STILL open afterwards',
     after.body === BODY, JSON.stringify(after));
   check('and the name field still names it', after.name === PAGE, after.name);
-  // ── 3. mobile: land on the tree, and do not summon the keyboard ─────────
+  // ── 3. a save must not discard an in-flight tree refresh ────────────────
+  // A body-only save used to bump the tree generation, which exists so a
+  // STRUCTURAL local patch is not overwritten by a list fetch issued before
+  // it. Bumping for a body change threw away legitimate refreshes: a page
+  // created while an autosave was in flight never appeared in the tree. The
+  // dump is held open so the overlap is deterministic rather than luck.
+  step = 'save vs in-flight tree fetch';
+  const RACE = PAGE + '-race';
+  await page.evaluate((n) => {
+    [...document.querySelectorAll('#treelist a.pg')]
+      .find((a) => a.href.includes(encodeURIComponent(n))).click();
+  }, PAGE);
+  await wait((b) => document.getElementById('src').value === b, BODY);
+  // start a tree refresh that will still be in flight when the save lands
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  // ...and a save that completes during it
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = '# edited during refresh'; s.dispatchEvent(new Event('input'));
+  });
+  // a page created by something else (another device, a template) meanwhile
+  await page.evaluate((n) => fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
+    '&type=md&new=1', { method: 'POST', body: '# race' }), RACE);
+  await sleep(12000);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await sleep(8000);
+  check('a page created during a save still lands in the tree',
+    await page.evaluate((n) => [...document.querySelectorAll('#treelist a.pg')]
+      .some((a) => a.href.includes(encodeURIComponent(n))), RACE),
+    'tree is missing ' + RACE);
+  // this step deliberately edited the probe page; put it back, because the
+  // mobile checks below assert it resumes with its ORIGINAL body
+  await page.evaluate((n, b) => fetch('/apps/lattice/page-save?name=' +
+    encodeURIComponent(n) + '&type=md', { method: 'POST', body: b }), PAGE, BODY);
+  await sleep(4000);
+
+  // ── 4. mobile: land on the tree, and do not summon the keyboard ─────────
   step = 'mobile defaults';
   await page.setRequestInterception(false);
   await page.setViewport({ width: 390, height: 780, isMobile: true });
@@ -145,8 +181,9 @@ try {
 } finally {
   try {
     await page.setRequestInterception(false);
-    await page.evaluate((n) =>
-      fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n), { method: 'POST' }), PAGE);
+    for (const n of [PAGE, PAGE + '-race'])
+      await page.evaluate((x) =>
+        fetch('/apps/lattice/page-del?name=' + encodeURIComponent(x), { method: 'POST' }), n);
   } catch {}
   await browser.close();
 }
