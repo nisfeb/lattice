@@ -170,6 +170,89 @@
       "<ul class=\"guestbook\">"  item  prev  "</ul></div>"
     ==
   (html body)
+::  +split-on: split a tape on a character. Small, but three page builders
+::  wanted it and each had its own copy.
+::
+++  split-on
+  |=  [t=tape c=@tD]
+  ^-  (list tape)
+  |-  ^-  (list tape)
+  =/  i=(unit @ud)  (find ~[c] t)
+  ?~  i  ~[t]
+  [(scag u.i t) $(t (slag +(u.i) t))]
+::  +deg-micro / +micro-deg: a decimal degree as SIGNED MICRODEGREES.
+::
+::  A map needs a bounding box, which means arithmetic on coordinates — but
+::  +live-location deliberately never parses them as floating point, because
+::  round-tripping a position through a float is a silent way to change it.
+::  Fixed-point integers add and subtract exactly, so the number that comes
+::  back out is the number that went in.
+::
+::  +num-tape / +tape-num: plain base-10 digits, both ways.
+::
+::  NOT +scow and NOT rush/dem. `(scow %ud 500.700)` renders "500.700" WITH dot
+::  separators, which silently broke the zero-padding below, and dem refused
+::  the zero-padded fractions this needs. Hoon's number syntax is for hoon
+::  source, not for decimal degrees.
+::
+++  num-tape
+  |=  n=@ud
+  ^-  tape
+  ?:  =(0 n)  "0"
+  =|  out=tape
+  |-  ^-  tape
+  ?:  =(0 n)  out
+  $(n (div n 10), out [(add '0' (mod n 10)) out])
+::
+++  tape-num
+  |=  t=tape
+  ^-  (unit @ud)
+  ?:  =("" t)  ~
+  =|  acc=@ud
+  |-  ^-  (unit @ud)
+  ?~  t  `acc
+  ?.  &((gte i.t '0') (lte i.t '9'))  ~
+  $(t t.t, acc (add (mul acc 10) (sub i.t '0')))
+::  +deg-micro / +micro-deg: a decimal degree as SIGNED MICRODEGREES.
+::
+::  A map needs a bounding box, which means arithmetic on coordinates — but
+::  +live-location deliberately never parses them as floating point, because
+::  round-tripping a position through a float is a silent way to move it.
+::  Fixed-point integers add and subtract exactly.
+::
+++  deg-micro
+  |=  t=tape
+  ^-  (unit @sd)
+  ::  scag/slag rather than snag: they are total, so no ?~ refinement has to
+  ::  survive into a wet gate (snag on a refined tape mull-grows here).
+  ?:  =("" t)  ~
+  =/  neg=?  =("-" (scag 1 t))
+  =/  b=tape  ?:(neg (slag 1 t) t)
+  =/  ps=(list tape)  (split-on b '.')
+  ?.  |(=(1 (lent ps)) =(2 (lent ps)))  ~
+  =/  whole=(unit @ud)  (tape-num (scag 1.000 (snag 0 ps)))
+  ?~  whole  ~
+  =/  frac=tape
+    ?:  =(1 (lent ps))  "000000"
+    =/  f=tape  (scag 6 (snag 1 ps))
+    (weld f (reap (sub 6 (lent f)) '0'))
+  =/  fr=(unit @ud)  (tape-num frac)
+  ?~  fr  ~
+  =/  mag=@ud  (add (mul u.whole 1.000.000) u.fr)
+  `?:(neg (new:si | mag) (sun:si mag))
+::
+++  micro-deg
+  |=  m=@sd
+  ^-  tape
+  =/  o  (old:si m)
+  =/  mag=@ud  +.o
+  =/  frac=tape  (num-tape (mod mag 1.000.000))
+  ;:  weld
+    ?:(-.o "" "-")
+    (num-tape (div mag 1.000.000))
+    "."
+    (weld (reap (sub 6 (lent frac)) '0') frac)
+  ==
 ::  +live-location: a page that shares where you are, for a bounded time.
 ::
 ::  Owner-only input. The command channel (POST /page-cmd) is authenticated as
@@ -211,14 +294,6 @@
     =/  rest=tape  (slag (add u.a (lent marker)) old)
     =/  b=(unit @ud)  (find "-->" rest)
     ?~(b "" (scag u.b rest))
-  ::  split a tape on a character
-  =/  split
-    |=  [t=tape c=@tD]
-    ^-  (list tape)
-    |-  ^-  (list tape)
-    =/  i=(unit @ud)  (find ~[c] t)
-    ?~  i  ~[t]
-    [(scag u.i t) $(t (slag +(u.i) t))]
   ::  a coordinate is digits, a minus and a dot — nothing else reaches the page
   =/  coordy
     |=  t=tape
@@ -233,9 +308,9 @@
   =/  arg=tape
     =/  eq=(unit @ud)  (find "=" raw)
     ?~(eq raw (slag +(u.eq) raw))
-  =/  parts=(list tape)  (split arg ',')
+  =/  parts=(list tape)  (split-on arg ',')
   ::  state is lat|lon|acc|until, all as text
-  =/  old=(list tape)  (split prev '|')
+  =/  old=(list tape)  (split-on prev '|')
   =/  now-t=tape  (scow %da now)
   =/  next=(list tape)
     ?:  =("stop" arg)  ~
@@ -260,23 +335,62 @@
     =/  u=(unit @da)  (slaw %da (crip (snag 3 next)))
     ?~(u %.n (lth now u.u))
   =/  until=tape  ?:(live (snag 3 next) "")
+  ::  THE MAP. Know the trade before publishing this page: an embedded map
+  ::  means every viewer's browser asks openstreetmap.org for tiles at these
+  ::  coordinates, so the tile host learns the position (and each viewer's IP)
+  ::  whenever the page is opened. The bare link below leaks nothing until
+  ::  someone clicks it. Both are here; the map because it was asked for.
+  ::
+  ::  Empty unless live, so an expired share renders no iframe at all —
+  ::  nothing to load, nothing to leak.
+  =/  map-html=tape
+    ?.  live  ""
+    =/  mlat=(unit @sd)  (deg-micro (snag 0 next))
+    =/  mlon=(unit @sd)  (deg-micro (snag 1 next))
+    ?:  |(?=(~ mlat) ?=(~ mlon))  ""
+    =/  span=@sd  (sun:si 8.000)          ::  ~0.008deg, roughly a mile
+    =/  bbox=tape
+      ;:  weld
+        (micro-deg (dif:si u.mlon span))  ","
+        (micro-deg (dif:si u.mlat span))  ","
+        (micro-deg (sum:si u.mlon span))  ","
+        (micro-deg (sum:si u.mlat span))
+      ==
+    ;:  weld
+      "<iframe title=\"map\" loading=\"lazy\" referrerpolicy=\"no-referrer\" "
+      "style=\"width:100%;height:320px;border:1px solid #8886;border-radius:8px\" "
+      "src=\"https://www.openstreetmap.org/export/embed.html?bbox="
+      (trip (esc (crip bbox)))
+      "&amp;layer=mapnik&amp;marker="
+      (trip (esc (crip (snag 0 next))))  ","  (trip (esc (crip (snag 1 next))))
+      "\"></iframe>"
+    ==
   =/  body=@t
     %-  crip
     ;:  weld
       "<div class=\"page\"><h1>"  title  "</h1>"
       ?.  live
-        "<p class=\"muted\">Not sharing a location right now.</p>"
+        ;:  weld
+          "<p class=\"muted\">No position is being broadcast right now.</p>"
+          ::  "sharing" already means page ACLs here, and using it for this
+          ::  sent someone to the share controls to fix a page that needed a
+          ::  command instead. Name the two things differently and say which
+          ::  one this is.
+          "<p class=\"muted\">Sharing this page controls who can SEE it; "
+          "a position is started by posting a command to it.</p>"
+        ==
       ;:  weld
         "<p><b>"  (trip (esc (crip (snag 0 next))))  ", "
                   (trip (esc (crip (snag 1 next))))  "</b></p>"
         ?:  =("" (snag 2 next))  ""
         :(weld "<p class=\"muted\">accurate to about " (trip (esc (crip (snag 2 next)))) " m</p>")
-        "<p class=\"muted\">shared until "  (trip (esc (crip until)))  "</p>"
-        ::  a LINK, not an embed: an embedded map would hand the tile host the
-        ::  location every time anyone opened the page
+        "<p class=\"muted\">broadcasting until "  (trip (esc (crip until)))  "</p>"
+      ;:  weld
+        map-html
         "<p><a rel=\"noreferrer noopener\" href=\"https://www.openstreetmap.org/?mlat="
         (trip (esc (crip (snag 0 next))))  "&amp;mlon="  (trip (esc (crip (snag 1 next))))
         "\">open in a map</a></p>"
+        ==
       ==
       ::  Machine-readable state for the next run — but ONLY while the share
       ::  is live. Carrying it past expiry meant the page said "not sharing"
