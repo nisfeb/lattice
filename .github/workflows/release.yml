@@ -101,10 +101,21 @@ jobs:
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
             libsoup-3.0-dev libxdo-dev libssl-dev file
 
-      # No macFUSE step, and no libfuse on Linux either: fuser is pulled in with
-      # default-features = false, so nothing links libfuse at build time — the
-      # mount goes through fusermount3 at RUNTIME instead. Installing a kernel
-      # extension cask in CI would be a hang risk for no build-time benefit.
+      # macFUSE supplies fuse.pc. fuser's BUILD SCRIPT probes pkg-config for
+      # `fuse` even with default-features = false, so this is required to
+      # compile at all — the Linux job only worked because libfuse3-dev is in
+      # its apt list. Removing this on the theory that default-features = false
+      # meant no build-time dependency is exactly how the first v0.8.0-rc1 run
+      # failed: "The system library `fuse` required by crate `fuser` was not
+      # found." The kext never has to load; only the headers are needed.
+      - name: macfuse (fuse.pc for fuser's build script)
+        if: runner.os == 'macOS'
+        run: |
+          brew install --cask macfuse
+          pkg-config --exists fuse && echo "fuse.pc found" || {
+            echo "::error::macFUSE installed but fuse.pc is not on the pkg-config path" >&2
+            exit 1
+          }
 
       - name: build and upload
         uses: tauri-apps/tauri-action@v0
