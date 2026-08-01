@@ -99,6 +99,7 @@
   <button id="wrapt" class="ico" title="toggle line wrap">&#8617;</button>
   <!-- a KEY, not U+26BF: that codepoint has almost no font coverage and
        rendered as an empty box, which is worse than no button at all. -->
+  <button id="cmt" class="ico" title="comments from other ships">&#128172;</button>
   <button id="aclt" class="ico" title="access control &mdash; groups, sharing, banned ships">&#128273;</button>
   <button id="treet" class="ico" title="toggle tree pane">&#9776;</button>
   <button id="ctlt" class="ico" title="toggle controls pane">&#9881;</button>
@@ -1507,20 +1508,35 @@
       try { await mutate(api + '/folder-new?name=' + encodeURIComponent(d)); }
       catch {}
     }
-    let fails = 0;
-    for (let i = 0; i < list.length; i++) {
-      upProg(i, list.length, list[i].name);
+    // ONE request per chunk, not one per file: every request pays the pier's
+    // ~0.5s floor serially, so a 20-file drop used to be ~20 round-trips of
+    // pure overhead doing work the server can batch. Chunked because the
+    // route bounds a single transaction (200) and a whole folder should not
+    // become one unbounded write.
+    const CHUNK = 50;
+    let fails = 0, done = 0;
+    for (let i = 0; i < list.length; i += CHUNK) {
+      const part = list.slice(i, i + CHUNK);
+      upProg(done, list.length, part[0].name);
       let r = null;
       try {
-        r = await mutate(api + '/page-save?name=' + encodeURIComponent(list[i].name) +
-          '&type=' + list[i].kind, { method: 'POST', body: (await list[i].file.text()) || '\n' });
+        const payload = [];
+        for (const it of part)
+          payload.push({ name: it.name, type: it.kind, body: (await it.file.text()) || '\n' });
+        r = await mutate(api + '/page-save-batch',
+          { method: 'POST', body: JSON.stringify(payload) });
       } catch {}
       if (!r || !r.ok) {
-        fails++;
-        upErr.textContent += `failed: ${list[i].name}${r ? ' (' + r.status + ')' : ''}\n`;
+        // the batch is all-or-nothing, so report the whole chunk rather than
+        // implying some of it landed
+        fails += part.length;
+        let msg = r ? r.status : 'network';
+        if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
+        upErr.textContent += `failed: ${part.length} file(s) — ${msg}\n`;
       } else {
-        addTreeNode(list[i].name, list[i].kind);
+        for (const it of part) addTreeNode(it.name, it.kind);
       }
+      done += part.length;
     }
     upProg(list.length, list.length, '');
     upMsg.textContent = fails ? `done with ${fails} failures` : `uploaded ${list.length} files`;
@@ -1869,6 +1885,122 @@
   // Escape closes, matching the in-app dialog's behaviour
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !$('aclwrap').hidden) aclClose();
+  });
+
+// ── src/73-comments.js ────────────────────────────────────────────────────
+  // ── comments inbox: <lat-comments> ───────────────────────────────────────
+  // Comments arrive from OTHER ships, and until now the workspace had no view
+  // of them — the reader rendered a thread per page, so finding out anyone had
+  // replied meant visiting each published page. This is the owner's side: what
+  // came in, across every page, newest first, with a way to remove one.
+  //
+  // Reuses the .aclwrap/.aclbar/.aclbody overlay styles rather than growing a
+  // second set that would drift from them.
+  customElements.define('lat-comments', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<div class="aclwrap" id="cmwrap" hidden role="dialog" aria-modal="true" aria-label="comments">
+  <div class="aclbar">
+    <h2>Comments</h2>
+    <span class="muted" id="cmsum"></span>
+    <span class="grow"></span>
+    <button id="cmreload" class="ico" title="reload from ship">&#8635;</button>
+    <button id="cmclose">close</button>
+  </div>
+  <div class="aclbody">
+    <div id="cmlist"></div>
+  </div>
+</div>`;
+    }
+  });
+
+  let inbox = [];
+  async function loadComments() {
+    const host = $('cmlist');
+    if (host && !host.childElementCount) {
+      host.className = 'aclempty';
+      host.textContent = 'loading…';
+    }
+    let d = null;
+    try {
+      const r = await fetch(api + '/comments-inbox');
+      if (!r.ok) { st('comments failed ' + r.status, false); return; }
+      d = await r.json();
+    } catch { st('comments failed', false); return; }
+    inbox = d.items || [];
+    renderComments(d.total || inbox.length);
+  }
+
+  function renderComments(total) {
+    const host = $('cmlist');
+    if (!host) return;
+    host.textContent = '';
+    host.className = '';
+    $('cmsum').textContent = inbox.length
+      ? inbox.length + (total > inbox.length ? ' of ' + total : '') + ' comment'
+        + (total === 1 ? '' : 's')
+      : '';
+    if (!inbox.length) {
+      host.className = 'aclempty';
+      // say WHY it might be empty: comments are opt-in per page, so "none yet"
+      // and "never enabled anywhere" look identical and mean different things
+      host.textContent = 'No comments. They are opt-in per page — turn them on '
+        + 'from a page’s sharing controls.';
+      return;
+    }
+    const grid = document.createElement('div');
+    grid.className = 'aclgrid';
+    for (const c of inbox) {
+      const card = document.createElement('div');
+      card.className = 'aclcard';
+      const head = document.createElement('header');
+      const who = document.createElement('b');
+      who.textContent = c.author;
+      const del = document.createElement('button');
+      del.textContent = 'remove';
+      del.className = 'acl-del';
+      del.onclick = async () => {
+        if (!(await askConfirm('remove this comment by ' + c.author + '?', 'remove'))) return;
+        const r = await fetch(api + '/comment-del?page=' + encodeURIComponent(c.page) +
+          '&id=' + encodeURIComponent(c.id), { method: 'POST' }).catch(() => null);
+        if (!r || !r.ok) { st('remove failed' + (r ? ' ' + r.status : ''), false); return; }
+        st('comment removed');
+        loadComments();
+      };
+      head.appendChild(who); head.appendChild(del);
+      card.appendChild(head);
+
+      // the page it landed on, clickable — the point of an inbox is getting
+      // to the thing being talked about
+      const on = document.createElement('a');
+      on.className = 'gname';
+      on.textContent = c.page;
+      on.style.cursor = 'pointer';
+      on.onclick = () => { cmClose(); openPage(c.page); };
+      card.appendChild(on);
+
+      const body = document.createElement('div');
+      body.style.whiteSpace = 'pre-wrap';
+      body.style.overflowWrap = 'anywhere';
+      body.textContent = c.body;
+      card.appendChild(body);
+
+      const when = document.createElement('div');
+      when.className = 'aclnote';
+      when.textContent = c.when;
+      card.appendChild(when);
+      grid.appendChild(card);
+    }
+    host.appendChild(grid);
+  }
+
+  const cmOpen = () => { $('cmwrap').hidden = false; loadComments(); };
+  const cmClose = () => { $('cmwrap').hidden = true; };
+  $('cmclose').onclick = cmClose;
+  $('cmreload').onclick = loadComments;
+  $('cmt').onclick = cmOpen;
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('cmwrap').hidden) cmClose();
   });
 
 // ── src/75-move.js ────────────────────────────────────────────────────────

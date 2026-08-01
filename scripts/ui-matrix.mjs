@@ -493,6 +493,73 @@ try {
   check('mode round-trip: tag chips hidden again',
     await page.evaluate(() => getComputedStyle(document.getElementById('chips')).display) === 'none');
 
+  // ── batch upload: N files in ONE request, all-or-nothing ────────────────
+  // An upload used to be one request per file, and each pays the pier's floor
+  // serially. The batch must be atomic in the sense that matters to a client:
+  // a rejected batch writes NOTHING, so "failed" never means "some landed".
+  step = 'batch upload';
+  const api2 = (p, o) => page.evaluate(async (p, o) => {
+    const r = await fetch('/apps/lattice' + p, o || { method: 'POST' });
+    let body = null; try { body = await r.json(); } catch {}
+    return { status: r.status, body };
+  }, p, o);
+  const batch = (names) => JSON.stringify(names.map((n, i) =>
+    ({ name: n, type: 'md', body: '# batched ' + i })));
+  const okBatch = await api2('/page-save-batch',
+    { method: 'POST', body: batch([RUN + '/b1', RUN + '/b2', RUN + '/b3']) });
+  check('batch: one request saves every file',
+    okBatch.status === 200 && okBatch.body && okBatch.body.saved === 3,
+    JSON.stringify(okBatch));
+  await sleep(4000);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await wait((n) => ['b1', 'b2', 'b3'].every((f) =>
+    [...document.querySelectorAll('#treelist a.pg')]
+      .some((a) => a.href.includes(encodeURIComponent(n + '/' + f)))), RUN);
+  check('batch: the files appear in the tree', true);
+  // A bad name anywhere must reject the WHOLE batch, not write the good ones.
+  // NB: '..' is NOT the invalid name to test with — a path segment of '..' is
+  // a valid @ta, so it is accepted here exactly as plain page-save accepts it
+  // (it makes a page literally named '..'; hoon paths have no traversal).
+  // A space cannot parse as a path at all, which is a real rejection.
+  const badBatch = await api2('/page-save-batch',
+    { method: 'POST', body: batch([RUN + '/ok-one', RUN + '/has space']) });
+  check('batch: a bad name rejects the whole batch', badBatch.status === 400,
+    JSON.stringify(badBatch));
+  const leaked = await api2('/page-source?name=' + encodeURIComponent(RUN + '/ok-one'),
+    { method: 'GET' });
+  check('batch: nothing from the rejected batch was written', leaked.status !== 200,
+    'ok-one status=' + leaked.status);
+
+  // ── comments inbox: the owner's view of what other ships said ───────────
+  step = 'comments inbox';
+  await api2('/page-comments?name=' + encodeURIComponent(RUN + '/b1') + '&on=1');
+  await sleep(3000);
+  await api2('/comment?page=' + encodeURIComponent(RUN + '/b1'),
+    { method: 'POST', body: 'body=' + encodeURIComponent('a comment for the inbox') });
+  await sleep(5000);
+  const box = await api2('/comments-inbox', { method: 'GET' });
+  const mine = ((box.body || {}).items || []).find((c) => c.page === RUN + '/b1');
+  check('comments: the inbox lists a comment left on a page',
+    !!mine && /inbox/.test(mine.body), JSON.stringify(mine));
+  if (mine) {
+    const del = await api2('/comment-del?page=' + encodeURIComponent(mine.page) +
+      '&id=' + encodeURIComponent(mine.id));
+    await sleep(4000);
+    const after = await api2('/comments-inbox', { method: 'GET' });
+    check('comments: moderation removes it',
+      del.status === 200 &&
+      !((after.body || {}).items || []).some((c) => c.id === mine.id));
+  }
+  // These pages recreate RUN/ after the move step renamed it to RUN-moved, so
+  // clear them here — otherwise the folder-delete check below waits forever
+  // for a subtree this section put back.
+  // one %del on the folder takes the whole subtree, same action the UI's
+  // folder delete uses
+  await api2('/page-del?name=' + encodeURIComponent(RUN));
+  await sleep(6000);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await sleep(3000);
+
   step = 'cleanup deletes';
   // ── 9. delete the test page + folder via dialogs ─────────────────────────
   await page.goto(APP + '?name=' + RUN + '-moved/hello', { waitUntil: 'domcontentloaded' });

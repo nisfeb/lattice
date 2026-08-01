@@ -19,6 +19,11 @@
 ::
 +$  eval-action
   $%  [%make pax=path src=@t]           ::  create a page / replace its code
+      ::  N pages in ONE writer transaction. An upload used to be one HTTP
+      ::  request (and one poke) per file, and every request pays the pier's
+      ::  ~0.5s floor serially — a 20-file drop was ~20 round-trips of pure
+      ::  overhead. Same per-page work, paid once.
+      [%make-many pages=(list [pax=path src=@t])]
       [%cmd pax=path txt=@t bud=@ud]    ::  send a command (bud = poke budget)
       [%del pax=path]                   ::  delete a page
       [%share pax=path mode=share-mode] ::  set a page's sharing preset
