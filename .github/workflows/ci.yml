@@ -43,6 +43,24 @@ jobs:
         working-directory: desktop
         run: cargo test
 
+  nix:
+    name: nix — flake build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      # `nix flake check` also evaluates the devShells, so a typo'd package
+      # attribute fails here rather than the first time someone runs it.
+      - name: flake evaluates
+        run: nix flake check --no-build --all-systems
+      - name: build the package
+        run: nix build .#lattice-desktop --print-build-logs
+      - name: the built binary is the one we think it is
+        run: |
+          test -x result/bin/lattice-desktop
+          echo "built: $(readlink -f result)"
+
   static:
     name: web client + scripts — static checks
     runs-on: ubuntu-latest
