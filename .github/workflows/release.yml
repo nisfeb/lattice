@@ -129,7 +129,10 @@ jobs:
           # Draft by default: a release is outward-facing and irreversible once
           # people have the URL. A human publishes it.
           releaseDraft: true
-          prerelease: false
+          # semver puts a hyphen before any prerelease identifier, so -rc/-beta
+          # tags publish as prereleases instead of being marked "Latest" and
+          # handed to everyone looking for the current stable build.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           releaseBody: |
             Desktop builds of the lattice client.
 
