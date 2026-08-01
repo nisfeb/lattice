@@ -42,4 +42,28 @@
   ^-  shared
   %+  skip  cur
   |=(e=entry &(=(host.e host) =(pax.e pax)))
+::  +$  banned: ships this ship refuses. A DENY list, and deny is the one thing
+::  grubbery weirs cannot express — a weir is a SET of granted roads, unioned
+::  across every usergroup a ship belongs to, so there is nowhere to write "not
+::  this one". The banlist therefore lives here and is enforced by this app, at
+::  the two places a foreign ship's identity is actually known:
+::
+::    - the shares inbox, which /public deliberately lets ANY ship poke
+::    - any grant this app writes (per-ship share, or a group's ship list)
+::
+::  What it CANNOT do, and must not pretend to: stop a banned ship reading a
+::  page you published. A published page's road sits in /public's peek set,
+::  which means everyone, and clearweb has no ship identity at all. Banning is
+::  about who can reach you and who can hold a grant — unpublish to stop a
+::  read.
++$  banned  (set @p)
+::  +ban-cap: bound, same reasoning as +cap — a list the owner grows by hand,
+::  but bounded so a runaway client cannot balloon the grub.
+++  ban-cap  ^-(@ud 500)
+::  +is-banned: the single predicate every enforcement point calls, so a new
+::  call site cannot invent its own subtly different rule.
+++  is-banned
+  |=  [bans=banned who=@p]
+  ^-  ?
+  (~(has in bans) who)
 --

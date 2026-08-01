@@ -1612,6 +1612,18 @@
       <button id="aclnewbtn">create group</button>
     </div>
     <div id="aclgrid" class="aclgrid"></div>
+    <div class="aclban">
+      <h4>banned ships</h4>
+      <p class="aclnote">A banned ship cannot share anything with you and
+      cannot be granted access — banning revokes what it already had. It does
+      NOT hide pages you have published: those are readable by anyone, so
+      unpublish to stop a read.</p>
+      <div class="row">
+        <input id="banship" placeholder="~ship" autocomplete="off" spellcheck="false">
+        <button id="banadd">ban</button>
+      </div>
+      <div id="banlist" class="chips"></div>
+    </div>
   </div>
   <datalist id="aclpaths"></datalist>
 </div>`;
@@ -1624,6 +1636,7 @@
     // permGroups is populated by boot's deferred load; only pay a request if
     // the pane was opened before that landed.
     if (!permGroups.length) loadPerms(); else renderAcl();
+    loadBans();
   };
   const aclClose = () => { $('aclwrap').hidden = true; };
 
@@ -1780,6 +1793,64 @@
       grid.appendChild(card);
     }
   }
+
+  // ── banlist ──────────────────────────────────────────────────────────────
+  // Deny is not something a weir can say, so it is the app's own list. Banning
+  // revokes group membership server-side; the response says how many groups
+  // changed, because "banned" with grants still live would be a lie.
+  let banned = [];
+  async function loadBans() {
+    try {
+      const r = await fetch(api + '/banlist');
+      if (!r.ok) return;
+      banned = await r.json();
+    } catch { return; }
+    renderBans();
+  }
+  function renderBans() {
+    const host = $('banlist');
+    if (!host) return;
+    host.textContent = '';
+    if (!banned.length) {
+      const e = document.createElement('span');
+      e.className = 'aclnote';
+      e.textContent = 'nobody is banned.';
+      host.appendChild(e);
+      return;
+    }
+    for (const w of banned) {
+      const a = document.createElement('a');
+      a.textContent = w + ' ×';
+      a.title = 'unban ' + w;
+      a.onclick = async () => {
+        await fetch(api + '/unban?ship=' + encodeURIComponent(w), { method: 'POST' })
+          .catch(() => null);
+        st('unbanned ' + w + ' — it holds no access until you grant it again');
+        loadBans();
+      };
+      host.appendChild(a);
+    }
+  }
+  $('banadd').onclick = async () => {
+    const w = $('banship').value.trim();
+    if (!w) return;
+    const r = await fetch(api + '/ban?ship=' + encodeURIComponent(w), { method: 'POST' })
+      .catch(() => null);
+    if (!r || !r.ok) {
+      let msg = r ? r.status : 'network';
+      if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
+      st('ban: ' + msg, false);
+      return;
+    }
+    const j = await r.json().catch(() => ({}));
+    st('banned ' + w + (j.revoked ? ' — revoked from ' + j.revoked + ' group(s)' : ''));
+    $('banship').value = '';
+    loadBans();
+    loadPerms();          // membership changed server-side; repaint the groups
+  };
+  $('banship').onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); $('banadd').click(); }
+  };
 
   $('aclclose').onclick = aclClose;
   $('aclreload').onclick = () => loadPerms();
