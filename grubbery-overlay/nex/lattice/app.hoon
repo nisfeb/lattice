@@ -818,6 +818,44 @@
       (send-err eyre-id 403 'write did not land — no make permission on that path?')
     (send-ok eyre-id)
   ::  ── sharing groups: the permission editor (see +share-groups-json) ──
+  ::  ── banlist ────────────────────────────────────────────────────────────
+  ::  Deny cannot be expressed as a weir (see +$banned in /lib/lattice-share),
+  ::  so it is this app's own list, enforced where a foreign ship's identity is
+  ::  known: the shares inbox and every grant written here.
+      [%'GET' %banlist]
+    ;<  bans=banned:ls  bind:m  read-banned
+    %+  send-json  eyre-id
+    a+(turn (sort ~(tap in bans) lth) |=(w=@p s+(scot %p w)))
+  ::
+  ::  ban: add, then REVOKE — a ban that left existing grants in place would be
+  ::  a label, not a ban. The ship is stripped from every usergroup it is in.
+      [%'POST' %ban]
+    =/  st=(unit @t)  (~(get by args) 'ship')
+    ?~  st  (send-err eyre-id 400 'missing ship')
+    =/  who=(unit @p)  (slaw %p u.st)
+    ?~  who  (send-err eyre-id 400 'bad ship')
+    ?:  =(u.who our)  (send-err eyre-id 400 'that is you')
+    ;<  bans=banned:ls  bind:m  read-banned
+    ?:  (gth ~(wyt in bans) ban-cap:ls)
+      (send-err eyre-id 400 'banlist is full')
+    ;<  ~  bind:m
+      (over:io ban-road [[/lattice %banned] (~(put in bans) u.who)])
+    ;<  n=@ud  bind:m  (strip-ship-from-groups u.who)
+    %+  send-json  eyre-id
+    (pairs:enjs:format ~[['ok' b+&] ['revoked' (numb:enjs:format n)]])
+  ::
+      [%'POST' %unban]
+    =/  st=(unit @t)  (~(get by args) 'ship')
+    ?~  st  (send-err eyre-id 400 'missing ship')
+    =/  who=(unit @p)  (slaw %p u.st)
+    ?~  who  (send-err eyre-id 400 'bad ship')
+    ;<  bans=banned:ls  bind:m  read-banned
+    ::  unban restores nothing: the grants were revoked, and re-granting is a
+    ::  deliberate act, not a side effect of lifting a ban.
+    ;<  ~  bind:m
+      (over:io ban-road [[/lattice %banned] (~(del in bans) u.who)])
+    (send-ok eyre-id)
+  ::
       [%'GET' %share-groups]
     ;<  j=json  bind:m  share-groups-json
     (send-json eyre-id j)
@@ -876,7 +914,13 @@
       :+  (~(uni in (ug-keep make.old)) (to-roads u.mkp))
         poke.old
       (~(uni in (ug-keep peek.old)) (to-roads u.pkp))
+    ;<  bans=banned:ls  bind:m  read-banned
     =/  who=(set @p)  (~(gas in *(set @p)) (murn ships same))
+    ::  a group save must not smuggle a banned ship back in. Reject rather than
+    ::  silently drop: a silently-dropped ship is someone believing they granted
+    ::  access and did not, which is this editor's worst failure mode.
+    ?:  (lien ~(tap in who) |=(w=@p (is-banned:ls bans w)))
+      (send-err eyre-id 403 'that group names a banned ship')
     ;<  ~  bind:m  (over:io [%& %& gdir %'who.ships'] [[/ %ships] who])
     ;<  ~  bind:m  (over:io [%& %& gdir %'how.weir'] [[/ %weir] weir])
     (send-ok eyre-id)
@@ -894,6 +938,11 @@
     =/  shp=(unit @p)  (slaw %p u.shp-t)
     ?~  shp  (send-err eyre-id 400 'bad ship')
     ?:  =(u.shp our)  (send-err eyre-id 400 'that is you')
+    ::  a banned ship must not be grantable — otherwise the ban survives only
+    ::  until the next share, and the UI would happily hand access straight back
+    ;<  bans=banned:ls  bind:m  read-banned
+    ?:  (is-banned:ls bans u.shp)
+      (send-err eyre-id 403 'that ship is banned — unban it first')
     =/  mode=@t  (~(gut by args) 'mode' 'read')
     ?.  |(=('read' mode) =('edit' mode))  (send-err eyre-id 400 'mode: read or edit')
     =/  pdir=path  (weld app-base:lu (weld /page (pax-of u.name)))
@@ -5126,9 +5175,14 @@
   =/  cur=shared:ls
     ?.  ?=([%file *] sn)  ~
     (fall (mole |.(;;(shared:ls (sang-noun:tarball sang.sn)))) ~)
+  ;<  bans=banned:ls  bind:m  read-banned
   ?-    -.u.na
       %add
     ?~  src  (pure:m ~)                      ::  own %add is meaningless
+    ::  the inbox is the one surface /public opens to EVERY ship, so it is the
+    ::  surface a banlist exists for. Drop silently: telling a banned sender
+    ::  their notice was refused just confirms the address is live.
+    ?:  (is-banned:ls bans u.src)  (pure:m ~)
     ?.  ?=([%apps *] pax.u.na)  (pure:m ~)
     ?.  |(=('read' mode.u.na) =('edit' mode.u.na))  (pure:m ~)
     %^  put-file  [%& %& root %shared]  [/lattice %shared]
@@ -5153,6 +5207,46 @@
   =/  iroad=road:tarball  [%& %& app-base:lu %'shares.sig']
   ?:  (~(has in poke.cur) iroad)  (pure:m ~)
   (put-file wroad [/ %weir] cur(poke (~(put in poke.cur) iroad)))
+::  +strip-ship-from-groups: remove one ship from every usergroup's who.ships,
+::  returning how many groups changed. This is what makes a ban a revocation
+::  rather than a note: grants are unioned across the groups a ship belongs to,
+::  so membership IS access, and leaving it in place would leave it reachable.
+::  The grant ROADS are untouched — they belong to the group, not the ship, and
+::  other members still need them.
+++  strip-ship-from-groups
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  dn=view:nexus  bind:m  (peek-shallow:io [%& %| ug-base] ~)
+  ?.  ?=([%ball *] dn)  (pure:m 0)
+  =/  names=(list @ta)  (sort ~(tap in ~(key by dir.ball.dn)) aor)
+  =|  hit=@ud
+  |-  ^-  form:m
+  ?~  names  (pure:m hit)
+  =/  nt=tape  (trip i.names)
+  ?.  &((gth (lent nt) 4) =(".grp" (slag (sub (lent nt) 4) nt)))
+    $(names t.names)
+  =/  gdir=path  (snoc ug-base i.names)
+  ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
+  =/  ships=(set @p)
+    ?.  ?=([%file *] wv)  ~
+    (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
+  ?.  (~(has in ships) who)
+    $(names t.names)
+  ;<  ~  bind:m
+    (over:io [%& %& gdir %'who.ships'] [[/ %ships] (~(del in ships) who)])
+  $(names t.names, hit +(hit))
+::  +ban-road: where the banlist lives.
+++  ban-road  ^-(road:tarball [%& %& app-base:lu %banned])
+::  +read-banned: the banlist, empty if never written. Every enforcement point
+::  reads it fresh — a ban has to take effect on the next poke, not on the next
+::  restart.
+++  read-banned
+  =/  m  (fiber:fiber:nexus ,banned:ls)
+  ^-  form:m
+  ;<  bv=view:nexus  bind:m  (peek:io ban-road ~)
+  ?.  ?=([%file *] bv)  (pure:m ~)
+  (pure:m (fall (mole |.(;;(banned:ls (sang-noun:tarball sang.bv)))) ~))
 ::  +ug-merge: fold ships and grants INTO a usergroup, creating it if absent.
 ::  The per-file share flow uses this (one auto-group per ship, named after
 ::  it) so repeated shares accumulate instead of replacing.

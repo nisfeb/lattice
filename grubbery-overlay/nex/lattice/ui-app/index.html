@@ -289,6 +289,21 @@ select, option { color-scheme: light dark; }
 .aclcard button:hover { border-color: var(--green); }
 .aclnote { color: var(--muted); font-size: .8rem; }
 .aclempty { color: var(--muted); text-align: center; padding: 2rem; }
+.aclban { max-width: 1100px; margin: 22px auto 0; padding-top: 16px;
+  border-top: 1px solid var(--border-soft); }
+.aclban h4 { margin: 0 0 4px; font-size: .7rem; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.aclban .aclnote { max-width: 60ch; margin: 0 0 10px; }
+.aclban .row { display: flex; gap: 8px; margin-bottom: 10px; }
+.aclban input { flex: 1; max-width: 20rem; font: inherit; padding: 7px 10px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+  color: inherit; }
+.aclban input:focus { outline: none; border-color: var(--green); }
+.aclban button { font: inherit; padding: 7px 14px; cursor: pointer;
+  border: 1px solid #c0392b55; border-radius: 6px; background: var(--surface);
+  color: #c0392b; }
+.aclban button:hover { border-color: #c0392b; }
+.aclban .chips a { border-color: #c0392b55; color: #c0392b; }
 .acl-del { color: #c0392b; border-color: #c0392b55 !important; }
 
 /* in-app dialog (no browser-native popups, ever) */

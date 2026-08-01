@@ -169,11 +169,56 @@ try {
     return [...row.querySelectorAll('button')].find((b) => b.textContent === 'read').className;
   }, GROUP);
   check('and the toggle reads back as on', /on/.test(lit), lit);
+  // ── banlist: deny, which a weir cannot express ──────────────────────────
+  // Banning must REVOKE, not just record: membership in a group is access, so
+  // a ban that left the ship in its groups would be a label rather than a ban.
+  step = 'banlist';
+  const BANNED = '~zod';
+  const api = (p, o) => page.evaluate(async (p, o) => {
+    const r = await fetch('/apps/lattice' + p, o || { method: 'POST' });
+    let body = null; try { body = await r.json(); } catch {}
+    return { status: r.status, body };
+  }, p, o);
+  await api('/share-group-save?name=' + GROUP + '-ban', {
+    method: 'POST',
+    body: JSON.stringify({ ships: [BANNED, '~bus'], peek: [], make: [] }),
+  });
+  await sleep(4000);
+  const banRes = await api('/ban?ship=' + encodeURIComponent(BANNED));
+  check('ban: reports how many groups it revoked from',
+    banRes.status === 200 && banRes.body && banRes.body.revoked >= 1, JSON.stringify(banRes));
+  await sleep(4000);
+  const groups = await api('/share-groups', { method: 'GET' });
+  const g = (groups.body || []).find((x) => x.name === GROUP + '-ban');
+  check('ban: revokes the banned ship from its groups',
+    !!g && !g.ships.includes(BANNED), JSON.stringify(g && g.ships));
+  check('ban: leaves other members alone', !!g && g.ships.includes('~bus'),
+    JSON.stringify(g && g.ships));
+  const shareBanned = await api('/share-file?name=' + encodeURIComponent(GROUP + '/target') +
+    '&ship=' + encodeURIComponent(BANNED) + '&mode=read');
+  check('ban: per-ship share to a banned ship is refused', shareBanned.status === 403,
+    JSON.stringify(shareBanned));
+  const saveBanned = await api('/share-group-save?name=' + GROUP + '-ban', {
+    method: 'POST', body: JSON.stringify({ ships: [BANNED], peek: [], make: [] }),
+  });
+  check('ban: a group naming a banned ship is refused', saveBanned.status === 403,
+    JSON.stringify(saveBanned));
+  await api('/unban?ship=' + encodeURIComponent(BANNED));
+  await sleep(3000);
+  const after = await api('/banlist', { method: 'GET' });
+  check('unban: clears the list', Array.isArray(after.body) && !after.body.includes(BANNED),
+    JSON.stringify(after.body));
+  const g2 = ((await api('/share-groups', { method: 'GET' })).body || [])
+    .find((x) => x.name === GROUP + '-ban');
+  check('unban: does NOT silently restore the revoked grant',
+    !!g2 && !g2.ships.includes(BANNED), JSON.stringify(g2 && g2.ships));
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 140), false);
 } finally {
   try {
     await page.evaluate(async (g) => {
+      await fetch('/apps/lattice/unban?ship=' + encodeURIComponent('~zod'), { method: 'POST' });
+      await fetch('/apps/lattice/share-group-del?name=' + encodeURIComponent(g + '-ban'), { method: 'POST' });
       await fetch('/apps/lattice/share-group-del?name=' + encodeURIComponent(g), { method: 'POST' });
       await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(g + '/target'), { method: 'POST' });
       localStorage.removeItem('latFont'); localStorage.removeItem('latFontSize');
