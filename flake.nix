@@ -36,7 +36,11 @@
             fileset = pkgs.lib.fileset.unions [ ./desktop ./lattice-fs-rs ];
           };
 
-          buildAndTestSubdir = "desktop";
+          # buildRustPackage looks for Cargo.lock at the SOURCE ROOT, and ours
+          # lives in desktop/ (the two crates are separate, not a workspace).
+          # Rooting at desktop/ finds it, and the ../lattice-fs-rs path
+          # dependency still resolves because it is a sibling inside src.
+          sourceRoot = "source/desktop";
           cargoLock.lockFile = ./desktop/Cargo.lock;
 
           nativeBuildInputs = with pkgs; [
