@@ -32,7 +32,13 @@
   // in-flight refresh — which silently lost pages created while an autosave
   // was in flight.
   const persistTree = () => {
-    try { localStorage.appTree = JSON.stringify(nodes); } catch {}
+    // IDB, not localStorage (phase 3): the tree carries every page BODY via
+    // page-dump, so a growing vault was marching toward the ~5MB quota — and
+    // stringifying the whole tree on every save was main-thread work paid at
+    // the worst time. The structured clone goes straight in. The PAGE
+    // snapshot (appPage) stays in localStorage on purpose: it is small and
+    // synchronous, which is what keeps resume painting at 0ms.
+    kvPut('tree', nodes);
   };
   // rendered page-source answers, by name. The tree dump already carries every
   // body, so this only adds what the dump lacks — `share` and the rendered

@@ -1,6 +1,6 @@
   // ── offline edits: queue, detection, replay (docs/offline-edits.md) ──────
   // Phase 1: page saves only. The queue lives in IndexedDB (localStorage is
-  // synchronous, ~5MB, and already carries the tree snapshot), one record per
+  // synchronous and ~5MB — the tree snapshot moved here too, phase 3), one per
   // page, coalesced — re-editing a queued page replaces its record, the same
   // way autosave coalesces savePending.
   //
@@ -17,8 +17,17 @@
   const offOpen = () => new Promise((res) => {
     if (offDb) return res(offDb);
     let rq = null;
-    try { rq = indexedDB.open('lattice-offline', 1); } catch { return res(null); }
-    rq.onupgradeneeded = () => rq.result.createObjectStore('saves', { keyPath: 'name' });
+    try { rq = indexedDB.open('lattice-offline', 2); } catch { return res(null); }
+    rq.onupgradeneeded = () => {
+      const d = rq.result;
+      if (!d.objectStoreNames.contains('saves'))
+        d.createObjectStore('saves', { keyPath: 'name' });
+      // kv: the tree snapshot (phase 3). It lived in localStorage, which is
+      // ~5MB, synchronous, and was re-STRINGIFIED whole on every save; IDB
+      // stores the structured clone directly and scales to the disk.
+      if (!d.objectStoreNames.contains('kv'))
+        d.createObjectStore('kv', { keyPath: 'k' });
+    };
     rq.onsuccess = () => { offDb = rq.result; res(offDb); };
     rq.onerror = () => res(null);   // no idb: the queue is off, saves fail loudly as before
   });
@@ -47,6 +56,22 @@
     await offRecount();
   };
   offRecount();
+  const kvStore = async (mode) => {
+    const d = await offOpen();
+    try { return d && d.transaction('kv', mode).objectStore('kv'); } catch { return null; }
+  };
+  const kvGet = async (k) => {
+    const st = await kvStore('readonly');
+    const r = st && await offReq(st.get(k));
+    return r ? r.v : null;
+  };
+  // fire-and-forget by design: persistTree's callers are synchronous save
+  // paths, and a snapshot write that loses a race with app close costs one
+  // boot's paint, not data — the ship copy is the durable one.
+  const kvPut = async (k, v) => {
+    const st = await kvStore('readwrite');
+    if (st) await offReq(st.put({ k, v }));
+  };
 
   // fetch with a REAL deadline. "Detect offline by timeout" was in the design
   // from day one, but nothing implemented a timeout — no AbortController

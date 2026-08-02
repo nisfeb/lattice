@@ -1,6 +1,8 @@
 # Offline edits — design
 
-Status: **designed, not built.** Phase 1 is the next unit of work.
+Status: **built.** Phases 1–3 shipped (queue/detection/replay; CAS +
+conflict pages; tree snapshot in IndexedDB — the page snapshot stays in
+localStorage deliberately, its synchronous read is what paints resume at 0ms).
 
 Reviewed 2026-08-02 against the shipped code; four gaps found and folded in
 below (marked **[review]**). The architecture stood; the gaps were all in
@@ -127,7 +129,10 @@ Same queue, same code. The differences are real but small:
    for Phase 1, noted so it is a decision rather than a surprise.
 2. The CAS server change plus the conflict surface.
 3. Move the tree snapshot to IndexedDB so offline reads scale past
-   localStorage.
+   localStorage. **Done:** `kv` store beside the queue (db v2), structured
+   clone instead of a whole-tree stringify per save, one-time migration from
+   `localStorage.appTree` at boot. The async read lands single-digit ms after
+   the synchronous page paint — imperceptible next to the ~0.5s network floor.
 
 ## Testing
 
