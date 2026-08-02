@@ -1261,24 +1261,38 @@
     ::  conflicted items get their losing body preserved FIRST, in the same
     ::  %make-many transaction — see +conflict-name for why history is not
     ::  enough. Peeks happen here (fiber), the writes land atomically below.
-    ;<  keeps=(list [pax=path src=@t])  bind:m
-      =/  n  (fiber:fiber:nexus ,(list [pax=path src=@t]))
-      ?.  report  (pure:n ~)
+    ::  dups: items whose stale base points at content IDENTICAL to what the
+    ::  ship already holds — a replay racing its own timed-out-but-landed
+    ::  write. Not a conflict (see page-save); aligned with items for the
+    ::  report below.
+    ;<  kd=[keeps=(list [pax=path src=@t]) dups=(list ?)]  bind:m
+      =/  n  (fiber:fiber:nexus ,[keeps=(list [pax=path src=@t]) dups=(list ?)])
+      ?.  report  (pure:n [~ ~])
       =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
       =/  ps=(list @ud)  prevs
-      =|  acc=(list [pax=path src=@t])
+      =/  pg=(list [pax=path src=@t])  pages
+      =|  keeps=(list [pax=path src=@t])
+      =|  dups=(list ?)
       |-  ^-  form:n
-      ?~  todo  (pure:n (flop acc))
+      ?~  todo  (pure:n [(flop keeps) (flop dups)])
       =/  pv=@ud  ?~(ps 0 i.ps)
       =/  more  ?~(ps ~ t.ps)
-      ?.  !=(bas.i.todo pv)  $(todo t.todo, ps more)
+      =/  wsrc=@t  ?~(pg '' src.i.pg)
+      =/  pgm  ?~(pg ~ t.pg)
+      ?.  !=(bas.i.todo pv)  $(todo t.todo, ps more, pg pgm, dups [| dups])
       ;<  old=(unit @t)  bind:n  (page-src (pax-of nam.i.todo))
-      ?~  old  $(todo t.todo, ps more)
+      ::  missing page or identical body: stale base, but nothing to preserve
+      ::  and nothing to disagree with — not a conflict
+      ?~  old  $(todo t.todo, ps more, pg pgm, dups [& dups])
+      ?:  =(u.old wsrc)  $(todo t.todo, ps more, pg pgm, dups [& dups])
       %=  $
-        todo  t.todo
-        ps    more
-        acc   [[(pax-of (conflict-name nam.i.todo pv)) u.old] acc]
+        todo   t.todo
+        ps     more
+        pg     pgm
+        dups   [| dups]
+        keeps  [[(pax-of (conflict-name nam.i.todo pv)) u.old] keeps]
       ==
+    =/  keeps=(list [pax=path src=@t])  keeps.kd
     ;<  ~  bind:m  (poke-eval [%make-many (weld keeps pages)])
     ?.  report
       %+  send-json  eyre-id
@@ -1288,22 +1302,25 @@
     =/  out=(list json)
       =/  todo  items
       =/  ps  prevs
+      =/  ds  dups.kd
       =|  acc=(list json)
       |-  ^-  (list json)
       ?~  todo  (flop acc)
       =/  pv=@ud  ?~(ps 0 i.ps)
       =/  nw=@ud  +(pv)
+      =/  cf=?  &(!=(bas.i.todo pv) ?~(ds & !i.ds))
       %=  $
         todo  t.todo
         ps    ?~(ps ~ t.ps)
+        ds    ?~(ds ~ t.ds)
         acc
       :_  acc
       %-  pairs:enjs:format
       :~  ['name' s+nam.i.todo]
           ['rev' (numb:enjs:format nw)]
           ['prev-rev' (numb:enjs:format pv)]
-          ['conflicted' b+!=(bas.i.todo pv)]
-          ['kept' s+?.(!=(bas.i.todo pv) '' (conflict-name nam.i.todo pv))]
+          ['conflicted' b+cf]
+          ['kept' s+?.(cf '' (conflict-name nam.i.todo pv))]
       ==
       ==
     %+  send-json  eyre-id
@@ -1346,12 +1363,22 @@
     ::  is safe where refuse-and-block would need true writer-side CAS.
     =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
     ;<  prev=@ud  bind:m  (page-rev (pax-of u.name))
-    =/  conflicted=?  &(?=(^ base) !=(u.base prev))
+    =/  stale=?  &(?=(^ base) !=(u.base prev))
+    ;<  old=(unit @t)  bind:m
+      =/  n  (fiber:fiber:nexus ,(unit @t))
+      ?.  stale  (pure:n ~)
+      (page-src (pax-of u.name))
+    ::  identical content cannot conflict. The client's 10s deadline can fire
+    ::  on a request the pier nevertheless applies (abort stops the WAIT, not
+    ::  the write), so the queued replay carries a base one rev behind its own
+    ::  landed save — same body, moved rev. Flagging that manufactured a bogus
+    ::  conflicts/ page holding a copy of the very body being saved. A missing
+    ::  page is the same shape: nothing to preserve, nothing to conflict with.
+    =/  conflicted=?  &(stale ?=(^ old) !=(u.old src))
     =/  kept=@t  ?.(conflicted '' (conflict-name u.name prev))
     ;<  ~  bind:m
       =/  n  (fiber:fiber:nexus ,~)
       ?.  conflicted  (pure:n ~)
-      ;<  old=(unit @t)  bind:n  (page-src (pax-of u.name))
       ?~  old  (pure:n ~)
       (poke-eval [%make (pax-of kept) u.old])
     ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
