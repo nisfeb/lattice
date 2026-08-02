@@ -1,0 +1,20 @@
+<!-- the lattice logo — the same grid the web client ships (nex/lattice
+     icon-svg), on the DESKTOP's green (#4a7c59, the `green` custom property in ui-app/index.html)
+     instead of the reader's blue. This file is the single source; every file
+     in icons/ is generated from it by `cargo tauri icon`. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#4a7c59"/>
+  <g stroke="#ffffff" stroke-width="14" stroke-linecap="round" fill="#ffffff">
+    <line x1="140" y1="140" x2="372" y2="140"/>
+    <line x1="140" y1="256" x2="372" y2="256"/>
+    <line x1="140" y1="372" x2="372" y2="372"/>
+    <line x1="140" y1="140" x2="140" y2="372"/>
+    <line x1="256" y1="140" x2="256" y2="372"/>
+    <line x1="372" y1="140" x2="372" y2="372"/>
+    <line x1="140" y1="140" x2="372" y2="372"/>
+    <line x1="372" y1="140" x2="140" y2="372"/>
+    <circle cx="140" cy="140" r="26"/><circle cx="256" cy="140" r="26"/><circle cx="372" cy="140" r="26"/>
+    <circle cx="140" cy="256" r="26"/><circle cx="256" cy="256" r="30"/><circle cx="372" cy="256" r="26"/>
+    <circle cx="140" cy="372" r="26"/><circle cx="256" cy="372" r="26"/><circle cx="372" cy="372" r="26"/>
+  </g>
+</svg>
