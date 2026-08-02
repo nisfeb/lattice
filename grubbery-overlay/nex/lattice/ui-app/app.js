@@ -142,16 +142,26 @@
     replaying = true;
     stWork('syncing ' + all.length + ' offline edit' + (all.length === 1 ? '' : 's') + '…');
     let stuck = false;
+    const conflicts = [];
     for (let i = 0; i < all.length && !stuck; i += 50) {
       const part = all.slice(i, i + 50);
       let r = null;
       try {
-        r = await tfetch(api + '/page-save-batch', {
+        r = await tfetch(api + '/page-save-batch?report=1', {
           method: 'POST',
-          body: JSON.stringify(part.map((q) => ({ name: q.name, type: q.kind, body: q.body || '\n' }))),
+          body: JSON.stringify(part.map((q) =>
+            ({ name: q.name, type: q.kind, body: q.body || '\n', base: q.baseRev || 0 }))),
         }, 120000);
       } catch {}
       if (r && r.ok) {
+        // per-item verdicts: an edit whose base the ship moved past still
+        // APPLIED (it is the newest revision), but the overwritten revision
+        // is named so it can be recovered from history — apply-and-flag,
+        // never silently drop either side
+        try {
+          for (const it of ((await r.json()).items || []))
+            if (it.conflicted) conflicts.push(it.kept || it.name);
+        } catch {}
         for (const q of part) await offDel(q.name);
         continue;
       }
@@ -160,9 +170,17 @@
           let one = null;
           try {
             one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
-              '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
+              '&type=' + q.kind + '&base=' + (q.baseRev || 0),
+              { method: 'POST', body: q.body || '\n' }, 20000);
           } catch {}
-          if (one && one.ok) { await offDel(q.name); continue; }
+          if (one && one.ok) {
+            try {
+              const j = await one.json();
+              if (j.conflicted) conflicts.push(j.kept || q.name);
+            } catch {}
+            await offDel(q.name);
+            continue;
+          }
           if (shipGone(one)) { stuck = true; break; }
           st('dropped an unsyncable offline edit: ' + q.name, false);
           await offDel(q.name);
@@ -174,7 +192,10 @@
     replaying = false;
     if (stuck) { setDegraded(true); st(offCount + ' offline edit(s) still waiting', false); return; }
     setDegraded(false);
-    st('offline edits synced');
+    if (conflicts.length) {
+      st('synced — ' + conflicts.length + ' conflict(s): your offline version won; '
+        + 'the other is saved at ' + conflicts.join(', '), false);
+    } else st('offline edits synced');
     // reconcile ONLY after the drain: refreshAll on reconnect would repaint
     // queued pages from the server dump before their edits landed (gap 4)
     loadTree();
@@ -874,6 +895,11 @@
     // in and the typed text is lost (same guard autosave has always had).
     const sent = src.value;
     const kind = kindOverride || curKind || pkind.value;
+    // NO base on live saves, deliberately: base is the OFFLINE queue's tool,
+    // where the divergence window is real. Online, any dirty-blocked refresh
+    // or panel-driven save can leave curRev one step behind, and every stale
+    // base manufactures a false conflict page out of nothing (ui-matrix
+    // caught exactly that). Online editing stays last-writer-wins.
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '');
     let r = null;
@@ -901,7 +927,14 @@
     curKind = kind;
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
-    st(CONTENT() ? 'saved' : 'compiling\u2026');
+    // the response carries the new revision (no re-read needed) and whether
+    // this save landed on top of a revision made elsewhere
+    let vr = null;
+    try { vr = await r.json(); } catch {}
+    if (vr && vr.rev) curRev = vr.rev;
+    if (vr && vr.conflicted) {
+      st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
+    } else st(CONTENT() ? 'saved' : 'compiling\u2026');
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
     // only a CREATE changes the tree — refetching it after every save was a
     // 2.3s pier round-trip to learn nothing. Patch the local copy on create.
@@ -956,12 +989,21 @@
     }
     if (!r || !r.ok) { st('autosave failed' + (r ? ' ' + r.status : ''), false); return; }
     if (src.value === sent) dirty = false;   // typed during the request? stay dirty
+    let vr = null;
+    if (mode !== 'know') {
+      try { vr = await r.json(); } catch {}
+      if (vr && vr.rev) curRev = vr.rev;
+    }
     if (mode !== 'know') {
       pageCache.delete(current);
       const nd = nodes.find((n) => n.page && n.path === current);
       if (nd) { nd.body = sent; persistTree(); }
     }
-    st('autosaved');
+    // the conflict verdict must be the LAST word, not clobbered by the
+    // ordinary confirmation a line later
+    if (vr && vr.conflicted)
+      st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
+    else st('autosaved');
     if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
     if (savePending) { savePending = false; if (dirty) autosave(); }
   }
@@ -2500,6 +2542,11 @@
     // request has no &render=1, so re-open the page properly rather than trying
     // to patch the preview from a response that does not contain one.
     if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent); return; }
+    // track the rev even when the BODY is unchanged: a save from elsewhere
+    // that landed the same text still moved the revision, and a stale curRev
+    // makes the next save carry a stale base — manufacturing a false
+    // conflict (and a conflicts/ page) out of nothing
+    if (mode !== 'know' && d.rev) curRev = d.rev;
     if (d.body === src.value) return;
     // the ship's copy moved under us: this page's cached render is stale
     if (mode !== 'know') pageCache.delete(wasCurrent);

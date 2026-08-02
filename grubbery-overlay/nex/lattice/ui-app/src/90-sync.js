@@ -31,6 +31,11 @@
     // request has no &render=1, so re-open the page properly rather than trying
     // to patch the preview from a response that does not contain one.
     if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent); return; }
+    // track the rev even when the BODY is unchanged: a save from elsewhere
+    // that landed the same text still moved the revision, and a stale curRev
+    // makes the next save carry a stale base — manufacturing a false
+    // conflict (and a conflicts/ page) out of nothing
+    if (mode !== 'know' && d.rev) curRev = d.rev;
     if (d.body === src.value) return;
     // the ship's copy moved under us: this page's cached render is stale
     if (mode !== 'know') pageCache.delete(wasCurrent);

@@ -1198,17 +1198,38 @@
       [%'POST' %page-save-batch]
     =/  jon=(unit json)  (de:json:html (req-body req))
     ?~  jon  (send-err eyre-id 400 'bad json')
-    =/  pr=(each (list [nam=@t typ=@t bod=@t]) tang)
+    ::  ?report=1: REPLAY mode. Items additionally carry base (the rev each
+    ::  queued edit was made from) and the response reports per-item
+    ::  {rev, conflicted} instead of a bare count. A mode rather than the
+    ::  default because the upload path WANTS all-or-nothing and no per-item
+    ::  bookkeeping. The write itself is unchanged either way: one %make-many
+    ::  transaction.
+    =/  report=?  =('1' (~(gut by args) 'report' '0'))
+    =/  pr=(each (list [nam=@t typ=@t bod=@t bas=@ud]) tang)
       %-  mule  |.
       %.  u.jon
       %-  ar:dejs:format
-      %-  ot:dejs:format
-      :~  name+so:dejs:format
-          type+so:dejs:format
-          body+so:dejs:format
-      ==
-    ?:  ?=(%| -.pr)  (send-err eyre-id 400 'expected [{name, type, body}]')
-    =/  items=(list [nam=@t typ=@t bod=@t])  p.pr
+      ?:  report
+        %-  ot:dejs:format
+        :~  name+so:dejs:format
+            type+so:dejs:format
+            body+so:dejs:format
+            base+ni:dejs:format
+        ==
+      |=  j=json
+      ^-  [@t @t @t @ud]
+      =/  [nam=@t typ=@t bod=@t]
+        %.  j
+        %-  ot:dejs:format
+        :~  name+so:dejs:format
+            type+so:dejs:format
+            body+so:dejs:format
+        ==
+      [nam typ bod 0]
+    ?:  ?=(%| -.pr)
+      %+  send-err  eyre-id
+      [400 ?:(report 'expected [{name, type, body, base}]' 'expected [{name, type, body}]')]
+    =/  items=(list [nam=@t typ=@t bod=@t bas=@ud])  p.pr
     ?:  =(0 (lent items))  (send-err eyre-id 400 'empty batch')
     ::  bounded: one transaction the writer cannot be talked into running
     ::  forever. The client chunks above this.
@@ -1217,15 +1238,80 @@
       (send-err eyre-id 400 'bad page name in batch')
     =/  pages=(list [pax=path src=@t])
       %+  turn  items
-      |=  [nam=@t typ=@t bod=@t]
+      |=  [nam=@t typ=@t bod=@t bas=@ud]
       =/  ptype=@tas  `@tas`typ
       :-  (pax-of nam)
       ?:  =(%index ptype)  (make-folder-index (pax-of nam))
       ?:  (~(has in content-builders) ptype)  (wrap-content ptype bod)
       bod
-    ;<  ~  bind:m  (poke-eval [%make-many pages])
+    ::  report mode: read every page's rev BEFORE the write (conflict = the
+    ::  ship moved past the base the edit was made from) and after (the new
+    ::  rev the client should carry forward). Same caveat as page-save: the
+    ::  compare is fiber-adjacent to the poke, so a same-ship interleave can
+    ::  mislabel a flag — never lose a revision.
+    ;<  prevs=(list @ud)  bind:m
+      =/  n  (fiber:fiber:nexus ,(list @ud))
+      ?.  report  (pure:n ~)
+      =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+      =|  acc=(list @ud)
+      |-  ^-  form:n
+      ?~  todo  (pure:n (flop acc))
+      ;<  r=@ud  bind:n  (page-rev (pax-of nam.i.todo))
+      $(todo t.todo, acc [r acc])
+    ::  conflicted items get their losing body preserved FIRST, in the same
+    ::  %make-many transaction — see +conflict-name for why history is not
+    ::  enough. Peeks happen here (fiber), the writes land atomically below.
+    ;<  keeps=(list [pax=path src=@t])  bind:m
+      =/  n  (fiber:fiber:nexus ,(list [pax=path src=@t]))
+      ?.  report  (pure:n ~)
+      =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+      =/  ps=(list @ud)  prevs
+      =|  acc=(list [pax=path src=@t])
+      |-  ^-  form:n
+      ?~  todo  (pure:n (flop acc))
+      =/  pv=@ud  ?~(ps 0 i.ps)
+      =/  more  ?~(ps ~ t.ps)
+      ?.  !=(bas.i.todo pv)  $(todo t.todo, ps more)
+      ;<  old=(unit @t)  bind:n  (page-src (pax-of nam.i.todo))
+      ?~  old  $(todo t.todo, ps more)
+      %=  $
+        todo  t.todo
+        ps    more
+        acc   [[(pax-of (conflict-name nam.i.todo pv)) u.old] acc]
+      ==
+    ;<  ~  bind:m  (poke-eval [%make-many (weld keeps pages)])
+    ?.  report
+      %+  send-json  eyre-id
+      (pairs:enjs:format ~[['ok' b+&] ['saved' (numb:enjs:format (lent items))]])
+    ::  new rev per item = prev+1, computed for the same reason page-save
+    ::  computes it: a same-fiber peek cannot observe the write it follows
+    =/  out=(list json)
+      =/  todo  items
+      =/  ps  prevs
+      =|  acc=(list json)
+      |-  ^-  (list json)
+      ?~  todo  (flop acc)
+      =/  pv=@ud  ?~(ps 0 i.ps)
+      =/  nw=@ud  +(pv)
+      %=  $
+        todo  t.todo
+        ps    ?~(ps ~ t.ps)
+        acc
+      :_  acc
+      %-  pairs:enjs:format
+      :~  ['name' s+nam.i.todo]
+          ['rev' (numb:enjs:format nw)]
+          ['prev-rev' (numb:enjs:format pv)]
+          ['conflicted' b+!=(bas.i.todo pv)]
+          ['kept' s+?.(!=(bas.i.todo pv) '' (conflict-name nam.i.todo pv))]
+      ==
+      ==
     %+  send-json  eyre-id
-    (pairs:enjs:format ~[['ok' b+&] ['saved' (numb:enjs:format (lent items))]])
+    %-  pairs:enjs:format
+    :~  ['ok' b+&]
+        ['saved' (numb:enjs:format (lent items))]
+        ['items' a+out]
+    ==
   ::
       [%'POST' %page-save]
     =/  name=(unit @t)  (~(get by args) 'name')
@@ -1251,8 +1337,38 @@
       ?.  (~(has by args) 'new')  (pure:(fiber:fiber:nexus ,?) %.n)
       (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.name))) %code])
     ?:  &((~(has by args) 'new') ex)  (send-err eyre-id 409 'page exists')
+    ::  ?base=<rev>: the revision the caller edited FROM (the offline queue
+    ::  stamps it at enqueue). Compared HERE rather than by the client — a
+    ::  client check-then-write races anything landing in between. The compare
+    ::  sits one fiber-bind from the poke, so a same-ship interleave can still
+    ::  mislabel a conflict in principle; the consequence is only a wrong FLAG
+    ::  (every save is a kept revision either way), which is why apply-and-flag
+    ::  is safe where refuse-and-block would need true writer-side CAS.
+    =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
+    ;<  prev=@ud  bind:m  (page-rev (pax-of u.name))
+    =/  conflicted=?  &(?=(^ base) !=(u.base prev))
+    =/  kept=@t  ?.(conflicted '' (conflict-name u.name prev))
+    ;<  ~  bind:m
+      =/  n  (fiber:fiber:nexus ,~)
+      ?.  conflicted  (pure:n ~)
+      ;<  old=(unit @t)  bind:n  (page-src (pax-of u.name))
+      ?~  old  (pure:n ~)
+      (poke-eval [%make (pax-of kept) u.old])
     ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
-    (send-ok eyre-id)
+    ::  the new rev is prev+1, COMPUTED not re-peeked: a peek in this same
+    ::  fiber does not observe the write yet (effects flush on yield), so a
+    ::  post-write peek returned the stale rev — and a client carrying that
+    ::  as its base would flag a false conflict on every second save. %make
+    ::  commits the code grub exactly once, so +1 is exact.
+    ::  additive over the old {"ok":true} — nothing keyed on the exact shape
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['ok' b+&]
+        ['rev' (numb:enjs:format +(prev))]
+        ['prev-rev' (numb:enjs:format prev)]
+        ['conflicted' b+conflicted]
+        ['kept' s+kept]
+    ==
       [%'POST' %folder-new]
     ::  create an empty folder (nested ok, e.g. "a/b"). The tree shows it and
     ::  ?into= drops new files inside. Idempotent over an existing page/folder.
@@ -4255,6 +4371,48 @@
 ::  catalog (source = publisher = our). The local, peer-free slice of the crawler
 ::  — proves the analyze -> obelisk pipeline end to end. Returns the count indexed.
 ::
+::  +page-src: a page's current stored source (the WRAPPED src, so re-saving
+::  it reproduces the page byte-for-byte, kind included), ~ if absent.
+++  page-src
+  |=  rel=path
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  =/  pdir=path  (weld app-base:lu (weld /page rel))
+  ;<  cv=view:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
+  ?.  ?=([%file *] cv)  (pure:m ~)
+  (pure:m (mole |.(;;(@t (sang-noun:tarball sang.cv)))))
+::  +conflict-name: where a conflict's LOSING body is preserved as a real
+::  page. NOT left to revision history: the firm keep coalesces rapid
+::  revisions (three quick writes kept revs [3,1] and pruned 2 in testing),
+::  so "recover it from history" is false exactly when the overwrite came
+::  quickly. A page in the tree is visible, recoverable and deletable, and
+::  needs no machinery that does not already exist.
+++  conflict-name
+  |=  [nam=@t prev=@ud]
+  ^-  @t
+  %-  crip
+  ;:  weld
+    "conflicts/"
+    %+  turn  (trip nam)
+    |=(c=@tD ?:(=('/' c) '-' c))
+    "-rev"
+    ::  plain digits, NOT +scow — %ud renders "1.234" with dot separators,
+    ::  and autosave rev numbers pass 1000 within a few sessions
+    (num-tape:pg prev)
+  ==
+::  +page-rev: the current revision of one page's code grub, 0 if absent.
+::  One dir peek; the wave carries the cass (same read fs-dump-json uses),
+::  which is far lighter than peep %numb walking every historical revision.
+++  page-rev
+  |=  rel=path
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  =/  pdir=path  (weld app-base:lu (weld /page rel))
+  ;<  dv=view:nexus  bind:m  (peek:io [%& %| pdir] ~)
+  ?.  ?=([%ball *] dv)  (pure:m 0)
+  =/  wfil=(map @ta cass:clay)  ?~(fil.wave.dv ~ file.u.fil.wave.dv)
+  =/  c=(unit cass:clay)  (~(get by wfil) %code)
+  (pure:m ?~(c 0 ud.u.c))
 ++  catalog-scan-self
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m

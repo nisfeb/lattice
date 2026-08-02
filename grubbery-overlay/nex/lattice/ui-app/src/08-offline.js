@@ -105,16 +105,26 @@
     replaying = true;
     stWork('syncing ' + all.length + ' offline edit' + (all.length === 1 ? '' : 's') + '…');
     let stuck = false;
+    const conflicts = [];
     for (let i = 0; i < all.length && !stuck; i += 50) {
       const part = all.slice(i, i + 50);
       let r = null;
       try {
-        r = await tfetch(api + '/page-save-batch', {
+        r = await tfetch(api + '/page-save-batch?report=1', {
           method: 'POST',
-          body: JSON.stringify(part.map((q) => ({ name: q.name, type: q.kind, body: q.body || '\n' }))),
+          body: JSON.stringify(part.map((q) =>
+            ({ name: q.name, type: q.kind, body: q.body || '\n', base: q.baseRev || 0 }))),
         }, 120000);
       } catch {}
       if (r && r.ok) {
+        // per-item verdicts: an edit whose base the ship moved past still
+        // APPLIED (it is the newest revision), but the overwritten revision
+        // is named so it can be recovered from history — apply-and-flag,
+        // never silently drop either side
+        try {
+          for (const it of ((await r.json()).items || []))
+            if (it.conflicted) conflicts.push(it.kept || it.name);
+        } catch {}
         for (const q of part) await offDel(q.name);
         continue;
       }
@@ -123,9 +133,17 @@
           let one = null;
           try {
             one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
-              '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
+              '&type=' + q.kind + '&base=' + (q.baseRev || 0),
+              { method: 'POST', body: q.body || '\n' }, 20000);
           } catch {}
-          if (one && one.ok) { await offDel(q.name); continue; }
+          if (one && one.ok) {
+            try {
+              const j = await one.json();
+              if (j.conflicted) conflicts.push(j.kept || q.name);
+            } catch {}
+            await offDel(q.name);
+            continue;
+          }
           if (shipGone(one)) { stuck = true; break; }
           st('dropped an unsyncable offline edit: ' + q.name, false);
           await offDel(q.name);
@@ -137,7 +155,10 @@
     replaying = false;
     if (stuck) { setDegraded(true); st(offCount + ' offline edit(s) still waiting', false); return; }
     setDegraded(false);
-    st('offline edits synced');
+    if (conflicts.length) {
+      st('synced — ' + conflicts.length + ' conflict(s): your offline version won; '
+        + 'the other is saved at ' + conflicts.join(', '), false);
+    } else st('offline edits synced');
     // reconcile ONLY after the drain: refreshAll on reconnect would repaint
     // queued pages from the server dump before their edits landed (gap 4)
     loadTree();
