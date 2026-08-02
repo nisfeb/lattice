@@ -138,6 +138,11 @@
     // in and the typed text is lost (same guard autosave has always had).
     const sent = src.value;
     const kind = kindOverride || curKind || pkind.value;
+    // NO base on live saves, deliberately: base is the OFFLINE queue's tool,
+    // where the divergence window is real. Online, any dirty-blocked refresh
+    // or panel-driven save can leave curRev one step behind, and every stale
+    // base manufactures a false conflict page out of nothing (ui-matrix
+    // caught exactly that). Online editing stays last-writer-wins.
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '');
     let r = null;
@@ -165,7 +170,14 @@
     curKind = kind;
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
-    st(CONTENT() ? 'saved' : 'compiling\u2026');
+    // the response carries the new revision (no re-read needed) and whether
+    // this save landed on top of a revision made elsewhere
+    let vr = null;
+    try { vr = await r.json(); } catch {}
+    if (vr && vr.rev) curRev = vr.rev;
+    if (vr && vr.conflicted) {
+      st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
+    } else st(CONTENT() ? 'saved' : 'compiling\u2026');
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
     // only a CREATE changes the tree — refetching it after every save was a
     // 2.3s pier round-trip to learn nothing. Patch the local copy on create.
@@ -220,12 +232,21 @@
     }
     if (!r || !r.ok) { st('autosave failed' + (r ? ' ' + r.status : ''), false); return; }
     if (src.value === sent) dirty = false;   // typed during the request? stay dirty
+    let vr = null;
+    if (mode !== 'know') {
+      try { vr = await r.json(); } catch {}
+      if (vr && vr.rev) curRev = vr.rev;
+    }
     if (mode !== 'know') {
       pageCache.delete(current);
       const nd = nodes.find((n) => n.page && n.path === current);
       if (nd) { nd.body = sent; persistTree(); }
     }
-    st('autosaved');
+    // the conflict verdict must be the LAST word, not clobbered by the
+    // ordinary confirmation a line later
+    if (vr && vr.conflicted)
+      st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
+    else st('autosaved');
     if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
     if (savePending) { savePending = false; if (dirty) autosave(); }
   }

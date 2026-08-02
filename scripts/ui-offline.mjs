@@ -127,6 +127,52 @@ try {
     return (await r.json()).body;
   }, A);
   check('the ship has the offline edit', server === '# alpha OFFLINE EDIT', JSON.stringify(server));
+
+  // ── 5. Phase 2: a conflict is applied AND flagged, with the loser kept ───
+  // While this client is offline, "another device" (node itself — its fetches
+  // bypass the page's interception, exactly like a second machine) edits the
+  // same page. On replay: the offline version wins as the newest revision,
+  // the status names the overwritten rev, and history still holds it.
+  step = 'conflict on replay';
+  await page.goto(APP + '?name=' + encodeURIComponent(B), { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.getElementById('src').value.includes('beta v1'));
+  shipDown = true;
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = '# beta OFFLINE'; s.dispatchEvent(new Event('input'));
+  });
+  await wait(() => (document.getElementById('status').textContent || '').includes('waiting to sync'));
+  // the concurrent edit, from outside the browser entirely
+  const cr = await fetch(URL + '/apps/lattice/page-save?name=' + encodeURIComponent(B) + '&type=md',
+    { method: 'POST', headers: { cookie }, body: '# beta CONCURRENT' });
+  const cj = await cr.json();
+  check('concurrent edit landed server-side (the rev to be overwritten)',
+    cr.ok && cj.rev > 0, JSON.stringify(cj));
+  await sleep(2000);
+  shipDown = false;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await wait(() => (document.getElementById('status').textContent || '').includes('conflict'));
+  const cstat = await page.evaluate(() => document.getElementById('status').textContent);
+  check('replay flags the conflict and names where the loser was kept',
+    cstat.includes('saved at conflicts/'), cstat.slice(0, 140));
+  await sleep(3000);
+  const winner = await page.evaluate(async (n) => {
+    const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n));
+    return (await r.json()).body;
+  }, B);
+  check('the offline version won (newest revision)', winner === '# beta OFFLINE',
+    JSON.stringify(winner));
+  // NOT asserted via page-source-at: the firm keep coalesces rapid revisions
+  // (three quick writes kept revs [3,1] in testing), so history is exactly
+  // the wrong place to promise recovery from — which is why the server
+  // preserves the loser as a real page instead.
+  const keptName = 'conflicts/' + B.replace(/\//g, '-') + '-rev' + cj.rev;
+  const kept = await page.evaluate(async (n) => {
+    const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n));
+    return r.ok ? (await r.json()).body : 'HTTP ' + r.status;
+  }, keptName);
+  check('the overwritten concurrent edit is preserved as a conflict page',
+    kept === '# beta CONCURRENT', keptName + ' -> ' + JSON.stringify(kept));
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 140), false);
 } finally {
@@ -134,6 +180,7 @@ try {
     shipDown = false;
     await page.evaluate(async (run) => {
       await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(run), { method: 'POST' });
+      await fetch('/apps/lattice/page-del?name=conflicts', { method: 'POST' });
       indexedDB.deleteDatabase('lattice-offline');
     }, RUN);
   } catch {}
