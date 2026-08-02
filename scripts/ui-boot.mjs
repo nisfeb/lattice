@@ -151,6 +151,11 @@ try {
   step = 'mobile defaults';
   await page.setRequestInterception(false);
   await page.setViewport({ width: 390, height: 780, isMobile: true });
+  // the tree-landing rule applies when NOTHING is remembered — with a
+  // snapshot, resuming the page wins (that is the other half of the same
+  // request: "default to the tree UNLESS it remembers a recent file"). Clear
+  // only the page snapshot so this asserts the no-memory case.
+  await page.evaluate(() => localStorage.removeItem('appPage'));
   await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
   await sleep(2500);
@@ -158,7 +163,7 @@ try {
     mv: document.getElementById('ws').dataset.mv,
     focused: document.activeElement && document.activeElement.id,
   }));
-  check('mobile: lands on the tree, not an empty editor', mob.mv === 'tree', JSON.stringify(mob));
+  check('mobile: with nothing remembered, lands on the tree', mob.mv === 'tree', JSON.stringify(mob));
   check('mobile: does not focus the name field (no keyboard)',
     mob.focused !== 'pname', 'activeElement=' + mob.focused);
 
@@ -176,6 +181,22 @@ try {
   await wait((b) => document.getElementById('src').value === b, BODY);
   check('mobile: a remembered file resumes in the editor',
     await page.evaluate(() => document.getElementById('ws').dataset.mv) === 'code');
+
+  // ── 5. PWA launch: a BARE url resumes the last page ─────────────────────
+  // A PWA always launches at start_url, which can never carry ?name — so the
+  // snapshot must resume by itself. This was the report "every time I open
+  // the PWA it loads my home page instead of the last page I had open".
+  step = 'bare-url resume';
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.getElementById('src').value.length > 0);
+  const res = await page.evaluate(() => ({
+    body: document.getElementById('src').value,
+    name: document.getElementById('pname').value,
+    mv: document.getElementById('ws').dataset.mv,
+  }));
+  check('bare launch resumes the last open page', res.body === BODY && res.name === PAGE,
+    JSON.stringify(res).slice(0, 90));
+  check('and lands in the editor pane on mobile', res.mv === 'code', res.mv);
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 140), false);
 } finally {

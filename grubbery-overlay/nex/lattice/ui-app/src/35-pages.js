@@ -29,7 +29,14 @@
     const painted = !!node && typeof node.body === 'string';
     // `quiet`: the render=1 request below carries the preview and the error
     // report, so painting must not also fire refreshPreview/checkErrors.
-    if (painted) applyPage(name, node, true);
+    if (painted) {
+      applyPage(name, node, true);
+      // snapshot NOW, not only after the render fetch below: the snapshot is
+      // what a bare launch (the PWA) resumes from, and a session that ends
+      // during the fetch would otherwise remember nothing. The fetch's
+      // snapPage upgrades this with the rendered html when it lands.
+      snapPage(name, node);
+    }
     let d = null;
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
