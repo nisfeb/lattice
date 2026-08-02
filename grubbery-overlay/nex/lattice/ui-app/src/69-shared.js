@@ -27,9 +27,9 @@
       const row = document.createElement('div');
       row.className = 'chips';
       const a = document.createElement('a');
-      a.textContent = it.host + ' ' + it.path.replace(/^\/apps\/lattice\.lattice_app\//, '') +
+      a.textContent = it.host + ' ' + shortPath(it.path, items.map((x) => x.path)) +
         ' (' + it.mode + ')';
-      a.title = 'open in the editor';
+      a.title = it.path + ' — open in the editor';
       a.href = '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
         '&ship=' + encodeURIComponent(it.host);
       const x = document.createElement('a');

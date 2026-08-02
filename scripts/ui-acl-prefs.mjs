@@ -169,6 +169,45 @@ try {
     return [...row.querySelectorAll('button')].find((b) => b.textContent === 'read').className;
   }, GROUP);
   check('and the toggle reads back as on', /on/.test(lit), lit);
+  // ── short paths: grants show a tail, not the whole ball path ────────────
+  step = 'short paths';
+  await page.evaluate(() => document.getElementById('aclt').click());
+  await page.waitForFunction(() => !document.getElementById('aclwrap').hidden, { timeout: 30000 });
+  const fullPath = '/apps/lattice.lattice_app/page/' + GROUP + '/target';
+  const chip = await page.evaluate((full) => {
+    const a = [...document.querySelectorAll('#aclgrid .chips a')]
+      .find((x) => x.title === 'remove ' + full);
+    return a ? a.textContent : null;
+  }, fullPath);
+  // leftovers from a crashed run can force disambiguation ('…/x/target'), so
+  // assert SHORTENED + right tail rather than one exact string
+  check('acl: grant paths are shortened to an unambiguous tail',
+    !!chip && !chip.includes('lattice_app') && /target ×$/.test(chip),
+    JSON.stringify(chip));
+  await page.evaluate(() => document.getElementById('aclclose').click());
+
+  // ── pane resize: drag a boundary, persist, double-click reset ───────────
+  step = 'pane resize';
+  const ph1 = await page.$('#ph1');
+  check('pane handle present', !!ph1);
+  let hb = await ph1.boundingBox();
+  await page.mouse.move(hb.x + 4, hb.y + 200);
+  await page.mouse.down();
+  await page.mouse.move(360, hb.y + 200, { steps: 4 });
+  await page.mouse.up();
+  const rz = await page.evaluate(() => ({
+    tw: Math.round(document.querySelector('.tree').getBoundingClientRect().width),
+    ls: (() => { try { return JSON.parse(localStorage.appPanes || '{}').tree || 0; } catch { return 0; } })(),
+  }));
+  check('dragging the tree boundary resizes the pane', rz.tw > 300, JSON.stringify(rz));
+  check('the dragged width persists', rz.ls > 300, JSON.stringify(rz));
+  hb = await ph1.boundingBox();
+  await page.mouse.click(hb.x + 4, hb.y + 200);
+  await page.mouse.click(hb.x + 4, hb.y + 200);
+  const rz2 = await page.evaluate(() =>
+    (() => { try { return JSON.parse(localStorage.appPanes || '{}').tree || 0; } catch { return -1; } })());
+  check('double-click resets the boundary', rz2 === 0, String(rz2));
+
   // ── banlist: deny, which a weir cannot express ──────────────────────────
   // Banning must REVOKE, not just record: membership in a group is access, so
   // a ban that left the ship in its groups would be a label rather than a ban.
@@ -222,6 +261,7 @@ try {
       await fetch('/apps/lattice/share-group-del?name=' + encodeURIComponent(g), { method: 'POST' });
       await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(g + '/target'), { method: 'POST' });
       localStorage.removeItem('latFont'); localStorage.removeItem('latFontSize');
+      localStorage.removeItem('appPanes');
     }, GROUP);
   } catch {}
   await browser.close();
