@@ -38,7 +38,7 @@ await page.setCookie({ name: ckName, value: ckRest.join('='), domain: host, path
 const wait = (fn, ...args) => page.waitForFunction(fn, { timeout: 90000 }, ...args);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const qCount = () => page.evaluate(() => new Promise((res) => {
-  const rq = indexedDB.open('lattice-offline', 1);
+  const rq = indexedDB.open('lattice-offline');
   rq.onsuccess = () => {
     try {
       const c = rq.result.transaction('saves', 'readonly').objectStore('saves').count();

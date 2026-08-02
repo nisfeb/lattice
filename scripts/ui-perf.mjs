@@ -59,6 +59,7 @@ try {
   await page.goto(APP + '/no-such-asset', { timeout: 30000 });
   await page.evaluate(async () => {
     localStorage.clear();
+    indexedDB.deleteDatabase('lattice-offline');
     const regs = await navigator.serviceWorker.getRegistrations();
     for (const r of regs) await r.unregister();
     if (window.caches) for (const k of await caches.keys()) await caches.delete(k);

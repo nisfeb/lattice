@@ -37,7 +37,7 @@
 // ── src/08-offline.js ─────────────────────────────────────────────────────
   // ── offline edits: queue, detection, replay (docs/offline-edits.md) ──────
   // Phase 1: page saves only. The queue lives in IndexedDB (localStorage is
-  // synchronous, ~5MB, and already carries the tree snapshot), one record per
+  // synchronous and ~5MB — the tree snapshot moved here too, phase 3), one per
   // page, coalesced — re-editing a queued page replaces its record, the same
   // way autosave coalesces savePending.
   //
@@ -54,8 +54,17 @@
   const offOpen = () => new Promise((res) => {
     if (offDb) return res(offDb);
     let rq = null;
-    try { rq = indexedDB.open('lattice-offline', 1); } catch { return res(null); }
-    rq.onupgradeneeded = () => rq.result.createObjectStore('saves', { keyPath: 'name' });
+    try { rq = indexedDB.open('lattice-offline', 2); } catch { return res(null); }
+    rq.onupgradeneeded = () => {
+      const d = rq.result;
+      if (!d.objectStoreNames.contains('saves'))
+        d.createObjectStore('saves', { keyPath: 'name' });
+      // kv: the tree snapshot (phase 3). It lived in localStorage, which is
+      // ~5MB, synchronous, and was re-STRINGIFIED whole on every save; IDB
+      // stores the structured clone directly and scales to the disk.
+      if (!d.objectStoreNames.contains('kv'))
+        d.createObjectStore('kv', { keyPath: 'k' });
+    };
     rq.onsuccess = () => { offDb = rq.result; res(offDb); };
     rq.onerror = () => res(null);   // no idb: the queue is off, saves fail loudly as before
   });
@@ -84,6 +93,22 @@
     await offRecount();
   };
   offRecount();
+  const kvStore = async (mode) => {
+    const d = await offOpen();
+    try { return d && d.transaction('kv', mode).objectStore('kv'); } catch { return null; }
+  };
+  const kvGet = async (k) => {
+    const st = await kvStore('readonly');
+    const r = st && await offReq(st.get(k));
+    return r ? r.v : null;
+  };
+  // fire-and-forget by design: persistTree's callers are synchronous save
+  // paths, and a snapshot write that loses a race with app close costs one
+  // boot's paint, not data — the ship copy is the durable one.
+  const kvPut = async (k, v) => {
+    const st = await kvStore('readwrite');
+    if (st) await offReq(st.put({ k, v }));
+  };
 
   // fetch with a REAL deadline. "Detect offline by timeout" was in the design
   // from day one, but nothing implemented a timeout — no AbortController
@@ -456,7 +481,13 @@
   // in-flight refresh — which silently lost pages created while an autosave
   // was in flight.
   const persistTree = () => {
-    try { localStorage.appTree = JSON.stringify(nodes); } catch {}
+    // IDB, not localStorage (phase 3): the tree carries every page BODY via
+    // page-dump, so a growing vault was marching toward the ~5MB quota — and
+    // stringifying the whole tree on every save was main-thread work paid at
+    // the worst time. The structured clone goes straight in. The PAGE
+    // snapshot (appPage) stays in localStorage on purpose: it is small and
+    // synchronous, which is what keeps resume painting at 0ms.
+    kvPut('tree', nodes);
   };
   // rendered page-source answers, by name. The tree dump already carries every
   // body, so this only adds what the dump lacks — `share` and the rendered
@@ -2933,27 +2964,42 @@
   // tree and (when it matches ?name) the page body + preview appear at 0ms,
   // then loadTree/refreshOpen reconcile in the background — local edits win,
   // same rules as any live refresh.
+  // The PAGE snapshot is synchronous localStorage — small, and it is what
+  // makes resume paint at literally 0ms. The TREE snapshot moved to IDB
+  // (phase 3), whose read is async but single-digit ms: imperceptible next
+  // to the ~0.5s network floor, and it frees the tree (which carries every
+  // page body) from localStorage's ~5MB ceiling.
   function bootSnap() {
-    let t = null, p = null;
-    try {
-      t = JSON.parse(localStorage.appTree || 'null');
-      p = JSON.parse(localStorage.appPage || 'null');
-    } catch {}
-    if (!t || !t.length) return false;
-    nodes = t;
-    renderTree();
+    let p = null;
+    try { p = JSON.parse(localStorage.appPage || 'null'); } catch {}
+    if (!p || !p.name) return false;
     const name = qs.get('name');
     // No ?name means a bare launch — above all the PWA, whose start_url can
     // never carry one. Resume the snapshot page instead of landing on an
     // empty editor: "opens where I left off" is what an installed app means.
     // A ?name that does not match the snapshot still defers to the network.
-    if (p && p.name && (!name || p.name === name)) {
-      applyPage(p.name, p);
-      // openPage sets the upload-target folder; the snapshot path must too,
-      // or uploads land at the root until the next explicit open
-      setFolderCtx(p.name);
-    }
+    if (name && p.name !== name) return false;
+    applyPage(p.name, p);
+    // openPage sets the upload-target folder; the snapshot path must too,
+    // or uploads land at the root until the next explicit open
+    setFolderCtx(p.name);
     return true;
+  }
+  async function bootTree() {
+    let t = await kvGet('tree');
+    if (!t || !t.length) {
+      // one-time migration from the localStorage era, then free the quota
+      try { t = JSON.parse(localStorage.appTree || 'null'); } catch {}
+      if (t && t.length) kvPut('tree', t);
+    }
+    try { localStorage.removeItem('appTree'); } catch {}
+    // if the network dump (or any local activity) beat us here, it is fresher
+    // than the snapshot — and deliberately NO treeGen bump: a snapshot must
+    // never supersede an in-flight loadTree the way a real local patch does
+    if (!t || !t.length || nodes.length) return;
+    nodes = t;
+    renderTree();
+    markCurrent();
   }
   // the control-panel lists (sharing groups, shared-with-me) are never needed
   // to read or edit anything, so they load AFTER the editor is usable. Issued
@@ -2975,6 +3021,7 @@
     loadPanels();
   } else {
     const painted = bootSnap();
+    bootTree();
     // what the snapshot painted, if anything — the baseline for "did the USER
     // do something while the dump was in flight?"
     const bootCurrent = current;

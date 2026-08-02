@@ -68,6 +68,7 @@ try {
   await page.goto(APP + '/no-such-asset', { timeout: 20000 });
   await page.evaluate(async () => {
     localStorage.clear();
+    indexedDB.deleteDatabase('lattice-offline');
     // the profile can persist: drop any service worker + caches from a
     // previous run/deploy so every run boots as a fresh visitor
     const regs = await navigator.serviceWorker.getRegistrations();

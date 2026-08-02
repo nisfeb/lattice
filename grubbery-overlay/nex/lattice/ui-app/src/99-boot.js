@@ -3,27 +3,42 @@
   // tree and (when it matches ?name) the page body + preview appear at 0ms,
   // then loadTree/refreshOpen reconcile in the background — local edits win,
   // same rules as any live refresh.
+  // The PAGE snapshot is synchronous localStorage — small, and it is what
+  // makes resume paint at literally 0ms. The TREE snapshot moved to IDB
+  // (phase 3), whose read is async but single-digit ms: imperceptible next
+  // to the ~0.5s network floor, and it frees the tree (which carries every
+  // page body) from localStorage's ~5MB ceiling.
   function bootSnap() {
-    let t = null, p = null;
-    try {
-      t = JSON.parse(localStorage.appTree || 'null');
-      p = JSON.parse(localStorage.appPage || 'null');
-    } catch {}
-    if (!t || !t.length) return false;
-    nodes = t;
-    renderTree();
+    let p = null;
+    try { p = JSON.parse(localStorage.appPage || 'null'); } catch {}
+    if (!p || !p.name) return false;
     const name = qs.get('name');
     // No ?name means a bare launch — above all the PWA, whose start_url can
     // never carry one. Resume the snapshot page instead of landing on an
     // empty editor: "opens where I left off" is what an installed app means.
     // A ?name that does not match the snapshot still defers to the network.
-    if (p && p.name && (!name || p.name === name)) {
-      applyPage(p.name, p);
-      // openPage sets the upload-target folder; the snapshot path must too,
-      // or uploads land at the root until the next explicit open
-      setFolderCtx(p.name);
-    }
+    if (name && p.name !== name) return false;
+    applyPage(p.name, p);
+    // openPage sets the upload-target folder; the snapshot path must too,
+    // or uploads land at the root until the next explicit open
+    setFolderCtx(p.name);
     return true;
+  }
+  async function bootTree() {
+    let t = await kvGet('tree');
+    if (!t || !t.length) {
+      // one-time migration from the localStorage era, then free the quota
+      try { t = JSON.parse(localStorage.appTree || 'null'); } catch {}
+      if (t && t.length) kvPut('tree', t);
+    }
+    try { localStorage.removeItem('appTree'); } catch {}
+    // if the network dump (or any local activity) beat us here, it is fresher
+    // than the snapshot — and deliberately NO treeGen bump: a snapshot must
+    // never supersede an in-flight loadTree the way a real local patch does
+    if (!t || !t.length || nodes.length) return;
+    nodes = t;
+    renderTree();
+    markCurrent();
   }
   // the control-panel lists (sharing groups, shared-with-me) are never needed
   // to read or edit anything, so they load AFTER the editor is usable. Issued
@@ -45,6 +60,7 @@
     loadPanels();
   } else {
     const painted = bootSnap();
+    bootTree();
     // what the snapshot painted, if anything — the baseline for "did the USER
     // do something while the dump was in flight?"
     const bootCurrent = current;

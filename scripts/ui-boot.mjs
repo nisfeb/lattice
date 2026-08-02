@@ -53,6 +53,7 @@ try {
   await page.goto(APP + '/no-such-asset', { timeout: 30000 });
   await page.evaluate(async () => {
     localStorage.clear();
+    indexedDB.deleteDatabase('lattice-offline');
     const regs = await navigator.serviceWorker.getRegistrations();
     for (const r of regs) await r.unregister();
     if (window.caches) for (const k of await caches.keys()) await caches.delete(k);
@@ -70,6 +71,29 @@ try {
     .some((a) => a.href.includes(encodeURIComponent(n))), PAGE);
 
   // ── now the real test: hold /page-dump open so the load window is wide ───
+  // the primed snapshot is demoted to the LEGACY localStorage form first, so
+  // this boot also proves the migration: paint from localStorage.appTree,
+  // move it into IDB, remove the localStorage key
+  step = 'demote snapshot to legacy form';
+  const primed = await page.evaluate(() => new Promise((res) => {
+    const rq = indexedDB.open('lattice-offline');
+    rq.onsuccess = () => {
+      const g = rq.result.transaction('kv').objectStore('kv').get('tree');
+      g.onsuccess = () => { res(JSON.stringify((g.result && g.result.v) || null)); rq.result.close(); };
+      g.onerror = () => { res('null'); rq.result.close(); };
+    };
+    rq.onerror = () => res('null');
+  }));
+  check('warm boot persisted the tree snapshot to IDB', primed !== 'null',
+    'kv store had no tree');
+  await page.evaluate((t) => new Promise((res) => {
+    localStorage.appTree = t;
+    // blocked while this page holds its connection — the delete completes at
+    // navigation, safely before the next boot's open
+    const dq = indexedDB.deleteDatabase('lattice-offline');
+    dq.onsuccess = dq.onerror = dq.onblocked = res;
+  }), primed);
+
   step = 'delayed boot';
   await page.setRequestInterception(true);
   page.on('request', async (r) => {
@@ -111,6 +135,20 @@ try {
   check('the page opened during load is STILL open afterwards',
     after.body === BODY, JSON.stringify(after));
   check('and the name field still names it', after.name === PAGE, after.name);
+  const mig = await page.evaluate(() => new Promise((res) => {
+    const rq = indexedDB.open('lattice-offline');
+    rq.onsuccess = () => {
+      const g = rq.result.transaction('kv').objectStore('kv').get('tree');
+      g.onsuccess = () => {
+        res({ ls: 'appTree' in localStorage, idb: !!(g.result && g.result.v && g.result.v.length) });
+        rq.result.close();
+      };
+      g.onerror = () => { res({ ls: 'appTree' in localStorage, idb: false }); rq.result.close(); };
+    };
+    rq.onerror = () => res(null);
+  }));
+  check('legacy localStorage tree migrated into IDB and removed',
+    !!mig && mig.idb && !mig.ls, JSON.stringify(mig));
   // ── 3. a save must not discard an in-flight tree refresh ────────────────
   // A body-only save used to bump the tree generation, which exists so a
   // STRUCTURAL local patch is not overwritten by a list fetch issued before
