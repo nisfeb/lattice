@@ -35,4 +35,42 @@
     (expect-eq !>(`(list tape)`~["solo"]) !>((split-on:pg "solo" ',')))
     (expect-eq !>(`(list tape)`~["" ""]) !>((split-on:pg "," ',')))
   ==
+::  +live-location is a state machine whose state is its own last render, so
+::  it is testable as a pure gate: feed each result's dat back in as the next
+::  call's dat. What matters most is what each state REFUSES to contain.
+::
+++  test-live-location-flow
+  =/  t0=@da  ~2026.8.2..10.00.00
+  =/  r1  (live-location:pg [~ 'cmd=51.50000,7.25000,10,60'] ~ t0 /w "W")
+  =/  b1=tape  (trip ;;(@t (need dat.r1)))
+  =/  r2  (live-location:pg [~ 'cmd=51.50500,7.25500,10,60'] [~ (crip b1)] (add t0 ~m5) /w "W")
+  =/  b2=tape  (trip ;;(@t (need dat.r2)))
+  =/  r3  (live-location:pg [~ 'cmd=stop'] [~ (crip b2)] (add t0 ~m10) /w "W")
+  =/  b3=tape  (trip ;;(@t (need dat.r3)))
+  =/  r4  (live-location:pg ~ [~ (crip b2)] (add t0 ~d1) /w "W")
+  =/  b4=tape  (trip ;;(@t (need dat.r4)))
+  ;:  weld
+    ::  first share: position renders, no trail yet, wake armed for expiry
+    (expect-eq !>(%.y) !>(?=(^ (find "51.50000, 7.25000" b1))))
+    (expect-eq !>(%.y) !>(?=(~ (find "<circle" b1))))
+    (expect-eq !>(%.y) !>(?=(^ wake.r1)))
+    ::  second share from a new position (0.005 deg away — INSIDE the map's
+    ::  0.008-deg half-span; a first draft moved 0.01 deg and the dot was
+    ::  correctly clipped as off-map, which failed the test and proved the
+    ::  clipping): the old position is now the trail —
+    ::  drawn as an overlay dot, kept in state, never sent to the tile host
+    ::  (the iframe src carries only the CURRENT position)
+    (expect-eq !>(%.y) !>(?=(^ (find "<circle" b2))))
+    (expect-eq !>(%.y) !>(?=(^ (find "51.50000,7.25000" b2))))
+    (expect-eq !>(%.y) !>(?=(^ (find "51.50500, 7.25500" b2))))
+    ::  stop: no positions, no trail, no map — current AND past are erased
+    (expect-eq !>(%.y) !>(?=(~ (find "51.5" b3))))
+    (expect-eq !>(%.y) !>(?=(~ (find "<iframe" b3))))
+    (expect-eq !>(%.y) !>(?=(^ (find "No position is being broadcast" b3))))
+    ::  expiry (no command, past the deadline): identical erasure — a history
+    ::  of where you were is exactly as sensitive as where you are
+    (expect-eq !>(%.y) !>(?=(~ (find "51.5" b4))))
+    (expect-eq !>(%.y) !>(?=(~ (find "openstreetmap" b4))))
+    (expect-eq !>(%.y) !>(?=(^ (find "No position is being broadcast" b4))))
+  ==
 --

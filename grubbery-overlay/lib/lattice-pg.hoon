@@ -284,8 +284,10 @@
   |=  [cmd=(unit @t) dat=(unit *) now=@da rel=path title=tape]
   ^-  result
   =/  marker  "<!--loc "
-  ::  prior state: our own last render carries it in a comment (the page's data
-  ::  IS its render, same as +guestbook).
+  ::  prior state from our own last render (the page's data IS its render):
+  ::  lat|lon|acc|until|trail, trail = "lat,lon;lat,lon;..." newest first.
+  ::  Older pages wrote 4 fields; every access below is length-guarded so an
+  ::  update never crashes a page that predates the trail.
   =/  prev=tape
     ?~  dat  ""
     =/  old=tape  (trip ;;(@t u.dat))
@@ -294,6 +296,21 @@
     =/  rest=tape  (slag (add u.a (lent marker)) old)
     =/  b=(unit @ud)  (find "-->" rest)
     ?~(b "" (scag u.b rest))
+  =/  fields=(list tape)  (split-on prev '|')
+  =/  had=?  (gte (lent fields) 4)
+  =/  old-lat=tape    ?:(had (snag 0 fields) "")
+  =/  old-lon=tape    ?:(had (snag 1 fields) "")
+  =/  old-acc=tape    ?:(had (snag 2 fields) "")
+  =/  old-until=tape  ?:(had (snag 3 fields) "")
+  =/  old-trail=tape  ?:((gte (lent fields) 5) (snag 4 fields) "")
+  ::  join a list of tapes with ";" — inverse of split-on for the trail
+  =/  rejoin
+    |=  ps=(list tape)
+    ^-  tape
+    ?~  ps  ""
+    |-  ^-  tape
+    ?~  t.ps  i.ps
+    (weld i.ps (weld ";" $(ps t.ps)))
   ::  a coordinate is digits, a minus and a dot — nothing else reaches the page
   =/  coordy
     |=  t=tape
@@ -309,82 +326,158 @@
     =/  eq=(unit @ud)  (find "=" raw)
     ?~(eq raw (slag +(u.eq) raw))
   =/  parts=(list tape)  (split-on arg ',')
-  ::  state is lat|lon|acc|until, all as text
-  =/  old=(list tape)  (split-on prev '|')
-  =/  now-t=tape  (scow %da now)
   =/  next=(list tape)
     ?:  =("stop" arg)  ~
     ?.  ?&  (gte (lent parts) 2)
             (coordy (snag 0 parts))
             (coordy (snag 1 parts))
         ==
-      old                                  ::  unparseable: change nothing
+      ::  no (or unparseable) command: state unchanged
+      ?.  had  ~
+      ~[old-lat old-lon old-acc old-until old-trail]
+    =/  nlat=tape  (snag 0 parts)
+    =/  nlon=tape  (snag 1 parts)
     =/  acc=tape   ?:((gte (lent parts) 3) (snag 2 parts) "")
     =/  mins=@ud
       ?.  (gte (lent parts) 4)  60
       =/  n=(unit @ud)  (rush (crip (snag 3 parts)) dem:ag)
       ?~(n 60 ?:((gth u.n 1.440) 1.440 ?:(=(0 u.n) 60 u.n)))
-    :~  (snag 0 parts)
-        (snag 1 parts)
-        acc
-        (scow %da (add now (mul mins ~m1)))
-    ==
+    ::  THE TRAIL: each update files the position it replaces, newest first,
+    ::  capped, consecutive duplicates dropped. It lives in the same state
+    ::  field as everything else, so stop/expiry erase it with the rest — a
+    ::  history of where you were is exactly as sensitive as where you are.
+    =/  trail2=tape
+      ?.  had  ""
+      ?:  &(=(old-lat nlat) =(old-lon nlon))  old-trail
+      ?:  =("" old-lat)  old-trail
+      =/  entry=tape  :(weld old-lat "," old-lon)
+      =/  joined=tape  ?:(=("" old-trail) entry :(weld entry ";" old-trail))
+      (rejoin (scag 12 (split-on joined ';')))
+    ~[nlat nlon acc (scow %da (add now (mul mins ~m1))) trail2]
   ::  live only while inside the window — an expired share renders NOTHING
   =/  live=?
-    ?.  =(4 (lent next))  %.n
+    ?.  (gte (lent next) 4)  %.n
     =/  u=(unit @da)  (slaw %da (crip (snag 3 next)))
     ?~(u %.n (lth now u.u))
   =/  until=tape  ?:(live (snag 3 next) "")
-  ::  THE MAP. Know the trade before publishing this page: an embedded map
-  ::  means every viewer's browser asks openstreetmap.org for tiles at these
-  ::  coordinates, so the tile host learns the position (and each viewer's IP)
-  ::  whenever the page is opened. The bare link below leaks nothing until
-  ::  someone clicks it. Both are here; the map because it was asked for.
-  ::
-  ::  Empty unless live, so an expired share renders no iframe at all —
-  ::  nothing to load, nothing to leak.
+  =/  trail=tape  ?:(&(live (gte (lent next) 5)) (snag 4 next) "")
+  =/  now-t=tape  (scow %da now)
+  ::  THE MAP + TRAIL. The privacy trade of the embed stands as documented:
+  ::  every viewer's browser asks openstreetmap.org for tiles at these
+  ::  coordinates. The trail is drawn by US as an SVG overlay aligned to the
+  ::  same bbox — past positions are never sent to the tile host at all.
+  ::  Empty unless live, so an expired share renders no iframe and no trail.
   =/  map-html=tape
     ?.  live  ""
     =/  mlat=(unit @sd)  (deg-micro (snag 0 next))
     =/  mlon=(unit @sd)  (deg-micro (snag 1 next))
     ?:  |(?=(~ mlat) ?=(~ mlon))  ""
     =/  span=@sd  (sun:si 8.000)          ::  ~0.008deg, roughly a mile
+    =/  lonw=@sd  (dif:si u.mlon span)
+    =/  latn=@sd  (sum:si u.mlat span)
     =/  bbox=tape
       ;:  weld
-        (micro-deg (dif:si u.mlon span))  ","
+        (micro-deg lonw)  ","
         (micro-deg (dif:si u.mlat span))  ","
         (micro-deg (sum:si u.mlon span))  ","
-        (micro-deg (sum:si u.mlat span))
+        (micro-deg latn)
+      ==
+    ::  signed microdegree offset -> percent across the bbox (16.000 wide)
+    =/  pct
+      |=  d=@sd
+      ^-  (unit @ud)
+      =/  o  (old:si d)
+      ?.  -.o  ~
+      =/  p=@ud  (div +.o 160)
+      ?:((gth p 100) ~ `p)
+    =/  bits=[pl=tape cs=tape]
+      =/  pts=(list tape)  ?:(=("" trail) ~ (split-on trail ';'))
+      =/  pl=tape  "50,50"
+      =/  cs=tape  ""
+      |-  ^-  [tape tape]
+      ?~  pts  [pl cs]
+      =/  xy=(list tape)  (split-on i.pts ',')
+      ?.  =(2 (lent xy))  $(pts t.pts)
+      =/  py=(unit @sd)  (deg-micro (snag 0 xy))
+      =/  px=(unit @sd)  (deg-micro (snag 1 xy))
+      ?:  |(?=(~ px) ?=(~ py))  $(pts t.pts)
+      =/  xo=(unit @ud)  (pct (dif:si u.px lonw))
+      =/  yo=(unit @ud)  (pct (dif:si latn u.py))
+      ?:  |(?=(~ xo) ?=(~ yo))  $(pts t.pts)
+      =/  xs=tape  (num-tape u.xo)
+      =/  ys=tape  (num-tape u.yo)
+      %=  $
+        pts  t.pts
+        pl   :(weld pl " " xs "," ys)
+        cs   :(weld cs "<circle cx=\"" xs "\" cy=\"" ys "\" r=\"1.4\"/>")
+      ==
+    ::  subtle by construction: low opacity, thin line, no labels — a shape of
+    ::  where you have been, not a second dataset
+    =/  overlay=tape
+      ?:  =("" cs.bits)  ""
+      ;:  weld
+        "<svg viewBox=\"0 0 100 100\" preserveAspectRatio=\"none\" "
+        "style=\"position:absolute;inset:0;width:100%;height:100%;pointer-events:none\">"
+        "<polyline fill=\"none\" stroke=\"#4a7c59\" stroke-opacity=\".3\" stroke-width=\".8\" points=\""
+        pl.bits
+        "\"/><g fill=\"#4a7c59\" fill-opacity=\".4\">"  cs.bits  "</g></svg>"
       ==
     ;:  weld
+      "<div style=\"position:relative\">"
       "<iframe title=\"map\" loading=\"lazy\" referrerpolicy=\"no-referrer\" "
-      "style=\"width:100%;height:320px;border:1px solid #8886;border-radius:8px\" "
+      "style=\"width:100%;height:320px;border:1px solid #8886;border-radius:8px;display:block\" "
       "src=\"https://www.openstreetmap.org/export/embed.html?bbox="
       (trip (esc (crip bbox)))
       "&amp;layer=mapnik&amp;marker="
       (trip (esc (crip (snag 0 next))))  ","  (trip (esc (crip (snag 1 next))))
       "\"></iframe>"
+      overlay
+      "</div>"
     ==
-  ::  +loc-control: the buttons that actually send a position.
+  ::  the swappable view: everything a WATCHER needs, wrapped in markers so the
+  ::  poll below can replace it in place. In place matters twice over: a
+  ::  location.reload() would flicker the map for viewers AND kill the sharing
+  ::  tab's watch/heartbeat timers, silently ending the broadcast.
+  =/  view-html=tape
+    ?.  live
+      ;:  weld
+        "<p class=\"muted\">No position is being broadcast right now.</p>"
+        "<p class=\"muted\">Sharing this page controls who can SEE it; "
+        "a position is started with the button below.</p>"
+      ==
+    ;:  weld
+      "<p><b>"  (trip (esc (crip (snag 0 next))))  ", "
+                (trip (esc (crip (snag 1 next))))  "</b></p>"
+      ?:  =("" (snag 2 next))  ""
+      :(weld "<p class=\"muted\">accurate to about " (trip (esc (crip (snag 2 next)))) " m</p>")
+      "<p class=\"muted\">broadcasting until "  (trip (esc (crip until)))  "</p>"
+      map-html
+      "<p><a rel=\"noreferrer noopener\" href=\"https://www.openstreetmap.org/?mlat="
+      (trip (esc (crip (snag 0 next))))  "&amp;mlon="  (trip (esc (crip (snag 1 next))))
+      "\">open in a map</a></p>"
+      "<p class=\"muted\" id=\"locupd\">updated "  now-t  "</p>"
+    ==
+  ::  +loc-control: the buttons that send positions. Sharing IS live now:
+  ::  one press posts immediately, then keeps posting — on significant
+  ::  movement (throttled) and on a heartbeat — until the chosen window ends,
+  ::  as long as the tab stays open. The old "keep updating" checkbox
+  ::  described a browser event that fires only on movement and updated
+  ::  nobody's view; "share for an hour" now means what it says.
   ::
-  ::  This page had no way to update itself from the app — it was driven only
-  ::  by POST /page-cmd, i.e. by curl. A page that shares your location should
-  ::  have a button that shares your location.
+  ::  Every post carries the REMAINING minutes, so the deadline is fixed at
+  ::  press-time + duration rather than sliding forward with each update.
   ::
-  ::  The script is a single-quoted CORD, not a tape: hoon interpolates {...}
-  ::  inside a double-quoted tape, so JS braces cannot live in one. It also
-  ::  uses only double quotes internally, since the cord delimiter is the
-  ::  single quote. The page name is passed via data-page rather than being
-  ::  spliced into the script, which keeps the cord entirely static.
+  ::  Hidden by default and revealed by an authed probe: /page-cmd is
+  ::  owner-gated anyway, but a clearweb viewer should see a status page, not
+  ::  buttons that 403. One page serves both roles.
   ::
-  ::  NB: the control renders for anyone viewing the page. /page-cmd is
-  ::  owner-authenticated, so a visitor pressing it gets a 403 rather than
-  ::  moving your position — but it is worth knowing it is visible if you
-  ::  publish the page.
+  ::  The script is a single-quoted CORD, not a tape (hoon interpolates {...}
+  ::  in tapes); it uses only double quotes internally, and the page name
+  ::  arrives via data-page so the cord stays fully static.
   =/  loc-control=tape
     ;:  weld
       "<div id=\"locctl\" data-page=\""  (trip (esc (crip (slag 1 (spud rel)))))  "\" "
-      "style=\"margin:.8rem 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap\">"
+      "style=\"display:none;margin:.8rem 0;gap:8px;align-items:center;flex-wrap:wrap\">"
       "<button id=\"locgo\">share my location</button>"
       "<select id=\"locmins\">"
       "<option value=\"15\">15 min</option>"
@@ -392,7 +485,6 @@
       "<option value=\"480\">8 hours</option>"
       "</select>"
       "<label><input type=\"checkbox\" id=\"loccoarse\"> coarse (~1 km)</label>"
-      "<label><input type=\"checkbox\" id=\"loclive\"> keep updating</label>"
       "<button id=\"locstop\">stop</button>"
       "<span id=\"locmsg\" class=\"muted\"></span>"
       "</div>"
@@ -401,20 +493,63 @@
       '''
       (function(){
       var el=document.getElementById("locctl");
+      if(!el)return;
       var P=el.getAttribute("data-page");
       var m=document.getElementById("locmsg");
-      function post(c){return fetch("/apps/lattice/page-cmd?name="+encodeURIComponent(P),{method:"POST",body:"cmd="+encodeURIComponent(c)});}
-      function fx(n){return document.getElementById("loccoarse").checked?n.toFixed(2):n.toFixed(5);}
-      function send(p){return post(fx(p.coords.latitude)+","+fx(p.coords.longitude)+","+Math.round(p.coords.accuracy)+","+document.getElementById("locmins").value);}
-      function fail(e){m.textContent="location error: "+e.message;}
+      var api="/apps/lattice";
+      fetch(api+"/legacy-status").then(function(r){if(r.ok)el.style.display="flex"}).catch(function(){});
+      function post(c){return fetch(api+"/page-cmd?name="+encodeURIComponent(P),{method:"POST",body:"cmd="+encodeURIComponent(c)})}
+      var endAt=null,beat=null,watch=null,latest=null,lastPost=0;
+      function fx(n){return document.getElementById("loccoarse").checked?n.toFixed(2):n.toFixed(5)}
+      function remaining(){return Math.max(1,Math.ceil((endAt-Date.now())/60000))}
+      function sendLatest(){
+      if(!latest)return;
+      lastPost=Date.now();
+      post(fx(latest.coords.latitude)+","+fx(latest.coords.longitude)+","+Math.round(latest.coords.accuracy)+","+remaining()).then(function(){setTimeout(refresh,4000)});
+      }
+      function stopLive(msg){
+      if(beat)clearInterval(beat);
+      if(watch!==null)navigator.geolocation.clearWatch(watch);
+      beat=null;watch=null;endAt=null;m.textContent=msg||"";
+      }
       document.getElementById("locgo").onclick=function(){
       m.textContent="getting position...";
-      navigator.geolocation.getCurrentPosition(function(p){send(p).then(function(){location.reload();});},fail,{enableHighAccuracy:true,timeout:15000});};
-      document.getElementById("locstop").onclick=function(){post("stop").then(function(){location.reload();});};
-      var w=null;
-      document.getElementById("loclive").onchange=function(e){
-      if(e.target.checked){m.textContent="updating live";w=navigator.geolocation.watchPosition(function(p){send(p);},fail,{enableHighAccuracy:true});}
-      else{if(w!==null)navigator.geolocation.clearWatch(w);w=null;m.textContent="";}};
+      stopLive("");
+      endAt=Date.now()+60000*parseInt(document.getElementById("locmins").value,10);
+      navigator.geolocation.getCurrentPosition(function(p){
+      latest=p;sendLatest();
+      m.textContent="sharing - updates while this tab stays open";
+      watch=navigator.geolocation.watchPosition(function(q){
+      var moved=Math.abs(q.coords.latitude-latest.coords.latitude)+Math.abs(q.coords.longitude-latest.coords.longitude)>0.0003;
+      latest=q;
+      if(moved&&Date.now()-lastPost>20000)sendLatest();
+      },function(){},{enableHighAccuracy:true});
+      beat=setInterval(function(){
+      if(Date.now()>endAt){stopLive("sharing window ended");return}
+      sendLatest();
+      },60000);
+      },function(e){m.textContent="location error: "+e.message},{enableHighAccuracy:true,timeout:15000});
+      };
+      document.getElementById("locstop").onclick=function(){stopLive();post("stop").then(function(){setTimeout(refresh,3000)})};
+      var lastStripped=null;
+      function refresh(){
+      fetch(location.href,{cache:"no-store"}).then(function(r){return r.text()}).then(function(t){
+      var a=t.indexOf("<!--view-->"),b=t.indexOf("<!--/view-->");
+      if(a<0||b<0)return;
+      var v=t.slice(a+11,b);
+      var vs=v.replace(/updated [^<]*/,"");
+      var cur=document.getElementById("locview");
+      if(!cur)return;
+      if(vs===lastStripped){
+      var mm=v.match(/updated [^<]*/);
+      var e=document.getElementById("locupd");
+      if(mm&&e)e.textContent=mm[0];
+      return}
+      lastStripped=vs;
+      cur.innerHTML=v;
+      }).catch(function(){})
+      }
+      setInterval(refresh,30000);
       })();
       '''
       "</script>"
@@ -423,42 +558,18 @@
     %-  crip
     ;:  weld
       "<div class=\"page\"><h1>"  title  "</h1>"
-      ?.  live
-        ;:  weld
-          "<p class=\"muted\">No position is being broadcast right now.</p>"
-          ::  "sharing" already means page ACLs here, and using it for this
-          ::  sent someone to the share controls to fix a page that needed a
-          ::  command instead. Name the two things differently and say which
-          ::  one this is.
-          "<p class=\"muted\">Sharing this page controls who can SEE it; "
-          "a position is started by posting a command to it.</p>"
-        ==
-      ;:  weld
-        "<p><b>"  (trip (esc (crip (snag 0 next))))  ", "
-                  (trip (esc (crip (snag 1 next))))  "</b></p>"
-        ?:  =("" (snag 2 next))  ""
-        :(weld "<p class=\"muted\">accurate to about " (trip (esc (crip (snag 2 next)))) " m</p>")
-        "<p class=\"muted\">broadcasting until "  (trip (esc (crip until)))  "</p>"
-      ;:  weld
-        map-html
-        "<p><a rel=\"noreferrer noopener\" href=\"https://www.openstreetmap.org/?mlat="
-        (trip (esc (crip (snag 0 next))))  "&amp;mlon="  (trip (esc (crip (snag 1 next))))
-        "\">open in a map</a></p>"
-        ==
-      ==
+      "<div id=\"locview\"><!--view-->"  view-html  "<!--/view--></div>"
       loc-control
-      ::  Machine-readable state for the next run — but ONLY while the share
-      ::  is live. Carrying it past expiry meant the page said "not sharing"
-      ::  while the coordinates sat in an HTML comment for anyone who viewed
-      ::  source: exactly the leak the deadline exists to prevent. Expired
-      ::  state is dead state, so it is not written at all.
+      ::  machine-readable state for the next run — live only. Writing it past
+      ::  expiry once leaked coordinates into a "not sharing" page's source.
       "<!--loc "
-      ?:  |(=(~ next) !live)  ""
+      ?:  |(!live (lth (lent next) 4))  ""
       ;:  weld
         (snag 0 next)  "|"  (snag 1 next)  "|"  (snag 2 next)  "|"  (snag 3 next)
+        "|"  trail
       ==
       "-->"
-      "<p class=\"muted\">updated "  now-t  "</p></div>"
+      "</div>"
     ==
   ::  re-run when the window closes so the page goes dark by itself
   =/  r=result  (html body)
