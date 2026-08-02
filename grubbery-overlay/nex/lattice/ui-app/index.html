@@ -3,6 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- installed-PWA status bar. The manifest's theme_color is the icon's blue,
+     which matches nothing on screen: the app bar is --bg, so standalone mode
+     showed a blue band above an off-white bar. These win over the manifest at
+     runtime and track the theme, so keep them equal to --bg in both schemes. -->
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#fafafa">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1a1a">
 <title>lattice</title>
 <!-- css + icon inlined: every asset request costs ~2s on the serialized
      pier, so the shell ships as one document -->
@@ -217,9 +223,26 @@ select, option { color-scheme: light dark; }
 .ws.wrap #src, .ws.wrap #hl { white-space: pre-wrap; overflow-wrap: break-word; }
 
 @media (max-width: 820px) {
-  html, body { overflow: auto; height: auto; }
+  /* the document itself scrolls here, so an overscroll at the top is Chrome's
+     pull-to-refresh — which RELOADS the app. Page edits survive (2s autosave),
+     but grub mode has none: a stray downward swipe threw away typed template
+     source. `contain` keeps the gesture inside the page. */
+  html, body { overflow: auto; height: auto; overscroll-behavior-y: contain; }
+  /* dvh, not vh: vh is sized to the browser with its URL bar HIDDEN, so a
+     100vh min-height overshoots the visible viewport by the bar's height and
+     leaves the tab strip scrolled half off. Plain vh stays as the fallback. */
   .ws, .ws.nt, .ws.nc, .ws.nt.nc { grid-template-columns: 1fr;
-    height: auto; min-height: 100vh; }
+    height: auto; min-height: 100vh; min-height: 100dvh; }
+  /* iOS zooms the viewport when a control under 16px takes focus and never
+     zooms back out. The omnibar (.bar input) and the editor (#src/#hl) were
+     each fixed once already; these are the rest — the controls pane and the
+     rename/new-page dialog. Listed by their existing selectors on purpose: a
+     bare `input` rule loses the cascade to `.ctl input` and `#dlginput`,
+     which set `font: inherit` at higher specificity. So a NEWLY added input
+     still needs adding here — the base font is 15px, under the threshold.
+     (#dlginput is declared below this block, so source order beats us there;
+     it gets its own rule next to its definition.) */
+  .ctl input, select, textarea { font-size: 16px; }
   .bar { flex-wrap: wrap; }
   .bar input { min-width: 0; flex: 1 1 100%; order: 5; font-size: 16px; }
   #wrapt, #treet, #ctlt { display: none; }
@@ -305,6 +328,11 @@ select, option { color-scheme: light dark; }
 .aclban button:hover { border-color: #c0392b; }
 .aclban .chips a { border-color: #c0392b55; color: #c0392b; }
 .acl-del { color: #c0392b; border-color: #c0392b55 !important; }
+/* iOS zoom-on-focus opt-out (see the 820px block): the ACL pane is an overlay,
+   not part of .ctl, so the block's rule misses it. Every ACL input sits in a
+   .row, and .aclwrap .row input (0-2-1) placed AFTER the pane's font:inherit
+   rules beats .aclcard/.aclban input and out-orders .aclbody > .row input. */
+@media (max-width: 820px) { .aclwrap .row input { font-size: 16px; } }
 
 /* in-app dialog (no browser-native popups, ever) */
 .dlg { position: fixed; inset: 0; background: #0008; display: grid;
@@ -317,6 +345,10 @@ select, option { color-scheme: light dark; }
 #dlginput { font: inherit; padding: 6px 9px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--surface); color: inherit; width: 100%; }
 #dlginput[hidden] { display: none; }
+/* the iOS zoom-on-focus opt-out (see the 820px block above) has to live HERE,
+   after `font: inherit` — same specificity, so source order decides. This is
+   the input every new page and every rename goes through. */
+@media (max-width: 820px) { #dlginput { font-size: 16px; } }
 #dlgsel { width: 100%; }
 /* choice list: real buttons in the app's own style. A <select> opens an
    OS-drawn list — a browser-native popup — which this UI never uses. */
@@ -353,7 +385,12 @@ lat-comments { display: contents; }
 </style>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='512' height='512' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%231a6ed8'/%3E%3Cg stroke='%23ffffff' stroke-width='14' stroke-linecap='round' fill='%23ffffff'%3E%3Cline x1='140' y1='140' x2='372' y2='140'/%3E%3Cline x1='140' y1='256' x2='372' y2='256'/%3E%3Cline x1='140' y1='372' x2='372' y2='372'/%3E%3Cline x1='140' y1='140' x2='140' y2='372'/%3E%3Cline x1='256' y1='140' x2='256' y2='372'/%3E%3Cline x1='372' y1='140' x2='372' y2='372'/%3E%3Cline x1='140' y1='140' x2='372' y2='372'/%3E%3Cline x1='372' y1='140' x2='140' y2='372'/%3E%3Ccircle cx='140' cy='140' r='26'/%3E%3Ccircle cx='256' cy='140' r='26'/%3E%3Ccircle cx='372' cy='140' r='26'/%3E%3Ccircle cx='140' cy='256' r='26'/%3E%3Ccircle cx='256' cy='256' r='30'/%3E%3Ccircle cx='372' cy='256' r='26'/%3E%3Ccircle cx='140' cy='372' r='26'/%3E%3Ccircle cx='256' cy='372' r='26'/%3E%3Ccircle cx='372' cy='372' r='26'/%3E%3C/g%3E%3C/svg%3E" type="image/svg+xml">
 <link rel="manifest" href="/apps/lattice/manifest.webmanifest">
-<link rel="apple-touch-icon" href="/apps/lattice/icon-192.png">
+<!-- the 180x180 OPAQUE png, not icon-192: iOS ignores the manifest icons and
+     composites any alpha onto black, so the transparent-cornered icon-192 got
+     a black frame on the home screen. app.hoon already serves the right asset
+     (+apple-icon-b64) at this route, unauthenticated because iOS fetches
+     touch icons without cookies — it was just never linked. -->
+<link rel="apple-touch-icon" href="/apps/lattice/apple-touch-icon.png">
 </head>
 <body>
 <div class="ws" id="ws">
