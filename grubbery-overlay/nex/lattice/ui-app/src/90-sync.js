@@ -12,7 +12,7 @@
     const wasCurrent = current, wasMode = mode;
     // a queued edit outranks the ship's copy — reconciling now would paint
     // the stale server body over work that has not synced yet
-    if (mode !== 'know' && await offGet(current)) return;
+    if (await offGet(mode === 'know' ? 'know:' + current : current)) return;
     const url = mode === 'know'
       ? api + '/know-read?key=' + encodeURIComponent(current)
       : api + '/page-source?name=' + encodeURIComponent(current);

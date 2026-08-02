@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Offline-editing invariants (docs/offline-edits.md, Phase 1). The outage is
+// Offline-editing invariants (docs/offline-edits.md). The outage is
 // simulated by ABORTING the save/probe routes via request interception, so
 // every scenario is deterministic rather than depending on a dead ship.
 //
@@ -53,7 +53,7 @@ const qCount = () => page.evaluate(() => new Promise((res) => {
 let shipDown = false;
 await page.setRequestInterception(true);
 page.on('request', (r) => {
-  const down = shipDown && /page-save|legacy-status|page-cmd/.test(r.url());
+  const down = shipDown && /page-save|legacy-status|page-cmd|know-save/.test(r.url());
   (down ? r.abort() : r.continue()).catch(() => {});
 });
 
@@ -173,6 +173,47 @@ try {
   }, keptName);
   check('the overwritten concurrent edit is preserved as a conflict page',
     kept === '# beta CONCURRENT', keptName + ' -> ' + JSON.stringify(kept));
+
+  // ── 6. know memories: queue, queue-first reopen, last-write-wins replay ──
+  // know-read is deliberately NOT intercepted: the server still answers with
+  // the pre-edit body, so the reopen check proves the queue OUTRANKS a
+  // reachable read, not merely a dead one.
+  step = 'know offline';
+  const K = 'test/' + RUN;
+  await page.click('#modet');
+  await wait(() => document.getElementById('ws').className.includes('know'));
+  await page.evaluate((k) => {
+    document.getElementById('pname').value = k;
+    const s = document.getElementById('src');
+    s.value = 'memory v1'; s.dispatchEvent(new Event('input'));
+  }, K);
+  await page.click('#save');
+  await wait(() => (document.getElementById('status').textContent || '').includes('memory saved'));
+  shipDown = true;
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = 'memory OFFLINE'; s.dispatchEvent(new Event('input'));
+  });
+  await page.click('#save');
+  await wait(() => (document.getElementById('status').textContent || '').includes('waiting to sync'));
+  check('a know save queues while the ship is down', true);
+  check('the know queue holds one record', await qCount() === 1, 'count=' + await qCount());
+  await page.evaluate((n) => [...document.querySelectorAll('#treelist a.pg')]
+    .find((a) => a.textContent === n).click(), RUN);
+  await sleep(1500);
+  check('reopening a queued memory shows the QUEUED body, beating a live know-read',
+    await page.evaluate(() => document.getElementById('src').value) === 'memory OFFLINE',
+    JSON.stringify(await page.evaluate(() => document.getElementById('src').value)));
+  step = 'know replay';
+  shipDown = false;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await wait(() => (document.getElementById('status').textContent || '').includes('offline edits synced'));
+  check('know replay drains the queue', await qCount() === 0, 'count=' + await qCount());
+  const kr = await fetch(URL + '/apps/lattice/know-read?key=' + encodeURIComponent(K),
+    { headers: { cookie } });
+  const kb = kr.ok ? (await kr.json()).body : 'HTTP ' + kr.status;
+  check('the ship has the offline memory (last write wins, no conflict page)',
+    kb === 'memory OFFLINE', JSON.stringify(kb));
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 140), false);
 } finally {
@@ -181,6 +222,8 @@ try {
     await page.evaluate(async (run) => {
       await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(run), { method: 'POST' });
       await fetch('/apps/lattice/page-del?name=conflicts', { method: 'POST' });
+      await fetch('/apps/lattice/know-delete?key=' + encodeURIComponent('test/' + run),
+        { method: 'POST' });
       indexedDB.deleteDatabase('lattice-offline');
     }, RUN);
   } catch {}

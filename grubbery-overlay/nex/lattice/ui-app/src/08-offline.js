@@ -1,5 +1,5 @@
   // ── offline edits: queue, detection, replay (docs/offline-edits.md) ──────
-  // Phase 1: page saves only. The queue lives in IndexedDB (localStorage is
+  // Saves only — pages and know memories. The queue lives in IndexedDB (localStorage is
   // synchronous and ~5MB — the tree snapshot moved here too, phase 3), one per
   // page, coalesced — re-editing a queued page replaces its record, the same
   // way autosave coalesces savePending.
@@ -117,6 +117,21 @@
     setDegraded(true);
     st('saved offline — ' + offCount + ' waiting to sync');
   }
+  // know memories share the queue under a 'know:' prefix — page names cannot
+  // contain a colon, so the two namespaces cannot collide in the one store.
+  // No baseRev: memories are last-write-wins (no CAS, no conflicts/ pages),
+  // matching what know-save itself does.
+  async function enqueueKnow(key, body) {
+    await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
+    knowGen++;
+    const k = knowEntry(key);
+    if (k) k.bytes = body.length;
+    else knowKeys.push({ key, tags: [], updated: '', bytes: body.length });
+    renderKnowChips();
+    renderKnowTree();
+    setDegraded(true);
+    st('saved offline — ' + offCount + ' waiting to sync');
+  }
 
   // Drain through page-save-batch. The batch is all-or-nothing — right for
   // uploads, wrong for replay: one poisoned record would block the queue
@@ -125,10 +140,12 @@
   let replaying = false;
   async function replayQueue() {
     if (replaying) return;
-    const all = await offAll();
-    if (!all.length) return;
+    const whole = await offAll();
+    if (!whole.length) return;
+    const all = whole.filter((q) => q.kind !== 'know');
+    const knows = whole.filter((q) => q.kind === 'know');
     replaying = true;
-    stWork('syncing ' + all.length + ' offline edit' + (all.length === 1 ? '' : 's') + '…');
+    stWork('syncing ' + whole.length + ' offline edit' + (whole.length === 1 ? '' : 's') + '…');
     let stuck = false;
     const conflicts = [];
     for (let i = 0; i < all.length && !stuck; i += 50) {
@@ -177,6 +194,20 @@
       }
       stuck = true;
     }
+    // memories drain per-item: there is no know batch route, and last-write-
+    // wins means a plain re-save with no verdict to collect
+    for (const q of knows) {
+      if (stuck) break;
+      let one = null;
+      try {
+        one = await tfetch(api + '/know-save?key=' + encodeURIComponent(q.name.slice(5)),
+          { method: 'POST', body: q.body || '\n' }, 20000);
+      } catch {}
+      if (one && one.ok) { await offDel(q.name); continue; }
+      if (shipGone(one)) { stuck = true; break; }
+      st('dropped an unsyncable offline edit: ' + q.name, false);
+      await offDel(q.name);
+    }
     replaying = false;
     if (stuck) { setDegraded(true); st(offCount + ' offline edit(s) still waiting', false); return; }
     setDegraded(false);
@@ -186,5 +217,6 @@
     } else st('offline edits synced');
     // reconcile ONLY after the drain: refreshAll on reconnect would repaint
     // queued pages from the server dump before their edits landed (gap 4)
+    if (knows.length && mode === 'know') loadKnow();
     loadTree();
   }

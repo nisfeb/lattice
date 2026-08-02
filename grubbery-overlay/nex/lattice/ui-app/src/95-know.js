@@ -95,9 +95,16 @@
     knowKeys.find((x) => x.key.replace(/^\//, '') === key);
 
   async function openKnow(key) {
-    const r = await fetch(api + '/know-read?key=' + encodeURIComponent(key));
-    if (!r.ok) { st('open failed ' + r.status, false); return; }
-    const d = await r.json();
+    // a queued edit outranks the ship's copy, same rule as pages
+    const q = await offGet('know:' + key);
+    let d = null;
+    if (q) d = { body: q.body, tags: (knowEntry(key) || { tags: [] }).tags, updated: 'queued offline' };
+    else {
+      let r = null;
+      try { r = await fetch(api + '/know-read?key=' + encodeURIComponent(key)); } catch {}
+      if (!r || !r.ok) { st('open failed ' + (r ? r.status : '— offline'), false); return; }
+      d = await r.json();
+    }
     current = key;
     pname.value = key;
     pname.readOnly = true;
@@ -153,8 +160,18 @@
     if (!src.value) { st('empty body', false); return; }
     if (viewingRev !== null) { st('viewing a revision — use restore', false); return; }
     const sent = src.value;
-    const r = await mutate(api + '/know-save?key=' + encodeURIComponent(key),
-      { method: 'POST', body: sent });
+    echoUntil = Date.now() + 60000;
+    let r = null;
+    try { r = await tfetch(api + '/know-save?key=' + encodeURIComponent(key),
+      { method: 'POST', body: sent }); } catch {}
+    echoUntil = Date.now() + 4000;
+    if (shipGone(r)) {
+      await enqueueKnow(key, sent);
+      current = key;
+      pname.readOnly = true;
+      if (src.value === sent) dirty = false;
+      return;
+    }
     if (!r.ok) { st('save failed ' + r.status, false); return; }
     current = key;
     pname.readOnly = true;

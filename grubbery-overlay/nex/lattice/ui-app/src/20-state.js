@@ -63,7 +63,7 @@
   // times) plus a short tail, so the SSE handler never refetches what this
   // client just did itself.
   async function mutate(url, opts) {
-    // Phase 1 queues page SAVES only. Deletes, moves, shares, folders: their
+    // Only SAVES queue (pages and know memories). Deletes, moves, shares: their
     // ordering dependencies are where offline systems get genuinely hard, so
     // they refuse honestly instead of pretending (design doc, Phasing).
     if (degraded || offCount) {
