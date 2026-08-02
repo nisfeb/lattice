@@ -4222,7 +4222,14 @@
   ::  into ONE urQL script (like catalog-init) so a page's write is atomic at the
   ::  owner. Narrow race (concurrent index+delete of the SAME page); left for now.
   ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-ensure-urql:cat src pub pat now a))
+  ::  yield between the pokes too: measured on a 20-page vault, the PAGE-level
+  ::  yield alone still left ~10-12s probe latency, because these three pokes
+  ::  are the bulk of a page's event. One poke per event caps what any queued
+  ::  request waits behind at a single poke. These three were already
+  ::  non-atomic (finding #8 above) — the sweep re-converges next tick.
+  ;<  ~  bind:m  (sleep-draining ~s1)
   ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-refresh-urql:cat src pub pat now a pages))
+  ;<  ~  bind:m  (sleep-draining ~s1)
   (catalog-run catalog-db (catalog-page-terms-urql:cat src pub pat a))
 ::  +index-remote-page: re-index ONE remote page into the catalog on demand — the
 ::  live-subscription counterpart of the crawler's per-page work. A /sub/pages keep
@@ -4271,6 +4278,18 @@
   ;<  body=(unit @t)  bind:m  (read-page-body our our rel)
   ?~  body  (catalog-scan-loop our now t.keys pages cnt)
   ;<  ~  bind:m  (catalog-index-page our our i.keys now u.body pages)
+  ::  YIELD BETWEEN PAGES. Local darts and peeks all drain inside one Arvo
+  ::  event, so without this the whole sweep is ONE event and every queued
+  ::  HTTP request waits behind all of it — measured at 47s for a 20-page
+  ::  vault, and the ~h6 crawler runs this unprompted: that was the ship's
+  ::  periodic multi-minute brownout. A timer is a real yield (the fiber
+  ::  suspends across events), so requests now interleave between pages and
+  ::  the worst added latency anyone sees is ONE page's indexing cost.
+  ::  The sweep itself takes ~1s/page longer, which a 6-hour cadence cannot
+  ::  feel. sleep-draining, not a bare wait: this loop runs under
+  ::  /crawler.sig, where finding #13 applies (stray early-resolved timer
+  ::  wakes accumulate over a long fiber).
+  ;<  ~  bind:m  (sleep-draining ~s1)
   (catalog-scan-loop our now t.keys pages (add cnt 1))
 ::  +catalog-scan-peers: sweep every followed publisher into the catalog. source
 ::  = our (the crawler ship), publisher = them. Needs peers/follows to exercise;
