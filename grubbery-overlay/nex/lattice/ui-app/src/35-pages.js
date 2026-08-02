@@ -222,9 +222,12 @@
     saving = false;
     echoUntil = Date.now() + 4000;
     if (shipGone(r)) {
-      // know-mode is out of Phase 1 (design doc): its keys can collide with
-      // page names in the queue store, so a know edit fails loudly instead
-      if (mode === 'know') { st('autosave failed — ship unreachable', false); return; }
+      if (mode === 'know') {
+        await enqueueKnow(current, sent);
+        if (src.value === sent) dirty = false;
+        if (savePending) { savePending = false; if (dirty) autosave(); }
+        return;
+      }
       await enqueueSave(current, curKind || pkind.value, sent);
       if (src.value === sent) dirty = false;
       if (savePending) { savePending = false; if (dirty) autosave(); }

@@ -120,8 +120,10 @@ Same queue, same code. The differences are real but small:
 ## Phasing
 
 1. Queue, detection, replay, honest status ("3 edits waiting"). **Saves only** —
-   creates and edits, **pages only ([review]: know-mode edits are explicitly
-   out; know-save can join in a later phase)**. Deletes, moves and uploads
+   creates and edits, **pages and know memories ([review]: know-mode was out
+   of Phase 1 for key-collision reasons; it has since joined — same queue
+   under a `know:` prefix so the namespaces cannot collide, per-item
+   last-write-wins replay, no conflict pages, matching know-save itself)**. Deletes, moves and uploads
    refuse while degraded with a clear message; their ordering dependencies are
    where offline systems get genuinely hard, and they are rare offline.
    [review] Multi-tab: two tabs share the IndexedDB queue; double replay is
