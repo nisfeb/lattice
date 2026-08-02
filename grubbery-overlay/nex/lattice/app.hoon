@@ -6638,11 +6638,18 @@
   %+  send-simple:srv  eyre-id
   :_  (de:base64:mimes:html b64)
   [200 ~[['content-type' 'image/png'] ['cache-control' 'public, max-age=604800']]]
-::  scope + start_url both /apps/lattice (no trailing-slash mismatch). One SVG
+::  scope /apps/lattice, start_url the editor INSIDE that scope. One SVG
 ::  icon covers Android/desktop install; iOS uses the apple-touch-icon PNG.
 ::
 ++  manifest-json
   ^-  @t
+  ::  start_url is the EDITOR: a PWA always launches at start_url, so pointing
+  ::  it at the reader landing page meant every launch opened "home" and never
+  ::  the page you were working in (boot's snapshot-resume does the rest).
+  ::  `id` is explicit and must NOT follow start_url: id is the install's
+  ::  identity, and changing it would orphan every existing home-screen icon.
+  ::  NB WebAPK lag: Android applies manifest changes on its own schedule —
+  ::  remove + re-add to the home screen picks this up immediately.
   ::  share_target makes the installed PWA appear in the mobile share sheet;
   ::  sharing a page to Lattice archives it, same as the bookmarklet. GET (not
   ::  POST) deliberately: the OS then performs a top-level NAVIGATION, which
@@ -6650,7 +6657,7 @@
   ::  cross-site form post and arrive unauthenticated. The action must sit
   ::  inside `scope`. All three params are declared because senders disagree
   ::  about which one carries the url (see +first-url).
-  '{"id":"/apps/lattice","name":"Lattice","short_name":"Lattice","description":"Programmable pages and markdown notes on Urbit.","start_url":"/apps/lattice","scope":"/apps/lattice","display":"standalone","theme_color":"#1a6ed8","background_color":"#fafafa","share_target":{"action":"/apps/lattice/share","method":"GET","params":{"title":"title","text":"text","url":"url"}},"icons":[{"src":"/apps/lattice/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/apps/lattice/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"},{"src":"/apps/lattice/icon-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"},{"src":"/apps/lattice/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}'
+  '{"id":"/apps/lattice","name":"Lattice","short_name":"Lattice","description":"Programmable pages and markdown notes on Urbit.","start_url":"/apps/lattice/app","scope":"/apps/lattice","display":"standalone","theme_color":"#1a6ed8","background_color":"#fafafa","share_target":{"action":"/apps/lattice/share","method":"GET","params":{"title":"title","text":"text","url":"url"}},"icons":[{"src":"/apps/lattice/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/apps/lattice/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"},{"src":"/apps/lattice/icon-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"},{"src":"/apps/lattice/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}'
 ++  icon-svg
   ^-  @t
   '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" fill="#1a6ed8"/><g stroke="#ffffff" stroke-width="14" stroke-linecap="round" fill="#ffffff"><line x1="140" y1="140" x2="372" y2="140"/><line x1="140" y1="256" x2="372" y2="256"/><line x1="140" y1="372" x2="372" y2="372"/><line x1="140" y1="140" x2="140" y2="372"/><line x1="256" y1="140" x2="256" y2="372"/><line x1="372" y1="140" x2="372" y2="372"/><line x1="140" y1="140" x2="372" y2="372"/><line x1="372" y1="140" x2="140" y2="372"/><circle cx="140" cy="140" r="26"/><circle cx="256" cy="140" r="26"/><circle cx="372" cy="140" r="26"/><circle cx="140" cy="256" r="26"/><circle cx="256" cy="256" r="30"/><circle cx="372" cy="256" r="26"/><circle cx="140" cy="372" r="26"/><circle cx="256" cy="372" r="26"/><circle cx="372" cy="372" r="26"/></g></svg>'

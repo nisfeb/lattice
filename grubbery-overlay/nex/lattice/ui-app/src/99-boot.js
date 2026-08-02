@@ -13,7 +13,16 @@
     nodes = t;
     renderTree();
     const name = qs.get('name');
-    if (name && p && p.name === name) applyPage(name, p);
+    // No ?name means a bare launch — above all the PWA, whose start_url can
+    // never carry one. Resume the snapshot page instead of landing on an
+    // empty editor: "opens where I left off" is what an installed app means.
+    // A ?name that does not match the snapshot still defers to the network.
+    if (p && p.name && (!name || p.name === name)) {
+      applyPage(p.name, p);
+      // openPage sets the upload-target folder; the snapshot path must too,
+      // or uploads land at the root until the next explicit open
+      setFolderCtx(p.name);
+    }
     return true;
   }
   // the control-panel lists (sharing groups, shared-with-me) are never needed
@@ -57,6 +66,9 @@
       else if (into && nodes.some((n) => !n.page && n.path === into)) selectFolder(into);
       // no focus: boot did not ask for a new file, the user did not either
       else if (into) newFile(into, false);
+      // bare launch, snapshot resumed a page above: reconcile it, do not
+      // clobber it with an empty new-file view
+      else if (current) refreshOpen();
       else newFile('', false);
       legacyCheck();
       loadPanels();
