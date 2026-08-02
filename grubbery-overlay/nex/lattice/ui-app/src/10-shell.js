@@ -17,6 +17,23 @@
       'body{margin:0;background:#fafafa}' +
       '@media(prefers-color-scheme:dark){body{background:#1a1a1a}}</style>';
   };
+  // grant paths are shown in the share/ACL surfaces, and every one carries
+  // the same app base — pure noise on screen. Strip it, then keep the
+  // SHORTEST tail that stays unique among the paths shown alongside (`all`),
+  // growing only where disambiguation demands. Callers put the full path in
+  // `title`, so hover always has the truth.
+  const shortPath = (p, all) => {
+    const strip = (x) => x.replace(/^\/apps\/lattice\.lattice_app\/(page\/)?/, '');
+    const me = strip(p);
+    if (!me) return p;
+    const segs = me.split('/');
+    let n = 1;
+    const tail = () => segs.slice(-n).join('/');
+    while (n < segs.length &&
+           all.some((q) => q !== p && strip(q).split('/').slice(-n).join('/') === tail()))
+      n++;
+    return (n < segs.length ? '\u2026/' : '') + tail();
+  };
   const st = (msg, ok = true) => {
     spinner.classList.remove('on');          // any plain status ends the spin
     status.textContent = msg;

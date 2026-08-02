@@ -74,7 +74,7 @@
     }
   }
 
-  function aclChips(host, items, onDel) {
+  function aclChips(host, items, onDel, label) {
     const row = document.createElement('div');
     row.className = 'chips';
     if (!items.length) {
@@ -85,7 +85,7 @@
     }
     for (const it of items) {
       const a = document.createElement('a');
-      a.textContent = it + ' ×';
+      a.textContent = (label ? label(it) : it) + ' ×';
       a.title = 'remove ' + it;
       a.onclick = () => onDel(it);
       row.appendChild(a);
@@ -93,11 +93,11 @@
     host.appendChild(row);
   }
 
-  function aclSection(card, label, items, onDel) {
+  function aclSection(card, label, items, onDel, disp) {
     const h = document.createElement('h4');
     h.textContent = label;
     card.appendChild(h);
-    aclChips(card, items, onDel);
+    aclChips(card, items, onDel, disp);
   }
 
   function renderAcl() {
@@ -153,6 +153,10 @@
       srow.appendChild(sin); srow.appendChild(sadd);
       card.appendChild(srow);
 
+      // one disambiguation scope for the whole pane, so the same page shows
+      // the same short name in every card
+      const allPaths = permGroups.flatMap((x) => [...x.peek, ...x.make]);
+      const disp = (v) => shortPath(v, allPaths);
       aclSection(card, 'read', g.peek, (v) => {
         // dropping read must drop edit too: edit without read is a grant that
         // cannot be exercised, and it would silently reappear as "read" on the
@@ -160,10 +164,10 @@
         g.peek = g.peek.filter((x) => x !== v);
         g.make = g.make.filter((x) => x !== v);
         permSave(g);
-      });
+      }, disp);
       aclSection(card, 'edit', g.make, (v) => {
         g.make = g.make.filter((x) => x !== v); permSave(g);
-      });
+      }, disp);
 
       const prow = document.createElement('div');
       prow.className = 'row';

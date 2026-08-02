@@ -59,13 +59,25 @@ select:hover, select:focus { border-color: var(--green); }
 select, option { color-scheme: light dark; }
 .muted { color: var(--muted); }
 
+/* pane widths are custom properties so the drag handles (.psplit) can move
+   them; the defaults keep the historical layout when nothing was dragged */
 .ws { display: grid; height: 100vh;
-  grid-template-columns: 220px minmax(0, 1.15fr) minmax(0, 1fr) 280px;
+  grid-template-columns: var(--wtree, 220px) minmax(0, var(--wed, 1.15fr)) minmax(0, 1fr) var(--wctl, 280px);
   grid-template-rows: auto auto 1fr; }
-.ws.nt { grid-template-columns: 0 minmax(0, 1.15fr) minmax(0, 1fr) 280px; }
-.ws.nc { grid-template-columns: 220px minmax(0, 1.15fr) minmax(0, 1fr) 0; }
-.ws.nt.nc { grid-template-columns: 0 minmax(0, 1.15fr) minmax(0, 1fr) 0; }
+.ws.nt { grid-template-columns: 0 minmax(0, var(--wed, 1.15fr)) minmax(0, 1fr) var(--wctl, 280px); }
+.ws.nc { grid-template-columns: var(--wtree, 220px) minmax(0, var(--wed, 1.15fr)) minmax(0, 1fr) 0; }
+.ws.nt.nc { grid-template-columns: 0 minmax(0, var(--wed, 1.15fr)) minmax(0, 1fr) 0; }
 .ws.nt .tree, .ws.nc .ctl { display: none; }
+/* drag handles: extra grid items OVERLAYING each pane boundary (same cell,
+   justify-self start, negative margin) — no extra columns, so every variant
+   rule above stays untouched. Double-click resets a boundary. */
+.psplit { grid-row: 3; justify-self: start; width: 9px; margin-left: -4.5px;
+  cursor: col-resize; z-index: 5; position: relative; user-select: none; }
+#ph1 { grid-column: 2; }
+#ph2 { grid-column: 3; }
+#ph3 { grid-column: 4; }
+.psplit:hover, .psplit.drag { background: var(--green); opacity: .35; }
+.ws.nt #ph1, .ws.nc #ph3, .ws.know #ph2 { display: none; }
 .bar .ico { padding: 5px 9px; }
 .bar .ico.on { border-color: var(--green); color: var(--green); }
 .mtabs { display: none; grid-column: 1 / -1; grid-row: 2;
@@ -233,6 +245,7 @@ select, option { color-scheme: light dark; }
      leaves the tab strip scrolled half off. Plain vh stays as the fallback. */
   .ws, .ws.nt, .ws.nc, .ws.nt.nc { grid-template-columns: 1fr;
     height: auto; min-height: 100vh; min-height: 100dvh; }
+  .psplit { display: none; }
   /* iOS zooms the viewport when a control under 16px takes focus and never
      zooms back out. The omnibar (.bar input) and the editor (#src/#hl) were
      each fixed once already; these are the rest — the controls pane and the
@@ -400,6 +413,9 @@ lat-comments { display: contents; }
   <lat-editor></lat-editor>
   <lat-preview></lat-preview>
   <lat-ctl></lat-ctl>
+  <div class="psplit" id="ph1"></div>
+  <div class="psplit" id="ph2"></div>
+  <div class="psplit" id="ph3"></div>
 </div>
 <lat-acl></lat-acl>
 <lat-comments></lat-comments>

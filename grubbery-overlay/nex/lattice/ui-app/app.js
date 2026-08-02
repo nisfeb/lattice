@@ -278,6 +278,23 @@
       'body{margin:0;background:#fafafa}' +
       '@media(prefers-color-scheme:dark){body{background:#1a1a1a}}</style>';
   };
+  // grant paths are shown in the share/ACL surfaces, and every one carries
+  // the same app base — pure noise on screen. Strip it, then keep the
+  // SHORTEST tail that stays unique among the paths shown alongside (`all`),
+  // growing only where disambiguation demands. Callers put the full path in
+  // `title`, so hover always has the truth.
+  const shortPath = (p, all) => {
+    const strip = (x) => x.replace(/^\/apps\/lattice\.lattice_app\/(page\/)?/, '');
+    const me = strip(p);
+    if (!me) return p;
+    const segs = me.split('/');
+    let n = 1;
+    const tail = () => segs.slice(-n).join('/');
+    while (n < segs.length &&
+           all.some((q) => q !== p && strip(q).split('/').slice(-n).join('/') === tail()))
+      n++;
+    return (n < segs.length ? '\u2026/' : '') + tail();
+  };
   const st = (msg, ok = true) => {
     spinner.classList.remove('on');          // any plain status ends the spin
     status.textContent = msg;
@@ -1759,9 +1776,9 @@
       const row = document.createElement('div');
       row.className = 'chips';
       const a = document.createElement('a');
-      a.textContent = it.host + ' ' + it.path.replace(/^\/apps\/lattice\.lattice_app\//, '') +
+      a.textContent = it.host + ' ' + shortPath(it.path, items.map((x) => x.path)) +
         ' (' + it.mode + ')';
-      a.title = 'open in the editor';
+      a.title = it.path + ' — open in the editor';
       a.href = '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
         '&ship=' + encodeURIComponent(it.host);
       const x = document.createElement('a');
@@ -1995,7 +2012,7 @@
     }
   }
 
-  function aclChips(host, items, onDel) {
+  function aclChips(host, items, onDel, label) {
     const row = document.createElement('div');
     row.className = 'chips';
     if (!items.length) {
@@ -2006,7 +2023,7 @@
     }
     for (const it of items) {
       const a = document.createElement('a');
-      a.textContent = it + ' ×';
+      a.textContent = (label ? label(it) : it) + ' ×';
       a.title = 'remove ' + it;
       a.onclick = () => onDel(it);
       row.appendChild(a);
@@ -2014,11 +2031,11 @@
     host.appendChild(row);
   }
 
-  function aclSection(card, label, items, onDel) {
+  function aclSection(card, label, items, onDel, disp) {
     const h = document.createElement('h4');
     h.textContent = label;
     card.appendChild(h);
-    aclChips(card, items, onDel);
+    aclChips(card, items, onDel, disp);
   }
 
   function renderAcl() {
@@ -2074,6 +2091,10 @@
       srow.appendChild(sin); srow.appendChild(sadd);
       card.appendChild(srow);
 
+      // one disambiguation scope for the whole pane, so the same page shows
+      // the same short name in every card
+      const allPaths = permGroups.flatMap((x) => [...x.peek, ...x.make]);
+      const disp = (v) => shortPath(v, allPaths);
       aclSection(card, 'read', g.peek, (v) => {
         // dropping read must drop edit too: edit without read is a grant that
         // cannot be exercised, and it would silently reappear as "read" on the
@@ -2081,10 +2102,10 @@
         g.peek = g.peek.filter((x) => x !== v);
         g.make = g.make.filter((x) => x !== v);
         permSave(g);
-      });
+      }, disp);
       aclSection(card, 'edit', g.make, (v) => {
         g.make = g.make.filter((x) => x !== v); permSave(g);
-      });
+      }, disp);
 
       const prow = document.createElement('div');
       prow.className = 'row';
@@ -2573,6 +2594,61 @@
   // so a remembered or ?name page still lands in the editor. Desktop shows
   // every pane at once, so 'code' remains right there.
   setMv(isMobile() ? 'tree' : 'code');
+
+  // ── pane resize: drag a boundary, double-click it to reset ───────────────
+  // Widths live in CSS custom properties on #ws (see .psplit in the shell
+  // css). Outer panes store px; the editor/preview boundary stores the
+  // editor's fr share against the preview's fixed 1fr, so it keeps meaning
+  // when the window or the outer panes change size.
+  {
+    let panes = {};
+    try { panes = JSON.parse(localStorage.appPanes || '{}'); } catch {}
+    const applyPanes = () => {
+      ws.style.setProperty('--wtree', panes.tree ? panes.tree + 'px' : '');
+      ws.style.setProperty('--wed', panes.ed ? panes.ed + 'fr' : '');
+      ws.style.setProperty('--wctl', panes.ctl ? panes.ctl + 'px' : '');
+    };
+    applyPanes();
+    const lim = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const wire = (id, key, drag) => {
+      const h = $(id);
+      if (!h) return;                    // stale cached shell without handles
+      // the reset gesture is detected from pointerup pairs, NOT dblclick:
+      // pointerdown must preventDefault (otherwise native selection starts
+      // and eats the pointer stream mid-drag), and a cancelled pointerdown
+      // never produces the derived click/dblclick events at all.
+      let lastTap = 0;
+      h.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        h.setPointerCapture(e.pointerId);
+        h.classList.add('drag');
+        const x0 = e.clientX;
+        let moved = false;
+        const move = (ev) => {
+          if (!moved && Math.abs(ev.clientX - x0) <= 3) return;   // tap jitter
+          moved = true;
+          drag(ev.clientX);
+          applyPanes();
+        };
+        const up = () => {
+          h.removeEventListener('pointermove', move);
+          h.classList.remove('drag');
+          if (!moved && Date.now() - lastTap < 450) { delete panes[key]; applyPanes(); }
+          lastTap = moved ? 0 : Date.now();
+          try { localStorage.appPanes = JSON.stringify(panes); } catch {}
+        };
+        h.addEventListener('pointermove', move);
+        h.addEventListener('pointerup', up, { once: true });
+      });
+    };
+    wire('ph1', 'tree', (x) => { panes.tree = Math.round(lim(x, 130, 480)); });
+    wire('ph3', 'ctl', (x) => { panes.ctl = Math.round(lim(innerWidth - x, 190, 520)); });
+    wire('ph2', 'ed', (x) => {
+      const ed = document.querySelector('.edwrap').getBoundingClientRect();
+      const pv = document.querySelector('.prev').getBoundingClientRect();
+      panes.ed = Math.round(lim((x - ed.left) / Math.max(60, pv.right - x), 0.25, 4) * 1000) / 1000;
+    });
+  }
 
 // ── src/90-sync.js ────────────────────────────────────────────────────────
   // ── live refresh (beacon keep-SSE + focus + idle poll) ───────────────────
