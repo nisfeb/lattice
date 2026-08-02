@@ -1,0 +1,6 @@
+# Pin builds to stable: a nightly rustc took down a from-source build with an
+# LLVM ThinLTO SIGSEGV while compiling webkit2gtk-sys. Tracking the stable
+# channel (not one version) keeps rustup from ever electing nightly here
+# without freezing us to a release.
+[toolchain]
+channel = "stable"
