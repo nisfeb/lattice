@@ -23,6 +23,15 @@
     grubPath = null;
     src.readOnly = false;
     setFolderCtx(name);
+    // the queue outranks every other tier: a queued edit is the newest truth
+    // for this page whether or not the ship is reachable right now
+    const q = await offGet(name);
+    if (q) {
+      const d = { body: q.body, kind: q.kind, rev: q.baseRev || 0, share: 'private' };
+      applyPage(name, d, true);
+      snapPage(name, d);
+      return;
+    }
     const hit = pageCache.get(name);
     if (hit) { applyPage(name, hit); snapPage(name, hit); return; }
     const node = nodes.find((n) => n.page && n.path === name);
@@ -56,6 +65,7 @@
     pname.value = name;
     pname.readOnly = true;
     curKind = d.kind;
+    curRev = d.rev || 0;
     if (LMAP[d.kind] || d.kind === 'text') pkind.value = d.kind === 'text' ? 'text' : d.kind;
     src.value = d.body;
     dirty = false;
@@ -131,8 +141,24 @@
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '');
     let r = null;
-    try { r = await fetch(url, { method: 'POST', body: sent || '\n' }); }
+    try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); }
+    catch {}
     finally { saving = false; echoUntil = Date.now() + 4000; }
+    if (shipGone(r)) {
+      // the ship is unreachable: queue the edit and complete the save's
+      // LOCAL bookkeeping exactly as a successful save would, so the editor
+      // does not care which kind it got
+      await enqueueSave(name, kind, sent);
+      current = name;
+      curKind = kind;
+      pname.readOnly = true;
+      if (src.value === sent) dirty = false;
+      history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
+      if (creating) { addTreeNode(name, kind); snapTree(); renderTree(); }
+      cerr.textContent = 'saved offline'; cerr.className = 'ok';
+      if (savePending) { savePending = false; if (dirty) autosave(); }
+      return;
+    }
     if (r && r.status === 409) { st('that page already exists', false); return; }
     if (!r || !r.ok) { st('save failed' + (r ? ' ' + r.status : ''), false); return; }
     current = name;
@@ -155,6 +181,7 @@
     if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
     else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
     if (savePending) { savePending = false; if (dirty) autosave(); }
+    if (offCount) replayQueue();     // back online: drain the backlog
   }
 
   let autoTimer = null;
@@ -179,9 +206,18 @@
       : api + '/page-save?name=' + encodeURIComponent(current) +
         '&type=' + (curKind || pkind.value);
     let r = null;
-    try { r = await fetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
+    try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
     saving = false;
     echoUntil = Date.now() + 4000;
+    if (shipGone(r)) {
+      // know-mode is out of Phase 1 (design doc): its keys can collide with
+      // page names in the queue store, so a know edit fails loudly instead
+      if (mode === 'know') { st('autosave failed — ship unreachable', false); return; }
+      await enqueueSave(current, curKind || pkind.value, sent);
+      if (src.value === sent) dirty = false;
+      if (savePending) { savePending = false; if (dirty) autosave(); }
+      return;
+    }
     if (!r || !r.ok) { st('autosave failed' + (r ? ' ' + r.status : ''), false); return; }
     if (src.value === sent) dirty = false;   // typed during the request? stay dirty
     if (mode !== 'know') {

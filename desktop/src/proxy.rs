@@ -115,6 +115,13 @@ pub fn agent() -> &'static ureq::Agent {
         ureq::AgentBuilder::new()
             .redirects(0)
             .max_idle_connections_per_host(6)
+            // CONNECT timeout only, never read/write: the SSE beacon holds a
+            // connection open for hours, and a read timeout would sever it on
+            // every idle stretch. Connect is where an unreachable ship hangs
+            // (SYN into the void), and 10s bounds it so the webview gets its
+            // 502 while the client's own AbortController is still waiting —
+            // the offline queue depends on failure being FAST.
+            .timeout_connect(std::time::Duration::from_secs(10))
             .build()
     })
 }

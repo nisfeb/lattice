@@ -10,6 +10,9 @@
     // applying a stale body then would show the wrong content or, across modes,
     // autosave a page body over a memory.
     const wasCurrent = current, wasMode = mode;
+    // a queued edit outranks the ship's copy — reconciling now would paint
+    // the stale server body over work that has not synced yet
+    if (mode !== 'know' && await offGet(current)) return;
     const url = mode === 'know'
       ? api + '/know-read?key=' + encodeURIComponent(current)
       : api + '/page-source?name=' + encodeURIComponent(current);
@@ -48,6 +51,9 @@
   }
   const refreshAll = () => {
     if (document.hidden) return;
+    // replay WINS the reconnect race: loadTree would repaint queued pages
+    // from the server dump before their edits landed (design doc, gap 4)
+    if (degraded || offCount) { replayQueue(); return; }
     // NB: stale cached renders are dropped by loadTree, which prunes against
     // the revs in the fresh dump. Clearing the whole cache here instead meant
     // one page's edit cost every other page its cache.

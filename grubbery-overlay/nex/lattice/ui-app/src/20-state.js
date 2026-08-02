@@ -4,6 +4,7 @@
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
                            // option, so pkind.value would silently convert it
+  let curRev = 0;          // the open page's server revision (offline baseRev)
   let curFolder = null;    // selected folder path — right-pane ops target it
   let folderCtx = '';      // folder uploads land in (last into / open page's dir)
   let nodes = [];          // last page-tree
@@ -56,6 +57,13 @@
   // times) plus a short tail, so the SSE handler never refetches what this
   // client just did itself.
   async function mutate(url, opts) {
+    // Phase 1 queues page SAVES only. Deletes, moves, shares, folders: their
+    // ordering dependencies are where offline systems get genuinely hard, so
+    // they refuse honestly instead of pretending (design doc, Phasing).
+    if (degraded || offCount) {
+      st('offline — edits are queued, but this change needs the ship', false);
+      return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
+    }
     echoUntil = Date.now() + 60000;
     try { return await fetch(url, opts || { method: 'POST' }); }
     finally { echoUntil = Date.now() + 4000; }

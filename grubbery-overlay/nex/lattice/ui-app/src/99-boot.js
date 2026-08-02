@@ -30,6 +30,10 @@
   // at parse time they were two pier round-trips queued ahead of the tree, and
   // the pier serializes — pure delay on the only requests that matter.
   const loadPanels = () => { loadPerms(); loadShared(); };
+  // a queue left by a previous session syncs on open — with no Background
+  // Sync (the SW must not intercept API calls), next-open IS the replay
+  // moment, and the UI says so rather than implying closed-app sync exists
+  setTimeout(() => { if (offCount) replayQueue(); }, 4000);
   if (qs.get('grub')) {
     // arrived from the explorer's edit link: open that ball path directly. The
     // tree still lists lattice pages, so clicking one leaves grub mode.

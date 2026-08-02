@@ -11,6 +11,11 @@
   };
 
   async function uploadItems(items) {
+    if (degraded || offCount) {
+      upShow();
+      upMsg.textContent = 'offline — uploads need the ship (queued edits will sync first)';
+      return;
+    }
     const list = [];
     const dirs = new Set();
     let skipped = 0;
