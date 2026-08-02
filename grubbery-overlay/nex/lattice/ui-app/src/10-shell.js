@@ -9,7 +9,13 @@
   // and the pane's theme background shows through.
   const prevBlank = () => {
     prev.removeAttribute('src');
-    prev.srcdoc = '<style>:root{color-scheme:light dark}</style>';
+    // the srcdoc paints its OWN theme background rather than relying on the
+    // engine to composite a mismatched-scheme iframe as transparent — that
+    // reliance is exactly the kind of behavior that differs between the
+    // Chromium the tests run and the webkitgtk the desktop runs
+    prev.srcdoc = '<style>:root{color-scheme:light dark}' +
+      'body{margin:0;background:#fafafa}' +
+      '@media(prefers-color-scheme:dark){body{background:#1a1a1a}}</style>';
   };
   const st = (msg, ok = true) => {
     spinner.classList.remove('on');          // any plain status ends the spin
