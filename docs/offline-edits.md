@@ -2,6 +2,10 @@
 
 Status: **designed, not built.** Phase 1 is the next unit of work.
 
+Reviewed 2026-08-02 against the shipped code; four gaps found and folded in
+below (marked **[review]**). The architecture stood; the gaps were all in
+what the first draft left unsaid.
+
 Four facts from this codebase shape this more than any general sync theory.
 
 ## What already exists
@@ -39,11 +43,38 @@ queuedAt}`, coalesced — re-editing a queued page replaces its record, the same
 way autosave already coalesces `savePending`. Bounded by pages touched, not
 edits made.
 
+**[review] The queue is also the TOP READ TIER.** The first draft only queued
+writes. But `openPage` serves cache-first, and the cache holds the last
+SERVER render — so editing A offline, visiting B, and returning to A painted
+the pre-edit body over a queue holding the new one: the edit looks lost, and
+an autosave from that state queues the OLD body back. On enqueue the queued
+body must also update `pageCache` and the page's `nodes` entry; on open the
+queue is consulted before anything else.
+
 **Detection.** A save failing with 502/timeout/network flips a `degraded` flag
 and enqueues instead of erroring; any later success clears it. No polling.
 
+**[review] Nothing implements the timeout today.** The bridge's ureq agent
+sets no timeout and no client fetch uses an AbortController, so against a dead
+remote ship "degraded" is the OS TCP timeout — a 1–2 minute hang before the
+first enqueue. Phase 1 adds an AbortController (~10s) on the save path and a
+timeout on the bridge agent.
+
 **Replay.** On reconnect or on open with a non-empty queue, drain through
 `page-save-batch` in chunks, then `loadTree()` to reconcile.
+
+**[review] The batch is all-or-nothing, which is right for uploads and wrong
+for replay:** one poisoned queued item would block the whole queue forever.
+Phase 1 falls back to per-item `page-save` when a batch rejects, isolating the
+bad item. Queued CREATES also lose the `new=1` 409 protection inside a batch —
+carried per-item in Phase 2's route change, which must be a MODE on the route
+(the upload path keeps all-or-nothing).
+
+**[review] Replay must win the reconnect race.** `refreshAll` fires on
+focus/visibilitychange and repaints from the server dump; on reconnect that
+runs BEFORE the queue drains and repaints queued pages with stale server
+bodies. Either replay runs first, or dump reconciliation skips any page with a
+queue entry.
 
 **Conflict policy.** Each queued edit carries the `rev` it was based on.
 
@@ -87,9 +118,13 @@ Same queue, same code. The differences are real but small:
 ## Phasing
 
 1. Queue, detection, replay, honest status ("3 edits waiting"). **Saves only** —
-   creates and edits. Deletes, moves and uploads refuse while degraded with a
-   clear message; their ordering dependencies are where offline systems get
-   genuinely hard, and they are rare offline.
+   creates and edits, **pages only ([review]: know-mode edits are explicitly
+   out; know-save can join in a later phase)**. Deletes, moves and uploads
+   refuse while degraded with a clear message; their ordering dependencies are
+   where offline systems get genuinely hard, and they are rare offline.
+   [review] Multi-tab: two tabs share the IndexedDB queue; double replay is
+   near-idempotent (same bodies, duplicate revisions at worst) — acceptable
+   for Phase 1, noted so it is a decision rather than a surprise.
 2. The CAS server change plus the conflict surface.
 3. Move the tree snapshot to IndexedDB so offline reads scale past
    localStorage.
