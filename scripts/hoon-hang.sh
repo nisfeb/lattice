@@ -380,6 +380,36 @@ if want save && [ -z "$WEDGED" ]; then
   echo
 fi
 
+#  ── sweep ─────────────────────────────────────────────────────────────────
+#  The clip family archives each probe as a real page under clips/, and only
+#  the save family cleaned up after itself. Fifty of those accumulated on the
+#  dev ship and later broke an unrelated browser suite, which then reported a
+#  failure in a step that had nothing to do with them. A probe that leaves
+#  state behind is a probe that will be blamed for something else later.
+#
+#  Swept by NAMESPACE out of the live tree rather than by reconstructing the
+#  slugs: the archiver derives a page name from the url, and guessing that
+#  transformation here would rot the moment it changes.
+if [ -z "$WEDGED" ]; then
+  swept=0
+  tree=$(curl -s --max-time 60 -H "Cookie: $COOKIE" "$B/page-tree" 2>/dev/null)
+  for pth in $(printf '%s' "$tree" | python3 -c '
+import json, sys
+try:
+    ns = json.load(sys.stdin).get("nodes", [])
+except Exception:
+    ns = []
+import os
+tag = os.environ.get("NS", "")
+print(" ".join(n["path"] for n in ns if n.get("page") and tag and tag in n["path"]))
+' NS="$NS" 2>/dev/null); do
+    curl -s -o /dev/null --max-time 30 -X POST -H "Cookie: $COOKIE" \
+      "$B/page-del?name=$(printf '%s' "$pth" | sed 's|/|%2F|g')" 2>/dev/null
+    swept=$((swept + 1))
+  done
+  [ "$swept" -gt 0 ] && echo "swept $swept probe page(s) named $NS"
+fi
+
 #  ── report ────────────────────────────────────────────────────────────────
 echo "── hoon-hang report ──"
 printf 'probes %s   ok %s   slow %s   wedge %s   unreached %s\n' "$N_TOTAL" "$N_OK" "$N_SLOW" "$N_WEDGE" "$N_MISS"
