@@ -276,6 +276,87 @@ pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
     Ok(())
 }
 
+fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
+    let handle = app.clone();
+    let w = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("manager.html".into()))
+        .title("lattice — workspace")
+        .inner_size(1200.0, 800.0)
+        // tauri's own drag-drop interception would swallow the HTML5 drop
+        // events the ship UI's drag-to-upload listens for
+        .disable_drag_drop_handler()
+        // a webview without browser chrome has no other way to zoom
+        .zoom_hotkeys_enabled(true)
+        // keep the workspace on the bridge (or the shell's own pages). Any
+        // other top-level navigation opens in the system browser. The
+        // webview has no back button or url bar to escape from
+        .on_navigation(move |u| {
+            // local shell pages: tauri:// (macOS) or http://tauri.localhost (Linux)
+            if u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost") {
+                return true;
+            }
+            // in-page pseudo-navigations (the preview iframe is srcdoc-based,
+            // and some webkits run every frame through this policy hook).
+            // Never route these to the system opener. That popups "Could not
+            // read file about:src:doc."
+            if matches!(u.scheme(), "about" | "blob" | "data") {
+                return true;
+            }
+            let bridge = handle
+                .state::<crate::proxy::Bridge>()
+                .inner()
+                .0
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|(_, p)| *p);
+            if u.host_str() == Some("127.0.0.1") && u.port() == bridge {
+                return true;
+            }
+            // renavigate the workspace ourselves, off-thread so the queued
+            // navigate never re-enters the policy callback we are inside
+            let renav = |t: tauri::Url| {
+                let h = handle.clone();
+                std::thread::spawn(move || {
+                    let h2 = h.clone();
+                    h.run_on_main_thread(move || {
+                        if let Some(w) = h2.get_webview_window("workspace") {
+                            w.navigate(t).ok();
+                        }
+                    })
+                    .ok();
+                });
+            };
+            let local = bridge.map(|p| format!("http://127.0.0.1:{p}"));
+            // urb:// names stay in the app. The ship's reader resolves them
+            if let (Some(local), "urb") = (&local, u.scheme()) {
+                if let Ok(mut t) = format!("{local}/apps/lattice").parse::<tauri::Url>() {
+                    t.query_pairs_mut().clear().append_pair("url", u.as_str());
+                    renav(t);
+                }
+                return false;
+            }
+            // absolute links to the ship's real origin re-route through the
+            // bridge. Hitting the ship directly would arrive cookieless
+            let cfg = config::load(&handle);
+            if tauri::Url::parse(&cfg.url).is_ok_and(|ship| ship.origin() == u.origin()) {
+                if let Some(local) = &local {
+                    let pq = &u.as_str()[u.origin().ascii_serialization().len()..];
+                    if let Ok(t) = format!("{local}{pq}").parse::<tauri::Url>() {
+                        renav(t);
+                    }
+                }
+                return false;
+            }
+            // only things a system handler can sensibly open leave the app.
+            // Anything else is silently blocked (an opener error is a popup)
+            open_external(u.as_str()).ok();
+            false
+        })
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(w)
+}
+
 #[cfg(test)]
 mod tests {
     use super::openable;
@@ -369,85 +450,4 @@ mod tests {
 
         std::fs::remove_dir_all(&base).ok();
     }
-}
-
-fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
-    let handle = app.clone();
-    let w = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("manager.html".into()))
-        .title("lattice — workspace")
-        .inner_size(1200.0, 800.0)
-        // tauri's own drag-drop interception would swallow the HTML5 drop
-        // events the ship UI's drag-to-upload listens for
-        .disable_drag_drop_handler()
-        // a webview without browser chrome has no other way to zoom
-        .zoom_hotkeys_enabled(true)
-        // keep the workspace on the bridge (or the shell's own pages). Any
-        // other top-level navigation opens in the system browser. The
-        // webview has no back button or url bar to escape from
-        .on_navigation(move |u| {
-            // local shell pages: tauri:// (macOS) or http://tauri.localhost (Linux)
-            if u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost") {
-                return true;
-            }
-            // in-page pseudo-navigations (the preview iframe is srcdoc-based,
-            // and some webkits run every frame through this policy hook).
-            // Never route these to the system opener. That popups "Could not
-            // read file about:src:doc."
-            if matches!(u.scheme(), "about" | "blob" | "data") {
-                return true;
-            }
-            let bridge = handle
-                .state::<crate::proxy::Bridge>()
-                .inner()
-                .0
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|(_, p)| *p);
-            if u.host_str() == Some("127.0.0.1") && u.port() == bridge {
-                return true;
-            }
-            // renavigate the workspace ourselves, off-thread so the queued
-            // navigate never re-enters the policy callback we are inside
-            let renav = |t: tauri::Url| {
-                let h = handle.clone();
-                std::thread::spawn(move || {
-                    let h2 = h.clone();
-                    h.run_on_main_thread(move || {
-                        if let Some(w) = h2.get_webview_window("workspace") {
-                            w.navigate(t).ok();
-                        }
-                    })
-                    .ok();
-                });
-            };
-            let local = bridge.map(|p| format!("http://127.0.0.1:{p}"));
-            // urb:// names stay in the app. The ship's reader resolves them
-            if let (Some(local), "urb") = (&local, u.scheme()) {
-                if let Ok(mut t) = format!("{local}/apps/lattice").parse::<tauri::Url>() {
-                    t.query_pairs_mut().clear().append_pair("url", u.as_str());
-                    renav(t);
-                }
-                return false;
-            }
-            // absolute links to the ship's real origin re-route through the
-            // bridge. Hitting the ship directly would arrive cookieless
-            let cfg = config::load(&handle);
-            if tauri::Url::parse(&cfg.url).is_ok_and(|ship| ship.origin() == u.origin()) {
-                if let Some(local) = &local {
-                    let pq = &u.as_str()[u.origin().ascii_serialization().len()..];
-                    if let Ok(t) = format!("{local}{pq}").parse::<tauri::Url>() {
-                        renav(t);
-                    }
-                }
-                return false;
-            }
-            // only things a system handler can sensibly open leave the app.
-            // Anything else is silently blocked (an opener error is a popup)
-            open_external(u.as_str()).ok();
-            false
-        })
-        .build()
-        .map_err(|e| e.to_string())?;
-    Ok(w)
 }
