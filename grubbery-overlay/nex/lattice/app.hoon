@@ -1569,7 +1569,8 @@
     =/  url=(unit @t)  (~(get by args) 'url')
     ?~  url  (send-err eyre-id 400 'missing url')
     =/  title=@t  (~(gut by args) 'title' u.url)
-    ;<  ~  bind:m  (poke-bookmark [%add u.url title])
+    =/  folder=@t  (~(gut by args) 'folder' '')
+    ;<  ~  bind:m  (poke-bookmark [%add u.url title folder])
     (send-ok eyre-id)
   ::  ── omnibar completions ─────────────────────────────────────────────────
   ::  Bookmarks and history matching `q`, for the address bar's dropdown.
@@ -1638,6 +1639,28 @@
     ?~  url  (send-err eyre-id 400 'missing url')
     ;<  ~  bind:m  (poke-bookmark [%del u.url])
     (send-ok eyre-id)
+  ::  refile a bookmark (folder='' returns it to unfiled). In-place: recency
+  ::  order is preserved, which a del+re-add would not do.
+      [%'POST' %bookmark-move]
+    =/  url=(unit @t)  (~(get by args) 'url')
+    ?~  url  (send-err eyre-id 400 'missing url')
+    =/  folder=@t  (~(gut by args) 'folder' '')
+    ;<  ~  bind:m  (poke-bookmark [%move u.url folder])
+    (send-ok eyre-id)
+  ::  the whole list as JSON, for clients and tests; the /marks page is the
+  ::  human view of the same data.
+      [%'GET' %bookmarks]
+    ;<  bms=bookmarks:lb  bind:m  read-bookmarks
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['ok' b+&]
+        :-  'items'
+        :-  %a
+        %+  turn  bms
+        |=  b=bookmark:lb
+        %-  pairs:enjs:format
+        ~[['url' s+url.b] ['title' s+title.b] ['folder' s+folder.b]]
+    ==
   ::  ── /clip: archive a clearweb page AS a lattice page ───────────────────
   ::  A bookmark stores a link; this stores the page. The ship fetches the url
   ::  itself over iris, converts the html to markdown, and writes a normal
@@ -2095,6 +2118,9 @@
   ::  mid-sweep (grubbery handle-eyre-action %send / on-leave %http-response).
       [%'GET' %settings]
     (send-html eyre-id (render-page "" "" settings-html))
+      [%'GET' %marks]
+    ;<  bms=bookmarks:lb  bind:m  read-bookmarks
+    (send-html eyre-id (render-page "" "" (marks-html bms)))
       [%'POST' %catalog-sweep]
     ::  ACK, YIELD, THEN SCAN. This already acked first, but a fiber's
     ::  effects only flush when it YIELDS, and +catalog-scan-self never does
@@ -3291,6 +3317,11 @@
       =/  kept=bookmarks:lb  (skip cur |=(b=bookmark:lb =(url.b url.bookmark.act)))
       (scag cap:lb `bookmarks:lb`[bookmark.act kept])
         %del  (skip cur |=(b=bookmark:lb =(url.b url.act)))
+        ::  refile in place: order (= recency) is untouched, unlike a re-add
+        %move
+      %+  turn  cur
+      |=  b=bookmark:lb
+      ?.(=(url.b url.act) b b(folder folder.act))
     ==
   (put-file [%& %& root %bookmarks] [/lattice %bookmarks] new)
 ::  +apply-history: record a visit, forget one, or clear. Runs in the writer.
@@ -3357,7 +3388,15 @@
   ^-  form:m
   ;<  seen=view:nexus  bind:m  (peek:io [%& %& app-base:lu %bookmarks] ~)
   ?.  ?=([%file *] seen)  (pure:m ~)
-  (pure:m (fall (mole |.(!<(bookmarks:lb (need-vase:tarball sang.seen)))) ~))
+  =/  vs=vase  (need-vase:tarball sang.seen)
+  =/  new=(unit bookmarks:lb)  (mole |.(!<(bookmarks:lb vs)))
+  ?^  new  (pure:m u.new)
+  ::  pre-folder era stored [url title] pairs — surface them as unfiled
+  ::  rather than silently dropping the whole list on the type change
+  =/  old=(unit (list [url=@t title=@t]))
+    (mole |.(!<((list [url=@t title=@t]) vs)))
+  ?~  old  (pure:m ~)
+  (pure:m (turn u.old |=([u=@t t=@t] `bookmark:lb`[u t ''])))
 ::  +read-recent: the up-to-`n` most-recently-edited pages, [path preview]. mtime
 ::  is each code grub's latest revision date (cass.da), read per page — O(pages)
 ::  peeks on a home load, fine for a personal ship; add an index if it ever bites.
@@ -7322,7 +7361,7 @@
     recent-list
     "</div>"
     :(weld "<div class=\"col\"><a class=\"appcard\" href=\"" tree "\"><span class=\"ico\">&#127760;</span><strong>Browser</strong><span class=\"d\">Read and explore content &mdash; your published pages and other ships via urb://.</span></a>")
-    "<h3 class=\"qh\">Bookmarks</h3>"
+    "<h3 class=\"qh\"><a href=\"/apps/lattice/marks\">Bookmarks &#8594;</a></h3>"
     bm-list
     "</div>"
     "<div class=\"col\">"
@@ -7332,6 +7371,73 @@
     "</div>"
     "</div>"
   ==
+::  +marks-html: the full bookmark list — every bookmark grouped by folder
+::  (unfiled first: it is where the star button files things), a search box
+::  filtering client-side over title+url+folder, and per-row refile/delete.
+::  Actions call the JSON routes and reload; the page itself stays dumb.
+::
+++  marks-html
+  |=  bms=bookmarks:lb
+  ^-  tape
+  =/  folders=(list @t)
+    =/  uniq=(list @t)
+      %+  sort  ~(tap in (~(gas in *(set @t)) (turn bms |=(b=bookmark:lb folder.b))))
+      aor
+    ?.  (lien uniq |=(f=@t =('' f)))  uniq
+    ['' (skip uniq |=(f=@t =('' f)))]
+  =/  groups=tape
+    %-  zing
+    %+  turn  folders
+    |=  f=@t
+    =/  mine=bookmarks:lb  (skim bms |=(b=bookmark:lb =(folder.b f)))
+    =/  fname=tape  ?:(=('' f) "unfiled" (esc (trip f)))
+    =/  mine=bookmarks:lb  (skim bms |=(b=bookmark:lb =(folder.b f)))
+    =/  rows=tape
+      %-  zing
+      %+  turn  mine
+      |=  b=bookmark:lb
+      =/  u=tape  (esc (trip url.b))
+      =/  t=tape  (esc (trip title.b))
+      =/  fo=tape  (esc (trip folder.b))
+      %-  zing
+      :~  "<li data-t=\""  t  " "  u  " "  fo  "\">"
+          "<a href=\"/apps/lattice?url="  u  "\">"
+          "<span class=\"qname\">"  t  "</span>"
+          "<span class=\"qprev\">"  u  "</span></a>"
+          "<span class=\"bmops\">"
+          "<input value=\""  fo  "\" placeholder=\"folder\">"
+          "<button data-act=\"move\" data-url=\""  u  "\">file</button>"
+          "<button data-act=\"del\" data-url=\""  u  "\" title=\"remove bookmark\">&#215;</button>"
+          "</span></li>"
+      ==
+    ;:  weld
+      "<section class=\"bmgrp\"><h3 class=\"qh\">"
+      fname
+      "</h3><ul class=\"qlist\">"
+      rows
+      "</ul></section>"
+    ==
+  ;:  weld
+    "<style>"  marks-css  "</style>"
+    "<h1>Bookmarks</h1>"
+    ?~  bms
+      "<p class=\"muted\">No bookmarks yet &mdash; open a page in the Browser and hit &#9734;.</p>"
+    %+  weld
+      "<input id=\"bmq\" type=\"search\" placeholder=\"search bookmarks\" autocomplete=\"off\">"
+    groups
+    marks-script
+  ==
+::  +marks-css / +marks-script: single-quoted cords, so braces stay literal
+::  and the script uses double-quoted JS strings throughout.
+::
+++  marks-css
+  ^-  tape
+  %-  trip
+  '#bmq{width:100%;padding:8px 10px;font:inherit;border:1px solid #8886;border-radius:8px;background:transparent;color:inherit;margin:.4rem 0 .8rem}.bmgrp li{display:flex;align-items:center;gap:8px}.bmgrp li a{flex:1;min-width:0}.bmops{display:flex;gap:4px;align-items:center}.bmops input{width:8.5em;padding:4px 6px;font:inherit;font-size:.82rem;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bmops button{padding:4px 9px;font:inherit;font-size:.82rem;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}.bmops button:hover{border-color:#1a6ed8}@media(max-width:520px){.bmgrp li{flex-wrap:wrap}.bmops{margin-left:auto}}'
+++  marks-script
+  ^-  tape
+  %-  trip
+  '<script>document.addEventListener("input",function(e){if(e.target.id!=="bmq")return;var q=e.target.value.toLowerCase();document.querySelectorAll(".bmgrp").forEach(function(g){var vis=0;g.querySelectorAll("li").forEach(function(li){var on=li.dataset.t.toLowerCase().indexOf(q)>=0;li.hidden=!on;if(on)vis++;});g.hidden=!vis;});});document.addEventListener("click",async function(e){var b=e.target.closest("button[data-act]");if(!b)return;e.preventDefault();var u=encodeURIComponent(b.dataset.url);if(b.dataset.act==="del"){if(!confirm("remove this bookmark?"))return;await fetch("/apps/lattice/unbookmark?url="+u,{method:"POST"});}else{var f=b.parentElement.querySelector("input").value.trim();await fetch("/apps/lattice/bookmark-move?url="+u+"&folder="+encodeURIComponent(f),{method:"POST"});}location.reload();});</script>'
 ::  +web-css: minimal reader styling (single-quoted cord so braces are literal).
 ::
 ++  web-css
