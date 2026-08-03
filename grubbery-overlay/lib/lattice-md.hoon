@@ -1,5 +1,5 @@
-::  /lib/lattice-md — a GitHub-Flavored Markdown -> HTML renderer (server-side).
-::  Own-page content: raw HTML is escaped; only safe link schemes become hrefs.
+::  /lib/lattice-md, a GitHub-Flavored Markdown -> HTML renderer (server-side).
+::  Own-page content: raw HTML is escaped. Only safe link schemes become hrefs.
 ::
 |%
 +$  refm  (map tape [url=tape title=tape])
@@ -17,7 +17,7 @@
     %'>'  "&gt;"
     %'"'  "&quot;"
   ==
-::  scag/slag widen their arg to a GENERAL (nullable) tape: called on a
+::  scag/slag widen their arg to a GENERAL (nullable) tape. Called on a
 ::  ?=/?~-refined non-null tape they mull-grow (scag/slag ^+ b, but can return ~).
 ++  sc  |=([n=@ud t=tape] ^-(tape (scag n t)))
 ++  sl  |=([n=@ud t=tape] ^-(tape (slag n t)))
@@ -36,7 +36,7 @@
   =/  s=tape  (trim t)
   ?:  (lth (lent s) need)  |
   |-  ^-  ?  ?~(s & ?:((lien cs |=(c=@tD =(c i.s))) $(s t.s) |))
-::  +safe-url: allow http(s)/urb/mailto/relative; block javascript:/data:/etc.
+::  +safe-url: allow http(s)/urb/mailto/relative. Block javascript:/data:/etc.
 ++  safe-url
   |=  u=tape
   ^-  ?
@@ -71,16 +71,16 @@
 ::  giving up and treating the opener as literal text.
 ::
 ::  Every unmatched inline delimiter used to cost a scan of the whole rest of
-::  the paragraph, at EVERY position — so a paragraph of repeated "[[" (or
+::  the paragraph, at EVERY position. So a paragraph of repeated "[[" (or
 ::  "**", or backticks) was quadratic. That is reachable from an
-::  unauthenticated page render: 20KB of "[[" wedged the ship for hours.
+::  unauthenticated page render. 20KB of "[[" wedged the ship for hours.
 ::  Capping the lookahead bounds the worst case to cap*n instead of n^2.
 ::  2K is far longer than any real link text, code span or emphasis run, so
 ::  no realistic document renders differently.
 ++  scan-cap  ^~((mul 2 1.024))
 ::  +link-scan-cap: lookahead for a link's ( ) or [ref] tail. Reached only
-::  after a bracket matched, so a tight bound is safe — real URLs and
-::  reference labels are far shorter — and it stops "[a](" spam from costing
+::  after a bracket matched, so a tight bound is safe (real URLs and
+::  reference labels are far shorter), and it stops "[a](" spam from costing
 ::  a full-tail scan per link.
 ++  link-scan-cap  ^~(512)
 ::  +find-cap: (find nedl hay), giving up after +scan-cap characters.
@@ -104,7 +104,7 @@
   ?:  =('[' i.t)  $(t t.t, i +(i), d +(d))
   ?:  =(']' i.t)  ?:(=(0 d) `i $(t t.t, i +(i), d (dec d)))
   $(t t.t, i +(i))
-::  +take-paren: parse (url "title") starting at t (after the [text]); returns
+::  +take-paren: parse (url "title") starting at t (after the [text]). Returns
 ::  [url title rest] where rest is after the closing ).
 ++  take-paren
   |=  t=tape
@@ -124,7 +124,7 @@
   =/  q2  (find "\"" aft)
   ?~  q2  [~ url "" rest]
   [~ url (sc u.q2 aft) rest]
-::  +take-ref: parse [ref] starting at t (after [text]); look up in refs.
+::  +take-ref: parse [ref] starting at t (after [text]). Look up in refs.
 ++  take-ref
   |=  [t=tape label=tape refs=refm]
   ^-  (unit [url=tape title=tape rest=tape])
@@ -143,17 +143,17 @@
   |=  [t=tape refs=refm]
   ^-  tape
   (ib-in t refs *(set @tD))
-::  +ib-in: +ib carrying `no` — the set of closing characters a previous scan
+::  +ib-in: +ib carrying `no`, the set of closing characters a previous scan
 ::  has PROVED absent from the rest of this tape.
 ::
-::  The asymmetric delimiters ('[' needs ']', '<http' needs '>') were quadratic:
-::  with no closer anywhere, every opener scanned the whole remaining paragraph
+::  The asymmetric delimiters ('[' needs ']', '<http' needs '>') were quadratic.
+::  With no closer anywhere, every opener scanned the whole remaining paragraph
 ::  and failed, at every position. That is reachable from an unauthenticated
-::  render — 20KB of '[[' wedged the ship for hours. A failed scan is conclusive
+::  render. 20KB of '[[' wedged the ship for hours. A failed scan is conclusive
 ::  for the whole remaining tape (and for every suffix of it), so we record the
-::  closer and skip the scan from then on. Output is byte-identical: the flag
+::  closer and skip the scan from then on. Output is byte-identical. The flag
 ::  only skips scans whose answer is already known. Symmetric delimiters (**,
-::  ~~, backtick) are self-limiting — a repeated delimiter is its own closer —
+::  ~~, backtick) are self-limiting (a repeated delimiter is its own closer)
 ::  and stay on the capped +find-cap.
 ++  ib-in
   |=  [t=tape refs=refm no=(set @tD)]
@@ -173,8 +173,8 @@
     =/  code=tape  (sc u.close aft)
     %+  weld  :(weld "<code>" (esc (trim code)) "</code>")
     (ib-in (sl (add u.close (lent op)) aft) refs no)
-  ::  image ![alt](url) or ![alt][ref] — same no-set guard as the link branch
-  ::  below: a failed bracket scan is conclusive for the whole remaining tape,
+  ::  image ![alt](url) or ![alt][ref]. Same no-set guard as the link branch
+  ::  below. A failed bracket scan is conclusive for the whole remaining tape,
   ::  so record it instead of re-scanning at every later '![' (20KB of "!["
   ::  was the same unauthenticated quadratic the link fix closed).
   ?:  ?&(=('!' c) ?=(^ t.t) =('[' i.t.t))
@@ -269,7 +269,7 @@
   =/  ti=tape  (sl (add u.q 2) rest)
   =/  q2  (find "\"" ti)
   [~ (cass key) url ?~(q2 ti (sc u.q2 ti))]
-::  +collect-refs: pull every reference-definition line out; return [refs kept].
+::  +collect-refs: pull every reference-definition line out. Return [refs kept].
 ++  collect-refs
   |=  lines=(list tape)
   ^-  [refm (list tape)]
@@ -312,7 +312,7 @@
 ++  sub-foot-refs
   |=  [t=tape foot=footm]
   ^-  tape
-  ::  no definitions -> nothing can rewrite: skip the whole-document pass that
+  ::  no definitions -> nothing can rewrite. Skip the whole-document pass that
   ::  every footnote-free md render used to pay.
   ?:  =(0 ~(wyt by foot))  t
   |-  ^-  tape
@@ -373,7 +373,7 @@
     [~ ind & task rest]
   ~
 ++  digs  |=(t=tape =|(n=@ud |-(^-(@ud ?~(t n ?:(&((gte i.t '0') (lte i.t '9')) $(t t.t, n +(n)) n))))))
-::  +take-task: strip a leading [ ] / [x] checkbox; report its state.
+::  +take-task: strip a leading [ ] / [x] checkbox. Report its state.
 ++  take-task
   |=  t=tape
   ^-  [(unit ?) tape]
@@ -384,7 +384,7 @@
       ==
     [~ t]
   [`(gth (sn 1 t) ' ') (ltrm (sl 3 t))]
-::  +take-fence: gather raw lines until the closing fence; return [body rest].
+::  +take-fence: gather raw lines until the closing fence. Return [body rest].
 ++  take-fence
   |=  [lines=(list tape) fence=tape]
   ^-  [(list tape) (list tape)]
@@ -437,7 +437,7 @@
   |=  [lines=(list tape) refs=refm]
   ^-  [tape (list tape)]
   ?~  lines  ["" ~]
-  ::  a table needs a separator row; rb only calls us when one exists, but the
+  ::  a table needs a separator row. rb only calls us when one exists, but the
   ::  compiler needs the guard to reach i.t.lines / t.t.lines.
   ?~  t.lines  ["" lines]
   =/  heads=(list tape)  (split-row i.lines)
@@ -451,7 +451,7 @@
     ?:  r  " style=\"text-align:right\""
     ?:  l  " style=\"text-align:left\""
     ""
-  ::  cells and aligns walk together — the old gulf+snag indexing re-walked
+  ::  cells and aligns walk together. The old gulf+snag indexing re-walked
   ::  both lists per column, O(columns^2) per row on the unauthenticated
   ::  render path (a single 20KB row was ~100M steps).
   =/  hcells=tape  (zing (cells-html heads aligns refs "th"))
@@ -495,7 +495,7 @@
     $(lines t.lines, inner [stripped inner])
   [:(weld "<blockquote>" (rb (flop inner) refs) "</blockquote>") lines]
 ++  trim-head  |=(t=tape =/(s (ltrm t) ?~(s '0' i.s)))
-::  +take-para: gather consecutive plain lines into a paragraph; return [html rest].
+::  +take-para: gather consecutive plain lines into a paragraph. Return [html rest].
 ++  take-para
   |=  [lines=(list tape) refs=refm]
   ^-  [tape (list tape)]
@@ -508,7 +508,7 @@
     $(lines t.lines, buf [i.lines buf])
   =/  txt=tape  (join-para (flop buf))
   [:(weld "<p>" (ib txt refs) "</p>") lines]
-::  +join-para: join lines with a space; two trailing spaces -> <br>.
+::  +join-para: join lines with a space. Two trailing spaces -> <br>.
 ++  join-para
   |=  ls=(list tape)
   ^-  tape
@@ -531,7 +531,7 @@
   ?:  &(?=(^ (find "|" s)) ?=(^ t.lines) (table-sep (trim i.t.lines)))  &
   ?:  &(?=(^ t.lines) (gth (setext-under (trim i.t.lines)) 0))  &
   |
-::  +take-list: parse a list block into nested <ul>/<ol>; return [html rest].
+::  +take-list: parse a list block into nested <ul>/<ol>. Return [html rest].
 ++  take-list
   |=  [lines=(list tape) refs=refm]
   ^-  [tape (list tape)]
@@ -557,7 +557,7 @@
         $(lines t.lines, blanks 0, items [i.items(body merged) t.items])
       [(render items) lines]
   ::  +render: flat-stack nesting via deferred </li>. Output accumulates as a
-  ::  LIST of chunks zinged once at the end — the old shape welded every item
+  ::  LIST of chunks zinged once at the end. The old shape welded every item
   ::  onto one growing tape, re-copying the whole document per item (quadratic
   ::  in list size, reachable from the unauthenticated render).
   ++  render
@@ -595,7 +595,7 @@
       ?:  =(ord ord.i.stack)
         [(flop ["</li>" acc]) stack]
       ::  same indent, marker kind changed (bullet<->number): GFM starts a new
-      ::  list — close this one and open the other.
+      ::  list. Close this one and open the other.
       :_  [[ind ord] t.stack]
       (flop [:(weld "</li>" ?:(ord.i.stack "</ol>" "</ul>") ?:(ord "<ol>" "<ul>")) acc])
     [(flop [?:(ord "<ol>" "<ul>") acc]) [[ind ord] stack]]
@@ -652,7 +652,7 @@
 ::  +render-md: markdown body -> HTML fragment.
 ::  +cap-quote-depth: bound a line's leading '>' run at 32. +take-quote strips
 ::  ONE '>' per full re-render pass, so an adversarial 20KB line of '>' was
-::  ~400M steps (quadratic in depth) on the unauthenticated render; capping
+::  ~400M steps (quadratic in depth) on the unauthenticated render. Capping
 ::  the depth bounds it at 32 passes and is byte-identical below the cap.
 ++  cap-quote-depth
   |=  l=tape

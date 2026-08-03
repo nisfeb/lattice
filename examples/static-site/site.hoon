@@ -1,16 +1,16 @@
-::  site/index — a standalone static-site index, published to the clear web.
+::  site/index, a standalone static-site index, published to the clear web.
 ::
 ::  Everything lives under the /site folder, so ONE `%share-tree /site clearweb`
 ::  publishes the whole thing (and mode=private takes it all down). The builder
 ::  depends on the /site/content DIRECTORY, walks it with tree-in, and links
 ::  every page (and the script) with pub-of, the public /c/ url, so a logged-out
-::  visitor can navigate (the /x explorer path is owner-gated). The theme is
+::  visitor can navigate. The /x explorer path is owner-gated. The theme is
 ::  applied automatically by the clearweb serving layer (nearest `theme` up the
 ::  tree), so the builder need not link it.
 ::
-::  It emits an %html FRAGMENT: the public /c surface wraps it in a bare
+::  It emits an %html FRAGMENT. The public /c surface wraps it in a bare
 ::  standalone document (no lattice chrome), and the owner's /x view inlines the
-::  same fragment — one stored representation, each surface owns its shell.
+::  same fragment. One stored representation, each surface owns its shell.
 ::
 |=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
 ^-  result

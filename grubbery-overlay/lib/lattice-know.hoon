@@ -1,13 +1,13 @@
 ::  Pure helpers for the lattice nexus's private knowledge vault (know grubs).
 ::
 ::  Deliberately depends on base + clay types ONLY (path, @ta, @da, sets,
-::  maps) — no grubbery tarball/nexus types — so the SAME file compiles both
+::  maps), no grubbery tarball/nexus types, so the SAME file compiles both
 ::  in a plain desk /lib (where these arms are unit-tested) and in grubbery's
 ::  gub/lib (where the lattice nexus wraps them). The nexus casts our structural
 ::  [pax nom] to a real rail:tarball.
 ::
 |%
-::  ==  Knowledge types — the canonical know-* shapes the nexus stores and the
+::  ==  Knowledge types, the canonical know-* shapes the nexus stores and the
 ::  HTTP reads emit.
 ::
 +$  know-vector  [model=@t dim=@ud vec=(list @rd)]
@@ -27,17 +27,17 @@
       [%tag key=@t tag=@t]
       [%untag key=@t tag=@t]
   ::  verbatim imports (used by the bulk-import endpoint, POST /know-import).
-  ::  Unlike %save, these write the entry VERBATIM — preserving its original
-  ::  updated/tags/vector — instead of stamping updated=now. %import lands a
-  ::  live entry; %import-trashed lands it then soft-deletes (so it sits in
+  ::  Unlike %save, these write the entry VERBATIM, preserving its original
+  ::  updated/tags/vector, instead of stamping updated=now. %import lands a
+  ::  live entry. %import-trashed lands it then soft-deletes (so it sits in
   ::  trash, body recoverable).
       [%import key=@t entry=know-entry]
       [%import-trashed key=@t entry=know-entry]
   ==
-::  derived per-entry index row for the trash listing (know-trash) — lists
+::  derived per-entry index row for the trash listing (know-trash). Lists
 ::  soft-deleted entries without reading bodies. bytes = body byte-length. restore is a RESERVED
 ::  slot for a future revision-restore feature (peek-at the firm cass captured at
-::  delete time); the current soft-delete keeps the body grub live in the trash
+::  delete time). The current soft-delete keeps the body grub live in the trash
 ::  vault and restores it whole, so restore is always ~. Kept in the row shape so
 ::  adding the feature later doesn't re-key the persisted know-index grub.
 ::
@@ -50,14 +50,14 @@
   ^-  index-entry
   [updated.e (met 3 body.e) tags.e ~]
 ::  +merge-save: body for %save. Preserves an existing entry's tags+vector
-::  (save edits content only); a brand-new key starts untagged, no vector.
+::  (save edits content only). A brand-new key starts untagged, no vector.
 ::
 ++  merge-save
   |=  [old=(unit know-entry) body=@t now=@da]
   ^-  know-entry
   ?~  old  [body now ~ ~]
   u.old(body body, updated now)
-::  +add-tag / +del-tag: %tag / %untag — touch only the tag set.
+::  +add-tag / +del-tag: %tag / %untag. They touch only the tag set.
 ::
 ++  add-tag
   |=  [e=know-entry tag=@t]
@@ -73,7 +73,7 @@
 +$  vrail  [pax=path nom=@ta]
 ::  +entry-leaf: the fixed file name under each key-directory that holds a
 ::  vault entry's content. Reserving one leaf name per key-dir is what lets a
-::  flat (map path know-entry) — where /a and /a/b may BOTH be entries — map
+::  flat (map path know-entry), where /a and /a/b may BOTH be entries, map
 ::  onto a tree: /a becomes the file [/a %entry] and /a/b the file [/a/b
 ::  %entry], and the directory /a happily holds both the file `entry` and the
 ::  child directory `b`.

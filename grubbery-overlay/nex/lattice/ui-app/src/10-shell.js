@@ -1,16 +1,16 @@
-// lattice app — served from ui-app/src/, built by scripts/build-ui.mjs
+// lattice app, served from ui-app/src/, built by scripts/build-ui.mjs
   const $ = (id) => document.getElementById(id);
   const api = '/apps/lattice';
   let pname, pkind, status, spinner;   // assigned by <lat-bar>   (12-bar.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)
   // blank preview: about:blank defaults to light color-scheme, which
   // mismatches the app's declared scheme and makes the iframe an opaque
-  // white canvas in dark theme — declare the scheme so it stays transparent
+  // white canvas in dark theme. Declare the scheme so it stays transparent
   // and the pane's theme background shows through.
   const prevBlank = () => {
     prev.removeAttribute('src');
     // the srcdoc paints its OWN theme background rather than relying on the
-    // engine to composite a mismatched-scheme iframe as transparent — that
+    // engine to composite a mismatched-scheme iframe as transparent. That
     // reliance is exactly the kind of behavior that differs between the
     // Chromium the tests run and the webkitgtk the desktop runs
     prev.srcdoc = '<style>:root{color-scheme:light dark}' +
@@ -18,7 +18,7 @@
       '@media(prefers-color-scheme:dark){body{background:#1a1a1a}}</style>';
   };
   // grant paths are shown in the share/ACL surfaces, and every one carries
-  // the same app base — pure noise on screen. Strip it, then keep the
+  // the same app base, pure noise on screen. Strip it, then keep the
   // SHORTEST tail that stays unique among the paths shown alongside (`all`),
   // growing only where disambiguation demands. Callers put the full path in
   // `title`, so hover always has the truth.
@@ -47,7 +47,7 @@
   };
   // desktop shell: wry denies target=_blank new windows (the clearweb share
   // link would be a dead click). Same-origin and urb:// links stay in the
-  // app; only truly external http(s) leaves for the system browser.
+  // app. Only truly external http(s) leaves for the system browser.
   if (window.__TAURI__)
     document.addEventListener('click', (e) => {
       const a = e.target.closest && e.target.closest('a[target="_blank"]');

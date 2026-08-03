@@ -80,7 +80,7 @@
 ++  test-unknown-tag  (yes (has "inner" (m '<span class="x">inner</span>')))
 ::  titles
 ++  test-title      (yes =('Test Article & Friends' (need (page-title:clip '<title>Test Article &amp; Friends</title>'))))
-::  ?= narrows a WING, so the unit has to be bound before it is tested —
+::  ?= narrows a WING, so the unit has to be bound before it is tested.
 ::  ?=(~ (call ...)) does not build.
 ++  test-title-none
   =/  r  (page-title:clip '<p>no title here</p>')
@@ -93,7 +93,7 @@
 ::  whitespace: runs collapse, blank lines cap at one
 ++  test-collapse-spaces  (yes (has "a b" (m '<p>a     b</p>')))
 ++  test-no-triple-blank  (no (has "\0a\0a\0a" (m '<p>a</p><p>b</p><p>c</p>')))
-::  a large document must not blow up quadratically — 2000 paragraphs
+::  a large document must not blow up quadratically. 2000 paragraphs
 ++  test-large
   =/  big=@t  (crip (zing (reap 2.000 "<p>paragraph text here</p>")))
   (yes (gth (met 3 (m big)) 10.000))

@@ -1,4 +1,4 @@
-# ui-app — the lattice-hosted editor client
+# ui-app: the lattice-hosted editor client
 
 The ship serves exactly TWO assets from here: `index.html` (shell) and
 `app.js` (client). Every extra asset request costs ~2s on the serialized
@@ -6,41 +6,41 @@ pier, so this never grows a third file.
 
 ## Build
 
-`app.js` is a BUILT ARTIFACT — never edit it. Source lives in `src/`;
+`app.js` is a BUILT ARTIFACT. Never edit it. Source lives in `src/`, and
 `node scripts/build-ui.mjs` concatenates `src/*.js` in filename order into
 one IIFE. CI fails if the committed artifact is stale
 (`git diff --exit-code` after a build). `sync-overlay.sh` excludes `src/`
-from the desk — the ball never sees the source files.
+from the desk. The ball never sees the source files.
 
 ## Rules the layout encodes
 
 - **One shared scope.** All src files live inside the single build IIFE, so
   every top-level `const`/`let`/`function` is visible to every file. Nothing
-  is exported or imported; cross-file calls are plain identifiers.
+  is exported or imported. Cross-file calls are plain identifiers.
 - **Filename order = execution order.** A file's top-level code may only
   *execute* names from lower-numbered files (function declarations hoist
-  across the whole IIFE and may be referenced from anywhere at runtime;
-  `const`/`let` initializers must have run).
+  across the whole IIFE and may be referenced from anywhere at runtime,
+  while `const`/`let` initializers must have run).
 - **Custom elements own pane markup.** Each `<lat-*>` class renders its
   pane's HTML in its `connectedCallback` and assigns the shared element
   refs (`src`, `hl`, `treeList`, `cerr`, …). `customElements.define`
   upgrades the already-parsed tag synchronously, so those refs exist the
-  moment the defining file executes — which is why component files are
+  moment the defining file executes. That is why component files are
   numbered BELOW the modules that use their elements.
-- **Light DOM only, ids stable.** No Shadow DOM: the shell's single inlined
+- **Light DOM only, ids stable.** No Shadow DOM. The shell's single inlined
   stylesheet, the Prism token rules, and `scripts/ui-matrix.mjs`'s
   id-driven checks all rely on the global DOM. Never rename an id.
 - **`lat-* { display: contents }`** (in the shell CSS) keeps component
   wrappers invisible to the `.ws` grid. Each component also carries a
-  stale-shell guard: if a cached `index.html` predates its tag, it removes
+  stale-shell guard. If a cached `index.html` predates its tag, it removes
   the old literal markup and inserts itself, so an HTML/JS service-worker
   cache skew degrades gracefully instead of breaking.
-- **No browser-native popups** — dialogs are `<lat-dialog>`; a choice is
+- **No browser-native popups.** Dialogs are `<lat-dialog>`, and a choice is
   real buttons, never a `<select>` (the matrix fails the run on any
   `prompt`/`confirm`/`alert`).
 - The pier-economy rules (own-write echo window, `treeGen`/`knowGen` stale
   guards, localStorage boot snapshot, never-overlap saves) live in
-  `20-state.js` and `35-pages.js` — they are load-bearing; see the comments
+  `20-state.js` and `35-pages.js`. They are load-bearing. See the comments
   there before touching refresh or save paths.
 
 ## File map

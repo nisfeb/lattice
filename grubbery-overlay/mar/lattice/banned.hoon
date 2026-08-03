@@ -1,4 +1,4 @@
-::  mar/lattice/banned: the banlist grub — ships this ship refuses (see
+::  mar/lattice/banned: the banlist grub, ships this ship refuses (see
 ::  /lib/lattice-share). Sorted on the way out so the UI order is stable
 ::  rather than following set iteration.
 ::

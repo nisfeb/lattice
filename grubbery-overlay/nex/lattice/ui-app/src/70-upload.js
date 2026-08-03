@@ -40,7 +40,7 @@
     upShow();
     upProg(0, list.length, '');
     if (skipped) upErr.textContent = `skipped ${skipped} unsupported\n`;
-    // only create folders the tree does not already have — each folder-new is
+    // only create folders the tree does not already have. Each folder-new is
     // a ~2s writer round-trip, and re-uploading into an existing tree used to
     // pay it for every directory.
     for (const d of [...dirs].sort()) {

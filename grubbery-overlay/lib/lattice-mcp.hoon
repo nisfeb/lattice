@@ -1,8 +1,8 @@
 ::  lattice-mcp: shared helpers for the lattice knowledge-store MCP tools
 ::  (lib/mcp/lattice-*.hoon). The tools run inside the mcp nexus's fibers, so
 ::  every road here is ABSOLUTE (/apps/lattice.lattice_app/...) and writes poke
-::  the lattice writer directly — in-ship, no HTTP hop, no session cookie,
-::  nothing to go stale. Reads mirror the nexus's own vault walk; JSON shapes
+::  the lattice writer directly: in-ship, no HTTP hop, no session cookie,
+::  nothing to go stale. Reads mirror the nexus's own vault walk. JSON shapes
 ::  are compact mirrors of the know-* HTTP responses.
 /<  lk  /lib/lattice-know.hoon
 |%
@@ -33,7 +33,7 @@
   ?~  kids  acc
   =.  acc  (~(uni by acc) (walk (snoc at seg.i.kids) kid.i.kids))
   $(kids t.kids)
-::  +poke-writer: one serialized mutation through lattice's action writer —
+::  +poke-writer: one serialized mutation through lattice's action writer,
 ::  the same path every other lattice client takes, so index maintenance and
 ::  the change beacon fire identically.
 ::

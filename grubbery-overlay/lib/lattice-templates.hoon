@@ -1,15 +1,15 @@
-::  /lib/lattice-templates — the page-tree templates the app ships. Each is a
-::  list of [rel-path kind raw-body]; the nexus lays them down under
+::  /lib/lattice-templates, the page-tree templates the app ships. Each is a
+::  list of [rel-path kind raw-body]. The nexus lays them down under
 ::  /template/<name>/ on writer start (if absent) and instantiates a copy under
 ::  /page/<your-name>/ on demand, rewriting the leading /<name> path to yours.
 ::
 ::  Templates reference their own root by the template NAME (e.g. /site), so a
 ::  page's own-tree deps/links rewrite cleanly when instantiated elsewhere.
-::  Kept small on purpose: instantiation is one writer round-trip per page.
+::  Kept small on purpose. Instantiation is one writer round-trip per page.
 ::
 |%
-::  +site: a themed static site. An auto-index home lists the content pages;
-::  a css theme styles every page (nearest-theme convention); publish the whole
+::  +site: a themed static site. An auto-index home lists the content pages.
+::  A css theme styles every page (nearest-theme convention). Publish the whole
 ::  folder to the clear web with one action.
 ::
 ++  site
@@ -52,12 +52,12 @@
 ::  logic lives in +live-location:lattice-pg, so this template is one call and
 ::  a fix reaches every page ever made from it.
 ::
-::  It needs NO sharing switches to work — it is a private page until you
-::  publish it, and that asymmetry is deliberate: turning location sharing on
+::  It needs NO sharing switches to work. It is a private page until you
+::  publish it, and that asymmetry is deliberate. Turning location sharing on
 ::  should be a thing you do, never a default you inherit.
 ::
-::  Update it from your phone (iOS Shortcuts, Tasker, curl — anything that can
-::  POST with your session cookie):
+::  Update it from your phone with anything that can POST with your session
+::  cookie (iOS Shortcuts, Tasker, curl):
 ::    POST /apps/lattice/page-cmd?name=<your-page>   body: cmd=<lat>,<lon>,<acc>,<minutes>
 ::    POST /apps/lattice/page-cmd?name=<your-page>   body: cmd=stop
 ::
@@ -77,7 +77,7 @@
 ::  path below is the template NAME, which instantiation rewrites to wherever
 ::  you create it, so the form always posts back to its own page.
 ::
-::  Two owner actions turn it on — never implicit, this is the only public
+::  Two owner actions turn it on (never implicit). This is the only public
 ::  write surface:
 ::    POST /page-share?name=<your-page>&mode=clearweb
 ::    POST /page-forms?name=<your-page>&on=1&cap=200&gap=10
@@ -93,7 +93,7 @@
       '''
   ==
 ::  +shipped: every template the app lays down on writer start, by name. Adding
-::  one here is all it takes — the laydown walks this list.
+::  one here is all it takes. The laydown walks this list.
 ::
 ++  shipped
   ^-  (list [name=@tas pages=(list [rel=path kind=@tas body=@t])])

@@ -1,7 +1,7 @@
   // ── legacy agent import (one-time offer) ─────────────────────────────────
   // A ship upgraded from the pre-grubbery %lattice gall agent may still have
   // it installed with knowledge this store never saw. Ask once, in-app, then
-  // never again: the server marker is authoritative (it survives a new
+  // never again. The server marker is authoritative (it survives a new
   // browser), and the localStorage flag keeps resolved installs from spending
   // a request on the check at all.
   async function legacyCheck() {
@@ -25,8 +25,8 @@
       'this store existed. Import the memories it holds?\n\nAnything already ' +
       'here is left exactly as it is, and nothing is removed from the old agent.',
       ['import them now', 'not now', 'never ask again'], 'ok');
-    if (choice === null) return;            // dismissed — offer again next load
-    if (choice === 'not now') {             // explicitly declined — quiet until
+    if (choice === null) return;            // dismissed. Offer again next load
+    if (choice === 'not now') {             // explicitly declined, quiet until
       sessionStorage.latLegacyAsked = '1';  // the next browser session
       return;
     }
@@ -51,7 +51,7 @@
         st('legacy import completed');
         return;
       }
-      // 504/502 is the reverse proxy giving up, not the ship failing: the
+      // 504/502 is the reverse proxy giving up, not the ship failing. The
       // import keeps running server-side and is usually PARTLY done. Say what
       // landed, and name the cause, because the fix is a proxy setting.
       const cut = r && (r.status === 504 || r.status === 502);
@@ -76,14 +76,14 @@
       return;
     }
     const res = await r.json();
-    // only latch when the SERVER says it finished; a partial run deliberately
+    // only latch when the SERVER says it finished. A partial run deliberately
     // leaves its marker unwritten so the offer returns and can be retried
     if (res.complete) localStorage.latLegacy = 'done';
     else delete sessionStorage.latLegacyAsked;
     knowGen++;
     st('imported ' + res.imported + ' memories from the old agent');
     if (mode === 'know') loadKnow(); else loadTree();
-    // NEVER advise retiring the old agent while it still holds pages: this
+    // NEVER advise retiring the old agent while it still holds pages. This
     // import moves knowledge only (the agent exposes no arm for page bodies),
     // so an uninstall on that advice would destroy them permanently.
     const kept = res.imported + ' ' + (res.imported === 1 ? 'memory' : 'memories') +
@@ -91,7 +91,7 @@
     const got = res.pagesImported || 0;
     let msg = 'Imported ' + kept + (got ? ', and ' + got + ' ' + (got === 1 ? 'page' : 'pages') : '') + '.';
     // The agent is cleared for retirement ONLY when the server says the whole
-    // migration completed. Never infer it from a count: an unreadable page
+    // migration completed. Never infer it from a count. An unreadable page
     // list reads as zero pages, and telling someone to uninstall on that
     // would destroy the only copy of them.
     if (!res.complete) {

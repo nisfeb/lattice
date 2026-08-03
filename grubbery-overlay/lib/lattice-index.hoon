@@ -1,7 +1,7 @@
-::  /lib/lattice-index — the grub-native inverted index.
+::  /lib/lattice-index, the grub-native inverted index.
 ::
 ::  Replaces obelisk's content-terms table. See docs/native-index.md for the cost
-::  model this layout is derived from; the short version is that obelisk keeps its
+::  model this layout is derived from. The short version is that obelisk keeps its
 ::  whole database in ONE grub, so every write costs O(entire corpus), and a full
 ::  reindex of a real vault took over ten minutes and wedged the ship's HTTP.
 ::
@@ -17,7 +17,7 @@
 |%
 ::  +$  posts: who carries a term, and how often.
 ::
-::  Keyed by the document key ALONE. Scope is a field, never part of the key: a
+::  Keyed by the document key ALONE. Scope is a field, never part of the key. A
 ::  page flipping private -> public must move, not fork, or the document ends up
 ::  indexed twice under two identities.
 +$  posts  (map key=@t [scope=@t tf=@ud])
@@ -28,7 +28,7 @@
 ::  +bucket-of: which bucket a term lives in.
 ::
 ::  mug is a cheap 31-bit hash and its low bits are well mixed, which is all this
-::  needs — the index never iterates buckets in order, so distribution is the only
+::  needs. The index never iterates buckets in order, so distribution is the only
 ::  property that matters.
 ++  bucket-of
   |=  term=@t
@@ -40,11 +40,11 @@
   |=  n=@ud
   ^-  @ta
   =/  h=tape  (trip (scot %ux n))
-  ::  scot %ux gives "0x1f"; keep the digits and pad to two
+  ::  scot %ux gives "0x1f". Keep the digits and pad to two
   =/  d=tape  (slag 2 h)
   (crip (weld ?:((gth 2 (lent d)) "b0" "b") d))
-::  +name-of: the grub name a term resolves to. One call, no directory read —
-::  this is the whole reason search is O(1) in corpus size.
+::  +name-of: the grub name a term resolves to. One call, no directory read.
+::  This is the whole reason search is O(1) in corpus size.
 ++  name-of
   |=  term=@t
   ^-  @ta
@@ -72,7 +72,7 @@
   =/  nm=@ta  (name-of term.r)
   =/  bk=bucket  (~(gut by acc) nm *bucket)
   =/  ps=posts   (~(gut by bk) term.r *posts)
-  ::  last write wins on a duplicate (key, term); the analyzer already dedupes
+  ::  last write wins on a duplicate (key, term). The analyzer already dedupes
   ::  per document, so a collision here means two documents share a key, which
   ::  the caller's own key construction prevents.
   =.  ps  (~(put by ps) key.r [scope.r tf.r])

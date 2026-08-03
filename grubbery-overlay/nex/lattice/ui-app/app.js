@@ -5,9 +5,9 @@
   // ── typography preferences ───────────────────────────────────────────────
   // Set on the settings page, stored in localStorage, applied here. Two vars
   // only (--ed-font, --ed-size), because #src and #hl must keep byte-identical
-  // metrics — see the note beside them in index.html.
+  // metrics. See the note beside them in index.html.
   //
-  // Costs ZERO requests: preferences are a client concern, so they never touch
+  // Costs ZERO requests. Preferences are a client concern, so they never touch
   // the pier. This file sorts first so the editor paints in the chosen font
   // rather than flashing the default and re-laying out.
   const FONTS = {
@@ -29,24 +29,24 @@
   }
   applyPrefs();
   // the settings page is a SEPARATE document on the same origin, so its writes
-  // reach an open editor through the storage event — no reload, no polling.
+  // reach an open editor through the storage event (no reload, no polling).
   window.addEventListener('storage', (e) => {
     if (!e.key || e.key === 'latFont' || e.key === 'latFontSize') applyPrefs();
   });
 
 // ── src/08-offline.js ─────────────────────────────────────────────────────
   // ── offline edits: queue, detection, replay (docs/offline-edits.md) ──────
-  // Saves only — pages and know memories. The queue lives in IndexedDB (localStorage is
-  // synchronous and ~5MB — the tree snapshot moved here too, phase 3), one per
-  // page, coalesced — re-editing a queued page replaces its record, the same
-  // way autosave coalesces savePending.
+  // Saves only: pages and know memories. The queue lives in IndexedDB, one per
+  // page, coalesced. Re-editing a queued page replaces its record, the same
+  // way autosave coalesces savePending. localStorage is synchronous and ~5MB,
+  // which is why the tree snapshot moved here too (phase 3).
   //
-  // Detection is from RESPONSES, never navigator.onLine: the desktop webview
+  // Detection is from RESPONSES, never navigator.onLine. The desktop webview
   // talks to a localhost bridge that always answers and returns 502 when the
   // ship is unreachable, and onLine lies about captive portals on mobile.
   //
   // THE QUEUE IS THE TOP READ TIER. Without that, cache-first opens painted
-  // the pre-edit body over a queued edit — the edit looked lost, and the next
+  // the pre-edit body over a queued edit. The edit looked lost, and the next
   // autosave would queue the OLD body back (review gap 1 in the design doc).
   let degraded = false;      // a save failed like the ship was unreachable
   let offCount = 0;          // queued page edits, drives the status text
@@ -60,7 +60,7 @@
       if (!d.objectStoreNames.contains('saves'))
         d.createObjectStore('saves', { keyPath: 'name' });
       // kv: the tree snapshot (phase 3). It lived in localStorage, which is
-      // ~5MB, synchronous, and was re-STRINGIFIED whole on every save; IDB
+      // ~5MB, synchronous, and was re-STRINGIFIED whole on every save. IDB
       // stores the structured clone directly and scales to the disk.
       if (!d.objectStoreNames.contains('kv'))
         d.createObjectStore('kv', { keyPath: 'k' });
@@ -104,24 +104,24 @@
   };
   // fire-and-forget by design: persistTree's callers are synchronous save
   // paths, and a snapshot write that loses a race with app close costs one
-  // boot's paint, not data — the ship copy is the durable one.
+  // boot's paint, not data. The ship copy is the durable one.
   const kvPut = async (k, v) => {
     const st = await kvStore('readwrite');
     if (st) await offReq(st.put({ k, v }));
   };
 
   // fetch with a REAL deadline. "Detect offline by timeout" was in the design
-  // from day one, but nothing implemented a timeout — no AbortController
-  // anywhere, no ureq timeout in the bridge — so against a dead remote ship
+  // from day one, but nothing implemented a timeout. No AbortController
+  // anywhere, no ureq timeout in the bridge. So against a dead remote ship
   // "degraded" was the OS TCP timeout, minutes away (review gap 2).
   const tfetch = (url, opts = {}, ms = 10000) => {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), ms);
     return fetch(url, { ...opts, signal: ac.signal }).finally(() => clearTimeout(t));
   };
-  // the bridge answers 502 when the ship is unreachable; a proxy in front of
-  // eyre may say 504. Anything else means the ship SPOKE — a real error, not
-  // an outage, and must never be queued over.
+  // the bridge answers 502 when the ship is unreachable. A proxy in front of
+  // eyre may say 504. Anything else means the ship SPOKE. That is a real
+  // error, not an outage, and must never be queued over.
   const shipGone = (r) => !r || r.status === 502 || r.status === 504;
 
   let probeTimer = null;
@@ -154,7 +154,7 @@
     setDegraded(true);
     st('saved offline — ' + offCount + ' waiting to sync');
   }
-  // know memories share the queue under a 'know:' prefix — page names cannot
+  // know memories share the queue under a 'know:' prefix. Page names cannot
   // contain a colon, so the two namespaces cannot collide in the one store.
   // No baseRev: memories are last-write-wins (no CAS, no conflicts/ pages),
   // matching what know-save itself does.
@@ -170,8 +170,8 @@
     st('saved offline — ' + offCount + ' waiting to sync');
   }
 
-  // Drain through page-save-batch. The batch is all-or-nothing — right for
-  // uploads, wrong for replay: one poisoned record would block the queue
+  // Drain through page-save-batch. The batch is all-or-nothing, right for
+  // uploads, wrong for replay. One poisoned record would block the queue
   // forever. A rejected batch falls back to per-item saves so the bad record
   // is isolated and DROPPED (it can never apply; review gap 3).
   let replaying = false;
@@ -198,7 +198,7 @@
       if (r && r.ok) {
         // per-item verdicts: an edit whose base the ship moved past still
         // APPLIED (it is the newest revision), but the overwritten revision
-        // is named so it can be recovered from history — apply-and-flag,
+        // is named so it can be recovered from history. Apply-and-flag,
         // never silently drop either side
         try {
           for (const it of ((await r.json()).items || []))
@@ -231,7 +231,7 @@
       }
       stuck = true;
     }
-    // memories drain per-item: there is no know batch route, and last-write-
+    // memories drain per-item. There is no know batch route, and last-write-
     // wins means a plain re-save with no verdict to collect
     for (const q of knows) {
       if (stuck) break;
@@ -252,26 +252,26 @@
       st('synced — ' + conflicts.length + ' conflict(s): your offline version won; '
         + 'the other is saved at ' + conflicts.join(', '), false);
     } else st('offline edits synced');
-    // reconcile ONLY after the drain: refreshAll on reconnect would repaint
+    // reconcile ONLY after the drain. refreshAll on reconnect would repaint
     // queued pages from the server dump before their edits landed (gap 4)
     if (knows.length && mode === 'know') loadKnow();
     loadTree();
   }
 
 // ── src/10-shell.js ───────────────────────────────────────────────────────
-// lattice app — served from ui-app/src/, built by scripts/build-ui.mjs
+// lattice app, served from ui-app/src/, built by scripts/build-ui.mjs
   const $ = (id) => document.getElementById(id);
   const api = '/apps/lattice';
   let pname, pkind, status, spinner;   // assigned by <lat-bar>   (12-bar.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)
   // blank preview: about:blank defaults to light color-scheme, which
   // mismatches the app's declared scheme and makes the iframe an opaque
-  // white canvas in dark theme — declare the scheme so it stays transparent
+  // white canvas in dark theme. Declare the scheme so it stays transparent
   // and the pane's theme background shows through.
   const prevBlank = () => {
     prev.removeAttribute('src');
     // the srcdoc paints its OWN theme background rather than relying on the
-    // engine to composite a mismatched-scheme iframe as transparent — that
+    // engine to composite a mismatched-scheme iframe as transparent. That
     // reliance is exactly the kind of behavior that differs between the
     // Chromium the tests run and the webkitgtk the desktop runs
     prev.srcdoc = '<style>:root{color-scheme:light dark}' +
@@ -279,7 +279,7 @@
       '@media(prefers-color-scheme:dark){body{background:#1a1a1a}}</style>';
   };
   // grant paths are shown in the share/ACL surfaces, and every one carries
-  // the same app base — pure noise on screen. Strip it, then keep the
+  // the same app base, pure noise on screen. Strip it, then keep the
   // SHORTEST tail that stays unique among the paths shown alongside (`all`),
   // growing only where disambiguation demands. Callers put the full path in
   // `title`, so hover always has the truth.
@@ -308,7 +308,7 @@
   };
   // desktop shell: wry denies target=_blank new windows (the clearweb share
   // link would be a dead click). Same-origin and urb:// links stay in the
-  // app; only truly external http(s) leaves for the system browser.
+  // app. Only truly external http(s) leaves for the system browser.
   if (window.__TAURI__)
     document.addEventListener('click', (e) => {
       const a = e.target.closest && e.target.closest('a[target="_blank"]');
@@ -322,7 +322,7 @@
 // ── src/12-bar.js ─────────────────────────────────────────────────────────
   // ── top bar + mobile tabs: <lat-bar>, <lat-tabs> ─────────────────────────
   // The spinner is part of the bar's own markup now (its CSS lives in the
-  // shell stylesheet) — the old inject-styles-and-synthesize-elements guards
+  // shell stylesheet). The old inject-styles-and-synthesize-elements guards
   // existed only because the shell and JS could cache-skew apart.
   customElements.define('lat-bar', class extends HTMLElement {
     connectedCallback() {
@@ -383,8 +383,8 @@
   }
 
 // ── src/15-dialog.js ──────────────────────────────────────────────────────
-  // ── in-app dialogs — NEVER browser-native prompt/confirm/alert ───────────
-  // <lat-dialog> owns the dialog's markup AND wiring: the shell only carries
+  // ── in-app dialogs, NEVER browser-native prompt/confirm/alert ────────────
+  // <lat-dialog> owns the dialog's markup AND wiring. The shell only carries
   // the tag, so the served HTML can never be missing an element this file
   // expects (the old cache-skew guards existed exactly for that gap).
   let dlg, dlgMsg, dlgIn, dlgSel, dlgOpts;
@@ -418,7 +418,7 @@
     return p.then((v) => v !== null);
   };
   // askChoice: pick one of a list -> the chosen value, or null on cancel.
-  // Rendered as real buttons in the app's own style, NEVER a <select>: a
+  // Rendered as real buttons in the app's own style, NEVER a <select>. A
   // select opens an OS-drawn list, which is a browser-native popup, and this
   // UI does not use those anywhere.
   const askChoice = (msg, options, okLabel) => {
@@ -439,7 +439,7 @@
       return b;
     });
     if (btns[0]) btns[0].focus();
-    // arrow keys move between options; Enter takes the focused one
+    // arrow keys move between options. Enter takes the focused one
     dlgOpts.onkeydown = (e) => {
       const i = btns.indexOf(document.activeElement);
       if (i < 0) return;
@@ -498,18 +498,18 @@
 // ── src/20-state.js ───────────────────────────────────────────────────────
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
-  let dirty = false;       // unsaved local edits — auto-refresh never clobbers them
+  let dirty = false;       // unsaved local edits. Auto-refresh never clobbers them
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
                            // option, so pkind.value would silently convert it
   let curRev = 0;          // the open page's server revision (offline baseRev)
-  let curFolder = null;    // selected folder path — right-pane ops target it
+  let curFolder = null;    // selected folder path. Right-pane ops target it
   let folderCtx = '';      // folder uploads land in (last into / open page's dir)
   let nodes = [];          // last page-tree
-  let saving = false;      // a save round-trip is in flight — never overlap them:
-  let savePending = false; // the pier serializes, so a second save just queues
+  let saving = false;      // a save round-trip is in flight. Never overlap them.
+  let savePending = false; // The pier serializes, so a second save just queues
                            // 3.7s of stale-body work behind the first
-  let echoUntil = 0;       // our own save bumps the beacon; ignore that echo or
+  let echoUntil = 0;       // our own save bumps the beacon. Ignore that echo or
                            // every save triggers a tree+source refetch of content
                            // this client just wrote (~4s of pier time each)
   const qs = new URLSearchParams(location.search);
@@ -521,26 +521,26 @@
   // generation counters: a list fetch issued BEFORE a local patch must not
   // land AFTER it and clobber newer local state with a stale server snapshot
   // (the own-write echo is suppressed, so nothing would correct it until the
-  // 30s poll). Bumped on every local mutation; stale responses are dropped.
+  // 30s poll). Bumped on every local mutation. Stale responses are dropped.
   let treeGen = 0, knowGen = 0;
   // persistTree: save the tree WITHOUT bumping the generation. The counter
   // exists so a STRUCTURAL local patch (a page created, moved, deleted) is not
   // overwritten by a list fetch that was issued before it. A body-only update
   // changes no structure, so bumping for one just discards a legitimate
-  // in-flight refresh — which silently lost pages created while an autosave
+  // in-flight refresh, which silently lost pages created while an autosave
   // was in flight.
   const persistTree = () => {
     // IDB, not localStorage (phase 3): the tree carries every page BODY via
-    // page-dump, so a growing vault was marching toward the ~5MB quota — and
-    // stringifying the whole tree on every save was main-thread work paid at
+    // page-dump, so a growing vault was marching toward the ~5MB quota.
+    // Stringifying the whole tree on every save was main-thread work paid at
     // the worst time. The structured clone goes straight in. The PAGE
-    // snapshot (appPage) stays in localStorage on purpose: it is small and
+    // snapshot (appPage) stays in localStorage on purpose. It is small and
     // synchronous, which is what keeps resume painting at 0ms.
     kvPut('tree', nodes);
   };
   // rendered page-source answers, by name. The tree dump already carries every
-  // body, so this only adds what the dump lacks — `share` and the rendered
-  // `html` — which makes re-opening a page cost ZERO requests instead of a
+  // body, so this only adds what the dump lacks (`share` and the rendered
+  // `html`), which makes re-opening a page cost ZERO requests instead of a
   // ~0.5s round-trip. Dropped whenever the ship reports a change (the beacon
   // clears it) or when this client writes the page.
   const pageCache = new Map();
@@ -556,7 +556,7 @@
     } catch {}
   };
 
-  // every client-initiated write bumps the change beacon; hold the echo window
+  // every client-initiated write bumps the change beacon. Hold the echo window
   // open while the request is in flight (a folder move pokes the writer many
   // times) plus a short tail, so the SSE handler never refetches what this
   // client just did itself.
@@ -592,7 +592,7 @@
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
   // per-keystroke highlight throttle: Prism re-tokenizes the WHOLE document on
   // every render, which drops frames on large pages. Coalesce to one render per
-  // frame; past ~60KB fall back to a trailing debounce (even one full highlight
+  // frame. Past ~60KB fall back to a trailing debounce (even one full highlight
   // per frame is too heavy there).
   let hlRaf = 0, hlTimer = 0;
   const scheduleRender = () => {
@@ -605,8 +605,8 @@
   };
   // +edited: announce a PROGRAMMATIC change to the editor exactly as if it had
   // been typed. Setting src.value fires no input event, so anything that only
-  // called render() silently skipped the dirty flag, autosave and the preview
-  // — a Tab indent was shown but never saved, and a live refresh reverted it.
+  // called render() silently skipped the dirty flag, autosave and the preview.
+  // A Tab indent was shown but never saved, and a live refresh reverted it.
   // Always route scripted edits through here.
   const edited = () => src.dispatchEvent(new Event('input'));
   customElements.define('lat-editor', class extends HTMLElement {
@@ -629,7 +629,7 @@
     }
   });
   // stale-shell guard: a cached index.html predating <lat-editor> still has
-  // the literal .edwrap block (and lacks the lat-* display rule) — swap it.
+  // the literal .edwrap block (and lacks the lat-* display rule). Swap it.
   if (!document.querySelector('lat-editor')) {
     const stale = document.querySelector('.edwrap');
     if (stale) stale.remove();
@@ -642,7 +642,7 @@
 // ── src/30-tree.js ────────────────────────────────────────────────────────
   // ── tree pane: <lat-tree> ────────────────────────────────────────────────
   // The pane's buttons are wired where their handlers live (45-templates,
-  // 70-upload) — those files run after this component upgrades, so their
+  // 70-upload). Those files run after this component upgrades, so their
   // $-lookups find the rendered elements.
   let treeList;
   customElements.define('lat-tree', class extends HTMLElement {
@@ -683,8 +683,8 @@
   // page-dump, not page-tree: it returns the same nodes PLUS every page's body
   // inline from ONE deep peek, and measures FASTER than page-tree (which
   // re-peeks each code grub). Those bodies are what make opening a page cost
-  // zero requests — see openPage. Bodies over 256KB are omitted by the server;
-  // such a node has no `body` and falls back to the per-page fetch.
+  // zero requests. See openPage. Bodies over 256KB are omitted by the server.
+  // Such a node has no `body` and falls back to the per-page fetch.
   // ponytail: whole-store payload (~55KB today). If the tree ever grows past
   // a megabyte, page it or go back to page-tree plus a lazy body cache.
   async function loadTree() {
@@ -695,7 +695,7 @@
     if (gen !== treeGen) return;   // a local patch superseded this response
     nodes = d.nodes;
     // drop only the cached renders the dump says have moved FORWARD. Blanket-
-    // clearing on every change cost every other page its cache; and comparing
+    // clearing on every change cost every other page its cache. Comparing
     // for mere inequality evicted good entries whenever the dump trailed
     // page-source by a revision, which it does right after a write (the
     // evaluator settles after the writer).
@@ -707,7 +707,7 @@
     renderTree();
   }
 
-  // selection changes only move the `cur` class — never rebuild the pane's DOM
+  // selection changes only move the `cur` class. Never rebuild the pane's DOM
   // for that. rowByPath is rebuilt by renderTree/renderKnowTree.
   let rowByPath = new Map();
   function markCurrent() {
@@ -717,7 +717,7 @@
   }
 
   // local `nodes` patching: this client performed the write, so it already
-  // knows the outcome — applying it locally replaces a page-tree refetch.
+  // knows the outcome. Applying it locally replaces a page-tree refetch.
   const hasNode = (path) => nodes.some((n) => n.path === path);
   function addFolderNodes(path) {
     const parts = path.split('/');
@@ -844,13 +844,13 @@
   //   2. body came with the tree dump -> paint the editor NOW, then fetch
   //      render=1 only to fill in `share` and the preview.
   //   3. no body (oversized page, or a tree we never loaded) -> as before.
-  // History and backlinks stay lazy on panel expand — they were 2 more ~2s
+  // History and backlinks stay lazy on panel expand. They were 2 more ~2s
   // round-trips paid on every open whether or not anyone looked at them.
   // Which open is current. Opening a page is an explicit user act, so the ONLY
   // reason to discard a landed response is that the user opened something else
-  // while it was in flight — not that the editor was dirty, and not that
+  // while it was in flight, not that the editor was dirty, and not that
   // `current` had not been set yet. Guarding on those meant an explicit open
-  // was silently dropped: after an unsaved edit, clicking another file did
+  // was silently dropped. After an unsaved edit, clicking another file did
   // nothing, and a page absent from the local tree never applied at all.
   let openSeq = 0;
   async function openPage(name) {
@@ -860,7 +860,7 @@
     grubPath = null;
     src.readOnly = false;
     setFolderCtx(name);
-    // the queue outranks every other tier: a queued edit is the newest truth
+    // the queue outranks every other tier. A queued edit is the newest truth
     // for this page whether or not the ship is reachable right now
     const q = await offGet(name);
     if (q) {
@@ -877,7 +877,7 @@
     // report, so painting must not also fire refreshPreview/checkErrors.
     if (painted) {
       applyPage(name, node, true);
-      // snapshot NOW, not only after the render fetch below: the snapshot is
+      // snapshot NOW, not only after the render fetch below. The snapshot is
       // what a bare launch (the PWA) resumes from, and a session that ends
       // during the fetch would otherwise remember nothing. The fetch's
       // snapPage upgrades this with the rendered html when it lands.
@@ -891,7 +891,7 @@
     } catch { if (!painted) st('open failed', false); return; }
     pageCache.set(name, d);
     snapPage(name, d);
-    // a later openPage supersedes this one; anything else still applies
+    // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
     applyPage(name, d);
   }
@@ -922,7 +922,7 @@
 
   // focusName: only when the USER asked for a new file. Boot calls this to
   // land on an empty page, and focusing the name field there summons the
-  // phone keyboard before you have done anything — you arrive at the app
+  // phone keyboard before you have done anything. You arrive at the app
   // already typing a filename you did not ask to type.
   function newFile(into, focusName = true) {
     folderCtx = into || '';
@@ -987,7 +987,7 @@
     catch {}
     finally { saving = false; echoUntil = Date.now() + 4000; }
     if (shipGone(r)) {
-      // the ship is unreachable: queue the edit and complete the save's
+      // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
       // does not care which kind it got
       await enqueueSave(name, kind, sent);
@@ -1016,17 +1016,17 @@
       st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
     } else st(CONTENT() ? 'saved' : 'compiling\u2026');
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
-    // only a CREATE changes the tree — refetching it after every save was a
+    // only a CREATE changes the tree. Refetching it after every save was a
     // 2.3s pier round-trip to learn nothing. Patch the local copy on create.
     if (creating) { addTreeNode(name, kind); snapTree(); renderTree(); }
-    // we know exactly what we just wrote: patch the local copies so reopening
+    // we know exactly what we just wrote. Patch the local copies so reopening
     // this page paints the saved text, not the dump's pre-save body. The
-    // cached render is stale by definition — drop it and let it re-render.
+    // cached render is stale by definition. Drop it and let it re-render.
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = sent; nd.kind = kind; persistTree(); }
     // the preview already shows this exact body (the input debounce rendered
-    // it); re-POSTing it after the save was a duplicate 1.8s render.
+    // it). Re-POSTing it after the save was a duplicate 1.8s render.
     if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
     else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
     if (savePending) { savePending = false; if (dirty) autosave(); }
@@ -1035,16 +1035,16 @@
 
   let autoTimer = null;
   async function autosave() {
-    // GRUB MODE IS EXPLICIT-SAVE ONLY. Autosaving a lattice page is fine — it is
+    // GRUB MODE IS EXPLICIT-SAVE ONLY. Autosaving a lattice page is fine. It is
     // your own note and the editor has always worked that way. Autosaving
-    // another app's source is not: a half-typed edit to calendar.html would go
+    // another app's source is not. A half-typed edit to calendar.html would go
     // live 2s after you paused, and the 5-minute history window may not have
     // kept a revision fine-grained enough to step back to. Save/Cmd+S only.
-    // The 2s debounce still fires — it just reports instead of writing, so the
+    // The 2s debounce still fires. It just reports instead of writing, so the
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved — press Save or Cmd+S'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
-    // never overlap saves: the pier serializes, so a second in-flight save is
+    // never overlap saves. The pier serializes, so a second in-flight save is
     // 3.7s of stale-body work queued behind the first, delaying every preview
     // behind it. Coalesce to one trailing save instead.
     if (saving) { savePending = true; return; }
@@ -1094,7 +1094,7 @@
 // ── src/40-grub.js ────────────────────────────────────────────────────────
   // ── editing an arbitrary grub (?grub=<ball path>) ────────────────────────
   // Any file in the ball, not just a lattice page: an app's html/js/css/hoon.
-  // Deliberately NOT a third setMode branch — that function is wired into the
+  // Deliberately NOT a third setMode branch. That function is wired into the
   // tree, kind picker, chips and history panes, and a third mode would mean
   // touching every one of them. This is a thin overlay: same textarea and save
   // button, its own two endpoints.
@@ -1110,9 +1110,9 @@
     $('histsec').hidden = true;
     $('linksec').hidden = true;
     st('loading ' + p + '…');
-    // remote files ride /browse-file (bounded cross-ship peek); its JSON says
-    // body/mark where grub-source says text/blot — normalize here, not there:
-    // both routes have other consumers.
+    // remote files ride /browse-file (bounded cross-ship peek). Its JSON says
+    // body/mark where grub-source says text/blot. Normalize here, not there,
+    // since both routes have other consumers.
     const url = grubShip
       ? api + '/browse-file?ship=' + encodeURIComponent(grubShip) + '&path=' + encodeURIComponent(p)
       : api + '/grub-source?path=' + encodeURIComponent(p);
@@ -1121,7 +1121,7 @@
     if (!r || !r.ok) { st('could not open ' + p + (r ? ' (' + r.status + ')' : ''), false); return; }
     const d = await r.json();
     src.value = d.text || d.body || '';
-    // a binary/opaque grub has no text form — show it, never offer to save it
+    // a binary/opaque grub has no text form. Show it, never offer to save it
     src.readOnly = !d.editable;
     dirty = false;
     render();
@@ -1138,7 +1138,7 @@
     const sent = src.value;
     let r = null;
     try {
-      // a remote save is verified server-side by revision bump: a peer that
+      // a remote save is verified server-side by revision bump. A peer that
       // never granted make ACKS the poke and silently drops the write, and
       // "saved" on a dropped write is the one lie an editor must not tell.
       r = await fetch(grubShip
@@ -1149,7 +1149,7 @@
     } catch {}
     saving = false;
     if (!r || !r.ok) {
-      // the mark can reject the source; show ITS error, since the stored grub
+      // the mark can reject the source. Show ITS error, since the stored grub
       // still holds the previous content and the user needs to know why
       let msg = r ? ' ' + r.status : '';
       if (r) { try { const j = await r.json(); if (j && j.error) msg = ': ' + j.error; } catch {} }
@@ -1192,7 +1192,7 @@
     if (r && r.status === 409) { st('a page by that name exists', false); return; }
     if (!r || !r.ok) { st('template failed' + (r ? ' ' + r.status : ''), false); return; }
     await loadTree();
-    // a multi-page template lands as a folder: open its index if it made one,
+    // a multi-page template lands as a folder. Open its index if it made one,
     // else the page itself, else just select the new folder.
     const has = (p) => nodes.some((n) => n.page && n.path === p);
     if (has(name)) await openPage(name);
@@ -1208,7 +1208,7 @@
       e.preventDefault();
       // grubPath first: it is the only mode with no `current`, and page save()
       // would write to the wrong place (or nowhere) while a grub is open.
-      // Cmd+S matters more here than elsewhere — grub mode has no autosave.
+      // Cmd+S matters more here than elsewhere, since grub mode has no autosave.
       if (grubPath) saveGrub();
       else if (mode === 'know') saveKnow();
       else save();
@@ -1238,9 +1238,9 @@
 
 // ── src/55-autocomplete.js ────────────────────────────────────────────────
   // ── wikilink autocomplete ────────────────────────────────────────────────
-  // Typing `[[` opens a list of pages from the tree we already hold — no
-  // request, no index. Wikilink names are absolute page paths, so a sibling
-  // still has to be written in full; ranking exists to make that cheap.
+  // Typing `[[` opens a list of pages from the tree we already hold (no
+  // request, no index). Wikilink names are absolute page paths, so a sibling
+  // still has to be written in full. Ranking exists to make that cheap.
   const acEl = $('ac'), acMirror = $('acmirror');
   let ac = { open: false, start: -1, items: [], sel: 0 };
 
@@ -1275,7 +1275,7 @@
   }
 
   // caret position, measured through a mirror that shares the textarea's
-  // geometry — correct on wrapped lines, where a column calculation is not.
+  // geometry, correct on wrapped lines, where a column calculation is not.
   let acAnchor = null;   // {start, left, top, lh} - raw mirror offsets at ac.start
   const acCtx = document.createElement('canvas').getContext('2d');
   function acMeasureAnchor(pos) {
@@ -1295,7 +1295,7 @@
     return a;
   }
   // the full-prefix mirror layout is expensive on large documents, so it runs
-  // once per [[ site; while the dropdown stays open only the short query after
+  // once per [[ site. While the dropdown stays open only the short query after
   // the anchor changes, and its width comes from measureText, not a relayout.
   function caretXY() {
     if (!acAnchor || acAnchor.start !== ac.start) acAnchor = acMeasureAnchor(ac.start);
@@ -1368,7 +1368,7 @@
 
 // ── src/60-preview.js ─────────────────────────────────────────────────────
   // ── preview pane: <lat-preview> ──────────────────────────────────────────
-  // Content kinds render through page-preview (srcdoc); computed kinds (hoon,
+  // Content kinds render through page-preview (srcdoc). Computed kinds (hoon,
   // js, css) show the page's live DATA via /f/<name>, refreshed after save/cmd.
   customElements.define('lat-preview', class extends HTMLElement {
     connectedCallback() {
@@ -1377,7 +1377,7 @@
       prev = $('prev');
       // blank it NOW, not when the first page opens. An iframe with no srcdoc
       // is an opaque white canvas, and the first thing that used to call
-      // prevBlank was boot's trailing newFile() — so the pane sat white for
+      // prevBlank was boot's trailing newFile(). So the pane sat white for
       // the whole load and then popped to the theme background.
       prevBlank();
     }
@@ -1438,10 +1438,10 @@
 
 // ── src/65-ctl.js ─────────────────────────────────────────────────────────
   // ── controls pane: <lat-ctl> frame ───────────────────────────────────────
-  // Renders the pane skeleton with one tag per panel; the panel components
+  // Renders the pane skeleton with one tag per panel. The panel components
   // (lat-knowtags 68, lat-share 66, lat-history/lat-links 77) upgrade when
-  // NB: no lat-perms — group EDITING lives in the full-window ACL pane now;
-  // this column only points existing groups at the open file (66-share).
+  // NB: no lat-perms. Group EDITING lives in the full-window ACL pane now.
+  // This column only points existing groups at the open file (66-share).
   // their own files run, in file order. Button handlers wired below in this
   // file (and in later files) find their elements because the frame renders
   // here first.
@@ -1473,8 +1473,8 @@
   }
 
   // NB: the command box is gone from this panel. It POSTed to /page-cmd, the
-  // input channel for a programmable page. The ROUTE stays — public form
-  // submissions (POST /f/<page>) go through the same handler — but nothing in
+  // input channel for a programmable page. The ROUTE stays, since public form
+  // submissions (POST /f/<page>) go through the same handler, but nothing in
   // the editor sends to it now.
 
   // ── delete ───────────────────────────────────────────────────────────────
@@ -1530,7 +1530,7 @@
   });
   function showShare(m) {
     // the grant result names "this page", so it MUST NOT outlive the page it
-    // was about — every target change (page open, new file, folder select,
+    // was about. Every target change (page open, new file, folder select,
     // beacon sync) routes through here. A fuzz run caught it claiming
     // "~nec can now edit this page" while a different page was open, which
     // is a permissions UI telling the user something false.
@@ -1558,7 +1558,7 @@
         if (!r.ok) { st('share failed ' + r.status, false); return; }
         showShare(m);
         st(m === 'clearweb' ? 'published tree at /c/' + curFolder + '/' : 'tree set ' + m);
-        // share-tree sets every page under the folder — mirror that locally
+        // share-tree sets every page under the folder. Mirror that locally
         // instead of refetching the tree to learn what we just did.
         for (const n of nodes)
           if (n.page && n.path.startsWith(curFolder + '/')) n.share = m;
@@ -1581,8 +1581,8 @@
 
   // ── per-file share-with: grant one ship read/edit on the OPEN page ───────
   // Writes through the same usergroups as the peers panel (an auto-group named
-  // after the ship), then notifies them; the response says whether the notice
-  // arrived — the grant is durable either way.
+  // after the ship), then notifies them. The response says whether the notice
+  // arrived. The grant is durable either way.
   const shareWith = async (mode) => {
     const shp = $('shwith').value.trim();
     if (!current) { st('open a page first', false); return; }
@@ -1590,7 +1590,7 @@
     // NAME the page rather than saying "this page". The editor's target can
     // change from eleven places (mode toggle, grub mode, memory open, rename,
     // …) and only four of them route through showShare, so a clear-on-change
-    // hook is whack-a-mole — a fuzz run caught the message surviving the
+    // hook is whack-a-mole. A fuzz run caught the message surviving the
     // pages/knowledge toggle. A message that names its own subject cannot go
     // false no matter what the editor does next, which is the property that
     // actually matters for a permissions UI.
@@ -1615,12 +1615,12 @@
 
   // ── per-file group access ────────────────────────────────────────────────
   // The same read/edit grant as the ship row above, but pointed at a group
-  // rather than one ship. This pane only SETS existing groups on this file;
-  // creating and editing the groups themselves is the ACL pane's job (there is
+  // rather than one ship. This pane only SETS existing groups on this file.
+  // Creating and editing the groups themselves is the ACL pane's job (there is
   // a link), which is what took the busy chip editor out of this narrow
   // column. Grants go through permSave, so both surfaces agree.
   //
-  // A group's grant on a page is the page's own ball path in its peek/make —
+  // A group's grant on a page is the page's own ball path in its peek/make,
   // exactly what the server's share-file writes, so a per-ship grant and a
   // per-group grant are the same kind of rule and read back the same way.
   const pagePath = (name) => '/apps/lattice.lattice_app/page/' + name;
@@ -1665,7 +1665,7 @@
       const canEdit = g.make.includes(path);
       mk('read', canRead, () => {
         if (canRead) {
-          // dropping read drops edit: edit without read cannot be exercised
+          // dropping read drops edit. Edit without read cannot be exercised
           g.peek = g.peek.filter((x) => x !== path);
           g.make = g.make.filter((x) => x !== path);
         } else g.peek.push(path);
@@ -1687,18 +1687,18 @@
 // ── src/67-perms.js ───────────────────────────────────────────────────────
   // ── usergroups: the shared data layer ────────────────────────────────────
   // No UI of its own any more. The busy chip editor that used to live in the
-  // editor's narrow right column moved to the full-window ACL pane (72-acl.js);
-  // the right column now only SETS existing groups on the open file (66-share).
+  // editor's narrow right column moved to the full-window ACL pane (72-acl.js).
+  // The right column now only SETS existing groups on the open file (66-share).
   // Both surfaces read permGroups and write through permSave, so they cannot
   // disagree about what is in force.
   //
   // Backed by grubbery usergroups via /share-groups. The vocabulary is read
-  // (= weir peek) and edit (= weir make); poke grants and non-directory rules
-  // are real but dojo territory — the server preserves them verbatim on every
-  // save, and the ACL pane reports how many exist.
+  // and edit, where read is weir peek and edit is weir make. Poke grants and
+  // non-directory rules are real but dojo territory. The server preserves
+  // them verbatim on every save, and the ACL pane reports how many exist.
   let permGroups = [];
   // "no groups yet" and "not loaded yet" are different claims, and the group
-  // list is deferred off boot's critical path — so without this the panel
+  // list is deferred off boot's critical path. Without this flag the panel
   // asserts you have no groups for the second or two before the answer lands.
   let permsLoaded = false;
   async function loadPerms() {
@@ -1747,9 +1747,9 @@
   });
 
 // ── src/69-shared.js ──────────────────────────────────────────────────────
-  // ── shared with me: <lat-shared> — files other ships granted us ──────────
-  // Fed by their share notices (claims, not capabilities — the entry proves
-  // itself when opened, and a stale one can just be removed).
+  // ── shared with me: <lat-shared>, files other ships granted us ───────────
+  // Fed by their share notices. These are claims, not capabilities. The entry
+  // proves itself when opened, and a stale one can just be removed.
   customElements.define('lat-shared', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -1793,7 +1793,7 @@
       host.appendChild(row);
     }
   }
-  // deferred to boot, same reason as loadPerms — see 67-perms.js.
+  // deferred to boot, same reason as loadPerms. See 67-perms.js.
 
 // ── src/70-upload.js ──────────────────────────────────────────────────────
   // ── upload (pickers + drag-and-drop, progress panel) ─────────────────────
@@ -1838,7 +1838,7 @@
     upShow();
     upProg(0, list.length, '');
     if (skipped) upErr.textContent = `skipped ${skipped} unsupported\n`;
-    // only create folders the tree does not already have — each folder-new is
+    // only create folders the tree does not already have. Each folder-new is
     // a ~2s writer round-trip, and re-uploading into an existing tree used to
     // pay it for every directory.
     for (const d of [...dirs].sort()) {
@@ -1936,20 +1936,20 @@
   });
 
 // ── src/72-acl.js ─────────────────────────────────────────────────────────
-  // ── access control pane: <lat-acl> — the peers panel with room to work ───
-  // Same data and same endpoints as the narrow editor panel (67-perms.js);
-  // this is a full-window overlay for organising it. Deliberately NOT a third
-  // setMode branch: setMode is wired into the tree/editor lifecycle and access
+  // ── access control pane: <lat-acl>, the peers panel with room to work ────
+  // Same data and same endpoints as the narrow editor panel (67-perms.js).
+  // This is a full-window overlay for organising it. Deliberately NOT a third
+  // setMode branch. setMode is wired into the tree/editor lifecycle and access
   // control has nothing to do with either (same reasoning as 40-grub.js).
   //
-  // Costs no boot requests: it renders permGroups, which boot already loads
+  // Costs no boot requests. It renders permGroups, which boot already loads
   // off the critical path, and only fetches if the pane is opened before that
   // landed. Every mutation goes through permSave, so the narrow panel and this
   // one can never disagree.
   //
   // POKE GRANTS ARE READ-ONLY HERE, deliberately. The server preserves them
   // verbatim on save and refuses to set them from the editor ("the editor has
-  // no business granting eval power"); a grant of eval capability stays a
+  // no business granting eval power"). A grant of eval capability stays a
   // dojo-level act. They are shown so this pane never hides live rules.
   customElements.define('lat-acl', class extends HTMLElement {
     connectedCallback() {
@@ -1989,7 +1989,7 @@
   const aclOpen = () => {
     $('aclwrap').hidden = false;
     aclPathOptions();
-    // permGroups is populated by boot's deferred load; only pay a request if
+    // permGroups is populated by boot's deferred load. Only pay a request if
     // the pane was opened before that landed.
     if (!permGroups.length) loadPerms(); else renderAcl();
     loadBans();
@@ -2096,7 +2096,7 @@
       const allPaths = permGroups.flatMap((x) => [...x.peek, ...x.make]);
       const disp = (v) => shortPath(v, allPaths);
       aclSection(card, 'read', g.peek, (v) => {
-        // dropping read must drop edit too: edit without read is a grant that
+        // dropping read must drop edit too. Edit without read is a grant that
         // cannot be exercised, and it would silently reappear as "read" on the
         // next save because addPath re-adds it.
         g.peek = g.peek.filter((x) => x !== v);
@@ -2156,7 +2156,7 @@
 
   // ── banlist ──────────────────────────────────────────────────────────────
   // Deny is not something a weir can say, so it is the app's own list. Banning
-  // revokes group membership server-side; the response says how many groups
+  // revokes group membership server-side. The response says how many groups
   // changed, because "banned" with grants still live would be a lie.
   let banned = [];
   async function loadBans() {
@@ -2206,7 +2206,7 @@
     st('banned ' + w + (j.revoked ? ' — revoked from ' + j.revoked + ' group(s)' : ''));
     $('banship').value = '';
     loadBans();
-    loadPerms();          // membership changed server-side; repaint the groups
+    loadPerms();          // membership changed server-side. Repaint the groups
   };
   $('banship').onkeydown = (e) => {
     if (e.key === 'Enter') { e.preventDefault(); $('banadd').click(); }
@@ -2232,7 +2232,7 @@
 // ── src/73-comments.js ────────────────────────────────────────────────────
   // ── comments inbox: <lat-comments> ───────────────────────────────────────
   // Comments arrive from OTHER ships, and until now the workspace had no view
-  // of them — the reader rendered a thread per page, so finding out anyone had
+  // of them. The reader rendered a thread per page, so finding out anyone had
   // replied meant visiting each published page. This is the owner's side: what
   // came in, across every page, newest first, with a way to remove one.
   //
@@ -2284,7 +2284,7 @@
       : '';
     if (!inbox.length) {
       host.className = 'aclempty';
-      // say WHY it might be empty: comments are opt-in per page, so "none yet"
+      // say WHY it might be empty. Comments are opt-in per page, so "none yet"
       // and "never enabled anywhere" look identical and mean different things
       host.textContent = 'No comments. They are opt-in per page — turn them on '
         + 'from a page’s sharing controls.';
@@ -2312,7 +2312,7 @@
       head.appendChild(who); head.appendChild(del);
       card.appendChild(head);
 
-      // the page it landed on, clickable — the point of an inbox is getting
+      // the page it landed on, clickable. The point of an inbox is getting
       // to the thing being talked about
       const on = document.createElement('a');
       on.className = 'gname';
@@ -2348,7 +2348,7 @@
 // ── src/75-move.js ────────────────────────────────────────────────────────
   // ── move / rename ────────────────────────────────────────────────────────
   // page-move does the whole thing server-side (copy + share carry-over +
-  // delete, wikilink self-references rewritten) in ONE request — the old
+  // delete, wikilink self-references rewritten) in ONE request. The old
   // client choreography was 3 round-trips per page plus one per folder.
   // Memories use the know-move route (history preserved).
   async function movePage(oldName, newName) {
@@ -2390,7 +2390,7 @@
 
 // ── src/77-history.js ─────────────────────────────────────────────────────
   // ── history + backlinks panels: <lat-history>, <lat-links> ───────────────
-  // Defined here (before this file's own $-lookups) — they upgrade inside the
+  // Defined here (before this file's own $-lookups). They upgrade inside the
   // <lat-ctl> frame rendered at 65.
   customElements.define('lat-history', class extends HTMLElement {
     connectedCallback() {
@@ -2416,7 +2416,7 @@
   });
 
   // ── backlinks: pages that wikilink [[this page]] ─────────────────────────
-  // fetched ONLY when the panel is expanded — this and history were two more
+  // fetched ONLY when the panel is expanded. This and history were two more
   // ~2s round-trips paid on every page open whether or not anyone looked.
   const linkSec = $('linksec'), linkList = $('linklist');
   async function loadBacklinks() {
@@ -2440,7 +2440,7 @@
     }
   }
 
-  // collapsed-by-default panels; first expand does the fetch
+  // collapsed-by-default panels. First expand does the fetch
   let histOpen = false, linksOpen = false;
   const panelArrow = (el, base, open) => { el.textContent = base + (open ? ' ▾' : ' ▸'); };
   function resetPanels() {
@@ -2542,7 +2542,7 @@
       const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
         '&to=' + encodeURIComponent(newName));
       if (!r.ok) { st('move failed ' + r.status, false); return; }
-      // the body is already in the editor — rename in place, no refetch
+      // the body is already in the editor. Rename in place, no refetch
       knowGen++;
       const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
       if (k) k.key = newName;
@@ -2563,7 +2563,7 @@
   // ── layout toggles + mobile tabs ─────────────────────────────────────────
   const ws = $('ws');
   // soft-wrap is the default (long lines running off-screen are unusable on
-  // mobile); the toggle still turns it off, and a saved preference wins.
+  // mobile). The toggle still turns it off, and a saved preference wins.
   if (!('appWrap' in localStorage)) localStorage.appWrap = '1';
   const applyToggles = () => {
     ws.classList.toggle('nt', localStorage.appNT === '1');
@@ -2588,16 +2588,16 @@
   };
   for (const b of document.querySelectorAll('.mtabs button'))
     b.onclick = () => setMv(b.dataset.mv);
-  // On a phone the code pane is the wrong place to land: with no file open it
+  // On a phone the code pane is the wrong place to land. With no file open it
   // is an empty box, and the tree is how you get anywhere. Start on the tree
-  // and let opening a file move us — applyPage switches to 'code' on mobile,
+  // and let opening a file move us. applyPage switches to 'code' on mobile,
   // so a remembered or ?name page still lands in the editor. Desktop shows
   // every pane at once, so 'code' remains right there.
   setMv(isMobile() ? 'tree' : 'code');
 
   // ── pane resize: drag a boundary, double-click it to reset ───────────────
   // Widths live in CSS custom properties on #ws (see .psplit in the shell
-  // css). Outer panes store px; the editor/preview boundary stores the
+  // css). Outer panes store px. The editor/preview boundary stores the
   // editor's fr share against the preview's fixed 1fr, so it keeps meaning
   // when the window or the outer panes change size.
   {
@@ -2613,7 +2613,7 @@
     const wire = (id, key, drag) => {
       const h = $(id);
       if (!h) return;                    // stale cached shell without handles
-      // the reset gesture is detected from pointerup pairs, NOT dblclick:
+      // the reset gesture is detected from pointerup pairs, NOT dblclick.
       // pointerdown must preventDefault (otherwise native selection starts
       // and eats the pointer stream mid-drag), and a cancelled pointerdown
       // never produces the derived click/dblclick events at all.
@@ -2653,17 +2653,17 @@
 // ── src/90-sync.js ────────────────────────────────────────────────────────
   // ── live refresh (beacon keep-SSE + focus + idle poll) ───────────────────
   // The writer bumps /beacon/rev on every mutation. On a real change refresh
-  // the tree AND the open page — so an edit made on another device shows up
-  // here without a reload. Local unsaved edits always win: `dirty` blocks the
+  // the tree AND the open page. So an edit made on another device shows up
+  // here without a reload. Local unsaved edits always win. `dirty` blocks the
   // content swap until the page is saved or reopened.
   async function refreshOpen() {
     if (!current || curFolder || dirty || document.hidden || viewingRev !== null) return;
-    // remember WHAT we are fetching: by the time it lands the user may have opened
-    // another page, switched mode, selected a folder, or entered history view —
-    // applying a stale body then would show the wrong content or, across modes,
+    // remember WHAT we are fetching. By the time it lands the user may have opened
+    // another page, switched mode, selected a folder, or entered history view.
+    // Applying a stale body then would show the wrong content or, across modes,
     // autosave a page body over a memory.
     const wasCurrent = current, wasMode = mode;
-    // a queued edit outranks the ship's copy — reconciling now would paint
+    // a queued edit outranks the ship's copy. Reconciling now would paint
     // the stale server body over work that has not synced yet
     if (await offGet(mode === 'know' ? 'know:' + current : current)) return;
     const url = mode === 'know'
@@ -2679,18 +2679,19 @@
     if (curFolder || viewingRev !== null) return;
     // A KIND change with an UNCHANGED body still needs handling. Retagging a
     // page (gmi -> md, say) leaves the text byte-identical, so the body check
-    // below returns early and the preview keeps rendering with the old builder
-    // — forever, because the boot snapshot caches the rendered html too. This
-    // request has no &render=1, so re-open the page properly rather than trying
-    // to patch the preview from a response that does not contain one.
+    // below returns early and the preview keeps rendering with the old builder.
+    // That lasts forever, because the boot snapshot caches the rendered html
+    // too. This request has no &render=1, so re-open the page properly rather
+    // than trying to patch the preview from a response that does not contain
+    // one.
     if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent); return; }
-    // track the rev even when the BODY is unchanged: a save from elsewhere
+    // track the rev even when the BODY is unchanged. A save from elsewhere
     // that landed the same text still moved the revision, and a stale curRev
-    // makes the next save carry a stale base — manufacturing a false
+    // makes the next save carry a stale base, manufacturing a false
     // conflict (and a conflicts/ page) out of nothing
     if (mode !== 'know' && d.rev) curRev = d.rev;
     if (d.body === src.value) return;
-    // the ship's copy moved under us: this page's cached render is stale
+    // the ship's copy moved under us. This page's cached render is stale
     if (mode !== 'know') pageCache.delete(wasCurrent);
     const top = src.scrollTop;
     src.value = d.body;
@@ -2709,7 +2710,7 @@
   }
   const refreshAll = () => {
     if (document.hidden) return;
-    // replay WINS the reconnect race: loadTree would repaint queued pages
+    // replay WINS the reconnect race. loadTree would repaint queued pages
     // from the server dump before their edits landed (design doc, gap 4)
     if (degraded || offCount) { replayQueue(); return; }
     // NB: stale cached renders are dropped by loadTree, which prunes against
@@ -2722,7 +2723,7 @@
     const es = new EventSource('/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev');
     let beaconTimer = null;
     es.addEventListener('upd', () => {
-      // our own save bumps the beacon too — refetching tree + source to learn
+      // our own save bumps the beacon too. Refetching tree + source to learn
       // about content this client just wrote was ~4s of pier time per save.
       // A remote edit inside the echo window is caught by the 30s poll/focus.
       if (Date.now() < echoUntil) return;
@@ -2730,7 +2731,7 @@
       beaconTimer = setTimeout(refreshAll, 300);
     });
   } catch {}
-  // coming back to the tab/window is the moment staleness shows — catch it
+  // coming back to the tab/window is the moment staleness shows. Catch it
   // directly, plus a gentle 30s idle poll in case the SSE stream died.
   window.addEventListener('focus', refreshAll);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(); });
@@ -2829,7 +2830,7 @@
       treeList.appendChild(row);
     }
   }
-  // one knowKeys entry by (normalized) key — keys may carry a leading slash
+  // one knowKeys entry by (normalized) key. Keys may carry a leading slash
   const knowEntry = (key) =>
     knowKeys.find((x) => x.key.replace(/^\//, '') === key);
 
@@ -2866,7 +2867,7 @@
         const r = await mutate(api + '/know-untag?key=' + encodeURIComponent(current) +
           '&tag=' + encodeURIComponent(t));
         if (!r.ok) { st('untag failed ' + r.status, false); return; }
-        // this client made the change \u2014 patch the list it already holds
+        // this client made the change. Patch the list it already holds
         knowGen++;
         const k = knowEntry(current);
         if (k) k.tags = k.tags.filter((x) => x !== t);
@@ -2879,7 +2880,7 @@
   }
 
   $('ktagadd').onclick = async () => {
-    // the writer case-folds tags; fold here too so the local patch matches
+    // the writer case-folds tags. Fold here too so the local patch matches
     const t = $('ktag').value.trim().toLowerCase();
     if (!t || !current || mode !== 'know') return;
     const r = await mutate(api + '/know-tag?key=' + encodeURIComponent(current) +
@@ -2964,7 +2965,7 @@
     render();
     if (m === 'know') loadKnow(); else loadTree();
     history.replaceState(null, '', '/apps/lattice/app' + (m === 'know' ? '?view=know' : ''));
-    // the toggle's visible result is the tree listing — make sure it can be
+    // the toggle's visible result is the tree listing. Make sure it can be
     // seen: un-hide the pane on desktop, jump to the tree tab on mobile.
     if (localStorage.appNT === '1') { localStorage.appNT = '0'; applyToggles(); }
     if (isMobile()) setMv('tree');
@@ -2976,7 +2977,7 @@
   // ── legacy agent import (one-time offer) ─────────────────────────────────
   // A ship upgraded from the pre-grubbery %lattice gall agent may still have
   // it installed with knowledge this store never saw. Ask once, in-app, then
-  // never again: the server marker is authoritative (it survives a new
+  // never again. The server marker is authoritative (it survives a new
   // browser), and the localStorage flag keeps resolved installs from spending
   // a request on the check at all.
   async function legacyCheck() {
@@ -3000,8 +3001,8 @@
       'this store existed. Import the memories it holds?\n\nAnything already ' +
       'here is left exactly as it is, and nothing is removed from the old agent.',
       ['import them now', 'not now', 'never ask again'], 'ok');
-    if (choice === null) return;            // dismissed — offer again next load
-    if (choice === 'not now') {             // explicitly declined — quiet until
+    if (choice === null) return;            // dismissed. Offer again next load
+    if (choice === 'not now') {             // explicitly declined, quiet until
       sessionStorage.latLegacyAsked = '1';  // the next browser session
       return;
     }
@@ -3026,7 +3027,7 @@
         st('legacy import completed');
         return;
       }
-      // 504/502 is the reverse proxy giving up, not the ship failing: the
+      // 504/502 is the reverse proxy giving up, not the ship failing. The
       // import keeps running server-side and is usually PARTLY done. Say what
       // landed, and name the cause, because the fix is a proxy setting.
       const cut = r && (r.status === 504 || r.status === 502);
@@ -3051,14 +3052,14 @@
       return;
     }
     const res = await r.json();
-    // only latch when the SERVER says it finished; a partial run deliberately
+    // only latch when the SERVER says it finished. A partial run deliberately
     // leaves its marker unwritten so the offer returns and can be retried
     if (res.complete) localStorage.latLegacy = 'done';
     else delete sessionStorage.latLegacyAsked;
     knowGen++;
     st('imported ' + res.imported + ' memories from the old agent');
     if (mode === 'know') loadKnow(); else loadTree();
-    // NEVER advise retiring the old agent while it still holds pages: this
+    // NEVER advise retiring the old agent while it still holds pages. This
     // import moves knowledge only (the agent exposes no arm for page bodies),
     // so an uninstall on that advice would destroy them permanently.
     const kept = res.imported + ' ' + (res.imported === 1 ? 'memory' : 'memories') +
@@ -3066,7 +3067,7 @@
     const got = res.pagesImported || 0;
     let msg = 'Imported ' + kept + (got ? ', and ' + got + ' ' + (got === 1 ? 'page' : 'pages') : '') + '.';
     // The agent is cleared for retirement ONLY when the server says the whole
-    // migration completed. Never infer it from a count: an unreadable page
+    // migration completed. Never infer it from a count. An unreadable page
     // list reads as zero pages, and telling someone to uninstall on that
     // would destroy the only copy of them.
     if (!res.complete) {
@@ -3088,27 +3089,27 @@
 
 // ── src/99-boot.js ────────────────────────────────────────────────────────
   // ── boot ─────────────────────────────────────────────────────────────────
-  // paint from the last session's snapshot before the network answers: the
-  // tree and (when it matches ?name) the page body + preview appear at 0ms,
-  // then loadTree/refreshOpen reconcile in the background — local edits win,
+  // paint from the last session's snapshot before the network answers. The
+  // tree and (when it matches ?name) the page body + preview appear at 0ms.
+  // Then loadTree/refreshOpen reconcile in the background. Local edits win,
   // same rules as any live refresh.
-  // The PAGE snapshot is synchronous localStorage — small, and it is what
+  // The PAGE snapshot is small synchronous localStorage, and it is what
   // makes resume paint at literally 0ms. The TREE snapshot moved to IDB
-  // (phase 3), whose read is async but single-digit ms: imperceptible next
-  // to the ~0.5s network floor, and it frees the tree (which carries every
+  // (phase 3), whose read is async but single-digit ms, imperceptible next
+  // to the ~0.5s network floor. It also frees the tree (which carries every
   // page body) from localStorage's ~5MB ceiling.
   function bootSnap() {
     let p = null;
     try { p = JSON.parse(localStorage.appPage || 'null'); } catch {}
     if (!p || !p.name) return false;
     const name = qs.get('name');
-    // No ?name means a bare launch — above all the PWA, whose start_url can
+    // No ?name means a bare launch, above all the PWA, whose start_url can
     // never carry one. Resume the snapshot page instead of landing on an
-    // empty editor: "opens where I left off" is what an installed app means.
+    // empty editor. "opens where I left off" is what an installed app means.
     // A ?name that does not match the snapshot still defers to the network.
     if (name && p.name !== name) return false;
     applyPage(p.name, p);
-    // openPage sets the upload-target folder; the snapshot path must too,
+    // openPage sets the upload-target folder. The snapshot path must too,
     // or uploads land at the root until the next explicit open
     setFolderCtx(p.name);
     return true;
@@ -3122,7 +3123,7 @@
     }
     try { localStorage.removeItem('appTree'); } catch {}
     // if the network dump (or any local activity) beat us here, it is fresher
-    // than the snapshot — and deliberately NO treeGen bump: a snapshot must
+    // than the snapshot. Also deliberately NO treeGen bump. A snapshot must
     // never supersede an in-flight loadTree the way a real local patch does
     if (!t || !t.length || nodes.length) return;
     nodes = t;
@@ -3132,14 +3133,14 @@
   // the control-panel lists (sharing groups, shared-with-me) are never needed
   // to read or edit anything, so they load AFTER the editor is usable. Issued
   // at parse time they were two pier round-trips queued ahead of the tree, and
-  // the pier serializes — pure delay on the only requests that matter.
+  // the pier serializes, pure delay on the only requests that matter.
   const loadPanels = () => { loadPerms(); loadShared(); };
-  // a queue left by a previous session syncs on open — with no Background
+  // a queue left by a previous session syncs on open. With no Background
   // Sync (the SW must not intercept API calls), next-open IS the replay
   // moment, and the UI says so rather than implying closed-app sync exists
   setTimeout(() => { if (offCount) replayQueue(); }, 4000);
   if (qs.get('grub')) {
-    // arrived from the explorer's edit link: open that ball path directly. The
+    // arrived from the explorer's edit link. Open that ball path directly. The
     // tree still lists lattice pages, so clicking one leaves grub mode.
     loadTree().then(loadPanels);
     openGrub(qs.get('grub'), qs.get('ship'));
@@ -3150,7 +3151,7 @@
   } else {
     const painted = bootSnap();
     bootTree();
-    // what the snapshot painted, if anything — the baseline for "did the USER
+    // what the snapshot painted, if anything. The baseline for "did the USER
     // do something while the dump was in flight?"
     const bootCurrent = current;
     loadTree().then(() => {
@@ -3158,9 +3159,9 @@
       const into = qs.get('into');
       // The tree paints from localStorage at 0ms, so it is clickable long
       // before this resolves. Anything boot does by default would then land on
-      // top of the user's own action — opening a page and having it close a
+      // top of the user's own action, opening a page and having it close a
       // second later, which is exactly what the trailing newFile('') did.
-      // Compare against bootCurrent, not against null: a snapshot-painted page
+      // Compare against bootCurrent, not against null. A snapshot-painted page
       // is not a user action and still wants its refreshOpen reconcile.
       const touched = current !== bootCurrent || curFolder !== null || dirty;
       if (touched) {
@@ -3175,7 +3176,7 @@
       else if (into && nodes.some((n) => !n.page && n.path === into)) selectFolder(into);
       // no focus: boot did not ask for a new file, the user did not either
       else if (into) newFile(into, false);
-      // bare launch, snapshot resumed a page above: reconcile it, do not
+      // bare launch, snapshot resumed a page above. Reconcile it, do not
       // clobber it with an empty new-file view
       else if (current) refreshOpen();
       else newFile('', false);

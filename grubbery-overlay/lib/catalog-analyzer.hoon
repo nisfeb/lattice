@@ -1,4 +1,4 @@
-::  /lib/catalog-analyzer — gemtext → catalog row data.
+::  /lib/catalog-analyzer, gemtext → catalog row data.
 ::
 ::  Pure structural extraction over a fetched page body. The analyzer
 ::  identifies title, headings (with depth + position), outbound links
@@ -14,7 +14,7 @@
 ::
 |%
 ::  +$  analysis: the result of analyzing one body. The crawler attaches
-::  publisher/source/path/url/fetched at the row-write step — none of
+::  publisher/source/path/url/fetched at the row-write step. None of
 ::  those are derivable from the body itself.
 ::
 +$  analysis
@@ -34,7 +34,7 @@
 +$  term     [term=@t tf=@ud]   ::  one posting: a content word + its in-page frequency
 ::
 ::  Per-page caps on extracted rows. A hostile page body (e.g. a megabyte
-::  of "# x\n") would otherwise yield one catalog-* INSERT per line — a
+::  of "# x\n") would otherwise yield one catalog-* INSERT per line, a
 ::  single page amplifying into a huge urQL poke. These bound the analysis
 ::  output (first-N by document order), so the row fan-out per page is
 ::  bounded the way +manifest-max bounds the page fan-out per publisher.
@@ -43,7 +43,7 @@
 ++  link-max     ^-(@ud 1.024)
 ++  tag-max      ^-(@ud 128)
 ::  Per-page cap on inverted-index postings. A page's body is tokenized into a
-::  term->frequency map; we keep only the top-`term-max` terms by frequency
+::  term->frequency map. We keep only the top-`term-max` terms by frequency
 ::  (ties broken by term order, for determinism). This bounds the per-page
 ::  obelisk fan-out the same way the caps above do, AND is one of the three
 ::  lossy stages (with stop-word/min-length filtering and dedup-to-count) that
@@ -51,14 +51,14 @@
 ++  term-max     ^-(@ud 512)
 ::  Upper bound on a SINGLE term's byte length, and on the author-declared
 ::  category/summary. A hostile page with one giant space-free run would
-::  otherwise store a multi-KB "term"; real search words are short. Bytes, not
-::  codepoints — a crude DoS guard that keeps any one value bounded.
+::  otherwise store a multi-KB "term". Real search words are short. Bytes, not
+::  codepoints, a crude DoS guard that keeps any one value bounded.
 ++  term-len-max  ^-(@ud 64)
 ++  summary-max   ^-(@ud 280)
 ::
 ::  +analyze: single-pass fold over the body's lines.
 ::
-::  Order of prefix checks matters — `### ` must be tested BEFORE `## `,
+::  Order of prefix checks matters. `### ` must be tested BEFORE `## `,
 ::  which must be tested BEFORE `# `, so "### Foo" isn't accidentally
 ::  picked up as a level-1 heading with text "## Foo".
 ::
@@ -72,7 +72,7 @@
 ++  analyze
   |=  body=@t
   ^-  analysis
-  ::  strip a trailing CR per line: to-wain splits on LF only, but CRLF is the
+  ::  strip a trailing CR per line. to-wain splits on LF only, but CRLF is the
   ::  Gemini line terminator, so without this the CR rides into every heading /
   ::  tag / link-target token and urq-esc turns it into a trailing space that
   ::  breaks exact-match tag + backlink lookups (terms are spared by trim-punct).
@@ -85,8 +85,8 @@
   =/  word-count=@ud  0
   ::  inverted-index accumulator: content word -> in-page frequency. Folded on
   ::  the SAME body lines that feed +count-words, so the term index is a near-
-  ::  free byproduct of the word-count pass — the body is never re-traversed and
-  ::  never persisted; only the derived (term, tf) postings are.
+  ::  free byproduct of the word-count pass. The body is never re-traversed and
+  ::  never persisted. Only the derived (term, tf) postings are.
   =|  term-freqs=(map @t @ud)
   ::  author-declared metadata (feature A), from `%meta key: value` preamble.
   =/  author-cat=@t  ''
@@ -187,7 +187,7 @@
 ::
 ::  +parse-tag-line: `~[tag1 tag2 …]` if the line is composed entirely of
 ::  `#word` tokens (whitespace-separated, `#` followed by at least one
-::  non-space character). `~` otherwise — including empty / whitespace
+::  non-space character). `~` otherwise, including empty / whitespace
 ::  lines. Tags lose their leading `#` and are lower-cased.
 ::
 ++  parse-tag-line
@@ -208,8 +208,8 @@
   ?.  &(?=(^ i.toks) =('#' i.i.toks) ?=(^ t.i.toks))  ~
   $(toks t.toks, acc [(crip (cass t.i.toks)) acc])
 ::
-::  +split-space: split a tape on runs of spaces; empty segments dropped.
-::  In-order; no flop needed at the caller.
+::  +split-space: split a tape on runs of spaces. Empty segments dropped.
+::  In-order. No flop needed at the caller.
 ::
 ++  split-space
   |=  t=tape
@@ -226,7 +226,7 @@
   $(t t.t, cur [i.t cur])
 ::
 ::  +count-words: whitespace-separated tokens. Good enough for ranking
-::  and excerpt sizing; not lexically perfect.
+::  and excerpt sizing, not lexically perfect.
 ::
 ++  count-words
   |=  t=tape
@@ -260,15 +260,15 @@
 ::
 ::  +urq-esc: make an arbitrary tape safe inside an obelisk single-quoted
 ::  urQL string literal. obelisk's cord-literal lexer (its /lib/parse.hoon)
-::  has exactly ONE escape rule — the byte pair \' yields a literal quote —
+::  has exactly ONE escape rule (the byte pair \' yields a literal quote)
 ::  and takes every other byte, including a lone backslash, VERBATIM. There
-::  is NO \\ rule, so backslashes must never be doubled: doubling corrupts
+::  is NO \\ rule, so backslashes must never be doubled. Doubling corrupts
 ::  interior backslashes, and a value ENDING in \ would emit ...\' where the
-::  lexer's escape rule EATS the caller's closing quote — the literal never
+::  lexer's escape rule EATS the caller's closing quote. The literal never
 ::  terminates and the rest of the multi-statement poke is swallowed as
 ::  string content (urQL injection / whole-poke abort). So: ' becomes \',
 ::  and every backslash AND control byte (< 32: newline, CR, tab, …)
-::  becomes a space — the lexer can also cut a literal at a raw control
+::  becomes a space. The lexer can also cut a literal at a raw control
 ::  byte, so any @t that might carry one (a multi-line manifest body, a
 ::  CRLF-authored page's heading/title/link/tag) must be neutralized.
 ::  Spacing backslashes out means the only backslashes emitted are the \'
@@ -276,7 +276,7 @@
 ::  quote can never be consumed. Every urQL generator in /lib/catalog
 ::  routes untrusted @t values through this one arm. It lives HERE (not
 ::  /lib/catalog, its sole caller) because catalog's grubbery-only /<
-::  import keeps that lib out of clay's ford — this import-free lib is
+::  import keeps that lib out of clay's ford. This import-free lib is
 ::  where the desk-level /tests can reach it.
 ++  urq-esc
   |=  s=tape
@@ -293,7 +293,7 @@
 ::  ── inverted-index tokenization (feature B) ───────────────────────────
 ::
 ::  +parse-meta-line: `[key value]` if [ln] is a `%meta <key>: <value>`
-::  preamble line, `~` otherwise. The key is lower-cased + left-trimmed; the
+::  preamble line, `~` otherwise. The key is lower-cased + left-trimmed. The
 ::  value is returned raw (the caller trims). A line without `%meta ` or
 ::  without a `:` is not metadata.
 ++  parse-meta-line
@@ -308,7 +308,7 @@
   `[key value]
 ::
 ::  +index-terms: fold every content word in [t] into the frequency map [m].
-::  Dropped tokens (too short / stop word) never enter the map; surviving
+::  Dropped tokens (too short / stop word) never enter the map. Surviving
 ::  tokens bump their count. This is the dedup-to-count (bag-of-words) stage.
 ++  index-terms
   |=  [m=(map @t @ud) t=tape]
@@ -340,9 +340,9 @@
   |=  t=tape
   ^-  tape
   (flop (trim-leading (flop (trim-leading t))))
-::  +trim-both: drop leading AND trailing spaces (for %meta key/value cleanup;
-::  unlike +trim-punct it only strips spaces, keeping interior/edge punctuation
-::  like 'C++' intact).
+::  +trim-both: drop leading AND trailing spaces, for %meta key/value cleanup.
+::  Unlike +trim-punct it only strips spaces, keeping interior/edge punctuation
+::  like 'C++' intact.
 ++  trim-both
   |=  t=tape
   ^-  tape
@@ -377,9 +377,9 @@
   (gth f.a f.b)
 ::
 ::  +stop-words: a small fixed set of high-frequency English function words
-::  (3+ chars — shorter ones are already dropped by the min-length filter)
+::  (3+ chars, since shorter ones are already dropped by the min-length filter)
 ::  excluded from the term index. Deliberately small + fixed so the analyzer
-::  stays pure and unit-testable; content words (man/new/old/…) are NOT here.
+::  stays pure and unit-testable. Content words (man/new/old/…) are NOT here.
 ++  stop-words
   ^-  (set @t)
   %-  ~(gas in *(set @t))

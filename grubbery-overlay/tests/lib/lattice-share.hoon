@@ -1,9 +1,9 @@
-::  Unit tests for /lib/lattice-share — the shares inbox and the banlist.
+::  Unit tests for /lib/lattice-share, the shares inbox and the banlist.
 ::  Run with:  -test /=grubbery=/tests/lib/lattice-share ~
 ::
 ::  The inbox is a list a STRANGER can append to (any ship may poke it), and
 ::  the banlist is the only thing that can refuse one. Both are pure data, so
-::  both are testable without a ship — which matters, because the enforcement
+::  both are testable without a ship. That matters, because the enforcement
 ::  points that call them need a second ship to exercise end to end.
 ::
 /+  *test, ls=lattice-share
@@ -20,7 +20,7 @@
     (expect-eq !>(%.y) !>((is-banned:ls bans zod)))
     (expect-eq !>(%.y) !>((is-banned:ls bans bus)))
     (expect-eq !>(%.n) !>((is-banned:ls bans nec)))
-    ::  an empty banlist refuses nobody — the default must not be "deny all"
+    ::  an empty banlist refuses nobody. The default must not be "deny all"
     (expect-eq !>(%.n) !>((is-banned:ls *banned:ls zod)))
   ==
 ::  +put-entry: a re-share UPDATES rather than duplicating. Without this a

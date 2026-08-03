@@ -2,7 +2,7 @@
 
 your knowledge, on your ship.
 
-Write pages in markdown, gemtext, or HTML, or write Hoon pages that compute their own content. Keep a private, tagged memory you share with your AI. Search all of it in full text. Publishing is peer-to-peer: every published page is addressed as urb://~ship/path and travels ship-to-ship over remote scry. No DNS, no web server, no host in the middle.
+Write pages in markdown, gemtext, or HTML, or write Hoon pages that compute their own content. Keep a private, tagged memory you share with your AI. Search all of it in full text. Publishing is peer-to-peer. Every published page is addressed as urb://~ship/path and travels ship-to-ship over remote scry. No DNS, no web server, no host in the middle.
 
 (You may well be reading this page through lattice right now.)
 
@@ -31,9 +31,9 @@ A page can also be Hoon that computes its content, with state, commands, and dep
 
 ## And besides
 
-* Offline editing. Saves queue while the ship is unreachable — pages and memories both — and replay on reconnect. A concurrent edit is never lost: the newest wins and the other is kept as a page under conflicts/.
-* Bookmarks. Star any urb:// page; the list is foldered and searchable.
-* Comments. Readers comment on what you publish; a moderation inbox removes anything in one click.
+* Offline editing. Saves queue while the ship is unreachable (pages and memories both) and replay on reconnect. A concurrent edit is never lost. The newest wins and the other is kept as a page under conflicts/.
+* Bookmarks. Star any urb:// page. The list is foldered and searchable.
+* Comments. Readers comment on what you publish. A moderation inbox removes anything in one click.
 * Groups and bans. Named ship-groups with per-path read/edit grants, per-file sharing, and a banlist that revokes on ban.
 * Live location. A template page that shares your position with chosen ships: map, trail, auto-updates, hard expiry.
 

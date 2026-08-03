@@ -1,6 +1,6 @@
   // ── comments inbox: <lat-comments> ───────────────────────────────────────
   // Comments arrive from OTHER ships, and until now the workspace had no view
-  // of them — the reader rendered a thread per page, so finding out anyone had
+  // of them. The reader rendered a thread per page, so finding out anyone had
   // replied meant visiting each published page. This is the owner's side: what
   // came in, across every page, newest first, with a way to remove one.
   //
@@ -52,7 +52,7 @@
       : '';
     if (!inbox.length) {
       host.className = 'aclempty';
-      // say WHY it might be empty: comments are opt-in per page, so "none yet"
+      // say WHY it might be empty. Comments are opt-in per page, so "none yet"
       // and "never enabled anywhere" look identical and mean different things
       host.textContent = 'No comments. They are opt-in per page — turn them on '
         + 'from a page’s sharing controls.';
@@ -80,7 +80,7 @@
       head.appendChild(who); head.appendChild(del);
       card.appendChild(head);
 
-      // the page it landed on, clickable — the point of an inbox is getting
+      // the page it landed on, clickable. The point of an inbox is getting
       // to the thing being talked about
       const on = document.createElement('a');
       on.className = 'gname';

@@ -1,7 +1,7 @@
   // ── layout toggles + mobile tabs ─────────────────────────────────────────
   const ws = $('ws');
   // soft-wrap is the default (long lines running off-screen are unusable on
-  // mobile); the toggle still turns it off, and a saved preference wins.
+  // mobile). The toggle still turns it off, and a saved preference wins.
   if (!('appWrap' in localStorage)) localStorage.appWrap = '1';
   const applyToggles = () => {
     ws.classList.toggle('nt', localStorage.appNT === '1');
@@ -26,16 +26,16 @@
   };
   for (const b of document.querySelectorAll('.mtabs button'))
     b.onclick = () => setMv(b.dataset.mv);
-  // On a phone the code pane is the wrong place to land: with no file open it
+  // On a phone the code pane is the wrong place to land. With no file open it
   // is an empty box, and the tree is how you get anywhere. Start on the tree
-  // and let opening a file move us — applyPage switches to 'code' on mobile,
+  // and let opening a file move us. applyPage switches to 'code' on mobile,
   // so a remembered or ?name page still lands in the editor. Desktop shows
   // every pane at once, so 'code' remains right there.
   setMv(isMobile() ? 'tree' : 'code');
 
   // ── pane resize: drag a boundary, double-click it to reset ───────────────
   // Widths live in CSS custom properties on #ws (see .psplit in the shell
-  // css). Outer panes store px; the editor/preview boundary stores the
+  // css). Outer panes store px. The editor/preview boundary stores the
   // editor's fr share against the preview's fixed 1fr, so it keeps meaning
   // when the window or the outer panes change size.
   {
@@ -51,7 +51,7 @@
     const wire = (id, key, drag) => {
       const h = $(id);
       if (!h) return;                    // stale cached shell without handles
-      // the reset gesture is detected from pointerup pairs, NOT dblclick:
+      // the reset gesture is detected from pointerup pairs, NOT dblclick.
       // pointerdown must preventDefault (otherwise native selection starts
       // and eats the pointer stream mid-drag), and a cancelled pointerdown
       // never produces the derived click/dblclick events at all.

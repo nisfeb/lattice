@@ -1,5 +1,5 @@
 fn main() {
-    // Opting ANY command into the app manifest gates them ALL — an unlisted
+    // Opting ANY command into the app manifest gates them ALL. An unlisted
     // command is denied everywhere ("connect not allowed"). So every command
     // is listed, local windows get all of them via capabilities/local.json,
     // and the ship-served workspace gets only pick_upload (workspace-remote).

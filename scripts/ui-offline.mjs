@@ -49,7 +49,7 @@ const qCount = () => page.evaluate(() => new Promise((res) => {
 }));
 
 // the switch: while down, saves and the reconnect probe abort at the network
-// layer — indistinguishable from an unreachable ship as far as fetch can see
+// layer, indistinguishable from an unreachable ship as far as fetch can see
 let shipDown = false;
 await page.setRequestInterception(true);
 page.on('request', (r) => {
@@ -77,7 +77,7 @@ try {
   await page.goto(APP + '?name=' + encodeURIComponent(A), { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.includes('alpha v1'));
 
-  // ── 1. the ship goes away mid-session; an edit queues instead of failing ──
+  // ── 1. the ship goes away mid-session. An edit queues instead of failing ──
   step = 'edit while down';
   shipDown = true;
   await page.evaluate(() => {
@@ -110,7 +110,7 @@ try {
   step = 'mutate guard';
   await page.evaluate(() => document.querySelector('.share button[data-m="clearweb"]').click());
   // the guard's own message is immediately followed by the caller's failure
-  // line ("share failed offline") — the FINAL status is what the user reads
+  // line ("share failed offline"). The FINAL status is what the user reads
   await wait(() => (document.getElementById('status').textContent || '').includes('share failed offline'));
   check('a share attempt while offline is refused, named as offline', true);
 
@@ -129,10 +129,11 @@ try {
   check('the ship has the offline edit', server === '# alpha OFFLINE EDIT', JSON.stringify(server));
 
   // ── 5. Phase 2: a conflict is applied AND flagged, with the loser kept ───
-  // While this client is offline, "another device" (node itself — its fetches
-  // bypass the page's interception, exactly like a second machine) edits the
-  // same page. On replay: the offline version wins as the newest revision,
-  // the status names the overwritten rev, and history still holds it.
+  // While this client is offline, "another device" (node itself, whose
+  // fetches bypass the page's interception, exactly like a second machine)
+  // edits the same page. On replay: the offline version wins as the newest
+  // revision, the status names the overwritten rev, and history still
+  // holds it.
   step = 'conflict on replay';
   await page.goto(APP + '?name=' + encodeURIComponent(B), { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.includes('beta v1'));
@@ -164,7 +165,7 @@ try {
     JSON.stringify(winner));
   // NOT asserted via page-source-at: the firm keep coalesces rapid revisions
   // (three quick writes kept revs [3,1] in testing), so history is exactly
-  // the wrong place to promise recovery from — which is why the server
+  // the wrong place to promise recovery from, which is why the server
   // preserves the loser as a real page instead.
   const keptName = 'conflicts/' + B.replace(/\//g, '-') + '-rev' + cj.rev;
   const kept = await page.evaluate(async (n) => {
@@ -175,7 +176,7 @@ try {
     kept === '# beta CONCURRENT', keptName + ' -> ' + JSON.stringify(kept));
 
   // ── 6. know memories: queue, queue-first reopen, last-write-wins replay ──
-  // know-read is deliberately NOT intercepted: the server still answers with
+  // know-read is deliberately NOT intercepted. The server still answers with
   // the pre-edit body, so the reopen check proves the queue OUTRANKS a
   // reachable read, not merely a dead one.
   step = 'know offline';

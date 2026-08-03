@@ -1,8 +1,8 @@
   // ── controls pane: <lat-ctl> frame ───────────────────────────────────────
-  // Renders the pane skeleton with one tag per panel; the panel components
+  // Renders the pane skeleton with one tag per panel. The panel components
   // (lat-knowtags 68, lat-share 66, lat-history/lat-links 77) upgrade when
-  // NB: no lat-perms — group EDITING lives in the full-window ACL pane now;
-  // this column only points existing groups at the open file (66-share).
+  // NB: no lat-perms. Group EDITING lives in the full-window ACL pane now.
+  // This column only points existing groups at the open file (66-share).
   // their own files run, in file order. Button handlers wired below in this
   // file (and in later files) find their elements because the frame renders
   // here first.
@@ -34,8 +34,8 @@
   }
 
   // NB: the command box is gone from this panel. It POSTed to /page-cmd, the
-  // input channel for a programmable page. The ROUTE stays — public form
-  // submissions (POST /f/<page>) go through the same handler — but nothing in
+  // input channel for a programmable page. The ROUTE stays, since public form
+  // submissions (POST /f/<page>) go through the same handler, but nothing in
   // the editor sends to it now.
 
   // ── delete ───────────────────────────────────────────────────────────────

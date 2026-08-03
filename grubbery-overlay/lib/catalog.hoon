@@ -1,4 +1,4 @@
-::  /lib/catalog — urQL schema + row-write generators for the lattice
+::  /lib/catalog, urQL schema + row-write generators for the lattice
 ::  content catalog.
 ::
 ::  The catalog is a federation-ready index of network content discovered
@@ -11,11 +11,11 @@
 ::  classifier pipeline that fills `category`/`tags` over time, and the
 ::  federation plan that lights up `source != our` rows in v2.
 ::
-::  These gates are pure — they emit urQL strings the agent pokes into
+::  These gates are pure. They emit urQL strings the agent pokes into
 ::  %obelisk via the existing `%obelisk-action` `[%tape2 %lattice _]`
 ::  envelope (see +obelisk-poke / +obelisk-create-urql in /app/lattice
 ::  + /lib/lattice for the precedent). The crawler that calls these
-::  lands in a follow-up PR; this lib stays bowl-independent so the
+::  lands in a follow-up PR. This lib stays bowl-independent so the
 ::  generators are unit-testable in isolation.
 ::
 /<  *  /lib/catalog-analyzer.hoon
@@ -28,49 +28,49 @@
 ++  catalog-normalize-term  normalize-term
 ::  +catalog-create-list: the catalog tables' CREATE statements, ONE per list
 ::  element. The agent MUST poke each element as its OWN obelisk poke (NOT one
-::  joined poke): CREATE TABLE on an already-existing table
-::  ERRORS ("duplicate key") and — since any crud error aborts the whole
-::  multi-statement poke — a single joined CREATE poke aborts at the first
-::  existing table and NEVER creates the ones after it. (That left
-::  catalog-terms/catalog-meta uncreated on a ship upgraded in place; a fresh
+::  joined poke). CREATE TABLE on an already-existing table
+::  ERRORS ("duplicate key"), and any crud error aborts the whole
+::  multi-statement poke. A single joined CREATE poke therefore aborts at the
+::  first existing table and NEVER creates the ones after it. (That left
+::  catalog-terms/catalog-meta uncreated on a ship upgraded in place. A fresh
 ::  ship was fine only because no table existed yet to abort on.) Per statement
-::  it is idempotent: an existing table's CREATE aborts only its own poke, so
+::  it is idempotent. An existing table's CREATE aborts only its own poke, so
 ::  every other table's poke still runs.
 ::
 ::  Natural keys throughout. `source` is the @p that vouches for the row:
 ::  `our` for content this ship crawled itself, another @p for catalog
-::  rows imported from a peer's /catalog-query in the federation v2 plan
-::  — so a single `(publisher, path)` can have multiple rows, one per
+::  rows imported from a peer's /catalog-query in the federation v2 plan.
+::  So a single `(publisher, path)` can have multiple rows, one per
 ::  vouching source. Identical `hash` from independent sources is
 ::  cross-corroboration and a future ranking signal.
 ::
 ::  Column-by-column notes:
-::    catalog-pages.category   — '' (empty cord) until classified.
-::    catalog-pages.cat-source — '' | 'rule' | 'llm' | 'rule-fallback' |
+::    catalog-pages.category     '' (empty cord) until classified.
+::    catalog-pages.cat-source   '' | 'rule' | 'llm' | 'rule-fallback' |
 ::                               'manual' | 'imported' | 'author'. '' = not
-::                               yet classified; the classifier pipeline (or,
+::                               yet classified. The classifier pipeline (or,
 ::                               for 'author', the crawler reading a page's
 ::                               `%meta category:` line) writes a non-empty
 ::                               value. 'author' is applied only while a page
 ::                               is still unclassified, so it never clobbers
 ::                               a 'manual'/'llm' label (see refresh-urql).
-::    catalog-pages.confidence — 0.0 when no confidence value is set;
-::                               the LLM path writes 0.0-1.0.
-::    catalog-pages.hash       — `sham` over the body cord. Hoon-side it
-::                               stays @uvH (sham's return); the urQL column
+::    catalog-pages.confidence   0.0 when no confidence value is set.
+::                               The LLM path writes 0.0-1.0.
+::    catalog-pages.hash         `sham` over the body cord. Hoon-side it
+::                               stays @uvH (sham's return). The urQL column
 ::                               is typed @ud and the value encoded via
 ::                               +scot %ud, because obelisk's urQL accepts
 ::                               neither a @uv column literal nor a `0v…`
-::                               value on INSERT — only @ud round-trips
+::                               value on INSERT. Only @ud round-trips
 ::                               losslessly through both. The hash is used
 ::                               only for equality (skip-if-unchanged), so
 ::                               the decimal aura is immaterial.
-::    catalog-links.is-internal — 1 if target-url starts with "urb://"
-::                                (other-ship link); 0 for foreign-scheme
+::    catalog-links.is-internal   1 if target-url starts with "urb://"
+::                                (other-ship link). 0 for foreign-scheme
 ::                                links (http(s)/mailto/etc).
-::    catalog-manifests        — caches each publisher's last /manifest
+::    catalog-manifests          caches each publisher's last /manifest
 ::                                hash for sweep diffing without re-fetch.
-::    catalog-pending          — the classifier queue. `reason` is one
+::    catalog-pending            the classifier queue. `reason` is one
 ::                                of 'new' | 'changed' | 'requested' |
 ::                                'low-confidence'.
 ::
@@ -83,21 +83,21 @@
       "CREATE TABLE catalog-manifests (publisher @p, scanned @da, hash @ud, raw @t) PRIMARY KEY (publisher);"
       "CREATE TABLE catalog-pending (source @p, publisher @p, path @t, queued @da, attempts @ud, reason @t) PRIMARY KEY (source, publisher, path);"
       ::  inverted index (feature B): one row per (page, content term). `tf` is
-      ::  the in-page term frequency. NO body text — a lossy, order-free
-      ::  bag-of-words; the page can't be reconstructed from these postings.
+      ::  the in-page term frequency. NO body text, a lossy, order-free
+      ::  bag-of-words. The page can't be reconstructed from these postings.
       ::  Replaced wholesale per page on re-crawl (DELETE-then-INSERT).
       "CREATE TABLE catalog-terms (source @p, publisher @p, path @t, term @t, tf @ud) PRIMARY KEY (source, publisher, path, term);"
       ::  author-declared metadata (feature A): a per-page summary an author
       ::  supplies via a `%meta summary:` line. (author-declared CATEGORY is
       ::  written straight onto catalog-pages.category, so it has no column
-      ::  here.) Refreshed every crawl; one row per page when a summary exists.
+      ::  here.) Refreshed every crawl. One row per page when a summary exists.
       "CREATE TABLE catalog-meta (source @p, publisher @p, path @t, summary @t) PRIMARY KEY (source, publisher, path);"
   ==
 ::
 ::  ── private-knowledge obelisk index (metadata only) ────────────────
 ::
 ::  A parallel schema to the catalog tables, one row per private know entry
-::  (item path + updated) plus its tags. No bodies/vectors — just enough for
+::  (item path + updated) plus its tags. No bodies/vectors, just enough for
 ::  the Explore pane to urQL over private notes. Rebuilt wholesale by
 ::  /know-reindex (create tables, then TRUNCATE + re-INSERT the live vault), so
 ::  it goes stale between reindexes, same as the retired agent's knowledge/tags.
@@ -110,7 +110,7 @@
 ::  because the dev ship's only two entries both fall on day 28.
 ::
 ::  Verified against the live engine: ~2026.6.09 and ~2026.06.09 are dropped,
-::  ~2026.6.9 and ~2026.06.19 land. So the DAY is what matters; the month pads
+::  ~2026.6.9 and ~2026.06.19 land. So the DAY is what matters. The month pads
 ::  harmlessly and is stripped only for symmetry, and the time fields are left
 ::  exactly as scot wrote them.
 ++  nopad
@@ -124,7 +124,7 @@
   ^-  tape
   =/  t=tape  (trip (scot %da when))
   ::  bail out unchanged on anything that is not scot's ~YYYY.MM.DD.. shape
-  ::  (pre-1000 or BC dates print differently) — a wrong date beats a crash.
+  ::  (pre-1000 or BC dates print differently). A wrong date beats a crash.
   ?.  (gte (lent t) 11)  t
   ?.  ?&(=('.' (snag 5 t)) =('.' (snag 8 t)))  t
   ;:  weld
@@ -141,7 +141,7 @@
 ::
 ::  WHY CHUNKED and not one giant statement: each chunk is a separate script, so
 ::  the caller sends it as its own poke and no single Arvo event has to build the
-::  whole index. A reindex of a real vault is tens of thousands of rows; in one
+::  whole index. A reindex of a real vault is tens of thousands of rows. In one
 ::  event that blocks the ship.
 ::
 ++  chunk-max  ^-(@ud 500)
@@ -151,10 +151,10 @@
   =/  rest=(list tape)  tuples
   |-  ^-  (list tape)
   ?~  rest  ~
-  ::  scag/slag/zing are WET: hand them the widened copy, never the face the ?~
+  ::  scag/slag/zing are WET. Hand them the widened copy, never the face the ?~
   ::  just narrowed, or the cast lands on the product and mull-grows.
   =/  all=(list tape)  rest
-  ::  bound to a face, not inlined into the weld — see +catalog-page-terms-urql.
+  ::  bound to a face, not inlined into the weld. See +catalog-page-terms-urql.
   =/  vals=tape  (zing (scag chunk-max all))
   :-  :(weld head vals ";")
   $(rest (slag chunk-max all))
@@ -164,7 +164,7 @@
       "CREATE TABLE tags (item @t, tag @t) PRIMARY KEY (item, tag);"
   ==
 ::  +know-index-populate-urql: clear both tables, then refill them with chunked
-::  multi-row INSERTs. Returns one script PER POKE (see +chunk-rows) — knowledge
+::  multi-row INSERTs. Returns one script PER POKE (see +chunk-rows). Knowledge
 ::  and tags are separate tables, so they cannot share a statement.
 ::
 ++  know-index-populate-urql
@@ -176,7 +176,7 @@
     ^-  [tape (list tape)]
     =/  ek=tape  (urq-esc (trip item))
     =/  up=tape  (urq-da updated)
-    ::  DEDUP tags on the ESCAPED literal, like catalog-page-refresh-urql: urq-esc
+    ::  DEDUP tags on the ESCAPED literal, like catalog-page-refresh-urql. urq-esc
     ::  collapses control bytes (<32) to one space, so two tags differing only by
     ::  an interior control byte escape to the SAME literal -> duplicate (item,tag)
     ::  PK -> the whole TRUNCATE+INSERT reindex aborts, leaving the knowledge index
@@ -206,14 +206,14 @@
 ::  owns, with its visibility recorded AT INDEX TIME so a result can be labelled
 ::  without a per-result peek (which would be one dart per hit):
 ::    %clearweb   page published to the open web, and over ames
-::    %urbit      page shared over ames only — other ships can read it, browsers cannot
+::    %urbit      page shared over ames only. Other ships can read it, browsers cannot
 ::    %private    page source that is not published anywhere
 ::    %knowledge  private know-vault entry
 ::
 ::  Peers keep coming from catalog-terms, so a search fans out over both and the
 ::  caller drops catalog rows whose publisher is us (they are in content-terms
 ::  already, better labelled). Rebuilt wholesale by /search-reindex, so it goes
-::  stale between reindexes — the same contract as the knowledge index.
+::  stale between reindexes, the same contract as the knowledge index.
 ::
 ::
 ::  ── page writes: the two-poke upsert ───────────────────────────────
@@ -223,25 +223,25 @@
 ::  classification (category / cat-source / confidence) the classifier set
 ::  on it. The split is forced by obelisk's primitives (all verified live):
 ::    - INSERT on an existing PRIMARY KEY ERRORS ("cannot add duplicate
-::      key") — it never replaces an existing row;
-::    - UPDATE on an absent row is a clean no-op;
+::      key"). It never replaces an existing row.
+::    - UPDATE on an absent row is a clean no-op.
 ::    - any parse/crud error ABORTS the whole multi-statement poke.
-::  So the two operations CAN'T share one poke: the ensure-INSERT would
+::  So the two operations CAN'T share one poke. The ensure-INSERT would
 ::  abort the refresh-UPDATE on every already-indexed page. As separate
-::  pokes — in EITHER order — the end state is correct:
-::    +catalog-page-ensure-urql  — INSERT the row with REAL content and
-::      SENTINEL classification ('' / '' / .0). Succeeds for a new page;
-::      fails harmlessly (dup-key, no state change) for one already in the
+::  pokes, in EITHER order, the end state is correct:
+::    +catalog-page-ensure-urql    INSERT the row with REAL content and
+::      SENTINEL classification ('' / '' / .0). Succeeds for a new page.
+::      Fails harmlessly (dup-key, no state change) for one already in the
 ::      catalog. This is what puts a fresh page into the classifier
 ::      worklist (category = '').
-::    +catalog-page-refresh-urql — UPDATE only the CONTENT columns (never
+::    +catalog-page-refresh-urql   UPDATE only the CONTENT columns (never
 ::      category/cat-source/confidence) so a re-crawl can't clobber a
-::      classification; then DELETE+re-INSERT the page's headings/links/
+::      classification. Then DELETE+re-INSERT the page's headings/links/
 ::      tags (pure derived content, safe to fully replace).
 ::  Brand-new page: ensure inserts it (real content, sentinel class),
 ::  refresh re-sets the same content + writes children. Existing page:
-::  ensure no-ops (dup), refresh refreshes content (class preserved) +
-::  replaces children. The crawler emits BOTH pokes per page.
+::  ensure no-ops (dup), refresh refreshes content + replaces children.
+::  The classification is preserved. The crawler emits BOTH pokes per page.
 ::
 ++  catalog-page-ensure-urql
   |=  [src=@p pub=@p pat=path now=@da =analysis]
@@ -280,7 +280,7 @@
   ::  WHERE clause shared by the content UPDATE and every child DELETE.
   =/  where=tape
     :(weld " WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
-  ::  UPDATE only content columns — category/cat-source/confidence are NOT
+  ::  UPDATE only content columns. category/cat-source/confidence are NOT
   ::  named, so an existing classification survives the re-crawl. No-op if
   ::  the row is absent (a brand-new page is created by the ensure-INSERT).
   =/  update=tape
@@ -322,11 +322,11 @@
     :~  "INSERT INTO catalog-links (source, publisher, path, position, target-url, label, is-internal) VALUES ("
         st  ", "  pt  ", '"  ek  "', "  p  ", '"  tt  "', '"  lt  "', "  intr  ");"
     ==
-  ::  DEDUPE tags first: the analyzer lower-cases but does not dedupe, so a page
+  ::  DEDUPE tags first. The analyzer lower-cases but does not dedupe, so a page
   ::  with `#Urbit #urbit` (or a repeated hashtag) would emit two INSERTs on the
-  ::  same PK (source,publisher,path,tag); the 2nd dup-keys and ABORTS the whole
+  ::  same PK (source,publisher,path,tag). The 2nd dup-keys and ABORTS the whole
   ::  refresh poke, mis-indexing the page every crawl. A set collapses collisions.
-  ::  dedup on the ESCAPED literal, not the raw tag: urq-esc collapses control
+  ::  dedup on the ESCAPED literal, not the raw tag. urq-esc collapses control
   ::  bytes (<32) to one space, so two raw tags differing only by an interior
   ::  control byte escape to the SAME literal -> duplicate PK -> the whole refresh
   ::  poke aborts. Escaping first, then setting, collapses those collisions too.
@@ -341,8 +341,8 @@
     :~  "INSERT INTO catalog-tags (source, publisher, path, tag) VALUES ("
         st  ", "  pt  ", '"  ek  "', '"  tg  "');"
     ==
-  ::  feature A — adopt the author's `%meta category:` ONLY while the page is
-  ::  still unclassified: the WHERE carries `category = ''`, so this no-ops once
+  ::  feature A: adopt the author's `%meta category:` ONLY while the page is
+  ::  still unclassified. The WHERE carries `category = ''`, so this no-ops once
   ::  any classifier (llm/manual) has set a label, and re-applies on re-crawl
   ::  for a page still on the worklist. Empty tape when no category was declared.
   =/  acat=tape  (urq-esc (trip author-category.analysis))
@@ -354,8 +354,8 @@
         " WHERE source = "  st  " AND publisher = "  pt
         " AND path = '"  ek  "' AND category = '';"
     ==
-  ::  feature A — the author summary (content, refreshed every crawl). Its
-  ::  DELETE is in `deletes` above; INSERT only when a summary was declared.
+  ::  feature A: the author summary (content, refreshed every crawl). Its
+  ::  DELETE is in `deletes` above. INSERT only when a summary was declared.
   =/  meta-insert=tape
     ?:  =('' summary.analysis)  ""
     =/  sm=tape  (urq-esc (trip summary.analysis))
@@ -367,8 +367,8 @@
 ::
 ::  +link-internal: does a link target point into the network / to a known
 ::  page on this publisher? Replaces the old "starts with urb://" heuristic,
-::  which marked every RELATIVE intra-ship link — the common case in real
-::  gemtext — as external (live crawl of ~zod showed is-internal=0 on every
+::  which marked every RELATIVE intra-ship link, the common case in real
+::  gemtext, as external (live crawl of ~zod showed is-internal=0 on every
 ::  /-rooted link). A target is internal iff it is an explicit `urb://` link
 ::  OR a /-rooted spur that resolves to a path in `pages` (the publisher's
 ::  current manifest set, threaded in by the crawler). Foreign schemes
@@ -384,7 +384,7 @@
   ?:  ?=(%| -.parsed)  |
   ::  `pages` holds content-map keys of the form /pub/<spur>/gmi, but a relative
   ::  gemtext link is a bare spur (/notes/intro). Accept either the raw spur (a
-  ::  full content-key link) or its derived page key /pub/<spur>/gmi — testing only
+  ::  full content-key link) or its derived page key /pub/<spur>/gmi. Testing only
   ::  the bare spur never matched, so every relative intra-ship link read external.
   ?|  (~(has in pages) p.parsed)
       (~(has in pages) (weld /pub (snoc `path`p.parsed %gmi)))
@@ -392,7 +392,7 @@
 ::
 ::  +catalog-page-delete-urql: remove every row for one page across all
 ::  five catalog tables. Used when the crawler observes a path drop out
-::  of a publisher's /manifest. Idempotent — DELETE WHERE on absent rows
+::  of a publisher's /manifest. Idempotent. DELETE WHERE on absent rows
 ::  is a no-op.
 ::
 ++  catalog-page-delete-urql
@@ -412,7 +412,7 @@
       ::  the inverted-index postings + author summary for this page MUST be
       ::  swept too, else a page that drops out of a publisher's manifest leaves
       ::  orphaned term rows → "ghost" search hits to a page no longer in
-      ::  catalog-pages. (Bug found in the design review; fixed here.)
+      ::  catalog-pages. (Bug found in the design review, fixed here.)
       (weld "DELETE FROM catalog-terms" where)
       (weld "DELETE FROM catalog-meta" where)
   ==
@@ -428,11 +428,11 @@
   :(weld "FROM catalog-pages WHERE source = " st " AND publisher = " pt " SELECT path;")
 ::
 ::  +catalog-page-terms-urql: replace one page's inverted-index postings. A
-::  DELETE-then-INSERT in a SINGLE poke — the
+::  DELETE-then-INSERT in a SINGLE poke. The
 ::  leading DELETE clears the prior crawl's postings so the INSERTs can't hit a
 ::  duplicate key (which would abort the poke). Emitted as its OWN obelisk poke,
 ::  separate from the page ensure/refresh, so a pathological term aborts only
-::  the index write, never the page row. NO body text is stored — only the
+::  the index write, never the page row. NO body text is stored, only the
 ::  derived (term, tf) postings, an order-free bag-of-words.
 ++  catalog-page-terms-urql
   |=  [src=@p pub=@p pat=path =analysis]
@@ -442,7 +442,7 @@
   =/  ek=tape   (urq-esc (trip (spat pat)))
   =/  where=tape
     :(weld " WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
-  ::  dedup on the ESCAPED term literal (first tf wins): urq-esc collapses control
+  ::  dedup on the ESCAPED term literal (first tf wins). urq-esc collapses control
   ::  bytes to a space, so two raw terms differing only by an interior control byte
   ::  escape to the SAME literal -> duplicate PK -> the terms poke aborts. The
   ::  analyzer deduped on the raw form, which doesn't cover post-escape collisions.
@@ -452,7 +452,7 @@
     =/  tx=tape  (urq-esc (trip term.tm))
     ?:  (~(has by acc) tx)  acc
     (~(put by acc) tx tf.tm)
-  ::  ONE multi-row INSERT, not one per term: this runs on the crawler's hot path
+  ::  ONE multi-row INSERT, not one per term. This runs on the crawler's hot path
   ::  for every page, and obelisk rebuilds the whole term index per statement (see
   ::  +chunk-rows). Bounded by term-max (512), so it needs no chunking.
   =/  tuples=(list tape)
@@ -465,7 +465,7 @@
   =/  del=tape  (weld "DELETE FROM catalog-terms" where)
   ?~  tuples  del
   =/  all=(list tape)  tuples
-  ::  bind the zing to a tape face FIRST: a raw zing/turn product sitting in weld
+  ::  bind the zing to a tape face FIRST. A raw zing/turn product sitting in weld
   ::  position beside tape literals fuse-loops the compiler.
   =/  vals=tape  (zing all)
   ;:  weld  del
@@ -479,16 +479,16 @@
 ::  These build SELECT urQL for the catalog read HTTP endpoints. The
 ::  lattice agent runs them through the same async obelisk bridge as
 ::  /know-query (poke %obelisk-action, await the result %fact). Obelisk's
-::  urQL is FROM-first and — verified live against the installed obelisk —
+::  urQL is FROM-first and (verified live against the installed obelisk)
 ::  supports equality + comparison WHERE, AND-conjunction, and ORDER BY,
 ::  but NOT LIKE, LIMIT, or COUNT. So:
-::    - filtering is equality-only (category / publisher / source);
+::    - filtering is equality-only (category / publisher / source).
 ::    - free-text substring search is the CALLER's job, over the
-::      /catalog-list result (obelisk has no LIKE);
-::    - there's no row cap server-side (no LIMIT) — callers paginate.
+::      /catalog-list result (obelisk has no LIKE).
+::    - there's no row cap server-side (no LIMIT). Callers paginate.
 ::
 ::  @t values are single-quoted + +urq-esc'd (injection-safe). @p values
-::  (publisher, source) are emitted as BARE ship literals — obelisk's
+::  (publisher, source) are emitted as BARE ship literals. Obelisk's
 ::  crud layer type-checks `publisher = ~zod`, and rejects a quoted
 ::  `'~zod'`. Endpoints MUST pre-validate @p params via +slaw %p and pass
 ::  the canonical (scot %p) form, so only well-formed ship literals reach
@@ -496,13 +496,13 @@
 ::  ════════════════════════════════════════════════════════════════════
 ::
 ::  The column set every page-row query returns. Body/headings/links are
-::  NOT here — they're per-page detail fetched via +catalog-fetch-urql.
+::  NOT here. They're per-page detail fetched via +catalog-fetch-urql.
 ++  catalog-list-cols
   ^-  tape
   "source, publisher, path, url, title, category, cat-source, word-count, fetched"
 ::
 ::  +catalog-list-urql: every catalog page, newest first. No LIMIT in
-::  obelisk's urQL; callers paginate client-side.
+::  obelisk's urQL. Callers paginate client-side.
 ++  catalog-list-urql
   ^-  tape
   ;:  weld
@@ -510,9 +510,9 @@
   ==
 ::
 ::  +catalog-explore-urql: filter pages by any combination of category /
-::  publisher / source, AND-ed. Each arg is a tape; "" drops that filter.
-::  `category` is a @t column (quoted + escaped); `publisher` and `source`
-::  are @p columns (bare ship literal — caller pre-validates via slaw %p).
+::  publisher / source, AND-ed. Each arg is a tape. "" drops that filter.
+::  `category` is a @t column (quoted + escaped). `publisher` and `source`
+::  are @p columns (bare ship literal, caller pre-validates via slaw %p).
 ::  No filters → identical to +catalog-list-urql.
 ++  catalog-explore-urql
   |=  [category=tape publisher=tape source=tape]
@@ -546,7 +546,7 @@
   :(weld "FROM catalog-pages WHERE url = '" (urq-esc url) "' SELECT *;")
 ::
 ::  +catalog-by-tag-urql: the (source, publisher, path) of every page
-::  carrying `tag`. Queries the catalog-tags table; the caller resolves
+::  carrying `tag`. Queries the catalog-tags table. The caller resolves
 ::  the keys to full rows via +catalog-fetch-urql (tag is in a separate
 ::  table from pages, and obelisk's single-equality JOIN ON can't express
 ::  the composite (source, publisher, path) key cleanly).
@@ -556,8 +556,8 @@
   :(weld "FROM catalog-tags WHERE tag = '" (urq-esc tag) "' SELECT source, publisher, path;")
 ::
 ::  +catalog-search-urql: the (source, publisher, path) + in-page frequency of
-::  every page whose body contains `term` (feature B). One equality WHERE —
-::  obelisk has no LIKE / IN / OR — so a multi-word query is N sequential
+::  every page whose body contains `term` (feature B). One equality WHERE
+::  (obelisk has no LIKE / IN / OR), so a multi-word query is N sequential
 ::  single-term calls the CLIENT fans out, then ranks (TF-IDF, df = posting-row
 ::  count) + joins the keys back to catalog-pages rows. Same key-then-resolve
 ::  shape as +catalog-by-tag-urql. `term` must be pre-normalized by the caller
@@ -567,12 +567,12 @@
   ^-  tape
   :(weld "FROM catalog-terms WHERE term = '" (urq-esc term) "' SELECT source, publisher, path, tf;")
 ::
-::  +catalog-backlinks-urql: the pages that link TO `target` — every catalog-links
+::  +catalog-backlinks-urql: the pages that link TO `target`, every catalog-links
 ::  row whose target-url equals it. `target` is matched VERBATIM against the
 ::  authored link string the analyzer stored (the raw gemtext after `=> `, e.g.
-::  "urb://~pub/other" or "/other"), NOT a normalized catalog url — so the caller
+::  "urb://~pub/other" or "/other"), NOT a normalized catalog url, so the caller
 ::  passes the form the author wrote. is-internal is returned so the client can tell
-::  namespace links from external ones. Same key-then-resolve shape as by-tag: the
+::  namespace links from external ones. Same key-then-resolve shape as by-tag. The
 ::  client joins (source, publisher, path) back to catalog-pages for titles.
 ++  catalog-backlinks-urql
   |=  target=tape
@@ -581,8 +581,8 @@
     "FROM catalog-links WHERE target-url = '"  (urq-esc target)
     "' SELECT source, publisher, path, label, is-internal, position;"
   ==
-::  +catalog-toc-urql: one page's headings in document order — its table of
-::  contents. Keyed by (source, publisher, path); path is the (spat content-key)
+::  +catalog-toc-urql: one page's headings in document order, its table of
+::  contents. Keyed by (source, publisher, path). path is the (spat content-key)
 ::  form the crawler stores (/pub/<spur>/gmi). ORDER BY position so the outline
 ::  reads top-to-bottom. source is always the crawler ship (our).
 ++  catalog-toc-urql
@@ -609,18 +609,18 @@
 ::  worklist + the existing taxonomy, decides a category for each page, and
 ::  writes it back. obelisk can't be read from an MCP thread (no scry, the
 ::  bridge is async), so the two READ helpers below are served by HTTP
-::  endpoints the classifier calls directly; the WRITE is exposed both as an
+::  endpoints the classifier calls directly. The WRITE is exposed both as an
 ::  HTTP endpoint and a poke action so an MCP tool can drive it.
 ::  ════════════════════════════════════════════════════════════════════
 ::
-::  +catalog-pending-list-urql: the worklist — every page not yet classified
+::  +catalog-pending-list-urql: the worklist, every page not yet classified
 ::  (category = ''), newest first. obelisk has no LIMIT, so the classifier
 ::  takes a batch off the front and paginates client-side. This is a
-::  COMPUTED worklist, not a queue table: a fresh crawl INSERTs category=''
-::  (page appears here); +catalog-classify-urql sets a category (page drops
-::  off); the two-poke upsert preserves the category across re-sweeps (an
+::  COMPUTED worklist, not a queue table. A fresh crawl INSERTs category=''
+::  (page appears here). +catalog-classify-urql sets a category (page drops
+::  off). The two-poke upsert preserves the category across re-sweeps (an
 ::  already-classified page never reappears). No catalog-pending TABLE write
-::  is needed for the 'new' case — that table is reserved for future
+::  is needed for the 'new' case. That table is reserved for future
 ::  explicit-requeue reasons ('changed' / 'requested' / 'low-confidence').
 ++  catalog-pending-list-urql
   ^-  tape
@@ -632,10 +632,10 @@
 ::
 ::  +catalog-classify-urql: write a classification onto one page. A pure
 ::  multi-column UPDATE (verified live) that names ONLY the classification
-::  columns, never content — so it composes cleanly with the crawler's
+::  columns, never content, so it composes cleanly with the crawler's
 ::  content refresh in any interleaving. `cat-source` is the provenance
-::  ('llm' | 'rule' | 'manual' | 'imported'); `confidence` is 0.0-1.0 (@rs,
-::  emitted via +scot %rs — obelisk parses the `.85` float syntax). Targets
+::  ('llm' | 'rule' | 'manual' | 'imported'). `confidence` is 0.0-1.0 (@rs,
+::  emitted via +scot %rs, and obelisk parses the `.85` float syntax). Targets
 ::  exactly one row via the (source, publisher, path) natural key.
 ++  catalog-classify-urql
   |=  [src=@p pub=@p pat=path category=@t cat-source=@t confidence=@rs]
@@ -653,18 +653,18 @@
     " AND path = '"  ek  "';"
   ==
 ::
-::  +catalog-vocab-urql: the existing category vocabulary — the category
+::  +catalog-vocab-urql: the existing category vocabulary, the category
 ::  column of every page. obelisk has no DISTINCT/GROUP BY (verified live),
 ::  so this returns one row per page and the CALLER dedupes + drops the ''
 ::  (unclassified) sentinel. The classifier reads this to reuse established
 ::  categories instead of coining near-duplicates (the "let users/LLMs
-::  bootstrap their own taxonomy without bias" goal — we suggest the live
-::  vocabulary, we don't impose a fixed enum).
+::  bootstrap their own taxonomy without bias" goal). We suggest the live
+::  vocabulary, we don't impose a fixed enum.
 ++  catalog-vocab-urql
   ^-  tape
-  ::  EXCLUDE author-declared categories (cat-source='author'): a crawled
+  ::  EXCLUDE author-declared categories (cat-source='author'). A crawled
   ::  publisher's `%meta category:` must NOT seed the shared taxonomy the
-  ::  classifier reuses to label OTHER pages — that would let one peer poison
+  ::  classifier reuses to label OTHER pages. That would let one peer poison
   ::  everyone's vocabulary (untrusted-content hardening from the PR review).
   "FROM catalog-pages WHERE cat-source != 'author' SELECT category;"
 ::
@@ -676,13 +676,13 @@
   ?~  t.clauses  i.clauses
   :(weld i.clauses " AND " $(clauses t.clauses))
 ::
-::  +urq-esc — the single escaper every generator above routes @t values
-::  through — lives in /lib/catalog-analyzer (bare-imported wholesale up
-::  top), NOT here: this lib's grubbery-only /< import keeps it out of
+::  +urq-esc, the single escaper every generator above routes @t values
+::  through, lives in /lib/catalog-analyzer (bare-imported wholesale up
+::  top), NOT here. This lib's grubbery-only /< import keeps it out of
 ::  clay's ford, so the escaper sits in the import-free analyzer lib where
 ::  /tests/lib/catalog-analyzer can regression-test it. Contract (locked
 ::  by those tests): \' is obelisk's ONLY lexer escape, so ' -> \' and
-::  backslashes/control bytes -> spaces, NEVER doubled — a doubled
+::  backslashes/control bytes -> spaces, NEVER doubled. A doubled
 ::  trailing \ would emit ...\', eat the caller's closing quote, and
 ::  swallow the rest of the poke as string content (urQL injection).
 --

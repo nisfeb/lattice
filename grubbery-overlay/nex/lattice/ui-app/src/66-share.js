@@ -22,7 +22,7 @@
   });
   function showShare(m) {
     // the grant result names "this page", so it MUST NOT outlive the page it
-    // was about — every target change (page open, new file, folder select,
+    // was about. Every target change (page open, new file, folder select,
     // beacon sync) routes through here. A fuzz run caught it claiming
     // "~nec can now edit this page" while a different page was open, which
     // is a permissions UI telling the user something false.
@@ -50,7 +50,7 @@
         if (!r.ok) { st('share failed ' + r.status, false); return; }
         showShare(m);
         st(m === 'clearweb' ? 'published tree at /c/' + curFolder + '/' : 'tree set ' + m);
-        // share-tree sets every page under the folder — mirror that locally
+        // share-tree sets every page under the folder. Mirror that locally
         // instead of refetching the tree to learn what we just did.
         for (const n of nodes)
           if (n.page && n.path.startsWith(curFolder + '/')) n.share = m;
@@ -73,8 +73,8 @@
 
   // ── per-file share-with: grant one ship read/edit on the OPEN page ───────
   // Writes through the same usergroups as the peers panel (an auto-group named
-  // after the ship), then notifies them; the response says whether the notice
-  // arrived — the grant is durable either way.
+  // after the ship), then notifies them. The response says whether the notice
+  // arrived. The grant is durable either way.
   const shareWith = async (mode) => {
     const shp = $('shwith').value.trim();
     if (!current) { st('open a page first', false); return; }
@@ -82,7 +82,7 @@
     // NAME the page rather than saying "this page". The editor's target can
     // change from eleven places (mode toggle, grub mode, memory open, rename,
     // …) and only four of them route through showShare, so a clear-on-change
-    // hook is whack-a-mole — a fuzz run caught the message surviving the
+    // hook is whack-a-mole. A fuzz run caught the message surviving the
     // pages/knowledge toggle. A message that names its own subject cannot go
     // false no matter what the editor does next, which is the property that
     // actually matters for a permissions UI.
@@ -107,12 +107,12 @@
 
   // ── per-file group access ────────────────────────────────────────────────
   // The same read/edit grant as the ship row above, but pointed at a group
-  // rather than one ship. This pane only SETS existing groups on this file;
-  // creating and editing the groups themselves is the ACL pane's job (there is
+  // rather than one ship. This pane only SETS existing groups on this file.
+  // Creating and editing the groups themselves is the ACL pane's job (there is
   // a link), which is what took the busy chip editor out of this narrow
   // column. Grants go through permSave, so both surfaces agree.
   //
-  // A group's grant on a page is the page's own ball path in its peek/make —
+  // A group's grant on a page is the page's own ball path in its peek/make,
   // exactly what the server's share-file writes, so a per-ship grant and a
   // per-group grant are the same kind of rule and read back the same way.
   const pagePath = (name) => '/apps/lattice.lattice_app/page/' + name;
@@ -157,7 +157,7 @@
       const canEdit = g.make.includes(path);
       mk('read', canRead, () => {
         if (canRead) {
-          // dropping read drops edit: edit without read cannot be exercised
+          // dropping read drops edit. Edit without read cannot be exercised
           g.peek = g.peek.filter((x) => x !== path);
           g.make = g.make.filter((x) => x !== path);
         } else g.peek.push(path);

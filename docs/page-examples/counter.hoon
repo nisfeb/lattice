@@ -1,4 +1,4 @@
-::  counter — commands and state. "inc" bumps the count; data is text.
+::  counter, commands and state. "inc" bumps the count. Data is text.
 |=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
 ^-  result
 =/  n=@ud  ?~(dat 0 (fall (rush ;;(@t u.dat) dim:ag) 0))

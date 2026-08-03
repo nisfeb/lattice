@@ -1,6 +1,6 @@
   // ── move / rename ────────────────────────────────────────────────────────
   // page-move does the whole thing server-side (copy + share carry-over +
-  // delete, wikilink self-references rewritten) in ONE request — the old
+  // delete, wikilink self-references rewritten) in ONE request. The old
   // client choreography was 3 round-trips per page plus one per folder.
   // Memories use the know-move route (history preserved).
   async function movePage(oldName, newName) {

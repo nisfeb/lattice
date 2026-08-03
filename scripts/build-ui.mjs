@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Concatenate ui-app/src/*.js (filename order) into the served app.js.
-// One IIFE, one served asset — the pier serializes requests (~2s each),
+// One IIFE, one served asset. The pier serializes requests (~2s each),
 // so the client must stay a single file. No deps, no bundler.
 import { readdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';

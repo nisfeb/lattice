@@ -18,3 +18,7 @@ serde_json = "1"
 # tls (rustls) so remote ships over https work; still no json/cookies
 ureq = { version = "2", default-features = false, features = ["tls"] }
 libc = "0.2"
+
+[dev-dependencies]
+# property tests only. Never in a release build.
+proptest = "1.7"

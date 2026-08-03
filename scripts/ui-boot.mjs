@@ -4,7 +4,7 @@
 //
 //   1. the preview pane was an opaque white canvas until loading finished,
 //      then popped to the theme background
-//   2. work done DURING the load was undone when it finished — open a page
+//   2. work done DURING the load was undone when it finished. Open a page
 //      while the tree (painted from localStorage at 0ms) is already clickable,
 //      and boot's trailing newFile('') closed it a second later
 //
@@ -88,7 +88,7 @@ try {
     'kv store had no tree');
   await page.evaluate((t) => new Promise((res) => {
     localStorage.appTree = t;
-    // blocked while this page holds its connection — the delete completes at
+    // blocked while this page holds its connection. The delete completes at
     // navigation, safely before the next boot's open
     const dq = indexedDB.deleteDatabase('lattice-offline');
     dq.onsuccess = dq.onerror = dq.onblocked = res;
@@ -113,7 +113,7 @@ try {
   check('preview: iframe declares light dark, so no white flash pre-srcdoc',
     /light/.test(early.cs) && /dark/.test(early.cs), early.cs);
 
-  // 2. open a page mid-load; it must survive the load completing
+  // 2. open a page mid-load. It must survive the load completing
   step = 'open during load';
   await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
     .some((a) => a.href.includes(encodeURIComponent(n))), PAGE);
@@ -152,7 +152,7 @@ try {
   // ── 3. a save must not discard an in-flight tree refresh ────────────────
   // A body-only save used to bump the tree generation, which exists so a
   // STRUCTURAL local patch is not overwritten by a list fetch issued before
-  // it. Bumping for a body change threw away legitimate refreshes: a page
+  // it. Bumping for a body change threw away legitimate refreshes. A page
   // created while an autosave was in flight never appeared in the tree. The
   // dump is held open so the overlap is deterministic rather than luck.
   step = 'save vs in-flight tree fetch';
@@ -179,7 +179,7 @@ try {
     await page.evaluate((n) => [...document.querySelectorAll('#treelist a.pg')]
       .some((a) => a.href.includes(encodeURIComponent(n))), RACE),
     'tree is missing ' + RACE);
-  // this step deliberately edited the probe page; put it back, because the
+  // this step deliberately edited the probe page. Put it back, because the
   // mobile checks below assert it resumes with its ORIGINAL body
   await page.evaluate((n, b) => fetch('/apps/lattice/page-save?name=' +
     encodeURIComponent(n) + '&type=md', { method: 'POST', body: b }), PAGE, BODY);
@@ -189,7 +189,7 @@ try {
   step = 'mobile defaults';
   await page.setRequestInterception(false);
   await page.setViewport({ width: 390, height: 780, isMobile: true });
-  // the tree-landing rule applies when NOTHING is remembered — with a
+  // the tree-landing rule applies when NOTHING is remembered. With a
   // snapshot, resuming the page wins (that is the other half of the same
   // request: "default to the tree UNLESS it remembers a recent file"). Clear
   // only the page snapshot so this asserts the no-memory case.
@@ -221,7 +221,7 @@ try {
     await page.evaluate(() => document.getElementById('ws').dataset.mv) === 'code');
 
   // ── 5. PWA launch: a BARE url resumes the last page ─────────────────────
-  // A PWA always launches at start_url, which can never carry ?name — so the
+  // A PWA always launches at start_url, which can never carry ?name, so the
   // snapshot must resume by itself. This was the report "every time I open
   // the PWA it loads my home page instead of the last page I had open".
   step = 'bare-url resume';

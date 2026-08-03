@@ -1,4 +1,4 @@
-::  mar/lattice/shared: the "shared with me" grub — notices received from
+::  mar/lattice/shared: the "shared with me" grub, notices received from
 ::  other ships, newest first, capped (see /lib/lattice-share).
 ::
 /<  ls  /lib/lattice-share.hoon

@@ -1,5 +1,5 @@
-::  card — a page whose data IS html (view mode %html via `html`). The command
-::  sets the card text; `esc` keeps it safe. Renders a real styled box in the
+::  card, a page whose data IS html (view mode %html via `html`). The command
+::  sets the card text. `esc` keeps it safe. Renders a real styled box in the
 ::  page view and on the clearweb surface.
 |=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
 ^-  result

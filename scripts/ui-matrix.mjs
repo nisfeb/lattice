@@ -38,7 +38,7 @@ const page = await browser.newPage();
 page.on('pageerror', (e) => bad('page threw: ' + e.message.slice(0, 80)));
 await page.setCookie({ name: ckName, value: ckRest.join('='), domain: host, path: '/' });
 
-// The no-native-popups rule is absolute: any prompt/confirm/alert fails the run.
+// The no-native-popups rule is absolute. Any prompt/confirm/alert fails the run.
 await page.evaluateOnNewDocument(() => {
   for (const f of ['prompt', 'confirm', 'alert'])
     window[f] = () => { throw new Error('native ' + f + '() used'); };
@@ -61,7 +61,7 @@ try {
   await page.setViewport({ width: 1400, height: 900 });
   // per-run isolation: the browser profile can persist across runs, and the
   // editor's localStorage boot snapshot would paint a PREVIOUS run's tree
-  // (stale RUN ids) — a real user's snapshot is their own last session, but
+  // (stale RUN ids). A real user's snapshot is their own last session, but
   // each matrix run is a fresh namespace.
   // plain-text 404 on the app origin: navigating to a JSON file trips
   // chromium's internal viewer (a getEventId pageerror)
@@ -69,7 +69,7 @@ try {
   await page.evaluate(async () => {
     localStorage.clear();
     indexedDB.deleteDatabase('lattice-offline');
-    // the profile can persist: drop any service worker + caches from a
+    // the profile can persist. Drop any service worker + caches from a
     // previous run/deploy so every run boots as a fresh visitor
     const regs = await navigator.serviceWorker.getRegistrations();
     for (const r of regs) await r.unregister();
@@ -79,18 +79,18 @@ try {
   await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
   ok('boot: tree renders');
 
-  // every <lat-*> tag must have upgraded to its class — a connectedCallback
+  // every <lat-*> tag must have upgraded to its class. A connectedCallback
   // that throws leaves a dead pane that fails nothing else at boot
   check('boot: custom elements upgraded', await page.evaluate(() =>
     [...document.querySelectorAll('*')].filter((e) => e.tagName.includes('-'))
       .every((e) => e.constructor !== HTMLElement)));
 
   // Icon buttons must actually RENDER. The access-control button shipped as
-  // U+26BF, which almost no font covers, so it drew as an empty .notdef box —
-  // the only entry to groups, sharing and the banlist looked like a blank
+  // U+26BF, which almost no font covers, so it drew as an empty .notdef box.
+  // The only entry to groups, sharing and the banlist looked like a blank
   // square. Every check we had asserted the element EXISTED, which it did.
-  // Compare each glyph's rendering against a guaranteed-unassigned codepoint:
-  // identical pixels means the font had nothing and drew tofu.
+  // Compare each glyph's rendering against a guaranteed-unassigned codepoint.
+  // Identical pixels means the font had nothing and drew tofu.
   const tofu = await page.evaluate(() => {
     const c = document.createElement('canvas');
     c.width = 48; c.height = 48;
@@ -137,7 +137,7 @@ try {
 
   // live refresh: an edit made elsewhere (here: straight through the API,
   // as if from another device) must land in the open editor without a
-  // reload — the beacon drives it; local edits would have blocked it.
+  // reload. The beacon drives it. Local edits would have blocked it.
   await page.evaluate(async (n) => {
     await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) + '&type=md',
       { method: 'POST', body: '# updated elsewhere' });
@@ -145,11 +145,11 @@ try {
   await wait(() => document.getElementById('src').value === '# updated elsewhere');
   ok('live: open page updates when edited elsewhere');
 
-  // version history: the earlier remote edit left ≥2 revisions; the panel
+  // version history: the earlier remote edit left ≥2 revisions. The panel
   // lists them, viewing one is read-only, restoring re-saves it as newest.
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => !document.getElementById('histsec').hidden);
-  // history is lazy now: revisions fetch on first header expand
+  // history is lazy now. Revisions fetch on first header expand
   await page.click('#histh');
   await wait(() => document.querySelectorAll('#histlist a').length >= 2);
   ok('history: panel lists revisions after expanding');
@@ -170,7 +170,7 @@ try {
   ok('history: restore re-saves the old revision as newest');
 
   // REGRESSION GUARDS for the adversarial review's findings.
-  // F2 (data loss): text typed DURING a save must survive — the save must not
+  // F2 (data loss): text typed DURING a save must survive. The save must not
   // mark the editor clean, or the refresh echo swaps the stale server body in.
   await page.evaluate((n) => {
     const s = document.getElementById('src');
@@ -217,8 +217,8 @@ try {
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.length > 0);
 
-  // autosave: a 2s typing pause persists the draft, with no UI churn —
-  // the server copy converges on what was typed.
+  // autosave: a 2s typing pause persists the draft, with no UI churn.
+  // The server copy converges on what was typed.
   await page.evaluate(() => {
     const s = document.getElementById('src');
     s.value = '# autosaved content';
@@ -236,7 +236,7 @@ try {
       return s.value === '# autosaved content' && s.selectionStart === 5;
     }));
 
-  // wikilinks render in the preview; backlinks list the linking page
+  // wikilinks render in the preview. Backlinks list the linking page
   await page.evaluate(async (n) => {
     await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n + '/linker') + '&type=md&new=1',
       { method: 'POST', body: 'see [[' + n + '/hello]]' });
@@ -250,11 +250,11 @@ try {
   await wait(() => !!document.querySelector('#linklist a'));
   check('backlinks: panel lists the linking page',
     (await page.evaluate(() => document.querySelector('#linklist a').textContent)) === RUN + '/linker');
-  await page.evaluate(async (n) => {   // done with the linker — keep later folder ops light
+  await page.evaluate(async (n) => {   // done with the linker. Keep later folder ops light
     await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n + '/linker'), { method: 'POST' });
   }, RUN);
 
-  // ...but never over local unsaved edits: type locally, change remotely,
+  // ...but never over local unsaved edits. Type locally, change remotely,
   // and the local text must survive.
   await page.evaluate(() => {
     const s = document.getElementById('src');
@@ -287,7 +287,7 @@ try {
   });
   check('wrap: soft-wrap is the default',
     await page.evaluate(() => document.getElementById('ws').className.includes('wrap')));
-  // settle before measuring: 300 lines have to re-highlight and re-layout, and
+  // settle before measuring. 300 lines have to re-highlight and re-layout, and
   // the nowrap check below already sleeps for exactly this reason. Without it
   // the geometries are compared mid-reflow and disagree for a frame.
   await sleep(300);
@@ -336,11 +336,11 @@ try {
   ok('autocomplete: Tab completes the full path');
   check('autocomplete: closes after completing',
     await page.evaluate(() => document.getElementById('ac').hidden));
-  // a scripted edit must behave exactly like typing: preview refreshes and
+  // a scripted edit must behave exactly like typing. Preview refreshes and
   // the buffer is dirty so autosave persists it
   await wait((s) => (document.getElementById('prev').srcdoc || '').includes(s), sibling);
   ok('autocomplete: completion refreshes the preview');
-  // Tab-indent is the other scripted edit — it used to show in the editor and
+  // Tab-indent is the other scripted edit. It used to show in the editor and
   // never reach the ship. Autosave firing is the observable proof it is now
   // treated as a real edit (asserting ship state here races the slow pier).
   await page.evaluate(() => {
@@ -360,7 +360,7 @@ try {
   });
 
   // Opening a page is an EXPLICIT act and must not be blocked by editor state.
-  // A guard that skipped the open when `dirty` was set shipped once: with
+  // A guard that skipped the open when `dirty` was set shipped once. With
   // unsaved edits, clicking another file silently did nothing. It surfaced
   // three steps away (a template failing to open) rather than here, so this
   // asserts the invariant directly.
@@ -369,7 +369,7 @@ try {
     '&type=md&new=1', { method: 'POST', body: '# other' }), RUN + '/other');
   await sleep(3000);
   // the client does not learn about a page created behind its back until it
-  // refreshes; focus is the cheapest way to force one deterministically
+  // refreshes. Focus is the cheapest way to force one deterministically
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
     .some((a) => a.href.includes(encodeURIComponent(n))), RUN + '/other');
@@ -431,7 +431,7 @@ try {
     (await page.evaluate(() => document.getElementById('pname').value)) === RUN);
 
   step = 'share tree';
-  // ── 5. share tree clearweb: public read + indicator; then private ────────
+  // ── 5. share tree clearweb: public read + indicator. Then private ────────
   await page.evaluate(() => [...document.querySelectorAll('.share button')]
     .find((b) => b.dataset.m === 'clearweb').click());
   await wait(() => document.getElementById('cwurl').textContent.includes('public'));
@@ -496,8 +496,8 @@ try {
 
   // ── batch upload: N files in ONE request, all-or-nothing ────────────────
   // An upload used to be one request per file, and each pays the pier's floor
-  // serially. The batch must be atomic in the sense that matters to a client:
-  // a rejected batch writes NOTHING, so "failed" never means "some landed".
+  // serially. The batch must be atomic in the sense that matters to a client.
+  // A rejected batch writes NOTHING, so "failed" never means "some landed".
   step = 'batch upload';
   const api2 = (p, o) => page.evaluate(async (p, o) => {
     const r = await fetch('/apps/lattice' + p, o || { method: 'POST' });
@@ -518,9 +518,9 @@ try {
       .some((a) => a.href.includes(encodeURIComponent(n + '/' + f)))), RUN);
   check('batch: the files appear in the tree', true);
   // A bad name anywhere must reject the WHOLE batch, not write the good ones.
-  // NB: '..' is NOT the invalid name to test with — a path segment of '..' is
+  // NB: '..' is NOT the invalid name to test with. A path segment of '..' is
   // a valid @ta, so it is accepted here exactly as plain page-save accepts it
-  // (it makes a page literally named '..'; hoon paths have no traversal).
+  // (it makes a page literally named '..', and hoon paths have no traversal).
   // A space cannot parse as a path at all, which is a real rejection.
   const badBatch = await api2('/page-save-batch',
     { method: 'POST', body: batch([RUN + '/ok-one', RUN + '/has space']) });
@@ -552,7 +552,7 @@ try {
       !((after.body || {}).items || []).some((c) => c.id === mine.id));
   }
   // These pages recreate RUN/ after the move step renamed it to RUN-moved, so
-  // clear them here — otherwise the folder-delete check below waits forever
+  // clear them here. Otherwise the folder-delete check below waits forever
   // for a subtree this section put back.
   // one %del on the folder takes the whole subtree, same action the UI's
   // folder delete uses

@@ -1,4 +1,4 @@
-//! lattice-fs — mount the lattice page tree as a FUSE filesystem.
+//! lattice-fs: mount the lattice page tree as a FUSE filesystem.
 //!
 //!   lattice-fs auth              log in once, store the session cookie
 //!   lattice-fs mount <dir>       mount the page tree at <dir> (foreground)
@@ -9,7 +9,7 @@
 //!               cookie at ~/.config/lattice-fs/cookie (mode 600).
 //!
 //! The projections, transports, and mount helpers live in the lattice_fs
-//! library (src/lib.rs); this binary is CLI parsing plus the lick branch.
+//! library (src/lib.rs). This binary is CLI parsing plus the lick branch.
 
 use std::sync::Arc;
 
@@ -110,7 +110,7 @@ fn read_code() -> Option<String> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    // --root <val> may appear anywhere after the command; LATTICE_ROOT is the
+    // --root <val> may appear anywhere after the command. LATTICE_ROOT is the
     // env fallback. Everything else is positional (the mountpoint / page name).
     let mut root = std::env::var("LATTICE_ROOT").unwrap_or_default();
     let mut pos: Vec<String> = Vec::new();

@@ -42,7 +42,7 @@
   .conn .row { align-items: center; gap: 10px; }
   .mono { font: 12px/1.5 ui-monospace, monospace; overflow-wrap: anywhere; }
   /* state at a glance: green connected, amber reachable-but-logged-out, red
-     unreachable. Colour is never the only signal — the text says it too. */
+     unreachable. Colour is never the only signal. The text says it too. */
   .dot { width: 10px; height: 10px; border-radius: 50%; flex: none;
     background: var(--muted); }
   .dot.on { background: var(--green); }
@@ -79,7 +79,7 @@
   <h2>ship</h2>
   <!-- the connected state is its own panel. Showing the login form whenever
        there was nothing better to say is what made an already-connected ship
-       look logged out; the form is now revealed only when it is actually
+       look logged out. The form is now revealed only when it is actually
        needed, or on request. -->
   <div id="conn" class="conn" hidden>
     <div class="row">
@@ -107,7 +107,7 @@
   </form>
 
   <!-- What the ship is missing, and what to do about it. Shown only when
-       something IS missing: a fully-installed ship should not be nagged. -->
+       something IS missing. A fully-installed ship should not be nagged. -->
   <div id="stack" hidden>
     <h2>ship software</h2>
     <ul id="stack-list"></ul>
@@ -167,7 +167,7 @@
 
   // Show the login form only when logging in is actually the thing to do.
   // `connected` comes from a real authenticated request, not from "we have a
-  // url in the config" — a stored url proves we logged in once, which is
+  // url in the config". A stored url proves we logged in once, which is
   // precisely the state that used to render as logged out.
   const showForm = (on, cancelable) => {
     $('connect').hidden = !on;
@@ -247,7 +247,7 @@
   }
 
   // Detected local piers. A ship is only offered for lick when its lattice
-  // socket actually exists — a stopped pier, or one whose lattice is not up,
+  // socket actually exists. A stopped pier, or one whose lattice is not up,
   // is listed with the reason rather than a button that would fail.
   async function refreshLocal() {
     const host = $('local');
@@ -296,7 +296,7 @@
     }
     host.appendChild(ul);
   }
-  // whatever is typed in the mountpoint box wins; otherwise ~/<ship>, so the
+  // whatever is typed in the mountpoint box wins. Otherwise ~/<ship>, so the
   // common case is one click.
   function mountpointFor(ship) {
     return $('mp').value.trim() || '~/' + ship.replace(/^~/, '');

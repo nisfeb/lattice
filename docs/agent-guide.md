@@ -28,12 +28,12 @@ The mount projects the page tree as files: `pub/index` becomes `index.md`, a hoo
 # build once
 cd lattice-fs-rs && cargo build --release
 
-# mount over lick (local IPC, no cookie; the socket in the pier IS the auth)
+# mount over lick: local IPC, no cookie (the socket in the pier IS the auth)
 export LATTICE_SOCK="$PIER/.urb/dev/grubbery/lattice/fs"
 export LATTICE_SHIP=tyr              # ship name, no ~
-./target/release/lattice-fs mount ~/lattice-mnt      # foreground; Ctrl-C unmounts
+./target/release/lattice-fs mount ~/lattice-mnt      # foreground, Ctrl-C unmounts
 
-# …or over HTTP (Eyre): set a cookie instead of LATTICE_SOCK:
+# …or over HTTP (Eyre). Set a cookie instead of LATTICE_SOCK:
 #   lattice-fs auth              (prompts for +code once, stores a cookie)
 #   LATTICE_URL=http://localhost:8080 ./target/release/lattice-fs mount ~/lattice-mnt
 ```
@@ -139,20 +139,20 @@ curl -s -X POST -H "$CK" --data-binary '# Todo
 
 | Route | Params | Returns |
 |---|---|---|
-| `GET /page-history?name=<p>` | `name` | `{name, revisions:[{rev,updated}]}`, newest first. Every save is a revision; autosave makes them dense. Pruned to the newest 50. |
+| `GET /page-history?name=<p>` | `name` | `{name, revisions:[{rev,updated}]}`, newest first. Every save is a revision. Autosave makes them dense. Pruned to the newest 50. |
 | `GET /page-source-at?name=<p>&rev=<n>` | `name`, `rev` | that revision's `{body, kind, rev}`. Restoring = re-saving the old body, so nothing is destroyed. |
-| `GET /page-backlinks?name=<p>` | `name` | `{links:[path]}` — pages whose body contains `[[<name>]]`. |
+| `GET /page-backlinks?name=<p>` | `name` | `{links:[path]}`, the pages whose body contains `[[<name>]]`. |
 
-`[[page-name]]` in a markdown body renders as a link (names may use
-`a-z 0-9 - / . _ ~`; anything else is left verbatim).
+`[[page-name]]` in a markdown body renders as a link. Names may use
+`a-z 0-9 - / . _ ~`, and anything else is left verbatim.
 
 ### Public forms (the one unauthenticated write)
 
 `POST /apps/lattice/f/<page>` delivers a body as a command to that page. It
 requires the page to be **clearweb** AND to carry a forms flag set by the owner
 via `POST /page-forms?name=<p>&on=1` (nearest-flag-wins up the folder tree).
-Bodies over 8 KB are refused; submissions carry poke budget 0. Everything else
-in this guide is owner-gated.
+Bodies over 8 KB are refused, and submissions carry poke budget 0. Everything
+else in this guide is owner-gated.
 
 ### Published pages & federation
 

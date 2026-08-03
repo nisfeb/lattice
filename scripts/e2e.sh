@@ -9,9 +9,9 @@
 #   scripts/e2e.sh [ship-url] [code]
 # Env (override the args):
 #   LATTICE_URL   (default http://localhost:8081)
-#   LATTICE_CODE  (default lidlut-tabwed-pillex-ridrup — a fresh fakezod)
-#   LATTICE_PEER_SHIP / LATTICE_PEER_FILE  — if set, also test a cross-ship
-#                                            fetch of urb://<peer>/<file>
+#   LATTICE_CODE  (default lidlut-tabwed-pillex-ridrup, a fresh fakezod)
+#   LATTICE_PEER_SHIP / LATTICE_PEER_FILE  if set, also test a cross-ship
+#                                          fetch of urb://<peer>/<file>
 set -uo pipefail
 
 URL="${1:-${LATTICE_URL:-http://localhost:8081}}"

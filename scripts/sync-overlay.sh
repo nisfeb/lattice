@@ -20,8 +20,8 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OVERLAY="$HERE/../grubbery-overlay"
-# DEST is REQUIRED. The old default pointed at ~zod — a scratch ship that gets
-# rebuilt and renamed; an implicit deploy target is how code lands on the wrong
+# DEST is REQUIRED. The old default pointed at ~zod, a scratch ship that gets
+# rebuilt and renamed. An implicit deploy target is how code lands on the wrong
 # pier. Say where it goes.
 DEST="${1:?usage: sync-overlay.sh <grubbery-desk-root>}"
 
@@ -32,7 +32,7 @@ mkdir -p "$DEST/gub/lib" "$DEST/lib" "$DEST/gub/nex/lattice" "$DEST/gub/mar/latt
 
 # SHADOW CHECK. gub/lib is SHARED with grubbery's own libraries, and rsync has no
 # --delete, so an overlay file silently overwrites a grubbery file of the same
-# name and no later sync ever puts it back. This is not hypothetical: a 28-line
+# name and no later sync ever puts it back. This is not hypothetical. A 28-line
 # lib/obelisk-ast.hoon here clobbered grubbery's real 1208-line one on every sync
 # and broke grubbery's whole obelisk integration on every ship it touched. Nothing
 # reported it, because the overwritten file compiles fine on its own.
@@ -53,11 +53,11 @@ for f in "$OVERLAY"/lib/*.hoon; do
 done
 [ "$SHADOW" -eq 0 ] || exit 69
 
-# Pure libs: into the tree (gub/lib, for the nexus) and the desk (lib, for tests).
+# Pure libs: into gub/lib for the nexus, and into desk-level lib for tests.
 rsync -a "$OVERLAY/lib/" "$DEST/gub/lib/"
 rsync -a "$OVERLAY/lib/" "$DEST/lib/"
-# Nexus + marks: into the gub tree only. ui-app/src is build SOURCE — only the
-# built app.js ships; the desk must not carry files the ball never loads.
+# Nexus + marks: into the gub tree only. ui-app/src is build SOURCE. Only the
+# built app.js ships. The desk must not carry files the ball never loads.
 [ -d "$OVERLAY/nex/lattice" ] && rsync -a --exclude 'ui-app/src' "$OVERLAY/nex/lattice/" "$DEST/gub/nex/lattice/"
 [ -d "$OVERLAY/mar/lattice" ] && rsync -a "$OVERLAY/mar/lattice/" "$DEST/gub/mar/lattice/"
 # Cross-desk poke marcs (e.g. obelisk-action): into grubbery's gub/mar/clay tree
@@ -66,7 +66,7 @@ rsync -a "$OVERLAY/lib/" "$DEST/lib/"
 # Tests: desk-level.
 rsync -a "$OVERLAY/tests/" "$DEST/tests/"
 
-# Print what actually landed — a grubbery core update wipes none of its own
+# Print what actually landed. A grubbery core update wipes none of its own
 # apps but knows nothing about this overlay, so any grubbery re-sync MUST be
 # followed by this script before committing the desk. Zero counts here mean
 # the next |commit will cull lattice from clay and take the app down.

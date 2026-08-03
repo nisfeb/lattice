@@ -92,3 +92,85 @@ pub trait Projection: Send + Sync {
         .to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::TErr;
+
+    /// Nothing but the trait's provided methods, which is what's under test.
+    struct Bare;
+    impl Projection for Bare {
+        fn ship(&self) -> String {
+            "~test".into()
+        }
+        fn list(&self) -> Result<Vec<Node>, PErr> {
+            Ok(vec![])
+        }
+        fn read(&self, _rel: &str) -> Result<Vec<u8>, PErr> {
+            Ok(vec![])
+        }
+        fn dump(&self) -> Result<(Vec<Node>, HashMap<String, Vec<u8>>), PErr> {
+            Ok((vec![], HashMap::new()))
+        }
+        fn errors(&self, _rel: &str) -> Result<String, PErr> {
+            Ok(String::new())
+        }
+        fn write(&self, _: &str, _: &str, _: &[u8], _: bool) -> Result<(), PErr> {
+            Ok(())
+        }
+        fn mkdir(&self, _rel: &str) -> Result<(), PErr> {
+            Ok(())
+        }
+        fn delete(&self, _rel: &str) -> Result<(), PErr> {
+            Ok(())
+        }
+        fn mv(&self, _s: &str, _d: &str) -> Result<(), PErr> {
+            Ok(())
+        }
+        fn watch(&self, _on_change: &(dyn Fn() + Send + Sync)) {}
+    }
+
+    #[test]
+    fn kind_and_ext_round_trip_for_every_page_type() {
+        // the ext decides the FILENAME the tree exposes and the kind decides the
+        // mark a save is stored under, so the two must stay inverses. A broken
+        // pair either hides a page or stores it as the wrong type.
+        let p = Bare;
+        for (kind, ext) in
+            [("md", "md"), ("gmi", "gmi"), ("html", "html"), ("text", "txt"), ("js", "js"), ("css", "css")]
+        {
+            assert_eq!(p.ext_for_kind(kind), ext, "kind {kind}");
+            assert_eq!(p.kind_for_ext(ext), kind, "ext {ext}");
+        }
+        // a generated %index page is served as .md (it renders markdown) but is
+        // deliberately NOT invertible: .md always means an editable md page
+        assert_eq!(p.ext_for_kind("index"), "md");
+        // everything else is a bare hoon page, in both directions
+        assert_eq!(p.ext_for_kind("hoon"), "hoon");
+        assert_eq!(p.ext_for_kind("something-new"), "hoon");
+        assert_eq!(p.kind_for_ext("hoon"), "hoon");
+        assert_eq!(p.kind_for_ext("something-new"), "hoon");
+    }
+
+    #[test]
+    fn a_transport_status_maps_to_the_errno_the_shell_acts_on() {
+        // these drive real behaviour: ENOENT is "no such file", EEXIST makes an
+        // atomic save fall back to overwrite, EACCES tells the caller to
+        // re-auth instead of retrying forever.
+        for (code, errno) in [
+            (400, libc::EINVAL),
+            (401, libc::EACCES),
+            (403, libc::EACCES),
+            (404, libc::ENOENT),
+            (409, libc::EEXIST),
+            (500, libc::EIO),
+            (418, libc::EIO),
+            (0, libc::EIO),
+        ] {
+            let p: PErr = TErr::new(code, "server said no").into();
+            assert_eq!(p.errno, errno, "http {code}");
+            assert_eq!(p.msg, "server said no", "the server's message must survive");
+        }
+    }
+}

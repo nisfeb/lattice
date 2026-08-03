@@ -1,9 +1,9 @@
   // ── typography preferences ───────────────────────────────────────────────
   // Set on the settings page, stored in localStorage, applied here. Two vars
   // only (--ed-font, --ed-size), because #src and #hl must keep byte-identical
-  // metrics — see the note beside them in index.html.
+  // metrics. See the note beside them in index.html.
   //
-  // Costs ZERO requests: preferences are a client concern, so they never touch
+  // Costs ZERO requests. Preferences are a client concern, so they never touch
   // the pier. This file sorts first so the editor paints in the chosen font
   // rather than flashing the default and re-laying out.
   const FONTS = {
@@ -25,7 +25,7 @@
   }
   applyPrefs();
   // the settings page is a SEPARATE document on the same origin, so its writes
-  // reach an open editor through the storage event — no reload, no polling.
+  // reach an open editor through the storage event (no reload, no polling).
   window.addEventListener('storage', (e) => {
     if (!e.key || e.key === 'latFont' || e.key === 'latFontSize') applyPrefs();
   });

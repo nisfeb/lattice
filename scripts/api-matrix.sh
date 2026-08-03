@@ -44,7 +44,7 @@ echo "==> sharing: page"
 is "share=shared"          200 "$(sc -X POST "$B/page-share?name=$P/note&mode=shared")"
 is "source sees shared"    shared "$(G "$B/page-source?name=$P/note" | python3 -c 'import json,sys;print(json.load(sys.stdin)["share"])')"
 is "tree sees shared"      shared "$(G "$B/page-tree" | node_field "$P/note" share)"
-# an unknown mode folds to private on the server; pin that so a client
+# an unknown mode folds to private on the server. Pin that so a client
 # sending a bad mode can never silently *publish*
 is "unknown mode folds to private" 200 "$(sc -X POST "$B/page-share?name=$P/note&mode=public")"
 is "  ...and lands private" private "$(G "$B/page-source?name=$P/note" | python3 -c 'import json,sys;print(json.load(sys.stdin)["share"])')"
@@ -125,7 +125,7 @@ is "move missing 404"      404 "$(sc -X POST "$B/page-move?from=$P/ghost-move&to
 is "page-move gated"       403 "$(code -X POST "$B/page-move?from=$P/mvdir2&to=$P/free")"
 
 echo "==> public forms: the unauthenticated write surface"
-# the gate walk is the security boundary — every refusal below must hold
+# the gate walk is the security boundary. Every refusal below must hold
 is "forms flag on"         200 "$(sc -X POST "$B/page-forms?name=$P/note&on=1")"
 sleep 2
 is "  submit to a NON-clearweb page -> 404" 404 "$(code -X POST "$B/f/$P/note" --data-binary 'entry=x')"
@@ -145,7 +145,7 @@ tc=$(code -X POST "$B/f/$P/../../etc" --data-binary 'entry=x')
 case "$tc" in 200|303) bad "  path traversal refused" "accepted with $tc" ;; *) ok "  path traversal refused ($tc)" ;; esac
 echo "==> form limits: absolute cap + cooldown"
 is "set cap=2 gap=0"       200 "$(sc -X POST "$B/page-forms?name=$P/note&on=1&cap=2&gap=0")"
-# an earlier assertion in this file already submitted once — start from zero
+# an earlier assertion in this file already submitted once. Start from zero
 is "zero the counter first" 200 "$(sc -X POST "$B/page-forms-reset?name=$P/note")"
 sleep 2
 has "status reports the cap" '"cap":2' "$(G "$B/page-forms?name=$P/note")"
@@ -172,6 +172,21 @@ is "page-source-at gated"   403 "$(code "$B/page-source-at?name=$P/note&rev=1")"
 is "page-backlinks gated"   403 "$(code "$B/page-backlinks?name=$P/note")"
 is "page-forms gated"       403 "$(code -X POST "$B/page-forms?name=$P/note&on=1")"
 
+echo "==> page names: dot segments are refused (fuzz-api finding)"
+# '.' and '..' are ordinary @ta knots, so the sanity check alone admits them and
+# page-tree then hands clients a path that walks out of its own directory when
+# joined onto a real filesystem path.
+is "'..' segment refused"       400 "$(sc -X POST "$B/page-save?name=..%2Fetc&type=md&new=1" --data-binary '# x')"
+is "'.' segment refused"        400 "$(sc -X POST "$B/page-save?name=.%2F$P-dot&type=md&new=1" --data-binary '# x')"
+is "deep traversal refused"     400 "$(sc -X POST "$B/page-save?name=..%2F..%2F..%2Fetc%2Fpasswd&type=md&new=1" --data-binary '# x')"
+is "bare '..' refused"          400 "$(sc -X POST "$B/page-save?name=..&type=md&new=1" --data-binary '# x')"
+is "folder-new refuses too"     400 "$(sc -X POST "$B/folder-new?name=..%2Fetc")"
+NOESC="$(G "$B/page-tree")"
+if printf '%s' "$NOESC" | grep -qF '"../'; then bad "no traversal path in the tree" "found one"; else ok "no traversal path in the tree"; fi
+# deletion stays permissive on purpose, so a page that predates the rule is
+# still removable rather than stranded forever
+is "page-del still accepts a dot name" 200 "$(sc -X POST "$B/page-del?name=..%2Fnonexistent")"
+
 echo "==> bookmarks (folders + list + marks page)"
 BM="urb://~zod/$P-mark"
 is "bookmark with folder"   200 "$(sc -X POST "$B/bookmark?url=$BM&title=$P-title&folder=intel")"
@@ -186,8 +201,8 @@ has "marks page is searchable"    'id="bmq"'                  "$(G "$B/marks")"
 has "marks page row carries search text" "$P-title"           "$(G "$B/marks")"
 is "bookmarks gated"        403 "$(code "$B/bookmarks")"
 is "marks page gated"       403 "$(code "$B/marks")"
-# the home index has a urb:// address in its bar, so it must offer the star;
-# settings has no address, so it must not
+# the home index has a urb:// address in its bar, so it must offer the star.
+# Settings has no address, so it must not
 has "reader offers the bookmark star" 'class="bm"' "$(G "$B")"
 # the marks link must live in the BAR (not only the generated home), because
 # an authored /index replaces the home view entirely

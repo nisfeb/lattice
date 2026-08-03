@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fs-matrix.sh — end-to-end regression matrix for the lattice-fs FUSE client.
+# fs-matrix.sh: end-to-end regression matrix for the lattice-fs FUSE client.
 #
 # Exercises both projections against a LIVE ship and verifies every claim on the
 # ship side (via HTTP), not just through the mount. Every bug this client has
@@ -11,9 +11,9 @@
 #   env:  LATTICE_URL (default http://localhost:8080)
 #         cookie at ~/.config/lattice-fs/cookie (run `lattice-fs auth` first)
 #
-# Exits non-zero on the first failed assertion. Test pages live under
-# fsmatrix/ (lattice) and /apps/lattice.lattice_app/fsmatrix (generic scratch);
-# both are deleted on exit.
+# Exits non-zero on the first failed assertion. Lattice test pages live
+# under fsmatrix/. Generic scratch lives under
+# /apps/lattice.lattice_app/fsmatrix. Both are deleted on exit.
 
 set -u
 URL="${1:-${LATTICE_URL:-http://localhost:8080}}"
@@ -131,7 +131,7 @@ assert "overwrite lands, blot preserved" 'edited via fuse' "$(grub_txt gnote)"
 assert "mark still hoon" '"hoon"' "$(gtree | python3 -c 'import sys,json;print(json.dumps(json.load(sys.stdin)["files"].get("gnote")),end="")')"
 
 say "create refused (unknown target mark)"
-( echo x > "$GMNT/new.txt" ) 2>/dev/null   # EROFS surfaces at close; shell rc unreliable
+( echo x > "$GMNT/new.txt" ) 2>/dev/null   # EROFS surfaces at close. Shell rc unreliable
 sleep 0.4
 assert "created grub never lands on ship" 'null' "$(gtree | python3 -c 'import sys,json;print(json.dumps(json.load(sys.stdin)["files"].get("new")),end="")')"
 

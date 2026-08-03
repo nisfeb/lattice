@@ -213,7 +213,7 @@ nexi, transient eyre conns) migrated live on a populated pier.
 
 Re-measured after the obelisk in-process port, the browser-history feature and
 the bucket index landed. Serial curl on tyr read 1.1-1.6s for the icon floor
-against the review's 0.78s — an apparent ~0.5s regression. Investigated by
+against the review's 0.78s, an apparent ~0.5s regression. Investigated by
 live A/B on the harness (desk-commit an older app.hoon, measure, restore).
 
 What the experiments established:
@@ -226,28 +226,28 @@ What the experiments established:
   surviving per-request nest against the whole core.
 - **The apparent regression tracks machine load, not code.** An early rollback
   of the bucket-index commit looked ~0.2s faster, but later same-code samples
-  drifted to the same values as background load fell (load avg 1.3 -> 0.8;
+  drifted to the same values as background load fell (load avg 1.3 -> 0.8,
   several active sessions and builds on this box). The 0.78s baseline was
-  taken on an idle machine. tyr floors are only comparable idle — interleave
+  taken on an idle machine. tyr floors are only comparable idle. Interleave
   A/B samples in time before believing any delta under ~0.3s.
 - **Production is fine.** ~ricsul-bilwyt (urbit.sneagan.com, idle host)
-  serves the icon floor in 0.51-0.88s over TLS and a real WAN — at the
+  serves the icon floor in 0.51-0.88s over TLS and a real WAN, at the
   review-era tyr floor. User-felt latency there is still bounded by the
   tier-5 poke cost, not by anything that landed since.
 
 No code fix warranted. The open levers stand: tier-5 experiments (vere 4.5
-vs 4.6, --keep-cache-limit), and one new tier-1 item —
+vs 4.6, --keep-cache-limit), and one new tier-1 item:
 
 29. **Uploads pay one page-save per file, serialized.** A 20-file drop is
     ~20 requests. The bucket-index rebuild already demonstrates the fix
     shape: one request carrying N files, written as ONE bole (one %make
     dart, one tree hash), plus local tree patching in the client. Collapses
-    a folder upload to a single request. Hoon-side; the evaluator-respawn
+    a folder upload to a single request. Hoon-side. The evaluator-respawn
     caveats in +instantiate-template do not apply to plain content kinds.
 
 ---
 
-## 2026-07-31 — desktop boot and file toggling
+## 2026-07-31: desktop boot and file toggling
 
 sneagan: "5 seconds from first click until the editor is loaded and 1 second
 or more toggling between files even if the file was already opened."
@@ -257,22 +257,22 @@ Measured against ~ricsul-bilwyt (urbit.sneagan.com) from the laptop.
 
 | probe | ttfb | ship-side |
 |---|---|---|
-| ping RTT | 34ms | — |
+| ping RTT | 34ms | n/a |
 | `/~/name` (plain eyre, 14 bytes) | 150ms | ~115ms |
 | `/apps/lattice/icon.svg` (870 hardcoded bytes) | ~445ms | ~410ms |
 | `/apps/lattice/app/app.js` (98.8KB) | 567ms | ~410ms + ~100ms transfer |
 
-Size is irrelevant; the floor is per-request. And **the pier serializes**: six
+Size is irrelevant. The floor is per-request. And **the pier serializes**: six
 requests in parallel measured 2.62s against 2.75s in series, so fetching wider
 buys nothing. ~300ms of each lattice request is our own per-request fiber
-dispatch, not Urbit — `icon.svg` is a compile-time constant returned before the
+dispatch, not Urbit. `icon.svg` is a compile-time constant returned before the
 auth gate and before any peek, yet costs 3x a plain eyre route. That last item
 is the highest-leverage number in the system and is deliberately NOT addressed
-here (it is grubbery-side surgery); everything below reduces the count instead.
+here (it is grubbery-side surgery). Everything below reduces the count instead.
 
 Cold editor load was ~12 serialized requests (reader home, `/app` doc,
 prism.js, app.js, manifest, icon-192, sw.js, share-groups, shared-with-me,
-page-tree, legacy-status, page-source) — 12 x ~450ms = the reported 5s.
+page-tree, legacy-status, page-source). 12 x ~450ms = the reported 5s.
 Toggling was 1-2 requests because `openPage` had no body cache at all and
 localStorage held exactly one page.
 
@@ -282,27 +282,27 @@ Fixed, in descending order of payoff:
     0.0.1", 0))` gave every launch a different port, hence a different web
     ORIGIN, hence an empty service-worker cache and empty localStorage every
     single start. The desktop could never reuse anything and never got
-    `bootSnap()`'s paint-from-snapshot — which is precisely why it felt slower
+    `bootSnap()`'s paint-from-snapshot. That is precisely why it felt slower
     than the same UI in a browser, where the origin is stable. Now a
-    deterministic port (41863, probing a 16-wide range), and the listener is
+    deterministic port (26500, probing a 16-wide range), and the listener is
     re-pointed rather than rebound when the ship changes.
 31. **The app opened on the reader.** Reaching the editor was a SECOND full
     document load (16KB shell + 124KB of JS), so "first click" cost a whole
-    page load. The desktop now opens `/apps/lattice/app` directly; `urb://`
+    page load. The desktop now opens `/apps/lattice/app` directly. `urb://`
     links still route to the reader through the navigation guard.
 32. **`page-tree` replaced by `page-dump` on boot.** The dump returns the same
     nodes PLUS every page body from ONE deep peek, and measured FASTER than
-    page-tree (0.95s vs 1.16s — page-tree re-peeks each code grub). Those
-    bodies are what make a toggle free. No hoon change: the route already
-    existed for the FUSE client.
+    page-tree (0.95s vs 1.16s, since page-tree re-peeks each code grub). Those
+    bodies are what make a toggle free. No hoon change was needed. The route
+    already existed for the FUSE client.
 33. **`openPage` now has three tiers.** Cached render -> 0 requests; body from
     the dump -> paint the editor immediately and fetch only to fill `share`
     and the preview; nothing -> as before. Re-opening a page costs nothing.
 34. **share-groups and shared-with-me deferred.** Issued at parse time they
-    put two round-trips AHEAD of the tree on a serialized pier; neither is
+    put two round-trips AHEAD of the tree on a serialized pier. Neither is
     needed to read or edit. Boot calls them once the editor is usable.
 35. **Shell revalidation deferred 5s in the service worker.** The shell and
-    app.js are `no-cache`, so a warm boot still re-fetched both; served from
+    app.js are `no-cache`, so a warm boot still re-fetched both. Served from
     cache at 0ms, they nonetheless queued ahead of `page-dump`. On a cache hit
     the revalidation is now held behind a `waitUntil` timer, so page-dump wins
     the pier. Verified: it moved from 3rd to 2nd request, with both shell
@@ -312,15 +312,15 @@ Net on a warm desktop launch: the critical path is ONE request (page-dump),
 with the tree and last page painted from localStorage before it. Re-opening a
 page is zero requests.
 
-Cache invalidation is rev-based, and pruning only on FORWARD movement matters:
-comparing revs for mere inequality evicted good entries whenever the dump
+Cache invalidation is rev-based, and pruning only on FORWARD movement matters.
+Comparing revs for mere inequality evicted good entries whenever the dump
 trailed page-source by one revision, which it does right after a write (the
 evaluator settles after the writer). That bug showed up as a flaky check
 before it showed up as a slow toggle.
 
-Checked by `scripts/ui-perf.mjs` (headless Chromium, asserts request COUNTS —
-wall-clock on a shared harness ship is noise). `scripts/ui-matrix.mjs` still
-passes. Both run against tyr; never production.
+Checked by `scripts/ui-perf.mjs` (headless Chromium, asserts request COUNTS
+because wall-clock on a shared harness ship is noise). `scripts/ui-matrix.mjs`
+still passes. Both run against tyr, never production.
 
 Still open: item 29 (batch upload), the ~300ms fiber dispatch above, and
 URL-versioning the bundle so app.js could be `immutable` and skip

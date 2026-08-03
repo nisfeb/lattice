@@ -39,7 +39,7 @@ from the page stdlib (`pg`, which is your compile subject):
 **Inputs (the sample):**
 
 - `cmd`: the command that triggered this run, or `~` for a *dependency tick*
-  ("something you depend on changed; update if you need to").
+  ("something you depend on changed, so update if you need to").
 - `dat`: your page's current data (`~` if never produced). Read it to make an
   update relative to the last value (a counter, an accumulator).
 - `now`: the time of this run.
@@ -53,7 +53,7 @@ render mode and pass the value:
 |---|---|---|
 | `(text v)` | `v` | escaped text |
 | `(html v)` | `v` | **raw HTML**, your own page's markup |
-| `(md v)` | `v` | markdown → HTML (escaped; safe for notes/docs) |
+| `(md v)` | `v` | markdown → HTML (escaped, safe for notes/docs) |
 | `(gmi v)` | `v` | gemtext → HTML |
 | `(raw v)` | `v` | opaque noun, shown escaped |
 | `same` | *unchanged* | (no write) |
@@ -93,8 +93,8 @@ POST /page-del?name=<name>                                delete the page
 POST /page-share?name=<name>&mode=private|shared|clearweb  set sharing
 ```
 
-`page-cmd` reads `cmd` from either the query string (programmatic callers)
-or a form-urlencoded POST body (browser forms). Each command bumps `cmd`'s
+`page-cmd` reads `cmd` from the query string for programmatic callers, or
+from a form-urlencoded POST body for browser forms. Each command bumps `cmd`'s
 seq, so an identical command still runs.
 
 Navigate the explorer to a page dir and you get the **live view**: the
@@ -279,12 +279,12 @@ the markup with the stdlib helpers: `form-of` gives the action URL and
 
 ### Writing wikilinks
 
-A wikilink name is the **full page path from the root**, not a relative one —
+A wikilink name is the **full page path from the root**, not a relative one.
 `[[wiki/notes/todo]]` links to that page whether you write it from
 `wiki/notes/index` (a sibling) or from anywhere else. `[[todo]]` means a
 top-level page called `todo`, and `[[../x]]` does not resolve.
 
-The editor makes that cheap: type `[[` and a list of your pages appears at the
+The editor makes that cheap. Type `[[` and a list of your pages appears at the
 caret, filtered as you type and ranked with siblings of the page you are
 editing first. **Tab** completes the highlighted one to its full path and
 closes the brackets, arrows move the selection, Escape dismisses. It reads the
@@ -294,7 +294,7 @@ Names may use `a-z 0-9 - / . _ ~`. Anything else is left as literal text, which
 is also how you write `[[not a link]]` on purpose.
 
 `+guestbook` is a ready-made builder for the common case, in the same shape
-as `folder-index` — your whole page is one call:
+as `folder-index`. Your whole page is one call:
 
 ```hoon
 (guestbook cmd dat /my/page "Guestbook")
@@ -324,7 +324,7 @@ Standing limits on this surface, since it is the only public write:
   Both are read with the same nearest-wins walk as the on/off flag, so a
   folder can set the policy for a whole site.
 - `GET /page-forms?name=<page>` reports `{on, cap, gap, count, remaining}`,
-  and `POST /page-forms-reset?name=<page>` zeroes the counter — a cap you
+  and `POST /page-forms-reset?name=<page>` zeroes the counter. A cap you
   cannot reset would be a one-shot switch rather than a limit.
 - Submissions also coalesce in the page's single command slot, and a page
   that reruns too fast is parked, so the practical ceiling is about one
@@ -355,7 +355,7 @@ archiving every keystroke forever. Two honest caveats:
 - Pruning covers a page's **source**. A page's computed `data` is a separate
   grub with its own history, which the prune does not cover.
 - With autosave writing a revision per typing pause, 50 revisions is roughly
-  50 pauses — minutes of active writing. It is a deep undo buffer for the
+  50 pauses, minutes of active writing. It is a deep undo buffer for the
   current session, not a long-term archive.
 - Deleting a page does not remove its stored revisions.
 
@@ -370,7 +370,7 @@ can't drive itself faster than the rate window.
 The next tick is armed for `dur` *after the run finishes*, so there is
 always at least `dur` of real idle between runs. A timer whose gate is
 slower than its interval no longer pins the loop. It just runs at a high
-duty cycle, and the ship stays responsive. Still: use the *slowest* interval
+duty cycle, and the ship stays responsive. Still, use the *slowest* interval
 that does the job (seconds, not sub-second), keep the gate light, and prefer
 a dependency tick over a timer when something else already changes on the
 cadence you want.
@@ -382,7 +382,7 @@ and the platform sends each as a command to that page, bumping its `cmd`. A
 page reached via a poke gets a **decremented budget**, so a poke chain,
 cycles included, terminates after a fixed depth (`poke-budget-max`)
 regardless of timing. One run emits at most `poke-cap` pokes. See
-relay/sink. This is the capped-authority dart: a page can drive other
+relay/sink. This is the capped-authority dart. A page can drive other
 *pages*, but still can't poke arbitrary agents, make HTTP requests, or write
 outside the page tree.
 
@@ -397,7 +397,7 @@ outside the page tree.
   relative to its interval will still run at a high duty cycle, since the
   rate cap keys on rerun *rapidity*, not on how long each run takes. Keep
   timer gates light.
-- **Own HTML renders raw; peer HTML is always escaped.** Your own `html`
+- **Own HTML renders raw. Peer HTML is always escaped.** Your own `html`
   page data is inlined verbatim, so escape dynamic values with `esc`. A
   *peer's* page data browsed remotely is always escaped and served inert. A
   foreign ship can never inject markup into your origin.

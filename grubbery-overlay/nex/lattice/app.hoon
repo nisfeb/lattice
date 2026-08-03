@@ -1,8 +1,8 @@
 ::  nex/lattice/app: the grubbery-native %lattice application nexus.
-::  (rev: post-review hardening batch 2 — trash integrity, catalog cleanup)
+::  (rev: post-review hardening batch 2, trash integrity and catalog cleanup)
 ::
 ::  Lattice is now a nexus, not a gall agent. The tree it owns:
-::    /main.sig            the action WRITER — takes %know-action / %pub-action
+::    /main.sig            the action WRITER. Takes %know-action / %pub-action
 ::                         pokes and serialises every mutation (avoids index races)
 ::    /know/vault/<key>/entry   one know-entry grub per key (private)
 ::    /know/trash          derived trash index
@@ -32,7 +32,7 @@
 /<  gfm  /lib/lattice-md.hoon
 /<  tpl  /lib/lattice-templates.hoon
 /<  lkv  /lib/lattice-know-view.hoon
-::  imports resolve relative to THIS file's dir (/nex/lattice), not /nex —
+::  imports resolve relative to THIS file's dir (/nex/lattice), not /nex.
 ::  guestbook writes `guestbook/icon.svg` only because its source sits AT /nex.
 /<  icon  icon.svg
 /<  pjs  prism.js
@@ -49,15 +49,15 @@
     ++  on-load
       |=  =ball:tarball
       ^-  bole:tarball
-      ::  Every persistent path needs a covering row — spin rebuilds the
+      ::  Every persistent path needs a covering row. spin rebuilds the
       ::  bole from scratch and DROPS anything uncovered. The %fall %| over
       ::  /know/vault copies the whole existing subtree, so dynamically
       ::  created entries survive reload. Versioning is the manifest row
-      ::  (grubbery's loader has no read-side ver gate — matches obelisk).
+      ::  (grubbery's loader has no read-side ver gate, matches obelisk).
       %+  spin:loader  ball
       :~  (manifest:loader 0)
         ::  tile.json: the launcher (tiles nexus) lists only apps that carry
-        ::  one — without it lattice is invisible in the grubbery home UI.
+        ::  one. Without it lattice is invisible in the grubbery home UI.
         ::  %over so the tile stays current across reloads.
             :^  %over  %&  [/ %'tile.json']
             :-  [/ %json]
@@ -73,7 +73,7 @@
             [%over %& [/ %'icon.svg'] [[/ %mime] icon]]
             [%over %& [/ %'prism.js'] [[/ %mime] pjs]]
         ::  the lattice-hosted UI (docs/ui-migration/PLAN.md): real files in
-        ::  ui-app/, laid as grubs, served at /apps/lattice/app — the core
+        ::  ui-app/, laid as grubs, served at /apps/lattice/app. The core
         ::  stays lean (assets in cords wedge every request fiber).
         ::  css is inlined in index.html (every asset request costs ~2s on the
         ::  serialized pier, so the shell ships as one document + one script).
@@ -81,7 +81,7 @@
             [%over %& [/app %'app.js'] [[/ %mime] uij]]
         ::  /db.lattice: the obelisk database itself, a grub this nexus owns.
         ::  grubbery ships obelisk as a LIBRARY (+exec:obl is a pure function),
-        ::  so there is no separate agent and no owner fiber — the catalog is
+        ::  so there is no separate agent and no owner fiber. The catalog is
         ::  just state we hold and hand to the engine.
             [%fall %& [/ %'db.lattice'] [[/obelisk %server] *db-state:sst]]
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
@@ -110,11 +110,11 @@
         ::  page; the code grub's on-file fiber is the evaluator.
             [%fall %| /page empty-dir:loader]
         ::  /template/: reusable page-tree templates (inert code grubs, never
-        ::  evaluated — no [%page ...] on-file match). Covered so saved and
+        ::  evaluated, no [%page ...] on-file match). Covered so saved and
         ::  shipped templates survive reload, like /page and /know/vault.
             [%fall %| /template empty-dir:loader]
         ::  /comments/<page>/<id>: one grub per page comment (Urbit-ships-only).
-        ::  Page content stays under /page (owner-only weir); comments are the one
+        ::  Page content stays under /page (owner-only weir). Comments are the one
         ::  area other ships may append to (via the public inbox fiber, added with
         ::  the cross-ship path). The owner writer (main.sig) also writes here.
             [%fall %| /comments empty-dir:loader]
@@ -125,18 +125,18 @@
         ::  shape as /bookmarks. Entries expire after lattice-history's ttl.
             [%fall %& [/ %history] [[/lattice %history] *history:lh]]
         ::  /rev: a tiny change beacon bumped on every writer mutation. Open web
-        ::  readers keep-SSE this one small grub (no-blot) and reload on any change
-        ::  — a lightweight live-update signal that doesn't stream a page's heavy
+        ::  readers keep-SSE this one small grub (no-blot) and reload on any change,
+        ::  a lightweight live-update signal that doesn't stream a page's heavy
         ::  compiled grub, and works where grubbery's ?blot=/txt keep does not.
             [%fall %& [/beacon %rev] [[/ %json] (numb:enjs:format 0)]]
         ::  /idx: the grub-native term index (docs/native-index.md). 256 bucket
-        ::  grubs, each term -> (key -> [scope tf]). ONE covering %fall row: a
+        ::  grubs, each term -> (key -> [scope tf]). ONE covering %fall row. A
         ::  nexus reload rewrites its whole covered subtree, so without a row
         ::  here the whole index is deleted on every load.
             [%fall %| /idx/b empty-dir:loader]
         ::  /shared: notices other ships sent about files they granted us (see
-        ::  /lib/lattice-share — claims, not capabilities). /shares.sig is the
-        ::  inbox fiber that takes those pokes; the /public usergroup carries a
+        ::  /lib/lattice-share: claims, not capabilities). /shares.sig is the
+        ::  inbox fiber that takes those pokes. The /public usergroup carries a
         ::  poke road for it (+ensure-shares-inbox) so ANY ship may notify,
         ::  which is safe because the list is capped and sender identity comes
         ::  from the transport.
@@ -144,7 +144,7 @@
             [%fall %& [/ %'shares.sig'] [[/ %sig] ~]]
             [%fall %& [/ %'crawler.sig'] [[/ %sig] ~]]
         ::  /fs.sig: a lick (unix-socket) port exposing the filesystem ops to a
-        ::  local FUSE client (lattice-fs) — the native-transport twin of the
+        ::  local FUSE client (lattice-fs), the native-transport twin of the
         ::  HTTP page-tree/page-source/page-save routes.
             [%fall %& [/ %'fs.sig'] [[/ %sig] ~]]
         ==
@@ -161,11 +161,11 @@
         ;<  here=rail:tarball  bind:m  get-here-abs:io
         =/  root=path  path.here
         ::  open /pub to foreign readers (idempotent, union-not-clobber). know/
-        ::  needs nothing — foreign access is deny-by-default.
+        ::  needs nothing. Foreign access is deny-by-default.
         ;<  ~  bind:m  (ensure-pub-weir root)
-        ::  re-grant every shared page's data road (self-heal, like ensure-pub-weir):
-        ::  a page shared before the public usergroup existed skipped the grant;
-        ::  this re-applies it on the next writer start once the group is present.
+        ::  re-grant every shared page's data road (self-heal, like ensure-pub-weir).
+        ::  A page shared before the public usergroup existed skipped the grant.
+        ::  This re-applies it on the next writer start once the group is present.
         ;<  ~  bind:m  (heal-share-weirs root)
         ;<  ~  bind:m  ensure-shares-inbox
         ::  lay down the built-in page-tree templates (idempotent; skips if the
@@ -179,19 +179,19 @@
         ::
         ::  EXCEPT for history. Every page view records a visit, and bumping the
         ::  beacon on each one would make browsing live-reload every other open
-        ::  reader — a reload storm produced by nothing the reader can see.
+        ::  reader, a reload storm produced by nothing the reader can see.
         ::  History is not content; it does not belong on the content beacon.
         ;<  ~  bind:m
           ?:  =([/lattice %history-action] p.sage)  (pure:m ~)
           (bump-rev now)
         $
-      ::  /shares.sig: the cross-ship share-notice inbox. Foreign ships %add;
-      ::  only our own UI may %del (sender is read from the TRANSPORT, so a
+      ::  /shares.sig: the cross-ship share-notice inbox. Foreign ships %add.
+      ::  Only our own UI may %del (sender is read from the TRANSPORT, so a
       ::  forged payload cannot curate our list). Same take-poke loop shape as
       ::  the writer below.
           [~ %'shares.sig']
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /shares: failed")
-        ::  root is NOT ambient in on-file — each case that needs it derives it
+        ::  root is NOT ambient in on-file. Each case that needs it derives it
         ::  from its own rail, exactly as the writer above does.
         ;<  here=rail:tarball  bind:m  get-here-abs:io
         =/  root=path  path.here
@@ -211,15 +211,15 @@
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /ui/requests: failed")
         (handle-request name.rail)
       ::  /sub/pages/*: one live per-file subscription. keep the peer's page grub
-      ::  and re-index it into the catalog on every change — so an edit lands now
+      ::  and re-index it into the catalog on every change, so an edit lands now
       ::  instead of waiting for the ~h6 crawler sweep. The keep is re-established
-      ::  from the stored page-sub on reload; culling the grub (via /unsub) tears
+      ::  from the stored page-sub on reload. Culling the grub (via /unsub) tears
       ::  down the fiber and its keep (delete -> sub-wipe).
           [[%sub %pages ~] @]
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /sub/pages: failed")
         ;<  ps=page-sub:lp  bind:m  (get-state-as:io ,page-sub:lp)
         =/  rel=path  (page-rel pax.ps)
-        ::  keep the page's gmi FILE — that is the node the publisher GAINS (apply-pub
+        ::  keep the page's gmi FILE. That is the node the publisher GAINS (apply-pub
         ::  gains the gmi grub, not its parent dir), so a keep on the file gets the
         ::  publisher's %news on every edit. Keeping the parent dir would subscribe to
         ::  an un-gained node and never fire.
@@ -228,13 +228,13 @@
         ::  arm the keep BEFORE the initial index. keep:io's initial bond wave
         ::  is consumed either way, so with the keep armed first a peer edit
         ::  during the (slow: remote body/index peeks + owner round-trips)
-        ::  initial index always fires a real second wave — the index's inner
+        ::  initial index always fires a real second wave. The index's inner
         ::  takes %skip it, grubbery re-offers skipped inputs at the next bind,
         ::  and the loop's take below consumes it and re-indexes. Indexing
         ::  first opened a multi-second window where an edit fired no wave at
         ::  all and was never re-indexed (a page-sub is not a follow, so no
         ::  ~h6 sweep corrects it). Cost: the first index now waits for the
-        ::  (remote) keep handshake — a peer too slow to ack the keep would
+        ::  (remote) keep handshake. A peer too slow to ack the keep would
         ::  have timed out the index's body peek anyway.
         ;<  *  bind:m  (keep:io /page road ~)
         ;<  ~  bind:m  (index-remote-page ship.ps rel)
@@ -243,7 +243,7 @@
         ::  resolving obelisk/peek send-waits leave uncancellable timers armed, and a
         ::  timed-out remote peek's late %peek/%veto still arrives; plain take-news
         ::  would %skip those and pile them in this long-lived fiber's skip queue
-        ::  forever. -drain consumes both. A %wake is just drained; only a real %news
+        ::  forever. -drain consumes both. A %wake is just drained. Only a real %news
         ::  re-indexes.
         ;<  nw=news-or-wake:io  bind:m  (take-news-or-wake-drain /page)
         ?-  -.nw
@@ -256,13 +256,13 @@
       ::  fiber owns the page's code grub: compile the source (a gate) against
       ::  the hoon stdlib, run it on commands (cmd grub, seq-bumped) and on
       ::  dependency waves, write the product to the data grub. A compile or
-      ::  run crash writes err and keeps the last good data — a broken page
+      ::  run crash writes err and keeps the last good data. A broken page
       ::  never kills the fiber (mule everything). ponytail: dep keeps are
-      ::  armed and never dropped (a removed dep still ticks; save-file's
+      ::  armed and never dropped (a removed dep still ticks. save-file's
       ::  no-op suppression bounds it); page code gets the hoon stdlib only
-      ::  (..add) and returns NO darts yet — the capped-authority %sand
+      ::  (..add) and returns NO darts yet. The capped-authority %sand
       ::  plumbing lands with darts (platform decision). A divergent dep
-      ::  cycle spins; a converging one terminates via no-op suppression.
+      ::  cycle spins. A converging one terminates via no-op suppression.
           [[%page @ *] %code]
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /page eval: failed")
         ;<  here=rail:tarball  bind:m  get-here-abs:io
@@ -275,7 +275,7 @@
         ::  `last` = last-PROCESSED cmd seq, persisted in the /seen grub (NOT
         ::  inferred from the current cmd grub). A page-save on a compile-broken
         ::  page respawns this fiber (put-file over /code), which re-inits `last`
-        ::  from /seen — so a command sent while broken (seq past /seen) still
+        ::  from /seen, so a command sent while broken (seq past /seen) still
         ::  runs once the fix compiles, while a plain reload never replays an
         ::  already-run command (both caught by review).
         ;<  last=@ud  bind:m  (read-eval-seen pdir)
@@ -284,10 +284,10 @@
         =/  bild=(each vase tang)  [%| `tang`~[leaf+"not compiled"]]
         ::  gen counts RAPID consecutive dep-tick reruns. A dep cycle or an
         ::  always-changing page reruns as fast as the event loop allows and
-        ::  would livelock it; a legit reactive page reruns only when an
+        ::  would livelock it. A legit reactive page reruns only when an
         ::  upstream actually changes, spaced out in time. So gen accumulates
         ::  only while reruns land closer together than `rerun-gap`, and resets
-        ::  on a command or a slow (legit) gap — capping runaways without ever
+        ::  on a command or a slow (legit) gap, capping runaways without ever
         ::  parking a page that merely reacts to many updates over time. gen and
         ::  last-now live in this fiber's loop across every wave.
         =/  gen=@ud  0
@@ -312,15 +312,15 @@
         =/  fresh=?  (gth seq.cur last)
         ;<  now=@da  bind:m  bowl-now
         ::  rapid = this rerun landed within `rerun-gap` of the previous one (a
-        ::  runaway burst — a DEPENDENCY cycle or an always-changing page reruns
+        ::  runaway burst: a DEPENDENCY cycle or an always-changing page reruns
         ::  as fast as the loop allows). gen accumulates while rapid and resets
         ::  on a settled gap. (Page-to-page POKE cycles are too slow per hop for
-        ::  this window — those are bounded by the poke budget instead.)
+        ::  this window. Those are bounded by the poke budget instead.)
         =/  rapid=?  &(!=(`@da`0 last-now) (lth (sub now last-now) rerun-gap))
         =.  gen  ?:(rapid +(gen) 0)
         =.  last-now  now
         ?:  (gth gen recompute-cap)
-          ::  a sustained rapid rerun burst — a cycle or an always-changing page.
+          ::  a sustained rapid rerun burst: a cycle or an always-changing page.
           ::  Stop producing data (that is what wakes our dependents), write err,
           ::  and park until a command (or a settled gap) resets gen.
           =/  msg=@t
@@ -330,17 +330,17 @@
           $
         =/  cmd=(unit @t)  ?:(fresh `txt.cur ~)
         ::  poke budget for this run: a command carries one (a page reached via
-        ::  a poke got a decremented budget); a dep/timer tick starts fresh.
+        ::  a poke got a decremented budget). A dep/timer tick starts fresh.
         =/  run-bud=@ud  ?:(fresh bud.cur poke-budget-max)
         ;<  ~  bind:m  (eval-run pdir p.bild cmd deps run-bud)
         ::  eval-run recorded any timer request in the /wake grub (clamped, or ~
-        ::  if the page asked for no timer or its run failed); read it back.
+        ::  if the page asked for no timer or its run failed). Read it back.
         ;<  wake=(unit @dr)  bind:m  (read-wake pdir)
         ::  persist the processed seq only when a command actually ran (a dep
         ::  tick leaves seq unchanged). /seen is not kept, so this fires no wave.
         =?  last  fresh  seq.cur
         ;<  ~  bind:m  ?:(fresh (write-eval-seen pdir seq.cur) (pure:m ~))
-        ::  wait for a dependency/command wave — or, if the page asked for a
+        ::  wait for a dependency/command wave, or, if the page asked for a
         ::  timer (`every`), for that timer, whichever comes first. Using
         ::  -until keyed on this timer means an earlier stale timer is drained,
         ::  so timers don't pile up across reruns.
@@ -348,7 +348,7 @@
           ;<  *  bind:m  (take-news-or-wake-drain /ev)
           $
         ::  anchor the timer to a FRESH now, read AFTER eval-run. The `now` above
-        ::  was captured before the (possibly slow) run; if the run took longer
+        ::  was captured before the (possibly slow) run. If the run took longer
         ::  than u.wake, `(add now u.wake)` is already in the PAST, so behn fires
         ::  immediately => zero real idle => a 100%-pinned tight loop (the timer
         ::  can't outrun its own eval). Re-reading now guarantees >= u.wake
@@ -361,19 +361,19 @@
         ;<  *  bind:m  (take-news-or-wake-until /ev until)
         $
       ::  /crawler.sig: periodic catalog sweep. Each tick re-indexes our own
-      ::  published pages into obelisk. The sweep SLEEPS FIRST: it monopolises
+      ::  published pages into obelisk. The sweep SLEEPS FIRST. It monopolises
       ::  the event loop for minutes on a real vault, and running it on start
       ::  meant every nexus reload (deploys included) blacked out HTTP right
       ::  when the user was watching. Settings' "Sweep catalog now" covers the
       ::  fresh-install case. ponytail: full re-scan per tick (fine for a
-      ::  personal store); chunked scanning like /search-reindex is the real
+      ::  personal store). Chunked scanning like /search-reindex is the real
       ::  fix if the blackout ever matters at the 6-hour cadence too.
-      ::  Interval hardcoded ~h6 — add /cat/config.json if it needs tuning.
+      ::  Interval hardcoded ~h6. Add /cat/config.json if it needs tuning.
           [~ %'crawler.sig']
         ::  each tick: re-index our own pub pages, then sweep followed peers.
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /crawler: failed")
         |-
-        ::  drain stray timer-wakes while sleeping (finding #13) — a plain sleep
+        ::  drain stray timer-wakes while sleeping (finding #13). A plain sleep
         ::  would let this sweep's early-resolved obelisk/peek timers accumulate.
         ;<  ~  bind:m  (sleep-draining ~h6)
         ;<  *       bind:m  catalog-scan-self
@@ -382,23 +382,23 @@
         ;<  *       bind:m  (catalog-scan-peers our now)
         $
       ::  /fs.sig: the lick (local IPC) port for the FUSE client. The serve-loop
-      ::  is generic — +lick-serve:io (fiberio) spins the socket, decodes each
+      ::  is generic. +lick-serve:io (fiberio) spins the socket, decodes each
       ::  [verb path query body] frame, and spits back [status body]. The only
-      ::  lattice-specific part is the +fs-op handler. Auth is filesystem-presence:
-      ::  the socket lives in the pier.
+      ::  lattice-specific part is the +fs-op handler. Auth is filesystem-presence.
+      ::  The socket lives in the pier.
           [~ %'fs.sig']
         ;<  ~  bind:m  (rise-wait:io prod "%lattice fs port: failed")
         (lick-serve:io fs-port fs-op)
       ==
     --
 |%
-::  +srv: HTTP response door — the road from a /ui/requests/* fiber up to
+::  +srv: HTTP response door, the road from a /ui/requests/* fiber up to
 ::  /ui/main.sig, through which all responses are sent (so the dispatcher can
 ::  cancel orphaned connections). Identical layout to counter.
 ::
 ++  srv  ~(. http-res:io [%| 1 %& ~ %'main.sig'])
 ::  +handle-request: serve one HTTP request. ponytail: the full ~50-route
-::  contract lands in step 3; this scaffold proves the request-fiber path —
+::  contract lands in step 3. This scaffold proves the request-fiber path:
 ::  owner-auth, then serve the web reader at the root and 404 (JSON) the rest.
 ::
 ++  handle-request
@@ -412,12 +412,12 @@
   =/  suffix=path  (slag 2 site.parsed)
   =/  args=(map @t @t)  (malt args.parsed)
   ::  clearweb: the ONLY unauthenticated surface. GET /c/<name> serves a
-  ::  clearweb-tagged page's DATA, read-only — no tree nav, no code, no
+  ::  clearweb-tagged page's DATA, read-only: no tree nav, no code, no
   ::  sibling grubs, no command form. Everything else requires the owner.
   ?:  &(?=([%c ^] suffix) =(%'GET' method.request.req))
     (serve-clearweb eyre-id t.suffix)
   ::  public form submissions: POST /f/<page>. The ONLY unauthenticated WRITE,
-  ::  and it is opt-in twice over — the page must be %clearweb AND carry a
+  ::  and it is opt-in twice over. The page must be %clearweb AND carry a
   ::  /forms-on flag (owner-set). The body becomes one command to that page,
   ::  with poke budget 0 so a submission can never start a poke chain. The
   ::  gate is +serve-form; nothing else public can write.
@@ -425,7 +425,7 @@
     (serve-form eyre-id t.suffix (req-body req))
   ::  PWA assets: also unauthenticated. Browsers fetch the manifest and the
   ::  apple-touch-icon WITHOUT credentials (only Chrome honors
-  ::  crossorigin=use-credentials, iOS never sends cookies for icons) — behind
+  ::  crossorigin=use-credentials, iOS never sends cookies for icons). Behind
   ::  the owner gate they 403 and the install silently degrades to a bookmark
   ::  with no standalone display. Nothing here is private: the app's name,
   ::  colors, icons, and a generic caching worker.
@@ -443,8 +443,8 @@
     (send-png eyre-id icon-512-b64)
   ::  owner gate. Eyre stamps a request authenticated to our web login with
   ::  src=our, so `authenticated` (already in hand, synchronous) IS the src==our
-  ::  check — reading `our` via a /sys/bowl round trip (bowl-our) just to compare
-  ::  cost ~0.2s on EVERY request. Gate on the flag; `our` is then simply `src`.
+  ::  check. Reading `our` via a /sys/bowl round trip (bowl-our) just to compare
+  ::  cost ~0.2s on EVERY request. Gate on the flag. `our` is then simply `src`.
   ?.  authenticated.req
     ::  JSON error, like every other route (was a bare text 'Forbidden').
     (send-err eyre-id 403 'forbidden')
@@ -459,7 +459,7 @@
   ::  can import a js/css file by URL. Owner-gated (fetched with the session).
   ?:  &(?=([%f ^] suffix) =(%'GET' method.request.req))
     (serve-asset eyre-id t.suffix)
-  ::  /know[/<key…>]: the private knowledge view — browse the memory store in
+  ::  /know[/<key…>]: the private knowledge view. Browse the memory store in
   ::  the reader. Owner-only like every non-clearweb route (gated above).
   ?:  &(?=([%know *] suffix) =(%'GET' method.request.req))
     (serve-know eyre-id t.suffix args)
@@ -467,13 +467,13 @@
   ?:  &(?=([%app *] suffix) =(%'GET' method.request.req))
     (serve-ui eyre-id t.suffix)
   ::  root: the web reader (Landscape tile). ?url=urb://ship/rel renders that
-  ::  page; no url renders the home index of our published pages. ponytail:
-  ::  compact gemtext->HTML (headings/links/quotes/lists/pre); the full reader's
+  ::  page. No url renders the home index of our published pages. ponytail:
+  ::  compact gemtext->HTML (headings/links/quotes/lists/pre). The full reader's
   ::  link-resolution + bookmark sync can follow.
   ?~  suffix
     =/  raw=(unit @t)  (~(get by args) 'url')
     ?~  raw
-      ::  authored home first: if the user published an /index page, serve it;
+      ::  authored home first: if the user published an /index page, serve it,
       ::  else the generated listing. Both keep /pub/index so a publish/delete/
       ::  edit auto-refreshes the open reader.
       ;<  home=(unit @t)  bind:m  (read-page-body our our /index)
@@ -484,7 +484,7 @@
         (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") (home-index-html our recent bms (know-quick-html:lkv kes 6))))
       (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") (render-gmi u.home)))
     =/  ref=(unit referent:lu)  (de-urb:lu u.raw)
-    ::  omnibar: input that isn't a urb:// address is a SEARCH query — serve a
+    ::  omnibar: input that isn't a urb:// address is a SEARCH query. Serve a
     ::  results page that queries the obelisk content catalog (client-side, via
     ::  the /catalog-search JSON api, which is built for exactly this fan-out).
     ?~  ref  (send-html eyre-id (render-page (trip u.raw) "" (search-results-html u.raw our)))
@@ -502,11 +502,11 @@
       =/  canon=tape  (trip (en-urb:lu ship.u.ref (weld pub-prefix:lu rel.u.ref)))
       ?~  body
         (send-view eyre-id (render-page canon "" "<p class=\"err\">not published here</p>"))
-      ::  own pages get a live reader (keep /pub/index — its per-page hash changes
-      ::  on every edit); remote pages stay static (can't keep a peer's grub).
+      ::  own pages get a live reader (keep /pub/index: its per-page hash changes
+      ::  on every edit). Remote pages stay static (can't keep a peer's grub).
       =/  rk=tape  ?:(=(ship.u.ref our) (keep-url "beacon/rev") "")
       ::  Respond FIRST, then record the visit. A history write is a poke to the
-      ::  serialised writer; doing it before the response would put a write on
+      ::  serialised writer. Doing it before the response would put a write on
       ::  the critical path of every page READ, which is exactly what the perf
       ::  pass took out. Safe to continue after send: a completed %simple
       ::  response drops the connection's conns entry, so no later cancel can
@@ -515,9 +515,9 @@
       (poke-history [%visit u.raw (page-title-of u.body u.raw)])
     ==
   ::  dispatch on [method action]. ponytail: read-know-map peeks the whole vault
-  ::  per request — fine for a personal store. Writes poke the single writer
-  ::  fiber (serialised) and respond ok; the writer logs no-op cases (missing key
-  ::  etc.) rather than 404 — precise per-route error codes can follow if a client
+  ::  per request, fine for a personal store. Writes poke the single writer
+  ::  fiber (serialised) and respond ok. The writer logs no-op cases (missing key
+  ::  etc.) rather than 404. Precise per-route error codes can follow if a client
   ::  needs them.
   =/  meth=@tas  method.request.req
   ?+    [meth (rear suffix)]
@@ -554,7 +554,7 @@
       [%'GET' %know-read]
     =/  ko=(unit path)  (know-key (~(gut by args) 'key' ''))
     ?~  ko  (send-err eyre-id 400 'bad key')
-    ::  peek just the one entry grub — hydrating the whole vault to serve a
+    ::  peek just the one entry grub. Hydrating the whole vault to serve a
     ::  single memory made this route degrade linearly with the store's size.
     ;<  kn=view:nexus  bind:m
       (peek:io [%| 2 %& (weld /know/vault u.ko) entry-leaf:lk] ~)
@@ -581,7 +581,7 @@
     ==
   ::  page-history: every stored revision of a page, newest first. The /page
   ::  code grub's born history is permanent (%firm), and autosave makes it
-  ::  dense — version history for free, no extra storage machinery.
+  ::  dense. Version history for free, no extra storage machinery.
       [%'GET' %page-history]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -602,11 +602,11 @@
         |=  [ud=@ud da=@da]
         (pairs:enjs:format ~[['rev' (numb:enjs:format ud)] ['updated' s+(scot %da da)]])
     ==
-  ::  page-source-at: a page's source AS OF a revision. Read-only view;
-  ::  restoring = the client re-saves the old body as a fresh revision, so
+  ::  page-source-at: a page's source AS OF a revision. Read-only view.
+  ::  Restoring = the client re-saves the old body as a fresh revision, so
   ::  nothing is ever destroyed. The rev is validated against real history
   ::  first because peek-at bails outright on a miss.
-      ::  NB: numeric URL params parse with +dim:ag, NOT +slaw %ud — slaw wants
+      ::  NB: numeric URL params parse with +dim:ag, NOT +slaw %ud. slaw wants
       ::  hoon's dotted numeral syntax (1.000), so every rev >= 1000 silently
       ::  failed to parse and 400'd. With autosave, revision numbers pass 1000
       ::  within a few sessions.
@@ -634,8 +634,8 @@
         ['rev' (numb:enjs:format u.rv)]
     ==
   ::  page-backlinks: every page whose body wikilinks [[name]]. ONE deep peek
-  ::  (the ball already carries every code grub), then a local scan per page —
-  ::  no external index, so it works even where obelisk doesn't; no per-page
+  ::  (the ball already carries every code grub), then a local scan per page.
+  ::  No external index, so it works even where obelisk doesn't. No per-page
   ::  darts, so it stays flat as pages accumulate.
       [%'GET' %page-backlinks]
     =/  name=(unit @t)  (~(get by args) 'name')
@@ -646,7 +646,7 @@
     ?.  ?=([%ball *] sn)
       (send-json eyre-id (pairs:enjs:format ~[['links' a+~]]))
     =/  pages=(list [pax=path when=@da code=@t])  (recent-walk ball.sn wave.sn ~)
-    ::  sorted by path like the old walk; murn preserves input order
+    ::  sorted by path like the old walk. murn preserves input order
     =/  srt=(list [pax=path when=@da code=@t])
       (sort pages |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
     =/  links=(list json)
@@ -676,17 +676,17 @@
     ;<  j=json  bind:m  fs-tree-json
     (send-json eyre-id j)
   ::
-  ::  page-dump: page-tree PLUS every page's body inline, in ONE deep peek — warms
+  ::  page-dump: page-tree PLUS every page's body inline, in ONE deep peek. Warms
   ::  a filesystem client's whole read-cache so rg/grep run from RAM. Heavier than
-  ::  page-tree; shape-only clients keep using page-tree.
+  ::  page-tree. Shape-only clients keep using page-tree.
       [%'GET' %page-dump]
     ;<  j=json  bind:m  fs-dump-json
     (send-json eyre-id j)
   ::
       [%'GET' %fetch]
     ::  read a published page. url=urb://~ship/rel. Own pages peek the local pub
-    ::  vault; remote pages use grubbery peek-remote (clean break: the peer must
-    ::  run the grubbery-native lattice — old %grow spurs are not read). case=~
+    ::  vault. Remote pages use grubbery peek-remote (clean break: the peer must
+    ::  run the grubbery-native lattice. Old %grow spurs are not read). case=~
     ::  gets the latest gained content, so there's no walk-to-latest.
     =/  raw=(unit @t)  (~(get by args) 'url')
     ?~  raw  (send-err eyre-id 400 'missing url param')
@@ -699,7 +699,7 @@
     ::  to badge publishers (publishes()) + list their files. The grubbery-native
     ::  store keeps no manifest grub, so synthesize one from the ship's pub index
     ::  instead. An unreachable/denied index stays a 404, so a non-lattice ship
-    ::  never badges as a publisher; a page the user really published at
+    ::  never badges as a publisher. A page the user really published at
     ::  /manifest was already served above.
     ?.  =(/manifest path.u.pu)  (send-err eyre-id 404 'not found')
     ;<  mix=(unit pub-index:lp)  bind:m  (read-pub-index-any ship.u.pu)
@@ -707,9 +707,9 @@
     (send-json eyre-id (mark-body-json 'gmi' (manifest-gmi u.mix)))
   ::  ── cross-ship browse (federated read-only tree reader) ──
   ::  list ANY grubbery ship's directory (not just lattice peers): ship=~x&path=/y.
-  ::  SHALLOW (one level) so a huge/hostile remote tree can't balloon memory;
-  ::  children past browse-fan-cap are dropped with `truncated`. Owner-only (the
-  ::  request handler already gates src=our) — never an open proxy. A denied
+  ::  SHALLOW (one level) so a huge/hostile remote tree can't balloon memory.
+  ::  Children past browse-fan-cap are dropped with `truncated`. Owner-only (the
+  ::  request handler already gates src=our), never an open proxy. A denied
   ::  (un-granted weir) or unreachable peer reads as 504, same as a timeout. No path
   ::  = the ship's root (its app list).
       [%'GET' %browse]
@@ -740,7 +740,7 @@
     =/  pp=(each path tang)  (mule |.((stab u.pt)))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
     ::  =(~ ...) not ?=(~ ...): ?= narrows p.pp to a lest, and scag casts its result
-    ::  to the input type (^+), so the possibly-empty dir would nest-fail — the same
+    ::  to the input type (^+), so the possibly-empty dir would nest-fail, the same
     ::  footgun key-to-rail documents. Split via lent/scag/snag on the un-narrowed path.
     ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
     =/  n=@ud  (dec (lent p.pp))
@@ -751,15 +751,15 @@
     ;<  ms=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
     ?~  ms  (send-err eyre-id 504 'unreachable or denied')
     (browse-file-respond eyre-id u.ms)
-  ::  remote-save: overwrite a file on ANOTHER ship — the editor's save button
+  ::  remote-save: overwrite a file on ANOTHER ship. The editor's save button
   ::  pointed across ames. POST /remote-save?ship=~nec&path=/a/b/c, body = the
   ::  new text. The write is a %grubbery-load %make applied on THEIR side as a
   ::  dart from /sys/ames/ships/<us>/ship.sig, so their weir decides it.
   ::
-  ::  VERIFIED BY REVISION, not trusted: the gall ack says the poke was
+  ::  VERIFIED BY REVISION, not trusted. The gall ack says the poke was
   ::  processed, but a weir denial after the ack is silent. We peek the file's
-  ::  cass before and after — no bump, no save, and the editor says so instead
-  ::  of lying "saved". (Content equality can't be the check: their mark may
+  ::  cass before and after. No bump, no save, and the editor says so instead
+  ::  of lying "saved". (Content equality can't be the check. Their mark may
   ::  normalize the body, e.g. wain round-trips and trailing newlines.)
       [%'POST' %remote-save]
     =/  shp-t=(unit @t)  (~(get by args) 'ship')
@@ -790,7 +790,7 @@
     ::  rebuild the noun in the grub's OWN shape (cord / wain / mime) and send
     ::  it under its OWN blot, with NO destination conversion. Converting
     ::  mime->blot at the destination needs the target marc to carry a mime
-    ::  grab, and lattice's own %page marc doesn't — a missing tube drops the
+    ::  grab, and lattice's own %page marc doesn't. A missing tube drops the
     ::  make SILENTLY on their side (found live: the save 403'd on the
     ::  revision check while a blot-converted remote_over "landed" an empty
     ::  body). Shape-preserving nouns need no tube; their marc just re-clams.
@@ -827,7 +827,7 @@
     %+  send-json  eyre-id
     a+(turn (sort ~(tap in bans) lth) |=(w=@p s+(scot %p w)))
   ::
-  ::  ban: add, then REVOKE — a ban that left existing grants in place would be
+  ::  ban: add, then REVOKE. A ban that left existing grants in place would be
   ::  a label, not a ban. The ship is stripped from every usergroup it is in.
       [%'POST' %ban]
     =/  st=(unit @t)  (~(get by args) 'ship')
@@ -850,7 +850,7 @@
     =/  who=(unit @p)  (slaw %p u.st)
     ?~  who  (send-err eyre-id 400 'bad ship')
     ;<  bans=banned:ls  bind:m  read-banned
-    ::  unban restores nothing: the grants were revoked, and re-granting is a
+    ::  unban restores nothing. The grants were revoked, and re-granting is a
     ::  deliberate act, not a side effect of lifting a ban.
     ;<  ~  bind:m
       (over:io ban-road [[/lattice %banned] (~(del in bans) u.who)])
@@ -863,7 +863,7 @@
   ::  {ships: ["~nec"], peek: ["/apps/..."], make: ["/apps/..."]}.
   ::
   ::  PRESERVED, never replaced: the poke set (the editor has no business
-  ::  granting eval power) and any road shape the editor can't render — both
+  ::  granting eval power) and any road shape the editor can't render, both
   ::  carried through from the stored weir verbatim.
       [%'POST' %share-group-save]
     =/  gname=(unit @t)  (~(get by args) 'name')
@@ -895,8 +895,8 @@
       =/  pp=(each path tang)  (mule |.((stab i.ts)))
       ?:  ?=(%| -.pp)  ~
       ::  grants stay under /apps. A peek grant on /sys leaks ACLs and silo
-      ::  internals; a make grant there lets a peer edit your usergroups. The
-      ::  dojo can still do it deliberately; this editor will not do it by
+      ::  internals. A make grant there lets a peer edit your usergroups. The
+      ::  dojo can still do it deliberately. This editor will not do it by
       ::  accident.
       ?.  ?=([%apps *] p.pp)  ~
       $(ts t.ts, out [p.pp out])
@@ -917,17 +917,17 @@
     ;<  bans=banned:ls  bind:m  read-banned
     =/  who=(set @p)  (~(gas in *(set @p)) (murn ships same))
     ::  a group save must not smuggle a banned ship back in. Reject rather than
-    ::  silently drop: a silently-dropped ship is someone believing they granted
+    ::  silently drop. A silently-dropped ship is someone believing they granted
     ::  access and did not, which is this editor's worst failure mode.
     ?:  (lien ~(tap in who) |=(w=@p (is-banned:ls bans w)))
       (send-err eyre-id 403 'that group names a banned ship')
     ;<  ~  bind:m  (over:io [%& %& gdir %'who.ships'] [[/ %ships] who])
     ;<  ~  bind:m  (over:io [%& %& gdir %'how.weir'] [[/ %weir] weir])
     (send-ok eyre-id)
-  ::  share-file: the per-file shortcut — grant a ship read or edit on ONE
+  ::  share-file: the per-file shortcut. Grant a ship read or edit on ONE
   ::  page, and tell them. The grant goes into an auto-group named after the
-  ::  ship (visible and editable in the peers panel like any other group);
-  ::  the notice is best-effort and the response says whether it arrived,
+  ::  ship (visible and editable in the peers panel like any other group).
+  ::  The notice is best-effort and the response says whether it arrived,
   ::  because the grant is durable either way.
       [%'POST' %share-file]
     =/  name=(unit @t)  (~(get by args) 'name')
@@ -938,7 +938,7 @@
     =/  shp=(unit @p)  (slaw %p u.shp-t)
     ?~  shp  (send-err eyre-id 400 'bad ship')
     ?:  =(u.shp our)  (send-err eyre-id 400 'that is you')
-    ::  a banned ship must not be grantable — otherwise the ban survives only
+    ::  a banned ship must not be grantable. Otherwise the ban survives only
     ::  until the next share, and the UI would happily hand access straight back
     ;<  bans=banned:ls  bind:m  read-banned
     ?:  (is-banned:ls bans u.shp)
@@ -967,7 +967,7 @@
     %+  send-json  eyre-id
     (pairs:enjs:format ~[['ok' b+&] ['notified' b+told]])
   ::  shared-with-me: the notices other ships sent us. Claims, not
-  ::  capabilities — opening one is what proves the grant is still real.
+  ::  capabilities. Opening one is what proves the grant is still real.
       [%'GET' %shared-with-me]
     ;<  sn=view:nexus  bind:m  (peek:io [%& %& app-base:lu %shared] ~)
     =/  sh=shared:ls
@@ -1026,7 +1026,7 @@
     =/  term=(unit @t)  (~(get by args) 'term')
     ?~  term  (send-err eyre-id 400 'missing term param')
     =/  nt=(unit @t)  (catalog-normalize-term:cat (trip u.term))
-    ::  a non-indexable term (too short / stop word) matches nothing — return an
+    ::  a non-indexable term (too short / stop word) matches nothing. Return an
     ::  empty result (200), NOT a 400, so a client fanning out one call per query
     ::  word doesn't error on a common stop word. Same flat obelisk shape (and
     ::  the same column set) the old agent hardcoded for this case.
@@ -1046,7 +1046,7 @@
     ?~  cq  (send-err eyre-id 400 'missing q param')
     ;<  cr=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query catalog-db (trip u.cq))
     (send-obelisk eyre-id cr)
-  ::  filtered catalog listing. category/publisher/source all optional; a present
+  ::  filtered catalog listing. category/publisher/source all optional. A present
   ::  but unparseable @p is a 400 (not silently dropped to "match all").
       [%'GET' %catalog-explore]
     =/  ct=tape  (trip (~(gut by args) 'category' ''))
@@ -1069,9 +1069,9 @@
       (obelisk-query catalog-db (catalog-fetch-urql:cat (trip u.url)))
     (send-obelisk eyre-id cf)
   ::  backlinks: which pages link TO `url`. `url` is matched VERBATIM against the
-  ::  authored link target (what the author wrote after `=> ` — e.g. urb://~pub/x
+  ::  authored link target (what the author wrote after `=> `, e.g. urb://~pub/x
   ::  or /x), not a normalized catalog url. Returns (source, publisher, path) +
-  ::  label + is-internal; the client joins the keys back to catalog-pages rows.
+  ::  label + is-internal. The client joins the keys back to catalog-pages rows.
       [%'GET' %catalog-backlinks]
     =/  url=(unit @t)  (~(get by args) 'url')
     ?~  url  (send-err eyre-id 400 'missing url param')
@@ -1079,7 +1079,7 @@
       (obelisk-query catalog-db (catalog-backlinks-urql:cat (trip u.url)))
     (send-obelisk eyre-id cb)
   ::  table of contents: one page's headings in order. url is the catalog url
-  ::  (urb://<pub>/pub/<spur>/gmi); source is always us (the crawler).
+  ::  (urb://<pub>/pub/<spur>/gmi). Source is always us (the crawler).
       [%'GET' %catalog-toc]
     =/  url=(unit @t)  (~(get by args) 'url')
     ?~  url  (send-err eyre-id 400 'missing url param')
@@ -1092,7 +1092,7 @@
       [%'GET' %catalog-by-tag]
     =/  tag=(unit @t)  (~(get by args) 'tag')
     ?~  tag  (send-err eyre-id 400 'missing tag param')
-    ::  case-fold the query tag: the analyzer stores catalog tags lowercased
+    ::  case-fold the query tag. The analyzer stores catalog tags lowercased
     ::  (collect-tag-tokens), and obelisk equality is exact, so an uppercase
     ::  query would never match. Matches the norm-tag/normalize-term convention.
     ;<  cb=(each (list cmd-result:ast) tang)  bind:m
@@ -1114,8 +1114,8 @@
       (obelisk-query catalog-db catalog-vocab-urql:cat)
     (send-obelisk eyre-id cv)
   ::  candidate ships to follow. grubbery has no gall SCRY (only watch/poke), so
-  ::  the %contacts book can't be read here; crawler targets are set explicitly
-  ::  via /follow instead. Route kept for contract shape; ponytail: bridge via a
+  ::  the %contacts book can't be read here. Crawler targets are set explicitly
+  ::  via /follow instead. Route kept for contract shape. ponytail: bridge via a
   ::  %contacts gall-watch if a live list is needed.
       [%'GET' %contacts]
     (send-json eyre-id (pairs:enjs:format ~[['ships' a+~]]))
@@ -1135,9 +1135,9 @@
   ::  hand the client grubbery's native keep endpoints for our subscribable grubs,
   ::  so it can live-subscribe instead of polling /know-list, /list, /follows. Each
   ::  is an SSE stream (Accept: text/event-stream) whose frames are
-  ::  'event: <old|add|upd|del> <name>' + 'data: <json>' — skip the initial `old`
+  ::  'event: <old|add|upd|del> <name>' + 'data: <json>'. Skip the initial `old`
   ::  snapshot, then on add/upd upsert <name> with its data, on del drop it. know
-  ::  and pub are DIRECTORY subscriptions (one frame per changed entry/page);
+  ::  and pub are DIRECTORY subscriptions (one frame per changed entry/page).
   ::  follows is the single follow-set grub.
       [%'GET' %streams]
     =/  base=tape  "/grubbery/api/keep/apps/lattice.lattice_app/"
@@ -1179,7 +1179,7 @@
     (send-png eyre-id apple-icon-b64)
       [%'GET' %edit]
     ::  the editor moved to the lattice-hosted app (ui-app/). Preserve deep
-    ::  links: ?name= opens the page, ?into= starts a new file in a folder;
+    ::  links: ?name= opens the page, ?into= starts a new file in a folder.
     ::  kind/newfolder are app-internal now.
     =/  name=(unit @t)  (~(get by args) 'name')
     =/  into=(unit @t)  (~(get by args) 'into')
@@ -1192,7 +1192,7 @@
   ::  Body is a JSON array of {name, type, body}. An upload used to be one
   ::  request per file, and each pays the pier's ~0.5s floor serially, so a
   ::  20-file folder drop was ~20 round-trips of overhead to do work that is
-  ::  identical here. Every name is validated BEFORE anything is written: a
+  ::  identical here. Every name is validated BEFORE anything is written. A
   ::  batch that half-applies and then rejects file 14 is worse than one that
   ::  refuses up front, because the client cannot tell what landed.
       [%'POST' %page-save-batch]
@@ -1248,7 +1248,7 @@
     ::  ship moved past the base the edit was made from) and after (the new
     ::  rev the client should carry forward). Same caveat as page-save: the
     ::  compare is fiber-adjacent to the poke, so a same-ship interleave can
-    ::  mislabel a flag — never lose a revision.
+    ::  mislabel a flag, never lose a revision.
     ;<  prevs=(list @ud)  bind:m
       =/  n  (fiber:fiber:nexus ,(list @ud))
       ?.  report  (pure:n ~)
@@ -1259,11 +1259,11 @@
       ;<  r=@ud  bind:n  (page-rev (pax-of nam.i.todo))
       $(todo t.todo, acc [r acc])
     ::  conflicted items get their losing body preserved FIRST, in the same
-    ::  %make-many transaction — see +conflict-name for why history is not
+    ::  %make-many transaction. See +conflict-name for why history is not
     ::  enough. Peeks happen here (fiber), the writes land atomically below.
     ::  dups: items whose stale base points at content IDENTICAL to what the
-    ::  ship already holds — a replay racing its own timed-out-but-landed
-    ::  write. Not a conflict (see page-save); aligned with items for the
+    ::  ship already holds, a replay racing its own timed-out-but-landed
+    ::  write. Not a conflict (see page-save). Aligned with items for the
     ::  report below.
     ;<  kd=[keeps=(list [pax=path src=@t]) dups=(list ?)]  bind:m
       =/  n  (fiber:fiber:nexus ,[keeps=(list [pax=path src=@t]) dups=(list ?)])
@@ -1282,7 +1282,7 @@
       ?.  !=(bas.i.todo pv)  $(todo t.todo, ps more, pg pgm, dups [| dups])
       ;<  old=(unit @t)  bind:n  (page-src (pax-of nam.i.todo))
       ::  missing page or identical body: stale base, but nothing to preserve
-      ::  and nothing to disagree with — not a conflict
+      ::  and nothing to disagree with. Not a conflict
       ?~  old  $(todo t.todo, ps more, pg pgm, dups [& dups])
       ?:  =(u.old wsrc)  $(todo t.todo, ps more, pg pgm, dups [& dups])
       %=  $
@@ -1298,7 +1298,7 @@
       %+  send-json  eyre-id
       (pairs:enjs:format ~[['ok' b+&] ['saved' (numb:enjs:format (lent items))]])
     ::  new rev per item = prev+1, computed for the same reason page-save
-    ::  computes it: a same-fiber peek cannot observe the write it follows
+    ::  computes it. A same-fiber peek cannot observe the write it follows
     =/  out=(list json)
       =/  todo  items
       =/  ps  prevs
@@ -1335,30 +1335,30 @@
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     =/  raw=@t  (req-body req)
-    ::  ?type=index: no body — the code is generated from the page's own path
+    ::  ?type=index: no body. The code is generated from the page's own path
     ::  (it lists its own folder). Otherwise a body is required.
     =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'hoon')
     =/  is-index=?  =(%index ptype)
     ?:  &(?!(is-index) =('' raw))  (send-err eyre-id 400 'missing body')
     ::  ?type=<builder>: the body is raw content, not hoon. Wrap it in
-    ::  `... (BUILDER 'content')` so the whole pipeline runs unchanged; edit
+    ::  `... (BUILDER 'content')` so the whole pipeline runs unchanged. edit
     ::  reopens it via unwrap-content. Absent/unknown type -> raw hoon.
     =/  src=@t
       ?:  is-index  (make-folder-index (pax-of u.name))
       ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
-    ::  ?new=1: create-only — 409 instead of silently overwriting an existing
+    ::  ?new=1: create-only, 409 instead of silently overwriting an existing
     ::  page (the editor's new-page mode sends it; caught by review). Only the
-    ::  new=1 path pays the existence peek — a plain overwrite (every autosave)
+    ::  new=1 path pays the existence peek. A plain overwrite (every autosave)
     ::  never used the answer.
     ;<  ex=?  bind:m
       ?.  (~(has by args) 'new')  (pure:(fiber:fiber:nexus ,?) %.n)
       (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.name))) %code])
     ?:  &((~(has by args) 'new') ex)  (send-err eyre-id 409 'page exists')
     ::  ?base=<rev>: the revision the caller edited FROM (the offline queue
-    ::  stamps it at enqueue). Compared HERE rather than by the client — a
+    ::  stamps it at enqueue). Compared HERE rather than by the client. A
     ::  client check-then-write races anything landing in between. The compare
     ::  sits one fiber-bind from the poke, so a same-ship interleave can still
-    ::  mislabel a conflict in principle; the consequence is only a wrong FLAG
+    ::  mislabel a conflict in principle. The consequence is only a wrong FLAG
     ::  (every save is a kept revision either way), which is why apply-and-flag
     ::  is safe where refuse-and-block would need true writer-side CAS.
     =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
@@ -1371,7 +1371,7 @@
     ::  identical content cannot conflict. The client's 10s deadline can fire
     ::  on a request the pier nevertheless applies (abort stops the WAIT, not
     ::  the write), so the queued replay carries a base one rev behind its own
-    ::  landed save — same body, moved rev. Flagging that manufactured a bogus
+    ::  landed save: same body, moved rev. Flagging that manufactured a bogus
     ::  conflicts/ page holding a copy of the very body being saved. A missing
     ::  page is the same shape: nothing to preserve, nothing to conflict with.
     =/  conflicted=?  &(stale ?=(^ old) !=(u.old src))
@@ -1382,12 +1382,12 @@
       ?~  old  (pure:n ~)
       (poke-eval [%make (pax-of kept) u.old])
     ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
-    ::  the new rev is prev+1, COMPUTED not re-peeked: a peek in this same
+    ::  the new rev is prev+1, COMPUTED not re-peeked. A peek in this same
     ::  fiber does not observe the write yet (effects flush on yield), so a
-    ::  post-write peek returned the stale rev — and a client carrying that
+    ::  post-write peek returned the stale rev, and a client carrying that
     ::  as its base would flag a false conflict on every second save. %make
     ::  commits the code grub exactly once, so +1 is exact.
-    ::  additive over the old {"ok":true} — nothing keyed on the exact shape
+    ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
     %+  send-json  eyre-id
     %-  pairs:enjs:format
     :~  ['ok' b+&]
@@ -1407,7 +1407,7 @@
       [%'POST' %page-preview]
     ::  live markdown preview: render the POSTed body with the real render-md
     ::  (the source-of-truth renderer, so no client/server drift) and return a
-    ::  bare HTML doc. Non-persisting — nothing is written, so the editor can
+    ::  bare HTML doc. Non-persisting. Nothing is written, so the editor can
     ::  preview a note as it is typed, before any save. Owner-gated like all
     ::  non-clearweb routes.
     =/  body=@t  (req-body req)
@@ -1430,20 +1430,23 @@
     ::  a user command starts a fresh poke budget.
     ;<  ~  bind:m  (poke-eval [%cmd (pax-of u.name) txt poke-budget-max])
     ::  web=1 (a page-view form submit) -> 303 back to the page so the browser
-    ::  lands on the live view; the JSON ok stays for programmatic callers.
+    ::  lands on the live view. The JSON ok stays for programmatic callers.
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
     %+  send-see-other  eyre-id
     :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.name) "/")
       [%'POST' %page-del]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
-    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    ;<  ~  bind:m  (poke-eval [%del (pax-of u.name)])
+    ::  raw-name-pax, not valid-name: deletion stays able to remove a page whose
+    ::  name predates the dot-segment rule. Creation is where the rule belongs.
+    =/  dpax=(unit path)  (raw-name-pax u.name)
+    ?~  dpax  (send-err eyre-id 400 'bad name')
+    ;<  ~  bind:m  (poke-eval [%del u.dpax])
     (send-ok eyre-id)
   ::  page-move: server-side move/rename of a page or a whole folder subtree.
   ::  Replaces the old client choreography (page-source + page-save + page-del
-  ::  per page, folder-new per folder — 3N+M round-trips at ~2s each) with one
-  ::  request. Share modes carry over; wikilink self-references are rewritten
+  ::  per page, folder-new per folder, 3N+M round-trips at ~2s each) with one
+  ::  request. Share modes carry over. Wikilink self-references are rewritten
   ::  the same way template instantiation rewrites its root.
       [%'POST' %page-move]
     =/  from=(unit @t)  (~(get by args) 'from')
@@ -1481,7 +1484,7 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    ::  cap=0 (default) means no absolute limit; gap is in SECONDS, 0 = none.
+    ::  cap=0 (default) means no absolute limit. gap is in SECONDS, 0 = none.
     =/  cap=@ud  (fall (rush (~(gut by args) 'cap' '0') dim:ag) 0)
     =/  gaps=@ud  (fall (rush (~(gut by args) 'gap' '0') dim:ag) 0)
     ;<  ~  bind:m
@@ -1517,14 +1520,14 @@
       ::  nearest flag at/above a page decides, so a folder toggles a whole site.
   ::  comments-inbox: what other ships have said, across every page. Comments
   ::  arrive from anyone the page is open to and the workspace had no view of
-  ::  them at all — you had to visit each published page in the reader to find
+  ::  them at all. You had to visit each published page in the reader to find
   ::  out anyone had replied.
       [%'GET' %comments-inbox]
     ;<  j=json  bind:m  comments-inbox-json
     (send-json eyre-id j)
   ::
   ::  moderation: remove one comment. Owner-only like every non-clearweb route.
-  ::  Deleting the grub is the whole operation — the reader renders from the
+  ::  Deleting the grub is the whole operation. The reader renders from the
   ::  same tree, so it disappears there too.
       [%'POST' %comment-del]
     =/  pg=(unit @t)  (~(get by args) 'page')
@@ -1552,7 +1555,7 @@
     =/  page=(unit @t)  (~(get by args) 'page')
     ?~  page  (send-err eyre-id 400 'missing page')
     ?.  (valid-name u.page)  (send-err eyre-id 400 'bad page')
-    ::  the box POSTs a form (body=<urlencoded>); parse it like page-cmd does.
+    ::  the box POSTs a form (body=<urlencoded>). Parse it like page-cmd does.
     =/  fargs=(map @t @t)
       (malt args:(parse-url:http-utils (crip (weld "/?" (trip (req-body req))))))
     =/  body=@t  (~(gut by fargs) 'body' '')
@@ -1560,7 +1563,7 @@
     ;<  ~  bind:m  (poke-comment [(pax-of u.page) body])
     ::  303 back to the page (target=_top on the box), so it reloads with the new
     ::  comment. The write is a separate transaction, so a stale reload just needs
-    ::  a refresh — acceptable, like page-cmd.
+    ::  a refresh (acceptable, like page-cmd).
     %+  send-see-other  eyre-id
     :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.page) "/")
       ::  bookmark the current browser url (title defaults to the url). Newest
@@ -1610,7 +1613,7 @@
             ['hits' (numb:enjs:format n)]
         ==
     ==
-  ::  the visit list itself, newest first — for a history page or a client that
+  ::  the visit list itself, newest first, for a history page or a client that
   ::  wants more than the dropdown's twelve.
       [%'GET' %history]
     ;<  his=history:lh  bind:m  read-history
@@ -1647,7 +1650,7 @@
     =/  folder=@t  (~(gut by args) 'folder' '')
     ;<  ~  bind:m  (poke-bookmark [%move u.url folder])
     (send-ok eyre-id)
-  ::  the whole list as JSON, for clients and tests; the /marks page is the
+  ::  the whole list as JSON, for clients and tests. The /marks page is the
   ::  human view of the same data.
       [%'GET' %bookmarks]
     ;<  bms=bookmarks:lb  bind:m  read-bookmarks
@@ -1662,18 +1665,18 @@
         ~[['url' s+url.b] ['title' s+title.b] ['folder' s+folder.b]]
     ==
   ::  ── /clip: archive a clearweb page AS a lattice page ───────────────────
-  ::  A bookmark stores a link; this stores the page. The ship fetches the url
+  ::  A bookmark stores a link. This stores the page. The ship fetches the url
   ::  itself over iris, converts the html to markdown, and writes a normal
-  ::  private page under clips/ — editable, searchable and shareable like any
+  ::  private page under clips/: editable, searchable and shareable like any
   ::  other, because it IS any other.
   ::
   ::  GET, not POST, because the whole point is that a bookmarklet reaches it
-  ::  by top-level navigation: eyre's session cookie carries no SameSite
+  ::  by top-level navigation. eyre's session cookie carries no SameSite
   ::  attribute, so a navigation sends it where a cross-site POST would not.
   ::  That does leave it CSRF-reachable (an <img src=…/clip?url=> on a hostile
   ::  page would archive a page of the attacker's choosing), which is noise in
-  ::  the owner's own tree, not disclosure — the fetched body never travels
-  ::  back to the attacker. +http-url is the real boundary: it keeps `file:`
+  ::  the owner's own tree, not disclosure. The fetched body never travels
+  ::  back to the attacker. +http-url is the real boundary. It keeps `file:`
   ::  and friends away from iris on both the initial url and the redirect.
       [%'GET' %clip]
     =/  url=(unit @t)  (~(get by args) 'url')
@@ -1683,12 +1686,12 @@
   ::  Some publishers refuse the ship (403 to any automated fetch), and a
   ::  paywalled or logged-in page is never fetchable server-side at all. In
   ::  both cases the browser is already holding the rendered page, legitimately,
-  ::  so the html comes from there instead — no request to the site is made.
+  ::  so the html comes from there instead. No request to the site is made.
   ::
   ::  It takes two routes because of the session cookie. Eyre sets it with no
-  ::  SameSite attribute, which browsers treat as Lax: a top-level GET
+  ::  SameSite attribute, which browsers treat as Lax. A top-level GET
   ::  navigation carries it, a cross-site POST does not. So the bookmarklet
-  ::  cannot POST the html from the article page — it would arrive
+  ::  cannot POST the html from the article page. It would arrive
   ::  unauthenticated. Instead it OPENS /clip-paste (top-level GET, cookie
   ::  rides along), then postMessages the html to that tab, which is same-origin
   ::  with the api and can POST it to /clip-html normally.
@@ -1696,7 +1699,7 @@
     =/  url=(unit @t)  (~(get by args) 'url')
     ?~  url  (send-err eyre-id 400 'missing url')
     (send-html eyre-id (clip-paste-html u.url))
-  ::  the html arrives as the request body; `url` is only provenance and the
+  ::  the html arrives as the request body. `url` is only provenance and the
   ::  slug source. Nothing is fetched here.
       [%'POST' %clip-html]
     =/  url=(unit @t)  (~(get by args) 'url')
@@ -1733,7 +1736,7 @@
     (clip-page eyre-id u.found)
       [%'POST' %page-share-tree]
     ::  publish/unpublish a whole subtree at once: set `mode` on every page
-    ::  under a folder. name is the folder path; mode=clearweb publishes a site,
+    ::  under a folder. name is the folder path. mode=clearweb publishes a site,
     ::  mode=private takes it all down.
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -1789,7 +1792,7 @@
     =/  rel=(unit @t)  (~(get by args) 'path')
     ?~  rel  (send-err eyre-id 400 'missing path')
     ::  reject an EMPTY path value (?path=): pub-path('') is /pub/gmi, a degenerate
-    ::  key the reader maps back to /index — so it would mis-index and be unreadable.
+    ::  key the reader maps back to /index, so it would mis-index and be unreadable.
     ?:  =('' u.rel)  (send-err eyre-id 400 'missing path')
     =/  pp=(each path tang)  (mule |.((pub-path u.rel)))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'invalid path')
@@ -1812,9 +1815,9 @@
     (send-ok eyre-id)
   ::  ── pub version history ──
   ::  every published page is a firm grub, so grubbery keeps every prior revision.
-  ::  list a page's revisions (rev = the opaque grub revision id, with its date —
-  ::  key the UI on the date, revs are not contiguous). read-at + restore ONLY ever
-  ::  pass a rev that came from this list: peek-at -> resolve-case BAILS the whole
+  ::  list a page's revisions (rev = the opaque grub revision id, with its date.
+  ::  Key the UI on the date, revs are not contiguous). read-at + restore ONLY ever
+  ::  pass a rev that came from this list. peek-at -> resolve-case BAILS the whole
   ::  event on a missing case, so an unvalidated number would crash the request.
       [%'GET' %pub-history]
     =/  raw=(unit @t)  (~(get by args) 'path')
@@ -1859,8 +1862,8 @@
     %+  send-json  eyre-id
     (pairs:enjs:format ~[['body' s+body] ['rev' (numb:enjs:format u.rev)] ['mark' s+'gmi']])
   ::  restore a prior revision: read its body, then re-save through the writer so it
-  ::  lands as a fresh firm revision (index + gain stay consistent). Non-destructive
-  ::  — the current body is itself retained in history.
+  ::  lands as a fresh firm revision (index + gain stay consistent). Non-destructive.
+  ::  The current body is itself retained in history.
       [%'POST' %pub-restore-rev]
     =/  raw=(unit @t)  (~(get by args) 'path')
     ?~  raw  (send-err eyre-id 400 'missing path')
@@ -1884,10 +1887,10 @@
     (send-ok eyre-id)
   ::  prune a page's history to the newest `keep` revisions (default 10, floor 1).
   ::  Destructive + irreversible, same contract as /know-prune: %lose [%pick ...]
-  ::  drops the picked old revisions and decrements silo refs; the live rev is never
+  ::  drops the picked old revisions and decrements silo refs. The live rev is never
   ::  dropped (keep>=1 keeps the newest, and the top cass is excluded from the drop
-  ::  set). Request-fiber + explicit cass set — no writer serialization, no open
-  ::  range. Shrinks what /pub-history lists; /pub-read-at on a dropped rev 404s.
+  ::  set). Request-fiber + explicit cass set: no writer serialization, no open
+  ::  range. Shrinks what /pub-history lists. /pub-read-at on a dropped rev 404s.
       [%'POST' %pub-prune]
     =/  raw=(unit @t)  (~(get by args) 'path')
     ?~  raw  (send-err eyre-id 400 'missing path')
@@ -1919,7 +1922,7 @@
     (send-json eyre-id (pairs:enjs:format ~[['dropped' (numb:enjs:format nd)] ['kept' (numb:enjs:format (sub ntot nd))]]))
   ::  ── know version history ──
   ::  every know entry is a firm grub, so grubbery keeps its prior revisions. A live
-  ::  key's history is under /know/vault; a deleted key's is under /know/trash-vault
+  ::  key's history is under /know/vault. A deleted key's is under /know/trash-vault
   ::  (see know-hist-road). read-at + restore only ever pass a rev returned here.
       [%'GET' %know-history]
     =/  raw=(unit @t)  (~(get by args) 'key')
@@ -1966,7 +1969,7 @@
     (send-json eyre-id (know-entry-json u.ko e))
   ::  restore a prior revision: re-save it live via %import (preserves tags/vector),
   ::  stamped updated=now so it sorts fresh in know-list (matches pub-restore). Works
-  ::  for a trashed key too — %import revives it live. Non-destructive: the current
+  ::  for a trashed key too. %import revives it live. Non-destructive. The current
   ::  body stays in history.
       [%'POST' %know-restore-rev]
     =/  raw=(unit @t)  (~(get by args) 'key')
@@ -1993,13 +1996,13 @@
   ::  prune a live key's history to the newest `keep` revisions (default 10, floor
   ::  1). DESTRUCTIVE + IRREVERSIBLE: %lose hard-drops the picked revisions and
   ::  decrements silo refs (shared content lobes survive by refcount). The current
-  ::  body is NEVER dropped — two guards: keep>=1 leaves the newest in the kept
+  ::  body is NEVER dropped. Two guards: keep>=1 leaves the newest in the kept
   ::  segment, and the top cass is explicitly removed from the drop set. Uses %pick
   ::  (an explicit cass set), never an open %numb/%date range, so even a concurrent
   ::  write can't widen the drop into the live rev. Runs in the request fiber (prune
-  ::  touches only old revs, not the know-index, so no writer serialization needed);
-  ::  a lose failure 500s this one request, it can't park the writer. Trashed keys
-  ::  are out of scope — targets the live vault only.
+  ::  touches only old revs, not the know-index, so no writer serialization needed).
+  ::  A lose failure 500s this one request. It can't park the writer. Trashed keys
+  ::  are out of scope. This targets the live vault only.
       [%'POST' %know-prune]
     =/  raw=(unit @t)  (~(get by args) 'key')
     ?~  raw  (send-err eyre-id 400 'missing key')
@@ -2047,7 +2050,7 @@
     ;<  ~  bind:m  (poke-sub [%unfollow u.who])
     (send-ok eyre-id)
   ::  ── per-file subscribe writes (POST) ── url=urb://<ship>/<path> keeps that one
-  ::  page live: the crawler re-indexes it the moment the peer edits it, instead of
+  ::  page live. The crawler re-indexes it the moment the peer edits it, instead of
   ::  waiting for the ~h6 sweep. /unsub tears the keep down.
       [%'POST' %sub]
     =/  raw=(unit @t)  (~(get by args) 'url')
@@ -2083,15 +2086,15 @@
       =/  ct=tape  (trip u.c)
       ::  @rs literals put the aura dot FIRST: 0.7 is `.0.7`, NOT `.7` (=7.0).
       ::  So PREPEND the aura dot to a plain decimal ("0.7" -> ".0.7"), but leave a
-      ::  full native literal (".0.7") alone — else "..0.7" fails to parse and the
+      ::  full native literal (".0.7") alone, else "..0.7" fails to parse and the
       ::  documented native form silently coerces to .0.
       =/  lit=tape  ?:(?=([%'.' *] ct) ct ['.' ct])
       =/  v=@rs  ?~(r=(slaw %rs (crip lit)) .0 u.r)
-      ::  clamp to [0,1] — shorthand like ".7" parses as 7.0 per @rs literal rules,
-      ::  and confidence is a probability; an out-of-range value would corrupt
+      ::  clamp to [0,1]. Shorthand like ".7" parses as 7.0 per @rs literal rules,
+      ::  and confidence is a probability. An out-of-range value would corrupt
       ::  the stored/displayed value in catalog-pages.confidence. A NaN (".nan"
       ::  parses fine) makes every rs comparison %.n, so it would slip past the
-      ::  range test — collapse it to .0 first (equ:rs v v is %.n only for NaN).
+      ::  range test. Collapse it to .0 first (equ:rs v v is %.n only for NaN).
       ?:  !(equ:rs v v)  .0
       ?:((lth:rs v .0) .0 ?:((gth:rs v .1) .1 v))
     ;<  ~  bind:m
@@ -2110,9 +2113,9 @@
     ;<  n=@ud  bind:m  (catalog-scan-peer our u.pub now)
     (send-json eyre-id (pairs:enjs:format ~[['indexed' (numb:enjs:format n)]]))
   ::  sweep everything now: our own pages + every followed peer. Respond FIRST
-  ::  ({"ok":true}, the old agent's fire-and-forget contract — the client's 10s
+  ::  ({"ok":true}, the old agent's fire-and-forget contract. The client's 10s
   ::  read timeout can't outlast a real sweep), THEN run the sweep in this same
-  ::  request fiber. Safe: a completed %simple response deletes the connection's
+  ::  request fiber. Safe. A completed %simple response deletes the connection's
   ::  conns entry in grubbery, so eyre's later leave takes the no-binding branch
   ::  and no %handle-http-cancel can reach the dispatcher to cull this fiber
   ::  mid-sweep (grubbery handle-eyre-action %send / on-leave %http-response).
@@ -2123,15 +2126,15 @@
     (send-html eyre-id (render-page "" "" (marks-html bms)))
       [%'POST' %catalog-sweep]
     ::  ACK, YIELD, THEN SCAN. This already acked first, but a fiber's
-    ::  effects only flush when it YIELDS, and +catalog-scan-self never does
-    ::  — it runs to completion inside a single event. So the response sat
+    ::  effects only flush when it YIELDS, and +catalog-scan-self never does.
+    ::  It runs to completion inside a single event. So the response sat
     ::  behind the whole scan and the button spun ~21s (measured; ~107s once
     ::  the store grew) while the page claimed the work was already
     ::  backgrounded. The one-second sleep ends the event, the ack goes out,
     ::  and the scan resumes on the wake.
     ::
-    ::  Handing this to /crawler.sig would be tidier — one sweeper, and it
-    ::  owns the ~h6 tick — but an internal poke is only acked once the
+    ::  Handing this to /crawler.sig would be tidier (one sweeper, and it
+    ::  owns the ~h6 tick), but an internal poke is only acked once the
     ::  target fiber reaches a take, and pokes sent to the crawler never
     ::  produced a scan (verified: page-tree held ~1.8s throughout, where a
     ::  real scan stalls it for a minute-plus). Not worth a silent no-op
@@ -2155,14 +2158,14 @@
     ;<  kq=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query catalog-db (trip urql))
     (send-obelisk eyre-id kq)
   ::  rebuild the obelisk knowledge index from the live vault (Explore pane's
-  ::  Reindex). Ack-blocking but the client treats it fire-and-forget; 502 only
+  ::  Reindex). Ack-blocking but the client treats it fire-and-forget. 502 only
   ::  when obelisk is absent.
       [%'POST' %know-reindex]
     ;<  ~  bind:m  know-reindex
     (send-ok eyre-id)
   ::  ── editing arbitrary grubs (write apps in the editor) ──────────────────
   ::  grub-source: any grub's editable text. `editable` is false for a binary
-  ::  or opaque grub — the client shows it read-only rather than offering a save
+  ::  or opaque grub. The client shows it read-only rather than offering a save
   ::  that would corrupt it.
       [%'GET' %grub-source]
     =/  raw=(unit @t)  (~(get by args) 'path')
@@ -2189,7 +2192,7 @@
     =/  ro=(unit [rod=road:tarball nom=@ta])  (grub-road u.raw)
     ?~  ro  (send-err eyre-id 400 'invalid path')
     =/  fresh=?  =('1' (~(gut by args) 'new' '0'))
-    ::  a full peek, not peek-exists: an overwrite needs the grub's CURRENT blot
+    ::  a full peek, not peek-exists. An overwrite needs the grub's CURRENT blot
     ::  (and content-type, if it is a mime grub) so the save cannot retype it.
     ;<  vn=view:nexus  bind:m  (peek:io rod.u.ro ~)
     =/  ex=?  ?=([%file *] vn)
@@ -2202,7 +2205,7 @@
         (grub-bask nom.u.ro body)
       (grub-bask-into p.sang.vn (grub-mime-type sang.vn) body)
     ?:  ?=(%| -.bk)
-      ::  the mark rejected the source. Report it so the editor can show it; the
+      ::  the mark rejected the source. Report it so the editor can show it. The
       ::  grub still holds its previous content.
       ::  +obelisk-tang-text is a generic tang -> cord despite the name.
       (send-err eyre-id 400 (obelisk-tang-text p.bk))
@@ -2210,7 +2213,7 @@
       ?:  ex  (over:io rod.u.ro p.bk)
       (make:io rod.u.ro |+[p.bk ~])
     (send-ok eyre-id)
-  ::  grub-folder: create a directory — how a NEW app starts, since an app is
+  ::  grub-folder: create a directory, how a NEW app starts, since an app is
   ::  just a folder of grubs under /apps.
       [%'POST' %grub-folder]
     =/  raw=(unit @t)  (~(get by args) 'path')
@@ -2229,15 +2232,15 @@
   ::  labelled with the visibility recorded at index time. Same JSON shape as
   ::  /catalog-search so the omnibar can fan out over both identically.
   ::
-  ::  Owner-gated like every route below the gate — which is what makes it safe
+  ::  Owner-gated like every route below the gate, which is what makes it safe
   ::  to return private rows at all. The results page is served from the root
-  ::  route, also behind the gate; the only unauthenticated surfaces (clearweb
+  ::  route, also behind the gate. The only unauthenticated surfaces (clearweb
   ::  /c/, public form POST /f/, PWA assets) dispatch above it.
       [%'GET' %content-search]
     =/  term=(unit @t)  (~(get by args) 'term')
     ?~  term  (send-err eyre-id 400 'missing term param')
     =/  nt=(unit @t)  (catalog-normalize-term:cat (trip u.term))
-    ::  a non-indexable term (too short / stop word) matches nothing — 200 with
+    ::  a non-indexable term (too short / stop word) matches nothing. 200 with
     ::  no rows, NOT a 400, so a client fanning out one call per query word
     ::  doesn't error on a common stop word. Mirrors /catalog-search.
     ?~  nt
@@ -2248,7 +2251,7 @@
           ['rows' a+~]
       ==
     ::  ONE peek of ONE bucket, whatever the corpus size. The bucket is named by
-    ::  hashing the term, so this never reads the /idx directory — a directory
+    ::  hashing the term, so this never reads the /idx directory. A directory
     ::  peek would materialise the whole index (docs/native-index.md).
     ;<  hits=(list [scope=@t key=@t tf=@ud])  bind:m  (index-look u.nt)
     %+  send-json  eyre-id
@@ -2269,14 +2272,14 @@
     (send-ok eyre-id)
   ::  ── legacy agent migration (see the +legacy-live block) ────────────────
   ::  legacy-status: should the UI offer to import from a retired %lattice
-  ::  gall agent? One %gu liveness scry and nothing else — see below. The
+  ::  gall agent? One %gu liveness scry and nothing else. See below. The
   ::  client asks once per browser session and never again once resolved.
       [%'GET' %legacy-status]
     ;<  done=?  bind:m  legacy-resolved
     ?:  done
       (send-json eyre-id (pairs:enjs:format ~[['prompt' b+|] ['reason' s+'resolved']]))
     ::  %gu ONLY. This route runs on the editor's boot path, and a %gx against
-    ::  an agent whose version lacks the arm does not fail gracefully — it
+    ::  an agent whose version lacks the arm does not fail gracefully. It
     ::  unwinds the Arvo event. Liveness is the one thing %gu can answer
     ::  safely, so the counts (and every peek that could bail) move behind the
     ::  user's explicit click in /legacy-migrate.
@@ -2287,7 +2290,7 @@
         ['reason' s+?:(up 'agent-present' 'absent')]
     ==
   ::  legacy-migrate: copy the retired agent's knowledge in. Entries whose key
-  ::  ALREADY exists here are SKIPPED, never overwritten — the live store is
+  ::  ALREADY exists here are SKIPPED, never overwritten. The live store is
   ::  always the newer one, and a legacy body must never revert an edit made
   ::  since. That also makes a re-run harmless.
       [%'POST' %legacy-migrate]
@@ -2299,14 +2302,14 @@
     =/  parsed=(each (list [@t know-entry:lk]) tang)  (mule |.((parse-import aj)))
     ?:  ?=(%| -.parsed)  (send-err eyre-id 502 'bad legacy export shape')
     ::  FAIL CLOSED. +read-know-map maps ANY unreadable view onto the empty
-    ::  map, which is indistinguishable from a legitimately empty store — and
+    ::  map, which is indistinguishable from a legitimately empty store, and
     ::  "empty" would mean every legacy entry imports over live data. Use the
     ::  unit-returning read so a genuine read FAILURE refuses the import, while
     ::  a real (readable) empty store still migrates normally.
     ;<  esu=(unit (map path know-entry:lk))  bind:m  read-know-vault-safe
     ?~  esu  (send-err eyre-id 503 'local store unreadable; import refused')
     =/  es=(map path know-entry:lk)  u.esu
-    ::  skip anything we already hold LIVE or in TRASH — importing over a
+    ::  skip anything we already hold LIVE or in TRASH. Importing over a
     ::  soft-deleted key would resurrect what the user deleted here.
     ;<  tx=know-index:lk  bind:m  (read-index [%| 2 %& /know %trash])
     =/  fresh=(list [@t know-entry:lk])
@@ -2317,12 +2320,12 @@
     ;<  n=@ud  bind:m  (import-know-loop fresh 0)
     ::  ── pages ────────────────────────────────────────────────────────────
     ::  Scoped to the rels the agent itself reports. ~ means we could not read
-    ::  its page list at all: treat that as UNKNOWN, never as "no pages", or
+    ::  its page list at all. Treat that as UNKNOWN, never as "no pages", or
     ::  the completion dialog would clear an agent that still holds the only
     ::  copy of them.
     ;<  prels=(unit (list path))  bind:m  legacy-page-rels
     =/  want=(list path)  ?~(prels ~ u.prels)
-    ::  never let a legacy body land on a page we already have: %save-page is
+    ::  never let a legacy body land on a page we already have. %save-page is
     ::  an unconditional upsert in the writer, so a name collision would
     ::  overwrite the user's own published body. Drop collisions before
     ::  triggering and report them as left-behind.
@@ -2330,7 +2333,7 @@
     ::  A legacy name can also collide with a page this nexus published but
     ::  never had a source for (POST /save, know-publish). %save-page is an
     ::  unconditional upsert, so triggering would overwrite the user's body.
-    ::  Anything ALREADY in the vault is therefore off limits — unless a prior
+    ::  Anything ALREADY in the vault is therefore off limits, unless a prior
     ::  run of this migration is what put it there.
     ;<  prior=(list path)  bind:m  legacy-triggered
     ;<  in-vault=(list path)  bind:m  (vault-present want)
@@ -2343,7 +2346,7 @@
     =/  nil  (fiber:fiber:nexus ,~)
     ::  read the bodies directly (see +legacy-page-bodies) and write each one
     ::  as a normal page. No poke, no waiting on another agent's cards, and no
-    ::  window in which arrivals can be missed: what we read is what we write.
+    ::  window in which arrivals can be missed. What we read is what we write.
     ;<  bodies=(unit (list [rel=path body=@t]))  bind:m
       ?:  =(~ fresh-pages)
         (pure:(fiber:fiber:nexus ,(unit (list [rel=path body=@t]))) `~)
@@ -2356,12 +2359,12 @@
       (write-legacy-pages (skim u.bodies |=([r=path *] (has fresh-pages r))) 0)
     ::  ONLY claim the migration is finished when nothing is left behind. A
     ::  short count leaves the marker UNWRITTEN so the offer returns and the
-    ::  user can retry — the knowledge import is idempotent (skip-existing),
+    ::  user can retry. The knowledge import is idempotent (skip-existing),
     ::  so a retry costs nothing and finishes the pages.
     =/  page-total=@ud  (lent want)
     ::  "complete" means: we could read the page list, and every page we were
     ::  allowed to move actually landed AND was promoted. Collisions count as
-    ::  NOT complete — those pages stay only in the old agent, so the agent
+    ::  NOT complete. Those pages stay only in the old agent, so the agent
     ::  must not be cleared for retirement.
     =/  done=?
       ?&  ?=(^ prels)
@@ -2378,7 +2381,7 @@
         ['pages' (numb:enjs:format page-total)]
         ['pagesImported' (numb:enjs:format promoted)]
         ['pagesCollided' (numb:enjs:format (add (lent live-pages) (lent theirs)))]
-        ::  why the trigger failed, when it did — the difference between
+        ::  why the trigger failed, when it did, the difference between
         ::  "no pages arrived" and knowing the poke was refused
         :-  'pageError'
         ?~  bodies  s+'could not read the old agent\'s pages'
@@ -2391,21 +2394,21 @@
       [%'POST' %legacy-dismiss]
     ;<  ~  bind:m  (poke-eval [%legacy-seen 0])
     (send-ok eyre-id)
-  ::  bulk import: body = a /know-all export; lands each entry VERBATIM (tags +
+  ::  bulk import: body = a /know-all export. Lands each entry VERBATIM (tags +
   ::  original updated preserved) via %import. Owner-only.
       [%'POST' %know-import]
     =/  jon=(unit json)  (de:json:html (req-body req))
     ?~  jon  (send-err eyre-id 400 'bad json')
     =/  parsed=(each (list [@t know-entry:lk]) tang)  (mule |.((parse-import u.jon)))
     ?:  ?=(%| -.parsed)  (send-err eyre-id 400 'bad import shape')
-    ::  reject the whole batch if any key is unparseable as a path — the writer
+    ::  reject the whole batch if any key is unparseable as a path. The writer
     ::  would otherwise skip those entries (silent partial import).
     ?:  (lien p.parsed |=([k=@t *] ?=(~ (know-key k))))
       (send-err eyre-id 400 'invalid key in import')
     ;<  n=@ud  bind:m  (import-know-loop p.parsed 0)
     (send-json eyre-id (pairs:enjs:format ~[['imported' (numb:enjs:format n)]]))
   ::  ── know writes (POST) ──
-  ::  keys are normalised via know-key (prepends a leading /) before poking; the
+  ::  keys are normalised via know-key (prepends a leading /) before poking. The
   ::  writer does a bare (stab key) which needs the leading slash, so an
   ::  un-normalised "a/b" would misparse and silently create a junk dir.
       [%'POST' %know-save]
@@ -2463,7 +2466,7 @@
     ?:  |(?=(~ fko) ?=(~ tko))  (send-err eyre-id 400 'invalid from or to')
     ::  old-agent status contract: 404 if `from` is absent, 409 if `to` is already
     ::  live. The writer independently guards against clobber (returns a no-op),
-    ::  but the route surfaces the right code — and closes the read/poke TOCTOU
+    ::  but the route surfaces the right code, and closes the read/poke TOCTOU
     ::  since the serialized writer re-checks authoritatively.
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
     ?.  (~(has by es) u.fko)  (send-err eyre-id 404 'from not found')
@@ -2488,7 +2491,7 @@
 ::  ── legacy %lattice gall agent (pre-grubbery) ─────────────────────────────
 ::  A ship that ran the standalone agent before the nexus may still have it
 ::  installed, holding knowledge the nexus never saw. We offer a one-time
-::  in-app import rather than migrating silently: the entries are the user's,
+::  in-app import rather than migrating silently. The entries are the user's,
 ::  and which store they want them in is their call.
 ::
 ::  DETECTION IS %gu, NEVER a bare %gx. A %gx against an absent agent BAILS,
@@ -2516,11 +2519,11 @@
   ^-  form:m
   (peek-exists:io legacy-mark-road)
 ::  +legacy-pages: how many PAGES the retired agent still holds. This import
-::  moves knowledge only — the old agent exposes no arm for page BODIES
-::  (%published and %live-list give paths and hashes, nothing more) — so pages
+::  moves knowledge only. The old agent exposes no arm for page BODIES
+::  (%published and %live-list give paths and hashes, nothing more), so pages
 ::  stay behind. We count them because a user who retires the agent while pages
 ::  remain loses them permanently, and the completion dialog has to say so.
-::  Called ONLY from /legacy-migrate, never on the boot path: like every %gx it
+::  Called ONLY from /legacy-migrate, never on the boot path. Like every %gx it
 ::  can bail on an agent whose version lacks the arm, so it stays behind the
 ::  user's explicit click.
 ++  legacy-pages
@@ -2534,7 +2537,7 @@
 ::  The retired agent exposes no scry arm for page BODIES, and %grow'n content
 ::  is not served on %gx (both verified). It does still carry its phase-1
 ::  endpoint POST /pub-migrate, which emits one `%save-page` poke per page at
-::  this nexus's writer — a native pub-action, so bodies land in /pub/vault.
+::  this nexus's writer, a native pub-action, so bodies land in /pub/vault.
 ::  That endpoint is HTTP-only and grubbery shadows /apps/lattice, so we hand
 ::  the agent the request as a poke.
 ::
@@ -2552,7 +2555,7 @@
   ?~  pu  ~
   ?.  ?=([%pub *] u.pu)  ~
   ?~  t.u.pu  ~
-  ::  re-widen after the ?~: scag/rear are wet gates and mull-grow against the
+  ::  re-widen after the ?~. scag/rear are wet gates and mull-grow against the
   ::  narrowed (non-null) type, which is a nest-fail at the call site.
   =/  r=path  `path`t.u.pu
   ?.  =(%gmi (rear r))  ~
@@ -2560,7 +2563,7 @@
   `(scag (dec (lent r)) r)
 ::  +legacy-page-rels: the pages the retired agent holds, as nexus rels. A
 ::  shape mismatch yields ~, which callers MUST treat as "unknown", never as
-::  "none" — reporting zero pages is what would wrongly clear the agent for
+::  "none". Reporting zero pages is what would wrongly clear the agent for
 ::  uninstall.
 ++  legacy-page-rels
   =/  m  (fiber:fiber:nexus ,(unit (list path)))
@@ -2587,14 +2590,14 @@
 ::  +legacy-page-bodies: the retired agent's page bodies, by SCRY.
 ::
 ::  The deployed agents carry a `[%x %content ~]` peek that dumps the content
-::  map as {spat-key: gemtext} — the temporary migration arm from the original
+::  map as {spat-key: gemtext}, the temporary migration arm from the original
 ::  cutover. That is the same %gx mechanism the knowledge import uses, and it
 ::  needs nothing from the agent beyond a read.
 ::
 ::  This replaces an earlier design that poked the agent's own /pub-migrate
 ::  endpoint. That endpoint does not exist in the deployed version (state-10
 ::  has no pub-migrate at all), so the poke was delivered, matched no route,
-::  404'd, emitted nothing, and acked positively — a silent no-op that cost a
+::  404'd, emitted nothing, and acked positively, a silent no-op that cost a
 ::  long debugging cycle. Read what the agent actually exposes.
 ::
 ++  legacy-page-bodies
@@ -2614,7 +2617,7 @@
   ?:  =('' v)  ~
   `[u.ko v]
 ::  +await-vault: wait for `rels` to appear in the vault, checking every 2s up
-::  to `tries`. Replaces a fixed sleep: the arrivals are one writer
+::  to `tries`. Replaces a fixed sleep. The arrivals are one writer
 ::  transaction per page, so the time needed scales with page count, and a
 ::  fixed window would strand the tail.
 ++  await-vault
@@ -2650,7 +2653,7 @@
   ;<  rest=(list path)  bind:m  $(rels t.rels)
   (pure:m ?:(ex [i.rels rest] rest))
 ::  +write-legacy-pages: create an editable page per legacy body. Skips any
-::  rel that already has a source — the collision guard runs before this, but
+::  rel that already has a source. The collision guard runs before this, but
 ::  the check is cheap and this must never overwrite a page of the user's.
 ++  write-legacy-pages
   |=  [items=(list [rel=path body=@t]) made=@ud]
@@ -2662,7 +2665,7 @@
   ?:  ex  $(items t.items)
   ::  the editable source…
   ;<  ~  bind:m  (poke-eval [%make rel.i.items (wrap-content %gmi body.i.items)])
-  ::  …AND publish it. These pages were PUBLISHED in the old agent — that is
+  ::  …AND publish it. These pages were PUBLISHED in the old agent. That is
   ::  what made the urb:// links between them resolve. Creating only the source
   ::  leaves the vault empty, so every internal link 404s and the pages look
   ::  migrated but broken. %save-page writes the vault grub and gains it,
@@ -2698,14 +2701,14 @@
 ::  here instead of uploaded.
 ::
 ::  The write is the delicate part. `over` handed a mime bask does NOT reliably
-::  convert to the target blot: with no warm tube it silently REPLACES the
-::  grub's blot with /mime. Verified on a scratch grub — writing hoon source
+::  convert to the target blot. With no warm tube it silently REPLACES the
+::  grub's blot with /mime. Verified on a scratch grub: writing hoon source
 ::  over a /hoon grub left `[mark: /mime]`, after which every later save was
 ::  refused ("blot differs"), so a single typo permanently changed the file's
 ::  type and locked out the fix. So the conversion is done HERE, explicitly:
 ::  fetch the extension's tube, apply it inside +mule, and only write once it
 ::  has produced a value. A tube failure (unparseable hoon) becomes a 400 with
-::  the error and leaves the grub untouched — which also avoids `over`'s other
+::  the error and leaves the grub untouched, which also avoids `over`'s other
 ::  trap, that a failed dart fails the whole request fiber and grubbery emits
 ::  no response for it, hanging the browser.
 ::
@@ -2716,10 +2719,10 @@
 ++  grub-road
   |=  raw=@t
   ^-  (unit [rod=road:tarball nom=@ta])
-  ::  accept both `/apps/x/y` and `apps/x/y` — +stab needs the leading slash,
+  ::  accept both `/apps/x/y` and `apps/x/y`. +stab needs the leading slash,
   ::  and a hand-typed or link-built path is easy to get wrong either way.
   ::  NOT (cat 3 '/' raw): `cat` is the face of the imported catalog library,
-  ::  which shadows the stdlib gate — the same collision `lk` caused before.
+  ::  which shadows the stdlib gate, the same collision `lk` caused before.
   ::  +end takes an explicit bite here, as it does everywhere else in this file.
   =/  abs=@t  ?:(=('/' (end [3 1] raw)) raw (crip ['/' (trip raw)]))
   =/  pp=(each path tang)  (mule |.((stab abs)))
@@ -2743,7 +2746,7 @@
   ?:  =((lent pre) (met 3 nom))  ''
   (crip (flop pre))
 ::  +grub-text: a grub's editable text, or ~ when it has none. A cord grub
-::  (hoon, md, css, js — the %hoon mark stores SOURCE, not an AST) reads
+::  (hoon, md, css, js. The %hoon mark stores SOURCE, not an AST) reads
 ::  directly; a mime grub goes through +mime-text, which refuses binary.
 ++  grub-text
   |=  =sang:tarball
@@ -2751,9 +2754,9 @@
   =/  nn=*  (sang-noun:tarball sang)
   =/  c=(each @t tang)  (mule |.(;;(@t nn)))
   ?:  ?=(%& -.c)  `p.c
-  ::  a /txt grub is a wain, not a cord — without this branch every remote
+  ::  a /txt grub is a wain, not a cord. Without this branch every remote
   ::  ship's .txt file rendered as "binary grub" and got no edit affordance.
-  ::  Checked BEFORE mime: a wain coincidentally nests in nothing else here.
+  ::  Checked BEFORE mime. A wain coincidentally nests in nothing else here.
   =/  wn=(each wain tang)  (mule |.(;;(wain nn)))
   ?:  ?=(%& -.wn)  `(of-wain:format p.wn)
   =/  mm=(each mime tang)  (mule |.(;;(mime nn)))
@@ -2808,15 +2811,15 @@
   ?:  ?=(%| -.out)  (pure:m [%| p.out])
   (pure:m [%& [/ ext] q.p.out])
 ::  ── web archiving (the /clip bookmarklet) ──────────────────────────────
-::  +fetch-hops: redirect hops to follow. One was not enough — an ordinary site
+::  +fetch-hops: redirect hops to follow. One was not enough. An ordinary site
 ::  chains http->https->www->canonical, and stopping at the first hop reported
 ::  "could not fetch" for pages that were perfectly reachable.
 ++  fetch-hops  ^-(@ud 5)
 ::  +fetch-url: GET a clearweb url through iris, following redirects.
 ::
-::  Returns the body, or a REASON — never bails. A request fiber that crashes
+::  Returns the body, or a REASON. Never bails. A request fiber that crashes
 ::  leaves the browser hanging on a dead connection, so every failure comes back
-::  as a value. And the reason is carried out rather than flattened to ~: a bare
+::  as a value. And the reason is carried out rather than flattened to ~. A bare
 ::  "could not fetch that page" is useless to whoever is standing there, since
 ::  a 403 from a bot-blocking site, a timeout and a dead host all need different
 ::  responses from the user.
@@ -2826,8 +2829,8 @@
   ^-  form:m
   =/  hed=(list [@t @t])
     :~  ['User-Agent' 'lattice-clip']
-        ::  honest content negotiation — some sites serve a readable document
-        ::  only when asked for one. NOT a browser UA: pretending to be Chrome
+        ::  honest content negotiation. Some sites serve a readable document
+        ::  only when asked for one. NOT a browser UA. Pretending to be Chrome
         ::  to get past bot mitigation is evasion, and this fetches on the
         ::  owner's behalf under their own name.
         ['Accept' 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8']
@@ -2849,7 +2852,7 @@
       (~(get by (malt headers.response-header.res)) 'location')
     ?~  loc  (pure:m [%| 'the site redirected without saying where'])
     ?.  (http-url u.loc)
-      ::  a relative Location needs the base url resolved against it; say so
+      ::  a relative Location needs the base url resolved against it. Say so
       ::  rather than reporting a generic failure
       (pure:m [%| 'the site redirected to a relative address, which is not supported yet'])
     $(cur u.loc, hops +(hops))
@@ -2861,8 +2864,8 @@
   ?~  full-file.res  (pure:m [%| 'the site sent an empty page'])
   (pure:m [%& q.data.u.full-file.res])
 ::  +clip-page: fetch a url, convert it, file it under clips/, and render the
-::  confirmation. Shared by /clip (bookmarklet) and /share (PWA share target) —
-::  the two differ only in how the url reaches us.
+::  confirmation. Shared by /clip (bookmarklet) and /share (PWA share target).
+::  The two differ only in how the url reaches us.
 ++  clip-page
   |=  [eyre-id=@ta url=@t]
   =/  m  (fiber:fiber:nexus ,~)
@@ -2873,7 +2876,7 @@
   (archive-html eyre-id url p.got)
 ::  +archive-html: convert html we already hold and file it under clips/.
 ::  Split out of +clip-page so the browser can supply the html directly (see
-::  /clip-html): a publisher that refuses the SHIP still renders the page fine
+::  /clip-html). A publisher that refuses the SHIP still renders the page fine
 ::  in the browser that is authorised to read it, and paywalled or logged-in
 ::  pages are only ever available that way.
 ++  archive-html
@@ -2902,11 +2905,11 @@
   ::  %md, NOT %gmi. The converter emits markdown; filing it as gemtext meant
   ::  the preview ran the gemtext renderer over it, so headings, bold, italics
   ::  and links all came out as literal punctuation. (The two %gmi calls in the
-  ::  legacy migration are correct — those pages really are gemtext.)
+  ::  legacy migration are correct. Those pages really are gemtext.)
   ;<  ~  bind:m  (poke-eval [%make u.free (wrap-content %md body)])
-  ::  private by default — deliberately. Archiving someone else's page and
+  ::  private by default, deliberately. Archiving someone else's page and
   ::  republishing it to the clearweb in one click is not a default anyone
-  ::  should get by accident; the share control is one click away.
+  ::  should get by accident. The share control is one click away.
   =/  nom=tape  (pax-str u.free)
   %+  send-html  eyre-id
   %^  render-page  ""  ""
@@ -2914,14 +2917,14 @@
     "<h1>Archived</h1>"
     "<p>"  (esc (trip ttl))  "</p>"
     "<p class=\"muted\">saved privately as <code>"  (esc nom)  "</code></p>"
-    ::  ?name= — without it this opened the editor's default view rather than
+    ::  ?name=: without it this opened the editor's default view rather than
     ::  the thing just archived. The slug is [a-z0-9-] joined by /, so it needs
-    ::  no percent-encoding; esc is for the html context.
+    ::  no percent-encoding. esc is for the html context.
     "<p><a href=\"/apps/lattice/app?name="  (esc nom)  "\">open in the editor</a></p>"
   ==
 ::  +first-url: the first http(s) token across some candidate strings. A share
-::  sheet rarely hands over a bare url — Android typically sends
-::  "Page Title https://example.com/x" as `text` — so the url has to be picked
+::  sheet rarely hands over a bare url (Android typically sends
+::  "Page Title https://example.com/x" as `text`), so the url has to be picked
 ::  out of surrounding prose rather than assumed to be the whole field.
 ++  first-url
   |=  cands=(list @t)
@@ -2953,7 +2956,7 @@
     [i.s $(s t.s)]
   ?~(run ~ `(crip `tape`run))
 ::  +http-url: is this an http(s) url? The ship fetches whatever /clip is
-::  handed, so this is the trust boundary — it keeps `file:`, `data:` and any
+::  handed, so this is the trust boundary. It keeps `file:`, `data:` and any
 ::  other iris-reachable scheme out, and it also gates the redirect target
 ::  (an http redirect to file:/// would otherwise walk right past the check).
 ++  http-url
@@ -2971,11 +2974,11 @@
   =/  t=tape  (cass (trip url))
   =.  t  ?:(=("http://" (scag 7 t)) (slag 7 t) t)
   =.  t  ?:(=("https://" (scag 8 t)) (slag 8 t) t)
-  ::  cap the INPUT rather than counting output — a long query string can't
+  ::  cap the INPUT rather than counting output. A long query string can't
   ::  produce an unusable page name, and there is no length counter to keep.
   =.  t  (scag 60 t)
-  ::  one pass, accumulating REVERSED — never weld onto a growing tape.
-  ::  `dash` starts set so leading separators are dropped; a trailing hyphen
+  ::  one pass, accumulating REVERSED. Never weld onto a growing tape.
+  ::  `dash` starts set so leading separators are dropped. A trailing hyphen
   ::  is popped at the end.
   =/  acc=tape  ~
   =/  dash=?  &
@@ -2990,7 +2993,7 @@
   ?:  dash  $(t t.t)
   $(t t.t, acc ['-' acc], dash &)
 ::  +clip-free: first unused page rel under clips/ for this slug. Never
-::  overwrites an existing archive — a re-clip of the same url lands beside the
+::  overwrites an existing archive. A re-clip of the same url lands beside the
 ::  old one. Gives up after -9 rather than looping forever.
 ++  clip-free
   |=  slug=@t
@@ -3005,7 +3008,7 @@
   ?.  ex  (pure:m `rel)
   $(n +(n))
 ::  +poke-know / +poke-pub: poke the single writer fiber (root /main.sig) with a
-::  typed action; grubbery vales the noun through the action marc. The writer
+::  typed action. grubbery vales the noun through the action marc. The writer
 ::  serialises all mutations, so concurrent requests can't race the index.
 ::
 ++  poke-know
@@ -3019,9 +3022,9 @@
   ^-  form:m
   (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %pub-action] act])
 ::  +render-tang: a compile/run-error tang as the readable multi-line text
-::  dojo would print — NOT a raw [i=[%palm ...]] noun dump. The page is
+::  dojo would print, NOT a raw [i=[%palm ...]] noun dump. The page is
 ::  compiled via (slap !>(pg) (ream src)), so slap stamps its own call site
-::  (nex/lattice/app.hoon:<...>) into the trace; those lines are noise to a
+::  (nex/lattice/app.hoon:<...>) into the trace. Those lines are noise to a
 ::  page author, so we drop them and keep the actual error (`-find.cmd`,
 ::  `syntax error`, `nest-fail`). Falls back to the raw trace if filtering
 ::  would leave nothing.
@@ -3059,15 +3062,15 @@
   ~&([%lattice-bad-mark p.sage] (pure:m ~))
 ::  +bump-rev: write `now` to the /rev change beacon. A distinct value each call
 ::  (bowl-now is monotonic) guarantees a keep-SSE news event fires, so every open
-::  reader watching /rev live-reloads. Cheap: /rev is one json number, not a page.
+::  reader watching /rev live-reloads. Cheap. /rev is one json number, not a page.
 ::
 ++  bump-rev
   |=  now=@da
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ::  the beacon must be NESTED (under /beacon): grubbery's keep-SSE does not
-  ::  stream a grub at the nexus root (verified — /rev and /bookmarks keeps stay
-  ::  silent; nested grubs like /pub/index stream fine). Gain is not required.
+  ::  the beacon must be NESTED (under /beacon). grubbery's keep-SSE does not
+  ::  stream a grub at the nexus root (verified: /rev and /bookmarks keeps stay
+  ::  silent. Nested grubs like /pub/index stream fine). Gain is not required.
   (put-file [%& %& (weld app-base:lu /beacon) %rev] [/ %json] (numb:enjs:format `@ud`now))
 ::  +poke-eval: send an eval-action to the writer (serialized like all writes).
 ::
@@ -3079,9 +3082,9 @@
 ::  +poke-eval-abs: like +poke-eval, but an ABSOLUTE road to the writer.
 ::
 ::  +poke-eval's up-2 is only correct from /ui/requests. +catalog-run is reached
-::  from fibers at three different depths — /ui/requests (up-2), /crawler.sig at
-::  the app root (up-0, like /fs.sig), and the /sub keep fibers — so no fixed hop
-::  count serves them all. An absolute road is depth-independent; a relative one
+::  from fibers at three different depths: /ui/requests (up-2), /crawler.sig at
+::  the app root (up-0, like /fs.sig), and the /sub keep fibers. So no fixed hop
+::  count serves them all. An absolute road is depth-independent. A relative one
 ::  from the crawler overshoots the app root and the poke nacks, killing the sweep.
 ::
 ++  poke-eval-abs
@@ -3117,7 +3120,7 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ::  name.act only resolves after ?- narrows the fork (%del is a 2-cell,
-  ::  the others 3-cells — the face sits at different axes).
+  ::  the others 3-cells. The face sits at different axes).
   ?-  -.act
       %make
     ;<  ~  bind:m  (make-page root pax.act src.act)
@@ -3125,7 +3128,7 @@
     (republish-if-shared root now pax.act src.act)
       %make-many
     ::  Same work as %make, once per page, but inside ONE writer transaction.
-    ::  The saving is the ~0.5s pier floor an upload used to pay per FILE; the
+    ::  The saving is the ~0.5s pier floor an upload used to pay per FILE. The
     ::  per-page darts are unchanged, so a batch is exactly as durable as the
     ::  saves it replaces. Bounded by the route, not here.
     |-  ^-  form:m
@@ -3136,12 +3139,12 @@
       %tmpl-save
     ::  save a page-tree as a template: copy every page's CODE under
     ::  /template/<name>, rewriting its own root path to the template root, and
-    ::  leave it inert (code grub only — templates are never evaluated).
-    ::  (Instantiation is +instantiate-template — one make PER page, not a batch.)
+    ::  leave it inert (code grub only. Templates are never evaluated).
+    ::  (Instantiation is +instantiate-template, one make PER page, not a batch.)
     (copy-tree root [%page from.act] [%template /[name.act]] %.n)
       %obelisk
     ::  the WRITE path: read the db, run the script, persist the new state.
-    ::  Read-modify-write over one grub, so it only happens here — the writer
+    ::  Read-modify-write over one grub, so it only happens here. The writer
     ::  serialises every lattice mutation already.
     ;<  st=db-state:sst  bind:m  read-db
     ;<  our=@p  bind:m  bowl-our
@@ -3149,7 +3152,7 @@
       (mule |.((exec:obl st now our db.act (trip urql.act))))
     ?:  ?=(%| -.out)
       ::  a failed statement leaves the database untouched, which is what makes
-      ::  +catalog-init idempotent: re-CREATEing an existing table errors and
+      ::  +catalog-init idempotent. Re-CREATEing an existing table errors and
       ::  the rest of the run is unaffected.
       ::
       ::  Those expected create-errors are SILENT. They fire on every reindex, and
@@ -3158,19 +3161,19 @@
       ~&([%lattice-obelisk-failed db.act p.out] (pure:m ~))
     (put-file [%& %& root %'db.lattice'] [/obelisk %server] +.p.out)
       %legacy-pages
-    ::  remember which page rels THIS migration triggered. Provenance matters:
-    ::  a legacy page name may collide with a page the nexus published itself,
+    ::  remember which page rels THIS migration triggered. Provenance matters.
+    ::  A legacy page name may collide with a page the nexus published itself,
     ::  and only this record distinguishes "we put it in the vault" from "it
     ::  was already the user's".
     %^  put-file  [%& %& (weld root /legacy) %pages]  [/ %json]
     a+(turn rels.act |=(r=path s+(crip (pax-str r))))
       %legacy-seen
-    ::  one marker for both outcomes (imported N, or dismissed with 0): its
+    ::  one marker for both outcomes (imported N, or dismissed with 0). Its
     ::  existence is what silences the prompt. See +legacy-mark-road.
     %^  put-file  [%& %& (weld root /legacy) %state]  [/ %json]
     (pairs:enjs:format ~[['imported' (numb:enjs:format imported.act)]])
       %tmpl-del
-    ::  delete a template — cull its subtree. A shipped template comes back on
+    ::  delete a template, cull its subtree. A shipped template comes back on
     ::  the next writer start (ensure-shipped-templates), which is intended.
     =/  tdir=path  (weld root (weld /template /[name.act]))
     ;<  ex=?  bind:m  (peek-exists:io [%& %| tdir])
@@ -3192,7 +3195,7 @@
     (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[+(seq.cur) txt.act bud.act])
       %del
     ::  cull-soft on an absent dir veto-crashes the writer (as apply-sub's
-    ::  %unsub-page guards against) — no-op a delete of a gone page. Also
+    ::  %unsub-page guards against). No-op a delete of a gone page. Also
     ::  drop the data road from the public weir so a deleted page leaves no
     ::  dangling grant.
     =/  pdir=path  (weld root (weld /page pax.act))
@@ -3214,7 +3217,7 @@
       %share-tree
     ::  publish/unpublish a whole subtree: apply the mode to every PAGE under
     ::  pax (folders have no /data grub, so skip them). Idempotent, so
-    ::  re-publishing is safe; a %private sweep revokes each page's weir too.
+    ::  re-publishing is safe. A %private sweep revokes each page's weir too.
     =/  base=path  (weld root (weld /page pax.act))
     ;<  dn=view:nexus  bind:m  (peek:io [%& %| base] ~)
     ?.  ?=([%ball *] dn)  (pure:m ~)
@@ -3262,9 +3265,9 @@
     (put-file [%& %& fdir %forms-use] [/lattice %eval-data] `form-use:le`[0 *@da])
   ==
 ::  +apply-comment: store one comment under /comments/<page>/<id>. `author` is us
-::  (owner writer) or the poking ship (public inbox) — NEVER from the payload,
+::  (owner writer) or the poking ship (public inbox), NEVER from the payload,
 ::  which can't be trusted. Rejected unless the page path is sane and has comments
-::  enabled; the body is required and length-capped. Bodies are stored raw and
+::  enabled. The body is required and length-capped. Bodies are stored raw and
 ::  HTML-escaped at render time (they are other ships' text).
 ::
 ++  apply-comment
@@ -3287,7 +3290,7 @@
   ;<  ~  bind:m  (ensure-dirs cbase page.act)
   (put-file [%& %& (weld cbase page.act) id] [/lattice %comment] comment)
 ::  +comments-on: is `page` comments-enabled? The nearest `comment-on` flag grub
-::  AT or ABOVE it in /page wins (like find-theme); absent everywhere = off. One
+::  AT or ABOVE it in /page wins (like find-theme). Absent everywhere = off. One
 ::  flag on a site folder enables all its pages; a page can override its own.
 ::
 ++  comments-on
@@ -3312,7 +3315,7 @@
   =/  new=bookmarks:lb
     ?-  -.act
         %add
-      ::  cast the prepend to the general list type — scag on a lest (non-empty
+      ::  cast the prepend to the general list type. scag on a lest (non-empty
       ::  list) mull-grows.
       =/  kept=bookmarks:lb  (skip cur |=(b=bookmark:lb =(url.b url.bookmark.act)))
       (scag cap:lb `bookmarks:lb`[bookmark.act kept])
@@ -3326,7 +3329,7 @@
   (put-file [%& %& root %bookmarks] [/lattice %bookmarks] new)
 ::  +apply-history: record a visit, forget one, or clear. Runs in the writer.
 ::
-::  Expiry happens HERE, on write, not on read: a read must never be a write
+::  Expiry happens HERE, on write, not on read. A read must never be a write
 ::  (the reader serves unauthenticated clearweb traffic), and pruning on every
 ::  mutation keeps the list bounded without a timer to maintain.
 ::
@@ -3343,21 +3346,21 @@
         %clear   ~
         %forget  (skip live |=(v=visit:lh =(url.v url.act)))
         %visit
-      ::  a revisit moves to the front and increments; it does not duplicate.
+      ::  a revisit moves to the front and increments. It does not duplicate.
       =/  prior=(unit visit:lh)
         =/  hit=history:lh  (skim live |=(v=visit:lh =(url.v url.act)))
         ?~(hit ~ `i.hit)
       =/  hits=@ud  ?~(prior 1 +(hits.u.prior))
-      ::  keep the FIRST title we saw if the new one is empty — a share-sheet or
+      ::  keep the FIRST title we saw if the new one is empty. A share-sheet or
       ::  bare-url visit should not blank out a title recorded earlier.
       =/  ttl=@t  ?:(=('' title.act) ?~(prior url.act title.u.prior) title.act)
       =/  kept=history:lh  (skip live |=(v=visit:lh =(url.v url.act)))
-      ::  cast before scag: scag on a lest (non-empty list) mull-grows — the
+      ::  cast before scag: scag on a lest (non-empty list) mull-grows, the
       ::  same trap +apply-bookmark documents.
       (scag cap:lh `history:lh`[[url.act ttl now hits] kept])
     ==
   (put-file [%& %& root %history] [/lattice %history] new)
-::  +page-title-of: a page's display title for history — its first heading line,
+::  +page-title-of: a page's display title for history, its first heading line,
 ::  falling back to the url. Gemtext and markdown both open a heading with '#',
 ::  so one rule covers every page kind the reader serves.
 ++  page-title-of
@@ -3391,22 +3394,22 @@
   =/  vs=vase  (need-vase:tarball sang.seen)
   =/  new=(unit bookmarks:lb)  (mole |.(!<(bookmarks:lb vs)))
   ?^  new  (pure:m u.new)
-  ::  pre-folder era stored [url title] pairs — surface them as unfiled
+  ::  pre-folder era stored [url title] pairs. Surface them as unfiled
   ::  rather than silently dropping the whole list on the type change
   =/  old=(unit (list [url=@t title=@t]))
     (mole |.(!<((list [url=@t title=@t]) vs)))
   ?~  old  (pure:m ~)
   (pure:m (turn u.old |=([u=@t t=@t] `bookmark:lb`[u t ''])))
 ::  +read-recent: the up-to-`n` most-recently-edited pages, [path preview]. mtime
-::  is each code grub's latest revision date (cass.da), read per page — O(pages)
-::  peeks on a home load, fine for a personal ship; add an index if it ever bites.
+::  is each code grub's latest revision date (cass.da), read per page, O(pages)
+::  peeks on a home load, fine for a personal ship. Add an index if it ever bites.
 ::
 ++  read-recent
   |=  n=@ud
   =/  m  (fiber:fiber:nexus ,(list [pax=path prev=@t]))
   ^-  form:m
   ::  ONE deep peek: the ball carries every code grub and the wave every cass.
-  ::  The old shape listed the names then re-peeked each page — O(pages)
+  ::  The old shape listed the names then re-peeked each page, O(pages)
   ::  serialized darts on every home load, just to pick the newest n.
   ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
   ?.  ?=([%ball *] sn)  (pure:m ~)
@@ -3434,15 +3437,15 @@
   =/  cs=cass:clay  (fall (~(get by wfil) %code) *cass:clay)
   :_  kids
   [rel da.cs (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) '')]
-::  +preview-of: a one-line, ~140-char plaintext preview of a page's source —
-::  leading markdown '#'/spaces dropped, whitespace flattened to single spaces.
+::  +preview-of: a one-line, ~140-char plaintext preview of a page's source.
+::  Leading markdown '#'/spaces dropped, whitespace flattened to single spaces.
 ::
 ++  preview-of
   |=  code=@t
   ^-  @t
   ::  a content page (md/css/js/gmi/text) stores its raw body wrapped in a builder
-  ::  gate; unwrap it so the preview is the actual content, not the hoon wrapper
-  ::  (a raw hoon builder has nothing to unwrap — preview its source as-is).
+  ::  gate. Unwrap it so the preview is the actual content, not the hoon wrapper
+  ::  (a raw hoon builder has nothing to unwrap. Preview its source as-is).
   =/  raw=@t
     =/  un=(unit [builder=@tas body=@t])  (unwrap-content code)
     ?~(un code body.u.un)
@@ -3450,17 +3453,17 @@
   =.  in  |-(?~(in in ?:(?=(?(%'#' %' ') i.in) $(in t.in) in)))
   =/  flat=tape  (turn (scag 200 in) |=(c=@tD ?:((lte c ' ') ' ' c)))
   (crip (scag 140 flat))
-::  +apply-share: set one page's sharing preset — the shared body of the %share
+::  +apply-share: set one page's sharing preset, the shared body of the %share
 ::  and %share-tree eval-actions, so per-page and per-tree can't drift. weir road
 ::  first (covers the grub before it exists), then gain the current data if any
 ::  (the evaluator re-gains on each later write). Idempotent.
 ::
 ::  +apply-share: set a page's sharing preset, and make BOTH surfaces match it.
 ::
-::  %private   — on neither: no vault copy (so no ship can read it over ames),
+::  %private     on neither: no vault copy (so no ship can read it over ames),
 ::               data grub un-gained, no /c/ route.
-::  %shared    — vault copy published + gained, so peers resolve urb://…/<name>.
-::  %clearweb  — the same, PLUS the unauthenticated /c/ route.
+::  %shared      vault copy published + gained, so peers resolve urb://…/<name>.
+::  %clearweb    the same, PLUS the unauthenticated /c/ route.
 ::
 ::  Setting the preset used to touch only the data grub's gain/weir, which is
 ::  not the surface anyone browses: urb:// resolves through /pub/vault. So a
@@ -3492,15 +3495,15 @@
   (apply-pub root now [%save-page key u.body])
 ::  +republish-if-shared: refresh a page's published vault copy after a write.
 ::  urb:// names a LIVE page (docs/urls.md), but until this arm the vault copy
-::  was a snapshot taken only when the share preset was SET — every later edit
+::  was a snapshot taken only when the share preset was SET. Every later edit
 ::  left urb:// readers (own front door included) on the stale body forever.
 ::
-::  The body comes from the make's own src (unwrapped), NOT the data grub:
-::  the evaluator recomputes data AFTER the writer moves on, so a data peek
+::  The body comes from the make's own src (unwrapped), NOT the data grub.
+::  The evaluator recomputes data AFTER the writer moves on, so a data peek
 ::  here publishes the PREVIOUS revision (verified: one save behind).
-::  ponytail: computed (hoon/index) pages keep share-time snapshots — their
-::  body lands async; a data-keep publisher fiber is the upgrade path.
-::  Non-content saves cost nothing; private content pages cost one peek.
+::  ponytail: computed (hoon/index) pages keep share-time snapshots. Their
+::  body lands async. A data-keep publisher fiber is the upgrade path.
+::  Non-content saves cost nothing. Private content pages cost one peek.
 ::
 ++  republish-if-shared
   |=  [root=path now=@da rel=path src=@t]
@@ -3518,36 +3521,36 @@
   ?~  mode  (pure:m ~)
   ?:  ?=(%private u.mode)  (pure:m ~)
   (apply-pub root now [%save-page (spat (pub-path (crip (pax-str rel)))) body.u.un])
-::  +make-page: create a page at `pax` under /page with the given code — the
+::  +make-page: create a page at `pax` under /page with the given code, the
 ::  shared body of the %make action and template instantiation. cmd + deps
 ::  first (the code grub's fiber reads both at spawn), then the code.
 ::
 ::  +history-keep / +know-keep / +data-keep: revisions retained per grub.
 ::  Autosave writes one revision per typing pause, so every GAINED grub needs
 ::  a ceiling or the pier archives every keystroke forever.
-::    page source / know entries — the user-facing history surfaces, so deep
+::    page source / know entries: the user-facing history surfaces, so deep
 ::    enough to undo a bad session.
-::    page data — recomputed on every command, dependency wave, timer tick and
+::    page data: recomputed on every command, dependency wave, timer tick and
 ::    public form submission, with NO history UI. Keep only enough to debug.
 ++  history-keep  50
 ++  know-keep     50
 ++  data-keep     3
 ::  +history-window: two revisions closer together than this are keystroke-scale
-::  intermediates, not history — the trail behind the head gets collapsed so the
+::  intermediates, not history. The trail behind the head gets collapsed so the
 ::  KEPT revisions stay roughly this far apart. Nothing is ever lost from the
-::  document: every save still writes, and the head is always current; only the
+::  document: every save still writes, and the head is always current. Only the
 ::  superseded intermediates go.
 ::
 ::  A count-only cap was not enough. Editing through the lattice-fs mount turns
 ::  one editor save into several write() calls (the kernel picks the chunking,
-::  not us), each a %make and each a revision — so all 50 slots filled in
+::  not us), each a %make and each a revision, so all 50 slots filled in
 ::  seconds and "history" spanned under a minute. Throttling here rather than in
 ::  the editor's debounce covers every writer: browser, fs mount, MCP, raw API.
 ++  history-window  ~m5
 ::  +prune-hist: drop a grub's revision tail past `keep`.
 ::
 ::  Uses +born (metadata only: cass + tags + tombstone flag) rather than +peep,
-::  which hydrates every stored BODY just to count them — on a 50-revision page
+::  which hydrates every stored BODY just to count them. On a 50-revision page
 ::  that is 50 full documents read per save. Tombstones are filtered so the
 ::  count matches what +peep-based callers and page-history report.
 ::
@@ -3557,7 +3560,7 @@
   ^-  form:m
   ;<  bo=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m  (born:io road)
   ?:  ?=(%| -.bo)  (pure:m ~)
-  ::  live revisions, NEWEST FIRST — both passes below want that order, and one
+  ::  live revisions, NEWEST FIRST. Both passes below want that order, and one
   ::  +born read feeds both so a save costs no extra dart than it used to.
   =/  live=(list cass:clay)
     %+  sort
@@ -3566,8 +3569,8 @@
       ^-  (unit cass:clay)
       ?:(tomb ~ `c)
     |=([a=cass:clay b=cass:clay] (gth ud.a ud.b))
-  ::  keep=0 means drop the lot (used by delete). Guard it explicitly: the
-  ::  general path below computes (dec keep), and dec 0 crashes — which would
+  ::  keep=0 means drop the lot (used by delete). Guard it explicitly. The
+  ::  general path below computes (dec keep), and dec 0 crashes, which would
   ::  have taken the writer down on every page delete.
   ?:  =(0 keep)
     ?~  live  (pure:m ~)
@@ -3577,7 +3580,7 @@
   ::  window of `anchor`, i.e. it is an intermediate between two kept points.
   ::
   ::  Comparing prev against the HEAD instead is the obvious version and it is
-  ::  wrong: the thing compared against is replaced on every save, so a long
+  ::  wrong. The thing compared against is replaced on every save, so a long
   ::  continuous editing session would collapse to a single revision and you
   ::  could never step back. Anchoring on the revision BEFORE prev keeps one
   ::  revision per window no matter how fast the writes arrive.
@@ -3604,9 +3607,9 @@
   ^-  form:m
   =/  pdir=path  (weld root (weld /page pax))
   ::  ONE existence probe. An overwrite (code present) already has its dirs,
-  ::  cmd and deps from creation — the old per-save re-probing of each was
+  ::  cmd and deps from creation. The old per-save re-probing of each was
   ::  3+ wasted darts on every autosave. A half-created page (crash between
-  ::  scaffold and code) just re-runs the scaffold: put-file is idempotent.
+  ::  scaffold and code) just re-runs the scaffold. put-file is idempotent.
   ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
   ;<  ~  bind:m
     ?:  ex  (pure:m ~)
@@ -3614,15 +3617,15 @@
     ;<  ~  bind:m  (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[0 '' 0])
     (put-file [%& %& pdir %deps] [/lattice %eval-deps] `(list path)`~)
   ;<  ~  bind:m  (put-file [%& %& pdir %code] [/lattice %page] src)
-  ::  gain the code grub so every save is a kept %firm revision — that is
-  ::  what page-history / page-source-at read. Privacy is unchanged: gain
+  ::  gain the code grub so every save is a kept %firm revision. That is
+  ::  what page-history / page-source-at read. Privacy is unchanged. gain
   ::  makes a grub namespace-addressable but cross-ship reads stay weir-gated
   ::  deny-all, the same model the know vault uses (every private entry
   ::  gained, for exactly this history).
   ;<  ~  bind:m  (gain:io [%& %& pdir %code] %.y)
   (prune-hist [%& %& pdir %code] history-keep history-window)
 ::  +rewrite-root: replace the path-prefix `from` with `to` in code, only where
-::  `from` ends at a path boundary (/ ) space " ] , or end) — so a short root
+::  `from` ends at a path boundary (/ ) space " ] , or end), so a short root
 ::  can't clobber a longer path that merely starts with it.
 ::
 ++  rewrite-root
@@ -3639,14 +3642,14 @@
   =/  pre=tape  (scag u.i hay)
   =/  aft=tape  (slag (add u.i (lent from)) hay)
   ::  a path literal ends at end-of-code, any whitespace/control (space, TAB,
-  ::  NEWLINE, CR — all <= ' '), or a structural close/open ( ) ( [ ] " , ).
+  ::  NEWLINE, CR, all <= ' '), or a structural close/open ( ) ( [ ] " , ).
   =/  bnd=?
     ?~  aft  %.y
     ?|((lte i.aft ' ') ?=(?(%'/' %')' %'(' %'[' %']' %'"' %',') i.aft))
   ::  `from` starts with '/', so the match always lands on a '/'; but that '/'
   ::  must be the START of a path literal, not a separator mid-path. So require a
-  ::  boundary BEFORE it too — start-of-code, whitespace/control, or a structural
-  ::  open ( [ " , — else '/data/site' (or the 2nd seg of '/site/site') would be
+  ::  boundary BEFORE it too: start-of-code, whitespace/control, or a structural
+  ::  open ( [ " , . Else '/data/site' (or the 2nd seg of '/site/site') would be
   ::  clobbered. Path-segment chars and '/' before => reject (mid-path match).
   =/  pc=(unit @t)  ?~(pre bef `(rear pre))
   =/  pbnd=?
@@ -3687,7 +3690,7 @@
     (put-file [%& %& ddir %code] [/lattice %page] newcode)
   $(rels t.rels)
 ::  +rewrite-wikilinks: rewrite [[from]] and [[from/...]] references in code
-::  text to the new name — the bare-name form wikilinks use (+rewrite-root
+::  text to the new name, the bare-name form wikilinks use (+rewrite-root
 ::  only covers /slash-prefixed hoon path literals). Boundary-checked so a
 ::  [[fromX]] page is never clobbered by a move of [[from]].
 ::
@@ -3709,9 +3712,9 @@
 ::  dst. Copies each page's code (share mode carried over, wikilink
 ::  self-references rewritten like template instantiation rewrites its root),
 ::  then deletes the source. Runs in a REQUEST fiber with one writer poke per
-::  action — the same reasoning as +instantiate-template: a batch make in one
+::  action. The same reasoning as +instantiate-template: a batch make in one
 ::  writer transaction arms dep-keeps that never establish. Returns ~ when
-::  nothing exists at src; `count is the number of pages moved (0 = an empty
+::  nothing exists at src. `count is the number of pages moved (0 = an empty
 ::  folder, still a successful move).
 ::
 ++  move-pages
@@ -3730,7 +3733,7 @@
     (sort (murn all |=([pax=path page=?] ?:(page ~ `pax))) aor)
   =/  rels=(list path)
     (sort (murn all |=([pax=path page=?] ?:(page `pax ~))) aor)
-  ::  structure first, parents before children — preserves empty subfolders
+  ::  structure first, parents before children, preserves empty subfolders
   =/  todo=(list eval-action:le)
     [[%mkdir to] (turn dirs |=(p=path `eval-action:le`[%mkdir (weld to p)]))]
   =/  count=@ud  0
@@ -3760,7 +3763,7 @@
   $(todo acts, rels t.rels, count +(count))
 ::  +instantiate-template: create a live page-tree from a template. Runs in a
 ::  REQUEST fiber and pokes one %make PER page (a separate writer transaction
-::  each), in sorted order — so every page commits before the next and its
+::  each), in sorted order, so every page commits before the next and its
 ::  evaluator spawns against a settled tree. This is why it is NOT a batch
 ::  writer action: pages made in one transaction arm dep-keeps that never
 ::  establish (the tree isn't committed yet), leaving the copies non-reactive.
@@ -3788,7 +3791,7 @@
   =/  newcode=@t  (crip (rewrite-root (trip code) from-str to-str))
   ;<  ~  bind:m  (poke-eval [%make (weld to i.rels) newcode])
   $(rels t.rels)
-::  +page-code: the stored hoon code for a page of a given kind — an index-type
+::  +page-code: the stored hoon code for a page of a given kind: an index-type
 ::  page's generated auto-index, a content builder's wrapped body, else raw hoon.
 ::  Shared by page-save and template laydown.
 ::
@@ -3798,8 +3801,8 @@
   ?:  =(%index kind)  (make-folder-index pax)
   ?:((~(has in content-builders) kind) (wrap-content kind body) body)
 ::  +ensure-shipped-templates: on writer start, lay down the built-in templates
-::  under /template/ if absent (idempotent, never overwrites — a user can edit
-::  or replace them). Writes inert code grubs; the tree is covered by an on-load
+::  under /template/ if absent (idempotent, never overwrites. A user can edit
+::  or replace them). Writes inert code grubs. The tree is covered by an on-load
 ::  row so it survives reload.
 ::
 ++  ensure-shipped-templates
@@ -3821,7 +3824,7 @@
   ?~  pages  (pure:m ~)
   =/  prel=path  prel.i.pages
   =/  pdir=path  (weld root (weld /template prel))
-  ::  per-page: skip a page that already exists (never overwrite a user edit;
+  ::  per-page: skip a page that already exists (never overwrite a user edit,
   ::  and a laydown interrupted after some pages completes on the next start),
   ::  else write it.
   ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
@@ -3831,11 +3834,11 @@
   ;<  ~  bind:m  (put-file [%& %& pdir %code] [/lattice %page] code)
   $(pages t.pages)
 ::  +share-weir: add/remove a grub's road in the public usergroup's peek
-::  weir — the same grant ensure-pub-weir uses for /pub. Absent group -> no-op.
+::  weir, the same grant ensure-pub-weir uses for /pub. Absent group -> no-op.
 ::  (same read-modify-write race as ensure-pub-weir, finding #12; self-heals.)
 ::
 ::  +public-grp: the public usergroup's storage dir. Grubbery names usergroup
-::  dirs with a `.grp` suffix (+grp-storage-path in app/grubbery.hoon) — a
+::  dirs with a `.grp` suffix (+grp-storage-path in app/grubbery.hoon), a
 ::  FOURTH framework drift past seen->view, loader ver->manifest and
 ::  bowl->bowl.sig. We wrote to /usergroups/public, which does not exist, so
 ::  the peek-exists guard below failed and EVERY share grant silently no-opped:
@@ -3915,20 +3918,20 @@
 ::
 ::  +recompute-cap: max RAPID consecutive reruns before the evaluator parks a
 ::  page (cycle / runaway guard). Only reruns closer together than +rerun-gap
-::  count, so a legit page reacting to spaced-out updates never hits it; 32 is
+::  count, so a legit page reacting to spaced-out updates never hits it. 32 is
 ::  far above any real reactive chain and keeps the runaway burst short.
 ::
 ++  recompute-cap  ^-(@ud 32)
 ::  +rerun-gap: reruns landing closer than this are "rapid" (part of a runaway
-::  burst) and accumulate; a larger gap is a legit update and resets the count.
+::  burst) and accumulate. A larger gap is a legit update and resets the count.
 ::
 ++  rerun-gap  ^-(@dr ~s1)
 ::  +poke-cap: max page-to-page pokes one run may emit (flood guard).
 ::
 ++  poke-cap  ^-(@ud 16)
 ::  +poke-budget-max: max depth of a page-to-page poke chain. A user/dep/timer
-::  trigger starts a run with this budget; each poke it emits carries budget-1,
-::  so any chain — a cycle included — terminates after this many hops,
+::  trigger starts a run with this budget. Each poke it emits carries budget-1,
+::  so any chain (a cycle included) terminates after this many hops,
 ::  independent of timing (poke round-trips are too slow for the rate cap).
 ::
 ++  poke-budget-max  ^-(@ud 8)
@@ -3940,7 +3943,7 @@
   ?.  ?=([%file *] sn)  (pure:m [0 '' 0])
   (pure:m (fall (mole |.(;;(eval-cmd:le (sang-noun:tarball sang.sn)))) [0 '' 0]))
 ::  +read-eval-seen / +write-eval-seen: the last-PROCESSED command seq, stored
-::  as a bare @ud (reusing the eval-data marc — it's a noun grub). /seen is
+::  as a bare @ud (reusing the eval-data marc, it's a noun grub). /seen is
 ::  never kept, so writing it wakes no fiber. Absent -> 0.
 ::
 ++  read-eval-seen
@@ -3965,7 +3968,7 @@
 ::  +view-src: if a dep path is a VIEW dependency on one of our OWN pages
 ::  (/apps/lattice.lattice_app/page/<name>/view), the source page's dir; else ~.
 ::  A view-dep resolves to the source page's RENDERED html rather than its raw
-::  data (composition, docs/pages.md). Own-tree only by construction — a foreign
+::  data (composition, docs/pages.md). Own-tree only by construction. A foreign
 ::  path never matches, so a peer's markup is never rendered into our origin.
 ::
 ++  view-src
@@ -4005,7 +4008,7 @@
   $(deps t.deps, armed (~(put in armed) i.deps))
 ::  +read-dep-vals: resolve each dep to its current value. A data dep gives the
 ::  grub's raw noun (~ if absent); a VIEW dep gives the source page's RENDERED
-::  html fragment as a @t (composition — the fragment is welded into this page's
+::  html fragment as a @t (composition: the fragment is welded into this page's
 ::  own html). render-shown runs on our OWN page data only (view-src is own-tree).
 ::
 ++  read-dep-vals
@@ -4022,8 +4025,8 @@
     =/  frag=@t
       ?.  ?=([%file *] dsn)  ''
       ::  a composed view fragment is rendered ONCE at eval time and stored in
-      ::  the composing page's data, then served on both surfaces — so no base
-      ::  is universally right. /c/ is the useful one: composition (dashboards,
+      ::  the composing page's data, then served on both surfaces, so no base
+      ::  is universally right. /c/ is the useful one. Composition (dashboards,
       ::  indexes) is what gets published. Wikilinks inside an embedded
       ::  fragment therefore always point at the public surface.
       (crip (render-shown sang.dsn vmode "/apps/lattice/c/"))
@@ -4041,9 +4044,9 @@
   ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
   =/  val=*  ?.(?=([%ball *] dn) ~ (collect-tree ball.dn ~))
   (pure:m [[i.deps val] rest])
-::  +eval-run: one run of a compiled page — build the env vase (typed via
+::  +eval-run: one run of a compiled page: build the env vase (typed via
 ::  slop, so the gate's declared sample nest-checks), slam inside mule,
-::  land the product. dat=~ means no change; a changed dep list is
+::  land the product. dat=~ means no change. A changed dep list is
 ::  persisted (the deps grub is on the /ev wire, so the loop re-arms).
 ::
 ++  eval-run
@@ -4075,15 +4078,15 @@
     ;<  ~  bind:m  (put-file [%& %& pdir %data] [/lattice %eval-data] u.dat.p.res)
     ::  record the render mode next to the data (read by the page view).
     ;<  ~  bind:m  (put-file [%& %& pdir %show] [/lattice %eval-data] show.p.res)
-    ::  a shared page's data must stay gained across recomputes — gain is
+    ::  a shared page's data must stay gained across recomputes. Gain is
     ::  per-revision (like apply-pub re-gaining on every save).
     ;<  mode=share-mode:le  bind:m  (read-share pdir)
     ?:  =(%private mode)  (pure:m ~)
     ;<  ~  bind:m  (gain:io [%& %& pdir %data] %.y)
-    ::  a gained data grub keeps EVERY recompute forever otherwise: a timer
+    ::  a gained data grub keeps EVERY recompute forever otherwise. A timer
     ::  page, or a public form anyone can submit to, would grow the pier
     ::  without bound. Data has no history UI, so keep only a debugging tail.
-    ::  data has no history UI and keep=3 already; no window needed
+    ::  data has no history UI and keep=3 already, no window needed
     (prune-hist [%& %& pdir %data] data-keep ~s0)
   ::  send this run's page-to-page pokes with the run's remaining budget
   ::  (capped per run so one page can't flood the writer).
@@ -4098,7 +4101,7 @@
   (put-file [%& %& pdir %wake] [/lattice %eval-data] wake)
 ::  +emit-pokes: deliver each [page-name command] to the writer (which bumps
 ::  that page's cmd grub), carrying a DECREMENTED budget so a poke chain (or
-::  cycle) terminates at a fixed depth. bud=0 drops them — the chain ends. A
+::  cycle) terminates at a fixed depth. bud=0 drops them. The chain ends. A
 ::  poke to a nonexistent page is a safe no-op (apply-eval %cmd guards on the
 ::  code grub existing).
 ::
@@ -4116,7 +4119,7 @@
   ^-  form:m
   (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %sub-action] act])
 ::  +parse-import: decode a /know-all export ({items:[{key,body,updated,tags}]})
-::  into [key entry] pairs for a verbatim %import. Mirrors know-entry-json's shape;
+::  into [key entry] pairs for a verbatim %import. Mirrors know-entry-json's shape.
 ::  vector is not exported (a derived embedding) so it lands ~.
 ++  import-item
   |=  jon=json
@@ -4137,7 +4140,7 @@
   ^-  (list [@t know-entry:lk])
   ((ot:dejs:format items+(ar:dejs:format import-item) ~) jon)
 ::  +import-know-loop: poke %import per entry. poke:io waits for the writer's ack,
-::  so this is serial+synchronous — every entry is applied before the next.
+::  so this is serial+synchronous. Every entry is applied before the next.
 ++  import-know-loop
   |=  [items=(list [key=@t entry=know-entry:lk]) cnt=@ud]
   =/  m  (fiber:fiber:nexus ,@ud)
@@ -4163,7 +4166,7 @@
   ^-  form:m
   ::  Read the database out of our own grub and run the query IN PROCESS.
   ::
-  ::  +exec:obl is a pure function — [state now our db script] -> results — so a
+  ::  +exec:obl is a pure function ([state now our db script] -> results), so a
   ::  query needs no agent, no subscription, and no poke to another fiber. That
   ::  is the whole reason the old owner apparatus existed, and all of it is gone.
   ::  A peek is enough, and peeks are the one thing that has worked reliably
@@ -4171,7 +4174,7 @@
   ::
   ::  WRITES: this arm DISCARDS the returned state, so it is read-only. Anything
   ::  that mutates the catalog goes through +catalog-run, which routes to the
-  ::  single writer — the same serialisation every other lattice mutation uses.
+  ::  single writer, the same serialisation every other lattice mutation uses.
   ;<  now=@da  bind:m  bowl-now
   ;<  our=@p   bind:m  bowl-our
   ;<  st=db-state:sst  bind:m  read-db
@@ -4241,8 +4244,8 @@
       ['rows' a+rows]
   ==
 ::  +obelisk-cell-cord: render one typed cell for display. Text auras (t/ta/tas)
-::  hold the cord verbatim; scot would re-escape it ('Urbit Basics' ->
-::  ~~~55.rbit...). Emit the raw cord for those; scot the rest (@p/@ud/@da/@rs)
+::  hold the cord verbatim. scot would re-escape it ('Urbit Basics' ->
+::  ~~~55.rbit...). Emit the raw cord for those. scot the rest (@p/@ud/@da/@rs)
 ::  so their aura syntax survives.
 ++  obelisk-cell-cord
   |=  d=dime
@@ -4252,7 +4255,7 @@
   (scot d)
 ::  +obelisk-err-json / +obelisk-tang-text: the old agent's {ok:false, error}
 ::  envelope and its tang -> cord rendering. No per-tank separator, so the
-::  single-leaf 'obelisk not installed' stays EXACT — the client's obelisk
+::  single-leaf 'obelisk not installed' stays EXACT. The client's obelisk
 ::  presence probe string-matches that text.
 ++  obelisk-err-json
   |=  msg=@t
@@ -4265,11 +4268,11 @@
 ::  +send-obelisk: answer a route with an obelisk query result under the OLD
 ::  agent's status contract: 503 when obelisk is absent, 504 when the query or
 ::  the owner timed out, 502 when the transport broke mid-flight (result grub
-::  missing), and 200 otherwise — including obelisk's own urQL error, which
+::  missing), and 200 otherwise, including obelisk's own urQL error, which
 ::  rides the 200 {ok:false, error} envelope exactly as the old agent's
 ::  obelisk-result-json did. Transport failures are matched by their exact tang
 ::  texts (all minted in this file: obelisk-run-one, obelisk-query, obk-read-res
-::  and obelisk-read-data); an unrecognized tang is obelisk's own query error.
+::  and obelisk-read-data). An unrecognized tang is obelisk's own query error.
 ++  send-obelisk
   |=  [eyre-id=@ta res=(each (list cmd-result:ast) tang)]
   =/  m  (fiber:fiber:nexus ,~)
@@ -4311,7 +4314,7 @@
 ++  catalog-db  `@tas`%lattice
 ::  +catalog-run: run one urQL statement against the catalog db. Obelisk is a
 ::  LIBRARY now (+exec is a pure function over db state), not a separate agent, so
-::  a write is a read-modify-write over one grub and has to be serialised — it
+::  a write is a read-modify-write over one grub and has to be serialised. It
 ::  goes to the writer as an %obelisk eval-action, the same path every other
 ::  lattice mutation takes.
 ::
@@ -4338,7 +4341,7 @@
   ^-  form:m
   (poke-eval-abs [%obelisk db (crip urql) &])
 ::  +catalog-init: create the lattice database, then each catalog table as its OWN
-::  poke (per catalog-create-list's contract — the joined catalog-create-urql would
+::  poke (per catalog-create-list's contract: the joined catalog-create-urql would
 ::  abort at the first already-existing table and never create the rest). Each
 ::  catalog-run is a distinct obelisk event via obelisk-query (which re-establishes
 ::  the sub per call), so there's no kick/resub race, and a re-run idempotently
@@ -4363,7 +4366,7 @@
 ::  +know-reindex: rebuild the obelisk knowledge index from the live vault. Ensure
 ::  the db + knowledge/tags tables exist (create errors swallowed, like catalog-init),
 ::  then TRUNCATE + re-INSERT every entry in one write. Driven by POST /know-reindex
-::  (the Explore pane's Reindex button); the index is stale between reindexes.
+::  (the Explore pane's Reindex button). The index is stale between reindexes.
 ::
 ++  know-reindex
   =/  m  (fiber:fiber:nexus ,~)
@@ -4378,18 +4381,18 @@
   ::  chunked: one poke per script, so a big vault cannot build the whole index in
   ::  a single Arvo event. See +chunk-rows in lib/catalog.hoon.
   (catalog-run-loop | (know-index-populate-urql:cat rows))
-::  +catalog-index-page: analyze one page body and write its catalog rows — the
+::  +catalog-index-page: analyze one page body and write its catalog rows: the
 ::  two-poke page upsert (ensure INSERT + content refresh) plus the term index.
 ::  pat is the content-map key (/pub/.../gmi); the url is derived inside the urQL
 ::  gens. pages is the publisher's full key set (for internal-link detection).
 ::
-::  +body-cap: max page bytes fed to the analyzer. Peer pages are UNTRUSTED — a
+::  +body-cap: max page bytes fed to the analyzer. Peer pages are UNTRUSTED. A
 ::  hostile publisher could serve a huge body to burn crawl CPU. end truncates to
-::  the low body-cap bytes (a no-op for a smaller body); analysis is lossy anyway.
+::  the low body-cap bytes (a no-op for a smaller body). Analysis is lossy anyway.
 ::
 ++  body-cap  ^-(@ud 1.048.576)
 ::  +manifest-max: max pages indexed from ONE followed peer per sweep. A hostile
-::  publisher could advertise an unbounded /pub/index; each page costs a 30s remote
+::  publisher could advertise an unbounded /pub/index. Each page costs a 30s remote
 ::  peek + 3 obelisk pokes, so cap the fan-out. Own pages (scan-self) are trusted
 ::  and uncapped.
 ++  manifest-max  ^-(@ud 1.024)
@@ -4408,12 +4411,12 @@
   ::  yield alone still left ~10-12s probe latency, because these three pokes
   ::  are the bulk of a page's event. One poke per event caps what any queued
   ::  request waits behind at a single poke. These three were already
-  ::  non-atomic (finding #8 above) — the sweep re-converges next tick.
+  ::  non-atomic (finding #8 above). The sweep re-converges next tick.
   ;<  ~  bind:m  (sleep-draining ~s1)
   ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-refresh-urql:cat src pub pat now a pages))
   ;<  ~  bind:m  (sleep-draining ~s1)
   (catalog-run catalog-db (catalog-page-terms-urql:cat src pub pat a))
-::  +index-remote-page: re-index ONE remote page into the catalog on demand — the
+::  +index-remote-page: re-index ONE remote page into the catalog on demand, the
 ::  live-subscription counterpart of the crawler's per-page work. A /sub/pages keep
 ::  fiber calls this whenever the peer edits the page (and once on subscribe), so
 ::  the change lands immediately instead of waiting for the ~h6 sweep. rel is the
@@ -4434,8 +4437,8 @@
   =/  pat=path  (weld /pub (snoc rel %gmi))
   (catalog-index-page our pub pat now u.body ~(key by ix))
 ::  +catalog-scan-self: index every one of OUR OWN published pages into the
-::  catalog (source = publisher = our). The local, peer-free slice of the crawler
-::  — proves the analyze -> obelisk pipeline end to end. Returns the count indexed.
+::  catalog (source = publisher = our). The local, peer-free slice of the crawler.
+::  Proves the analyze -> obelisk pipeline end to end. Returns the count indexed.
 ::
 ::  +page-src: a page's current stored source (the WRAPPED src, so re-saving
 ::  it reproduces the page byte-for-byte, kind included), ~ if absent.
@@ -4448,7 +4451,7 @@
   ?.  ?=([%file *] cv)  (pure:m ~)
   (pure:m (mole |.(;;(@t (sang-noun:tarball sang.cv)))))
 ::  +conflict-name: where a conflict's LOSING body is preserved as a real
-::  page. NOT left to revision history: the firm keep coalesces rapid
+::  page. NOT left to revision history. The firm keep coalesces rapid
 ::  revisions (three quick writes kept revs [3,1] and pruned 2 in testing),
 ::  so "recover it from history" is false exactly when the overwrite came
 ::  quickly. A page in the tree is visible, recoverable and deletable, and
@@ -4462,7 +4465,7 @@
     %+  turn  (trip nam)
     |=(c=@tD ?:(=('/' c) '-' c))
     "-rev"
-    ::  plain digits, NOT +scow — %ud renders "1.234" with dot separators,
+    ::  plain digits, NOT +scow. %ud renders "1.234" with dot separators,
     ::  and autosave rev numbers pass 1000 within a few sessions
     (num-tape:pg prev)
   ==
@@ -4504,23 +4507,23 @@
   ;<  ~  bind:m  (catalog-index-page our our i.keys now u.body pages)
   ::  YIELD BETWEEN PAGES. Local darts and peeks all drain inside one Arvo
   ::  event, so without this the whole sweep is ONE event and every queued
-  ::  HTTP request waits behind all of it — measured at 47s for a 20-page
-  ::  vault, and the ~h6 crawler runs this unprompted: that was the ship's
+  ::  HTTP request waits behind all of it. Measured at 47s for a 20-page
+  ::  vault, and the ~h6 crawler runs this unprompted. That was the ship's
   ::  periodic multi-minute brownout. A timer is a real yield (the fiber
   ::  suspends across events), so requests now interleave between pages and
   ::  the worst added latency anyone sees is ONE page's indexing cost.
   ::  The sweep itself takes ~1s/page longer, which a 6-hour cadence cannot
-  ::  feel. sleep-draining, not a bare wait: this loop runs under
+  ::  feel. sleep-draining, not a bare wait. This loop runs under
   ::  /crawler.sig, where finding #13 applies (stray early-resolved timer
   ::  wakes accumulate over a long fiber).
   ;<  ~  bind:m  (sleep-draining ~s1)
   (catalog-scan-loop our now t.keys pages (add cnt 1))
 ::  +catalog-scan-peers: sweep every followed publisher into the catalog. source
-::  = our (the crawler ship), publisher = them. Needs peers/follows to exercise;
-::  a no-op until /follow is used. ponytail: full re-crawl per tick; per-follow
+::  = our (the crawler ship), publisher = them. Needs peers/follows to exercise.
+::  A no-op until /follow is used. ponytail: full re-crawl per tick. Per-follow
 ::  since-cursors and a hash-diff skip layer on here once catalog size warrants.
 ::  ponytail: peek-remote blocks on take-peek, so an unreachable follow stalls
-::  the sweep (self-scan already ran, so own pages stay fresh) — same limitation
+::  the sweep (self-scan already ran, so own pages stay fresh), same limitation
 ::  as /fetch. Only follow live lattice peers; a per-peer timeout is a later layer.
 ::
 ++  catalog-scan-peers
@@ -4538,8 +4541,8 @@
   (catalog-scan-peers-loop our now t.ships (add cnt n))
 ::  +catalog-scan-peer: index one peer's published pages via peek-remote.
 ::  After indexing the peer's CURRENT manifest, +catalog-reconcile-peer sweeps
-::  the rows we stored on a PRIOR sweep for pages the peer has since UNPUBLISHED
-::  — otherwise their catalog-pages/terms/headings/links/tags/meta rows linger as
+::  the rows we stored on a PRIOR sweep for pages the peer has since UNPUBLISHED.
+::  Otherwise their catalog-pages/terms/headings/links/tags/meta rows linger as
 ::  stale search hits that 404 on read (finding #5). Runs every ~h6 crawler tick.
 ++  catalog-scan-peer
   |=  [our=@p pub=@p now=@da]
@@ -4547,28 +4550,28 @@
   ^-  form:m
   ;<  u-ix=(unit pub-index:lp)  bind:m  (read-pub-index-remote pub)
   ::  unreachable / malformed / vetoed peer -> ~ (NOT a genuine empty index). Index
-  ::  and reconcile NOTHING: reconciling against an empty set deletes every stored
+  ::  and reconcile NOTHING. Reconciling against an empty set deletes every stored
   ::  row for a merely-offline peer (a reachable-but-empty peer yields `~ *pub-index
   ::  and reconciles correctly, dropping the pages it really unpublished).
   ?~  u-ix  (pure:m 0)
   ::  drop keys whose knots don't reparse. An untrusted peer can serve a path with a
-  ::  byte outside the knot charset (uppercase/space/control); it survives the clam,
+  ::  byte outside the knot charset (uppercase/space/control). It survives the clam,
   ::  then stores lossily (false-ghosts a live page on reconcile) and crashes +stab.
   ::  Keep only canonical keys (rush-guarded) so poison never enters the index.
   =/  ix=pub-index:lp
     (~(gas by *pub-index:lp) (skim ~(tap by u.u-ix) |=([k=path *] ?=(^ (rush (spat k) stap)))))
   =/  pages=(set path)  ~(key by ix)
-  ::  cap the indexed fan-out per peer (untrusted); pages stays full for
-  ::  internal-link detection. ponytail: index the first manifest-max keys;
-  ::  add per-peer cursoring if a real follow legitimately exceeds it.
+  ::  cap the indexed fan-out per peer (untrusted). pages stays full for
+  ::  internal-link detection. ponytail: index the first manifest-max keys.
+  ::  Add per-peer cursoring if a real follow legitimately exceeds it.
   ::  RESIDUAL (review-3): this caps the expensive per-page work (peek + pokes),
   ::  but read-pub-index-remote already clammed the peer's ENTIRE index into `ix`,
   ::  so a hostile publisher can still force a transient allocation ~ its index
-  ::  size. Bounding that needs a byte-cap at the peek/clam boundary; deferred with
+  ::  size. Bounding that needs a byte-cap at the peek/clam boundary. Deferred with
   ::  the rest of the peer path until /follow is exercised.
   =/  keys=(list path)  (scag manifest-max ~(tap in pages))
   ::  bound this peer's page sweep by peer-budget (see +peer-budget) so one staller
-  ::  can't monopolize the tick; deadline is fresh-now + budget, not the sweep's now.
+  ::  can't monopolize the tick. deadline is fresh-now + budget, not the sweep's now.
   ;<  t0=@da    bind:m  bowl-now
   ;<  cnt=@ud   bind:m  (catalog-scan-peer-loop our pub now keys pages (add t0 peer-budget) 0)
   ;<  ~         bind:m  (catalog-reconcile-peer our pub pages)
@@ -4612,8 +4615,8 @@
   ?~  keys  (pure:m cnt)
   ::  per-peer wall-clock budget (finding F): bail once spent so a peer stalling its
   ::  page peeks can't starve later peers. Overshoots by at most one remote-timeout
-  ::  (the check is between peeks). ponytail: total worst case = follows*peer-budget;
-  ::  add per-peer cursoring if a LEGIT peer's page set can't finish in one budget.
+  ::  (the check is between peeks). ponytail: total worst case = follows*peer-budget.
+  ::  Add per-peer cursoring if a LEGIT peer's page set can't finish in one budget.
   ;<  clk=@da  bind:m  bowl-now
   ?:  (gte clk deadline)  ~&([%lattice-peer-budget-spent pub cnt] (pure:m cnt))
   =/  stripped=path  (strip-pub:lp i.keys)
@@ -4651,8 +4654,8 @@
 ::  +know-hist-road: the ABSOLUTE road of a know key's entry grub, for reading its
 ::  revision history. A live key's grub is under /know/vault; a DELETED key was
 ::  MOVED to /know/trash-vault (%del moves the grub, it doesn't tomb in place), so
-::  its history lives there instead — resolve live-first, then trash. peep + peek-at
-::  MUST use the same road: a rev from one road's history bails peek-at on the other.
+::  its history lives there instead. Resolve live-first, then trash. peep + peek-at
+::  MUST use the same road. A rev from one road's history bails peek-at on the other.
 ::  ~ if the key is unparseable or exists in neither vault. The `trashed` flag lets
 ::  the UI label a deleted key's (shallow, one-snapshot) history.
 ::
@@ -4709,9 +4712,9 @@
 ::
 ::  +fs-tree-json: the whole /page tree as JSON (GET /page-tree + lick
 ::  %page-tree), from ONE deep peek. The ball already carries every code AND
-::  share grub (and the wave every grub's cass), so the old shape — deep peek,
-::  discard the ball, then TWO more darts per page (code re-peek + read-share)
-::  — was pure waste that degraded the route linearly as pages accumulate.
+::  share grub (and the wave every grub's cass), so the old shape (deep peek,
+::  discard the ball, then TWO more darts per page (code re-peek + read-share))
+::  was pure waste that degraded the route linearly as pages accumulate.
 ::  Walk in place, exactly like +fs-dump-json.
 ++  fs-tree-json
   =/  m  (fiber:fiber:nexus ,json)
@@ -4721,7 +4724,7 @@
   =/  nodes=(list [pax=path j=json])  (tree-walk ball.sn wave.sn ~)
   =/  srt  (sort nodes |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
   (pure:m (pairs:enjs:format ~[['nodes' a+(turn srt |=([* j=json] j))]]))
-::  +tree-walk: +dump-walk's twin without bodies — path+kind+size+rev+mtime+
+::  +tree-walk: +dump-walk's twin without bodies: path+kind+size+rev+mtime+
 ::  share per page, folders as bare nodes. share comes from the /share grub in
 ::  the same ball (absent -> %private, the same rule as +read-share).
 ::  +index-walk: every page in the ball as [rel body share], from the SAME single
@@ -4769,7 +4772,7 @@
 ::  The populate goes through +catalog-run (the writer) like every other write.
 ::  It used to run on +obelisk-query so it could return an accepted/failed ack,
 ::  which mattered when obelisk was a separate agent that could be absent. Obelisk
-::  is compiled into this app now — it cannot be missing — and that path discards
+::  is compiled into this app now (it cannot be missing), and that path discards
 ::  the state it produces, so the ack described a write that was thrown away.
 ++  content-reindex
   =/  m  (fiber:fiber:nexus ,~)
@@ -4795,7 +4798,7 @@
   ::  flatten to (scope, key, term, tf) and write the WHOLE index as ONE bole.
   ::
   ::  This is the entire point of the change. The obelisk version sent ~200 pokes,
-  ::  each peeking and rewriting the whole database — and since every local dart
+  ::  each peeking and rewriting the whole database, and since every local dart
   ::  drains inside ONE Arvo event, that was one enormous event, which is why it
   ::  wedged HTTP rather than merely being slow. A bole is a single %make dart
   ::  with a single tree hash: O(rows) once.
@@ -4823,8 +4826,8 @@
     ^-  [@ta [bask:tarball ?]]
     [nm [[/lattice %index-bucket] (~(gut by full) nm *bucket:li)] %.n]
   =/  bol=bole:tarball  [`[~ ~ %.n contents] ~]
-  ::  a bole targets a DIRECTORY, so the road is an absolute fold [%& %| path] —
-  ::  a rail hangs the fiber forever, because the dart never resolves and +make
+  ::  a bole targets a DIRECTORY, so the road is an absolute fold [%& %| path].
+  ::  A rail hangs the fiber forever, because the dart never resolves and +make
   ::  waits on a made that cannot arrive.
   ::
   ::  Buckets live under /idx/b, not /idx, because +sync-bole DELETES anything in
@@ -4832,22 +4835,22 @@
   ::  means a rebuild can never take out a sibling.
   ::  make-soft, not make: +make waits for a made that never arrives if the dart
   ::  is refused, so a bad road or a rejected bole hangs the request fiber
-  ::  forever — which is exactly how this failed the first time. Soft turns that
+  ::  forever, which is exactly how this failed the first time. Soft turns that
   ::  into a tang we can see.
   ::  CULL FIRST. fiberio only exposes a forced write for single files (over /
   ::  over-as); make and make-soft always send force=%.n, so a bole aimed at a
-  ::  directory that already exists silently no-ops — it reports success and
+  ::  directory that already exists silently no-ops. It reports success and
   ::  writes nothing. Removing the directory makes the bole the creating write.
   ::
   ::  Safe because /idx/b holds only derived postings and the whole point of this
-  ::  arm is to replace all of them; the on-load %fall row recreates the dir if a
+  ::  arm is to replace all of them. The on-load %fall row recreates the dir if a
   ::  reload lands in the gap.
   =/  dst=road:tarball  [%& %| (weld app-base:lu /idx/b)]
   ;<  *  bind:m  (cull-soft:io dst)
   ;<  err=(unit tang)  bind:m  (make-soft:io dst &+bol)
   ?~  err  (pure:m ~)
   ~&([%lattice-index-write-failed u.err] (pure:m ~))
-::  +index-look: the postings for one term. One peek of one bucket — the bucket
+::  +index-look: the postings for one term. One peek of one bucket. The bucket
 ::  name is computed from the term, so cost is independent of corpus size.
 ++  index-look
   |=  term=@t
@@ -4901,10 +4904,10 @@
 ::  +fs-tree-json); here we KEEP the ball and read every sang in place. The ball's
 ::  lump.contents carries the typed sang per grub (tarball: contents map), and the
 ::  parallel wave carries rev+mtime per grub (nexus: wave). One HTTP round-trip,
-::  O(pages) local peeks — warms a filesystem client's whole read-cache so
+::  O(pages) local peeks. Warms a filesystem client's whole read-cache so
 ::  rg/grep never touch the network again.
 ::  +dump-inline-max: bodies larger than this (256 KB) are NOT inlined in
-::  page-dump — the client fetches them on demand via page-source. Keeps one
+::  page-dump. The client fetches them on demand via page-source. Keeps one
 ::  warm dump bounded per file, so a few big pages can't balloon the payload
 ::  or the client's RAM cache. The node still carries an accurate `size`.
 ++  dump-inline-max  ^~((mul 256 1.024))
@@ -4960,7 +4963,7 @@
   :_  kids
   :-  rel
   (pairs:enjs:format :(weld head body-row tail))
-::  +fs-source-result: a page's source as (each json [code msg]) — the json on
+::  +fs-source-result: a page's source as (each json [code msg]): the json on
 ::  %&, an HTTP-style [code msg] error on %|.
 ++  fs-source-result
   |=  [name=@t render=?]
@@ -4986,7 +4989,7 @@
   :-  %&
   %-  pairs:enjs:format
   %+  weld
-    ::  the cast homogenizes the row literal — weld is wet, and a bare :~ of
+    ::  the cast homogenizes the row literal. weld is wet, and a bare :~ of
     ::  mixed [@t json-case] cells mull-grows against the first row's type
     ^-  (list [@t json])
     :~  ['kind' s+kind]  ['body' s+body]
@@ -5007,7 +5010,7 @@
   ?.  ?=([%file *] en)  (pure:m '')
   (pure:m (fall (mole |.(;;(@t (sang-noun:tarball sang.en)))) ''))
 ::  +fs-poke-eval: poke the writer (main.sig) with an eval-action. Called from the
-::  /fs.sig fiber, which sits at the app root as a sibling of main.sig — so the
+::  /fs.sig fiber, which sits at the app root as a sibling of main.sig, so the
 ::  road is a fixed up-0 (unlike +poke-eval's up-2 from /ui/requests).
 ++  fs-poke-eval
   |=  act=eval-action:le
@@ -5015,8 +5018,8 @@
   ^-  form:m
   (poke:io [%| 0 %& ~ %'main.sig'] [[/lattice %eval-action] act])
 ::  +fs-save: create/overwrite a page (POST /page-save + lick %page-save).
-::  Mirrors the HTTP route: index generates its own body; a content type wraps
-::  the body; ?new rejects an existing page with 409.
+::  Mirrors the HTTP route. index generates its own body. A content type wraps
+::  the body. ?new rejects an existing page with 409.
 ++  fs-save
   |=  [name=@t ptype=@tas new=? raw=@t]
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
@@ -5047,9 +5050,9 @@
   ?.  (valid-name name)  (pure:m [400 'bad name'])
   ;<  ~  bind:m  (fs-poke-eval [%del (pax-of name)])
   (pure:m [200 ''])
-::  +fs-op: the shared request dispatcher. `path`'s last segment selects the op;
+::  +fs-op: the shared request dispatcher. `path`'s last segment selects the op.
 ::  `query` is "k=v&k=v" (raw, page names are @ta so need no url-decode). Returns
-::  [status body] — for the lick port to spit, and for the HTTP routes to send.
+::  [status body], for the lick port to spit, and for the HTTP routes to send.
 ++  fs-op
   |=  [verb=@t path=@t query=@t body=@t]
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
@@ -5132,7 +5135,7 @@
   (pure:m `(collect-entries ~ ball.seen))
 ::  +serve-ui: stream a ui-app asset grub. MIME from the (whitelisted) name;
 ::  anything unknown 404s. Assets are grubs so the request-fiber core stays
-::  small — never serve big blobs from core constants.
+::  small. Never serve big blobs from core constants.
 ::
 ++  serve-ui
   |=  [eyre-id=@ta rest=path]
@@ -5321,7 +5324,7 @@
   |=  [mark=@t body=@t]
   ^-  json
   (pairs:enjs:format ~[['mark' s+mark] ['body' s+body]])
-::  +manifest-gmi: the discovery-manifest body — a generated gemtext index of a
+::  +manifest-gmi: the discovery-manifest body, a generated gemtext index of a
 ::  ship's published pages, served by /fetch's /manifest fallback. Ported from
 ::  the old lib's +generate-index (the body the retired agent GREW at the
 ::  reserved /manifest spur), keyed off the pub index instead of the content map.
@@ -5341,14 +5344,14 @@
   (of-wain:format (welp header lines))
 ::  +remote-timeout: how long a remote peek waits before giving up. A dead or
 ::  offline peer would otherwise block the fiber forever (peek-remote -> take-peek
-::  never resolves) — hanging /fetch and stalling the crawler's peer sweep.
+::  never resolves), hanging /fetch and stalling the crawler's peer sweep.
 ::
 ++  remote-timeout  ^-(@dr ~s30)
 ::  +peer-budget: wall-clock a single peer's page sweep may consume before we bail
 ::  and move on. Without it, a peer that lists manifest-max pages but stalls each
 ::  page peek (up to remote-timeout) could burn manifest-max * remote-timeout (~8.5h)
 ::  and starve every later peer in the sequential sweep. A healthy peer answers in
-::  ms so this never bites; a staller is capped and re-scanned next tick.
+::  ms so this never bites. A staller is capped and re-scanned next tick.
 ::
 ++  peer-budget  ^-(@dr ~m30)
 ::  +remote-road: rewrite an absolute road into its /sys/ames mirror on `shp`, so
@@ -5368,7 +5371,7 @@
       ==
   ==
 ::  +peek-remote-wait: peek a remote road, but give up after remote-timeout. ~ on
-::  timeout or veto; `seen otherwise. This is peek-remote (nonce + %peek dart +
+::  timeout or veto. `seen otherwise. This is peek-remote (nonce + %peek dart +
 ::  take-peek) with a concurrent timer, resolving on whichever lands first.
 ::
 ++  peek-remote-wait
@@ -5381,11 +5384,11 @@
   ;<  ~  bind:m  (send-dart:io %node pw (remote-road road shp) %peek ~ ~ %.y)
   ;<  ~  bind:m  (send-wait:io until)
   (take-peek-or-wake pw until)
-::  +peek-remote-shallow-wait: peek-remote-wait but deep=%.n — one directory level
+::  +peek-remote-shallow-wait: peek-remote-wait but deep=%.n, one directory level
 ::  (files here + subdir names, no recursion). Used by the cross-ship browser: a
 ::  deep (%.y) peek of a foreign DIR would materialize its whole subtree, so a huge
 ::  or hostile tree could balloon memory before any render cap. Shallow bounds the
-::  pull to one level per request. (A file peek is unaffected — one node either way.)
+::  pull to one level per request. (A file peek is unaffected, one node either way.)
 ::
 ++  peek-remote-shallow-wait
   |=  [=road:tarball shp=@p]
@@ -5398,19 +5401,19 @@
   ;<  ~  bind:m  (send-wait:io until)
   (take-peek-or-wake pw until)
 ::  +take-peek-or-wake: resolve on the matching %peek response OR our timer wake.
-::  Sibling of take-news-or-wake; a %veto counts as give-up (~), like a timeout.
+::  Sibling of take-news-or-wake. A %veto counts as give-up (~), like a timeout.
 ::
 ::  ── sharing groups (the permission editor's backend) ────────────────────
 ::  A grubbery usergroup is a directory /sys/ames/usergroups/<name>.grp/ with
 ::  two grubs: who.ships (set @p, blot [/ %ships]) and how.weir (weir:nexus,
 ::  blot [/ %weir]). Grubbery recomputes effective weirs on any change, so
-::  writing the grubs IS the whole API — the same primitive its own MCP tools
-::  use. The editor speaks read=peek / edit=make; poke is deliberately never
-::  exposed: a poke grant on main.sig is full eval power, not "edit a file".
+::  writing the grubs IS the whole API, the same primitive its own MCP tools
+::  use. The editor speaks read=peek / edit=make. poke is deliberately never
+::  exposed. A poke grant on main.sig is full eval power, not "edit a file".
 ::
 ++  ug-base  `path`/sys/ames/usergroups
 ::  +ug-dirfold-paths: the roads a UI can render (absolute dir folds), plus a
-::  count of the ones it can't. The count matters: the editor must SAY it is
+::  count of the ones it can't. The count matters. The editor must SAY it is
 ::  preserving rules it doesn't show, or a user auditing their ACL is misled.
 ++  ug-dirfold-paths
   |=  rs=(set road:tarball)
@@ -5473,15 +5476,15 @@
 ::  +apply-share-notice: one inbox poke. Everything about it is defensive:
 ::  the payload is soft-cast (any ship can send anything), the path must be
 ::  under /apps, the mode must be one of ours, and %del from a foreign ship is
-::  dropped — the transport decides who the sender is, never the payload.
+::  dropped. The transport decides who the sender is, never the payload.
 ::
 ++  apply-share-notice
   |=  [root=path =from:fiber:nexus =sage:tarball now=@da]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  src=(unit @p)  (get-poke-src:io from)
-  ::  a poke's sage is [blot VASE] (unlike a peek's sang, whose q is an each) —
-  ::  the payload noun is q.q.sage. Gate on the blot first so a stray poke of
+  ::  a poke's sage is [blot VASE] (unlike a peek's sang, whose q is an each).
+  ::  The payload noun is q.q.sage. Gate on the blot first so a stray poke of
   ::  some other mark is ignored rather than misparsed.
   ?.  =([/lattice %share-notice] p.sage)  (pure:m ~)
   =/  na=(unit action:ls)  (mole |.(;;(action:ls q.q.sage)))
@@ -5495,7 +5498,7 @@
       %add
     ?~  src  (pure:m ~)                      ::  own %add is meaningless
     ::  the inbox is the one surface /public opens to EVERY ship, so it is the
-    ::  surface a banlist exists for. Drop silently: telling a banned sender
+    ::  surface a banlist exists for. Drop silently. Telling a banned sender
     ::  their notice was refused just confirms the address is live.
     ?:  (is-banned:ls bans u.src)  (pure:m ~)
     ?.  ?=([%apps *] pax.u.na)  (pure:m ~)
@@ -5510,7 +5513,7 @@
   ==
 ::  +ensure-shares-inbox: the /public usergroup carries a poke road for our
 ::  shares inbox, so any ship may send a notice. Idempotent, run at writer
-::  boot like +heal-share-weirs; a no-op until /public first exists.
+::  boot like +heal-share-weirs. A no-op until /public first exists.
 ::
 ++  ensure-shares-inbox
   =/  m  (fiber:fiber:nexus ,~)
@@ -5524,9 +5527,9 @@
   (put-file wroad [/ %weir] cur(poke (~(put in poke.cur) iroad)))
 ::  +strip-ship-from-groups: remove one ship from every usergroup's who.ships,
 ::  returning how many groups changed. This is what makes a ban a revocation
-::  rather than a note: grants are unioned across the groups a ship belongs to,
+::  rather than a note. Grants are unioned across the groups a ship belongs to,
 ::  so membership IS access, and leaving it in place would leave it reachable.
-::  The grant ROADS are untouched — they belong to the group, not the ship, and
+::  The grant ROADS are untouched. They belong to the group, not the ship, and
 ::  other members still need them.
 ++  strip-ship-from-groups
   |=  who=@p
@@ -5554,7 +5557,7 @@
 ::  +ban-road: where the banlist lives.
 ++  ban-road  ^-(road:tarball [%& %& app-base:lu %banned])
 ::  +read-banned: the banlist, empty if never written. Every enforcement point
-::  reads it fresh — a ban has to take effect on the next poke, not on the next
+::  reads it fresh. A ban has to take effect on the next poke, not on the next
 ::  restart.
 ++  read-banned
   =/  m  (fiber:fiber:nexus ,banned:ls)
@@ -5585,8 +5588,8 @@
   (pure:m ~)
 ::  +remote-load-poke-wait: +remote-load-poke with a deadline. %.y = acked in
 ::  time. An offline ship never acks a gall poke, and a share notice must not
-::  hang the save that triggered it — the GRANT is already durable by the time
-::  this runs; the notice is best-effort and says so in the response.
+::  hang the save that triggered it. The GRANT is already durable by the time
+::  this runs. The notice is best-effort and says so in the response.
 ::
 ++  remote-load-poke-wait
   |=  [target=@p req=load:remo:nexus timeout=@dr]
@@ -5616,8 +5619,8 @@
 ::  gall ack. Modeled on +gall-poke-or-nack (fiberio), which is our-ship-only;
 ::  a bare +gall-poke:io would CRASH the request fiber on a remote nack, taking
 ::  the HTTP response with it. ~ = acked; `tang = nacked (their side crashed or
-::  refused). NOTE an ack is not proof the write LANDED — a weir denial on
-::  their side is applied after the ack, silently — so /remote-save verifies
+::  refused). NOTE an ack is not proof the write LANDED (a weir denial on
+::  their side is applied after the ack, silently), so /remote-save verifies
 ::  by revision number afterwards.
 ::
 ++  remote-load-poke
@@ -5644,7 +5647,7 @@
   :+  ~  q.state
   ?+  in  [%skip ~]
       ~  [%wait ~]
-      ::  a veto gives up (~) like a timeout, but ONLY for OUR peek's dart — gate on
+      ::  a veto gives up (~) like a timeout, but ONLY for OUR peek's dart. Gate on
       ::  its wire, like the %peek branch, so a veto of some other dart can't resolve
       ::  the peek we're actually awaiting. peek-remote-wait always sends a %node dart,
       ::  so match that shape (wire sits at a consistent axis only within one branch).
@@ -5661,7 +5664,7 @@
     [%done ~]
   ==
 ::  +bowl-our / +bowl-now: read our/now from /sys/bowl like get-our:io / get-time:io,
-::  but the take MARK-FILTERS the bowl reply — a stray poke (a queued %know-action,
+::  but the take MARK-FILTERS the bowl reply. A stray poke (a queued %know-action,
 ::  %eval-action, etc. buffered while this fiber was mid-work) is %skip'd back to the
 ::  owning loop instead of being stolen. fiberio's get-our/get-time use a plain
 ::  take-poke, so in a busy fiber (obelisk owner, crawler, writer) they grab a
@@ -5716,7 +5719,7 @@
     [%done %wake ~]
   ==
 ::  +take-wake-drain: like fiberio's take-wake ~, but also DRAINS a stray remote
-::  %peek/%veto — the late response of a peek-remote-wait that already timed out in
+::  %peek/%veto, the late response of a peek-remote-wait that already timed out in
 ::  this fiber (fiberio has no dart-cancel, so an abandoned peek's answer still
 ::  arrives). fiberio's take-wake %skips a stray %peek (piling it in the skip queue
 ::  forever) and CRASHES on a stray %veto; here both are consumed. Used by the
@@ -5735,7 +5738,7 @@
 ::  +take-news-or-wake-drain: take-news-or-wake that ALSO drains a stray remote
 ::  %peek/%veto (as a %wake), so a /sub keep loop clears the late peeks its
 ::  index-remote-page calls leave behind instead of piling them forever. A real
-::  %news on news-wire still re-indexes; anything else is skipped.
+::  %news on news-wire still re-indexes. Anything else is skipped.
 ++  take-news-or-wake-drain
   |=  news-wire=wire
   =/  m  (fiber:fiber:nexus ,news-or-wake:io)
@@ -5752,7 +5755,7 @@
     [%done %wake ~]
       [~ %peek * *]  [%done %wake ~]
       ::  drain a STALE peek's veto (a stray from a timed-out remote peek), but NOT a
-      ::  veto of THIS loop's own keep (news-wire) — that means the subscription died,
+      ::  veto of THIS loop's own keep (news-wire). That means the subscription died,
       ::  and swallowing it as a keepalive would hide the failure. Gate on the dart
       ::  wire like take-peek-or-wake; both are %node darts, told apart by wire.
       [~ %veto %node * * *]
@@ -5773,14 +5776,14 @@
   ?.  ?&(=(%pub i.rel) =(%gmi (rear rel)))  rel
   (snip (strip-pub:lp rel))
 ::  +read-page-body: the gemtext of a published page, shared by /fetch and the
-::  web reader. Own pages peek the local pub vault; remote pages use the bounded
+::  web reader. Own pages peek the local pub vault. Remote pages use the bounded
 ::  peek-remote-wait (~ if absent, unreachable, or slow past remote-timeout).
 ::
 ++  read-page-body
   |=  [our=@p shp=@p rel=path]
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
-  ::  `our` is a parameter, not a bowl-our bind — callers already hold it (the
+  ::  `our` is a parameter, not a bowl-our bind. Callers already hold it (the
   ::  owner gate's src, or their own binding), and the /sys/bowl round trip
   ::  cost ~0.2s on every reader view for a value that never changes.
   ::  tolerate a catalog-row url form: catalog stores url as urb://<pub>/pub/<spur>/gmi
@@ -5788,7 +5791,7 @@
   ::  /fetch or the reader passes rel=/pub/<spur>/gmi. Strip the leading pub +
   ::  trailing gmi back to the vault-relative /<spur> /fetch expects. A plain vault
   ::  rel (no leading pub / no trailing gmi) is untouched. ponytail: a page literally
-  ::  published as "pub/…/gmi" would be mis-normalized — accepted, that key is absurd.
+  ::  published as "pub/…/gmi" would be mis-normalized (accepted, that key is absurd).
   =/  rel=path  (page-rel rel)
   ::  own pages: ABSOLUTE road via app-base (the nexus's fixed tree path), so this
   ::  resolves the same from the depth-2 request fiber and the depth-0 crawler.
@@ -5801,18 +5804,18 @@
   ;<  ms=(unit view:nexus)  bind:m  (peek-remote-wait road shp)
   ?~  ms  (pure:m ~)
   ?.  ?=([%file *] u.ms)  (pure:m ~)
-  ::  CROSS-SHIP peek content is a boom (raw noun), NOT a vase — need-vase would
+  ::  CROSS-SHIP peek content is a boom (raw noun), NOT a vase. need-vase would
   ::  crash. Extract via sang-noun and clam in a mule so a malformed/hostile peer
   ::  body yields ~ (clean 404) instead of a crash.
   =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.u.ms))))
   ?:  ?=(%| -.res)  (pure:m ~)
   (pure:m `p.res)
-::  +explore: GET /x/<ship>/<path...> — the server-rendered tree explorer
+::  +explore: GET /x/<ship>/<path...>, the server-rendered tree explorer
 ::  (docs/platform.md, build step 1). Directories render as listings with
 ::  relative child links; trailing slash is forced on directory urls (hawk
-::  convention — relative hrefs resolve against the listing). Files render
-::  mark-aware; ?data serves the raw body with a mark-derived content-type.
-::  Own tree peeks locally; a foreign ship's gained tree via remote peek.
+::  convention: relative hrefs resolve against the listing). Files render
+::  mark-aware. ?data serves the raw body with a mark-derived content-type.
+::  Own tree peeks locally. A foreign ship's gained tree via remote peek.
 ::  Owner-only like every route (clearweb projection is build step 4).
 ::  No trailing slash -> try file first (the common case for leaf urls), then
 ::  dir + redirect; trailing slash -> dir first. Remote: an unreachable ship is
@@ -5820,7 +5823,7 @@
 ::  fallback attempt only runs when the ship answered with the wrong node kind.
 ::
 ++  explore
-  ::  `our` is threaded from handle-request — bowl-our is a full /sys/bowl round
+  ::  `our` is threaded from handle-request. bowl-our is a full /sys/bowl round
   ::  trip (~0.2s) and the caller already paid it, so re-fetching it here doubled
   ::  the cost of every explorer/page request.
   |=  [eyre-id=@ta our=@p rest=path args=(map @t @t) raw-url=@t]
@@ -5828,7 +5831,7 @@
   ^-  form:m
   ::  a trailing '/' parses as a trailing EMPTY knot (smeg matches ''), which
   ::  would send every slashed dir url down the peek path as a child literally
-  ::  named '' -> 404 (caught by review). Trim trailing empties up front —
+  ::  named '' -> 404 (caught by review). Trim trailing empties up front.
   ::  `slashed` below still records that the url named a directory.
   =/  rest=path
     |-  ^-  path
@@ -5843,7 +5846,7 @@
   =/  base=tape  (url-path-part raw-url)
   =/  slashed=?  &(?=(^ base) =('/' (rear base)))
   =/  want-raw=?  (~(has by args) 'data')
-  ::  the canonical urb:// address for this node — shown in the chrome bar so any
+  ::  the canonical urb:// address for this node, shown in the chrome bar so any
   ::  view is copy-shareable (the browser url stays the /x projection).
   =/  canon=tape  (trip (en-urb:lu u.shp pax))
   =/  dir-road=road:tarball  [%& %| pax]
@@ -5887,8 +5890,8 @@
     ;<  md=(unit view:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
     ?~  md  (send-err eyre-id 504 'unreachable or denied')
     ?:  ?=([%ball *] u.md)
-      ::  a peer's /page/<name>/ dir renders as the clearweb-style page — sandboxed
-      ::  (untrusted html/js), unthemed, read-only — unless ?raw asks for the plain
+      ::  a peer's /page/<name>/ dir renders as the clearweb-style page (sandboxed
+      ::  (untrusted html/js), unthemed, read-only), unless ?raw asks for the plain
       ::  grub listing. A plain folder (no /code grub) still browses as a listing.
       =/  pn=(unit @t)  (page-dir-name pax)
       =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
@@ -5944,18 +5947,18 @@
   ?.  ?=([@ @ %page @ *] pax)  ~
   ?.  =(`path`[i.pax i.t.pax ~] app-base:lu)  ~
   `(crip (pax-str `path`t.t.t.pax))
-::  +render-page-view: the live view of one of our programmable pages —
+::  +render-page-view: the live view of one of our programmable pages,
 ::  rendered data + any error + a command form, with keep-SSE on the data
 ::  grub so a command from ANY browser reloads every open view (step 3).
 ::
 ++  render-page-view
   ::  `b` is the page dir's ball, ALREADY peeked by the caller (explore) to detect
-  ::  the page dir — reuse it instead of peeking the same dir again. The ball
+  ::  the page dir. Reuse it instead of peeking the same dir again. The ball
   ::  carries every grub's contents, so data+err+share+show all come from it with
   ::  zero further round-trips.
-  ::  embed=%.y (?embed): the bare rendered data + SSE, no chrome/crumbs/controls
-  ::  — for the editor's live-preview iframe. Otherwise the full standalone view.
-  ::  local=%.n: a PEER's page (browsed over ames) — rendered in a SANDBOXED frame
+  ::  embed=%.y (?embed): the bare rendered data + SSE, no chrome/crumbs/controls,
+  ::  for the editor's live-preview iframe. Otherwise the full standalone view.
+  ::  local=%.n: a PEER's page (browsed over ames), rendered in a SANDBOXED frame
   ::  (its html/js is untrusted), no theme peek (that would read OUR tree), no Edit
   ::  button, no live keep. local=%.y: our own page, fully themed + editable + live.
   |=  [eyre-id=@ta shp=@p pax=path name=@t b=ball:tarball embed=? local=?]
@@ -5975,7 +5978,7 @@
   =/  cd=(unit sang:tarball)  (grub %data)
   ::  own lean SSE (no ?blot=/txt): a page dir's noun grubs render huge under
   ::  /txt on the initial snapshot, and the reload script reads only event
-  ::  names, never the payload — so keep="" to render-* and append a blot-free
+  ::  names, never the payload, so keep="" to render-* and append a blot-free
   ::  stream here.
   =/  keep=tape  (keep-url "beacon/rev")
   ?:  embed
@@ -5985,19 +5988,19 @@
     (send-html eyre-id (render-bare :(weld errh "<section class=\"data\">" data-html "</section>" (page-sse-script keep))))
   ::  standalone browser view: the page rendered exactly as it would publish. For
   ::  our own page the nearest theme is inlined (owner-gated, so it need not be
-  ::  clearweb-shared) and it gets an Edit button + live-reload; a peer's page is
-  ::  sandboxed and unthemed. No sharing/command controls — those live in the
+  ::  clearweb-shared) and it gets an Edit button + live-reload. A peer's page is
+  ::  sandboxed and unthemed. No sharing/command controls. Those live in the
   ::  editor. `rel` strips the app-base/page/ prefix to the page-relative path that
   ::  find-theme-css/clearweb-doc expect (the same shape serve-clearweb passes).
   =/  rel=path  (slag 3 pax)
   ;<  head=tape  bind:m  (browser-head local vmode rel)
-  ::  comments live in OUR tree, so only show them on OUR OWN pages — a peer's
+  ::  comments live in OUR tree, so only show them on OUR OWN pages. A peer's
   ::  page at a path that collides with one of ours must NOT surface our comments
   ::  or toggle. (Reading a peer's own comments waits for the cross-ship path.)
   ;<  ocon=?  bind:m  (comments-on rel)
   =/  con=?  &(local ocon)
   ::  our own view also gets a comment box (posts to /comment as us). A peer's box
-  ::  — which posts to OUR nexus, which then pokes the peer — comes with the
+  ::  (which posts to OUR nexus, which then pokes the peer) comes with the
   ::  cross-ship path.
   =/  box=tape
     ?.  con  ""
@@ -6032,7 +6035,7 @@
       (trip (en-urb:lu shp pax))
     doc
   [?:(local `name ~) ?!(local) ?:(local keep "")]
-::  +preview-inner: the rendered-preview HTML fragment for a page kind — the
+::  +preview-inner: the rendered-preview HTML fragment for a page kind, the
 ::  single renderer behind POST /page-preview AND page-source?render=1, so the
 ::  editor preview can never drift from the reader. Wikilinkify only runs for
 ::  the markdown paths (it reads [[...]] syntax the other kinds do not have).
@@ -6049,7 +6052,7 @@
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip body)) "</code></pre>")
     %index  "<div style=\"color:#8a8a8a;text-align:center;padding:2rem\"><p><b>Folder index</b></p><p>Lists the pages in this page's folder automatically, once you name it (e.g. blog/index) and save. Live as pages come and go.</p></div>"
   ==
-::  +render-bare: a minimal HTML doc (shared reader CSS, no address-bar chrome) —
+::  +render-bare: a minimal HTML doc (shared reader CSS, no address-bar chrome),
 ::  for the editor preview iframe, which supplies its own layout.
 ::
 ++  render-bare
@@ -6067,7 +6070,7 @@
     (trip '<script>document.addEventListener("click",function(e){var a=e.target.closest("a");if(a){var h=a.getAttribute("href");if(h&&h.charAt(0)==="#"){e.preventDefault();var el=document.getElementById(h.slice(1));if(el)el.scrollIntoView()}}})</script>')
     "</body></html>"
   ==
-::  +render-clearweb: the standalone public shell for a %clearweb page — a bare
+::  +render-clearweb: the standalone public shell for a %clearweb page, a bare
 ::  html document, NO lattice chrome. `head` is raw <head> content (the theme
 ::  <link> or a <style>), placed in the HEAD so it is render-blocking: the page
 ::  paints WITH its background and never flashes white on navigation. A
@@ -6102,9 +6105,9 @@
   ?:  ?=(%| -.res)  (send-err eyre-id 415 'not servable')
   (send-typed eyre-id (mime-of vmode) 'no-cache' p.res)
 ::  +find-theme: the nearest folder AT or ABOVE pax's parent holding a clearweb
-::  css `theme` page — so a rendered clearweb page auto-inherits a site theme
-::  (nearest wins; a subfolder theme overrides). ~ if none up to the root.
-::  ponytail: a few peeks per rendered request; the theme link is then browser-
+::  css `theme` page, so a rendered clearweb page auto-inherits a site theme
+::  (nearest wins, a subfolder theme overrides). ~ if none up to the root.
+::  ponytail: a few peeks per rendered request. The theme link is then browser-
 ::  cached across the site. Add a cache here only if it ever measures hot.
 ::
 ++  find-theme
@@ -6119,20 +6122,20 @@
   ?:  &(?=(%clearweb mode) ?=(%css show))  (pure:m `anc)
   ?~  anc  (pure:m ~)
   $(anc (snip `path`anc))
-::  +clearweb-doc: the standalone chrome-less document for a page — theme in the
+::  +clearweb-doc: the standalone chrome-less document for a page. Theme in the
 ::  <head>, body per view-mode. %html inlines raw (owns its own layout); a
 ::  md/gmi/text/noun body is wrapped in <main class="page"> (with an optional home
 ::  link) when `wrap`; css/js show as a code block. `head` is the caller's theme
 ::  <head> (a <link>, inline <style>, or the default reader css). Shared by
 ::  serve-clearweb (/c/, links a shared theme) and the browser page view (owner-
 ::  gated, inlines any theme). On PEER data it is only ever rendered inside a
-::  sandboxed frame — the sandbox, not escaping, is what neutralizes hostile html.
+::  sandboxed frame. The sandbox, not escaping, is what neutralizes hostile html.
 ::
 ++  clearweb-doc
   |=  [pax=path =sang:tarball vmode=view-mode:pg head=tape wrap=? home=(unit tape) extra=tape base=tape]
   ^-  @t
   ::  `extra` (a rendered comment thread + optional box) is appended after the
-  ::  page content — inside the themed wrapper for md/gmi/text, or after the raw
+  ::  page content, inside the themed wrapper for md/gmi/text, or after the raw
   ::  body for %html.
   ::  `base` is the wikilink target root: /c/ on the public surface, the editor
   ::  on an owner view. Hardcoding /c/ here made every wikilink on the owner's
@@ -6147,7 +6150,7 @@
     :(weld "<main class=\"page\">" hlink inner "</main>")
   (render-clearweb (pax-str pax) head body)
 ::  +comment-walk: every comment under /comments, with the page it belongs to.
-::  Recurses the ball once rather than per-page — the owner wants "what came
+::  Recurses the ball once rather than per-page. The owner wants "what came
 ::  in", which is a question about the whole tree, not about a page they
 ::  already know to look at.
 ++  comment-walk
@@ -6169,7 +6172,7 @@
   |=  [nom=@ta kb=ball:tarball]
   (comment-walk kb (weld rel /[nom]))
 ::  +comments-inbox-json: the owner's view of comments across every page.
-::  Newest first and capped: this is a list other ships append to, so it is
+::  Newest first and capped. This is a list other ships append to, so it is
 ::  bounded on read for the same reason the shares inbox is bounded on write.
 ++  comments-inbox-json
   =/  m  (fiber:fiber:nexus ,json)
@@ -6195,7 +6198,7 @@
 ::  +render-comments: the comment thread for `page` (page-relative path) as escaped
 ::  html, oldest first. `box` is an optional trailing comment form (browser views
 ::  only). "" when the page has no comments and no box. Read here (a peek) rather
-::  than in the pure +clearweb-doc; the result is passed in as its `extra`.
+::  than in the pure +clearweb-doc. The result is passed in as its `extra`.
 ::
 ++  render-comments
   |=  [page=path on=? box=tape]
@@ -6242,7 +6245,7 @@
     "</p><p class=\"cbody\">"  (esc (trip body.c))  "</p></article>"
   ==
 ::  +find-theme-css: the nearest `theme` css page AT/ABOVE pax's parent, as inline
-::  css text — for the owner-gated browser view, which (unlike /c/) themes a page
+::  css text, for the owner-gated browser view, which (unlike /c/) themes a page
 ::  whose theme need not be clearweb-shared, so it inlines rather than links. ~ if
 ::  none up to the root. A nearer theme whose data is unreadable is skipped.
 ::
@@ -6279,7 +6282,7 @@
   ;<  tcss=(unit @t)  bind:m  (find-theme-css rel)
   (pure:m ?^(tcss :(weld "<style>" (trip u.tcss) "</style>") dflt))
 ::  +serve-clearweb: the public read of a %clearweb page. Read-only, data grub
-::  only — a non-clearweb (or absent) page is a flat 404 so private siblings
+::  only. A non-clearweb (or absent) page is a flat 404 so private siblings
 ::  never leak existence. No SSE (an anon keep would 403 anyway).
 ::
 ::  +forms-on: is public form submission enabled at or above this page? Same
@@ -6310,7 +6313,7 @@
     (pure:m (fall (mole |.(;;(form-cfg:le (sang-noun:tarball sang.seen)))) [0 *@dr]))
   ?~  page  (pure:m [0 *@dr])
   $(page (snip `path`page))
-::  +read-form-use: a page's submission tally. EXACT — never inherited.
+::  +read-form-use: a page's submission tally. EXACT, never inherited.
 ::
 ++  read-form-use
   |=  page=path
@@ -6321,7 +6324,7 @@
   ?.  ?=([%file *] seen)  (pure:m [0 *@da])
   (pure:m (fall (mole |.(;;(form-use:le (sang-noun:tarball sang.seen)))) [0 *@da]))
 ::  +serve-form: accept a public form POST for a page and deliver it as a
-::  command. Requires clearweb + forms-on; the body is capped, and the reply
+::  command. Requires clearweb + forms-on. The body is capped, and the reply
 ::  is a redirect back to the page so a plain <form> works with no JS.
 ::
 ++  serve-form
@@ -6340,7 +6343,7 @@
   ?:  (gth (met 3 body) form-body-max)  (send-err eyre-id 413 'too large')
   ::  the two owner-set limits. Both are checked HERE rather than in the writer
   ::  so a refused submission gets an honest 429 instead of a 303 that pretends
-  ::  it landed; the cost is that a simultaneous burst can overshoot the cap by
+  ::  it landed. The cost is that a simultaneous burst can overshoot the cap by
   ::  the number of requests in flight.
   ;<  cfg=form-cfg:le  bind:m  (read-form-cfg pax)
   ;<  use=form-use:le  bind:m  (read-form-use pax)
@@ -6365,7 +6368,7 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ::  same per-segment gate as name-pax/serve-asset: non-empty %ta knots only,
-  ::  so a trailing '/' ('' segment) and '.'/'..' 404 — no traversal, no folder
+  ::  so a trailing '/' ('' segment) and '.'/'..' 404: no traversal, no folder
   ::  listing. (The route's [%c ^] already rejects a bare /c/.) The per-leaf
   ::  %clearweb check below is the only public/private gate.
   ?.  (levy pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
@@ -6378,7 +6381,7 @@
   ?.  ?=([%file *] dsn)
     (send-html eyre-id (render-clearweb (pax-str pax) "" "<p>no data</p>"))
   ::  css/js serve RAW (a public page links them as a stylesheet/script, so they
-  ::  must NOT go through render-shown's <pre><code> wrap); everything else
+  ::  must NOT go through render-shown's <pre><code> wrap). Everything else
   ::  renders per its view-mode into a bare, chrome-less standalone document.
   ?:  ?=(?(%css %js) vmode)
     =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.dsn))))
@@ -6396,7 +6399,7 @@
   =/  home=(unit tape)
     ?~(tf ~ `(weld "/apps/lattice/c" (spud (weld u.tf /index))))
   ::  a public clearweb visitor is anonymous (no ship), so the thread is read-only
-  ::  here — no comment box (box=""). Commenting happens from a ship's browser.
+  ::  here, no comment box (box=""). Commenting happens from a ship's browser.
   ;<  con=?    bind:m  (comments-on pax)
   ;<  cmts=tape  bind:m  (render-comments pax con "")
   %+  send-html  eyre-id
@@ -6413,8 +6416,8 @@
     :(weld "<pre>" (esc (trip p.cord-res)) "</pre>")
   :(weld "<pre>" (esc "{<nn>}") "</pre>")
 ::  +render-shown: render an OWN page's data grub per its render mode. %html
-::  inlines raw — safe because this is only ever called on OUR OWN page data
-::  (render-page-view / serve-clearweb); a peer's page data is escaped by the
+::  inlines raw, safe because this is only ever called on OUR OWN page data
+::  (render-page-view / serve-clearweb). A peer's page data is escaped by the
 ::  explorer, never routed here. A non-cord value falls back to a noun literal.
 ::
 ::  +wikilinkify: rewrite [[page-name]] into a standard markdown link
@@ -6442,7 +6445,7 @@
   ?~  t  ~
   ::  code is verbatim: skip a ``` fence or a ` span whole, so a wikilink
   ::  inside a code sample stays literal text. Without this there was no way
-  ::  to SHOW [[x]] in a document — including documenting this syntax.
+  ::  to SHOW [[x]] in a document, including documenting this syntax.
   ?:  =("```" (scag 3 `tape`t))
     =/  aft=tape  (slag 3 `tape`t)
     =/  end=(unit @ud)  (find "```" aft)
@@ -6459,7 +6462,7 @@
   ::  scan ONLY the legal-charset run, then require "]]" immediately after, so a
   ::  candidate costs the length of its name. The previous version searched the
   ::  whole remaining document for "]]" at every "[[" and, on a miss, dropped a
-  ::  single character and searched again — quadratic. A body of repeated "[["
+  ::  single character and searched again (quadratic). A body of repeated "[["
   ::  with no closer took ~6.5s at 40KB and, through the render route, wedged
   ::  the ship for hours from an UNAUTHENTICATED page view. This version is flat
   ::  (~0.5s at 100KB) and byte-identical on every edge case tested.
@@ -6487,7 +6490,7 @@
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip p.cr)) "</code></pre>")
     %noun  (page-data-html sang)
   ==
-::  +page-sse-script: like +sse-script but WITHOUT ?blot=/txt — the page dir's
+::  +page-sse-script: like +sse-script but WITHOUT ?blot=/txt. The page dir's
 ::  noun grubs are megabytes under /txt on connect, and this only needs the
 ::  event names to reload. Same reload-on-any-non-old-event loop otherwise.
 ::
@@ -6501,7 +6504,7 @@
     %-  trip
     '";async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7)}if(!ev)continue;if(ev.slice(0,3)==="old")continue;location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
   ==
-::  +explore-crumbs: breadcrumb nav — absolute hrefs from the ship root down,
+::  +explore-crumbs: breadcrumb nav, absolute hrefs from the ship root down,
 ::  each with a trailing slash. The leaf is linked too (self-link; harmless).
 ::
 ++  explore-crumbs
@@ -6520,10 +6523,10 @@
   |-  ^-  tape
   ?~  pax  (weld out "</nav>")
   =.  cur  :(weld cur "/" (trip i.pax))
-  ::  esc the href too — remote segment names are attacker-chosen text.
+  ::  esc the href too. Remote segment names are attacker-chosen text.
   =.  out  :(weld out " / <a href=\"" (esc cur) "/\">" (esc (trip i.pax)) "</a>")
   $(pax t.pax)
-::  +explore-dir-html: one directory level as HTML — subdirs first, then files
+::  +explore-dir-html: one directory level as HTML, subdirs first, then files
 ::  with their marks. Child hrefs are RELATIVE (dirs get a trailing slash), so
 ::  they resolve against the forced-trailing-slash listing url. Capped at
 ::  browse-fan-cap like browse-json, for the same unbounded-response reason.
@@ -6565,7 +6568,7 @@
     ?.(truncated "" "<p class=\"err\">listing truncated</p>")
   ==
 ::  +explore-file-html: one file, mark-aware. Cord bodies: gemtext renders,
-::  html inlines as-is (hawk's model — data is its own ui; this surface is
+::  html inlines as-is (hawk's model: data is its own ui. This surface is
 ::  owner-only until the clearweb step), everything else is an escaped <pre>.
 ::  Non-cord bodies: octs get a byte count + raw link; opaque nouns just the
 ::  mark. ?data is always offered for cord/octs bodies.
@@ -6590,8 +6593,8 @@
       ::  doubling, and ?data still serves the full bytes.
       ?:  (gth (met 3 p.cord-res) (bex 20))
         "<p>file too large to preview &mdash; <a href=\"?data\">view raw</a></p>"
-      ::  %page is the lattice pub blot ([/lattice %page]) — gemtext bodies.
-      ::  %html inlines RAW — but only for our OWN grubs (local): a foreign
+      ::  %page is the lattice pub blot ([/lattice %page]), gemtext bodies.
+      ::  %html inlines RAW, but only for our OWN grubs (local). A foreign
       ::  ship's %html body is attacker-controlled, so escape it (stored XSS
       ::  in the owner's browser otherwise; caught by review).
       ?+  mk  :(weld "<pre>" (esc (trip p.cord-res)) "</pre>")
@@ -6601,7 +6604,7 @@
       :(weld "<pre>" (esc (trip p.cord-res)) "</pre>")
       ==
     ::  a %json grub holds a json NOUN. Re-encode it rather than calling it
-    ::  opaque — and check this BEFORE the octs shape, because some json nouns
+    ::  opaque, and check this BEFORE the octs shape, because some json nouns
     ::  coincidentally nest as [@ud @] and were reported as "binary grub".
     ?:  =(%json mk)
       =/  jr=(each json tang)  (mule |.(;;(json nn)))
@@ -6612,8 +6615,8 @@
     ?:  ?=(%& -.octs-res)
       :(weld "<p>binary grub (" (a-co:co p.p.octs-res) " bytes)</p>")
     ::  %mime grubs are an app's own assets (html/css/js/images). Show them as
-    ::  what they are rather than "opaque noun": HTML in a FRAME, never inlined
-    ::  — inlining would run the asset's scripts in our origin with the owner's
+    ::  what they are rather than "opaque noun": HTML in a FRAME, never inlined.
+    ::  Inlining would run the asset's scripts in our origin with the owner's
     ::  session. Foreign frames get no scripts at all.
     =/  mime-res=(each mime tang)  (mule |.(;;(mime nn)))
     ?:  ?=(%& -.mime-res)
@@ -6622,7 +6625,7 @@
       ?:  ?=([%text %html *] mt)
         %+  weld
           ::  OUR OWN asset: same-origin, so the app can authenticate its own
-          ::  data fetches and actually work — without it the frame gets an
+          ::  data fetches and actually work. Without it the frame gets an
           ::  opaque origin, requests go out cookieless, and e.g. a calendar
           ::  renders its chrome with no events. This is our own installed
           ::  code, already running on this ship, so it is not new exposure.
@@ -6631,7 +6634,7 @@
           "<iframe class=\"rawf\" src=\"?data\" sandbox=\"\"></iframe>"
         :(weld "<p class=\"muted\">" (spud mt) " &middot; " (a-co:co n) " bytes &middot; <a href=\"?data\">open raw</a></p>")
       ::  <img> renders svg WITHOUT executing its scripts, so it is safe for
-      ::  foreign content too — unlike an inline <svg> or an iframe.
+      ::  foreign content too, unlike an inline <svg> or an iframe.
       ?:  ?=([%image *] mt)
         :(weld "<p><img src=\"?data\" alt=\"\"></p>" (mime-note mt n))
       ?:  ?=([%audio *] mt)
@@ -6641,7 +6644,7 @@
       ?:  ?=([%application %pdf *] mt)
         :(weld "<iframe class=\"rawf\" src=\"?data\" sandbox=\"\"></iframe>" (mime-note mt n))
       ::  text-ish assets (css, js, json, markdown, plain) are the bulk of an
-      ::  app's tree — show the CONTENT, not just a size and a link.
+      ::  app's tree. Show the CONTENT, not just a size and a link.
       =/  txt=(unit @t)  (mime-text mt q.p.mime-res)
       ?^  txt
         %+  weld
@@ -6653,10 +6656,10 @@
       :(weld "<p>" (mime-note mt n) "</p>")
     "<p>opaque noun grub (not raw-servable)</p>"
   ::  edit link: any grub with recoverable text. A remote link carries the ship
-  ::  and saves go back over ames as weir-gated writes — whether the peer
+  ::  and saves go back over ames as weir-gated writes. Whether the peer
   ::  ACCEPTS the write is their weir's decision at save time, which the editor
-  ::  surfaces; hiding the affordance here would be guessing their ACL for them.
-  ::  Binary/opaque grubs get no link — a text round-trip would destroy them.
+  ::  surfaces. Hiding the affordance here would be guessing their ACL for them.
+  ::  Binary/opaque grubs get no link. A text round-trip would destroy them.
   =/  editable=?  ?=(^ (grub-text sang))
   =/  edit-link=tape
     ?.  editable  ""
@@ -6672,8 +6675,8 @@
     " &middot; <a href=\"?data\">raw</a>"  edit-link  "</div>"
     body
   ==
-::  +send-raw: ?data — the file body verbatim with a mark-derived content-type.
-::  Cords ship as their bytes; octs ship as-is; anything else is 415.
+::  +send-raw: ?data, the file body verbatim with a mark-derived content-type.
+::  Cords ship as their bytes. octs ship as-is. Anything else is 415.
 ::
 ++  send-raw
   |=  [eyre-id=@ta =sang:tarball local=?]
@@ -6692,7 +6695,7 @@
         ['content-disposition' 'attachment']
         ['x-content-type-options' 'nosniff']
     ==
-  ::  a %mime grub carries its OWN type ([mite octs]) — an app's asset, e.g.
+  ::  a %mime grub carries its OWN type ([mite octs]), an app's asset, e.g.
   ::  calendar.html. Serve it with that type so it renders as itself instead of
   ::  falling through to 415. Foreign grubs keep the inert-download headers
   ::  above: the type comes from the grub, so it is attacker-controlled too.
@@ -6714,7 +6717,7 @@
     (send-simple:srv eyre-id [[200 heads] `(as-octs:mimes:html p.cord-res)])
   =/  octs-res=(each [p=@ud q=@] tang)  (mule |.(;;([p=@ud q=@] nn)))
   ?:  ?=(%& -.octs-res)
-    ::  p is remote-attested (a boom carries the peer's raw noun) — a hostile
+    ::  p is remote-attested (a boom carries the peer's raw noun). A hostile
     ::  length would become our content-length. Cap it: real octs may pad p
     ::  past (met 3 q) for trailing zeros, but not by 16MiB (caught by review).
     ?:  (gth p.p.octs-res (bex 24))
@@ -6749,7 +6752,7 @@
   =/  segs=(list tape)  (turn `(list @ta)`mt trip)
   (crip (zing (join "/" segs)))
 ::  +mark-mime: content-type for ?data by mark leaf. Unknown marks default to
-::  text/plain — cords are overwhelmingly text, and octs of unknown mark are
+::  text/plain. Cords are overwhelmingly text, and octs of unknown mark are
 ::  rare enough not to earn octet-stream plumbing yet.
 ::
 ++  mark-mime
@@ -6769,7 +6772,7 @@
     %svg           'image/svg+xml'
   ==
 ::  +browse-json: render one directory level of a foreign (or own) grubbery tree as
-::  a JSON listing — subdirs first, then files. Each file carries its mark leaf. Both
+::  a JSON listing, subdirs first, then files. Each file carries its mark leaf. Both
 ::  lists are capped at browse-fan-cap and `truncated` is set if either overflowed,
 ::  so a hostile ship can't make the RESPONSE unbounded (the shallow peek already
 ::  bounds the fetch). Names are the raw @ta segments; the client rebuilds child
@@ -6799,7 +6802,7 @@
       ['children' a+(weld dir-kids file-kids)]
   ==
 ::  +browse-file-respond: send one foreign/own file's body as JSON. Cross-ship
-::  content is a boom (raw noun), so clam to @t in a mule — a non-text file (or a
+::  content is a boom (raw noun), so clam to @t in a mule. A non-text file (or a
 ::  hostile non-cord body) is a clean 415, never a crash.
 ::
 ++  browse-file-respond
@@ -6829,8 +6832,8 @@
   `(as-octs:mimes:html htm)
 ::  +send-view: like +send-html but with a short private cache, for READ-ONLY
 ::  navigable surfaces (home, tree explorer). A repeat visit inside the window is
-::  served from the browser cache instantly (like the back button's bfcache) —
-::  the ~0.7s grubbery render is skipped. Safe here because these surfaces have
+::  served from the browser cache instantly (like the back button's bfcache).
+::  The ~0.7s grubbery render is skipped. Safe here because these surfaces have
 ::  no command/save flow whose result must appear immediately, and any live SSE
 ::  reload revalidates (browsers bypass max-age on reload), so real changes still
 ::  land fresh. NOT used for page views (command form) or the editor (save flow).
@@ -6845,7 +6848,7 @@
 ::  ── PWA (installable app) ──────────────────────────────────────────────────
 ::  Content-Type is an explicit header cord here (not mark-derived), so a
 ::  manifest and a service worker are served with correct MIME by hand. All PWA
-::  routes sit AFTER the owner gate, so they're owner-only — the browser fetches
+::  routes sit AFTER the owner gate, so they're owner-only. The browser fetches
 ::  them same-origin with the session cookie, which is the right posture for a
 ::  private app (install is offered only inside an authed session).
 ::
@@ -6891,12 +6894,12 @@
   ::  the page you were working in (boot's snapshot-resume does the rest).
   ::  `id` is explicit and must NOT follow start_url: id is the install's
   ::  identity, and changing it would orphan every existing home-screen icon.
-  ::  NB WebAPK lag: Android applies manifest changes on its own schedule —
-  ::  remove + re-add to the home screen picks this up immediately.
-  ::  share_target makes the installed PWA appear in the mobile share sheet;
-  ::  sharing a page to Lattice archives it, same as the bookmarklet. GET (not
+  ::  NB WebAPK lag: Android applies manifest changes on its own schedule.
+  ::  Remove + re-add to the home screen picks this up immediately.
+  ::  share_target makes the installed PWA appear in the mobile share sheet.
+  ::  Sharing a page to Lattice archives it, same as the bookmarklet. GET (not
   ::  POST) deliberately: the OS then performs a top-level NAVIGATION, which
-  ::  carries the eyre session cookie — a POST share target would be a
+  ::  carries the eyre session cookie. A POST share target would be a
   ::  cross-site form post and arrive unauthenticated. The action must sit
   ::  inside `scope`. All three params are declared because senders disagree
   ::  about which one carries the url (see +first-url).
@@ -6905,14 +6908,14 @@
   ^-  @t
   '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" fill="#1a6ed8"/><g stroke="#ffffff" stroke-width="14" stroke-linecap="round" fill="#ffffff"><line x1="140" y1="140" x2="372" y2="140"/><line x1="140" y1="256" x2="372" y2="256"/><line x1="140" y1="372" x2="372" y2="372"/><line x1="140" y1="140" x2="140" y2="372"/><line x1="256" y1="140" x2="256" y2="372"/><line x1="372" y1="140" x2="372" y2="372"/><line x1="140" y1="140" x2="372" y2="372"/><line x1="372" y1="140" x2="140" y2="372"/><circle cx="140" cy="140" r="26"/><circle cx="256" cy="140" r="26"/><circle cx="372" cy="140" r="26"/><circle cx="140" cy="256" r="26"/><circle cx="256" cy="256" r="30"/><circle cx="372" cy="256" r="26"/><circle cx="140" cy="372" r="26"/><circle cx="256" cy="372" r="26"/><circle cx="372" cy="372" r="26"/></g></svg>'
 ::  the service worker: stale-while-revalidate for the app SHELL (editor HTML,
-::  app.js, prism, icons, manifest) — a warm boot serves every asset from the
+::  app.js, prism, icons, manifest). A warm boot serves every asset from the
 ::  SW cache at 0ms and refreshes it in the background, so it is at most one
 ::  load behind a deploy. (The fetch handler is genuinely cache-FIRST: an
 ::  earlier version awaited the network before answering, which paid the full
 ::  pier round-trip per asset per boot and made the cache pure fallback.)
-::  On a cache HIT the revalidation is DELAYED (5s, held open by waitUntil):
-::  the shell and app.js are `no-cache`, so they re-fetch on every boot, and
-::  the pier serializes — issued immediately they put two round-trips ahead of
+::  On a cache HIT the revalidation is DELAYED (5s, held open by waitUntil).
+::  The shell and app.js are `no-cache`, so they re-fetch on every boot, and
+::  the pier serializes. Issued immediately they put two round-trips ahead of
 ::  page-dump, the one request the editor is actually waiting for. Deferring
 ::  costs nothing (the answer was served from cache) and still picks the
 ::  deploy up within the same session. waitUntil is guarded: if the event has
@@ -6920,7 +6923,7 @@
 ::  The /app HTML is cached by pathname, so ?name= deep
 ::  links share one entry. API routes stay network-only: every one is
 ::  auth-gated and dynamic, and a stale authed response must never be served.
-::  No precache — a logged-out install would 403 and abort.
+::  No precache. A logged-out install would 403 and abort.
 ::
 ::  Non-SHELL requests are NOT intercepted at all (no respondWith): some
 ::  webkitgtk builds drop cookies on SW-mediated fetch, so a blanket
@@ -6979,8 +6982,8 @@
 ::  lists, blockquotes, ``` pre, paragraphs). urb:// links route back through
 ::  the reader; other links render as their description text only.
 ::
-::  output accumulates as a list of per-line chunks zinged once at the end —
-::  welding each line onto one growing tape re-copied the whole document per
+::  output accumulates as a list of per-line chunks zinged once at the end.
+::  Welding each line onto one growing tape re-copied the whole document per
 ::  line (quadratic in document size, the same class as the fixed wikilinkify
 ::  quadratic, on the unauthenticated reader path).
 ++  render-gmi
@@ -7032,7 +7035,7 @@
 ::  in lockstep with this string.
 ::
 ++  content-env-pre  "|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]  ^-  result  ("
-::  +make-folder-index: the generated code for an `index`-type page — a gate
+::  +make-folder-index: the generated code for an `index`-type page, a gate
 ::  whose whole body is `(folder-index deps /its/folder)`. The folder is the
 ::  page's OWN parent (snip its path), so creating an index page in a folder
 ::  auto-lists that folder with no hoon written by the user.
@@ -7080,12 +7083,12 @@
   =/  dec=(unit tape)  (unesc-content mid)
   ?~  dec  ~
   `[`@tas`(crip builder) (crip u.dec)]
-::  +unesc-content: decode +wrap-content's escaping directly — a linear scan
+::  +unesc-content: decode +wrap-content's escaping directly, a linear scan
 ::  instead of the old ream+slap (a full hoon parse + eval per page read,
 ::  which every page-tree/page-dump/home request paid per page). The scheme
 ::  is exactly what +wrap-content emits: \\ -> backslash, \' -> quote,
 ::  \XX -> hex byte (controls). Anything else malformed yields ~, and the
-::  caller treats the page as raw hoon — same as a failed parse did.
+::  caller treats the page as raw hoon, same as a failed parse did.
 ++  unesc-content
   |=  ec=tape
   ^-  (unit tape)
@@ -7115,7 +7118,11 @@
 ::  +name-pax: a ?name= value (slash-separated, e.g. notes/todo) -> a validated
 ::  page path under /page, or ~. Each segment must be a non-empty @ta knot.
 ::
-++  name-pax
+::  +raw-name-pax: parse a name to a path WITHOUT the dot-segment check. Only
+::  deletion uses it. Tightening +name-pax would otherwise strand any page
+::  created before the check landed, because page-del validates the same way
+::  it writes, so bad names would become permanently undeletable.
+++  raw-name-pax
   |=  n=@t
   ^-  (unit path)
   =/  r  (mule |.(`path`(stab (crip (weld "/" (trip n))))))
@@ -7123,6 +7130,19 @@
   ?~  p.r  ~
   ?.  (levy `path`p.r |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))  ~
   `p.r
+++  name-pax
+  |=  n=@t
+  ^-  (unit path)
+  =/  r  (raw-name-pax n)
+  ?~  r  ~
+  ::  reject '.' and '..' segments. Both are ordinary @ta knots, so (sane %ta)
+  ::  admits them, and a page named '../../etc/passwd' is inert HERE (a knot is
+  ::  not a parent reference in a grubbery path) but page-tree then hands that
+  ::  string to every client. Anything that joins it onto a real filesystem
+  ::  path, the FUSE mount, an export, a static-site build, walks out of its
+  ::  own directory. Found by scripts/fuzz-api.mjs.
+  ?.  (levy u.r |=(seg=@ta &(!=('.' seg) !=('..' seg))))  ~
+  r
 ++  valid-name  |=(n=@t ^-(? ?=(^ (name-pax n))))
 ++  pax-of  |=(n=@t ^-(path (need (name-pax n))))
 ::  +pax-str: a page path -> its slash-separated string (no leading slash).
@@ -7138,7 +7158,7 @@
     %md    'text/markdown; charset=utf-8'
     %gmi   'text/gemini; charset=utf-8'
   ==
-::  +read-tree: every node under /page (sorted) as [path page=?] — page=%.y is a
+::  +read-tree: every node under /page (sorted) as [path page=?]. page=%.y is a
 ::  programmable page (a dir with a /code grub), page=%.n a plain folder (incl.
 ::  empty ones, made by +folder-new). Feeds the editor's nested tree sidebar.
 ::
@@ -7150,7 +7170,7 @@
   %-  pure:m
   %+  sort  (collect-tree ball.sn ~)
   |=([a=[pax=path page=?] b=[pax=path page=?]] (aor pax.a pax.b))
-::  +read-page-names: just the page paths (folders dropped) — the home landing
+::  +read-page-names: just the page paths (folders dropped). The home landing
 ::  lists what you can open. (+read-template-names was removed with the home
 ::  redesign, which no longer lists templates.)
 ::
@@ -7189,8 +7209,8 @@
 ::  braces stay literal (no ' or \ inside). Obelisk down -> a graceful message.
 ::
 ::  +search-results-html: the omnibar results page. Fans out over BOTH indexes
-::  per query word — /content-search (our pages + knowledge, scope recorded at
-::  index time) and /catalog-search (the crawler's, for peers) — and labels every
+::  per query word, /content-search (our pages + knowledge, scope recorded at
+::  index time) and /catalog-search (the crawler's, for peers), and labels every
 ::  hit with where it lives. Catalog rows published by US are dropped: they are
 ::  in content-terms already with a truthful clearweb/urbit badge, and keeping
 ::  both would double every own-page hit.
@@ -7212,7 +7232,7 @@
     %-  trip
     '<style>.qbadge{display:inline-block;padding:1px 7px;margin-right:.5em;border-radius:999px;border:1px solid #8886;font-size:.75rem;vertical-align:middle;white-space:nowrap}.qbadge.clearweb{border-color:#1a6ed8;color:#1a6ed8}.qbadge.urbit{border-color:#7a5af8;color:#7a5af8}.qbadge.private{border-color:#8a8a8a;color:#8a8a8a}.qbadge.knowledge{border-color:#0a9a6a;color:#0a9a6a}.qbadge.peer{border-color:#c07000;color:#c07000}</style>'
     ::  one fan-out per query word over BOTH indexes; see the arm comment. The
-    ::  minified source lives in scratch as search.js — it is checked with
+    ::  minified source lives in scratch as search.js. It is checked with
     ::  `node --check` before being pasted here, and contains no single quote or
     ::  backslash so it needs no cord escaping.
     %-  trip
@@ -7243,7 +7263,7 @@
     '(function(){var out=document.getElementById("pst");var p=new URLSearchParams(location.search);var u=p.get("url")||"";var done=false;function show(m,bad){out.textContent=m;out.className=bad?"err":"";}function send(html){if(done)return; done=true;show("archiving…");fetch("/apps/lattice/clip-html?url="+encodeURIComponent(u),{method:"POST",body:html}).then(function(r){if(r.ok){return r.text().then(function(t){document.open();document.write(t);document.close();});}return r.json().catch(function(){return{}}).then(function(j){show("could not archive"+(j.error?": "+j.error:" ("+r.status+")"),true);});}).catch(function(){show("could not archive (network error)",true);});}window.addEventListener("message",function(e){if(e.source!==window.opener)return;var d=e.data;if(!d||d.lattice!==1||typeof d.html!=="string")return;send(d.html);});try{if(window.opener)window.opener.postMessage({lattice:"ready"},"*");}catch(x){}setTimeout(function(){if(!done)show("nothing arrived from the page — try the bookmarklet again",true);},15000);})();'
     "</script>"
   ==
-::  +settings-html: the settings page. One maintenance action so far — a manual
+::  +settings-html: the settings page. One maintenance action so far, a manual
 ::  content-catalog sweep. The crawler auto-sweeps every ~6h (and a followed
 ::  peer's edits index live), but a newly published page isn't searchable until
 ::  the next sweep, so this forces one now. POSTs /catalog-sweep, which acks
@@ -7275,7 +7295,7 @@
     "<h2>Typography</h2>"
     "<p class=\"muted\">Font and size for the editor. Saved in this browser only &mdash; it never touches your ship, so it costs no round-trip. An editor open in another tab picks the change up immediately.</p>"
     "<p><label for=\"fontsel\">Font </label><select id=\"fontsel\"><option value=\"mono\">Monospace (default)</option><option value=\"system\">System sans</option><option value=\"serif\">Serif</option><option value=\"humanist\">Coding (Iosevka, JetBrains Mono)</option></select> <label for=\"fontsize\">Size </label><input type=\"range\" id=\"fontsize\" min=\"9\" max=\"32\" step=\"1\"> <span id=\"fontsizeo\" class=\"muted\"></span> <button type=\"button\" id=\"fontreset\" class=\"btn\">Reset</button></p>"
-    ::  NB: no curly braces in this tape — hoon interpolates "{...}" inside a
+    ::  NB: no curly braces in this tape. hoon interpolates "{...}" inside a
     ::  double-quoted tape, so a literal brace is a syntax error here. (The
     ::  script below is a single-quoted cord, which is literal, braces and all.)
     "<p id=\"fontsample\" style=\"border:1px solid #8886;border-radius:8px;padding:12px\">The quick brown fox jumps over the lazy dog &middot; 0123456789 &middot; il1 O0 &middot; |= ^- @ud</p>"
@@ -7299,20 +7319,20 @@
     '<script>(function(){var b=document.getElementById("sweep");var s=document.getElementById("swst");b.onclick=function(){b.disabled=true;s.textContent="sweeping...";fetch("/apps/lattice/catalog-sweep",{method:"POST"}).then(function(r){s.textContent=r.ok?"started — pages are being (re)indexed in the background.":"failed ("+r.status+")";b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
     ::  the bookmarklet href is built client-side because settings-html has no
     ::  idea what host the browser reached us on (ship domain, localhost, a
-    ::  reverse proxy) — location.origin is the only thing that knows.
+    ::  reverse proxy). location.origin is the only thing that knows.
     %-  trip
     '<script>(function(){var a=document.getElementById("clipbm");a.href="javascript:(function(){location.href=\'"+location.origin+"/apps/lattice/clip?url=\'+encodeURIComponent(location.href)})()";a.onclick=function(e){e.preventDefault()}})();</script>'
   ==
 ::  +home-index-html: the landing page. Always shows navigation (Pages,
 ::  Explorer) plus a live list of your programmable pages and any published
-::  pages — so an empty store is still a way in, not a dead end.
+::  pages, so an empty store is still a way in, not a dead end.
 ::
 ++  home-index-html
   |=  [our=@p recent=(list [pax=path prev=@t]) bms=bookmarks:lb know=tape]
   ^-  tape
   =/  ship=tape  (scow %p our)
   =/  tree=tape  :(weld "/apps/lattice/x/" ship "/")
-  ::  under Editor: the 10 most recently edited pages — name + a preview, each
+  ::  under Editor: the 10 most recently edited pages, name + a preview, each
   ::  linking straight into the editor.
   =/  recent-list=tape
     ?~  recent  "<p class=\"muted\">No pages yet.</p>"
@@ -7331,7 +7351,7 @@
       ==
       `(list tape)`~["</ul>"]
     ==
-  ::  under Browser: the last 10 bookmarks — the title opens the saved url via the
+  ::  under Browser: the last 10 bookmarks. The title opens the saved url via the
   ::  reader (which resolves the urb:// address back to the /x view).
   =/  bm-list=tape
     ?~  bms
@@ -7371,7 +7391,7 @@
     "</div>"
     "</div>"
   ==
-::  +marks-html: the full bookmark list — every bookmark grouped by folder
+::  +marks-html: the full bookmark list, every bookmark grouped by folder
 ::  (unfiled first: it is where the star button files things), a search box
 ::  filtering client-side over title+url+folder, and per-row refile/delete.
 ::  Actions call the JSON routes and reload; the page itself stays dumb.
@@ -7456,8 +7476,8 @@
 ++  render-page
   |=  [current=tape keep=tape inner=tape]
   ^-  @t
-  ::  the star shows whenever the address bar holds a real urb:// address —
-  ::  it was only on the framed browser view before, so most of the Browser
+  ::  the star shows whenever the address bar holds a real urb:// address.
+  ::  It was only on the framed browser view before, so most of the Browser
   ::  (home, published pages, the /x explorer) had no way to bookmark at all.
   ::  Hoisted =/ (not inline in the weld): see the fuse-loop trap.
   =/  bmbtn=tape
@@ -7472,7 +7492,7 @@
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
     "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
     ::  an authored /index takes over the home view, and the generated home was
-    ::  the ONLY way to the editor, browser and knowledge — so carry them here.
+    ::  the ONLY way to the editor, browser and knowledge, so carry them here.
     "<a class=\"nav\" href=\"/apps/lattice/app\" title=\"editor\">&#9998;</a>"
     "<a class=\"nav\" href=\"/apps/lattice/know\" title=\"knowledge\">&#9670;</a>"
     "<a class=\"nav\" href=\"/apps/lattice/marks\" title=\"bookmarks\">&#9733;</a>"
@@ -7484,7 +7504,7 @@
     "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search the catalog\">"
     bmbtn
     "<button type=\"submit\">Go</button></form><main>"  inner  "</main>"
-    ::  omnibar completions. A STYLED list, deliberately — <datalist> is the
+    ::  omnibar completions. A STYLED list, deliberately. <datalist> is the
     ::  one-line version and renders as an OS-drawn dropdown that ignores every
     ::  style here, which is not acceptable in this UI.
     %-  trip
@@ -7497,7 +7517,7 @@
     '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})}})();</script>'
     (sse-script keep)  sw-register-script  "</body></html>"
   ==
-::  +render-browser-page: the browser's page view — the address bar (+ an Edit
+::  +render-browser-page: the browser's page view, the address bar (+ an Edit
 ::  button when `edit` names an editable own page) above the page rendered in a
 ::  viewport-filling iframe, so the page's theme owns its whole document (no
 ::  collision with the chrome css) and looks as it would on the clear web.
@@ -7542,7 +7562,7 @@
   (weld "/grubbery/api/keep/apps/lattice.lattice_app/" sub)
 ::  +sse-script: reactive live-view client JS. Streams grubbery's
 ::  keep-SSE for `keep`, skips the initial `old` snapshot events, and reloads on
-::  any subsequent change — so an open reader / home index upgrades a stale first
+::  any subsequent change, so an open reader / home index upgrades a stale first
 ::  paint and shows live edits (the /updates live channel). "" -> no script
 ::  (remote pages, error shells). Built from single-quote cords so the JS braces
 ::  stay literal (only \\ needs escaping); mirrors counter.hoon's SSE parse loop.
@@ -7575,11 +7595,11 @@
   ==
 ::  +ensure-pub-weir: whitelist <root>/pub in the grubbery `public` usergroup's
 ::  peek set, so any foreign ship may peek/keep published pages. UNION, never
-::  overwrite — the public group is global (shared by every grubbery app), so we
+::  overwrite. The public group is global (shared by every grubbery app), so we
 ::  add our road without clobbering others'. know/ is private by omission
-::  (foreign access is deny-by-default; see the weir audit). Idempotent: re-runs
+::  (foreign access is deny-by-default, see the weir audit). Idempotent. Re-runs
 ::  on every writer (re)start, no-ops once our road is present. Skips quietly if
-::  no public group exists yet (no peer has ever connected) — it re-applies the
+::  no public group exists yet (no peer has ever connected). It re-applies the
 ::  next time the writer starts after a peer shows up.
 ::
 ++  ensure-pub-weir
@@ -7618,7 +7638,7 @@
   ^-  form:m
   =/  vbase=path  (weld root /know/vault)
   ::  trash-vault: deleted entry grubs MOVE here (not culled) so restore is a
-  ::  plain move-back — robust, no born-history/cass recovery. /know/trash is the
+  ::  plain move-back (robust, no born-history/cass recovery). /know/trash is the
   ::  derived metadata index over it.
   =/  tvbase=path  (weld root /know/trash-vault)
   =/  tx=road:tarball  [%& %& (weld root /know) %trash]
@@ -7626,7 +7646,7 @@
       %save
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
     ::  would crash this single writer fiber, and rise-wait would then swallow the
-    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab; skip+log
+    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab. skip+log
     ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
@@ -7647,7 +7667,7 @@
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] e)
     ;<  ~  bind:m  (gain:io road %.y)
     ::  memories are gained too, and autosave saves one revision per typing
-    ::  pause — the same ceiling pages get, or the vault grows forever.
+    ::  pause, the same ceiling pages get, or the vault grows forever.
     ::  know entries are a user-facing history surface too, so same window
     ;<  ~  bind:m  (prune-hist road know-keep history-window)
     ::  a re-saved key leaves trash; cull the orphaned trash-vault GRUB (not just
@@ -7661,7 +7681,7 @@
       %del
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
     ::  would crash this single writer fiber, and rise-wait would then swallow the
-    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab; skip+log
+    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab. skip+log
     ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
@@ -7684,7 +7704,7 @@
   ::
       %move
     ::  guard both keys: %move is reachable un-normalized via the direct grubbery
-    ::  poke API (mar know-action), bypassing the route's know-key check — a bad
+    ::  poke API (mar know-action), bypassing the route's know-key check. A bad
     ::  key would crash+park the single writer and swallow the next mutation.
     =/  fko=(unit path)  (know-key from.act)
     =/  tko=(unit path)  (know-key to.act)
@@ -7696,7 +7716,7 @@
     =/  troad=road:tarball  (entry-road vbase tk)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry froad)
     ?~  old  ~&([%lattice-move-missing fk] (pure:m ~))
-    ::  refuse to clobber a LIVE target (the route pre-checks and 409s; this is
+    ::  refuse to clobber a LIVE target (the route pre-checks and 409s. This is
     ::  defense-in-depth against silent overwrite/data-loss).
     ;<  liv=(unit know-entry:lk)  bind:m  (read-entry troad)
     ?^  liv  ~&([%lattice-move-target-exists tk] (pure:m ~))
@@ -7715,7 +7735,7 @@
       %restore
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
     ::  would crash this single writer fiber, and rise-wait would then swallow the
-    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab; skip+log
+    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab. skip+log
     ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
@@ -7724,9 +7744,9 @@
     =/  troad=road:tarball  (entry-road tvbase key)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry troad)
     ?~  old  ~&([%lattice-restore-missing key] (pure:m ~))
-    ::  refuse to resurrect over a LIVE entry — the save/move/import writers already
-    ::  cull the trash grub when a key goes live again, so this can't normally fire;
-    ::  it's the last guard against a stale tomb clobbering live data.
+    ::  refuse to resurrect over a LIVE entry. The save/move/import writers already
+    ::  cull the trash grub when a key goes live again, so this can't normally fire.
+    ::  It's the last guard against a stale tomb clobbering live data.
     ;<  live=(unit know-entry:lk)  bind:m  (read-entry road)
     ?^  live  ~&([%lattice-restore-target-live key] (pure:m ~))
     ::  MOVE back from the trash vault: write the live grub, then cull the trash
@@ -7739,12 +7759,12 @@
     (put-file tx [/lattice %know-index] (~(del by trash) key))
   ::
       %import
-    ::  write a live entry VERBATIM (preserve updated/tags/vector) — an import,
+    ::  write a live entry VERBATIM (preserve updated/tags/vector). An import,
     ::  not a user edit, so no merge-save now-stamp. Mirror of %save minus the
-    ::  body merge; index row derives from the entry's own metadata.
+    ::  body merge. index row derives from the entry's own metadata.
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
     ::  would crash this single writer fiber, and rise-wait would then swallow the
-    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab; skip+log
+    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab. skip+log
     ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
@@ -7760,10 +7780,10 @@
   ::
       %import-trashed
     ::  land a trashed entry straight into the trash vault (import of an
-    ::  already-deleted entry). No live grub, no cull dance — just write + index.
+    ::  already-deleted entry). No live grub, no cull dance, just write + index.
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
     ::  would crash this single writer fiber, and rise-wait would then swallow the
-    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab; skip+log
+    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab. skip+log
     ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
@@ -7789,14 +7809,14 @@
       %save-page
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
     ::  would crash this single writer fiber, and rise-wait would then swallow the
-    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab; skip+log
+    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab. skip+log
     ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
     =/  key=path  u.ko
     ::  a top-level single-char pub name would shadow a urb:// mount letter
     ::  (p/n/k/t and the rest of the reserved 1-char space), so its bare
-    ::  canonical url could never resolve back to it. Refuse it — the whole
+    ::  canonical url could never resolve back to it. Refuse it. The whole
     ::  single-char first-component space stays reserved to the protocol forever.
     ?:  ?&(?=([@ ~] key) =(1 (met 3 i.key)))
       ~&([%lattice-pub-name-reserved key] (pure:m ~))
@@ -7812,7 +7832,7 @@
       %del-page
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
     ::  would crash this single writer fiber, and rise-wait would then swallow the
-    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab; skip+log
+    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab. skip+log
     ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
@@ -7822,8 +7842,8 @@
     =/  road=road:tarball  [%& %& pax.u.or nom.u.or]
     ;<  exists=?  bind:m  (peek-exists:io road)
     ?.  exists  ~&([%lattice-pub-del-missing key] (pure:m ~))
-    ::  cull tombs the grub (gain=%.y keeps the body in born history); drop its
-    ::  index row so it's no longer live. No trash row — pages have no restore.
+    ::  cull tombs the grub (gain=%.y keeps the body in born history). Drop its
+    ::  index row so it's no longer live. No trash row. Pages have no restore.
     ;<  ~  bind:m  (cull:io road)
     ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
     (put-file px [/lattice %pub-index] (~(del by ix) key))
@@ -7837,7 +7857,7 @@
   ;<  seen=view:nexus  bind:m  (peek:io road ~)
   ?.  ?=([%file *] seen)  (pure:m *pub-index:lp)
   (pure:m !<(pub-index:lp (need-vase:tarball sang.seen)))
-::  +read-pub-index-remote: a peer's /pub/index via peek-remote (clean break —
+::  +read-pub-index-remote: a peer's /pub/index via peek-remote (clean break:
 ::  the peer must run the grubbery-native lattice at the same app-base).
 ::
 ++  read-pub-index-remote
@@ -7846,18 +7866,18 @@
   ^-  form:m
   ;<  ms=(unit view:nexus)  bind:m
     (peek-remote-wait [%& %& (weld app-base:lu /pub) %index] shp)
-  ::  ~ means the read FAILED (timeout / not-a-file / bad clam) — distinct from a
+  ::  ~ means the read FAILED (timeout / not-a-file / bad clam), distinct from a
   ::  reachable peer with a genuinely empty index (`~ *pub-index). Callers use the
   ::  difference: reconcile must NOT run on a failure (it would delete every row).
   ?~  ms  (pure:m ~)
   ?.  ?=([%file *] u.ms)  (pure:m ~)
-  ::  CROSS-SHIP peek content is a boom (raw noun), not a vase — need-vase would
+  ::  CROSS-SHIP peek content is a boom (raw noun), not a vase. need-vase would
   ::  crash the crawler. Extract via sang-noun and clam in a mule so a malformed
   ::  or hostile peer index yields ~ (treated as unreachable) instead of crashing.
   =/  res=(each pub-index:lp tang)
     (mule |.(;;(pub-index:lp (sang-noun:tarball sang.u.ms))))
   ?:(?=(%| -.res) (pure:m ~) (pure:m `p.res))
-::  +read-pub-index-any: a ship's pub index — local peek for our own ship, the
+::  +read-pub-index-any: a ship's pub index, local peek for our own ship, the
 ::  bounded remote peek for a peer. ~ = unreachable/denied/absent (a reachable
 ::  but empty peer yields `~ *pub-index). Used by /fetch's manifest fallback.
 ::
@@ -7897,7 +7917,7 @@
   $(cs t.cs, out [!<(page-sub:lp (need-vase:tarball sang.i.cs)) out])
 ::  +apply-sub: mutate the crawler's subscriptions. Runs in the writer fiber
 ::  (serialised), so concurrent /follow + /sub requests don't race. %follow /
-::  %unfollow read-modify-write the follow set; %sub-page / %unsub-page make/cull
+::  %unfollow read-modify-write the follow set. %sub-page / %unsub-page make/cull
 ::  a per-page grub under /sub/pages/ (whose on-file fiber owns the live keep).
 ::
 ++  apply-sub
@@ -7922,7 +7942,7 @@
   ;<  exists=?  bind:m  (peek-exists:io road)
   ?.  exists  (pure:m ~)
   (cull:io road)
-::  +retag: %tag / %untag — touch the entry's tag set + refresh its index row.
+::  +retag: %tag / %untag, touch the entry's tag set + refresh its index row.
 ::
 ++  retag
   |=  [root=path key-t=@t tag=@t add=?]
@@ -7930,7 +7950,7 @@
   ^-  form:m
   =/  vbase=path  (weld root /know/vault)
   ::  guard the key: %tag/%untag are reachable un-normalized via the direct
-  ::  grubbery poke API (mar know-action) — a bad key crashes+parks the writer.
+  ::  grubbery poke API (mar know-action). A bad key crashes+parks the writer.
   =/  ko=(unit path)  (know-key key-t)
   ?~  ko  ~&([%lattice-tag-bad-key key-t] (pure:m ~))
   =/  key=path  u.ko
@@ -7938,12 +7958,12 @@
   ;<  old=(unit know-entry:lk)  bind:m  (read-entry road)
   ?~  old  ~&([%lattice-tag-missing key] (pure:m ~))
   ::  case-fold the tag at the write boundary so explore (which normalizes the
-  ::  query tag, +norm-tag) and the tag cloud agree — a stored 'Rust' would be
+  ::  query tag, +norm-tag) and the tag cloud agree. A stored 'Rust' would be
   ::  unreachable by an explore for 'rust'/'Rust' otherwise.
   =/  ftag=@t  (norm-tag tag)
   =/  e=know-entry:lk
     ?:  add  (add-tag:lk u.old ftag)
-    ::  untag: drop BOTH the folded tag and the raw one — an entry tagged before
+    ::  untag: drop BOTH the folded tag and the raw one. An entry tagged before
     ::  the case-fold landed stored it un-folded (e.g. 'Rust'), so a folded-only
     ::  del would leave it permanently unremovable.
     (del-tag:lk (del-tag:lk u.old ftag) tag)
@@ -7975,7 +7995,7 @@
   (pure:m !<(know-index:lk (need-vase:tarball sang.seen)))
 ::  +put-file: create-or-overwrite a grub (over = %make force=%.y).
 ::
-::  +put-file: one dart, no probe — %over's %make-with-force creates when the
+::  +put-file: one dart, no probe. %over's %make-with-force creates when the
 ::  rail is missing and overwrites when it exists (grubbery skips its exists
 ::  check entirely under force), so the old peek-exists round-trip before
 ::  every single write was pure waste on the hottest path in the app.
@@ -7986,7 +8006,7 @@
   (over:io road [blot noun])
 ::  +ensure-dirs: make each cumulative dir base/seg1, base/seg1/seg2 ... so a
 ::  deep key's entry has a parent. ponytail: empty key-dirs are left behind on
-::  delete — add pruning if the tree clutters.
+::  delete. Add pruning if the tree clutters.
 ::
 ++  ensure-dirs
   |=  [base=path segs=path]

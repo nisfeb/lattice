@@ -3,13 +3,13 @@ name: nightly
 # Heavier suites that need a running ship. Not PR-gating: scheduled + manual.
 # Configure repo secrets to enable them (jobs no-op when unset):
 #   LATTICE_URL         e.g. https://test-ship.example.com
-#                       ⚠ point this at a HARNESS ship, never production —
-#                       the matrices write and delete scratch pages/memories.
+#                       ⚠ point this at a HARNESS ship, never production.
+#                       The matrices write and delete scratch pages/memories.
 #   LATTICE_CODE        the ship's +code (e2e mints its own cookie from it)
-#   LATTICE_PEER_SHIP   (optional) e.g. ~tyr — for the cross-ship fetch test
+#   LATTICE_PEER_SHIP   (optional) e.g. ~tyr, for the cross-ship fetch test
 #   LATTICE_MCP_COOKIE  "urbauth-~ship=0v…" session cookie, used by the Hoon
 #                       test runner and the three integration matrices. A ship
-#                       restart expires it; re-set the secret when that happens.
+#                       restart expires it. Re-set the secret when that happens.
 
 on:
   schedule:
@@ -42,7 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # The in-ball run_tests tool 500s on current grubbery builds, so drive
-      # the dojo -test thread per test file instead: ok=%.y is the pass signal
+      # the dojo -test thread per test file instead. ok=%.y is the pass signal
       # (per-test detail goes to the pier's terminal, which CI can't see).
       # Assumes the ship runs grubbery with the lattice overlay synced.
       - name: dojo -test per test file
@@ -167,6 +167,23 @@ jobs:
       - name: skipped
         if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
         run: echo "ship/cookie secrets not set — skipping ui-acl-prefs."
+
+  fuzz-api:
+    name: api — hostile-input fuzz
+    runs-on: ubuntu-latest
+    env:
+      LATTICE_URL: ${{ secrets.LATTICE_URL }}
+      LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: fuzz-api.mjs --quick
+        if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
+        run: |
+          printf '%s' "$LATTICE_MCP_COOKIE" > /tmp/ship-cookie
+          LATTICE_COOKIE=/tmp/ship-cookie node scripts/fuzz-api.mjs --quick
+      - name: skipped
+        if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
+        run: echo "ship/cookie secrets not set — skipping fuzz-api."
 
   ui-offline:
     name: ui — offline queue + replay
