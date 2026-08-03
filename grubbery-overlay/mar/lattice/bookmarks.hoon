@@ -12,7 +12,7 @@
     :-  %a
     %+  turn  bs
     |=  b=bookmark:lb
-    (pairs:enjs ~[url+s+url.b title+s+title.b])
+    (pairs:enjs ~[url+s+url.b title+s+title.b folder+s+folder.b])
   --
 ++  grab
   |%

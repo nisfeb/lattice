@@ -172,6 +172,25 @@ is "page-source-at gated"   403 "$(code "$B/page-source-at?name=$P/note&rev=1")"
 is "page-backlinks gated"   403 "$(code "$B/page-backlinks?name=$P/note")"
 is "page-forms gated"       403 "$(code -X POST "$B/page-forms?name=$P/note&on=1")"
 
+echo "==> bookmarks (folders + list + marks page)"
+BM="urb://~zod/$P-mark"
+is "bookmark with folder"   200 "$(sc -X POST "$B/bookmark?url=$BM&title=$P-title&folder=intel")"
+sleep 2
+has "list carries the url"    "$BM"       "$(G "$B/bookmarks")"
+has "list carries the folder" '"intel"'   "$(G "$B/bookmarks")"
+is "bookmark-move"          200 "$(sc -X POST "$B/bookmark-move?url=$BM&folder=osint")"
+sleep 2
+has "move refiles it"         '"osint"'   "$(G "$B/bookmarks")"
+has "marks page groups by folder" '<h3 class="qh">osint</h3>' "$(G "$B/marks")"
+has "marks page is searchable"    'id="bmq"'                  "$(G "$B/marks")"
+has "marks page row carries search text" "$P-title"           "$(G "$B/marks")"
+is "bookmarks gated"        403 "$(code "$B/bookmarks")"
+is "marks page gated"       403 "$(code "$B/marks")"
+is "unbookmark"             200 "$(sc -X POST "$B/unbookmark?url=$BM")"
+sleep 2
+UB="$(G "$B/bookmarks")"
+if printf '%s' "$UB" | grep -qF -- "$BM"; then bad "unbookmark removes it" "still listed"; else ok "unbookmark removes it"; fi
+
 echo "==> recursive folder delete"
 is "page-del on folder" 200 "$(sc -X POST "$B/page-del?name=$P")"
 sleep 2
