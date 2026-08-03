@@ -54,6 +54,6 @@
       if (!a || !a.href) return;
       e.preventDefault();
       const ext = /^https?:/.test(a.href) && new URL(a.href).origin !== location.origin;
-      if (ext) window.__TAURI__.core.invoke('plugin:opener|open_url', { url: a.href });
+      if (ext) window.__TAURI__.core.invoke('open_external_url', { url: a.href });
       else location.href = a.href;
     });

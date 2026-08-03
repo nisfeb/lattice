@@ -127,6 +127,63 @@ pub struct PickedFile {
 /// or a folder, reads only extensions the UI supports, returns the text.
 /// The page never sees a path or fs handle. One user-driven dialog per call.
 /// Async so the blocking dialog runs off the main thread.
+/// Schemes a system handler can sensibly open, and the ONLY ones that leave
+/// the app. This is a trust boundary, not a convenience check: the workspace
+/// webview renders ship-served content and can reach the command below, so a
+/// page could ask us to hand any string to the desktop's URL dispatcher.
+/// Refusing here rather than in the page's javascript is the difference
+/// between a policy and a suggestion.
+///
+/// Control characters are refused too. The URL is passed as one argv element
+/// so no shell parses it, but a handler further down the chain might, and a
+/// newline is how a single argument becomes two.
+pub fn openable(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once(':') else { return false };
+    if rest.is_empty() {
+        return false;
+    }
+    if !matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "http" | "https" | "mailto" | "tel"
+    ) {
+        return false;
+    }
+    !url.contains(|c: char| c.is_control())
+}
+
+/// Hand a vetted URL to the desktop's own dispatcher.
+///
+/// This replaces tauri-plugin-opener, which cost ~35 crates (an entire async
+/// executor: async-io, polling, blocking, rustix) to run what is one process
+/// spawn. No shell is involved: Command passes argv directly.
+pub fn open_external(url: &str) -> Result<(), String> {
+    if !openable(url) {
+        return Err(format!("refused to open {url:?}"));
+    }
+    let bin = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let child = std::process::Command::new(bin)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{bin}: {e}"))?;
+    // reap it. The handler exits immediately after handing off to the
+    // browser, and an unwaited child stays a zombie for the life of the app.
+    std::thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// The webview's route to the same policy. Named for what it does rather than
+/// mirroring the plugin's `open_url`, since the allowlist is ours now.
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    open_external(&url)
+}
+
 #[tauri::command]
 pub async fn pick_upload(app: AppHandle, dir: bool, exts: Vec<String>) -> Vec<PickedFile> {
     use tauri_plugin_dialog::DialogExt;
@@ -221,6 +278,57 @@ pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::openable;
+
+    //  This allowlist is the only thing standing between a ship-served page
+    //  and the desktop's URL dispatcher, so it is tested as a boundary rather
+    //  than as a formatting helper.
+    #[test]
+    fn only_handler_safe_schemes_leave_the_app() {
+        for ok in [
+            "http://example.com/x",
+            "https://example.com/x?q=1#f",
+            "HTTPS://EXAMPLE.COM",
+            "mailto:a@b.c",
+            "tel:+15551234",
+        ] {
+            assert!(openable(ok), "should open: {ok}");
+        }
+        for bad in [
+            //  the ones that turn "open a link" into "run something"
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,<script>x</script>",
+            "vscode://x",
+            "smb://host/share",
+            //  and the malformed shapes
+            "not-a-url",
+            "",
+            "http",
+            "http:",
+            "://example.com",
+        ] {
+            assert!(!openable(bad), "should refuse: {bad}");
+        }
+    }
+
+    #[test]
+    fn a_control_character_cannot_ride_along() {
+        //  argv carries the url as one element, but a handler downstream may
+        //  split it, and a newline is how one argument becomes two
+        assert!(!openable("http://example.com/\nmailto:x@y.z"));
+        assert!(!openable("http://example.com/\r\nHeader: v"));
+        assert!(!openable("http://example.com/\u{0}"));
+    }
+
+    #[test]
+    fn a_leading_dash_cannot_look_like_a_flag() {
+        //  xdg-open would read "-foo" as an option; the scheme requirement
+        //  makes that unreachable, and this pins it
+        assert!(!openable("-x"));
+        assert!(!openable("--help"));
+    }
+
     use super::{push_file, walk};
 
     #[test]
@@ -336,10 +444,7 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
             }
             // only things a system handler can sensibly open leave the app.
             // Anything else is silently blocked (an opener error is a popup)
-            if matches!(u.scheme(), "http" | "https" | "mailto" | "tel") {
-                use tauri_plugin_opener::OpenerExt;
-                handle.opener().open_url(u.as_str(), None::<&str>).ok();
-            }
+            open_external(u.as_str()).ok();
             false
         })
         .build()

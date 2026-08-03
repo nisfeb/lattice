@@ -49,7 +49,6 @@ fn main() {
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
         .manage(proxy::Bridge(Mutex::new(None)))
         .on_menu_event(|app, ev| {
@@ -131,6 +130,7 @@ fn main() {
             commands::get_config,
             commands::go_home,
             commands::pick_upload,
+            commands::open_external_url,
             mounts::status,
             mounts::add_mount,
             mounts::remove_mount,
