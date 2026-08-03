@@ -7456,6 +7456,13 @@
 ++  render-page
   |=  [current=tape keep=tape inner=tape]
   ^-  @t
+  ::  the star shows whenever the address bar holds a real urb:// address —
+  ::  it was only on the framed browser view before, so most of the Browser
+  ::  (home, published pages, the /x explorer) had no way to bookmark at all.
+  ::  Hoisted =/ (not inline in the weld): see the fuse-loop trap.
+  =/  bmbtn=tape
+    ?.  (has-prefix "urb://" current)  ""
+    "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
   %-  crip
   ;:  weld
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -7474,6 +7481,7 @@
     ::  so anything that must stay reachable belongs in it.
     "<a class=\"nav\" href=\"/apps/lattice/settings\" title=\"settings\">&#9881;</a>"
     "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search the catalog\">"
+    bmbtn
     "<button type=\"submit\">Go</button></form><main>"  inner  "</main>"
     ::  omnibar completions. A STYLED list, deliberately — <datalist> is the
     ::  one-line version and renders as an OS-drawn dropdown that ignores every
@@ -7484,6 +7492,8 @@
     %-  trip
     '(function(){var bar=document.querySelector(".bar");var inp=bar?bar.querySelector("input[name=url]"):null;if(!inp)return;var box=document.createElement("div");box.className="omni";box.hidden=true;bar.appendChild(box);var items=[],sel=-1,timer=null,seq=0;function hide(){box.hidden=true;sel=-1;}function pick(i){if(i<0||i>=items.length)return;inp.value=items[i].url;hide();bar.submit();}function draw(){box.textContent="";if(!items.length){hide();return}items.forEach(function(it,i){var row=document.createElement("div");row.className="omnirow"+(i===sel?" on":"");var b=document.createElement("span");b.className="omnisrc "+it.source;b.textContent=it.source==="bookmark"?"saved":"visited";var t=document.createElement("span");t.className="omnittl";t.textContent=it.title||it.url;var u=document.createElement("span");u.className="omniurl";u.textContent=it.url;row.appendChild(b);row.appendChild(t);row.appendChild(u);row.addEventListener("mousedown",function(e){e.preventDefault();pick(i)});box.appendChild(row);});box.hidden=false;}function fetchSug(){var q=inp.value.trim();var my=++seq;fetch("/apps/lattice/omni-suggest?q="+encodeURIComponent(q)).then(function(r){return r.ok?r.json():{items:[]}}).then(function(j){if(my!==seq)return;items=(j.items||[]);sel=-1;draw();}).catch(function(){if(my===seq){items=[];hide()}});}inp.addEventListener("input",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("focus",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("blur",function(){setTimeout(hide,120)});inp.addEventListener("keydown",function(e){if(box.hidden)return;if(e.key==="ArrowDown"){e.preventDefault();sel=Math.min(sel+1,items.length-1);draw()}else if(e.key==="ArrowUp"){e.preventDefault();sel=Math.max(sel-1,-1);draw()}else if(e.key==="Enter"){if(sel>=0){e.preventDefault();pick(sel)}}else if(e.key==="Escape"){hide()}});})();'
     "</script>"
+    %-  trip
+    '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})}})();</script>'
     (sse-script keep)  sw-register-script  "</body></html>"
   ==
 ::  +render-browser-page: the browser's page view — the address bar (+ an Edit
