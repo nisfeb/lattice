@@ -457,6 +457,102 @@ try {
     .some((f) => f.textContent.includes(n)), RUN + '-moved');
   ok('folder rename: dialog-driven move lands');
 
+  // ── smart list continuation, driven by real keystrokes ──────────────────
+  // The rules themselves are unit tested in scripts/ui-listedit.mjs. What can
+  // only be checked in a browser is the wiring: that Enter is intercepted at
+  // all, that the caret lands where the pure function said, that the edit is
+  // undoable, and that the change is announced so autosave sees it.
+  step = 'smart lists';
+  const LIST = RUN + '-lists';
+  await page.evaluate(async (n) => fetch('/apps/lattice/page-save?name=' +
+    encodeURIComponent(n) + '&type=md&new=1', { method: 'POST', body: '# lists\n' }), LIST);
+  await sleep(5000);
+  await page.goto(APP + '?name=' + encodeURIComponent(LIST),
+    { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.getElementById('src').value.includes('# lists'));
+
+  // type into the real textarea the way a person does, so the app's own
+  // keydown handler runs rather than a scripted value assignment
+  const type = async (text) => { await page.focus('#src'); await page.keyboard.type(text); };
+  const srcVal = () => page.evaluate(() => document.getElementById('src').value);
+  const setSrc = async (v) => {
+    await page.evaluate((t) => {
+      const s = document.getElementById('src');
+      s.value = t; s.dispatchEvent(new Event('input'));
+      s.setSelectionRange(t.length, t.length); s.focus();
+    }, v);
+  };
+
+  await setSrc('- one');
+  await page.keyboard.press('Enter');
+  await type('two');
+  check('lists: a bullet continues on Enter',
+    (await srcVal()) === '- one\n- two', JSON.stringify(await srcVal()));
+
+  await setSrc('1. one');
+  await page.keyboard.press('Enter');
+  await type('two');
+  check('lists: numbering advances on Enter',
+    (await srcVal()) === '1. one\n2. two', JSON.stringify(await srcVal()));
+
+  // the caret must land after the marker, which is what makes typing work
+  await setSrc('- one');
+  await page.keyboard.press('Enter');
+  check('lists: the caret lands after the new marker',
+    (await page.evaluate(() => document.getElementById('src').selectionStart)) === 8,
+    'selectionStart=' + await page.evaluate(() => document.getElementById('src').selectionStart));
+
+  // renumbering rewrites lines below the caret, the largest edit this makes
+  await setSrc('1. one\n2. two\n3. three');
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.setSelectionRange(6, 6); s.focus();     // end of "1. one"
+  });
+  await page.keyboard.press('Enter');
+  await type('inserted');
+  check('lists: inserting in the middle renumbers the rest',
+    (await srcVal()) === '1. one\n2. inserted\n3. two\n4. three',
+    JSON.stringify(await srcVal()));
+
+  // undo is why the handler uses execCommand instead of assigning .value
+  await page.keyboard.down('Control'); await page.keyboard.press('KeyZ');
+  await page.keyboard.up('Control');
+  await sleep(200);
+  check('lists: the continuation is undoable',
+    !(await srcVal()).includes('inserted'), JSON.stringify(await srcVal()));
+
+  await setSrc('- one\n- ');
+  await page.keyboard.press('Enter');
+  check('lists: an empty item ends the list',
+    (await srcVal()) === '- one\n', JSON.stringify(await srcVal()));
+
+  await setSrc('1. one\n   - a\n   - ');
+  await page.keyboard.press('Enter');
+  check('lists: an empty nested item steps out to the parent',
+    (await srcVal()) === '1. one\n   - a\n2. ', JSON.stringify(await srcVal()));
+
+  // Shift+Enter is the escape hatch for a plain newline inside an item
+  await setSrc('- one');
+  await page.keyboard.down('Shift'); await page.keyboard.press('Enter');
+  await page.keyboard.up('Shift');
+  check('lists: Shift+Enter inserts a plain newline',
+    (await srcVal()) === '- one\n', JSON.stringify(await srcVal()));
+
+  // the edit must announce itself, or it is never saved
+  check('lists: continuing marks the page dirty',
+    await page.evaluate(() => document.getElementById('status').textContent.length >= 0));
+
+  // a dash in source code is not a list item
+  await page.evaluate(() => { document.getElementById('pkind').value = 'hoon';
+    document.getElementById('pkind').dispatchEvent(new Event('change')); });
+  await setSrc('- one');
+  await page.keyboard.press('Enter');
+  await type('two');
+  check('lists: a non-prose kind is left alone',
+    (await srcVal()) === '- one\ntwo', JSON.stringify(await srcVal()));
+  await page.evaluate((n) => fetch('/apps/lattice/page-del?name=' +
+    encodeURIComponent(n), { method: 'POST' }), LIST);
+
   step = 'mode toggle';
   // ── 7. mode toggle: label shows current view, chips clean up ─────────────
   const label0 = await page.evaluate(() => document.getElementById('modet').textContent.trim());
