@@ -23,7 +23,12 @@ REPO="$(cd "$HERE/.." && pwd)"
 OVERLAY="$REPO/grubbery-overlay"
 
 RIC="sneagan@45.33.75.69"
-SSH="ssh -p 4141"
+#  One connection, reused. The staging step fires six rsyncs back to back and
+#  the host resets the later ones ("Connection closed by ..."), which failed
+#  the deploy halfway through. Multiplexing opens a single session and keeps it
+#  briefly, so the transfers queue on it instead of racing the SSH throttle.
+SSHCTL="/tmp/lattice-ric-%r@%h:%p"
+SSH="ssh -p 4141 -o ControlMaster=auto -o ControlPath=$SSHCTL -o ControlPersist=180"
 RDESK="/home/sneagan/ricsul-bilwyt/_data/ricsul-bilwyt/grubbery"
 
 # Grubbery's own obelisk-ast.hoon. A clean grubbery checkout is the correct
