@@ -106,7 +106,11 @@
     // Everything from the caret to the end of the block gets rewritten in one
     // edit: the text after the caret becomes the new item's content, and the
     // items below it shift up by one. One replacement means one undo step.
-    const blockEnd = lines.slice(0, lastIdx + 1).join('\n').length;
+    // The replaced region must cover the whole selection AND the rest of the
+    // block. A selection reaching past the last item would otherwise be
+    // clamped to the block, leaving the part below it alive: the user's
+    // selection came back after being typed over.
+    const blockEnd = Math.max(selEnd, lines.slice(0, lastIdx + 1).join('\n').length);
     const tail = value.slice(selEnd, blockEnd).split('\n');
     if (!lazy) {
       let n = nextNum;

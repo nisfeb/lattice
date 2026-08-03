@@ -167,5 +167,34 @@ console.log('\nend of document');
 press('the last line with no trailing newline', '- one\n- two|', '- one\n- two\n- |');
 press('a document that is only a marker', '- |', '|');
 
+console.log('\nEnter over a selection replaces it');
+// Two carets mark a selection. Enter must consume ALL of it: a range reaching
+// past the last list item was once clamped to the block, so the tail of the
+// selection survived being typed over.
+function pressRange(name, input, want) {
+  const a = input.indexOf('|');
+  const b = input.indexOf('|', a + 1) - 1;
+  const value = input.replace(/\|/g, '');
+  const r = listEnter(value, a, b);
+  let got;
+  if (!r) got = input;
+  else {
+    const out = value.slice(0, r.from) + r.text + value.slice(r.to);
+    got = out.slice(0, r.caret) + '|' + out.slice(r.caret);
+  }
+  if (got === want) console.log('  ok   - ' + name);
+  else {
+    console.log(`  FAIL - ${name}\n         want ${show(want)}\n         got  ${show(got)}`);
+    fails++;
+  }
+}
+pressRange('within one item', '- one| tw|o', '- one\n- |o');
+pressRange('across two items', '- one|\n- tw|o', '- one\n- |o');
+pressRange('reaching past the end of the list',
+  '1. one|\n2. two\n\nte|xt here', '1. one\n2. |xt here');
+pressRange('reaching past a bullet list', '- one|\n- two\naf|ter', '- one\n- |ter');
+pressRange('a selection still renumbers what remains',
+  '1. one|\n2. t|wo\n3. three', '1. one\n2. |wo\n3. three');
+
 console.log(fails ? `\n${fails} check(s) FAILED` : '\nall checks passed');
 process.exit(fails ? 1 : 0);
