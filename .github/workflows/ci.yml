@@ -78,3 +78,5 @@ jobs:
         run: |
           for f in scripts/*.mjs; do node --check "$f"; done
           for f in scripts/*.sh; do bash -n "$f"; done
+      - name: list-editing unit tests
+        run: node scripts/ui-listedit.mjs

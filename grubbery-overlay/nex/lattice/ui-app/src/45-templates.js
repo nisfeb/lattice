@@ -62,6 +62,28 @@
       }
       if (e.key === 'Escape') { e.preventDefault(); acClose(); return; }
     }
+    // Smart list continuation. Prose kinds only: a "- " in a hoon or js file is
+    // not a list item. Shift+Enter is the deliberate escape hatch, and it is
+    // also what the browser gives a user who wants a plain newline.
+    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey
+        && !src.readOnly && (mode === 'know' || pkind.value === 'md' || pkind.value === 'text')) {
+      const r = listEnter(src.value, src.selectionStart, src.selectionEnd);
+      if (r) {
+        e.preventDefault();
+        src.setSelectionRange(r.from, r.to);
+        // execCommand keeps the textarea's OWN undo stack, so Ctrl+Z steps back
+        // through these edits like any typing. Assigning src.value wipes that
+        // stack outright, which is why the Tab handler below loses undo.
+        // Deprecated, not gone, and there is no replacement that preserves
+        // undo; setRangeText is the fallback when an engine refuses.
+        let ok = false;
+        try { ok = document.execCommand('insertText', false, r.text); } catch {}
+        if (!ok) src.setRangeText(r.text, r.from, r.to, 'end');
+        src.setSelectionRange(r.caret, r.caret);
+        edited();
+        return;
+      }
+    }
     if (e.key === 'Tab') {
       e.preventDefault();
       if (src.readOnly) return;   // readOnly blocks typing, not scripted edits
