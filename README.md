@@ -19,7 +19,11 @@ One store, every surface:
   your own editor, and mount any other grubbery app tree too.
 - **desktop** ([`desktop/`](desktop/)): a Tauri shell that wraps the
   ship-served web client and manages `lattice-fs` mounts — one login, one
-  window, clean unmounts on quit. Linux + macOS.
+  window, clean unmounts on quit. Linux + macOS, with prebuilt bundles
+  (deb, AppImage, dmg) on the
+  [releases page](https://github.com/nisfeb/lattice/releases) and a Nix
+  flake (`nix build .#lattice-desktop`). It auto-detects piers running on
+  the same machine and offers grubbery's local IPC instead of HTTP.
 - **AI agents**: eleven MCP knowledge tools compiled into the ship itself and
   served at `/grubbery/mcp`. Your assistant's memory lives on your ship,
   not in someone's cloud.
@@ -53,7 +57,26 @@ other ships over remote scry, and followed remote files push you updates.
   and you've published a site.
 - **Editor.** A web workspace with syntax highlighting for every page kind,
   live preview, compile errors for Hoon pages, folder-level share, move, and
-  delete, and drag-and-drop upload of files or whole directories.
+  delete, and drag-and-drop upload of files or whole directories (batched
+  into single requests, so a 20-file drop costs one round-trip, not twenty).
+  Resizable panes, font and size settings, and page templates — including a
+  live-location page that renders a map, trails your recent positions, and
+  expires itself.
+- **Works offline.** Lose the ship mid-session and saves queue locally —
+  pages and knowledge entries both — then replay when it returns. Concurrent
+  edits are never lost: the newest version wins and the overwritten one is
+  preserved as a real page under `conflicts/`. The tree snapshot lives in
+  IndexedDB, so the editor paints instantly on launch and works from the
+  last-known tree while unreachable.
+- **Bookmarks.** Star any `urb://` page from the reader bar. The full list at
+  `/apps/lattice/marks` is organized into folders and searchable as you
+  type; the omnibar ranks bookmarks above history.
+- **Comments.** Readers can leave comments on pages you publish; a
+  moderation inbox in the workspace lists and removes them.
+- **Sharing that scales.** Named groups of ships with per-path read/edit
+  grants, editable in a full ACL pane; per-file grants to a ship or a group
+  from the editor; and a banlist that revokes on ban — a banned ship is
+  stripped from every group, and new grants to it are refused.
 - **Follow & subscribe.** Follow ships to discover what they publish, or
   subscribe to a specific file to get notified when it changes. Your own
   files push live over an Eyre SSE channel. Changes on a followed remote
@@ -181,7 +204,11 @@ your ship's web login (`/~/login` with your `+code`) and open:
   live preview, sharing controls, uploads, and the knowledge browser.
 
 On a phone, use your browser's *Install app / Add to Home Screen*. lattice
-is a full PWA with its own icon and standalone window. New to Urbit?
+is a full PWA with its own icon and standalone window — it resumes the page
+you left open and keeps working offline. On Linux or macOS there is also an
+optional [desktop app](https://github.com/nisfeb/lattice/releases): the same
+ship-served client in its own window, plus managed filesystem mounts and
+auto-detection of piers on the same machine. New to Urbit?
 [urbit.org/overview/running-urbit](https://urbit.org/overview/running-urbit)
 walks you through booting a ship.
 
@@ -259,14 +286,21 @@ The ship-side nexus source is in [`grubbery-overlay/`](grubbery-overlay/).
 Sync it into a grubbery desk and commit (see Install above). The FUSE client
 builds with `cargo build --release` in [`lattice-fs-rs/`](lattice-fs-rs/).
 
+The desktop app builds with `cargo build --release` in
+[`desktop/`](desktop/) (or `cargo tauri build` for bundles; or
+`nix build .#lattice-desktop`). Tagged commits (`v*` matching the version
+in `desktop/tauri.conf.json`) trigger a release workflow that builds and
+drafts all four bundles.
+
 The nexus's pure lib has Hoon unit tests under
 [`grubbery-overlay/tests/`](grubbery-overlay/tests/), run via grubbery's
 `run-tests`. The FUSE client has a 19-assertion ship-verified regression
-matrix (`scripts/fs-matrix.sh`). Three integration matrices exercise a
-running harness ship end to end: `scripts/ui-matrix.mjs` drives the web
-app through headless Chromium, `scripts/api-matrix.sh` walks the HTTP
-routes, and `scripts/mcp-matrix.sh` round-trips all eleven knowledge
-tools over MCP.
+matrix (`scripts/fs-matrix.sh`). Seven integration matrices exercise a
+running harness ship end to end: `ui-matrix`, `ui-boot`, `ui-perf`,
+`ui-offline`, and `ui-acl-prefs` drive the web app through headless
+Chromium (boot races, request budgets, offline queue and conflicts, ACLs),
+`api-matrix.sh` walks the HTTP routes, and `mcp-matrix.sh` round-trips all
+eleven knowledge tools over MCP. A nightly workflow runs the lot.
 
 ## Layout
 
@@ -275,10 +309,12 @@ grubbery-overlay/  the lattice nexus: ship side (nex/ lib/ mar/ tests/),
                    the web client (nex/lattice/ui-app/), and the in-ship
                    MCP knowledge tools (lib/mcp/)
 lattice-fs-rs/     Rust FUSE client that mounts the page tree as a filesystem
+desktop/           Tauri desktop shell: bridge proxy, mount manager, pier
+                   auto-detection, release bundles
 web/               the website (self-contained HTML + a gemtext edition,
                    organized to be uploaded to and hosted on lattice itself)
-scripts/           overlay-sync helpers, fs regression matrix
-docs/              agent guide, grubbery ops, catalog, cutover runbooks
+scripts/           overlay-sync helpers, integration matrices, deploy
+docs/              agent guide, grubbery ops, catalog, offline-edits design
 ```
 
 ## License
