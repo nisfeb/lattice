@@ -1,5 +1,5 @@
-::  doubler — a DERIVED page. `needs` declares the counter's data as a
-::  dependency; when it changes, grubbery re-runs this page (empty command).
+::  doubler, a DERIVED page. `needs` declares the counter's data as a
+::  dependency. When it changes, grubbery re-runs this page (empty command).
 |=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
 ^-  result
 =/  tgt=path  /apps/[`@ta`'lattice.lattice_app']/page/counter/data

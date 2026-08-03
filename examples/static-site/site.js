@@ -1,4 +1,4 @@
-// Live filter for the site nav — an example of a JS asset imported by a page.
+// Live filter for the site nav, an example of a JS asset imported by a page.
 (function () {
   var f = document.querySelector(".site .filter");
   if (!f) return;

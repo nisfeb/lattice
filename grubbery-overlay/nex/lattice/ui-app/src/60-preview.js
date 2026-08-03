@@ -1,5 +1,5 @@
   // ── preview pane: <lat-preview> ──────────────────────────────────────────
-  // Content kinds render through page-preview (srcdoc); computed kinds (hoon,
+  // Content kinds render through page-preview (srcdoc). Computed kinds (hoon,
   // js, css) show the page's live DATA via /f/<name>, refreshed after save/cmd.
   customElements.define('lat-preview', class extends HTMLElement {
     connectedCallback() {
@@ -8,7 +8,7 @@
       prev = $('prev');
       // blank it NOW, not when the first page opens. An iframe with no srcdoc
       // is an opaque white canvas, and the first thing that used to call
-      // prevBlank was boot's trailing newFile() — so the pane sat white for
+      // prevBlank was boot's trailing newFile(). So the pane sat white for
       // the whole load and then popped to the theme background.
       prevBlank();
     }

@@ -1,4 +1,4 @@
-::  mar/lattice/eval-deps: a page's declared dependencies — absolute file
+::  mar/lattice/eval-deps: a page's declared dependencies, absolute file
 ::  paths, kept by the evaluator and re-run on change.
 ::
 |_  d=(list path)

@@ -1,6 +1,6 @@
   // ── top bar + mobile tabs: <lat-bar>, <lat-tabs> ─────────────────────────
   // The spinner is part of the bar's own markup now (its CSS lives in the
-  // shell stylesheet) — the old inject-styles-and-synthesize-elements guards
+  // shell stylesheet). The old inject-styles-and-synthesize-elements guards
   // existed only because the shell and JS could cache-skew apart.
   customElements.define('lat-bar', class extends HTMLElement {
     connectedCallback() {

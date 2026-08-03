@@ -4,8 +4,8 @@ name: release
 # a GitHub release. Triggered by a version tag (v1.2.3), or by hand.
 #
 # Windows is deliberately absent. It is not an oversight and not a TODO in this
-# file: the app depends on lattice-fs, which mounts through `fuser`, and fuser
-# is unix-only — the crate does not compile on Windows at all. Shipping a
+# file. The app depends on lattice-fs, which mounts through `fuser`, and fuser
+# is unix-only. The crate does not compile on Windows at all. Shipping a
 # Windows build means writing a WinFsp backend for the Projection trait first
 # (see desktop/README.md). A job here would only fail loudly every release.
 
@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   # A tag that disagrees with the version tauri stamps into the bundles would
-  # ship "lattice 0.1.0" from a tag called v0.4.0 — wrong in the filename, the
+  # ship "lattice 0.1.0" from a tag called v0.4.0. Wrong in the filename, the
   # About box and the .deb metadata, and invisible until someone reports it.
   # Fail before spending 20 minutes of matrix build time.
   verify:
@@ -80,7 +80,7 @@ jobs:
             target: aarch64-apple-darwin
           # Cross-compiled on the SAME arm64 runner rather than on macos-13.
           # In v0.8.0-rc1 the macos-13 job sat queued for hours and never
-          # started — GitHub's Intel macOS capacity is scarce — so depending on
+          # started (GitHub's Intel macOS capacity is scarce), so depending on
           # it means never shipping an Intel build. Apple Silicon hosts
           # x86_64-apple-darwin fine, and macFUSE ships universal libraries, so
           # the link works.
@@ -109,11 +109,11 @@ jobs:
 
       # macFUSE supplies fuse.pc. fuser's BUILD SCRIPT probes pkg-config for
       # `fuse` even with default-features = false, so this is required to
-      # compile at all — the Linux job only worked because libfuse3-dev is in
+      # compile at all. The Linux job only worked because libfuse3-dev is in
       # its apt list. Removing this on the theory that default-features = false
       # meant no build-time dependency is exactly how the first v0.8.0-rc1 run
       # failed: "The system library `fuse` required by crate `fuser` was not
-      # found." The kext never has to load; only the headers are needed.
+      # found." The kext never has to load. Only the headers are needed.
       - name: macfuse (fuse.pc for fuser's build script)
         if: runner.os == 'macOS'
         run: |
@@ -130,18 +130,18 @@ jobs:
           # pkg-config refuses to answer when target != host unless told it is
           # allowed, so the Intel-from-arm64 build died in fuser's build script
           # before compiling a line. Safe here specifically because macFUSE
-          # ships UNIVERSAL libraries — the .pc it finds describes a binary
+          # ships UNIVERSAL libraries. The .pc it finds describes a binary
           # that really does contain x86_64. No effect on a native build.
           PKG_CONFIG_ALLOW_CROSS: '1'
           # No APPLE_* vars here on purpose. `${{ secrets.X }}` for a secret
           # that does not exist renders an EMPTY STRING, which is not the same
-          # as not setting the variable — tauri saw APPLE_CERTIFICATE present,
+          # as not setting the variable. tauri saw APPLE_CERTIFICATE present,
           # tried to import it, and the first v0.8.0-rc1 macOS build died with
           # "failed to run command security import". Passing nothing produces
           # an unsigned bundle, which is the intended default.
           #
-          # To sign later, add the block below AND the matching repo secrets —
-          # both, or the same failure returns:
+          # To sign later, add the block below AND the matching repo secrets.
+          # Both, or the same failure returns:
           #   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD
           #   APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
         with:

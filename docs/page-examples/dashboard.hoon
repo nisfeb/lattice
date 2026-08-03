@@ -1,7 +1,7 @@
-::  dashboard — composition. Embeds the rendered VIEWS of other pages (clock and
-::  counter) in a layout. `view-of` makes a view-dependency: this page re-renders
+::  dashboard, composition. Embeds the rendered VIEWS of other pages (clock and
+::  counter) in a layout. `view-of` makes a view-dependency. This page re-renders
 ::  whenever an embedded page changes, and each rendered view arrives in `deps`
-::  (pulled out by `shown`). Own pages only — a peer's markup is never embedded.
+::  (pulled out by `shown`). Own pages only. A peer's markup is never embedded.
 |=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]
 ^-  result
 %+  needs

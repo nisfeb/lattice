@@ -1,4 +1,4 @@
-::  mar/lattice/comment: one stored comment grub — [author when body].
+::  mar/lattice/comment: one stored comment grub, [author when body].
 ::
 /<  lc  /lib/lattice-comment.hoon
 =,  format

@@ -1,9 +1,9 @@
-::  /lib/lattice-history — browser history: pages visited in the reader, newest
-::  first. Sibling of /lib/lattice-bookmark; a bookmark is a page you chose to
+::  /lib/lattice-history, browser history: pages visited in the reader, newest
+::  first. Sibling of /lib/lattice-bookmark. A bookmark is a page you chose to
 ::  keep, a visit is one you merely saw.
 ::
-::  Entries EXPIRE. History that never forgets is a liability, not a feature —
-::  it accumulates every idle page view forever and turns a personal store into
+::  Entries EXPIRE. History that never forgets is a liability, not a feature.
+::  It accumulates every idle page view forever and turns a personal store into
 ::  a surveillance log of its owner. Anything older than +ttl falls out.
 ::
 |%
@@ -24,9 +24,9 @@
 ++  cap  ^-(@ud 500)
 ::  +fresh: is this visit still within the ttl at `now`?
 ::
-::  The clock guard is load-bearing: `last` can legitimately sit in the FUTURE
+::  The clock guard is load-bearing. `last` can legitimately sit in the FUTURE
 ::  after a clock adjustment or a restore, and (sub now last) on @da underflows
-::  rather than going negative — which would crash the writer on every page
+::  rather than going negative. That would crash the writer on every page
 ::  view. A future-dated entry is treated as fresh.
 ++  fresh
   |=  [now=@da v=visit]

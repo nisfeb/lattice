@@ -2,12 +2,12 @@
 # Autonomous property-based UI exploration via bombadil (antithesishq/bombadil).
 #
 # Points bombadil at the OWNER session of a dev ship's lattice app and lets it
-# click everything. Owner session means it WILL create/delete/share content —
-# that is the point, and why the target defaults to tyr and must never be
+# click everything. Owner session means it WILL create/delete/share content.
+# That is the point, and why the target defaults to tyr and must never be
 # production. Install: see https://antithesishq.github.io/bombadil/
 #
-# Runs with scripts/bombadil-spec.js unless LATTICE_SPEC says otherwise: the
-# spec steers exploration into the sharing flow (grants to ~nec) and adds
+# Runs with scripts/bombadil-spec.js unless LATTICE_SPEC says otherwise. The
+# spec steers exploration into the sharing flow (grants to ~nec). It adds
 # lattice properties (shared-with-me dedupe, saving/granting resolve <30s).
 #
 # Usage: scripts/bombadil.sh [minutes] [output-dir]
@@ -17,7 +17,7 @@
 #   start:  /apps/lattice/app. Override with LATTICE_START.
 #
 # The broad spec explores everything but verifies the share flow only
-# WEAKLY: it navigates every ~200ms while a grant takes ~2s, so the fetch's
+# WEAKLY. It navigates every ~200ms while a grant takes ~2s, so the fetch's
 # JS context usually dies before it resolves and properties about the result
 # pass vacuously (observed: 1083 events, 0 grant results rendered). For a
 # real gate on that flow use the focused spec, which exports no default
@@ -30,9 +30,9 @@
 # server-side (weir widened, evaluator fiber crash, body emptied). So this
 # wrapper snapshots share-groups + page-tree before, re-probes after, and
 # prints the drift. A page-tree diff is EXPECTED (the fuzzer creates/deletes
-# pages as owner); the share-groups diff is the one to actually read — it is
+# pages as owner). The share-groups diff is the one to actually read. It is
 # every grant the run manufactured. A failed post-run probe means the
-# evaluator is likely down: stop and look at the ship before anything else.
+# evaluator is likely down. Stop and look at the ship before anything else.
 #
 # Reading results: each attempt writes $OUT/run-N/ with trace.jsonl (one
 # event per interaction, per-event `violations`) and screenshots/.
@@ -40,8 +40,8 @@
 # property violation(s) in any attempt.
 #
 # Why attempts, plural: bombadil hard-aborts when a navigation exceeds 30s,
-# and the pier gets there honestly — /catalog-sweep blocks ~21s before
-# acking (measured on tyr, despite its "background" claim) and the pier
+# and the pier gets there honestly. /catalog-sweep blocks ~21s before
+# acking (measured on tyr, despite its "background" claim). The pier
 # serializes everything behind it (docs/perf-review.md). Each abort is
 # logged as the latency finding it is, and the run relaunches with the
 # remaining time budget instead of forfeiting it.

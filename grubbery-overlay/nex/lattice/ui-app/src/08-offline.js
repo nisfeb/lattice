@@ -1,15 +1,15 @@
   // ── offline edits: queue, detection, replay (docs/offline-edits.md) ──────
-  // Saves only — pages and know memories. The queue lives in IndexedDB (localStorage is
-  // synchronous and ~5MB — the tree snapshot moved here too, phase 3), one per
-  // page, coalesced — re-editing a queued page replaces its record, the same
-  // way autosave coalesces savePending.
+  // Saves only: pages and know memories. The queue lives in IndexedDB, one per
+  // page, coalesced. Re-editing a queued page replaces its record, the same
+  // way autosave coalesces savePending. localStorage is synchronous and ~5MB,
+  // which is why the tree snapshot moved here too (phase 3).
   //
-  // Detection is from RESPONSES, never navigator.onLine: the desktop webview
+  // Detection is from RESPONSES, never navigator.onLine. The desktop webview
   // talks to a localhost bridge that always answers and returns 502 when the
   // ship is unreachable, and onLine lies about captive portals on mobile.
   //
   // THE QUEUE IS THE TOP READ TIER. Without that, cache-first opens painted
-  // the pre-edit body over a queued edit — the edit looked lost, and the next
+  // the pre-edit body over a queued edit. The edit looked lost, and the next
   // autosave would queue the OLD body back (review gap 1 in the design doc).
   let degraded = false;      // a save failed like the ship was unreachable
   let offCount = 0;          // queued page edits, drives the status text
@@ -23,7 +23,7 @@
       if (!d.objectStoreNames.contains('saves'))
         d.createObjectStore('saves', { keyPath: 'name' });
       // kv: the tree snapshot (phase 3). It lived in localStorage, which is
-      // ~5MB, synchronous, and was re-STRINGIFIED whole on every save; IDB
+      // ~5MB, synchronous, and was re-STRINGIFIED whole on every save. IDB
       // stores the structured clone directly and scales to the disk.
       if (!d.objectStoreNames.contains('kv'))
         d.createObjectStore('kv', { keyPath: 'k' });
@@ -67,24 +67,24 @@
   };
   // fire-and-forget by design: persistTree's callers are synchronous save
   // paths, and a snapshot write that loses a race with app close costs one
-  // boot's paint, not data — the ship copy is the durable one.
+  // boot's paint, not data. The ship copy is the durable one.
   const kvPut = async (k, v) => {
     const st = await kvStore('readwrite');
     if (st) await offReq(st.put({ k, v }));
   };
 
   // fetch with a REAL deadline. "Detect offline by timeout" was in the design
-  // from day one, but nothing implemented a timeout — no AbortController
-  // anywhere, no ureq timeout in the bridge — so against a dead remote ship
+  // from day one, but nothing implemented a timeout. No AbortController
+  // anywhere, no ureq timeout in the bridge. So against a dead remote ship
   // "degraded" was the OS TCP timeout, minutes away (review gap 2).
   const tfetch = (url, opts = {}, ms = 10000) => {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), ms);
     return fetch(url, { ...opts, signal: ac.signal }).finally(() => clearTimeout(t));
   };
-  // the bridge answers 502 when the ship is unreachable; a proxy in front of
-  // eyre may say 504. Anything else means the ship SPOKE — a real error, not
-  // an outage, and must never be queued over.
+  // the bridge answers 502 when the ship is unreachable. A proxy in front of
+  // eyre may say 504. Anything else means the ship SPOKE. That is a real
+  // error, not an outage, and must never be queued over.
   const shipGone = (r) => !r || r.status === 502 || r.status === 504;
 
   let probeTimer = null;
@@ -117,7 +117,7 @@
     setDegraded(true);
     st('saved offline — ' + offCount + ' waiting to sync');
   }
-  // know memories share the queue under a 'know:' prefix — page names cannot
+  // know memories share the queue under a 'know:' prefix. Page names cannot
   // contain a colon, so the two namespaces cannot collide in the one store.
   // No baseRev: memories are last-write-wins (no CAS, no conflicts/ pages),
   // matching what know-save itself does.
@@ -133,8 +133,8 @@
     st('saved offline — ' + offCount + ' waiting to sync');
   }
 
-  // Drain through page-save-batch. The batch is all-or-nothing — right for
-  // uploads, wrong for replay: one poisoned record would block the queue
+  // Drain through page-save-batch. The batch is all-or-nothing, right for
+  // uploads, wrong for replay. One poisoned record would block the queue
   // forever. A rejected batch falls back to per-item saves so the bad record
   // is isolated and DROPPED (it can never apply; review gap 3).
   let replaying = false;
@@ -161,7 +161,7 @@
       if (r && r.ok) {
         // per-item verdicts: an edit whose base the ship moved past still
         // APPLIED (it is the newest revision), but the overwritten revision
-        // is named so it can be recovered from history — apply-and-flag,
+        // is named so it can be recovered from history. Apply-and-flag,
         // never silently drop either side
         try {
           for (const it of ((await r.json()).items || []))
@@ -194,7 +194,7 @@
       }
       stuck = true;
     }
-    // memories drain per-item: there is no know batch route, and last-write-
+    // memories drain per-item. There is no know batch route, and last-write-
     // wins means a plain re-save with no verdict to collect
     for (const q of knows) {
       if (stuck) break;
@@ -215,7 +215,7 @@
       st('synced — ' + conflicts.length + ' conflict(s): your offline version won; '
         + 'the other is saved at ' + conflicts.join(', '), false);
     } else st('offline edits synced');
-    // reconcile ONLY after the drain: refreshAll on reconnect would repaint
+    // reconcile ONLY after the drain. refreshAll on reconnect would repaint
     // queued pages from the server dump before their edits landed (gap 4)
     if (knows.length && mode === 'know') loadKnow();
     loadTree();

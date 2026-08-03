@@ -27,7 +27,7 @@ SSH="ssh -p 4141"
 RDESK="/home/sneagan/ricsul-bilwyt/_data/ricsul-bilwyt/grubbery"
 
 # Grubbery's own obelisk-ast.hoon. A clean grubbery checkout is the correct
-# source of truth: it is the file grubbery ships, not obelisk upstream's copy
+# source of truth. It is the file grubbery ships, not obelisk upstream's copy
 # that merely happens to be identical today.
 PRISTINE_AST="/home/sneagan/software/groundwire/grubbery/desk/gub/lib/obelisk-ast.hoon"
 AST_MD5="9d67986c05b5942ab28d099fd72735da"
@@ -44,7 +44,7 @@ got=$(md5sum "$PRISTINE_AST" | cut -d' ' -f1)
 [ "$got" = "$AST_MD5" ] || { echo "pristine AST md5 $got != expected $AST_MD5" >&2; exit 68; }
 echo "pristine obelisk-ast.hoon ok ($(wc -l < "$PRISTINE_AST") lines, $AST_MD5)"
 
-# The repo must be clean and pushed: ricsul is deployed from these files, and a
+# The repo must be clean and pushed. Ricsul is deployed from these files, and a
 # dirty tree makes "what is on the ship" unanswerable later.
 cd "$REPO"
 [ -z "$(git status --porcelain)" ] || { echo "repo is dirty — commit first" >&2; exit 69; }
@@ -85,8 +85,8 @@ echo "overlay staged"
 rsync -a -e "$SSH" "$PRISTINE_AST" "$RIC:$RDESK/gub/lib/obelisk-ast.hoon"
 echo "grubbery obelisk-ast.hoon restored"
 
-# obk-req is a POKE mark only — no grub is stored under it, so removing the marc
-# is safe. obk-res IS a grub mark (the outgoing app wrote grubs under it); leaving
+# obk-req is a POKE mark only. No grub is stored under it, so removing the marc
+# is safe. obk-res IS a grub mark (the outgoing app wrote grubs under it). Leaving
 # its marc in place is what prevents %marc-not-found on those grubs.
 $SSH "$RIC" "rm -f $RDESK/gub/mar/lattice/obk-req.hoon"
 echo "orphaned obk-req.hoon marc removed (obk-res.hoon deliberately kept)"

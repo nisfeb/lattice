@@ -1,17 +1,17 @@
   // ── usergroups: the shared data layer ────────────────────────────────────
   // No UI of its own any more. The busy chip editor that used to live in the
-  // editor's narrow right column moved to the full-window ACL pane (72-acl.js);
-  // the right column now only SETS existing groups on the open file (66-share).
+  // editor's narrow right column moved to the full-window ACL pane (72-acl.js).
+  // The right column now only SETS existing groups on the open file (66-share).
   // Both surfaces read permGroups and write through permSave, so they cannot
   // disagree about what is in force.
   //
   // Backed by grubbery usergroups via /share-groups. The vocabulary is read
-  // (= weir peek) and edit (= weir make); poke grants and non-directory rules
-  // are real but dojo territory — the server preserves them verbatim on every
-  // save, and the ACL pane reports how many exist.
+  // and edit, where read is weir peek and edit is weir make. Poke grants and
+  // non-directory rules are real but dojo territory. The server preserves
+  // them verbatim on every save, and the ACL pane reports how many exist.
   let permGroups = [];
   // "no groups yet" and "not loaded yet" are different claims, and the group
-  // list is deferred off boot's critical path — so without this the panel
+  // list is deferred off boot's critical path. Without this flag the panel
   // asserts you have no groups for the second or two before the answer lands.
   let permsLoaded = false;
   async function loadPerms() {

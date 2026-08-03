@@ -1,6 +1,6 @@
   // ── tree pane: <lat-tree> ────────────────────────────────────────────────
   // The pane's buttons are wired where their handlers live (45-templates,
-  // 70-upload) — those files run after this component upgrades, so their
+  // 70-upload). Those files run after this component upgrades, so their
   // $-lookups find the rendered elements.
   let treeList;
   customElements.define('lat-tree', class extends HTMLElement {
@@ -41,8 +41,8 @@
   // page-dump, not page-tree: it returns the same nodes PLUS every page's body
   // inline from ONE deep peek, and measures FASTER than page-tree (which
   // re-peeks each code grub). Those bodies are what make opening a page cost
-  // zero requests — see openPage. Bodies over 256KB are omitted by the server;
-  // such a node has no `body` and falls back to the per-page fetch.
+  // zero requests. See openPage. Bodies over 256KB are omitted by the server.
+  // Such a node has no `body` and falls back to the per-page fetch.
   // ponytail: whole-store payload (~55KB today). If the tree ever grows past
   // a megabyte, page it or go back to page-tree plus a lazy body cache.
   async function loadTree() {
@@ -53,7 +53,7 @@
     if (gen !== treeGen) return;   // a local patch superseded this response
     nodes = d.nodes;
     // drop only the cached renders the dump says have moved FORWARD. Blanket-
-    // clearing on every change cost every other page its cache; and comparing
+    // clearing on every change cost every other page its cache. Comparing
     // for mere inequality evicted good entries whenever the dump trailed
     // page-source by a revision, which it does right after a write (the
     // evaluator settles after the writer).
@@ -65,7 +65,7 @@
     renderTree();
   }
 
-  // selection changes only move the `cur` class — never rebuild the pane's DOM
+  // selection changes only move the `cur` class. Never rebuild the pane's DOM
   // for that. rowByPath is rebuilt by renderTree/renderKnowTree.
   let rowByPath = new Map();
   function markCurrent() {
@@ -75,7 +75,7 @@
   }
 
   // local `nodes` patching: this client performed the write, so it already
-  // knows the outcome — applying it locally replaces a page-tree refetch.
+  // knows the outcome. Applying it locally replaces a page-tree refetch.
   const hasNode = (path) => nodes.some((n) => n.path === path);
   function addFolderNodes(path) {
     const parts = path.split('/');

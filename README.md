@@ -18,7 +18,7 @@ One store, every surface:
   mounts your page tree as local files. `rg` everything at RAM speed, edit in
   your own editor, and mount any other grubbery app tree too.
 - **desktop** ([`desktop/`](desktop/)): a Tauri shell that wraps the
-  ship-served web client and manages `lattice-fs` mounts — one login, one
+  ship-served web client and manages `lattice-fs` mounts: one login, one
   window, clean unmounts on quit. Linux + macOS, with prebuilt bundles
   (deb, AppImage, dmg) on the
   [releases page](https://github.com/nisfeb/lattice/releases) and a Nix
@@ -59,23 +59,23 @@ other ships over remote scry, and followed remote files push you updates.
   live preview, compile errors for Hoon pages, folder-level share, move, and
   delete, and drag-and-drop upload of files or whole directories (batched
   into single requests, so a 20-file drop costs one round-trip, not twenty).
-  Resizable panes, font and size settings, and page templates — including a
+  Resizable panes, font and size settings, and page templates, including a
   live-location page that renders a map, trails your recent positions, and
   expires itself.
-- **Works offline.** Lose the ship mid-session and saves queue locally —
-  pages and knowledge entries both — then replay when it returns. Concurrent
-  edits are never lost: the newest version wins and the overwritten one is
-  preserved as a real page under `conflicts/`. The tree snapshot lives in
-  IndexedDB, so the editor paints instantly on launch and works from the
-  last-known tree while unreachable.
+- **Works offline.** Lose the ship mid-session and saves queue locally
+  (pages and knowledge entries both), then replay when it returns.
+  Concurrent edits are never lost. The newest version wins and the
+  overwritten one is preserved as a real page under `conflicts/`. The tree
+  snapshot lives in IndexedDB, so the editor paints instantly on launch and
+  works from the last-known tree while unreachable.
 - **Bookmarks.** Star any `urb://` page from the reader bar. The full list at
   `/apps/lattice/marks` is organized into folders and searchable as you
-  type; the omnibar ranks bookmarks above history.
-- **Comments.** Readers can leave comments on pages you publish; a
+  type. The omnibar ranks bookmarks above history.
+- **Comments.** Readers can leave comments on pages you publish. A
   moderation inbox in the workspace lists and removes them.
 - **Sharing that scales.** Named groups of ships with per-path read/edit
   grants, editable in a full ACL pane; per-file grants to a ship or a group
-  from the editor; and a banlist that revokes on ban — a banned ship is
+  from the editor; and a banlist that revokes on ban. A banned ship is
   stripped from every group, and new grants to it are refused.
 - **Follow & subscribe.** Follow ships to discover what they publish, or
   subscribe to a specific file to get notified when it changes. Your own
@@ -204,7 +204,7 @@ your ship's web login (`/~/login` with your `+code`) and open:
   live preview, sharing controls, uploads, and the knowledge browser.
 
 On a phone, use your browser's *Install app / Add to Home Screen*. lattice
-is a full PWA with its own icon and standalone window — it resumes the page
+is a full PWA with its own icon and standalone window. It resumes the page
 you left open and keeps working offline. On Linux or macOS there is also an
 optional [desktop app](https://github.com/nisfeb/lattice/releases): the same
 ship-served client in its own window, plus managed filesystem mounts and
@@ -287,7 +287,7 @@ Sync it into a grubbery desk and commit (see Install above). The FUSE client
 builds with `cargo build --release` in [`lattice-fs-rs/`](lattice-fs-rs/).
 
 The desktop app builds with `cargo build --release` in
-[`desktop/`](desktop/) (or `cargo tauri build` for bundles; or
+[`desktop/`](desktop/) (or `cargo tauri build` for bundles, or
 `nix build .#lattice-desktop`). Tagged commits (`v*` matching the version
 in `desktop/tauri.conf.json`) trigger a release workflow that builds and
 drafts all four bundles.

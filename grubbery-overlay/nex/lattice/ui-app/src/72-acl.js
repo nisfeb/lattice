@@ -1,17 +1,17 @@
-  // ── access control pane: <lat-acl> — the peers panel with room to work ───
-  // Same data and same endpoints as the narrow editor panel (67-perms.js);
-  // this is a full-window overlay for organising it. Deliberately NOT a third
-  // setMode branch: setMode is wired into the tree/editor lifecycle and access
+  // ── access control pane: <lat-acl>, the peers panel with room to work ────
+  // Same data and same endpoints as the narrow editor panel (67-perms.js).
+  // This is a full-window overlay for organising it. Deliberately NOT a third
+  // setMode branch. setMode is wired into the tree/editor lifecycle and access
   // control has nothing to do with either (same reasoning as 40-grub.js).
   //
-  // Costs no boot requests: it renders permGroups, which boot already loads
+  // Costs no boot requests. It renders permGroups, which boot already loads
   // off the critical path, and only fetches if the pane is opened before that
   // landed. Every mutation goes through permSave, so the narrow panel and this
   // one can never disagree.
   //
   // POKE GRANTS ARE READ-ONLY HERE, deliberately. The server preserves them
   // verbatim on save and refuses to set them from the editor ("the editor has
-  // no business granting eval power"); a grant of eval capability stays a
+  // no business granting eval power"). A grant of eval capability stays a
   // dojo-level act. They are shown so this pane never hides live rules.
   customElements.define('lat-acl', class extends HTMLElement {
     connectedCallback() {
@@ -51,7 +51,7 @@
   const aclOpen = () => {
     $('aclwrap').hidden = false;
     aclPathOptions();
-    // permGroups is populated by boot's deferred load; only pay a request if
+    // permGroups is populated by boot's deferred load. Only pay a request if
     // the pane was opened before that landed.
     if (!permGroups.length) loadPerms(); else renderAcl();
     loadBans();
@@ -158,7 +158,7 @@
       const allPaths = permGroups.flatMap((x) => [...x.peek, ...x.make]);
       const disp = (v) => shortPath(v, allPaths);
       aclSection(card, 'read', g.peek, (v) => {
-        // dropping read must drop edit too: edit without read is a grant that
+        // dropping read must drop edit too. Edit without read is a grant that
         // cannot be exercised, and it would silently reappear as "read" on the
         // next save because addPath re-adds it.
         g.peek = g.peek.filter((x) => x !== v);
@@ -218,7 +218,7 @@
 
   // ── banlist ──────────────────────────────────────────────────────────────
   // Deny is not something a weir can say, so it is the app's own list. Banning
-  // revokes group membership server-side; the response says how many groups
+  // revokes group membership server-side. The response says how many groups
   // changed, because "banned" with grants still live would be a lie.
   let banned = [];
   async function loadBans() {
@@ -268,7 +268,7 @@
     st('banned ' + w + (j.revoked ? ' — revoked from ' + j.revoked + ' group(s)' : ''));
     $('banship').value = '';
     loadBans();
-    loadPerms();          // membership changed server-side; repaint the groups
+    loadPerms();          // membership changed server-side. Repaint the groups
   };
   $('banship').onkeydown = (e) => {
     if (e.key === 'Enter') { e.preventDefault(); $('banadd').click(); }

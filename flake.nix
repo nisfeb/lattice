@@ -46,7 +46,7 @@
           nativeBuildInputs = with pkgs; [
             pkg-config
             # wraps the binary so webkit finds its GIO modules and GSettings
-            # schemas at runtime; without it the window comes up blank.
+            # schemas at runtime. Without it the window comes up blank.
             wrapGAppsHook3
           ];
 
@@ -61,7 +61,7 @@
           ];
 
           # NB: no fuse here. fuser is pulled in with default-features = false,
-          # and on Linux that means no libfuse at build time — it shells out to
+          # and on Linux that means no libfuse at build time. It shells out to
           # fusermount3 at RUNTIME instead. (macOS is the exception, which is
           # part of why this package is Linux-only.) fuse3 is a runtime
           # dependency for mounting, not a build one.
@@ -76,7 +76,7 @@
             homepage = "https://github.com/nisfeb/lattice";
             license = licenses.mit;
             mainProgram = "lattice-desktop";
-            # Darwin is absent on purpose: mounting needs macFUSE, a kernel
+            # Darwin is absent on purpose. Mounting needs macFUSE, a kernel
             # extension nixpkgs cannot ship. Use the .dmg from a release.
             platforms = platforms.linux;
           };
@@ -86,7 +86,7 @@
       devShells = forSystems allSystems (pkgs: {
         default = pkgs.mkShell {
           # Everything the desktop crate, the FUSE client and the test suites
-          # need — so `nix develop` replaces the apt/brew preamble in the README.
+          # need, so `nix develop` replaces the apt/brew preamble in the README.
           nativeBuildInputs = with pkgs; [
             pkg-config
             rustc

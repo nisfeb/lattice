@@ -1,4 +1,4 @@
-::  Unit tests for /lib/lattice-pg — the page standard library.
+::  Unit tests for /lib/lattice-pg, the page standard library.
 ::  Run with:  -test /=grubbery=/tests/lib/lattice-pg ~
 ::
 ::  +deg-micro / +micro-deg exist so +live-location can compute a map bounding
@@ -25,7 +25,7 @@
   ;:  weld
     (expect-eq !>("51.500700") !>((micro-deg:pg (sun:si 51.500.700))))
     (expect-eq !>("-0.124600") !>((micro-deg:pg (new:si | 124.600))))
-    ::  a small fraction keeps its leading zeros — dropping them would move
+    ::  a small fraction keeps its leading zeros. Dropping them would move
     ::  the position by kilometres
     (expect-eq !>("0.000001") !>((micro-deg:pg (sun:si 1))))
   ==
@@ -36,7 +36,7 @@
     (expect-eq !>(`(list tape)`~["" ""]) !>((split-on:pg "," ',')))
   ==
 ::  +live-location is a state machine whose state is its own last render, so
-::  it is testable as a pure gate: feed each result's dat back in as the next
+::  it is testable as a pure gate. Feed each result's dat back in as the next
 ::  call's dat. What matters most is what each state REFUSES to contain.
 ::
 ++  test-live-location-flow
@@ -54,20 +54,20 @@
     (expect-eq !>(%.y) !>(?=(^ (find "51.50000, 7.25000" b1))))
     (expect-eq !>(%.y) !>(?=(~ (find "<circle" b1))))
     (expect-eq !>(%.y) !>(?=(^ wake.r1)))
-    ::  second share from a new position (0.005 deg away — INSIDE the map's
-    ::  0.008-deg half-span; a first draft moved 0.01 deg and the dot was
+    ::  second share from a new position, 0.005 deg away and INSIDE the map's
+    ::  0.008-deg half-span. (A first draft moved 0.01 deg and the dot was
     ::  correctly clipped as off-map, which failed the test and proved the
-    ::  clipping): the old position is now the trail —
-    ::  drawn as an overlay dot, kept in state, never sent to the tile host
-    ::  (the iframe src carries only the CURRENT position)
+    ::  clipping.) The old position is now the trail. It is drawn as an
+    ::  overlay dot, kept in state, never sent to the tile host. The iframe
+    ::  src carries only the CURRENT position.
     (expect-eq !>(%.y) !>(?=(^ (find "<circle" b2))))
     (expect-eq !>(%.y) !>(?=(^ (find "51.50000,7.25000" b2))))
     (expect-eq !>(%.y) !>(?=(^ (find "51.50500, 7.25500" b2))))
-    ::  stop: no positions, no trail, no map — current AND past are erased
+    ::  stop: no positions, no trail, no map. Current AND past are erased
     (expect-eq !>(%.y) !>(?=(~ (find "51.5" b3))))
     (expect-eq !>(%.y) !>(?=(~ (find "<iframe" b3))))
     (expect-eq !>(%.y) !>(?=(^ (find "No position is being broadcast" b3))))
-    ::  expiry (no command, past the deadline): identical erasure — a history
+    ::  expiry (no command, past the deadline): identical erasure. A history
     ::  of where you were is exactly as sensitive as where you are
     (expect-eq !>(%.y) !>(?=(~ (find "51.5" b4))))
     (expect-eq !>(%.y) !>(?=(~ (find "openstreetmap" b4))))

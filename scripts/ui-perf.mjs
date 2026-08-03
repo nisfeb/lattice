@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Perf regression check for the lattice editor. It asserts REQUEST COUNTS, not
-// wall-clock: every request to the pier costs ~0.5s and they serialize (six in
-// parallel measured no faster than six in series), so the count on a path IS
-// its user-visible latency. Wall-clock on a shared harness ship is noise.
+// Perf regression check for the lattice editor. It asserts REQUEST COUNTS,
+// not wall-clock. Every request to the pier costs ~0.5s and they serialize
+// (six in parallel measured no faster than six in series), so the count on a
+// path IS its user-visible latency. Wall-clock on a shared harness ship is
+// noise.
 //
 // Usage:  node scripts/ui-perf.mjs
 // Env:    LATTICE_URL     ship base (default http://localhost:8080)
@@ -10,7 +11,7 @@
 //         CHROME          browser binary (default /usr/bin/chromium)
 //
 // Needs puppeteer-core:  npm i --no-save puppeteer-core
-// Never run against production — it writes two probe pages and deletes them.
+// Never run against production. It writes two probe pages and deletes them.
 
 import { readFileSync } from 'fs';
 import { homedir } from 'os';
@@ -55,7 +56,7 @@ const BODY_A = '# alpha probe', BODY_B = '# beta probe';
 
 let step = 'setup';
 try {
-  // a JSON 404 would trip chromium's internal viewer; use a plain-text one
+  // a JSON 404 would trip chromium's internal viewer. Use a plain-text one
   await page.goto(APP + '/no-such-asset', { timeout: 30000 });
   await page.evaluate(async () => {
     localStorage.clear();
@@ -72,10 +73,10 @@ try {
     await put(a, ba);
     await put(b, bb);
   }, A, B, BODY_A, BODY_B);
-  // let the writes settle before boot: the dump can trail page-source by a
+  // let the writes settle before boot. The dump can trail page-source by a
   // revision (the evaluator settles after the writer), and a dump landing
-  // mid-test legitimately prunes the entry it thinks is stale — a cache miss,
-  // not a wrong answer, but it makes the assertions below flap.
+  // mid-test legitimately prunes the entry it thinks is stale. That is a
+  // cache miss, not a wrong answer, but it makes the assertions below flap.
   await sleep(6000);
 
   // ── 1. cold boot: how many requests before the editor is usable? ─────────
@@ -147,7 +148,7 @@ try {
     s.value = '# alpha edited'; s.dispatchEvent(new Event('input'));
   });
   await page.click('#save');
-  // wait for the write to actually land — a fixed sleep raced the pier
+  // wait for the write to actually land. A fixed sleep raced the pier
   await wait(() => /saved|compiling/.test(document.getElementById('status').textContent));
   await sleep(1500);
   await page.evaluate((n) => {

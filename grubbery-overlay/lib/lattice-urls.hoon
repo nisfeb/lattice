@@ -1,4 +1,4 @@
-::  /lib/lattice-urls — the urb:// address codec (docs/urls.md).
+::  /lib/lattice-urls, the urb:// address codec (docs/urls.md).
 ::
 ::  Pure and import-free, so clay's ford can build it and the round-trip laws
 ::  in /tests/lib/lattice-urls stay enforceable:
@@ -30,12 +30,13 @@
   =/  pax=(each path tang)  (mule |.((stab (crip (slag u.slash rest)))))
   ?:(?=(%| -.pax) ~ `[u.shp p.pax])
 ::  ── urb:// address grammar v2 (docs/urls.md) ────────────────────────────────
-::  The first path component selects a fixed, code-versioned MOUNT (p/n/k/t); a
-::  multi-char first component is the frozen legacy pub form. Resolution is a
-::  PURE function of the url text — no lookups, no viewer context, no existence
-::  probes — so the same urb:// names the same referent from any ship, any year
-::  (referential transparency). Aliasing exists (/t/<abs> can name what /p/<name>
-::  names) but the canonicalizer +en-urb is pure too, and every index keys on it.
+::  The first path component selects a fixed, code-versioned MOUNT (p/n/k/t).
+::  A multi-char first component is the frozen legacy pub form. Resolution is
+::  a PURE function of the url text. No lookups, no viewer context, no
+::  existence probes, so the same urb:// names the same referent from any
+::  ship, any year (referential transparency). Aliasing exists (/t/<abs> can
+::  name what /p/<name> names) but the canonicalizer +en-urb is pure too, and
+::  every index keys on it.
 ::
 ++  page-prefix  ^-(path (weld app-base /page))
 ++  pub-prefix   ^-(path (weld app-base /pub/vault))

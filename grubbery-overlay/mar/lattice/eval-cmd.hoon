@@ -1,4 +1,4 @@
-::  mar/lattice/eval-cmd: a page's command inbox — [seq=@ud txt=@t].
+::  mar/lattice/eval-cmd: a page's command inbox, [seq=@ud txt=@t].
 ::
 /<  le  /lib/lattice-eval.hoon
 |_  c=eval-cmd:le

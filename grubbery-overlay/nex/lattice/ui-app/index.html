@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- installed-PWA status bar. The manifest's theme_color is the icon's blue,
-     which matches nothing on screen: the app bar is --bg, so standalone mode
+     which matches nothing on screen. The app bar is --bg, so standalone mode
      showed a blue band above an off-white bar. These win over the manifest at
      runtime and track the theme, so keep them equal to --bg in both schemes. -->
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fafafa">
@@ -13,7 +13,7 @@
 <!-- css + icon inlined: every asset request costs ~2s on the serialized
      pier, so the shell ships as one document -->
 <style>
-/* lattice app — flat green identity */
+/* lattice app, flat green identity */
 * { box-sizing: border-box; }
 :root {
   color-scheme: light dark;
@@ -21,7 +21,7 @@
   --bg: #fafafa; --text: #1a1a1a; --muted: #8a8a8a;
   --border: #8886; --border-soft: #8883; --surface: #8881;
   /* editor typography, overridden from the settings page (see 05-prefs.js).
-     BOTH #src and #hl derive from these two vars and nothing else: the
+     BOTH #src and #hl derive from these two vars and nothing else. The
      textarea and its highlight overlay must have byte-identical metrics or
      the caret drifts off its line on wrapped text. Never set a size or family
      on one of them alone. */
@@ -34,7 +34,7 @@
 html, body { margin: 0; height: 100vh; background: var(--bg); color: var(--text);
   font: 15px/1.5 system-ui, sans-serif; overflow: hidden; }
 /* flat scrollbars matching the UI: thin, trackless, muted thumb.
-   scrollbar-color covers Firefox + Chrome 121+; the -webkit rules cover
+   scrollbar-color covers Firefox + Chrome 121+. The -webkit rules cover
    Safari and older Chrome (ignored wherever scrollbar-color wins). */
 html { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -54,13 +54,13 @@ select { appearance: none; -webkit-appearance: none; cursor: pointer;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888888' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat; background-position: right 9px center; }
 select:hover, select:focus { border-color: var(--green); }
-/* the popup list itself is OS-drawn; color-scheme is what makes it follow
+/* the popup list itself is OS-drawn. color-scheme is what makes it follow
    the theme instead of rendering white-on-white in dark mode. */
 select, option { color-scheme: light dark; }
 .muted { color: var(--muted); }
 
 /* pane widths are custom properties so the drag handles (.psplit) can move
-   them; the defaults keep the historical layout when nothing was dragged */
+   them. The defaults keep the historical layout when nothing was dragged */
 .ws { display: grid; height: 100vh;
   grid-template-columns: var(--wtree, 220px) minmax(0, var(--wed, 1.15fr)) minmax(0, 1fr) var(--wctl, 280px);
   grid-template-rows: auto auto 1fr; }
@@ -69,7 +69,7 @@ select, option { color-scheme: light dark; }
 .ws.nt.nc { grid-template-columns: 0 minmax(0, var(--wed, 1.15fr)) minmax(0, 1fr) 0; }
 .ws.nt .tree, .ws.nc .ctl { display: none; }
 /* drag handles: extra grid items OVERLAYING each pane boundary (same cell,
-   justify-self start, negative margin) — no extra columns, so every variant
+   justify-self start, negative margin). No extra columns, so every variant
    rule above stays untouched. Double-click resets a boundary. */
 .psplit { grid-row: 3; justify-self: start; width: 9px; margin-left: -4.5px;
   cursor: col-resize; z-index: 5; position: relative; user-select: none; }
@@ -92,7 +92,7 @@ select, option { color-scheme: light dark; }
 .bar .home { display: flex; align-items: center; padding: 3px 11px;
   font-size: 1.15rem; border: 1px solid var(--border); border-radius: 6px;
   text-decoration: none; color: inherit; }
-/* NB: select is deliberately excluded — the global `select` rule owns its
+/* NB: select is deliberately excluded. The global `select` rule owns its
    padding (it reserves room for the chevron) and `background` shorthand here
    would wipe the chevron image. */
 .bar input, .bar button { font: inherit; padding: 5px 9px;
@@ -179,7 +179,7 @@ select, option { color-scheme: light dark; }
 .share { display: flex; flex-wrap: wrap; gap: 5px; }
 .share button.on { border-color: var(--green); color: var(--green); }
 /* per-file group access: one row per group, read/edit toggles on the right.
-   Group EDITING is the ACL pane's job — this is only "point it at this file". */
+   Group EDITING is the ACL pane's job. This is only "point it at this file". */
 .grouphead { display: flex; align-items: baseline; gap: 8px; }
 .grouphead a { margin-left: auto; font-size: .78rem; text-transform: none;
   letter-spacing: 0; cursor: pointer; text-decoration: none; }
@@ -201,7 +201,7 @@ select, option { color-scheme: light dark; }
   border-radius: 4px; flex: none; }
 .tree .fld .mvf:hover { color: var(--green); background: #4a7c5922; }
 /* wikilink autocomplete. #acmirror is an offscreen clone of the textarea's
-   text geometry used only to locate the caret — the editor soft-wraps, so a
+   text geometry used only to locate the caret. The editor soft-wraps, so a
    monospace column calculation would be wrong on any wrapped line. */
 #acmirror { position: absolute; visibility: hidden; pointer-events: none;
   top: 0; left: 0; white-space: pre-wrap; overflow-wrap: break-word; }
@@ -225,10 +225,10 @@ select, option { color-scheme: light dark; }
   caret-color: var(--text); overflow: auto; z-index: 1; outline: none; }
 #src::placeholder { color: var(--muted); }
 /* #hl scrolls like #src (overflow auto, NOT hidden) so both layers have
-   identical scrollbar geometry — with classic scrollbars an overflow-hidden
+   identical scrollbar geometry. With classic scrollbars an overflow-hidden
    overlay is wider than the textarea, wrap points diverge, and the caret
    drifts off its line on long pages. Its scrollbars stay invisible (src's
-   render on top); only the reserved space matters. */
+   render on top). Only the reserved space matters. */
 #hl { overflow: auto; color: var(--text); z-index: 0;
   scrollbar-color: transparent transparent; }
 #hl::-webkit-scrollbar-thumb { background: transparent; }
@@ -236,8 +236,8 @@ select, option { color-scheme: light dark; }
 
 @media (max-width: 820px) {
   /* the document itself scrolls here, so an overscroll at the top is Chrome's
-     pull-to-refresh — which RELOADS the app. Page edits survive (2s autosave),
-     but grub mode has none: a stray downward swipe threw away typed template
+     pull-to-refresh, which RELOADS the app. Page edits survive (2s autosave),
+     but grub mode has none. A stray downward swipe threw away typed template
      source. `contain` keeps the gesture inside the page. */
   html, body { overflow: auto; height: auto; overscroll-behavior-y: contain; }
   /* dvh, not vh: vh is sized to the browser with its URL bar HIDDEN, so a
@@ -248,11 +248,11 @@ select, option { color-scheme: light dark; }
   .psplit { display: none; }
   /* iOS zooms the viewport when a control under 16px takes focus and never
      zooms back out. The omnibar (.bar input) and the editor (#src/#hl) were
-     each fixed once already; these are the rest — the controls pane and the
-     rename/new-page dialog. Listed by their existing selectors on purpose: a
+     each fixed once already. These are the rest: the controls pane and the
+     rename/new-page dialog. Listed by their existing selectors on purpose. A
      bare `input` rule loses the cascade to `.ctl input` and `#dlginput`,
      which set `font: inherit` at higher specificity. So a NEWLY added input
-     still needs adding here — the base font is 15px, under the threshold.
+     still needs adding here. The base font is 15px, under the threshold.
      (#dlginput is declared below this block, so source order beats us there;
      it gets its own rule next to its definition.) */
   .ctl input, select, textarea { font-size: 16px; }
@@ -266,7 +266,7 @@ select, option { color-scheme: light dark; }
   .ws[data-mv="code"] .edwrap { display: block; min-height: 68vh; }
   .ws[data-mv="prev"] .prev { display: block; min-height: 68vh; }
   .ws[data-mv="ctl"] .ctl { display: block; }
-  /* never below 16px on mobile — a smaller textarea font makes iOS zoom on
+  /* never below 16px on mobile. A smaller textarea font makes iOS zoom on
      focus. Still one rule for both layers, so the metrics stay identical. */
   #src, #hl { font-size: max(16px, var(--ed-size)); }
 }
@@ -289,7 +289,7 @@ select, option { color-scheme: light dark; }
 #hl .token.url { text-decoration: underline; }
 
 /* access-control pane: the peers panel given room to work in. A full-window
-   overlay rather than a third setMode branch — setMode is wired into the
+   overlay rather than a third setMode branch. setMode is wired into the
    tree/editor lifecycle, and access control has nothing to do with either. */
 .aclwrap { position: fixed; inset: 0; z-index: 45; background: var(--bg);
   display: flex; flex-direction: column; }
@@ -359,12 +359,12 @@ select, option { color-scheme: light dark; }
   border-radius: 6px; background: var(--surface); color: inherit; width: 100%; }
 #dlginput[hidden] { display: none; }
 /* the iOS zoom-on-focus opt-out (see the 820px block above) has to live HERE,
-   after `font: inherit` — same specificity, so source order decides. This is
+   after `font: inherit`. Same specificity, so source order decides. This is
    the input every new page and every rename goes through. */
 @media (max-width: 820px) { #dlginput { font-size: 16px; } }
 #dlgsel { width: 100%; }
 /* choice list: real buttons in the app's own style. A <select> opens an
-   OS-drawn list — a browser-native popup — which this UI never uses. */
+   OS-drawn list (a browser-native popup), which this UI never uses. */
 .dlgopts { display: grid; gap: 6px; }
 .dlgopts[hidden] { display: none; }
 .dlgopt { font: inherit; text-align: left; padding: 9px 12px; cursor: pointer;
@@ -389,7 +389,7 @@ select, option { color-scheme: light dark; }
 #histh:hover, #linkh:hover { color: var(--green); }
 #histlist[hidden], #linklist[hidden] { display: none; }
 
-/* custom-element wrappers are invisible to layout: their inner divs stay
+/* custom-element wrappers are invisible to layout. Their inner divs stay
    direct grid items of .ws (and .dlg stays a fixed overlay). Without this,
    custom elements default to display:inline and break the grid. */
 lat-dialog, lat-bar, lat-tabs, lat-tree, lat-editor, lat-preview, lat-ctl,
@@ -402,7 +402,7 @@ lat-comments { display: contents; }
      composites any alpha onto black, so the transparent-cornered icon-192 got
      a black frame on the home screen. app.hoon already serves the right asset
      (+apple-icon-b64) at this route, unauthenticated because iOS fetches
-     touch icons without cookies — it was just never linked. -->
+     touch icons without cookies. It was just never linked. -->
 <link rel="apple-touch-icon" href="/apps/lattice/apple-touch-icon.png">
 </head>
 <body>

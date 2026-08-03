@@ -80,7 +80,7 @@ Eyre's status codes mean specific things here:
 | `307` → `location: /apps/landscape/` | **Not bound.** Eyre's fallback redirect for an unknown authed path. |
 | `404 Not Found` (bare) | Not bound / no binding. |
 | `401 bad session auth` | Bound, but your cookie is stale. |
-| `400 Missing body` | Bound; endpoint wants a POST body (e.g. the MCP endpoint). |
+| `400 Missing body` | Bound. The endpoint wants a POST body (e.g. the MCP endpoint). |
 | `200` | Bound and serving. |
 
 A `307` to landscape is *not* success. It is the "this path doesn't exist" signal.
@@ -141,10 +141,10 @@ scripts/sync-overlay.sh <pier>/grubbery   # overlay -> gub/lib, gub/nex/lattice,
 > **After ANY grubbery core update, re-run `sync-overlay.sh` BEFORE the
 > commit.** Grubbery updates and the lattice overlay write into the same
 > desk, and a fresh grubbery sync does not carry the overlay. Committing
-> without re-laying it culls every lattice file from clay: the bins vanish,
+> without re-laying it culls every lattice file from clay. The bins vanish,
 > all lattice fibers die, and every route hangs until the proxy 504s. This
-> took production down once (2026-07-28). Data in the ball is unaffected;
-> recovery is re-sync + `|commit`.
+> took production down once (2026-07-28). Data in the ball is unaffected.
+> Recovery is re-sync + `|commit`.
 
 The nexus layout that works (it matches obelisk/indexer/git) is a directory with
 `app.hoon`, i.e. `gub/nex/lattice/app.hoon`. No companion `.hoon` file is required.
@@ -273,7 +273,7 @@ bare `..zuse`, so `.^` with `/=…=/` paths is a syntax error there.
 
 | Line | Meaning |
 |---|---|
-| `WARNING /path.hoon did not compile` | Compile failure: the file is broken. |
+| `WARNING /path.hoon did not compile` | Compile failure. The file is broken. |
 | `BANG nexus /apps/x` + `dep failed in ...` | It compiled, but a **dependency** is missing/broken. |
 | `[%spawn-skip-banged ...]` | Files skipped because their nexus banged. |
 | `reload-changed-nexuses: reloading /x/app at ...` | The nexus is actually being (re)started. |
@@ -374,7 +374,7 @@ write-only via `manifest:loader`, and there is no gate. Match the working nexuse
 ==
 ```
 
-That is: delete the `=/ =ver` line and the whole `?+ ver … ==` wrapper (mind the
+That is, delete the `=/ =ver` line and the whole `?+ ver … ==` wrapper (mind the
 now-orphaned `==`), and swap `ver-row:loader 0` for `manifest:loader 0`.
 `spin:loader` and `empty-dir:loader` are unchanged. Behaviour is preserved, since the
 old gate only ever accepted `~`/`%0` anyway.
@@ -420,9 +420,9 @@ that avoids the 10–20 minute commit-and-wait cycle. Two naming quirks:
 
 | Message | Meaning |
 |---|---|
-| `OK: … compiled successfully` | Real success: the nexus vase built. |
+| `OK: … compiled successfully` | Real success. The nexus vase built. |
 | `OK: … non-vase artifact` | **Failure in disguise.** The nexus compile failed, so it stored the source as a raw (non-vase) grub. Treat as "did not compile." |
-| `ERROR: … -find.<name>` | Compile error; `<name>` is the next unmigrated reference. |
+| `ERROR: … -find.<name>` | Compile error. `<name>` is the next unmigrated reference. |
 
 So the reliable fast loop is: `write_code`, look for `compiled successfully` (not
 just `OK:`), then commit + `check_bin` for the authoritative bin. `check_bin` remains
@@ -471,8 +471,8 @@ technique that finally gave visibility.
    (`make:io … diag-wN`). **All five markers appeared, including the one right before
    `take-poke`**, so the writer completes startup and *reaches the poke loop*. It is
    not wedged in startup at all.
-3. That flipped the question to poke *delivery/processing*. `%pack` (what `poke:io`
-   waits for) is sent only when the poked fiber's turn **completes**
+3. That flipped the question to poke *delivery/processing*. `%pack` is what
+   `poke:io` waits for. It is sent only when the poked fiber's turn **completes**
    (`give-poke-sign`), so a hung poke means the writer's turn never finishes. Since
    bookmark, page-save, AND %save all hang, three different `apply-*` arms, the
    failure is in the **shared prelude** of the loop: `take-poke:io` then `bowl-now`
@@ -496,20 +496,20 @@ found a different way:
 
 | Drift | Symptom | How found |
 |---|---|---|
-| `peek` returns `view` not `seen`; `%peek` sign field | did not compile | `check_bin` `-find` loop |
+| `peek` returns `view` not `seen`, plus the `%peek` sign field | did not compile | `check_bin` `-find` loop |
 | `loader` `ver`→`manifest` | did not compile | `check_bin` `-find` loop |
 | bowl server `/sys/bowl`→`/sys/bowl.sig` | compiles, writer wedges at runtime | marker-grub instrumentation |
 | usergroup dirs gained a `.grp` suffix | compiles, runs, **silently does nothing** | adversarial code review |
 
-The fourth is the nastiest shape of all: grubbery stores usergroups at
+The fourth is the nastiest shape of all. Grubbery stores usergroups at
 `/sys/ames/usergroups/<name>.grp` (`+grp-storage-path`), and lattice granted
 share weirs at `/sys/ames/usergroups/public`. That directory does not exist, so
 the `peek-exists` guard in `+share-weir` / `+ensure-pub-weir` failed and every
 grant returned early **as a no-op**. Nothing logged, nothing crashed, sharing
-appeared to work — but no foreign ship could read a shared page. Clearweb (plain
+appeared to work. But no foreign ship could read a shared page. Clearweb (plain
 HTTP) was unaffected, which is why it survived so long.
 
-The lesson to carry: a drift that fails to compile costs an afternoon; a drift
+The lesson to carry: a drift that fails to compile costs an afternoon. A drift
 that turns a security-relevant write into a silent no-op can hide for months.
 When a framework call is *supposed* to change permissions, assert the change
 afterwards (read the weir back) rather than trusting the write.
@@ -520,7 +520,7 @@ request-response to a `/sys/*` grub can move without any compile error. When a f
 wedges, instrument it with marker grubs (`make:io` writes a grub you can `browse`)
 after each step. The last marker present is the last line that ran.
 
-For the benchmark none of this mattered: a `diag-bulk` route writes N `/page` grubs
+For the benchmark none of this mattered. A `diag-bulk` route writes N `/page` grubs
 via `make:io` directly, bypassing the writer, enough to time page-dump vs page-tree.
 See §12.
 

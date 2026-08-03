@@ -4,7 +4,7 @@
 // Usage:  node scripts/ui-acl-prefs.mjs
 // Env:    LATTICE_URL, LATTICE_COOKIE, CHROME   (as ui-matrix.mjs)
 // Needs puppeteer-core:  npm i --no-save puppeteer-core
-// Never run against production — it creates and deletes a probe usergroup.
+// Never run against production. It creates and deletes a probe usergroup.
 
 import { readFileSync } from 'fs';
 import { homedir } from 'os';
@@ -209,7 +209,7 @@ try {
   check('double-click resets the boundary', rz2 === 0, String(rz2));
 
   // ── banlist: deny, which a weir cannot express ──────────────────────────
-  // Banning must REVOKE, not just record: membership in a group is access, so
+  // Banning must REVOKE, not just record. Membership in a group is access, so
   // a ban that left the ship in its groups would be a label rather than a ban.
   step = 'banlist';
   const BANNED = '~zod';

@@ -11,7 +11,7 @@
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
   // per-keystroke highlight throttle: Prism re-tokenizes the WHOLE document on
   // every render, which drops frames on large pages. Coalesce to one render per
-  // frame; past ~60KB fall back to a trailing debounce (even one full highlight
+  // frame. Past ~60KB fall back to a trailing debounce (even one full highlight
   // per frame is too heavy there).
   let hlRaf = 0, hlTimer = 0;
   const scheduleRender = () => {
@@ -24,8 +24,8 @@
   };
   // +edited: announce a PROGRAMMATIC change to the editor exactly as if it had
   // been typed. Setting src.value fires no input event, so anything that only
-  // called render() silently skipped the dirty flag, autosave and the preview
-  // — a Tab indent was shown but never saved, and a live refresh reverted it.
+  // called render() silently skipped the dirty flag, autosave and the preview.
+  // A Tab indent was shown but never saved, and a live refresh reverted it.
   // Always route scripted edits through here.
   const edited = () => src.dispatchEvent(new Event('input'));
   customElements.define('lat-editor', class extends HTMLElement {
@@ -48,7 +48,7 @@
     }
   });
   // stale-shell guard: a cached index.html predating <lat-editor> still has
-  // the literal .edwrap block (and lacks the lat-* display rule) — swap it.
+  // the literal .edwrap block (and lacks the lat-* display rule). Swap it.
   if (!document.querySelector('lat-editor')) {
     const stale = document.querySelector('.edwrap');
     if (stale) stale.remove();

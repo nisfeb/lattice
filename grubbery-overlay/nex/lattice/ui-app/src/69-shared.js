@@ -1,6 +1,6 @@
-  // ── shared with me: <lat-shared> — files other ships granted us ──────────
-  // Fed by their share notices (claims, not capabilities — the entry proves
-  // itself when opened, and a stale one can just be removed).
+  // ── shared with me: <lat-shared>, files other ships granted us ───────────
+  // Fed by their share notices. These are claims, not capabilities. The entry
+  // proves itself when opened, and a stale one can just be removed.
   customElements.define('lat-shared', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -44,4 +44,4 @@
       host.appendChild(row);
     }
   }
-  // deferred to boot, same reason as loadPerms — see 67-perms.js.
+  // deferred to boot, same reason as loadPerms. See 67-perms.js.

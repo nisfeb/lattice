@@ -18,7 +18,7 @@ fi
 ARGS="${2-}"
 if [ -z "$ARGS" ]; then ARGS='{}'; fi
 
-# Locate .mcp.json — walk up from this script's directory.
+# Locate .mcp.json. Walk up from this script's directory.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 MCPJSON=""
 DIR="$HERE"

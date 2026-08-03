@@ -1,5 +1,5 @@
   // ── history + backlinks panels: <lat-history>, <lat-links> ───────────────
-  // Defined here (before this file's own $-lookups) — they upgrade inside the
+  // Defined here (before this file's own $-lookups). They upgrade inside the
   // <lat-ctl> frame rendered at 65.
   customElements.define('lat-history', class extends HTMLElement {
     connectedCallback() {
@@ -25,7 +25,7 @@
   });
 
   // ── backlinks: pages that wikilink [[this page]] ─────────────────────────
-  // fetched ONLY when the panel is expanded — this and history were two more
+  // fetched ONLY when the panel is expanded. This and history were two more
   // ~2s round-trips paid on every page open whether or not anyone looked.
   const linkSec = $('linksec'), linkList = $('linklist');
   async function loadBacklinks() {
@@ -49,7 +49,7 @@
     }
   }
 
-  // collapsed-by-default panels; first expand does the fetch
+  // collapsed-by-default panels. First expand does the fetch
   let histOpen = false, linksOpen = false;
   const panelArrow = (el, base, open) => { el.textContent = base + (open ? ' ▾' : ' ▸'); };
   function resetPanels() {
@@ -151,7 +151,7 @@
       const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
         '&to=' + encodeURIComponent(newName));
       if (!r.ok) { st('move failed ' + r.status, false); return; }
-      // the body is already in the editor — rename in place, no refetch
+      // the body is already in the editor. Rename in place, no refetch
       knowGen++;
       const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
       if (k) k.key = newName;

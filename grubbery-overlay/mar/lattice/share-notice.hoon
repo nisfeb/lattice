@@ -1,4 +1,4 @@
-::  mar/lattice/share-notice: the shares-inbox poke — %add from any ship,
+::  mar/lattice/share-notice: the shares-inbox poke. %add from any ship,
 ::  %del from the owner's own UI. Sender identity comes from the poke's
 ::  transport, never from this payload.
 ::

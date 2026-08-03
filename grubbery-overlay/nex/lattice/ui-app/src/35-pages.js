@@ -7,13 +7,13 @@
   //   2. body came with the tree dump -> paint the editor NOW, then fetch
   //      render=1 only to fill in `share` and the preview.
   //   3. no body (oversized page, or a tree we never loaded) -> as before.
-  // History and backlinks stay lazy on panel expand — they were 2 more ~2s
+  // History and backlinks stay lazy on panel expand. They were 2 more ~2s
   // round-trips paid on every open whether or not anyone looked at them.
   // Which open is current. Opening a page is an explicit user act, so the ONLY
   // reason to discard a landed response is that the user opened something else
-  // while it was in flight — not that the editor was dirty, and not that
+  // while it was in flight, not that the editor was dirty, and not that
   // `current` had not been set yet. Guarding on those meant an explicit open
-  // was silently dropped: after an unsaved edit, clicking another file did
+  // was silently dropped. After an unsaved edit, clicking another file did
   // nothing, and a page absent from the local tree never applied at all.
   let openSeq = 0;
   async function openPage(name) {
@@ -23,7 +23,7 @@
     grubPath = null;
     src.readOnly = false;
     setFolderCtx(name);
-    // the queue outranks every other tier: a queued edit is the newest truth
+    // the queue outranks every other tier. A queued edit is the newest truth
     // for this page whether or not the ship is reachable right now
     const q = await offGet(name);
     if (q) {
@@ -40,7 +40,7 @@
     // report, so painting must not also fire refreshPreview/checkErrors.
     if (painted) {
       applyPage(name, node, true);
-      // snapshot NOW, not only after the render fetch below: the snapshot is
+      // snapshot NOW, not only after the render fetch below. The snapshot is
       // what a bare launch (the PWA) resumes from, and a session that ends
       // during the fetch would otherwise remember nothing. The fetch's
       // snapPage upgrades this with the rendered html when it lands.
@@ -54,7 +54,7 @@
     } catch { if (!painted) st('open failed', false); return; }
     pageCache.set(name, d);
     snapPage(name, d);
-    // a later openPage supersedes this one; anything else still applies
+    // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
     applyPage(name, d);
   }
@@ -85,7 +85,7 @@
 
   // focusName: only when the USER asked for a new file. Boot calls this to
   // land on an empty page, and focusing the name field there summons the
-  // phone keyboard before you have done anything — you arrive at the app
+  // phone keyboard before you have done anything. You arrive at the app
   // already typing a filename you did not ask to type.
   function newFile(into, focusName = true) {
     folderCtx = into || '';
@@ -150,7 +150,7 @@
     catch {}
     finally { saving = false; echoUntil = Date.now() + 4000; }
     if (shipGone(r)) {
-      // the ship is unreachable: queue the edit and complete the save's
+      // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
       // does not care which kind it got
       await enqueueSave(name, kind, sent);
@@ -179,17 +179,17 @@
       st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
     } else st(CONTENT() ? 'saved' : 'compiling\u2026');
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
-    // only a CREATE changes the tree — refetching it after every save was a
+    // only a CREATE changes the tree. Refetching it after every save was a
     // 2.3s pier round-trip to learn nothing. Patch the local copy on create.
     if (creating) { addTreeNode(name, kind); snapTree(); renderTree(); }
-    // we know exactly what we just wrote: patch the local copies so reopening
+    // we know exactly what we just wrote. Patch the local copies so reopening
     // this page paints the saved text, not the dump's pre-save body. The
-    // cached render is stale by definition — drop it and let it re-render.
+    // cached render is stale by definition. Drop it and let it re-render.
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = sent; nd.kind = kind; persistTree(); }
     // the preview already shows this exact body (the input debounce rendered
-    // it); re-POSTing it after the save was a duplicate 1.8s render.
+    // it). Re-POSTing it after the save was a duplicate 1.8s render.
     if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
     else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
     if (savePending) { savePending = false; if (dirty) autosave(); }
@@ -198,16 +198,16 @@
 
   let autoTimer = null;
   async function autosave() {
-    // GRUB MODE IS EXPLICIT-SAVE ONLY. Autosaving a lattice page is fine — it is
+    // GRUB MODE IS EXPLICIT-SAVE ONLY. Autosaving a lattice page is fine. It is
     // your own note and the editor has always worked that way. Autosaving
-    // another app's source is not: a half-typed edit to calendar.html would go
+    // another app's source is not. A half-typed edit to calendar.html would go
     // live 2s after you paused, and the 5-minute history window may not have
     // kept a revision fine-grained enough to step back to. Save/Cmd+S only.
-    // The 2s debounce still fires — it just reports instead of writing, so the
+    // The 2s debounce still fires. It just reports instead of writing, so the
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved — press Save or Cmd+S'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
-    // never overlap saves: the pier serializes, so a second in-flight save is
+    // never overlap saves. The pier serializes, so a second in-flight save is
     // 3.7s of stale-body work queued behind the first, delaying every preview
     // behind it. Coalesce to one trailing save instead.
     if (saving) { savePending = true; return; }

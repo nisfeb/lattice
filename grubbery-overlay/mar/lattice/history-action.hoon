@@ -1,4 +1,4 @@
-::  mar/lattice/history-action: a history poke payload — record a visit, forget
+::  mar/lattice/history-action: a history poke payload. Record a visit, forget
 ::  one url, or clear the lot.
 ::
 /<  lh  /lib/lattice-history.hoon

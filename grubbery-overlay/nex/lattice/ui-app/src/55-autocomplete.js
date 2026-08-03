@@ -1,7 +1,7 @@
   // ── wikilink autocomplete ────────────────────────────────────────────────
-  // Typing `[[` opens a list of pages from the tree we already hold — no
-  // request, no index. Wikilink names are absolute page paths, so a sibling
-  // still has to be written in full; ranking exists to make that cheap.
+  // Typing `[[` opens a list of pages from the tree we already hold (no
+  // request, no index). Wikilink names are absolute page paths, so a sibling
+  // still has to be written in full. Ranking exists to make that cheap.
   const acEl = $('ac'), acMirror = $('acmirror');
   let ac = { open: false, start: -1, items: [], sel: 0 };
 
@@ -36,7 +36,7 @@
   }
 
   // caret position, measured through a mirror that shares the textarea's
-  // geometry — correct on wrapped lines, where a column calculation is not.
+  // geometry, correct on wrapped lines, where a column calculation is not.
   let acAnchor = null;   // {start, left, top, lh} - raw mirror offsets at ac.start
   const acCtx = document.createElement('canvas').getContext('2d');
   function acMeasureAnchor(pos) {
@@ -56,7 +56,7 @@
     return a;
   }
   // the full-prefix mirror layout is expensive on large documents, so it runs
-  // once per [[ site; while the dropdown stays open only the short query after
+  // once per [[ site. While the dropdown stays open only the short query after
   // the anchor changes, and its width comes from measureText, not a relayout.
   function caretXY() {
     if (!acAnchor || acAnchor.start !== ac.start) acAnchor = acMeasureAnchor(ac.start);

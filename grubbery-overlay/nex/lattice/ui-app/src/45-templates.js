@@ -28,7 +28,7 @@
     if (r && r.status === 409) { st('a page by that name exists', false); return; }
     if (!r || !r.ok) { st('template failed' + (r ? ' ' + r.status : ''), false); return; }
     await loadTree();
-    // a multi-page template lands as a folder: open its index if it made one,
+    // a multi-page template lands as a folder. Open its index if it made one,
     // else the page itself, else just select the new folder.
     const has = (p) => nodes.some((n) => n.page && n.path === p);
     if (has(name)) await openPage(name);
@@ -44,7 +44,7 @@
       e.preventDefault();
       // grubPath first: it is the only mode with no `current`, and page save()
       // would write to the wrong place (or nowhere) while a grub is open.
-      // Cmd+S matters more here than elsewhere — grub mode has no autosave.
+      // Cmd+S matters more here than elsewhere, since grub mode has no autosave.
       if (grubPath) saveGrub();
       else if (mode === 'know') saveKnow();
       else save();

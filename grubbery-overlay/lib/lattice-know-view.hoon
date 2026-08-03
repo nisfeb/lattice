@@ -4,7 +4,7 @@
 ::  level, breadcrumbs up top. ?tag= switches to a flat filtered list.
 ::
 ::  COMPILER RULE: never put a raw zing/turn product in weld position next to
-::  tape literals (fuse-loop) — pre-bind every computed tape to a face first.
+::  tape literals (fuse-loop). Pre-bind every computed tape to a face first.
 /<  lk  /lib/lattice-know.hoon
 |%
 ++  esc
@@ -94,7 +94,7 @@
     links
     "</div>"
   ==
-::  +kids-of: one level of the tree at `at` — child folders (with entry counts)
+::  +kids-of: one level of the tree at `at`, child folders (with entry counts)
 ::  and the entries that live exactly at this level.
 ++  kids-of
   |=  [es=(map path know-entry:lk) at=path]
@@ -129,7 +129,7 @@
   =/  eseg=tape  (esc seg)
   =/  nacc=tape  :(weld acc " / <a href=\"" nbase "\">" eseg "</a>")
   $(l t.l, acc nacc, base nbase)
-::  +know-dir-html: the directory view at `at` — the node's own entry (if one
+::  +know-dir-html: the directory view at `at`. The node's own entry (if one
 ::  lives at this exact key) above child folders, then child entries.
 ++  know-dir-html
   |=  [es=(map path know-entry:lk) at=path node=(unit know-entry:lk) chips=tape]
@@ -227,7 +227,7 @@
     chip-row
     "<pre class=\"know-body\">"  body  "</pre>"
   ==
-::  +know-node-html: dispatch for /know/<path> — entry page for a childless
+::  +know-node-html: dispatch for /know/<path>. Entry page for a childless
 ::  key, directory view when children exist (own entry shown above), ~ = 404.
 ++  know-node-html
   |=  [es=(map path know-entry:lk) at=path]

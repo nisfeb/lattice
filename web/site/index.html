@@ -264,7 +264,7 @@ Welcome. Everything here is a gemtext file in /pub.
             </li>
             <li>
                 <span class="name">Knowledge &amp; AI memory</span>
-                <span class="desc">A private, tagged note store with history and trash. Browse it at <code>/know</code>; your agents read and write the same store over MCP, served by the ship itself.</span>
+                <span class="desc">A private, tagged note store with history and trash. Browse it at <code>/know</code>. Your agents read and write the same store over MCP, served by the ship itself.</span>
             </li>
             <li>
                 <span class="name">Search everything</span>
@@ -272,7 +272,7 @@ Welcome. Everything here is a gemtext file in /pub.
             </li>
             <li>
                 <span class="name">A real filesystem</span>
-                <span class="desc">Mount your pages as local files with <code>lattice-fs</code>. A cold mount warms in one round-trip, so grep runs from RAM; edit in your own editor and saves round-trip safely.</span>
+                <span class="desc">Mount your pages as local files with <code>lattice-fs</code>. A cold mount warms in one round-trip, so grep runs from RAM. Edit in your own editor and saves round-trip safely.</span>
             </li>
             <li>
                 <span class="name">Browse <code>urb://</code></span>
@@ -284,7 +284,7 @@ Welcome. Everything here is a gemtext file in /pub.
             </li>
             <li>
                 <span class="name">Follow &amp; subscribe</span>
-                <span class="desc">Follow ships to see what they publish; subscribe to a file for a live push when it changes. Discover publishers via <code>%contacts</code>; copy any remote file onto your own ship.</span>
+                <span class="desc">Follow ships to see what they publish. Subscribe to a file for a live push when it changes. Discover publishers via <code>%contacts</code>. Copy any remote file onto your own ship.</span>
             </li>
             <li>
                 <span class="name">Web workspace</span>
@@ -296,11 +296,11 @@ Welcome. Everything here is a gemtext file in /pub.
             </li>
             <li>
                 <span class="name">Works offline</span>
-                <span class="desc">Lose the ship mid-session and saves queue locally — pages and memories both — then replay on reconnect. Concurrent edits are never lost: the newest wins and the other is kept as a real page under <span class="mono">conflicts/</span>.</span>
+                <span class="desc">Lose the ship mid-session and saves queue locally (pages and memories both), then replay on reconnect. Concurrent edits are never lost. The newest wins and the other is kept as a real page under <span class="mono">conflicts/</span>.</span>
             </li>
             <li>
                 <span class="name">Bookmarks</span>
-                <span class="desc">Star any <span class="mono">urb://</span> page from the reader bar. The full list is organized into folders and searchable as you type; the omnibar ranks bookmarks above history.</span>
+                <span class="desc">Star any <span class="mono">urb://</span> page from the reader bar. The full list is organized into folders and searchable as you type. The omnibar ranks bookmarks above history.</span>
             </li>
             <li>
                 <span class="name">Comments &amp; moderation</span>
@@ -308,7 +308,7 @@ Welcome. Everything here is a gemtext file in /pub.
             </li>
             <li>
                 <span class="name">Groups &amp; bans</span>
-                <span class="desc">Named groups of ships with per-path read/edit grants, a full ACL editor, per-file sharing to a ship or a group — and a banlist that revokes on ban, not just labels.</span>
+                <span class="desc">Named groups of ships with per-path read/edit grants, a full ACL editor, per-file sharing to a ship or a group, and a banlist that revokes on ban, not just labels.</span>
             </li>
             <li>
                 <span class="name">Live location</span>
@@ -324,7 +324,7 @@ Welcome. Everything here is a gemtext file in /pub.
         <ul class="disclaimers">
             <li>Not a host. <a href="https://urbit.org/overview/running-urbit">Bring your own ship</a>: yours, a friend's, or a hosted one.</li>
             <li>Not the HTTP web. Pages are Urbit-native (<span class="mono">urb://~ship/path</span>) and move between ships over remote scry, not over DNS and HTTP.</li>
-            <li>Not an app you must install. The client is served by your ship; the desktop app and the filesystem client are optional local extras.</li>
+            <li>Not an app you must install. The client is served by your ship. The desktop app and the filesystem client are optional local extras.</li>
         </ul>
     </div>
 </section>
@@ -337,7 +337,7 @@ Welcome. Everything here is a gemtext file in /pub.
             <p>
                 No analytics, no third-party SDKs, no telemetry. Every client speaks only to the Urbit
                 ship you point it at. That's the entire network surface. Your session never
-                leaves the device unencrypted: lattice refuses to send your <span class="mono">+code</span>
+                leaves the device unencrypted. lattice refuses to send your <span class="mono">+code</span>
                 or cookie in cleartext to a remote ship, and stores it owner-only at rest.
             </p>
             <p>
@@ -397,7 +397,7 @@ Welcome. Everything here is a gemtext file in /pub.
         </div>
         <p class="dl-note" style="margin-top:16px;">
             On a phone, use your browser's <em>Install app / Add to Home Screen</em>. lattice
-            is a full PWA with its own icon and standalone window — it resumes where you left
+            is a full PWA with its own icon and standalone window. It resumes where you left
             off and keeps working offline. Prefer real files? Build the
             FUSE client (<span class="mono">cargo build --release</span> in
             <span class="mono">lattice-fs-rs/</span>) and mount your page tree, or

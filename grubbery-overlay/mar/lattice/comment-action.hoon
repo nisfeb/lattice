@@ -1,4 +1,4 @@
-::  mar/lattice/comment-action: a comment poke payload — [page body]. The author
+::  mar/lattice/comment-action: a comment poke payload, [page body]. The author
 ::  is taken from the poke source by the receiver, NEVER from this payload.
 ::
 /<  lc  /lib/lattice-comment.hoon

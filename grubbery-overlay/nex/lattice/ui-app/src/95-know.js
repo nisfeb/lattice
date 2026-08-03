@@ -90,7 +90,7 @@
       treeList.appendChild(row);
     }
   }
-  // one knowKeys entry by (normalized) key — keys may carry a leading slash
+  // one knowKeys entry by (normalized) key. Keys may carry a leading slash
   const knowEntry = (key) =>
     knowKeys.find((x) => x.key.replace(/^\//, '') === key);
 
@@ -127,7 +127,7 @@
         const r = await mutate(api + '/know-untag?key=' + encodeURIComponent(current) +
           '&tag=' + encodeURIComponent(t));
         if (!r.ok) { st('untag failed ' + r.status, false); return; }
-        // this client made the change \u2014 patch the list it already holds
+        // this client made the change. Patch the list it already holds
         knowGen++;
         const k = knowEntry(current);
         if (k) k.tags = k.tags.filter((x) => x !== t);
@@ -140,7 +140,7 @@
   }
 
   $('ktagadd').onclick = async () => {
-    // the writer case-folds tags; fold here too so the local patch matches
+    // the writer case-folds tags. Fold here too so the local patch matches
     const t = $('ktag').value.trim().toLowerCase();
     if (!t || !current || mode !== 'know') return;
     const r = await mutate(api + '/know-tag?key=' + encodeURIComponent(current) +
@@ -225,7 +225,7 @@
     render();
     if (m === 'know') loadKnow(); else loadTree();
     history.replaceState(null, '', '/apps/lattice/app' + (m === 'know' ? '?view=know' : ''));
-    // the toggle's visible result is the tree listing — make sure it can be
+    // the toggle's visible result is the tree listing. Make sure it can be
     // seen: un-hide the pane on desktop, jump to the tree tab on mobile.
     if (localStorage.appNT === '1') { localStorage.appNT = '0'; applyToggles(); }
     if (isMobile()) setMv('tree');

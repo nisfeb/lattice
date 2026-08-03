@@ -7,7 +7,7 @@
 /+  *test, lp=lattice-pub
 |%
 ++  base  `path`/lattice/pub/vault
-::  +strip-pub: drops a leading `pub`; leaves a pub-less key untouched.
+::  +strip-pub: drops a leading `pub` and leaves a pub-less key untouched.
 ::
 ++  test-strip-pub
   ;:  weld
@@ -23,18 +23,18 @@
   ;:  weld
     (expect-eq !>(`(unit vrail:lp)`[~ /lattice/pub/vault/a %gmi]) !>((key-to-rail:lp base /pub/a/gmi)))
     (expect-eq !>(`(unit vrail:lp)`[~ /lattice/pub/vault/a/b %gmi]) !>((key-to-rail:lp base /pub/a/b/gmi)))
-    ::  the home page /pub/index/gmi sits under vault/index — NOT colliding with
+    ::  the home page /pub/index/gmi sits under vault/index, NOT colliding with
     ::  the sibling /pub/index grub (which lives outside the vault subtree).
     (expect-eq !>(`(unit vrail:lp)`[~ /lattice/pub/vault/index %gmi]) !>((key-to-rail:lp base /pub/index/gmi)))
     ::  empty / degenerate key has no leaf to name
     (expect-eq !>(`(unit vrail:lp)`~) !>((key-to-rail:lp base ~)))
-    ::  a pub-less key is REJECTED (~), not aliased onto /pub/a/gmi's grub — the
+    ::  a pub-less key is REJECTED (~), not aliased onto /pub/a/gmi's grub. The
     ::  map must be injective or two index rows share one body.
     (expect-eq !>(`(unit vrail:lp)`~) !>((key-to-rail:lp base /a/gmi)))
-    ::  a non-gmi leaf is REJECTED (~): the reader only ever reads .../gmi, so such a
+    ::  a non-gmi leaf is REJECTED (~). The reader only ever reads .../gmi, so such a
     ::  grub would be unreadable and its index row divergent.
     (expect-eq !>(`(unit vrail:lp)`~) !>((key-to-rail:lp base /pub/notes/intro)))
-    ::  an empty spur (/pub/gmi, from an empty publish path) is REJECTED (~): it
+    ::  an empty spur (/pub/gmi, from an empty publish path) is REJECTED (~). It
     ::  collapses onto the vault root and the reader maps it back to /index.
     (expect-eq !>(`(unit vrail:lp)`~) !>((key-to-rail:lp base /pub/gmi)))
   ==

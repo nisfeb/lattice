@@ -5,25 +5,25 @@
 ::  to name the archive.
 ::
 ::  Shape of the thing: ONE linear pass. Output accumulates REVERSED through
-::  +emit and is flopped once at the end — welding onto a growing tape is the
+::  +emit and is flopped once at the end. Welding onto a growing tape is the
 ::  quadratic that has wedged this ship before, so +emit is deliberately the
 ::  only way to append and it never touches more than the short literal it is
 ::  given. Forward scans (a closing tag, a comment terminator, a quoted
 ::  attribute value) each consume the input they skip, so they cannot be
 ::  re-run over the same ground, and the input is capped up front regardless.
 ::
-::  This is a converter, not a parser: malformed html must degrade into
+::  This is a converter, not a parser. Malformed html must degrade into
 ::  imperfect markdown, never bail. Every "can't happen" branch has a value.
 ::
 |%
 ::  +cap: nothing here reads more input than this. A hostile or merely
-::  enormous page truncates; it never runs away.
+::  enormous page truncates. It never runs away.
 ++  cap  2.000.000
 ++  nl  ^-(tape ~[`@tD`10])
 ::  +emit: append `s` to the reversed accumulator. The ONLY append.
 ++  emit  |=([acc=tape s=tape] ^-(tape (weld (flop s) acc)))
-::  +brk: a line break, carrying the blockquote marker when we are inside one
-::  — markdown needs '>' on every line of a quote, not just the first.
+::  +brk: a line break, carrying the blockquote marker when we are inside one.
+::  Markdown needs '>' on every line of a quote, not just the first.
 ++  brk  |=(q=? ^-(tape ?:(q (weld nl "> ") nl)))
 ::
 ::  +to-md: document -> markdown.
@@ -47,13 +47,13 @@
   =/  beg=@ud  (add u.o +(u.g))
   =/  e=(unit @ud)  (find "</title" `tape`(slag beg low))
   ?~  e  ~
-  ::  slice the ORIGINAL, not the lowercased copy — the title keeps its case.
+  ::  slice the ORIGINAL, not the lowercased copy. The title keeps its case.
   =/  txt=tape  (scag u.e `tape`(slag beg raw))
   =/  out=tape  (squeeze (unent txt))
   ?~(out ~ `(crip `tape`out))
 ::
-::  +region: the article body. <main> or <article> when present — that IS the
-::  content and everything around it is site chrome — else <body>, else the
+::  +region: the article body. <main> or <article> when present (that IS the
+::  content and everything around it is site chrome), else <body>, else the
 ::  whole input.
 ++  region
   |=  t=tape
@@ -67,7 +67,7 @@
   t
 ::
 ::  +between: text inside the first open..close pair, starting after the open
-::  tag's own '>'. Tags are matched case-insensitively; the text keeps its case.
+::  tag's own '>'. Tags are matched case-insensitively. The text keeps its case.
 ++  between
   |=  [t=tape open=tape close=tape]
   ^-  (unit tape)
@@ -81,7 +81,7 @@
   ?~  e  ~
   `(scag u.e `tape`(slag beg t))
 ::
-::  +drop-tag: tags whose CONTENT goes with them — executable, or page chrome
+::  +drop-tag: tags whose CONTENT goes with them. Executable, or page chrome
 ::  that is not the article. Everything else keeps its text.
 ++  drop-tag
   |=  n=tape
@@ -91,7 +91,7 @@
       ==
   (crip n)
 ::
-::  +tag: at a '<', split off the tag — lowercased name, whether it closes,
+::  +tag: at a '<', split off the tag: lowercased name, whether it closes,
 ::  the raw attribute text, and the input after the '>'. An unterminated '<'
 ::  (malformed html, or a stray '<' in prose) comes back with an empty name so
 ::  the caller can emit it as literal text instead of eating the rest.
@@ -112,7 +112,7 @@
     [i.raw $(raw t.raw)]
   [(cass nam) cls (slag (lent nam) raw) rest]
 ::
-::  +attr: an attribute's value. Quoted or bare; the name is matched
+::  +attr: an attribute's value. Quoted or bare. The name is matched
 ::  case-insensitively but the value keeps its case (urls are case-sensitive).
 ++  attr
   |=  [att=tape key=tape]
@@ -130,7 +130,7 @@
     ?~  r  ~
     ?:  =(q i.r)  ~
     [i.r $(r t.r)]
-  ::  unquoted value: walk `vv`, not `v` — v is already narrowed non-empty by
+  ::  unquoted value: walk `vv`, not `v`. v is already narrowed non-empty by
   ::  the check above, so a second ?~ on it is a vain branch.
   =/  b=tape  vv
   |-  ^-  tape
@@ -152,18 +152,18 @@
 ::
 ::  +walk: the pass.
 ::    acc  output, REVERSED
-::    pre  inside <pre> — verbatim, no whitespace collapsing
-::    quo  inside <blockquote> — every line break carries '> '
-::    sp   whitespace was seen and not yet emitted; this is how runs of
+::    pre  inside <pre>, verbatim, no whitespace collapsing
+::    quo  inside <blockquote>, every line break carries '> '
+::    sp   whitespace was seen and not yet emitted. This is how runs of
 ::         spaces and newlines collapse without a second pass
-::    lnk  ~ when not in a link (or the link was dropped); [~ url] when we
+::    lnk  ~ when not in a link (or the link was dropped). [~ url] when we
 ::         have emitted '[' and owe a '](url)'
 ++  walk
   |=  t=tape
   ^-  tape
   =|  acc=tape
   ::  These MUST be =/ with an explicit |, not =|. The bunt of `?` is %.y, so
-  ::  `=| pre=?` starts pre TRUE — which made the "inside <pre>" guard swallow
+  ::  `=| pre=?` starts pre TRUE. That made the "inside <pre>" guard swallow
   ::  every tag but <pre> itself, put a blockquote marker on every line, and
   ::  route all text down the verbatim path. One character, whole converter.
   =/  pre=?  |
@@ -174,7 +174,7 @@
   ?~  t  (flop acc)
   ::  `?~` above narrows t to a non-empty tape, and a WET gate (scag/slag/find)
   ::  handed that narrowed type mull-grows. Re-widen ONCE here and pass `tt` to
-  ::  every wet gate below — casting their result instead does nothing, because
+  ::  every wet gate below. Casting their result instead does nothing, because
   ::  the mull happens on the argument.
   =/  tt=tape  `tape`t
   =/  c=@tD  i.t
@@ -185,15 +185,15 @@
     ?~  e  (flop acc)
     $(t (slag (add 7 u.e) tt))
   ?:  =('&' c)
-    ::  an entity is text, so it flushes any pending space like any other char
-    ::  — and so does a BARE ampersand, which is why the flush is computed
+    ::  an entity is text, so it flushes any pending space like any other char.
+    ::  So does a BARE ampersand, which is why the flush is computed
     ::  before the branch. Doing it only on the entity path turned "Tom & Jerry"
     ::  into "Tom& Jerry".
     =/  a2=tape  ?:(&(sp ?=(^ acc)) (emit acc " ") acc)
     =/  d=(unit [c=tape rest=tape])  (unent-one (slag 1 tt))
     ?~  d  $(t t.t, acc (emit a2 "&"), sp |)
     ::  an entity that decodes to a plain space (&nbsp;) is whitespace like any
-    ::  other — hand it to the collapser instead of emitting it verbatim, or an
+    ::  other. Hand it to the collapser instead of emitting it verbatim, or an
     ::  &nbsp; stacks on top of the literal spaces around it.
     ?:  =(" " c.u.d)  $(t rest.u.d, sp &)
     $(t rest.u.d, acc (emit a2 c.u.d), sp |)
@@ -211,7 +211,7 @@
       =/  g2=(unit @ud)  (find ">" aft)
       ?~  g2  (flop acc)
       $(t (slag +(u.g2) aft), sp &)
-    ::  inside <pre> only </pre> means anything; other tags are shown as text
+    ::  inside <pre> only </pre> means anything. Other tags are shown as text
     ?:  &(pre !=("pre" n))
       $(t rest.g)
     =/  r=tape  rest.g
@@ -236,8 +236,8 @@
     ::  ── opening tags ──
     ::  An inline marker is TEXT, so a pending space belongs BEFORE it, exactly
     ::  as it would before a letter. Every branch that opens inline markup uses
-    ::  `flu` rather than `acc`; dropping the space glued "with **bold**" into
-    ::  "with**bold**". Closing markers deliberately do NOT flush — the space
+    ::  `flu` rather than `acc`. Dropping the space glued "with **bold**" into
+    ::  "with**bold**". Closing markers deliberately do NOT flush. The space
     ::  belongs after the marker there, and the following text emits it.
     =/  flu=tape  ?:(&(sp ?=(^ acc)) (emit acc " ") acc)
     ?:  =("pre" n)
@@ -284,7 +284,7 @@
   $(t t.t, acc (emit a2 ~[c]), sp |)
 ::
 ::  +block: does this tag end a line?
-::  +block: does this tag end a line? NOT %li — a closing </li> would then add
+::  +block: does this tag end a line? NOT %li. A closing </li> would then add
 ::  a break on top of the one the next <li> already emits, and the blank line
 ::  between items makes markdown render a loose list (every item wrapped in a
 ::  paragraph). The <li> OPEN is handled before this is consulted.
@@ -320,17 +320,17 @@
   $(t rest.u.d, acc (emit acc c.u.d))
 ::
 ::  +unent-one: at the character AFTER an '&', decode one entity. ~ when this
-::  is a bare ampersand — which is common in prose and must stay literal.
+::  is a bare ampersand, which is common in prose and must stay literal.
 ++  unent-one
   |=  t=tape
   ^-  (unit [c=tape rest=tape])
-  ::  an entity name is short; anything longer is a stray '&'
+  ::  an entity name is short. Anything longer is a stray '&'
   =/  e=(unit @ud)  (find ";" (scag 12 t))
   ?~  e  ~
   =/  nam=tape  (scag u.e t)
   =/  rest=tape  (slag +(u.e) t)
   ?~  nam  ~
-  ::  widened copy for the wet gates below — see the note in +walk
+  ::  widened copy for the wet gates below (see the note in +walk)
   =/  nn=tape  `tape`nam
   ?.  =('#' i.nam)
     =/  c=tape
@@ -366,7 +366,7 @@
 ++  parse-num
   |=  [t=tape hex=?]
   ^-  (unit @ud)
-  ::  empty is not a number. Loop over a WIDENED copy: the guard above narrows
+  ::  empty is not a number. Loop over a WIDENED copy. The guard above narrows
   ::  t, and a trap that re-tests the narrowed face is a vain branch.
   ?~  t  ~
   =/  ds=tape  `tape`t
@@ -381,11 +381,11 @@
     ?:  &((gte c 'A') (lte c 'F'))  `(add 10 (sub c 'A'))
     ~
   ?~  d  ~
-  ::  cap the value: a codepoint past plane 16 is not a codepoint
+  ::  cap the value. A codepoint past plane 16 is not a codepoint
   ?:  (gth acc 200.000)  ~
   $(ds t.ds, acc (add (mul acc ?:(hex 16 10)) u.d))
 ::
-::  +squeeze: tidy the finished markdown — drop spaces before a line break,
+::  +squeeze: tidy the finished markdown. Drop spaces before a line break,
 ::  collapse 3+ newlines to a blank line, trim both ends. One linear pass,
 ::  again accumulating reversed.
 ++  squeeze
@@ -410,8 +410,8 @@
       ?~  acc  ~
       ?:  =(' ' i.acc)  $(acc t.acc)
       acc
-    ::  leading newlines never make it in; 3+ collapse to 2.
-    ::  `$` is this trap — the a2 loop above is a closed =/ expression, so
+    ::  leading newlines never make it in. 3+ collapse to 2.
+    ::  `$` is this trap. The a2 loop above is a closed =/ expression, so
     ::  `^$` here would reach the GATE and its =| would wipe acc.
     ?:  ?~(a2 & (gte runs 2))
       $(t t.t, acc a2)

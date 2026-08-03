@@ -1,6 +1,6 @@
 // Focused verification: NO default actions, so the fuzzer cannot navigate
 // away mid-grant. Boot straight onto an open page, drive only the share
-// flow, and let each grant actually resolve — which is the only way the
+// flow, and let each grant actually resolve, which is the only way the
 // success message renders and grantNamesItsPage stops passing vacuously.
 import { extract, always, now, eventually, actions } from "@antithesishq/bombadil";
 

@@ -27,18 +27,18 @@
 ::
 ::  ── +urq-esc: obelisk string-literal escaping ──
 ::  obelisk's cord-literal lexer has exactly ONE escape rule (\' -> literal
-::  quote) and NO \\ rule, so backslashes must be spaced out, never doubled:
-::  a doubled trailing backslash would emit 'evil\\' whose last \ pairs with
+::  quote) and NO \\ rule, so backslashes must be spaced out, never doubled.
+::  A doubled trailing backslash would emit 'evil\\' whose last \ pairs with
 ::  the caller's CLOSING quote under the \' rule, unterminating the literal
 ::  and swallowing the rest of the multi-statement poke (urQL injection).
 ::
 ::  a clean string passes through untouched.
 ++  test-urq-esc-plain
   (expect-eq !>("hello") !>((urq-esc:ca "hello")))
-::  ' is escaped to \' — the one escape obelisk understands.
+::  ' is escaped to \', the one escape obelisk understands.
 ++  test-urq-esc-quote
   (expect-eq !>(`tape`['i' 'n' '\\' '\'' 't' ~]) !>((urq-esc:ca "in't")))
-::  control bytes — newline (10), CR (13), tab (9) — become spaces.
+::  control bytes become spaces: newline (10), CR (13), tab (9).
 ++  test-urq-esc-strips-control
   ;:  weld
     (expect-eq !>(`tape`['a' ' ' 'b' ~]) !>((urq-esc:ca `tape`['a' `@tD`10 'b' ~])))
@@ -48,7 +48,7 @@
 ::  backslashes become spaces, NEVER doubled (obelisk has no \\ un-escape).
 ++  test-urq-esc-backslash
   ;:  weld
-    ::  trailing backslash — the injection case (a hostile page's tag `evil\`)
+    ::  trailing backslash, the injection case (a hostile page's tag `evil\`)
     (expect-eq !>(`tape`['e' 'v' 'i' 'l' ' ' ~]) !>((urq-esc:ca "evil\\")))
     ::  backslash-then-quote: \ -> space, ' still escaped to \'
     (expect-eq !>(`tape`['a' ' ' '\\' '\'' 'b' ~]) !>((urq-esc:ca "a\\'b")))

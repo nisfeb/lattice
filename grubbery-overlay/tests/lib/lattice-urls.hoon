@@ -92,7 +92,7 @@
   %+  expect-eq
     !>  `(unit referent:lu)``[%pub zod rel]
     !>  (de-urb:lu (en-urb:lu zod (weld pub-prefix:lu rel)))
-::  Law 2: en-urb over a decoded url is idempotent text normalization — the
+::  Law 2: en-urb over a decoded url is idempotent text normalization. The
 ::  aliased /t/ spelling of a page canonicalizes to /p/, and canonical text is
 ::  a fixed point.
 ::

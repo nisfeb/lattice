@@ -1,5 +1,5 @@
-  // ── in-app dialogs — NEVER browser-native prompt/confirm/alert ───────────
-  // <lat-dialog> owns the dialog's markup AND wiring: the shell only carries
+  // ── in-app dialogs, NEVER browser-native prompt/confirm/alert ────────────
+  // <lat-dialog> owns the dialog's markup AND wiring. The shell only carries
   // the tag, so the served HTML can never be missing an element this file
   // expects (the old cache-skew guards existed exactly for that gap).
   let dlg, dlgMsg, dlgIn, dlgSel, dlgOpts;
@@ -33,7 +33,7 @@
     return p.then((v) => v !== null);
   };
   // askChoice: pick one of a list -> the chosen value, or null on cancel.
-  // Rendered as real buttons in the app's own style, NEVER a <select>: a
+  // Rendered as real buttons in the app's own style, NEVER a <select>. A
   // select opens an OS-drawn list, which is a browser-native popup, and this
   // UI does not use those anywhere.
   const askChoice = (msg, options, okLabel) => {
@@ -54,7 +54,7 @@
       return b;
     });
     if (btns[0]) btns[0].focus();
-    // arrow keys move between options; Enter takes the focused one
+    // arrow keys move between options. Enter takes the focused one
     dlgOpts.onkeydown = (e) => {
       const i = btns.indexOf(document.activeElement);
       if (i < 0) return;
