@@ -7475,6 +7475,7 @@
     ::  the ONLY way to the editor, browser and knowledge — so carry them here.
     "<a class=\"nav\" href=\"/apps/lattice/app\" title=\"editor\">&#9998;</a>"
     "<a class=\"nav\" href=\"/apps/lattice/know\" title=\"knowledge\">&#9670;</a>"
+    "<a class=\"nav\" href=\"/apps/lattice/marks\" title=\"bookmarks\">&#9733;</a>"
     ::  settings lives here and NOT only on the home index: an authored /index
     ::  replaces that whole view, which is exactly what orphaned the settings
     ::  page (and the editor link before it). The bar survives an authored home,
@@ -7520,6 +7521,7 @@
     "</style></head><body class=\"bp\">"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
     "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
+    "<a class=\"nav\" href=\"/apps/lattice/marks\" title=\"bookmarks\">&#9733;</a>"
     "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search the catalog\">"
     editbtn
     "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
