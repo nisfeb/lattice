@@ -50,6 +50,45 @@
       else save();
     }
   });
+  // Applies the list-continuation edit if the caret is in a list. Shared by
+  // the keydown path and the beforeinput path below, which is the ONLY one a
+  // phone reliably takes.
+  const continueList = () => {
+    if (src.readOnly) return false;
+    if (!(mode === 'know' || ['md', 'text', 'gmi'].includes(pkind.value))) return false;
+    // know memories are prose, so they follow the markdown rules
+    const flavor = mode === 'know' ? 'md' : pkind.value;
+    const r = listEnter(src.value, src.selectionStart, src.selectionEnd, flavor);
+    if (!r) return false;
+    src.setSelectionRange(r.from, r.to);
+    // execCommand keeps the textarea's OWN undo stack, so Ctrl+Z steps back
+    // through these edits like any typing. Assigning src.value wipes that
+    // stack outright, which is why the Tab handler below loses undo.
+    // Deprecated, not gone, and there is no replacement that preserves
+    // undo; setRangeText is the fallback when an engine refuses.
+    let ok = false;
+    try { ok = document.execCommand('insertText', false, r.text); } catch {}
+    if (!ok) src.setRangeText(r.text, r.from, r.to, 'end');
+    src.setSelectionRange(r.caret, r.caret);
+    edited();
+    return true;
+  };
+  let plainBreak = false;
+  // A soft keyboard usually does NOT report Enter as a keydown. Android and
+  // GBoard send keyCode 229 (or key "Unidentified") because the IME owns the
+  // composition, so the keydown branch below never matched and lists simply
+  // did not continue on a phone. beforeinput carries insertLineBreak on every
+  // engine that matters, which is why the real handler hangs off it too.
+  //
+  // On a desktop press keydown gets there first and calls preventDefault,
+  // which cancels beforeinput, so exactly one of these two ever fires.
+  src.addEventListener('beforeinput', (e) => {
+    if (e.inputType !== 'insertLineBreak' && e.inputType !== 'insertParagraph') return;
+    // the autocomplete owns Enter while it is open, as on the keydown path
+    if (ac.open) return;
+    if (plainBreak) { plainBreak = false; return; }
+    if (continueList()) e.preventDefault();
+  });
   src.addEventListener('keydown', (e) => {
     // autocomplete owns these keys while it is open
     if (ac.open) {
@@ -65,27 +104,13 @@
     // Smart list continuation. Prose kinds only: a "- " in a hoon or js file is
     // not a list item. Shift+Enter is the deliberate escape hatch, and it is
     // also what the browser gives a user who wants a plain newline.
-    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey
-        && !src.readOnly
-        && (mode === 'know' || ['md', 'text', 'gmi'].includes(pkind.value))) {
-      // know memories are prose, so they follow the markdown rules
-      const flavor = mode === 'know' ? 'md' : pkind.value;
-      const r = listEnter(src.value, src.selectionStart, src.selectionEnd, flavor);
-      if (r) {
-        e.preventDefault();
-        src.setSelectionRange(r.from, r.to);
-        // execCommand keeps the textarea's OWN undo stack, so Ctrl+Z steps back
-        // through these edits like any typing. Assigning src.value wipes that
-        // stack outright, which is why the Tab handler below loses undo.
-        // Deprecated, not gone, and there is no replacement that preserves
-        // undo; setRangeText is the fallback when an engine refuses.
-        let ok = false;
-        try { ok = document.execCommand('insertText', false, r.text); } catch {}
-        if (!ok) src.setRangeText(r.text, r.from, r.to, 'end');
-        src.setSelectionRange(r.caret, r.caret);
-        edited();
-        return;
-      }
+    //
+    // A modifier here means "just break the line", and the beforeinput handler
+    // below has no modifier state of its own, so record the decision for it.
+    if (e.key === 'Enter') plainBreak = e.shiftKey || e.metaKey || e.ctrlKey || e.altKey;
+    if (e.key === 'Enter' && !plainBreak && continueList()) {
+      e.preventDefault();
+      return;
     }
     if (e.key === 'Tab') {
       e.preventDefault();

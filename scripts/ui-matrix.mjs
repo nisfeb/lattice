@@ -542,6 +542,39 @@ try {
   check('lists: continuing marks the page dirty',
     await page.evaluate(() => document.getElementById('status').textContent.length >= 0));
 
+  // ── the mobile path ────────────────────────────────────────────────────
+  // A soft keyboard does not report Enter as a keydown (Android sends keyCode
+  // 229 while the IME composes), so the keydown branch never ran and lists did
+  // not continue on a phone. puppeteer's keyboard sends REAL key events, which
+  // take the desktop path, so the only way to exercise the phone path here is
+  // to dispatch the beforeinput a soft keyboard would send.
+  const softEnter = () => page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.focus();
+    const ev = new InputEvent('beforeinput',
+      { inputType: 'insertLineBreak', bubbles: true, cancelable: true });
+    const handled = !s.dispatchEvent(ev);   // false => a listener preventDefault'd
+    return handled;
+  });
+
+  await setSrc('- one');
+  const softHandled = await softEnter();
+  check('lists: a soft keyboard line break is intercepted', softHandled === true,
+    'beforeinput was not preventDefault()ed');
+  check('lists: and continues the list on mobile',
+    (await srcVal()) === '- one\n- ', JSON.stringify(await srcVal()));
+
+  await setSrc('1. one');
+  await softEnter();
+  check('lists: numbering advances on mobile too',
+    (await srcVal()) === '1. one\n2. ', JSON.stringify(await srcVal()));
+
+  // ordinary prose must still get a plain break from the soft keyboard
+  await setSrc('just prose');
+  const proseHandled = await softEnter();
+  check('lists: a soft break in prose is left to the browser', proseHandled === false,
+    'beforeinput was cancelled on a non-list line');
+
   // a dash in source code is not a list item
   await page.evaluate(() => { document.getElementById('pkind').value = 'hoon';
     document.getElementById('pkind').dispatchEvent(new Event('change')); });
@@ -550,8 +583,32 @@ try {
   await type('two');
   check('lists: a non-prose kind is left alone',
     (await srcVal()) === '- one\ntwo', JSON.stringify(await srcVal()));
-  await page.evaluate((n) => fetch('/apps/lattice/page-del?name=' +
-    encodeURIComponent(n), { method: 'POST' }), LIST);
+  // The section ends with the editor DIRTY on this page, and autosave fires
+  // two seconds after the last input. Deleting first and letting that autosave
+  // land afterwards simply recreated the page, which then blocked the cleanup
+  // step's wait. Let it settle before deleting anything.
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = ''; s.dispatchEvent(new Event('input'));
+  });
+  await sleep(4000);
+
+  // The rapid scripted edits above can leave the server flagging a concurrent
+  // save, which preserves the losing revision as a real page under conflicts/.
+  // That page carries this run's name, and the cleanup step waits for every
+  // node containing it to disappear, so leaving it behind hangs the suite for
+  // ninety seconds and reports the wrong failure.
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n), { method: 'POST' });
+    const r = await fetch('/apps/lattice/page-tree');
+    const t = await r.json();
+    for (const node of t.nodes || []) {
+      if (node.path.startsWith('conflicts/') && node.path.includes(n)) {
+        await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(node.path),
+          { method: 'POST' });
+      }
+    }
+  }, LIST);
 
   step = 'mode toggle';
   // ── 7. mode toggle: label shows current view, chips clean up ─────────────
@@ -674,7 +731,14 @@ try {
     await page.click('#del');
     await dialog(null);
   }
+  // conflicts/ is excluded deliberately. A save that outruns the client's 10s
+  // deadline is queued as offline and replayed with the revision it was made
+  // from, so on a slow pier a page edited further in the meantime genuinely
+  // conflicts and the losing revision is preserved as conflicts/<run>-revN.
+  // That is the product working, not residue, but the node carries this run's
+  // name, so matching it here waited ninety seconds and blamed the wrong step.
   await wait((n) => ![...document.querySelectorAll('#treelist .fld, #treelist a.pg')]
+    .filter((x) => !x.textContent.startsWith('conflicts'))
     .some((x) => x.textContent.includes(n)), RUN);
   ok('folder delete: whole subtree gone');
 
@@ -714,6 +778,22 @@ try {
 } catch (e) {
   bad('matrix aborted at [' + step + ']: ' + e.message.slice(0, 120));
 }
+
+//  A save that outruns the client's 10s deadline is queued as offline and
+//  replayed carrying the revision it was made from, so on a slow pier this
+//  suite can genuinely produce conflicts/<run>-revN. That is the product
+//  working. This suite made it, so this suite removes it.
+try {
+  await page.evaluate(async (n) => {
+    const t = await (await fetch('/apps/lattice/page-tree')).json();
+    for (const node of t.nodes || []) {
+      if (node.path.startsWith('conflicts/') && node.path.includes(n)) {
+        await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(node.path),
+          { method: 'POST' });
+      }
+    }
+  }, RUN);
+} catch {}
 
 await browser.close();
 console.log(fails ? `\nui-matrix FAILED (${fails})` : '\nui-matrix PASSED');
