@@ -78,5 +78,11 @@ jobs:
         run: |
           for f in scripts/*.mjs; do node --check "$f"; done
           for f in scripts/*.sh; do bash -n "$f"; done
-      - name: list-editing unit tests
-        run: node scripts/ui-listedit.mjs
+      - name: pure-function unit tests
+        run: |
+          node scripts/ui-listedit.mjs
+          node scripts/ui-shortpath.mjs
+      - name: pure-function property tests
+        run: |
+          npm i --no-save --no-audit --no-fund fast-check
+          node scripts/ui-props.mjs
