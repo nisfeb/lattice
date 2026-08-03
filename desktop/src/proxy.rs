@@ -79,19 +79,33 @@ pub fn ensure(state: &Bridge, ship_base: &str) -> Result<String, String> {
 /// connection page used to misreport. Doubles as a connection warm-up.
 pub fn probe(base: &str) -> Result<bool, String> {
     let url = format!("{}/apps/lattice/legacy-status", base.trim_end_matches('/'));
-    let mut req = agent().get(&url);
-    if let Ok(ck) = std::fs::read_to_string(default_cookie_path()) {
-        let ck = ck.trim().to_string();
-        if !ck.is_empty() {
-            req = req.set("cookie", &ck);
-        }
-    }
+    let req = with_cookie(agent().get(&url));
     match req.call() {
         Ok(r) => Ok(r.status() == 200),
         // a 403/redirect is a live ship that does not know us: not connected,
         // but not an error either. Only a transport failure is an error.
         Err(ureq::Error::Status(_, _)) => Ok(false),
         Err(e) => Err(e.to_string()),
+    }
+}
+
+/// The fuse session cookie at `path`, if there is one. A file that is missing,
+/// unreadable or blank is NOT a session: attaching an empty cookie header
+/// would be a request we already know the ship will refuse.
+pub fn session_cookie(path: &str) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+}
+
+/// The one place credentials go onto an outbound request. Read fresh every
+/// time: a reconnect rewrites the cookie file, and the next request must use
+/// the new session rather than one cached at startup.
+pub fn with_cookie(req: ureq::Request) -> ureq::Request {
+    match session_cookie(&default_cookie_path()) {
+        Some(c) => req.set("cookie", &c),
+        None => req,
     }
 }
 
@@ -195,12 +209,7 @@ fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
     for (k, v) in &headers {
         req = req.set(k, v);
     }
-    if let Ok(ck) = std::fs::read_to_string(default_cookie_path()) {
-        let ck = ck.trim();
-        if !ck.is_empty() {
-            req = req.set("cookie", ck);
-        }
-    }
+    let req = with_cookie(req);
     let resp = if content_len > 0 { req.send_bytes(&body) } else { req.call() };
     let resp = match resp {
         Ok(r) => r,
@@ -275,17 +284,19 @@ mod tests {
         }
     }
 
+    use crate::testutil::Stub;
     use proptest::prelude::*;
 
-    /// Feed raw bytes to a real serve() with a dead upstream and collect
-    /// whatever it answers. The property is survival: reply or drop, never
-    /// panic (the join would surface it) and never abort on an absurd claim.
-    fn poke_bridge(req: &[u8]) -> Vec<u8> {
+    /// Push raw bytes through a real serve() relaying to `ship` and collect
+    /// whatever the client gets back. serve() runs to completion before this
+    /// returns, so "the ship saw nothing" is a decision, not a race.
+    fn through_bridge(req: &[u8], ship: &str) -> Vec<u8> {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
+        let ship = ship.to_string();
         let t = std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
-            let _ = serve(conn, "http://127.0.0.1:1"); // nothing listens: refused fast
+            let _ = serve(conn, &ship);
         });
         let mut c = TcpStream::connect(addr).unwrap();
         c.write_all(req).ok();
@@ -294,6 +305,134 @@ mod tests {
         let _ = c.read_to_end(&mut out);
         t.join().expect("serve must not panic");
         out
+    }
+
+    /// Feed raw bytes to a real serve() with a dead upstream and collect
+    /// whatever it answers. The property is survival: reply or drop, never
+    /// panic (the join would surface it) and never abort on an absurd claim.
+    fn poke_bridge(req: &[u8]) -> Vec<u8> {
+        through_bridge(req, "http://127.0.0.1:1") // nothing listens: refused fast
+    }
+
+    /// one plain GET straight at the bridge's own port, returning the body
+    fn get_through_bridge(base: &str, path: &str) -> String {
+        let addr = base.trim_start_matches("http://").to_string();
+        let mut c = TcpStream::connect(addr).unwrap();
+        write!(c, "GET {path} HTTP/1.1\r\nhost: bridge\r\n\r\n").unwrap();
+        c.shutdown(std::net::Shutdown::Write).ok();
+        let mut out = String::new();
+        c.read_to_string(&mut out).unwrap();
+        out.rsplit("\r\n\r\n").next().unwrap_or_default().to_string()
+    }
+
+    #[test]
+    fn a_request_body_reaches_the_ship_byte_for_byte() {
+        // Nothing else in this file proves a POST body is forwarded AT ALL.
+        // If it silently stopped being, every save, upload and batch write
+        // would arrive at the ship empty while the webview saw a 200.
+        let ship = Stub::new(|_| (200, "saved".to_string()));
+        let body = r#"{"page":"note","text":"body bytes that must survive the hop"}"#;
+        let req = format!(
+            "POST /apps/lattice/save?id=7 HTTP/1.1\r\nhost: 127.0.0.1:41863\r\n\
+             cookie: webview-junk=1\r\ncontent-length: {}\r\n\
+             x-lattice-probe: keep-me\r\naccept-encoding: gzip\r\n\r\n{body}",
+            body.len()
+        );
+        let back = through_bridge(req.as_bytes(), &ship.base);
+
+        let seen = ship.only();
+        assert_eq!(seen.method, "POST", "the method is relayed as sent");
+        assert_eq!(seen.target, "/apps/lattice/save?id=7", "path AND query");
+        assert_eq!(seen.body_str(), body, "the body must arrive intact");
+        assert_eq!(seen.header("content-length"), Some(body.len().to_string().as_str()));
+        // ordinary request headers ride through...
+        assert_eq!(seen.header("x-lattice-probe"), Some("keep-me"));
+        // ...including accept-encoding, or every WAN transfer goes identity
+        assert_eq!(seen.header("accept-encoding"), Some("gzip"));
+        // ...but never the webview's own cookie: that is the whole design
+        assert!(
+            !seen.header_blob().contains("webview-junk"),
+            "the webview's cookie was relayed: {}",
+            seen.header_blob()
+        );
+
+        // and the ship's answer comes back, status line and body
+        let back = String::from_utf8_lossy(&back);
+        assert!(back.starts_with("HTTP/1.1 200 OK"), "{back}");
+        assert!(back.ends_with("saved"), "the response body must reach the webview: {back}");
+    }
+
+    #[test]
+    fn a_truncated_body_is_never_forwarded_as_a_short_one() {
+        // a client that promises 64 bytes and dies after 4 must not have its
+        // half-written save committed to the ship as a complete one
+        let ship = Stub::new(|_| (200, "should not happen".to_string()));
+        let back = through_bridge(
+            b"POST /apps/lattice/save HTTP/1.1\r\ncontent-length: 64\r\n\r\nhalf",
+            &ship.base,
+        );
+        assert!(
+            ship.requests().is_empty(),
+            "a truncated body reached the ship"
+        );
+        assert!(back.is_empty(), "the webview must get no fabricated reply");
+    }
+
+    #[test]
+    fn an_unreachable_ship_is_a_502_and_not_a_hang() {
+        // the client's offline queue depends on failure arriving FAST and
+        // looking like a failure, not like an empty success
+        let back = String::from_utf8_lossy(&poke_bridge(b"GET /apps/lattice/app HTTP/1.1\r\n\r\n"))
+            .into_owned();
+        assert!(back.starts_with("HTTP/1.1 502 Bad Gateway"), "{back}");
+    }
+
+    #[test]
+    fn probe_reports_the_session_honestly() {
+        // 200 on an owner-gated route is the ONLY thing that means logged in.
+        // The connection page reads this directly, so a wrong answer either
+        // strands the user on a login form or claims a ship it cannot reach.
+        let live = Stub::new(|_| (200, "ok".to_string()));
+        assert_eq!(probe(&live.base), Ok(true));
+        assert_eq!(
+            live.only().target,
+            "/apps/lattice/legacy-status",
+            "the probe must hit the owner-gated route, not something public"
+        );
+        // a live ship that does not know us: not connected, but not an error
+        let stale = Stub::new(|_| (403, "no".to_string()));
+        assert_eq!(probe(&stale.base), Ok(false));
+        // a ship that answers something other than 200 is not a session either
+        let odd = Stub::new(|_| (307, String::new()));
+        assert_eq!(probe(&odd.base), Ok(false));
+        // nothing listening is an error, which the page must advise on
+        // differently from "reachable but logged out"
+        assert!(probe("http://127.0.0.1:1").is_err());
+        // a configured url with a trailing slash must not become //apps/...
+        let slashed = Stub::new(|_| (200, "ok".to_string()));
+        let base = format!("{}/", slashed.base);
+        assert_eq!(probe(&base), Ok(true));
+        assert_eq!(slashed.only().target, "/apps/lattice/legacy-status");
+    }
+
+    #[test]
+    fn the_session_cookie_is_attached_only_when_there_is_one() {
+        // every authenticated request the shell makes goes through here. If it
+        // stopped attaching, the whole workspace would 403 with the cookie
+        // file sitting right there; if it attached a blank one, likewise.
+        let p = std::env::temp_dir().join(format!("lattice-ck-{}", std::process::id()));
+        std::fs::remove_file(&p).ok();
+        let path = p.to_string_lossy().into_owned();
+        assert_eq!(session_cookie(&path), None, "no file is no session");
+        std::fs::write(&p, b"  \n ").unwrap();
+        assert_eq!(session_cookie(&path), None, "a blank file is no session");
+        std::fs::write(&p, b"urbauth-~tyr=0v1.2ab3c\n").unwrap();
+        assert_eq!(
+            session_cookie(&path).as_deref(),
+            Some("urbauth-~tyr=0v1.2ab3c"),
+            "the cookie is passed on verbatim, minus the trailing newline"
+        );
+        std::fs::remove_file(&p).ok();
     }
 
     proptest! {
@@ -330,8 +469,43 @@ mod tests {
         }
     }
 
+    /// Wait for exclusive use of the bridge port range. Two things can hold a
+    /// port in it: another test process (several run at once under
+    /// cargo-mutants), and the kernel — 41863.. sits inside Linux's ephemeral
+    /// range, 32768-60999, so an outgoing connection from any process, and
+    /// these tests open plenty, can be handed one of these ports for a moment.
+    ///
+    /// So: take a port outside the asserted range as a cross-process lock (no
+    /// dependency, no cleanup), then wait for the range itself to be clear.
+    /// The lock is deliberately never released — ensure() hands PORT_BASE to a
+    /// thread that owns it for the life of the process, so a claim ending with
+    /// the test would let the next process in while this one still held it.
+    fn claim_the_port_range() {
+        // generous: the claim is held for a whole process lifetime, so N
+        // concurrent test binaries serialize on it
+        for _ in 0..600 {
+            if let Ok(lock) = TcpListener::bind(("127.0.0.1", PORT_BASE + PORT_SPAN + 1)) {
+                if (0..2).all(|i| TcpListener::bind(("127.0.0.1", PORT_BASE + i)).is_ok()) {
+                    std::mem::forget(lock);
+                    return;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        panic!(
+            "127.0.0.1:{PORT_BASE}..{} never came free. Something holds one of \
+             those ports: the desktop app itself, or an ordinary outgoing \
+             connection that the kernel handed an ephemeral port in this range.",
+            PORT_BASE + 2
+        );
+    }
+
+    /// One test, because ensure() hands its listener to a thread that owns it
+    /// for the life of the process: nothing can free PORT_BASE again, so the
+    /// bind-stable assertions have to run first, in the same test.
     #[test]
-    fn the_bridge_port_is_deterministic() {
+    fn the_bridge_port_is_deterministic_and_relays_to_the_current_ship() {
+        claim_the_port_range();
         // The port is part of the webview's ORIGIN, and web storage is keyed by
         // origin. A moving port gave every launch an empty cache, which is what
         // made the desktop app slower than the same UI in a browser. So the
@@ -347,5 +521,27 @@ mod tests {
         let (third, p3) = bind_stable().expect("free again");
         assert_eq!(p3, PORT_BASE, "the origin is recoverable, not drifting");
         drop(third);
+
+        // And the bridge that port belongs to must actually forward. ensure()
+        // returning a plausible-looking url without a live listener behind it
+        // is a blank window; forwarding to a stale ship after a re-point is
+        // one ship's pages served under another ship's session and origin.
+        let ship1 = Stub::new(|_| (200, "ship one".to_string()));
+        let ship2 = Stub::new(|_| (200, "ship two".to_string()));
+        let bridge = Bridge(Mutex::new(None));
+
+        let local = ensure(&bridge, &format!("{}/", ship1.base)).expect("bridge starts");
+        assert_eq!(local, format!("http://127.0.0.1:{PORT_BASE}"), "the webview's origin");
+        assert_eq!(get_through_bridge(&local, "/apps/lattice/app"), "ship one");
+        // the trailing slash was trimmed, not doubled onto the target
+        assert!(ship1.asked_for("/apps/lattice/app"), "{:?}", ship1.requests().len());
+
+        let again = ensure(&bridge, &ship2.base).expect("re-point");
+        assert_eq!(again, local, "a ship change must NOT move the origin");
+        assert_eq!(
+            get_through_bridge(&local, "/apps/lattice/app"),
+            "ship two",
+            "the bridge kept relaying to the previous ship after a re-point"
+        );
     }
 }

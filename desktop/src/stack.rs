@@ -58,13 +58,12 @@ pub fn mcp_call(base: &str, tool: &str, args: serde_json::Value) -> Result<serde
         "params": {"name": tool, "arguments": args}
     })
     .to_string();
-    let mut req = crate::proxy::agent()
-        .post(&format!("{}/mcp", base.trim_end_matches('/')))
-        .set("content-type", "application/json")
-        .set("accept", "application/json, text/event-stream");
-    if let Some(c) = cookie() {
-        req = req.set("cookie", &c);
-    }
+    let req = crate::proxy::with_cookie(
+        crate::proxy::agent()
+            .post(&format!("{}/mcp", base.trim_end_matches('/')))
+            .set("content-type", "application/json")
+            .set("accept", "application/json, text/event-stream"),
+    );
     let text = match req.send_string(&body) {
         Ok(r) => r.into_string().map_err(|e| e.to_string())?,
         Err(ureq::Error::Status(s, _)) => {
@@ -96,19 +95,8 @@ pub fn mcp_call(base: &str, tool: &str, args: serde_json::Value) -> Result<serde
     Ok(result)
 }
 
-fn cookie() -> Option<String> {
-    std::fs::read_to_string(lattice_fs::default_cookie_path())
-        .ok()
-        .map(|c| c.trim().to_string())
-        .filter(|c| !c.is_empty())
-}
-
 fn get_status(agent: &ureq::Agent, url: &str) -> Result<u16, String> {
-    let mut req = agent.get(url);
-    if let Some(c) = cookie() {
-        req = req.set("cookie", &c);
-    }
-    match req.call() {
+    match crate::proxy::with_cookie(agent.get(url)).call() {
         Ok(r) => Ok(r.status()),
         Err(ureq::Error::Status(s, _)) => Ok(s),
         Err(e) => Err(e.to_string()),
@@ -120,13 +108,12 @@ fn get_status(agent: &ureq::Agent, url: &str) -> Result<u16, String> {
 /// MCP transport. Without it the server answers 406 and a status-only probe
 /// would call that "present" on the strength of an error.
 fn mcp_handshake(agent: &ureq::Agent, base: &str) -> Option<String> {
-    let mut req = agent
-        .post(&format!("{base}/mcp"))
-        .set("content-type", "application/json")
-        .set("accept", "application/json, text/event-stream");
-    if let Some(c) = cookie() {
-        req = req.set("cookie", &c);
-    }
+    let req = crate::proxy::with_cookie(
+        agent
+            .post(&format!("{base}/mcp"))
+            .set("content-type", "application/json")
+            .set("accept", "application/json, text/event-stream"),
+    );
     // ponytail: hand-rolled body string rather than enabling ureq's `json`
     // feature for one request. The payload is fixed and has nothing to escape.
     let body = format!(
@@ -201,5 +188,84 @@ mod tests {
         assert!(bound(403), "403 means it is there and we are not authorised");
         assert!(bound(406), "406 is the mcp server rejecting our Accept header");
         assert!(bound(405));
+    }
+
+    use crate::testutil::Stub;
+
+    #[test]
+    fn the_probe_asks_the_ship_and_believes_only_what_it_answers() {
+        // a ship with nothing installed: eyre 307s every unbound path
+        let bare = Stub::new(|_| (307, String::new()));
+        let s = probe(&bare.base);
+        assert!(s.checked, "we DID ask: 'unknown' and 'nothing installed' are different claims");
+        assert!(!s.grubbery && !s.lattice && !s.mcp, "307 is not an installation");
+        assert!(s.mcp_server.is_none());
+        assert!(s.error.is_none(), "a 307 is an answer, not a failure to reach the ship");
+        assert_eq!(bare.got("/grubbery/api/tree").method, "GET");
+
+        // a full stack, mcp proved by a real initialize handshake
+        let full = Stub::new(|r| match r.target.as_str() {
+            "/mcp" => (
+                200,
+                r#"{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"~stub urbit mcp server"}}}"#
+                    .to_string(),
+            ),
+            _ => (200, "ok".to_string()),
+        });
+        let s = probe(&full.base);
+        assert!(s.checked && s.grubbery && s.lattice && s.mcp, "a bound route is an installation");
+        assert_eq!(s.mcp_server.as_deref(), Some("~stub urbit mcp server"));
+        assert!(s.error.is_none());
+        assert_eq!(full.got("/apps/lattice").method, "GET");
+
+        // something answering /mcp is not the same as %mcp being there: a
+        // status-only probe would call a 406 or a stray page "installed"
+        let liar = Stub::new(|r| match r.target.as_str() {
+            "/mcp" => (200, "not json at all".to_string()),
+            _ => (200, "ok".to_string()),
+        });
+        let s = probe(&liar.base);
+        assert!(!s.mcp && s.mcp_server.is_none(), "no handshake, no %mcp");
+
+        // an unreachable ship must read as an error, NEVER as "nothing
+        // installed" — that would nag the user to reinstall a working ship
+        let s = probe("http://127.0.0.1:1");
+        assert!(s.checked, "we tried");
+        assert!(s.error.is_some(), "unreachable must be reported as unreachable");
+        assert!(!s.grubbery && !s.lattice && !s.mcp);
+    }
+
+    #[test]
+    fn an_mcp_tool_failure_is_never_reported_as_success() {
+        // the transport answers as SSE even for a single reply, and a tool
+        // that failed reports isError INSIDE a 200. Reading the status alone
+        // would tell the install UI the work happened when it did not.
+        let failed = Stub::new(|_| {
+            (200, "data: {\"result\":{\"isError\":true,\"content\":\"no such desk\"}}\n\n".to_string())
+        });
+        let e = mcp_call(&failed.base, "mcp/install-app", serde_json::json!({"desk": "grubbery"}))
+            .unwrap_err();
+        assert!(e.contains("no such desk"), "the ship's reason must survive: {e}");
+        let sent = failed.only();
+        assert_eq!(sent.target, "/mcp");
+        assert_eq!(
+            sent.header("accept"),
+            Some("application/json, text/event-stream"),
+            "without this header the mcp transport 406s"
+        );
+        assert!(sent.body_str().contains(r#""name":"mcp/install-app""#), "{}", sent.body_str());
+        assert!(sent.body_str().contains(r#""desk":"grubbery""#), "arguments must be sent");
+
+        // a good reply comes back as the result object itself
+        let ok = Stub::new(|_| {
+            (200, "data: {\"result\":{\"structuredContent\":{\"dojo-output\":\"done\"}}}\n".to_string())
+        });
+        let v = mcp_call(&ok.base, "t", serde_json::json!({})).unwrap();
+        assert_eq!(v["structuredContent"]["dojo-output"], "done");
+
+        // a ship with no %mcp gets an answer the user can act on
+        let none = Stub::new(|_| (404, String::new()));
+        let e = mcp_call(&none.base, "t", serde_json::json!({})).unwrap_err();
+        assert!(e.contains("%mcp"), "{e}");
     }
 }

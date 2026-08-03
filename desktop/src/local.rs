@@ -183,6 +183,46 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
     }
 
+    #[test]
+    fn the_pier_walk_stays_bounded_and_out_of_the_heavy_directories() {
+        // This walk runs on the main path of the local-ships panel, over a
+        // home directory. If the depth stopped shrinking, or the skip list
+        // stopped applying, it would descend node_modules and the whole tree
+        // below it — an unbounded scan on every open of the panel.
+        let base = std::env::temp_dir().join(format!("lattice-walk-{}", std::process::id()));
+        std::fs::remove_dir_all(&base).ok();
+        let pier = |p: std::path::PathBuf| {
+            std::fs::create_dir_all(p.join(".urb")).unwrap();
+            p
+        };
+        let near = pier(base.join("piers/tyr"));            // depth 2: found
+        pier(base.join("a/b/c/deepship"));                  // depth 4: too far
+        pier(base.join("node_modules/fakeship"));           // skipped by name
+        pier(base.join(".cache/hiddenship"));               // skipped: dotted
+
+        let mut out = Vec::new();
+        walk(&base, 2, &mut out);
+        let found: Vec<&str> = out.iter().map(|s| s.ship.as_str()).collect();
+        assert_eq!(
+            found,
+            vec!["~tyr"],
+            "the walk must reach a pier two levels down and nothing deeper, \
+             and must not descend node_modules or dot-directories"
+        );
+        assert_eq!(out[0].pier, std::fs::canonicalize(&near).unwrap().to_string_lossy());
+
+        // the cap is a cap: 24 piers is all the panel will ever be handed
+        let many = base.join("many");
+        for i in 0..30 {
+            pier(many.join(format!("ship{i:02}")));
+        }
+        let mut out = Vec::new();
+        walk(&many, 2, &mut out);
+        assert_eq!(out.len(), 24, "the discovery list must stay bounded");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
     use proptest::prelude::*;
 
     proptest! {

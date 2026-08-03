@@ -50,10 +50,7 @@ pub async fn install_grubbery(app: AppHandle, ship: Option<String>) -> Result<St
     if cfg.url.is_empty() {
         return Err("connect to a ship first".into());
     }
-    let from = ship
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_DISTRIBUTOR.to_string());
+    let from = distributor(ship);
     // a bare @p is the only thing |install accepts. Catching it here beats a
     // hoon parse error surfacing as an opaque tool failure
     if !valid_ship(&from) {
@@ -126,6 +123,15 @@ pub async fn install_grubbery(app: AppHandle, ship: Option<String>) -> Result<St
     .map_err(|e| e.to_string())?
 }
 
+/// The ship we pull %grubbery FROM: what the user typed, or the default when
+/// they left the field alone. Their choice must never be silently swapped for
+/// ours — that would install software over Ames from a ship they did not pick.
+fn distributor(ship: Option<String>) -> String {
+    ship.map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_DISTRIBUTOR.to_string())
+}
+
 /// A shape check, not a full @p parse: enough to keep an obvious typo from
 /// reaching the dojo, where it surfaces as an opaque tool failure. The ship
 /// itself does the real validation.
@@ -146,6 +152,22 @@ mod tests {
         // the default is what the prompt shows. If it were malformed every
         // first-run install would fail on our own validation
         assert!(valid_ship(DEFAULT_DISTRIBUTOR));
+    }
+
+    #[test]
+    fn the_publisher_is_the_ship_the_user_chose() {
+        // an install pulls a whole desk over Ames from this ship. Substituting
+        // our default for the user's choice is an install from somewhere they
+        // did not ask for, and nothing downstream would ever say so.
+        assert_eq!(distributor(Some("~ricsul-bilwyt".into())), "~ricsul-bilwyt");
+        assert_eq!(
+            distributor(Some("  ~ricsul-bilwyt \n".into())),
+            "~ricsul-bilwyt",
+            "surrounding whitespace is trimmed, not treated as blank"
+        );
+        // left alone means "use the default", and only that
+        assert_eq!(distributor(None), DEFAULT_DISTRIBUTOR);
+        assert_eq!(distributor(Some("   ".into())), DEFAULT_DISTRIBUTOR);
     }
 
     #[test]

@@ -7,6 +7,8 @@ mod local;
 mod mounts;
 mod proxy;
 mod stack;
+#[cfg(test)]
+mod testutil;
 
 use std::collections::HashMap;
 use std::sync::Mutex;

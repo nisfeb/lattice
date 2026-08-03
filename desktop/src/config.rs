@@ -63,9 +63,9 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let dir = std::env::temp_dir().join("lattice-desktop-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("config.json");
+        // per-process path: several test binaries run at once under
+        // cargo-mutants, and a shared filename had them clobbering each other
+        let p = tmp("roundtrip");
         let c = Config {
             url: "http://localhost:8080".into(),
             mounts: vec![MountSpec {

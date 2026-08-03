@@ -165,8 +165,32 @@ fn expand_home(p: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::expand_home;
+    use super::{expand_home, heal_mountpoint};
     use proptest::prelude::*;
+
+    #[test]
+    fn a_mountpoint_is_made_usable_before_anything_mounts_on_it() {
+        // Every mount and every remount on launch goes through here first. If
+        // it stopped creating the directory, mounting a fresh path would fail
+        // for good; if it took the fusermount3 branch for an ordinary missing
+        // path, it would try to unmount something that was never mounted and
+        // still leave nothing to mount on.
+        let base = std::env::temp_dir().join(format!("lattice-heal-{}", std::process::id()));
+        std::fs::remove_dir_all(&base).ok();
+        let mp = base.join("nested/mnt");
+        let path = mp.to_string_lossy().into_owned();
+
+        heal_mountpoint(&path);
+        assert!(mp.is_dir(), "a mountpoint that does not exist yet must be created");
+
+        // healing a live mountpoint is a no-op: it must not disturb a
+        // directory that is already there (or already mounted)
+        std::fs::write(mp.join("keep"), b"x").unwrap();
+        heal_mountpoint(&path);
+        assert!(mp.join("keep").exists(), "an existing mountpoint was disturbed");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
 
     proptest! {
         // total over any user-typed mountpoint, expands exactly the "~/"

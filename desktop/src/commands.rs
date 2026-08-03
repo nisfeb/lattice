@@ -219,6 +219,50 @@ pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{push_file, walk};
+
+    #[test]
+    fn a_folder_pick_reads_exactly_the_tree_the_ship_will_receive() {
+        // The rel paths ARE the paths the upload writes to the ship, so a
+        // silent change here either drops the user's files or files them
+        // under the wrong names, overwriting pages that already exist.
+        let base = std::env::temp_dir().join(format!("lattice-pick-{}", std::process::id()));
+        std::fs::remove_dir_all(&base).ok();
+        let root = base.join("notes");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.md"), "alpha").unwrap();
+        std::fs::write(root.join("sub/b.MD"), "bravo").unwrap();
+        std::fs::write(root.join("skip.txt"), "not a page").unwrap();
+        // a binary file with the right extension: read_to_string fails and it
+        // must be skipped rather than pushed as mangled text
+        std::fs::write(root.join("binary.md"), [0xffu8, 0xfe, 0x00]).unwrap();
+
+        let exts = vec!["md".to_string()];
+        let mut out = Vec::new();
+        walk(&root, "notes", &exts, &mut out);
+        out.sort_by(|a, b| a.rel.cmp(&b.rel));
+
+        let rels: Vec<&str> = out.iter().map(|f| f.rel.as_str()).collect();
+        assert_eq!(
+            rels,
+            vec!["notes/a.md", "notes/sub/b.MD"],
+            "rel mirrors webkitRelativePath: the picked folder, then the tree"
+        );
+        assert_eq!(out[0].text, "alpha", "the file's text must be what is uploaded");
+        assert_eq!(out[1].text, "bravo");
+
+        // a file pick names the file alone, no folder prefix
+        let mut one = Vec::new();
+        push_file(&root.join("a.md"), "a.md".to_string(), &mut one);
+        assert_eq!(one.len(), 1);
+        assert_eq!((one[0].rel.as_str(), one[0].text.as_str()), ("a.md", "alpha"));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+}
+
 fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     let handle = app.clone();
     let w = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("manager.html".into()))
