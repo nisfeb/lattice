@@ -208,7 +208,7 @@
         </div>
 
         <div class="meta-row">
-            <span><strong>Web · Filesystem · MCP</strong></span>
+            <span><strong>Web · Desktop · Filesystem · MCP</strong></span>
             <span><strong>Installable PWA</strong> · served by your ship</span>
             <span><strong>Peer-to-peer</strong> · no servers</span>
             <span><strong>Open source</strong> · PolyForm Noncommercial</span>
@@ -233,7 +233,7 @@
             <div class="step">
                 <div class="n">the surfaces</div>
                 <div class="t">browse &amp; edit anywhere</div>
-                <div class="d">A web workspace with live preview and drag-and-drop upload, an installable PWA, and a FUSE client that mounts your pages as plain files. lattice hosts its own client. There is nothing to install.</div>
+                <div class="d">A web workspace with live preview and drag-and-drop upload, an installable PWA that works offline, a desktop app for Linux and macOS, and a FUSE client that mounts your pages as plain files. lattice hosts its own client.</div>
             </div>
             <div class="step">
                 <div class="n">the agents</div>
@@ -294,6 +294,26 @@ Welcome. Everything here is a gemtext file in /pub.
                 <span class="name">Share whole sites</span>
                 <span class="desc">Share a folder and everything under it goes clearweb-public at <span class="mono">/c/&lt;folder&gt;/</span> with the theme inherited. A site, published and unpublished in one click.</span>
             </li>
+            <li>
+                <span class="name">Works offline</span>
+                <span class="desc">Lose the ship mid-session and saves queue locally — pages and memories both — then replay on reconnect. Concurrent edits are never lost: the newest wins and the other is kept as a real page under <span class="mono">conflicts/</span>.</span>
+            </li>
+            <li>
+                <span class="name">Bookmarks</span>
+                <span class="desc">Star any <span class="mono">urb://</span> page from the reader bar. The full list is organized into folders and searchable as you type; the omnibar ranks bookmarks above history.</span>
+            </li>
+            <li>
+                <span class="name">Comments &amp; moderation</span>
+                <span class="desc">Readers can leave comments on pages you publish. An inbox in the workspace lists every comment and removes any of them in one click.</span>
+            </li>
+            <li>
+                <span class="name">Groups &amp; bans</span>
+                <span class="desc">Named groups of ships with per-path read/edit grants, a full ACL editor, per-file sharing to a ship or a group — and a banlist that revokes on ban, not just labels.</span>
+            </li>
+            <li>
+                <span class="name">Live location</span>
+                <span class="desc">A template page that shares your position with chosen ships: a map with a trail of recent fixes, periodic auto-updates while open, and a hard expiry it enforces itself.</span>
+            </li>
         </ul>
     </div>
 </section>
@@ -304,7 +324,7 @@ Welcome. Everything here is a gemtext file in /pub.
         <ul class="disclaimers">
             <li>Not a host. <a href="https://urbit.org/overview/running-urbit">Bring your own ship</a>: yours, a friend's, or a hosted one.</li>
             <li>Not the HTTP web. Pages are Urbit-native (<span class="mono">urb://~ship/path</span>) and move between ships over remote scry, not over DNS and HTTP.</li>
-            <li>Not an app to install. The client is served by your ship; the only local piece is the optional filesystem client.</li>
+            <li>Not an app you must install. The client is served by your ship; the desktop app and the filesystem client are optional local extras.</li>
         </ul>
     </div>
 </section>
@@ -368,11 +388,20 @@ Welcome. Everything here is a gemtext file in /pub.
                 <span class="desc">The workspace. Editor with highlighting and live preview, sharing, uploads, knowledge browser.</span>
             </div>
         </div>
+        <div class="dl-grid" style="margin-top:16px;">
+            <div class="dl-row">
+                <span class="platform mono">desktop app</span>
+                <span class="desc">Linux (deb, AppImage) and macOS (dmg, Apple&nbsp;Silicon + Intel). The ship-served client in its own window, plus managed filesystem mounts and pier auto-detection.</span>
+                <a class="dl-link" href="https://github.com/nisfeb/lattice/releases">Releases</a>
+            </div>
+        </div>
         <p class="dl-note" style="margin-top:16px;">
             On a phone, use your browser's <em>Install app / Add to Home Screen</em>. lattice
-            is a full PWA with its own icon and standalone window. Prefer real files? Build the
+            is a full PWA with its own icon and standalone window — it resumes where you left
+            off and keeps working offline. Prefer real files? Build the
             FUSE client (<span class="mono">cargo build --release</span> in
-            <span class="mono">lattice-fs-rs/</span>) and mount your page tree.
+            <span class="mono">lattice-fs-rs/</span>) and mount your page tree, or
+            <span class="mono">nix build .#lattice-desktop</span>.
         </p>
 
         <p style="margin-top:32px;">

@@ -9,7 +9,8 @@ Write pages in markdown, gemtext, or HTML, or write Hoon pages that compute thei
 ## One store, every surface
 
 * The ship. A lattice nexus in the grubbery framework. Pages and knowledge live as grubs in the vault. Published pages answer remote scry, and followed files push you updates.
-* The web. A reader, a workspace editor with live preview and drag-and-drop upload, a knowledge browser, and an installable PWA, all served straight from the ship. lattice hosts its own client. There is nothing to install.
+* The web. A reader, a workspace editor with live preview and drag-and-drop upload, a knowledge browser, and an installable PWA that works offline, all served straight from the ship. lattice hosts its own client. There is nothing to install.
+* The desktop. An optional app for Linux and macOS: the same ship-served client in its own window, plus managed filesystem mounts and auto-detection of piers on the machine.
 * The filesystem. lattice-fs mounts your pages as local files. grep runs from RAM, and you edit in your own editor.
 * The agents. MCP knowledge tools compiled into the ship, served at /grubbery/mcp. Your assistant's memory lives on your ship.
 
@@ -28,11 +29,19 @@ Welcome. Everything here is a page on my ship.
 
 A page can also be Hoon that computes its content, with state, commands, and dependencies on other pages. A page or a whole folder can go clearweb-public, served over plain HTTP from your ship.
 
+## And besides
+
+* Offline editing. Saves queue while the ship is unreachable — pages and memories both — and replay on reconnect. A concurrent edit is never lost: the newest wins and the other is kept as a page under conflicts/.
+* Bookmarks. Star any urb:// page; the list is foldered and searchable.
+* Comments. Readers comment on what you publish; a moderation inbox removes anything in one click.
+* Groups and bans. Named ship-groups with per-path read/edit grants, per-file sharing, and a banlist that revokes on ban.
+* Live location. A template page that shares your position with chosen ships: map, trail, auto-updates, hard expiry.
+
 ## What it isn't
 
 * Not a host. Bring your own ship: yours, a friend's, or a hosted one.
 * Not the HTTP web. Published pages are Urbit-native and move between ships over remote scry.
-* Not an app to install. The client is served by your ship. The only local piece is the optional filesystem client.
+* Not an app you must install. The client is served by your ship. The desktop app and the filesystem client are optional local extras.
 
 ## Privacy
 
@@ -41,6 +50,7 @@ The only server lattice talks to is your ship. No analytics, no third-party SDKs
 ## Get it
 
 => https://github.com/nisfeb/lattice  Source on GitHub
+=> https://github.com/nisfeb/lattice/releases  Desktop app downloads
 => https://urbit.org/overview/running-urbit  New to Urbit? Boot a ship
 
 © lattice, built by ~nisfeb. PolyForm Noncommercial 1.0.0.
