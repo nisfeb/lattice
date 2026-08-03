@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use lattice_fs::projection::{Node, PErr, Projection};
+use lattice_fs::projection::{Dump, Node, PErr, Projection};
 
 /// The ship, in memory. Records every mutation so the test can assert what
 /// actually reached it, not merely what the mount reported.
@@ -69,7 +69,7 @@ impl Projection for Ship {
     fn read(&self, rel: &str) -> Result<Vec<u8>, PErr> {
         self.body(rel).ok_or_else(|| PErr::new(libc::ENOENT, "no such page"))
     }
-    fn dump(&self) -> Result<(Vec<Node>, HashMap<String, Vec<u8>>), PErr> {
+    fn dump(&self) -> Result<Dump, PErr> {
         self.dumps.fetch_add(1, Ordering::SeqCst);
         let pages = self.pages.lock().unwrap();
         let mut nodes: Vec<Node> = self

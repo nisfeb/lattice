@@ -6,10 +6,15 @@
 //! is behind one Mutex (fuser calls methods on &self, possibly concurrently).
 //! HTTP calls happen OUTSIDE the lock so a slow save never blocks the mutex.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+// std in every build that ships. Only a `--cfg shuttle` lib test swaps these
+// for shuttle's, so its scheduler can permute the three threads below. See
+// src/sync.rs.
+use crate::sync::{thread, Arc, Mutex};
 
 use fuser::{
     BsdFileFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation,
@@ -107,7 +112,7 @@ impl GrubberyFs {
         // no-op). The 5s TTL poll is the guaranteed freshness floor.
         let wst = st.clone();
         let wproj = proj.clone();
-        std::thread::spawn(move || {
+        thread::spawn(move || {
             let on_change = move || {
                 if let Ok(mut s) = wst.lock() {
                     s.vt_ts = None;
@@ -124,7 +129,7 @@ impl GrubberyFs {
         // (older) snapshot must not swap in and resurrect the pre-write body.
         let west = st.clone();
         let wproj2 = proj.clone();
-        std::thread::spawn(move || {
+        thread::spawn(move || {
             let start_gen = west.lock().unwrap().write_gen;
             if let Ok((nodes, bodies)) = wproj2.dump() {
                 let vt = build_vt(&nodes, |k| wproj2.ext_for_kind(k));
@@ -155,7 +160,7 @@ impl GrubberyFs {
         }
         let go = {
             let mut s = self.st.lock().unwrap();
-            let stale = s.vt_ts.map_or(true, |t| t.elapsed() > TREE_TTL);
+            let stale = s.vt_ts.is_none_or(|t| t.elapsed() > TREE_TTL);
             if stale && !s.refresh_pending {
                 s.refresh_pending = true;
                 true
@@ -168,7 +173,7 @@ impl GrubberyFs {
         }
         let st = self.st.clone();
         let proj = self.proj.clone();
-        std::thread::spawn(move || {
+        thread::spawn(move || {
             let start_gen = st.lock().unwrap().write_gen;
             let built = proj.dump().map(|(nodes, bodies)| {
                 let vt = build_vt(&nodes, |k| proj.ext_for_kind(k));
@@ -187,15 +192,37 @@ impl GrubberyFs {
 
     /// Cold path only: block until the first dump lands (mount just came up). No-op
     /// if the warm thread already won the race.
+    ///
+    /// Generation-guarded exactly like the background swap. This path can have
+    /// two callers inside it at once (nothing is warm yet, so every FUSE op
+    /// takes it), and a write needs no warm tree to succeed, so the snapshot
+    /// this dump is carrying can be older than the state it is about to
+    /// replace. Swapping it in unguarded silently rolls a completed save back
+    /// to its pre-write body. Retry rather than give up on a mismatch: this is
+    /// the path that makes the first `ls` after mount non-empty, and returning
+    /// still-cold serves an empty tree. Bounded, so a save storm can't spin.
     fn refresh_blocking(&self) {
-        if self.st.lock().unwrap().warm {
-            return;
-        }
-        if let Ok((nodes, bodies)) = self.proj.dump() {
+        for _ in 0..3 {
+            let start_gen = {
+                let s = self.st.lock().unwrap();
+                if s.warm {
+                    return;
+                }
+                s.write_gen
+            };
+            let Ok((nodes, bodies)) = self.proj.dump() else { return };
             let vt = build_vt(&nodes, |k| self.proj.ext_for_kind(k));
             let (cache, bytes) = cap_bodies(bodies, READ_CACHE_MAX);
             let mut s = self.st.lock().unwrap();
-            apply_swap(&mut s, vt, cache, bytes);
+            // another cold dump landed while ours was on the wire. It passed
+            // this same guard, so it is at least as new as ours: leave it.
+            if s.warm {
+                return;
+            }
+            if s.write_gen == start_gen {
+                apply_swap(&mut s, vt, cache, bytes);
+                return;
+            }
         }
     }
 
@@ -498,10 +525,10 @@ fn apply_swap(
             // carry the cached body when the snapshot has none for this rel.
             // The old cache holds the exact bytes of the recent write.
             if let Some(rel) = vt.get(path).and_then(|e| e.node.as_ref()).map(|n| n.rel.clone()) {
-                if !cache.contains_key(&rel) {
-                    if let Some(b) = s.read_cache.get(&rel) {
-                        bytes += rel.len() + b.len();
-                        cache.insert(rel, b.clone());
+                if let Some(b) = s.read_cache.get(&rel) {
+                    if let Entry::Vacant(slot) = cache.entry(rel) {
+                        bytes += slot.key().len() + b.len();
+                        slot.insert(b.clone());
                     }
                 }
             }
@@ -1315,7 +1342,11 @@ fn resize(buf: &mut Vec<u8>, sz: u64) {
     }
 }
 
-#[cfg(test)]
+// The ordinary unit tests run on std primitives and real sleeps, so they are
+// compiled out of a `--cfg shuttle` build: shuttle's Mutex panics if it is
+// touched outside a shuttle execution. `cargo test` (no cfg) runs these and
+// skips the shuttle module; `--cfg shuttle` does the reverse.
+#[cfg(all(test, not(shuttle)))]
 mod tests {
     use super::{cap_bodies, is_scratch};
     use std::collections::HashMap;
@@ -1532,7 +1563,18 @@ mod tests {
                 .cloned()
                 .ok_or_else(|| PErr::new(libc::ENOENT, "fake: no such rel"))
         }
-        fn dump(&self) -> Result<(Vec<Node>, HashMap<String, Vec<u8>>), PErr> {
+        fn dump(&self) -> Result<crate::projection::Dump, PErr> {
+            // Snapshot FIRST, then stall. A dump held up on the wire carries
+            // the state the ship held when it answered, not the state it holds
+            // when the bytes finally arrive, and the stale-swap guard exists
+            // for exactly that gap. `entered` therefore means "the snapshot is
+            // taken", which is the moment a racing test wants to write after.
+            let nodes = self.nodes.lock().unwrap().clone();
+            let bodies = if self.no_inline.load(Ordering::SeqCst) {
+                HashMap::new()
+            } else {
+                self.bodies.lock().unwrap().clone()
+            };
             self.entered.store(true, Ordering::SeqCst);
             while self.hold.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(1));
@@ -1542,12 +1584,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(d));
             }
             self.dumps.fetch_add(1, Ordering::SeqCst);
-            let bodies = if self.no_inline.load(Ordering::SeqCst) {
-                HashMap::new()
-            } else {
-                self.bodies.lock().unwrap().clone()
-            };
-            Ok((self.nodes.lock().unwrap().clone(), bodies))
+            Ok((nodes, bodies))
         }
         fn errors(&self, _rel: &str) -> Result<String, PErr> {
             Ok(String::new())
@@ -1557,6 +1594,18 @@ mod tests {
                 "write {rel} {kind} {} new={create}",
                 String::from_utf8_lossy(data)
             ));
+            // The ship KEEPS what it accepted, so a dump taken after this one
+            // returns the new body. A fake that dropped writes on the floor
+            // would make every "did the swap undo the save?" test pass by
+            // accident. One lock at a time, in dump()'s order, so the two can
+            // never deadlock against each other.
+            let mut nodes = self.nodes.lock().unwrap();
+            match nodes.iter_mut().find(|n| n.rel == rel) {
+                Some(n) => n.size = data.len() as u64,
+                None => nodes.push(page(rel, kind, data.len() as u64)),
+            }
+            drop(nodes);
+            self.bodies.lock().unwrap().insert(rel.to_string(), data.to_vec());
             Ok(())
         }
         fn mkdir(&self, rel: &str) -> Result<(), PErr> {
@@ -1886,6 +1935,42 @@ mod tests {
     }
 
     #[test]
+    fn a_cold_blocking_dump_never_undoes_a_write_that_beat_it() {
+        // The same stale-swap guard, on the OTHER swapper. Found by the shuttle
+        // harness (src/core_shuttle.rs), which permuted a cold refresh_blocking
+        // against a concurrent save and caught the pre-write body coming back.
+        // Before the fix, refresh_blocking applied its snapshot unconditionally.
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        let fs = warm_fs(f.clone());
+        // back to cold, as if the mount's first dump had failed: nothing is
+        // warm, yet a save still works and still moves write_gen
+        {
+            let mut s = fs.st.lock().unwrap();
+            s.warm = false;
+            s.vt.clear();
+            s.vt_ts = None;
+        }
+        f.entered.store(false, Ordering::SeqCst);
+        f.hold.store(true, Ordering::SeqCst);
+
+        std::thread::scope(|sc| {
+            sc.spawn(|| fs.ensure_fresh()); // cold -> refresh_blocking, stalls mid-dump
+            wait_until("the cold dump to snapshot the ship", || f.entered.load(Ordering::SeqCst));
+            // the user saves while that snapshot sits on the wire
+            fs.st.lock().unwrap().handles.insert(1, handle("note", "md", b"NEWER!", true, false));
+            fs.commit(1).unwrap();
+            f.hold.store(false, Ordering::SeqCst);
+        });
+
+        let s = fs.st.lock().unwrap();
+        assert_eq!(s.read_cache["note"], b"NEWER!", "a cold dump must not undo a save");
+        assert_eq!(s.vt["/note.md"].node.as_ref().unwrap().size, 6);
+        // and the cold path still has to end warm: it is the one that makes the
+        // first ls after mount non-empty, so a discarded snapshot must retry
+        assert!(s.warm, "a discarded cold snapshot must be retried, not given up on");
+    }
+
+    #[test]
     fn open_size_reports_the_live_buffer_for_the_right_rel() {
         // an open handle's buffer is the authoritative size. Reporting another
         // file's (or none) makes an append seek to a stale offset.
@@ -1946,3 +2031,9 @@ mod tests {
         );
     }
 }
+
+/// Randomized concurrency permutation tests (awslabs/shuttle). Compiled only
+/// under `--cfg shuttle`; see the module for how to run it.
+#[cfg(all(test, shuttle))]
+#[path = "core_shuttle.rs"]
+mod shuttle_tests;

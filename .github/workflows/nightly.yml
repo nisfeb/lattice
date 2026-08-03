@@ -168,6 +168,23 @@ jobs:
         if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
         run: echo "ship/cookie secrets not set — skipping ui-acl-prefs."
 
+  hoon-hang:
+    name: hoon — parser hang probe
+    runs-on: ubuntu-latest
+    env:
+      LATTICE_URL: ${{ secrets.LATTICE_URL }}
+      LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: hoon-hang.sh
+        if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
+        run: |
+          printf '%s' "$LATTICE_MCP_COOKIE" > /tmp/ship-cookie
+          LATTICE_COOKIE=/tmp/ship-cookie scripts/hoon-hang.sh
+      - name: skipped
+        if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
+        run: echo "ship/cookie secrets not set — skipping hang probe."
+
   fuzz-api:
     name: api — hostile-input fuzz
     runs-on: ubuntu-latest

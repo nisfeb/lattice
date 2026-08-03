@@ -3,6 +3,7 @@
 
 #[path = "core.rs"]
 pub mod vfs;
+mod sync;
 pub mod eyre;
 pub mod generic;
 pub mod lattice;

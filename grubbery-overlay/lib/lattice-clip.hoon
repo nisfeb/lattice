@@ -141,14 +141,33 @@
 ::  +safe-url: keep `javascript:` and `data:` out of the archive. They cannot
 ::  execute in rendered markdown, but they are never useful in an archive and
 ::  a stored one is a trap waiting for whoever opens the source later.
+::  A browser resolves a url AFTER stripping leading whitespace and control
+::  bytes, so " javascript:x" and "\09javascript:x" are live links to it. The
+::  check used to compare at a FIXED offset, so any such byte slid the scheme
+::  out of the window and the url was archived as a live link. Strip first,
+::  then test. Found by a generated leading-byte x scheme sweep.
+::
+::  /lib/lattice-md's +safe-url is an ALLOWLIST and fails closed on the same
+::  input, which is why this was defence in depth rather than a live hole:
+::  clipped markdown renders through that allowlist. Two checks, one threat,
+::  opposite defaults. This one is now the stricter of the two.
 ++  safe-url
   |=  u=tape
   ^-  ?
-  =/  l=tape  (cass u)
+  =/  l=tape  (cass (lead-strip u))
   ?&  !=("javascript:" (scag 11 l))
       !=("data:" (scag 5 l))
+      !=("vbscript:" (scag 9 l))
       ?=(^ u)
   ==
+::  +lead-strip: drop leading whitespace and C0 control bytes, the ones a
+::  browser discards before it decides what scheme a url has.
+++  lead-strip
+  |=  t=tape
+  ^-  tape
+  ?~  t  t
+  ?:  |(=(' ' i.t) (lth `@`i.t 33))  $(t t.t)
+  t
 ::
 ::  +walk: the pass.
 ::    acc  output, REVERSED
