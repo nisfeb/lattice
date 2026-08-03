@@ -324,6 +324,17 @@ impl LickTransport {
         if guard.is_none() {
             let s = UnixStream::connect(&self.sock_path)
                 .map_err(|e| TErr::new(0, format!("lick connect {}: {e}", self.sock_path)))?;
+            //  Without a deadline a nexus that accepts the connection but never
+            //  replies wedges the mount FOREVER: this mutex is held across
+            //  send+recv, and refresh runs on the FUSE path, so every later
+            //  operation queues behind the stuck read. Generous on purpose. A
+            //  request can trigger a remote peek, which the nexus bounds at
+            //  ~s30, and a loaded pier has been measured answering in ~12s.
+            //  This is a wedge-breaker, not a latency budget: on expiry the
+            //  caller drops the socket and reconnects once.
+            let d = Some(std::time::Duration::from_secs(120));
+            let _ = s.set_read_timeout(d);
+            let _ = s.set_write_timeout(d);
             *guard = Some(s);
         }
         let sock = guard.as_mut().unwrap();
@@ -466,12 +477,120 @@ mod tests {
     #[test]
     fn frame_roundtrip_over_a_socketpair() {
         let (mut a, mut b) = UnixStream::pair().unwrap();
+        // recv_frame has no timeout of its own, so give the test one: a frame
+        // that never arrives must fail this test, not hang it.
+        b.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
         let n = cell(num(200), cord("# a page body\n"));
         send_frame(&mut a, "res", &n).unwrap();
         assert_eq!(recv_frame(&mut b).unwrap(), n);
         // and a wrong version byte is rejected, not misread as a length
         a.write_all(&[1, 0, 0, 0, 0]).unwrap();
         assert!(recv_frame(&mut b).is_err());
+    }
+
+    #[test]
+    fn noun_accessors_read_the_reply_shape() {
+        // exchange() takes the status from head() and the body from tail(). A
+        // status read as 0 (or as a constant) turns a rejected save into a
+        // reported success, and the user's bytes are gone.
+        let reply = cell(num(404), cord("no such page"));
+        assert_eq!(reply.head().unwrap().as_u64(), 404);
+        assert_eq!(reply.tail().unwrap().as_string(), "no such page");
+        assert_eq!(num(200).as_u64(), 200);
+        assert_eq!(num(u64::MAX).as_u64(), u64::MAX);
+        assert_eq!(atom(0).as_u64(), 0);
+        // an atom has no head/tail, and a cell is neither a number nor a cord
+        assert!(atom(7).head().is_none() && atom(7).tail().is_none());
+        assert_eq!(cell(num(1), num(2)).as_u64(), 0);
+        assert_eq!(cell(num(1), num(2)).as_string(), "");
+    }
+
+    #[test]
+    fn cue_rejects_an_atom_length_it_cannot_represent() {
+        // cue eats bit 0 as the atom/cell tag, so bits 1..=65 are rub's zero
+        // run: 65 long, claiming a bit-length that overflows the u64 shift used
+        // to rebuild it. That claim must be rejected on its own merits, not
+        // merely because the frame also happens to run out of bits.
+        let mut frame = vec![0u8; 8]; // bits 0..63 zero
+        frame.push(0x04); // bits 64,65 zero; bit 66 = 1  ->  a 65-long run
+        frame.extend_from_slice(&[0xFF; 9]); // and plenty of payload behind it
+        assert!(cue(&frame).is_err());
+    }
+
+    #[test]
+    fn lick_reconnects_once_when_the_socket_is_dropped() {
+        // the nexus restarts and the pooled connection dies mid-mount. One
+        // silent reconnect keeps the mount alive; without it every FUSE op
+        // after a ship restart fails until remount.
+        let dir = std::env::temp_dir().join(format!("lattice-fs-lick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fs");
+        let l = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        std::thread::spawn(move || {
+            let mut it = l.incoming();
+            // first connection: read the request, then die without replying
+            if let Some(Ok(mut s)) = it.next() {
+                s.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+                if let Ok(req) = recv_frame(&mut s) {
+                    sink.lock().unwrap().push(req);
+                }
+            }
+            // second and third: answer properly
+            for _ in 0..2 {
+                if let Some(Ok(mut s)) = it.next() {
+                    s.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+                    if let Ok(req) = recv_frame(&mut s) {
+                        sink.lock().unwrap().push(req);
+                    }
+                    let _ = send_frame(&mut s, "res", &cell(num(200), cord("the body")));
+                }
+            }
+        });
+
+        let t = LickTransport::new(path.to_str().unwrap(), "~zod");
+        assert_eq!(t.ship().unwrap(), "~zod");
+        assert_eq!(t.get_bytes("/apps/lattice/page-source", &[("name", "n")]).unwrap(), b"the body");
+        // a POST carries its body over the same exchange
+        assert_eq!(t.post("/apps/lattice/page-save", &[("name", "n")], b"# page").unwrap(), b"the body");
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 3, "the dropped connection must be retried exactly once");
+        let post = &seen[2];
+        assert_eq!(post.head().unwrap().as_string(), "POST");
+        assert_eq!(post.tail().unwrap().tail().unwrap().tail().unwrap().as_string(), "# page");
+        // and the request shape is [verb path query body]
+        let q = &seen[1];
+        assert_eq!(q.head().unwrap().as_string(), "GET");
+        let rest = q.tail().unwrap();
+        assert_eq!(rest.head().unwrap().as_string(), "/apps/lattice/page-source");
+        assert_eq!(rest.tail().unwrap().head().unwrap().as_string(), "name=n");
+        drop(seen);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lick_retries_at_most_once_before_giving_up() {
+        // the reconnect is ONE retry, not a loop. A nexus that is down must
+        // surface an error; retrying forever would spin holding the connection
+        // mutex and wedge every FUSE op behind it.
+        let dir = std::env::temp_dir().join(format!("lattice-fs-lick-dead-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fs");
+        let l = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        // accept and immediately hang up, every time
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                drop(s);
+            }
+        });
+        let t = LickTransport::new(path.to_str().unwrap(), "~zod");
+        let e = t.get_bytes("/x", &[("name", "n")]).unwrap_err();
+        assert_ne!(e.code, 400, "not the query guard: a real transport failure");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---------- property tests ----------

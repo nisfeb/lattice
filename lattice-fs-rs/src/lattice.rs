@@ -216,40 +216,54 @@ fn parse_dump(v: &Value) -> Result<(Vec<Node>, HashMap<String, Vec<u8>>), PErr> 
         .get("nodes")
         .and_then(|n| n.as_array())
         .ok_or_else(|| PErr::new(libc::EIO, "page-dump: no nodes"))?;
-    let mut out = Vec::with_capacity(arr.len());
+    let mut out: Vec<Node> = Vec::with_capacity(arr.len());
     let mut bodies = HashMap::new();
+    let mut at: HashMap<String, usize> = HashMap::new(); // rel -> its index in `out`
     for n in arr {
         let rel = n.get("path").and_then(|p| p.as_str()).unwrap_or("").to_string();
+        // One rel, one node. `bodies` is keyed by rel and keeps the last writer,
+        // so the node list has to as well: two nodes sharing a rel leaves FUSE's
+        // st_size describing one of them and read() returning the other's bytes,
+        // and every cat of that page short-reads. A repeated (or absent, which
+        // reads as "") path is malformed input, but it comes off the wire.
+        bodies.remove(&rel);
         let is_page = n.get("page").and_then(|p| p.as_bool()).unwrap_or(false);
-        if !is_page {
-            out.push(Node {
-                rel,
+        let node = if !is_page {
+            Node {
+                rel: rel.clone(),
                 is_dir: true,
                 is_page: false,
                 kind: String::new(),
                 size: 0,
                 mtime: now(),
                 readonly: false,
-            });
-            continue;
-        }
-        let kind = n.get("kind").and_then(|k| k.as_str()).unwrap_or("hoon").to_string();
-        let mtime = da_to_unix(n.get("mtime").and_then(|m| m.as_str()).unwrap_or(""));
-        let readonly = kind == "index";
-        // A present `body` is inlined. Cache it, and derive size from the actual
-        // bytes (the st_size guard). A missing `body` means the server omitted an
-        // oversized page (dump-inline-max). Don't cache it (body() reads it on
-        // demand), and trust the reported `size`, like list() already does.
-        let size = match n.get("body").and_then(|b| b.as_str()) {
-            Some(s) => {
-                let body = s.as_bytes().to_vec();
-                let sz = body.len() as u64;
-                bodies.insert(rel.clone(), body);
-                sz
             }
-            None => n.get("size").and_then(|s| s.as_u64()).unwrap_or(0),
+        } else {
+            let kind = n.get("kind").and_then(|k| k.as_str()).unwrap_or("hoon").to_string();
+            let mtime = da_to_unix(n.get("mtime").and_then(|m| m.as_str()).unwrap_or(""));
+            let readonly = kind == "index";
+            // A present `body` is inlined. Cache it, and derive size from the actual
+            // bytes (the st_size guard). A missing `body` means the server omitted an
+            // oversized page (dump-inline-max). Don't cache it (body() reads it on
+            // demand), and trust the reported `size`, like list() already does.
+            let size = match n.get("body").and_then(|b| b.as_str()) {
+                Some(s) => {
+                    let body = s.as_bytes().to_vec();
+                    let sz = body.len() as u64;
+                    bodies.insert(rel.clone(), body);
+                    sz
+                }
+                None => n.get("size").and_then(|s| s.as_u64()).unwrap_or(0),
+            };
+            Node { rel: rel.clone(), is_dir: false, is_page: true, kind, size, mtime, readonly }
         };
-        out.push(Node { rel, is_dir: false, is_page: true, kind, size, mtime, readonly });
+        match at.get(&rel) {
+            Some(&i) => out[i] = node,
+            None => {
+                at.insert(rel, out.len());
+                out.push(node);
+            }
+        }
     }
     Ok((out, bodies))
 }
@@ -352,6 +366,30 @@ mod tests {
         let big = nodes.iter().find(|n| n.rel == "big").unwrap();
         assert!(big.is_page);
         assert_eq!(big.size, 500000); // trusts the reported size
+    }
+
+    #[test]
+    fn dump_keeps_exactly_one_node_per_path() {
+        // duplicate (or absent) paths are malformed, but they arrive off the
+        // wire. Two nodes sharing a rel leaves st_size describing one of them
+        // while read() returns the other's bytes, and that page short-reads.
+        let v = serde_json::json!({"nodes": [
+            {"path": "x", "page": true, "kind": "md", "body": "aa"},
+            {"path": "x", "page": true, "kind": "md", "body": "bbbb"},
+            {"path": "y", "page": true, "kind": "md", "body": "cc"},
+            {"path": "y", "page": false},
+        ]});
+        let (nodes, bodies) = parse_dump(&v).unwrap();
+        assert_eq!(nodes.len(), 2, "one node per path");
+        let n = |r: &str| nodes.iter().find(|n| n.rel == r).unwrap();
+        assert_eq!(n("x").size, 4);
+        assert_eq!(bodies["x"], b"bbbb", "the last writer owns both the node and the body");
+        // a page shadowed by a later folder must not leave its body behind
+        assert!(n("y").is_dir);
+        assert!(!bodies.contains_key("y"));
+        for (rel, b) in &bodies {
+            assert_eq!(n(rel).size, b.len() as u64, "{rel}: st_size must match the bytes");
+        }
     }
 
     #[test]
@@ -493,5 +531,231 @@ mod tests {
             let inside = path == root || path.starts_with(&format!("{root}/"));
             prop_assert_eq!(p.strip(&path).is_some(), inside);
         }
+    }
+
+    // ---------- the nexus routes, over a scripted transport ----------
+
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct RecInner {
+        script: Mutex<VecDeque<Result<Vec<u8>, TErr>>>,
+        log: Mutex<Vec<String>>,
+    }
+
+    #[derive(Clone, Default)]
+    struct Rec(Arc<RecInner>);
+
+    fn ok(s: &str) -> Result<Vec<u8>, TErr> {
+        Ok(s.as_bytes().to_vec())
+    }
+    fn bad(code: u16) -> Result<Vec<u8>, TErr> {
+        Err(TErr::new(code, "scripted failure"))
+    }
+
+    impl Rec {
+        fn next(&self, entry: String) -> Result<Vec<u8>, TErr> {
+            self.0.log.lock().unwrap().push(entry);
+            self.0
+                .script
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(TErr::new(599, "script exhausted")))
+        }
+        fn log(&self) -> Vec<String> {
+            self.0.log.lock().unwrap().clone()
+        }
+    }
+
+    fn qs(query: &[(&str, &str)]) -> String {
+        query.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("&")
+    }
+
+    impl Transport for Rec {
+        fn get_bytes(&self, path: &str, query: &[(&str, &str)]) -> Result<Vec<u8>, TErr> {
+            self.next(format!("GET {path}?{}", qs(query)))
+        }
+        fn post(&self, path: &str, query: &[(&str, &str)], body: &[u8]) -> Result<Vec<u8>, TErr> {
+            self.next(format!(
+                "POST {path}?{} {:?}",
+                qs(query),
+                String::from_utf8_lossy(body)
+            ))
+        }
+        fn ship(&self) -> Result<String, TErr> {
+            Ok("~test".into())
+        }
+        fn watch(&self, on_change: &(dyn Fn() + Send + Sync)) {
+            on_change();
+        }
+    }
+
+    fn lp(root: &str, script: Vec<Result<Vec<u8>, TErr>>) -> (Rec, LatticeProjection) {
+        let rec = Rec::default();
+        *rec.0.script.lock().unwrap() = script.into();
+        let p = LatticeProjection::new(Box::new(rec.clone()), root).unwrap();
+        (rec, p)
+    }
+
+    #[test]
+    fn write_maps_kind_to_page_type_and_seeds_only_a_new_empty_body() {
+        // the `type` decides the mark the page is stored under. A wrong one
+        // stores markdown as hoon (or worse, clobbers a generated %index).
+        let (rec, p) = lp("", (0..5).map(|_| ok("{}")).collect());
+        p.write("n", "md", b"hi", false).unwrap();
+        p.write("n", "index", b"", true).unwrap();
+        p.write("n", "md", b"", true).unwrap();
+        p.write("n", "md", b"hi", true).unwrap();
+        p.write("n", "bespoke", b"x", false).unwrap();
+        assert_eq!(
+            rec.log(),
+            vec![
+                r#"POST /apps/lattice/page-save?name=n&type=md "hi""#,
+                // %index accepts an empty body; it must NOT be seeded
+                r#"POST /apps/lattice/page-save?name=n&type=index&new=1 """#,
+                // page-save 400s on an empty body for every other kind, so a
+                // brand-new page is seeded with a newline
+                r#"POST /apps/lattice/page-save?name=n&type=md&new=1 "\n""#,
+                // ...but only when it IS empty. Never overwrite real content.
+                r#"POST /apps/lattice/page-save?name=n&type=md&new=1 "hi""#,
+                r#"POST /apps/lattice/page-save?name=n&type=hoon "x""#,
+            ]
+        );
+    }
+
+    #[test]
+    fn mv_saves_the_destination_before_deleting_the_source() {
+        // there is no server rename. Ordering IS the safety property: save
+        // first, delete second. Reversed (or a skipped save) loses the page.
+        let (rec, p) = lp("", vec![ok(r#"{"body":"content","kind":"gmi"}"#), ok("{}"), ok("{}")]);
+        p.mv("a", "b").unwrap();
+        let log = rec.log();
+        assert_eq!(log.len(), 3);
+        assert_eq!(log[0], "GET /apps/lattice/page-source?name=a");
+        assert_eq!(log[1], r#"POST /apps/lattice/page-save?name=b&type=gmi "content""#);
+        assert!(!log[1].contains("new=1"), "a move must clobber the destination, not 409");
+        assert_eq!(log[2], r#"POST /apps/lattice/page-del?name=a """#);
+    }
+
+    #[test]
+    fn errors_treats_a_missing_page_as_clean_but_not_a_real_failure() {
+        let (_, p) = lp("", vec![ok("  boom: syntax\n")]);
+        assert_eq!(p.errors("n").unwrap(), "boom: syntax");
+        let (_, p) = lp("", vec![bad(404)]);
+        assert_eq!(p.errors("n").unwrap(), "", "no such page = clean, not an error");
+        let (_, p) = lp("", vec![bad(500)]);
+        assert!(p.errors("n").is_err(), "a real failure must not be reported as clean");
+    }
+
+    #[test]
+    fn dump_falls_back_to_list_and_read_only_when_the_route_is_missing() {
+        let tree = r#"{"nodes":[{"path":"n","page":true,"kind":"md","size":2,"mtime":"~2026.7.20"}]}"#;
+        let (rec, p) = lp("", vec![bad(404), ok(tree), ok(r#"{"body":"hi","kind":"md"}"#)]);
+        let (nodes, bodies) = p.dump().unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(bodies["n"], b"hi");
+        let log = rec.log();
+        assert!(log[0].contains("page-dump"));
+        assert!(log[1].contains("page-tree"), "an old nexus falls back to list()+read()");
+
+        // any other failure is a failure, not a silent N+1 crawl
+        let (rec, p) = lp("", vec![bad(500)]);
+        assert!(p.dump().is_err());
+        assert_eq!(rec.log().len(), 1);
+    }
+
+    #[test]
+    fn list_filters_to_the_sub_root_and_flags_generated_pages() {
+        let tree = r#"{"nodes":[
+            {"path":"notes","page":false},
+            {"path":"notes/a","page":true,"kind":"md","size":3,"mtime":"~2026.7.20"},
+            {"path":"notes/idx","page":true,"kind":"index","size":1,"mtime":"~2026.7.20"},
+            {"path":"notes/sub","page":false},
+            {"path":"other","page":true,"kind":"md","size":1,"mtime":"~2026.7.20"}
+        ]}"#;
+        let (_, p) = lp("notes", vec![ok(tree)]);
+        let ns = p.list().unwrap();
+        let mut rels: Vec<&str> = ns.iter().map(|n| n.rel.as_str()).collect();
+        rels.sort();
+        assert_eq!(rels, vec!["a", "idx", "sub"], "the sub-root itself and outsiders are dropped");
+        let f = |r: &str| ns.iter().find(|n| n.rel == r).unwrap();
+        assert!(f("a").is_page && !f("a").is_dir && !f("a").readonly);
+        assert!(f("idx").readonly, "a generated %index page must be read-only");
+        assert!(f("sub").is_dir && !f("sub").is_page);
+        assert_eq!(f("a").mtime, 1784505600, "mtime comes off the @da, not the clock");
+        assert!(f("sub").mtime > 1_700_000_000, "a folder gets wall clock");
+    }
+
+    #[test]
+    fn remap_dump_strips_the_sub_root_from_rels_and_body_keys() {
+        // a rel that kept its prefix would be read/written at the wrong page
+        let dump = r#"{"nodes":[
+            {"path":"notes","page":true,"kind":"md","body":"root body","mtime":"~2026.7.20"},
+            {"path":"notes/a","page":true,"kind":"md","body":"aa","mtime":"~2026.7.20"},
+            {"path":"elsewhere","page":true,"kind":"md","body":"nope","mtime":"~2026.7.20"}
+        ]}"#;
+        let (_, p) = lp("notes", vec![ok(dump)]);
+        let (nodes, bodies) = p.dump().unwrap();
+        assert_eq!(nodes.iter().map(|n| n.rel.clone()).collect::<Vec<_>>(), vec!["a"]);
+        assert_eq!(bodies.keys().cloned().collect::<Vec<_>>(), vec!["a".to_string()]);
+        assert_eq!(bodies["a"], b"aa");
+
+        // mounting the whole tree is a no-op remap
+        let (_, p) = lp("", vec![ok(dump)]);
+        let (nodes, bodies) = p.dump().unwrap();
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(bodies.len(), 3);
+    }
+
+    #[test]
+    fn dump_marks_generated_index_pages_read_only() {
+        let v = serde_json::json!({"nodes": [
+            {"path": "idx", "page": true, "kind": "index", "mtime": "~2026.7.20", "body": "x"},
+            {"path": "note", "page": true, "kind": "md", "mtime": "~2026.7.20", "body": "y"},
+            {"path": "d", "page": false},
+        ]});
+        let (nodes, _) = parse_dump(&v).unwrap();
+        let f = |r: &str| nodes.iter().find(|n| n.rel == r).unwrap();
+        assert!(f("idx").readonly, "%index is generated; an edit would be clobbered");
+        assert!(!f("note").readonly);
+        assert!(f("d").mtime > 1_700_000_000, "a folder's mtime is wall clock");
+    }
+
+    #[test]
+    fn folder_and_page_routes_carry_the_root_prefixed_name() {
+        let (rec, p) = lp("notes", vec![ok("{}")]);
+        p.mkdir("d").unwrap();
+        assert_eq!(rec.log(), vec![r#"POST /apps/lattice/folder-new?name=notes/d """#]);
+
+        let (rec, p) = lp("notes", vec![ok("{}")]);
+        p.delete("d").unwrap();
+        assert_eq!(rec.log(), vec![r#"POST /apps/lattice/page-del?name=notes/d """#]);
+
+        let (rec, p) = lp("notes", vec![ok(r#"{"body":"the body"}"#)]);
+        assert_eq!(p.read("n").unwrap(), b"the body");
+        assert_eq!(rec.log(), vec!["GET /apps/lattice/page-source?name=notes/n"]);
+        assert_eq!(p.ship(), "~test");
+    }
+
+    #[test]
+    fn watch_delegates_to_the_transport() {
+        let (_, p) = lp("", vec![]);
+        let fired = Arc::new(AtomicBool::new(false));
+        let f = fired.clone();
+        p.watch(&move || f.store(true, Ordering::SeqCst));
+        assert!(fired.load(Ordering::SeqCst), "watch must reach the transport");
+    }
+
+    #[test]
+    fn da_needs_three_date_fields_and_ignores_extra_ones() {
+        // fewer than three is unparseable -> now, and must never index past the end
+        for s in ["~2026", "~2026.7", "~"] {
+            assert!(da_to_unix(s) > 1_700_000_000, "{s}");
+        }
+        // more than three still parses the first three
+        assert_eq!(da_to_unix("~2026.7.20.99"), da_to_unix("~2026.7.20"));
     }
 }

@@ -45,3 +45,37 @@ pub trait Transport: Send + Sync {
         serde_json::from_slice(&b).map_err(|e| TErr::new(500, format!("bad json: {e}")))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Stub(&'static str);
+    impl Transport for Stub {
+        fn get_bytes(&self, _p: &str, _q: &[(&str, &str)]) -> Result<Vec<u8>, TErr> {
+            Ok(self.0.as_bytes().to_vec())
+        }
+        fn post(&self, _p: &str, _q: &[(&str, &str)], _b: &[u8]) -> Result<Vec<u8>, TErr> {
+            Ok(vec![])
+        }
+        fn ship(&self) -> Result<String, TErr> {
+            Ok("~test".into())
+        }
+    }
+
+    #[test]
+    fn get_json_parses_a_real_body_and_refuses_a_broken_one() {
+        let v = Stub(r#"{"nodes":[{"path":"a"}]}"#).get_json("/x", &[]).unwrap();
+        assert_eq!(v["nodes"][0]["path"], "a");
+        // a proxy error page must be an error, never a silent null that every
+        // projection then reads as "this tree has no nodes"
+        let e = Stub("<html>gateway timeout</html>").get_json("/x", &[]).unwrap_err();
+        assert_eq!(e.code, 500);
+        assert!(e.msg.contains("bad json"), "{}", e.msg);
+    }
+
+    #[test]
+    fn terr_displays_its_status_and_message() {
+        assert_eq!(TErr::new(404, "no such page").to_string(), "404 no such page");
+    }
+}

@@ -128,6 +128,25 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn the_mount_is_owner_only_with_kernel_enforced_permissions() {
+        let c = mount_config();
+        assert_eq!(c.acl, fuser::SessionACL::Owner, "no other uid may reach the mount");
+        assert!(
+            c.mount_options.contains(&fuser::MountOption::DefaultPermissions),
+            "without this the kernel ignores the 0o444 we report for generated pages"
+        );
+        assert!(c.mount_options.contains(&fuser::MountOption::FSName("lattice".to_string())));
+    }
+
+    #[test]
+    fn the_cookie_lives_under_the_users_config_dir() {
+        // a relative path would drop a live session cookie into whatever
+        // directory the process happened to start in
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        assert_eq!(default_cookie_path(), format!("{home}/.config/lattice-fs/cookie"));
+    }
+
     use proptest::prelude::*;
 
     proptest! {

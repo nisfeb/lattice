@@ -151,8 +151,197 @@ fn urlencode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::urlencode;
+    use super::*;
     use proptest::prelude::*;
+    use std::io::Write as _;
+    use std::net::TcpListener;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir()
+            .join(format!("lattice-fs-test-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A throwaway HTTP server that answers `replies` in order, then stops.
+    /// Each reply is (status, body, optional Set-Cookie).
+    struct Stub {
+        base: String,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Stub {
+        fn seen(&self) -> Vec<String> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+
+    fn stub(replies: Vec<(u16, &'static str, Option<&'static str>)>) -> Stub {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", l.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        std::thread::spawn(move || {
+            for (code, body, cookie) in replies {
+                let Ok((mut sock, _)) = l.accept() else { return };
+                sock.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                // read the head, plus whatever body arrived with it
+                let mut raw = Vec::new();
+                let mut chunk = [0u8; 4096];
+                while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match sock.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => raw.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                // drain the declared body too, so an assertion can see it
+                let text = String::from_utf8_lossy(&raw).to_string();
+                let want: usize = text
+                    .lines()
+                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:")?.trim().parse().ok())
+                    .unwrap_or(0);
+                let head_end = raw.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4).unwrap_or(raw.len());
+                while raw.len() < head_end + want {
+                    match sock.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => raw.extend_from_slice(&chunk[..n]),
+                    }
+                }
+                let line = text.lines().next().unwrap_or("").to_string();
+                let req_body = String::from_utf8_lossy(&raw[head_end.min(raw.len())..]).to_string();
+                sink.lock().unwrap().push(format!("{line} {req_body}"));
+                let ck = cookie.map(|c| format!("Set-Cookie: {c}\r\n")).unwrap_or_default();
+                let resp = format!(
+                    "HTTP/1.1 {code} S\r\nContent-Length: {}\r\n{ck}Connection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(resp.as_bytes());
+                let _ = sock.flush();
+                let _ = sock.shutdown(std::net::Shutdown::Both);
+            }
+        });
+        Stub { base, seen }
+    }
+
+    #[test]
+    fn url_appends_a_query_only_when_there_is_one() {
+        let t = EyreTransport::new("http://host:8080/", "/nonexistent/cookie");
+        assert_eq!(t.url("/x", &[]), "http://host:8080/x", "no query means no '?'");
+        assert_eq!(
+            t.url("/apps/lattice/page-source", &[("name", "a/b c"), ("type", "md")]),
+            "http://host:8080/apps/lattice/page-source?name=a%2Fb%20c&type=md",
+            "a page name must be encoded, '/' included"
+        );
+    }
+
+    #[test]
+    fn urlencode_passes_the_unreserved_set_through_untouched() {
+        assert_eq!(urlencode("aZ0-_.~"), "aZ0-_.~");
+        assert_eq!(urlencode("a/b c&d=e"), "a%2Fb%20c%26d%3De");
+    }
+
+    #[test]
+    fn a_stored_cookie_is_owner_only_and_names_the_ship() {
+        // the cookie IS the ship's session. World-readable would hand any local
+        // process full owner authority.
+        let dir = tmpdir("store");
+        let p = dir.join("nested").join("cookie");
+        let t = EyreTransport::new("http://host", p.to_str().unwrap());
+        assert!(t.ship().is_err(), "no cookie yet means no ship, not an empty name");
+
+        t.store("urbauth-~tyr=0v1.abcde").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "urbauth-~tyr=0v1.abcde");
+        let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a session cookie must not be readable by anyone else");
+        assert_eq!(t.ship().unwrap(), "~tyr");
+        // and it is picked back up on the next run
+        assert_eq!(
+            EyreTransport::new("http://host", p.to_str().unwrap()).ship().unwrap(),
+            "~tyr"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn login_keeps_only_the_urbauth_cookie_and_refuses_anything_else() {
+        let s = stub(vec![
+            (200, "", Some("urbauth-~tyr=0v1.abcde; Path=/; HttpOnly")),
+            (200, "", Some("sessionid=not-urbauth; Path=/")),
+            (403, "", None),
+        ]);
+        let dir = tmpdir("login");
+        let p = dir.join("cookie");
+        let t = EyreTransport::new(&s.base, p.to_str().unwrap());
+        t.login(Some("lidlut-tabwed".into())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "urbauth-~tyr=0v1.abcde",
+            "only the cookie itself, never its attributes"
+        );
+        assert!(s.seen()[0].starts_with("POST /~/login"));
+
+        // a Set-Cookie that isn't an urbauth is not a session: refuse it rather
+        // than store a useless cookie and fail every later request as a 401
+        let t2 = EyreTransport::new(&s.base, dir.join("c2").to_str().unwrap());
+        assert!(t2.login(Some("x".into())).is_err());
+        assert!(!dir.join("c2").exists(), "a refused login must not write a cookie");
+
+        // and a rejected +code surfaces the server's status
+        let t3 = EyreTransport::new(&s.base, dir.join("c3").to_str().unwrap());
+        assert_eq!(t3.login(Some("x".into())).unwrap_err().code, 403);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_expired_cookie_re_authenticates_once_and_replays() {
+        let s = stub(vec![
+            (401, "", None),                                  // the cookie went stale
+            (200, "", Some("urbauth-~tyr=0vfresh; Path=/")),   // the silent re-login
+            (200, "payload", None),                            // the replayed request
+        ]);
+        let dir = tmpdir("retry");
+        let t = EyreTransport::new(&s.base, dir.join("cookie").to_str().unwrap());
+        t.store("urbauth-~tyr=0vstale").unwrap();
+        std::env::set_var("LATTICE_CODE", "lidlut-tabwed-pillex-ridrup");
+
+        assert_eq!(t.get_bytes("/x", &[]).unwrap(), b"payload");
+        let seen = s.seen();
+        assert_eq!(seen.len(), 3, "exactly one re-auth, then one replay");
+        assert!(seen[1].starts_with("POST /~/login"), "a 401 must trigger a re-login");
+        assert!(seen[2].starts_with("GET /x"), "and the original request must be replayed");
+        assert_eq!(t.ship().unwrap(), "~tyr", "the fresh cookie is now in force");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn post_puts_the_page_body_on_the_wire_and_returns_the_reply() {
+        // a save whose body never reaches the ship is a silent data loss
+        let s = stub(vec![(200, "saved", None)]);
+        let dir = tmpdir("post");
+        let t = EyreTransport::new(&s.base, dir.join("cookie").to_str().unwrap());
+        t.store("urbauth-~tyr=0v1").unwrap();
+        let got = t.post("/apps/lattice/page-save", &[("name", "n")], b"# the body").unwrap();
+        assert_eq!(got, b"saved");
+        assert_eq!(s.seen(), vec!["POST /apps/lattice/page-save?name=n HTTP/1.1 # the body"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_non_auth_status_reaches_the_caller_without_a_login_attempt() {
+        // dump() depends on seeing a real 404 to fall back to list()+read(), and
+        // hammering /~/login on every 404 would be both wrong and hostile.
+        let s = stub(vec![(404, "", None)]);
+        let dir = tmpdir("noretry");
+        let t = EyreTransport::new(&s.base, dir.join("cookie").to_str().unwrap());
+        t.store("urbauth-~tyr=0v1").unwrap();
+        let e = t.get_bytes("/apps/lattice/page-dump", &[]).unwrap_err();
+        assert_eq!(e.code, 404, "a 404 must reach the projection unchanged");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     proptest! {
         // every page name (any UTF-8 at all) must encode losslessly into the
