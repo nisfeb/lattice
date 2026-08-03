@@ -22,3 +22,9 @@ libc = "0.2"
 [dev-dependencies]
 # property tests only. Never in a release build.
 proptest = "1.7"
+shuttle = "0.9.1"
+
+# `shuttle` is a custom cfg (RUSTFLAGS='--cfg shuttle'), not a feature, so the
+# concurrency harness can never be compiled into a release build. See src/sync.rs.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(shuttle)'] }

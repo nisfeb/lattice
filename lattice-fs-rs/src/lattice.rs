@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::projection::{Node, PErr, Projection};
+use crate::projection::{Dump, Node, PErr, Projection};
 use crate::transport::Transport;
 
 pub struct LatticeProjection {
@@ -50,7 +50,7 @@ impl LatticeProjection {
         &self,
         nodes: Vec<Node>,
         bodies: HashMap<String, Vec<u8>>,
-    ) -> (Vec<Node>, HashMap<String, Vec<u8>>) {
+    ) -> Dump {
         if self.root.is_empty() {
             return (nodes, bodies);
         }
@@ -122,7 +122,7 @@ impl Projection for LatticeProjection {
         Ok(body.as_bytes().to_vec())
     }
 
-    fn dump(&self) -> Result<(Vec<Node>, HashMap<String, Vec<u8>>), PErr> {
+    fn dump(&self) -> Result<Dump, PErr> {
         let v = match self.t.get_json("/apps/lattice/page-dump", &[]) {
             Ok(v) => v,
             // old nexus without the route -> fall back to list()+read() (N+1).
@@ -211,7 +211,7 @@ impl Projection for LatticeProjection {
 /// Parse a page-dump response into (nodes, bodies). `size` is derived from the
 /// actual body bytes, never the reported `size` field, so FUSE st_size can never
 /// disagree with what read() returns (a wrong server size would short/over-read).
-fn parse_dump(v: &Value) -> Result<(Vec<Node>, HashMap<String, Vec<u8>>), PErr> {
+fn parse_dump(v: &Value) -> Result<Dump, PErr> {
     let arr = v
         .get("nodes")
         .and_then(|n| n.as_array())

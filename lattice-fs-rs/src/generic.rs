@@ -31,7 +31,7 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 
-use crate::projection::{Node, PErr, Projection};
+use crate::projection::{Dump, Node, PErr, Projection};
 use crate::transport::Transport;
 
 pub struct GenericProjection {
@@ -160,7 +160,7 @@ impl Projection for GenericProjection {
         }
     }
 
-    fn dump(&self) -> Result<(Vec<Node>, HashMap<String, Vec<u8>>), PErr> {
+    fn dump(&self) -> Result<Dump, PErr> {
         // No bulk endpoint for a generic tree. Walk it, then read each grub.
         // read() picks /txt, falling back to /json (small, not the raw jam).
         // A grub that won't render gets a placeholder so the tree stays browsable.

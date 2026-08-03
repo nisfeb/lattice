@@ -32,6 +32,10 @@ impl From<TErr> for PErr {
     }
 }
 
+/// One bulk warm: the whole node tree plus every page body, keyed by rel.
+/// Named because the tuple is spelled out at every dump() impl and parse site.
+pub type Dump = (Vec<Node>, HashMap<String, Vec<u8>>);
+
 #[derive(Clone, Debug)]
 pub struct Node {
     pub rel: String,     // projection key, no leading slash, no extension ("" = root)
@@ -54,7 +58,7 @@ pub trait Projection: Send + Sync {
     /// calls this to fill the read cache so grep/cat run from RAM. lattice serves
     /// it from a single page-dump peek, falling back to list()+read() on an old
     /// nexus that lacks the route.
-    fn dump(&self) -> Result<(Vec<Node>, HashMap<String, Vec<u8>>), PErr>;
+    fn dump(&self) -> Result<Dump, PErr>;
 
     fn errors(&self, rel: &str) -> Result<String, PErr>;
     fn write(&self, rel: &str, kind: &str, data: &[u8], create: bool) -> Result<(), PErr>;
@@ -110,7 +114,7 @@ mod tests {
         fn read(&self, _rel: &str) -> Result<Vec<u8>, PErr> {
             Ok(vec![])
         }
-        fn dump(&self) -> Result<(Vec<Node>, HashMap<String, Vec<u8>>), PErr> {
+        fn dump(&self) -> Result<Dump, PErr> {
             Ok((vec![], HashMap::new()))
         }
         fn errors(&self, _rel: &str) -> Result<String, PErr> {

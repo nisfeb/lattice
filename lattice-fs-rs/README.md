@@ -118,6 +118,23 @@ Both transports verified end-to-end on the harness, with a full mount matrix
   port (`grubbery-overlay/nex/lattice/app.hoon`). jam/cue is verified against the
   canonical Urbit vectors + round-trips + KB atoms (`cargo test`).
 
+## Tests
+
+`cargo test` is the whole suite: unit + property tests, and a real kernel mount
+(`tests/mount.rs`) that skips cleanly where FUSE is unavailable. Two extra
+harnesses stay out of that run because they need more than a Rust toolchain:
+
+```sh
+# concurrency: shuttle permutes the watch/warm/refresh threads against a save.
+# See src/core_shuttle.rs for what it asserts and SHUTTLE_ITERS to soak it.
+CARGO_TARGET_DIR=target/shuttle RUSTFLAGS='--cfg shuttle' \
+  cargo test --lib shuttle_tests -- --test-threads=1
+
+# filesystem ops: fsx random read/write/truncate against a live mount, with an
+# in-memory shadow buffer as the oracle. Fetches and builds fsx on first run.
+tests/fsx.sh
+```
+
 ## Wire protocol (lick)
 
 Each frame, both directions: `0x00` + 4-byte LE length + `jam([mark noun])`
