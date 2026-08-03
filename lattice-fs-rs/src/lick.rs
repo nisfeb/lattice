@@ -1,6 +1,6 @@
 //! LickTransport: the lick (unix-socket IPC) transport. Same request shape as
-//! Eyre — `[verb path query body]` in, `[status body]` out — but over the
-//! grubbery lick port instead of HTTP. Auth is filesystem-presence: the socket
+//! Eyre (`[verb path query body]` in, `[status body]` out) but over the
+//! grubbery lick port instead of HTTP. Auth is filesystem-presence. The socket
 //! lives in the pier, so reaching it IS authorization (no cookie, no +code).
 //!
 //! Wire format (verified against vere 4.5, per gub/man/lick-echo): each frame,
@@ -126,8 +126,8 @@ fn mat(w: &mut BitWriter, a: &[u8]) {
     w.atom_bits(a, b);
 }
 
-/// jam a noun. No backreference compression on write (valid, just non-optimal —
-/// the nexus cue handles it); cue below decodes backrefs the nexus may emit.
+/// jam a noun. No backreference compression on write (valid, just non-optimal,
+/// and the nexus cue handles it). cue below decodes backrefs the nexus may emit.
 pub fn jam(n: &Noun) -> Vec<u8> {
     let mut w = BitWriter::new();
     jam_into(&mut w, n);
@@ -160,75 +160,112 @@ struct BitReader<'a> {
 }
 
 impl<'a> BitReader<'a> {
-    fn bit(&mut self) -> u8 {
-        let byte = self.pos / 8;
-        let b = if byte < self.data.len() {
-            (self.data[byte] >> (self.pos % 8)) & 1
-        } else {
-            0
-        };
-        self.pos += 1;
-        b
+    fn remaining(&self) -> usize {
+        self.data.len() * 8 - self.pos
     }
-    fn bits(&mut self, n: usize) -> u64 {
+    /// A read past the end is a truncated/corrupt frame, never a phantom zero
+    /// bit. Treating it as zero made `rub`'s zero-run scan loop forever on a
+    /// malformed frame (any byte stream, e.g. a single 0x00, hung the mount).
+    fn bit(&mut self) -> Result<u8, TErr> {
+        if self.pos >= self.data.len() * 8 {
+            return Err(TErr::new(500, "cue: truncated stream"));
+        }
+        let b = (self.data[self.pos / 8] >> (self.pos % 8)) & 1;
+        self.pos += 1;
+        Ok(b)
+    }
+    fn bits(&mut self, n: usize) -> Result<u64, TErr> {
         let mut v = 0u64;
         for i in 0..n {
-            v |= (self.bit() as u64) << i;
+            v |= (self.bit()? as u64) << i;
         }
-        v
+        Ok(v)
     }
-    fn atom(&mut self, nbits: usize) -> Vec<u8> {
+    fn atom(&mut self, nbits: usize) -> Result<Vec<u8>, TErr> {
         let mut bytes = vec![0u8; nbits.div_ceil(8)];
         for i in 0..nbits {
-            if self.bit() == 1 {
+            if self.bit()? == 1 {
                 bytes[i / 8] |= 1 << (i % 8);
             }
         }
-        trim(bytes)
+        Ok(trim(bytes))
     }
 }
 
-fn rub(r: &mut BitReader) -> Vec<u8> {
+fn rub(r: &mut BitReader) -> Result<Vec<u8>, TErr> {
     let mut c = 0usize;
-    while r.bit() == 0 {
+    while r.bit()? == 0 {
         c += 1;
     }
     if c == 0 {
-        return Vec::new(); // atom 0
+        return Ok(Vec::new()); // atom 0
     }
-    let low = r.bits(c - 1);
+    // c-1 low bits + an implicit top bit encode the atom's bit length. A run
+    // past 64 can't name a length that fits in any real frame, and shifting by
+    // it overflowed (a panic on a corrupt frame). Same for a length exceeding
+    // the bits actually present: it used to allocate for the claim, not the data.
+    if c > 64 {
+        return Err(TErr::new(500, "cue: atom length overflow"));
+    }
+    let low = r.bits(c - 1)?;
     let b = (low | (1u64 << (c - 1))) as usize;
+    if b > r.remaining() {
+        return Err(TErr::new(500, "cue: truncated atom"));
+    }
     r.atom(b)
 }
 
 pub fn cue(data: &[u8]) -> Result<Noun, TErr> {
     let mut r = BitReader { data, pos: 0 };
     let mut memo: HashMap<usize, Noun> = HashMap::new();
-    cue_go(&mut r, &mut memo)
-}
-
-fn cue_go(r: &mut BitReader, memo: &mut HashMap<usize, Noun>) -> Result<Noun, TErr> {
-    let at = r.pos;
-    let n = if r.bit() == 0 {
-        Noun::Atom(rub(r))
-    } else if r.bit() == 0 {
-        let h = cue_go(r, memo)?;
-        let t = cue_go(r, memo)?;
-        cell(h, t)
-    } else {
-        let k = rub(r);
-        let mut b = [0u8; 8];
-        for (i, x) in k.iter().take(8).enumerate() {
-            b[i] = *x;
+    // An explicit work stack instead of recursion: cells nest as deep as the
+    // frame says, and recursing per cell overflowed the thread stack on a
+    // deeply nested (or malicious) frame. Combine pops [tail, head] off `done`.
+    enum Op {
+        Decode,
+        Combine(usize),
+    }
+    let mut ops = vec![Op::Decode];
+    let mut done: Vec<Noun> = Vec::new();
+    while let Some(op) = ops.pop() {
+        match op {
+            Op::Decode => {
+                let at = r.pos;
+                if r.bit()? == 0 {
+                    let n = Noun::Atom(rub(&mut r)?);
+                    memo.insert(at, n.clone());
+                    done.push(n);
+                } else if r.bit()? == 0 {
+                    ops.push(Op::Combine(at));
+                    ops.push(Op::Decode); // tail, decoded second (LIFO)
+                    ops.push(Op::Decode); // head, decoded first
+                } else {
+                    let k = rub(&mut r)?;
+                    let mut b = [0u8; 8];
+                    for (i, x) in k.iter().take(8).enumerate() {
+                        b[i] = *x;
+                    }
+                    let idx = u64::from_le_bytes(b) as usize;
+                    let n = memo
+                        .get(&idx)
+                        .cloned()
+                        .ok_or_else(|| TErr::new(500, "cue: bad backref"))?;
+                    done.push(n);
+                }
+            }
+            Op::Combine(at) => {
+                let t = done.pop();
+                let h = done.pop();
+                let (Some(h), Some(t)) = (h, t) else {
+                    return Err(TErr::new(500, "cue: bad stream"));
+                };
+                let n = cell(h, t);
+                memo.insert(at, n.clone());
+                done.push(n);
+            }
         }
-        let idx = u64::from_le_bytes(b) as usize;
-        return memo
-            .get(&idx)
-            .cloned()
-            .ok_or_else(|| TErr::new(500, "cue: bad backref"));
-    };
-    memo.insert(at, n.clone());
-    Ok(n)
+    }
+    done.pop().ok_or_else(|| TErr::new(500, "cue: empty stream"))
 }
 
 // ---------- framing ----------
@@ -255,7 +292,7 @@ fn recv_frame(sock: &mut UnixStream) -> Result<Noun, TErr> {
     sock.read_exact(&mut body)
         .map_err(|e| TErr::new(0, format!("lick read body: {e}")))?;
     let framed = cue(&body)?;
-    // framed = [mark payload]; return payload
+    // framed = [mark payload]. Return payload
     framed
         .tail()
         .cloned()
@@ -271,8 +308,8 @@ pub struct LickTransport {
 }
 
 impl LickTransport {
-    /// `sock_path` is the pier-relative socket (…/.urb/dev/grubbery/lattice/fs);
-    /// `our` is the ship @p (the caller knows it — e.g. from a one-time scry).
+    /// `sock_path` is the pier-relative socket (…/.urb/dev/grubbery/lattice/fs).
+    /// `our` is the ship @p (the caller knows it, e.g. from a one-time scry).
     pub fn new(sock_path: &str, our: &str) -> Self {
         LickTransport {
             sock_path: sock_path.to_string(),
@@ -307,10 +344,10 @@ impl LickTransport {
 
     /// Build `[verb path query body]` and unpack the `[status body]` reply.
     fn exchange(&self, verb: &str, path: &str, query: &[(&str, &str)], body: &[u8]) -> Result<Vec<u8>, TErr> {
-        // The nexus splits the query on raw '&'/'=' (no url-decoding — page names
-        // are @ta and can't contain them). A value carrying either would silently
-        // retarget the op (`rm 'a&b.md'` becoming a delete of page `a`), so refuse
-        // it here; the server would reject the name anyway.
+        // The nexus splits the query on raw '&'/'=' (no url-decoding, since page
+        // names are @ta and can't contain them). A value carrying either would
+        // silently retarget the op (`rm 'a&b.md'` becoming a delete of page `a`),
+        // so refuse it here. The server would reject the name anyway.
         if query.iter().any(|(_, v)| v.contains('&') || v.contains('=')) {
             return Err(TErr::new(400, "lick: '&'/'=' not allowed in a page name"));
         }
@@ -344,7 +381,7 @@ impl Transport for LickTransport {
     fn ship(&self) -> Result<String, TErr> {
         Ok(self.our.clone())
     }
-    // watch: a future enhancement — the nexus can lick-spit change frames on a
+    // watch: a future enhancement. The nexus can lick-spit change frames on a
     // second port. For now freshness rides the core's TTL poll (no-op default).
 }
 
@@ -400,5 +437,79 @@ mod tests {
         let n = cell(num(200), cord(&big));
         let back = cue(&jam(&n)).unwrap();
         assert_eq!(back.tail().unwrap().as_string(), big);
+    }
+
+    #[test]
+    fn cue_rejects_malformed_frames() {
+        // each of these was a production defect on a corrupt/hostile frame:
+        assert!(cue(&[]).is_err()); // infinite loop (phantom zero bits)
+        assert!(cue(&[0x00]).is_err()); // infinite loop in rub's zero-run scan
+        let mut long_run = vec![0u8; 9]; // 72 zero bits then ones:
+        long_run.push(0xFF); // shift-overflow panic in rub
+        assert!(cue(&long_run).is_err());
+        // 0x55 = LSB-first bits 1,0,1,0… = an endless nest of cell tags:
+        // stack overflow in the recursive cue
+        assert!(cue(&vec![0x55; 200_000]).is_err());
+    }
+
+    #[test]
+    fn lick_query_refuses_metacharacters() {
+        // the nexus splits the query on raw '&'/'=', so a name carrying either
+        // would silently retarget the op. The guard fires before any I/O.
+        let t = LickTransport::new("/nonexistent/lattice/sock", "~zod");
+        for bad in ["a&b", "a=b", "x&", "=y"] {
+            let e = t.get_bytes("/x", &[("name", bad)]).unwrap_err();
+            assert_eq!(e.code, 400, "{bad} must be refused with 400");
+        }
+    }
+
+    #[test]
+    fn frame_roundtrip_over_a_socketpair() {
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+        let n = cell(num(200), cord("# a page body\n"));
+        send_frame(&mut a, "res", &n).unwrap();
+        assert_eq!(recv_frame(&mut b).unwrap(), n);
+        // and a wrong version byte is rejected, not misread as a length
+        a.write_all(&[1, 0, 0, 0, 0]).unwrap();
+        assert!(recv_frame(&mut b).is_err());
+    }
+
+    // ---------- property tests ----------
+
+    use proptest::prelude::*;
+
+    fn noun_strategy() -> impl Strategy<Value = Noun> {
+        let leaf = proptest::collection::vec(any::<u8>(), 0..48).prop_map(|v| Noun::Atom(trim(v)));
+        leaf.prop_recursive(6, 64, 4, |inner| {
+            (inner.clone(), inner).prop_map(|(h, t)| cell(h, t))
+        })
+    }
+
+    proptest! {
+        // the round-trip law: every noun survives jam -> cue byte-identically
+        #[test]
+        fn jam_cue_roundtrip(n in noun_strategy()) {
+            prop_assert_eq!(cue(&jam(&n)).unwrap(), n);
+        }
+
+        // total on ANY byte string: a corrupt frame may error, never
+        // panic, hang, overflow a shift, or overflow the stack
+        #[test]
+        fn cue_is_total_on_arbitrary_bytes(data in proptest::collection::vec(any::<u8>(), 0..512)) {
+            let _ = cue(&data);
+        }
+
+        // a name is refused iff it carries a query metacharacter
+        #[test]
+        fn lick_name_guard_is_exact(name in ".*") {
+            let t = LickTransport::new("/nonexistent/lattice/sock", "~zod");
+            let e = t.get_bytes("/x", &[("name", &name)]).unwrap_err();
+            if name.contains('&') || name.contains('=') {
+                prop_assert_eq!(e.code, 400);
+            } else {
+                // reaches the (dead) socket: a connect error, never the guard
+                prop_assert_ne!(e.code, 400);
+            }
+        }
     }
 }

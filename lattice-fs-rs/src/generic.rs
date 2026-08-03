@@ -1,30 +1,30 @@
 //! GenericProjection: mount ANY grubbery ball tree (another nexus, an arbitrary
-//! sub-path) — not just lattice's /page. Browses/reads via grubbery's generic
+//! sub-path), not just lattice's /page. Browses/reads via grubbery's generic
 //! ball API (no lattice route knowledge), so grep/cat work over any nexus.
 //!
 //! Writes overwrite an EXISTING grub in place via grubbery's own `edit_file` MCP
 //! tool: read the current text, replace it whole, blot preserved, atomic (no
 //! delete-first, so a rejected conversion leaves the old grub intact). This is
-//! the same "writable file" path the operator has — permission is the owner's,
+//! the same "writable file" path the operator has. Permission is the owner's,
 //! the mechanism is grubbery's. `rm` maps to `delete_grub`. Creating a *new*
-//! grub is refused (EROFS): a foreign nexus's correct blot can't be inferred
+//! grub is refused (EROFS). A foreign nexus's correct blot can't be inferred
 //! from bytes, and a wrong blot yields a broken grub. Grubs with no text/mime
 //! conversion fail the edit cleanly (EIO), never corrupt.
 //!
 //! Supported reliably: read, whole-file OVERWRITE (an editor's save, `>`), and
 //! `rm`. NOT reliable: append / partial writes (`>>`, `tee -a`). A grub's mark
 //! may normalize its text (e.g. hoon strips a trailing newline), so the byte
-//! length exposed as /txt need not equal the stored bytes — an offset-based
+//! length exposed as /txt need not equal the stored bytes. An offset-based
 //! append then lands at the wrong place. Overwrite is immune because it replaces
 //! the whole content, which is what editors do. Emptying a grub via the mount is
-//! also a no-op by design (see write()); use `rm` to remove one.
+//! also a no-op by design (see write()). Use `rm` to remove one.
 //!
-//! Wire (HTTP only — the generic API is not on lick):
+//! Wire (HTTP only, since the generic API is not on lick):
 //!   GET  /grubbery/api/tree/<root>            -> {neck, files:{name:mark}, dirs:{name:{...}}}
 //!   GET  /grubbery/api/file/<root>/<rel>?blot=/txt   -> the grub's text form (edit-consistent)
 //!   GET  /grubbery/api/file/<root>/<rel>?blot=/json  -> semantic value, when there's no text tube
 //!   POST /grubbery/mcp  (edit_file / delete_grub)    -> in-place overwrite / remove
-//! `/txt` is read first: it's what edit_file overwrites, and a mark with no text
+//! `/txt` is read first. It's what edit_file overwrites, and a mark with no text
 //! tube 400s cleanly (whereas /json falls back to the multi-MB raw jam).
 
 use std::collections::HashMap;
@@ -60,7 +60,7 @@ impl GenericProjection {
         split_rel(&self.root, rel)
     }
 
-    /// Call a grubbery MCP tool over HTTP. Returns Ok on success; maps a JSON-RPC
+    /// Call a grubbery MCP tool over HTTP. Returns Ok on success. Maps a JSON-RPC
     /// error to EIO carrying the server's message.
     fn mcp(&self, tool: &str, args: Value) -> Result<(), PErr> {
         let body = json!({
@@ -75,7 +75,7 @@ impl GenericProjection {
             return Err(PErr::new(libc::EIO, msg.to_string()));
         }
         // MCP also signals tool failure as result.isError with the message in
-        // content — treat that as an error too, not a silent success.
+        // content. Treat that as an error too, not a silent success.
         let res = v.get("result");
         if res.and_then(|r| r.get("isError")).and_then(Value::as_bool) == Some(true) {
             let msg = res
@@ -124,7 +124,7 @@ impl Projection for GenericProjection {
     }
 
     fn list(&self) -> Result<Vec<Node>, PErr> {
-        // structure only; sizes are filled by dump() (which the core warms from).
+        // structure only. Sizes are filled by dump() (which the core warms from).
         Ok(self
             .nodes()?
             .into_iter()
@@ -135,7 +135,7 @@ impl Projection for GenericProjection {
                 kind: String::new(),
                 size: 0,
                 mtime: now(),
-                readonly: is_dir, // files editable in place; dirs aren't
+                readonly: is_dir, // files editable in place. Dirs aren't
             })
             .collect())
     }
@@ -143,7 +143,7 @@ impl Projection for GenericProjection {
     fn read(&self, rel: &str) -> Result<Vec<u8>, PErr> {
         // /txt is the grub's text form: readable AND exactly what edit_file matches,
         // so read and write stay consistent. A mark with no text tube returns a
-        // clean 400 ("No tube") — fall back to /json for a semantic, read-only view
+        // clean 400 ("No tube"). Fall back to /json for a semantic, read-only view
         // (an @t grub's source, a struct's json). /json is NOT used first because a
         // mark with no json tube falls back to the multi-MB raw jam instead of erroring.
         match self.t.get_bytes(&self.file_path(rel), &[("blot", "/txt")]) {
@@ -161,9 +161,9 @@ impl Projection for GenericProjection {
     }
 
     fn dump(&self) -> Result<(Vec<Node>, HashMap<String, Vec<u8>>), PErr> {
-        // No bulk endpoint for a generic tree: walk it, then read each grub (read()
-        // picks /txt, falling back to /json — small, not the raw jam). A grub that
-        // won't render gets a placeholder so the tree stays browsable.
+        // No bulk endpoint for a generic tree. Walk it, then read each grub.
+        // read() picks /txt, falling back to /json (small, not the raw jam).
+        // A grub that won't render gets a placeholder so the tree stays browsable.
         let mut nodes = Vec::new();
         let mut bodies = HashMap::new();
         for (rel, is_dir) in self.nodes()? {
@@ -218,9 +218,9 @@ impl Projection for GenericProjection {
         if new.is_empty() {
             // Never set a generic grub empty via the mount. An editor's O_TRUNC
             // arrives as a truncate-to-0 commit *before* the real bytes land, and
-            // edit_file (a diff, not a set) can't rebuild a grub from empty — so
+            // edit_file (a diff, not a set) can't rebuild a grub from empty. So
             // honoring the empty commit would wipe it and the next commit couldn't
-            // recover. Skip it; the following commit carries the real content.
+            // recover. Skip it. The following commit carries the real content.
             // `rm` (delete_grub) is how you actually remove a grub.
             return Ok(());
         }
@@ -239,8 +239,8 @@ impl Projection for GenericProjection {
     }
 
     fn delete(&self, rel: &str) -> Result<(), PErr> {
-        // Folders need delete_folder — delete_grub silently no-ops on them (it
-        // even claims "Deleted"). Only empty dirs get here: the core's rmdir
+        // Folders need delete_folder. delete_grub silently no-ops on them (it
+        // even claims "Deleted"). Only empty dirs get here. The core's rmdir
         // returns ENOTEMPTY for populated ones.
         if self.nodes()?.iter().any(|(r, is_dir)| *is_dir && r == rel) {
             return self.mcp("delete_folder", json!({"path": format!("/{}/{}", self.root, rel)}));
@@ -253,7 +253,7 @@ impl Projection for GenericProjection {
         Err(PErr::new(libc::EROFS, "generic mount: rename not supported"))
     }
 
-    // A generic grub has no lattice kind; present everything as .txt so grep/cat
+    // A generic grub has no lattice kind. Present everything as .txt so grep/cat
     // and editors treat it as text (the ?blot=/json read yields text/json text).
     fn ext_for_kind(&self, _kind: &str) -> &'static str {
         "txt"

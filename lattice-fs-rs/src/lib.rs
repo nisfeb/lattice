@@ -20,7 +20,7 @@ pub use vfs::GrubberyFs;
 /// Where to root the mounted tree. A value like `notes` or `page/notes` or the
 /// full ball path `/apps/lattice.lattice_app/page/notes` mounts a lattice
 /// sub-tree (keeps all page semantics). Any other absolute ball path
-/// (`/apps/obelisk.obelisk_app`, …) is a generic tree — a different nexus.
+/// (`/apps/obelisk.obelisk_app`, …) is a generic tree, a different nexus.
 pub enum Root {
     Lattice(String), // sub-root under /page ("" = whole tree)
     Generic(String), // full ball path
@@ -46,7 +46,7 @@ pub fn default_cookie_path() -> String {
     format!("{home}/.config/lattice-fs/cookie")
 }
 
-/// Build a projection over the Eyre (HTTP) transport only — the desktop
+/// Build a projection over the Eyre (HTTP) transport only, the desktop
 /// shell's path. The CLI keeps its lick branch in main.rs.
 pub fn projection_http(
     url: &str,
@@ -64,7 +64,7 @@ pub fn projection_http(
     }
 }
 
-/// Build a projection over the lick (unix-socket) transport — a ship running
+/// Build a projection over the lick (unix-socket) transport, a ship running
 /// on THIS machine. No cookie and no +code: the socket lives inside the pier,
 /// so being able to open it is the authorization.
 ///
@@ -100,7 +100,7 @@ pub fn mount_config() -> fuser::Config {
     config
 }
 
-/// Background mount: returns a handle; dropping it unmounts.
+/// Background mount: returns a handle. Dropping it unmounts.
 pub fn spawn(
     proj: Arc<dyn Projection>,
     mnt: &str,
@@ -126,5 +126,22 @@ mod tests {
             resolve_root("/apps/foo.foo_app"),
             Root::Generic(s) if s == "apps/foo.foo_app"
         ));
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        // total over anything a config file or CLI can hand it, and the
+        // resolved root is always normalized (no leading/trailing slashes),
+        // which the projections' path building depends on
+        #[test]
+        fn resolve_root_is_total_and_normalized(val in ".*") {
+            let s = match resolve_root(&val) {
+                Root::Lattice(s) => s,
+                Root::Generic(s) => s,
+            };
+            prop_assert!(!s.starts_with('/'), "{:?} kept a leading slash", s);
+            prop_assert!(!s.ends_with('/'), "{:?} kept a trailing slash", s);
+        }
     }
 }

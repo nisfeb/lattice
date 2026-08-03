@@ -32,3 +32,6 @@ __pycache__/
 # Claude Code session dir
 .claude/
 node_modules
+
+# cargo-mutants scratch output
+mutants.out/

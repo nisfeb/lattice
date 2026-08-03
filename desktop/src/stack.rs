@@ -4,9 +4,9 @@
 //! they are three different kinds of thing:
 //!
 //!   %mcp       a DESK (agent %mcp-server) that binds eyre at /mcp. It is the
-//!              bootstrap: with it we can drive a ship remotely, without it we
+//!              bootstrap. With it we can drive a ship remotely, without it we
 //!              can only tell the user to install it.
-//!   %grubbery  a DESK whose agent serves /grubbery/… — the framework lattice
+//!   %grubbery  a DESK whose agent serves /grubbery/…, the framework lattice
 //!              runs inside.
 //!   lattice    NOT a desk: an app folder in grubbery's ball, serving /apps/
 //!              lattice. Committing its source installs nothing (see
@@ -15,7 +15,7 @@
 //!
 //! The discriminator for "not there" is 307. An unbound eyre path redirects to
 //! /apps/landscape/, which the ops doc calls out as looking exactly like "the
-//! app isn't installed" — here that IS what it means, but it means a 307 must
+//! app isn't installed". Here that IS what it means, but it means a 307 must
 //! never be read as success.
 
 use serde::Serialize;
@@ -35,13 +35,13 @@ pub struct Stack {
     /// serverInfo.name from the MCP handshake, e.g. "~tyr urbit mcp server".
     /// Present only when the handshake really succeeded.
     pub mcp_server: Option<String>,
-    /// set when the ship could not be reached at all — very different from
+    /// set when the ship could not be reached at all, very different from
     /// "reached it and nothing is installed", and must not read as the latter
     pub error: Option<String>,
 }
 
-/// A bound route answered. 307 means eyre had no binding; 404 likewise.
-/// Anything else — including 403 and 406 — proves something is listening.
+/// A bound route answered. 307 means eyre had no binding. 404 likewise.
+/// Anything else (including 403 and 406) proves something is listening.
 fn bound(status: u16) -> bool {
     status != UNBOUND && status != 404
 }
@@ -49,7 +49,7 @@ fn bound(status: u16) -> bool {
 /// One JSON-RPC tools/call against the ship's %mcp endpoint.
 ///
 /// The transport answers as an SSE stream ("data: {json}") even for a single
-/// reply, and it requires the Accept header — without it the server 406s. A
+/// reply, and it requires the Accept header. Without it the server 406s. A
 /// tool that fails reports `isError` inside a 200, so the HTTP status alone
 /// says nothing about whether the work happened.
 pub fn mcp_call(base: &str, tool: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
@@ -117,7 +117,7 @@ fn get_status(agent: &ureq::Agent, url: &str) -> Result<u16, String> {
 
 /// Real MCP `initialize` handshake, not just "something answered /mcp".
 /// Returns serverInfo.name on success. The Accept header is required by the
-/// MCP transport — without it the server answers 406 and a status-only probe
+/// MCP transport. Without it the server answers 406 and a status-only probe
 /// would call that "present" on the strength of an error.
 fn mcp_handshake(agent: &ureq::Agent, base: &str) -> Option<String> {
     let mut req = agent
@@ -128,7 +128,7 @@ fn mcp_handshake(agent: &ureq::Agent, base: &str) -> Option<String> {
         req = req.set("cookie", &c);
     }
     // ponytail: hand-rolled body string rather than enabling ureq's `json`
-    // feature for one request — the payload is fixed and has nothing to escape.
+    // feature for one request. The payload is fixed and has nothing to escape.
     let body = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2024-11-05","capabilities":{{}},"clientInfo":{{"name":"lattice-desktop","version":"{}"}}}}}}"#,
         env!("CARGO_PKG_VERSION")

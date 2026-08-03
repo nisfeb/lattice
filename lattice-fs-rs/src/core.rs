@@ -3,7 +3,7 @@
 //! fuser is inode-based, so we keep an ino<->path table on top of a virtual
 //! tree (vpath -> entry) built once per 5s from projection.list(). Writes buffer
 //! in a per-fh handle and POST once on flush (one :w = one page-save). All state
-//! is behind one Mutex (fuser calls methods on &self, possibly concurrently);
+//! is behind one Mutex (fuser calls methods on &self, possibly concurrently).
 //! HTTP calls happen OUTSIDE the lock so a slow save never blocks the mutex.
 
 use std::collections::{HashMap, HashSet};
@@ -21,13 +21,13 @@ use crate::projection::{Node, PErr, Projection};
 
 const TTL: Duration = Duration::from_secs(1); // kernel entry/dir-attr cache
 // Files get a zero attr cache so the kernel re-stats before it computes an
-// O_APPEND offset from the size — otherwise an append within TTL of a prior write
+// O_APPEND offset from the size. Otherwise an append within TTL of a prior write
 // seeks to a stale EOF and corrupts the file. Cheap: getattr is served from RAM
 // and the read hot-path uses the body cache, not stat.
 const FILE_TTL: Duration = Duration::from_secs(0);
 const TREE_TTL: Duration = Duration::from_secs(5);
-const RECENT_TTL: Duration = Duration::from_secs(10); // grace window for the recent-mutation ledger // our vtree refresh floor (watch() is a no-op; this is the only floor)
-const READ_CACHE_MAX: usize = 256 * 1024 * 1024; // body-cache ceiling; past it, degrade to lazy read
+const RECENT_TTL: Duration = Duration::from_secs(10); // grace window for the recent-mutation ledger // our vtree refresh floor (watch() is a no-op, so this is the only floor)
+const READ_CACHE_MAX: usize = 256 * 1024 * 1024; // body-cache ceiling. Past it, degrade to lazy read
 
 #[derive(Clone, Copy, PartialEq)]
 enum VKind {
@@ -60,7 +60,7 @@ struct State {
     read_cache_bytes: usize,              // running total, for the READ_CACHE_MAX ceiling
     warm: bool,                           // a dump has landed at least once
     refresh_pending: bool,                // a background refresh is already in flight
-    write_gen: u64,                       // bumped on every mutation; guards stale dump swaps
+    write_gen: u64,                       // bumped on every mutation. Guards stale dump swaps
     handles: HashMap<u64, Handle>,        // fh -> handle
     next_fh: u64,
     pending_trunc: HashMap<u64, u64>, // ino -> size (handle-less truncate deferred to open)
@@ -68,8 +68,8 @@ struct State {
     // vpath -> (when, alive). The ship acks a save before a BRAND-NEW page is
     // visible to page-dump, so a snapshot taken in that window lacks it (and,
     // symmetrically, may still carry a just-deleted one). Swaps consult this
-    // ledger: within RECENT_TTL a snapshot can't evict a created entry or
-    // resurrect a deleted one. Entries age out; steady state is empty.
+    // ledger. Within RECENT_TTL a snapshot can't evict a created entry or
+    // resurrect a deleted one. Entries age out. Steady state is empty.
     recent: HashMap<String, (Instant, bool)>,
 }
 
@@ -104,7 +104,7 @@ impl GrubberyFs {
             recent: HashMap::new(),
         }));
         // watch thread: invalidate on external change. Best-effort (Eyre is a
-        // no-op) — the 5s TTL poll is the guaranteed freshness floor.
+        // no-op). The 5s TTL poll is the guaranteed freshness floor.
         let wst = st.clone();
         let wproj = proj.clone();
         std::thread::spawn(move || {
@@ -118,7 +118,7 @@ impl GrubberyFs {
             wproj.watch(&on_change);
         });
         // warm thread: one page-dump seeds the whole vtree + every body up front,
-        // so grep/cat run from RAM. Async — new() returns immediately. If a FUSE op
+        // so grep/cat run from RAM. Async. new() returns immediately. If a FUSE op
         // beats it, ensure_fresh() cold-blocks on the same one dump (not N reads).
         // Generation-guarded: if that cold path won AND a write already landed, this
         // (older) snapshot must not swap in and resurrect the pre-write body.
@@ -147,7 +147,7 @@ impl GrubberyFs {
     /// yet) blocks once on a single dump so the first op isn't empty. Steady state
     /// serves the current (possibly stale) vtree and kicks a background dump when
     /// past TREE_TTL, coalesced by refresh_pending. The background swap is
-    /// discarded if a write moved write_gen while the dump was in flight — else a
+    /// discarded if a write moved write_gen while the dump was in flight. Else a
     /// stale snapshot would resurrect an edited body or a just-deleted entry.
     fn ensure_fresh(&self) {
         if !self.st.lock().unwrap().warm {
@@ -164,7 +164,7 @@ impl GrubberyFs {
             }
         };
         if !go {
-            return; // serve the current vtree — zero network on the FUSE path
+            return; // serve the current vtree, zero network on the FUSE path
         }
         let st = self.st.clone();
         let proj = self.proj.clone();
@@ -209,8 +209,8 @@ impl GrubberyFs {
         }
         let data = self.proj.read(rel)?;
         let mut s = self.st.lock().unwrap();
-        // re-check under the lock: a concurrent body() for the same rel may have
-        // fetched and inserted while we were on the wire — inserting again would
+        // re-check under the lock. A concurrent body() for the same rel may have
+        // fetched and inserted while we were on the wire. Inserting again would
         // double-count the bytes and slowly rot the cap accounting.
         if !s.read_cache.contains_key(rel) {
             let add = rel.len() + data.len();
@@ -300,7 +300,7 @@ impl GrubberyFs {
             h.dirty = false;
             h.new = false;
         }
-        // Update the vt node's size NOW — the re-dump is async, and until it lands
+        // Update the vt node's size NOW. The re-dump is async, and until it lands
         // stat would report the pre-write size (create() seeds 0). The kernel
         // computes an O_APPEND offset from that stale size, so an append following
         // a write would land at the wrong offset and overwrite instead of append.
@@ -318,7 +318,7 @@ impl GrubberyFs {
         }
         s.vt_ts = None;
         s.write_gen += 1; // supersede any in-flight dump swap (stale-swap guard)
-        // The buffer IS the page's content now — install it rather than evicting,
+        // The buffer IS the page's content now. Install it rather than evicting,
         // so a read in the ship's brief new-page-visibility window never sees
         // empty/stale bytes (and post-write reads skip a round-trip entirely).
         match s.read_cache.insert(rel.clone(), buf.clone()) {
@@ -335,9 +335,9 @@ impl GrubberyFs {
 
 /// Editor scratch/temp files that must NEVER map onto a page. A backup like
 /// `foo.md~` otherwise resolves (last-dot strip) to page `foo`, so removing the
-/// backup deletes the page — the sidecar data-loss bug. Rule: a known page
-/// extension, or no extension (a bare hoon page), is a real file; anything else
-/// — an unknown extension, or a trailing `~` — is an editor temp, handled
+/// backup deletes the page, the sidecar data-loss bug. Rule: a known page
+/// extension, or no extension (a bare hoon page), is a real file. Anything
+/// else (an unknown extension, or a trailing `~`) is an editor temp, handled
 /// ephemerally in the FUSE layer and never sent to the ship. Covers vim/emacs
 /// backups (`foo.md~`), swap files (`.foo.md.swp`), and atomic-save temps.
 fn is_scratch(name: &str) -> bool {
@@ -394,7 +394,7 @@ fn now_secs() -> i64 {
 }
 
 // An open handle's buffer is the authoritative current content (loaded fresh via
-// body() at open, or truncated/written since) — report its length regardless of
+// body() at open, or truncated/written since). Report its length regardless of
 // the dirty flag. The vtree node's size can lag a write (the re-dump is async), so
 // an append that opened right after a write would otherwise seek to a stale offset
 // and corrupt the file.
@@ -446,7 +446,7 @@ fn file_attr(ino: u64, size: u64, mtime: SystemTime, readonly: bool, uid: u32, g
 
 /// Build the virtual tree from a node list (port of the Python _build).
 /// Cap a warm dump's bodies at `limit` bytes so a large tree can't OOM the
-/// client: keep bodies until the running total would exceed the cap, drop the
+/// client. Keep bodies until the running total would exceed the cap, drop the
 /// rest (body() lazily fetches those on demand). Deterministic across runs by
 /// caching smallest-first, so the cache holds as many whole files as fit.
 fn cap_bodies(bodies: HashMap<String, Vec<u8>>, limit: usize) -> (HashMap<String, Vec<u8>>, usize) {
@@ -465,10 +465,10 @@ fn cap_bodies(bodies: HashMap<String, Vec<u8>>, limit: usize) -> (HashMap<String
     (out, bytes)
 }
 
-/// Install a freshly-dumped snapshot — as a MERGE, not a blind replace. The
-/// recent-mutation ledger overrides the snapshot both ways: a just-created
-/// entry the (lagging) snapshot lacks is carried forward from the old vt (with
-/// its cached body), and a just-deleted one it still carries is stripped.
+/// Install a freshly-dumped snapshot, as a MERGE, not a blind replace. The
+/// recent-mutation ledger overrides the snapshot both ways. A just-created
+/// entry the (lagging) snapshot lacks is carried forward from the old vt,
+/// with its cached body. A just-deleted one it still carries is stripped.
 fn apply_swap(
     s: &mut State,
     mut vt: HashMap<String, VEntry>,
@@ -483,8 +483,8 @@ fn apply_swap(
                     vt.insert(path.clone(), e.clone());
                 }
             }
-            // carry the cached body when the snapshot has none for this rel —
-            // the old cache holds the exact bytes of the recent write.
+            // carry the cached body when the snapshot has none for this rel.
+            // The old cache holds the exact bytes of the recent write.
             if let Some(rel) = vt.get(path).and_then(|e| e.node.as_ref()).map(|n| n.rel.clone()) {
                 if !cache.contains_key(&rel) {
                     if let Some(b) = s.read_cache.get(&rel) {
@@ -749,7 +749,7 @@ impl Filesystem for GrubberyFs {
                 }
             })
             .collect();
-        // editor temp files live in the scratch map, not the vtree — list them too
+        // editor temp files live in the scratch map, not the vtree. List them too
         // so an editor sees its own backup/swap while it's working.
         for vp in s.scratch.keys() {
             let par = match vp.rfind('/') {
@@ -1062,7 +1062,7 @@ impl Filesystem for GrubberyFs {
                 }
             };
             let path = join(&parent_path, &name);
-            // scratch file: drop it from the FUSE layer only — NEVER proj.delete,
+            // scratch file: drop it from the FUSE layer only. NEVER proj.delete,
             // which (via the last-dot strip) would delete the page it shadows.
             if is_scratch(&name) {
                 s.scratch.remove(&path);
@@ -1103,7 +1103,7 @@ impl Filesystem for GrubberyFs {
         };
         // POSIX: a non-empty directory is ENOTEMPTY. Without this, rmdir of a
         // populated lattice folder would pass straight to page-del and take the
-        // whole subtree with it (rm -r still works: it empties, then rmdirs).
+        // whole subtree with it (rm -r still works because it empties, then rmdirs).
         {
             let s = self.st.lock().unwrap();
             let prefix = format!("{path}/");
@@ -1175,7 +1175,7 @@ impl Filesystem for GrubberyFs {
                 Ok(())
             } else if src_scratch {
                 // atomic save: temp -> real page. Promote the scratch bytes.
-                // create only when the destination doesn't exist — an atomic save
+                // create only when the destination doesn't exist. An atomic save
                 // ONTO an existing page is an overwrite (create=true would 409 on
                 // lattice / EROFS on generic, failing every VS Code-style save).
                 let v = self.st.lock().unwrap().scratch.remove(&src_path).unwrap_or_default();
@@ -1183,7 +1183,7 @@ impl Filesystem for GrubberyFs {
             } else {
                 // backup-by-rename: page -> temp name. Snapshot the page's current
                 // body into the scratch map and KEEP the page (the editor rewrites
-                // it next); never delete it, so there is no data-loss window.
+                // it next). Never delete it, so there is no data-loss window.
                 let v = self.body(&src_rel).unwrap_or_default();
                 self.st.lock().unwrap().scratch.insert(dst_path.clone(), v);
                 Ok(())
@@ -1198,7 +1198,7 @@ impl Filesystem for GrubberyFs {
                         s.vt.remove(&src_path);
                     }
                     if !src_scratch {
-                        // page -> temp: the page stays; refresh so the new content lands
+                        // page -> temp: the page stays. Refresh so the new content lands
                         s.vt_ts = None;
                     }
                     if src_scratch && !dst_scratch {
@@ -1245,13 +1245,13 @@ mod tests {
 
     #[test]
     fn scratch_classifies_editor_temp_files() {
-        // real pages — must NOT be scratch (they map to a page and persist)
+        // real pages: must NOT be scratch (they map to a page and persist)
         for real in ["foo.md", "foo.gmi", "foo.html", "foo.txt", "foo.js", "foo.css", "foo.hoon", "notes"] {
             assert!(!is_scratch(real), "{real} should be a real page file");
         }
-        // editor temp files — MUST be scratch (never map onto a page)
+        // editor temp files: MUST be scratch (never map onto a page)
         for tmp in [
-            "foo.md~",       // vim/emacs backup — the reported data-loss case
+            "foo.md~",       // vim/emacs backup, the reported data-loss case
             "foo.gmi~",
             ".foo.md.swp",   // vim swap
             ".foo.md.swo",
@@ -1267,7 +1267,7 @@ mod tests {
     #[test]
     fn cap_bodies_bounds_the_cache() {
         // three 100-byte bodies (key ~1 byte each), cap at 250 bytes -> only two
-        // whole files fit; the cache never exceeds the cap, and it degrades by
+        // whole files fit. The cache never exceeds the cap, and it degrades by
         // dropping files (not truncating one), so overflow reads lazily later.
         let mut b = HashMap::new();
         b.insert("a".to_string(), vec![0u8; 100]);
@@ -1289,5 +1289,116 @@ mod tests {
         b.insert("y".to_string(), vec![0u8; 10]);
         let (cache, _) = cap_bodies(b, 1_000_000);
         assert_eq!(cache.len(), 2);
+    }
+
+    // ---------- property tests ----------
+
+    use super::{build_vt, join, leaf_of, resize};
+    use crate::projection::Node;
+    use proptest::prelude::*;
+
+    proptest! {
+        // total over any name (unicode, dots anywhere, empty), and the two
+        // hard rules: a trailing '~' is ALWAYS scratch (the vim-backup
+        // data-loss case), a known page extension NEVER is
+        #[test]
+        fn is_scratch_is_total(name in ".*") {
+            let s = is_scratch(&name);
+            if name.ends_with('~') {
+                prop_assert!(s, "{} must be scratch (backup suffix)", name);
+            }
+        }
+
+        #[test]
+        fn known_extensions_are_never_scratch(
+            stem in "[a-zA-Z0-9 ._-]*",
+            ext in proptest::sample::select(vec!["md", "gmi", "html", "txt", "js", "css", "hoon"]),
+        ) {
+            let name = format!("{stem}.{ext}");
+            prop_assert!(!is_scratch(&name), "{} is a real page file", name);
+        }
+
+        // the cache never exceeds its cap, holds only whole bodies, accounts
+        // its bytes exactly, and is deterministic across runs
+        #[test]
+        fn cap_bodies_respects_the_cap(
+            bodies in proptest::collection::hash_map(
+                "[a-z/]{0,8}",
+                proptest::collection::vec(any::<u8>(), 0..64),
+                0..16,
+            ),
+            limit in 0usize..600,
+        ) {
+            let input = bodies.clone();
+            let (cache, bytes) = cap_bodies(bodies, limit);
+            prop_assert!(bytes <= limit);
+            let sum: usize = cache.iter().map(|(k, v)| k.len() + v.len()).sum();
+            prop_assert_eq!(bytes, sum, "accounting must match contents");
+            for (k, v) in &cache {
+                prop_assert_eq!(&input[k], v, "a cached body is never truncated");
+            }
+            let (cache2, bytes2) = cap_bodies(input, limit);
+            prop_assert_eq!(cache, cache2, "deterministic across runs");
+            prop_assert_eq!(bytes, bytes2);
+        }
+
+        // every entry build_vt makes must have its parent directory present,
+        // whatever the projection's rels look like (empty segments, dots,
+        // unicode, dirs shadowing files) — an orphan would be unreachable
+        // via readdir yet still occupy an inode
+        #[test]
+        fn build_vt_never_orphans_an_entry(
+            rels in proptest::collection::vec(("[a-zA-Z0-9/._~ ]{0,16}", any::<bool>()), 0..12),
+        ) {
+            let nodes: Vec<Node> = rels
+                .into_iter()
+                .map(|(rel, is_dir)| Node {
+                    rel,
+                    is_dir,
+                    is_page: !is_dir,
+                    kind: "md".into(),
+                    size: 0,
+                    mtime: 0,
+                    readonly: false,
+                })
+                .collect();
+            let vt = build_vt(&nodes, |_| "md");
+            prop_assert!(vt.contains_key("/"));
+            for k in vt.keys() {
+                if k == "/" {
+                    continue;
+                }
+                prop_assert!(k.starts_with('/'), "vpath {} must be absolute", k);
+                let parent = match k.rfind('/') {
+                    Some(0) => "/".to_string(),
+                    Some(i) => k[..i].to_string(),
+                    None => "/".to_string(),
+                };
+                prop_assert!(vt.contains_key(&parent), "{} orphaned: no {}", k, parent);
+            }
+        }
+
+        // resize is exact, prefix-preserving, and zero-fills growth (a
+        // truncate/extend must never expose stale bytes)
+        #[test]
+        fn resize_is_exact(orig in proptest::collection::vec(any::<u8>(), 0..64), sz in 0u64..256) {
+            let mut b = orig.clone();
+            resize(&mut b, sz);
+            prop_assert_eq!(b.len(), sz as usize);
+            let keep = orig.len().min(sz as usize);
+            prop_assert_eq!(&b[..keep], &orig[..keep]);
+            prop_assert!(b[keep..].iter().all(|&x| x == 0));
+        }
+
+        // join/leaf_of roundtrip: the leaf of a joined path is the name
+        #[test]
+        fn join_leaf_roundtrip(
+            parent in proptest::sample::select(vec!["/", "/a", "/a/b", "/deep/er/tree"]),
+            name in "[a-zA-Z0-9. _~-]{1,12}",
+        ) {
+            let joined = join(parent, &name);
+            prop_assert_eq!(leaf_of(&joined), name.as_str());
+            prop_assert!(joined.starts_with(parent));
+        }
     }
 }

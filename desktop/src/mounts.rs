@@ -1,5 +1,5 @@
-//! In-process fuse mounts. Each live mount is a fuser::BackgroundSession;
-//! dropping the session unmounts, so removing from the map IS the unmount.
+//! In-process fuse mounts. Each live mount is a fuser::BackgroundSession.
+//! Dropping the session unmounts, so removing from the map IS the unmount.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -12,7 +12,7 @@ use crate::config::{self, MountSpec};
 /// mountpoint -> (root, live session)
 pub struct MountMap(pub Mutex<HashMap<String, (String, fuser::BackgroundSession)>>);
 
-/// macOS needs macFUSE installed; Linux needs fusermount3 on PATH.
+/// macOS needs macFUSE installed. Linux needs fusermount3 on PATH.
 pub fn fuse_check() -> (bool, String) {
     #[cfg(target_os = "macos")]
     {
@@ -46,7 +46,7 @@ pub fn status() -> Status {
     Status { fuse_available, hint }
 }
 
-/// Build the projection for a mount. A `sock` selects lick — a ship on this
+/// Build the projection for a mount. A `sock` selects lick, a ship on this
 /// machine, reachable with no URL, no +code and no cookie, because opening the
 /// socket inside the pier IS the authorization. Otherwise HTTP against the
 /// configured ship, which does need a session.
@@ -115,7 +115,7 @@ pub fn remove_mount(
 
 #[tauri::command]
 pub fn list_mounts(app: AppHandle, map: State<MountMap>) -> Vec<MountSpec> {
-    // the live sessions are the truth about what is mounted; the config
+    // the live sessions are the truth about what is mounted. The config
     // carries how each one is reached, so the list can say "over lick".
     let cfg = config::load(&app);
     map.0
@@ -161,4 +161,23 @@ fn expand_home(p: &str) -> String {
         }
     }
     p.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_home;
+    use proptest::prelude::*;
+
+    proptest! {
+        // total over any user-typed mountpoint, expands exactly the "~/"
+        // prefix (against $HOME), and touches nothing else
+        #[test]
+        fn expand_home_is_exact(p in ".*") {
+            let out = expand_home(&p);
+            match (p.strip_prefix("~/"), std::env::var("HOME")) {
+                (Some(rest), Ok(home)) => prop_assert_eq!(out, format!("{home}/{rest}")),
+                _ => prop_assert_eq!(out, p),
+            }
+        }
+    }
 }

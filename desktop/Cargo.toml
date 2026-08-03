@@ -17,3 +17,7 @@ lattice-fs = { path = "../lattice-fs-rs" }
 # the localhost bridge relays webview traffic to the ship (same build as
 # lattice-fs's transport: rustls, no json/cookies)
 ureq = { version = "2", default-features = false, features = ["tls"] }
+
+[dev-dependencies]
+# property tests only. Never in a release build.
+proptest = "1.7"

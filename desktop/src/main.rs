@@ -15,7 +15,7 @@ use tauri::Manager;
 
 /// Restore saved mounts. Each one carries how it is reached (a lick socket, or
 /// HTTP against the configured ship), so a local-pier mount survives a restart
-/// with no session in play. A failure is reported and skipped: one dead pier
+/// with no session in play. A failure is reported and skipped. One dead pier
 /// must not cost the other mounts.
 fn remount(handle: &tauri::AppHandle, cfg: &config::Config) {
     let map = handle.state::<mounts::MountMap>();
@@ -36,7 +36,7 @@ fn remount(handle: &tauri::AppHandle, cfg: &config::Config) {
 fn main() {
     // webkit2gtk's dmabuf renderer crashes some Wayland stacks outright
     // ("Error 71 (Protocol error) dispatching to Wayland display"). Opt out
-    // there — but ONLY there: the fallback is software rendering, and paying
+    // there, but ONLY there. The fallback is software rendering, and paying
     // it on X11/XWayland sessions made the whole UI feel sluggish for nothing.
     #[cfg(target_os = "linux")]
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
@@ -65,7 +65,7 @@ fn main() {
             app.set_menu(tauri::menu::MenuBuilder::new(app).items(&[&sub]).build()?)?;
             let handle = app.handle().clone();
             // LATTICE_AUTOCONNECT="url,+code": drive the real connect flow
-            // without a display — the headless test harness's entry point.
+            // without a display, the headless test harness's entry point.
             if let Ok(spec) = std::env::var("LATTICE_AUTOCONNECT") {
                 if let Some((u, c)) = spec.split_once(',') {
                     let h = handle.clone();
@@ -75,21 +75,21 @@ fn main() {
                         let r = tauri::async_runtime::block_on(commands::connect(h.clone(), u, c));
                         commands::dlog(&format!("autoconnect: {r:?}"));
                         // LATTICE_AUTOMANAGER=1: after connect, drive the
-                        // menu's ship-page -> manager-page navigation — the
+                        // menu's ship-page -> manager-page navigation, the
                         // headless check for the app-protocol round trip
                         if std::env::var_os("LATTICE_AUTOMANAGER").is_some() {
                             std::thread::sleep(std::time::Duration::from_secs(8));
                             commands::show_manager(&h).ok();
                         }
                         // LATTICE_AUTOSTACK=1: report what is installed on the
-                        // ship we just logged in to — the headless check for
+                        // ship we just logged in to, the headless check for
                         // the %mcp / %grubbery / lattice probe.
                         if std::env::var_os("LATTICE_AUTOSTACK").is_some() {
                             let s = tauri::async_runtime::block_on(stack::stack_status(h.clone()));
                             let _ = s;
                         }
                         // LATTICE_AUTONAV=/path: follow the connect with a
-                        // fresh top-level navigation — the headless harness's
+                        // fresh top-level navigation, the headless harness's
                         // regression check for the 403-on-navigation class
                         if let Ok(nav) = std::env::var("LATTICE_AUTONAV") {
                             std::thread::sleep(std::time::Duration::from_secs(8));
@@ -117,7 +117,7 @@ fn main() {
                     commands::open_workspace(&h, false).ok();
                 });
             }
-            // remount OUTSIDE the url check: a lick mount is a local pier and
+            // remount OUTSIDE the url check. A lick mount is a local pier and
             // needs no configured ship at all, so it must come back on launch
             // even when nothing is connected over HTTP.
             remount(&handle, &cfg);

@@ -1,19 +1,19 @@
 //! Installing %grubbery on the logged-in ship.
 //!
-//! Distribution is Ames, not git: %base has no HTTP client generator and no
+//! Distribution is Ames, not git. %base has no HTTP client generator and no
 //! git, so the only native install is `|install ~ship %desk` pulling the desk
 //! from a publishing ship. %mcp wraps exactly that generator, so one tool call
 //! starts it. (Grubbery does ship a real Hoon git client, but it is grubbery's
 //! own code and so cannot be what installs grubbery.)
 //!
-//! `|install` returns immediately and the desk lands later — sometimes minutes
+//! `|install` returns immediately and the desk lands later, sometimes minutes
 //! later, over Ames, on a pier that serializes. So the command pokes it and
-//! then WATCHES, reporting as it goes; the honest completion signal is
+//! then WATCHES, reporting as it goes. The honest completion signal is
 //! grubbery answering its own route, not the poke being accepted.
 
 use tauri::{AppHandle, Emitter};
 
-/// the ship we publish %grubbery from; the user can point this anywhere
+/// the ship we publish %grubbery from. The user can point this anywhere
 pub const DEFAULT_DISTRIBUTOR: &str = "~nisfeb";
 
 /// how long to wait for the desk to arrive before giving up. Ames transfers of
@@ -24,7 +24,7 @@ const WAIT_SECS: u64 = 600;
 pub struct Progress {
     /// one line for the log the user is watching
     pub line: String,
-    /// running | ok | failed — drives the status chip, not just the text
+    /// running | ok | failed. Drives the status chip, not just the text
     pub state: String,
     /// seconds since the install started, so the UI can show it ticking
     pub secs: u64,
@@ -37,7 +37,7 @@ fn say(app: &AppHandle, t0: std::time::Instant, state: &str, line: impl Into<Str
         secs: t0.elapsed().as_secs(),
     };
     crate::commands::dlog(&format!("install[{}] {}", p.state, p.line));
-    // the manager page listens for these; a failure to emit must not abort the
+    // the manager page listens for these. A failure to emit must not abort the
     // install itself, so the result is deliberately dropped
     let _ = app.emit("install-progress", p);
 }
@@ -54,7 +54,7 @@ pub async fn install_grubbery(app: AppHandle, ship: Option<String>) -> Result<St
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| DEFAULT_DISTRIBUTOR.to_string());
-    // a bare @p is the only thing |install accepts; catching it here beats a
+    // a bare @p is the only thing |install accepts. Catching it here beats a
     // hoon parse error surfacing as an opaque tool failure
     if !valid_ship(&from) {
         return Err(format!("{from} is not a ship name — try {DEFAULT_DISTRIBUTOR}"));
@@ -91,7 +91,7 @@ pub async fn install_grubbery(app: AppHandle, ship: Option<String>) -> Result<St
             }
         }
 
-        // |install is asynchronous: the poke returns long before the desk does.
+        // |install is asynchronous. The poke returns long before the desk does.
         // Grubbery answering its own route is the only claim worth making.
         let mut last = String::new();
         loop {
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn distributor_default_is_itself_valid() {
-        // the default is what the prompt shows; if it were malformed every
+        // the default is what the prompt shows. If it were malformed every
         // first-run install would fail on our own validation
         assert!(valid_ship(DEFAULT_DISTRIBUTOR));
     }

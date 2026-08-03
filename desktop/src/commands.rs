@@ -1,4 +1,4 @@
-//! Connect flow: one +code entry logs in both sides — the Rust login stores
+//! Connect flow: one +code entry logs in both sides. The Rust login stores
 //! the shared fuse cookie, and open_workspace drives the webview through the
 //! ship's own /~/login form so eyre sets its session cookie first-party.
 
@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::config;
 
-/// stderr diagnostics, on when LATTICE_LOG is set — costs nothing otherwise
+/// stderr diagnostics, on when LATTICE_LOG is set. Costs nothing otherwise
 /// and makes "it 403s on my machine" debuggable from a pasted terminal log.
 pub fn dlog(msg: &str) {
     if std::env::var_os("LATTICE_LOG").is_some() {
@@ -35,7 +35,7 @@ pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String
     Ok(ship)
 }
 
-/// manager page's "open lattice" button — back to the ship UI.
+/// manager page's "open lattice" button, back to the ship UI.
 #[tauri::command]
 pub fn go_home(app: AppHandle) -> Result<(), String> {
     open_workspace(&app, false)
@@ -56,7 +56,7 @@ pub fn show_manager(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// The single window is always BORN on manager.html: the app-page protocol
+/// The single window is always BORN on manager.html. The app-page protocol
 /// handler only attaches to webviews created on an app URL, and a window
 /// born on the bridge origin cannot navigate back to the shell's pages
 /// ("Could not connect to tauri.localhost").
@@ -79,12 +79,12 @@ pub struct ConnStatus {
     pub ship: Option<String>,
     pub connected: bool,
     /// set when we could not reach the ship at all (as opposed to being
-    /// reachable but unauthenticated) — the two need different advice
+    /// reachable but unauthenticated). The two need different advice
     pub error: Option<String>,
 }
 
 /// What the connection page shows. A configured URL is NOT the same as being
-/// logged in, which is exactly what the page used to get wrong: it rendered
+/// logged in, which is exactly what the page used to get wrong. It rendered
 /// the login form whenever it had nothing better to say, so an already-
 /// connected ship looked logged out. Async: this makes a real request.
 #[tauri::command]
@@ -116,7 +116,7 @@ pub async fn connection_status(app: AppHandle) -> ConnStatus {
 #[derive(serde::Serialize)]
 pub struct PickedFile {
     /// slash-separated path relative to the pick, folder name included for
-    /// folder picks — mirrors webkitRelativePath so the web upload path
+    /// folder picks. Mirrors webkitRelativePath so the web upload path
     /// builds the same tree.
     pub rel: String,
     pub text: String,
@@ -125,7 +125,7 @@ pub struct PickedFile {
 /// Native upload picker for the ship-served workspace (webkit2gtk has no
 /// webkitdirectory, so the web folder picker is dead on Linux). Picks files
 /// or a folder, reads only extensions the UI supports, returns the text.
-/// The page never sees a path or fs handle — one user-driven dialog per call.
+/// The page never sees a path or fs handle. One user-driven dialog per call.
 /// Async so the blocking dialog runs off the main thread.
 #[tauri::command]
 pub async fn pick_upload(app: AppHandle, dir: bool, exts: Vec<String>) -> Vec<PickedFile> {
@@ -189,9 +189,9 @@ fn push_file(path: &std::path::Path, rel: String, out: &mut Vec<PickedFile>) {
 }
 
 /// Open (or reuse) the workspace on the localhost bridge. The webview only
-/// ever talks to 127.0.0.1; the bridge relays to the ship with the fuse
-/// session cookie attached Rust-side, so no webkit cookie behavior — site
-/// pinning, third-party policy, SW-mediated fetch — can ever unauthenticate
+/// ever talks to 127.0.0.1. The bridge relays to the ship with the fuse
+/// session cookie attached Rust-side, so no webkit cookie behavior (site
+/// pinning, third-party policy, SW-mediated fetch) can ever unauthenticate
 /// a view again. `fresh` (a new connect) also clears browsing data so stale
 /// service workers and caches from earlier sessions cannot linger.
 pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
@@ -200,10 +200,10 @@ pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
         return Err("connect to a ship first".into());
     }
     let local = crate::proxy::ensure(app.state::<crate::proxy::Bridge>().inner(), &cfg.url)?;
-    // land on the editor, not the reader. This is a workspace: opening the
+    // land on the editor, not the reader. This is a workspace. Opening the
     // reader first made reaching the editor a SECOND full document load
     // (16KB shell + 124KB of JS), so "first click" cost a whole page load.
-    // urb:// links still route to the reader — see the navigation guard.
+    // urb:// links still route to the reader. See the navigation guard.
     let home: tauri::Url = format!("{local}/apps/lattice/app")
         .parse()
         .map_err(|e| format!("{e}"))?;
@@ -229,18 +229,18 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
         .disable_drag_drop_handler()
         // a webview without browser chrome has no other way to zoom
         .zoom_hotkeys_enabled(true)
-        // keep the workspace on the bridge (or the shell's own pages); any
-        // other top-level navigation opens in the system browser — the
+        // keep the workspace on the bridge (or the shell's own pages). Any
+        // other top-level navigation opens in the system browser. The
         // webview has no back button or url bar to escape from
         .on_navigation(move |u| {
             // local shell pages: tauri:// (macOS) or http://tauri.localhost (Linux)
             if u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost") {
                 return true;
             }
-            // in-page pseudo-navigations (the preview iframe is srcdoc-based;
-            // some webkits run every frame through this policy hook) — never
-            // route these to the system opener, it popups "Could not read
-            // file about:src:doc."
+            // in-page pseudo-navigations (the preview iframe is srcdoc-based,
+            // and some webkits run every frame through this policy hook).
+            // Never route these to the system opener. That popups "Could not
+            // read file about:src:doc."
             if matches!(u.scheme(), "about" | "blob" | "data") {
                 return true;
             }
@@ -270,7 +270,7 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
                 });
             };
             let local = bridge.map(|p| format!("http://127.0.0.1:{p}"));
-            // urb:// names stay in the app — the ship's reader resolves them
+            // urb:// names stay in the app. The ship's reader resolves them
             if let (Some(local), "urb") = (&local, u.scheme()) {
                 if let Ok(mut t) = format!("{local}/apps/lattice").parse::<tauri::Url>() {
                     t.query_pairs_mut().clear().append_pair("url", u.as_str());
@@ -279,7 +279,7 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
                 return false;
             }
             // absolute links to the ship's real origin re-route through the
-            // bridge — hitting the ship directly would arrive cookieless
+            // bridge. Hitting the ship directly would arrive cookieless
             let cfg = config::load(&handle);
             if tauri::Url::parse(&cfg.url).is_ok_and(|ship| ship.origin() == u.origin()) {
                 if let Some(local) = &local {
@@ -290,8 +290,8 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
                 }
                 return false;
             }
-            // only things a system handler can sensibly open leave the app;
-            // anything else is silently blocked (an opener error is a popup)
+            // only things a system handler can sensibly open leave the app.
+            // Anything else is silently blocked (an opener error is a popup)
             if matches!(u.scheme(), "http" | "https" | "mailto" | "tel") {
                 use tauri_plugin_opener::OpenerExt;
                 handle.opener().open_url(u.as_str(), None::<&str>).ok();

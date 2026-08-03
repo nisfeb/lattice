@@ -166,7 +166,7 @@ impl Projection for LatticeProjection {
         let mut body = data.to_vec();
         if create {
             q.push(("new", "1"));
-            // page-save 400s on an empty body for non-index kinds; seed a newline
+            // page-save 400s on an empty body for non-index kinds. Seed a newline
             // (the editor overwrites it on the real flush).
             if kind != "index" && body.is_empty() {
                 body = b"\n".to_vec();
@@ -236,9 +236,9 @@ fn parse_dump(v: &Value) -> Result<(Vec<Node>, HashMap<String, Vec<u8>>), PErr> 
         let kind = n.get("kind").and_then(|k| k.as_str()).unwrap_or("hoon").to_string();
         let mtime = da_to_unix(n.get("mtime").and_then(|m| m.as_str()).unwrap_or(""));
         let readonly = kind == "index";
-        // A present `body` is inlined: cache it, and derive size from the actual
+        // A present `body` is inlined. Cache it, and derive size from the actual
         // bytes (the st_size guard). A missing `body` means the server omitted an
-        // oversized page (dump-inline-max) — don't cache it (body() reads it on
+        // oversized page (dump-inline-max). Don't cache it (body() reads it on
         // demand), and trust the reported `size`, like list() already does.
         let size = match n.get("body").and_then(|b| b.as_str()) {
             Some(s) => {
@@ -262,7 +262,7 @@ fn now() -> i64 {
 }
 
 /// Parse an Urbit `@da` string '~2026.7.22..18.30.00..cafe' -> unix seconds
-/// (UTC). Whole-second precision; the sub-second `..hex` fraction is dropped.
+/// (UTC). Whole-second precision. The sub-second `..hex` fraction is dropped.
 /// Date-only '~2026.7.20' -> midnight UTC. Anything unparseable -> now.
 fn da_to_unix(da: &str) -> i64 {
     let s = match da.strip_prefix('~') {
@@ -288,13 +288,21 @@ fn da_to_unix(da: &str) -> i64 {
     let hh: i64 = tp.first().and_then(|x| x.parse().ok()).unwrap_or(0);
     let mm: i64 = tp.get(1).and_then(|x| x.parse().ok()).unwrap_or(0);
     let ss: i64 = tp.get(2).and_then(|x| x.parse().ok()).unwrap_or(0);
-    days_from_civil(y, mo, d) * 86400 + hh * 3600 + mm * 60 + ss
+    // saturating: the fields come off the wire, and an absurd one (an hour
+    // field near i64::MAX) must clamp, not overflow (a panic in debug builds)
+    days_from_civil(y, mo, d)
+        .saturating_mul(86400)
+        .saturating_add(hh.saturating_mul(3600))
+        .saturating_add(mm.saturating_mul(60))
+        .saturating_add(ss)
 }
 
 /// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
-/// algorithm) — avoids a chrono dependency for one conversion.
+/// algorithm). Avoids a chrono dependency for one conversion.
 fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y } as i64;
+    // widen BEFORE the March-shift: y comes off the wire, and i32::MIN - 1
+    // overflows i32 (a panic in debug builds)
+    let y = if m <= 2 { y as i64 - 1 } else { y as i64 };
     let era = (if y >= 0 { y } else { y - 399 }) / 400;
     let yoe = y - era * 400; // [0, 399]
     let m = m as i64;
@@ -310,7 +318,7 @@ mod tests {
 
     #[test]
     fn dump_size_from_bytes() {
-        // a folder node + a page node whose reported "size" LIES (999); the parsed
+        // a folder node + a page node whose reported "size" LIES (999). The parsed
         // size must equal the real body byte length, and the body must round-trip.
         let v = serde_json::json!({"nodes": [
             {"path": "a/b", "page": false},
@@ -336,7 +344,7 @@ mod tests {
             {"path": "small", "page": true, "kind": "md", "mtime": "~2026.7.20",
              "body": "hi", "size": 2},
             {"path": "big", "page": true, "kind": "md", "mtime": "~2026.7.20",
-             "size": 500000}, // no "body" — omitted by dump-inline-max
+             "size": 500000}, // no "body", omitted by dump-inline-max
         ]});
         let (nodes, bodies) = parse_dump(&v).unwrap();
         assert!(bodies.contains_key("small")); // small inlined + cached
@@ -369,5 +377,121 @@ mod tests {
     fn civil_epoch() {
         assert_eq!(days_from_civil(1970, 1, 1), 0);
         assert_eq!(days_from_civil(2000, 1, 1), 10957);
+    }
+
+    #[test]
+    fn da_extreme_fields_do_not_overflow() {
+        // each of these panicked (arithmetic overflow) before the saturating fix
+        let _ = da_to_unix("~2026.7.22..9223372036854775807.0.0");
+        let _ = da_to_unix("~-2147483648.1.1"); // i32::MIN year, March-shift y-1
+        let _ = da_to_unix("~2147483647.12.31..23.59.9223372036854775807");
+    }
+
+    // ---------- property tests ----------
+
+    use proptest::prelude::*;
+    use crate::transport::{TErr, Transport};
+
+    /// A transport that answers ship() and nothing else: strip/full are pure.
+    struct NullT;
+    impl Transport for NullT {
+        fn get_bytes(&self, _: &str, _: &[(&str, &str)]) -> Result<Vec<u8>, TErr> {
+            Err(TErr::new(0, "null transport"))
+        }
+        fn post(&self, _: &str, _: &[(&str, &str)], _: &[u8]) -> Result<Vec<u8>, TErr> {
+            Err(TErr::new(0, "null transport"))
+        }
+        fn ship(&self) -> Result<String, TErr> {
+            Ok("~test".into())
+        }
+    }
+
+    /// Hinnant's civil_from_days, the inverse of days_from_civil, so the
+    /// roundtrip law can be checked without trusting the code under test.
+    fn civil_from_days(z: i64) -> (i32, u32, u32) {
+        let z = z + 719468;
+        let era = if z >= 0 { z } else { z - 146096 } / 146097;
+        let doe = z - era * 146097;
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+        let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+        ((if m <= 2 { y + 1 } else { y }) as i32, m, d)
+    }
+
+    /// JSON that looks like (broken) ship output: the parser's own vocabulary
+    /// with wrong types, missing fields, and junk at every level.
+    fn dumpish_json() -> impl Strategy<Value = Value> {
+        let leaf = prop_oneof![
+            Just(Value::Null),
+            any::<bool>().prop_map(Value::Bool),
+            any::<i64>().prop_map(|n| serde_json::json!(n)),
+            "[ -~]{0,12}".prop_map(Value::String),
+        ];
+        leaf.prop_recursive(4, 48, 4, |inner| {
+            let key = proptest::sample::select(vec![
+                "nodes", "path", "page", "kind", "mtime", "body", "size", "junk",
+            ]);
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..4).prop_map(Value::Array),
+                proptest::collection::hash_map(key, inner, 0..5)
+                    .prop_map(|m| Value::Object(m.into_iter().map(|(k, v)| (k.to_string(), v)).collect())),
+            ]
+        })
+    }
+
+    proptest! {
+        // a ship's mtime string is wire data: any string at all must parse to
+        // SOME i64, never panic (overflow was a real panic in debug builds)
+        #[test]
+        fn da_is_total(s in ".*") {
+            let _ = da_to_unix(&s);
+        }
+
+        #[test]
+        fn da_is_total_on_numeric_extremes(
+            y in any::<i64>(), mo in any::<i64>(), d in any::<i64>(),
+            hh in any::<i64>(), mm in any::<i64>(), ss in any::<i64>(),
+        ) {
+            let _ = da_to_unix(&format!("~{y}.{mo}.{d}..{hh}.{mm}.{ss}"));
+            let _ = da_to_unix(&format!("~{y}.{mo}.{d}"));
+        }
+
+        // the calendar roundtrip law over ±~2.7 millennia of days
+        #[test]
+        fn civil_days_roundtrip(days in -1_000_000i64..1_000_000) {
+            let (y, m, d) = civil_from_days(days);
+            prop_assert_eq!(days_from_civil(y, m, d), days);
+        }
+
+        // parse_dump consumes network JSON: total over arbitrary shapes, and
+        // when it accepts, every cached body's node size equals its byte length
+        #[test]
+        fn parse_dump_is_total_and_sizes_match(v in dumpish_json()) {
+            if let Ok((nodes, bodies)) = parse_dump(&v) {
+                for (rel, body) in &bodies {
+                    let n = nodes.iter().find(|n| &n.rel == rel);
+                    prop_assert!(n.is_some(), "body {rel} without a node");
+                    prop_assert_eq!(n.unwrap().size, body.len() as u64);
+                }
+            }
+        }
+
+        // sub-root mapping law: what full() prefixes, strip() removes
+        #[test]
+        fn strip_inverts_full(root in "[a-z0-9/]{0,12}", rel in "[a-z0-9/]{0,12}") {
+            let p = LatticeProjection::new(Box::new(NullT), &root).unwrap();
+            prop_assert_eq!(p.strip(&p.full(&rel)), Some(rel));
+        }
+
+        // and a path outside the sub-root never maps in
+        #[test]
+        fn strip_rejects_outside_paths(root in "[a-z0-9]{1,8}", path in "[a-z0-9/]{0,12}") {
+            let p = LatticeProjection::new(Box::new(NullT), &root).unwrap();
+            let inside = path == root || path.starts_with(&format!("{root}/"));
+            prop_assert_eq!(p.strip(&path).is_some(), inside);
+        }
     }
 }

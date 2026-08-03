@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use crate::transport::{TErr, Transport};
 
 pub struct EyreTransport {
-    base: String, // bare Eyre base; login is at /~/login
+    base: String, // bare Eyre base. Login is at /~/login
     cookie: Mutex<Option<String>>,
     cookie_path: String,
 }
@@ -27,7 +27,7 @@ impl EyreTransport {
         }
     }
 
-    /// POST /~/login with the +code; keep only the derived urbauth cookie.
+    /// POST /~/login with the +code. Keep only the derived urbauth cookie.
     pub fn login(&self, code: Option<String>) -> Result<(), TErr> {
         let code = code
             .or_else(|| std::env::var("LATTICE_CODE").ok())
@@ -102,7 +102,7 @@ impl EyreTransport {
             }
             Err(ureq::Error::Status(code, _)) => {
                 if (code == 401 || code == 403) && retry {
-                    self.login(None)?; // cookie expired — re-auth once
+                    self.login(None)?; // cookie expired. Re-auth once
                     return self.do_req(method, path, query, body, false);
                 }
                 Err(TErr::new(code, format!("http {code}")))
@@ -147,4 +147,39 @@ fn urlencode(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::urlencode;
+    use proptest::prelude::*;
+
+    proptest! {
+        // every page name (any UTF-8 at all) must encode losslessly into the
+        // unreserved set + %XX escapes, and decode back to the same bytes.
+        // Anything else would corrupt a query value on the wire.
+        #[test]
+        fn urlencode_is_lossless_and_url_safe(s in ".*") {
+            let e = urlencode(&s);
+            let bytes = e.as_bytes();
+            let mut decoded = Vec::new();
+            let mut i = 0;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'%' => {
+                        prop_assert!(i + 2 < bytes.len(), "dangling %% in {}", e);
+                        let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap();
+                        decoded.push(u8::from_str_radix(hex, 16).expect("non-hex escape"));
+                        i += 3;
+                    }
+                    b @ (b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~') => {
+                        decoded.push(b);
+                        i += 1;
+                    }
+                    other => prop_assert!(false, "reserved byte {other:#x} leaked into {}", e),
+                }
+            }
+            prop_assert_eq!(decoded, s.as_bytes());
+        }
+    }
 }
