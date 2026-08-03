@@ -87,12 +87,19 @@ const UNICODE = [
 
 //  Unique markers so a reflection check can never false-positive on the app's
 //  own inline <script> tags.
+//  A probe MUST contain a character that correct escaping would have changed,
+//  otherwise it matches safe output and reports a phantom hole. `onerror=MARK`
+//  has no metacharacters at all, so it survives entity-escaping verbatim: it
+//  scored four CRITICALs against surfaces that were escaping correctly
+//  (value="&quot;&gt;&lt;img src=x onerror=MARK&gt;"). Every probe here now
+//  carries a raw '<' opening a tag, or a sink that is dangerous even when the
+//  value itself is inert (javascript: in an href).
 const XSS = [
   { tag: 'script', payload: '<script>FUZZMARKA</script>', probe: '<script>FUZZMARKA' },
-  { tag: 'imgattr', payload: '"><img src=x onerror=FUZZMARKB>', probe: 'onerror=FUZZMARKB' },
+  { tag: 'imgattr', payload: '"><img src=x onerror=FUZZMARKB>', probe: '<img src=x onerror=FUZZMARKB' },
   { tag: 'textarea', payload: '</textarea><b>FUZZMARKC</b>', probe: '</textarea><b>FUZZMARKC' },
   { tag: 'jsurl', payload: 'javascript:FUZZMARKD//', probe: 'href="javascript:FUZZMARKD' },
-  { tag: 'svgload', payload: "'><svg onload=FUZZMARKE>", probe: 'onload=FUZZMARKE' },
+  { tag: 'svgload', payload: "'><svg onload=FUZZMARKE>", probe: '<svg onload=FUZZMARKE' },
 ];
 
 const NUMERIC = ['-1', '0', '99999999999999999999', 'abc', '007', '1.024', '', ' ', '0x10', '1e9', '-0'];
@@ -279,6 +286,24 @@ async function assertRejectedAbsent(family, rejected) {
 //  assertion 4: reflected payloads must come back escaped.
 //  HTML surfaces only. A <script> inside a JSON string body served as
 //  application/json is data, not markup — flagging it is a false positive.
+//  Guard the guard. A probe that matches correctly-escaped output turns every
+//  clean surface into a CRITICAL, and a wrong alarm gets the whole run ignored.
+//  Runs before any request: costs nothing, and fails loudly rather than lying.
+function assertProbesSound() {
+  const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const broken = [];
+  for (const x of XSS) {
+    if (x.tag === 'jsurl') continue;   //  a sink probe: dangerous while inert
+    if (`<input value="${esc(x.payload)}">`.includes(x.probe)) broken.push(`${x.tag}: matches ESCAPED output`);
+    if (!`<input value="${x.payload}">`.includes(x.probe)) broken.push(`${x.tag}: misses RAW output`);
+  }
+  if (broken.length) {
+    console.error('fuzz-api: XSS probes are unsound, refusing to run:\n  ' + broken.join('\n  '));
+    process.exit(2);
+  }
+}
+
 function xssScan(family, surface, r, repro) {
   if (!/html/i.test(r.ct || '')) return false;
   const text = r.text;
@@ -837,6 +862,7 @@ async function cleanup(before) {
 // ── main ─────────────────────────────────────────────────────────────────
 
 async function main() {
+  assertProbesSound();
   console.log(`lattice fuzz-api — ${QUICK ? 'QUICK' : 'FULL'} mode`);
   console.log(`  target: ${URL_BASE}   namespace: ${P}   timeout: ${TIMEOUT_MS}ms\n`);
 
