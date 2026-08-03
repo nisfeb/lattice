@@ -186,6 +186,11 @@ has "marks page is searchable"    'id="bmq"'                  "$(G "$B/marks")"
 has "marks page row carries search text" "$P-title"           "$(G "$B/marks")"
 is "bookmarks gated"        403 "$(code "$B/bookmarks")"
 is "marks page gated"       403 "$(code "$B/marks")"
+# the home index has a urb:// address in its bar, so it must offer the star;
+# settings has no address, so it must not
+has "reader offers the bookmark star" 'class="bm"' "$(G "$B")"
+UBAR="$(G "$B/settings")"
+if printf '%s' "$UBAR" | grep -qF 'class="bm"'; then bad "no star on settings" "starred"; else ok "no star on settings"; fi
 is "unbookmark"             200 "$(sc -X POST "$B/unbookmark?url=$BM")"
 sleep 2
 UB="$(G "$B/bookmarks")"
