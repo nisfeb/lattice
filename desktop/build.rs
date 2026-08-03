@@ -13,6 +13,7 @@ fn main() {
             "get_config",
             "go_home",
             "pick_upload",
+            "open_external_url",
             "status",
             "add_mount",
             "remove_mount",
