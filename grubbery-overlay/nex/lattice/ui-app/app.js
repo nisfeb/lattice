@@ -290,9 +290,15 @@
     const segs = me.split('/');
     let n = 1;
     const tail = () => segs.slice(-n).join('/');
-    while (n < segs.length &&
-           all.some((q) => q !== p && strip(q).split('/').slice(-n).join('/') === tail()))
-      n++;
+    const clashes = () =>
+      all.some((q) => q !== p && strip(q).split('/').slice(-n).join('/') === tail());
+    while (n < segs.length && clashes()) n++;
+    // Out of segments and STILL ambiguous. strip() drops an optional "page/",
+    // so /…/page/foo and /…/foo both reduce to "foo" with nothing left to
+    // extend, and two different grants rendered identically in the ACL pane.
+    // Fall back to keeping that prefix, which is what actually distinguishes
+    // them. Showing a longer path beats showing the wrong one.
+    if (clashes()) return p.replace(/^\/apps\/lattice\.lattice_app\//, '');
     return (n < segs.length ? '\u2026/' : '') + tail();
   };
   const st = (msg, ok = true) => {
