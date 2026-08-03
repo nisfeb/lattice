@@ -125,7 +125,7 @@ pub async fn install_grubbery(app: AppHandle, ship: Option<String>) -> Result<St
 
 /// The ship we pull %grubbery FROM: what the user typed, or the default when
 /// they left the field alone. Their choice must never be silently swapped for
-/// ours — that would install software over Ames from a ship they did not pick.
+/// ours. That would install software over Ames from a ship they did not pick.
 fn distributor(ship: Option<String>) -> String {
     ship.map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())

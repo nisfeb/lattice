@@ -188,7 +188,7 @@ mod tests {
         // This walk runs on the main path of the local-ships panel, over a
         // home directory. If the depth stopped shrinking, or the skip list
         // stopped applying, it would descend node_modules and the whole tree
-        // below it — an unbounded scan on every open of the panel.
+        // below it, an unbounded scan on every open of the panel.
         let base = std::env::temp_dir().join(format!("lattice-walk-{}", std::process::id()));
         std::fs::remove_dir_all(&base).ok();
         let pier = |p: std::path::PathBuf| {

@@ -310,7 +310,7 @@ impl GrubberyFs {
 ///
 ///  - the vt node's size, because stat would otherwise report the pre-write
 ///    size (create() seeds 0) and the kernel computes an O_APPEND offset from
-///    it — an append right after a write would land at the wrong offset and
+///    it. An append right after a write would land at the wrong offset and
 ///    overwrite instead of append;
 ///  - write_gen, so an in-flight dump swap can't undo this write;
 ///  - the body cache, installed rather than evicted, so a read inside the
@@ -1295,7 +1295,7 @@ impl Filesystem for GrubberyFs {
 /// After a rename the kernel keeps the SOURCE inode under the destination
 /// name, so the ino<->path tables have to move with it. Without this the next
 /// stat of the destination resolves through the source inode to the old vpath
-/// — which the rename just removed — and returns ENOENT. An editor that saves
+/// (which the rename just removed) and returns ENOENT. An editor that saves
 /// by writing a temp and renaming it into place (VS Code, `:w` with
 /// `backupcopy=no`) then sees the file it just wrote disappear.
 fn remap_ino(s: &mut State, src: &str, dst: &str) {
@@ -1421,7 +1421,7 @@ mod tests {
 
         // every entry build_vt makes must have its parent directory present,
         // whatever the projection's rels look like (empty segments, dots,
-        // unicode, dirs shadowing files) — an orphan would be unreachable
+        // unicode, dirs shadowing files). An orphan would be unreachable
         // via readdir yet still occupy an inode
         #[test]
         fn build_vt_never_orphans_an_entry(

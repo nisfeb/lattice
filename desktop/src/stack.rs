@@ -228,7 +228,7 @@ mod tests {
         assert!(!s.mcp && s.mcp_server.is_none(), "no handshake, no %mcp");
 
         // an unreachable ship must read as an error, NEVER as "nothing
-        // installed" — that would nag the user to reinstall a working ship
+        // installed". That would nag the user to reinstall a working ship
         let s = probe("http://127.0.0.1:1");
         assert!(s.checked, "we tried");
         assert!(s.error.is_some(), "unreachable must be reported as unreachable");

@@ -49,7 +49,7 @@ the connection page until a ship is configured, then lives on the ship UI.
 
 Once configured it opens straight on the editor. Landing on the reader made
 reaching the editor a second full page load. The bridge listens on a fixed
-port (41863, or the next free one in a 16-wide range). That is deliberate and
+port (26500, or the next free one in a 16-wide range). That is deliberate and
 load-bearing, not cosmetic. The port is part of the webview's origin, and all
 web storage is keyed by origin, so an ephemeral port gave every launch an
 empty cache and made the desktop app slower than the same UI in a browser.

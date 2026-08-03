@@ -38,7 +38,7 @@ impl Seen {
 }
 
 pub struct Stub {
-    /// `http://127.0.0.1:<port>` — hand it to anything that takes a ship base
+    /// `http://127.0.0.1:<port>`, for anything that takes a ship base
     pub base: String,
     seen: Arc<Mutex<Vec<Seen>>>,
 }

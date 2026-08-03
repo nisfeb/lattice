@@ -6,13 +6,13 @@
 //  reflects a payload unescaped, and never stores a name it just rejected.
 //
 //  Usage:  node scripts/fuzz-api.mjs [--quick] [--verbose]
-//  Env:    LATTICE_URL     ship base (default http://localhost:8081 — the nec
+//  Env:    LATTICE_URL     ship base (default http://localhost:8081, the nec
 //                          harness). Refuses any non-loopback host: this
 //                          hammers a ship and must never touch production.
 //          LATTICE_COOKIE  cookie file (default ~/.config/lattice-fs/nec-cookie)
 //
 //  Cost: the pier serialises requests, and the render-heavy routes (the
-//  reader, /marks, the explorer) dominate — measured ~3s/request against the
+//  reader, /marks, the explorer) dominate. Measured ~3s/request against the
 //  nec harness, well above the ~0.45s floor a bare page-tree costs.
 //    full    ~560 requests -> ~20m wall clock (observed 652 req / 20m56s
 //                             before trimming; includes 2x the deliberate
@@ -262,7 +262,7 @@ async function tree() {
 }
 
 //  assertion 5: a name the server REJECTED must not have created anything.
-//  Takes the names that actually drew a 4xx — asserting against names the
+//  Takes the names that actually drew a 4xx. Asserting against names the
 //  server accepted (200) would mislabel an accept-policy question as a
 //  validation bypass, which is exactly the false positive this replaced.
 async function assertRejectedAbsent(family, rejected) {
@@ -285,7 +285,7 @@ async function assertRejectedAbsent(family, rejected) {
 
 //  assertion 4: reflected payloads must come back escaped.
 //  HTML surfaces only. A <script> inside a JSON string body served as
-//  application/json is data, not markup — flagging it is a false positive.
+//  application/json is data, not markup, so flagging it is a false positive.
 //  Guard the guard. A probe that matches correctly-escaped output turns every
 //  clean surface into a CRITICAL, and a wrong alarm gets the whole run ignored.
 //  Runs before any request: costs nothing, and fails loudly rather than lying.
@@ -346,7 +346,7 @@ async function famPageSave() {
     if (r.status >= 400) rejected.push(n);
     else if (r.status === 200 && /(^|\/)\.\.?(\/|$)/.test(String(n))) {
       //  Urbit paths treat `.` and `..` as ordinary knots, so this is NOT a
-      //  filesystem escape — the page really is named "..". But +name-pax
+      //  filesystem escape. The page really is named "..". But +name-pax
       //  admitting them means page-tree grows nodes whose paths look like
       //  traversal to every client that joins them with "/", and a user
       //  cannot reach or retype them.
@@ -406,7 +406,7 @@ async function famBatch() {
     await probe('page-save-batch', 'POST', '/page-save-batch?report=1', { body: mk(0) });
     //  all-or-nothing: a batch containing one name the server REJECTS must
     //  write neither item. Uses a name that genuinely fails +valid-name (an
-    //  empty segment), not a dot name — dots pass validation, so a dot batch
+    //  empty segment), not a dot name. Dots pass validation, so a dot batch
     //  is expected to land and proves nothing about atomicity.
     const rb = await probe('page-save-batch', 'POST', '/page-save-batch', {
       body: JSON.stringify([{ name: `${P}/good1`, type: 'md', body: 'x' },
@@ -657,7 +657,7 @@ async function famReader() {
   }
   //  /x/<ship>/<path>: the explorer consumes the rest of the path verbatim.
   //  Aim the path-handling cases at OUR OWN ship: a foreign ship short-circuits
-  //  straight into the remote peek, so it exercises ames, not path parsing —
+  //  straight into the remote peek, so it exercises ames, not path parsing.
   //  and burns +remote-timeout (~s30) per probe. Two foreign probes are kept
   //  deliberately, to pin that an unreachable peer still answers 504.
   const me = await ourShip() || '~nec';
@@ -683,7 +683,7 @@ async function famReader() {
   for (const f of (QUICK ? ['../etc'] : ['../etc', '%00', '', `${P}/note`, big(500), '..%2f..%2fetc', '.'])) {
     await probe('asset', 'GET', `/f/${f}`);
   }
-  //  /c/<path>: the unauthenticated clearweb surface — also probe with NO cookie
+  //  /c/<path>: the unauthenticated clearweb surface, also probed with NO cookie
   for (const c of (QUICK ? [`${P}/note`] : ['../etc', '%00', '', `${P}/note`, big(500), '..%2f..%2fetc', '.', 'a//b'])) {
     const r = await probe('clearweb', 'GET', `/c/${c}`, { noCookie: true });
     if (r.status === 200 && /html/.test(r.ct)) {

@@ -110,7 +110,7 @@ mod tests {
         }
 
         // save -> load is the identity for any field content (quotes,
-        // backslashes, unicode — everything JSON escaping must survive)
+        // backslashes, unicode, everything JSON escaping must survive)
         #[test]
         fn config_roundtrips(
             url in ".{0,32}",

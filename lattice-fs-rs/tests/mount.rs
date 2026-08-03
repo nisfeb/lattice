@@ -1,7 +1,7 @@
 //! The FUSE surface itself, over a real kernel mount.
 //!
 //! fuser's Reply types have no public constructor, so the `Filesystem` methods
-//! cannot be called in-process — the only way to exercise lookup/readdir/open/
+//! cannot be called in-process. The only way to exercise lookup/readdir/open/
 //! read/write/setattr/create/unlink/rmdir/rename is to mount and use ordinary
 //! file syscalls. That is also the only place the editor-safety rules
 //! (vim's backup-by-rename, VS Code's atomic save, `rm` of a `.swp`) are
@@ -395,7 +395,7 @@ fn exercise(mnt: &Path, ship: &Ship) {
 /// A page rel that tries to climb out of the mount can only ever be an
 /// unreachable vpath, never a host path. The vtree is a flat map keyed by
 /// absolute vpath and `lookup` only ever does `vt.get(join(parent, name))`,
-/// so there is no path traversal to exploit — but a ship is untrusted input,
+/// so there is no path traversal to exploit. But a ship is untrusted input,
 /// so pin the behaviour.
 #[test]
 fn a_hostile_page_name_cannot_reach_outside_the_mount() {

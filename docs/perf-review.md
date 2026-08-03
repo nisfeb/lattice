@@ -284,7 +284,7 @@ Fixed, in descending order of payoff:
     single start. The desktop could never reuse anything and never got
     `bootSnap()`'s paint-from-snapshot. That is precisely why it felt slower
     than the same UI in a browser, where the origin is stable. Now a
-    deterministic port (41863, probing a 16-wide range), and the listener is
+    deterministic port (26500, probing a 16-wide range), and the listener is
     re-pointed rather than rebound when the ship changes.
 31. **The app opened on the reader.** Reaching the editor was a SECOND full
     document load (16KB shell + 124KB of JS), so "first click" cost a whole

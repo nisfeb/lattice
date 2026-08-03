@@ -25,7 +25,15 @@ pub struct Bridge(pub Mutex<Option<(Arc<Mutex<String>>, u16)>>);
 /// UI on every start and never got the client's paint-from-snapshot. It was
 /// measurably slower than the same UI in a browser, which keeps its origin.
 /// A deterministic port is a stable origin, so the cache survives a restart.
-const PORT_BASE: u16 = 41863;
+///
+/// BELOW 32768 on purpose. Linux hands out ephemeral ports from 32768 upward
+/// (`net.ipv4.ip_local_port_range`), so the old 41863 sat inside that range:
+/// any unrelated outgoing connection could be holding it at launch, the bind
+/// would step to 41864, and the webview would come up on a DIFFERENT origin.
+/// Since the offline queue, the tree snapshot and the resume snapshot are all
+/// keyed by origin, that silently hid a user's queued edits. Found by mutation
+/// testing, which flagged the same overlap making the port test flaky.
+const PORT_BASE: u16 = 26500;
 const PORT_SPAN: u16 = 16;
 
 fn bind_stable() -> Result<(TcpListener, u16), String> {
@@ -333,7 +341,7 @@ mod tests {
         let ship = Stub::new(|_| (200, "saved".to_string()));
         let body = r#"{"page":"note","text":"body bytes that must survive the hop"}"#;
         let req = format!(
-            "POST /apps/lattice/save?id=7 HTTP/1.1\r\nhost: 127.0.0.1:41863\r\n\
+            "POST /apps/lattice/save?id=7 HTTP/1.1\r\nhost: 127.0.0.1:{PORT_BASE}\r\n\
              cookie: webview-junk=1\r\ncontent-length: {}\r\n\
              x-lattice-probe: keep-me\r\naccept-encoding: gzip\r\n\r\n{body}",
             body.len()
@@ -469,15 +477,16 @@ mod tests {
         }
     }
 
-    /// Wait for exclusive use of the bridge port range. Two things can hold a
-    /// port in it: another test process (several run at once under
-    /// cargo-mutants), and the kernel — 41863.. sits inside Linux's ephemeral
-    /// range, 32768-60999, so an outgoing connection from any process, and
-    /// these tests open plenty, can be handed one of these ports for a moment.
+    /// Wait for exclusive use of the bridge port range. What can hold a port in
+    /// it is another test process, several of which run at once under
+    /// cargo-mutants. The kernel is no longer a contender: PORT_BASE now sits
+    /// below the ephemeral floor (32768), so no outgoing connection can be
+    /// handed one of these ports. That overlap used to fail this test at random
+    /// and score mutants "caught" by the flake.
     ///
     /// So: take a port outside the asserted range as a cross-process lock (no
     /// dependency, no cleanup), then wait for the range itself to be clear.
-    /// The lock is deliberately never released — ensure() hands PORT_BASE to a
+    /// The lock is deliberately never released. ensure() hands PORT_BASE to a
     /// thread that owns it for the life of the process, so a claim ending with
     /// the test would let the next process in while this one still held it.
     fn claim_the_port_range() {
