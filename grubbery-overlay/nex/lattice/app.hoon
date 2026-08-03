@@ -1437,8 +1437,11 @@
       [%'POST' %page-del]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
-    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    ;<  ~  bind:m  (poke-eval [%del (pax-of u.name)])
+    ::  raw-name-pax, not valid-name: deletion stays able to remove a page whose
+    ::  name predates the dot-segment rule. Creation is where the rule belongs.
+    =/  dpax=(unit path)  (raw-name-pax u.name)
+    ?~  dpax  (send-err eyre-id 400 'bad name')
+    ;<  ~  bind:m  (poke-eval [%del u.dpax])
     (send-ok eyre-id)
   ::  page-move: server-side move/rename of a page or a whole folder subtree.
   ::  Replaces the old client choreography (page-source + page-save + page-del
@@ -7115,7 +7118,11 @@
 ::  +name-pax: a ?name= value (slash-separated, e.g. notes/todo) -> a validated
 ::  page path under /page, or ~. Each segment must be a non-empty @ta knot.
 ::
-++  name-pax
+::  +raw-name-pax: parse a name to a path WITHOUT the dot-segment check. Only
+::  deletion uses it. Tightening +name-pax would otherwise strand any page
+::  created before the check landed, because page-del validates the same way
+::  it writes, so bad names would become permanently undeletable.
+++  raw-name-pax
   |=  n=@t
   ^-  (unit path)
   =/  r  (mule |.(`path`(stab (crip (weld "/" (trip n))))))
@@ -7123,6 +7130,19 @@
   ?~  p.r  ~
   ?.  (levy `path`p.r |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))  ~
   `p.r
+++  name-pax
+  |=  n=@t
+  ^-  (unit path)
+  =/  r  (raw-name-pax n)
+  ?~  r  ~
+  ::  reject '.' and '..' segments. Both are ordinary @ta knots, so (sane %ta)
+  ::  admits them, and a page named '../../etc/passwd' is inert HERE (a knot is
+  ::  not a parent reference in a grubbery path) but page-tree then hands that
+  ::  string to every client. Anything that joins it onto a real filesystem
+  ::  path, the FUSE mount, an export, a static-site build, walks out of its
+  ::  own directory. Found by scripts/fuzz-api.mjs.
+  ?.  (levy u.r |=(seg=@ta &(!=('.' seg) !=('..' seg))))  ~
+  r
 ++  valid-name  |=(n=@t ^-(? ?=(^ (name-pax n))))
 ++  pax-of  |=(n=@t ^-(path (need (name-pax n))))
 ::  +pax-str: a page path -> its slash-separated string (no leading slash).

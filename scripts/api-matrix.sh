@@ -172,6 +172,21 @@ is "page-source-at gated"   403 "$(code "$B/page-source-at?name=$P/note&rev=1")"
 is "page-backlinks gated"   403 "$(code "$B/page-backlinks?name=$P/note")"
 is "page-forms gated"       403 "$(code -X POST "$B/page-forms?name=$P/note&on=1")"
 
+echo "==> page names: dot segments are refused (fuzz-api finding)"
+# '.' and '..' are ordinary @ta knots, so the sanity check alone admits them and
+# page-tree then hands clients a path that walks out of its own directory when
+# joined onto a real filesystem path.
+is "'..' segment refused"       400 "$(sc -X POST "$B/page-save?name=..%2Fetc&type=md&new=1" --data-binary '# x')"
+is "'.' segment refused"        400 "$(sc -X POST "$B/page-save?name=.%2F$P-dot&type=md&new=1" --data-binary '# x')"
+is "deep traversal refused"     400 "$(sc -X POST "$B/page-save?name=..%2F..%2F..%2Fetc%2Fpasswd&type=md&new=1" --data-binary '# x')"
+is "bare '..' refused"          400 "$(sc -X POST "$B/page-save?name=..&type=md&new=1" --data-binary '# x')"
+is "folder-new refuses too"     400 "$(sc -X POST "$B/folder-new?name=..%2Fetc")"
+NOESC="$(G "$B/page-tree")"
+if printf '%s' "$NOESC" | grep -qF '"../'; then bad "no traversal path in the tree" "found one"; else ok "no traversal path in the tree"; fi
+# deletion stays permissive on purpose, so a page that predates the rule is
+# still removable rather than stranded forever
+is "page-del still accepts a dot name" 200 "$(sc -X POST "$B/page-del?name=..%2Fnonexistent")"
+
 echo "==> bookmarks (folders + list + marks page)"
 BM="urb://~zod/$P-mark"
 is "bookmark with folder"   200 "$(sc -X POST "$B/bookmark?url=$BM&title=$P-title&folder=intel")"
