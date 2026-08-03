@@ -24,10 +24,10 @@ const show = (s) => JSON.stringify(s);
 // Drive it the way a keypress does: "|" marks the caret in the input, and the
 // expected string carries "|" where the caret must land. Reading a case is
 // then the same as reading what you would see on screen.
-function press(name, input, want) {
+function press(name, input, want, flavor) {
   const at = input.indexOf('|');
   const value = input.replace('|', '');
-  const r = listEnter(value, at, at);
+  const r = listEnter(value, at, at, flavor);
   let got;
   if (!r) got = input;   // null means Enter does its ordinary thing
   else {
@@ -195,6 +195,34 @@ pressRange('reaching past the end of the list',
 pressRange('reaching past a bullet list', '- one|\n- two\naf|ter', '- one\n- |ter');
 pressRange('a selection still renumbers what remains',
   '1. one|\n2. t|wo\n3. three', '1. one\n2. |wo\n3. three');
+
+console.log('\ngemtext is a different grammar, not markdown-lite');
+// Gemtext has exactly one list form: "* " at the very start of a line. No
+// ordered lists, no nesting, and a leading space makes the line ordinary
+// text. Continuing markdown markers here would write characters that gemtext
+// renders literally.
+const gmi = (n, i, w) => press(n, i, w, 'gmi');
+gmi('a star list continues', '* one|', '* one\n* |');
+gmi('the gap width is kept', '*   one|', '*   one\n*   |');
+gmi('an empty item ends the list', '* one\n* |', '* one\n|');
+gmi('text right of the caret moves down', '* one|two', '* one\n* |two');
+gmi('a dash is not a gemtext list', '- one|', '- one|');
+gmi('a plus is not a gemtext list', '+ one|', '+ one|');
+gmi('a number is not a gemtext list', '1. one|', '1. one|');
+gmi('an indented star is ordinary text', '  * one|', '  * one|');
+gmi('there is no nesting to step out of', '* one\n  * a|', '* one\n  * a|');
+gmi('the caret inside the marker defers', '*| one', '*| one');
+gmi('a link line is not a list', '=> urb://~zod/x label|', '=> urb://~zod/x label|');
+gmi('a heading is not a list', '## title|', '## title|');
+gmi('a quote is not a list', '> quoted|', '> quoted|');
+gmi('preformatted blocks are literal', '```\n* one|', '```\n* one|');
+gmi('a closed preformatted block hands control back',
+  '```\ncode\n```\n* one|', '```\ncode\n```\n* one\n* |');
+
+console.log('\nthe same text under markdown rules');
+// the contrast is the point: identical input, different grammar
+press('a dash IS a markdown list', '- one|', '- one\n- |');
+press('a star list also works in markdown', '* one|', '* one\n* |');
 
 console.log(fails ? `\n${fails} check(s) FAILED` : '\nall checks passed');
 process.exit(fails ? 1 : 0);

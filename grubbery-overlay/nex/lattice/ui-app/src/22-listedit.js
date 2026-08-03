@@ -8,7 +8,7 @@
   // Returns null when Enter should do its ordinary thing. Otherwise
   // {from, to, text, caret}: replace [from, to) with text, then put the caret
   // at `caret`.
-  const listEnter = (value, selStart, selEnd) => {
+  const listEnter = (value, selStart, selEnd, flavor) => {
     const TAB = 4;
     const width = (s) => s.replace(/\t/g, ' '.repeat(TAB)).length;
     // indent, then either a bullet or a number+delimiter, then the gap, then
@@ -24,9 +24,29 @@
       };
     };
     // A fenced block is literal text: a "- " in a shell snippet is not a list.
+    // In gemtext ``` toggles a preformatted block, which is the same rule.
     const before = value.slice(0, selStart);
     const fences = before.match(/^[ \t]*(?:```|~~~)/gm);
     if (fences && fences.length % 2 === 1) return null;
+
+    // Gemtext is not markdown with fewer features, it is a different grammar.
+    // Its ONLY list form is "* " at the very start of a line: no ordered
+    // lists, no nesting, and leading whitespace makes a line ordinary text.
+    // Continuing markdown markers here would write "- " and "2." that gemtext
+    // renders as literal characters, so it gets its own small rule set.
+    if (flavor === 'gmi') {
+      const gLineStart = before.lastIndexOf('\n') + 1;
+      let gLineEnd = value.indexOf('\n', selEnd);
+      if (gLineEnd === -1) gLineEnd = value.length;
+      const g = value.slice(gLineStart, gLineEnd).match(/^\* +/);
+      if (!g) return null;
+      if (selStart < gLineStart + g[0].length) return null;   // caret in the marker
+      if (!value.slice(gLineStart, gLineEnd).slice(g[0].length).trim()) {
+        return { from: gLineStart, to: gLineEnd, text: '', caret: gLineStart };
+      }
+      const gText = '\n' + g[0];
+      return { from: selStart, to: selEnd, text: gText, caret: selStart + gText.length };
+    }
 
     const lineStart = before.lastIndexOf('\n') + 1;
     let lineEnd = value.indexOf('\n', selEnd);

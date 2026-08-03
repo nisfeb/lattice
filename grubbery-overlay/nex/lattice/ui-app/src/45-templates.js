@@ -66,8 +66,11 @@
     // not a list item. Shift+Enter is the deliberate escape hatch, and it is
     // also what the browser gives a user who wants a plain newline.
     if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey
-        && !src.readOnly && (mode === 'know' || pkind.value === 'md' || pkind.value === 'text')) {
-      const r = listEnter(src.value, src.selectionStart, src.selectionEnd);
+        && !src.readOnly
+        && (mode === 'know' || ['md', 'text', 'gmi'].includes(pkind.value))) {
+      // know memories are prose, so they follow the markdown rules
+      const flavor = mode === 'know' ? 'md' : pkind.value;
+      const r = listEnter(src.value, src.selectionStart, src.selectionEnd, flavor);
       if (r) {
         e.preventDefault();
         src.setSelectionRange(r.from, r.to);
