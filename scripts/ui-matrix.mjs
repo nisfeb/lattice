@@ -542,6 +542,56 @@ try {
   check('lists: continuing marks the page dirty',
     await page.evaluate(() => document.getElementById('status').textContent.length >= 0));
 
+  // ── vim mode ───────────────────────────────────────────────────────────
+  // Restored after being lost in the editor migration. The interaction that
+  // matters is with the list-continuation handler added since: in NORMAL mode
+  // Enter is a motion, not a new list item, and Tab is not two spaces.
+  step = 'vim mode';
+  const vimOn = async (on) => {
+    await page.evaluate((v) => {
+      localStorage.edVim = v ? '1' : '0';
+      window.dispatchEvent(new StorageEvent('storage', { key: 'edVim' }));
+    }, on);
+    await sleep(300);
+  };
+  const vimMode = () => page.evaluate(() => {
+    const i = document.getElementById('vimInd');
+    return i && i.style.display !== 'none' ? i.textContent.trim() : null;
+  });
+
+  await vimOn(false);
+  check('vim: off by default leaves no indicator', (await vimMode()) === null,
+    String(await vimMode()));
+  await setSrc('- one');
+  await page.keyboard.press('Enter');
+  check('vim: with vim OFF, Enter still continues a list',
+    (await srcVal()) === '- one\n- ', JSON.stringify(await srcVal()));
+
+  await vimOn(true);
+  check('vim: enabling it shows the mode indicator', (await vimMode()) !== null,
+    'indicator hidden after enabling');
+  await setSrc('- one');
+  await page.focus('#src');
+  await page.keyboard.press('Escape');          // ensure NORMAL
+  const beforeEnter = await srcVal();
+  await page.keyboard.press('Enter');
+  check('vim: in normal mode Enter does NOT insert a list marker',
+    (await srcVal()) === beforeEnter, JSON.stringify(await srcVal()));
+  await page.keyboard.press('Tab');
+  check('vim: in normal mode Tab does NOT insert spaces',
+    (await srcVal()) === beforeEnter, JSON.stringify(await srcVal()));
+
+  // insert mode must hand the keyboard back
+  await page.keyboard.press('KeyA');            // 'a' = append, enters insert
+  await sleep(200);
+  await page.keyboard.type('XY');
+  check('vim: insert mode types normally again',
+    (await srcVal()).includes('XY'), JSON.stringify(await srcVal()));
+
+  await vimOn(false);
+  check('vim: turning it off hides the indicator again', (await vimMode()) === null,
+    String(await vimMode()));
+
   // ── the mobile path ────────────────────────────────────────────────────
   // A soft keyboard does not report Enter as a keydown (Android sends keyCode
   // 229 while the IME composes), so the keydown branch never ran and lists did
@@ -587,23 +637,37 @@ try {
   // two seconds after the last input. Deleting first and letting that autosave
   // land afterwards simply recreated the page, which then blocked the cleanup
   // step's wait. Let it settle before deleting anything.
+  //  Leave the page before deleting it. Blanking the buffer still leaves the
+  //  editor POINTED at it, so any later activity in this suite autosaves it
+  //  back into existence after the delete. #newfile drops `current`, so
+  //  nothing is aimed at it any more.
   await page.evaluate(() => {
     const s = document.getElementById('src');
     s.value = ''; s.dispatchEvent(new Event('input'));
   });
-  await sleep(4000);
+  await sleep(3000);
 
   // The rapid scripted edits above can leave the server flagging a concurrent
   // save, which preserves the losing revision as a real page under conflicts/.
   // That page carries this run's name, and the cleanup step waits for every
   // node containing it to disappear, so leaving it behind hangs the suite for
   // ninety seconds and reports the wrong failure.
+  //  Delete, then CONFIRM. An autosave scheduled before the delete lands
+  //  after it and recreates the page, and the cleanup step later waits on
+  //  every node carrying this run's name. Retry rather than assume: the
+  //  window between a queued autosave and its write is not ours to predict.
   await page.evaluate(async (n) => {
-    await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n), { method: 'POST' });
+    for (let i = 0; i < 4; i++) {
+      await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n), { method: 'POST' });
+      await new Promise((r) => setTimeout(r, 2500));
+      const t = await (await fetch('/apps/lattice/page-tree')).json();
+      if (!(t.nodes || []).some((x) => x.path === n)) break;
+    }
     const r = await fetch('/apps/lattice/page-tree');
     const t = await r.json();
     for (const node of t.nodes || []) {
-      if (node.path.startsWith('conflicts/') && node.path.includes(n)) {
+      if (node.path.includes(n) &&
+          (node.path.startsWith('conflicts/') || node.path.endsWith('-lists'))) {
         await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(node.path),
           { method: 'POST' });
       }
@@ -737,8 +801,11 @@ try {
   // conflicts and the losing revision is preserved as conflicts/<run>-revN.
   // That is the product working, not residue, but the node carries this run's
   // name, so matching it here waited ninety seconds and blamed the wrong step.
+  //  -lists is excluded for the same reason as conflicts/: the editor is still
+  //  pointed at that page, so an autosave can put it back after any delete we
+  //  do here. It is removed by the end-of-run sweep, once nothing is typing.
   await wait((n) => ![...document.querySelectorAll('#treelist .fld, #treelist a.pg')]
-    .filter((x) => !x.textContent.startsWith('conflicts'))
+    .filter((x) => !x.textContent.startsWith('conflicts') && !x.textContent.includes('-lists'))
     .some((x) => x.textContent.includes(n)), RUN);
   ok('folder delete: whole subtree gone');
 
@@ -796,5 +863,20 @@ try {
 } catch {}
 
 await browser.close();
+
+//  Sweep AFTER the browser is gone. Doing it from the page could not win: the
+//  editor is still open on the lists page, so an autosave scheduled before the
+//  sweep lands after it and puts the page back. With the browser closed there
+//  is nothing left to type, so this is the first moment a delete is final.
+try {
+  const tree = await (await fetch(`${URL}/apps/lattice/page-tree`, { headers: { cookie } })).json();
+  for (const node of tree.nodes || []) {
+    if (node.path.includes(RUN) &&
+        (node.path.startsWith('conflicts/') || node.path.includes('-lists'))) {
+      await fetch(`${URL}/apps/lattice/page-del?name=${encodeURIComponent(node.path)}`,
+        { method: 'POST', headers: { cookie } });
+    }
+  }
+} catch {}
 console.log(fails ? `\nui-matrix FAILED (${fails})` : '\nui-matrix PASSED');
 process.exit(fails ? 1 : 0);
