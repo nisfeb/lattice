@@ -86,6 +86,17 @@ try {
   });
   await wait(() => (document.getElementById('status').textContent || '').includes('waiting to sync'));
   check('a failed save queues, and the status says so', true);
+  //  The status line is overwritten by the next event, so it cannot be the
+  //  only signal that you are editing offline. The badge reports the CONDITION.
+  const badge = () => page.evaluate(() => {
+    const b = document.getElementById('offbadge');
+    return b ? { hidden: b.hidden, text: b.textContent, syncing: b.classList.contains('syncing') } : null;
+  });
+  const b1 = await badge();
+  check('the offline badge is showing', b1 && !b1.hidden, JSON.stringify(b1));
+  check('and it says offline, with the queue depth',
+    b1 && /offline/.test(b1.text) && /1 queued/.test(b1.text), JSON.stringify(b1));
+  check('and it is not in the syncing state yet', b1 && !b1.syncing, JSON.stringify(b1));
   check('the queue holds one record', await qCount() === 1, 'count=' + await qCount());
   check('the editor is clean, not stuck dirty',
     await page.evaluate(() => document.getElementById('status').textContent.includes('1 waiting')));
@@ -121,6 +132,8 @@ try {
   await wait(() => (document.getElementById('status').textContent || '').includes('synced'), );
   check('replay reports the sync', true);
   check('the queue is empty afterwards', await qCount() === 0, 'count=' + await qCount());
+  const b2 = await badge();
+  check('the badge clears once the queue drains', b2 && b2.hidden, JSON.stringify(b2));
   await sleep(3000);
   const server = await page.evaluate(async (n) => {
     const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n));

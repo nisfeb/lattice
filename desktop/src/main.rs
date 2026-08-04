@@ -19,15 +19,22 @@ use tauri::Manager;
 /// HTTP against the configured ship), so a local-pier mount survives a restart
 /// with no session in play. A failure is reported and skipped. One dead pier
 /// must not cost the other mounts.
+/// Bring saved mounts back after a restart.
+///
+/// The lock is taken PER MOUNT, never across the loop. Healing and spawning
+/// both touch the filesystem and the network, and holding the map across them
+/// meant every mount-related command from the webview queued behind the
+/// slowest one. With a wedged mount that was forever, so the window came up
+/// blank: the UI was not broken, it was waiting.
 fn remount(handle: &tauri::AppHandle, cfg: &config::Config) {
-    let map = handle.state::<mounts::MountMap>();
-    let mut m = map.0.lock().unwrap();
     for spec in &cfg.mounts {
         mounts::heal_mountpoint(&spec.mountpoint);
         match mounts::projection_for(handle, &spec.root, &spec.sock, &spec.ship)
             .and_then(|p| lattice_fs::spawn(p, &spec.mountpoint).map_err(|e| e.to_string()))
         {
             Ok(s) => {
+                let map = handle.state::<mounts::MountMap>();
+                let mut m = map.0.lock().unwrap();
                 m.insert(spec.mountpoint.clone(), (spec.root.clone(), s));
             }
             Err(e) => eprintln!("remount {} failed: {e}", spec.mountpoint),
@@ -121,7 +128,16 @@ fn main() {
             // remount OUTSIDE the url check. A lick mount is a local pier and
             // needs no configured ship at all, so it must come back on launch
             // even when nothing is connected over HTTP.
-            remount(&handle, &cfg);
+            //
+            // OFF the setup thread. Restoring a mount talks to a ship, and
+            // doing that here meant a ship that never answered held up setup
+            // itself: no window, and a process parked in the kernel that
+            // SIGKILL could not touch. The window must not depend on a mount.
+            let rh = handle.clone();
+            let rcfg = cfg.clone();
+            std::thread::spawn(move || {
+                remount(&rh, &rcfg);
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

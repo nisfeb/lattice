@@ -13,6 +13,26 @@
   // autosave would queue the OLD body back (review gap 1 in the design doc).
   let degraded = false;      // a save failed like the ship was unreachable
   let offCount = 0;          // queued page edits, drives the status text
+  let offbadge = null;       // assigned by <lat-bar> (12-bar.js)
+  // The persistent offline indicator. The status line reports EVENTS and the
+  // next one overwrites it, so "saved offline" scrolls away while you are
+  // still offline and still queueing. This reports the CONDITION and stays up
+  // until the queue is empty and the ship answers again.
+  //
+  // The two halves are independent: the ship can be unreachable with nothing
+  // queued yet, and the queue can be non-empty while the ship is back but the
+  // replay has not finished.
+  const renderOffline = () => {
+    if (!offbadge) return;
+    const q = offCount ? offCount + ' queued' : '';
+    if (!degraded && !offCount) { offbadge.hidden = true; return; }
+    offbadge.hidden = false;
+    offbadge.textContent = degraded ? (q ? 'offline \u00b7 ' + q : 'offline') : q;
+    offbadge.title = degraded
+      ? 'the ship is not answering. Edits are saved on this device and sent when it returns.'
+      : 'edits saved on this device, syncing now.';
+    offbadge.classList.toggle('syncing', !degraded);
+  };
   let offDb = null;
   const offOpen = () => new Promise((res) => {
     if (offDb) return res(offDb);
@@ -46,7 +66,7 @@
   const offAll = async () => {
     const s = await offStore('readonly'); return (s && await offReq(s.getAll())) || [];
   };
-  const offRecount = async () => { offCount = (await offAll()).length; };
+  const offRecount = async () => { offCount = (await offAll()).length; renderOffline(); };
   const offPut = async (rec) => {
     const s = await offStore('readwrite'); if (s) await offReq(s.put(rec));
     await offRecount();
@@ -91,6 +111,7 @@
   function setDegraded(on) {
     if (degraded === on) return;
     degraded = on;
+    renderOffline();
     if (on) st('ship unreachable — edits are queued locally', false);
     if (on && !probeTimer) {
       probeTimer = setInterval(async () => {
@@ -99,6 +120,7 @@
         if (r && r.ok) {
           clearInterval(probeTimer); probeTimer = null;
           degraded = false;
+          renderOffline();   // ship is back; the badge now reports the drain
           replayQueue();
         }
       }, 20000);

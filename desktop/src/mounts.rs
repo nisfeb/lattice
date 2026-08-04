@@ -137,20 +137,74 @@ pub fn list_mounts(app: AppHandle, map: State<MountMap>) -> Vec<MountSpec> {
 /// Make a mountpoint usable: detach a stale fuse mount left by a run that
 /// died without unmounting ("Transport endpoint is not connected", os 107),
 /// and create the directory if it does not exist yet.
+/// Is this path a fuse mount, according to the kernel's own table?
+///
+/// Read from /proc, which never enters the filesystem, so it cannot block the
+/// way stat() does. That distinction is the whole point: stat() on a mount
+/// whose daemon is alive but WEDGED never returns, and the caller is parked in
+/// uninterruptible sleep where even SIGKILL cannot reach it.
+#[cfg(target_os = "linux")]
+fn is_fuse_mount(mountpoint: &str) -> bool {
+    let Ok(table) = std::fs::read_to_string("/proc/self/mounts") else {
+        return false;
+    };
+    table.lines().any(|line| {
+        let mut f = line.split_whitespace();
+        let (_dev, dir, ty) = (f.next(), f.next(), f.next());
+        //  /proc escapes spaces (and a few others) as octal
+        dir.map(|d| d.replace("\\040", " ")).as_deref() == Some(mountpoint)
+            //  "fuse" or "fuse.sshfs", but NOT "fusectl": that is the kernel
+            //  control filesystem at /sys/fs/fuse/connections, and a prefix
+            //  test would have had us trying to unmount it.
+            && ty.is_some_and(|t| t == "fuse" || t.starts_with("fuse."))
+    })
+}
+
+/// stat(), but the caller gets control back even if the filesystem never
+/// answers. The probe thread stays parked in that case, which we cannot help:
+/// it is blocked in the kernel. What matters is that WE are not.
+fn stat_bounded(mountpoint: &str, wait: std::time::Duration) -> Option<std::io::Result<()>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let p = mountpoint.to_string();
+    std::thread::spawn(move || {
+        let _ = tx.send(std::fs::metadata(&p).map(|_| ()));
+    });
+    rx.recv_timeout(wait).ok()
+}
+
+/// Make a mountpoint usable: detach a mount left by a previous run, and create
+/// the directory if it does not exist yet.
+///
+/// A stale mount is detached WITHOUT stat'ing it first. The old code only
+/// recognised os error 107 (ENOTCONN), which is a DEAD daemon; a daemon that
+/// is alive but hung returns nothing at all, so the stat blocked forever. On
+/// the startup path that produced an app that never opened a window and could
+/// not be killed, which is how this was found.
 pub fn heal_mountpoint(mountpoint: &str) {
-    match std::fs::metadata(mountpoint) {
-        Err(e) if e.raw_os_error() == Some(107) => {
+    #[cfg(target_os = "linux")]
+    if is_fuse_mount(mountpoint) {
+        //  lazy: detach now even if something is still parked on it
+        let _ = std::process::Command::new("fusermount3")
+            .args(["-uz", mountpoint])
+            .status();
+    }
+    match stat_bounded(mountpoint, std::time::Duration::from_secs(5)) {
+        //  it answered and is gone: make the directory
+        Some(Err(e)) if e.raw_os_error() == Some(107) => {
             #[cfg(target_os = "macos")]
             let _ = std::process::Command::new("umount").arg(mountpoint).status();
             #[cfg(not(target_os = "macos"))]
             let _ = std::process::Command::new("fusermount3")
-                .args(["-u", mountpoint])
+                .args(["-uz", mountpoint])
                 .status();
         }
-        Err(_) => {
+        Some(Err(_)) => {
             let _ = std::fs::create_dir_all(mountpoint);
         }
-        Ok(_) => {}
+        Some(Ok(())) => {}
+        //  never answered. Leave it alone rather than pile more blocked calls
+        //  onto it; the mount this was preparing for will fail and say so.
+        None => eprintln!("heal_mountpoint: {mountpoint} did not respond, skipping"),
     }
 }
 
@@ -165,6 +219,34 @@ fn expand_home(p: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{is_fuse_mount, stat_bounded};
+    use std::time::Duration;
+
+    //  This decides whether we run fusermount3 on a path, so a false positive
+    //  means unmounting something we do not own.
+    #[test]
+    fn only_real_fuse_mounts_are_recognised() {
+        assert!(!is_fuse_mount("/"), "root is not fuse");
+        assert!(!is_fuse_mount("/no/such/path/here"), "a missing path is not a mount");
+        //  fusectl lives here on any linux box with fuse loaded, and its type
+        //  starts with "fuse". It must NOT be treated as a fuse mount.
+        assert!(
+            !is_fuse_mount("/sys/fs/fuse/connections"),
+            "fusectl is not a fuse mount and must never be unmounted"
+        );
+    }
+
+    //  The property that matters is that the CALLER comes back. A wedged
+    //  daemon cannot be conjured in a unit test, so this pins the ordinary
+    //  path; the timeout branch is what the wedge exercises in the field.
+    #[test]
+    fn a_responsive_path_answers_within_the_deadline() {
+        let r = stat_bounded("/", Duration::from_secs(5));
+        assert!(matches!(r, Some(Ok(()))), "root should stat cleanly: {r:?}");
+        let missing = stat_bounded("/no/such/path/here", Duration::from_secs(5));
+        assert!(matches!(missing, Some(Err(_))), "a missing path errors, it does not hang");
+    }
+
     use super::{expand_home, heal_mountpoint};
     use proptest::prelude::*;
 
