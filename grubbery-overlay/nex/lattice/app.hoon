@@ -142,6 +142,13 @@
         ::  from the transport.
             [%fall %& [/ %shared] [[/lattice %shared] *shared:ls]]
             [%fall %& [/ %'shares.sig'] [[/ %sig] ~]]
+        ::  /comments.sig: the cross-ship COMMENT inbox. Same shape as
+        ::  shares.sig and the same reasoning: /public carries a poke road for
+        ::  it (+ensure-comments-inbox) so any ship running lattice may append,
+        ::  and the author is taken from the transport rather than the payload.
+        ::  The road reaches only this fiber, and this fiber writes only under
+        ::  /comments, so a commenter structurally cannot touch a page.
+            [%fall %& [/ %'comments.sig'] [[/ %sig] ~]]
             [%fall %& [/ %'crawler.sig'] [[/ %sig] ~]]
         ::  /fs.sig: a lick (unix-socket) port exposing the filesystem ops to a
         ::  local FUSE client (lattice-fs), the native-transport twin of the
@@ -168,6 +175,7 @@
         ::  This re-applies it on the next writer start once the group is present.
         ;<  ~  bind:m  (heal-share-weirs root)
         ;<  ~  bind:m  ensure-shares-inbox
+        ;<  ~  bind:m  ensure-comments-inbox
         ::  lay down the built-in page-tree templates (idempotent; skips if the
         ::  user already has them). Users instantiate a copy under /page.
         ;<  ~  bind:m  (ensure-shipped-templates root)
@@ -199,6 +207,18 @@
         ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
         ;<  now=@da  bind:m  bowl-now
         ;<  ~  bind:m  (apply-share-notice root from sage now)
+        $
+      ::  /comments.sig: the cross-ship comment inbox. Foreign ships poke a
+      ::  comment-action; we take the author from the TRANSPORT, never from the
+      ::  payload, so it cannot be forged. Same take-poke loop as /shares.sig.
+          [~ %'comments.sig']
+        ;<  ~  bind:m  (rise-wait:io prod "%lattice /comments: failed")
+        ;<  here=rail:tarball  bind:m  get-here-abs:io
+        =/  root=path  path.here
+        |-
+        ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
+        ;<  now=@da  bind:m  bowl-now
+        ;<  ~  bind:m  (apply-comment-notice root from sage now)
         $
       ::  /ui/main.sig: bind the HTTP endpoint and dispatch each request into a
       ::  per-request fiber under /ui/requests (same pattern as counter).
@@ -511,7 +531,15 @@
       ::  pass took out. Safe to continue after send: a completed %simple
       ::  response drops the connection's conns entry, so no later cancel can
       ::  cull this fiber (the same reasoning /catalog-sweep relies on).
-      ;<  ~  bind:m  (send-view eyre-id (render-page canon rk (render-gmi u.body)))
+      ::  A peer's page gets a comment box. Their ship decides whether it
+      ::  lands, by their per-page flag and their banlist, and stamps us as the
+      ::  author from the transport. Our own pages keep the owner box in the /x
+      ::  view instead, so this does not double up there.
+      =/  cbox=tape
+        ?:  =(ship.u.ref our)  ""
+        (remote-comment-box ship.u.ref rel.u.ref)
+      ;<  ~  bind:m
+        (send-view eyre-id (render-page canon rk (weld (render-gmi u.body) cbox)))
       (poke-history [%visit u.raw (page-title-of u.body u.raw)])
     ==
   ::  dispatch on [method action]. ponytail: read-know-map peeks the whole vault
@@ -1566,6 +1594,38 @@
     ::  a refresh (acceptable, like page-cmd).
     %+  send-see-other  eyre-id
     :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.page) "/")
+  ::  comment on ANOTHER ship's page. Owner-gated like everything here: this
+  ::  is us, using our own session, choosing to say something on a page we are
+  ::  reading. The peer decides whether it lands, by their banlist and their
+  ::  per-page comment flag, and their ship stamps us as the author from the
+  ::  transport, so nothing we send here can claim to be someone else.
+  ::
+  ::  `told` reports only that the poke was ACCEPTED for delivery. A silent
+  ::  refusal on the far side is indistinguishable from success by design, so
+  ::  the UI says "sent" rather than "posted".
+      [%'POST' %comment-remote]
+    =/  st=(unit @t)  (~(get by args) 'ship')
+    ?~  st  (send-err eyre-id 400 'missing ship')
+    =/  shp=(unit @p)  (slaw %p u.st)
+    ?~  shp  (send-err eyre-id 400 'bad ship')
+    =/  page=(unit @t)  (~(get by args) 'page')
+    ?~  page  (send-err eyre-id 400 'missing page')
+    ?.  (valid-name u.page)  (send-err eyre-id 400 'bad page')
+    ::  the box POSTs a form, exactly like the local comment route
+    =/  fargs=(map @t @t)
+      (malt args:(parse-url:http-utils (crip (weld "/?" (trip (req-body req))))))
+    =/  body=@t  (~(gut by fargs) 'body' '')
+    ?:  =('' body)  (send-err eyre-id 400 'missing body')
+    ::  cap before sending, so a peer never has to defend against our client
+    =/  body=@t
+      ?:((gth (met 3 body) max-body:lc) (end [3 max-body:lc] body) body)
+    ;<  told=?  bind:m
+      %^  remote-load-poke-wait  u.shp
+        :-  [/comment-notice %& app-base:lu %'comments.sig']
+        [%poke [/lattice %comment-action] `comment-action:lc`[(pax-of u.page) body]]
+      ~s15
+    %+  send-json  eyre-id
+    (pairs:enjs:format ~[['ok' b+&] ['sent' b+told]])
       ::  bookmark the current browser url (title defaults to the url). Newest
       ::  first, deduped by url. Shown under Browser on the home page.
       [%'POST' %bookmark]
@@ -5531,6 +5591,46 @@
 ::  so membership IS access, and leaving it in place would leave it reachable.
 ::  The grant ROADS are untouched. They belong to the group, not the ship, and
 ::  other members still need them.
+::  +ensure-comments-inbox: open /comments.sig to every ship, the same way
+::  +ensure-shares-inbox opens the share inbox. The poke road names THIS fiber
+::  and nothing else, and the fiber only ever writes under /comments, so the
+::  door is exactly as wide as one append.
+::
+++  ensure-comments-inbox
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ok=?  bind:m  (peek-exists:io [%& %| public-grp])
+  ?.  ok  (pure:m ~)
+  =/  wroad=road:tarball  [%& %& [public-grp %'how.weir']]
+  ;<  cur=weir:nexus  bind:m  (read-weir wroad)
+  =/  iroad=road:tarball  [%& %& app-base:lu %'comments.sig']
+  ?:  (~(has in poke.cur) iroad)  (pure:m ~)
+  (put-file wroad [/ %weir] cur(poke (~(put in poke.cur) iroad)))
+::  +apply-comment-notice: a comment poked by ANOTHER ship.
+::
+::  Everything that decides whether it lands is read here, never from the
+::  payload: the author is the transport source, the banlist is ours, and
+::  +apply-comment re-checks that the page exists and has comments enabled and
+::  caps the body. A payload can only ever say WHICH page and WHAT text.
+::
+::  Refusals are silent. Telling a banned or unwanted sender why just confirms
+::  the address is live, the same reasoning the shares inbox uses.
+::
+++  apply-comment-notice
+  |=  [root=path =from:fiber:nexus =sage:tarball now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  src=(unit @p)  (get-poke-src:io from)
+  ::  no source means a local poke, which belongs to the owner route
+  ?~  src  (pure:m ~)
+  ::  gate on the blot before parsing, so a stray poke of another mark is
+  ::  ignored rather than misread
+  ?.  =([/lattice %comment-action] p.sage)  (pure:m ~)
+  =/  na=(unit comment-action:lc)  (mole |.(;;(comment-action:lc q.q.sage)))
+  ?~  na  (pure:m ~)
+  ;<  bans=banned:ls  bind:m  read-banned
+  ?:  (is-banned:ls bans u.src)  (pure:m ~)
+  (apply-comment root u.src now u.na)
 ++  strip-ship-from-groups
   |=  who=@p
   =/  m  (fiber:fiber:nexus ,@ud)
@@ -7390,6 +7490,29 @@
     know
     "</div>"
     "</div>"
+  ==
+::  +remote-comment-box: the form that comments on ANOTHER ship's page.
+::
+::  Posts to our own ship, which forwards the poke. The response says "sent",
+::  not "posted": a peer refuses silently by design (banlist, comments off),
+::  so claiming success here would be inventing a fact we do not have.
+::
+++  remote-comment-box
+  |=  [shp=@p rel=path]
+  ^-  tape
+  =/  st=tape   (scow %p shp)
+  =/  pg=tape   (slag 1 (spud rel))
+  ;:  weld
+    "<section class=\"cbox-wrap\"><h3>Comment</h3>"
+    "<form class=\"cbox\" method=\"post\" action=\"/apps/lattice/comment-remote?ship="
+    (esc st)  "&amp;page="  (esc pg)  "\">"
+    "<textarea name=\"body\" rows=\"3\" placeholder=\"say something to "
+    (esc st)  "\"></textarea>"
+    "<button type=\"submit\">send to "  (esc st)  "</button>"
+    "</form>"
+    "<p class=\"muted\">Sent over Ames from your ship, so "  (esc st)
+    " sees your @p as the author. They decide whether it appears.</p>"
+    "</section>"
   ==
 ::  +marks-html: the full bookmark list, every bookmark grouped by folder
 ::  (unfiled first: it is where the star button files things), a search box
