@@ -65,6 +65,10 @@
     // one page's edit cost every other page its cache.
     if (mode === 'know') loadKnow(); else loadTree();
     refreshOpen();
+    // a comment arriving from another ship bumps the beacon like any write, so
+    // this is the same signal the tree refresh uses. Cheap: it counts, it does
+    // not render, and it is skipped entirely while the pane is open.
+    if ($('cmwrap') && $('cmwrap').hidden) refreshCommentBadge();
   };
   try {
     const es = new EventSource('/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev');

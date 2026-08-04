@@ -135,6 +135,18 @@ select, option { color-scheme: light dark; }
   .offbadge { border-color: #d4a017; color: #d4a017; background: #d4a01722; }
   .offbadge.syncing { border-color: #7fb08a; color: #7fb08a; background: #7fb08a22; }
 }
+/* Unread comment count, drawn on the comments button itself. Position is
+   relative to the button so the count rides its corner rather than taking
+   space in a bar that is already tight on a phone. */
+.bar button.has-unread { position: relative; border-color: var(--green); }
+.bar button.has-unread::after {
+  content: attr(data-n);
+  position: absolute; top: -5px; right: -5px;
+  min-width: 1.05em; padding: 0 .25em;
+  border-radius: 999px; background: var(--green); color: #fff;
+  font-size: .62rem; font-weight: 700; line-height: 1.35;
+  text-align: center; pointer-events: none;
+}
 .offbadge[hidden] { display: none; }
 .chips[hidden] { display: none; }
 .grp { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }

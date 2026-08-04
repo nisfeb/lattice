@@ -546,6 +546,66 @@ try {
   // Restored after being lost in the editor migration. The interaction that
   // matters is with the list-continuation handler added since: in NORMAL mode
   // Enter is a motion, not a new list item, and Tab is not two spaces.
+  // ── unread comments ────────────────────────────────────────────────────
+  // A comment from another ship used to arrive silently: the inbox is
+  // pull-only, so nothing on screen changed until you opened it.
+  step = 'comment notifications';
+  const CN = RUN + '-notify';
+  const unread = () => page.evaluate(() => {
+    const b = document.getElementById('cmt');
+    return { n: b.dataset.n || null, marked: b.classList.contains('has-unread') };
+  });
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
+      '&type=md&new=1', { method: 'POST', body: '# notify' });
+  }, CN);
+  await sleep(4000);
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/page-comments?name=' + encodeURIComponent(n) + '&on=1',
+      { method: 'POST' });
+  }, CN);
+  await sleep(3000);
+  //  clear the high-water mark so this run's comment is genuinely new
+  await page.evaluate(() => localStorage.removeItem('cmtSeen'));
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/comment?page=' + encodeURIComponent(n),
+      { method: 'POST', body: 'body=notify+probe' });
+  }, CN);
+  await sleep(4000);
+  //  The count is throttled to once a minute, because on a serialising pier a
+  //  badge is not worth queueing ahead of the user's saves. A fresh load starts
+  //  that clock at zero, so reloading is both how the count becomes immediate
+  //  and how we prove the mark survives a reload, which is the point of it.
+  const reloadApp = async () => {
+    await page.reload({ waitUntil: 'networkidle2', timeout: 90000 });
+    await wait(() => !!document.getElementById('cmt'));
+    await sleep(2000);
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  };
+  await reloadApp();
+  await wait(() => document.getElementById('cmt').classList.contains('has-unread'));
+  const u1 = await unread();
+  check('comments: an arrival marks the button unread', u1.marked, JSON.stringify(u1));
+  check('comments: and carries a count', u1.n && Number(u1.n) >= 1, JSON.stringify(u1));
+
+  //  opening the inbox IS reading it
+  await page.click('#cmt');
+  await wait(() => !document.getElementById('cmwrap').hidden);
+  await sleep(2500);
+  const u2 = await unread();
+  check('comments: opening the inbox clears the badge', !u2.marked, JSON.stringify(u2));
+  await page.click('#cmclose');
+  await sleep(500);
+  //  and it stays cleared across a reload, which recounts from scratch against
+  //  the mark opening the inbox just wrote. A refresh alone would be throttled
+  //  out and pass without counting anything.
+  await reloadApp();
+  await sleep(3000);
+  const u3 = await unread();
+  check('comments: and it stays cleared on the next refresh', !u3.marked, JSON.stringify(u3));
+  await page.evaluate((n) => fetch('/apps/lattice/page-del?name=' +
+    encodeURIComponent(n), { method: 'POST' }), CN);
+
   step = 'vim mode';
   const vimOn = async (on) => {
     await page.evaluate((v) => {
