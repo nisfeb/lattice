@@ -20,6 +20,10 @@
   </select>
   <button id="save">save</button>
   <span id="spin"></span><span id="status" class="muted"></span>
+  <!-- Offline state is a CONDITION, not an event, so it cannot live in the
+       status line: the next save, render or refresh overwrites that. This
+       badge stays up for as long as the condition holds. -->
+  <span id="offbadge" class="offbadge" hidden></span>
   <span class="grow"></span>
   <button id="wrapt" class="ico" title="toggle line wrap">&#8617;</button>
   <!-- a KEY, not U+26BF: that codepoint has almost no font coverage and
@@ -30,7 +34,8 @@
   <button id="ctlt" class="ico" title="toggle controls pane">&#9881;</button>
 </header>`;
       pname = $('pname'); pkind = $('pkind');
-      status = $('status'); spinner = $('spin');
+      status = $('status'); spinner = $('spin'); offbadge = $('offbadge');
+      renderOffline();   // a queue can outlive a session, so show it at boot
     }
   });
   customElements.define('lat-tabs', class extends HTMLElement {

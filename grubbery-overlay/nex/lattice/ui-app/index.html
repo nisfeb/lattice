@@ -119,6 +119,23 @@ select, option { color-scheme: light dark; }
   background: var(--surface); color: inherit; cursor: pointer; }
 .tree .nf:hover { border-color: var(--green); }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
+/* Offline indicator. Amber for "the ship is gone", green for "back, still
+   draining", because those are different situations for the person editing:
+   one means your words are only on this device, the other means they are on
+   their way. Colour is never the only signal, the text says which. */
+.offbadge { display: inline-flex; align-items: center; gap: .35em;
+  padding: 2px 9px; border-radius: 999px; font-size: .74rem; font-weight: 600;
+  white-space: nowrap; border: 1px solid #b8860b; color: #b8860b;
+  background: #b8860b1a; }
+.offbadge::before { content: ""; width: .5em; height: .5em; border-radius: 50%;
+  background: currentColor; }
+.offbadge.syncing { border-color: var(--green); color: var(--green);
+  background: #4a7c591a; }
+@media (prefers-color-scheme: dark) {
+  .offbadge { border-color: #d4a017; color: #d4a017; background: #d4a01722; }
+  .offbadge.syncing { border-color: #7fb08a; color: #7fb08a; background: #7fb08a22; }
+}
+.offbadge[hidden] { display: none; }
 .chips[hidden] { display: none; }
 .grp { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
 .grp > div:first-child { display: flex; justify-content: space-between; align-items: center; }
