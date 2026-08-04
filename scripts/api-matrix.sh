@@ -172,6 +172,32 @@ is "page-source-at gated"   403 "$(code "$B/page-source-at?name=$P/note&rev=1")"
 is "page-backlinks gated"   403 "$(code "$B/page-backlinks?name=$P/note")"
 is "page-forms gated"       403 "$(code -X POST "$B/page-forms?name=$P/note&on=1")"
 
+echo "==> deleting a page purges its comments"
+# Comments live under /comments, not /page, so a page delete used to leave them
+# in the moderation inbox attached to a path a NEW page could reuse.
+cmt_count() { G "$B/comments-inbox" | python3 -c "
+import json,sys
+d=json.load(sys.stdin); i=d if isinstance(d,list) else d.get('items',[])
+print(sum(1 for c in i if str(c.get('page','')).startswith('$1')))"; }
+is "comment page created"   200 "$(sc -X POST "$B/page-save?name=$P-cmt&type=md&new=1" --data-binary '# c')"
+is "comments enabled"       200 "$(sc -X POST "$B/page-comments?name=$P-cmt&on=1")"
+sleep 2
+# the body is a urlencoded form, so the space has to be encoded: a raw space
+# makes the parse yield nothing and the route answers 400 'missing body'
+is "comment accepted"       303 "$(sc -X POST "$B/comment?page=$P-cmt" --data 'body=purge+regression')"
+sleep 3
+is "comment is in the inbox"  1 "$(cmt_count "$P-cmt")"
+is "page deleted"           200 "$(sc -X POST "$B/page-del?name=$P-cmt")"
+sleep 4
+is "and its comments went with it" 0 "$(cmt_count "$P-cmt")"
+# the guard matters: cull-soft on an absent dir veto-crashes the writer, and
+# most pages never had a comment
+is "deleting a page with no comments still works" 200 "$(sc -X POST "$B/page-save?name=$P-nocmt&type=md&new=1" --data-binary '# n')"
+sleep 2
+is "  delete"               200 "$(sc -X POST "$B/page-del?name=$P-nocmt")"
+sleep 2
+is "  writer survived"      200 "$(sc "$B/page-tree")"
+
 echo "==> page names: dot segments are refused (fuzz-api finding)"
 # '.' and '..' are ordinary @ta knots, so the sanity check alone admits them and
 # page-tree then hands clients a path that walks out of its own directory when

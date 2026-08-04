@@ -3271,6 +3271,18 @@
     ;<  ~  bind:m  (prune-hist [%& %& pdir %code] 0 ~s0)
     ;<  ~  bind:m  (prune-hist [%& %& pdir %data] 0 ~s0)
     ;<  *  bind:m  (cull-soft:io [%& %| pdir])
+    ::  Comments live under /comments, not /page, so culling the page left them
+    ::  behind: they stayed in the moderation inbox attached to a path a NEW
+    ::  page could later reuse, which is the same resurrection the history
+    ::  prune above exists to prevent. A folder delete lands here too, and
+    ::  culling /comments/<folder> takes every page beneath it.
+    ::
+    ::  Guarded, because cull-soft on an absent dir veto-crashes the writer,
+    ::  and most pages never had a comment.
+    =/  cdir=path  (weld root (weld /comments pax.act))
+    ;<  cex=?  bind:m  (peek-exists:io [%& %| cdir])
+    ?.  cex  (pure:m ~)
+    ;<  *  bind:m  (cull-soft:io [%& %| cdir])
     (pure:m ~)
       %share
     (apply-share root now pax.act mode.act)
