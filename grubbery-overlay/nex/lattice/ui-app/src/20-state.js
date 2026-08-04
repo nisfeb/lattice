@@ -62,11 +62,33 @@
   // open while the request is in flight (a folder move pokes the writer many
   // times) plus a short tail, so the SSE handler never refetches what this
   // client just did itself.
+  // Deletes and moves that can be queued. Sharing and the ACL routes are
+  // deliberately NOT here. A grant that appears to work offline and is refused
+  // an hour later is a security surprise, and there is no version of that
+  // which is better than saying so now.
+  const offlineOp = (url) => {
+    let u = null;
+    try { u = new globalThis.URL(url, location.origin); } catch { return null; }
+    const p = u.searchParams;
+    if (u.pathname.endsWith('/page-del') && p.get('name'))
+      return { op: 'del', name: p.get('name') };
+    if (u.pathname.endsWith('/page-move') && p.get('from') && p.get('to'))
+      return { op: 'move', from: p.get('from'), to: p.get('to') };
+    return null;
+  };
+
   async function mutate(url, opts) {
-    // Only SAVES queue (pages and know memories). Deletes, moves, shares: their
-    // ordering dependencies are where offline systems get genuinely hard, so
-    // they refuse honestly instead of pretending (design doc, Phasing).
+    // Saves coalesce in a map, structural ops go in an ordered log, and both
+    // drain together. Everything else (sharing, tagging, the legacy migration)
+    // still refuses honestly rather than pretending.
     if (degraded || offCount) {
+      const q = offlineOp(url);
+      if (q) {
+        await enqueueOp(q);
+        //  the caller now does exactly the local tree work it does when the
+        //  ship answers: drop the nodes, or remap their paths
+        return { ok: true, status: 200, json: async () => ({ offline: true }) };
+      }
       st('offline — edits are queued, but this change needs the ship', false);
       return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
     }

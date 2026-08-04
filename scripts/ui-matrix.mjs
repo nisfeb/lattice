@@ -869,6 +869,89 @@ try {
     .some((x) => x.textContent.includes(n)), RUN);
   ok('folder delete: whole subtree gone');
 
+  step = 'offline structure';
+  // ── 9b. deletes and renames survive an unreachable ship ──────────────────
+  // Saves have always queued. Structural changes refused, because their
+  // ordering is the hard part of an offline system. They queue now, in an
+  // ordered log that drains ahead of the saves.
+  const OFF = RUN + '-off';
+  await page.evaluate(async (a, b) => {
+    for (const n of [a, b])
+      await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
+        '&type=md&new=1', { method: 'POST', body: '# ' + n });
+  }, OFF + '/gone', OFF + '/here');
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
+    .filter((a) => a.href.includes(n)).length >= 2, OFF);
+
+  // Cut the ship off the way a real outage looks from the browser. The desktop
+  // bridge answers 502 when it cannot reach the ship, and 502 is what the
+  // client detects on. navigator.onLine is never consulted, on purpose.
+  let cut = true;
+  await page.setRequestInterception(true);
+  const cutter = (r) => {
+    if (cut && r.method() === 'POST' && r.url().includes('/apps/lattice/'))
+      r.respond({ status: 502, contentType: 'text/plain', body: 'ship unreachable' });
+    else r.continue();
+  };
+  page.on('request', cutter);
+
+  //  a save that comes back 502 is what puts the client in the offline state
+  await page.goto(APP + '?name=' + OFF + '/here', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.getElementById('src').value.length > 0);
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = '# edited while offline'; s.dispatchEvent(new Event('input'));
+  });
+  await page.click('#save');
+  await wait(() => !document.getElementById('offbadge').hidden);
+  ok('offline: a failed save raises the offline badge');
+
+  //  delete with the ship down. The queue survives the reload in between,
+  //  which is what keeps the app in offline mode across a restart.
+  await page.goto(APP + '?name=' + OFF + '/gone', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.getElementById('src').value.length > 0);
+  await page.click('#del');
+  await dialog(null);
+  //  the leaf is matched on its LABEL and the namespace on the href: a tree
+  //  link percent-encodes the slash, so href.includes('ns/leaf') never matches
+  //  and an absence check written that way passes without proving anything
+  await wait((n) => ![...document.querySelectorAll('#treelist a.pg')]
+    .some((a) => a.textContent === 'gone.md' && a.href.includes(n)), OFF);
+  ok('offline: a delete applies to the tree and queues');
+
+  //  rename with the ship down, on the page whose edit is already queued
+  await page.goto(APP + '?name=' + OFF + '/here', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.getElementById('src').value === '# edited while offline');
+  ok('offline: the queued edit outranks the ship copy on reopen');
+  await page.click('#mv');
+  await dialog(OFF + '/moved');
+  await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
+    .some((a) => a.textContent === 'moved.md' && a.href.includes(n)), OFF);
+  ok('offline: a rename applies to the tree and queues');
+
+  //  the ship comes back. A fresh load drains the queue on its boot timer.
+  cut = false;
+  page.off('request', cutter);
+  await page.setRequestInterception(false);
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.getElementById('offbadge').hidden);
+  ok('offline: the badge clears once the queue drains');
+
+  //  and the ship itself agrees, which is the only claim that matters
+  const after = await page.evaluate(async () =>
+    (await (await fetch('/apps/lattice/page-tree')).json()));
+  const paths = JSON.stringify(after);
+  check('offline: the queued delete reached the ship',
+    !paths.includes(OFF + '/gone'), 'still present');
+  check('offline: the queued rename reached the ship',
+    paths.includes(OFF + '/moved') && !paths.includes(OFF + '/here'), 'move did not land');
+  const moved = await page.evaluate(async (n) =>
+    (await (await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n))).json()).body,
+  OFF + '/moved');
+  check('offline: the edit made offline landed under the NEW name',
+    String(moved).includes('edited while offline'), JSON.stringify(moved));
+
   step = 'mobile';
   // ── 10. mobile: toggle reveals the tree, opening jumps to the editor ─────
   await page.setViewport({ width: 390, height: 780, isMobile: true });
