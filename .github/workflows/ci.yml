@@ -24,6 +24,13 @@ jobs:
       - name: cargo test
         working-directory: lattice-fs-rs
         run: cargo test --release
+      #  Lints are a ratchet or they are nothing: the findings this removed
+      #  come straight back the first time nobody runs it by hand.
+      - name: clippy
+        working-directory: lattice-fs-rs
+        run: |
+          rustup component add clippy
+          cargo clippy --all-targets -- -D warnings
 
   desktop:
     name: desktop — cargo test
@@ -42,6 +49,11 @@ jobs:
       - name: cargo test
         working-directory: desktop
         run: cargo test
+      - name: clippy
+        working-directory: desktop
+        run: |
+          rustup component add clippy
+          cargo clippy --all-targets -- -D warnings
 
   nix:
     name: nix — flake build
@@ -82,6 +94,14 @@ jobs:
         run: |
           node scripts/ui-listedit.mjs
           node scripts/ui-shortpath.mjs
+      - name: supply chain (licences + bans)
+        run: |
+          cargo install cargo-deny --locked
+          cargo deny --manifest-path lattice-fs-rs/Cargo.toml check licenses bans sources
+          cargo deny --manifest-path desktop/Cargo.toml check licenses bans sources
+          #  advisories are REPORTED, never fatal: every one today is an
+          #  unmaintained transitive of tauri's gtk3 stack, unfixable here.
+          cargo deny --manifest-path desktop/Cargo.toml check advisories || true
       - name: pure-function property tests
         run: |
           npm i --no-save --no-audit --no-fund fast-check

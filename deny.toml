@@ -1,0 +1,88 @@
+#  cargo-deny: supply-chain gates for both rust crates.
+#
+#  WHAT THIS DOES AND DOES NOT GATE ON
+#  -----------------------------------
+#  It gates on LICENCES and BANS, which are the checks that catch something
+#  actionable here: a dependency arriving under a licence this project cannot
+#  ship, or the same crate being pulled in at three versions at once.
+#
+#  It does NOT gate on advisories. A scan of the desktop crate's 465
+#  dependencies found ZERO vulnerabilities and 17 warnings, every one of them
+#  "unmaintained" or "unsound" and every one of them transitive through Tauri's
+#  GTK3 stack. None is fixable from this repository, and none will be until
+#  Tauri moves off GTK3. Gating on them would paint the build red on day one
+#  and teach everyone to ignore it, which is worse than not running it.
+#
+#  So advisories are reported and the known set is listed below. When that list
+#  stops matching reality the `unused` warning fires, which is the signal worth
+#  having: a NEW advisory shows up as an entry nobody has triaged.
+
+[advisories]
+#  reported, never fatal. Reviewed 2026-08-03: 0 vulnerabilities.
+ignore = [
+  #  gtk-rs GTK3 bindings, all unmaintained, all via tauri
+  "RUSTSEC-2024-0411",  # gtk
+  "RUSTSEC-2024-0412",  # atk
+  "RUSTSEC-2024-0413",  # gdk
+  "RUSTSEC-2024-0414",  # gdkwayland
+  "RUSTSEC-2024-0415",  # gdkx11
+  "RUSTSEC-2024-0416",  # atk-sys
+  "RUSTSEC-2024-0417",  # gdk-sys
+  "RUSTSEC-2024-0418",  # gdkwayland-sys
+  "RUSTSEC-2024-0419",  # gdkx11-sys
+  "RUSTSEC-2024-0420",  # gtk-sys
+  "RUSTSEC-2024-0429",  # glib VariantStrIter unsoundness
+  #  proc-macro-error, unic-*, and the rest of the unmaintained transitives
+  "RUSTSEC-2024-0370",
+  "RUSTSEC-2025-0075",
+  "RUSTSEC-2025-0080",
+  "RUSTSEC-2025-0081",
+  "RUSTSEC-2025-0098",
+  "RUSTSEC-2025-0100",
+]
+
+[licenses]
+#  Permissive plus the weak-copyleft ones that only bind the library itself.
+#  Anything outside this list is a decision, not a default, so it stops the
+#  build and gets read.
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "MIT-0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "CC0-1.0",
+  "Unlicense",
+  "BSL-1.0",
+  "OpenSSL",
+  "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+#  Our own crates carry no `license` field and are not published. The project
+#  licence is PolyForm Noncommercial 1.0.0, in LICENSE.md at the repo root, and
+#  it is not one of the SPDX ids a dependency scanner should be matching
+#  against anyway. Skip the crates in this workspace, gate the dependencies.
+private = { ignore = true }
+
+[bans]
+#  Duplicate major versions of one crate are a size and audit-surface problem,
+#  not a correctness one, so they warn. A crate listed in `deny` is a decision
+#  someone made once and should not be undone by a transitive bump.
+multiple-versions = "warn"
+#  A wildcard version is a real smell from crates.io, but `lattice-fs` is a
+#  path dependency inside this repo and has no version to pin, which is not
+#  the same thing.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

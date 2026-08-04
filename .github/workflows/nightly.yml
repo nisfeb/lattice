@@ -168,6 +168,38 @@ jobs:
         if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
         run: echo "ship/cookie secrets not set — skipping ui-acl-prefs."
 
+  shuttle:
+    name: lattice-fs — concurrency permutations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: fuse build deps
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+      #  shuttle is RANDOMISED, not exhaustive, so one CI pass proves less than
+      #  repetition does. Nightly is where it earns its keep: a fresh schedule
+      #  space every night, and a failure prints the seed that replays it.
+      - name: shuttle permutation tests
+        working-directory: lattice-fs-rs
+        env:
+          RUSTFLAGS: --cfg shuttle
+          CARGO_TARGET_DIR: target/shuttle
+          SHUTTLE_ITERS: "20000"
+        run: cargo test --lib shuttle_tests -- --test-threads=1
+
+  fsx:
+    name: lattice-fs — fsx torture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: fuse build deps
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+      #  fsx keeps a shadow buffer and diffs it against the filesystem after
+      #  every operation, so a mismatch names the exact op sequence. The script
+      #  skips cleanly when there is no /dev/fuse, no compiler, or no network.
+      - name: fsx
+        working-directory: lattice-fs-rs
+        run: bash tests/fsx.sh
+
   hoon-hang:
     name: hoon — parser hang probe
     runs-on: ubuntu-latest
