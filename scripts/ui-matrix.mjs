@@ -11,8 +11,9 @@
 //
 // Needs puppeteer-core:  npm i --no-save puppeteer-core
 
-import { readFileSync } from 'fs';
-import { homedir } from 'os';
+import { readFileSync, writeFileSync, rmSync } from 'fs';
+import { homedir, tmpdir } from 'os';
+import { join } from 'path';
 
 let puppeteer;
 try { puppeteer = (await import('puppeteer-core')).default; }
@@ -591,7 +592,11 @@ try {
   //  opening the inbox IS reading it
   await page.click('#cmt');
   await wait(() => !document.getElementById('cmwrap').hidden);
-  await sleep(2500);
+  //  clearing is asynchronous by nature: opening has to LOAD the inbox before
+  //  it can know what the newest comment is. A fixed sleep raced that fetch
+  //  and blamed the badge. Waiting on the condition still fails if it never
+  //  clears, which is the thing actually worth asserting.
+  await wait(() => !document.getElementById('cmt').classList.contains('has-unread'));
   const u2 = await unread();
   check('comments: opening the inbox clears the badge', !u2.marked, JSON.stringify(u2));
   await page.click('#cmclose');
@@ -963,6 +968,9 @@ try {
   await page.evaluate(() => {
     //  a click would open a download dialog in a headless run, so hold the
     //  Blob instead of handing it to the browser and read what it built
+    window.__vaultBlob = null;
+    const realCOU = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = (b) => { window.__vaultBlob = b; return realCOU(b); };
     const a = document.createElement('a');
     a.click = function () { window.__vaultName = this.download; };
     const made = document.createElement;
@@ -980,6 +988,99 @@ try {
   check('vault: the archive is named for when it was taken',
     /^lattice-vault-\d{4}-\d{2}-\d{2}/.test(await page.evaluate(() => window.__vaultName || '')),
     await page.evaluate(() => window.__vaultName || '(no download)'));
+
+  step = 'vault restore';
+  // ── 9d. an export is only a backup if it restores ────────────────────────
+  // The whole loop, for real: write pages, export, DELETE them off the ship,
+  // restore from the archive, and ask the ship whether they came back with
+  // the paths and bodies they had. A .txt page is in there deliberately: the
+  // kind is `text` but the extension is `txt`, and when those disagreed the
+  // restore skipped every text page as an unsupported type.
+  const VR = RUN + '-vr';
+  const VBODY = { md: '# restored ⚡ 日本\n', txt: 'plain text page\n' };
+  await page.evaluate(async (n, b) => {
+    await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n + '/doc') +
+      '&type=md&new=1', { method: 'POST', body: b.md });
+    await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n + '/notes') +
+      '&type=text&new=1', { method: 'POST', body: b.txt });
+  }, VR, VBODY);
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
+    .filter((a) => a.href.includes(n)).length >= 2, VR);
+
+  //  take an archive and pull its bytes out of the browser
+  await page.evaluate(() => {
+    window.__vaultBlob = null;
+    const realCOU = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = (b) => { window.__vaultBlob = b; return realCOU(b); };
+    const a = document.createElement('a');
+    a.click = function () { window.__vaultName = this.download; };
+    const made = document.createElement;
+    document.createElement = function (t) {
+      if (t === 'a') { document.createElement = made; return a; }
+      return made.call(document, t);
+    };
+    document.getElementById('vault').click();
+  });
+  await wait(() => /exported|could NOT|failed/.test(document.getElementById('status').textContent));
+  const b64 = await page.evaluate(() => new Promise((res) => {
+    if (!window.__vaultBlob) return res('');
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result).split(',')[1]);
+    fr.readAsDataURL(window.__vaultBlob);
+  }));
+  check('restore: the export produced real bytes', b64.length > 0);
+  const tarPath = join(tmpdir(), 'uimx-vault-' + process.pid + '.tar');
+  writeFileSync(tarPath, Buffer.from(b64, 'base64'));
+
+  //  now lose them
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n), { method: 'POST' });
+  }, VR);
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait((n) => ![...document.querySelectorAll('#treelist a.pg')]
+    .some((a) => a.href.includes(n)), VR);
+  ok('restore: the pages are gone off the ship');
+
+  //  and put them back
+  const vpick = await page.$('#vpick');
+  await vpick.uploadFile(tarPath);
+  await dialog(null);                     // the overwrite confirmation
+  await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
+    .filter((a) => a.href.includes(n)).length >= 2, VR);
+  ok('restore: both pages are back in the tree');
+
+  const back = await page.evaluate(async (n) => {
+    const get = async (p) =>
+      (await (await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(p))).json());
+    return { doc: await get(n + '/doc'), notes: await get(n + '/notes') };
+  }, VR);
+  check('restore: the md body came back byte for byte',
+    back.doc.body === VBODY.md, JSON.stringify(back.doc.body));
+  check('restore: utf-8 survived the round trip',
+    String(back.doc.body).includes('⚡ 日本'), JSON.stringify(back.doc.body));
+  check('restore: a text page came back at all (kind vs extension)',
+    back.notes.body === VBODY.txt, JSON.stringify(back.notes.body));
+  check('restore: and kept its kind rather than becoming markdown',
+    back.notes.kind === 'text', String(back.notes.kind));
+  //  paths must be exact: seg() lowercases, which would be a silent rename
+  check('restore: the path is the original, not a mangled one',
+    back.doc.body !== undefined && back.notes.body !== undefined);
+
+  //  a damaged archive must be refused, not half-applied
+  const bad8 = Buffer.from(b64, 'base64');
+  bad8[5] ^= 0xff;
+  const badPath = join(tmpdir(), 'uimx-vault-bad-' + process.pid + '.tar');
+  writeFileSync(badPath, bad8);
+  await (await page.$('#vpick')).uploadFile(badPath);
+  await wait(() => /not a readable archive/.test(document.getElementById('status').textContent));
+  ok('restore: a corrupt archive is refused rather than half-applied');
+
+  rmSync(tarPath, { force: true });
+  rmSync(badPath, { force: true });
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n), { method: 'POST' });
+  }, VR);
 
   step = 'mobile';
   // ── 10. mobile: toggle reveals the tree, opening jumps to the editor ─────

@@ -62,6 +62,103 @@
     return new Blob(parts, { type: 'application/x-tar' });
   }
 
+  // ── reading one back ─────────────────────────────────────────────────────
+  // The inverse of the writer, and deliberately not only of THIS writer: it
+  // reads ordinary ustar, so an archive you made with `tar cf` restores too.
+  // The checksum is verified rather than trusted. A restore is the one path
+  // where reading garbage confidently is worse than refusing.
+  const td = new TextDecoder();
+  function untar(buf) {
+    const u = new Uint8Array(buf);
+    const out = [];
+    let off = 0;
+    let longName = null;
+    const str = (at, len) => {
+      const s = u.subarray(at, at + len);
+      const e = s.indexOf(0);
+      return td.decode(e === -1 ? s : s.subarray(0, e));
+    };
+    while (off + 512 <= u.length) {
+      const h = u.subarray(off, off + 512);
+      let zero = true;
+      for (const b of h) if (b) { zero = false; break; }
+      if (zero) break;                    // the two zero blocks that end it
+      // the checksum is computed with its own field read as eight spaces
+      let sum = 0;
+      for (let i = 0; i < 512; i++) sum += (i >= 148 && i < 156) ? 32 : h[i];
+      const want = parseInt(str(off + 148, 8).replace(/[^0-7]/g, '') || '-1', 8);
+      if (want !== sum) throw new Error('checksum mismatch at byte ' + off);
+      const size = parseInt(str(off + 124, 12).replace(/[^0-7]/g, '') || '0', 8) || 0;
+      const type = str(off + 156, 1);
+      const name = str(off, 100);
+      const prefix = str(off + 345, 155);
+      off += 512;
+      const data = u.subarray(off, off + size);
+      off += Math.ceil(size / 512) * 512;
+      // 'L' carries the next entry's real name. '0' and '' are regular files.
+      // Directories and links have nothing to restore, so they are skipped
+      // rather than treated as pages.
+      if (type === 'L') { longName = td.decode(data).replace(/\0+$/, ''); continue; }
+      if (type !== '0' && type !== '') { longName = null; continue; }
+      out.push({ name: longName || (prefix ? prefix + '/' + name : name),
+        text: td.decode(data) });
+      longName = null;
+    }
+    return out;
+  }
+
+  async function restoreVault(file) {
+    if (degraded || offCount) {
+      st('a restore writes many pages, so it needs the ship', false);
+      return;
+    }
+    let entries = null;
+    try { entries = untar(await file.arrayBuffer()); }
+    catch (e) { st('not a readable archive: ' + e.message, false); return; }
+
+    const pages = [];
+    let knowJson = null;
+    for (const e of entries) {
+      if (e.name === 'know.json') knowJson = e.text;
+      else if (e.name.startsWith('pages/'))
+        pages.push({ file: { text: async () => e.text }, rel: e.name.slice(6) });
+    }
+    if (!pages.length && !knowJson) {
+      st('that archive has no pages/ and no know.json in it', false);
+      return;
+    }
+
+    // Say what will be overwritten BEFORE doing it. Overwrites are recoverable
+    // (the old body stays in that page's history) but a restore that silently
+    // buries newer work is not something to find out about afterwards.
+    const stem = (rel) => { const d = rel.lastIndexOf('.'); return d > 0 ? rel.slice(0, d) : rel; };
+    const clash = pages.filter((p) => hasNode(stem(p.rel))).length;
+    const msg = 'restore ' + pages.length + ' page(s)' +
+      (knowJson ? ' and the memories' : '') +
+      (clash ? '? ' + clash + ' of them already exist and will be overwritten. The '
+        + 'version you have now stays in each page\'s history.'
+        : '?');
+    if (!(await askConfirm(msg, 'restore'))) return;
+
+    if (pages.length) await uploadItems(pages, { verbatim: true });
+
+    if (knowJson) {
+      stWork('restoring memories…');
+      let r = null;
+      try { r = await mutate(api + '/know-import', { method: 'POST', body: knowJson }); } catch {}
+      if (r && r.ok) st('memories restored');
+      else st('pages restored, but the memories did not: ' + (r ? r.status : 'no answer'), false);
+    }
+    loadTree();
+  }
+
+  // The extension a kind is conventionally written with. Only `text` differs
+  // from its own kind name, and it matters both ways. The export's whole
+  // promise is a directory readable without lattice, where a .txt is a .txt,
+  // and the restore reads extensions back through KMAP, which knows `txt` and
+  // would have skipped every `.text` file as an unsupported type.
+  const kindExt = (k) => (k === 'text' ? 'txt' : (k || 'md'));
+
   //  ~2026.08.04..23.35.53..8360.0000.0000.0001 -> unix seconds
   const daToUnix = (s) => {
     const m = /^~(\d+)\.(\d+)\.(\d+)\.\.(\d+)\.(\d+)\.(\d+)/.exec(String(s || ''));
@@ -73,11 +170,15 @@
 
 pages/    every page, as a plain file named for its path and kind.
 know/     every memory, one file per key.
-know.json the memories again, in the format /know-import reads. Restoring
-          them is one POST of this file to that route.
+know.json the memories again, in the format /know-import reads.
 
-Pages restore by saving each file back under its path, which the desktop
-client's folder sync does for a whole directory at once.
+To put it all back, use "restore vault" in the controls pane and pick this
+file. Pages go back to the paths they came from and the memories go back with
+their tags and dates. Anything already there is overwritten, and the version
+being replaced stays in that page's history.
+
+Nothing here needs lattice to read. The pages are plain files, so grep, an
+editor, or git will do if you only want to look.
 `;
 
   async function exportVault() {
@@ -104,7 +205,7 @@ client's folder sync does for a whole directory at once.
         } catch { body = null; }
       }
       if (typeof body !== 'string') { missing.push(n.path); continue; }
-      files.push({ name: 'pages/' + n.path + '.' + (n.kind || 'md'),
+      files.push({ name: 'pages/' + n.path + '.' + kindExt(n.kind),
         body, mtime: daToUnix(n.mtime) });
     }
 
@@ -140,3 +241,20 @@ client's folder sync does for a whole directory at once.
   }
 
   $('vault').onclick = exportVault;
+
+  // The desktop shell has no working file input for this. Its native picker
+  // (pick_upload) hands back decoded TEXT, which would corrupt a tar's bytes,
+  // so restore is browser-only until that command can return raw bytes. Say
+  // so rather than opening a picker that silently does nothing.
+  $('vrestore').onclick = () => {
+    if (window.__TAURI__) {
+      st('restore needs a file picker the desktop shell cannot do yet — use the browser', false);
+      return;
+    }
+    $('vpick').click();
+  };
+  $('vpick').onchange = () => {
+    const f = $('vpick').files[0];
+    $('vpick').value = '';            // same file twice in a row must re-fire
+    if (f) restoreVault(f);
+  };

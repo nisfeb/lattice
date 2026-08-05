@@ -76,6 +76,13 @@ other ships over remote scry, and followed remote files push you updates.
   read without lattice, grep, or put in git. The memories also come out in
   the format the bulk importer reads back. Anything the export could not read
   is named in the status line rather than quietly left out.
+- **And restore one.** "restore vault" takes an archive back, putting pages at
+  the paths they came from and memories back with their tags and dates. It
+  reads ordinary tar, not a private format, so an export you unpacked, edited
+  in vim and tarred up again restores just the same. It says how many existing
+  pages it will overwrite before it acts, and the version being replaced stays
+  in that page's history. A damaged archive is refused on its checksum rather
+  than half-applied.
 - **Bookmarks.** Star any `urb://` page from the reader bar. The full list at
   `/apps/lattice/marks` is organized into folders and searchable as you
   type. The omnibar ranks bookmarks above history.
