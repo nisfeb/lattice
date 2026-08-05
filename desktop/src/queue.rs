@@ -67,13 +67,17 @@ fn key_dir_name(key: &str) -> String {
     hex(key)
 }
 
-/// Resolve the queue key once and remember it. Prefers the ship's @p, falls
-/// back to the configured URL when we have never successfully learned one.
-/// Persisted either way, because stability matters more than prettiness.
-pub fn queue_key(app: &AppHandle) -> String {
-    let mut cfg = config::load(app);
+/// The key decision, with no app handle and no filesystem, so the invariant
+/// that matters can actually be tested: ONCE A KEY IS SET IT NEVER CHANGES.
+///
+/// Returns the key, and whether the config needs writing back. A key that
+/// improved itself later (URL today, @p once the ship answered) would rename
+/// the queue directory out from under the edits it exists to protect. That is
+/// the original data-loss bug wearing a different hat, so the first branch
+/// here is deliberately unconditional.
+pub fn resolve_key(cfg: &config::Config) -> (String, bool) {
     if !cfg.queue_key.is_empty() {
-        return cfg.queue_key;
+        return (cfg.queue_key.clone(), false);
     }
     let chosen = if !cfg.ship.is_empty() {
         cfg.ship.clone()
@@ -84,8 +88,17 @@ pub fn queue_key(app: &AppHandle) -> String {
         // edits made before a connect are not stranded by the connect.
         "unconfigured".to_string()
     };
-    cfg.queue_key = chosen.clone();
-    let _ = config::save(app, &cfg);
+    (chosen, true)
+}
+
+/// Resolve the queue key once and remember it.
+pub fn queue_key(app: &AppHandle) -> String {
+    let mut cfg = config::load(app);
+    let (chosen, needs_write) = resolve_key(&cfg);
+    if needs_write {
+        cfg.queue_key = chosen.clone();
+        let _ = config::save(app, &cfg);
+    }
     chosen
 }
 
@@ -373,6 +386,89 @@ mod tests {
         assert_eq!(list_saves_at(&b)[0]["body"], "from ship b");
         std::fs::remove_dir_all(&a).ok();
         std::fs::remove_dir_all(&b).ok();
+    }
+
+    /// A relaunch, end to end, with nothing mocked but the passage of time.
+    /// This is the failure that was reported: edits queued, app closed, app
+    /// reopened, edits gone. Nothing in the desktop path tested that the
+    /// second launch could still see the first launch's work.
+    #[test]
+    fn a_relaunch_still_sees_the_edits_the_last_launch_queued() {
+        let data = tmp("relaunch");
+        let mut cfg = config::Config {
+            url: "http://localhost:8080".into(),
+            ship: "~ricsul-bilwyt".into(),
+            ..Default::default()
+        };
+
+        //  launch one: resolve a key, queue some work
+        let (k1, wrote) = resolve_key(&cfg);
+        assert!(wrote, "the first launch decides the key");
+        cfg.queue_key = k1.clone();
+        let dir1 = data.join(key_dir_name(&k1)).join("saves");
+        put_save_at(&dir1, &json!({"name": "notes/draft", "body": "half a paragraph"})).unwrap();
+        push_op_at(&data.join(key_dir_name(&k1)).join("ops.json"),
+                   json!({"op": "del", "name": "notes/old"})).unwrap();
+
+        //  launch two: the bridge came up on a different port, so the webview
+        //  is on a different ORIGIN. That used to be the end of the queue.
+        let (k2, wrote2) = resolve_key(&cfg);
+        assert!(!wrote2, "the key is already decided, nothing to rewrite");
+        assert_eq!(k1, k2, "the same install resolves the same key");
+        let dir2 = data.join(key_dir_name(&k2)).join("saves");
+        let back = list_saves_at(&dir2);
+        assert_eq!(back.len(), 1, "the queued edit survived the relaunch");
+        assert_eq!(back[0]["body"], "half a paragraph");
+        let ops = read_ops_at(&data.join(key_dir_name(&k2)).join("ops.json"));
+        assert_eq!(ops.len(), 1, "and so did the queued op");
+        assert_eq!(ops[0].rest["name"], "notes/old");
+
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn learning_the_ship_later_does_not_move_the_queue() {
+        // The tempting bug: connect for the first time AFTER queueing, learn
+        // the @p, and "upgrade" the key. That renames the directory out from
+        // under the edits, which is the original failure with a nicer cause.
+        let data = tmp("upgrade");
+        let mut cfg = config::Config { url: "http://localhost:8080".into(), ..Default::default() };
+        let (k1, _) = resolve_key(&cfg);
+        cfg.queue_key = k1.clone();
+        let dir = data.join(key_dir_name(&k1)).join("saves");
+        put_save_at(&dir, &json!({"name": "p", "body": "written before connecting"})).unwrap();
+
+        //  now we learn the ship's name
+        cfg.ship = "~ricsul-bilwyt".into();
+        let (k2, wrote) = resolve_key(&cfg);
+        assert_eq!(k1, k2, "a known @p must NOT retarget an existing queue");
+        assert!(!wrote);
+        assert_eq!(
+            list_saves_at(&data.join(key_dir_name(&k2)).join("saves"))[0]["body"],
+            "written before connecting"
+        );
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn edits_made_before_any_connect_are_not_stranded_by_connecting() {
+        //  a fresh install, no url, no ship: the key still has to be stable
+        let mut cfg = config::Config::default();
+        let (k1, _) = resolve_key(&cfg);
+        cfg.queue_key = k1.clone();
+        cfg.url = "http://localhost:8080".into();
+        cfg.ship = "~zod".into();
+        let (k2, _) = resolve_key(&cfg);
+        assert_eq!(k1, k2, "connecting must not orphan what was queued before it");
+    }
+
+    #[test]
+    fn two_installs_pointed_at_different_ships_never_share_a_directory() {
+        let a = config::Config { ship: "~zod".into(), ..Default::default() };
+        let b = config::Config { ship: "~ricsul-bilwyt".into(), ..Default::default() };
+        let (ka, _) = resolve_key(&a);
+        let (kb, _) = resolve_key(&b);
+        assert_ne!(key_dir_name(&ka), key_dir_name(&kb));
     }
 
     #[test]
