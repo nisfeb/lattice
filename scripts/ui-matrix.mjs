@@ -1152,6 +1152,68 @@ try {
     await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n), { method: 'POST' });
   }, VR);
 
+  step = 'search';
+  // ── 9e. finding your own writing from the editor ─────────────────────────
+  // /content-search is OUR index (pages and knowledge, each row carrying the
+  // scope it was indexed under). /catalog-search is the crawler's, for peers,
+  // and is deliberately not queried here. The distinction is easy to get
+  // backwards and the failure is quiet: a search that returns peer content and
+  // none of your own still looks like it works.
+  const SQ = RUN + '-sq';
+  const NEEDLE = 'krypthonium' + String(process.pid);
+  await page.evaluate(async (n, needle) => {
+    await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
+      '&type=md&new=1', { method: 'POST', body: '# ' + needle + ' a private page' });
+  }, SQ, NEEDLE);
+  //  the index is rebuilt on demand, not on write
+  await page.evaluate(async () =>
+    fetch('/apps/lattice/search-reindex', { method: 'POST' }));
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
+
+  check('search: the button is in the bar', await page.evaluate(() => !!document.getElementById('qt')));
+  await page.keyboard.down('Control');
+  await page.keyboard.press('KeyK');
+  await page.keyboard.up('Control');
+  await wait(() => !document.getElementById('qwrap').hidden);
+  ok('search: ctrl-K opens the panel');
+  check('search: the input takes focus',
+    await page.evaluate(() => document.activeElement && document.activeElement.id === 'qinput'));
+
+  await page.type('#qinput', NEEDLE);
+  await wait(() => /result/.test(document.getElementById('qsum').textContent)
+    || /nothing matches/.test(document.getElementById('qlist').textContent));
+  const hits = await page.evaluate(() => [...document.querySelectorAll('#qlist ul.qlist li')]
+    .map((li) => ({ badge: li.querySelector('.qbadge').textContent,
+                    name: li.querySelector('.qname').textContent })));
+  check('search: a private page of mine is found', hits.some((h) => h.name.includes('-sq')),
+    JSON.stringify(hits));
+  //  the badge is load-bearing: this list puts private notes beside things
+  //  published on the open web, so a wrong badge misreports exposure
+  check('search: and is labelled with its exposure',
+    hits.some((h) => h.badge === 'private'), JSON.stringify(hits));
+
+  await page.evaluate(() => document.querySelector('#qlist ul.qlist li a').click());
+  await wait(() => document.getElementById('qwrap').hidden);
+  await wait(() => document.getElementById('src').value.length > 0);
+  check('search: clicking a result opens that page',
+    (await page.evaluate(() => document.getElementById('src').value)).includes(NEEDLE),
+    await page.evaluate(() => document.getElementById('src').value.slice(0, 60)));
+
+  //  a term that matches nothing must say so rather than spin
+  await page.keyboard.down('Control');
+  await page.keyboard.press('KeyK');
+  await page.keyboard.up('Control');
+  await wait(() => !document.getElementById('qwrap').hidden);
+  await page.type('#qinput', 'zzqqxxwwvvnothing');
+  await wait(() => /nothing matches/.test(document.getElementById('qlist').textContent));
+  ok('search: a term with no hits says so');
+  await page.keyboard.press('Escape');
+  await wait(() => document.getElementById('qwrap').hidden);
+  ok('search: escape closes the panel');
+  await page.evaluate((n) => fetch('/apps/lattice/page-del?name=' +
+    encodeURIComponent(n), { method: 'POST' }), SQ);
+
   step = 'mobile';
   // ── 10. mobile: toggle reveals the tree, opening jumps to the editor ─────
   await page.setViewport({ width: 390, height: 780, isMobile: true });
