@@ -30,6 +30,10 @@ pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String
     dlog(&format!("connect: ship {ship}"));
     let mut cfg = config::load(&app);
     cfg.url = url;
+    //  remember the @p: the offline queue prefers it as its directory key, and
+    //  it has to be known BEFORE the ship stops answering, which is exactly
+    //  when the queue starts mattering
+    cfg.ship = ship.clone();
     config::save(&app, &cfg)?;
     open_workspace(&app, true)?;
     Ok(ship)

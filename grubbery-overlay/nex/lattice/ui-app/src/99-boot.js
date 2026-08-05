@@ -48,7 +48,13 @@
   // a queue left by a previous session syncs on open. With no Background
   // Sync (the SW must not intercept API calls), next-open IS the replay
   // moment, and the UI says so rather than implying closed-app sync exists
-  setTimeout(() => { if (offCount) replayQueue(); }, 4000);
+  // Adoption first, replay after. On the desktop the durable queue is the
+  // ship-keyed one in Rust, so anything still sitting in this origin's
+  // IndexedDB is a leftover from before that existed. Move it across BEFORE
+  // the replay looks at the queue, or the first drain would not include it.
+  adoptIdbQueue().then(() => {
+    setTimeout(() => { if (offCount) replayQueue(); }, 4000);
+  });
   // Well after boot has settled, never during it. Boot already spends five
   // serialised pier requests and takes most of ten seconds on a slow ship. A
   // count landing in the middle of that puts the user's first save behind it

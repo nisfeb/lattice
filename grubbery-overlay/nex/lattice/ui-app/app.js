@@ -104,10 +104,10 @@
     const d = await offOpen();
     try { return d && d.transaction('saves', mode).objectStore('saves'); } catch { return null; }
   };
-  const offGet = async (name) => {
+  const idbGet = async (name) => {
     const s = await offStore('readonly'); return s ? offReq(s.get(name)) : null;
   };
-  const offAll = async () => {
+  const idbAll = async () => {
     const s = await offStore('readonly'); return (s && await offReq(s.getAll())) || [];
   };
   const opStore = async (mode) => {
@@ -117,7 +117,7 @@
   //  getAll and getAllKeys both come back in key order, which is the order
   //  they were queued in. That ordering IS the data structure here. The keys
   //  come along so a partly drained queue can delete exactly what landed.
-  const opAll = async () => {
+  const idbOpAll = async () => {
     const s = await opStore('readonly');
     if (!s) return [];
     //  both requests are issued before either is awaited: a transaction ends
@@ -128,14 +128,84 @@
     const keys = (await kp) || [];
     return vals.map((v, i) => ({ ...v, _k: keys[i] }));
   };
-  const opPut = async (rec) => {
+  const idbOpPut = async (rec) => {
     const s = await opStore('readwrite'); if (s) await offReq(s.add(rec));
     await offRecount();
   };
-  const opDel = async (k) => {
+  const idbOpDel = async (k) => {
     const s = await opStore('readwrite'); if (s) await offReq(s.delete(k));
     await offRecount();
   };
+  // ── where the queue actually lives ───────────────────────────────────
+  // In a browser: IndexedDB, which is all there is. In the desktop shell:
+  // Rust, on disk, under the app's data dir and keyed by ship.
+  //
+  // The difference is not performance, it is survival. Web storage is keyed
+  // by ORIGIN, and the origin here is the bridge's port. Anything that moved
+  // that port moved the queue with it, so a relaunch that could not reclaim
+  // the canonical port came up unable to see edits queued minutes earlier.
+  // They were on disk the whole time, under an origin nothing would ask for
+  // again. A ship-keyed store on the Rust side cannot be lost that way: not
+  // by a port change, not by an upgrade, not by a second window.
+  const qrust = () => (window.__TAURI__ && window.__TAURI__.core) || null;
+  const qcall = async (cmd, args) => {
+    const d = qrust();
+    if (!d) return null;
+    return d.invoke(cmd, args || {});
+  };
+
+  const offGet = async (name) => {
+    if (!qrust()) return idbGet(name);
+    try { return (await qcall('queue_list')).find((r) => r.name === name) || null; }
+    catch { return null; }
+  };
+  const offAll = async () => {
+    if (!qrust()) return idbAll();
+    try { return (await qcall('queue_list')) || []; } catch { return []; }
+  };
+  //  the one that must never lie: it reports whether the edit is really down
+  const offPut = async (rec) => {
+    let ok = false;
+    if (!qrust()) ok = await idbPut(rec);
+    else { try { await qcall('queue_put', { rec }); ok = true; } catch { ok = false; } }
+    await offRecount();
+    return ok;
+  };
+  const offDel = async (name) => {
+    if (!qrust()) await idbDel(name);
+    else { try { await qcall('queue_del', { name }); } catch {} }
+    await offRecount();
+  };
+  const opAll = async () => {
+    if (!qrust()) return idbOpAll();
+    try { return (await qcall('queue_ops')) || []; } catch { return []; }
+  };
+  const opPut = async (rec) => {
+    if (!qrust()) return idbOpPut(rec);
+    try { await qcall('queue_op_put', { rec }); } catch {}
+    await offRecount();
+  };
+  const opDel = async (k) => {
+    if (!qrust()) return idbOpDel(k);
+    try { await qcall('queue_op_del', { seq: k }); } catch {}
+    await offRecount();
+  };
+
+  // One-time adoption. A desktop user upgrading into this has edits sitting
+  // in the IndexedDB of whatever origin they were queued under, and the one
+  // we can still reach is our own. Move those across rather than leaving
+  // somebody's writing in a store nothing reads any more.
+  async function adoptIdbQueue() {
+    if (!qrust()) return;
+    let mine = [];
+    try { mine = await idbAll(); } catch { return }
+    for (const rec of mine) {
+      try { await qcall('queue_put', { rec }); await idbDel(rec.name); } catch {}
+    }
+    if (mine.length) st('recovered ' + mine.length + ' offline edit(s) from this device');
+    await offRecount();
+  }
+
   const offRecount = async () => {
     offCount = (await offAll()).length + (await opAll()).length;
     renderOffline();
@@ -151,16 +221,14 @@
     rq.onerror = () => res(false);
   });
   //  returns whether the record is now durably in the queue
-  const offPut = async (rec) => {
+  const idbPut = async (rec) => {
     const s = await offStore('readwrite');
     let ok = false;
     if (s) { try { ok = await offOk(s.put(rec)); } catch { ok = false; } }
-    await offRecount();
     return ok;
   };
-  const offDel = async (name) => {
+  const idbDel = async (name) => {
     const s = await offStore('readwrite'); if (s) await offReq(s.delete(name));
-    await offRecount();
   };
   offRecount();
   const kvStore = async (mode) => {
@@ -4646,7 +4714,13 @@ editor, or git will do if you only want to look.
   // a queue left by a previous session syncs on open. With no Background
   // Sync (the SW must not intercept API calls), next-open IS the replay
   // moment, and the UI says so rather than implying closed-app sync exists
-  setTimeout(() => { if (offCount) replayQueue(); }, 4000);
+  // Adoption first, replay after. On the desktop the durable queue is the
+  // ship-keyed one in Rust, so anything still sitting in this origin's
+  // IndexedDB is a leftover from before that existed. Move it across BEFORE
+  // the replay looks at the queue, or the first drain would not include it.
+  adoptIdbQueue().then(() => {
+    setTimeout(() => { if (offCount) replayQueue(); }, 4000);
+  });
   // Well after boot has settled, never during it. Boot already spends five
   // serialised pier requests and takes most of ten seconds on a slow ship. A
   // count landing in the middle of that puts the user's first save behind it
