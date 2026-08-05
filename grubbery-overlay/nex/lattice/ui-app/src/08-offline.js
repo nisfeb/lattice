@@ -133,7 +133,21 @@
   // from day one, but nothing implemented a timeout. No AbortController
   // anywhere, no ureq timeout in the bridge. So against a dead remote ship
   // "degraded" was the OS TCP timeout, minutes away (review gap 2).
-  const tfetch = (url, opts = {}, ms = 10000) => {
+  //
+  // The default is what the LIVE saves use, and it was 10s, which is the
+  // tightest deadline in the app. Replay gets 20s an item and 120s a batch.
+  // That was backwards. The pier serialises, so opening the app spends four
+  // or five round-trips before you touch anything, and on a loaded ship the
+  // first save is still queued behind them when its own clock runs out. It
+  // then gets treated as an outage: the edit is queued, replayed later, and
+  // lands on top of whatever happened in between as a conflicts/ page. A
+  // false offline FABRICATES a conflict and splits one page into two.
+  //
+  // Waiting longer to notice a genuinely dead ship costs the user some
+  // seconds. Guessing wrong costs them a duplicate page and the belief that
+  // their edit was lost. So the default is generous now, and the checks that
+  // are actually cheap (the reconnect probe at 5s) stay short.
+  const tfetch = (url, opts = {}, ms = 30000) => {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), ms);
     return fetch(url, { ...opts, signal: ac.signal }).finally(() => clearTimeout(t));
