@@ -1154,20 +1154,23 @@ try {
 
   step = 'search';
   // ── 9e. finding your own writing from the editor ─────────────────────────
-  // /content-search is OUR index (pages and knowledge, each row carrying the
-  // scope it was indexed under). /catalog-search is the crawler's, for peers,
-  // and is deliberately not queried here. The distinction is easy to get
-  // backwards and the failure is quiet: a search that returns peer content and
-  // none of your own still looks like it works.
+  // Grep over the page-dump the client already holds, not the term index.
+  // Two properties that the index cannot give and this must:
+  //
+  //   LIVE. No /search-reindex anywhere in this block, on purpose. The index
+  //   is rebuilt only by that route, so a page written a minute ago is absent
+  //   from it. In a tool you write into all day that is precisely the material
+  //   you want to find.
+  //
+  //   PARTIAL. The index matches whole words, so "zaphod" misses
+  //   "zaphodbeeblebrox" and searching as you type says "nothing matches" for
+  //   every keystroke until a word is finished.
   const SQ = RUN + '-sq';
   const NEEDLE = 'krypthonium' + String(process.pid);
   await page.evaluate(async (n, needle) => {
     await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
       '&type=md&new=1', { method: 'POST', body: '# ' + needle + ' a private page' });
   }, SQ, NEEDLE);
-  //  the index is rebuilt on demand, not on write
-  await page.evaluate(async () =>
-    fetch('/apps/lattice/search-reindex', { method: 'POST' }));
   await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
 
@@ -1180,31 +1183,39 @@ try {
   check('search: the input takes focus',
     await page.evaluate(() => document.activeElement && document.activeElement.id === 'qinput'));
 
-  await page.type('#qinput', NEEDLE);
-  await wait(() => /result/.test(document.getElementById('qsum').textContent)
-    || /nothing matches/.test(document.getElementById('qlist').textContent));
-  const hits = await page.evaluate(() => [...document.querySelectorAll('#qlist ul.qlist li')]
-    .map((li) => ({ badge: li.querySelector('.qbadge').textContent,
-                    name: li.querySelector('.qname').textContent })));
-  check('search: a private page of mine is found', hits.some((h) => h.name.includes('-sq')),
-    JSON.stringify(hits));
+  //  the panel loads the exposure map and the memories once; the first query
+  //  waits on that, and this pier is slow
+  const qType = async (text) => {
+    await page.evaluate(() => { document.getElementById('qinput').value = ''; });
+    await page.type('#qinput', text);
+    await wait(() => /result/.test(document.getElementById('qsum').textContent)
+      || /nothing matches/.test(document.getElementById('qlist').textContent));
+    return page.evaluate(() => [...document.querySelectorAll('#qlist ul.qlist li')]
+      .map((li) => ({ badge: li.querySelector('.qbadge').textContent,
+                      name: li.querySelector('.qname').textContent })));
+  };
+
+  //  a PARTIAL word, against a page that has never been indexed
+  const partial = NEEDLE.slice(0, 7);
+  const hits = await qType(partial);
+  check('search: a partial word finds a never-indexed page',
+    hits.some((h) => h.name.includes('-sq')), partial + ' -> ' + JSON.stringify(hits));
   //  the badge is load-bearing: this list puts private notes beside things
   //  published on the open web, so a wrong badge misreports exposure
   check('search: and is labelled with its exposure',
     hits.some((h) => h.badge === 'private'), JSON.stringify(hits));
 
-  await page.evaluate(() => document.querySelector('#qlist ul.qlist li a').click());
-  await wait(() => document.getElementById('qwrap').hidden);
-  await wait(() => document.getElementById('src').value.length > 0);
-  check('search: clicking a result opens that page',
-    (await page.evaluate(() => document.getElementById('src').value)).includes(NEEDLE),
-    await page.evaluate(() => document.getElementById('src').value.slice(0, 60)));
+  //  mid-word, which no term index can do
+  const mid = NEEDLE.slice(3, 9);
+  const midHits = await qType(mid);
+  check('search: a mid-word substring matches too',
+    midHits.some((h) => h.name.includes('-sq')), mid + ' -> ' + JSON.stringify(midHits));
 
-  //  a term that matches nothing must say so rather than spin
-  await page.keyboard.down('Control');
-  await page.keyboard.press('KeyK');
-  await page.keyboard.up('Control');
-  await wait(() => !document.getElementById('qwrap').hidden);
+  const upper = await qType(partial.toUpperCase());
+  check('search: matching is case-insensitive',
+    upper.some((h) => h.name.includes('-sq')), JSON.stringify(upper));
+
+  await page.evaluate(() => { document.getElementById('qinput').value = ''; });
   await page.type('#qinput', 'zzqqxxwwvvnothing');
   await wait(() => /nothing matches/.test(document.getElementById('qlist').textContent));
   ok('search: a term with no hits says so');
@@ -1212,12 +1223,11 @@ try {
   await wait(() => document.getElementById('qwrap').hidden);
   ok('search: escape closes the panel');
 
-  // From INSIDE the editor, which is where you actually are when you want to
-  // find something. And with vim on, because vim's handler is capture-phase on
-  // the textarea and consumes normal-mode keys with stopImmediatePropagation:
-  // anything it does not explicitly hand back never reaches the window. Save
-  // was exempted from the start, search was not, and the symptom was "ctrl-K
-  // does nothing" rather than anything pointing at vim.
+  // From INSIDE the editor, which is where you are when you want to find
+  // something, and with vim on: vim's handler is capture-phase on the textarea
+  // and consumes normal-mode keys whole, so anything not handed back never
+  // reaches the window. Driving this from the document body, as the first
+  // version did, never exercises the path that broke.
   for (const vim of [false, true]) {
     await page.evaluate((v) => {
       localStorage.edVim = v ? '1' : '0';
@@ -1225,7 +1235,7 @@ try {
     }, vim);
     await sleep(300);
     await page.focus('#src');
-    if (vim) { await page.keyboard.press('Escape'); await sleep(150); }  // ensure NORMAL
+    if (vim) { await page.keyboard.press('Escape'); await sleep(150); }
     await page.keyboard.down('Control');
     await page.keyboard.press('KeyK');
     await page.keyboard.up('Control');

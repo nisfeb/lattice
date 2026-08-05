@@ -1,17 +1,27 @@
   // ── search: <lat-search> ─────────────────────────────────────────────────
-  // The editor had no search. A tool you write everything into, with no way to
-  // find any of it from the place you write, sends you to the reader or to
-  // guessing at the tree. The index was already there and already covered the
-  // right things, so this is the way in.
+  // Grep, not an index.
   //
-  // /content-search is OUR index: pages and knowledge entries, each row
-  // carrying the scope recorded when it was indexed. /catalog-search is the
-  // crawler's, for peers, and is deliberately NOT queried here. This panel is
-  // for finding your own work, and mixing peer results into that makes the
-  // common case worse to read.
+  // The first version queried /content-search, the term index. Two things were
+  // wrong with that and only one was obvious. The obvious one: the index is
+  // exact whole words, so "zaphod" does not find "zaphodbeeblebrox" and
+  // "markers" does not find "marker". Searching as you type then says "nothing
+  // matches" for every keystroke until you finish a word.
   //
-  // Reuses .aclwrap/.aclbar/.aclbody like the comments panel, rather than
-  // growing a third set of overlay styles that would drift from the other two.
+  // The one that actually decides it: THE INDEX IS STALE. It is rebuilt by
+  // /search-reindex and by nothing else, so a page written a minute ago is not
+  // in it. In a tool you write into all day, the material you most want to find
+  // is exactly the material the index does not have.
+  //
+  // The client already holds the corpus. page-dump carries every page body
+  // inline and is refetched as the tree changes, so a substring scan over what
+  // is already in memory is live, matches partial words and phrases, costs no
+  // request per keystroke, and needs no index to maintain. For a personal store
+  // this is milliseconds.
+  //
+  // What the dump does NOT carry is the share mode, which is why /page-scopes
+  // exists. A results list that cannot say which hits are published would show
+  // private notes and clearweb pages looking identical, on a screen someone may
+  // be sharing. That badge is a safety signal, so it is worth one request.
   customElements.define('lat-search', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -30,56 +40,113 @@
     }
   });
 
-  // Obelisk has no OR and no LIKE, so a phrase is one request per word and the
-  // union happens here. The reader's omnibar already settled this shape; the
-  // ranking is the same, and matching it means two surfaces that agree about
-  // what "best result" means.
-  const qWords = (s) => String(s || '').toLowerCase()
-    .split(/[^a-z0-9]+/).filter((w) => w.length >= 2);
+  // Loaded when the panel opens, not per keystroke: the scopes and the
+  // memories are two requests, and then every keystroke is local.
+  let qScopes = null;          // path -> 'private' | 'urbit' | 'clearweb'
+  let qKnow = [];              // [{key, body}]
+  let qLoading = null;         // in-flight load, shared
+  //  Opening the panel starts this, and the first keystroke wants it too. The
+  //  pier serialises, so letting both fire meant four queued requests and a
+  //  wait long enough to look like a hang. One load, both await it.
+  function qLoadContext() {
+    if (qLoading) return qLoading;
+    qLoading = qLoadContextOnce().finally(() => { qLoading = null; });
+    return qLoading;
+  }
+  async function qLoadContextOnce() {
+    try {
+      const r = await fetch(api + '/page-scopes');
+      if (r.ok) {
+        const m = new Map();
+        for (const it of ((await r.json()).items || [])) m.set(it.path, it.scope);
+        qScopes = m;
+      }
+    } catch {}
+    try {
+      const r = await fetch(api + '/know-all');
+      if (r.ok) qKnow = (await r.json()).items || [];
+    } catch {}
+  }
 
-  let qSeq = 0;                    // a slower earlier query must not overwrite
+  const qCount = (hay, needle) => {
+    let n = 0, i = 0;
+    for (;;) {
+      const at = hay.indexOf(needle, i);
+      if (at < 0) return n;
+      n += 1;
+      i = at + needle.length;
+    }
+  };
+  // a line of context around the hit, the way grep shows it
+  const qSnip = (body, at, len) => {
+    const from = Math.max(0, at - 40);
+    const to = Math.min(body.length, at + len + 40);
+    return (from ? '…' : '') + body.slice(from, to).replace(/\s+/g, ' ') + (to < body.length ? '…' : '');
+  };
+
+  let qSeq = 0;
   async function runSearch(raw) {
     const host = $('qlist');
     const sum = $('qsum');
-    const words = qWords(raw);
-    if (!words.length) {
+    const q = String(raw || '').trim().toLowerCase();
+    if (q.length < 2) {
       host.className = 'aclempty';
-      host.textContent = 'type at least one word of two letters or more';
+      host.textContent = 'type at least two characters';
       sum.textContent = '';
       return;
     }
     const mine = ++qSeq;
-    host.className = 'aclempty';
-    host.textContent = 'searching…';
+    if (!qScopes) {
+      //  the exposure map and the memories are fetched once per open, and on a
+      //  slow pier that is seconds. Say so, rather than showing an empty panel
+      //  that reads as "no results".
+      host.className = 'aclempty';
+      host.textContent = 'searching\u2026';
+      await qLoadContext();
+      if (mine !== qSeq) return;
+    }
 
-    const hits = new Map();
-    const one = async (w) => {
-      try {
-        const r = await fetch(api + '/content-search?term=' + encodeURIComponent(w));
-        if (!r.ok) return;
-        const j = await r.json();
-        const c = j.columns || [];
-        const si = c.indexOf('scope'), ki = c.indexOf('key'), ti = c.indexOf('tf');
-        for (const row of (j.rows || [])) {
-          const scope = row[si], key = row[ki];
-          if (!scope || !key) continue;
-          const k = scope + '|' + key;
-          const h = hits.get(k) || { scope, key, terms: 0, tf: 0 };
-          h.terms += 1;
-          h.tf += parseInt(row[ti], 10) || 0;
-          hits.set(k, h);
-        }
-      } catch {}
-    };
-    await Promise.all(words.map(one));
-    if (mine !== qSeq) return;     // superseded while in flight
+    const out = [];
+    let skipped = 0;
+    for (const n of nodes) {
+      if (!n.page) continue;
+      // A body over the dump's inline cap is not here, only its size. Say so
+      // rather than quietly returning a result set that is missing pages.
+      if (typeof n.body !== 'string') { skipped += 1; continue; }
+      const hay = n.body.toLowerCase();
+      const at = hay.indexOf(q);
+      const inPath = n.path.toLowerCase().includes(q);
+      if (at < 0 && !inPath) continue;
+      out.push({
+        key: n.path,
+        scope: (qScopes && qScopes.get(n.path)) || 'private',
+        hits: at < 0 ? 0 : qCount(hay, q),
+        inPath,
+        snip: at < 0 ? '' : qSnip(n.body, at, q.length),
+        know: false,
+      });
+    }
+    for (const k of qKnow) {
+      const body = String(k.body || '');
+      const key = String(k.key || '').replace(/^\/+/, '');
+      const hay = body.toLowerCase();
+      const at = hay.indexOf(q);
+      const inPath = key.toLowerCase().includes(q);
+      if (at < 0 && !inPath) continue;
+      out.push({
+        key, scope: 'knowledge', hits: at < 0 ? 0 : qCount(hay, q),
+        inPath, snip: at < 0 ? '' : qSnip(body, at, q.length), know: true,
+      });
+    }
 
-    // most query words matched first, then raw frequency. Matching two words
-    // beats matching one a lot, which is what people expect from a phrase.
-    const list = [...hits.values()].sort((a, b) => b.terms - a.terms || b.tf - a.tf);
-    sum.textContent = list.length ? list.length + ' result' + (list.length === 1 ? '' : 's') : '';
+    // a name match is what you meant more often than a body match, then
+    // whichever mentions it most
+    out.sort((a, b) => (b.inPath - a.inPath) || (b.hits - a.hits) || a.key.localeCompare(b.key));
+
+    sum.textContent = (out.length ? out.length + ' result' + (out.length === 1 ? '' : 's') : '')
+      + (skipped ? (out.length ? ' · ' : '') + skipped + ' large page(s) not scanned' : '');
     host.textContent = '';
-    if (!list.length) {
+    if (!out.length) {
       host.className = 'aclempty';
       host.textContent = 'nothing matches that';
       return;
@@ -87,25 +154,28 @@
     host.className = '';
     const ul = document.createElement('ul');
     ul.className = 'qlist';
-    for (const h of list.slice(0, 100)) {
+    for (const h of out.slice(0, 100)) {
       const li = document.createElement('li');
       const a = document.createElement('a');
       a.href = '#';
-      // The badge is not decoration. These results put private notes next to
-      // things published on the open web, so each row states its exposure.
       const b = document.createElement('span');
-      b.className = 'qbadge ' + (h.scope === 'knowledge' ? 'knowledge' : h.scope);
+      b.className = 'qbadge ' + h.scope;
       b.textContent = h.scope;
       const n = document.createElement('span');
       n.className = 'qname';
-      n.textContent = h.key;              // textContent: page names are content
+      n.textContent = h.key;                 // textContent: names are content
       a.appendChild(b);
       a.appendChild(n);
+      if (h.snip) {
+        const s = document.createElement('span');
+        s.className = 'qprev muted';
+        s.textContent = h.snip;              // and so are bodies
+        a.appendChild(s);
+      }
       a.onclick = (e) => {
         e.preventDefault();
         qClose();
-        if (h.scope === 'knowledge') { openKnow(h.key); return; }
-        openPage(h.key);
+        if (h.know) openKnow(h.key); else openPage(h.key);
       };
       li.appendChild(a);
       ul.appendChild(li);
@@ -120,17 +190,19 @@
     i.value = '';
     i.focus();
     $('qlist').className = 'aclempty';
-    $('qlist').textContent = 'type at least one word of two letters or more';
+    $('qlist').textContent = 'type at least two characters';
     $('qsum').textContent = '';
+    qScopes = null;                          // refresh exposure each open
+    qLoadContext();
   };
 
-  // typing searches, but not on every keystroke: each one is a request per
-  // word against a pier that serialises
+  // Local now, so this can be short. It exists to avoid rescanning on every
+  // keystroke of a fast typist, not to avoid requests.
   let qTimer = null;
   $('qinput').oninput = () => {
     clearTimeout(qTimer);
     const v = $('qinput').value;
-    qTimer = setTimeout(() => runSearch(v), 250);
+    qTimer = setTimeout(() => runSearch(v), 80);
   };
   $('qinput').onkeydown = (e) => {
     if (e.key === 'Enter') { clearTimeout(qTimer); runSearch($('qinput').value); }
@@ -138,11 +210,14 @@
   $('qclose').onclick = qClose;
   $('qt').onclick = qOpen;
 
+  // CAPTURE phase on window, so nothing downstream can swallow it. Vim mode's
+  // handler is capture-phase on the textarea and consumes normal-mode keys
+  // whole; being ahead of it is more robust than listing exemptions there.
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !$('qwrap').hidden) { qClose(); return; }
-    // ctrl/cmd-K from anywhere, including the editor. Not "/" : that types.
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'k' || e.key === 'K')) {
       e.preventDefault();
+      e.stopPropagation();
       if ($('qwrap').hidden) qOpen(); else qClose();
     }
-  });
+  }, true);
