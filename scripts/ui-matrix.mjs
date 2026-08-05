@@ -1211,6 +1211,37 @@ try {
   await page.keyboard.press('Escape');
   await wait(() => document.getElementById('qwrap').hidden);
   ok('search: escape closes the panel');
+
+  // From INSIDE the editor, which is where you actually are when you want to
+  // find something. And with vim on, because vim's handler is capture-phase on
+  // the textarea and consumes normal-mode keys with stopImmediatePropagation:
+  // anything it does not explicitly hand back never reaches the window. Save
+  // was exempted from the start, search was not, and the symptom was "ctrl-K
+  // does nothing" rather than anything pointing at vim.
+  for (const vim of [false, true]) {
+    await page.evaluate((v) => {
+      localStorage.edVim = v ? '1' : '0';
+      window.dispatchEvent(new StorageEvent('storage', { key: 'edVim' }));
+    }, vim);
+    await sleep(300);
+    await page.focus('#src');
+    if (vim) { await page.keyboard.press('Escape'); await sleep(150); }  // ensure NORMAL
+    await page.keyboard.down('Control');
+    await page.keyboard.press('KeyK');
+    await page.keyboard.up('Control');
+    let opened = true;
+    try { await page.waitForFunction(() => !document.getElementById('qwrap').hidden, { timeout: 8000 }); }
+    catch { opened = false; }
+    check('search: ctrl-K works from the editor with vim ' + (vim ? 'ON' : 'off'), opened);
+    if (opened) {
+      await page.keyboard.press('Escape');
+      await wait(() => document.getElementById('qwrap').hidden);
+    }
+  }
+  await page.evaluate(() => {
+    localStorage.edVim = '0';
+    window.dispatchEvent(new StorageEvent('storage', { key: 'edVim' }));
+  });
   await page.evaluate((n) => fetch('/apps/lattice/page-del?name=' +
     encodeURIComponent(n), { method: 'POST' }), SQ);
 
