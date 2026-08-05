@@ -1629,6 +1629,7 @@ dependencies = [
 name = "lattice-desktop"
 version = "0.8.0-rc5"
 dependencies = [
+ "base64 0.22.1",
  "fuser",
  "lattice-fs",
  "proptest",

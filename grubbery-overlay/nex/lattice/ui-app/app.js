@@ -3791,6 +3791,24 @@
     return new Blob(parts, { type: 'application/x-tar' });
   }
 
+  // The desktop shell reaches the disk through Rust, not the DOM. Bytes cross
+  // the IPC base64-encoded: the webview's structured clone of a multi-megabyte
+  // array of numbers is slow enough to read as a hang, and this is the path
+  // whose entire job is that the bytes arrive exactly as they left.
+  const desk = () => (window.__TAURI__ && window.__TAURI__.core) || null;
+  const blobToB64 = (b) => new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result).split(',')[1] || '');
+    fr.onerror = () => rej(new Error('could not read the archive'));
+    fr.readAsDataURL(b);
+  });
+  const b64ToBytes = (s) => {
+    const bin = atob(s);
+    const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return u;
+  };
+
   // ── reading one back ─────────────────────────────────────────────────────
   // The inverse of the writer, and deliberately not only of THIS writer: it
   // reads ordinary ustar, so an archive you made with `tar cf` restores too.
@@ -3951,10 +3969,24 @@ editor, or git will do if you only want to look.
     files.push({ name: 'README.txt', body: RESTORE, mtime: now });
 
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-    const url = globalThis.URL.createObjectURL(tarBlob(files));
+    const fname = 'lattice-vault-' + stamp + '.tar';
+    const blob = tarBlob(files);
+    const d = desk();
+    if (d) {
+      // The shell has no download handling of any kind, so an <a download>
+      // click here does nothing at all and the export looked like it worked.
+      // Hand the bytes to Rust and let it open a real save dialog.
+      let where = '';
+      try { where = await d.invoke('save_vault', { name: fname, b64: await blobToB64(blob) }); }
+      catch (e) { st('export failed: ' + e, false); return; }
+      if (!where) { st('export cancelled'); return; }
+      st('exported ' + pages.length + ' page(s) to ' + where);
+      return;
+    }
+    const url = globalThis.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'lattice-vault-' + stamp + '.tar';
+    a.download = fname;
     a.click();
     setTimeout(() => globalThis.URL.revokeObjectURL(url), 30000);
 
@@ -3971,16 +4003,18 @@ editor, or git will do if you only want to look.
 
   $('vault').onclick = exportVault;
 
-  // The desktop shell has no working file input for this. Its native picker
-  // (pick_upload) hands back decoded TEXT, which would corrupt a tar's bytes,
-  // so restore is browser-only until that command can return raw bytes. Say
-  // so rather than opening a picker that silently does nothing.
-  $('vrestore').onclick = () => {
-    if (window.__TAURI__) {
-      st('restore needs a file picker the desktop shell cannot do yet — use the browser', false);
-      return;
-    }
-    $('vpick').click();
+  // A file input cannot read a tar in the shell, so the desktop path goes
+  // through Rust's own picker and hands the bytes back. restoreVault only
+  // wants something with arrayBuffer(), which is all a File ever was to it.
+  $('vrestore').onclick = async () => {
+    const d = desk();
+    if (!d) { $('vpick').click(); return; }
+    let b64 = '';
+    try { b64 = await d.invoke('pick_vault'); }
+    catch (e) { st('could not read that file: ' + e, false); return; }
+    if (!b64) return;                 // cancelled, which is not an error
+    const bytes = b64ToBytes(b64);
+    restoreVault({ arrayBuffer: async () => bytes.buffer });
   };
   $('vpick').onchange = () => {
     const f = $('vpick').files[0];

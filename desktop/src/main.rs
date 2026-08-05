@@ -147,6 +147,8 @@ fn main() {
             commands::go_home,
             commands::pick_upload,
             commands::open_external_url,
+            commands::save_vault,
+            commands::pick_vault,
             mounts::status,
             mounts::add_mount,
             mounts::remove_mount,
