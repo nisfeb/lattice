@@ -952,6 +952,35 @@ try {
   check('offline: the edit made offline landed under the NEW name',
     String(moved).includes('edited while offline'), JSON.stringify(moved));
 
+  step = 'vault export';
+  // ── 9c. one action, the whole store ──────────────────────────────────────
+  // The archive's BYTES are covered by scripts/ui-vaultar.mjs, which unpacks
+  // real archives with the system tar. What only a browser can prove is the
+  // wiring: the button exists, the handler runs, and every route it reads
+  // answers. It must also never claim a complete export when it is not one.
+  check('vault: the export button is in the controls pane',
+    await page.evaluate(() => !!document.getElementById('vault')));
+  await page.evaluate(() => {
+    //  a click would open a download dialog in a headless run, so hold the
+    //  Blob instead of handing it to the browser and read what it built
+    const a = document.createElement('a');
+    a.click = function () { window.__vaultName = this.download; };
+    const made = document.createElement;
+    document.createElement = function (t) {
+      if (t === 'a') { document.createElement = made; return a; }
+      return made.call(document, t);
+    };
+    document.getElementById('vault').click();
+  });
+  await wait(() => /exported|could NOT|failed/.test(document.getElementById('status').textContent));
+  const vmsg = await page.evaluate(() => document.getElementById('status').textContent);
+  check('vault: the export completes and reports what it wrote',
+    /exported \d+ page\(s\) and \d+ memories/.test(vmsg), vmsg);
+  check('vault: nothing was unreadable', !/could NOT/.test(vmsg), vmsg);
+  check('vault: the archive is named for when it was taken',
+    /^lattice-vault-\d{4}-\d{2}-\d{2}/.test(await page.evaluate(() => window.__vaultName || '')),
+    await page.evaluate(() => window.__vaultName || '(no download)'));
+
   step = 'mobile';
   // ── 10. mobile: toggle reveals the tree, opening jumps to the editor ─────
   await page.setViewport({ width: 390, height: 780, isMobile: true });

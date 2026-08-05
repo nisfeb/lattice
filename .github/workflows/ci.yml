@@ -94,6 +94,8 @@ jobs:
         run: |
           node scripts/ui-listedit.mjs
           node scripts/ui-shortpath.mjs
+          # writes real archives and unpacks them with the runner's own tar
+          node scripts/ui-vaultar.mjs
       - name: supply chain (licences + bans)
         run: |
           cargo install cargo-deny --locked
