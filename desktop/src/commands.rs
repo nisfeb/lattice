@@ -30,6 +30,10 @@ pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String
     dlog(&format!("connect: ship {ship}"));
     let mut cfg = config::load(&app);
     cfg.url = url;
+    //  remember the @p: the offline queue prefers it as its directory key, and
+    //  it has to be known BEFORE the ship stops answering, which is exactly
+    //  when the queue starts mattering
+    cfg.ship = ship.clone();
     config::save(&app, &cfg)?;
     open_workspace(&app, true)?;
     Ok(ship)
@@ -357,6 +361,71 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     Ok(w)
 }
 
+//  ── the vault archive, off and on to disk ────────────────────────────────
+//  The shell has no download handling at all: no on_download, no save dialog,
+//  nothing. So the web app's <a download> click had nothing to catch it and
+//  "export vault" silently did nothing here, while restore had no way to read
+//  a file at all. A backup feature that works only in a browser is not a
+//  backup feature, and the desktop app is the surface that actually has a
+//  disk to put one on.
+//
+//  Bytes cross the IPC base64-encoded. A multi-megabyte JSON array of numbers
+//  is slow enough through the webview to read as a hang, and this is the one
+//  path where the entire point is that the bytes arrive exactly as they left.
+
+/// Decode an archive payload from the webview. Split out from the command so
+/// the byte handling is testable without a dialog or a display.
+fn decode_archive(b64: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(b64.as_bytes())
+        .map_err(|e| format!("bad archive payload: {e}"))
+}
+
+/// Encode an archive read off disk for the trip back to the webview.
+fn encode_archive(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Save a vault archive wherever the user says. Returns the path written, or
+/// an empty string if they cancelled, which is not an error.
+#[tauri::command]
+pub async fn save_vault(app: AppHandle, name: String, b64: String) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let bytes = decode_archive(&b64)?;
+    let Some(target) = app
+        .dialog()
+        .file()
+        .set_file_name(name)
+        .add_filter("tar archive", &["tar"])
+        .blocking_save_file()
+    else {
+        return Ok(String::new());
+    };
+    let path = target.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
+/// Read a vault archive the user picks. Empty string means they cancelled.
+#[tauri::command]
+pub async fn pick_vault(app: AppHandle) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .add_filter("vault archive", &["tar"])
+        .blocking_pick_file()
+    else {
+        return Ok(String::new());
+    };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    let bytes =
+        std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    Ok(encode_archive(&bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::openable;
@@ -449,5 +518,51 @@ mod tests {
         assert_eq!((one[0].rel.as_str(), one[0].text.as_str()), ("a.md", "alpha"));
 
         std::fs::remove_dir_all(&base).ok();
+    }
+}
+
+#[cfg(test)]
+mod vault_tests {
+    use super::{decode_archive, encode_archive};
+
+    //  A tar is arbitrary bytes, not text. Every value has to survive, and the
+    //  three input lengths mod 3 are where a codec's padding goes wrong.
+    #[test]
+    fn every_byte_value_round_trips() {
+        let all: Vec<u8> = (0..=255u8).collect();
+        assert_eq!(decode_archive(&encode_archive(&all)).unwrap(), all);
+    }
+
+    #[test]
+    fn every_padding_case_round_trips() {
+        for len in 0..=48usize {
+            let b: Vec<u8> = (0..len).map(|i| (i * 7 % 256) as u8).collect();
+            let got = decode_archive(&encode_archive(&b)).unwrap();
+            assert_eq!(got, b, "length {len} did not survive");
+        }
+    }
+
+    //  the shapes a real archive is full of: NUL runs from header padding and
+    //  the two zero blocks that end it, plus high bytes from utf-8 bodies
+    #[test]
+    fn archive_shaped_bytes_round_trip() {
+        let mut b = vec![0u8; 1024];
+        b.extend_from_slice("# héllo ⚡ 日本\n".as_bytes());
+        b.extend_from_slice(&[0u8; 512]);
+        b.extend_from_slice(&(0..=255u8).rev().collect::<Vec<u8>>());
+        assert_eq!(decode_archive(&encode_archive(&b)).unwrap(), b);
+    }
+
+    #[test]
+    fn a_payload_that_is_not_base64_is_refused_not_guessed() {
+        //  restoring from a mangled payload by salvaging what parses would be
+        //  worse than refusing: it writes a corrupt page over a good one
+        assert!(decode_archive("not base64 !!!").is_err());
+        assert!(decode_archive("QUJD===").is_err());
+    }
+
+    #[test]
+    fn empty_is_empty_not_an_error() {
+        assert_eq!(decode_archive("").unwrap(), Vec::<u8>::new());
     }
 }

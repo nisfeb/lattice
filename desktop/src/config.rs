@@ -10,6 +10,14 @@ pub struct Config {
     pub url: String,
     #[serde(default)]
     pub mounts: Vec<MountSpec>,
+    /// The ship's @p, learned at connect. Display and queue keying only.
+    #[serde(default)]
+    pub ship: String,
+    /// The offline queue's directory key, resolved ONCE and then never
+    /// recomputed. See queue.rs: a key that improved itself later would
+    /// rename the queue directory out from under the edits it protects.
+    #[serde(default)]
+    pub queue_key: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -68,6 +76,8 @@ mod tests {
         let p = tmp("roundtrip");
         let c = Config {
             url: "http://localhost:8080".into(),
+            ship: String::new(),
+            queue_key: String::new(),
             mounts: vec![MountSpec {
                 mountpoint: "/tmp/l".into(),
                 root: "notes".into(),
@@ -118,6 +128,8 @@ mod tests {
         ) {
             let c = Config {
                 url: url.clone(),
+                ship: String::new(),
+                queue_key: String::new(),
                 mounts: mounts
                     .iter()
                     .map(|(mountpoint, root, sock, ship)| MountSpec {

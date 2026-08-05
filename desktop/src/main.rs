@@ -6,6 +6,7 @@ mod install;
 mod local;
 mod mounts;
 mod proxy;
+mod queue;
 mod stack;
 #[cfg(test)]
 mod testutil;
@@ -147,6 +148,14 @@ fn main() {
             commands::go_home,
             commands::pick_upload,
             commands::open_external_url,
+            commands::save_vault,
+            commands::pick_vault,
+            queue::queue_list,
+            queue::queue_put,
+            queue::queue_del,
+            queue::queue_ops,
+            queue::queue_op_put,
+            queue::queue_op_del,
             mounts::status,
             mounts::add_mount,
             mounts::remove_mount,

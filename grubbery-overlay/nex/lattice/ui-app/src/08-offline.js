@@ -67,10 +67,10 @@
     const d = await offOpen();
     try { return d && d.transaction('saves', mode).objectStore('saves'); } catch { return null; }
   };
-  const offGet = async (name) => {
+  const idbGet = async (name) => {
     const s = await offStore('readonly'); return s ? offReq(s.get(name)) : null;
   };
-  const offAll = async () => {
+  const idbAll = async () => {
     const s = await offStore('readonly'); return (s && await offReq(s.getAll())) || [];
   };
   const opStore = async (mode) => {
@@ -80,7 +80,7 @@
   //  getAll and getAllKeys both come back in key order, which is the order
   //  they were queued in. That ordering IS the data structure here. The keys
   //  come along so a partly drained queue can delete exactly what landed.
-  const opAll = async () => {
+  const idbOpAll = async () => {
     const s = await opStore('readonly');
     if (!s) return [];
     //  both requests are issued before either is awaited: a transaction ends
@@ -91,25 +91,107 @@
     const keys = (await kp) || [];
     return vals.map((v, i) => ({ ...v, _k: keys[i] }));
   };
-  const opPut = async (rec) => {
+  const idbOpPut = async (rec) => {
     const s = await opStore('readwrite'); if (s) await offReq(s.add(rec));
     await offRecount();
   };
-  const opDel = async (k) => {
+  const idbOpDel = async (k) => {
     const s = await opStore('readwrite'); if (s) await offReq(s.delete(k));
     await offRecount();
   };
+  // ── where the queue actually lives ───────────────────────────────────
+  // In a browser: IndexedDB, which is all there is. In the desktop shell:
+  // Rust, on disk, under the app's data dir and keyed by ship.
+  //
+  // The difference is not performance, it is survival. Web storage is keyed
+  // by ORIGIN, and the origin here is the bridge's port. Anything that moved
+  // that port moved the queue with it, so a relaunch that could not reclaim
+  // the canonical port came up unable to see edits queued minutes earlier.
+  // They were on disk the whole time, under an origin nothing would ask for
+  // again. A ship-keyed store on the Rust side cannot be lost that way: not
+  // by a port change, not by an upgrade, not by a second window.
+  const qrust = () => (window.__TAURI__ && window.__TAURI__.core) || null;
+  const qcall = async (cmd, args) => {
+    const d = qrust();
+    if (!d) return null;
+    return d.invoke(cmd, args || {});
+  };
+
+  const offGet = async (name) => {
+    if (!qrust()) return idbGet(name);
+    try { return (await qcall('queue_list')).find((r) => r.name === name) || null; }
+    catch { return null; }
+  };
+  const offAll = async () => {
+    if (!qrust()) return idbAll();
+    try { return (await qcall('queue_list')) || []; } catch { return []; }
+  };
+  //  the one that must never lie: it reports whether the edit is really down
+  const offPut = async (rec) => {
+    let ok = false;
+    if (!qrust()) ok = await idbPut(rec);
+    else { try { await qcall('queue_put', { rec }); ok = true; } catch { ok = false; } }
+    await offRecount();
+    return ok;
+  };
+  const offDel = async (name) => {
+    if (!qrust()) await idbDel(name);
+    else { try { await qcall('queue_del', { name }); } catch {} }
+    await offRecount();
+  };
+  const opAll = async () => {
+    if (!qrust()) return idbOpAll();
+    try { return (await qcall('queue_ops')) || []; } catch { return []; }
+  };
+  const opPut = async (rec) => {
+    if (!qrust()) return idbOpPut(rec);
+    try { await qcall('queue_op_put', { rec }); } catch {}
+    await offRecount();
+  };
+  const opDel = async (k) => {
+    if (!qrust()) return idbOpDel(k);
+    try { await qcall('queue_op_del', { seq: k }); } catch {}
+    await offRecount();
+  };
+
+  // One-time adoption. A desktop user upgrading into this has edits sitting
+  // in the IndexedDB of whatever origin they were queued under, and the one
+  // we can still reach is our own. Move those across rather than leaving
+  // somebody's writing in a store nothing reads any more.
+  async function adoptIdbQueue() {
+    if (!qrust()) return;
+    let mine = [];
+    try { mine = await idbAll(); } catch { return }
+    for (const rec of mine) {
+      try { await qcall('queue_put', { rec }); await idbDel(rec.name); } catch {}
+    }
+    if (mine.length) st('recovered ' + mine.length + ' offline edit(s) from this device');
+    await offRecount();
+  }
+
   const offRecount = async () => {
     offCount = (await offAll()).length + (await opAll()).length;
     renderOffline();
   };
-  const offPut = async (rec) => {
-    const s = await offStore('readwrite'); if (s) await offReq(s.put(rec));
-    await offRecount();
+  // Resolve TRUE only when the write actually completed. offReq resolves the
+  // request's RESULT, which for a put is the key, and a key is not a success
+  // signal you can trust. This one exists so a failed write is distinguishable
+  // from a successful one, because everything below depends on never claiming
+  // a save that did not happen.
+  const offOk = (rq) => new Promise((res) => {
+    if (!rq) return res(false);
+    rq.onsuccess = () => res(true);
+    rq.onerror = () => res(false);
+  });
+  //  returns whether the record is now durably in the queue
+  const idbPut = async (rec) => {
+    const s = await offStore('readwrite');
+    let ok = false;
+    if (s) { try { ok = await offOk(s.put(rec)); } catch { ok = false; } }
+    return ok;
   };
-  const offDel = async (name) => {
+  const idbDel = async (name) => {
     const s = await offStore('readwrite'); if (s) await offReq(s.delete(name));
-    await offRecount();
   };
   offRecount();
   const kvStore = async (mode) => {
@@ -133,7 +215,21 @@
   // from day one, but nothing implemented a timeout. No AbortController
   // anywhere, no ureq timeout in the bridge. So against a dead remote ship
   // "degraded" was the OS TCP timeout, minutes away (review gap 2).
-  const tfetch = (url, opts = {}, ms = 10000) => {
+  //
+  // The default is what the LIVE saves use, and it was 10s, which is the
+  // tightest deadline in the app. Replay gets 20s an item and 120s a batch.
+  // That was backwards. The pier serialises, so opening the app spends four
+  // or five round-trips before you touch anything, and on a loaded ship the
+  // first save is still queued behind them when its own clock runs out. It
+  // then gets treated as an outage: the edit is queued, replayed later, and
+  // lands on top of whatever happened in between as a conflicts/ page. A
+  // false offline FABRICATES a conflict and splits one page into two.
+  //
+  // Waiting longer to notice a genuinely dead ship costs the user some
+  // seconds. Guessing wrong costs them a duplicate page and the belief that
+  // their edit was lost. So the default is generous now, and the checks that
+  // are actually cheap (the reconnect probe at 5s) stay short.
+  const tfetch = (url, opts = {}, ms = 30000) => {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), ms);
     return fetch(url, { ...opts, signal: ac.signal }).finally(() => clearTimeout(t));
@@ -166,14 +262,26 @@
 
   // queue one page's edit and make it the visible truth everywhere a read
   // could come from: the render cache, the tree dump body, the boot snapshot.
+  // Returns whether the edit is actually safe. The old version returned
+  // nothing and said "saved offline" unconditionally, including when the
+  // queue write had silently failed, which is the worst thing this file can
+  // do: the editor then cleared its dirty flag and the work was gone with the
+  // UI reporting success. If the queue cannot take it, say so and say it in
+  // the words that matter, because there is nowhere else the edit now lives.
   async function enqueueSave(name, kind, body) {
-    await offPut({ name, kind, body, baseRev: curRev || 0, queuedAt: Date.now() });
+    const queued = await offPut({ name, kind, body, baseRev: curRev || 0, queuedAt: Date.now() });
+    setDegraded(true);
+    if (!queued) {
+      st('NOT SAVED — this device cannot store offline edits. Copy your text '
+        + 'somewhere safe before closing this page.', false);
+      return false;
+    }
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
     snapPage(name, { body, kind, rev: curRev || 0 });
-    setDegraded(true);
     st('saved offline — ' + offCount + ' waiting to sync');
+    return true;
   }
   // Queue a delete or a move. The caller has already done the local tree work
   // (dropTreeNodes, or remapping the paths) because that is the same work it
@@ -209,15 +317,21 @@
   // No baseRev: memories are last-write-wins (no CAS, no conflicts/ pages),
   // matching what know-save itself does.
   async function enqueueKnow(key, body) {
-    await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
+    const queued = await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
+    setDegraded(true);
+    if (!queued) {
+      st('NOT SAVED — this device cannot store offline edits. Copy your text '
+        + 'somewhere safe before closing this page.', false);
+      return false;
+    }
     knowGen++;
     const k = knowEntry(key);
     if (k) k.bytes = body.length;
     else knowKeys.push({ key, tags: [], updated: '', bytes: body.length });
     renderKnowChips();
     renderKnowTree();
-    setDegraded(true);
     st('saved offline — ' + offCount + ' waiting to sync');
+    return true;
   }
 
   // Drain through page-save-batch. The batch is all-or-nothing, right for

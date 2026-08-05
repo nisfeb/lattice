@@ -60,7 +60,8 @@ and enqueues instead of erroring. Any later success clears it. No polling.
 sets no timeout and no client fetch uses an AbortController, so against a dead
 remote ship "degraded" is the OS TCP timeout, a 1–2 minute hang before the
 first enqueue. Phase 1 adds an AbortController (~10s) on the save path and a
-timeout on the bridge agent.
+timeout on the bridge agent. **[review]** Ten seconds turned out to be too
+tight to be safe. See "The live-save deadline" below for why it is thirty now.
 
 **Replay.** On reconnect or on open with a non-empty queue, drain through
 `page-save-batch` in chunks, then `loadTree()` to reconcile.
@@ -156,6 +157,25 @@ Same queue, same code. The differences are real but small:
    there is nothing to lose because no content lives in an op. Sharing and
    the ACL routes are deliberately still refused. A grant that appears to
    work offline and is denied an hour later is a security surprise.
+
+## The live-save deadline
+
+Detection is by response, with a timeout as the backstop. That timeout applies
+to the user's own saves, and it was the tightest one in the app: ten seconds
+for a live save, against twenty per item and a hundred and twenty per batch on
+replay. Backwards, and not harmlessly so.
+
+The pier serialises. Opening the app spends four or five round-trips before
+anyone touches anything, so on a loaded ship the first save is still queued
+behind boot when its own clock runs out. That reads as an outage. The edit is
+queued, replayed later, and lands on top of whatever happened in between as a
+conflicts/ page. A false offline does not just delay a save. It manufactures a
+conflict and splits one page into two.
+
+So the default is thirty seconds now. Noticing a genuinely dead ship later
+costs seconds. Guessing wrong costs a duplicate page and the belief that an
+edit was lost. The reconnect probe stays at five, because that one is cheap
+and wrong-in-the-other-direction is harmless.
 
 ## Testing
 

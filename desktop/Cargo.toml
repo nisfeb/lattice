@@ -13,6 +13,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+#  already in the tree transitively, so naming it directly costs no build.
+#  The vault archive crosses the IPC encoded, and hand-rolling a codec on a
+#  path whose whole job is that the bytes arrive intact is not a saving.
+base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fuser = { version = "0.18", default-features = false }

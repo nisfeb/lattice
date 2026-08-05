@@ -25,10 +25,10 @@ const src = readFileSync(
 // the pure half only: everything from the encoder down to the end of tarBlob.
 // The rest of the file talks to the ship and the DOM.
 const a = src.indexOf('const te = new TextEncoder();');
-const b = src.indexOf('//  ~2026.');
-if (a < 0 || b < 0) { console.error('could not find the tar writer in 78-export.js'); process.exit(2); }
-const { tarBlob, splitName } =
-  new Function(`${src.slice(a, b)}\nreturn { tarBlob, splitName };`)();
+const b = src.indexOf('async function restoreVault');
+if (a < 0 || b < 0) { console.error('could not find the tar code in 78-export.js'); process.exit(2); }
+const { tarBlob, splitName, untar } =
+  new Function(`${src.slice(a, b)}\nreturn { tarBlob, splitName, untar };`)();
 
 let fails = 0;
 const eq = (name, got, want) => {
@@ -139,6 +139,84 @@ console.log('\nmodification times are carried, not invented');
   eq('the mtime we asked for is the mtime on disk',
     Math.floor(statSync(join(out, 'pages/t.md')).mtimeMs / 1000), MT);
   rmSync(dir, { recursive: true, force: true });
+}
+
+// ── reading archives back (the restore half) ───────────────────────────────
+// The writer is checked against the system tar above. The reader has to be
+// checked against the system tar too, in the other direction, or "it round
+// trips" only ever proves our two halves agree with each other.
+const read = async (files) => {
+  const m = new Map();
+  for (const e of untar(await tarBlob(files).arrayBuffer())) m.set(e.name, e.text);
+  return m;
+};
+
+console.log('\nreading back what we wrote');
+{
+  const got = await read([
+    { name: 'pages/a.md', body: '# a\n', mtime: MT },
+    { name: 'pages/deep/nest/b.md', body: 'b\n', mtime: MT },
+    { name: 'know.json', body: '{"items":[]}', mtime: MT },
+  ]);
+  eq('a plain entry reads back', got.get('pages/a.md'), '# a\n');
+  eq('a nested entry keeps its path', got.get('pages/deep/nest/b.md'), 'b\n');
+  eq('and nothing is invented', got.size, 3);
+}
+
+console.log('\nthe cases that broke the writer must survive the reader too');
+{
+  const body = 'héllo ⚡ 日本\n';
+  const long = 'pages/' + 'dir'.repeat(20) + '/' + 'leaf'.repeat(15) + '.md';
+  const huge = 'pages/' + 'z'.repeat(240) + '.md';
+  const got = await read([
+    { name: 'pages/utf8.md', body, mtime: MT },
+    { name: long, body: 'long\n', mtime: MT },
+    { name: huge, body: 'huge\n', mtime: MT },
+    { name: 'pages/empty.md', body: '', mtime: MT },
+    { name: 'pages/exact.md', body: 'x'.repeat(512), mtime: MT },
+    { name: 'pages/last.md', body: 'last\n', mtime: MT },
+  ]);
+  eq('utf-8 survives the round trip', got.get('pages/utf8.md'), body);
+  eq('an ustar-prefix path reads back whole', got.get(long), 'long\n');
+  eq('a @LongLink path reads back whole', got.get(huge), 'huge\n');
+  eq('an empty entry reads back empty', got.get('pages/empty.md'), '');
+  eq('a one-block body does not swallow the next entry', got.get('pages/exact.md'), 'x'.repeat(512));
+  eq('and the entry after all of that is intact', got.get('pages/last.md'), 'last\n');
+}
+
+console.log('\nreading an archive the system tar wrote');
+{
+  // The point of a plain tar is that it is not OUR format. If someone
+  // unpacks an export, edits a page in vim and tars it back up, that has to
+  // restore. So: build a directory, `tar cf` it, and read THAT.
+  const dir = mkdtempSync(join(tmpdir(), 'vaultar-'));
+  const stage = join(dir, 'stage');
+  execFileSync('mkdir', ['-p', join(stage, 'pages', 'sub')]);
+  writeFileSync(join(stage, 'pages', 'one.md'), '# one\n');
+  writeFileSync(join(stage, 'pages', 'sub', 'two.md'), 'two ⚡\n');
+  writeFileSync(join(stage, 'know.json'), '{"items":[]}');
+  const arc = join(dir, 'sys.tar');
+  execFileSync(tar, ['cf', arc, '-C', stage, '.']);
+  const m = new Map();
+  for (const e of untar(readFileSync(arc).buffer)) m.set(e.name.replace(/^\.\//, ''), e.text);
+  eq('a system-tar entry reads back', m.get('pages/one.md'), '# one\n');
+  eq('nested, with utf-8', m.get('pages/sub/two.md'), 'two ⚡\n');
+  eq('and the json rides along', m.get('know.json'), '{"items":[]}');
+  // `tar cf .` emits directory entries. They are not pages and must not
+  // arrive as empty ones.
+  eq('directory entries are not returned as files',
+    [...m.keys()].filter((k) => k.endsWith('/')).length, 0);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+console.log('\nrefusing a corrupt archive');
+{
+  const buf = new Uint8Array(await tarBlob([{ name: 'pages/a.md', body: 'a\n', mtime: MT }]).arrayBuffer());
+  buf[5] ^= 0xff;                       // damage the name, leave the checksum
+  let threw = '';
+  try { untar(buf.buffer); } catch (e) { threw = e.message; }
+  // Restoring from a damaged backup by guessing is worse than saying no.
+  eq('a flipped byte is caught by the checksum', /checksum/.test(threw), true);
 }
 
 console.log(fails ? `\n${fails} check(s) FAILED` : '\nall checks passed');

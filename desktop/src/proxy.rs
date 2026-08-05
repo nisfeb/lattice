@@ -36,9 +36,34 @@ pub struct Bridge(pub Mutex<Option<(Arc<Mutex<String>>, u16)>>);
 const PORT_BASE: u16 = 26500;
 const PORT_SPAN: u16 = 16;
 
+/// How long to keep asking for PORT_BASE before accepting a different origin.
+/// Moving PORT_BASE below the ephemeral range stopped the kernel taking it,
+/// but left the likeliest thief of all: our own previous instance, still
+/// closing its listener while the user relaunches. That is precisely the
+/// "quit, rebuild, start again" path, and stepping a port there hands the new
+/// window a new origin whose IndexedDB is empty, so the queued edits from the
+/// session that just ended are invisible. Reported as lost work, and it is.
+///
+/// Waiting a few seconds costs a slow launch in a rare case. Not waiting costs
+/// somebody their unsaved writing, so the trade is not close.
+const PORT_WAIT_MS: u64 = 3_000;
+const PORT_POLL_MS: u64 = 100;
+
 fn bind_stable() -> Result<(TcpListener, u16), String> {
     let mut last = String::new();
-    for port in PORT_BASE..PORT_BASE + PORT_SPAN {
+    //  the canonical origin, patiently
+    for _ in 0..(PORT_WAIT_MS / PORT_POLL_MS) {
+        match TcpListener::bind(("127.0.0.1", PORT_BASE)) {
+            Ok(l) => return Ok((l, PORT_BASE)),
+            Err(e) => last = e.to_string(),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(PORT_POLL_MS));
+    }
+    //  Still held, so another instance is genuinely running rather than
+    //  exiting. Stepping is right (a second window has to work) but it is a
+    //  different origin, and the caller warns rather than letting the user
+    //  discover it by missing edits.
+    for port in PORT_BASE + 1..PORT_BASE + PORT_SPAN {
         match TcpListener::bind(("127.0.0.1", port)) {
             Ok(l) => return Ok((l, port)),
             Err(e) => last = e.to_string(),
@@ -65,6 +90,19 @@ pub fn ensure(state: &Bridge, ship_base: &str) -> Result<String, String> {
         return Ok(format!("http://127.0.0.1:{port}"));
     }
     let (listener, port) = bind_stable()?;
+    if port != PORT_BASE {
+        // Not a cosmetic detail. Web storage is keyed by origin, so this
+        // window cannot see the offline queue, tree snapshot or resume
+        // snapshot belonging to a window on the canonical port. Anyone
+        // debugging "where did my queued edits go" should find this line
+        // rather than guess.
+        crate::commands::dlog(&format!(
+            "bridge: PORT {PORT_BASE} was taken, running on {port}. This is a \
+             DIFFERENT ORIGIN: offline edits queued by another instance are \
+             not visible here. Close the other instance and restart to get \
+             them back."
+        ));
+    }
     let shared = Arc::new(Mutex::new(base.clone()));
     let ship = shared.clone();
     std::thread::spawn(move || {
@@ -530,6 +568,28 @@ mod tests {
         let (third, p3) = bind_stable().expect("free again");
         assert_eq!(p3, PORT_BASE, "the origin is recoverable, not drifting");
         drop(third);
+
+        // The reported failure, exactly: quit the app, rebuild, launch again.
+        // The previous instance is still letting go of its listener, so a bind
+        // that gives up immediately lands on PORT_BASE+1. That is a DIFFERENT
+        // ORIGIN, and web storage is keyed by origin, so the offline queue the
+        // user just filled is not reachable from the new window. It reads as
+        // lost work because it is. Waiting for the canonical port is what makes
+        // a relaunch keep its data.
+        let (held, hp) = bind_stable().expect("free range");
+        assert_eq!(hp, PORT_BASE);
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            drop(held); // the outgoing instance finally exits
+        });
+        let (got, port) = bind_stable().expect("the canonical port comes free");
+        assert_eq!(
+            port, PORT_BASE,
+            "a relaunch must wait for the SAME origin, not silently take a new \
+             one and orphan the queued edits"
+        );
+        drop(got);
+        releaser.join().unwrap();
 
         // And the bridge that port belongs to must actually forward. ensure()
         // returning a plausible-looking url without a live listener behind it

@@ -104,10 +104,10 @@
     const d = await offOpen();
     try { return d && d.transaction('saves', mode).objectStore('saves'); } catch { return null; }
   };
-  const offGet = async (name) => {
+  const idbGet = async (name) => {
     const s = await offStore('readonly'); return s ? offReq(s.get(name)) : null;
   };
-  const offAll = async () => {
+  const idbAll = async () => {
     const s = await offStore('readonly'); return (s && await offReq(s.getAll())) || [];
   };
   const opStore = async (mode) => {
@@ -117,7 +117,7 @@
   //  getAll and getAllKeys both come back in key order, which is the order
   //  they were queued in. That ordering IS the data structure here. The keys
   //  come along so a partly drained queue can delete exactly what landed.
-  const opAll = async () => {
+  const idbOpAll = async () => {
     const s = await opStore('readonly');
     if (!s) return [];
     //  both requests are issued before either is awaited: a transaction ends
@@ -128,25 +128,107 @@
     const keys = (await kp) || [];
     return vals.map((v, i) => ({ ...v, _k: keys[i] }));
   };
-  const opPut = async (rec) => {
+  const idbOpPut = async (rec) => {
     const s = await opStore('readwrite'); if (s) await offReq(s.add(rec));
     await offRecount();
   };
-  const opDel = async (k) => {
+  const idbOpDel = async (k) => {
     const s = await opStore('readwrite'); if (s) await offReq(s.delete(k));
     await offRecount();
   };
+  // ── where the queue actually lives ───────────────────────────────────
+  // In a browser: IndexedDB, which is all there is. In the desktop shell:
+  // Rust, on disk, under the app's data dir and keyed by ship.
+  //
+  // The difference is not performance, it is survival. Web storage is keyed
+  // by ORIGIN, and the origin here is the bridge's port. Anything that moved
+  // that port moved the queue with it, so a relaunch that could not reclaim
+  // the canonical port came up unable to see edits queued minutes earlier.
+  // They were on disk the whole time, under an origin nothing would ask for
+  // again. A ship-keyed store on the Rust side cannot be lost that way: not
+  // by a port change, not by an upgrade, not by a second window.
+  const qrust = () => (window.__TAURI__ && window.__TAURI__.core) || null;
+  const qcall = async (cmd, args) => {
+    const d = qrust();
+    if (!d) return null;
+    return d.invoke(cmd, args || {});
+  };
+
+  const offGet = async (name) => {
+    if (!qrust()) return idbGet(name);
+    try { return (await qcall('queue_list')).find((r) => r.name === name) || null; }
+    catch { return null; }
+  };
+  const offAll = async () => {
+    if (!qrust()) return idbAll();
+    try { return (await qcall('queue_list')) || []; } catch { return []; }
+  };
+  //  the one that must never lie: it reports whether the edit is really down
+  const offPut = async (rec) => {
+    let ok = false;
+    if (!qrust()) ok = await idbPut(rec);
+    else { try { await qcall('queue_put', { rec }); ok = true; } catch { ok = false; } }
+    await offRecount();
+    return ok;
+  };
+  const offDel = async (name) => {
+    if (!qrust()) await idbDel(name);
+    else { try { await qcall('queue_del', { name }); } catch {} }
+    await offRecount();
+  };
+  const opAll = async () => {
+    if (!qrust()) return idbOpAll();
+    try { return (await qcall('queue_ops')) || []; } catch { return []; }
+  };
+  const opPut = async (rec) => {
+    if (!qrust()) return idbOpPut(rec);
+    try { await qcall('queue_op_put', { rec }); } catch {}
+    await offRecount();
+  };
+  const opDel = async (k) => {
+    if (!qrust()) return idbOpDel(k);
+    try { await qcall('queue_op_del', { seq: k }); } catch {}
+    await offRecount();
+  };
+
+  // One-time adoption. A desktop user upgrading into this has edits sitting
+  // in the IndexedDB of whatever origin they were queued under, and the one
+  // we can still reach is our own. Move those across rather than leaving
+  // somebody's writing in a store nothing reads any more.
+  async function adoptIdbQueue() {
+    if (!qrust()) return;
+    let mine = [];
+    try { mine = await idbAll(); } catch { return }
+    for (const rec of mine) {
+      try { await qcall('queue_put', { rec }); await idbDel(rec.name); } catch {}
+    }
+    if (mine.length) st('recovered ' + mine.length + ' offline edit(s) from this device');
+    await offRecount();
+  }
+
   const offRecount = async () => {
     offCount = (await offAll()).length + (await opAll()).length;
     renderOffline();
   };
-  const offPut = async (rec) => {
-    const s = await offStore('readwrite'); if (s) await offReq(s.put(rec));
-    await offRecount();
+  // Resolve TRUE only when the write actually completed. offReq resolves the
+  // request's RESULT, which for a put is the key, and a key is not a success
+  // signal you can trust. This one exists so a failed write is distinguishable
+  // from a successful one, because everything below depends on never claiming
+  // a save that did not happen.
+  const offOk = (rq) => new Promise((res) => {
+    if (!rq) return res(false);
+    rq.onsuccess = () => res(true);
+    rq.onerror = () => res(false);
+  });
+  //  returns whether the record is now durably in the queue
+  const idbPut = async (rec) => {
+    const s = await offStore('readwrite');
+    let ok = false;
+    if (s) { try { ok = await offOk(s.put(rec)); } catch { ok = false; } }
+    return ok;
   };
-  const offDel = async (name) => {
+  const idbDel = async (name) => {
     const s = await offStore('readwrite'); if (s) await offReq(s.delete(name));
-    await offRecount();
   };
   offRecount();
   const kvStore = async (mode) => {
@@ -170,7 +252,21 @@
   // from day one, but nothing implemented a timeout. No AbortController
   // anywhere, no ureq timeout in the bridge. So against a dead remote ship
   // "degraded" was the OS TCP timeout, minutes away (review gap 2).
-  const tfetch = (url, opts = {}, ms = 10000) => {
+  //
+  // The default is what the LIVE saves use, and it was 10s, which is the
+  // tightest deadline in the app. Replay gets 20s an item and 120s a batch.
+  // That was backwards. The pier serialises, so opening the app spends four
+  // or five round-trips before you touch anything, and on a loaded ship the
+  // first save is still queued behind them when its own clock runs out. It
+  // then gets treated as an outage: the edit is queued, replayed later, and
+  // lands on top of whatever happened in between as a conflicts/ page. A
+  // false offline FABRICATES a conflict and splits one page into two.
+  //
+  // Waiting longer to notice a genuinely dead ship costs the user some
+  // seconds. Guessing wrong costs them a duplicate page and the belief that
+  // their edit was lost. So the default is generous now, and the checks that
+  // are actually cheap (the reconnect probe at 5s) stay short.
+  const tfetch = (url, opts = {}, ms = 30000) => {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), ms);
     return fetch(url, { ...opts, signal: ac.signal }).finally(() => clearTimeout(t));
@@ -203,14 +299,26 @@
 
   // queue one page's edit and make it the visible truth everywhere a read
   // could come from: the render cache, the tree dump body, the boot snapshot.
+  // Returns whether the edit is actually safe. The old version returned
+  // nothing and said "saved offline" unconditionally, including when the
+  // queue write had silently failed, which is the worst thing this file can
+  // do: the editor then cleared its dirty flag and the work was gone with the
+  // UI reporting success. If the queue cannot take it, say so and say it in
+  // the words that matter, because there is nowhere else the edit now lives.
   async function enqueueSave(name, kind, body) {
-    await offPut({ name, kind, body, baseRev: curRev || 0, queuedAt: Date.now() });
+    const queued = await offPut({ name, kind, body, baseRev: curRev || 0, queuedAt: Date.now() });
+    setDegraded(true);
+    if (!queued) {
+      st('NOT SAVED — this device cannot store offline edits. Copy your text '
+        + 'somewhere safe before closing this page.', false);
+      return false;
+    }
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
     snapPage(name, { body, kind, rev: curRev || 0 });
-    setDegraded(true);
     st('saved offline — ' + offCount + ' waiting to sync');
+    return true;
   }
   // Queue a delete or a move. The caller has already done the local tree work
   // (dropTreeNodes, or remapping the paths) because that is the same work it
@@ -246,15 +354,21 @@
   // No baseRev: memories are last-write-wins (no CAS, no conflicts/ pages),
   // matching what know-save itself does.
   async function enqueueKnow(key, body) {
-    await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
+    const queued = await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
+    setDegraded(true);
+    if (!queued) {
+      st('NOT SAVED — this device cannot store offline edits. Copy your text '
+        + 'somewhere safe before closing this page.', false);
+      return false;
+    }
     knowGen++;
     const k = knowEntry(key);
     if (k) k.bytes = body.length;
     else knowKeys.push({ key, tags: [], updated: '', bytes: body.length });
     renderKnowChips();
     renderKnowTree();
-    setDegraded(true);
     st('saved offline — ' + offCount + ' waiting to sync');
+    return true;
   }
 
   // Drain through page-save-batch. The batch is all-or-nothing, right for
@@ -1697,6 +1811,7 @@
   </div>
   <input type="file" id="fpick" multiple hidden>
   <input type="file" id="dpick" webkitdirectory hidden>
+  <input type="file" id="vpick" accept=".tar,application/x-tar" hidden>
   <div id="uppanel" class="uppanel" hidden>
     <div id="upmsg"></div>
     <div class="upbar"><div id="upfill"></div></div>
@@ -2027,7 +2142,14 @@
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
       // does not care which kind it got
-      await enqueueSave(name, kind, sent);
+      // A failed queue write means this edit exists ONLY in the textarea.
+      // Clearing dirty there would tell the editor the work is safe and let
+      // the next navigation drop it, so the bookkeeping stays untouched and
+      // the page keeps behaving as unsaved. enqueueSave has already said so.
+      if (!(await enqueueSave(name, kind, sent))) {
+        cerr.textContent = 'NOT saved'; cerr.className = 'err';
+        return;
+      }
       current = name;
       curKind = kind;
       pname.readOnly = true;
@@ -2096,13 +2218,15 @@
     saving = false;
     echoUntil = Date.now() + 4000;
     if (shipGone(r)) {
+      //  same rule on the autosave path: if it did not queue, it is not saved,
+      //  so the editor stays dirty and keeps the text under the cursor
       if (mode === 'know') {
-        await enqueueKnow(current, sent);
+        if (!(await enqueueKnow(current, sent))) return;
         if (src.value === sent) dirty = false;
         if (savePending) { savePending = false; if (dirty) autosave(); }
         return;
       }
-      await enqueueSave(current, curKind || pkind.value, sent);
+      if (!(await enqueueSave(current, curKind || pkind.value, sent))) return;
       if (src.value === sent) dirty = false;
       if (savePending) { savePending = false; if (dirty) autosave(); }
       return;
@@ -2547,6 +2671,7 @@
   <button id="mv" class="mvbtn">move / rename</button>
   <button id="del" class="del">delete page</button>
   <button id="vault" class="mvbtn" title="download every page and memory as one tar">export vault</button>
+  <button id="vrestore" class="mvbtn" title="restore pages and memories from a vault tar">restore vault</button>
 </aside>`;
       cerr = $('cerr');
     }
@@ -2885,8 +3010,11 @@
 
 // ── src/70-upload.js ──────────────────────────────────────────────────────
   // ── upload (pickers + drag-and-drop, progress panel) ─────────────────────
+  //  `text` maps to itself as well as from `txt`: exports written before the
+  //  extension was conventionalised named those files `.text`, and a restore
+  //  has to keep reading archives it already handed out.
   const KMAP = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
-                 js: 'js', css: 'css', hoon: 'hoon' };
+                 text: 'text', js: 'js', css: 'css', hoon: 'hoon' };
   const seg = (x) => x.toLowerCase().replace(/[^a-z0-9._~-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
   const upPanel = $('uppanel'), upMsg = $('upmsg'), upFill = $('upfill'), upErr = $('uperr');
 
@@ -2896,7 +3024,13 @@
     upFill.style.width = Math.round(done * 100 / Math.max(total, 1)) + '%';
   };
 
-  async function uploadItems(items) {
+  // opts.verbatim: the paths are ones this app itself wrote (a vault restore),
+  // so take them as they are. seg() lowercases and rewrites characters, which
+  // is right for a file dragged in off a disk and wrong for a page being put
+  // back where it came from. folderCtx is ignored for the same reason: a
+  // restore goes to the original path, not under whatever folder is selected.
+  async function uploadItems(items, opts) {
+    const verbatim = !!(opts && opts.verbatim);
     if (degraded || offCount) {
       upShow();
       upMsg.textContent = 'offline — uploads need the ship (queued edits will sync first)';
@@ -2910,8 +3044,10 @@
       const kind = dot > 0 ? KMAP[rel.slice(dot + 1).toLowerCase()] : null;
       if (!kind) { skipped++; continue; }
       const stem = rel.slice(0, dot);
-      const parts = stem.split('/').map(seg).filter(Boolean);
-      if (folderCtx) parts.unshift(...folderCtx.split('/'));
+      const parts = verbatim
+        ? stem.split('/').filter(Boolean)
+        : stem.split('/').map(seg).filter(Boolean);
+      if (folderCtx && !verbatim) parts.unshift(...folderCtx.split('/'));
       const name = parts.join('/');
       if (!name) { skipped++; continue; }
       list.push({ file, name, kind });
@@ -3764,6 +3900,121 @@
     return new Blob(parts, { type: 'application/x-tar' });
   }
 
+  // The desktop shell reaches the disk through Rust, not the DOM. Bytes cross
+  // the IPC base64-encoded: the webview's structured clone of a multi-megabyte
+  // array of numbers is slow enough to read as a hang, and this is the path
+  // whose entire job is that the bytes arrive exactly as they left.
+  const desk = () => (window.__TAURI__ && window.__TAURI__.core) || null;
+  const blobToB64 = (b) => new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result).split(',')[1] || '');
+    fr.onerror = () => rej(new Error('could not read the archive'));
+    fr.readAsDataURL(b);
+  });
+  const b64ToBytes = (s) => {
+    const bin = atob(s);
+    const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return u;
+  };
+
+  // ── reading one back ─────────────────────────────────────────────────────
+  // The inverse of the writer, and deliberately not only of THIS writer: it
+  // reads ordinary ustar, so an archive you made with `tar cf` restores too.
+  // The checksum is verified rather than trusted. A restore is the one path
+  // where reading garbage confidently is worse than refusing.
+  const td = new TextDecoder();
+  function untar(buf) {
+    const u = new Uint8Array(buf);
+    const out = [];
+    let off = 0;
+    let longName = null;
+    const str = (at, len) => {
+      const s = u.subarray(at, at + len);
+      const e = s.indexOf(0);
+      return td.decode(e === -1 ? s : s.subarray(0, e));
+    };
+    while (off + 512 <= u.length) {
+      const h = u.subarray(off, off + 512);
+      let zero = true;
+      for (const b of h) if (b) { zero = false; break; }
+      if (zero) break;                    // the two zero blocks that end it
+      // the checksum is computed with its own field read as eight spaces
+      let sum = 0;
+      for (let i = 0; i < 512; i++) sum += (i >= 148 && i < 156) ? 32 : h[i];
+      const want = parseInt(str(off + 148, 8).replace(/[^0-7]/g, '') || '-1', 8);
+      if (want !== sum) throw new Error('checksum mismatch at byte ' + off);
+      const size = parseInt(str(off + 124, 12).replace(/[^0-7]/g, '') || '0', 8) || 0;
+      const type = str(off + 156, 1);
+      const name = str(off, 100);
+      const prefix = str(off + 345, 155);
+      off += 512;
+      const data = u.subarray(off, off + size);
+      off += Math.ceil(size / 512) * 512;
+      // 'L' carries the next entry's real name. '0' and '' are regular files.
+      // Directories and links have nothing to restore, so they are skipped
+      // rather than treated as pages.
+      if (type === 'L') { longName = td.decode(data).replace(/\0+$/, ''); continue; }
+      if (type !== '0' && type !== '') { longName = null; continue; }
+      out.push({ name: longName || (prefix ? prefix + '/' + name : name),
+        text: td.decode(data) });
+      longName = null;
+    }
+    return out;
+  }
+
+  async function restoreVault(file) {
+    if (degraded || offCount) {
+      st('a restore writes many pages, so it needs the ship', false);
+      return;
+    }
+    let entries = null;
+    try { entries = untar(await file.arrayBuffer()); }
+    catch (e) { st('not a readable archive: ' + e.message, false); return; }
+
+    const pages = [];
+    let knowJson = null;
+    for (const e of entries) {
+      if (e.name === 'know.json') knowJson = e.text;
+      else if (e.name.startsWith('pages/'))
+        pages.push({ file: { text: async () => e.text }, rel: e.name.slice(6) });
+    }
+    if (!pages.length && !knowJson) {
+      st('that archive has no pages/ and no know.json in it', false);
+      return;
+    }
+
+    // Say what will be overwritten BEFORE doing it. Overwrites are recoverable
+    // (the old body stays in that page's history) but a restore that silently
+    // buries newer work is not something to find out about afterwards.
+    const stem = (rel) => { const d = rel.lastIndexOf('.'); return d > 0 ? rel.slice(0, d) : rel; };
+    const clash = pages.filter((p) => hasNode(stem(p.rel))).length;
+    const msg = 'restore ' + pages.length + ' page(s)' +
+      (knowJson ? ' and the memories' : '') +
+      (clash ? '? ' + clash + ' of them already exist and will be overwritten. The '
+        + 'version you have now stays in each page\'s history.'
+        : '?');
+    if (!(await askConfirm(msg, 'restore'))) return;
+
+    if (pages.length) await uploadItems(pages, { verbatim: true });
+
+    if (knowJson) {
+      stWork('restoring memories…');
+      let r = null;
+      try { r = await mutate(api + '/know-import', { method: 'POST', body: knowJson }); } catch {}
+      if (r && r.ok) st('memories restored');
+      else st('pages restored, but the memories did not: ' + (r ? r.status : 'no answer'), false);
+    }
+    loadTree();
+  }
+
+  // The extension a kind is conventionally written with. Only `text` differs
+  // from its own kind name, and it matters both ways. The export's whole
+  // promise is a directory readable without lattice, where a .txt is a .txt,
+  // and the restore reads extensions back through KMAP, which knows `txt` and
+  // would have skipped every `.text` file as an unsupported type.
+  const kindExt = (k) => (k === 'text' ? 'txt' : (k || 'md'));
+
   //  ~2026.08.04..23.35.53..8360.0000.0000.0001 -> unix seconds
   const daToUnix = (s) => {
     const m = /^~(\d+)\.(\d+)\.(\d+)\.\.(\d+)\.(\d+)\.(\d+)/.exec(String(s || ''));
@@ -3775,11 +4026,15 @@
 
 pages/    every page, as a plain file named for its path and kind.
 know/     every memory, one file per key.
-know.json the memories again, in the format /know-import reads. Restoring
-          them is one POST of this file to that route.
+know.json the memories again, in the format /know-import reads.
 
-Pages restore by saving each file back under its path, which the desktop
-client's folder sync does for a whole directory at once.
+To put it all back, use "restore vault" in the controls pane and pick this
+file. Pages go back to the paths they came from and the memories go back with
+their tags and dates. Anything already there is overwritten, and the version
+being replaced stays in that page's history.
+
+Nothing here needs lattice to read. The pages are plain files, so grep, an
+editor, or git will do if you only want to look.
 `;
 
   async function exportVault() {
@@ -3806,7 +4061,7 @@ client's folder sync does for a whole directory at once.
         } catch { body = null; }
       }
       if (typeof body !== 'string') { missing.push(n.path); continue; }
-      files.push({ name: 'pages/' + n.path + '.' + (n.kind || 'md'),
+      files.push({ name: 'pages/' + n.path + '.' + kindExt(n.kind),
         body, mtime: daToUnix(n.mtime) });
     }
 
@@ -3823,10 +4078,24 @@ client's folder sync does for a whole directory at once.
     files.push({ name: 'README.txt', body: RESTORE, mtime: now });
 
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-    const url = globalThis.URL.createObjectURL(tarBlob(files));
+    const fname = 'lattice-vault-' + stamp + '.tar';
+    const blob = tarBlob(files);
+    const d = desk();
+    if (d) {
+      // The shell has no download handling of any kind, so an <a download>
+      // click here does nothing at all and the export looked like it worked.
+      // Hand the bytes to Rust and let it open a real save dialog.
+      let where = '';
+      try { where = await d.invoke('save_vault', { name: fname, b64: await blobToB64(blob) }); }
+      catch (e) { st('export failed: ' + e, false); return; }
+      if (!where) { st('export cancelled'); return; }
+      st('exported ' + pages.length + ' page(s) to ' + where);
+      return;
+    }
+    const url = globalThis.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'lattice-vault-' + stamp + '.tar';
+    a.download = fname;
     a.click();
     setTimeout(() => globalThis.URL.revokeObjectURL(url), 30000);
 
@@ -3842,6 +4111,25 @@ client's folder sync does for a whole directory at once.
   }
 
   $('vault').onclick = exportVault;
+
+  // A file input cannot read a tar in the shell, so the desktop path goes
+  // through Rust's own picker and hands the bytes back. restoreVault only
+  // wants something with arrayBuffer(), which is all a File ever was to it.
+  $('vrestore').onclick = async () => {
+    const d = desk();
+    if (!d) { $('vpick').click(); return; }
+    let b64 = '';
+    try { b64 = await d.invoke('pick_vault'); }
+    catch (e) { st('could not read that file: ' + e, false); return; }
+    if (!b64) return;                 // cancelled, which is not an error
+    const bytes = b64ToBytes(b64);
+    restoreVault({ arrayBuffer: async () => bytes.buffer });
+  };
+  $('vpick').onchange = () => {
+    const f = $('vpick').files[0];
+    $('vpick').value = '';            // same file twice in a row must re-fire
+    if (f) restoreVault(f);
+  };
 
 // ── src/85-layout.js ──────────────────────────────────────────────────────
   // ── layout toggles + mobile tabs ─────────────────────────────────────────
@@ -4426,7 +4714,13 @@ client's folder sync does for a whole directory at once.
   // a queue left by a previous session syncs on open. With no Background
   // Sync (the SW must not intercept API calls), next-open IS the replay
   // moment, and the UI says so rather than implying closed-app sync exists
-  setTimeout(() => { if (offCount) replayQueue(); }, 4000);
+  // Adoption first, replay after. On the desktop the durable queue is the
+  // ship-keyed one in Rust, so anything still sitting in this origin's
+  // IndexedDB is a leftover from before that existed. Move it across BEFORE
+  // the replay looks at the queue, or the first drain would not include it.
+  adoptIdbQueue().then(() => {
+    setTimeout(() => { if (offCount) replayQueue(); }, 4000);
+  });
   // Well after boot has settled, never during it. Boot already spends five
   // serialised pier requests and takes most of ten seconds on a slow ship. A
   // count landing in the middle of that puts the user's first save behind it

@@ -1,6 +1,9 @@
   // ── upload (pickers + drag-and-drop, progress panel) ─────────────────────
+  //  `text` maps to itself as well as from `txt`: exports written before the
+  //  extension was conventionalised named those files `.text`, and a restore
+  //  has to keep reading archives it already handed out.
   const KMAP = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
-                 js: 'js', css: 'css', hoon: 'hoon' };
+                 text: 'text', js: 'js', css: 'css', hoon: 'hoon' };
   const seg = (x) => x.toLowerCase().replace(/[^a-z0-9._~-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
   const upPanel = $('uppanel'), upMsg = $('upmsg'), upFill = $('upfill'), upErr = $('uperr');
 
@@ -10,7 +13,13 @@
     upFill.style.width = Math.round(done * 100 / Math.max(total, 1)) + '%';
   };
 
-  async function uploadItems(items) {
+  // opts.verbatim: the paths are ones this app itself wrote (a vault restore),
+  // so take them as they are. seg() lowercases and rewrites characters, which
+  // is right for a file dragged in off a disk and wrong for a page being put
+  // back where it came from. folderCtx is ignored for the same reason: a
+  // restore goes to the original path, not under whatever folder is selected.
+  async function uploadItems(items, opts) {
+    const verbatim = !!(opts && opts.verbatim);
     if (degraded || offCount) {
       upShow();
       upMsg.textContent = 'offline — uploads need the ship (queued edits will sync first)';
@@ -24,8 +33,10 @@
       const kind = dot > 0 ? KMAP[rel.slice(dot + 1).toLowerCase()] : null;
       if (!kind) { skipped++; continue; }
       const stem = rel.slice(0, dot);
-      const parts = stem.split('/').map(seg).filter(Boolean);
-      if (folderCtx) parts.unshift(...folderCtx.split('/'));
+      const parts = verbatim
+        ? stem.split('/').filter(Boolean)
+        : stem.split('/').map(seg).filter(Boolean);
+      if (folderCtx && !verbatim) parts.unshift(...folderCtx.split('/'));
       const name = parts.join('/');
       if (!name) { skipped++; continue; }
       list.push({ file, name, kind });
