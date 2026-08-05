@@ -546,6 +546,66 @@ try {
   // Restored after being lost in the editor migration. The interaction that
   // matters is with the list-continuation handler added since: in NORMAL mode
   // Enter is a motion, not a new list item, and Tab is not two spaces.
+  // ── unread comments ────────────────────────────────────────────────────
+  // A comment from another ship used to arrive silently: the inbox is
+  // pull-only, so nothing on screen changed until you opened it.
+  step = 'comment notifications';
+  const CN = RUN + '-notify';
+  const unread = () => page.evaluate(() => {
+    const b = document.getElementById('cmt');
+    return { n: b.dataset.n || null, marked: b.classList.contains('has-unread') };
+  });
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
+      '&type=md&new=1', { method: 'POST', body: '# notify' });
+  }, CN);
+  await sleep(4000);
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/page-comments?name=' + encodeURIComponent(n) + '&on=1',
+      { method: 'POST' });
+  }, CN);
+  await sleep(3000);
+  //  clear the high-water mark so this run's comment is genuinely new
+  await page.evaluate(() => localStorage.removeItem('cmtSeen'));
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/comment?page=' + encodeURIComponent(n),
+      { method: 'POST', body: 'body=notify+probe' });
+  }, CN);
+  await sleep(4000);
+  //  The count is throttled to once a minute, because on a serialising pier a
+  //  badge is not worth queueing ahead of the user's saves. A fresh load starts
+  //  that clock at zero, so reloading is both how the count becomes immediate
+  //  and how we prove the mark survives a reload, which is the point of it.
+  const reloadApp = async () => {
+    await page.reload({ waitUntil: 'networkidle2', timeout: 90000 });
+    await wait(() => !!document.getElementById('cmt'));
+    await sleep(2000);
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  };
+  await reloadApp();
+  await wait(() => document.getElementById('cmt').classList.contains('has-unread'));
+  const u1 = await unread();
+  check('comments: an arrival marks the button unread', u1.marked, JSON.stringify(u1));
+  check('comments: and carries a count', u1.n && Number(u1.n) >= 1, JSON.stringify(u1));
+
+  //  opening the inbox IS reading it
+  await page.click('#cmt');
+  await wait(() => !document.getElementById('cmwrap').hidden);
+  await sleep(2500);
+  const u2 = await unread();
+  check('comments: opening the inbox clears the badge', !u2.marked, JSON.stringify(u2));
+  await page.click('#cmclose');
+  await sleep(500);
+  //  and it stays cleared across a reload, which recounts from scratch against
+  //  the mark opening the inbox just wrote. A refresh alone would be throttled
+  //  out and pass without counting anything.
+  await reloadApp();
+  await sleep(3000);
+  const u3 = await unread();
+  check('comments: and it stays cleared on the next refresh', !u3.marked, JSON.stringify(u3));
+  await page.evaluate((n) => fetch('/apps/lattice/page-del?name=' +
+    encodeURIComponent(n), { method: 'POST' }), CN);
+
   step = 'vim mode';
   const vimOn = async (on) => {
     await page.evaluate((v) => {
@@ -808,6 +868,118 @@ try {
     .filter((x) => !x.textContent.startsWith('conflicts') && !x.textContent.includes('-lists'))
     .some((x) => x.textContent.includes(n)), RUN);
   ok('folder delete: whole subtree gone');
+
+  step = 'offline structure';
+  // ── 9b. deletes and renames survive an unreachable ship ──────────────────
+  // Saves have always queued. Structural changes refused, because their
+  // ordering is the hard part of an offline system. They queue now, in an
+  // ordered log that drains ahead of the saves.
+  const OFF = RUN + '-off';
+  await page.evaluate(async (a, b) => {
+    for (const n of [a, b])
+      await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
+        '&type=md&new=1', { method: 'POST', body: '# ' + n });
+  }, OFF + '/gone', OFF + '/here');
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
+    .filter((a) => a.href.includes(n)).length >= 2, OFF);
+
+  // Cut the ship off the way a real outage looks from the browser. The desktop
+  // bridge answers 502 when it cannot reach the ship, and 502 is what the
+  // client detects on. navigator.onLine is never consulted, on purpose.
+  let cut = true;
+  await page.setRequestInterception(true);
+  const cutter = (r) => {
+    if (cut && r.method() === 'POST' && r.url().includes('/apps/lattice/'))
+      r.respond({ status: 502, contentType: 'text/plain', body: 'ship unreachable' });
+    else r.continue();
+  };
+  page.on('request', cutter);
+
+  //  a save that comes back 502 is what puts the client in the offline state
+  await page.goto(APP + '?name=' + OFF + '/here', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.getElementById('src').value.length > 0);
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = '# edited while offline'; s.dispatchEvent(new Event('input'));
+  });
+  await page.click('#save');
+  await wait(() => !document.getElementById('offbadge').hidden);
+  ok('offline: a failed save raises the offline badge');
+
+  //  delete with the ship down. The queue survives the reload in between,
+  //  which is what keeps the app in offline mode across a restart.
+  await page.goto(APP + '?name=' + OFF + '/gone', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.getElementById('src').value.length > 0);
+  await page.click('#del');
+  await dialog(null);
+  //  the leaf is matched on its LABEL and the namespace on the href: a tree
+  //  link percent-encodes the slash, so href.includes('ns/leaf') never matches
+  //  and an absence check written that way passes without proving anything
+  await wait((n) => ![...document.querySelectorAll('#treelist a.pg')]
+    .some((a) => a.textContent === 'gone.md' && a.href.includes(n)), OFF);
+  ok('offline: a delete applies to the tree and queues');
+
+  //  rename with the ship down, on the page whose edit is already queued
+  await page.goto(APP + '?name=' + OFF + '/here', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.getElementById('src').value === '# edited while offline');
+  ok('offline: the queued edit outranks the ship copy on reopen');
+  await page.click('#mv');
+  await dialog(OFF + '/moved');
+  await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
+    .some((a) => a.textContent === 'moved.md' && a.href.includes(n)), OFF);
+  ok('offline: a rename applies to the tree and queues');
+
+  //  the ship comes back. A fresh load drains the queue on its boot timer.
+  cut = false;
+  page.off('request', cutter);
+  await page.setRequestInterception(false);
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.getElementById('offbadge').hidden);
+  ok('offline: the badge clears once the queue drains');
+
+  //  and the ship itself agrees, which is the only claim that matters
+  const after = await page.evaluate(async () =>
+    (await (await fetch('/apps/lattice/page-tree')).json()));
+  const paths = JSON.stringify(after);
+  check('offline: the queued delete reached the ship',
+    !paths.includes(OFF + '/gone'), 'still present');
+  check('offline: the queued rename reached the ship',
+    paths.includes(OFF + '/moved') && !paths.includes(OFF + '/here'), 'move did not land');
+  const moved = await page.evaluate(async (n) =>
+    (await (await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n))).json()).body,
+  OFF + '/moved');
+  check('offline: the edit made offline landed under the NEW name',
+    String(moved).includes('edited while offline'), JSON.stringify(moved));
+
+  step = 'vault export';
+  // ── 9c. one action, the whole store ──────────────────────────────────────
+  // The archive's BYTES are covered by scripts/ui-vaultar.mjs, which unpacks
+  // real archives with the system tar. What only a browser can prove is the
+  // wiring: the button exists, the handler runs, and every route it reads
+  // answers. It must also never claim a complete export when it is not one.
+  check('vault: the export button is in the controls pane',
+    await page.evaluate(() => !!document.getElementById('vault')));
+  await page.evaluate(() => {
+    //  a click would open a download dialog in a headless run, so hold the
+    //  Blob instead of handing it to the browser and read what it built
+    const a = document.createElement('a');
+    a.click = function () { window.__vaultName = this.download; };
+    const made = document.createElement;
+    document.createElement = function (t) {
+      if (t === 'a') { document.createElement = made; return a; }
+      return made.call(document, t);
+    };
+    document.getElementById('vault').click();
+  });
+  await wait(() => /exported|could NOT|failed/.test(document.getElementById('status').textContent));
+  const vmsg = await page.evaluate(() => document.getElementById('status').textContent);
+  check('vault: the export completes and reports what it wrote',
+    /exported \d+ page\(s\) and \d+ memories/.test(vmsg), vmsg);
+  check('vault: nothing was unreadable', !/could NOT/.test(vmsg), vmsg);
+  check('vault: the archive is named for when it was taken',
+    /^lattice-vault-\d{4}-\d{2}-\d{2}/.test(await page.evaluate(() => window.__vaultName || '')),
+    await page.evaluate(() => window.__vaultName || '(no download)'));
 
   step = 'mobile';
   // ── 10. mobile: toggle reveals the tree, opening jumps to the editor ─────

@@ -37,11 +37,18 @@
   const offOpen = () => new Promise((res) => {
     if (offDb) return res(offDb);
     let rq = null;
-    try { rq = indexedDB.open('lattice-offline', 2); } catch { return res(null); }
+    try { rq = indexedDB.open('lattice-offline', 3); } catch { return res(null); }
     rq.onupgradeneeded = () => {
       const d = rq.result;
       if (!d.objectStoreNames.contains('saves'))
         d.createObjectStore('saves', { keyPath: 'name' });
+      // Structural ops (delete, move, rename) are an ORDERED LOG, not a map.
+      // Saves coalesce because only the last body matters and autosave writes
+      // constantly. Deletes and moves do not: "rename A to B" then "delete B"
+      // is not the same as the reverse, and both are things a person does on
+      // purpose a handful of times, so there is nothing to coalesce away.
+      if (!d.objectStoreNames.contains('ops'))
+        d.createObjectStore('ops', { autoIncrement: true });
       // kv: the tree snapshot (phase 3). It lived in localStorage, which is
       // ~5MB, synchronous, and was re-STRINGIFIED whole on every save. IDB
       // stores the structured clone directly and scales to the disk.
@@ -66,7 +73,36 @@
   const offAll = async () => {
     const s = await offStore('readonly'); return (s && await offReq(s.getAll())) || [];
   };
-  const offRecount = async () => { offCount = (await offAll()).length; renderOffline(); };
+  const opStore = async (mode) => {
+    const d = await offOpen();
+    try { return d && d.transaction('ops', mode).objectStore('ops'); } catch { return null; }
+  };
+  //  getAll and getAllKeys both come back in key order, which is the order
+  //  they were queued in. That ordering IS the data structure here. The keys
+  //  come along so a partly drained queue can delete exactly what landed.
+  const opAll = async () => {
+    const s = await opStore('readonly');
+    if (!s) return [];
+    //  both requests are issued before either is awaited: a transaction ends
+    //  once the microtask queue drains with nothing pending on it
+    const vp = offReq(s.getAll());
+    const kp = offReq(s.getAllKeys());
+    const vals = (await vp) || [];
+    const keys = (await kp) || [];
+    return vals.map((v, i) => ({ ...v, _k: keys[i] }));
+  };
+  const opPut = async (rec) => {
+    const s = await opStore('readwrite'); if (s) await offReq(s.add(rec));
+    await offRecount();
+  };
+  const opDel = async (k) => {
+    const s = await opStore('readwrite'); if (s) await offReq(s.delete(k));
+    await offRecount();
+  };
+  const offRecount = async () => {
+    offCount = (await offAll()).length + (await opAll()).length;
+    renderOffline();
+  };
   const offPut = async (rec) => {
     const s = await offStore('readwrite'); if (s) await offReq(s.put(rec));
     await offRecount();
@@ -139,6 +175,35 @@
     setDegraded(true);
     st('saved offline — ' + offCount + ' waiting to sync');
   }
+  // Queue a delete or a move. The caller has already done the local tree work
+  // (dropTreeNodes, or remapping the paths) because that is the same work it
+  // does when the ship answers, so all that is left is remembering the intent.
+  //
+  // The queued SAVES are reconciled here, immediately, which is what lets the
+  // replay run every op before any save and still be right. Deleting a page
+  // drops the save nobody will ever want again. Renaming one carries its
+  // pending body along to the new name. Without that, a page edited and then
+  // renamed offline would replay as a move of the OLD body plus a save under
+  // the old name, resurrecting what was just renamed away.
+  const under = (name, p) => name === p || name.startsWith(p + '/');
+  async function enqueueOp(rec) {
+    for (const q of await offAll()) {
+      if (q.kind === 'know') continue;
+      if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
+      if (rec.op === 'move' && under(q.name, rec.from)) {
+        await offDel(q.name);
+        await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length) });
+      }
+    }
+    for (const k of [...pageCache.keys()])
+      if (under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
+    await opPut({ ...rec, queuedAt: Date.now() });
+    setDegraded(true);
+    st(rec.op === 'del'
+      ? 'deleted offline — ' + offCount + ' waiting to sync'
+      : 'moved offline — ' + offCount + ' waiting to sync');
+  }
+
   // know memories share the queue under a 'know:' prefix. Page names cannot
   // contain a colon, so the two namespaces cannot collide in the one store.
   // No baseRev: memories are last-write-wins (no CAS, no conflicts/ pages),
@@ -163,13 +228,41 @@
   async function replayQueue() {
     if (replaying) return;
     const whole = await offAll();
-    if (!whole.length) return;
+    const ops = await opAll();
+    if (!whole.length && !ops.length) return;
     const all = whole.filter((q) => q.kind !== 'know');
     const knows = whole.filter((q) => q.kind === 'know');
     replaying = true;
-    stWork('syncing ' + whole.length + ' offline edit' + (whole.length === 1 ? '' : 's') + '…');
+    const total = whole.length + ops.length;
+    stWork('syncing ' + total + ' offline edit' + (total === 1 ? '' : 's') + '…');
     let stuck = false;
     const conflicts = [];
+
+    // Structural ops go FIRST, in the order they were made. Their effect on
+    // the pending saves was already applied when they were queued, so a save
+    // landing afterwards is always a save the user still wants, under the name
+    // they want it under.
+    //
+    // An op the ship REJECTS is dropped, not retried. It means the intent was
+    // already satisfied some other way: deleting a page that only ever existed
+    // in this queue, or moving one whose source the queue never sent. Retrying
+    // that forever would wedge everything behind it, and there is nothing to
+    // recover because no content lives in an op.
+    for (const o of ops) {
+      if (stuck) break;
+      const u = o.op === 'del'
+        ? api + '/page-del?name=' + encodeURIComponent(o.name)
+        : api + '/page-move?from=' + encodeURIComponent(o.from) +
+          '&to=' + encodeURIComponent(o.to);
+      let r = null;
+      try { r = await tfetch(u, { method: 'POST' }, 30000); } catch {}
+      if (shipGone(r)) { stuck = true; break; }
+      if (!(r && r.ok)) {
+        st('offline ' + o.op + ' no longer applies: ' +
+          (o.name || o.from) + ' (skipped)', false);
+      }
+      await opDel(o._k);
+    }
     for (let i = 0; i < all.length && !stuck; i += 50) {
       const part = all.slice(i, i + 50);
       let r = null;

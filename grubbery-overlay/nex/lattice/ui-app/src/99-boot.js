@@ -49,6 +49,12 @@
   // Sync (the SW must not intercept API calls), next-open IS the replay
   // moment, and the UI says so rather than implying closed-app sync exists
   setTimeout(() => { if (offCount) replayQueue(); }, 4000);
+  // Well after boot has settled, never during it. Boot already spends five
+  // serialised pier requests and takes most of ten seconds on a slow ship. A
+  // count landing in the middle of that puts the user's first save behind it
+  // and can push the save past the offline timeout, which is a real failure
+  // traded for a badge nobody is waiting on.
+  setTimeout(() => { refreshCommentBadge(); }, 20000);
   if (qs.get('grub')) {
     // arrived from the explorer's edit link. Open that ball path directly. The
     // tree still lists lattice pages, so clicking one leaves grub mode.

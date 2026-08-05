@@ -74,11 +74,18 @@
   const offOpen = () => new Promise((res) => {
     if (offDb) return res(offDb);
     let rq = null;
-    try { rq = indexedDB.open('lattice-offline', 2); } catch { return res(null); }
+    try { rq = indexedDB.open('lattice-offline', 3); } catch { return res(null); }
     rq.onupgradeneeded = () => {
       const d = rq.result;
       if (!d.objectStoreNames.contains('saves'))
         d.createObjectStore('saves', { keyPath: 'name' });
+      // Structural ops (delete, move, rename) are an ORDERED LOG, not a map.
+      // Saves coalesce because only the last body matters and autosave writes
+      // constantly. Deletes and moves do not: "rename A to B" then "delete B"
+      // is not the same as the reverse, and both are things a person does on
+      // purpose a handful of times, so there is nothing to coalesce away.
+      if (!d.objectStoreNames.contains('ops'))
+        d.createObjectStore('ops', { autoIncrement: true });
       // kv: the tree snapshot (phase 3). It lived in localStorage, which is
       // ~5MB, synchronous, and was re-STRINGIFIED whole on every save. IDB
       // stores the structured clone directly and scales to the disk.
@@ -103,7 +110,36 @@
   const offAll = async () => {
     const s = await offStore('readonly'); return (s && await offReq(s.getAll())) || [];
   };
-  const offRecount = async () => { offCount = (await offAll()).length; renderOffline(); };
+  const opStore = async (mode) => {
+    const d = await offOpen();
+    try { return d && d.transaction('ops', mode).objectStore('ops'); } catch { return null; }
+  };
+  //  getAll and getAllKeys both come back in key order, which is the order
+  //  they were queued in. That ordering IS the data structure here. The keys
+  //  come along so a partly drained queue can delete exactly what landed.
+  const opAll = async () => {
+    const s = await opStore('readonly');
+    if (!s) return [];
+    //  both requests are issued before either is awaited: a transaction ends
+    //  once the microtask queue drains with nothing pending on it
+    const vp = offReq(s.getAll());
+    const kp = offReq(s.getAllKeys());
+    const vals = (await vp) || [];
+    const keys = (await kp) || [];
+    return vals.map((v, i) => ({ ...v, _k: keys[i] }));
+  };
+  const opPut = async (rec) => {
+    const s = await opStore('readwrite'); if (s) await offReq(s.add(rec));
+    await offRecount();
+  };
+  const opDel = async (k) => {
+    const s = await opStore('readwrite'); if (s) await offReq(s.delete(k));
+    await offRecount();
+  };
+  const offRecount = async () => {
+    offCount = (await offAll()).length + (await opAll()).length;
+    renderOffline();
+  };
   const offPut = async (rec) => {
     const s = await offStore('readwrite'); if (s) await offReq(s.put(rec));
     await offRecount();
@@ -176,6 +212,35 @@
     setDegraded(true);
     st('saved offline — ' + offCount + ' waiting to sync');
   }
+  // Queue a delete or a move. The caller has already done the local tree work
+  // (dropTreeNodes, or remapping the paths) because that is the same work it
+  // does when the ship answers, so all that is left is remembering the intent.
+  //
+  // The queued SAVES are reconciled here, immediately, which is what lets the
+  // replay run every op before any save and still be right. Deleting a page
+  // drops the save nobody will ever want again. Renaming one carries its
+  // pending body along to the new name. Without that, a page edited and then
+  // renamed offline would replay as a move of the OLD body plus a save under
+  // the old name, resurrecting what was just renamed away.
+  const under = (name, p) => name === p || name.startsWith(p + '/');
+  async function enqueueOp(rec) {
+    for (const q of await offAll()) {
+      if (q.kind === 'know') continue;
+      if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
+      if (rec.op === 'move' && under(q.name, rec.from)) {
+        await offDel(q.name);
+        await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length) });
+      }
+    }
+    for (const k of [...pageCache.keys()])
+      if (under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
+    await opPut({ ...rec, queuedAt: Date.now() });
+    setDegraded(true);
+    st(rec.op === 'del'
+      ? 'deleted offline — ' + offCount + ' waiting to sync'
+      : 'moved offline — ' + offCount + ' waiting to sync');
+  }
+
   // know memories share the queue under a 'know:' prefix. Page names cannot
   // contain a colon, so the two namespaces cannot collide in the one store.
   // No baseRev: memories are last-write-wins (no CAS, no conflicts/ pages),
@@ -200,13 +265,41 @@
   async function replayQueue() {
     if (replaying) return;
     const whole = await offAll();
-    if (!whole.length) return;
+    const ops = await opAll();
+    if (!whole.length && !ops.length) return;
     const all = whole.filter((q) => q.kind !== 'know');
     const knows = whole.filter((q) => q.kind === 'know');
     replaying = true;
-    stWork('syncing ' + whole.length + ' offline edit' + (whole.length === 1 ? '' : 's') + '…');
+    const total = whole.length + ops.length;
+    stWork('syncing ' + total + ' offline edit' + (total === 1 ? '' : 's') + '…');
     let stuck = false;
     const conflicts = [];
+
+    // Structural ops go FIRST, in the order they were made. Their effect on
+    // the pending saves was already applied when they were queued, so a save
+    // landing afterwards is always a save the user still wants, under the name
+    // they want it under.
+    //
+    // An op the ship REJECTS is dropped, not retried. It means the intent was
+    // already satisfied some other way: deleting a page that only ever existed
+    // in this queue, or moving one whose source the queue never sent. Retrying
+    // that forever would wedge everything behind it, and there is nothing to
+    // recover because no content lives in an op.
+    for (const o of ops) {
+      if (stuck) break;
+      const u = o.op === 'del'
+        ? api + '/page-del?name=' + encodeURIComponent(o.name)
+        : api + '/page-move?from=' + encodeURIComponent(o.from) +
+          '&to=' + encodeURIComponent(o.to);
+      let r = null;
+      try { r = await tfetch(u, { method: 'POST' }, 30000); } catch {}
+      if (shipGone(r)) { stuck = true; break; }
+      if (!(r && r.ok)) {
+        st('offline ' + o.op + ' no longer applies: ' +
+          (o.name || o.from) + ' (skipped)', false);
+      }
+      await opDel(o._k);
+    }
     for (let i = 0; i < all.length && !stuck; i += 50) {
       const part = all.slice(i, i + 50);
       let r = null;
@@ -607,11 +700,33 @@
   // open while the request is in flight (a folder move pokes the writer many
   // times) plus a short tail, so the SSE handler never refetches what this
   // client just did itself.
+  // Deletes and moves that can be queued. Sharing and the ACL routes are
+  // deliberately NOT here. A grant that appears to work offline and is refused
+  // an hour later is a security surprise, and there is no version of that
+  // which is better than saying so now.
+  const offlineOp = (url) => {
+    let u = null;
+    try { u = new globalThis.URL(url, location.origin); } catch { return null; }
+    const p = u.searchParams;
+    if (u.pathname.endsWith('/page-del') && p.get('name'))
+      return { op: 'del', name: p.get('name') };
+    if (u.pathname.endsWith('/page-move') && p.get('from') && p.get('to'))
+      return { op: 'move', from: p.get('from'), to: p.get('to') };
+    return null;
+  };
+
   async function mutate(url, opts) {
-    // Only SAVES queue (pages and know memories). Deletes, moves, shares: their
-    // ordering dependencies are where offline systems get genuinely hard, so
-    // they refuse honestly instead of pretending (design doc, Phasing).
+    // Saves coalesce in a map, structural ops go in an ordered log, and both
+    // drain together. Everything else (sharing, tagging, the legacy migration)
+    // still refuses honestly rather than pretending.
     if (degraded || offCount) {
+      const q = offlineOp(url);
+      if (q) {
+        await enqueueOp(q);
+        //  the caller now does exactly the local tree work it does when the
+        //  ship answers: drop the nodes, or remap their paths
+        return { ok: true, status: 200, json: async () => ({ offline: true }) };
+      }
       st('offline — edits are queued, but this change needs the ship', false);
       return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
     }
@@ -2431,6 +2546,7 @@
   <lat-links></lat-links>
   <button id="mv" class="mvbtn">move / rename</button>
   <button id="del" class="del">delete page</button>
+  <button id="vault" class="mvbtn" title="download every page and memory as one tar">export vault</button>
 </aside>`;
       cerr = $('cerr');
     }
@@ -3308,7 +3424,59 @@
     host.appendChild(grid);
   }
 
-  const cmOpen = () => { $('cmwrap').hidden = false; loadComments(); };
+  // ── unread ───────────────────────────────────────────────────────────────
+  // A comment from another ship used to land in total silence: the inbox is
+  // pull-only, so the only way to learn anyone had said anything was to open
+  // it and look. That makes the feature invisible in practice.
+  //
+  // "Seen" is a high-water mark, not a per-comment flag: the @da the items
+  // carry is zero-padded and fixed-width, so a lexical compare orders them and
+  // one string in localStorage replaces a set that would need pruning.
+  const seenKey = 'cmtSeen';
+  const lastSeen = () => { try { return localStorage[seenKey] || ''; } catch { return ''; } };
+  const markSeen = (when) => { try { if (when) localStorage[seenKey] = when; } catch {} };
+
+  function paintUnread(n) {
+    const b = $('cmt');
+    if (!b) return;
+    if (n > 0) { b.dataset.n = n > 99 ? '99+' : String(n); b.classList.add('has-unread'); }
+    else { delete b.dataset.n; b.classList.remove('has-unread'); }
+    b.title = n > 0
+      ? n + ' new comment' + (n === 1 ? '' : 's') + ' from other ships'
+      : 'comments from other ships';
+  }
+
+  // Counts without rendering, so it can run on a refresh without the pane open.
+  // The pier serialises, so every count costs a real request in the same queue
+  // the user's saves are waiting in. A badge is not worth that: it is throttled
+  // to one count a minute no matter how often a sync asks for it. Opening the
+  // panel does not go through here, so reading is always immediate.
+  const BADGE_MS = 60000;
+  let badgeAt = 0;
+
+  async function refreshCommentBadge() {
+    if (Date.now() - badgeAt < BADGE_MS) return;
+    badgeAt = Date.now();
+    let d = null;
+    try {
+      const r = await fetch(api + '/comments-inbox');
+      if (!r.ok) return;                 // a failed count is not worth reporting
+      d = await r.json();
+    } catch { return; }
+    const items = d.items || [];
+    const mark = lastSeen();
+    paintUnread(items.filter((c) => String(c.when || '') > mark).length);
+  }
+
+  const cmOpen = () => {
+    $('cmwrap').hidden = false;
+    // opening IS reading: mark everything currently in the inbox as seen
+    loadComments().then(() => {
+      const newest = inbox.reduce((a, c) => (String(c.when) > a ? String(c.when) : a), lastSeen());
+      markSeen(newest);
+      paintUnread(0);
+    });
+  };
   const cmClose = () => { $('cmwrap').hidden = true; };
   $('cmclose').onclick = cmClose;
   $('cmreload').onclick = loadComments;
@@ -3531,6 +3699,150 @@
     }
   };
 
+// ── src/78-export.js ──────────────────────────────────────────────────────
+  // ── vault export ─────────────────────────────────────────────────────────
+  // One action, the whole store, as a plain tar you can unpack anywhere. No
+  // new route and no new dependency: page-dump already carries every body and
+  // know-all is already the format the bulk importer reads back, so all this
+  // does is arrange them into files and hand the browser a Blob.
+  //
+  // Tar rather than zip because tar needs no compression, no CRC table and no
+  // central directory. It is a header and the bytes, which is about forty
+  // lines, where a zip writer is a dependency or a much longer afternoon.
+  const te = new TextEncoder();
+  const oct = (n, w) => n.toString(8).padStart(w - 1, '0') + '\0';
+  const pad512 = (n) => new Uint8Array((512 - (n % 512)) % 512);
+
+  // ustar stores a path as prefix(155) + '/' + name(100). Anything that fits
+  // that way is portable everywhere. Anything that does not gets a GNU
+  // @LongLink record, which bsdtar and GNU tar both read. Truncating instead
+  // would be silent corruption, and this is the one feature where the whole
+  // point is that nothing goes missing.
+  const splitName = (p) => {
+    if (p.length <= 100) return ['', p];
+    for (let i = Math.max(0, p.length - 101); i < p.length; i++)
+      if (p[i] === '/' && p.length - i - 1 <= 100 && i <= 155)
+        return [p.slice(0, i), p.slice(i + 1)];
+    return null;
+  };
+
+  function tarHeader(name, size, mtime, type) {
+    const h = new Uint8Array(512);
+    const put = (s, at, len) => h.set(te.encode(s).subarray(0, len), at);
+    const sp = splitName(name);
+    put(sp ? sp[1] : name.slice(0, 100), 0, 100);
+    put('0000644\0', 100, 8);          // mode
+    put('0000000\0', 108, 8);          // uid
+    put('0000000\0', 116, 8);          // gid
+    put(oct(size, 12), 124, 12);
+    put(oct(mtime, 12), 136, 12);
+    h.fill(32, 148, 156);              // checksum field reads as spaces while summed
+    put(type || '0', 156, 1);
+    put('ustar\0', 257, 6);
+    put('00', 263, 2);
+    if (sp && sp[0]) put(sp[0], 345, 155);
+    let sum = 0;
+    for (const b of h) sum += b;
+    put(sum.toString(8).padStart(6, '0') + '\0 ', 148, 8);
+    return h;
+  }
+
+  function tarBlob(files) {
+    const parts = [];
+    for (const f of files) {
+      const data = te.encode(f.body);
+      if (!splitName(f.name)) {
+        const nb = te.encode(f.name + '\0');
+        parts.push(tarHeader('././@LongLink', nb.length, f.mtime, 'L'), nb, pad512(nb.length));
+      }
+      // size is the BYTE length. A body with any non-ascii character in it
+      // would otherwise declare short and the archive would desynchronise
+      // from that entry onward.
+      parts.push(tarHeader(f.name, data.length, f.mtime, '0'), data, pad512(data.length));
+    }
+    parts.push(new Uint8Array(1024));   // two zero blocks end the archive
+    return new Blob(parts, { type: 'application/x-tar' });
+  }
+
+  //  ~2026.08.04..23.35.53..8360.0000.0000.0001 -> unix seconds
+  const daToUnix = (s) => {
+    const m = /^~(\d+)\.(\d+)\.(\d+)\.\.(\d+)\.(\d+)\.(\d+)/.exec(String(s || ''));
+    if (!m) return Math.floor(Date.now() / 1000);
+    return Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) / 1000);
+  };
+
+  const RESTORE = `lattice vault export
+
+pages/    every page, as a plain file named for its path and kind.
+know/     every memory, one file per key.
+know.json the memories again, in the format /know-import reads. Restoring
+          them is one POST of this file to that route.
+
+Pages restore by saving each file back under its path, which the desktop
+client's folder sync does for a whole directory at once.
+`;
+
+  async function exportVault() {
+    if (degraded) { st('the ship is not answering, so there is nothing to export from', false); return; }
+    stWork('reading the store…');
+    let dump = null;
+    try { dump = await (await fetch(api + '/page-dump')).json(); } catch {}
+    if (!dump) { st('export failed: could not read the page tree', false); return; }
+
+    const now = Math.floor(Date.now() / 1000);
+    const files = [];
+    const missing = [];
+    const pages = (dump.nodes || []).filter((n) => n.page);
+    for (const n of pages) {
+      let body = n.body;
+      // Bodies over the dump's inline cap (256 KB) are not in the dump, only
+      // their size is. Fetching them one at a time is slow on a serialising
+      // pier, and it is the difference between a backup and a nearly-backup.
+      if (typeof body !== 'string') {
+        stWork('fetching ' + n.path + '…');
+        try {
+          const r = await fetch(api + '/page-source?name=' + encodeURIComponent(n.path));
+          body = r.ok ? (await r.json()).body : null;
+        } catch { body = null; }
+      }
+      if (typeof body !== 'string') { missing.push(n.path); continue; }
+      files.push({ name: 'pages/' + n.path + '.' + (n.kind || 'md'),
+        body, mtime: daToUnix(n.mtime) });
+    }
+
+    stWork('reading memories…');
+    let know = null;
+    try { know = await (await fetch(api + '/know-all')).json(); } catch {}
+    if (know) {
+      for (const it of (know.items || []))
+        files.push({ name: 'know/' + String(it.key || '').replace(/^\/+/, '') + '.md',
+          body: it.body || '', mtime: daToUnix(it.updated) });
+      files.push({ name: 'know.json', body: JSON.stringify(know, null, 1), mtime: now });
+    } else missing.push('the memories');
+
+    files.push({ name: 'README.txt', body: RESTORE, mtime: now });
+
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const url = globalThis.URL.createObjectURL(tarBlob(files));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'lattice-vault-' + stamp + '.tar';
+    a.click();
+    setTimeout(() => globalThis.URL.revokeObjectURL(url), 30000);
+
+    // What could not be read is named, not swallowed. A backup you believe is
+    // complete when it is not is the only outcome here that is worse than no
+    // backup at all.
+    if (missing.length) {
+      st('exported ' + pages.length + ' page(s), but could NOT read: ' +
+        missing.slice(0, 5).join(', ') +
+        (missing.length > 5 ? ' and ' + (missing.length - 5) + ' more' : ''), false);
+    } else st('exported ' + pages.length + ' page(s) and ' +
+      ((know && (know.items || []).length) || 0) + ' memories');
+  }
+
+  $('vault').onclick = exportVault;
+
 // ── src/85-layout.js ──────────────────────────────────────────────────────
   // ── layout toggles + mobile tabs ─────────────────────────────────────────
   const ws = $('ws');
@@ -3690,6 +4002,10 @@
     // one page's edit cost every other page its cache.
     if (mode === 'know') loadKnow(); else loadTree();
     refreshOpen();
+    // a comment arriving from another ship bumps the beacon like any write, so
+    // this is the same signal the tree refresh uses. Cheap: it counts, it does
+    // not render, and it is skipped entirely while the pane is open.
+    if ($('cmwrap') && $('cmwrap').hidden) refreshCommentBadge();
   };
   try {
     const es = new EventSource('/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev');
@@ -4111,6 +4427,12 @@
   // Sync (the SW must not intercept API calls), next-open IS the replay
   // moment, and the UI says so rather than implying closed-app sync exists
   setTimeout(() => { if (offCount) replayQueue(); }, 4000);
+  // Well after boot has settled, never during it. Boot already spends five
+  // serialised pier requests and takes most of ten seconds on a slow ship. A
+  // count landing in the middle of that puts the user's first save behind it
+  // and can push the save past the offline timeout, which is a real failure
+  // traded for a badge nobody is waiting on.
+  setTimeout(() => { refreshCommentBadge(); }, 20000);
   if (qs.get('grub')) {
     // arrived from the explorer's edit link. Open that ball path directly. The
     // tree still lists lattice pages, so clicking one leaves grub mode.

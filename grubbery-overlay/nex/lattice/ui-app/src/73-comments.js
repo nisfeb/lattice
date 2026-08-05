@@ -104,7 +104,59 @@
     host.appendChild(grid);
   }
 
-  const cmOpen = () => { $('cmwrap').hidden = false; loadComments(); };
+  // ── unread ───────────────────────────────────────────────────────────────
+  // A comment from another ship used to land in total silence: the inbox is
+  // pull-only, so the only way to learn anyone had said anything was to open
+  // it and look. That makes the feature invisible in practice.
+  //
+  // "Seen" is a high-water mark, not a per-comment flag: the @da the items
+  // carry is zero-padded and fixed-width, so a lexical compare orders them and
+  // one string in localStorage replaces a set that would need pruning.
+  const seenKey = 'cmtSeen';
+  const lastSeen = () => { try { return localStorage[seenKey] || ''; } catch { return ''; } };
+  const markSeen = (when) => { try { if (when) localStorage[seenKey] = when; } catch {} };
+
+  function paintUnread(n) {
+    const b = $('cmt');
+    if (!b) return;
+    if (n > 0) { b.dataset.n = n > 99 ? '99+' : String(n); b.classList.add('has-unread'); }
+    else { delete b.dataset.n; b.classList.remove('has-unread'); }
+    b.title = n > 0
+      ? n + ' new comment' + (n === 1 ? '' : 's') + ' from other ships'
+      : 'comments from other ships';
+  }
+
+  // Counts without rendering, so it can run on a refresh without the pane open.
+  // The pier serialises, so every count costs a real request in the same queue
+  // the user's saves are waiting in. A badge is not worth that: it is throttled
+  // to one count a minute no matter how often a sync asks for it. Opening the
+  // panel does not go through here, so reading is always immediate.
+  const BADGE_MS = 60000;
+  let badgeAt = 0;
+
+  async function refreshCommentBadge() {
+    if (Date.now() - badgeAt < BADGE_MS) return;
+    badgeAt = Date.now();
+    let d = null;
+    try {
+      const r = await fetch(api + '/comments-inbox');
+      if (!r.ok) return;                 // a failed count is not worth reporting
+      d = await r.json();
+    } catch { return; }
+    const items = d.items || [];
+    const mark = lastSeen();
+    paintUnread(items.filter((c) => String(c.when || '') > mark).length);
+  }
+
+  const cmOpen = () => {
+    $('cmwrap').hidden = false;
+    // opening IS reading: mark everything currently in the inbox as seen
+    loadComments().then(() => {
+      const newest = inbox.reduce((a, c) => (String(c.when) > a ? String(c.when) : a), lastSeen());
+      markSeen(newest);
+      paintUnread(0);
+    });
+  };
   const cmClose = () => { $('cmwrap').hidden = true; };
   $('cmclose').onclick = cmClose;
   $('cmreload').onclick = loadComments;

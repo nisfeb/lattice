@@ -63,11 +63,19 @@ other ships over remote scry, and followed remote files push you updates.
   live-location page that renders a map, trails your recent positions, and
   expires itself.
 - **Works offline.** Lose the ship mid-session and saves queue locally
-  (pages and knowledge entries both), then replay when it returns.
+  (pages and knowledge entries both), then replay when it returns. Deletes,
+  moves and renames queue too, in an ordered log that drains ahead of the
+  saves, so a page you edit and then rename arrives under its new name.
   Concurrent edits are never lost. The newest version wins and the
   overwritten one is preserved as a real page under `conflicts/`. The tree
   snapshot lives in IndexedDB, so the editor paints instantly on launch and
   works from the last-known tree while unreachable.
+- **Export the whole vault.** One button in the controls pane downloads every
+  page and every memory as a single tar. Pages come out as plain files named
+  for their paths, so unpacking it gives you an ordinary directory you can
+  read without lattice, grep, or put in git. The memories also come out in
+  the format the bulk importer reads back. Anything the export could not read
+  is named in the status line rather than quietly left out.
 - **Bookmarks.** Star any `urb://` page from the reader bar. The full list at
   `/apps/lattice/marks` is organized into folders and searchable as you
   type. The omnibar ranks bookmarks above history.

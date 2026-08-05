@@ -127,6 +127,8 @@ Same queue, same code. The differences are real but small:
    matching know-save itself. Deletes, moves and uploads
    refuse while degraded with a clear message. Their ordering dependencies are
    where offline systems get genuinely hard, and they are rare offline.
+   [review] Deletes, moves and renames have since joined too, in Phase 4
+   below. Uploads and the sharing routes still refuse.
    [review] Multi-tab: two tabs share the IndexedDB queue. Double replay is
    near-idempotent (same bodies, duplicate revisions at worst). That is
    acceptable for Phase 1, noted so it is a decision rather than a surprise.
@@ -136,6 +138,24 @@ Same queue, same code. The differences are real but small:
    clone instead of a whole-tree stringify per save, one-time migration from
    `localStorage.appTree` at boot. The async read lands single-digit ms after
    the synchronous page paint, imperceptible next to the ~0.5s network floor.
+4. Structural changes: delete, move, rename. **Done:** an `ops` store beside
+   the queue (db v3). Saves are a map keyed by name, because only the last
+   body matters and autosave writes constantly. Ops are an ordered log,
+   because "rename A to B" then "delete B" is not the reverse and nobody does
+   either of them often enough to be worth coalescing.
+
+   The ordering problem is solved at enqueue time rather than at replay time.
+   Queueing a delete drops the pending saves under that path. Queueing a move
+   carries them to the new name. Once that is done every op can run before
+   every save and still be right, so the drain is two plain passes instead of
+   an interleaved merge.
+
+   An op the ship rejects is dropped, never retried. A rejection means the
+   intent was already met some other way, usually deleting a page that only
+   ever existed in this queue. Retrying would wedge the queue behind it, and
+   there is nothing to lose because no content lives in an op. Sharing and
+   the ACL routes are deliberately still refused. A grant that appears to
+   work offline and is denied an hour later is a security surprise.
 
 ## Testing
 
