@@ -2325,6 +2325,30 @@
       |=  [scope=@t key=@t tf=@ud]
       a+~[s+scope s+key s+(scot %ud tf)]
     ==
+  ::  page-scopes: every page's path and exposure, in ONE peek.
+  ::
+  ::  The editor's search greps the page-dump the client already holds. That is
+  ::  live (a page written a second ago is in it) and it matches partial words,
+  ::  neither of which the term index does. But the dump carries no share mode,
+  ::  and a result list that cannot say which hits are published would show
+  ::  private notes and clearweb pages looking identical. That is the one
+  ::  failure worth a route: the badge is a safety signal, not decoration.
+  ::
+  ::  Same walk +content-reindex does, without the term extraction.
+      [%'GET' %page-scopes]
+    ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
+    =/  pages=(list [rel=path body=@t shr=share-mode:le])
+      ?.  ?=([%ball *] sn)  ~
+      (index-walk ball.sn ~)
+    =/  items=(list json)
+      %+  turn  pages
+      |=  [rel=path body=@t shr=share-mode:le]
+      ^-  json
+      %-  pairs:enjs:format
+      :~  ['path' s+(crip (pax-str rel))]
+          ['scope' s+(scope-of shr)]
+      ==
+    (send-json eyre-id (pairs:enjs:format ~[['items' a+items]]))
   ::  search-reindex: rebuild content-terms from the live tree + know vault.
   ::  Blocking (the client treats it fire-and-forget), like /know-reindex.
       [%'POST' %search-reindex]
