@@ -103,9 +103,23 @@
     offCount = (await offAll()).length + (await opAll()).length;
     renderOffline();
   };
+  // Resolve TRUE only when the write actually completed. offReq resolves the
+  // request's RESULT, which for a put is the key, and a key is not a success
+  // signal you can trust. This one exists so a failed write is distinguishable
+  // from a successful one, because everything below depends on never claiming
+  // a save that did not happen.
+  const offOk = (rq) => new Promise((res) => {
+    if (!rq) return res(false);
+    rq.onsuccess = () => res(true);
+    rq.onerror = () => res(false);
+  });
+  //  returns whether the record is now durably in the queue
   const offPut = async (rec) => {
-    const s = await offStore('readwrite'); if (s) await offReq(s.put(rec));
+    const s = await offStore('readwrite');
+    let ok = false;
+    if (s) { try { ok = await offOk(s.put(rec)); } catch { ok = false; } }
     await offRecount();
+    return ok;
   };
   const offDel = async (name) => {
     const s = await offStore('readwrite'); if (s) await offReq(s.delete(name));
@@ -180,14 +194,26 @@
 
   // queue one page's edit and make it the visible truth everywhere a read
   // could come from: the render cache, the tree dump body, the boot snapshot.
+  // Returns whether the edit is actually safe. The old version returned
+  // nothing and said "saved offline" unconditionally, including when the
+  // queue write had silently failed, which is the worst thing this file can
+  // do: the editor then cleared its dirty flag and the work was gone with the
+  // UI reporting success. If the queue cannot take it, say so and say it in
+  // the words that matter, because there is nowhere else the edit now lives.
   async function enqueueSave(name, kind, body) {
-    await offPut({ name, kind, body, baseRev: curRev || 0, queuedAt: Date.now() });
+    const queued = await offPut({ name, kind, body, baseRev: curRev || 0, queuedAt: Date.now() });
+    setDegraded(true);
+    if (!queued) {
+      st('NOT SAVED — this device cannot store offline edits. Copy your text '
+        + 'somewhere safe before closing this page.', false);
+      return false;
+    }
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
     snapPage(name, { body, kind, rev: curRev || 0 });
-    setDegraded(true);
     st('saved offline — ' + offCount + ' waiting to sync');
+    return true;
   }
   // Queue a delete or a move. The caller has already done the local tree work
   // (dropTreeNodes, or remapping the paths) because that is the same work it
@@ -223,15 +249,21 @@
   // No baseRev: memories are last-write-wins (no CAS, no conflicts/ pages),
   // matching what know-save itself does.
   async function enqueueKnow(key, body) {
-    await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
+    const queued = await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
+    setDegraded(true);
+    if (!queued) {
+      st('NOT SAVED — this device cannot store offline edits. Copy your text '
+        + 'somewhere safe before closing this page.', false);
+      return false;
+    }
     knowGen++;
     const k = knowEntry(key);
     if (k) k.bytes = body.length;
     else knowKeys.push({ key, tags: [], updated: '', bytes: body.length });
     renderKnowChips();
     renderKnowTree();
-    setDegraded(true);
     st('saved offline — ' + offCount + ' waiting to sync');
+    return true;
   }
 
   // Drain through page-save-batch. The batch is all-or-nothing, right for

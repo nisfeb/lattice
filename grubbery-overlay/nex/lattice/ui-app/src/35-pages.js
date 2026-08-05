@@ -153,7 +153,14 @@
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
       // does not care which kind it got
-      await enqueueSave(name, kind, sent);
+      // A failed queue write means this edit exists ONLY in the textarea.
+      // Clearing dirty there would tell the editor the work is safe and let
+      // the next navigation drop it, so the bookkeeping stays untouched and
+      // the page keeps behaving as unsaved. enqueueSave has already said so.
+      if (!(await enqueueSave(name, kind, sent))) {
+        cerr.textContent = 'NOT saved'; cerr.className = 'err';
+        return;
+      }
       current = name;
       curKind = kind;
       pname.readOnly = true;
@@ -222,13 +229,15 @@
     saving = false;
     echoUntil = Date.now() + 4000;
     if (shipGone(r)) {
+      //  same rule on the autosave path: if it did not queue, it is not saved,
+      //  so the editor stays dirty and keeps the text under the cursor
       if (mode === 'know') {
-        await enqueueKnow(current, sent);
+        if (!(await enqueueKnow(current, sent))) return;
         if (src.value === sent) dirty = false;
         if (savePending) { savePending = false; if (dirty) autosave(); }
         return;
       }
-      await enqueueSave(current, curKind || pkind.value, sent);
+      if (!(await enqueueSave(current, curKind || pkind.value, sent))) return;
       if (src.value === sent) dirty = false;
       if (savePending) { savePending = false; if (dirty) autosave(); }
       return;

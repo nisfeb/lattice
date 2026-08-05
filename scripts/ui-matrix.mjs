@@ -957,6 +957,62 @@ try {
   check('offline: the edit made offline landed under the NEW name',
     String(moved).includes('edited while offline'), JSON.stringify(moved));
 
+  step = 'offline durability';
+  // ── 9a. an edit that could not be queued must never look saved ───────────
+  // The queue write can fail: private-mode storage, a quota refusal, a webview
+  // whose IndexedDB is unavailable. The old code ignored the result and said
+  // "saved offline" regardless, and the editor cleared its dirty flag, so the
+  // work was gone while the UI reported success. That is the worst outcome
+  // this app has, so it gets a test that breaks IndexedDB on purpose.
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
+  const DUR = RUN + '-dur';
+  await page.evaluate((n) => {
+    //  every put on the saves store fails from here on
+    const realTx = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (names, mode) {
+      const tx = realTx.call(this, names, mode);
+      const realStore = tx.objectStore.bind(tx);
+      tx.objectStore = (nm) => {
+        const st = realStore(nm);
+        if (nm === 'saves') {
+          st.put = () => {
+            const rq = {};
+            setTimeout(() => { if (rq.onerror) rq.onerror(new Event('error')); }, 0);
+            return rq;
+          };
+        }
+        return st;
+      };
+      return tx;
+    };
+    //  and the ship is unreachable, so the save takes the offline path
+    const realFetch = window.fetch;
+    window.fetch = (u, o) => {
+      if (String(u).includes('/page-save')) return Promise.resolve(new Response('', { status: 502 }));
+      return realFetch(u, o);
+    };
+    document.getElementById('newfile').click();
+    document.getElementById('pname').value = n;
+    document.getElementById('pkind').value = 'md';
+    const s2 = document.getElementById('src');
+    s2.value = '# work that must not vanish'; s2.dispatchEvent(new Event('input'));
+  }, DUR);
+  await page.click('#save');
+  await wait(() => /NOT SAVED|not saved/i.test(document.getElementById('status').textContent));
+  ok('durability: a failed queue write says NOT SAVED rather than claiming success');
+  //  and the text is still in the editor, which is the only copy left
+  check('durability: the text is still in the editor',
+    (await page.evaluate(() => document.getElementById('src').value))
+      === '# work that must not vanish');
+  // This step poisons fetch and IndexedDB in the page and leaves the client
+  // in its degraded state. Both live as long as the document does, so the
+  // reload is not tidiness: without it every later step runs against a ship
+  // that always answers 502 and a queue that cannot be written.
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
+  await wait(() => document.getElementById('offbadge').hidden);
+
   step = 'vault export';
   // ── 9c. one action, the whole store ──────────────────────────────────────
   // The archive's BYTES are covered by scripts/ui-vaultar.mjs, which unpacks
@@ -968,15 +1024,22 @@ try {
   await page.evaluate(() => {
     //  a click would open a download dialog in a headless run, so hold the
     //  Blob instead of handing it to the browser and read what it built
+    // Hook the ANCHOR's click, not document.createElement. The old version
+    // swapped createElement for a one-shot that returned a prepared <a>, but
+    // exportVault awaits page-dump and know-all first, and any tree render
+    // during those seconds creates an <a> and eats the interception. The real
+    // anchor then got a real click, which in a headless run downloads nothing
+    // and reports no name. Hooking the prototype does not care who creates
+    // what, or when.
     window.__vaultBlob = null;
+    window.__vaultName = '';
     const realCOU = URL.createObjectURL.bind(URL);
     URL.createObjectURL = (b) => { window.__vaultBlob = b; return realCOU(b); };
-    const a = document.createElement('a');
-    a.click = function () { window.__vaultName = this.download; };
-    const made = document.createElement;
-    document.createElement = function (t) {
-      if (t === 'a') { document.createElement = made; return a; }
-      return made.call(document, t);
+    const realClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      //  only the download anchors: ordinary tree links keep working
+      if (this.download) { window.__vaultName = this.download; return; }
+      return realClick.call(this);
     };
     document.getElementById('vault').click();
   });
@@ -1010,15 +1073,22 @@ try {
 
   //  take an archive and pull its bytes out of the browser
   await page.evaluate(() => {
+    // Hook the ANCHOR's click, not document.createElement. The old version
+    // swapped createElement for a one-shot that returned a prepared <a>, but
+    // exportVault awaits page-dump and know-all first, and any tree render
+    // during those seconds creates an <a> and eats the interception. The real
+    // anchor then got a real click, which in a headless run downloads nothing
+    // and reports no name. Hooking the prototype does not care who creates
+    // what, or when.
     window.__vaultBlob = null;
+    window.__vaultName = '';
     const realCOU = URL.createObjectURL.bind(URL);
     URL.createObjectURL = (b) => { window.__vaultBlob = b; return realCOU(b); };
-    const a = document.createElement('a');
-    a.click = function () { window.__vaultName = this.download; };
-    const made = document.createElement;
-    document.createElement = function (t) {
-      if (t === 'a') { document.createElement = made; return a; }
-      return made.call(document, t);
+    const realClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      //  only the download anchors: ordinary tree links keep working
+      if (this.download) { window.__vaultName = this.download; return; }
+      return realClick.call(this);
     };
     document.getElementById('vault').click();
   });
