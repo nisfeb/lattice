@@ -151,6 +151,7 @@ fn main() {
             commands::save_vault,
             commands::pick_vault,
             queue::queue_list,
+            queue::queue_get,
             queue::queue_put,
             queue::queue_del,
             queue::queue_ops,

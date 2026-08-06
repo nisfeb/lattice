@@ -156,8 +156,8 @@
 
   const offGet = async (name) => {
     if (!qrust()) return idbGet(name);
-    try { return (await qcall('queue_list')).find((r) => r.name === name) || null; }
-    catch { return null; }
+    //  one file, not the whole queue: this runs on every page open
+    try { return (await qcall('queue_get', { name })) || null; } catch { return null; }
   };
   const offAll = async () => {
     if (!qrust()) return idbAll();
@@ -198,11 +198,27 @@
   async function adoptIdbQueue() {
     if (!qrust()) return;
     let mine = [];
-    try { mine = await idbAll(); } catch { return }
+    try { mine = await idbAll(); } catch { mine = []; }
     for (const rec of mine) {
       try { await qcall('queue_put', { rec }); await idbDel(rec.name); } catch {}
     }
-    if (mine.length) st('recovered ' + mine.length + ' offline edit(s) from this device');
+    // The ops too. Leaving them behind was a data-loss bug inside the very
+    // migration that exists to prevent one: a delete or a rename queued before
+    // the upgrade would be dropped, the tree would come back from the ship on
+    // the next load, and the change would silently undo itself.
+    //
+    // In order, and one at a time: the sequence is assigned on the Rust side,
+    // so the order they are pushed IS the order they replay in. `_k` is the
+    // old IndexedDB handle and must not travel with the record.
+    let ops = [];
+    try { ops = await idbOpAll(); } catch { ops = []; }
+    for (const o of ops) {
+      const rec = { ...o };
+      delete rec._k;
+      try { await qcall('queue_op_put', { rec }); await idbOpDel(o._k); } catch {}
+    }
+    const n = mine.length + ops.length;
+    if (n) st('recovered ' + n + ' offline change(s) from this device');
     await offRecount();
   }
 
@@ -376,14 +392,31 @@
   // forever. A rejected batch falls back to per-item saves so the bad record
   // is isolated and DROPPED (it can never apply; review gap 3).
   let replaying = false;
+  // The guard has to be taken BEFORE the first await. It used to be set four
+  // lines further down, after two of them, so two callers could both pass the
+  // check and drain the queue at the same time. Four things call this (boot,
+  // the reconnect probe, a save that succeeds, and refreshAll) and they fire
+  // close together by design.
+  //
+  // Concurrent drains are not merely wasteful. Both send the same baseRev; the
+  // first applies and moves the revision on; the second is then a CAS miss,
+  // which the server records as a conflict. That is a conflicts/ page invented
+  // out of one queue draining twice, which is the same failure as a false
+  // offline: a conflict manufactured where the user made none.
+  //
+  // try/finally because an exception part way through used to leave this true
+  // for the life of the page, and replay never ran again.
   async function replayQueue() {
     if (replaying) return;
+    replaying = true;
+    try { await drainQueue(); } finally { replaying = false; }
+  }
+  async function drainQueue() {
     const whole = await offAll();
     const ops = await opAll();
     if (!whole.length && !ops.length) return;
     const all = whole.filter((q) => q.kind !== 'know');
     const knows = whole.filter((q) => q.kind === 'know');
-    replaying = true;
     const total = whole.length + ops.length;
     stWork('syncing ' + total + ' offline edit' + (total === 1 ? '' : 's') + '…');
     let stuck = false;
@@ -401,6 +434,10 @@
     // recover because no content lives in an op.
     for (const o of ops) {
       if (stuck) break;
+      //  a record of any other shape is corrupt. Falling through to the move
+      //  branch would POST from=undefined&to=undefined, which is a confusing
+      //  400 rather than a dropped bad record.
+      if (o.op !== 'del' && o.op !== 'move') { await opDel(o._k); continue; }
       const u = o.op === 'del'
         ? api + '/page-del?name=' + encodeURIComponent(o.name)
         : api + '/page-move?from=' + encodeURIComponent(o.from) +
@@ -474,7 +511,6 @@
       st('dropped an unsyncable offline edit: ' + q.name, false);
       await offDel(q.name);
     }
-    replaying = false;
     if (stuck) { setDegraded(true); st(offCount + ' offline edit(s) still waiting', false); return; }
     setDegraded(false);
     if (conflicts.length) {
@@ -4263,7 +4299,11 @@ editor, or git will do if you only want to look.
       if (at < 0 && !inPath) continue;
       out.push({
         key: n.path,
-        scope: (qScopes && qScopes.get(n.path)) || 'private',
+        // NOT defaulted to 'private'. If the exposure lookup failed, or the
+        // page is newer than it, calling it private would be a false safety
+        // signal on a clearweb page: exactly the misread this badge exists to
+        // prevent. Unknown says unknown.
+        scope: (qScopes && qScopes.get(n.path)) || 'unknown',
         hits: at < 0 ? 0 : qCount(hay, q),
         inPath,
         snip: at < 0 ? '' : qSnip(n.body, at, q.length),

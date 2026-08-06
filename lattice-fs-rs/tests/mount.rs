@@ -183,7 +183,10 @@ fn a_real_mount_behaves_like_a_filesystem() {
     let dir = mnt.clone();
     let s = ship.clone();
     std::thread::spawn(move || {
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| exercise(&dir, &s)));
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            exercise(&dir, &s);
+            a_parked_truncate_is_applied_by_the_next_open(&dir, &s);
+        }));
         let _ = tx.send(r);
     });
     let outcome = rx.recv_timeout(Duration::from_secs(10));
@@ -196,6 +199,52 @@ fn a_real_mount_behaves_like_a_filesystem() {
         Ok(Err(panic)) => std::panic::resume_unwind(panic),
         Err(_) => panic!("the mount stopped answering: a FUSE op never returned"),
     }
+}
+
+/// A handle-less truncate, and what a later READ is allowed to do about it.
+///
+/// truncate(2) on a path takes the deferred branch: there is no open handle to
+/// resize, so the request parks and the next open() applies it. That makes the
+/// applying open look alarming from the inside. It serves an EMPTY buffer and
+/// marks the handle dirty, so closing it writes emptiness through to the ship,
+/// and the open that does this can be a read-only one.
+///
+/// It is correct anyway, and this test exists to stop it being "fixed". The
+/// user asked for the file to be empty. A reader seeing the old bytes after a
+/// successful truncate would be the bug. Making a read-only open ignore the
+/// parked truncate looks like a safety improvement and is really a way to make
+/// truncate(2) silently do nothing.
+///
+/// What is NOT settled here, and is a real if narrow defect: the store is not
+/// updated until that next open happens. truncate(2) returns 0 with the old
+/// bytes still on the ship, so stat says 0 while another client still sees the
+/// page, and nothing at all opening the file before a remount loses the
+/// truncate. Persisting eagerly instead would add an empty revision before
+/// every ordinary save on any kernel whose O_TRUNC lands in this branch, which
+/// is a worse problem than the one it fixes, so it is left alone on purpose.
+fn a_parked_truncate_is_applied_by_the_next_open(mnt: &Path, ship: &Ship) {
+    use std::ffi::CString;
+    //  whatever the earlier steps left in it: this is about the truncate, not
+    //  about that content
+    assert!(!read_to_string(&mnt.join("demo/child.gmi")).is_empty(), "precondition: non-empty");
+
+    let c = CString::new(mnt.join("demo/child.gmi").to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::truncate(c.as_ptr(), 0) }, 0, "truncate(2) must succeed");
+
+    // the read applies it, and agrees with what the ship then holds
+    assert_eq!(
+        read_to_string(&mnt.join("demo/child.gmi")),
+        "",
+        "a successful truncate must be visible to the next reader"
+    );
+    assert_eq!(
+        ship.body("demo/child").unwrap(),
+        b"",
+        "and the store must not still hold the old bytes once something has opened it"
+    );
+
+    // stable, not a one-shot that resurrects the body on the second read
+    assert_eq!(read_to_string(&mnt.join("demo/child.gmi")), "");
 }
 
 fn exercise(mnt: &Path, ship: &Ship) {

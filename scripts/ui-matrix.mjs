@@ -66,7 +66,21 @@ try {
   // each matrix run is a fresh namespace.
   // plain-text 404 on the app origin: navigating to a JSON file trips
   // chromium's internal viewer (a getEventId pageerror)
-  await page.goto(APP + '/no-such-asset', { timeout: 20000 });
+  // Wait for the ship to answer before starting. Committing the desk makes it
+  // briefly unreachable while it recompiles, and a run started inside that
+  // window aborted at [boot] on a 20s navigation timeout. That looked like a
+  // product failure every time and was never one, which is worse than a slow
+  // start: it trains you to re-run instead of reading the result.
+  for (let i = 0; ; i++) {
+    try {
+      await page.goto(APP + '/no-such-asset', { timeout: 20000 });
+      break;
+    } catch (e) {
+      if (i >= 14) throw new Error('ship never answered: ' + e.message);
+      console.log('  ..  waiting for the ship to come back (' + (i + 1) + ')');
+      await sleep(10000);
+    }
+  }
   await page.evaluate(async () => {
     localStorage.clear();
     indexedDB.deleteDatabase('lattice-offline');
