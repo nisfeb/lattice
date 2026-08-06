@@ -1234,6 +1234,62 @@ try {
   await page.evaluate((n) => fetch('/apps/lattice/page-del?name=' +
     encodeURIComponent(n), { method: 'POST' }), PV);
 
+  step = 'open upgrade clobber';
+  // ── 9g. typing during an open's upgrade fetch must survive it ────────────
+  // openPage paints instantly from the tree copy, then a trailing
+  // page-source?render=1 upgrades the paint. That fetch used to apply
+  // unconditionally unless another OPEN superseded it, and typing opens
+  // nothing: on a busy pier it landed ~10s later carrying the pre-edit body,
+  // replaced the textarea, and the next autosave wrote the stale text back
+  // over the good save. The editor ate work the ship already had.
+  //
+  // Deterministic, not a race: the upgrade request is HELD by interception,
+  // the typing happens while it is captive, then it is released.
+  const CL = RUN + '-clob';
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
+      '&type=md&new=1', { method: 'POST', body: '# before edit\n' });
+  }, CL);
+  //  fresh tree so the page opens from the dump copy (the painted arm)
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
+    .some((a) => a.href.includes(encodeURIComponent(n))), CL);
+
+  let releaseUpgrade = null;
+  await page.setRequestInterception(true);
+  const holdUpgrade = (r) => {
+    if (r.url().includes('page-source') && r.url().includes('render=1')
+        && r.url().includes(encodeURIComponent(CL))) {
+      releaseUpgrade = () => r.continue();
+      return;                       // held captive until released
+    }
+    r.continue();
+  };
+  page.on('request', holdUpgrade);
+
+  await page.evaluate((n) => {
+    [...document.querySelectorAll('#treelist a.pg')]
+      .find((a) => a.href.includes(encodeURIComponent(n))).click();
+  }, CL);
+  await wait(() => document.getElementById('src').value.includes('before edit'));
+  //  the upgrade fetch is now in flight and held. Type.
+  await page.focus('#src');
+  await page.keyboard.down('Control');
+  await page.keyboard.press('KeyA');
+  await page.keyboard.up('Control');
+  await page.keyboard.type('# after edit clobmark\n', { delay: 10 });
+  check('clobber: the upgrade request was actually captured', !!releaseUpgrade);
+  if (releaseUpgrade) releaseUpgrade();
+  await sleep(4000);              // let the released response land and try its worst
+  check('clobber: text typed during the upgrade fetch survives it',
+    await page.evaluate(() => document.getElementById('src').value.includes('clobmark')),
+    await page.evaluate(() => document.getElementById('src').value.slice(0, 60)));
+
+  page.off('request', holdUpgrade);
+  await page.setRequestInterception(false);
+  await page.evaluate((n) => fetch('/apps/lattice/page-del?name=' +
+    encodeURIComponent(n), { method: 'POST' }), CL);
+
   step = 'search';
   // ── 9e. finding your own writing from the editor ─────────────────────────
   // Grep over the page-dump the client already holds, not the term index.

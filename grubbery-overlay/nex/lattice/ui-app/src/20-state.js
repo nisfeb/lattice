@@ -1,13 +1,14 @@
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits. Auto-refresh never clobbers them
-  // Whether the user has typed AT ALL this session. Never cleared, and that is
-  // the point: `dirty` cannot answer "did the user do something while boot's
-  // dump was in flight", because autosave clears it. The sequence type ->
-  // autosave -> dump-lands then looked untouched, and boot's reconcile called
-  // openPage, which repainted the editor from the PRE-edit dump copy. The next
-  // autosave wrote that stale body back over the good save: the editor visibly
-  // ate work the ship already had.
+  // Whether the user has typed since the current editor view was established.
+  // Cleared by applyPage/newFile (a fresh view), NEVER by autosave — and that
+  // is the point: `dirty` cannot answer "did the user do something while
+  // boot's dump was in flight", because autosave clears it. The sequence
+  // type -> autosave -> dump-lands then looked untouched, and boot's reconcile
+  // called openPage, which repainted the editor from the PRE-edit dump copy.
+  // The next autosave wrote that stale body back over the good save: the
+  // editor visibly ate work the ship already had.
   let everTyped = false;
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select

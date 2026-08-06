@@ -111,6 +111,11 @@
       const name = str(off, 100);
       const prefix = str(off + 345, 155);
       off += 512;
+      // a truncated archive (a partial download) must not restore its last
+      // page silently short. subarray would clamp and hand back fewer bytes
+      // than the header declared, with no signal. Refuse the whole thing.
+      if (off + size > u.length)
+        throw new Error('truncated entry "' + name + '" at byte ' + off);
       const data = u.subarray(off, off + size);
       off += Math.ceil(size / 512) * 512;
       // 'L' carries the next entry's real name. '0' and '' are regular files.

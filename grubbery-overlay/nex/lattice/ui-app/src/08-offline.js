@@ -321,6 +321,15 @@
     }
     for (const k of [...pageCache.keys()])
       if (under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
+    // the boot snapshot names one page. If that page was just deleted or moved
+    // away, the snapshot is stale: the next boot would paint a body whose name
+    // no longer resolves in the tree (it reads as "my change reverted"). Drop
+    // it so the boot defers to the network instead of painting a ghost.
+    try {
+      const p = JSON.parse(localStorage.appPage || 'null');
+      if (p && p.name && under(p.name, rec.op === 'del' ? rec.name : rec.from))
+        localStorage.removeItem('appPage');
+    } catch {}
     await opPut({ ...rec, queuedAt: Date.now() });
     setDegraded(true);
     st(rec.op === 'del'

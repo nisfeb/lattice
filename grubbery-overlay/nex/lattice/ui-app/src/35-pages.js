@@ -56,8 +56,6 @@
       if (!r.ok) { if (!painted) st('open failed ' + r.status, false); return; }
       d = await r.json();
     } catch { if (!painted) st('open failed', false); return; }
-    pageCache.set(name, d);
-    snapPage(name, d);
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
     // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
@@ -71,6 +69,13 @@
     // The !painted arm stays unconditional on purpose — there the fetch IS the
     // open, and an explicit open must always land (see the head comment).
     if (painted && src.value !== shown) return;
+    // Cache and snapshot BELOW the guards, not above. A stale or superseded
+    // response that reached the cache here poisoned it with the pre-edit body:
+    // the guard protected the editor but not the cache, so switching away and
+    // back repainted the old text — the same data loss through a different
+    // door. Only a response that is actually applied may be remembered.
+    pageCache.set(name, d);
+    snapPage(name, d);
     applyPage(name, d);
   }
   function applyPage(name, d, quiet) {
@@ -84,6 +89,10 @@
     if (LMAP[d.kind] || d.kind === 'text') pkind.value = d.kind === 'text' ? 'text' : d.kind;
     src.value = d.body;
     dirty = false;
+    // A fresh editor state begins here. everTyped answers "did the user type
+    // since this view was established?" for boot's reconcile guard; carrying
+    // it across a navigation would mark every later untouched page as touched.
+    everTyped = false;
     render(); sync();
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
     markCurrent();
@@ -115,6 +124,7 @@
     pname.value = into ? into + '/' : '';
     src.value = '';
     dirty = false;
+    everTyped = false;   // a new file is a fresh editor state, like applyPage
     render();
     history.replaceState(null, '', '/apps/lattice/app');
     renderTree();

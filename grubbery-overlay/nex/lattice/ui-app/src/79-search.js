@@ -69,6 +69,7 @@
   }
 
   const qCount = (hay, needle) => {
+    if (!needle.length) return 0;   // indexOf('', i) is i: an empty needle loops forever
     let n = 0, i = 0;
     for (;;) {
       const at = hay.indexOf(needle, i);

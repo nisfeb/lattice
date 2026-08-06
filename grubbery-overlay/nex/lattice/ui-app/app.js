@@ -358,6 +358,15 @@
     }
     for (const k of [...pageCache.keys()])
       if (under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
+    // the boot snapshot names one page. If that page was just deleted or moved
+    // away, the snapshot is stale: the next boot would paint a body whose name
+    // no longer resolves in the tree (it reads as "my change reverted"). Drop
+    // it so the boot defers to the network instead of painting a ghost.
+    try {
+      const p = JSON.parse(localStorage.appPage || 'null');
+      if (p && p.name && under(p.name, rec.op === 'del' ? rec.name : rec.from))
+        localStorage.removeItem('appPage');
+    } catch {}
     await opPut({ ...rec, queuedAt: Date.now() });
     setDegraded(true);
     st(rec.op === 'del'
@@ -790,13 +799,14 @@
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits. Auto-refresh never clobbers them
-  // Whether the user has typed AT ALL this session. Never cleared, and that is
-  // the point: `dirty` cannot answer "did the user do something while boot's
-  // dump was in flight", because autosave clears it. The sequence type ->
-  // autosave -> dump-lands then looked untouched, and boot's reconcile called
-  // openPage, which repainted the editor from the PRE-edit dump copy. The next
-  // autosave wrote that stale body back over the good save: the editor visibly
-  // ate work the ship already had.
+  // Whether the user has typed since the current editor view was established.
+  // Cleared by applyPage/newFile (a fresh view), NEVER by autosave — and that
+  // is the point: `dirty` cannot answer "did the user do something while
+  // boot's dump was in flight", because autosave clears it. The sequence
+  // type -> autosave -> dump-lands then looked untouched, and boot's reconcile
+  // called openPage, which repainted the editor from the PRE-edit dump copy.
+  // The next autosave wrote that stale body back over the good save: the
+  // editor visibly ate work the ship already had.
   let everTyped = false;
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
@@ -2100,8 +2110,6 @@
       if (!r.ok) { if (!painted) st('open failed ' + r.status, false); return; }
       d = await r.json();
     } catch { if (!painted) st('open failed', false); return; }
-    pageCache.set(name, d);
-    snapPage(name, d);
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
     // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
@@ -2115,6 +2123,13 @@
     // The !painted arm stays unconditional on purpose — there the fetch IS the
     // open, and an explicit open must always land (see the head comment).
     if (painted && src.value !== shown) return;
+    // Cache and snapshot BELOW the guards, not above. A stale or superseded
+    // response that reached the cache here poisoned it with the pre-edit body:
+    // the guard protected the editor but not the cache, so switching away and
+    // back repainted the old text — the same data loss through a different
+    // door. Only a response that is actually applied may be remembered.
+    pageCache.set(name, d);
+    snapPage(name, d);
     applyPage(name, d);
   }
   function applyPage(name, d, quiet) {
@@ -2128,6 +2143,10 @@
     if (LMAP[d.kind] || d.kind === 'text') pkind.value = d.kind === 'text' ? 'text' : d.kind;
     src.value = d.body;
     dirty = false;
+    // A fresh editor state begins here. everTyped answers "did the user type
+    // since this view was established?" for boot's reconcile guard; carrying
+    // it across a navigation would mark every later untouched page as touched.
+    everTyped = false;
     render(); sync();
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
     markCurrent();
@@ -2159,6 +2178,7 @@
     pname.value = into ? into + '/' : '';
     src.value = '';
     dirty = false;
+    everTyped = false;   // a new file is a fresh editor state, like applyPage
     render();
     history.replaceState(null, '', '/apps/lattice/app');
     renderTree();
@@ -2679,13 +2699,23 @@
     return /^(https?:\/\/|urb:\/\/|mailto:|#|\/)/i.test(s) ? mdEsc(s) : '';
   };
 
+  // Code-span placeholders. The token must be UNFORGEABLE by document text:
+  // a page that can write the token literally could otherwise smuggle content
+  // past the escaper. The trick is that the token contains '&', which mdEsc
+  // turns into '&amp;'. A token typed into the document is mangled by the
+  // escaper and can never match the restore regex; the only intact tokens are
+  // the ones the extractor mints AFTER escaping. Extraction runs on the
+  // ESCAPED string: mdEsc does not touch backticks, so code spans are still
+  // findable there and their contents are already escaped.
+  const CD_RE = /&CD(\d+);/g;
   const mdInline = (t) => {
     let s = mdEsc(t);
-    // code first: its contents must not be re-processed for emphasis
+    // code first: its (already-escaped) contents must not be re-processed for
+    // emphasis. The token is minted now, after the escape, so it survives.
     const code = [];
     s = s.replace(/`([^`]+)`/g, (_, c) => {
       code.push(c);
-      return ' ' + (code.length - 1) + ' ';
+      return '&CD' + (code.length - 1) + ';';
     });
     s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (m, alt, u) => {
       const h = mdHref(u);
@@ -2695,15 +2725,21 @@
       const h = mdHref(u);
       return h ? '<a href="' + h + '">' + txt + '</a>' : m;
     });
-    //  wikilinks, which lattice writes a lot of
+    //  wikilinks, which lattice writes a lot of. The target is a page name, so
+    //  it is URI-encoded into the query — a name carrying &, = or quotes must
+    //  not smuggle extra params or break out of the href.
     s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
-      (_, tgt, label) => '<a href="' + mdHref('/apps/lattice/app?name=' + tgt.trim()) + '">'
+      (_, tgt, label) => '<a href="'
+        + mdHref('/apps/lattice/app?name=' + encodeURIComponent(tgt.trim())) + '">'
         + (label || tgt) + '</a>');
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');
     s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
     s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
-    s = s.replace(/ (\d+) /g, (_, i) => '<code>' + code[+i] + '</code>');
+    // restore code spans. They were escaped when the whole string was, so no
+    // re-escape here (that would double-escape). Only extractor-minted tokens
+    // match; a forged one was mangled to '&amp;CD…;' by the escaper.
+    s = s.replace(CD_RE, (_, i) => '<code>' + code[+i] + '</code>');
     return s;
   };
 
@@ -4246,6 +4282,11 @@
       const name = str(off, 100);
       const prefix = str(off + 345, 155);
       off += 512;
+      // a truncated archive (a partial download) must not restore its last
+      // page silently short. subarray would clamp and hand back fewer bytes
+      // than the header declared, with no signal. Refuse the whole thing.
+      if (off + size > u.length)
+        throw new Error('truncated entry "' + name + '" at byte ' + off);
       const data = u.subarray(off, off + size);
       off += Math.ceil(size / 512) * 512;
       // 'L' carries the next entry's real name. '0' and '' are regular files.
@@ -4500,6 +4541,7 @@ editor, or git will do if you only want to look.
   }
 
   const qCount = (hay, needle) => {
+    if (!needle.length) return 0;   // indexOf('', i) is i: an empty needle loops forever
     let n = 0, i = 0;
     for (;;) {
       const at = hay.indexOf(needle, i);
