@@ -7,7 +7,14 @@
     const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldName) +
       '&to=' + encodeURIComponent(newName));
     if (!r.ok) { st('move failed ' + r.status, false); return false; }
-    for (const n of nodes) if (n.page && n.path === oldName) n.path = newName;
+    // the server moves the WHOLE subtree (a page can parent nested pages, and
+    // move-pages rewrites every rel under it). Renaming only the exact node
+    // left those children pointing at paths that no longer exist — ghosts in
+    // the tree until the next full loadTree. Same suffix-preserving remap as
+    // moveFolder, and as the offline queue's own move reconciliation.
+    const mapped = (p) => newName + p.slice(oldName.length);
+    for (const n of nodes)
+      if (n.path === oldName || n.path.startsWith(oldName + '/')) n.path = mapped(n.path);
     if (newName.includes('/')) addFolderNodes(newName.slice(0, newName.lastIndexOf('/')));
     snapTree();
     renderTree();

@@ -34,12 +34,22 @@
     renderGroupAccess();
     const target = curFolder || current;
     const suffix = curFolder ? '/' : '';
-    cwurl.innerHTML =
-      m === 'clearweb' && target
-        ? 'public: <a href="' + api + '/c/' + target + suffix +
-          '" target="_blank">/c/' + target + suffix + '</a>'
-      : m === 'mixed' ? 'mixed — pages under this folder differ'
-      : '';
+    // Build the public link as DOM, never innerHTML: a page/folder name is
+    // content (the codebase rule everywhere else), and interpolating it into
+    // markup makes this sink depend on every name source staying sane-%ta.
+    cwurl.textContent = '';
+    if (m === 'clearweb' && target) {
+      const url = api + '/c/' + target + suffix;
+      cwurl.appendChild(document.createTextNode('public: '));
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = '/c/' + target + suffix;   // textContent: names are content
+      cwurl.appendChild(a);
+    } else if (m === 'mixed') {
+      cwurl.textContent = 'mixed — pages under this folder differ';
+    }
   }
   for (const b of document.querySelectorAll('.share button')) {
     b.onclick = async () => {

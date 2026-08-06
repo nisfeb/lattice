@@ -3088,12 +3088,22 @@
     renderGroupAccess();
     const target = curFolder || current;
     const suffix = curFolder ? '/' : '';
-    cwurl.innerHTML =
-      m === 'clearweb' && target
-        ? 'public: <a href="' + api + '/c/' + target + suffix +
-          '" target="_blank">/c/' + target + suffix + '</a>'
-      : m === 'mixed' ? 'mixed — pages under this folder differ'
-      : '';
+    // Build the public link as DOM, never innerHTML: a page/folder name is
+    // content (the codebase rule everywhere else), and interpolating it into
+    // markup makes this sink depend on every name source staying sane-%ta.
+    cwurl.textContent = '';
+    if (m === 'clearweb' && target) {
+      const url = api + '/c/' + target + suffix;
+      cwurl.appendChild(document.createTextNode('public: '));
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = '/c/' + target + suffix;   // textContent: names are content
+      cwurl.appendChild(a);
+    } else if (m === 'mixed') {
+      cwurl.textContent = 'mixed — pages under this folder differ';
+    }
   }
   for (const b of document.querySelectorAll('.share button')) {
     b.onclick = async () => {
@@ -3964,7 +3974,14 @@
     const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldName) +
       '&to=' + encodeURIComponent(newName));
     if (!r.ok) { st('move failed ' + r.status, false); return false; }
-    for (const n of nodes) if (n.page && n.path === oldName) n.path = newName;
+    // the server moves the WHOLE subtree (a page can parent nested pages, and
+    // move-pages rewrites every rel under it). Renaming only the exact node
+    // left those children pointing at paths that no longer exist — ghosts in
+    // the tree until the next full loadTree. Same suffix-preserving remap as
+    // moveFolder, and as the offline queue's own move reconciliation.
+    const mapped = (p) => newName + p.slice(oldName.length);
+    for (const n of nodes)
+      if (n.path === oldName || n.path.startsWith(oldName + '/')) n.path = mapped(n.path);
     if (newName.includes('/')) addFolderNodes(newName.slice(0, newName.lastIndexOf('/')));
     snapTree();
     renderTree();

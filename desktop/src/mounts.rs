@@ -83,6 +83,7 @@ pub fn add_mount(
     let mountpoint = expand_home(mountpoint.trim());
     let sock = sock.unwrap_or_default();
     let ship = ship.unwrap_or_default();
+    validate_mountpoint(&mountpoint)?;
     let mut m = map.0.lock().unwrap();
     if m.contains_key(&mountpoint) {
         return Err(format!("{mountpoint} is already mounted"));
@@ -217,6 +218,83 @@ fn expand_home(p: &str) -> String {
     p.to_string()
 }
 
+/// The mountpoint comes from the webview, which renders ship-served content.
+/// Mounting FUSE over an arbitrary path — a mountpoint of `/etc` or
+/// `~/.ssh` — would shadow a directory the user did not mean to hide behind a
+/// live filesystem. So the path is validated as a trust boundary, the same
+/// reasoning as `openable()` for URLs: policy here, not a suggestion in the
+/// page's javascript.
+///
+/// Two rules. The mountpoint must resolve in-or-under `$HOME` (after symlink
+/// resolution, so `~/link -> /etc` cannot escape), and it must not be an
+/// existing NON-EMPTY directory (mounting over content hides it for the life
+/// of the mount, which reads as lost files). A missing path is fine —
+/// heal_mountpoint creates it — and an existing EMPTY dir is the normal case.
+fn validate_mountpoint(mountpoint: &str) -> Result<(), String> {
+    let p = std::path::Path::new(mountpoint);
+    if mountpoint.trim().is_empty() {
+        return Err("mountpoint is empty".into());
+    }
+    if !p.is_absolute() {
+        return Err(format!("{mountpoint}: mountpoint must be an absolute path"));
+    }
+    // Resolve symlinks. The full path may not exist yet, so canonicalize the
+    // longest existing ancestor and re-append the non-existing tail. Only a
+    // NotFound walks up a level; anything else (a permission denied) is a real
+    // failure, not a reason to keep climbing toward the root.
+    let mut ancestor = p;
+    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    let canon = loop {
+        match std::fs::canonicalize(ancestor) {
+            Ok(c) => break c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                match (ancestor.parent(), ancestor.file_name()) {
+                    (Some(par), Some(name)) => {
+                        tail.push(name);
+                        ancestor = par;
+                    }
+                    _ => return Err(format!("{mountpoint}: cannot resolve mountpoint")),
+                }
+            }
+            Err(e) => return Err(format!("{}: {e}", ancestor.display())),
+        }
+    };
+    let mut resolved = canon;
+    for name in tail.iter().rev() {
+        resolved.push(name);
+    }
+    // A `..` surviving in the not-yet-created tail would let the resolved path
+    // escape the canonicalized ancestor. Refuse it outright: a mountpoint has
+    // no legitimate need for parent traversal.
+    if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(format!("{mountpoint}: '..' is not allowed in a mountpoint"));
+    }
+    let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
+    let home_canon = std::fs::canonicalize(&home).unwrap_or_else(|_| std::path::PathBuf::from(&home));
+    if !resolved.starts_with(&home_canon) {
+        return Err(format!(
+            "{mountpoint}: mounts must live under $HOME ({})",
+            home_canon.display()
+        ));
+    }
+    // An existing directory must be empty; an existing non-dir (a file) is
+    // never a mountpoint. A missing path is created later, so it passes.
+    if let Ok(md) = std::fs::metadata(&resolved) {
+        if md.is_dir() {
+            let mut entries = std::fs::read_dir(&resolved)
+                .map_err(|e| format!("{}: {e}", resolved.display()))?;
+            if entries.next().is_some() {
+                return Err(format!(
+                    "{mountpoint}: not mounting over a non-empty directory"
+                ));
+            }
+        } else {
+            return Err(format!("{mountpoint}: exists and is not a directory"));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{is_fuse_mount, stat_bounded};
@@ -247,7 +325,7 @@ mod tests {
         assert!(matches!(missing, Some(Err(_))), "a missing path errors, it does not hang");
     }
 
-    use super::{expand_home, heal_mountpoint};
+    use super::{expand_home, heal_mountpoint, validate_mountpoint};
     use proptest::prelude::*;
 
     #[test]
@@ -272,6 +350,69 @@ mod tests {
         assert!(mp.join("keep").exists(), "an existing mountpoint was disturbed");
 
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn a_mountpoint_must_live_under_home_and_not_hide_content() {
+        // The mountpoint is webview input. These are the cases that turn
+        // "mount a ship's pages" into "shadow a directory the user owns":
+        // escaping $HOME, and mounting over a directory that already has
+        // things in it.
+        let home = std::env::var("HOME").unwrap();
+        let home = std::fs::canonicalize(&home).unwrap();
+
+        // the normal cases: a missing path under HOME, and an existing EMPTY dir
+        let missing = home.join(format!("lattice-val-{}-missing", std::process::id()));
+        assert!(validate_mountpoint(missing.to_str().unwrap()).is_ok(),
+            "a fresh path under HOME is the common case");
+        let empty = home.join(format!("lattice-val-{}-empty", std::process::id()));
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(validate_mountpoint(empty.to_str().unwrap()).is_ok(),
+            "an existing empty dir is fine");
+        std::fs::remove_dir_all(&empty).ok();
+
+        // outside $HOME: refused, whether or not it exists
+        assert!(validate_mountpoint("/etc/lattice-mnt").is_err(), "/etc is not under HOME");
+        assert!(validate_mountpoint("/tmp/lattice-mnt-x").is_err(), "/tmp is not under HOME");
+
+        // a non-empty dir under HOME: refused (mounting hides its contents)
+        let full = home.join(format!("lattice-val-{}-full", std::process::id()));
+        std::fs::create_dir_all(&full).unwrap();
+        std::fs::write(full.join("keep"), b"x").unwrap();
+        let e = validate_mountpoint(full.to_str().unwrap()).unwrap_err();
+        assert!(e.contains("non-empty"), "{e}");
+        std::fs::remove_dir_all(&full).ok();
+
+        // an existing regular file is not a mountpoint at all
+        let file = home.join(format!("lattice-val-{}-file", std::process::id()));
+        std::fs::write(&file, b"x").unwrap();
+        assert!(validate_mountpoint(file.to_str().unwrap()).is_err());
+        std::fs::remove_file(&file).ok();
+
+        // '..' is refused outright: no parent traversal in a mountpoint
+        let dots = format!("{}/x/../mnt", home.display());
+        assert!(validate_mountpoint(&dots).is_err(), "'..' must be refused");
+
+        // a relative path is refused before any of the above
+        assert!(validate_mountpoint("relative/mnt").is_err());
+        assert!(validate_mountpoint("").is_err());
+    }
+
+    #[test]
+    fn a_symlink_cannot_smuggle_a_mount_out_of_home() {
+        // ~/link -> /tmp, then ~/link/mnt: the path STRING is under HOME but
+        // resolves outside it. Canonicalizing the existing ancestor catches it.
+        let home = std::fs::canonicalize(std::env::var("HOME").unwrap()).unwrap();
+        let outside = std::env::temp_dir().join(format!("lattice-esc-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap();
+        let link = home.join(format!("lattice-link-{}", std::process::id()));
+        std::fs::remove_file(&link).ok();
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let through = link.join("mnt");
+        let e = validate_mountpoint(through.to_str().unwrap()).unwrap_err();
+        assert!(e.contains("under $HOME"), "symlink escape must be caught: {e}");
+        std::fs::remove_file(&link).ok();
+        std::fs::remove_dir_all(&outside).ok();
     }
 
     proptest! {
