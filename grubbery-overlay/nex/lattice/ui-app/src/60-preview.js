@@ -22,6 +22,31 @@
     document.getElementById('ws').appendChild(el);
   }
   const CONTENT = () => ['md', 'gmi', 'html', 'text'].includes(pkind.value);
+
+  // Paint locally NOW, and let the ship's answer replace it when it arrives.
+  //
+  // The server render is the source of truth and stays that way. What changed
+  // is that it is no longer the ONLY thing that ever fills this pane, because
+  // it costs a pier round trip every time: measured against a real ship, 1.36s
+  // for an eight byte document and 3.0s for 106 KB. The floor is the pier, not
+  // the rendering, so the wait did not shrink with the document and a one line
+  // note took as long as a long one.
+  //
+  // Markdown only. gmi, html and text keep the old behaviour, since html is
+  // already its own output and the other two are not worth a second renderer.
+  const localPreviewable = () => pkind.value === 'md';
+  const paintLocal = () => {
+    if (!localPreviewable() || document.hidden) return;
+    if (isMobile() && ws.dataset.mv !== 'prev') return;
+    try {
+      prev.srcdoc = '<!doctype html><meta charset="utf-8">'
+        + '<style>body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;'
+        + 'color-scheme:light dark}img{max-width:100%}pre{overflow-x:auto}'
+        + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
+        + '</style>' + mdToHtml(src.value);
+    } catch {}
+  };
+
   let prevTimer = null;
   async function refreshPreview() {
     // a hidden pane renders to nobody, but the POST still costs ~2s of pier
@@ -40,10 +65,18 @@
       prev.src = api + '/f/' + current + '?t=' + Date.now();
     }
   }
+  let localTimer = null;
   src.addEventListener('input', () => {
     if (!CONTENT()) return;
+    // local first, on a delay short enough to feel like typing
+    clearTimeout(localTimer);
+    localTimer = setTimeout(paintLocal, 60);
+    // and the authoritative render less often than before. Every one of these
+    // is a POST of the WHOLE document onto a pier that serialises, so at 400ms
+    // a long note queued previews behind each other and the autosave behind
+    // those. The local paint is what the eye follows now, so this can wait.
     clearTimeout(prevTimer);
-    prevTimer = setTimeout(refreshPreview, 400);
+    prevTimer = setTimeout(refreshPreview, 1200);
   });
 
   // ── compile errors (hoon pages) ──────────────────────────────────────────

@@ -94,6 +94,9 @@ jobs:
         run: |
           node scripts/ui-listedit.mjs
           node scripts/ui-shortpath.mjs
+          # the preview renderer: mostly asserts that document text
+          # cannot become live markup, since its srcdoc is same-origin
+          node scripts/ui-md.mjs
           # writes real archives and unpacks them with the runner's own tar
           node scripts/ui-vaultar.mjs
       - name: supply chain (licences + bans)
