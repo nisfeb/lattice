@@ -48,6 +48,7 @@
   };
 
   let prevTimer = null;
+  let prevSeq = 0;
   async function refreshPreview() {
     // a hidden pane renders to nobody, but the POST still costs ~2s of pier
     // time and delays the autosave queued behind it (worst on mobile, where
@@ -55,9 +56,24 @@
     if (document.hidden) return;
     if (isMobile() && ws.dataset.mv !== 'prev') return;
     if (CONTENT()) {
+      // A render is of the text that was SENT, and it lands a pier round trip
+      // later. Painting it unconditionally means a render issued before an
+      // edit can arrive after it and put the older document back on screen.
+      //
+      // That was survivable when every paint came from here and they mostly
+      // queued in order. Now the local paint is instant, so a late reply
+      // visibly reverts what you just typed: the edit looks lost.
+      //
+      // Two guards, because they catch different things. prevSeq drops a reply
+      // that a newer request has already superseded. Comparing the text drops
+      // one whose document has moved on even if no newer request went out yet,
+      // which is the common case while typing.
+      const mine = ++prevSeq;
+      const sent = src.value;
       try {
         const r = await fetch(api + '/page-preview?type=' + pkind.value,
-          { method: 'POST', body: src.value });
+          { method: 'POST', body: sent });
+        if (mine !== prevSeq || src.value !== sent) return;
         if (r.ok) prev.srcdoc = await r.text();
       } catch {}
     } else if (current) {
@@ -71,12 +87,20 @@
     // local first, on a delay short enough to feel like typing
     clearTimeout(localTimer);
     localTimer = setTimeout(paintLocal, 60);
-    // and the authoritative render less often than before. Every one of these
-    // is a POST of the WHOLE document onto a pier that serialises, so at 400ms
-    // a long note queued previews behind each other and the autosave behind
-    // those. The local paint is what the eye follows now, so this can wait.
+    // The authoritative render is now RARE, not merely less frequent.
+    //
+    // Every one of these is a POST of the WHOLE document to the ship. At 400ms
+    // a long note re-uploaded itself after every pause in typing, previews
+    // queued behind each other on a pier that serialises, and the autosave
+    // queued behind those. Moving it to 1200ms made that less bad while
+    // keeping the shape of the mistake: the file went over the wire again and
+    // again to render text that had barely changed.
+    //
+    // Ten seconds of quiet, and only then. While you are actually typing the
+    // ship sees nothing at all, and the pane is driven entirely by the local
+    // render. This is a preview correcting itself, not a live feed.
     clearTimeout(prevTimer);
-    prevTimer = setTimeout(refreshPreview, 1200);
+    prevTimer = setTimeout(refreshPreview, 10000);
   });
 
   // ── compile errors (hoon pages) ──────────────────────────────────────────

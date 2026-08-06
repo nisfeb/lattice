@@ -1225,7 +1225,10 @@ try {
     const f = document.getElementById('prev');
     try { return (f.contentDocument.body.innerHTML || '').includes(m); } catch { return false; }
   }, { timeout: 30000 }, MARK2);
-  await sleep(6000);              // long enough for the server render to replace it
+  //  the authoritative render is debounced to TEN SECONDS of quiet, on purpose:
+  //  each one POSTs the whole document to a pier that serialises. So this waits
+  //  past that rather than assuming a prompt reply.
+  await sleep(15000);
   check('preview: the ship\'s render still arrives and holds', await inPreview(MARK2));
 
   await page.evaluate((n) => fetch('/apps/lattice/page-del?name=' +
