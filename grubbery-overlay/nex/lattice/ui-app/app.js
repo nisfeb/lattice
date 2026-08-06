@@ -321,8 +321,9 @@
   // do: the editor then cleared its dirty flag and the work was gone with the
   // UI reporting success. If the queue cannot take it, say so and say it in
   // the words that matter, because there is nowhere else the edit now lives.
-  async function enqueueSave(name, kind, body) {
-    const queued = await offPut({ name, kind, body, baseRev: curRev || 0, queuedAt: Date.now() });
+  async function enqueueSave(name, kind, body, isNew) {
+    const queued = await offPut({ name, kind, body, baseRev: curRev || 0,
+      isNew: !!isNew, queuedAt: Date.now() });
     setDegraded(true);
     if (!queued) {
       st('NOT SAVED — this device cannot store offline edits. Copy your text '
@@ -348,30 +349,37 @@
   // the old name, resurrecting what was just renamed away.
   const under = (name, p) => name === p || name.startsWith(p + '/');
   async function enqueueOp(rec) {
-    for (const q of await offAll()) {
-      if (q.kind === 'know') continue;
-      if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
-      if (rec.op === 'move' && under(q.name, rec.from)) {
-        await offDel(q.name);
-        await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length) });
+    // mkdir affects no queued save (it carries no content), so the
+    // reconciliation below only runs for del/move. A folder create is recorded
+    // and drained as-is; the local tree work (addFolderNodes) already happened.
+    if (rec.op !== 'mkdir') {
+      for (const q of await offAll()) {
+        if (q.kind === 'know') continue;
+        if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
+        if (rec.op === 'move' && under(q.name, rec.from)) {
+          await offDel(q.name);
+          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length) });
+        }
       }
+      for (const k of [...pageCache.keys()])
+        if (under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
+      // the boot snapshot names one page. If that page was just deleted or moved
+      // away, the snapshot is stale: the next boot would paint a body whose name
+      // no longer resolves in the tree (it reads as "my change reverted"). Drop
+      // it so the boot defers to the network instead of painting a ghost.
+      try {
+        const p = JSON.parse(localStorage.appPage || 'null');
+        if (p && p.name && under(p.name, rec.op === 'del' ? rec.name : rec.from))
+          localStorage.removeItem('appPage');
+      } catch {}
     }
-    for (const k of [...pageCache.keys()])
-      if (under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
-    // the boot snapshot names one page. If that page was just deleted or moved
-    // away, the snapshot is stale: the next boot would paint a body whose name
-    // no longer resolves in the tree (it reads as "my change reverted"). Drop
-    // it so the boot defers to the network instead of painting a ghost.
-    try {
-      const p = JSON.parse(localStorage.appPage || 'null');
-      if (p && p.name && under(p.name, rec.op === 'del' ? rec.name : rec.from))
-        localStorage.removeItem('appPage');
-    } catch {}
     await opPut({ ...rec, queuedAt: Date.now() });
     setDegraded(true);
     st(rec.op === 'del'
       ? 'deleted offline — ' + offCount + ' waiting to sync'
-      : 'moved offline — ' + offCount + ' waiting to sync');
+      : rec.op === 'mkdir'
+        ? 'folder created offline — ' + offCount + ' waiting to sync'
+        : 'moved offline — ' + offCount + ' waiting to sync');
   }
 
   // know memories share the queue under a 'know:' prefix. Page names cannot
@@ -446,11 +454,13 @@
       //  a record of any other shape is corrupt. Falling through to the move
       //  branch would POST from=undefined&to=undefined, which is a confusing
       //  400 rather than a dropped bad record.
-      if (o.op !== 'del' && o.op !== 'move') { await opDel(o._k); continue; }
+      if (o.op !== 'del' && o.op !== 'move' && o.op !== 'mkdir') { await opDel(o._k); continue; }
       const u = o.op === 'del'
         ? api + '/page-del?name=' + encodeURIComponent(o.name)
-        : api + '/page-move?from=' + encodeURIComponent(o.from) +
-          '&to=' + encodeURIComponent(o.to);
+        : o.op === 'mkdir'
+          ? api + '/folder-new?name=' + encodeURIComponent(o.name)
+          : api + '/page-move?from=' + encodeURIComponent(o.from) +
+            '&to=' + encodeURIComponent(o.to);
       let r = null;
       try { r = await tfetch(u, { method: 'POST' }, 30000); } catch {}
       if (shipGone(r)) { stuck = true; break; }
@@ -460,8 +470,48 @@
       }
       await opDel(o._k);
     }
-    for (let i = 0; i < all.length && !stuck; i += 50) {
-      const part = all.slice(i, i + 50);
+    // Creates go PER-ITEM with new=1, never through the batch: the batch is an
+    // unconditional upsert, so a name that already exists on the ship would be
+    // silently overwritten. A create must keep its 409-on-exists protection,
+    // or an offline "new page" could clobber a page someone else made online.
+    const creates = all.filter((q) => q.isNew);
+    const edits = all.filter((q) => !q.isNew);
+    for (const q of creates) {
+      if (stuck) break;
+      let one = null;
+      try {
+        one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
+          '&type=' + q.kind + '&new=1',
+          { method: 'POST', body: q.body || '\n' }, 20000);
+      } catch {}
+      if (one && one.ok) { await offDel(q.name); continue; }
+      if (shipGone(one)) { stuck = true; break; }
+      // 409: the name is taken on the ship. Do NOT drop the user's body — move
+      // it out of the way as a conflict page so nothing is lost, then let them
+      // rename. Overwriting is the one thing a create must never do. The alt
+      // write needs no new=1 (it is a preservation write, not a create-claim),
+      // and %make creates the conflicts/ parent server-side, as it does for
+      // the ship's own conflict pages.
+      if (one && one.status === 409) {
+        const alt = 'conflicts/offline-create-' + q.name.replace(/\//g, '-');
+        let two = null;
+        try {
+          two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
+            '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
+        } catch {}
+        if (two && two.ok) {
+          conflicts.push(alt);
+          await offDel(q.name);
+          st('offline create collided: ' + q.name + ' exists on the ship — your ' +
+            'version is kept at ' + alt, false);
+        } else { stuck = true; }
+        continue;
+      }
+      st('dropped an unsyncable offline create: ' + q.name, false);
+      await offDel(q.name);
+    }
+    for (let i = 0; i < edits.length && !stuck; i += 50) {
+      const part = edits.slice(i, i + 50);
       let r = null;
       try {
         r = await tfetch(api + '/page-save-batch?report=1', {
@@ -646,6 +696,11 @@
        rendered as an empty box, which is worse than no button at all. -->
   <button id="qt" class="ico" title="search your pages and notes (ctrl-K)">&#128269;</button>
   <button id="cmt" class="ico" title="comments from other ships">&#128172;</button>
+  <!-- a save that replaced an edit from elsewhere keeps the losing body as a
+       conflicts/ page. Those are invisible unless you already know to look,
+       which is the one failure a conflict design must not have. This badge
+       counts them and opens the resolve pane. -->
+  <button id="cflt" class="ico" title="sync conflicts to resolve" hidden>&#9873;</button>
   <button id="aclt" class="ico" title="access control &mdash; groups, sharing, banned ships">&#128273;</button>
   <button id="treet" class="ico" title="toggle tree pane">&#9776;</button>
   <button id="ctlt" class="ico" title="toggle controls pane">&#9881;</button>
@@ -881,6 +936,11 @@
       return { op: 'del', name: p.get('name') };
     if (u.pathname.endsWith('/page-move') && p.get('from') && p.get('to'))
       return { op: 'move', from: p.get('from'), to: p.get('to') };
+    // folder-new carries no content, so it is a structural op like del/move,
+    // not a save. Idempotent on the ship (folder-new over an existing folder
+    // is a no-op), so a replayed mkdir can never conflict.
+    if (u.pathname.endsWith('/folder-new') && p.get('name'))
+      return { op: 'mkdir', name: p.get('name') };
     return null;
   };
 
@@ -2005,6 +2065,9 @@
       rowByPath.set(n.path, row);
       treeList.appendChild(row);
     }
+    // the conflict badge is a count of conflicts/ pages in this very tree, so
+    // it repaints exactly when the tree does. Defined in 80-conflicts.js.
+    if (typeof renderConfBadge === 'function') renderConfBadge();
   }
 
   const extOf = (kind) => ({ md: 'md', gmi: 'gmi', html: 'html', text: 'txt',
@@ -2236,7 +2299,7 @@
       // Clearing dirty there would tell the editor the work is safe and let
       // the next navigation drop it, so the bookkeeping stays untouched and
       // the page keeps behaving as unsaved. enqueueSave has already said so.
-      if (!(await enqueueSave(name, kind, sent))) {
+      if (!(await enqueueSave(name, kind, sent, creating))) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return;
       }
@@ -2853,6 +2916,44 @@
     return out.join('\n');
   }
 
+  // ── local gemtext, for the live preview only ────────────────────────────
+  // Mirrors the ship's render-gmi (app.hoon) so the local paint matches the
+  // authoritative one it corrects to: ```-fenced pre, #/##/### headings,
+  // => links, > quotes, blank lines dropped, everything else a paragraph.
+  // Same safety contract as the markdown above: EVERY line is escaped, links
+  // only for urb:// and http(s) (a javascript: => target renders as text).
+  const gmiToHtml = (input) => {
+    const out = [];
+    let pre = null;
+    for (const ln of String(input == null ? '' : input).split('\n')) {
+      if (pre !== null) {
+        if (ln.trimEnd() === '```') { out.push('<pre>' + mdEsc(pre) + '</pre>'); pre = null; }
+        else pre = pre === '' ? ln : pre + '\n' + ln;
+        continue;
+      }
+      if (ln.trimEnd() === '```') { pre = ''; continue; }
+      const h = ln.match(/^(#{1,3}) (.*)$/);
+      if (h) { out.push('<h' + h[1].length + '>' + mdEsc(h[2]) + '</h' + h[1].length + '>'); continue; }
+      if (ln.startsWith('=> ')) {
+        const rest = ln.slice(3).replace(/^\s+/, '');
+        const sp = rest.indexOf(' ');
+        const raw = sp < 0 ? rest : rest.slice(0, sp);
+        const desc = mdEsc((sp < 0 ? rest : rest.slice(sp + 1)).replace(/^\s+/, ''));
+        if (raw.startsWith('urb://'))
+          out.push('<p><a href="/apps/lattice?url=' + mdEsc(raw) + '">' + desc + '</a></p>');
+        else if (/^https?:\/\//.test(raw))
+          out.push('<p><a href="' + mdEsc(raw) + '" target="_blank" rel="noopener noreferrer">' + desc + '</a></p>');
+        else out.push('<p>' + desc + '</p>');
+        continue;
+      }
+      if (ln.startsWith('> ')) { out.push('<blockquote>' + mdEsc(ln.slice(2)) + '</blockquote>'); continue; }
+      if (!ln.trim()) continue;
+      out.push('<p>' + mdEsc(ln) + '</p>');
+    }
+    if (pre !== null) out.push('<pre>' + mdEsc(pre) + '</pre>');
+    return out.join('\n');
+  };
+
 // ── src/60-preview.js ─────────────────────────────────────────────────────
   // ── preview pane: <lat-preview> ──────────────────────────────────────────
   // Content kinds render through page-preview (srcdoc). Computed kinds (hoon,
@@ -2888,18 +2989,30 @@
   // the rendering, so the wait did not shrink with the document and a one line
   // note took as long as a long one.
   //
-  // Markdown only. gmi, html and text keep the old behaviour, since html is
-  // already its own output and the other two are not worth a second renderer.
-  const localPreviewable = () => pkind.value === 'md';
+  // All four content kinds paint locally now. md and gmi run the hand-written
+  // renderers (59-md.js) that the ship's answer then corrects. html is its own
+  // output, so it srcdocs directly — the one case where local IS authoritative.
+  // text is an escaped <pre>. Only the computed kinds (hoon, js, css) still
+  // wait on the ship, because their preview is the page's live DATA, not text.
+  const localPreviewable = () => ['md', 'gmi', 'html', 'text'].includes(pkind.value);
+  const localHtml = (kind, body) => {
+    if (kind === 'md') return mdToHtml(body);
+    if (kind === 'gmi') return gmiToHtml(body);
+    if (kind === 'text') return '<pre>' + mdEsc(body) + '</pre>';
+    return body;   // html: the document is already its own rendering
+  };
   const paintLocal = () => {
     if (!localPreviewable() || document.hidden) return;
     if (isMobile() && ws.dataset.mv !== 'prev') return;
     try {
+      // html pages own their whole document, chrome and all. The content kinds
+      // get the same bare shell the markdown preview always used.
+      if (pkind.value === 'html') { prev.srcdoc = src.value; return; }
       prev.srcdoc = '<!doctype html><meta charset="utf-8">'
         + '<style>body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;'
         + 'color-scheme:light dark}img{max-width:100%}pre{overflow-x:auto}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
-        + '</style>' + mdToHtml(src.value);
+        + '</style>' + localHtml(pkind.value, src.value);
     } catch {}
   };
 
@@ -4329,8 +4442,10 @@
 
     const pages = [];
     let knowJson = null;
+    let shareJson = null;
     for (const e of entries) {
       if (e.name === 'know.json') knowJson = e.text;
+      else if (e.name === 'share.json') shareJson = e.text;
       else if (e.name.startsWith('pages/'))
         pages.push({ file: { text: async () => e.text }, rel: e.name.slice(6) });
     }
@@ -4338,6 +4453,14 @@
       st('that archive has no pages/ and no know.json in it', false);
       return;
     }
+    // the sharing map is advisory. An archive without one (every export before
+    // this) restores exactly as it always did, all-private.
+    let share = {};
+    if (shareJson) {
+      try { share = JSON.parse(shareJson) || {}; }
+      catch { st('share.json is unreadable — pages will come back private', false); }
+    }
+    const shared = Object.keys(share).length;
 
     // Say what will be overwritten BEFORE doing it. Overwrites are recoverable
     // (the old body stays in that page's history) but a restore that silently
@@ -4346,12 +4469,29 @@
     const clash = pages.filter((p) => hasNode(stem(p.rel))).length;
     const msg = 'restore ' + pages.length + ' page(s)' +
       (knowJson ? ' and the memories' : '') +
+      (shared ? ' (' + shared + ' shared/public)' : '') +
       (clash ? '? ' + clash + ' of them already exist and will be overwritten. The '
         + 'version you have now stays in each page\'s history.'
         : '?');
     if (!(await askConfirm(msg, 'restore'))) return;
 
     if (pages.length) await uploadItems(pages, { verbatim: true });
+
+    // re-apply the share modes AFTER the pages exist. page-share is per page,
+    // so a tree mode is re-stated page by page — cheap for a personal store,
+    // and a page the restore did not write is left exactly as it is.
+    if (shared) {
+      stWork('restoring share modes…');
+      let ok = 0, bad = 0;
+      for (const [name, mode] of Object.entries(share)) {
+        try {
+          const r = await mutate(api + '/page-share?name=' + encodeURIComponent(name) +
+            '&mode=' + encodeURIComponent(mode));
+          if (r && r.ok) ok++; else bad++;
+        } catch { bad++; }
+      }
+      if (bad) st('share modes: ' + ok + ' restored, ' + bad + ' failed', false);
+    }
 
     if (knowJson) {
       stWork('restoring memories…');
@@ -4382,11 +4522,13 @@
 pages/    every page, as a plain file named for its path and kind.
 know/     every memory, one file per key.
 know.json the memories again, in the format /know-import reads.
+share.json  the share mode of every non-private page (path -> shared|clearweb).
 
 To put it all back, use "restore vault" in the controls pane and pick this
-file. Pages go back to the paths they came from and the memories go back with
-their tags and dates. Anything already there is overwritten, and the version
-being replaced stays in that page's history.
+file. Pages go back to the paths they came from, the memories go back with
+their tags and dates, and any shared or public pages are re-shared. Anything
+already there is overwritten, and the version being replaced stays in that
+page's history. An archive with no share.json restores everything private.
 
 Nothing here needs lattice to read. The pages are plain files, so grep, an
 editor, or git will do if you only want to look.
@@ -4429,6 +4571,18 @@ editor, or git will do if you only want to look.
           body: it.body || '', mtime: daToUnix(it.updated) });
       files.push({ name: 'know.json', body: JSON.stringify(know, null, 1), mtime: now });
     } else missing.push('the memories');
+
+    // Share state is content too: a restore that brings every page back
+    // private is a backup that silently unpublished a site. page-scopes is the
+    // same one-peek map the search badge uses, {path, scope} per page.
+    let scopes = null;
+    try { scopes = await (await fetch(api + '/page-scopes')).json(); } catch {}
+    if (scopes && scopes.items) {
+      const share = {};
+      for (const it of scopes.items)
+        if (it.scope && it.scope !== 'private') share[it.path] = it.scope;
+      files.push({ name: 'share.json', body: JSON.stringify(share, null, 1), mtime: now });
+    } else missing.push('the share modes');
 
     files.push({ name: 'README.txt', body: RESTORE, mtime: now });
 
@@ -4715,6 +4869,130 @@ editor, or git will do if you only want to look.
       if ($('qwrap').hidden) qOpen(); else qClose();
     }
   }, true);
+
+// ── src/80-conflicts.js ───────────────────────────────────────────────────
+  // ── conflict inbox: <lat-conflicts> ─────────────────────────────────────
+  // When a save lands on top of an edit made elsewhere, the ship keeps the
+  // LOSING body as a real page under conflicts/ (see conflict-name in
+  // app.hoon), and the save's response names it. That is careful, but it is
+  // also write-only: nothing in the workspace ever listed them, so a conflict
+  // was preserved in a place nobody looked. This is the read side.
+  //
+  // No server route and no fetch: a conflict IS an ordinary page in the tree
+  // the client already holds, so the whole pane derives from `nodes`. The
+  // badge counts them; the pane lists them with the live page they came from.
+  customElements.define('lat-conflicts', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<div class="aclwrap" id="cfwrap" hidden role="dialog" aria-modal="true" aria-label="sync conflicts">
+  <div class="aclbar">
+    <h2>Conflicts</h2>
+    <span class="muted" id="cfsum"></span>
+    <span class="grow"></span>
+    <button id="cfclose">close</button>
+  </div>
+  <div class="aclbody">
+    <p class="aclnote">Each of these is a version that lost a sync race: your
+    save went through, and the version it replaced was kept here so nothing was
+    destroyed. Open one to read it next to the live page, then remove it when
+    you have what you need. Removing is just deleting that conflicts/ page.</p>
+    <div id="cflist"></div>
+  </div>
+</div>`;
+    }
+  });
+
+  // conflicts/<name-with-dashes>-rev<N>, the inverse of the ship's
+  // conflict-name. Best-effort: the rev suffix is stripped and the dashes
+  // become slashes, which is unambiguous for any name that itself has no dash.
+  const cfOriginal = (path) => {
+    const m = path.match(/^conflicts\/(.+)-rev\d+$/);
+    return m ? m[1].replace(/-/g, '/') : null;
+  };
+  const cfList = () => {
+    const out = [];
+    for (const n of nodes)
+      if (n.page && n.path.startsWith('conflicts/')) out.push(n.path);
+    return out.sort();
+  };
+
+  // the badge: a CONDITION (unresolved conflicts exist), so like the offline
+  // badge it stays up rather than living in the scrolling status line
+  function renderConfBadge() {
+    const b = $('cflt');
+    if (!b) return;
+    const n = cfList().length;
+    b.hidden = n === 0;
+    b.textContent = '⚑ ' + n;
+    b.title = n + ' unresolved conflict' + (n === 1 ? '' : 's') +
+      ' — a save replaced an edit from elsewhere';
+  }
+
+  function renderConflicts() {
+    const host = $('cflist');
+    const sum = $('cfsum');
+    if (!host) return;
+    host.textContent = '';
+    const list = cfList();
+    sum.textContent = list.length ? list.length + ' to resolve' : '';
+    if (!list.length) {
+      const e = document.createElement('div');
+      e.className = 'aclempty';
+      e.textContent = 'No unresolved conflicts.';
+      host.appendChild(e);
+      return;
+    }
+    for (const path of list) {
+      const card = document.createElement('div');
+      card.className = 'aclcard';
+      const head = document.createElement('header');
+
+      const nm = document.createElement('b');
+      nm.textContent = path;                       // textContent: names are content
+      head.appendChild(nm);
+
+      const orig = cfOriginal(path);
+      if (orig && hasNode(orig)) {
+        const live = document.createElement('a');
+        live.textContent = 'open live (' + orig + ')';
+        live.title = 'open the page this conflicted with';
+        live.style.cursor = 'pointer';
+        live.onclick = () => { cfClose(); openPage(orig); };
+        head.appendChild(live);
+      }
+
+      const view = document.createElement('button');
+      view.textContent = 'read it';
+      view.onclick = () => { cfClose(); openPage(path); };
+      head.appendChild(view);
+
+      const del = document.createElement('button');
+      del.textContent = 'resolve (delete)';
+      del.className = 'acl-del';
+      del.onclick = async () => {
+        if (!(await askConfirm('delete ' + path + '? Open it first if you need its text.', 'delete'))) return;
+        const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
+        if (!r.ok) { st('delete failed ' + r.status, false); return; }
+        dropTreeNodes(path);
+        snapTree();
+        renderConflicts();
+        renderConfBadge();
+        renderTree();
+        st('resolved ' + path);
+      };
+      head.appendChild(del);
+      card.appendChild(head);
+      host.appendChild(card);
+    }
+  }
+
+  const cfOpen = () => { $('cfwrap').hidden = false; renderConflicts(); };
+  const cfClose = () => { $('cfwrap').hidden = true; };
+  $('cfclose').onclick = cfClose;
+  $('cflt').onclick = cfOpen;
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('cfwrap').hidden) cfClose();
+  });
 
 // ── src/85-layout.js ──────────────────────────────────────────────────────
   // ── layout toggles + mobile tabs ─────────────────────────────────────────

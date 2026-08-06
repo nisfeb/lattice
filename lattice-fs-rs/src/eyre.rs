@@ -132,6 +132,82 @@ impl Transport for EyreTransport {
         let name = ck.split('=').next().unwrap_or("");
         Ok(name.trim_start_matches("urbauth-").to_string())
     }
+
+    /// Push invalidation over the same beacon SSE the editor listens to.
+    ///
+    /// The writer bumps /beacon/rev on EVERY mutation — including a page-save
+    /// that arrived over this very mount, and crucially including one that
+    /// arrived over HTTP from the open editor. Without this the mount only
+    /// ever learned about edits at the 5s TTL poll, so a save in the editor
+    /// took up to five seconds to be visible in vim, and a grep right after a
+    /// save read the pre-edit body. Subscribing here makes the mount react to
+    /// the editor in milliseconds, the same nudge the editor already gets.
+    ///
+    /// Blocking, best-effort, and silently absent if the stream can't be held:
+    /// the 5s TTL poll is still the guaranteed floor, so a dropped stream is a
+    /// slowdown, never a staleness. The TTL poll being behind it is exactly
+    /// why an SSE gap cannot wedge the filesystem.
+    fn watch(&self, on_change: &(dyn Fn() + Send + Sync)) {
+        use std::io::BufRead;
+        let url = format!(
+            "{}/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev",
+            self.base
+        );
+        // reconnect forever. The stream severs on ship restart, pier hiccup,
+        // or an idle proxy; each of those is transient, and the TTL poll
+        // covers the gap until we get back on.
+        loop {
+            let cookie = self.cookie.lock().unwrap().clone().unwrap_or_default();
+            // a dedicated agent, CONNECT timeout only, never a read timeout:
+            // the beacon holds an idle connection open for hours between
+            // bumps, and a read timeout would sever it on every quiet stretch
+            // (the exact failure proxy.rs's agent is built to avoid). Connect
+            // is where a dead ship hangs, so that one stays bounded.
+            let agent = ureq::AgentBuilder::new()
+                .redirects(0)
+                .timeout_connect(std::time::Duration::from_secs(10))
+                .build();
+            let req = agent
+                .get(&url)
+                .set("Cookie", &cookie)
+                .set("Accept", "text/event-stream");
+            let resp = match req.call() {
+                Ok(r) => r,
+                Err(_) => {
+                    // ship down or stream refused. Back off, then retry — the
+                    // TTL poll is the floor meanwhile.
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    continue;
+                }
+            };
+            let mut reader = std::io::BufReader::new(resp.into_reader());
+            let mut line = String::new();
+            let mut dirty = false;
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,   // stream closed: reconnect
+                    Ok(_) => {
+                        let t = line.trim_end();
+                        if t.is_empty() {
+                            // blank line = end of one SSE event. Fire at most
+                            // once per event, not once per field line.
+                            if dirty {
+                                on_change();
+                                dirty = false;
+                            }
+                        } else if t.starts_with("data:") || t.starts_with("event:") {
+                            dirty = true;
+                        }
+                    }
+                }
+            }
+            if dirty {
+                on_change();   // stream ended mid-event: don't drop the last nudge
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    }
 }
 
 /// Percent-encode everything but the RFC 3986 unreserved set (matches the

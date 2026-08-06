@@ -147,6 +147,9 @@
       rowByPath.set(n.path, row);
       treeList.appendChild(row);
     }
+    // the conflict badge is a count of conflicts/ pages in this very tree, so
+    // it repaints exactly when the tree does. Defined in 80-conflicts.js.
+    if (typeof renderConfBadge === 'function') renderConfBadge();
   }
 
   const extOf = (kind) => ({ md: 'md', gmi: 'gmi', html: 'html', text: 'txt',

@@ -83,6 +83,11 @@
       return { op: 'del', name: p.get('name') };
     if (u.pathname.endsWith('/page-move') && p.get('from') && p.get('to'))
       return { op: 'move', from: p.get('from'), to: p.get('to') };
+    // folder-new carries no content, so it is a structural op like del/move,
+    // not a save. Idempotent on the ship (folder-new over an existing folder
+    // is a no-op), so a replayed mkdir can never conflict.
+    if (u.pathname.endsWith('/folder-new') && p.get('name'))
+      return { op: 'mkdir', name: p.get('name') };
     return null;
   };
 

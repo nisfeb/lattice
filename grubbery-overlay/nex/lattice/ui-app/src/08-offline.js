@@ -284,8 +284,9 @@
   // do: the editor then cleared its dirty flag and the work was gone with the
   // UI reporting success. If the queue cannot take it, say so and say it in
   // the words that matter, because there is nowhere else the edit now lives.
-  async function enqueueSave(name, kind, body) {
-    const queued = await offPut({ name, kind, body, baseRev: curRev || 0, queuedAt: Date.now() });
+  async function enqueueSave(name, kind, body, isNew) {
+    const queued = await offPut({ name, kind, body, baseRev: curRev || 0,
+      isNew: !!isNew, queuedAt: Date.now() });
     setDegraded(true);
     if (!queued) {
       st('NOT SAVED — this device cannot store offline edits. Copy your text '
@@ -311,30 +312,37 @@
   // the old name, resurrecting what was just renamed away.
   const under = (name, p) => name === p || name.startsWith(p + '/');
   async function enqueueOp(rec) {
-    for (const q of await offAll()) {
-      if (q.kind === 'know') continue;
-      if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
-      if (rec.op === 'move' && under(q.name, rec.from)) {
-        await offDel(q.name);
-        await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length) });
+    // mkdir affects no queued save (it carries no content), so the
+    // reconciliation below only runs for del/move. A folder create is recorded
+    // and drained as-is; the local tree work (addFolderNodes) already happened.
+    if (rec.op !== 'mkdir') {
+      for (const q of await offAll()) {
+        if (q.kind === 'know') continue;
+        if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
+        if (rec.op === 'move' && under(q.name, rec.from)) {
+          await offDel(q.name);
+          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length) });
+        }
       }
+      for (const k of [...pageCache.keys()])
+        if (under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
+      // the boot snapshot names one page. If that page was just deleted or moved
+      // away, the snapshot is stale: the next boot would paint a body whose name
+      // no longer resolves in the tree (it reads as "my change reverted"). Drop
+      // it so the boot defers to the network instead of painting a ghost.
+      try {
+        const p = JSON.parse(localStorage.appPage || 'null');
+        if (p && p.name && under(p.name, rec.op === 'del' ? rec.name : rec.from))
+          localStorage.removeItem('appPage');
+      } catch {}
     }
-    for (const k of [...pageCache.keys()])
-      if (under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
-    // the boot snapshot names one page. If that page was just deleted or moved
-    // away, the snapshot is stale: the next boot would paint a body whose name
-    // no longer resolves in the tree (it reads as "my change reverted"). Drop
-    // it so the boot defers to the network instead of painting a ghost.
-    try {
-      const p = JSON.parse(localStorage.appPage || 'null');
-      if (p && p.name && under(p.name, rec.op === 'del' ? rec.name : rec.from))
-        localStorage.removeItem('appPage');
-    } catch {}
     await opPut({ ...rec, queuedAt: Date.now() });
     setDegraded(true);
     st(rec.op === 'del'
       ? 'deleted offline — ' + offCount + ' waiting to sync'
-      : 'moved offline — ' + offCount + ' waiting to sync');
+      : rec.op === 'mkdir'
+        ? 'folder created offline — ' + offCount + ' waiting to sync'
+        : 'moved offline — ' + offCount + ' waiting to sync');
   }
 
   // know memories share the queue under a 'know:' prefix. Page names cannot
@@ -409,11 +417,13 @@
       //  a record of any other shape is corrupt. Falling through to the move
       //  branch would POST from=undefined&to=undefined, which is a confusing
       //  400 rather than a dropped bad record.
-      if (o.op !== 'del' && o.op !== 'move') { await opDel(o._k); continue; }
+      if (o.op !== 'del' && o.op !== 'move' && o.op !== 'mkdir') { await opDel(o._k); continue; }
       const u = o.op === 'del'
         ? api + '/page-del?name=' + encodeURIComponent(o.name)
-        : api + '/page-move?from=' + encodeURIComponent(o.from) +
-          '&to=' + encodeURIComponent(o.to);
+        : o.op === 'mkdir'
+          ? api + '/folder-new?name=' + encodeURIComponent(o.name)
+          : api + '/page-move?from=' + encodeURIComponent(o.from) +
+            '&to=' + encodeURIComponent(o.to);
       let r = null;
       try { r = await tfetch(u, { method: 'POST' }, 30000); } catch {}
       if (shipGone(r)) { stuck = true; break; }
@@ -423,8 +433,48 @@
       }
       await opDel(o._k);
     }
-    for (let i = 0; i < all.length && !stuck; i += 50) {
-      const part = all.slice(i, i + 50);
+    // Creates go PER-ITEM with new=1, never through the batch: the batch is an
+    // unconditional upsert, so a name that already exists on the ship would be
+    // silently overwritten. A create must keep its 409-on-exists protection,
+    // or an offline "new page" could clobber a page someone else made online.
+    const creates = all.filter((q) => q.isNew);
+    const edits = all.filter((q) => !q.isNew);
+    for (const q of creates) {
+      if (stuck) break;
+      let one = null;
+      try {
+        one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
+          '&type=' + q.kind + '&new=1',
+          { method: 'POST', body: q.body || '\n' }, 20000);
+      } catch {}
+      if (one && one.ok) { await offDel(q.name); continue; }
+      if (shipGone(one)) { stuck = true; break; }
+      // 409: the name is taken on the ship. Do NOT drop the user's body — move
+      // it out of the way as a conflict page so nothing is lost, then let them
+      // rename. Overwriting is the one thing a create must never do. The alt
+      // write needs no new=1 (it is a preservation write, not a create-claim),
+      // and %make creates the conflicts/ parent server-side, as it does for
+      // the ship's own conflict pages.
+      if (one && one.status === 409) {
+        const alt = 'conflicts/offline-create-' + q.name.replace(/\//g, '-');
+        let two = null;
+        try {
+          two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
+            '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
+        } catch {}
+        if (two && two.ok) {
+          conflicts.push(alt);
+          await offDel(q.name);
+          st('offline create collided: ' + q.name + ' exists on the ship — your ' +
+            'version is kept at ' + alt, false);
+        } else { stuck = true; }
+        continue;
+      }
+      st('dropped an unsyncable offline create: ' + q.name, false);
+      await offDel(q.name);
+    }
+    for (let i = 0; i < edits.length && !stuck; i += 50) {
+      const part = edits.slice(i, i + 50);
       let r = null;
       try {
         r = await tfetch(api + '/page-save-batch?report=1', {
