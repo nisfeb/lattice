@@ -182,7 +182,7 @@
       // Clearing dirty there would tell the editor the work is safe and let
       // the next navigation drop it, so the bookkeeping stays untouched and
       // the page keeps behaving as unsaved. enqueueSave has already said so.
-      if (!(await enqueueSave(name, kind, sent))) {
+      if (!(await enqueueSave(name, kind, sent, creating))) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return;
       }

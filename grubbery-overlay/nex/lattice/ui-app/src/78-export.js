@@ -141,8 +141,10 @@
 
     const pages = [];
     let knowJson = null;
+    let shareJson = null;
     for (const e of entries) {
       if (e.name === 'know.json') knowJson = e.text;
+      else if (e.name === 'share.json') shareJson = e.text;
       else if (e.name.startsWith('pages/'))
         pages.push({ file: { text: async () => e.text }, rel: e.name.slice(6) });
     }
@@ -150,6 +152,14 @@
       st('that archive has no pages/ and no know.json in it', false);
       return;
     }
+    // the sharing map is advisory. An archive without one (every export before
+    // this) restores exactly as it always did, all-private.
+    let share = {};
+    if (shareJson) {
+      try { share = JSON.parse(shareJson) || {}; }
+      catch { st('share.json is unreadable — pages will come back private', false); }
+    }
+    const shared = Object.keys(share).length;
 
     // Say what will be overwritten BEFORE doing it. Overwrites are recoverable
     // (the old body stays in that page's history) but a restore that silently
@@ -158,12 +168,29 @@
     const clash = pages.filter((p) => hasNode(stem(p.rel))).length;
     const msg = 'restore ' + pages.length + ' page(s)' +
       (knowJson ? ' and the memories' : '') +
+      (shared ? ' (' + shared + ' shared/public)' : '') +
       (clash ? '? ' + clash + ' of them already exist and will be overwritten. The '
         + 'version you have now stays in each page\'s history.'
         : '?');
     if (!(await askConfirm(msg, 'restore'))) return;
 
     if (pages.length) await uploadItems(pages, { verbatim: true });
+
+    // re-apply the share modes AFTER the pages exist. page-share is per page,
+    // so a tree mode is re-stated page by page — cheap for a personal store,
+    // and a page the restore did not write is left exactly as it is.
+    if (shared) {
+      stWork('restoring share modes…');
+      let ok = 0, bad = 0;
+      for (const [name, mode] of Object.entries(share)) {
+        try {
+          const r = await mutate(api + '/page-share?name=' + encodeURIComponent(name) +
+            '&mode=' + encodeURIComponent(mode));
+          if (r && r.ok) ok++; else bad++;
+        } catch { bad++; }
+      }
+      if (bad) st('share modes: ' + ok + ' restored, ' + bad + ' failed', false);
+    }
 
     if (knowJson) {
       stWork('restoring memories…');
@@ -194,11 +221,13 @@
 pages/    every page, as a plain file named for its path and kind.
 know/     every memory, one file per key.
 know.json the memories again, in the format /know-import reads.
+share.json  the share mode of every non-private page (path -> shared|clearweb).
 
 To put it all back, use "restore vault" in the controls pane and pick this
-file. Pages go back to the paths they came from and the memories go back with
-their tags and dates. Anything already there is overwritten, and the version
-being replaced stays in that page's history.
+file. Pages go back to the paths they came from, the memories go back with
+their tags and dates, and any shared or public pages are re-shared. Anything
+already there is overwritten, and the version being replaced stays in that
+page's history. An archive with no share.json restores everything private.
 
 Nothing here needs lattice to read. The pages are plain files, so grep, an
 editor, or git will do if you only want to look.
@@ -241,6 +270,18 @@ editor, or git will do if you only want to look.
           body: it.body || '', mtime: daToUnix(it.updated) });
       files.push({ name: 'know.json', body: JSON.stringify(know, null, 1), mtime: now });
     } else missing.push('the memories');
+
+    // Share state is content too: a restore that brings every page back
+    // private is a backup that silently unpublished a site. page-scopes is the
+    // same one-peek map the search badge uses, {path, scope} per page.
+    let scopes = null;
+    try { scopes = await (await fetch(api + '/page-scopes')).json(); } catch {}
+    if (scopes && scopes.items) {
+      const share = {};
+      for (const it of scopes.items)
+        if (it.scope && it.scope !== 'private') share[it.path] = it.scope;
+      files.push({ name: 'share.json', body: JSON.stringify(share, null, 1), mtime: now });
+    } else missing.push('the share modes');
 
     files.push({ name: 'README.txt', body: RESTORE, mtime: now });
 

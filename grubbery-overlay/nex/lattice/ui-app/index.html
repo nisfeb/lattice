@@ -424,7 +424,7 @@ select, option { color-scheme: light dark; }
 lat-dialog, lat-bar, lat-tabs, lat-tree, lat-editor, lat-preview, lat-ctl,
 lat-share, lat-history, lat-links, lat-knowtags, lat-acl,
 lat-comments { display: contents; }
-lat-search { display: contents; }
+lat-search, lat-conflicts { display: contents; }
 
 /*  search results. The badge states each hit's exposure, because this list
     puts private notes next to things published on the open web and the
@@ -475,6 +475,7 @@ ul.qlist a:hover { background: var(--hover, #8881); }
 <lat-acl></lat-acl>
 <lat-comments></lat-comments>
 <lat-search></lat-search>
+<lat-conflicts></lat-conflicts>
 <lat-dialog></lat-dialog>
 <script src="/apps/lattice/prism.js"></script>
 <script>if("serviceWorker"in navigator)navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice"});</script>

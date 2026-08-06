@@ -32,18 +32,30 @@
   // the rendering, so the wait did not shrink with the document and a one line
   // note took as long as a long one.
   //
-  // Markdown only. gmi, html and text keep the old behaviour, since html is
-  // already its own output and the other two are not worth a second renderer.
-  const localPreviewable = () => pkind.value === 'md';
+  // All four content kinds paint locally now. md and gmi run the hand-written
+  // renderers (59-md.js) that the ship's answer then corrects. html is its own
+  // output, so it srcdocs directly — the one case where local IS authoritative.
+  // text is an escaped <pre>. Only the computed kinds (hoon, js, css) still
+  // wait on the ship, because their preview is the page's live DATA, not text.
+  const localPreviewable = () => ['md', 'gmi', 'html', 'text'].includes(pkind.value);
+  const localHtml = (kind, body) => {
+    if (kind === 'md') return mdToHtml(body);
+    if (kind === 'gmi') return gmiToHtml(body);
+    if (kind === 'text') return '<pre>' + mdEsc(body) + '</pre>';
+    return body;   // html: the document is already its own rendering
+  };
   const paintLocal = () => {
     if (!localPreviewable() || document.hidden) return;
     if (isMobile() && ws.dataset.mv !== 'prev') return;
     try {
+      // html pages own their whole document, chrome and all. The content kinds
+      // get the same bare shell the markdown preview always used.
+      if (pkind.value === 'html') { prev.srcdoc = src.value; return; }
       prev.srcdoc = '<!doctype html><meta charset="utf-8">'
         + '<style>body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;'
         + 'color-scheme:light dark}img{max-width:100%}pre{overflow-x:auto}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
-        + '</style>' + mdToHtml(src.value);
+        + '</style>' + localHtml(pkind.value, src.value);
     } catch {}
   };
 

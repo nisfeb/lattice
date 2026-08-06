@@ -30,6 +30,11 @@
        rendered as an empty box, which is worse than no button at all. -->
   <button id="qt" class="ico" title="search your pages and notes (ctrl-K)">&#128269;</button>
   <button id="cmt" class="ico" title="comments from other ships">&#128172;</button>
+  <!-- a save that replaced an edit from elsewhere keeps the losing body as a
+       conflicts/ page. Those are invisible unless you already know to look,
+       which is the one failure a conflict design must not have. This badge
+       counts them and opens the resolve pane. -->
+  <button id="cflt" class="ico" title="sync conflicts to resolve" hidden>&#9873;</button>
   <button id="aclt" class="ico" title="access control &mdash; groups, sharing, banned ships">&#128273;</button>
   <button id="treet" class="ico" title="toggle tree pane">&#9776;</button>
   <button id="ctlt" class="ico" title="toggle controls pane">&#9881;</button>

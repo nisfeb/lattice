@@ -182,3 +182,41 @@
     closeLists(0);
     return out.join('\n');
   }
+
+  // ── local gemtext, for the live preview only ────────────────────────────
+  // Mirrors the ship's render-gmi (app.hoon) so the local paint matches the
+  // authoritative one it corrects to: ```-fenced pre, #/##/### headings,
+  // => links, > quotes, blank lines dropped, everything else a paragraph.
+  // Same safety contract as the markdown above: EVERY line is escaped, links
+  // only for urb:// and http(s) (a javascript: => target renders as text).
+  const gmiToHtml = (input) => {
+    const out = [];
+    let pre = null;
+    for (const ln of String(input == null ? '' : input).split('\n')) {
+      if (pre !== null) {
+        if (ln.trimEnd() === '```') { out.push('<pre>' + mdEsc(pre) + '</pre>'); pre = null; }
+        else pre = pre === '' ? ln : pre + '\n' + ln;
+        continue;
+      }
+      if (ln.trimEnd() === '```') { pre = ''; continue; }
+      const h = ln.match(/^(#{1,3}) (.*)$/);
+      if (h) { out.push('<h' + h[1].length + '>' + mdEsc(h[2]) + '</h' + h[1].length + '>'); continue; }
+      if (ln.startsWith('=> ')) {
+        const rest = ln.slice(3).replace(/^\s+/, '');
+        const sp = rest.indexOf(' ');
+        const raw = sp < 0 ? rest : rest.slice(0, sp);
+        const desc = mdEsc((sp < 0 ? rest : rest.slice(sp + 1)).replace(/^\s+/, ''));
+        if (raw.startsWith('urb://'))
+          out.push('<p><a href="/apps/lattice?url=' + mdEsc(raw) + '">' + desc + '</a></p>');
+        else if (/^https?:\/\//.test(raw))
+          out.push('<p><a href="' + mdEsc(raw) + '" target="_blank" rel="noopener noreferrer">' + desc + '</a></p>');
+        else out.push('<p>' + desc + '</p>');
+        continue;
+      }
+      if (ln.startsWith('> ')) { out.push('<blockquote>' + mdEsc(ln.slice(2)) + '</blockquote>'); continue; }
+      if (!ln.trim()) continue;
+      out.push('<p>' + mdEsc(ln) + '</p>');
+    }
+    if (pre !== null) out.push('<pre>' + mdEsc(pre) + '</pre>');
+    return out.join('\n');
+  };
