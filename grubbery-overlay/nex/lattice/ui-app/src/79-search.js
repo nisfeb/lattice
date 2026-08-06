@@ -119,7 +119,11 @@
       if (at < 0 && !inPath) continue;
       out.push({
         key: n.path,
-        scope: (qScopes && qScopes.get(n.path)) || 'private',
+        // NOT defaulted to 'private'. If the exposure lookup failed, or the
+        // page is newer than it, calling it private would be a false safety
+        // signal on a clearweb page: exactly the misread this badge exists to
+        // prevent. Unknown says unknown.
+        scope: (qScopes && qScopes.get(n.path)) || 'unknown',
         hits: at < 0 ? 0 : qCount(hay, q),
         inPath,
         snip: at < 0 ? '' : qSnip(n.body, at, q.length),

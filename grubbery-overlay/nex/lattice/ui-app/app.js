@@ -156,8 +156,8 @@
 
   const offGet = async (name) => {
     if (!qrust()) return idbGet(name);
-    try { return (await qcall('queue_list')).find((r) => r.name === name) || null; }
-    catch { return null; }
+    //  one file, not the whole queue: this runs on every page open
+    try { return (await qcall('queue_get', { name })) || null; } catch { return null; }
   };
   const offAll = async () => {
     if (!qrust()) return idbAll();
@@ -198,11 +198,27 @@
   async function adoptIdbQueue() {
     if (!qrust()) return;
     let mine = [];
-    try { mine = await idbAll(); } catch { return }
+    try { mine = await idbAll(); } catch { mine = []; }
     for (const rec of mine) {
       try { await qcall('queue_put', { rec }); await idbDel(rec.name); } catch {}
     }
-    if (mine.length) st('recovered ' + mine.length + ' offline edit(s) from this device');
+    // The ops too. Leaving them behind was a data-loss bug inside the very
+    // migration that exists to prevent one: a delete or a rename queued before
+    // the upgrade would be dropped, the tree would come back from the ship on
+    // the next load, and the change would silently undo itself.
+    //
+    // In order, and one at a time: the sequence is assigned on the Rust side,
+    // so the order they are pushed IS the order they replay in. `_k` is the
+    // old IndexedDB handle and must not travel with the record.
+    let ops = [];
+    try { ops = await idbOpAll(); } catch { ops = []; }
+    for (const o of ops) {
+      const rec = { ...o };
+      delete rec._k;
+      try { await qcall('queue_op_put', { rec }); await idbOpDel(o._k); } catch {}
+    }
+    const n = mine.length + ops.length;
+    if (n) st('recovered ' + n + ' offline change(s) from this device');
     await offRecount();
   }
 
@@ -4263,7 +4279,11 @@ editor, or git will do if you only want to look.
       if (at < 0 && !inPath) continue;
       out.push({
         key: n.path,
-        scope: (qScopes && qScopes.get(n.path)) || 'private',
+        // NOT defaulted to 'private'. If the exposure lookup failed, or the
+        // page is newer than it, calling it private would be a false safety
+        // signal on a clearweb page: exactly the misread this badge exists to
+        // prevent. Unknown says unknown.
+        scope: (qScopes && qScopes.get(n.path)) || 'unknown',
         hits: at < 0 ? 0 : qCount(hay, q),
         inPath,
         snip: at < 0 ? '' : qSnip(n.body, at, q.length),

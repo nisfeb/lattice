@@ -79,16 +79,21 @@ pub fn resolve_key(cfg: &config::Config) -> (String, bool) {
     if !cfg.queue_key.is_empty() {
         return (cfg.queue_key.clone(), false);
     }
-    let chosen = if !cfg.ship.is_empty() {
-        cfg.ship.clone()
-    } else if !cfg.url.is_empty() {
-        cfg.url.clone()
-    } else {
-        // nothing configured yet: a placeholder that is still stable, so
-        // edits made before a connect are not stranded by the connect.
-        "unconfigured".to_string()
-    };
-    (chosen, true)
+    if !cfg.ship.is_empty() {
+        return (cfg.ship.clone(), true);
+    }
+    if !cfg.url.is_empty() {
+        return (cfg.url.clone(), true);
+    }
+    // Nothing configured yet. Use a placeholder but do NOT freeze it, which is
+    // the second half of the write flag. Freezing it meant a queue op before
+    // any connect pinned the key to "unconfigured" forever, and connecting
+    // later to a DIFFERENT ship would then share that queue: one ship's edits
+    // replaying into another, which is the isolation this module promises.
+    //
+    // Edits queued with no ship configured are orphaned by this. They had no
+    // destination to replay to in the first place.
+    ("unconfigured".to_string(), false)
 }
 
 /// Resolve the queue key once and remember it.
@@ -163,6 +168,13 @@ pub fn put_save_at(dir: &Path, rec: &Value) -> Result<(), String> {
     write_atomic(&p, &body)
 }
 
+pub fn get_save_at(dir: &Path, name: &str) -> Option<Value> {
+    let p = dir.join(format!("{}.json", hex(name)));
+    std::fs::read_to_string(p)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+}
+
 pub fn del_save_at(dir: &Path, name: &str) -> Result<(), String> {
     let p = dir.join(format!("{}.json", hex(name)));
     match std::fs::remove_file(&p) {
@@ -205,6 +217,14 @@ pub fn del_op_at(path: &Path, seq: u64) -> Result<(), String> {
 #[tauri::command]
 pub fn queue_list(app: AppHandle) -> Result<Vec<Value>, String> {
     Ok(list_saves_at(&saves_dir(app_ref(&app))?))
+}
+
+/// One record by name. openPage consults the queue as its TOP READ TIER, on
+/// every open, so routing that through queue_list meant a readdir plus a
+/// deserialise of every queued body just to answer a question about one page.
+#[tauri::command]
+pub fn queue_get(app: AppHandle, name: String) -> Result<Option<Value>, String> {
+    Ok(get_save_at(&saves_dir(app_ref(&app))?, &name))
 }
 
 #[tauri::command]
@@ -316,6 +336,17 @@ mod tests {
         for v in got {
             assert_eq!(v["name"], v["body"], "name round-tripped intact");
         }
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn one_record_can_be_fetched_without_reading_the_rest() {
+        let d = tmp("get");
+        put_save_at(&d, &json!({"name": "a/one", "body": "first"})).unwrap();
+        put_save_at(&d, &json!({"name": "b/two", "body": "second"})).unwrap();
+        assert_eq!(get_save_at(&d, "b/two").unwrap()["body"], "second");
+        assert_eq!(get_save_at(&d, "a/one").unwrap()["body"], "first");
+        assert!(get_save_at(&d, "never queued").is_none(), "a miss is None, not an error");
         std::fs::remove_dir_all(&d).ok();
     }
 
@@ -451,15 +482,37 @@ mod tests {
     }
 
     #[test]
-    fn edits_made_before_any_connect_are_not_stranded_by_connecting() {
-        //  a fresh install, no url, no ship: the key still has to be stable
-        let mut cfg = config::Config::default();
-        let (k1, _) = resolve_key(&cfg);
-        cfg.queue_key = k1.clone();
-        cfg.url = "http://localhost:8080".into();
-        cfg.ship = "~zod".into();
-        let (k2, _) = resolve_key(&cfg);
-        assert_eq!(k1, k2, "connecting must not orphan what was queued before it");
+    fn the_placeholder_key_is_never_frozen() {
+        // With nothing configured there is no identity to key on. The
+        // placeholder must NOT be written back, because freezing it pinned the
+        // key to "unconfigured" forever: connect later to one ship, then to a
+        // different one, and both would share that queue. One ship's edits
+        // replaying into another is the exact isolation this module promises.
+        //
+        // The cost is that edits queued before any connect are orphaned. They
+        // had no ship to replay to in the first place.
+        let cfg = config::Config::default();
+        let (k, wrote) = resolve_key(&cfg);
+        assert_eq!(k, "unconfigured");
+        assert!(!wrote, "the placeholder must not be persisted");
+
+        //  and once a ship IS known, that is what gets frozen
+        let cfg2 = config::Config { ship: "~zod".into(), ..Default::default() };
+        let (k2, wrote2) = resolve_key(&cfg2);
+        assert_eq!(k2, "~zod");
+        assert!(wrote2, "a real identity is worth remembering");
+    }
+
+    #[test]
+    fn two_ships_cannot_meet_through_the_placeholder() {
+        //  the failure the fix above prevents, stated directly
+        let a = config::Config { ship: "~zod".into(), ..Default::default() };
+        let b = config::Config { ship: "~ricsul-bilwyt".into(), ..Default::default() };
+        let (ka, _) = resolve_key(&a);
+        let (kb, _) = resolve_key(&b);
+        assert_ne!(ka, "unconfigured");
+        assert_ne!(kb, "unconfigured");
+        assert_ne!(key_dir_name(&ka), key_dir_name(&kb));
     }
 
     #[test]
