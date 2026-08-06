@@ -1166,6 +1166,71 @@ try {
     await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n), { method: 'POST' });
   }, VR);
 
+  step = 'preview latency';
+  // ── 9f. the preview paints locally, then the ship corrects it ────────────
+  // The preview used to be a POST of the whole document to the ship, and the
+  // floor was the pier rather than the rendering: 1.36s for eight bytes, 1.57s
+  // for 16 KB. A one line note was as slow as a long one.
+  //
+  // Both halves matter and this asserts both. Fast is the point, but a local
+  // render that quietly became the ONLY render would mean the pane stops
+  // showing what the page actually is.
+  const PV = RUN + '-pv';
+  await page.evaluate(async (n) => {
+    await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
+      '&type=md&new=1', { method: 'POST', body: '# start\n' });
+  }, PV);
+  await page.goto(APP + '?name=' + PV, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.getElementById('src').value.length > 0);
+  await sleep(2500);
+
+  const inPreview = (needle) => page.evaluate((m) => {
+    const f = document.getElementById('prev');
+    try { return (f.contentDocument.body.innerHTML || '').includes(m); } catch { return false; }
+  }, needle);
+
+  const MARK = 'previewmark' + process.pid;
+  const t0 = Date.now();
+  await page.evaluate((v) => {
+    const s2 = document.getElementById('src');
+    s2.value = v; s2.dispatchEvent(new Event('input'));
+  }, '# heading\n\nsome **text**\n\n' + MARK + '\n');
+  await page.waitForFunction((m) => {
+    const f = document.getElementById('prev');
+    try { return (f.contentDocument.body.innerHTML || '').includes(m); } catch { return false; }
+  }, { timeout: 30000 }, MARK);
+  const took = Date.now() - t0;
+  //  generous: this asserts "not a pier round trip", not a stopwatch figure
+  check('preview: an edit appears without waiting for the ship (' + took + 'ms)',
+    took < 1000, took + 'ms');
+
+  //  the local renderer must not be passing raw markup through: the iframe is
+  //  not sandboxed, so its srcdoc runs on this app's origin
+  await page.evaluate(() => {
+    const s2 = document.getElementById('src');
+    s2.value = '# x\n\n<img src=q onerror=window.__XSS=1>\n';
+    s2.dispatchEvent(new Event('input'));
+  });
+  await sleep(600);
+  check('preview: document text cannot become live markup',
+    !(await page.evaluate(() => !!window.__XSS)));
+
+  //  and the authoritative render still lands
+  const MARK2 = 'servermark' + process.pid;
+  await page.evaluate((v) => {
+    const s2 = document.getElementById('src');
+    s2.value = v; s2.dispatchEvent(new Event('input'));
+  }, '# heading\n\n' + MARK2 + '\n');
+  await page.waitForFunction((m) => {
+    const f = document.getElementById('prev');
+    try { return (f.contentDocument.body.innerHTML || '').includes(m); } catch { return false; }
+  }, { timeout: 30000 }, MARK2);
+  await sleep(6000);              // long enough for the server render to replace it
+  check('preview: the ship\'s render still arrives and holds', await inPreview(MARK2));
+
+  await page.evaluate((n) => fetch('/apps/lattice/page-del?name=' +
+    encodeURIComponent(n), { method: 'POST' }), PV);
+
   step = 'search';
   // ── 9e. finding your own writing from the editor ─────────────────────────
   // Grep over the page-dump the client already holds, not the term index.
