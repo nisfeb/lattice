@@ -22,10 +22,24 @@
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
+  // Undo mdEsc. Inline rendering escapes the WHOLE line first, so by the time
+  // a URL is captured out of it the entities are already in: a link whose
+  // query holds & arrived here as &amp;, and escaping again produced
+  // &amp;amp;, which the browser hands back to the server as a literal
+  // "&amp;". Wikilinks were worse than cosmetic — [[a&b]] encoded to
+  // name=a%26amp%3Bb and opened a page that does not exist.
+  //
+  // Reverses mdEsc's order: & LAST, or "&amp;lt;" would decode twice.
+  const mdUnesc = (t) => String(t)
+    .replace(/&quot;/g, '"').replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<').replace(/&amp;/g, '&');
+
   // Only http(s) and in-page anchors become links. A javascript: or data: href
   // in a clipped page must not become a live link on our origin.
   const mdHref = (u) => {
-    const s = String(u).trim();
+    // decode, THEN test the scheme: "javascript&#58;" must not sneak past a
+    // check run against still-escaped text, and then re-escape for the attr.
+    const s = mdUnesc(u).trim();
     return /^(https?:\/\/|urb:\/\/|mailto:|#|\/)/i.test(s) ? mdEsc(s) : '';
   };
 
@@ -60,7 +74,7 @@
     //  not smuggle extra params or break out of the href.
     s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
       (_, tgt, label) => '<a href="'
-        + mdHref('/apps/lattice/app?name=' + encodeURIComponent(tgt.trim())) + '">'
+        + mdHref('/apps/lattice/app?name=' + encodeURIComponent(mdUnesc(tgt).trim())) + '">'
         + (label || tgt) + '</a>');
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');

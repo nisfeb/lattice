@@ -2755,10 +2755,24 @@
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
+  // Undo mdEsc. Inline rendering escapes the WHOLE line first, so by the time
+  // a URL is captured out of it the entities are already in: a link whose
+  // query holds & arrived here as &amp;, and escaping again produced
+  // &amp;amp;, which the browser hands back to the server as a literal
+  // "&amp;". Wikilinks were worse than cosmetic — [[a&b]] encoded to
+  // name=a%26amp%3Bb and opened a page that does not exist.
+  //
+  // Reverses mdEsc's order: & LAST, or "&amp;lt;" would decode twice.
+  const mdUnesc = (t) => String(t)
+    .replace(/&quot;/g, '"').replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<').replace(/&amp;/g, '&');
+
   // Only http(s) and in-page anchors become links. A javascript: or data: href
   // in a clipped page must not become a live link on our origin.
   const mdHref = (u) => {
-    const s = String(u).trim();
+    // decode, THEN test the scheme: "javascript&#58;" must not sneak past a
+    // check run against still-escaped text, and then re-escape for the attr.
+    const s = mdUnesc(u).trim();
     return /^(https?:\/\/|urb:\/\/|mailto:|#|\/)/i.test(s) ? mdEsc(s) : '';
   };
 
@@ -2793,7 +2807,7 @@
     //  not smuggle extra params or break out of the href.
     s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
       (_, tgt, label) => '<a href="'
-        + mdHref('/apps/lattice/app?name=' + encodeURIComponent(tgt.trim())) + '">'
+        + mdHref('/apps/lattice/app?name=' + encodeURIComponent(mdUnesc(tgt).trim())) + '">'
         + (label || tgt) + '</a>');
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');
@@ -2961,7 +2975,23 @@
   customElements.define('lat-preview', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML =
-        '<iframe class="prev" id="prev" title="live preview"></iframe>';
+        // SANDBOXED, and this is load-bearing rather than defensive.
+        //
+        // The pane renders page content, and an html page is served into it as
+        // its own document — including its scripts. Pages are not all
+        // hand-written: the clipper archives arbitrary web pages verbatim. On
+        // a same-origin frame, opening one of those in the editor ran its
+        // JavaScript with this session, which is read every page, rewrite the
+        // ACLs, exfiltrate the store. Verified before this line existed: a
+        // page containing <script>parent.__PWNED=1</script> set that global on
+        // the app and rewrote its title.
+        //
+        // allow-scripts WITHOUT allow-same-origin is the pair that matters.
+        // Scripts still run, so the footnote-anchor handler the ship injects
+        // into every server render keeps working, but the frame gets an opaque
+        // origin: no parent, no cookies, no session. The two together would
+        // hand the sandbox straight back.
+        '<iframe class="prev" id="prev" title="live preview" sandbox="allow-scripts"></iframe>';
       prev = $('prev');
       // blank it NOW, not when the first page opens. An iframe with no srcdoc
       // is an opaque white canvas, and the first thing that used to call
