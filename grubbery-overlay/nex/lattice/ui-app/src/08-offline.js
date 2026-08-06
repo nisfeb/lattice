@@ -355,14 +355,31 @@
   // forever. A rejected batch falls back to per-item saves so the bad record
   // is isolated and DROPPED (it can never apply; review gap 3).
   let replaying = false;
+  // The guard has to be taken BEFORE the first await. It used to be set four
+  // lines further down, after two of them, so two callers could both pass the
+  // check and drain the queue at the same time. Four things call this (boot,
+  // the reconnect probe, a save that succeeds, and refreshAll) and they fire
+  // close together by design.
+  //
+  // Concurrent drains are not merely wasteful. Both send the same baseRev; the
+  // first applies and moves the revision on; the second is then a CAS miss,
+  // which the server records as a conflict. That is a conflicts/ page invented
+  // out of one queue draining twice, which is the same failure as a false
+  // offline: a conflict manufactured where the user made none.
+  //
+  // try/finally because an exception part way through used to leave this true
+  // for the life of the page, and replay never ran again.
   async function replayQueue() {
     if (replaying) return;
+    replaying = true;
+    try { await drainQueue(); } finally { replaying = false; }
+  }
+  async function drainQueue() {
     const whole = await offAll();
     const ops = await opAll();
     if (!whole.length && !ops.length) return;
     const all = whole.filter((q) => q.kind !== 'know');
     const knows = whole.filter((q) => q.kind === 'know');
-    replaying = true;
     const total = whole.length + ops.length;
     stWork('syncing ' + total + ' offline edit' + (total === 1 ? '' : 's') + '…');
     let stuck = false;
@@ -380,6 +397,10 @@
     // recover because no content lives in an op.
     for (const o of ops) {
       if (stuck) break;
+      //  a record of any other shape is corrupt. Falling through to the move
+      //  branch would POST from=undefined&to=undefined, which is a confusing
+      //  400 rather than a dropped bad record.
+      if (o.op !== 'del' && o.op !== 'move') { await opDel(o._k); continue; }
       const u = o.op === 'del'
         ? api + '/page-del?name=' + encodeURIComponent(o.name)
         : api + '/page-move?from=' + encodeURIComponent(o.from) +
@@ -453,7 +474,6 @@
       st('dropped an unsyncable offline edit: ' + q.name, false);
       await offDel(q.name);
     }
-    replaying = false;
     if (stuck) { setDegraded(true); st(offCount + ' offline edit(s) still waiting', false); return; }
     setDegraded(false);
     if (conflicts.length) {
