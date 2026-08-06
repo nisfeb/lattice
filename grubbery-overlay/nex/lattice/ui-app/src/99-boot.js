@@ -85,7 +85,11 @@
       // second later, which is exactly what the trailing newFile('') did.
       // Compare against bootCurrent, not against null. A snapshot-painted page
       // is not a user action and still wants its refreshOpen reconcile.
-      const touched = current !== bootCurrent || curFolder !== null || dirty;
+      // everTyped, not dirty. A keystroke followed by an autosave clears dirty
+      // before a slow dump lands, and this branch then repainted the editor
+      // from the dump's PRE-edit copy. Typing is a user action whether or not
+      // it has since been saved.
+      const touched = current !== bootCurrent || curFolder !== null || dirty || everTyped;
       if (touched) {
         legacyCheck();
         loadPanels();

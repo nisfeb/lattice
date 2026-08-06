@@ -40,6 +40,7 @@
       src = $('src'); hl = $('hl');
       src.addEventListener('input', () => {
         dirty = true;
+        everTyped = true;      // never cleared: see 20-state.js
         scheduleRender();
         clearTimeout(autoTimer);
         autoTimer = setTimeout(autosave, 2000);

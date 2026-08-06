@@ -790,6 +790,14 @@
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits. Auto-refresh never clobbers them
+  // Whether the user has typed AT ALL this session. Never cleared, and that is
+  // the point: `dirty` cannot answer "did the user do something while boot's
+  // dump was in flight", because autosave clears it. The sequence type ->
+  // autosave -> dump-lands then looked untouched, and boot's reconcile called
+  // openPage, which repainted the editor from the PRE-edit dump copy. The next
+  // autosave wrote that stale body back over the good save: the editor visibly
+  // ate work the ship already had.
+  let everTyped = false;
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
                            // option, so pkind.value would silently convert it
@@ -1085,6 +1093,7 @@
       src = $('src'); hl = $('hl');
       src.addEventListener('input', () => {
         dirty = true;
+        everTyped = true;      // never cleared: see 20-state.js
         scheduleRender();
         clearTimeout(autoTimer);
         autoTimer = setTimeout(autosave, 2000);
@@ -2081,6 +2090,10 @@
       // snapPage upgrades this with the rendered html when it lands.
       snapPage(name, node);
     }
+    // What the editor shows as the fetch leaves. When `painted`, the open has
+    // already visibly happened and the fetch below is an UPGRADE (share, the
+    // rendered html) — not the open itself.
+    const shown = src.value;
     let d = null;
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
@@ -2091,6 +2104,17 @@
     snapPage(name, d);
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
+    // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
+    // typed while it was in flight. On a busy pier this fetch lands many
+    // seconds after the paint, and it carries the PRE-edit body: applying it
+    // replaced what you just typed, and the next autosave wrote that stale
+    // text back over the good save. The editor ate work the ship had.
+    //
+    // Compared by TEXT, not by `dirty`: autosave clears dirty inside this very
+    // window, which is how the old dirty-guards kept failing to catch it.
+    // The !painted arm stays unconditional on purpose — there the fetch IS the
+    // open, and an explicit open must always land (see the head comment).
+    if (painted && src.value !== shown) return;
     applyPage(name, d);
   }
   function applyPage(name, d, quiet) {
@@ -5253,7 +5277,11 @@ editor, or git will do if you only want to look.
       // second later, which is exactly what the trailing newFile('') did.
       // Compare against bootCurrent, not against null. A snapshot-painted page
       // is not a user action and still wants its refreshOpen reconcile.
-      const touched = current !== bootCurrent || curFolder !== null || dirty;
+      // everTyped, not dirty. A keystroke followed by an autosave clears dirty
+      // before a slow dump lands, and this branch then repainted the editor
+      // from the dump's PRE-edit copy. Typing is a user action whether or not
+      // it has since been saved.
+      const touched = current !== bootCurrent || curFolder !== null || dirty || everTyped;
       if (touched) {
         legacyCheck();
         loadPanels();

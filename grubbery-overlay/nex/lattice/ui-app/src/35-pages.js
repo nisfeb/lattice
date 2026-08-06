@@ -46,6 +46,10 @@
       // snapPage upgrades this with the rendered html when it lands.
       snapPage(name, node);
     }
+    // What the editor shows as the fetch leaves. When `painted`, the open has
+    // already visibly happened and the fetch below is an UPGRADE (share, the
+    // rendered html) — not the open itself.
+    const shown = src.value;
     let d = null;
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
@@ -56,6 +60,17 @@
     snapPage(name, d);
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
+    // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
+    // typed while it was in flight. On a busy pier this fetch lands many
+    // seconds after the paint, and it carries the PRE-edit body: applying it
+    // replaced what you just typed, and the next autosave wrote that stale
+    // text back over the good save. The editor ate work the ship had.
+    //
+    // Compared by TEXT, not by `dirty`: autosave clears dirty inside this very
+    // window, which is how the old dirty-guards kept failing to catch it.
+    // The !painted arm stays unconditional on purpose — there the fetch IS the
+    // open, and an explicit open must always land (see the head comment).
+    if (painted && src.value !== shown) return;
     applyPage(name, d);
   }
   function applyPage(name, d, quiet) {
