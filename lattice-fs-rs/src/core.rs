@@ -362,6 +362,33 @@ fn publish(s: &mut State, rel: &str, buf: &[u8]) {
     }
     s.vt_ts = None;
     s.write_gen += 1;
+    // A completed write supersedes any DEFERRED TRUNCATE for this file.
+    //
+    // setattr with no open handle parks the truncate in pending_trunc for the
+    // next open() to apply. Nothing else ever clears it and it has no lifetime,
+    // so a leftover entry makes the next open of that file an EMPTY buffer
+    // marked DIRTY, and commit() then writes that emptiness to the ship. The
+    // next open is not necessarily a writer: reading the file is enough to
+    // destroy it.
+    //
+    // CI caught the visible half of this once, as a read-back after a write
+    // returning "" instead of the bytes just written. Bytes landing is proof
+    // the truncate is spent, so this is where it gets dropped.
+    let spent: Vec<u64> = s
+        .to_path
+        .iter()
+        .filter(|(_, p)| {
+            s.vt
+                .get(*p)
+                .and_then(|e| e.node.as_ref())
+                .map(|n| n.rel == rel)
+                .unwrap_or(false)
+        })
+        .map(|(i, _)| *i)
+        .collect();
+    for i in spent {
+        s.pending_trunc.remove(&i);
+    }
     match s.read_cache.insert(rel.to_string(), buf.to_vec()) {
         Some(old) => {
             s.read_cache_bytes = s.read_cache_bytes.saturating_sub(old.len()) + buf.len();
@@ -1980,6 +2007,70 @@ mod tests {
         assert_eq!(open_size(&s, "a"), Some(7));
         assert_eq!(open_size(&s, "b"), Some(3));
         assert_eq!(open_size(&s, "c"), None, "no open handle: fall back to the vtree size");
+    }
+
+    #[test]
+    fn a_completed_write_spends_a_deferred_truncate() {
+        // The failure this prevents, in order:
+        //
+        //   setattr(size=0) with no open handle parks the truncate in
+        //   pending_trunc for the next open() to apply. Nothing else clears it
+        //   and it has no lifetime. A leftover entry makes the next open of
+        //   that file an EMPTY buffer marked DIRTY, and commit() writes that
+        //   emptiness to the ship. The next open need not be a writer, so
+        //   READING the file is enough to destroy it.
+        //
+        // CI saw the visible half once: a read-back after a write returning ""
+        // rather than the bytes just written.
+        let mut s = bare_state();
+        let ino = ino_for(&mut s, "/hello.md");
+        s.vt.insert(
+            "/hello.md".into(),
+            VEntry { kind: VKind::File, node: Some(page("hello", "md", 8)) },
+        );
+        //  a handle-less truncate parks itself
+        s.pending_trunc.insert(ino, 0);
+
+        //  and then bytes actually land for that page
+        publish(&mut s, "hello", b"# rewritten\n");
+
+        assert!(
+            !s.pending_trunc.contains_key(&ino),
+            "a completed write must spend the deferred truncate, or the next \
+             open serves an empty dirty buffer and commits it over the page"
+        );
+        assert_eq!(
+            s.read_cache.get("hello").map(|v| v.as_slice()),
+            Some(&b"# rewritten\n"[..]),
+            "and the new bytes are what a reader gets"
+        );
+    }
+
+    #[test]
+    fn a_truncate_parked_for_another_file_is_left_alone() {
+        //  publishing one page must not cancel a pending truncate on a different
+        //  one: that would silently drop a truncate the user did ask for
+        let mut s = bare_state();
+        let mine = ino_for(&mut s, "/hello.md");
+        let other = ino_for(&mut s, "/notes.md");
+        s.vt.insert(
+            "/hello.md".into(),
+            VEntry { kind: VKind::File, node: Some(page("hello", "md", 8)) },
+        );
+        s.vt.insert(
+            "/notes.md".into(),
+            VEntry { kind: VKind::File, node: Some(page("notes", "md", 4)) },
+        );
+        s.pending_trunc.insert(mine, 0);
+        s.pending_trunc.insert(other, 0);
+
+        publish(&mut s, "hello", b"new\n");
+
+        assert!(!s.pending_trunc.contains_key(&mine));
+        assert!(
+            s.pending_trunc.contains_key(&other),
+            "another file's pending truncate is not this write's business"
+        );
     }
 
     #[test]
