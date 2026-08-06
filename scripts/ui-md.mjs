@@ -73,7 +73,15 @@ has('bold', 'a **b** c', '<strong>b</strong>');
 has('italic with stars', 'a *b* c', '<em>b</em>');
 has('strikethrough', 'a ~~b~~ c', '<del>b</del>');
 has('code', 'a `b` c', '<code>b</code>');
-has('a wikilink points into the app', '[[notes/todo]]', 'name=/apps/lattice/app?name=notes/todo'.slice(5));
+// the target is URI-encoded on purpose, so a name carrying & or = cannot
+// smuggle extra query params. URLSearchParams decodes %2F straight back.
+has('a wikilink points into the app', '[[notes/todo]]', 'name=notes%2Ftodo');
+// escaping runs over the whole line before URLs are captured out of it, so
+// these two guard against the entities being applied a second time
+has('a link keeps a single-escaped query', '[x](https://e.com/?a=1&b=2)',
+  'href="https://e.com/?a=1&amp;b=2"');
+hasnt('and is not double-escaped', '[x](https://e.com/?a=1&b=2)', '&amp;amp;');
+has('a wikilink target with & encodes the raw character', '[[a&b]]', 'name=a%26b');
 // the placeholder for code spans used to be spaces, so a document containing
 // " 1 " came back out as a code span
 has('a bare number is not mistaken for a code span', 'chapter 1 begins', 'chapter 1 begins');

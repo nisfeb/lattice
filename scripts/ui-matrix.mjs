@@ -1186,7 +1186,7 @@ try {
 
   const inPreview = (needle) => page.evaluate((m) => {
     const f = document.getElementById('prev');
-    try { return (f.contentDocument.body.innerHTML || '').includes(m); } catch { return false; }
+    return (f.getAttribute('srcdoc') || '').includes(m);
   }, needle);
 
   const MARK = 'previewmark' + process.pid;
@@ -1197,7 +1197,7 @@ try {
   }, '# heading\n\nsome **text**\n\n' + MARK + '\n');
   await page.waitForFunction((m) => {
     const f = document.getElementById('prev');
-    try { return (f.contentDocument.body.innerHTML || '').includes(m); } catch { return false; }
+    return (f.getAttribute('srcdoc') || '').includes(m);
   }, { timeout: 30000 }, MARK);
   const took = Date.now() - t0;
   //  generous: this asserts "not a pier round trip", not a stopwatch figure
@@ -1223,7 +1223,7 @@ try {
   }, '# heading\n\n' + MARK2 + '\n');
   await page.waitForFunction((m) => {
     const f = document.getElementById('prev');
-    try { return (f.contentDocument.body.innerHTML || '').includes(m); } catch { return false; }
+    return (f.getAttribute('srcdoc') || '').includes(m);
   }, { timeout: 30000 }, MARK2);
   //  the authoritative render is debounced to TEN SECONDS of quiet, on purpose:
   //  each one POSTs the whole document to a pier that serialises. So this waits
@@ -1289,6 +1289,40 @@ try {
   await page.setRequestInterception(false);
   await page.evaluate((n) => fetch('/apps/lattice/page-del?name=' +
     encodeURIComponent(n), { method: 'POST' }), CL);
+
+  step = 'preview sandbox';
+  // ── 9h. an html page's own scripts must not run on the app's origin ──────
+  // The preview serves an html page as its own document, scripts included, and
+  // pages are not all hand-written: the clipper archives arbitrary web pages
+  // verbatim. Before the frame was sandboxed this was verified exploitable —
+  // a page containing <script>parent.__PWNED=1</script> set that global on the
+  // app and rewrote its title, which is the session, the ACLs and the store.
+  //
+  // allow-scripts WITHOUT allow-same-origin: scripts still run, so the ship's
+  // footnote-anchor handler keeps working, but the frame has an opaque origin.
+  // Adding allow-same-origin back would hand the sandbox straight over.
+  check('sandbox: the preview frame is sandboxed',
+    await page.evaluate(() => document.getElementById('prev').getAttribute('sandbox')) === 'allow-scripts',
+    String(await page.evaluate(() => document.getElementById('prev').getAttribute('sandbox'))));
+
+  await page.evaluate(() => {
+    document.getElementById('newfile').click();
+    document.getElementById('pkind').value = 'html';
+    const s = document.getElementById('src');
+    //  the assignment THROWS a SecurityError once the frame is sandboxed,
+    //  which is the proof it works — but an uncaught one would trip the
+    //  matrix's page-error rule. Swallow it in the frame: if the sandbox
+    //  ever regresses the global gets set and the next check fails.
+    s.value = '<h1>clipped</h1><script>try{parent.__PWNED = 1;}catch(e){}<\/script>';
+    s.dispatchEvent(new Event('input'));
+  });
+  await sleep(2500);
+  check('sandbox: an html page cannot reach the app from the preview',
+    !(await page.evaluate(() => !!window.__PWNED)));
+  check('sandbox: and the frame is not same-origin',
+    !(await page.evaluate(() => {
+      try { return !!document.getElementById('prev').contentDocument; } catch { return false; }
+    })));
 
   step = 'search';
   // ── 9e. finding your own writing from the editor ─────────────────────────

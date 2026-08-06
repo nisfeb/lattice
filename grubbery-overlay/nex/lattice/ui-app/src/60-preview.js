@@ -4,7 +4,23 @@
   customElements.define('lat-preview', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML =
-        '<iframe class="prev" id="prev" title="live preview"></iframe>';
+        // SANDBOXED, and this is load-bearing rather than defensive.
+        //
+        // The pane renders page content, and an html page is served into it as
+        // its own document — including its scripts. Pages are not all
+        // hand-written: the clipper archives arbitrary web pages verbatim. On
+        // a same-origin frame, opening one of those in the editor ran its
+        // JavaScript with this session, which is read every page, rewrite the
+        // ACLs, exfiltrate the store. Verified before this line existed: a
+        // page containing <script>parent.__PWNED=1</script> set that global on
+        // the app and rewrote its title.
+        //
+        // allow-scripts WITHOUT allow-same-origin is the pair that matters.
+        // Scripts still run, so the footnote-anchor handler the ship injects
+        // into every server render keeps working, but the frame gets an opaque
+        // origin: no parent, no cookies, no session. The two together would
+        // hand the sandbox straight back.
+        '<iframe class="prev" id="prev" title="live preview" sandbox="allow-scripts"></iframe>';
       prev = $('prev');
       // blank it NOW, not when the first page opens. An iframe with no srcdoc
       // is an opaque white canvas, and the first thing that used to call
