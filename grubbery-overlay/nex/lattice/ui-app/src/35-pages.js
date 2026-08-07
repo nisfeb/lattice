@@ -103,6 +103,14 @@
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
     if (typeof d.html === 'string') { prev.removeAttribute('src'); prev.srcdoc = d.html; }
     else if (!quiet) refreshPreview();
+    // A quiet open is the COMMON one: the tree dump already carried the body,
+    // so the editor painted instantly and the render=1 fetch is an upgrade.
+    // refreshPreview is suppressed there to avoid a second render — but that
+    // left the PREVIEW alone on the pier, still showing the document you just
+    // navigated away from until the fetch landed. That is the "previews are
+    // slow" report: the editor was never slow, the pane beside it was.
+    // Paint locally now; the fetch still corrects it when it arrives.
+    else paintLocal();
     if (!CONTENT() && !quiet) checkErrors();
     if (isMobile()) setMv('code');
   }
