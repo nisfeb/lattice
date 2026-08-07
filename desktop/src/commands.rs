@@ -285,6 +285,17 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     let w = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("manager.html".into()))
         .title("lattice — workspace")
         .inner_size(1200.0, 800.0)
+        // Tell the page this build HAS the File menu, so it can hide the
+        // buttons that moved into it.
+        //
+        // __TAURI__ alone would be the wrong test: it answers "is this the
+        // desktop", not "does this desktop have the menu". The UI is served by
+        // the ship and the menu lives in this binary, so the two update
+        // independently — a ship that has the new UI reaching an older build
+        // would hide the buttons with no menubar to replace them, and new
+        // page, new folder, upload and save would all be unreachable. Keying
+        // on a flag only this build sets makes the order not matter.
+        .initialization_script("window.__LATTICE_FILE_MENU__ = true;")
         // tauri's own drag-drop interception would swallow the HTML5 drop
         // events the ship UI's drag-to-upload listens for
         .disable_drag_drop_handler()
