@@ -61,8 +61,9 @@ fn main() {
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
         .manage(proxy::Bridge(Mutex::new(None)))
         .on_menu_event(|app, ev| {
-            // single-window app: the manager is a page in the workspace
-            if ev.id().as_ref() == "manager" {
+            // single-window app: the manager is a page in the workspace, and
+            // both of these items are ways of asking for it
+            if matches!(ev.id().as_ref(), "manager" | "backups") {
                 commands::show_manager(app).ok();
                 return;
             }
@@ -94,8 +95,14 @@ fn main() {
         .setup(|app| {
             // one menu, one item: mounts lived in an unreachable window once
             // the manager auto-hid after connect
+            // "backups" opens the same manager page as "connection" — the
+            // settings all live there. It gets its own item anyway, because a
+            // scheduled backup is not something you go looking for under
+            // "connection && mounts", and an entry that is not in the menubar
+            // is, for this purpose, not there at all.
             let sub = tauri::menu::SubmenuBuilder::new(app, "lattice")
                 .text("manager", "connection && mounts…")
+                .text("backups", "scheduled backups…")
                 .build()?;
             // A real File menu. These commands were sidebar buttons, which is
             // web convention, not desktop convention — in a window with a
