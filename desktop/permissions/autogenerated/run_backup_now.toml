@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-run-backup-now"
+description = "Enables the run_backup_now command without any pre-configured scope."
+commands.allow = ["run_backup_now"]
+
+[[permission]]
+identifier = "deny-run-backup-now"
+description = "Denies the run_backup_now command without any pre-configured scope."
+commands.deny = ["run_backup_now"]

@@ -160,6 +160,37 @@
       <span id="mount-status" class="err"></span>
     </div>
   </form>
+
+  <h2>automatic backups</h2>
+  <p class="muted" style="margin:.2rem 0 .8rem">Whole-store archives written to
+  this machine on a schedule — the same tar the vault export makes, so anything
+  here restores the same way. Add several: seven daily, four weekly and twelve
+  monthly is three schedules, each keeping its own count.</p>
+  <p class="muted" style="margin:.2rem 0 .8rem">These run while lattice is
+  open. One that came due while the app was closed runs shortly after you next
+  open it, so a period is skipped only if the app never runs during it.</p>
+  <ul id="backup-list"></ul>
+  <form id="add-backup">
+    <div class="row">
+      <input id="bk-label" placeholder="name (e.g. daily)" required>
+      <select id="bk-every">
+        <option value="24">every day</option>
+        <option value="168">every week</option>
+        <option value="720">every 30 days</option>
+        <option value="1">every hour</option>
+      </select>
+      <input id="bk-keep" type="number" min="0" max="999" value="7" style="width:6rem"
+             title="how many to keep — 0 keeps every one">
+    </div>
+    <div class="row">
+      <input id="bk-dir" placeholder="folder on this machine" required>
+      <button type="button" id="bk-pick">choose…</button>
+    </div>
+    <div class="row">
+      <button>add schedule</button>
+      <span id="backup-status" class="err"></span>
+    </div>
+  </form>
 </main>
 <script>
   const invoke = window.__TAURI__.core.invoke;
@@ -378,6 +409,102 @@
     btn.disabled = false;
   };
   refreshStack();
+
+  // ── automatic backups ────────────────────────────────────────────────────
+  // The list is the source of truth and is written whole (set_backup_schedules
+  // preserves each schedule's last_run by id, so editing one does not make it
+  // instantly due again). Ids are minted here and never reused: retention
+  // matches archives by the schedule's NAME, so renaming one starts a fresh
+  // set rather than adopting — and orphaning — the old files.
+  let backups = [];
+  const bkId = () => 'bk' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const period = (h) => (h === 24 ? 'daily' : h === 168 ? 'weekly'
+    : h === 720 ? 'every 30 days' : h === 1 ? 'hourly' : 'every ' + h + 'h');
+  const ago = (t) => {
+    if (!t) return 'never run';
+    const s = Math.max(0, Math.floor(Date.now() / 1000) - t);
+    if (s < 3600) return 'last run ' + Math.floor(s / 60) + 'm ago';
+    if (s < 86400) return 'last run ' + Math.floor(s / 3600) + 'h ago';
+    return 'last run ' + Math.floor(s / 86400) + 'd ago';
+  };
+  const saveBackups = async () => {
+    await invoke('set_backup_schedules', { schedules: backups });
+    await refreshBackups();
+  };
+  async function refreshBackups() {
+    try { backups = await invoke('backup_schedules'); } catch { backups = []; }
+    const ul = $('backup-list');
+    ul.innerHTML = '';
+    for (const s of backups) {
+      const li = document.createElement('li');
+      const keep = s.keep ? 'keeping ' + s.keep : 'keeping every one';
+      const head = document.createElement('div');
+      head.textContent = s.label + ' — ' + period(s.every_hours) + ', ' + keep
+        + (s.enabled ? '' : ' (paused)');
+      const sub = document.createElement('div');
+      sub.className = 'muted';
+      sub.textContent = s.dir + ' · ' + ago(s.last_run);
+      const row = document.createElement('div');
+      row.className = 'row';
+      const now = document.createElement('button');
+      now.textContent = 'back up now';
+      now.onclick = async () => {
+        $('backup-status').textContent = '';
+        try { await invoke('run_backup_now', { id: s.id }); $('backup-status').textContent = 'building…'; }
+        catch (e) { $('backup-status').textContent = String(e); }
+      };
+      const pause = document.createElement('button');
+      pause.textContent = s.enabled ? 'pause' : 'resume';
+      pause.onclick = async () => { s.enabled = !s.enabled; await saveBackups(); };
+      const del = document.createElement('button');
+      del.textContent = 'remove';
+      // removing a SCHEDULE never removes its archives. Deleting backups is
+      // not what "stop backing up" means, and the files are the user's.
+      del.title = 'stops the schedule — the archives already written stay';
+      del.onclick = async () => { backups = backups.filter((x) => x.id !== s.id); await saveBackups(); };
+      row.append(now, pause, del);
+      li.append(head, sub, row);
+      ul.append(li);
+    }
+    if (!backups.length) {
+      const li = document.createElement('li');
+      li.className = 'muted';
+      li.textContent = 'no scheduled backups yet';
+      ul.append(li);
+    }
+  }
+  $('bk-pick').onclick = async () => {
+    try {
+      const d = await invoke('pick_backup_dir');
+      if (d) $('bk-dir').value = d;
+    } catch (e) { $('backup-status').textContent = String(e); }
+  };
+  $('add-backup').onsubmit = async (e) => {
+    e.preventDefault();
+    $('backup-status').textContent = '';
+    const label = $('bk-label').value.trim();
+    const dir = $('bk-dir').value.trim();
+    if (!label || !dir) { $('backup-status').textContent = 'a name and a folder are both needed'; return; }
+    if (backups.some((b) => b.label.toLowerCase() === label.toLowerCase())) {
+      // two schedules sharing a name would share an archive prefix, and then
+      // each would count the other's files against its own retention
+      $('backup-status').textContent = 'there is already a schedule called ' + label;
+      return;
+    }
+    backups.push({
+      id: bkId(),
+      label,
+      every_hours: Number($('bk-every').value),
+      keep: Math.max(0, Number($('bk-keep').value) || 0),
+      dir,
+      last_run: 0,
+      enabled: true,
+    });
+    await saveBackups();
+    $('bk-label').value = '';
+  };
+  refreshBackups();
+
   invoke('status').then((s) => {
     if (!s.fuse_available) {
       const h = $('fuse-hint');

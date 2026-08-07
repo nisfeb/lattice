@@ -16,6 +16,10 @@
     "allow-status",
     "allow-add-mount",
     "allow-remove-mount",
-    "allow-list-mounts"
+    "allow-list-mounts",
+    "allow-backup-schedules",
+    "allow-set-backup-schedules",
+    "allow-pick-backup-dir",
+    "allow-run-backup-now"
   ]
 }

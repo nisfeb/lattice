@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod backup;
 mod commands;
 mod config;
 mod install;
@@ -180,6 +181,42 @@ fn main() {
                     commands::open_workspace(&h, false).ok();
                 });
             }
+            // The backup tick. One minute is far finer than any period anyone
+            // will set, and the work in a tick with nothing due is reading a
+            // small json file, so the cost of checking often is nothing and it
+            // means a schedule fires close to when it came due rather than up
+            // to an hour late.
+            //
+            // This also covers the app having been CLOSED: a schedule overdue
+            // at launch is due on the first tick, so a laptop shut for a week
+            // backs up when it comes back rather than skipping the period.
+            // Nothing fires while the app is not running at all — that wants a
+            // systemd timer driving the CLI, not a GUI that has to be open.
+            {
+                let h = handle.clone();
+                std::thread::spawn(move || {
+                    // let the workspace finish booting before asking it to
+                    // export: a request into a half-loaded page is a no-op and
+                    // would burn the catch-up run
+                    std::thread::sleep(std::time::Duration::from_secs(45));
+                    loop {
+                        let cfg = config::load(&h);
+                        let now = backup::now();
+                        for s in cfg.backups.iter().filter(|s| backup::is_due(s, now)) {
+                            // Fire ONE per tick. Several schedules coming due
+                            // together (a fresh config, or a laptop opened
+                            // after a fortnight) would otherwise build several
+                            // whole-store archives at once, on a pier that
+                            // serialises, while someone is trying to type.
+                            commands::dlog(&format!("backup: {} is due", s.label));
+                            if commands::request_backup(&h, &s.id) {
+                                break;
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(60));
+                    }
+                });
+            }
             // remount OUTSIDE the url check. A lick mount is a local pier and
             // needs no configured ship at all, so it must come back on launch
             // even when nothing is connected over HTTP.
@@ -204,6 +241,11 @@ fn main() {
             commands::open_external_url,
             commands::save_vault,
             commands::pick_vault,
+            commands::backup_schedules,
+            commands::set_backup_schedules,
+            commands::pick_backup_dir,
+            commands::backup_write,
+            commands::run_backup_now,
             queue::queue_list,
             queue::queue_get,
             queue::queue_put,
