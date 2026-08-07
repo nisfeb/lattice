@@ -67,9 +67,18 @@
       // html pages own their whole document, chrome and all. The content kinds
       // get the same bare shell the markdown preview always used.
       if (pkind.value === 'html') { prev.srcdoc = src.value; return; }
+      // color-scheme belongs on :root, not body — on body it does not reach the
+      // canvas, so the frame painted opaque WHITE in dark theme. That was true
+      // of every local paint since it landed and went unseen because only the
+      // BLANK pane was ever checked for theme; wiring this into the open path
+      // is what finally put it on screen. Backgrounds match prevBlank exactly,
+      // so a document appearing cannot flash a different colour than the empty
+      // pane it replaces.
       prev.srcdoc = '<!doctype html><meta charset="utf-8">'
-        + '<style>body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;'
-        + 'color-scheme:light dark}img{max-width:100%}pre{overflow-x:auto}'
+        + '<style>:root{color-scheme:light dark}'
+        + 'body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;background:#fafafa}'
+        + '@media(prefers-color-scheme:dark){body{background:#1a1a1a}}'
+        + 'img{max-width:100%}pre{overflow-x:auto}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
         + '</style>' + localHtml(pkind.value, src.value);
     } catch {}
@@ -84,6 +93,16 @@
     if (document.hidden) return;
     if (isMobile() && ws.dataset.mv !== 'prev') return;
     if (CONTENT()) {
+      // Paint locally FIRST, on every path into this function, not just while
+      // typing. The local render used to hang off the input event alone, so
+      // typing was instant and everything else — opening a page, switching to
+      // the preview pane, restoring a revision, a sync — still sat on the pier
+      // for its first frame. That is the slow case people actually report,
+      // because you open a document far more often than you type the first
+      // character into one. src.value is already the new body at every call
+      // site (applyPage sets it well before it calls here), so this paints the
+      // document that is about to be rendered, not the one leaving the screen.
+      paintLocal();
       // A render is of the text that was SENT, and it lands a pier round trip
       // later. Painting it unconditionally means a render issued before an
       // edit can arrive after it and put the older document back on screen.
