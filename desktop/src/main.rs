@@ -63,6 +63,31 @@ fn main() {
             // single-window app: the manager is a page in the workspace
             if ev.id().as_ref() == "manager" {
                 commands::show_manager(app).ok();
+                return;
+            }
+            // The File menu drives the ship UI's OWN buttons instead of
+            // reimplementing them here. The workspace webview is the lattice
+            // page itself (the window navigates to the bridge, it does not
+            // frame it), so a click on the real element runs the real handler
+            // — one code path, and the upload picker, template dialog and
+            // dirty-state logic keep working with no Rust counterpart to drift.
+            let btn = match ev.id().as_ref() {
+                "file-new" => "newfile",
+                "file-new-folder" => "newfolder",
+                "file-new-template" => "newtmpl",
+                "file-upload-files" => "upfiles",
+                "file-upload-folder" => "updir",
+                "file-save" => "save",
+                _ => return,
+            };
+            if let Some(w) = app.get_webview_window("workspace") {
+                // The buttons are HIDDEN on desktop, not removed, precisely so
+                // this keeps working. A missing element is a no-op rather than
+                // an error: the menu exists before the page has finished
+                // booting, and early clicks must not throw into the webview.
+                let _ = w.eval(format!(
+                    "(function(){{var b=document.getElementById('{btn}');if(b)b.click();}})()"
+                ));
             }
         })
         .setup(|app| {
@@ -71,7 +96,36 @@ fn main() {
             let sub = tauri::menu::SubmenuBuilder::new(app, "lattice")
                 .text("manager", "connection && mounts…")
                 .build()?;
-            app.set_menu(tauri::menu::MenuBuilder::new(app).items(&[&sub]).build()?)?;
+            // A real File menu. These commands were sidebar buttons, which is
+            // web convention, not desktop convention — in a window with a
+            // menubar the first place anyone looks for "new file" is File.
+            //
+            // Accelerators only where the page does not already own the key.
+            // ctrl-S is bound in the editor (45-templates.js), and registering
+            // it natively as well risks one keypress driving both paths and
+            // writing twice, so Save is menu-only here and the existing
+            // shortcut keeps working exactly as it did.
+            let file = tauri::menu::SubmenuBuilder::new(app, "File")
+                .item(
+                    &tauri::menu::MenuItemBuilder::with_id("file-new", "New page")
+                        .accelerator("CmdOrCtrl+N")
+                        .build(app)?,
+                )
+                .item(
+                    &tauri::menu::MenuItemBuilder::with_id("file-new-folder", "New folder")
+                        .accelerator("CmdOrCtrl+Shift+N")
+                        .build(app)?,
+                )
+                .text("file-new-template", "New from template…")
+                .separator()
+                .text("file-upload-files", "Upload files…")
+                .text("file-upload-folder", "Upload folder…")
+                .separator()
+                .text("file-save", "Save")
+                .build()?;
+            // "lattice" stays FIRST: on macOS the leading submenu becomes the
+            // application menu, and putting File there would bury it.
+            app.set_menu(tauri::menu::MenuBuilder::new(app).items(&[&sub, &file]).build()?)?;
             let handle = app.handle().clone();
             // LATTICE_AUTOCONNECT="url,+code": drive the real connect flow
             // without a display, the headless test harness's entry point.
