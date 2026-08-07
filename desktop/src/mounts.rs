@@ -352,14 +352,34 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
     }
 
+    /// Every mountpoint rule is relative to $HOME, so these tests need one that
+    /// exists on disk. The nix build sandbox sets HOME=/homeless-shelter and
+    /// never creates it, so canonicalize() returned NotFound and the unwrap
+    /// panicked — a security test failing as a BUILD error, which reads as
+    /// "the mount guard is broken" when the guard was never exercised.
+    /// Create it when absent; if the sandbox forbids that too, say so out loud
+    /// rather than reporting a pass we did not earn.
+    fn home_for_test() -> Option<std::path::PathBuf> {
+        let h = std::env::var("HOME").ok()?;
+        if !std::path::Path::new(&h).exists() {
+            std::fs::create_dir_all(&h).ok()?;
+        }
+        match std::fs::canonicalize(&h) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                eprintln!("SKIPPED: no usable $HOME ({h}): {e}");
+                None
+            }
+        }
+    }
+
     #[test]
     fn a_mountpoint_must_live_under_home_and_not_hide_content() {
         // The mountpoint is webview input. These are the cases that turn
         // "mount a ship's pages" into "shadow a directory the user owns":
         // escaping $HOME, and mounting over a directory that already has
         // things in it.
-        let home = std::env::var("HOME").unwrap();
-        let home = std::fs::canonicalize(&home).unwrap();
+        let Some(home) = home_for_test() else { return };
 
         // the normal cases: a missing path under HOME, and an existing EMPTY dir
         let missing = home.join(format!("lattice-val-{}-missing", std::process::id()));
@@ -402,7 +422,7 @@ mod tests {
     fn a_symlink_cannot_smuggle_a_mount_out_of_home() {
         // ~/link -> /tmp, then ~/link/mnt: the path STRING is under HOME but
         // resolves outside it. Canonicalizing the existing ancestor catches it.
-        let home = std::fs::canonicalize(std::env::var("HOME").unwrap()).unwrap();
+        let Some(home) = home_for_test() else { return };
         let outside = std::env::temp_dir().join(format!("lattice-esc-{}", std::process::id()));
         std::fs::create_dir_all(&outside).unwrap();
         let link = home.join(format!("lattice-link-{}", std::process::id()));
