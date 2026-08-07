@@ -10,7 +10,13 @@
   //
   // Web and mobile are untouched: without the desktop shell there is no
   // menubar to move anything into, and the buttons are the only affordance.
-  if (window.__TAURI__) {
+  //
+  // The flag is set by the desktop build that HAS the menu (commands.rs, an
+  // initialization_script), not inferred from __TAURI__. This UI ships from
+  // the ship and the menu ships in the binary, so they update independently:
+  // testing for the desktop alone would hide these on an older build with no
+  // menubar behind them and make every one of these commands unreachable.
+  if (window.__TAURI__ && window.__LATTICE_FILE_MENU__) {
     for (const id of ['newfile', 'newfolder', 'newtmpl', 'upfiles', 'updir', 'save']) {
       const el = document.getElementById(id);
       if (el) el.hidden = true;

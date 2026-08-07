@@ -60,11 +60,13 @@ const boot = async (desktop) => {
   await p.setViewport({ width: 1400, height: 900 });
   await p.setCookie({ name: cn, value: cr.join('='), domain: new globalThis.URL(BASE).hostname, path: '/' });
   if (desktop) {
-    // the shell's own marker, and the only thing the UI keys off. invoke is
-    // stubbed because 10-shell.js and 70-upload.js route through it on desktop.
-    await p.evaluateOnNewDocument(() => {
+    // invoke is stubbed because 10-shell.js and 70-upload.js route through it
+    // on desktop. __LATTICE_FILE_MENU__ is what commands.rs injects, and is
+    // set separately so the older-build case can be exercised.
+    await p.evaluateOnNewDocument((menu) => {
       window.__TAURI__ = { core: { invoke: async () => null } };
-    });
+      if (menu) window.__LATTICE_FILE_MENU__ = true;
+    }, desktop === 'menu');
   }
   await p.goto(APP, { waitUntil: 'domcontentloaded', timeout: 90000 });
   await p.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0,
@@ -86,8 +88,18 @@ check('web: every moved command is still a visible button',
   MOVED.every((id) => onWeb[id]), JSON.stringify(onWeb));
 await web.close();
 
+// an OLDER desktop build: __TAURI__ is there, the File menu is not. The UI
+// ships from the ship and the menu ships in the binary, so this pairing is
+// reachable in the field. Hiding here would strand every one of these
+// commands with nothing to reach them by.
+const old = await boot(true);
+const onOld = await shown(old);
+check('a desktop build with no File menu keeps its buttons',
+  MOVED.every((id) => onOld[id]), JSON.stringify(onOld));
+await old.close();
+
 // desktop: hidden, but still present and still clickable
-const desk = await boot(true);
+const desk = await boot('menu');
 const onDesk = await shown(desk);
 check('desktop: all six are hidden from the page',
   MOVED.every((id) => !onDesk[id]), JSON.stringify(onDesk));
