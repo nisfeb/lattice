@@ -233,7 +233,11 @@ Nothing here needs lattice to read. The pages are plain files, so grep, an
 editor, or git will do if you only want to look.
 `;
 
-  async function exportVault() {
+  // `autoId`, when given, is a backup schedule's id: build exactly the same
+  // archive but hand it to the scheduler instead of a save dialog. Same code
+  // path deliberately — a scheduled backup that differed from the one you can
+  // make by hand is a backup nobody has actually tested restoring.
+  async function exportVault(autoId) {
     if (degraded) { st('the ship is not answering, so there is nothing to export from', false); return; }
     stWork('reading the store…');
     let dump = null;
@@ -288,6 +292,19 @@ editor, or git will do if you only want to look.
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     const fname = 'lattice-vault-' + stamp + '.tar';
     const blob = tarBlob(files);
+    // Scheduled backup: Rust names the file and decides where it lands, so
+    // retention can recognise its own archives. Failures are reported the same
+    // way a manual export's are — a backup that quietly stopped happening is
+    // the failure this whole feature exists to prevent.
+    if (autoId) {
+      const d = desk();
+      if (!d) return;
+      try {
+        const where = await d.invoke('backup_write', { id: autoId, b64: await blobToB64(blob) });
+        st('backed up ' + pages.length + ' page(s) to ' + where);
+      } catch (e) { st('scheduled backup failed: ' + e, false); }
+      return;
+    }
     const d = desk();
     if (d) {
       // The shell has no download handling of any kind, so an <a download>
@@ -318,7 +335,14 @@ editor, or git will do if you only want to look.
       ((know && (know.items || []).length) || 0) + ' memories');
   }
 
-  $('vault').onclick = exportVault;
+  // wrapped, NOT `onclick = exportVault`: that hands the click Event straight
+  // in as autoId, and a MouseEvent is truthy, so every manual export would
+  // have taken the scheduled-backup path and never opened the save dialog.
+  $('vault').onclick = () => exportVault();
+  // How the scheduler asks for one. It lives on window because the caller is
+  // Rust, reaching in with eval — there is no other channel from the menu bar
+  // or a timer thread into this page.
+  if (window.__TAURI__) window.__latticeBackup = (id) => exportVault(id);
 
   // A file input cannot read a tar in the shell, so the desktop path goes
   // through Rust's own picker and hands the bytes back. restoreVault only

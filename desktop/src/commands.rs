@@ -419,6 +419,97 @@ pub async fn save_vault(app: AppHandle, name: String, b64: String) -> Result<Str
     Ok(path.display().to_string())
 }
 
+/// The configured backup schedules.
+#[tauri::command]
+pub fn backup_schedules(app: AppHandle) -> Vec<crate::config::BackupSchedule> {
+    config::load(&app).backups
+}
+
+/// Replace the whole schedule list.
+///
+/// Whole-list rather than per-schedule edits: the manager form owns the table,
+/// and a partial update racing the scheduler's last_run write is how a backup
+/// silently stops running. last_run is preserved from the stored copy by id,
+/// so editing a schedule's keep or directory does not make it immediately due
+/// again and re-backup on every save.
+#[tauri::command]
+pub fn set_backup_schedules(
+    app: AppHandle,
+    schedules: Vec<crate::config::BackupSchedule>,
+) -> Result<(), String> {
+    let mut cfg = config::load(&app);
+    let mut next = schedules;
+    for s in next.iter_mut() {
+        if let Some(old) = cfg.backups.iter().find(|o| o.id == s.id) {
+            s.last_run = old.last_run;
+        }
+    }
+    cfg.backups = next;
+    config::save(&app, &cfg)
+}
+
+/// Pick a directory for a schedule to write into.
+#[tauri::command]
+pub async fn pick_backup_dir(app: AppHandle) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(picked) = app.dialog().file().blocking_pick_folder() else {
+        return Ok(String::new());
+    };
+    Ok(picked.into_path().map_err(|e| e.to_string())?.display().to_string())
+}
+
+/// The page hands back an archive it built for a schedule. Write it, prune
+/// that schedule's older archives, and record that the schedule ran.
+///
+/// last_run is stamped only on SUCCESS. A failed write must leave the schedule
+/// due, or one unwritable evening silently costs a whole period.
+#[tauri::command]
+pub fn backup_write(app: AppHandle, id: String, b64: String) -> Result<String, String> {
+    let bytes = decode_archive(&b64)?;
+    let mut cfg = config::load(&app);
+    let at = crate::backup::now();
+    let Some(s) = cfg.backups.iter().find(|s| s.id == id).cloned() else {
+        return Err(format!("no backup schedule {id}"));
+    };
+    let path = crate::backup::write_archive(&s, &bytes, at)?;
+    if let Some(slot) = cfg.backups.iter_mut().find(|s| s.id == id) {
+        slot.last_run = at;
+    }
+    config::save(&app, &cfg)?;
+    dlog(&format!("backup: wrote {}", path.display()));
+    Ok(path.display().to_string())
+}
+
+/// Ask the workspace page to build an archive for this schedule.
+///
+/// Returns whether the request could be made at all — the archive lands
+/// asynchronously via backup_write. The page is the only thing that can build
+/// one (see backup.rs), so if the workspace is showing the manager instead,
+/// this is a no-op and the schedule stays due for the next tick.
+pub fn request_backup(app: &AppHandle, id: &str) -> bool {
+    let Some(w) = app.get_webview_window("workspace") else { return false };
+    // the id is ours, not user text, but it still goes through a quoted JSON
+    // string rather than being pasted raw into a script
+    let arg = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".into());
+    w.eval(format!(
+        "(function(){{if(window.__latticeBackup)window.__latticeBackup({arg});}})()"
+    ))
+    .is_ok()
+}
+
+/// Run one schedule now, whatever its period says.
+#[tauri::command]
+pub fn run_backup_now(app: AppHandle, id: String) -> Result<(), String> {
+    let cfg = config::load(&app);
+    if !cfg.backups.iter().any(|s| s.id == id) {
+        return Err(format!("no backup schedule {id}"));
+    }
+    if !request_backup(&app, &id) {
+        return Err("the workspace page is not open, so there is nothing to export from".into());
+    }
+    Ok(())
+}
+
 /// Read a vault archive the user picks. Empty string means they cancelled.
 #[tauri::command]
 pub async fn pick_vault(app: AppHandle) -> Result<String, String> {

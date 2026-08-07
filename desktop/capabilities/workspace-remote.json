@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "workspace-remote",
-  "description": "The workspace webview shows the ship-served lattice client (any user-configured URL, so the pattern is any host). It gets exactly two things: pick_upload, which opens a native dialog and returns only what the user picked (a hostile page gets nothing without the user choosing files in a visible OS dialog), and open-external-url, so target=_blank links (the clearweb share link) reach the system browser. That command refuses anything outside http, https, mailto and tel, enforced in rust rather than in the page.",
+  "description": "The workspace webview shows the ship-served lattice client (any user-configured URL, so the pattern is any host), so everything here is reachable by whatever the ship serves and each grant is justified on that basis. pick_upload, save_vault and pick_vault all open a native dialog and act ONLY on what the user then picks: a hostile page gets nothing without a visible OS dialog and a deliberate choice in it. open_external_url sends target=_blank links (the clearweb share link) to the system browser, refusing anything outside http, https, mailto and tel, enforced in rust rather than in the page. backup_write takes bytes for an EXISTING schedule id only; the page cannot choose the directory or the filename, both come from the stored schedule, and the schedule's own retention bounds how many files it can leave behind. NOTE: save_vault and pick_vault were missing here until the scheduled-backup work, which meant vault export and restore in the desktop app failed on 'not allowed. Command not found' — deny-by-default is right, but a command the client calls and never gets is a feature that silently does not exist.",
   "windows": [
     "workspace"
   ],
@@ -15,6 +15,9 @@
   },
   "permissions": [
     "allow-pick-upload",
-    "allow-open-external-url"
+    "allow-open-external-url",
+    "allow-save-vault",
+    "allow-pick-vault",
+    "allow-backup-write"
   ]
 }

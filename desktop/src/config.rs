@@ -18,6 +18,39 @@ pub struct Config {
     /// rename the queue directory out from under the edits it protects.
     #[serde(default)]
     pub queue_key: String,
+    /// Scheduled vault backups to the host. Empty by default — nothing is
+    /// written to anyone's disk until they ask for it.
+    #[serde(default)]
+    pub backups: Vec<BackupSchedule>,
+}
+
+/// One recurring backup: how often, where, and how many to keep.
+///
+/// Several of these are the point. "7 daily, 4 weekly, 12 monthly" is three
+/// schedules pointing at the same directory with different periods and
+/// different keep counts, which is why retention is per-schedule and pruning
+/// only ever considers a schedule's OWN archives.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct BackupSchedule {
+    /// stable identity, so editing a schedule does not orphan its archives
+    pub id: String,
+    /// user's name for it, and the archive filename stem: lattice-<label>-<stamp>.tar
+    pub label: String,
+    /// period in hours. Hours rather than a calendar rule because a period is
+    /// all this needs: 24 daily, 168 weekly, 720 monthly. A real calendar
+    /// month would drag in date arithmetic to answer a question nobody asked —
+    /// "monthly" here means every 30 days, and the UI says so.
+    pub every_hours: u64,
+    /// how many of THIS schedule's archives to keep. 0 means keep everything.
+    pub keep: u32,
+    /// host directory the archives are written to
+    pub dir: String,
+    /// unix seconds of the last successful write. 0 = never run.
+    #[serde(default)]
+    pub last_run: u64,
+    /// paused schedules stay configured but never come due
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -78,6 +111,17 @@ mod tests {
             url: "http://localhost:8080".into(),
             ship: String::new(),
             queue_key: String::new(),
+            // a schedule must survive the round trip too: it is the only thing
+            // in here whose loss silently stops backups from ever running
+            backups: vec![BackupSchedule {
+                id: "b1".into(),
+                label: "daily".into(),
+                every_hours: 24,
+                keep: 7,
+                dir: "/tmp/backups".into(),
+                last_run: 1_700_000_000,
+                enabled: true,
+            }],
             mounts: vec![MountSpec {
                 mountpoint: "/tmp/l".into(),
                 root: "notes".into(),
@@ -130,6 +174,7 @@ mod tests {
                 url: url.clone(),
                 ship: String::new(),
                 queue_key: String::new(),
+                backups: Vec::new(),
                 mounts: mounts
                     .iter()
                     .map(|(mountpoint, root, sock, ship)| MountSpec {
