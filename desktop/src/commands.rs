@@ -519,6 +519,28 @@ pub fn request_backup(app: &AppHandle, id: &str) -> bool {
     .is_ok()
 }
 
+/// Read a schedule's newest archive back and report what is actually in it.
+///
+/// The drill, not a checksum file: it walks the tar the way a restore walks
+/// it, so what passes here is what a restore would find. An archive that is
+/// merely PRESENT proves nothing — the desktop export path was dead for weeks
+/// and looked exactly like this feature working.
+#[tauri::command]
+pub fn verify_backup(app: AppHandle, id: String) -> Result<crate::backup::Report, String> {
+    let cfg = config::load(&app);
+    let Some(s) = cfg.backups.iter().find(|s| s.id == id) else {
+        return Err(format!("no backup schedule {id}"));
+    };
+    let r = crate::backup::verify_newest(s)?;
+    dlog(&format!(
+        "verify {}: {} — {:?}",
+        s.label,
+        if r.ok() { "clean" } else { "PROBLEMS" },
+        r
+    ));
+    Ok(r)
+}
+
 /// Run one schedule now, whatever its period says.
 #[tauri::command]
 pub fn run_backup_now(app: AppHandle, id: String) -> Result<(), String> {

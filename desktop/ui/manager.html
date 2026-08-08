@@ -456,13 +456,36 @@
       const pause = document.createElement('button');
       pause.textContent = s.enabled ? 'pause' : 'resume';
       pause.onclick = async () => { s.enabled = !s.enabled; await saveBackups(); };
+      // The drill. An archive that EXISTS proves nothing — the desktop export
+      // path was dead for weeks and looked exactly like this working. This
+      // reads the newest one back the way a restore would and says what is in
+      // it, so "there are backups" and "the backups are good" stop being the
+      // same sentence.
+      const ver = document.createElement('button');
+      ver.textContent = 'verify latest';
+      ver.onclick = async () => {
+        sub.textContent = 'reading the newest archive…';
+        try {
+          const r = await invoke('verify_backup', { id: s.id });
+          const bits = [r.pages + ' page(s)'];
+          if (r.has_share) bits.push('share modes'); else bits.push('NO share.json');
+          if (r.has_know) bits.push('memories'); else bits.push('NO know.json');
+          sub.textContent = (r.problems.length ? '✗ ' : '✓ ')
+            + bits.join(', ') + ' · ' + Math.round(r.bytes / 1024) + ' KB'
+            + (r.problems.length ? ' — ' + r.problems.join('; ') : ' — reads clean');
+          sub.className = r.problems.length ? 'err' : 'muted';
+        } catch (e) {
+          sub.textContent = String(e);
+          sub.className = 'err';
+        }
+      };
       const del = document.createElement('button');
       del.textContent = 'remove';
       // removing a SCHEDULE never removes its archives. Deleting backups is
       // not what "stop backing up" means, and the files are the user's.
       del.title = 'stops the schedule — the archives already written stay';
       del.onclick = async () => { backups = backups.filter((x) => x.id !== s.id); await saveBackups(); };
-      row.append(now, pause, del);
+      row.append(now, ver, pause, del);
       li.append(head, sub, row);
       ul.append(li);
     }

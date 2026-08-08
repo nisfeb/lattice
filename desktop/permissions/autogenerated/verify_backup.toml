@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-verify-backup"
+description = "Enables the verify_backup command without any pre-configured scope."
+commands.allow = ["verify_backup"]
+
+[[permission]]
+identifier = "deny-verify-backup"
+description = "Denies the verify_backup command without any pre-configured scope."
+commands.deny = ["verify_backup"]
