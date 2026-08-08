@@ -282,9 +282,31 @@ pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
 
 fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     let handle = app.clone();
-    let w = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("manager.html".into()))
+    // LATTICE_PROBE_JS=<path>: inject that file into the workspace page.
+    //
+    // The desktop-only paths are the ones that keep breaking in ways nothing
+    // catches — the File menu's hiding, the capability grants, the backup
+    // chain — because a browser test cannot reach any of them: no menubar, no
+    // invoke, no bridge. scripts/desktop-matrix.sh drives the REAL binary and
+    // needs a way to ask the page what it sees. Injecting from a file beats
+    // editing the ship's app.js, which is what the throwaway versions of this
+    // did and which meant the harness could not run against a ship it did not
+    // own.
+    //
+    // Test-only and inert unless the variable is set. Setting it requires
+    // already controlling this process's environment, the same bar as
+    // LATTICE_AUTOCONNECT, which takes a +code.
+    let probe = std::env::var("LATTICE_PROBE_JS")
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok());
+    let mut b = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("manager.html".into()))
         .title("lattice — workspace")
-        .inner_size(1200.0, 800.0)
+        .inner_size(1200.0, 800.0);
+    if let Some(js) = probe {
+        dlog("probe script injected into the workspace");
+        b = b.initialization_script(js);
+    }
+    let w = b
         // Tell the page this build HAS the File menu, so it can hide the
         // buttons that moved into it.
         //
