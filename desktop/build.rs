@@ -34,6 +34,7 @@ fn main() {
             "set_backup_schedules",
             "pick_backup_dir",
             "run_backup_now",
+            "verify_backup",
             "backup_write",
         ]),
     ))

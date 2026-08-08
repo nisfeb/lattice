@@ -253,6 +253,7 @@ fn main() {
             commands::pick_backup_dir,
             commands::backup_write,
             commands::run_backup_now,
+            commands::verify_backup,
             queue::queue_list,
             queue::queue_get,
             queue::queue_put,
