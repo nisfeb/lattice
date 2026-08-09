@@ -181,7 +181,11 @@ try {
   await page.waitForFunction(async (n) => {
     const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n));
     return (await r.json()).body === '# ui matrix probe';
-  }, { timeout: 30000 }, RUN + '/hello');
+  //  90s, the same budget as every other integration wait here. This was the
+  //  file's only bespoke timeout, tuned when a perf fork made the pier faster
+  //  than upstream; on plain grubbery develop it is the one thing that ends a
+  //  run, and it ends it on a clock rather than on a behaviour.
+  }, { timeout: 90000 }, RUN + '/hello');
   ok('history: restore re-saves the old revision as newest');
 
   // REGRESSION GUARDS for the adversarial review's findings.
@@ -243,7 +247,11 @@ try {
   await page.waitForFunction(async (n) => {
     const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n));
     return (await r.json()).body === '# autosaved content';
-  }, { timeout: 30000 }, RUN + '/hello');
+  //  90s, the same budget as every other integration wait here. This was the
+  //  file's only bespoke timeout, tuned when a perf fork made the pier faster
+  //  than upstream; on plain grubbery develop it is the one thing that ends a
+  //  run, and it ends it on a clock rather than on a behaviour.
+  }, { timeout: 90000 }, RUN + '/hello');
   ok('autosave: 2s pause persists the draft');
   check('autosave: text and caret untouched',
     await page.evaluate(() => {
@@ -1440,6 +1448,36 @@ try {
   await page.evaluate(() => document.querySelector('#treelist a.pg').click());
   await wait(() => document.getElementById('ws').dataset.mv === 'code');
   ok('mobile: opening a page jumps to the editor pane');
+
+  // full-screen editing. The trap this guards against is losing the way back:
+  // full screen hides the bar and the tabs, so if the control went with them
+  // the only exit would be a reload.
+  const vis = (id) => page.evaluate((i) => {
+    const e = document.getElementById(i);
+    return !!e && getComputedStyle(e).display !== 'none';
+  }, id);
+  check('mobile: the full-screen control is offered while editing', await vis('fullt'));
+  await page.click('#fullt');
+  await wait(() => document.getElementById('ws').classList.contains('full'));
+  //  read the real element, never a missing one: a selector that matches
+  //  nothing would make "it is hidden" pass for the wrong reason
+  const shown = (sel) => page.evaluate((s) => {
+    const e = document.querySelector(s);
+    if (!e) throw new Error('no element for ' + s);
+    return getComputedStyle(e).display !== 'none';
+  }, sel);
+  check('mobile: full screen hides the bar', !(await shown('.bar')));
+  check('mobile: full screen hides the tab strip', !(await shown('.mtabs')));
+  check('mobile: and the editor is still there', await vis('src'));
+  // the one that matters
+  check('mobile: the way OUT is still on screen', await vis('fullt'));
+  await page.click('#fullt');
+  await wait(() => !document.getElementById('ws').classList.contains('full'));
+  check('mobile: leaving full screen brings the tabs back', await shown('.mtabs'));
+  // desktop shows every pane at once, so the control has nothing to reveal
+  await page.setViewport({ width: 1400, height: 900 });
+  check('desktop: no full-screen control', !(await vis('fullt')));
+  await page.setViewport({ width: 390, height: 780, isMobile: true });
 
   step = 'dark theme';
   // ── 11. dark theme: blank preview shows the theme background ─────────────
