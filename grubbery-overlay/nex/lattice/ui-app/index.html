@@ -80,6 +80,9 @@ select, option { color-scheme: light dark; }
 .ws.nt #ph1, .ws.nc #ph3, .ws.know #ph2 { display: none; }
 .bar .ico { padding: 5px 9px; }
 .bar .ico.on { border-color: var(--green); color: var(--green); }
+/* the full-screen control is mobile-only; the desktop shows every pane at
+   once, so there is nothing for it to reveal. Shown by the 820px block. */
+#fullt { display: none; }
 .mtabs { display: none; grid-column: 1 / -1; grid-row: 2;
   border-bottom: 1px solid var(--border-soft); }
 .mtabs button { flex: 1; padding: 10px; border: 0; background: none;
@@ -287,6 +290,26 @@ select, option { color-scheme: light dark; }
   .ctl input, select, textarea { font-size: 16px; }
   .bar { flex-wrap: wrap; }
   .bar input { min-width: 0; flex: 1 1 100%; order: 5; font-size: 16px; }
+  /* full-screen editing. The bar and the tab strip cost about a third of a
+     phone screen; this hands it to the text and back.
+
+     Scoped to the code pane on purpose: "full screen" for the tree or the
+     controls means nothing, and hiding the tabs there would strand you with
+     no way to move. The control itself is FIXED and sits outside .bar,
+     because it has to stay reachable in the exact state that hides the bar.
+
+     It moves to the top when full: the bar is gone, so that corner is free,
+     and the bottom of a phone is where the keyboard comes up. */
+  .ws[data-mv="code"] #fullt {
+    display: block; position: fixed; right: 10px; bottom: 12px; z-index: 30;
+    font: 12px/1 system-ui, sans-serif; padding: 7px 11px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--muted);
+    opacity: .8;
+  }
+  .ws.full[data-mv="code"] #fullt { top: 10px; bottom: auto; }
+  .ws.full[data-mv="code"] .bar,
+  .ws.full[data-mv="code"] .mtabs { display: none; }
+  .ws.full[data-mv="code"] .edwrap { min-height: 100vh; min-height: 100dvh; }
   #wrapt, #treet, #ctlt { display: none; }
   .mtabs { display: flex; }
   .tree, .edwrap, .prev, .ctl { grid-column: 1; grid-row: 3; display: none;

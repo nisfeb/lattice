@@ -17,6 +17,34 @@
   $('ctlt').onclick = () => flip('appNC');
   applyToggles();
 
+  // ── mobile: full-screen editing ──────────────────────────────────────────
+  // Created here rather than in <lat-bar>, and appended to #ws, because it has
+  // to survive the state it creates: full screen hides the bar, so a button
+  // inside the bar would take the only way out with it.
+  //
+  // Labelled in words, not an icon. There is no full-screen glyph with broad
+  // font coverage, and this codebase has already shipped an invisible button
+  // once — the access-control key was U+26BF and drew as an empty box, which
+  // every existence check passed. Two short words always render.
+  //
+  // The state persists: it reads as a preference ("I write full screen"),
+  // matching the other layout toggles, and the way back is on screen the whole
+  // time so a remembered full screen cannot trap anyone.
+  const fullt = document.createElement('button');
+  fullt.id = 'fullt';
+  fullt.type = 'button';
+  const setFull = (on) => {
+    ws.classList.toggle('full', on);
+    localStorage.appFull = on ? '1' : '0';
+    fullt.textContent = on ? 'exit' : 'full';
+    fullt.title = on ? 'leave full-screen editing' : 'full-screen editing';
+    fullt.setAttribute('aria-label', fullt.title);
+    fullt.setAttribute('aria-pressed', on ? 'true' : 'false');
+  };
+  fullt.onclick = () => setFull(!ws.classList.contains('full'));
+  ws.appendChild(fullt);
+  setFull(localStorage.appFull === '1');
+
   const isMobile = () => matchMedia('(max-width: 820px)').matches;
   const setMv = (v) => {
     ws.dataset.mv = v;
