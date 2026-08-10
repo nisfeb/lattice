@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-queue-del"
+description = "Enables the queue_del command without any pre-configured scope."
+commands.allow = ["queue_del"]
+
+[[permission]]
+identifier = "deny-queue-del"
+description = "Denies the queue_del command without any pre-configured scope."
+commands.deny = ["queue_del"]

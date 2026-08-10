@@ -28,4 +28,59 @@
     for (const row of document.querySelectorAll('#tree .newbtns')) {
       if ([...row.children].every((c) => c.hidden)) row.hidden = true;
     }
+
+    // ── the bar's name field becomes a label ────────────────────────────────
+    // Typing a path into a text box is how you named a page when there was
+    // nowhere else to do it. Creation lives in the File menu now, so the bar
+    // can just say which page is open — centred, and not something you can
+    // edit by accident mid-sentence.
+    //
+    // Both controls stay in the DOM and keep their values. Everything reads
+    // pname.value and pkind.value — save, applyPage, the share flow, the
+    // matrix — and rewriting all of that to read from somewhere else would be
+    // a much larger change than this is worth.
+    ws.classList.add('deskbar');
+    const label = document.createElement('div');
+    label.id = 'pathlabel';
+    label.setAttribute('aria-live', 'polite');
+    pname.after(label);
+    const paint = () => {
+      const v = (pname.value || '').trim();
+      label.textContent = v || 'no page open';
+      label.className = v ? '' : 'muted';
+      label.title = v ? v + ' · ' + (pkind.value || '') : '';
+    };
+    paint();
+    // pname is set from a dozen places (applyPage, newFile, rename, the
+    // offline replay). Rather than find them all, watch the field itself.
+    new MutationObserver(paint).observe(pname, { attributes: true, attributeFilter: ['value'] });
+    pname.addEventListener('input', paint);
+    pname.addEventListener('change', paint);
+    setInterval(paint, 500);
+
+    // ── naming a new page ───────────────────────────────────────────────────
+    // With the field read-only, File > New page had nowhere to put a name:
+    // newFile focuses pname and waits for typing, which now cannot happen.
+    // Ask for it up front instead. The kind comes from the extension, since
+    // the kind dropdown is gone too — "notes/todo.md" is a more natural thing
+    // to type than a name plus a separate menu.
+    const KINDS = ['md', 'gmi', 'html', 'text', 'txt', 'js', 'css', 'hoon'];
+    const nf = document.getElementById('newfile');
+    if (nf) {
+      nf.addEventListener('click', async () => {
+        const raw = await ask('page name (e.g. notes/todo.md)', pname.value || '', 'create');
+        if (!raw) return;
+        let name = raw.trim().replace(/^\/+/, '');
+        if (!name) return;
+        const dot = name.lastIndexOf('.');
+        const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+        if (KINDS.includes(ext)) {
+          pkind.value = ext === 'txt' ? 'text' : ext;
+          name = name.slice(0, dot);
+        }
+        pname.value = name;
+        paint();
+        src.focus();
+      });
+    }
   }
