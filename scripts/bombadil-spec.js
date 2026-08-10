@@ -229,3 +229,79 @@ export const permsFlow = actions(() => {
   }
   return out;
 });
+
+// ── mobile: full-screen editing ────────────────────────────────────────────
+//
+// Only reachable with LATTICE_MOBILE=1 (the control is display:none above
+// 820px). At desktop width these read vacuously true, which is correct: there
+// is nothing to trap you in when every pane is visible at once.
+//
+// The failure this exists for is not cosmetic. Full screen hides the bar AND
+// the tab strip, so if the way out ever goes with them, the phone is stuck
+// on one pane with no route to the tree, no save button, and no exit — a
+// reload is the only escape. A fuzzer that clicks everything is exactly the
+// adversary that finds that, which is why it belongs here and not only in
+// the matrix, where the toggle is driven in a known order.
+const fullState = extract((state) => {
+  const d = state.document;
+  const ws = d.getElementById("ws");
+  const vis = (el) => {
+    if (!el) return false;
+    const st = d.defaultView.getComputedStyle(el);
+    return st.display !== "none" && st.visibility !== "hidden";
+  };
+  return {
+    full: !!ws && ws.classList.contains("full"),
+    mv: ws ? ws.dataset.mv || "" : "",
+    exit: vis(d.getElementById("fullt")),
+    tabs: vis(d.querySelector(".mtabs")),
+    bar: vis(d.querySelector(".bar")),
+    editor: vis(d.getElementById("src")),
+  };
+});
+
+// The one that matters: in full screen there is ALWAYS a way back.
+export const fullScreenHasAnExit = always(() => {
+  const f = fullState.current;
+  if (!f.full || f.mv !== "code") return true;
+  return f.exit;
+});
+
+// ...and full screen never costs you the editor it exists to enlarge.
+export const fullScreenKeepsTheEditor = always(() => {
+  const f = fullState.current;
+  if (!f.full || f.mv !== "code") return true;
+  return f.editor;
+});
+
+// Leaving it restores the chrome. Guards a half-exit that clears the class
+// but leaves the bar hidden, which looks identical to being stuck.
+export const leavingFullScreenRestoresChrome = always(() => {
+  const f = fullState.current;
+  if (f.full || f.mv !== "code") return true;
+  return f.tabs && f.bar;
+});
+
+// ── conflicts ──────────────────────────────────────────────────────────────
+//
+// A conflicts/ page is a save that replaced someone else's edit; the badge is
+// the only thing that says so. If the badge is showing it must carry a count,
+// and if it claims a count there must be pages behind it — a badge that lies
+// in either direction is worse than no badge, because the whole point is
+// noticing something you did not know to look for.
+const conflictState = extract((state) => {
+  const d = state.document;
+  const b = d.getElementById("cflt");
+  if (!b) return { present: false, shown: false, text: "" };
+  const st = d.defaultView.getComputedStyle(b);
+  return {
+    present: true,
+    shown: !b.hidden && st.display !== "none",
+    text: (b.textContent || "").trim(),
+  };
+});
+export const conflictBadgeCountsSomething = always(() => {
+  const c = conflictState.current;
+  if (!c.present || !c.shown) return true;
+  return /\d/.test(c.text);
+});
