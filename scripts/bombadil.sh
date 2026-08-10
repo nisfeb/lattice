@@ -52,6 +52,16 @@ BASE="${LATTICE_URL:-http://localhost:8080}"
 CK="$(cat "${LATTICE_COOKIE_FILE:-$HOME/.config/lattice-fs/cookie}")"
 SPEC="${LATTICE_SPEC-$(dirname "$0")/bombadil-spec.js}"
 START="${LATTICE_START:-/apps/lattice/app}"
+#  Viewport. Defaults match bombadil's own, so existing runs are
+#  unchanged. LATTICE_MOBILE=1 switches to a phone, which is the only
+#  way to reach the mobile-only chrome: the tab strip and the
+#  full-screen control are display:none above 820px, so a desktop run
+#  cannot click either of them and silently tests neither.
+if [ "${LATTICE_MOBILE:-0}" = "1" ]; then
+  W="${LATTICE_WIDTH:-390}"; H="${LATTICE_HEIGHT:-780}"
+else
+  W="${LATTICE_WIDTH:-1024}"; H="${LATTICE_HEIGHT:-768}"
+fi
 case "$BASE" in
   *sneagan.com*|*ricsul*) echo "refusing: that looks like production" >&2; exit 66;;
 esac
@@ -73,6 +83,7 @@ while :; do
   bombadil browser test "$BASE$START" ${SPEC:+"$SPEC"} \
     --header "Cookie=$CK" \
     --time-limit "${LEFT}s" --headless --no-sandbox \
+    --width "$W" --height "$H" \
     --output-path "$OUT/run-$N"
   RC=$?
   set -e
@@ -80,7 +91,7 @@ while :; do
   [ "$RC" -eq 0 ] && break
   echo "attempt $N died (exit $RC) — a navigation stalled past 30s behind the pier queue; relaunching" >&2
 done
-echo "attempts: $N, violations: $VIOL"
+echo "attempts: $N, violations: $VIOL  (viewport ${W}x${H})"
 
 echo "--- post-run health"
 if curl -sf -H "Cookie: $CK" "$API/page-tree" -o "$OUT/page-tree.after"; then
