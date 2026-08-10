@@ -350,6 +350,38 @@ mod tests {
         // fixed width means lexical order IS chronological order, which the
         // pruner depends on to pick the oldest without parsing
         assert!(stamp(1_000_000_000) < stamp(1_700_000_000));
+        // Mutation testing killed the earlier version of this test: three
+        // separate mutants in the year-of-era line survived four epochs that
+        // all sat inside one century. These spread across the 400-year cycle,
+        // where the century rules (2000 is a leap year, 2100 is not) are what
+        // the arithmetic is actually for.
+        assert_eq!(stamp(946_684_800), "20000101-000000");
+        assert_eq!(stamp(951_868_800), "20000301-000000", "day after 2000-02-29");
+        assert_eq!(stamp(68_169_600), "19720229-000000", "an ordinary leap day");
+        assert_eq!(stamp(1_583_020_800), "20200301-000000");
+        assert_eq!(stamp(1_234_567_890), "20090213-233130");
+        assert_eq!(stamp(2_147_483_647), "20380119-031407", "past 2^31 seconds");
+        assert_eq!(stamp(4_102_444_800), "21000101-000000", "2100 is NOT a leap year");
+        // Two mutants survived even the dates above, and the reason is worth
+        // keeping. An era begins 1 March of a year divisible by 400, so every
+        // date this side of 2100 sits early in the era that began 2000-03-01
+        // — and there `doe/36_524` and `doe/146_096` are both ZERO. Mutating
+        // the operators around terms that evaluate to zero changes nothing,
+        // so no date in range could have caught them. 2100-01-01 missed by 59
+        // days (doe=36_465, needs 36_524).
+        //
+        // These two are the only interesting inputs those terms have:
+        assert_eq!(stamp(4_107_542_400), "21000301-000000", "doe=36_524, first day the /36_524 term is 1");
+        assert_eq!(stamp(13_574_563_200), "24000229-000000", "doe=146_096, the LAST day of the era");
+    }
+
+    #[test]
+    fn now_is_a_plausible_clock() {
+        // A now() stuck at a constant makes every schedule permanently due or
+        // permanently not, and nothing else here would notice.
+        let t = now();
+        assert!(t > 1_700_000_000, "clock before 2023: {t}");
+        assert!(t < 4_102_444_800, "clock after 2100: {t}");
     }
 
     #[test]
@@ -497,6 +529,105 @@ mod tests {
             ("know.json", b"{}"),
             ("README.txt", b"lattice vault export\n"),
         ])
+    }
+
+    /// An entry whose size FIELD is written verbatim, checksum recomputed to
+    /// match. Needed to test the octal parser in isolation: patching the field
+    /// after the fact breaks the checksum, and then the archive is rejected
+    /// for that instead — which is how the first version of this test passed
+    /// while the mutant lived.
+    fn tar_entry_raw_size(name: &str, size_field: &[u8; 12], body: &[u8]) -> Vec<u8> {
+        let mut h = tar_entry(name, body);
+        h[124..136].copy_from_slice(size_field);
+        h[148..156].copy_from_slice(b"        ");
+        let sum: u64 = h[..512].iter().map(|c| *c as u64).sum();
+        let ck = format!("{sum:06o}\0 ");
+        h[148..156].copy_from_slice(ck.as_bytes());
+        h.truncate(512 + body.len() + ((512 - (body.len() % 512)) % 512));
+        h
+    }
+
+    #[test]
+    fn octal_fields_reject_non_octal_digits() {
+        // '8' is not an octal digit. Correct parsing reads "00000000008" as 0
+        // (the 8 ignored), so the NEXT header sits at +512 and is read. A
+        // parser that accepts '8' reads size 8, skips a padded block, and
+        // lands on the end marker instead — one entry, not two.
+        //
+        // The checksum is valid here on purpose. Break it and the archive is
+        // rejected for the checksum, the count never differs, and the mutant
+        // survives a test that looks like it passed.
+        let mut v = tar_entry_raw_size("first.md", b"00000000008\0", b"");
+        v.extend(tar_entry("pages/second.md", b""));
+        v.extend(std::iter::repeat_n(0, 1024));
+        let r = verify_bytes("t.tar", &v);
+        assert_eq!(r.entries, 2, "the 8 was treated as an octal digit: {:?}", r.problems);
+    }
+
+    #[test]
+    fn an_archive_ending_exactly_on_a_body_is_not_called_truncated() {
+        // body_end == data.len() is the boundary. The file is missing its end
+        // marker, which is worth saying — but the entry IS complete, so
+        // reporting "ends mid-file" and dropping it is the wrong complaint.
+        // TRUNCATE to exactly header+body. tar_entry pads the body out to a
+        // 512 block, so without this body_end is 517 against a length of 1024
+        // and the boundary is never reached — which is why the first version
+        // of this test left the mutant alive.
+        let mut v = tar_entry("pages/only.md", b"hello");
+        v.truncate(512 + 5);
+        assert_eq!(v.len(), 512 + 5, "the case only means anything at the boundary");
+        let r = verify_bytes("t.tar", &v);
+        assert_eq!(r.entries, 1, "a complete final entry was discarded");
+        assert!(
+            r.problems.iter().any(|p| p.contains("end-of-archive")),
+            "expected the missing-marker complaint, got {:?}",
+            r.problems
+        );
+        assert!(
+            !r.problems.iter().any(|p| p.contains("mid-file")),
+            "a complete entry was reported as truncated: {:?}",
+            r.problems
+        );
+    }
+
+    #[test]
+    fn a_missing_readme_is_seen_as_missing() {
+        // has_readme compares each name to README.txt. Flip that comparison
+        // and an archive full of other files still "has" one — every archive
+        // in these tests contains a README, so nothing noticed.
+        let v = tar_of(&[("pages/a.md", b"x"), ("share.json", b"{}"), ("know.json", b"{}")]);
+        let r = verify_bytes("t.tar", &v);
+        assert!(!r.has_readme, "an archive with no README.txt reported one");
+        assert!(r.has_share && r.has_know);
+    }
+
+    #[test]
+    fn the_report_says_which_archive_and_how_big() {
+        // Both fields survived as mutants: nothing asserted them, yet they are
+        // exactly what the manager shows when someone asks whether a backup is
+        // any good.
+        let d = full_archive();
+        let r = verify_bytes("/backups/lattice-daily-20240101-000000.tar", &d);
+        assert_eq!(r.archive, "/backups/lattice-daily-20240101-000000.tar");
+        assert_eq!(r.bytes, d.len() as u64);
+    }
+
+    #[test]
+    fn verify_newest_reads_the_newest_one_from_disk() {
+        // verify_newest could be replaced wholesale with Ok(Default::default())
+        // and every test still passed — the drill's entry point was untested.
+        let dir = tmpdir("verifynewest");
+        let s = sched("daily", 24, 0, dir.to_str().unwrap());
+        assert!(verify_newest(&s).is_err(), "no archives yet is an error, not a clean report");
+        // an older good one, then a newer BROKEN one: it must read the newer
+        std::fs::write(dir.join(archive_name(&s, 1_700_000_000)), full_archive()).unwrap();
+        let mut bad = full_archive();
+        bad.truncate(bad.len() - 2048);
+        std::fs::write(dir.join(archive_name(&s, 1_700_086_400)), &bad).unwrap();
+        let r = verify_newest(&s).unwrap();
+        assert!(!r.ok(), "it read the older archive instead of the newest");
+        assert!(r.archive.ends_with("20231115-221320.tar"), "{}", r.archive);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
