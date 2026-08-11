@@ -135,7 +135,7 @@ impl Projection for Ship {
         }
         Ok(())
     }
-    fn watch(&self, _on_change: &(dyn Fn() + Send + Sync)) {}
+    fn watch(&self, _on_event: &(dyn Fn(lattice_fs::transport::WatchEvent) + Send + Sync)) {}
 }
 
 fn read_to_string(p: &Path) -> String {

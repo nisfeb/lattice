@@ -66,9 +66,11 @@ pub trait Projection: Send + Sync {
     fn delete(&self, rel: &str) -> Result<(), PErr>;
     fn mv(&self, src: &str, dst: &str) -> Result<(), PErr>;
 
-    /// Block, calling `on_change` when the tree changes externally. Delegates to
-    /// the transport (lick pushes; Eyre is a no-op and the core's TTL poll wins).
-    fn watch(&self, on_change: &(dyn Fn() + Send + Sync));
+    /// Block, calling `on_event` for external changes and for the health of
+    /// the watch stream itself. Delegates to the transport. The core trusts
+    /// a live stream over its TTL clock, so `Up`/`Down` matter as much as
+    /// `Changed` — see WatchEvent in transport.rs.
+    fn watch(&self, on_event: &(dyn Fn(crate::transport::WatchEvent) + Send + Sync));
 
     // kind<->ext policy. Shared for lattice; another app overrides.
     fn ext_for_kind(&self, kind: &str) -> &'static str {
@@ -132,7 +134,7 @@ mod tests {
         fn mv(&self, _s: &str, _d: &str) -> Result<(), PErr> {
             Ok(())
         }
-        fn watch(&self, _on_change: &(dyn Fn() + Send + Sync)) {}
+        fn watch(&self, _on_event: &(dyn Fn(crate::transport::WatchEvent) + Send + Sync)) {}
     }
 
     #[test]

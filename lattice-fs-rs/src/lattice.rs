@@ -203,8 +203,8 @@ impl Projection for LatticeProjection {
         Ok(())
     }
 
-    fn watch(&self, on_change: &(dyn Fn() + Send + Sync)) {
-        self.t.watch(on_change);
+    fn watch(&self, on_event: &(dyn Fn(crate::transport::WatchEvent) + Send + Sync)) {
+        self.t.watch(on_event);
     }
 }
 
@@ -588,8 +588,8 @@ mod tests {
         fn ship(&self) -> Result<String, TErr> {
             Ok("~test".into())
         }
-        fn watch(&self, on_change: &(dyn Fn() + Send + Sync)) {
-            on_change();
+        fn watch(&self, on_event: &(dyn Fn(crate::transport::WatchEvent) + Send + Sync)) {
+            on_event(crate::transport::WatchEvent::Changed);
         }
     }
 
@@ -745,7 +745,7 @@ mod tests {
         let (_, p) = lp("", vec![]);
         let fired = Arc::new(AtomicBool::new(false));
         let f = fired.clone();
-        p.watch(&move || f.store(true, Ordering::SeqCst));
+        p.watch(&move |_| f.store(true, Ordering::SeqCst));
         assert!(fired.load(Ordering::SeqCst), "watch must reach the transport");
     }
 
