@@ -80,12 +80,15 @@
        which does not read as "leave this" and is not where anyone looks for
        it. Same command either way — this is only where and how it is offered.
 
-       Hidden unless connected, because that is the only state with a ship UI
-       to go back to. The other states are still exits: reconnect, change
-       ship, or the File menu. -->
+       ALWAYS on screen, from the first paint. It was gated on the connection
+       check succeeding, and that check is a real round-trip to the ship —
+       seconds on a slow pier — so the one exit from the page spent those
+       seconds not existing. The exit must never wait on the network.
+       go_home refuses cleanly when no ship is configured ("connect to a
+       ship first"), and that message is surfaced instead of navigating. -->
   <div class="top">
     <h1>lattice</h1>
-    <button id="close" hidden>close</button>
+    <button id="close">close</button>
   </div>
 
   <h2>ship</h2>
@@ -225,35 +228,37 @@
     if (s.connected) {
       dot.className = 'dot on';
       ship.innerHTML = '<b>connected</b> as ' + (s.ship || 'your ship');
-      $('close').hidden = false; $('relog').hidden = true; $('switch').hidden = false;
+      $('relog').hidden = true; $('switch').hidden = false;
       showForm(false, false);
     } else if (s.error) {
       dot.className = 'dot err';
       ship.innerHTML = '<b>cannot reach this ship</b>';
       $('conn-url').textContent = (s.url || '') + ' — ' + s.error;
-      $('close').hidden = true; $('relog').hidden = false; $('switch').hidden = false;
+      $('relog').hidden = false; $('switch').hidden = false;
       showForm(false, false);
     } else if (s.url) {
       dot.className = 'dot off';
       ship.innerHTML = '<b>signed out</b> — enter your +code to reconnect';
-      $('close').hidden = true; $('relog').hidden = true; $('switch').hidden = false;
+      $('relog').hidden = true; $('switch').hidden = false;
       showForm(true, false);
     } else {
       // never configured: the form IS the page, and there is nothing to cancel
-      // — nor anything to close back to.
       $('conn').hidden = true;
-      $('close').hidden = true;
       showForm(true, false);
     }
   }
   refreshConn();
-  const closeManager = () => invoke('go_home');
+  // Close never waits on anything. go_home navigates when a ship is
+  // configured and refuses with a message when none is; that message lands
+  // in the form's status line rather than vanishing into a rejected promise.
+  const closeManager = () => invoke('go_home').catch((e) => {
+    const s = $('connect-status');
+    s.textContent = String(e); s.className = 'err';
+  });
   $('close').onclick = closeManager;
-  // Escape closes, matching the in-app dialogs. Guarded on the button being
-  // available: in the states with no ship UI behind this page, Escape must
-  // not navigate to one.
+  // Escape closes too, matching the in-app dialogs — same non-blocking rule.
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('close').hidden) closeManager();
+    if (e.key === 'Escape') closeManager();
   });
   $('relog').onclick = () => showForm(true, true);
   $('switch').onclick = () => { $('url').value = ''; showForm(true, true); $('url').focus(); };

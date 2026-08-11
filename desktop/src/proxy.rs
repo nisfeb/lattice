@@ -125,7 +125,17 @@ pub fn ensure(state: &Bridge, ship_base: &str) -> Result<String, String> {
 /// connection page used to misreport. Doubles as a connection warm-up.
 pub fn probe(base: &str) -> Result<bool, String> {
     let url = format!("{}/apps/lattice/legacy-status", base.trim_end_matches('/'));
-    let req = with_cookie(agent().get(&url));
+    // NOT the shared agent: that one deliberately has no read timeout (the
+    // SSE beacon holds a connection open for hours), which for this one call
+    // meant a wedged or queue-bound pier held the connection page's status
+    // check open indefinitely. A status check that cannot say "slow" inside
+    // ten seconds should say "unreachable"; the page offers reconnect either
+    // way. Everything real still goes through the shared agent.
+    let a = ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+    let req = with_cookie(a.get(&url));
     match req.call() {
         Ok(r) => Ok(r.status() == 200),
         // a 403/redirect is a live ship that does not know us: not connected,

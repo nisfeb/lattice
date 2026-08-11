@@ -8,8 +8,10 @@
 //  the end of the header, the wording and position the in-app panes use.
 //
 //  Worth a test because the failure mode is being stuck on the page with no
-//  exit, and because the button must NOT appear in the states with no ship UI
-//  behind it — closing to a page that cannot load is its own dead end.
+//  exit. The button is ALWAYS on screen — above all it must not wait for the
+//  connection check, which is a real round-trip to the ship and the reason
+//  the exit used to take seconds to appear. Where there is no ship behind
+//  the page, go_home refuses cleanly and the refusal is shown.
 //
 //  No ship and no app needed: the page is loaded from file:// with a stubbed
 //  Tauri backend, so this runs anywhere.
@@ -37,17 +39,22 @@ const browser = await puppeteer.launch({
 const dir = mkdtempSync(join(tmpdir(), 'mgr-'));
 const src = readFileSync(P, 'utf8');
 
-async function load(status) {
+async function load(status, opts = {}) {
   const page = await browser.newPage();
   await page.setViewport({ width: 1000, height: 800 });
-  await page.evaluateOnNewDocument((s) => {
+  await page.evaluateOnNewDocument((s, o) => {
     window.__CALLS__ = [];
     window.__TAURI__ = {
       core: { invoke: (name) => { window.__CALLS__.push(name);
-        return Promise.resolve(name === 'connection_status' ? s : null); } },
+        if (name === 'connection_status') {
+          // statusDelayMs mimics the real thing: a round-trip to the ship
+          return new Promise((res) => setTimeout(() => res(s), o.statusDelayMs || 0));
+        }
+        if (name === 'go_home' && o.rejectGoHome) return Promise.reject('connect to a ship first');
+        return Promise.resolve(null); } },
       event: { listen: () => Promise.resolve(() => {}) },
     };
-  }, status);
+  }, status, opts);
   const f = join(dir, 'm.html');
   writeFileSync(f, src);
   await page.goto('file://' + f, { waitUntil: 'domcontentloaded' });
@@ -78,16 +85,35 @@ const esc = await on.evaluate(() => { const n = window.__CALLS__.length;
 check('Escape closes too', JSON.stringify(esc) === '["go_home"]', JSON.stringify(esc));
 await on.close();
 
-// never configured: nothing to go back to, so no close and Escape is inert
-const off = await load({ connected: false, ship: null, url: '', error: null });
-const st2 = await off.evaluate(() => {
+// THE point: close must exist before the connection check answers. The check
+// is a real round-trip to the ship — seconds on a slow pier — and the exit
+// used to spend those seconds not existing.
+const slow = await load({ connected: true, ship: '~x', url: 'https://s.example.com' },
+  { statusDelayMs: 8000 });
+check('close is on screen while the check is still in flight',
+  await slow.evaluate(() => {
+    const c = document.getElementById('close');
+    return !!c && !c.hidden && c.offsetParent !== null;
+  }));
+await slow.close();
+
+// never configured: close stays, and go_home's clean refusal is surfaced
+// instead of navigating to a page that cannot load
+const off = await load({ connected: false, ship: null, url: '', error: null },
+  { rejectGoHome: true });
+const st2 = await off.evaluate(async () => {
   const n = window.__CALLS__.length;
-  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-  return { hidden: document.getElementById('close').hidden, after: window.__CALLS__.slice(n) };
+  document.getElementById('close').click();
+  await new Promise((r) => setTimeout(r, 50));
+  return { hidden: document.getElementById('close').hidden,
+           called: window.__CALLS__.slice(n),
+           statusText: document.getElementById('connect-status').textContent };
 });
-check('never configured: close is hidden', st2.hidden === true);
-check('never configured: Escape does not navigate to a UI that is not there',
-  JSON.stringify(st2.after) === '[]', JSON.stringify(st2.after));
+check('never configured: close is still offered', st2.hidden === false);
+check('never configured: clicking it still calls go_home',
+  JSON.stringify(st2.called) === '["go_home"]', JSON.stringify(st2.called));
+check('and the refusal is shown, not swallowed',
+  st2.statusText.includes('connect to a ship first'), JSON.stringify(st2.statusText));
 await off.close();
 
 await browser.close();
