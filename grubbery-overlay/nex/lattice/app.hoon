@@ -7087,11 +7087,21 @@
   ::  A mug of the shell and the client changes exactly when they do, so the
   ::  old cache is dropped on activate by construction and there is no
   ::  bump to forget.
+  ::
+  ::  That same property is why a SHELL hit is served from cache and NOTHING
+  ::  else happens. There used to be a background revalidation five seconds
+  ::  after every hit, which could not find staleness it was possible to have
+  ::  — under a given V those two files are that V by definition — but did
+  ::  put one fetch per SHELL entry on the wire, all at the same 5s mark.
+  ::  A ship runs its events one at a time, so that pile-up is what anything
+  ::  NOT in SHELL then had to queue behind: /apps/lattice took 2.0s on its
+  ::  own and 5.3s alongside the revalidations, and clicking home out of the
+  ::  editor took about eight seconds. Freshness is the cache key's job.
   =/  ver=@t  (scot %ux (mug [uih uij]))
   %+  rap  3
   :~  'var V="lattice-'
       ver
-      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V}).map(function(k){return caches.delete(k)}))}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}var later=new Promise(function(z){setTimeout(z,5000)}).then(rv).catch(function(){});try{e.waitUntil(later)}catch(x){}return hit})}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V}).map(function(k){return caches.delete(k)}))}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
