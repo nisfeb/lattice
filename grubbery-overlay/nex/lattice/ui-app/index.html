@@ -87,6 +87,8 @@ select, option { color-scheme: light dark; }
    label saying which page is open. Set by 96-deskmenu.js, which also adds the
    name prompt that replaces typing into the field. */
 #pathlabel { display: none; }
+/* phone bar (97-mobar.js): built always, shown only by the 820px block */
+#mpath, #mmore, #msheet { display: none; }
 .ws.deskbar #pname, .ws.deskbar #pkind { display: none; }
 /* Centred on the BAR, not on whatever space is left between its two button
    clusters. `flex: 1` here did the latter and looked off-centre, because
@@ -316,8 +318,39 @@ select, option { color-scheme: light dark; }
      (#dlginput is declared below this block, so source order beats us there;
      it gets its own rule next to its definition.) */
   .ctl input, select, textarea { font-size: 16px; }
-  .bar { flex-wrap: wrap; }
-  .bar input { min-width: 0; flex: 1 1 100%; order: 5; font-size: 16px; }
+  /* ── one bar row (97-mobar.js) ──────────────────────────────────────────
+     The bar used to flex-wrap into three rows here: the icon cluster was
+     overflow, and the name input held a full-width row for a once-per-page
+     action. Everything it drops stays in the DOM — the ⋯ sheet clicks the
+     real hidden buttons, the label mirrors the real name field — so no
+     behaviour forks by width, only what is on screen. */
+  .bar { flex-wrap: nowrap; position: relative; }
+  #modet, #pname, #pkind, #qt, #cmt, #aclt { display: none; }
+  /* .grow is also flex:1 — left in the row it takes half the free space and
+     the path label ellipsises early with daylight sitting next to it (the
+     exact bug the desktop label had). The ⋯ is appended last, so nothing
+     needs pushing right. */
+  .bar .grow { display: none; }
+  #status { max-width: 30vw; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  #mpath { display: block; flex: 1; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+    font: 15px/1.3 ui-monospace, Menlo, Consolas, monospace; padding: 6px 2px; }
+  #mpath.muted { font-style: italic; }
+  #mmore { display: flex; }
+  #msheet { position: absolute; right: 8px; top: 100%; z-index: 40;
+    display: flex; flex-direction: column; min-width: 13rem;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden; box-shadow: 0 6px 24px #0003; }
+  #msheet[hidden] { display: none; }
+  #msheet button { font: 16px/1 inherit; font-size: 16px; text-align: left;
+    padding: 12px 14px; border: 0; background: none; color: inherit;
+    border-bottom: 1px solid var(--border-soft); cursor: pointer; }
+  #msheet button:last-child { border-bottom: 0; }
+  /* the unread dot #cmt carries, mirrored where it can be seen */
+  #mmore.has-unread, #msheet .has-unread { border-color: var(--green); color: var(--green); }
+  /* the desktop shell squeezed narrow keeps its own label and menu */
+  .ws.deskbar #mpath, .ws.deskbar #mmore, .ws.deskbar #msheet { display: none; }
   /* full-screen editing. The bar and the tab strip cost about a third of a
      phone screen; this hands it to the text and back.
 

@@ -57,46 +57,50 @@
     pname.addEventListener('input', paint);
     pname.addEventListener('change', paint);
     setInterval(paint, 500);
-
-    // ── naming a new page ───────────────────────────────────────────────────
-    // With the field read-only, File > New page had nowhere to put a name:
-    // newFile focuses pname and waits for typing, which now cannot happen.
-    // Ask for it up front instead. The kind comes from the extension, since
-    // the kind dropdown is gone too — "notes/todo.md" is a more natural thing
-    // to type than a name plus a separate menu.
-    const KINDS = ['md', 'gmi', 'html', 'text', 'txt', 'js', 'css', 'hoon'];
-    //  Wrap +newFile itself rather than the toolbar button. Hooking the
-    //  button covered File > New page and missed the green + on every tree
-    //  folder, which calls newFile(path) straight — so it set a name into a
-    //  hidden field, focused something display:none, and looked like a dead
-    //  button. Everything user-initiated routes through here: the toolbar
-    //  (newFile('')), the File menu (which clicks it), and the tree.
-    //
-    //  Boot also calls newFile, with focusName false, to land on an empty
-    //  page. That must not be interrupted by a dialog, and it is the one
-    //  caller that says so.
-    const baseNewFile = newFile;
-    newFile = function (into, focusName = true) {
-      if (!focusName) return baseNewFile(into, false);
-      //  reset the editor first, without the focus that cannot land
-      baseNewFile(into, false);
-      (async () => {
-        //  a folder's + pre-fills that folder; the toolbar keeps offering the
-        //  open page's path, which is what it did before this existed
-        const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
-        const raw = await ask('page name (e.g. notes/todo.md)', seed, 'create');
-        if (!raw) return;
-        let name = raw.trim().replace(/^\/+/, '');
-        if (!name) return;
-        const dot = name.lastIndexOf('.');
-        const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
-        if (KINDS.includes(ext)) {
-          pkind.value = ext === 'txt' ? 'text' : ext;
-          name = name.slice(0, dot);
-        }
-        pname.value = name;
-        paint();
-        src.focus();
-      })();
-    };
   }
+
+  // ── naming a new page when the name field is not on screen ───────────────
+  //  Wrap +newFile itself rather than any one button. Hooking the toolbar
+  //  button covered File > New page and missed the green + on every tree
+  //  folder, which calls newFile(path) straight — so it set a name into a
+  //  hidden field, focused something display:none, and looked like a dead
+  //  button. Everything user-initiated routes through here: the toolbar
+  //  (newFile('')), the File menu (which clicks it), the tree, and the
+  //  mobile bar's label.
+  //
+  //  The field is hidden in two independent states — the desktop shell
+  //  (deskbar, set above) and phone width (the 820px CSS block) — and a
+  //  resize crosses the second one live, so the decision is made per call,
+  //  not at load.
+  //
+  //  Boot also calls newFile, with focusName false, to land on an empty
+  //  page. That must not be interrupted by a dialog, and it is the one
+  //  caller that says so.
+  const KINDS = ['md', 'gmi', 'html', 'text', 'txt', 'js', 'css', 'hoon'];
+  const nameFieldHidden = () =>
+    ws.classList.contains('deskbar') || matchMedia('(max-width: 820px)').matches;
+  const baseNewFile = newFile;
+  newFile = function (into, focusName = true) {
+    if (!focusName || !nameFieldHidden()) return baseNewFile(into, focusName);
+    //  reset the editor first, without the focus that cannot land
+    baseNewFile(into, false);
+    (async () => {
+      //  a folder's + pre-fills that folder; the toolbar keeps offering the
+      //  open page's path, which is what it did before this existed
+      const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
+      const raw = await ask('page name (e.g. notes/todo.md)', seed, 'create');
+      if (!raw) return;
+      let name = raw.trim().replace(/^\/+/, '');
+      if (!name) return;
+      const dot = name.lastIndexOf('.');
+      const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+      if (KINDS.includes(ext)) {
+        pkind.value = ext === 'txt' ? 'text' : ext;
+        name = name.slice(0, dot);
+      }
+      pname.value = name;
+      //  both labels (desktop deskbar, mobile bar) repaint off this event
+      pname.dispatchEvent(new Event('change'));
+      src.focus();
+    })();
+  };

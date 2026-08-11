@@ -1439,11 +1439,18 @@ try {
   // ── 10. mobile: toggle reveals the tree, opening jumps to the editor ─────
   await page.setViewport({ width: 390, height: 780, isMobile: true });
   await page.goto(APP, { waitUntil: 'domcontentloaded' });
-  await page.click('#modet');
+  // at phone width the mode toggle lives in the ⋯ sheet (97-mobar.js); the
+  // sheet clicks the real hidden #modet, so this drives it the way a thumb
+  // does rather than reaching around the UI
+  const toggleMode = async () => {
+    await page.click('#mmore');
+    await page.click('#ms-mode');
+  };
+  await toggleMode();
   await wait(() => document.getElementById('ws').dataset.mv === 'tree');
-  check('mobile: mode toggle jumps to the tree pane',
+  check('mobile: mode toggle (via ⋯) jumps to the tree pane',
     await page.evaluate(() => getComputedStyle(document.getElementById('tree')).display) !== 'none');
-  await page.click('#modet');   // back to pages, still on tree pane
+  await toggleMode();   // back to pages, still on tree pane
   await wait(() => document.querySelector('#treelist a.pg'));
   await page.evaluate(() => document.querySelector('#treelist a.pg').click());
   await wait(() => document.getElementById('ws').dataset.mv === 'code');
