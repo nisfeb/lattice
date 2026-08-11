@@ -1554,6 +1554,21 @@
     ;<  j=json  bind:m  comments-inbox-json
     (send-json eyre-id j)
   ::
+  ::  comments-latest: the /beacon/comments stamp, one grub read. The badge
+  ::  polls THIS and only pays for the full inbox when the stamp changed —
+  ::  the inbox materializes every comment body (~6s of serial pier time),
+  ::  which is a absurd price for "nothing new". `latest` is null until the
+  ::  first comment ever arrives (or on a store from before the stamp);
+  ::  the client treats null as unknown and falls back to the full fetch,
+  ::  so an old store self-heals on its next comment.
+      [%'GET' %comments-latest]
+    ;<  v=view:nexus  bind:m
+      (peek:io [%& %& (weld app-base:lu /beacon) %comments] ~)
+    =/  latest=json
+      ?.  ?=([%file *] v)  ~
+      (fall (mole |.(;;(json (sang-noun:tarball sang.v)))) ~)
+    (send-json eyre-id (pairs:enjs:format ~[['latest' latest]]))
+  ::
   ::  moderation: remove one comment. Owner-only like every non-clearweb route.
   ::  Deleting the grub is the whole operation. The reader renders from the
   ::  same tree, so it disappears there too.
@@ -3384,7 +3399,17 @@
   =/  id=@ta  (scot %uv (sham comment))
   =/  cbase=path  (weld root /comments)
   ;<  ~  bind:m  (ensure-dirs cbase page.act)
-  (put-file [%& %& (weld cbase page.act) id] [/lattice %comment] comment)
+  ;<  ~  bind:m
+    (put-file [%& %& (weld cbase page.act) id] [/lattice %comment] comment)
+  ::  stamp /beacon/comments so the badge can ask "anything new?" for the
+  ::  price of ONE grub read. Without it the only answer was the full inbox
+  ::  — every comment body under /comments materialized and sorted, ~6s of
+  ::  the pier's serial time — refetched on a clock whether or not anything
+  ::  had arrived. Both arrival paths (owner route, remote notice) land
+  ::  here, so this stamp cannot miss a comment. Deletes leave it alone:
+  ::  they cannot create anything new, and the badge reads the stamp as a
+  ::  CHANGE detector, not a count.
+  (put-file [%& %& (weld root /beacon) %comments] [/ %json] (numb:enjs:format `@ud`now))
 ::  +comments-on: is `page` comments-enabled? The nearest `comment-on` flag grub
 ::  AT or ABOVE it in /page wins (like find-theme). Absent everywhere = off. One
 ::  flag on a site folder enables all its pages; a page can override its own.
