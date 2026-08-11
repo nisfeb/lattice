@@ -83,6 +83,17 @@ select, option { color-scheme: light dark; }
 /* the full-screen control is mobile-only; the desktop shows every pane at
    once, so there is nothing for it to reveal. Shown by the 820px block. */
 #fullt { display: none; }
+/* desktop shell only: the name field and kind picker give way to a centred
+   label saying which page is open. Set by 96-deskmenu.js, which also adds the
+   name prompt that replaces typing into the field. */
+#pathlabel { display: none; }
+.ws.deskbar #pname, .ws.deskbar #pkind { display: none; }
+.ws.deskbar #pathlabel {
+  display: block; flex: 1; text-align: center; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 14px/1 ui-monospace, Menlo, Consolas, monospace; padding: 0 12px;
+}
+.ws.deskbar #pathlabel.muted { color: var(--muted); font-style: italic; }
 .mtabs { display: none; grid-column: 1 / -1; grid-row: 2;
   border-bottom: 1px solid var(--border-soft); }
 .mtabs button { flex: 1; padding: 10px; border: 0; background: none;

@@ -35,6 +35,21 @@ fn main() {
             "pick_backup_dir",
             "run_backup_now",
             "verify_backup",
+            // The offline queue. All seven were registered in the invoke
+            // handler and in NEITHER this list nor a capability, so every one
+            // was denied — which means the desktop offline queue has never
+            // once worked. It fails in the worst possible place: a save that
+            // cannot reach the ship falls back to the queue, the queue write
+            // is refused, and the editor tells you your text is not saved
+            // anywhere. Same omission as save_vault, found the same way:
+            // someone hit it in real use.
+            "queue_list",
+            "queue_get",
+            "queue_put",
+            "queue_del",
+            "queue_ops",
+            "queue_op_put",
+            "queue_op_del",
             "backup_write",
         ]),
     ))

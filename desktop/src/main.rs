@@ -100,7 +100,7 @@ fn main() {
             // scheduled backup is not something you go looking for under
             // "connection && mounts", and an entry that is not in the menubar
             // is, for this purpose, not there at all.
-            let sub = tauri::menu::SubmenuBuilder::new(app, "lattice")
+            let prefs = tauri::menu::SubmenuBuilder::new(app, "Preferences")
                 .text("manager", "connection && mounts…")
                 .text("backups", "scheduled backups…")
                 .build()?;
@@ -131,9 +131,15 @@ fn main() {
                 .separator()
                 .text("file-save", "Save")
                 .build()?;
-            // "lattice" stays FIRST: on macOS the leading submenu becomes the
-            // application menu, and putting File there would bury it.
-            app.set_menu(tauri::menu::MenuBuilder::new(app).items(&[&sub, &file]).build()?)?;
+            // File first, Preferences second — the conventional order, and
+            // where anyone reaches for either one.
+            //
+            // Worth knowing on macOS: the leading submenu becomes the
+            // application menu, so File takes that slot there. That is a
+            // cosmetic difference on a platform this has never been run on,
+            // and not a reason to keep an unconventional order on the one it
+            // has. Revisit when there is a mac to look at.
+            app.set_menu(tauri::menu::MenuBuilder::new(app).items(&[&file, &prefs]).build()?)?;
             let handle = app.handle().clone();
             // LATTICE_AUTOCONNECT="url,+code": drive the real connect flow
             // without a display, the headless test harness's entry point.

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-queue-get"
+description = "Enables the queue_get command without any pre-configured scope."
+commands.allow = ["queue_get"]
+
+[[permission]]
+identifier = "deny-queue-get"
+description = "Denies the queue_get command without any pre-configured scope."
+commands.deny = ["queue_get"]

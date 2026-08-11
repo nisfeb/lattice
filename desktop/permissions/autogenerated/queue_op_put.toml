@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-queue-op-put"
+description = "Enables the queue_op_put command without any pre-configured scope."
+commands.allow = ["queue_op_put"]
+
+[[permission]]
+identifier = "deny-queue-op-put"
+description = "Denies the queue_op_put command without any pre-configured scope."
+commands.deny = ["queue_op_put"]
