@@ -262,7 +262,7 @@ impl Projection for GenericProjection {
         String::new()
     }
 
-    fn watch(&self, _on_change: &(dyn Fn() + Send + Sync)) {
+    fn watch(&self, _on_event: &(dyn Fn(crate::transport::WatchEvent) + Send + Sync)) {
         // no-op: the core's 5s TTL poll is the freshness floor for generic mounts.
     }
 }

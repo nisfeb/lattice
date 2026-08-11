@@ -129,9 +129,13 @@ impl Projection for Ship {
     fn mv(&self, _s: &str, _d: &str) -> Result<(), PErr> {
         Ok(())
     }
-    fn watch(&self, on_change: &(dyn Fn() + Send + Sync)) {
+    fn watch(&self, on_event: &(dyn Fn(crate::transport::WatchEvent) + Send + Sync)) {
         if self.notify {
-            on_change();
+            // Up first: a real stream reports itself live before its first
+            // bump, and Changed-while-not-live would exercise a state no
+            // real transport produces.
+            on_event(crate::transport::WatchEvent::Up);
+            on_event(crate::transport::WatchEvent::Changed);
         }
     }
 }

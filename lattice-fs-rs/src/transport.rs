@@ -24,6 +24,23 @@ impl std::fmt::Display for TErr {
     }
 }
 
+/// What a watch stream can say. `Changed` is the point of the stream; `Up`
+/// and `Down` exist because the core changes how much it trusts its clock
+/// based on them. While a stream is up, "5 seconds passed" is not evidence
+/// anything changed — the stream would have said so — and acting on the
+/// clock anyway cost a full page-dump (~2.5s of the ship's serial event
+/// loop) every time anything touched the mountpoint. While the stream is
+/// down, the clock is the only floor there is, exactly as before.
+///
+/// `Up` means "the stream is standing guard FROM NOW ON": bumps during the
+/// gap before it are unseen, so the core treats every `Up` as a change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WatchEvent {
+    Changed,
+    Up,
+    Down,
+}
+
 pub trait Transport: Send + Sync {
     /// GET-like: fetch `path` with query params, return the raw response body.
     fn get_bytes(&self, path: &str, query: &[(&str, &str)]) -> Result<Vec<u8>, TErr>;
@@ -34,10 +51,12 @@ pub trait Transport: Send + Sync {
     /// Our ship @p (e.g. "~tyr"), for building the /x/…/err path.
     fn ship(&self) -> Result<String, TErr>;
 
-    /// Best-effort change notifications. Blocks, calling `on_change` per event.
-    /// Default no-op: the core's TTL poll is the freshness floor (Eyre uses this;
-    /// lick overrides it with a real push stream).
-    fn watch(&self, _on_change: &(dyn Fn() + Send + Sync)) {}
+    /// Best-effort change notifications. Blocks, calling `on_event` per event.
+    /// Default no-op: with no watch stream the core's TTL poll is the
+    /// freshness floor. A transport with a real stream (Eyre's beacon SSE)
+    /// also reports the stream's OWN health, because the core stops trusting
+    /// the 5s clock while a live stream is standing guard — see WatchEvent.
+    fn watch(&self, _on_event: &(dyn Fn(WatchEvent) + Send + Sync)) {}
 
     /// Provided: GET and parse JSON.
     fn get_json(&self, path: &str, query: &[(&str, &str)]) -> Result<Value, TErr> {

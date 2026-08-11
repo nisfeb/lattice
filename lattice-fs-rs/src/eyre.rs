@@ -147,7 +147,8 @@ impl Transport for EyreTransport {
     /// the 5s TTL poll is still the guaranteed floor, so a dropped stream is a
     /// slowdown, never a staleness. The TTL poll being behind it is exactly
     /// why an SSE gap cannot wedge the filesystem.
-    fn watch(&self, on_change: &(dyn Fn() + Send + Sync)) {
+    fn watch(&self, on_event: &(dyn Fn(crate::transport::WatchEvent) + Send + Sync)) {
+        use crate::transport::WatchEvent as W;
         use std::io::BufRead;
         let url = format!(
             "{}/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev",
@@ -155,7 +156,7 @@ impl Transport for EyreTransport {
         );
         // reconnect forever. The stream severs on ship restart, pier hiccup,
         // or an idle proxy; each of those is transient, and the TTL poll
-        // covers the gap until we get back on.
+        // covers the gap until we get back on — Down is what re-arms it.
         loop {
             let cookie = self.cookie.lock().unwrap().clone().unwrap_or_default();
             // a dedicated agent, CONNECT timeout only, never a read timeout:
@@ -176,10 +177,15 @@ impl Transport for EyreTransport {
                 Err(_) => {
                     // ship down or stream refused. Back off, then retry — the
                     // TTL poll is the floor meanwhile.
+                    on_event(W::Down);
                     std::thread::sleep(std::time::Duration::from_secs(5));
                     continue;
                 }
             };
+            // Up only once the stream is actually open. Anything that bumped
+            // during the gap before it is unseen, which is why the core
+            // treats Up itself as a change.
+            on_event(W::Up);
             let mut reader = std::io::BufReader::new(resp.into_reader());
             let mut line = String::new();
             let mut dirty = false;
@@ -193,7 +199,7 @@ impl Transport for EyreTransport {
                             // blank line = end of one SSE event. Fire at most
                             // once per event, not once per field line.
                             if dirty {
-                                on_change();
+                                on_event(W::Changed);
                                 dirty = false;
                             }
                         } else if t.starts_with("data:") || t.starts_with("event:") {
@@ -203,8 +209,9 @@ impl Transport for EyreTransport {
                 }
             }
             if dirty {
-                on_change();   // stream ended mid-event: don't drop the last nudge
+                on_event(W::Changed); // stream ended mid-event: keep the nudge
             }
+            on_event(W::Down);
             std::thread::sleep(std::time::Duration::from_secs(2));
         }
     }

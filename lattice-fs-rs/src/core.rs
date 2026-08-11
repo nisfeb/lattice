@@ -65,6 +65,11 @@ struct State {
     read_cache_bytes: usize,              // running total, for the READ_CACHE_MAX ceiling
     warm: bool,                           // a dump has landed at least once
     refresh_pending: bool,                // a background refresh is already in flight
+    // the beacon watch stream is currently open. While it is, "TREE_TTL
+    // elapsed" is not evidence of change — the stream would have said so —
+    // and the elapsed-time dump is skipped. The moment it drops, the clock
+    // is the floor again, exactly as when there is no stream at all.
+    watch_live: bool,
     write_gen: u64,                       // bumped on every mutation. Guards stale dump swaps
     handles: HashMap<u64, Handle>,        // fh -> handle
     next_fh: u64,
@@ -101,6 +106,7 @@ impl GrubberyFs {
             read_cache_bytes: 0,
             warm: false,
             refresh_pending: false,
+            watch_live: false,
             write_gen: 0,
             handles: HashMap::new(),
             next_fh: 1,
@@ -108,19 +114,32 @@ impl GrubberyFs {
             scratch: HashMap::new(),
             recent: HashMap::new(),
         }));
-        // watch thread: invalidate on external change. Best-effort (Eyre is a
-        // no-op). The 5s TTL poll is the guaranteed freshness floor.
+        // watch thread: invalidate on external change, and track the stream's
+        // own health — while it is up the core trusts it over the TTL clock
+        // (see ensure_fresh), so Up/Down are as load-bearing as Changed.
+        // Up ALSO invalidates: bumps during the gap before the stream opened
+        // are unseen, and one extra dump per (re)connect is the price of
+        // never serving a gap-stale tree.
         let wst = st.clone();
         let wproj = proj.clone();
         thread::spawn(move || {
-            let on_change = move || {
+            let on_event = move |ev: crate::transport::WatchEvent| {
+                use crate::transport::WatchEvent as W;
                 if let Ok(mut s) = wst.lock() {
-                    s.vt_ts = None;
-                    s.read_cache.clear();
-                    s.read_cache_bytes = 0; // else the stale total blocks re-caching
+                    match ev {
+                        W::Down => s.watch_live = false,
+                        W::Up | W::Changed => {
+                            if ev == W::Up {
+                                s.watch_live = true;
+                            }
+                            s.vt_ts = None;
+                            s.read_cache.clear();
+                            s.read_cache_bytes = 0; // else the stale total blocks re-caching
+                        }
+                    }
                 }
             };
-            wproj.watch(&on_change);
+            wproj.watch(&on_event);
         });
         // warm thread: one page-dump seeds the whole vtree + every body up front,
         // so grep/cat run from RAM. Async. new() returns immediately. If a FUSE op
@@ -160,7 +179,15 @@ impl GrubberyFs {
         }
         let go = {
             let mut s = self.st.lock().unwrap();
-            let stale = s.vt_ts.is_none_or(|t| t.elapsed() > TREE_TTL);
+            // vt_ts = None is a KNOWN change (a write landed or the watch
+            // said so) — always refresh. Mere age only counts while no live
+            // stream is standing guard; with one up, silence means nothing
+            // changed, and re-dumping on a clock costs the ship ~2.5s of
+            // serial event-loop time per anything-touches-the-mount.
+            let stale = match s.vt_ts {
+                None => true,
+                Some(t) => !s.watch_live && t.elapsed() > TREE_TTL,
+            };
             if stale && !s.refresh_pending {
                 s.refresh_pending = true;
                 true
@@ -1647,7 +1674,7 @@ mod tests {
             self.log.lock().unwrap().push(format!("mv {s} {d}"));
             Ok(())
         }
-        fn watch(&self, _on_change: &(dyn Fn() + Send + Sync)) {}
+        fn watch(&self, _on_event: &(dyn Fn(crate::transport::WatchEvent) + Send + Sync)) {}
     }
 
     fn page(rel: &str, kind: &str, size: u64) -> Node {
@@ -1685,6 +1712,7 @@ mod tests {
             read_cache_bytes: 0,
             warm: false,
             refresh_pending: false,
+            watch_live: false,
             write_gen: 0,
             handles: HashMap::new(),
             next_fh: 1,
@@ -1935,6 +1963,47 @@ mod tests {
         let s = fs.st.lock().unwrap();
         assert!(s.warm, "a cold ensure_fresh must block until the first dump lands");
         assert!(s.vt.contains_key("/note.md"), "and return with the tree populated");
+    }
+
+    #[test]
+    fn a_live_watch_stream_silences_the_ttl_clock() {
+        // With the beacon stream up, "5 seconds passed" is not evidence of
+        // change — re-dumping on the clock cost the ship ~2.5s of serial
+        // event-loop time every time anything touched the mountpoint. The
+        // clock only counts while no stream is standing guard, and an
+        // explicit invalidation (a bump, or Up after a gap) always wins.
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        let fs = warm_fs(f.clone());
+        let dumps = || f.dumps.load(Ordering::SeqCst);
+
+        // stream up + stale-by-clock: no refresh
+        {
+            let mut s = fs.st.lock().unwrap();
+            s.watch_live = true;
+            s.vt_ts = Some(Instant::now() - TREE_TTL * 10);
+        }
+        let before = dumps();
+        fs.ensure_fresh();
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(dumps(), before, "age alone must not dump while the stream is live");
+
+        // a bump (vt_ts = None, what the watch thread does on Changed/Up)
+        // refreshes even with the stream live
+        fs.st.lock().unwrap().vt_ts = None;
+        fs.ensure_fresh();
+        wait_until("the bump refresh", || !fs.st.lock().unwrap().refresh_pending);
+        assert!(dumps() > before, "an explicit invalidation must still dump");
+
+        // stream down: the clock is the floor again
+        let after_bump = dumps();
+        {
+            let mut s = fs.st.lock().unwrap();
+            s.watch_live = false;
+            s.vt_ts = Some(Instant::now() - TREE_TTL * 2);
+        }
+        fs.ensure_fresh();
+        wait_until("the clock refresh", || !fs.st.lock().unwrap().refresh_pending);
+        assert!(dumps() > after_bump, "with no stream the TTL poll must come back");
     }
 
     #[test]
