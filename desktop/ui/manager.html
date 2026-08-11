@@ -72,8 +72,20 @@
   #need-grubbery input { margin-bottom: 0; }
 </style>
 <main>
+  <!-- Leaving this page is a CLOSE, in the place and the wording the in-app
+       panes use (access control, search, comments, conflicts all put a plain
+       "close" at the end of their header bar, and all close on Escape).
+       It replaced an "open lattice →" primary button down in the ship panel:
+       the only way out was a call to action buried three rows into the page,
+       which does not read as "leave this" and is not where anyone looks for
+       it. Same command either way — this is only where and how it is offered.
+
+       Hidden unless connected, because that is the only state with a ship UI
+       to go back to. The other states are still exits: reconnect, change
+       ship, or the File menu. -->
   <div class="top">
     <h1>lattice</h1>
+    <button id="close" hidden>close</button>
   </div>
 
   <h2>ship</h2>
@@ -90,7 +102,6 @@
       </div>
     </div>
     <div class="row" style="margin-top:.7rem">
-      <button id="open" class="primary" hidden>open lattice &rarr;</button>
       <button id="relog" hidden>reconnect</button>
       <button id="switch">change ship</button>
     </div>
@@ -214,27 +225,36 @@
     if (s.connected) {
       dot.className = 'dot on';
       ship.innerHTML = '<b>connected</b> as ' + (s.ship || 'your ship');
-      $('open').hidden = false; $('relog').hidden = true; $('switch').hidden = false;
+      $('close').hidden = false; $('relog').hidden = true; $('switch').hidden = false;
       showForm(false, false);
     } else if (s.error) {
       dot.className = 'dot err';
       ship.innerHTML = '<b>cannot reach this ship</b>';
       $('conn-url').textContent = (s.url || '') + ' — ' + s.error;
-      $('open').hidden = true; $('relog').hidden = false; $('switch').hidden = false;
+      $('close').hidden = true; $('relog').hidden = false; $('switch').hidden = false;
       showForm(false, false);
     } else if (s.url) {
       dot.className = 'dot off';
       ship.innerHTML = '<b>signed out</b> — enter your +code to reconnect';
-      $('open').hidden = true; $('relog').hidden = true; $('switch').hidden = false;
+      $('close').hidden = true; $('relog').hidden = true; $('switch').hidden = false;
       showForm(true, false);
     } else {
       // never configured: the form IS the page, and there is nothing to cancel
+      // — nor anything to close back to.
       $('conn').hidden = true;
+      $('close').hidden = true;
       showForm(true, false);
     }
   }
   refreshConn();
-  $('open').onclick = () => invoke('go_home');
+  const closeManager = () => invoke('go_home');
+  $('close').onclick = closeManager;
+  // Escape closes, matching the in-app dialogs. Guarded on the button being
+  // available: in the states with no ship UI behind this page, Escape must
+  // not navigate to one.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('close').hidden) closeManager();
+  });
   $('relog').onclick = () => showForm(true, true);
   $('switch').onclick = () => { $('url').value = ''; showForm(true, true); $('url').focus(); };
   $('cancel').onclick = () => { showForm(false, false); refreshConn(); };

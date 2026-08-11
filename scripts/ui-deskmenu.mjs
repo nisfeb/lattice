@@ -118,6 +118,32 @@ try {
 } catch {}
 check('desktop: clicking a hidden button still runs its handler', opened);
 await desk.evaluate(() => { const c = document.getElementById('dlgcancel'); if (c) c.click(); });
+
+// The green + on a tree folder. It calls newFile(path) directly rather than
+// going through #newfile, so the desktop override has to sit on newFile
+// itself — hooking the button left this one setting a name into a hidden
+// field and focusing something display:none, i.e. doing nothing at all.
+const plus = await desk.evaluate(() => {
+  const a = document.querySelector('#treelist a.addf');
+  if (!a) return null;
+  a.click();
+  return (a.title.match(/^new file in (.*)$/) || [])[1] || '';
+});
+if (plus === null) {
+  check('desktop: a tree folder + was available to test', false,
+    'no a.addf in the tree — needs a ship with at least one folder');
+} else {
+  let asked = false;
+  try {
+    await desk.waitForFunction(() => !document.getElementById('dlg').hidden, { timeout: 5000 });
+    asked = true;
+  } catch {}
+  check('desktop: a tree folder + opens the new-page dialog', asked);
+  const seeded = await desk.evaluate(() => document.getElementById('dlginput').value);
+  check('desktop: and pre-fills that folder', seeded === plus + '/',
+    'folder ' + JSON.stringify(plus) + ' -> dialog ' + JSON.stringify(seeded));
+  await desk.evaluate(() => { const c = document.getElementById('dlgcancel'); if (c) c.click(); });
+}
 await desk.close();
 
 await browser.close();

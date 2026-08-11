@@ -65,10 +65,26 @@
     // the kind dropdown is gone too — "notes/todo.md" is a more natural thing
     // to type than a name plus a separate menu.
     const KINDS = ['md', 'gmi', 'html', 'text', 'txt', 'js', 'css', 'hoon'];
-    const nf = document.getElementById('newfile');
-    if (nf) {
-      nf.addEventListener('click', async () => {
-        const raw = await ask('page name (e.g. notes/todo.md)', pname.value || '', 'create');
+    //  Wrap +newFile itself rather than the toolbar button. Hooking the
+    //  button covered File > New page and missed the green + on every tree
+    //  folder, which calls newFile(path) straight — so it set a name into a
+    //  hidden field, focused something display:none, and looked like a dead
+    //  button. Everything user-initiated routes through here: the toolbar
+    //  (newFile('')), the File menu (which clicks it), and the tree.
+    //
+    //  Boot also calls newFile, with focusName false, to land on an empty
+    //  page. That must not be interrupted by a dialog, and it is the one
+    //  caller that says so.
+    const baseNewFile = newFile;
+    newFile = function (into, focusName = true) {
+      if (!focusName) return baseNewFile(into, false);
+      //  reset the editor first, without the focus that cannot land
+      baseNewFile(into, false);
+      (async () => {
+        //  a folder's + pre-fills that folder; the toolbar keeps offering the
+        //  open page's path, which is what it did before this existed
+        const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
+        const raw = await ask('page name (e.g. notes/todo.md)', seed, 'create');
         if (!raw) return;
         let name = raw.trim().replace(/^\/+/, '');
         if (!name) return;
@@ -81,6 +97,6 @@
         pname.value = name;
         paint();
         src.focus();
-      });
-    }
+      })();
+    };
   }
