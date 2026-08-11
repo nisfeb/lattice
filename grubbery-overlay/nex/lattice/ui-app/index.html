@@ -88,10 +88,27 @@ select, option { color-scheme: light dark; }
    name prompt that replaces typing into the field. */
 #pathlabel { display: none; }
 .ws.deskbar #pname, .ws.deskbar #pkind { display: none; }
+/* Centred on the BAR, not on whatever space is left between its two button
+   clusters. `flex: 1` here did the latter and looked off-centre, because
+   .bar .grow is also flex:1 — two growing siblings split the free space, so
+   the label's box only spanned half of it and its centred text landed left
+   of centre.
+   Out of flow, so: the label adds no gap of its own to the flex row, and
+   #status growing mid-save cannot shove the filename sideways. Clamped and
+   ellipsised so a long path cannot reach the buttons, and pointer-events
+   none because this is a label lying on top of a row of them. */
+.ws.deskbar .bar { position: relative; }
 .ws.deskbar #pathlabel {
-  display: block; flex: 1; text-align: center; min-width: 0;
+  display: block; position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  /* 38%, not 50%: centred means the label grows symmetrically, so half of
+     any extra width runs at the button cluster on each side. The icon
+     cluster is ~266px, and at a 900px window 46% put a long path 23px on
+     top of it. Measured at 820/900/1100/1400. */
+  max-width: min(38%, 60ch); pointer-events: none;
+  text-align: center; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font: 14px/1 ui-monospace, Menlo, Consolas, monospace; padding: 0 12px;
+  font: 14px/1 ui-monospace, Menlo, Consolas, monospace;
 }
 .ws.deskbar #pathlabel.muted { color: var(--muted); font-style: italic; }
 .mtabs { display: none; grid-column: 1 / -1; grid-row: 2;
