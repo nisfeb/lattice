@@ -14,9 +14,11 @@
   // list is deferred off boot's critical path. Without this flag the panel
   // asserts you have no groups for the second or two before the answer lands.
   let permsLoaded = false;
-  async function loadPerms() {
+  //  bg: boot's deferred call yields to user activity (bgFetch). Panel
+  //  opens and post-save re-reads stay on the user lane.
+  async function loadPerms(bg = false) {
     let r = null;
-    try { r = await fetch(api + '/share-groups'); } catch {}
+    try { r = await (bg ? bgFetch : fetch)(api + '/share-groups'); } catch {}
     if (!r || !r.ok) {
       st('could not load groups (' + (r ? r.status : 'network') + ')', false);
       return;

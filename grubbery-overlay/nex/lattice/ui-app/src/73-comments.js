@@ -133,19 +133,41 @@
   // panel does not go through here, so reading is always immediate.
   const BADGE_MS = 60000;
   let badgeAt = 0;
+  // change detection: the /beacon/comments stamp as of the last full count,
+  // and what that count was. Same stamp = nothing arrived = repaint the old
+  // number for the price of ONE grub read, instead of the full inbox (every
+  // comment body materialized — ~6s of the pier's serial time). Deletes
+  // don't move the stamp, and don't need to: they can only lower a count,
+  // and opening the panel recomputes for real.
+  let stampSeen = null;
+  let unreadSeen = 0;
 
   async function refreshCommentBadge() {
     if (Date.now() - badgeAt < BADGE_MS) return;
     badgeAt = Date.now();
+    let stamp = null;
+    try {
+      // bgFetch: a badge must never queue ahead of something the user asked
+      // for (this call is why page opens measured 6s+, see 10-shell.js)
+      const r = await bgFetch(api + '/comments-latest');
+      if (r.ok) {
+        stamp = (await r.json()).latest;
+        if (stamp !== null && stamp === stampSeen) { paintUnread(unreadSeen); return; }
+      }
+      // unknown stamp (old nexus, no comments yet) or a change: pay for the
+      // real count
+    } catch { return; }
     let d = null;
     try {
-      const r = await fetch(api + '/comments-inbox');
+      const r = await bgFetch(api + '/comments-inbox');
       if (!r.ok) return;                 // a failed count is not worth reporting
       d = await r.json();
     } catch { return; }
     const items = d.items || [];
     const mark = lastSeen();
-    paintUnread(items.filter((c) => String(c.when || '') > mark).length);
+    unreadSeen = items.filter((c) => String(c.when || '') > mark).length;
+    stampSeen = stamp;
+    paintUnread(unreadSeen);
   }
 
   const cmOpen = () => {

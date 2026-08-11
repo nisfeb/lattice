@@ -7,7 +7,8 @@
   async function legacyCheck() {
     if (localStorage.latLegacy === 'done') return;
     let d = null;
-    try { d = await (await fetch(api + '/legacy-status')).json(); } catch { return; }
+    //  background lane: a status check must never delay a user's click
+    try { d = await (await bgFetch(api + '/legacy-status')).json(); } catch { return; }
     if (!d) return;
     // ONLY the server's marker is permanent. 'absent' can mean the agent is
     // merely suspended (|revive brings it back), and caching that as done

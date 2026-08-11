@@ -10,9 +10,10 @@
 </div>`;
     }
   });
-  async function loadShared() {
+  //  bg as in loadPerms: only boot uses it
+  async function loadShared(bg = false) {
     let r = null;
-    try { r = await fetch(api + '/shared-with-me'); } catch {}
+    try { r = await (bg ? bgFetch : fetch)(api + '/shared-with-me'); } catch {}
     if (!r || !r.ok) { $('swmlist').textContent = 'could not load'; return; }
     const items = await r.json();
     const host = $('swmlist');

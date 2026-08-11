@@ -44,7 +44,9 @@
   // to read or edit anything, so they load AFTER the editor is usable. Issued
   // at parse time they were two pier round-trips queued ahead of the tree, and
   // the pier serializes, pure delay on the only requests that matter.
-  const loadPanels = () => { loadPerms(); loadShared(); };
+  //  background lane: these also yield to any user activity (see bgFetch),
+  //  so a click during boot is no longer queued behind panel lists
+  const loadPanels = () => { loadPerms(true); loadShared(true); };
   // a queue left by a previous session syncs on open. With no Background
   // Sync (the SW must not intercept API calls), next-open IS the replay
   // moment, and the UI says so rather than implying closed-app sync exists

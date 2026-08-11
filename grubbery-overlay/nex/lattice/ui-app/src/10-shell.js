@@ -1,6 +1,46 @@
 // lattice app, served from ui-app/src/, built by scripts/build-ui.mjs
   const $ = (id) => document.getElementById(id);
   const api = '/apps/lattice';
+  // ── background requests yield to the user ────────────────────────────────
+  // The pier runs one event at a time, so every request this client sends is
+  // one the user's next click queues behind — measured: a page open landed at
+  // 6.2s because three background fetches were in line ahead of it. There is
+  // no cancelling a request already on the wire, so priority here means one
+  // thing: do not SEND background traffic near user activity. bgFetch holds
+  // its request until BG_IDLE_MS have passed since the last pointer/key
+  // event; while you are actively browsing, background traffic is silent.
+  //
+  // For badges and syncs only. Anything the user asked for — opens, saves,
+  // panel loads — uses fetch directly and must never come through here.
+  //  seeded with NOW: page load counts as activity, so boot's background
+  //  lane waits out the window in which a user's FIRST click arrives — the
+  //  one click pointerdown cannot have preceded. Measured before this: the
+  //  first open queued behind three boot fetches and took 5.2s.
+  let lastAction = Date.now();
+  addEventListener('pointerdown', () => { lastAction = Date.now(); }, true);
+  addEventListener('keydown', () => { lastAction = Date.now(); }, true);
+  const BG_IDLE_MS = 4000;
+  //  ONE background request at a time, idle re-checked before EACH send.
+  //  Releasing them together is an ambush: the gate opens after 4 idle
+  //  seconds, three requests hit the pier's FIFO queue at once (~2s each),
+  //  and the user's next click waits behind all of them — measured, that
+  //  was 6s to open a page. Sequenced, the worst a click can land behind
+  //  is the single background request already on the wire.
+  let bgChain = Promise.resolve();
+  const bgFetch = (url, opts) => {
+    const run = async () => {
+      for (;;) {
+        const wait = BG_IDLE_MS - (Date.now() - lastAction);
+        if (wait <= 0) break;
+        await new Promise((r) => setTimeout(r, Math.max(wait, 250)));
+      }
+      return fetch(url, opts);
+    };
+    const p = bgChain.then(run);
+    //  errors stay with the caller; the chain itself must survive them
+    bgChain = p.catch(() => {});
+    return p;
+  };
   let pname, pkind, status, spinner;   // assigned by <lat-bar>   (12-bar.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)
   // blank preview: about:blank defaults to light color-scheme, which

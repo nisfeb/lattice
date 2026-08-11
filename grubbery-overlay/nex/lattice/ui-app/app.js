@@ -586,6 +586,46 @@
 // lattice app, served from ui-app/src/, built by scripts/build-ui.mjs
   const $ = (id) => document.getElementById(id);
   const api = '/apps/lattice';
+  // ── background requests yield to the user ────────────────────────────────
+  // The pier runs one event at a time, so every request this client sends is
+  // one the user's next click queues behind — measured: a page open landed at
+  // 6.2s because three background fetches were in line ahead of it. There is
+  // no cancelling a request already on the wire, so priority here means one
+  // thing: do not SEND background traffic near user activity. bgFetch holds
+  // its request until BG_IDLE_MS have passed since the last pointer/key
+  // event; while you are actively browsing, background traffic is silent.
+  //
+  // For badges and syncs only. Anything the user asked for — opens, saves,
+  // panel loads — uses fetch directly and must never come through here.
+  //  seeded with NOW: page load counts as activity, so boot's background
+  //  lane waits out the window in which a user's FIRST click arrives — the
+  //  one click pointerdown cannot have preceded. Measured before this: the
+  //  first open queued behind three boot fetches and took 5.2s.
+  let lastAction = Date.now();
+  addEventListener('pointerdown', () => { lastAction = Date.now(); }, true);
+  addEventListener('keydown', () => { lastAction = Date.now(); }, true);
+  const BG_IDLE_MS = 4000;
+  //  ONE background request at a time, idle re-checked before EACH send.
+  //  Releasing them together is an ambush: the gate opens after 4 idle
+  //  seconds, three requests hit the pier's FIFO queue at once (~2s each),
+  //  and the user's next click waits behind all of them — measured, that
+  //  was 6s to open a page. Sequenced, the worst a click can land behind
+  //  is the single background request already on the wire.
+  let bgChain = Promise.resolve();
+  const bgFetch = (url, opts) => {
+    const run = async () => {
+      for (;;) {
+        const wait = BG_IDLE_MS - (Date.now() - lastAction);
+        if (wait <= 0) break;
+        await new Promise((r) => setTimeout(r, Math.max(wait, 250)));
+      }
+      return fetch(url, opts);
+    };
+    const p = bgChain.then(run);
+    //  errors stay with the caller; the chain itself must survive them
+    bgChain = p.catch(() => {});
+    return p;
+  };
   let pname, pkind, status, spinner;   // assigned by <lat-bar>   (12-bar.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)
   // blank preview: about:blank defaults to light color-scheme, which
@@ -3427,9 +3467,11 @@
   // list is deferred off boot's critical path. Without this flag the panel
   // asserts you have no groups for the second or two before the answer lands.
   let permsLoaded = false;
-  async function loadPerms() {
+  //  bg: boot's deferred call yields to user activity (bgFetch). Panel
+  //  opens and post-save re-reads stay on the user lane.
+  async function loadPerms(bg = false) {
     let r = null;
-    try { r = await fetch(api + '/share-groups'); } catch {}
+    try { r = await (bg ? bgFetch : fetch)(api + '/share-groups'); } catch {}
     if (!r || !r.ok) {
       st('could not load groups (' + (r ? r.status : 'network') + ')', false);
       return;
@@ -3485,9 +3527,10 @@
 </div>`;
     }
   });
-  async function loadShared() {
+  //  bg as in loadPerms: only boot uses it
+  async function loadShared(bg = false) {
     let r = null;
-    try { r = await fetch(api + '/shared-with-me'); } catch {}
+    try { r = await (bg ? bgFetch : fetch)(api + '/shared-with-me'); } catch {}
     if (!r || !r.ok) { $('swmlist').textContent = 'could not load'; return; }
     const items = await r.json();
     const host = $('swmlist');
@@ -4102,19 +4145,41 @@
   // panel does not go through here, so reading is always immediate.
   const BADGE_MS = 60000;
   let badgeAt = 0;
+  // change detection: the /beacon/comments stamp as of the last full count,
+  // and what that count was. Same stamp = nothing arrived = repaint the old
+  // number for the price of ONE grub read, instead of the full inbox (every
+  // comment body materialized — ~6s of the pier's serial time). Deletes
+  // don't move the stamp, and don't need to: they can only lower a count,
+  // and opening the panel recomputes for real.
+  let stampSeen = null;
+  let unreadSeen = 0;
 
   async function refreshCommentBadge() {
     if (Date.now() - badgeAt < BADGE_MS) return;
     badgeAt = Date.now();
+    let stamp = null;
+    try {
+      // bgFetch: a badge must never queue ahead of something the user asked
+      // for (this call is why page opens measured 6s+, see 10-shell.js)
+      const r = await bgFetch(api + '/comments-latest');
+      if (r.ok) {
+        stamp = (await r.json()).latest;
+        if (stamp !== null && stamp === stampSeen) { paintUnread(unreadSeen); return; }
+      }
+      // unknown stamp (old nexus, no comments yet) or a change: pay for the
+      // real count
+    } catch { return; }
     let d = null;
     try {
-      const r = await fetch(api + '/comments-inbox');
+      const r = await bgFetch(api + '/comments-inbox');
       if (!r.ok) return;                 // a failed count is not worth reporting
       d = await r.json();
     } catch { return; }
     const items = d.items || [];
     const mark = lastSeen();
-    paintUnread(items.filter((c) => String(c.when || '') > mark).length);
+    unreadSeen = items.filter((c) => String(c.when || '') > mark).length;
+    stampSeen = stamp;
+    paintUnread(unreadSeen);
   }
 
   const cmOpen = () => {
@@ -5723,7 +5788,8 @@ editor, or git will do if you only want to look.
   async function legacyCheck() {
     if (localStorage.latLegacy === 'done') return;
     let d = null;
-    try { d = await (await fetch(api + '/legacy-status')).json(); } catch { return; }
+    //  background lane: a status check must never delay a user's click
+    try { d = await (await bgFetch(api + '/legacy-status')).json(); } catch { return; }
     if (!d) return;
     // ONLY the server's marker is permanent. 'absent' can mean the agent is
     // merely suspended (|revive brings it back), and caching that as done
@@ -5874,7 +5940,9 @@ editor, or git will do if you only want to look.
   // to read or edit anything, so they load AFTER the editor is usable. Issued
   // at parse time they were two pier round-trips queued ahead of the tree, and
   // the pier serializes, pure delay on the only requests that matter.
-  const loadPanels = () => { loadPerms(); loadShared(); };
+  //  background lane: these also yield to any user activity (see bgFetch),
+  //  so a click during boot is no longer queued behind panel lists
+  const loadPanels = () => { loadPerms(true); loadShared(true); };
   // a queue left by a previous session syncs on open. With no Background
   // Sync (the SW must not intercept API calls), next-open IS the replay
   // moment, and the UI says so rather than implying closed-app sync exists
