@@ -39,7 +39,7 @@ pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String
     Ok(ship)
 }
 
-/// manager page's "open lattice" button, back to the ship UI.
+/// manager page's "close" button (and Escape), back to the ship UI.
 #[tauri::command]
 pub fn go_home(app: AppHandle) -> Result<(), String> {
     open_workspace(&app, false)
