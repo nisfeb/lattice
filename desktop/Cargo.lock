@@ -1627,7 +1627,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-desktop"
-version = "0.8.0-rc14"
+version = "0.8.0-rc15"
 dependencies = [
  "base64 0.22.1",
  "fuser",
