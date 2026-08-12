@@ -450,7 +450,7 @@
   ::  with no standalone display. Nothing here is private: the app's name,
   ::  colors, icons, and a generic caching worker.
   ?:  &(=(%'GET' method.request.req) =(`path`[%'manifest.webmanifest' ~] suffix))
-    (send-typed eyre-id 'application/manifest+json' 'no-cache' manifest-json)
+    (send-typed eyre-id 'application/manifest+json' 'public, max-age=86400' manifest-json)
   ?:  &(=(%'GET' method.request.req) =(`path`[%'sw.js' ~] suffix))
     (send-sw eyre-id sw-js)
   ?:  &(=(%'GET' method.request.req) =(`path`[%'icon.svg' ~] suffix))
@@ -497,17 +497,18 @@
       ::  else the generated listing. Both keep /pub/index so a publish/delete/
       ::  edit auto-refreshes the open reader.
       ;<  home=(unit @t)  bind:m  (read-page-body our our /index)
+      ;<  rv=tape  bind:m  beacon-rev-tape
       ?~  home
         ;<  recent=(list [pax=path prev=@t])  bind:m  (read-recent 10)
         ;<  bms=bookmarks:lb  bind:m  read-bookmarks
         ;<  kes=(map path know-entry:lk)  bind:m  read-know-map
-        (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") (home-index-html our recent bms (know-quick-html:lkv kes 6))))
-      (send-view eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") (render-gmi u.home)))
+        (send-view-long eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") rv (home-index-html our recent bms (know-quick-html:lkv kes 6))))
+      (send-view-long eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") rv (render-gmi u.home)))
     =/  ref=(unit referent:lu)  (de-urb:lu u.raw)
     ::  omnibar: input that isn't a urb:// address is a SEARCH query. Serve a
     ::  results page that queries the obelisk content catalog (client-side, via
     ::  the /catalog-search JSON api, which is built for exactly this fan-out).
-    ?~  ref  (send-html eyre-id (render-page (trip u.raw) "" (search-results-html u.raw our)))
+    ?~  ref  (send-html eyre-id (render-page (trip u.raw) "" "" (search-results-html u.raw our)))
     ?-  -.u.ref
         %tree
       ::  redirect to the /x explorer projection, which renders the node and
@@ -521,7 +522,7 @@
       ;<  body=(unit @t)  bind:m  (read-page-body our ship.u.ref rel.u.ref)
       =/  canon=tape  (trip (en-urb:lu ship.u.ref (weld pub-prefix:lu rel.u.ref)))
       ?~  body
-        (send-view eyre-id (render-page canon "" "<p class=\"err\">not published here</p>"))
+        (send-view eyre-id (render-page canon "" "" "<p class=\"err\">not published here</p>"))
       ::  own pages get a live reader (keep /pub/index: its per-page hash changes
       ::  on every edit). Remote pages stay static (can't keep a peer's grub).
       =/  rk=tape  ?:(=(ship.u.ref our) (keep-url "beacon/rev") "")
@@ -539,7 +540,10 @@
         ?:  =(ship.u.ref our)  ""
         (remote-comment-box ship.u.ref rel.u.ref)
       ;<  ~  bind:m
-        (send-view eyre-id (render-page canon rk (weld (render-gmi u.body) cbox)))
+        ;<  rv=tape  bind:m  ?:(=("" rk) (pure:(fiber:fiber:nexus ,tape) "") beacon-rev-tape)
+        ?:  =("" rk)
+          (send-view eyre-id (render-page canon rk "" (weld (render-gmi u.body) cbox)))
+        (send-view-long eyre-id (render-page canon rk rv (weld (render-gmi u.body) cbox)))
       (poke-history [%visit u.raw (page-title-of u.body u.raw)])
     ==
   ::  dispatch on [method action]. ponytail: read-know-map peeks the whole vault
@@ -1198,7 +1202,7 @@
     :-  [200 ~[['content-type' 'text/javascript'] ['cache-control' 'private, max-age=3600']]]
     `q.p.res
       [%'GET' %'manifest.webmanifest']
-    (send-typed eyre-id 'application/manifest+json' 'no-cache' manifest-json)
+    (send-typed eyre-id 'application/manifest+json' 'public, max-age=86400' manifest-json)
       [%'GET' %'sw.js']
     (send-sw eyre-id sw-js)
       [%'GET' %'icon.svg']
@@ -1802,7 +1806,8 @@
     =/  found=(unit @t)  (first-url cand)
     ?~  found
       %+  send-html  eyre-id
-      %^  render-page  ""  ""
+      %-  render-page
+      :^    ""  ""  ""
       ;:  weld
         "<h1>Nothing to archive</h1>"
         "<p class=\"muted\">That share didn&rsquo;t contain a web address.</p>"
@@ -2195,10 +2200,10 @@
   ::  and no %handle-http-cancel can reach the dispatcher to cull this fiber
   ::  mid-sweep (grubbery handle-eyre-action %send / on-leave %http-response).
       [%'GET' %settings]
-    (send-html eyre-id (render-page "" "" settings-html))
+    (send-html eyre-id (render-page "" "" "" settings-html))
       [%'GET' %marks]
     ;<  bms=bookmarks:lb  bind:m  read-bookmarks
-    (send-html eyre-id (render-page "" "" (marks-html bms)))
+    (send-html eyre-id (render-page "" "" "" (marks-html bms)))
       [%'POST' %catalog-sweep]
     ::  ACK, YIELD, THEN SCAN. This already acked first, but a fiber's
     ::  effects only flush when it YIELDS, and +catalog-scan-self never does.
@@ -3011,7 +3016,8 @@
   ::  should get by accident. The share control is one click away.
   =/  nom=tape  (pax-str u.free)
   %+  send-html  eyre-id
-  %^  render-page  ""  ""
+  %-  render-page
+  :^    ""  ""  ""
   ;:  weld
     "<h1>Archived</h1>"
     "<p>"  (esc (trip ttl))  "</p>"
@@ -5302,12 +5308,15 @@
   ?~  rest
     =/  tsel=(unit @t)  (~(get by args) 'tag')
     ?^  tsel
-      (send-view eyre-id (render-page "know" (keep-url "beacon/rev") (know-flat-html:lkv es u.tsel)))
-    (send-view eyre-id (render-page "know" (keep-url "beacon/rev") (know-dir-html:lkv es ~ ~ (tag-chips:lkv es ''))))
+      ;<  rv=tape  bind:m  beacon-rev-tape
+      (send-view-long eyre-id (render-page "know" (keep-url "beacon/rev") rv (know-flat-html:lkv es u.tsel)))
+    ;<  rv=tape  bind:m  beacon-rev-tape
+    (send-view-long eyre-id (render-page "know" (keep-url "beacon/rev") rv (know-dir-html:lkv es ~ ~ (tag-chips:lkv es ''))))
   =/  page=(unit tape)  (know-node-html:lkv es `path`rest)
   ?~  page
-    (send-view eyre-id (render-page "know" "" "<p class=\"err\">no such entry</p>"))
-  (send-view eyre-id (render-page (weld "know" (spud rest)) (keep-url "beacon/rev") u.page))
+    (send-view eyre-id (render-page "know" "" "" "<p class=\"err\">no such entry</p>"))
+  ;<  rv=tape  bind:m  beacon-rev-tape
+  (send-view-long eyre-id (render-page (weld "know" (spud rest)) (keep-url "beacon/rev") rv u.page))
 ::  ── JSON renderers (ported from /lib/lattice; client contract, byte-for-byte) ──
 ::
 ++  tags-json
@@ -6042,11 +6051,11 @@
     ?:  =(u.shp our)
       ;<  dn=view:nexus  bind:m  (peek-shallow:io dir-road ~)
       ?.  ?=([%ball *] dn)  (send-err eyre-id 404 'not found')
-      (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.dn)))
+      (send-view eyre-id (render-page canon "" "" (explore-dir-html u.shp pax ball.dn)))
     ;<  md=(unit view:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
     ?~  md  (send-err eyre-id 504 'unreachable or denied')
     ?.  ?=([%ball *] u.md)  (send-err eyre-id 404 'not found')
-    (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.u.md)))
+    (send-view eyre-id (render-page canon "" "" (explore-dir-html u.shp pax ball.u.md)))
   =/  file-road=road:tarball  [%& %& (snip `path`pax) (rear pax)]
   ?:  =(u.shp our)
     ?:  slashed
@@ -6059,16 +6068,16 @@
         =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
           ?~(fil.ball.dn ~ contents.u.fil.ball.dn)
         ?:  |(?=(~ pn) ?!((~(has by fils) %code)) (~(has by args) 'raw'))
-          (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.dn)))
+          (send-view eyre-id (render-page canon "" "" (explore-dir-html u.shp pax ball.dn)))
         (render-page-view eyre-id u.shp pax u.pn ball.dn (~(has by args) 'embed') %.y)
       ;<  fn=view:nexus  bind:m  (peek:io file-road ~)
       ?.  ?=([%file *] fn)  (send-err eyre-id 404 'not found')
       ?:  want-raw  (send-raw eyre-id sang.fn %.y)
-      (send-view eyre-id (render-page canon "" (explore-file-html u.shp pax sang.fn %.y)))
+      (send-view eyre-id (render-page canon "" "" (explore-file-html u.shp pax sang.fn %.y)))
     ;<  fn=view:nexus  bind:m  (peek:io file-road ~)
     ?:  ?=([%file *] fn)
       ?:  want-raw  (send-raw eyre-id sang.fn %.y)
-      (send-view eyre-id (render-page canon "" (explore-file-html u.shp pax sang.fn %.y)))
+      (send-view eyre-id (render-page canon "" "" (explore-file-html u.shp pax sang.fn %.y)))
     ;<  dn=view:nexus  bind:m  (peek-shallow:io dir-road ~)
     ?.  ?=([%ball *] dn)  (send-err eyre-id 404 'not found')
     (send-redirect eyre-id (weld base "/"))
@@ -6083,18 +6092,18 @@
       =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
         ?~(fil.ball.u.md ~ contents.u.fil.ball.u.md)
       ?:  |(?=(~ pn) ?!((~(has by fils) %code)) (~(has by args) 'raw'))
-        (send-view eyre-id (render-page canon "" (explore-dir-html u.shp pax ball.u.md)))
+        (send-view eyre-id (render-page canon "" "" (explore-dir-html u.shp pax ball.u.md)))
       (render-page-view eyre-id u.shp pax u.pn ball.u.md %.n %.n)
     ;<  mf=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
     ?~  mf  (send-err eyre-id 504 'unreachable or denied')
     ?.  ?=([%file *] u.mf)  (send-err eyre-id 404 'not found')
     ?:  want-raw  (send-raw eyre-id sang.u.mf %.n)
-    (send-view eyre-id (render-page canon "" (explore-file-html u.shp pax sang.u.mf %.n)))
+    (send-view eyre-id (render-page canon "" "" (explore-file-html u.shp pax sang.u.mf %.n)))
   ;<  mf=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
   ?~  mf  (send-err eyre-id 504 'unreachable or denied')
   ?:  ?=([%file *] u.mf)
     ?:  want-raw  (send-raw eyre-id sang.u.mf %.n)
-    (send-view eyre-id (render-page canon "" (explore-file-html u.shp pax sang.u.mf %.n)))
+    (send-view eyre-id (render-page canon "" "" (explore-file-html u.shp pax sang.u.mf %.n)))
   ;<  md=(unit view:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
   ?~  md  (send-err eyre-id 504 'unreachable or denied')
   ?.  ?=([%ball *] u.md)  (send-err eyre-id 404 'not found')
@@ -6116,13 +6125,21 @@
   %+  send-simple:srv  eyre-id
   [[301 ['location' (crip to)]~] ~]
 ::  +send-see-other: a 303 (POST -> GET redirect, for form command submits).
+::  The location carries a unique query so the follow-up GET can never be a
+::  cache hit: these redirects exist to SHOW the result of the write that
+::  just happened, and +send-view's stale-while-revalidate would otherwise
+::  happily serve the pre-write document. Central here, so no call site can
+::  forget it.
 ::
 ++  send-see-other
   |=  [eyre-id=@ta to=tape]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  now=@da  bind:m  bowl-now
+  =/  sep=tape  ?:(?=(^ (find "?" to)) "&" "?")
+  =/  bust=tape  :(weld to sep "u=" (scow %ud (mod now 1.000.000.000)))
   %+  send-simple:srv  eyre-id
-  [[303 ['location' (crip to)]~] ~]
+  [[303 ['location' (crip bust)]~] ~]
 ::  +page-dir-name: is `pax` under our own /page/ tree? -> the slash-joined
 ::  name (e.g. 'projects/plan'). app-base ++ /page ++ >=1 seg, at any depth;
 ::  the caller checks for a /code grub to tell a page from a plain folder.
@@ -6167,11 +6184,12 @@
   ::  names, never the payload, so keep="" to render-* and append a blot-free
   ::  stream here.
   =/  keep=tape  (keep-url "beacon/rev")
+  ;<  rev=tape  bind:m  ?:(local beacon-rev-tape (pure:(fiber:fiber:nexus ,tape) ""))
   ?:  embed
     ::  bare preview: just the rendered data (+ any error) and the live stream.
     =/  data-html=tape  ?~(cd "<p>no data yet</p>" (render-shown u.cd vmode "/apps/lattice/app?name="))
     =/  errh=tape  ?:(=('' err) "" :(weld "<pre class=\"err\">" (esc (trip err)) "</pre>"))
-    (send-html eyre-id (render-bare :(weld errh "<section class=\"data\">" data-html "</section>" (page-sse-script keep))))
+    (send-html eyre-id (render-bare :(weld errh "<section class=\"data\">" data-html "</section>" (page-sse-script keep rev))))
   ::  standalone browser view: the page rendered exactly as it would publish. For
   ::  our own page the nearest theme is inlined (owner-gated, so it need not be
   ::  clearweb-shared) and it gets an Edit button + live-reload. A peer's page is
@@ -6215,12 +6233,15 @@
     :*  rel  u.cd  vmode  head  ?!(?=(%html vmode))  ~  extra
         ?:(local "/apps/lattice/app?name=" "/apps/lattice/c/")
     ==
-  %-  send-html
+  ::  the long tier, LOCAL only: a local page view carries the live script
+  ::  with a baked rev, so a cached paint self-corrects. A peer's page has
+  ::  no stream — it keeps the short tier.
+  %-  ?:(local send-view-long send-view)
   :-  eyre-id
   %^    render-browser-page
       (trip (en-urb:lu shp pax))
     doc
-  [?:(local `name ~) ?!(local) ?:(local keep "")]
+  [?:(local `name ~) ?!(local) ?:(local keep "") ?:(local rev "")]
 ::  +preview-inner: the rendered-preview HTML fragment for a page kind, the
 ::  single renderer behind POST /page-preview AND page-source?render=1, so the
 ::  editor preview can never drift from the reader. Wikilinkify only runs for
@@ -6681,14 +6702,16 @@
 ::  event names to reload. Same reload-on-any-non-old-event loop otherwise.
 ::
 ++  page-sse-script
-  |=  keep=tape
+  |=  [keep=tape rev=tape]
   ^-  tape
   ?~  keep  ""
   ;:  weld
     (trip '<script>(function(){var K="')
     keep
+    (trip '";var REV="')
+    rev
     %-  trip
-    '";async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7)}if(!ev)continue;if(ev.slice(0,3)==="old")continue;location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
+    '";async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){location.reload();return}continue}location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
   ==
 ::  +explore-crumbs: breadcrumb nav, absolute hrefs from the ship root down,
 ::  each with a trailing slash. The leaf is linked too (self-link; harmless).
@@ -7016,20 +7039,55 @@
   %+  send-simple:srv  eyre-id
   :-  [200 ['content-type' 'text/html']~]
   `(as-octs:mimes:html htm)
-::  +send-view: like +send-html but with a short private cache, for READ-ONLY
-::  navigable surfaces (home, tree explorer). A repeat visit inside the window is
-::  served from the browser cache instantly (like the back button's bfcache).
-::  The ~0.7s grubbery render is skipped. Safe here because these surfaces have
-::  no command/save flow whose result must appear immediately, and any live SSE
-::  reload revalidates (browsers bypass max-age on reload), so real changes still
-::  land fresh. NOT used for page views (command form) or the editor (save flow).
+::  +send-view: +send-html plus a cache policy for navigable read surfaces
+::  (home, tree explorer, reader AND page views). Every request to this pier
+::  costs a flat ~2s regardless of payload, so the only way a repeat visit
+::  gets fast is not making the request: max-age=5 covers back/forward, and
+::  stale-while-revalidate covers the real browsing pattern — a repeat click
+::  minutes later paints INSTANTLY from cache while the browser refetches in
+::  the background, so the next view is fresh. Live changes on own-ship
+::  documents still land immediately via the beacon SSE location.reload()
+::  (a reload bypasses the cache).
+::
+::  Page views carry the command/comment forms, which used to be why they
+::  were excluded (a 303-then-GET served from cache would hide the user's
+::  own edit). That objection is retired centrally: +send-see-other now
+::  busts its redirect with a unique query, so every read-after-write GET
+::  misses the cache by construction. The one accepted staleness: a page
+::  changed by OTHER means (an editor save, a remote edit) can paint one
+::  stale view within the revalidate window before the background refresh
+::  or the beacon corrects it.
 ::
 ++  send-view
   |=  [eyre-id=@ta htm=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   %+  send-simple:srv  eyre-id
-  :-  [200 ~[['content-type' 'text/html'] ['cache-control' 'private, max-age=5']]]
+  :-  :-  200
+      :~  ['content-type' 'text/html']
+          ['cache-control' 'private, max-age=5, stale-while-revalidate=600']
+      ==
+  `(as-octs:mimes:html htm)
+::  +send-view-long: the tier for LIVE local surfaces — pages that carry the
+::  beacon reload script with a baked rev. Chromium ignores
+::  stale-while-revalidate for document navigations (measured: a repeat
+::  click past max-age refetched in full), so the only way a repeat click
+::  paints instantly is a real max-age. Five minutes is safe here and only
+::  here, because these documents self-correct: a cached paint's script
+::  compares its baked rev against the stream's first event and reloads on
+::  mismatch, and +send-see-other busts every read-after-write redirect.
+::  Surfaces without the live script (remote pages, error shells) must NOT
+::  use this tier — nothing would ever correct them.
+::
+++  send-view-long
+  |=  [eyre-id=@ta htm=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  :-  :-  200
+      :~  ['content-type' 'text/html']
+          ['cache-control' 'private, max-age=300, stale-while-revalidate=600']
+      ==
   `(as-octs:mimes:html htm)
 ::  ── PWA (installable app) ──────────────────────────────────────────────────
 ::  Content-Type is an explicit header cord here (not mark-derived), so a
@@ -7479,7 +7537,8 @@
 ++  clip-paste-html
   |=  url=@t
   ^-  @t
-  %^  render-page  ""  ""
+  %-  render-page
+  :^    ""  ""  ""
   ;:  weld
     "<h1>Archiving from your browser</h1>"
     "<p class=\"muted\">"  (esc (trip url))  "</p>"
@@ -7728,7 +7787,7 @@
 ::  +render-page: wrap an HTML fragment in the reader chrome (address bar + CSS).
 ::
 ++  render-page
-  |=  [current=tape keep=tape inner=tape]
+  |=  [current=tape keep=tape rev=tape inner=tape]
   ^-  @t
   ::  the star shows whenever the address bar holds a real urb:// address.
   ::  It was only on the framed browser view before, so most of the Browser
@@ -7769,7 +7828,7 @@
     "</script>"
     %-  trip
     '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})}})();</script>'
-    (sse-script keep)  sw-register-script  "</body></html>"
+    (sse-script keep rev)  sw-register-script  "</body></html>"
   ==
 ::  +render-browser-page: the browser's page view, the address bar (+ an Edit
 ::  button when `edit` names an editable own page) above the page rendered in a
@@ -7780,7 +7839,7 @@
 ::  view. The clearweb-parity replacement for the old dev page-view chrome.
 ::
 ++  render-browser-page
-  |=  [current=tape doc=@t edit=(unit @t) sandbox=? keep=tape]
+  |=  [current=tape doc=@t edit=(unit @t) sandbox=? keep=tape rev=tape]
   ^-  @t
   =/  editbtn=tape
     ?~  edit  ""
@@ -7806,8 +7865,24 @@
     ::  origin). single-quote cord so the js braces stay literal.
     %-  trip
     '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})}})();</script>'
-    (page-sse-script keep)  sw-register-script  "</body></html>"
+    (page-sse-script keep rev)  sw-register-script  "</body></html>"
   ==
+::  +beacon-rev-tape: the current /beacon/rev value, rendered as the same
+::  text the keep-SSE stream sends in its event data. Baked into live pages
+::  so their reload script can tell a CACHED paint apart from a fresh one:
+::  the stream's initial `old` event carries the rev as of connect, and a
+::  mismatch against the baked value means the document predates a change —
+::  reload. "" (never bumped, or peek failure) disables the comparison.
+::
+++  beacon-rev-tape
+  =/  m  (fiber:fiber:nexus ,tape)
+  ^-  form:m
+  ;<  v=view:nexus  bind:m
+    (peek:io [%& %& (weld app-base:lu /beacon) %rev] ~)
+  ?.  ?=([%file *] v)  (pure:m "")
+  =/  j=json  (fall (mole |.(;;(json (sang-noun:tarball sang.v)))) ~)
+  ?~  j  (pure:m "")
+  (pure:m (trip (en:json:html j)))
 ::  +keep-url: grubbery's native keep-SSE endpoint for one of our grubs.
 ::
 ++  keep-url
@@ -7822,14 +7897,16 @@
 ::  stay literal (only \\ needs escaping); mirrors counter.hoon's SSE parse loop.
 ::
 ++  sse-script
-  |=  keep=tape
+  |=  [keep=tape rev=tape]
   ^-  tape
   ?~  keep  ""
   ;:  weld
     (trip '<script>(function(){var K="')
     keep
+    (trip '";var REV="')
+    rev
     %-  trip
-    '";async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7)}if(!ev)continue;if(ev.slice(0,3)==="old")continue;location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
+    '";async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){location.reload();return}continue}location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
   ==
 ::  +lattice-page: placeholder web reader (replaced by the live SSE view in
 ::  step 6).
