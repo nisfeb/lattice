@@ -38,6 +38,7 @@ const cut = (file, re, what) => {
 
 // ── the functions under test, lifted out of the source ─────────────────────
 const listEnter = new Function(`${read('22-listedit.js')}\nreturn listEnter;`)();
+const listTab = new Function(`${read('22-listedit.js')}\nreturn listTab;`)();
 const shortPath = new Function(
   `${cut('10-shell.js', /const shortPath = \([\s\S]*?\n {2}\};/, 'shortPath')}\nreturn shortPath;`)();
 const esc = new Function(
@@ -214,6 +215,41 @@ prop('it is a pure function of its arguments', fc.property(caseArb, (c) => {
   const a = listEnter(c.value, c.selStart, c.selEnd, c.flavor);
   const b = listEnter(c.value, c.selStart, c.selEnd, c.flavor);
   return JSON.stringify(a) === JSON.stringify(b);
+}));
+
+
+// ═══ listTab (22-listedit.js) ════════════════════════════════════════════════════════
+// Tab/Shift-Tab share listEnter's document generator and its contracts, plus
+// two of their own: an indent-then-outdent round-trips the document, and the
+// line COUNT never changes (Tab restructures, it never splits or joins).
+const dirArb = fc.constantFrom(1, -1);
+const tabCase = fc.tuple(caseArb, dirArb).map(([c, dir]) => ({ ...c, dir }));
+
+console.log('\nlistTab: shape of the edit');
+prop('it never throws', fc.property(tabCase, (c) => {
+  listTab(c.value, c.selStart, c.selEnd, c.flavor, c.dir);
+  return true;
+}));
+prop('the replaced range is inside the document', fc.property(tabCase, (c) => {
+  const r = listTab(c.value, c.selStart, c.selEnd, c.flavor, c.dir);
+  return !r || (r.from >= 0 && r.from <= r.to && r.to <= c.value.length);
+}));
+prop('the text outside the range survives verbatim', fc.property(tabCase, (c) => {
+  const r = listTab(c.value, c.selStart, c.selEnd, c.flavor, c.dir);
+  if (!r) return true;
+  const out = apply(c.value, r);
+  return out.startsWith(c.value.slice(0, r.from)) && out.endsWith(c.value.slice(r.to));
+}));
+prop('the line count never changes', fc.property(tabCase, (c) => {
+  const r = listTab(c.value, c.selStart, c.selEnd, c.flavor, c.dir);
+  return !r || nl(apply(c.value, r)) === nl(c.value);
+}));
+prop('indent then outdent round-trips', fc.property(caseArb, (c) => {
+  const r1 = listTab(c.value, c.selStart, c.selEnd, c.flavor, 1);
+  if (!r1) return true;
+  const v2 = apply(c.value, r1);
+  const r2 = listTab(v2, r1.caret, r1.caretEnd == null ? r1.caret : r1.caretEnd, c.flavor, -1);
+  return !!r2 && apply(v2, r2) === c.value;
 }));
 
 // ═══ shortPath (10-shell.js) ═══════════════════════════════════════════════

@@ -1175,6 +1175,63 @@
     return { from: selStart, to: blockEnd, text, caret: selStart + 1 + marker.length };
   };
 
+  // ── indent / outdent a list item ─────────────────────────────────────────
+  // Tab on a list line moves it a level deeper; Shift-Tab a level out. Same
+  // contract as listEnter: pure, returns {from, to, text, caret} or null for
+  // "not a list edit — let Tab do its ordinary thing". A selection spanning
+  // several lines moves every LIST line in it together, which is what makes
+  // reshaping a pasted outline a two-keystroke job.
+  //
+  // One level is TWO SPACES, because that is what the local renderer counts
+  // (59-md.js: depth = floor(indent/2) + 1). A tab character is one level of
+  // its own on the way out.
+  const listTab = (value, selStart, selEnd, flavor, dir) => {
+    // gemtext has no nesting: "* " at column zero is the whole grammar, and
+    // an indented line is ordinary text. Tab must stay a plain tab there.
+    if (flavor === 'gmi') return null;
+    const ITEM = /^([ \t]*)(?:([-*+])|(\d+)([.)]))([ \t]+)/;
+    const lineStart = value.slice(0, selStart).lastIndexOf('\n') + 1;
+    // fenced code is literal text (the same rule listEnter applies): a Tab
+    // inside a fence is indentation for CODE, not for a list that is not one.
+    // Parity is counted up to LINE start, not caret: this is a line
+    // operation, so the question is whether the line begins inside a fence —
+    // and a caret-relative count changed its answer between an indent and
+    // the outdent that undoes it when the line itself opens with a fence
+    // marker (found by the round-trip property, seed 1105911052).
+    const fences = value.slice(0, lineStart).match(/^[ \t]*(?:```|~~~)/gm);
+    if (fences && fences.length % 2 === 1) return null;
+
+    let spanEnd = value.indexOf('\n', Math.max(selEnd, selStart));
+    if (spanEnd === -1) spanEnd = value.length;
+    const span = value.slice(lineStart, spanEnd).split('\n');
+
+    // only item lines move; a selection that contains none is not a list edit
+    if (!span.some((ln) => ITEM.test(ln))) return null;
+
+    let firstDelta = 0;   // how the FIRST line's start moved, for the caret
+    const out = span.map((ln, i) => {
+      if (!ITEM.test(ln)) return ln;
+      if (dir > 0) {
+        if (i === 0) firstDelta = 2;
+        return '  ' + ln;
+      }
+      // outdent: one tab is one level; otherwise up to two spaces
+      const cut = ln.startsWith('\t') ? 1 : Math.min(2, (ln.match(/^ */) || [''])[0].length);
+      if (i === 0) firstDelta = -cut;
+      return ln.slice(cut);
+    });
+    const text = out.join('\n');
+    if (text === value.slice(lineStart, spanEnd)) return null;   // nothing to take out
+
+    if (selStart === selEnd) {
+      // keep the caret on the same character it was on, clamped to its line
+      const caret = Math.max(lineStart, selStart + firstDelta);
+      return { from: lineStart, to: spanEnd, text, caret };
+    }
+    // a multi-line selection stays a selection over the moved lines
+    return { from: lineStart, to: spanEnd, text, caret: lineStart, caretEnd: lineStart + text.length };
+  };
+
 // ── src/25-editor.js ──────────────────────────────────────────────────────
   // ── editor pane: <lat-editor> + highlighting (Prism overlay) ─────────────
   let src, hl;   // assigned when <lat-editor> upgrades (below, synchronously)
@@ -2616,24 +2673,33 @@
   // Applies the list-continuation edit if the caret is in a list. Shared by
   // the keydown path and the beforeinput path below, which is the ONLY one a
   // phone reliably takes.
-  const continueList = () => {
-    if (src.readOnly) return false;
-    if (!(mode === 'know' || ['md', 'text', 'gmi'].includes(pkind.value))) return false;
-    // know memories are prose, so they follow the markdown rules
-    const flavor = mode === 'know' ? 'md' : pkind.value;
-    const r = listEnter(src.value, src.selectionStart, src.selectionEnd, flavor);
-    if (!r) return false;
+  // prose kinds get list behaviour; anything else is code, where "- " and
+  // "1." are just characters. know memories are prose, so markdown rules.
+  const proseFlavor = () => {
+    if (mode === 'know') return 'md';
+    return ['md', 'text', 'gmi'].includes(pkind.value) ? pkind.value : null;
+  };
+  // Apply a {from, to, text, caret} edit from the pure list functions.
+  // execCommand keeps the textarea's OWN undo stack, so Ctrl+Z steps back
+  // through these edits like any typing. Assigning src.value wipes that
+  // stack outright (the old Tab handler's sin). Deprecated, not gone, and
+  // there is no replacement that preserves undo; setRangeText is the
+  // fallback when an engine refuses.
+  const applyEdit = (r) => {
     src.setSelectionRange(r.from, r.to);
-    // execCommand keeps the textarea's OWN undo stack, so Ctrl+Z steps back
-    // through these edits like any typing. Assigning src.value wipes that
-    // stack outright, which is why the Tab handler below loses undo.
-    // Deprecated, not gone, and there is no replacement that preserves
-    // undo; setRangeText is the fallback when an engine refuses.
     let ok = false;
     try { ok = document.execCommand('insertText', false, r.text); } catch {}
     if (!ok) src.setRangeText(r.text, r.from, r.to, 'end');
-    src.setSelectionRange(r.caret, r.caret);
+    src.setSelectionRange(r.caret, r.caretEnd == null ? r.caret : r.caretEnd);
     edited();
+  };
+  const continueList = () => {
+    if (src.readOnly) return false;
+    const flavor = proseFlavor();
+    if (!flavor) return false;
+    const r = listEnter(src.value, src.selectionStart, src.selectionEnd, flavor);
+    if (!r) return false;
+    applyEdit(r);
     return true;
   };
   let plainBreak = false;
@@ -2678,10 +2744,19 @@
     if (e.key === 'Tab') {
       e.preventDefault();
       if (src.readOnly) return;   // readOnly blocks typing, not scripted edits
-      const s = src.selectionStart;
-      src.value = src.value.slice(0, s) + '  ' + src.value.slice(src.selectionEnd);
-      src.selectionStart = src.selectionEnd = s + 2;
-      edited();
+      // On a list line, Tab is structure, not whitespace: indent the item a
+      // level, Shift-Tab brings it back out. A multi-line selection moves
+      // every list line in it together.
+      const flavor = proseFlavor();
+      if (flavor) {
+        const r = listTab(src.value, src.selectionStart, src.selectionEnd,
+          flavor, e.shiftKey ? -1 : 1);
+        if (r) { applyEdit(r); return; }
+      }
+      // Shift-Tab outside a list has nothing to take back
+      if (e.shiftKey) return;
+      applyEdit({ from: src.selectionStart, to: src.selectionEnd,
+        text: '  ', caret: src.selectionStart + 2 });
     }
   });
 

@@ -17,6 +17,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(
   join(here, '../grubbery-overlay/nex/lattice/ui-app/src/22-listedit.js'), 'utf8');
 const listEnter = new Function(`${src}\nreturn listEnter;`)();
+const listTab = new Function(`${src}\nreturn listTab;`)();
 
 let fails = 0;
 const show = (s) => JSON.stringify(s);
@@ -223,6 +224,57 @@ console.log('\nthe same text under markdown rules');
 // the contrast is the point: identical input, different grammar
 press('a dash IS a markdown list', '- one|', '- one\n- |');
 press('a star list also works in markdown', '* one|', '* one\n* |');
+
+// ── Tab / Shift-Tab: indent and outdent ────────────────────────────────────
+// Same caret convention as press(). dir +1 is Tab, -1 is Shift-Tab. A "["
+// and "]" pair marks a selection instead of a caret.
+function tab(name, input, want, dir, flavor = 'md') {
+  let selA = input.indexOf('|'), selB = selA, value;
+  if (selA === -1) {
+    selA = input.indexOf('[');
+    selB = input.indexOf(']') - 1;               // after removing "["
+    value = input.replace('[', '').replace(']', '');
+  } else value = input.replace('|', '');
+  const r = listTab(value, selA, selB, flavor, dir);
+  let got;
+  if (!r) got = input;                           // null: not a list edit
+  else {
+    const out = value.slice(0, r.from) + r.text + value.slice(r.to);
+    if (r.caretEnd == null) got = out.slice(0, r.caret) + '|' + out.slice(r.caret);
+    else got = out.slice(0, r.caret) + '[' + out.slice(r.caret, r.caretEnd) + ']' + out.slice(r.caretEnd);
+  }
+  if (got === want) console.log('  ok   - ' + name);
+  else {
+    console.log(`  FAIL - ${name}\n         want ${show(want)}\n         got  ${show(got)}`);
+    fails++;
+  }
+}
+
+console.log('\ntab: indent');
+tab('an ordered item steps in a level', '1. a\n2. b|', '1. a\n  2. b|', 1);
+tab('a dash item steps in', '- a\n- b|', '- a\n  - b|', 1);
+tab('caret position rides the shift', '1. a\n2. b|cd', '1. a\n  2. b|cd', 1);
+tab('caret in the marker still indents the line', '1. a\n2|. b', '1. a\n  2|. b', 1);
+tab('a plain paragraph is not a list edit', 'just text|', 'just text|', 1);
+tab('inside a fence, tab stays ordinary', '```\n- x|', '```\n- x|', 1);
+tab('a selection starting on a fence-marker line is not a list edit',
+  '```\n~~~[1. \n- ]', '```\n~~~[1. \n- ]', 1);   // CI seed 1105911052
+tab('gemtext has no nesting', '* one|', '* one|', 1, 'gmi');
+
+console.log('\ntab: outdent');
+tab('shift-tab steps back out', '1. a\n  2. b|', '1. a\n2. b|', -1);
+tab('a single leading space still comes off', '1. a\n 2. b|', '1. a\n2. b|', -1);
+tab('a leading tab is one level', '1. a\n\t2. b|', '1. a\n2. b|', -1);
+tab('nothing to take out is not an edit', '1. a|', '1. a|', -1);
+tab('caret clamps to the line start', '  - a\n|  - b', '  - a\n|- b', -1);
+
+console.log('\ntab: selections');
+tab('a selection indents every list line in it',
+  '1. a\n[2. b\n3. c]', '1. a\n[  2. b\n  3. c]', 1);
+tab('non-list lines inside the selection stay put',
+  '[- a\ntext\n- b]', '[  - a\ntext\n  - b]', 1);
+tab('a selection outdents together',
+  '[  - a\n  - b]', '[- a\n- b]', -1);
 
 console.log(fails ? `\n${fails} check(s) FAILED` : '\nall checks passed');
 process.exit(fails ? 1 : 0);
