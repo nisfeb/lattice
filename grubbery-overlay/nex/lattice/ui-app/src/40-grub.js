@@ -64,6 +64,7 @@
     }
     if (src.value === sent) dirty = false;
     st('saved');
+    bustPages(grubPath);
     if (savePending) { savePending = false; if (dirty) saveGrub(); }
   }
 

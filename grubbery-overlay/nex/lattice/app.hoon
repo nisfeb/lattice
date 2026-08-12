@@ -6699,7 +6699,7 @@
   ==
 ::  +page-sse-script: like +sse-script but WITHOUT ?blot=/txt. The page dir's
 ::  noun grubs are megabytes under /txt on connect, and this only needs the
-::  event names to reload. Same reload-on-any-non-old-event loop otherwise.
+::  event names. Same refresh/swap loop otherwise.
 ::
 ++  page-sse-script
   |=  [keep=tape rev=tape]
@@ -6711,7 +6711,7 @@
     (trip '";var REV="')
     rev
     %-  trip
-    '";async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(-5)!==" /rev")continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){location.reload();return}continue}location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
+    '";var pend=0;async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(-5)!==" /rev")continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){go();return}if(ok&&window.__latCanon){location.replace(window.__latCanon)}else{location.reload()}})})()}continue}location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
   ==
 ::  +explore-crumbs: breadcrumb nav, absolute hrefs from the ship root down,
 ::  each with a trailing slash. The leaf is linked too (self-link; harmless).
@@ -7046,8 +7046,8 @@
 ::  stale-while-revalidate covers the real browsing pattern — a repeat click
 ::  minutes later paints INSTANTLY from cache while the browser refetches in
 ::  the background, so the next view is fresh. Live changes on own-ship
-::  documents still land immediately via the beacon SSE location.reload()
-::  (a reload bypasses the cache).
+::  documents still land immediately via the beacon SSE (refresh the pages
+::  cache, then swap to it).
 ::
 ::  Page views carry the command/comment forms, which used to be why they
 ::  were excluded (a 303-then-GET served from cache would hide the user's
@@ -7069,15 +7069,15 @@
       ==
   `(as-octs:mimes:html htm)
 ::  +send-view-long: the tier for LIVE local surfaces — pages that carry the
-::  beacon reload script with a baked rev. Chromium ignores
-::  stale-while-revalidate for document navigations (measured: a repeat
-::  click past max-age refetched in full), so the only way a repeat click
-::  paints instantly is a real max-age. Five minutes is safe here and only
-::  here, because these documents self-correct: a cached paint's script
-::  compares its baked rev against the stream's first event and reloads on
-::  mismatch, and +send-see-other busts every read-after-write redirect.
-::  Surfaces without the live script (remote pages, error shells) must NOT
-::  use this tier — nothing would ever correct them.
+::  beacon script with a baked rev plus +page-cache-script. Instant repeats
+::  are the LRU pages cache's job now (sw-js serves them before HTTP ever
+::  sees the request), so max-age dropped from 300 back to 5: the long
+::  window's only remaining consumers were ?u=-stamped history entries and
+::  SW-less browsers, and both were serving up-to-5-minute-old snapshots
+::  that the quiet-convergence regime no longer reloads. Kept as its own
+::  tier (not collapsed into +send-view) because these are exactly the
+::  surfaces the pages cache may serve stale-then-converge, and the knob
+::  may want retuning separately from plain read surfaces.
 ::
 ++  send-view-long
   |=  [eyre-id=@ta htm=@t]
@@ -7086,7 +7086,7 @@
   %+  send-simple:srv  eyre-id
   :-  :-  200
       :~  ['content-type' 'text/html']
-          ['cache-control' 'private, max-age=300, stale-while-revalidate=600']
+          ['cache-control' 'private, max-age=5, stale-while-revalidate=600']
       ==
   `(as-octs:mimes:html htm)
 ::  ── PWA (installable app) ──────────────────────────────────────────────────
@@ -7211,12 +7211,21 @@
   ::  the key holds still is stale forever. All seven are compile-time
   ::  constants, so this is exactly "the cache key changes when and only
   ::  when what it caches changes".
+  ::
+  ::  'lattice-pages' is the OTHER cache this worker consults: the LRU page
+  ::  cache, written by +page-cache-script from PAGE context — this worker
+  ::  must never fetch (webkitgtk drops cookies on SW-issued fetches). A
+  ::  navigation it holds is served from cache; a miss is REDIRECTED to the
+  ::  same URL plus a unique ?u= marker, which this worker ignores, so the
+  ::  network request is the browser's own, cookies and all. The ?u= guard
+  ::  also keeps command 303s (send-see-other's buster) network-fresh, and
+  ::  activate-time eviction spares this cache: its freshness is rev-based.
   =/  ver=@t
     (scot %ux (mug [uih uij icon pjs manifest-json icon-192-b64 icon-512-b64]))
   %+  rap  3
   :~  'var V="lattice-'
       ver
-      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V}).map(function(k){return caches.delete(k)}))}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"}).map(function(k){return caches.delete(k)}))}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")){var ru=q.url+(q.url.indexOf("?")<0?"?":"&")+"u=sw"+Date.now();e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
@@ -7235,6 +7244,25 @@
   ^-  tape
   %-  trip
   '<link rel="manifest" href="/apps/lattice/manifest.webmanifest" crossorigin="use-credentials"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#1a6ed8"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1a1a"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="Lattice"><link rel="apple-touch-icon" href="/apps/lattice/apple-touch-icon.png"><link rel="icon" href="/apps/lattice/icon.svg" type="image/svg+xml">'
+::  +page-cache-script: the write path of the LRU page cache (the read path
+::  lives in +sw-js). The worker only READS the 'lattice-pages' cache — it
+::  must never fetch — so every reader document, once painted and after a
+::  2.5s user-idle window (user requests queue first on a one-event-at-a-
+::  time ship), refetches ITSELF from page context (credentialed on every
+::  engine), puts the fresh copy under its canonical URL (?u= stripped, so
+::  command results refresh the canonical entry), stamps an LRU index in
+::  IndexedDB (url -> {size, at}), and evicts least-recently-viewed entries
+::  past the budget. 200MB at ~15KB a page is ~13k pages: eviction is the
+::  emergency brake, not the steady state (localStorage.latCacheBudget
+::  overrides it so the harness can prove eviction without 200MB of pages).
+::  No reload here: a stale paint converges quietly and the NEXT view is
+::  fresh — the regime's rule is that only a first-ever view, or the first
+::  after eviction, is slow.
+::
+++  page-cache-script
+  ^-  tape
+  %-  trip
+  '<script>(function(){if(!("caches"in window)||!window.indexedDB)return;var BUDGET=(+localStorage.latCacheBudget)||200*1024*1024;var canon=(function(){var h=location.href.split("#")[0];var i=h.indexOf("?");if(i<0)return h;var q=h.slice(i+1).split("&").filter(function(s){return s.slice(0,2)!=="u="});return q.length?h.slice(0,i)+"?"+q.join("&"):h.slice(0,i)})();function idb(){return new Promise(function(res,rej){var r=indexedDB.open("lattice-lru",1);r.onupgradeneeded=function(){r.result.createObjectStore("e",{keyPath:"url"})};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}function tx(db,mode,fn){return new Promise(function(res,rej){var t=db.transaction("e",mode);fn(t.objectStore("e"));t.oncomplete=function(){res()};t.onerror=function(){rej(t.error)}})}function touch(url,size){return idb().then(function(db){return tx(db,"readwrite",function(st){var g=st.get(url);g.onsuccess=function(){var e=g.result||{url:url,size:0};e.at=Date.now();if(size)e.size=size;st.put(e)}})}).catch(function(x){})}function evict(){return idb().then(function(db){var all=[];return tx(db,"readonly",function(st){st.openCursor().onsuccess=function(ev){var c=ev.target.result;if(c){all.push(c.value);c.continue()}}}).then(function(){var total=all.reduce(function(a,e){return a+(e.size||0)},0);if(total<=BUDGET)return;all.sort(function(a,b){return(a.at||0)-(b.at||0)});return caches.open("lattice-pages").then(function(c){var i=0;function step(){if(i>=all.length||total<=BUDGET)return;var e=all[i++];total-=(e.size||0);return c.delete(e.url).then(function(){return tx(db,"readwrite",function(st){st.delete(e.url)})}).then(step)}return step()})})}).catch(function(x){})}var inflight=null;function refresh(force){if(inflight&&!force)return inflight;var p=fetch(location.href,{credentials:"same-origin",cache:"no-store"}).then(function(r){if(!r.ok||r.redirected)return false;return r.blob().then(function(body){return caches.open("lattice-pages").then(function(c){return c.put(canon,new Response(body,{status:200,headers:{"content-type":r.headers.get("content-type")||"text/html"}}))}).then(function(){return touch(canon,body.size)}).then(evict).then(function(){return true})})}).catch(function(x){return false}).then(function(ok){if(inflight===p)inflight=null;return ok});inflight=p;return p}window.__latRefresh=refresh;window.__latCanon=canon;touch(canon,0);var last=Date.now();addEventListener("pointerdown",function(){last=Date.now()},true);addEventListener("keydown",function(){last=Date.now()},true);var t0=Date.now();var iv=setInterval(function(){if(Date.now()-last>2000||Date.now()-t0>6000){clearInterval(iv);refresh()}},500);})();</script>'
 ++  sw-register-script
   ^-  tape
   %-  trip
@@ -7828,7 +7856,7 @@
     "</script>"
     %-  trip
     '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})}})();</script>'
-    (sse-script keep rev)  sw-register-script  "</body></html>"
+    (sse-script keep rev)  page-cache-script  sw-register-script  "</body></html>"
   ==
 ::  +render-browser-page: the browser's page view, the address bar (+ an Edit
 ::  button when `edit` names an editable own page) above the page rendered in a
@@ -7865,14 +7893,17 @@
     ::  origin). single-quote cord so the js braces stay literal.
     %-  trip
     '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})}})();</script>'
-    (page-sse-script keep rev)  sw-register-script  "</body></html>"
+    (page-sse-script keep rev)  page-cache-script  sw-register-script  "</body></html>"
   ==
 ::  +beacon-rev-tape: the current /beacon/rev value, rendered as the same
 ::  text the keep-SSE stream sends in its event data. Baked into live pages
-::  so their reload script can tell a CACHED paint apart from a fresh one:
+::  so their beacon script can tell a CACHED paint apart from a fresh one:
 ::  the stream's initial `old` event carries the rev as of connect, and a
 ::  mismatch against the baked value means the document predates a change —
-::  reload. "" (never bumped, or peek failure) disables the comparison.
+::  +page-cache-script then refreshes the cached copy QUIETLY (the stale
+::  paint stands; the next view is fresh), falling back to a reload where
+::  the cache regime is unavailable. "" (never bumped, or peek failure)
+::  disables the comparison.
 ::
 ++  beacon-rev-tape
   =/  m  (fiber:fiber:nexus ,tape)
@@ -7889,12 +7920,17 @@
   |=  sub=tape
   ^-  tape
   (weld "/grubbery/api/keep/apps/lattice.lattice_app/" sub)
-::  +sse-script: reactive live-view client JS. Streams grubbery's
-::  keep-SSE for `keep`, skips the initial `old` snapshot events, and reloads on
-::  any subsequent change, so an open reader / home index upgrades a stale first
-::  paint and shows live edits (the /updates live channel). "" -> no script
-::  (remote pages, error shells). Built from single-quote cords so the JS braces
-::  stay literal (only \\ needs escaping); mirrors counter.hoon's SSE parse loop.
+::  +sse-script: reactive live-view client JS. Streams grubbery's keep-SSE
+::  for `keep`, acting only on " /rev" events (the stream carries the whole
+::  /beacon directory). The initial `old` event's rev mismatching the baked
+::  REV means this paint came from the pages cache stale: refresh that cache
+::  quietly (next view is fresh; reload fallback without the cache regime).
+::  A later `upd` is a live edit under the user's eyes: force-refresh the
+::  cache — coalescing bumps that land mid-refresh — then swap to the
+::  canonical URL, which sw-js serves from the copy just written (instant).
+::  "" -> no script (remote pages, error shells). Built from single-quote
+::  cords so the JS braces stay literal (only \\ needs escaping); mirrors
+::  counter.hoon's SSE parse loop.
 ::
 ++  sse-script
   |=  [keep=tape rev=tape]
@@ -7906,7 +7942,7 @@
     (trip '";var REV="')
     rev
     %-  trip
-    '";async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(-5)!==" /rev")continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){location.reload();return}continue}location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
+    '";var pend=0;async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(-5)!==" /rev")continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){go();return}if(ok&&window.__latCanon){location.replace(window.__latCanon)}else{location.reload()}})})()}continue}location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
   ==
 ::  +lattice-page: placeholder web reader (replaced by the live SSE view in
 ::  step 6).

@@ -41,6 +41,24 @@
     bgChain = p.catch(() => {});
     return p;
   };
+  // the reader's LRU pages cache (sw-js serves it with NO revalidation, and
+  // its beacon script converges stale paints QUIETLY — the next view is
+  // fresh, not this one). Fine for edits from elsewhere; a lie for our own:
+  // save here, Back into the reader, and the pre-save copy would paint with
+  // nothing visibly correcting it. So every successful write busts the
+  // cached views it could have changed — any entry naming the page, plus
+  // home, whose listings change under every write.
+  const bustPages = (name) => {
+    if (!('caches' in window)) return;
+    caches.open('lattice-pages').then(async (c) => {
+      const home = location.origin + '/apps/lattice';
+      for (const k of await c.keys()) {
+        let d = k.url;
+        try { d = decodeURIComponent(k.url); } catch {}
+        if (k.url === home || (name && d.indexOf('/' + name) >= 0)) c.delete(k.url);
+      }
+    }).catch(() => {});
+  };
   let pname, pkind, status, spinner;   // assigned by <lat-bar>   (12-bar.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)
   // blank preview: about:blank defaults to light color-scheme, which

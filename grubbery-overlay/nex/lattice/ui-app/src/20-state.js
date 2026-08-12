@@ -118,7 +118,15 @@
     const sentAt = Date.now();
     try {
       const r = await fetch(url, opts || { method: 'POST' });
-      if (r.ok) pendingEchoes++;      // one bump is ours; consume it on arrival
+      if (r.ok) {
+        pendingEchoes++;              // one bump is ours; consume it on arrival
+        // every mutate names its target the same way; a move dirties both ends
+        try {
+          const q = new URL(url, location.href).searchParams;
+          bustPages(q.get('name') || q.get('from') || q.get('key'));
+          if (q.get('to')) bustPages(q.get('to'));
+        } catch {}
+      }
       return r;
     }
     //  RTT-scaled like the save paths: our own bump arrives a queue-length

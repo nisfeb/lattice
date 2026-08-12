@@ -174,6 +174,9 @@
   const offDel = async (name) => {
     if (!qrust()) await idbDel(name);
     else { try { await qcall('queue_del', { name }); } catch {} }
+    // a queue entry leaves the queue because it LANDED (or was dropped with
+    // a notice) — either way the reader's cached views of it are now lies
+    bustPages(name);
     await offRecount();
   };
   const opAll = async () => {
@@ -467,6 +470,9 @@
       if (!(r && r.ok)) {
         st('offline ' + o.op + ' no longer applies: ' +
           (o.name || o.from) + ' (skipped)', false);
+      } else {
+        bustPages(o.name || o.from);
+        if (o.to) bustPages(o.to);
       }
       await opDel(o._k);
     }
@@ -625,6 +631,24 @@
     //  errors stay with the caller; the chain itself must survive them
     bgChain = p.catch(() => {});
     return p;
+  };
+  // the reader's LRU pages cache (sw-js serves it with NO revalidation, and
+  // its beacon script converges stale paints QUIETLY — the next view is
+  // fresh, not this one). Fine for edits from elsewhere; a lie for our own:
+  // save here, Back into the reader, and the pre-save copy would paint with
+  // nothing visibly correcting it. So every successful write busts the
+  // cached views it could have changed — any entry naming the page, plus
+  // home, whose listings change under every write.
+  const bustPages = (name) => {
+    if (!('caches' in window)) return;
+    caches.open('lattice-pages').then(async (c) => {
+      const home = location.origin + '/apps/lattice';
+      for (const k of await c.keys()) {
+        let d = k.url;
+        try { d = decodeURIComponent(k.url); } catch {}
+        if (k.url === home || (name && d.indexOf('/' + name) >= 0)) c.delete(k.url);
+      }
+    }).catch(() => {});
   };
   let pname, pkind, status, spinner;   // assigned by <lat-bar>   (12-bar.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)
@@ -1011,7 +1035,15 @@
     const sentAt = Date.now();
     try {
       const r = await fetch(url, opts || { method: 'POST' });
-      if (r.ok) pendingEchoes++;      // one bump is ours; consume it on arrival
+      if (r.ok) {
+        pendingEchoes++;              // one bump is ours; consume it on arrival
+        // every mutate names its target the same way; a move dirties both ends
+        try {
+          const q = new URL(url, location.href).searchParams;
+          bustPages(q.get('name') || q.get('from') || q.get('key'));
+          if (q.get('to')) bustPages(q.get('to'));
+        } catch {}
+      }
       return r;
     }
     //  RTT-scaled like the save paths: our own bump arrives a queue-length
@@ -2464,6 +2496,7 @@
     if (r && r.status === 409) { st('that page already exists', false); return; }
     if (!r || !r.ok) { st('save failed' + (r ? ' ' + r.status : ''), false); return; }
     pendingEchoes++;                  // this save's own beacon bump
+    bustPages(name);
     current = name;
     curKind = kind;
     pname.readOnly = true;
@@ -2521,7 +2554,10 @@
     try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
     saving = false;
     echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));  // see above
-    if (r && r.ok) pendingEchoes++;   // this save's own beacon bump
+    if (r && r.ok) {
+      pendingEchoes++;                // this save's own beacon bump
+      bustPages(current);
+    }
     if (shipGone(r)) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
@@ -2624,6 +2660,7 @@
     }
     if (src.value === sent) dirty = false;
     st('saved');
+    bustPages(grubPath);
     if (savePending) { savePending = false; if (dirty) saveGrub(); }
   }
 
@@ -5763,6 +5800,7 @@ editor, or git will do if you only want to look.
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
     st('memory saved');
+    bustPages(key);
     knowGen++;
     const k = knowEntry(key);
     if (k) k.bytes = sent.length;

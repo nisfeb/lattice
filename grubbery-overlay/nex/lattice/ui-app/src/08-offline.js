@@ -137,6 +137,9 @@
   const offDel = async (name) => {
     if (!qrust()) await idbDel(name);
     else { try { await qcall('queue_del', { name }); } catch {} }
+    // a queue entry leaves the queue because it LANDED (or was dropped with
+    // a notice) — either way the reader's cached views of it are now lies
+    bustPages(name);
     await offRecount();
   };
   const opAll = async () => {
@@ -430,6 +433,9 @@
       if (!(r && r.ok)) {
         st('offline ' + o.op + ' no longer applies: ' +
           (o.name || o.from) + ' (skipped)', false);
+      } else {
+        bustPages(o.name || o.from);
+        if (o.to) bustPages(o.to);
       }
       await opDel(o._k);
     }
