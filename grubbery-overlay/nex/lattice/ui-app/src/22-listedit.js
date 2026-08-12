@@ -147,3 +147,55 @@
     const text = '\n' + marker + tail.join('\n');
     return { from: selStart, to: blockEnd, text, caret: selStart + 1 + marker.length };
   };
+
+  // ── indent / outdent a list item ─────────────────────────────────────────
+  // Tab on a list line moves it a level deeper; Shift-Tab a level out. Same
+  // contract as listEnter: pure, returns {from, to, text, caret} or null for
+  // "not a list edit — let Tab do its ordinary thing". A selection spanning
+  // several lines moves every LIST line in it together, which is what makes
+  // reshaping a pasted outline a two-keystroke job.
+  //
+  // One level is TWO SPACES, because that is what the local renderer counts
+  // (59-md.js: depth = floor(indent/2) + 1). A tab character is one level of
+  // its own on the way out.
+  const listTab = (value, selStart, selEnd, flavor, dir) => {
+    // gemtext has no nesting: "* " at column zero is the whole grammar, and
+    // an indented line is ordinary text. Tab must stay a plain tab there.
+    if (flavor === 'gmi') return null;
+    const ITEM = /^([ \t]*)(?:([-*+])|(\d+)([.)]))([ \t]+)/;
+    // fenced code is literal text (the same rule listEnter applies): a Tab
+    // inside a fence is indentation for CODE, not for a list that is not one
+    const fences = value.slice(0, selStart).match(/^[ \t]*(?:```|~~~)/gm);
+    if (fences && fences.length % 2 === 1) return null;
+
+    const lineStart = value.slice(0, selStart).lastIndexOf('\n') + 1;
+    let spanEnd = value.indexOf('\n', Math.max(selEnd, selStart));
+    if (spanEnd === -1) spanEnd = value.length;
+    const span = value.slice(lineStart, spanEnd).split('\n');
+
+    // only item lines move; a selection that contains none is not a list edit
+    if (!span.some((ln) => ITEM.test(ln))) return null;
+
+    let firstDelta = 0;   // how the FIRST line's start moved, for the caret
+    const out = span.map((ln, i) => {
+      if (!ITEM.test(ln)) return ln;
+      if (dir > 0) {
+        if (i === 0) firstDelta = 2;
+        return '  ' + ln;
+      }
+      // outdent: one tab is one level; otherwise up to two spaces
+      const cut = ln.startsWith('\t') ? 1 : Math.min(2, (ln.match(/^ */) || [''])[0].length);
+      if (i === 0) firstDelta = -cut;
+      return ln.slice(cut);
+    });
+    const text = out.join('\n');
+    if (text === value.slice(lineStart, spanEnd)) return null;   // nothing to take out
+
+    if (selStart === selEnd) {
+      // keep the caret on the same character it was on, clamped to its line
+      const caret = Math.max(lineStart, selStart + firstDelta);
+      return { from: lineStart, to: spanEnd, text, caret };
+    }
+    // a multi-line selection stays a selection over the moved lines
+    return { from: lineStart, to: spanEnd, text, caret: lineStart, caretEnd: lineStart + text.length };
+  };

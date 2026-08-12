@@ -53,24 +53,33 @@
   // Applies the list-continuation edit if the caret is in a list. Shared by
   // the keydown path and the beforeinput path below, which is the ONLY one a
   // phone reliably takes.
-  const continueList = () => {
-    if (src.readOnly) return false;
-    if (!(mode === 'know' || ['md', 'text', 'gmi'].includes(pkind.value))) return false;
-    // know memories are prose, so they follow the markdown rules
-    const flavor = mode === 'know' ? 'md' : pkind.value;
-    const r = listEnter(src.value, src.selectionStart, src.selectionEnd, flavor);
-    if (!r) return false;
+  // prose kinds get list behaviour; anything else is code, where "- " and
+  // "1." are just characters. know memories are prose, so markdown rules.
+  const proseFlavor = () => {
+    if (mode === 'know') return 'md';
+    return ['md', 'text', 'gmi'].includes(pkind.value) ? pkind.value : null;
+  };
+  // Apply a {from, to, text, caret} edit from the pure list functions.
+  // execCommand keeps the textarea's OWN undo stack, so Ctrl+Z steps back
+  // through these edits like any typing. Assigning src.value wipes that
+  // stack outright (the old Tab handler's sin). Deprecated, not gone, and
+  // there is no replacement that preserves undo; setRangeText is the
+  // fallback when an engine refuses.
+  const applyEdit = (r) => {
     src.setSelectionRange(r.from, r.to);
-    // execCommand keeps the textarea's OWN undo stack, so Ctrl+Z steps back
-    // through these edits like any typing. Assigning src.value wipes that
-    // stack outright, which is why the Tab handler below loses undo.
-    // Deprecated, not gone, and there is no replacement that preserves
-    // undo; setRangeText is the fallback when an engine refuses.
     let ok = false;
     try { ok = document.execCommand('insertText', false, r.text); } catch {}
     if (!ok) src.setRangeText(r.text, r.from, r.to, 'end');
-    src.setSelectionRange(r.caret, r.caret);
+    src.setSelectionRange(r.caret, r.caretEnd == null ? r.caret : r.caretEnd);
     edited();
+  };
+  const continueList = () => {
+    if (src.readOnly) return false;
+    const flavor = proseFlavor();
+    if (!flavor) return false;
+    const r = listEnter(src.value, src.selectionStart, src.selectionEnd, flavor);
+    if (!r) return false;
+    applyEdit(r);
     return true;
   };
   let plainBreak = false;
@@ -115,9 +124,18 @@
     if (e.key === 'Tab') {
       e.preventDefault();
       if (src.readOnly) return;   // readOnly blocks typing, not scripted edits
-      const s = src.selectionStart;
-      src.value = src.value.slice(0, s) + '  ' + src.value.slice(src.selectionEnd);
-      src.selectionStart = src.selectionEnd = s + 2;
-      edited();
+      // On a list line, Tab is structure, not whitespace: indent the item a
+      // level, Shift-Tab brings it back out. A multi-line selection moves
+      // every list line in it together.
+      const flavor = proseFlavor();
+      if (flavor) {
+        const r = listTab(src.value, src.selectionStart, src.selectionEnd,
+          flavor, e.shiftKey ? -1 : 1);
+        if (r) { applyEdit(r); return; }
+      }
+      // Shift-Tab outside a list has nothing to take back
+      if (e.shiftKey) return;
+      applyEdit({ from: src.selectionStart, to: src.selectionEnd,
+        text: '  ', caret: src.selectionStart + 2 });
     }
   });
