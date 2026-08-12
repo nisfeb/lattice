@@ -112,6 +112,14 @@
               else if (ln.startsWith('data: ')) data = ln.slice(6).trim();
             }
             if (!name) continue;
+            // this keep streams the whole /beacon directory: events arrive
+            // as "old /rev", "old /comments", "upd /rev", ... — the name
+            // carries the grub's sub-path. Only /rev is the change beacon;
+            // acting on the badge stamp's events corrupted lastRev and
+            // fired spurious refreshes. (Historical note: the pre-raw
+            // EventSource listened for a literal 'upd' event, which never
+            // existed — live refresh was ALWAYS the 30s poll.)
+            if (name.slice(-5) !== ' /rev') continue;
             if (name.slice(0, 3) === 'old') {
               // registration. The stream is authoritative from HERE on;
               // a rev that moved since we last looked is a missed change.

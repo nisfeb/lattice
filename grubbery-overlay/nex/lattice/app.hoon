@@ -6711,7 +6711,7 @@
     (trip '";var REV="')
     rev
     %-  trip
-    '";async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){location.reload();return}continue}location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
+    '";async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(-5)!==" /rev")continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){location.reload();return}continue}location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
   ==
 ::  +explore-crumbs: breadcrumb nav, absolute hrefs from the ship root down,
 ::  each with a trailing slash. The leaf is linked too (self-link; harmless).
@@ -7906,7 +7906,7 @@
     (trip '";var REV="')
     rev
     %-  trip
-    '";async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){location.reload();return}continue}location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
+    '";async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(-5)!==" /rev")continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){location.reload();return}continue}location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
   ==
 ::  +lattice-page: placeholder web reader (replaced by the live SSE view in
 ::  step 6).
