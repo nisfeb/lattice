@@ -5035,12 +5035,25 @@
 ++  fs-dump-json
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
+  ::  the current /beacon/rev rides along. The dump is a SNAPSHOT, and the
+  ::  client's beacon stream only reports changes from its registration
+  ::  onward — a bump between this snapshot and that registration was
+  ::  invisible on a first-ever session (nothing remembered to compare the
+  ::  registration's rev against). With the snapshot's rev in hand, the
+  ::  client always has a baseline, and the gap closes by comparison for
+  ::  fresh profiles exactly as it does for returning ones.
+  ;<  bv=view:nexus  bind:m
+    (peek:io [%& %& (weld app-base:lu /beacon) %rev] ~)
+  =/  rev=json
+    ?.  ?=([%file *] bv)  ~
+    (fall (mole |.(;;(json (sang-noun:tarball sang.bv)))) ~)
   ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
-  ?.  ?=([%ball *] sn)  (pure:m (pairs:enjs:format ~[['nodes' a+~]]))
+  ?.  ?=([%ball *] sn)
+    (pure:m (pairs:enjs:format ~[['nodes' a+~] ['rev' rev]]))
   =/  nodes=(list [pax=path j=json])  (dump-walk ball.sn wave.sn ~)
   =/  srt  (sort nodes |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
   =/  js=(list json)  (turn srt |=([* j=json] j))
-  (pure:m (pairs:enjs:format ~[['nodes' a+js]]))
+  (pure:m (pairs:enjs:format ~[['nodes' a+js] ['rev' rev]]))
 ::  +dump-walk: recurse ball+wave in lockstep (mirrors +collect-tree). A dir with a
 ::  %code grub is a page → emit path+kind+body+size+rev+mtime, body pulled straight
 ::  from the ball's sang (no re-peek); any other non-root dir is a folder. cass
@@ -5665,8 +5678,20 @@
   =/  wroad=road:tarball  [%& %& [public-grp %'how.weir']]
   ;<  cur=weir:nexus  bind:m  (read-weir wroad)
   =/  iroad=road:tarball  [%& %& app-base:lu %'comments.sig']
-  ?:  (~(has in poke.cur) iroad)  (pure:m ~)
-  (put-file wroad [/ %weir] cur(poke (~(put in poke.cur) iroad)))
+  ;<  ~  bind:m
+    ?:  (~(has in poke.cur) iroad)  (pure:m ~)
+    (put-file wroad [/ %weir] cur(poke (~(put in poke.cur) iroad)))
+  ::  seed /beacon/comments when it is absent. On a store from before the
+  ::  stamp existed, comments-latest answered null and the badge fell back
+  ::  to the full inbox scan (~6s of serial pier time) on every tick — a
+  ::  price that would only stop when the NEXT comment happened to arrive.
+  ::  A seed of `now` is honest: everything currently in the inbox is older
+  ::  than it, and the badge's change detection starts working immediately.
+  ;<  bx=?  bind:m
+    (peek-exists:io [%& %& (weld app-base:lu /beacon) %comments])
+  ?:  bx  (pure:m ~)
+  ;<  now=@da  bind:m  bowl-now
+  (put-file [%& %& (weld app-base:lu /beacon) %comments] [/ %json] (numb:enjs:format `@ud`now))
 ::  +apply-comment-notice: a comment poked by ANOTHER ship.
 ::
 ::  Everything that decides whether it lands is read here, never from the
@@ -7122,7 +7147,14 @@
   ::  NOT in SHELL then had to queue behind: /apps/lattice took 2.0s on its
   ::  own and 5.3s alongside the revalidations, and clicking home out of the
   ::  editor took about eight seconds. Freshness is the cache key's job.
-  =/  ver=@t  (scot %ux (mug [uih uij]))
+  ::  the mug must cover EVERY asset SHELL caches, not just the two big
+  ::  ones. With the 5s revalidation gone (#154), activate-time eviction is
+  ::  the ONLY refresh path — an asset outside the key that changes while
+  ::  the key holds still is stale forever. All seven are compile-time
+  ::  constants, so this is exactly "the cache key changes when and only
+  ::  when what it caches changes".
+  =/  ver=@t
+    (scot %ux (mug [uih uij icon pjs manifest-json icon-192-b64 icon-512-b64]))
   %+  rap  3
   :~  'var V="lattice-'
       ver

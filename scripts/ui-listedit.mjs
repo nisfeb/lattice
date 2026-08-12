@@ -269,6 +269,8 @@ tab('nothing to take out is not an edit', '1. a|', '1. a|', -1);
 tab('caret clamps to the line start', '  - a\n|  - b', '  - a\n|- b', -1);
 
 console.log('\ntab: selections');
+tab('a selection ending at column 0 leaves that line alone',
+  '[- a\n]- b', '[  - a]\n- b', 1);
 tab('a selection indents every list line in it',
   '1. a\n[2. b\n3. c]', '1. a\n[  2. b\n  3. c]', 1);
 tab('non-list lines inside the selection stay put',

@@ -52,6 +52,12 @@
     if (!r.ok) { st('tree failed ' + r.status, false); return; }
     const d = await r.json();
     if (gen !== treeGen) return;   // a local patch superseded this response
+    // the dump's beacon rev is the baseline for a FIRST-EVER session: the
+    // stream only reports from registration onward, and with nothing
+    // remembered the registration comparison had nothing to catch a bump
+    // that landed between this snapshot and that registration. Never
+    // overwrite a stream-observed rev — the snapshot may already trail it.
+    if (!lastRev && d.rev != null) noteRev(String(d.rev));
     nodes = d.nodes;
     // drop only the cached renders the dump says have moved FORWARD. Blanket-
     // clearing on every change cost every other page its cache. Comparing
