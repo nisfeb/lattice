@@ -225,6 +225,7 @@
     if (r && r.status === 409) { st('that page already exists', false); return; }
     if (!r || !r.ok) { st('save failed' + (r ? ' ' + r.status : ''), false); return; }
     pendingEchoes++;                  // this save's own beacon bump
+    bustPages(name);
     current = name;
     curKind = kind;
     pname.readOnly = true;
@@ -282,7 +283,10 @@
     try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
     saving = false;
     echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));  // see above
-    if (r && r.ok) pendingEchoes++;   // this save's own beacon bump
+    if (r && r.ok) {
+      pendingEchoes++;                // this save's own beacon bump
+      bustPages(current);
+    }
     if (shipGone(r)) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor

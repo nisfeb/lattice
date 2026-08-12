@@ -177,6 +177,7 @@
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
     st('memory saved');
+    bustPages(key);
     knowGen++;
     const k = knowEntry(key);
     if (k) k.bytes = sent.length;
