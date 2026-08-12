@@ -49,6 +49,12 @@
     // What the editor shows as the fetch leaves. When `painted`, the open has
     // already visibly happened and the fetch below is an UPGRADE (share, the
     // rendered html) — not the open itself.
+    //
+    // When NOT painted (a body the dump did not carry), the user just clicked
+    // and nothing changed on screen — on a slow pier that silence lasts
+    // seconds and reads as a dead click. Say the open is happening; every
+    // exit below already replaces this status.
+    if (!painted) stWork('opening ' + name + '\u2026');
     const shown = src.value;
     let d = null;
     try {
@@ -179,9 +185,21 @@
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '');
     let r = null;
+    //  a save is user activity even when it arrives by hotkey or autosave,
+    //  so the background lane (bgFetch) holds its traffic out of its way
+    lastAction = Date.now();
+    const sentAt = Date.now();
     try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); }
     catch {}
-    finally { saving = false; echoUntil = Date.now() + 4000; }
+    finally {
+      saving = false;
+      //  the echo window covers OUR OWN beacon bump. A fixed 4s assumed the
+      //  bump lands promptly; on a queued pier it arrives after the save's
+      //  own round trip again, so scale the window to what the pier just
+      //  showed us. Too short meant refetching the page we just wrote —
+      //  two more pier requests to learn nothing.
+      echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
+    }
     if (shipGone(r)) {
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
@@ -206,6 +224,7 @@
     }
     if (r && r.status === 409) { st('that page already exists', false); return; }
     if (!r || !r.ok) { st('save failed' + (r ? ' ' + r.status : ''), false); return; }
+    pendingEchoes++;                  // this save's own beacon bump
     current = name;
     curKind = kind;
     pname.readOnly = true;
@@ -258,9 +277,12 @@
       : api + '/page-save?name=' + encodeURIComponent(current) +
         '&type=' + (curKind || pkind.value);
     let r = null;
+    lastAction = Date.now();       // saves are user activity (see above)
+    const sentAt = Date.now();
     try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
     saving = false;
-    echoUntil = Date.now() + 4000;
+    echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));  // see above
+    if (r && r.ok) pendingEchoes++;   // this save's own beacon bump
     if (shipGone(r)) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
