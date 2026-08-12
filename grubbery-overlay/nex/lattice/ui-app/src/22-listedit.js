@@ -174,7 +174,11 @@
     const fences = value.slice(0, lineStart).match(/^[ \t]*(?:```|~~~)/gm);
     if (fences && fences.length % 2 === 1) return null;
 
-    let spanEnd = value.indexOf('\n', Math.max(selEnd, selStart));
+    // a selection ending at column 0 does not include that line: shift-down
+    // leaves the anchor there, and indenting a line the user never touched
+    // is the surprise every editor avoids
+    const effEnd = selEnd > selStart && value[selEnd - 1] === '\n' ? selEnd - 1 : selEnd;
+    let spanEnd = value.indexOf('\n', Math.max(effEnd, selStart));
     if (spanEnd === -1) spanEnd = value.length;
     const span = value.slice(lineStart, spanEnd).split('\n');
 
