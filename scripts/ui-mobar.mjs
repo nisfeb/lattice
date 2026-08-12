@@ -106,6 +106,58 @@ const over = await m.evaluate(() => {
 check('phone: nothing reaches past the right edge (no horizontal scroll)',
   over.scrollW <= over.vw && over.past === 0, JSON.stringify(over));
 
+// ── list indent/outdent by thumb ───────────────────────────────────────────
+// Phones have no Tab key, so the editor grows a fixed button pair while the
+// caret sits where listTab would act — ordered, unordered, and task items
+// alike. The tap must not steal focus (the keyboard would drop), and the
+// pair must vanish on prose.
+await m.evaluate(() => {
+  const s = document.getElementById('src');
+  s.value = '1. one\n- two\n- [ ] three\nplain prose';
+  s.dispatchEvent(new Event('input'));
+});
+const caretTo = async (line) => {
+  await m.evaluate((ln) => {
+    const s = document.getElementById('src');
+    s.focus();
+    const at = s.value.split('\n').slice(0, ln).join('\n').length + (ln ? 1 : 0);
+    s.setSelectionRange(at + 2, at + 2);
+    document.dispatchEvent(new Event('selectionchange'));
+  }, line);
+  await new Promise((r) => setTimeout(r, 300));   // the paint is debounced
+};
+const pairState = () => m.evaluate(() => ({
+  on: document.getElementById('lbtns').classList.contains('on'),
+  display: getComputedStyle(document.getElementById('lbtns')).display,
+  active: document.activeElement && document.activeElement.id,
+  mv: document.getElementById('ws').dataset.mv,
+}));
+const pairOn = async () => { const st = await pairState(); return st.on && st.display !== 'none'; };
+const line = (n) => m.evaluate((i) => document.getElementById('src').value.split('\n')[i], n);
+const tap = (id) => m.evaluate((i) => {
+  const ev = new Event('pointerdown', { bubbles: true, cancelable: true });
+  document.getElementById(i).dispatchEvent(ev);
+}, id);
+
+await caretTo(0);
+check('ordered item: the pair appears', await pairOn(), JSON.stringify(await pairState()));
+await tap('lind');
+check('ordered item indents by tap', (await line(0)) === '  1. one', await line(0));
+await tap('loutd');
+check('and steps back out', (await line(0)) === '1. one', await line(0));
+
+await caretTo(1);
+await tap('lind');
+check('unordered item indents by tap', (await line(1)) === '  - two', await line(1));
+await caretTo(2);
+await tap('lind');
+check('task item indents by tap', (await line(2)) === '  - [ ] three', await line(2));
+check('the textarea keeps focus through taps', await m.evaluate(() =>
+  document.activeElement === document.getElementById('src')));
+
+await caretTo(3);
+check('on prose the pair is gone', !(await pairOn()));
+
 // a tree folder's + prompts for a name on phone too (the name field is
 // hidden here just as it is on the desktop shell)
 await m.evaluate(() => { document.querySelector('.mtabs button[data-mv="tree"]').click(); });
