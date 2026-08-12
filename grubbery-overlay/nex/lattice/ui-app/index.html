@@ -87,6 +87,10 @@ select, option { color-scheme: light dark; }
    label saying which page is open. Set by 96-deskmenu.js, which also adds the
    name prompt that replaces typing into the field. */
 #pathlabel { display: none; }
+/* list indent/outdent touch pair (45-templates.js): phones have no Tab key,
+   so these exist at phone width only, and only while the caret is where
+   listTab would act. Desktop has the real keys. */
+#lbtns { display: none; }
 /* phone bar (97-mobar.js): built always, shown only by the 820px block */
 #mpath, #mmore, #msheet { display: none; }
 .ws.deskbar #pname, .ws.deskbar #pkind { display: none; }
@@ -377,6 +381,14 @@ select, option { color-scheme: light dark; }
     opacity: .8;
   }
   .ws.full[data-mv="code"] #fullt { top: 10px; bottom: auto; }
+  /* the list pair sits opposite #fullt, and only when it can act. Fixed for
+     the same reason #fullt is: it must survive full-screen hiding the bar.
+     Above the keyboard by being bottom-anchored in the visual viewport. */
+  .ws[data-mv="code"] #lbtns.on { display: flex; gap: 8px; position: fixed;
+    left: 10px; bottom: 12px; z-index: 30; }
+  #lbtns button { font: 16px/1 system-ui, sans-serif; padding: 8px 13px;
+    border-radius: 999px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--muted); opacity: .85; }
   .ws.full[data-mv="code"] .bar,
   .ws.full[data-mv="code"] .mtabs { display: none; }
   .ws.full[data-mv="code"] .edwrap { min-height: 100vh; min-height: 100dvh; }
