@@ -1,5 +1,5 @@
   // ── preview pane: <lat-preview> ──────────────────────────────────────────
-  // Content kinds render through page-preview (srcdoc). Computed kinds (hoon,
+  // Content kinds render locally (srcdoc). Computed kinds (hoon,
   // js, css) show the page's live DATA via /f/<name>, refreshed after save/cmd.
   customElements.define('lat-preview', class extends HTMLElement {
     connectedCallback() {
@@ -85,7 +85,6 @@
   };
 
   let prevTimer = null;
-  let prevSeq = 0;
   async function refreshPreview() {
     // a hidden pane renders to nobody, but the POST still costs ~2s of pier
     // time and delays the autosave queued behind it (worst on mobile, where
@@ -102,27 +101,15 @@
       // character into one. src.value is already the new body at every call
       // site (applyPage sets it well before it calls here), so this paints the
       // document that is about to be rendered, not the one leaving the screen.
+      // ...and the local paint IS the preview. The pier's "correcting"
+      // render is gone: every content kind here (CONTENT ≡ md/gmi/html/text)
+      // has a client renderer, and posting the whole document so the ship's
+      // renderer could overrule ours cost ~2s of serial pier time per save
+      // to fix divergence that would be a renderer BUG, not a runtime
+      // condition — the boot snapshot has always trusted the local render.
+      // Computed kinds (hoon, js, css) take the /f/ branch below: their
+      // preview is the page's live data, which no client renderer can know.
       paintLocal();
-      // A render is of the text that was SENT, and it lands a pier round trip
-      // later. Painting it unconditionally means a render issued before an
-      // edit can arrive after it and put the older document back on screen.
-      //
-      // That was survivable when every paint came from here and they mostly
-      // queued in order. Now the local paint is instant, so a late reply
-      // visibly reverts what you just typed: the edit looks lost.
-      //
-      // Two guards, because they catch different things. prevSeq drops a reply
-      // that a newer request has already superseded. Comparing the text drops
-      // one whose document has moved on even if no newer request went out yet,
-      // which is the common case while typing.
-      const mine = ++prevSeq;
-      const sent = src.value;
-      try {
-        const r = await fetch(api + '/page-preview?type=' + pkind.value,
-          { method: 'POST', body: sent });
-        if (mine !== prevSeq || src.value !== sent) return;
-        if (r.ok) prev.srcdoc = await r.text();
-      } catch {}
     } else if (current) {
       prev.removeAttribute('srcdoc');
       prev.src = api + '/f/' + current + '?t=' + Date.now();

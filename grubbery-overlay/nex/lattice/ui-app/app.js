@@ -913,6 +913,14 @@
   let saving = false;      // a save round-trip is in flight. Never overlap them.
   let savePending = false; // The pier serializes, so a second save just queues
                            // 3.7s of stale-body work behind the first
+  //  every successful mutation of ours produces exactly one beacon bump,
+  //  eventually — and on a queued pier "eventually" outlives any time
+  //  window (measured: 14s behind the background lane's own traffic). So
+  //  count them: each expected echo swallows one 'upd'. A pier-side
+  //  coalesce or an untracked mutation can make this swallow a real remote
+  //  update; the 30s poll / focus refresh is the floor that catches it,
+  //  the same tradeoff the time window has always accepted.
+  let pendingEchoes = 0;
   let echoUntil = 0;       // our own save bumps the beacon. Ignore that echo or
                            // every save triggers a tree+source refetch of content
                            // this client just wrote (~4s of pier time each)
@@ -1000,8 +1008,15 @@
       return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
     }
     echoUntil = Date.now() + 60000;
-    try { return await fetch(url, opts || { method: 'POST' }); }
-    finally { echoUntil = Date.now() + 4000; }
+    const sentAt = Date.now();
+    try {
+      const r = await fetch(url, opts || { method: 'POST' });
+      if (r.ok) pendingEchoes++;      // one bump is ours; consume it on arrival
+      return r;
+    }
+    //  RTT-scaled like the save paths: our own bump arrives a queue-length
+    //  late on a slow pier, and a window it misses turns into refetches
+    finally { echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt)); }
   }
 
   const collapsed = () => {
@@ -2206,6 +2221,12 @@
     // What the editor shows as the fetch leaves. When `painted`, the open has
     // already visibly happened and the fetch below is an UPGRADE (share, the
     // rendered html) — not the open itself.
+    //
+    // When NOT painted (a body the dump did not carry), the user just clicked
+    // and nothing changed on screen — on a slow pier that silence lasts
+    // seconds and reads as a dead click. Say the open is happening; every
+    // exit below already replaces this status.
+    if (!painted) stWork('opening ' + name + '\u2026');
     const shown = src.value;
     let d = null;
     try {
@@ -2336,9 +2357,21 @@
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '');
     let r = null;
+    //  a save is user activity even when it arrives by hotkey or autosave,
+    //  so the background lane (bgFetch) holds its traffic out of its way
+    lastAction = Date.now();
+    const sentAt = Date.now();
     try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); }
     catch {}
-    finally { saving = false; echoUntil = Date.now() + 4000; }
+    finally {
+      saving = false;
+      //  the echo window covers OUR OWN beacon bump. A fixed 4s assumed the
+      //  bump lands promptly; on a queued pier it arrives after the save's
+      //  own round trip again, so scale the window to what the pier just
+      //  showed us. Too short meant refetching the page we just wrote —
+      //  two more pier requests to learn nothing.
+      echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
+    }
     if (shipGone(r)) {
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
@@ -2363,6 +2396,7 @@
     }
     if (r && r.status === 409) { st('that page already exists', false); return; }
     if (!r || !r.ok) { st('save failed' + (r ? ' ' + r.status : ''), false); return; }
+    pendingEchoes++;                  // this save's own beacon bump
     current = name;
     curKind = kind;
     pname.readOnly = true;
@@ -2415,9 +2449,12 @@
       : api + '/page-save?name=' + encodeURIComponent(current) +
         '&type=' + (curKind || pkind.value);
     let r = null;
+    lastAction = Date.now();       // saves are user activity (see above)
+    const sentAt = Date.now();
     try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
     saving = false;
-    echoUntil = Date.now() + 4000;
+    echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));  // see above
+    if (r && r.ok) pendingEchoes++;   // this save's own beacon bump
     if (shipGone(r)) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
@@ -3018,7 +3055,7 @@
 
 // ── src/60-preview.js ─────────────────────────────────────────────────────
   // ── preview pane: <lat-preview> ──────────────────────────────────────────
-  // Content kinds render through page-preview (srcdoc). Computed kinds (hoon,
+  // Content kinds render locally (srcdoc). Computed kinds (hoon,
   // js, css) show the page's live DATA via /f/<name>, refreshed after save/cmd.
   customElements.define('lat-preview', class extends HTMLElement {
     connectedCallback() {
@@ -3104,7 +3141,6 @@
   };
 
   let prevTimer = null;
-  let prevSeq = 0;
   async function refreshPreview() {
     // a hidden pane renders to nobody, but the POST still costs ~2s of pier
     // time and delays the autosave queued behind it (worst on mobile, where
@@ -3121,27 +3157,15 @@
       // character into one. src.value is already the new body at every call
       // site (applyPage sets it well before it calls here), so this paints the
       // document that is about to be rendered, not the one leaving the screen.
+      // ...and the local paint IS the preview. The pier's "correcting"
+      // render is gone: every content kind here (CONTENT ≡ md/gmi/html/text)
+      // has a client renderer, and posting the whole document so the ship's
+      // renderer could overrule ours cost ~2s of serial pier time per save
+      // to fix divergence that would be a renderer BUG, not a runtime
+      // condition — the boot snapshot has always trusted the local render.
+      // Computed kinds (hoon, js, css) take the /f/ branch below: their
+      // preview is the page's live data, which no client renderer can know.
       paintLocal();
-      // A render is of the text that was SENT, and it lands a pier round trip
-      // later. Painting it unconditionally means a render issued before an
-      // edit can arrive after it and put the older document back on screen.
-      //
-      // That was survivable when every paint came from here and they mostly
-      // queued in order. Now the local paint is instant, so a late reply
-      // visibly reverts what you just typed: the edit looks lost.
-      //
-      // Two guards, because they catch different things. prevSeq drops a reply
-      // that a newer request has already superseded. Comparing the text drops
-      // one whose document has moved on even if no newer request went out yet,
-      // which is the common case while typing.
-      const mine = ++prevSeq;
-      const sent = src.value;
-      try {
-        const r = await fetch(api + '/page-preview?type=' + pkind.value,
-          { method: 'POST', body: sent });
-        if (mine !== prevSeq || src.value !== sent) return;
-        if (r.ok) prev.srcdoc = await r.text();
-      } catch {}
     } else if (current) {
       prev.removeAttribute('srcdoc');
       prev.src = api + '/f/' + current + '?t=' + Date.now();
@@ -5332,23 +5356,85 @@ editor, or git will do if you only want to look.
     // not render, and it is skipped entirely while the pane is open.
     if ($('cmwrap') && $('cmwrap').hidden) refreshCommentBadge();
   };
-  try {
-    const es = new EventSource('/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev');
-    let beaconTimer = null;
-    es.addEventListener('upd', () => {
-      // our own save bumps the beacon too. Refetching tree + source to learn
-      // about content this client just wrote was ~4s of pier time per save.
-      // A remote edit inside the echo window is caught by the 30s poll/focus.
-      if (Date.now() < echoUntil) return;
-      clearTimeout(beaconTimer);
-      beaconTimer = setTimeout(refreshAll, 300);
-    });
-  } catch {}
+  // ── the beacon stream, read raw ──────────────────────────────────────────
+  // Not an EventSource: the stream's INITIAL event is named "old <path>" (a
+  // dynamic name EventSource cannot subscribe to), and that event is the one
+  // that matters most. It is the pier's proof of REGISTRATION — the keep is
+  // a queued pier event of its own, so headers (and EventSource's onopen)
+  // arrive long before the fiber actually watches, and any bump in that
+  // window is missed with no replay. The old-event carries the CURRENT rev,
+  // so the gap closes by comparison, not by clocks: remember the last rev
+  // this client saw; if registration shows a different one, something
+  // happened while nobody was watching — refresh. Bumps after registration
+  // arrive as upd events, exactly as before.
+  let streamLive = false;
+  let beaconTimer = null;
+  const bumped = () => { clearTimeout(beaconTimer); beaconTimer = setTimeout(refreshAll, 300); };
+  let lastRev = '';
+  try { lastRev = localStorage.latBeaconRev || ''; } catch {}
+  const noteRev = (rev) => {
+    if (!rev) return;
+    lastRev = rev;
+    try { localStorage.latBeaconRev = rev; } catch {}
+  };
+  (async () => {
+    for (;;) {
+      try {
+        const resp = await fetch('/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev',
+          { headers: { Accept: 'text/event-stream' } });
+        const rd = resp.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await rd.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const evs = buf.split('\n\n');
+          buf = evs.pop();
+          for (const ev of evs) {
+            let name = '', data = '';
+            for (const ln of ev.split('\n')) {
+              if (ln.startsWith('event: ')) name = ln.slice(7).trim();
+              else if (ln.startsWith('data: ')) data = ln.slice(6).trim();
+            }
+            if (!name) continue;
+            if (name.slice(0, 3) === 'old') {
+              // registration. The stream is authoritative from HERE on;
+              // a rev that moved since we last looked is a missed change.
+              // Echoes still pending were emitted BEFORE this point and
+              // will never arrive as upd — left counted, each would
+              // swallow one real remote bump later.
+              pendingEchoes = 0;
+              streamLive = true;
+              if (lastRev && data && data !== lastRev) bumped();
+              noteRev(data);
+              continue;
+            }
+            // a live bump. Our own save bumps the beacon too: refetching
+            // tree + source to learn what this client just wrote was ~4s
+            // of pier time per save, so our own expected echoes are
+            // consumed by count (see pendingEchoes).
+            noteRev(data);
+            if (pendingEchoes > 0) { pendingEchoes--; continue; }
+            if (Date.now() < echoUntil) continue;
+            bumped();
+          }
+        }
+      } catch {}
+      // stream severed: pier restart or proxy hiccup. The rev comparison at
+      // the NEXT registration covers whatever happens in this gap.
+      streamLive = false;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  })();
   // coming back to the tab/window is the moment staleness shows. Catch it
-  // directly, plus a gentle 30s idle poll in case the SSE stream died.
+  // directly. The 30s poll exists for a stream that is DOWN — while one is
+  // registered it would have said so, and polling anyway cost one pier
+  // request per open editor per 30s, forever (the same clock-vs-stream
+  // trust the mount fixed in #160).
   window.addEventListener('focus', refreshAll);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(); });
-  setInterval(refreshOpen, 30000);
+  setInterval(() => { if (!streamLive) refreshOpen(); }, 30000);
 
 // ── src/95-know.js ────────────────────────────────────────────────────────
   // ── knowledge mode ───────────────────────────────────────────────────────

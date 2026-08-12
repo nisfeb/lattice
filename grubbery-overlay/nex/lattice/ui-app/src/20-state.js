@@ -20,6 +20,14 @@
   let saving = false;      // a save round-trip is in flight. Never overlap them.
   let savePending = false; // The pier serializes, so a second save just queues
                            // 3.7s of stale-body work behind the first
+  //  every successful mutation of ours produces exactly one beacon bump,
+  //  eventually — and on a queued pier "eventually" outlives any time
+  //  window (measured: 14s behind the background lane's own traffic). So
+  //  count them: each expected echo swallows one 'upd'. A pier-side
+  //  coalesce or an untracked mutation can make this swallow a real remote
+  //  update; the 30s poll / focus refresh is the floor that catches it,
+  //  the same tradeoff the time window has always accepted.
+  let pendingEchoes = 0;
   let echoUntil = 0;       // our own save bumps the beacon. Ignore that echo or
                            // every save triggers a tree+source refetch of content
                            // this client just wrote (~4s of pier time each)
@@ -107,8 +115,15 @@
       return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
     }
     echoUntil = Date.now() + 60000;
-    try { return await fetch(url, opts || { method: 'POST' }); }
-    finally { echoUntil = Date.now() + 4000; }
+    const sentAt = Date.now();
+    try {
+      const r = await fetch(url, opts || { method: 'POST' });
+      if (r.ok) pendingEchoes++;      // one bump is ours; consume it on arrival
+      return r;
+    }
+    //  RTT-scaled like the save paths: our own bump arrives a queue-length
+    //  late on a slow pier, and a window it misses turns into refetches
+    finally { echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt)); }
   }
 
   const collapsed = () => {

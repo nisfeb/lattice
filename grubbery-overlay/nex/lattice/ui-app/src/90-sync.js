@@ -70,20 +70,82 @@
     // not render, and it is skipped entirely while the pane is open.
     if ($('cmwrap') && $('cmwrap').hidden) refreshCommentBadge();
   };
-  try {
-    const es = new EventSource('/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev');
-    let beaconTimer = null;
-    es.addEventListener('upd', () => {
-      // our own save bumps the beacon too. Refetching tree + source to learn
-      // about content this client just wrote was ~4s of pier time per save.
-      // A remote edit inside the echo window is caught by the 30s poll/focus.
-      if (Date.now() < echoUntil) return;
-      clearTimeout(beaconTimer);
-      beaconTimer = setTimeout(refreshAll, 300);
-    });
-  } catch {}
+  // ── the beacon stream, read raw ──────────────────────────────────────────
+  // Not an EventSource: the stream's INITIAL event is named "old <path>" (a
+  // dynamic name EventSource cannot subscribe to), and that event is the one
+  // that matters most. It is the pier's proof of REGISTRATION — the keep is
+  // a queued pier event of its own, so headers (and EventSource's onopen)
+  // arrive long before the fiber actually watches, and any bump in that
+  // window is missed with no replay. The old-event carries the CURRENT rev,
+  // so the gap closes by comparison, not by clocks: remember the last rev
+  // this client saw; if registration shows a different one, something
+  // happened while nobody was watching — refresh. Bumps after registration
+  // arrive as upd events, exactly as before.
+  let streamLive = false;
+  let beaconTimer = null;
+  const bumped = () => { clearTimeout(beaconTimer); beaconTimer = setTimeout(refreshAll, 300); };
+  let lastRev = '';
+  try { lastRev = localStorage.latBeaconRev || ''; } catch {}
+  const noteRev = (rev) => {
+    if (!rev) return;
+    lastRev = rev;
+    try { localStorage.latBeaconRev = rev; } catch {}
+  };
+  (async () => {
+    for (;;) {
+      try {
+        const resp = await fetch('/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev',
+          { headers: { Accept: 'text/event-stream' } });
+        const rd = resp.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await rd.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const evs = buf.split('\n\n');
+          buf = evs.pop();
+          for (const ev of evs) {
+            let name = '', data = '';
+            for (const ln of ev.split('\n')) {
+              if (ln.startsWith('event: ')) name = ln.slice(7).trim();
+              else if (ln.startsWith('data: ')) data = ln.slice(6).trim();
+            }
+            if (!name) continue;
+            if (name.slice(0, 3) === 'old') {
+              // registration. The stream is authoritative from HERE on;
+              // a rev that moved since we last looked is a missed change.
+              // Echoes still pending were emitted BEFORE this point and
+              // will never arrive as upd — left counted, each would
+              // swallow one real remote bump later.
+              pendingEchoes = 0;
+              streamLive = true;
+              if (lastRev && data && data !== lastRev) bumped();
+              noteRev(data);
+              continue;
+            }
+            // a live bump. Our own save bumps the beacon too: refetching
+            // tree + source to learn what this client just wrote was ~4s
+            // of pier time per save, so our own expected echoes are
+            // consumed by count (see pendingEchoes).
+            noteRev(data);
+            if (pendingEchoes > 0) { pendingEchoes--; continue; }
+            if (Date.now() < echoUntil) continue;
+            bumped();
+          }
+        }
+      } catch {}
+      // stream severed: pier restart or proxy hiccup. The rev comparison at
+      // the NEXT registration covers whatever happens in this gap.
+      streamLive = false;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  })();
   // coming back to the tab/window is the moment staleness shows. Catch it
-  // directly, plus a gentle 30s idle poll in case the SSE stream died.
+  // directly. The 30s poll exists for a stream that is DOWN — while one is
+  // registered it would have said so, and polling anyway cost one pier
+  // request per open editor per 30s, forever (the same clock-vs-stream
+  // trust the mount fixed in #160).
   window.addEventListener('focus', refreshAll);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(); });
-  setInterval(refreshOpen, 30000);
+  setInterval(() => { if (!streamLive) refreshOpen(); }, 30000);
