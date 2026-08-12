@@ -91,6 +91,21 @@ const seeded = await m.evaluate(() => document.getElementById('dlginput').value)
 check('pre-filled with the current name', seeded === label, JSON.stringify(seeded));
 await m.evaluate(() => document.getElementById('dlgcancel').click());
 
+// the bar is an item of a 1fr grid track whose floor is min-content, so a
+// long status line once pushed the whole layout 12px past the viewport —
+// horizontal scroll that only appeared AFTER the first pier response wrote
+// a longer status. By this point in the run a page has opened and a dialog
+// has cycled, so the status carries real text; nothing may stick out.
+const over = await m.evaluate(() => {
+  const vw = window.innerWidth;
+  let n = 0;
+  for (const el of document.querySelectorAll('body *'))
+    if (el.getBoundingClientRect().right > vw + 1) n++;
+  return { scrollW: document.documentElement.scrollWidth, vw, past: n };
+});
+check('phone: nothing reaches past the right edge (no horizontal scroll)',
+  over.scrollW <= over.vw && over.past === 0, JSON.stringify(over));
+
 // a tree folder's + prompts for a name on phone too (the name field is
 // hidden here just as it is on the desktop shell)
 await m.evaluate(() => { document.querySelector('.mtabs button[data-mv="tree"]').click(); });

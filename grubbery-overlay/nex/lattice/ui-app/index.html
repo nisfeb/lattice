@@ -324,7 +324,16 @@ select, option { color-scheme: light dark; }
      action. Everything it drops stays in the DOM — the ⋯ sheet clicks the
      real hidden buttons, the label mirrors the real name field — so no
      behaviour forks by width, only what is on screen. */
-  .bar { flex-wrap: nowrap; position: relative; }
+  /* min-width: 0 is the load-bearing half. The bar is an item of the .ws
+     grid's single 1fr column, and a grid item's automatic minimum is its
+     min-content size — for a nowrap flex row that is the SUM of the
+     children's text widths. The first long status line (st() after an
+     open or save) pushed that past the viewport, the 1fr track grew to
+     match, and every row (tabs, tree) stretched with it: horizontal
+     scroll that appears only after the first pier response, ~12px at
+     390px. Floor the item at 0 and the track stays at the viewport;
+     the flex row then squeezes #mpath (its min-width is already 0). */
+  .bar { flex-wrap: nowrap; position: relative; min-width: 0; }
   #modet, #pname, #pkind, #qt, #cmt, #aclt { display: none; }
   /* .grow is also flex:1 — left in the row it takes half the free space and
      the path label ellipsises early with daylight sitting next to it (the
