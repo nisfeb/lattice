@@ -1190,12 +1190,17 @@
     // an indented line is ordinary text. Tab must stay a plain tab there.
     if (flavor === 'gmi') return null;
     const ITEM = /^([ \t]*)(?:([-*+])|(\d+)([.)]))([ \t]+)/;
+    const lineStart = value.slice(0, selStart).lastIndexOf('\n') + 1;
     // fenced code is literal text (the same rule listEnter applies): a Tab
-    // inside a fence is indentation for CODE, not for a list that is not one
-    const fences = value.slice(0, selStart).match(/^[ \t]*(?:```|~~~)/gm);
+    // inside a fence is indentation for CODE, not for a list that is not one.
+    // Parity is counted up to LINE start, not caret: this is a line
+    // operation, so the question is whether the line begins inside a fence —
+    // and a caret-relative count changed its answer between an indent and
+    // the outdent that undoes it when the line itself opens with a fence
+    // marker (found by the round-trip property, seed 1105911052).
+    const fences = value.slice(0, lineStart).match(/^[ \t]*(?:```|~~~)/gm);
     if (fences && fences.length % 2 === 1) return null;
 
-    const lineStart = value.slice(0, selStart).lastIndexOf('\n') + 1;
     let spanEnd = value.indexOf('\n', Math.max(selEnd, selStart));
     if (spanEnd === -1) spanEnd = value.length;
     const span = value.slice(lineStart, spanEnd).split('\n');

@@ -257,6 +257,8 @@ tab('caret position rides the shift', '1. a\n2. b|cd', '1. a\n  2. b|cd', 1);
 tab('caret in the marker still indents the line', '1. a\n2|. b', '1. a\n  2|. b', 1);
 tab('a plain paragraph is not a list edit', 'just text|', 'just text|', 1);
 tab('inside a fence, tab stays ordinary', '```\n- x|', '```\n- x|', 1);
+tab('a selection starting on a fence-marker line is not a list edit',
+  '```\n~~~[1. \n- ]', '```\n~~~[1. \n- ]', 1);   // CI seed 1105911052
 tab('gemtext has no nesting', '* one|', '* one|', 1, 'gmi');
 
 console.log('\ntab: outdent');
