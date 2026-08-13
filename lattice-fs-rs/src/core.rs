@@ -132,6 +132,14 @@ impl GrubberyFs {
                             if ev == W::Up {
                                 s.watch_live = true;
                             }
+                            // an external change must also invalidate any dump
+                            // already IN FLIGHT: its snapshot may predate the
+                            // edit, and the swap guard only checks write_gen —
+                            // without this bump the stale swap lands, resets
+                            // vt_ts, and (watch_live silencing the TTL clock)
+                            // the mount serves the pre-edit tree until the
+                            // next bump, potentially hours on a quiet ship.
+                            s.write_gen += 1;
                             s.vt_ts = None;
                             s.read_cache.clear();
                             s.read_cache_bytes = 0; // else the stale total blocks re-caching
@@ -2028,6 +2036,42 @@ mod tests {
         let s = fs.st.lock().unwrap();
         assert_eq!(s.read_cache["note"], b"NEWER!", "a stale snapshot must not undo a write");
         assert_eq!(s.vt["/note.md"].node.as_ref().unwrap().size, 6);
+    }
+
+    #[test]
+    fn an_external_change_discards_an_in_flight_dump() {
+        // The third swapper hazard: a dump whose snapshot the pier produced
+        // BEFORE an external edit, landing AFTER the watch thread invalidated.
+        // Only write_gen guards swaps, so the watch handler must bump it —
+        // otherwise the stale swap resets vt_ts, watch_live silences the TTL
+        // clock, and the mount serves the pre-edit tree until the next bump.
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        let fs = warm_fs(f.clone());
+        f.entered.store(false, Ordering::SeqCst);
+        f.hold.store(true, Ordering::SeqCst);
+        {
+            let mut s = fs.st.lock().unwrap();
+            s.watch_live = true;
+            s.vt_ts = None; // a known change: kicks the background dump
+        }
+        fs.ensure_fresh();
+        wait_until("the refresh to start", || f.entered.load(Ordering::SeqCst));
+
+        // the beacon fires mid-flight: exactly what the watch handler does
+        {
+            let mut s = fs.st.lock().unwrap();
+            s.write_gen += 1;
+            s.vt_ts = None;
+            s.read_cache.clear();
+            s.read_cache_bytes = 0;
+        }
+
+        f.hold.store(false, Ordering::SeqCst);
+        wait_until("the stale dump", || !fs.st.lock().unwrap().refresh_pending);
+
+        let s = fs.st.lock().unwrap();
+        assert!(s.vt_ts.is_none(),
+            "a dump that raced an external change must not resurrect vt_ts");
     }
 
     #[test]
