@@ -70,8 +70,8 @@
       const part = list.slice(i, i + CHUNK);
       upProg(done, list.length, part[0].name);
       let r = null;
+      const payload = [];
       try {
-        const payload = [];
         for (const it of part)
           payload.push({ name: it.name, type: it.kind, body: (await it.file.text()) || '\n' });
         r = await mutate(api + '/page-save-batch',
@@ -85,9 +85,18 @@
         if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
         upErr.textContent += `failed: ${part.length} file(s) — ${msg}\n`;
       } else {
-        for (const it of part) addTreeNode(it.name, it.kind);
-        // batch targets live in the POST body, out of mutate()'s sight —
-        // a restore/upload may have overwritten anything, so drop it all
+        // an upload can OVERWRITE an existing page, and the batch's targets
+        // live in the POST body where mutate() can't see them — so every
+        // session tier must be told by hand, or openPage's pageCache hit
+        // serves the pre-upload body with zero requests and the next
+        // autosave buries the uploaded content under it.
+        for (const it of payload) {
+          pageCache.delete(it.name);
+          const nd = nodes.find((n) => n.page && n.path === it.name);
+          if (nd) { nd.body = it.body; nd.kind = it.type; }
+          else addTreeNode(it.name, it.type);
+        }
+        // and the SW pages cache, blind to POST bodies the same way
         bustAll();
       }
       done += part.length;

@@ -368,7 +368,13 @@
         if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
         if (rec.op === 'move' && under(q.name, rec.from)) {
           await offDel(q.name);
-          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length) });
+          // drop the CAS base: the drain replays the move FIRST, and
+          // move-pages creates the destination fresh at rev 1 — the old
+          // name's baseRev can never match it, and a mismatched base
+          // manufactures a conflicts/ page for a user who only edited and
+          // renamed. The move itself guarantees the destination's pre-save
+          // body is the one this edit was made from.
+          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 0 });
         }
       }
       for (const k of [...pageCache.keys()])
@@ -506,6 +512,20 @@
       // and %make creates the conflicts/ parent server-side, as it does for
       // the ship's own conflict pages.
       if (one && one.status === 409) {
+        // the 409 may be OUR OWN earlier attempt: tfetch's abort stops the
+        // wait, not the write, so a timed-out create can land ship-side and
+        // 409 its own replay (two tabs draining the shared queue race the
+        // same way). The single-save and batch paths have an identical-body
+        // dup rule for exactly this; a create must too, or a replay that
+        // raced its own landed write fabricates a "collided" conflict page.
+        try {
+          const sr = await tfetch(api + '/page-source?name=' +
+            encodeURIComponent(q.name), {}, 20000);
+          if (sr && sr.ok && ((await sr.json()).body || '') === (q.body || '\n')) {
+            await offDel(q.name);
+            continue;
+          }
+        } catch {}
         const alt = 'conflicts/offline-create-' + q.name.replace(/\//g, '-');
         let two = null;
         try {
@@ -3856,8 +3876,8 @@
       const part = list.slice(i, i + CHUNK);
       upProg(done, list.length, part[0].name);
       let r = null;
+      const payload = [];
       try {
-        const payload = [];
         for (const it of part)
           payload.push({ name: it.name, type: it.kind, body: (await it.file.text()) || '\n' });
         r = await mutate(api + '/page-save-batch',
@@ -3871,9 +3891,18 @@
         if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
         upErr.textContent += `failed: ${part.length} file(s) — ${msg}\n`;
       } else {
-        for (const it of part) addTreeNode(it.name, it.kind);
-        // batch targets live in the POST body, out of mutate()'s sight —
-        // a restore/upload may have overwritten anything, so drop it all
+        // an upload can OVERWRITE an existing page, and the batch's targets
+        // live in the POST body where mutate() can't see them — so every
+        // session tier must be told by hand, or openPage's pageCache hit
+        // serves the pre-upload body with zero requests and the next
+        // autosave buries the uploaded content under it.
+        for (const it of payload) {
+          pageCache.delete(it.name);
+          const nd = nodes.find((n) => n.page && n.path === it.name);
+          if (nd) { nd.body = it.body; nd.kind = it.type; }
+          else addTreeNode(it.name, it.type);
+        }
+        // and the SW pages cache, blind to POST bodies the same way
         bustAll();
       }
       done += part.length;

@@ -114,8 +114,8 @@ cat <<'EOF'
 Watch for "did not compile" / dep failures. Then, in order:
   1. load the lattice UI          — a banged nexus persists across restart
   2. lattice-list via MCP         — the memory store must be intact
-  3. GET  /catalog-init           — creates db + tables, idempotent
-  4. GET  /catalog-scan-self      — proves the crawler path writes
+  3. POST /catalog-init           — creates db + tables, idempotent
+  4. POST /catalog-scan-self      — proves the crawler path writes
   5. POST /know-reindex           — chunked, safe
   6. POST /search-reindex         — chunked, safe (was the wedge risk)
 EOF
