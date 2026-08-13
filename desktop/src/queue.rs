@@ -438,9 +438,11 @@ mod tests {
     fn a_ship_switch_resets_the_frozen_key() {
         // the frozen key keeps ONE ship's directory stable; reconnecting to a
         // DIFFERENT ship must not inherit it, or ship A's edits replay into B
-        let mut cfg = config::Config::default();
-        cfg.ship = "~shipa".into();
-        cfg.queue_key = "~shipa".into();
+        let mut cfg = config::Config {
+            ship: "~shipa".into(),
+            queue_key: "~shipa".into(),
+            ..Default::default()
+        };
         assert_eq!(key_after_connect(&cfg, "~shipa"), "~shipa");
         assert_eq!(key_after_connect(&cfg, "~shipb"), "");
         // same URL repointed at a new ship: the recorded @p still catches it
