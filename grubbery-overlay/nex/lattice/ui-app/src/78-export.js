@@ -184,8 +184,14 @@
       let ok = 0, bad = 0;
       for (const [name, mode] of Object.entries(share)) {
         try {
+          // archives carry /page-scopes labels, where ames-shared is
+          // 'urbit'; the share route's word is 'shared', and its unknown-
+          // mode default is PRIVATE — the one mapping this loop must not
+          // get wrong. (The route now also accepts 'urbit', for archives
+          // restored by clients older than this line.)
+          const wire = mode === 'urbit' ? 'shared' : mode;
           const r = await mutate(api + '/page-share?name=' + encodeURIComponent(name) +
-            '&mode=' + encodeURIComponent(mode));
+            '&mode=' + encodeURIComponent(wire));
           if (r && r.ok) ok++; else bad++;
         } catch { bad++; }
       }
@@ -296,12 +302,23 @@ editor, or git will do if you only want to look.
     // retention can recognise its own archives. Failures are reported the same
     // way a manual export's are — a backup that quietly stopped happening is
     // the failure this whole feature exists to prevent.
+    // What could not be read is named, not swallowed — in EVERY shell. The
+    // scheduled and desktop branches used to return before the missing
+    // report, quoting a count of pages that were not in the tar: a backup
+    // you believe is complete when it is not is the one outcome worse than
+    // no backup at all, and it is worst on the path that runs unattended.
+    const gaps = missing.length
+      ? ', but could NOT read: ' + missing.slice(0, 5).join(', ') +
+        (missing.length > 5 ? ' and ' + (missing.length - 5) + ' more' : '')
+      : '';
     if (autoId) {
       const d = desk();
       if (!d) return;
       try {
         const where = await d.invoke('backup_write', { id: autoId, b64: await blobToB64(blob) });
-        st('backed up ' + pages.length + ' page(s) to ' + where);
+        if (gaps) st('backed up ' + pages.length + ' page(s) to ' + where +
+          gaps + ' — backup INCOMPLETE', false);
+        else st('backed up ' + pages.length + ' page(s) to ' + where);
       } catch (e) { st('scheduled backup failed: ' + e, false); }
       return;
     }
@@ -314,7 +331,8 @@ editor, or git will do if you only want to look.
       try { where = await d.invoke('save_vault', { name: fname, b64: await blobToB64(blob) }); }
       catch (e) { st('export failed: ' + e, false); return; }
       if (!where) { st('export cancelled'); return; }
-      st('exported ' + pages.length + ' page(s) to ' + where);
+      if (gaps) st('exported ' + pages.length + ' page(s) to ' + where + gaps, false);
+      else st('exported ' + pages.length + ' page(s) to ' + where);
       return;
     }
     const url = globalThis.URL.createObjectURL(blob);
@@ -324,14 +342,8 @@ editor, or git will do if you only want to look.
     a.click();
     setTimeout(() => globalThis.URL.revokeObjectURL(url), 30000);
 
-    // What could not be read is named, not swallowed. A backup you believe is
-    // complete when it is not is the only outcome here that is worse than no
-    // backup at all.
-    if (missing.length) {
-      st('exported ' + pages.length + ' page(s), but could NOT read: ' +
-        missing.slice(0, 5).join(', ') +
-        (missing.length > 5 ? ' and ' + (missing.length - 5) + ' more' : ''), false);
-    } else st('exported ' + pages.length + ' page(s) and ' +
+    if (gaps) st('exported ' + pages.length + ' page(s)' + gaps, false);
+    else st('exported ' + pages.length + ' page(s) and ' +
       ((know && (know.items || []).length) || 0) + ' memories');
   }
 
