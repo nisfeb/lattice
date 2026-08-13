@@ -129,6 +129,12 @@ navs = 0;
 const p2 = await browser.newPage();
 await p2.setCookie({ name: cn, value: cr.join('='), domain: HOST, path: '/' });
 await p2.goto(HOME, { waitUntil: 'domcontentloaded' });
+// opening p2 made the viewing tab HIDDEN, and hidden tabs now hold no
+// stream and defer updates by design — bring it back before the bump so
+// this scenario tests the VISIBLE live path
+await p.bringToFront();
+await sleep(1500);   // let the stream reconnect
+navs = 0;
 await p2.evaluate(async (b) => {
   await fetch('/apps/lattice/page-save?name=harnessdir%2Fone&type=md',
     { method: 'POST', body: b });
@@ -140,6 +146,30 @@ for (let i = 0; i < 25 && !seen; i++) {
 }
 check('live bump corrects the open view', seen);
 check('live bump is exactly one navigation', navs === 1, navs + ' navs');
+
+// ── hidden tab: no churn while away, ONE catch-up swap on return ────────
+const stamp2b = 'hidden-' + Math.floor(Math.random() * 1e6);
+await p2.bringToFront();             // p is hidden again: stream parked
+// p2's own return-to-front catch-up may swap ITS document (home changed
+// under it) — let that settle, and retry the save if the swap raced it
+await sleep(6000);
+navs = 0;
+const saveB = (b) => p2.evaluate(async (body) => {
+  await fetch('/apps/lattice/page-save?name=harnessdir%2Fone&type=md',
+    { method: 'POST', body });
+}, b);
+try { await saveB('# one\n' + stamp2b); }
+catch { await sleep(3000); await saveB('# one\n' + stamp2b); }
+await sleep(8000);
+check('hidden tab does not navigate on a bump', navs === 0, navs + ' navs');
+await p.bringToFront();              // return: one coalesced catch-up swap
+let caught = false;
+for (let i = 0; i < 20 && !caught; i++) {
+  await sleep(1000);
+  try { caught = (await p.content()).includes(stamp2b); } catch {}
+}
+check('return to the tab catches up', caught, navs + ' navs');
+check('catch-up is exactly one navigation', navs === 1, navs + ' navs');
 await p2.close();
 
 // ── the cache and worker survive a browser restart ──────────────────────
@@ -148,9 +178,10 @@ browser = await launch();
 p = await browser.newPage();
 await p.setCookie({ name: cn, value: cr.join('='), domain: HOST, path: '/' });
 track(p);
+await p.bringToFront();
 t = await nav(PAGE);
 check('instant across browser restart', t < 400, t + 'ms');
-check('restart content is fresh', (await p.content()).includes(stamp2));
+check('restart content is fresh', (await p.content()).includes(stamp2b));
 
 // ── home is a cached surface too ────────────────────────────────────────
 await nav(HOME);

@@ -91,11 +91,23 @@
     lastRev = rev;
     try { localStorage.latBeaconRev = rev; } catch {}
   };
+  let dropStream = null;
   (async () => {
     for (;;) {
+      // a HIDDEN editor holds no stream: vere is HTTP/1.1 and the browser
+      // caps the origin at six connections, so parked tabs' never-ending
+      // streams starved every live request (and tripped false offline mode
+      // at six open tabs). The registration rev-compare on reconnect —
+      // plus the visibilitychange refreshAll below — covers the gap.
+      if (document.hidden) {
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
       try {
+        const ac = new AbortController();
+        dropStream = () => ac.abort();
         const resp = await fetch('/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev',
-          { headers: { Accept: 'text/event-stream' } });
+          { headers: { Accept: 'text/event-stream' }, signal: ac.signal });
         const rd = resp.body.getReader();
         const dec = new TextDecoder();
         let buf = '';
@@ -155,5 +167,11 @@
   // request per open editor per 30s, forever (the same clock-vs-stream
   // trust the mount fixed in #160).
   window.addEventListener('focus', refreshAll);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(); });
-  setInterval(() => { if (!streamLive) refreshOpen(); }, 30000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { if (dropStream) dropStream(); return; }
+    refreshAll();
+  });
+  //  the poll covers a DOWN stream — but a hidden tab's stream is down on
+  //  purpose, and polling for it would spend the pier request the parking
+  //  just saved
+  setInterval(() => { if (!streamLive && !document.hidden) refreshOpen(); }, 30000);

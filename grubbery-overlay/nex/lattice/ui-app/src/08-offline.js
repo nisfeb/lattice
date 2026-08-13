@@ -331,13 +331,15 @@
         if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
         if (rec.op === 'move' && under(q.name, rec.from)) {
           await offDel(q.name);
-          // drop the CAS base: the drain replays the move FIRST, and
-          // move-pages creates the destination fresh at rev 1 — the old
-          // name's baseRev can never match it, and a mismatched base
-          // manufactures a conflicts/ page for a user who only edited and
-          // renamed. The move itself guarantees the destination's pre-save
-          // body is the one this edit was made from.
-          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 0 });
+          // rebase onto the destination: the drain replays the move FIRST,
+          // and move-pages creates the destination fresh — always at rev 1 —
+          // so the old name's baseRev can never match and would manufacture
+          // a conflicts/ page for a user who only edited and renamed. The
+          // base must be 1, not 0: the wire has no no-CAS spelling (the
+          // batch schema REQUIRES base and compares it literally, and 0
+          // matches nothing), and if the move was skipped the missing page
+          // reads rev 0, which the server's not-conflicted branch absorbs.
+          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 1 });
         }
       }
       for (const k of [...pageCache.keys()])

@@ -6,6 +6,12 @@
   // button, its own two endpoints.
   let grubPath = null;
   let grubShip = null;   // '~ship' when the grub lives on ANOTHER ship; null = local
+  // Every editor reset that leaves grub mode MUST call this: Save gives
+  // grubPath top precedence, so a reset that forgets it leaves Save pointed
+  // at the app file while the textarea fills with unrelated content — an
+  // overwrite wearing a 'saved' status. openPage clears inline; newFile,
+  // selectFolder and setMode route through here.
+  const exitGrub = () => { grubPath = null; grubShip = null; };
   async function openGrub(p, ship) {
     grubPath = p;
     grubShip = ship || null;

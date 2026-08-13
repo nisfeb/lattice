@@ -130,6 +130,7 @@
     current = null;
     curFolder = null;
     curKind = null;
+    exitGrub();
     exitRev();
     $('histsec').hidden = true;
     $('linksec').hidden = true;

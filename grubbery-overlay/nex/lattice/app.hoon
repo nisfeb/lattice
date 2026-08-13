@@ -1508,6 +1508,10 @@
     =/  mode=share-mode:le
       ?+  (~(gut by args) 'mode' 'private')  %private
         %shared    %shared
+        ::  /page-scopes labels ames-shared pages 'urbit' (the search UI
+        ::  keys on it) and vault archives carry that label verbatim; the
+        ::  silent default below privatized every restored shared page.
+        %urbit     %shared
         %clearweb  %clearweb
       ==
     ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.name))) %code])
@@ -1831,6 +1835,10 @@
     =/  mode=share-mode:le
       ?+  (~(gut by args) 'mode' 'private')  %private
         %shared    %shared
+        ::  /page-scopes labels ames-shared pages 'urbit' (the search UI
+        ::  keys on it) and vault archives carry that label verbatim; the
+        ::  silent default below privatized every restored shared page.
+        %urbit     %shared
         %clearweb  %clearweb
       ==
     ;<  ~  bind:m  (poke-eval [%share-tree (pax-of u.name) mode])
@@ -3406,6 +3414,23 @@
   ?.  (levy page.act |=(s=@ta &(!=(%$ s) ((sane %ta) s))))  (pure:m ~)
   ;<  on=?  bind:m  (comments-on page.act)
   ?.  on  (pure:m ~)
+  ::  the page must EXIST: comments-on walks flags upward, so a folder-level
+  ::  comment-on would otherwise let any un-banned ship spray grubs under
+  ::  invented sub-paths of a commentable site.
+  ;<  ex=?  bind:m
+    (peek-exists:io [%& %& :(weld root /page page.act) %code])
+  ?.  ex  (pure:m ~)
+  ::  and the store is BOUNDED, for the reason the shares inbox is bounded:
+  ::  anyone may poke this road, each poke files a fresh time-salted grub,
+  ::  and without a cap a hostile ship grows the pier without limit. 200
+  ::  per page, matching the shares cap; the owner moderates from there.
+  ;<  cv=view:nexus  bind:m
+    (peek:io [%& %| :(weld root /comments page.act)] ~)
+  =/  stored=@ud
+    ?.  ?=([%ball *] cv)  0
+    ?~  fil.ball.cv  0
+    ~(wyt by contents.u.fil.ball.cv)
+  ?:  (gte stored 200)  (pure:m ~)
   =/  body=@t
     ?:((gth (met 3 body.act) max-body:lc) (end [3 max-body:lc] body.act) body.act)
   =/  =comment:lc  [author now body]
@@ -6718,7 +6743,7 @@
     (trip '";var REV="')
     rev
     %-  trip
-    '";var pend=0;async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(-5)!==" /rev")continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){go();return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}continue}location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
+    '";var pend=0,ac=null,live=false;function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||document.hidden)return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(-5)!==" /rev")continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!document.hidden)upd();continue}location.reload();return}}}catch(x){}live=false;if(!document.hidden)setTimeout(c,3000)}document.addEventListener("visibilitychange",function(){if(document.hidden){if(ac)ac.abort();return}if(window.__latRefresh)upd();setTimeout(c,200)});c()})();</script>'
   ==
 ::  +explore-crumbs: breadcrumb nav, absolute hrefs from the ship root down,
 ::  each with a trailing slash. The leaf is linked too (self-link; harmless).
@@ -7949,7 +7974,7 @@
     (trip '";var REV="')
     rev
     %-  trip
-    '";var pend=0;async function c(){try{var r=await fetch(K,{headers:{Accept:"text/event-stream"}});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(-5)!==" /rev")continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){go();return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}continue}location.reload();return}}}catch(x){}setTimeout(c,3000)}c()})();</script>'
+    '";var pend=0,ac=null,live=false;function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||document.hidden)return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(-5)!==" /rev")continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!document.hidden)upd();continue}location.reload();return}}}catch(x){}live=false;if(!document.hidden)setTimeout(c,3000)}document.addEventListener("visibilitychange",function(){if(document.hidden){if(ac)ac.abort();return}if(window.__latRefresh)upd();setTimeout(c,200)});c()})();</script>'
   ==
 ::  +lattice-page: placeholder web reader (replaced by the live SSE view in
 ::  step 6).

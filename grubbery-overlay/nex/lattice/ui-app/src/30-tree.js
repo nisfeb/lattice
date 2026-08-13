@@ -184,6 +184,7 @@
     current = null;
     curFolder = path;
     curKind = null;
+    exitGrub();
     exitRev();
     $('histsec').hidden = true;
     $('linksec').hidden = true;

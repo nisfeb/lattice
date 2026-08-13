@@ -368,13 +368,15 @@
         if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
         if (rec.op === 'move' && under(q.name, rec.from)) {
           await offDel(q.name);
-          // drop the CAS base: the drain replays the move FIRST, and
-          // move-pages creates the destination fresh at rev 1 — the old
-          // name's baseRev can never match it, and a mismatched base
-          // manufactures a conflicts/ page for a user who only edited and
-          // renamed. The move itself guarantees the destination's pre-save
-          // body is the one this edit was made from.
-          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 0 });
+          // rebase onto the destination: the drain replays the move FIRST,
+          // and move-pages creates the destination fresh — always at rev 1 —
+          // so the old name's baseRev can never match and would manufacture
+          // a conflicts/ page for a user who only edited and renamed. The
+          // base must be 1, not 0: the wire has no no-CAS spelling (the
+          // batch schema REQUIRES base and compares it literally, and 0
+          // matches nothing), and if the move was skipped the missing page
+          // reads rev 0, which the server's not-conflicted branch absorbs.
+          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 1 });
         }
       }
       for (const k of [...pageCache.keys()])
@@ -2287,6 +2289,7 @@
     current = null;
     curFolder = path;
     curKind = null;
+    exitGrub();
     exitRev();
     $('histsec').hidden = true;
     $('linksec').hidden = true;
@@ -2438,6 +2441,7 @@
     current = null;
     curFolder = null;
     curKind = null;
+    exitGrub();
     exitRev();
     $('histsec').hidden = true;
     $('linksec').hidden = true;
@@ -2639,6 +2643,12 @@
   // button, its own two endpoints.
   let grubPath = null;
   let grubShip = null;   // '~ship' when the grub lives on ANOTHER ship; null = local
+  // Every editor reset that leaves grub mode MUST call this: Save gives
+  // grubPath top precedence, so a reset that forgets it leaves Save pointed
+  // at the app file while the textarea fills with unrelated content — an
+  // overwrite wearing a 'saved' status. openPage clears inline; newFile,
+  // selectFolder and setMode route through here.
+  const exitGrub = () => { grubPath = null; grubShip = null; };
   async function openGrub(p, ship) {
     grubPath = p;
     grubShip = ship || null;
@@ -4858,8 +4868,14 @@
       let ok = 0, bad = 0;
       for (const [name, mode] of Object.entries(share)) {
         try {
+          // archives carry /page-scopes labels, where ames-shared is
+          // 'urbit'; the share route's word is 'shared', and its unknown-
+          // mode default is PRIVATE — the one mapping this loop must not
+          // get wrong. (The route now also accepts 'urbit', for archives
+          // restored by clients older than this line.)
+          const wire = mode === 'urbit' ? 'shared' : mode;
           const r = await mutate(api + '/page-share?name=' + encodeURIComponent(name) +
-            '&mode=' + encodeURIComponent(mode));
+            '&mode=' + encodeURIComponent(wire));
           if (r && r.ok) ok++; else bad++;
         } catch { bad++; }
       }
@@ -4970,12 +4986,23 @@ editor, or git will do if you only want to look.
     // retention can recognise its own archives. Failures are reported the same
     // way a manual export's are — a backup that quietly stopped happening is
     // the failure this whole feature exists to prevent.
+    // What could not be read is named, not swallowed — in EVERY shell. The
+    // scheduled and desktop branches used to return before the missing
+    // report, quoting a count of pages that were not in the tar: a backup
+    // you believe is complete when it is not is the one outcome worse than
+    // no backup at all, and it is worst on the path that runs unattended.
+    const gaps = missing.length
+      ? ', but could NOT read: ' + missing.slice(0, 5).join(', ') +
+        (missing.length > 5 ? ' and ' + (missing.length - 5) + ' more' : '')
+      : '';
     if (autoId) {
       const d = desk();
       if (!d) return;
       try {
         const where = await d.invoke('backup_write', { id: autoId, b64: await blobToB64(blob) });
-        st('backed up ' + pages.length + ' page(s) to ' + where);
+        if (gaps) st('backed up ' + pages.length + ' page(s) to ' + where +
+          gaps + ' — backup INCOMPLETE', false);
+        else st('backed up ' + pages.length + ' page(s) to ' + where);
       } catch (e) { st('scheduled backup failed: ' + e, false); }
       return;
     }
@@ -4988,7 +5015,8 @@ editor, or git will do if you only want to look.
       try { where = await d.invoke('save_vault', { name: fname, b64: await blobToB64(blob) }); }
       catch (e) { st('export failed: ' + e, false); return; }
       if (!where) { st('export cancelled'); return; }
-      st('exported ' + pages.length + ' page(s) to ' + where);
+      if (gaps) st('exported ' + pages.length + ' page(s) to ' + where + gaps, false);
+      else st('exported ' + pages.length + ' page(s) to ' + where);
       return;
     }
     const url = globalThis.URL.createObjectURL(blob);
@@ -4998,14 +5026,8 @@ editor, or git will do if you only want to look.
     a.click();
     setTimeout(() => globalThis.URL.revokeObjectURL(url), 30000);
 
-    // What could not be read is named, not swallowed. A backup you believe is
-    // complete when it is not is the only outcome here that is worse than no
-    // backup at all.
-    if (missing.length) {
-      st('exported ' + pages.length + ' page(s), but could NOT read: ' +
-        missing.slice(0, 5).join(', ') +
-        (missing.length > 5 ? ' and ' + (missing.length - 5) + ' more' : ''), false);
-    } else st('exported ' + pages.length + ' page(s) and ' +
+    if (gaps) st('exported ' + pages.length + ' page(s)' + gaps, false);
+    else st('exported ' + pages.length + ' page(s) and ' +
       ((know && (know.items || []).length) || 0) + ' memories');
   }
 
@@ -5604,11 +5626,23 @@ editor, or git will do if you only want to look.
     lastRev = rev;
     try { localStorage.latBeaconRev = rev; } catch {}
   };
+  let dropStream = null;
   (async () => {
     for (;;) {
+      // a HIDDEN editor holds no stream: vere is HTTP/1.1 and the browser
+      // caps the origin at six connections, so parked tabs' never-ending
+      // streams starved every live request (and tripped false offline mode
+      // at six open tabs). The registration rev-compare on reconnect —
+      // plus the visibilitychange refreshAll below — covers the gap.
+      if (document.hidden) {
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
       try {
+        const ac = new AbortController();
+        dropStream = () => ac.abort();
         const resp = await fetch('/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev',
-          { headers: { Accept: 'text/event-stream' } });
+          { headers: { Accept: 'text/event-stream' }, signal: ac.signal });
         const rd = resp.body.getReader();
         const dec = new TextDecoder();
         let buf = '';
@@ -5668,8 +5702,14 @@ editor, or git will do if you only want to look.
   // request per open editor per 30s, forever (the same clock-vs-stream
   // trust the mount fixed in #160).
   window.addEventListener('focus', refreshAll);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(); });
-  setInterval(() => { if (!streamLive) refreshOpen(); }, 30000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { if (dropStream) dropStream(); return; }
+    refreshAll();
+  });
+  //  the poll covers a DOWN stream — but a hidden tab's stream is down on
+  //  purpose, and polling for it would spend the pier request the parking
+  //  just saved
+  setInterval(() => { if (!streamLive && !document.hidden) refreshOpen(); }, 30000);
 
 // ── src/95-know.js ────────────────────────────────────────────────────────
   // ── knowledge mode ───────────────────────────────────────────────────────
@@ -5881,6 +5921,7 @@ editor, or git will do if you only want to look.
   function setMode(m) {
     mode = m;
     curKind = null;
+    exitGrub();                      // Save must stop pointing at an app file
     exitRev();                       // else readOnly leaks into the memory editor
     $('histsec').hidden = true;
     $('linksec').hidden = true;
