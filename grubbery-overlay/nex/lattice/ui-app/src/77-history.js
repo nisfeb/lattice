@@ -135,7 +135,9 @@
     exitRev();
     dirty = true;          // the historical body is now an unsaved local edit
     await save(kind);      // under the revision's OWN kind, not the current select
-    st('restored rev ' + rev + ' as the newest revision');
+    // save() reports its own failures and leaves dirty SET on every path
+    // that did not durably hold the body — do not paint success over that
+    if (!dirty) st('restored rev ' + rev + ' as the newest revision');
     loadHistory();
   };
 

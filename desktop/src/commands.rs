@@ -516,8 +516,20 @@ pub fn request_backup(app: &AppHandle, id: &str) -> bool {
     // the id is ours, not user text, but it still goes through a quoted JSON
     // string rather than being pasted raw into a script
     let arg = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".into());
+    // "back up now" is clicked FROM the manager page — the single window is
+    // by definition not showing the app page then, __latticeBackup is
+    // undefined, and the eval used to succeed while doing nothing: the
+    // button could never produce a backup. When the hook is absent,
+    // navigate the workspace to the app with ?backup=<id>; 78-export runs
+    // the pending id once the page is up.
+    let cfg = config::load(app);
+    let dest = serde_json::to_string(&format!(
+        "{}/apps/lattice/app?backup={}", cfg.url.trim_end_matches('/'), id
+    ))
+    .unwrap_or_else(|_| "\"\"".into());
     w.eval(format!(
-        "(function(){{if(window.__latticeBackup)window.__latticeBackup({arg});}})()"
+        "(function(){{if(window.__latticeBackup){{window.__latticeBackup({arg});}}\
+         else{{location.href={dest};}}}})()"
     ))
     .is_ok()
 }

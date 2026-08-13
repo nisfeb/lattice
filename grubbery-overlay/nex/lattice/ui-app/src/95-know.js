@@ -95,6 +95,7 @@
     knowKeys.find((x) => x.key.replace(/^\//, '') === key);
 
   async function openKnow(key) {
+    if (mode !== 'know') setMode('know');
     // a queued edit outranks the ship's copy, same rule as pages
     const q = await offGet('know:' + key);
     let d = null;
@@ -157,6 +158,10 @@
   async function saveKnow() {
     const key = pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!key) { st('key required', false); return; }
+    if (!validName(key)) {
+      st('bad key — lowercase letters, digits, and - . _ ~ (no spaces)', false);
+      return;
+    }
     if (!src.value) { st('empty body', false); return; }
     if (viewingRev !== null) { st('viewing a revision — use restore', false); return; }
     const sent = src.value;

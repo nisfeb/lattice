@@ -368,15 +368,13 @@
         if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
         if (rec.op === 'move' && under(q.name, rec.from)) {
           await offDel(q.name);
-          // rebase onto the destination: the drain replays the move FIRST,
-          // and move-pages creates the destination fresh — always at rev 1 —
-          // so the old name's baseRev can never match and would manufacture
-          // a conflicts/ page for a user who only edited and renamed. The
-          // base must be 1, not 0: the wire has no no-CAS spelling (the
-          // batch schema REQUIRES base and compares it literally, and 0
-          // matches nothing), and if the move was skipped the missing page
-          // reads rev 0, which the server's not-conflicted branch absorbs.
-          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 1 });
+          // drop the CAS claim: a save rebased by a move cannot know the
+          // destination's rev (fresh rails land at 1, recreated ones at
+          // prior+1, merges at oldRev+1 — two releases guessed numbers and
+          // both were wrong somewhere). base 0 now MEANS "no base claim"
+          // on both server write paths; the move itself guarantees the
+          // destination's pre-save body is the one this edit was made from.
+          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 0 });
         }
       }
       for (const k of [...pageCache.keys()])
@@ -686,6 +684,12 @@
   // targets only in the POST body — no per-name bust is possible from the
   // URL, and a restore legitimately invalidates everything. Drop the whole
   // pages cache; it rebuilds one view at a time.
+  // mirror of the server's +valid-name (@ta segments; no '.'/'..'): reject
+  // BEFORE saving or queueing. The server answers 400 — cryptic online, and
+  // fatal offline: the drain treats 400 as unsyncable and discards the
+  // queued document it earlier reported "saved offline".
+  const validName = (n) => String(n || '').split('/').every(
+    (s) => s.length && s !== '.' && s !== '..' && /^[a-z0-9._~-]+$/.test(s));
   const bustAll = () => {
     if ('caches' in window) caches.delete('lattice-pages').catch(() => {});
   };
@@ -1073,7 +1077,22 @@
     echoUntil = Date.now() + 60000;
     const sentAt = Date.now();
     try {
-      const r = await fetch(url, opts || { method: 'POST' });
+      let r = null;
+      try { r = await fetch(url, opts || { method: 'POST' }); } catch {}
+      // a rejected fetch or a bridge 502/504 is the ship being unreachable:
+      // queue what can be queued and ENGAGE degraded — the old path only
+      // queued when degraded was already true, so the FIRST offline action
+      // being structural threw past every caller and did nothing at all
+      if (!r || r.status === 502 || r.status === 504) {
+        const q = offlineOp(url);
+        setDegraded(true);
+        if (q) {
+          await enqueueOp(q);
+          return { ok: true, status: 200, json: async () => ({ offline: true }) };
+        }
+        st('offline — edits are queued, but this change needs the ship', false);
+        return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
+      }
       if (r.ok) {
         pendingEchoes++;              // one bump is ours; consume it on arrival
         // every mutate names its target the same way; a move dirties both ends
@@ -2332,6 +2351,10 @@
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
     grubPath = null;
+    // and knowledge mode: search results and the comments inbox open pages
+    // from know mode, and a stale mode routed the next save to /know-save —
+    // a new memory named after the page, while the page kept its old body
+    if (mode === 'know') setMode('pages');
     src.readOnly = false;
     setFolderCtx(name);
     // the queue outranks every other tier. A queued edit is the newest truth
@@ -2494,6 +2517,11 @@
     // or panel-driven save can leave curRev one step behind, and every stale
     // base manufactures a false conflict page out of nothing (ui-matrix
     // caught exactly that). Online editing stays last-writer-wins.
+    if (!validName(name)) {
+      saving = false;
+      st('bad name — lowercase letters, digits, and - . _ ~ (no spaces)', false);
+      return;
+    }
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '');
     let r = null;
@@ -3026,14 +3054,13 @@
     if (!ac.open) return;
     const path = ac.items[i === undefined ? ac.sel : i];
     if (!path) return;
-    const before = src.value.slice(0, ac.start);
-    const after = src.value.slice(src.selectionStart);
-    const tail = after.startsWith(']]') ? after.slice(2) : after;
-    src.value = before + path + ']]' + tail;
-    const caret = before.length + path.length + 2;
-    src.setSelectionRange(caret, caret);
+    // through applyEdit, never src.value assignment: the latter wipes the
+    // textarea's entire undo stack (45-templates documents this exact sin)
+    const to = src.selectionStart +
+      (src.value.slice(src.selectionStart).startsWith(']]') ? 2 : 0);
+    const caret = ac.start + path.length + 2;
+    applyEdit({ from: ac.start, to, text: path + ']]', caret });
     acClose();
-    edited();
   }
 
   src.addEventListener('input', acScan);
@@ -4382,9 +4409,13 @@
   // pull-only, so the only way to learn anyone had said anything was to open
   // it and look. That makes the feature invisible in practice.
   //
-  // "Seen" is a high-water mark, not a per-comment flag: the @da the items
-  // carry is zero-padded and fixed-width, so a lexical compare orders them and
-  // one string in localStorage replaces a set that would need pruning.
+  // "Seen" is a high-water mark, not a per-comment flag. The @da stamps the
+  // items carry are NOT fixed-width — scot %da leaves month and day unpadded
+  // (~2026.8.9 vs ~2026.10.1) — so a raw lexical compare misorders across
+  // every 9->10 boundary and the badge goes silent for months at a time.
+  // daKey pads the numeric fields into a genuinely sortable string; marks
+  // stored by older builds compare fine because both sides go through it.
+  const daKey = (w) => String(w || '').replace(/\d+/g, (d) => d.padStart(4, '0'));
   const seenKey = 'cmtSeen';
   const lastSeen = () => { try { return localStorage[seenKey] || ''; } catch { return ''; } };
   const markSeen = (when) => { try { if (when) localStorage[seenKey] = when; } catch {} };
@@ -4438,7 +4469,7 @@
     } catch { return; }
     const items = d.items || [];
     const mark = lastSeen();
-    unreadSeen = items.filter((c) => String(c.when || '') > mark).length;
+    unreadSeen = items.filter((c) => daKey(c.when) > daKey(mark)).length;
     stampSeen = stamp;
     paintUnread(unreadSeen);
   }
@@ -4447,8 +4478,13 @@
     $('cmwrap').hidden = false;
     // opening IS reading: mark everything currently in the inbox as seen
     loadComments().then(() => {
-      const newest = inbox.reduce((a, c) => (String(c.when) > a ? String(c.when) : a), lastSeen());
+      const newest = inbox.reduce(
+        (a, c) => (daKey(c.when) > daKey(a) ? String(c.when) : a), lastSeen());
       markSeen(newest);
+      // reading IS the recount: without dropping the cached stamp, the next
+      // same-stamp fast path repaints the PRE-read number forever
+      stampSeen = null;
+      unreadSeen = 0;
       paintUnread(0);
     });
   };
@@ -4648,7 +4684,9 @@
     exitRev();
     dirty = true;          // the historical body is now an unsaved local edit
     await save(kind);      // under the revision's OWN kind, not the current select
-    st('restored rev ' + rev + ' as the newest revision');
+    // save() reports its own failures and leaves dirty SET on every path
+    // that did not durably hold the body — do not paint success over that
+    if (!dirty) st('restored rev ' + rev + ' as the newest revision');
     loadHistory();
   };
 
@@ -5039,6 +5077,13 @@ editor, or git will do if you only want to look.
   // Rust, reaching in with eval — there is no other channel from the menu bar
   // or a timer thread into this page.
   if (window.__TAURI__) window.__latticeBackup = (id) => exportVault(id);
+  // "back up now" clicked while the MANAGER page was displayed: no app page
+  // existed to receive the eval, so the rust side navigates the workspace
+  // here with ?backup=<id> and the boot runs it (3s: let the tree land)
+  if (window.__TAURI__) {
+    const pend = new URLSearchParams(location.search).get('backup');
+    if (pend) setTimeout(() => window.__latticeBackup(pend), 3000);
+  }
 
   // A file input cannot read a tar in the shell, so the desktop path goes
   // through Rust's own picker and hands the bytes back. restoreVault only
@@ -5809,6 +5854,7 @@ editor, or git will do if you only want to look.
     knowKeys.find((x) => x.key.replace(/^\//, '') === key);
 
   async function openKnow(key) {
+    if (mode !== 'know') setMode('know');
     // a queued edit outranks the ship's copy, same rule as pages
     const q = await offGet('know:' + key);
     let d = null;
@@ -5871,6 +5917,10 @@ editor, or git will do if you only want to look.
   async function saveKnow() {
     const key = pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!key) { st('key required', false); return; }
+    if (!validName(key)) {
+      st('bad key — lowercase letters, digits, and - . _ ~ (no spaces)', false);
+      return;
+    }
     if (!src.value) { st('empty body', false); return; }
     if (viewingRev !== null) { st('viewing a revision — use restore', false); return; }
     const sent = src.value;
@@ -6091,8 +6141,11 @@ editor, or git will do if you only want to look.
     // tap: rename what is open (the controls pane's own move/rename flow),
     // or start a page when nothing is. Both are existing buttons.
     mpath.addEventListener('click', () => {
-      if (current || curFolder) $('mv').click();
-      else newFile('');
+      if (current || curFolder) { $('mv').click(); return; }
+      // current===null with text in the box is grub mode or an unsaved new
+      // page — the reset newFile() does would throw that work away
+      if (src.value.trim()) return;
+      newFile('');
     });
 
     // the ⋯ button and its sheet

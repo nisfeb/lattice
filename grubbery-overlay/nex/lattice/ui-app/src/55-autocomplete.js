@@ -113,14 +113,13 @@
     if (!ac.open) return;
     const path = ac.items[i === undefined ? ac.sel : i];
     if (!path) return;
-    const before = src.value.slice(0, ac.start);
-    const after = src.value.slice(src.selectionStart);
-    const tail = after.startsWith(']]') ? after.slice(2) : after;
-    src.value = before + path + ']]' + tail;
-    const caret = before.length + path.length + 2;
-    src.setSelectionRange(caret, caret);
+    // through applyEdit, never src.value assignment: the latter wipes the
+    // textarea's entire undo stack (45-templates documents this exact sin)
+    const to = src.selectionStart +
+      (src.value.slice(src.selectionStart).startsWith(']]') ? 2 : 0);
+    const caret = ac.start + path.length + 2;
+    applyEdit({ from: ac.start, to, text: path + ']]', caret });
     acClose();
-    edited();
   }
 
   src.addEventListener('input', acScan);

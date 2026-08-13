@@ -31,8 +31,11 @@
     // tap: rename what is open (the controls pane's own move/rename flow),
     // or start a page when nothing is. Both are existing buttons.
     mpath.addEventListener('click', () => {
-      if (current || curFolder) $('mv').click();
-      else newFile('');
+      if (current || curFolder) { $('mv').click(); return; }
+      // current===null with text in the box is grub mode or an unsaved new
+      // page — the reset newFile() does would throw that work away
+      if (src.value.trim()) return;
+      newFile('');
     });
 
     // the ⋯ button and its sheet

@@ -331,15 +331,13 @@
         if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
         if (rec.op === 'move' && under(q.name, rec.from)) {
           await offDel(q.name);
-          // rebase onto the destination: the drain replays the move FIRST,
-          // and move-pages creates the destination fresh — always at rev 1 —
-          // so the old name's baseRev can never match and would manufacture
-          // a conflicts/ page for a user who only edited and renamed. The
-          // base must be 1, not 0: the wire has no no-CAS spelling (the
-          // batch schema REQUIRES base and compares it literally, and 0
-          // matches nothing), and if the move was skipped the missing page
-          // reads rev 0, which the server's not-conflicted branch absorbs.
-          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 1 });
+          // drop the CAS claim: a save rebased by a move cannot know the
+          // destination's rev (fresh rails land at 1, recreated ones at
+          // prior+1, merges at oldRev+1 — two releases guessed numbers and
+          // both were wrong somewhere). base 0 now MEANS "no base claim"
+          // on both server write paths; the move itself guarantees the
+          // destination's pre-save body is the one this edit was made from.
+          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 0 });
         }
       }
       for (const k of [...pageCache.keys()])

@@ -117,7 +117,22 @@
     echoUntil = Date.now() + 60000;
     const sentAt = Date.now();
     try {
-      const r = await fetch(url, opts || { method: 'POST' });
+      let r = null;
+      try { r = await fetch(url, opts || { method: 'POST' }); } catch {}
+      // a rejected fetch or a bridge 502/504 is the ship being unreachable:
+      // queue what can be queued and ENGAGE degraded — the old path only
+      // queued when degraded was already true, so the FIRST offline action
+      // being structural threw past every caller and did nothing at all
+      if (!r || r.status === 502 || r.status === 504) {
+        const q = offlineOp(url);
+        setDegraded(true);
+        if (q) {
+          await enqueueOp(q);
+          return { ok: true, status: 200, json: async () => ({ offline: true }) };
+        }
+        st('offline — edits are queued, but this change needs the ship', false);
+        return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
+      }
       if (r.ok) {
         pendingEchoes++;              // one bump is ours; consume it on arrival
         // every mutate names its target the same way; a move dirties both ends
