@@ -64,7 +64,9 @@
     }
     if (src.value === sent) dirty = false;
     st('saved');
-    bustPages(grubPath);
+    // bust the page DIRECTORY, not the grub: the cached views are the /x/
+    // dir listing and page view, and none of their URLs name '/code'
+    bustPages(String(grubPath).replace(/\/[^/]*$/, ''));
     if (savePending) { savePending = false; if (dirty) saveGrub(); }
   }
 

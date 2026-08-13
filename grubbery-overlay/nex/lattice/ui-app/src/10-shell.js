@@ -50,6 +50,9 @@
   // home, whose listings change under every write.
   const bustPages = (name) => {
     if (!('caches' in window)) return;
+    // ball paths arrive with a leading slash (spud); the needle below adds
+    // its own, and '//' matches no URL — normalize or the bust is a no-op
+    name = String(name || '').replace(/^\/+/, '') || null;
     caches.open('lattice-pages').then(async (c) => {
       const home = location.origin + '/apps/lattice';
       for (const k of await c.keys()) {
@@ -58,6 +61,13 @@
         if (k.url === home || (name && d.indexOf('/' + name) >= 0)) c.delete(k.url);
       }
     }).catch(() => {});
+  };
+  // bulk writes (vault restore, drag-drop upload, know-import) name their
+  // targets only in the POST body — no per-name bust is possible from the
+  // URL, and a restore legitimately invalidates everything. Drop the whole
+  // pages cache; it rebuilds one view at a time.
+  const bustAll = () => {
+    if ('caches' in window) caches.delete('lattice-pages').catch(() => {});
   };
   let pname, pkind, status, spinner;   // assigned by <lat-bar>   (12-bar.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)

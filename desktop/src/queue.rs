@@ -96,6 +96,21 @@ pub fn resolve_key(cfg: &config::Config) -> (String, bool) {
     ("unconfigured".to_string(), false)
 }
 
+/// The one exception to "a frozen key never changes": connecting to a
+/// DIFFERENT ship. The freeze exists to keep one ship's directory stable
+/// (a key that improved URL -> @p would rename the queue out from under its
+/// edits) — not to deliver ship A's queued edits into ship B. When the
+/// connected identity changes, the key resets and the next queue op freezes
+/// a fresh one; the old directory stays on disk, orphaned rather than
+/// misdelivered.
+pub fn key_after_connect(cfg: &config::Config, new_ship: &str) -> String {
+    if !cfg.ship.is_empty() && cfg.ship != new_ship {
+        String::new()
+    } else {
+        cfg.queue_key.clone()
+    }
+}
+
 /// Resolve the queue key once and remember it.
 pub fn queue_key(app: &AppHandle) -> String {
     let mut cfg = config::load(app);
@@ -417,6 +432,23 @@ mod tests {
         assert_eq!(list_saves_at(&b)[0]["body"], "from ship b");
         std::fs::remove_dir_all(&a).ok();
         std::fs::remove_dir_all(&b).ok();
+    }
+
+    #[test]
+    fn a_ship_switch_resets_the_frozen_key() {
+        // the frozen key keeps ONE ship's directory stable; reconnecting to a
+        // DIFFERENT ship must not inherit it, or ship A's edits replay into B
+        let mut cfg = config::Config::default();
+        cfg.ship = "~shipa".into();
+        cfg.queue_key = "~shipa".into();
+        assert_eq!(key_after_connect(&cfg, "~shipa"), "~shipa");
+        assert_eq!(key_after_connect(&cfg, "~shipb"), "");
+        // same URL repointed at a new ship: the recorded @p still catches it
+        cfg.queue_key = "http://beast:8080".into();
+        assert_eq!(key_after_connect(&cfg, "~shipb"), "");
+        // first-ever connect (no ship recorded yet): whatever froze, stays
+        cfg.ship = String::new();
+        assert_eq!(key_after_connect(&cfg, "~shipb"), "http://beast:8080");
     }
 
     /// A relaunch, end to end, with nothing mocked but the passage of time.
