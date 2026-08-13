@@ -29,6 +29,9 @@ pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String
     let ship = t.ship().map_err(|e| e.msg)?;
     dlog(&format!("connect: ship {ship}"));
     let mut cfg = config::load(&app);
+    //  a ship SWITCH must not inherit the previous ship's queue directory —
+    //  its queued edits would replay into the new ship
+    cfg.queue_key = crate::queue::key_after_connect(&cfg, &ship);
     cfg.url = url;
     //  remember the @p: the offline queue prefers it as its directory key, and
     //  it has to be known BEFORE the ship stops answering, which is exactly

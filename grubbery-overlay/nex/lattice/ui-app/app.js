@@ -325,8 +325,15 @@
   // UI reporting success. If the queue cannot take it, say so and say it in
   // the words that matter, because there is nowhere else the edit now lives.
   async function enqueueSave(name, kind, body, isNew) {
+    // the queue coalesces by name, and the 2s autosave calls this WITHOUT
+    // the create flag — overwriting a queued create as a plain edit would
+    // route the replay around the 409 create protection and let an offline
+    // "new page" clobber one made online meanwhile. Once a create, always
+    // a create, until it drains.
+    let prev = null;
+    try { prev = await offGet(name); } catch {}
     const queued = await offPut({ name, kind, body, baseRev: curRev || 0,
-      isNew: !!isNew, queuedAt: Date.now() });
+      isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now() });
     setDegraded(true);
     if (!queued) {
       st('NOT SAVED — this device cannot store offline edits. Copy your text '
@@ -641,6 +648,9 @@
   // home, whose listings change under every write.
   const bustPages = (name) => {
     if (!('caches' in window)) return;
+    // ball paths arrive with a leading slash (spud); the needle below adds
+    // its own, and '//' matches no URL — normalize or the bust is a no-op
+    name = String(name || '').replace(/^\/+/, '') || null;
     caches.open('lattice-pages').then(async (c) => {
       const home = location.origin + '/apps/lattice';
       for (const k of await c.keys()) {
@@ -649,6 +659,13 @@
         if (k.url === home || (name && d.indexOf('/' + name) >= 0)) c.delete(k.url);
       }
     }).catch(() => {});
+  };
+  // bulk writes (vault restore, drag-drop upload, know-import) name their
+  // targets only in the POST body — no per-name bust is possible from the
+  // URL, and a restore legitimately invalidates everything. Drop the whole
+  // pages cache; it rebuilds one view at a time.
+  const bustAll = () => {
+    if ('caches' in window) caches.delete('lattice-pages').catch(() => {});
   };
   let pname, pkind, status, spinner;   // assigned by <lat-bar>   (12-bar.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)
@@ -2660,7 +2677,9 @@
     }
     if (src.value === sent) dirty = false;
     st('saved');
-    bustPages(grubPath);
+    // bust the page DIRECTORY, not the grub: the cached views are the /x/
+    // dir listing and page view, and none of their URLs name '/code'
+    bustPages(String(grubPath).replace(/\/[^/]*$/, ''));
     if (savePending) { savePending = false; if (dirty) saveGrub(); }
   }
 
@@ -3853,6 +3872,9 @@
         upErr.textContent += `failed: ${part.length} file(s) — ${msg}\n`;
       } else {
         for (const it of part) addTreeNode(it.name, it.kind);
+        // batch targets live in the POST body, out of mutate()'s sight —
+        // a restore/upload may have overwritten anything, so drop it all
+        bustAll();
       }
       done += part.length;
     }
@@ -4819,7 +4841,7 @@
       stWork('restoring memories…');
       let r = null;
       try { r = await mutate(api + '/know-import', { method: 'POST', body: knowJson }); } catch {}
-      if (r && r.ok) st('memories restored');
+      if (r && r.ok) { st('memories restored'); bustAll(); }
       else st('pages restored, but the memories did not: ' + (r ? r.status : 'no answer'), false);
     }
     loadTree();

@@ -196,7 +196,7 @@
       stWork('restoring memories…');
       let r = null;
       try { r = await mutate(api + '/know-import', { method: 'POST', body: knowJson }); } catch {}
-      if (r && r.ok) st('memories restored');
+      if (r && r.ok) { st('memories restored'); bustAll(); }
       else st('pages restored, but the memories did not: ' + (r ? r.status : 'no answer'), false);
     }
     loadTree();

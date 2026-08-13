@@ -86,6 +86,9 @@
         upErr.textContent += `failed: ${part.length} file(s) — ${msg}\n`;
       } else {
         for (const it of part) addTreeNode(it.name, it.kind);
+        // batch targets live in the POST body, out of mutate()'s sight —
+        // a restore/upload may have overwritten anything, so drop it all
+        bustAll();
       }
       done += part.length;
     }

@@ -25,11 +25,28 @@ const BASE = (process.env.LATTICE_URL || 'http://localhost:8080').replace(/\/$/,
 const CKF = (process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/cookie')
   .replace(/^~/, homedir());
 const CHROME = process.env.CHROME || '/usr/bin/chromium';
-const PROFILE = mkdtempSync(join(tmpdir(), 'lat-pc-'));
+const PROFILE = mkdtempSync(join(process.env.LATTICE_PROFILE_DIR || tmpdir(), 'lat-pc-'));
 
 const puppeteer = (await import('puppeteer-core')).default;
 const ck = readFileSync(CKF, 'utf8').trim();
 const [cn, ...cr] = ck.split('=');
+
+// Settle gate: right after a deploy the pier serves everything at 5-10s while
+// the nexus rebuilds, and a fresh profile's SW install (sw.js + activation)
+// queues behind that — the suite would measure deploy churn, not the regime.
+// Same contract as the matrix settle scripts: three consecutive sub-4s docs.
+{
+  let okRuns = 0;
+  for (let i = 0; i < 40 && okRuns < 3; i++) {
+    const t0 = Date.now();
+    try {
+      const r = await fetch(BASE + '/apps/lattice', { headers: { Cookie: ck } });
+      okRuns = (r.ok && Date.now() - t0 < 4000) ? okRuns + 1 : 0;
+    } catch { okRuns = 0; }
+    if (okRuns < 3) await new Promise((r) => setTimeout(r, 5000));
+  }
+  if (okRuns < 3) { console.log('ship never settled'); process.exit(1); }
+}
 const HOST = new globalThis.URL(BASE).hostname;
 const PAGE = BASE + '/apps/lattice?url=urb%3A%2F%2F~tyr%2Fharnessdir%2Fone';
 const HOME = BASE + '/apps/lattice';
@@ -55,11 +72,31 @@ const nav = async (url) => {
   await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
   return Date.now() - t0;
 };
+// The write path is BACKGROUND machinery: the idle self-refetch queues on a
+// pier that serializes requests, behind a one-time ~7-asset SW install on a
+// fresh profile (~17s of pier time after a deploy). The contract is "the
+// next view after the machinery settles is instant", not "instant N seconds
+// after cold" — so readiness is polled, with a hard cap that still fails
+// the run if the machinery is genuinely broken.
+const waitCached = async (url, maxMs = 60000) => {
+  const t0 = Date.now();
+  while (Date.now() - t0 < maxMs) {
+    const ready = await p.evaluate(async (u) => {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (!reg || !reg.active) return false;
+      const c = await caches.open('lattice-pages');
+      return !!(await c.match(u));
+    }, url).catch(() => false);
+    if (ready) return true;
+    await sleep(1000);
+  }
+  return false;
+};
 
 // ── cold, then the background self-refetch populates the cache ──────────
 let t = await nav(PAGE);
 console.log('  (cold: ' + t + 'ms)');
-await sleep(12000);   // idle gate (2s idle / 6s cap) + self-fetch + margin
+check('(setup) cold view cached in the background', await waitCached(PAGE));
 
 // ── repeat: served by the SW from the pages cache, canonical URL ────────
 t = await nav(PAGE);
@@ -116,7 +153,8 @@ check('instant across browser restart', t < 400, t + 'ms');
 check('restart content is fresh', (await p.content()).includes(stamp2));
 
 // ── home is a cached surface too ────────────────────────────────────────
-await nav(HOME); await sleep(12000);
+await nav(HOME);
+check('(setup) home cached in the background', await waitCached(HOME));
 t = await nav(HOME);
 check('home repeat is instant', t < 400, t + 'ms');
 
@@ -135,7 +173,8 @@ check('post-eviction view takes the slow path',
 await p.evaluate(() => { localStorage.removeItem('latCacheBudget'); });
 
 // ── an EDITOR save busts the cached view of the page it changed ─────────
-await nav(PAGE); await sleep(12000);
+await nav(PAGE);
+check('(setup) page recached', await waitCached(PAGE));
 t = await nav(PAGE);
 check('(setup) page cached again', t < 400, t + 'ms');
 const stamp3 = 'editor-' + Math.floor(Math.random() * 1e6);
@@ -152,6 +191,7 @@ for (let i = 0; i < 30 && !ready; i++) {
 check('(setup) editor loaded the page', ready);
 await p.evaluate((s) => {
   const ta = document.querySelector('textarea');
+  if (!ta) return;
   ta.value = '# one\n' + s;
   ta.dispatchEvent(new Event('input', { bubbles: true }));
 }, stamp3);
@@ -174,8 +214,74 @@ check('editor save busts the cached view', busted);
 t = await nav(PAGE);
 check('view after own edit is fresh', (await p.content()).includes(stamp3), t + 'ms');
 
+// ── an UNRELATED write must not swap the open view ──────────────────────
+// (the beacon is vault-global; the swap must be page-scoped). The editor
+// save above busted the entry — wait for the recache so this scenario runs
+// on a cache-served view with a real displayed-baseline.
+check('(setup) entry back after the editor bust', await waitCached(PAGE));
+t = await nav(PAGE);
+navs = 0;
+const p3 = await browser.newPage();
+await p3.setCookie({ name: cn, value: cr.join('='), domain: HOST, path: '/' });
+await p3.goto(HOME, { waitUntil: 'domcontentloaded' });
+await p3.evaluate(async () => {
+  await fetch('/apps/lattice/page-save?name=harnessdir%2Fother&type=md',
+    { method: 'POST', body: '# other\nunrelated-' + Math.random() });
+});
+await sleep(15000);
+check('unrelated write does not swap the open view', navs === 0, navs + ' navs');
+await p3.close();
+
+// ── a DELETED page must fall out of the cache ───────────────────────────
+await p.evaluate(async () => {
+  await fetch('/apps/lattice/page-save?name=harnessdir%2Ftmpdel&type=md',
+    { method: 'POST', body: '# doomed\ntmpdel-body' });
+});
+await sleep(2000);
+const DOOMED = BASE + '/apps/lattice?url=urb%3A%2F%2F~tyr%2Fharnessdir%2Ftmpdel';
+await nav(DOOMED);
+check('(setup) doomed page in cache', await waitCached(DOOMED));
+t = await nav(DOOMED);
+check('(setup) doomed page cached', t < 400, t + 'ms');
+await p.evaluate(async () => {
+  await fetch('/apps/lattice/page-del?name=harnessdir%2Ftmpdel', { method: 'POST' });
+});
+// this tab did the delete via raw fetch (no bustPages) — convergence must
+// come from the page script. The ?url= reader serves a 200 "not published"
+// page for a missing pub, so the cached entry CONVERGES to that body (the
+// 404-drop path applies to /x/ routes, where the server actually 404s).
+await nav(DOOMED);
+let ghost = true;
+for (let i = 0; i < 30 && ghost; i++) {
+  await sleep(1000);
+  ghost = await p.evaluate(async (u) => {
+    const c = await caches.open('lattice-pages');
+    const hit = await c.match(u);
+    if (!hit) return false;              // dropped: converged
+    return (await hit.text()).includes('tmpdel-body');  // still the old body?
+  }, DOOMED).catch(() => true);
+}
+check('deleted page converges out of the cached view', !ghost);
+t = await nav(DOOMED);
+check('view after delete is not the old page',
+  !(await p.content()).includes('tmpdel-body'), t + 'ms');
+
+// ── /clip is a side-effecting GET: never cached, never self-refetched ───
+const CLIP = BASE + '/apps/lattice/clip?url=' +
+  encodeURIComponent('urb://~tyr/harnessdir/one');
+await nav(CLIP); await sleep(12000);
+const clipCached = await p.evaluate(async () => {
+  const c = await caches.open('lattice-pages');
+  for (const k of await c.keys())
+    if (k.url.includes('/apps/lattice/clip')) return true;
+  return false;
+});
+check('clip confirmation never enters the cache', !clipCached);
+t = await nav(CLIP);
+check('repeat clip reaches the server', t > 400, t + 'ms');
+
 // ── a manual reload must reach the network ──────────────────────────────
-await sleep(12000);
+check('(setup) view recached', await waitCached(PAGE));
 t = await nav(PAGE);
 check('(setup) view cached once more', t < 400, t + 'ms');
 const t0r = Date.now();
