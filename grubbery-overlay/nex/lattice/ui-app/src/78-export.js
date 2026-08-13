@@ -355,6 +355,13 @@ editor, or git will do if you only want to look.
   // Rust, reaching in with eval — there is no other channel from the menu bar
   // or a timer thread into this page.
   if (window.__TAURI__) window.__latticeBackup = (id) => exportVault(id);
+  // "back up now" clicked while the MANAGER page was displayed: no app page
+  // existed to receive the eval, so the rust side navigates the workspace
+  // here with ?backup=<id> and the boot runs it (3s: let the tree land)
+  if (window.__TAURI__) {
+    const pend = new URLSearchParams(location.search).get('backup');
+    if (pend) setTimeout(() => window.__latticeBackup(pend), 3000);
+  }
 
   // A file input cannot read a tar in the shell, so the desktop path goes
   // through Rust's own picker and hands the bytes back. restoreVault only

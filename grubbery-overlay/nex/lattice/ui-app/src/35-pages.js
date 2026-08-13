@@ -21,6 +21,10 @@
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
     grubPath = null;
+    // and knowledge mode: search results and the comments inbox open pages
+    // from know mode, and a stale mode routed the next save to /know-save —
+    // a new memory named after the page, while the page kept its old body
+    if (mode === 'know') setMode('pages');
     src.readOnly = false;
     setFolderCtx(name);
     // the queue outranks every other tier. A queued edit is the newest truth
@@ -183,6 +187,11 @@
     // or panel-driven save can leave curRev one step behind, and every stale
     // base manufactures a false conflict page out of nothing (ui-matrix
     // caught exactly that). Online editing stays last-writer-wins.
+    if (!validName(name)) {
+      saving = false;
+      st('bad name — lowercase letters, digits, and - . _ ~ (no spaces)', false);
+      return;
+    }
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '');
     let r = null;

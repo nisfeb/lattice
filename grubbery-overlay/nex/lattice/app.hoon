@@ -1318,7 +1318,10 @@
       =/  more  ?~(ps ~ t.ps)
       =/  wsrc=@t  ?~(pg '' src.i.pg)
       =/  pgm  ?~(pg ~ t.pg)
-      ?.  !=(bas.i.todo pv)  $(todo t.todo, ps more, pg pgm, dups [| dups])
+      ::  base 0 = NO base claim (a save rebased by an offline move cannot
+      ::  know the destination's rev): apply without a conflict check.
+      ?.  &(!=(0 bas.i.todo) !=(bas.i.todo pv))
+        $(todo t.todo, ps more, pg pgm, dups [| dups])
       ;<  old=(unit @t)  bind:n  (page-src (pax-of nam.i.todo))
       ::  missing page or identical body: stale base, but nothing to preserve
       ::  and nothing to disagree with. Not a conflict
@@ -1347,7 +1350,7 @@
       ?~  todo  (flop acc)
       =/  pv=@ud  ?~(ps 0 i.ps)
       =/  nw=@ud  +(pv)
-      =/  cf=?  &(!=(bas.i.todo pv) ?~(ds & !i.ds))
+      =/  cf=?  &(!=(0 bas.i.todo) !=(bas.i.todo pv) ?~(ds & !i.ds))
       %=  $
         todo  t.todo
         ps    ?~(ps ~ t.ps)
@@ -1402,7 +1405,7 @@
     ::  is safe where refuse-and-block would need true writer-side CAS.
     =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
     ;<  prev=@ud  bind:m  (page-rev (pax-of u.name))
-    =/  stale=?  &(?=(^ base) !=(u.base prev))
+    =/  stale=?  &(?=(^ base) !=(u.base 0) !=(u.base prev))
     ;<  old=(unit @t)  bind:m
       =/  n  (fiber:fiber:nexus ,(unit @t))
       ?.  stale  (pure:n ~)
@@ -1498,6 +1501,14 @@
     =/  pt=path  (pax-of u.to)
     ?:  &((gth (lent pt) (lent pf)) =(pf `path`(scag (lent pf) `path`pt)))
       (send-err eyre-id 400 'cannot move under itself')
+    ::  never clobber: a collision replaced the destination silently (and
+    ::  prune-hist's coalesce window could make it unrecoverable). /know-move
+    ::  has refused this from the start; pages get the same 409.
+    =/  dbase=path  (weld app-base:lu (weld /page pt))
+    ;<  dpg=?  bind:m  (peek-exists:io [%& %& dbase %code])
+    ?:  dpg  (send-err eyre-id 409 'destination exists')
+    ;<  ddr=?  bind:m  (peek-exists:io [%& %| dbase])
+    ?:  ddr  (send-err eyre-id 409 'destination exists')
     ;<  n=(unit @ud)  bind:m  (move-pages pf pt)
     ?~  n  (send-err eyre-id 404 'no such page or folder')
     (send-json eyre-id (pairs:enjs:format ~[['moved' (numb:enjs:format u.n)]]))
@@ -3321,6 +3332,10 @@
     =/  pdir=path  (weld root (weld /page pax.act))
     ;<  ex=?  bind:m  (peek-exists:io [%& %| pdir])
     ?.  ex  (pure:m ~)
+    ::  unpublish FIRST: the vault copy at urb://<name> (and its /pub/index
+    ::  entry) is world-readable and otherwise outlives the page forever.
+    ;<  ~  bind:m
+      (apply-pub root now [%del-page (spat (pub-path (crip (pax-str pax.act))))])
     ;<  ~  bind:m  (share-weir [%& %& pdir %data] %.n)
     ::  cull tombs the CURRENT revision but leaves every stored %firm one, so
     ::  a deleted page's bodies stayed readable via page-history and could be
@@ -3648,10 +3663,21 @@
   ::  computed noun) has no gemtext form, so it keeps its preset without a
   ::  vault copy rather than publishing something meaningless.
   ;<  dn=view:nexus  bind:m  (peek:io data-road ~)
-  ?.  ?=([%file *] dn)  (pure:m ~)
-  =/  body=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.dn))))
-  ?~  body  (pure:m ~)
-  (apply-pub root now [%save-page key u.body])
+  ?:  ?=([%file *] dn)
+    =/  body=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.dn))))
+    ?~  body  (pure:m ~)
+    (apply-pub root now [%save-page key u.body])
+  ::  no computed data yet — a freshly-made page (a move lands here: %share
+  ::  is queued right behind %make, and the evaluator computes /data later).
+  ::  Publish from the code src, exactly as +republish-if-shared does; the
+  ::  evaluator's eventual output republishes over this if it differs.
+  ;<  cv=view:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
+  ?.  ?=([%file *] cv)  (pure:m ~)
+  =/  src=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.cv))))
+  ?~  src  (pure:m ~)
+  =/  un=(unit [builder=@tas body=@t])  (unwrap-content u.src)
+  ?~  un  (pure:m ~)
+  (apply-pub root now [%save-page key body.u.un])
 ::  +republish-if-shared: refresh a page's published vault copy after a write.
 ::  urb:// names a LIVE page (docs/urls.md), but until this arm the vault copy
 ::  was a snapshot taken only when the share preset was SET. Every later edit
@@ -4270,7 +4296,7 @@
   ^-  form:m
   ?:  =(0 bud)  (pure:m ~)
   ?~  pokes  (pure:m ~)
-  ;<  ~  bind:m  (poke-eval [%cmd ~[name.i.pokes] txt.i.pokes (dec bud)])
+  ;<  ~  bind:m  (poke-eval-abs [%cmd ~[name.i.pokes] txt.i.pokes (dec bud)])
   $(pokes t.pokes)
 ++  poke-sub
   |=  act=sub-action:lp

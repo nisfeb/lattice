@@ -109,9 +109,13 @@
   // pull-only, so the only way to learn anyone had said anything was to open
   // it and look. That makes the feature invisible in practice.
   //
-  // "Seen" is a high-water mark, not a per-comment flag: the @da the items
-  // carry is zero-padded and fixed-width, so a lexical compare orders them and
-  // one string in localStorage replaces a set that would need pruning.
+  // "Seen" is a high-water mark, not a per-comment flag. The @da stamps the
+  // items carry are NOT fixed-width — scot %da leaves month and day unpadded
+  // (~2026.8.9 vs ~2026.10.1) — so a raw lexical compare misorders across
+  // every 9->10 boundary and the badge goes silent for months at a time.
+  // daKey pads the numeric fields into a genuinely sortable string; marks
+  // stored by older builds compare fine because both sides go through it.
+  const daKey = (w) => String(w || '').replace(/\d+/g, (d) => d.padStart(4, '0'));
   const seenKey = 'cmtSeen';
   const lastSeen = () => { try { return localStorage[seenKey] || ''; } catch { return ''; } };
   const markSeen = (when) => { try { if (when) localStorage[seenKey] = when; } catch {} };
@@ -165,7 +169,7 @@
     } catch { return; }
     const items = d.items || [];
     const mark = lastSeen();
-    unreadSeen = items.filter((c) => String(c.when || '') > mark).length;
+    unreadSeen = items.filter((c) => daKey(c.when) > daKey(mark)).length;
     stampSeen = stamp;
     paintUnread(unreadSeen);
   }
@@ -174,8 +178,13 @@
     $('cmwrap').hidden = false;
     // opening IS reading: mark everything currently in the inbox as seen
     loadComments().then(() => {
-      const newest = inbox.reduce((a, c) => (String(c.when) > a ? String(c.when) : a), lastSeen());
+      const newest = inbox.reduce(
+        (a, c) => (daKey(c.when) > daKey(a) ? String(c.when) : a), lastSeen());
       markSeen(newest);
+      // reading IS the recount: without dropping the cached stamp, the next
+      // same-stamp fast path repaints the PRE-read number forever
+      stampSeen = null;
+      unreadSeen = 0;
       paintUnread(0);
     });
   };
