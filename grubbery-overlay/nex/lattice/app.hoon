@@ -92,6 +92,12 @@
             [%fall %& [/know %trash] [[/lattice %know-index] *know-index:lk]]
             [%fall %| /pub/vault empty-dir:loader]
             [%fall %& [/pub %index] [[/lattice %pub-index] *pub-index:lp]]
+        ::  /pub/meta: the mesa publish sequence counter (docs D1). Every
+        ::  namespace publish grows one /pub/index/<seq> manifest binding and
+        ::  takes its seq from here (monotonic, never reused). A covering row
+        ::  so the counter survives reload — a dropped counter would re-grow
+        ::  seq 1 over an already-bound spur.
+            [%fall %& [/pub %meta] [[/lattice %pub-meta] 0]]
         ::  HTTP front-end: ui/main.sig binds /apps/lattice and dispatches each
         ::  request into a per-request fiber under ui/requests. The web reader is
         ::  rendered dynamically per request (no static page grub).
@@ -2400,6 +2406,14 @@
       [%'POST' %search-reindex]
     ;<  ~  bind:m  content-reindex
     (send-ok eyre-id)
+  ::  pub-regrow: backfill the remote-scry namespace from the pub vault (see
+  ::  +pub-regrow). One-shot after deploying the mesa mirror onto a ship that
+  ::  already published; harmless to re-run (each re-grow lands a fresh gall
+  ::  case on the same rev spur, latest wins). Owner-only like every route.
+      [%'POST' %pub-regrow]
+    ;<  n=@ud  bind:m  pub-regrow
+    %+  send-json  eyre-id
+    (pairs:enjs:format ~[['ok' b+&] ['grown' (numb:enjs:format n)]])
   ::  ── legacy agent migration (see the +legacy-live block) ────────────────
   ::  legacy-status: should the UI offer to import from a retired %lattice
   ::  gall agent? One %gu liveness scry and nothing else. See below. The
@@ -8313,7 +8327,18 @@
     ;<  ~  bind:m  (put-file road [/lattice %page] body.act)
     ;<  ~  bind:m  (gain:io road %.y)
     ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
-    (put-file px [/lattice %pub-index] (~(put by ix) key (to-pub-row:lp body.act now)))
+    =/  nix=pub-index:lp  (~(put by ix) key (to-pub-row:lp body.act now))
+    ;<  ~  bind:m  (put-file px [/lattice %pub-index] nix)
+    ::  mesa (D1): mirror the publish into the remote-scry namespace, so a
+    ::  peer can %keen the page instead of negotiating a grubbery peek. Two
+    ::  bindings: the body at /pub/page/<name>/<rev> (rev = the vault grub's
+    ::  cass, read AFTER the put-file so it names the revision just written),
+    ::  and a fresh /pub/index/<seq> manifest. %grow is fire-and-forget, so a
+    ::  crash between the vault write and the grow can leave the namespace one
+    ::  save behind; POST /pub-regrow re-grows the current state.
+    ;<  rev=@ud  bind:m  (pub-grub-rev pax.u.or nom.u.or)
+    ;<  ~  bind:m  (grow-pub-page key body.act rev)
+    (grow-pub-index root nix)
   ::
       %del-page
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
@@ -8328,11 +8353,24 @@
     =/  road=road:tarball  [%& %& pax.u.or nom.u.or]
     ;<  exists=?  bind:m  (peek-exists:io road)
     ?.  exists  ~&([%lattice-pub-del-missing key] (pure:m ~))
+    ::  the latest published rev, read BEFORE the cull drops the grub from the
+    ::  dir wave. It names the namespace binding the tomb below retracts.
+    ;<  rev=@ud  bind:m  (pub-grub-rev pax.u.or nom.u.or)
     ::  cull tombs the grub (gain=%.y keeps the body in born history). Drop its
     ::  index row so it's no longer live. No trash row. Pages have no restore.
     ;<  ~  bind:m  (cull:io road)
     ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
-    (put-file px [/lattice %pub-index] (~(del by ix) key))
+    =/  nix=pub-index:lp  (~(del by ix) key)
+    ;<  ~  bind:m  (put-file px [/lattice %pub-index] nix)
+    ::  mesa (D1): retract the namespace copy. %tomb is per-[case spur], and a
+    ::  rev-carrying spur is grown exactly once, so its only gall case is 1.
+    ::  Only the LATEST rev binding is tombed here — older rev spurs age out
+    ::  under kernel retention policy; walking every historical rev would cost
+    ::  a peep per page for bindings the kernel already reaps. The successor
+    ::  index seq is grown so followers see the page leave the manifest.
+    =/  inner=path  (snip (strip-pub:lp key))
+    ;<  ~  bind:m  (tomb:io 1 (snoc (weld /pub/page inner) (scot %ud rev)))
+    (grow-pub-index root nix)
   ==
 ::  +read-pub-index: peek the /pub/index grub. Empty if absent.
 ::
@@ -8343,6 +8381,106 @@
   ;<  seen=view:nexus  bind:m  (peek:io road ~)
   ?.  ?=([%file *] seen)  (pure:m *pub-index:lp)
   (pure:m !<(pub-index:lp (need-vase:tarball sang.seen)))
+::  ── mesa: the remote-scry publish mirror (docs D1) ───────────────────────
+::  Every pub-vault save/delete ALSO drives the ship's remote-scry namespace,
+::  so a peer can read pages with %keen (content-addressed, kernel-cached)
+::  instead of negotiating grubbery peeks. The scheme:
+::    /pub/page/<name-segments>/<rev>   one immutable binding per published
+::                                      body, rev = the vault grub's cass
+::    /pub/index/<seq>                  the discovery manifest (manifest-gmi),
+::                                      re-grown on every publish and delete
+::    [/pub %meta] grub                 the seq counter, monotonic @ud
+::  Bindings are immutable per spur (the rev/seq segment makes each grow
+::  fresh), which is what the namespace requires. Compiles only against
+::  grubbery feat/scry-io (grow:io / tomb:io / keen:io).
+::
+::  +pub-grub-rev: the current cass revision of one pub-vault grub, 0 if
+::  absent. Same one-dir-peek read +page-rev uses (the wave carries the cass),
+::  aimed at the vault grub instead of a /page code grub.
+::
+++  pub-grub-rev
+  |=  [pax=path nom=@ta]
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  dv=view:nexus  bind:m  (peek:io [%& %| pax] ~)
+  ?.  ?=([%ball *] dv)  (pure:m 0)
+  =/  wfil=(map @ta cass:clay)  ?~(fil.wave.dv ~ file.u.fil.wave.dv)
+  =/  c=(unit cass:clay)  (~(get by wfil) nom)
+  (pure:m ?~(c 0 ud.u.c))
+::  +read-pub-seq: the [/pub %meta] publish counter. 0 if the grub is missing
+::  or predates the row (mirror of read-pub-index's absent case).
+::
+++  read-pub-seq
+  |=  road=road:tarball
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  seen=view:nexus  bind:m  (peek:io road ~)
+  ?.  ?=([%file *] seen)  (pure:m 0)
+  (pure:m !<(@ud (need-vase:tarball sang.seen)))
+::  +grow-pub-page: bind one page body in the namespace at its rev spur.
+::  key is the canonical pub key (/pub/<name…>/gmi, already validated by the
+::  caller's key-to-rail); the spur drops the pub/gmi wrapping and rides the
+::  rev as its last segment, so every revision is its own immutable binding.
+::  The page rides the %gmi mark — the vault body IS rendered gemtext.
+::
+++  grow-pub-page
+  |=  [key=path body=@t rev=@ud]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  inner=path  (snip (strip-pub:lp key))
+  (grow:io (snoc (weld /pub/page inner) (scot %ud rev)) [%gmi body])
+::  +grow-pub-index: grow the successor discovery manifest. Reads the seq
+::  counter, grows /pub/index/<seq+1> carrying manifest-gmi of the index the
+::  caller JUST wrote, then persists the bumped counter. Counter write comes
+::  last: a crash before it re-grows the same seq next publish, and gall
+::  treats a re-grow of a bound spur as a fresh case — stale but readable —
+::  where the reverse order could skip a seq forever.
+::
+++  grow-pub-index
+  |=  [root=path ix=pub-index:lp]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  mx=road:tarball  [%& %& (weld root /pub) %meta]
+  ;<  seq=@ud  bind:m  (read-pub-seq mx)
+  =/  nseq=@ud  +(seq)
+  ;<  ~  bind:m  (grow:io /pub/index/[(scot %ud nseq)] [%gmi (manifest-gmi ix)])
+  (put-file mx [/lattice %pub-meta] nseq)
+::  +pub-regrow: backfill the namespace from the existing pub vault — every
+::  page at its CURRENT vault rev, then one fresh index seq. For piers that
+::  published before the mesa mirror existed (their saves never grew). Same
+::  walk the manifest generation uses: the pub index's key set, each key read
+::  through its vault rail. Returns the number of pages grown.
+::
+::  Single pass, not chunked: unlike the catalog sweep this does no term
+::  extraction and no remote peeks — per page it costs one file peek, one dir
+::  peek and one fire-and-forget %grow card, so even a large vault is one
+::  event of cheap local darts. If a regrow is ever observed to brown out the
+::  pier, chunk it with the /catalog-sweep ack-yield-scan idiom.
+::
+++  pub-regrow
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  ix=pub-index:lp  bind:m
+    (read-pub-index [%& %& (weld app-base:lu /pub) %index])
+  ;<  n=@ud  bind:m  (pub-regrow-loop ~(tap in ~(key by ix)) 0)
+  ;<  ~  bind:m  (grow-pub-index app-base:lu ix)
+  (pure:m n)
+++  pub-regrow-loop
+  |=  [keys=(list path) cnt=@ud]
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ?~  keys  (pure:m cnt)
+  =/  or=(unit vrail:lp)  (key-to-rail:lp (weld app-base:lu /pub/vault) i.keys)
+  ?~  or  (pub-regrow-loop t.keys cnt)
+  ;<  seen=view:nexus  bind:m  (peek:io [%& %& pax.u.or nom.u.or] ~)
+  ?.  ?=([%file *] seen)  (pub-regrow-loop t.keys cnt)
+  ::  clam in a mole: one malformed grub (an index row whose vault copy was
+  ::  hand-edited) must skip, not kill the whole backfill.
+  =/  body=(unit @t)  (mole |.(!<(@t (need-vase:tarball sang.seen))))
+  ?~  body  (pub-regrow-loop t.keys cnt)
+  ;<  rev=@ud  bind:m  (pub-grub-rev pax.u.or nom.u.or)
+  ;<  ~  bind:m  (grow-pub-page i.keys u.body rev)
+  (pub-regrow-loop t.keys +(cnt))
 ::  +read-pub-index-remote: a peer's /pub/index via peek-remote (clean break:
 ::  the peer must run the grubbery-native lattice at the same app-base).
 ::

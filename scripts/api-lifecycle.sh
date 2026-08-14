@@ -75,5 +75,27 @@ for nm in api-lc%2Fdst api-lc%2Fmoved; do
   post "/apps/lattice/page-del?name=$nm" >/dev/null
 done
 
+# ── mesa (remote-scry publish, docs D1) — PENDING A2 ─────────────────────────
+# The lattice publish side now grows /pub/page/<name>/<rev> and
+# /pub/index/<seq> bindings on every save/delete, but the live %grubbery desk
+# cannot load feat/scry-io yet (state-migration blocker), so the routes below
+# do not exist on a deployed ship and a keen self-read has no namespace to
+# answer from. Once A2 lands (feat/scry-io deployed under the nuke-and-restart
+# policy), run with LATTICE_MESA=1 to enable; until then this block is skipped
+# and the script's default behavior is unchanged.
+if [ "${LATTICE_MESA:-0}" = 1 ]; then
+  # backfill answers and reports a count
+  r=$(post "/apps/lattice/pub-regrow")
+  echo "$r" | grep -q '"ok":true' && ok "pub-regrow answers ok" || bad "pub-regrow answers ok" "$r"
+  echo "$r" | grep -q '"grown":' && ok "pub-regrow reports a grown count" || bad "pub-regrow grown count" "$r"
+  # a publish must land a namespace binding readable by keen (self-read).
+  # Dojo probe (needs the tyr MCP dojo harness; sketch, unverified until A2):
+  #   post page-save + page-share for api-lc/mesa, then from the dojo:
+  #     -keen /=//=/g/~tyr/grubbery/1/pub/page/api-lc/mesa/<rev>
+  #   expect a %gmi page carrying the body, and after page-del a tombstone.
+  #   The /pub/index/<seq> binding should carry the manifest-gmi listing.
+  bad "mesa keen self-read" "not implemented — needs A2 on the live desk"
+fi
+
 echo
 if [ $fails = 0 ]; then echo "all checks passed"; else echo "$fails FAILURES"; exit 1; fi
