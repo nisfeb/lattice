@@ -31,7 +31,10 @@ const st = () => p.evaluate(() => ({
   b: document.getElementById('navb')?.disabled,
   f: document.getElementById('navf')?.disabled,
   ham: !!document.getElementById('ham'),
-  menuHidden: document.getElementById('hammenu')?.hidden,
+  // VISIBILITY, not the DOM property: display:flex on the id once
+  // outranked [hidden]{display:none} and the menu rendered open while
+  // .hidden read true — the property lied, the box did not
+  menuHidden: (document.getElementById('hammenu')?.getBoundingClientRect().height || 0) === 0,
   links: [...(document.getElementById('hammenu')?.querySelectorAll('a') || [])]
     .map((a) => a.getAttribute('href')),
   // Go must be the input's NEXT element; the hamburger the bar's LAST
