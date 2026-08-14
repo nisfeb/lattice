@@ -7327,6 +7327,18 @@
   ^-  tape
   %-  trip
   '<script>(function(){if(!("caches"in window)||!window.indexedDB)return;var PN=location.pathname;if(PN==="/apps/lattice/clip"||PN==="/apps/lattice/share")return;var BUDGET=(+localStorage.latCacheBudget)||200*1024*1024;var canon=(function(){var h=location.href.split("#")[0];var i=h.indexOf("?");if(i<0)return h;var q=h.slice(i+1).split("&").filter(function(s){return s.slice(0,2)!=="u="});return q.length?h.slice(0,i)+"?"+q.join("&"):h.slice(0,i)})();function idb(){return new Promise(function(res,rej){var r=indexedDB.open("lattice-lru",1);r.onupgradeneeded=function(){r.result.createObjectStore("e",{keyPath:"url"})};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}function tx(db,mode,fn){return new Promise(function(res,rej){var t=db.transaction("e",mode);fn(t.objectStore("e"));t.oncomplete=function(){res()};t.onerror=function(){rej(t.error)}})}function touch(url,size){return idb().then(function(db){return tx(db,"readwrite",function(st){var g=st.get(url);g.onsuccess=function(){var e=g.result||{url:url,size:0};e.at=Date.now();if(size)e.size=size;st.put(e)}})}).catch(function(x){})}function evict(){return idb().then(function(db){var all=[];return tx(db,"readonly",function(st){st.openCursor().onsuccess=function(ev){var c=ev.target.result;if(c){all.push(c.value);c.continue()}}}).then(function(){var total=all.reduce(function(a,e){return a+(e.size||0)},0);if(total<=BUDGET)return;all.sort(function(a,b){return(a.at||0)-(b.at||0)});return caches.open("lattice-pages").then(function(c){var i=0;function step(){if(i>=all.length||total<=BUDGET)return;var e=all[i++];total-=(e.size||0);return c.delete(e.url).then(function(){return tx(db,"readwrite",function(st){st.delete(e.url)})}).then(step)}return step()})})}).catch(function(x){})}var shown=null;caches.open("lattice-pages").then(function(c){return c.match(canon)}).then(function(r){return r?r.text():null}).then(function(t){shown=t}).catch(function(x){});function strip(t){return t.replace(/var REV="[^"]*"/,"")}function drop(){return caches.open("lattice-pages").then(function(c){return c.delete(canon)}).then(function(){return idb()}).then(function(db){return tx(db,"readwrite",function(st){st.delete(canon)})}).catch(function(x){})}var inflight=null;function refresh(force){if(inflight&&!force)return inflight;var p=fetch(location.href,{credentials:"same-origin",cache:"no-store",headers:{"x-lattice-bg":"1"}}).then(function(r){if(r.redirected||r.status===403||r.status===404||r.status===410){return drop().then(function(){return false})}if(!r.ok)return false;return r.blob().then(function(body){return caches.open("lattice-pages").then(function(c){return body.text().then(function(nt){var chg=shown===null||strip(shown)!==strip(nt);if(shown===null)shown=nt;return c.put(canon,new Response(body,{status:200,headers:{"content-type":r.headers.get("content-type")||"text/html"}})).then(function(){return touch(canon,body.size)}).then(evict).then(function(){return{ok:true,chg:chg}})})})})}).catch(function(x){return false}).then(function(ok){if(inflight===p)inflight=null;return ok});inflight=p;return p}window.__latRefresh=refresh;window.__latCanon=canon;touch(canon,0);var last=Date.now();addEventListener("pointerdown",function(){last=Date.now()},true);addEventListener("keydown",function(){last=Date.now()},true);var nav0=performance.getEntriesByType("navigation")[0];var fresh=!!(nav0&&nav0.transferSize>0);var IDLE=fresh?12000:8000;var CAP=fresh?45000:20000;var t0=Date.now();var iv=setInterval(function(){if(Date.now()-last>IDLE||Date.now()-t0>CAP){clearInterval(iv);refresh()}},500);var oic=/Chrome\//.test(navigator.userAgent);if(fresh&&oic){fetch(location.href,{cache:"only-if-cached",mode:"same-origin",credentials:"same-origin"}).then(function(r){if(!r.ok||r.redirected)throw 0;return r.blob()}).then(function(body){return body.text().then(function(nt){shown=nt;return caches.open("lattice-pages").then(function(c){return c.put(canon,new Response(body,{status:200,headers:{"content-type":"text/html"}}))}).then(function(){return touch(canon,body.size)})})}).then(function(){clearInterval(iv)}).catch(function(x){})}})();</script>'
+::  +nav-script: contextual back/forward + the hamburger. The stack is the
+::  TAB's own (sessionStorage), indexed by a latI stamped into history.state
+::  so a traversal is told apart from a new navigation: a load carrying latI
+::  is a return to that entry; a load without one truncates the forward
+::  branch at the previous position and pushes. Buttons stay disabled until
+::  there is genuinely somewhere to go. history.back()/forward() do the
+::  moving, so traversals ride the pages cache (instant) and bfcache.
+::
+++  nav-script
+  ^-  tape
+  %-  trip
+  '<script>(function(){var b=document.getElementById("navb"),f=document.getElementById("navf");var h=document.getElementById("ham"),m=document.getElementById("hammenu");if(h&&m){h.addEventListener("click",function(e){e.preventDefault();e.stopPropagation();m.hidden=!m.hidden});document.addEventListener("click",function(){m.hidden=true})}if(!b||!f)return;var ents=[],pos=-1;try{ents=JSON.parse(sessionStorage.latNav||"[]")}catch(e){}var prev=+(sessionStorage.latNavPos||-1);var st=history.state&&typeof history.state.latI==="number"?history.state.latI:null;if(st!==null&&st<ents.length){pos=st}else if(prev>=0&&ents[prev]===location.href){pos=prev;history.replaceState({latI:pos},"")}else{ents=ents.slice(0,prev+1);ents.push(location.href);if(ents.length>400){ents=[location.href]}pos=ents.length-1;history.replaceState({latI:pos},"")}try{sessionStorage.latNav=JSON.stringify(ents);sessionStorage.latNavPos=String(pos)}catch(e){}function sync(){var si=history.state&&typeof history.state.latI==="number"?history.state.latI:pos;pos=si;try{sessionStorage.latNavPos=String(pos)}catch(e){}if(pos>0){b.removeAttribute("disabled")}else{b.setAttribute("disabled","")}if(pos<ents.length-1){f.removeAttribute("disabled")}else{f.setAttribute("disabled","")}}sync();window.addEventListener("pageshow",function(ev){if(ev.persisted){try{ents=JSON.parse(sessionStorage.latNav||"[]")}catch(e){}sync()}});b.addEventListener("click",function(){history.back()});f.addEventListener("click",function(){history.forward()})})();</script>'
 ++  sw-register-script
   ^-  tape
   %-  trip
@@ -7869,7 +7881,7 @@
   ^-  tape
   %+  weld  know-css
   %-  trip
-  '*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{background:#fafafa}body{margin:0;font:16px/1.6 system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){html{background:#1a1a1a}body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:#1a6ed8}.bar a.nav{display:flex;align-items:center;padding:0 11px;font-size:1.05rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap}.bar a.nav:hover{border-color:#1a6ed8}.rawf{width:100%;height:70vh;border:1px solid #8886;border-radius:6px;background:#fff}.muted{color:#8a8a8a;font-size:.9em}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}.bar button:hover{border-color:#1a6ed8}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:#1a6ed8}.err{color:#c0392b}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}code{background:#8881;padding:.1em .3em;border-radius:4px;font-size:.9em}pre code{background:0;padding:0}table{border-collapse:collapse;margin:.7rem 0;display:block;overflow-x:auto;max-width:100%}th,td{border:1px solid #8887;padding:6px 11px}th{background:#8881;font-weight:600;text-align:left}img{max-width:100%;height:auto}del{opacity:.7}ul,ol{padding-left:1.5rem}li{margin:.15rem 0}sup.fnref{font-size:.72em}sup.fnref a{text-decoration:none}hr.fn-sep{margin-top:2rem}.footnotes{font-size:.88em;color:#8a8a8a}.footnotes li{margin:.25rem 0}.bar{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}@media(max-width:520px){.bar{flex-wrap:wrap}.bar input{flex:1 1 100%;order:3}main{padding-top:12px;padding-bottom:12px}}'
+  '.navb{border:0;background:none;cursor:pointer;font-size:1.05em;padding:2px 6px}.navb[disabled]{opacity:.35;cursor:default}.hamw{position:relative;margin-left:auto}.hamw>button{border:0;background:none;font-size:1.1em;cursor:pointer;padding:2px 8px}#hammenu{position:absolute;right:0;top:100%;z-index:60;background:var(--bg,#fff);border:1px solid #8886;border-radius:6px;min-width:160px;display:flex;flex-direction:column;padding:4px;box-shadow:0 4px 14px #0003}#hammenu a{padding:7px 10px;text-decoration:none;color:inherit;border-radius:4px}#hammenu a:hover{background:#8882}*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{background:#fafafa}body{margin:0;font:16px/1.6 system-ui,sans-serif;color:#111;background:#fafafa}@media(prefers-color-scheme:dark){html{background:#1a1a1a}body{color:#e6e6e6;background:#1a1a1a}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:#1a6ed8}.bar a.nav{display:flex;align-items:center;padding:0 11px;font-size:1.05rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap}.bar a.nav:hover{border-color:#1a6ed8}.rawf{width:100%;height:70vh;border:1px solid #8886;border-radius:6px;background:#fff}.muted{color:#8a8a8a;font-size:.9em}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}.bar button:hover{border-color:#1a6ed8}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:#1a6ed8}.err{color:#c0392b}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:#8a8a8a}pre{background:#8881;padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}code{background:#8881;padding:.1em .3em;border-radius:4px;font-size:.9em}pre code{background:0;padding:0}table{border-collapse:collapse;margin:.7rem 0;display:block;overflow-x:auto;max-width:100%}th,td{border:1px solid #8887;padding:6px 11px}th{background:#8881;font-weight:600;text-align:left}img{max-width:100%;height:auto}del{opacity:.7}ul,ol{padding-left:1.5rem}li{margin:.15rem 0}sup.fnref{font-size:.72em}sup.fnref a{text-decoration:none}hr.fn-sep{margin-top:2rem}.footnotes{font-size:.88em;color:#8a8a8a}.footnotes li{margin:.25rem 0}.bar{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}@media(max-width:520px){.bar{flex-wrap:wrap}.bar input{flex:1 1 100%;order:3}main{padding-top:12px;padding-bottom:12px}}'
 ::  +know-css: styles for the knowledge view (single-quote cord: braces literal).
 ::
 ++  know-css
@@ -7895,20 +7907,25 @@
     pwa-head
     "<title>lattice</title><style>"  web-css  "</style></head><body>"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
+    ::  contextual history: enabled only when this tab has somewhere to go
+    ::  (+nav-script maintains the per-tab stack). Everything that used to be
+    ::  a row of nav links lives in the hamburger now — including the editor,
+    ::  the knowledge store, bookmarks and settings — because an authored
+    ::  /index takes over the home view and the bar is what survives it.
+    "<button type=\"button\" class=\"navb\" id=\"navb\" title=\"back\" disabled>&#8592;</button>"
+    "<button type=\"button\" class=\"navb\" id=\"navf\" title=\"forward\" disabled>&#8594;</button>"
     "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
-    ::  an authored /index takes over the home view, and the generated home was
-    ::  the ONLY way to the editor, browser and knowledge, so carry them here.
-    "<a class=\"nav\" href=\"/apps/lattice/app\" title=\"editor\">&#9998;</a>"
-    "<a class=\"nav\" href=\"/apps/lattice/know\" title=\"knowledge\">&#9670;</a>"
-    "<a class=\"nav\" href=\"/apps/lattice/marks\" title=\"bookmarks\">&#9733;</a>"
-    ::  settings lives here and NOT only on the home index: an authored /index
-    ::  replaces that whole view, which is exactly what orphaned the settings
-    ::  page (and the editor link before it). The bar survives an authored home,
-    ::  so anything that must stay reachable belongs in it.
-    "<a class=\"nav\" href=\"/apps/lattice/settings\" title=\"settings\">&#9881;</a>"
     "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search the catalog\">"
+    "<button type=\"submit\">Go</button>"
     bmbtn
-    "<button type=\"submit\">Go</button></form><main>"  inner  "</main>"
+    "<span class=\"hamw\"><button type=\"button\" id=\"ham\" title=\"menu\">&#9776;</button>"
+    "<div id=\"hammenu\" hidden>"
+    "<a href=\"/apps/lattice/app\">&#9998; editor</a>"
+    "<a href=\"/apps/lattice/know\">&#9670; knowledge</a>"
+    "<a href=\"/apps/lattice/marks\">&#9733; bookmarks</a>"
+    "<a href=\"/apps/lattice/settings\">&#9881; settings</a>"
+    "</div></span>"
+    "</form><main>"  inner  "</main>"
     ::  omnibar completions. A STYLED list, deliberately. <datalist> is the
     ::  one-line version and renders as an OS-drawn dropdown that ignores every
     ::  style here, which is not acceptable in this UI.
@@ -7920,7 +7937,7 @@
     "</script>"
     %-  trip
     '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})}})();</script>'
-    (sse-script keep rev)  page-cache-script  sw-register-script  "</body></html>"
+    (sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
   ==
 ::  +render-browser-page: the browser's page view, the address bar (+ an Edit
 ::  button when `edit` names an editable own page) above the page rendered in a
@@ -7945,19 +7962,28 @@
     (trip 'html,body{height:100%}body.bp{display:flex;flex-direction:column;margin:0}.bp main{max-width:none;margin:0;padding:0;flex:1;display:flex}.bp .pf{flex:1;width:100%;border:0}.bar .eb,.bar .bm{display:flex;align-items:center;gap:.3em;padding:0 12px;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;background:transparent;cursor:pointer;font-size:1rem}.bar .eb:hover,.bar .bm:hover{border-color:#1a6ed8}')
     "</style></head><body class=\"bp\">"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
+    "<button type=\"button\" class=\"navb\" id=\"navb\" title=\"back\" disabled>&#8592;</button>"
+    "<button type=\"button\" class=\"navb\" id=\"navf\" title=\"forward\" disabled>&#8594;</button>"
     "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
-    "<a class=\"nav\" href=\"/apps/lattice/marks\" title=\"bookmarks\">&#9733;</a>"
     "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search the catalog\">"
+    "<button type=\"submit\">Go</button>"
     editbtn
     "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
-    "<button type=\"submit\">Go</button></form>"
+    "<span class=\"hamw\"><button type=\"button\" id=\"ham\" title=\"menu\">&#9776;</button>"
+    "<div id=\"hammenu\" hidden>"
+    "<a href=\"/apps/lattice/app\">&#9998; editor</a>"
+    "<a href=\"/apps/lattice/know\">&#9670; knowledge</a>"
+    "<a href=\"/apps/lattice/marks\">&#9733; bookmarks</a>"
+    "<a href=\"/apps/lattice/settings\">&#9881; settings</a>"
+    "</div></span>"
+    "</form>"
     "<main><iframe class=\"pf\""  ?:(sandbox " sandbox=\"\"" "")
     " srcdoc=\""  (esc (trip doc))  "\"></iframe></main>"
     ::  bookmark button: POST the address-bar url to /bookmark (owner-gated, same
     ::  origin). single-quote cord so the js braces stay literal.
     %-  trip
     '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})}})();</script>'
-    (page-sse-script keep rev)  page-cache-script  sw-register-script  "</body></html>"
+    (page-sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
   ==
 ::  +beacon-rev-tape: the current /beacon/rev value, rendered as the same
 ::  text the keep-SSE stream sends in its event data. Baked into live pages
