@@ -435,7 +435,7 @@
   ::  clearweb-tagged page's DATA, read-only: no tree nav, no code, no
   ::  sibling grubs, no command form. Everything else requires the owner.
   ?:  &(?=([%c ^] suffix) =(%'GET' method.request.req))
-    (serve-clearweb eyre-id t.suffix)
+    (serve-clearweb eyre-id t.suffix authenticated.req)
   ::  public form submissions: POST /f/<page>. The ONLY unauthenticated WRITE,
   ::  and it is opt-in twice over. The page must be %clearweb AND carry a
   ::  /forms-on flag (owner-set). The body becomes one command to that page,
@@ -6283,13 +6283,15 @@
     =/  r=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball u.cd))))
     ?|(?=(%| -.r) (gth (met 3 p.r) (bex 20)))
   =/  doc=@t
-    ?:  toobig  (render-clearweb (pax-str rel) head "<p>page too large or not previewable</p>")
-    ?~  cd  (render-clearweb (pax-str rel) head "<p>no data yet</p>")
+    ?:  toobig  (render-clearweb (pax-str rel) head "<p>page too large or not previewable</p>" "")
+    ?~  cd  (render-clearweb (pax-str rel) head "<p>no data yet</p>" "")
     ::  our own page view links into the editor; a peer's page keeps the
     ::  public form (we cannot link into their editor).
     %-  clearweb-doc
     :*  rel  u.cd  vmode  head  ?!(?=(%html vmode))  ~  extra
         ?:(local "/apps/lattice/app?name=" "/apps/lattice/c/")
+        ::  no bar: this document is the browser view's iframed inner page
+        ""
     ==
   ::  the long tier, LOCAL only: a local page view carries the live script
   ::  with a baked rev, so a cached paint self-corrects. A peer's page has
@@ -6343,7 +6345,7 @@
 ::  public mirror of +render-page (the owner's authenticated explorer chrome).
 ::
 ++  render-clearweb
-  |=  [title=tape head=tape inner=tape]
+  |=  [title=tape head=tape inner=tape bar=tape]
   ^-  @t
   %-  crip
   ;:  weld
@@ -6352,11 +6354,26 @@
     "<meta name=\"color-scheme\" content=\"light dark\">"
     "<title>"  (esc title)  "</title>"
     head
-    "</head><body>"  inner  "</body></html>"
+    "</head><body>"  bar  inner  "</body></html>"
   ==
-::  +serve-asset: serve a file's raw /data grub with a Content-Type from its
-::  render mode (js/css/html/md/gmi), so an html file can import it by URL.
+::  +clearweb-bar: the /c/ navigation affordance, in two tiers. EVERYONE
+::  gets contextual back/forward — pure history traversal, no auth, so an
+::  anonymous visitor is never stranded on a bare page. The authenticated
+::  OWNER also gets the omnibar + Go + the hamburger; those are owner tools
+::  (the reader routes behind them are owner-gated and would only bounce a
+::  visitor to a login). Self-contained styles: public pages wear their own
+::  theme css, not web-css. +nav-script wires the buttons either way.
 ::
+++  clearweb-bar
+  |=  authed=?
+  ^-  tape
+  ::  single-quote cords: braces in a double-quoted tape INTERPOLATE.
+  %+  weld
+    %-  trip
+    '<style>.cbar{display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid #8884}.cbar button,.cbar a.home{font:inherit;padding:4px 12px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer;text-decoration:none}.cbar button[disabled]{opacity:.35;cursor:default}.cbar input{flex:1;font:inherit;padding:5px 8px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbar .hamw{position:relative;margin-left:auto;display:flex}#hammenu{position:absolute;right:0;top:100%;z-index:60;background:#fff;border:1px solid #8886;border-radius:6px;min-width:160px;display:flex;flex-direction:column;padding:4px;box-shadow:0 4px 14px #0003}@media(prefers-color-scheme:dark){#hammenu{background:#1a1a1a}}#hammenu a{padding:7px 10px;text-decoration:none;color:inherit;border-radius:4px}#hammenu a:hover{background:#8882}#hammenu[hidden]{display:none}</style><form class="cbar" action="/apps/lattice" method="get"><button type="button" class="navb" id="navb" title="back" disabled>&#8592;</button><button type="button" class="navb" id="navf" title="forward" disabled>&#8594;</button>'
+  ?.  authed  "</form>"
+  %-  trip
+  '<a class="home" href="/apps/lattice" title="lattice home">&#8962;</a><input name="url" value="" autocomplete="off" placeholder="urb:// address or search the catalog"><button type="submit">Go</button><span class="hamw"><button type="button" id="ham" title="menu">&#9776;</button><div id="hammenu" hidden><a href="/apps/lattice/app">&#9998; editor</a><a href="/apps/lattice/know">&#9670; knowledge</a><a href="/apps/lattice/marks">&#9733; bookmarks</a><a href="/apps/lattice/settings">&#9881; settings</a></div></span></form>'
 ++  serve-asset
   |=  [eyre-id=@ta pax=path]
   =/  m  (fiber:fiber:nexus ,~)
@@ -6397,7 +6414,7 @@
 ::  sandboxed frame. The sandbox, not escaping, is what neutralizes hostile html.
 ::
 ++  clearweb-doc
-  |=  [pax=path =sang:tarball vmode=view-mode:pg head=tape wrap=? home=(unit tape) extra=tape base=tape]
+  |=  [pax=path =sang:tarball vmode=view-mode:pg head=tape wrap=? home=(unit tape) extra=tape base=tape bar=tape]
   ^-  @t
   ::  `extra` (a rendered comment thread + optional box) is appended after the
   ::  page content, inside the themed wrapper for md/gmi/text, or after the raw
@@ -6413,7 +6430,7 @@
       ?~  home  ""
       :(weld "<p class=\"home\"><a href=\"" (esc u.home) "\">&larr; home</a></p>")
     :(weld "<main class=\"page\">" hlink inner "</main>")
-  (render-clearweb (pax-str pax) head body)
+  (render-clearweb (pax-str pax) head body bar)
 ::  +comment-walk: every comment under /comments, with the page it belongs to.
 ::  Recurses the ball once rather than per-page. The owner wants "what came
 ::  in", which is a question about the whole tree, not about a page they
@@ -6629,7 +6646,7 @@
 ::
 ++  form-body-max  ^~((mul 8 1.024))
 ++  serve-clearweb
-  |=  [eyre-id=@ta pax=path]
+  |=  [eyre-id=@ta pax=path authed=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ::  same per-segment gate as name-pax/serve-asset: non-empty %ta knots only,
@@ -6644,7 +6661,7 @@
   ;<  dsn=view:nexus  bind:m  (peek:io [%& %& pdir %data] ~)
   ;<  vmode=view-mode:pg  bind:m  (read-show-mode pdir)
   ?.  ?=([%file *] dsn)
-    (send-html eyre-id (render-clearweb (pax-str pax) "" "<p>no data</p>"))
+    (send-html eyre-id (render-clearweb (pax-str pax) "" "<p>no data</p>" (weld (clearweb-bar authed) nav-script)))
   ::  css/js serve RAW (a public page links them as a stylesheet/script, so they
   ::  must NOT go through render-shown's <pre><code> wrap). Everything else
   ::  renders per its view-mode into a bare, chrome-less standalone document.
@@ -6668,7 +6685,10 @@
   ;<  con=?    bind:m  (comments-on pax)
   ;<  cmts=tape  bind:m  (render-comments pax con "")
   %+  send-html  eyre-id
-  (clearweb-doc pax sang.dsn vmode head ?=(^ tf) home cmts "/apps/lattice/c/")
+  %:  clearweb-doc
+    pax  sang.dsn  vmode  head  ?=(^ tf)  home  cmts  "/apps/lattice/c/"
+    (weld (clearweb-bar authed) nav-script)
+  ==
 ::  +page-data-html: render a page's data grub. A cord shows as text; any
 ::  other noun as its literal (a page's data mark is a bare noun).
 ::
