@@ -195,7 +195,8 @@ await nav(PAGE);
 await sleep(12000);
 const left = await p.evaluate(async () => {
   const c = await caches.open('lattice-pages');
-  return (await c.keys()).length;
+  // the /__pv deploy-version marker lives in the cache and never evicts
+  return (await c.keys()).filter((k) => !k.url.includes('__pv')).length;
 });
 check('eviction empties the cache at budget=1', left === 0, left + ' entries');
 t = await nav(PAGE);
