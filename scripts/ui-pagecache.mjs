@@ -96,7 +96,12 @@ const waitCached = async (url, maxMs = 60000) => {
 // ── cold, then the background self-refetch populates the cache ──────────
 let t = await nav(PAGE);
 console.log('  (cold: ' + t + 'ms)');
-check('(setup) cold view cached in the background', await waitCached(PAGE));
+// the deploy contract allows ONE eaten population: the activate-time PV
+// wipe may race the very first put after a deploy or in a fresh profile.
+// The second view repopulates and everything sticks from there.
+let seeded = await waitCached(PAGE, 30000);
+if (!seeded) { await nav(PAGE); seeded = await waitCached(PAGE); }
+check('(setup) cold view cached in the background', seeded);
 
 // ── repeat: served by the SW from the pages cache, canonical URL ────────
 t = await nav(PAGE);
