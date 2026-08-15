@@ -8454,27 +8454,37 @@
     ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
     =/  nix=pub-index:lp  (~(del by ix) key)
     ;<  ~  bind:m  (put-file px [/lattice %pub-index] nix)
-    ::  mesa (D1): retract the namespace copy. %tomb is per-[case spur] —
-    ::  gall's +ap-tomb replaces exactly ONE case's value with its hash (it is
-    ::  +ap-cull, which grubbery's dart set does not expose, that deletes a
-    ::  range). Only the LATEST rev binding is tombed here — older rev spurs
-    ::  age out under kernel retention policy; walking every historical rev
-    ::  would cost a peep per page for bindings the kernel already reaps. The
-    ::  successor index seq is grown so followers see the page leave the
-    ::  manifest.
+    ::  mesa (D1): retract the namespace copy. cull-farm, NOT tomb, and the
+    ::  difference is the whole point: %tomb is per-[case spur] and gall's
+    ::  +ap-tomb replaces exactly ONE case's value with its hash, while
+    ::  +ap-cull deletes every case at or below the one it is given and parks
+    ::  that number as the spur's high-water mark, so nothing re-binds under
+    ::  it. cull-farm:io asks for the whole spur; grubbery resolves the top
+    ::  bound case for us (the kernel no-ops a cull outside the bound range,
+    ::  so "all of them" is not a number a caller can pick).
     ::
-    ::  KNOWN GAP, measured on ~tyr: case 1 is not always the only case. A
+    ::  Measured on ~tyr, which is why this is not a stylistic preference: a
     ::  save grows the rev spur at case 1, but every later POST /pub-regrow
-    ::  re-grows that same spur, and gall's +grow assigns key+1 each time — a
+    ::  re-grows that SAME spur and gall's +grow assigns key+1 each time, so a
     ::  page saved once and regrown twice answers at cases 1, 2 AND 3, all
-    ::  with the same body. Reads are unaffected (case 1 is always present and
-    ::  always the same page), but this tomb then retracts case 1 only and a
-    ::  peer that keens case 2 still gets a deleted page. Closing it needs
-    ::  either a %cull dart in grubbery or a persisted regrow count to bound
-    ::  the sweep; neither exists yet, and a fiber cannot read its own farm to
-    ::  discover the count (bowl-our / bowl-now are the whole bowl surface).
+    ::  carrying the same body. Reads never noticed (case 1 is always present
+    ::  and always the same page). Deletes did: the old tomb retracted case 1
+    ::  and a peer that keened case 2 still read the deleted page — deleted
+    ::  pages staying readable, the #178 failure again one layer down.
+    ::
+    ::  The peek-exists guard at the top of this branch is load-bearing for
+    ::  this call, not just a nicety: cull-farm must not run twice on the same
+    ::  spur (grubbery cannot tell an already-culled spur from a live one, so
+    ::  the second one crashes), and that guard is what makes a repeat delete
+    ::  exit before it gets here.
+    ::
+    ::  Still scoped to the LATEST rev's spur. Older rev spurs are separate
+    ::  spurs and age out under kernel retention policy; walking every
+    ::  historical rev would cost a peep per page for bindings the kernel
+    ::  already reaps. The successor index seq is grown so followers see the
+    ::  page leave the manifest.
     =/  inner=path  (snip (strip-pub:lp key))
-    ;<  ~  bind:m  (tomb:io 1 (snoc (weld /pub/page inner) (scot %ud rev)))
+    ;<  ~  bind:m  (cull-farm:io (snoc (weld /pub/page inner) (scot %ud rev)))
     (grow-pub-index root nix)
   ==
 ::  +read-pub-index: peek the /pub/index grub. Empty if absent.
@@ -8497,7 +8507,7 @@
 ::    [/pub %meta] grub                 the seq counter, monotonic @ud
 ::  Bindings are immutable per spur (the rev/seq segment makes each grow
 ::  fresh), which is what the namespace requires. Compiles only against
-::  grubbery feat/scry-io (grow:io / tomb:io / keen:io).
+::  grubbery feat/scry-io (grow:io / cull-farm:io / keen:io).
 ::
 ::  +pub-grub-rev: the current cass revision of one pub-vault grub, 0 if
 ::  absent. Same one-dir-peek read +page-rev uses (the wave carries the cass),
@@ -8578,10 +8588,12 @@
 ::  event of cheap local darts. If a regrow is ever observed to brown out the
 ::  pier, chunk it with the /catalog-sweep ack-yield-scan idiom.
 ::
-::  ONE-SHOT, and re-running it is not free: a %grow at an already-bound spur
-::  does not overwrite, it appends a case (gall's +grow takes key+1). The body
-::  is identical so no read changes, but it widens the set of cases %del-page
-::  would have to tomb to fully retract a page — see the KNOWN GAP note there.
+::  Re-running it is cheap but not free: a %grow at an already-bound spur does
+::  not overwrite, it appends a case (gall's +grow takes key+1). The body is
+::  identical so no read changes, and %del-page's cull-farm retracts the whole
+::  spur however many cases deep it went — this used to be a correctness bug
+::  (a per-case tomb left the extra cases readable after a delete), and is now
+::  just wasted farm space.
 ::
 ++  pub-regrow
   =/  m  (fiber:fiber:nexus ,@ud)
