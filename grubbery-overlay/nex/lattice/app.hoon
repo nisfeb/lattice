@@ -97,7 +97,14 @@
         ::  takes its seq from here (monotonic, never reused). A covering row
         ::  so the counter survives reload — a dropped counter would re-grow
         ::  seq 1 over an already-bound spur.
-            [%fall %& [/pub %meta] [[/lattice %pub-meta] 0]]
+        ::
+        ::  The mark is grubbery's OWN [/ %ud], not a lattice-private one. The
+        ::  first cut of this row named [/lattice %pub-meta], a mark that was
+        ::  never written: a grub laid under a mark that does not exist gets a
+        ::  BOOM sang (raw noun + tang, no vase), and the first +read-pub-seq
+        ::  crashed on it, killing the writer fiber and hanging every publish.
+        ::  The counter is one bare atom and /mar/ud.hoon already is that mark.
+            [%fall %& [/pub %meta] [[/ %ud] 0]]
         ::  HTTP front-end: ui/main.sig binds /apps/lattice and dispatches each
         ::  request into a per-request fiber under ui/requests. The web reader is
         ::  rendered dynamically per request (no static page grub).
@@ -8447,12 +8454,25 @@
     ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
     =/  nix=pub-index:lp  (~(del by ix) key)
     ;<  ~  bind:m  (put-file px [/lattice %pub-index] nix)
-    ::  mesa (D1): retract the namespace copy. %tomb is per-[case spur], and a
-    ::  rev-carrying spur is grown exactly once, so its only gall case is 1.
-    ::  Only the LATEST rev binding is tombed here — older rev spurs age out
-    ::  under kernel retention policy; walking every historical rev would cost
-    ::  a peep per page for bindings the kernel already reaps. The successor
-    ::  index seq is grown so followers see the page leave the manifest.
+    ::  mesa (D1): retract the namespace copy. %tomb is per-[case spur] —
+    ::  gall's +ap-tomb replaces exactly ONE case's value with its hash (it is
+    ::  +ap-cull, which grubbery's dart set does not expose, that deletes a
+    ::  range). Only the LATEST rev binding is tombed here — older rev spurs
+    ::  age out under kernel retention policy; walking every historical rev
+    ::  would cost a peep per page for bindings the kernel already reaps. The
+    ::  successor index seq is grown so followers see the page leave the
+    ::  manifest.
+    ::
+    ::  KNOWN GAP, measured on ~tyr: case 1 is not always the only case. A
+    ::  save grows the rev spur at case 1, but every later POST /pub-regrow
+    ::  re-grows that same spur, and gall's +grow assigns key+1 each time — a
+    ::  page saved once and regrown twice answers at cases 1, 2 AND 3, all
+    ::  with the same body. Reads are unaffected (case 1 is always present and
+    ::  always the same page), but this tomb then retracts case 1 only and a
+    ::  peer that keens case 2 still gets a deleted page. Closing it needs
+    ::  either a %cull dart in grubbery or a persisted regrow count to bound
+    ::  the sweep; neither exists yet, and a fiber cannot read its own farm to
+    ::  discover the count (bowl-our / bowl-now are the whole bowl surface).
     =/  inner=path  (snip (strip-pub:lp key))
     ;<  ~  bind:m  (tomb:io 1 (snoc (weld /pub/page inner) (scot %ud rev)))
     (grow-pub-index root nix)
@@ -8495,13 +8515,27 @@
 ::  +read-pub-seq: the [/pub %meta] publish counter. 0 if the grub is missing
 ::  or predates the row (mirror of read-pub-index's absent case).
 ::
+::  Read through +sang-noun, NOT +need-vase. A grub whose mark failed to vale
+::  is stored as a boom ([tang noun], no vase) and need-vase crashes on it —
+::  which is precisely how the first cut of this arm took the nexus down: the
+::  covering row named a mark that did not exist, so /pub/meta was a boom from
+::  the moment it was laid, and every fiber that touched the publish path (the
+::  single writer, and POST /pub-regrow's request fiber) died on this line.
+::  sang-noun reads the atom out of EITHER shape, so a pier still carrying the
+::  boomed counter recovers its real seq instead of restarting at 0, and the
+::  next +grow-pub-index write re-lays it under a mark that vales.
+::
+::  Unlike +read-pub-index this may safely soften to a default: a lost counter
+::  re-grows an already-bound seq (stale but readable, per +grow-pub-index),
+::  whereas a softened index would silently overwrite the live index with ~.
+::
 ++  read-pub-seq
   |=  road=road:tarball
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
   ;<  seen=view:nexus  bind:m  (peek:io road ~)
   ?.  ?=([%file *] seen)  (pure:m 0)
-  (pure:m !<(@ud (need-vase:tarball sang.seen)))
+  (pure:m (fall (mole |.(;;(@ud (sang-noun:tarball sang.seen)))) 0))
 ::  +grow-pub-page: bind one page body in the namespace at its rev spur.
 ::  key is the canonical pub key (/pub/<name…>/gmi, already validated by the
 ::  caller's key-to-rail); the spur drops the pub/gmi wrapping and rides the
@@ -8529,7 +8563,9 @@
   ;<  seq=@ud  bind:m  (read-pub-seq mx)
   =/  nseq=@ud  +(seq)
   ;<  ~  bind:m  (grow:io /pub/index/[(scot %ud nseq)] [%gmi (manifest-gmi ix)])
-  (put-file mx [/lattice %pub-meta] nseq)
+  ::  [/ %ud], grubbery's own atom mark — see the /pub/meta covering row in
+  ::  +on-load. A put-file under a mark with no source file lays a boom.
+  (put-file mx [/ %ud] nseq)
 ::  +pub-regrow: backfill the namespace from the existing pub vault — every
 ::  page at its CURRENT vault rev, then one fresh index seq. For piers that
 ::  published before the mesa mirror existed (their saves never grew). Same
@@ -8541,6 +8577,11 @@
 ::  peek and one fire-and-forget %grow card, so even a large vault is one
 ::  event of cheap local darts. If a regrow is ever observed to brown out the
 ::  pier, chunk it with the /catalog-sweep ack-yield-scan idiom.
+::
+::  ONE-SHOT, and re-running it is not free: a %grow at an already-bound spur
+::  does not overwrite, it appends a case (gall's +grow takes key+1). The body
+::  is identical so no read changes, but it widens the set of cases %del-page
+::  would have to tomb to fully retract a page — see the KNOWN GAP note there.
 ::
 ++  pub-regrow
   =/  m  (fiber:fiber:nexus ,@ud)
@@ -8602,15 +8643,29 @@
 ::  +keen-path: the ames scry path (the spar path) of one published page body.
 ::  MUST mirror +grow-pub-page's spur exactly or every read misses forever.
 ::
-::    /g/x/1/<agent>/1/pub/page/<rel…>/<rev>
+::    /g/x/1/<agent>//1/pub/page/<rel…>/<rev>
 ::      g          gall
 ::      x          the value care
-::      1          the gall CASE. A rev-carrying spur is grown exactly once, so
-::                 its only case is 1 — the same fact +apply-pub's %tomb leans
-::                 on when it retracts a revision.
+::      1          the gall CASE. A rev-carrying spur is grown at case 1 by the
+::                 save that created it, and every case gall later assigns to
+::                 that spur (a /pub-regrow re-grow gets key+1) carries the
+::                 SAME body — the rev in the spur is what makes the content
+::                 immutable. So case 1 is always present and always right.
 ::      <agent>    q.bem, the yoke whose farm is read (see +mesa-agent)
+::      ''         THE EMPTY SEGMENT, and it is load-bearing. The publisher's
+::                 ames splits the spar into [ship rift life vane care case
+::                 spur] and +as-omen:balk takes the HEAD of that spur as the
+::                 beam's desk slot (the agent) and its TAIL as s.bem. gall's
+::                 +scry then splits on that tail: `?. ?=([%$ *] path)` sends
+::                 anything NOT starting with the empty knot to the agent's
+::                 +on-peek instead of to the vane's scry farm. Verified on the
+::                 live pier: a probe without this segment came back
+::                 "unexpected scry into %grubbery on path /t/1/pub" (the
+::                 agent's default-agent +on-peek), while the same read with it
+::                 answered the grown page. Without it every keen would miss —
+::                 silently, because a fallback path treats a miss as normal.
 ::      1          the namespace version marker gall's +scry requires
-::                 (?=([%'1' *] path) on the beam's path)
+::                 (?=([%'1' *] path) on the beam's path AFTER the split above)
 ::      pub/page/… the spur +grow-pub-page grew: /pub/page/<rel>/<rev>
 ::
 ::  ames prepends /<ship>/<rift>/<life> itself (+fi-full-path), so the spar
@@ -8618,10 +8673,14 @@
 ::  hand over either the vault-relative form or a /pub/<spur>/gmi content key,
 ::  exactly like +read-page-body tolerates.
 ::
+::  Built by cons, not as a path literal: the empty segment is exactly the
+::  thing a literal cannot spell unambiguously, and it is the one segment
+::  nobody notices is missing.
+::
 ++  keen-path
   |=  [rel=path rev=@ud]
   ^-  path
-  %+  weld  /g/x/1/[mesa-agent]/1/pub/page
+  %+  weld  `path`[%g %x %'1' mesa-agent %$ %'1' %pub %page ~]
   (snoc (page-rel rel) (scot %ud rev))
 ::  +keen-page: read one page body out of a PEER's namespace. `~ on every
 ::  failure, because every caller falls back.
