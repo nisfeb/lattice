@@ -398,6 +398,11 @@
           [~ %'crawler.sig']
         ::  each tick: re-index our own pub pages, then sweep followed peers.
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /crawler: failed")
+        ::  mesa (D1 phase C): the scry-first rev cache. Fiber-local, NOT a
+        ::  grub (see +mesa-cache) — it rides this loop so the second and later
+        ::  sweeps can %keen unchanged peer pages out of the publisher's
+        ::  namespace instead of peeking them. A reload just starts cold again.
+        =|  mc=mesa-cache
         |-
         ::  drain stray timer-wakes while sleeping (finding #13). A plain sleep
         ::  would let this sweep's early-resolved obelisk/peek timers accumulate.
@@ -405,8 +410,8 @@
         ;<  *       bind:m  catalog-scan-self
         ;<  our=@p  bind:m  bowl-our
         ;<  now=@da  bind:m  bowl-now
-        ;<  *       bind:m  (catalog-scan-peers our now)
-        $
+        ;<  [* nc=mesa-cache]  bind:m  (catalog-scan-peers our now mc)
+        $(mc nc)
       ::  /fs.sig: the lick (local IPC) port for the FUSE client. The serve-loop
       ::  is generic. +lick-serve:io (fiberio) spins the socket, decodes each
       ::  [verb path query body] frame, and spits back [status body]. The only
@@ -2222,7 +2227,11 @@
     ?~  pub  (send-err eyre-id 400 'bad ship')
     ?:  =(u.pub our)  (send-err eyre-id 400 'cannot crawl own ship')
     ;<  now=@da  bind:m  bowl-now
-    ;<  n=@ud  bind:m  (catalog-scan-peer our u.pub now)
+    ::  mesa: a request fiber has no memory between requests, so it hands in an
+    ::  empty +mesa-cache and drops the one it gets back. Every page therefore
+    ::  takes the peek path — identical to pre-mesa behavior. Only the long-
+    ::  lived /crawler.sig sweep carries a warm cache.
+    ;<  [n=@ud *]  bind:m  (catalog-scan-peer our u.pub now *mesa-cache)
     (send-json eyre-id (pairs:enjs:format ~[['indexed' (numb:enjs:format n)]]))
   ::  sweep everything now: our own pages + every followed peer. Respond FIRST
   ::  ({"ok":true}, the old agent's fire-and-forget contract. The client's 10s
@@ -2255,7 +2264,9 @@
     ;<  ~  bind:m  (sleep-draining ~s1)
     ;<  *  bind:m  catalog-scan-self
     ;<  now=@da  bind:m  bowl-now
-    ;<  *  bind:m  (catalog-scan-peers our now)
+    ::  cold +mesa-cache, same as /catalog-scan: a request fiber keeps nothing
+    ::  between requests, so this sweep peeks everything.
+    ;<  *  bind:m  (catalog-scan-peers our now *mesa-cache)
     (pure:m ~)
   ::  arbitrary urQL passthrough (body = the query), run against the lattice db.
   ::  Owner-only like all routes.
@@ -4725,34 +4736,39 @@
 ::  the sweep (self-scan already ran, so own pages stay fresh), same limitation
 ::  as /fetch. Only follow live lattice peers; a per-peer timeout is a later layer.
 ::
+::  mesa (D1 phase C): the sweep threads a +mesa-cache in and out. It is the
+::  crawler fiber's own working memory, not state — see +mesa-cache. Callers
+::  with no memory (the two POST routes) hand in *mesa-cache and drop the
+::  result, which just means every page takes the peek path.
+::
 ++  catalog-scan-peers
-  |=  [our=@p now=@da]
-  =/  m  (fiber:fiber:nexus ,@ud)
+  |=  [our=@p now=@da mc=mesa-cache]
+  =/  m  (fiber:fiber:nexus ,[@ud mesa-cache])
   ^-  form:m
   ;<  fs=follows:lp  bind:m  read-follows
-  (catalog-scan-peers-loop our now ~(tap in fs) 0)
+  (catalog-scan-peers-loop our now ~(tap in fs) 0 mc)
 ++  catalog-scan-peers-loop
-  |=  [our=@p now=@da ships=(list @p) cnt=@ud]
-  =/  m  (fiber:fiber:nexus ,@ud)
+  |=  [our=@p now=@da ships=(list @p) cnt=@ud mc=mesa-cache]
+  =/  m  (fiber:fiber:nexus ,[@ud mesa-cache])
   ^-  form:m
-  ?~  ships  (pure:m cnt)
-  ;<  n=@ud  bind:m  (catalog-scan-peer our i.ships now)
-  (catalog-scan-peers-loop our now t.ships (add cnt n))
+  ?~  ships  (pure:m [cnt mc])
+  ;<  [n=@ud nc=mesa-cache]  bind:m  (catalog-scan-peer our i.ships now mc)
+  (catalog-scan-peers-loop our now t.ships (add cnt n) nc)
 ::  +catalog-scan-peer: index one peer's published pages via peek-remote.
 ::  After indexing the peer's CURRENT manifest, +catalog-reconcile-peer sweeps
 ::  the rows we stored on a PRIOR sweep for pages the peer has since UNPUBLISHED.
 ::  Otherwise their catalog-pages/terms/headings/links/tags/meta rows linger as
 ::  stale search hits that 404 on read (finding #5). Runs every ~h6 crawler tick.
 ++  catalog-scan-peer
-  |=  [our=@p pub=@p now=@da]
-  =/  m  (fiber:fiber:nexus ,@ud)
+  |=  [our=@p pub=@p now=@da mc=mesa-cache]
+  =/  m  (fiber:fiber:nexus ,[@ud mesa-cache])
   ^-  form:m
   ;<  u-ix=(unit pub-index:lp)  bind:m  (read-pub-index-remote pub)
   ::  unreachable / malformed / vetoed peer -> ~ (NOT a genuine empty index). Index
   ::  and reconcile NOTHING. Reconciling against an empty set deletes every stored
   ::  row for a merely-offline peer (a reachable-but-empty peer yields `~ *pub-index
   ::  and reconciles correctly, dropping the pages it really unpublished).
-  ?~  u-ix  (pure:m 0)
+  ?~  u-ix  (pure:m [0 mc])
   ::  drop keys whose knots don't reparse. An untrusted peer can serve a path with a
   ::  byte outside the knot charset (uppercase/space/control). It survives the clam,
   ::  then stores lossily (false-ghosts a live page on reconcile) and crashes +stab.
@@ -4772,9 +4788,34 @@
   ::  bound this peer's page sweep by peer-budget (see +peer-budget) so one staller
   ::  can't monopolize the tick. deadline is fresh-now + budget, not the sweep's now.
   ;<  t0=@da    bind:m  bowl-now
-  ;<  cnt=@ud   bind:m  (catalog-scan-peer-loop our pub now keys pages (add t0 peer-budget) 0)
+  ;<  [cnt=@ud nc=mesa-cache]  bind:m
+    (catalog-scan-peer-loop our pub now keys pages ix (add t0 peer-budget) 0 mc)
   ;<  ~         bind:m  (catalog-reconcile-peer our pub pages)
-  (pure:m cnt)
+  ::  mesa: this peer's scry-first split for THIS sweep (deltas, not the
+  ::  running totals — the cache is cumulative for the crawler fiber's life).
+  ::  keens is how many pages the peer's kernel served without waking its
+  ::  %grubbery; peeks is everything that fell back. Both zero on a first
+  ::  sweep is expected: nothing is learned yet. This is the only place the
+  ::  split is observable — no route exposes it (see api-lifecycle.sh).
+  ~&  :*  %lattice-mesa-scry  pub
+          keens=(sub keens.nc keens.mc)
+          peeks=(sub peeks.nc peeks.mc)
+      ==
+  ::  mesa: the rev-cache twin of +catalog-reconcile-peer — drop notes for
+  ::  pages this peer no longer lists. Not tidiness: manifest-max caps ONE
+  ::  sweep's fan-out, not the crawler fiber's whole life, so a publisher who
+  ::  churns page names would otherwise grow this map without bound between
+  ::  deploys. Diffed against the FULL `pages`, like reconcile, so a page
+  ::  beyond the cap keeps its (still valid) note.
+  =/  pruned=mesa-cache
+    %=    nc
+        revs
+      %-  ~(gas by *(map [@p path] rev-note))
+      %+  skim  ~(tap by revs.nc)
+      |=  [k=[who=@p key=path] *]
+      |(?!(=(who.k pub)) (~(has in pages) key.k))
+    ==
+  (pure:m [cnt pruned])
 ::  +catalog-reconcile-peer: drop catalog rows for pages this publisher no longer
 ::  lists. SELECT the stored `path`s for (source=our, publisher=pub), diff against
 ::  the current manifest `pages`, and delete each dropped key from every table.
@@ -4808,22 +4849,30 @@
     (catalog-run catalog-db (catalog-page-delete-urql:cat our pub u.pp))
   (catalog-reconcile-loop our pub t.ghosts)
 ++  catalog-scan-peer-loop
-  |=  [our=@p pub=@p now=@da keys=(list path) pages=(set path) deadline=@da cnt=@ud]
-  =/  m  (fiber:fiber:nexus ,@ud)
+  |=  $:  our=@p  pub=@p  now=@da  keys=(list path)  pages=(set path)
+          ix=pub-index:lp  deadline=@da  cnt=@ud  mc=mesa-cache
+      ==
+  =/  m  (fiber:fiber:nexus ,[@ud mesa-cache])
   ^-  form:m
-  ?~  keys  (pure:m cnt)
+  ?~  keys  (pure:m [cnt mc])
   ::  per-peer wall-clock budget (finding F): bail once spent so a peer stalling its
   ::  page peeks can't starve later peers. Overshoots by at most one remote-timeout
   ::  (the check is between peeks). ponytail: total worst case = follows*peer-budget.
   ::  Add per-peer cursoring if a LEGIT peer's page set can't finish in one budget.
   ;<  clk=@da  bind:m  bowl-now
-  ?:  (gte clk deadline)  ~&([%lattice-peer-budget-spent pub cnt] (pure:m cnt))
+  ?:  (gte clk deadline)  ~&([%lattice-peer-budget-spent pub cnt] (pure:m [cnt mc]))
   =/  stripped=path  (strip-pub:lp i.keys)
-  ?~  stripped  (catalog-scan-peer-loop our pub now t.keys pages deadline cnt)
-  ;<  body=(unit @t)  bind:m  (read-page-body our pub (snip `path`stripped))
-  ?~  body  (catalog-scan-peer-loop our pub now t.keys pages deadline cnt)
+  ?~  stripped  (catalog-scan-peer-loop our pub now t.keys pages ix deadline cnt mc)
+  ::  mesa (D1 phase C): read scry-first. The manifest row's hash is the
+  ::  freshness witness +read-page-scry gates the %keen on, so it rides along.
+  ::  `keys` came out of `ix`, so the row is always there; a missing one bunts
+  ::  to a zero hash, which simply never matches and forces the peek.
+  =/  row=pub-row:lp  (fall (~(get by ix) i.keys) *pub-row:lp)
+  ;<  [body=(unit @t) nc=mesa-cache]  bind:m
+    (read-page-scry our pub i.keys (snip `path`stripped) hash.row mc)
+  ?~  body  (catalog-scan-peer-loop our pub now t.keys pages ix deadline cnt nc)
   ;<  ~  bind:m  (catalog-index-page our pub i.keys now u.body pages)
-  (catalog-scan-peer-loop our pub now t.keys pages deadline (add cnt 1))
+  (catalog-scan-peer-loop our pub now t.keys pages ix deadline (add cnt 1) nc)
 ::  +pub-path: a relative publish path ("notes/intro") -> content-map key
 ::  (/pub/notes/intro/gmi). Ported from /lib/lattice.
 ::
@@ -6046,9 +6095,45 @@
 ::  web reader. Own pages peek the local pub vault. Remote pages use the bounded
 ::  peek-remote-wait (~ if absent, unreachable, or slow past remote-timeout).
 ::
+::  DELIBERATELY NOT scry-first (mesa D1 phase C). /fetch, the web reader,
+::  the /x/ explorer and +index-remote-page all read through here or through
+::  peek-remote-wait directly, and none of them can name a %keen spur:
+::
+::    * a request fiber is born and dies per request, so it never carries a
+::      remembered rev, and nothing durable holds one — the catalog tables have
+::      no rev column and the peer's manifest rows are [updated bytes hash].
+::      Giving /fetch a rev would mean INVENTING new persistence (a rev grub +
+::      mark + on-load row) for a read that already costs exactly one peek.
+::      Not done; the crawler's fiber-local cache is the whole rev memory in
+::      this phase (+mesa-cache).
+::    * +index-remote-page is triggered by a %news that says the peer JUST
+::      edited this page, so any remembered rev is stale by construction and
+::      the keen would miss (or worse, hang on an unbound successor spur).
+::    * the /x/ explorer reads arbitrary tree nodes, which the mirror does not
+::      publish at all — only /pub/page/<rel>/<rev> and /pub/index/<seq> exist
+::      in the namespace.
+::
+::  The seam is one call away if a later phase gives readers a rev: swap the
+::  +read-page-body call for +read-page-scry and thread a cache. Writes
+::  (comments, /remote-save, share notices) stay on the weir-gated poke path by
+::  design and are not candidates at all.
+::
 ++  read-page-body
   |=  [our=@p shp=@p rel=path]
   =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  pr=(unit [rev=@ud body=@t])  bind:m  (read-page-body-rev our shp rel)
+  (pure:m ?~(pr ~ `body.u.pr))
+::  +read-page-body-rev: +read-page-body, but it also hands back the REVISION
+::  the body came from. The peek view already carries the grub's cass ([%file
+::  =cass =sang], and a cross-ship discharge fills it from the remote's own
+::  snap), so the read that fetches a body teaches us its revision for free.
+::  That is the only rev source a reader has (docs D1 / +read-page-scry), and
+::  it is why the mesa read path never costs an extra round trip to learn one.
+::
+++  read-page-body-rev
+  |=  [our=@p shp=@p rel=path]
+  =/  m  (fiber:fiber:nexus ,(unit [rev=@ud body=@t]))
   ^-  form:m
   ::  `our` is a parameter, not a bowl-our bind. Callers already hold it (the
   ::  owner gate's src, or their own binding), and the /sys/bowl round trip
@@ -6067,7 +6152,7 @@
   ?:  =(shp our)
     ;<  seen=view:nexus  bind:m  (peek:io road ~)
     ?.  ?=([%file *] seen)  (pure:m ~)
-    (pure:m `!<(@t (need-vase:tarball sang.seen)))
+    (pure:m `[ud.cass.seen !<(@t (need-vase:tarball sang.seen))])
   ;<  ms=(unit view:nexus)  bind:m  (peek-remote-wait road shp)
   ?~  ms  (pure:m ~)
   ?.  ?=([%file *] u.ms)  (pure:m ~)
@@ -6076,7 +6161,7 @@
   ::  body yields ~ (clean 404) instead of a crash.
   =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.u.ms))))
   ?:  ?=(%| -.res)  (pure:m ~)
-  (pure:m `p.res)
+  (pure:m `[ud.cass.u.ms p.res])
 ::  +explore: GET /x/<ship>/<path...>, the server-rendered tree explorer
 ::  (docs/platform.md, build step 1). Directories render as listings with
 ::  relative child links; trailing slash is forced on directory urls (hawk
@@ -8481,6 +8566,186 @@
   ;<  rev=@ud  bind:m  (pub-grub-rev pax.u.or nom.u.or)
   ;<  ~  bind:m  (grow-pub-page i.keys u.body rev)
   (pub-regrow-loop t.keys +(cnt))
+::  ── mesa: scry-first cross-ship READS (docs D1, phase C) ─────────────────
+::  The block above publishes OUR pages into the namespace. This block reads a
+::  PEER's. A %keen is a content-addressed namespace read: the publisher's
+::  kernel answers it out of gall's scry farm without waking %grubbery, with
+::  no weir round-trip and no per-reader work, and the answer is signed so any
+::  relay on the path may cache it. That is the whole point of the transport.
+::
+::  Scry-first is ALWAYS a fallback pair. Every arm here answers ~ on any
+::  failure — deadline, unbound spur, wrong mark, malformed noun — and the
+::  caller then runs today's grubbery peek unchanged. Nothing below can make a
+::  read fail that would otherwise have succeeded; the worst case is one
+::  wasted +mesa-timeout ahead of the peek that was going to run anyway.
+::
+::  Compiles only against grubbery feat/scry-io (keen:io / with-timeout:io).
+::  NOTHING here has been exercised at runtime: a %keen is answered by another
+::  ship's kernel, so it needs both A2 (feat/scry-io under the live agent) and
+::  a second ship. Phase D.
+::
+::  +mesa-agent: the gall agent whose scry farm holds the bindings. lattice is
+::  a NEXUS inside %grubbery, so +grow-pub-page's spurs live under %grubbery's
+::  yoke, not under an agent named %lattice. A fiber cannot read its own `dap`
+::  (bowl-our / bowl-now are the whole bowl surface), so this is a constant and
+::  it must track the desk's agent name.
+::
+++  mesa-agent  ^-(@ta %grubbery)
+::  +mesa-timeout: how long ONE %keen waits. keen:io carries no deadline of its
+::  own — ames holds an unanswerable request forever — so this is the only
+::  bound. Deliberately far under +remote-timeout (~s30): a namespace read is
+::  answered from a cache or from the publisher's kernel with no agent in the
+::  loop, so a keen that is slow is a keen that is not coming, and its cost is
+::  paid ON TOP of the peek that then has to run.
+::
+++  mesa-timeout  ^-(@dr ~s10)
+::  +keen-path: the ames scry path (the spar path) of one published page body.
+::  MUST mirror +grow-pub-page's spur exactly or every read misses forever.
+::
+::    /g/x/1/<agent>/1/pub/page/<rel…>/<rev>
+::      g          gall
+::      x          the value care
+::      1          the gall CASE. A rev-carrying spur is grown exactly once, so
+::                 its only case is 1 — the same fact +apply-pub's %tomb leans
+::                 on when it retracts a revision.
+::      <agent>    q.bem, the yoke whose farm is read (see +mesa-agent)
+::      1          the namespace version marker gall's +scry requires
+::                 (?=([%'1' *] path) on the beam's path)
+::      pub/page/… the spur +grow-pub-page grew: /pub/page/<rel>/<rev>
+::
+::  ames prepends /<ship>/<rift>/<life> itself (+fi-full-path), so the spar
+::  path starts at the vane letter. rel runs through +page-rel so a caller may
+::  hand over either the vault-relative form or a /pub/<spur>/gmi content key,
+::  exactly like +read-page-body tolerates.
+::
+++  keen-path
+  |=  [rel=path rev=@ud]
+  ^-  path
+  %+  weld  /g/x/1/[mesa-agent]/1/pub/page
+  (snoc (page-rel rel) (scot %ud rev))
+::  +keen-page: read one page body out of a PEER's namespace. `~ on every
+::  failure, because every caller falls back.
+::
+++  keen-page
+  |=  [shp=@p rel=path rev=@ud]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  res=(unit (unit roar:ames))  bind:m
+    %+  (with-timeout:io ,(unit roar:ames))
+      mesa-timeout
+    (keen:io shp (keen-path rel rev))
+  ::  outer ~: our own deadline fired. inner ~: ames answered with no roar.
+  ?~  res  (pure:m ~)
+  ?~  u.res  (pure:m ~)
+  ::  the roar's payload is [path (unit page)]. ~ means the publisher has
+  ::  nothing bound at that spur — never grown, or tombed.
+  ?~  q.dat.u.u.res  (pure:m ~)
+  =/  pag  u.q.dat.u.u.res
+  ::  the mirror grows [%gmi body] and nothing else. A different mark is a
+  ::  publisher we do not understand, not a page.
+  ?.  =(%gmi p.pag)  (pure:m ~)
+  ::  a peer's raw noun, not a local vase: clam in a mule so a hostile or
+  ::  mismatched binding falls back cleanly instead of crashing the crawler.
+  =/  got=(each @t tang)  (mule |.(;;(@t q.pag)))
+  ?:(?=(%| -.got) (pure:m ~) (pure:m `p.got))
+::  +read-page-scry: read one PEER page scry-first, learning as it goes.
+::
+::  REV DISCOVERY, as actually built. A reader cannot address
+::  /pub/page/<rel>/<rev> without knowing rev, and nothing a COLD reader can
+::  see carries one: the peer's /pub/index rows are [updated bytes hash], the
+::  catalog tables have no rev column (checked — `hash` is the only content
+::  identity they store), and guessing is worse than useless. gall BLOCKS on an
+::  unbound spur (its +scry returns ~, not "definitely nothing"), so ames holds
+::  the request open and a speculative rev+1 probe would cost a full
+::  +mesa-timeout on every UNCHANGED page — the common case. So instead:
+::
+::    cold     -> peek. The peek's view carries the grub's cass, so the read
+::                that fetches the body also teaches us its rev at no extra
+::                cost (+read-page-body-rev). Remember [rev, the hash the
+::                peer's manifest showed at that moment].
+::    warm     -> keen at the remembered rev, but ONLY while the peer's CURRENT
+::                manifest still reports the same body hash. That is the peer's
+::                own statement that the page has not moved since we learned
+::                that rev, which makes the spur both BOUND (no hang) and
+::                CURRENT (no stale body). The crawler reads that manifest once
+::                per sweep already, so the guard costs nothing.
+::    changed  -> straight to the peek, which relearns rev and hash.
+::
+::  Net effect on a steady vault: from the second sweep on, every unchanged
+::  peer page is read out of the namespace and the publisher's %grubbery never
+::  runs. A changed page costs exactly what it costs today.
+::
+++  read-page-scry
+  |=  [our=@p pub=@p key=path rel=path hash=@uvH mc=mesa-cache]
+  =/  m  (fiber:fiber:nexus ,[(unit @t) mesa-cache])
+  ^-  form:m
+  ::  our own pages are a local peek; keening ourselves would be a round trip
+  ::  through ames to read a grub sitting in this pier.
+  ?:  =(pub our)  (read-page-peek our pub key rel hash mc)
+  ::  struck out (see +mesa-strikes): this peer publishes, but not into the
+  ::  namespace. Do not pay its timeout again.
+  =/  miss=@ud  (~(gut by cold.mc) pub 0)
+  ?:  (gte miss mesa-strikes)  (read-page-peek our pub key rel hash mc)
+  =/  kn=(unit rev-note)  (~(get by revs.mc) [pub key])
+  ?~  kn  (read-page-peek our pub key rel hash mc)
+  ?.  =(hash hash.u.kn)  (read-page-peek our pub key rel hash mc)
+  ;<  sc=(unit @t)  bind:m  (keen-page pub rel rev.u.kn)
+  ?~  sc
+    =/  struck=mesa-cache  mc(cold (~(put by cold.mc) pub +(miss)))
+    (read-page-peek our pub key rel hash struck)
+  =/  hit=mesa-cache  mc(keens +(keens.mc), cold (~(del by cold.mc) pub))
+  (pure:m [sc hit])
+::  +read-page-peek: the fallback half — today's read, plus the rev its view
+::  already carried. A FAILED read drops the remembered note: the page may be
+::  gone, and a note kept past its page would keen a dead spur next sweep and
+::  pay the timeout for nothing.
+::
+++  read-page-peek
+  |=  [our=@p pub=@p key=path rel=path hash=@uvH mc=mesa-cache]
+  =/  m  (fiber:fiber:nexus ,[(unit @t) mesa-cache])
+  ^-  form:m
+  ;<  pr=(unit [rev=@ud body=@t])  bind:m  (read-page-body-rev our pub rel)
+  =.  peeks.mc  +(peeks.mc)
+  ?~  pr  (pure:m [~ mc(revs (~(del by revs.mc) [pub key]))])
+  (pure:m [`body.u.pr mc(revs (~(put by revs.mc) [pub key] [rev.u.pr hash]))])
+::  +rev-note: what we remember about ONE peer page after reading it — the
+::  vault revision the body came from (the spur's last segment) and the body
+::  hash the peer's manifest carried at that moment. The hash is the freshness
+::  witness; the rev is the address.
+::
++$  rev-note  [rev=@ud hash=@uvH]
+::  +mesa-strikes: consecutive keen misses that retire a peer from the scry
+::  path for the rest of the crawler fiber's life.
+::
+::  Without this the mirror is a REGRESSION against a peer who publishes but
+::  never grew any bindings (an older lattice, or one that has not run
+::  /pub-regrow). Every page of theirs would look warm — we have its rev from
+::  the peek, its manifest hash is stable — so every page would burn a full
+::  +mesa-timeout finding nothing before falling back, and +peer-budget would
+::  expire on timeouts instead of pages. Three strikes is enough to tell "does
+::  not mirror" from one lost packet, and a single hit clears the count, so a
+::  peer who deploys the mirror later is picked back up.
+::
+++  mesa-strikes  ^-(@ud 3)
+::  +mesa-cache: the crawler's scry-first working set, plus per-sweep counters.
+::
+::  NOT PERSISTED, on purpose. It lives in the /crawler.sig fiber's loop and is
+::  empty again after any reload or deploy. Persisting it would mean a new grub
+::  + mark + on-load row for data that costs nothing to rebuild: a cold entry
+::  simply takes the peek that would have run anyway, and that peek refills it.
+::  A per-request fiber (POST /catalog-scan, POST /catalog-sweep) therefore
+::  always runs cold and always peeks — see those routes.
+::
+::  cold: per-peer consecutive keen misses (+mesa-strikes). Keyed by ship, not
+::  by page, so one page's tombstone does not retire the whole peer for long —
+::  the next page that hits clears it.
+::
++$  mesa-cache
+  $:  revs=(map [@p path] rev-note)
+      cold=(map @p @ud)
+      keens=@ud
+      peeks=@ud
+  ==
 ::  +read-pub-index-remote: a peer's /pub/index via peek-remote (clean break:
 ::  the peer must run the grubbery-native lattice at the same app-base).
 ::

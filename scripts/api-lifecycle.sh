@@ -94,7 +94,57 @@ if [ "${LATTICE_MESA:-0}" = 1 ]; then
   #     -keen /=//=/g/~tyr/grubbery/1/pub/page/api-lc/mesa/<rev>
   #   expect a %gmi page carrying the body, and after page-del a tombstone.
   #   The /pub/index/<seq> binding should carry the manifest-gmi listing.
+  #   The spar path the READER builds is +keen-path: the vane letter first
+  #   (ames prepends ship/rift/life itself), i.e.
+  #     /g/x/1/grubbery/1/pub/page/api-lc/mesa/<rev>
   bad "mesa keen self-read" "not implemented — needs A2 on the live desk"
+
+  # ── READ side (phase C): scry-first cross-ship reads ──────────────────────
+  # Nothing here is runnable on ONE ship. A %keen is answered by ANOTHER
+  # ship's kernel, and +read-page-scry deliberately bails when publisher ==
+  # our (keening ourselves would be a round trip through ames to read a grub
+  # sitting in this pier), so there is no single-ship path that touches the
+  # converted code at all. This is the two-ship procedure Phase D runs, and it
+  # is written down here rather than faked with a curl that proves nothing.
+  #
+  #   1. on ~peer (running the same lattice + feat/scry-io):
+  #        page-save api-lc/mesa, page-share it.
+  #   2. on this ship: POST /follow?ship=~peer, then POST /catalog-sweep.
+  #      That route runs COLD by design (a request fiber keeps no cache), so
+  #      it must peek everything. The interesting sweeps are the crawler's.
+  #   3. wait for two /crawler.sig ticks (or shorten ~h6 locally) and read the
+  #      pier log for the per-peer, per-sweep split:
+  #        [%lattice-mesa-scry ~peer keens=0 peeks=N]   <- sweep 1, cold
+  #        [%lattice-mesa-scry ~peer keens=N peeks=0]   <- sweep 2, warm
+  #      Sweep 2 is the entire Phase C claim: an unchanged peer page is read
+  #      out of the namespace and the peer's %grubbery never runs.
+  #   4. edit the page on ~peer, let a sweep run: the peer's manifest hash
+  #      moved, so the crawler must FALL BACK (peeks>0) and pick up the new
+  #      body — /catalog-list must show the new title, not the old one.
+  #   5. delete the page on ~peer: it leaves the manifest, so the rev note
+  #      must be pruned alongside the catalog rows (+catalog-scan-peer's
+  #      prune). A note outliving its page would keen a tombed spur and eat a
+  #      full +mesa-timeout every sweep forever.
+  #   6. the case that MUST NOT regress: a peer that publishes but never grew
+  #      bindings (an old lattice, or one that skipped /pub-regrow). Follow
+  #      such a ship and sweep repeatedly. Its first warm sweep pays three
+  #      +mesa-timeouts, then +mesa-strikes retires it and every later sweep
+  #      costs exactly what it cost before the mirror existed. If sweeps of
+  #      that peer keep getting slower, the strike-out is broken.
+  #   7. stop ~peer entirely and sweep: this bails at the manifest read
+  #      (+read-pub-index-remote answers ~ and the peer is skipped), so it
+  #      exercises no keen at all — it should look exactly as it does today.
+  #
+  # Counter caveat: keens/peeks exist only in that ~& line. No route exposes
+  # them, so this is a log-reading check. If Phase D wants it automated,
+  # surface the pair on a route first.
+  bad "mesa scry-first peer reads" "not implemented — needs A2 AND a second ship (phase D)"
+
+  # NOT converted, and not pending: /fetch, the web reader, the /x/ explorer
+  # and +index-remote-page all stay on peek-remote (no rev is knowable in a
+  # per-request fiber — see the comment on +read-page-body), and every write
+  # path (comments, /remote-save, share notices) stays on the weir-gated poke
+  # by design. Their existing checks above cover them unchanged.
 fi
 
 echo
