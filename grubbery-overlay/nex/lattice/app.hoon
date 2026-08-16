@@ -8,6 +8,9 @@
 ::    /know/trash          derived trash index
 ::    /pub/vault/<spur>    published page grubs (public)
 ::    /pub/index           derived page index (parity hash)
+::    /pub/note/ptr        the mesa publish POINTER (D2): tiny json fact
+::                         [rel rev seq op] overwritten on every publish,
+::                         so a subscriber's keep learns WHERE to %keen
 ::    /ui/main.sig         binds /apps/lattice; dispatches to per-request fibers
 ::    /ui/requests/<id>    one ephemeral fiber per in-flight HTTP request
 ::    /ui/views/page.html  the web reader grub
@@ -105,6 +108,24 @@
         ::  crashed on it, killing the writer fiber and hanging every publish.
         ::  The counter is one bare atom and /mar/ud.hoon already is that mark.
             [%fall %& [/pub %meta] [[/ %ud] 0]]
+        ::  /pub/note/ptr: the mesa publish POINTER (D2, the subscription leg).
+        ::  One tiny json grub overwritten by every publish/delete with
+        ::  {rel rev seq op} — the minimal fact a subscribed peer needs to
+        ::  %keen the page body at its concrete namespace spur instead of
+        ::  negotiating a full grubbery peek. See +write-pub-note.
+        ::
+        ::  NESTED in its own directory (/pub/note/ptr, not [/pub %note]) on
+        ::  purpose: a keep's wave is +wave-at of the kept FILE's whole parent
+        ::  dir, so a pointer sitting directly in /pub would push the entire
+        ::  /pub/vault cass tree to every subscriber on every edit. In its own
+        ::  dir the wave is one fold + one file cass — actually pointer-sized.
+        ::
+        ::  [/ %json] like the /beacon/rev stamp — a mark whose file exists.
+        ::  (The /pub/meta comment above records what naming a mark with no
+        ::  file does to the writer.) Starts as json null; subscribers treat
+        ::  an unparseable pointer as "publisher does not mirror" (mixed
+        ::  fleet) and keep today's peek path.
+            [%fall %& [/pub/note %ptr] [[/ %json] ~]]
         ::  HTTP front-end: ui/main.sig binds /apps/lattice and dispatches each
         ::  request into a per-request fiber under ui/requests. The web reader is
         ::  rendered dynamically per request (no static page grub).
@@ -244,10 +265,14 @@
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /ui/requests: failed")
         (handle-request name.rail)
       ::  /sub/pages/*: one live per-file subscription. keep the peer's page grub
-      ::  and re-index it into the catalog on every change, so an edit lands now
-      ::  instead of waiting for the ~h6 crawler sweep. The keep is re-established
-      ::  from the stored page-sub on reload. Culling the grub (via /unsub) tears
-      ::  down the fiber and its keep (delete -> sub-wipe).
+      ::  (and, mesa D2, their publish POINTER) and re-index the page on every
+      ::  change, so an edit lands now instead of waiting for the ~h6 crawler
+      ::  sweep. Against a mesa publisher the re-index bulk-fetches over the
+      ::  namespace (%keen at the concrete rev the wave/pointer names) and only
+      ::  falls back to the peek transport; against a pre-mesa publisher it is
+      ::  exactly the old peek path. The keeps are re-established from the
+      ::  stored page-sub on reload. Culling the grub (via /unsub) tears down
+      ::  the fiber and its keeps (delete -> sub-wipe).
           [[%sub %pages ~] @]
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /sub/pages: failed")
         ;<  ps=page-sub:lp  bind:m  (get-state-as:io ,page-sub:lp)
@@ -270,20 +295,119 @@
         ::  (remote) keep handshake. A peer too slow to ack the keep would
         ::  have timed out the index's body peek anyway.
         ;<  *  bind:m  (keep:io /page road ~)
-        ;<  ~  bind:m  (index-remote-page ship.ps rel)
+        ::  mesa (D2): ALSO keep the peer's publish pointer (/pub/note/ptr).
+        ::  A SECOND keep, not a widening of the first: grubbery matches a
+        ::  file keep against its target lane EXACTLY (+load-ball-changes'
+        ::  relevant-filter: "File target: only exact match counts"), so the
+        ::  pointer cannot ride the /page keep — different file, different
+        ::  lane. Registered here because this fiber IS where lattice
+        ::  registers its remote keeps (each /sub/pages grub arms its own on
+        ::  spawn and grubbery tears both down with the fiber on /unsub).
+        ::  The /pub dir weir grant (ensure-pub-weir) already covers the
+        ::  pointer road, and a keep on a grub the peer never creates (a
+        ::  publisher without the mesa overlay) registers fine and simply
+        ::  never fires — mixed fleet costs nothing.
+        =/  nroad=road:tarball
+          (remote-road [%& %& (weld app-base:lu /pub/note) %ptr] ship.ps)
+        ;<  *  bind:m  (keep:io /note nroad ~)
+        ::  adopt the peer's current publish seq BEFORE the initial index:
+        ::  any publish at or below this seq is covered by the index peek
+        ::  below (it reads current state), and any publish after it fires a
+        ::  note wave whose seq exceeds it, so no edit can fall between.
+        ::  Reading it AFTER the index would let an edit land between index
+        ::  and read and be skipped as stale forever (a page-sub is not a
+        ::  follow; no sweep corrects it). ~ = peer does not mirror (mixed
+        ::  fleet): seq stays 0 and every wave takes today's peek path.
+        ;<  np0=(unit pub-note)  bind:m  (read-pub-note ship.ps)
+        ;<  pages=(set path)  bind:m  (index-remote-page ship.ps rel)
+        =/  seq=@ud   ?~(np0 0 seq.u.np0)
+        ::  the last vault rev this fiber indexed. Dedupes the two waves a
+        ::  mesa publisher's every edit fires (vault put-file, then note
+        ::  put-file — ordered, same ames flow) down to ONE index.
+        =/  lrev=@ud  0
         |-
-        ::  take-news-or-wake-drain, not take-news: index-remote-page's early-
+        ::  take-sub-wave-drain, not take-news: index-remote-page's early-
         ::  resolving obelisk/peek send-waits leave uncancellable timers armed, and a
-        ::  timed-out remote peek's late %peek/%veto still arrives; plain take-news
-        ::  would %skip those and pile them in this long-lived fiber's skip queue
-        ::  forever. -drain consumes both. A %wake is just drained. Only a real %news
-        ::  re-indexes.
-        ;<  nw=news-or-wake:io  bind:m  (take-news-or-wake-drain /page)
+        ::  timed-out remote peek's late %peek/%veto (and now a timed-out keen's late
+        ::  [/ %keen-tune] poke) still arrives; plain take-news would %skip those and
+        ::  pile them in this long-lived fiber's skip queue forever. -drain consumes
+        ::  them. A %wake is just drained. Only a real %news does work.
+        ;<  nw=sub-wave  bind:m  take-sub-wave-drain
         ?-  -.nw
             %wake  $
-            %news
-          ;<  ~  bind:m  (index-remote-page ship.ps rel)
-          $
+            %page
+          ::  the peer edited the kept page grub. Two regimes:
+          ::
+          ::  seq=0 — the peer is not known to mirror into the namespace:
+          ::  exactly today's path, re-index over the peek transport. No
+          ::  behavior change against a pre-mesa publisher.
+          ?:  =(0 seq)
+            ;<  nps=(set path)  bind:m  (index-remote-page ship.ps rel)
+            $(pages ?:(=(~ nps) pages nps))
+          ::  seq>0 — the peer mirrors (its pointer attested it). The wave
+          ::  itself already names the revision: a keep's wave is an axal of
+          ::  cass, and the kept gmi file's new cass IS the rev the
+          ::  publisher's +grow-pub-page bound (both are the vault grub's
+          ::  cass — see +pub-grub-rev). And the binding is live before this
+          ::  wave could reach us: the publisher's vault write, %grow and
+          ::  pointer write all drain inside its one writer event, so the
+          ::  wave that left that event postdates the grow. Bulk-fetch over
+          ::  the namespace (keen at the concrete rev, kernel-served,
+          ::  relay-cacheable) with the peek path as fallback — never worse
+          ::  than today. Handling the edit HERE and not on the note wave
+          ::  also survives note coalescing: a burst of edits across several
+          ::  pages overwrites the one pointer, but every page wave still
+          ::  carries its own rev.
+          ::
+          ::  rev<=lrev skips: the note leg below indexed this edit already
+          ::  (or it is a delete — the culled gmi drops out of the wave's
+          ::  file map and reads as rev 0; the note %del handles it).
+          =/  wfil=(map @ta cass:clay)  ?~(fil.wave.nw ~ file.u.fil.wave.nw)
+          =/  c=(unit cass:clay)  (~(get by wfil) %gmi)
+          =/  r=@ud  ?~(c 0 ud.u.c)
+          ?.  (gth r lrev)  $
+          ;<  nps=(set path)  bind:m  (index-remote-page-keen ship.ps rel r pages)
+          $(lrev r, pages ?:(=(~ nps) pages nps))
+            %note
+          ::  the peer's publish pointer moved: some page of theirs was
+          ::  saved or deleted. Read the pointer (one tiny snap-inlined
+          ::  peek) for the fact the wave cannot carry: seq, op, and which
+          ::  page. An unreadable pointer is ignored (hostile/malformed
+          ::  peer, or json null before the first publish).
+          ;<  np=(unit pub-note)  bind:m  (read-pub-note ship.ps)
+          ?~  np  $
+          ?:  (lte seq.u.np seq)  $
+          ::  SEQ GAP: a jump past +(seq) means waves were missed (we were
+          ::  down, or the flow dropped) — or the peer ran /pub-regrow,
+          ::  which advances seq without a pointer write. Either way our
+          ::  view of this peer may be arbitrarily stale, so resweep the
+          ::  peer wholesale: +catalog-scan-peer re-indexes its manifest
+          ::  AND reconciles deletions, the same path the crawler runs.
+          ::  One comparison buys the whole recovery.
+          ?:  &((gth seq 0) (gth seq.u.np +(seq)))
+            ;<  our=@p   bind:m  bowl-our
+            ;<  now=@da  bind:m  bowl-now
+            ;<  *  bind:m  (catalog-scan-peer our ship.ps now *mesa-cache)
+            $(seq seq.u.np)
+          ?.  =(rel (page-rel rel.u.np))  $(seq seq.u.np)
+          ?:  ?=(%del op.u.np)
+            ::  our subscribed page was unpublished: drop its catalog rows
+            ::  now, the same per-page delete +catalog-reconcile-peer runs
+            ::  for a ghost (today the live sub leaves the rows to linger).
+            ;<  our=@p  bind:m  bowl-our
+            ;<  ~  bind:m
+              %+  catalog-run  catalog-db
+              (catalog-page-delete-urql:cat our ship.ps (weld /pub (snoc rel %gmi)))
+            $(seq seq.u.np)
+          ::  %save of our page: normally the %page leg above already
+          ::  indexed this rev (its wave precedes this one on the same
+          ::  flow). Index here only if it somehow did not (belt and
+          ::  braces), at the pointer's concrete rev — bound by
+          ::  construction, the publisher wrote the pointer after the grow.
+          ?.  (gth rev.u.np lrev)  $(seq seq.u.np)
+          ;<  nps=(set path)  bind:m
+            (index-remote-page-keen ship.ps rel rev.u.np pages)
+          $(seq seq.u.np, lrev rev.u.np, pages ?:(=(~ nps) pages nps))
         ==
       ::  /page/<name>/code: the page evaluator (docs/platform.md step 2). The
       ::  fiber owns the page's code grub: compile the source (a gate) against
@@ -4641,9 +4765,13 @@
 ::  detection), then writes the page's catalog rows. No-op if the page is
 ::  gone/unreachable, or if obelisk is absent (the obelisk-run-one guard swallows).
 ::
+::  Returns the peer's page key set (mesa D2): the caller's loop caches it so
+::  the keen twin below can index without re-peeking the peer's whole index on
+::  every edit. ~ when the page/index was unreadable (caller keeps its cache).
+::
 ++  index-remote-page
   |=  [pub=@p rel=path]
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,(set path))
   ^-  form:m
   ;<  our=@p   bind:m  bowl-our
   ;<  now=@da  bind:m  bowl-now
@@ -4652,7 +4780,33 @@
   ;<  u-ix=(unit pub-index:lp)  bind:m  (read-pub-index-remote pub)
   =/  ix=pub-index:lp  (fall u-ix *pub-index:lp)
   =/  pat=path  (weld /pub (snoc rel %gmi))
-  (catalog-index-page our pub pat now u.body ~(key by ix))
+  ;<  ~  bind:m  (catalog-index-page our pub pat now u.body ~(key by ix))
+  (pure:m ~(key by ix))
+::  +index-remote-page-keen: the pointer-driven twin (mesa D2). The subscriber
+::  already KNOWS the concrete revision (the wave/pointer named it), so the
+::  bulk fetch goes over the namespace: one %keen at /pub/page/<rel>/<rev>,
+::  answered by the peer's kernel out of gall's scry farm — no weir
+::  negotiation, no per-reader work in the peer's %grubbery, and the signed
+::  answer is relay-cacheable. This is the kiln/clay shape: notify over the
+::  flow, bulk over the namespace. `pages` is the caller's cached key set
+::  (internal-link detection); slightly stale is fine — the sweep refreshes
+::  catalog rows anyway, and our own page is in it by construction.
+::
+::  On any keen failure (timeout, unbound spur, wrong mark) fall back to the
+::  full +index-remote-page — exactly today's read, so this path is never
+::  worse than the one it replaces.
+::
+++  index-remote-page-keen
+  |=  [pub=@p rel=path rev=@ud pages=(set path)]
+  =/  m  (fiber:fiber:nexus ,(set path))
+  ^-  form:m
+  ;<  sc=(unit @t)  bind:m  (keen-page pub rel rev)
+  ?~  sc  (index-remote-page pub rel)
+  ;<  our=@p   bind:m  bowl-our
+  ;<  now=@da  bind:m  bowl-now
+  =/  pat=path  (weld /pub (snoc rel %gmi))
+  ;<  ~  bind:m  (catalog-index-page our pub pat now u.sc pages)
+  (pure:m pages)
 ::  +catalog-scan-self: index every one of OUR OWN published pages into the
 ::  catalog (source = publisher = our). The local, peer-free slice of the crawler.
 ::  Proves the analyze -> obelisk pipeline end to end. Returns the count indexed.
@@ -6083,6 +6237,45 @@
       ::  wire like take-peek-or-wake; both are %node darts, told apart by wire.
       [~ %veto %node * * *]
     ?:  =(news-wire wire.dart.u.in)  [%skip ~]
+    [%done %wake ~]
+  ==
+::  +sub-wave: what one turn of the /sub/pages loop saw — the page grub's own
+::  wave (carrying the dir's cass axal, out of which the loop reads the new
+::  rev), the publish pointer's wave (its content is read separately; the wave
+::  itself is just the doorbell), or a drained stray.
+::
++$  sub-wave
+  $%  [%wake ~]
+      [%page =wave:nexus]
+      [%note ~]
+  ==
+::  +take-sub-wave-drain: +take-news-or-wake-drain widened for the /sub/pages
+::  loop's TWO keeps (mesa D2): %news on /page and /note resolve as themselves,
+::  and the drain also consumes the late [/ %keen-tune] poke a timed-out
+::  +keen-page leaves behind (same reasoning as the late-%peek drain — this is
+::  a long-lived fiber, and anything merely %skipped piles in its skip queue
+::  forever). A %veto of EITHER of this loop's own keeps is still %skipped,
+::  not swallowed: that subscription died, and reading it as a keepalive would
+::  hide the failure.
+::
+++  take-sub-wave-drain
+  =/  m  (fiber:fiber:nexus ,sub-wave)
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %news * *]
+    ?:  =(/page wire.u.in)  [%done %page wave.u.in]
+    ?:  =(/note wire.u.in)  [%done %note ~]
+    [%skip ~]
+      [~ %poke * *]
+    ?:  =([/ %timer-wake] p.sage.u.in)  [%done %wake ~]
+    ?:  =([/ %keen-tune] p.sage.u.in)   [%done %wake ~]
+    [%skip ~]
+      [~ %peek * *]  [%done %wake ~]
+      [~ %veto %node * * *]
+    ?:  |(=(/page wire.dart.u.in) =(/note wire.dart.u.in))  [%skip ~]
     [%done %wake ~]
   ==
 ::  +page-rel: normalize a fetch/subscribe spur to the vault-relative page path.
@@ -8429,8 +8622,16 @@
     ::  crash between the vault write and the grow can leave the namespace one
     ::  save behind; POST /pub-regrow re-grows the current state.
     ;<  rev=@ud  bind:m  (pub-grub-rev pax.u.or nom.u.or)
+    ::  ORDERING INVARIANT (mesa D2): grow the page into the namespace FIRST,
+    ::  then write the pointer. A subscriber keens the exact rev the pointer
+    ::  advertises, and gall PARKS a keen at an unbound spur (the documented
+    ::  remote-scry deficiency: the reader hangs, not errors), so a pointer
+    ::  that ever preceded its grow would turn the fast path into a stall.
+    ::  Grown first, the rev is bound by construction before any peer can
+    ::  learn it exists.
     ;<  ~  bind:m  (grow-pub-page key body.act rev)
-    (grow-pub-index root nix)
+    ;<  seq=@ud  bind:m  (grow-pub-index root nix)
+    (write-pub-note root (snip (strip-pub:lp key)) rev seq %save)
   ::
       %del-page
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
@@ -8485,7 +8686,14 @@
     ::  page leave the manifest.
     =/  inner=path  (snip (strip-pub:lp key))
     ;<  ~  bind:m  (cull-farm:io (snoc (weld /pub/page inner) (scot %ud rev)))
-    (grow-pub-index root nix)
+    ::  ORDERING INVARIANT (mesa D2), the delete half: retract the namespace
+    ::  binding FIRST (the cull-farm above), then write the pointer. The %del
+    ::  pointer tells subscribers to drop local state, never to keen, so the
+    ::  hazard here is the mirror image of %save's — a pointer written before
+    ::  the cull could race a reader into a binding about to vanish. Written
+    ::  after, whatever the pointer says about this page is already true.
+    ;<  seq=@ud  bind:m  (grow-pub-index root nix)
+    (write-pub-note root inner rev seq %del)
   ==
 ::  +read-pub-index: peek the /pub/index grub. Empty if absent.
 ::
@@ -8505,6 +8713,11 @@
 ::    /pub/index/<seq>                  the discovery manifest (manifest-gmi),
 ::                                      re-grown on every publish and delete
 ::    [/pub %meta] grub                 the seq counter, monotonic @ud
+::    /pub/note/ptr grub (D2)           the publish POINTER: tiny json
+::                                      {rel rev seq op} overwritten last on
+::                                      every publish/delete; subscribers'
+::                                      keeps ring on it and %keen the body
+::                                      at the concrete rev it names
 ::  Bindings are immutable per spur (the rev/seq segment makes each grow
 ::  fresh), which is what the namespace requires. Compiles only against
 ::  grubbery feat/scry-io (grow:io / cull-farm:io / keen:io).
@@ -8565,9 +8778,12 @@
 ::  treats a re-grow of a bound spur as a fresh case — stale but readable —
 ::  where the reverse order could skip a seq forever.
 ::
+::  Returns the seq it grew (mesa D2): +apply-pub stamps it into the publish
+::  pointer, so subscribers can spot missed waves as a seq gap.
+::
 ++  grow-pub-index
   |=  [root=path ix=pub-index:lp]
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
   =/  mx=road:tarball  [%& %& (weld root /pub) %meta]
   ;<  seq=@ud  bind:m  (read-pub-seq mx)
@@ -8575,7 +8791,77 @@
   ;<  ~  bind:m  (grow:io /pub/index/[(scot %ud nseq)] [%gmi (manifest-gmi ix)])
   ::  [/ %ud], grubbery's own atom mark — see the /pub/meta covering row in
   ::  +on-load. A put-file under a mark with no source file lays a boom.
-  (put-file mx [/ %ud] nseq)
+  ;<  ~  bind:m  (put-file mx [/ %ud] nseq)
+  (pure:m nseq)
+::  +pub-note: the publish POINTER's content (mesa D2) — the minimal fact a
+::  subscribed peer needs to act on one publish without any discovery peek:
+::  which page (rel, the vault-relative spur), which namespace binding to
+::  %keen (rev), where this sits in the publish stream (seq, for gap
+::  detection), and whether to fetch or drop (op).
+::
++$  pub-note  [rel=path rev=@ud seq=@ud op=?(%save %del)]
+::  +write-pub-note: overwrite the pointer grub. Runs LAST in +apply-pub, and
+::  the order is the contract (stated at both call sites): the page body is
+::  grown into the namespace before the pointer that names its rev, so a
+::  subscriber acting on a pointer wave keens a spur that is bound by
+::  construction — no parked keen, no polling. The grub is tiny and
+::  overwritten in place: what rides the subscriber's keep/wave flow is a
+::  pointer, while the page body rides the namespace. That split is why the
+::  publisher's per-subscriber cost per edit collapses — the wave poke is the
+::  only per-subscriber work its agent ever does.
+::
+::  json under [/ %json], the same real mark the /beacon/rev stamp uses. A
+::  peer WITHOUT the mesa overlay simply never runs this arm and never grows
+::  a /pub/note dir — subscribers read that absence as "does not mirror" and
+::  keep today's path (see the /sub/pages fiber). No flag days.
+::
+++  write-pub-note
+  |=  [root=path rel=path rev=@ud seq=@ud op=?(%save %del)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  jon=json
+    %-  pairs:enjs:format
+    :~  rel+s+(spat rel)
+        rev+(numb:enjs:format rev)
+        seq+(numb:enjs:format seq)
+        op+s+?:(?=(%save op) 'save' 'del')
+    ==
+  (put-file [%& %& (weld root /pub/note) %ptr] [/ %json] jon)
+::  +read-pub-note: a peer's current publish pointer, over the bounded remote
+::  peek (the grub is a few dozen bytes, so the peek's snap inlines it — one
+::  round trip). ~ on unreachable / absent / json-null (pre-first-publish) /
+::  malformed — every caller treats ~ as "peer does not mirror" and keeps
+::  today's behavior, so a hostile pointer can degrade nothing.
+::
+++  read-pub-note
+  |=  shp=@p
+  =/  m  (fiber:fiber:nexus ,(unit pub-note))
+  ^-  form:m
+  ;<  ms=(unit view:nexus)  bind:m
+    (peek-remote-wait [%& %& (weld app-base:lu /pub/note) %ptr] shp)
+  ?~  ms  (pure:m ~)
+  ?.  ?=([%file *] u.ms)  (pure:m ~)
+  ::  cross-ship content is a raw noun (boom), never a vase, and it is PEER
+  ::  data: clam and parse inside mole/mule so garbage yields ~, not a crash
+  ::  in this long-lived keep fiber.
+  =/  jr=(each json tang)  (mule |.(;;(json (sang-noun:tarball sang.u.ms))))
+  ?:  ?=(%| -.jr)  (pure:m ~)
+  (pure:m (parse-pub-note p.jr))
+::  +parse-pub-note: json -> pub-note, ~ on any shape violation. The strict
+::  dejs arms crash on mismatch, which is exactly what the mole converts to ~.
+::
+++  parse-pub-note
+  |=  jon=json
+  ^-  (unit pub-note)
+  %-  mole  |.
+  ?>  ?=([%o *] jon)
+  =/  o=(map @t json)  p.jon
+  =/  rel=path  (stab (so:dejs:format (~(got by o) 'rel')))
+  =/  rev=@ud   (ni:dejs:format (~(got by o) 'rev'))
+  =/  seq=@ud   (ni:dejs:format (~(got by o) 'seq'))
+  =/  op=@t     (so:dejs:format (~(got by o) 'op'))
+  ?>  |(=('save' op) =('del' op))
+  `pub-note`[rel rev seq ?:(=('save' op) %save %del)]
 ::  +pub-regrow: backfill the namespace from the existing pub vault — every
 ::  page at its CURRENT vault rev, then one fresh index seq. For piers that
 ::  published before the mesa mirror existed (their saves never grew). Same
@@ -8601,7 +8887,11 @@
   ;<  ix=pub-index:lp  bind:m
     (read-pub-index [%& %& (weld app-base:lu /pub) %index])
   ;<  n=@ud  bind:m  (pub-regrow-loop ~(tap in ~(key by ix)) 0)
-  ;<  ~  bind:m  (grow-pub-index app-base:lu ix)
+  ::  no pointer write: a regrow is a backfill, not a page publish, so there
+  ::  is no single (rel rev op) to advertise. The seq still advances, which
+  ::  subscribers see as a GAP on the next real publish — and answer with a
+  ::  full peer resweep. For a wholesale re-grow that is the right response.
+  ;<  *  bind:m  (grow-pub-index app-base:lu ix)
   (pure:m n)
 ++  pub-regrow-loop
   |=  [keys=(list path) cnt=@ud]

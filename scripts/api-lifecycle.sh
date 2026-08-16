@@ -140,11 +140,35 @@ if [ "${LATTICE_MESA:-0}" = 1 ]; then
   # surface the pair on a route first.
   bad "mesa scry-first peer reads" "not implemented — needs A2 AND a second ship (phase D)"
 
-  # NOT converted, and not pending: /fetch, the web reader, the /x/ explorer
-  # and +index-remote-page all stay on peek-remote (no rev is knowable in a
-  # per-request fiber — see the comment on +read-page-body), and every write
-  # path (comments, /remote-save, share notices) stays on the weir-gated poke
-  # by design. Their existing checks above cover them unchanged.
+  # NOT converted, and not pending: /fetch, the web reader and the /x/
+  # explorer stay on peek-remote (no rev is knowable in a per-request fiber —
+  # see the comment on +read-page-body), and every write path (comments,
+  # /remote-save, share notices) stays on the weir-gated poke by design.
+  # Their existing checks above cover them unchanged.
+
+  # ── SUBSCRIPTION leg (mesa D2): pointer waves + keen ──────────────────────
+  # The publisher half is proven single-ship (the /pub/note/ptr pointer and
+  # its seq are readable via a scratch-desk generator after page-share /
+  # page-del — see the D2 commit). The SUBSCRIBER half cannot be: a wave is
+  # pushed by ANOTHER ship's %grubbery and the keen it triggers is answered
+  # by that ship's kernel. Two-ship procedure (with ~peer running this same
+  # overlay):
+  #   1. on ~peer: page-save + page-share a page P.
+  #   2. on this ship: POST /sub?url=urb://~peer/P (the /sub/pages fiber arms
+  #      BOTH keeps: /page on the vault grub, /note on the publish pointer).
+  #   3. edit P on ~peer. Expect on this ship: the page wave carries P's new
+  #      cass, the fiber keens /pub/page/P/<rev> (publisher log shows NO
+  #      lattice peek; catalog shows the new body), then the note wave lands
+  #      and only bumps the remembered seq (no second index).
+  #   4. on ~peer edit a DIFFERENT shared page twice, then edit P: the seq
+  #      the next note carries jumps by >1 relative to this ship's memory of
+  #      it ONLY if waves were dropped — force that by pausing this ship —
+  #      and the fiber must answer with a full +catalog-scan-peer resweep.
+  #   5. page-del P on ~peer: the %del pointer must drop P's catalog rows
+  #      here (search stops finding it) without waiting for a sweep.
+  #   6. the mixed-fleet floor: repeat 2-3 against a peer WITHOUT the
+  #      overlay — no /pub/note exists, the note keep stays silent, and every
+  #      edit must land exactly as before over the peek path.
 fi
 
 echo
