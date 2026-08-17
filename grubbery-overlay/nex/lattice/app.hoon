@@ -9185,17 +9185,16 @@
   |=  [shp=@p rel=path rev=@ud]
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
-  ;<  res=(unit (unit roar:ames))  bind:m
-    %+  (with-timeout:io ,(unit roar:ames))
+  ;<  res=(unit (unit page))  bind:m
+    %+  (with-timeout:io ,(unit page))
       mesa-timeout
     (keen:io shp (keen-path rel rev))
-  ::  outer ~: our own deadline fired. inner ~: ames answered with no roar.
+  ::  outer ~: our own deadline fired. inner ~: the publisher bound nothing
+  ::  at that spur — never grown, or tombed. keen:io hands back the page the
+  ::  kernel's verified %sage carried (see +keen:io / +take-keen-tune).
   ?~  res  (pure:m ~)
   ?~  u.res  (pure:m ~)
-  ::  the roar's payload is [path (unit page)]. ~ means the publisher has
-  ::  nothing bound at that spur — never grown, or tombed.
-  ?~  q.dat.u.u.res  (pure:m ~)
-  =/  pag  u.q.dat.u.u.res
+  =/  pag  u.u.res
   ::  the mirror grows [%gmi body] and nothing else. A different mark is a
   ::  publisher we do not understand, not a page.
   ?.  =(%gmi p.pag)  (pure:m ~)
