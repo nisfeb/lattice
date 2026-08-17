@@ -2556,6 +2556,24 @@
     ;<  n=@ud  bind:m  pub-regrow
     %+  send-json  eyre-id
     (pairs:enjs:format ~[['ok' b+&] ['grown' (numb:enjs:format n)]])
+  ::  pub-reconcile: ONE-SHOT cleanup of the historical-rev namespace leak
+  ::  left by any publish that ran BEFORE +apply-pub started culling
+  ::  predecessors. Under the old code every save grew a fresh rev spur and
+  ::  never culled the old one, and every publish grew a fresh index seq and
+  ::  never culled the old one — so such a ship holds stale rev spurs and
+  ::  stale index seqs, all world-readable via keen forever. This retracts
+  ::  them from the vault grubs' own version history. Owner-only. 409s on a
+  ::  second run — see +pub-reconcile for the marker, the ordering rule and
+  ::  the enumeration gap.
+      [%'POST' %pub-reconcile]
+    ;<  res=(unit [revs=@ud seqs=@ud])  bind:m  pub-reconcile
+    ?~  res  (send-err eyre-id 409 'already reconciled')
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['ok' b+&]
+        ['revs-culled' (numb:enjs:format revs.u.res)]
+        ['seqs-culled' (numb:enjs:format seqs.u.res)]
+    ==
   ::  ── legacy agent migration (see the +legacy-live block) ────────────────
   ::  legacy-status: should the UI offer to import from a retired %lattice
   ::  gall agent? One %gu liveness scry and nothing else. See below. The
@@ -4800,6 +4818,10 @@
   |=  [pub=@p rel=path rev=@ud pages=(set path)]
   =/  m  (fiber:fiber:nexus ,(set path))
   ^-  form:m
+  ::  keen read-path gated OFF (see +mesa-keen-on): skip the keen ATTEMPT
+  ::  entirely and take today's peek path, with no keen emission and no
+  ::  ~s10 stall. The flip back to %.y re-arms the keen twin unchanged.
+  ?.  mesa-keen-on  (index-remote-page pub rel)
   ;<  sc=(unit @t)  bind:m  (keen-page pub rel rev)
   ?~  sc  (index-remote-page pub rel)
   ;<  our=@p   bind:m  bowl-our
@@ -8609,6 +8631,13 @@
     ?~  or  ~&([%lattice-pub-bad-key key] (pure:m ~))
     =/  road=road:tarball  [%& %& pax.u.or nom.u.or]
     ;<  ~  bind:m  (ensure-dirs vbase (slag (lent vbase) pax.u.or))
+    ::  the rev bound in the namespace by the PREVIOUS publish of this page,
+    ::  read BEFORE this save's put-file bumps the vault grub's cass. This is
+    ::  the exact predecessor rev spur the keep-only-current cull below
+    ::  retracts (the last save grew at this cass and never culled it). 0 when
+    ::  the page has no prior publish (first save, or a re-save after delete
+    ::  tombed the grub — a tombed grub drops out of the dir wave and reads 0).
+    ;<  prev-rev=@ud  bind:m  (pub-grub-rev pax.u.or nom.u.or)
     ;<  ~  bind:m  (put-file road [/lattice %page] body.act)
     ;<  ~  bind:m  (gain:io road %.y)
     ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
@@ -8630,8 +8659,23 @@
     ::  Grown first, the rev is bound by construction before any peer can
     ::  learn it exists.
     ;<  ~  bind:m  (grow-pub-page key body.act rev)
+    ::  keep-only-current INVARIANT: at most one rev spur per page is ever
+    ::  bound. Retract the PREDECESSOR rev spur now that the new one is grown
+    ::  — grow-then-cull, in this order, so a reader never observes zero
+    ::  bindings for the page. Guards:
+    ::    prev-rev=0        no prior publish, nothing to cull
+    ::    prev-rev=rev      a no-op save (save-file suppressed the cass bump);
+    ::                      the "predecessor" IS the current spur — do not cull
+    ::  The predecessor was grown by the previous save and not yet culled, so
+    ::  this hits a still-bound spur exactly once (cull-farm crashes if handed
+    ::  an already-culled spur — see +cull-farm:io). A pre-mesa page whose old
+    ::  rev was never grown culls as a no-op (farm-top finds nothing).
+    =/  inner=path  (snip (strip-pub:lp key))
+    ;<  ~  bind:m
+      ?:  |(=(0 prev-rev) =(prev-rev rev))  (pure:m ~)
+      (cull-farm:io (snoc (weld /pub/page inner) (scot %ud prev-rev)))
     ;<  seq=@ud  bind:m  (grow-pub-index root nix)
-    (write-pub-note root (snip (strip-pub:lp key)) rev seq %save)
+    (write-pub-note root inner rev seq %save)
   ::
       %del-page
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
@@ -8679,11 +8723,17 @@
     ::  the second one crashes), and that guard is what makes a repeat delete
     ::  exit before it gets here.
     ::
-    ::  Still scoped to the LATEST rev's spur. Older rev spurs are separate
-    ::  spurs and age out under kernel retention policy; walking every
-    ::  historical rev would cost a peep per page for bindings the kernel
-    ::  already reaps. The successor index seq is grown so followers see the
-    ::  page leave the manifest.
+    ::  Culling the LATEST rev's spur is now SUFFICIENT, not a leak: +apply-pub
+    ::  keeps the keep-only-current invariant (every save culls its predecessor
+    ::  rev spur), so the current rev is the ONLY page binding ever live and no
+    ::  historical rev survives a delete. (This comment used to claim older rev
+    ::  spurs "age out under kernel retention policy" — that is FALSE. gall's
+    ::  scry farm only shrinks via an agent's own %tomb/%cull; nothing reaps a
+    ::  bound spur on its own. Every un-culled rev stayed world-readable via
+    ::  keen forever, which is exactly the leak the save-side cull now closes.)
+    ::  The successor index seq is grown — and the predecessor seq culled inside
+    ::  +grow-pub-index — so followers see the page leave the manifest and no
+    ::  stale seq lingers.
     =/  inner=path  (snip (strip-pub:lp key))
     ;<  ~  bind:m  (cull-farm:io (snoc (weld /pub/page inner) (scot %ud rev)))
     ::  ORDERING INVARIANT (mesa D2), the delete half: retract the namespace
@@ -8789,6 +8839,19 @@
   ;<  seq=@ud  bind:m  (read-pub-seq mx)
   =/  nseq=@ud  +(seq)
   ;<  ~  bind:m  (grow:io /pub/index/[(scot %ud nseq)] [%gmi (manifest-gmi ix)])
+  ::  keep-only-current INVARIANT for the manifest: at most one /pub/index seq
+  ::  is ever bound. Retract the predecessor seq now that the successor is
+  ::  grown — grow-then-cull so a reader never sees zero manifests. seq
+  ::  (= nseq-1) is the predecessor. On the very first publish seq=0 and
+  ::  /pub/index/0 was never grown, so this culls as a no-op (farm-top finds
+  ::  nothing bound there — same safety the below-current sweep relies on).
+  ::  Otherwise the counter is strictly monotonic (+1 per grow), so every seq
+  ::  is grown once and culled once here — a still-bound spur hit exactly
+  ::  once, never a re-cull (which cull-farm cannot survive). +read-pub-seq's
+  ::  boom-recovery keeps the counter alive so a lost counter can't re-grow a
+  ::  live seq and break that. Runs on save, delete AND regrow — every
+  ::  manifest grow maintains the one-live-seq rule.
+  ;<  ~  bind:m  (cull-farm:io /pub/index/[(scot %ud seq)])
   ::  [/ %ud], grubbery's own atom mark — see the /pub/meta covering row in
   ::  +on-load. A put-file under a mark with no source file lays a boom.
   ;<  ~  bind:m  (put-file mx [/ %ud] nseq)
@@ -8909,6 +8972,116 @@
   ;<  rev=@ud  bind:m  (pub-grub-rev pax.u.or nom.u.or)
   ;<  ~  bind:m  (grow-pub-page i.keys u.body rev)
   (pub-regrow-loop t.keys +(cnt))
+::  +pub-reconcile: the ONE-SHOT leak cleanup behind POST /pub-reconcile.
+::  For every page in the pub index it reads the vault grub's full version
+::  history (born:io) — each past cass is a rev a pre-fix save grew into the
+::  namespace and never culled — and cull-farms every rev spur BELOW the
+::  current one, then culls every index seq below the live counter. What
+::  survives is exactly the one live rev per page and the one live index seq,
+::  the steady state +apply-pub now maintains going forward.
+::
+::  STRICTLY one-shot, enforced by the [/pub %reconciled] marker grub: a
+::  second POST 409s. This is not optional hygiene. cull-farm CRASHES the
+::  event when handed an already-culled spur (gall keeps the emptied plot, so
+::  its own "is anything bound here" check still says yes — see +cull-farm:io
+::  and +farm-top in grubbery), so a re-run, or a run that targets a spur a
+::  post-fix save has already culled, would take the writer down. Two rules
+::  follow, both the caller's responsibility: run it ONCE, and run it BEFORE
+::  any post-fix publish/delete of a page whose predecessor it would touch
+::  (right after deploying the leak fix, when nothing has culled yet). The
+::  marker enforces once; ordering is on the operator.
+::
+::  GAP: enumeration is bounded by the vault grub's born history. A rev whose
+::  history entry was pruned under a keep ceiling grew a spur this cannot name
+::  and so cannot retract — that spur stays leaked. There is no in-agent farm
+::  listing to fall back on (a %gt sweep is a gall scry privilege the nexus
+::  does not hold), so born history is the whole enumeration. The report says
+::  so plainly.
+::
+++  pub-reconcile
+  =/  m  (fiber:fiber:nexus ,(unit [revs=@ud seqs=@ud]))
+  ^-  form:m
+  =/  base=path  app-base:lu
+  =/  markr=road:tarball  [%& %& (weld base /pub) %reconciled]
+  ;<  done=?  bind:m  (peek-exists:io markr)
+  ?:  done  (pure:m ~)
+  ;<  ix=pub-index:lp  bind:m
+    (read-pub-index [%& %& (weld base /pub) %index])
+  ;<  rc=@ud  bind:m  (pub-reconcile-revs ~(tap in ~(key by ix)) 0)
+  ;<  sc=@ud  bind:m  (pub-reconcile-seqs base)
+  ;<  now=@da  bind:m  bowl-now
+  ;<  ~  bind:m  (put-file markr [/ %ud] `@ud`now)
+  (pure:m `[rc sc])
+::  +pub-reconcile-revs: cull the below-current rev spurs of every page.
+::
+++  pub-reconcile-revs
+  |=  [keys=(list path) cnt=@ud]
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ?~  keys  (pure:m cnt)
+  =/  or=(unit vrail:lp)  (key-to-rail:lp (weld app-base:lu /pub/vault) i.keys)
+  ?~  or  (pub-reconcile-revs t.keys cnt)
+  ;<  hs=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m
+    (born:io [%& %& pax.u.or nom.u.or])
+  ?:  ?=(%| -.hs)  (pub-reconcile-revs t.keys cnt)
+  ::  the LIVE (non-tomb) rev numbers — one per content write, each of which
+  ::  +grow-pub-page bound a spur for. The current grown spur is the MAX of
+  ::  these. Deliberately NOT +pub-grub-rev: a move or delete tombs the vault
+  ::  grub, advancing its cass WITHOUT growing a spur, so pub-grub-rev can
+  ::  name a rev no spur was ever grown at — and culling everything below it
+  ::  then retracts the real current spur as if it were historical. born's
+  ::  tomb flag lets us skip those phantom bumps. (born keeps NEWEST revisions
+  ::  under any keep ceiling, so the max is reliable even when older content
+  ::  revs were pruned out — those pruned spurs are the enumeration GAP.)
+  =/  live=(list @ud)
+    %+  murn  p.hs
+    |=  [c=cass:clay tags=(set @t) tomb=?]
+    ?:(tomb ~ `ud.c)
+  ::  cur (the max live rev) is kept; everything below it is a historical
+  ::  grown spur to retract. No early ~-guard: an all-tomb page yields cur=0
+  ::  and an empty cull list, a harmless no-op — and narrowing `live` to a
+  ::  lest here trips the wet inference in +max-ud/+skim.
+  =/  cur=@ud  (max-ud live)
+  =/  revs=(list @ud)  (skim live |=(r=@ud (lth r cur)))
+  =/  inner=path  (snip (strip-pub:lp i.keys))
+  ;<  n=@ud  bind:m  (cull-rev-spurs inner revs 0)
+  (pub-reconcile-revs t.keys (add cnt n))
+::  +max-ud: the largest element of a rev list, 0 if empty.
+::
+++  max-ud
+  |=  l=(list @ud)
+  ^-  @ud
+  ?~  l  0
+  (max i.l $(l t.l))
+::  +cull-rev-spurs: retract each named rev spur of one page.
+::
+++  cull-rev-spurs
+  |=  [inner=path revs=(list @ud) cnt=@ud]
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ?~  revs  (pure:m cnt)
+  ;<  ~  bind:m  (cull-farm:io (snoc (weld /pub/page inner) (scot %ud i.revs)))
+  (cull-rev-spurs inner t.revs +(cnt))
+::  +pub-reconcile-seqs: cull every index seq below the live counter.
+::
+++  pub-reconcile-seqs
+  |=  base=path
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  =/  mx=road:tarball  [%& %& (weld base /pub) %meta]
+  ;<  cur=@ud  bind:m  (read-pub-seq mx)
+  (cull-seq-spurs 1 cur 0)
+::  +cull-seq-spurs: cull /pub/index/i for i in [lo, top). A never-grown seq
+::  culls as a no-op (farm-top lists nothing), so a gap is harmless; only an
+::  already-culled seq would crash, which the one-shot marker guards against.
+::
+++  cull-seq-spurs
+  |=  [i=@ud top=@ud cnt=@ud]
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ?:  (gte i top)  (pure:m cnt)
+  ;<  ~  bind:m  (cull-farm:io /pub/index/[(scot %ud i)])
+  (cull-seq-spurs +(i) top +(cnt))
 ::  ── mesa: scry-first cross-ship READS (docs D1, phase C) ─────────────────
 ::  The block above publishes OUR pages into the namespace. This block reads a
 ::  PEER's. A %keen is a content-addressed namespace read: the publisher's
@@ -8942,6 +9115,27 @@
 ::  paid ON TOP of the peek that then has to run.
 ::
 ++  mesa-timeout  ^-(@dr ~s10)
+::  +mesa-keen-on: master switch for the subscription/crawler READ path's
+::  keen ATTEMPTS. OFF (%.n) for now.
+::
+::  The two-ship proof settled it: a subscription keen NEVER wins over the
+::  wire — it parks at the publisher (the documented remote-scry deficiency:
+::  gall answers an unbound-or-slow spur by hanging, not erroring), times out
+::  at +mesa-timeout (~s10), and the peek fallback carries the body every
+::  time. Worse, each timed-out keen leaves a PARKED ames request that ames
+::  re-sends every ~2min forever — a live, unbounded leak on every running
+::  ship, one parked request per page read that ever keened. So until the
+::  keen-path reliability work lands, every reader goes straight to the peek
+::  path with no keen emitted and no ~s10 stall.
+::
+::  This gates only the READ side. The PUBLISH side (grow/cull in +apply-pub)
+::  stays fully ON, so the namespace keeps being populated and the research
+::  has real bound data to test against. Flipping this to %.y is the single
+::  re-entry point for the keen-reliability work — the machinery below
+::  (+keen-page, +index-remote-page-keen, +read-page-scry, with-timeout) is
+::  intact and unmodified, just not reached.
+::
+++  mesa-keen-on  ^-(? %.n)
 ::  +keen-path: the ames scry path (the spar path) of one published page body.
 ::  MUST mirror +grow-pub-page's spur exactly or every read misses forever.
 ::
@@ -9040,6 +9234,11 @@
   |=  [our=@p pub=@p key=path rel=path hash=@uvH mc=mesa-cache]
   =/  m  (fiber:fiber:nexus ,[(unit @t) mesa-cache])
   ^-  form:m
+  ::  keen read-path gated OFF (see +mesa-keen-on): every read takes the peek
+  ::  path directly — no keen emitted, no ~s10 timeout, no parked ames request
+  ::  left retrying every ~2min. The cold/strike bookkeeping below is moot
+  ::  while off (peek always runs) and comes back with the flag.
+  ?.  mesa-keen-on  (read-page-peek our pub key rel hash mc)
   ::  our own pages are a local peek; keening ourselves would be a round trip
   ::  through ames to read a grub sitting in this pier.
   ?:  =(pub our)  (read-page-peek our pub key rel hash mc)
