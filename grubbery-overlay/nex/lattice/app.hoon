@@ -267,147 +267,74 @@
       ::  /sub/pages/*: one live per-file subscription. keep the peer's page grub
       ::  (and, mesa D2, their publish POINTER) and re-index the page on every
       ::  change, so an edit lands now instead of waiting for the ~h6 crawler
-      ::  sweep. Against a mesa publisher the re-index bulk-fetches over the
-      ::  namespace (%keen at the concrete rev the wave/pointer names) and only
-      ::  falls back to the peek transport; against a pre-mesa publisher it is
-      ::  exactly the old peek path. The keeps are re-established from the
-      ::  stored page-sub on reload. Culling the grub (via /unsub) tears down
-      ::  the fiber and its keeps (delete -> sub-wipe).
+      ::  sweep. Against a MESA publisher the body arrives entirely over the
+      ::  namespace: %keen at the concrete rev the wave/pointer names, with NO
+      ::  peek fallback (the publisher grows the rev before the wave leaves, so
+      ::  the spur is bound by construction — see +index-remote-page-keen).
+      ::  Against a PRE-MESA publisher (seq stays 0) it is exactly the old peek
+      ::  path. The keeps are re-established from the stored page-sub on reload.
+      ::  Culling the grub (via /unsub) tears down the fiber and its keeps
+      ::  (delete -> sub-wipe).
           [[%sub %pages ~] @]
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /sub/pages: failed")
         ;<  ps=page-sub:lp  bind:m  (get-state-as:io ,page-sub:lp)
         =/  rel=path  (page-rel pax.ps)
-        ::  keep the page's gmi FILE. That is the node the publisher GAINS (apply-pub
-        ::  gains the gmi grub, not its parent dir), so a keep on the file gets the
-        ::  publisher's %news on every edit. Keeping the parent dir would subscribe to
-        ::  an un-gained node and never fire.
+        ::  Keep the peer's page gmi FILE (the node apply-pub GAINS, so a keep on
+        ::  it gets a %news on every edit; keeping the parent dir would subscribe
+        ::  to an un-gained node and never fire).
+        ::
+        ::  mesa (D2), corrected for the weir reality: the reader rides this ONE
+        ::  keep and nothing else. The keep's wave carries the gmi grub's cass —
+        ::  on the initial bond (grubbery answers a new watcher with +wave-at, the
+        ::  live state, cass and all) AND on every edit — and that cass IS the
+        ::  vault rev the publisher grew the body at (+pub-grub-rev /
+        ::  +grow-pub-page). So the wave alone teaches the rev and we keen the
+        ::  body at it. The publish POINTER and the cross-ship PEEK are both
+        ::  weir-gated dead between peers (a keen is permissionless and a keep's
+        ::  flow is kernel-blessed, but a foreign peek/scry hangs), so neither the
+        ::  old /note-pointer leg nor a peek fallback can run — which is exactly
+        ::  why the rev MUST come off the wave. No pointer keep, no read-pub-note,
+        ::  no seq bookkeeping.
         =/  road=road:tarball
           (remote-road [%& %& (weld (weld app-base:lu /pub/vault) rel) %gmi] ship.ps)
-        ::  arm the keep BEFORE the initial index. keep:io's initial bond wave
-        ::  is consumed either way, so with the keep armed first a peer edit
-        ::  during the (slow: remote body/index peeks + owner round-trips)
-        ::  initial index always fires a real second wave. The index's inner
-        ::  takes %skip it, grubbery re-offers skipped inputs at the next bind,
-        ::  and the loop's take below consumes it and re-indexes. Indexing
-        ::  first opened a multi-second window where an edit fired no wave at
-        ::  all and was never re-indexed (a page-sub is not a follow, so no
-        ::  ~h6 sweep corrects it). Cost: the first index now waits for the
-        ::  (remote) keep handshake. A peer too slow to ack the keep would
-        ::  have timed out the index's body peek anyway.
         ;<  *  bind:m  (keep:io /page road ~)
-        ::  mesa (D2): ALSO keep the peer's publish pointer (/pub/note/ptr).
-        ::  A SECOND keep, not a widening of the first: grubbery matches a
-        ::  file keep against its target lane EXACTLY (+load-ball-changes'
-        ::  relevant-filter: "File target: only exact match counts"), so the
-        ::  pointer cannot ride the /page keep — different file, different
-        ::  lane. Registered here because this fiber IS where lattice
-        ::  registers its remote keeps (each /sub/pages grub arms its own on
-        ::  spawn and grubbery tears both down with the fiber on /unsub).
-        ::  The /pub dir weir grant (ensure-pub-weir) already covers the
-        ::  pointer road, and a keep on a grub the peer never creates (a
-        ::  publisher without the mesa overlay) registers fine and simply
-        ::  never fires — mixed fleet costs nothing.
-        =/  nroad=road:tarball
-          (remote-road [%& %& (weld app-base:lu /pub/note) %ptr] ship.ps)
-        ;<  *  bind:m  (keep:io /note nroad ~)
-        ::  adopt the peer's current publish seq BEFORE the initial index:
-        ::  any publish at or below this seq is covered by the index peek
-        ::  below (it reads current state), and any publish after it fires a
-        ::  note wave whose seq exceeds it, so no edit can fall between.
-        ::  Reading it AFTER the index would let an edit land between index
-        ::  and read and be skipped as stale forever (a page-sub is not a
-        ::  follow; no sweep corrects it). ~ = peer does not mirror (mixed
-        ::  fleet): seq stays 0 and every wave takes today's peek path.
-        ;<  np0=(unit pub-note)  bind:m  (read-pub-note ship.ps)
-        ;<  pages=(set path)  bind:m  (index-remote-page ship.ps rel)
-        =/  seq=@ud   ?~(np0 0 seq.u.np0)
-        ::  the last vault rev this fiber indexed. Dedupes the two waves a
-        ::  mesa publisher's every edit fires (vault put-file, then note
-        ::  put-file — ordered, same ames flow) down to ONE index.
+        ::  lrev: the last vault rev this fiber indexed (0 = nothing yet).
         =/  lrev=@ud  0
         |-
-        ::  take-sub-wave-drain, not take-news: index-remote-page's early-
-        ::  resolving obelisk/peek send-waits leave uncancellable timers armed, and a
-        ::  timed-out remote peek's late %peek/%veto (and now a timed-out keen's late
-        ::  [/ %keen-tune] poke) still arrives; plain take-news would %skip those and
-        ::  pile them in this long-lived fiber's skip queue forever. -drain consumes
-        ::  them. A %wake is just drained. Only a real %news does work.
+        ::  take-sub-wave-drain, not take-news: a keen's late [/ %keen-tune] poke
+        ::  and a stray %veto still arrive at this long-lived fiber; plain
+        ::  take-news would %skip them and pile them in the skip queue forever.
+        ::  -drain consumes them. A %wake is just drained; only a real %news works.
         ;<  nw=sub-wave  bind:m  take-sub-wave-drain
         ?-  -.nw
             %wake  $
+            ::  no /note keep is armed (the pointer rides a dead peek), so a %note
+            ::  can only be a stray — ignore it.
+            %note  $
             %page
-          ::  the peer edited the kept page grub. Two regimes:
-          ::
-          ::  seq=0 — the peer is not known to mirror into the namespace:
-          ::  exactly today's path, re-index over the peek transport. No
-          ::  behavior change against a pre-mesa publisher.
-          ?:  =(0 seq)
-            ;<  nps=(set path)  bind:m  (index-remote-page ship.ps rel)
-            $(pages ?:(=(~ nps) pages nps))
-          ::  seq>0 — the peer mirrors (its pointer attested it). The wave
-          ::  itself already names the revision: a keep's wave is an axal of
-          ::  cass, and the kept gmi file's new cass IS the rev the
-          ::  publisher's +grow-pub-page bound (both are the vault grub's
-          ::  cass — see +pub-grub-rev). And the binding is live before this
-          ::  wave could reach us: the publisher's vault write, %grow and
-          ::  pointer write all drain inside its one writer event, so the
-          ::  wave that left that event postdates the grow. Bulk-fetch over
-          ::  the namespace (keen at the concrete rev, kernel-served,
-          ::  relay-cacheable) with the peek path as fallback — never worse
-          ::  than today. Handling the edit HERE and not on the note wave
-          ::  also survives note coalescing: a burst of edits across several
-          ::  pages overwrites the one pointer, but every page wave still
-          ::  carries its own rev.
-          ::
-          ::  rev<=lrev skips: the note leg below indexed this edit already
-          ::  (or it is a delete — the culled gmi drops out of the wave's
-          ::  file map and reads as rev 0; the note %del handles it).
+          ::  the kept gmi's cass IS the rev the publisher grew. r=0 means the
+          ::  grub is GONE from the wave's file map: the peer culled it (a
+          ::  delete), or it never existed.
           =/  wfil=(map @ta cass:clay)  ?~(fil.wave.nw ~ file.u.fil.wave.nw)
           =/  c=(unit cass:clay)  (~(get by wfil) %gmi)
           =/  r=@ud  ?~(c 0 ud.u.c)
-          ?.  (gth r lrev)  $
-          ;<  nps=(set path)  bind:m  (index-remote-page-keen ship.ps rel r pages)
-          $(lrev r, pages ?:(=(~ nps) pages nps))
-            %note
-          ::  the peer's publish pointer moved: some page of theirs was
-          ::  saved or deleted. Read the pointer (one tiny snap-inlined
-          ::  peek) for the fact the wave cannot carry: seq, op, and which
-          ::  page. An unreadable pointer is ignored (hostile/malformed
-          ::  peer, or json null before the first publish).
-          ;<  np=(unit pub-note)  bind:m  (read-pub-note ship.ps)
-          ?~  np  $
-          ?:  (lte seq.u.np seq)  $
-          ::  SEQ GAP: a jump past +(seq) means waves were missed (we were
-          ::  down, or the flow dropped) — or the peer ran /pub-regrow,
-          ::  which advances seq without a pointer write. Either way our
-          ::  view of this peer may be arbitrarily stale, so resweep the
-          ::  peer wholesale: +catalog-scan-peer re-indexes its manifest
-          ::  AND reconciles deletions, the same path the crawler runs.
-          ::  One comparison buys the whole recovery.
-          ?:  &((gth seq 0) (gth seq.u.np +(seq)))
-            ;<  our=@p   bind:m  bowl-our
-            ;<  now=@da  bind:m  bowl-now
-            ;<  *  bind:m  (catalog-scan-peer our ship.ps now *mesa-cache)
-            $(seq seq.u.np)
-          ?.  =(rel (page-rel rel.u.np))  $(seq seq.u.np)
-          ?:  ?=(%del op.u.np)
-            ::  our subscribed page was unpublished: drop its catalog rows
-            ::  now, the same per-page delete +catalog-reconcile-peer runs
-            ::  for a ghost (today the live sub leaves the rows to linger).
+          ?:  =(0 r)
+            ::  DELETE: drop the page's catalog rows now (the same per-page
+            ::  delete +catalog-reconcile-peer runs for a ghost), no peek, no
+            ::  pointer. lrev back to 0 so a later re-publish re-indexes.
             ;<  our=@p  bind:m  bowl-our
             ;<  ~  bind:m
               %+  catalog-run  catalog-db
               (catalog-page-delete-urql:cat our ship.ps (weld /pub (snoc rel %gmi)))
-            $(seq seq.u.np)
-          ::  %save of our page: normally the %page leg above already
-          ::  indexed this rev (its wave precedes this one on the same
-          ::  flow). Index here only if it somehow did not (belt and
-          ::  braces), at the pointer's concrete rev — bound by
-          ::  construction, the publisher wrote the pointer after the grow.
-          ?.  (gth rev.u.np lrev)  $(seq seq.u.np)
-          ;<  nps=(set path)  bind:m
-            (index-remote-page-keen ship.ps rel rev.u.np pages)
-          $(seq seq.u.np, lrev rev.u.np, pages ?:(=(~ nps) pages nps))
+            $(lrev 0)
+          ::  rev<=lrev: a duplicate/echo of a rev we already indexed. Skip.
+          ?.  (gth r lrev)  $
+          ::  SAVE/EDIT: keen the body at the concrete rev the wave named. No
+          ::  peek fallback (+index-remote-page-keen) — a mirroring peer's spur is
+          ::  bound before the wave leaves. `pages` (link-detection set) is ~: the
+          ::  ~h6 crawler refreshes internal-link rows.
+          ;<  *  bind:m  (index-remote-page-keen ship.ps rel r ~)
+          $(lrev r)
         ==
       ::  /page/<name>/code: the page evaluator (docs/platform.md step 2). The
       ::  fiber owns the page's code grub: compile the source (a gate) against
@@ -4818,12 +4745,17 @@
   |=  [pub=@p rel=path rev=@ud pages=(set path)]
   =/  m  (fiber:fiber:nexus ,(set path))
   ^-  form:m
-  ::  keen read-path gated OFF (see +mesa-keen-on): skip the keen ATTEMPT
-  ::  entirely and take today's peek path, with no keen emission and no
-  ::  ~s10 stall. The flip back to %.y re-arms the keen twin unchanged.
-  ?.  mesa-keen-on  (index-remote-page pub rel)
+  ::  wave->keen, no peek fallback (mesa D2). The wave that woke this call
+  ::  already named the concrete rev, and the publisher grows the body BEFORE
+  ::  it writes the pointer / lets the wave leave (the ORDERING INVARIANT in
+  ::  +apply-pub), so the spur is bound by construction. A keen MISS here is a
+  ::  lost packet or a peer mid-delete, not a reason to fall back to the
+  ::  publisher's peek — the next wave (or the ~h6 crawler backstop)
+  ::  re-indexes. Only reached for a MIRRORING peer (seq>0); a non-mirroring
+  ::  peer takes the peek path in the /sub/pages loop's seq=0 branch, so a
+  ::  mixed fleet never reaches a dead keen here.
   ;<  sc=(unit @t)  bind:m  (keen-page pub rel rev)
-  ?~  sc  (index-remote-page pub rel)
+  ?~  sc  (pure:m pages)
   ;<  our=@p   bind:m  bowl-our
   ;<  now=@da  bind:m  bowl-now
   =/  pat=path  (weld /pub (snoc rel %gmi))
@@ -9115,27 +9047,6 @@
 ::  paid ON TOP of the peek that then has to run.
 ::
 ++  mesa-timeout  ^-(@dr ~s10)
-::  +mesa-keen-on: master switch for the subscription/crawler READ path's
-::  keen ATTEMPTS. OFF (%.n) for now.
-::
-::  The two-ship proof settled it: a subscription keen NEVER wins over the
-::  wire — it parks at the publisher (the documented remote-scry deficiency:
-::  gall answers an unbound-or-slow spur by hanging, not erroring), times out
-::  at +mesa-timeout (~s10), and the peek fallback carries the body every
-::  time. Worse, each timed-out keen leaves a PARKED ames request that ames
-::  re-sends every ~2min forever — a live, unbounded leak on every running
-::  ship, one parked request per page read that ever keened. So until the
-::  keen-path reliability work lands, every reader goes straight to the peek
-::  path with no keen emitted and no ~s10 stall.
-::
-::  This gates only the READ side. The PUBLISH side (grow/cull in +apply-pub)
-::  stays fully ON, so the namespace keeps being populated and the research
-::  has real bound data to test against. Flipping this to %.y is the single
-::  re-entry point for the keen-reliability work — the machinery below
-::  (+keen-page, +index-remote-page-keen, +read-page-scry, with-timeout) is
-::  intact and unmodified, just not reached.
-::
-++  mesa-keen-on  ^-(? %.n)
 ::  +keen-path: the ames scry path (the spar path) of one published page body.
 ::  MUST mirror +grow-pub-page's spur exactly or every read misses forever.
 ::
@@ -9233,26 +9144,23 @@
   |=  [our=@p pub=@p key=path rel=path hash=@uvH mc=mesa-cache]
   =/  m  (fiber:fiber:nexus ,[(unit @t) mesa-cache])
   ^-  form:m
-  ::  keen read-path gated OFF (see +mesa-keen-on): every read takes the peek
-  ::  path directly — no keen emitted, no ~s10 timeout, no parked ames request
-  ::  left retrying every ~2min. The cold/strike bookkeeping below is moot
-  ::  while off (peek always runs) and comes back with the flag.
-  ?.  mesa-keen-on  (read-page-peek our pub key rel hash mc)
   ::  our own pages are a local peek; keening ourselves would be a round trip
   ::  through ames to read a grub sitting in this pier.
   ?:  =(pub our)  (read-page-peek our pub key rel hash mc)
-  ::  struck out (see +mesa-strikes): this peer publishes, but not into the
-  ::  namespace. Do not pay its timeout again.
-  =/  miss=@ud  (~(gut by cold.mc) pub 0)
-  ?:  (gte miss mesa-strikes)  (read-page-peek our pub key rel hash mc)
+  ::  cold (no remembered rev) or changed (the manifest hash moved since we
+  ::  learned the rev): peek, which fetches the body AND (re)learns the rev for
+  ::  free. Only a warm page whose manifest hash still matches what we last saw
+  ::  is keened — the peer's own word that the spur is both BOUND and CURRENT.
   =/  kn=(unit rev-note)  (~(get by revs.mc) [pub key])
   ?~  kn  (read-page-peek our pub key rel hash mc)
   ?.  =(hash hash.u.kn)  (read-page-peek our pub key rel hash mc)
   ;<  sc=(unit @t)  bind:m  (keen-page pub rel rev.u.kn)
-  ?~  sc
-    =/  struck=mesa-cache  mc(cold (~(put by cold.mc) pub +(miss)))
-    (read-page-peek our pub key rel hash struck)
-  =/  hit=mesa-cache  mc(keens +(keens.mc), cold (~(del by cold.mc) pub))
+  ::  keen miss (a lost packet, or a peer that stopped mirroring): fall back to
+  ::  the peek, which relearns the rev. NO strike retirement — a per-page keen
+  ::  timeout is bounded by +peer-budget and never brownouts the sweep, so the
+  ::  bookkeeping the strike count cost is not worth its narrow mixed-fleet win.
+  ?~  sc  (read-page-peek our pub key rel hash mc)
+  =/  hit=mesa-cache  mc(keens +(keens.mc))
   (pure:m [sc hit])
 ::  +read-page-peek: the fallback half — today's read, plus the rev its view
 ::  already carried. A FAILED read drops the remembered note: the page may be
@@ -9273,19 +9181,6 @@
 ::  witness; the rev is the address.
 ::
 +$  rev-note  [rev=@ud hash=@uvH]
-::  +mesa-strikes: consecutive keen misses that retire a peer from the scry
-::  path for the rest of the crawler fiber's life.
-::
-::  Without this the mirror is a REGRESSION against a peer who publishes but
-::  never grew any bindings (an older lattice, or one that has not run
-::  /pub-regrow). Every page of theirs would look warm — we have its rev from
-::  the peek, its manifest hash is stable — so every page would burn a full
-::  +mesa-timeout finding nothing before falling back, and +peer-budget would
-::  expire on timeouts instead of pages. Three strikes is enough to tell "does
-::  not mirror" from one lost packet, and a single hit clears the count, so a
-::  peer who deploys the mirror later is picked back up.
-::
-++  mesa-strikes  ^-(@ud 3)
 ::  +mesa-cache: the crawler's scry-first working set, plus per-sweep counters.
 ::
 ::  NOT PERSISTED, on purpose. It lives in the /crawler.sig fiber's loop and is
@@ -9295,13 +9190,8 @@
 ::  A per-request fiber (POST /catalog-scan, POST /catalog-sweep) therefore
 ::  always runs cold and always peeks — see those routes.
 ::
-::  cold: per-peer consecutive keen misses (+mesa-strikes). Keyed by ship, not
-::  by page, so one page's tombstone does not retire the whole peer for long —
-::  the next page that hits clears it.
-::
 +$  mesa-cache
   $:  revs=(map [@p path] rev-note)
-      cold=(map @p @ud)
       keens=@ud
       peeks=@ud
   ==
