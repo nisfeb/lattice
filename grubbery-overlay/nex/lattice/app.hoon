@@ -3349,7 +3349,12 @@
       ::  Those expected create-errors are SILENT. They fire on every reindex, and
       ::  printing a full tang for each one buries the failures that do matter.
       ?:  quiet.act  (pure:m ~)
-      ~&([%lattice-obelisk-failed db.act p.out] (pure:m ~))
+      ::  BOUNDED print. A full crud tang for a multi-statement script runs
+      ::  to hundreds of tanks, and rendering them starves a single-threaded
+      ::  ship for minutes. The first few tanks carry the message leaf
+      ::  (which statement, which row, which key). That is what a debugger
+      ::  needs from the console; the db is untouched either way.
+      ~&([%lattice-obelisk-failed db.act (scag 5 p.out)] (pure:m ~))
     (put-file [%& %& root %'db.lattice'] [/obelisk %server] +.p.out)
       %legacy-pages
     ::  remember which page rels THIS migration triggered. Provenance matters.
@@ -4651,7 +4656,14 @@
   ::  orphaned catalog-terms rows (ghost hits). Upgrade: fold ensure+refresh+terms
   ::  into ONE urQL script (like catalog-init) so a page's write is atomic at the
   ::  owner. Narrow race (concurrent index+delete of the SAME page); left for now.
-  ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-ensure-urql:cat src pub pat now a))
+  ::  QUIET, and this is load-bearing: the ensure-INSERT dup-fails BY DESIGN
+  ::  for every already-indexed page (the two-poke upsert contract in
+  ::  lib/catalog.hoon). Through the loud runner, each sweep of an indexed
+  ::  vault printed one full crud tang per existing page, and rendering
+  ::  those tanks starved the ship for minutes at a time. The expected
+  ::  failure is silent, like the schema repairs. Real content failures
+  ::  still surface through the refresh and terms pokes below.
+  ;<  ~  bind:m  (catalog-run-quiet catalog-db (catalog-page-ensure-urql:cat src pub pat now a))
   ::  yield between the pokes too: measured on a 20-page vault, the PAGE-level
   ::  yield alone still left ~10-12s probe latency, because these three pokes
   ::  are the bulk of a page's event. One poke per event caps what any queued
