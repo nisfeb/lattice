@@ -280,11 +280,11 @@
         ::  lrev: the last vault rev this fiber acted on (0 = nothing yet).
         ;<  lrev=@ud  bind:m  (sub-apply-wave ship.ps rel bond 0)
         |-
-        ::  take-sub-wave-drain, not take-news. A timed-out keen's late %tune
-        ::  intake and a stray %veto still arrive at this long-lived fiber, and
-        ::  plain take-news would %skip them and pile them in the skip queue
-        ::  forever. -drain consumes them. A %wake is just drained. Only a real
-        ::  %news works.
+        ::  take-sub-wave-drain, not take-news. A timed-out keen's late
+        ::  %keen-response poke and a stray %veto still arrive at this
+        ::  long-lived fiber, and plain take-news would %skip them and pile
+        ::  them in the skip queue forever. -drain consumes them. A %wake is
+        ::  just drained. Only a real %news works.
         ;<  nw=sub-wave  bind:m  take-sub-wave-drain
         ?-  -.nw
             %wake  $
@@ -870,7 +870,7 @@
       =/  mt=path  (fall (grub-mime-type sang.u.ms) /text/plain)
       [[[/ %mime] `*``mime`[mt (as-octs:mimes:html body)]] ~]
     ;<  nak=(unit tang)  bind:m
-      (remote-load-poke u.shp [[/remote-save %& dir nam] %make %.y |+[b.bd d.bd]])
+      (remote-load-poke u.shp [[/remote-save %& dir nam] %make %.y %.n |+[b.bd d.bd]])
     ?^  nak
       (send-err eyre-id 502 'remote rejected the write')
     ;<  vs=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
@@ -6041,12 +6041,12 @@
     [%done %wake ~]
   ==
 ::  +take-wake-drain: like fiberio's take-wake ~, but also DRAINS a stray remote
-::  %peek/%veto/%tune, the late response of a peek-remote-wait or keen that
-::  already timed out in this fiber. fiberio has no dart-cancel, so an
-::  abandoned read's answer still arrives (a keen's arrives as a typed %tune
-::  intake). fiberio's take-wake %skips those strays (piling them in the skip
-::  queue forever) and CRASHES on a stray %veto. Here all are consumed. Used by
-::  the crawler's sleep-draining loop, which re-checks the clock after each drain.
+::  %peek/%veto and the late %keen-response poke a timed-out keen leaves behind.
+::  fiberio has no dart-cancel, so an abandoned read's answer still arrives (a
+::  keen's arrives as a %keen-response poke-back, correlated by wire). fiberio's
+::  take-wake %skips those strays (piling them in the skip queue forever) and
+::  CRASHES on a stray %veto. Here all are consumed. Used by the crawler's
+::  sleep-draining loop, which re-checks the clock after each drain.
 ++  take-wake-drain
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
@@ -6054,15 +6054,18 @@
   :+  ~  q.state
   ?+  in  [%skip ~]
       ~  [%wait ~]
-      [~ %poke * *]  ?:(=([/ %timer-wake] p.sage.u.in) [%done ~] [%skip ~])
-      [~ %tune * *]  [%done ~]
+      [~ %poke * *]
+    ?:  ?|(=([/ %timer-wake] p.sage.u.in) =([/ %keen-response] p.sage.u.in))
+      [%done ~]
+    [%skip ~]
       [~ %peek * *]  [%done ~]
       [~ %veto *]    [%done ~]
   ==
 ::  +take-news-or-wake-drain: take-news-or-wake that ALSO drains a stray remote
-::  %peek/%veto/%tune (as a %wake), so a keep loop clears the late reads its
-::  timed-out peeks and keens leave behind instead of piling them forever. A
-::  real %news on news-wire still re-indexes. Anything else is skipped.
+::  %peek/%veto and the late %keen-response poke (as a %wake), so a keep loop
+::  clears the late reads its timed-out peeks and keens leave behind instead of
+::  piling them forever. A real %news on news-wire still re-indexes. Anything
+::  else is skipped.
 ++  take-news-or-wake-drain
   |=  news-wire=wire
   =/  m  (fiber:fiber:nexus ,news-or-wake:io)
@@ -6075,9 +6078,9 @@
     ?.  =(news-wire wire.u.in)  [%skip ~]
     [%done %news wave.u.in]
       [~ %poke * *]
-    ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
+    ?.  ?|(=([/ %timer-wake] p.sage.u.in) =([/ %keen-response] p.sage.u.in))
+      [%skip ~]
     [%done %wake ~]
-      [~ %tune * *]  [%done %wake ~]
       [~ %peek * *]  [%done %wake ~]
       ::  drain a STALE peek's veto (a stray from a timed-out remote peek), but NOT a
       ::  veto of THIS loop's own keep (news-wire). That means the subscription died,
@@ -6097,14 +6100,14 @@
   ==
 ::  +take-sub-wave-drain: +take-news-or-wake-drain widened for the /sub/pages
 ::  loop's keep. %news on /page resolves as itself, and the drain also
-::  consumes the late %tune intake a timed-out +keen-page leaves behind. The
-::  kernel's answer to a keen arrives as a typed [%tune wire pag] intake
-::  (see +take-keen-tune in grubbery), and this is a long-lived fiber, so
-::  anything merely %skipped piles in its skip queue forever. Safe to drain
-::  unconditionally, since a %tune can only be addressed to this fiber's own
-::  earlier keen, and no keen is in flight while the loop sits here. A %veto
-::  of this loop's own keep is still %skipped, not swallowed. That
-::  subscription died, and reading it as a keepalive would hide the failure.
+::  consumes the late %keen-response poke a timed-out +keen-page leaves behind.
+::  The keen answer arrives as a %keen-response poke-back (see +take-keen-sage
+::  in grubbery), and this is a long-lived fiber, so anything merely %skipped
+::  piles in its skip queue forever. Safe to drain unconditionally, since a
+::  keen-response can only answer this fiber's own earlier keen, and no keen is
+::  in flight while the loop sits here. A %veto of this loop's own keep is
+::  still %skipped, not swallowed. That subscription died, and reading it as a
+::  keepalive would hide the failure.
 ::
 ++  take-sub-wave-drain
   =/  m  (fiber:fiber:nexus ,sub-wave)
@@ -6117,9 +6120,9 @@
     ?:  =(/page wire.u.in)  [%done %page wave.u.in]
     [%skip ~]
       [~ %poke * *]
-    ?:  =([/ %timer-wake] p.sage.u.in)  [%done %wake ~]
+    ?:  ?|(=([/ %timer-wake] p.sage.u.in) =([/ %keen-response] p.sage.u.in))
+      [%done %wake ~]
     [%skip ~]
-      [~ %tune * *]  [%done %wake ~]
       [~ %peek * *]  [%done %wake ~]
       [~ %veto %node * * *]
     ?:  =(/page wire.dart.u.in)  [%skip ~]
@@ -9019,15 +9022,17 @@
   ::  outer ~: our own deadline fired, so cancel the parked request.
   ::  inner ~: the publisher bound nothing at that spur (never grown, or
   ::  culled). keen:io hands back the page the kernel's verified %sage
-  ::  carried (see +keen:io / +take-keen-tune), already clammed to
-  ::  [p=@tas q=@t].
+  ::  carried, valed through the %keen-response mark (see +keen:io /
+  ::  +take-keen-sage in grubbery), so pag is a well-formed page: an atom
+  ::  mark and any noun body.
   ?~  res
     ;<  ~  bind:m  (yawn:io shp pax)
     (pure:m ~)
   ?~  u.res  (pure:m ~)
   =/  pag  u.u.res
-  ::  keen:io mole-clams the cued noun to [p=@tas q=@t]. Re-clam defensively
-  ::  here so this arm's contract holds even if that changes.
+  ::  narrow the body to @t. The mirror grows [%gmi @t] bodies and the [%del '']
+  ::  tombstone, both @t bodies; a non-@t body is a publisher we do not
+  ::  understand, so the mule reads it as ~ rather than crashing.
   =/  got=(each [p=@tas q=@t] tang)  (mule |.(;;([p=@tas q=@t] [p q]:pag)))
   ?:(?=(%| -.got) (pure:m ~) (pure:m `p.got))
 ::  +keen-page: the body-only read, a [%gmi body] binding's body, ~ for a
