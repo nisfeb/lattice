@@ -4607,7 +4607,7 @@
 ::  and uncapped.
 ++  manifest-max  ^-(@ud 1.024)
 ++  catalog-index-page
-  |=  [src=@p pub=@p pat=path now=@da body=@t pages=(set path)]
+  |=  [src=@p pub=@p pat=path now=@da body=@t pages=(set path) pace=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  a  (catalog-analyze:cat (end [3 body-cap] body))
@@ -4624,14 +4624,17 @@
   ::  failure is silent, like the schema repairs. Real content failures
   ::  still surface through the refresh and terms pokes below.
   ;<  ~  bind:m  (catalog-run-quiet catalog-db (catalog-page-ensure-urql:cat src pub pat now a))
-  ::  yield between the pokes too: measured on a 20-page vault, the PAGE-level
-  ::  yield alone still left ~10-12s probe latency, because these three pokes
-  ::  are the bulk of a page's event. One poke per event caps what any queued
-  ::  request waits behind at a single poke. These three were already
-  ::  non-atomic (finding #8 above). The sweep re-converges next tick.
-  ;<  ~  bind:m  (sleep-draining ~s1)
+  ::  pace=& is CRAWLER pacing: yield between the pokes so a queued request
+  ::  waits behind one poke at most (measured, ~10-12s probe latency without
+  ::  it). pace=| is the SUBSCRIPTION path: one page per wave, and dozens of
+  ::  sub fibers can index concurrently after a reboot's re-bond storm.
+  ::  Measured on the dev pier: concurrent drain-sleeps collided on their
+  ::  timers and every loser wedged here between the ensure and the refresh,
+  ::  which left page rows without term rows across the whole catalog. A
+  ::  sub fiber therefore runs the three pokes back to back.
+  ;<  ~  bind:m  ?:(pace (sleep-draining ~s1) (pure:m ~))
   ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-refresh-urql:cat src pub pat now a pages))
-  ;<  ~  bind:m  (sleep-draining ~s1)
+  ;<  ~  bind:m  ?:(pace (sleep-draining ~s1) (pure:m ~))
   (catalog-run catalog-db (catalog-page-terms-urql:cat src pub pat a))
 ::  +sub-apply-wave: act on ONE wave of a subscribed page (mesa D2). The wave
 ::  (initial bond or edit) carries the kept gmi grub's cass, which IS the rev
@@ -4687,7 +4690,7 @@
   ::  the ~h6 crawler refreshes internal-link rows.
   ;<  our=@p   bind:m  bowl-our
   ;<  now=@da  bind:m  bowl-now
-  ;<  ~  bind:m  (catalog-index-page our pub (weld /pub (snoc rel %gmi)) now q.u.pg ~)
+  ;<  ~  bind:m  (catalog-index-page our pub (weld /pub (snoc rel %gmi)) now q.u.pg ~ %.n)
   (pure:m r)
 ::  +catalog-scan-self: index every one of OUR OWN published pages into the
 ::  catalog (source = publisher = our). The local, peer-free slice of the crawler.
@@ -4757,7 +4760,7 @@
   =/  rel=path  (snip `path`stripped)
   ;<  body=(unit @t)  bind:m  (read-page-body our our rel)
   ?~  body  (catalog-scan-loop our now t.keys pages cnt)
-  ;<  ~  bind:m  (catalog-index-page our our i.keys now u.body pages)
+  ;<  ~  bind:m  (catalog-index-page our our i.keys now u.body pages %.y)
   ::  YIELD BETWEEN PAGES. Local darts and peeks all drain inside one Arvo
   ::  event, so without this the whole sweep is ONE event and every queued
   ::  HTTP request waits behind all of it. Measured at 47s for a 20-page
@@ -4915,7 +4918,7 @@
   ;<  [body=(unit @t) nc=mesa-cache]  bind:m
     (read-page-scry our pub i.keys (snip `path`stripped) hash.row mc)
   ?~  body  (catalog-scan-peer-loop our pub now t.keys pages ix deadline cnt nc)
-  ;<  ~  bind:m  (catalog-index-page our pub i.keys now u.body pages)
+  ;<  ~  bind:m  (catalog-index-page our pub i.keys now u.body pages %.y)
   (catalog-scan-peer-loop our pub now t.keys pages ix deadline (add cnt 1) nc)
 ::  +pub-path: a relative publish path ("notes/intro") -> content-map key
 ::  (/pub/notes/intro/gmi). Ported from /lib/lattice.
