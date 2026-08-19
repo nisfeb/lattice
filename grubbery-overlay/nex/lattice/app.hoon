@@ -8319,18 +8319,26 @@
   =/  gdir=road:tarball  [%& %| public-grp]
   ;<  ok=?  bind:m  (peek-exists:io gdir)
   ?.  ok  ~&([%lattice-no-public-group ~] (pure:m ~))
-  =/  wroad=road:tarball  [%& %& [public-grp %'how.weir']]
   =/  pubdir=road:tarball  [%& %| (weld root /pub)]
-  ::  KNOWN RACE (finding #12): how.weir is the GLOBAL public usergroup weir shared
-  ::  by every grubbery app. This read-modify-write straddles a fiber yield, so two
-  ::  apps starting their writers concurrently can each read the same stale weir and
-  ::  clobber the other's road. Self-heals on the next writer (re)start (idempotent
-  ::  re-add), and on a personal ship concurrent app-writer starts are near-zero.
-  ::  Proper fix needs a grubbery-side atomic add-road op; left as-is (low, healing).
-  ;<  cur=weir:nexus  bind:m  (read-weir wroad)
-  =/  new=weir:nexus  cur(peek (~(put in peek.cur) pubdir))
-  ?:  =(new cur)  (pure:m ~)
-  (put-file wroad [/ %weir] new)
+  ::  THE SANCTIONED PATH. Group weirs belong to grubbery's usergroup
+  ::  machinery: a grant lands through the registry's %how action, which
+  ::  validates the roads against the sender's registered prefix, merges
+  ::  them server-side (other apps' roads survive untouched, which retires
+  ::  the finding-#12 read-modify-write race), and recomputes every peer
+  ::  ship's effective weir. A direct put-file to how.weir does none of
+  ::  that on the current core. Measured on the dev pier: the file write
+  ::  was issued every boot, drew no veto, changed nothing, and every
+  ::  cross-ship /pub keep came back %dbg-keep-denied.
+  ::
+  ::  Register the writer's rail for the app root first (idempotent), so
+  ::  the %how sender matches the registry row.
+  ;<  ~  bind:m  (reg-register-at:io [root %'main.sig'])
+  ::  %how replaces this prefix's roads in the group wholesale, so the act
+  ::  must carry lattice's COMPLETE public road set. Today that is the
+  ::  /pub dir. The per-page share grants still ride +share-weir's file
+  ::  writes and need the same conversion (folded into the %how act here)
+  ::  before this lands anywhere that depends on them.
+  (reg-how:io /public [make=~ poke=~ peek=(silt ~[pubdir])])
 ::  +read-weir: peek a how.weir grub. Empty (deny-all) default if absent.
 ::
 ++  read-weir
