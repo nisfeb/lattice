@@ -154,14 +154,14 @@
         ::  /shared: notices other ships sent about files they granted us (see
         ::  /lib/lattice-share: claims, not capabilities). /shares.sig is the
         ::  inbox fiber that takes those pokes. The /public usergroup carries a
-        ::  poke road for it (+ensure-shares-inbox) so ANY ship may notify,
+        ::  poke road for it (laid by +send-public-how) so ANY ship may notify,
         ::  which is safe because the list is capped and sender identity comes
         ::  from the transport.
             [%fall %& [/ %shared] [[/lattice %shared] *shared:ls]]
             [%fall %& [/ %'shares.sig'] [[/ %sig] ~]]
         ::  /comments.sig: the cross-ship COMMENT inbox. Same shape as
         ::  shares.sig and the same reasoning: /public carries a poke road for
-        ::  it (+ensure-comments-inbox) so any ship running lattice may append,
+        ::  it (laid by +send-public-how) so any ship running lattice may append,
         ::  and the author is taken from the transport rather than the payload.
         ::  The road reaches only this fiber, and this fiber writes only under
         ::  /comments, so a commenter structurally cannot touch a page.
@@ -184,15 +184,12 @@
         ;<  ~     bind:m  (rise-wait:io prod "%lattice writer failed")
         ;<  here=rail:tarball  bind:m  get-here-abs:io
         =/  root=path  path.here
-        ::  open /pub to foreign readers (idempotent, union-not-clobber). know/
-        ::  needs nothing. Foreign access is deny-by-default.
-        ;<  ~  bind:m  (ensure-pub-weir root)
-        ::  re-grant every shared page's data road (self-heal, like ensure-pub-weir).
-        ::  A page shared before the public usergroup existed skipped the grant.
-        ::  This re-applies it on the next writer start once the group is present.
-        ;<  ~  bind:m  (heal-share-weirs root)
-        ;<  ~  bind:m  ensure-shares-inbox
-        ;<  ~  bind:m  ensure-comments-inbox
+        ::  lay lattice's COMPLETE public grant set through the registry's
+        ::  %how action: /pub for foreign readers, every shared page's data
+        ::  road, and the share/comment inboxes. One act, server-side merged,
+        ::  self-healing on every writer start. know/ needs nothing. Foreign
+        ::  access is deny-by-default.
+        ;<  ~  bind:m  (send-public-how root)
         ::  lay down the built-in page-tree templates (idempotent; skips if the
         ::  user already has them). Users instantiate a copy under /page.
         ;<  ~  bind:m  (ensure-shipped-templates root)
@@ -3401,7 +3398,6 @@
     ::  entry) is world-readable and otherwise outlives the page forever.
     ;<  ~  bind:m
       (apply-pub root now [%del-page (spat (pub-path (crip (pax-str pax.act))))])
-    ;<  ~  bind:m  (share-weir [%& %& pdir %data] %.n)
     ::  cull tombs the CURRENT revision but leaves every stored %firm one, so
     ::  a deleted page's bodies stayed readable via page-history and could be
     ::  resurrected onto the next page created with the same name. Drop them
@@ -3411,6 +3407,10 @@
     ;<  ~  bind:m  (prune-hist [%& %& pdir %code] 0 ~s0)
     ;<  ~  bind:m  (prune-hist [%& %& pdir %data] 0 ~s0)
     ;<  *  bind:m  (cull-soft:io [%& %| pdir])
+    ::  re-send the public grant act AFTER the cull, so the walk inside
+    ::  +send-public-how sees the deletion and the dead page's data road
+    ::  leaves the group.
+    ;<  ~  bind:m  (send-public-how root)
     ::  Comments live under /comments, not /page, so culling the page left them
     ::  behind: they stayed in the moderation inbox attached to a path a NEW
     ::  page could later reuse, which is the same resurrection the history
@@ -3707,7 +3707,7 @@
 ::  Setting the preset used to touch only the data grub's gain/weir, which is
 ::  not the surface anyone browses: urb:// resolves through /pub/vault. So a
 ::  clearweb page was reachable on the web and 404 over ames, and a page could
-::  sit in the vault (readable by any ship, since ensure-pub-weir opens /pub)
+::  sit in the vault (readable by any ship, since /pub is publicly granted)
 ::  while still labelled private. Drive the vault from the preset instead.
 ++  apply-share
   |=  [root=path now=@da rel=path mode=share-mode:le]
@@ -3718,10 +3718,12 @@
   ?.  cx  (pure:m ~)
   =/  data-road=road:tarball  [%& %& pdir %data]
   =/  pub=?  !=(%private mode)
-  ;<  ~  bind:m  (share-weir data-road pub)
   ;<  dx=?  bind:m  (peek-exists:io data-road)
   ;<  ~  bind:m  ?:(dx (gain:io data-road pub) (pure:m ~))
   ;<  ~  bind:m  (put-file [%& %& pdir %share] [/lattice %eval-data] mode)
+  ::  the grant act walks share grubs, so it runs AFTER the mode write and
+  ::  reflects this share (or unshare) immediately.
+  ;<  ~  bind:m  (send-public-how root)
   =/  key=@t  (spat (pub-path (crip (pax-str rel))))
   ?.  pub  (apply-pub root now [%del-page key])
   ::  publish the page's own output. A page whose data is not a cord (a
@@ -4083,10 +4085,6 @@
   ;<  ~  bind:m  (ensure-dirs (weld root /template) prel)
   ;<  ~  bind:m  (put-file [%& %& pdir %code] [/lattice %page] code)
   $(pages t.pages)
-::  +share-weir: add/remove a grub's road in the public usergroup's peek
-::  weir, the same grant ensure-pub-weir uses for /pub. Absent group -> no-op.
-::  (same read-modify-write race as ensure-pub-weir, finding #12; self-heals.)
-::
 ::  +public-grp: the public usergroup's storage dir. Grubbery names usergroup
 ::  dirs with a `.grp` suffix (+grp-storage-path in app/grubbery.hoon), a
 ::  FOURTH framework drift past seen->view, loader ver->manifest and
@@ -4096,44 +4094,6 @@
 ::  was unaffected, which is why it went unnoticed.
 ::
 ++  public-grp  ^-(path /sys/ames/usergroups/'public.grp')
-++  share-weir
-  |=  [road=road:tarball add=?]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  =/  gdir=road:tarball  [%& %| public-grp]
-  ;<  ok=?  bind:m  (peek-exists:io gdir)
-  ?.  ok  (pure:m ~)
-  =/  wroad=road:tarball  [%& %& [public-grp %'how.weir']]
-  ;<  cur=weir:nexus  bind:m  (read-weir wroad)
-  =/  new=weir:nexus
-    ?:  add  cur(peek (~(put in peek.cur) road))
-    cur(peek (~(del in peek.cur) road))
-  ?:  =(new cur)  (pure:m ~)
-  (put-file wroad [/ %weir] new)
-::  +heal-share-weirs: on writer start, re-add every shared/clearweb page's
-::  data road to the public weir. Makes +share-weir self-healing (a page
-::  shared before the public usergroup existed gets its grant on the next
-::  writer start once a peer has connected), matching +ensure-pub-weir.
-::
-++  heal-share-weirs
-  |=  root=path
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ::  DEEP peek + recursive walk so NESTED clearweb pages re-heal too (a shallow
-  ::  top-level walk would leave a nested public page ungranted after restart).
-  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld root /page)] ~)
-  ?.  ?=([%ball *] sn)  (pure:m ~)
-  =/  rels=(list path)
-    %+  murn  (collect-tree ball.sn ~)
-    |=([pax=path page=?] ?:(page `pax ~))
-  |-  ^-  form:m
-  ?~  rels  (pure:m ~)
-  =/  pp=path  (weld (weld root /page) i.rels)
-  ;<  mode=share-mode:le  bind:m  (read-share pp)
-  ;<  ~  bind:m
-    ?:  =(%private mode)  (pure:m ~)
-    (share-weir [%& %& pp %data] %.y)
-  $(rels t.rels)
 ::  +read-share: a page's sharing preset grub, %private if absent/malformed.
 ::
 ++  read-share
@@ -5859,53 +5819,12 @@
     %^  put-file  [%& %& root %shared]  [/lattice %shared]
     (del-entry:ls cur host.u.na pax.u.na)
   ==
-::  +ensure-shares-inbox: the /public usergroup carries a poke road for our
-::  shares inbox, so any ship may send a notice. Idempotent, run at writer
-::  boot like +heal-share-weirs. A no-op until /public first exists.
-::
-++  ensure-shares-inbox
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  ok=?  bind:m  (peek-exists:io [%& %| public-grp])
-  ?.  ok  (pure:m ~)
-  =/  wroad=road:tarball  [%& %& [public-grp %'how.weir']]
-  ;<  cur=weir:nexus  bind:m  (read-weir wroad)
-  =/  iroad=road:tarball  [%& %& app-base:lu %'shares.sig']
-  ?:  (~(has in poke.cur) iroad)  (pure:m ~)
-  (put-file wroad [/ %weir] cur(poke (~(put in poke.cur) iroad)))
 ::  +strip-ship-from-groups: remove one ship from every usergroup's who.ships,
 ::  returning how many groups changed. This is what makes a ban a revocation
 ::  rather than a note. Grants are unioned across the groups a ship belongs to,
 ::  so membership IS access, and leaving it in place would leave it reachable.
 ::  The grant ROADS are untouched. They belong to the group, not the ship, and
 ::  other members still need them.
-::  +ensure-comments-inbox: open /comments.sig to every ship, the same way
-::  +ensure-shares-inbox opens the share inbox. The poke road names THIS fiber
-::  and nothing else, and the fiber only ever writes under /comments, so the
-::  door is exactly as wide as one append.
-::
-++  ensure-comments-inbox
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  ok=?  bind:m  (peek-exists:io [%& %| public-grp])
-  ?.  ok  (pure:m ~)
-  =/  wroad=road:tarball  [%& %& [public-grp %'how.weir']]
-  ;<  cur=weir:nexus  bind:m  (read-weir wroad)
-  =/  iroad=road:tarball  [%& %& app-base:lu %'comments.sig']
-  ;<  ~  bind:m
-    ?:  (~(has in poke.cur) iroad)  (pure:m ~)
-    (put-file wroad [/ %weir] cur(poke (~(put in poke.cur) iroad)))
-  ::  seed /beacon/comments when it is absent. On a store from before the
-  ::  stamp existed, comments-latest answered null and the badge fell back
-  ::  to the full inbox scan (~6s of serial pier time) on every tick — a
-  ::  price that would only stop when the NEXT comment happened to arrive.
-  ::  A seed of `now` is honest: everything currently in the inbox is older
-  ::  than it, and the badge's change detection starts working immediately.
-  ;<  bx=?  bind:m
-    (peek-exists:io [%& %& (weld app-base:lu /beacon) %comments])
-  ?:  bx  (pure:m ~)
-  ;<  now=@da  bind:m  bowl-now
-  (put-file [%& %& (weld app-base:lu /beacon) %comments] [/ %json] (numb:enjs:format `@ud`now))
 ::  +apply-comment-notice: a comment poked by ANOTHER ship.
 ::
 ::  Everything that decides whether it lands is read here, never from the
@@ -8312,42 +8231,48 @@
 ::  no public group exists yet (no peer has ever connected). It re-applies the
 ::  next time the writer starts after a peer shows up.
 ::
-++  ensure-pub-weir
+++  send-public-how
   |=  root=path
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  gdir=road:tarball  [%& %| public-grp]
   ;<  ok=?  bind:m  (peek-exists:io gdir)
   ?.  ok  ~&([%lattice-no-public-group ~] (pure:m ~))
-  =/  pubdir=road:tarball  [%& %| (weld root /pub)]
   ::  THE SANCTIONED PATH. Group weirs belong to grubbery's usergroup
   ::  machinery: a grant lands through the registry's %how action, which
   ::  validates the roads against the sender's registered prefix, merges
-  ::  them server-side (other apps' roads survive untouched, which retires
-  ::  the finding-#12 read-modify-write race), and recomputes every peer
-  ::  ship's effective weir. A direct put-file to how.weir does none of
-  ::  that on the current core. Measured on the dev pier: the file write
-  ::  was issued every boot, drew no veto, changed nothing, and every
-  ::  cross-ship /pub keep came back %dbg-keep-denied.
+  ::  them server-side (other apps' roads survive untouched), and
+  ::  recomputes every peer ship's effective weir. A direct put-file to
+  ::  how.weir does none of that on the current core. Measured on the dev
+  ::  pier: the file write was issued every boot, drew no veto, changed
+  ::  nothing, and every cross-ship /pub keep came back denied.
   ::
-  ::  Register the writer's rail for the app root first (idempotent), so
-  ::  the %how sender matches the registry row.
-  ;<  ~  bind:m  (reg-register-at:io [root %'main.sig'])
   ::  %how replaces this prefix's roads in the group wholesale, so the act
-  ::  must carry lattice's COMPLETE public road set. Today that is the
-  ::  /pub dir. The per-page share grants still ride +share-weir's file
-  ::  writes and need the same conversion (folded into the %how act here)
-  ::  before this lands anywhere that depends on them.
-  (reg-how:io /public [make=~ poke=~ peek=(silt ~[pubdir])])
-::  +read-weir: peek a how.weir grub. Empty (deny-all) default if absent.
-::
-++  read-weir
-  |=  road=road:tarball
-  =/  m  (fiber:fiber:nexus ,weir:nexus)
-  ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io road ~)
-  ?.  ?=([%file *] seen)  (pure:m *weir:nexus)
-  (pure:m !<(weir:nexus (need-vase:tarball sang.seen)))
+  ::  carries lattice's COMPLETE public road set every time: the /pub dir
+  ::  (world-readable published pages), every shared or clearweb page's
+  ::  data road, and the share/comment inbox pokes. Callers run in the
+  ::  writer fiber, whose rail the registration names; the register is
+  ::  idempotent. Deep walk, so nested shared pages are granted too.
+  ;<  ~  bind:m  (reg-register-at:io [root %'main.sig'])
+  =/  pubdir=road:tarball  [%& %| (weld root /pub)]
+  =/  pokes=(set road:tarball)
+    %-  silt
+    :~  `road:tarball`[%& %& app-base:lu %'shares.sig']
+        `road:tarball`[%& %& app-base:lu %'comments.sig']
+    ==
+  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld root /page)] ~)
+  =/  rels=(list path)
+    ?.  ?=([%ball *] sn)  ~
+    %+  murn  (collect-tree ball.sn ~)
+    |=([pax=path page=?] ?:(page `pax ~))
+  =|  peeks=(set road:tarball)
+  |-
+  ?~  rels
+    (reg-how:io /public [make=~ poke=pokes peek=(~(put in peeks) pubdir)])
+  =/  pp=path  (weld (weld root /page) i.rels)
+  ;<  mode=share-mode:le  bind:m  (read-share pp)
+  =?  peeks  !=(%private mode)  (~(put in peeks) [%& %& pp %data])
+  $(rels t.rels)
 ::  +apply: dispatch one knowledge action. root is the nexus dir (/lattice).
 ::
 ++  apply
@@ -8821,13 +8746,10 @@
 ++  pub-regrow
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
-  ::  Re-lay the public /pub grant before regrowing. how.weir is one shared
-  ::  file and every app's writer rewrites it at boot (finding #12), so a
-  ::  full-pier restart can clobber this app's grant with high probability.
-  ::  Measured on the dev pier: after a bounce the public weir carried four
-  ::  other apps' roads and no /pub. This route runs race-free after boot,
-  ::  which makes it the operator's grant repair as well as the binding one.
-  ;<  ~  bind:m  (ensure-pub-weir app-base:lu)
+  ::  Grants live in the registry-canonical %how act, laid at writer boot
+  ::  (+send-public-how). The regrow route runs in a request fiber, whose
+  ::  rail the registry does not know, so grant repair belongs to a writer
+  ::  restart and this route only rebuilds namespace bindings.
   ;<  ix=pub-index:lp  bind:m
     (read-pub-index [%& %& (weld app-base:lu /pub) %index])
   ;<  n=@ud  bind:m  (pub-regrow-loop ~(tap in ~(key by ix)) 0)
