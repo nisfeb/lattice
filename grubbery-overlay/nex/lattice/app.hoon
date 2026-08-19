@@ -8813,6 +8813,13 @@
 ++  pub-regrow
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
+  ::  Re-lay the public /pub grant before regrowing. how.weir is one shared
+  ::  file and every app's writer rewrites it at boot (finding #12), so a
+  ::  full-pier restart can clobber this app's grant with high probability.
+  ::  Measured on the dev pier: after a bounce the public weir carried four
+  ::  other apps' roads and no /pub. This route runs race-free after boot,
+  ::  which makes it the operator's grant repair as well as the binding one.
+  ;<  ~  bind:m  (ensure-pub-weir app-base:lu)
   ;<  ix=pub-index:lp  bind:m
     (read-pub-index [%& %& (weld app-base:lu /pub) %index])
   ;<  n=@ud  bind:m  (pub-regrow-loop ~(tap in ~(key by ix)) 0)
