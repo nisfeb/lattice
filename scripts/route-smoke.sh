@@ -29,6 +29,18 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 LIST="${ROUTE_LIST:-$HERE/route-list.txt}"
 [ -r "$LIST" ] || { echo "no route list at $LIST" >&2; exit 66; }
 
+# Routes that DO something and are not idempotent: their status legitimately
+# differs between runs, so a status here would make the fingerprint flap and
+# train you to ignore real diffs. They are still called (reachability is what
+# is being checked) but reported as `mutating`, not as a code.
+#
+# pub-reconcile earned its place the hard way: it is one-shot behind a marker
+# grub, and on a ship where that marker did not stick, every later call re-culls
+# already-culled seqs and 500s. The first run of this harness is what exposed
+# that, which is worth knowing before you read a diff here as a refactor bug.
+NOIDEM=" pub-reconcile pub-regrow pub-prune catalog-sweep catalog-init catalog-scan-self
+ search-reindex know-reindex know-prune history-clear legacy-dismiss legacy-migrate "
+
 # the bare app root, which the switch reaches as an empty suffix
 printf '%-4s %-24s %s\n' GET '(root)' \
   "$(curl -s -o /dev/null -w '%{http_code}' -m 25 -H "$CK" "$URL/apps/lattice")"
@@ -42,5 +54,11 @@ while read -r meth name; do
   else
     code=$(curl -s -o /dev/null -w '%{http_code}' -m 25 -X "$meth" -H "$CK" "$u")
   fi
+  case "$NOIDEM" in
+    *" $name "*)
+      # 404 still fails loudly: that means the route stopped being reachable,
+      # which is the regression this harness is for.
+      [ "$code" = 404 ] || code=mutating ;;
+  esac
   printf '%-4s %-24s %s\n' "$meth" "$name" "$code"
 done < "$LIST"

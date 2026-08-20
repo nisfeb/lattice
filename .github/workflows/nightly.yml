@@ -295,7 +295,9 @@ jobs:
           fail=0
           for f in scripts/ui-*.mjs; do
             b="$(basename "$f" .mjs)"
-            grep -q puppeteer "$f" || continue
+            # a browser suite either names puppeteer or imports the shared
+            # harness that owns the launch on its behalf
+            grep -qE 'puppeteer|lib/harness\.mjs' "$f" || continue
             case "$covered" in *" $b "*) continue ;; esac
             echo "::group::$b"; node "$f" || fail=1; echo "::endgroup::"
           done

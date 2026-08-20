@@ -451,6 +451,452 @@
 ::  contract lands in step 3. This scaffold proves the request-fiber path:
 ::  owner-auth, then serve the web reader at the root and 404 (JSON) the rest.
 ::
+++  handle-page-save-batch
+  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  jon=(unit json)  (de:json:html (req-body req))
+  ?~  jon  (send-err eyre-id 400 'bad json')
+  ::  ?report=1: REPLAY mode. Items additionally carry base (the rev each
+  ::  queued edit was made from) and the response reports per-item
+  ::  {rev, conflicted} instead of a bare count. A mode rather than the
+  ::  default because the upload path WANTS all-or-nothing and no per-item
+  ::  bookkeeping. The write itself is unchanged either way: one %make-many
+  ::  transaction.
+  =/  report=?  =('1' (~(gut by args) 'report' '0'))
+  =/  pr=(each (list [nam=@t typ=@t bod=@t bas=@ud]) tang)
+    %-  mule  |.
+    %.  u.jon
+    %-  ar:dejs:format
+    ?:  report
+      %-  ot:dejs:format
+      :~  name+so:dejs:format
+          type+so:dejs:format
+          body+so:dejs:format
+          base+ni:dejs:format
+      ==
+    |=  j=json
+    ^-  [@t @t @t @ud]
+    =/  [nam=@t typ=@t bod=@t]
+      %.  j
+      %-  ot:dejs:format
+      :~  name+so:dejs:format
+          type+so:dejs:format
+          body+so:dejs:format
+      ==
+    [nam typ bod 0]
+  ?:  ?=(%| -.pr)
+    %+  send-err  eyre-id
+    [400 ?:(report 'expected [{name, type, body, base}]' 'expected [{name, type, body}]')]
+  =/  items=(list [nam=@t typ=@t bod=@t bas=@ud])  p.pr
+  ?:  =(0 (lent items))  (send-err eyre-id 400 'empty batch')
+  ::  bounded: one transaction the writer cannot be talked into running
+  ::  forever. The client chunks above this.
+  ?:  (gth (lent items) 200)  (send-err eyre-id 400 'batch too large (max 200)')
+  ?.  (levy items |=([nam=@t *] (valid-name nam)))
+    (send-err eyre-id 400 'bad page name in batch')
+  =/  pages=(list [pax=path src=@t])
+    %+  turn  items
+    |=  [nam=@t typ=@t bod=@t bas=@ud]
+    =/  ptype=@tas  `@tas`typ
+    :-  (pax-of nam)
+    ?:  =(%index ptype)  (make-folder-index (pax-of nam))
+    ?:  (~(has in content-builders) ptype)  (wrap-content ptype bod)
+    bod
+  ::  report mode: read every page's rev BEFORE the write (conflict = the
+  ::  ship moved past the base the edit was made from) and after (the new
+  ::  rev the client should carry forward). Same caveat as page-save: the
+  ::  compare is fiber-adjacent to the poke, so a same-ship interleave can
+  ::  mislabel a flag, never lose a revision.
+  ;<  prevs=(list @ud)  bind:m
+    =/  n  (fiber:fiber:nexus ,(list @ud))
+    ?.  report  (pure:n ~)
+    =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+    =|  acc=(list @ud)
+    |-  ^-  form:n
+    ?~  todo  (pure:n (flop acc))
+    ;<  r=@ud  bind:n  (page-rev (pax-of nam.i.todo))
+    $(todo t.todo, acc [r acc])
+  ::  conflicted items get their losing body preserved FIRST, in the same
+  ::  %make-many transaction. See +conflict-name for why history is not
+  ::  enough. Peeks happen here (fiber), the writes land atomically below.
+  ::  dups: items whose stale base points at content IDENTICAL to what the
+  ::  ship already holds, a replay racing its own timed-out-but-landed
+  ::  write. Not a conflict (see page-save). Aligned with items for the
+  ::  report below.
+  ;<  kd=[keeps=(list [pax=path src=@t]) dups=(list ?)]  bind:m
+    =/  n  (fiber:fiber:nexus ,[keeps=(list [pax=path src=@t]) dups=(list ?)])
+    ?.  report  (pure:n [~ ~])
+    =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+    =/  ps=(list @ud)  prevs
+    =/  pg=(list [pax=path src=@t])  pages
+    =|  keeps=(list [pax=path src=@t])
+    =|  dups=(list ?)
+    |-  ^-  form:n
+    ?~  todo  (pure:n [(flop keeps) (flop dups)])
+    =/  pv=@ud  ?~(ps 0 i.ps)
+    =/  more  ?~(ps ~ t.ps)
+    =/  wsrc=@t  ?~(pg '' src.i.pg)
+    =/  pgm  ?~(pg ~ t.pg)
+    ::  base 0 = NO base claim (a save rebased by an offline move cannot
+    ::  know the destination's rev): apply without a conflict check.
+    ?.  &(!=(0 bas.i.todo) !=(bas.i.todo pv))
+      $(todo t.todo, ps more, pg pgm, dups [| dups])
+    ;<  old=(unit @t)  bind:n  (page-src (pax-of nam.i.todo))
+    ::  missing page or identical body: stale base, but nothing to preserve
+    ::  and nothing to disagree with. Not a conflict
+    ?~  old  $(todo t.todo, ps more, pg pgm, dups [& dups])
+    ?:  =(u.old wsrc)  $(todo t.todo, ps more, pg pgm, dups [& dups])
+    %=  $
+      todo   t.todo
+      ps     more
+      pg     pgm
+      dups   [| dups]
+      keeps  [[(pax-of (conflict-name nam.i.todo pv)) u.old] keeps]
+    ==
+  =/  keeps=(list [pax=path src=@t])  keeps.kd
+  ;<  ~  bind:m  (poke-eval [%make-many (weld keeps pages)])
+  ?.  report
+    %+  send-json  eyre-id
+    (pairs:enjs:format ~[['ok' b+&] ['saved' (numb:enjs:format (lent items))]])
+  ::  new rev per item = prev+1, computed for the same reason page-save
+  ::  computes it. A same-fiber peek cannot observe the write it follows
+  =/  out=(list json)
+    =/  todo  items
+    =/  ps  prevs
+    =/  ds  dups.kd
+    =|  acc=(list json)
+    |-  ^-  (list json)
+    ?~  todo  (flop acc)
+    =/  pv=@ud  ?~(ps 0 i.ps)
+    =/  nw=@ud  +(pv)
+    =/  cf=?  &(!=(0 bas.i.todo) !=(bas.i.todo pv) ?~(ds & !i.ds))
+    %=  $
+      todo  t.todo
+      ps    ?~(ps ~ t.ps)
+      ds    ?~(ds ~ t.ds)
+      acc
+    :_  acc
+    %-  pairs:enjs:format
+    :~  ['name' s+nam.i.todo]
+        ['rev' (numb:enjs:format nw)]
+        ['prev-rev' (numb:enjs:format pv)]
+        ['conflicted' b+cf]
+        ['kept' s+?.(cf '' (conflict-name nam.i.todo pv))]
+    ==
+    ==
+  %+  send-json  eyre-id
+  %-  pairs:enjs:format
+  :~  ['ok' b+&]
+      ['saved' (numb:enjs:format (lent items))]
+      ['items' a+out]
+  ==
+::
+++  handle-page-save
+  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  name=(unit @t)  (~(get by args) 'name')
+  ?~  name  (send-err eyre-id 400 'missing name')
+  ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+  =/  raw=@t  (req-body req)
+  ::  ?type=index: no body. The code is generated from the page's own path
+  ::  (it lists its own folder). Otherwise a body is required.
+  =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'hoon')
+  =/  is-index=?  =(%index ptype)
+  ?:  &(?!(is-index) =('' raw))  (send-err eyre-id 400 'missing body')
+  ::  ?type=<builder>: the body is raw content, not hoon. Wrap it in
+  ::  `... (BUILDER 'content')` so the whole pipeline runs unchanged. edit
+  ::  reopens it via unwrap-content. Absent/unknown type -> raw hoon.
+  =/  src=@t
+    ?:  is-index  (make-folder-index (pax-of u.name))
+    ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
+  ::  ?new=1: create-only, 409 instead of silently overwriting an existing
+  ::  page (the editor's new-page mode sends it; caught by review). Only the
+  ::  new=1 path pays the existence peek. A plain overwrite (every autosave)
+  ::  never used the answer.
+  ;<  ex=?  bind:m
+    ?.  (~(has by args) 'new')  (pure:(fiber:fiber:nexus ,?) %.n)
+    (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.name))) %code])
+  ?:  &((~(has by args) 'new') ex)  (send-err eyre-id 409 'page exists')
+  ::  ?base=<rev>: the revision the caller edited FROM (the offline queue
+  ::  stamps it at enqueue). Compared HERE rather than by the client. A
+  ::  client check-then-write races anything landing in between. The compare
+  ::  sits one fiber-bind from the poke, so a same-ship interleave can still
+  ::  mislabel a conflict in principle. The consequence is only a wrong FLAG
+  ::  (every save is a kept revision either way), which is why apply-and-flag
+  ::  is safe where refuse-and-block would need true writer-side CAS.
+  =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
+  ;<  prev=@ud  bind:m  (page-rev (pax-of u.name))
+  =/  stale=?  &(?=(^ base) !=(u.base 0) !=(u.base prev))
+  ;<  old=(unit @t)  bind:m
+    =/  n  (fiber:fiber:nexus ,(unit @t))
+    ?.  stale  (pure:n ~)
+    (page-src (pax-of u.name))
+  ::  identical content cannot conflict. The client's 10s deadline can fire
+  ::  on a request the pier nevertheless applies (abort stops the WAIT, not
+  ::  the write), so the queued replay carries a base one rev behind its own
+  ::  landed save: same body, moved rev. Flagging that manufactured a bogus
+  ::  conflicts/ page holding a copy of the very body being saved. A missing
+  ::  page is the same shape: nothing to preserve, nothing to conflict with.
+  =/  conflicted=?  &(stale ?=(^ old) !=(u.old src))
+  =/  kept=@t  ?.(conflicted '' (conflict-name u.name prev))
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    ?.  conflicted  (pure:n ~)
+    ?~  old  (pure:n ~)
+    (poke-eval [%make (pax-of kept) u.old])
+  ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
+  ::  the new rev is prev+1, COMPUTED not re-peeked. A peek in this same
+  ::  fiber does not observe the write yet (effects flush on yield), so a
+  ::  post-write peek returned the stale rev, and a client carrying that
+  ::  as its base would flag a false conflict on every second save. %make
+  ::  commits the code grub exactly once, so +1 is exact.
+  ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
+  %+  send-json  eyre-id
+  %-  pairs:enjs:format
+  :~  ['ok' b+&]
+      ['rev' (numb:enjs:format +(prev))]
+      ['prev-rev' (numb:enjs:format prev)]
+      ['conflicted' b+conflicted]
+      ['kept' s+kept]
+  ==
+::
+++  handle-share-group-save
+  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  gname=(unit @t)  (~(get by args) 'name')
+  ?~  gname  (send-err eyre-id 400 'missing name')
+  ?.  ((sane %tas) u.gname)
+    (send-err eyre-id 400 'group name: lowercase letters, digits, hyphens')
+  =/  jon=(unit json)  (de:json:html (req-body req))
+  ?~  jon  (send-err eyre-id 400 'bad json')
+  =/  pr=(each [ships=(list @t) peek=(list @t) make=(list @t)] tang)
+    %-  mule  |.
+    %.  u.jon
+    %-  ot:dejs:format
+    :~  ships+(ar:dejs:format so:dejs:format)
+        peek+(ar:dejs:format so:dejs:format)
+        make+(ar:dejs:format so:dejs:format)
+    ==
+  ?:  ?=(%| -.pr)  (send-err eyre-id 400 'expected {ships, peek, make}')
+  =/  ships=(list (unit @p))  (turn ships.p.pr |=(t=@t (slaw %p t)))
+  ?:  (lien ships |=(u=(unit @p) ?=(~ u)))
+    ::  a typo'd ship silently dropped = someone believes they granted
+    ::  access and did not. Reject the whole save instead.
+    (send-err eyre-id 400 'bad ship name in list')
+  =/  parse-paths
+    |=  ts=(list @t)
+    ^-  (unit (list path))
+    =|  out=(list path)
+    |-  ^-  (unit (list path))
+    ?~  ts  `(flop out)
+    =/  pp=(each path tang)  (mule |.((stab i.ts)))
+    ?:  ?=(%| -.pp)  ~
+    ::  grants stay under /apps. A peek grant on /sys leaks ACLs and silo
+    ::  internals. A make grant there lets a peer edit your usergroups. The
+    ::  dojo can still do it deliberately. This editor will not do it by
+    ::  accident.
+    ?.  ?=([%apps *] p.pp)  ~
+    $(ts t.ts, out [p.pp out])
+  =/  pkp=(unit (list path))  (parse-paths peek.p.pr)
+  =/  mkp=(unit (list path))  (parse-paths make.p.pr)
+  ?:  |(?=(~ pkp) ?=(~ mkp))
+    (send-err eyre-id 400 'grant paths must be absolute and under /apps')
+  =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
+  ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
+  =/  to-roads
+    |=  ps=(list path)
+    ^-  (set road:tarball)
+    (~(gas in *(set road:tarball)) (turn ps |=(p=path [%& %| p])))
+  =/  =weir:nexus
+    :+  (~(uni in (ug-keep make.old)) (to-roads u.mkp))
+      poke.old
+    (~(uni in (ug-keep peek.old)) (to-roads u.pkp))
+  ;<  bans=banned:ls  bind:m  read-banned
+  =/  who=(set @p)  (~(gas in *(set @p)) (murn ships same))
+  ::  a group save must not smuggle a banned ship back in. Reject rather than
+  ::  silently drop. A silently-dropped ship is someone believing they granted
+  ::  access and did not, which is this editor's worst failure mode.
+  ?:  (lien ~(tap in who) |=(w=@p (is-banned:ls bans w)))
+    (send-err eyre-id 403 'that group names a banned ship')
+  ;<  ~  bind:m  (over:io [%& %& gdir %'who.ships'] [[/ %ships] who])
+  ;<  ~  bind:m  (over:io [%& %& gdir %'how.weir'] [[/ %weir] weir])
+  (send-ok eyre-id)
+::  share-file: the per-file shortcut. Grant a ship read or edit on ONE
+::  page, and tell them. The grant goes into an auto-group named after the
+::  ship (visible and editable in the peers panel like any other group).
+::  The notice is best-effort and the response says whether it arrived,
+::  because the grant is durable either way.
+::
+++  handle-remote-save
+  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t) our=@p]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  shp-t=(unit @t)  (~(get by args) 'ship')
+  ?~  shp-t  (send-err eyre-id 400 'missing ship')
+  =/  shp=(unit @p)  (slaw %p u.shp-t)
+  ?~  shp  (send-err eyre-id 400 'bad ship')
+  ?:  =(u.shp our)  (send-err eyre-id 400 'own ship: use /grub-save')
+  =/  pt=(unit @t)  (~(get by args) 'path')
+  ?~  pt  (send-err eyre-id 400 'missing path')
+  =/  pp=(each path tang)  (mule |.((stab u.pt)))
+  ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
+  ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
+  =/  n=@ud  (dec (lent p.pp))
+  =/  dir=path  (scag n p.pp)
+  =/  nam=@ta  (snag n p.pp)
+  =/  body=@t  (req-body req)
+  =/  file-road=road:tarball  [%& %& dir nam]
+  ;<  ms=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
+  ?~  ms  (send-err eyre-id 504 'unreachable or denied')
+  ::  v1 edits EXISTING files only. Remote create needs a make grant plus a
+  ::  blot decision the client can't make for a tree it doesn't own.
+  ?.  ?=([%file *] u.ms)  (send-err eyre-id 404 'no such file on that ship')
+  ?:  =((grub-text sang.u.ms) `body)
+    ::  no-op save: nothing to send, and grubbery skips unchanged writes
+    ::  anyway, so the revision check below would misread it as a denial.
+    (send-ok eyre-id)
+  =/  ud0=@ud  ud.cass.u.ms
+  ::  rebuild the noun in the grub's OWN shape (cord / wain / mime) and send
+  ::  it under its OWN blot, with NO destination conversion. Converting
+  ::  mime->blot at the destination needs the target marc to carry a mime
+  ::  grab, and lattice's own %page marc doesn't. A missing tube drops the
+  ::  make SILENTLY on their side (found live: the save 403'd on the
+  ::  revision check while a blot-converted remote_over "landed" an empty
+  ::  body). Shape-preserving nouns need no tube; their marc just re-clams.
+  =/  dst=blot:tarball  p.sang.u.ms
+  =/  nn=*  (sang-noun:tarball sang.u.ms)
+  ?:  &(?=(~ (mole |.(;;(@t nn)))) ?=(~ (mole |.(;;(wain nn)))) !=([/ %mime] dst))
+    (send-err eyre-id 415 'grub shape not editable as text')
+  =/  bd=[b=bask:tarball d=(unit blot:tarball)]
+    ?:  ?=(^ (mole |.(;;(@t nn))))
+      [[dst `*`body] ~]
+    ?:  ?=(^ (mole |.(;;(wain nn))))
+      [[dst `*`(to-wain:format body)] ~]
+    =/  mt=path  (fall (grub-mime-type sang.u.ms) /text/plain)
+    [[[/ %mime] `*``mime`[mt (as-octs:mimes:html body)]] ~]
+  ;<  nak=(unit tang)  bind:m
+    (remote-load-poke u.shp [[/remote-save %& dir nam] %make %.y %.n |+[b.bd d.bd]])
+  ?^  nak
+    (send-err eyre-id 502 'remote rejected the write')
+  ;<  vs=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
+  =/  landed=?
+    ?~  vs  |
+    ?.  ?=([%file *] u.vs)  |
+    (gth ud.cass.u.vs ud0)
+  ?.  landed
+    (send-err eyre-id 403 'write did not land — no make permission on that path?')
+  (send-ok eyre-id)
+::  ── sharing groups: the permission editor (see +share-groups-json) ──
+::  ── banlist ────────────────────────────────────────────────────────────
+::  Deny cannot be expressed as a weir (see +$banned in /lib/lattice-share),
+::  so it is this app's own list, enforced where a foreign ship's identity is
+::  known: the shares inbox and every grant written here.
+::
+++  handle-legacy-migrate
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  done=?  bind:m  legacy-resolved
+  ?:  done  (send-err eyre-id 409 'already resolved')
+  ;<  up=?  bind:m  legacy-live
+  ?.  up  (send-err eyre-id 404 'no legacy agent')
+  ;<  aj=json  bind:m  (legacy-peek /gx/lattice/know/all/json)
+  =/  parsed=(each (list [@t know-entry:lk]) tang)  (mule |.((parse-import aj)))
+  ?:  ?=(%| -.parsed)  (send-err eyre-id 502 'bad legacy export shape')
+  ::  FAIL CLOSED. +read-know-map maps ANY unreadable view onto the empty
+  ::  map, which is indistinguishable from a legitimately empty store, and
+  ::  "empty" would mean every legacy entry imports over live data. Use the
+  ::  unit-returning read so a genuine read FAILURE refuses the import, while
+  ::  a real (readable) empty store still migrates normally.
+  ;<  esu=(unit (map path know-entry:lk))  bind:m  read-know-vault-safe
+  ?~  esu  (send-err eyre-id 503 'local store unreadable; import refused')
+  =/  es=(map path know-entry:lk)  u.esu
+  ::  skip anything we already hold LIVE or in TRASH. Importing over a
+  ::  soft-deleted key would resurrect what the user deleted here.
+  ;<  tx=know-index:lk  bind:m  (read-index [%| 2 %& /know %trash])
+  =/  fresh=(list [@t know-entry:lk])
+    %+  skim  p.parsed
+    |=  [k=@t *]
+    =/  ko=(unit path)  (know-key k)
+    ?~(ko %.n ?!(|((~(has by es) u.ko) (~(has by tx) u.ko))))
+  ;<  n=@ud  bind:m  (import-know-loop fresh 0)
+  ::  ── pages ────────────────────────────────────────────────────────────
+  ::  Scoped to the rels the agent itself reports. ~ means we could not read
+  ::  its page list at all. Treat that as UNKNOWN, never as "no pages", or
+  ::  the completion dialog would clear an agent that still holds the only
+  ::  copy of them.
+  ;<  prels=(unit (list path))  bind:m  legacy-page-rels
+  =/  want=(list path)  ?~(prels ~ u.prels)
+  ::  never let a legacy body land on a page we already have. %save-page is
+  ::  an unconditional upsert in the writer, so a name collision would
+  ::  overwrite the user's own published body. Drop collisions before
+  ::  triggering and report them as left-behind.
+  ;<  live-pages=(list path)  bind:m  (page-sources-present want)
+  ::  A legacy name can also collide with a page this nexus published but
+  ::  never had a source for (POST /save, know-publish). %save-page is an
+  ::  unconditional upsert, so triggering would overwrite the user's body.
+  ::  Anything ALREADY in the vault is therefore off limits, unless a prior
+  ::  run of this migration is what put it there.
+  ;<  prior=(list path)  bind:m  legacy-triggered
+  ;<  in-vault=(list path)  bind:m  (vault-present want)
+  =/  has  |=([l=(list path) r=path] (lien l |=(x=path =(x r))))
+  =/  theirs=(list path)
+    (skip in-vault |=(r=path (has prior r)))
+  =/  fresh-pages=(list path)
+    %+  skip  want
+    |=(r=path |((has live-pages r) (has theirs r)))
+  =/  nil  (fiber:fiber:nexus ,~)
+  ::  read the bodies directly (see +legacy-page-bodies) and write each one
+  ::  as a normal page. No poke, no waiting on another agent's cards, and no
+  ::  window in which arrivals can be missed. What we read is what we write.
+  ;<  bodies=(unit (list [rel=path body=@t]))  bind:m
+    ?:  =(~ fresh-pages)
+      (pure:(fiber:fiber:nexus ,(unit (list [rel=path body=@t]))) `~)
+    legacy-page-bodies
+  ;<  ~  bind:m
+    ?:  =(~ fresh-pages)  (pure:nil ~)
+    (poke-eval [%legacy-pages (weld prior fresh-pages)])
+  ;<  promoted=@ud  bind:m
+    ?~  bodies  (pure:(fiber:fiber:nexus ,@ud) 0)
+    (write-legacy-pages (skim u.bodies |=([r=path *] (has fresh-pages r))) 0)
+  ::  ONLY claim the migration is finished when nothing is left behind. A
+  ::  short count leaves the marker UNWRITTEN so the offer returns and the
+  ::  user can retry. The knowledge import is idempotent (skip-existing),
+  ::  so a retry costs nothing and finishes the pages.
+  =/  page-total=@ud  (lent want)
+  ::  "complete" means: we could read the page list, and every page we were
+  ::  allowed to move actually landed AND was promoted. Collisions count as
+  ::  NOT complete. Those pages stay only in the old agent, so the agent
+  ::  must not be cleared for retirement.
+  =/  done=?
+    ?&  ?=(^ prels)
+        ?=(^ bodies)
+        =(promoted (lent fresh-pages))
+        =(0 (lent live-pages))
+        =(0 (lent theirs))
+    ==
+  ;<  ~  bind:m  ?:(done (poke-eval [%legacy-seen n]) (pure:nil ~))
+  %+  send-json  eyre-id
+  %-  pairs:enjs:format
+  :~  ['imported' (numb:enjs:format n)]
+      ['skipped' (numb:enjs:format (sub (lent p.parsed) (lent fresh)))]
+      ['pages' (numb:enjs:format page-total)]
+      ['pagesImported' (numb:enjs:format promoted)]
+      ['pagesCollided' (numb:enjs:format (add (lent live-pages) (lent theirs)))]
+      ::  why the trigger failed, when it did, the difference between
+      ::  "no pages arrived" and knowing the poke was refused
+      :-  'pageError'
+      ?~  bodies  s+'could not read the old agent\'s pages'
+      ~
+      ['pagesKnown' b+?=(^ prels)]
+      ['complete' b+done]
+  ==
+::  legacy-dismiss: the user declined. Same marker as a completed import, so
+::  the prompt never returns.
+::
 ++  handle-request
   |=  eyre-id=@ta
   =/  m  (fiber:fiber:nexus ,~)
@@ -831,66 +1277,7 @@
   ::  of lying "saved". (Content equality can't be the check. Their mark may
   ::  normalize the body, e.g. wain round-trips and trailing newlines.)
       [%'POST' %remote-save]
-    =/  shp-t=(unit @t)  (~(get by args) 'ship')
-    ?~  shp-t  (send-err eyre-id 400 'missing ship')
-    =/  shp=(unit @p)  (slaw %p u.shp-t)
-    ?~  shp  (send-err eyre-id 400 'bad ship')
-    ?:  =(u.shp our)  (send-err eyre-id 400 'own ship: use /grub-save')
-    =/  pt=(unit @t)  (~(get by args) 'path')
-    ?~  pt  (send-err eyre-id 400 'missing path')
-    =/  pp=(each path tang)  (mule |.((stab u.pt)))
-    ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
-    ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
-    =/  n=@ud  (dec (lent p.pp))
-    =/  dir=path  (scag n p.pp)
-    =/  nam=@ta  (snag n p.pp)
-    =/  body=@t  (req-body req)
-    =/  file-road=road:tarball  [%& %& dir nam]
-    ;<  ms=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
-    ?~  ms  (send-err eyre-id 504 'unreachable or denied')
-    ::  v1 edits EXISTING files only. Remote create needs a make grant plus a
-    ::  blot decision the client can't make for a tree it doesn't own.
-    ?.  ?=([%file *] u.ms)  (send-err eyre-id 404 'no such file on that ship')
-    ?:  =((grub-text sang.u.ms) `body)
-      ::  no-op save: nothing to send, and grubbery skips unchanged writes
-      ::  anyway, so the revision check below would misread it as a denial.
-      (send-ok eyre-id)
-    =/  ud0=@ud  ud.cass.u.ms
-    ::  rebuild the noun in the grub's OWN shape (cord / wain / mime) and send
-    ::  it under its OWN blot, with NO destination conversion. Converting
-    ::  mime->blot at the destination needs the target marc to carry a mime
-    ::  grab, and lattice's own %page marc doesn't. A missing tube drops the
-    ::  make SILENTLY on their side (found live: the save 403'd on the
-    ::  revision check while a blot-converted remote_over "landed" an empty
-    ::  body). Shape-preserving nouns need no tube; their marc just re-clams.
-    =/  dst=blot:tarball  p.sang.u.ms
-    =/  nn=*  (sang-noun:tarball sang.u.ms)
-    ?:  &(?=(~ (mole |.(;;(@t nn)))) ?=(~ (mole |.(;;(wain nn)))) !=([/ %mime] dst))
-      (send-err eyre-id 415 'grub shape not editable as text')
-    =/  bd=[b=bask:tarball d=(unit blot:tarball)]
-      ?:  ?=(^ (mole |.(;;(@t nn))))
-        [[dst `*`body] ~]
-      ?:  ?=(^ (mole |.(;;(wain nn))))
-        [[dst `*`(to-wain:format body)] ~]
-      =/  mt=path  (fall (grub-mime-type sang.u.ms) /text/plain)
-      [[[/ %mime] `*``mime`[mt (as-octs:mimes:html body)]] ~]
-    ;<  nak=(unit tang)  bind:m
-      (remote-load-poke u.shp [[/remote-save %& dir nam] %make %.y %.n |+[b.bd d.bd]])
-    ?^  nak
-      (send-err eyre-id 502 'remote rejected the write')
-    ;<  vs=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
-    =/  landed=?
-      ?~  vs  |
-      ?.  ?=([%file *] u.vs)  |
-      (gth ud.cass.u.vs ud0)
-    ?.  landed
-      (send-err eyre-id 403 'write did not land — no make permission on that path?')
-    (send-ok eyre-id)
-  ::  ── sharing groups: the permission editor (see +share-groups-json) ──
-  ::  ── banlist ────────────────────────────────────────────────────────────
-  ::  Deny cannot be expressed as a weir (see +$banned in /lib/lattice-share),
-  ::  so it is this app's own list, enforced where a foreign ship's identity is
-  ::  known: the shares inbox and every grant written here.
+    (handle-remote-save eyre-id req args our)
       [%'GET' %banlist]
     ;<  bans=banned:ls  bind:m  read-banned
     %+  send-json  eyre-id
@@ -935,69 +1322,7 @@
   ::  granting eval power) and any road shape the editor can't render, both
   ::  carried through from the stored weir verbatim.
       [%'POST' %share-group-save]
-    =/  gname=(unit @t)  (~(get by args) 'name')
-    ?~  gname  (send-err eyre-id 400 'missing name')
-    ?.  ((sane %tas) u.gname)
-      (send-err eyre-id 400 'group name: lowercase letters, digits, hyphens')
-    =/  jon=(unit json)  (de:json:html (req-body req))
-    ?~  jon  (send-err eyre-id 400 'bad json')
-    =/  pr=(each [ships=(list @t) peek=(list @t) make=(list @t)] tang)
-      %-  mule  |.
-      %.  u.jon
-      %-  ot:dejs:format
-      :~  ships+(ar:dejs:format so:dejs:format)
-          peek+(ar:dejs:format so:dejs:format)
-          make+(ar:dejs:format so:dejs:format)
-      ==
-    ?:  ?=(%| -.pr)  (send-err eyre-id 400 'expected {ships, peek, make}')
-    =/  ships=(list (unit @p))  (turn ships.p.pr |=(t=@t (slaw %p t)))
-    ?:  (lien ships |=(u=(unit @p) ?=(~ u)))
-      ::  a typo'd ship silently dropped = someone believes they granted
-      ::  access and did not. Reject the whole save instead.
-      (send-err eyre-id 400 'bad ship name in list')
-    =/  parse-paths
-      |=  ts=(list @t)
-      ^-  (unit (list path))
-      =|  out=(list path)
-      |-  ^-  (unit (list path))
-      ?~  ts  `(flop out)
-      =/  pp=(each path tang)  (mule |.((stab i.ts)))
-      ?:  ?=(%| -.pp)  ~
-      ::  grants stay under /apps. A peek grant on /sys leaks ACLs and silo
-      ::  internals. A make grant there lets a peer edit your usergroups. The
-      ::  dojo can still do it deliberately. This editor will not do it by
-      ::  accident.
-      ?.  ?=([%apps *] p.pp)  ~
-      $(ts t.ts, out [p.pp out])
-    =/  pkp=(unit (list path))  (parse-paths peek.p.pr)
-    =/  mkp=(unit (list path))  (parse-paths make.p.pr)
-    ?:  |(?=(~ pkp) ?=(~ mkp))
-      (send-err eyre-id 400 'grant paths must be absolute and under /apps')
-    =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
-    ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
-    =/  to-roads
-      |=  ps=(list path)
-      ^-  (set road:tarball)
-      (~(gas in *(set road:tarball)) (turn ps |=(p=path [%& %| p])))
-    =/  =weir:nexus
-      :+  (~(uni in (ug-keep make.old)) (to-roads u.mkp))
-        poke.old
-      (~(uni in (ug-keep peek.old)) (to-roads u.pkp))
-    ;<  bans=banned:ls  bind:m  read-banned
-    =/  who=(set @p)  (~(gas in *(set @p)) (murn ships same))
-    ::  a group save must not smuggle a banned ship back in. Reject rather than
-    ::  silently drop. A silently-dropped ship is someone believing they granted
-    ::  access and did not, which is this editor's worst failure mode.
-    ?:  (lien ~(tap in who) |=(w=@p (is-banned:ls bans w)))
-      (send-err eyre-id 403 'that group names a banned ship')
-    ;<  ~  bind:m  (over:io [%& %& gdir %'who.ships'] [[/ %ships] who])
-    ;<  ~  bind:m  (over:io [%& %& gdir %'how.weir'] [[/ %weir] weir])
-    (send-ok eyre-id)
-  ::  share-file: the per-file shortcut. Grant a ship read or edit on ONE
-  ::  page, and tell them. The grant goes into an auto-group named after the
-  ::  ship (visible and editable in the peers panel like any other group).
-  ::  The notice is best-effort and the response says whether it arrived,
-  ::  because the grant is durable either way.
+    (handle-share-group-save eyre-id req args)
       [%'POST' %share-file]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -1259,209 +1584,10 @@
   ::  batch that half-applies and then rejects file 14 is worse than one that
   ::  refuses up front, because the client cannot tell what landed.
       [%'POST' %page-save-batch]
-    =/  jon=(unit json)  (de:json:html (req-body req))
-    ?~  jon  (send-err eyre-id 400 'bad json')
-    ::  ?report=1: REPLAY mode. Items additionally carry base (the rev each
-    ::  queued edit was made from) and the response reports per-item
-    ::  {rev, conflicted} instead of a bare count. A mode rather than the
-    ::  default because the upload path WANTS all-or-nothing and no per-item
-    ::  bookkeeping. The write itself is unchanged either way: one %make-many
-    ::  transaction.
-    =/  report=?  =('1' (~(gut by args) 'report' '0'))
-    =/  pr=(each (list [nam=@t typ=@t bod=@t bas=@ud]) tang)
-      %-  mule  |.
-      %.  u.jon
-      %-  ar:dejs:format
-      ?:  report
-        %-  ot:dejs:format
-        :~  name+so:dejs:format
-            type+so:dejs:format
-            body+so:dejs:format
-            base+ni:dejs:format
-        ==
-      |=  j=json
-      ^-  [@t @t @t @ud]
-      =/  [nam=@t typ=@t bod=@t]
-        %.  j
-        %-  ot:dejs:format
-        :~  name+so:dejs:format
-            type+so:dejs:format
-            body+so:dejs:format
-        ==
-      [nam typ bod 0]
-    ?:  ?=(%| -.pr)
-      %+  send-err  eyre-id
-      [400 ?:(report 'expected [{name, type, body, base}]' 'expected [{name, type, body}]')]
-    =/  items=(list [nam=@t typ=@t bod=@t bas=@ud])  p.pr
-    ?:  =(0 (lent items))  (send-err eyre-id 400 'empty batch')
-    ::  bounded: one transaction the writer cannot be talked into running
-    ::  forever. The client chunks above this.
-    ?:  (gth (lent items) 200)  (send-err eyre-id 400 'batch too large (max 200)')
-    ?.  (levy items |=([nam=@t *] (valid-name nam)))
-      (send-err eyre-id 400 'bad page name in batch')
-    =/  pages=(list [pax=path src=@t])
-      %+  turn  items
-      |=  [nam=@t typ=@t bod=@t bas=@ud]
-      =/  ptype=@tas  `@tas`typ
-      :-  (pax-of nam)
-      ?:  =(%index ptype)  (make-folder-index (pax-of nam))
-      ?:  (~(has in content-builders) ptype)  (wrap-content ptype bod)
-      bod
-    ::  report mode: read every page's rev BEFORE the write (conflict = the
-    ::  ship moved past the base the edit was made from) and after (the new
-    ::  rev the client should carry forward). Same caveat as page-save: the
-    ::  compare is fiber-adjacent to the poke, so a same-ship interleave can
-    ::  mislabel a flag, never lose a revision.
-    ;<  prevs=(list @ud)  bind:m
-      =/  n  (fiber:fiber:nexus ,(list @ud))
-      ?.  report  (pure:n ~)
-      =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
-      =|  acc=(list @ud)
-      |-  ^-  form:n
-      ?~  todo  (pure:n (flop acc))
-      ;<  r=@ud  bind:n  (page-rev (pax-of nam.i.todo))
-      $(todo t.todo, acc [r acc])
-    ::  conflicted items get their losing body preserved FIRST, in the same
-    ::  %make-many transaction. See +conflict-name for why history is not
-    ::  enough. Peeks happen here (fiber), the writes land atomically below.
-    ::  dups: items whose stale base points at content IDENTICAL to what the
-    ::  ship already holds, a replay racing its own timed-out-but-landed
-    ::  write. Not a conflict (see page-save). Aligned with items for the
-    ::  report below.
-    ;<  kd=[keeps=(list [pax=path src=@t]) dups=(list ?)]  bind:m
-      =/  n  (fiber:fiber:nexus ,[keeps=(list [pax=path src=@t]) dups=(list ?)])
-      ?.  report  (pure:n [~ ~])
-      =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
-      =/  ps=(list @ud)  prevs
-      =/  pg=(list [pax=path src=@t])  pages
-      =|  keeps=(list [pax=path src=@t])
-      =|  dups=(list ?)
-      |-  ^-  form:n
-      ?~  todo  (pure:n [(flop keeps) (flop dups)])
-      =/  pv=@ud  ?~(ps 0 i.ps)
-      =/  more  ?~(ps ~ t.ps)
-      =/  wsrc=@t  ?~(pg '' src.i.pg)
-      =/  pgm  ?~(pg ~ t.pg)
-      ::  base 0 = NO base claim (a save rebased by an offline move cannot
-      ::  know the destination's rev): apply without a conflict check.
-      ?.  &(!=(0 bas.i.todo) !=(bas.i.todo pv))
-        $(todo t.todo, ps more, pg pgm, dups [| dups])
-      ;<  old=(unit @t)  bind:n  (page-src (pax-of nam.i.todo))
-      ::  missing page or identical body: stale base, but nothing to preserve
-      ::  and nothing to disagree with. Not a conflict
-      ?~  old  $(todo t.todo, ps more, pg pgm, dups [& dups])
-      ?:  =(u.old wsrc)  $(todo t.todo, ps more, pg pgm, dups [& dups])
-      %=  $
-        todo   t.todo
-        ps     more
-        pg     pgm
-        dups   [| dups]
-        keeps  [[(pax-of (conflict-name nam.i.todo pv)) u.old] keeps]
-      ==
-    =/  keeps=(list [pax=path src=@t])  keeps.kd
-    ;<  ~  bind:m  (poke-eval [%make-many (weld keeps pages)])
-    ?.  report
-      %+  send-json  eyre-id
-      (pairs:enjs:format ~[['ok' b+&] ['saved' (numb:enjs:format (lent items))]])
-    ::  new rev per item = prev+1, computed for the same reason page-save
-    ::  computes it. A same-fiber peek cannot observe the write it follows
-    =/  out=(list json)
-      =/  todo  items
-      =/  ps  prevs
-      =/  ds  dups.kd
-      =|  acc=(list json)
-      |-  ^-  (list json)
-      ?~  todo  (flop acc)
-      =/  pv=@ud  ?~(ps 0 i.ps)
-      =/  nw=@ud  +(pv)
-      =/  cf=?  &(!=(0 bas.i.todo) !=(bas.i.todo pv) ?~(ds & !i.ds))
-      %=  $
-        todo  t.todo
-        ps    ?~(ps ~ t.ps)
-        ds    ?~(ds ~ t.ds)
-        acc
-      :_  acc
-      %-  pairs:enjs:format
-      :~  ['name' s+nam.i.todo]
-          ['rev' (numb:enjs:format nw)]
-          ['prev-rev' (numb:enjs:format pv)]
-          ['conflicted' b+cf]
-          ['kept' s+?.(cf '' (conflict-name nam.i.todo pv))]
-      ==
-      ==
-    %+  send-json  eyre-id
-    %-  pairs:enjs:format
-    :~  ['ok' b+&]
-        ['saved' (numb:enjs:format (lent items))]
-        ['items' a+out]
-    ==
+    (handle-page-save-batch eyre-id req args)
   ::
       [%'POST' %page-save]
-    =/  name=(unit @t)  (~(get by args) 'name')
-    ?~  name  (send-err eyre-id 400 'missing name')
-    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    =/  raw=@t  (req-body req)
-    ::  ?type=index: no body. The code is generated from the page's own path
-    ::  (it lists its own folder). Otherwise a body is required.
-    =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'hoon')
-    =/  is-index=?  =(%index ptype)
-    ?:  &(?!(is-index) =('' raw))  (send-err eyre-id 400 'missing body')
-    ::  ?type=<builder>: the body is raw content, not hoon. Wrap it in
-    ::  `... (BUILDER 'content')` so the whole pipeline runs unchanged. edit
-    ::  reopens it via unwrap-content. Absent/unknown type -> raw hoon.
-    =/  src=@t
-      ?:  is-index  (make-folder-index (pax-of u.name))
-      ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
-    ::  ?new=1: create-only, 409 instead of silently overwriting an existing
-    ::  page (the editor's new-page mode sends it; caught by review). Only the
-    ::  new=1 path pays the existence peek. A plain overwrite (every autosave)
-    ::  never used the answer.
-    ;<  ex=?  bind:m
-      ?.  (~(has by args) 'new')  (pure:(fiber:fiber:nexus ,?) %.n)
-      (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.name))) %code])
-    ?:  &((~(has by args) 'new') ex)  (send-err eyre-id 409 'page exists')
-    ::  ?base=<rev>: the revision the caller edited FROM (the offline queue
-    ::  stamps it at enqueue). Compared HERE rather than by the client. A
-    ::  client check-then-write races anything landing in between. The compare
-    ::  sits one fiber-bind from the poke, so a same-ship interleave can still
-    ::  mislabel a conflict in principle. The consequence is only a wrong FLAG
-    ::  (every save is a kept revision either way), which is why apply-and-flag
-    ::  is safe where refuse-and-block would need true writer-side CAS.
-    =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
-    ;<  prev=@ud  bind:m  (page-rev (pax-of u.name))
-    =/  stale=?  &(?=(^ base) !=(u.base 0) !=(u.base prev))
-    ;<  old=(unit @t)  bind:m
-      =/  n  (fiber:fiber:nexus ,(unit @t))
-      ?.  stale  (pure:n ~)
-      (page-src (pax-of u.name))
-    ::  identical content cannot conflict. The client's 10s deadline can fire
-    ::  on a request the pier nevertheless applies (abort stops the WAIT, not
-    ::  the write), so the queued replay carries a base one rev behind its own
-    ::  landed save: same body, moved rev. Flagging that manufactured a bogus
-    ::  conflicts/ page holding a copy of the very body being saved. A missing
-    ::  page is the same shape: nothing to preserve, nothing to conflict with.
-    =/  conflicted=?  &(stale ?=(^ old) !=(u.old src))
-    =/  kept=@t  ?.(conflicted '' (conflict-name u.name prev))
-    ;<  ~  bind:m
-      =/  n  (fiber:fiber:nexus ,~)
-      ?.  conflicted  (pure:n ~)
-      ?~  old  (pure:n ~)
-      (poke-eval [%make (pax-of kept) u.old])
-    ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
-    ::  the new rev is prev+1, COMPUTED not re-peeked. A peek in this same
-    ::  fiber does not observe the write yet (effects flush on yield), so a
-    ::  post-write peek returned the stale rev, and a client carrying that
-    ::  as its base would flag a false conflict on every second save. %make
-    ::  commits the code grub exactly once, so +1 is exact.
-    ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
-    %+  send-json  eyre-id
-    %-  pairs:enjs:format
-    :~  ['ok' b+&]
-        ['rev' (numb:enjs:format +(prev))]
-        ['prev-rev' (numb:enjs:format prev)]
-        ['conflicted' b+conflicted]
-        ['kept' s+kept]
-    ==
+    (handle-page-save eyre-id req args)
       [%'POST' %folder-new]
     ::  create an empty folder (nested ok, e.g. "a/b"). The tree shows it and
     ::  ?into= drops new files inside. Idempotent over an existing page/folder.
@@ -2480,103 +2606,7 @@
   ::  always the newer one, and a legacy body must never revert an edit made
   ::  since. That also makes a re-run harmless.
       [%'POST' %legacy-migrate]
-    ;<  done=?  bind:m  legacy-resolved
-    ?:  done  (send-err eyre-id 409 'already resolved')
-    ;<  up=?  bind:m  legacy-live
-    ?.  up  (send-err eyre-id 404 'no legacy agent')
-    ;<  aj=json  bind:m  (legacy-peek /gx/lattice/know/all/json)
-    =/  parsed=(each (list [@t know-entry:lk]) tang)  (mule |.((parse-import aj)))
-    ?:  ?=(%| -.parsed)  (send-err eyre-id 502 'bad legacy export shape')
-    ::  FAIL CLOSED. +read-know-map maps ANY unreadable view onto the empty
-    ::  map, which is indistinguishable from a legitimately empty store, and
-    ::  "empty" would mean every legacy entry imports over live data. Use the
-    ::  unit-returning read so a genuine read FAILURE refuses the import, while
-    ::  a real (readable) empty store still migrates normally.
-    ;<  esu=(unit (map path know-entry:lk))  bind:m  read-know-vault-safe
-    ?~  esu  (send-err eyre-id 503 'local store unreadable; import refused')
-    =/  es=(map path know-entry:lk)  u.esu
-    ::  skip anything we already hold LIVE or in TRASH. Importing over a
-    ::  soft-deleted key would resurrect what the user deleted here.
-    ;<  tx=know-index:lk  bind:m  (read-index [%| 2 %& /know %trash])
-    =/  fresh=(list [@t know-entry:lk])
-      %+  skim  p.parsed
-      |=  [k=@t *]
-      =/  ko=(unit path)  (know-key k)
-      ?~(ko %.n ?!(|((~(has by es) u.ko) (~(has by tx) u.ko))))
-    ;<  n=@ud  bind:m  (import-know-loop fresh 0)
-    ::  ── pages ────────────────────────────────────────────────────────────
-    ::  Scoped to the rels the agent itself reports. ~ means we could not read
-    ::  its page list at all. Treat that as UNKNOWN, never as "no pages", or
-    ::  the completion dialog would clear an agent that still holds the only
-    ::  copy of them.
-    ;<  prels=(unit (list path))  bind:m  legacy-page-rels
-    =/  want=(list path)  ?~(prels ~ u.prels)
-    ::  never let a legacy body land on a page we already have. %save-page is
-    ::  an unconditional upsert in the writer, so a name collision would
-    ::  overwrite the user's own published body. Drop collisions before
-    ::  triggering and report them as left-behind.
-    ;<  live-pages=(list path)  bind:m  (page-sources-present want)
-    ::  A legacy name can also collide with a page this nexus published but
-    ::  never had a source for (POST /save, know-publish). %save-page is an
-    ::  unconditional upsert, so triggering would overwrite the user's body.
-    ::  Anything ALREADY in the vault is therefore off limits, unless a prior
-    ::  run of this migration is what put it there.
-    ;<  prior=(list path)  bind:m  legacy-triggered
-    ;<  in-vault=(list path)  bind:m  (vault-present want)
-    =/  has  |=([l=(list path) r=path] (lien l |=(x=path =(x r))))
-    =/  theirs=(list path)
-      (skip in-vault |=(r=path (has prior r)))
-    =/  fresh-pages=(list path)
-      %+  skip  want
-      |=(r=path |((has live-pages r) (has theirs r)))
-    =/  nil  (fiber:fiber:nexus ,~)
-    ::  read the bodies directly (see +legacy-page-bodies) and write each one
-    ::  as a normal page. No poke, no waiting on another agent's cards, and no
-    ::  window in which arrivals can be missed. What we read is what we write.
-    ;<  bodies=(unit (list [rel=path body=@t]))  bind:m
-      ?:  =(~ fresh-pages)
-        (pure:(fiber:fiber:nexus ,(unit (list [rel=path body=@t]))) `~)
-      legacy-page-bodies
-    ;<  ~  bind:m
-      ?:  =(~ fresh-pages)  (pure:nil ~)
-      (poke-eval [%legacy-pages (weld prior fresh-pages)])
-    ;<  promoted=@ud  bind:m
-      ?~  bodies  (pure:(fiber:fiber:nexus ,@ud) 0)
-      (write-legacy-pages (skim u.bodies |=([r=path *] (has fresh-pages r))) 0)
-    ::  ONLY claim the migration is finished when nothing is left behind. A
-    ::  short count leaves the marker UNWRITTEN so the offer returns and the
-    ::  user can retry. The knowledge import is idempotent (skip-existing),
-    ::  so a retry costs nothing and finishes the pages.
-    =/  page-total=@ud  (lent want)
-    ::  "complete" means: we could read the page list, and every page we were
-    ::  allowed to move actually landed AND was promoted. Collisions count as
-    ::  NOT complete. Those pages stay only in the old agent, so the agent
-    ::  must not be cleared for retirement.
-    =/  done=?
-      ?&  ?=(^ prels)
-          ?=(^ bodies)
-          =(promoted (lent fresh-pages))
-          =(0 (lent live-pages))
-          =(0 (lent theirs))
-      ==
-    ;<  ~  bind:m  ?:(done (poke-eval [%legacy-seen n]) (pure:nil ~))
-    %+  send-json  eyre-id
-    %-  pairs:enjs:format
-    :~  ['imported' (numb:enjs:format n)]
-        ['skipped' (numb:enjs:format (sub (lent p.parsed) (lent fresh)))]
-        ['pages' (numb:enjs:format page-total)]
-        ['pagesImported' (numb:enjs:format promoted)]
-        ['pagesCollided' (numb:enjs:format (add (lent live-pages) (lent theirs)))]
-        ::  why the trigger failed, when it did, the difference between
-        ::  "no pages arrived" and knowing the poke was refused
-        :-  'pageError'
-        ?~  bodies  s+'could not read the old agent\'s pages'
-        ~
-        ['pagesKnown' b+?=(^ prels)]
-        ['complete' b+done]
-    ==
-  ::  legacy-dismiss: the user declined. Same marker as a completed import, so
-  ::  the prompt never returns.
+    (handle-legacy-migrate eyre-id)
       [%'POST' %legacy-dismiss]
     ;<  ~  bind:m  (poke-eval [%legacy-seen 0])
     (send-ok eyre-id)

@@ -92,14 +92,20 @@ jobs:
           for f in scripts/*.sh; do bash -n "$f"; done
       # Every pure (non-browser) harness, found by glob rather than a hand-kept
       # list: a new *.mjs unit test nobody remembers to add here is a suite CI
-      # silently never runs. Browser suites (they import puppeteer and drive a
-      # page) are skipped — the ship-free one runs in the next step, the
-      # ship-bound ones in nightly.yml. fast-check is for the property harness.
+      # silently never runs.
+      #
+      # A harness counts as a browser suite if it names puppeteer OR imports
+      # scripts/lib/harness.mjs. Both halves are load-bearing: the shared helper
+      # now owns the launch, so the harnesses that use it stopped naming
+      # puppeteer at all, and a puppeteer-only filter swept two ship-dependent
+      # suites into this step, where they failed for want of a ship.
+      # The ship-free browser suite runs in the next step, the ship-bound ones
+      # in nightly.yml. fast-check is for the property harness.
       - name: pure-function unit + property tests
         run: |
           npm i --no-save --no-audit --no-fund fast-check
           for f in scripts/ui-*.mjs; do
-            grep -q puppeteer "$f" && continue
+            grep -qE 'puppeteer|lib/harness\.mjs' "$f" && continue
             echo "--- $(basename "$f") ---"
             node "$f"
           done
