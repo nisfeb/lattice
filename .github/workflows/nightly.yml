@@ -271,3 +271,35 @@ jobs:
       - name: skipped
         if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
         run: echo "ship/cookie secrets not set — skipping the ui matrix."
+
+  ui-rest:
+    name: ui — remaining browser suites (drift guard)
+    runs-on: ubuntu-latest
+    env:
+      # harnesses read the ship URL as either LATTICE_UI or LATTICE_URL; set both.
+      LATTICE_URL: ${{ secrets.LATTICE_URL }}
+      LATTICE_UI: ${{ secrets.LATTICE_URL }}
+      LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
+    steps:
+      - uses: actions/checkout@v4
+      # Every puppeteer harness that does NOT already have its own job above,
+      # found by glob so a new ui-*.mjs browser suite runs the day it lands
+      # instead of being silently untested. ui-manager is ship-free (ci.yml).
+      - name: remaining ui harnesses
+        if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
+        run: |
+          npm i --no-save --no-audit --no-fund puppeteer-core
+          printf '%s' "$LATTICE_MCP_COOKIE" > /tmp/ship-cookie
+          export LATTICE_COOKIE=/tmp/ship-cookie CHROME="$(command -v google-chrome)"
+          covered=" ui-boot ui-perf ui-acl-prefs ui-offline ui-matrix ui-manager "
+          fail=0
+          for f in scripts/ui-*.mjs; do
+            b="$(basename "$f" .mjs)"
+            grep -q puppeteer "$f" || continue
+            case "$covered" in *" $b "*) continue ;; esac
+            echo "::group::$b"; node "$f" || fail=1; echo "::endgroup::"
+          done
+          exit $fail
+      - name: skipped
+        if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
+        run: echo "ship/cookie secrets not set — skipping remaining ui suites."

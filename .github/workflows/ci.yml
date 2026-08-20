@@ -90,15 +90,19 @@ jobs:
         run: |
           for f in scripts/*.mjs; do node --check "$f"; done
           for f in scripts/*.sh; do bash -n "$f"; done
-      - name: pure-function unit tests
+      # Every pure (non-browser) harness, found by glob rather than a hand-kept
+      # list: a new *.mjs unit test nobody remembers to add here is a suite CI
+      # silently never runs. Browser suites (they import puppeteer and drive a
+      # page) are skipped — the ship-free one runs in the next step, the
+      # ship-bound ones in nightly.yml. fast-check is for the property harness.
+      - name: pure-function unit + property tests
         run: |
-          node scripts/ui-listedit.mjs
-          node scripts/ui-shortpath.mjs
-          # the preview renderer: mostly asserts that document text
-          # cannot become live markup, since its srcdoc is same-origin
-          node scripts/ui-md.mjs
-          # writes real archives and unpacks them with the runner's own tar
-          node scripts/ui-vaultar.mjs
+          npm i --no-save --no-audit --no-fund fast-check
+          for f in scripts/ui-*.mjs; do
+            grep -q puppeteer "$f" && continue
+            echo "--- $(basename "$f") ---"
+            node "$f"
+          done
       - name: supply chain (licences + bans)
         run: |
           cargo install cargo-deny --locked
@@ -107,7 +111,10 @@ jobs:
           #  advisories are REPORTED, never fatal: every one today is an
           #  unmaintained transitive of tauri's gtk3 stack, unfixable here.
           cargo deny --manifest-path desktop/Cargo.toml check advisories || true
-      - name: pure-function property tests
+      # ui-manager loads desktop/ui/manager.html from file:// with a stubbed
+      # Tauri, so it is a real browser test that needs NO ship — it gates PRs
+      # with the rest here. The ubuntu runner ships google-chrome.
+      - name: browser unit test — manager page (no ship)
         run: |
-          npm i --no-save --no-audit --no-fund fast-check
-          node scripts/ui-props.mjs
+          npm i --no-save --no-audit --no-fund puppeteer-core
+          CHROME="$(command -v google-chrome)" node scripts/ui-manager.mjs
