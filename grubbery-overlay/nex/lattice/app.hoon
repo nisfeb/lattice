@@ -1182,12 +1182,6 @@
     ;<  cv=(each (list cmd-result:ast) tang)  bind:m
       (obelisk-query catalog-db catalog-vocab-urql:cat)
     (send-obelisk eyre-id cv)
-  ::  candidate ships to follow. grubbery has no gall SCRY (only watch/poke), so
-  ::  the %contacts book can't be read here. Crawler targets are set explicitly
-  ::  via /follow instead. Route kept for contract shape. ponytail: bridge via a
-  ::  %contacts gall-watch if a live list is needed.
-      [%'GET' %contacts]
-    (send-json eyre-id (pairs:enjs:format ~[['ships' a+~]]))
   ::  ── follows (crawler targets) ──
       [%'GET' %follows]
     ;<  fs=follows:lp  bind:m  read-follows
@@ -8230,22 +8224,6 @@
     rev
     %-  trip
     '";var pend=0,ac=null,live=false;function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||document.hidden)return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(-5)!==" /rev")continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!document.hidden)upd();continue}location.reload();return}}}catch(x){}live=false;if(!document.hidden)setTimeout(c,3000)}document.addEventListener("visibilitychange",function(){if(document.hidden){if(ac)ac.abort();return}if(window.__latRefresh)upd();setTimeout(c,200)});c()})();</script>'
-  ==
-::  +lattice-page: placeholder web reader (replaced by the live SSE view in
-::  step 6).
-::
-++  lattice-page
-  ^-  manx
-  ;html
-    ;head
-      ;title: lattice
-      ;meta(charset "utf-8");
-      ;meta(name "viewport", content "width=device-width, initial-scale=1");
-    ==
-    ;body
-      ;h1: lattice
-      ;p: grubbery-native lattice - web reader coming online.
-    ==
   ==
 ::  +ensure-pub-weir: whitelist <root>/pub in the grubbery `public` usergroup's
 ::  peek set, so any foreign ship may peek/keep published pages. UNION, never

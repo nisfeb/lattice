@@ -45,11 +45,4 @@
     (expect-eq !>(`pub-row:lp`[~2026.1.1 2 (sham 'hi')]) !>((to-pub-row:lp 'hi' ~2026.1.1)))
     (expect-eq !>(`pub-row:lp`[~2026.2.2 5 (sham 'hello')]) !>((to-pub-row:lp 'hello' ~2026.2.2)))
   ==
-::  +derive-pub-index: project every page, keyed identically.
-::
-++  test-derive-pub-index
-  =/  in=(map path page:lp)  (my /pub/a/gmi^'hi' /pub/b/gmi^'hello' ~)
-  =/  want=pub-index:lp
-    (my /pub/a/gmi^[~2026.1.1 2 (sham 'hi')] /pub/b/gmi^[~2026.1.1 5 (sham 'hello')] ~)
-  (expect-eq !>(want) !>((derive-pub-index:lp in ~2026.1.1)))
 --

@@ -32,7 +32,7 @@
 ::  a key-list on demand would drop that column. Caveat: apply-pub writes the vault
 ::  grub then the index row as two darts, so a crash between them can leave the
 ::  index missing a live page (drops it from /list until a manual re-save). There
-::  is no auto-repair yet (derive-pub-index is unused). Add a pub arm to +reindex
+::  is no auto-repair yet. Add a pub arm to +reindex
 ::  if that drift is ever observed in practice.
 ::
 +$  pub-row    [updated=@da bytes=@ud hash=@uvH]
@@ -43,12 +43,6 @@
   |=  [body=@t now=@da]
   ^-  pub-row
   [now (met 3 body) (sham body)]
-::  +derive-pub-index: index every page. Pure projection of the vault.
-::
-++  derive-pub-index
-  |=  [pages=(map path page) now=@da]
-  ^-  pub-index
-  (~(run by pages) |=(b=page (to-pub-row b now)))
 ::  +vrail: a rail expressed structurally (== rail:tarball [p=path name=@ta]) so
 ::  this lib stays grubbery-free.
 ::

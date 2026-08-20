@@ -231,7 +231,7 @@ pub fn del_op_at(path: &Path, seq: u64) -> Result<(), String> {
 
 #[tauri::command]
 pub fn queue_list(app: AppHandle) -> Result<Vec<Value>, String> {
-    Ok(list_saves_at(&saves_dir(app_ref(&app))?))
+    Ok(list_saves_at(&saves_dir(&app)?))
 }
 
 /// One record by name. openPage consults the queue as its TOP READ TIER, on
@@ -239,24 +239,24 @@ pub fn queue_list(app: AppHandle) -> Result<Vec<Value>, String> {
 /// deserialise of every queued body just to answer a question about one page.
 #[tauri::command]
 pub fn queue_get(app: AppHandle, name: String) -> Result<Option<Value>, String> {
-    Ok(get_save_at(&saves_dir(app_ref(&app))?, &name))
+    Ok(get_save_at(&saves_dir(&app)?, &name))
 }
 
 #[tauri::command]
 pub fn queue_put(app: AppHandle, rec: Value) -> Result<(), String> {
-    put_save_at(&saves_dir(app_ref(&app))?, &rec)
+    put_save_at(&saves_dir(&app)?, &rec)
 }
 
 #[tauri::command]
 pub fn queue_del(app: AppHandle, name: String) -> Result<(), String> {
-    del_save_at(&saves_dir(app_ref(&app))?, &name)
+    del_save_at(&saves_dir(&app)?, &name)
 }
 
 #[tauri::command]
 pub fn queue_ops(app: AppHandle) -> Result<Vec<Value>, String> {
     //  flattened back into the shape the client already replays: the record's
     //  own fields plus `_k`, the handle it deletes by
-    Ok(read_ops_at(&ops_path(app_ref(&app))?)
+    Ok(read_ops_at(&ops_path(&app)?)
         .into_iter()
         .map(|o| {
             let mut v = o.rest;
@@ -270,16 +270,12 @@ pub fn queue_ops(app: AppHandle) -> Result<Vec<Value>, String> {
 
 #[tauri::command]
 pub fn queue_op_put(app: AppHandle, rec: Value) -> Result<u64, String> {
-    push_op_at(&ops_path(app_ref(&app))?, rec)
+    push_op_at(&ops_path(&app)?, rec)
 }
 
 #[tauri::command]
 pub fn queue_op_del(app: AppHandle, seq: u64) -> Result<(), String> {
-    del_op_at(&ops_path(app_ref(&app))?, seq)
-}
-
-fn app_ref(app: &AppHandle) -> &AppHandle {
-    app
+    del_op_at(&ops_path(&app)?, seq)
 }
 
 #[cfg(test)]

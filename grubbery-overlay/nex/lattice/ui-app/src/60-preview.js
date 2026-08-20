@@ -53,7 +53,6 @@
   // output, so it srcdocs directly — the one case where local IS authoritative.
   // text is an escaped <pre>. Only the computed kinds (hoon, js, css) still
   // wait on the ship, because their preview is the page's live DATA, not text.
-  const localPreviewable = () => ['md', 'gmi', 'html', 'text'].includes(pkind.value);
   const localHtml = (kind, body) => {
     if (kind === 'md') return mdToHtml(body);
     if (kind === 'gmi') return gmiToHtml(body);
@@ -61,7 +60,7 @@
     return body;   // html: the document is already its own rendering
   };
   const paintLocal = () => {
-    if (!localPreviewable() || document.hidden) return;
+    if (!CONTENT() || document.hidden) return;
     if (isMobile() && ws.dataset.mv !== 'prev') return;
     try {
       // html pages own their whole document, chrome and all. The content kinds

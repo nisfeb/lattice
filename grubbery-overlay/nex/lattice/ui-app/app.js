@@ -3360,7 +3360,6 @@
   // output, so it srcdocs directly — the one case where local IS authoritative.
   // text is an escaped <pre>. Only the computed kinds (hoon, js, css) still
   // wait on the ship, because their preview is the page's live DATA, not text.
-  const localPreviewable = () => ['md', 'gmi', 'html', 'text'].includes(pkind.value);
   const localHtml = (kind, body) => {
     if (kind === 'md') return mdToHtml(body);
     if (kind === 'gmi') return gmiToHtml(body);
@@ -3368,7 +3367,7 @@
     return body;   // html: the document is already its own rendering
   };
   const paintLocal = () => {
-    if (!localPreviewable() || document.hidden) return;
+    if (!CONTENT() || document.hidden) return;
     if (isMobile() && ws.dataset.mv !== 'prev') return;
     try {
       // html pages own their whole document, chrome and all. The content kinds
@@ -4814,16 +4813,9 @@
     } catch {}
   }
 
-  const qCount = (hay, needle) => {
-    if (!needle.length) return 0;   // indexOf('', i) is i: an empty needle loops forever
-    let n = 0, i = 0;
-    for (;;) {
-      const at = hay.indexOf(needle, i);
-      if (at < 0) return n;
-      n += 1;
-      i = at + needle.length;
-    }
-  };
+  // non-overlapping occurrence count: split yields pieces-1 = matches. The
+  // empty-needle guard stays, since split('') would count every character.
+  const qCount = (hay, needle) => needle ? hay.split(needle).length - 1 : 0;
   // a line of context around the hit, the way grep shows it
   const qSnip = (body, at, len) => {
     const from = Math.max(0, at - 40);

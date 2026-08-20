@@ -68,16 +68,9 @@
     } catch {}
   }
 
-  const qCount = (hay, needle) => {
-    if (!needle.length) return 0;   // indexOf('', i) is i: an empty needle loops forever
-    let n = 0, i = 0;
-    for (;;) {
-      const at = hay.indexOf(needle, i);
-      if (at < 0) return n;
-      n += 1;
-      i = at + needle.length;
-    }
-  };
+  // non-overlapping occurrence count: split yields pieces-1 = matches. The
+  // empty-needle guard stays, since split('') would count every character.
+  const qCount = (hay, needle) => needle ? hay.split(needle).length - 1 : 0;
   // a line of context around the hit, the way grep shows it
   const qSnip = (body, at, len) => {
     const from = Math.max(0, at - 40);
