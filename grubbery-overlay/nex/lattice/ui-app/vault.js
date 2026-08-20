@@ -340,7 +340,11 @@ editor, or git will do if you only want to look.
   };
   const bkId = () => 'bk' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
-  function mountSettings(root) {
+  // manual export and restore: the browser (download / file input) and the
+  // desktop shell (native save / open dialog, chosen inside exportVault/desk())
+  // both get these. This is also where the module's cfg callbacks are
+  // installed, so mounting the pane is what wires up status and confirm.
+  function mountManual(root) {
     const status = el('span', { class: 'muted' });
     configure({
       status: (m, ok) => { status.textContent = m || ''; status.className = ok === false ? 'err' : 'muted'; },
@@ -350,8 +354,6 @@ editor, or git will do if you only want to look.
       afterRestore: () => {},
     });
 
-    // manual: works in the browser (download / file input) and the desktop shell
-    // (native save / open dialog, chosen inside exportVault/desk()).
     const exportBtn = el('button', { type: 'button', class: 'btn', text: 'Export vault' });
     exportBtn.onclick = () => exportVault();
     const pick = el('input', { type: 'file', accept: '.tar,application/x-tar', hidden: true });
@@ -370,15 +372,11 @@ editor, or git will do if you only want to look.
       el('p', { class: 'muted' }, [document.createTextNode('Download every page and memory as one tar, or restore from one. The archive is plain files, readable without lattice.')]),
       el('p', null, [exportBtn, document.createTextNode(' '), restoreBtn, pick, document.createTextNode(' '), status]),
     );
+  }
 
-    // automated: desktop only. In a browser there is no scheduler and nowhere on
-    // the machine to write to, so say that rather than showing dead controls.
-    const d = cfg.desk();
-    if (!d) {
-      root.append(el('p', { class: 'muted', text: 'Automatic scheduled backups run in the lattice desktop app. Open lattice on your computer to set them up.' }));
-      return;
-    }
-    const invoke = window.__TAURI__.core.invoke;
+  // the scheduled-backup CRUD: list, verify, add. Desktop only, and it talks
+  // to the shell rather than to the ship.
+  function mountSchedules(root, invoke) {
     root.append(el('h3', { text: 'Automatic backups' }));
     root.append(el('p', { class: 'muted', text: 'Whole-store archives written to this machine on a schedule — the same tar as export above. They run while lattice is open; one that came due while it was closed runs shortly after you next open it.' }));
     const listEl = el('ul', { class: 'bklist' });
@@ -438,6 +436,18 @@ editor, or git will do if you only want to look.
       el('div', { class: 'bkrow' }, [inDir, pickDir]),
       el('div', { class: 'bkrow' }, [addBtn, bkStatus]));
     refresh();
+  }
+
+  function mountSettings(root) {
+    mountManual(root);
+    // automated: desktop only. In a browser there is no scheduler and nowhere on
+    // the machine to write to, so say that rather than showing dead controls.
+    const d = cfg.desk();
+    if (!d) {
+      root.append(el('p', { class: 'muted', text: 'Automatic scheduled backups run in the lattice desktop app. Open lattice on your computer to set them up.' }));
+      return;
+    }
+    mountSchedules(root, window.__TAURI__.core.invoke);
   }
 
   window.LatticeVault = { configure, exportVault, restoreVault, mountSettings,

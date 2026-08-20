@@ -47,9 +47,17 @@
   // a megabyte, page it or go back to page-tree plus a lazy body cache.
   async function loadTree() {
     const gen = treeGen;
-    const r = await fetch(api + '/page-dump');
-    if (!r.ok) { st('tree failed ' + r.status, false); return; }
-    const d = await r.json();
+    let d = null;
+    // this one RESOLVES, always. Boot chains its whole reconcile off it
+    // (99-boot.js) with no .catch, so a rejection here would silently cancel
+    // loadPanels, the open/reconcile branch and legacyCheck, and show nothing.
+    // A dead pier is a reportable condition, the way openPage and loadPerms
+    // already report theirs. Offline is a state this app is built for.
+    try {
+      const r = await fetch(api + '/page-dump');
+      if (!r.ok) { st('tree failed ' + r.status, false); return; }
+      d = await r.json();
+    } catch { st('tree failed (network)', false); return; }
     if (gen !== treeGen) return;   // a local patch superseded this response
     // the dump's beacon rev is the baseline for a FIRST-EVER session: the
     // stream only reports from registration onward, and with nothing

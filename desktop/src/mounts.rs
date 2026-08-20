@@ -84,14 +84,26 @@ pub fn add_mount(
     let sock = sock.unwrap_or_default();
     let ship = ship.unwrap_or_default();
     validate_mountpoint(&mountpoint)?;
-    let mut m = map.0.lock().unwrap();
-    if m.contains_key(&mountpoint) {
+    // Cheap check under the lock, then RELEASE it. The map lock never spans
+    // I/O, the same rule remount() follows: status, list_mounts and
+    // remove_mount stay answerable while a mount is coming up, and healing a
+    // wedged mountpoint alone can take 5 seconds.
+    if map.0.lock().unwrap().contains_key(&mountpoint) {
         return Err(format!("{mountpoint} is already mounted"));
     }
     let proj = projection_for(&app, &root, &sock, &ship)?;
     heal_mountpoint(&mountpoint);
     let session = lattice_fs::spawn(proj, &mountpoint).map_err(|e| e.to_string())?;
-    m.insert(mountpoint.clone(), (root.clone(), session));
+    {
+        let mut m = map.0.lock().unwrap();
+        // check again: two adds of the same path could both have got past the
+        // first check while the lock was down
+        if m.contains_key(&mountpoint) {
+            drop(session); // dropping the session IS the unmount
+            return Err(format!("{mountpoint} is already mounted"));
+        }
+        m.insert(mountpoint.clone(), (root.clone(), session));
+    }
     // persist for auto-remount on launch
     let mut cfg = config::load(&app);
     cfg.mounts.retain(|s| s.mountpoint != mountpoint);
@@ -135,9 +147,6 @@ pub fn list_mounts(app: AppHandle, map: State<MountMap>) -> Vec<MountSpec> {
         .collect()
 }
 
-/// Make a mountpoint usable: detach a stale fuse mount left by a run that
-/// died without unmounting ("Transport endpoint is not connected", os 107),
-/// and create the directory if it does not exist yet.
 /// Is this path a fuse mount, according to the kernel's own table?
 ///
 /// Read from /proc, which never enters the filesystem, so it cannot block the

@@ -129,14 +129,9 @@ pub struct PickedFile {
     pub text: String,
 }
 
-/// Native upload picker for the ship-served workspace (webkit2gtk has no
-/// webkitdirectory, so the web folder picker is dead on Linux). Picks files
-/// or a folder, reads only extensions the UI supports, returns the text.
-/// The page never sees a path or fs handle. One user-driven dialog per call.
-/// Async so the blocking dialog runs off the main thread.
 /// Schemes a system handler can sensibly open, and the ONLY ones that leave
 /// the app. This is a trust boundary, not a convenience check: the workspace
-/// webview renders ship-served content and can reach the command below, so a
+/// webview renders ship-served content and can reach `open_external_url`, so a
 /// page could ask us to hand any string to the desktop's URL dispatcher.
 /// Refusing here rather than in the page's javascript is the difference
 /// between a policy and a suggestion.
@@ -191,6 +186,11 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     open_external(&url)
 }
 
+/// Native upload picker for the ship-served workspace (webkit2gtk has no
+/// webkitdirectory, so the web folder picker is dead on Linux). Picks files
+/// or a folder, reads only extensions the UI supports, returns the text.
+/// The page never sees a path or fs handle. One user-driven dialog per call.
+/// Async so the blocking dialog runs off the main thread.
 #[tauri::command]
 pub async fn pick_upload(app: AppHandle, dir: bool, exts: Vec<String>) -> Vec<PickedFile> {
     use tauri_plugin_dialog::DialogExt;
@@ -283,6 +283,70 @@ pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// What to do with a top-level navigation the workspace attempted.
+#[derive(Debug, PartialEq)]
+enum Nav {
+    /// stay in the webview as-is
+    Allow,
+    /// renavigate the workspace to this url instead
+    Rewrite(String),
+    /// hand to the system opener, which applies openable()
+    External,
+    /// nothing to open and nothing to rewrite, so the navigation just stops
+    Block,
+}
+
+/// The whole navigation policy, with no AppHandle and no window in it, so the
+/// six branches read as one table instead of as plumbing.
+///
+/// `bridge` yields the live bridge port and `ship_url` the configured ship
+/// base, both looked up only if the decision gets far enough to need them.
+/// Laziness is the point: the preview iframe is srcdoc-based and some webkits
+/// run every frame through this hook, so neither a mutex nor a config read
+/// belongs on the path that answers those.
+fn nav_decision(
+    u: &tauri::Url,
+    bridge: impl FnOnce() -> Option<u16>,
+    ship_url: impl FnOnce() -> String,
+) -> Nav {
+    // local shell pages: tauri:// (macOS) or http://tauri.localhost (Linux)
+    if u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost") {
+        return Nav::Allow;
+    }
+    // in-page pseudo-navigations (the preview iframe is srcdoc-based,
+    // and some webkits run every frame through this policy hook).
+    // Never route these to the system opener. That popups "Could not
+    // read file about:src:doc."
+    if matches!(u.scheme(), "about" | "blob" | "data") {
+        return Nav::Allow;
+    }
+    let bridge = bridge();
+    if u.host_str() == Some("127.0.0.1") && u.port() == bridge {
+        return Nav::Allow;
+    }
+    let local = bridge.map(|p| format!("http://127.0.0.1:{p}"));
+    // urb:// names stay in the app. The ship's reader resolves them
+    if let (Some(local), "urb") = (&local, u.scheme()) {
+        return match format!("{local}/apps/lattice").parse::<tauri::Url>() {
+            Ok(mut t) => {
+                t.query_pairs_mut().clear().append_pair("url", u.as_str());
+                Nav::Rewrite(t.to_string())
+            }
+            Err(_) => Nav::Block,
+        };
+    }
+    // absolute links to the ship's real origin re-route through the
+    // bridge. Hitting the ship directly would arrive cookieless
+    if tauri::Url::parse(&ship_url()).is_ok_and(|ship| ship.origin() == u.origin()) {
+        let Some(local) = &local else { return Nav::Block };
+        let pq = &u.as_str()[u.origin().ascii_serialization().len()..];
+        return Nav::Rewrite(format!("{local}{pq}"));
+    }
+    // only things a system handler can sensibly open leave the app.
+    // Anything else is silently blocked (an opener error is a popup)
+    Nav::External
+}
+
 fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     let handle = app.clone();
     // LATTICE_PROBE_JS=<path>: inject that file into the workspace page.
@@ -330,28 +394,6 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
         // other top-level navigation opens in the system browser. The
         // webview has no back button or url bar to escape from
         .on_navigation(move |u| {
-            // local shell pages: tauri:// (macOS) or http://tauri.localhost (Linux)
-            if u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost") {
-                return true;
-            }
-            // in-page pseudo-navigations (the preview iframe is srcdoc-based,
-            // and some webkits run every frame through this policy hook).
-            // Never route these to the system opener. That popups "Could not
-            // read file about:src:doc."
-            if matches!(u.scheme(), "about" | "blob" | "data") {
-                return true;
-            }
-            let bridge = handle
-                .state::<crate::proxy::Bridge>()
-                .inner()
-                .0
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|(_, p)| *p);
-            if u.host_str() == Some("127.0.0.1") && u.port() == bridge {
-                return true;
-            }
             // renavigate the workspace ourselves, off-thread so the queued
             // navigate never re-enters the policy callback we are inside
             let renav = |t: tauri::Url| {
@@ -366,31 +408,30 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
                     .ok();
                 });
             };
-            let local = bridge.map(|p| format!("http://127.0.0.1:{p}"));
-            // urb:// names stay in the app. The ship's reader resolves them
-            if let (Some(local), "urb") = (&local, u.scheme()) {
-                if let Ok(mut t) = format!("{local}/apps/lattice").parse::<tauri::Url>() {
-                    t.query_pairs_mut().clear().append_pair("url", u.as_str());
-                    renav(t);
-                }
-                return false;
-            }
-            // absolute links to the ship's real origin re-route through the
-            // bridge. Hitting the ship directly would arrive cookieless
-            let cfg = config::load(&handle);
-            if tauri::Url::parse(&cfg.url).is_ok_and(|ship| ship.origin() == u.origin()) {
-                if let Some(local) = &local {
-                    let pq = &u.as_str()[u.origin().ascii_serialization().len()..];
-                    if let Ok(t) = format!("{local}{pq}").parse::<tauri::Url>() {
+            let bridge = || {
+                handle
+                    .state::<crate::proxy::Bridge>()
+                    .inner()
+                    .0
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|(_, p)| *p)
+            };
+            match nav_decision(u, bridge, || config::load(&handle).url) {
+                Nav::Allow => true,
+                Nav::Rewrite(t) => {
+                    if let Ok(t) = t.parse::<tauri::Url>() {
                         renav(t);
                     }
+                    false
                 }
-                return false;
+                Nav::External => {
+                    open_external(u.as_str()).ok();
+                    false
+                }
+                Nav::Block => false,
             }
-            // only things a system handler can sensibly open leave the app.
-            // Anything else is silently blocked (an opener error is a popup)
-            open_external(u.as_str()).ok();
-            false
         })
         .build()
         .map_err(|e| e.to_string())?;
@@ -473,6 +514,18 @@ pub fn set_backup_schedules(
     config::save(&app, &cfg)
 }
 
+/// The schedule with this id. One place, so "no backup schedule" reads the
+/// same however the user arrived at it.
+fn schedule<'a>(
+    cfg: &'a config::Config,
+    id: &str,
+) -> Result<&'a crate::config::BackupSchedule, String> {
+    cfg.backups
+        .iter()
+        .find(|s| s.id == id)
+        .ok_or_else(|| format!("no backup schedule {id}"))
+}
+
 /// Pick a directory for a schedule to write into.
 #[tauri::command]
 pub async fn pick_backup_dir(app: AppHandle) -> Result<String, String> {
@@ -493,9 +546,7 @@ pub fn backup_write(app: AppHandle, id: String, b64: String) -> Result<String, S
     let bytes = decode_archive(&b64)?;
     let mut cfg = config::load(&app);
     let at = crate::backup::now();
-    let Some(s) = cfg.backups.iter().find(|s| s.id == id).cloned() else {
-        return Err(format!("no backup schedule {id}"));
-    };
+    let s = schedule(&cfg, &id)?.clone();
     let path = crate::backup::write_archive(&s, &bytes, at)?;
     if let Some(slot) = cfg.backups.iter_mut().find(|s| s.id == id) {
         slot.last_run = at;
@@ -543,9 +594,7 @@ pub fn request_backup(app: &AppHandle, id: &str) -> bool {
 #[tauri::command]
 pub fn verify_backup(app: AppHandle, id: String) -> Result<crate::backup::Report, String> {
     let cfg = config::load(&app);
-    let Some(s) = cfg.backups.iter().find(|s| s.id == id) else {
-        return Err(format!("no backup schedule {id}"));
-    };
+    let s = schedule(&cfg, &id)?;
     let r = crate::backup::verify_newest(s)?;
     dlog(&format!(
         "verify {}: {} — {:?}",
@@ -560,9 +609,7 @@ pub fn verify_backup(app: AppHandle, id: String) -> Result<crate::backup::Report
 #[tauri::command]
 pub fn run_backup_now(app: AppHandle, id: String) -> Result<(), String> {
     let cfg = config::load(&app);
-    if !cfg.backups.iter().any(|s| s.id == id) {
-        return Err(format!("no backup schedule {id}"));
-    }
+    schedule(&cfg, &id)?;
     if !request_backup(&app, &id) {
         return Err("the workspace page is not open, so there is nothing to export from".into());
     }

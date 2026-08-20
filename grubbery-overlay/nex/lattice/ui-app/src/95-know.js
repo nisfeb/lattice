@@ -8,9 +8,15 @@
 
   async function loadKnow() {
     const gen = knowGen;
-    const r = await fetch(api + '/know-list');
-    if (!r.ok) { st('know-list failed ' + r.status, false); return; }
-    const d = await r.json();
+    let d = null;
+    // resolves either way, like loadTree: the drain and the mode switch both
+    // call this without a .catch, and a rejection there would take the rest of
+    // their work with it.
+    try {
+      const r = await fetch(api + '/know-list');
+      if (!r.ok) { st('know-list failed ' + r.status, false); return; }
+      d = await r.json();
+    } catch { st('know-list failed (network)', false); return; }
     if (gen !== knowGen) return;   // a local patch superseded this response
     knowKeys = d.keys;
     renderKnowChips();

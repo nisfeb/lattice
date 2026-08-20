@@ -100,12 +100,26 @@ impl EyreTransport {
                     .map_err(|e| TErr::new(0, format!("read: {e}")))?;
                 Ok(buf)
             }
-            Err(ureq::Error::Status(code, _)) => {
+            Err(ureq::Error::Status(code, resp)) => {
                 if (code == 401 || code == 403) && retry {
                     self.login(None)?; // cookie expired. Re-auth once
                     return self.do_req(method, path, query, body, false);
                 }
-                Err(TErr::new(code, format!("http {code}")))
+                // Carry the ship's own words. The message is printed verbatim by
+                // the shell and by `errors`, and "http 400" says nothing when the
+                // reply body names the field page-save rejected. lick already
+                // returns the reply body as the message, so this keeps the two
+                // transports saying the same kind of thing behind the trait.
+                let detail = resp.into_string().unwrap_or_default();
+                let detail = detail.trim();
+                Err(TErr::new(
+                    code,
+                    if detail.is_empty() {
+                        format!("http {code}")
+                    } else {
+                        format!("http {code}: {detail}")
+                    },
+                ))
             }
             Err(e) => Err(TErr::new(0, format!("transport: {e}"))),
         }

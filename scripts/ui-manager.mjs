@@ -21,20 +21,13 @@
 import { readFileSync, writeFileSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { launchBrowser, makeCheck } from './lib/harness.mjs';
 
 const ROOT = new globalThis.URL('..', import.meta.url).pathname;
 const P = ROOT + 'desktop/ui/manager.html';
-let fails = 0;
-const check = (m, c, d) => {
-  console.log((c ? '  ok   - ' : '  FAIL - ') + m + (c || !d ? '' : ' (' + d + ')'));
-  if (!c) fails++;
-};
+const check = makeCheck();
 
-const puppeteer = (await import('puppeteer-core')).default;
-const browser = await puppeteer.launch({
-  executablePath: process.env.CHROME || '/usr/bin/chromium',
-  headless: 'new', args: ['--no-sandbox'],
-});
+const browser = await launchBrowser();
 
 const dir = mkdtempSync(join(tmpdir(), 'mgr-'));
 const src = readFileSync(P, 'utf8');
@@ -117,5 +110,5 @@ check('and the refusal is shown, not swallowed',
 await off.close();
 
 await browser.close();
-console.log(fails ? '\n' + fails + ' FAILED' : '\nall checks passed');
-process.exit(fails ? 1 : 0);
+console.log(check.fails ? '\n' + check.fails + ' FAILED' : '\nall checks passed');
+process.exit(check.fails ? 1 : 0);

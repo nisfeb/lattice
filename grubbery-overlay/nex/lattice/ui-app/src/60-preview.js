@@ -83,7 +83,6 @@
     } catch {}
   };
 
-  let prevTimer = null;
   async function refreshPreview() {
     // a hidden pane renders to nobody, but the POST still costs ~2s of pier
     // time and delays the autosave queued behind it (worst on mobile, where
@@ -117,23 +116,15 @@
   let localTimer = null;
   src.addEventListener('input', () => {
     if (!CONTENT()) return;
+    // Typing sends nothing to the ship. The local render IS the preview for
+    // every content kind (md/gmi/html/text), with no second authoritative
+    // render behind it to wait for. refreshPreview says why. Computed kinds
+    // (hoon, js, css) return above; their preview is the page's live data and
+    // arrives from refreshPreview's /f/ branch after a save.
+    //
     // local first, on a delay short enough to feel like typing
     clearTimeout(localTimer);
     localTimer = setTimeout(paintLocal, 60);
-    // The authoritative render is now RARE, not merely less frequent.
-    //
-    // Every one of these is a POST of the WHOLE document to the ship. At 400ms
-    // a long note re-uploaded itself after every pause in typing, previews
-    // queued behind each other on a pier that serialises, and the autosave
-    // queued behind those. Moving it to 1200ms made that less bad while
-    // keeping the shape of the mistake: the file went over the wire again and
-    // again to render text that had barely changed.
-    //
-    // Ten seconds of quiet, and only then. While you are actually typing the
-    // ship sees nothing at all, and the pane is driven entirely by the local
-    // render. This is a preview correcting itself, not a live feed.
-    clearTimeout(prevTimer);
-    prevTimer = setTimeout(refreshPreview, 10000);
   });
 
   // ── compile errors (hoon pages) ──────────────────────────────────────────

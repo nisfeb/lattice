@@ -11,33 +11,23 @@
 //
 // Needs puppeteer-core:  npm i --no-save puppeteer-core
 
-import { readFileSync, writeFileSync, rmSync } from 'fs';
-import { homedir, tmpdir } from 'os';
+import { writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
+import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harness.mjs';
 
-let puppeteer;
-try { puppeteer = (await import('puppeteer-core')).default; }
-catch { console.error('puppeteer-core missing: npm i --no-save puppeteer-core'); process.exit(2); }
-
-const URL = (process.env.LATTICE_URL || 'http://localhost:8080').replace(/\/$/, '');
-const COOKIE_FILE = process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/cookie';
-const CHROME = process.env.CHROME || '/usr/bin/chromium';
-const APP = URL + '/apps/lattice/app';
+const env = shipEnv();
+const APP = env.app;
 const RUN = 'uimx-' + process.pid;          // per-run namespace, cleaned at the end
 
-const cookie = readFileSync(COOKIE_FILE, 'utf8').trim();
-const [ckName, ...ckRest] = cookie.split('=');
-const host = new globalThis.URL(URL).hostname;
+const check = makeCheck();
+const ok = check.ok;
+const bad = check.bad;
 
-let fails = 0;
-const ok = (name) => console.log('  ok   - ' + name);
-const bad = (name, detail) => { console.log('  FAIL - ' + name + (detail ? ' (' + detail + ')' : '')); fails++; };
-const check = (name, cond, detail) => (cond ? ok(name) : bad(name, detail));
-
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox'] });
-const page = await browser.newPage();
-page.on('pageerror', (e) => bad('page threw: ' + e.message.slice(0, 80)));
-await page.setCookie({ name: ckName, value: ckRest.join('='), domain: host, path: '/' });
+const browser = await launchBrowser();
+const page = await openPage(browser, env, {
+  onPageError: (e) => bad('page threw: ' + e.message.slice(0, 80)),
+});
 
 // The no-native-popups rule is absolute. Any prompt/confirm/alert fails the run.
 await page.evaluateOnNewDocument(() => {
@@ -48,7 +38,6 @@ await page.evaluateOnNewDocument(() => {
 // the harness pier is slow (a page save is 2-4s, a folder move is one save
 // per page), so integration waits get a generous budget
 const wait = (fn, ...args) => page.waitForFunction(fn, { timeout: 90000 }, ...args);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // The in-app dialog: fill (optional) and submit / cancel.
 const dialog = async (value, submit = true) => {
   await wait(() => !document.getElementById('dlg').hidden);
@@ -1532,14 +1521,15 @@ await browser.close();
 //  sweep lands after it and puts the page back. With the browser closed there
 //  is nothing left to type, so this is the first moment a delete is final.
 try {
-  const tree = await (await fetch(`${URL}/apps/lattice/page-tree`, { headers: { cookie } })).json();
+  const tree = await (await fetch(`${env.base}/apps/lattice/page-tree`,
+    { headers: { cookie: env.cookie } })).json();
   for (const node of tree.nodes || []) {
     if (node.path.includes(RUN) &&
         (node.path.startsWith('conflicts/') || node.path.includes('-lists'))) {
-      await fetch(`${URL}/apps/lattice/page-del?name=${encodeURIComponent(node.path)}`,
-        { method: 'POST', headers: { cookie } });
+      await fetch(`${env.base}/apps/lattice/page-del?name=${encodeURIComponent(node.path)}`,
+        { method: 'POST', headers: { cookie: env.cookie } });
     }
   }
 } catch {}
-console.log(fails ? `\nui-matrix FAILED (${fails})` : '\nui-matrix PASSED');
-process.exit(fails ? 1 : 0);
+console.log(check.fails ? `\nui-matrix FAILED (${check.fails})` : '\nui-matrix PASSED');
+process.exit(check.fails ? 1 : 0);

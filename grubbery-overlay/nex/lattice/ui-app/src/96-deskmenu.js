@@ -51,11 +51,14 @@
       label.title = v ? v + ' · ' + (pkind.value || '') : '';
     };
     paint();
-    // pname is set from a dozen places (applyPage, newFile, rename, the
-    // offline replay). Rather than find them all, watch the field itself.
-    new MutationObserver(paint).observe(pname, { attributes: true, attributeFilter: ['value'] });
     pname.addEventListener('input', paint);
     pname.addEventListener('change', paint);
+    // pname is set from a dozen places (applyPage, newFile, rename, the
+    // offline replay) and every one of them assigns the value PROPERTY. That
+    // fires no event and leaves the value attribute alone, so a
+    // MutationObserver cannot see it either. Until those writers go through
+    // one setter, the poll is the mechanism here, not a safety net. The
+    // mobile bar (97-mobar.js) polls its own label for the same reason.
     setInterval(paint, 500);
   }
 
