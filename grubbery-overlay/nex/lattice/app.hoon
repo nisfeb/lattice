@@ -447,9 +447,12 @@
 ::  cancel orphaned connections). Identical layout to counter.
 ::
 ++  srv  ~(. http-res:io [%| 1 %& ~ %'main.sig'])
-::  +handle-request: serve one HTTP request. ponytail: the full ~50-route
-::  contract lands in step 3. This scaffold proves the request-fiber path:
-::  owner-auth, then serve the web reader at the root and 404 (JSON) the rest.
+::  +handle-page-save-batch: POST /page-save-batch. One %make-many transaction
+::  for a whole upload or queue replay. ?report=1 switches to REPLAY mode, where
+::  each item also carries the rev it was made from and the response reports
+::  {rev, conflicted} per item instead of a bare count. The plain mode wants
+::  all-or-nothing and no per-item bookkeeping, which is why it is a mode rather
+::  than the default.
 ::
 ++  handle-page-save-batch
   |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t)]
@@ -591,6 +594,10 @@
       ['saved' (numb:enjs:format (lent items))]
       ['items' a+out]
   ==
+::  +handle-page-save: POST /page-save. One page, with the conflict rule the
+::  offline queue depends on: ?base=<rev> claims the rev this edit was made
+::  from, and a write against a moved-on page is reported as conflicted with
+::  the replaced body kept, rather than refused or silently overwritten.
 ::
 ++  handle-page-save
   |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t)]
@@ -661,6 +668,10 @@
       ['conflicted' b+conflicted]
       ['kept' s+kept]
   ==
+::  +handle-share-group-save: POST /share-group-save. Write one usergroup's
+::  members and the weir that grants them access. A group naming a banned ship
+::  is refused outright rather than written with that ship dropped, because a
+::  silent drop reads as a grant that was made and was not.
 ::
 ++  handle-share-group-save
   |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t)]
@@ -724,11 +735,9 @@
   ;<  ~  bind:m  (over:io [%& %& gdir %'who.ships'] [[/ %ships] who])
   ;<  ~  bind:m  (over:io [%& %& gdir %'how.weir'] [[/ %weir] weir])
   (send-ok eyre-id)
-::  share-file: the per-file shortcut. Grant a ship read or edit on ONE
-::  page, and tell them. The grant goes into an auto-group named after the
-::  ship (visible and editable in the peers panel like any other group).
-::  The notice is best-effort and the response says whether it arrived,
-::  because the grant is durable either way.
+::  +handle-remote-save: POST /remote-save. Write a grub onto ANOTHER ship's
+::  grubbery, which is why it takes `our`: saving to yourself is a different
+::  path (/grub-save) and is refused here rather than silently rerouted.
 ::
 ++  handle-remote-save
   |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t) our=@p]
@@ -789,11 +798,10 @@
   ?.  landed
     (send-err eyre-id 403 'write did not land — no make permission on that path?')
   (send-ok eyre-id)
-::  ── sharing groups: the permission editor (see +share-groups-json) ──
-::  ── banlist ────────────────────────────────────────────────────────────
-::  Deny cannot be expressed as a weir (see +$banned in /lib/lattice-share),
-::  so it is this app's own list, enforced where a foreign ship's identity is
-::  known: the shares inbox and every grant written here.
+::  +handle-legacy-migrate: POST /legacy-migrate. Import the pages and memories
+::  of a retired %lattice gall agent, once. It takes only eyre-id because it
+::  reads everything it needs from the old agent rather than the request, and
+::  it writes a marker so a re-run is harmless.
 ::
 ++  handle-legacy-migrate
   |=  eyre-id=@ta
@@ -894,8 +902,11 @@
       ['pagesKnown' b+?=(^ prels)]
       ['complete' b+done]
   ==
-::  legacy-dismiss: the user declined. Same marker as a completed import, so
-::  the prompt never returns.
+::  +handle-request: serve one HTTP request. Owner-auth first, then the two
+::  unauthenticated surfaces (clearweb reads and public form posts), then the
+::  route table below, which dispatches on [method (rear suffix)]. The five
+::  largest handlers live in their own arms above; every other route answers
+::  inline here so the whole contract stays readable in one place.
 ::
 ++  handle-request
   |=  eyre-id=@ta
@@ -1278,6 +1289,10 @@
   ::  normalize the body, e.g. wain round-trips and trailing newlines.)
       [%'POST' %remote-save]
     (handle-remote-save eyre-id req args our)
+  ::  ── banlist ────────────────────────────────────────────────────────────
+  ::  Deny cannot be expressed as a weir (see +$banned in /lib/lattice-share),
+  ::  so it is this app's own list, enforced where a foreign ship's identity is
+  ::  known: the shares inbox and every grant written here.
       [%'GET' %banlist]
     ;<  bans=banned:ls  bind:m  read-banned
     %+  send-json  eyre-id
@@ -1311,7 +1326,7 @@
     ;<  ~  bind:m
       (over:io ban-road [[/lattice %banned] (~(del in bans) u.who)])
     (send-ok eyre-id)
-  ::
+  ::  ── sharing groups: the permission editor (see +share-groups-json) ──
       [%'GET' %share-groups]
     ;<  j=json  bind:m  share-groups-json
     (send-json eyre-id j)
@@ -1323,6 +1338,11 @@
   ::  carried through from the stored weir verbatim.
       [%'POST' %share-group-save]
     (handle-share-group-save eyre-id req args)
+  ::  share-file: the per-file shortcut. Grant a ship read or edit on ONE
+  ::  page, and tell them. The grant goes into an auto-group named after the
+  ::  ship (visible and editable in the peers panel like any other group).
+  ::  The notice is best-effort and the response says whether it arrived,
+  ::  because the grant is durable either way.
       [%'POST' %share-file]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -2607,6 +2627,8 @@
   ::  since. That also makes a re-run harmless.
       [%'POST' %legacy-migrate]
     (handle-legacy-migrate eyre-id)
+  ::  legacy-dismiss: the user declined. Same marker as a completed import, so
+  ::  the prompt never returns.
       [%'POST' %legacy-dismiss]
     ;<  ~  bind:m  (poke-eval [%legacy-seen 0])
     (send-ok eyre-id)

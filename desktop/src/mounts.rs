@@ -1,8 +1,8 @@
 //! In-process fuse mounts. Each live mount is a fuser::BackgroundSession.
 //! Dropping the session unmounts, so removing from the map IS the unmount.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
 
 use lattice_fs::{default_cookie_path, projection_http};
 use tauri::{AppHandle, State};
@@ -11,6 +11,28 @@ use crate::config::{self, MountSpec};
 
 /// mountpoint -> (root, live session)
 pub struct MountMap(pub Mutex<HashMap<String, (String, fuser::BackgroundSession)>>);
+
+/// Mountpoints with a mount in flight.
+///
+/// The map cannot express this on its own: its value is a live session, and
+/// the moment a reservation is needed is precisely the moment no session
+/// exists yet. Without it, two adds of the same path both get past the map
+/// check while the lock is down and both reach `heal_mountpoint`, which runs
+/// `fusermount3 -uz` and would tear down the mount the other one just made.
+/// Re-checking the map afterwards repairs the map and not the filesystem.
+fn inflight() -> &'static Mutex<HashSet<String>> {
+    static INFLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    INFLIGHT.get_or_init(Default::default)
+}
+
+/// Holds a mountpoint's reservation and releases it on every exit path,
+/// including the `?` returns between here and the insert.
+struct Reservation(String);
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        inflight().lock().unwrap().remove(&self.0);
+    }
+}
 
 /// macOS needs macFUSE installed. Linux needs fusermount3 on PATH.
 pub fn fuse_check() -> (bool, String) {
@@ -84,20 +106,32 @@ pub fn add_mount(
     let sock = sock.unwrap_or_default();
     let ship = ship.unwrap_or_default();
     validate_mountpoint(&mountpoint)?;
-    // Cheap check under the lock, then RELEASE it. The map lock never spans
-    // I/O, the same rule remount() follows: status, list_mounts and
-    // remove_mount stay answerable while a mount is coming up, and healing a
-    // wedged mountpoint alone can take 5 seconds.
-    if map.0.lock().unwrap().contains_key(&mountpoint) {
-        return Err(format!("{mountpoint} is already mounted"));
-    }
+    // Cheap checks under the locks, then RELEASE them. Neither lock spans I/O,
+    // the same rule remount() follows: status, list_mounts and remove_mount
+    // stay answerable while a mount is coming up, and healing a wedged
+    // mountpoint alone can take 5 seconds.
+    //
+    // The reservation is taken here rather than after the I/O because
+    // heal_mountpoint is destructive. A second add that got this far would
+    // unmount the first one's session, and no later map check can undo that.
+    let _reserved = {
+        let mut inf = inflight().lock().unwrap();
+        if map.0.lock().unwrap().contains_key(&mountpoint) {
+            return Err(format!("{mountpoint} is already mounted"));
+        }
+        if !inf.insert(mountpoint.clone()) {
+            return Err(format!("{mountpoint} is already being mounted"));
+        }
+        Reservation(mountpoint.clone())
+    };
     let proj = projection_for(&app, &root, &sock, &ship)?;
     heal_mountpoint(&mountpoint);
     let session = lattice_fs::spawn(proj, &mountpoint).map_err(|e| e.to_string())?;
     {
         let mut m = map.0.lock().unwrap();
-        // check again: two adds of the same path could both have got past the
-        // first check while the lock was down
+        // remove_mount could have run while this mount was coming up, so the
+        // map is still re-checked. The reservation is what makes a competing
+        // ADD impossible; this covers everything else.
         if m.contains_key(&mountpoint) {
             drop(session); // dropping the session IS the unmount
             return Err(format!("{mountpoint} is already mounted"));

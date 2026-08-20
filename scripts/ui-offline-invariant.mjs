@@ -42,9 +42,25 @@ for (const f of readdirSync(src).filter((n) => n.endsWith('.js')).sort()) {
       const prev = lines[i - 1] || '';
       if (/offline-invariant:\s*exempt/.test(prev)) { ok(`${f}:${i + 1} ${fn} exempt (annotated)`); continue; }
       //  the guard shape: the call's value is tested, not discarded
-      if (/if\s*\(\s*!\s*\(\s*await/.test(line) || /(const|let|var)\s+\w+\s*=\s*await/.test(line)
-        || /return\s+await/.test(line) || /\?\s*$/.test(line)) {
+      if (/if\s*\(\s*!\s*\(\s*await/.test(line) || /return\s+await/.test(line)
+        || /\?\s*$/.test(line)) {
         ok(`${f}:${i + 1} ${fn} result is checked`);
+        continue;
+      }
+      //  bound to a name: only counts if the name is READ again nearby. The
+      //  first version of this check accepted any binding, which passes
+      //  `const ok = await enqueueSave(...)` with ok never tested — the exact
+      //  "reported as saved when it was not" bug the file exists to catch,
+      //  wearing a variable name.
+      const bind = /(?:const|let|var)\s+(\w+)\s*=\s*await/.exec(line);
+      if (bind) {
+        const name = new RegExp(`(?<![\\w$])${bind[1]}(?![\\w$])`);
+        if (lines.slice(i + 1, i + 8).some((l) => name.test(l))) {
+          ok(`${f}:${i + 1} ${fn} result is bound to \`${bind[1]}\` and read below`);
+          continue;
+        }
+        bad(`${f}:${i + 1} ${fn} result is bound to \`${bind[1]}\` and never read `
+          + '— that is the same as discarding it.');
         continue;
       }
       bad(`${f}:${i + 1} ${fn} result is DISCARDED — an edit the queue refused `
