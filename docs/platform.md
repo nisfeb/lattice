@@ -243,8 +243,8 @@ Subsumption, not replacement:
   same tree. **The memory store must not regress.** It is in production use by
   every Claude session on this machine.
 - `pub/` becomes shared/clearweb pages without code.
-- Catalog/obelisk becomes the search index over pages. The crawler's sweep
-  targets become "peers whose trees I follow".
+- The term index (`/idx`) becomes the search index over pages, with the same
+  bucket layout and the same one-peek-per-word read.
 - The reader/explorer routes generalize from pub-only to any readable subtree
   (`/browse` is most of the way there).
 - The browser is the client. The Kotlin client is retired, and the PWA covers
@@ -307,4 +307,5 @@ Each step ships something usable on ricsul, and each has a verification gate.
 - A native rendering client: the browser renders and the ship serves. Lick,
   native wrappers, and `web+urb` handlers remain optional layers from the
   explorer design.
-- Replacing obelisk: search stays external, bridged, replaceable.
+- A relational query language over page data: search is a term index, and
+  pages that want structure keep it in their own grubs.

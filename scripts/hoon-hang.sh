@@ -19,7 +19,7 @@
 #  WHAT IT DOES
 #  ------------
 #  Feeds adversarial bodies to the routes that reach the hand-written parsers
-#  (/lib/lattice-clip, /lib/lattice-md, /lib/lattice-urls, /lib/catalog-analyzer),
+#  (/lib/lattice-clip, /lib/lattice-md, /lib/lattice-urls, /lib/lattice-index),
 #  each with a hard deadline. After EVERY probe it fires a cheap canary at a
 #  route that touches no parser. Three outcomes per probe:
 #
@@ -39,7 +39,7 @@
 #  USAGE
 #    scripts/hoon-hang.sh [--quick] [--family NAME] [--verbose]
 #      --quick        one probe per shape instead of the full ladder
-#      --family NAME  clip | md | gmi | urls | catalog | save  (repeatable)
+#      --family NAME  clip | md | gmi | urls | search | save  (repeatable)
 #      --verbose      print the canary timing for every probe
 #
 #  ENV
@@ -78,7 +78,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -n "$FAMILIES" ] || FAMILIES="clip md gmi urls catalog save"
+[ -n "$FAMILIES" ] || FAMILIES="clip md gmi urls search save"
 
 #  Guard rail. This script's SUCCESS CONDITION is finding a request that takes
 #  the ship down. Pointing it at anything but a disposable loopback pier is
@@ -333,9 +333,9 @@ if want urls && [ -z "$WEDGED" ]; then
   echo
 fi
 
-#  ── catalog: GET /catalog-search, the term normalizer + urQL path ──────────
-if want catalog && [ -z "$WEDGED" ]; then
-  echo "family catalog  (/catalog-search?term= -> catalog-normalize-term)"
+#  ── search: GET /content-search, the term normalizer + bucket lookup ───────
+if want search && [ -z "$WEDGED" ]; then
+  echo "family search  (/content-search?term= -> normalize-term)"
   S=$(scale 20000 2000)
 
   for pair in "k-long:$(rep "$S" 'a')" \
@@ -346,7 +346,7 @@ if want catalog && [ -z "$WEDGED" ]; then
               "k-hash:$(rep "$S" '%23')"; do
     [ -z "$WEDGED" ] || break
     lbl="${pair%%:*}"; val="${pair#*:}"
-    get catalog "$lbl" "$B/catalog-search?term=$val" || break
+    get search "$lbl" "$B/content-search?term=$val" || break
   done
   echo
 fi

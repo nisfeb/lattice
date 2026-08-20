@@ -1,5 +1,4 @@
 ::  nex/lattice/app: the grubbery-native %lattice application nexus.
-::  (rev: post-review hardening batch 2, trash integrity and catalog cleanup)
 ::
 ::  Lattice is a nexus, not a gall agent. The tree it owns:
 ::    /main.sig            the action WRITER. Takes %know-action / %pub-action
@@ -11,7 +10,7 @@
 ::    /ui/main.sig         binds /apps/lattice; dispatches to per-request fibers
 ::    /ui/requests/<id>    one ephemeral fiber per in-flight HTTP request
 ::    /ui/views/page.html  the web reader grub
-::    /cat, /sub, /crawler.sig  catalog + follows + sweep (steps 4/5)
+::    /sub, /idx           follows + the grub-native term index
 ::
 ::  pub and know are the SAME kind of grub (both gain=%.y). They differ only in
 ::  permission: /pub is whitelisted in grubbery's `public` usergroup peek set
@@ -22,10 +21,6 @@
 ::
 /<  lk   /lib/lattice-know.hoon
 /<  lp   /lib/lattice-pub.hoon
-/<  ast  /lib/obelisk-ast.hoon
-/<  obl  /lib/obelisk.hoon
-/<  sst  /lib/server-state.hoon
-/<  cat  /lib/catalog.hoon
 /<  le   /lib/lattice-eval.hoon
 /<  lu   /lib/lattice-urls.hoon
 /<  pg   /lib/lattice-pg.hoon
@@ -54,7 +49,7 @@
       ::  bole from scratch and DROPS anything uncovered. The %fall %| over
       ::  /know/vault copies the whole existing subtree, so dynamically
       ::  created entries survive reload. Versioning is the manifest row
-      ::  (grubbery's loader has no read-side ver gate, matches obelisk).
+      ::  (grubbery's loader has no read-side ver gate).
       %+  spin:loader  ball
       :~  (manifest:loader 0)
         ::  tile.json: the launcher (tiles nexus) lists only apps that carry
@@ -64,7 +59,7 @@
             :-  [/ %json]
             %-  pairs:enjs:format
             :~  title+s+'Lattice'
-                info+s+'Pages, knowledge & catalog'
+                info+s+'Pages, knowledge & publishing'
                 color+s+'#4a7c59'
                 ::  the tiles icon route matches the app SLUG (name before the
                 ::  first dot), not the folder name.
@@ -84,11 +79,6 @@
         ::  standalone so the editor bundle and the settings page (a separate
         ::  document) share one tar writer/reader instead of two.
             [%over %& [/app %'vault.js'] [[/ %mime] vjs]]
-        ::  /db.lattice: the obelisk database itself, a grub this nexus owns.
-        ::  grubbery ships obelisk as a LIBRARY (+exec:obl is a pure function),
-        ::  so there is no separate agent and no owner fiber. The catalog is
-        ::  just state we hold and hand to the engine.
-            [%fall %& [/ %'db.lattice'] [[/obelisk %server] *db-state:sst]]
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
         ::  /legacy: the retired-agent marker lives here (see +legacy-mark-road)
             [%fall %| /legacy empty-dir:loader]
@@ -119,14 +109,12 @@
         ::  rendered dynamically per request (no static page grub).
             [%fall %& [/ui %'main.sig'] [[/ %sig] ~]]
             [%fall %| /ui/requests empty-dir:loader]
-        ::  cat/ = catalog crawler state + derived index; sub/ = follows (one grub
-        ::  per followed url); crawler.sig = the long-lived sweep fiber.
-        ::  /sub/follows: the crawler's follow set (ships to sweep). A covering
-        ::  file row (not an empty-dir) so the set survives reload.
+        ::  /sub/follows: the ships this user follows. A covering file row
+        ::  (not an empty-dir) so the set survives reload.
             [%fall %& [/sub %follows] [[/lattice %sub-follows] *follows:lp]]
         ::  /sub/pages/: one grub per live per-file subscription. Each grub's
-        ::  on-file spawns a keep fiber that re-indexes that remote page whenever
-        ::  the peer edits it. /sub + /unsub make/cull these grubs.
+        ::  on-file spawns a keep fiber that wakes whenever the peer edits that
+        ::  remote page. /sub + /unsub make/cull these grubs.
             [%fall %| /sub/pages empty-dir:loader]
         ::  /page/: programmable pages (docs/platform.md step 2). One dir per
         ::  page; the code grub's on-file fiber is the evaluator.
@@ -171,7 +159,6 @@
         ::  The road reaches only this fiber, and this fiber writes only under
         ::  /comments, so a commenter structurally cannot touch a page.
             [%fall %& [/ %'comments.sig'] [[/ %sig] ~]]
-            [%fall %& [/ %'crawler.sig'] [[/ %sig] ~]]
         ::  /fs.sig: a lick (unix-socket) port exposing the filesystem ops to a
         ::  local FUSE client (lattice-fs), the native-transport twin of the
         ::  HTTP page-tree/page-source/page-save routes.
@@ -250,8 +237,8 @@
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /ui/requests: failed")
         (handle-request name.rail)
       ::  /sub/pages/*: one live per-file subscription. keep the peer's page grub
-      ::  and act on every wave, so an edit lands now instead of waiting for the
-      ::  ~h6 crawler sweep. The body arrives entirely over the namespace: %keen
+      ::  and act on every wave, so an edit is noticed as it happens. The body
+      ::  arrives entirely over the namespace: %keen
       ::  at the concrete rev the wave names, with NO peek fallback. This reader
       ::  is mesa-only by design, so a non-mirroring publisher's waves keen an
       ::  unbound spur and index nothing (one bounded retry per wave, then wait
@@ -405,32 +392,6 @@
         ;<  ~  bind:m  (send-wait:io until)
         ;<  *  bind:m  (take-news-or-wake-until /ev until)
         $
-      ::  /crawler.sig: periodic catalog sweep. Each tick re-indexes our own
-      ::  published pages into obelisk. The sweep SLEEPS FIRST. It monopolises
-      ::  the event loop for minutes on a real vault, and running it on start
-      ::  meant every nexus reload (deploys included) blacked out HTTP right
-      ::  when the user was watching. Settings' "Sweep catalog now" covers the
-      ::  fresh-install case. ponytail: full re-scan per tick (fine for a
-      ::  personal store). Chunked scanning like /search-reindex is the real
-      ::  fix if the blackout ever matters at the 6-hour cadence too.
-      ::  Interval hardcoded ~h6. Add /cat/config.json if it needs tuning.
-          [~ %'crawler.sig']
-        ::  each tick: re-index our own pub pages, then sweep followed peers.
-        ;<  ~  bind:m  (rise-wait:io prod "%lattice /crawler: failed")
-        ::  mesa (D1 phase C): the scry-first rev cache. Fiber-local, NOT a
-        ::  grub (see +mesa-cache). It rides this loop so the second and later
-        ::  sweeps can %keen unchanged peer pages out of the publisher's
-        ::  namespace instead of peeking them. A reload just starts cold again.
-        =|  mc=mesa-cache
-        |-
-        ::  drain stray timer-wakes while sleeping (finding #13). A plain sleep
-        ::  would let this sweep's early-resolved obelisk/peek timers accumulate.
-        ;<  ~  bind:m  (sleep-draining ~h6)
-        ;<  *       bind:m  catalog-scan-self
-        ;<  our=@p  bind:m  bowl-our
-        ;<  now=@da  bind:m  bowl-now
-        ;<  [* nc=mesa-cache]  bind:m  (catalog-scan-peers our now mc)
-        $(mc nc)
       ::  /fs.sig: the lick (local IPC) port for the FUSE client. The serve-loop
       ::  is generic. +lick-serve:io (fiberio) spins the socket, decodes each
       ::  [verb path query body] frame, and spits back [status body]. The only
@@ -1004,8 +965,8 @@
       (send-view-long eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") rv (render-gmi u.home)))
     =/  ref=(unit referent:lu)  (de-urb:lu u.raw)
     ::  omnibar: input that isn't a urb:// address is a SEARCH query. Serve a
-    ::  results page that queries the obelisk content catalog (client-side, via
-    ::  the /catalog-search JSON api, which is built for exactly this fan-out).
+    ::  results page that queries the term index (client-side, via the
+    ::  /content-search JSON api, which is built for exactly this fan-out).
     ?~  ref  (send-html eyre-id (render-page (trip u.raw) "" "" (search-results-html u.raw our)))
     ?-  -.u.ref
         %tree
@@ -1029,7 +990,7 @@
       ::  the critical path of every page READ, which is exactly what the perf
       ::  pass took out. Safe to continue after send: a completed %simple
       ::  response drops the connection's conns entry, so no later cancel can
-      ::  cull this fiber (the same reasoning /catalog-sweep relies on).
+      ::  cull this fiber.
       ::  A peer's page gets a comment box. Their ship decides whether it
       ::  lands, by their per-page flag and their banlist, and stamps us as the
       ::  author from the transport. Our own pages keep the owner box in the /x
@@ -1172,7 +1133,7 @@
     ==
   ::  page-backlinks: every page whose body wikilinks [[name]]. ONE deep peek
   ::  (the ball already carries every code grub), then a local scan per page.
-  ::  No external index, so it works even where obelisk doesn't. No per-page
+  ::  No external index, so it needs nothing but the page tree. No per-page
   ::  darts, so it stays flat as pages accumulate.
       [%'GET' %page-backlinks]
     =/  name=(unit @t)  (~(get by args) 'name')
@@ -1428,117 +1389,7 @@
     =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
     ;<  *  bind:m  (cull-soft:io [%& %| gdir])
     (send-ok eyre-id)
-      [%'GET' %obelisk-query]
-    =/  db=@tas  (~(gut by args) 'db' 'sys')
-    =/  q=(unit @t)  (~(get by args) 'q')
-    ?~  q  (send-err eyre-id 400 'missing q param')
-    ;<  res=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query db (trip u.q))
-    (send-obelisk eyre-id res)
-  ::  ── catalog routes (step 5) ──
-      [%'POST' %catalog-init]
-    ;<  ~  bind:m  catalog-init
-    (send-ok eyre-id)
-  ::
-      [%'POST' %catalog-scan-self]
-    ;<  cnt=@ud  bind:m  catalog-scan-self
-    (send-json eyre-id (pairs:enjs:format ~[['indexed' (numb:enjs:format cnt)]]))
-  ::
-      [%'GET' %catalog-list]
-    ;<  cl=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query catalog-db catalog-list-urql:cat)
-    (send-obelisk eyre-id cl)
-  ::
-      [%'GET' %catalog-search]
-    =/  term=(unit @t)  (~(get by args) 'term')
-    ?~  term  (send-err eyre-id 400 'missing term param')
-    =/  nt=(unit @t)  (catalog-normalize-term:cat (trip u.term))
-    ::  a non-indexable term (too short / stop word) matches nothing. Return an
-    ::  empty result (200), NOT a 400, so a client fanning out one call per query
-    ::  word doesn't error on a common stop word. Same flat obelisk shape (and
-    ::  the same column set) the old agent hardcoded for this case.
-    ?~  nt
-      %+  send-json  eyre-id
-      %-  pairs:enjs:format
-      :~  ['ok' b+&]
-          ['columns' a+(turn ~['source' 'publisher' 'path' 'tf'] |=(c=@t s+c))]
-          ['rows' a+~]
-      ==
-    =/  urql=tape  (catalog-search-urql:cat (trip u.nt))
-    ;<  cs=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query catalog-db urql)
-    (send-obelisk eyre-id cs)
-  ::
-      [%'GET' %catalog-query]
-    =/  cq=(unit @t)  (~(get by args) 'q')
-    ?~  cq  (send-err eyre-id 400 'missing q param')
-    ;<  cr=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query catalog-db (trip u.cq))
-    (send-obelisk eyre-id cr)
-  ::  filtered catalog listing. category/publisher/source all optional. A present
-  ::  but unparseable @p is a 400 (not silently dropped to "match all").
-      [%'GET' %catalog-explore]
-    =/  ct=tape  (trip (~(gut by args) 'category' ''))
-    =/  pp=(unit @t)  (~(get by args) 'publisher')
-    =/  sp=(unit @t)  (~(get by args) 'source')
-    =/  pub=(unit @p)  ?~(pp ~ (slaw %p u.pp))
-    =/  src=(unit @p)  ?~(sp ~ (slaw %p u.sp))
-    ?:  &(?=(^ pp) ?=(~ pub))  (send-err eyre-id 400 'bad publisher')
-    ?:  &(?=(^ sp) ?=(~ src))  (send-err eyre-id 400 'bad source')
-    =/  pubt=tape  ?~(pub "" (trip (scot %p u.pub)))
-    =/  srct=tape  ?~(src "" (trip (scot %p u.src)))
-    ;<  cx=(each (list cmd-result:ast) tang)  bind:m
-      (obelisk-query catalog-db (catalog-explore-urql:cat ct pubt srct))
-    (send-obelisk eyre-id cx)
-  ::  one full catalog row by its url (urb://<pub>/<catalog-path>).
-      [%'GET' %catalog-fetch]
-    =/  url=(unit @t)  (~(get by args) 'url')
-    ?~  url  (send-err eyre-id 400 'missing url param')
-    ;<  cf=(each (list cmd-result:ast) tang)  bind:m
-      (obelisk-query catalog-db (catalog-fetch-urql:cat (trip u.url)))
-    (send-obelisk eyre-id cf)
-  ::  backlinks: which pages link TO `url`. `url` is matched VERBATIM against the
-  ::  authored link target (what the author wrote after `=> `, e.g. urb://~pub/x
-  ::  or /x), not a normalized catalog url. Returns (source, publisher, path) +
-  ::  label + is-internal. The client joins the keys back to catalog-pages rows.
-      [%'GET' %catalog-backlinks]
-    =/  url=(unit @t)  (~(get by args) 'url')
-    ?~  url  (send-err eyre-id 400 'missing url param')
-    ;<  cb=(each (list cmd-result:ast) tang)  bind:m
-      (obelisk-query catalog-db (catalog-backlinks-urql:cat (trip u.url)))
-    (send-obelisk eyre-id cb)
-  ::  table of contents: one page's headings in order. url is the catalog url
-  ::  (urb://<pub>/pub/<spur>/gmi). Source is always us (the crawler).
-      [%'GET' %catalog-toc]
-    =/  url=(unit @t)  (~(get by args) 'url')
-    ?~  url  (send-err eyre-id 400 'missing url param')
-    =/  pu=(unit [=ship =path])  (parse-urb-url:lu u.url)
-    ?~  pu  (send-err eyre-id 400 'bad urb:// url')
-    ;<  ct=(each (list cmd-result:ast) tang)  bind:m
-      (obelisk-query catalog-db (catalog-toc-urql:cat our ship.u.pu (trip (spat path.u.pu))))
-    (send-obelisk eyre-id ct)
-  ::  page keys carrying a tag.
-      [%'GET' %catalog-by-tag]
-    =/  tag=(unit @t)  (~(get by args) 'tag')
-    ?~  tag  (send-err eyre-id 400 'missing tag param')
-    ::  case-fold the query tag. The analyzer stores catalog tags lowercased
-    ::  (collect-tag-tokens), and obelisk equality is exact, so an uppercase
-    ::  query would never match. Matches the norm-tag/normalize-term convention.
-    ;<  cb=(each (list cmd-result:ast) tang)  bind:m
-      (obelisk-query catalog-db (catalog-by-tag-urql:cat (cass (trip u.tag))))
-    (send-obelisk eyre-id cb)
-  ::  per-page classification metadata (source/publisher/path/summary).
-      [%'GET' %catalog-meta]
-    ;<  cm=(each (list cmd-result:ast) tang)  bind:m
-      (obelisk-query catalog-db catalog-meta-list-urql:cat)
-    (send-obelisk eyre-id cm)
-  ::  the classifier worklist: OUR unclassified pages, newest first.
-      [%'GET' %catalog-pending]
-    ;<  cp=(each (list cmd-result:ast) tang)  bind:m
-      (obelisk-query catalog-db catalog-pending-list-urql:cat)
-    (send-obelisk eyre-id cp)
-  ::  the live (crawler-derived) category vocabulary.
-      [%'GET' %catalog-vocab]
-    ;<  cv=(each (list cmd-result:ast) tang)  bind:m
-      (obelisk-query catalog-db catalog-vocab-urql:cat)
-    (send-obelisk eyre-id cv)
-  ::  ── follows (crawler targets) ──
+  ::  ── follows (the ship-level follow list) ──
       [%'GET' %follows]
     ;<  fs=follows:lp  bind:m  read-follows
     (send-json eyre-id a+(turn ~(tap in fs) |=(s=@p s+(scot %p s))))
@@ -2078,11 +1929,6 @@
     =/  pp=(each path tang)  (mule |.((pub-path u.rel)))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'invalid path')
     ;<  ~  bind:m  (poke-pub [%del-page (spat p.pp)])
-    ::  also sweep the page's catalog rows (source=publisher=our) so a deleted
-    ::  page leaves no orphaned term postings / ghost search hits. Driven here (in
-    ::  the request fiber) not the writer, so the obelisk round-trip can't stall
-    ::  the single writer.
-    ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-delete-urql:cat our our p.pp))
     (send-ok eyre-id)
   ::  ── pub version history ──
   ::  every published page is a firm grub, so grubbery keeps every prior revision.
@@ -2321,8 +2167,8 @@
     ;<  ~  bind:m  (poke-sub [%unfollow u.who])
     (send-ok eyre-id)
   ::  ── per-file subscribe writes (POST) ── url=urb://<ship>/<path> keeps that one
-  ::  page live. The crawler re-indexes it the moment the peer edits it, instead of
-  ::  waiting for the ~h6 sweep. /unsub tears the keep down.
+  ::  page live, so the reader learns of an edit the moment the peer makes it.
+  ::  /unsub tears the keep down.
       [%'POST' %sub]
     =/  raw=(unit @t)  (~(get by args) 'url')
     ?~  raw  (send-err eyre-id 400 'missing url param')
@@ -2339,107 +2185,11 @@
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
     ;<  ~  bind:m  (poke-sub [%unsub-page ship.u.pu path.u.pu])
     (send-ok eyre-id)
-  ::  ── catalog classify (POST) ──
-  ::  write a classification onto one of OUR catalog rows. url=urb://<pub>/<path>
-  ::  (the catalog url form), category required, cat-source defaults 'manual',
-  ::  confidence accepts "0.7" or the full native @rs ".0.7" (unparseable -> .0).
-      [%'POST' %catalog-classify]
-    =/  raw=(unit @t)  (~(get by args) 'url')
-    ?~  raw  (send-err eyre-id 400 'missing url param')
-    =/  cat-v=(unit @t)  (~(get by args) 'category')
-    ?~  cat-v  (send-err eyre-id 400 'missing category param')
-    =/  pu=(unit [=ship =path])  (parse-urb-url:lu u.raw)
-    ?~  pu  (send-err eyre-id 400 'bad urb:// url')
-    =/  csrc=@t  (~(gut by args) 'cat-source' 'manual')
-    =/  conf=@rs
-      =/  c=(unit @t)  (~(get by args) 'confidence')
-      ?~  c  .0
-      =/  ct=tape  (trip u.c)
-      ::  @rs literals put the aura dot FIRST: 0.7 is `.0.7`, NOT `.7` (=7.0).
-      ::  So PREPEND the aura dot to a plain decimal ("0.7" -> ".0.7"), but leave a
-      ::  full native literal (".0.7") alone, else "..0.7" fails to parse and the
-      ::  documented native form silently coerces to .0.
-      =/  lit=tape  ?:(?=([%'.' *] ct) ct ['.' ct])
-      =/  v=@rs  ?~(r=(slaw %rs (crip lit)) .0 u.r)
-      ::  clamp to [0,1]. Shorthand like ".7" parses as 7.0 per @rs literal rules,
-      ::  and confidence is a probability. An out-of-range value would corrupt
-      ::  the stored/displayed value in catalog-pages.confidence. A NaN (".nan"
-      ::  parses fine) makes every rs comparison %.n, so it would slip past the
-      ::  range test. Collapse it to .0 first (equ:rs v v is %.n only for NaN).
-      ?:  !(equ:rs v v)  .0
-      ?:((lth:rs v .0) .0 ?:((gth:rs v .1) .1 v))
-    ;<  ~  bind:m
-      (catalog-run catalog-db (catalog-classify-urql:cat our ship.u.pu path.u.pu u.cat-v csrc conf))
-    (send-ok eyre-id)
-  ::  ── catalog crawl triggers (POST) ──
-  ::  scan ONE publisher on demand: synchronous (bounded by remote-timeout),
-  ::  returns the indexed count.
-      [%'POST' %catalog-scan]
-    =/  raw=(unit @t)  (~(get by args) 'ship')
-    ?~  raw  (send-err eyre-id 400 'missing ship param')
-    =/  pub=(unit @p)  (slaw %p u.raw)
-    ?~  pub  (send-err eyre-id 400 'bad ship')
-    ?:  =(u.pub our)  (send-err eyre-id 400 'cannot crawl own ship')
-    ;<  now=@da  bind:m  bowl-now
-    ::  mesa: a request fiber has no memory between requests, so it hands in an
-    ::  empty +mesa-cache and drops the one it gets back. Every page therefore
-    ::  takes the peek path. Only the long-lived /crawler.sig sweep carries a
-    ::  warm cache.
-    ;<  [n=@ud *]  bind:m  (catalog-scan-peer our u.pub now *mesa-cache)
-    (send-json eyre-id (pairs:enjs:format ~[['indexed' (numb:enjs:format n)]]))
-  ::  sweep everything now: our own pages + every followed peer. Respond FIRST
-  ::  ({"ok":true}, the old agent's fire-and-forget contract. The client's 10s
-  ::  read timeout can't outlast a real sweep), THEN run the sweep in this same
-  ::  request fiber. Safe. A completed %simple response deletes the connection's
-  ::  conns entry in grubbery, so eyre's later leave takes the no-binding branch
-  ::  and no %handle-http-cancel can reach the dispatcher to cull this fiber
-  ::  mid-sweep (grubbery handle-eyre-action %send / on-leave %http-response).
       [%'GET' %settings]
     (send-html eyre-id (render-page "" "" "" settings-html))
       [%'GET' %marks]
     ;<  bms=bookmarks:lb  bind:m  read-bookmarks
     (send-html eyre-id (render-page "" "" "" (marks-html bms)))
-      [%'POST' %catalog-sweep]
-    ::  ACK, YIELD, THEN SCAN. This already acked first, but a fiber's
-    ::  effects only flush when it YIELDS, and +catalog-scan-self never does.
-    ::  It runs to completion inside a single event. So the response sat
-    ::  behind the whole scan and the button spun ~21s (measured; ~107s once
-    ::  the store grew) while the page claimed the work was already
-    ::  backgrounded. The one-second sleep ends the event, the ack goes out,
-    ::  and the scan resumes on the wake.
-    ::
-    ::  Handing this to /crawler.sig would be tidier (one sweeper, and it
-    ::  owns the ~h6 tick), but an internal poke is only acked once the
-    ::  target fiber reaches a take, and pokes sent to the crawler never
-    ::  produced a scan (verified: page-tree held ~1.8s throughout, where a
-    ::  real scan stalls it for a minute-plus). Not worth a silent no-op
-    ::  button until that is understood.
-    ;<  ~  bind:m  (send-ok eyre-id)
-    ;<  ~  bind:m  (sleep-draining ~s1)
-    ;<  *  bind:m  catalog-scan-self
-    ;<  now=@da  bind:m  bowl-now
-    ::  cold +mesa-cache, same as /catalog-scan. A request fiber keeps nothing
-    ::  between requests, so this sweep peeks everything.
-    ;<  *  bind:m  (catalog-scan-peers our now *mesa-cache)
-    (pure:m ~)
-  ::  arbitrary urQL passthrough (body = the query), run against the lattice db.
-  ::  Owner-only like all routes.
-      [%'POST' %know-query]
-    =/  urql=@t  (req-body req)
-    ::  a passthrough takes whatever the caller typed, so it can be either. A
-    ::  mutation run on +obelisk-query executes and is thrown away, which is the
-    ::  worst possible answer: {"ok":true} for a write that did not happen.
-    ?.  (urql-read (trip urql))
-      ;<  ~  bind:m  (catalog-run catalog-db (trip urql))
-      (send-ok eyre-id)
-    ;<  kq=(each (list cmd-result:ast) tang)  bind:m  (obelisk-query catalog-db (trip urql))
-    (send-obelisk eyre-id kq)
-  ::  rebuild the obelisk knowledge index from the live vault (Explore pane's
-  ::  Reindex). Ack-blocking but the client treats it fire-and-forget. 502 only
-  ::  when obelisk is absent.
-      [%'POST' %know-reindex]
-    ;<  ~  bind:m  know-reindex
-    (send-ok eyre-id)
   ::  ── editing arbitrary grubs (write apps in the editor) ──────────────────
   ::  grub-source: any grub's editable text. `editable` is false for a binary
   ::  or opaque grub. The client shows it read-only rather than offering a save
@@ -2484,8 +2234,8 @@
     ?:  ?=(%| -.bk)
       ::  the mark rejected the source. Report it so the editor can show it. The
       ::  grub still holds its previous content.
-      ::  +obelisk-tang-text is a generic tang -> cord despite the name.
-      (send-err eyre-id 400 (obelisk-tang-text p.bk))
+      ::  +tang-text renders the mark's failure as plain text for the editor.
+      (send-err eyre-id 400 (tang-text p.bk))
     ;<  ~  bind:m
       ?:  ex  (over:io rod.u.ro p.bk)
       (make:io rod.u.ro |+[p.bk ~])
@@ -2506,8 +2256,8 @@
     (send-ok eyre-id)
   ::  ── unified search (the omnibar's private half) ─────────────────────────
   ::  content-search: own pages + knowledge entries carrying `term`, each row
-  ::  labelled with the visibility recorded at index time. Same JSON shape as
-  ::  /catalog-search so the omnibar can fan out over both identically.
+  ::  labelled with the visibility recorded at index time. One peek of one
+  ::  bucket, whatever the corpus size.
   ::
   ::  Owner-gated like every route below the gate, which is what makes it safe
   ::  to return private rows at all. The results page is served from the root
@@ -2516,10 +2266,10 @@
       [%'GET' %content-search]
     =/  term=(unit @t)  (~(get by args) 'term')
     ?~  term  (send-err eyre-id 400 'missing term param')
-    =/  nt=(unit @t)  (catalog-normalize-term:cat (trip u.term))
+    =/  nt=(unit @t)  (normalize-term:li (trip u.term))
     ::  a non-indexable term (too short / stop word) matches nothing. 200 with
     ::  no rows, NOT a 400, so a client fanning out one call per query word
-    ::  doesn't error on a common stop word. Mirrors /catalog-search.
+    ::  doesn't error on a common stop word.
     ?~  nt
       %+  send-json  eyre-id
       %-  pairs:enjs:format
@@ -2566,8 +2316,8 @@
           ['scope' s+(scope-of shr)]
       ==
     (send-json eyre-id (pairs:enjs:format ~[['items' a+items]]))
-  ::  search-reindex: rebuild content-terms from the live tree + know vault.
-  ::  Blocking (the client treats it fire-and-forget), like /know-reindex.
+  ::  search-reindex: rebuild the term index from the live tree + know vault.
+  ::  Blocking, though the client treats it as fire-and-forget.
       [%'POST' %search-reindex]
     ;<  ~  bind:m  content-reindex
     (send-ok eyre-id)
@@ -2954,8 +2704,8 @@
   ^-  (unit [rod=road:tarball nom=@ta])
   ::  accept both `/apps/x/y` and `apps/x/y`. +stab needs the leading slash,
   ::  and a hand-typed or link-built path is easy to get wrong either way.
-  ::  NOT (cat 3 '/' raw): `cat` is the face of the imported catalog library,
-  ::  which shadows the stdlib gate, the same collision `lk` caused before.
+  ::  NOT (cat 3 '/' raw): +end takes an explicit bite here, as it does
+  ::  everywhere else in this file.
   ::  +end takes an explicit bite here, as it does everywhere else in this file.
   =/  abs=@t  ?:(=('/' (end [3 1] raw)) raw (crip ['/' (trip raw)]))
   =/  pp=(each path tang)  (mule |.((stab abs)))
@@ -3315,11 +3065,10 @@
   (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %eval-action] act])
 ::  +poke-eval-abs: like +poke-eval, but an ABSOLUTE road to the writer.
 ::
-::  +poke-eval's up-2 is only correct from /ui/requests. +catalog-run is reached
-::  from fibers at three different depths: /ui/requests (up-2), /crawler.sig at
-::  the app root (up-0, like /fs.sig), and the /sub keep fibers. So no fixed hop
-::  count serves them all. An absolute road is depth-independent. A relative one
-::  from the crawler overshoots the app root and the poke nacks, killing the sweep.
+::  +poke-eval's up-2 is only correct from /ui/requests. The /sub keep fibers
+::  and /fs.sig sit at other depths, so no fixed hop count serves them all. An
+::  absolute road is depth-independent; a relative one from the app root
+::  overshoots and the poke nacks.
 ::
 ++  poke-eval-abs
   |=  act=eval-action:le
@@ -3376,29 +3125,6 @@
     ::  leave it inert (code grub only. Templates are never evaluated).
     ::  (Instantiation is +instantiate-template, one make PER page, not a batch.)
     (copy-tree root [%page from.act] [%template /[name.act]] %.n)
-      %obelisk
-    ::  the WRITE path: read the db, run the script, persist the new state.
-    ::  Read-modify-write over one grub, so it only happens here. The writer
-    ::  serialises every lattice mutation already.
-    ;<  st=db-state:sst  bind:m  read-db
-    ;<  our=@p  bind:m  bowl-our
-    =/  out=(each [(list cmd-result:ast) db-state:sst] tang)
-      (mule |.((exec:obl st now our db.act (trip urql.act))))
-    ?:  ?=(%| -.out)
-      ::  a failed statement leaves the database untouched, which is what makes
-      ::  +catalog-init idempotent. Re-CREATEing an existing table errors and
-      ::  the rest of the run is unaffected.
-      ::
-      ::  Those expected create-errors are SILENT. They fire on every reindex, and
-      ::  printing a full tang for each one buries the failures that do matter.
-      ?:  quiet.act  (pure:m ~)
-      ::  BOUNDED print. A full crud tang for a multi-statement script runs
-      ::  to hundreds of tanks, and rendering them starves a single-threaded
-      ::  ship for minutes. The first few tanks carry the message leaf
-      ::  (which statement, which row, which key). That is what a debugger
-      ::  needs from the console; the db is untouched either way.
-      ~&([%lattice-obelisk-failed db.act (scag 5 p.out)] (pure:m ~))
-    (put-file [%& %& root %'db.lattice'] [/obelisk %server] +.p.out)
       %legacy-pages
     ::  remember which page rels THIS migration triggered. Provenance matters.
     ::  A legacy page name may collide with a page the nexus published itself,
@@ -4404,54 +4130,6 @@
   ?~  items  (pure:m cnt)
   ;<  ~  bind:m  (poke-know [%import key.i.items entry.i.items])
   (import-know-loop t.items (add cnt 1))
-::  +urql-read: is this script a pure query? obelisk's selections are FROM-first,
-::  so a script that starts with anything else (INSERT/DELETE/UPDATE/CREATE/
-::  TRUNCATE/DROP) mutates the db and has to be routed to the writer.
-++  urql-read
-  |=  s=tape
-  ^-  ?
-  =/  t=tape
-    |-  ^-  tape
-    ?~  s  ~
-    ?:  (lte i.s ' ')  $(s t.s)
-    s
-  =("from" (cass (scag 4 t)))
-++  obelisk-query
-  |=  [db=@tas urql=tape]
-  =/  m  (fiber:fiber:nexus ,(each (list cmd-result:ast) tang))
-  ^-  form:m
-  ::  Read the database out of our own grub and run the query IN PROCESS.
-  ::
-  ::  +exec:obl is a pure function ([state now our db script] -> results), so a
-  ::  query needs no agent, no subscription, and no poke to another fiber. That
-  ::  is the whole reason the old owner apparatus existed, and all of it is gone.
-  ::  A peek is enough, and peeks are the one thing that has worked reliably
-  ::  here throughout.
-  ::
-  ::  WRITES: this arm DISCARDS the returned state, so it is read-only. Anything
-  ::  that mutates the catalog goes through +catalog-run, which routes to the
-  ::  single writer, the same serialisation every other lattice mutation uses.
-  ;<  now=@da  bind:m  bowl-now
-  ;<  our=@p   bind:m  bowl-our
-  ;<  st=db-state:sst  bind:m  read-db
-  ::  the engine bails on a malformed script rather than returning an error, so
-  ::  it runs inside +mule and a parse failure becomes a value.
-  =/  out=(each [(list cmd-result:ast) db-state:sst] tang)
-    (mule |.((exec:obl st now our db urql)))
-  ?:  ?=(%| -.out)  (pure:m [%| p.out])
-  (pure:m [%& -.p.out])
-::  +read-db: the obelisk database grub. A fresh (empty) state if it is missing,
-::  so a first query on a new ship reports "no such table" rather than crashing.
-++  read-db
-  =/  m  (fiber:fiber:nexus ,db-state:sst)
-  ^-  form:m
-  ;<  here=rail:tarball  bind:m  get-here-abs:io
-  =/  deep=@ud  (lent path.here)
-  =/  base=@ud  (lent app-base:lu)
-  =/  up=@ud  ?:((lth deep base) 0 (sub deep base))
-  ;<  vn=view:nexus  bind:m  (peek:io [%| up %& / %'db.lattice'] ~)
-  ?.  ?=([%file *] vn)  (pure:m *db-state:sst)
-  (pure:m (fall (mole |.(!<(db-state:sst (need-vase:tarball sang.vn)))) *db-state:sst))
 ++  sleep-draining
   |=  for=@dr
   =/  m  (fiber:fiber:nexus ,~)
@@ -4464,224 +4142,18 @@
   ;<  chk=@da  bind:m  bowl-now
   ?:  (gte chk wake-at)  (pure:m ~)
   $
-++  obelisk-json
-  |=  res=(each (list cmd-result:ast) tang)
-  ^-  json
-  ?:  ?=(%| -.res)
-    (obelisk-err-json (obelisk-tang-text p.res))
-  =/  results=(list result:ast)  (zing (turn p.res |=(cr=cmd-result:ast +.cr)))
-  =/  action=@t  ''
-  =/  relation=@t  ''
-  =/  count=(unit @ud)  ~
-  =/  vecs=(list vector:ast)  ~
-  |-
-  ?^  results
-    %=  $
-      results   t.results
-      action    ?:(?=(%action -.i.results) action.i.results action)
-      relation  ?:(?=(%relation -.i.results) relation.i.results relation)
-      count     ?:(?=(%vector-count -.i.results) `count.i.results count)
-      vecs      ?:(?=(%result-set -.i.results) +.i.results vecs)
-    ==
-  =/  cols=(list @t)
-    ?~  vecs  ~
-    (turn `(lest vector-cell:ast)`+.i.vecs |=(c=vector-cell:ast p.c))
-  =/  rows=(list json)
-    %+  turn  vecs
-    |=  v=vector:ast
-    ^-  json
-    a+(turn `(lest vector-cell:ast)`+.v |=(c=vector-cell:ast s+(obelisk-cell-cord q.c)))
-  %-  pairs:enjs:format
-  :~  ['ok' b+&]
-      ['action' s+action]
-      ['relation' s+relation]
-      ['count' (numb:enjs:format ?~(count (lent vecs) u.count))]
-      ['columns' a+(turn cols |=(c=@t s+c))]
-      ['rows' a+rows]
-  ==
-::  +obelisk-cell-cord: render one typed cell for display. Text auras (t/ta/tas)
-::  hold the cord verbatim. scot would re-escape it ('Urbit Basics' ->
-::  ~~~55.rbit...). Emit the raw cord for those. scot the rest (@p/@ud/@da/@rs)
-::  so their aura syntax survives.
-++  obelisk-cell-cord
-  |=  d=dime
-  ^-  @t
-  ?:  |(=('t' p.d) =('ta' p.d) =('tas' p.d))
-    q.d
-  (scot d)
-::  +obelisk-err-json / +obelisk-tang-text: the old agent's {ok:false, error}
-::  envelope and its tang -> cord rendering. No per-tank separator, so the
-::  single-leaf 'obelisk not installed' stays EXACT. The client's obelisk
-::  presence probe string-matches that text.
-++  obelisk-err-json
-  |=  msg=@t
-  ^-  json
-  (pairs:enjs:format ~[['ok' b+|] ['error' s+msg]])
-++  obelisk-tang-text
+::  +tang-text: render a tang as one cord, no per-tank separator. The only
+::  caller left is /grub-save, which reports a mark conversion failure to the
+::  editor as plain text.
+++  tang-text
   |=  =tang
   ^-  @t
   (crip (zing (turn tang |=(=tank ~(ram re tank)))))
-::  +send-obelisk: answer a route with an obelisk query result under the OLD
-::  agent's status contract: 503 when obelisk is absent, 504 when the query or
-::  the owner timed out, 502 when the transport broke mid-flight (result grub
-::  missing), and 200 otherwise, including obelisk's own urQL error, which
-::  rides the 200 {ok:false, error} envelope exactly as the old agent's
-::  obelisk-result-json did. Transport failures are matched by their exact tang
-::  texts (all minted in this file: obelisk-run-one, obelisk-query, obk-read-res
-::  and obelisk-read-data). An unrecognized tang is obelisk's own query error.
-++  send-obelisk
-  |=  [eyre-id=@ta res=(each (list cmd-result:ast) tang)]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ?:  ?=(%& -.res)  (send-json eyre-id (obelisk-json res))
-  =/  txt=@t  (obelisk-tang-text p.res)
-  ?:  =('obelisk not installed' txt)  (send-err eyre-id 503 txt)
-  ?:  =('obelisk: owner timed out' txt)  (send-err eyre-id 504 txt)
-  ?:  =('obelisk: query timed out (agent down?)' txt)  (send-err eyre-id 504 txt)
-  ?:  =('obelisk: no result grub' txt)  (send-err eyre-id 502 txt)
-  (send-json eyre-id (obelisk-err-json txt))
-::  +obelisk-col-cords: pull one column's raw dime values (as cords) out of a
-::  query result, across every result-set row. Used by the ghost-row reconcile
-::  to read back the `path` column. A `%| error` result yields the empty set, so
-::  callers treat "obelisk unreachable" as "nothing stored" (safe no-op).
-++  obelisk-col-cords
-  |=  [res=(each (list cmd-result:ast) tang) col=@tas]
-  ^-  (set @t)
-  ?.  ?=([%& *] res)  ~
-  =/  results=(list result:ast)  (zing (turn p.res |=(cr=cmd-result:ast +.cr)))
-  =|  out=(set @t)
-  |-  ^-  (set @t)
-  ?~  results  out
-  ?.  ?=([%result-set *] i.results)
-    $(results t.results)
-  =.  out  (obelisk-col-rows out col +.i.results)
-  $(results t.results)
-++  obelisk-col-rows
-  |=  [out=(set @t) col=@tas rows=(list vector:ast)]
-  ^-  (set @t)
-  ?~  rows  out
-  =/  cells=(list vector-cell:ast)  +.i.rows
-  =.  out
-    |-  ^-  (set @t)
-    ?~  cells  out
-    ?:  =(col p.i.cells)  (~(put in out) `@t`q.q.i.cells)
-    $(cells t.cells)
-  $(rows t.rows)
-++  catalog-db  `@tas`%lattice
-::  +catalog-run: run one urQL statement against the catalog db. Obelisk is a
-::  LIBRARY now (+exec is a pure function over db state), not a separate agent, so
-::  a write is a read-modify-write over one grub and has to be serialised. It
-::  goes to the writer as an %obelisk eval-action, the same path every other
-::  lattice mutation takes.
-::
-::  KNOWN LIMIT (finding #13): the result is not returned to the caller, so
-::  callers (catalog-classify, catalog-init, the /save+/delete sweeps) send
-::  {"ok":true} even when the write no-ops or errors. A failed statement is logged
-::  by the writer (%lattice-obelisk-failed) and leaves the db untouched, which is
-::  what makes re-running +catalog-init a safe schema repair.
-++  catalog-run
-  |=  [db=@tas urql=tape]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ::  WRITES go to the writer. +obelisk-query is read-only by construction (it
-  ::  throws away the state +exec returns), so a CREATE/INSERT run through it
-  ::  would execute and then vanish.
-  ::
-  ::  ABSOLUTE road: the crawler reaches this arm from the app root, where
-  ::  +poke-eval's up-2 overshoots and nacks. See +poke-eval-abs.
-  (poke-eval-abs [%obelisk db (crip urql) |])
-::  +catalog-run-quiet: a schema repair, whose failure means "already there".
-++  catalog-run-quiet
-  |=  [db=@tas urql=tape]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  (poke-eval-abs [%obelisk db (crip urql) &])
-::  +catalog-init: create the lattice database, then each catalog table as its OWN
-::  poke (per catalog-create-list's contract: the joined catalog-create-urql would
-::  abort at the first already-existing table and never create the rest). Each
-::  catalog-run is a distinct obelisk event via obelisk-query (which re-establishes
-::  the sub per call), so there's no kick/resub race, and a re-run idempotently
-::  repairs a partial/evolved schema: existing tables error harmlessly (the ack is
-::  swallowed), missing ones get created.
-::
-++  catalog-init
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  ~  bind:m  (catalog-run-quiet %sys (weld "CREATE DATABASE " (trip catalog-db)))
-  (catalog-run-loop & catalog-create-list:cat)
-::  +catalog-run-loop: run a sequence of scripts, each as its own poke/event.
-::  Used for the CREATE lists and for the chunked reindex populates (+chunk-rows),
-::  which must not land in a single event.
-++  catalog-run-loop
-  |=  [quiet=? stmts=(list tape)]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ?~  stmts  (pure:m ~)
-  ;<  ~  bind:m  ?:(quiet (catalog-run-quiet catalog-db i.stmts) (catalog-run catalog-db i.stmts))
-  (catalog-run-loop quiet t.stmts)
-::  +know-reindex: rebuild the obelisk knowledge index from the live vault. Ensure
-::  the db + knowledge/tags tables exist (create errors swallowed, like catalog-init),
-::  then TRUNCATE + re-INSERT every entry in one write. Driven by POST /know-reindex
-::  (the Explore pane's Reindex button). The index is stale between reindexes.
-::
-++  know-reindex
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  entries=(map path know-entry:lk)  bind:m  read-know-map
-  ;<  ~  bind:m  (catalog-run-quiet %sys (weld "CREATE DATABASE " (trip catalog-db)))
-  ;<  ~  bind:m  (catalog-run-loop & know-index-create-list:cat)
-  =/  rows=(list [item=@t updated=@da tags=(list @t)])
-    %+  turn  ~(tap by entries)
-    |=  [key=path e=know-entry:lk]
-    [(spat key) updated.e ~(tap in tags.e)]
-  ::  chunked: one poke per script, so a big vault cannot build the whole index in
-  ::  a single Arvo event. See +chunk-rows in lib/catalog.hoon.
-  (catalog-run-loop | (know-index-populate-urql:cat rows))
-::  +catalog-index-page: analyze one page body and write its catalog rows: the
-::  two-poke page upsert (ensure INSERT + content refresh) plus the term index.
-::  pat is the content-map key (/pub/.../gmi); the url is derived inside the urQL
-::  gens. pages is the publisher's full key set (for internal-link detection).
-::
-::  +body-cap: max page bytes fed to the analyzer. Peer pages are UNTRUSTED. A
-::  hostile publisher could serve a huge body to burn crawl CPU. end truncates to
-::  the low body-cap bytes (a no-op for a smaller body). Analysis is lossy anyway.
+::  +body-cap: max page bytes fed to the tokenizer. end truncates to the low
+::  body-cap bytes (a no-op for a smaller body), so one enormous page cannot
+::  dominate a rebuild. Tokenization is lossy anyway.
 ::
 ++  body-cap  ^-(@ud 1.048.576)
-::  +manifest-max: max pages indexed from ONE followed peer per sweep. A hostile
-::  publisher could advertise an unbounded /pub/index. Each page costs a 30s remote
-::  peek + 3 obelisk pokes, so cap the fan-out. Own pages (scan-self) are trusted
-::  and uncapped.
-++  manifest-max  ^-(@ud 1.024)
-++  catalog-index-page
-  |=  [src=@p pub=@p pat=path now=@da body=@t pages=(set path) pace=?]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  =/  a  (catalog-analyze:cat (end [3 body-cap] body))
-  ::  KNOWN GAP (finding #8): these are 3 separate owner pokes, not one obelisk
-  ::  event, so a concurrent /delete of this same page can interleave and leave
-  ::  orphaned catalog-terms rows (ghost hits). Upgrade: fold ensure+refresh+terms
-  ::  into ONE urQL script (like catalog-init) so a page's write is atomic at the
-  ::  owner. Narrow race (concurrent index+delete of the SAME page); left for now.
-  ::  QUIET, and this is load-bearing: the ensure-INSERT dup-fails BY DESIGN
-  ::  for every already-indexed page (the two-poke upsert contract in
-  ::  lib/catalog.hoon). Through the loud runner, each sweep of an indexed
-  ::  vault printed one full crud tang per existing page, and rendering
-  ::  those tanks starved the ship for minutes at a time. The expected
-  ::  failure is silent, like the schema repairs. Real content failures
-  ::  still surface through the refresh and terms pokes below.
-  ;<  ~  bind:m  (catalog-run-quiet catalog-db (catalog-page-ensure-urql:cat src pub pat now a))
-  ::  pace=& is CRAWLER pacing: yield between the pokes so a queued request
-  ::  waits behind one poke at most (measured, ~10-12s probe latency without
-  ::  it). pace=| is the SUBSCRIPTION path: one page per wave, and dozens of
-  ::  sub fibers can index concurrently after a reboot's re-bond storm.
-  ::  Measured on the dev pier: concurrent drain-sleeps collided on their
-  ::  timers and every loser wedged here between the ensure and the refresh,
-  ::  which left page rows without term rows across the whole catalog. A
-  ::  sub fiber therefore runs the three pokes back to back.
-  ;<  ~  bind:m  ?:(pace (sleep-draining ~s1) (pure:m ~))
-  ;<  ~  bind:m  (catalog-run catalog-db (catalog-page-refresh-urql:cat src pub pat now a pages))
-  ;<  ~  bind:m  ?:(pace (sleep-draining ~s1) (pure:m ~))
-  (catalog-run catalog-db (catalog-page-terms-urql:cat src pub pat a))
 ::  +sub-apply-wave: act on ONE wave of a subscribed page (mesa D2). The wave
 ::  (initial bond or edit) carries the kept gmi grub's cass, which IS the rev
 ::  the publisher last grew a namespace binding at. For a save that binding
@@ -4700,10 +4172,9 @@
 ::  lrev. The next wave (or a resubscribe) then retries the fetch instead of
 ::  skipping the rev as a duplicate forever. Bounded at one extra attempt
 ::  per wave, no polling. Against a non-mirroring publisher every wave
-::  misses (this reader is mesa-only by design). Each edit costs the bounded
-::  retry and indexes nothing. r=0 means the grub has never existed in the
-::  peer's pub vault (a sub armed before the first share). Nothing to do
-::  until a wave with a real cass arrives.
+::  misses (this reader is mesa-only by design). r=0 means the grub has never
+::  existed in the peer's pub vault (a sub armed before the first share).
+::  Nothing to do until a wave with a real cass arrives.
 ::
 ++  sub-apply-wave
   |=  [pub=@p rel=path wav=wave:nexus lrev=@ud]
@@ -4722,26 +4193,13 @@
     ;<  ~  bind:m  (sleep-draining ~s2)
     $(try +(try))
   ?:  =(%del p.u.pg)
-    ::  DELETE: the publisher grew a tombstone at the post-cull cass. Drop the
-    ::  page's catalog rows (the same per-page delete +catalog-reconcile-peer
-    ::  runs for a ghost). lrev advances to r so a later re-publish (cass r+1
-    ::  and up) still indexes.
-    ;<  our=@p  bind:m  bowl-our
-    ;<  ~  bind:m
-      %+  catalog-run  catalog-db
-      (catalog-page-delete-urql:cat our pub (weld /pub (snoc rel %gmi)))
+    ::  DELETE: the publisher grew a tombstone at the post-cull cass. lrev
+    ::  advances to r so a later re-publish (cass r+1 and up) still registers.
     (pure:m r)
   ?.  =(%gmi p.u.pg)  (pure:m lrev)
-  ::  SAVE/EDIT: index the body. pages (link-detection set) is ~ because
-  ::  the ~h6 crawler refreshes internal-link rows.
-  ;<  our=@p   bind:m  bowl-our
-  ;<  now=@da  bind:m  bowl-now
-  ;<  ~  bind:m  (catalog-index-page our pub (weld /pub (snoc rel %gmi)) now q.u.pg ~ %.n)
+  ::  SAVE/EDIT: the fetch above is what proves the wave carried a real body,
+  ::  so lrev may advance past it.
   (pure:m r)
-::  +catalog-scan-self: index every one of OUR OWN published pages into the
-::  catalog (source = publisher = our). The local, peer-free slice of the crawler.
-::  Proves the analyze -> obelisk pipeline end to end. Returns the count indexed.
-::
 ::  +page-src: a page's current stored source (the WRAPPED src, so re-saving
 ::  it reproduces the page byte-for-byte, kind included), ~ if absent.
 ++  page-src
@@ -4784,188 +4242,6 @@
   =/  wfil=(map @ta cass:clay)  ?~(fil.wave.dv ~ file.u.fil.wave.dv)
   =/  c=(unit cass:clay)  (~(get by wfil) %code)
   (pure:m ?~(c 0 ud.u.c))
-++  catalog-scan-self
-  =/  m  (fiber:fiber:nexus ,@ud)
-  ^-  form:m
-  ;<  our=@p       bind:m  bowl-our
-  ;<  now=@da      bind:m  bowl-now
-  ::  ABSOLUTE road via app-base, not a drop-N relative road: scan-self runs from
-  ::  both the depth-2 /ui/requests fiber AND the depth-0 /crawler.sig fiber, so a
-  ::  relative road would resolve differently per caller.
-  ;<  ix=pub-index:lp  bind:m  (read-pub-index [%& %& (weld app-base:lu /pub) %index])
-  =/  pages=(set path)  ~(key by ix)
-  (catalog-scan-loop our now ~(tap in pages) pages 0)
-++  catalog-scan-loop
-  |=  [our=@p now=@da keys=(list path) pages=(set path) cnt=@ud]
-  =/  m  (fiber:fiber:nexus ,@ud)
-  ^-  form:m
-  ?~  keys  (pure:m cnt)
-  =/  stripped=path  (strip-pub:lp i.keys)
-  ?~  stripped  (catalog-scan-loop our now t.keys pages cnt)
-  ::  content key /pub/a/gmi -> vault rel /a (strip leading pub, trailing gmi)
-  =/  rel=path  (snip `path`stripped)
-  ;<  body=(unit @t)  bind:m  (read-page-body our our rel)
-  ?~  body  (catalog-scan-loop our now t.keys pages cnt)
-  ;<  ~  bind:m  (catalog-index-page our our i.keys now u.body pages %.y)
-  ::  YIELD BETWEEN PAGES. Local darts and peeks all drain inside one Arvo
-  ::  event, so without this the whole sweep is ONE event and every queued
-  ::  HTTP request waits behind all of it. Measured at 47s for a 20-page
-  ::  vault, and the ~h6 crawler runs this unprompted. That was the ship's
-  ::  periodic multi-minute brownout. A timer is a real yield (the fiber
-  ::  suspends across events), so requests now interleave between pages and
-  ::  the worst added latency anyone sees is ONE page's indexing cost.
-  ::  The sweep itself takes ~1s/page longer, which a 6-hour cadence cannot
-  ::  feel. sleep-draining, not a bare wait. This loop runs under
-  ::  /crawler.sig, where finding #13 applies (stray early-resolved timer
-  ::  wakes accumulate over a long fiber).
-  ;<  ~  bind:m  (sleep-draining ~s1)
-  (catalog-scan-loop our now t.keys pages (add cnt 1))
-::  +catalog-scan-peers: sweep every followed publisher into the catalog. source
-::  = our (the crawler ship), publisher = them. Needs peers/follows to exercise.
-::  A no-op until /follow is used. ponytail: full re-crawl per tick. Per-follow
-::  since-cursors and a hash-diff skip layer on here once catalog size warrants.
-::  ponytail: peek-remote blocks on take-peek, so an unreachable follow stalls
-::  the sweep (self-scan already ran, so own pages stay fresh), same limitation
-::  as /fetch. Only follow live lattice peers; a per-peer timeout is a later layer.
-::
-::  mesa (D1 phase C): the sweep threads a +mesa-cache in and out. It is the
-::  crawler fiber's own working memory, not state (see +mesa-cache). Callers
-::  with no memory (the two POST routes) hand in *mesa-cache and drop the
-::  result, which just means every page takes the peek path.
-::
-++  catalog-scan-peers
-  |=  [our=@p now=@da mc=mesa-cache]
-  =/  m  (fiber:fiber:nexus ,[@ud mesa-cache])
-  ^-  form:m
-  ;<  fs=follows:lp  bind:m  read-follows
-  (catalog-scan-peers-loop our now ~(tap in fs) 0 mc)
-++  catalog-scan-peers-loop
-  |=  [our=@p now=@da ships=(list @p) cnt=@ud mc=mesa-cache]
-  =/  m  (fiber:fiber:nexus ,[@ud mesa-cache])
-  ^-  form:m
-  ?~  ships  (pure:m [cnt mc])
-  ;<  [n=@ud nc=mesa-cache]  bind:m  (catalog-scan-peer our i.ships now mc)
-  (catalog-scan-peers-loop our now t.ships (add cnt n) nc)
-::  +catalog-scan-peer: index one peer's published pages via peek-remote.
-::  After indexing the peer's CURRENT manifest, +catalog-reconcile-peer sweeps
-::  the rows we stored on a PRIOR sweep for pages the peer has since UNPUBLISHED.
-::  Otherwise their catalog-pages/terms/headings/links/tags/meta rows linger as
-::  stale search hits that 404 on read (finding #5). Runs every ~h6 crawler tick.
-++  catalog-scan-peer
-  |=  [our=@p pub=@p now=@da mc=mesa-cache]
-  =/  m  (fiber:fiber:nexus ,[@ud mesa-cache])
-  ^-  form:m
-  ;<  u-ix=(unit pub-index:lp)  bind:m  (read-pub-index-remote pub)
-  ::  unreachable / malformed / vetoed peer -> ~ (NOT a genuine empty index). Index
-  ::  and reconcile NOTHING. Reconciling against an empty set deletes every stored
-  ::  row for a merely-offline peer (a reachable-but-empty peer yields `~ *pub-index
-  ::  and reconciles correctly, dropping the pages it really unpublished).
-  ?~  u-ix  (pure:m [0 mc])
-  ::  drop keys whose knots don't reparse. An untrusted peer can serve a path with a
-  ::  byte outside the knot charset (uppercase/space/control). It survives the clam,
-  ::  then stores lossily (false-ghosts a live page on reconcile) and crashes +stab.
-  ::  Keep only canonical keys (rush-guarded) so poison never enters the index.
-  =/  ix=pub-index:lp
-    (~(gas by *pub-index:lp) (skim ~(tap by u.u-ix) |=([k=path *] ?=(^ (rush (spat k) stap)))))
-  =/  pages=(set path)  ~(key by ix)
-  ::  cap the indexed fan-out per peer (untrusted). pages stays full for
-  ::  internal-link detection. ponytail: index the first manifest-max keys.
-  ::  Add per-peer cursoring if a real follow legitimately exceeds it.
-  ::  RESIDUAL (review-3): this caps the expensive per-page work (peek + pokes),
-  ::  but read-pub-index-remote already clammed the peer's ENTIRE index into `ix`,
-  ::  so a hostile publisher can still force a transient allocation ~ its index
-  ::  size. Bounding that needs a byte-cap at the peek/clam boundary. Deferred with
-  ::  the rest of the peer path until /follow is exercised.
-  =/  keys=(list path)  (scag manifest-max ~(tap in pages))
-  ::  bound this peer's page sweep by peer-budget (see +peer-budget) so one staller
-  ::  can't monopolize the tick. deadline is fresh-now + budget, not the sweep's now.
-  ;<  t0=@da    bind:m  bowl-now
-  ;<  [cnt=@ud nc=mesa-cache]  bind:m
-    (catalog-scan-peer-loop our pub now keys pages ix (add t0 peer-budget) 0 mc)
-  ;<  ~         bind:m  (catalog-reconcile-peer our pub pages)
-  ::  mesa: this peer's scry-first split for THIS sweep. Deltas, not the
-  ::  running totals (the cache is cumulative for the crawler fiber's life).
-  ::  keens is how many pages the peer's kernel served without waking its
-  ::  %grubbery. peeks is everything that fell back. Both zero on a first
-  ::  sweep is expected because nothing is learned yet. This is the only
-  ::  place the split is observable. No route exposes it (see
-  ::  api-lifecycle.sh).
-  ~&  :*  %lattice-mesa-scry  pub
-          keens=(sub keens.nc keens.mc)
-          peeks=(sub peeks.nc peeks.mc)
-      ==
-  ::  mesa: the rev-cache twin of +catalog-reconcile-peer. Drop notes for
-  ::  pages this peer no longer lists. Not tidiness. manifest-max caps ONE
-  ::  sweep's fan-out, not the crawler fiber's whole life, so a publisher who
-  ::  churns page names would otherwise grow this map without bound between
-  ::  deploys. Diffed against the FULL `pages`, like reconcile, so a page
-  ::  beyond the cap keeps its (still valid) note.
-  =/  pruned=mesa-cache
-    %=    nc
-        revs
-      %-  ~(gas by *(map [@p path] rev-note))
-      %+  skim  ~(tap by revs.nc)
-      |=  [k=[who=@p key=path] *]
-      |(?!(=(who.k pub)) (~(has in pages) key.k))
-    ==
-  (pure:m [cnt pruned])
-::  +catalog-reconcile-peer: drop catalog rows for pages this publisher no longer
-::  lists. SELECT the stored `path`s for (source=our, publisher=pub), diff against
-::  the current manifest `pages`, and delete each dropped key from every table.
-::  Compares against the FULL `pages` (not the manifest-max-capped index slice) so
-::  a page beyond the cap is never mistaken for unpublished. On an unreachable
-::  obelisk the SELECT errors -> empty stored -> no deletes (safe no-op).
-++  catalog-reconcile-peer
-  |=  [our=@p pub=@p pages=(set path)]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  qr=(each (list cmd-result:ast) tang)  bind:m
-    (obelisk-query catalog-db (catalog-peer-paths-urql:cat our pub))
-  =/  stored=(set @t)   (obelisk-col-cords qr %path)
-  ::  catalog-pages.path stores (spat content-key); compare on the same cords.
-  =/  current=(set @t)  (silt (turn ~(tap in pages) |=(p=path (spat p))))
-  =/  ghosts=(list @t)  ~(tap in (~(dif in stored) current))
-  (catalog-reconcile-loop our pub ghosts)
-++  catalog-reconcile-loop
-  |=  [our=@p pub=@p ghosts=(list @t)]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ?~  ghosts  (pure:m ~)
-  ::  ghosts are stored cords; a row written before ingest-filtering (a malicious
-  ::  peer, pre-upgrade) can hold an unparseable knot that would crash +stab and the
-  ::  sweep fiber. rush-guard: skip+log an unparseable ghost rather than crash.
-  =/  pp=(unit path)  (rush i.ghosts stap)
-  ?~  pp
-    ~&  [%lattice-reconcile-bad-ghost i.ghosts]
-    (catalog-reconcile-loop our pub t.ghosts)
-  ;<  ~  bind:m
-    (catalog-run catalog-db (catalog-page-delete-urql:cat our pub u.pp))
-  (catalog-reconcile-loop our pub t.ghosts)
-++  catalog-scan-peer-loop
-  |=  $:  our=@p  pub=@p  now=@da  keys=(list path)  pages=(set path)
-          ix=pub-index:lp  deadline=@da  cnt=@ud  mc=mesa-cache
-      ==
-  =/  m  (fiber:fiber:nexus ,[@ud mesa-cache])
-  ^-  form:m
-  ?~  keys  (pure:m [cnt mc])
-  ::  per-peer wall-clock budget (finding F): bail once spent so a peer stalling its
-  ::  page peeks can't starve later peers. Overshoots by at most one remote-timeout
-  ::  (the check is between peeks). ponytail: total worst case = follows*peer-budget.
-  ::  Add per-peer cursoring if a LEGIT peer's page set can't finish in one budget.
-  ;<  clk=@da  bind:m  bowl-now
-  ?:  (gte clk deadline)  ~&([%lattice-peer-budget-spent pub cnt] (pure:m [cnt mc]))
-  =/  stripped=path  (strip-pub:lp i.keys)
-  ?~  stripped  (catalog-scan-peer-loop our pub now t.keys pages ix deadline cnt mc)
-  ::  mesa (D1 phase C): read scry-first. The manifest row's hash is the
-  ::  freshness witness +read-page-scry gates the %keen on, so it rides along.
-  ::  `keys` came out of `ix`, so the row is always there. A missing one bunts
-  ::  to a zero hash, which simply never matches and forces the peek.
-  =/  row=pub-row:lp  (fall (~(get by ix) i.keys) *pub-row:lp)
-  ;<  [body=(unit @t) nc=mesa-cache]  bind:m
-    (read-page-scry our pub i.keys (snip `path`stripped) hash.row mc)
-  ?~  body  (catalog-scan-peer-loop our pub now t.keys pages ix deadline cnt nc)
-  ;<  ~  bind:m  (catalog-index-page our pub i.keys now u.body pages %.y)
-  (catalog-scan-peer-loop our pub now t.keys pages ix deadline (add cnt 1) nc)
 ::  +pub-path: a relative publish path ("notes/intro") -> content-map key
 ::  (/pub/notes/intro/gmi). Ported from /lib/lattice.
 ::
@@ -5119,15 +4395,11 @@
     %urbit     %shared
     %clearweb  %clearweb
   ==
-::  +content-reindex: rebuild content-terms from the live tree + know vault.
-::  Two reads total (one deep page peek, one know-map read), then a single
-::  TRUNCATE+INSERT.
+::  +content-reindex: rebuild the term index from the live tree + know vault.
+::  Two reads total (one deep page peek, one know-map read), then one write.
 ::
-::  The populate goes through +catalog-run (the writer) like every other write.
-::  It used to run on +obelisk-query so it could return an accepted/failed ack,
-::  which mattered when obelisk was a separate agent that could be absent. Obelisk
-::  is compiled into this app now (it cannot be missing), and that path discards
-::  the state it produces, so the ack described a write that was thrown away.
+::  The populate goes through +index-write, one bole for the whole index, so a
+::  rebuild is a single dart no matter how big the vault is.
 ++  content-reindex
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
@@ -5140,21 +4412,22 @@
     %+  turn  pages
     |=  [rel=path body=@t shr=share-mode:le]
     :+  (scope-of shr)  (crip (pax-str rel))
-    ::  same cap the crawler applies to a page body before analysis
-    %+  top-terms:cat  term-max:cat
-    (index-terms:cat *(map @t @ud) (trip (end [3 body-cap] body)))
+    ::  the same body cap the know half applies, so one giant page cannot
+    ::  dominate a rebuild
+    %+  top-terms:li  term-max:li
+    (index-terms:li *(map @t @ud) (trip (end [3 body-cap] body)))
   =/  know-rows=(list [scope=@t key=@t terms=(list [term=@t tf=@ud])])
     %+  turn  ~(tap by entries)
     |=  [key=path e=know-entry:lk]
     :+  'knowledge'  (spat key)
-    %+  top-terms:cat  term-max:cat
-    (index-terms:cat *(map @t @ud) (trip (end [3 body-cap] body.e)))
+    %+  top-terms:li  term-max:li
+    (index-terms:li *(map @t @ud) (trip (end [3 body-cap] body.e)))
   ::  flatten to (scope, key, term, tf) and write the WHOLE index as ONE bole.
   ::
-  ::  This is the entire point of the change. The obelisk version sent ~200 pokes,
-  ::  each peeking and rewriting the whole database, and since every local dart
-  ::  drains inside ONE Arvo event, that was one enormous event, which is why it
-  ::  wedged HTTP rather than merely being slow. A bole is a single %make dart
+  ::  This is the entire point of the layout. The old external index took ~200
+  ::  pokes, each peeking and rewriting a whole database, and since every local
+  ::  dart drains inside ONE Arvo event that was one enormous event, which is why
+  ::  it wedged HTTP rather than merely being slow. A bole is a single %make dart
   ::  with a single tree hash: O(rows) once.
   =/  rows=(list [scope=@t key=@t term=@t tf=@ud])
     %-  zing
@@ -5717,16 +4990,9 @@
   (of-wain:format (welp header lines))
 ::  +remote-timeout: how long a remote peek waits before giving up. A dead or
 ::  offline peer would otherwise block the fiber forever (peek-remote -> take-peek
-::  never resolves), hanging /fetch and stalling the crawler's peer sweep.
+::  never resolves), hanging /fetch and the /x explorer's remote reads.
 ::
 ++  remote-timeout  ^-(@dr ~s30)
-::  +peer-budget: wall-clock a single peer's page sweep may consume before we bail
-::  and move on. Without it, a peer that lists manifest-max pages but stalls each
-::  page peek (up to remote-timeout) could burn manifest-max * remote-timeout (~8.5h)
-::  and starve every later peer in the sequential sweep. A healthy peer answers in
-::  ms so this never bites. A staller is capped and re-scanned next tick.
-::
-++  peer-budget  ^-(@dr ~m30)
 ::  +remote-road: rewrite an absolute road into its /sys/ames mirror on `shp`, so
 ::  a %peek dart routes to that ship. Mirrors peek-remote's own rewrite (kept
 ::  local so peek-remote-wait doesn't fork fiberio just to add a deadline).
@@ -6051,7 +5317,7 @@
 ::  but the take MARK-FILTERS the bowl reply. A stray poke (a queued %know-action,
 ::  %eval-action, etc. buffered while this fiber was mid-work) is %skip'd back to the
 ::  owning loop instead of being stolen. fiberio's get-our/get-time use a plain
-::  take-poke, so in a busy fiber (obelisk owner, crawler, writer) they grab a
+::  take-poke, so in a busy fiber (the writer, a keep fiber) they grab a
 ::  neighbour's message and nest-fail (-need.@p / -need.@da). The one grubbery peek
 ::  turned into a poke-service means every our/now read must filter like this.
 ::
@@ -6082,7 +5348,7 @@
 ::  +take-news-or-wake-until: like fiberio's take-news-or-wake, but the timer-wake
 ::  branch matches ONLY our own `until` timer (mirrors take-peek-or-wake). fiberio's
 ::  version matches ANY %timer-wake, so a stale timer left armed by an earlier
-::  obelisk-query in the SAME long-lived fiber (the crawler runs many in sequence)
+::  read in the SAME long-lived fiber (a keep fiber runs many in sequence)
 ::  would spuriously abort a later query. Checking until makes a stale wake skip.
 ::
 ++  take-news-or-wake-until
@@ -6107,8 +5373,8 @@
 ::  fiberio has no dart-cancel, so an abandoned read's answer still arrives (a
 ::  keen's arrives as a %keen-response poke-back, correlated by wire). fiberio's
 ::  take-wake %skips those strays (piling them in the skip queue forever) and
-::  CRASHES on a stray %veto. Here all are consumed. Used by the crawler's
-::  sleep-draining loop, which re-checks the clock after each drain.
+::  CRASHES on a stray %veto. Here all are consumed. Used by +sleep-draining,
+::  which re-checks the clock after each drain.
 ++  take-wake-drain
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
@@ -6192,10 +5458,10 @@
   ==
 ::  +page-rel: normalize a fetch/subscribe spur to the vault-relative page path.
 ::  The home spur (empty) is the authored /index page (so urb://~ship/ resolves).
-::  A catalog url form (/pub/<spur>/gmi round-tripped from a search result) is
+::  A /pub/<spur>/gmi content-map key (round-tripped from a search result) is
 ::  stripped back to /<spur>. A plain vault spur is untouched (idempotent). Shared
-::  by read-page-body and the /sub keep fiber so the keep road, the read, and the
-::  catalog key all derive from the SAME normalized spur.
+::  by read-page-body and the /sub keep fiber so the keep road and the read both
+::  derive from the SAME normalized spur.
 ::
 ++  page-rel
   |=  rel=path
@@ -6212,12 +5478,10 @@
 ::  directly, and none of them can name a %keen spur:
 ::
 ::    * a request fiber is born and dies per request, so it never carries a
-::      remembered rev, and nothing durable holds one. The catalog tables have
-::      no rev column and the peer's manifest rows are [updated bytes hash].
-::      Giving /fetch a rev would mean INVENTING new persistence (a rev grub +
-::      mark + on-load row) for a read that already costs exactly one peek.
-::      Not done. The crawler's fiber-local cache is the whole rev memory in
-::      this phase (+mesa-cache).
+::      remembered rev, and nothing durable holds one. The peer's manifest rows
+::      are [updated bytes hash], no rev column anywhere. Giving /fetch a rev
+::      would mean INVENTING new persistence (a rev grub + mark + on-load row)
+::      for a read that already costs exactly one peek. Not done.
 ::    * the /sub/pages reader needs no remembered rev at all. The %news wave
 ::      that says the peer JUST edited this page carries the fresh cass, and
 ::      +sub-apply-wave keens at exactly that rev.
@@ -6225,10 +5489,10 @@
 ::      publish. Only /pub/page/<rel>/<rev> and /pub/index/<seq> exist in the
 ::      namespace.
 ::
-::  The seam is one call away if a later phase gives readers a rev. Swap the
-::  +read-page-body call for +read-page-scry and thread a cache. Writes
-::  (comments, /remote-save, share notices) stay on the weir-gated poke path by
-::  design and are not candidates at all.
+::  The seam is one call away if a later phase gives readers a rev: remember it
+::  alongside the body and %keen the spur it names. Writes (comments,
+::  /remote-save, share notices) stay on the weir-gated poke path by design and
+::  are not candidates at all.
 ::
 ++  read-page-body
   |=  [our=@p shp=@p rel=path]
@@ -6240,8 +5504,8 @@
 ::  the body came from. The peek view already carries the grub's cass ([%file
 ::  =cass =sang], and a cross-ship discharge fills it from the remote's own
 ::  snap), so the read that fetches a body teaches us its revision for free.
-::  That is the only rev source a reader has (docs D1 / +read-page-scry), and
-::  it is why the mesa read path never costs an extra round trip to learn one.
+::  That is the only rev source a reader has (docs D1), and it is why the mesa
+::  read path never costs an extra round trip to learn one.
 ::
 ++  read-page-body-rev
   |=  [our=@p shp=@p rel=path]
@@ -6250,15 +5514,15 @@
   ::  `our` is a parameter, not a bowl-our bind. Callers already hold it (the
   ::  owner gate's src, or their own binding), and the /sys/bowl round trip
   ::  cost ~0.2s on every reader view for a value that never changes.
-  ::  tolerate a catalog-row url form: catalog stores url as urb://<pub>/pub/<spur>/gmi
-  ::  (the content-map key), so a client that round-trips a /catalog-* result into
+  ::  tolerate a /pub/<spur>/gmi url form: that is the content-map key a search
+  ::  result or a peer manifest row carries, so a client round-tripping one into
   ::  /fetch or the reader passes rel=/pub/<spur>/gmi. Strip the leading pub +
   ::  trailing gmi back to the vault-relative /<spur> /fetch expects. A plain vault
   ::  rel (no leading pub / no trailing gmi) is untouched. ponytail: a page literally
   ::  published as "pub/…/gmi" would be mis-normalized (accepted, that key is absurd).
   =/  rel=path  (page-rel rel)
   ::  own pages: ABSOLUTE road via app-base (the nexus's fixed tree path), so this
-  ::  resolves the same from the depth-2 request fiber and the depth-0 crawler.
+  ::  resolves the same at every fiber depth.
   =/  road=road:tarball
     [%& %& (weld (weld app-base:lu /pub/vault) rel) %gmi]
   ?:  =(shp our)
@@ -6585,7 +5849,7 @@
     '<style>.cbar{display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid #8884}.cbar button,.cbar a.home{font:inherit;padding:4px 12px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer;text-decoration:none}.cbar button[disabled]{opacity:.35;cursor:default}.cbar input{flex:1;font:inherit;padding:5px 8px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbar .hamw{position:relative;margin-left:auto;display:flex}#hammenu{position:absolute;right:0;top:100%;z-index:60;background:#fff;border:1px solid #8886;border-radius:6px;min-width:160px;display:flex;flex-direction:column;padding:4px;box-shadow:0 4px 14px #0003}@media(prefers-color-scheme:dark){#hammenu{background:#1a1a1a}}#hammenu a{padding:7px 10px;text-decoration:none;color:inherit;border-radius:4px}#hammenu a:hover{background:#8882}#hammenu[hidden]{display:none}</style><form class="cbar" action="/apps/lattice" method="get"><button type="button" class="navb" id="navb" title="back" disabled>&#8592;</button><button type="button" class="navb" id="navf" title="forward" disabled>&#8594;</button>'
   ?.  authed  "</form>"
   %-  trip
-  '<a class="home" href="/apps/lattice" title="lattice home">&#8962;</a><input name="url" value="" autocomplete="off" placeholder="urb:// address or search the catalog"><button type="submit">Go</button><span class="hamw"><button type="button" id="ham" title="menu">&#9776;</button><div id="hammenu" hidden><a href="/apps/lattice/app">&#9998; editor</a><a href="/apps/lattice/know">&#9670; knowledge</a><a href="/apps/lattice/marks">&#9733; bookmarks</a><a href="/apps/lattice/settings">&#9881; settings</a></div></span></form>'
+  '<a class="home" href="/apps/lattice" title="lattice home">&#8962;</a><input name="url" value="" autocomplete="off" placeholder="urb:// address or search your pages"><button type="submit">Go</button><span class="hamw"><button type="button" id="ham" title="menu">&#9776;</button><div id="hammenu" hidden><a href="/apps/lattice/app">&#9998; editor</a><a href="/apps/lattice/know">&#9670; knowledge</a><a href="/apps/lattice/marks">&#9733; bookmarks</a><a href="/apps/lattice/settings">&#9881; settings</a></div></span></form>'
 ++  serve-asset
   |=  [eyre-id=@ta pax=path]
   =/  m  (fiber:fiber:nexus ,~)
@@ -7825,42 +7089,35 @@
   ^-  tape
   %-  trip
   '<style>*{scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}.muted{color:#8a8a8a}h1{margin:.2rem 0}.apps{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:14px;margin:1.2rem 0}.appcard{display:flex;flex-direction:column;gap:5px;padding:20px;border:1px solid #8886;border-radius:12px;text-decoration:none;color:inherit;background:#8881}.appcard:hover{border-color:#1a6ed8}.appcard .ico{font-size:1.7rem;line-height:1}.appcard strong{font-size:1.2rem}.appcard .d{color:#8a8a8a;font-size:.9rem}.quick{display:flex;flex-wrap:wrap;gap:8px;margin:.5rem 0 .3rem}.quick a{padding:6px 12px;border:1px solid #8886;border-radius:8px;text-decoration:none;color:inherit;background:#8881;font-size:.9rem}.quick a:hover{border-color:#1a6ed8}ul.pglist{list-style:none;padding:0;margin:.4rem 0}ul.pglist li{padding:11px 2px;border-bottom:1px solid #8883;display:flex;justify-content:space-between;align-items:center;gap:12px}ul.pglist a{padding:4px 2px}h2{font-size:1rem;color:#8a8a8a;margin:1.4rem 0 .2rem;text-transform:uppercase;letter-spacing:.03em}.apps{align-items:start}.col{display:flex;flex-direction:column}.qh{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:#8a8a8a;margin:1.1rem 0 .2rem;font-weight:600}ul.qlist{list-style:none;padding:0;margin:0}ul.qlist li{border-bottom:1px solid #8883}ul.qlist a{display:block;padding:9px 6px;text-decoration:none;color:inherit;border-radius:6px}ul.qlist a:hover{background:#8881}.qname{display:block;font-weight:500;color:#1a6ed8}.qprev{display:block;font-size:.84rem;color:#8a8a8a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.05rem}</style>'
-::  +search-results-html: the omnibar search results page. A heading + a #results
-::  div filled by client JS that fans out ONE /catalog-search call per query word
-::  (obelisk has no OR/LIKE, so the client unions the per-term hits and ranks by
-::  words-matched then tf), and links each hit to the reader. Built with the DOM
-::  API (textContent) so catalog text is XSS-safe; single-quote cord so the JS
-::  braces stay literal (no ' or \ inside). Obelisk down -> a graceful message.
-::
-::  +search-results-html: the omnibar results page. Fans out over BOTH indexes
-::  per query word, /content-search (our pages + knowledge, scope recorded at
-::  index time) and /catalog-search (the crawler's, for peers), and labels every
-::  hit with where it lives. Catalog rows published by US are dropped: they are
-::  in content-terms already with a truthful clearweb/urbit badge, and keeping
-::  both would double every own-page hit.
+::  +search-results-html: the omnibar results page. A heading plus a #results
+::  div filled by client JS that fans out ONE /content-search call per query
+::  word (the index has no OR, so the client unions the per-term hits and ranks
+::  by words-matched then tf) and links each hit to the reader. Built with the
+::  DOM API (textContent) so result text is XSS-safe; single-quote cord so the
+::  JS braces stay literal (no ' or \ inside).
 ::
 ::  The badge is load-bearing, not decoration. These results mix content that is
 ::  on the open web with private notes, on a screen the owner may be sharing, so
 ::  each row states its exposure: clearweb (open web), urbit (other ships only),
-::  private (nobody), knowledge (private note), or the peer's @p.
+::  private (nobody), knowledge (private note).
 ::
-::  `our` is interpolated because the client needs it to recognise its own rows.
+::  `our` is interpolated because a published page's link is built from it.
 ++  search-results-html
   |=  [q=@t our=@p]
   ^-  tape
   ;:  weld
     "<h1>Search</h1>"
-    "<p class=\"muted\">Results for &ldquo;"  (esc (trip q))  "&rdquo; across your pages, notes and followed peers.</p>"
+    "<p class=\"muted\">Results for &ldquo;"  (esc (trip q))  "&rdquo; across your pages and notes.</p>"
     "<div id=\"results\" class=\"muted\">Searching&hellip;</div>"
     :(weld "<script>var OUR=\"" (scow %p our) "\";</script>")
     %-  trip
-    '<style>.qbadge{display:inline-block;padding:1px 7px;margin-right:.5em;border-radius:999px;border:1px solid #8886;font-size:.75rem;vertical-align:middle;white-space:nowrap}.qbadge.clearweb{border-color:#1a6ed8;color:#1a6ed8}.qbadge.urbit{border-color:#7a5af8;color:#7a5af8}.qbadge.private{border-color:#8a8a8a;color:#8a8a8a}.qbadge.knowledge{border-color:#0a9a6a;color:#0a9a6a}.qbadge.peer{border-color:#c07000;color:#c07000}</style>'
-    ::  one fan-out per query word over BOTH indexes; see the arm comment. The
-    ::  minified source lives in scratch as search.js. It is checked with
-    ::  `node --check` before being pasted here, and contains no single quote or
-    ::  backslash so it needs no cord escaping.
+    '<style>.qbadge{display:inline-block;padding:1px 7px;margin-right:.5em;border-radius:999px;border:1px solid #8886;font-size:.75rem;vertical-align:middle;white-space:nowrap}.qbadge.clearweb{border-color:#1a6ed8;color:#1a6ed8}.qbadge.urbit{border-color:#7a5af8;color:#7a5af8}.qbadge.private{border-color:#8a8a8a;color:#8a8a8a}.qbadge.knowledge{border-color:#0a9a6a;color:#0a9a6a}</style>'
+    ::  one fan-out per query word; see the arm comment. The minified source
+    ::  lives in scratch as search.js. It is checked with `node --check` before
+    ::  being pasted here, and contains no single quote or backslash so it needs
+    ::  no cord escaping.
     %-  trip
-    '<script>(function(){var p=new URLSearchParams(location.search);var q=(p.get("url")||"").trim();var out=document.getElementById("results");if(!q){out.textContent="";return}var words=q.toLowerCase().split(/[^a-z0-9]+/).filter(function(w){return w.length>=2});if(!words.length){out.textContent="Type at least one search word (2+ letters).";return}function get(u){return fetch(u).then(function(r){return r.ok?r.json():{rows:[]}}).catch(function(){return{rows:[]}})}var calls=[];words.forEach(function(w){calls.push(get("/apps/lattice/content-search?term="+encodeURIComponent(w)).then(function(j){return{kind:"own",j:j}}));calls.push(get("/apps/lattice/catalog-search?term="+encodeURIComponent(w)).then(function(j){return{kind:"cat",j:j}}));});Promise.all(calls).then(function(res){var hits={};function bump(scope,key,tf){var k=scope+"|"+key;if(!hits[k])hits[k]={scope:scope,key:key,terms:0,tf:0};hits[k].terms++;hits[k].tf+=tf;}res.forEach(function(r){var c=r.j.columns||[];var rows=r.j.rows||[];if(r.kind==="own"){var si=c.indexOf("scope"),ki=c.indexOf("key"),ti=c.indexOf("tf");rows.forEach(function(row){var s=row[si],k=row[ki];if(!s||!k)return;bump(s,k,parseInt(row[ti],10)||0);});}else{var pi=c.indexOf("publisher"),xi=c.indexOf("path"),ti2=c.indexOf("tf");rows.forEach(function(row){var pub=row[pi],path=row[xi];if(!pub||!path)return;if(pub===OUR)return;bump(pub,path,parseInt(row[ti2],10)||0);});}});var list=Object.keys(hits).map(function(k){return hits[k]});list.sort(function(a,b){return b.terms-a.terms||b.tf-a.tf});out.textContent="";out.className="";if(!list.length){out.className="muted";out.textContent="Nothing matches that.";return}var ul=document.createElement("ul");ul.className="qlist";list.slice(0,50).forEach(function(h){var peer=h.scope.charAt(0)==="~";var cls=peer?"peer":h.scope;var href;if(peer){href="/apps/lattice?url="+encodeURIComponent("urb://"+h.scope+"/"+h.key)}else if(h.scope==="knowledge"){href="/apps/lattice/app?view=know&name="+encodeURIComponent(h.key)}else if(h.scope==="private"){href="/apps/lattice/app?name="+encodeURIComponent(h.key)}else{href="/apps/lattice?url="+encodeURIComponent("urb://"+OUR+"/"+h.key)}var li=document.createElement("li");var a=document.createElement("a");a.href=href;var b=document.createElement("span");b.className="qbadge "+cls;b.textContent=peer?h.scope:h.scope;var n=document.createElement("span");n.className="qname";n.textContent=h.key;var s=document.createElement("span");s.className="qprev";s.textContent=h.terms+(h.terms>1?" terms":" term")+", tf "+h.tf;a.appendChild(b);a.appendChild(n);a.appendChild(s);li.appendChild(a);ul.appendChild(li);});out.appendChild(ul);}).catch(function(){out.className="muted";out.textContent="Search is unavailable (obelisk not responding).";});})();</script>'
+    '<script>(function(){var p=new URLSearchParams(location.search);var q=(p.get("url")||"").trim();var out=document.getElementById("results");if(!q){out.textContent="";return}var words=q.toLowerCase().split(/[^a-z0-9]+/).filter(function(w){return w.length>=2});if(!words.length){out.textContent="Type at least one search word (2+ letters).";return}function get(u){return fetch(u).then(function(r){return r.ok?r.json():{rows:[]}}).catch(function(){return{rows:[]}})}var calls=words.map(function(w){return get("/apps/lattice/content-search?term="+encodeURIComponent(w))});Promise.all(calls).then(function(res){var hits={};function bump(scope,key,tf){var k=scope+"|"+key;if(!hits[k])hits[k]={scope:scope,key:key,terms:0,tf:0};hits[k].terms++;hits[k].tf+=tf;}res.forEach(function(j){var c=j.columns||[];var rows=j.rows||[];var si=c.indexOf("scope"),ki=c.indexOf("key"),ti=c.indexOf("tf");rows.forEach(function(row){var s=row[si],k=row[ki];if(!s||!k)return;bump(s,k,parseInt(row[ti],10)||0);});});var list=Object.keys(hits).map(function(k){return hits[k]});list.sort(function(a,b){return b.terms-a.terms||b.tf-a.tf});out.textContent="";out.className="";if(!list.length){out.className="muted";out.textContent="Nothing matches that.";return}var ul=document.createElement("ul");ul.className="qlist";list.slice(0,50).forEach(function(h){var href;if(h.scope==="knowledge"){href="/apps/lattice/app?view=know&name="+encodeURIComponent(h.key)}else if(h.scope==="private"){href="/apps/lattice/app?name="+encodeURIComponent(h.key)}else{href="/apps/lattice?url="+encodeURIComponent("urb://"+OUR+"/"+h.key)}var li=document.createElement("li");var a=document.createElement("a");a.href=href;var b=document.createElement("span");b.className="qbadge "+h.scope;b.textContent=h.scope;var n=document.createElement("span");n.className="qname";n.textContent=h.key;var s=document.createElement("span");s.className="qprev";s.textContent=h.terms+(h.terms>1?" terms":" term")+", tf "+h.tf;a.appendChild(b);a.appendChild(n);a.appendChild(s);li.appendChild(a);ul.appendChild(li);});out.appendChild(ul);}).catch(function(){out.className="muted";out.textContent="Search is unavailable.";});})();</script>'
   ==
 ::  +clip-paste-html: the landing page the send-page bookmarklet opens. Its only
 ::  job is to be same-origin with the api: it receives the html over
@@ -7888,12 +7145,9 @@
     '(function(){var out=document.getElementById("pst");var p=new URLSearchParams(location.search);var u=p.get("url")||"";var done=false;function show(m,bad){out.textContent=m;out.className=bad?"err":"";}function send(html){if(done)return; done=true;show("archiving…");fetch("/apps/lattice/clip-html?url="+encodeURIComponent(u),{method:"POST",body:html}).then(function(r){if(r.ok){return r.text().then(function(t){document.open();document.write(t);document.close();});}return r.json().catch(function(){return{}}).then(function(j){show("could not archive"+(j.error?": "+j.error:" ("+r.status+")"),true);});}).catch(function(){show("could not archive (network error)",true);});}window.addEventListener("message",function(e){if(e.source!==window.opener)return;var d=e.data;if(!d||d.lattice!==1||typeof d.html!=="string")return;send(d.html);});try{if(window.opener)window.opener.postMessage({lattice:"ready"},"*");}catch(x){}setTimeout(function(){if(!done)show("nothing arrived from the page — try the bookmarklet again",true);},15000);})();'
     "</script>"
   ==
-::  +settings-html: the settings page. One maintenance action so far, a manual
-::  content-catalog sweep. The crawler auto-sweeps every ~6h (and a followed
-::  peer's edits index live), but a newly published page isn't searchable until
-::  the next sweep, so this forces one now. POSTs /catalog-sweep, which acks
-::  immediately and (re)indexes in the background. Single-quote cords so the css
-::  and js braces stay literal (no ' or \ inside).
+::  +settings-html: the settings page. Search-index maintenance, the browser
+::  bookmarklets and the vault backup UI. Single-quote cords so the css and js
+::  braces stay literal (no ' or \ inside).
 ::
 ++  settings-html
   ^-  tape
@@ -7905,11 +7159,8 @@
     ::  replacement chevron would leave no affordance at all).
     '<style>.btn{padding:8px 16px;font:inherit;border:1px solid #8886;border-radius:8px;background:transparent;color:inherit;cursor:pointer}.btn:hover{border-color:#1a6ed8}.btn:disabled{opacity:.5;cursor:default}select,option,input[type=range]{color-scheme:light dark}select{font:inherit;color:inherit;background:transparent;border:1px solid #8886;border-radius:6px;padding:5px 8px;cursor:pointer}select:hover,select:focus{border-color:#1a6ed8;outline:none}input[type=range]{vertical-align:middle;accent-color:#1a6ed8;cursor:pointer}label{color:#8a8a8a}.bklist{list-style:none;padding:0;margin:.4rem 0}.bklist li{margin:.4rem 0;padding:.5rem .7rem;border:1px solid #8886;border-radius:8px}.bkrow{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:.4rem 0}.err{color:#c0392b}</style>'
     "<h1>Settings</h1>"
-    "<h2>Content catalog</h2>"
-    "<p class=\"muted\">Published pages are indexed for search automatically about every 6 hours (and a followed peer's edits index live). Sweep now to (re)index all of your published pages and followed peers immediately &mdash; e.g. after publishing something you want searchable right away.</p>"
-    "<p><button type=\"button\" id=\"sweep\" class=\"btn\">Sweep catalog now</button> <span id=\"swst\" class=\"muted\"></span></p>"
     "<h2>Search index</h2>"
-    "<p class=\"muted\">The omnibar searches your published pages, your private page sources and your knowledge entries, labelling each result with where it lives. That private half is rebuilt on demand rather than continuously, so reindex after a batch of edits to make them findable.</p>"
+    "<p class=\"muted\">The omnibar searches your published pages, your private page sources and your knowledge entries, labelling each result with where it lives. The index is rebuilt on demand rather than continuously, so reindex after a batch of edits to make them findable.</p>"
     "<p><button type=\"button\" id=\"sreidx\" class=\"btn\">Reindex my content</button> <span id=\"srst\" class=\"muted\"></span></p>"
     %-  trip
     '<script>(function(){var b=document.getElementById("sreidx");var s=document.getElementById("srst");b.onclick=function(){b.disabled=true;s.textContent="reindexing...";fetch("/apps/lattice/search-reindex",{method:"POST"}).then(function(r){s.textContent=r.ok?"done - your pages and notes are searchable.":"failed ("+r.status+")";b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
@@ -7958,8 +7209,6 @@
     '<script type="text/plain" id="bmsrc">(function(){var h=document.documentElement.outerHTML;var o=__O__;var w=window.open(o+"/apps/lattice/clip-paste?url="+encodeURIComponent(location.href),"_blank");if(!w){alert("Allow popups for this site to send the page to lattice.");return}var n=0;var t=setInterval(function(){n++;try{w.postMessage({lattice:1,html:h},o)}catch(e){}if(n>40)clearInterval(t)},250);window.addEventListener("message",function(e){if(e.data&&e.data.lattice==="ready"){try{w.postMessage({lattice:1,html:h},o)}catch(x){}}})})()</script>'
     %-  trip
     '<script>(function(){var a=document.getElementById("sendbm");var s=document.getElementById("bmsrc").textContent.trim().replace("__O__",JSON.stringify(location.origin));a.href="javascript:"+s;a.onclick=function(e){e.preventDefault()}})();</script>'
-    %-  trip
-    '<script>(function(){var b=document.getElementById("sweep");var s=document.getElementById("swst");b.onclick=function(){b.disabled=true;s.textContent="sweeping...";fetch("/apps/lattice/catalog-sweep",{method:"POST"}).then(function(r){s.textContent=r.ok?"started — pages are being (re)indexed in the background.":"failed ("+r.status+")";b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
     ::  the bookmarklet href is built client-side because settings-html has no
     ::  idea what host the browser reached us on (ship domain, localhost, a
     ::  reverse proxy). location.origin is the only thing that knows.
@@ -8164,7 +7413,7 @@
     "<button type=\"button\" class=\"navb\" id=\"navb\" title=\"back\" disabled>&#8592;</button>"
     "<button type=\"button\" class=\"navb\" id=\"navf\" title=\"forward\" disabled>&#8594;</button>"
     "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
-    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search the catalog\">"
+    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search your pages\">"
     "<button type=\"submit\">Go</button>"
     bmbtn
     "<span class=\"hamw\"><button type=\"button\" id=\"ham\" title=\"menu\">&#9776;</button>"
@@ -8214,7 +7463,7 @@
     "<button type=\"button\" class=\"navb\" id=\"navb\" title=\"back\" disabled>&#8592;</button>"
     "<button type=\"button\" class=\"navb\" id=\"navf\" title=\"forward\" disabled>&#8594;</button>"
     "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
-    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search the catalog\">"
+    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search your pages\">"
     "<button type=\"submit\">Go</button>"
     editbtn
     "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
@@ -8792,11 +8041,10 @@
 ::  walk the manifest generation uses: the pub index's key set, each key read
 ::  through its vault rail. Returns the number of pages grown.
 ::
-::  Single pass, not chunked. Unlike the catalog sweep this does no term
-::  extraction and no remote peeks. Per page it costs one file peek, one dir
-::  peek and one fire-and-forget %grow card, so even a large vault is one
-::  event of cheap local darts. If a regrow is ever observed to brown out the
-::  pier, chunk it with the /catalog-sweep ack-yield-scan idiom.
+::  Single pass, not chunked. Per page it costs one file peek, one dir peek and
+::  one fire-and-forget %grow card, so even a large vault is one event of cheap
+::  local darts. If a regrow is ever observed to brown out the pier, ack the
+::  request first, sleep a second so the effects flush, then walk the vault.
 ::
 ::  Re-running it is cheap but not free. A %grow at an already-bound spur does
 ::  not overwrite but appends a case (gall's +grow takes key+1). The body is
@@ -9091,8 +8339,7 @@
   =/  got=(each [p=@tas q=@t] tang)  (mule |.(;;([p=@tas q=@t] [p q]:pag)))
   ?:(?=(%| -.got) (pure:m ~) (pure:m `p.got))
 ::  +keen-page: the body-only read, a [%gmi body] binding's body, ~ for a
-::  miss, a tombstone, or a mark we do not understand. What the crawler's
-::  scry-first read path wants.
+::  miss, a tombstone, or a mark we do not understand.
 ::
 ++  keen-page
   |=  [shp=@p rel=path rev=@ud]
@@ -9102,90 +8349,6 @@
   ?~  pg  (pure:m ~)
   ?.  =(%gmi p.u.pg)  (pure:m ~)
   (pure:m `q.u.pg)
-::  +read-page-scry: read one PEER page scry-first, learning as it goes.
-::
-::  REV DISCOVERY, as actually built. A reader cannot address
-::  /pub/page/<rel>/<rev> without knowing rev, and nothing a COLD reader can
-::  see carries one. The peer's /pub/index rows are [updated bytes hash], the
-::  catalog tables have no rev column (`hash` is the only content identity
-::  they store), and guessing is worse than useless. gall BLOCKS on an
-::  unbound spur (its +scry returns ~, not "definitely nothing"), so ames holds
-::  the request open and a speculative rev+1 probe would cost a full
-::  +mesa-timeout on every UNCHANGED page, the common case. So instead:
-::
-::    cold     -> peek. The peek's view carries the grub's cass, so the read
-::                that fetches the body also teaches us its rev at no extra
-::                cost (+read-page-body-rev). Remember [rev, the hash the
-::                peer's manifest showed at that moment].
-::    warm     -> keen at the remembered rev, but ONLY while the peer's CURRENT
-::                manifest still reports the same body hash. That is the peer's
-::                own statement that the page has not moved since we learned
-::                that rev, which makes the spur both BOUND and CURRENT
-::                (no hang, no stale body). The crawler reads that manifest
-::                once per sweep already, so the guard costs nothing.
-::    changed  -> straight to the peek, which relearns rev and hash.
-::
-::  Net effect on a steady vault. From the second sweep on, every unchanged
-::  peer page is read out of the namespace and the publisher's %grubbery never
-::  runs. A changed page costs exactly what it costs today.
-::
-++  read-page-scry
-  |=  [our=@p pub=@p key=path rel=path hash=@uvH mc=mesa-cache]
-  =/  m  (fiber:fiber:nexus ,[(unit @t) mesa-cache])
-  ^-  form:m
-  ::  our own pages are a local peek. Keening ourselves would be a round trip
-  ::  through ames to read a grub sitting in this pier.
-  ?:  =(pub our)  (read-page-peek our pub key rel hash mc)
-  ::  cold or changed: peek, which fetches the body AND relearns the rev for
-  ::  free. Cold means no remembered rev. Changed means the manifest hash
-  ::  moved since we learned the rev. Only a warm page whose manifest hash
-  ::  still matches what we last saw is keened, the peer's own word that the
-  ::  spur is both BOUND and CURRENT.
-  =/  kn=(unit rev-note)  (~(get by revs.mc) [pub key])
-  ?~  kn  (read-page-peek our pub key rel hash mc)
-  ?.  =(hash hash.u.kn)  (read-page-peek our pub key rel hash mc)
-  ;<  sc=(unit @t)  bind:m  (keen-page pub rel rev.u.kn)
-  ::  on a keen miss (a lost packet, or a peer that stopped mirroring), fall
-  ::  back to the peek, which relearns the rev. NO strike retirement. A
-  ::  per-page keen timeout is bounded by +peer-budget and never brownouts
-  ::  the sweep, so the bookkeeping a strike count would cost is not worth
-  ::  its narrow mixed-fleet win.
-  ?~  sc  (read-page-peek our pub key rel hash mc)
-  =/  hit=mesa-cache  mc(keens +(keens.mc))
-  (pure:m [sc hit])
-::  +read-page-peek: the fallback half, today's read plus the rev its view
-::  already carried. A FAILED read drops the remembered note. The page may be
-::  gone, and a note kept past its page would keen a dead spur next sweep and
-::  pay the timeout for nothing.
-::
-++  read-page-peek
-  |=  [our=@p pub=@p key=path rel=path hash=@uvH mc=mesa-cache]
-  =/  m  (fiber:fiber:nexus ,[(unit @t) mesa-cache])
-  ^-  form:m
-  ;<  pr=(unit [rev=@ud body=@t])  bind:m  (read-page-body-rev our pub rel)
-  =.  peeks.mc  +(peeks.mc)
-  ?~  pr  (pure:m [~ mc(revs (~(del by revs.mc) [pub key]))])
-  (pure:m [`body.u.pr mc(revs (~(put by revs.mc) [pub key] [rev.u.pr hash]))])
-::  +rev-note: what we remember about ONE peer page after reading it: the
-::  vault revision the body came from (the spur's last segment) and the body
-::  hash the peer's manifest carried at that moment. The hash is the freshness
-::  witness. The rev is the address.
-::
-+$  rev-note  [rev=@ud hash=@uvH]
-::  +mesa-cache: the crawler's scry-first working set, plus per-sweep counters.
-::
-::  NOT PERSISTED, on purpose. It lives in the /crawler.sig fiber's loop and is
-::  empty again after any reload or deploy. Persisting it would mean a new grub
-::  + mark + on-load row for data that costs nothing to rebuild. A cold entry
-::  simply takes the peek that would have run anyway, and that peek refills it.
-::  A per-request fiber (POST /catalog-scan, POST /catalog-sweep) therefore
-::  always runs cold and always peeks (see those routes).
-::
-+$  mesa-cache
-  $:  revs=(map [@p path] rev-note)
-      keens=@ud
-      peeks=@ud
-  ==
 ::  +read-pub-index-remote: a peer's /pub/index via peek-remote (clean break:
 ::  the peer must run the grubbery-native lattice at the same app-base).
 ::
@@ -9201,7 +8364,7 @@
   ?~  ms  (pure:m ~)
   ?.  ?=([%file *] u.ms)  (pure:m ~)
   ::  CROSS-SHIP peek content is a boom (raw noun), not a vase. need-vase would
-  ::  crash the crawler. Extract via sang-noun and clam in a mule so a malformed
+  ::  crash the reader. Extract via sang-noun and clam in a mule so a malformed
   ::  or hostile peer index yields ~ (treated as unreachable) instead of crashing.
   =/  res=(each pub-index:lp tang)
     (mule |.(;;(pub-index:lp (sang-noun:tarball sang.u.ms))))
@@ -9218,8 +8381,8 @@
   ?.  =(shp our)  (read-pub-index-remote shp)
   ;<  ix=pub-index:lp  bind:m  (read-pub-index [%& %& (weld app-base:lu /pub) %index])
   (pure:m `ix)
-::  +read-follows: the crawler's follow set. ABSOLUTE road (app-base) so it reads
-::  the same from the depth-2 request fiber and the depth-0 crawler fiber.
+::  +read-follows: the ships we follow. ABSOLUTE road (app-base) so it reads the
+::  same from a depth-2 request fiber and a depth-0 app-root fiber.
 ::
 ++  read-follows
   =/  m  (fiber:fiber:nexus ,follows:lp)
@@ -9244,8 +8407,8 @@
   ?~  cs  (pure:m (flop out))
   ?:  (is-boom:tarball sang.i.cs)  $(cs t.cs)
   $(cs t.cs, out [!<(page-sub:lp (need-vase:tarball sang.i.cs)) out])
-::  +apply-sub: mutate the crawler's subscriptions. Runs in the writer fiber
-::  (serialised), so concurrent /follow + /sub requests don't race. %follow /
+::  +apply-sub: mutate the follow set and the page subscriptions. Runs in the
+::  writer fiber (serialised), so concurrent /follow + /sub requests don't race.
 ::  %unfollow read-modify-write the follow set. %sub-page / %unsub-page make/cull
 ::  a per-page grub under /sub/pages/ (whose on-file fiber owns the live keep).
 ::

@@ -436,9 +436,8 @@ functional on ~tyr:
 
 - The nexus **compiles** (`check_bin /nex/lattice app` → OK).
 - `create_folder /apps name=lattice.lattice_app nexus=/lattice/app` + `%reload` lays
-  down the **full `on-load` tree** (`pub/ know/ ui/ cat/ sub/ page/ comments/
-  template/`, the `main.sig`/`crawler.sig`/`fs.sig` fibers, `bookmarks`,
-  `manifest.json`).
+  down the **full `on-load` tree** (`pub/ know/ ui/ sub/ page/ comments/
+  template/`, the `main.sig`/`fs.sig` fibers, `bookmarks`).
 - Reads serve under **`/apps/lattice`** (§1): `page-dump` / `page-tree` → 200.
 - **Writes work**: `page-save` (200/2.1s), `save`+gain (200/1.1s), `bookmark`
   (200/0.8s). Pages persist and appear in `page-tree`/`page-dump`.

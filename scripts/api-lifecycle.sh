@@ -99,52 +99,30 @@ if [ "${LATTICE_MESA:-0}" = 1 ]; then
   #   (rev+1) answers the [%del ''] tombstone the delete grew.
   bad "mesa keen read" "manual: two-ship dojo probe (see path note above)"
 
-  # ── READ side (phase C): scry-first cross-ship reads ──────────────────────
-  # Nothing here is runnable on ONE ship. A %keen is answered by ANOTHER
-  # ship's kernel, and +read-page-scry deliberately bails when publisher ==
-  # our (keening ourselves would be a round trip through ames to read a grub
-  # sitting in this pier). No single-ship path touches the converted code.
-  # This is the two-ship procedure Phase D runs. Do not fake it with a
-  # single-ship curl check.
+  # ── READ side (phase C): peer reads ───────────────────────────────────────
+  # Nothing here is runnable on ONE ship, so do not fake it with a
+  # single-ship curl check. Two-ship procedure:
   #
   #   1. on ~peer (running the same lattice + feat/scry-io):
   #        page-save api-lc/mesa, page-share it.
-  #   2. on this ship: POST /follow?ship=~peer, then POST /catalog-sweep.
-  #      That route runs COLD by design (a request fiber keeps no cache), so
-  #      it must peek everything. The interesting sweeps are the crawler's.
-  #   3. wait for two /crawler.sig ticks (or shorten ~h6 locally) and read the
-  #      pier log for the per-peer, per-sweep split:
-  #        [%lattice-mesa-scry ~peer keens=0 peeks=N]   <- sweep 1, cold
-  #        [%lattice-mesa-scry ~peer keens=N peeks=0]   <- sweep 2, warm
-  #      Sweep 2 is the entire Phase C claim. An unchanged peer page is read
-  #      out of the namespace and the peer's %grubbery never runs.
-  #   4. edit the page on ~peer and let a sweep run. The peer's manifest hash
-  #      moved, so the crawler must FALL BACK (peeks>0) and pick up the new
-  #      body. /catalog-list must show the new title, not the old one.
-  #   5. delete the page on ~peer. It leaves the manifest, so the rev note
-  #      must be pruned alongside the catalog rows (+catalog-scan-peer's
-  #      prune). A note outliving its page would keen a tombed spur and eat a
-  #      full +mesa-timeout every sweep forever.
-  #   6. the documented cost against a peer that publishes but never grew
-  #      bindings (an old lattice, or one that skipped /pub-regrow): each
-  #      warm sweep of an unchanged page pays one ~s10 +mesa-timeout before
-  #      the peek fallback. There is deliberately NO strike-out. The cost
-  #      recurs every sweep, bounded by the peer budget. If that bites,
-  #      /pub-regrow on the peer (or unfollow) is the remedy.
-  #   7. stop ~peer entirely and sweep. This bails at the manifest read
-  #      (+read-pub-index-remote answers ~ and the peer is skipped), so it
-  #      exercises no keen at all.
-  #
-  # Counter caveat: keens/peeks exist only in that ~& line. No route exposes
-  # them, so this is a log-reading check. If Phase D wants it automated,
-  # surface the pair on a route first.
-  bad "mesa scry-first peer reads" "manual: two-ship crawler procedure above"
+  #   2. on this ship: POST /follow?ship=~peer. GET /follows must list the
+  #      peer, and the entry must survive a restart. The follow set is one
+  #      covering grub, not fiber state.
+  #   3. read the page here
+  #      (GET /apps/lattice?url=urb://~peer/api-lc/mesa). Expect the body.
+  #   4. edit the page on ~peer, re-read here. The new body must come back.
+  #      The reader holds no cache, so there is nothing to invalidate.
+  #   5. stop ~peer entirely and read. +read-pub-index-remote answers ~ and
+  #      the read fails bounded, on +peek-remote-wait's own deadline. It must
+  #      never park the request fiber waiting on a ship that is gone.
+  bad "peer reads" "manual: two-ship procedure above"
 
   # NOT converted, and not pending: /fetch, the web reader and the /x/
   # explorer stay on peek-remote, since no rev is knowable in a per-request
   # fiber (see the comment on +read-page-body). Every write path (comments,
   # /remote-save, share notices) stays on the weir-gated poke by design.
-  # The existing checks above cover them.
+  # The existing checks above cover them. The keen path is exercised by the
+  # SUBSCRIPTION leg below, the one reader that learns a concrete rev.
 
   # ── SUBSCRIPTION leg (mesa D2): wave -> keen ──────────────────────────────
   # The reader rides ONE keep on the peer's page gmi grub. The keep's wave
@@ -154,22 +132,22 @@ if [ "${LATTICE_MESA:-0}" = 1 ]; then
   # running this same overlay):
   #   1. on ~peer: page-save + page-share a page P.
   #   2. on this ship: POST /sub?url=urb://~peer/P. The BOND wave alone must
-  #      index P here (catalog/search finds it) with NO edit on ~peer. That
-  #      is the initial-bond leg.
+  #      carry P's current cass and fetch the body at that rev, with NO edit
+  #      on ~peer. That is the initial-bond leg. /subs must list P.
   #   3. edit P on ~peer. Expect here: the wave carries P's new cass, the
   #      fiber keens /pub/page/P/<rev> (publisher log shows NO lattice peek),
-  #      catalog shows the new body.
+  #      and lrev advances to that rev.
   #   4. reboot THIS ship, then edit P on ~peer while it is down, restart.
   #      The re-armed keep's bond wave carries the newest cass and the missed
   #      edit lands. Offline catch-up rides the same bond leg as step 2.
   #   5. page-del P on ~peer. The delete grows a [%del ''] tombstone at the
-  #      post-cull cass. The wave names it, the keen here hits it, and P's
-  #      catalog rows drop (search stops finding it) without waiting for a
-  #      sweep. A re-save of P after that must re-index (rev keeps rising).
+  #      post-cull cass. The wave names it and the keen here hits it, so the
+  #      delete is noticed as it happens. A re-save of P after that must
+  #      still be picked up (rev keeps rising past the tombstone).
   #   6. the mixed-fleet limitation, BY DESIGN: subscribe to a peer that
   #      does not mirror (old lattice / never regrown). Every wave keens an
   #      unbound spur. Each wave costs one retry then a give-up (~20s in the
-  #      fiber, lrev NOT advanced) and nothing is indexed. The abandoned
+  #      fiber, lrev NOT advanced) and nothing lands. The abandoned
   #      request is %yawn-cancelled, so parked keens never pile up on the
   #      publisher. The subscription starts working the moment the peer runs
   #      /pub-regrow.

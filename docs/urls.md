@@ -58,7 +58,7 @@ Canonical choices: published notes canonicalize to the **bare** form (not
 `/n/`) so federation URLs stay pretty, pages to `/p/`, know to `/k/`, and
 anything with no nicer name to the `/t/` raw form. Aliases are legal
 (`urb://~s/t/apps/lattice.lattice_app/page/counter` names the same node as
-`urb://~s/p/counter`). But everything that indexes, like the catalog and
+`urb://~s/p/counter`). But everything that indexes, like the term index and
 bookmarks, keys on the canonical form, so aliasing never splits state.
 
 ## Implementation

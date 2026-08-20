@@ -19,7 +19,7 @@
 #         diff before.txt after.txt   # must be empty
 #
 # Run it against a THROWAWAY ship. Requests carry no parameters, so handlers
-# reject them before mutating, but a few (catalog-sweep, search-reindex) do
+# reject them before mutating, but a few (search-reindex, pub-regrow) do
 # real background work.
 set -u
 URL="${LATTICE_URL:-http://localhost:8081}"; URL="${URL%/}"
@@ -38,8 +38,8 @@ LIST="${ROUTE_LIST:-$HERE/route-list.txt}"
 # grub, and on a ship where that marker did not stick, every later call re-culls
 # already-culled seqs and 500s. The first run of this harness is what exposed
 # that, which is worth knowing before you read a diff here as a refactor bug.
-NOIDEM=" pub-reconcile pub-regrow pub-prune catalog-sweep catalog-init catalog-scan-self
- search-reindex know-reindex know-prune history-clear legacy-dismiss legacy-migrate "
+NOIDEM=" pub-reconcile pub-regrow pub-prune
+ search-reindex know-prune history-clear legacy-dismiss legacy-migrate "
 
 # the bare app root, which the switch reaches as an empty suffix
 printf '%-4s %-24s %s\n' GET '(root)' \

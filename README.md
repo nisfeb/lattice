@@ -42,8 +42,9 @@ other ships over remote scry, and followed remote files push you updates.
   and a trash you can restore from. Browse it in the workspace with folders,
   tag filters, and live updates. Drive it from the web app, HTTP, MCP, or
   the FUSE mount.
-- **Search.** An obelisk-backed catalog gives full-text search across your
-  pages and the ships you follow, from the reader's omnibar.
+- **Search.** A term index over your pages and your knowledge store, queried
+  from the reader's omnibar. Every hit is badged with its scope, so a
+  published page never reads like a private note.
 - **A real filesystem.** `lattice-fs` mounts your pages as files over HTTP or
   grubbery's local IPC. A cold mount warms in one round-trip, so `grep` and
   `cat` run from RAM. Editor saves round-trip safely, and backup or swap
@@ -92,12 +93,12 @@ other ships over remote scry, and followed remote files push you updates.
   grants, editable in a full ACL pane; per-file grants to a ship or a group
   from the editor; and a banlist that revokes on ban. A banned ship is
   stripped from every group, and new grants to it are refused.
-- **Follow & subscribe.** Follow ships to discover what they publish, or
-  subscribe to a specific file to get notified when it changes. Your own
-  files push live over an Eyre SSE channel. Changes on a followed remote
-  ship surface when the crawler next picks them up.
-- **Discovery.** Find other lattice publishers among your `%contacts` via a
-  small published manifest.
+- **Follow & subscribe.** Follow ships to keep track of what they publish, or
+  subscribe to a specific file. Your own files push live over an Eyre SSE
+  channel. A subscribed remote file rides a live namespace subscription, so
+  an edit on the other ship arrives as it happens rather than on a timer.
+- **Discovery.** Every lattice ship serves a small gemtext manifest of what
+  it has published. Fetch `urb://~ship/manifest` to see a stranger's index.
 - **Copy to your ship.** Like a bookmark, but real: copy a remote file onto
   your own ship at a path of your choosing.
 - **Light and dark.** The reader, the editor, and the PWA all follow your
@@ -157,10 +158,10 @@ sequenceDiagram
 - **Latest-version, clean break.** A fetch reads the *current* published
   version in one shot. There is no walk-to-latest and no revision chain. The
   publisher must be running lattice for a peer read to resolve.
-- **On-demand vs. discovery.** Tapping a link you already have
-  (`urb://~remote/page`) is the live path above. *Finding* pages you don't
-  know about is a separate background crawler that follows ships and builds
-  a searchable catalog of what they publish.
+- **Following is a live subscription, not a poll.** Subscribing to a peer's
+  page rides one keep on the published grub. The peer's edit sends a wave
+  carrying the new revision, and your ship reads that exact revision out of
+  the namespace. Nothing is fetched on a timer.
 
 ## Install
 
@@ -213,8 +214,8 @@ migrating an existing `%lattice` agent's data into the nexus.
 There is nothing to install, because lattice hosts its own client. Log into
 your ship's web login (`/~/login` with your `+code`) and open:
 
-- **`/apps/lattice`**: the reader. Your pages, the `urb://` omnibar, catalog
-  search, and the ships you follow.
+- **`/apps/lattice`**: the reader. Your pages, the `urb://` omnibar, search,
+  and the ships you follow.
 - **`/apps/lattice/app`**: the workspace. Tree, editor with highlighting and
   live preview, sharing controls, uploads, and the knowledge browser.
 
@@ -329,7 +330,7 @@ desktop/           Tauri desktop shell: bridge proxy, mount manager, pier
 web/               the website (self-contained HTML + a gemtext edition,
                    organized to be uploaded to and hosted on lattice itself)
 scripts/           overlay-sync helpers, integration matrices, deploy
-docs/              agent guide, grubbery ops, catalog, offline-edits design
+docs/              agent guide, grubbery ops, search index, offline-edits design
 ```
 
 ## License

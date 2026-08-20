@@ -133,11 +133,10 @@
       "data:text/html,"  "DATA:text/html,"  "data:"
   ==
 ::
-::  +gem-pool: fragments for /lib/catalog-analyzer. Gemtext line prefixes at
-::  every depth including one past the cap, both line terminators (LF and
-::  CRLF), the `%meta` preamble with known and unknown keys, tag lines valid
-::  and invalid, and the bytes +urq-esc exists to neutralize (quote,
-::  backslash, control) since that arm's whole job is urQL injection safety.
+::  +gem-pool: gemtext fragments. Line prefixes at every heading depth, both
+::  line terminators (LF and CRLF), `%meta` preamble lines with known and
+::  unknown keys, tag lines valid and invalid, and the punctuation and control
+::  bytes a tokenizer has to survive (quote, backslash, tab, NUL-adjacent).
 ++  gem-pool
   ^-  (list tape)
   :~  "# "  "## "  "### "  "#### "  "#"  "# "  "  # "
