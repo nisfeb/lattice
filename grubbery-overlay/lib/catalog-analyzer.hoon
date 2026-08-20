@@ -126,29 +126,19 @@
   =/  fnb-line=tape  (ltrim ln)
   =?  first-non-blank  &(=('' first-non-blank) ?=(^ fnb-line))  (crip fnb-line)
   ::  ── headings (longest-prefix-first, capped at depth 3) ──
-  ?:  (has-prefix "### " ln)
-    =/  text=tape  (slag 4 ln)
-    =/  ct=@t      (crip text)
+  ::  The prefix, its slag offset and its depth sit on one line each, so a
+  ::  mismatched offset is visible against its neighbours instead of hiding
+  ::  in a third transcription of the same accumulator update.
+  =/  hd=(unit [depth=@ud text=tape])
+    ?:  (has-prefix "### " ln)  `[3 (slag 4 ln)]
+    ?:  (has-prefix "## " ln)   `[2 (slag 3 ln)]
+    ?:  (has-prefix "# " ln)    `[1 (slag 2 ln)]
+    ~
+  ?^  hd
     %=  $
       lines         t.lines
       pos           +(pos)
-      rev-headings  [[3 ct pos] rev-headings]
-    ==
-  ?:  (has-prefix "## " ln)
-    =/  text=tape  (slag 3 ln)
-    =/  ct=@t      (crip text)
-    %=  $
-      lines         t.lines
-      pos           +(pos)
-      rev-headings  [[2 ct pos] rev-headings]
-    ==
-  ?:  (has-prefix "# " ln)
-    =/  text=tape  (slag 2 ln)
-    =/  ct=@t      (crip text)
-    %=  $
-      lines         t.lines
-      pos           +(pos)
-      rev-headings  [[1 ct pos] rev-headings]
+      rev-headings  [[depth.u.hd (crip text.u.hd) pos] rev-headings]
     ==
   ::  ── outbound link: `=> <target>[<whitespace><label>]` ──
   ?:  (has-prefix "=> " ln)

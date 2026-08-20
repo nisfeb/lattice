@@ -17,12 +17,9 @@
   =/  m  (fiber:fiber:nexus ,tool-result:tools)
   ^-  form:m
   ;<  st=tool-state:tools  bind:m  (get-state-as:io ,tool-state:tools)
-  =/  parsed=(each @t tang)
-    %-  mule  |.
-    (~(dog jo:json-utils [%o args.st]) /query so:dejs:format)
-  ?:  ?=(%| -.parsed)
-    (pure:m [%error 'missing or invalid: query'])
-  =/  query=@t  p.parsed
+  =/  raw=(unit @t)  (arg:lm args.st /query)
+  ?~  raw  (pure:m [%error 'missing or invalid: query'])
+  =/  query=@t  u.raw
   ;<  es=(map path know-entry:lk)  bind:m  read-vault:lm
   =/  hits=(map path know-entry:lk)
     %-  ~(gas by *(map path know-entry:lk))

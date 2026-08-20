@@ -51,6 +51,18 @@
   =/  full=tape  ?:(?=([%'/' *] t) t ['/' t])
   =/  res  (mule |.((stab (crip full))))
   ?:(?=(%& -.res) ?~(p.res ~ `p.res) ~)
+::  +arg: one required string argument out of a tool's args. ~ when it is
+::  absent or not a string. The mule guard is what turns a wrong-typed
+::  argument into a tool %error instead of a crashed fiber, so every tool
+::  draws it from here rather than carrying its own copy of the prologue.
+::
+++  arg
+  |=  [args=(map @t json) pax=path]
+  ^-  (unit @t)
+  =/  res=(each @t tang)
+    %-  mule  |.
+    (~(dog jo:json-utils [%o args]) pax so:dejs:format)
+  ?:(?=(%| -.res) ~ `p.res)
 ::  +low: case-fold a cord for substring matching.
 ::
 ++  low  |=(t=@t (crip (cass (trip t))))

@@ -180,14 +180,6 @@
   =/  i=(unit @ud)  (find ~[c] t)
   ?~  i  ~[t]
   [(scag u.i t) $(t (slag +(u.i) t))]
-::  +deg-micro / +micro-deg: a decimal degree as SIGNED MICRODEGREES.
-::
-::  A map needs a bounding box, which means arithmetic on coordinates. But
-::  +live-location deliberately never parses them as floating point, because
-::  round-tripping a position through a float is a silent way to change it.
-::  Fixed-point integers add and subtract exactly, so the number that comes
-::  back out is the number that went in.
-::
 ::  +num-tape / +tape-num: plain base-10 digits, both ways.
 ::
 ::  NOT +scow and NOT rush/dem. `(scow %ud 500.700)` renders "500.700" WITH dot

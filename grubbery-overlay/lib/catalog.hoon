@@ -216,6 +216,41 @@
 ::  stale between reindexes, the same contract as the knowledge index.
 ::
 ::
+::  +row-lits: the literals that IDENTIFY one catalog row. Every generator
+::  that touches a page needs source, publisher and the escaped path, and
+::  every one of them has to spell the WHERE clause identically, so it is
+::  written once here. `where` is shared by the content UPDATE and by every
+::  child DELETE.
+::
+++  row-lits
+  |=  [src=@p pub=@p pat=path]
+  ^-  [st=tape pt=tape ek=tape where=tape]
+  =/  st=tape  (trip (scot %p src))
+  =/  pt=tape  (trip (scot %p pub))
+  =/  ek=tape  (urq-esc (trip (spat pat)))
+  :^  st  pt  ek
+  :(weld " WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
+::  +page-lits: the row identity plus the CONTENT literals. The ensure-INSERT
+::  and the refresh-UPDATE are a matched pair (see the two-poke note below).
+::  If they disagreed about the escaping of `ue` or `ttl`, a re-crawl would
+::  rewrite the row with different content than it inserted. Deriving both
+::  from one arm makes that disagreement impossible.
+::
+++  page-lits
+  |=  [src=@p pub=@p pat=path now=@da =analysis]
+  ^-  $:  st=tape   pt=tape   ek=tape   where=tape  ue=tape
+          fet=tape  hsh=tape  ttl=tape  wc=tape     bl=tape
+      ==
+  =+  (row-lits src pub pat)
+  :*  st  pt  ek  where
+      (urq-esc :(weld "urb://" pt (trip (spat pat))))
+      (urq-da now)
+      (trip (scot %ud hash.analysis))
+      (urq-esc (trip title.analysis))
+      (trip (scot %ud word-count.analysis))
+      (trip (scot %ud body-lines.analysis))
+  ==
+::
 ::  ── page writes: the two-poke upsert ───────────────────────────────
 ::
 ::  A catalog page is written by TWO separate obelisk pokes, NOT one, so
@@ -246,17 +281,7 @@
 ++  catalog-page-ensure-urql
   |=  [src=@p pub=@p pat=path now=@da =analysis]
   ^-  tape
-  =/  st=tape    (trip (scot %p src))
-  =/  pt=tape    (trip (scot %p pub))
-  =/  pk=tape    (trip (spat pat))
-  =/  ek=tape    (urq-esc pk)
-  =/  url=tape   :(weld "urb://" pt pk)
-  =/  ue=tape    (urq-esc url)
-  =/  fet=tape   (urq-da now)
-  =/  hsh=tape   (trip (scot %ud hash.analysis))
-  =/  ttl=tape   (urq-esc (trip title.analysis))
-  =/  wc=tape    (trip (scot %ud word-count.analysis))
-  =/  bl=tape    (trip (scot %ud body-lines.analysis))
+  =+  (page-lits src pub pat now analysis)
   %-  zing
   :~  "INSERT INTO catalog-pages (source, publisher, path, url, title, fetched, hash, category, cat-source, confidence, word-count, body-lines) VALUES ("
       st  ", "  pt  ", '"  ek  "', '"  ue  "', '"  ttl  "', "
@@ -266,20 +291,7 @@
 ++  catalog-page-refresh-urql
   |=  [src=@p pub=@p pat=path now=@da =analysis pages=(set path)]
   ^-  tape
-  =/  st=tape    (trip (scot %p src))
-  =/  pt=tape    (trip (scot %p pub))
-  =/  pk=tape    (trip (spat pat))
-  =/  ek=tape    (urq-esc pk)
-  =/  url=tape   :(weld "urb://" pt pk)
-  =/  ue=tape    (urq-esc url)
-  =/  fet=tape   (urq-da now)
-  =/  hsh=tape   (trip (scot %ud hash.analysis))
-  =/  ttl=tape   (urq-esc (trip title.analysis))
-  =/  wc=tape    (trip (scot %ud word-count.analysis))
-  =/  bl=tape    (trip (scot %ud body-lines.analysis))
-  ::  WHERE clause shared by the content UPDATE and every child DELETE.
-  =/  where=tape
-    :(weld " WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
+  =+  (page-lits src pub pat now analysis)
   ::  UPDATE only content columns. category/cat-source/confidence are NOT
   ::  named, so an existing classification survives the re-crawl. No-op if
   ::  the row is absent (a brand-new page is created by the ensure-INSERT).
@@ -398,11 +410,7 @@
 ++  catalog-page-delete-urql
   |=  [src=@p pub=@p pat=path]
   ^-  tape
-  =/  st=tape  (trip (scot %p src))
-  =/  pt=tape  (trip (scot %p pub))
-  =/  ek=tape  (urq-esc (trip (spat pat)))
-  =/  where=tape
-    :(weld " WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
+  =+  (row-lits src pub pat)
   %-  zing
   :~  (weld "DELETE FROM catalog-pages" where)
       (weld "DELETE FROM catalog-headings" where)
@@ -437,11 +445,7 @@
 ++  catalog-page-terms-urql
   |=  [src=@p pub=@p pat=path =analysis]
   ^-  tape
-  =/  st=tape   (trip (scot %p src))
-  =/  pt=tape   (trip (scot %p pub))
-  =/  ek=tape   (urq-esc (trip (spat pat)))
-  =/  where=tape
-    :(weld " WHERE source = " st " AND publisher = " pt " AND path = '" ek "';")
+  =+  (row-lits src pub pat)
   ::  dedup on the ESCAPED term literal (first tf wins). urq-esc collapses control
   ::  bytes to a space, so two raw terms differing only by an interior control byte
   ::  escape to the SAME literal -> duplicate PK -> the terms poke aborts. The
