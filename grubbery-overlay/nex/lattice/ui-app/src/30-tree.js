@@ -18,7 +18,6 @@
   </div>
   <input type="file" id="fpick" multiple hidden>
   <input type="file" id="dpick" webkitdirectory hidden>
-  <input type="file" id="vpick" accept=".tar,application/x-tar" hidden>
   <div id="uppanel" class="uppanel" hidden>
     <div id="upmsg"></div>
     <div class="upbar"><div id="upfill"></div></div>

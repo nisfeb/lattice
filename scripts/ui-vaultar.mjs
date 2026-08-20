@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unit tests for the vault export's tar writer (ui-app/src/78-export.js).
+// Unit tests for the vault export's tar writer (ui-app/vault.js).
 //
 // A tar writer is exactly the kind of code that looks fine and produces an
 // archive nobody can open two years later when they need it. So this does not
@@ -20,13 +20,15 @@ import { tmpdir } from 'os';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(
-  join(here, '../grubbery-overlay/nex/lattice/ui-app/src/78-export.js'), 'utf8');
+  join(here, '../grubbery-overlay/nex/lattice/ui-app/vault.js'), 'utf8');
 
-// the pure half only: everything from the encoder down to the end of tarBlob.
-// The rest of the file talks to the ship and the DOM.
+// the pure half only: everything from the encoder down to the end of the tar
+// reader/writer. The rest of vault.js talks to the ship and the DOM. The
+// consts in between (cfg, mutate, uploadPages) reference window/fetch/document
+// only inside function bodies, so defining them here is harmless.
 const a = src.indexOf('const te = new TextEncoder();');
 const b = src.indexOf('async function restoreVault');
-if (a < 0 || b < 0) { console.error('could not find the tar code in 78-export.js'); process.exit(2); }
+if (a < 0 || b < 0) { console.error('could not find the tar code in vault.js'); process.exit(2); }
 const { tarBlob, splitName, untar } =
   new Function(`${src.slice(a, b)}\nreturn { tarBlob, splitName, untar };`)();
 
