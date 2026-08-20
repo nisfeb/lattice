@@ -21,7 +21,6 @@ use tauri::Manager;
 /// HTTP against the configured ship), so a local-pier mount survives a restart
 /// with no session in play. A failure is reported and skipped. One dead pier
 /// must not cost the other mounts.
-/// Bring saved mounts back after a restart.
 ///
 /// The lock is taken PER MOUNT, never across the loop. Healing and spawning
 /// both touch the filesystem and the network, and holding the map across them
@@ -42,6 +41,140 @@ fn remount(handle: &tauri::AppHandle, cfg: &config::Config) {
             Err(e) => eprintln!("remount {} failed: {e}", spec.mountpoint),
         }
     }
+}
+
+/// The menubar: File, then Preferences.
+fn build_menu(app: &tauri::App) -> tauri::Result<()> {
+    // one menu, one item: mounts lived in an unreachable window once
+    // the manager auto-hid after connect
+    // "backups" opens the same manager page as "connection" — the
+    // settings all live there. It gets its own item anyway, because a
+    // scheduled backup is not something you go looking for under
+    // "connection && mounts", and an entry that is not in the menubar
+    // is, for this purpose, not there at all.
+    let prefs = tauri::menu::SubmenuBuilder::new(app, "Preferences")
+        .text("manager", "connection && mounts…")
+        .text("backups", "scheduled backups…")
+        .build()?;
+    // A real File menu. These commands were sidebar buttons, which is
+    // web convention, not desktop convention — in a window with a
+    // menubar the first place anyone looks for "new file" is File.
+    //
+    // Accelerators only where the page does not already own the key.
+    // ctrl-S is bound in the editor (45-templates.js), and registering
+    // it natively as well risks one keypress driving both paths and
+    // writing twice, so Save is menu-only here and the existing
+    // shortcut keeps working exactly as it did.
+    let file = tauri::menu::SubmenuBuilder::new(app, "File")
+        .item(
+            &tauri::menu::MenuItemBuilder::with_id("file-new", "New page")
+                .accelerator("CmdOrCtrl+N")
+                .build(app)?,
+        )
+        .item(
+            &tauri::menu::MenuItemBuilder::with_id("file-new-folder", "New folder")
+                .accelerator("CmdOrCtrl+Shift+N")
+                .build(app)?,
+        )
+        .text("file-new-template", "New from template…")
+        .separator()
+        .text("file-upload-files", "Upload files…")
+        .text("file-upload-folder", "Upload folder…")
+        .separator()
+        .text("file-save", "Save")
+        .build()?;
+    // File first, Preferences second — the conventional order, and
+    // where anyone reaches for either one.
+    //
+    // Worth knowing on macOS: the leading submenu becomes the
+    // application menu, so File takes that slot there. That is a
+    // cosmetic difference on a platform this has never been run on,
+    // and not a reason to keep an unconventional order on the one it
+    // has. Revisit when there is a mac to look at.
+    app.set_menu(tauri::menu::MenuBuilder::new(app).items(&[&file, &prefs]).build()?)?;
+    Ok(())
+}
+
+/// The headless test harness, inert unless LATTICE_AUTOCONNECT is set.
+///
+/// LATTICE_AUTOCONNECT="url,+code": drive the real connect flow
+/// without a display, the harness's entry point.
+fn spawn_test_harness(handle: &tauri::AppHandle) {
+    if let Ok(spec) = std::env::var("LATTICE_AUTOCONNECT") {
+        if let Some((u, c)) = spec.split_once(',') {
+            let h = handle.clone();
+            let (u, c) = (u.to_string(), c.to_string());
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                let r = tauri::async_runtime::block_on(commands::connect(h.clone(), u, c));
+                commands::dlog(&format!("autoconnect: {r:?}"));
+                // LATTICE_AUTOMANAGER=1: after connect, drive the
+                // menu's ship-page -> manager-page navigation, the
+                // headless check for the app-protocol round trip
+                if std::env::var_os("LATTICE_AUTOMANAGER").is_some() {
+                    std::thread::sleep(std::time::Duration::from_secs(8));
+                    commands::show_manager(&h).ok();
+                }
+                // LATTICE_AUTOSTACK=1: report what is installed on the
+                // ship we just logged in to, the headless check for
+                // the %mcp / %grubbery / lattice probe.
+                if std::env::var_os("LATTICE_AUTOSTACK").is_some() {
+                    let s = tauri::async_runtime::block_on(stack::stack_status(h.clone()));
+                    let _ = s;
+                }
+                // LATTICE_AUTONAV=/path: follow the connect with a
+                // fresh top-level navigation, the headless harness's
+                // regression check for the 403-on-navigation class
+                if let Ok(nav) = std::env::var("LATTICE_AUTONAV") {
+                    std::thread::sleep(std::time::Duration::from_secs(8));
+                    if let Some(w) = h.get_webview_window("workspace") {
+                        if let Ok(cur) = w.url() {
+                            let t = format!("{}://{}:{}{nav}",
+                                cur.scheme(), cur.host_str().unwrap_or(""), cur.port().unwrap_or(80));
+                            commands::dlog(&format!("autonav: {t}"));
+                            w.navigate(t.parse().unwrap()).ok();
+                        }
+                    }
+                }
+            });
+        }
+    }
+}
+
+/// The backup tick. One minute is far finer than any period anyone
+/// will set, and the work in a tick with nothing due is reading a
+/// small json file, so the cost of checking often is nothing and it
+/// means a schedule fires close to when it came due rather than up
+/// to an hour late.
+///
+/// This also covers the app having been CLOSED: a schedule overdue
+/// at launch is due on the first tick, so a laptop shut for a week
+/// backs up when it comes back rather than skipping the period.
+/// Nothing fires while the app is not running at all — that wants a
+/// systemd timer driving the CLI, not a GUI that has to be open.
+fn spawn_backup_scheduler(h: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        // let the workspace finish booting before asking it to
+        // export: a request into a half-loaded page is a no-op and
+        // would burn the catch-up run
+        std::thread::sleep(std::time::Duration::from_secs(45));
+        loop {
+            let cfg = config::load(&h);
+            let now = backup::now();
+            for s in cfg.backups.iter().filter(|s| backup::is_due(s, now)) {
+                // Fire ONE per tick. Several schedules coming due
+                // together (a fresh config, or a laptop opened
+                // after a fortnight) would otherwise build several
+                // whole-store archives at once, on a pier that
+                // serialises, while someone is trying to type.
+                commands::dlog(&format!("backup: {} is due", s.label));
+                if commands::request_backup(&h, &s.id) {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
+    });
 }
 
 fn main() {
@@ -93,95 +226,9 @@ fn main() {
             }
         })
         .setup(|app| {
-            // one menu, one item: mounts lived in an unreachable window once
-            // the manager auto-hid after connect
-            // "backups" opens the same manager page as "connection" — the
-            // settings all live there. It gets its own item anyway, because a
-            // scheduled backup is not something you go looking for under
-            // "connection && mounts", and an entry that is not in the menubar
-            // is, for this purpose, not there at all.
-            let prefs = tauri::menu::SubmenuBuilder::new(app, "Preferences")
-                .text("manager", "connection && mounts…")
-                .text("backups", "scheduled backups…")
-                .build()?;
-            // A real File menu. These commands were sidebar buttons, which is
-            // web convention, not desktop convention — in a window with a
-            // menubar the first place anyone looks for "new file" is File.
-            //
-            // Accelerators only where the page does not already own the key.
-            // ctrl-S is bound in the editor (45-templates.js), and registering
-            // it natively as well risks one keypress driving both paths and
-            // writing twice, so Save is menu-only here and the existing
-            // shortcut keeps working exactly as it did.
-            let file = tauri::menu::SubmenuBuilder::new(app, "File")
-                .item(
-                    &tauri::menu::MenuItemBuilder::with_id("file-new", "New page")
-                        .accelerator("CmdOrCtrl+N")
-                        .build(app)?,
-                )
-                .item(
-                    &tauri::menu::MenuItemBuilder::with_id("file-new-folder", "New folder")
-                        .accelerator("CmdOrCtrl+Shift+N")
-                        .build(app)?,
-                )
-                .text("file-new-template", "New from template…")
-                .separator()
-                .text("file-upload-files", "Upload files…")
-                .text("file-upload-folder", "Upload folder…")
-                .separator()
-                .text("file-save", "Save")
-                .build()?;
-            // File first, Preferences second — the conventional order, and
-            // where anyone reaches for either one.
-            //
-            // Worth knowing on macOS: the leading submenu becomes the
-            // application menu, so File takes that slot there. That is a
-            // cosmetic difference on a platform this has never been run on,
-            // and not a reason to keep an unconventional order on the one it
-            // has. Revisit when there is a mac to look at.
-            app.set_menu(tauri::menu::MenuBuilder::new(app).items(&[&file, &prefs]).build()?)?;
+            build_menu(app)?;
             let handle = app.handle().clone();
-            // LATTICE_AUTOCONNECT="url,+code": drive the real connect flow
-            // without a display, the headless test harness's entry point.
-            if let Ok(spec) = std::env::var("LATTICE_AUTOCONNECT") {
-                if let Some((u, c)) = spec.split_once(',') {
-                    let h = handle.clone();
-                    let (u, c) = (u.to_string(), c.to_string());
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_secs(3));
-                        let r = tauri::async_runtime::block_on(commands::connect(h.clone(), u, c));
-                        commands::dlog(&format!("autoconnect: {r:?}"));
-                        // LATTICE_AUTOMANAGER=1: after connect, drive the
-                        // menu's ship-page -> manager-page navigation, the
-                        // headless check for the app-protocol round trip
-                        if std::env::var_os("LATTICE_AUTOMANAGER").is_some() {
-                            std::thread::sleep(std::time::Duration::from_secs(8));
-                            commands::show_manager(&h).ok();
-                        }
-                        // LATTICE_AUTOSTACK=1: report what is installed on the
-                        // ship we just logged in to, the headless check for
-                        // the %mcp / %grubbery / lattice probe.
-                        if std::env::var_os("LATTICE_AUTOSTACK").is_some() {
-                            let s = tauri::async_runtime::block_on(stack::stack_status(h.clone()));
-                            let _ = s;
-                        }
-                        // LATTICE_AUTONAV=/path: follow the connect with a
-                        // fresh top-level navigation, the headless harness's
-                        // regression check for the 403-on-navigation class
-                        if let Ok(nav) = std::env::var("LATTICE_AUTONAV") {
-                            std::thread::sleep(std::time::Duration::from_secs(8));
-                            if let Some(w) = h.get_webview_window("workspace") {
-                                if let Ok(cur) = w.url() {
-                                    let t = format!("{}://{}:{}{nav}",
-                                        cur.scheme(), cur.host_str().unwrap_or(""), cur.port().unwrap_or(80));
-                                    commands::dlog(&format!("autonav: {t}"));
-                                    w.navigate(t.parse().unwrap()).ok();
-                                }
-                            }
-                        }
-                    });
-                }
-            }
+            spawn_test_harness(&handle);
             let cfg = config::load(&handle);
             if cfg.url.is_empty() {
                 // first run: the single window opens on the connect page
@@ -194,42 +241,7 @@ fn main() {
                     commands::open_workspace(&h, false).ok();
                 });
             }
-            // The backup tick. One minute is far finer than any period anyone
-            // will set, and the work in a tick with nothing due is reading a
-            // small json file, so the cost of checking often is nothing and it
-            // means a schedule fires close to when it came due rather than up
-            // to an hour late.
-            //
-            // This also covers the app having been CLOSED: a schedule overdue
-            // at launch is due on the first tick, so a laptop shut for a week
-            // backs up when it comes back rather than skipping the period.
-            // Nothing fires while the app is not running at all — that wants a
-            // systemd timer driving the CLI, not a GUI that has to be open.
-            {
-                let h = handle.clone();
-                std::thread::spawn(move || {
-                    // let the workspace finish booting before asking it to
-                    // export: a request into a half-loaded page is a no-op and
-                    // would burn the catch-up run
-                    std::thread::sleep(std::time::Duration::from_secs(45));
-                    loop {
-                        let cfg = config::load(&h);
-                        let now = backup::now();
-                        for s in cfg.backups.iter().filter(|s| backup::is_due(s, now)) {
-                            // Fire ONE per tick. Several schedules coming due
-                            // together (a fresh config, or a laptop opened
-                            // after a fortnight) would otherwise build several
-                            // whole-store archives at once, on a pier that
-                            // serialises, while someone is trying to type.
-                            commands::dlog(&format!("backup: {} is due", s.label));
-                            if commands::request_backup(&h, &s.id) {
-                                break;
-                            }
-                        }
-                        std::thread::sleep(std::time::Duration::from_secs(60));
-                    }
-                });
-            }
+            spawn_backup_scheduler(handle.clone());
             // remount OUTSIDE the url check. A lick mount is a local pier and
             // needs no configured ship at all, so it must come back on launch
             // even when nothing is connected over HTTP.

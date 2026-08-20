@@ -100,6 +100,123 @@
     aclChips(card, items, onDel, disp);
   }
 
+  // the card's title bar: the group's name, and the button that removes it
+  function aclHead(g) {
+    const head = document.createElement('header');
+    const b = document.createElement('b');
+    b.textContent = g.name;
+    const del = document.createElement('button');
+    del.textContent = 'delete';
+    del.className = 'acl-del';
+    del.onclick = async () => {
+      if (!(await askConfirm('delete group ' + g.name + ' and every grant it carries?', 'delete'))) return;
+      const r = await fetch(api + '/share-group-del?name=' + encodeURIComponent(g.name),
+        { method: 'POST' }).catch(() => null);
+      // loadPerms repaints from the ship either way, so a delete that failed
+      // and a group that came back on its own look identical. Say which it
+      // was, the rule permSave and the ban handler already follow.
+      if (!r || !r.ok) st('could not delete ' + g.name + ' (' + (r ? r.status : 'network') + ')', false);
+      loadPerms();
+    };
+    head.appendChild(b); head.appendChild(del);
+    return head;
+  }
+
+  // who is in the group: the chips, and the row that adds one more
+  function aclShips(card, g) {
+    aclSection(card, 'ships', g.ships, (v) => {
+      g.ships = g.ships.filter((x) => x !== v); permSave(g);
+    });
+    const srow = document.createElement('div');
+    srow.className = 'row';
+    const sin = document.createElement('input');
+    sin.placeholder = '~ship';
+    sin.autocomplete = 'off';
+    const sadd = document.createElement('button');
+    sadd.textContent = 'add ship';
+    const addShip = () => {
+      const v = sin.value.trim();
+      if (!v) return;
+      if (!g.ships.includes(v)) { g.ships.push(v); permSave(g); }
+      sin.value = '';
+    };
+    sadd.onclick = addShip;
+    sin.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addShip(); } };
+    srow.appendChild(sin); srow.appendChild(sadd);
+    card.appendChild(srow);
+  }
+
+  // granting a path: one input, and the two buttons that say how far it goes
+  function aclPathRow(card, g) {
+    const prow = document.createElement('div');
+    prow.className = 'row';
+    const pin = document.createElement('input');
+    pin.placeholder = '/apps/lattice.lattice_app/pub';
+    pin.setAttribute('list', 'aclpaths');
+    pin.autocomplete = 'off';
+    const radd = document.createElement('button');
+    radd.textContent = '+read';
+    const eadd = document.createElement('button');
+    eadd.textContent = '+edit';
+    const addPath = (edit) => {
+      const v = pin.value.trim();
+      if (!v) { st('enter a path to grant', false); return; }
+      if (!g.peek.includes(v)) g.peek.push(v);           // edit implies read
+      if (edit && !g.make.includes(v)) g.make.push(v);
+      permSave(g);
+      pin.value = '';
+    };
+    radd.onclick = () => addPath(false);
+    eadd.onclick = () => addPath(true);
+    prow.appendChild(pin); prow.appendChild(radd); prow.appendChild(eadd);
+    card.appendChild(prow);
+  }
+
+  // the grants this pane carries but will not let you edit
+  function aclReadOnlyNote(card, g) {
+    if (!(g.poke && g.poke.length) && !g.opaque) return;
+    const h = document.createElement('h4');
+    h.textContent = 'not editable here';
+    card.appendChild(h);
+    const m = document.createElement('div');
+    m.className = 'aclnote';
+    const parts = [];
+    if (g.poke && g.poke.length) parts.push(g.poke.length + ' poke grant(s)');
+    if (g.opaque) parts.push(g.opaque + ' advanced rule(s)');
+    m.textContent = parts.join(' + ') +
+      ' — preserved exactly as they are on every save. Poke grants eval' +
+      ' power, so they stay a dojo-level act.';
+    card.appendChild(m);
+    if (g.poke && g.poke.length) {
+      const l = document.createElement('div');
+      l.className = 'aclnote';
+      l.textContent = g.poke.join(', ');
+      card.appendChild(l);
+    }
+  }
+
+  // one card, one group. `disp` shortens a path against the whole pane.
+  function aclCard(g, disp) {
+    const card = document.createElement('div');
+    card.className = 'aclcard';
+    card.appendChild(aclHead(g));
+    aclShips(card, g);
+    aclSection(card, 'read', g.peek, (v) => {
+      // dropping read must drop edit too. Edit without read is a grant that
+      // cannot be exercised, and it would silently reappear as "read" on the
+      // next save because addPath re-adds it.
+      g.peek = g.peek.filter((x) => x !== v);
+      g.make = g.make.filter((x) => x !== v);
+      permSave(g);
+    }, disp);
+    aclSection(card, 'edit', g.make, (v) => {
+      g.make = g.make.filter((x) => x !== v); permSave(g);
+    }, disp);
+    aclPathRow(card, g);
+    aclReadOnlyNote(card, g);
+    return card;
+  }
+
   function renderAcl() {
     const grid = $('aclgrid');
     if (!grid) return;
@@ -114,106 +231,11 @@
       grid.appendChild(e);
       return;
     }
-    for (const g of permGroups) {
-      const card = document.createElement('div');
-      card.className = 'aclcard';
-
-      const head = document.createElement('header');
-      const b = document.createElement('b');
-      b.textContent = g.name;
-      const del = document.createElement('button');
-      del.textContent = 'delete';
-      del.className = 'acl-del';
-      del.onclick = async () => {
-        if (!(await askConfirm('delete group ' + g.name + ' and every grant it carries?', 'delete'))) return;
-        await fetch(api + '/share-group-del?name=' + encodeURIComponent(g.name), { method: 'POST' }).catch(() => null);
-        loadPerms();
-      };
-      head.appendChild(b); head.appendChild(del);
-      card.appendChild(head);
-
-      aclSection(card, 'ships', g.ships, (v) => {
-        g.ships = g.ships.filter((x) => x !== v); permSave(g);
-      });
-      const srow = document.createElement('div');
-      srow.className = 'row';
-      const sin = document.createElement('input');
-      sin.placeholder = '~ship';
-      sin.autocomplete = 'off';
-      const sadd = document.createElement('button');
-      sadd.textContent = 'add ship';
-      const addShip = () => {
-        const v = sin.value.trim();
-        if (!v) return;
-        if (!g.ships.includes(v)) { g.ships.push(v); permSave(g); }
-        sin.value = '';
-      };
-      sadd.onclick = addShip;
-      sin.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addShip(); } };
-      srow.appendChild(sin); srow.appendChild(sadd);
-      card.appendChild(srow);
-
-      // one disambiguation scope for the whole pane, so the same page shows
-      // the same short name in every card
-      const allPaths = permGroups.flatMap((x) => [...x.peek, ...x.make]);
-      const disp = (v) => shortPath(v, allPaths);
-      aclSection(card, 'read', g.peek, (v) => {
-        // dropping read must drop edit too. Edit without read is a grant that
-        // cannot be exercised, and it would silently reappear as "read" on the
-        // next save because addPath re-adds it.
-        g.peek = g.peek.filter((x) => x !== v);
-        g.make = g.make.filter((x) => x !== v);
-        permSave(g);
-      }, disp);
-      aclSection(card, 'edit', g.make, (v) => {
-        g.make = g.make.filter((x) => x !== v); permSave(g);
-      }, disp);
-
-      const prow = document.createElement('div');
-      prow.className = 'row';
-      const pin = document.createElement('input');
-      pin.placeholder = '/apps/lattice.lattice_app/pub';
-      pin.setAttribute('list', 'aclpaths');
-      pin.autocomplete = 'off';
-      const radd = document.createElement('button');
-      radd.textContent = '+read';
-      const eadd = document.createElement('button');
-      eadd.textContent = '+edit';
-      const addPath = (edit) => {
-        const v = pin.value.trim();
-        if (!v) { st('enter a path to grant', false); return; }
-        if (!g.peek.includes(v)) g.peek.push(v);           // edit implies read
-        if (edit && !g.make.includes(v)) g.make.push(v);
-        permSave(g);
-        pin.value = '';
-      };
-      radd.onclick = () => addPath(false);
-      eadd.onclick = () => addPath(true);
-      prow.appendChild(pin); prow.appendChild(radd); prow.appendChild(eadd);
-      card.appendChild(prow);
-
-      if ((g.poke && g.poke.length) || g.opaque) {
-        const h = document.createElement('h4');
-        h.textContent = 'not editable here';
-        card.appendChild(h);
-        const m = document.createElement('div');
-        m.className = 'aclnote';
-        const parts = [];
-        if (g.poke && g.poke.length) parts.push(g.poke.length + ' poke grant(s)');
-        if (g.opaque) parts.push(g.opaque + ' advanced rule(s)');
-        m.textContent = parts.join(' + ') +
-          ' — preserved exactly as they are on every save. Poke grants eval' +
-          ' power, so they stay a dojo-level act.';
-        card.appendChild(m);
-        if (g.poke && g.poke.length) {
-          const l = document.createElement('div');
-          l.className = 'aclnote';
-          l.textContent = g.poke.join(', ');
-          card.appendChild(l);
-        }
-      }
-      grid.appendChild(card);
-    }
+    // one disambiguation scope for the whole pane, so the same page shows
+    // the same short name in every card
+    const allPaths = permGroups.flatMap((x) => [...x.peek, ...x.make]);
+    const disp = (v) => shortPath(v, allPaths);
+    for (const g of permGroups) grid.appendChild(aclCard(g, disp));
   }
 
   // ── banlist ──────────────────────────────────────────────────────────────
@@ -245,9 +267,11 @@
       a.textContent = w + ' ×';
       a.title = 'unban ' + w;
       a.onclick = async () => {
-        await fetch(api + '/unban?ship=' + encodeURIComponent(w), { method: 'POST' })
+        const r = await fetch(api + '/unban?ship=' + encodeURIComponent(w), { method: 'POST' })
           .catch(() => null);
-        st('unbanned ' + w + ' — it holds no access until you grant it again');
+        // announce the unban only once the ship has agreed to it
+        if (!r || !r.ok) st('unban: ' + (r ? r.status : 'network'), false);
+        else st('unbanned ' + w + ' — it holds no access until you grant it again');
         loadBans();
       };
       host.appendChild(a);

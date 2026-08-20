@@ -92,22 +92,12 @@ impl Projection for LatticeProjection {
             };
             let is_page = n.get("page").and_then(|p| p.as_bool()).unwrap_or(false);
             if !is_page {
-                out.push(Node {
-                    rel,
-                    is_dir: true,
-                    is_page: false,
-                    kind: String::new(),
-                    size: 0,
-                    mtime: now(),
-                    readonly: false,
-                });
+                out.push(dir_node(rel));
                 continue;
             }
-            let kind = n.get("kind").and_then(|k| k.as_str()).unwrap_or("hoon").to_string();
+            // the tree reports a size per node, and that is all there is here
             let size = n.get("size").and_then(|s| s.as_u64()).unwrap_or(0);
-            let mtime = da_to_unix(n.get("mtime").and_then(|m| m.as_str()).unwrap_or(""));
-            let readonly = kind == "index";
-            out.push(Node { rel, is_dir: false, is_page: true, kind, size, mtime, readonly });
+            out.push(page_node(n, rel, size));
         }
         Ok(out)
     }
@@ -208,6 +198,30 @@ impl Projection for LatticeProjection {
     }
 }
 
+/// One page off the wire. page-tree and page-dump spell a page node the same
+/// way except for where `size` comes from, so that is the only parameter: the
+/// tree's reported size, or the length of the body the dump inlined.
+fn page_node(v: &Value, rel: String, size: u64) -> Node {
+    let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("hoon").to_string();
+    let readonly = kind == "index"; // a generated %index page is not editable
+    let mtime = da_to_unix(v.get("mtime").and_then(|m| m.as_str()).unwrap_or(""));
+    Node { rel, is_dir: false, is_page: true, kind, size, mtime, readonly }
+}
+
+/// A non-page node: a lattice folder, which carries none of a page's fields.
+/// Neither endpoint reports an mtime for one, so it gets the wall clock.
+fn dir_node(rel: String) -> Node {
+    Node {
+        rel,
+        is_dir: true,
+        is_page: false,
+        kind: String::new(),
+        size: 0,
+        mtime: now(),
+        readonly: false,
+    }
+}
+
 /// Parse a page-dump response into (nodes, bodies). `size` is derived from the
 /// actual body bytes, never the reported `size` field, so FUSE st_size can never
 /// disagree with what read() returns (a wrong server size would short/over-read).
@@ -229,19 +243,8 @@ fn parse_dump(v: &Value) -> Result<Dump, PErr> {
         bodies.remove(&rel);
         let is_page = n.get("page").and_then(|p| p.as_bool()).unwrap_or(false);
         let node = if !is_page {
-            Node {
-                rel: rel.clone(),
-                is_dir: true,
-                is_page: false,
-                kind: String::new(),
-                size: 0,
-                mtime: now(),
-                readonly: false,
-            }
+            dir_node(rel.clone())
         } else {
-            let kind = n.get("kind").and_then(|k| k.as_str()).unwrap_or("hoon").to_string();
-            let mtime = da_to_unix(n.get("mtime").and_then(|m| m.as_str()).unwrap_or(""));
-            let readonly = kind == "index";
             // A present `body` is inlined. Cache it, and derive size from the actual
             // bytes (the st_size guard). A missing `body` means the server omitted an
             // oversized page (dump-inline-max). Don't cache it (body() reads it on
@@ -255,7 +258,7 @@ fn parse_dump(v: &Value) -> Result<Dump, PErr> {
                 }
                 None => n.get("size").and_then(|s| s.as_u64()).unwrap_or(0),
             };
-            Node { rel: rel.clone(), is_dir: false, is_page: true, kind, size, mtime, readonly }
+            page_node(n, rel.clone(), size)
         };
         match at.get(&rel) {
             Some(&i) => out[i] = node,

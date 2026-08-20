@@ -16,6 +16,12 @@
 ::  +parse-urb-url: "urb://~ship/rel" -> [ship rel-path]. ~ on a malformed url
 ::  (+stab is mule-guarded against bad knots).
 ::
+::  Legacy, and the split from +de-urb is deliberate. This one does NO mount
+::  resolution: /p/, /n/, /k/ and /t/ come back as ordinary path segments. The
+::  HTTP routes that take a url= param (fetch, catalog-toc, sub, unsub,
+::  catalog-classify) want the spur exactly as authored, so they call this.
+::  New callers want +de-urb.
+::
 ++  parse-urb-url
   |=  raw=@t
   ^-  (unit [=ship =path])

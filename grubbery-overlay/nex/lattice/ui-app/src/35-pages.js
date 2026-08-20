@@ -168,6 +168,37 @@
     renderTree();
   }
 
+  //  The three steps save() and autosave() both owe. They are two policies
+  //  over one protocol: what genuinely differs (a name to validate, 409 and
+  //  the create branch on one side, the debounce and the know branch on the
+  //  other) stays in each arm, and the bookkeeping that must never drift
+  //  between them lives here.
+
+  //  a save arriving mid-flight only set savePending. Take that trailing save
+  //  now, and only if the text really is still unsaved.
+  const flushPending = () => {
+    if (!savePending) return;
+    savePending = false;
+    if (dirty) autosave();
+  };
+  //  the echo window covers OUR OWN beacon bump. A fixed 4s assumed the bump
+  //  lands promptly; on a queued pier it arrives after the save's own round
+  //  trip again, so scale the window to what the pier just showed us. Too
+  //  short meant refetching the page we just wrote — two more pier requests
+  //  to learn nothing.
+  const noteRtt = (sentAt) => {
+    echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
+  };
+  //  we know exactly what we just wrote. Patch the local copies so reopening
+  //  this page paints the saved text, not the dump's pre-save body. The
+  //  cached render is stale by definition. Drop it and let it re-render.
+  //  Only a save that can change the kind passes one.
+  const patchLocal = (name, kind, sent) => {
+    pageCache.delete(name);
+    const nd = nodes.find((n) => n.page && n.path === name);
+    if (nd) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
+  };
+
   async function save(kindOverride) {
     if (curFolder) { st('folder selected — open a page to edit', false); return; }
     if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
@@ -203,12 +234,7 @@
     catch {}
     finally {
       saving = false;
-      //  the echo window covers OUR OWN beacon bump. A fixed 4s assumed the
-      //  bump lands promptly; on a queued pier it arrives after the save's
-      //  own round trip again, so scale the window to what the pier just
-      //  showed us. Too short meant refetching the page we just wrote —
-      //  two more pier requests to learn nothing.
-      echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
+      noteRtt(sentAt);
     }
     if (shipGone(r)) {
       // the ship is unreachable. Queue the edit and complete the save's
@@ -229,7 +255,7 @@
       history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
       if (creating) { addTreeNode(name, kind); snapTree(); renderTree(); }
       cerr.textContent = 'saved offline'; cerr.className = 'ok';
-      if (savePending) { savePending = false; if (dirty) autosave(); }
+      flushPending();
       return;
     }
     if (r && r.status === 409) { st('that page already exists', false); return; }
@@ -252,17 +278,12 @@
     // only a CREATE changes the tree. Refetching it after every save was a
     // 2.3s pier round-trip to learn nothing. Patch the local copy on create.
     if (creating) { addTreeNode(name, kind); snapTree(); renderTree(); }
-    // we know exactly what we just wrote. Patch the local copies so reopening
-    // this page paints the saved text, not the dump's pre-save body. The
-    // cached render is stale by definition. Drop it and let it re-render.
-    pageCache.delete(name);
-    const nd = nodes.find((n) => n.page && n.path === name);
-    if (nd) { nd.body = sent; nd.kind = kind; persistTree(); }
+    patchLocal(name, kind, sent);
     // the preview already shows this exact body (the input debounce rendered
     // it). Re-POSTing it after the save was a duplicate 1.8s render.
     if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
     else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
-    if (savePending) { savePending = false; if (dirty) autosave(); }
+    flushPending();
     if (offCount) replayQueue();     // back online: drain the backlog
   }
 
@@ -292,7 +313,7 @@
     const sentAt = Date.now();
     try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
     saving = false;
-    echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));  // see above
+    noteRtt(sentAt);
     if (r && r.ok) {
       pendingEchoes++;                // this save's own beacon bump
       bustPages(current);
@@ -303,12 +324,12 @@
       if (mode === 'know') {
         if (!(await enqueueKnow(current, sent))) return;
         if (src.value === sent) dirty = false;
-        if (savePending) { savePending = false; if (dirty) autosave(); }
+        flushPending();
         return;
       }
       if (!(await enqueueSave(current, curKind || pkind.value, sent))) return;
       if (src.value === sent) dirty = false;
-      if (savePending) { savePending = false; if (dirty) autosave(); }
+      flushPending();
       return;
     }
     if (!r || !r.ok) { st('autosave failed' + (r ? ' ' + r.status : ''), false); return; }
@@ -318,16 +339,13 @@
       try { vr = await r.json(); } catch {}
       if (vr && vr.rev) curRev = vr.rev;
     }
-    if (mode !== 'know') {
-      pageCache.delete(current);
-      const nd = nodes.find((n) => n.page && n.path === current);
-      if (nd) { nd.body = sent; persistTree(); }
-    }
+    //  no kind: an autosave writes the page's existing kind, it never sets one
+    if (mode !== 'know') patchLocal(current, null, sent);
     // the conflict verdict must be the LAST word, not clobbered by the
     // ordinary confirmation a line later
     if (vr && vr.conflicted)
       st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
     else st('autosaved');
     if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
-    if (savePending) { savePending = false; if (dirty) autosave(); }
+    flushPending();
   }

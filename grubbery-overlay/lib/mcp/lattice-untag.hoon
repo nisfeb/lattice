@@ -18,13 +18,11 @@
   =/  m  (fiber:fiber:nexus ,tool-result:tools)
   ^-  form:m
   ;<  st=tool-state:tools  bind:m  (get-state-as:io ,tool-state:tools)
-  =/  parsed=(each [@t @t] tang)
-    %-  mule  |.
-    :-  (~(dog jo:json-utils [%o args.st]) /key so:dejs:format)
-    (~(dog jo:json-utils [%o args.st]) /tag so:dejs:format)
-  ?:  ?=(%| -.parsed)
+  =/  ra=(unit @t)  (arg:lm args.st /key)
+  =/  rb=(unit @t)  (arg:lm args.st /tag)
+  ?.  &(?=(^ ra) ?=(^ rb))
     (pure:m [%error 'missing or invalid arguments (key, tag)'])
-  =/  [key=@t tag=@t]  p.parsed
+  =/  [key=@t tag=@t]  [u.ra u.rb]
   ?~  (parse-key:lm key)  (pure:m [%error 'invalid key'])
   ;<  ~  bind:m  (poke-writer:lm [%untag key tag])
   (pure:m [%text (crip "untagged {(trip key)} -{(trip tag)}")])

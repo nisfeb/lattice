@@ -68,16 +68,9 @@
     } catch {}
   }
 
-  const qCount = (hay, needle) => {
-    if (!needle.length) return 0;   // indexOf('', i) is i: an empty needle loops forever
-    let n = 0, i = 0;
-    for (;;) {
-      const at = hay.indexOf(needle, i);
-      if (at < 0) return n;
-      n += 1;
-      i = at + needle.length;
-    }
-  };
+  // non-overlapping occurrence count: split yields pieces-1 = matches. The
+  // empty-needle guard stays, since split('') would count every character.
+  const qCount = (hay, needle) => needle ? hay.split(needle).length - 1 : 0;
   // a line of context around the hit, the way grep shows it
   const qSnip = (body, at, len) => {
     const from = Math.max(0, at - 40);
@@ -85,28 +78,23 @@
     return (from ? '…' : '') + body.slice(from, to).replace(/\s+/g, ' ') + (to < body.length ? '…' : '');
   };
 
-  let qSeq = 0;
-  async function runSearch(raw) {
-    const host = $('qlist');
-    const sum = $('qsum');
-    const q = String(raw || '').trim().toLowerCase();
-    if (q.length < 2) {
-      host.className = 'aclempty';
-      host.textContent = 'type at least two characters';
-      sum.textContent = '';
-      return;
-    }
-    const mine = ++qSeq;
-    if (!qScopes) {
-      //  the exposure map and the memories are fetched once per open, and on a
-      //  slow pier that is seconds. Say so, rather than showing an empty panel
-      //  that reads as "no results".
-      host.className = 'aclempty';
-      host.textContent = 'searching\u2026';
-      await qLoadContext();
-      if (mine !== qSeq) return;
-    }
+  //  one hit builder for both corpora. A page and a memory differ only in
+  //  where the key and the body come from, and in what the badge says.
+  const qHit = (key, body, q, scope, know) => {
+    const hay = body.toLowerCase();
+    const at = hay.indexOf(q);
+    const inPath = key.toLowerCase().includes(q);
+    if (at < 0 && !inPath) return null;
+    return {
+      key, scope, inPath, know,
+      hits: at < 0 ? 0 : qCount(hay, q),
+      snip: at < 0 ? '' : qSnip(body, at, q.length),
+    };
+  };
 
+  //  the scan is pure: it reads the corpora already in memory and returns the
+  //  ranked hits plus how many pages it could not look inside.
+  function qScan(q) {
     const out = [];
     let skipped = 0;
     for (const n of nodes) {
@@ -114,40 +102,27 @@
       // A body over the dump's inline cap is not here, only its size. Say so
       // rather than quietly returning a result set that is missing pages.
       if (typeof n.body !== 'string') { skipped += 1; continue; }
-      const hay = n.body.toLowerCase();
-      const at = hay.indexOf(q);
-      const inPath = n.path.toLowerCase().includes(q);
-      if (at < 0 && !inPath) continue;
-      out.push({
-        key: n.path,
-        // NOT defaulted to 'private'. If the exposure lookup failed, or the
-        // page is newer than it, calling it private would be a false safety
-        // signal on a clearweb page: exactly the misread this badge exists to
-        // prevent. Unknown says unknown.
-        scope: (qScopes && qScopes.get(n.path)) || 'unknown',
-        hits: at < 0 ? 0 : qCount(hay, q),
-        inPath,
-        snip: at < 0 ? '' : qSnip(n.body, at, q.length),
-        know: false,
-      });
+      // NOT defaulted to 'private'. If the exposure lookup failed, or the
+      // page is newer than it, calling it private would be a false safety
+      // signal on a clearweb page: exactly the misread this badge exists to
+      // prevent. Unknown says unknown.
+      const h = qHit(n.path, n.body, q, (qScopes && qScopes.get(n.path)) || 'unknown', false);
+      if (h) out.push(h);
     }
     for (const k of qKnow) {
-      const body = String(k.body || '');
-      const key = String(k.key || '').replace(/^\/+/, '');
-      const hay = body.toLowerCase();
-      const at = hay.indexOf(q);
-      const inPath = key.toLowerCase().includes(q);
-      if (at < 0 && !inPath) continue;
-      out.push({
-        key, scope: 'knowledge', hits: at < 0 ? 0 : qCount(hay, q),
-        inPath, snip: at < 0 ? '' : qSnip(body, at, q.length), know: true,
-      });
+      const h = qHit(String(k.key || '').replace(/^\/+/, ''),
+        String(k.body || ''), q, 'knowledge', true);
+      if (h) out.push(h);
     }
-
     // a name match is what you meant more often than a body match, then
     // whichever mentions it most
     out.sort((a, b) => (b.inPath - a.inPath) || (b.hits - a.hits) || a.key.localeCompare(b.key));
+    return { out, skipped };
+  }
 
+  //  the summary line and the list. Names and bodies are content, so every
+  //  string here goes in through textContent.
+  function qPaint(host, sum, out, skipped) {
     sum.textContent = (out.length ? out.length + ' result' + (out.length === 1 ? '' : 's') : '')
       + (skipped ? (out.length ? ' · ' : '') + skipped + ' large page(s) not scanned' : '');
     host.textContent = '';
@@ -186,6 +161,31 @@
       ul.appendChild(li);
     }
     host.appendChild(ul);
+  }
+
+  let qSeq = 0;
+  async function runSearch(raw) {
+    const host = $('qlist');
+    const sum = $('qsum');
+    const q = String(raw || '').trim().toLowerCase();
+    if (q.length < 2) {
+      host.className = 'aclempty';
+      host.textContent = 'type at least two characters';
+      sum.textContent = '';
+      return;
+    }
+    const mine = ++qSeq;
+    if (!qScopes) {
+      //  the exposure map and the memories are fetched once per open, and on a
+      //  slow pier that is seconds. Say so, rather than showing an empty panel
+      //  that reads as "no results".
+      host.className = 'aclempty';
+      host.textContent = 'searching\u2026';
+      await qLoadContext();
+      if (mine !== qSeq) return;
+    }
+    const { out, skipped } = qScan(q);
+    qPaint(host, sum, out, skipped);
   }
 
   const qClose = () => { $('qwrap').hidden = true; };

@@ -6,7 +6,6 @@
 //! is behind one Mutex (fuser calls methods on &self, possibly concurrently).
 //! HTTP calls happen OUTSIDE the lock so a slow save never blocks the mutex.
 
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -274,12 +273,10 @@ impl GrubberyFs {
         // re-check under the lock. A concurrent body() for the same rel may have
         // fetched and inserted while we were on the wire. Inserting again would
         // double-count the bytes and slowly rot the cap accounting.
-        if !s.read_cache.contains_key(rel) {
-            let add = rel.len() + data.len();
-            if s.read_cache_bytes + add <= READ_CACHE_MAX {
-                s.read_cache_bytes += add;
-                s.read_cache.insert(rel.to_string(), data.clone());
-            }
+        if !s.read_cache.contains_key(rel)
+            && s.read_cache_bytes + rel.len() + data.len() <= READ_CACHE_MAX
+        {
+            s.cache_put(rel, data.clone());
         }
         Ok(data)
     }
@@ -334,6 +331,39 @@ impl GrubberyFs {
                 file_attr(ino, size, to_systime(n.mtime), n.readonly, self.uid, self.gid)
             }
         }
+    }
+
+    /// The attr and TTL for one vpath, or the errno to reply with. The one place
+    /// lookup and getattr agree on scratch shadowing, on the live-buffer size
+    /// override, and on the zero FILE_TTL that keeps an O_APPEND offset off a
+    /// stale size. `ino` comes from the caller: getattr answers about the inode
+    /// the kernel asked for, lookup passes None and mints one for the name it
+    /// resolved, which happens only once that name is known to exist so a miss
+    /// never grows the ino tables.
+    fn attr_for(
+        &self,
+        s: &mut State,
+        path: &str,
+        ino: Option<u64>,
+    ) -> Result<(FileAttr, Duration), i32> {
+        // scratch file: it lives in the map, not the vtree.
+        if is_scratch(leaf_of(path)) {
+            let sz = s.scratch.get(path).ok_or(libc::ENOENT)?.len() as u64;
+            let ino = ino.unwrap_or_else(|| ino_for(s, path));
+            return Ok((
+                file_attr(ino, sz, SystemTime::now(), false, self.uid, self.gid),
+                TTL,
+            ));
+        }
+        let e = s.vt.get(path).cloned().ok_or(libc::ENOENT)?;
+        let ino = ino.unwrap_or_else(|| ino_for(s, path));
+        let (ov, ttl) = if e.kind == VKind::File {
+            let (rel, _) = self.rel_kind_of(s, path);
+            (open_size(s, &rel), FILE_TTL)
+        } else {
+            (None, TTL)
+        };
+        Ok((self.mk_attr(ino, &e, ov), ttl))
     }
 
     /// Commit an fh's buffer through the projection (one POST), then invalidate.
@@ -424,11 +454,39 @@ fn publish(s: &mut State, rel: &str, buf: &[u8]) {
     for i in spent {
         s.pending_trunc.remove(&i);
     }
-    match s.read_cache.insert(rel.to_string(), buf.to_vec()) {
-        Some(old) => {
-            s.read_cache_bytes = s.read_cache_bytes.saturating_sub(old.len()) + buf.len();
-        }
-        None => s.read_cache_bytes += rel.len() + buf.len(),
+    s.cache_put(rel, buf.to_vec());
+}
+
+/// The one place a cached body and its byte total move together. The map and
+/// the total are separate args so apply_swap can use it on its local pair too.
+/// Getting this arithmetic wrong anywhere rots the READ_CACHE_MAX accounting
+/// silently: an over-count stops the cache filling, an under-count uncaps it.
+fn cache_put(cache: &mut HashMap<String, Vec<u8>>, total: &mut usize, rel: &str, bytes: Vec<u8>) {
+    let new_len = bytes.len();
+    match cache.insert(rel.to_string(), bytes) {
+        // the key is already counted. Only the body's bytes move
+        Some(old) => *total = total.saturating_sub(old.len()) + new_len,
+        None => *total += rel.len() + new_len,
+    }
+}
+
+/// Take a cached body out, discounting its bytes. Counterpart to cache_put.
+fn cache_take(cache: &mut HashMap<String, Vec<u8>>, total: &mut usize, rel: &str) -> Option<Vec<u8>> {
+    let b = cache.remove(rel)?;
+    *total = total.saturating_sub(rel.len() + b.len());
+    Some(b)
+}
+
+impl State {
+    /// Cache a body, keeping read_cache_bytes exact. Callers hold the state
+    /// behind a mutex guard, which cannot be split into two field borrows.
+    fn cache_put(&mut self, rel: &str, bytes: Vec<u8>) {
+        cache_put(&mut self.read_cache, &mut self.read_cache_bytes, rel, bytes);
+    }
+
+    /// Take a body back out, keeping read_cache_bytes exact.
+    fn cache_take(&mut self, rel: &str) -> Option<Vec<u8>> {
+        cache_take(&mut self.read_cache, &mut self.read_cache_bytes, rel)
     }
 }
 
@@ -451,9 +509,39 @@ fn is_scratch(name: &str) -> bool {
     }
 }
 
+/// One editor-save pattern, named once, so the three cases a rename involving a
+/// scratch name can take are classified in a single place. A rename between two
+/// real page names is not an editor pattern and is not one of these.
+enum EditorMove {
+    WithinScratch, // temp -> temp
+    Promote,       // temp -> page (atomic save)
+    Backup,        // page -> temp (backup by rename)
+}
+
+impl EditorMove {
+    fn of(src_scratch: bool, dst_scratch: bool) -> Option<EditorMove> {
+        match (src_scratch, dst_scratch) {
+            (true, true) => Some(EditorMove::WithinScratch),
+            (true, false) => Some(EditorMove::Promote),
+            (false, true) => Some(EditorMove::Backup),
+            (false, false) => None,
+        }
+    }
+}
+
 /// The leaf (filename) of a vpath.
 fn leaf_of(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+/// The parent vpath of a vpath: "/a/b" -> "/a", "/a" -> "/". Counterpart to
+/// leaf_of. readdir needs it for "..", for the vtree scan and for the scratch
+/// scan, which all have to apply the same rule.
+fn parent_of(vpath: &str) -> &str {
+    match vpath.rfind('/') {
+        Some(0) | None => "/",
+        Some(i) => &vpath[..i],
+    }
 }
 
 fn err(e: i32) -> Errno {
@@ -477,6 +565,14 @@ fn ino_for(s: &mut State, path: &str) -> u64 {
     s.to_ino.insert(path.to_string(), i);
     s.to_path.insert(i, path.to_string());
     i
+}
+
+/// The vpath an inode names, or None when the kernel handed back an ino we
+/// never minted. Every FUSE entry point starts here, and a miss is always
+/// ENOENT: a stale dentry the kernel still remembers, or a remap that lost it.
+/// The minting counterpart is ino_for.
+fn path_of(s: &State, ino: u64) -> Option<String> {
+    s.to_path.get(&ino).cloned()
 }
 
 fn to_systime(secs: i64) -> SystemTime {
@@ -545,7 +641,6 @@ fn file_attr(ino: u64, size: u64, mtime: SystemTime, readonly: bool, uid: u32, g
     }
 }
 
-/// Build the virtual tree from a node list (port of the Python _build).
 /// Cap a warm dump's bodies at `limit` bytes so a large tree can't OOM the
 /// client. Keep bodies until the running total would exceed the cap, drop the
 /// rest (body() lazily fetches those on demand). Deterministic across runs by
@@ -588,17 +683,14 @@ fn apply_swap(
             // The old cache holds the exact bytes of the recent write.
             if let Some(rel) = vt.get(path).and_then(|e| e.node.as_ref()).map(|n| n.rel.clone()) {
                 if let Some(b) = s.read_cache.get(&rel) {
-                    if let Entry::Vacant(slot) = cache.entry(rel) {
-                        bytes += slot.key().len() + b.len();
-                        slot.insert(b.clone());
+                    if !cache.contains_key(&rel) {
+                        cache_put(&mut cache, &mut bytes, &rel, b.clone());
                     }
                 }
             }
         } else if let Some(gone) = vt.remove(path) {
             if let Some(n) = gone.node {
-                if let Some(b) = cache.remove(&n.rel) {
-                    bytes = bytes.saturating_sub(n.rel.len() + b.len());
-                }
+                cache_take(&mut cache, &mut bytes, &n.rel);
             }
         }
     }
@@ -609,6 +701,11 @@ fn apply_swap(
     s.warm = true;
 }
 
+/// Build the virtual tree from a node list (port of the Python _build). A rel
+/// that is also some other rel's parent becomes a DIRECTORY whose own body is
+/// exposed as <dir>/<leaf>.<ext>; that is why "demo" shows up as a directory
+/// holding "demo.md". Every other page is <rel>.<ext>, and missing intermediate
+/// segments are synthesized as node-less dirs. rel_kind_of inverts this.
 fn build_vt(nodes: &[Node], ext_for: impl Fn(&str) -> &'static str) -> HashMap<String, VEntry> {
     let parents: HashSet<&str> = nodes
         .iter()
@@ -652,87 +749,36 @@ impl Filesystem for GrubberyFs {
         self.ensure_fresh();
         let name = name.to_string_lossy().to_string();
         let mut s = self.st.lock().unwrap();
-        let parent_path = match s.to_path.get(&parent.0) {
-            Some(p) => p.clone(),
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
-            }
+        let Some(parent_path) = path_of(&s, parent.0) else {
+            reply.error(err(libc::ENOENT));
+            return;
         };
         let child = join(&parent_path, &name);
-        // scratch file: it lives in the map, not the vtree.
-        if is_scratch(&name) {
-            match s.scratch.get(&child) {
-                Some(bytes) => {
-                    let sz = bytes.len() as u64;
-                    let ino = ino_for(&mut s, &child);
-                    drop(s);
-                    let attr = file_attr(ino, sz, SystemTime::now(), false, self.uid, self.gid);
-                    reply.entry(&TTL, &attr, Generation(0));
-                }
-                None => reply.error(err(libc::ENOENT)),
+        match self.attr_for(&mut s, &child, None) {
+            Ok((attr, ttl)) => {
+                drop(s);
+                reply.entry(&ttl, &attr, Generation(0));
             }
-            return;
+            Err(e) => reply.error(err(e)),
         }
-        let e = match s.vt.get(&child).cloned() {
-            Some(e) => e,
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
-            }
-        };
-        let ino = ino_for(&mut s, &child);
-        let ov = if e.kind == VKind::File {
-            let (rel, _) = self.rel_kind_of(&s, &child);
-            open_size(&s, &rel)
-        } else {
-            None
-        };
-        let ttl = if e.kind == VKind::File { &FILE_TTL } else { &TTL };
-        drop(s);
-        let attr = self.mk_attr(ino, &e, ov);
-        reply.entry(ttl, &attr, Generation(0));
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
         self.ensure_fresh();
-        let s = self.st.lock().unwrap();
-        let path = match s.to_path.get(&ino.0) {
-            Some(p) => p.clone(),
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
-            }
-        };
-        if is_scratch(leaf_of(&path)) {
-            match s.scratch.get(&path) {
-                Some(bytes) => {
-                    let sz = bytes.len() as u64;
-                    drop(s);
-                    let attr = file_attr(ino.0, sz, SystemTime::now(), false, self.uid, self.gid);
-                    reply.attr(&TTL, &attr);
-                }
-                None => reply.error(err(libc::ENOENT)),
-            }
+        let mut s = self.st.lock().unwrap();
+        let Some(path) = path_of(&s, ino.0) else {
+            reply.error(err(libc::ENOENT));
             return;
-        }
-        let e = match s.vt.get(&path).cloned() {
-            Some(e) => e,
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
+        };
+        // the kernel asked about this inode, so answer about it, whatever the
+        // vpath's own ino would be.
+        match self.attr_for(&mut s, &path, Some(ino.0)) {
+            Ok((attr, ttl)) => {
+                drop(s);
+                reply.attr(&ttl, &attr);
             }
-        };
-        let ov = if e.kind == VKind::File {
-            let (rel, _) = self.rel_kind_of(&s, &path);
-            open_size(&s, &rel)
-        } else {
-            None
-        };
-        let ttl = if e.kind == VKind::File { &FILE_TTL } else { &TTL };
-        drop(s);
-        let attr = self.mk_attr(ino.0, &e, ov);
-        reply.attr(ttl, &attr);
+            Err(e) => reply.error(err(e)),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -756,12 +802,9 @@ impl Filesystem for GrubberyFs {
     ) {
         self.ensure_fresh();
         let mut s = self.st.lock().unwrap();
-        let path = match s.to_path.get(&ino.0) {
-            Some(p) => p.clone(),
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
-            }
+        let Some(path) = path_of(&s, ino.0) else {
+            reply.error(err(libc::ENOENT));
+            return;
         };
         if let Some(sz) = size {
             // 1) explicit fh -> truncate that buffer
@@ -810,22 +853,14 @@ impl Filesystem for GrubberyFs {
     ) {
         self.ensure_fresh();
         let mut s = self.st.lock().unwrap();
-        let base = match s.to_path.get(&ino.0) {
-            Some(p) => p.clone(),
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
-            }
+        let Some(base) = path_of(&s, ino.0) else {
+            reply.error(err(libc::ENOENT));
+            return;
         };
         let parent_ino = if base == "/" {
             1
         } else {
-            let pp = match base.rfind('/') {
-                Some(0) => "/",
-                Some(i) => &base[..i],
-                None => "/",
-            };
-            *s.to_ino.get(pp).unwrap_or(&1)
+            *s.to_ino.get(parent_of(&base)).unwrap_or(&1)
         };
         let mut kids: Vec<(String, FileType)> = s
             .vt
@@ -834,12 +869,7 @@ impl Filesystem for GrubberyFs {
                 if vp == "/" {
                     return None;
                 }
-                let par = match vp.rfind('/') {
-                    Some(0) => "/".to_string(),
-                    Some(i) => vp[..i].to_string(),
-                    None => "/".to_string(),
-                };
-                if par == base {
+                if parent_of(vp) == base {
                     let ft = match e.kind {
                         VKind::Dir => FileType::Directory,
                         VKind::File => FileType::RegularFile,
@@ -853,12 +883,7 @@ impl Filesystem for GrubberyFs {
         // editor temp files live in the scratch map, not the vtree. List them too
         // so an editor sees its own backup/swap while it's working.
         for vp in s.scratch.keys() {
-            let par = match vp.rfind('/') {
-                Some(0) => "/".to_string(),
-                Some(i) => vp[..i].to_string(),
-                None => "/".to_string(),
-            };
-            if par == base {
+            if parent_of(vp) == base {
                 kids.push((vp.clone(), FileType::RegularFile));
             }
         }
@@ -869,7 +894,7 @@ impl Filesystem for GrubberyFs {
         ];
         for (vp, ft) in kids {
             let cino = ino_for(&mut s, &vp);
-            let leaf = vp.rsplit('/').next().unwrap().to_string();
+            let leaf = leaf_of(&vp).to_string();
             list.push((cino, ft, leaf));
         }
         drop(s);
@@ -886,12 +911,9 @@ impl Filesystem for GrubberyFs {
         // scratch file: serve its bytes from the in-memory map, never the ship.
         {
             let mut s = self.st.lock().unwrap();
-            let path = match s.to_path.get(&ino.0) {
-                Some(p) => p.clone(),
-                None => {
-                    reply.error(err(libc::ENOENT));
-                    return;
-                }
+            let Some(path) = path_of(&s, ino.0) else {
+                reply.error(err(libc::ENOENT));
+                return;
             };
             if is_scratch(leaf_of(&path)) {
                 let buf = s.scratch.get(&path).cloned().unwrap_or_default();
@@ -908,12 +930,9 @@ impl Filesystem for GrubberyFs {
         }
         let (rel, kind, pending) = {
             let s = self.st.lock().unwrap();
-            let path = match s.to_path.get(&ino.0) {
-                Some(p) => p.clone(),
-                None => {
-                    reply.error(err(libc::ENOENT));
-                    return;
-                }
+            let Some(path) = path_of(&s, ino.0) else {
+                reply.error(err(libc::ENOENT));
+                return;
             };
             match s.vt.get(&path) {
                 Some(VEntry { kind: VKind::File, .. }) => {}
@@ -1054,12 +1073,9 @@ impl Filesystem for GrubberyFs {
         self.ensure_fresh();
         let name = name.to_string_lossy().to_string();
         let mut s = self.st.lock().unwrap();
-        let parent_path = match s.to_path.get(&parent.0) {
-            Some(p) => p.clone(),
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
-            }
+        let Some(parent_path) = path_of(&s, parent.0) else {
+            reply.error(err(libc::ENOENT));
+            return;
         };
         let path = join(&parent_path, &name);
         // editor temp file: keep it entirely in the FUSE layer (never a page).
@@ -1126,12 +1142,9 @@ impl Filesystem for GrubberyFs {
         reply: ReplyEntry,
     ) {
         let name = name.to_string_lossy().to_string();
-        let parent_path = match self.st.lock().unwrap().to_path.get(&parent.0) {
-            Some(p) => p.clone(),
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
-            }
+        let Some(parent_path) = path_of(&self.st.lock().unwrap(), parent.0) else {
+            reply.error(err(libc::ENOENT));
+            return;
         };
         let path = join(&parent_path, &name);
         let rel = path.trim_start_matches('/').to_string();
@@ -1155,12 +1168,9 @@ impl Filesystem for GrubberyFs {
         let name = name.to_string_lossy().to_string();
         let (path, rel) = {
             let mut s = self.st.lock().unwrap();
-            let parent_path = match s.to_path.get(&parent.0) {
-                Some(p) => p.clone(),
-                None => {
-                    reply.error(err(libc::ENOENT));
-                    return;
-                }
+            let Some(parent_path) = path_of(&s, parent.0) else {
+                reply.error(err(libc::ENOENT));
+                return;
             };
             let path = join(&parent_path, &name);
             // scratch file: drop it from the FUSE layer only. NEVER proj.delete,
@@ -1193,12 +1203,9 @@ impl Filesystem for GrubberyFs {
         let name = name.to_string_lossy().to_string();
         let path = {
             let s = self.st.lock().unwrap();
-            let parent_path = match s.to_path.get(&parent.0) {
-                Some(p) => p.clone(),
-                None => {
-                    reply.error(err(libc::ENOENT));
-                    return;
-                }
+            let Some(parent_path) = path_of(&s, parent.0) else {
+                reply.error(err(libc::ENOENT));
+                return;
             };
             join(&parent_path, &name)
         };
@@ -1245,19 +1252,13 @@ impl Filesystem for GrubberyFs {
         let dst_scratch = is_scratch(&newname);
         let (src_path, dst_path, src_rel, dst_rel, dst_kind, dst_exists) = {
             let s = self.st.lock().unwrap();
-            let pp = match s.to_path.get(&parent.0) {
-                Some(p) => p.clone(),
-                None => {
-                    reply.error(err(libc::ENOENT));
-                    return;
-                }
+            let Some(pp) = path_of(&s, parent.0) else {
+                reply.error(err(libc::ENOENT));
+                return;
             };
-            let npp = match s.to_path.get(&newparent.0) {
-                Some(p) => p.clone(),
-                None => {
-                    reply.error(err(libc::ENOENT));
-                    return;
-                }
+            let Some(npp) = path_of(&s, newparent.0) else {
+                reply.error(err(libc::ENOENT));
+                return;
             };
             let src_path = join(&pp, &name);
             let dst_path = join(&npp, &newname);
@@ -1267,70 +1268,75 @@ impl Filesystem for GrubberyFs {
             (src_path, dst_path, src_rel, dst_rel, dst_kind, dst_exists)
         };
         // Any rename touching a scratch name must never delete/clobber the page it
-        // shadows. Handle the editor patterns explicitly:
-        if src_scratch || dst_scratch {
-            // the bytes an atomic save promoted onto a real page, if any
-            let mut promoted: Option<Vec<u8>> = None;
-            let res: Result<(), PErr> = if src_scratch && dst_scratch {
-                // temp -> temp: move within the scratch map
-                let v = self.st.lock().unwrap().scratch.remove(&src_path).unwrap_or_default();
-                self.st.lock().unwrap().scratch.insert(dst_path.clone(), v);
-                Ok(())
-            } else if src_scratch {
-                // atomic save: temp -> real page. Promote the scratch bytes.
-                // create only when the destination doesn't exist. An atomic save
-                // ONTO an existing page is an overwrite (create=true would 409 on
-                // lattice / EROFS on generic, failing every VS Code-style save).
-                let v = self.st.lock().unwrap().scratch.remove(&src_path).unwrap_or_default();
-                let r = self.proj.write(&dst_rel, &dst_kind, &v, !dst_exists);
-                promoted = Some(v);
-                r
-            } else {
-                // backup-by-rename: page -> temp name. Snapshot the page's current
-                // body into the scratch map and KEEP the page (the editor rewrites
-                // it next). Never delete it, so there is no data-loss window.
-                let v = self.body(&src_rel).unwrap_or_default();
-                self.st.lock().unwrap().scratch.insert(dst_path.clone(), v);
-                Ok(())
+        // shadows. Handle the editor patterns explicitly: each arm owns both its
+        // wire call and the state fixup that pattern needs, so a fix to one
+        // pattern cannot silently mis-target another.
+        if let Some(mv) = EditorMove::of(src_scratch, dst_scratch) {
+            let res: Result<(), PErr> = match mv {
+                EditorMove::WithinScratch => {
+                    // temp -> temp: move within the scratch map. This arm makes no
+                    // wire call, so it holds the lock for the whole move and a
+                    // concurrent readdir never sees the temp under neither name.
+                    let mut s = self.st.lock().unwrap();
+                    let v = s.scratch.remove(&src_path).unwrap_or_default();
+                    s.scratch.insert(dst_path.clone(), v);
+                    // the temp no longer exists under its old name
+                    s.scratch.remove(&src_path);
+                    s.vt.remove(&src_path);
+                    remap_ino(&mut s, &src_path, &dst_path);
+                    Ok(())
+                }
+                EditorMove::Promote => {
+                    // atomic save: temp -> real page. Promote the scratch bytes.
+                    // create only when the destination doesn't exist. An atomic save
+                    // ONTO an existing page is an overwrite (create=true would 409 on
+                    // lattice / EROFS on generic, failing every VS Code-style save).
+                    let v = self.st.lock().unwrap().scratch.remove(&src_path).unwrap_or_default();
+                    match self.proj.write(&dst_rel, &dst_kind, &v, !dst_exists) {
+                        Ok(()) => {
+                            let mut s = self.st.lock().unwrap();
+                            // the temp no longer exists under its old name
+                            s.scratch.remove(&src_path);
+                            s.vt.remove(&src_path);
+                            s.recent.insert(dst_path.clone(), (Instant::now(), true));
+                            // an atomic save may CREATE the page. Seed an optimistic
+                            // entry, as create() does, so the file the editor just
+                            // wrote is stat-able before the re-dump lands.
+                            s.vt.entry(dst_path.clone()).or_insert_with(|| VEntry {
+                                kind: VKind::File,
+                                node: Some(Node {
+                                    rel: dst_rel.clone(),
+                                    is_dir: false,
+                                    is_page: true,
+                                    kind: dst_kind.clone(),
+                                    size: 0,
+                                    mtime: now_secs(),
+                                    readonly: false,
+                                }),
+                            });
+                            // and the promoted bytes ARE that page now
+                            publish(&mut s, &dst_rel, &v);
+                            remap_ino(&mut s, &src_path, &dst_path);
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                EditorMove::Backup => {
+                    // backup-by-rename: page -> temp name. Snapshot the page's current
+                    // body into the scratch map and KEEP the page (the editor rewrites
+                    // it next). Never delete it, so there is no data-loss window.
+                    let v = self.body(&src_rel).unwrap_or_default();
+                    let mut s = self.st.lock().unwrap();
+                    s.scratch.insert(dst_path.clone(), v);
+                    // the page stays. Refresh so the new content lands
+                    s.vt_ts = None;
+                    remap_ino(&mut s, &src_path, &dst_path);
+                    Ok(())
+                }
             };
             match res {
-                Ok(()) => {
-                    let mut s = self.st.lock().unwrap();
-                    // src no longer exists under its old name only when it moved
-                    // OUT of the page/scratch namespace (not the page->backup case).
-                    if src_scratch {
-                        s.scratch.remove(&src_path);
-                        s.vt.remove(&src_path);
-                    }
-                    if !src_scratch {
-                        // page -> temp: the page stays. Refresh so the new content lands
-                        s.vt_ts = None;
-                    }
-                    if src_scratch && !dst_scratch {
-                        s.recent.insert(dst_path.clone(), (Instant::now(), true));
-                        // an atomic save may CREATE the page. Seed an optimistic
-                        // entry, as create() does, so the file the editor just
-                        // wrote is stat-able before the re-dump lands.
-                        let buf = promoted.unwrap_or_default();
-                        s.vt.entry(dst_path.clone()).or_insert_with(|| VEntry {
-                            kind: VKind::File,
-                            node: Some(Node {
-                                rel: dst_rel.clone(),
-                                is_dir: false,
-                                is_page: true,
-                                kind: dst_kind.clone(),
-                                size: 0,
-                                mtime: now_secs(),
-                                readonly: false,
-                            }),
-                        });
-                        // and the promoted bytes ARE that page now
-                        publish(&mut s, &dst_rel, &buf);
-                    }
-                    remap_ino(&mut s, &src_path, &dst_path);
-                    drop(s);
-                    reply.ok();
-                }
+                Ok(()) => reply.ok(),
                 Err(e) => reply.error(err(e.errno)),
             }
             return;
@@ -1344,11 +1350,7 @@ impl Filesystem for GrubberyFs {
                 // whole refresh interval. Carry the cached body across with it
                 // so the read after the rename also skips the round trip.
                 let moved = s.vt.remove(&src_path);
-                let body = s.read_cache.remove(&src_rel);
-                if let Some(b) = &body {
-                    s.read_cache_bytes =
-                        s.read_cache_bytes.saturating_sub(src_rel.len() + b.len());
-                }
+                let body = s.cache_take(&src_rel);
                 if let Some(mut e) = moved {
                     if let Some(n) = e.node.as_mut() {
                         n.rel = dst_rel.clone();
@@ -1356,17 +1358,8 @@ impl Filesystem for GrubberyFs {
                     s.vt.insert(dst_path.clone(), e);
                 }
                 if let Some(b) = body {
-                    let add = dst_rel.len() + b.len();
-                    match s.read_cache.insert(dst_rel.clone(), b) {
-                        // the destination may already have been cached
-                        Some(old) => {
-                            s.read_cache_bytes = s
-                                .read_cache_bytes
-                                .saturating_sub(dst_rel.len() + old.len())
-                                + add;
-                        }
-                        None => s.read_cache_bytes += add,
-                    }
+                    // the destination may already have been cached
+                    s.cache_put(&dst_rel, b);
                 }
                 s.recent.insert(src_path.clone(), (Instant::now(), false));
                 s.recent.insert(dst_path.clone(), (Instant::now(), true));

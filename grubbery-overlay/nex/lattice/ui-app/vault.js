@@ -109,8 +109,14 @@
   };
 
   // extension the writer uses, and the reverse map the reader files pages back
-  // through. `text` is the only kind whose extension differs from its name.
-  const kindExt = (k) => (k === 'text' ? 'txt' : (k || 'md'));
+  // through. `text` is the only kind whose extension differs from its name;
+  // `index` is a page the ship generates and its file form is markdown.
+  //
+  // Twin of KIND_EXT/EXT_KIND in ui-app/src/30-tree.js, duplicated on purpose:
+  // this file is also served alone to the Settings page, with no bundle around
+  // it, so it cannot read the bundle's copy. The two must answer the same, and
+  // lattice-fs-rs/src/projection.rs is the third copy, across the process line.
+  const kindExt = (k) => (k === 'text' ? 'txt' : k === 'index' ? 'md' : (k || 'md'));
   const KMAP = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
     text: 'text', js: 'js', css: 'css', hoon: 'hoon' };
 
@@ -122,7 +128,9 @@
 
   const RESTORE = `lattice vault export
 
-pages/    every page, as a plain file named for its path and kind.
+pages/    every page you wrote, as a plain file named for its path and kind.
+          Generated folder indexes are left out: the store rebuilds them from
+          the folder itself, so they come back when their folder does.
 know/     every memory, one file per key.
 know.json the memories again, in the format /know-import reads.
 share.json  the share mode of every non-private page (path -> shared|clearweb).
@@ -249,8 +257,24 @@ editor, or git will do if you only want to look.
 
     const now = Math.floor(Date.now() / 1000);
     const files = [];
+    //  two different things, kept apart on purpose. `missing` is a FAILURE: a
+    //  page whose body could not be read, which makes the archive incomplete
+    //  and says so loudly. `excluded` is a deliberate omission of content the
+    //  store regenerates. Reporting the second as the first would mark every
+    //  backup of a store with folders INCOMPLETE, and a warning that fires on
+    //  every healthy run is a warning nobody reads when it finally matters.
     const missing = [];
-    const pages = (dump.nodes || []).filter((n) => n.page);
+    const excluded = [];
+    // A folder index is generated: its body is the hoon that builds the
+    // listing, not anything the user wrote, and no extension files it back as
+    // an index page. Naming it beats writing a file the restore would either
+    // skip or put back as a markdown page full of hoon.
+    const pages = [];
+    for (const n of (dump.nodes || [])) {
+      if (!n.page) continue;
+      if (n.kind === 'index') { excluded.push(n.path); continue; }
+      pages.push(n);
+    }
     for (const n of pages) {
       let body = n.body;
       if (typeof body !== 'string') {
@@ -289,6 +313,12 @@ editor, or git will do if you only want to look.
     const gaps = missing.length
       ? ', but could NOT read: ' + missing.slice(0, 5).join(', ') +
         (missing.length > 5 ? ' and ' + (missing.length - 5) + ' more' : '') : '';
+    //  said plainly, and never as a failure: these come back when the folder
+    //  does, so their absence costs nothing on restore.
+    const skipped = excluded.length
+      ? ' (' + excluded.length + ' generated folder index'
+        + (excluded.length === 1 ? '' : 'es') + ' not included, they rebuild themselves)'
+      : '';
 
     if (autoId) {
       const d = cfg.desk();
@@ -296,7 +326,7 @@ editor, or git will do if you only want to look.
       try {
         const where = await d.invoke('backup_write', { id: autoId, b64: await blobToB64(blob) });
         if (gaps) st('backed up ' + pages.length + ' page(s) to ' + where + gaps + ' — backup INCOMPLETE', false);
-        else st('backed up ' + pages.length + ' page(s) to ' + where);
+        else st('backed up ' + pages.length + ' page(s) to ' + where + skipped);
       } catch (e) { st('scheduled backup failed: ' + e, false); }
       return;
     }
@@ -307,7 +337,7 @@ editor, or git will do if you only want to look.
       catch (e) { st('export failed: ' + e, false); return; }
       if (!where) { st('export cancelled'); return; }
       if (gaps) st('exported ' + pages.length + ' page(s) to ' + where + gaps, false);
-      else st('exported ' + pages.length + ' page(s) to ' + where);
+      else st('exported ' + pages.length + ' page(s) to ' + where + skipped);
       return;
     }
     const url = globalThis.URL.createObjectURL(blob);
@@ -315,7 +345,8 @@ editor, or git will do if you only want to look.
     a.href = url; a.download = fname; a.click();
     setTimeout(() => globalThis.URL.revokeObjectURL(url), 30000);
     if (gaps) st('exported ' + pages.length + ' page(s)' + gaps, false);
-    else st('exported ' + pages.length + ' page(s) and ' + ((know && (know.items || []).length) || 0) + ' memories');
+    else st('exported ' + pages.length + ' page(s) and '
+      + ((know && (know.items || []).length) || 0) + ' memories' + skipped);
   }
 
   // ── settings-page UI ─────────────────────────────────────────────────────────
@@ -340,7 +371,11 @@ editor, or git will do if you only want to look.
   };
   const bkId = () => 'bk' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
-  function mountSettings(root) {
+  // manual export and restore: the browser (download / file input) and the
+  // desktop shell (native save / open dialog, chosen inside exportVault/desk())
+  // both get these. This is also where the module's cfg callbacks are
+  // installed, so mounting the pane is what wires up status and confirm.
+  function mountManual(root) {
     const status = el('span', { class: 'muted' });
     configure({
       status: (m, ok) => { status.textContent = m || ''; status.className = ok === false ? 'err' : 'muted'; },
@@ -350,8 +385,6 @@ editor, or git will do if you only want to look.
       afterRestore: () => {},
     });
 
-    // manual: works in the browser (download / file input) and the desktop shell
-    // (native save / open dialog, chosen inside exportVault/desk()).
     const exportBtn = el('button', { type: 'button', class: 'btn', text: 'Export vault' });
     exportBtn.onclick = () => exportVault();
     const pick = el('input', { type: 'file', accept: '.tar,application/x-tar', hidden: true });
@@ -370,15 +403,11 @@ editor, or git will do if you only want to look.
       el('p', { class: 'muted' }, [document.createTextNode('Download every page and memory as one tar, or restore from one. The archive is plain files, readable without lattice.')]),
       el('p', null, [exportBtn, document.createTextNode(' '), restoreBtn, pick, document.createTextNode(' '), status]),
     );
+  }
 
-    // automated: desktop only. In a browser there is no scheduler and nowhere on
-    // the machine to write to, so say that rather than showing dead controls.
-    const d = cfg.desk();
-    if (!d) {
-      root.append(el('p', { class: 'muted', text: 'Automatic scheduled backups run in the lattice desktop app. Open lattice on your computer to set them up.' }));
-      return;
-    }
-    const invoke = window.__TAURI__.core.invoke;
+  // the scheduled-backup CRUD: list, verify, add. Desktop only, and it talks
+  // to the shell rather than to the ship.
+  function mountSchedules(root, invoke) {
     root.append(el('h3', { text: 'Automatic backups' }));
     root.append(el('p', { class: 'muted', text: 'Whole-store archives written to this machine on a schedule — the same tar as export above. They run while lattice is open; one that came due while it was closed runs shortly after you next open it.' }));
     const listEl = el('ul', { class: 'bklist' });
@@ -438,6 +467,18 @@ editor, or git will do if you only want to look.
       el('div', { class: 'bkrow' }, [inDir, pickDir]),
       el('div', { class: 'bkrow' }, [addBtn, bkStatus]));
     refresh();
+  }
+
+  function mountSettings(root) {
+    mountManual(root);
+    // automated: desktop only. In a browser there is no scheduler and nowhere on
+    // the machine to write to, so say that rather than showing dead controls.
+    const d = cfg.desk();
+    if (!d) {
+      root.append(el('p', { class: 'muted', text: 'Automatic scheduled backups run in the lattice desktop app. Open lattice on your computer to set them up.' }));
+      return;
+    }
+    mountSchedules(root, window.__TAURI__.core.invoke);
   }
 
   window.LatticeVault = { configure, exportVault, restoreVault, mountSettings,

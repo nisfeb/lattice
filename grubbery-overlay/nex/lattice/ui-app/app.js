@@ -420,10 +420,6 @@
     return true;
   }
 
-  // Drain through page-save-batch. The batch is all-or-nothing, right for
-  // uploads, wrong for replay. One poisoned record would block the queue
-  // forever. A rejected batch falls back to per-item saves so the bad record
-  // is isolated and DROPPED (it can never apply; review gap 3).
   let replaying = false;
   // The guard has to be taken BEFORE the first await. It used to be set four
   // lines further down, after two of them, so two callers could both pass the
@@ -444,29 +440,28 @@
     replaying = true;
     try { await drainQueue(); } finally { replaying = false; }
   }
-  async function drainQueue() {
-    const whole = await offAll();
-    const ops = await opAll();
-    if (!whole.length && !ops.length) return;
-    const all = whole.filter((q) => q.kind !== 'know');
-    const knows = whole.filter((q) => q.kind === 'know');
-    const total = whole.length + ops.length;
-    stWork('syncing ' + total + ' offline edit' + (total === 1 ? '' : 's') + '…');
-    let stuck = false;
-    const conflicts = [];
 
-    // Structural ops go FIRST, in the order they were made. Their effect on
-    // the pending saves was already applied when they were queued, so a save
-    // landing afterwards is always a save the user still wants, under the name
-    // they want it under.
-    //
-    // An op the ship REJECTS is dropped, not retried. It means the intent was
-    // already satisfied some other way: deleting a page that only ever existed
-    // in this queue, or moving one whose source the queue never sent. Retrying
-    // that forever would wedge everything behind it, and there is nothing to
-    // recover because no content lives in an op.
+  //  Each drain phase returns FALSE when it could not finish. Usually that is
+  //  the ship going away mid-drain (shipGone). drainCreates also returns false
+  //  when the conflict-preservation write did not land for any other reason,
+  //  because the alternative is dropping the user's only copy of a document.
+  //  Either way everything the phase had not finished stays queued, in order,
+  //  for the next replay, and the caller stops there and goes degraded. For a
+  //  ship that is answering but refusing that one write, degraded is a
+  //  deliberate over-report.
+
+  // Structural ops go FIRST, in the order they were made. Their effect on
+  // the pending saves was already applied when they were queued, so a save
+  // landing afterwards is always a save the user still wants, under the name
+  // they want it under.
+  //
+  // An op the ship REJECTS is dropped, not retried. It means the intent was
+  // already satisfied some other way: deleting a page that only ever existed
+  // in this queue, or moving one whose source the queue never sent. Retrying
+  // that forever would wedge everything behind it, and there is nothing to
+  // recover because no content lives in an op.
+  async function drainOps(ops) {
     for (const o of ops) {
-      if (stuck) break;
       //  a record of any other shape is corrupt. Falling through to the move
       //  branch would POST from=undefined&to=undefined, which is a confusing
       //  400 rather than a dropped bad record.
@@ -479,7 +474,7 @@
             '&to=' + encodeURIComponent(o.to);
       let r = null;
       try { r = await tfetch(u, { method: 'POST' }, 30000); } catch {}
-      if (shipGone(r)) { stuck = true; break; }
+      if (shipGone(r)) return false;
       if (!(r && r.ok)) {
         st('offline ' + o.op + ' no longer applies: ' +
           (o.name || o.from) + ' (skipped)', false);
@@ -489,14 +484,15 @@
       }
       await opDel(o._k);
     }
-    // Creates go PER-ITEM with new=1, never through the batch: the batch is an
-    // unconditional upsert, so a name that already exists on the ship would be
-    // silently overwritten. A create must keep its 409-on-exists protection,
-    // or an offline "new page" could clobber a page someone else made online.
-    const creates = all.filter((q) => q.isNew);
-    const edits = all.filter((q) => !q.isNew);
+    return true;
+  }
+
+  // Creates go PER-ITEM with new=1, never through the batch: the batch is an
+  // unconditional upsert, so a name that already exists on the ship would be
+  // silently overwritten. A create must keep its 409-on-exists protection,
+  // or an offline "new page" could clobber a page someone else made online.
+  async function drainCreates(creates, conflicts) {
     for (const q of creates) {
-      if (stuck) break;
       let one = null;
       try {
         one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
@@ -504,7 +500,7 @@
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
       if (one && one.ok) { await offDel(q.name); continue; }
-      if (shipGone(one)) { stuck = true; break; }
+      if (shipGone(one)) return false;
       // 409: the name is taken on the ship. Do NOT drop the user's body — move
       // it out of the way as a conflict page so nothing is lost, then let them
       // rename. Overwriting is the one thing a create must never do. The alt
@@ -532,18 +528,27 @@
           two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
             '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
         } catch {}
-        if (two && two.ok) {
-          conflicts.push(alt);
-          await offDel(q.name);
-          st('offline create collided: ' + q.name + ' exists on the ship — your ' +
-            'version is kept at ' + alt, false);
-        } else { stuck = true; }
+        //  the preservation write is the only thing standing between the user
+        //  and a lost document, so if it does not land the record stays queued
+        if (!(two && two.ok)) return false;
+        conflicts.push(alt);
+        await offDel(q.name);
+        st('offline create collided: ' + q.name + ' exists on the ship — your ' +
+          'version is kept at ' + alt, false);
         continue;
       }
       st('dropped an unsyncable offline create: ' + q.name, false);
       await offDel(q.name);
     }
-    for (let i = 0; i < edits.length && !stuck; i += 50) {
+    return true;
+  }
+
+  // Drain through page-save-batch. The batch is all-or-nothing, right for
+  // uploads, wrong for replay. One poisoned record would block the queue
+  // forever. A rejected batch falls back to per-item saves so the bad record
+  // is isolated and DROPPED (it can never apply; review gap 3).
+  async function drainEdits(edits, conflicts) {
+    for (let i = 0; i < edits.length; i += 50) {
       const part = edits.slice(i, i + 50);
       let r = null;
       try {
@@ -581,29 +586,51 @@
             await offDel(q.name);
             continue;
           }
-          if (shipGone(one)) { stuck = true; break; }
+          if (shipGone(one)) return false;
           st('dropped an unsyncable offline edit: ' + q.name, false);
           await offDel(q.name);
         }
         continue;
       }
-      stuck = true;
+      return false;
     }
-    // memories drain per-item. There is no know batch route, and last-write-
-    // wins means a plain re-save with no verdict to collect
+    return true;
+  }
+
+  // memories drain per-item. There is no know batch route, and last-write-
+  // wins means a plain re-save with no verdict to collect
+  async function drainKnows(knows) {
     for (const q of knows) {
-      if (stuck) break;
       let one = null;
       try {
         one = await tfetch(api + '/know-save?key=' + encodeURIComponent(q.name.slice(5)),
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
       if (one && one.ok) { await offDel(q.name); continue; }
-      if (shipGone(one)) { stuck = true; break; }
+      if (shipGone(one)) return false;
       st('dropped an unsyncable offline edit: ' + q.name, false);
       await offDel(q.name);
     }
-    if (stuck) { setDegraded(true); st(offCount + ' offline edit(s) still waiting', false); return; }
+    return true;
+  }
+
+  async function drainQueue() {
+    const whole = await offAll();
+    const ops = await opAll();
+    if (!whole.length && !ops.length) return;
+    const all = whole.filter((q) => q.kind !== 'know');
+    const knows = whole.filter((q) => q.kind === 'know');
+    const total = whole.length + ops.length;
+    stWork('syncing ' + total + ' offline edit' + (total === 1 ? '' : 's') + '…');
+    const conflicts = [];
+    //  ORDER IS THE CONTRACT: ops, then creates, then edits, then memories.
+    //  && short-circuits, so the first phase that loses the ship stops the
+    //  drain and leaves the rest of the queue untouched for the next replay.
+    const landed = await drainOps(ops)
+      && await drainCreates(all.filter((q) => q.isNew), conflicts)
+      && await drainEdits(all.filter((q) => !q.isNew), conflicts)
+      && await drainKnows(knows);
+    if (!landed) { setDegraded(true); st(offCount + ' offline edit(s) still waiting', false); return; }
     setDegraded(false);
     if (conflicts.length) {
       st('synced — ' + conflicts.length + ' conflict(s): your offline version won; '
@@ -680,16 +707,16 @@
       }
     }).catch(() => {});
   };
-  // bulk writes (vault restore, drag-drop upload, know-import) name their
-  // targets only in the POST body — no per-name bust is possible from the
-  // URL, and a restore legitimately invalidates everything. Drop the whole
-  // pages cache; it rebuilds one view at a time.
   // mirror of the server's +valid-name (@ta segments; no '.'/'..'): reject
   // BEFORE saving or queueing. The server answers 400 — cryptic online, and
   // fatal offline: the drain treats 400 as unsyncable and discards the
   // queued document it earlier reported "saved offline".
   const validName = (n) => String(n || '').split('/').every(
     (s) => s.length && s !== '.' && s !== '..' && /^[a-z0-9._~-]+$/.test(s));
+  // bulk writes (vault restore, drag-drop upload, know-import) name their
+  // targets only in the POST body — no per-name bust is possible from the
+  // URL, and a restore legitimately invalidates everything. Drop the whole
+  // pages cache; it rebuilds one view at a time.
   const bustAll = () => {
     if ('caches' in window) caches.delete('lattice-pages').catch(() => {});
   };
@@ -2122,6 +2149,32 @@
 })();
 
 // ── src/30-tree.js ────────────────────────────────────────────────────────
+  // ── page kind <-> extension, once for the whole bundle ───────────────────
+  // `kind` is what the ship stores (page-save?type=); `ext` is what a filename
+  // shows. They differ for `text`, and `index` is a page the ship generates
+  // (+make-folder-index) whose file form is markdown. Everything in the bundle
+  // reads these two tables: the tree below, the uploader (70-upload.js) and
+  // the desktop File menu (96-deskmenu.js). Those files are numbered after
+  // this one and the build concatenates in filename order into one scope, so
+  // the names are visible there.
+  //
+  // Two copies live outside the bundle and have to be kept in step by hand:
+  // ui-app/vault.js, which is also served alone to the Settings page with no
+  // bundle around it, and lattice-fs-rs/src/projection.rs, another process in
+  // another language.
+  //
+  // `htm` and `text` are INBOUND-ONLY aliases: archives written before the
+  // extension was conventionalised named those files `.text`, and a restore
+  // has to keep reading archives this app already handed out.
+  const KIND_EXT = { md: 'md', gmi: 'gmi', html: 'html', text: 'txt', js: 'js',
+                     css: 'css', hoon: 'hoon', index: 'md' };
+  const EXT_KIND = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
+                     text: 'text', js: 'js', css: 'css', hoon: 'hoon' };
+  //  an unknown kind shows as hoon, the kind that holds arbitrary source
+  const kindExt = (k) => KIND_EXT[k] || 'hoon';
+  //  an unknown extension is null, never guessed: the caller skips that file
+  const extKind = (e) => EXT_KIND[String(e || '').toLowerCase()] || null;
+
   // ── tree pane: <lat-tree> ────────────────────────────────────────────────
   // The pane's buttons are wired where their handlers live (45-templates,
   // 70-upload). Those files run after this component upgrades, so their
@@ -2171,9 +2224,17 @@
   // a megabyte, page it or go back to page-tree plus a lazy body cache.
   async function loadTree() {
     const gen = treeGen;
-    const r = await fetch(api + '/page-dump');
-    if (!r.ok) { st('tree failed ' + r.status, false); return; }
-    const d = await r.json();
+    let d = null;
+    // this one RESOLVES, always. Boot chains its whole reconcile off it
+    // (99-boot.js) with no .catch, so a rejection here would silently cancel
+    // loadPanels, the open/reconcile branch and legacyCheck, and show nothing.
+    // A dead pier is a reportable condition, the way openPage and loadPerms
+    // already report theirs. Offline is a state this app is built for.
+    try {
+      const r = await fetch(api + '/page-dump');
+      if (!r.ok) { st('tree failed ' + r.status, false); return; }
+      d = await r.json();
+    } catch { st('tree failed (network)', false); return; }
     if (gen !== treeGen) return;   // a local patch superseded this response
     // the dump's beacon rev is the baseline for a FIRST-EVER session: the
     // stream only reports from registration onward, and with nothing
@@ -2239,7 +2300,7 @@
       if (n.page) {
         row.className = 'pg' + (n.path === current ? ' cur' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
-        row.textContent = n.path.split('/').pop() + '.' + extOf(n.kind);
+        row.textContent = n.path.split('/').pop() + '.' + kindExt(n.kind);
         row.onclick = (e) => { e.preventDefault(); openPage(n.path); };
       } else {
         row.className = 'fld' + (n.path === curFolder ? ' cur' : '');
@@ -2280,9 +2341,6 @@
     // it repaints exactly when the tree does. Defined in 80-conflicts.js.
     if (typeof renderConfBadge === 'function') renderConfBadge();
   }
-
-  const extOf = (kind) => ({ md: 'md', gmi: 'gmi', html: 'html', text: 'txt',
-                             js: 'js', css: 'css', index: 'md' }[kind] || 'hoon');
 
   // ── folder selection ─────────────────────────────────────────────────────
   // A folder's share state is derived from its pages: uniform → that mode,
@@ -2497,6 +2555,37 @@
     renderTree();
   }
 
+  //  The three steps save() and autosave() both owe. They are two policies
+  //  over one protocol: what genuinely differs (a name to validate, 409 and
+  //  the create branch on one side, the debounce and the know branch on the
+  //  other) stays in each arm, and the bookkeeping that must never drift
+  //  between them lives here.
+
+  //  a save arriving mid-flight only set savePending. Take that trailing save
+  //  now, and only if the text really is still unsaved.
+  const flushPending = () => {
+    if (!savePending) return;
+    savePending = false;
+    if (dirty) autosave();
+  };
+  //  the echo window covers OUR OWN beacon bump. A fixed 4s assumed the bump
+  //  lands promptly; on a queued pier it arrives after the save's own round
+  //  trip again, so scale the window to what the pier just showed us. Too
+  //  short meant refetching the page we just wrote — two more pier requests
+  //  to learn nothing.
+  const noteRtt = (sentAt) => {
+    echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
+  };
+  //  we know exactly what we just wrote. Patch the local copies so reopening
+  //  this page paints the saved text, not the dump's pre-save body. The
+  //  cached render is stale by definition. Drop it and let it re-render.
+  //  Only a save that can change the kind passes one.
+  const patchLocal = (name, kind, sent) => {
+    pageCache.delete(name);
+    const nd = nodes.find((n) => n.page && n.path === name);
+    if (nd) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
+  };
+
   async function save(kindOverride) {
     if (curFolder) { st('folder selected — open a page to edit', false); return; }
     if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
@@ -2532,12 +2621,7 @@
     catch {}
     finally {
       saving = false;
-      //  the echo window covers OUR OWN beacon bump. A fixed 4s assumed the
-      //  bump lands promptly; on a queued pier it arrives after the save's
-      //  own round trip again, so scale the window to what the pier just
-      //  showed us. Too short meant refetching the page we just wrote —
-      //  two more pier requests to learn nothing.
-      echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
+      noteRtt(sentAt);
     }
     if (shipGone(r)) {
       // the ship is unreachable. Queue the edit and complete the save's
@@ -2558,7 +2642,7 @@
       history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
       if (creating) { addTreeNode(name, kind); snapTree(); renderTree(); }
       cerr.textContent = 'saved offline'; cerr.className = 'ok';
-      if (savePending) { savePending = false; if (dirty) autosave(); }
+      flushPending();
       return;
     }
     if (r && r.status === 409) { st('that page already exists', false); return; }
@@ -2581,17 +2665,12 @@
     // only a CREATE changes the tree. Refetching it after every save was a
     // 2.3s pier round-trip to learn nothing. Patch the local copy on create.
     if (creating) { addTreeNode(name, kind); snapTree(); renderTree(); }
-    // we know exactly what we just wrote. Patch the local copies so reopening
-    // this page paints the saved text, not the dump's pre-save body. The
-    // cached render is stale by definition. Drop it and let it re-render.
-    pageCache.delete(name);
-    const nd = nodes.find((n) => n.page && n.path === name);
-    if (nd) { nd.body = sent; nd.kind = kind; persistTree(); }
+    patchLocal(name, kind, sent);
     // the preview already shows this exact body (the input debounce rendered
     // it). Re-POSTing it after the save was a duplicate 1.8s render.
     if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
     else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
-    if (savePending) { savePending = false; if (dirty) autosave(); }
+    flushPending();
     if (offCount) replayQueue();     // back online: drain the backlog
   }
 
@@ -2621,7 +2700,7 @@
     const sentAt = Date.now();
     try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
     saving = false;
-    echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));  // see above
+    noteRtt(sentAt);
     if (r && r.ok) {
       pendingEchoes++;                // this save's own beacon bump
       bustPages(current);
@@ -2632,12 +2711,12 @@
       if (mode === 'know') {
         if (!(await enqueueKnow(current, sent))) return;
         if (src.value === sent) dirty = false;
-        if (savePending) { savePending = false; if (dirty) autosave(); }
+        flushPending();
         return;
       }
       if (!(await enqueueSave(current, curKind || pkind.value, sent))) return;
       if (src.value === sent) dirty = false;
-      if (savePending) { savePending = false; if (dirty) autosave(); }
+      flushPending();
       return;
     }
     if (!r || !r.ok) { st('autosave failed' + (r ? ' ' + r.status : ''), false); return; }
@@ -2647,18 +2726,15 @@
       try { vr = await r.json(); } catch {}
       if (vr && vr.rev) curRev = vr.rev;
     }
-    if (mode !== 'know') {
-      pageCache.delete(current);
-      const nd = nodes.find((n) => n.page && n.path === current);
-      if (nd) { nd.body = sent; persistTree(); }
-    }
+    //  no kind: an autosave writes the page's existing kind, it never sets one
+    if (mode !== 'know') patchLocal(current, null, sent);
     // the conflict verdict must be the LAST word, not clobbered by the
     // ordinary confirmation a line later
     if (vr && vr.conflicted)
       st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
     else st('autosaved');
     if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
-    if (savePending) { savePending = false; if (dirty) autosave(); }
+    flushPending();
   }
 
 // ── src/40-grub.js ────────────────────────────────────────────────────────
@@ -3360,7 +3436,6 @@
   // output, so it srcdocs directly — the one case where local IS authoritative.
   // text is an escaped <pre>. Only the computed kinds (hoon, js, css) still
   // wait on the ship, because their preview is the page's live DATA, not text.
-  const localPreviewable = () => ['md', 'gmi', 'html', 'text'].includes(pkind.value);
   const localHtml = (kind, body) => {
     if (kind === 'md') return mdToHtml(body);
     if (kind === 'gmi') return gmiToHtml(body);
@@ -3368,7 +3443,7 @@
     return body;   // html: the document is already its own rendering
   };
   const paintLocal = () => {
-    if (!localPreviewable() || document.hidden) return;
+    if (!CONTENT() || document.hidden) return;
     if (isMobile() && ws.dataset.mv !== 'prev') return;
     try {
       // html pages own their whole document, chrome and all. The content kinds
@@ -3391,7 +3466,6 @@
     } catch {}
   };
 
-  let prevTimer = null;
   async function refreshPreview() {
     // a hidden pane renders to nobody, but the POST still costs ~2s of pier
     // time and delays the autosave queued behind it (worst on mobile, where
@@ -3425,23 +3499,15 @@
   let localTimer = null;
   src.addEventListener('input', () => {
     if (!CONTENT()) return;
+    // Typing sends nothing to the ship. The local render IS the preview for
+    // every content kind (md/gmi/html/text), with no second authoritative
+    // render behind it to wait for. refreshPreview says why. Computed kinds
+    // (hoon, js, css) return above; their preview is the page's live data and
+    // arrives from refreshPreview's /f/ branch after a save.
+    //
     // local first, on a delay short enough to feel like typing
     clearTimeout(localTimer);
     localTimer = setTimeout(paintLocal, 60);
-    // The authoritative render is now RARE, not merely less frequent.
-    //
-    // Every one of these is a POST of the WHOLE document to the ship. At 400ms
-    // a long note re-uploaded itself after every pause in typing, previews
-    // queued behind each other on a pier that serialises, and the autosave
-    // queued behind those. Moving it to 1200ms made that less bad while
-    // keeping the shape of the mistake: the file went over the wire again and
-    // again to render text that had barely changed.
-    //
-    // Ten seconds of quiet, and only then. While you are actually typing the
-    // ship sees nothing at all, and the pane is driven entirely by the local
-    // render. This is a preview correcting itself, not a live feed.
-    clearTimeout(prevTimer);
-    prevTimer = setTimeout(refreshPreview, 10000);
   });
 
   // ── compile errors (hoon pages) ──────────────────────────────────────────
@@ -3839,11 +3905,7 @@
 
 // ── src/70-upload.js ──────────────────────────────────────────────────────
   // ── upload (pickers + drag-and-drop, progress panel) ─────────────────────
-  //  `text` maps to itself as well as from `txt`: exports written before the
-  //  extension was conventionalised named those files `.text`, and a restore
-  //  has to keep reading archives it already handed out.
-  const KMAP = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
-                 text: 'text', js: 'js', css: 'css', hoon: 'hoon' };
+  //  which extensions arrive as which kind is EXT_KIND, in 30-tree.js
   const seg = (x) => x.toLowerCase().replace(/[^a-z0-9._~-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
   const upPanel = $('uppanel'), upMsg = $('upmsg'), upFill = $('upfill'), upErr = $('uperr');
 
@@ -3870,7 +3932,7 @@
     let skipped = 0;
     for (const { file, rel } of items) {
       const dot = rel.lastIndexOf('.');
-      const kind = dot > 0 ? KMAP[rel.slice(dot + 1).toLowerCase()] : null;
+      const kind = dot > 0 ? extKind(rel.slice(dot + 1)) : null;
       if (!kind) { skipped++; continue; }
       const stem = rel.slice(0, dot);
       const parts = verbatim
@@ -3957,7 +4019,7 @@
   const deskPick = window.__TAURI__ && (async (dir) => {
     try {
       const picked = await window.__TAURI__.core.invoke('pick_upload',
-        { dir, exts: Object.keys(KMAP) });
+        { dir, exts: Object.keys(EXT_KIND) });
       if (picked.length)
         uploadItems(picked.map((p) => ({ file: { text: async () => p.text }, rel: p.rel })));
     } catch (e) {
@@ -4103,6 +4165,123 @@
     aclChips(card, items, onDel, disp);
   }
 
+  // the card's title bar: the group's name, and the button that removes it
+  function aclHead(g) {
+    const head = document.createElement('header');
+    const b = document.createElement('b');
+    b.textContent = g.name;
+    const del = document.createElement('button');
+    del.textContent = 'delete';
+    del.className = 'acl-del';
+    del.onclick = async () => {
+      if (!(await askConfirm('delete group ' + g.name + ' and every grant it carries?', 'delete'))) return;
+      const r = await fetch(api + '/share-group-del?name=' + encodeURIComponent(g.name),
+        { method: 'POST' }).catch(() => null);
+      // loadPerms repaints from the ship either way, so a delete that failed
+      // and a group that came back on its own look identical. Say which it
+      // was, the rule permSave and the ban handler already follow.
+      if (!r || !r.ok) st('could not delete ' + g.name + ' (' + (r ? r.status : 'network') + ')', false);
+      loadPerms();
+    };
+    head.appendChild(b); head.appendChild(del);
+    return head;
+  }
+
+  // who is in the group: the chips, and the row that adds one more
+  function aclShips(card, g) {
+    aclSection(card, 'ships', g.ships, (v) => {
+      g.ships = g.ships.filter((x) => x !== v); permSave(g);
+    });
+    const srow = document.createElement('div');
+    srow.className = 'row';
+    const sin = document.createElement('input');
+    sin.placeholder = '~ship';
+    sin.autocomplete = 'off';
+    const sadd = document.createElement('button');
+    sadd.textContent = 'add ship';
+    const addShip = () => {
+      const v = sin.value.trim();
+      if (!v) return;
+      if (!g.ships.includes(v)) { g.ships.push(v); permSave(g); }
+      sin.value = '';
+    };
+    sadd.onclick = addShip;
+    sin.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addShip(); } };
+    srow.appendChild(sin); srow.appendChild(sadd);
+    card.appendChild(srow);
+  }
+
+  // granting a path: one input, and the two buttons that say how far it goes
+  function aclPathRow(card, g) {
+    const prow = document.createElement('div');
+    prow.className = 'row';
+    const pin = document.createElement('input');
+    pin.placeholder = '/apps/lattice.lattice_app/pub';
+    pin.setAttribute('list', 'aclpaths');
+    pin.autocomplete = 'off';
+    const radd = document.createElement('button');
+    radd.textContent = '+read';
+    const eadd = document.createElement('button');
+    eadd.textContent = '+edit';
+    const addPath = (edit) => {
+      const v = pin.value.trim();
+      if (!v) { st('enter a path to grant', false); return; }
+      if (!g.peek.includes(v)) g.peek.push(v);           // edit implies read
+      if (edit && !g.make.includes(v)) g.make.push(v);
+      permSave(g);
+      pin.value = '';
+    };
+    radd.onclick = () => addPath(false);
+    eadd.onclick = () => addPath(true);
+    prow.appendChild(pin); prow.appendChild(radd); prow.appendChild(eadd);
+    card.appendChild(prow);
+  }
+
+  // the grants this pane carries but will not let you edit
+  function aclReadOnlyNote(card, g) {
+    if (!(g.poke && g.poke.length) && !g.opaque) return;
+    const h = document.createElement('h4');
+    h.textContent = 'not editable here';
+    card.appendChild(h);
+    const m = document.createElement('div');
+    m.className = 'aclnote';
+    const parts = [];
+    if (g.poke && g.poke.length) parts.push(g.poke.length + ' poke grant(s)');
+    if (g.opaque) parts.push(g.opaque + ' advanced rule(s)');
+    m.textContent = parts.join(' + ') +
+      ' — preserved exactly as they are on every save. Poke grants eval' +
+      ' power, so they stay a dojo-level act.';
+    card.appendChild(m);
+    if (g.poke && g.poke.length) {
+      const l = document.createElement('div');
+      l.className = 'aclnote';
+      l.textContent = g.poke.join(', ');
+      card.appendChild(l);
+    }
+  }
+
+  // one card, one group. `disp` shortens a path against the whole pane.
+  function aclCard(g, disp) {
+    const card = document.createElement('div');
+    card.className = 'aclcard';
+    card.appendChild(aclHead(g));
+    aclShips(card, g);
+    aclSection(card, 'read', g.peek, (v) => {
+      // dropping read must drop edit too. Edit without read is a grant that
+      // cannot be exercised, and it would silently reappear as "read" on the
+      // next save because addPath re-adds it.
+      g.peek = g.peek.filter((x) => x !== v);
+      g.make = g.make.filter((x) => x !== v);
+      permSave(g);
+    }, disp);
+    aclSection(card, 'edit', g.make, (v) => {
+      g.make = g.make.filter((x) => x !== v); permSave(g);
+    }, disp);
+    aclPathRow(card, g);
+    aclReadOnlyNote(card, g);
+    return card;
+  }
+
   function renderAcl() {
     const grid = $('aclgrid');
     if (!grid) return;
@@ -4117,106 +4296,11 @@
       grid.appendChild(e);
       return;
     }
-    for (const g of permGroups) {
-      const card = document.createElement('div');
-      card.className = 'aclcard';
-
-      const head = document.createElement('header');
-      const b = document.createElement('b');
-      b.textContent = g.name;
-      const del = document.createElement('button');
-      del.textContent = 'delete';
-      del.className = 'acl-del';
-      del.onclick = async () => {
-        if (!(await askConfirm('delete group ' + g.name + ' and every grant it carries?', 'delete'))) return;
-        await fetch(api + '/share-group-del?name=' + encodeURIComponent(g.name), { method: 'POST' }).catch(() => null);
-        loadPerms();
-      };
-      head.appendChild(b); head.appendChild(del);
-      card.appendChild(head);
-
-      aclSection(card, 'ships', g.ships, (v) => {
-        g.ships = g.ships.filter((x) => x !== v); permSave(g);
-      });
-      const srow = document.createElement('div');
-      srow.className = 'row';
-      const sin = document.createElement('input');
-      sin.placeholder = '~ship';
-      sin.autocomplete = 'off';
-      const sadd = document.createElement('button');
-      sadd.textContent = 'add ship';
-      const addShip = () => {
-        const v = sin.value.trim();
-        if (!v) return;
-        if (!g.ships.includes(v)) { g.ships.push(v); permSave(g); }
-        sin.value = '';
-      };
-      sadd.onclick = addShip;
-      sin.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addShip(); } };
-      srow.appendChild(sin); srow.appendChild(sadd);
-      card.appendChild(srow);
-
-      // one disambiguation scope for the whole pane, so the same page shows
-      // the same short name in every card
-      const allPaths = permGroups.flatMap((x) => [...x.peek, ...x.make]);
-      const disp = (v) => shortPath(v, allPaths);
-      aclSection(card, 'read', g.peek, (v) => {
-        // dropping read must drop edit too. Edit without read is a grant that
-        // cannot be exercised, and it would silently reappear as "read" on the
-        // next save because addPath re-adds it.
-        g.peek = g.peek.filter((x) => x !== v);
-        g.make = g.make.filter((x) => x !== v);
-        permSave(g);
-      }, disp);
-      aclSection(card, 'edit', g.make, (v) => {
-        g.make = g.make.filter((x) => x !== v); permSave(g);
-      }, disp);
-
-      const prow = document.createElement('div');
-      prow.className = 'row';
-      const pin = document.createElement('input');
-      pin.placeholder = '/apps/lattice.lattice_app/pub';
-      pin.setAttribute('list', 'aclpaths');
-      pin.autocomplete = 'off';
-      const radd = document.createElement('button');
-      radd.textContent = '+read';
-      const eadd = document.createElement('button');
-      eadd.textContent = '+edit';
-      const addPath = (edit) => {
-        const v = pin.value.trim();
-        if (!v) { st('enter a path to grant', false); return; }
-        if (!g.peek.includes(v)) g.peek.push(v);           // edit implies read
-        if (edit && !g.make.includes(v)) g.make.push(v);
-        permSave(g);
-        pin.value = '';
-      };
-      radd.onclick = () => addPath(false);
-      eadd.onclick = () => addPath(true);
-      prow.appendChild(pin); prow.appendChild(radd); prow.appendChild(eadd);
-      card.appendChild(prow);
-
-      if ((g.poke && g.poke.length) || g.opaque) {
-        const h = document.createElement('h4');
-        h.textContent = 'not editable here';
-        card.appendChild(h);
-        const m = document.createElement('div');
-        m.className = 'aclnote';
-        const parts = [];
-        if (g.poke && g.poke.length) parts.push(g.poke.length + ' poke grant(s)');
-        if (g.opaque) parts.push(g.opaque + ' advanced rule(s)');
-        m.textContent = parts.join(' + ') +
-          ' — preserved exactly as they are on every save. Poke grants eval' +
-          ' power, so they stay a dojo-level act.';
-        card.appendChild(m);
-        if (g.poke && g.poke.length) {
-          const l = document.createElement('div');
-          l.className = 'aclnote';
-          l.textContent = g.poke.join(', ');
-          card.appendChild(l);
-        }
-      }
-      grid.appendChild(card);
-    }
+    // one disambiguation scope for the whole pane, so the same page shows
+    // the same short name in every card
+    const allPaths = permGroups.flatMap((x) => [...x.peek, ...x.make]);
+    const disp = (v) => shortPath(v, allPaths);
+    for (const g of permGroups) grid.appendChild(aclCard(g, disp));
   }
 
   // ── banlist ──────────────────────────────────────────────────────────────
@@ -4248,9 +4332,11 @@
       a.textContent = w + ' ×';
       a.title = 'unban ' + w;
       a.onclick = async () => {
-        await fetch(api + '/unban?ship=' + encodeURIComponent(w), { method: 'POST' })
+        const r = await fetch(api + '/unban?ship=' + encodeURIComponent(w), { method: 'POST' })
           .catch(() => null);
-        st('unbanned ' + w + ' — it holds no access until you grant it again');
+        // announce the unban only once the ship has agreed to it
+        if (!r || !r.ok) st('unban: ' + (r ? r.status : 'network'), false);
+        else st('unbanned ' + w + ' — it holds no access until you grant it again');
         loadBans();
       };
       host.appendChild(a);
@@ -4577,9 +4663,15 @@
   async function loadBacklinks() {
     linkList.textContent = '';
     if (!current || mode === 'know') return;
-    const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(current));
-    if (!r.ok) return;
-    const links = ((await r.json()).links || []).filter((p) => p !== current);
+    let j = null;
+    // a panel nobody can see is not worth a rejection: an unreachable ship
+    // leaves the list empty, the same as a refused request already does
+    try {
+      const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(current));
+      if (!r.ok) return;
+      j = await r.json();
+    } catch { return; }
+    const links = (j.links || []).filter((p) => p !== current);
     if (!links.length) {
       const d = document.createElement('div');
       d.className = 'muted';
@@ -4637,9 +4729,14 @@
   async function loadHistory() {
     histList.textContent = '';
     if (!current || mode === 'know') return;
-    const r = await fetch(api + '/page-history?name=' + encodeURIComponent(current));
-    if (!r.ok) return;
-    const revs = (await r.json()).revisions || [];
+    let j = null;
+    // same rule as loadBacklinks: an unreachable ship leaves the panel empty
+    try {
+      const r = await fetch(api + '/page-history?name=' + encodeURIComponent(current));
+      if (!r.ok) return;
+      j = await r.json();
+    } catch { return; }
+    const revs = j.revisions || [];
     if (revs.length < 2) {               // a single revision is just "now"
       const d = document.createElement('div');
       d.className = 'muted';
@@ -4658,10 +4755,13 @@
     }
   }
   async function openRev(rev) {
-    const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(current) +
-      '&rev=' + rev);
-    if (!r.ok) { st('revision load failed ' + r.status, false); return; }
-    const d = await r.json();
+    let d = null;
+    try {
+      const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(current) +
+        '&rev=' + rev);
+      if (!r.ok) { st('revision load failed ' + r.status, false); return; }
+      d = await r.json();
+    } catch { st('revision load failed (network)', false); return; }
     viewingRev = rev;
     revKind = d.kind === 'index' ? 'md' : d.kind;   // restore under the REVISION's kind
     dirty = false;
@@ -4814,16 +4914,9 @@
     } catch {}
   }
 
-  const qCount = (hay, needle) => {
-    if (!needle.length) return 0;   // indexOf('', i) is i: an empty needle loops forever
-    let n = 0, i = 0;
-    for (;;) {
-      const at = hay.indexOf(needle, i);
-      if (at < 0) return n;
-      n += 1;
-      i = at + needle.length;
-    }
-  };
+  // non-overlapping occurrence count: split yields pieces-1 = matches. The
+  // empty-needle guard stays, since split('') would count every character.
+  const qCount = (hay, needle) => needle ? hay.split(needle).length - 1 : 0;
   // a line of context around the hit, the way grep shows it
   const qSnip = (body, at, len) => {
     const from = Math.max(0, at - 40);
@@ -4831,28 +4924,23 @@
     return (from ? '…' : '') + body.slice(from, to).replace(/\s+/g, ' ') + (to < body.length ? '…' : '');
   };
 
-  let qSeq = 0;
-  async function runSearch(raw) {
-    const host = $('qlist');
-    const sum = $('qsum');
-    const q = String(raw || '').trim().toLowerCase();
-    if (q.length < 2) {
-      host.className = 'aclempty';
-      host.textContent = 'type at least two characters';
-      sum.textContent = '';
-      return;
-    }
-    const mine = ++qSeq;
-    if (!qScopes) {
-      //  the exposure map and the memories are fetched once per open, and on a
-      //  slow pier that is seconds. Say so, rather than showing an empty panel
-      //  that reads as "no results".
-      host.className = 'aclempty';
-      host.textContent = 'searching\u2026';
-      await qLoadContext();
-      if (mine !== qSeq) return;
-    }
+  //  one hit builder for both corpora. A page and a memory differ only in
+  //  where the key and the body come from, and in what the badge says.
+  const qHit = (key, body, q, scope, know) => {
+    const hay = body.toLowerCase();
+    const at = hay.indexOf(q);
+    const inPath = key.toLowerCase().includes(q);
+    if (at < 0 && !inPath) return null;
+    return {
+      key, scope, inPath, know,
+      hits: at < 0 ? 0 : qCount(hay, q),
+      snip: at < 0 ? '' : qSnip(body, at, q.length),
+    };
+  };
 
+  //  the scan is pure: it reads the corpora already in memory and returns the
+  //  ranked hits plus how many pages it could not look inside.
+  function qScan(q) {
     const out = [];
     let skipped = 0;
     for (const n of nodes) {
@@ -4860,40 +4948,27 @@
       // A body over the dump's inline cap is not here, only its size. Say so
       // rather than quietly returning a result set that is missing pages.
       if (typeof n.body !== 'string') { skipped += 1; continue; }
-      const hay = n.body.toLowerCase();
-      const at = hay.indexOf(q);
-      const inPath = n.path.toLowerCase().includes(q);
-      if (at < 0 && !inPath) continue;
-      out.push({
-        key: n.path,
-        // NOT defaulted to 'private'. If the exposure lookup failed, or the
-        // page is newer than it, calling it private would be a false safety
-        // signal on a clearweb page: exactly the misread this badge exists to
-        // prevent. Unknown says unknown.
-        scope: (qScopes && qScopes.get(n.path)) || 'unknown',
-        hits: at < 0 ? 0 : qCount(hay, q),
-        inPath,
-        snip: at < 0 ? '' : qSnip(n.body, at, q.length),
-        know: false,
-      });
+      // NOT defaulted to 'private'. If the exposure lookup failed, or the
+      // page is newer than it, calling it private would be a false safety
+      // signal on a clearweb page: exactly the misread this badge exists to
+      // prevent. Unknown says unknown.
+      const h = qHit(n.path, n.body, q, (qScopes && qScopes.get(n.path)) || 'unknown', false);
+      if (h) out.push(h);
     }
     for (const k of qKnow) {
-      const body = String(k.body || '');
-      const key = String(k.key || '').replace(/^\/+/, '');
-      const hay = body.toLowerCase();
-      const at = hay.indexOf(q);
-      const inPath = key.toLowerCase().includes(q);
-      if (at < 0 && !inPath) continue;
-      out.push({
-        key, scope: 'knowledge', hits: at < 0 ? 0 : qCount(hay, q),
-        inPath, snip: at < 0 ? '' : qSnip(body, at, q.length), know: true,
-      });
+      const h = qHit(String(k.key || '').replace(/^\/+/, ''),
+        String(k.body || ''), q, 'knowledge', true);
+      if (h) out.push(h);
     }
-
     // a name match is what you meant more often than a body match, then
     // whichever mentions it most
     out.sort((a, b) => (b.inPath - a.inPath) || (b.hits - a.hits) || a.key.localeCompare(b.key));
+    return { out, skipped };
+  }
 
+  //  the summary line and the list. Names and bodies are content, so every
+  //  string here goes in through textContent.
+  function qPaint(host, sum, out, skipped) {
     sum.textContent = (out.length ? out.length + ' result' + (out.length === 1 ? '' : 's') : '')
       + (skipped ? (out.length ? ' · ' : '') + skipped + ' large page(s) not scanned' : '');
     host.textContent = '';
@@ -4932,6 +5007,31 @@
       ul.appendChild(li);
     }
     host.appendChild(ul);
+  }
+
+  let qSeq = 0;
+  async function runSearch(raw) {
+    const host = $('qlist');
+    const sum = $('qsum');
+    const q = String(raw || '').trim().toLowerCase();
+    if (q.length < 2) {
+      host.className = 'aclempty';
+      host.textContent = 'type at least two characters';
+      sum.textContent = '';
+      return;
+    }
+    const mine = ++qSeq;
+    if (!qScopes) {
+      //  the exposure map and the memories are fetched once per open, and on a
+      //  slow pier that is seconds. Say so, rather than showing an empty panel
+      //  that reads as "no results".
+      host.className = 'aclempty';
+      host.textContent = 'searching\u2026';
+      await qLoadContext();
+      if (mine !== qSeq) return;
+    }
+    const { out, skipped } = qScan(q);
+    qPaint(host, sum, out, skipped);
   }
 
   const qClose = () => { $('qwrap').hidden = true; };
@@ -5406,9 +5506,15 @@
 
   async function loadKnow() {
     const gen = knowGen;
-    const r = await fetch(api + '/know-list');
-    if (!r.ok) { st('know-list failed ' + r.status, false); return; }
-    const d = await r.json();
+    let d = null;
+    // resolves either way, like loadTree: the drain and the mode switch both
+    // call this without a .catch, and a rejection there would take the rest of
+    // their work with it.
+    try {
+      const r = await fetch(api + '/know-list');
+      if (!r.ok) { st('know-list failed ' + r.status, false); return; }
+      d = await r.json();
+    } catch { st('know-list failed (network)', false); return; }
     if (gen !== knowGen) return;   // a local patch superseded this response
     knowKeys = d.keys;
     renderKnowChips();
@@ -5569,7 +5675,11 @@
       { method: 'POST', body: sent }); } catch {}
     echoUntil = Date.now() + 4000;
     if (shipGone(r)) {
-      await enqueueKnow(key, sent);
+      //  if the queue would not take it, it is NOT saved: leave the editor
+      //  dirty and the key still editable, so the text under the cursor is not
+      //  presented as stored. Same rule the page paths enforce (35-pages.js),
+      //  and enqueueKnow has already said why it refused.
+      if (!(await enqueueKnow(key, sent))) return;
       current = key;
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
@@ -5692,11 +5802,14 @@
       label.title = v ? v + ' · ' + (pkind.value || '') : '';
     };
     paint();
-    // pname is set from a dozen places (applyPage, newFile, rename, the
-    // offline replay). Rather than find them all, watch the field itself.
-    new MutationObserver(paint).observe(pname, { attributes: true, attributeFilter: ['value'] });
     pname.addEventListener('input', paint);
     pname.addEventListener('change', paint);
+    // pname is set from a dozen places (applyPage, newFile, rename, the
+    // offline replay) and every one of them assigns the value PROPERTY. That
+    // fires no event and leaves the value attribute alone, so a
+    // MutationObserver cannot see it either. Until those writers go through
+    // one setter, the poll is the mechanism here, not a safety net. The
+    // mobile bar (97-mobar.js) polls its own label for the same reason.
     setInterval(paint, 500);
   }
 
@@ -5717,7 +5830,6 @@
   //  Boot also calls newFile, with focusName false, to land on an empty
   //  page. That must not be interrupted by a dialog, and it is the one
   //  caller that says so.
-  const KINDS = ['md', 'gmi', 'html', 'text', 'txt', 'js', 'css', 'hoon'];
   const nameFieldHidden = () =>
     ws.classList.contains('deskbar') || matchMedia('(max-width: 820px)').matches;
   const baseNewFile = newFile;
@@ -5733,10 +5845,12 @@
       if (!raw) return;
       let name = raw.trim().replace(/^\/+/, '');
       if (!name) return;
+      //  a typed extension picks the kind and drops off the name. The table
+      //  is EXT_KIND in 30-tree.js, the same one the uploader files by.
       const dot = name.lastIndexOf('.');
-      const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
-      if (KINDS.includes(ext)) {
-        pkind.value = ext === 'txt' ? 'text' : ext;
+      const kind = dot > 0 ? extKind(name.slice(dot + 1)) : null;
+      if (kind) {
+        pkind.value = kind;
         name = name.slice(0, dot);
       }
       pname.value = name;

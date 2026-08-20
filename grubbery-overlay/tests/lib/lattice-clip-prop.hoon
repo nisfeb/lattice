@@ -10,7 +10,7 @@
 ::    C2  +page-title is TOTAL
 ::    C3  output growth is bounded  (no input makes it explode)
 ::    C4  boilerplate stays dropped (no <script in the output, ever)
-::    C5  no dangerous URL survives (SEE THE FINDING AT THE BOTTOM: FALSE)
+::    C5  no dangerous URL survives (see the bypass writeup at the bottom)
 ::
 ::  C1 is the one that needs %quiz specifically: +mong catches the crash and
 ::  reports it as a refutation, so a bail in the code under test does not take
@@ -30,10 +30,6 @@
   |=  [size=@ud rng=_og]
   ^-  @t
   (brew:fz html-pool:fz size rng)
-::
-::  +low: case-folded tape, for the substring checks below. A denylist that
-::  ignores case is only meaningful if the CHECK ignores case too.
-++  low  |=(t=@t ^-(tape (cass (trip t))))
 ::
 ::  +gen-hidden-payload: an executable/chrome tag whose CONTENT is a sentinel,
 ::  followed by arbitrary soup. The sentinel `zzqqxx` appears in no pool, so if
@@ -71,6 +67,9 @@
 ::
 ::  ── C1/C2: totality ─────────────────────────────────────────────────────────
 ::
+::  Reaching the last line IS the property: +mong reports a bail inside the lib
+::  as a refutation. The size checks below stand in for `&`, so there is no
+::  bound to tighten in either arm.
 ++  test-prop-to-md-total
   =/  fate=vase
     !>
@@ -147,7 +146,7 @@
     !(has-sub:fz "zzqqxx" (trip u.o))
   (expect !>((chk fate `gen-hidden-payload `cord-alts:fz)))
 ::
-::  ── C5: FINDING. the scheme denylist is bypassable ──────────────────────────
+::  ── C5: FIXED. the scheme denylist was bypassable ───────────────────────────
 ::
 ::  /lib/lattice-clip guards link and image URLs with a DENYLIST:
 ::
@@ -215,15 +214,16 @@
 ::  from them; nothing else in the document can contribute a scheme, so a
 ::  refutation here is attributable to the href and to nothing else.
 ::
-::  Stated as a refutation for the same reason as the wild-knot test in
-::  lattice-urls-prop: if this ever comes back %.y then either +safe-url was
-::  fixed (good, delete this arm and un-pin the property above) or the
-::  generator stopped generating (bad, and silently).
+::  This asserts the property HOLDS. If it goes red, some leading byte again
+::  slides the scheme window past +safe-url. Do not pin it back to a refutation
+::  and do not delete it: this sweep is what found the bypass.
 ++  test-generated-evil-hrefs-never-reach-the-output
   =/  fate=vase
     !>
     |=  h=@t
     ^-  ?
+    ::  case-folded: a denylist that ignores case is only meaningful if the
+    ::  CHECK ignores case too.
     =/  o=tape  (cass (trip (to-md:clip h)))
     ?&  !(has-sub:fz "javascript:" o)
         !(has-sub:fz "data:" o)

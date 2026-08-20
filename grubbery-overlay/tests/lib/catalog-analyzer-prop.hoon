@@ -33,6 +33,9 @@
 ::
 ::  ── A1: totality and determinism ────────────────────────────────────────────
 ::
+::  Reaching the last line IS the totality property: +mong reports a bail
+::  inside +analyze as a refutation. The size check below stands in for `&`,
+::  so there is no bound to tighten there.
 ++  test-prop-analyze-total
   =/  fate=vase
     !>

@@ -62,16 +62,16 @@
       }
     }).catch(() => {});
   };
-  // bulk writes (vault restore, drag-drop upload, know-import) name their
-  // targets only in the POST body — no per-name bust is possible from the
-  // URL, and a restore legitimately invalidates everything. Drop the whole
-  // pages cache; it rebuilds one view at a time.
   // mirror of the server's +valid-name (@ta segments; no '.'/'..'): reject
   // BEFORE saving or queueing. The server answers 400 — cryptic online, and
   // fatal offline: the drain treats 400 as unsyncable and discards the
   // queued document it earlier reported "saved offline".
   const validName = (n) => String(n || '').split('/').every(
     (s) => s.length && s !== '.' && s !== '..' && /^[a-z0-9._~-]+$/.test(s));
+  // bulk writes (vault restore, drag-drop upload, know-import) name their
+  // targets only in the POST body — no per-name bust is possible from the
+  // URL, and a restore legitimately invalidates everything. Drop the whole
+  // pages cache; it rebuilds one view at a time.
   const bustAll = () => {
     if ('caches' in window) caches.delete('lattice-pages').catch(() => {});
   };

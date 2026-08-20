@@ -82,20 +82,29 @@ pub fn save_at(p: &Path, c: &Config) -> Result<(), String> {
     std::fs::write(p, s).map_err(|e| e.to_string())
 }
 
-fn path(app: &tauri::AppHandle) -> PathBuf {
+fn path(app: &tauri::AppHandle) -> Option<PathBuf> {
     use tauri::Manager;
-    app.path()
-        .app_config_dir()
-        .expect("no config dir")
-        .join("config.json")
+    app.path().app_config_dir().ok().map(|d| d.join("config.json"))
 }
 
+/// A config we cannot locate reads as the default, exactly as an unreadable or
+/// corrupt one does (see load_at). load runs on the backup thread, on the
+/// remount thread and inside the webview's navigation callback, so losing the
+/// config dir must not take any of them down with it.
 pub fn load(app: &tauri::AppHandle) -> Config {
-    load_at(&path(app))
+    match path(app) {
+        Some(p) => load_at(&p),
+        None => {
+            crate::commands::dlog("config: no app config dir; using defaults");
+            Config::default()
+        }
+    }
 }
 
+/// A save, unlike a load, must NOT fail silently: the caller surfaces this.
 pub fn save(app: &tauri::AppHandle, c: &Config) -> Result<(), String> {
-    save_at(&path(app), c)
+    let p = path(app).ok_or_else(|| "no app config dir to save into".to_string())?;
+    save_at(&p, c)
 }
 
 #[cfg(test)]

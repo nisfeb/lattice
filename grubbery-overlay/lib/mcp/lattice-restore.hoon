@@ -17,12 +17,9 @@
   =/  m  (fiber:fiber:nexus ,tool-result:tools)
   ^-  form:m
   ;<  st=tool-state:tools  bind:m  (get-state-as:io ,tool-state:tools)
-  =/  parsed=(each @t tang)
-    %-  mule  |.
-    (~(dog jo:json-utils [%o args.st]) /key so:dejs:format)
-  ?:  ?=(%| -.parsed)
-    (pure:m [%error 'missing or invalid: key'])
-  =/  key=@t  p.parsed
+  =/  raw=(unit @t)  (arg:lm args.st /key)
+  ?~  raw  (pure:m [%error 'missing or invalid: key'])
+  =/  key=@t  u.raw
   ?~  (parse-key:lm key)  (pure:m [%error 'invalid key'])
   ;<  ~  bind:m  (poke-writer:lm [%restore key])
   (pure:m [%text (crip "restored {(trip key)}")])

@@ -214,15 +214,27 @@ fn drop_request_header(lower_name: &str) -> bool {
     )
 }
 
-fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
-    client.set_nodelay(true).ok();
-    let mut reader = BufReader::new(client.try_clone()?);
+/// One request off the wire, already filtered, ready to relay. An empty body
+/// means the request had none: that is what decides send_bytes vs call.
+struct Incoming {
+    method: String,
+    target: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+/// Read one request. None is a request we will not serve: no request line at
+/// all, or a body that stopped short of what its Content-Length promised.
+///
+/// Split from serve so the interesting inputs (a lying Content-Length, a
+/// truncated body, a header line with no colon) can be fed in as bytes.
+fn read_request(reader: &mut impl BufRead) -> std::io::Result<Option<Incoming>> {
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let mut parts = line.split_whitespace();
     let (method, target) = match (parts.next(), parts.next()) {
         (Some(m), Some(t)) => (m.to_string(), t.to_string()),
-        _ => return Ok(()),
+        _ => return Ok(None),
     };
     // headers: keep what the page sent except hop-by-hop, host and cookies.
     // Accept-Encoding passes THROUGH. ureq (no gzip feature) hands us the
@@ -254,36 +266,16 @@ fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
     // vec![0; huge] before a single body byte existed.
     let mut body = Vec::new();
     if content_len > 0 {
-        (&mut reader).take(content_len as u64).read_to_end(&mut body)?;
+        (&mut *reader).take(content_len as u64).read_to_end(&mut body)?;
         if body.len() < content_len {
-            return Ok(()); // truncated body: drop it, same as a failed read_exact
+            return Ok(None); // truncated body: drop it, same as a failed read_exact
         }
     }
-    crate::commands::dlog(&format!("bridge: {method} {target}"));
+    Ok(Some(Incoming { method, target, headers, body }))
+}
 
-    let mut req = agent().request(&method, &format!("{ship}{target}"));
-    for (k, v) in &headers {
-        req = req.set(k, v);
-    }
-    let req = with_cookie(req);
-    let resp = if content_len > 0 { req.send_bytes(&body) } else { req.call() };
-    let resp = match resp {
-        Ok(r) => r,
-        Err(ureq::Error::Status(_, r)) => r,
-        Err(e) => {
-            let msg = format!("bridge: ship unreachable: {e}");
-            let mut c = client;
-            write!(
-                c,
-                "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
-                msg.len(),
-                msg
-            )?;
-            return Ok(());
-        }
-    };
-
-    let mut c = client;
+/// Status line, filtered headers, then the body as it arrives.
+fn relay_response(c: &mut TcpStream, resp: ureq::Response) -> std::io::Result<()> {
     write!(c, "HTTP/1.1 {} {}\r\n", resp.status(), resp.status_text())?;
     for name in resp.headers_names() {
         let nl = name.to_ascii_lowercase();
@@ -315,6 +307,37 @@ fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
+    client.set_nodelay(true).ok();
+    let mut reader = BufReader::new(client.try_clone()?);
+    let Some(req) = read_request(&mut reader)? else { return Ok(()) };
+    crate::commands::dlog(&format!("bridge: {} {}", req.method, req.target));
+
+    let mut out = agent().request(&req.method, &format!("{ship}{}", req.target));
+    for (k, v) in &req.headers {
+        out = out.set(k, v);
+    }
+    let out = with_cookie(out);
+    let resp = if !req.body.is_empty() { out.send_bytes(&req.body) } else { out.call() };
+    let mut c = client;
+    let resp = match resp {
+        Ok(r) => r,
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(e) => {
+            let msg = format!("bridge: ship unreachable: {e}");
+            write!(
+                c,
+                "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                msg.len(),
+                msg
+            )?;
+            return Ok(());
+        }
+    };
+
+    relay_response(&mut c, resp)
 }
 
 #[cfg(test)]

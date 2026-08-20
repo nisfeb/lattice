@@ -59,7 +59,8 @@
 ::  +de-urb never crashes. It runs +stab on caller bytes; +stab bails on a knot
 ::  it cannot lex, which is why the lib wraps it in +mule. This asserts the
 ::  guard is actually in front of every path that reaches +stab, not just the
-::  one that was tested by hand.
+::  one that was tested by hand. Reaching the last line IS the property, so
+::  `?~(r & &)` is a tautology on purpose.
 ++  test-prop-de-urb-total
   =/  fate=vase
     !>

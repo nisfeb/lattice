@@ -31,9 +31,15 @@
   async function loadBacklinks() {
     linkList.textContent = '';
     if (!current || mode === 'know') return;
-    const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(current));
-    if (!r.ok) return;
-    const links = ((await r.json()).links || []).filter((p) => p !== current);
+    let j = null;
+    // a panel nobody can see is not worth a rejection: an unreachable ship
+    // leaves the list empty, the same as a refused request already does
+    try {
+      const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(current));
+      if (!r.ok) return;
+      j = await r.json();
+    } catch { return; }
+    const links = (j.links || []).filter((p) => p !== current);
     if (!links.length) {
       const d = document.createElement('div');
       d.className = 'muted';
@@ -91,9 +97,14 @@
   async function loadHistory() {
     histList.textContent = '';
     if (!current || mode === 'know') return;
-    const r = await fetch(api + '/page-history?name=' + encodeURIComponent(current));
-    if (!r.ok) return;
-    const revs = (await r.json()).revisions || [];
+    let j = null;
+    // same rule as loadBacklinks: an unreachable ship leaves the panel empty
+    try {
+      const r = await fetch(api + '/page-history?name=' + encodeURIComponent(current));
+      if (!r.ok) return;
+      j = await r.json();
+    } catch { return; }
+    const revs = j.revisions || [];
     if (revs.length < 2) {               // a single revision is just "now"
       const d = document.createElement('div');
       d.className = 'muted';
@@ -112,10 +123,13 @@
     }
   }
   async function openRev(rev) {
-    const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(current) +
-      '&rev=' + rev);
-    if (!r.ok) { st('revision load failed ' + r.status, false); return; }
-    const d = await r.json();
+    let d = null;
+    try {
+      const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(current) +
+        '&rev=' + rev);
+      if (!r.ok) { st('revision load failed ' + r.status, false); return; }
+      d = await r.json();
+    } catch { st('revision load failed (network)', false); return; }
     viewingRev = rev;
     revKind = d.kind === 'index' ? 'md' : d.kind;   // restore under the REVISION's kind
     dirty = false;

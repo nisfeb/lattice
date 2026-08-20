@@ -23,8 +23,10 @@ trap 'rm -f "$JAR"' EXIT
 fail=0
 ok()   { echo "  ok   — $1"; }
 bad()  { echo "  FAIL — $1"; fail=1; }
-has()  { if printf '%s' "$2" | grep -qF -- "$3"; then ok "$1"; else bad "$1 (expected '$3' in: $2)"; fi; }
-hasnt(){ if printf '%s' "$2" | grep -qF -- "$3"; then bad "$1 (unexpected '$3' in: $2)"; else ok "$1"; fi; }
+# has   <name> <needle> <haystack>   — the order api-matrix.sh and mcp-matrix.sh
+# hasnt <name> <needle> <haystack>     use, so a call copied between them holds
+has()  { if printf '%s' "$3" | grep -qF -- "$2"; then ok "$1"; else bad "$1 (expected '$2' in: $3)"; fi; }
+hasnt(){ if printf '%s' "$3" | grep -qF -- "$2"; then bad "$1 (unexpected '$2' in: $3)"; else ok "$1"; fi; }
 
 echo "==> login $URL"
 code=$(curl -s -o /dev/null -w '%{http_code}' -c "$JAR" -X POST "$URL/~/login" --data "password=${CODE#+}")
@@ -36,26 +38,26 @@ B="$URL/apps/lattice"
 P="scratch/e2e-$$"
 
 echo "==> list"
-has "list returns JSON files array" "$(curl -s -b "$JAR" "$B/list")" '"files"'
+has "list returns JSON files array" '"files"' "$(curl -s -b "$JAR" "$B/list")"
 
 echo "==> save $P"
-has "save returns ok" "$(printf '# e2e\n\nhello from e2e.\n' | curl -s -b "$JAR" -X POST --data-binary @- "$B/save?path=$P")" '"ok":true'
+has "save returns ok" '"ok":true' "$(printf '# e2e\n\nhello from e2e.\n' | curl -s -b "$JAR" -X POST --data-binary @- "$B/save?path=$P")"
 sleep 1
 
 echo "==> fetch urb://$SHIP/$P"
-has "fetch returns saved body" "$(curl -s -b "$JAR" -G "$B/fetch" --data-urlencode "url=urb://$SHIP/$P")" 'hello from e2e.'
-has "list now includes the file" "$(curl -s -b "$JAR" "$B/list")" "$P"
+has "fetch returns saved body" 'hello from e2e.' "$(curl -s -b "$JAR" -G "$B/fetch" --data-urlencode "url=urb://$SHIP/$P")"
+has "list now includes the file" "$P" "$(curl -s -b "$JAR" "$B/list")"
 
 echo "==> delete $P"
-has "delete returns ok" "$(curl -s -b "$JAR" -X POST "$B/delete?path=$P")" '"ok":true'
+has "delete returns ok" '"ok":true' "$(curl -s -b "$JAR" -X POST "$B/delete?path=$P")"
 sleep 1
-hasnt "fetch after delete is not found" "$(curl -s -b "$JAR" -G "$B/fetch" --data-urlencode "url=urb://$SHIP/$P")" 'hello from e2e.'
+hasnt "fetch after delete is not found" 'hello from e2e.' "$(curl -s -b "$JAR" -G "$B/fetch" --data-urlencode "url=urb://$SHIP/$P")"
 
 if [ -n "${LATTICE_PEER_SHIP:-}" ]; then
   PF="${LATTICE_PEER_FILE:-from-tyr}"
   echo "==> cross-ship fetch urb://$LATTICE_PEER_SHIP/$PF"
   resp=$(curl -s -b "$JAR" -G "$B/fetch" --data-urlencode "url=urb://$LATTICE_PEER_SHIP/$PF")
-  has "cross-ship fetch returns a gmi body" "$resp" '"mark":"gmi"'
+  has "cross-ship fetch returns a gmi body" '"mark":"gmi"' "$resp"
 fi
 
 echo

@@ -8,9 +8,15 @@
 
   async function loadKnow() {
     const gen = knowGen;
-    const r = await fetch(api + '/know-list');
-    if (!r.ok) { st('know-list failed ' + r.status, false); return; }
-    const d = await r.json();
+    let d = null;
+    // resolves either way, like loadTree: the drain and the mode switch both
+    // call this without a .catch, and a rejection there would take the rest of
+    // their work with it.
+    try {
+      const r = await fetch(api + '/know-list');
+      if (!r.ok) { st('know-list failed ' + r.status, false); return; }
+      d = await r.json();
+    } catch { st('know-list failed (network)', false); return; }
     if (gen !== knowGen) return;   // a local patch superseded this response
     knowKeys = d.keys;
     renderKnowChips();
@@ -171,7 +177,11 @@
       { method: 'POST', body: sent }); } catch {}
     echoUntil = Date.now() + 4000;
     if (shipGone(r)) {
-      await enqueueKnow(key, sent);
+      //  if the queue would not take it, it is NOT saved: leave the editor
+      //  dirty and the key still editable, so the text under the cursor is not
+      //  presented as stored. Same rule the page paths enforce (35-pages.js),
+      //  and enqueueKnow has already said why it refused.
+      if (!(await enqueueKnow(key, sent))) return;
       current = key;
       pname.readOnly = true;
       if (src.value === sent) dirty = false;

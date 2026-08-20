@@ -383,10 +383,6 @@
     return true;
   }
 
-  // Drain through page-save-batch. The batch is all-or-nothing, right for
-  // uploads, wrong for replay. One poisoned record would block the queue
-  // forever. A rejected batch falls back to per-item saves so the bad record
-  // is isolated and DROPPED (it can never apply; review gap 3).
   let replaying = false;
   // The guard has to be taken BEFORE the first await. It used to be set four
   // lines further down, after two of them, so two callers could both pass the
@@ -407,29 +403,28 @@
     replaying = true;
     try { await drainQueue(); } finally { replaying = false; }
   }
-  async function drainQueue() {
-    const whole = await offAll();
-    const ops = await opAll();
-    if (!whole.length && !ops.length) return;
-    const all = whole.filter((q) => q.kind !== 'know');
-    const knows = whole.filter((q) => q.kind === 'know');
-    const total = whole.length + ops.length;
-    stWork('syncing ' + total + ' offline edit' + (total === 1 ? '' : 's') + '…');
-    let stuck = false;
-    const conflicts = [];
 
-    // Structural ops go FIRST, in the order they were made. Their effect on
-    // the pending saves was already applied when they were queued, so a save
-    // landing afterwards is always a save the user still wants, under the name
-    // they want it under.
-    //
-    // An op the ship REJECTS is dropped, not retried. It means the intent was
-    // already satisfied some other way: deleting a page that only ever existed
-    // in this queue, or moving one whose source the queue never sent. Retrying
-    // that forever would wedge everything behind it, and there is nothing to
-    // recover because no content lives in an op.
+  //  Each drain phase returns FALSE when it could not finish. Usually that is
+  //  the ship going away mid-drain (shipGone). drainCreates also returns false
+  //  when the conflict-preservation write did not land for any other reason,
+  //  because the alternative is dropping the user's only copy of a document.
+  //  Either way everything the phase had not finished stays queued, in order,
+  //  for the next replay, and the caller stops there and goes degraded. For a
+  //  ship that is answering but refusing that one write, degraded is a
+  //  deliberate over-report.
+
+  // Structural ops go FIRST, in the order they were made. Their effect on
+  // the pending saves was already applied when they were queued, so a save
+  // landing afterwards is always a save the user still wants, under the name
+  // they want it under.
+  //
+  // An op the ship REJECTS is dropped, not retried. It means the intent was
+  // already satisfied some other way: deleting a page that only ever existed
+  // in this queue, or moving one whose source the queue never sent. Retrying
+  // that forever would wedge everything behind it, and there is nothing to
+  // recover because no content lives in an op.
+  async function drainOps(ops) {
     for (const o of ops) {
-      if (stuck) break;
       //  a record of any other shape is corrupt. Falling through to the move
       //  branch would POST from=undefined&to=undefined, which is a confusing
       //  400 rather than a dropped bad record.
@@ -442,7 +437,7 @@
             '&to=' + encodeURIComponent(o.to);
       let r = null;
       try { r = await tfetch(u, { method: 'POST' }, 30000); } catch {}
-      if (shipGone(r)) { stuck = true; break; }
+      if (shipGone(r)) return false;
       if (!(r && r.ok)) {
         st('offline ' + o.op + ' no longer applies: ' +
           (o.name || o.from) + ' (skipped)', false);
@@ -452,14 +447,15 @@
       }
       await opDel(o._k);
     }
-    // Creates go PER-ITEM with new=1, never through the batch: the batch is an
-    // unconditional upsert, so a name that already exists on the ship would be
-    // silently overwritten. A create must keep its 409-on-exists protection,
-    // or an offline "new page" could clobber a page someone else made online.
-    const creates = all.filter((q) => q.isNew);
-    const edits = all.filter((q) => !q.isNew);
+    return true;
+  }
+
+  // Creates go PER-ITEM with new=1, never through the batch: the batch is an
+  // unconditional upsert, so a name that already exists on the ship would be
+  // silently overwritten. A create must keep its 409-on-exists protection,
+  // or an offline "new page" could clobber a page someone else made online.
+  async function drainCreates(creates, conflicts) {
     for (const q of creates) {
-      if (stuck) break;
       let one = null;
       try {
         one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
@@ -467,7 +463,7 @@
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
       if (one && one.ok) { await offDel(q.name); continue; }
-      if (shipGone(one)) { stuck = true; break; }
+      if (shipGone(one)) return false;
       // 409: the name is taken on the ship. Do NOT drop the user's body — move
       // it out of the way as a conflict page so nothing is lost, then let them
       // rename. Overwriting is the one thing a create must never do. The alt
@@ -495,18 +491,27 @@
           two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
             '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
         } catch {}
-        if (two && two.ok) {
-          conflicts.push(alt);
-          await offDel(q.name);
-          st('offline create collided: ' + q.name + ' exists on the ship — your ' +
-            'version is kept at ' + alt, false);
-        } else { stuck = true; }
+        //  the preservation write is the only thing standing between the user
+        //  and a lost document, so if it does not land the record stays queued
+        if (!(two && two.ok)) return false;
+        conflicts.push(alt);
+        await offDel(q.name);
+        st('offline create collided: ' + q.name + ' exists on the ship — your ' +
+          'version is kept at ' + alt, false);
         continue;
       }
       st('dropped an unsyncable offline create: ' + q.name, false);
       await offDel(q.name);
     }
-    for (let i = 0; i < edits.length && !stuck; i += 50) {
+    return true;
+  }
+
+  // Drain through page-save-batch. The batch is all-or-nothing, right for
+  // uploads, wrong for replay. One poisoned record would block the queue
+  // forever. A rejected batch falls back to per-item saves so the bad record
+  // is isolated and DROPPED (it can never apply; review gap 3).
+  async function drainEdits(edits, conflicts) {
+    for (let i = 0; i < edits.length; i += 50) {
       const part = edits.slice(i, i + 50);
       let r = null;
       try {
@@ -544,29 +549,51 @@
             await offDel(q.name);
             continue;
           }
-          if (shipGone(one)) { stuck = true; break; }
+          if (shipGone(one)) return false;
           st('dropped an unsyncable offline edit: ' + q.name, false);
           await offDel(q.name);
         }
         continue;
       }
-      stuck = true;
+      return false;
     }
-    // memories drain per-item. There is no know batch route, and last-write-
-    // wins means a plain re-save with no verdict to collect
+    return true;
+  }
+
+  // memories drain per-item. There is no know batch route, and last-write-
+  // wins means a plain re-save with no verdict to collect
+  async function drainKnows(knows) {
     for (const q of knows) {
-      if (stuck) break;
       let one = null;
       try {
         one = await tfetch(api + '/know-save?key=' + encodeURIComponent(q.name.slice(5)),
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
       if (one && one.ok) { await offDel(q.name); continue; }
-      if (shipGone(one)) { stuck = true; break; }
+      if (shipGone(one)) return false;
       st('dropped an unsyncable offline edit: ' + q.name, false);
       await offDel(q.name);
     }
-    if (stuck) { setDegraded(true); st(offCount + ' offline edit(s) still waiting', false); return; }
+    return true;
+  }
+
+  async function drainQueue() {
+    const whole = await offAll();
+    const ops = await opAll();
+    if (!whole.length && !ops.length) return;
+    const all = whole.filter((q) => q.kind !== 'know');
+    const knows = whole.filter((q) => q.kind === 'know');
+    const total = whole.length + ops.length;
+    stWork('syncing ' + total + ' offline edit' + (total === 1 ? '' : 's') + '…');
+    const conflicts = [];
+    //  ORDER IS THE CONTRACT: ops, then creates, then edits, then memories.
+    //  && short-circuits, so the first phase that loses the ship stops the
+    //  drain and leaves the rest of the queue untouched for the next replay.
+    const landed = await drainOps(ops)
+      && await drainCreates(all.filter((q) => q.isNew), conflicts)
+      && await drainEdits(all.filter((q) => !q.isNew), conflicts)
+      && await drainKnows(knows);
+    if (!landed) { setDegraded(true); st(offCount + ' offline edit(s) still waiting', false); return; }
     setDegraded(false);
     if (conflicts.length) {
       st('synced — ' + conflicts.length + ' conflict(s): your offline version won; '
