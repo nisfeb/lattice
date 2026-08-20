@@ -20,8 +20,6 @@
   <lat-links></lat-links>
   <button id="mv" class="mvbtn">move / rename</button>
   <button id="del" class="del">delete page</button>
-  <button id="vault" class="mvbtn" title="download every page and memory as one tar">export vault</button>
-  <button id="vrestore" class="mvbtn" title="restore pages and memories from a vault tar">restore vault</button>
 </aside>`;
       cerr = $('cerr');
     }
