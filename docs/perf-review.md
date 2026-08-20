@@ -211,10 +211,10 @@ nexi, transient eyre conns) migrated live on a populated pier.
 
 ## Addendum 2026-07-30: regression scare, two refutations, a production number
 
-Re-measured after the obelisk in-process port, the browser-history feature and
-the bucket index landed. Serial curl on tyr read 1.1-1.6s for the icon floor
-against the review's 0.78s, an apparent ~0.5s regression. Investigated by
-live A/B on the harness (desk-commit an older app.hoon, measure, restore).
+Re-measured after the browser-history feature and the bucket index landed.
+Serial curl on tyr read 1.1-1.6s for the icon floor against the review's
+0.78s, an apparent ~0.5s regression. Investigated by live A/B on the harness
+(desk-commit an older app.hoon, measure, restore).
 
 What the experiments established:
 

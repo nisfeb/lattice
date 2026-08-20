@@ -35,14 +35,6 @@
       [%forms pax=path on=? cap=@ud gap=@dr]  ::  public forms: on/off + limits
       [%form-hit pax=path now=@da]      ::  record one accepted submission
       [%form-reset pax=path]            ::  zero a page's submission counter
-      ::  run a urQL script against the obelisk db and PERSIST the new state.
-      ::  Writes have to be serialised (+exec is read-modify-write over one
-      ::  grub), so they go through the writer like every other mutation.
-      ::  quiet marks a script whose FAILURE is expected and meaningless: the
-      ::  CREATE DATABASE / CREATE TABLE repairs, which error whenever the object
-      ::  already exists (obelisk has no IF NOT EXISTS). Only the caller knows
-      ::  that, so it has to travel with the action.
-      [%obelisk db=@tas urql=@t quiet=?]
       [%legacy-seen imported=@ud]       ::  retired %lattice agent dealt with
       [%legacy-pages rels=(list path)]  ::  page rels this migration triggered
   ==

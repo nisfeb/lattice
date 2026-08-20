@@ -2,17 +2,6 @@ GET banlist
 GET bookmarks
 GET browse
 GET browse-file
-GET catalog-backlinks
-GET catalog-by-tag
-GET catalog-explore
-GET catalog-fetch
-GET catalog-list
-GET catalog-meta
-GET catalog-pending
-GET catalog-query
-GET catalog-search
-GET catalog-toc
-GET catalog-vocab
 GET clip
 GET clip-paste
 GET comments-inbox
@@ -34,7 +23,6 @@ GET know-trash
 GET legacy-status
 GET list
 GET marks
-GET obelisk-query
 GET omni-suggest
 GET page-backlinks
 GET page-dump
@@ -57,11 +45,6 @@ GET template-list
 POST ban
 POST bookmark
 POST bookmark-move
-POST catalog-classify
-POST catalog-init
-POST catalog-scan
-POST catalog-scan-self
-POST catalog-sweep
 POST clip-html
 POST comment
 POST comment-del
@@ -78,8 +61,6 @@ POST know-import
 POST know-move
 POST know-prune
 POST know-publish
-POST know-query
-POST know-reindex
 POST know-restore
 POST know-restore-rev
 POST know-save

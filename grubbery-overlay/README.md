@@ -20,15 +20,15 @@ grubbery-overlay/
                 (for the nexus). This is where the TDD'd logic lives:
                   lattice-know      private-vault helpers (know grubs)
                   lattice-pub       published-page helpers (pub grubs)
-                  catalog           catalog urQL / schema helpers
-                  catalog-analyzer  gemtext structural extraction
-                  obelisk-ast       obelisk query AST helpers
+                  lattice-index     the grub-native inverted term index
+                  lattice-md        markdown / gemtext rendering
+                  lattice-urls      urb:// parsing and app paths
   nex/lattice/app.hoon    the lattice nexus (on-load tree + main.sig writer +
                           the HTTP dispatcher and per-request fibers)
   mar/lattice/*.hoon      marks: know-{entry,action,index}, page, pub-{action,
-                          index}, sub-{action,follows}, obk-{req,res}
-  mar-clay/               cross-desk poke marks (grubbery-load, obelisk-action)
-                          copied into grubbery's gub/mar/clay
+                          index}, sub-{action,follows}, index-bucket
+  mar-clay/               cross-desk poke marks, copied into grubbery's
+                          gub/mar/clay
   tests/lib/*.hoon        unit tests for the pure libs (lattice-know,
                           lattice-pub), run via grubbery's run-tests
 ```

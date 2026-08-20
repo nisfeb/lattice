@@ -37,14 +37,14 @@ mkdir -p "$DEST/gub/lib" "$DEST/lib" "$DEST/gub/nex/lattice" "$DEST/gub/mar/latt
 # and broke grubbery's whole obelisk integration on every ship it touched. Nothing
 # reported it, because the overwritten file compiles fine on its own.
 #
-# The overlay owns lattice-*.hoon, catalog*.hoon and everything under nex/lattice.
+# The overlay owns lattice-*.hoon and everything under nex/lattice.
 # Anything else landing on top of an EXISTING destination file is a collision and
 # must be deliberate, so refuse and make the human look.
 SHADOW=0
 for f in "$OVERLAY"/lib/*.hoon; do
   [ -e "$f" ] || continue
   b="$(basename "$f")"
-  case "$b" in lattice-*|catalog*) continue ;; esac
+  case "$b" in lattice-*) continue ;; esac
   if [ -e "$DEST/gub/lib/$b" ] && ! cmp -s "$f" "$DEST/gub/lib/$b"; then
     echo "REFUSING: overlay lib/$b would overwrite a different gub/lib/$b" >&2
     echo "  If that file belongs to grubbery, the overlay must not ship it." >&2
@@ -60,8 +60,8 @@ rsync -a "$OVERLAY/lib/" "$DEST/lib/"
 # built app.js ships. The desk must not carry files the ball never loads.
 [ -d "$OVERLAY/nex/lattice" ] && rsync -a --exclude 'ui-app/src' "$OVERLAY/nex/lattice/" "$DEST/gub/nex/lattice/"
 [ -d "$OVERLAY/mar/lattice" ] && rsync -a "$OVERLAY/mar/lattice/" "$DEST/gub/mar/lattice/"
-# Cross-desk poke marcs (e.g. obelisk-action): into grubbery's gub/mar/clay tree
-# so handle-gall-poke can build the poke vase.
+# Cross-desk poke marcs: into grubbery's gub/mar/clay tree so handle-gall-poke
+# can build the poke vase.
 [ -d "$OVERLAY/mar-clay" ] && rsync -a "$OVERLAY/mar-clay/" "$DEST/gub/mar/clay/"
 # Tests: desk-level.
 rsync -a "$OVERLAY/tests/" "$DEST/tests/"

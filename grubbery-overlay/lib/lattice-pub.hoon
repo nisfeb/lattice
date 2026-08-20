@@ -46,15 +46,13 @@
 ::  +vrail: a rail expressed structurally (== rail:tarball [p=path name=@ta]) so
 ::  this lib stays grubbery-free.
 ::
-::  +follows: the set of ships the crawler sweeps (one peek, always present).
-::  Just ships. The crawler re-crawls each fully per tick. Per-follow cursors
-::  are a later refinement. +sub-action: the follow-writer's poke.
+::  +follows: the set of ships we follow (one peek, always present). Just ships.
+::  +sub-action: the follow-writer's poke.
 ::
 ::  +page-sub: one live per-file subscription, a specific remote page
 ::  (urb://ship/pax). Stored as its own grub under /sub/pages/, whose per-sub
-::  keep fiber re-indexes the page into the catalog the moment the peer edits it
-::  (vs. waiting for the ~h6 crawler sweep). %sub-page / %unsub-page create and
-::  tear down that grub (and thus its keep).
+::  keep fiber notices the moment the peer edits that page. %sub-page /
+::  %unsub-page create and tear down that grub (and thus its keep).
 ::
 +$  follows  (set @p)
 +$  page-sub  [ship=@p pax=path]

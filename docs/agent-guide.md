@@ -1,9 +1,9 @@
 # Interacting with lattice: a guide for agents
 
 Lattice is a personal knowledge base that runs as a **grubbery nexus on an Urbit ship**.
-Content is *pages* (markdown/gemtext/html/code), plus a private *knowledge* store and a
-crawled *catalog*. This guide is for an AI agent (or any program) that wants to read, search,
-and write that content. For *deploying* the nexus, see [`grubbery-ops.md`](./grubbery-ops.md).
+Content is *pages* (markdown/gemtext/html/code) plus a private *knowledge* store, with a
+term index over both. This guide is for an AI agent (or any program) that wants to read,
+search, and write that content. For *deploying* the nexus, see [`grubbery-ops.md`](./grubbery-ops.md).
 
 There are three ways in, in rough order of how you'll reach for them:
 
@@ -55,7 +55,7 @@ the ship, and a write there lands under `notes/`. No `--root` mounts the whole `
 **Mounting any other nexus or ball tree.** Give `--root` an absolute ball path:
 
 ```bash
-lattice-fs mount ~/obelisk-mnt --root /apps/obelisk.obelisk_app   # browse another nexus
+lattice-fs mount ~/counter-mnt --root /apps/counter.counter   # browse another nexus
 ```
 
 This uses grubbery's generic ball API (`/grubbery/api/tree` + `/grubbery/api/file`) plus its
@@ -186,18 +186,24 @@ ship's MCP rather than HTTP. The semantics are the same.
 
 ---
 
-## 4. Search: `catalog-search`
+## 4. Search: `content-search`
 
-The catalog is an obelisk-indexed, full-text view of crawled and local pages.
+One inverted index covers your pages and your knowledge entries. It answers a single
+normalized term at a time, out of one grub, so cost does not grow with the corpus.
 
 ```bash
-curl -s -H "$CK" 'localhost:8080/apps/lattice/catalog-search?term=ostrich'
-# -> {columns:[…,"publisher","path","tf"], rows:[…]}  rank by (# terms matched, tf)
+curl -s -H "$CK" 'localhost:8080/apps/lattice/content-search?term=ostrich'
+# -> {columns:["scope","key","tf"], rows:[…]}
 ```
 
-Other `catalog-*` routes (`catalog-toc`, `catalog-backlinks`, `catalog-by-tag`,
-`catalog-query`) expose the index, and `POST /catalog-sweep` forces a re-crawl. For raw
-relational queries there's `GET /obelisk-query`.
+`scope` is `public`, `private`, or `knowledge`, so you can tell a published page from a
+private note. For a multi-word query, fire one call per word and merge: rank by how many
+words a key matched, then by summed `tf`. A word under 3 characters or on the stop list
+matches nothing and answers 200 with no rows, so you never have to pre-filter.
+
+The index is rebuilt wholesale, not incrementally. Content written since the last rebuild
+is not findable until you run `POST /search-reindex`. See
+[`native-index.md`](./native-index.md) for the layout and the tokenizer.
 
 ---
 
@@ -248,5 +254,5 @@ registry (100+ tools). The load-bearing ones: `browse`/`read_grub` (inspect the 
   status.
 - **The nexus source is the source of truth** for the full route list and exact JSON
   shapes: `grubbery-overlay/nex/lattice/app.hoon` (grep for `%'GET'` / `%'POST'`). This
-  guide covers the routes an agent uses most. There are ~70 in total (comments, bookmarks,
-  templates, streams, settings, per-page sharing, obelisk exec, …).
+  guide covers the routes an agent uses most. There are ~100 in total (comments, bookmarks,
+  templates, streams, settings, per-page sharing, follows, …).

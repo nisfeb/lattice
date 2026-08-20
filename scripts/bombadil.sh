@@ -40,9 +40,9 @@
 # property violation(s) in any attempt.
 #
 # Why attempts, plural: bombadil hard-aborts when a navigation exceeds 30s,
-# and the pier gets there honestly. /catalog-sweep blocks ~21s before
-# acking (measured on tyr, despite its "background" claim). The pier
-# serializes everything behind it (docs/perf-review.md). Each abort is
+# and the pier gets there honestly. A whole-corpus /search-reindex is one
+# button in the UI, and the fuzzer will press it. The pier serializes
+# everything behind whatever is running (docs/perf-review.md). Each abort is
 # logged as the latency finding it is, and the run relaunches with the
 # remaining time budget instead of forfeiting it.
 set -euo pipefail
