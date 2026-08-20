@@ -73,6 +73,12 @@ pub trait Projection: Send + Sync {
     fn watch(&self, on_event: &(dyn Fn(crate::transport::WatchEvent) + Send + Sync));
 
     // kind<->ext policy. Shared for lattice; another app overrides.
+    // The browser holds the same table as KIND_EXT/EXT_KIND in
+    // ui-app/src/30-tree.js (and a twin in ui-app/vault.js). No build step
+    // joins the two languages, so a new kind has to be added on both sides.
+    // One difference is deliberate: kind_for_ext answers hoon for anything
+    // it does not know, because every file on a mounted disk must get some
+    // kind, while the browser's extKind answers null and skips the file.
     fn ext_for_kind(&self, kind: &str) -> &'static str {
         match kind {
             "md" => "md",

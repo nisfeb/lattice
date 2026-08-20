@@ -567,6 +567,14 @@ fn ino_for(s: &mut State, path: &str) -> u64 {
     i
 }
 
+/// The vpath an inode names, or None when the kernel handed back an ino we
+/// never minted. Every FUSE entry point starts here, and a miss is always
+/// ENOENT: a stale dentry the kernel still remembers, or a remap that lost it.
+/// The minting counterpart is ino_for.
+fn path_of(s: &State, ino: u64) -> Option<String> {
+    s.to_path.get(&ino).cloned()
+}
+
 fn to_systime(secs: i64) -> SystemTime {
     if secs <= 0 {
         SystemTime::now()
@@ -633,7 +641,6 @@ fn file_attr(ino: u64, size: u64, mtime: SystemTime, readonly: bool, uid: u32, g
     }
 }
 
-/// Build the virtual tree from a node list (port of the Python _build).
 /// Cap a warm dump's bodies at `limit` bytes so a large tree can't OOM the
 /// client. Keep bodies until the running total would exceed the cap, drop the
 /// rest (body() lazily fetches those on demand). Deterministic across runs by
@@ -694,6 +701,11 @@ fn apply_swap(
     s.warm = true;
 }
 
+/// Build the virtual tree from a node list (port of the Python _build). A rel
+/// that is also some other rel's parent becomes a DIRECTORY whose own body is
+/// exposed as <dir>/<leaf>.<ext>; that is why "demo" shows up as a directory
+/// holding "demo.md". Every other page is <rel>.<ext>, and missing intermediate
+/// segments are synthesized as node-less dirs. rel_kind_of inverts this.
 fn build_vt(nodes: &[Node], ext_for: impl Fn(&str) -> &'static str) -> HashMap<String, VEntry> {
     let parents: HashSet<&str> = nodes
         .iter()
@@ -737,12 +749,9 @@ impl Filesystem for GrubberyFs {
         self.ensure_fresh();
         let name = name.to_string_lossy().to_string();
         let mut s = self.st.lock().unwrap();
-        let parent_path = match s.to_path.get(&parent.0) {
-            Some(p) => p.clone(),
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
-            }
+        let Some(parent_path) = path_of(&s, parent.0) else {
+            reply.error(err(libc::ENOENT));
+            return;
         };
         let child = join(&parent_path, &name);
         match self.attr_for(&mut s, &child, None) {
@@ -757,12 +766,9 @@ impl Filesystem for GrubberyFs {
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
         self.ensure_fresh();
         let mut s = self.st.lock().unwrap();
-        let path = match s.to_path.get(&ino.0) {
-            Some(p) => p.clone(),
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
-            }
+        let Some(path) = path_of(&s, ino.0) else {
+            reply.error(err(libc::ENOENT));
+            return;
         };
         // the kernel asked about this inode, so answer about it, whatever the
         // vpath's own ino would be.
@@ -796,12 +802,9 @@ impl Filesystem for GrubberyFs {
     ) {
         self.ensure_fresh();
         let mut s = self.st.lock().unwrap();
-        let path = match s.to_path.get(&ino.0) {
-            Some(p) => p.clone(),
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
-            }
+        let Some(path) = path_of(&s, ino.0) else {
+            reply.error(err(libc::ENOENT));
+            return;
         };
         if let Some(sz) = size {
             // 1) explicit fh -> truncate that buffer
@@ -850,12 +853,9 @@ impl Filesystem for GrubberyFs {
     ) {
         self.ensure_fresh();
         let mut s = self.st.lock().unwrap();
-        let base = match s.to_path.get(&ino.0) {
-            Some(p) => p.clone(),
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
-            }
+        let Some(base) = path_of(&s, ino.0) else {
+            reply.error(err(libc::ENOENT));
+            return;
         };
         let parent_ino = if base == "/" {
             1
@@ -911,12 +911,9 @@ impl Filesystem for GrubberyFs {
         // scratch file: serve its bytes from the in-memory map, never the ship.
         {
             let mut s = self.st.lock().unwrap();
-            let path = match s.to_path.get(&ino.0) {
-                Some(p) => p.clone(),
-                None => {
-                    reply.error(err(libc::ENOENT));
-                    return;
-                }
+            let Some(path) = path_of(&s, ino.0) else {
+                reply.error(err(libc::ENOENT));
+                return;
             };
             if is_scratch(leaf_of(&path)) {
                 let buf = s.scratch.get(&path).cloned().unwrap_or_default();
@@ -933,12 +930,9 @@ impl Filesystem for GrubberyFs {
         }
         let (rel, kind, pending) = {
             let s = self.st.lock().unwrap();
-            let path = match s.to_path.get(&ino.0) {
-                Some(p) => p.clone(),
-                None => {
-                    reply.error(err(libc::ENOENT));
-                    return;
-                }
+            let Some(path) = path_of(&s, ino.0) else {
+                reply.error(err(libc::ENOENT));
+                return;
             };
             match s.vt.get(&path) {
                 Some(VEntry { kind: VKind::File, .. }) => {}
@@ -1079,12 +1073,9 @@ impl Filesystem for GrubberyFs {
         self.ensure_fresh();
         let name = name.to_string_lossy().to_string();
         let mut s = self.st.lock().unwrap();
-        let parent_path = match s.to_path.get(&parent.0) {
-            Some(p) => p.clone(),
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
-            }
+        let Some(parent_path) = path_of(&s, parent.0) else {
+            reply.error(err(libc::ENOENT));
+            return;
         };
         let path = join(&parent_path, &name);
         // editor temp file: keep it entirely in the FUSE layer (never a page).
@@ -1151,12 +1142,9 @@ impl Filesystem for GrubberyFs {
         reply: ReplyEntry,
     ) {
         let name = name.to_string_lossy().to_string();
-        let parent_path = match self.st.lock().unwrap().to_path.get(&parent.0) {
-            Some(p) => p.clone(),
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
-            }
+        let Some(parent_path) = path_of(&self.st.lock().unwrap(), parent.0) else {
+            reply.error(err(libc::ENOENT));
+            return;
         };
         let path = join(&parent_path, &name);
         let rel = path.trim_start_matches('/').to_string();
@@ -1180,12 +1168,9 @@ impl Filesystem for GrubberyFs {
         let name = name.to_string_lossy().to_string();
         let (path, rel) = {
             let mut s = self.st.lock().unwrap();
-            let parent_path = match s.to_path.get(&parent.0) {
-                Some(p) => p.clone(),
-                None => {
-                    reply.error(err(libc::ENOENT));
-                    return;
-                }
+            let Some(parent_path) = path_of(&s, parent.0) else {
+                reply.error(err(libc::ENOENT));
+                return;
             };
             let path = join(&parent_path, &name);
             // scratch file: drop it from the FUSE layer only. NEVER proj.delete,
@@ -1218,12 +1203,9 @@ impl Filesystem for GrubberyFs {
         let name = name.to_string_lossy().to_string();
         let path = {
             let s = self.st.lock().unwrap();
-            let parent_path = match s.to_path.get(&parent.0) {
-                Some(p) => p.clone(),
-                None => {
-                    reply.error(err(libc::ENOENT));
-                    return;
-                }
+            let Some(parent_path) = path_of(&s, parent.0) else {
+                reply.error(err(libc::ENOENT));
+                return;
             };
             join(&parent_path, &name)
         };
@@ -1270,19 +1252,13 @@ impl Filesystem for GrubberyFs {
         let dst_scratch = is_scratch(&newname);
         let (src_path, dst_path, src_rel, dst_rel, dst_kind, dst_exists) = {
             let s = self.st.lock().unwrap();
-            let pp = match s.to_path.get(&parent.0) {
-                Some(p) => p.clone(),
-                None => {
-                    reply.error(err(libc::ENOENT));
-                    return;
-                }
+            let Some(pp) = path_of(&s, parent.0) else {
+                reply.error(err(libc::ENOENT));
+                return;
             };
-            let npp = match s.to_path.get(&newparent.0) {
-                Some(p) => p.clone(),
-                None => {
-                    reply.error(err(libc::ENOENT));
-                    return;
-                }
+            let Some(npp) = path_of(&s, newparent.0) else {
+                reply.error(err(libc::ENOENT));
+                return;
             };
             let src_path = join(&pp, &name);
             let dst_path = join(&npp, &newname);
@@ -1298,10 +1274,12 @@ impl Filesystem for GrubberyFs {
         if let Some(mv) = EditorMove::of(src_scratch, dst_scratch) {
             let res: Result<(), PErr> = match mv {
                 EditorMove::WithinScratch => {
-                    // temp -> temp: move within the scratch map
-                    let v = self.st.lock().unwrap().scratch.remove(&src_path).unwrap_or_default();
-                    self.st.lock().unwrap().scratch.insert(dst_path.clone(), v);
+                    // temp -> temp: move within the scratch map. This arm makes no
+                    // wire call, so it holds the lock for the whole move and a
+                    // concurrent readdir never sees the temp under neither name.
                     let mut s = self.st.lock().unwrap();
+                    let v = s.scratch.remove(&src_path).unwrap_or_default();
+                    s.scratch.insert(dst_path.clone(), v);
                     // the temp no longer exists under its old name
                     s.scratch.remove(&src_path);
                     s.vt.remove(&src_path);

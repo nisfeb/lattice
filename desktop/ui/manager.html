@@ -296,7 +296,15 @@
       }
       const b = document.createElement('button');
       b.textContent = 'unmount';
-      b.onclick = () => invoke('remove_mount', { mountpoint: m.mountpoint }).then(refreshMounts);
+      b.onclick = () => {
+        $('mount-status').textContent = '';
+        invoke('remove_mount', { mountpoint: m.mountpoint })
+          .then(refreshMounts)
+          //  remove_mount says no when the mountpoint is not mounted and when
+          //  the config write fails. Without this the row just sits there and
+          //  the button looks like it did nothing.
+          .catch((e) => { $('mount-status').textContent = String(e); });
+      };
       li.appendChild(b);
       ul.appendChild(li);
     }
@@ -453,7 +461,15 @@
     return 'last run ' + Math.floor(s / 86400) + 'd ago';
   };
   const saveBackups = async () => {
-    await invoke('set_backup_schedules', { schedules: backups });
+    //  every caller mutates `backups` first and saves after. An uncaught
+    //  throw here would leave the page showing a pause or a removal that was
+    //  never written. Redraw either way: refreshBackups re-reads the stored
+    //  list, which drops the optimistic edit and puts the rows back in step.
+    try {
+      await invoke('set_backup_schedules', { schedules: backups });
+    } catch (e) {
+      $('backup-status').textContent = String(e);
+    }
     await refreshBackups();
   };
   async function refreshBackups() {

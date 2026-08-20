@@ -1,3 +1,29 @@
+  // ── page kind <-> extension, once for the whole bundle ───────────────────
+  // `kind` is what the ship stores (page-save?type=); `ext` is what a filename
+  // shows. They differ for `text`, and `index` is a page the ship generates
+  // (+make-folder-index) whose file form is markdown. Everything in the bundle
+  // reads these two tables: the tree below, the uploader (70-upload.js) and
+  // the desktop File menu (96-deskmenu.js). Those files are numbered after
+  // this one and the build concatenates in filename order into one scope, so
+  // the names are visible there.
+  //
+  // Two copies live outside the bundle and have to be kept in step by hand:
+  // ui-app/vault.js, which is also served alone to the Settings page with no
+  // bundle around it, and lattice-fs-rs/src/projection.rs, another process in
+  // another language.
+  //
+  // `htm` and `text` are INBOUND-ONLY aliases: archives written before the
+  // extension was conventionalised named those files `.text`, and a restore
+  // has to keep reading archives this app already handed out.
+  const KIND_EXT = { md: 'md', gmi: 'gmi', html: 'html', text: 'txt', js: 'js',
+                     css: 'css', hoon: 'hoon', index: 'md' };
+  const EXT_KIND = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
+                     text: 'text', js: 'js', css: 'css', hoon: 'hoon' };
+  //  an unknown kind shows as hoon, the kind that holds arbitrary source
+  const kindExt = (k) => KIND_EXT[k] || 'hoon';
+  //  an unknown extension is null, never guessed: the caller skips that file
+  const extKind = (e) => EXT_KIND[String(e || '').toLowerCase()] || null;
+
   // ── tree pane: <lat-tree> ────────────────────────────────────────────────
   // The pane's buttons are wired where their handlers live (45-templates,
   // 70-upload). Those files run after this component upgrades, so their
@@ -123,7 +149,7 @@
       if (n.page) {
         row.className = 'pg' + (n.path === current ? ' cur' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
-        row.textContent = n.path.split('/').pop() + '.' + extOf(n.kind);
+        row.textContent = n.path.split('/').pop() + '.' + kindExt(n.kind);
         row.onclick = (e) => { e.preventDefault(); openPage(n.path); };
       } else {
         row.className = 'fld' + (n.path === curFolder ? ' cur' : '');
@@ -164,9 +190,6 @@
     // it repaints exactly when the tree does. Defined in 80-conflicts.js.
     if (typeof renderConfBadge === 'function') renderConfBadge();
   }
-
-  const extOf = (kind) => ({ md: 'md', gmi: 'gmi', html: 'html', text: 'txt',
-                             js: 'js', css: 'css', index: 'md' }[kind] || 'hoon');
 
   // ── folder selection ─────────────────────────────────────────────────────
   // A folder's share state is derived from its pages: uniform → that mode,

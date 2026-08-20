@@ -289,7 +289,7 @@ enum Nav {
     /// stay in the webview as-is
     Allow,
     /// renavigate the workspace to this url instead
-    Rewrite(String),
+    Rewrite(tauri::Url),
     /// hand to the system opener, which applies openable()
     External,
     /// nothing to open and nothing to rewrite, so the navigation just stops
@@ -330,7 +330,7 @@ fn nav_decision(
         return match format!("{local}/apps/lattice").parse::<tauri::Url>() {
             Ok(mut t) => {
                 t.query_pairs_mut().clear().append_pair("url", u.as_str());
-                Nav::Rewrite(t.to_string())
+                Nav::Rewrite(t)
             }
             Err(_) => Nav::Block,
         };
@@ -340,7 +340,10 @@ fn nav_decision(
     if tauri::Url::parse(&ship_url()).is_ok_and(|ship| ship.origin() == u.origin()) {
         let Some(local) = &local else { return Nav::Block };
         let pq = &u.as_str()[u.origin().ascii_serialization().len()..];
-        return Nav::Rewrite(format!("{local}{pq}"));
+        return match format!("{local}{pq}").parse::<tauri::Url>() {
+            Ok(t) => Nav::Rewrite(t),
+            Err(_) => Nav::Block,
+        };
     }
     // only things a system handler can sensibly open leave the app.
     // Anything else is silently blocked (an opener error is a popup)
@@ -421,9 +424,7 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
             match nav_decision(u, bridge, || config::load(&handle).url) {
                 Nav::Allow => true,
                 Nav::Rewrite(t) => {
-                    if let Ok(t) = t.parse::<tauri::Url>() {
-                        renav(t);
-                    }
+                    renav(t);
                     false
                 }
                 Nav::External => {

@@ -594,6 +594,26 @@
       ['saved' (numb:enjs:format (lent items))]
       ['items' a+out]
   ==
+::  +save-src: the front half of the page-save contract, shared so the two write
+::  surfaces cannot drift on what a valid save is. POST /page-save and the lick
+::  %page-save both start here: name validation, the body rule, and the two
+::  errors they produce, then the source the page is stored as.
+::
+::  ?type=index: no body. The code is generated from the page's own path (it
+::  lists its own folder). Otherwise a body is required. ?type=<builder>: the
+::  body is raw content, not hoon, so it is wrapped in `... (BUILDER 'body')`
+::  and the whole pipeline runs unchanged. edit reopens it via unwrap-content.
+::  Absent/unknown type -> raw hoon.
+::
+++  save-src
+  |=  [name=@t ptype=@tas raw=@t]
+  ^-  (each @t [code=@ud msg=@t])
+  ?.  (valid-name name)  [%| 400 'bad name']
+  =/  is-index=?  =(%index ptype)
+  ?:  &(?!(is-index) =('' raw))  [%| 400 'missing body']
+  :-  %&
+  ?:  is-index  (make-folder-index (pax-of name))
+  ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
 ::  +handle-page-save: POST /page-save. One page, with the conflict rule the
 ::  offline queue depends on: ?base=<rev> claims the rev this edit was made
 ::  from, and a write against a moved-on page is reported as conflicted with
@@ -605,19 +625,10 @@
   ^-  form:m
   =/  name=(unit @t)  (~(get by args) 'name')
   ?~  name  (send-err eyre-id 400 'missing name')
-  ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-  =/  raw=@t  (req-body req)
-  ::  ?type=index: no body. The code is generated from the page's own path
-  ::  (it lists its own folder). Otherwise a body is required.
   =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'hoon')
-  =/  is-index=?  =(%index ptype)
-  ?:  &(?!(is-index) =('' raw))  (send-err eyre-id 400 'missing body')
-  ::  ?type=<builder>: the body is raw content, not hoon. Wrap it in
-  ::  `... (BUILDER 'content')` so the whole pipeline runs unchanged. edit
-  ::  reopens it via unwrap-content. Absent/unknown type -> raw hoon.
-  =/  src=@t
-    ?:  is-index  (make-folder-index (pax-of u.name))
-    ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
+  =/  sr  (save-src u.name ptype (req-body req))
+  ?:  ?=(%| -.sr)  (send-err eyre-id code.p.sr msg.p.sr)
+  =/  src=@t  p.sr
   ::  ?new=1: create-only, 409 instead of silently overwriting an existing
   ::  page (the editor's new-page mode sends it; caught by review). Only the
   ::  new=1 path pays the existence peek. A plain overwrite (every autosave)
@@ -1686,15 +1697,7 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    =/  mode=share-mode:le
-      ?+  (~(gut by args) 'mode' 'private')  %private
-        %shared    %shared
-        ::  /page-scopes labels ames-shared pages 'urbit' (the search UI
-        ::  keys on it) and vault archives carry that label verbatim; the
-        ::  silent default below privatized every restored shared page.
-        %urbit     %shared
-        %clearweb  %clearweb
-      ==
+    =/  mode=share-mode:le  (mode-arg args)
     ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.name))) %code])
     ?.  ex  (send-err eyre-id 404 'no such page')
     ;<  ~  bind:m  (poke-eval [%share (pax-of u.name) mode])
@@ -2013,15 +2016,7 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    =/  mode=share-mode:le
-      ?+  (~(gut by args) 'mode' 'private')  %private
-        %shared    %shared
-        ::  /page-scopes labels ames-shared pages 'urbit' (the search UI
-        ::  keys on it) and vault archives carry that label verbatim; the
-        ::  silent default below privatized every restored shared page.
-        %urbit     %shared
-        %clearweb  %clearweb
-      ==
+    =/  mode=share-mode:le  (mode-arg args)
     ;<  ~  bind:m  (poke-eval [%share-tree (pax-of u.name) mode])
     (send-ok eyre-id)
       [%'POST' %template-save]
@@ -2747,10 +2742,10 @@
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
   (typed-scry:io json %json pax)
-::  +legacy-mark: the "done with the old agent" marker. Its EXISTENCE is the
-::  whole signal (the body is detail for humans), so the read is a peek-exists
-::  and can never mis-parse. Written on a completed import AND on an explicit
-::  dismissal, so neither path ever prompts again.
+::  +legacy-mark-road: the "done with the old agent" marker. Its EXISTENCE is
+::  the whole signal (the body is detail for humans), so the read is a
+::  peek-exists and can never mis-parse. Written on a completed import AND on
+::  an explicit dismissal, so neither path ever prompts again.
 ++  legacy-mark-road  ^-(road:tarball [%& %& (weld app-base:lu /legacy) %state])
 ++  legacy-resolved
   =/  m  (fiber:fiber:nexus ,?)
@@ -5070,9 +5065,6 @@
   =/  nodes=(list [pax=path j=json])  (tree-walk ball.sn wave.sn ~)
   =/  srt  (sort nodes |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
   (pure:m (pairs:enjs:format ~[['nodes' a+(turn srt |=([* j=json] j))]]))
-::  +tree-walk: +dump-walk's twin without bodies: path+kind+size+rev+mtime+
-::  share per page, folders as bare nodes. share comes from the /share grub in
-::  the same ball (absent -> %private, the same rule as +read-share).
 ::  +index-walk: every page in the ball as [rel body share], from the SAME single
 ::  deep peek +tree-walk uses. That ball already carries each page's code and
 ::  share grub, so indexing the whole tree costs one dart, not two per page.
@@ -5110,6 +5102,22 @@
     %clearweb  'clearweb'
     %shared    'urbit'
     %private   'private'
+  ==
+::  +mode-arg: the ?mode= argument of the publish routes (/page-share and
+::  /page-share-tree), the exact inverse of +scope-of above. Kept next to it:
+::  the two directions of one vocabulary drift the moment they live apart.
+::  'urbit' is an ALIAS for %shared. /page-scopes labels ames-shared pages
+::  'urbit' (the search UI keys on it) and vault archives carry that label
+::  verbatim, so a restore posts it straight back. Without the alias the silent
+::  %private default privatizes every restored shared page.
+::
+++  mode-arg
+  |=  args=(map @t @t)
+  ^-  share-mode:le
+  ?+  (~(gut by args) 'mode' 'private')  %private
+    %shared    %shared
+    %urbit     %shared
+    %clearweb  %clearweb
   ==
 ::  +content-reindex: rebuild content-terms from the live tree + know vault.
 ::  Two reads total (one deep page peek, one know-map read), then a single
@@ -5208,6 +5216,9 @@
   =/  bk=bucket:li
     (fall (mole |.(!<(bucket:li (need-vase:tarball sang.vn)))) *bucket:li)
   (pure:m (look:li bk term))
+::  +tree-walk: +dump-walk's twin without bodies: path+kind+size+rev+mtime+
+::  share per page, folders as bare nodes. share comes from the /share grub in
+::  the same ball (absent -> %private, the same rule as +read-share).
 ++  tree-walk
   |=  [b=ball:tarball w=wave:nexus rel=path]
   ^-  (list [pax=path j=json])
@@ -5376,19 +5387,18 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   (poke:io [%| 0 %& ~ %'main.sig'] [[/lattice %eval-action] act])
-::  +fs-save: create/overwrite a page (POST /page-save + lick %page-save).
-::  Mirrors the HTTP route. index generates its own body. A content type wraps
-::  the body. ?new rejects an existing page with 409.
+::  +fs-save: create/overwrite a page (POST /page-save + lick %page-save). The
+::  name and body rules are +save-src, the same front half the HTTP route runs.
+::  ?new rejects an existing page with 409. The route's ?base= conflict protocol
+::  is HTTP-only: this surface answers [status body] and has nowhere to report a
+::  conflicted write or name the body it kept.
 ++  fs-save
   |=  [name=@t ptype=@tas new=? raw=@t]
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
   ^-  form:m
-  ?.  (valid-name name)  (pure:m [400 'bad name'])
-  =/  is-index=?  =(%index ptype)
-  ?:  &(?!(is-index) =('' raw))  (pure:m [400 'missing body'])
-  =/  src=@t
-    ?:  is-index  (make-folder-index (pax-of name))
-    ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
+  =/  sr  (save-src name ptype raw)
+  ?:  ?=(%| -.sr)  (pure:m [code.p.sr msg.p.sr])
+  =/  src=@t  p.sr
   ;<  ex=?  bind:m
     (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of name))) %code])
   ?:  &(new ex)  (pure:m [409 'page exists'])
@@ -5763,9 +5773,6 @@
   ;<  ~  bind:m  (send-dart:io %node pw (remote-road road shp) %peek ~ ~ %.n)
   ;<  ~  bind:m  (send-wait:io until)
   (take-peek-or-wake pw until)
-::  +take-peek-or-wake: resolve on the matching %peek response OR our timer wake.
-::  Sibling of take-news-or-wake. A %veto counts as give-up (~), like a timeout.
-::
 ::  ── sharing groups (the permission editor's backend) ────────────────────
 ::  A grubbery usergroup is a directory /sys/ames/usergroups/<name>.grp/ with
 ::  two grubs: who.ships (set @p, blot [/ %ships]) and how.weir (weir:nexus,
@@ -6013,6 +6020,9 @@
       [~ %pack *]
     [%done err.u.in]
   ==
+::  +take-peek-or-wake: resolve on the matching %peek response OR our timer wake.
+::  Sibling of take-news-or-wake. A %veto counts as give-up (~), like a timeout.
+::
 ++  take-peek-or-wake
   |=  [pwire=wire until=@da]
   =/  m  (fiber:fiber:nexus ,(unit view:nexus))
@@ -6497,12 +6507,13 @@
   ::  the long tier, LOCAL only: a local page view carries the live script
   ::  with a baked rev, so a cached paint self-corrects. A peer's page has
   ::  no stream — it keeps the short tier.
-  %-  ?:(local send-view-long send-view)
-  :-  eyre-id
-  %^    render-browser-page
-      (trip (en-urb:lu shp pax))
-    doc
-  [?:(local `name ~) ?!(local) ?:(local keep "") ?:(local rev "")]
+  =/  htm=@t
+    %^    render-browser-page
+        (trip (en-urb:lu shp pax))
+      doc
+    [?:(local `name ~) ?!(local) ?:(local keep "") ?:(local rev "")]
+  ?:  local  (send-view-long eyre-id htm)
+  (send-view eyre-id htm)
 ::  +preview-inner: the rendered-preview HTML fragment for a page kind, the
 ::  single renderer behind POST /page-preview AND page-source?render=1, so the
 ::  editor preview can never drift from the reader. Wikilinkify only runs for
@@ -6764,10 +6775,6 @@
   ?.  local  (pure:m dflt)
   ;<  tcss=(unit @t)  bind:m  (find-theme-css rel)
   (pure:m ?^(tcss :(weld "<style>" (trip u.tcss) "</style>") dflt))
-::  +serve-clearweb: the public read of a %clearweb page. Read-only, data grub
-::  only. A non-clearweb (or absent) page is a flat 404 so private siblings
-::  never leak existence. No SSE (an anon keep would 403 anyway).
-::
 ::  +forms-on: is public form submission enabled at or above this page? Same
 ::  nearest-flag-wins walk as +comments-on, so a folder opts in a whole site.
 ::
@@ -6846,6 +6853,10 @@
 ::  needs a size bound; the page's own gate decides what the text means.
 ::
 ++  form-body-max  ^~((mul 8 1.024))
+::  +serve-clearweb: the public read of a %clearweb page. Read-only, data grub
+::  only. A non-clearweb (or absent) page is a flat 404 so private siblings
+::  never leak existence. No SSE (an anon keep would 403 anyway).
+::
 ++  serve-clearweb
   |=  [eyre-id=@ta pax=path authed=?]
   =/  m  (fiber:fiber:nexus ,~)
@@ -7318,7 +7329,13 @@
   %+  send-simple:srv  eyre-id
   :-  [200 ['content-type' 'text/html']~]
   `(as-octs:mimes:html htm)
-::  +send-view: +send-html plus a cache policy for navigable read surfaces
+::  +view-cache / +view-long-cache: the cache policy each tier sends. The two
+::  values are the same today. They are named apart because the long tier's knob
+::  may want retuning on its own, so change one without touching the other.
+::
+++  view-cache       ^-(@t 'private, max-age=5, stale-while-revalidate=600')
+++  view-long-cache  ^-(@t 'private, max-age=5, stale-while-revalidate=600')
+::  +send-view: a text/html 200 plus a cache policy for navigable read surfaces
 ::  (home, tree explorer, reader AND page views). Every request to this pier
 ::  costs a flat ~2s regardless of payload, so the only way a repeat visit
 ::  gets fast is not making the request: max-age=5 covers back/forward, and
@@ -7339,14 +7356,7 @@
 ::
 ++  send-view
   |=  [eyre-id=@ta htm=@t]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  %+  send-simple:srv  eyre-id
-  :-  :-  200
-      :~  ['content-type' 'text/html']
-          ['cache-control' 'private, max-age=5, stale-while-revalidate=600']
-      ==
-  `(as-octs:mimes:html htm)
+  (send-typed eyre-id 'text/html' view-cache htm)
 ::  +send-view-long: the tier for LIVE local surfaces — pages that carry the
 ::  beacon script with a baked rev plus +page-cache-script. Instant repeats
 ::  are the LRU pages cache's job now (sw-js serves them before HTTP ever
@@ -7360,20 +7370,16 @@
 ::
 ++  send-view-long
   |=  [eyre-id=@ta htm=@t]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  %+  send-simple:srv  eyre-id
-  :-  :-  200
-      :~  ['content-type' 'text/html']
-          ['cache-control' 'private, max-age=5, stale-while-revalidate=600']
-      ==
-  `(as-octs:mimes:html htm)
+  (send-typed eyre-id 'text/html' view-long-cache htm)
 ::  ── PWA (installable app) ──────────────────────────────────────────────────
 ::  Content-Type is an explicit header cord here (not mark-derived), so a
 ::  manifest and a service worker are served with correct MIME by hand. All PWA
 ::  routes sit AFTER the owner gate, so they're owner-only. The browser fetches
 ::  them same-origin with the session cookie, which is the right posture for a
 ::  private app (install is offered only inside an authed session).
+::
+::  +send-typed: a 200 with an explicit content-type and cache-control. The PWA
+::  routes and both +send-view tiers send through it.
 ::
 ++  send-typed
   |=  [eyre-id=@ta ct=@t cc=@t body=@t]
@@ -7646,11 +7652,11 @@
     $(lines t.lines, acc [:(weld "<blockquote>" (esc (slag 2 ln)) "</blockquote>") acc])
   ?:  =("" ln)  $(lines t.lines)
   $(lines t.lines, acc [:(weld "<p>" (esc ln) "</p>") acc])
-::  +md-envelope: the exact page-source shell a markdown note is stored in.
-::  The evaluator only knows Hoon gates, so a note IS a gate returning (md '...'):
-::  wrap-md escapes the prose into a single-quote cord and drops it in here;
-::  unwrap-md matches this shell to recover the prose for editing. Keep the two
-::  in lockstep with this string.
+::  +content-env-pre: the exact page-source shell EVERY content note is stored
+::  in. The evaluator only knows Hoon gates, so a note IS a gate returning
+::  (BUILDER '...'): +wrap-content escapes the prose into a single-quote cord
+::  and drops it in here; +unwrap-content matches this shell to recover the
+::  prose for editing. Keep those two in lockstep with this string.
 ::
 ++  content-env-pre  "|=  [cmd=(unit @t) dat=(unit *) now=@da deps=(list [path *])]  ^-  result  ("
 ::  +make-folder-index: the generated code for an `index`-type page, a gate
@@ -8277,7 +8283,7 @@
     %-  trip
     '";var pend=0,ac=null,live=false;function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||document.hidden)return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(-5)!==" /rev")continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!document.hidden)upd();continue}location.reload();return}}}catch(x){}live=false;if(!document.hidden)setTimeout(c,3000)}document.addEventListener("visibilitychange",function(){if(document.hidden){if(ac)ac.abort();return}if(window.__latRefresh)upd();setTimeout(c,200)});c()})();</script>'
   ==
-::  +ensure-pub-weir: whitelist <root>/pub in the grubbery `public` usergroup's
+::  +send-public-how: whitelist <root>/pub in the grubbery `public` usergroup's
 ::  peek set, so any foreign ship may peek/keep published pages. UNION, never
 ::  overwrite. The public group is global (shared by every grubbery app), so we
 ::  add our road without clobbering others'. know/ is private by omission

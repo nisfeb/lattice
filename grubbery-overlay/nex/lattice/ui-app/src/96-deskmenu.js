@@ -79,7 +79,6 @@
   //  Boot also calls newFile, with focusName false, to land on an empty
   //  page. That must not be interrupted by a dialog, and it is the one
   //  caller that says so.
-  const KINDS = ['md', 'gmi', 'html', 'text', 'txt', 'js', 'css', 'hoon'];
   const nameFieldHidden = () =>
     ws.classList.contains('deskbar') || matchMedia('(max-width: 820px)').matches;
   const baseNewFile = newFile;
@@ -95,10 +94,12 @@
       if (!raw) return;
       let name = raw.trim().replace(/^\/+/, '');
       if (!name) return;
+      //  a typed extension picks the kind and drops off the name. The table
+      //  is EXT_KIND in 30-tree.js, the same one the uploader files by.
       const dot = name.lastIndexOf('.');
-      const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
-      if (KINDS.includes(ext)) {
-        pkind.value = ext === 'txt' ? 'text' : ext;
+      const kind = dot > 0 ? extKind(name.slice(dot + 1)) : null;
+      if (kind) {
+        pkind.value = kind;
         name = name.slice(0, dot);
       }
       pname.value = name;

@@ -404,9 +404,14 @@
     try { await drainQueue(); } finally { replaying = false; }
   }
 
-  //  Each drain phase answers one question: did the ship stay reachable? FALSE
-  //  means it went away mid-drain, and everything the phase had not finished
-  //  stays queued, in order, for the next replay. The caller stops there.
+  //  Each drain phase returns FALSE when it could not finish. Usually that is
+  //  the ship going away mid-drain (shipGone). drainCreates also returns false
+  //  when the conflict-preservation write did not land for any other reason,
+  //  because the alternative is dropping the user's only copy of a document.
+  //  Either way everything the phase had not finished stays queued, in order,
+  //  for the next replay, and the caller stops there and goes degraded. For a
+  //  ship that is answering but refusing that one write, degraded is a
+  //  deliberate over-report.
 
   // Structural ops go FIRST, in the order they were made. Their effect on
   // the pending saves was already applied when they were queued, so a save

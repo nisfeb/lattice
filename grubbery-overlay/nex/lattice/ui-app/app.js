@@ -441,9 +441,14 @@
     try { await drainQueue(); } finally { replaying = false; }
   }
 
-  //  Each drain phase answers one question: did the ship stay reachable? FALSE
-  //  means it went away mid-drain, and everything the phase had not finished
-  //  stays queued, in order, for the next replay. The caller stops there.
+  //  Each drain phase returns FALSE when it could not finish. Usually that is
+  //  the ship going away mid-drain (shipGone). drainCreates also returns false
+  //  when the conflict-preservation write did not land for any other reason,
+  //  because the alternative is dropping the user's only copy of a document.
+  //  Either way everything the phase had not finished stays queued, in order,
+  //  for the next replay, and the caller stops there and goes degraded. For a
+  //  ship that is answering but refusing that one write, degraded is a
+  //  deliberate over-report.
 
   // Structural ops go FIRST, in the order they were made. Their effect on
   // the pending saves was already applied when they were queued, so a save
@@ -2144,6 +2149,32 @@
 })();
 
 // ── src/30-tree.js ────────────────────────────────────────────────────────
+  // ── page kind <-> extension, once for the whole bundle ───────────────────
+  // `kind` is what the ship stores (page-save?type=); `ext` is what a filename
+  // shows. They differ for `text`, and `index` is a page the ship generates
+  // (+make-folder-index) whose file form is markdown. Everything in the bundle
+  // reads these two tables: the tree below, the uploader (70-upload.js) and
+  // the desktop File menu (96-deskmenu.js). Those files are numbered after
+  // this one and the build concatenates in filename order into one scope, so
+  // the names are visible there.
+  //
+  // Two copies live outside the bundle and have to be kept in step by hand:
+  // ui-app/vault.js, which is also served alone to the Settings page with no
+  // bundle around it, and lattice-fs-rs/src/projection.rs, another process in
+  // another language.
+  //
+  // `htm` and `text` are INBOUND-ONLY aliases: archives written before the
+  // extension was conventionalised named those files `.text`, and a restore
+  // has to keep reading archives this app already handed out.
+  const KIND_EXT = { md: 'md', gmi: 'gmi', html: 'html', text: 'txt', js: 'js',
+                     css: 'css', hoon: 'hoon', index: 'md' };
+  const EXT_KIND = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
+                     text: 'text', js: 'js', css: 'css', hoon: 'hoon' };
+  //  an unknown kind shows as hoon, the kind that holds arbitrary source
+  const kindExt = (k) => KIND_EXT[k] || 'hoon';
+  //  an unknown extension is null, never guessed: the caller skips that file
+  const extKind = (e) => EXT_KIND[String(e || '').toLowerCase()] || null;
+
   // ── tree pane: <lat-tree> ────────────────────────────────────────────────
   // The pane's buttons are wired where their handlers live (45-templates,
   // 70-upload). Those files run after this component upgrades, so their
@@ -2269,7 +2300,7 @@
       if (n.page) {
         row.className = 'pg' + (n.path === current ? ' cur' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
-        row.textContent = n.path.split('/').pop() + '.' + extOf(n.kind);
+        row.textContent = n.path.split('/').pop() + '.' + kindExt(n.kind);
         row.onclick = (e) => { e.preventDefault(); openPage(n.path); };
       } else {
         row.className = 'fld' + (n.path === curFolder ? ' cur' : '');
@@ -2310,9 +2341,6 @@
     // it repaints exactly when the tree does. Defined in 80-conflicts.js.
     if (typeof renderConfBadge === 'function') renderConfBadge();
   }
-
-  const extOf = (kind) => ({ md: 'md', gmi: 'gmi', html: 'html', text: 'txt',
-                             js: 'js', css: 'css', index: 'md' }[kind] || 'hoon');
 
   // ── folder selection ─────────────────────────────────────────────────────
   // A folder's share state is derived from its pages: uniform → that mode,
@@ -3877,11 +3905,7 @@
 
 // ── src/70-upload.js ──────────────────────────────────────────────────────
   // ── upload (pickers + drag-and-drop, progress panel) ─────────────────────
-  //  `text` maps to itself as well as from `txt`: exports written before the
-  //  extension was conventionalised named those files `.text`, and a restore
-  //  has to keep reading archives it already handed out.
-  const KMAP = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
-                 text: 'text', js: 'js', css: 'css', hoon: 'hoon' };
+  //  which extensions arrive as which kind is EXT_KIND, in 30-tree.js
   const seg = (x) => x.toLowerCase().replace(/[^a-z0-9._~-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
   const upPanel = $('uppanel'), upMsg = $('upmsg'), upFill = $('upfill'), upErr = $('uperr');
 
@@ -3908,7 +3932,7 @@
     let skipped = 0;
     for (const { file, rel } of items) {
       const dot = rel.lastIndexOf('.');
-      const kind = dot > 0 ? KMAP[rel.slice(dot + 1).toLowerCase()] : null;
+      const kind = dot > 0 ? extKind(rel.slice(dot + 1)) : null;
       if (!kind) { skipped++; continue; }
       const stem = rel.slice(0, dot);
       const parts = verbatim
@@ -3995,7 +4019,7 @@
   const deskPick = window.__TAURI__ && (async (dir) => {
     try {
       const picked = await window.__TAURI__.core.invoke('pick_upload',
-        { dir, exts: Object.keys(KMAP) });
+        { dir, exts: Object.keys(EXT_KIND) });
       if (picked.length)
         uploadItems(picked.map((p) => ({ file: { text: async () => p.text }, rel: p.rel })));
     } catch (e) {
@@ -5806,7 +5830,6 @@
   //  Boot also calls newFile, with focusName false, to land on an empty
   //  page. That must not be interrupted by a dialog, and it is the one
   //  caller that says so.
-  const KINDS = ['md', 'gmi', 'html', 'text', 'txt', 'js', 'css', 'hoon'];
   const nameFieldHidden = () =>
     ws.classList.contains('deskbar') || matchMedia('(max-width: 820px)').matches;
   const baseNewFile = newFile;
@@ -5822,10 +5845,12 @@
       if (!raw) return;
       let name = raw.trim().replace(/^\/+/, '');
       if (!name) return;
+      //  a typed extension picks the kind and drops off the name. The table
+      //  is EXT_KIND in 30-tree.js, the same one the uploader files by.
       const dot = name.lastIndexOf('.');
-      const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
-      if (KINDS.includes(ext)) {
-        pkind.value = ext === 'txt' ? 'text' : ext;
+      const kind = dot > 0 ? extKind(name.slice(dot + 1)) : null;
+      if (kind) {
+        pkind.value = kind;
         name = name.slice(0, dot);
       }
       pname.value = name;

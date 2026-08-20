@@ -1,5 +1,8 @@
-::  mar/lattice/sub-action: a follow/unfollow poked at the pub writer. noun grab
-::  for the internal self-poke; json grab lets an owner HTTP client drive it.
+::  mar/lattice/sub-action: a follow/unfollow poked at the pub writer. The noun
+::  grab carries the internal self-poke (+poke-sub), which is the only way this
+::  mark is reached. There is no mime grab beside the json one, so unlike
+::  know-action and pub-action this is NOT drivable from an HTTP body: add one
+::  (copy know-action's) if a client ever needs to.
 ::
 /<  lp  /lib/lattice-pub.hoon
 =,  format

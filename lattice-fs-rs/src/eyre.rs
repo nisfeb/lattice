@@ -8,6 +8,12 @@ use std::sync::Mutex;
 
 use crate::transport::{TErr, Transport};
 
+/// How much of an HTTP error body a TErr message may carry. The whole body is
+/// what the ship wanted to say, but it can be an HTML error page, and this
+/// string ends up in a shell line and in a served file. Enough for a page-save
+/// 400 naming the field it rejected, short enough to stay one readable line.
+const DETAIL_MAX: usize = 200;
+
 pub struct EyreTransport {
     base: String, // bare Eyre base. Login is at /~/login
     cookie: Mutex<Option<String>>,
@@ -110,12 +116,18 @@ impl EyreTransport {
                 // reply body names the field page-save rejected. lick already
                 // returns the reply body as the message, so this keeps the two
                 // transports saying the same kind of thing behind the trait.
+                // Bounded, and on one line: an Eyre error page can be megabytes
+                // of HTML, and generic.rs's dump() serves this string as the BODY
+                // of the placeholder file it puts in place of an unreadable grub.
                 let detail = resp.into_string().unwrap_or_default();
-                let detail = detail.trim();
+                let detail = detail.split_whitespace().collect::<Vec<_>>().join(" ");
                 Err(TErr::new(
                     code,
                     if detail.is_empty() {
                         format!("http {code}")
+                    } else if detail.chars().count() > DETAIL_MAX {
+                        let head: String = detail.chars().take(DETAIL_MAX).collect();
+                        format!("http {code}: {head}...")
                     } else {
                         format!("http {code}: {detail}")
                     },

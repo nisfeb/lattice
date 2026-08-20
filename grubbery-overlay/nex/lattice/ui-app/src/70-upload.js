@@ -1,9 +1,5 @@
   // ── upload (pickers + drag-and-drop, progress panel) ─────────────────────
-  //  `text` maps to itself as well as from `txt`: exports written before the
-  //  extension was conventionalised named those files `.text`, and a restore
-  //  has to keep reading archives it already handed out.
-  const KMAP = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
-                 text: 'text', js: 'js', css: 'css', hoon: 'hoon' };
+  //  which extensions arrive as which kind is EXT_KIND, in 30-tree.js
   const seg = (x) => x.toLowerCase().replace(/[^a-z0-9._~-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
   const upPanel = $('uppanel'), upMsg = $('upmsg'), upFill = $('upfill'), upErr = $('uperr');
 
@@ -30,7 +26,7 @@
     let skipped = 0;
     for (const { file, rel } of items) {
       const dot = rel.lastIndexOf('.');
-      const kind = dot > 0 ? KMAP[rel.slice(dot + 1).toLowerCase()] : null;
+      const kind = dot > 0 ? extKind(rel.slice(dot + 1)) : null;
       if (!kind) { skipped++; continue; }
       const stem = rel.slice(0, dot);
       const parts = verbatim
@@ -117,7 +113,7 @@
   const deskPick = window.__TAURI__ && (async (dir) => {
     try {
       const picked = await window.__TAURI__.core.invoke('pick_upload',
-        { dir, exts: Object.keys(KMAP) });
+        { dir, exts: Object.keys(EXT_KIND) });
       if (picked.length)
         uploadItems(picked.map((p) => ({ file: { text: async () => p.text }, rel: p.rel })));
     } catch (e) {

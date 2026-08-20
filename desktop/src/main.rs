@@ -21,7 +21,6 @@ use tauri::Manager;
 /// HTTP against the configured ship), so a local-pier mount survives a restart
 /// with no session in play. A failure is reported and skipped. One dead pier
 /// must not cost the other mounts.
-/// Bring saved mounts back after a restart.
 ///
 /// The lock is taken PER MOUNT, never across the loop. Healing and spawning
 /// both touch the filesystem and the network, and holding the map across them
