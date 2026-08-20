@@ -38,6 +38,7 @@
 /<  pjs  prism.js
 /<  uih  ui-app/index.html
 /<  uij  ui-app/app.js
+/<  vjs  ui-app/vault.js
 /<  lc   /lib/lattice-comment.hoon
 /<  lb   /lib/lattice-bookmark.hoon
 /<  lh   /lib/lattice-history.hoon
@@ -79,6 +80,10 @@
         ::  serialized pier, so the shell ships as one document + one script).
             [%over %& [/app %'index.html'] [[/ %mime] uih]]
             [%over %& [/app %'app.js'] [[/ %mime] uij]]
+        ::  vault.js: shared export/restore + the Settings backup UI. Served
+        ::  standalone so the editor bundle and the settings page (a separate
+        ::  document) share one tar writer/reader instead of two.
+            [%over %& [/app %'vault.js'] [[/ %mime] vjs]]
         ::  /db.lattice: the obelisk database itself, a grub this nexus owns.
         ::  grubbery ships obelisk as a LIBRARY (+exec:obl is a pure function),
         ::  so there is no separate agent and no owner fiber. The catalog is
@@ -5453,6 +5458,7 @@
   =/  ct=(unit @t)
     ?:  =(%'index.html' nam)  `'text/html'
     ?:  =(%'app.js' nam)      `'text/javascript'
+    ?:  =(%'vault.js' nam)    `'text/javascript'
     ~
   ?~  ct  (send-err eyre-id 404 'not found')
   ;<  pv=view:nexus  bind:m  (peek:io [%& %& (weld app-base:lu /app) nam] ~)
@@ -7845,7 +7851,7 @@
     ::  light-on-dark: the app's rule is that no control ships with foreign
     ::  widget chrome. The native select arrow is kept (appearance:none with no
     ::  replacement chevron would leave no affordance at all).
-    '<style>.btn{padding:8px 16px;font:inherit;border:1px solid #8886;border-radius:8px;background:transparent;color:inherit;cursor:pointer}.btn:hover{border-color:#1a6ed8}.btn:disabled{opacity:.5;cursor:default}select,option,input[type=range]{color-scheme:light dark}select{font:inherit;color:inherit;background:transparent;border:1px solid #8886;border-radius:6px;padding:5px 8px;cursor:pointer}select:hover,select:focus{border-color:#1a6ed8;outline:none}input[type=range]{vertical-align:middle;accent-color:#1a6ed8;cursor:pointer}label{color:#8a8a8a}</style>'
+    '<style>.btn{padding:8px 16px;font:inherit;border:1px solid #8886;border-radius:8px;background:transparent;color:inherit;cursor:pointer}.btn:hover{border-color:#1a6ed8}.btn:disabled{opacity:.5;cursor:default}select,option,input[type=range]{color-scheme:light dark}select{font:inherit;color:inherit;background:transparent;border:1px solid #8886;border-radius:6px;padding:5px 8px;cursor:pointer}select:hover,select:focus{border-color:#1a6ed8;outline:none}input[type=range]{vertical-align:middle;accent-color:#1a6ed8;cursor:pointer}label{color:#8a8a8a}.bklist{list-style:none;padding:0;margin:.4rem 0}.bklist li{margin:.4rem 0;padding:.5rem .7rem;border:1px solid #8886;border-radius:8px}.bkrow{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:.4rem 0}.err{color:#c0392b}</style>'
     "<h1>Settings</h1>"
     "<h2>Content catalog</h2>"
     "<p class=\"muted\">Published pages are indexed for search automatically about every 6 hours (and a followed peer's edits index live). Sweep now to (re)index all of your published pages and followed peers immediately &mdash; e.g. after publishing something you want searchable right away.</p>"
@@ -7855,6 +7861,19 @@
     "<p><button type=\"button\" id=\"sreidx\" class=\"btn\">Reindex my content</button> <span id=\"srst\" class=\"muted\"></span></p>"
     %-  trip
     '<script>(function(){var b=document.getElementById("sreidx");var s=document.getElementById("srst");b.onclick=function(){b.disabled=true;s.textContent="reindexing...";fetch("/apps/lattice/search-reindex",{method:"POST"}).then(function(r){s.textContent=r.ok?"done - your pages and notes are searchable.":"failed ("+r.status+")";b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
+    ::  backup: manual export/restore for everyone, plus (desktop only) the
+    ::  scheduled backups. The whole UI is rendered by ui-app/vault.js's
+    ::  +mountSettings, which shares the editor's exact tar writer/reader, so the
+    ::  archive a schedule writes and the one this page exports are the same file.
+    ::  This page is a separate document from the editor bundle, so it loads
+    ::  vault.js on its own; the external script is parser-blocking, so
+    ::  LatticeVault exists by the time the wiring line runs.
+    "<h2>Backup</h2>"
+    "<div id=\"vaultui\"></div>"
+    %-  trip
+    '<script src="/apps/lattice/app/vault.js"></script>'
+    %-  trip
+    '<script>window.LatticeVault&&LatticeVault.mountSettings(document.getElementById("vaultui"))</script>'
     ::  typography: a CLIENT-ONLY preference. It writes localStorage and the
     ::  editor (ui-app/src/05-prefs.js) applies it to --ed-font / --ed-size, so
     ::  changing it costs zero requests and never touches the pier. An editor
