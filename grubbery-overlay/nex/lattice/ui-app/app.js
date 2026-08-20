@@ -5561,7 +5561,11 @@
       { method: 'POST', body: sent }); } catch {}
     echoUntil = Date.now() + 4000;
     if (shipGone(r)) {
-      await enqueueKnow(key, sent);
+      //  if the queue would not take it, it is NOT saved: leave the editor
+      //  dirty and the key still editable, so the text under the cursor is not
+      //  presented as stored. Same rule the page paths enforce (35-pages.js),
+      //  and enqueueKnow has already said why it refused.
+      if (!(await enqueueKnow(key, sent))) return;
       current = key;
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
