@@ -90,9 +90,7 @@
       //  a folder's + pre-fills that folder; the toolbar keeps offering the
       //  open page's path, which is what it did before this existed
       const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
-      const raw = await ask('page name (e.g. notes/todo.md)', seed, 'create');
-      if (!raw) return;
-      let name = raw.trim().replace(/^\/+/, '');
+      let name = await askName('page name (e.g. notes/todo.md)', seed, 'create');
       if (!name) return;
       //  a typed extension picks the kind and drops off the name. The table
       //  is EXT_KIND in 30-tree.js, the same one the uploader files by.
@@ -105,6 +103,12 @@
       pname.value = name;
       //  both labels (desktop deskbar, mobile bar) repaint off this event
       pname.dispatchEvent(new Event('change'));
+      //  the button says create, so write the page here. Naming the buffer
+      //  and leaving it unwritten read as a create that did nothing, and a
+      //  page abandoned before its first keystroke left no trace at all.
+      //  save() owns the whole create: 409, the offline queue, the tree
+      //  patch and the url, so this must not reimplement any of it.
+      await save();
       src.focus();
     })();
   };

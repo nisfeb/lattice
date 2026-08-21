@@ -36,3 +36,49 @@ Prism.languages.gemtext = {
   'list': { pattern: /^\* /m, alias: 'important' }
 };
 Prism.languages.gmi = Prism.languages.gemtext;
+
+//  LaTeX. Written out here for the same reason hoon and gemtext are: this
+//  file is read, and a minified upstream component is not. Order matters in
+//  a Prism grammar, earliest match wins, so comments come before anything
+//  that could swallow a % and math comes before the command rule.
+Prism.languages.latex = {
+  //  a comment runs to end of line, but \% is a literal percent sign. The
+  //  lookbehind group is excluded from the token, so the escape stays put.
+  'comment': { pattern: /(^|[^\\])%.*/, lookbehind: true },
+  //  verbatim content is not LaTeX and must not be tokenised as any
+  'cdata': {
+    pattern: /(\\begin\{(verbatim|lstlisting)\*?\})[\s\S]*?(?=\\end\{\2\*?\})/,
+    lookbehind: true
+  },
+  //  math, in all four spellings plus the display environments
+  'equation': [
+    {
+      pattern: /\$\$(?:\\[\s\S]|[^\\$])+\$\$|\$(?:\\[\s\S]|[^\\$])+\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]/,
+      alias: 'string'
+    },
+    {
+      pattern: /(\\begin\{(align|alignat|eqnarray|equation|gather|math|multline)\*?\})[\s\S]*?(?=\\end\{\2\*?\})/,
+      lookbehind: true,
+      alias: 'string'
+    }
+  ],
+  //  the ARGUMENT of a structural command: the package name, the label, the
+  //  environment being opened. That is the part you scan for.
+  'keyword': {
+    pattern: /(\\(?:begin|end|cite|documentclass|label|ref|eqref|usepackage|input|include|bibliography)(?:\[[^\]]*\])?\{)[^}]*(?=\})/,
+    lookbehind: true
+  },
+  'url': { pattern: /(\\(?:url|href)\{)[^}]*(?=\})/, lookbehind: true },
+  //  section titles read as headings, like markdown's
+  'headline': {
+    pattern: /(\\(?:chapter|part|section|subsection|subsubsection|paragraph|subparagraph|title|author|frametitle)\*?(?:\[[^\]]*\])?\{)[^}]*(?=\})/,
+    lookbehind: true,
+    alias: 'class-name'
+  },
+  //  any remaining control sequence
+  'function': { pattern: /\\[a-zA-Z@]+\*?/, alias: 'selector' },
+  'punctuation': /[[\]{}&~]/
+};
+//  .tex is the extension, latex is the language. Both reach the same grammar,
+//  the way gmi does for gemtext.
+Prism.languages.tex = Prism.languages.latex;

@@ -816,9 +816,13 @@
     <option value="text">txt</option>
     <option value="js">js</option>
     <option value="css">css</option>
+    <option value="tex">tex</option>
     <option value="hoon">hoon</option>
   </select>
   <button id="save">save</button>
+  <!-- LaTeX conversion runs on the user's own machine (71-latex.js),
+       so this is hidden on the web and on non-tex pages. -->
+  <button id="texconv" hidden>convert to html</button>
   <span id="spin"></span><span id="status" class="muted"></span>
   <!-- Offline state is a CONDITION, not an event, so it cannot live in the
        status line: the next save, render or refresh overwrites that. This
@@ -897,6 +901,24 @@
     const p = dlgOpen(msg, okLabel);
     dlgIn.focus(); dlgIn.select();
     return p;
+  };
+  // askName: ask() for a path-like name, re-prompting until the server would
+  // accept it. Every one of these prompts feeds a route that enforces
+  // +valid-name, and a rejection came back as a bare status code ("folder
+  // failed 400") that never said what was wrong. Returns the CLEANED name,
+  // so callers do not each re-implement the trim and slash strip.
+  const askName = async (msg, value, okLabel) => {
+    let seed = value || '';
+    let note = '';
+    for (;;) {
+      const raw = await ask(note + msg, seed, okLabel);
+      if (raw === null) return null;
+      const name = raw.trim().replace(/^\/+|\/+$/g, '');
+      if (!name) return null;
+      if (validName(name)) return name;
+      seed = name;
+      note = 'lowercase letters, digits and - . _ ~ only, no spaces. ';
+    }
   };
   // askConfirm: yes/no dialog → boolean
   const askConfirm = (msg, okLabel) => {
@@ -988,6 +1010,10 @@
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits. Auto-refresh never clobbers them
+  // read by the service-worker registration script, which lives in its own
+  // inline <script> and cannot see this scope. It reloads the page when a new
+  // worker takes over, and must never do that over typed work.
+  window.__latUnsaved = () => dirty === true;
   // Whether the user has typed since the current editor view was established.
   // Cleared by applyPage/newFile (a fresh view), NEVER by autosave — and that
   // is the point: `dirty` cannot answer "did the user do something while
@@ -1357,7 +1383,7 @@
   // ── editor pane: <lat-editor> + highlighting (Prism overlay) ─────────────
   let src, hl;   // assigned when <lat-editor> upgrades (below, synchronously)
   const LMAP = { md: 'markdown', gmi: 'gemtext', html: 'markup',
-                 js: 'javascript', css: 'css', hoon: 'hoon' };
+                 js: 'javascript', css: 'css', hoon: 'hoon', tex: 'latex' };
   const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const render = () => {
     const lang = LMAP[pkind.value];
@@ -1413,7 +1439,11 @@
     el.style.display = 'contents';
     document.getElementById('ws').appendChild(el);
   }
-  pkind.addEventListener('change', () => { curKind = pkind.value; render(); });
+  pkind.addEventListener('change', () => {
+    curKind = pkind.value;
+    render();
+    if (typeof refreshTexButton === 'function') refreshTexButton();
+  });
 
 // ── src/27-vim.js ─────────────────────────────────────────────────────────
   // ── vim mode ─────────────────────────────────────────────────────────────
@@ -2167,9 +2197,10 @@
   // extension was conventionalised named those files `.text`, and a restore
   // has to keep reading archives this app already handed out.
   const KIND_EXT = { md: 'md', gmi: 'gmi', html: 'html', text: 'txt', js: 'js',
-                     css: 'css', hoon: 'hoon', index: 'md' };
+                     css: 'css', hoon: 'hoon', index: 'md', tex: 'tex' };
   const EXT_KIND = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
-                     text: 'text', js: 'js', css: 'css', hoon: 'hoon' };
+                     text: 'text', js: 'js', css: 'css', hoon: 'hoon', tex: 'tex',
+                     latex: 'tex' };
   //  an unknown kind shows as hoon, the kind that holds arbitrary source
   const kindExt = (k) => KIND_EXT[k] || 'hoon';
   //  an unknown extension is null, never guessed: the caller skips that file
@@ -2483,7 +2514,8 @@
     pname.readOnly = true;
     curKind = d.kind;
     curRev = d.rev || 0;
-    if (LMAP[d.kind] || d.kind === 'text') pkind.value = d.kind === 'text' ? 'text' : d.kind;
+    if ([...pkind.options].some((o) => o.value === d.kind)) pkind.value = d.kind;
+    if (typeof refreshTexButton === 'function') refreshTexButton();
     src.value = d.body;
     dirty = false;
     // A fresh editor state begins here. everTyped answers "did the user type
@@ -2498,7 +2530,13 @@
     resetPanels();
     showShare(d.share || 'private');
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
-    if (typeof d.html === 'string') { prev.removeAttribute('src'); prev.srcdoc = d.html; }
+    //  a tex page's server render is its SOURCE as escaped text, because the
+    //  ship has no LaTeX and is not getting one. The local conversion is the
+    //  only true render, and it arrives first, so letting the ship's answer
+    //  land here would overwrite a rendered document with its own source.
+    if (typeof d.html === 'string' && d.kind !== 'tex') {
+      prev.removeAttribute('src'); prev.srcdoc = d.html;
+    }
     else if (!quiet) refreshPreview();
     // A quiet open is the COMMON one: the tree dump already carried the body,
     // so the editor painted instantly and the render=1 fetch is an upgrade.
@@ -2521,6 +2559,7 @@
     current = null;
     curFolder = null;
     curKind = null;
+    if (typeof refreshTexButton === 'function') refreshTexButton();
     exitGrub();
     exitRev();
     $('histsec').hidden = true;
@@ -2542,10 +2581,8 @@
   }
 
   async function newFolder() {
-    const raw = await ask('folder name (e.g. notes or notes/sub)',
+    const name = await askName('folder name (e.g. notes or notes/sub)',
       folderCtx ? folderCtx + '/' : '', 'create');
-    if (!raw) return;
-    const name = raw.trim().replace(/^\/+|\/+$/g, '');
     if (!name) return;
     const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name));
     if (!r.ok) { st('folder failed ' + r.status, false); return; }
@@ -2833,10 +2870,8 @@
     if (!names.length) { st('no templates available', false); return; }
     const tmpl = await askChoice('start from which template?', names, 'next');
     if (!tmpl) return;
-    const raw = await ask('name for the new ' + tmpl,
+    const name = await askName('name for the new ' + tmpl,
       folderCtx ? folderCtx + '/' + tmpl : tmpl, 'create');
-    if (!raw) return;
-    const name = raw.trim().replace(/^\/+|\/+$/g, '');
     if (!name) return;
     stWork('creating ' + name + ' from ' + tmpl + '\u2026 (one save per page)');
     let r = null;
@@ -3420,7 +3455,11 @@
     el.style.display = 'contents';
     document.getElementById('ws').appendChild(el);
   }
-  const CONTENT = () => ['md', 'gmi', 'html', 'text'].includes(pkind.value);
+  //  tex is here for the same reason html is: the ship cannot render it, so
+  //  the local paint IS the preview and there is no server answer to wait
+  //  for. It differs in one way, that its renderer is a subprocess and
+  //  therefore async, which is what texPreviewHtml in 71-latex.js handles.
+  const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex'].includes(pkind.value);
 
   // Paint locally NOW, and let the ship's answer replace it when it arrives.
   //
@@ -3440,6 +3479,10 @@
     if (kind === 'md') return mdToHtml(body);
     if (kind === 'gmi') return gmiToHtml(body);
     if (kind === 'text') return '<pre>' + mdEsc(body) + '</pre>';
+    //  pandoc is a subprocess, so it cannot answer inside this synchronous
+    //  call. It returns whatever the last conversion produced and schedules
+    //  another, which repaints when it lands. Same contract as a cache.
+    if (kind === 'tex') return texPreviewHtml(body);
     return body;   // html: the document is already its own rendering
   };
   const paintLocal = () => {
@@ -4062,6 +4105,161 @@
     Promise.all(ps).then(() => { if (out.length) uploadItems(out); });
   });
 
+// ── src/71-latex.js ───────────────────────────────────────────────────────
+  // ── LaTeX to HTML ────────────────────────────────────────────────────────
+  //  A .tex page gets a convert button that runs pandoc on THIS machine and
+  //  writes the result back as an ordinary html page. The ship never learns
+  //  LaTeX: it stores tex source as text and serves the output as html, both
+  //  of which it already knew how to do.
+  //
+  //  Desktop only, because the conversion is a local subprocess. On the web
+  //  the button is simply absent, which is honest: there is nothing there that
+  //  could run it.
+  //
+  //  pandoc is NOT bundled (it is GPL, and 150MB). We detect the user's own
+  //  install and say where to get it when there is none.
+  const texRust = () => (window.__TAURI__ && window.__TAURI__.core) || null;
+
+  //  The output page's name. A page name is a key, so the source and its
+  //  output cannot share one. The tree derives the shown extension from the
+  //  kind, so `paper` (tex) lists as paper.tex and `paper-web` (html) lists
+  //  as paper-web.html without either name carrying an extension itself.
+  const texOut = (name) => name + '-web';
+
+  let texProbe = null;         // last probe result, per page open
+
+  const texBtn = () => $('texconv');
+
+  //  Probed on every .tex page open rather than once at boot: someone who
+  //  installs pandoc and comes back should find the button live without
+  //  restarting the app.
+  async function refreshTexButton() {
+    const b = texBtn();
+    if (!b) return;
+    const rust = texRust();
+    const isTex = curKind === 'tex' || pkind.value === 'tex';
+    if (!rust || !isTex || mode === 'know') { b.hidden = true; return; }
+    b.hidden = false;
+    b.textContent = 'convert to html';
+    b.disabled = false;                     // never a dead control: see below
+    try { texProbe = await rust.invoke('pandoc_probe'); }
+    catch { texProbe = { available: false }; }
+    b.title = texProbe && texProbe.available
+      ? 'convert this LaTeX to a sibling html page using ' +
+        (texProbe.version || 'pandoc')
+      : 'needs pandoc installed on this machine (click to find out how)';
+    //  The button stays CLICKABLE without pandoc, and explains itself when
+    //  pressed. A disabled control with no explanation is a dead end: the
+    //  person who most needs the message is the one who cannot click.
+    b.classList.toggle('needsdep', !(texProbe && texProbe.available));
+  }
+
+  async function convertTex() {
+    const rust = texRust();
+    if (!rust) return;
+    if (!texProbe || !texProbe.available) {
+      st('pandoc is not installed on this machine', false);
+      const go = await askConfirm(
+        'Converting LaTeX needs pandoc, which is not installed. ' +
+        'Open the pandoc install page?', 'open');
+      if (go) rust.invoke('open_external_url', { url: 'https://pandoc.org/installing.html' });
+      return;
+    }
+    if (!current) { st('save this page before converting', false); return; }
+    const out = texOut(current);
+    st('converting with pandoc…');
+    let html = null;
+    try { html = await rust.invoke('convert_tex', { src: src.value }); }
+    catch (e) {
+      //  pandoc names the line and the construct it choked on. Show that,
+      //  not a generic failure.
+      st('pandoc: ' + String(e && e.message ? e.message : e).slice(0, 160), false);
+      return;
+    }
+    //  A derived page. Say so IN the file, because the next convert
+    //  overwrites it and hand edits would vanish with no warning.
+    const body = '<!-- generated from ' + current +
+      '.tex by pandoc. Edits here are lost on the next convert. -->\n' + html;
+    //  &new=1 only the first time: page-save answers 409 to a create over an
+    //  existing name, and a re-convert is an overwrite by design.
+    const known = nodes.some((n) => n.page && n.path === out);
+    const url = api + '/page-save?name=' + encodeURIComponent(out) +
+      '&type=html' + (known ? '' : '&new=1');
+    const r = await mutate(url, { method: 'POST', body });
+    if (!r || !r.ok) { st('could not write ' + out + (r ? ' (' + r.status + ')' : ''), false); return; }
+    if (!known) { addTreeNode(out, 'html'); snapTree(); renderTree(); }
+    bustPages(out);
+    st('wrote ' + out + '.html');
+  }
+
+  //  wired here, where the handler lives (the same rule 45-templates and
+  //  75-move follow)
+  if (texBtn()) texBtn().onclick = convertTex;
+
+  // ── live preview ─────────────────────────────────────────────────────────
+  //  60-preview paints every content kind synchronously. pandoc is a
+  //  subprocess and cannot answer inside that call, so this keeps the last
+  //  conversion and hands it over immediately, then repaints when a fresh one
+  //  lands. Declared with `function` rather than `const`: 60-preview.js loads
+  //  first and names texPreviewHtml, so it must be hoisted, not in a TDZ.
+  let texCache = { src: null, html: null };
+  let texTimer = 0;
+  let texBusy = false;
+
+  //  400ms, not the 60ms the other kinds use. Those call a function; this
+  //  spawns a process, and one per keystroke would be a fork bomb with a
+  //  progress bar.
+  const TEX_DEBOUNCE = 400;
+
+  function texSourceFallback(body) {
+    return '<pre>' + mdEsc(body) + '</pre>';
+  }
+
+  function texPreviewHtml(body) {
+    //  On the web there is no pandoc, so show the source rather than an empty
+    //  pane. A blank preview reads as broken; the source reads as honest.
+    if (!texRust()) return texSourceFallback(body);
+    if (texCache.src !== body) scheduleTexRender(body);
+    //  until the first conversion returns, the source stands in. Typing then
+    //  refines rather than flashing empty.
+    return texCache.html === null ? texSourceFallback(body) : texCache.html;
+  }
+
+  function scheduleTexRender(body) {
+    clearTimeout(texTimer);
+    texTimer = setTimeout(() => { runTexRender(body); }, TEX_DEBOUNCE);
+  }
+
+  async function runTexRender(body) {
+    const rust = texRust();
+    if (!rust) return;
+    //  never two pandocs at once. The newer body wins, so re-arm rather than
+    //  queue: whatever is typed last is what anyone wants to see.
+    if (texBusy) { scheduleTexRender(body); return; }
+    if (!texProbe) {
+      try { texProbe = await rust.invoke('pandoc_probe'); }
+      catch { texProbe = { available: false }; }
+    }
+    if (!texProbe.available) { texCache = { src: body, html: null }; return; }
+    texBusy = true;
+    let html = null;
+    let err = null;
+    try { html = await rust.invoke('convert_tex', { src: body }); }
+    catch (e) { err = String(e && e.message ? e.message : e); }
+    texBusy = false;
+    //  A broken document must SAY so. Freezing the last good render would
+    //  leave a stale page on screen while the source no longer produces it.
+    texCache = {
+      src: body,
+      html: html !== null ? html
+        : '<pre style="color:#c33;white-space:pre-wrap">' +
+          mdEsc(err || 'pandoc could not convert this document') + '</pre>',
+    };
+    //  the body may have moved on while pandoc ran
+    if (src.value !== body) { scheduleTexRender(src.value); return; }
+    if (typeof paintLocal === 'function') paintLocal();
+  }
+
 // ── src/72-acl.js ─────────────────────────────────────────────────────────
   // ── access control pane: <lat-acl>, the peers panel with room to work ────
   // Same data and same endpoints as the narrow editor panel (67-perms.js).
@@ -4604,10 +4802,8 @@
   }
 
   async function moveFolder(oldPath) {
-    const to = await ask('move / rename folder ' + oldPath + ' to:', oldPath, 'move');
-    if (!to || to === oldPath) return;
-    const newPath = to.trim().replace(/^\/+|\/+$/g, '');
-    if (!newPath) return;
+    const newPath = await askName('move / rename folder ' + oldPath + ' to:', oldPath, 'move');
+    if (!newPath || newPath === oldPath) return;
     const mapped = (p) => newPath + p.slice(oldPath.length);
     st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
     const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldPath) +
@@ -4790,11 +4986,9 @@
   $('mv').onclick = async () => {
     if (curFolder) { moveFolder(curFolder); return; }
     if (!current) { st('open something first', false); return; }
-    const to = await ask('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
+    const newName = await askName('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
       current, 'move');
-    if (!to || to === current) return;
-    const newName = to.trim().replace(/^\/+|\/+$/g, '');
-    if (!newName) return;
+    if (!newName || newName === current) return;
     if (mode === 'know') {
       const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
         '&to=' + encodeURIComponent(newName));
@@ -5841,9 +6035,7 @@
       //  a folder's + pre-fills that folder; the toolbar keeps offering the
       //  open page's path, which is what it did before this existed
       const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
-      const raw = await ask('page name (e.g. notes/todo.md)', seed, 'create');
-      if (!raw) return;
-      let name = raw.trim().replace(/^\/+/, '');
+      let name = await askName('page name (e.g. notes/todo.md)', seed, 'create');
       if (!name) return;
       //  a typed extension picks the kind and drops off the name. The table
       //  is EXT_KIND in 30-tree.js, the same one the uploader files by.
@@ -5856,6 +6048,12 @@
       pname.value = name;
       //  both labels (desktop deskbar, mobile bar) repaint off this event
       pname.dispatchEvent(new Event('change'));
+      //  the button says create, so write the page here. Naming the buffer
+      //  and leaving it unwritten read as a create that did nothing, and a
+      //  page abandoned before its first keystroke left no trace at all.
+      //  save() owns the whole create: 409, the offline queue, the tree
+      //  patch and the url, so this must not reimplement any of it.
+      await save();
       src.focus();
     })();
   };

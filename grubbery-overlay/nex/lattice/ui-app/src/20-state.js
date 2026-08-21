@@ -1,6 +1,10 @@
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits. Auto-refresh never clobbers them
+  // read by the service-worker registration script, which lives in its own
+  // inline <script> and cannot see this scope. It reloads the page when a new
+  // worker takes over, and must never do that over typed work.
+  window.__latUnsaved = () => dirty === true;
   // Whether the user has typed since the current editor view was established.
   // Cleared by applyPage/newFile (a fresh view), NEVER by autosave — and that
   // is the point: `dirty` cannot answer "did the user do something while

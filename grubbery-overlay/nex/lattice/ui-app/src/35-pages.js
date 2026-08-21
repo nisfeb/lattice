@@ -96,7 +96,8 @@
     pname.readOnly = true;
     curKind = d.kind;
     curRev = d.rev || 0;
-    if (LMAP[d.kind] || d.kind === 'text') pkind.value = d.kind === 'text' ? 'text' : d.kind;
+    if ([...pkind.options].some((o) => o.value === d.kind)) pkind.value = d.kind;
+    if (typeof refreshTexButton === 'function') refreshTexButton();
     src.value = d.body;
     dirty = false;
     // A fresh editor state begins here. everTyped answers "did the user type
@@ -111,7 +112,13 @@
     resetPanels();
     showShare(d.share || 'private');
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
-    if (typeof d.html === 'string') { prev.removeAttribute('src'); prev.srcdoc = d.html; }
+    //  a tex page's server render is its SOURCE as escaped text, because the
+    //  ship has no LaTeX and is not getting one. The local conversion is the
+    //  only true render, and it arrives first, so letting the ship's answer
+    //  land here would overwrite a rendered document with its own source.
+    if (typeof d.html === 'string' && d.kind !== 'tex') {
+      prev.removeAttribute('src'); prev.srcdoc = d.html;
+    }
     else if (!quiet) refreshPreview();
     // A quiet open is the COMMON one: the tree dump already carried the body,
     // so the editor painted instantly and the render=1 fetch is an upgrade.
@@ -134,6 +141,7 @@
     current = null;
     curFolder = null;
     curKind = null;
+    if (typeof refreshTexButton === 'function') refreshTexButton();
     exitGrub();
     exitRev();
     $('histsec').hidden = true;
@@ -155,10 +163,8 @@
   }
 
   async function newFolder() {
-    const raw = await ask('folder name (e.g. notes or notes/sub)',
+    const name = await askName('folder name (e.g. notes or notes/sub)',
       folderCtx ? folderCtx + '/' : '', 'create');
-    if (!raw) return;
-    const name = raw.trim().replace(/^\/+|\/+$/g, '');
     if (!name) return;
     const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name));
     if (!r.ok) { st('folder failed ' + r.status, false); return; }

@@ -22,10 +22,8 @@
   }
 
   async function moveFolder(oldPath) {
-    const to = await ask('move / rename folder ' + oldPath + ' to:', oldPath, 'move');
-    if (!to || to === oldPath) return;
-    const newPath = to.trim().replace(/^\/+|\/+$/g, '');
-    if (!newPath) return;
+    const newPath = await askName('move / rename folder ' + oldPath + ' to:', oldPath, 'move');
+    if (!newPath || newPath === oldPath) return;
     const mapped = (p) => newPath + p.slice(oldPath.length);
     st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
     const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldPath) +

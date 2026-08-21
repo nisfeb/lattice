@@ -16,9 +16,13 @@
     <option value="text">txt</option>
     <option value="js">js</option>
     <option value="css">css</option>
+    <option value="tex">tex</option>
     <option value="hoon">hoon</option>
   </select>
   <button id="save">save</button>
+  <!-- LaTeX conversion runs on the user's own machine (71-latex.js),
+       so this is hidden on the web and on non-tex pages. -->
+  <button id="texconv" hidden>convert to html</button>
   <span id="spin"></span><span id="status" class="muted"></span>
   <!-- Offline state is a CONDITION, not an event, so it cannot live in the
        status line: the next save, render or refresh overwrites that. This

@@ -14,10 +14,8 @@
     if (!names.length) { st('no templates available', false); return; }
     const tmpl = await askChoice('start from which template?', names, 'next');
     if (!tmpl) return;
-    const raw = await ask('name for the new ' + tmpl,
+    const name = await askName('name for the new ' + tmpl,
       folderCtx ? folderCtx + '/' + tmpl : tmpl, 'create');
-    if (!raw) return;
-    const name = raw.trim().replace(/^\/+|\/+$/g, '');
     if (!name) return;
     stWork('creating ' + name + ' from ' + tmpl + '\u2026 (one save per page)');
     let r = null;

@@ -31,6 +31,10 @@
 ++  md    |=(m=@t `result`[`m ~ %md ~ ~])     ::  data is markdown
 ++  js    |=(j=@t `result`[`j ~ %js ~ ~])     ::  data is raw javascript (asset)
 ++  css   |=(c=@t `result`[`c ~ %css ~ ~])    ::  data is raw css (asset)
+::  LaTeX source. It renders as escaped text, because the ship has no TeX
+::  and is not getting one: conversion happens in the desktop client, which
+::  writes the result back as an ordinary html page.
+++  tex   |=(t=@t `result`[`t ~ %text ~ ~])   ::  data is LaTeX source
 ++  raw   |=(n=* `result`[`n ~ %noun ~ ~])    ::  data is an opaque noun
 ++  same  ^-(result [~ ~ %text ~ ~])          ::  no change to data
 ::  modifiers. Chain onto a result:

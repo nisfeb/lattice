@@ -158,11 +158,9 @@
   $('mv').onclick = async () => {
     if (curFolder) { moveFolder(curFolder); return; }
     if (!current) { st('open something first', false); return; }
-    const to = await ask('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
+    const newName = await askName('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
       current, 'move');
-    if (!to || to === current) return;
-    const newName = to.trim().replace(/^\/+|\/+$/g, '');
-    if (!newName) return;
+    if (!newName || newName === current) return;
     if (mode === 'know') {
       const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
         '&to=' + encodeURIComponent(newName));
