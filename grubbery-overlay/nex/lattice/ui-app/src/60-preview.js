@@ -37,7 +37,11 @@
     el.style.display = 'contents';
     document.getElementById('ws').appendChild(el);
   }
-  const CONTENT = () => ['md', 'gmi', 'html', 'text'].includes(pkind.value);
+  //  tex is here for the same reason html is: the ship cannot render it, so
+  //  the local paint IS the preview and there is no server answer to wait
+  //  for. It differs in one way, that its renderer is a subprocess and
+  //  therefore async, which is what texPreviewHtml in 71-latex.js handles.
+  const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex'].includes(pkind.value);
 
   // Paint locally NOW, and let the ship's answer replace it when it arrives.
   //
@@ -57,6 +61,10 @@
     if (kind === 'md') return mdToHtml(body);
     if (kind === 'gmi') return gmiToHtml(body);
     if (kind === 'text') return '<pre>' + mdEsc(body) + '</pre>';
+    //  pandoc is a subprocess, so it cannot answer inside this synchronous
+    //  call. It returns whatever the last conversion produced and schedules
+    //  another, which repaints when it lands. Same contract as a cache.
+    if (kind === 'tex') return texPreviewHtml(body);
     return body;   // html: the document is already its own rendering
   };
   const paintLocal = () => {

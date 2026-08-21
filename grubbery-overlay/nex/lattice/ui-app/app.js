@@ -2530,7 +2530,13 @@
     resetPanels();
     showShare(d.share || 'private');
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
-    if (typeof d.html === 'string') { prev.removeAttribute('src'); prev.srcdoc = d.html; }
+    //  a tex page's server render is its SOURCE as escaped text, because the
+    //  ship has no LaTeX and is not getting one. The local conversion is the
+    //  only true render, and it arrives first, so letting the ship's answer
+    //  land here would overwrite a rendered document with its own source.
+    if (typeof d.html === 'string' && d.kind !== 'tex') {
+      prev.removeAttribute('src'); prev.srcdoc = d.html;
+    }
     else if (!quiet) refreshPreview();
     // A quiet open is the COMMON one: the tree dump already carried the body,
     // so the editor painted instantly and the render=1 fetch is an upgrade.
@@ -3449,7 +3455,11 @@
     el.style.display = 'contents';
     document.getElementById('ws').appendChild(el);
   }
-  const CONTENT = () => ['md', 'gmi', 'html', 'text'].includes(pkind.value);
+  //  tex is here for the same reason html is: the ship cannot render it, so
+  //  the local paint IS the preview and there is no server answer to wait
+  //  for. It differs in one way, that its renderer is a subprocess and
+  //  therefore async, which is what texPreviewHtml in 71-latex.js handles.
+  const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex'].includes(pkind.value);
 
   // Paint locally NOW, and let the ship's answer replace it when it arrives.
   //
@@ -3469,6 +3479,10 @@
     if (kind === 'md') return mdToHtml(body);
     if (kind === 'gmi') return gmiToHtml(body);
     if (kind === 'text') return '<pre>' + mdEsc(body) + '</pre>';
+    //  pandoc is a subprocess, so it cannot answer inside this synchronous
+    //  call. It returns whatever the last conversion produced and schedules
+    //  another, which repaints when it lands. Same contract as a cache.
+    if (kind === 'tex') return texPreviewHtml(body);
     return body;   // html: the document is already its own rendering
   };
   const paintLocal = () => {
@@ -4181,6 +4195,70 @@
   //  wired here, where the handler lives (the same rule 45-templates and
   //  75-move follow)
   if (texBtn()) texBtn().onclick = convertTex;
+
+  // ── live preview ─────────────────────────────────────────────────────────
+  //  60-preview paints every content kind synchronously. pandoc is a
+  //  subprocess and cannot answer inside that call, so this keeps the last
+  //  conversion and hands it over immediately, then repaints when a fresh one
+  //  lands. Declared with `function` rather than `const`: 60-preview.js loads
+  //  first and names texPreviewHtml, so it must be hoisted, not in a TDZ.
+  let texCache = { src: null, html: null };
+  let texTimer = 0;
+  let texBusy = false;
+
+  //  400ms, not the 60ms the other kinds use. Those call a function; this
+  //  spawns a process, and one per keystroke would be a fork bomb with a
+  //  progress bar.
+  const TEX_DEBOUNCE = 400;
+
+  function texSourceFallback(body) {
+    return '<pre>' + mdEsc(body) + '</pre>';
+  }
+
+  function texPreviewHtml(body) {
+    //  On the web there is no pandoc, so show the source rather than an empty
+    //  pane. A blank preview reads as broken; the source reads as honest.
+    if (!texRust()) return texSourceFallback(body);
+    if (texCache.src !== body) scheduleTexRender(body);
+    //  until the first conversion returns, the source stands in. Typing then
+    //  refines rather than flashing empty.
+    return texCache.html === null ? texSourceFallback(body) : texCache.html;
+  }
+
+  function scheduleTexRender(body) {
+    clearTimeout(texTimer);
+    texTimer = setTimeout(() => { runTexRender(body); }, TEX_DEBOUNCE);
+  }
+
+  async function runTexRender(body) {
+    const rust = texRust();
+    if (!rust) return;
+    //  never two pandocs at once. The newer body wins, so re-arm rather than
+    //  queue: whatever is typed last is what anyone wants to see.
+    if (texBusy) { scheduleTexRender(body); return; }
+    if (!texProbe) {
+      try { texProbe = await rust.invoke('pandoc_probe'); }
+      catch { texProbe = { available: false }; }
+    }
+    if (!texProbe.available) { texCache = { src: body, html: null }; return; }
+    texBusy = true;
+    let html = null;
+    let err = null;
+    try { html = await rust.invoke('convert_tex', { src: body }); }
+    catch (e) { err = String(e && e.message ? e.message : e); }
+    texBusy = false;
+    //  A broken document must SAY so. Freezing the last good render would
+    //  leave a stale page on screen while the source no longer produces it.
+    texCache = {
+      src: body,
+      html: html !== null ? html
+        : '<pre style="color:#c33;white-space:pre-wrap">' +
+          mdEsc(err || 'pandoc could not convert this document') + '</pre>',
+    };
+    //  the body may have moved on while pandoc ran
+    if (src.value !== body) { scheduleTexRender(src.value); return; }
+    if (typeof paintLocal === 'function') paintLocal();
+  }
 
 // ── src/72-acl.js ─────────────────────────────────────────────────────────
   // ── access control pane: <lat-acl>, the peers panel with room to work ────
