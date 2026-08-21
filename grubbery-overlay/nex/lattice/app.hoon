@@ -6704,6 +6704,11 @@
 ::  app.js, vault.js, prism, icons, manifest). A warm boot serves every asset
 ::  from the SW cache at 0ms and refreshes it in the background, so it is at
 ::  most one load behind a deploy.
+::  A new worker also RELOADS the page once it takes over. Without that the
+::  visit that picks up a deploy still runs the code it loaded before the
+::  worker changed, so every deploy served one full visit of stale UI and a
+::  fix looked like it had not shipped. The reload is skipped while the
+::  editor holds unsaved text, which is why the bundle exports __latUnsaved.
 ::  install PRECACHES the shell. Filling it lazily on a fetch miss meant the
 ::  visit that missed paid the full pier round-trip for every asset, so a new
 ::  install took three visits to go fast: one to register, one to miss and
@@ -6848,7 +6853,7 @@
 ++  sw-register-script
   ^-  tape
   %-  trip
-  '<script>if("serviceWorker"in navigator){navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice"}).then(function(r){r.addEventListener("updatefound",function(){var w=r.installing;if(w)w.addEventListener("statechange",function(){if(w.state==="installed"&&navigator.serviceWorker.controller)w.postMessage("skipWaiting")})})}).catch(function(x){})}</script>'
+  '<script>if("serviceWorker"in navigator){navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice"}).then(function(r){r.addEventListener("updatefound",function(){var w=r.installing;if(w)w.addEventListener("statechange",function(){if(w.state==="installed"&&navigator.serviceWorker.controller)w.postMessage("skipWaiting")})})}).catch(function(x){});var swReloading=false;if(navigator.serviceWorker.controller){navigator.serviceWorker.addEventListener("controllerchange",function(){if(swReloading)return;if(window.__latUnsaved&&window.__latUnsaved())return;swReloading=true;location.reload()})}}</script>'
 ::  +esc: HTML-escape a tape. +has-prefix: tape prefix test.
 ::
 ++  esc
