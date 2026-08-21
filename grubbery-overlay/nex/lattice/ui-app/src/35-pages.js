@@ -96,7 +96,8 @@
     pname.readOnly = true;
     curKind = d.kind;
     curRev = d.rev || 0;
-    if (LMAP[d.kind] || d.kind === 'text') pkind.value = d.kind === 'text' ? 'text' : d.kind;
+    if ([...pkind.options].some((o) => o.value === d.kind)) pkind.value = d.kind;
+    if (typeof refreshTexButton === 'function') refreshTexButton();
     src.value = d.body;
     dirty = false;
     // A fresh editor state begins here. everTyped answers "did the user type
@@ -134,6 +135,7 @@
     current = null;
     curFolder = null;
     curKind = null;
+    if (typeof refreshTexButton === 'function') refreshTexButton();
     exitGrub();
     exitRev();
     $('histsec').hidden = true;

@@ -57,4 +57,8 @@
     el.style.display = 'contents';
     document.getElementById('ws').appendChild(el);
   }
-  pkind.addEventListener('change', () => { curKind = pkind.value; render(); });
+  pkind.addEventListener('change', () => {
+    curKind = pkind.value;
+    render();
+    if (typeof refreshTexButton === 'function') refreshTexButton();
+  });

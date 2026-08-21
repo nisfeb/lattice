@@ -6,6 +6,7 @@ mod config;
 mod install;
 mod local;
 mod mounts;
+mod pandoc;
 mod proxy;
 mod queue;
 mod stack;
@@ -272,6 +273,8 @@ fn main() {
             commands::backup_write,
             commands::run_backup_now,
             commands::verify_backup,
+            pandoc::pandoc_probe,
+            pandoc::convert_tex,
             queue::queue_list,
             queue::queue_get,
             queue::queue_put,
