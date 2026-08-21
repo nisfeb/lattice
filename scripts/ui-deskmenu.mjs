@@ -142,7 +142,29 @@ if (plus === null) {
   const seeded = await desk.evaluate(() => document.getElementById('dlginput').value);
   check('desktop: and pre-fills that folder', seeded === plus + '/',
     'folder ' + JSON.stringify(plus) + ' -> dialog ' + JSON.stringify(seeded));
-  await desk.evaluate(() => { const c = document.getElementById('dlgcancel'); if (c) c.click(); });
+  //  confirming the dialog must WRITE the page. It used to only fill the name
+  //  field, so a create that was never followed by a save left nothing behind
+  //  and read as a button that did nothing.
+  const made = plus + '/deskmenu-create-probe';
+  const saves = [];
+  const onSave = (r) => { if (/page-save/.test(r.url())) saves.push(r.status()); };
+  desk.on('response', onSave);
+  await desk.evaluate((n) => {
+    const i = document.getElementById('dlginput');
+    i.value = n; i.dispatchEvent(new Event('input'));
+    document.getElementById('dlgok').click();
+  }, made);
+  await new Promise((r) => setTimeout(r, 6000));
+  desk.off('response', onSave);
+  check('desktop: confirming the dialog writes the page', saves.length > 0,
+    'page-save statuses: ' + JSON.stringify(saves));
+  const listed = await desk.evaluate((n) =>
+    [...document.querySelectorAll('#treelist a.pg')].some((a) => a.href.includes(encodeURIComponent(n))), made);
+  check('desktop: and the new page is in the tree', listed, 'looking for ' + made);
+  //  leave the ship as we found it
+  await desk.evaluate((n) => fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n),
+    { method: 'POST', credentials: 'same-origin' }).catch(() => {}), made);
+  await new Promise((r) => setTimeout(r, 1500));
 }
 await desk.close();
 
