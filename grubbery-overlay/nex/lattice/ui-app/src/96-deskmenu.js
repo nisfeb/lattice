@@ -90,9 +90,11 @@
       //  a folder's + pre-fills that folder; the toolbar keeps offering the
       //  open page's path, which is what it did before this existed
       const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
-      const raw = await ask('page name (e.g. notes/todo.md)', seed, 'create');
-      if (!raw) return;
-      let name = raw.trim().replace(/^\/+/, '');
+      //  'next', not 'create': confirming here only NAMES the buffer, the
+      //  page is written when you save. The folder dialog's 'create' does
+      //  write immediately, and one word meaning both things read as a
+      //  create that silently did nothing.
+      let name = await askName('page name (e.g. notes/todo.md)', seed, 'next');
       if (!name) return;
       //  a typed extension picks the kind and drops off the name. The table
       //  is EXT_KIND in 30-tree.js, the same one the uploader files by.

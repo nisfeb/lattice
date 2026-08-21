@@ -898,6 +898,24 @@
     dlgIn.focus(); dlgIn.select();
     return p;
   };
+  // askName: ask() for a path-like name, re-prompting until the server would
+  // accept it. Every one of these prompts feeds a route that enforces
+  // +valid-name, and a rejection came back as a bare status code ("folder
+  // failed 400") that never said what was wrong. Returns the CLEANED name,
+  // so callers do not each re-implement the trim and slash strip.
+  const askName = async (msg, value, okLabel) => {
+    let seed = value || '';
+    let note = '';
+    for (;;) {
+      const raw = await ask(note + msg, seed, okLabel);
+      if (raw === null) return null;
+      const name = raw.trim().replace(/^\/+|\/+$/g, '');
+      if (!name) return null;
+      if (validName(name)) return name;
+      seed = name;
+      note = 'lowercase letters, digits and - . _ ~ only, no spaces. ';
+    }
+  };
   // askConfirm: yes/no dialog → boolean
   const askConfirm = (msg, okLabel) => {
     dlgSel.hidden = true;
@@ -2542,10 +2560,8 @@
   }
 
   async function newFolder() {
-    const raw = await ask('folder name (e.g. notes or notes/sub)',
+    const name = await askName('folder name (e.g. notes or notes/sub)',
       folderCtx ? folderCtx + '/' : '', 'create');
-    if (!raw) return;
-    const name = raw.trim().replace(/^\/+|\/+$/g, '');
     if (!name) return;
     const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name));
     if (!r.ok) { st('folder failed ' + r.status, false); return; }
@@ -2833,10 +2849,8 @@
     if (!names.length) { st('no templates available', false); return; }
     const tmpl = await askChoice('start from which template?', names, 'next');
     if (!tmpl) return;
-    const raw = await ask('name for the new ' + tmpl,
+    const name = await askName('name for the new ' + tmpl,
       folderCtx ? folderCtx + '/' + tmpl : tmpl, 'create');
-    if (!raw) return;
-    const name = raw.trim().replace(/^\/+|\/+$/g, '');
     if (!name) return;
     stWork('creating ' + name + ' from ' + tmpl + '\u2026 (one save per page)');
     let r = null;
@@ -4604,10 +4618,8 @@
   }
 
   async function moveFolder(oldPath) {
-    const to = await ask('move / rename folder ' + oldPath + ' to:', oldPath, 'move');
-    if (!to || to === oldPath) return;
-    const newPath = to.trim().replace(/^\/+|\/+$/g, '');
-    if (!newPath) return;
+    const newPath = await askName('move / rename folder ' + oldPath + ' to:', oldPath, 'move');
+    if (!newPath || newPath === oldPath) return;
     const mapped = (p) => newPath + p.slice(oldPath.length);
     st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
     const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldPath) +
@@ -4790,11 +4802,9 @@
   $('mv').onclick = async () => {
     if (curFolder) { moveFolder(curFolder); return; }
     if (!current) { st('open something first', false); return; }
-    const to = await ask('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
+    const newName = await askName('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
       current, 'move');
-    if (!to || to === current) return;
-    const newName = to.trim().replace(/^\/+|\/+$/g, '');
-    if (!newName) return;
+    if (!newName || newName === current) return;
     if (mode === 'know') {
       const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
         '&to=' + encodeURIComponent(newName));
@@ -5841,9 +5851,11 @@
       //  a folder's + pre-fills that folder; the toolbar keeps offering the
       //  open page's path, which is what it did before this existed
       const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
-      const raw = await ask('page name (e.g. notes/todo.md)', seed, 'create');
-      if (!raw) return;
-      let name = raw.trim().replace(/^\/+/, '');
+      //  'next', not 'create': confirming here only NAMES the buffer, the
+      //  page is written when you save. The folder dialog's 'create' does
+      //  write immediately, and one word meaning both things read as a
+      //  create that silently did nothing.
+      let name = await askName('page name (e.g. notes/todo.md)', seed, 'next');
       if (!name) return;
       //  a typed extension picks the kind and drops off the name. The table
       //  is EXT_KIND in 30-tree.js, the same one the uploader files by.

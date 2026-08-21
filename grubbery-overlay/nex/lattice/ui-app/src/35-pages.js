@@ -155,10 +155,8 @@
   }
 
   async function newFolder() {
-    const raw = await ask('folder name (e.g. notes or notes/sub)',
+    const name = await askName('folder name (e.g. notes or notes/sub)',
       folderCtx ? folderCtx + '/' : '', 'create');
-    if (!raw) return;
-    const name = raw.trim().replace(/^\/+|\/+$/g, '');
     if (!name) return;
     const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name));
     if (!r.ok) { st('folder failed ' + r.status, false); return; }

@@ -24,6 +24,24 @@
     dlgIn.focus(); dlgIn.select();
     return p;
   };
+  // askName: ask() for a path-like name, re-prompting until the server would
+  // accept it. Every one of these prompts feeds a route that enforces
+  // +valid-name, and a rejection came back as a bare status code ("folder
+  // failed 400") that never said what was wrong. Returns the CLEANED name,
+  // so callers do not each re-implement the trim and slash strip.
+  const askName = async (msg, value, okLabel) => {
+    let seed = value || '';
+    let note = '';
+    for (;;) {
+      const raw = await ask(note + msg, seed, okLabel);
+      if (raw === null) return null;
+      const name = raw.trim().replace(/^\/+|\/+$/g, '');
+      if (!name) return null;
+      if (validName(name)) return name;
+      seed = name;
+      note = 'lowercase letters, digits and - . _ ~ only, no spaces. ';
+    }
+  };
   // askConfirm: yes/no dialog → boolean
   const askConfirm = (msg, okLabel) => {
     dlgSel.hidden = true;
