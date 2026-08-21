@@ -1383,7 +1383,7 @@
   // ── editor pane: <lat-editor> + highlighting (Prism overlay) ─────────────
   let src, hl;   // assigned when <lat-editor> upgrades (below, synchronously)
   const LMAP = { md: 'markdown', gmi: 'gemtext', html: 'markup',
-                 js: 'javascript', css: 'css', hoon: 'hoon' };
+                 js: 'javascript', css: 'css', hoon: 'hoon', tex: 'latex' };
   const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const render = () => {
     const lang = LMAP[pkind.value];
