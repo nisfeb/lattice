@@ -114,7 +114,7 @@ fn spawn_test_harness(handle: &tauri::AppHandle) {
                 // headless check for the app-protocol round trip
                 if std::env::var_os("LATTICE_AUTOMANAGER").is_some() {
                     std::thread::sleep(std::time::Duration::from_secs(8));
-                    commands::show_manager(&h).ok();
+                    commands::show_manager(&h, None).ok();
                 }
                 // LATTICE_AUTOSTACK=1: report what is installed on the
                 // ship we just logged in to, the headless check for
@@ -169,7 +169,10 @@ fn spawn_backup_scheduler(h: tauri::AppHandle) {
                 // whole-store archives at once, on a pier that
                 // serialises, while someone is trying to type.
                 commands::dlog(&format!("backup: {} is due", s.label));
-                if commands::request_backup(&h, &s.id) {
+                // no takeover: a scheduled run must not navigate the window
+                // out from under whatever the user is doing, so it waits for
+                // the app page instead
+                if commands::request_backup(&h, &s.id, false) {
                     break;
                 }
             }
@@ -196,10 +199,20 @@ fn main() {
         .manage(proxy::Bridge(Mutex::new(None)))
         .on_menu_event(|app, ev| {
             // single-window app: the manager is a page in the workspace, and
-            // both of these items are ways of asking for it
-            if matches!(ev.id().as_ref(), "manager" | "backups") {
-                commands::show_manager(app).ok();
-                return;
+            // both of these items are ways of asking for it. "backups" lands
+            // on its section: the item exists because scheduled backups are
+            // not something you go looking for under connection && mounts,
+            // and that reasoning covers the scroll past ship and mounts too
+            match ev.id().as_ref() {
+                "manager" => {
+                    commands::show_manager(app, None).ok();
+                    return;
+                }
+                "backups" => {
+                    commands::show_manager(app, Some("backups")).ok();
+                    return;
+                }
+                _ => {}
             }
             // The File menu drives the ship UI's OWN buttons instead of
             // reimplementing them here. The workspace webview is the lattice
@@ -233,7 +246,7 @@ fn main() {
             let cfg = config::load(&handle);
             if cfg.url.is_empty() {
                 // first run: the single window opens on the connect page
-                commands::show_manager(&handle)?;
+                commands::show_manager(&handle, None)?;
             } else {
                 // off-thread: bridge setup does network work that must not
                 // block the main loop

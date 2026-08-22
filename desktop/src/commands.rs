@@ -51,10 +51,16 @@ pub fn go_home(app: AppHandle) -> Result<(), String> {
 /// Show the connection & mounts page IN the workspace window (single-window
 /// app: the manager is a page, not a second window). Local shell pages live
 /// at tauri://localhost on macOS but http://tauri.localhost on Linux.
-pub fn show_manager(app: &AppHandle) -> Result<(), String> {
+///
+/// `section` is an anchor on the page. A menu item named for one section
+/// should land looking at it, not at the top with three sections to scroll
+/// past. A freshly created window is already on the page but at its top, so
+/// a requested section still navigates.
+pub fn show_manager(app: &AppHandle, section: Option<&str>) -> Result<(), String> {
     let (w, created) = ensure_workspace(app)?;
-    if !created {
-        let url: tauri::Url = "tauri://localhost/manager.html"
+    if !created || section.is_some() {
+        let frag = section.map(|s| format!("#{s}")).unwrap_or_default();
+        let url: tauri::Url = format!("tauri://localhost/manager.html{frag}")
             .parse()
             .map_err(|e| format!("{e}"))?;
         w.navigate(url).map_err(|e| e.to_string())?;
@@ -542,8 +548,11 @@ pub async fn pick_backup_dir(app: AppHandle) -> Result<String, String> {
 ///
 /// last_run is stamped only on SUCCESS. A failed write must leave the schedule
 /// due, or one unwritable evening silently costs a whole period.
+///
+/// Async, like save_vault: the decode and the disk write handle whole
+/// multi-MB archives, and holding the main thread for that freezes the UI.
 #[tauri::command]
-pub fn backup_write(app: AppHandle, id: String, b64: String) -> Result<String, String> {
+pub async fn backup_write(app: AppHandle, id: String, b64: String) -> Result<String, String> {
     let bytes = decode_archive(&b64)?;
     let mut cfg = config::load(&app);
     let at = crate::backup::now();
@@ -559,21 +568,45 @@ pub fn backup_write(app: AppHandle, id: String, b64: String) -> Result<String, S
 
 /// Ask the workspace page to build an archive for this schedule.
 ///
-/// Returns whether the request could be made at all — the archive lands
-/// asynchronously via backup_write. The page is the only thing that can build
-/// one (see backup.rs), so if the workspace is showing the manager instead,
-/// this is a no-op and the schedule stays due for the next tick.
-pub fn request_backup(app: &AppHandle, id: &str) -> bool {
+/// Returns whether the request could be made at all. The archive lands
+/// asynchronously via backup_write, and last_run is stamped only there, so a
+/// request that reaches nothing leaves the schedule due.
+///
+/// `takeover` is the difference between the two callers. "back up now" is
+/// clicked FROM the manager page, where the single window is by definition
+/// not showing the app page, __latticeBackup is undefined, and the eval
+/// used to succeed while doing nothing: the button could never produce a
+/// backup. So the user-initiated path (true) navigates the workspace to the
+/// app with ?backup=<id> when the hook is absent, and 78-export runs the
+/// pending id once the page is up. The scheduler passes false: yanking the
+/// manager page out from under a half-filled mount or schedule form costs
+/// the user's input, backup.rs promises a due schedule waits, and waiting is
+/// cheap because a later tick retries once the app page is back.
+pub fn request_backup(app: &AppHandle, id: &str, takeover: bool) -> bool {
     let Some(w) = app.get_webview_window("workspace") else { return false };
     // the id is ours, not user text, but it still goes through a quoted JSON
     // string rather than being pasted raw into a script
     let arg = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".into());
-    // "back up now" is clicked FROM the manager page — the single window is
-    // by definition not showing the app page then, __latticeBackup is
-    // undefined, and the eval used to succeed while doing nothing: the
-    // button could never produce a backup. When the hook is absent,
-    // navigate the workspace to the app with ?backup=<id>; 78-export runs
-    // the pending id once the page is up.
+    if !takeover {
+        // a shell page (the manager) has no hook to call, so skip the eval
+        // entirely and say why the run is waiting
+        let on_shell = w
+            .url()
+            .map(|u| u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost"))
+            .unwrap_or(false);
+        if on_shell {
+            dlog("backup: the manager page is showing, the schedule waits for a later tick");
+            return false;
+        }
+        // on the app page the hook may still be a beat from existing (page
+        // mid-boot). The guarded call is then a no-op and the schedule
+        // stays due, which is the retry.
+        return w
+            .eval(format!(
+                "(function(){{if(window.__latticeBackup){{window.__latticeBackup({arg});}}}})()"
+            ))
+            .is_ok();
+    }
     let cfg = config::load(app);
     let dest = serde_json::to_string(&format!(
         "{}/apps/lattice/app?backup={}", cfg.url.trim_end_matches('/'), id
@@ -592,8 +625,11 @@ pub fn request_backup(app: &AppHandle, id: &str) -> bool {
 /// it, so what passes here is what a restore would find. An archive that is
 /// merely PRESENT proves nothing — the desktop export path was dead for weeks
 /// and looked exactly like this feature working.
+///
+/// Async, like save_vault: it reads the newest archive whole, and a
+/// multi-MB read belongs off the main thread.
 #[tauri::command]
-pub fn verify_backup(app: AppHandle, id: String) -> Result<crate::backup::Report, String> {
+pub async fn verify_backup(app: AppHandle, id: String) -> Result<crate::backup::Report, String> {
     let cfg = config::load(&app);
     let s = schedule(&cfg, &id)?;
     let r = crate::backup::verify_newest(s)?;
@@ -611,7 +647,7 @@ pub fn verify_backup(app: AppHandle, id: String) -> Result<crate::backup::Report
 pub fn run_backup_now(app: AppHandle, id: String) -> Result<(), String> {
     let cfg = config::load(&app);
     schedule(&cfg, &id)?;
-    if !request_backup(&app, &id) {
+    if !request_backup(&app, &id, true) {
         return Err("the workspace page is not open, so there is nothing to export from".into());
     }
     Ok(())
