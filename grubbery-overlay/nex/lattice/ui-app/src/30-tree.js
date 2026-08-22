@@ -125,11 +125,21 @@
       if (!hasNode(dir)) nodes.push({ path: dir, page: false });
     }
   }
-  function addTreeNode(name, kind) {
+  function addTreeNode(name, kind, pending) {
     if (name.includes('/')) addFolderNodes(name.slice(0, name.lastIndexOf('/')));
     const n = nodes.find((x) => x.path === name && x.page);
-    if (n) n.kind = kind;
-    else nodes.push({ path: name, page: true, kind, share: 'private' });
+    if (n) { n.kind = kind; if (pending !== undefined) n.pending = pending; }
+    else nodes.push({ path: name, page: true, kind, share: 'private', pending: !!pending });
+  }
+  //  A node added before the ship has confirmed it. The row pulses until the
+  //  write lands, so the tree can answer instantly without claiming something
+  //  that has not happened yet. Clearing it is the success signal; dropping
+  //  the node is the failure one.
+  function setTreePending(name, pending) {
+    const n = nodes.find((x) => x.path === name && x.page);
+    if (!n) return;
+    if (pending) n.pending = true; else delete n.pending;
+    renderTree();
   }
   function dropTreeNodes(path) {
     nodes = nodes.filter((n) => n.path !== path && !n.path.startsWith(path + '/'));
@@ -148,7 +158,8 @@
       row.style.marginLeft = (depth * 14) + 'px';
       if (hidden) row.style.display = 'none';
       if (n.page) {
-        row.className = 'pg' + (n.path === current ? ' cur' : '');
+        row.className = 'pg' + (n.path === current ? ' cur' : '')
+          + (n.pending ? ' pend' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
         row.textContent = n.path.split('/').pop() + '.' + kindExt(n.kind);
         row.onclick = (e) => { e.preventDefault(); openPage(n.path); };

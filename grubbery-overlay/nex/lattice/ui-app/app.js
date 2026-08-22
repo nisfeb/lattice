@@ -880,7 +880,7 @@
   // <lat-dialog> owns the dialog's markup AND wiring. The shell only carries
   // the tag, so the served HTML can never be missing an element this file
   // expects (the old cache-skew guards existed exactly for that gap).
-  let dlg, dlgMsg, dlgIn, dlgSel, dlgOpts;
+  let dlg, dlgMsg, dlgIn, dlgSel, dlgOpts, dlgKind;
   let dlgDone = null;
   const dlgClose = (v) => {
     if (!dlgDone) return;
@@ -897,10 +897,46 @@
   const ask = (msg, value, okLabel) => {
     dlgSel.hidden = true;
     dlgIn.hidden = false;
+    dlgKind.hidden = true;
     dlgIn.value = value || '';
     const p = dlgOpen(msg, okLabel);
-    dlgIn.focus(); dlgIn.select();
+    dlgIn.focus();
+    dlgIn.setSelectionRange(dlgIn.value.length, dlgIn.value.length);
     return p;
+  };
+  //  askNameKind: a name AND the kind to save it as, in one dialog.
+  //
+  //  The kind used to be reachable only from the bar, which the desktop shell
+  //  hides. So the one place a desktop user names a file was also the one
+  //  place they could not say what it was, and everything arrived as md.
+  //
+  //  Options are cloned from the bar's own picker rather than restated, so a
+  //  kind added there (tex was) appears here with no second edit.
+  const askNameKind = async (msg, value, okLabel, kind) => {
+    dlgKind.textContent = '';
+    const src = $('pkind');
+    if (src) for (const o of src.options) dlgKind.appendChild(o.cloneNode(true));
+    dlgKind.value = kind || (src && src.value) || 'md';
+    let seed = value || '';
+    let note = '';
+    for (;;) {
+      dlgSel.hidden = true;
+      dlgIn.hidden = false;
+      dlgKind.hidden = false;
+      dlgIn.value = seed;
+      const p = dlgOpen(note + msg, okLabel);
+      dlgIn.focus();
+      dlgIn.setSelectionRange(dlgIn.value.length, dlgIn.value.length);
+      const raw = await p;
+      const picked = dlgKind.value;
+      dlgKind.hidden = true;
+      if (raw === null) return null;
+      const name = raw.trim().replace(/^\/+|\/+$/g, '');
+      if (!name) return null;
+      if (validName(name)) return { name, kind: picked };
+      seed = name;
+      note = 'lowercase letters, digits and - . _ ~ only, no spaces. ';
+    }
   };
   // askName: ask() for a path-like name, re-prompting until the server would
   // accept it. Every one of these prompts feeds a route that enforces
@@ -923,6 +959,7 @@
   // askConfirm: yes/no dialog → boolean
   const askConfirm = (msg, okLabel) => {
     dlgSel.hidden = true;
+    dlgKind.hidden = true;
     dlgIn.hidden = true;
     const p = dlgOpen(msg, okLabel);
     $('dlgok').focus();
@@ -935,6 +972,7 @@
   const askChoice = (msg, options, okLabel) => {
     dlgIn.hidden = true;
     dlgSel.hidden = true;
+    dlgKind.hidden = true;
     dlgOpts.textContent = '';
     dlgOpts.hidden = false;
     $('dlgok').hidden = true;          // each option is its own commit button
@@ -977,6 +1015,8 @@
     <div id="dlgopts" class="dlgopts" hidden></div>
     <select id="dlgsel" hidden></select>
     <input id="dlginput" autocomplete="off" spellcheck="false">
+    <!-- the kind to save as. Only askNameKind shows it. -->
+    <select id="dlgkind" class="dlgkind" hidden></select>
     <div class="dlgbtns">
       <button type="button" id="dlgcancel">cancel</button>
       <button type="submit" id="dlgok">ok</button>
@@ -984,7 +1024,7 @@
   </form>
 </div>`;
       dlg = $('dlg'); dlgMsg = $('dlgmsg'); dlgIn = $('dlginput');
-      dlgSel = $('dlgsel'); dlgOpts = $('dlgopts');
+      dlgSel = $('dlgsel'); dlgOpts = $('dlgopts'); dlgKind = $('dlgkind');
       $('dlgform').onsubmit = (e) => {
         e.preventDefault();
         dlgClose(!dlgSel.hidden ? dlgSel.value : dlgIn.hidden ? '' : dlgIn.value);
@@ -2306,11 +2346,21 @@
       if (!hasNode(dir)) nodes.push({ path: dir, page: false });
     }
   }
-  function addTreeNode(name, kind) {
+  function addTreeNode(name, kind, pending) {
     if (name.includes('/')) addFolderNodes(name.slice(0, name.lastIndexOf('/')));
     const n = nodes.find((x) => x.path === name && x.page);
-    if (n) n.kind = kind;
-    else nodes.push({ path: name, page: true, kind, share: 'private' });
+    if (n) { n.kind = kind; if (pending !== undefined) n.pending = pending; }
+    else nodes.push({ path: name, page: true, kind, share: 'private', pending: !!pending });
+  }
+  //  A node added before the ship has confirmed it. The row pulses until the
+  //  write lands, so the tree can answer instantly without claiming something
+  //  that has not happened yet. Clearing it is the success signal; dropping
+  //  the node is the failure one.
+  function setTreePending(name, pending) {
+    const n = nodes.find((x) => x.path === name && x.page);
+    if (!n) return;
+    if (pending) n.pending = true; else delete n.pending;
+    renderTree();
   }
   function dropTreeNodes(path) {
     nodes = nodes.filter((n) => n.path !== path && !n.path.startsWith(path + '/'));
@@ -2329,7 +2379,8 @@
       row.style.marginLeft = (depth * 14) + 'px';
       if (hidden) row.style.display = 'none';
       if (n.page) {
-        row.className = 'pg' + (n.path === current ? ' cur' : '');
+        row.className = 'pg' + (n.path === current ? ' cur' : '')
+          + (n.pending ? ' pend' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
         row.textContent = n.path.split('/').pop() + '.' + kindExt(n.kind);
         row.onclick = (e) => { e.preventDefault(); openPage(n.path); };
@@ -6066,25 +6117,45 @@
       //  a folder's + pre-fills that folder; the toolbar keeps offering the
       //  open page's path, which is what it did before this existed
       const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
-      let name = await askName('page name (e.g. notes/todo.md)', seed, 'create');
-      if (!name) return;
-      //  a typed extension picks the kind and drops off the name. The table
-      //  is EXT_KIND in 30-tree.js, the same one the uploader files by.
+      //  the kind is picked IN the dialog. The bar carries that control and
+      //  the desktop shell hides the bar, so this was the one place a desktop
+      //  user could name a file and the one place they could not say what it
+      //  was. Everything arrived as md.
+      const picked = await askNameKind('page name (e.g. notes/todo)', seed,
+        'create', pkind.value);
+      if (!picked) return;
+      let name = picked.name;
+      let kind = picked.kind;
+      //  a typed extension still wins, because typing notes/todo.md and being
+      //  given a page called "todo.md" would be absurd. The table is EXT_KIND
+      //  in 30-tree.js, the same one the uploader files by.
       const dot = name.lastIndexOf('.');
-      const kind = dot > 0 ? extKind(name.slice(dot + 1)) : null;
-      if (kind) {
-        pkind.value = kind;
-        name = name.slice(0, dot);
-      }
+      const typed = dot > 0 ? extKind(name.slice(dot + 1)) : null;
+      if (typed) { kind = typed; name = name.slice(0, dot); }
+      pkind.value = kind;
       pname.value = name;
       //  both labels (desktop deskbar, mobile bar) repaint off this event
       pname.dispatchEvent(new Event('change'));
+      //  Show it in the tree NOW, pulsing, before the ship has agreed. The
+      //  write is a pier round trip and the tree sitting unchanged through it
+      //  reads as nothing having happened, which is the report that started
+      //  all of this. The pulse is the honest part: it says recorded, not yet
+      //  confirmed. Cleared on success, and the row is dropped on failure so
+      //  a page that does not exist is never left sitting there.
+      const already = nodes.some((n) => n.page && n.path === name);
+      if (!already) { addTreeNode(name, kind, true); snapTree(); renderTree(); }
       //  the button says create, so write the page here. Naming the buffer
       //  and leaving it unwritten read as a create that did nothing, and a
       //  page abandoned before its first keystroke left no trace at all.
       //  save() owns the whole create: 409, the offline queue, the tree
       //  patch and the url, so this must not reimplement any of it.
       await save();
+      if (!already) {
+        //  save() sets `current` on any outcome it considers a success,
+        //  including a queued offline write, which IS a success here.
+        if (current === name) setTreePending(name, false);
+        else { dropTreeNodes(name); snapTree(); renderTree(); }
+      }
       src.focus();
     })();
   };
