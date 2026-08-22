@@ -34,22 +34,54 @@
     b.hidden = false;
     b.textContent = 'convert to html';
     b.disabled = false;                     // never a dead control: see below
-    try { texProbe = await rust.invoke('pandoc_probe'); }
-    catch { texProbe = { available: false }; }
-    b.title = texProbe && texProbe.available
+    texProbe = await probePandoc(rust);
+    b.title = texProbe.available
       ? 'convert this LaTeX to a sibling html page using ' +
         (texProbe.version || 'pandoc')
-      : 'needs pandoc installed on this machine (click to find out how)';
+      : texProbe.stale
+        ? 'this desktop build predates LaTeX support (click for what to do)'
+        : 'needs pandoc installed on this machine (click to find out how)';
     //  The button stays CLICKABLE without pandoc, and explains itself when
     //  pressed. A disabled control with no explanation is a dead end: the
     //  person who most needs the message is the one who cannot click.
     b.classList.toggle('needsdep', !(texProbe && texProbe.available));
   }
 
+  //  A rejected invoke means one of two very different things, and saying the
+  //  wrong one sends someone off to install software they already have. An
+  //  app built before these commands existed rejects with "not found"; a real
+  //  probe answers {available:false} when pandoc is genuinely missing.
+  async function probePandoc(rust) {
+    try {
+      const r = await rust.invoke('pandoc_probe');
+      return r && typeof r === 'object' ? r : { available: false };
+    } catch (e) {
+      const msg = String((e && e.message) || e || '');
+      return {
+        available: false,
+        stale: /not found|not allowlisted|unknown command|does not exist/i.test(msg),
+        why: msg.slice(0, 200),
+      };
+    }
+  }
+
   async function convertTex() {
     const rust = texRust();
     if (!rust) return;
-    if (!texProbe || !texProbe.available) {
+    if (!texProbe) texProbe = await probePandoc(rust);
+    if (texProbe.stale) {
+      //  the UI comes from the ship and updates on reload. The commands it
+      //  calls live in the binary, which does not. That gap is exactly what
+      //  this branch exists to name.
+      st('this desktop build has no LaTeX support yet', false);
+      await askConfirm(
+        'This copy of the desktop app was built before LaTeX support existed, ' +
+        'so it has no converter to call. The web UI updated on its own; the ' +
+        'app has to be rebuilt and reinstalled. Nothing is wrong with your ' +
+        'pandoc install.', 'ok');
+      return;
+    }
+    if (!texProbe.available) {
       st('pandoc is not installed on this machine', false);
       const go = await askConfirm(
         'Converting LaTeX needs pandoc, which is not installed. ' +
@@ -128,10 +160,9 @@
     //  never two pandocs at once. The newer body wins, so re-arm rather than
     //  queue: whatever is typed last is what anyone wants to see.
     if (texBusy) { scheduleTexRender(body); return; }
-    if (!texProbe) {
-      try { texProbe = await rust.invoke('pandoc_probe'); }
-      catch { texProbe = { available: false }; }
-    }
+    if (!texProbe) texProbe = await probePandoc(rust);
+    //  no renderer to call: leave the source showing rather than blanking the
+    //  pane. The button carries the explanation; the preview stays quiet.
     if (!texProbe.available) { texCache = { src: body, html: null }; return; }
     texBusy = true;
     let html = null;
