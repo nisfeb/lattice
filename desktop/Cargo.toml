@@ -1,6 +1,6 @@
 [package]
 name = "lattice-desktop"
-version = "0.8.0-rc24"
+version = "0.8.0-rc25"
 edition = "2021"
 #  Never goes to crates.io: the desktop app ships as bundles and lattice-fs
 #  is consumed by path. Saying so keeps `cargo publish` from being a slip, and
