@@ -118,7 +118,7 @@
   // lattice-fs-rs/src/projection.rs is the third copy, across the process line.
   const kindExt = (k) => (k === 'text' ? 'txt' : k === 'index' ? 'md' : (k || 'md'));
   const KMAP = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
-    text: 'text', js: 'js', css: 'css', hoon: 'hoon' };
+    text: 'text', js: 'js', css: 'css', hoon: 'hoon', tex: 'tex', latex: 'tex' };
 
   const daToUnix = (s) => {
     const m = /^~(\d+)\.(\d+)\.(\d+)\.\.(\d+)\.(\d+)\.(\d+)/.exec(String(s || ''));
@@ -165,12 +165,15 @@ editor, or git will do if you only want to look.
   async function uploadPages(pages) {
     const list = [];
     const dirs = new Set();
+    // skips are counted so the completion message can say the restore was
+    // lossy. A silent skip once cost every tex page in the archive.
+    let skipped = 0;
     for (const { rel, text } of pages) {
       const dot = rel.lastIndexOf('.');
       const kind = dot > 0 ? KMAP[rel.slice(dot + 1).toLowerCase()] : null;
-      if (!kind) continue;                         // an unknown extension is skipped, not guessed
+      if (!kind) { skipped++; continue; }          // an unknown extension is skipped, not guessed
       const name = rel.slice(0, dot);
-      if (!name) continue;
+      if (!name) { skipped++; continue; }
       list.push({ name, kind, body: text });
       const pp = name.split('/'); pp.pop();
       for (let i = 1; i <= pp.length; i++) dirs.add(pp.slice(0, i).join('/'));
@@ -185,7 +188,7 @@ editor, or git will do if you only want to look.
       try { r = await mutate(cfg.api + '/page-save-batch', { method: 'POST', body: JSON.stringify(part) }); } catch (e) {}
       if (r && r.ok) ok += part.length; else bad += part.length;
     }
-    return { ok, bad };
+    return { ok, bad, skipped };
   }
 
   async function restoreVault(file) {
@@ -219,7 +222,12 @@ editor, or git will do if you only want to look.
     if (pages.length) {
       st('restoring pages…');
       const u = await uploadPages(pages);
-      if (u.bad) st('pages: ' + u.ok + ' restored, ' + u.bad + ' failed', false);
+      if (u.bad || u.skipped) {
+        const parts = [u.ok + ' restored'];
+        if (u.bad) parts.push(u.bad + ' failed');
+        if (u.skipped) parts.push(u.skipped + ' skipped (unknown extension)');
+        st('pages: ' + parts.join(', '), false);
+      }
     }
 
     if (shared) {
