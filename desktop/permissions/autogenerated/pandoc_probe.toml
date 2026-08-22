@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pandoc-probe"
+description = "Enables the pandoc_probe command without any pre-configured scope."
+commands.allow = ["pandoc_probe"]
+
+[[permission]]
+identifier = "deny-pandoc-probe"
+description = "Denies the pandoc_probe command without any pre-configured scope."
+commands.deny = ["pandoc_probe"]
