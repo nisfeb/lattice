@@ -46,6 +46,13 @@ jobs:
           sudo apt-get install -y libfuse3-dev pkg-config libgtk-3-dev \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
             libsoup-3.0-dev
+      # A tauri command is registered in three places and missing any one of
+      # them denies it at runtime with "not allowed. Command not found". That
+      # has shipped three times here: save_vault, the whole offline queue, and
+      # the pandoc converter. cargo test cannot see it, because the mismatch is
+      # between rust, a build script and json.
+      - name: tauri commands are registered everywhere
+        run: node scripts/desktop-commands.mjs
       - name: cargo test
         working-directory: desktop
         run: cargo test

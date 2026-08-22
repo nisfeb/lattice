@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-convert-tex"
+description = "Enables the convert_tex command without any pre-configured scope."
+commands.allow = ["convert_tex"]
+
+[[permission]]
+identifier = "deny-convert-tex"
+description = "Denies the convert_tex command without any pre-configured scope."
+commands.deny = ["convert_tex"]

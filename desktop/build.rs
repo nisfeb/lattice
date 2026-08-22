@@ -51,6 +51,14 @@ fn main() {
             "queue_op_put",
             "queue_op_del",
             "backup_write",
+            // Third time for this omission, after save_vault and the
+            // queue. Registered in the invoke handler and nowhere else,
+            // so the convert button told people with pandoc installed
+            // that they had no pandoc. scripts/desktop-commands.mjs now
+            // cross-checks this list against the handler and the
+            // capabilities, because three times is a pattern, not luck.
+            "pandoc_probe",
+            "convert_tex",
         ]),
     ))
     .expect("tauri-build failed")
