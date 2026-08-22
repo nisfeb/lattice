@@ -2,7 +2,7 @@
   // <lat-dialog> owns the dialog's markup AND wiring. The shell only carries
   // the tag, so the served HTML can never be missing an element this file
   // expects (the old cache-skew guards existed exactly for that gap).
-  let dlg, dlgMsg, dlgIn, dlgSel, dlgOpts;
+  let dlg, dlgMsg, dlgIn, dlgSel, dlgOpts, dlgKind;
   let dlgDone = null;
   const dlgClose = (v) => {
     if (!dlgDone) return;
@@ -19,10 +19,46 @@
   const ask = (msg, value, okLabel) => {
     dlgSel.hidden = true;
     dlgIn.hidden = false;
+    dlgKind.hidden = true;
     dlgIn.value = value || '';
     const p = dlgOpen(msg, okLabel);
-    dlgIn.focus(); dlgIn.select();
+    dlgIn.focus();
+    dlgIn.setSelectionRange(dlgIn.value.length, dlgIn.value.length);
     return p;
+  };
+  //  askNameKind: a name AND the kind to save it as, in one dialog.
+  //
+  //  The kind used to be reachable only from the bar, which the desktop shell
+  //  hides. So the one place a desktop user names a file was also the one
+  //  place they could not say what it was, and everything arrived as md.
+  //
+  //  Options are cloned from the bar's own picker rather than restated, so a
+  //  kind added there (tex was) appears here with no second edit.
+  const askNameKind = async (msg, value, okLabel, kind) => {
+    dlgKind.textContent = '';
+    const src = $('pkind');
+    if (src) for (const o of src.options) dlgKind.appendChild(o.cloneNode(true));
+    dlgKind.value = kind || (src && src.value) || 'md';
+    let seed = value || '';
+    let note = '';
+    for (;;) {
+      dlgSel.hidden = true;
+      dlgIn.hidden = false;
+      dlgKind.hidden = false;
+      dlgIn.value = seed;
+      const p = dlgOpen(note + msg, okLabel);
+      dlgIn.focus();
+      dlgIn.setSelectionRange(dlgIn.value.length, dlgIn.value.length);
+      const raw = await p;
+      const picked = dlgKind.value;
+      dlgKind.hidden = true;
+      if (raw === null) return null;
+      const name = raw.trim().replace(/^\/+|\/+$/g, '');
+      if (!name) return null;
+      if (validName(name)) return { name, kind: picked };
+      seed = name;
+      note = 'lowercase letters, digits and - . _ ~ only, no spaces. ';
+    }
   };
   // askName: ask() for a path-like name, re-prompting until the server would
   // accept it. Every one of these prompts feeds a route that enforces
@@ -45,6 +81,7 @@
   // askConfirm: yes/no dialog → boolean
   const askConfirm = (msg, okLabel) => {
     dlgSel.hidden = true;
+    dlgKind.hidden = true;
     dlgIn.hidden = true;
     const p = dlgOpen(msg, okLabel);
     $('dlgok').focus();
@@ -57,6 +94,7 @@
   const askChoice = (msg, options, okLabel) => {
     dlgIn.hidden = true;
     dlgSel.hidden = true;
+    dlgKind.hidden = true;
     dlgOpts.textContent = '';
     dlgOpts.hidden = false;
     $('dlgok').hidden = true;          // each option is its own commit button
@@ -99,6 +137,8 @@
     <div id="dlgopts" class="dlgopts" hidden></div>
     <select id="dlgsel" hidden></select>
     <input id="dlginput" autocomplete="off" spellcheck="false">
+    <!-- the kind to save as. Only askNameKind shows it. -->
+    <select id="dlgkind" class="dlgkind" hidden></select>
     <div class="dlgbtns">
       <button type="button" id="dlgcancel">cancel</button>
       <button type="submit" id="dlgok">ok</button>
@@ -106,7 +146,7 @@
   </form>
 </div>`;
       dlg = $('dlg'); dlgMsg = $('dlgmsg'); dlgIn = $('dlginput');
-      dlgSel = $('dlgsel'); dlgOpts = $('dlgopts');
+      dlgSel = $('dlgsel'); dlgOpts = $('dlgopts'); dlgKind = $('dlgkind');
       $('dlgform').onsubmit = (e) => {
         e.preventDefault();
         dlgClose(!dlgSel.hidden ? dlgSel.value : dlgIn.hidden ? '' : dlgIn.value);

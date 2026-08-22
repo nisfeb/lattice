@@ -212,6 +212,23 @@ select, option { color-scheme: light dark; }
   text-overflow: ellipsis; }
 .tree a.pg:hover { background: var(--surface); }
 .tree a.pg.cur { background: #4a7c5922; color: var(--green); font-weight: 600; }
+/*  A row for a page the ship has not confirmed yet. It pulses rather than
+    spinning: a spinner in a dense tree reads as an error badge, and this has
+    to sit inside a row of text without changing its size or its position.
+    currentColor, so it works in both themes with no second rule. */
+.tree a.pg.pend { animation: latpend 1.1s ease-in-out infinite; }
+@keyframes latpend {
+  0%, 100% { background: transparent; }
+  50%      { background: color-mix(in srgb, currentColor 16%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /*  Nothing moves for anyone who asked for that, but the state still has to
+      be visible, so it holds the mid tone instead of animating to it. */
+  .tree a.pg.pend {
+    animation: none;
+    background: color-mix(in srgb, currentColor 16%, transparent);
+  }
+}
 .tree .fld { display: flex; align-items: center; gap: 4px; padding: 4px 8px;
   color: var(--muted); font-weight: 600; cursor: pointer; white-space: nowrap; }
 .tree .fld .cx { width: .9em; font-size: .7rem; flex: none; user-select: none; }

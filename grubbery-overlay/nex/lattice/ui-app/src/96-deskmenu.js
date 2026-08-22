@@ -90,25 +90,45 @@
       //  a folder's + pre-fills that folder; the toolbar keeps offering the
       //  open page's path, which is what it did before this existed
       const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
-      let name = await askName('page name (e.g. notes/todo.md)', seed, 'create');
-      if (!name) return;
-      //  a typed extension picks the kind and drops off the name. The table
-      //  is EXT_KIND in 30-tree.js, the same one the uploader files by.
+      //  the kind is picked IN the dialog. The bar carries that control and
+      //  the desktop shell hides the bar, so this was the one place a desktop
+      //  user could name a file and the one place they could not say what it
+      //  was. Everything arrived as md.
+      const picked = await askNameKind('page name (e.g. notes/todo)', seed,
+        'create', pkind.value);
+      if (!picked) return;
+      let name = picked.name;
+      let kind = picked.kind;
+      //  a typed extension still wins, because typing notes/todo.md and being
+      //  given a page called "todo.md" would be absurd. The table is EXT_KIND
+      //  in 30-tree.js, the same one the uploader files by.
       const dot = name.lastIndexOf('.');
-      const kind = dot > 0 ? extKind(name.slice(dot + 1)) : null;
-      if (kind) {
-        pkind.value = kind;
-        name = name.slice(0, dot);
-      }
+      const typed = dot > 0 ? extKind(name.slice(dot + 1)) : null;
+      if (typed) { kind = typed; name = name.slice(0, dot); }
+      pkind.value = kind;
       pname.value = name;
       //  both labels (desktop deskbar, mobile bar) repaint off this event
       pname.dispatchEvent(new Event('change'));
+      //  Show it in the tree NOW, pulsing, before the ship has agreed. The
+      //  write is a pier round trip and the tree sitting unchanged through it
+      //  reads as nothing having happened, which is the report that started
+      //  all of this. The pulse is the honest part: it says recorded, not yet
+      //  confirmed. Cleared on success, and the row is dropped on failure so
+      //  a page that does not exist is never left sitting there.
+      const already = nodes.some((n) => n.page && n.path === name);
+      if (!already) { addTreeNode(name, kind, true); snapTree(); renderTree(); }
       //  the button says create, so write the page here. Naming the buffer
       //  and leaving it unwritten read as a create that did nothing, and a
       //  page abandoned before its first keystroke left no trace at all.
       //  save() owns the whole create: 409, the offline queue, the tree
       //  patch and the url, so this must not reimplement any of it.
       await save();
+      if (!already) {
+        //  save() sets `current` on any outcome it considers a success,
+        //  including a queued offline write, which IS a success here.
+        if (current === name) setTreePending(name, false);
+        else { dropTreeNodes(name); snapTree(); renderTree(); }
+      }
       src.focus();
     })();
   };
