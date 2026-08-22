@@ -51,6 +51,11 @@ await page.evaluateOnNewDocument((out) => {
     core: {
       invoke: async (cmd, args) => {
         window.__texCalls.push(cmd);
+        //  an app built before LaTeX support rejects the call itself, which is
+        //  a different thing from pandoc being absent
+        if (window.__texNoCommand && /pandoc_probe|convert_tex/.test(cmd)) {
+          throw new Error('Command ' + cmd + ' not found');
+        }
         if (cmd === 'pandoc_probe') return { available: true, version: 'pandoc STUB', path: '/stub' };
         if (cmd === 'convert_tex') {
           if (window.__texFail) throw new Error('stub: undefined control sequence at line 3');
@@ -131,6 +136,23 @@ try {
   const errHtml = await frameHtml();
   check('a failed conversion shows the reason', errHtml.includes('undefined control sequence'),
     errHtml.slice(0, 200));
+  //  the failure that actually happened: the ship-served UI updated, the app
+  //  binary did not, and the missing command was reported as a missing pandoc.
+  //  That sent someone to reinstall software they already had.
+  await page.evaluate(() => { window.__texNoCommand = true; });
+  await page.evaluate(() => {
+    const k = document.getElementById('pkind');
+    k.value = 'md'; k.dispatchEvent(new Event('change'));
+    k.value = 'tex'; k.dispatchEvent(new Event('change'));
+  });
+  await sleep(1200);
+  const title = await page.evaluate(() => {
+    const b = document.getElementById('texconv');
+    return b ? b.title : '';
+  });
+  check('an app too old to convert says THAT, not "pandoc is missing"',
+    /desktop build|predates/i.test(title) && !/needs pandoc installed/i.test(title),
+    'button title: ' + JSON.stringify(title));
 } catch (e) {
   check('threw: ' + String(e.message).slice(0, 140), false);
 } finally {
