@@ -7,9 +7,14 @@
     ws.classList.toggle('nt', localStorage.appNT === '1');
     ws.classList.toggle('nc', localStorage.appNC === '1');
     ws.classList.toggle('wrap', localStorage.appWrap === '1');
-    $('wrapt').className = 'ico' + (localStorage.appWrap === '1' ? ' on' : '');
-    $('treet').className = 'ico' + (localStorage.appNT === '1' ? ' on' : '');
-    $('ctlt').className = 'ico' + (localStorage.appNC === '1' ? ' on' : '');
+    //  the on class is paint alone, so mirror the state in aria-pressed the
+    //  way setFull below does
+    for (const [id, key] of [['wrapt', 'appWrap'], ['treet', 'appNT'], ['ctlt', 'appNC']]) {
+      const on = localStorage[key] === '1';
+      const b = $(id);
+      b.className = 'ico' + (on ? ' on' : '');
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
   $('wrapt').onclick = () => flip('appWrap');

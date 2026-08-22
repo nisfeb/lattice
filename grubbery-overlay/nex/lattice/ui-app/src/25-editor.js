@@ -60,5 +60,9 @@
   pkind.addEventListener('change', () => {
     curKind = pkind.value;
     render();
+    //  the kind rides every save as a query param, so switching it on an open
+    //  page must dirty the editor or navigating away silently reverts the
+    //  choice. A page with no name yet gets its kind from the first save.
+    if (current) edited();
     if (typeof refreshTexButton === 'function') refreshTexButton();
   });

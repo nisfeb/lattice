@@ -167,8 +167,8 @@
       folderCtx ? folderCtx + '/' : '', 'create');
     if (!name) return;
     const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name));
-    if (!r.ok) { st('folder failed ' + r.status, false); return; }
-    st('folder created');
+    if (!r.ok) { st('folder failed' + await errText(r), false); return; }
+    st(r.offline ? 'folder created offline' : 'folder created');
     addFolderNodes(name);
     snapTree();
     renderTree();
@@ -265,7 +265,7 @@
       return;
     }
     if (r && r.status === 409) { st('that page already exists', false); return; }
-    if (!r || !r.ok) { st('save failed' + (r ? ' ' + r.status : ''), false); return; }
+    if (!r || !r.ok) { st('save failed' + await errText(r), false); return; }
     pendingEchoes++;                  // this save's own beacon bump
     bustPages(name);
     current = name;
@@ -338,7 +338,7 @@
       flushPending();
       return;
     }
-    if (!r || !r.ok) { st('autosave failed' + (r ? ' ' + r.status : ''), false); return; }
+    if (!r || !r.ok) { st('autosave failed' + await errText(r), false); return; }
     if (src.value === sent) dirty = false;   // typed during the request? stay dirty
     let vr = null;
     if (mode !== 'know') {

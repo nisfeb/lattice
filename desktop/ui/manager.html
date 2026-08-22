@@ -175,7 +175,8 @@
     </div>
   </form>
 
-  <h2>automatic backups</h2>
+  <!-- the id is a menu target: Preferences > "scheduled backups…" lands here -->
+  <h2 id="backups">automatic backups</h2>
   <p class="muted" style="margin:.2rem 0 .8rem">Whole-store archives written to
   this machine on a schedule — the same tar the vault export makes, so anything
   here restores the same way. Add several: seven daily, four weekly and twelve
@@ -483,8 +484,15 @@
       head.textContent = s.label + ' — ' + period(s.every_hours) + ', ' + keep
         + (s.enabled ? '' : ' (paused)');
       const sub = document.createElement('div');
-      sub.className = 'muted';
-      sub.textContent = s.dir + ' · ' + ago(s.last_run);
+      // an hour of grace past the period covers a run that is merely late.
+      // The tick catches up within a minute of launch, so a gap wider than
+      // that means the runs since have been failing, and the only other
+      // trace of that is an editor status line the next message overwrites.
+      const overdue = s.enabled && s.every_hours > 0 && s.last_run > 0
+        && Math.floor(Date.now() / 1000) - s.last_run > (s.every_hours + 1) * 3600;
+      sub.className = overdue ? 'err' : 'muted';
+      sub.textContent = s.dir + ' · ' + ago(s.last_run)
+        + (overdue ? ' · the last run did not complete' : '');
       const row = document.createElement('div');
       row.className = 'row';
       const now = document.createElement('button');

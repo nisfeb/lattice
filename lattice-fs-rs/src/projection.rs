@@ -41,7 +41,7 @@ pub struct Node {
     pub rel: String,     // projection key, no leading slash, no extension ("" = root)
     pub is_dir: bool,    // a plain folder (no editable source)
     pub is_page: bool,   // has editable source; MAY also parent children
-    pub kind: String,    // md|gmi|html|text|js|css|hoon|index  ("" for a pure dir)
+    pub kind: String,    // md|gmi|html|text|js|css|tex|hoon|index  ("" for a pure dir)
     pub size: u64,       // byte length of the editable body
     pub mtime: i64,      // unix seconds
     pub readonly: bool,  // generated %index pages
@@ -87,6 +87,7 @@ pub trait Projection: Send + Sync {
             "text" => "txt",
             "js" => "js",
             "css" => "css",
+            "tex" => "tex",
             "index" => "md",
             _ => "hoon",
         }
@@ -99,6 +100,9 @@ pub trait Projection: Send + Sync {
             "txt" => "text",
             "js" => "js",
             "css" => "css",
+            "tex" => "tex",
+            // .latex is inbound-only, matching the browser's EXT_KIND alias
+            "latex" => "tex",
             _ => "hoon",
         }
         .to_string()
@@ -149,15 +153,23 @@ mod tests {
         // mark a save is stored under, so the two must stay inverses. A broken
         // pair either hides a page or stores it as the wrong type.
         let p = Bare;
-        for (kind, ext) in
-            [("md", "md"), ("gmi", "gmi"), ("html", "html"), ("text", "txt"), ("js", "js"), ("css", "css")]
-        {
+        for (kind, ext) in [
+            ("md", "md"),
+            ("gmi", "gmi"),
+            ("html", "html"),
+            ("text", "txt"),
+            ("js", "js"),
+            ("css", "css"),
+            ("tex", "tex"),
+        ] {
             assert_eq!(p.ext_for_kind(kind), ext, "kind {kind}");
             assert_eq!(p.kind_for_ext(ext), kind, "ext {ext}");
         }
         // a generated %index page is served as .md (it renders markdown) but is
         // deliberately NOT invertible: .md always means an editable md page
         assert_eq!(p.ext_for_kind("index"), "md");
+        // .latex reads as a tex page, though a tex page always mounts as .tex
+        assert_eq!(p.kind_for_ext("latex"), "tex");
         // everything else is a bare hoon page, in both directions
         assert_eq!(p.ext_for_kind("hoon"), "hoon");
         assert_eq!(p.ext_for_kind("something-new"), "hoon");

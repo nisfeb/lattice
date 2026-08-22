@@ -99,8 +99,17 @@ pub struct PandocStatus {
 ///
 /// Probed per call, never cached: someone who installs pandoc and comes back
 /// should find the button live without restarting the app.
+///
+/// Async, like the commands in commands.rs: the probe spawns processes, it
+/// runs on every .tex page open, and a sync command would hold the main
+/// thread for the length of each spawn.
 #[tauri::command]
-pub fn pandoc_probe() -> PandocStatus {
+pub async fn pandoc_probe() -> PandocStatus {
+    probe()
+}
+
+/// The probe's actual work, sync so the tests need no runtime.
+fn probe() -> PandocStatus {
     match locate() {
         Some(p) => {
             let v = version_of(&p);
@@ -126,8 +135,17 @@ pub fn pandoc_probe() -> PandocStatus {
 ///
 /// The source goes in on stdin. A temp file would be a path this app has to
 /// create, clean up and get right on three platforms, for nothing.
+///
+/// Async, like the commands in commands.rs: the live preview invokes this
+/// after every debounced keystroke, and a sync command would stutter the
+/// whole UI for the length of each pandoc run.
 #[tauri::command]
-pub fn convert_tex(src: String) -> Result<String, String> {
+pub async fn convert_tex(src: String) -> Result<String, String> {
+    convert(&src)
+}
+
+/// The conversion's actual work, sync so the tests need no runtime.
+fn convert(src: &str) -> Result<String, String> {
     use std::io::Write;
     use std::process::Stdio;
 
@@ -176,7 +194,7 @@ mod tests {
     //  every .tex page open.
     #[test]
     fn probe_is_total() {
-        let s = pandoc_probe();
+        let s = probe();
         assert_eq!(s.available, s.path.is_some());
     }
 
@@ -185,7 +203,7 @@ mod tests {
     #[test]
     fn convert_without_pandoc_is_an_error_not_a_panic() {
         if locate().is_none() {
-            let r = convert_tex("\\documentclass{article}".into());
+            let r = convert("\\documentclass{article}");
             assert!(r.is_err());
         }
     }
@@ -205,7 +223,7 @@ mod tests {
             "Some \\emph{words} and math $e^{i\\pi}+1=0$.\n",
             "\\end{document}\n"
         );
-        let html = convert_tex(src.into()).expect("pandoc should convert this");
+        let html = convert(src).expect("pandoc should convert this");
         assert!(html.contains("<em>words</em>"), "emphasis missing: {html}");
         assert!(html.contains("Heading"), "section missing: {html}");
         //  MathML, not a script tag: the generated page must not need a math
@@ -221,7 +239,7 @@ mod tests {
         if locate().is_none() {
             return;
         }
-        let r = convert_tex("\\begin{document}\n\\undefinedmacro{".into());
+        let r = convert("\\begin{document}\n\\undefinedmacro{");
         if let Err(e) = r {
             assert!(!e.is_empty(), "an error must carry a message");
         }

@@ -68,12 +68,33 @@
   // queued document it earlier reported "saved offline".
   const validName = (n) => String(n || '').split('/').every(
     (s) => s.length && s !== '.' && s !== '..' && /^[a-z0-9._~-]+$/.test(s));
+  // failure statuses name the actual cause. Every send-err answer carries
+  // {"error": msg}, and dropping it for a bare status code wasted a cause
+  // the pier already paid a round trip to deliver. Same parse the grub save
+  // path uses. The body has ONE read, so a caller hands the response here
+  // and reads nothing else from it.
+  const errText = async (r) => {
+    let msg = r ? ' ' + r.status : '';
+    if (r) { try { const j = await r.json(); if (j && j.error) msg = ': ' + j.error; } catch {} }
+    return msg;
+  };
   // bulk writes (vault restore, drag-drop upload, know-import) name their
   // targets only in the POST body — no per-name bust is possible from the
   // URL, and a restore legitimately invalidates everything. Drop the whole
   // pages cache; it rebuilds one view at a time.
   const bustAll = () => {
-    if ('caches' in window) caches.delete('lattice-pages').catch(() => {});
+    if (!('caches' in window)) return;
+    // spare the /__pv marker: it is the SW's record of which page-format
+    // version this cache holds, and deleting it with the cache made the
+    // next activate read a mismatch and wipe every freshly cached page
+    // again. Read it out, drop the cache, put it back.
+    caches.open('lattice-pages').then(async (c) => {
+      const hit = await c.match('/__pv');
+      const pv = hit ? await hit.text() : null;
+      await caches.delete('lattice-pages');
+      if (pv !== null)
+        await (await caches.open('lattice-pages')).put('/__pv', new Response(pv));
+    }).catch(() => {});
   };
   let pname, pkind, status, spinner;   // assigned by <lat-bar>   (12-bar.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)

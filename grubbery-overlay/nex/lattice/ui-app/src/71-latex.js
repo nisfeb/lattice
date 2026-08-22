@@ -65,7 +65,18 @@
     }
   }
 
+  //  a double click must not launch two converts: both write the same output
+  //  page and the second surfaces the race as a write failure.
+  let texConvBusy = false;
+
   async function convertTex() {
+    if (texConvBusy) return;
+    texConvBusy = true;
+    try { await runConvertTex(); }
+    finally { texConvBusy = false; }
+  }
+
+  async function runConvertTex() {
     const rust = texRust();
     if (!rust) return;
     if (!texProbe) texProbe = await probePandoc(rust);
@@ -91,7 +102,7 @@
     }
     if (!current) { st('save this page before converting', false); return; }
     const out = texOut(current);
-    st('converting with pandoc…');
+    stWork('converting with pandoc…');
     let html = null;
     try { html = await rust.invoke('convert_tex', { src: src.value }); }
     catch (e) {
@@ -107,9 +118,13 @@
     //  &new=1 only the first time: page-save answers 409 to a create over an
     //  existing name, and a re-convert is an overwrite by design.
     const known = nodes.some((n) => n.page && n.path === out);
-    const url = api + '/page-save?name=' + encodeURIComponent(out) +
-      '&type=html' + (known ? '' : '&new=1');
-    const r = await mutate(url, { method: 'POST', body });
+    const url = api + '/page-save?name=' + encodeURIComponent(out) + '&type=html';
+    let r = await mutate(url + (known ? '' : '&new=1'), { method: 'POST', body });
+    //  the local tree can run behind the ship: a sibling created elsewhere
+    //  answers our create with 409. The page exists, so retry the write the
+    //  way every re-convert already works, as an overwrite.
+    if (!known && r && r.status === 409)
+      r = await mutate(url, { method: 'POST', body });
     if (!r || !r.ok) { st('could not write ' + out + (r ? ' (' + r.status + ')' : ''), false); return; }
     if (!known) { addTreeNode(out, 'html'); snapTree(); renderTree(); }
     bustPages(out);

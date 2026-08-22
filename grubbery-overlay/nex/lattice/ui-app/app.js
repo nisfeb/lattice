@@ -713,12 +713,33 @@
   // queued document it earlier reported "saved offline".
   const validName = (n) => String(n || '').split('/').every(
     (s) => s.length && s !== '.' && s !== '..' && /^[a-z0-9._~-]+$/.test(s));
+  // failure statuses name the actual cause. Every send-err answer carries
+  // {"error": msg}, and dropping it for a bare status code wasted a cause
+  // the pier already paid a round trip to deliver. Same parse the grub save
+  // path uses. The body has ONE read, so a caller hands the response here
+  // and reads nothing else from it.
+  const errText = async (r) => {
+    let msg = r ? ' ' + r.status : '';
+    if (r) { try { const j = await r.json(); if (j && j.error) msg = ': ' + j.error; } catch {} }
+    return msg;
+  };
   // bulk writes (vault restore, drag-drop upload, know-import) name their
   // targets only in the POST body — no per-name bust is possible from the
   // URL, and a restore legitimately invalidates everything. Drop the whole
   // pages cache; it rebuilds one view at a time.
   const bustAll = () => {
-    if ('caches' in window) caches.delete('lattice-pages').catch(() => {});
+    if (!('caches' in window)) return;
+    // spare the /__pv marker: it is the SW's record of which page-format
+    // version this cache holds, and deleting it with the cache made the
+    // next activate read a mismatch and wipe every freshly cached page
+    // again. Read it out, drop the cache, put it back.
+    caches.open('lattice-pages').then(async (c) => {
+      const hit = await c.match('/__pv');
+      const pv = hit ? await hit.text() : null;
+      await caches.delete('lattice-pages');
+      if (pv !== null)
+        await (await caches.open('lattice-pages')).put('/__pv', new Response(pv));
+    }).catch(() => {});
   };
   let pname, pkind, status, spinner;   // assigned by <lat-bar>   (12-bar.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)
@@ -806,7 +827,9 @@
     connectedCallback() {
       this.innerHTML = `
 <header class="bar">
-  <a class="home" href="/apps/lattice" title="lattice home">&#8962;</a>
+  <!-- the icon-only controls carry aria-labels: their glyph is their whole
+       text content, which is no accessible name at all -->
+  <a class="home" href="/apps/lattice" title="lattice home" aria-label="lattice home">&#8962;</a>
   <button id="modet" title="switch pages / knowledge">&#9998; pages</button>
   <input id="pname" placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
   <select id="pkind" title="page kind">
@@ -823,25 +846,27 @@
   <!-- LaTeX conversion runs on the user's own machine (71-latex.js),
        so this is hidden on the web and on non-tex pages. -->
   <button id="texconv" hidden>convert to html</button>
-  <span id="spin"></span><span id="status" class="muted"></span>
+  <!-- role=status so "saved" and every failure are announced, not just
+       painted onto a line a screen reader never revisits -->
+  <span id="spin"></span><span id="status" class="muted" role="status" aria-live="polite"></span>
   <!-- Offline state is a CONDITION, not an event, so it cannot live in the
        status line: the next save, render or refresh overwrites that. This
        badge stays up for as long as the condition holds. -->
-  <span id="offbadge" class="offbadge" hidden></span>
+  <span id="offbadge" class="offbadge" role="status" aria-live="polite" hidden></span>
   <span class="grow"></span>
-  <button id="wrapt" class="ico" title="toggle line wrap">&#8617;</button>
+  <button id="wrapt" class="ico" title="toggle line wrap" aria-label="toggle line wrap">&#8617;</button>
   <!-- a KEY, not U+26BF: that codepoint has almost no font coverage and
        rendered as an empty box, which is worse than no button at all. -->
-  <button id="qt" class="ico" title="search your pages and notes (ctrl-K)">&#128269;</button>
-  <button id="cmt" class="ico" title="comments from other ships">&#128172;</button>
+  <button id="qt" class="ico" title="search your pages and notes (ctrl-K)" aria-label="search your pages and notes (ctrl-K)">&#128269;</button>
+  <button id="cmt" class="ico" title="comments from other ships" aria-label="comments from other ships">&#128172;</button>
   <!-- a save that replaced an edit from elsewhere keeps the losing body as a
        conflicts/ page. Those are invisible unless you already know to look,
        which is the one failure a conflict design must not have. This badge
        counts them and opens the resolve pane. -->
-  <button id="cflt" class="ico" title="sync conflicts to resolve" hidden>&#9873;</button>
-  <button id="aclt" class="ico" title="access control &mdash; groups, sharing, banned ships">&#128273;</button>
-  <button id="treet" class="ico" title="toggle tree pane">&#9776;</button>
-  <button id="ctlt" class="ico" title="toggle controls pane">&#9881;</button>
+  <button id="cflt" class="ico" title="sync conflicts to resolve" aria-label="sync conflicts to resolve" hidden>&#9873;</button>
+  <button id="aclt" class="ico" title="access control &mdash; groups, sharing, banned ships" aria-label="access control &mdash; groups, sharing, banned ships">&#128273;</button>
+  <button id="treet" class="ico" title="toggle tree pane" aria-label="toggle tree pane">&#9776;</button>
+  <button id="ctlt" class="ico" title="toggle controls pane" aria-label="toggle controls pane">&#9881;</button>
 </header>`;
       pname = $('pname'); pkind = $('pkind');
       status = $('status'); spinner = $('spin'); offbadge = $('offbadge');
@@ -882,12 +907,20 @@
   // expects (the old cache-skew guards existed exactly for that gap).
   let dlg, dlgMsg, dlgIn, dlgSel, dlgOpts, dlgKind;
   let dlgDone = null;
+  let dlgFrom = null;   // focus to hand back on close
   const dlgClose = (v) => {
     if (!dlgDone) return;
     dlg.hidden = true;
+    //  hand focus back to where it was before the dialog took it. Hiding the
+    //  focused element drops focus to body, which loses a keyboard or screen
+    //  reader user's place. The element may have been removed meanwhile
+    //  (a tree re-render replaces its rows), hence the isConnected guard.
+    const f = dlgFrom; dlgFrom = null;
+    if (f && f.isConnected) f.focus();
     const d = dlgDone; dlgDone = null; d(v);
   };
   const dlgOpen = (msg, okLabel) => {
+    dlgFrom = document.activeElement;
     dlgMsg.textContent = msg;
     $('dlgok').textContent = okLabel || 'ok';
     dlg.hidden = false;
@@ -1009,14 +1042,17 @@
   customElements.define('lat-dialog', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="dlg" id="dlg" hidden>
+<!-- labelled by the prompt itself: dlgmsg carries the question, so it is
+     the accessible name, like the aria-label on the overlay siblings -->
+<div class="dlg" id="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgmsg" hidden>
   <form class="dlgbox" id="dlgform">
     <div id="dlgmsg"></div>
     <div id="dlgopts" class="dlgopts" hidden></div>
     <select id="dlgsel" hidden></select>
-    <input id="dlginput" autocomplete="off" spellcheck="false">
+    <!-- every prompt that shows this asks for a name of some kind -->
+    <input id="dlginput" aria-label="name" autocomplete="off" spellcheck="false">
     <!-- the kind to save as. Only askNameKind shows it. -->
-    <select id="dlgkind" class="dlgkind" hidden></select>
+    <select id="dlgkind" class="dlgkind" aria-label="page kind" hidden></select>
     <div class="dlgbtns">
       <button type="button" id="dlgcancel">cancel</button>
       <button type="submit" id="dlgok">ok</button>
@@ -1161,8 +1197,11 @@
       if (q) {
         await enqueueOp(q);
         //  the caller now does exactly the local tree work it does when the
-        //  ship answers: drop the nodes, or remap their paths
-        return { ok: true, status: 200, json: async () => ({ offline: true }) };
+        //  ship answers: drop the nodes, or remap their paths. The flag sits
+        //  on the object itself so the success message can say the change is
+        //  queued without spending the body's single read
+        return { ok: true, offline: true, status: 200,
+                 json: async () => ({ offline: true }) };
       }
       st('offline — edits are queued, but this change needs the ship', false);
       return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
@@ -1181,7 +1220,8 @@
         setDegraded(true);
         if (q) {
           await enqueueOp(q);
-          return { ok: true, status: 200, json: async () => ({ offline: true }) };
+          return { ok: true, offline: true, status: 200,
+                   json: async () => ({ offline: true }) };
         }
         st('offline — edits are queued, but this change needs the ship', false);
         return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
@@ -1482,6 +1522,10 @@
   pkind.addEventListener('change', () => {
     curKind = pkind.value;
     render();
+    //  the kind rides every save as a query param, so switching it on an open
+    //  page must dirty the editor or navigating away silently reverts the
+    //  choice. A page with no name yet gets its kind from the first save.
+    if (current) edited();
     if (typeof refreshTexButton === 'function') refreshTexButton();
   });
 
@@ -2303,7 +2347,7 @@
     // already report theirs. Offline is a state this app is built for.
     try {
       const r = await fetch(api + '/page-dump');
-      if (!r.ok) { st('tree failed ' + r.status, false); return; }
+      if (!r.ok) { st('tree failed' + await errText(r), false); return; }
       d = await r.json();
     } catch { st('tree failed (network)', false); return; }
     if (gen !== treeGen) return;   // a local patch superseded this response
@@ -2636,8 +2680,8 @@
       folderCtx ? folderCtx + '/' : '', 'create');
     if (!name) return;
     const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name));
-    if (!r.ok) { st('folder failed ' + r.status, false); return; }
-    st('folder created');
+    if (!r.ok) { st('folder failed' + await errText(r), false); return; }
+    st(r.offline ? 'folder created offline' : 'folder created');
     addFolderNodes(name);
     snapTree();
     renderTree();
@@ -2734,7 +2778,7 @@
       return;
     }
     if (r && r.status === 409) { st('that page already exists', false); return; }
-    if (!r || !r.ok) { st('save failed' + (r ? ' ' + r.status : ''), false); return; }
+    if (!r || !r.ok) { st('save failed' + await errText(r), false); return; }
     pendingEchoes++;                  // this save's own beacon bump
     bustPages(name);
     current = name;
@@ -2807,7 +2851,7 @@
       flushPending();
       return;
     }
-    if (!r || !r.ok) { st('autosave failed' + (r ? ' ' + r.status : ''), false); return; }
+    if (!r || !r.ok) { st('autosave failed' + await errText(r), false); return; }
     if (src.value === sent) dirty = false;   // typed during the request? stay dirty
     let vr = null;
     if (mode !== 'know') {
@@ -3676,22 +3720,30 @@
         (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it?' : '?');
       if (!(await askConfirm(what, 'delete'))) return;
       const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
-      if (!r.ok) { st('delete failed ' + r.status, false); return; }
+      if (!r.ok) { st('delete failed' + await errText(r), false); return; }
       dropTreeNodes(path);
       snapTree();
-      newFile('');
-      st('deleted ' + path);
+      // no focus: a focused newFile becomes the create dialog under the
+      // desktop wrapper, and nobody asked to create a page by deleting one
+      newFile('', false);
+      st(r.offline ? 'deleted ' + path + ' offline' : 'deleted ' + path);
       return;
     }
     if (!current) { st('nothing to delete', false); return; }
-    if (!(await askConfirm('delete ' + current + '?', 'delete'))) return;
     const doomed = current;
+    // the server culls the page's whole dir, nested pages included, and
+    // dropTreeNodes below assumes exactly that. Count what goes the way the
+    // folder branch does, so the confirm is proportional to the loss
+    const c = pageCount(doomed);
+    const what = 'delete ' + doomed +
+      (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it?' : '?');
+    if (!(await askConfirm(what, 'delete'))) return;
     const r = await mutate(api + '/page-del?name=' + encodeURIComponent(doomed));
-    if (!r.ok) { st('delete failed ' + r.status, false); return; }
+    if (!r.ok) { st('delete failed' + await errText(r), false); return; }
     dropTreeNodes(doomed);
     snapTree();
-    newFile('');
-    st('deleted');
+    newFile('', false);
+    st(r.offline ? 'deleted ' + doomed + ' offline' : 'deleted ' + doomed);
   };
 
 // ── src/66-share.js ───────────────────────────────────────────────────────
@@ -4224,7 +4276,18 @@
     }
   }
 
+  //  a double click must not launch two converts: both write the same output
+  //  page and the second surfaces the race as a write failure.
+  let texConvBusy = false;
+
   async function convertTex() {
+    if (texConvBusy) return;
+    texConvBusy = true;
+    try { await runConvertTex(); }
+    finally { texConvBusy = false; }
+  }
+
+  async function runConvertTex() {
     const rust = texRust();
     if (!rust) return;
     if (!texProbe) texProbe = await probePandoc(rust);
@@ -4250,7 +4313,7 @@
     }
     if (!current) { st('save this page before converting', false); return; }
     const out = texOut(current);
-    st('converting with pandoc…');
+    stWork('converting with pandoc…');
     let html = null;
     try { html = await rust.invoke('convert_tex', { src: src.value }); }
     catch (e) {
@@ -4266,9 +4329,13 @@
     //  &new=1 only the first time: page-save answers 409 to a create over an
     //  existing name, and a re-convert is an overwrite by design.
     const known = nodes.some((n) => n.page && n.path === out);
-    const url = api + '/page-save?name=' + encodeURIComponent(out) +
-      '&type=html' + (known ? '' : '&new=1');
-    const r = await mutate(url, { method: 'POST', body });
+    const url = api + '/page-save?name=' + encodeURIComponent(out) + '&type=html';
+    let r = await mutate(url + (known ? '' : '&new=1'), { method: 'POST', body });
+    //  the local tree can run behind the ship: a sibling created elsewhere
+    //  answers our create with 409. The page exists, so retry the write the
+    //  way every re-convert already works, as an overwrite.
+    if (!known && r && r.status === 409)
+      r = await mutate(url, { method: 'POST', body });
     if (!r || !r.ok) { st('could not write ' + out + (r ? ' (' + r.status + ')' : ''), false); return; }
     if (!known) { addTreeNode(out, 'html'); snapTree(); renderTree(); }
     bustPages(out);
@@ -4868,7 +4935,7 @@
   async function movePage(oldName, newName) {
     const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldName) +
       '&to=' + encodeURIComponent(newName));
-    if (!r.ok) { st('move failed ' + r.status, false); return false; }
+    if (!r.ok) { st('move failed' + await errText(r), false); return false; }
     // the server moves the WHOLE subtree (a page can parent nested pages, and
     // move-pages rewrites every rel under it). Renaming only the exact node
     // left those children pointing at paths that no longer exist — ghosts in
@@ -4880,7 +4947,9 @@
     if (newName.includes('/')) addFolderNodes(newName.slice(0, newName.lastIndexOf('/')));
     snapTree();
     renderTree();
-    return true;
+    //  the response, not a bare true: the caller's message must say when the
+    //  move was queued offline, and only the response knows.
+    return r;
   }
 
   async function moveFolder(oldPath) {
@@ -4890,7 +4959,7 @@
     st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
     const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldPath) +
       '&to=' + encodeURIComponent(newPath));
-    if (!r.ok) { st('move failed ' + r.status, false); return; }
+    if (!r.ok) { st('move failed' + await errText(r), false); return; }
     let moved = 0;
     for (const n of nodes)
       if (n.path === oldPath || n.path.startsWith(oldPath + '/')) {
@@ -4902,7 +4971,8 @@
       current = mapped(current);
     snapTree();
     renderTree();
-    st('moved ' + oldPath + ' \u2192 ' + newPath + ' (' + moved + ' pages)');
+    st('moved ' + oldPath + ' \u2192 ' + newPath +
+      (r.offline ? ' offline' : '') + ' (' + moved + ' pages)');
     if (current) openPage(current);
     else if (curFolder === oldPath) selectFolder(newPath);
   }
@@ -5086,8 +5156,9 @@
       st('moved to ' + newName);
       return;
     }
-    if (await movePage(current, newName)) {
-      st('moved to ' + newName);
+    const mv = await movePage(current, newName);
+    if (mv) {
+      st('moved to ' + newName + (mv.offline ? ' offline' : ''));
       openPage(newName);
     }
   };
@@ -5115,7 +5186,17 @@
       // page existed to receive the eval, so Rust navigates here with
       // ?backup=<id> and the boot runs it (3s: let the tree land first).
       const pend = new URLSearchParams(location.search).get('backup');
-      if (pend) setTimeout(() => window.__latticeBackup(pend), 3000);
+      if (pend) {
+        // the param is a one-shot instruction. A service-worker takeover or
+        // an offline fallback reloads this page with its query intact, and
+        // re-reading it would write a second archive.
+        const q = new URLSearchParams(location.search);
+        q.delete('backup');
+        const rest = q.toString();
+        history.replaceState(history.state, '',
+          location.pathname + (rest ? '?' + rest : '') + location.hash);
+        setTimeout(() => window.__latticeBackup(pend), 3000);
+      }
     }
   }
 
@@ -5483,9 +5564,14 @@
     ws.classList.toggle('nt', localStorage.appNT === '1');
     ws.classList.toggle('nc', localStorage.appNC === '1');
     ws.classList.toggle('wrap', localStorage.appWrap === '1');
-    $('wrapt').className = 'ico' + (localStorage.appWrap === '1' ? ' on' : '');
-    $('treet').className = 'ico' + (localStorage.appNT === '1' ? ' on' : '');
-    $('ctlt').className = 'ico' + (localStorage.appNC === '1' ? ' on' : '');
+    //  the on class is paint alone, so mirror the state in aria-pressed the
+    //  way setFull below does
+    for (const [id, key] of [['wrapt', 'appWrap'], ['treet', 'appNT'], ['ctlt', 'appNC']]) {
+      const on = localStorage[key] === '1';
+      const b = $(id);
+      b.className = 'ico' + (on ? ' on' : '');
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
   $('wrapt').onclick = () => flip('appWrap');
@@ -6111,11 +6197,10 @@
   const baseNewFile = newFile;
   newFile = function (into, focusName = true) {
     if (!focusName || !nameFieldHidden()) return baseNewFile(into, focusName);
-    //  reset the editor first, without the focus that cannot land
-    baseNewFile(into, false);
     (async () => {
       //  a folder's + pre-fills that folder; the toolbar keeps offering the
-      //  open page's path, which is what it did before this existed
+      //  open page's path, which is what it did before this existed. Read it
+      //  BEFORE the reset below, which clears the field it comes from.
       const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
       //  the kind is picked IN the dialog. The bar carries that control and
       //  the desktop shell hides the bar, so this was the one place a desktop
@@ -6124,6 +6209,10 @@
       const picked = await askNameKind('page name (e.g. notes/todo)', seed,
         'create', pkind.value);
       if (!picked) return;
+      //  reset the editor only once the create is confirmed, so a cancel
+      //  leaves the open page exactly as it was. The false skips the focus
+      //  that cannot land on a hidden name field.
+      baseNewFile(into, false);
       let name = picked.name;
       let kind = picked.kind;
       //  a typed extension still wins, because typing notes/todo.md and being

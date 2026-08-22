@@ -20,6 +20,16 @@
       // page existed to receive the eval, so Rust navigates here with
       // ?backup=<id> and the boot runs it (3s: let the tree land first).
       const pend = new URLSearchParams(location.search).get('backup');
-      if (pend) setTimeout(() => window.__latticeBackup(pend), 3000);
+      if (pend) {
+        // the param is a one-shot instruction. A service-worker takeover or
+        // an offline fallback reloads this page with its query intact, and
+        // re-reading it would write a second archive.
+        const q = new URLSearchParams(location.search);
+        q.delete('backup');
+        const rest = q.toString();
+        history.replaceState(history.state, '',
+          location.pathname + (rest ? '?' + rest : '') + location.hash);
+        setTimeout(() => window.__latticeBackup(pend), 3000);
+      }
     }
   }
