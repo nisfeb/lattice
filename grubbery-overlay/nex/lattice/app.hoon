@@ -21,6 +21,7 @@
 ::
 /<  lk   /lib/lattice-know.hoon
 /<  lp   /lib/lattice-pub.hoon
+/<  lgmi  /lib/lattice-gmi.hoon
 /<  le   /lib/lattice-eval.hoon
 /<  lu   /lib/lattice-urls.hoon
 /<  pg   /lib/lattice-pg.hoon
@@ -6877,56 +6878,11 @@
   ^-  tape
   ?~  a  a
   ?:(=(' ' i.a) $(a t.a) a)
-::  +render-gmi: gemtext body -> HTML fragment (compact: headings, => links,
-::  lists, blockquotes, ``` pre, paragraphs). urb:// links route back through
-::  the reader; other links render as their description text only.
+::  +render-gmi: gemtext body -> HTML fragment. Lives in /lib/lattice-gmi
+::  now, beside its tests, the same way render-md always has. It sat here
+::  untested and had shipped two bugs a single test would have caught.
 ::
-::  output accumulates as a list of per-line chunks zinged once at the end.
-::  Welding each line onto one growing tape re-copied the whole document per
-::  line (quadratic in document size, the same class as the fixed wikilinkify
-::  quadratic, on the unauthenticated reader path).
-++  render-gmi
-  |=  body=@t
-  ^-  tape
-  =/  lines=(list @t)  (to-wain:format body)
-  =|  acc=(list tape)
-  =/  pre=?  |
-  =|  prebuf=(list @t)
-  |-  ^-  tape
-  ?~  lines
-    ?:  pre
-      %-  zing  %-  flop
-      [:(weld "<pre>" (esc (trip (of-wain:format (flop prebuf)))) "</pre>") acc]
-    (zing (flop acc))
-  =/  ln=tape  (trip i.lines)
-  ?:  pre
-    ?.  =("```" ln)  $(lines t.lines, prebuf [i.lines prebuf])
-    %=  $
-      lines   t.lines
-      pre     |
-      prebuf  ~
-      acc     [:(weld "<pre>" (esc (trip (of-wain:format (flop prebuf)))) "</pre>") acc]
-    ==
-  ?:  =("```" ln)  $(lines t.lines, pre &, prebuf ~)
-  ?:  (has-prefix "### " ln)  $(lines t.lines, acc [:(weld "<h3>" (esc (slag 4 ln)) "</h3>") acc])
-  ?:  (has-prefix "## " ln)   $(lines t.lines, acc [:(weld "<h2>" (esc (slag 3 ln)) "</h2>") acc])
-  ?:  (has-prefix "# " ln)    $(lines t.lines, acc [:(weld "<h1>" (esc (slag 2 ln)) "</h1>") acc])
-  ?:  (has-prefix "=> " ln)
-    =/  rest=tape  (ltrim (slag 3 ln))
-    =/  sp=(unit @ud)  (find " " rest)
-    =/  raw=tape   ?~(sp rest (scag u.sp rest))
-    =/  desc=tape  (ltrim ?~(sp rest (slag +(u.sp) rest)))
-    =/  anchor=tape
-      ?:  =("urb://" (scag 6 raw))
-        :(weld "<a href=\"/apps/lattice?url=" (esc raw) "\">" (esc desc) "</a>")
-      ?:  |(=("http://" (scag 7 raw)) =("https://" (scag 8 raw)))
-        :(weld "<a href=\"" (esc raw) "\" target=\"_blank\" rel=\"noopener noreferrer\">" (esc desc) "</a>")
-      (esc desc)
-    $(lines t.lines, acc [:(weld "<p>" anchor "</p>") acc])
-  ?:  (has-prefix "> " ln)
-    $(lines t.lines, acc [:(weld "<blockquote>" (esc (slag 2 ln)) "</blockquote>") acc])
-  ?:  =("" ln)  $(lines t.lines)
-  $(lines t.lines, acc [:(weld "<p>" (esc ln) "</p>") acc])
+++  render-gmi  render-gmi:lgmi
 ::  +content-env-pre: the exact page-source shell EVERY content note is stored
 ::  in. The evaluator only knows Hoon gates, so a note IS a gate returning
 ::  (BUILDER '...'): +wrap-content escapes the prose into a single-quote cord
