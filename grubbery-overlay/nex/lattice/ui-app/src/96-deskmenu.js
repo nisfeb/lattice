@@ -84,11 +84,10 @@
   const baseNewFile = newFile;
   newFile = function (into, focusName = true) {
     if (!focusName || !nameFieldHidden()) return baseNewFile(into, focusName);
-    //  reset the editor first, without the focus that cannot land
-    baseNewFile(into, false);
     (async () => {
       //  a folder's + pre-fills that folder; the toolbar keeps offering the
-      //  open page's path, which is what it did before this existed
+      //  open page's path, which is what it did before this existed. Read it
+      //  BEFORE the reset below, which clears the field it comes from.
       const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
       //  the kind is picked IN the dialog. The bar carries that control and
       //  the desktop shell hides the bar, so this was the one place a desktop
@@ -97,6 +96,10 @@
       const picked = await askNameKind('page name (e.g. notes/todo)', seed,
         'create', pkind.value);
       if (!picked) return;
+      //  reset the editor only once the create is confirmed, so a cancel
+      //  leaves the open page exactly as it was. The false skips the focus
+      //  that cannot land on a hidden name field.
+      baseNewFile(into, false);
       let name = picked.name;
       let kind = picked.kind;
       //  a typed extension still wins, because typing notes/todo.md and being

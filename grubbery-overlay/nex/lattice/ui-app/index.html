@@ -137,6 +137,12 @@ select, option { color-scheme: light dark; }
   color: inherit; }
 .bar input { min-width: 16rem; cursor: text; }
 .bar button { cursor: pointer; }
+/* the convert button with no converter behind it: pandoc is missing, or the
+   desktop build predates LaTeX support. Dashed reads as "needs something",
+   and the button stays clickable to explain itself (71-latex.js). The var
+   holds in both themes. */
+.bar button.needsdep { border-style: dashed; border-color: var(--muted);
+  color: var(--muted); }
 .bar button:hover, .bar .home:hover { border-color: var(--green); }
 .bar .grow { flex: 1; }
 #status { font-size: .85rem; }
@@ -600,7 +606,45 @@ ul.qlist a:hover { background: var(--surface); }
 <lat-conflicts></lat-conflicts>
 <lat-dialog></lat-dialog>
 <script src="/apps/lattice/prism.js"></script>
-<script>if("serviceWorker"in navigator)navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice"});</script>
+<script>
+// The reader pages get this registration from app.hoon's sw-register-script.
+// The editor carries its own copy with one change: where a reader skips the
+// takeover reload while work is unsaved, that skip here would leave the
+// editor on stale code for the life of the tab. So the editor polls until
+// the save lands and reloads then.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/apps/lattice/sw.js', { scope: '/apps/lattice' })
+    .then(function (r) {
+      r.addEventListener('updatefound', function () {
+        var w = r.installing;
+        if (w) w.addEventListener('statechange', function () {
+          if (w.state === 'installed' && navigator.serviceWorker.controller)
+            w.postMessage('skipWaiting');
+        });
+      });
+    }).catch(function (x) {});
+  // a controller present now means this load was already SW-served, so a
+  // later controllerchange is an update taking over. A first install also
+  // fires controllerchange, and reloading on it would interrupt the very
+  // first visit, so the listener only exists when a controller did.
+  if (navigator.serviceWorker.controller) {
+    var swReloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (swReloading) return;
+      swReloading = true;
+      if (window.__latUnsaved && window.__latUnsaved()) {
+        var iv = setInterval(function () {
+          if (window.__latUnsaved()) return;
+          clearInterval(iv);
+          location.reload();
+        }, 3000);
+        return;
+      }
+      location.reload();
+    });
+  }
+}
+</script>
 <script src="/apps/lattice/app/vault.js"></script>
 <script src="/apps/lattice/app/app.js"></script>
 </body>

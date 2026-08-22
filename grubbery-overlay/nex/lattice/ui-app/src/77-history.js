@@ -176,8 +176,9 @@
       st('moved to ' + newName);
       return;
     }
-    if (await movePage(current, newName)) {
-      st('moved to ' + newName);
+    const mv = await movePage(current, newName);
+    if (mv) {
+      st('moved to ' + newName + (mv.offline ? ' offline' : ''));
       openPage(newName);
     }
   };

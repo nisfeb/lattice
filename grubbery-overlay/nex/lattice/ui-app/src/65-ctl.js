@@ -48,20 +48,28 @@
         (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it?' : '?');
       if (!(await askConfirm(what, 'delete'))) return;
       const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
-      if (!r.ok) { st('delete failed ' + r.status, false); return; }
+      if (!r.ok) { st('delete failed' + await errText(r), false); return; }
       dropTreeNodes(path);
       snapTree();
-      newFile('');
-      st('deleted ' + path);
+      // no focus: a focused newFile becomes the create dialog under the
+      // desktop wrapper, and nobody asked to create a page by deleting one
+      newFile('', false);
+      st(r.offline ? 'deleted ' + path + ' offline' : 'deleted ' + path);
       return;
     }
     if (!current) { st('nothing to delete', false); return; }
-    if (!(await askConfirm('delete ' + current + '?', 'delete'))) return;
     const doomed = current;
+    // the server culls the page's whole dir, nested pages included, and
+    // dropTreeNodes below assumes exactly that. Count what goes the way the
+    // folder branch does, so the confirm is proportional to the loss
+    const c = pageCount(doomed);
+    const what = 'delete ' + doomed +
+      (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it?' : '?');
+    if (!(await askConfirm(what, 'delete'))) return;
     const r = await mutate(api + '/page-del?name=' + encodeURIComponent(doomed));
-    if (!r.ok) { st('delete failed ' + r.status, false); return; }
+    if (!r.ok) { st('delete failed' + await errText(r), false); return; }
     dropTreeNodes(doomed);
     snapTree();
-    newFile('');
-    st('deleted');
+    newFile('', false);
+    st(r.offline ? 'deleted ' + doomed + ' offline' : 'deleted ' + doomed);
   };

@@ -112,8 +112,11 @@
       if (q) {
         await enqueueOp(q);
         //  the caller now does exactly the local tree work it does when the
-        //  ship answers: drop the nodes, or remap their paths
-        return { ok: true, status: 200, json: async () => ({ offline: true }) };
+        //  ship answers: drop the nodes, or remap their paths. The flag sits
+        //  on the object itself so the success message can say the change is
+        //  queued without spending the body's single read
+        return { ok: true, offline: true, status: 200,
+                 json: async () => ({ offline: true }) };
       }
       st('offline — edits are queued, but this change needs the ship', false);
       return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
@@ -132,7 +135,8 @@
         setDegraded(true);
         if (q) {
           await enqueueOp(q);
-          return { ok: true, status: 200, json: async () => ({ offline: true }) };
+          return { ok: true, offline: true, status: 200,
+                   json: async () => ({ offline: true }) };
         }
         st('offline — edits are queued, but this change needs the ship', false);
         return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };

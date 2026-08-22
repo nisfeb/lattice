@@ -4,12 +4,20 @@
   // expects (the old cache-skew guards existed exactly for that gap).
   let dlg, dlgMsg, dlgIn, dlgSel, dlgOpts, dlgKind;
   let dlgDone = null;
+  let dlgFrom = null;   // focus to hand back on close
   const dlgClose = (v) => {
     if (!dlgDone) return;
     dlg.hidden = true;
+    //  hand focus back to where it was before the dialog took it. Hiding the
+    //  focused element drops focus to body, which loses a keyboard or screen
+    //  reader user's place. The element may have been removed meanwhile
+    //  (a tree re-render replaces its rows), hence the isConnected guard.
+    const f = dlgFrom; dlgFrom = null;
+    if (f && f.isConnected) f.focus();
     const d = dlgDone; dlgDone = null; d(v);
   };
   const dlgOpen = (msg, okLabel) => {
+    dlgFrom = document.activeElement;
     dlgMsg.textContent = msg;
     $('dlgok').textContent = okLabel || 'ok';
     dlg.hidden = false;
@@ -131,14 +139,17 @@
   customElements.define('lat-dialog', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="dlg" id="dlg" hidden>
+<!-- labelled by the prompt itself: dlgmsg carries the question, so it is
+     the accessible name, like the aria-label on the overlay siblings -->
+<div class="dlg" id="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgmsg" hidden>
   <form class="dlgbox" id="dlgform">
     <div id="dlgmsg"></div>
     <div id="dlgopts" class="dlgopts" hidden></div>
     <select id="dlgsel" hidden></select>
-    <input id="dlginput" autocomplete="off" spellcheck="false">
+    <!-- every prompt that shows this asks for a name of some kind -->
+    <input id="dlginput" aria-label="name" autocomplete="off" spellcheck="false">
     <!-- the kind to save as. Only askNameKind shows it. -->
-    <select id="dlgkind" class="dlgkind" hidden></select>
+    <select id="dlgkind" class="dlgkind" aria-label="page kind" hidden></select>
     <div class="dlgbtns">
       <button type="button" id="dlgcancel">cancel</button>
       <button type="submit" id="dlgok">ok</button>

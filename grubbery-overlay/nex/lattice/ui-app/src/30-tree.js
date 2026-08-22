@@ -82,7 +82,7 @@
     // already report theirs. Offline is a state this app is built for.
     try {
       const r = await fetch(api + '/page-dump');
-      if (!r.ok) { st('tree failed ' + r.status, false); return; }
+      if (!r.ok) { st('tree failed' + await errText(r), false); return; }
       d = await r.json();
     } catch { st('tree failed (network)', false); return; }
     if (gen !== treeGen) return;   // a local patch superseded this response

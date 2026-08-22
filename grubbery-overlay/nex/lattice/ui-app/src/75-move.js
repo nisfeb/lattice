@@ -6,7 +6,7 @@
   async function movePage(oldName, newName) {
     const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldName) +
       '&to=' + encodeURIComponent(newName));
-    if (!r.ok) { st('move failed ' + r.status, false); return false; }
+    if (!r.ok) { st('move failed' + await errText(r), false); return false; }
     // the server moves the WHOLE subtree (a page can parent nested pages, and
     // move-pages rewrites every rel under it). Renaming only the exact node
     // left those children pointing at paths that no longer exist — ghosts in
@@ -18,7 +18,9 @@
     if (newName.includes('/')) addFolderNodes(newName.slice(0, newName.lastIndexOf('/')));
     snapTree();
     renderTree();
-    return true;
+    //  the response, not a bare true: the caller's message must say when the
+    //  move was queued offline, and only the response knows.
+    return r;
   }
 
   async function moveFolder(oldPath) {
@@ -28,7 +30,7 @@
     st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
     const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldPath) +
       '&to=' + encodeURIComponent(newPath));
-    if (!r.ok) { st('move failed ' + r.status, false); return; }
+    if (!r.ok) { st('move failed' + await errText(r), false); return; }
     let moved = 0;
     for (const n of nodes)
       if (n.path === oldPath || n.path.startsWith(oldPath + '/')) {
@@ -40,7 +42,8 @@
       current = mapped(current);
     snapTree();
     renderTree();
-    st('moved ' + oldPath + ' \u2192 ' + newPath + ' (' + moved + ' pages)');
+    st('moved ' + oldPath + ' \u2192 ' + newPath +
+      (r.offline ? ' offline' : '') + ' (' + moved + ' pages)');
     if (current) openPage(current);
     else if (curFolder === oldPath) selectFolder(newPath);
   }
