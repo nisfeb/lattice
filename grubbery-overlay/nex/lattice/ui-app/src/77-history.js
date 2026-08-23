@@ -63,9 +63,10 @@
     histList.textContent = ''; linkList.textContent = '';
     histList.hidden = true; linkList.hidden = true;
     histView.hidden = true;
-    const on = !!current && mode !== 'know';
-    histSec.hidden = !on;
-    linkSec.hidden = !on;
+    // history now covers memories too. Backlinks stay pages-only, since a
+    // wikilink search over the vault is a different feature nobody asked for
+    histSec.hidden = !current;
+    linkSec.hidden = !current || mode === 'know';
     panelArrow($('histh'), 'history', false);
     panelArrow($('linkh'), 'linked from', false);
   }
@@ -96,11 +97,13 @@
   };
   async function loadHistory() {
     histList.textContent = '';
-    if (!current || mode === 'know') return;
+    if (!current) return;
     let j = null;
     // same rule as loadBacklinks: an unreachable ship leaves the panel empty
     try {
-      const r = await fetch(api + '/page-history?name=' + encodeURIComponent(current));
+      const r = await fetch(mode === 'know'
+        ? api + '/know-history?key=' + encodeURIComponent(current)
+        : api + '/page-history?name=' + encodeURIComponent(current));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
@@ -123,15 +126,28 @@
     }
   }
   async function openRev(rev) {
+    // the historical body is about to overwrite the textarea. It exists
+    // nowhere else, so a dirty edit needs the same ask as a grub discard.
+    if (dirty &&
+        !(await askConfirm('discard unsaved changes to ' + current + '?', 'discard'))) return;
     let d = null;
     try {
-      const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(current) +
-        '&rev=' + rev);
-      if (!r.ok) { st('revision load failed ' + r.status, false); return; }
+      const r = await fetch(mode === 'know'
+        ? api + '/know-read-at?key=' + encodeURIComponent(current) + '&rev=' + rev
+        : api + '/page-source-at?name=' + encodeURIComponent(current) + '&rev=' + rev);
+      if (!r.ok) {
+        st('revision load failed' + await errText(r), false);
+        // prune-hist coalesces revisions inside its window on every save, so
+        // a chip the pane still lists can genuinely be gone. Resync the list
+        // instead of leaving a chip that will fail forever.
+        if (r.status === 404) loadHistory();
+        return;
+      }
       d = await r.json();
     } catch { st('revision load failed (network)', false); return; }
     viewingRev = rev;
-    revKind = d.kind === 'index' ? 'md' : d.kind;   // restore under the REVISION's kind
+    // restore under the REVISION's own kind. Memories carry no kind at all
+    revKind = mode === 'know' ? null : (d.kind === 'index' ? 'md' : d.kind);
     dirty = false;
     src.value = d.body;
     src.readOnly = true;
@@ -140,12 +156,29 @@
     for (const a of histList.children)
       a.className = a.textContent.split(' ')[0] === '#' + rev ? 'on' : '';
     st('viewing rev ' + rev + ' \u00b7 read-only');
-    if (CONTENT()) refreshPreview();
+    if (mode !== 'know' && CONTENT()) refreshPreview();
   }
-  $('hback').onclick = () => { exitRev(); openPage(current); };
+  $('hback').onclick = () => {
+    exitRev();
+    if (mode === 'know') openKnow(current); else openPage(current);
+  };
   $('hrestore').onclick = async () => {
     if (viewingRev === null) return;
-    const rev = viewingRev, kind = revKind;
+    const rev = viewingRev;
+    if (mode === 'know') {
+      exitRev();
+      // the dedicated restore route re-imports the revision's OWN tags via
+      // %import, so the tag set that rev actually held comes back with it
+      const r = await mutate(api + '/know-restore-rev?key=' + encodeURIComponent(current) +
+        '&rev=' + rev);
+      if (!r.ok) { st('restore failed' + await errText(r), false); return; }
+      knowGen++;
+      await openKnow(current);   // repaints body + tags from the restored entry
+      st('restored rev ' + rev + ' as the newest revision');
+      loadHistory();
+      return;
+    }
+    const kind = revKind;
     exitRev();
     dirty = true;          // the historical body is now an unsaved local edit
     await save(kind);      // under the revision's OWN kind, not the current select
@@ -156,6 +189,7 @@
   };
 
   $('mv').onclick = async () => {
+    if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     if (curFolder) { moveFolder(curFolder); return; }
     if (!current) { st('open something first', false); return; }
     const newName = await askName('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
@@ -164,7 +198,7 @@
     if (mode === 'know') {
       const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
         '&to=' + encodeURIComponent(newName));
-      if (!r.ok) { st('move failed ' + r.status, false); return; }
+      if (!r.ok) { st('move failed' + await errText(r), false); return; }
       // the body is already in the editor. Rename in place, no refetch
       knowGen++;
       const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);

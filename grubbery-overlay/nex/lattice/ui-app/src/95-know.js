@@ -14,7 +14,7 @@
     // their work with it.
     try {
       const r = await fetch(api + '/know-list');
-      if (!r.ok) { st('know-list failed ' + r.status, false); return; }
+      if (!r.ok) { st('know-list failed' + await errText(r), false); return; }
       d = await r.json();
     } catch { st('know-list failed (network)', false); return; }
     if (gen !== knowGen) return;   // a local patch superseded this response
@@ -109,7 +109,7 @@
     else {
       let r = null;
       try { r = await fetch(api + '/know-read?key=' + encodeURIComponent(key)); } catch {}
-      if (!r || !r.ok) { st('open failed ' + (r ? r.status : '— offline'), false); return; }
+      if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return; }
       d = await r.json();
     }
     current = key;
@@ -121,6 +121,8 @@
     markCurrent();
     renderKnowTags(d.tags || []);
     $('kupd').textContent = 'updated ' + (d.updated || '');
+    exitRev();
+    resetPanels();
     st('memory · ' + (d.tags || []).map((t) => '#' + t).join(' '));
     if (isMobile()) setMv('code');
   }
@@ -133,7 +135,7 @@
       a.onclick = async () => {
         const r = await mutate(api + '/know-untag?key=' + encodeURIComponent(current) +
           '&tag=' + encodeURIComponent(t));
-        if (!r.ok) { st('untag failed ' + r.status, false); return; }
+        if (!r.ok) { st('untag failed' + await errText(r), false); return; }
         // this client made the change. Patch the list it already holds
         knowGen++;
         const k = knowEntry(current);
@@ -152,7 +154,7 @@
     if (!t || !current || mode !== 'know') return;
     const r = await mutate(api + '/know-tag?key=' + encodeURIComponent(current) +
       '&tag=' + encodeURIComponent(t));
-    if (!r.ok) { st('tag failed ' + r.status, false); return; }
+    if (!r.ok) { st('tag failed' + await errText(r), false); return; }
     $('ktag').value = '';
     knowGen++;
     const k = knowEntry(current);
@@ -187,7 +189,7 @@
       if (src.value === sent) dirty = false;
       return;
     }
-    if (!r.ok) { st('save failed ' + r.status, false); return; }
+    if (!r.ok) { st('save failed' + await errText(r), false); return; }
     current = key;
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
@@ -206,7 +208,7 @@
     if (!(await askConfirm('delete memory ' + current + '? (soft-delete, restorable)', 'delete'))) return;
     const doomed = current;
     const r = await mutate(api + '/know-delete?key=' + encodeURIComponent(doomed));
-    if (!r.ok) { st('delete failed ' + r.status, false); return; }
+    if (!r.ok) { st('delete failed' + await errText(r), false); return; }
     current = null;
     pname.value = '';
     pname.readOnly = false;

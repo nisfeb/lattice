@@ -41,6 +41,7 @@
   // ── delete ───────────────────────────────────────────────────────────────
   $('del').onclick = async () => {
     if (mode === 'know') { deleteKnow(); return; }
+    if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     if (curFolder) {
       const path = curFolder;
       const c = pageCount(path);

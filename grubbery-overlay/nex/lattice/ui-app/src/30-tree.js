@@ -161,7 +161,14 @@
         row.className = 'pg' + (n.path === current ? ' cur' : '')
           + (n.pending ? ' pend' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
-        row.textContent = n.path.split('/').pop() + '.' + kindExt(n.kind);
+        row.append(document.createTextNode(n.path.split('/').pop() + '.' + kindExt(n.kind)));
+        if (n.share === 'clearweb') {
+          const cw = document.createElement('span');
+          cw.className = 'cw';
+          cw.textContent = '\u{1F310}';
+          cw.title = n.path + ' is clearweb public';
+          row.append(cw);
+        }
         row.onclick = (e) => { e.preventDefault(); openPage(n.path); };
       } else {
         row.className = 'fld' + (n.path === curFolder ? ' cur' : '');

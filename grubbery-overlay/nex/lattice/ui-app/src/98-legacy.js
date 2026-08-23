@@ -59,7 +59,7 @@
       let listed = null;
       try { listed = await (await fetch(api + '/know-list')).json(); } catch {}
       const have = listed && listed.keys ? listed.keys.length : null;
-      st((cut ? 'the connection timed out mid-import' : 'legacy import failed' + (r ? ' ' + r.status : '')) +
+      st((cut ? 'the connection timed out mid-import' : 'legacy import failed' + await errText(r)) +
          (have !== null ? ' — ' + have + ' memories are here now' : '') +
          ' · nothing was removed from the old agent · run it again to finish', false);
       if (cut) {

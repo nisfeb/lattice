@@ -125,7 +125,7 @@
     //  way every re-convert already works, as an overwrite.
     if (!known && r && r.status === 409)
       r = await mutate(url, { method: 'POST', body });
-    if (!r || !r.ok) { st('could not write ' + out + (r ? ' (' + r.status + ')' : ''), false); return; }
+    if (!r || !r.ok) { st('could not write ' + out + await errText(r), false); return; }
     if (!known) { addTreeNode(out, 'html'); snapTree(); renderTree(); }
     bustPages(out);
     st('wrote ' + out + '.html');

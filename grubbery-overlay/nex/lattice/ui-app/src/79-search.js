@@ -44,7 +44,19 @@
   // memories are two requests, and then every keystroke is local.
   let qScopes = null;          // path -> 'private' | 'urbit' | 'clearweb'
   let qKnow = [];              // [{key, body}]
+  let qKnowFailed = false;     // /know-all never answered this panel-open
   let qLoading = null;         // in-flight load, shared
+  // never-loaded and load-failed are different states. qCtxAttempts counts
+  // how many times qLoadContextOnce has actually run since the panel opened,
+  // capped at two: the open-time load and one retry. A failure short of that
+  // cap is worth trying again; past it, every keystroke would otherwise fire
+  // the same doomed pair of requests forever.
+  let qCtxAttempts = 0;
+  // last painted hits and their rows, so ArrowUp/Down + Enter can act on
+  // what is actually on screen without rescanning
+  let qResults = [];
+  let qRows = [];
+  let qSel = -1;
   //  Opening the panel starts this, and the first keystroke wants it too. The
   //  pier serialises, so letting both fire meant four queued requests and a
   //  wait long enough to look like a hang. One load, both await it.
@@ -54,6 +66,7 @@
     return qLoading;
   }
   async function qLoadContextOnce() {
+    qCtxAttempts += 1;
     try {
       const r = await fetch(api + '/page-scopes');
       if (r.ok) {
@@ -64,8 +77,9 @@
     } catch {}
     try {
       const r = await fetch(api + '/know-all');
-      if (r.ok) qKnow = (await r.json()).items || [];
-    } catch {}
+      if (r.ok) { qKnow = (await r.json()).items || []; qKnowFailed = false; }
+      else qKnowFailed = true;
+    } catch { qKnowFailed = true; }
   }
 
   // non-overlapping occurrence count: split yields pieces-1 = matches. The
@@ -120,21 +134,46 @@
     return { out, skipped };
   }
 
+  // opening a hit is the same move whether the mouse clicked it or Enter
+  // picked it off the highlighted row
+  const qOpenResult = (h) => {
+    qClose();
+    if (h.know) openKnow(h.key); else openPage(h.key);
+  };
+
+  // the highlighted row alone, no rebuild: an inline background rather than
+  // a class, since the app's .on styling is defined per-component and this
+  // list has none of its own yet
+  function qHighlight() {
+    qRows.forEach((a, i) => { a.style.background = i === qSel ? 'var(--surface)' : ''; });
+  }
+
   //  the summary line and the list. Names and bodies are content, so every
   //  string here goes in through textContent.
   function qPaint(host, sum, out, skipped) {
-    sum.textContent = (out.length ? out.length + ' result' + (out.length === 1 ? '' : 's') : '')
-      + (skipped ? (out.length ? ' · ' : '') + skipped + ' large page(s) not scanned' : '');
+    const parts = [];
+    if (out.length) parts.push(out.length + ' result' + (out.length === 1 ? '' : 's'));
+    if (skipped) parts.push(skipped + ' large page(s) not scanned');
+    if (qKnowFailed) parts.push('memories not searched');
+    sum.textContent = parts.join(' · ');
     host.textContent = '';
+    // a fresh result set starts with nothing highlighted
+    qSel = -1;
+    qRows = [];
     if (!out.length) {
+      qResults = [];
       host.className = 'aclempty';
-      host.textContent = 'nothing matches that';
+      // nodes starts empty and fills once the page-dump lands, seconds away
+      // on a cold load. Zero hits against an empty corpus is not the same
+      // claim as zero hits against the real one.
+      host.textContent = nodes.some((n) => n.page) ? 'nothing matches that' : 'pages still loading…';
       return;
     }
     host.className = '';
+    qResults = out.slice(0, 100);
     const ul = document.createElement('ul');
     ul.className = 'qlist';
-    for (const h of out.slice(0, 100)) {
+    for (const h of qResults) {
       const li = document.createElement('li');
       const a = document.createElement('a');
       a.href = '#';
@@ -152,11 +191,8 @@
         s.textContent = h.snip;              // and so are bodies
         a.appendChild(s);
       }
-      a.onclick = (e) => {
-        e.preventDefault();
-        qClose();
-        if (h.know) openKnow(h.key); else openPage(h.key);
-      };
+      a.onclick = (e) => { e.preventDefault(); qOpenResult(h); };
+      qRows.push(a);
       li.appendChild(a);
       ul.appendChild(li);
     }
@@ -175,7 +211,11 @@
       return;
     }
     const mine = ++qSeq;
-    if (!qScopes) {
+    // qScopes stays null both before the first load and after a failed one,
+    // so gate on the attempt count instead: one retry, then search on with
+    // scopes unknown rather than firing the same pair of requests every
+    // keystroke a slow or unreachable pier ever gets typed at.
+    if (!qScopes && qCtxAttempts < 2) {
       //  the exposure map and the memories are fetched once per open, and on a
       //  slow pier that is seconds. Say so, rather than showing an empty panel
       //  that reads as "no results".
@@ -198,6 +238,10 @@
     $('qlist').textContent = 'type at least two characters';
     $('qsum').textContent = '';
     qScopes = null;                          // refresh exposure each open
+    qCtxAttempts = 0;                        // this open gets its own retry
+    qResults = [];
+    qRows = [];
+    qSel = -1;
     qLoadContext();
   };
 
@@ -210,7 +254,23 @@
     qTimer = setTimeout(() => runSearch(v), 80);
   };
   $('qinput').onkeydown = (e) => {
-    if (e.key === 'Enter') { clearTimeout(qTimer); runSearch($('qinput').value); }
+    // the omnibar's pattern: arrows move a highlighted row, Enter opens it.
+    // With nothing highlighted, Enter falls through to its old job of
+    // re-running the scan.
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && qResults.length) {
+      e.preventDefault();
+      qSel = e.key === 'ArrowDown'
+        ? (qSel + 1) % qResults.length
+        : (qSel - 1 + qResults.length) % qResults.length;
+      qHighlight();
+      qRows[qSel].scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    if (e.key === 'Enter') {
+      clearTimeout(qTimer);
+      if (qSel >= 0 && qResults[qSel]) { e.preventDefault(); qOpenResult(qResults[qSel]); return; }
+      runSearch($('qinput').value);
+    }
   };
   $('qclose').onclick = qClose;
   $('qt').onclick = qOpen;

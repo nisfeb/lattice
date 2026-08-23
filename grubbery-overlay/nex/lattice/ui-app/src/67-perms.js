@@ -34,11 +34,7 @@
       method: 'POST',
       body: JSON.stringify({ ships: g.ships, peek: g.peek, make: g.make }),
     }).catch(() => null);
-    if (!r || !r.ok) {
-      let msg = r ? r.status : 'network';
-      if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
-      st('permissions: ' + msg, false);
-    }
+    if (!r || !r.ok) st('permissions' + await errText(r), false);
     // re-read either way: the server is the authority, and a failed save must
     // snap the panels back to what is actually in force rather than show the
     // grant the user believes they made.

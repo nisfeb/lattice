@@ -17,6 +17,11 @@
   // nothing, and a page absent from the local tree never applied at all.
   let openSeq = 0;
   async function openPage(name) {
+    // a grub edit is explicit-save only and lives nowhere but this textarea.
+    // Clearing grubPath below would throw it away on a single click, so ask
+    // first. The dialog's own cancel button is the "stay" option.
+    if (grubPath && dirty &&
+        !(await askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard'))) return;
     const my = ++openSeq;
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
@@ -63,7 +68,7 @@
     let d = null;
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
-      if (!r.ok) { if (!painted) st('open failed ' + r.status, false); return; }
+      if (!r.ok) { if (!painted) st('open failed' + await errText(r), false); return; }
       d = await r.json();
     } catch { if (!painted) st('open failed', false); return; }
     // a later openPage supersedes this one. Anything else still applies
@@ -180,12 +185,18 @@
   //  other) stays in each arm, and the bookkeeping that must never drift
   //  between them lives here.
 
-  //  a save arriving mid-flight only set savePending. Take that trailing save
-  //  now, and only if the text really is still unsaved.
+  //  a save arriving mid-flight only set savePending, which now carries the
+  //  kindOverride that call wanted (or bare `true` for a plain save with
+  //  none). A re-run that forgot it and fell back to autosave's own
+  //  curKind/pkind guess is how a restore's revision kind used to vanish.
+  //  Take the trailing save now, honoring that kind, and only if the text
+  //  really is still unsaved.
   const flushPending = () => {
     if (!savePending) return;
+    const pending = savePending;
     savePending = false;
-    if (dirty) autosave();
+    if (!dirty) return;
+    if (pending === true) autosave(); else save(pending);
   };
   //  the echo window covers OUR OWN beacon bump. A fixed 4s assumed the bump
   //  lands promptly; on a queued pier it arrives after the save's own round
@@ -204,6 +215,15 @@
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
   };
+  // an accidental tab close is the same data-loss shape as the grub-discard
+  // guard up in openPage: a dirty edit, grub or page, exists only here
+  // until it is saved. That guard catches deliberate in-app navigation. This
+  // one catches the close and reload that never go through openPage at all.
+  window.addEventListener('beforeunload', (e) => {
+    if (!dirty) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
 
   async function save(kindOverride) {
     if (curFolder) { st('folder selected — open a page to edit', false); return; }
@@ -211,7 +231,10 @@
     const name = pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!name) { st('name required', false); return; }
     const creating = current === null;
-    if (saving) { savePending = true; return; }
+    // carry kindOverride into the re-arm: a bare `true` here forgot which
+    // kind THIS call wanted, and the trailing run picked whatever the
+    // picker happened to show by the time it fired
+    if (saving) { savePending = kindOverride || true; return; }
     saving = true;
     st('saving…');
     // capture the exact body being sent: keystrokes landing during the round-trip

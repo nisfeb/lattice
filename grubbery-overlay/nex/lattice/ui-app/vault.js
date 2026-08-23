@@ -222,12 +222,13 @@ editor, or git will do if you only want to look.
     if (pages.length) {
       st('restoring pages…');
       const u = await uploadPages(pages);
-      if (u.bad || u.skipped) {
-        const parts = [u.ok + ' restored'];
-        if (u.bad) parts.push(u.bad + ' failed');
-        if (u.skipped) parts.push(u.skipped + ' skipped (unknown extension)');
-        st('pages: ' + parts.join(', '), false);
-      }
+      // "restoring pages…" is the only status this leaves behind on a clean
+      // run unless something replaces it below, so the summary paints every
+      // time, not only when something went wrong.
+      const bits = ['pages: ' + u.ok + ' restored'];
+      if (u.skipped) bits.push(u.skipped + ' skipped (unknown extension)');
+      if (u.bad) bits.push(u.bad + ' failed');
+      st(bits.join(', '), !u.bad);
     }
 
     if (shared) {
@@ -377,6 +378,16 @@ editor, or git will do if you only want to look.
     if (s < 86400) return 'last run ' + Math.floor(s / 3600) + 'h ago';
     return 'last run ' + Math.floor(s / 86400) + 'd ago';
   };
+  // One period past last_run is the ordinary moment right before the next
+  // attempt fires, not a problem. Two periods past it is a schedule that
+  // should have run again by now and did not, whether that is a wedged
+  // scheduler or a run that keeps failing before it can stamp last_run, so
+  // it reads the same "did not complete" either way. A schedule that has
+  // never run is exempt: `ago` already says "never run" plainly, and a
+  // brand-new schedule is not overdue, it just has not had its first turn.
+  const overdue = (s) =>
+    s.enabled && s.last_run > 0
+    && (Math.floor(Date.now() / 1000) - s.last_run) >= 2 * s.every_hours * 3600;
   const bkId = () => 'bk' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
   // manual export and restore: the browser (download / file input) and the
@@ -428,7 +439,11 @@ editor, or git will do if you only want to look.
       for (const s of backups) {
         const keep = s.keep ? 'keeping ' + s.keep : 'keeping every one';
         const head = el('div', { text: s.label + ' — ' + period(s.every_hours) + ', ' + keep + (s.enabled ? '' : ' (paused)') });
-        const sub = el('div', { class: 'muted', text: s.dir + ' · ' + ago(s.last_run) });
+        const late = overdue(s);
+        const sub = el('div', {
+          class: late ? 'err' : 'muted',
+          text: s.dir + ' · ' + ago(s.last_run) + (late ? ' — the last run did not complete' : ''),
+        });
         const now = el('button', { type: 'button', class: 'btn', text: 'back up now' });
         now.onclick = async () => { bkStatus.textContent = ''; try { await invoke('run_backup_now', { id: s.id }); bkStatus.textContent = 'building…'; } catch (e) { bkStatus.textContent = String(e); } };
         const pause = el('button', { type: 'button', class: 'btn', text: s.enabled ? 'pause' : 'resume' });

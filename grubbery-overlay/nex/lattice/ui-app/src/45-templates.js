@@ -24,7 +24,7 @@
         '&name=' + encodeURIComponent(name));
     } catch {}
     if (r && r.status === 409) { st('a page by that name exists', false); return; }
-    if (!r || !r.ok) { st('template failed' + (r ? ' ' + r.status : ''), false); return; }
+    if (!r || !r.ok) { st('template failed' + await errText(r), false); return; }
     await loadTree();
     // a multi-page template lands as a folder. Open its index if it made one,
     // else the page itself, else just select the new folder.

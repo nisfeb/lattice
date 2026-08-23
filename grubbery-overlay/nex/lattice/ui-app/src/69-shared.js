@@ -37,8 +37,9 @@
       x.textContent = '×';
       x.title = 'remove from this list (does not touch their grant)';
       x.onclick = async () => {
-        await fetch(api + '/shared-with-me-del?host=' + encodeURIComponent(it.host) +
+        const r = await fetch(api + '/shared-with-me-del?host=' + encodeURIComponent(it.host) +
           '&path=' + encodeURIComponent(it.path), { method: 'POST' }).catch(() => null);
+        if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
         loadShared();
       };
       row.appendChild(a); row.appendChild(x);
