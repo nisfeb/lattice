@@ -20,7 +20,10 @@
   =/  raw=(unit @t)  (arg:lm args.st /key)
   ?~  raw  (pure:m [%error 'missing or invalid: key'])
   =/  key=@t  u.raw
-  ?~  (parse-key:lm key)  (pure:m [%error 'invalid key'])
+  =/  kp=(unit path)  (parse-key:lm key)
+  ?~  kp  (pure:m [%error 'invalid key'])
+  ;<  es=(map path know-entry:lk)  bind:m  read-vault:lm
+  ?.  (~(has by es) u.kp)  (pure:m [%error (crip "no entry {(trip key)}")])
   ;<  ~  bind:m  (poke-writer:lm [%del key])
   (pure:m [%text (crip "deleted {(trip key)}")])
 --

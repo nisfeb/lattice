@@ -2426,7 +2426,14 @@
         row.className = 'pg' + (n.path === current ? ' cur' : '')
           + (n.pending ? ' pend' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
-        row.textContent = n.path.split('/').pop() + '.' + kindExt(n.kind);
+        row.append(document.createTextNode(n.path.split('/').pop() + '.' + kindExt(n.kind)));
+        if (n.share === 'clearweb') {
+          const cw = document.createElement('span');
+          cw.className = 'cw';
+          cw.textContent = '\u{1F310}';
+          cw.title = n.path + ' is clearweb public';
+          row.append(cw);
+        }
         row.onclick = (e) => { e.preventDefault(); openPage(n.path); };
       } else {
         row.className = 'fld' + (n.path === curFolder ? ' cur' : '');
@@ -2530,6 +2537,11 @@
   // nothing, and a page absent from the local tree never applied at all.
   let openSeq = 0;
   async function openPage(name) {
+    // a grub edit is explicit-save only and lives nowhere but this textarea.
+    // Clearing grubPath below would throw it away on a single click, so ask
+    // first. The dialog's own cancel button is the "stay" option.
+    if (grubPath && dirty &&
+        !(await askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard'))) return;
     const my = ++openSeq;
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
@@ -2576,7 +2588,7 @@
     let d = null;
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
-      if (!r.ok) { if (!painted) st('open failed ' + r.status, false); return; }
+      if (!r.ok) { if (!painted) st('open failed' + await errText(r), false); return; }
       d = await r.json();
     } catch { if (!painted) st('open failed', false); return; }
     // a later openPage supersedes this one. Anything else still applies
@@ -2693,12 +2705,18 @@
   //  other) stays in each arm, and the bookkeeping that must never drift
   //  between them lives here.
 
-  //  a save arriving mid-flight only set savePending. Take that trailing save
-  //  now, and only if the text really is still unsaved.
+  //  a save arriving mid-flight only set savePending, which now carries the
+  //  kindOverride that call wanted (or bare `true` for a plain save with
+  //  none). A re-run that forgot it and fell back to autosave's own
+  //  curKind/pkind guess is how a restore's revision kind used to vanish.
+  //  Take the trailing save now, honoring that kind, and only if the text
+  //  really is still unsaved.
   const flushPending = () => {
     if (!savePending) return;
+    const pending = savePending;
     savePending = false;
-    if (dirty) autosave();
+    if (!dirty) return;
+    if (pending === true) autosave(); else save(pending);
   };
   //  the echo window covers OUR OWN beacon bump. A fixed 4s assumed the bump
   //  lands promptly; on a queued pier it arrives after the save's own round
@@ -2717,6 +2735,15 @@
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
   };
+  // an accidental tab close is the same data-loss shape as the grub-discard
+  // guard up in openPage: a dirty edit, grub or page, exists only here
+  // until it is saved. That guard catches deliberate in-app navigation. This
+  // one catches the close and reload that never go through openPage at all.
+  window.addEventListener('beforeunload', (e) => {
+    if (!dirty) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
 
   async function save(kindOverride) {
     if (curFolder) { st('folder selected — open a page to edit', false); return; }
@@ -2724,7 +2751,10 @@
     const name = pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!name) { st('name required', false); return; }
     const creating = current === null;
-    if (saving) { savePending = true; return; }
+    // carry kindOverride into the re-arm: a bare `true` here forgot which
+    // kind THIS call wanted, and the trailing run picked whatever the
+    // picker happened to show by the time it fired
+    if (saving) { savePending = kindOverride || true; return; }
     saving = true;
     st('saving…');
     // capture the exact body being sent: keystrokes landing during the round-trip
@@ -2878,15 +2908,23 @@
   // button, its own two endpoints.
   let grubPath = null;
   let grubShip = null;   // '~ship' when the grub lives on ANOTHER ship; null = local
+  // the picker's value before a grub took it over, restored on exitGrub. Set
+  // only on the FIRST entry (see the guard in openGrub), so browsing straight
+  // from one grub to another still remembers the page kind that came before.
+  let grubPrevKind = null;
   // Every editor reset that leaves grub mode MUST call this: Save gives
   // grubPath top precedence, so a reset that forgets it leaves Save pointed
   // at the app file while the textarea fills with unrelated content — an
   // overwrite wearing a 'saved' status. openPage clears inline; newFile,
   // selectFolder and setMode route through here.
-  const exitGrub = () => { grubPath = null; grubShip = null; };
+  const exitGrub = () => {
+    grubPath = null; grubShip = null;
+    if (grubPrevKind !== null) { pkind.value = grubPrevKind; grubPrevKind = null; }
+  };
   async function openGrub(p, ship) {
     grubPath = p;
     grubShip = ship || null;
+    if (grubPrevKind === null) grubPrevKind = pkind.value;
     current = null;
     curFolder = null;
     pname.value = (grubShip ? grubShip + ' ' : '') + p;
@@ -2910,9 +2948,16 @@
     dirty = false;
     render();
     const blot = d.blot || d.mark || '';
+    // the picker drives syntax highlighting (LMAP) and list-continuation
+    // rules (proseFlavor), so it needs to follow this file's real language.
+    // Left alone it keeps whatever page kind was open before, and editing
+    // calendar.html ends up highlighted and indented as that stale kind.
+    const mk = extKind(String(blot).split('/').pop()) || 'hoon';
+    if ([...pkind.options].some((o) => o.value === mk)) pkind.value = mk;
+    curKind = mk;
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'remote grub on ' + grubShip + ' — saves need their permission'
-       : 'grub ' + blot);
+       : 'grub ' + blot + ' — manual save (Cmd+S), no autosave here');
   }
   async function saveGrub() {
     if (!grubPath || src.readOnly) return;
@@ -2933,11 +2978,14 @@
     } catch {}
     saving = false;
     if (!r || !r.ok) {
+      // 'rejected' is the mark's word, and a 502 is the ship's absence, not
+      // the mark's opinion of the content. Grub edits have nowhere to queue
+      // the way page saves do, so the text just stays here until Save runs
+      // again with the ship back.
+      if (shipGone(r)) { st('ship unreachable — grub edits do not queue', false); return; }
       // the mark can reject the source. Show ITS error, since the stored grub
       // still holds the previous content and the user needs to know why
-      let msg = r ? ' ' + r.status : '';
-      if (r) { try { const j = await r.json(); if (j && j.error) msg = ': ' + j.error; } catch {} }
-      st('save rejected' + msg, false);
+      st('save rejected' + await errText(r), false);
       return;
     }
     if (src.value === sent) dirty = false;
@@ -2975,7 +3023,7 @@
         '&name=' + encodeURIComponent(name));
     } catch {}
     if (r && r.status === 409) { st('a page by that name exists', false); return; }
-    if (!r || !r.ok) { st('template failed' + (r ? ' ' + r.status : ''), false); return; }
+    if (!r || !r.ok) { st('template failed' + await errText(r), false); return; }
     await loadTree();
     // a multi-page template lands as a folder. Open its index if it made one,
     // else the page itself, else just select the new folder.
@@ -3533,7 +3581,18 @@
         // into every server render keeps working, but the frame gets an opaque
         // origin: no parent, no cookies, no session. The two together would
         // hand the sandbox straight back.
-        '<iframe class="prev" id="prev" title="live preview" sandbox="allow-scripts"></iframe>';
+        //
+        // allow-top-navigation-by-user-activation is a narrower third token,
+        // added for a different reason: a wikilink is a plain <a> pointing at
+        // the app's own route, and clicking one used to navigate the frame
+        // itself, straight into the opaque origin's missing cookies, a live
+        // 403 in place of the page. This token opens exactly one door out of
+        // the sandbox, and only on an actual click. Nothing running inside
+        // the frame can drive the top page anywhere on its own; the click has
+        // to be real. The base target below is what points those clicks
+        // upward instead of at the frame.
+        '<iframe class="prev" id="prev" title="live preview" '
+          + 'sandbox="allow-scripts allow-top-navigation-by-user-activation"></iframe>';
       prev = $('prev');
       // blank it NOW, not when the first page opens. An iframe with no srcdoc
       // is an opaque white canvas, and the first thing that used to call
@@ -3594,7 +3653,12 @@
       // is what finally put it on screen. Backgrounds match prevBlank exactly,
       // so a document appearing cannot flash a different colour than the empty
       // pane it replaces.
-      prev.srcdoc = '<!doctype html><meta charset="utf-8">'
+      // <base target="_top"> sends every plain link in this shell to the real
+      // top-level page instead of the sandboxed frame it is written into. A
+      // wikilink used to navigate the frame itself and land on an
+      // authenticated route the opaque origin has no cookies for; escaping
+      // to the top page is what the sandbox token above actually permits.
+      prev.srcdoc = '<!doctype html><meta charset="utf-8"><base target="_top">'
         + '<style>:root{color-scheme:light dark}'
         + 'body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;background:#fafafa}'
         + '@media(prefers-color-scheme:dark){body{background:#1a1a1a}}'
@@ -3713,6 +3777,7 @@
   // ── delete ───────────────────────────────────────────────────────────────
   $('del').onclick = async () => {
     if (mode === 'know') { deleteKnow(); return; }
+    if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     if (curFolder) {
       const path = curFolder;
       const c = pageCount(path);
@@ -3803,30 +3868,41 @@
   for (const b of document.querySelectorAll('.share button')) {
     b.onclick = async () => {
       const m = b.dataset.m;
-      if (curFolder) {
-        const r = await mutate(api + '/page-share-tree?name=' + encodeURIComponent(curFolder) +
+      // a share write is a real round trip (0.3-2s), and all three buttons
+      // stayed clickable through it — enough time for a second click to fire
+      // a second mutation against the same target. Freeze the row for the
+      // duration; the st() calls below already end the spin either way.
+      const btns = document.querySelectorAll('.share button');
+      for (const x of btns) x.disabled = true;
+      stWork('setting ' + m + '…');
+      try {
+        if (curFolder) {
+          const r = await mutate(api + '/page-share-tree?name=' + encodeURIComponent(curFolder) +
+            '&mode=' + m);
+          if (!r.ok) { st('share failed' + await errText(r), false); return; }
+          showShare(m);
+          st(m === 'clearweb' ? 'published tree at /c/' + curFolder + '/' : 'tree set ' + m);
+          // share-tree sets every page under the folder. Mirror that locally
+          // instead of refetching the tree to learn what we just did.
+          for (const n of nodes)
+            if (n.page && n.path.startsWith(curFolder + '/')) n.share = m;
+          snapTree();
+          renderTree();
+          return;
+        }
+        if (!current) { st('save the page first', false); return; }
+        const r = await mutate(api + '/page-share?name=' + encodeURIComponent(current) +
           '&mode=' + m);
-        if (!r.ok) { st('share failed ' + r.status, false); return; }
+        if (!r.ok) { st('share failed' + await errText(r), false); return; }
         showShare(m);
-        st(m === 'clearweb' ? 'published tree at /c/' + curFolder + '/' : 'tree set ' + m);
-        // share-tree sets every page under the folder. Mirror that locally
-        // instead of refetching the tree to learn what we just did.
-        for (const n of nodes)
-          if (n.page && n.path.startsWith(curFolder + '/')) n.share = m;
+        st('sharing: ' + m);
+        const n = nodes.find((x) => x.page && x.path === current);
+        if (n) n.share = m;
         snapTree();
         renderTree();
-        return;
+      } finally {
+        for (const x of btns) x.disabled = false;
       }
-      if (!current) { st('save the page first', false); return; }
-      const r = await mutate(api + '/page-share?name=' + encodeURIComponent(current) +
-        '&mode=' + m);
-      if (!r.ok) { st('share failed ' + r.status, false); return; }
-      showShare(m);
-      st('sharing: ' + m);
-      const n = nodes.find((x) => x.page && x.path === current);
-      if (n) n.share = m;
-      snapTree();
-      renderTree();
     };
   }
 
@@ -3850,10 +3926,8 @@
     const r = await mutate(api + '/share-file?name=' + encodeURIComponent(page) +
       '&ship=' + encodeURIComponent(shp) + '&mode=' + mode);
     if (!r || !r.ok) {
-      let msg = r ? r.status : 'network';
-      if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
       $('shres').textContent = '';
-      st('share failed: ' + msg, false);
+      st('share failed' + await errText(r), false);
       return;
     }
     const j = await r.json();
@@ -3972,11 +4046,7 @@
       method: 'POST',
       body: JSON.stringify({ ships: g.ships, peek: g.peek, make: g.make }),
     }).catch(() => null);
-    if (!r || !r.ok) {
-      let msg = r ? r.status : 'network';
-      if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
-      st('permissions: ' + msg, false);
-    }
+    if (!r || !r.ok) st('permissions' + await errText(r), false);
     // re-read either way: the server is the authority, and a failed save must
     // snap the panels back to what is actually in force rather than show the
     // grant the user believes they made.
@@ -4039,8 +4109,9 @@
       x.textContent = '×';
       x.title = 'remove from this list (does not touch their grant)';
       x.onclick = async () => {
-        await fetch(api + '/shared-with-me-del?host=' + encodeURIComponent(it.host) +
+        const r = await fetch(api + '/shared-with-me-del?host=' + encodeURIComponent(it.host) +
           '&path=' + encodeURIComponent(it.path), { method: 'POST' }).catch(() => null);
+        if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
         loadShared();
       };
       row.appendChild(a); row.appendChild(x);
@@ -4056,8 +4127,8 @@
   const upPanel = $('uppanel'), upMsg = $('upmsg'), upFill = $('upfill'), upErr = $('uperr');
 
   const upShow = () => { upPanel.hidden = false; upErr.textContent = ''; upFill.style.width = '0%'; };
-  const upProg = (done, total, name) => {
-    upMsg.textContent = `uploading ${done}/${total}${name ? ': ' + name : ''}`;
+  const upProg = (done, total, name, verb) => {
+    upMsg.textContent = `${verb || 'uploading'} ${done}/${total}${name ? ': ' + name : ''}`;
     upFill.style.width = Math.round(done * 100 / Math.max(total, 1)) + '%';
   };
 
@@ -4075,30 +4146,40 @@
     }
     const list = [];
     const dirs = new Set();
-    let skipped = 0;
+    //  names, not just a count: a batch of thirty dropped files that skips
+    //  three leaves the user guessing which three without this
+    const skippedNames = [];
     for (const { file, rel } of items) {
       const dot = rel.lastIndexOf('.');
       const kind = dot > 0 ? extKind(rel.slice(dot + 1)) : null;
-      if (!kind) { skipped++; continue; }
+      if (!kind) { skippedNames.push(rel); continue; }
       const stem = rel.slice(0, dot);
       const parts = verbatim
         ? stem.split('/').filter(Boolean)
         : stem.split('/').map(seg).filter(Boolean);
       if (folderCtx && !verbatim) parts.unshift(...folderCtx.split('/'));
       const name = parts.join('/');
-      if (!name) { skipped++; continue; }
+      if (!name) { skippedNames.push(rel); continue; }
       list.push({ file, name, kind });
       const pp = name.split('/'); pp.pop();
       for (let i = 1; i <= pp.length; i++) dirs.add(pp.slice(0, i).join('/'));
     }
     if (!list.length) {
       upShow();
-      upMsg.textContent = 'no supported files (md gmi html txt js css hoon)';
+      // EXT_KIND (30-tree.js) is the one table the picker filter and this
+      // message both have to agree with, so read it instead of hand-listing
+      // extensions that drift the moment a new kind is added.
+      upMsg.textContent = 'no supported files (' + Object.keys(EXT_KIND).join(' ') + ')';
       return;
     }
     upShow();
     upProg(0, list.length, '');
-    if (skipped) upErr.textContent = `skipped ${skipped} unsupported\n`;
+    if (skippedNames.length) {
+      const shown = skippedNames.length > 6
+        ? skippedNames.slice(0, 6).join(', ') + ', and ' + (skippedNames.length - 6) + ' more'
+        : skippedNames.join(', ');
+      upErr.textContent = `skipped ${skippedNames.length} unsupported\n  ${shown}\n`;
+    }
     // only create folders the tree does not already have. Each folder-new is
     // a ~2s writer round-trip, and re-uploading into an existing tree used to
     // pay it for every directory.
@@ -4116,22 +4197,31 @@
     let fails = 0, done = 0;
     for (let i = 0; i < list.length; i += CHUNK) {
       const part = list.slice(i, i + CHUNK);
-      upProg(done, list.length, part[0].name);
       let r = null;
       const payload = [];
       try {
-        for (const it of part)
+        for (const it of part) {
           payload.push({ name: it.name, type: it.kind, body: (await it.file.text()) || '\n' });
+          // the read is awaited one file at a time, so the bar can move with
+          // it instead of sitting at 0% for the whole chunk and then jumping
+          upProg(done + payload.length, list.length, it.name, 'reading');
+        }
         r = await mutate(api + '/page-save-batch',
           { method: 'POST', body: JSON.stringify(payload) });
       } catch {}
       if (!r || !r.ok) {
         // the batch is all-or-nothing, so report the whole chunk rather than
-        // implying some of it landed
+        // implying some of it landed, and name what it held: a count alone
+        // leaves the user diffing the tree by hand to find which files never
+        // made it
         fails += part.length;
         let msg = r ? r.status : 'network';
         if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
-        upErr.textContent += `failed: ${part.length} file(s) — ${msg}\n`;
+        const names = part.map((it) => it.name);
+        const held = names.length > 6
+          ? names.slice(0, 6).join(', ') + ', and ' + (names.length - 6) + ' more'
+          : names.join(', ');
+        upErr.textContent += `failed: ${part.length} file(s) — ${msg}\n  ${held}\n`;
       } else {
         // an upload can OVERWRITE an existing page, and the batch's targets
         // live in the POST body where mutate() can't see them — so every
@@ -4192,9 +4282,22 @@
     } else res();
   });
   const treePane = $('tree');
-  window.addEventListener('dragover', (e) => { e.preventDefault(); treePane.classList.add('dragover'); });
+  // A drag carries files, or it carries something else entirely, most often
+  // a text selection dragged around inside the editor. window used to
+  // preventDefault on every drag without asking which, which also cancels
+  // the browser's native text drop and paints the tree as a target for a
+  // drop it was never going to accept. types is populated the moment the
+  // drag starts, well before any drop, so the two handlers below check the
+  // same thing at two different points in the same gesture.
+  const dragHasFiles = (e) => !!(e.dataTransfer && [...e.dataTransfer.types].includes('Files'));
+  window.addEventListener('dragover', (e) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    treePane.classList.add('dragover');
+  });
   window.addEventListener('dragleave', (e) => { if (!e.relatedTarget) treePane.classList.remove('dragover'); });
   window.addEventListener('drop', (e) => {
+    if (!dragHasFiles(e)) return;
     e.preventDefault();
     treePane.classList.remove('dragover');
     const its = e.dataTransfer && e.dataTransfer.items;
@@ -4336,7 +4439,7 @@
     //  way every re-convert already works, as an overwrite.
     if (!known && r && r.status === 409)
       r = await mutate(url, { method: 'POST', body });
-    if (!r || !r.ok) { st('could not write ' + out + (r ? ' (' + r.status + ')' : ''), false); return; }
+    if (!r || !r.ok) { st('could not write ' + out + await errText(r), false); return; }
     if (!known) { addTreeNode(out, 'html'); snapTree(); renderTree(); }
     bustPages(out);
     st('wrote ' + out + '.html');
@@ -4527,7 +4630,7 @@
       // loadPerms repaints from the ship either way, so a delete that failed
       // and a group that came back on its own look identical. Say which it
       // was, the rule permSave and the ban handler already follow.
-      if (!r || !r.ok) st('could not delete ' + g.name + ' (' + (r ? r.status : 'network') + ')', false);
+      if (!r || !r.ok) st('could not delete ' + g.name + await errText(r), false);
       loadPerms();
     };
     head.appendChild(b); head.appendChild(del);
@@ -4682,7 +4785,7 @@
         const r = await fetch(api + '/unban?ship=' + encodeURIComponent(w), { method: 'POST' })
           .catch(() => null);
         // announce the unban only once the ship has agreed to it
-        if (!r || !r.ok) st('unban: ' + (r ? r.status : 'network'), false);
+        if (!r || !r.ok) st('could not unban ' + w + await errText(r), false);
         else st('unbanned ' + w + ' — it holds no access until you grant it again');
         loadBans();
       };
@@ -4692,14 +4795,14 @@
   $('banadd').onclick = async () => {
     const w = $('banship').value.trim();
     if (!w) return;
+    // banning revokes every grant the ship holds right now, and unban does
+    // not bring them back (the nexus is explicit about that) — a mistyped
+    // ship name is a permanent loss with no online undo, so ask first the
+    // way delete already does.
+    if (!(await askConfirm('ban ' + w + '? this revokes every grant it holds, and unban will not restore them', 'ban'))) return;
     const r = await fetch(api + '/ban?ship=' + encodeURIComponent(w), { method: 'POST' })
       .catch(() => null);
-    if (!r || !r.ok) {
-      let msg = r ? r.status : 'network';
-      if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
-      st('ban: ' + msg, false);
-      return;
-    }
+    if (!r || !r.ok) { st('could not ban ' + w + await errText(r), false); return; }
     const j = await r.json().catch(() => ({}));
     st('banned ' + w + (j.revoked ? ' — revoked from ' + j.revoked + ' group(s)' : ''));
     $('banship').value = '';
@@ -4711,7 +4814,7 @@
   };
 
   $('aclclose').onclick = aclClose;
-  $('aclreload').onclick = () => loadPerms();
+  $('aclreload').onclick = () => { loadPerms(); loadBans(); };
   $('aclnewbtn').onclick = async () => {
     const v = $('aclnew').value.trim();
     if (!v) return;
@@ -4764,7 +4867,7 @@
     let d = null;
     try {
       const r = await fetch(api + '/comments-inbox');
-      if (!r.ok) { st('comments failed ' + r.status, false); return; }
+      if (!r.ok) { st('comments failed' + await errText(r), false); return; }
       d = await r.json();
     } catch { st('comments failed', false); return; }
     inbox = d.items || [];
@@ -4784,8 +4887,8 @@
       host.className = 'aclempty';
       // say WHY it might be empty. Comments are opt-in per page, so "none yet"
       // and "never enabled anywhere" look identical and mean different things
-      host.textContent = 'No comments. They are opt-in per page — turn them on '
-        + 'from a page’s sharing controls.';
+      host.textContent = 'No comments. They are opt-in per page, and this app '
+        + 'has no switch for that yet.';
       return;
     }
     const grid = document.createElement('div');
@@ -4803,7 +4906,7 @@
         if (!(await askConfirm('remove this comment by ' + c.author + '?', 'remove'))) return;
         const r = await fetch(api + '/comment-del?page=' + encodeURIComponent(c.page) +
           '&id=' + encodeURIComponent(c.id), { method: 'POST' }).catch(() => null);
-        if (!r || !r.ok) { st('remove failed' + (r ? ' ' + r.status : ''), false); return; }
+        if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
         st('comment removed');
         loadComments();
       };
@@ -5043,9 +5146,10 @@
     histList.textContent = ''; linkList.textContent = '';
     histList.hidden = true; linkList.hidden = true;
     histView.hidden = true;
-    const on = !!current && mode !== 'know';
-    histSec.hidden = !on;
-    linkSec.hidden = !on;
+    // history now covers memories too. Backlinks stay pages-only, since a
+    // wikilink search over the vault is a different feature nobody asked for
+    histSec.hidden = !current;
+    linkSec.hidden = !current || mode === 'know';
     panelArrow($('histh'), 'history', false);
     panelArrow($('linkh'), 'linked from', false);
   }
@@ -5076,11 +5180,13 @@
   };
   async function loadHistory() {
     histList.textContent = '';
-    if (!current || mode === 'know') return;
+    if (!current) return;
     let j = null;
     // same rule as loadBacklinks: an unreachable ship leaves the panel empty
     try {
-      const r = await fetch(api + '/page-history?name=' + encodeURIComponent(current));
+      const r = await fetch(mode === 'know'
+        ? api + '/know-history?key=' + encodeURIComponent(current)
+        : api + '/page-history?name=' + encodeURIComponent(current));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
@@ -5103,15 +5209,28 @@
     }
   }
   async function openRev(rev) {
+    // the historical body is about to overwrite the textarea. It exists
+    // nowhere else, so a dirty edit needs the same ask as a grub discard.
+    if (dirty &&
+        !(await askConfirm('discard unsaved changes to ' + current + '?', 'discard'))) return;
     let d = null;
     try {
-      const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(current) +
-        '&rev=' + rev);
-      if (!r.ok) { st('revision load failed ' + r.status, false); return; }
+      const r = await fetch(mode === 'know'
+        ? api + '/know-read-at?key=' + encodeURIComponent(current) + '&rev=' + rev
+        : api + '/page-source-at?name=' + encodeURIComponent(current) + '&rev=' + rev);
+      if (!r.ok) {
+        st('revision load failed' + await errText(r), false);
+        // prune-hist coalesces revisions inside its window on every save, so
+        // a chip the pane still lists can genuinely be gone. Resync the list
+        // instead of leaving a chip that will fail forever.
+        if (r.status === 404) loadHistory();
+        return;
+      }
       d = await r.json();
     } catch { st('revision load failed (network)', false); return; }
     viewingRev = rev;
-    revKind = d.kind === 'index' ? 'md' : d.kind;   // restore under the REVISION's kind
+    // restore under the REVISION's own kind. Memories carry no kind at all
+    revKind = mode === 'know' ? null : (d.kind === 'index' ? 'md' : d.kind);
     dirty = false;
     src.value = d.body;
     src.readOnly = true;
@@ -5120,12 +5239,29 @@
     for (const a of histList.children)
       a.className = a.textContent.split(' ')[0] === '#' + rev ? 'on' : '';
     st('viewing rev ' + rev + ' \u00b7 read-only');
-    if (CONTENT()) refreshPreview();
+    if (mode !== 'know' && CONTENT()) refreshPreview();
   }
-  $('hback').onclick = () => { exitRev(); openPage(current); };
+  $('hback').onclick = () => {
+    exitRev();
+    if (mode === 'know') openKnow(current); else openPage(current);
+  };
   $('hrestore').onclick = async () => {
     if (viewingRev === null) return;
-    const rev = viewingRev, kind = revKind;
+    const rev = viewingRev;
+    if (mode === 'know') {
+      exitRev();
+      // the dedicated restore route re-imports the revision's OWN tags via
+      // %import, so the tag set that rev actually held comes back with it
+      const r = await mutate(api + '/know-restore-rev?key=' + encodeURIComponent(current) +
+        '&rev=' + rev);
+      if (!r.ok) { st('restore failed' + await errText(r), false); return; }
+      knowGen++;
+      await openKnow(current);   // repaints body + tags from the restored entry
+      st('restored rev ' + rev + ' as the newest revision');
+      loadHistory();
+      return;
+    }
+    const kind = revKind;
     exitRev();
     dirty = true;          // the historical body is now an unsaved local edit
     await save(kind);      // under the revision's OWN kind, not the current select
@@ -5136,6 +5272,7 @@
   };
 
   $('mv').onclick = async () => {
+    if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     if (curFolder) { moveFolder(curFolder); return; }
     if (!current) { st('open something first', false); return; }
     const newName = await askName('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
@@ -5144,7 +5281,7 @@
     if (mode === 'know') {
       const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
         '&to=' + encodeURIComponent(newName));
-      if (!r.ok) { st('move failed ' + r.status, false); return; }
+      if (!r.ok) { st('move failed' + await errText(r), false); return; }
       // the body is already in the editor. Rename in place, no refetch
       knowGen++;
       const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
@@ -5247,7 +5384,19 @@
   // memories are two requests, and then every keystroke is local.
   let qScopes = null;          // path -> 'private' | 'urbit' | 'clearweb'
   let qKnow = [];              // [{key, body}]
+  let qKnowFailed = false;     // /know-all never answered this panel-open
   let qLoading = null;         // in-flight load, shared
+  // never-loaded and load-failed are different states. qCtxAttempts counts
+  // how many times qLoadContextOnce has actually run since the panel opened,
+  // capped at two: the open-time load and one retry. A failure short of that
+  // cap is worth trying again; past it, every keystroke would otherwise fire
+  // the same doomed pair of requests forever.
+  let qCtxAttempts = 0;
+  // last painted hits and their rows, so ArrowUp/Down + Enter can act on
+  // what is actually on screen without rescanning
+  let qResults = [];
+  let qRows = [];
+  let qSel = -1;
   //  Opening the panel starts this, and the first keystroke wants it too. The
   //  pier serialises, so letting both fire meant four queued requests and a
   //  wait long enough to look like a hang. One load, both await it.
@@ -5257,6 +5406,7 @@
     return qLoading;
   }
   async function qLoadContextOnce() {
+    qCtxAttempts += 1;
     try {
       const r = await fetch(api + '/page-scopes');
       if (r.ok) {
@@ -5267,8 +5417,9 @@
     } catch {}
     try {
       const r = await fetch(api + '/know-all');
-      if (r.ok) qKnow = (await r.json()).items || [];
-    } catch {}
+      if (r.ok) { qKnow = (await r.json()).items || []; qKnowFailed = false; }
+      else qKnowFailed = true;
+    } catch { qKnowFailed = true; }
   }
 
   // non-overlapping occurrence count: split yields pieces-1 = matches. The
@@ -5323,21 +5474,46 @@
     return { out, skipped };
   }
 
+  // opening a hit is the same move whether the mouse clicked it or Enter
+  // picked it off the highlighted row
+  const qOpenResult = (h) => {
+    qClose();
+    if (h.know) openKnow(h.key); else openPage(h.key);
+  };
+
+  // the highlighted row alone, no rebuild: an inline background rather than
+  // a class, since the app's .on styling is defined per-component and this
+  // list has none of its own yet
+  function qHighlight() {
+    qRows.forEach((a, i) => { a.style.background = i === qSel ? 'var(--surface)' : ''; });
+  }
+
   //  the summary line and the list. Names and bodies are content, so every
   //  string here goes in through textContent.
   function qPaint(host, sum, out, skipped) {
-    sum.textContent = (out.length ? out.length + ' result' + (out.length === 1 ? '' : 's') : '')
-      + (skipped ? (out.length ? ' · ' : '') + skipped + ' large page(s) not scanned' : '');
+    const parts = [];
+    if (out.length) parts.push(out.length + ' result' + (out.length === 1 ? '' : 's'));
+    if (skipped) parts.push(skipped + ' large page(s) not scanned');
+    if (qKnowFailed) parts.push('memories not searched');
+    sum.textContent = parts.join(' · ');
     host.textContent = '';
+    // a fresh result set starts with nothing highlighted
+    qSel = -1;
+    qRows = [];
     if (!out.length) {
+      qResults = [];
       host.className = 'aclempty';
-      host.textContent = 'nothing matches that';
+      // nodes starts empty and fills once the page-dump lands, seconds away
+      // on a cold load. Zero hits against an empty corpus is not the same
+      // claim as zero hits against the real one.
+      host.textContent = nodes.some((n) => n.page) ? 'nothing matches that' : 'pages still loading…';
       return;
     }
     host.className = '';
+    qResults = out.slice(0, 100);
     const ul = document.createElement('ul');
     ul.className = 'qlist';
-    for (const h of out.slice(0, 100)) {
+    for (const h of qResults) {
       const li = document.createElement('li');
       const a = document.createElement('a');
       a.href = '#';
@@ -5355,11 +5531,8 @@
         s.textContent = h.snip;              // and so are bodies
         a.appendChild(s);
       }
-      a.onclick = (e) => {
-        e.preventDefault();
-        qClose();
-        if (h.know) openKnow(h.key); else openPage(h.key);
-      };
+      a.onclick = (e) => { e.preventDefault(); qOpenResult(h); };
+      qRows.push(a);
       li.appendChild(a);
       ul.appendChild(li);
     }
@@ -5378,7 +5551,11 @@
       return;
     }
     const mine = ++qSeq;
-    if (!qScopes) {
+    // qScopes stays null both before the first load and after a failed one,
+    // so gate on the attempt count instead: one retry, then search on with
+    // scopes unknown rather than firing the same pair of requests every
+    // keystroke a slow or unreachable pier ever gets typed at.
+    if (!qScopes && qCtxAttempts < 2) {
       //  the exposure map and the memories are fetched once per open, and on a
       //  slow pier that is seconds. Say so, rather than showing an empty panel
       //  that reads as "no results".
@@ -5401,6 +5578,10 @@
     $('qlist').textContent = 'type at least two characters';
     $('qsum').textContent = '';
     qScopes = null;                          // refresh exposure each open
+    qCtxAttempts = 0;                        // this open gets its own retry
+    qResults = [];
+    qRows = [];
+    qSel = -1;
     qLoadContext();
   };
 
@@ -5413,7 +5594,23 @@
     qTimer = setTimeout(() => runSearch(v), 80);
   };
   $('qinput').onkeydown = (e) => {
-    if (e.key === 'Enter') { clearTimeout(qTimer); runSearch($('qinput').value); }
+    // the omnibar's pattern: arrows move a highlighted row, Enter opens it.
+    // With nothing highlighted, Enter falls through to its old job of
+    // re-running the scan.
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && qResults.length) {
+      e.preventDefault();
+      qSel = e.key === 'ArrowDown'
+        ? (qSel + 1) % qResults.length
+        : (qSel - 1 + qResults.length) % qResults.length;
+      qHighlight();
+      qRows[qSel].scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    if (e.key === 'Enter') {
+      clearTimeout(qTimer);
+      if (qSel >= 0 && qResults[qSel]) { e.preventDefault(); qOpenResult(qResults[qSel]); return; }
+      runSearch($('qinput').value);
+    }
   };
   $('qclose').onclick = qClose;
   $('qt').onclick = qOpen;
@@ -5532,13 +5729,13 @@
       del.onclick = async () => {
         if (!(await askConfirm('delete ' + path + '? Open it first if you need its text.', 'delete'))) return;
         const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
-        if (!r.ok) { st('delete failed ' + r.status, false); return; }
+        if (!r.ok) { st('delete failed' + await errText(r), false); return; }
         dropTreeNodes(path);
         snapTree();
         renderConflicts();
         renderConfBadge();
         renderTree();
-        st('resolved ' + path);
+        st(r.offline ? 'resolved ' + path + ' offline' : 'resolved ' + path);
       };
       head.appendChild(del);
       card.appendChild(head);
@@ -5746,9 +5943,12 @@
     // one page's edit cost every other page its cache.
     if (mode === 'know') loadKnow(); else loadTree();
     refreshOpen();
-    // a comment arriving from another ship bumps the beacon like any write, so
-    // this is the same signal the tree refresh uses. Cheap: it counts, it does
-    // not render, and it is skipped entirely while the pane is open.
+    // a catch-up call, not the primary path: the stream now wakes the badge
+    // directly on its own /comments event (see commentBumped below). This
+    // covers the tab that was HIDDEN while a comment landed, since the SSE
+    // loop pauses entirely on document.hidden and only reconnects here, on
+    // focus. Cheap either way: it counts, it does not render, and it is
+    // skipped entirely while the pane is open.
     if ($('cmwrap') && $('cmwrap').hidden) refreshCommentBadge();
   };
   // ── the beacon stream, read raw ──────────────────────────────────────────
@@ -5765,6 +5965,17 @@
   let streamLive = false;
   let beaconTimer = null;
   const bumped = () => { clearTimeout(beaconTimer); beaconTimer = setTimeout(refreshAll, 300); };
+  // comments never bump /rev (apply-comment stamps only /beacon/comments), so
+  // a foreign comment used to reach the badge only by accident, on whatever
+  // next refreshAll a focus or poll happened to trigger. Give it the same
+  // debounced path bumped() gives /rev, straight to the badge check.
+  let cmBeaconTimer = null;
+  const commentBumped = () => {
+    clearTimeout(cmBeaconTimer);
+    cmBeaconTimer = setTimeout(() => {
+      if ($('cmwrap') && $('cmwrap').hidden) refreshCommentBadge();
+    }, 300);
+  };
   let lastRev = '';
   try { lastRev = localStorage.latBeaconRev || ''; } catch {}
   const noteRev = (rev) => {
@@ -5807,12 +6018,20 @@
             if (!name) continue;
             // this keep streams the whole /beacon directory: events arrive
             // as "old /rev", "old /comments", "upd /rev", ... — the name
-            // carries the grub's sub-path. Only /rev is the change beacon;
-            // acting on the badge stamp's events corrupted lastRev and
-            // fired spurious refreshes. (Historical note: the pre-raw
+            // carries the grub's sub-path. /rev is the content beacon and
+            // drives lastRev below; folding a comment bump into that same
+            // bookkeeping corrupted lastRev and fired spurious refreshes, so
+            // /comments gets its own path straight to commentBumped instead,
+            // never touching lastRev. (Historical note: the pre-raw
             // EventSource listened for a literal 'upd' event, which never
             // existed — live refresh was ALWAYS the 30s poll.)
-            if (name.slice(-5) !== ' /rev') continue;
+            if (name.slice(-5) !== ' /rev') {
+              // registration ("old /comments") just reports the stamp as it
+              // already stood, nothing to react to. A live bump is the
+              // event worth waking the badge for.
+              if (name.slice(-10) === ' /comments' && name.slice(0, 3) !== 'old') commentBumped();
+              continue;
+            }
             if (name.slice(0, 3) === 'old') {
               // registration. The stream is authoritative from HERE on;
               // a rev that moved since we last looked is a missed change.
@@ -5874,7 +6093,7 @@
     // their work with it.
     try {
       const r = await fetch(api + '/know-list');
-      if (!r.ok) { st('know-list failed ' + r.status, false); return; }
+      if (!r.ok) { st('know-list failed' + await errText(r), false); return; }
       d = await r.json();
     } catch { st('know-list failed (network)', false); return; }
     if (gen !== knowGen) return;   // a local patch superseded this response
@@ -5969,7 +6188,7 @@
     else {
       let r = null;
       try { r = await fetch(api + '/know-read?key=' + encodeURIComponent(key)); } catch {}
-      if (!r || !r.ok) { st('open failed ' + (r ? r.status : '— offline'), false); return; }
+      if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return; }
       d = await r.json();
     }
     current = key;
@@ -5981,6 +6200,8 @@
     markCurrent();
     renderKnowTags(d.tags || []);
     $('kupd').textContent = 'updated ' + (d.updated || '');
+    exitRev();
+    resetPanels();
     st('memory · ' + (d.tags || []).map((t) => '#' + t).join(' '));
     if (isMobile()) setMv('code');
   }
@@ -5993,7 +6214,7 @@
       a.onclick = async () => {
         const r = await mutate(api + '/know-untag?key=' + encodeURIComponent(current) +
           '&tag=' + encodeURIComponent(t));
-        if (!r.ok) { st('untag failed ' + r.status, false); return; }
+        if (!r.ok) { st('untag failed' + await errText(r), false); return; }
         // this client made the change. Patch the list it already holds
         knowGen++;
         const k = knowEntry(current);
@@ -6012,7 +6233,7 @@
     if (!t || !current || mode !== 'know') return;
     const r = await mutate(api + '/know-tag?key=' + encodeURIComponent(current) +
       '&tag=' + encodeURIComponent(t));
-    if (!r.ok) { st('tag failed ' + r.status, false); return; }
+    if (!r.ok) { st('tag failed' + await errText(r), false); return; }
     $('ktag').value = '';
     knowGen++;
     const k = knowEntry(current);
@@ -6047,7 +6268,7 @@
       if (src.value === sent) dirty = false;
       return;
     }
-    if (!r.ok) { st('save failed ' + r.status, false); return; }
+    if (!r.ok) { st('save failed' + await errText(r), false); return; }
     current = key;
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
@@ -6066,7 +6287,7 @@
     if (!(await askConfirm('delete memory ' + current + '? (soft-delete, restorable)', 'delete'))) return;
     const doomed = current;
     const r = await mutate(api + '/know-delete?key=' + encodeURIComponent(doomed));
-    if (!r.ok) { st('delete failed ' + r.status, false); return; }
+    if (!r.ok) { st('delete failed' + await errText(r), false); return; }
     current = null;
     pname.value = '';
     pname.readOnly = false;
@@ -6398,7 +6619,7 @@
       let listed = null;
       try { listed = await (await fetch(api + '/know-list')).json(); } catch {}
       const have = listed && listed.keys ? listed.keys.length : null;
-      st((cut ? 'the connection timed out mid-import' : 'legacy import failed' + (r ? ' ' + r.status : '')) +
+      st((cut ? 'the connection timed out mid-import' : 'legacy import failed' + await errText(r)) +
          (have !== null ? ' — ' + have + ' memories are here now' : '') +
          ' · nothing was removed from the old agent · run it again to finish', false);
       if (cut) {

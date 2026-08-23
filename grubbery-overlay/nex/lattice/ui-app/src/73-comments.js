@@ -34,7 +34,7 @@
     let d = null;
     try {
       const r = await fetch(api + '/comments-inbox');
-      if (!r.ok) { st('comments failed ' + r.status, false); return; }
+      if (!r.ok) { st('comments failed' + await errText(r), false); return; }
       d = await r.json();
     } catch { st('comments failed', false); return; }
     inbox = d.items || [];
@@ -54,8 +54,8 @@
       host.className = 'aclempty';
       // say WHY it might be empty. Comments are opt-in per page, so "none yet"
       // and "never enabled anywhere" look identical and mean different things
-      host.textContent = 'No comments. They are opt-in per page — turn them on '
-        + 'from a page’s sharing controls.';
+      host.textContent = 'No comments. They are opt-in per page, and this app '
+        + 'has no switch for that yet.';
       return;
     }
     const grid = document.createElement('div');
@@ -73,7 +73,7 @@
         if (!(await askConfirm('remove this comment by ' + c.author + '?', 'remove'))) return;
         const r = await fetch(api + '/comment-del?page=' + encodeURIComponent(c.page) +
           '&id=' + encodeURIComponent(c.id), { method: 'POST' }).catch(() => null);
-        if (!r || !r.ok) { st('remove failed' + (r ? ' ' + r.status : ''), false); return; }
+        if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
         st('comment removed');
         loadComments();
       };

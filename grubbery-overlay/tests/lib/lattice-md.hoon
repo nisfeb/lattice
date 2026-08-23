@@ -55,4 +55,12 @@
 ++  test-foot-ref   (yes (has "<sup" (r 'x[^a] y\0a\0a[^a]: a note')))
 ++  test-foot-num   (yes (has ">1</a>" (r 'x[^a] y\0a\0a[^a]: a note')))
 ++  test-foot-list  (yes (has "class=\"footnotes\"" (r 'x[^a] y\0a\0a[^a]: a note')))
+::  wikilinks
+++  wl  |=([t=tape base=tape] (wikilinkify:md t base))
+++  test-wiki-nolabel
+  (yes (has "[a/b](/w/a/b)" (wl "[[a/b]]" "/w/")))
+++  test-wiki-label
+  (yes (has "[Some Label](/w/a/b)" (wl "[[a/b|Some Label]]" "/w/")))
+++  test-wiki-escape
+  (yes (has "[[a/b|x]]" (wl "`[[a/b|x]]`" "/w/")))
 --

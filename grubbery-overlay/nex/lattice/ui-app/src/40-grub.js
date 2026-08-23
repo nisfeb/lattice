@@ -6,15 +6,23 @@
   // button, its own two endpoints.
   let grubPath = null;
   let grubShip = null;   // '~ship' when the grub lives on ANOTHER ship; null = local
+  // the picker's value before a grub took it over, restored on exitGrub. Set
+  // only on the FIRST entry (see the guard in openGrub), so browsing straight
+  // from one grub to another still remembers the page kind that came before.
+  let grubPrevKind = null;
   // Every editor reset that leaves grub mode MUST call this: Save gives
   // grubPath top precedence, so a reset that forgets it leaves Save pointed
   // at the app file while the textarea fills with unrelated content — an
   // overwrite wearing a 'saved' status. openPage clears inline; newFile,
   // selectFolder and setMode route through here.
-  const exitGrub = () => { grubPath = null; grubShip = null; };
+  const exitGrub = () => {
+    grubPath = null; grubShip = null;
+    if (grubPrevKind !== null) { pkind.value = grubPrevKind; grubPrevKind = null; }
+  };
   async function openGrub(p, ship) {
     grubPath = p;
     grubShip = ship || null;
+    if (grubPrevKind === null) grubPrevKind = pkind.value;
     current = null;
     curFolder = null;
     pname.value = (grubShip ? grubShip + ' ' : '') + p;
@@ -38,9 +46,16 @@
     dirty = false;
     render();
     const blot = d.blot || d.mark || '';
+    // the picker drives syntax highlighting (LMAP) and list-continuation
+    // rules (proseFlavor), so it needs to follow this file's real language.
+    // Left alone it keeps whatever page kind was open before, and editing
+    // calendar.html ends up highlighted and indented as that stale kind.
+    const mk = extKind(String(blot).split('/').pop()) || 'hoon';
+    if ([...pkind.options].some((o) => o.value === mk)) pkind.value = mk;
+    curKind = mk;
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'remote grub on ' + grubShip + ' — saves need their permission'
-       : 'grub ' + blot);
+       : 'grub ' + blot + ' — manual save (Cmd+S), no autosave here');
   }
   async function saveGrub() {
     if (!grubPath || src.readOnly) return;
@@ -61,11 +76,14 @@
     } catch {}
     saving = false;
     if (!r || !r.ok) {
+      // 'rejected' is the mark's word, and a 502 is the ship's absence, not
+      // the mark's opinion of the content. Grub edits have nowhere to queue
+      // the way page saves do, so the text just stays here until Save runs
+      // again with the ship back.
+      if (shipGone(r)) { st('ship unreachable — grub edits do not queue', false); return; }
       // the mark can reject the source. Show ITS error, since the stored grub
       // still holds the previous content and the user needs to know why
-      let msg = r ? ' ' + r.status : '';
-      if (r) { try { const j = await r.json(); if (j && j.error) msg = ': ' + j.error; } catch {} }
-      st('save rejected' + msg, false);
+      st('save rejected' + await errText(r), false);
       return;
     }
     if (src.value === sent) dirty = false;

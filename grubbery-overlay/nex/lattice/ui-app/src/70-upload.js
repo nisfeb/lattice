@@ -4,8 +4,8 @@
   const upPanel = $('uppanel'), upMsg = $('upmsg'), upFill = $('upfill'), upErr = $('uperr');
 
   const upShow = () => { upPanel.hidden = false; upErr.textContent = ''; upFill.style.width = '0%'; };
-  const upProg = (done, total, name) => {
-    upMsg.textContent = `uploading ${done}/${total}${name ? ': ' + name : ''}`;
+  const upProg = (done, total, name, verb) => {
+    upMsg.textContent = `${verb || 'uploading'} ${done}/${total}${name ? ': ' + name : ''}`;
     upFill.style.width = Math.round(done * 100 / Math.max(total, 1)) + '%';
   };
 
@@ -23,30 +23,40 @@
     }
     const list = [];
     const dirs = new Set();
-    let skipped = 0;
+    //  names, not just a count: a batch of thirty dropped files that skips
+    //  three leaves the user guessing which three without this
+    const skippedNames = [];
     for (const { file, rel } of items) {
       const dot = rel.lastIndexOf('.');
       const kind = dot > 0 ? extKind(rel.slice(dot + 1)) : null;
-      if (!kind) { skipped++; continue; }
+      if (!kind) { skippedNames.push(rel); continue; }
       const stem = rel.slice(0, dot);
       const parts = verbatim
         ? stem.split('/').filter(Boolean)
         : stem.split('/').map(seg).filter(Boolean);
       if (folderCtx && !verbatim) parts.unshift(...folderCtx.split('/'));
       const name = parts.join('/');
-      if (!name) { skipped++; continue; }
+      if (!name) { skippedNames.push(rel); continue; }
       list.push({ file, name, kind });
       const pp = name.split('/'); pp.pop();
       for (let i = 1; i <= pp.length; i++) dirs.add(pp.slice(0, i).join('/'));
     }
     if (!list.length) {
       upShow();
-      upMsg.textContent = 'no supported files (md gmi html txt js css hoon)';
+      // EXT_KIND (30-tree.js) is the one table the picker filter and this
+      // message both have to agree with, so read it instead of hand-listing
+      // extensions that drift the moment a new kind is added.
+      upMsg.textContent = 'no supported files (' + Object.keys(EXT_KIND).join(' ') + ')';
       return;
     }
     upShow();
     upProg(0, list.length, '');
-    if (skipped) upErr.textContent = `skipped ${skipped} unsupported\n`;
+    if (skippedNames.length) {
+      const shown = skippedNames.length > 6
+        ? skippedNames.slice(0, 6).join(', ') + ', and ' + (skippedNames.length - 6) + ' more'
+        : skippedNames.join(', ');
+      upErr.textContent = `skipped ${skippedNames.length} unsupported\n  ${shown}\n`;
+    }
     // only create folders the tree does not already have. Each folder-new is
     // a ~2s writer round-trip, and re-uploading into an existing tree used to
     // pay it for every directory.
@@ -64,22 +74,31 @@
     let fails = 0, done = 0;
     for (let i = 0; i < list.length; i += CHUNK) {
       const part = list.slice(i, i + CHUNK);
-      upProg(done, list.length, part[0].name);
       let r = null;
       const payload = [];
       try {
-        for (const it of part)
+        for (const it of part) {
           payload.push({ name: it.name, type: it.kind, body: (await it.file.text()) || '\n' });
+          // the read is awaited one file at a time, so the bar can move with
+          // it instead of sitting at 0% for the whole chunk and then jumping
+          upProg(done + payload.length, list.length, it.name, 'reading');
+        }
         r = await mutate(api + '/page-save-batch',
           { method: 'POST', body: JSON.stringify(payload) });
       } catch {}
       if (!r || !r.ok) {
         // the batch is all-or-nothing, so report the whole chunk rather than
-        // implying some of it landed
+        // implying some of it landed, and name what it held: a count alone
+        // leaves the user diffing the tree by hand to find which files never
+        // made it
         fails += part.length;
         let msg = r ? r.status : 'network';
         if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
-        upErr.textContent += `failed: ${part.length} file(s) — ${msg}\n`;
+        const names = part.map((it) => it.name);
+        const held = names.length > 6
+          ? names.slice(0, 6).join(', ') + ', and ' + (names.length - 6) + ' more'
+          : names.join(', ');
+        upErr.textContent += `failed: ${part.length} file(s) — ${msg}\n  ${held}\n`;
       } else {
         // an upload can OVERWRITE an existing page, and the batch's targets
         // live in the POST body where mutate() can't see them — so every
@@ -140,9 +159,22 @@
     } else res();
   });
   const treePane = $('tree');
-  window.addEventListener('dragover', (e) => { e.preventDefault(); treePane.classList.add('dragover'); });
+  // A drag carries files, or it carries something else entirely, most often
+  // a text selection dragged around inside the editor. window used to
+  // preventDefault on every drag without asking which, which also cancels
+  // the browser's native text drop and paints the tree as a target for a
+  // drop it was never going to accept. types is populated the moment the
+  // drag starts, well before any drop, so the two handlers below check the
+  // same thing at two different points in the same gesture.
+  const dragHasFiles = (e) => !!(e.dataTransfer && [...e.dataTransfer.types].includes('Files'));
+  window.addEventListener('dragover', (e) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    treePane.classList.add('dragover');
+  });
   window.addEventListener('dragleave', (e) => { if (!e.relatedTarget) treePane.classList.remove('dragover'); });
   window.addEventListener('drop', (e) => {
+    if (!dragHasFiles(e)) return;
     e.preventDefault();
     treePane.classList.remove('dragover');
     const its = e.dataTransfer && e.dataTransfer.items;

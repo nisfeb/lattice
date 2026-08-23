@@ -65,9 +65,12 @@
     // one page's edit cost every other page its cache.
     if (mode === 'know') loadKnow(); else loadTree();
     refreshOpen();
-    // a comment arriving from another ship bumps the beacon like any write, so
-    // this is the same signal the tree refresh uses. Cheap: it counts, it does
-    // not render, and it is skipped entirely while the pane is open.
+    // a catch-up call, not the primary path: the stream now wakes the badge
+    // directly on its own /comments event (see commentBumped below). This
+    // covers the tab that was HIDDEN while a comment landed, since the SSE
+    // loop pauses entirely on document.hidden and only reconnects here, on
+    // focus. Cheap either way: it counts, it does not render, and it is
+    // skipped entirely while the pane is open.
     if ($('cmwrap') && $('cmwrap').hidden) refreshCommentBadge();
   };
   // ── the beacon stream, read raw ──────────────────────────────────────────
@@ -84,6 +87,17 @@
   let streamLive = false;
   let beaconTimer = null;
   const bumped = () => { clearTimeout(beaconTimer); beaconTimer = setTimeout(refreshAll, 300); };
+  // comments never bump /rev (apply-comment stamps only /beacon/comments), so
+  // a foreign comment used to reach the badge only by accident, on whatever
+  // next refreshAll a focus or poll happened to trigger. Give it the same
+  // debounced path bumped() gives /rev, straight to the badge check.
+  let cmBeaconTimer = null;
+  const commentBumped = () => {
+    clearTimeout(cmBeaconTimer);
+    cmBeaconTimer = setTimeout(() => {
+      if ($('cmwrap') && $('cmwrap').hidden) refreshCommentBadge();
+    }, 300);
+  };
   let lastRev = '';
   try { lastRev = localStorage.latBeaconRev || ''; } catch {}
   const noteRev = (rev) => {
@@ -126,12 +140,20 @@
             if (!name) continue;
             // this keep streams the whole /beacon directory: events arrive
             // as "old /rev", "old /comments", "upd /rev", ... — the name
-            // carries the grub's sub-path. Only /rev is the change beacon;
-            // acting on the badge stamp's events corrupted lastRev and
-            // fired spurious refreshes. (Historical note: the pre-raw
+            // carries the grub's sub-path. /rev is the content beacon and
+            // drives lastRev below; folding a comment bump into that same
+            // bookkeeping corrupted lastRev and fired spurious refreshes, so
+            // /comments gets its own path straight to commentBumped instead,
+            // never touching lastRev. (Historical note: the pre-raw
             // EventSource listened for a literal 'upd' event, which never
             // existed — live refresh was ALWAYS the 30s poll.)
-            if (name.slice(-5) !== ' /rev') continue;
+            if (name.slice(-5) !== ' /rev') {
+              // registration ("old /comments") just reports the stamp as it
+              // already stood, nothing to react to. A live bump is the
+              // event worth waking the badge for.
+              if (name.slice(-10) === ' /comments' && name.slice(0, 3) !== 'old') commentBumped();
+              continue;
+            }
             if (name.slice(0, 3) === 'old') {
               // registration. The stream is authoritative from HERE on;
               // a rev that moved since we last looked is a missed change.

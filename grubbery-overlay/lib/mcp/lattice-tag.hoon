@@ -23,7 +23,10 @@
   ?.  &(?=(^ ra) ?=(^ rb))
     (pure:m [%error 'missing or invalid arguments (key, tag)'])
   =/  [key=@t tag=@t]  [u.ra u.rb]
-  ?~  (parse-key:lm key)  (pure:m [%error 'invalid key'])
+  =/  kp=(unit path)  (parse-key:lm key)
+  ?~  kp  (pure:m [%error 'invalid key'])
+  ;<  es=(map path know-entry:lk)  bind:m  read-vault:lm
+  ?.  (~(has by es) u.kp)  (pure:m [%error (crip "no entry {(trip key)}")])
   ;<  ~  bind:m  (poke-writer:lm [%tag key tag])
   (pure:m [%text (crip "tagged {(trip key)} +{(trip tag)}")])
 --

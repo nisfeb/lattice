@@ -5787,8 +5787,8 @@
 ++  preview-inner
   |=  [ptype=@tas body=@t]
   ^-  tape
-  ?+  ptype  (render-md:gfm (crip (wikilinkify (trip body) "/apps/lattice/app?name=")))
-    %md    (render-md:gfm (crip (wikilinkify (trip body) "/apps/lattice/app?name=")))
+  ?+  ptype  (render-md:gfm (crip (wikilinkify:gfm (trip body) "/apps/lattice/app?name=")))
+    %md    (render-md:gfm (crip (wikilinkify:gfm (trip body) "/apps/lattice/app?name=")))
     %gmi   (render-gmi body)
     %html  (trip body)
     %text  :(weld "<pre>" (esc (trip body)) "</pre>")
@@ -6182,60 +6182,10 @@
 ::  (render-page-view / serve-clearweb). A peer's page data is escaped by the
 ::  explorer, never routed here. A non-cord value falls back to a noun literal.
 ::
-::  +wikilinkify: rewrite [[page-name]] into a standard markdown link
-::  [page-name](<base>page-name) BEFORE rendering, so wikilinks work on every
-::  md surface. Only path-ish names rewrite (a-z 0-9 - / . _ ~); anything
-::  else passes through untouched. `base` is the surface's link root: the
-::  editor for owner views, /c/ for clearweb.
+::  wikilinkify (rewrite [[name]] / [[name|label]] before md render) lives in
+::  /lib/lattice-md (imported here as `gfm`), alongside render-md, so both
+::  ends of markdown rendering share one pure, unit-tested core.
 ::
-++  wiki-name-len
-  |=  t=tape
-  ^-  @ud
-  =|  n=@ud
-  |-  ^-  @ud
-  ?~  t  n
-  ?.  ?|  &((gte i.t 'a') (lte i.t 'z'))
-          &((gte i.t '0') (lte i.t '9'))
-          =(i.t '-')  =(i.t '/')  =(i.t '.')  =(i.t '_')  =(i.t '~')
-      ==
-    n
-  $(t t.t, n +(n))
-++  wikilinkify
-  |=  [t=tape base=tape]
-  ^-  tape
-  |-  ^-  tape
-  ?~  t  ~
-  ::  code is verbatim: skip a ``` fence or a ` span whole, so a wikilink
-  ::  inside a code sample stays literal text. Without this there was no way
-  ::  to SHOW [[x]] in a document, including documenting this syntax.
-  ?:  =("```" (scag 3 `tape`t))
-    =/  aft=tape  (slag 3 `tape`t)
-    =/  end=(unit @ud)  (find "```" aft)
-    ?~  end  t
-    =/  n=@ud  (add u.end 3)
-    (weld (scag 3 `tape`t) (weld (scag n aft) $(t (slag n aft))))
-  ?:  =('`' i.t)
-    =/  aft=tape  (slag 1 `tape`t)
-    =/  end=(unit @ud)  (find "`" aft)
-    ?~  end  [i.t $(t t.t)]
-    =/  n=@ud  (add u.end 1)
-    (weld "`" (weld (scag n aft) $(t (slag n aft))))
-  ?.  =("[[" (scag 2 `tape`t))  [i.t $(t t.t)]
-  ::  scan ONLY the legal-charset run, then require "]]" immediately after, so a
-  ::  candidate costs the length of its name. The previous version searched the
-  ::  whole remaining document for "]]" at every "[[" and, on a miss, dropped a
-  ::  single character and searched again (quadratic). A body of repeated "[["
-  ::  with no closer took ~6.5s at 40KB and, through the render route, wedged
-  ::  the ship for hours from an UNAUTHENTICATED page view. This version is flat
-  ::  (~0.5s at 100KB) and byte-identical on every edge case tested.
-  =/  aft=tape  (slag 2 `tape`t)
-  =/  n=@ud  (wiki-name-len aft)
-  ?:  =(0 n)  [i.t $(t t.t)]
-  ?.  =("]]" (scag 2 (slag n aft)))  [i.t $(t t.t)]
-  =/  name=tape  (scag n aft)
-  =/  rest=tape  (slag (add n 2) aft)
-  =/  tail=tape  $(t rest)
-  :(weld "[" name "](" base name ")" tail)
 ++  render-shown
   |=  [=sang:tarball mode=view-mode:pg base=tape]
   ^-  tape
@@ -6246,7 +6196,7 @@
     %text  :(weld "<pre>" (esc (trip p.cr)) "</pre>")
     %html  (trip p.cr)
     %gmi   (render-gmi p.cr)
-    %md    =/  wl=@t  (crip (wikilinkify (trip p.cr) base))
+    %md    =/  wl=@t  (crip (wikilinkify:gfm (trip p.cr) base))
            (render-md:gfm wl)
     %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip p.cr)) "</code></pre>")
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip p.cr)) "</code></pre>")

@@ -54,30 +54,41 @@
   for (const b of document.querySelectorAll('.share button')) {
     b.onclick = async () => {
       const m = b.dataset.m;
-      if (curFolder) {
-        const r = await mutate(api + '/page-share-tree?name=' + encodeURIComponent(curFolder) +
+      // a share write is a real round trip (0.3-2s), and all three buttons
+      // stayed clickable through it — enough time for a second click to fire
+      // a second mutation against the same target. Freeze the row for the
+      // duration; the st() calls below already end the spin either way.
+      const btns = document.querySelectorAll('.share button');
+      for (const x of btns) x.disabled = true;
+      stWork('setting ' + m + '…');
+      try {
+        if (curFolder) {
+          const r = await mutate(api + '/page-share-tree?name=' + encodeURIComponent(curFolder) +
+            '&mode=' + m);
+          if (!r.ok) { st('share failed' + await errText(r), false); return; }
+          showShare(m);
+          st(m === 'clearweb' ? 'published tree at /c/' + curFolder + '/' : 'tree set ' + m);
+          // share-tree sets every page under the folder. Mirror that locally
+          // instead of refetching the tree to learn what we just did.
+          for (const n of nodes)
+            if (n.page && n.path.startsWith(curFolder + '/')) n.share = m;
+          snapTree();
+          renderTree();
+          return;
+        }
+        if (!current) { st('save the page first', false); return; }
+        const r = await mutate(api + '/page-share?name=' + encodeURIComponent(current) +
           '&mode=' + m);
-        if (!r.ok) { st('share failed ' + r.status, false); return; }
+        if (!r.ok) { st('share failed' + await errText(r), false); return; }
         showShare(m);
-        st(m === 'clearweb' ? 'published tree at /c/' + curFolder + '/' : 'tree set ' + m);
-        // share-tree sets every page under the folder. Mirror that locally
-        // instead of refetching the tree to learn what we just did.
-        for (const n of nodes)
-          if (n.page && n.path.startsWith(curFolder + '/')) n.share = m;
+        st('sharing: ' + m);
+        const n = nodes.find((x) => x.page && x.path === current);
+        if (n) n.share = m;
         snapTree();
         renderTree();
-        return;
+      } finally {
+        for (const x of btns) x.disabled = false;
       }
-      if (!current) { st('save the page first', false); return; }
-      const r = await mutate(api + '/page-share?name=' + encodeURIComponent(current) +
-        '&mode=' + m);
-      if (!r.ok) { st('share failed ' + r.status, false); return; }
-      showShare(m);
-      st('sharing: ' + m);
-      const n = nodes.find((x) => x.page && x.path === current);
-      if (n) n.share = m;
-      snapTree();
-      renderTree();
     };
   }
 
@@ -101,10 +112,8 @@
     const r = await mutate(api + '/share-file?name=' + encodeURIComponent(page) +
       '&ship=' + encodeURIComponent(shp) + '&mode=' + mode);
     if (!r || !r.ok) {
-      let msg = r ? r.status : 'network';
-      if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
       $('shres').textContent = '';
-      st('share failed: ' + msg, false);
+      st('share failed' + await errText(r), false);
       return;
     }
     const j = await r.json();

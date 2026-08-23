@@ -99,13 +99,13 @@
       del.onclick = async () => {
         if (!(await askConfirm('delete ' + path + '? Open it first if you need its text.', 'delete'))) return;
         const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
-        if (!r.ok) { st('delete failed ' + r.status, false); return; }
+        if (!r.ok) { st('delete failed' + await errText(r), false); return; }
         dropTreeNodes(path);
         snapTree();
         renderConflicts();
         renderConfBadge();
         renderTree();
-        st('resolved ' + path);
+        st(r.offline ? 'resolved ' + path + ' offline' : 'resolved ' + path);
       };
       head.appendChild(del);
       card.appendChild(head);

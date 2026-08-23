@@ -20,7 +20,18 @@
         // into every server render keeps working, but the frame gets an opaque
         // origin: no parent, no cookies, no session. The two together would
         // hand the sandbox straight back.
-        '<iframe class="prev" id="prev" title="live preview" sandbox="allow-scripts"></iframe>';
+        //
+        // allow-top-navigation-by-user-activation is a narrower third token,
+        // added for a different reason: a wikilink is a plain <a> pointing at
+        // the app's own route, and clicking one used to navigate the frame
+        // itself, straight into the opaque origin's missing cookies, a live
+        // 403 in place of the page. This token opens exactly one door out of
+        // the sandbox, and only on an actual click. Nothing running inside
+        // the frame can drive the top page anywhere on its own; the click has
+        // to be real. The base target below is what points those clicks
+        // upward instead of at the frame.
+        '<iframe class="prev" id="prev" title="live preview" '
+          + 'sandbox="allow-scripts allow-top-navigation-by-user-activation"></iframe>';
       prev = $('prev');
       // blank it NOW, not when the first page opens. An iframe with no srcdoc
       // is an opaque white canvas, and the first thing that used to call
@@ -81,7 +92,12 @@
       // is what finally put it on screen. Backgrounds match prevBlank exactly,
       // so a document appearing cannot flash a different colour than the empty
       // pane it replaces.
-      prev.srcdoc = '<!doctype html><meta charset="utf-8">'
+      // <base target="_top"> sends every plain link in this shell to the real
+      // top-level page instead of the sandboxed frame it is written into. A
+      // wikilink used to navigate the frame itself and land on an
+      // authenticated route the opaque origin has no cookies for; escaping
+      // to the top page is what the sandbox token above actually permits.
+      prev.srcdoc = '<!doctype html><meta charset="utf-8"><base target="_top">'
         + '<style>:root{color-scheme:light dark}'
         + 'body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;background:#fafafa}'
         + '@media(prefers-color-scheme:dark){body{background:#1a1a1a}}'

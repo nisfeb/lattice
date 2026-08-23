@@ -115,7 +115,7 @@
       // loadPerms repaints from the ship either way, so a delete that failed
       // and a group that came back on its own look identical. Say which it
       // was, the rule permSave and the ban handler already follow.
-      if (!r || !r.ok) st('could not delete ' + g.name + ' (' + (r ? r.status : 'network') + ')', false);
+      if (!r || !r.ok) st('could not delete ' + g.name + await errText(r), false);
       loadPerms();
     };
     head.appendChild(b); head.appendChild(del);
@@ -270,7 +270,7 @@
         const r = await fetch(api + '/unban?ship=' + encodeURIComponent(w), { method: 'POST' })
           .catch(() => null);
         // announce the unban only once the ship has agreed to it
-        if (!r || !r.ok) st('unban: ' + (r ? r.status : 'network'), false);
+        if (!r || !r.ok) st('could not unban ' + w + await errText(r), false);
         else st('unbanned ' + w + ' — it holds no access until you grant it again');
         loadBans();
       };
@@ -280,14 +280,14 @@
   $('banadd').onclick = async () => {
     const w = $('banship').value.trim();
     if (!w) return;
+    // banning revokes every grant the ship holds right now, and unban does
+    // not bring them back (the nexus is explicit about that) — a mistyped
+    // ship name is a permanent loss with no online undo, so ask first the
+    // way delete already does.
+    if (!(await askConfirm('ban ' + w + '? this revokes every grant it holds, and unban will not restore them', 'ban'))) return;
     const r = await fetch(api + '/ban?ship=' + encodeURIComponent(w), { method: 'POST' })
       .catch(() => null);
-    if (!r || !r.ok) {
-      let msg = r ? r.status : 'network';
-      if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
-      st('ban: ' + msg, false);
-      return;
-    }
+    if (!r || !r.ok) { st('could not ban ' + w + await errText(r), false); return; }
     const j = await r.json().catch(() => ({}));
     st('banned ' + w + (j.revoked ? ' — revoked from ' + j.revoked + ' group(s)' : ''));
     $('banship').value = '';
@@ -299,7 +299,7 @@
   };
 
   $('aclclose').onclick = aclClose;
-  $('aclreload').onclick = () => loadPerms();
+  $('aclreload').onclick = () => { loadPerms(); loadBans(); };
   $('aclnewbtn').onclick = async () => {
     const v = $('aclnew').value.trim();
     if (!v) return;
