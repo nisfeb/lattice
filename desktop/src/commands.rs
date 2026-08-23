@@ -2,10 +2,22 @@
 //! the shared fuse cookie, and open_workspace drives the webview through the
 //! ship's own /~/login form so eyre sets its session cookie first-party.
 
+use std::sync::{Mutex, OnceLock};
+
 use lattice_fs::{default_cookie_path, EyreTransport, Transport};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::config;
+
+/// Guards the load-modify-save span shared by set_backup_schedules and
+/// backup_write. Both read the whole config, touch their own slice of it,
+/// and write the whole thing back, so without a lock the scheduler's
+/// last_run stamp and a user's schedule edit can race: whichever save lands
+/// second wins outright and silently erases the other's change.
+fn config_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(Default::default)
+}
 
 /// stderr diagnostics, on when LATTICE_LOG is set. Costs nothing otherwise
 /// and makes "it 403s on my machine" debuggable from a pasted terminal log.
@@ -510,6 +522,7 @@ pub fn set_backup_schedules(
     app: AppHandle,
     schedules: Vec<crate::config::BackupSchedule>,
 ) -> Result<(), String> {
+    let _guard = config_lock().lock().unwrap();
     let mut cfg = config::load(&app);
     let mut next = schedules;
     for s in next.iter_mut() {
@@ -554,6 +567,7 @@ pub async fn pick_backup_dir(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub async fn backup_write(app: AppHandle, id: String, b64: String) -> Result<String, String> {
     let bytes = decode_archive(&b64)?;
+    let _guard = config_lock().lock().unwrap();
     let mut cfg = config::load(&app);
     let at = crate::backup::now();
     let s = schedule(&cfg, &id)?.clone();
@@ -809,5 +823,87 @@ mod vault_tests {
     #[test]
     fn empty_is_empty_not_an_error() {
         assert_eq!(decode_archive("").unwrap(), Vec::<u8>::new());
+    }
+}
+
+#[cfg(test)]
+mod backup_race_tests {
+    use crate::config::{self, BackupSchedule, Config};
+    use std::sync::{Arc, Barrier};
+
+    // per-process, per-test path: cargo runs test binaries (and cases within
+    // this one) in parallel, and a shared filename would have them stomping
+    // each other's config the same way the bug does
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        std::env::temp_dir().join(format!(
+            "lattice-cmd-race-{}-{tag}-{}.json",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    // Mirrors what set_backup_schedules and backup_write each do to the
+    // config: load the whole thing, touch one field, save the whole thing
+    // back, under config_lock. A Barrier lines the two threads up so their
+    // load-modify-save spans actually overlap instead of happening to run
+    // one after the other on their own. Without the lock this is flaky:
+    // whichever save lands second wins outright and the other thread's
+    // change vanishes even though its caller saw Ok(()).
+    #[test]
+    fn a_schedule_edit_and_a_last_run_stamp_do_not_clobber_each_other() {
+        let p = tmp("race");
+        let start = Config {
+            url: String::new(),
+            ship: String::new(),
+            queue_key: String::new(),
+            mounts: Vec::new(),
+            backups: vec![BackupSchedule {
+                id: "b1".into(),
+                label: "daily".into(),
+                every_hours: 24,
+                keep: 7,
+                dir: "/tmp/backups".into(),
+                last_run: 0,
+                enabled: true,
+            }],
+        };
+        config::save_at(&p, &start).unwrap();
+
+        let barrier = Arc::new(Barrier::new(2));
+
+        let p1 = p.clone();
+        let b1 = barrier.clone();
+        let stamp_last_run = std::thread::spawn(move || {
+            b1.wait();
+            let _guard = super::config_lock().lock().unwrap();
+            let mut c = config::load_at(&p1);
+            if let Some(s) = c.backups.iter_mut().find(|s| s.id == "b1") {
+                s.last_run = 12_345;
+            }
+            config::save_at(&p1, &c).unwrap();
+        });
+
+        let p2 = p.clone();
+        let b2 = barrier.clone();
+        let edit_schedule = std::thread::spawn(move || {
+            b2.wait();
+            let _guard = super::config_lock().lock().unwrap();
+            let mut c = config::load_at(&p2);
+            for s in c.backups.iter_mut() {
+                s.label = "renamed".into();
+            }
+            config::save_at(&p2, &c).unwrap();
+        });
+
+        stamp_last_run.join().unwrap();
+        edit_schedule.join().unwrap();
+
+        let back = config::load_at(&p);
+        assert_eq!(back.backups.len(), 1);
+        assert_eq!(back.backups[0].last_run, 12_345, "the last_run stamp must survive");
+        assert_eq!(back.backups[0].label, "renamed", "the schedule edit must survive");
+        std::fs::remove_file(&p).ok();
     }
 }
