@@ -2,22 +2,10 @@
 //! the shared fuse cookie, and open_workspace drives the webview through the
 //! ship's own /~/login form so eyre sets its session cookie first-party.
 
-use std::sync::{Mutex, OnceLock};
-
 use lattice_fs::{default_cookie_path, EyreTransport, Transport};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::config;
-
-/// Guards the load-modify-save span shared by set_backup_schedules and
-/// backup_write. Both read the whole config, touch their own slice of it,
-/// and write the whole thing back, so without a lock the scheduler's
-/// last_run stamp and a user's schedule edit can race: whichever save lands
-/// second wins outright and silently erases the other's change.
-fn config_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(Default::default)
-}
 
 /// stderr diagnostics, on when LATTICE_LOG is set. Costs nothing otherwise
 /// and makes "it 403s on my machine" debuggable from a pasted terminal log.
@@ -40,16 +28,17 @@ pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String
     dlog(&format!("connect: cookie stored at {}", default_cookie_path()));
     let ship = t.ship().map_err(|e| e.msg)?;
     dlog(&format!("connect: ship {ship}"));
-    let mut cfg = config::load(&app);
-    //  a ship SWITCH must not inherit the previous ship's queue directory —
-    //  its queued edits would replay into the new ship
-    cfg.queue_key = crate::queue::key_after_connect(&cfg, &ship);
-    cfg.url = url;
-    //  remember the @p: the offline queue prefers it as its directory key, and
-    //  it has to be known BEFORE the ship stops answering, which is exactly
-    //  when the queue starts mattering
-    cfg.ship = ship.clone();
-    config::save(&app, &cfg)?;
+    let ship_for_cfg = ship.clone();
+    config::update(&app, move |cfg| {
+        //  a ship SWITCH must not inherit the previous ship's queue directory —
+        //  its queued edits would replay into the new ship
+        cfg.queue_key = crate::queue::key_after_connect(cfg, &ship_for_cfg);
+        cfg.url = url;
+        //  remember the @p: the offline queue prefers it as its directory key, and
+        //  it has to be known BEFORE the ship stops answering, which is exactly
+        //  when the queue starts mattering
+        cfg.ship = ship_for_cfg;
+    })?;
     open_workspace(&app, true)?;
     Ok(ship)
 }
@@ -522,16 +511,16 @@ pub fn set_backup_schedules(
     app: AppHandle,
     schedules: Vec<crate::config::BackupSchedule>,
 ) -> Result<(), String> {
-    let _guard = config_lock().lock().unwrap();
-    let mut cfg = config::load(&app);
-    let mut next = schedules;
-    for s in next.iter_mut() {
-        if let Some(old) = cfg.backups.iter().find(|o| o.id == s.id) {
-            s.last_run = old.last_run;
+    config::update(&app, move |cfg| {
+        let mut next = schedules;
+        for s in next.iter_mut() {
+            if let Some(old) = cfg.backups.iter().find(|o| o.id == s.id) {
+                s.last_run = old.last_run;
+            }
         }
-    }
-    cfg.backups = next;
-    config::save(&app, &cfg)
+        cfg.backups = next;
+    })
+    .map(|_| ())
 }
 
 /// The schedule with this id. One place, so "no backup schedule" reads the
@@ -567,15 +556,18 @@ pub async fn pick_backup_dir(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub async fn backup_write(app: AppHandle, id: String, b64: String) -> Result<String, String> {
     let bytes = decode_archive(&b64)?;
-    let _guard = config_lock().lock().unwrap();
-    let mut cfg = config::load(&app);
     let at = crate::backup::now();
-    let s = schedule(&cfg, &id)?.clone();
-    let path = crate::backup::write_archive(&s, &bytes, at)?;
-    if let Some(slot) = cfg.backups.iter_mut().find(|s| s.id == id) {
-        slot.last_run = at;
-    }
-    config::save(&app, &cfg)?;
+    // try_update, not update: a schedule that vanished out from under this
+    // request, or an archive write that fails, must leave config.json
+    // untouched rather than persist a last_run stamp for nothing written.
+    let path = config::try_update(&app, move |cfg| {
+        let s = schedule(cfg, &id)?.clone();
+        let path = crate::backup::write_archive(&s, &bytes, at)?;
+        if let Some(slot) = cfg.backups.iter_mut().find(|s| s.id == id) {
+            slot.last_run = at;
+        }
+        Ok(path)
+    })?;
     dlog(&format!("backup: wrote {}", path.display()));
     Ok(path.display().to_string())
 }
@@ -844,13 +836,16 @@ mod backup_race_tests {
         ))
     }
 
-    // Mirrors what set_backup_schedules and backup_write each do to the
+    // Mirrors what backup_write and set_backup_schedules each do to the
     // config: load the whole thing, touch one field, save the whole thing
-    // back, under config_lock. A Barrier lines the two threads up so their
-    // load-modify-save spans actually overlap instead of happening to run
-    // one after the other on their own. Without the lock this is flaky:
-    // whichever save lands second wins outright and the other thread's
-    // change vanishes even though its caller saw Ok(()).
+    // back, through config::update_at, the same helper every real writer
+    // (connect, add_mount, remove_mount, queue_key, and these two) now goes
+    // through, with no lock of its own to remember. A Barrier lines the two
+    // threads up so their load-modify-save spans actually overlap instead of
+    // happening to run one after the other on their own. Without update_at's
+    // internal lock this is flaky: whichever save lands second wins outright
+    // and the other thread's change vanishes even though its caller saw
+    // Ok(()).
     #[test]
     fn a_schedule_edit_and_a_last_run_stamp_do_not_clobber_each_other() {
         let p = tmp("race");
@@ -877,24 +872,24 @@ mod backup_race_tests {
         let b1 = barrier.clone();
         let stamp_last_run = std::thread::spawn(move || {
             b1.wait();
-            let _guard = super::config_lock().lock().unwrap();
-            let mut c = config::load_at(&p1);
-            if let Some(s) = c.backups.iter_mut().find(|s| s.id == "b1") {
-                s.last_run = 12_345;
-            }
-            config::save_at(&p1, &c).unwrap();
+            config::update_at(&p1, |c| {
+                if let Some(s) = c.backups.iter_mut().find(|s| s.id == "b1") {
+                    s.last_run = 12_345;
+                }
+            })
+            .unwrap();
         });
 
         let p2 = p.clone();
         let b2 = barrier.clone();
         let edit_schedule = std::thread::spawn(move || {
             b2.wait();
-            let _guard = super::config_lock().lock().unwrap();
-            let mut c = config::load_at(&p2);
-            for s in c.backups.iter_mut() {
-                s.label = "renamed".into();
-            }
-            config::save_at(&p2, &c).unwrap();
+            config::update_at(&p2, |c| {
+                for s in c.backups.iter_mut() {
+                    s.label = "renamed".into();
+                }
+            })
+            .unwrap();
         });
 
         stamp_last_run.join().unwrap();

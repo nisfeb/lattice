@@ -101,6 +101,11 @@
     knowKeys.find((x) => x.key.replace(/^\//, '') === key);
 
   async function openKnow(key) {
+    // a dirty memory lives nowhere but this textarea until it saves, the
+    // same reason openPage guards a dirty grub and openRev guards a dirty
+    // revision before repainting over it
+    if (mode === 'know' && current && dirty &&
+        !(await askConfirm('discard unsaved changes to ' + current + '?', 'discard'))) return;
     if (mode !== 'know') setMode('know');
     // a queued edit outranks the ship's copy, same rule as pages
     const q = await offGet('know:' + key);

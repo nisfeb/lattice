@@ -435,10 +435,10 @@
   //
   // try/finally because an exception part way through used to leave this true
   // for the life of the page, and replay never ran again.
-  async function replayQueue() {
+  async function replayQueue(proven) {
     if (replaying) return;
     replaying = true;
-    try { await drainQueue(); } finally { replaying = false; }
+    try { await drainQueue(proven); } finally { replaying = false; }
   }
 
   //  Each drain phase returns FALSE when it could not finish. Usually that is
@@ -614,10 +614,15 @@
     return true;
   }
 
-  async function drainQueue() {
+  async function drainQueue(proven) {
     const whole = await offAll();
     const ops = await opAll();
     if (!whole.length && !ops.length) return;
+    // a proven-live caller already has a round-trip that answered, so the
+    // ship being gone is disproved before the first phase even runs. Clear
+    // the badge now instead of leaving it amber for a drain that is, by
+    // then, just bookkeeping.
+    if (proven && degraded) { degraded = false; renderOffline(); }
     const all = whole.filter((q) => q.kind !== 'know');
     const knows = whole.filter((q) => q.kind === 'know');
     const total = whole.length + ops.length;
@@ -630,7 +635,11 @@
       && await drainCreates(all.filter((q) => q.isNew), conflicts)
       && await drainEdits(all.filter((q) => !q.isNew), conflicts)
       && await drainKnows(knows);
-    if (!landed) { setDegraded(true); st(offCount + ' offline edit(s) still waiting', false); return; }
+    if (!landed) {
+      setDegraded(true);
+      st(offCount + ' offline edit' + (offCount === 1 ? '' : 's') + ' still waiting', false);
+      return;
+    }
     setDegraded(false);
     if (conflicts.length) {
       st('synced — ' + conflicts.length + ' conflict(s): your offline version won; '
@@ -2833,7 +2842,7 @@
     if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
     else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
     flushPending();
-    if (offCount) replayQueue();     // back online: drain the backlog
+    if (offCount) replayQueue(true);     // back online: drain the backlog
   }
 
   let autoTimer = null;
@@ -2897,6 +2906,7 @@
     else st('autosaved');
     if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
     flushPending();
+    if (offCount) replayQueue(true);     // this autosave proves the ship is back too
   }
 
 // ── src/40-grub.js ────────────────────────────────────────────────────────
@@ -6180,6 +6190,11 @@
     knowKeys.find((x) => x.key.replace(/^\//, '') === key);
 
   async function openKnow(key) {
+    // a dirty memory lives nowhere but this textarea until it saves, the
+    // same reason openPage guards a dirty grub and openRev guards a dirty
+    // revision before repainting over it
+    if (mode === 'know' && current && dirty &&
+        !(await askConfirm('discard unsaved changes to ' + current + '?', 'discard'))) return;
     if (mode !== 'know') setMode('know');
     // a queued edit outranks the ship's copy, same rule as pages
     const q = await offGet('know:' + key);

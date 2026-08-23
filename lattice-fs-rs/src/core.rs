@@ -347,7 +347,7 @@ impl GrubberyFs {
         ino: Option<u64>,
     ) -> Result<(FileAttr, Duration), i32> {
         // scratch file: it lives in the map, not the vtree.
-        if is_scratch(leaf_of(path)) {
+        if is_scratch(leaf_of(path), |ext| self.proj.kind_for_ext(ext)) {
             let sz = s.scratch.get(path).ok_or(libc::ENOENT)?.len() as u64;
             let ino = ino.unwrap_or_else(|| ino_for(s, path));
             return Ok((
@@ -499,12 +499,25 @@ impl State {
 /// else (an unknown extension, or a trailing `~`) is an editor temp, handled
 /// ephemerally in the FUSE layer and never sent to the ship. Covers vim/emacs
 /// backups (`foo.md~`), swap files (`.foo.md.swp`), and atomic-save temps.
-fn is_scratch(name: &str) -> bool {
+///
+/// "Known" is asked of the projection's own kind_for_ext, not hand-copied
+/// here: this file used to carry a third copy of the extension list (the
+/// vault KMAP and the projection's tables were the first two to drift), and
+/// it went stale silently when tex support landed in kind_for_ext, so every
+/// .tex open through the mount hit the empty scratch map and every .tex save
+/// through it was accepted and never reached the ship. kind_for_ext answers
+/// "hoon" for any extension it doesn't recognize, on purpose, so a brand-new
+/// file dropped into the mount still lands somewhere. That's also the
+/// real answer for a literal `.hoon` page, so a bare "hoon" extension is
+/// checked directly rather than through the closure, which has no way to
+/// tell "recognized as hoon" apart from "fell through to hoon".
+fn is_scratch(name: &str, kind_for: impl Fn(&str) -> String) -> bool {
     if name.ends_with('~') {
         return true;
     }
     match name.rsplit_once('.') {
-        Some((_, ext)) => !matches!(ext, "md" | "gmi" | "html" | "txt" | "js" | "css" | "hoon"),
+        Some((_, "hoon")) => false,
+        Some((_, ext)) => kind_for(ext) == "hoon",
         None => false,
     }
 }
@@ -915,7 +928,7 @@ impl Filesystem for GrubberyFs {
                 reply.error(err(libc::ENOENT));
                 return;
             };
-            if is_scratch(leaf_of(&path)) {
+            if is_scratch(leaf_of(&path), |ext| self.proj.kind_for_ext(ext)) {
                 let buf = s.scratch.get(&path).cloned().unwrap_or_default();
                 let fh = s.next_fh;
                 s.next_fh += 1;
@@ -1079,7 +1092,7 @@ impl Filesystem for GrubberyFs {
         };
         let path = join(&parent_path, &name);
         // editor temp file: keep it entirely in the FUSE layer (never a page).
-        if is_scratch(&name) {
+        if is_scratch(&name, |ext| self.proj.kind_for_ext(ext)) {
             let ino = ino_for(&mut s, &path);
             s.scratch.entry(path.clone()).or_default();
             let fh = s.next_fh;
@@ -1175,7 +1188,7 @@ impl Filesystem for GrubberyFs {
             let path = join(&parent_path, &name);
             // scratch file: drop it from the FUSE layer only. NEVER proj.delete,
             // which (via the last-dot strip) would delete the page it shadows.
-            if is_scratch(&name) {
+            if is_scratch(&name, |ext| self.proj.kind_for_ext(ext)) {
                 s.scratch.remove(&path);
                 s.vt.remove(&path);
                 drop(s);
@@ -1248,8 +1261,8 @@ impl Filesystem for GrubberyFs {
     ) {
         let name = name.to_string_lossy().to_string();
         let newname = newname.to_string_lossy().to_string();
-        let src_scratch = is_scratch(&name);
-        let dst_scratch = is_scratch(&newname);
+        let src_scratch = is_scratch(&name, |ext| self.proj.kind_for_ext(ext));
+        let dst_scratch = is_scratch(&newname, |ext| self.proj.kind_for_ext(ext));
         let (src_path, dst_path, src_rel, dst_rel, dst_kind, dst_exists) = {
             let s = self.st.lock().unwrap();
             let Some(pp) = path_of(&s, parent.0) else {
@@ -1406,11 +1419,19 @@ mod tests {
     use super::{cap_bodies, is_scratch};
     use std::collections::HashMap;
 
+    /// The real kind_for_ext, driven off `Fake` (defined further down in this
+    /// module) rather than a fourth hand-copied list. The whole point of
+    /// deriving is_scratch from the projection is that its own tests run
+    /// against the one table that also drives real mount writes.
+    fn t_kind(ext: &str) -> String {
+        Fake::default().kind_for_ext(ext)
+    }
+
     #[test]
     fn scratch_classifies_editor_temp_files() {
         // real pages: must NOT be scratch (they map to a page and persist)
         for real in ["foo.md", "foo.gmi", "foo.html", "foo.txt", "foo.js", "foo.css", "foo.hoon", "notes"] {
-            assert!(!is_scratch(real), "{real} should be a real page file");
+            assert!(!is_scratch(real, t_kind), "{real} should be a real page file");
         }
         // editor temp files: MUST be scratch (never map onto a page)
         for tmp in [
@@ -1423,8 +1444,21 @@ mod tests {
             "foo.bak",
             "4913.tmp",
         ] {
-            assert!(is_scratch(tmp), "{tmp} should be an ephemeral scratch file");
+            assert!(is_scratch(tmp, t_kind), "{tmp} should be an ephemeral scratch file");
         }
+    }
+
+    #[test]
+    fn is_scratch_derives_from_kind_for_ext_so_tex_stops_losing_edits() {
+        // is_scratch used to hand-copy its own extension list, a third
+        // drifted copy of the same table (the vault KMAP and projection's own
+        // tables were the first two to fall out of sync). tex support landed
+        // in kind_for_ext and never got mirrored here, so a real .tex node
+        // opened against the empty scratch map and a save through the mount
+        // was accepted and quietly never reached the ship. Pin both halves:
+        // a real tex page stays out of scratch, its backup still isn't one.
+        assert!(!is_scratch("x.tex", t_kind), "a real tex page must not be scratch");
+        assert!(is_scratch("x.tex~", t_kind), "a tex backup must still be scratch");
     }
 
     #[test]
@@ -1466,7 +1500,7 @@ mod tests {
         // data-loss case), a known page extension NEVER is
         #[test]
         fn is_scratch_is_total(name in ".*") {
-            let s = is_scratch(&name);
+            let s = is_scratch(&name, t_kind);
             if name.ends_with('~') {
                 prop_assert!(s, "{} must be scratch (backup suffix)", name);
             }
@@ -1475,10 +1509,10 @@ mod tests {
         #[test]
         fn known_extensions_are_never_scratch(
             stem in "[a-zA-Z0-9 ._-]*",
-            ext in proptest::sample::select(vec!["md", "gmi", "html", "txt", "js", "css", "hoon"]),
+            ext in proptest::sample::select(vec!["md", "gmi", "html", "txt", "js", "css", "hoon", "tex", "latex"]),
         ) {
             let name = format!("{stem}.{ext}");
-            prop_assert!(!is_scratch(&name), "{} is a real page file", name);
+            prop_assert!(!is_scratch(&name, t_kind), "{} is a real page file", name);
         }
 
         // the cache never exceeds its cap, holds only whole bodies, accounts

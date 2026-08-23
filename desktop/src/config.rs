@@ -2,6 +2,7 @@
 //! Lives at <app_config_dir>/config.json.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -87,6 +88,10 @@ fn path(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path().app_config_dir().ok().map(|d| d.join("config.json"))
 }
 
+fn require_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    path(app).ok_or_else(|| "no app config dir to save into".to_string())
+}
+
 /// A config we cannot locate reads as the default, exactly as an unreadable or
 /// corrupt one does (see load_at). load runs on the backup thread, on the
 /// remount thread and inside the webview's navigation callback, so losing the
@@ -101,10 +106,56 @@ pub fn load(app: &tauri::AppHandle) -> Config {
     }
 }
 
-/// A save, unlike a load, must NOT fail silently: the caller surfaces this.
-pub fn save(app: &tauri::AppHandle, c: &Config) -> Result<(), String> {
-    let p = path(app).ok_or_else(|| "no app config dir to save into".to_string())?;
-    save_at(&p, c)
+/// The one lock guarding every load-modify-save span through config.json.
+/// It lives here, with the load and the save it sits between, rather than
+/// with any one caller: a lock a caller can reach around is no lock at all.
+/// connect, add_mount, remove_mount, queue_key, set_backup_schedules, and
+/// backup_write all take this same lock now; before, a private mutex in
+/// commands.rs covered only the last two, and the other four raced it freely.
+fn lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(Default::default)
+}
+
+/// Load config.json at `p`, hand it to `f` to mutate, save only if `f`
+/// succeeds, all under the one lock, so a failure (the schedule an id names
+/// is gone, an archive write failed) leaves the file untouched instead of
+/// persisting a half-applied change. Raw-path, alongside load_at/save_at, so
+/// a test can drive the exact span a real caller runs without a live
+/// AppHandle.
+pub fn try_update_at<T>(
+    p: &Path,
+    f: impl FnOnce(&mut Config) -> Result<T, String>,
+) -> Result<T, String> {
+    let _guard = lock().lock().unwrap();
+    let mut cfg = load_at(p);
+    let out = f(&mut cfg)?;
+    save_at(p, &cfg)?;
+    Ok(out)
+}
+
+/// Load, let `f` mutate in place, save unconditionally, all under the one
+/// lock. The shape every plain writer (no failure path of its own) wants.
+pub fn update_at(p: &Path, f: impl FnOnce(&mut Config)) -> Result<Config, String> {
+    try_update_at(p, |cfg| {
+        f(cfg);
+        Ok(cfg.clone())
+    })
+}
+
+/// try_update_at against the app's own config.json.
+pub fn try_update<T>(
+    app: &tauri::AppHandle,
+    f: impl FnOnce(&mut Config) -> Result<T, String>,
+) -> Result<T, String> {
+    try_update_at(&require_path(app)?, f)
+}
+
+/// update_at against the app's own config.json. The helper every ordinary
+/// writer should reach for: load config.json, apply `f`, save it back, all
+/// under the one lock, so no caller can load-modify-save around it.
+pub fn update(app: &tauri::AppHandle, f: impl FnOnce(&mut Config)) -> Result<Config, String> {
+    update_at(&require_path(app)?, f)
 }
 
 #[cfg(test)]

@@ -25,6 +25,16 @@
   =/  [key=@t tag=@t]  [u.ra u.rb]
   =/  kp=(unit path)  (parse-key:lm key)
   ?~  kp  (pure:m [%error 'invalid key'])
+  ::  the peek below and the poke further down are separate binds in this
+  ::  fiber, so the ship's event loop can run other writer pokes between
+  ::  them. A concurrent delete of key, landing in that gap, can make this
+  ::  check stale: it could already be gone by the time poke-writer fires.
+  ::  retag's own guard (?~ old) re-checks at write time and no-ops rather
+  ::  than crash on a missing grub. A raced delete costs a stale "untagged"
+  ::  reply on a write that quietly skipped. A raced tag/untag of the same
+  ::  tag is harmless either way, since del-tag is idempotent. Truthful
+  ::  except for a race beats the old answer, which lied on every no-op,
+  ::  so the pre-check stays as is.
   ;<  es=(map path know-entry:lk)  bind:m  read-vault:lm
   =/  e=(unit know-entry:lk)  (~(get by es) u.kp)
   ?~  e  (pure:m [%error (crip "no entry {(trip key)}")])

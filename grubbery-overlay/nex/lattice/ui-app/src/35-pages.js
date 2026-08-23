@@ -313,7 +313,7 @@
     if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
     else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
     flushPending();
-    if (offCount) replayQueue();     // back online: drain the backlog
+    if (offCount) replayQueue(true);     // back online: drain the backlog
   }
 
   let autoTimer = null;
@@ -377,4 +377,5 @@
     else st('autosaved');
     if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
     flushPending();
+    if (offCount) replayQueue(true);     // this autosave proves the ship is back too
   }

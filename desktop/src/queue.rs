@@ -112,14 +112,32 @@ pub fn key_after_connect(cfg: &config::Config, new_ship: &str) -> String {
 }
 
 /// Resolve the queue key once and remember it.
+///
+/// The common case, a key already frozen, is a plain, unguarded read. This
+/// runs on effectively every queue operation, and taking the config lock for
+/// a call that will not write anything back would serialize every mount,
+/// connect, or backup command behind it for nothing. Only the once-ever
+/// resolution (or the reset a ship switch leaves behind) needs the lock, and
+/// it re-resolves against a freshly loaded config from inside it, so a
+/// concurrent resolution racing the same empty key cannot pick two different
+/// answers.
 pub fn queue_key(app: &AppHandle) -> String {
-    let mut cfg = config::load(app);
-    let (chosen, needs_write) = resolve_key(&cfg);
-    if needs_write {
-        cfg.queue_key = chosen.clone();
-        let _ = config::save(app, &cfg);
+    let cfg = config::load(app);
+    if !cfg.queue_key.is_empty() {
+        return cfg.queue_key;
     }
-    chosen
+    let mut resolved = resolve_key(&cfg).0;
+    // Save errors are ignored here exactly as they were before this moved
+    // under the shared lock: an unwritable config dir must not stop a queue
+    // operation, only cost it the freeze for next time.
+    let _ = config::update(app, |c| {
+        let (chosen, needs_write) = resolve_key(c);
+        resolved = chosen.clone();
+        if needs_write {
+            c.queue_key = chosen;
+        }
+    });
+    resolved
 }
 
 fn root(app: &AppHandle) -> Result<PathBuf, String> {

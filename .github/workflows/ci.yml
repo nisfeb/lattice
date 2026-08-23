@@ -53,6 +53,13 @@ jobs:
       # between rust, a build script and json.
       - name: tauri commands are registered everywhere
         run: node scripts/desktop-commands.mjs
+      # The page-kind <-> extension table lives in three places (two JS, one
+      # Rust) that cannot see each other, and it has drifted apart three
+      # times already, each one a shipped data-loss bug. See
+      # kind-parity.mjs's own header for the list. cargo test cannot catch
+      # it, same reason as the step above: the mismatch is across languages.
+      - name: page-kind <-> extension tables agree everywhere
+        run: node scripts/kind-parity.mjs
       - name: cargo test
         working-directory: desktop
         run: cargo test
