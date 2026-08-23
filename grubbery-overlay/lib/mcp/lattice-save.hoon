@@ -23,8 +23,13 @@
   ?.  &(?=(^ ra) ?=(^ rb))
     (pure:m [%error 'missing or invalid arguments (key, body)'])
   =/  [key=@t body=@t]  [u.ra u.rb]
-  ?~  (parse-key:lm key)  (pure:m [%error 'invalid key'])
+  =/  kp=(unit path)  (parse-key:lm key)
+  ?~  kp  (pure:m [%error 'invalid key'])
   ?:  =('' body)  (pure:m [%error 'empty body'])
+  ;<  es=(map path know-entry:lk)  bind:m  read-vault:lm
+  =/  existed=?  (~(has by es) u.kp)
   ;<  ~  bind:m  (poke-writer:lm [%save key body])
-  (pure:m [%text (crip "saved {(trip key)}")])
+  ?:  existed
+    (pure:m [%text (crip "updated {(trip key)}")])
+  (pure:m [%text (crip "created {(trip key)}")])
 --
