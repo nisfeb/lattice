@@ -357,7 +357,7 @@
           ::  Stop producing data (that is what wakes our dependents), write err,
           ::  and park until a command (or a settled gap) resets gen.
           =/  msg=@t
-            'recompute limit hit (dependency cycle or always-changing page?); send a command to resume'
+            'recompute limit hit (dependency cycle or always-changing page?); edit and save to resume'
           ;<  ~  bind:m  (put-file [%& %& pdir %err] [/lattice %page] msg)
           ;<  *  bind:m  (take-news-or-wake-drain /ev)
           $
@@ -890,6 +890,15 @@
   =/  parsed  (parse-url:http-utils url.request.req)
   ::  drop the /apps/lattice prefix; the remainder is the route.
   =/  suffix=path  (slag 2 site.parsed)
+  ::  a trailing '/' parses as a trailing empty knot, the same shape +explore
+  ::  already trims for its own path argument (see there). Drop it here too, so
+  ::  /apps/lattice/ dispatches exactly like /apps/lattice instead of falling
+  ::  through every route below to the generic 404.
+  =/  suffix=path
+    |-  ^-  path
+    ?:  &(?=(^ suffix) =('' (rear `path`suffix)))
+      $(suffix (snip `path`suffix))
+    suffix
   =/  args=(map @t @t)  (malt args.parsed)
   ::  clearweb: the ONLY unauthenticated surface. GET /c/<name> serves a
   ::  clearweb-tagged page's DATA, read-only: no tree nav, no code, no
@@ -963,7 +972,9 @@
         ;<  bms=bookmarks:lb  bind:m  read-bookmarks
         ;<  kes=(map path know-entry:lk)  bind:m  read-know-map
         (send-view-long eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") rv (home-index-html our recent bms (know-quick-html:lkv kes 6))))
-      (send-view-long eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") rv (render-gmi u.home)))
+      =/  ttl=tape  (trip (page-title-of u.home 'lattice'))
+      %+  send-view-long  eyre-id
+      (render-page-titled (weld "urb://" (scow %p our)) (keep-url "beacon/rev") rv ttl (render-gmi u.home))
     =/  ref=(unit referent:lu)  (de-urb:lu u.raw)
     ::  omnibar: input that isn't a urb:// address is a SEARCH query. Serve a
     ::  results page that queries the term index (client-side, via the
@@ -999,11 +1010,14 @@
       =/  cbox=tape
         ?:  =(ship.u.ref our)  ""
         (remote-comment-box ship.u.ref rel.u.ref)
+      ::  the tab/history title: a real `#` heading, else the raw address.
+      ::  Computed once here, shared with the history-log write below.
+      =/  ttl=@t  (page-title-of u.body u.raw)
       ;<  ~  bind:m
         ;<  rv=tape  bind:m  ?:(=("" rk) (pure:(fiber:fiber:nexus ,tape) "") beacon-rev-tape)
         ?:  =("" rk)
-          (send-view eyre-id (render-page canon rk "" (weld (render-gmi u.body) cbox)))
-        (send-view-long eyre-id (render-page canon rk rv (weld (render-gmi u.body) cbox)))
+          (send-view eyre-id (render-page-titled canon rk "" (trip ttl) (weld (render-gmi u.body) cbox)))
+        (send-view-long eyre-id (render-page-titled canon rk rv (trip ttl) (weld (render-gmi u.body) cbox)))
       ::  the background self-refetch and SSE-forced refreshes re-run this
       ::  handler; they are machinery, not reading, and they mark themselves
       ::  (x-lattice-bg). Counting them double-counted every cold view and
@@ -1011,7 +1025,7 @@
       ::  visit that pinned the entry's ttl.
       ?:  ?=(^ (get-header:http 'x-lattice-bg' header-list.request.req))
         (pure:m ~)
-      (poke-history [%visit u.raw (page-title-of u.body u.raw)])
+      (poke-history [%visit u.raw ttl])
     ==
   ::  dispatch on [method action]. ponytail: read-know-map peeks the whole vault
   ::  per request, fine for a personal store. Writes poke the single writer
@@ -1549,10 +1563,11 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    =/  mode=share-mode:le  (mode-arg args)
+    =/  mode=(unit share-mode:le)  (mode-arg args)
+    ?~  mode  (send-err eyre-id 400 'mode: shared, urbit, or clearweb')
     ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.name))) %code])
     ?.  ex  (send-err eyre-id 404 'no such page')
-    ;<  ~  bind:m  (poke-eval [%share (pax-of u.name) mode])
+    ;<  ~  bind:m  (poke-eval [%share (pax-of u.name) u.mode])
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
     %+  send-see-other  eyre-id
     :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.name) "/")
@@ -1690,8 +1705,13 @@
         :-  [/comment-notice %& app-base:lu %'comments.sig']
         [%poke [/lattice %comment-action] `comment-action:lc`[(pax-of u.page) body]]
       ~s15
-    %+  send-json  eyre-id
-    (pairs:enjs:format ~[['ok' b+&] ['sent' b+told]])
+    ::  303 back to the reader view of the page just commented on, the same
+    ::  shape /comment uses for its own redirect. A plain form submit here
+    ::  used to land on this route's raw JSON body, replacing the whole
+    ::  reader with {"ok":true,"sent":told}.
+    %+  send-see-other  eyre-id
+    %+  weld  "/apps/lattice?url="
+    (url-enc (trip (en-urb:lu u.shp (weld pub-prefix:lu (pax-of u.page)))))
       ::  bookmark the current browser url (title defaults to the url). Newest
       ::  first, deduped by url. Shown under Browser on the home page.
       [%'POST' %bookmark]
@@ -1868,8 +1888,9 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    =/  mode=share-mode:le  (mode-arg args)
-    ;<  ~  bind:m  (poke-eval [%share-tree (pax-of u.name) mode])
+    =/  mode=(unit share-mode:le)  (mode-arg args)
+    ?~  mode  (send-err eyre-id 400 'mode: shared, urbit, or clearweb')
+    ;<  ~  bind:m  (poke-eval [%share-tree (pax-of u.name) u.mode])
     (send-ok eyre-id)
       [%'POST' %template-save]
     ::  save a page-tree as a reusable template: from=<page path>, name=<term>.
@@ -2187,10 +2208,10 @@
     ;<  ~  bind:m  (poke-sub [%unsub-page ship.u.pu path.u.pu])
     (send-ok eyre-id)
       [%'GET' %settings]
-    (send-html eyre-id (render-page "" "" "" settings-html))
+    (send-view eyre-id (render-page "" "" "" settings-html))
       [%'GET' %marks]
     ;<  bms=bookmarks:lb  bind:m  read-bookmarks
-    (send-html eyre-id (render-page "" "" "" (marks-html bms)))
+    (send-view eyre-id (render-page "" "" "" (marks-html bms)))
   ::  ── editing arbitrary grubs (write apps in the editor) ──────────────────
   ::  grub-source: any grub's editable text. `editable` is false for a binary
   ::  or opaque grub. The client shows it read-only rather than offering a save
@@ -4388,13 +4409,19 @@
 ::  verbatim, so a restore posts it straight back. Without the alias the silent
 ::  %private default privatizes every restored shared page.
 ::
+::  ~ means an explicit ?mode= that isn't one of the four names below: a typo
+::  or a wrong-vocabulary guess. The caller 400s on that, the same as
+::  /share-file already does for its own mode param. A mistyped mode used to
+::  land the page private with a plain 200, no sign anything was off.
+::
 ++  mode-arg
   |=  args=(map @t @t)
-  ^-  share-mode:le
-  ?+  (~(gut by args) 'mode' 'private')  %private
-    %shared    %shared
-    %urbit     %shared
-    %clearweb  %clearweb
+  ^-  (unit share-mode:le)
+  ?+  (~(gut by args) 'mode' 'private')  ~
+    %private   `%private
+    %shared    `%shared
+    %urbit     `%shared
+    %clearweb  `%clearweb
   ==
 ::  +content-reindex: rebuild the term index from the live tree + know vault.
 ::  Two reads total (one deep page peek, one know-map read), then one write.
@@ -5758,17 +5785,29 @@
     ?~  cd  %.n
     =/  r=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball u.cd))))
     ?|(?=(%| -.r) (gth (met 3 p.r) (bex 20)))
+  ::  the embed view (above) shows a crashed handler's err; the standalone
+  ::  view a page-cmd's web=1 redirect actually lands on never did, so a
+  ::  sender was bounced back to a quietly stale page with no sign anything
+  ::  failed. Same markup here, in every branch this view can render.
+  =/  errh=tape  ?:(=('' err) "" :(weld "<pre class=\"err\">" (esc (trip err)) "</pre>"))
   =/  doc=@t
-    ?:  toobig  (render-clearweb (pax-str rel) head "<p>page too large or not previewable</p>" "")
-    ?~  cd  (render-clearweb (pax-str rel) head "<p>no data yet</p>" "")
+    ?:  toobig  (render-clearweb (pax-str rel) head (weld errh "<p>page too large or not previewable</p>") "")
+    ?~  cd  (render-clearweb (pax-str rel) head (weld errh "<p>no data yet</p>") "")
     ::  our own page view links into the editor; a peer's page keeps the
     ::  public form (we cannot link into their editor).
     %-  clearweb-doc
-    :*  rel  u.cd  vmode  head  ?!(?=(%html vmode))  ~  extra
+    :*  rel  u.cd  vmode  head  ?!(?=(%html vmode))  ~  (weld errh extra)
         ?:(local "/apps/lattice/app?name=" "/apps/lattice/c/")
         ::  no bar: this document is the browser view's iframed inner page
         ""
     ==
+  ::  the tab/history title: a real `#` heading in the page's own data (same
+  ::  derivation +page-title-of runs everywhere else), else just the page's
+  ::  own name. Always something more useful than the bare app name.
+  =/  ttl=tape
+    =/  txt=(unit @t)  ?~(cd ~ (mole |.(;;(@t (sang-noun:tarball u.cd)))))
+    ?~  txt  (trip name)
+    (trip (page-title-of u.txt name))
   ::  the long tier, LOCAL only: a local page view carries the live script
   ::  with a baked rev, so a cached paint self-corrects. A peer's page has
   ::  no stream — it keeps the short tier.
@@ -5776,7 +5815,7 @@
     %^    render-browser-page
         (trip (en-urb:lu shp pax))
       doc
-    [?:(local `name ~) ?!(local) ?:(local keep "") ?:(local rev "")]
+    [?:(local `name ~) ?!(local) ?:(local keep "") ?:(local rev "") ttl]
   ?:  local  (send-view-long eyre-id htm)
   (send-view eyre-id htm)
 ::  +preview-inner: the rendered-preview HTML fragment for a page kind, the
@@ -6805,7 +6844,8 @@
   ^-  tape
   %-  trip
   '<script>if("serviceWorker"in navigator){navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice"}).then(function(r){r.addEventListener("updatefound",function(){var w=r.installing;if(w)w.addEventListener("statechange",function(){if(w.state==="installed"&&navigator.serviceWorker.controller)w.postMessage("skipWaiting")})})}).catch(function(x){});var swReloading=false;if(navigator.serviceWorker.controller){navigator.serviceWorker.addEventListener("controllerchange",function(){if(swReloading)return;if(window.__latUnsaved&&window.__latUnsaved())return;swReloading=true;location.reload()})}}</script>'
-::  +esc: HTML-escape a tape. +has-prefix: tape prefix test.
+::  +esc: HTML-escape a tape. +url-enc: percent-encode a tape for a query
+::  value. +has-prefix: tape prefix test.
 ::
 ++  esc
   |=  t=tape
@@ -6819,6 +6859,33 @@
     %'>'  "&gt;"
     %'"'  "&quot;"
   ==
+::  +url-enc: percent-encode a tape so it survives as a single query-string
+::  value. Letters, digits, and -_.~ pass through unchanged; everything else
+::  (including & # ? and a stray %) becomes %XX, uppercase hex. Apply this to
+::  a raw url BEFORE +esc when it goes into an href's query value: the two
+::  layers, query-value escaping then html-attribute escaping, stay in that
+::  order.
+::
+++  url-enc
+  |=  t=tape
+  ^-  tape
+  =/  hx
+    |=  n=@
+    ^-  @tD
+    ?:  (lth n 10)
+      (add '0' n)
+    (add 'A' (sub n 10))
+  %-  zing
+  %+  turn  t
+  |=  c=@tD
+  ^-  tape
+  ?:  ?|  &((gte c 'a') (lte c 'z'))
+          &((gte c 'A') (lte c 'Z'))
+          &((gte c '0') (lte c '9'))
+          =(c '-')  =(c '_')  =(c '.')  =(c '~')
+      ==
+    ~[c]
+  ~['%' (hx (div c 16)) (hx (mod c 16))]
 ++  has-prefix  |=([pre=tape t=tape] =(pre (scag (lent pre) t)))
 ::  +ltrim: drop leading spaces from a tape (gemtext allows extra whitespace
 ::  after the "=> " sigil; the analyzer already strips it, render-gmi must too).
@@ -7171,7 +7238,7 @@
       %+  turn  bms
       |=  b=bookmark:lb
       ;:  weld
-        "<li><a href=\"/apps/lattice?url="  (esc (trip url.b))  "\">"
+        "<li><a href=\"/apps/lattice?url="  (esc (url-enc (trip url.b)))  "\">"
         "<span class=\"qname\">"  (esc (trip title.b))  "</span>"
         "</a></li>"
       ==
@@ -7213,7 +7280,7 @@
   =/  pg=tape   (slag 1 (spud rel))
   ;:  weld
     "<section class=\"cbox-wrap\"><h3>Comment</h3>"
-    "<form class=\"cbox\" method=\"post\" action=\"/apps/lattice/comment-remote?ship="
+    "<form class=\"cbox\" method=\"post\" target=\"_top\" action=\"/apps/lattice/comment-remote?ship="
     (esc st)  "&amp;page="  (esc pg)  "\">"
     "<textarea name=\"body\" rows=\"3\" placeholder=\"say something to "
     (esc st)  "\"></textarea>"
@@ -7249,11 +7316,12 @@
       %+  turn  mine
       |=  b=bookmark:lb
       =/  u=tape  (esc (trip url.b))
+      =/  hu=tape  (esc (url-enc (trip url.b)))
       =/  t=tape  (esc (trip title.b))
       =/  fo=tape  (esc (trip folder.b))
       %-  zing
       :~  "<li data-t=\""  t  " "  u  " "  fo  "\">"
-          "<a href=\"/apps/lattice?url="  u  "\">"
+          "<a href=\"/apps/lattice?url="  hu  "\">"
           "<span class=\"qname\">"  t  "</span>"
           "<span class=\"qprev\">"  u  "</span></a>"
           "<span class=\"bmops\">"
@@ -7303,10 +7371,21 @@
   ^-  tape
   %-  trip
   '.muted{color:#8a8a8a}.quick{display:flex;flex-wrap:wrap;gap:8px;margin:.5rem 0 .3rem}.quick a{padding:6px 12px;border:1px solid #8886;border-radius:8px;text-decoration:none;color:inherit;background:#8881;font-size:.9rem}.quick a:hover{border-color:#1a6ed8}.quick a.on{border-color:#1a6ed8;color:#1a6ed8}ul.qlist{list-style:none;padding:0;margin:.4rem 0}ul.qlist li{border-bottom:1px solid #8883;margin:0}ul.qlist a{display:block;padding:9px 6px;text-decoration:none;color:inherit;border-radius:6px}ul.qlist a:hover{background:#8881}.qname{display:block;font-weight:500;color:#1a6ed8}.qprev{display:block;font-size:.84rem;color:#8a8a8a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.05rem}.know-body{white-space:pre-wrap}'
-::  +render-page: wrap an HTML fragment in the reader chrome (address bar + CSS).
+::  +render-page: wrap an HTML fragment in the reader chrome (address bar +
+::  CSS), titled plain "lattice". +render-page-titled is the same chrome with
+::  a real <title>. The /pub call sites use it (page-title-of already runs
+::  there for the history log). Every other caller (settings, marks, search,
+::  the /x explorer) has no page to name a tab after, so it keeps this one.
 ::
 ++  render-page
   |=  [current=tape keep=tape rev=tape inner=tape]
+  ^-  @t
+  (render-page-titled current keep rev "lattice" inner)
+::  +render-page-titled: +render-page with an explicit tab/history title
+::  instead of the bare "lattice" fallback.
+::
+++  render-page-titled
+  |=  [current=tape keep=tape rev=tape title=tape inner=tape]
   ^-  @t
   ::  the star shows whenever the address bar holds a real urb:// address.
   ::  It was only on the framed browser view before, so most of the Browser
@@ -7320,7 +7399,7 @@
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
     pwa-head
-    "<title>lattice</title><style>"  web-css  "</style></head><body>"
+    "<title>"  (esc title)  "</title><style>"  web-css  "</style></head><body>"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
     ::  contextual history: enabled only when this tab has somewhere to go
     ::  (+nav-script maintains the per-tab stack). Everything that used to be
@@ -7351,7 +7430,7 @@
     '(function(){var bar=document.querySelector(".bar");var inp=bar?bar.querySelector("input[name=url]"):null;if(!inp)return;var box=document.createElement("div");box.className="omni";box.hidden=true;bar.appendChild(box);var items=[],sel=-1,timer=null,seq=0;function hide(){box.hidden=true;sel=-1;}function pick(i){if(i<0||i>=items.length)return;inp.value=items[i].url;hide();bar.submit();}function draw(){box.textContent="";if(!items.length){hide();return}items.forEach(function(it,i){var row=document.createElement("div");row.className="omnirow"+(i===sel?" on":"");var b=document.createElement("span");b.className="omnisrc "+it.source;b.textContent=it.source==="bookmark"?"saved":"visited";var t=document.createElement("span");t.className="omnittl";t.textContent=it.title||it.url;var u=document.createElement("span");u.className="omniurl";u.textContent=it.url;row.appendChild(b);row.appendChild(t);row.appendChild(u);row.addEventListener("mousedown",function(e){e.preventDefault();pick(i)});box.appendChild(row);});box.hidden=false;}function fetchSug(){var q=inp.value.trim();var my=++seq;fetch("/apps/lattice/omni-suggest?q="+encodeURIComponent(q)).then(function(r){return r.ok?r.json():{items:[]}}).then(function(j){if(my!==seq)return;items=(j.items||[]);sel=-1;draw();}).catch(function(){if(my===seq){items=[];hide()}});}inp.addEventListener("input",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("focus",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("blur",function(){setTimeout(hide,120)});inp.addEventListener("keydown",function(e){if(box.hidden)return;if(e.key==="ArrowDown"){e.preventDefault();sel=Math.min(sel+1,items.length-1);draw()}else if(e.key==="ArrowUp"){e.preventDefault();sel=Math.max(sel-1,-1);draw()}else if(e.key==="Enter"){if(sel>=0){e.preventDefault();pick(sel)}}else if(e.key==="Escape"){hide()}});})();'
     "</script>"
     %-  trip
-    '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})}})();</script>'
+    '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})};fetch("/apps/lattice/bookmarks").then(function(r){return r.ok?r.json():null}).then(function(j){var cu=document.querySelector(".bar input").value;if(!cu||!j)return;if((j.items||[]).some(function(it){return it.url===cu})){b.innerHTML="&#9733;";b.title="Bookmarked"}}).catch(function(x){})})();</script>'
     (sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
   ==
 ::  +render-browser-page: the browser's page view, the address bar (+ an Edit
@@ -7360,10 +7439,12 @@
 ::  collision with the chrome css) and looks as it would on the clear web.
 ::  `sandbox` locks the frame (no scripts/same-origin) for untrusted peer content;
 ::  `keep` is the data-grub SSE url ("" = none) so an owner edit live-reloads the
-::  view. The clearweb-parity replacement for the old dev page-view chrome.
+::  view. `title` is the page's own tab/history title (its caller already runs
+::  +page-title-of), falling back to "lattice" where there is none. The
+::  clearweb-parity replacement for the old dev page-view chrome.
 ::
 ++  render-browser-page
-  |=  [current=tape doc=@t edit=(unit @t) sandbox=? keep=tape rev=tape]
+  |=  [current=tape doc=@t edit=(unit @t) sandbox=? keep=tape rev=tape title=tape]
   ^-  @t
   =/  editbtn=tape
     ?~  edit  ""
@@ -7373,7 +7454,7 @@
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
     pwa-head
-    "<title>lattice</title><style>"  web-css
+    "<title>"  (esc title)  "</title><style>"  web-css
     (trip 'html,body{height:100%}body.bp{display:flex;flex-direction:column;margin:0}.bp main{max-width:none;margin:0;padding:0;flex:1;display:flex}.bp .pf{flex:1;width:100%;border:0}.bar .eb,.bar .bm{display:flex;align-items:center;gap:.3em;padding:0 12px;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;background:transparent;cursor:pointer;font-size:1rem}.bar .eb:hover,.bar .bm:hover{border-color:#1a6ed8}')
     "</style></head><body class=\"bp\">"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
@@ -7397,7 +7478,7 @@
     ::  bookmark button: POST the address-bar url to /bookmark (owner-gated, same
     ::  origin). single-quote cord so the js braces stay literal.
     %-  trip
-    '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})}})();</script>'
+    '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})};fetch("/apps/lattice/bookmarks").then(function(r){return r.ok?r.json():null}).then(function(j){var cu=document.querySelector(".bar input").value;if(!cu||!j)return;if((j.items||[]).some(function(it){return it.url===cu})){b.innerHTML="&#9733;";b.title="Bookmarked"}}).catch(function(x){})})();</script>'
     (page-sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
   ==
 ::  +beacon-rev-tape: the current /beacon/rev value, rendered as the same

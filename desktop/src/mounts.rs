@@ -139,10 +139,11 @@ pub fn add_mount(
         m.insert(mountpoint.clone(), (root.clone(), session));
     }
     // persist for auto-remount on launch
-    let mut cfg = config::load(&app);
-    cfg.mounts.retain(|s| s.mountpoint != mountpoint);
-    cfg.mounts.push(MountSpec { mountpoint, root, sock, ship });
-    config::save(&app, &cfg)
+    config::update(&app, move |cfg| {
+        cfg.mounts.retain(|s| s.mountpoint != mountpoint);
+        cfg.mounts.push(MountSpec { mountpoint, root, sock, ship });
+    })
+    .map(|_| ())
 }
 
 #[tauri::command]
@@ -155,9 +156,10 @@ pub fn remove_mount(
     if removed.is_none() {
         return Err(format!("{mountpoint} is not mounted"));
     }
-    let mut cfg = config::load(&app);
-    cfg.mounts.retain(|s| s.mountpoint != mountpoint);
-    config::save(&app, &cfg)
+    config::update(&app, move |cfg| {
+        cfg.mounts.retain(|s| s.mountpoint != mountpoint);
+    })
+    .map(|_| ())
 }
 
 #[tauri::command]
