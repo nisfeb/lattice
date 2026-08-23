@@ -663,6 +663,90 @@
   ?:  &(?=(^ s) =('>' i.s))  $(s t.s, n +(n))
   ?:  (lte n 32)  l
   (weld `tape`(reap 32 '>') `tape`s)
+::  ── wikilinks ──────────────────────────────────────────────────────────────
+::  +wikilinkify: rewrite [[name]] or [[name|label]] into a standard markdown
+::  link [label](<base>name) BEFORE +render-md runs, so wikilinks work on
+::  every md surface. Only path-ish names rewrite (a-z 0-9 - / . _ ~);
+::  anything else passes through untouched. A label may follow a '|' and
+::  stops at the first ']', the same charset the editor preview uses
+::  (ui-app/src/59-md.js), so a labeled link parses the same shape on both
+::  sides. `base` is the surface's link root: the editor for owner views,
+::  /c/ for clearweb.
+::
+++  wiki-name-len
+  |=  t=tape
+  ^-  @ud
+  =|  n=@ud
+  |-  ^-  @ud
+  ?~  t  n
+  ?.  ?|  &((gte i.t 'a') (lte i.t 'z'))
+          &((gte i.t '0') (lte i.t '9'))
+          =(i.t '-')  =(i.t '/')  =(i.t '.')  =(i.t '_')  =(i.t '~')
+      ==
+    n
+  $(t t.t, n +(n))
+::  +wiki-label-len: length of a label run, everything up to the closing ']'.
+::  A bare ']' can't appear in the label (it would collide with the closer),
+::  so this stops there rather than trying to balance brackets.
+::
+++  wiki-label-len
+  |=  t=tape
+  ^-  @ud
+  =|  n=@ud
+  |-  ^-  @ud
+  ?~  t  n
+  ?:  =(']' i.t)  n
+  $(t t.t, n +(n))
+++  wikilinkify
+  |=  [t=tape base=tape]
+  ^-  tape
+  |-  ^-  tape
+  ?~  t  ~
+  ::  code is verbatim: skip a ``` fence or a ` span whole, so a wikilink
+  ::  inside a code sample stays literal text. Without this there was no way
+  ::  to SHOW [[x]] in a document, including documenting this syntax.
+  ?:  =("```" (scag 3 `tape`t))
+    =/  aft=tape  (slag 3 `tape`t)
+    =/  end=(unit @ud)  (find "```" aft)
+    ?~  end  t
+    =/  n=@ud  (add u.end 3)
+    (weld (scag 3 `tape`t) (weld (scag n aft) $(t (slag n aft))))
+  ?:  =('`' i.t)
+    =/  aft=tape  (slag 1 `tape`t)
+    =/  end=(unit @ud)  (find "`" aft)
+    ?~  end  [i.t $(t t.t)]
+    =/  n=@ud  (add u.end 1)
+    (weld "`" (weld (scag n aft) $(t (slag n aft))))
+  ?.  =("[[" (scag 2 `tape`t))  [i.t $(t t.t)]
+  ::  scan ONLY the legal-charset run, then require "]]" (or "|label]]")
+  ::  immediately after, so a candidate costs the length of its name. The
+  ::  previous version searched the whole remaining document for "]]" at
+  ::  every "[[" and, on a miss, dropped a single character and searched
+  ::  again (quadratic). A body of repeated "[[" with no closer took ~6.5s
+  ::  at 40KB and, through the render route, wedged the ship for hours from
+  ::  an UNAUTHENTICATED page view. This version is flat (~0.5s at 100KB)
+  ::  and byte-identical on every edge case tested.
+  =/  aft=tape  (slag 2 `tape`t)
+  =/  n=@ud  (wiki-name-len aft)
+  ?:  =(0 n)  [i.t $(t t.t)]
+  ?:  =("]]" (scag 2 (slag n aft)))
+    =/  name=tape  (scag n aft)
+    =/  rest=tape  (slag (add n 2) aft)
+    =/  tail=tape  $(t rest)
+    :(weld "[" name "](" base name ")" tail)
+  ::  a pipe after the name starts a label: [[target|shown text]]. Tested
+  ::  with scag rather than a ?= on the head, since a ?= refinement inside
+  ::  the irregular & does not survive mull and this file compiles as a lib.
+  ?.  =("|" (scag 1 (slag n aft)))  [i.t $(t t.t)]
+  =/  laft=tape  (slag +(n) aft)
+  =/  ln=@ud  (wiki-label-len laft)
+  ?:  =(0 ln)  [i.t $(t t.t)]
+  ?.  =("]]" (scag 2 (slag ln laft)))  [i.t $(t t.t)]
+  =/  name=tape  (scag n aft)
+  =/  label=tape  (scag ln laft)
+  =/  rest=tape  (slag (add ln 2) laft)
+  =/  tail=tape  $(t rest)
+  :(weld "[" label "](" base name ")" tail)
 ++  render-md
   |=  body=@t
   ^-  tape
