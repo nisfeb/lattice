@@ -35,6 +35,33 @@ The replacement rule for each: no event may process more than a bounded
 batch, no grub may grow with the corpus, and the page view path may not
 gain a single network round trip.
 
+Obelisk itself does not return in this design, and the omission is
+deliberate. Three reasons, in order of weight.
+
+1. The storage failure is structural, not a bug in how the first catalog
+   used it. Obelisk's model wants its tables together as one typed noun,
+   and grubbery revalidates a grub through its mark on every write, so
+   the cost of one insert grows with the whole database forever.
+   Escaping that means sharding obelisk's storage across many grubs,
+   which is a rewrite of obelisk rather than a fix in lattice, and the
+   end result would be a sharded exact-match index, which the native
+   term buckets already are.
+2. The queries do not pay for the storage either. urQL matching is
+   equality over whole terms, so it answers nothing a postings bucket
+   peek cannot. The first catalog lost two full days of cross-ship
+   testing to exactly this, because a hyphenated marker word can never
+   match an equality query.
+3. Everything the catalog wants beyond exact matching, meaning fuzzy
+   matching, ranking, filtering by ship or kind or age, and vector
+   similarity, runs on the client under the division of labor in
+   section 8. Ship-side query power is the one thing this design
+   refuses to buy, because every query engine written in hoon executes
+   inside a single-threaded gall event.
+
+A relational engine earns its place in a feature that needs real joins
+over structured records at a low write rate. The catalog is not that
+feature.
+
 ## 2. What already exists
 
 The design extends three things that are already in the tree and proven.
