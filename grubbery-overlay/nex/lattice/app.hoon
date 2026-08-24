@@ -8746,10 +8746,14 @@
   =/  names=(list @ta)
     ?~  fil.ball.vw  ~
     (turn ~(tap by contents.u.fil.ball.vw) |=([s=@ta *] s))
-  |-
+  (cull-obk-names base names)
+++  cull-obk-names
+  |=  [base=path names=(list @ta)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
   ?~  names  (pure:m ~)
   ;<  *  bind:m  (cull-soft:io [%& %& base i.names])
-  $(names t.names)
+  (cull-obk-names base t.names)
 ::  +obk-read-res: read the owner's result grub.
 ::
 ++  obk-read-res
@@ -8800,7 +8804,7 @@
     %security-time  (frond:enjs:format 'security-time' s+(scot %da date.r))
     %schema-time    (frond:enjs:format 'schema-time' s+(scot %da date.r))
     %data-time      (frond:enjs:format 'data-time' s+(scot %da date.r))
-    %result-set     (frond:enjs:format 'rows' a+(turn set.r obelisk-row-json))
+    %result-set     (frond:enjs:format 'rows' a+(turn +.r obelisk-row-json))
   ==
 ++  obelisk-row-json
   |=  v=vector:ast
@@ -8840,7 +8844,9 @@
   ^-  form:m
   ?~  stmts  (pure:m ~)
   ;<  *  bind:m  (mirror-run i.stmts)
-  $(stmts t.stmts)
+  ::  name-recursion, never $: a $ with args inside a ;< continuation
+  ::  cannot find the trap through the bind gates (-find.$).
+  (mirror-rows-one-by-one t.stmts)
 ::  +mirror-write: one domain's difference. ups = UPDATE statements
 ::  (changed rows, new rows, tombstones), batched 32 per poke with the
 ::  per-item fallback. ins = one INSERT per brand-new row, one poke
@@ -8852,7 +8858,11 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  ~  bind:m  (mirror-rows-one-by-one ins)
-  |-
+  (mirror-write-chunks ups)
+++  mirror-write-chunks
+  |=  ups=(list tape)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
   ?~  ups  (pure:m ~)
   =/  all=(list tape)  ups
   =/  chunk=(list tape)  (scag 32 all)
@@ -8860,7 +8870,7 @@
   ;<  ~  bind:m
     ?:  ?=(%& -.r)  (pure:m ~)
     (mirror-rows-one-by-one chunk)
-  $(ups (slag 32 all))
+  (mirror-write-chunks (slag 32 all))
 ::  grub readers for the loop's own state.
 ::
 ++  mirror-enabled
@@ -8871,7 +8881,9 @@
   =/  jon=json  (fall (mole |.(!<(json (need-vase:tarball sang.vw)))) ~)
   ?.  ?=([%o *] jon)  (pure:m %.n)
   =/  v=(unit json)  (~(get by p.jon) 'enabled')
-  (pure:m ?~(v %.n ?=([%b &] u.v)))
+  ?~  v  (pure:m %.n)
+  ?.  ?=([%b *] u.v)  (pure:m %.n)
+  (pure:m p.u.v)
 ++  read-beacon-val
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
@@ -8903,23 +8915,21 @@
 ++  probe-tables
   =/  m  (fiber:fiber:nexus ,(list ?))
   ^-  form:m
-  =/  probes=(list tape)  probe-urqls:lm
-  =|  acc=(list ?)
-  |-
+  (probe-tables-loop probe-urqls:lm ~)
+++  probe-tables-loop
+  |=  [probes=(list tape) acc=(list ?)]
+  =/  m  (fiber:fiber:nexus ,(list ?))
+  ^-  form:m
   ?~  probes  (pure:m (flop acc))
   ;<  r=(each (list cmd-result:ast) tang)  bind:m  (mirror-run i.probes)
-  $(probes t.probes, acc [?=(%& -.r) acc])
+  (probe-tables-loop t.probes [?=(%& -.r) acc])
 ++  mirror-bootstrap
   =/  m  (fiber:fiber:nexus ,(unit (set @ud)))
   ^-  form:m
   ;<  first=(list ?)  bind:m  probe-tables
   ?:  (levy first |=(f=? f))  (pure:m `*(set @ud))
   ;<  *  bind:m  (mirror-run create-db-urql:lm)
-  =/  creates=(list tape)  create-list:lm
-  |-
-  ?^  creates
-    ;<  *  bind:m  (mirror-run i.creates)
-    $(creates t.creates)
+  ;<  ~  bind:m  (run-creates create-list:lm)
   ;<  again=(list ?)  bind:m  probe-tables
   ?.  (levy again |=(f=? f))  (pure:m ~)
   =/  fresh=(set @ud)
@@ -8930,6 +8940,13 @@
     ?~  fl  s
     $(fl t.fl, i +(i), s ?:(i.fl s (~(put in s) i)))
   (pure:m `fresh)
+++  run-creates
+  |=  creates=(list tape)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  creates  (pure:m ~)
+  ;<  *  bind:m  (mirror-run i.creates)
+  (run-creates t.creates)
 ::  +zero-fresh: reset the cursor state of tables that were missing at
 ::  probe time, so the pass backfills them. Index order matches
 ::  +probe-urqls: pages knows tags follows visits docs.
