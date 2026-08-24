@@ -58,6 +58,19 @@ deliberate. Three reasons, in order of weight.
    refuses to buy, because every query engine written in hoon executes
    inside a single-threaded gall event.
 
+Running obelisk as its own gall agent on the %obelisk desk instead of
+inside grubbery was also considered. That variant genuinely escapes
+reason 1, because gall agent state is a plain noun and is never
+revalidated through a mark on write. It leaves reasons 2 and 3
+untouched, since neither depends on where obelisk runs, and arvo
+processes one event at a time, so a slow query in %obelisk stalls
+lattice serving just as hard as the same query inside grubbery. It
+also moves the catalog outside the grubbery namespace, which the
+design leans on for the beacon-synced client snapshot, remote peeks
+of the index, the unified vault backup, and the single writer's crash
+recovery. The move removes the disqualifier without adding a
+qualification.
+
 A relational engine earns its place in a feature that needs real joins
 over structured records at a low write rate. The catalog is not that
 feature.
