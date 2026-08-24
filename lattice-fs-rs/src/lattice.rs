@@ -177,19 +177,15 @@ impl Projection for LatticeProjection {
     }
 
     fn mv(&self, src: &str, dst: &str) -> Result<(), PErr> {
-        // no server rename: read source + save dst + delete src. create=false:
-        // page-save without new=1 creates OR overwrites, giving POSIX clobber
-        // semantics (create=true would 409 when the destination exists).
-        let v = self.t.get_json("/apps/lattice/page-source", &[("name", &self.full(src))])?;
-        let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("hoon").to_string();
-        let body = v
-            .get("body")
-            .and_then(|b| b.as_str())
-            .unwrap_or("")
-            .as_bytes()
-            .to_vec();
-        self.write(dst, &kind, &body, false)?;
-        self.delete(src)?;
+        // one server round trip, the same way write() calls page-save: the
+        // route carries the share mode across and rewrites self-referencing
+        // wikilinks, and it 409s on a live destination instead of a client
+        // choreography (read + write(create=false) + delete) silently
+        // clobbering it. PErr::from(TErr) already turns 409 into EEXIST and
+        // 404 into ENOENT, so no separate status mapping is needed here.
+        let q = [("from", self.full(src)), ("to", self.full(dst))];
+        let q: Vec<(&str, &str)> = q.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        self.t.post("/apps/lattice/page-move", &q, b"")?;
         Ok(())
     }
 
@@ -630,17 +626,25 @@ mod tests {
     }
 
     #[test]
-    fn mv_saves_the_destination_before_deleting_the_source() {
-        // there is no server rename. Ordering IS the safety property: save
-        // first, delete second. Reversed (or a skipped save) loses the page.
-        let (rec, p) = lp("", vec![ok(r#"{"body":"content","kind":"gmi"}"#), ok("{}"), ok("{}")]);
+    fn mv_calls_page_move_once_with_the_root_prefixed_names() {
+        // one request, not a client-side read+write+delete: page-move is what
+        // carries the share mode across and rewrites self-referencing
+        // wikilinks, neither of which a client choreography can reproduce.
+        let (rec, p) = lp("notes", vec![ok(r#"{"moved":1}"#)]);
         p.mv("a", "b").unwrap();
-        let log = rec.log();
-        assert_eq!(log.len(), 3);
-        assert_eq!(log[0], "GET /apps/lattice/page-source?name=a");
-        assert_eq!(log[1], r#"POST /apps/lattice/page-save?name=b&type=gmi "content""#);
-        assert!(!log[1].contains("new=1"), "a move must clobber the destination, not 409");
-        assert_eq!(log[2], r#"POST /apps/lattice/page-del?name=a """#);
+        assert_eq!(rec.log(), vec![r#"POST /apps/lattice/page-move?from=notes/a&to=notes/b """#]);
+    }
+
+    #[test]
+    fn mv_maps_a_live_destination_to_eexist_and_a_missing_source_to_enoent() {
+        // page-move 409s on a live destination by design (never clobber) and
+        // 404s when the source doesn't exist; anything else is just EIO.
+        let (_, p) = lp("", vec![bad(409)]);
+        assert_eq!(p.mv("a", "b").unwrap_err().errno, libc::EEXIST);
+        let (_, p) = lp("", vec![bad(404)]);
+        assert_eq!(p.mv("a", "b").unwrap_err().errno, libc::ENOENT);
+        let (_, p) = lp("", vec![bad(500)]);
+        assert_eq!(p.mv("a", "b").unwrap_err().errno, libc::EIO);
     }
 
     #[test]

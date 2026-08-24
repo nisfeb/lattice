@@ -17,13 +17,32 @@
       ? api + '/know-read?key=' + encodeURIComponent(current)
       : api + '/page-source?name=' + encodeURIComponent(current);
     let d = null;
+    let notFound = false;
     try {
       const r = await fetch(url);
-      if (!r.ok) return;
-      d = await r.json();
+      if (r.status === 404) notFound = true;
+      else if (!r.ok) return;
+      else d = await r.json();
     } catch { return; }
     if (dirty || current !== wasCurrent || mode !== wasMode) return;
     if (curFolder || viewingRev !== null) return;
+    if (notFound) {
+      // the ship no longer has what this fetch is FOR (the staleness checks
+      // above already ruled out "the user moved on" as the explanation), so
+      // it was deleted elsewhere. Pages only: memories are meant to come
+      // back on the next save (know-save's own doc calls re-saving a
+      // deleted key a restore), so an autosave recreating one there is by
+      // design, not this bug. A page has no such route. Keep the buffer,
+      // never destroy what was typed, but stop autosave from writing it
+      // back over the delete: it guards on `!current`, so clear that and
+      // reopen the name field the way a brand-new page gets one.
+      if (mode !== 'know') {
+        current = null;
+        pname.readOnly = false;
+        st('this page was deleted elsewhere — save to recreate it', false);
+      }
+      return;
+    }
     // A KIND change with an UNCHANGED body still needs handling. Retagging a
     // page (gmi -> md, say) leaves the text byte-identical, so the body check
     // below returns early and the preview keeps rendering with the old builder.

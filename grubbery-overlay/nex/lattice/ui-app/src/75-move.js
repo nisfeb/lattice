@@ -2,7 +2,9 @@
   // page-move does the whole thing server-side (copy + share carry-over +
   // delete, wikilink self-references rewritten) in ONE request. The old
   // client choreography was 3 round-trips per page plus one per folder.
-  // Memories use the know-move route (history preserved).
+  // Memories use the know-move route, which culls the source key outright.
+  // Only the current body carries over, not the history: the new key's own
+  // history starts fresh at rev 1.
   async function movePage(oldName, newName) {
     const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldName) +
       '&to=' + encodeURIComponent(newName));

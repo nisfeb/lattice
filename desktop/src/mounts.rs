@@ -90,7 +90,16 @@ pub fn projection_for(
     if cfg.url.is_empty() {
         return Err("connect to a ship first, or mount a ship running on this machine".into());
     }
-    projection_http(&cfg.url, &default_cookie_path(), root)
+    let proj = projection_http(&cfg.url, &default_cookie_path(), root)?;
+    // The lick branch above proves the ship is there before ever building a
+    // projection, by opening its socket. HTTP gets no such proof for free —
+    // building the projection only parses the cookie file on disk, no
+    // network touch — so ask the ship the cheapest real question there is.
+    // Bounded by the transport's own connect timeout (eyre.rs), so a dead
+    // pier or a stale URL fails here, named, instead of mounting clean and
+    // wedging the first real FUSE call against it.
+    proj.list().map_err(|e| format!("ship unreachable at {}: {}", cfg.url, e.msg))?;
+    Ok(proj)
 }
 
 #[tauri::command]

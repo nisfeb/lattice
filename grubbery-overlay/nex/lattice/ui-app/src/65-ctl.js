@@ -45,8 +45,12 @@
     if (curFolder) {
       const path = curFolder;
       const c = pageCount(path);
+      // pages carry no trash: the writer prunes every revision and never
+      // offers a restore route, unlike the memory delete confirm a click
+      // away, which correctly says restorable. Say permanent here instead.
       const what = 'delete folder ' + path +
-        (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it?' : '?');
+        (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it' : '') +
+        '? (permanent, not restorable)';
       if (!(await askConfirm(what, 'delete'))) return;
       const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
       if (!r.ok) { st('delete failed' + await errText(r), false); return; }
@@ -64,8 +68,10 @@
     // dropTreeNodes below assumes exactly that. Count what goes the way the
     // folder branch does, so the confirm is proportional to the loss
     const c = pageCount(doomed);
+    // same reason as the folder confirm above: no trash, no restore, so say so
     const what = 'delete ' + doomed +
-      (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it?' : '?');
+      (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it' : '') +
+      '? (permanent, not restorable)';
     if (!(await askConfirm(what, 'delete'))) return;
     const r = await mutate(api + '/page-del?name=' + encodeURIComponent(doomed));
     if (!r.ok) { st('delete failed' + await errText(r), false); return; }

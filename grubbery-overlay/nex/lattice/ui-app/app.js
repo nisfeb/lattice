@@ -1108,6 +1108,30 @@
   // The next autosave wrote that stale body back over the good save: the
   // editor visibly ate work the ship already had.
   let everTyped = false;
+  // guardDirty: the ONE place navigation asks "may I paint over what's here?"
+  // Rounds two and three answered that per call site (a guard bolted onto
+  // openKnow, another onto openPage, another onto openRev) and this round
+  // found three MORE unguarded paths to the same loss: the pages/knowledge
+  // toggle pill, a quick-open result crossing modes, and a same-mode page
+  // click landing inside the autosave debounce window. Three guards missed
+  // three doors. One chokepoint, called from every entry a user can click,
+  // closes all of them at once.
+  //
+  // A dirty grub has nowhere else to go until Save is pressed, so it only
+  // ever gets the dialog. A dirty page or memory usually CAN save itself in
+  // the time it takes to click somewhere else, so try that first, using the
+  // save path this mode already owns, and stay silent when it lands. Only a
+  // flush that leaves the buffer dirty anyway (the offline queue refused it,
+  // the ship rejected the write) falls back to naming what would be lost.
+  async function guardDirty() {
+    if (!dirty) return true;
+    if (grubPath)
+      return askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard');
+    const label = current || pname.value.trim() || 'this';
+    if (mode === 'know') await saveKnow(); else await save();
+    if (!dirty) return true;
+    return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+  }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
                            // option, so pkind.value would silently convert it
@@ -2546,11 +2570,10 @@
   // nothing, and a page absent from the local tree never applied at all.
   let openSeq = 0;
   async function openPage(name) {
-    // a grub edit is explicit-save only and lives nowhere but this textarea.
-    // Clearing grubPath below would throw it away on a single click, so ask
-    // first. The dialog's own cancel button is the "stay" option.
-    if (grubPath && dirty &&
-        !(await askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard'))) return;
+    // guardDirty covers a dirty grub, page, or memory in one place (see
+    // 20-state.js): it flushes what it can and only asks when the flush
+    // still leaves something unsaved.
+    if (!(await guardDirty())) return;
     const my = ++openSeq;
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
@@ -3791,8 +3814,12 @@
     if (curFolder) {
       const path = curFolder;
       const c = pageCount(path);
+      // pages carry no trash: the writer prunes every revision and never
+      // offers a restore route, unlike the memory delete confirm a click
+      // away, which correctly says restorable. Say permanent here instead.
       const what = 'delete folder ' + path +
-        (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it?' : '?');
+        (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it' : '') +
+        '? (permanent, not restorable)';
       if (!(await askConfirm(what, 'delete'))) return;
       const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
       if (!r.ok) { st('delete failed' + await errText(r), false); return; }
@@ -3810,8 +3837,10 @@
     // dropTreeNodes below assumes exactly that. Count what goes the way the
     // folder branch does, so the confirm is proportional to the loss
     const c = pageCount(doomed);
+    // same reason as the folder confirm above: no trash, no restore, so say so
     const what = 'delete ' + doomed +
-      (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it?' : '?');
+      (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it' : '') +
+      '? (permanent, not restorable)';
     if (!(await askConfirm(what, 'delete'))) return;
     const r = await mutate(api + '/page-del?name=' + encodeURIComponent(doomed));
     if (!r.ok) { st('delete failed' + await errText(r), false); return; }
@@ -4577,8 +4606,11 @@
     $('aclwrap').hidden = false;
     aclPathOptions();
     // permGroups is populated by boot's deferred load. Only pay a request if
-    // the pane was opened before that landed.
-    if (!permGroups.length) loadPerms(); else renderAcl();
+    // the pane was opened before that landed. Guard on permsLoaded, not the
+    // array's length: a ship with zero groups is a real, load-complete
+    // answer, and checking length alone paid a live round trip on every open
+    // forever for exactly that ship. 66-share.js already made this call.
+    if (!permsLoaded) loadPerms(); else renderAcl();
     loadBans();
   };
   const aclClose = () => { $('aclwrap').hidden = true; };
@@ -5044,7 +5076,9 @@
   // page-move does the whole thing server-side (copy + share carry-over +
   // delete, wikilink self-references rewritten) in ONE request. The old
   // client choreography was 3 round-trips per page plus one per folder.
-  // Memories use the know-move route (history preserved).
+  // Memories use the know-move route, which culls the source key outright.
+  // Only the current body carries over, not the history: the new key's own
+  // history starts fresh at rev 1.
   async function movePage(oldName, newName) {
     const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldName) +
       '&to=' + encodeURIComponent(newName));
@@ -5219,10 +5253,10 @@
     }
   }
   async function openRev(rev) {
-    // the historical body is about to overwrite the textarea. It exists
-    // nowhere else, so a dirty edit needs the same ask as a grub discard.
-    if (dirty &&
-        !(await askConfirm('discard unsaved changes to ' + current + '?', 'discard'))) return;
+    // guardDirty covers a dirty grub, page, or memory in one place (see
+    // 20-state.js): it flushes what it can and only asks when the flush
+    // still leaves something unsaved.
+    if (!(await guardDirty())) return;
     let d = null;
     try {
       const r = await fetch(mode === 'know'
@@ -5905,13 +5939,32 @@
       ? api + '/know-read?key=' + encodeURIComponent(current)
       : api + '/page-source?name=' + encodeURIComponent(current);
     let d = null;
+    let notFound = false;
     try {
       const r = await fetch(url);
-      if (!r.ok) return;
-      d = await r.json();
+      if (r.status === 404) notFound = true;
+      else if (!r.ok) return;
+      else d = await r.json();
     } catch { return; }
     if (dirty || current !== wasCurrent || mode !== wasMode) return;
     if (curFolder || viewingRev !== null) return;
+    if (notFound) {
+      // the ship no longer has what this fetch is FOR (the staleness checks
+      // above already ruled out "the user moved on" as the explanation), so
+      // it was deleted elsewhere. Pages only: memories are meant to come
+      // back on the next save (know-save's own doc calls re-saving a
+      // deleted key a restore), so an autosave recreating one there is by
+      // design, not this bug. A page has no such route. Keep the buffer,
+      // never destroy what was typed, but stop autosave from writing it
+      // back over the delete: it guards on `!current`, so clear that and
+      // reopen the name field the way a brand-new page gets one.
+      if (mode !== 'know') {
+        current = null;
+        pname.readOnly = false;
+        st('this page was deleted elsewhere — save to recreate it', false);
+      }
+      return;
+    }
     // A KIND change with an UNCHANGED body still needs handling. Retagging a
     // page (gmi -> md, say) leaves the text byte-identical, so the body check
     // below returns early and the preview keeps rendering with the old builder.
@@ -6190,11 +6243,10 @@
     knowKeys.find((x) => x.key.replace(/^\//, '') === key);
 
   async function openKnow(key) {
-    // a dirty memory lives nowhere but this textarea until it saves, the
-    // same reason openPage guards a dirty grub and openRev guards a dirty
-    // revision before repainting over it
-    if (mode === 'know' && current && dirty &&
-        !(await askConfirm('discard unsaved changes to ' + current + '?', 'discard'))) return;
+    // guardDirty covers a dirty grub, page, or memory in one place (see
+    // 20-state.js): it flushes what it can and only asks when the flush
+    // still leaves something unsaved.
+    if (!(await guardDirty())) return;
     if (mode !== 'know') setMode('know');
     // a queued edit outranks the ship's copy, same rule as pages
     const q = await offGet('know:' + key);
@@ -6344,7 +6396,14 @@
     if (isMobile()) setMv('tree');
     st(m === 'know' ? 'knowledge — pick a memory from the tree' : 'pages');
   }
-  $('modet').onclick = () => setMode(mode === 'know' ? 'pages' : 'know');
+  // the pill itself is the entry point a user clicks, so it guards. setMode
+  // is the applier openPage/openKnow also call once THEIR guard already
+  // passed, and guarding inside setMode too would ask twice, or ask about
+  // work guardDirty already flushed a moment earlier.
+  $('modet').onclick = async () => {
+    if (!(await guardDirty())) return;
+    setMode(mode === 'know' ? 'pages' : 'know');
+  };
 
 // ── src/96-deskmenu.js ────────────────────────────────────────────────────
   // ── desktop: these commands live in the native File menu ─────────────────
