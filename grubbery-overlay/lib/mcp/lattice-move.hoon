@@ -5,7 +5,7 @@
 ^-  tool:tools
 |%
 ++  name  'lattice-move'
-++  description  'Rename an entry key, history preserved.'
+++  description  'Rename an entry key. History stays behind under the old key and becomes unreachable.'
 ++  parameters
   ^-  (map @t parameter-def:tools)
   %-  ~(gas by *(map @t parameter-def:tools))

@@ -52,8 +52,11 @@
     $('aclwrap').hidden = false;
     aclPathOptions();
     // permGroups is populated by boot's deferred load. Only pay a request if
-    // the pane was opened before that landed.
-    if (!permGroups.length) loadPerms(); else renderAcl();
+    // the pane was opened before that landed. Guard on permsLoaded, not the
+    // array's length: a ship with zero groups is a real, load-complete
+    // answer, and checking length alone paid a live round trip on every open
+    // forever for exactly that ship. 66-share.js already made this call.
+    if (!permsLoaded) loadPerms(); else renderAcl();
     loadBans();
   };
   const aclClose = () => { $('aclwrap').hidden = true; };

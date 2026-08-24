@@ -101,11 +101,10 @@
     knowKeys.find((x) => x.key.replace(/^\//, '') === key);
 
   async function openKnow(key) {
-    // a dirty memory lives nowhere but this textarea until it saves, the
-    // same reason openPage guards a dirty grub and openRev guards a dirty
-    // revision before repainting over it
-    if (mode === 'know' && current && dirty &&
-        !(await askConfirm('discard unsaved changes to ' + current + '?', 'discard'))) return;
+    // guardDirty covers a dirty grub, page, or memory in one place (see
+    // 20-state.js): it flushes what it can and only asks when the flush
+    // still leaves something unsaved.
+    if (!(await guardDirty())) return;
     if (mode !== 'know') setMode('know');
     // a queued edit outranks the ship's copy, same rule as pages
     const q = await offGet('know:' + key);
@@ -255,4 +254,11 @@
     if (isMobile()) setMv('tree');
     st(m === 'know' ? 'knowledge — pick a memory from the tree' : 'pages');
   }
-  $('modet').onclick = () => setMode(mode === 'know' ? 'pages' : 'know');
+  // the pill itself is the entry point a user clicks, so it guards. setMode
+  // is the applier openPage/openKnow also call once THEIR guard already
+  // passed, and guarding inside setMode too would ask twice, or ask about
+  // work guardDirty already flushed a moment earlier.
+  $('modet').onclick = async () => {
+    if (!(await guardDirty())) return;
+    setMode(mode === 'know' ? 'pages' : 'know');
+  };

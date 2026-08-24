@@ -126,10 +126,10 @@
     }
   }
   async function openRev(rev) {
-    // the historical body is about to overwrite the textarea. It exists
-    // nowhere else, so a dirty edit needs the same ask as a grub discard.
-    if (dirty &&
-        !(await askConfirm('discard unsaved changes to ' + current + '?', 'discard'))) return;
+    // guardDirty covers a dirty grub, page, or memory in one place (see
+    // 20-state.js): it flushes what it can and only asks when the flush
+    // still leaves something unsaved.
+    if (!(await guardDirty())) return;
     let d = null;
     try {
       const r = await fetch(mode === 'know'

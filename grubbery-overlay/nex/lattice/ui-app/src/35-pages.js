@@ -17,11 +17,10 @@
   // nothing, and a page absent from the local tree never applied at all.
   let openSeq = 0;
   async function openPage(name) {
-    // a grub edit is explicit-save only and lives nowhere but this textarea.
-    // Clearing grubPath below would throw it away on a single click, so ask
-    // first. The dialog's own cancel button is the "stay" option.
-    if (grubPath && dirty &&
-        !(await askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard'))) return;
+    // guardDirty covers a dirty grub, page, or memory in one place (see
+    // 20-state.js): it flushes what it can and only asks when the flush
+    // still leaves something unsaved.
+    if (!(await guardDirty())) return;
     const my = ++openSeq;
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page

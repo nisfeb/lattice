@@ -14,6 +14,30 @@
   // The next autosave wrote that stale body back over the good save: the
   // editor visibly ate work the ship already had.
   let everTyped = false;
+  // guardDirty: the ONE place navigation asks "may I paint over what's here?"
+  // Rounds two and three answered that per call site (a guard bolted onto
+  // openKnow, another onto openPage, another onto openRev) and this round
+  // found three MORE unguarded paths to the same loss: the pages/knowledge
+  // toggle pill, a quick-open result crossing modes, and a same-mode page
+  // click landing inside the autosave debounce window. Three guards missed
+  // three doors. One chokepoint, called from every entry a user can click,
+  // closes all of them at once.
+  //
+  // A dirty grub has nowhere else to go until Save is pressed, so it only
+  // ever gets the dialog. A dirty page or memory usually CAN save itself in
+  // the time it takes to click somewhere else, so try that first, using the
+  // save path this mode already owns, and stay silent when it lands. Only a
+  // flush that leaves the buffer dirty anyway (the offline queue refused it,
+  // the ship rejected the write) falls back to naming what would be lost.
+  async function guardDirty() {
+    if (!dirty) return true;
+    if (grubPath)
+      return askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard');
+    const label = current || pname.value.trim() || 'this';
+    if (mode === 'know') await saveKnow(); else await save();
+    if (!dirty) return true;
+    return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+  }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
                            // option, so pkind.value would silently convert it

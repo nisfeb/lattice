@@ -979,7 +979,7 @@
     ::  omnibar: input that isn't a urb:// address is a SEARCH query. Serve a
     ::  results page that queries the term index (client-side, via the
     ::  /content-search JSON api, which is built for exactly this fan-out).
-    ?~  ref  (send-html eyre-id (render-page (trip u.raw) "" "" (search-results-html u.raw our)))
+    ?~  ref  (send-view eyre-id (render-page-titled (trip u.raw) "" "" (trip u.raw) (search-results-html u.raw our)))
     ?-  -.u.ref
         %tree
       ::  redirect to the /x explorer projection, which renders the node and
@@ -2208,10 +2208,10 @@
     ;<  ~  bind:m  (poke-sub [%unsub-page ship.u.pu path.u.pu])
     (send-ok eyre-id)
       [%'GET' %settings]
-    (send-view eyre-id (render-page "" "" "" settings-html))
+    (send-view eyre-id (render-page-titled "" "" "" "settings" settings-html))
       [%'GET' %marks]
     ;<  bms=bookmarks:lb  bind:m  read-bookmarks
-    (send-view eyre-id (render-page "" "" "" (marks-html bms)))
+    (send-view eyre-id (render-page-titled "" "" "" "marks" (marks-html bms)))
   ::  ── editing arbitrary grubs (write apps in the editor) ──────────────────
   ::  grub-source: any grub's editable text. `editable` is false for a binary
   ::  or opaque grub. The client shows it read-only rather than offering a save
@@ -4840,14 +4840,14 @@
     =/  tsel=(unit @t)  (~(get by args) 'tag')
     ?^  tsel
       ;<  rv=tape  bind:m  beacon-rev-tape
-      (send-view-long eyre-id (render-page "know" (keep-url "beacon/rev") rv (know-flat-html:lkv es u.tsel)))
+      (send-view-long eyre-id (render-page-titled "know" (keep-url "beacon/rev") rv "memories" (know-flat-html:lkv es u.tsel)))
     ;<  rv=tape  bind:m  beacon-rev-tape
-    (send-view-long eyre-id (render-page "know" (keep-url "beacon/rev") rv (know-dir-html:lkv es ~ ~ (tag-chips:lkv es ''))))
+    (send-view-long eyre-id (render-page-titled "know" (keep-url "beacon/rev") rv "memories" (know-dir-html:lkv es ~ ~ (tag-chips:lkv es ''))))
   =/  page=(unit tape)  (know-node-html:lkv es `path`rest)
   ?~  page
-    (send-view eyre-id (render-page "know" "" "" "<p class=\"err\">no such entry</p>"))
+    (send-view eyre-id (render-page-titled "know" "" "" "memories" "<p class=\"err\">no such entry</p>"))
   ;<  rv=tape  bind:m  beacon-rev-tape
-  (send-view-long eyre-id (render-page (weld "know" (spud rest)) (keep-url "beacon/rev") rv u.page))
+  (send-view-long eyre-id (render-page-titled (weld "know" (spud rest)) (keep-url "beacon/rev") rv (trip (rear rest)) u.page))
 ::  ── JSON renderers (ported from /lib/lattice; client contract, byte-for-byte) ──
 ::
 ++  tags-json
@@ -7373,9 +7373,11 @@
   '.muted{color:#8a8a8a}.quick{display:flex;flex-wrap:wrap;gap:8px;margin:.5rem 0 .3rem}.quick a{padding:6px 12px;border:1px solid #8886;border-radius:8px;text-decoration:none;color:inherit;background:#8881;font-size:.9rem}.quick a:hover{border-color:#1a6ed8}.quick a.on{border-color:#1a6ed8;color:#1a6ed8}ul.qlist{list-style:none;padding:0;margin:.4rem 0}ul.qlist li{border-bottom:1px solid #8883;margin:0}ul.qlist a{display:block;padding:9px 6px;text-decoration:none;color:inherit;border-radius:6px}ul.qlist a:hover{background:#8881}.qname{display:block;font-weight:500;color:#1a6ed8}.qprev{display:block;font-size:.84rem;color:#8a8a8a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.05rem}.know-body{white-space:pre-wrap}'
 ::  +render-page: wrap an HTML fragment in the reader chrome (address bar +
 ::  CSS), titled plain "lattice". +render-page-titled is the same chrome with
-::  a real <title>. The /pub call sites use it (page-title-of already runs
-::  there for the history log). Every other caller (settings, marks, search,
-::  the /x explorer) has no page to name a tab after, so it keeps this one.
+::  a real <title>, and covers most callers now: the /pub call sites
+::  (page-title-of already runs there for the history log), the /x explorer,
+::  the knowledge store, settings, marks, search. What is left plain is the
+::  generic home listing (no authored /index yet) and the pub-not-found
+::  error, surfaces with nothing of their own to call the tab.
 ::
 ++  render-page
   |=  [current=tape keep=tape rev=tape inner=tape]

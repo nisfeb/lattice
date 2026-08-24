@@ -14,6 +14,23 @@ use crate::transport::{TErr, Transport};
 /// 400 naming the field it rejected, short enough to stay one readable line.
 const DETAIL_MAX: usize = 200;
 
+/// The agent every ordinary request goes through: pooled connections (so a
+/// mount's steady traffic isn't paying a fresh handshake per call), bounded
+/// on the CONNECT phase only. Without this, `ureq::request`'s bare default
+/// agent has no timeout at all, and a dead pier or a stale URL hangs at SYN
+/// forever — one FUSE call away from the uninterruptible wedge mounts.rs's
+/// own comment warns about. No read timeout: a slow-but-alive ship (a big
+/// page-dump, a busy pier) still has to be allowed to finish, the same
+/// reasoning as the beacon watch's agent and proxy.rs's shared one.
+fn req_agent() -> &'static ureq::Agent {
+    static A: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    A.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(std::time::Duration::from_secs(10))
+            .build()
+    })
+}
+
 pub struct EyreTransport {
     base: String, // bare Eyre base. Login is at /~/login
     cookie: Mutex<Option<String>>,
@@ -93,7 +110,7 @@ impl EyreTransport {
     ) -> Result<Vec<u8>, TErr> {
         let url = self.url(path, query);
         let cookie = self.cookie.lock().unwrap().clone().unwrap_or_default();
-        let req = ureq::request(method, &url).set("Cookie", &cookie);
+        let req = req_agent().request(method, &url).set("Cookie", &cookie);
         let resp = match body {
             Some(b) => req.set("Content-Type", "application/octet-stream").send_bytes(b),
             None => req.call(),
