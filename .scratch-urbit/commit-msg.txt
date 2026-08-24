@@ -1,0 +1,79 @@
+feat: subscribed peers learn a rev pointer and keen the body (mesa D2)
+
+The subscription leg of the mesa conversion, in the kernel's own blessed
+shape (kiln/clay, UIP-0114): NOTIFY over the flow, BULK over the
+namespace. UIP-0100 names the deficiency this must dodge — gall PARKS a
+%keen at an unbound path, so a reader that guesses revisions hangs or
+polls. Here nothing is ever keened that was not bound first.
+
+WHAT THE WAVE CARRIED BEFORE THIS CHANGE. A grubbery wave is already
+pointer-sized: (axal [fold=cass file=(map @ta cass)]) — revision numbers,
+never content. The /sub/pages fiber kept the peer's vault gmi grub,
+DISCARDED the wave payload, and re-fetched every edit over the peek
+transport: +read-page-body (a full snap/want/data negotiation through the
+publisher's %grubbery, ~s30 bound) plus +read-pub-index-remote (a second
+full peek of the peer's ENTIRE pub index). The notification was already
+tiny; the BULK rode the wrong transport, and the publisher's agent paid
+for it per subscriber, per edit.
+
+WHAT CHANGES.
+
+Publisher (+apply-pub): after the namespace grow, every %save-page and
+%del-page overwrites ONE tiny grub, /pub/note/ptr — json {rel rev seq op}
+under [/ %json] (a mark whose file exists; the /pub/meta boom taught us
+why that clause is in writing). It is nested in its own directory on
+purpose: a keep's wave is +wave-at of the kept file's whole parent dir,
+so a pointer directly in /pub would drag the entire /pub/vault cass tree
+into every wave. +grow-pub-index now returns the seq it grew so the
+pointer can carry it.
+
+ORDERING INVARIANT (stated at both call sites): grow the page FIRST, then
+write the pointer. The pointer must never advertise an unbound rev — that
+is the parked-keen hazard by construction, and the order of two binds in
+one writer fiber is the whole proof. The delete half mirrors it:
+cull-farm first, pointer last.
+
+Subscriber (/sub/pages fiber): a SECOND keep on the peer's pointer
+(grubbery matches file keeps exactly, so it cannot ride the /page keep),
+plus one pointer read at subscribe to adopt the peer's current seq. On a
+page wave from a peer whose pointer has attested it mirrors, the fiber
+reads the new rev out of the wave itself (the kept gmi's cass IS the rev
++grow-pub-page bound) and bulk-fetches with +keen-page at that concrete
+rev — answered by the peer's KERNEL out of gall's scry farm, no agent
+work, relay-cacheable — indexing via the new +index-remote-page-keen with
+a cached key set instead of re-peeking the peer's whole index. Any keen
+failure falls back to the old +index-remote-page, so no read can end
+worse than today. The note wave then just bumps the remembered seq; on
+(rel rev %del) it drops the page's catalog rows with the same per-page
+delete +catalog-reconcile-peer uses (today's live sub left them to
+linger).
+
+SEQ GAP: the fiber remembers the peer's last seq; a jump past +(seq)
+means missed waves (or a /pub-regrow, which advances seq with no pointer)
+and triggers +catalog-scan-peer — the crawler's full resweep-and-
+reconcile — for that peer. One comparison, whole-peer recovery.
+
+MIXED FLEET, no flag days: a pre-mesa publisher never writes /pub/note;
+the note keep registers against the absent grub and never fires, seq
+stays 0, and every wave takes exactly today's peek path. A pre-mesa
+subscriber has no note keep and never sees the pointer. Each side alone
+is a no-op.
+
+VERIFIED single-ship on ~tyr: +scryver!check-lattice compiles clean
+(the one failing rail, /lib/unv.hoon, is grubbery's own bitcoin lib in
+the scratch desk's sweep, outside lattice's import cone); deployed to the
+live %grubbery desk with no fiber crashes; page-save + page-share
+mode=clearweb landed pointer {rel /mesa-d2/proof, rev 1, seq 46, op save}
+with /pub/meta 46 and the body bound at /pub/page/mesa-d2/proof/1
+(farm-read); page-del flipped it to {op del, seq 47}, meta 47, binding
+culled; the pointer then tracked api-lifecycle + ui-matrix's publishes
+and deletes in lockstep to seq 57. Both suites pass.
+
+NOT PROVEN HERE, by nature: the subscriber leg end to end. A wave is
+pushed by another ship's %grubbery and the keen is answered by that
+ship's kernel, so pointer-wave -> keen -> index, the note-coalescing
+burst case, gap-reconcile under dropped waves, %del row-drops, and the
+mixed-fleet floor all await the two-ship test (procedure appended to
+api-lifecycle.sh's phase-D notes).
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>

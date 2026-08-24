@@ -9083,15 +9083,14 @@
   =/  m  (fiber:fiber:nexus ,mirror-cursor:lm)
   ^-  form:m
   ;<  rows=(list [url=@t stamp=@ r=visit-row:lm])  bind:m  visit-rows
+  ::  the cursor keeps ONLY the current history window, so it stays
+  ::  bounded by the history cap. A url that rotated out and comes back
+  ::  reads as new: its INSERT fails quietly on the surviving row and
+  ::  the UPDATE beside it (changed includes new) repairs the values.
+  ::  Rows already mirrored for rotated-out entries persist untouched,
+  ::  the best-effort stance of the seen tables.
   =/  nxt=(map @t @)
-    ::  entries that rotate out of the history window keep their last
-    ::  mirrored stamp, so their rows are never rewritten and never
-    ::  tombstoned (the best-effort stance of the seen tables).
-    =/  base=(map @t @)  visits.cur
-    =/  rl=(list [url=@t stamp=@ r=visit-row:lm])  rows
-    |-  ^-  (map @t @)
-    ?~  rl  base
-    $(rl t.rl, base (~(put by base) url.i.rl stamp.i.rl))
+    (malt (turn rows |=([url=@t stamp=@ *] [url stamp])))
   =/  changed=(list [url=@t stamp=@ r=visit-row:lm])
     (skim rows |=([url=@t stamp=@ *] !=(`(unit @)`[~ stamp] (~(get by visits.cur) url))))
   =/  ups=(list tape)

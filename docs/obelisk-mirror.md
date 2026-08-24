@@ -96,12 +96,13 @@ preference does.
    on an absent row, correct in either order.
 6. A parse or crud error aborts the whole multi-statement poke. Batch
    writes therefore need a per-row fallback (section 5).
-7. `CREATE TABLE` on an existing table is a harmless no-op, but
-   `CREATE DATABASE` on an existing database is an error, so the
-   database bootstrap must ride its own isolated poke. A schema change
-   never alters an existing table. The only migration is
-   `DROP TABLE FORCE` plus recreate plus a cursor reset, which rule 4
-   above makes acceptable.
+7. `CREATE DATABASE` and `CREATE TABLE` both error on an existing
+   target, so every create rides its OWN poke with the expected error
+   swallowed. The first catalog learned this in production: a joined
+   create script aborts at the first existing table and never creates
+   the ones after it. A schema change never alters an existing table.
+   The only migration is `DROP TABLE FORCE` plus recreate plus a
+   cursor reset, which rule 4 above makes acceptable.
 8. Value literals: ships are bare (`~zod`), text is single-quoted with
    `'` and `\` escaped and control bytes below 32 neutralized, dates are
    `@da` literals, and there are no `@uv` literals, so hashes are stored
@@ -162,21 +163,23 @@ Phase 1 and 2 tables:
    on any rebuild, because the eviction window is the only rebuild
    source, and no consumer may depend on it. Deletion of a document at
    its source is undetectable here, and its row simply stops changing.
-2. `lattice-visits`: `visit-id` (`@ud`, primary key, sham of doc-id and
-   time), `doc-id` (`@ud`), `at` (`@da`). An append-only log row per
-   recorded visit, mirrored off the visit history grub
-   (`lib/lattice-history.hoon`), which keeps the latest 500 entries.
-   The deterministic key makes re-upserting the current window
-   idempotent, and rows rotated out of the window persist under the
-   same best-effort stance as `lattice-docs`.
+2. `lattice-visits`: `doc-id` (`@ud`, primary key), `ship` (`@p`),
+   `pax` (`@t`), `title` (`@t`), `last` (`@da`), `hits` (`@ud`). The
+   history grub (`lib/lattice-history.hoon`) keeps ONE entry per url
+   with its latest visit time and hit count, capped at 500 with a two
+   week ttl, so a visit row is a per-document upsert rather than an
+   event log. Rows whose source entry has expired out of the window
+   persist under the same best-effort stance as `lattice-docs`.
 3. `lattice-knows`: `know-key` (`@t`, primary key), `updated` (`@da`),
    `live` (`@ud`). Memory bodies never leave grubs.
 4. `lattice-know-tags`: `tag-id` (`@ud`, primary key, sham of key and
    tag), `know-key` (`@t`), `tag` (`@t`), `live` (`@ud`). One row per
    tag application, which is how a many-to-many survives a store with
    single-equality joins.
-5. `lattice-follows`: `follow-id` (`@ud`, primary key, sham of ship and
-   path), `ship` (`@p`), `pax` (`@t`), `live` (`@ud`).
+5. `lattice-follows`: `follow-id` (`@ud`, primary key, sham of the
+   ship), `ship` (`@p`), `live` (`@ud`). Follows are a bare set of
+   ships in the source. Per-page subscriptions are a separate
+   mechanism and a possible later table.
 6. `lattice-pages`: `doc-id` (`@ud`, primary key, sham of our ship and
    the path), `pax` (`@t`), `kind` (`@t`), `title` (`@t`), `updated`
    (`@da`), `share` (`@t`), `live` (`@ud`). One row per own page,
@@ -190,32 +193,31 @@ identity freezes now.
 
 ## 5. The mirror fiber
 
-The mirror is a reconciler, not an event tail. It runs on a behn timer,
-peeks the change beacon's revision each tick, and starts a pass only
-when the revision moved. It subscribes to nothing and it cannot miss an
-update, because its correctness comes from comparing state, not from
-observing every change.
+The mirror is a reconciler, not an event tail. It runs on a timer,
+checks the change beacon each tick, and additionally diffs the history
+grub locally, because visits deliberately never bump the content
+beacon. An idle tick costs three local peeks and no obelisk traffic at
+all. It subscribes to nothing and it cannot miss an update, because
+its correctness comes from comparing state, not from observing every
+change.
 
-1. The sources split into two shapes. The fixed sources are the 64
-   meta buckets, the visit history grub, and the follows grub. Each is
-   a grub with a native revision number, so the cursor stores one
-   last-mirrored revision per grub. The curated sources are the know
-   vault and the own page tree, where every entry is a grub of its own
-   with no fixed count, so the cursor stores a per-key map of last
-   mirrored stamps, the same key set tombstoning needs anyway (point
-   3). The cursor stays one grub. Its revision part is constant and
-   its key maps are bounded by curation, hundreds of entries in
-   practice, never by the seen corpus. If a curated key map ever
+1. Change detection is content stamps, not storage revisions. Each
+   pass reads the sources with the same peeks their list routes
+   already perform (one deep page peek, the know map read, two small
+   grub reads) and derives a stamp per row: a sham of body and share
+   for a page, the updated time for a know, the set membership itself
+   for tags and follows, a sham of title, last, and hits for a visit.
+   The cursor stores one map of stamps per domain and diffs the sweep
+   against it. Stamps were chosen over storage revisions because they
+   need nothing from the storage layer's internals and a rerun after
+   any crash re-derives exactly the same difference.
+2. The cursor stays one grub, and every map in it is bounded: pages,
+   knows, tags, and follows by curation (hundreds of entries in
+   practice), visits by the history cap of 500. The curated maps
+   double as the tombstone basis (point 3). If a curated map ever
    exceeds 10,000 entries, that domain falls back to the no-tombstone
    stance of the seen tables rather than let the cursor grow without
    bound.
-2. A pass peeks the fixed sources' revisions and diffs them against
-   the cursor, so an unchanged fixed source costs one peek. The
-   curated sources are swept with the same bounded subtree peek their
-   list routes already perform, and the sweep diffs per-key stamps
-   against the cursor's map. This replaces the row hashes the first
-   catalog computed with revisions and stamps the storage layer
-   already maintains.
 3. A changed source is mirrored in chunks of 32 rows. A chunk is one
    multi-statement `UPDATE` poke covering all 32 rows, safe as a batch
    because an update on an absent row no-ops cleanly, followed by one
@@ -255,7 +257,7 @@ sequenceDiagram
     participant L as lattice route
     participant O as %obelisk
     C->>L: POST /obelisk-query, body is raw urQL
-    L->>O: poke %obelisk-action [%tape2 %lattice query]
+    L->>O: poke %obelisk-action [%tape db query]
     O-->>L: %fact on /server
     L-->>C: rows as JSON
 ```
@@ -263,12 +265,15 @@ sequenceDiagram
 1. `POST /obelisk-query` is owner-gated and passes the body through as
    urQL. The route holds the connection until the fact arrives or a 30
    second deadline passes, exactly the deadline the first catalog used.
-2. One query is in flight at a time, because the single subscription
-   to `/server` cannot pair overlapping answers to their askers. A
-   second concurrent HTTP request gets a 429. The mirror's own probes
-   go through the same broker but queue for the slot instead of
-   erroring, so a user query can never make the mirror misread busy
-   as broken.
+2. One round-trip is in flight at a time, because the single
+   subscription to `/server` cannot pair overlapping answers to their
+   askers. Serialization lives in an owner fiber: every caller, HTTP
+   requests and the mirror's own probes alike, pokes the owner with
+   its query and a private result grub, and the owner runs them one
+   at a time. A concurrent caller therefore queues and waits its
+   turn, bounded by a 30 second deadline, rather than getting an
+   error, and a user query can never make the mirror misread busy as
+   broken.
 3. The same asynchrony means a synchronous MCP tool cannot serve reads.
    Agents query over authenticated HTTP. MCP writes remain possible but
    the mirror gives no reason for an external writer to exist.
@@ -312,12 +317,12 @@ sequenceDiagram
 
 ## 8. Phases
 
-1. Phase 1 ships the schema bootstrap, the presence probe, the
-   `lattice-docs` mirror off the catalog's meta buckets, and the query
-   bridge. This is the smallest slice that gives the agent real
-   cross-domain queries, and it depends on catalog v2 phase 1 for the
-   meta buckets it mirrors.
-2. Phase 2 adds visits, own pages, knows, know tags, and follows.
+1. Phase 1, built first because its sources all exist today, ships
+   the bridge (the owner fiber and `POST /obelisk-query`), the
+   bootstrap and probes, and the mirrors for own pages, knows, know
+   tags, follows, and visits.
+2. Phase 2 adds `lattice-docs` off the catalog's meta buckets, once
+   catalog v2 phase 1 exists to feed it.
 3. Phase 3 is the structured intel layer, specified separately, which
    adds entity tables that join against `doc-id`.
 
