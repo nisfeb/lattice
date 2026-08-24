@@ -1128,8 +1128,24 @@
     if (grubPath)
       return askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard');
     const label = current || pname.value.trim() || 'this';
-    if (mode === 'know') await saveKnow(); else await save();
+    // save() coalesces concurrent calls by design. A save already in flight
+    // just arms savePending and returns on the spot, so calling save() here
+    // answered nothing while dirty stayed set. That read like a flush that
+    // failed, when the real save was actually about to land. Wait for the
+    // flight already under way instead. The cap keeps a hung request from
+    // trapping navigation forever.
+    let waited = 0;
+    while (saving && waited < 15000) {
+      await new Promise((r) => setTimeout(r, 100));
+      waited += 100;
+    }
     if (!dirty) return true;
+    // still dirty and nothing is in flight: the wait either never started or
+    // timed out with the buffer untouched. Only now is a flush worth trying.
+    if (!saving) {
+      if (mode === 'know') await saveKnow(); else await save();
+      if (!dirty) return true;
+    }
     return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
   }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
@@ -2720,15 +2736,26 @@
   }
 
   async function newFolder() {
-    const name = await askName('folder name (e.g. notes or notes/sub)',
-      folderCtx ? folderCtx + '/' : '', 'create');
-    if (!name) return;
-    const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name));
-    if (!r.ok) { st('folder failed' + await errText(r), false); return; }
-    st(r.offline ? 'folder created offline' : 'folder created');
-    addFolderNodes(name);
-    snapTree();
-    renderTree();
+    // a server-side rejection (colliding with an existing page, say) used to
+    // leave nothing to retype into: the dialog already closed the moment the
+    // typed name passed client-side validName(). Loop back into askName
+    // instead, seeded with the name that just failed, so the fix is an edit
+    // rather than a full restart.
+    let seed = folderCtx ? folderCtx + '/' : '';
+    for (;;) {
+      const name = await askName('folder name (e.g. notes or notes/sub)', seed, 'create');
+      if (!name) return;
+      const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name));
+      if (r.ok || r.offline) {
+        st(r.offline ? 'folder created offline' : 'folder created');
+        addFolderNodes(name);
+        snapTree();
+        renderTree();
+        return;
+      }
+      st('folder failed' + await errText(r), false);
+      seed = name;
+    }
   }
 
   //  The three steps save() and autosave() both owe. They are two policies
@@ -3046,25 +3073,33 @@
     if (!names.length) { st('no templates available', false); return; }
     const tmpl = await askChoice('start from which template?', names, 'next');
     if (!tmpl) return;
-    const name = await askName('name for the new ' + tmpl,
-      folderCtx ? folderCtx + '/' + tmpl : tmpl, 'create');
-    if (!name) return;
-    stWork('creating ' + name + ' from ' + tmpl + '\u2026 (one save per page)');
-    let r = null;
-    try {
-      r = await mutate(api + '/template-new?template=' + encodeURIComponent(tmpl) +
-        '&name=' + encodeURIComponent(name));
-    } catch {}
-    if (r && r.status === 409) { st('a page by that name exists', false); return; }
-    if (!r || !r.ok) { st('template failed' + await errText(r), false); return; }
-    await loadTree();
-    // a multi-page template lands as a folder. Open its index if it made one,
-    // else the page itself, else just select the new folder.
-    const has = (p) => nodes.some((n) => n.page && n.path === p);
-    if (has(name)) await openPage(name);
-    else if (has(name + '/index')) await openPage(name + '/index');
-    else if (nodes.some((n) => !n.page && n.path === name)) selectFolder(name);
-    st('created ' + name + ' from ' + tmpl);
+    let seed = folderCtx ? folderCtx + '/' + tmpl : tmpl;
+    for (;;) {
+      const name = await askName('name for the new ' + tmpl, seed, 'create');
+      if (!name) return;
+      stWork('creating ' + name + ' from ' + tmpl + '\u2026 (one save per page)');
+      let r = null;
+      try {
+        r = await mutate(api + '/template-new?template=' + encodeURIComponent(tmpl) +
+          '&name=' + encodeURIComponent(name));
+      } catch {}
+      if (r && (r.ok || r.offline)) {
+        await loadTree();
+        // a multi-page template lands as a folder. Open its index if it made
+        // one, else the page itself, else just select the new folder.
+        const has = (p) => nodes.some((n) => n.page && n.path === p);
+        if (has(name)) await openPage(name);
+        else if (has(name + '/index')) await openPage(name + '/index');
+        else if (nodes.some((n) => !n.page && n.path === name)) selectFolder(name);
+        st('created ' + name + ' from ' + tmpl);
+        return;
+      }
+      // the server refused this name \u2014 loop back into askName seeded with
+      // it (keeping the template pick), so the retry is an edit not a redo
+      if (r && r.status === 409) st('a page by that name exists', false);
+      else st('template failed' + await errText(r), false);
+      seed = name;
+    }
   }
   $('newtmpl').onclick = newFromTemplate;
   $('newfile').onclick = () => newFile('');
@@ -5100,28 +5135,38 @@
   }
 
   async function moveFolder(oldPath) {
-    const newPath = await askName('move / rename folder ' + oldPath + ' to:', oldPath, 'move');
-    if (!newPath || newPath === oldPath) return;
-    const mapped = (p) => newPath + p.slice(oldPath.length);
-    st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
-    const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldPath) +
-      '&to=' + encodeURIComponent(newPath));
-    if (!r.ok) { st('move failed' + await errText(r), false); return; }
-    let moved = 0;
-    for (const n of nodes)
-      if (n.path === oldPath || n.path.startsWith(oldPath + '/')) {
-        if (n.page) moved++;
-        n.path = mapped(n.path);
+    let seed = oldPath;
+    for (;;) {
+      const newPath = await askName('move / rename folder ' + oldPath + ' to:', seed, 'move');
+      if (!newPath || newPath === oldPath) return;
+      const mapped = (p) => newPath + p.slice(oldPath.length);
+      st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
+      const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldPath) +
+        '&to=' + encodeURIComponent(newPath));
+      if (!(r.ok || r.offline)) {
+        // the server refused this name \u2014 loop back into askName seeded with
+        // it, so the retry is an edit, not a full retype
+        st('move failed' + await errText(r), false);
+        seed = newPath;
+        continue;
       }
-    if (newPath.includes('/')) addFolderNodes(newPath.slice(0, newPath.lastIndexOf('/')));
-    if (current && (current === oldPath || current.startsWith(oldPath + '/')))
-      current = mapped(current);
-    snapTree();
-    renderTree();
-    st('moved ' + oldPath + ' \u2192 ' + newPath +
-      (r.offline ? ' offline' : '') + ' (' + moved + ' pages)');
-    if (current) openPage(current);
-    else if (curFolder === oldPath) selectFolder(newPath);
+      let moved = 0;
+      for (const n of nodes)
+        if (n.path === oldPath || n.path.startsWith(oldPath + '/')) {
+          if (n.page) moved++;
+          n.path = mapped(n.path);
+        }
+      if (newPath.includes('/')) addFolderNodes(newPath.slice(0, newPath.lastIndexOf('/')));
+      if (current && (current === oldPath || current.startsWith(oldPath + '/')))
+        current = mapped(current);
+      snapTree();
+      renderTree();
+      st('moved ' + oldPath + ' \u2192 ' + newPath +
+        (r.offline ? ' offline' : '') + ' (' + moved + ' pages)');
+      if (current) openPage(current);
+      else if (curFolder === oldPath) selectFolder(newPath);
+      return;
+    }
   }
 
 // ── src/77-history.js ─────────────────────────────────────────────────────
@@ -5244,9 +5289,14 @@
     }
     for (const v of revs.slice(0, 30)) {
       const a = document.createElement('a');
-      // ~2026.7.27..19.12.23..xxxx -> 7.27 19:12
-      const m = (v.updated || '').match(/\.(\d+\.\d+)\.\.(\d+)\.(\d+)/);
-      a.textContent = '#' + v.rev + (m ? ' \u00b7 ' + m[1] + ' ' + m[2] + ':' + m[3] : '');
+      // @da is always ship UTC. daToUnix (vault.js) runs the same fields
+      // through Date.UTC for the export mtime; do the same here so a chip
+      // reads in the viewer's own zone instead of bare, unlabeled ship time.
+      const m = /^~(\d+)\.(\d+)\.(\d+)\.\.(\d+)\.(\d+)\.(\d+)/.exec(v.updated || '');
+      const when = m && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]));
+      const label = when && when.toLocaleString(undefined,
+        { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+      a.textContent = '#' + v.rev + (label ? ' \u00b7 ' + label : '');
       a.className = v.rev === viewingRev ? 'on' : '';
       a.onclick = () => openRev(v.rev);
       histList.appendChild(a);
@@ -5319,28 +5369,41 @@
     if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     if (curFolder) { moveFolder(curFolder); return; }
     if (!current) { st('open something first', false); return; }
-    const newName = await askName('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
-      current, 'move');
-    if (!newName || newName === current) return;
-    if (mode === 'know') {
-      const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
-        '&to=' + encodeURIComponent(newName));
-      if (!r.ok) { st('move failed' + await errText(r), false); return; }
-      // the body is already in the editor. Rename in place, no refetch
-      knowGen++;
-      const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
-      if (k) k.key = newName;
-      current = newName;
-      pname.value = newName;
-      renderKnowChips();
-      renderKnowTree();
-      st('moved to ' + newName);
-      return;
-    }
-    const mv = await movePage(current, newName);
-    if (mv) {
-      st('moved to ' + newName + (mv.offline ? ' offline' : ''));
-      openPage(newName);
+    let seed = current;
+    for (;;) {
+      const newName = await askName('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
+        seed, 'move');
+      if (!newName || newName === current) return;
+      if (mode === 'know') {
+        const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
+          '&to=' + encodeURIComponent(newName));
+        if (!(r.ok || r.offline)) {
+          // the server refused this name — loop back into askName seeded with
+          // it, so the retry is an edit, not a full retype
+          st('move failed' + await errText(r), false);
+          seed = newName;
+          continue;
+        }
+        // the body is already in the editor. Rename in place, no refetch
+        knowGen++;
+        const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
+        if (k) k.key = newName;
+        current = newName;
+        pname.value = newName;
+        renderKnowChips();
+        renderKnowTree();
+        st('moved to ' + newName);
+        return;
+      }
+      const mv = await movePage(current, newName);
+      if (mv) {
+        st('moved to ' + newName + (mv.offline ? ' offline' : ''));
+        openPage(newName);
+        return;
+      }
+      // movePage already reported the cause — loop back into askName seeded
+      // with the rejected name
+      seed = newName;
     }
   };
 
@@ -5959,8 +6022,19 @@
       // back over the delete: it guards on `!current`, so clear that and
       // reopen the name field the way a brand-new page gets one.
       if (mode !== 'know') {
+        const doomed = current;
         current = null;
         pname.readOnly = false;
+        // the tree row and the page cache still remember this page from
+        // before the delete. Left alone, the still-highlighted row (or a
+        // wikilink, or a search hit) repaints the dead body from cache with
+        // zero network calls, the exact resurrection this branch exists to
+        // stop. Clear them the way the explicit delete path does (65-ctl.js).
+        dropTreeNodes(doomed);
+        pageCache.delete(doomed);
+        snapTree();
+        renderTree();
+        resetPanels();
         st('this page was deleted elsewhere — save to recreate it', false);
       }
       return;
@@ -6318,11 +6392,18 @@
     }
     if (!src.value) { st('empty body', false); return; }
     if (viewingRev !== null) { st('viewing a revision — use restore', false); return; }
+    // the pier serializes every write behind one shared `saving` flag, know
+    // or page (see save()/autosave()/saveGrub()). Without this guard,
+    // guardDirty's flush against a memory whose autosave was already mid-
+    // flight fired a second, fully concurrent POST to the same /know-save key.
+    if (saving) { savePending = true; return; }
+    saving = true;
     const sent = src.value;
     echoUntil = Date.now() + 60000;
     let r = null;
     try { r = await tfetch(api + '/know-save?key=' + encodeURIComponent(key),
       { method: 'POST', body: sent }); } catch {}
+    saving = false;
     echoUntil = Date.now() + 4000;
     if (shipGone(r)) {
       //  if the queue would not take it, it is NOT saved: leave the editor
@@ -6333,6 +6414,7 @@
       current = key;
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
+      if (savePending) { savePending = false; if (dirty) saveKnow(); }
       return;
     }
     if (!r.ok) { st('save failed' + await errText(r), false); return; }
@@ -6347,9 +6429,15 @@
     else knowKeys.push({ key, tags: [], updated: '', bytes: sent.length });
     renderKnowChips();
     renderKnowTree();
+    if (savePending) { savePending = false; if (dirty) saveKnow(); }
   }
 
   async function deleteKnow() {
+    // a delete reachable from inside a revision view (mode='know' skips the
+    // viewingRev guard the pages path enforces) must not leave the editor
+    // behind it read-only forever. Exit first, the way every other reset
+    // path here does.
+    exitRev();
     if (!current) return;
     if (!(await askConfirm('delete memory ' + current + '? (soft-delete, restorable)', 'delete'))) return;
     const doomed = current;

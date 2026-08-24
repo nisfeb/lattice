@@ -167,15 +167,26 @@
   }
 
   async function newFolder() {
-    const name = await askName('folder name (e.g. notes or notes/sub)',
-      folderCtx ? folderCtx + '/' : '', 'create');
-    if (!name) return;
-    const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name));
-    if (!r.ok) { st('folder failed' + await errText(r), false); return; }
-    st(r.offline ? 'folder created offline' : 'folder created');
-    addFolderNodes(name);
-    snapTree();
-    renderTree();
+    // a server-side rejection (colliding with an existing page, say) used to
+    // leave nothing to retype into: the dialog already closed the moment the
+    // typed name passed client-side validName(). Loop back into askName
+    // instead, seeded with the name that just failed, so the fix is an edit
+    // rather than a full restart.
+    let seed = folderCtx ? folderCtx + '/' : '';
+    for (;;) {
+      const name = await askName('folder name (e.g. notes or notes/sub)', seed, 'create');
+      if (!name) return;
+      const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name));
+      if (r.ok || r.offline) {
+        st(r.offline ? 'folder created offline' : 'folder created');
+        addFolderNodes(name);
+        snapTree();
+        renderTree();
+        return;
+      }
+      st('folder failed' + await errText(r), false);
+      seed = name;
+    }
   }
 
   //  The three steps save() and autosave() both owe. They are two policies

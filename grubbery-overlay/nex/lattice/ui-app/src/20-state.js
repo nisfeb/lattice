@@ -34,8 +34,24 @@
     if (grubPath)
       return askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard');
     const label = current || pname.value.trim() || 'this';
-    if (mode === 'know') await saveKnow(); else await save();
+    // save() coalesces concurrent calls by design. A save already in flight
+    // just arms savePending and returns on the spot, so calling save() here
+    // answered nothing while dirty stayed set. That read like a flush that
+    // failed, when the real save was actually about to land. Wait for the
+    // flight already under way instead. The cap keeps a hung request from
+    // trapping navigation forever.
+    let waited = 0;
+    while (saving && waited < 15000) {
+      await new Promise((r) => setTimeout(r, 100));
+      waited += 100;
+    }
     if (!dirty) return true;
+    // still dirty and nothing is in flight: the wait either never started or
+    // timed out with the buffer untouched. Only now is a flush worth trying.
+    if (!saving) {
+      if (mode === 'know') await saveKnow(); else await save();
+      if (!dirty) return true;
+    }
     return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
   }
   let viewingRev = null;   // non-null: a read-only historical revision is shown

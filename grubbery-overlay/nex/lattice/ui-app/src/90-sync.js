@@ -37,8 +37,19 @@
       // back over the delete: it guards on `!current`, so clear that and
       // reopen the name field the way a brand-new page gets one.
       if (mode !== 'know') {
+        const doomed = current;
         current = null;
         pname.readOnly = false;
+        // the tree row and the page cache still remember this page from
+        // before the delete. Left alone, the still-highlighted row (or a
+        // wikilink, or a search hit) repaints the dead body from cache with
+        // zero network calls, the exact resurrection this branch exists to
+        // stop. Clear them the way the explicit delete path does (65-ctl.js).
+        dropTreeNodes(doomed);
+        pageCache.delete(doomed);
+        snapTree();
+        renderTree();
+        resetPanels();
         st('this page was deleted elsewhere — save to recreate it', false);
       }
       return;

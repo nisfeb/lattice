@@ -14,25 +14,33 @@
     if (!names.length) { st('no templates available', false); return; }
     const tmpl = await askChoice('start from which template?', names, 'next');
     if (!tmpl) return;
-    const name = await askName('name for the new ' + tmpl,
-      folderCtx ? folderCtx + '/' + tmpl : tmpl, 'create');
-    if (!name) return;
-    stWork('creating ' + name + ' from ' + tmpl + '\u2026 (one save per page)');
-    let r = null;
-    try {
-      r = await mutate(api + '/template-new?template=' + encodeURIComponent(tmpl) +
-        '&name=' + encodeURIComponent(name));
-    } catch {}
-    if (r && r.status === 409) { st('a page by that name exists', false); return; }
-    if (!r || !r.ok) { st('template failed' + await errText(r), false); return; }
-    await loadTree();
-    // a multi-page template lands as a folder. Open its index if it made one,
-    // else the page itself, else just select the new folder.
-    const has = (p) => nodes.some((n) => n.page && n.path === p);
-    if (has(name)) await openPage(name);
-    else if (has(name + '/index')) await openPage(name + '/index');
-    else if (nodes.some((n) => !n.page && n.path === name)) selectFolder(name);
-    st('created ' + name + ' from ' + tmpl);
+    let seed = folderCtx ? folderCtx + '/' + tmpl : tmpl;
+    for (;;) {
+      const name = await askName('name for the new ' + tmpl, seed, 'create');
+      if (!name) return;
+      stWork('creating ' + name + ' from ' + tmpl + '\u2026 (one save per page)');
+      let r = null;
+      try {
+        r = await mutate(api + '/template-new?template=' + encodeURIComponent(tmpl) +
+          '&name=' + encodeURIComponent(name));
+      } catch {}
+      if (r && (r.ok || r.offline)) {
+        await loadTree();
+        // a multi-page template lands as a folder. Open its index if it made
+        // one, else the page itself, else just select the new folder.
+        const has = (p) => nodes.some((n) => n.page && n.path === p);
+        if (has(name)) await openPage(name);
+        else if (has(name + '/index')) await openPage(name + '/index');
+        else if (nodes.some((n) => !n.page && n.path === name)) selectFolder(name);
+        st('created ' + name + ' from ' + tmpl);
+        return;
+      }
+      // the server refused this name \u2014 loop back into askName seeded with
+      // it (keeping the template pick), so the retry is an edit not a redo
+      if (r && r.status === 409) st('a page by that name exists', false);
+      else st('template failed' + await errText(r), false);
+      seed = name;
+    }
   }
   $('newtmpl').onclick = newFromTemplate;
   $('newfile').onclick = () => newFile('');

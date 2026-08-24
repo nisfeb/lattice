@@ -26,26 +26,36 @@
   }
 
   async function moveFolder(oldPath) {
-    const newPath = await askName('move / rename folder ' + oldPath + ' to:', oldPath, 'move');
-    if (!newPath || newPath === oldPath) return;
-    const mapped = (p) => newPath + p.slice(oldPath.length);
-    st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
-    const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldPath) +
-      '&to=' + encodeURIComponent(newPath));
-    if (!r.ok) { st('move failed' + await errText(r), false); return; }
-    let moved = 0;
-    for (const n of nodes)
-      if (n.path === oldPath || n.path.startsWith(oldPath + '/')) {
-        if (n.page) moved++;
-        n.path = mapped(n.path);
+    let seed = oldPath;
+    for (;;) {
+      const newPath = await askName('move / rename folder ' + oldPath + ' to:', seed, 'move');
+      if (!newPath || newPath === oldPath) return;
+      const mapped = (p) => newPath + p.slice(oldPath.length);
+      st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
+      const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldPath) +
+        '&to=' + encodeURIComponent(newPath));
+      if (!(r.ok || r.offline)) {
+        // the server refused this name \u2014 loop back into askName seeded with
+        // it, so the retry is an edit, not a full retype
+        st('move failed' + await errText(r), false);
+        seed = newPath;
+        continue;
       }
-    if (newPath.includes('/')) addFolderNodes(newPath.slice(0, newPath.lastIndexOf('/')));
-    if (current && (current === oldPath || current.startsWith(oldPath + '/')))
-      current = mapped(current);
-    snapTree();
-    renderTree();
-    st('moved ' + oldPath + ' \u2192 ' + newPath +
-      (r.offline ? ' offline' : '') + ' (' + moved + ' pages)');
-    if (current) openPage(current);
-    else if (curFolder === oldPath) selectFolder(newPath);
+      let moved = 0;
+      for (const n of nodes)
+        if (n.path === oldPath || n.path.startsWith(oldPath + '/')) {
+          if (n.page) moved++;
+          n.path = mapped(n.path);
+        }
+      if (newPath.includes('/')) addFolderNodes(newPath.slice(0, newPath.lastIndexOf('/')));
+      if (current && (current === oldPath || current.startsWith(oldPath + '/')))
+        current = mapped(current);
+      snapTree();
+      renderTree();
+      st('moved ' + oldPath + ' \u2192 ' + newPath +
+        (r.offline ? ' offline' : '') + ' (' + moved + ' pages)');
+      if (current) openPage(current);
+      else if (curFolder === oldPath) selectFolder(newPath);
+      return;
+    }
   }

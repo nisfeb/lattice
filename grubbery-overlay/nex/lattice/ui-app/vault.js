@@ -126,6 +126,13 @@
     return Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) / 1000);
   };
 
+  // mirror of the server's +valid-name and of 10-shell.js's own copy (@ta
+  // segments; no '.'/'..'): reject a bad name BEFORE it goes into a batch.
+  // The bundle's copy is unreachable here — same reason KMAP/kindExt above
+  // are duplicated rather than imported.
+  const validName = (n) => String(n || '').split('/').every(
+    (s) => s.length && s !== '.' && s !== '..' && /^[a-z0-9._~-]+$/.test(s));
+
   const RESTORE = `lattice vault export
 
 pages/    every page you wrote, as a plain file named for its path and kind.
@@ -166,14 +173,18 @@ editor, or git will do if you only want to look.
     const list = [];
     const dirs = new Set();
     // skips are counted so the completion message can say the restore was
-    // lossy. A silent skip once cost every tex page in the archive.
-    let skipped = 0;
+    // lossy, split by reason so an extension problem and a name problem don't
+    // blur together. A silent skip once cost every tex page in the archive.
+    let skipExt = 0, skipName = 0;
     for (const { rel, text } of pages) {
       const dot = rel.lastIndexOf('.');
       const kind = dot > 0 ? KMAP[rel.slice(dot + 1).toLowerCase()] : null;
-      if (!kind) { skipped++; continue; }          // an unknown extension is skipped, not guessed
+      if (!kind) { skipExt++; continue; }          // an unknown extension is skipped, not guessed
       const name = rel.slice(0, dot);
-      if (!name) { skipped++; continue; }
+      // rejected here, before it can reach a batch: a name the server would
+      // 400 on takes the other 49 pages in its chunk down with it, since
+      // /page-save-batch's plain mode is all-or-nothing.
+      if (!name || !validName(name)) { skipName++; continue; }
       list.push({ name, kind, body: text });
       const pp = name.split('/'); pp.pop();
       for (let i = 1; i <= pp.length; i++) dirs.add(pp.slice(0, i).join('/'));
@@ -182,13 +193,33 @@ editor, or git will do if you only want to look.
       if (!cfg.hasNode(d)) { try { await mutate(cfg.api + '/folder-new?name=' + encodeURIComponent(d)); } catch (e) {} }
     const CHUNK = 50;
     let ok = 0, bad = 0;
+    const failed = [];        // first few names the ship itself refused
     for (let i = 0; i < list.length; i += CHUNK) {
-      const part = list.slice(i, i + CHUNK).map((it) => ({ name: it.name, type: it.kind, body: it.body || '\n' }));
+      const part = list.slice(i, i + CHUNK);
       let r = null;
-      try { r = await mutate(cfg.api + '/page-save-batch', { method: 'POST', body: JSON.stringify(part) }); } catch (e) {}
-      if (r && r.ok) ok += part.length; else bad += part.length;
+      try {
+        r = await mutate(cfg.api + '/page-save-batch', {
+          method: 'POST',
+          body: JSON.stringify(part.map((it) => ({ name: it.name, type: it.kind, body: it.body || '\n' }))),
+        });
+      } catch (e) {}
+      if (r && r.ok) { ok += part.length; continue; }
+      // the chunk was refused whole, same all-or-nothing shape the offline
+      // queue's drain hits on replay (08-offline.js ~509-549). Fall back to
+      // the single-page route one page at a time, so only the record that
+      // actually fails is the one that's lost, not the other 49.
+      for (const it of part) {
+        let one = null;
+        try {
+          one = await mutate(cfg.api + '/page-save?name=' + encodeURIComponent(it.name) +
+            '&type=' + it.kind, { method: 'POST', body: it.body || '\n' });
+        } catch (e) {}
+        if (one && one.ok) { ok++; continue; }
+        bad++;
+        if (failed.length < 5) failed.push(it.name);
+      }
     }
-    return { ok, bad, skipped };
+    return { ok, bad, skipped: skipExt + skipName, skipExt, skipName, failed };
   }
 
   async function restoreVault(file) {
@@ -226,8 +257,12 @@ editor, or git will do if you only want to look.
       // run unless something replaces it below, so the summary paints every
       // time, not only when something went wrong.
       const bits = ['pages: ' + u.ok + ' restored'];
-      if (u.skipped) bits.push(u.skipped + ' skipped (unknown extension)');
-      if (u.bad) bits.push(u.bad + ' failed');
+      if (u.skipExt) bits.push(u.skipExt + ' skipped (unknown extension)');
+      if (u.skipName) bits.push(u.skipName + ' skipped (bad name)');
+      if (u.bad) {
+        const more = u.bad > u.failed.length ? ' and ' + (u.bad - u.failed.length) + ' more' : '';
+        bits.push(u.bad + ' failed: ' + u.failed.join(', ') + more);
+      }
       st(bits.join(', '), !u.bad);
     }
 
@@ -378,16 +413,17 @@ editor, or git will do if you only want to look.
     if (s < 86400) return 'last run ' + Math.floor(s / 3600) + 'h ago';
     return 'last run ' + Math.floor(s / 86400) + 'd ago';
   };
-  // One period past last_run is the ordinary moment right before the next
-  // attempt fires, not a problem. Two periods past it is a schedule that
-  // should have run again by now and did not, whether that is a wedged
-  // scheduler or a run that keeps failing before it can stamp last_run, so
-  // it reads the same "did not complete" either way. A schedule that has
-  // never run is exempt: `ago` already says "never run" plainly, and a
-  // brand-new schedule is not overdue, it just has not had its first turn.
+  // The scheduler itself (desktop/src/backup.rs:46) fires at elapsed >=
+  // every_hours * 3600. Overdue here is one missed firing past that plus an
+  // hour of slack for the app being asleep or closed right at the edge:
+  // elapsed > (every_hours + 1) * 3600. manager.html's Preferences panel
+  // reads the same schedules and must use this identical formula, or the two
+  // panels disagree about the same backup. A schedule that has never run is
+  // exempt: `ago` already says "never run" plainly, and a brand-new schedule
+  // is not overdue, it just has not had its first turn.
   const overdue = (s) =>
     s.enabled && s.last_run > 0
-    && (Math.floor(Date.now() / 1000) - s.last_run) >= 2 * s.every_hours * 3600;
+    && (Math.floor(Date.now() / 1000) - s.last_run) > (s.every_hours + 1) * 3600;
   const bkId = () => 'bk' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
   // manual export and restore: the browser (download / file input) and the
