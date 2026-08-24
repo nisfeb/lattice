@@ -98,7 +98,23 @@ pub fn projection_for(
     // Bounded by the transport's own connect timeout (eyre.rs), so a dead
     // pier or a stale URL fails here, named, instead of mounting clean and
     // wedging the first real FUSE call against it.
-    proj.list().map_err(|e| format!("ship unreachable at {}: {}", cfg.url, e.msg))?;
+    // A 401/403 is the one failure this probe can name with confidence:
+    // projection.rs maps those to EACCES, so the ship answered and turned
+    // the cookie away. A message already carrying "http ..." also proves
+    // the ship answered, just with some other status, so it is shown as the
+    // transport wrote it rather than folded into "unreachable". Only a
+    // message with neither trait is a real connection failure.
+    proj.list().map_err(|e| {
+        let refused = std::io::Error::from_raw_os_error(e.errno).kind()
+            == std::io::ErrorKind::PermissionDenied;
+        if refused {
+            format!("ship at {} refused the credentials: {}", cfg.url, e.msg)
+        } else if e.msg.starts_with("http ") {
+            e.msg
+        } else {
+            format!("ship unreachable at {}: {}", cfg.url, e.msg)
+        }
+    })?;
     Ok(proj)
 }
 

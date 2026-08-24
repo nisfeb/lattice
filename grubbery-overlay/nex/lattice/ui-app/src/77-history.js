@@ -117,9 +117,14 @@
     }
     for (const v of revs.slice(0, 30)) {
       const a = document.createElement('a');
-      // ~2026.7.27..19.12.23..xxxx -> 7.27 19:12
-      const m = (v.updated || '').match(/\.(\d+\.\d+)\.\.(\d+)\.(\d+)/);
-      a.textContent = '#' + v.rev + (m ? ' \u00b7 ' + m[1] + ' ' + m[2] + ':' + m[3] : '');
+      // @da is always ship UTC. daToUnix (vault.js) runs the same fields
+      // through Date.UTC for the export mtime; do the same here so a chip
+      // reads in the viewer's own zone instead of bare, unlabeled ship time.
+      const m = /^~(\d+)\.(\d+)\.(\d+)\.\.(\d+)\.(\d+)\.(\d+)/.exec(v.updated || '');
+      const when = m && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]));
+      const label = when && when.toLocaleString(undefined,
+        { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+      a.textContent = '#' + v.rev + (label ? ' \u00b7 ' + label : '');
       a.className = v.rev === viewingRev ? 'on' : '';
       a.onclick = () => openRev(v.rev);
       histList.appendChild(a);
@@ -192,27 +197,40 @@
     if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     if (curFolder) { moveFolder(curFolder); return; }
     if (!current) { st('open something first', false); return; }
-    const newName = await askName('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
-      current, 'move');
-    if (!newName || newName === current) return;
-    if (mode === 'know') {
-      const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
-        '&to=' + encodeURIComponent(newName));
-      if (!r.ok) { st('move failed' + await errText(r), false); return; }
-      // the body is already in the editor. Rename in place, no refetch
-      knowGen++;
-      const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
-      if (k) k.key = newName;
-      current = newName;
-      pname.value = newName;
-      renderKnowChips();
-      renderKnowTree();
-      st('moved to ' + newName);
-      return;
-    }
-    const mv = await movePage(current, newName);
-    if (mv) {
-      st('moved to ' + newName + (mv.offline ? ' offline' : ''));
-      openPage(newName);
+    let seed = current;
+    for (;;) {
+      const newName = await askName('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
+        seed, 'move');
+      if (!newName || newName === current) return;
+      if (mode === 'know') {
+        const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
+          '&to=' + encodeURIComponent(newName));
+        if (!(r.ok || r.offline)) {
+          // the server refused this name — loop back into askName seeded with
+          // it, so the retry is an edit, not a full retype
+          st('move failed' + await errText(r), false);
+          seed = newName;
+          continue;
+        }
+        // the body is already in the editor. Rename in place, no refetch
+        knowGen++;
+        const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
+        if (k) k.key = newName;
+        current = newName;
+        pname.value = newName;
+        renderKnowChips();
+        renderKnowTree();
+        st('moved to ' + newName);
+        return;
+      }
+      const mv = await movePage(current, newName);
+      if (mv) {
+        st('moved to ' + newName + (mv.offline ? ' offline' : ''));
+        openPage(newName);
+        return;
+      }
+      // movePage already reported the cause — loop back into askName seeded
+      // with the rejected name
+      seed = newName;
     }
   };

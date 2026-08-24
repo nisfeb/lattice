@@ -484,10 +484,13 @@
       head.textContent = s.label + ' — ' + period(s.every_hours) + ', ' + keep
         + (s.enabled ? '' : ' (paused)');
       const sub = document.createElement('div');
-      // an hour of grace past the period covers a run that is merely late.
-      // The tick catches up within a minute of launch, so a gap wider than
-      // that means the runs since have been failing, and the only other
-      // trace of that is an editor status line the next message overwrites.
+      // The scheduler itself (backup.rs:46) calls a run due once elapsed
+      // reaches every_hours * 3600. This panel is stricter: it waits a full
+      // extra hour past that before calling the schedule overdue, because
+      // the tick catches up within a minute of launch, so a gap wider than
+      // one period plus an hour means the runs since have been failing. The
+      // only other trace of that is an editor status line the next message
+      // overwrites.
       const overdue = s.enabled && s.every_hours > 0 && s.last_run > 0
         && Math.floor(Date.now() / 1000) - s.last_run > (s.every_hours + 1) * 3600;
       sub.className = overdue ? 'err' : 'muted';

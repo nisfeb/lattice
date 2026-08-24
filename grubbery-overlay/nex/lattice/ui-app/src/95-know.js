@@ -176,11 +176,18 @@
     }
     if (!src.value) { st('empty body', false); return; }
     if (viewingRev !== null) { st('viewing a revision — use restore', false); return; }
+    // the pier serializes every write behind one shared `saving` flag, know
+    // or page (see save()/autosave()/saveGrub()). Without this guard,
+    // guardDirty's flush against a memory whose autosave was already mid-
+    // flight fired a second, fully concurrent POST to the same /know-save key.
+    if (saving) { savePending = true; return; }
+    saving = true;
     const sent = src.value;
     echoUntil = Date.now() + 60000;
     let r = null;
     try { r = await tfetch(api + '/know-save?key=' + encodeURIComponent(key),
       { method: 'POST', body: sent }); } catch {}
+    saving = false;
     echoUntil = Date.now() + 4000;
     if (shipGone(r)) {
       //  if the queue would not take it, it is NOT saved: leave the editor
@@ -191,6 +198,7 @@
       current = key;
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
+      if (savePending) { savePending = false; if (dirty) saveKnow(); }
       return;
     }
     if (!r.ok) { st('save failed' + await errText(r), false); return; }
@@ -205,9 +213,15 @@
     else knowKeys.push({ key, tags: [], updated: '', bytes: sent.length });
     renderKnowChips();
     renderKnowTree();
+    if (savePending) { savePending = false; if (dirty) saveKnow(); }
   }
 
   async function deleteKnow() {
+    // a delete reachable from inside a revision view (mode='know' skips the
+    // viewingRev guard the pages path enforces) must not leave the editor
+    // behind it read-only forever. Exit first, the way every other reset
+    // path here does.
+    exitRev();
     if (!current) return;
     if (!(await askConfirm('delete memory ' + current + '? (soft-delete, restorable)', 'delete'))) return;
     const doomed = current;
