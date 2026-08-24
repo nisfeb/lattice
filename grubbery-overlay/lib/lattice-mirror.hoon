@@ -85,13 +85,6 @@
   |=  [a=path b=@t]
   ^-  tape
   (lit-ud `@ud`(sham a b))
-::  +visit-id: deterministic per recorded visit, so re-upserting the
-::  history window is idempotent.
-::
-++  visit-id
-  |=  [s=@p pax=path at=@da]
-  ^-  tape
-  (lit-ud `@ud`(sham s pax at))
 ::  ── schema ──────────────────────────────────────────────────────────
 ::  ONE create per list element, and the caller pokes each element as
 ::  its OWN poke, expected-error swallowed. The removed catalog learned
@@ -106,8 +99,8 @@
   :~  "CREATE TABLE lattice-pages (doc-id @ud, pax @t, kind @t, title @t, updated @da, share @t, live @ud) PRIMARY KEY (doc-id);"
       "CREATE TABLE lattice-knows (know-key @t, updated @da, live @ud) PRIMARY KEY (know-key);"
       "CREATE TABLE lattice-know-tags (tag-id @ud, know-key @t, tag @t, live @ud) PRIMARY KEY (tag-id);"
-      "CREATE TABLE lattice-follows (follow-id @ud, ship @p, pax @t, live @ud) PRIMARY KEY (follow-id);"
-      "CREATE TABLE lattice-visits (visit-id @ud, doc-id @ud, at @da) PRIMARY KEY (visit-id);"
+      "CREATE TABLE lattice-follows (follow-id @ud, ship @p, live @ud) PRIMARY KEY (follow-id);"
+      "CREATE TABLE lattice-visits (doc-id @ud, ship @p, pax @t, title @t, last @da, hits @ud) PRIMARY KEY (doc-id);"
       "CREATE TABLE lattice-docs (doc-id @ud, ship @p, pax @t, kind @t, title @t, seen-at @da, last-rev @ud) PRIMARY KEY (doc-id);"
   ==
 ::  per-table probes: one SELECT of the primary key column. An empty
@@ -123,7 +116,7 @@
       (probe "lattice-knows" "know-key" "''")
       (probe "lattice-know-tags" "tag-id" "0")
       (probe "lattice-follows" "follow-id" "0")
-      (probe "lattice-visits" "visit-id" "0")
+      (probe "lattice-visits" "doc-id" "0")
       (probe "lattice-docs" "doc-id" "0")
   ==
 ++  probe
@@ -137,8 +130,8 @@
 +$  page-row    [pax=path kind=@t title=@t updated=@da share=@t]
 +$  know-row    [key=path updated=@da]
 +$  tag-row     [key=path tag=@t]
-+$  follow-row  [=ship pax=path]
-+$  visit-row   [=ship pax=path at=@da]
++$  follow-row  [=ship ~]
++$  visit-row   [=ship pax=path title=@t last=@da hits=@ud]
 ::  ── upsert builders ─────────────────────────────────────────────────
 ::  Each curated row gets a matched UPDATE + INSERT pair derived from
 ::  one literal set, the pattern the removed catalog used to make
@@ -242,17 +235,14 @@
 ::
 ++  follow-lits
   |=  r=follow-row
-  ^-  [id=tape sp=tape px=tape]
-  :*  (lit-ud `@ud`(sham ship.r pax.r))
-      (lit-p ship.r)
-      (lit-t (trip (spat pax.r)))
-  ==
+  ^-  [id=tape sp=tape]
+  [(lit-ud `@ud`(sham ship.r ~)) (lit-p ship.r)]
 ++  follow-update
   |=  r=follow-row
   ^-  tape
   =+  (follow-lits r)
   %-  zing
-  :~  "UPDATE lattice-follows SET ship = "  sp  ", pax = "  px
+  :~  "UPDATE lattice-follows SET ship = "  sp
       ", live = 1 WHERE follow-id = "  id  ";"
   ==
 ++  follow-insert
@@ -260,27 +250,47 @@
   ^-  tape
   =+  (follow-lits r)
   %-  zing
-  :~  "INSERT INTO lattice-follows (follow-id, ship, pax, live) VALUES ("
-      id  ", "  sp  ", "  px  ", 1);"
+  :~  "INSERT INTO lattice-follows (follow-id, ship, live) VALUES ("
+      id  ", "  sp  ", 1);"
   ==
 ++  follow-dead
   |=  r=follow-row
   ^-  tape
   %-  zing
   :~  "UPDATE lattice-follows SET live = 0 WHERE follow-id = "
-      (lit-ud `@ud`(sham ship.r pax.r))  ";"
+      (lit-ud `@ud`(sham ship.r ~))  ";"
   ==
-::  visits are immutable log rows: INSERT only, duplicate key expected
-::  and swallowed on every re-upsert of the current history window.
+::  visits mirror the history grub, which keeps ONE entry per url with
+::  its last visit time and hit count (lib/lattice-history), so a visit
+::  row is a doc-id-keyed upsert, not an append-only event. Rows whose
+::  source entry has expired out of the history window persist under
+::  the best-effort stance the doc gives the seen tables.
 ::
+++  visit-lits
+  |=  r=visit-row
+  ^-  [id=tape sp=tape px=tape tt=tape ls=tape ht=tape]
+  :*  (doc-id ship.r pax.r)
+      (lit-p ship.r)
+      (lit-t (trip (spat pax.r)))
+      (lit-cord title.r)
+      (urq-da last.r)
+      (lit-ud hits.r)
+  ==
+++  visit-update
+  |=  r=visit-row
+  ^-  tape
+  =+  (visit-lits r)
+  %-  zing
+  :~  "UPDATE lattice-visits SET title = "  tt  ", last = "  ls
+      ", hits = "  ht  " WHERE doc-id = "  id  ";"
+  ==
 ++  visit-insert
   |=  r=visit-row
   ^-  tape
+  =+  (visit-lits r)
   %-  zing
-  :~  "INSERT INTO lattice-visits (visit-id, doc-id, at) VALUES ("
-      (visit-id ship.r pax.r at.r)  ", "
-      (doc-id ship.r pax.r)  ", "
-      (urq-da at.r)  ");"
+  :~  "INSERT INTO lattice-visits (doc-id, ship, pax, title, last, hits) VALUES ("
+      id  ", "  sp  ", "  px  ", "  tt  ", "  ls  ", "  ht  ");"
   ==
 ::  +batch: join statements into one multi-statement script. Every
 ::  builder already ends its statement with a semicolon, so this is a
@@ -294,4 +304,24 @@
   ?~  stmts  ""
   =/  all=(list tape)  stmts
   (zing (join " " all))
+::  ── reconciler state ────────────────────────────────────────────────
+::  +mirror-cursor: the cursor grub's noun (docs/obelisk-mirror.md
+::  section 5). beacon is the beacon value of the last completed pass.
+::  The per-domain maps are content stamps, and for the curated domains
+::  they double as the tombstone basis: a key present here and absent
+::  from the source is a row to mark dead. visits keys by the history
+::  entry's url cord, its source's own key.
+::
++$  mirror-cursor
+  $:  beacon=@ud
+      pages=(map path @)
+      knows=(map path @da)
+      tags=(set [path @t])
+      follows=(set @p)
+      visits=(map @t @)
+  ==
+::  +obk-req: one query request poked at the owner fiber, carrying the
+::  road where the caller waits for its result grub.
+::
++$  obk-req  [db=@tas urql=tape res-pax=path res-nom=@ta]
 --
