@@ -217,16 +217,18 @@
   }
 
   async function deleteKnow() {
-    // a delete reachable from inside a revision view (mode='know' skips the
-    // viewingRev guard the pages path enforces) must not leave the editor
-    // behind it read-only forever. Exit first, the way every other reset
-    // path here does.
-    exitRev();
     if (!current) return;
     if (!(await askConfirm('delete memory ' + current + '? (soft-delete, restorable)', 'delete'))) return;
     const doomed = current;
     const r = await mutate(api + '/know-delete?key=' + encodeURIComponent(doomed));
     if (!r.ok) { st('delete failed' + await errText(r), false); return; }
+    // a delete reachable from inside a revision view (mode='know' skips the
+    // viewingRev guard the pages path enforces) must not leave the editor
+    // behind it read-only forever. Exit ONLY on success: exiting up front
+    // left a declined confirm holding the old revision's body, editable and
+    // uncued, one keystroke from autosaving history over the live memory.
+    // An aborted delete keeps the revision view exactly as it was.
+    exitRev();
     current = null;
     pname.value = '';
     pname.readOnly = false;

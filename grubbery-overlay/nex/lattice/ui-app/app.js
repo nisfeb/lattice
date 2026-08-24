@@ -1133,9 +1133,13 @@
     // answered nothing while dirty stayed set. That read like a flush that
     // failed, when the real save was actually about to land. Wait for the
     // flight already under way instead. The cap keeps a hung request from
-    // trapping navigation forever.
+    // trapping navigation forever, and it must OUTLAST the save's own
+    // timeout or the wait gives up on a flight that is still legal: tfetch
+    // defaults to 30s (08-offline.js, widened deliberately for a queued
+    // pier), so a shorter cap here reintroduced the false discard prompt
+    // for any save landing past it. 30s of flight plus a beat to settle.
     let waited = 0;
-    while (saving && waited < 15000) {
+    while (saving && waited < 32000) {
       await new Promise((r) => setTimeout(r, 100));
       waited += 100;
     }
@@ -6433,16 +6437,18 @@
   }
 
   async function deleteKnow() {
-    // a delete reachable from inside a revision view (mode='know' skips the
-    // viewingRev guard the pages path enforces) must not leave the editor
-    // behind it read-only forever. Exit first, the way every other reset
-    // path here does.
-    exitRev();
     if (!current) return;
     if (!(await askConfirm('delete memory ' + current + '? (soft-delete, restorable)', 'delete'))) return;
     const doomed = current;
     const r = await mutate(api + '/know-delete?key=' + encodeURIComponent(doomed));
     if (!r.ok) { st('delete failed' + await errText(r), false); return; }
+    // a delete reachable from inside a revision view (mode='know' skips the
+    // viewingRev guard the pages path enforces) must not leave the editor
+    // behind it read-only forever. Exit ONLY on success: exiting up front
+    // left a declined confirm holding the old revision's body, editable and
+    // uncued, one keystroke from autosaving history over the live memory.
+    // An aborted delete keeps the revision view exactly as it was.
+    exitRev();
     current = null;
     pname.value = '';
     pname.readOnly = false;
