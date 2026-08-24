@@ -323,7 +323,42 @@ Every growth axis has a cap and an eviction path.
 Each phase is independently useful and independently abandonable. Nothing
 in phase 1 assumes the later phases exist.
 
-## 12. Testing
+## 12. The grubbery inline read path
+
+After this specification was first written, grubbery gained a change that
+affects phase 2. Commit 6a75654 on grubbery's develop branch answers GET
+requests under `/grubbery/api` for files, directory listings, and trees
+synchronously inside the agent, with no request grub, no fiber, and no
+event-log record per read. The commit message credits the read-floor
+measurements from issue 48 and removes roughly 166 ms of per-read
+overhead on those URLs. Three consequences for this design.
+
+1. The phase 2 snapshot route becomes a plain file read. The drip already
+   writes grubs, so it can maintain one snapshot grub holding the jammed
+   index, and the client fetches it through
+   `/grubbery/api/file/<path-to-snapshot>` on the fast path instead of a
+   custom lattice route. The client already refreshes only when the index
+   revision moves, so the missing cache headers on the fast path cost
+   nothing. This deletes a planned route and makes the sync cheaper than
+   the design assumed.
+2. The fast path is gated to the owner, which fits the snapshot use
+   exactly and rules the path out for anything a visitor reads. Reader
+   pages and clearweb content stay on the lattice routes.
+3. Nothing else in the design moves. Search stays a lattice route because
+   it is computed, not a file read. The drip's ship-to-ship peeks are
+   unrelated machinery. The argument for client-side fuzzy matching was
+   never only the 200 ms floor, it was that per-keystroke round trips of
+   any size lose to local matching, so the conclusion survives a faster
+   read path.
+
+Adopting the fast path requires ricsul's grubbery core to take the
+develop commits between its current version and 6a75654, which include
+invasive fiber semantics changes. That upgrade is its own project with
+its own testing, and phase 2 should treat the fast path as an
+optimization to adopt when the core catches up, with the custom route as
+the fallback that works today.
+
+## 13. Testing
 
 Phase 1 lands with the same discipline the last month established.
 
