@@ -36,7 +36,7 @@ batch, no grub may grow with the corpus, and the page view path may not
 gain a single network round trip.
 
 Obelisk itself does not return in this design, and the omission is
-deliberate. Three reasons, in order of weight.
+deliberate. Three reasons follow, in order of weight.
 
 1. The storage failure is structural, not a bug in how the first catalog
    used it. Obelisk's model wants its tables together as one typed noun,
@@ -73,7 +73,10 @@ qualification.
 
 A relational engine earns its place in a feature that needs real joins
 over structured records at a low write rate. The catalog is not that
-feature.
+feature. Obelisk does return in a different role, a one-way read-only
+mirror of record-shaped metadata for cross-application queries, designed
+in `docs/obelisk-mirror.md`. Nothing above changes, because a disposable
+projection carries none of the costs of a home.
 
 ## 2. What already exists
 
@@ -108,21 +111,23 @@ flowchart LR
     subgraph capture [Capture, rides existing events]
         V[foreign page view] -->|existing %visit poke| W[writer fiber]
         W -->|append tuple| Q[catalog/in grub]
-        S[own page save] -->|existing index delta| B
+        S[own page save]
     end
     subgraph drip [Drip, its own fiber]
-        D[catalog.sig fiber] -->|read past cursor| Q
-        D -->|remote peek body| P[peer ship]
+        D[catalog.sig fiber] -->|remote peek body| P[peer ship]
         D -->|tokenize + one bole dart| B[256 postings buckets /idx/b]
         D -->|same dart| M[64 meta buckets /idx/m]
         D -->|advance| C[catalog/cursor grub]
     end
     subgraph query [Query]
-        U[search request] -->|one bucket peek per word| B
-        U -->|one peek per shown result| M
+        U[search request]
         CL[client] -->|GET catalog-sync, cached by rev| SN[jammed snapshot]
         CL -->|fuzzy and vector match locally| CL
     end
+    S -->|existing index delta| B
+    D -->|read past cursor| Q
+    U -->|one bucket peek per word| B
+    U -->|one peek per shown result| M
 ```
 
 The three regions have different rhythms. Capture is synchronous but tiny.
@@ -154,8 +159,16 @@ All new storage is constant in grub count and bounded in size.
    is `mug` of the key modulo 64, a pure name computation, so a lookup
    never enumerates the directory (native-index.md fact 3).
 
+A document's permanent identity is frozen here: the pair of its source
+ship and its path, with the canonical string form `urb://~ship/path`. A
+revision qualifies a version and is never part of identity. Any external
+system that references catalog documents keys them by `doc-id`, computed
+as `(sham ship path)` and rendered as a `@ud` decimal. The obelisk
+mirror (`docs/obelisk-mirror.md`) is the first such system and the
+reason the freeze happens now rather than later.
+
 Foreign page bodies are not stored. A search result carries the pointer
-`urb://ship/path` and the page is fetched live when opened. The snippet is
+`urb://~ship/path` and the page is fetched live when opened. The snippet is
 the fallback when the peer is down. This bounds storage at roughly 600
 bytes per seen page. Twenty thousand seen pages cost about 12 MB across
 the buckets, which is well inside loom comfort.
@@ -223,7 +236,7 @@ sequenceDiagram
         D->>P: remote peek body, entry 1
         Note over D,P: each remote wait yields the event loop
         P-->>D: body or timeout
-        D->>P: remote peek body, entry 2 ... 8
+        D->>P: remote peek body, entries 2 through 8
         P-->>D: bodies
         D->>D: tokenize, cap 16 KB per body
         D->>B: one bole dart, postings deltas plus meta cards
