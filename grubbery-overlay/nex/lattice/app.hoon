@@ -155,7 +155,6 @@
         ::  obk-out holds one ephemeral result grub per in-flight caller.
         ::  mirror.sig is the reconciler, cursor its per-source memory,
         ::  config.json the enabled flag.
-            [%fall %& [/mirror %'obelisk.sig'] [[/ %sig] ~]]
             [%fall %| /mirror/obk-out empty-dir:loader]
             [%fall %& [/mirror %'mirror.sig'] [[/ %sig] ~]]
             [%fall %& [/mirror %cursor] [[/lattice %mirror-cursor] *mirror-cursor:lm]]
@@ -201,8 +200,26 @@
         ::  lay down the built-in page-tree templates (idempotent; skips if the
         ::  user already has them). Users instantiate a copy under /page.
         ;<  ~  bind:m  (ensure-shipped-templates root)
+        ;<  ~  bind:m  sweep-obk-out
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
+        ::  strays from fire-and-forget gall pokes: the ack arrives as
+        ::  an ordinary poke long after the poker stopped caring.
+        ?:  =([/ %poke-ack] p.sage)  $
+        ?:  =([/ %timer-wake] p.sage)  $
+        ::  obelisk round-trips ride the writer: the owner-fiber design
+        ::  could not receive fiber pokes on this core, and the writer
+        ::  is the one consumer proven to. Serialization comes free; a
+        ::  slow query queues saves behind it for at most its 15s cap.
+        ?:  =([/lattice %obk-req] p.sage)
+          =/  req=obk-req:lm  !<(obk-req:lm q.sage)
+          ;<  ~  bind:m  (mirror-trace %req-got)
+          ;<  res=(each (list cmd-result:ast) tang)  bind:m
+            (obelisk-run-one db.req urql.req)
+          ;<  ~  bind:m  (mirror-trace ?:(?=(%& -.res) %req-done-ok %req-done-err))
+          ;<  ~  bind:m
+            (put-file [%& %& res-pax.req res-nom.req] [/lattice %obk-res] res)
+          $
         ;<  now=@da  bind:m  bowl-now
         ;<  ~  bind:m  (apply-action root now sage)
         ::  bump the change beacon so open readers live-reload (see +bump-rev).
@@ -221,6 +238,7 @@
       ::  the writer below.
           [~ %'shares.sig']
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /shares: failed")
+        ~&  >  %shares-fiber-up
         ::  root is NOT ambient in on-file. Each case that needs it derives it
         ::  from its own rail, exactly as the writer above does.
         ;<  here=rail:tarball  bind:m  get-here-abs:io
@@ -416,33 +434,11 @@
           [~ %'fs.sig']
         ;<  ~  bind:m  (rise-wait:io prod "%lattice fs port: failed")
         (lick-serve:io fs-port fs-op)
-      ::  /mirror/obelisk.sig: the serializing owner for %obelisk the desk
-      ::  (docs/obelisk-mirror.md section 6). Owns the single /server sub;
-      ::  takes %obk-req pokes one at a time, runs the round-trip
-      ::  (+obelisk-run-one), writes the result to the caller's grub. One
-      ::  in flight ever, so results can't cross callers on the shared sub.
-          [[%mirror ~] %'obelisk.sig']
-        ;<  ~  bind:m  (rise-wait:io prod "%lattice obelisk owner: failed")
-        ::  clear result grubs orphaned by callers that timed out before a
-        ::  prior run wrote their answer. Nothing here is live at (re)start.
-        ;<  ~  bind:m  sweep-obk-out
-        |-
-        ;<  =sage:tarball  bind:m  take-poke:io
-        ::  obelisk-run-one arms a 15s wait per call and can't cancel it, so
-        ::  a finished query's timer fires here as a stray poke. Ignore it.
-        ?:  =([/ %timer-wake] p.sage)  $
-        ?.  =([/lattice %obk-req] p.sage)
-          ~&([%lattice-obk-bad-req p.sage] $)
-        =/  req=obk-req:lm  !<(obk-req:lm q.sage)
-        ;<  res=(each (list cmd-result:ast) tang)  bind:m
-          (obelisk-run-one db.req urql.req)
-        ;<  ~  bind:m
-          (put-file [%& %& res-pax.req res-nom.req] [/lattice %obk-res] res)
-        $
       ::  /mirror/mirror.sig: the commons reconciler (docs/obelisk-mirror.md
       ::  section 5). The loop lives in +mirror-loop.
           [[%mirror ~] %'mirror.sig']
         ;<  ~  bind:m  (rise-wait:io prod "%lattice mirror: failed")
+        ;<  ~  bind:m  (mirror-trace %reconciler-started)
         mirror-loop
       ==
     --
@@ -1615,7 +1611,7 @@
       ?~  d  mirror-db:lm
       (fall (mole |.(;;(@tas u.d))) mirror-db:lm)
     ;<  res=(each (list cmd-result:ast) tang)  bind:m
-      (obelisk-query db (trip bod))
+      (obelisk-query 2 db (trip bod))
     (send-json eyre-id (obelisk-json res))
       [%'POST' %page-share]
     =/  name=(unit @t)  (~(get by args) 'name')
@@ -8377,7 +8373,10 @@
   ^-  form:m
   =/  pax=path  (keen-path rel rev)
   ;<  res=(unit (unit page))  bind:m
-    %+  (with-timeout:io ,(unit page))
+    ::  develop HEAD's with-timeout takes a leading wire for its timer,
+    ::  so concurrent timeouts in one fiber stay distinguishable.
+    %^  (with-timeout:io ,(unit page))
+        /keen-to
       mesa-timeout
     (keen:io shp pax)
   ::  outer ~: our own deadline fired, so cancel the parked request.
@@ -8599,11 +8598,27 @@
 ::  (see +obelisk-run-one). ~ = delivered, `tang = gall could not
 ::  deliver (desk missing).
 ::
+::  +gall-poke-fire: emit a gall poke through the /sys/gall service
+::  WITHOUT waiting for the poke-ack. The core's ack routing back into
+::  nexus fibers never arrives on this build, so every ack-waiting
+::  primitive (gall-poke, gall-poke-or-nack) wedges its fiber forever.
+::  The emit side is proven (the watch poke materializes the sub), and
+::  obelisk positive-acks everything, so the ack carries nothing we
+::  need. The stray ack later arrives as a [/ %poke-ack] poke; loops
+::  that take pokes skip it.
+::
+++  gall-poke-fire
+  |=  [=dude:gall =page]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  our=@p  bind:m  get-our:io
+  (poke:io &+&+[/sys/gall %'main.sig'] [[/ %gall-poke] [[our dude] page]])
 ++  obelisk-exec
   |=  [db=@tas urql=tape]
   =/  m  (fiber:fiber:nexus ,(unit tang))
   ^-  form:m
-  (gall-poke-or-nack:io %obelisk [%obelisk-action [%tape db urql]])
+  ;<  ~  bind:m  (gall-poke-fire %obelisk [%obelisk-action [%tape db urql]])
+  (pure:m ~)
 ::  +obelisk-sub-base: the grubbery tree dir where obelisk's /server
 ::  fact is materialized by a %gall-watch subscription. The result
 ::  lands at .../data, the live flag at .../live.
@@ -8637,9 +8652,11 @@
   ?:  live  (pure:m ~)
   =/  road=road:tarball  [%& %& (obelisk-sub-base our) %live]
   ;<  ex=?  bind:m  (peek-exists:io road)
+  ;<  ~  bind:m  (mirror-trace %sub-watching)
   ;<  ~  bind:m
     ?:  ex  (pure:m ~)
-    (gall-poke-or-nack-drop %grubbery [%gall-watch [our %obelisk /server]])
+    (gall-poke-fire %grubbery [%gall-watch [our %obelisk /server]])
+  ;<  ~  bind:m  (mirror-trace %watch-poked)
   (obelisk-wait-live our 40)
 ++  gall-poke-or-nack-drop
   |=  [=dude:gall =page]
@@ -8663,30 +8680,40 @@
 ::  owner fiber (/mirror/obelisk.sig), which guarantees one-in-flight;
 ::  callers reach it via +obelisk-query.
 ::
+::  waiting is POLLING here, never a keep. A keep on a road whose grub
+::  does not exist yet blocks until the grub is born on this core, so
+::  the salvage era's keep-before-create idiom deadlocks every caller.
+::  A bounded peek loop is dumb, core-proof, and cheap (local peeks).
+::
+++  poll-road
+  |=  [road=road:tarball tries=@ud]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ?:  =(0 tries)  (pure:m %.n)
+  ;<  ex=?  bind:m  (peek-exists:io road)
+  ?:  ex  (pure:m %.y)
+  ;<  ~  bind:m  (sleep-draining (div ~s1 4))
+  (poll-road road (dec tries))
 ++  obelisk-run-one
   |=  [db=@tas urql=tape]
   =/  m  (fiber:fiber:nexus ,(each (list cmd-result:ast) tang))
   ^-  form:m
   ;<  our=@p  bind:m  get-our:io
   =/  data-road=road:tarball  [%& %& (obelisk-sub-base our) %data]
+  ;<  ~  bind:m  (mirror-trace %run-one-start)
   ;<  ~  bind:m  (obelisk-ensure-sub our)
-  ::  clear any stale result first: an identical result to last time
-  ::  would never fire a wave (save suppresses no-op writes) and the
-  ::  fiber would hang. Culling makes the next fact a fresh create.
+  ;<  ~  bind:m  (mirror-trace %sub-ensured)
+  ::  clear any stale result first, so the grub's REAPPEARANCE is the
+  ::  completion signal the poll below waits for.
   ;<  *  bind:m  (cull-soft:io data-road)
-  ::  keep BEFORE poking so the fact's create-wave can't be missed.
-  ;<  *  bind:m  (keep:io /obelisk-q data-road ~)
   ;<  err=(unit tang)  bind:m  (obelisk-exec db urql)
-  ?^  err
-    ;<  ~  bind:m  (drop:io /obelisk-q data-road)
-    (pure:m [%| u.err])
-  ::  a down/unresponsive desk returns an error rather than hanging.
-  ;<  now=@da  bind:m  get-time:io
-  =/  until=@da  (add now ~s15)
-  ;<  ~  bind:m  (send-wait:io until)
-  ;<  nw=news-or-wake:io  bind:m  (take-news-or-wake-until /obelisk-q until)
-  ;<  ~  bind:m  (drop:io /obelisk-q data-road)
-  ?:  ?=(%wake -.nw)
+  ;<  ~  bind:m  (mirror-trace ?:(?=(^ err) %exec-nacked %exec-acked))
+  ?^  err  (pure:m [%| u.err])
+  ::  a down/unresponsive desk returns an error rather than hanging:
+  ::  60 tries at a quarter second is the old 15s deadline.
+  ;<  got=?  bind:m  (poll-road data-road 60)
+  ;<  ~  bind:m  (mirror-trace ?:(got %poll-hit %poll-miss))
+  ?.  got
     (pure:m [%| ~[leaf+"obelisk: query timed out (desk down?)"]])
   ;<  res=(each (list cmd-result:ast) tang)  bind:m  (obelisk-read-data data-road)
   ::  settle: obelisk kicks /server right after the fact; let grubbery
@@ -8701,35 +8728,36 @@
 ::  shared /server sub, so concurrent callers never read each other's
 ::  results. Absolute roads so it resolves from any caller depth.
 ::
+::  depth is the CALLER'S static fiber depth below the nexus root:
+::  2 for HTTP request fibers (/ui/requests/<id>), 1 for the
+::  reconciler (/mirror/mirror.sig). Static like poke-eval's literal
+::  up-2, because computing it dynamically was itself a stall.
 ++  obelisk-query
-  |=  [db=@tas urql=tape]
+  |=  [depth=@ud db=@tas urql=tape]
   =/  m  (fiber:fiber:nexus ,(each (list cmd-result:ast) tang))
   ^-  form:m
+  ;<  ~  bind:m  (mirror-trace %caller-entered)
   ;<  rw=wire  bind:m  (nonce:io /obk-res)
+  ;<  ~  bind:m  (mirror-trace %caller-nonced)
   =/  nom=@ta  (rear rw)
   =/  res-dir=path  (weld app-base:lu /mirror/obk-out)
   =/  res-road=road:tarball  [%& %& res-dir nom]
-  ::  keep the (fresh, unique-nonce) result grub BEFORE poking, so the
-  ::  owner's create-wave can't be missed.
-  ;<  *  bind:m  (keep:io rw res-road ~)
-  ;<  ~  bind:m  (poke-obk [db urql res-dir nom])
-  ;<  now=@da  bind:m  get-time:io
+  ;<  ~  bind:m  (poke-obk depth [db urql res-dir nom])
+  ;<  ~  bind:m  (mirror-trace %caller-poked)
   ::  the owner runs its own 15s wait per query; margin for a queue.
-  =/  until=@da  (add now ~s30)
-  ;<  ~  bind:m  (send-wait:io until)
-  ;<  nw=news-or-wake:io  bind:m  (take-news-or-wake-until rw until)
-  ;<  ~  bind:m  (drop:io rw res-road)
-  ?:  ?=(%wake -.nw)
-    ;<  *  bind:m  (cull-soft:io res-road)
+  ::  120 tries at a quarter second is the old 30s deadline.
+  ;<  got=?  bind:m  (poll-road res-road 120)
+  ;<  ~  bind:m  (mirror-trace ?:(got %caller-poll-hit %caller-poll-miss))
+  ?.  got
     (pure:m [%| ~[leaf+"obelisk: owner timed out"]])
   ;<  res=(each (list cmd-result:ast) tang)  bind:m  (obk-read-res res-road)
   ;<  *  bind:m  (cull-soft:io res-road)
   (pure:m res)
 ++  poke-obk
-  |=  req=obk-req:lm
+  |=  [depth=@ud req=obk-req:lm]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (poke:io [%& %& (weld app-base:lu /mirror) %'obelisk.sig'] [[/lattice %obk-req] req])
+  (poke:io [%| depth %& ~ %'main.sig'] [[/lattice %obk-req] req])
 ::  +sweep-obk-out: cull every result grub under /mirror/obk-out. Run
 ::  once at owner startup: anything there is a caller that timed out or
 ::  died before the owner wrote its result. Callers are ephemeral, so
@@ -8763,7 +8791,11 @@
   ;<  vw=view:nexus  bind:m  (peek:io res-road ~)
   ?.  ?=([%file *] vw)
     (pure:m [%| ~[leaf+"obelisk: no result grub"]])
-  =/  parsed  (mule |.(!<((each (list cmd-result:ast) tang) (need-vase:tarball sang.vw))))
+  ::  clam the raw noun, never !<: the obk-res marc is a noun
+  ::  passthrough, so the stored vase is untyped and a typed extract
+  ::  nest-fails on every read.
+  =/  raw=*  q:(need-vase:tarball sang.vw)
+  =/  parsed  (mule |.(;;((each (list cmd-result:ast) tang) raw)))
   ?:  ?=(%| -.parsed)  (pure:m [%| p.parsed])
   (pure:m p.parsed)
 ::  +obelisk-read-data: read the materialized /server fact grub. The
@@ -8828,11 +8860,21 @@
 ::  timers: every obelisk round-trip crosses its own waits, so each
 ::  chunk is naturally its own event.
 ::
+::  +mirror-trace: file-based tracing for the mirror fibers. Console
+::  prints from nexus fibers are not reliably visible on this harness,
+::  so debugging writes a grub the http api can read.
+++  mirror-trace
+  |=  msg=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  now=@da  bind:m  get-time:io
+  ;<  ~  bind:m  (ensure-dirs (weld app-base:lu /mirror) /tr)
+  (put-file [%& %& (weld app-base:lu /mirror/tr) msg] [/ %json] s+(scot %da now))
 ++  mirror-run
   |=  urql=tape
   =/  m  (fiber:fiber:nexus ,(each (list cmd-result:ast) tang))
   ^-  form:m
-  (obelisk-query mirror-db:lm urql)
+  (obelisk-query 1 mirror-db:lm urql)
 ::  +mirror-rows-one-by-one: the per-item fallback. A batch that
 ::  aborted replays one statement per poke, so one poisoned row costs
 ::  one row. Results are discarded: the next pass re-converges anything
@@ -9143,6 +9185,7 @@
   ^-  form:m
   |-
   ;<  on=?  bind:m  mirror-enabled
+  ~&  >  [%mirror-tick on=on]
   ?.  on
     ;<  ~  bind:m  (sleep-draining ~m30)
     $
