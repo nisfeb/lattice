@@ -123,6 +123,28 @@
   |=  [table=tape col=tape zero=tape]
   ^-  tape
   :(weld "FROM " table " WHERE " col " = " zero " SELECT " col ";")
+::  ── v1 cleanup ──────────────────────────────────────────────────────
+::  Ships that ran the first catalog carry its dead tables in the same
+::  lattice database. They are lattice's own prior output, unread since
+::  the catalog removal and rebuildable by definition, and two of them
+::  squat generic names (tags, knowledge) other commons apps may want.
+::  The marker probe finds catalog-pages; when it exists, bootstrap
+::  drops EXACTLY this list, one poke each, errors swallowed. A fixed
+::  list cannot touch anything that is not v1's.
+::
+++  v1-marker-urql
+  ^-  tape
+  (probe "catalog-pages" "path" "''")
+++  v1-drop-list
+  ^-  (list tape)
+  %+  turn
+    ^-  (list tape)
+    :~  "catalog-pages"  "catalog-headings"  "catalog-links"
+        "catalog-tags"  "catalog-manifests"  "catalog-pending"
+        "catalog-terms"  "catalog-meta"  "knowledge"  "tags"
+    ==
+  |=  t=tape
+  :(weld "DROP TABLE FORCE " t ";")
 ::  ── row types ───────────────────────────────────────────────────────
 ::  What the reconciler hands the builders. Auras stay hoon-native here;
 ::  encoding is the builders' job.

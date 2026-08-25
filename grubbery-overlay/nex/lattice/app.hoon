@@ -2245,6 +2245,34 @@
     (send-ok eyre-id)
       [%'GET' %settings]
     (send-view eyre-id (render-page-titled "" "" "" "settings" settings-html))
+      ::  commons mirror status for the settings page: is the %obelisk
+      ::  desk's agent running, and is the mirror enabled.
+      [%'GET' %obelisk-status]
+    ::  a %gu scry is blocked in fiber context, so presence is the sub's
+    ::  live grub (instant when the mirror has ever watched) with a real
+    ::  SELECT round trip as the fallback verdict (slow only when the
+    ::  desk is absent, which is exactly when the page says installing).
+    ;<  installed=?  bind:m  obelisk-installed
+    ;<  on=?  bind:m  mirror-enabled
+    %+  send-json  eyre-id
+    (pairs:enjs:format ~[['installed' b+installed] ['enabled' b+on]])
+      ::  fire the kiln install toward the distributor. Fire-and-forget
+      ::  by the same rule as every gall poke here (the ack never routes
+      ::  back to a fiber); the settings page polls /obelisk-status.
+      [%'POST' %obelisk-install]
+    ;<  ~  bind:m
+      (gall-poke-fire %hood [%kiln-install [%obelisk ~dister-nomryg-nilref %obelisk]])
+    (send-ok eyre-id)
+      [%'POST' %mirror-config]
+    =/  en=(unit @t)  (~(get by args) 'enabled')
+    ?~  en  (send-err eyre-id 400 'enabled=true|false required')
+    ?.  |(=('true' u.en) =('false' u.en))
+      (send-err eyre-id 400 'enabled=true|false required')
+    ;<  ~  bind:m
+      %^  put-file  [%& %& (weld app-base:lu /mirror) %'config.json']
+        [/ %json]
+      (pairs:enjs:format ~[['enabled' b+=('true' u.en)]])
+    (send-ok eyre-id)
       [%'GET' %marks]
     ;<  bms=bookmarks:lb  bind:m  read-bookmarks
     (send-view eyre-id (render-page-titled "" "" "" "marks" (marks-html bms)))
@@ -7191,6 +7219,13 @@
     ::  This page is a separate document from the editor bundle, so it loads
     ::  vault.js on its own; the external script is parser-blocking, so
     ::  LatticeVault exists by the time the wiring line runs.
+    "<h2>Commons mirror</h2>"
+    "<p class=\"muted\">Mirrors your pages, notes, tags and follows into the %obelisk database, where you (and your agents) can query across apps with urQL. Optional: without %obelisk everything else works unchanged.</p>"
+    "<p><span id=\"obst\" class=\"muted\">checking&hellip;</span></p>"
+    "<p><button type=\"button\" id=\"obinst\" class=\"btn\" hidden>Install %obelisk</button> "
+    "<label for=\"obon\" id=\"obonl\" hidden><input type=\"checkbox\" id=\"obon\"> mirror enabled</label></p>"
+    %-  trip
+    '<script>(function(){var st=document.getElementById("obst");var bi=document.getElementById("obinst");var lb=document.getElementById("obonl");var cb=document.getElementById("obon");function show(d){if(d.installed){bi.hidden=true;lb.hidden=false;cb.checked=!!d.enabled;st.textContent="%obelisk is installed."}else{bi.hidden=false;lb.hidden=true;st.textContent="%obelisk is not installed."}}function load(){fetch("/apps/lattice/obelisk-status").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="status unavailable"})}bi.onclick=function(){bi.disabled=true;st.textContent="installing from ~dister-nomryg-nilref (this can take a while)...";fetch("/apps/lattice/obelisk-install",{method:"POST"}).then(function(){var n=0;var t=setInterval(function(){n++;fetch("/apps/lattice/obelisk-status").then(function(r){return r.json()}).then(function(d){if(d.installed){clearInterval(t);bi.disabled=false;show(d)}else if(n>40){clearInterval(t);bi.disabled=false;st.textContent="still not installed - check your ship is connected and retry."}})},6000)})};cb.onchange=function(){fetch("/apps/lattice/mirror-config?enabled="+(cb.checked?"true":"false"),{method:"POST"}).then(load)};load()})();</script>'
     "<h2>Backup</h2>"
     "<div id=\"vaultui\"></div>"
     %-  trip
@@ -8971,6 +9006,10 @@
   ^-  form:m
   ;<  first=(list ?)  bind:m  probe-tables
   ?:  (levy first |=(f=? f))  (pure:m `*(set @ud))
+  ::  v1 cleanup rides the FIRST bootstrap only (mirror tables still
+  ::  missing): when the first catalog's marker table exists, drop its
+  ::  dead tables (lattice's own prior output) so the commons database
+  ::  carries only live vocabulary. Steady state never pays the probe.
   ;<  *  bind:m  (mirror-run create-db-urql:lm)
   ;<  ~  bind:m  (run-creates create-list:lm)
   ;<  again=(list ?)  bind:m  probe-tables
@@ -8983,6 +9022,19 @@
     ?~  fl  s
     $(fl t.fl, i +(i), s ?:(i.fl s (~(put in s) i)))
   (pure:m `fresh)
+::  v1 cleanup is a RUNBOOK STEP, not resident code: the automated
+::  version crashed the reconciler into a respawn storm and a
+::  once-per-ship cleanup never earned that risk. The statements live
+::  in v1-drop-list:lm; run them through POST /obelisk-query on any
+::  ship that ran the first catalog.
+++  obelisk-installed
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  our=@p  bind:m  get-our:io
+  ;<  live=?  bind:m  (obelisk-live our)
+  ?:  live  (pure:m %.y)
+  ;<  r=obk-out:lm  bind:m  (obelisk-query 2 mirror-db:lm "SELECT 1;")
+  (pure:m ?=(%& -.r))
 ++  run-creates
   |=  creates=(list tape)
   =/  m  (fiber:fiber:nexus ,~)
@@ -9202,7 +9254,9 @@
   ;<  on=?  bind:m  mirror-enabled
   ~&  >  [%mirror-tick on=on]
   ?.  on
-    ;<  ~  bind:m  (sleep-draining ~m30)
+    ::  a short disabled tick (one local config read) so the settings
+    ::  toggle takes effect within minutes, not half an hour.
+    ;<  ~  bind:m  (sleep-draining ~m5)
     $
   ;<  bv=@ud  bind:m  read-beacon-val
   ;<  cur=mirror-cursor:lm  bind:m  read-mirror-cursor
