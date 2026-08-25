@@ -128,9 +128,9 @@
 ::  lattice database. They are lattice's own prior output, unread since
 ::  the catalog removal and rebuildable by definition, and two of them
 ::  squat generic names (tags, knowledge) other commons apps may want.
-::  The marker probe finds catalog-pages; when it exists, bootstrap
-::  drops EXACTLY this list, one poke each, errors swallowed. A fixed
-::  list cannot touch anything that is not v1's.
+::  These are RUNBOOK material, run by hand through POST /obelisk-query
+::  on any ship that ran the first catalog. The automated version was
+::  removed after it destabilized the reconciler.
 ::
 ++  v1-marker-urql
   ^-  tape
@@ -342,10 +342,6 @@
       follows=(set @p)
       visits=(map @t @)
   ==
-::  +obk-req: one query request poked at the owner fiber, carrying the
-::  road where the caller waits for its result grub.
-::
-+$  obk-req  [db=@tas urql=tape res-pax=path res-nom=@ta]
 ::  ── the desk's result vocabulary ────────────────────────────────────
 ::  These mirror jackfoxy/obelisk sur/obelisk-ast.hoon as SHIPPED, not
 ::  grubbery's vendored copy, which has drifted: the desk renamed

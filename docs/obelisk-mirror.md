@@ -214,19 +214,19 @@ change.
 2. The cursor stays one grub, and every map in it is bounded: pages,
    knows, tags, and follows by curation (hundreds of entries in
    practice), visits by the history cap of 500. The curated maps
-   double as the tombstone basis (point 3). If a curated map ever
-   exceeds 10,000 entries, that domain falls back to the no-tombstone
-   stance of the seen tables rather than let the cursor grow without
-   bound.
-3. A changed source is mirrored in chunks of 32 rows. A chunk is one
-   multi-statement `UPDATE` poke covering all 32 rows, safe as a batch
-   because an update on an absent row no-ops cleanly, followed by one
-   small `INSERT` poke per row with the expected duplicate-key error
-   swallowed, the shipped quiet-ensure pattern. Inserts are never
-   batched, because one duplicate key would abort a batched poke whole
-   (section 2, point 6). The fiber takes a timer wait between chunks,
-   which is what creates the event boundary between batches
-   (native-index.md fact 6). Tombstoning runs only for the curated
+   double as the tombstone basis (point 3). A hard cap with a
+   no-tombstone fallback is deliberately not implemented until a real
+   vault approaches one.
+3. A changed source is mirrored as one small `INSERT` poke per brand
+   new row (expected duplicate-key errors swallowed, the shipped
+   quiet-ensure pattern) followed by multi-statement `UPDATE` pokes in
+   chunks of 32, safe as batches because an update on an absent row
+   no-ops cleanly. New rows appear in the update set too, which is
+   both the crash-safety net behind their inserts and what makes the
+   update verdict alone authoritative for the cursor. Inserts are
+   never batched, because one duplicate key would abort a batched poke
+   whole (section 2, point 6). Event boundaries between chunks come
+   from each round-trip's own waits (native-index.md fact 6). Tombstoning runs only for the curated
    domains, where the cursor's key map says exactly what was mirrored
    before: a pass diffs current keys against the map and tombstones
    the difference. The seen tables get no tombstones, as section 4
@@ -235,9 +235,12 @@ change.
    row at a time, so one poisoned row costs one row. This copies the
    drip's per-item fallback, and it is required by the all-or-nothing
    poke semantics (section 2, point 6).
-5. The cursor advances only after a source completes. A crash between
-   a poke and the cursor write means the source reruns, and reruns are
-   harmless because the upsert is idempotent.
+5. The cursor advances only when a source's writes LANDED: every
+   update batch's verdict (or its per-row replay's) gates the domain's
+   cursor fold, so a failed write keeps the old stamps and the next
+   pass retries it. A crash between a poke and the cursor write means
+   the source reruns, and reruns are harmless because the upsert is
+   idempotent.
 
 Backfill is not a separate protocol. Cursor resets are per source, so
 zeroing one source's revision or key map makes the next pass remirror
@@ -263,38 +266,41 @@ sequenceDiagram
 ```
 
 1. `POST /obelisk-query` is owner-gated and passes the body through as
-   urQL. The route holds the connection until the fact arrives or a 30
-   second deadline passes, exactly the deadline the first catalog used.
-2. One round-trip is in flight at a time, because the single
-   subscription to `/server` cannot pair overlapping answers to their
-   askers. Serialization lives in an owner fiber: every caller, HTTP
-   requests and the mirror's own probes alike, pokes the owner with
-   its query and a private result grub, and the owner runs them one
-   at a time. A concurrent caller therefore queues and waits its
-   turn, bounded by a 30 second deadline, rather than getting an
-   error, and a user query can never make the mirror misread busy as
-   broken.
+   urQL. The route holds the connection until the result lands or a 15
+   second poll deadline passes.
+2. Every caller runs its own round-trip. There is no owner fiber: the
+   core's ack routing could not sustain one, so callers poke the desk
+   directly and poll the shared `/server` materialization. The race
+   that polling alone would allow is closed by a NONCE: every script
+   carries a trailing `SELECT` of a fresh number, and a caller accepts
+   only a result carrying its own number. A concurrent caller's answer
+   fails the check and reads as not-yet-mine, so overlapping callers
+   cost retries, never wrong verdicts. Error results pass the check
+   unconditionally, which at worst misattributes one failure and a
+   retry converges.
 3. The same asynchrony means a synchronous MCP tool cannot serve reads.
    Agents query over authenticated HTTP. MCP writes remain possible but
    the mirror gives no reason for an external writer to exist.
-4. A presence probe is a schema-independent `SELECT 1;` through the
-   bridge. The mirror treats only a positively identified error, a
-   missing agent or a missing table, as a signal. A busy slot or a
-   timeout changes nothing and the pass just retries later. On absence
-   the fiber sleeps long between passes instead of failing.
+4. Presence is read from the subscription's live grub when it exists,
+   with a real `SELECT 1;` round-trip as the fallback verdict. The
+   settings page shows the result, offers the install from the
+   distributor when the desk is absent, and toggles the mirror's
+   enabled flag, which the reconciler rechecks within five minutes in
+   either state.
 5. Commons queries run inside gall events on obelisk's side, the same
    single-threaded cost the catalog refuses for its serving path. The
    mirror accepts it for a different traffic class: occasional,
    user-initiated, analytical. urQL has no `LIMIT`, so callers keep
    result sets bounded with `WHERE` windows, comparison on `at` or
-   `seen-at` being the intended pattern, and the bridge's 30 second
+   `seen-at` being the intended pattern, and the bridge's poll
    deadline bounds the caller's wait, not obelisk's event.
 
 ## 7. Failure modes
 
 1. Obelisk is not installed. The probe fails, the mirror sleeps, every
-   lattice feature is unaffected. Installing it later needs no action,
-   because the next pass finds a zeroed cursor and backfills.
+   lattice feature is unaffected. Install it from the settings page
+   (or `|install ~dister-nomryg-nilref %obelisk`) and enable the
+   mirror there; the next pass finds a zeroed cursor and backfills.
 2. Obelisk is reinstalled empty. Each cycle starts with per-table
    probes, one `SELECT` of the primary key column per mirrored table,
    before any schema poke, so a wiped store still shows its missing
@@ -311,16 +317,20 @@ sequenceDiagram
 4. A hostile or buggy value reaches the mirror. Text passes through
    `+urq-esc`, which neutralizes quote, backslash, and control bytes,
    the exact escaper the first catalog shipped and fuzzed.
-5. Obelisk wedges mid-pass. Pokes nack or time out, the source does not
-   complete, the cursor does not advance, and the next pass retries.
-   The mirror lags and says nothing false.
+5. Obelisk wedges mid-pass. Pokes nack or time out, the write
+   verdicts come back false, the affected domains keep their old
+   cursors, and the next pass retries them. The mirror lags and says
+   nothing false.
 
 ## 8. Phases
 
 1. Phase 1, built first because its sources all exist today, ships
-   the bridge (the owner fiber and `POST /obelisk-query`), the
-   bootstrap and probes, and the mirrors for own pages, knows, know
-   tags, follows, and visits.
+   the bridge (`POST /obelisk-query` with nonce-verified round trips),
+   the bootstrap and probes, the settings installer, and the mirrors
+   for own pages, knows, know tags, follows, and visits. Cleaning a
+   first-catalog database is a manual runbook step (the statements
+   ship in the lib), removed from resident code after it destabilized
+   the reconciler.
 2. Phase 2 adds `lattice-docs` off the catalog's meta buckets, once
    catalog v2 phase 1 exists to feed it.
 3. Phase 3 is the structured intel layer, specified separately, which

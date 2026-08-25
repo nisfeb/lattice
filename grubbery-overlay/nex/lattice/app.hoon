@@ -150,12 +150,11 @@
         ::  here the whole index is deleted on every load.
             [%fall %| /idx/b empty-dir:loader]
         ::  /mirror: the obelisk commons mirror (docs/obelisk-mirror.md).
-        ::  obelisk.sig serializes every round-trip against %obelisk the
-        ::  DESK (one shared /server sub, so results can't cross callers).
-        ::  obk-out holds one ephemeral result grub per in-flight caller.
-        ::  mirror.sig is the reconciler, cursor its per-source memory,
-        ::  config.json the enabled flag.
-            [%fall %| /mirror/obk-out empty-dir:loader]
+        ::  Callers run their own round-trips against %obelisk the DESK,
+        ::  each verified by a nonce echoed through the query, so the
+        ::  shared /server materialization cannot cross results between
+        ::  callers. mirror.sig is the reconciler, cursor its per-source
+        ::  memory, config.json the enabled flag.
             [%fall %& [/mirror %'mirror.sig'] [[/ %sig] ~]]
             [%fall %& [/mirror %cursor] [[/lattice %mirror-cursor] *mirror-cursor:lm]]
             [%fall %& [/mirror %'config.json'] [[/ %json] (pairs:enjs:format ~[['enabled' b+|]])]]
@@ -220,7 +219,6 @@
       ::  the writer below.
           [~ %'shares.sig']
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /shares: failed")
-        ~&  >  %shares-fiber-up
         ::  root is NOT ambient in on-file. Each case that needs it derives it
         ::  from its own rail, exactly as the writer above does.
         ;<  here=rail:tarball  bind:m  get-here-abs:io
@@ -8669,18 +8667,10 @@
   ?:  live  (pure:m ~)
   =/  road=road:tarball  [%& %& (obelisk-sub-base our) %live]
   ;<  ex=?  bind:m  (peek-exists:io road)
-  ;<  ~  bind:m  (mirror-trace %sub-watching)
   ;<  ~  bind:m
     ?:  ex  (pure:m ~)
     (gall-poke-fire %grubbery [%gall-watch [our %obelisk /server]])
-  ;<  ~  bind:m  (mirror-trace %watch-poked)
   (obelisk-wait-live our 40)
-++  gall-poke-or-nack-drop
-  |=  [=dude:gall =page]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  *  bind:m  (gall-poke-or-nack:io dude page)
-  (pure:m ~)
 ++  obelisk-wait-live
   |=  [our=@p n=@ud]
   =/  m  (fiber:fiber:nexus ,~)
@@ -8702,18 +8692,6 @@
 ::  the salvage era's keep-before-create idiom deadlocks every caller.
 ::  A bounded peek loop is dumb, core-proof, and cheap (local peeks).
 ::
-++  poll-road
-  |=  [road=road:tarball tries=@ud]
-  =/  m  (fiber:fiber:nexus ,?)
-  ^-  form:m
-  ?:  =(0 tries)  (pure:m %.n)
-  ;<  ex=?  bind:m  (peek-exists:io road)
-  ?:  ex  (pure:m %.y)
-  ;<  ~  bind:m  (sleep-draining (div ~s1 4))
-  (poll-road road (dec tries))
-::  +read-road-noun: the raw noun behind a file road, ~ when absent or
-::  unreadable. The freshness baseline for +poll-changed.
-::
 ++  read-road-noun
   |=  road=road:tarball
   =/  m  (fiber:fiber:nexus ,(unit *))
@@ -8725,112 +8703,84 @@
   ::  a BOOM sang (grub laid without a live marc) has no vase, and a
   ::  bare need-vase on it kills the whole fiber (the pub-meta lesson).
   (pure:m (mole |.(q:(need-vase:tarball sang.vw))))
-::  +poll-changed: peek until the road's noun differs from the
-::  baseline. Replaces the cull-then-poll-exists dance: a cull is a
-::  DART into the core-owned /sys tree that nothing consumes, and it
-::  parked the writer forever. Peeks are proven safe there.
+::  +poll-nonce: peek until the road's noun differs from the baseline
+::  AND carries our nonce, then return it parsed. Change-only polling
+::  could accept a concurrent caller's result; the nonce check cannot.
+::  Peeks only: a cull is a DART into the core-owned /sys tree that
+::  nothing consumes, and it parked its fiber forever.
 ::
-++  poll-changed
-  |=  [road=road:tarball base=(unit *) tries=@ud]
-  =/  m  (fiber:fiber:nexus ,?)
+++  poll-nonce
+  |=  [road=road:tarball base=(unit *) nonce=@ud tries=@ud]
+  =/  m  (fiber:fiber:nexus ,(unit obk-out:lm))
   ^-  form:m
-  ?:  =(0 tries)  (pure:m %.n)
+  ?:  =(0 tries)  (pure:m ~)
   ;<  cur=(unit *)  bind:m  (read-road-noun road)
-  ?:  &(?=(^ cur) !=(cur base))  (pure:m %.y)
+  ?:  &(?=(^ cur) !=(cur base))
+    ;<  res=obk-out:lm  bind:m  (obelisk-read-data road)
+    ?:  (result-has-nonce res nonce)  (pure:m (some res))
+    ;<  ~  bind:m  (sleep-draining (div ~s1 4))
+    (poll-nonce road base nonce (dec tries))
   ;<  ~  bind:m  (sleep-draining (div ~s1 4))
-  (poll-changed road base (dec tries))
+  (poll-nonce road base nonce (dec tries))
+::  +result-has-nonce: does any result-set cell carry the nonce value?
+::  Error results pass unconditionally: the engine aborts the whole
+::  script on error, so the trailing SELECT never ran and the tang IS
+::  the answer to OUR script only if it names our statements, which
+::  cannot be checked cheaply. Accepting errors keeps the caller's
+::  worst case at one misattributed failure followed by a retry,
+::  against certain misattribution without the nonce.
+::
+++  result-has-nonce
+  |=  [res=obk-out:lm nonce=@ud]
+  ^-  ?
+  ?:  ?=(%| -.res)  %.y
+  %+  lien  p.res
+  |=  cr=obk-cmd-result:lm
+  %+  lien  p.cr
+  |=  r=obk-result:lm
+  ?.  ?=(%result-set -.r)  %.n
+  %+  lien  p.r
+  |=  v=obk-vector:lm
+  %+  lien  `(list obk-cell:lm)`p.v
+  |=  c=obk-cell:lm
+  =(nonce q.q.c)
 ++  obelisk-run-one
   |=  [db=@tas urql=tape]
   =/  m  (fiber:fiber:nexus ,obk-out:lm)
   ^-  form:m
   ;<  our=@p  bind:m  get-our:io
   =/  data-road=road:tarball  [%& %& (obelisk-sub-base our) %data]
-  ;<  ~  bind:m  (mirror-trace %run-one-start)
   ;<  ~  bind:m  (obelisk-ensure-sub our)
-  ;<  ~  bind:m  (mirror-trace %sub-ensured)
-  ::  freshness by CHANGE, not by reappearance: snapshot the data grub
-  ::  before poking, then wait for its noun to differ. No writes into
-  ::  /sys at all.
+  ::  the NONCE closes the shared-sub race: a trailing SELECT of a
+  ::  fresh number rides every script, and only a result carrying that
+  ::  number is accepted as ours. A concurrent caller's result fails
+  ::  the check and reads as not-yet, never as a false verdict.
+  ;<  eny=@uvJ  bind:m  get-entropy:io
+  =/  nonce=@ud  (mod `@ud`eny 1.000.000.000)
+  =/  script=tape  :(weld urql " SELECT " (trip (scot %ud nonce)) ";")
   ;<  base=(unit *)  bind:m  (read-road-noun data-road)
-  ;<  err=(unit tang)  bind:m  (obelisk-exec db urql)
-  ;<  ~  bind:m  (mirror-trace ?:(?=(^ err) %exec-nacked %exec-acked))
+  ;<  err=(unit tang)  bind:m  (obelisk-exec db script)
   ?^  err  (pure:m [%| u.err])
   ::  a down/unresponsive desk returns an error rather than hanging:
-  ::  60 tries at a quarter second is the old 15s deadline. An
-  ::  IDENTICAL repeat result reads as a timeout, the accepted edge of
-  ::  change-detection (the caller retries and converges).
-  ;<  got=?  bind:m  (poll-changed data-road base 60)
-  ;<  ~  bind:m  (mirror-trace ?:(got %poll-hit %poll-miss))
-  ?.  got
+  ::  60 tries at a quarter second is the poll deadline.
+  ;<  res=(unit obk-out:lm)  bind:m  (poll-nonce data-road base nonce 60)
+  ?~  res
     (pure:m [%| ~[leaf+"obelisk: query timed out (desk down?)"]])
-  ;<  res=obk-out:lm  bind:m  (obelisk-read-data data-road)
   ::  settle: obelisk kicks /server right after the fact; let grubbery
   ::  process the kick + auto-resub so a back-to-back query's ensure-sub
   ::  sees a stable sub rather than a live=y about to be torn down.
   ;<  ~  bind:m  (sleep-draining (div ~s1 2))
-  (pure:m res)
-::  +obelisk-query: caller-facing entry (request fibers + the mirror).
-::  Pokes the owner with the query and a unique result-grub rail, keeps
-::  that grub, and waits for the owner to write the answer there.
-::  Routing every query through the one owner serialises access to the
-::  shared /server sub, so concurrent callers never read each other's
-::  results. Absolute roads so it resolves from any caller depth.
-::
-::  every caller runs the round-trip in its OWN fiber. No owner fiber
-::  and no writer coupling: both designs wedged the shared consumer on
-::  this core, taking saves down with them. The cost is the shared
-::  /server materialization racing when two callers overlap. The
-::  reconciler serializes itself and ad-hoc queries are rare, and a
-::  crossed result reads as a miss or a mismatched answer that the
-::  caller's retry converges. depth is kept for signature stability.
+  (pure:m u.res)
+::  +obelisk-query: every caller runs the round-trip in its OWN fiber.
+::  No owner fiber and no writer coupling: both designs wedged their
+::  shared consumer on this core, taking saves down with them. The
+::  nonce inside +obelisk-run-one makes concurrent callers safe.
+::  depth is kept for signature stability.
 ++  obelisk-query
   |=  [depth=@ud db=@tas urql=tape]
   =/  m  (fiber:fiber:nexus ,obk-out:lm)
   ^-  form:m
-  ;<  ~  bind:m  (mirror-trace %caller-entered)
-  ;<  res=obk-out:lm  bind:m  (obelisk-run-one db urql)
-  ;<  ~  bind:m  (mirror-trace ?:(?=(%& -.res) %caller-done-ok %caller-done-err))
-  (pure:m res)
-::  +sweep-obk-out: cull every result grub under /mirror/obk-out. Run
-::  once at owner startup: anything there is a caller that timed out or
-::  died before the owner wrote its result. Callers are ephemeral, so
-::  at owner (re)start nothing there is live.
-::
-++  sweep-obk-out
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  =/  base=path  (weld app-base:lu /mirror/obk-out)
-  ;<  vw=view:nexus  bind:m  (peek:io [%& %| base] ~)
-  ?.  ?=([%ball *] vw)  (pure:m ~)
-  ::  result grubs are flat FILES at this node, so they live in the
-  ::  fil contents, never in dir (which holds only child directories).
-  =/  names=(list @ta)
-    ?~  fil.ball.vw  ~
-    (turn ~(tap by contents.u.fil.ball.vw) |=([s=@ta *] s))
-  (cull-obk-names base names)
-++  cull-obk-names
-  |=  [base=path names=(list @ta)]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ?~  names  (pure:m ~)
-  ;<  *  bind:m  (cull-soft:io [%& %& base i.names])
-  (cull-obk-names base t.names)
-::  +obk-read-res: read the owner's result grub.
-::
-++  obk-read-res
-  |=  res-road=road:tarball
-  =/  m  (fiber:fiber:nexus ,obk-out:lm)
-  ^-  form:m
-  ;<  vw=view:nexus  bind:m  (peek:io res-road ~)
-  ?.  ?=([%file *] vw)
-    (pure:m [%| ~[leaf+"obelisk: no result grub"]])
-  ::  clam the raw noun, never !<: the obk-res marc is a noun
-  ::  passthrough, so the stored vase is untyped and a typed extract
-  ::  nest-fails on every read.
-  =/  raw=*  q:(need-vase:tarball sang.vw)
-  =/  parsed  (mule |.(;;(obk-out:lm raw)))
-  ?:  ?=(%| -.parsed)  (pure:m [%| p.parsed])
-  (pure:m p.parsed)
+  (obelisk-run-one db urql)
 ::  +obelisk-read-data: read the materialized /server fact grub. The
 ::  fact may arrive page-wrapped as [%noun <each>]; unwrap and clam.
 ::
@@ -8841,7 +8791,11 @@
   ;<  vw=view:nexus  bind:m  (peek:io data-road ~)
   ?.  ?=([%file *] vw)
     (pure:m [%| ~[leaf+"obelisk: no result grub"]])
-  =/  raw=*  q:(need-vase:tarball sang.vw)
+  ::  mole the extraction: a BOOM sang has no vase and a bare need-vase
+  ::  kills the fiber (the pub-meta lesson).
+  =/  mraw=(unit *)  (mole |.(q:(need-vase:tarball sang.vw)))
+  ?~  mraw  (pure:m [%| ~[leaf+"obelisk: unreadable result grub"]])
+  =/  raw=*  u.mraw
   =/  en=*  ?:(&(?=(^ raw) =(%noun -.raw)) +.raw raw)
   =/  parsed  (mule |.(;;(obk-out:lm en)))
   ?:  ?=(%| -.parsed)  (pure:m [%| p.parsed])
@@ -8906,6 +8860,13 @@
   ;<  now=@da  bind:m  get-time:io
   ;<  ~  bind:m  (ensure-dirs (weld app-base:lu /mirror) /tr)
   (put-file [%& %& (weld app-base:lu /mirror/tr) msg] [/ %json] s+(scot %da now))
+::  +mirror-tracev: a trace carrying a value instead of a timestamp.
+++  mirror-tracev
+  |=  [msg=@ta val=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m  (ensure-dirs (weld app-base:lu /mirror) /tr)
+  (put-file [%& %& (weld app-base:lu /mirror/tr) msg] [/ %json] s+val)
 ++  mirror-run
   |=  urql=tape
   =/  m  (fiber:fiber:nexus ,obk-out:lm)
@@ -8917,38 +8878,45 @@
 ::  a replay missed.
 ::
 ++  mirror-rows-one-by-one
-  |=  stmts=(list tape)
-  =/  m  (fiber:fiber:nexus ,~)
+  |=  [stmts=(list tape) ok=?]
+  =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  ?~  stmts  (pure:m ~)
-  ;<  *  bind:m  (mirror-run i.stmts)
+  ?~  stmts  (pure:m ok)
+  ;<  r=obk-out:lm  bind:m  (mirror-run i.stmts)
   ::  name-recursion, never $: a $ with args inside a ;< continuation
   ::  cannot find the trap through the bind gates (-find.$).
-  (mirror-rows-one-by-one t.stmts)
+  (mirror-rows-one-by-one t.stmts &(ok ?=(%& -.r)))
 ::  +mirror-write: one domain's difference. ups = UPDATE statements
 ::  (changed rows, new rows, tombstones), batched 32 per poke with the
 ::  per-item fallback. ins = one INSERT per brand-new row, one poke
 ::  each, expected duplicate-key errors swallowed (never batched: one
 ::  duplicate would abort the whole poke).
 ::
+::  +mirror-write returns whether the domain's values LANDED: the
+::  verdict of every UPDATE batch (or its per-row replay). INSERT
+::  verdicts stay ignored by design, their duplicate-key errors are
+::  expected and every new row's values are covered by its paired
+::  UPDATE anyway. A %.n verdict keeps the domain's old cursor, so a
+::  failed write is retried next pass instead of silently skipped.
+::
 ++  mirror-write
   |=  [ups=(list tape) ins=(list tape)]
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  ;<  ~  bind:m  (mirror-rows-one-by-one ins)
-  (mirror-write-chunks ups)
+  ;<  *  bind:m  (mirror-rows-one-by-one ins &)
+  (mirror-write-chunks ups &)
 ++  mirror-write-chunks
-  |=  ups=(list tape)
-  =/  m  (fiber:fiber:nexus ,~)
+  |=  [ups=(list tape) ok=?]
+  =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  ?~  ups  (pure:m ~)
+  ?~  ups  (pure:m ok)
   =/  all=(list tape)  ups
   =/  chunk=(list tape)  (scag 32 all)
   ;<  r=obk-out:lm  bind:m  (mirror-run (batch:lm chunk))
-  ;<  ~  bind:m
-    ?:  ?=(%& -.r)  (pure:m ~)
-    (mirror-rows-one-by-one chunk)
-  (mirror-write-chunks (slag 32 all))
+  ;<  cok=?  bind:m
+    ?:  ?=(%& -.r)  (pure:m &)
+    (mirror-rows-one-by-one chunk &)
+  (mirror-write-chunks (slag 32 all) &(ok cok))
 ::  grub readers for the loop's own state.
 ::
 ++  mirror-enabled
@@ -9082,6 +9050,7 @@
   |=  cur=mirror-cursor:lm
   =/  m  (fiber:fiber:nexus ,mirror-cursor:lm)
   ^-  form:m
+  ;<  ~  bind:m  (mirror-trace %pages-start)
   ;<  our=@p  bind:m  get-our:io
   ;<  now=@da  bind:m  get-time:io
   ;<  vw=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
@@ -9110,8 +9079,12 @@
     %+  turn
       (skip rows |=([rel=path *] (~(has by pages.cur) rel)))
     |=([* * r=page-row:lm] (page-insert:lm our r))
-  ;<  ~  bind:m  (mirror-write ups ins)
-  (pure:m cur(pages nxt))
+  ;<  ~  bind:m
+    %+  mirror-tracev  %pages-swept
+    (crip (weld (a-co:co (lent ups)) (weld "/" (a-co:co (lent ins)))))
+  ;<  ok=?  bind:m  (mirror-write ups ins)
+  ;<  ~  bind:m  (mirror-tracev %pages-wrote ?:(ok 'y' 'n'))
+  (pure:m ?:(ok cur(pages nxt) cur))
 ++  mirror-knows
   |=  cur=mirror-cursor:lm
   =/  m  (fiber:fiber:nexus ,mirror-cursor:lm)
@@ -9143,7 +9116,7 @@
       (skip ents |=([key=path *] (~(has by knows.cur) key)))
     |=([key=path e=know-entry:lk] (know-insert:lm key updated.e))
   ;<  ~  bind:m  (mirror-trace ?~(ins %knows-no-ins %knows-has-ins))
-  ;<  ~  bind:m  (mirror-write ups ins)
+  ;<  kok=?  bind:m  (mirror-write ups ins)
   ;<  ~  bind:m  (mirror-trace %knows-wrote)
   ::  tags ride the same sweep: one row per (key, tag) application.
   =/  cur-tags=(set [path @t])
@@ -9162,9 +9135,12 @@
     ==
   =/  tag-ins=(list tape)
     (turn fresh-tags |=([key=path t=@t] (tag-insert:lm key t)))
-  ;<  ~  bind:m  (mirror-write tag-ups tag-ins)
+  ;<  tok=?  bind:m  (mirror-write tag-ups tag-ins)
   ;<  ~  bind:m  (mirror-trace %tags-wrote)
-  (pure:m cur(knows nxt, tags cur-tags))
+  %-  pure:m
+  ?.  kok  cur(tags ?:(tok cur-tags tags.cur))
+  ?.  tok  cur(knows nxt)
+  cur(knows nxt, tags cur-tags)
 ++  mirror-follows
   |=  cur=mirror-cursor:lm
   =/  m  (fiber:fiber:nexus ,mirror-cursor:lm)
@@ -9182,8 +9158,8 @@
         (turn dead |=(s=@p (follow-dead:lm s ~)))
     ==
   =/  ins=(list tape)  (turn fresh |=(s=@p (follow-insert:lm s ~)))
-  ;<  ~  bind:m  (mirror-write ups ins)
-  (pure:m cur(follows fs))
+  ;<  ok=?  bind:m  (mirror-write ups ins)
+  (pure:m ?:(ok cur(follows fs) cur))
 ::  +visit-rows: the history grub as mirror rows. Entries whose url is
 ::  not an urb:// page have no doc identity and are skipped.
 ::
@@ -9225,14 +9201,15 @@
     %+  turn
       (skip rows |=([url=@t *] (~(has by visits.cur) url)))
     |=([* * r=visit-row:lm] (visit-insert:lm r))
-  ;<  ~  bind:m  (mirror-write ups ins)
-  (pure:m cur(visits nxt))
+  ;<  ok=?  bind:m  (mirror-write ups ins)
+  (pure:m ?:(ok cur(visits nxt) cur))
 ++  mirror-pass
   |=  cur=mirror-cursor:lm
   =/  m  (fiber:fiber:nexus ,mirror-cursor:lm)
   ^-  form:m
   ;<  cur=mirror-cursor:lm  bind:m  (mirror-pages cur)
   ;<  ~  bind:m  (write-mirror-cursor cur)
+  ;<  ~  bind:m  (mirror-trace %cursor-wrote-1)
   ;<  cur=mirror-cursor:lm  bind:m  (mirror-knows cur)
   ;<  ~  bind:m  (write-mirror-cursor cur)
   ;<  cur=mirror-cursor:lm  bind:m  (mirror-follows cur)
@@ -9252,12 +9229,12 @@
   ^-  form:m
   |-
   ;<  on=?  bind:m  mirror-enabled
-  ~&  >  [%mirror-tick on=on]
   ?.  on
     ::  a short disabled tick (one local config read) so the settings
     ::  toggle takes effect within minutes, not half an hour.
     ;<  ~  bind:m  (sleep-draining ~m5)
     $
+  ;<  ~  bind:m  (mirror-trace %loop-woke)
   ;<  bv=@ud  bind:m  read-beacon-val
   ;<  cur=mirror-cursor:lm  bind:m  read-mirror-cursor
   ;<  vrows=(list [url=@t stamp=@ r=visit-row:lm])  bind:m  visit-rows
@@ -9267,16 +9244,22 @@
   ?:  &(=(bv beacon.cur) visits-idle)
     ;<  ~  bind:m  (sleep-draining ~m5)
     $
+  ;<  ~  bind:m  (mirror-trace %boot-start)
   ;<  boot=(unit (set @ud))  bind:m  mirror-bootstrap
   ?~  boot
     ::  the desk is absent or down. Say so once in a while, stay quiet
     ::  otherwise, and lose nothing: the cursor still marks everything
     ::  unmirrored, so the first healthy pass catches up whole.
+    ;<  ~  bind:m  (mirror-trace %boot-absent)
     ;<  ~  bind:m  (sleep-draining ~m30)
     $
+  ;<  ~  bind:m  (mirror-trace %boot-done)
   =.  cur  (zero-fresh cur u.boot)
+  ::  a wipe found during a visits-only wake still backfills the wiped
+  ::  domains: zero-fresh made their sweeps rewrite everything, so run
+  ::  the full pass whenever bootstrap zeroed anything.
   ;<  cur=mirror-cursor:lm  bind:m
-    ?:  =(bv beacon.cur)  (mirror-visits cur)
+    ?:  &(=(bv beacon.cur) =(~ u.boot))  (mirror-visits cur)
     (mirror-pass cur)
   ;<  ~  bind:m  (write-mirror-cursor cur(beacon bv))
   ;<  ~  bind:m  (sleep-draining ~m5)
