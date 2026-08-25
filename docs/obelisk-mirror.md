@@ -50,7 +50,7 @@ flowchart LR
         F[follows grub]
     end
     subgraph mirror [mirror fiber]
-        C[cursor grub: source revs] --> R[rev diff]
+        C[cursor grub: content stamps] --> R[stamp diff]
         R -->|changed sources only| U[batched upserts]
     end
     subgraph obelisk [%obelisk desk]
@@ -101,10 +101,13 @@ preference does.
    swallowed. The first catalog learned this in production: a joined
    create script aborts at the first existing table and never creates
    the ones after it. A schema change never alters an existing table.
-   The only migration is `DROP TABLE FORCE` plus recreate plus a
-   cursor reset, which rule 4 above makes acceptable.
+   The only migration is `DROP TABLE FORCE` with the new shape shipped
+   in the create list. The next pass finds the table missing at probe
+   time, recreates it, and zeroes its cursor state, which rule 4 above
+   makes acceptable.
 8. Value literals: ships are bare (`~zod`), text is single-quoted with
-   `'` and `\` escaped and control bytes below 32 neutralized, dates are
+   `'` escaped and backslashes and control bytes (below 32, plus DEL)
+   replaced by spaces, dates are
    `@da` literals, and there are no `@uv` literals, so hashes are stored
    as `@ud` decimals via `(scot %ud (sham ...))`.
 
@@ -177,13 +180,16 @@ Phase 1 and 2 tables:
    tag application, which is how a many-to-many survives a store with
    single-equality joins.
 5. `lattice-follows`: `follow-id` (`@ud`, primary key, sham of the
-   ship), `ship` (`@p`), `live` (`@ud`). Follows are a bare set of
+   one-column ship row `[ship ~]`), `ship` (`@p`), `live` (`@ud`).
+   Follows are a bare set of
    ships in the source. Per-page subscriptions are a separate
    mechanism and a possible later table.
 6. `lattice-pages`: `doc-id` (`@ud`, primary key, sham of our ship and
    the path), `pax` (`@t`), `kind` (`@t`), `title` (`@t`), `updated`
    (`@da`), `share` (`@t`), `live` (`@ud`). One row per own page,
-   mirrored from the page tree. Own pages get real tombstones because
+   mirrored from the page tree. The `updated` column carries the
+   mirroring pass's time, not the page's own edit time, so a full
+   rebuild restamps every row. Own pages get real tombstones because
    their source is curated and enumerates in full.
 
 Three tables are reserved for the structured intel layer, in its own
@@ -242,12 +248,14 @@ change.
    the source reruns, and reruns are harmless because the upsert is
    idempotent.
 
-Backfill is not a separate protocol. Cursor resets are per source, so
-zeroing one source's revision or key map makes the next pass remirror
-that source in full, and zeroing all of them is a full backfill. First
-run, recovery after reinstall, and schema migration are the same code
-path at different reset widths. A reset never touches another table's
-key map, so tombstone state survives unrelated migrations.
+Backfill is not a separate protocol. Cursor resets are per source, and
+the bootstrap is what performs them: a table found missing at probe
+time and present after the creates gets its stamp or key map zeroed,
+which makes the next pass remirror that source in full. Zeroing all of
+them is a full backfill. First run, recovery after reinstall, and
+schema migration are the same code path at different reset widths. A
+reset never touches another table's key map, so tombstone state
+survives unrelated migrations.
 
 ## 6. The query bridge
 
@@ -286,7 +294,8 @@ sequenceDiagram
    settings page shows the result, offers the install from the
    distributor when the desk is absent, and toggles the mirror's
    enabled flag, which the reconciler rechecks within five minutes in
-   either state.
+   either state, except while the desk is absent, where the wake is
+   half-hourly.
 5. Commons queries run inside gall events on obelisk's side, the same
    single-threaded cost the catalog refuses for its serving path. The
    mirror accepts it for a different traffic class: occasional,
@@ -309,11 +318,13 @@ sequenceDiagram
    its expected already-exists error is swallowed, never read as a
    failure, and the `CREATE TABLE` poke is a no-op against live tables
    (section 2, point 7). The zeroed state backfills in the same pass.
-3. The schema needs to change. Drop the changed table with
-   `DROP TABLE FORCE`, recreate, and zero that table's cursor state
-   only. The mirror rebuilds the one table while every other table's
-   state, tombstone key maps included, stays untouched. Consumers see
-   a gap, never wrong data.
+3. The schema needs to change. Ship the new shape in the create list,
+   then drop the changed table with `DROP TABLE FORCE` through the
+   query bridge. The next pass's probe finds the table missing,
+   recreates it with the new shape, and zeroes that table's cursor
+   state only, so the mirror rebuilds the one table while every other
+   table's state, tombstone key maps included, stays untouched.
+   Consumers see a gap, never wrong data.
 4. A hostile or buggy value reaches the mirror. Text passes through
    `+urq-esc`, which neutralizes quote, backslash, and control bytes,
    the exact escaper the first catalog shipped and fuzzed.

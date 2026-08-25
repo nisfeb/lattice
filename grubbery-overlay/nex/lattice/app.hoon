@@ -41,9 +41,8 @@
 /<  lcl  /lib/lattice-clip.hoon
 /<  li   /lib/lattice-index.hoon
 /<  ls   /lib/lattice-share.hoon
-::  the commons mirror (docs/obelisk-mirror.md). ast is the result-type
-::  vocabulary shared with %obelisk the DESK; lm builds the urQL.
-/<  ast  /lib/obelisk-ast.hoon
+::  the commons mirror (docs/obelisk-mirror.md). lm builds the urQL and
+::  carries the result-type vocabulary matched to %obelisk the DESK.
 /<  lm   /lib/lattice-mirror.hoon
 =<  ^-  nexus:nexus
     |%
@@ -1580,9 +1579,10 @@
     (send-json eyre-id (pairs:enjs:format ~[['moved' (numb:enjs:format u.n)]]))
       ::  the commons query bridge (docs/obelisk-mirror.md section 6): raw
       ::  urQL in the body, the desk's result as JSON out. Owner-gated by
-      ::  the dispatch gate above like every other route. Queries QUEUE at
-      ::  the owner fiber, so a concurrent caller waits its turn instead of
-      ::  erroring, bounded by the 30s deadline inside +obelisk-query.
+      ::  the dispatch gate above like every other route. The round-trip
+      ::  runs in this request's own fiber, nonce-verified against
+      ::  concurrent callers, bounded by the 15s poll deadline inside
+      ::  +obelisk-run-one.
       [%'POST' %obelisk-query]
     =/  bod=@t  (req-body req)
     ?:  =('' bod)  (send-err eyre-id 400 'missing urQL body')
@@ -1591,7 +1591,7 @@
       ?~  d  mirror-db:lm
       (fall (mole |.(;;(@tas u.d))) mirror-db:lm)
     ;<  res=obk-out:lm  bind:m
-      (obelisk-query 2 db (trip bod))
+      (obelisk-run-one db (trip bod))
     (send-json eyre-id (obelisk-json res))
       [%'POST' %page-share]
     =/  name=(unit @t)  (~(get by args) 'name')
@@ -7212,18 +7212,18 @@
     '<script>(function(){var b=document.getElementById("sreidx");var s=document.getElementById("srst");b.onclick=function(){b.disabled=true;s.textContent="reindexing...";fetch("/apps/lattice/search-reindex",{method:"POST"}).then(function(r){s.textContent=r.ok?"done - your pages and notes are searchable.":"failed ("+r.status+")";b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
     ::  backup: manual export/restore for everyone, plus (desktop only) the
     ::  scheduled backups. The whole UI is rendered by ui-app/vault.js's
-    ::  +mountSettings, which shares the editor's exact tar writer/reader, so the
-    ::  archive a schedule writes and the one this page exports are the same file.
-    ::  This page is a separate document from the editor bundle, so it loads
-    ::  vault.js on its own; the external script is parser-blocking, so
-    ::  LatticeVault exists by the time the wiring line runs.
     "<h2>Commons mirror</h2>"
     "<p class=\"muted\">Mirrors your pages, notes, tags and follows into the %obelisk database, where you (and your agents) can query across apps with urQL. Optional: without %obelisk everything else works unchanged.</p>"
     "<p><span id=\"obst\" class=\"muted\">checking&hellip;</span></p>"
     "<p><button type=\"button\" id=\"obinst\" class=\"btn\" hidden>Install %obelisk</button> "
     "<label for=\"obon\" id=\"obonl\" hidden><input type=\"checkbox\" id=\"obon\"> mirror enabled</label></p>"
     %-  trip
-    '<script>(function(){var st=document.getElementById("obst");var bi=document.getElementById("obinst");var lb=document.getElementById("obonl");var cb=document.getElementById("obon");function show(d){if(d.installed){bi.hidden=true;lb.hidden=false;cb.checked=!!d.enabled;st.textContent="%obelisk is installed."}else{bi.hidden=false;lb.hidden=true;st.textContent="%obelisk is not installed."}}function load(){fetch("/apps/lattice/obelisk-status").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="status unavailable"})}bi.onclick=function(){bi.disabled=true;st.textContent="installing from ~dister-nomryg-nilref (this can take a while)...";fetch("/apps/lattice/obelisk-install",{method:"POST"}).then(function(){var n=0;var t=setInterval(function(){n++;fetch("/apps/lattice/obelisk-status").then(function(r){return r.json()}).then(function(d){if(d.installed){clearInterval(t);bi.disabled=false;show(d)}else if(n>40){clearInterval(t);bi.disabled=false;st.textContent="still not installed - check your ship is connected and retry."}})},6000)})};cb.onchange=function(){fetch("/apps/lattice/mirror-config?enabled="+(cb.checked?"true":"false"),{method:"POST"}).then(load)};load()})();</script>'
+    '<script>(function(){var st=document.getElementById("obst");var bi=document.getElementById("obinst");var lb=document.getElementById("obonl");var cb=document.getElementById("obon");function show(d){if(d.installed){bi.hidden=true;lb.hidden=false;cb.checked=!!d.enabled;st.textContent="%obelisk is installed."}else{bi.hidden=false;lb.hidden=true;st.textContent="%obelisk is not installed."}}function load(){fetch("/apps/lattice/obelisk-status").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="status unavailable"})}bi.onclick=function(){bi.disabled=true;st.textContent="installing from ~dister-nomryg-nilref (this can take a while)...";fetch("/apps/lattice/obelisk-install",{method:"POST"}).then(function(){var n=0;var busy=false;var t=setInterval(function(){if(busy){return}n++;busy=true;fetch("/apps/lattice/obelisk-status").then(function(r){return r.json()}).then(function(d){busy=false;if(d.installed){clearInterval(t);bi.disabled=false;show(d)}else if(n>40){clearInterval(t);bi.disabled=false;st.textContent="still not installed - check your ship is connected and retry."}}).catch(function(){busy=false})},6000)}).catch(function(){bi.disabled=false;st.textContent="install request failed - retry."})};cb.onchange=function(){fetch("/apps/lattice/mirror-config?enabled="+(cb.checked?"true":"false"),{method:"POST"}).then(load).catch(load)};load()})();</script>'
+    ::  the backup section shares the editor's exact tar writer/reader through
+    ::  LatticeVault, so the archive a schedule writes and the one this page
+    ::  exports are the same file. This page is a separate document from the
+    ::  editor bundle, so it loads vault.js on its own; the external script is
+    ::  parser-blocking, so LatticeVault exists by the time the wiring runs.
     "<h2>Backup</h2>"
     "<div id=\"vaultui\"></div>"
     %-  trip
@@ -8607,12 +8607,6 @@
 ::  pre-embedded era of this nexus, where they ran against the desk in
 ::  production; the peek idiom is updated to view:nexus.
 ::
-::  +obelisk-exec: deliver one urQL script to %obelisk. Fire-and-forget
-::  at the gall layer: obelisk wraps queries in a mule and always
-::  positive-acks; the real result comes on its /server subscription
-::  (see +obelisk-run-one). ~ = delivered, `tang = gall could not
-::  deliver (desk missing).
-::
 ::  +gall-poke-fire: emit a gall poke through the /sys/gall service
 ::  WITHOUT waiting for the poke-ack. The core's ack routing back into
 ::  nexus fibers never arrives on this build, so every ack-waiting
@@ -8628,12 +8622,6 @@
   ^-  form:m
   ;<  our=@p  bind:m  get-our:io
   (poke:io &+&+[/sys/gall %'main.sig'] [[/ %gall-poke] [[our dude] page]])
-++  obelisk-exec
-  |=  [db=@tas urql=tape]
-  =/  m  (fiber:fiber:nexus ,(unit tang))
-  ^-  form:m
-  ;<  ~  bind:m  (gall-poke-fire %obelisk [%obelisk-action [%tape db urql]])
-  (pure:m ~)
 ::  +obelisk-sub-base: the grubbery tree dir where obelisk's /server
 ::  fact is materialized by a %gall-watch subscription. The result
 ::  lands at .../data, the live flag at .../live.
@@ -8670,22 +8658,36 @@
   ;<  ~  bind:m
     ?:  ex  (pure:m ~)
     (gall-poke-fire %grubbery [%gall-watch [our %obelisk /server]])
-  (obelisk-wait-live our 40)
+  ;<  ok=?  bind:m  (obelisk-wait-live our 40)
+  ?:  ok  (pure:m ~)
+  ::  the wait exhausted, so the sub is stuck dead. Either the first
+  ::  watch was nacked (obelisk not yet installed at watch time) or the
+  ::  book says live while the far side kicked during a doze, the
+  ::  zombie state mar-core/README.md documents. The cure for both is
+  ::  leave then watch. One attempt only, then the caller's own poll
+  ::  deadline turns a still-dead sub into a query error.
+  ;<  ~  bind:m  (gall-poke-fire %grubbery [%gall-leave [our %obelisk /server]])
+  ;<  ~  bind:m  (sleep-draining (div ~s1 2))
+  ;<  ~  bind:m  (gall-poke-fire %grubbery [%gall-watch [our %obelisk /server]])
+  ;<  *  bind:m  (obelisk-wait-live our 40)
+  (pure:m ~)
 ++  obelisk-wait-live
   |=  [our=@p n=@ud]
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  ?:  =(0 n)  (pure:m ~)
+  ?:  =(0 n)  (pure:m %.n)
   ;<  live=?  bind:m  (obelisk-live our)
-  ?:  live  (pure:m ~)
+  ?:  live  (pure:m %.y)
   ;<  ~  bind:m  (sleep-draining (div ~s1 10))
   (obelisk-wait-live our (dec n))
 ::  +obelisk-run-one: run one urQL script against %obelisk and return
 ::  its result. obelisk answers on its /server subscription (no
-::  scries), which grubbery materializes at .../data. Keep that grub,
-::  poke, take the result wave, then read + clam it. Called ONLY by the
-::  owner fiber (/mirror/obelisk.sig), which guarantees one-in-flight;
-::  callers reach it via +obelisk-query.
+::  scries), which grubbery materializes at .../data. Poke, then poll
+::  that materialization until a result carrying this call's nonce
+::  lands. Every caller runs the round-trip in its own fiber. No owner
+::  fiber and no writer coupling: both designs wedged their shared
+::  consumer on this core, taking saves down with them. The nonce is
+::  what keeps concurrent callers off each other's results.
 ::
 ::  waiting is POLLING here, never a keep. A keep on a road whose grub
 ::  does not exist yet blocks until the grub is born on this core, so
@@ -8759,8 +8761,9 @@
   =/  nonce=@ud  (mod `@ud`eny 1.000.000.000)
   =/  script=tape  :(weld urql " SELECT " (trip (scot %ud nonce)) ";")
   ;<  base=(unit *)  bind:m  (read-road-noun data-road)
-  ;<  err=(unit tang)  bind:m  (obelisk-exec db script)
-  ?^  err  (pure:m [%| u.err])
+  ::  fire-and-forget at the gall layer: obelisk wraps queries in a
+  ::  mule and always positive-acks; the result comes on /server.
+  ;<  ~  bind:m  (gall-poke-fire %obelisk [%obelisk-action [%tape db script]])
   ::  a down/unresponsive desk returns an error rather than hanging:
   ::  60 tries at a quarter second is the poll deadline.
   ;<  res=(unit obk-out:lm)  bind:m  (poll-nonce data-road base nonce 60)
@@ -8771,16 +8774,6 @@
   ::  sees a stable sub rather than a live=y about to be torn down.
   ;<  ~  bind:m  (sleep-draining (div ~s1 2))
   (pure:m u.res)
-::  +obelisk-query: every caller runs the round-trip in its OWN fiber.
-::  No owner fiber and no writer coupling: both designs wedged their
-::  shared consumer on this core, taking saves down with them. The
-::  nonce inside +obelisk-run-one makes concurrent callers safe.
-::  depth is kept for signature stability.
-++  obelisk-query
-  |=  [depth=@ud db=@tas urql=tape]
-  =/  m  (fiber:fiber:nexus ,obk-out:lm)
-  ^-  form:m
-  (obelisk-run-one db urql)
 ::  +obelisk-read-data: read the materialized /server fact grub. The
 ::  fact may arrive page-wrapped as [%noun <each>]; unwrap and clam.
 ::
@@ -8871,7 +8864,7 @@
   |=  urql=tape
   =/  m  (fiber:fiber:nexus ,obk-out:lm)
   ^-  form:m
-  (obelisk-query 1 mirror-db:lm urql)
+  (obelisk-run-one mirror-db:lm urql)
 ::  +mirror-rows-one-by-one: the per-item fallback. A batch that
 ::  aborted replays one statement per poke, so one poisoned row costs
 ::  one row. Results are discarded: the next pass re-converges anything
@@ -8974,10 +8967,6 @@
   ^-  form:m
   ;<  first=(list ?)  bind:m  probe-tables
   ?:  (levy first |=(f=? f))  (pure:m `*(set @ud))
-  ::  v1 cleanup rides the FIRST bootstrap only (mirror tables still
-  ::  missing): when the first catalog's marker table exists, drop its
-  ::  dead tables (lattice's own prior output) so the commons database
-  ::  carries only live vocabulary. Steady state never pays the probe.
   ;<  *  bind:m  (mirror-run create-db-urql:lm)
   ;<  ~  bind:m  (run-creates create-list:lm)
   ;<  again=(list ?)  bind:m  probe-tables
@@ -9001,7 +8990,7 @@
   ;<  our=@p  bind:m  get-our:io
   ;<  live=?  bind:m  (obelisk-live our)
   ?:  live  (pure:m %.y)
-  ;<  r=obk-out:lm  bind:m  (obelisk-query 2 mirror-db:lm "SELECT 1;")
+  ;<  r=obk-out:lm  bind:m  (obelisk-run-one mirror-db:lm "SELECT 1;")
   (pure:m ?=(%& -.r))
 ++  run-creates
   |=  creates=(list tape)
@@ -9042,13 +9031,16 @@
   ?~  dot  (crip nm)
   (crip (flop (slag +(u.dot) (flop nm))))
 ::  ── domain passes ───────────────────────────────────────────────────
-::  Each returns the cursor with ITS map replaced by the swept state.
-::  The caller persists the cursor after each domain, so a crash
-::  between domains reruns only the domain in flight.
+::  Each returns [landed cursor]: the cursor with ITS map replaced by
+::  the swept state when the write landed, unchanged when it did not,
+::  plus the verdict itself so the loop can hold the beacon back and
+::  retry a failed domain next tick. The caller persists the cursor
+::  after each domain, so a crash between domains reruns only the
+::  domain in flight.
 ::
 ++  mirror-pages
   |=  cur=mirror-cursor:lm
-  =/  m  (fiber:fiber:nexus ,mirror-cursor:lm)
+  =/  m  (fiber:fiber:nexus ,[? mirror-cursor:lm])
   ^-  form:m
   ;<  ~  bind:m  (mirror-trace %pages-start)
   ;<  our=@p  bind:m  get-our:io
@@ -9084,10 +9076,10 @@
     (crip (weld (a-co:co (lent ups)) (weld "/" (a-co:co (lent ins)))))
   ;<  ok=?  bind:m  (mirror-write ups ins)
   ;<  ~  bind:m  (mirror-tracev %pages-wrote ?:(ok 'y' 'n'))
-  (pure:m ?:(ok cur(pages nxt) cur))
+  (pure:m [ok ?:(ok cur(pages nxt) cur)])
 ++  mirror-knows
   |=  cur=mirror-cursor:lm
-  =/  m  (fiber:fiber:nexus ,mirror-cursor:lm)
+  =/  m  (fiber:fiber:nexus ,[? mirror-cursor:lm])
   ^-  form:m
   ;<  ~  bind:m  (mirror-trace %knows-start)
   ::  an ABSOLUTE sweep, never read-know-map: that arm peeks up-2
@@ -9138,12 +9130,13 @@
   ;<  tok=?  bind:m  (mirror-write tag-ups tag-ins)
   ;<  ~  bind:m  (mirror-trace %tags-wrote)
   %-  pure:m
+  :-  &(kok tok)
   ?.  kok  cur(tags ?:(tok cur-tags tags.cur))
   ?.  tok  cur(knows nxt)
   cur(knows nxt, tags cur-tags)
 ++  mirror-follows
   |=  cur=mirror-cursor:lm
-  =/  m  (fiber:fiber:nexus ,mirror-cursor:lm)
+  =/  m  (fiber:fiber:nexus ,[? mirror-cursor:lm])
   ^-  form:m
   ;<  ~  bind:m  (mirror-trace %follows-start)
   ;<  vw=view:nexus  bind:m  (peek:io [%& %& (weld app-base:lu /sub) %follows] ~)
@@ -9159,7 +9152,7 @@
     ==
   =/  ins=(list tape)  (turn fresh |=(s=@p (follow-insert:lm s ~)))
   ;<  ok=?  bind:m  (mirror-write ups ins)
-  (pure:m ?:(ok cur(follows fs) cur))
+  (pure:m [ok ?:(ok cur(follows fs) cur)])
 ::  +visit-rows: the history grub as mirror rows. Entries whose url is
 ::  not an urb:// page have no doc identity and are skipped.
 ::
@@ -9182,7 +9175,7 @@
   `visit-row:lm`[ship.u.pu path.u.pu title.v last.v hits.v]
 ++  mirror-visits
   |=  cur=mirror-cursor:lm
-  =/  m  (fiber:fiber:nexus ,mirror-cursor:lm)
+  =/  m  (fiber:fiber:nexus ,[? mirror-cursor:lm])
   ^-  form:m
   ;<  rows=(list [url=@t stamp=@ r=visit-row:lm])  bind:m  visit-rows
   ::  the cursor keeps ONLY the current history window, so it stays
@@ -9202,21 +9195,21 @@
       (skip rows |=([url=@t *] (~(has by visits.cur) url)))
     |=([* * r=visit-row:lm] (visit-insert:lm r))
   ;<  ok=?  bind:m  (mirror-write ups ins)
-  (pure:m ?:(ok cur(visits nxt) cur))
+  (pure:m [ok ?:(ok cur(visits nxt) cur)])
 ++  mirror-pass
   |=  cur=mirror-cursor:lm
-  =/  m  (fiber:fiber:nexus ,mirror-cursor:lm)
+  =/  m  (fiber:fiber:nexus ,[? mirror-cursor:lm])
   ^-  form:m
-  ;<  cur=mirror-cursor:lm  bind:m  (mirror-pages cur)
-  ;<  ~  bind:m  (write-mirror-cursor cur)
+  ;<  pag=[ok=? cur=mirror-cursor:lm]  bind:m  (mirror-pages cur)
+  ;<  ~  bind:m  (write-mirror-cursor cur.pag)
   ;<  ~  bind:m  (mirror-trace %cursor-wrote-1)
-  ;<  cur=mirror-cursor:lm  bind:m  (mirror-knows cur)
-  ;<  ~  bind:m  (write-mirror-cursor cur)
-  ;<  cur=mirror-cursor:lm  bind:m  (mirror-follows cur)
-  ;<  ~  bind:m  (write-mirror-cursor cur)
-  ;<  cur=mirror-cursor:lm  bind:m  (mirror-visits cur)
-  ;<  ~  bind:m  (write-mirror-cursor cur)
-  (pure:m cur)
+  ;<  kno=[ok=? cur=mirror-cursor:lm]  bind:m  (mirror-knows cur.pag)
+  ;<  ~  bind:m  (write-mirror-cursor cur.kno)
+  ;<  fol=[ok=? cur=mirror-cursor:lm]  bind:m  (mirror-follows cur.kno)
+  ;<  ~  bind:m  (write-mirror-cursor cur.fol)
+  ;<  vis=[ok=? cur=mirror-cursor:lm]  bind:m  (mirror-visits cur.fol)
+  ;<  ~  bind:m  (write-mirror-cursor cur.vis)
+  (pure:m [&(ok.pag ok.kno ok.fol ok.vis) cur.vis])
 ::  +mirror-loop: the reconciler's life. Wake, check the enabled flag,
 ::  find whether anything changed (the beacon for content, a local
 ::  history diff for visits, which deliberately never bump the
@@ -9258,10 +9251,13 @@
   ::  a wipe found during a visits-only wake still backfills the wiped
   ::  domains: zero-fresh made their sweeps rewrite everything, so run
   ::  the full pass whenever bootstrap zeroed anything.
-  ;<  cur=mirror-cursor:lm  bind:m
+  ;<  res=[ok=? cur=mirror-cursor:lm]  bind:m
     ?:  &(=(bv beacon.cur) =(~ u.boot))  (mirror-visits cur)
     (mirror-pass cur)
-  ;<  ~  bind:m  (write-mirror-cursor cur(beacon bv))
+  ::  the beacon stamp is the retry gate. A pass with any failed domain
+  ::  keeps the old beacon, so the next tick re-enters the pass and
+  ::  retries the failed diff instead of sleeping on a stale mirror.
+  ;<  ~  bind:m  (write-mirror-cursor ?:(ok.res cur.res(beacon bv) cur.res))
   ;<  ~  bind:m  (sleep-draining ~m5)
   $
 --
