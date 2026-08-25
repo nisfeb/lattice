@@ -324,4 +324,29 @@
 ::  road where the caller waits for its result grub.
 ::
 +$  obk-req  [db=@tas urql=tape res-pax=path res-nom=@ta]
+::  ── the desk's result vocabulary ────────────────────────────────────
+::  These mirror jackfoxy/obelisk sur/obelisk-ast.hoon as SHIPPED, not
+::  grubbery's vendored copy, which has drifted: the desk renamed
+::  %relation to %relation-name and grew %relations and
+::  %select-relation, and a clam through the stale union crashes on
+::  every successful result. Arms the mirror never decodes carry
+::  opaque payloads.
+::
++$  obk-cell    [p=@tas q=dime]
++$  obk-vector  [%vector p=(lest obk-cell)]
++$  obk-result
+  $%  [%action action=@t]
+      [%relation-name name=@t]
+      [%message msg=@t]
+      [%vector-count count=@ud]
+      [%server-time date=@da]
+      [%security-time date=@da]
+      [%schema-time date=@da]
+      [%data-time date=@da]
+      [%result-set p=(list obk-vector)]
+      [%relations p=*]
+      [%select-relation p=*]
+  ==
++$  obk-cmd-result  [%results p=(list obk-result)]
++$  obk-out  (each (list obk-cmd-result) tang)
 --
