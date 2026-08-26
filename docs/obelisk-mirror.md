@@ -383,8 +383,24 @@ sequenceDiagram
    result, and more seriously grubbery resolves a poke's mark through
    a scry that CRASHES when the target agent is not running. The
    crash rolls back the event and parks the emitting fiber, which can
-   take the reconciler down until the next nexus reload. Presence is
-   therefore decided by the subscription, never by poking blind.
+   take the reconciler down until the next nexus reload.
+
+   That guard is necessary but it is not sufficient, and the reason is
+   worth writing down because it was measured rather than reasoned.
+   Grubbery marks the subscription live when it CREATES the watch, not
+   when the watch is acked, and a watch sent to an agent that is not
+   running is neither acked nor refused. Gall simply notes that the
+   agent is not running. So on a ship that never installed the desk,
+   the live flag reads yes for a subscription that does not exist, the
+   guard passes, and the poke goes out anyway. Two consequences
+   follow. The settings page can report the desk as installed when it
+   is not, and the reconciler cannot conclude absence, so it retries
+   on the five minute tick rather than settling into the half-hourly
+   quiet that absence earns. Neither corrupts anything, and neither
+   has a fix that belongs in lattice: the honest repair is for the
+   poke path to survive an absent agent, which is grubbery's scry to
+   guard, not ours. Until then, presence is only ever proven by a
+   query that actually returned rows.
 
 ## 8. Phases
 

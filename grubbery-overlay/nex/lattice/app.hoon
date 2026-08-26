@@ -8813,6 +8813,20 @@
   ?.  ?=(%| -.res)  %.n
   ?~  p.res  %.n
   =([%leaf (trip nosub-leaf)] i.p.res)
+::  +is-silent: the desk told us NOTHING, whether because it stayed
+::  quiet past the deadline or because there was no subscription to ask
+::  over. Every decision point uses this one predicate, never the two
+::  sentinels separately. Wiring them separately is what produced the
+::  last round of defects: the probe path learned about nosub and the
+::  write path did not, so a subscription gap read as a poisoned row,
+::  replayed thirty-two times, and let a cursor advance over rows that
+::  were never written. The two tangs stay distinct only so the
+::  message a human reads names the real condition.
+::
+++  is-silent
+  |=  res=obk-out:lm
+  ^-  ?
+  |((is-timeout res) (is-nosub res))
 ++  obelisk-run-one
   |=  [db=@tas urql=tape]
   =/  m  (fiber:fiber:nexus ,obk-out:lm)
@@ -8987,7 +9001,7 @@
   ::  the same thing, and the domain's verdict is already false. Only
   ::  an engine error is worth walking past, since that isolates one
   ::  poisoned row.
-  ?:  (is-timeout r)  (pure:m [%.n %.y])
+  ?:  (is-silent r)  (pure:m [%.n %.y])
   ::  name-recursion, never $: a $ with args inside a ;< continuation
   ::  cannot find the trap through the bind gates (-find.$).
   (mirror-rows-one-by-one t.stmts &(ok ?=(%& -.r)))
@@ -9048,7 +9062,7 @@
   ::  became hours, every pass). Give up on the domain, let the
   ::  verdict hold its cursor, and let the retry flag bring the next
   ::  tick back. Only an engine error earns the per-row isolation.
-  ?:  (is-timeout r)  (pure:m [%.n %.y])
+  ?:  (is-silent r)  (pure:m [%.n %.y])
   ;<  cr=[ok=? to=?]  bind:m
     ?:  ?=(%& -.r)  (pure:m [%.y %.n])
     (mirror-rows-one-by-one chunk &)
@@ -9140,11 +9154,14 @@
   ;<  r=obk-out:lm  bind:m  (mirror-run i.probes)
   =/  v=probe-verdict
     ?:  ?=(%& -.r)  %yes
-    ::  no subscription reads as NO, not unknown. It is the answer a
-    ::  desk-less ship gives to every probe, and calling it unknown
-    ::  left absence undecidable forever.
-    ?:  (is-nosub r)  %no
-    ?:  (is-timeout r)  %dunno
+    ::  silence is UNKNOWN, never "the table is missing". Mapping a
+    ::  missing subscription to %no looked like it made absence
+    ::  decidable, but it cannot even fire on a desk-less ship (that
+    ::  ship's live grub reads yes), and on a healthy ship every
+    ::  transient subscription gap became a false wipe: the domain's
+    ::  cursor zeroed, its tombstone basis destroyed, and every
+    ::  already-deleted row stranded as live forever.
+    ?:  (is-silent r)  %dunno
     %no
   ::  retry an unknown ONCE before recording it. The first statement
   ::  after a revive races the freshly created subscription and its
@@ -9165,8 +9182,7 @@
   ?.  ?=(%dunno v)  (pure:m v)
   ;<  r=obk-out:lm  bind:m  (mirror-run probe)
   ?:  ?=(%& -.r)  (pure:m %yes)
-  ?:  (is-nosub r)  (pure:m %no)
-  (pure:m ?:((is-timeout r) %dunno %no))
+  (pure:m ?:((is-silent r) %dunno %no))
 ::  +boot-verdict: what the bootstrap concluded. %absent = every probe
 ::  says no table, so the desk is gone and the loop sleeps long.
 ::  %unclear = at least one probe timed out even after its retry, so
