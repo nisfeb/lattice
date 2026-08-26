@@ -202,8 +202,8 @@ identity freezes now.
 The mirror is a reconciler, not an event tail. It runs on a timer,
 checks the change beacon each tick, and additionally diffs the history
 grub locally, because visits deliberately never bump the content
-beacon. An idle tick costs three local peeks and no obelisk traffic at
-all. It subscribes to nothing and it cannot miss an update, because
+beacon. An idle tick costs a handful of local peeks, writes nothing,
+and sends no obelisk traffic at all. It subscribes to nothing and it cannot miss an update, because
 its correctness comes from comparing state, not from observing every
 change.
 
@@ -274,8 +274,8 @@ steady-state pass is a few statements and finishes in minutes. A
 recovery or first-run pass can hold the ship busy for tens of
 minutes. That is convergence, not failure. The reconciler finishes,
 the retry flag carries anything that missed a deadline into the next
-tick, and an idle tick costs three local peeks and no obelisk
-traffic at all.
+tick, and an idle tick costs a handful of local peeks, writes
+nothing, and sends no obelisk traffic at all.
 
 ## 6. The query bridge
 
@@ -370,7 +370,21 @@ sequenceDiagram
    collides with it (`%watch-not-unique`), the collision's crash
    produces another kick, and the loop becomes a self-sustaining
    storm. Automated cures were built twice and removed twice for
-   exactly that reason.
+   exactly that reason. A watch over a grub that reads DEAD is not
+   that cure and is always safe: a dead grub means the watch-ack was
+   an error, so gall dropped the request and holds no subscription
+   for a new watch to collide with. The bridge does re-watch there,
+   because gating on the grub merely existing latched the whole
+   bridge shut after one nacked watch.
+7. The desk is absent, which is the ordinary case on most ships. No
+   statement is ever poked at `%obelisk` unless the `/server`
+   subscription is live. That is not an optimization. Obelisk answers
+   only on that subscription, so a poke without one cannot produce a
+   result, and more seriously grubbery resolves a poke's mark through
+   a scry that CRASHES when the target agent is not running. The
+   crash rolls back the event and parks the emitting fiber, which can
+   take the reconciler down until the next nexus reload. Presence is
+   therefore decided by the subscription, never by poking blind.
 
 ## 8. Phases
 

@@ -60,12 +60,15 @@ if [ "$GO" -eq 0 ]; then
   exit 0
 fi
 
-say "staging (same six mappings as sync-overlay.sh; never add --delete)"
+say "staging (same seven mappings as sync-overlay.sh; never add --delete)"
 rsync -a -e "$SSH" "$OVERLAY/lib/"         "$RIC:$RDESK/gub/lib/"
 rsync -a -e "$SSH" "$OVERLAY/lib/"         "$RIC:$RDESK/lib/"
 rsync -a -e "$SSH" --exclude 'ui-app/src' "$OVERLAY/nex/lattice/" "$RIC:$RDESK/gub/nex/lattice/"
 rsync -a -e "$SSH" "$OVERLAY/mar/lattice/" "$RIC:$RDESK/gub/mar/lattice/"
 [ -d "$OVERLAY/mar-clay" ] && rsync -a -e "$SSH" "$OVERLAY/mar-clay/" "$RIC:$RDESK/gub/mar/clay/"
+# desk-level clay marks (dojo-resolvable), NOT gub/mar/clay. %gall-leave is
+# the documented cure for a stuck /server sub and resolves only from here.
+[ -d "$OVERLAY/mar-core" ] && rsync -a -e "$SSH" --exclude 'README.md' "$OVERLAY/mar-core/" "$RIC:$RDESK/mar/"
 rsync -a -e "$SSH" "$OVERLAY/tests/"       "$RIC:$RDESK/tests/"
 echo "overlay staged"
 
