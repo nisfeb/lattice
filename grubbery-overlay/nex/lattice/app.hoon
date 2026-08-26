@@ -1581,7 +1581,7 @@
       ::  urQL in the body, the desk's result as JSON out. Owner-gated by
       ::  the dispatch gate above like every other route. The round-trip
       ::  runs in this request's own fiber, nonce-verified against
-      ::  concurrent callers, bounded by the 15s poll deadline inside
+      ::  concurrent callers, bounded by the one-minute poll deadline inside
       ::  +obelisk-run-one.
       [%'POST' %obelisk-query]
     =/  bod=@t  (req-body req)
@@ -7218,7 +7218,7 @@
     "<p><button type=\"button\" id=\"obinst\" class=\"btn\" hidden>Install %obelisk</button> "
     "<label for=\"obon\" id=\"obonl\" hidden><input type=\"checkbox\" id=\"obon\"> mirror enabled</label></p>"
     %-  trip
-    '<script>(function(){var st=document.getElementById("obst");var bi=document.getElementById("obinst");var lb=document.getElementById("obonl");var cb=document.getElementById("obon");function show(d){if(d.installed){bi.hidden=true;lb.hidden=false;cb.checked=!!d.enabled;st.textContent="%obelisk is installed."}else{bi.hidden=false;lb.hidden=true;st.textContent="%obelisk is not installed."}}function load(){fetch("/apps/lattice/obelisk-status").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="status unavailable"})}bi.onclick=function(){bi.disabled=true;st.textContent="installing from ~dister-nomryg-nilref (this can take a while)...";fetch("/apps/lattice/obelisk-install",{method:"POST"}).then(function(){var n=0;var busy=false;var t=setInterval(function(){if(busy){return}n++;busy=true;fetch("/apps/lattice/obelisk-status").then(function(r){return r.json()}).then(function(d){busy=false;if(d.installed){clearInterval(t);bi.disabled=false;show(d)}else if(n>40){clearInterval(t);bi.disabled=false;st.textContent="still not installed - check your ship is connected and retry."}}).catch(function(){busy=false})},6000)}).catch(function(){bi.disabled=false;st.textContent="install request failed - retry."})};cb.onchange=function(){fetch("/apps/lattice/mirror-config?enabled="+(cb.checked?"true":"false"),{method:"POST"}).then(load).catch(load)};load()})();</script>'
+    '<script>(function(){var st=document.getElementById("obst");var bi=document.getElementById("obinst");var lb=document.getElementById("obonl");var cb=document.getElementById("obon");function show(d){if(d.installed){bi.hidden=true;lb.hidden=false;cb.checked=!!d.enabled;st.textContent="%obelisk is installed."}else{bi.hidden=false;lb.hidden=true;st.textContent="%obelisk is not installed."}}function load(){fetch("/apps/lattice/obelisk-status").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="status unavailable"})}bi.onclick=function(){bi.disabled=true;st.textContent="installing from ~dister-nomryg-nilref (this can take a while)...";fetch("/apps/lattice/obelisk-install",{method:"POST"}).then(function(){var n=0;var busy=false;var t=setInterval(function(){if(busy){return}n++;busy=true;fetch("/apps/lattice/obelisk-status").then(function(r){return r.json()}).then(function(d){busy=false;if(d.installed){clearInterval(t);bi.disabled=false;show(d)}else if(n>40){clearInterval(t);bi.disabled=false;st.textContent="still not installed - check your ship is connected and retry."}}).catch(function(){busy=false;if(n>40){clearInterval(t);bi.disabled=false;st.textContent="still not installed - check your ship is connected and retry."}})},6000)}).catch(function(){bi.disabled=false;st.textContent="install request failed - retry."})};cb.onchange=function(){fetch("/apps/lattice/mirror-config?enabled="+(cb.checked?"true":"false"),{method:"POST"}).then(load).catch(load)};load()})();</script>'
     ::  the backup section shares the editor's exact tar writer/reader through
     ::  LatticeVault, so the archive a schedule writes and the one this page
     ::  exports are the same file. This page is a separate document from the
@@ -8658,17 +8658,17 @@
   ;<  ~  bind:m
     ?:  ex  (pure:m ~)
     (gall-poke-fire %grubbery [%gall-watch [our %obelisk /server]])
-  ;<  ok=?  bind:m  (obelisk-wait-live our 40)
-  ?:  ok  (pure:m ~)
-  ::  the wait exhausted, so the sub is stuck dead. Either the first
-  ::  watch was nacked (obelisk not yet installed at watch time) or the
-  ::  book says live while the far side kicked during a doze, the
-  ::  zombie state mar-core/README.md documents. The cure for both is
-  ::  leave then watch. One attempt only, then the caller's own poll
-  ::  deadline turns a still-dead sub into a query error.
-  ;<  ~  bind:m  (gall-poke-fire %grubbery [%gall-leave [our %obelisk /server]])
-  ;<  ~  bind:m  (sleep-draining (div ~s1 2))
-  ;<  ~  bind:m  (gall-poke-fire %grubbery [%gall-watch [our %obelisk /server]])
+  ::  on exhaustion just return: the caller's poll deadline turns a
+  ::  still-dead sub into a query error and the retry flag re-runs the
+  ::  write. NEVER poke a cure here. Once the sub exists grubbery's
+  ::  auto-resubscribe owns it, obelisk kicks after every result by
+  ::  design, and any watch or leave poked into that cycle collides
+  ::  with the auto-resub (%watch-not-unique), whose crash produces
+  ::  another kick and another collision: a self-sustaining event
+  ::  tornado that pinned this ship four times before the mechanism
+  ::  was understood. A truly stuck sub (the zombie in
+  ::  mar-core/README.md) is cured by hand from the dojo, leave then
+  ::  watch, as that README documents.
   ;<  *  bind:m  (obelisk-wait-live our 40)
   (pure:m ~)
 ++  obelisk-wait-live
@@ -8765,9 +8765,18 @@
   ::  mule and always positive-acks; the result comes on /server.
   ;<  ~  bind:m  (gall-poke-fire %obelisk [%obelisk-action [%tape db script]])
   ::  a down/unresponsive desk returns an error rather than hanging:
-  ::  60 tries at a quarter second is the poll deadline.
-  ;<  res=(unit obk-out:lm)  bind:m  (poll-nonce data-road base nonce 60)
+  ::  240 tries at a quarter second is the poll deadline. A minute,
+  ::  because obelisk statements really cost seconds to tens of
+  ::  seconds on modest hardware, and a deadline under the real
+  ::  latency reads a slow desk as dead, fails every verdict, and
+  ::  turns the retry into a permanent loop that never lands anything.
+  ;<  res=(unit obk-out:lm)  bind:m  (poll-nonce data-road base nonce 240)
   ?~  res
+    ::  no self-healing here: a leave or watch poked at a slow-or-dead
+    ::  sub collides with grubbery's kick-driven auto-resubscribe and
+    ::  tornadoes (see +obelisk-ensure-sub). The timeout is the whole
+    ::  verdict, the retry flag re-runs the write, and the zombie sub
+    ::  is a documented dojo cure.
     (pure:m [%| ~[leaf+"obelisk: query timed out (desk down?)"]])
   ::  settle: obelisk kicks /server right after the fact; let grubbery
   ::  process the kick + auto-resub so a back-to-back query's ensure-sub
@@ -8892,11 +8901,19 @@
 ::  UPDATE anyway. A %.n verdict keeps the domain's old cursor, so a
 ::  failed write is retried next pass instead of silently skipped.
 ::
+::  inserts ride the same 32-statement chunks as updates. A chunk
+::  holding any duplicate aborts whole and replays row by row through
+::  the shared fallback, so steady state pays one aborted poke per
+::  chunk of re-inserts, and a fresh table's backfill, where no
+::  duplicate is possible, lands 32 rows per poke instead of one. At
+::  obelisk's per-statement cost that difference is what makes a
+::  many-hundred-row backfill minutes instead of hours.
+::
 ++  mirror-write
   |=  [ups=(list tape) ins=(list tape)]
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  ;<  *  bind:m  (mirror-rows-one-by-one ins &)
+  ;<  *  bind:m  (mirror-write-chunks ins &)
   (mirror-write-chunks ups &)
 ++  mirror-write-chunks
   |=  [ups=(list tape) ok=?]
@@ -8936,7 +8953,24 @@
   ^-  form:m
   ;<  vw=view:nexus  bind:m  (peek:io [%& %& (weld app-base:lu /mirror) %cursor] ~)
   ?.  ?=([%file *] vw)  (pure:m *mirror-cursor:lm)
-  (pure:m (fall (mole |.(!<(mirror-cursor:lm (need-vase:tarball sang.vw)))) *mirror-cursor:lm))
+  ::  the marc is a noun passthrough (see mar/lattice/mirror-cursor),
+  ::  so the vase is untyped and molding (;;) is the only clam that
+  ::  works, the obk-res lesson. Try the live shape, then v1 upgraded
+  ::  in place with its state trusted, so a shape change costs
+  ::  nothing. Only a grub that is neither shape falls to the fresh
+  ::  default and pays a full backfill.
+  =/  raw=(unit *)  (mole |.((sang-noun:tarball sang.vw)))
+  ?~  raw  (pure:m *mirror-cursor:lm)
+  =/  new=(unit mirror-cursor:lm)
+    (mole |.(;;(mirror-cursor:lm u.raw)))
+  ?^  new  (pure:m u.new)
+  =/  old=(unit mirror-cursor-v1:lm)
+    (mole |.(;;(mirror-cursor-v1:lm u.raw)))
+  ?~  old  (pure:m *mirror-cursor:lm)
+  %-  pure:m
+  :*  beacon.u.old  %.n  pages.u.old  knows.u.old
+      tags.u.old  follows.u.old  visits.u.old
+  ==
 ++  write-mirror-cursor
   |=  cur=mirror-cursor:lm
   =/  m  (fiber:fiber:nexus ,~)
@@ -8970,7 +9004,14 @@
   ;<  *  bind:m  (mirror-run create-db-urql:lm)
   ;<  ~  bind:m  (run-creates create-list:lm)
   ;<  again=(list ?)  bind:m  probe-tables
-  ?.  (levy again |=(f=? f))  (pure:m ~)
+  ::  every table still missing after the creates reads as an absent
+  ::  or unresponsive desk. A MIXED re-probe is a partial recovery:
+  ::  return the fresh set anyway so the zeroing lands and the pass
+  ::  writes what it can. The failed writes set the retry flag and the
+  ::  next tick finishes the job, and the zeroing persists through the
+  ::  pass's own cursor writes, so an interrupted recovery never
+  ::  strands a table with pre-wipe stamps.
+  ?:  (levy again |=(f=? !f))  (pure:m ~)
   =/  fresh=(set @ud)
     =|  s=(set @ud)
     =/  fl=(list ?)  first
@@ -9234,7 +9275,7 @@
   =/  visits-idle=?
     %+  levy  vrows
     |=([url=@t stamp=@ *] =(`(unit @)`[~ stamp] (~(get by visits.cur) url)))
-  ?:  &(=(bv beacon.cur) visits-idle)
+  ?:  &(=(bv beacon.cur) visits-idle !retry.cur)
     ;<  ~  bind:m  (sleep-draining ~m5)
     $
   ;<  ~  bind:m  (mirror-trace %boot-start)
@@ -9252,12 +9293,16 @@
   ::  domains: zero-fresh made their sweeps rewrite everything, so run
   ::  the full pass whenever bootstrap zeroed anything.
   ;<  res=[ok=? cur=mirror-cursor:lm]  bind:m
-    ?:  &(=(bv beacon.cur) =(~ u.boot))  (mirror-visits cur)
+    ?:  &(=(bv beacon.cur) =(~ u.boot) !retry.cur)  (mirror-visits cur)
     (mirror-pass cur)
-  ::  the beacon stamp is the retry gate. A pass with any failed domain
-  ::  keeps the old beacon, so the next tick re-enters the pass and
-  ::  retries the failed diff instead of sleeping on a stale mirror.
-  ;<  ~  bind:m  (write-mirror-cursor ?:(ok.res cur.res(beacon bv) cur.res))
+  ::  the retry flag is the retry gate. A pass with any failed domain
+  ::  sets it, so the next tick re-enters the FULL pass even when the
+  ::  beacon never moved (the wipe recovery path runs with the beacon
+  ::  already equal, so the beacon alone cannot carry the signal). A
+  ::  clean pass clears it and stamps the beacon.
+  ;<  ~  bind:m
+    %-  write-mirror-cursor
+    ?:(ok.res cur.res(beacon bv, retry |) cur.res(retry &))
   ;<  ~  bind:m  (sleep-draining ~m5)
   $
 --

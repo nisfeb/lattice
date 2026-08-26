@@ -223,15 +223,20 @@ change.
    double as the tombstone basis (point 3). A hard cap with a
    no-tombstone fallback is deliberately not implemented until a real
    vault approaches one.
-3. A changed source is mirrored as one small `INSERT` poke per brand
-   new row (expected duplicate-key errors swallowed, the shipped
-   quiet-ensure pattern) followed by multi-statement `UPDATE` pokes in
-   chunks of 32, safe as batches because an update on an absent row
-   no-ops cleanly. New rows appear in the update set too, which is
-   both the crash-safety net behind their inserts and what makes the
-   update verdict alone authoritative for the cursor. Inserts are
-   never batched, because one duplicate key would abort a batched poke
-   whole (section 2, point 6). Event boundaries between chunks come
+3. A changed source is mirrored as `INSERT` pokes for brand new rows
+   (expected duplicate-key errors swallowed, the shipped quiet-ensure
+   pattern) followed by multi-statement `UPDATE` pokes in chunks of
+   32, safe as batches because an update on an absent row no-ops
+   cleanly. New rows appear in the update set too, which is both the
+   crash-safety net behind their inserts and what makes the update
+   verdict alone authoritative for the cursor. Inserts ride the same
+   32-statement chunks, and a chunk holding any duplicate aborts
+   whole (section 2, point 6) and replays row by row, so steady state
+   pays one aborted poke per chunk of re-inserts while a fresh
+   table's backfill, where no duplicate is possible, lands 32 rows
+   per poke. Statements cost obelisk seconds to tens of seconds each
+   on modest hardware, and that batching is what keeps a
+   many-hundred-row backfill in minutes. Event boundaries between chunks come
    from each round-trip's own waits (native-index.md fact 6). Tombstoning runs only for the curated
    domains, where the cursor's key map says exactly what was mirrored
    before: a pass diffs current keys against the map and tombstones
@@ -243,19 +248,34 @@ change.
    poke semantics (section 2, point 6).
 5. The cursor advances only when a source's writes LANDED: every
    update batch's verdict (or its per-row replay's) gates the domain's
-   cursor fold, so a failed write keeps the old stamps and the next
-   pass retries it. A crash between a poke and the cursor write means
-   the source reruns, and reruns are harmless because the upsert is
-   idempotent.
+   cursor fold, so a failed write keeps the old stamps. A pass with
+   any failed domain also sets the cursor's retry flag, and the wake
+   gate honors it, so the next tick re-enters the full pass even when
+   the content beacon never moved. A clean pass clears the flag. A
+   crash between a poke and the cursor write means the source reruns,
+   and reruns are harmless because the upsert is idempotent.
 
 Backfill is not a separate protocol. Cursor resets are per source, and
-the bootstrap is what performs them: a table found missing at probe
-time and present after the creates gets its stamp or key map zeroed,
-which makes the next pass remirror that source in full. Zeroing all of
-them is a full backfill. First run, recovery after reinstall, and
-schema migration are the same code path at different reset widths. A
-reset never touches another table's key map, so tombstone state
-survives unrelated migrations.
+the bootstrap is what performs them. A table found missing at probe
+time gets its stamp or key map zeroed before the pass writes, which
+makes the pass remirror that source in full, and the zeroing persists
+through the pass's own cursor writes, so an interrupted recovery picks
+up where it stopped instead of stranding a table with pre-wipe stamps.
+Zeroing all of them is a full backfill. First run, recovery after
+reinstall, and schema migration are the same code path at different
+reset widths. A reset never touches another table's key map, so
+tombstone state survives unrelated migrations.
+
+Pass pacing on modest hardware is dominated by cold statements. An
+obelisk statement answers in about two seconds when the engine is
+warm, but the first statement after idle, or after the pass's own
+tree sweeps, pays a cold cost an order of magnitude higher. A
+steady-state pass is a few statements and finishes in minutes. A
+recovery or first-run pass can hold the ship busy for tens of
+minutes. That is convergence, not failure. The reconciler finishes,
+the retry flag carries anything that missed a deadline into the next
+tick, and an idle tick costs three local peeks and no obelisk
+traffic at all.
 
 ## 6. The query bridge
 
@@ -274,8 +294,9 @@ sequenceDiagram
 ```
 
 1. `POST /obelisk-query` is owner-gated and passes the body through as
-   urQL. The route holds the connection until the result lands or a 15
-   second poll deadline passes.
+   urQL. The route holds the connection until the result lands or a
+   one minute poll deadline passes, sized above obelisk's real
+   per-statement latency so a slow desk is not misread as a dead one.
 2. Every caller runs its own round-trip. There is no owner fiber: the
    core's ack routing could not sustain one, so callers poke the desk
    directly and poll the shared `/server` materialization. The race
@@ -310,21 +331,27 @@ sequenceDiagram
    lattice feature is unaffected. Install it from the settings page
    (or `|install ~dister-nomryg-nilref %obelisk`) and enable the
    mirror there; the next pass finds a zeroed cursor and backfills.
-2. Obelisk is reinstalled empty. Each cycle starts with per-table
-   probes, one `SELECT` of the primary key column per mirrored table,
-   before any schema poke, so a wiped store still shows its missing
-   tables. A table-missing error zeroes that table's cursor state.
-   Then the bootstrap runs. The `CREATE DATABASE` poke rides alone and
-   its expected already-exists error is swallowed, never read as a
-   failure, and the `CREATE TABLE` poke is a no-op against live tables
-   (section 2, point 7). The zeroed state backfills in the same pass.
+2. Obelisk is reinstalled empty. Every working pass starts with the
+   bootstrap's per-table probes, one `SELECT` of the primary key
+   column per mirrored table, before any schema poke, so a wiped
+   store still shows its missing tables. A table found missing gets
+   its cursor state zeroed before the pass writes. The
+   `CREATE DATABASE` poke rides alone and its expected already-exists
+   error is swallowed, never read as a failure, and the
+   `CREATE TABLE` poke is a no-op against live tables (section 2,
+   point 7). The zeroed state backfills in the same pass, and a
+   partial recovery sets the retry flag so the next tick finishes it.
+   The reinstall itself moves nothing lattice watches, so on a quiet
+   ship the recovery waits for the next content edit or visit.
 3. The schema needs to change. Ship the new shape in the create list,
    then drop the changed table with `DROP TABLE FORCE` through the
    query bridge. The next pass's probe finds the table missing,
    recreates it with the new shape, and zeroes that table's cursor
    state only, so the mirror rebuilds the one table while every other
    table's state, tombstone key maps included, stays untouched.
-   Consumers see a gap, never wrong data.
+   Consumers see a gap, never wrong data. The drop itself moves
+   neither the beacon nor the visit history, so on a quiet ship
+   follow it with any content edit to fire the pass.
 4. A hostile or buggy value reaches the mirror. Text passes through
    `+urq-esc`, which neutralizes quote, backslash, and control bytes,
    the exact escaper the first catalog shipped and fuzzed.
@@ -332,6 +359,18 @@ sequenceDiagram
    verdicts come back false, the affected domains keep their old
    cursors, and the next pass retries them. The mirror lags and says
    nothing false.
+6. The `/server` subscription sticks. Gall's book can say live while
+   the far side kicked during a doze (the zombie the mark README
+   documents), and every query then times out against a healthy desk.
+   The cure is manual and deliberate, from the dojo: poke
+   `%gall-leave` then `%gall-watch` for the ship, `%obelisk`,
+   `/server`. The bridge never pokes these itself. Obelisk kicks
+   subscribers after every result and grubbery auto-resubscribes on
+   every kick, so a watch or leave injected beside that cycle
+   collides with it (`%watch-not-unique`), the collision's crash
+   produces another kick, and the loop becomes a self-sustaining
+   storm. Automated cures were built twice and removed twice for
+   exactly that reason.
 
 ## 8. Phases
 

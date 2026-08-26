@@ -330,12 +330,36 @@
 ::  ── reconciler state ────────────────────────────────────────────────
 ::  +mirror-cursor: the cursor grub's noun (docs/obelisk-mirror.md
 ::  section 5). beacon is the beacon value of the last completed pass.
-::  The per-domain maps are content stamps, and for the curated domains
-::  they double as the tombstone basis: a key present here and absent
-::  from the source is a row to mark dead. visits keys by the history
-::  entry's url cord, its source's own key.
+::  retry is the failed-pass marker: the beacon alone cannot express
+::  "retry needed" on a pass the beacon did not trigger (the wipe
+::  recovery path runs with the beacon already equal), so a pass with
+::  any failed domain sets retry and the wake gate re-enters the full
+::  pass until one lands clean. The per-domain maps are content
+::  stamps, and for the curated domains they double as the tombstone
+::  basis: a key present here and absent from the source is a row to
+::  mark dead. visits keys by the history entry's url cord, its
+::  source's own key. A shape change here needs a versioned fallback
+::  in the reader (see +mirror-cursor-v1): the fresh-default fallback
+::  is a full backfill, never an acceptable migration.
 ::
 +$  mirror-cursor
+  $:  beacon=@ud
+      retry=?
+      pages=(map path @)
+      knows=(map path @da)
+      tags=(set [path @t])
+      follows=(set @p)
+      visits=(map @t @)
+  ==
+::  +mirror-cursor-v1: the shape before the retry flag. The reader
+::  clams this as its fallback and upgrades in place, because
+::  orphaning a persisted cursor is NOT a cheap migration: the fresh
+::  default diffs the whole store, hundreds of statements at obelisk's
+::  real per-statement cost, hours of solid compute that pinned the
+::  dev ship five times before the cause was found. State survives
+::  shape changes or the shape change does not ship.
+::
++$  mirror-cursor-v1
   $:  beacon=@ud
       pages=(map path @)
       knows=(map path @da)
