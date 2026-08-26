@@ -8796,6 +8796,23 @@
   ?.  ?=(%| -.res)  %.n
   ?~  p.res  %.n
   =([%leaf (trip timeout-leaf)] i.p.res)
+::  +nosub-leaf: the refusal to poke without a live subscription. It is
+::  a DIFFERENT verdict from a timeout on purpose. A timeout means the
+::  desk was asked and stayed silent, which says nothing about whether
+::  it exists. No subscription means the desk cannot be asked at all,
+::  which on a ship that never installed %obelisk is the permanent
+::  truth. Folding this into the timeout made every probe on such a
+::  ship read unknown forever, so the bootstrap could never conclude
+::  absence and the loop retried every five minutes for the life of
+::  the ship instead of settling into its half-hourly quiet.
+::
+++  nosub-leaf  ^-  @t  'obelisk: no /server subscription (desk absent?)'
+++  is-nosub
+  |=  res=obk-out:lm
+  ^-  ?
+  ?.  ?=(%| -.res)  %.n
+  ?~  p.res  %.n
+  =([%leaf (trip nosub-leaf)] i.p.res)
 ++  obelisk-run-one
   |=  [db=@tas urql=tape]
   =/  m  (fiber:fiber:nexus ,obk-out:lm)
@@ -8824,7 +8841,7 @@
   ::  presence), so this path must never poke blind.
   ;<  st=?(%none %dead %live)  bind:m  (obelisk-sub-state our)
   ?.  ?=(%live st)
-    (pure:m [%| ~[leaf+(trip timeout-leaf)]])
+    (pure:m [%| ~[leaf+(trip nosub-leaf)]])
   ::  the NONCE closes the shared-sub race: a trailing SELECT of a
   ::  fresh number rides every script, and only a result carrying that
   ::  number is accepted as ours. A concurrent caller's result fails
@@ -8951,18 +8968,26 @@
 ::  one row. Results are discarded: the next pass re-converges anything
 ::  a replay missed.
 ::
+::  the write arms return [ok to]: whether the values LANDED, and
+::  whether a poll deadline was missed. The caller needs both, because
+::  an engine error and a timeout mean opposite things. An engine error
+::  is information (a duplicate key, a poisoned row) and the run
+::  continues. A timeout is the absence of information, the remaining
+::  work is abandoned, and anything not yet written must not be
+::  recorded as mirrored.
+::
 ++  mirror-rows-one-by-one
   |=  [stmts=(list tape) ok=?]
-  =/  m  (fiber:fiber:nexus ,?)
+  =/  m  (fiber:fiber:nexus ,[ok=? to=?])
   ^-  form:m
-  ?~  stmts  (pure:m ok)
+  ?~  stmts  (pure:m [ok %.n])
   ;<  r=obk-out:lm  bind:m  (mirror-run i.stmts)
   ::  a TIMEOUT ends the replay immediately. The desk is unresponsive,
   ::  so the remaining rows would each pay the full deadline to learn
   ::  the same thing, and the domain's verdict is already false. Only
   ::  an engine error is worth walking past, since that isolates one
   ::  poisoned row.
-  ?:  (is-timeout r)  (pure:m %.n)
+  ?:  (is-timeout r)  (pure:m [%.n %.y])
   ::  name-recursion, never $: a $ with args inside a ;< continuation
   ::  cannot find the trap through the bind gates (-find.$).
   (mirror-rows-one-by-one t.stmts &(ok ?=(%& -.r)))
@@ -8991,13 +9016,29 @@
   |=  [ups=(list tape) ins=(list tape)]
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  ;<  *  bind:m  (mirror-write-chunks ins &)
-  (mirror-write-chunks ups &)
+  ::  the INSERT verdict is no longer discarded. Ignoring it was safe
+  ::  only while every insert chunk was attempted, because a chunk
+  ::  that aborted still fell through to the per-row replay and the
+  ::  loop carried on. Now that a timeout ABANDONS the remaining
+  ::  chunks, throwing the verdict away would let the domain's cursor
+  ::  advance over rows that were never inserted, and their paired
+  ::  UPDATE no-ops on an absent row, so those rows would be missing
+  ::  from the mirror permanently with the pass reporting success.
+  ::  Duplicate-key errors still do not fail a domain: those come back
+  ::  as engine errors, which the chunk loop swallows through the
+  ::  replay, and only a timeout can turn this verdict false.
+  ;<  ir=[ok=? to=?]  bind:m  (mirror-write-chunks ins &)
+  ;<  ur=[ok=? to=?]  bind:m  (mirror-write-chunks ups &)
+  ::  an insert fails the domain ONLY when it timed out. A duplicate
+  ::  key comes back as an engine error and is expected, so it must
+  ::  never freeze the cursor, but a timeout abandoned the remaining
+  ::  insert chunks and those rows really are missing.
+  (pure:m &(ok.ur !to.ir))
 ++  mirror-write-chunks
   |=  [ups=(list tape) ok=?]
-  =/  m  (fiber:fiber:nexus ,?)
+  =/  m  (fiber:fiber:nexus ,[ok=? to=?])
   ^-  form:m
-  ?~  ups  (pure:m ok)
+  ?~  ups  (pure:m [ok %.n])
   =/  all=(list tape)  ups
   =/  chunk=(list tape)  (scag 32 all)
   ;<  r=obk-out:lm  bind:m  (mirror-run (batch:lm chunk))
@@ -9007,16 +9048,18 @@
   ::  became hours, every pass). Give up on the domain, let the
   ::  verdict hold its cursor, and let the retry flag bring the next
   ::  tick back. Only an engine error earns the per-row isolation.
-  ?:  (is-timeout r)  (pure:m %.n)
-  ;<  cok=?  bind:m
-    ?:  ?=(%& -.r)  (pure:m &)
+  ?:  (is-timeout r)  (pure:m [%.n %.y])
+  ;<  cr=[ok=? to=?]  bind:m
+    ?:  ?=(%& -.r)  (pure:m [%.y %.n])
     (mirror-rows-one-by-one chunk &)
+  ::  a replay that timed out mid-chunk abandons the rest too.
+  ?:  to.cr  (pure:m [%.n %.y])
   ::  an engine error does NOT abort the domain: the replay already
   ::  isolated the poisoned row, and the later chunks are independent
   ::  and idempotent. Aborting would let one permanently bad row block
   ::  every row behind it forever, since the retry flag brings the
   ::  same pass back to the same chunk.
-  (mirror-write-chunks (slag 32 all) &(ok cok))
+  (mirror-write-chunks (slag 32 all) &(ok ok.cr))
 ::  grub readers for the loop's own state.
 ::
 ++  mirror-enabled
@@ -9097,6 +9140,10 @@
   ;<  r=obk-out:lm  bind:m  (mirror-run i.probes)
   =/  v=probe-verdict
     ?:  ?=(%& -.r)  %yes
+    ::  no subscription reads as NO, not unknown. It is the answer a
+    ::  desk-less ship gives to every probe, and calling it unknown
+    ::  left absence undecidable forever.
+    ?:  (is-nosub r)  %no
     ?:  (is-timeout r)  %dunno
     %no
   ::  retry an unknown ONCE before recording it. The first statement
@@ -9118,6 +9165,7 @@
   ?.  ?=(%dunno v)  (pure:m v)
   ;<  r=obk-out:lm  bind:m  (mirror-run probe)
   ?:  ?=(%& -.r)  (pure:m %yes)
+  ?:  (is-nosub r)  (pure:m %no)
   (pure:m ?:((is-timeout r) %dunno %no))
 ::  +boot-verdict: what the bootstrap concluded. %absent = every probe
 ::  says no table, so the desk is gone and the loop sleeps long.
@@ -9149,8 +9197,14 @@
   ::  pass's own cursor writes, so an interrupted recovery never
   ::  strands a table with pre-wipe stamps.
   ?:  (levy again |=(f=probe-verdict =(%no f)))  (pure:m [%absent ~])
-  ::  an unknown on the SECOND probe is the same refusal to guess.
-  ?:  (lien again |=(f=probe-verdict =(%dunno f)))  (pure:m [%unclear ~])
+  ::  an unknown on the SECOND probe does NOT abort. The fresh set is
+  ::  folded from the FIRST probe, which is already decided and
+  ::  dunno-free by the guard above, and the creates have ALREADY run
+  ::  by this point. Returning unclear here threw that decision away
+  ::  after changing the store, so the next tick saw every table
+  ::  present, zeroed nothing, and left the freshly created tables
+  ::  permanently empty with no tick able to notice. Carry the set
+  ::  through and let a failed write set the retry flag instead.
   ::  zero only what the FIRST probe positively found missing. %dunno
   ::  cannot reach here (the guard above returned), so this is a real
   ::  engine "no such table".
