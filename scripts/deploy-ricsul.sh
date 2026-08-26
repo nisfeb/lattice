@@ -39,12 +39,20 @@ cd "$REPO"
 [ -z "$(git status --porcelain)" ] || { echo "repo is dirty — commit first" >&2; exit 69; }
 echo "repo clean at $(git rev-parse --short HEAD)"
 
-# Ricsul runs MAIN. A feature branch can lag main (one deployed tonight was
-# missing a merged feature and silently clobbered it on the ship).
+# Ricsul must never receive a tree that is MISSING merged work. A feature
+# branch that lags main once deployed over a merged feature and silently
+# clobbered it on the ship. The property that actually prevents that is
+# containment, not equality: HEAD must have origin/main as an ancestor. Main
+# itself satisfies it, and so does a branch that is merely ahead, which is how
+# a release candidate reaches the ship before its PR is squashed.
 git fetch origin --quiet
-if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
-  echo "HEAD is not origin/main — deploy from latest main (or edit this check if you mean it)" >&2
+if ! git merge-base --is-ancestor origin/main HEAD; then
+  echo "HEAD does not contain origin/main — it would clobber merged work" >&2
+  echo "rebase onto latest main, then re-run" >&2
   exit 70
+fi
+if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+  echo "note: deploying $(git rev-parse --abbrev-ref HEAD), which is ahead of main"
 fi
 
 say "current state on ricsul"
