@@ -5473,7 +5473,16 @@
   ?+  in  [%skip ~]
       ~  [%wait ~]
       [~ %poke * *]
-    ?:  ?|(=([/ %timer-wake] p.sage.u.in) =([/ %keen-response] p.sage.u.in))
+    ::  poke-acks are consumed, never skipped. Every gall-poke-fire
+    ::  gets one back, a skipped input re-offers on EVERY later take,
+    ::  and a long-lived fiber that fires thousands of pokes (the
+    ::  reconciler's statement stream) turns its own skip pile into a
+    ::  per-tick rescan that made its round-trips two hundred times
+    ::  slower than a fresh fiber's. Nothing ever awaits these acks.
+    ?:  ?|  =([/ %timer-wake] p.sage.u.in)
+            =([/ %keen-response] p.sage.u.in)
+            =([/ %poke-ack] p.sage.u.in)
+        ==
       [%done ~]
     [%skip ~]
       [~ %peek * *]  [%done ~]
