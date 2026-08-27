@@ -35,3 +35,6 @@ node_modules
 
 # cargo-mutants scratch output
 mutants.out*/
+
+# reference-only scratch, never shipped
+.scratch-urbit/

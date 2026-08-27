@@ -63,6 +63,13 @@ rsync -a "$OVERLAY/lib/" "$DEST/lib/"
 # Cross-desk poke marcs: into grubbery's gub/mar/clay tree so handle-gall-poke
 # can build the poke vase.
 [ -d "$OVERLAY/mar-clay" ] && rsync -a "$OVERLAY/mar-clay/" "$DEST/gub/mar/clay/"
+# Desk-level clay marks: into $DEST/mar, NOT gub/mar. These are the marks a
+# DOJO poke resolves against, which is a different tree from the agent-side
+# gub/mar/clay above. %gall-leave lives here and nowhere else, and it is the
+# only cure for a stuck /server subscription (docs/obelisk-mirror.md failure
+# mode 6), so a deploy that skips this ships a runbook step no one can run.
+mkdir -p "$DEST/mar"
+[ -d "$OVERLAY/mar-core" ] && rsync -a --exclude 'README.md' "$OVERLAY/mar-core/" "$DEST/mar/"
 # Tests: desk-level.
 rsync -a "$OVERLAY/tests/" "$DEST/tests/"
 
