@@ -8391,18 +8391,67 @@
 ::  unanswerable keen forever (a parked request per missed keen, growing
 ::  without bound on a reader whose publisher stopped mirroring).
 ::
+::  +deadline: with-timeout, reimplemented here from primitives that every
+::  grubbery in the fleet shares.
+::
+::  +with-timeout:io itself cannot be called portably. Its body is identical
+::  across the versions our ships run, but its SIGNATURE is not: the newer one
+::  takes a leading wire, the older one mints its own through +nonce. A source
+::  file can only pick one, so calling it directly makes lattice buildable on
+::  exactly one grubbery generation. That is not academic. It is what made the
+::  obelisk mirror stage cleanly onto a production ship and then quietly fail
+::  to compile there, leaving the old ball running and the deploy inert.
+::
+::  Everything used below (+nonce, +get-time, +set-timer, +cancel-timer, and
+::  the shape of a fiber take) is present and identical in both, so this arm
+::  builds anywhere and needs no per-ship variant.
+::
+++  deadline
+  |*  result=mold
+  =/  m   (fiber:fiber:nexus ,(unit result))
+  =/  mr  (fiber:fiber:nexus ,result)
+  |=  [time=@dr computation=form:mr]
+  ^-  form:m
+  ;<  =wire    bind:m  (nonce:io /keen-to)
+  ;<  now=@da  bind:m  get-time:io
+  ;<  ~        bind:m  (set-timer:io wire (add now time))
+  |=  input:fiber:nexus
+  ^-  output:m
+  ::  our own deadline fired before the computation finished
+  ?:  ?&  ?=([~ %poke * *] in)
+          =([/ %timer-wake] p.sage.u.in)
+          =(wire !<(^wire q.sage.u.in))
+      ==
+    [~ q.state %done ~]
+  =/  c-res=output:mr  (computation +<)
+  ?:  ?=(%cont -.next.c-res)
+    [darts.c-res state.c-res %cont ..$(computation self.next.c-res)]
+  ?:  ?=(%done -.next.c-res)
+    =/  fin=form:m
+      ;<  ~  bind:m  (cancel-timer:io wire)
+      (pure:m `value.next.c-res)
+    [darts.c-res state.c-res %cont fin]
+  ?:  ?=(%fail -.next.c-res)
+    =/  err=tang  err.next.c-res
+    =/  fin=form:m
+      ;<  ~  bind:m  (cancel-timer:io wire)
+      |=  input:fiber:nexus
+      [~ q.state %fail err]
+    [darts.c-res state.c-res %cont fin]
+  :+  darts.c-res  state.c-res
+  ?-  -.next.c-res
+    %wait  [%wait ~]
+    %skip  [%skip ~]
+  ==
 ++  keen-page-raw
   |=  [shp=@p rel=path rev=@ud]
   =/  m  (fiber:fiber:nexus ,(unit [p=@tas q=@t]))
   ^-  form:m
   =/  pax=path  (keen-path rel rev)
   ;<  res=(unit (unit page))  bind:m
-    ::  develop HEAD's with-timeout takes a leading wire for its timer,
-    ::  so concurrent timeouts in one fiber stay distinguishable.
-    %^  (with-timeout:io ,(unit page))
-        /keen-to
-      mesa-timeout
-    (keen:io shp pax)
+    ::  +deadline, not +with-timeout:io, so this file builds on every
+    ::  grubbery generation the fleet runs. See the arm above.
+    ((deadline ,(unit page)) mesa-timeout (keen:io shp pax))
   ::  outer ~: our own deadline fired, so cancel the parked request.
   ::  inner ~: the publisher bound nothing at that spur (never grown, or
   ::  culled). keen:io hands back the page the kernel's verified %sage
