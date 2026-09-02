@@ -168,41 +168,37 @@ sequenceDiagram
 ### 1. The ship side (grubbery nexus)
 
 lattice's ship side runs as a **nexus** inside the
-[**grubbery**](https://github.com/gwbtc/grubbery) framework. One `%grubbery`
-Gall agent hosts a tree of "apps," and lattice is one of them. So installing
-means get grubbery, drop lattice's nexus into it, and commit.
+[**grubbery**](https://github.com/gwbtc/grubbery) framework, and ships as a
+`%grubbery` desk that already contains it. One command in your dojo:
 
-1. **Install grubbery** on your ship (`%grubbery`), following grubbery's own
-   install. Pin a recent commit, since lattice is developed against
-   grubbery's `develop`.
+```dojo
+|install ~ricsul-bilwyt %grubbery
+```
 
-2. **Sync the lattice overlay** into your grubbery desk. The nexus source
-   lives in this repo under [`grubbery-overlay/`](grubbery-overlay/) and must
-   be copied into the `%grubbery` desk, because grubbery only loads `gub/`
-   from its own desk:
-   ```bash
-   ./scripts/sync-overlay.sh /path/to/your-ship/grubbery
-   ```
+That pulls the desk, boots grubbery, creates the lattice app, binds
+`/apps/lattice`, and starts serving. Updates arrive on their own: every
+release the publisher commits is fetched and merged by kiln, the same way
+any Urbit desk updates. Pause them with `|pause %grubbery`, resume with
+`|resume %grubbery`.
 
-3. **Commit** the grubbery desk:
-   ```dojo
-   |commit %grubbery
-   ```
+The desk is grubbery with lattice and the MCP server and nothing else. If
+you already run a full grubbery from another publisher, installing from
+`~ricsul-bilwyt` replaces your desk source, and any apps that live only in
+the other publisher's desk stop until their code comes back. See
+[docs/grubbery-ops.md](docs/grubbery-ops.md) before switching.
 
-4. **Install the app.** Committing the source does *not* install it. An app
-   is a folder in grubbery's ball, so create it once with grubbery's MCP
-   `create_folder` tool. The `nexus` param is mandatory and stab-parsed:
-   ```json
-   create_folder {"path":"/apps","name":"lattice.lattice_app","nexus":"/lattice/app"}
-   ```
-   The nexus materializes its tree, binds an HTTP endpoint at
-   `/apps/lattice`, and starts serving. Pages you write become published
-   grubs in the namespace. Full deploy and ops detail lives in
-   [docs/grubbery-ops.md](docs/grubbery-ops.md).
+On first boot lattice also installs [`%obelisk`](https://github.com/dister-nomryg-nilref)
+from `~dister-nomryg-nilref` if you don't have it, so the optional search
+mirror has a database to talk to. The mirror itself stays off until you
+switch it on in settings.
 
-See [`grubbery-overlay/README.md`](grubbery-overlay/README.md) for the dev
-loop, and [`docs/cutover-runbook.md`](docs/cutover-runbook.md) if you're
-migrating an existing `%lattice` agent's data into the nexus.
+**Developing lattice, or publishing your own build:** the nexus source
+lives in this repo under [`grubbery-overlay/`](grubbery-overlay/) and is
+copied into a grubbery desk with `scripts/sync-overlay.sh`. That desk, made
+public with `|public %grubbery`, is what installers pull. The dev loop is
+in [`grubbery-overlay/README.md`](grubbery-overlay/README.md); migrating an
+old standalone `%lattice` agent's data into the nexus is in
+[`docs/cutover-runbook.md`](docs/cutover-runbook.md).
 
 > Access is enforced by grubbery **weirs**, which are per-directory ACLs.
 > Your published pages are namespace-public by design. That's the point of a
