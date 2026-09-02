@@ -44,7 +44,7 @@ fn remount(handle: &tauri::AppHandle, cfg: &config::Config) {
     }
 }
 
-/// The menubar: File, then Preferences.
+/// The menubar: File, Edit, then Preferences.
 fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     // one menu, one item: mounts lived in an unreachable window once
     // the manager auto-hid after connect
@@ -92,7 +92,21 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     // cosmetic difference on a platform this has never been run on,
     // and not a reason to keep an unconventional order on the one it
     // has. Revisit when there is a mac to look at.
-    app.set_menu(tauri::menu::MenuBuilder::new(app).items(&[&file, &prefs]).build()?)?;
+    // Edit is not decoration. On macOS a webview only receives Cmd-C/V/X/A
+    // through the standard Edit items; Tauri installs them in its default
+    // menu, and setting our own menu threw that away, which is why nobody
+    // could paste a +code on a Mac. The items are predefined: the OS routes
+    // them to the focused responder, so they need no handler here.
+    let edit = tauri::menu::SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+    app.set_menu(tauri::menu::MenuBuilder::new(app).items(&[&file, &edit, &prefs]).build()?)?;
     Ok(())
 }
 
