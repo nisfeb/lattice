@@ -9536,8 +9536,8 @@
   ::  not running is not the same as absent. A desk installed from any
   ::  publisher and merely suspended has a kiln source, and a kiln
   ::  install would REPLACE that source with ours. Leave it alone.
-  ;<  srcs=(map desk [ship desk])  bind:m
-    (typed-scry:io (map desk [ship desk]) %noun /gx/hood/kiln/sources/noun)
+  ;<  srcs=(map @tas [@p @tas])  bind:m
+    (typed-scry:io (map @tas [@p @tas]) %noun /gx/hood/kiln/sources/noun)
   ?:  (~(has by srcs) %obelisk)  (pure:m ~)
   ~&  >  %lattice-installing-obelisk
   (gall-poke-fire %hood [%kiln-install [%obelisk ~dister-nomryg-nilref %obelisk]])
