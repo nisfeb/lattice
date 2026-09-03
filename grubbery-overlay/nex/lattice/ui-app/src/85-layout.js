@@ -141,8 +141,14 @@
         + (t ? ` tree=${t.scrollHeight}/${t.clientHeight} ov=${getComputedStyle(t).overflowY} top=${t.getBoundingClientRect().top | 0}` : ' tree=-')
         + ` ua=${navigator.userAgent.replace(/^.*Chrome\//, 'Chrome/').split(' ')[0]}`;
     };
-    addEventListener('scroll', upd, true);
-    addEventListener('resize', upd);
-    new MutationObserver(upd).observe(document.body, { subtree: true, childList: true, attributes: true });
+    // coalesce to one update per frame, and watch the workspace grid rather
+    // than the body: the readout lives outside it, so rewriting its text is
+    // not a mutation it can see (observing the body made it observe itself
+    // and spin forever).
+    let queued = false;
+    const sched = () => { if (queued) return; queued = true; requestAnimationFrame(() => { queued = false; upd(); }); };
+    addEventListener('scroll', sched, true);
+    addEventListener('resize', sched);
+    new MutationObserver(sched).observe(ws, { subtree: true, childList: true, attributes: true });
     upd();
   }
