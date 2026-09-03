@@ -328,7 +328,17 @@ select, option { color-scheme: light dark; }
      pull-to-refresh, which RELOADS the app. Page edits survive (2s autosave),
      but grub mode has none. A stray downward swipe threw away typed template
      source. `contain` keeps the gesture inside the page. */
-  html, body { overflow: auto; height: auto; overscroll-behavior-y: contain; }
+  html { overflow: auto; height: auto; overscroll-behavior-y: contain; }
+  /* body must NOT be a scroll container. With overflow:auto on both, html
+     stops propagating body's overflow to the viewport and body becomes a
+     scroller in its own right, one with nothing to scroll (its height is
+     its content). A touch that lands in it latches onto body, and the
+     `contain` above, inherited here, forbids chaining up to the viewport
+     that actually has the range. Chrome 152 enforces that on
+     non-overflowing scrollers (older builds chained anyway): the expanded
+     tree reached past the screen and would not move, while html reported
+     a 430px range and scrollY stayed 0. Diagnosed with ?diag=1. */
+  body { overflow: visible; height: auto; }
   /* dvh, not vh: vh is sized to the browser with its URL bar HIDDEN, so a
      100vh min-height overshoots the visible viewport by the bar's height and
      leaves the tab strip scrolled half off. Plain vh stays as the fallback. */
