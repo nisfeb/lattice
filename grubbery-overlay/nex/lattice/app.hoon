@@ -5866,9 +5866,10 @@
     ?~  cd  (render-clearweb (pax-str rel) head (weld errh "<p>no data yet</p>") "")
     ::  our own page view links into the editor; a peer's page keeps the
     ::  public form (we cannot link into their editor).
+    =/  base=tape  ?:(local "/apps/lattice/app?name=" "/apps/lattice/c/")
     %-  clearweb-doc
-    :*  rel  u.cd  vmode  head  ?!(?=(%html vmode))  ~  (weld errh extra)
-        ?:(local "/apps/lattice/app?name=" "/apps/lattice/c/")
+    :*  rel  (render-shown u.cd vmode base)  vmode  head  ?!(?=(%html vmode))  ~
+        (weld errh extra)
         ::  no bar: this document is the browser view's iframed inner page
         ""
     ==
@@ -6001,15 +6002,17 @@
 ::  sandboxed frame. The sandbox, not escaping, is what neutralizes hostile html.
 ::
 ++  clearweb-doc
-  |=  [pax=path =sang:tarball vmode=view-mode:pg head=tape wrap=? home=(unit tape) extra=tape base=tape bar=tape]
+  |=  [pax=path shown=tape vmode=view-mode:pg head=tape wrap=? home=(unit tape) extra=tape bar=tape]
   ^-  @t
+  ::  `shown` is the page body already rendered for its mode (+render-shown,
+  ::  or the cached copy +clearweb-body serves on the public path).
   ::  `extra` (a rendered comment thread + optional box) is appended after the
   ::  page content, inside the themed wrapper for md/gmi/text, or after the raw
   ::  body for %html.
   ::  `base` is the wikilink target root: /c/ on the public surface, the editor
   ::  on an owner view. Hardcoding /c/ here made every wikilink on the owner's
   ::  own page view dead, since pages are private by default.
-  =/  inner=tape  (weld (render-shown sang vmode base) extra)
+  =/  inner=tape  (weld shown extra)
   =/  body=tape
     ?:  ?=(%html vmode)  inner
     ?.  wrap  inner
@@ -6271,11 +6274,51 @@
   ::  here, no comment box (box=""). Commenting happens from a ship's browser.
   ;<  con=?    bind:m  (comments-on pax)
   ;<  cmts=tape  bind:m  (render-comments pax con "")
+  ;<  shown=tape  bind:m  (clearweb-body pdir sang.dsn ud.cass.dsn vmode "/apps/lattice/c/")
   %+  send-html  eyre-id
   %:  clearweb-doc
-    pax  sang.dsn  vmode  head  ?=(^ tf)  home  cmts  "/apps/lattice/c/"
+    pax  shown  vmode  head  ?=(^ tf)  home  cmts
     (weld (clearweb-bar authed) nav-script)
   ==
+::  +clearweb-body: the rendered body of a public page, from a per-page cache
+::  keyed by the data grub's revision. The md and gmi renders are the costly
+::  part of an unauthenticated hit (quadratic on hostile input, see
+::  docs/perf-review.md), and they are pure in the page's data, its show mode
+::  and a constant base, so a hit at the same revision can reuse the last
+::  render. The other modes are a pass-through or a single escape and are
+::  not cached. No invalidation exists or is needed: a save bumps the
+::  revision, a show-mode change mismatches the mode, a delete takes the
+::  page dir and the cache grub with it. Two concurrent misses render twice
+::  and write the same bytes.
+::
+++  clearweb-body
+  |=  [pdir=path =sang:tarball rev=@ud vmode=view-mode:pg base=tape]
+  =/  m  (fiber:fiber:nexus ,tape)
+  ^-  form:m
+  ?.  ?=(?(%md %gmi) vmode)  (pure:m (render-shown sang vmode base))
+  =/  road=road:tarball  [%& %& pdir %'render.json']
+  =/  want=@t  (scot %ud rev)
+  ;<  cv=view:nexus  bind:m  (peek:io road ~)
+  =/  hit=(unit tape)
+    ?.  ?=([%file *] cv)  ~
+    =/  jon=json  (fall (mole |.(!<(json (need-vase:tarball sang.cv)))) ~)
+    ?.  ?=([%o *] jon)  ~
+    =/  r=(unit json)  (~(get by p.jon) 'rev')
+    =/  d=(unit json)  (~(get by p.jon) 'mode')
+    =/  h=(unit json)  (~(get by p.jon) 'html')
+    ?.  &(?=([~ %s *] r) ?=([~ %s *] d) ?=([~ %s *] h))  ~
+    ?.  &(=(p.u.r want) =(p.u.d vmode))  ~
+    `(trip p.u.h)
+  ?^  hit  (pure:m u.hit)
+  =/  html=tape  (render-shown sang vmode base)
+  ;<  ~  bind:m
+    %^  put-file  road  [/ %json]
+    %-  pairs:enjs:format
+    :~  ['rev' s+want]
+        ['mode' s+vmode]
+        ['html' s+(crip html)]
+    ==
+  (pure:m html)
 ::  +page-data-html: render a page's data grub. A cord shows as text; any
 ::  other noun as its literal (a page's data mark is a bare noun).
 ::
