@@ -120,3 +120,29 @@
       panes.ed = Math.round(lim((x - ed.left) / Math.max(60, pv.right - x), 0.25, 4) * 1000) / 1000;
     });
   }
+  // ── ?diag=1: a live layout readout for scroll bugs reported from phones ──
+  // Nothing here is reachable without the query string. It answers the
+  // questions a remote debugger would: which element scrolls, how tall the
+  // viewport, the document and the tree think they are, and whether those
+  // numbers move when folders expand.
+  if (/[?&]diag=1/.test(location.search)) {
+    const d = document.createElement('div');
+    d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99;font:11px/1.3 ui-monospace,monospace;'
+      + 'background:#000c;color:#0f0;padding:4px 6px;pointer-events:none;white-space:pre-wrap';
+    document.body.append(d);
+    const upd = () => {
+      const t = document.querySelector('.tree');
+      const se = document.scrollingElement;
+      d.textContent = `scroller=${se ? se.tagName : '-'} scrollY=${scrollY | 0}`
+        + ` inner=${innerHeight} vv=${window.visualViewport ? window.visualViewport.height | 0 : '-'}`
+        + ` html=${document.documentElement.scrollHeight}/${document.documentElement.clientHeight}`
+        + ` body=${document.body.scrollHeight}/${document.body.clientHeight}`
+        + ` ws=${ws.getBoundingClientRect().height | 0}`
+        + (t ? ` tree=${t.scrollHeight}/${t.clientHeight} ov=${getComputedStyle(t).overflowY} top=${t.getBoundingClientRect().top | 0}` : ' tree=-')
+        + ` ua=${navigator.userAgent.replace(/^.*Chrome\//, 'Chrome/').split(' ')[0]}`;
+    };
+    addEventListener('scroll', upd, true);
+    addEventListener('resize', upd);
+    new MutationObserver(upd).observe(document.body, { subtree: true, childList: true, attributes: true });
+    upd();
+  }
