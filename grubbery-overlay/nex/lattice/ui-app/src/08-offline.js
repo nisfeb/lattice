@@ -287,16 +287,18 @@
   // do: the editor then cleared its dirty flag and the work was gone with the
   // UI reporting success. If the queue cannot take it, say so and say it in
   // the words that matter, because there is nowhere else the edit now lives.
-  async function enqueueSave(name, kind, body, isNew) {
+  async function enqueueSave(name, kind, body, isNew, dname) {
     // the queue coalesces by name, and the 2s autosave calls this WITHOUT
     // the create flag — overwriting a queued create as a plain edit would
     // route the replay around the 409 create protection and let an offline
     // "new page" clobber one made online meanwhile. Once a create, always
-    // a create, until it drains.
+    // a create, until it drains. The display name rides with the create
+    // the same way.
     let prev = null;
     try { prev = await offGet(name); } catch {}
     const queued = await offPut({ name, kind, body, baseRev: curRev || 0,
-      isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now() });
+      isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(),
+      dname: dname || (prev && prev.dname) || '' });
     setDegraded(true);
     if (!queued) {
       st('NOT SAVED — this device cannot store offline edits. Copy your text '
@@ -459,7 +461,7 @@
       let one = null;
       try {
         one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
-          '&type=' + q.kind + '&new=1',
+          '&type=' + q.kind + '&new=1' + dnameQ(q.dname),
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
       if (one && one.ok) { await offDel(q.name); continue; }

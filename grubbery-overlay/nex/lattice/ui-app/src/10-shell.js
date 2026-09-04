@@ -68,6 +68,24 @@
   // queued document it earlier reported "saved offline".
   const validName = (n) => String(n || '').split('/').every(
     (s) => s.length && s !== '.' && s !== '..' && /^[a-z0-9._~-]+$/.test(s));
+  // realName: what a typed name becomes. A valid path is used as it is and
+  // gets NO display name (a name is never stored twice). Anything else —
+  // capitals, spaces, punctuation — is slugged per segment the way the
+  // uploader slugs file names, and the typed leaf is kept as the display
+  // name the tree shows over the real path. null when even the slug is
+  // empty: there is nothing to name it by.
+  const slugSeg = (s) => s.toLowerCase().replace(/[^a-z0-9._~-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
+  const realName = (typed) => {
+    const t = String(typed || '').trim().replace(/^\/+|\/+$/g, '');
+    if (!t) return null;
+    if (validName(t)) return { name: t, dname: '' };
+    const segs = t.split('/').map((s) => s.trim());
+    const name = segs.map(slugSeg).join('/');
+    if (!validName(name)) return null;
+    const leaf = segs[segs.length - 1];
+    return { name, dname: leaf === name.split('/').pop() ? '' : leaf };
+  };
+  const dnameQ = (d) => (d ? '&dname=' + encodeURIComponent(d) : '');
   // failure statuses name the actual cause. Every send-err answer carries
   // {"error": msg}, and dropping it for a bare status code wasted a cause
   // the pier already paid a round trip to deliver. Same parse the grub save

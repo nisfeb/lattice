@@ -16,13 +16,15 @@
     if (!tmpl) return;
     let seed = folderCtx ? folderCtx + '/' + tmpl : tmpl;
     for (;;) {
-      const name = await askName('name for the new ' + tmpl, seed, 'create');
-      if (!name) return;
+      const typed = await askName('name for the new ' + tmpl, seed, 'create');
+      if (!typed) return;
+      const rn = realName(typed);
+      const name = rn.name;
       stWork('creating ' + name + ' from ' + tmpl + '\u2026 (one save per page)');
       let r = null;
       try {
         r = await mutate(api + '/template-new?template=' + encodeURIComponent(tmpl) +
-          '&name=' + encodeURIComponent(name));
+          '&name=' + encodeURIComponent(name) + dnameQ(rn.dname));
       } catch {}
       if (r && (r.ok || r.offline)) {
         await loadTree();

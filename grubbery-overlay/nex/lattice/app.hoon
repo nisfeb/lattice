@@ -645,6 +645,14 @@
     ?~  old  (pure:n ~)
     (poke-eval [%make (pax-of kept) u.old])
   ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
+  ::  ?dname=<text>: the display name, sent by the client only when the
+  ::  typed name was not a valid path and the path is its slug. Absent on
+  ::  every ordinary save, so the grub is never touched by autosave.
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    =/  dn=(unit @t)  (~(get by args) 'dname')
+    ?~  dn  (pure:n ~)
+    (poke-eval [%dname (pax-of u.name) u.dn])
   ::  the new rev is prev+1, COMPUTED not re-peeked. A peek in this same
   ::  fiber does not observe the write yet (effects flush on yield), so a
   ::  post-write peek returned the stale rev, and a client carrying that
@@ -1510,6 +1518,10 @@
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     ;<  ~  bind:m  (poke-eval [%mkdir (pax-of u.name)])
+    =/  dn=(unit @t)  (~(get by args) 'dname')
+    ;<  ~  bind:m
+      ?~  dn  (pure:(fiber:fiber:nexus ,~) ~)
+      (poke-eval [%dname (pax-of u.name) u.dn])
     (send-ok eyre-id)
       [%'POST' %page-preview]
     ::  live markdown preview: render the POSTed body with the real render-md
@@ -1561,7 +1573,13 @@
     ?~  from  (send-err eyre-id 400 'missing from')
     ?~  to    (send-err eyre-id 400 'missing to')
     ?.  &((valid-name u.from) (valid-name u.to))  (send-err eyre-id 400 'bad name')
-    ?:  =(u.from u.to)  (send-err eyre-id 400 'same name')
+    ?:  =(u.from u.to)
+      ::  same path: nothing to move, but a rename that changed only the
+      ::  display name (My Page over my-page) lands here and still applies
+      =/  dn=(unit @t)  (~(get by args) 'dname')
+      ?~  dn  (send-err eyre-id 400 'same name')
+      ;<  ~  bind:m  (poke-eval [%dname (pax-of u.to) u.dn])
+      (send-json eyre-id (pairs:enjs:format ~[['moved' (numb:enjs:format 0)]]))
     =/  pf=path  (pax-of u.from)
     =/  pt=path  (pax-of u.to)
     ?:  &((gth (lent pt) (lent pf)) =(pf `path`(scag (lent pf) `path`pt)))
@@ -1576,6 +1594,12 @@
     ?:  ddr  (send-err eyre-id 409 'destination exists')
     ;<  n=(unit @ud)  bind:m  (move-pages pf pt)
     ?~  n  (send-err eyre-id 404 'no such page or folder')
+    ::  ?dname=: the display name for the NEW name ('' clears the one the
+    ::  move carried over, because the typed name was valid as it stands)
+    =/  dn=(unit @t)  (~(get by args) 'dname')
+    ;<  ~  bind:m
+      ?~  dn  (pure:(fiber:fiber:nexus ,~) ~)
+      (poke-eval [%dname pt u.dn])
     (send-json eyre-id (pairs:enjs:format ~[['moved' (numb:enjs:format u.n)]]))
       ::  the commons query bridge (docs/obelisk-mirror.md section 6): raw
       ::  urQL in the body, the desk's result as JSON out. Owner-gated by
@@ -1965,6 +1989,10 @@
       (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.nm))) %code])
     ?:  ex  (send-err eyre-id 409 'a page by that name exists')
     ;<  ~  bind:m  (instantiate-template `@tas`u.tmpl (pax-of u.nm))
+    =/  dn=(unit @t)  (~(get by args) 'dname')
+    ;<  ~  bind:m
+      ?~  dn  (pure:(fiber:fiber:nexus ,~) ~)
+      (poke-eval [%dname (pax-of u.nm) u.dn])
     (send-ok eyre-id)
       [%'POST' %save]
     =/  rel=(unit @t)  (~(get by args) 'path')
@@ -3300,6 +3328,17 @@
     ::  create an empty folder (and any missing parents). ensure-dirs is
     ::  idempotent, so mkdir over an existing page/folder is a harmless no-op.
     (ensure-dirs (weld root /page) pax.act)
+      %dname
+    ::  the display name sits beside a page's %code or a folder's flags, as
+    ::  a %name grub. '' clears it: the name typed at a rename was a valid
+    ::  segment, which is its own display name, so nothing is stored.
+    =/  fdir=path  (weld root (weld /page pax.act))
+    ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
+    ?.  ex  (pure:m ~)
+    ?:  =('' name.act)
+      ;<  *  bind:m  (cull-soft:io [%& %& fdir %name])
+      (pure:m ~)
+    (put-file [%& %& fdir %name] [/ %json] `json`s+name.act)
       %comments
     ::  set the comments on/off flag at pax (a page or folder). The nearest flag
     ::  at/above a page decides, so this enables/disables a whole subtree or one
@@ -3841,9 +3880,15 @@
     (sort (murn all |=([pax=path page=?] ?:(page ~ `pax))) aor)
   =/  rels=(list path)
     (sort (murn all |=([pax=path page=?] ?:(page `pax ~))) aor)
-  ::  structure first, parents before children, preserves empty subfolders
+  ::  structure first, parents before children, preserves empty subfolders.
+  ::  Display names of the root and every subfolder ride along after the
+  ::  mkdirs (pages carry theirs in the per-page loop below).
+  ;<  dacts=(list eval-action:le)  bind:m  (dname-acts sdir to [`path`~ dirs])
   =/  todo=(list eval-action:le)
-    [[%mkdir to] (turn dirs |=(p=path `eval-action:le`[%mkdir (weld to p)]))]
+    %+  weld
+      ^-  (list eval-action:le)
+      [[%mkdir to] (turn dirs |=(p=path `eval-action:le`[%mkdir (weld to p)]))]
+    dacts
   =/  count=@ud  0
   |-  ^-  form:m
   ?^  todo
@@ -3858,6 +3903,7 @@
     ?.  ?=([%file *] cn)  ''
     (fall (mole |.(;;(@t (sang-noun:tarball sang.cn)))) '')
   ;<  mode=share-mode:le  bind:m  (read-share pdir)
+  ;<  dn=(unit @t)  bind:m  (read-dname pdir)
   =/  dst=path  (weld to i.rels)
   =/  newcode=@t
     %-  crip
@@ -3867,6 +3913,9 @@
     to-bare
   =/  acts=(list eval-action:le)
     :-  [%make dst newcode]
+    %+  weld
+      ^-  (list eval-action:le)  ?~(dn ~ [%dname dst u.dn]~)
+    ^-  (list eval-action:le)
     ?:(=(%private mode) ~ [%share dst mode]~)
   $(todo acts, rels t.rels, count +(count))
 ::  +instantiate-template: create a live page-tree from a template. Runs in a
@@ -4593,11 +4642,15 @@
     |=  [nom=@ta kb=ball:tarball]
     =/  kw=wave:nexus  (fall (~(get by dir.w) nom) *wave:nexus)
     (tree-walk kb kw (weld rel /[nom]))
+  =/  drow=(list [@t json])  (dname-row fils)
   ?.  (~(has by fils) %code)
     ?~  rel  kids
     :_  kids
     :-  rel
-    (pairs:enjs:format ~[['path' s+(crip (pax-str rel))] ['page' b+|]])
+    %-  pairs:enjs:format
+    %+  weld  drow
+    ^-  (list [@t json])
+    ~[['path' s+(crip (pax-str rel))] ['page' b+|]]
   =/  cd  (~(got by fils) %code)
   =/  cs=cass:clay  (fall (~(get by wfil) %code) *cass:clay)
   =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) '')
@@ -4612,6 +4665,8 @@
   :_  kids
   :-  rel
   %-  pairs:enjs:format
+  %+  weld  drow
+  ^-  (list [@t json])
   :~  ['path' s+(crip (pax-str rel))]  ['page' b+&]  ['kind' s+kind]
       ['size' (numb:enjs:format (met 3 body))]
       ['rev' (numb:enjs:format ud.cs)]
@@ -4669,11 +4724,15 @@
     |=  [nom=@ta kb=ball:tarball]
     =/  kw=wave:nexus  (fall (~(get by dir.w) nom) *wave:nexus)
     (dump-walk kb kw (weld rel /[nom]))
+  =/  drow=(list [@t json])  (dname-row fils)
   ?.  (~(has by fils) %code)
     ?~  rel  kids
     :_  kids
     :-  rel
-    (pairs:enjs:format ~[['path' s+(crip (pax-str rel))] ['page' b+|]])
+    %-  pairs:enjs:format
+    %+  weld  drow
+    ^-  (list [@t json])
+    ~[['path' s+(crip (pax-str rel))] ['page' b+|]]
   =/  cd  (~(got by fils) %code)
   =/  cs=cass:clay  (fall (~(get by wfil) %code) *cass:clay)
   =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) '')
@@ -4695,7 +4754,46 @@
     ==
   :_  kids
   :-  rel
-  (pairs:enjs:format :(weld head body-row tail))
+  (pairs:enjs:format :(weld drow head body-row tail))
+::  +dname-row: the `dname` field of a tree node, from the %name grub in the
+::  same ball as its %code (or, for a folder, its flags). Absent -> no field:
+::  the client shows the path segment, and a valid name is never stored twice.
+::  mole/;;-fenced like %share: a broken grub reads as no display name.
+++  dname-row
+  |=  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+  ^-  (list [@t json])
+  =/  nd  (~(get by fils) %name)
+  ?~  nd  ~
+  =/  j=(unit json)  (mole |.(;;(json (sang-noun:tarball sang.u.nd))))
+  ?~  j  ~
+  ?.  ?=([%s *] u.j)  ~
+  ~[['dname' s+p.u.j]]
+::  +read-dname: a page's or folder's display name, by peek. Used where the
+::  ball is not already in hand (moves).
+++  read-dname
+  |=  dir=path
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  nn=view:nexus  bind:m  (peek:io [%& %& dir %name] ~)
+  %-  pure:m
+  ?.  ?=([%file *] nn)  ~
+  =/  j=(unit json)  (mole |.(;;(json (sang-noun:tarball sang.nn))))
+  ?~  j  ~
+  ?.  ?=([%s *] u.j)  ~
+  `p.u.j
+::  +dname-acts: the %dname actions that carry the display names of `dirs`
+::  (relative to sdir) to the same rels under `to`. One peek per dir; moves
+::  are rare.
+++  dname-acts
+  |=  [sdir=path to=path dirs=(list path)]
+  =/  m  (fiber:fiber:nexus ,(list eval-action:le))
+  ^-  form:m
+  ?~  dirs  (pure:m ~)
+  ;<  dn=(unit @t)  bind:m  (read-dname (weld sdir i.dirs))
+  ;<  rest=(list eval-action:le)  bind:m  $(dirs t.dirs)
+  %-  pure:m
+  ?~  dn  rest
+  [[%dname (weld to i.dirs) u.dn] rest]
 ::  +fs-source-result: a page's source as (each json [code msg]): the json on
 ::  %&, an HTTP-style [code msg] error on %|.
 ++  fs-source-result

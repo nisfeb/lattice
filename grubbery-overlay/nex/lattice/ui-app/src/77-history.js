@@ -199,9 +199,13 @@
     if (!current) { st('open something first', false); return; }
     let seed = current;
     for (;;) {
-      const newName = await askName('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
+      const typed = await askName('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
         seed, 'move');
-      if (!newName || newName === current) return;
+      if (!typed) return;
+      const rn = realName(typed);
+      const newName = rn.name;
+      // same path with a display name is still a rename (My Page over my-page)
+      if (newName === current && !(mode !== 'know' && rn.dname)) return;
       if (mode === 'know') {
         const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
           '&to=' + encodeURIComponent(newName));
@@ -223,7 +227,7 @@
         st('moved to ' + newName);
         return;
       }
-      const mv = await movePage(current, newName);
+      const mv = await movePage(current, newName, rn.dname);
       if (mv) {
         st('moved to ' + newName + (mv.offline ? ' offline' : ''));
         openPage(newName);
@@ -231,6 +235,6 @@
       }
       // movePage already reported the cause — loop back into askName seeded
       // with the rejected name
-      seed = newName;
+      seed = typed;
     }
   };
