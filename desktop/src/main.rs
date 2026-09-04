@@ -320,6 +320,13 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error building lattice desktop")
         .run(|app, event| {
+            // the manager rebuild destroys the only window and makes a new
+            // one; the gap must not read as "last window closed"
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = &event {
+                if commands::REBUILDING.load(std::sync::atomic::Ordering::SeqCst) {
+                    api.prevent_exit();
+                }
+            }
             if let tauri::RunEvent::Exit = event {
                 // drop every BackgroundSession -> clean unmounts before the
                 // process dies (drops of managed state are not otherwise run).
