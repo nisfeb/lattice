@@ -58,8 +58,24 @@ await page.evaluate(() => document.getElementById('save').click());
 check('a valid name shows as itself', await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
   .some((a) => a.textContent === 'plain.md' && a.href.includes(encodeURIComponent(n + '/plain'))), RUN));
 
+// a nested typed name names the folder it creates as well
+await page.evaluate(() => document.getElementById('newfile').click());
+await page.evaluate((n) => {
+  document.getElementById('pname').value = n;
+  document.getElementById('pkind').value = 'md';
+  const s = document.getElementById('src');
+  s.value = '# deep'; s.dispatchEvent(new Event('input'));
+}, RUN + '/Sub Folder/Deep Page');
+await page.evaluate(() => document.getElementById('save').click());
+check('the page shows as "Deep Page.md" at sub-folder/deep-page', await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
+  .some((a) => a.textContent === 'Deep Page.md' && a.href.includes(encodeURIComponent(n + '/sub-folder/deep-page'))), RUN));
+check('the folder the save made shows as "Sub Folder"', await wait((n) => [...document.querySelectorAll('#treelist .fld')]
+  .some((f) => f.textContent.includes('Sub Folder') && f.querySelector('[title="' + n + '/sub-folder"]')), RUN));
+
 // the ship agrees: dump carries dname for one and not the other
 const dump = await page.evaluate(async () => (await (await fetch('/apps/lattice/page-dump')).json()).nodes);
+const sf = dump.find((n) => n.path === RUN + '/sub-folder');
+check('page-dump carries the folder dname', sf && sf.dname === 'Sub Folder', JSON.stringify(sf));
 const mp = dump.find((n) => n.path === RUN + '/my-page');
 const pl = dump.find((n) => n.path === RUN + '/plain');
 check('page-dump carries dname for the slugged page', mp && mp.dname === 'My Page', JSON.stringify(mp));

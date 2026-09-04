@@ -66,6 +66,28 @@ sleep 2
 [ "$(node_field $R/moved/plain dname)" = "Plain Page" ] && ok "second page dname carried" || bad "second page: $(node_field $R/moved/plain dname)"
 [ "$(node_field $R/my-folder/plain dname)" = "<missing>" ] && ok "source is gone" || bad "source still there"
 
+echo "-- per-segment names: the folders a save creates get theirs too"
+# "$R/Sub Folder/Deep Page" typed -> name $R/sub-folder/deep-page, dnames "/Sub Folder/Deep Page"
+s=$(post --data-binary "# deep" "$B/page-save?name=$R/sub-folder/deep-page&type=md&new=1&dname=Deep%20Page&dnames=%2FSub%20Folder%2FDeep%20Page"); [ "$s" = 200 ] && ok "nested page-save 200" || bad "nested page-save $s"
+sleep 1
+[ "$(node_field $R/sub-folder dname)" = "Sub Folder" ] && ok "the folder the save made has its display name" || bad "sub-folder dname $(node_field $R/sub-folder dname)"
+[ "$(node_field $R/sub-folder/deep-page dname)" = "Deep Page" ] && ok "the page has its display name" || bad "deep-page dname $(node_field $R/sub-folder/deep-page dname)"
+[ "$(node_field $R dname)" = "<none>" ] && ok "a segment that was fine as typed gets none" || bad "root got a dname $(node_field $R dname)"
+# a second page inside, typed with the plain slug, must not clear the folder's name
+s=$(post --data-binary "# more" "$B/page-save?name=$R/sub-folder/more&type=md&new=1"); [ "$s" = 200 ] || bad "second page $s"
+sleep 1
+[ "$(node_field $R/sub-folder dname)" = "Sub Folder" ] && ok "a plain save inside keeps the folder's name" || bad "folder name lost"
+# a move into a new typed folder names that folder
+s=$(post "$B/page-move?from=$R/sub-folder/more&to=$R/new-dir/more&dname=&dnames=%2FNew%20Dir%2F"); [ "$s" = 200 ] && ok "move into a new folder 200" || bad "move $s"
+sleep 1
+[ "$(node_field $R/new-dir dname)" = "New Dir" ] && ok "the folder the move made has its display name" || bad "new-dir dname $(node_field $R/new-dir dname)"
+[ "$(node_field $R/new-dir/more dname)" = "<none>" ] && ok "the moved page has none" || bad "moved page got $(node_field $R/new-dir/more dname)"
+# nested folder-new names every new segment
+s=$(post "$B/folder-new?name=$R/alpha-one/beta-two&dnames=%2FAlpha%20One%2FBeta%20Two&dname=Beta%20Two"); [ "$s" = 200 ] && ok "nested folder-new 200" || bad "nested folder-new $s"
+sleep 1
+[ "$(node_field $R/alpha-one dname)" = "Alpha One" ] && ok "outer folder named" || bad "outer $(node_field $R/alpha-one dname)"
+[ "$(node_field $R/alpha-one/beta-two dname)" = "Beta Two" ] && ok "inner folder named" || bad "inner $(node_field $R/alpha-one/beta-two dname)"
+
 echo "-- delete"
 s=$(post "$B/page-del?name=$R"); [ "$s" = 200 ] && ok "cleanup" || bad "cleanup $s"
 exit $fail

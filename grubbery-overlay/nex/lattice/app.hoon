@@ -645,14 +645,10 @@
     ?~  old  (pure:n ~)
     (poke-eval [%make (pax-of kept) u.old])
   ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
-  ::  ?dname=<text>: the display name, sent by the client only when the
-  ::  typed name was not a valid path and the path is its slug. Absent on
-  ::  every ordinary save, so the grub is never touched by autosave.
-  ;<  ~  bind:m
-    =/  n  (fiber:fiber:nexus ,~)
-    =/  dn=(unit @t)  (~(get by args) 'dname')
-    ?~  dn  (pure:n ~)
-    (poke-eval [%dname (pax-of u.name) u.dn])
+  ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
+  ::  client only when the typed name was not a valid path and the path is
+  ::  its slug. Absent on every ordinary save, so autosave never touches them.
+  ;<  ~  bind:m  (poke-dnames args (pax-of u.name))
   ::  the new rev is prev+1, COMPUTED not re-peeked. A peek in this same
   ::  fiber does not observe the write yet (effects flush on yield), so a
   ::  post-write peek returned the stale rev, and a client carrying that
@@ -1518,10 +1514,7 @@
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     ;<  ~  bind:m  (poke-eval [%mkdir (pax-of u.name)])
-    =/  dn=(unit @t)  (~(get by args) 'dname')
-    ;<  ~  bind:m
-      ?~  dn  (pure:(fiber:fiber:nexus ,~) ~)
-      (poke-eval [%dname (pax-of u.name) u.dn])
+    ;<  ~  bind:m  (poke-dnames args (pax-of u.name))
     (send-ok eyre-id)
       [%'POST' %page-preview]
     ::  live markdown preview: render the POSTed body with the real render-md
@@ -1576,9 +1569,9 @@
     ?:  =(u.from u.to)
       ::  same path: nothing to move, but a rename that changed only the
       ::  display name (My Page over my-page) lands here and still applies
-      =/  dn=(unit @t)  (~(get by args) 'dname')
-      ?~  dn  (send-err eyre-id 400 'same name')
-      ;<  ~  bind:m  (poke-eval [%dname (pax-of u.to) u.dn])
+      ?.  |((~(has by args) 'dname') (~(has by args) 'dnames'))
+        (send-err eyre-id 400 'same name')
+      ;<  ~  bind:m  (poke-dnames args (pax-of u.to))
       (send-json eyre-id (pairs:enjs:format ~[['moved' (numb:enjs:format 0)]]))
     =/  pf=path  (pax-of u.from)
     =/  pt=path  (pax-of u.to)
@@ -1594,12 +1587,10 @@
     ?:  ddr  (send-err eyre-id 409 'destination exists')
     ;<  n=(unit @ud)  bind:m  (move-pages pf pt)
     ?~  n  (send-err eyre-id 404 'no such page or folder')
-    ::  ?dname=: the display name for the NEW name ('' clears the one the
-    ::  move carried over, because the typed name was valid as it stands)
-    =/  dn=(unit @t)  (~(get by args) 'dname')
-    ;<  ~  bind:m
-      ?~  dn  (pure:(fiber:fiber:nexus ,~) ~)
-      (poke-eval [%dname pt u.dn])
+    ::  ?dname= / ?dnames=: the display names for the NEW path ('' on dname
+    ::  clears the one the move carried over, because the typed name was
+    ::  valid as it stands; dnames names the folders the move made)
+    ;<  ~  bind:m  (poke-dnames args pt)
     (send-json eyre-id (pairs:enjs:format ~[['moved' (numb:enjs:format u.n)]]))
       ::  the commons query bridge (docs/obelisk-mirror.md section 6): raw
       ::  urQL in the body, the desk's result as JSON out. Owner-gated by
@@ -1989,10 +1980,7 @@
       (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.nm))) %code])
     ?:  ex  (send-err eyre-id 409 'a page by that name exists')
     ;<  ~  bind:m  (instantiate-template `@tas`u.tmpl (pax-of u.nm))
-    =/  dn=(unit @t)  (~(get by args) 'dname')
-    ;<  ~  bind:m
-      ?~  dn  (pure:(fiber:fiber:nexus ,~) ~)
-      (poke-eval [%dname (pax-of u.nm) u.dn])
+    ;<  ~  bind:m  (poke-dnames args (pax-of u.nm))
     (send-ok eyre-id)
       [%'POST' %save]
     =/  rel=(unit @t)  (~(get by args) 'path')
@@ -4794,6 +4782,51 @@
   %-  pure:m
   ?~  dn  rest
   [[%dname (weld to i.dirs) u.dn] rest]
+::  +split-fas: a cord on '/', keeping empty pieces ("/My Page" -> ['' 'My Page']).
+::  Byte-wise, so a typed name in any script survives.
+++  split-fas
+  |=  t=@t
+  ^-  (list @t)
+  =/  tap=tape  (trip t)
+  =|  cur=tape
+  =|  acc=(list @t)
+  |-  ^-  (list @t)
+  ?~  tap  (flop [(crip (flop cur)) acc])
+  ?:  =('/' i.tap)  $(tap t.tap, acc [(crip (flop cur)) acc], cur ~)
+  $(tap t.tap, cur [i.tap cur])
+::  +dname-acts-of: the display-name writes a request asks for at `pax`.
+::  ?dname=<text> names the leaf ('' clears it). ?dnames=<a/b/c> names every
+::  segment of pax at its depth, '' for a segment that needs none; only
+::  non-empty entries write, so a folder that already had a name keeps it
+::  when something is made inside it under the plain slug. Entries past
+::  the path's length are ignored.
+++  dname-acts-of
+  |=  [args=(map @t @t) pax=path]
+  ^-  (list eval-action:le)
+  =/  leaf=(list eval-action:le)
+    =/  dn=(unit @t)  (~(get by args) 'dname')
+    ?~  dn  ~
+    [%dname pax u.dn]~
+  =/  ds=(unit @t)  (~(get by args) 'dnames')
+  ?~  ds  leaf
+  =/  segs=(list @t)  (split-fas u.ds)
+  =/  i=@ud  1
+  |-  ^-  (list eval-action:le)
+  ?~  segs  leaf
+  ?:  (gth i (lent pax))  leaf
+  =/  rest  $(segs t.segs, i +(i))
+  ?:  =('' i.segs)  rest
+  [[%dname (scag i pax) i.segs] rest]
+::  +poke-dnames: apply +dname-acts-of, one writer poke each, in order.
+++  poke-dnames
+  |=  [args=(map @t @t) pax=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  acts=(list eval-action:le)  (dname-acts-of args pax)
+  |-  ^-  form:m
+  ?~  acts  (pure:m ~)
+  ;<  ~  bind:m  (poke-eval i.acts)
+  $(acts t.acts)
 ::  +fs-source-result: a page's source as (each json [code msg]): the json on
 ::  %&, an HTTP-style [code msg] error on %|.
 ++  fs-source-result

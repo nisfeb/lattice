@@ -227,7 +227,7 @@
         st('moved to ' + newName);
         return;
       }
-      const mv = await movePage(current, newName, rn.dname);
+      const mv = await movePage(current, newName, rn);
       if (mv) {
         st('moved to ' + newName + (mv.offline ? ' offline' : ''));
         openPage(newName);
