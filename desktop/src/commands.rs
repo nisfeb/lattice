@@ -4,6 +4,7 @@
 
 use lattice_fs::{default_cookie_path, EyreTransport, Transport};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::config;
 
@@ -59,8 +60,58 @@ pub fn go_home(app: AppHandle) -> Result<(), String> {
 /// a requested section still navigates.
 pub fn show_manager(app: &AppHandle, section: Option<&str>) -> Result<(), String> {
     let (w, created) = ensure_workspace(app)?;
+    let frag = section.map(|s| format!("#{s}")).unwrap_or_default();
+    // A window sitting on the ship page is REBUILT, not navigated back.
+    //
+    // Tauri judges every invoke local or remote from the origin the webview
+    // reports. On macOS, after navigating from the ship page to
+    // tauri://localhost, that origin can still be the ship page's, so the
+    // manager fell under the ship page's capability and every manager
+    // command was refused ("command pick_backup_dir not allowed by acl" on
+    // the choose button; backup_schedules and list_mounts failed silently).
+    // A window born on manager.html is the one state that provably works
+    // on every platform, and the window is born there anyway, so: destroy
+    // it, wait for the label to free (destroy is asynchronous), and make a
+    // fresh one. The user is leaving the ship page either way.
+    if !created && !on_shell_page(&w) {
+        // destroying the ONLY window asks the app to exit; main.rs vetoes
+        // that while this flag is up
+        dlog("manager: the window is on the ship page, rebuilding it");
+        REBUILDING.store(true, Ordering::SeqCst);
+        if let Err(e) = w.destroy() {
+            REBUILDING.store(false, Ordering::SeqCst);
+            return Err(e.to_string());
+        }
+        let h = app.clone();
+        std::thread::spawn(move || {
+            for _ in 0..100 {
+                if h.get_webview_window("workspace").is_none() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let h2 = h.clone();
+            h.run_on_main_thread(move || {
+                let made = new_workspace(&h2);
+                REBUILDING.store(false, Ordering::SeqCst);
+                dlog(&format!("manager: rebuilt the window: {}", made.is_ok()));
+                match made {
+                    Ok(w) => {
+                        if !frag.is_empty() {
+                            if let Ok(u) = format!("tauri://localhost/manager.html{frag}").parse() {
+                                w.navigate(u).ok();
+                            }
+                        }
+                        w.set_focus().ok();
+                    }
+                    Err(e) => dlog(&format!("manager: rebuilding the window failed: {e}")),
+                }
+            })
+            .ok();
+        });
+        return Ok(());
+    }
     if !created || section.is_some() {
-        let frag = section.map(|s| format!("#{s}")).unwrap_or_default();
         let url: tauri::Url = format!("tauri://localhost/manager.html{frag}")
             .parse()
             .map_err(|e| format!("{e}"))?;
@@ -68,6 +119,20 @@ pub fn show_manager(app: &AppHandle, section: Option<&str>) -> Result<(), String
     }
     w.set_focus().ok();
     Ok(())
+}
+
+/// Up while show_manager is between destroying the workspace window and
+/// making its replacement. The window is the app's only one, so its
+/// destruction reads as "last window closed, exit"; main.rs checks this
+/// and vetoes that exit.
+pub static REBUILDING: AtomicBool = AtomicBool::new(false);
+
+/// Is the window showing one of the shell's own pages (the manager, login)
+/// rather than the ship-served app?
+pub fn on_shell_page(w: &tauri::WebviewWindow) -> bool {
+    w.url()
+        .map(|u| u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost"))
+        .unwrap_or(false)
 }
 
 /// The single window is always BORN on manager.html. The app-page protocol
@@ -596,11 +661,7 @@ pub fn request_backup(app: &AppHandle, id: &str, takeover: bool) -> bool {
     if !takeover {
         // a shell page (the manager) has no hook to call, so skip the eval
         // entirely and say why the run is waiting
-        let on_shell = w
-            .url()
-            .map(|u| u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost"))
-            .unwrap_or(false);
-        if on_shell {
+        if on_shell_page(&w) {
             dlog("backup: the manager page is showing, the schedule waits for a later tick");
             return false;
         }
