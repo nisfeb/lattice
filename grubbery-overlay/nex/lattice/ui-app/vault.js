@@ -141,6 +141,8 @@ pages/    every page you wrote, as a plain file named for its path and kind.
 know/     every memory, one file per key.
 know.json the memories again, in the format /know-import reads.
 share.json  the share mode of every non-private page (path -> shared|clearweb).
+names.json  the display name of every page or folder that was named with
+          capitals or spaces (path -> the name shown in the tree).
 
 To put it all back, use "restore vault" in Settings and pick this file. Pages
 go back to the paths they came from, the memories go back with their tags and
@@ -229,10 +231,11 @@ editor, or git will do if you only want to look.
     catch (e) { st('not a readable archive: ' + e.message, false); return; }
 
     const pages = [];
-    let knowJson = null, shareJson = null;
+    let knowJson = null, shareJson = null, namesJson = null;
     for (const e of entries) {
       if (e.name === 'know.json') knowJson = e.text;
       else if (e.name === 'share.json') shareJson = e.text;
+      else if (e.name === 'names.json') namesJson = e.text;
       else if (e.name.startsWith('pages/')) pages.push({ rel: e.name.slice(6), text: e.text });
     }
     if (!pages.length && !knowJson) { st('that archive has no pages/ and no know.json in it', false); return; }
@@ -240,6 +243,8 @@ editor, or git will do if you only want to look.
     let share = {};
     if (shareJson) { try { share = JSON.parse(shareJson) || {}; } catch (e) { st('share.json is unreadable — pages will come back private', false); } }
     const shared = Object.keys(share).length;
+    let names = {};
+    if (namesJson) { try { names = JSON.parse(namesJson) || {}; } catch (e) { st('names.json is unreadable — display names will not come back', false); } }
 
     const stem = (rel) => { const d = rel.lastIndexOf('.'); return d > 0 ? rel.slice(0, d) : rel; };
     const clash = pages.filter((p) => cfg.hasNode(stem(p.rel))).length;
@@ -277,6 +282,22 @@ editor, or git will do if you only want to look.
         } catch (e) { bad++; }
       }
       if (bad) st('share modes: ' + ok + ' restored, ' + bad + ' failed', false);
+    }
+
+    // display names go back through page-move to the same path, which the
+    // ship treats as "set the display name" for a page or a folder
+    if (Object.keys(names).length) {
+      st('restoring display names…');
+      let bad = 0;
+      for (const [path, dname] of Object.entries(names)) {
+        if (typeof dname !== 'string' || !dname) continue;
+        try {
+          const r = await mutate(cfg.api + '/page-move?from=' + encodeURIComponent(path) +
+            '&to=' + encodeURIComponent(path) + '&dname=' + encodeURIComponent(dname));
+          if (!(r && r.ok)) bad++;
+        } catch (e) { bad++; }
+      }
+      if (bad) st('display names: ' + bad + ' failed', false);
     }
 
     if (knowJson) {
@@ -348,6 +369,13 @@ editor, or git will do if you only want to look.
       for (const it of scopes.items) if (it.scope && it.scope !== 'private') share[it.path] = it.scope;
       files.push({ name: 'share.json', body: JSON.stringify(share, null, 1), mtime: now });
     } else missing.push('the share modes');
+
+    // names.json: share.json's twin for display names (path -> shown name),
+    // pages and folders alike, straight off the dump the pages came from
+    const names = {};
+    for (const n of (dump.nodes || [])) if (n.dname) names[n.path] = n.dname;
+    if (Object.keys(names).length)
+      files.push({ name: 'names.json', body: JSON.stringify(names, null, 1), mtime: now });
 
     files.push({ name: 'README.txt', body: RESTORE, mtime: now });
 

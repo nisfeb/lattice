@@ -131,6 +131,13 @@
     if (n) { n.kind = kind; if (pending !== undefined) n.pending = pending; }
     else nodes.push({ path: name, page: true, kind, share: 'private', pending: !!pending });
   }
+  // the display name of a page or folder node ('' clears it). Mirrors the
+  // `dname` the ship sends in page-dump, so a local patch matches a refetch.
+  function setNodeDname(path, dname) {
+    const n = nodes.find((x) => x.path === path);
+    if (!n) return;
+    if (dname) n.dname = dname; else delete n.dname;
+  }
   //  A node added before the ship has confirmed it. The row pulses until the
   //  write lands, so the tree can answer instantly without claiming something
   //  that has not happened yet. Clearing it is the success signal; dropping
@@ -161,7 +168,10 @@
         row.className = 'pg' + (n.path === current ? ' cur' : '')
           + (n.pending ? ' pend' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
-        row.append(document.createTextNode(n.path.split('/').pop() + '.' + kindExt(n.kind)));
+        // the display name when there is one (a typed name that was not a
+        // valid path), the path segment otherwise; the real path in the tip
+        row.append(document.createTextNode((n.dname || n.path.split('/').pop()) + '.' + kindExt(n.kind)));
+        if (n.dname) row.title = n.path;
         if (n.share === 'clearweb') {
           const cw = document.createElement('span');
           cw.className = 'cw';
@@ -184,7 +194,8 @@
           renderTree();
         };
         const label = document.createElement('span');
-        label.textContent = '\u{1F4C1} ' + n.path.split('/').pop();
+        label.textContent = '\u{1F4C1} ' + (n.dname || n.path.split('/').pop());
+        if (n.dname) label.title = n.path;
         row.append(cx, label);
         if (treeShare(n.path) === 'clearweb') {
           const cw = document.createElement('span');

@@ -63,16 +63,18 @@
       if (raw === null) return null;
       const name = raw.trim().replace(/^\/+|\/+$/g, '');
       if (!name) return null;
-      if (validName(name)) return { name, kind: picked };
+      if (realName(name)) return { name, kind: picked };
       seed = name;
-      note = 'lowercase letters, digits and - . _ ~ only, no spaces. ';
+      note = 'that name has nothing to go by — use at least one letter or digit. ';
     }
   };
   // askName: ask() for a path-like name, re-prompting until the server would
   // accept it. Every one of these prompts feeds a route that enforces
   // +valid-name, and a rejection came back as a bare status code ("folder
   // failed 400") that never said what was wrong. Returns the CLEANED name,
-  // so callers do not each re-implement the trim and slash strip.
+  // so callers do not each re-implement the trim and slash strip. The name
+  // is what was TYPED: callers put it through realName() for the path the
+  // ship gets and the display name (if any) that goes with it.
   const askName = async (msg, value, okLabel) => {
     let seed = value || '';
     let note = '';
@@ -81,9 +83,9 @@
       if (raw === null) return null;
       const name = raw.trim().replace(/^\/+|\/+$/g, '');
       if (!name) return null;
-      if (validName(name)) return name;
+      if (realName(name)) return name;
       seed = name;
-      note = 'lowercase letters, digits and - . _ ~ only, no spaces. ';
+      note = 'that name has nothing to go by — use at least one letter or digit. ';
     }
   };
   // askConfirm: yes/no dialog → boolean

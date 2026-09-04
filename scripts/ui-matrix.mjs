@@ -449,7 +449,7 @@ try {
   await wait(() => document.getElementById('cwurl').textContent.includes('public'));
   await sleep(1500);
   const pub = await page.evaluate(async (u) =>
-    (await fetch(u, { credentials: 'omit' })).status, URL + '/apps/lattice/c/' + RUN + '/hello');
+    (await fetch(u, { credentials: 'omit' })).status, env.base + '/apps/lattice/c/' + RUN + '/hello');
   check('share-tree clearweb: page publicly readable', pub === 200, 'status ' + pub);
   await wait((n) => [...document.querySelectorAll('#treelist .fld')]
     .some((f) => f.textContent.includes(n.split('/')[0]) && f.querySelector('.cw')), RUN);
@@ -458,7 +458,7 @@ try {
     .find((b) => b.dataset.m === 'private').click());
   await sleep(1500);
   const priv = await page.evaluate(async (u) =>
-    (await fetch(u, { credentials: 'omit' })).status, URL + '/apps/lattice/c/' + RUN + '/hello');
+    (await fetch(u, { credentials: 'omit' })).status, env.base + '/apps/lattice/c/' + RUN + '/hello');
   check('share-tree private: public read revoked', priv !== 200, 'status ' + priv);
 
   step = 'folder rename';

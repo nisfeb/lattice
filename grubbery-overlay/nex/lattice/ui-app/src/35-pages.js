@@ -174,18 +174,21 @@
     // rather than a full restart.
     let seed = folderCtx ? folderCtx + '/' : '';
     for (;;) {
-      const name = await askName('folder name (e.g. notes or notes/sub)', seed, 'create');
-      if (!name) return;
-      const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name));
+      const typed = await askName('folder name (e.g. notes or notes/sub)', seed, 'create');
+      if (!typed) return;
+      const rn = realName(typed);
+      const name = rn.name;
+      const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name) + dnameQ(rn.dname));
       if (r.ok || r.offline) {
         st(r.offline ? 'folder created offline' : 'folder created');
         addFolderNodes(name);
+        setNodeDname(name, rn.dname);
         snapTree();
         renderTree();
         return;
       }
       st('folder failed' + await errText(r), false);
-      seed = name;
+      seed = typed;
     }
   }
 
@@ -235,10 +238,13 @@
     e.returnValue = '';
   });
 
+  // the display name the desktop create dialog split off the typed name
+  // before seeding #pname with the real path; save() consumes it on create
+  let newDname = '';
   async function save(kindOverride) {
     if (curFolder) { st('folder selected — open a page to edit', false); return; }
     if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
-    const name = pname.value.trim().replace(/^\/+|\/+$/g, '');
+    let name = pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!name) { st('name required', false); return; }
     const creating = current === null;
     // carry kindOverride into the re-arm: a bare `true` here forgot which
@@ -257,13 +263,21 @@
     // or panel-driven save can leave curRev one step behind, and every stale
     // base manufactures a false conflict page out of nothing (ui-matrix
     // caught exactly that). Online editing stays last-writer-wins.
-    if (!validName(name)) {
+    const rn = realName(name);
+    if (!rn) {
       saving = false;
-      st('bad name — lowercase letters, digits, and - . _ ~ (no spaces)', false);
+      st('bad name — use at least one letter or digit', false);
       return;
     }
+    // a typed name that is not a valid path saves under its slug and keeps
+    // the typed leaf as the display name (the tree shows that, the name
+    // field shows the real path). newDname is the desktop dialog's copy of
+    // the same split, made before it seeded the field with the slug.
+    const dname = creating ? (rn.dname || newDname) : '';
+    newDname = '';
+    if (rn.name !== name) { name = rn.name; pname.value = name; }
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
-      '&type=' + kind + (creating ? '&new=1' : '');
+      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(dname);
     let r = null;
     //  a save is user activity even when it arrives by hotkey or autosave,
     //  so the background lane (bgFetch) holds its traffic out of its way
@@ -283,7 +297,7 @@
       // Clearing dirty there would tell the editor the work is safe and let
       // the next navigation drop it, so the bookkeeping stays untouched and
       // the page keeps behaving as unsaved. enqueueSave has already said so.
-      if (!(await enqueueSave(name, kind, sent, creating))) {
+      if (!(await enqueueSave(name, kind, sent, creating, dname))) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return;
       }
@@ -292,7 +306,7 @@
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
       history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
-      if (creating) { addTreeNode(name, kind); snapTree(); renderTree(); }
+      if (creating) { addTreeNode(name, kind); setNodeDname(name, dname); snapTree(); renderTree(); }
       cerr.textContent = 'saved offline'; cerr.className = 'ok';
       flushPending();
       return;
@@ -312,11 +326,12 @@
     if (vr && vr.rev) curRev = vr.rev;
     if (vr && vr.conflicted) {
       st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
-    } else st(CONTENT() ? 'saved' : 'compiling\u2026');
+    } else if (dname) st('saved as ' + name + ' (shown as ' + dname + ')');
+    else st(CONTENT() ? 'saved' : 'compiling\u2026');
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
     // only a CREATE changes the tree. Refetching it after every save was a
     // 2.3s pier round-trip to learn nothing. Patch the local copy on create.
-    if (creating) { addTreeNode(name, kind); snapTree(); renderTree(); }
+    if (creating) { addTreeNode(name, kind); setNodeDname(name, dname); snapTree(); renderTree(); }
     patchLocal(name, kind, sent);
     // the preview already shows this exact body (the input debounce rendered
     // it). Re-POSTing it after the save was a duplicate 1.8s render.

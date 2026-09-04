@@ -29,6 +29,10 @@
       [%share pax=path mode=share-mode] ::  set a page's sharing preset
       [%share-tree pax=path mode=share-mode] ::  set every page under pax
       [%mkdir pax=path]                 ::  create an (empty) folder at pax
+      ::  set ('' clears) the display name of a page or folder. Stored ONLY
+      ::  when the typed name was not a valid path segment; a valid name is
+      ::  its own display name and gets no grub.
+      [%dname pax=path name=@t]
       [%tmpl-save from=path name=@tas]  ::  save page-tree `from` as template `name`
       [%tmpl-del name=@tas]             ::  delete template `name`
       [%comments pax=path on=?]         ::  turn comments on/off at pax (page or folder)
