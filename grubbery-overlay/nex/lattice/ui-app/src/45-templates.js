@@ -24,7 +24,7 @@
       let r = null;
       try {
         r = await mutate(api + '/template-new?template=' + encodeURIComponent(tmpl) +
-          '&name=' + encodeURIComponent(name) + dnameQ(rn.dname));
+          '&name=' + encodeURIComponent(name) + dnameQ(rn));
       } catch {}
       if (r && (r.ok || r.offline)) {
         await loadTree();

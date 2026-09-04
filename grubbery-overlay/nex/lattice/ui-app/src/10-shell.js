@@ -71,21 +71,27 @@
   // realName: what a typed name becomes. A valid path is used as it is and
   // gets NO display name (a name is never stored twice). Anything else —
   // capitals, spaces, punctuation — is slugged per segment the way the
-  // uploader slugs file names, and the typed leaf is kept as the display
-  // name the tree shows over the real path. null when even the slug is
-  // empty: there is nothing to name it by.
+  // uploader slugs file names, and each segment that changed keeps its
+  // typed text as the display name of the page or folder at that depth:
+  // `dname` is the leaf's, `dnames` is every segment's, '/'-joined with ''
+  // where the segment was fine as typed (so "notes/My Page" -> "/My Page").
+  // null when even the slug is empty: there is nothing to name it by.
   const slugSeg = (s) => s.toLowerCase().replace(/[^a-z0-9._~-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
   const realName = (typed) => {
     const t = String(typed || '').trim().replace(/^\/+|\/+$/g, '');
     if (!t) return null;
-    if (validName(t)) return { name: t, dname: '' };
+    if (validName(t)) return { name: t, dname: '', dnames: '' };
     const segs = t.split('/').map((s) => s.trim());
-    const name = segs.map(slugSeg).join('/');
+    const slugs = segs.map(slugSeg);
+    const name = slugs.join('/');
     if (!validName(name)) return null;
-    const leaf = segs[segs.length - 1];
-    return { name, dname: leaf === name.split('/').pop() ? '' : leaf };
+    const per = segs.map((s, i) => (s === slugs[i] ? '' : s));
+    return { name, dname: per[per.length - 1], dnames: per.some(Boolean) ? per.join('/') : '' };
   };
-  const dnameQ = (d) => (d ? '&dname=' + encodeURIComponent(d) : '');
+  // the query-string form of a realName() result (nothing for a valid name)
+  const dnameQ = (rn) => (!rn ? '' :
+    (rn.dname ? '&dname=' + encodeURIComponent(rn.dname) : '') +
+    (rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
   // failure statuses name the actual cause. Every send-err answer carries
   // {"error": msg}, and dropping it for a bare status code wasted a cause
   // the pier already paid a round trip to deliver. Same parse the grub save

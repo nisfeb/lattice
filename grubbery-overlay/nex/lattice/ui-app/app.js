@@ -324,7 +324,7 @@
   // do: the editor then cleared its dirty flag and the work was gone with the
   // UI reporting success. If the queue cannot take it, say so and say it in
   // the words that matter, because there is nowhere else the edit now lives.
-  async function enqueueSave(name, kind, body, isNew, dname) {
+  async function enqueueSave(name, kind, body, isNew, rn) {
     // the queue coalesces by name, and the 2s autosave calls this WITHOUT
     // the create flag — overwriting a queued create as a plain edit would
     // route the replay around the 409 create protection and let an offline
@@ -335,7 +335,8 @@
     try { prev = await offGet(name); } catch {}
     const queued = await offPut({ name, kind, body, baseRev: curRev || 0,
       isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(),
-      dname: dname || (prev && prev.dname) || '' });
+      dname: (rn && rn.dname) || (prev && prev.dname) || '',
+      dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
     setDegraded(true);
     if (!queued) {
       st('NOT SAVED — this device cannot store offline edits. Copy your text '
@@ -498,7 +499,7 @@
       let one = null;
       try {
         one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
-          '&type=' + q.kind + '&new=1' + dnameQ(q.dname),
+          '&type=' + q.kind + '&new=1' + dnameQ(q),
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
       if (one && one.ok) { await offDel(q.name); continue; }
@@ -727,21 +728,27 @@
   // realName: what a typed name becomes. A valid path is used as it is and
   // gets NO display name (a name is never stored twice). Anything else —
   // capitals, spaces, punctuation — is slugged per segment the way the
-  // uploader slugs file names, and the typed leaf is kept as the display
-  // name the tree shows over the real path. null when even the slug is
-  // empty: there is nothing to name it by.
+  // uploader slugs file names, and each segment that changed keeps its
+  // typed text as the display name of the page or folder at that depth:
+  // `dname` is the leaf's, `dnames` is every segment's, '/'-joined with ''
+  // where the segment was fine as typed (so "notes/My Page" -> "/My Page").
+  // null when even the slug is empty: there is nothing to name it by.
   const slugSeg = (s) => s.toLowerCase().replace(/[^a-z0-9._~-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
   const realName = (typed) => {
     const t = String(typed || '').trim().replace(/^\/+|\/+$/g, '');
     if (!t) return null;
-    if (validName(t)) return { name: t, dname: '' };
+    if (validName(t)) return { name: t, dname: '', dnames: '' };
     const segs = t.split('/').map((s) => s.trim());
-    const name = segs.map(slugSeg).join('/');
+    const slugs = segs.map(slugSeg);
+    const name = slugs.join('/');
     if (!validName(name)) return null;
-    const leaf = segs[segs.length - 1];
-    return { name, dname: leaf === name.split('/').pop() ? '' : leaf };
+    const per = segs.map((s, i) => (s === slugs[i] ? '' : s));
+    return { name, dname: per[per.length - 1], dnames: per.some(Boolean) ? per.join('/') : '' };
   };
-  const dnameQ = (d) => (d ? '&dname=' + encodeURIComponent(d) : '');
+  // the query-string form of a realName() result (nothing for a valid name)
+  const dnameQ = (rn) => (!rn ? '' :
+    (rn.dname ? '&dname=' + encodeURIComponent(rn.dname) : '') +
+    (rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
   // failure statuses name the actual cause. Every send-err answer carries
   // {"error": msg}, and dropping it for a bare status code wasted a cause
   // the pier already paid a round trip to deliver. Same parse the grub save
@@ -2478,6 +2485,18 @@
     if (!n) return;
     if (dname) n.dname = dname; else delete n.dname;
   }
+  // apply a realName() split to the local tree: the leaf follows rn.dname
+  // ('' clears, the way a rename to a valid name does on the ship); a parent
+  // folder is only ever SET, never cleared, because an existing folder keeps
+  // its own name when something is made inside it under the plain slug.
+  function applyDnames(rn) {
+    if (!rn) return;
+    const segs = rn.name.split('/');
+    const per = rn.dnames ? rn.dnames.split('/') : [];
+    for (let i = 0; i + 1 < segs.length; i++)
+      if (per[i]) setNodeDname(segs.slice(0, i + 1).join('/'), per[i]);
+    setNodeDname(rn.name, rn.dname);
+  }
   //  A node added before the ship has confirmed it. The row pulses until the
   //  write lands, so the tree can answer instantly without claiming something
   //  that has not happened yet. Clearing it is the success signal; dropping
@@ -2784,11 +2803,11 @@
       if (!typed) return;
       const rn = realName(typed);
       const name = rn.name;
-      const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name) + dnameQ(rn.dname));
+      const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name) + dnameQ(rn));
       if (r.ok || r.offline) {
         st(r.offline ? 'folder created offline' : 'folder created');
         addFolderNodes(name);
-        setNodeDname(name, rn.dname);
+        applyDnames(rn);
         snapTree();
         renderTree();
         return;
@@ -2844,9 +2863,9 @@
     e.returnValue = '';
   });
 
-  // the display name the desktop create dialog split off the typed name
-  // before seeding #pname with the real path; save() consumes it on create
-  let newDname = '';
+  // the realName() split the desktop create dialog made before seeding
+  // #pname with the real path; save() consumes it on create
+  let newRn = null;
   async function save(kindOverride) {
     if (curFolder) { st('folder selected — open a page to edit', false); return; }
     if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
@@ -2876,14 +2895,15 @@
       return;
     }
     // a typed name that is not a valid path saves under its slug and keeps
-    // the typed leaf as the display name (the tree shows that, the name
-    // field shows the real path). newDname is the desktop dialog's copy of
+    // the typed text as display names (the tree shows those, the name
+    // field shows the real path). newRn is the desktop dialog's copy of
     // the same split, made before it seeded the field with the slug.
-    const dname = creating ? (rn.dname || newDname) : '';
-    newDname = '';
+    const rnc = !creating ? null : rn.dnames ? rn : newRn;
+    newRn = null;
+    const dname = rnc ? rnc.dname : '';
     if (rn.name !== name) { name = rn.name; pname.value = name; }
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
-      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(dname);
+      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc);
     let r = null;
     //  a save is user activity even when it arrives by hotkey or autosave,
     //  so the background lane (bgFetch) holds its traffic out of its way
@@ -2903,7 +2923,7 @@
       // Clearing dirty there would tell the editor the work is safe and let
       // the next navigation drop it, so the bookkeeping stays untouched and
       // the page keeps behaving as unsaved. enqueueSave has already said so.
-      if (!(await enqueueSave(name, kind, sent, creating, dname))) {
+      if (!(await enqueueSave(name, kind, sent, creating, rnc))) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return;
       }
@@ -2912,7 +2932,7 @@
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
       history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
-      if (creating) { addTreeNode(name, kind); setNodeDname(name, dname); snapTree(); renderTree(); }
+      if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
       cerr.textContent = 'saved offline'; cerr.className = 'ok';
       flushPending();
       return;
@@ -2937,7 +2957,7 @@
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
     // only a CREATE changes the tree. Refetching it after every save was a
     // 2.3s pier round-trip to learn nothing. Patch the local copy on create.
-    if (creating) { addTreeNode(name, kind); setNodeDname(name, dname); snapTree(); renderTree(); }
+    if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent);
     // the preview already shows this exact body (the input debounce rendered
     // it). Re-POSTing it after the save was a duplicate 1.8s render.
@@ -3135,7 +3155,7 @@
       let r = null;
       try {
         r = await mutate(api + '/template-new?template=' + encodeURIComponent(tmpl) +
-          '&name=' + encodeURIComponent(name) + dnameQ(rn.dname));
+          '&name=' + encodeURIComponent(name) + dnameQ(rn));
       } catch {}
       if (r && (r.ok || r.offline)) {
         await loadTree();
@@ -5168,11 +5188,13 @@
   // Memories use the know-move route, which culls the source key outright.
   // Only the current body carries over, not the history: the new key's own
   // history starts fresh at rev 1.
-  // dname: the display name for the new name; '' (the typed name was a valid
-  // path) clears the one the move would otherwise carry over. Always sent.
-  async function movePage(oldName, newName, dname) {
+  // rn: the realName() split of the new name. Its dname is ALWAYS sent: ''
+  // (the typed name was a valid path) clears the one the move would
+  // otherwise carry over; dnames names the folders the move creates.
+  async function movePage(oldName, newName, rn) {
     const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldName) +
-      '&to=' + encodeURIComponent(newName) + '&dname=' + encodeURIComponent(dname || ''));
+      '&to=' + encodeURIComponent(newName) + '&dname=' + encodeURIComponent((rn && rn.dname) || '') +
+      (rn && rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
     if (!r.ok) { st('move failed' + await errText(r), false); return false; }
     // the server moves the WHOLE subtree (a page can parent nested pages, and
     // move-pages rewrites every rel under it). Renaming only the exact node
@@ -5183,7 +5205,7 @@
     for (const n of nodes)
       if (n.path === oldName || n.path.startsWith(oldName + '/')) n.path = mapped(n.path);
     if (newName.includes('/')) addFolderNodes(newName.slice(0, newName.lastIndexOf('/')));
-    setNodeDname(newName, dname);
+    applyDnames(rn || { name: newName, dname: '', dnames: '' });
     snapTree();
     renderTree();
     //  the response, not a bare true: the caller's message must say when the
@@ -5202,7 +5224,8 @@
       const mapped = (p) => newPath + p.slice(oldPath.length);
       st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
       const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldPath) +
-        '&to=' + encodeURIComponent(newPath) + '&dname=' + encodeURIComponent(rn.dname));
+        '&to=' + encodeURIComponent(newPath) + '&dname=' + encodeURIComponent(rn.dname) +
+        (rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
       if (!(r.ok || r.offline)) {
         // the server refused this name \u2014 loop back into askName seeded with
         // it, so the retry is an edit, not a full retype
@@ -5210,7 +5233,6 @@
         seed = typed;
         continue;
       }
-      setNodeDname(oldPath, rn.dname);
       let moved = 0;
       for (const n of nodes)
         if (n.path === oldPath || n.path.startsWith(oldPath + '/')) {
@@ -5218,6 +5240,7 @@
           n.path = mapped(n.path);
         }
       if (newPath.includes('/')) addFolderNodes(newPath.slice(0, newPath.lastIndexOf('/')));
+      applyDnames(rn);
       if (current && (current === oldPath || current.startsWith(oldPath + '/')))
         current = mapped(current);
       snapTree();
@@ -5460,7 +5483,7 @@
         st('moved to ' + newName);
         return;
       }
-      const mv = await movePage(current, newName, rn.dname);
+      const mv = await movePage(current, newName, rn);
       if (mv) {
         st('moved to ' + newName + (mv.offline ? ' offline' : ''));
         openPage(newName);
@@ -6676,7 +6699,7 @@
       const rn = realName(name);
       if (!rn) return;
       name = rn.name;
-      newDname = rn.dname;
+      newRn = rn;
       pkind.value = kind;
       pname.value = name;
       //  both labels (desktop deskbar, mobile bar) repaint off this event
@@ -6688,7 +6711,7 @@
       //  confirmed. Cleared on success, and the row is dropped on failure so
       //  a page that does not exist is never left sitting there.
       const already = nodes.some((n) => n.page && n.path === name);
-      if (!already) { addTreeNode(name, kind, true); setNodeDname(name, rn.dname); snapTree(); renderTree(); }
+      if (!already) { addTreeNode(name, kind, true); applyDnames(rn); snapTree(); renderTree(); }
       //  the button says create, so write the page here. Naming the buffer
       //  and leaving it unwritten read as a create that did nothing, and a
       //  page abandoned before its first keystroke left no trace at all.

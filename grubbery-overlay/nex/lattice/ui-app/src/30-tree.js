@@ -138,6 +138,18 @@
     if (!n) return;
     if (dname) n.dname = dname; else delete n.dname;
   }
+  // apply a realName() split to the local tree: the leaf follows rn.dname
+  // ('' clears, the way a rename to a valid name does on the ship); a parent
+  // folder is only ever SET, never cleared, because an existing folder keeps
+  // its own name when something is made inside it under the plain slug.
+  function applyDnames(rn) {
+    if (!rn) return;
+    const segs = rn.name.split('/');
+    const per = rn.dnames ? rn.dnames.split('/') : [];
+    for (let i = 0; i + 1 < segs.length; i++)
+      if (per[i]) setNodeDname(segs.slice(0, i + 1).join('/'), per[i]);
+    setNodeDname(rn.name, rn.dname);
+  }
   //  A node added before the ship has confirmed it. The row pulses until the
   //  write lands, so the tree can answer instantly without claiming something
   //  that has not happened yet. Clearing it is the success signal; dropping

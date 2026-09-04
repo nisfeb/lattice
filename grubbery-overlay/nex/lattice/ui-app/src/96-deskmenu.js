@@ -113,7 +113,7 @@
       const rn = realName(name);
       if (!rn) return;
       name = rn.name;
-      newDname = rn.dname;
+      newRn = rn;
       pkind.value = kind;
       pname.value = name;
       //  both labels (desktop deskbar, mobile bar) repaint off this event
@@ -125,7 +125,7 @@
       //  confirmed. Cleared on success, and the row is dropped on failure so
       //  a page that does not exist is never left sitting there.
       const already = nodes.some((n) => n.page && n.path === name);
-      if (!already) { addTreeNode(name, kind, true); setNodeDname(name, rn.dname); snapTree(); renderTree(); }
+      if (!already) { addTreeNode(name, kind, true); applyDnames(rn); snapTree(); renderTree(); }
       //  the button says create, so write the page here. Naming the buffer
       //  and leaving it unwritten read as a create that did nothing, and a
       //  page abandoned before its first keystroke left no trace at all.

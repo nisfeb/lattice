@@ -178,11 +178,11 @@
       if (!typed) return;
       const rn = realName(typed);
       const name = rn.name;
-      const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name) + dnameQ(rn.dname));
+      const r = await mutate(api + '/folder-new?name=' + encodeURIComponent(name) + dnameQ(rn));
       if (r.ok || r.offline) {
         st(r.offline ? 'folder created offline' : 'folder created');
         addFolderNodes(name);
-        setNodeDname(name, rn.dname);
+        applyDnames(rn);
         snapTree();
         renderTree();
         return;
@@ -238,9 +238,9 @@
     e.returnValue = '';
   });
 
-  // the display name the desktop create dialog split off the typed name
-  // before seeding #pname with the real path; save() consumes it on create
-  let newDname = '';
+  // the realName() split the desktop create dialog made before seeding
+  // #pname with the real path; save() consumes it on create
+  let newRn = null;
   async function save(kindOverride) {
     if (curFolder) { st('folder selected — open a page to edit', false); return; }
     if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
@@ -270,14 +270,15 @@
       return;
     }
     // a typed name that is not a valid path saves under its slug and keeps
-    // the typed leaf as the display name (the tree shows that, the name
-    // field shows the real path). newDname is the desktop dialog's copy of
+    // the typed text as display names (the tree shows those, the name
+    // field shows the real path). newRn is the desktop dialog's copy of
     // the same split, made before it seeded the field with the slug.
-    const dname = creating ? (rn.dname || newDname) : '';
-    newDname = '';
+    const rnc = !creating ? null : rn.dnames ? rn : newRn;
+    newRn = null;
+    const dname = rnc ? rnc.dname : '';
     if (rn.name !== name) { name = rn.name; pname.value = name; }
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
-      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(dname);
+      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc);
     let r = null;
     //  a save is user activity even when it arrives by hotkey or autosave,
     //  so the background lane (bgFetch) holds its traffic out of its way
@@ -297,7 +298,7 @@
       // Clearing dirty there would tell the editor the work is safe and let
       // the next navigation drop it, so the bookkeeping stays untouched and
       // the page keeps behaving as unsaved. enqueueSave has already said so.
-      if (!(await enqueueSave(name, kind, sent, creating, dname))) {
+      if (!(await enqueueSave(name, kind, sent, creating, rnc))) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return;
       }
@@ -306,7 +307,7 @@
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
       history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
-      if (creating) { addTreeNode(name, kind); setNodeDname(name, dname); snapTree(); renderTree(); }
+      if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
       cerr.textContent = 'saved offline'; cerr.className = 'ok';
       flushPending();
       return;
@@ -331,7 +332,7 @@
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
     // only a CREATE changes the tree. Refetching it after every save was a
     // 2.3s pier round-trip to learn nothing. Patch the local copy on create.
-    if (creating) { addTreeNode(name, kind); setNodeDname(name, dname); snapTree(); renderTree(); }
+    if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent);
     // the preview already shows this exact body (the input debounce rendered
     // it). Re-POSTing it after the save was a duplicate 1.8s render.

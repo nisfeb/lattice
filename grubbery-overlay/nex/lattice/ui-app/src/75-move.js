@@ -5,11 +5,13 @@
   // Memories use the know-move route, which culls the source key outright.
   // Only the current body carries over, not the history: the new key's own
   // history starts fresh at rev 1.
-  // dname: the display name for the new name; '' (the typed name was a valid
-  // path) clears the one the move would otherwise carry over. Always sent.
-  async function movePage(oldName, newName, dname) {
+  // rn: the realName() split of the new name. Its dname is ALWAYS sent: ''
+  // (the typed name was a valid path) clears the one the move would
+  // otherwise carry over; dnames names the folders the move creates.
+  async function movePage(oldName, newName, rn) {
     const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldName) +
-      '&to=' + encodeURIComponent(newName) + '&dname=' + encodeURIComponent(dname || ''));
+      '&to=' + encodeURIComponent(newName) + '&dname=' + encodeURIComponent((rn && rn.dname) || '') +
+      (rn && rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
     if (!r.ok) { st('move failed' + await errText(r), false); return false; }
     // the server moves the WHOLE subtree (a page can parent nested pages, and
     // move-pages rewrites every rel under it). Renaming only the exact node
@@ -20,7 +22,7 @@
     for (const n of nodes)
       if (n.path === oldName || n.path.startsWith(oldName + '/')) n.path = mapped(n.path);
     if (newName.includes('/')) addFolderNodes(newName.slice(0, newName.lastIndexOf('/')));
-    setNodeDname(newName, dname);
+    applyDnames(rn || { name: newName, dname: '', dnames: '' });
     snapTree();
     renderTree();
     //  the response, not a bare true: the caller's message must say when the
@@ -39,7 +41,8 @@
       const mapped = (p) => newPath + p.slice(oldPath.length);
       st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
       const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldPath) +
-        '&to=' + encodeURIComponent(newPath) + '&dname=' + encodeURIComponent(rn.dname));
+        '&to=' + encodeURIComponent(newPath) + '&dname=' + encodeURIComponent(rn.dname) +
+        (rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
       if (!(r.ok || r.offline)) {
         // the server refused this name \u2014 loop back into askName seeded with
         // it, so the retry is an edit, not a full retype
@@ -47,7 +50,6 @@
         seed = typed;
         continue;
       }
-      setNodeDname(oldPath, rn.dname);
       let moved = 0;
       for (const n of nodes)
         if (n.path === oldPath || n.path.startsWith(oldPath + '/')) {
@@ -55,6 +57,7 @@
           n.path = mapped(n.path);
         }
       if (newPath.includes('/')) addFolderNodes(newPath.slice(0, newPath.lastIndexOf('/')));
+      applyDnames(rn);
       if (current && (current === oldPath || current.startsWith(oldPath + '/')))
         current = mapped(current);
       snapTree();
