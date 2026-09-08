@@ -7047,7 +7047,7 @@
 ++  pwa-head
   ^-  tape
   %-  trip
-  '<link rel="manifest" href="/apps/lattice/manifest.webmanifest" crossorigin="use-credentials"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#1a6ed8"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1a1a"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="Lattice"><link rel="apple-touch-icon" href="/apps/lattice/apple-touch-icon.png"><link rel="icon" href="/apps/lattice/icon.svg" type="image/svg+xml">'
+  '<link rel="manifest" href="/apps/lattice/manifest.webmanifest" crossorigin="use-credentials"><meta name="theme-color" media="(prefers-color-scheme: light)" content="#101541"><meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1a1a"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="Lattice"><link rel="apple-touch-icon" href="/apps/lattice/apple-touch-icon.png"><link rel="icon" href="/apps/lattice/icon.svg" type="image/svg+xml">'
 ::  +page-cache-script: the write path of the LRU page cache (the read path
 ::  lives in +sw-js). The worker only READS the 'lattice-pages' cache — it
 ::  must never fetch — so every reader document, once painted and after a

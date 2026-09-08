@@ -3,184 +3,128 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>lattice: your knowledge, on your ship</title>
-    <meta name="description" content="A personal knowledge platform on your Urbit ship: pages in markdown, gemtext, HTML or programmable Hoon; a private tagged memory you share with your AI; full-text search; peer-to-peer publishing. Web, filesystem, MCP.">
-    <meta property="og:title" content="lattice: your knowledge, on your ship">
-    <meta property="og:description" content="Pages, private knowledge, and AI memory on your Urbit ship. Search everything, publish peer-to-peer, reach it from the web, your filesystem, or an agent.">
+    <title>lattice — a personal knowledge platform on your Urbit ship</title>
+    <meta name="description" content="Pages in markdown, gemtext, HTML, or programmable Hoon; a private knowledge store shared with your AI agents; full-text search; a filesystem mount; peer-to-peer publishing as urb://~ship/path. All of it served from your own Urbit ship.">
+    <meta property="og:title" content="lattice — a personal knowledge platform on your Urbit ship">
+    <meta property="og:description" content="Pages, a private knowledge store, search, a filesystem mount and MCP memory for AI agents. Published peer-to-peer as urb://~ship/path, served from your own ship.">
+    <meta property="og:image" content="https://lattice.nisfeb.com/lattice.png">
     <meta name="theme-color" content="#101541">
-    <link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="%234a7c59"/><g stroke="%23e9f1ec" stroke-width="3" stroke-linecap="round" fill="none"><path d="M8 24 24 8M8 40 40 8M8 56 56 8M24 56 56 24M40 56 56 40"/><path d="M40 8 56 24M24 8 56 40M8 8 56 56M8 24 40 56M8 40 24 56"/></g></svg>'>
+    <link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="%23101541"/><g stroke="%23f9a804" stroke-width="3" stroke-linecap="round" fill="none"><path d="M8 24 24 8M8 40 40 8M8 56 56 8M24 56 56 24M40 56 56 40"/><path d="M40 8 56 24M24 8 56 40M8 8 56 56M8 24 40 56M8 40 24 56"/></g></svg>'>
     <style>
         :root {
-            /* Navy and amber, the palette shared by sneagan's apps (talon, party manager); same as the app tile / PWA icon. */
-            --navy:      #101541;
-            --navy-deep: #0b0e2c;
-            --mist:       #f9a804;
+            /* amber on navy, the palette shared by sneagan's apps (talon, party manager) */
+            --amber:   #f9a804; /* link / primary accent */
+            --amber-2: #ffcf6b; /* hover / secondary accent */
+            --coral:   #ff8c5a;
 
-            --bg:      #fafafa;
-            --surface: #8881;   /* translucent, works on both grounds */
-            --text:    #1a1a1a;
-            --muted:   #8a8a8a;
-            --border:  #8886;
-            --border-soft: #8883;
+            --bg:          #101541;
+            --surface:     #1a2058;
+            --surface-var: #24297a;
+            --on-bg:       #f7f5ee;
+            --on-surface:  #e9e6f5;
+            --on-surf-var: #aeb0d1;
+            --outline:     #2e3480;
+            --outline-var: #1c2062;
 
-            --body: system-ui, -apple-system, "Segoe UI", sans-serif;
-            --mono: ui-monospace, Menlo, Consolas, monospace;
-        }
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --bg:   #1a1a1a;
-                --text: #e6e6e6;
-            }
+            --display: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            --body:    system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            --mono:    ui-monospace, "SF Mono", Menlo, Consolas, monospace;
         }
 
         * { box-sizing: border-box; }
 
         html, body {
-            margin: 0;
-            padding: 0;
-            background: var(--bg);
-            color: var(--text);
-            font-family: var(--body);
-            font-size: 16px;
-            line-height: 1.55;
-            -webkit-font-smoothing: antialiased;
+            margin: 0; padding: 0;
+            background: var(--bg); color: var(--on-bg);
+            font-family: var(--body); font-size: 16px; line-height: 1.55;
+            -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
         }
+        a { color: var(--amber); text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; }
+        a:hover { color: var(--amber-2); }
+        code, .mono { font-family: var(--mono); font-size: 0.92em; }
+        .wrap { max-width: 720px; margin: 0 auto; padding: 0 24px; }
 
-        .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
-
-        a { color: var(--navy); }
-        a:hover { color: var(--navy-deep); }
-        @media (prefers-color-scheme: dark) {
-            a:hover { color: var(--mist); }
+        header.hero {
+            position: relative; padding: 88px 0 64px;
+            background:
+                radial-gradient(ellipse at 28% 18%, rgba(249, 168, 4, 0.18) 0%, transparent 58%),
+                radial-gradient(ellipse at 82% 92%, rgba(255, 207, 107, 0.14) 0%, transparent 55%),
+                var(--bg);
+            border-bottom: 1px solid var(--outline); overflow: hidden;
         }
+        .hero-inner { display: flex; flex-direction: column; gap: 28px; }
+        .icon-wordmark { display: flex; align-items: center; gap: 18px; }
+        .icon-wordmark svg { width: 64px; height: 64px; display: block; }
+        .wordmark { font-family: var(--mono); font-weight: 500; font-size: 34px; letter-spacing: -0.01em; line-height: 1; }
+        h1 { font-family: var(--display); font-weight: 700; font-size: clamp(36px, 6vw, 56px); line-height: 1.05; letter-spacing: -0.02em; margin: 0; }
+        h1 .accent { color: var(--amber); }
+        .lede { font-size: 19px; color: var(--on-surf-var); max-width: 58ch; margin: 0; }
+        .lede .url { font-family: var(--mono); color: var(--amber-2); font-size: 0.92em; }
 
-        code, .mono, .url {
-            font-family: var(--mono);
-            font-size: .92em;
-            background: var(--surface);
-            padding: .1em .35em;
-            border-radius: 4px;
-        }
+        .ctas { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+        .btn { display: inline-flex; align-items: center; gap: 10px; font-family: var(--body); font-weight: 600; font-size: 15px;
+               padding: 12px 20px; border-radius: 8px; text-decoration: none; border: 1px solid transparent; transition: transform 0.05s ease; }
+        .btn:active { transform: translateY(1px); }
+        .btn-primary { background: var(--amber); color: #06121A; border-color: var(--amber); }
+        .btn-primary:hover { background: var(--amber-2); border-color: var(--amber-2); color: #120026; }
+        .btn-secondary { background: transparent; color: var(--on-bg); border-color: var(--outline); }
+        .btn-secondary:hover { border-color: var(--on-surf-var); }
+        .meta-row { display: flex; flex-wrap: wrap; gap: 16px 24px; margin-top: 4px; color: var(--on-surf-var); font-size: 13px; }
+        .meta-row strong { color: var(--on-surface); font-weight: 500; }
 
-        /* ── hero ─────────────────────────────────────────────── */
-        .hero { padding: 64px 0 48px; border-bottom: 1px solid var(--border-soft); }
-        .icon-wordmark { display: flex; align-items: center; gap: 14px; margin-bottom: 28px; }
-        .icon-wordmark svg { width: 56px; height: 56px; border-radius: 12px; }
-        .wordmark { font-size: 24px; font-weight: 700; letter-spacing: -.01em; }
+        section { padding: 64px 0; border-bottom: 1px solid var(--outline-var); }
+        section:last-of-type { border-bottom: none; }
+        h2 { font-family: var(--display); font-weight: 700; font-size: 28px; line-height: 1.2; letter-spacing: -0.01em; margin: 0 0 24px; }
+        h3 { font-family: var(--body); font-weight: 600; font-size: 16px; margin: 24px 0 8px; color: var(--on-surface); }
+        p { margin: 0 0 16px; }
+        p:last-child { margin-bottom: 0; }
 
-        h1 {
-            font-size: clamp(34px, 6vw, 52px);
-            line-height: 1.08;
-            font-weight: 700;
-            letter-spacing: -.02em;
-            margin: 0 0 20px;
-        }
-        .accent { color: var(--navy); }
+        .steps { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-top: 8px; }
+        .steps .step { background: var(--surface); border: 1px solid var(--outline-var); border-radius: 6px; padding: 18px 20px; }
+        .steps .step .n { font-family: var(--mono); font-size: 12px; color: var(--amber); text-transform: uppercase; letter-spacing: 0.06em; }
+        .steps .step .t { font-weight: 600; color: var(--on-surface); margin: 6px 0 4px; }
+        .steps .step .d { color: var(--on-surf-var); font-size: 14px; }
+        @media (max-width: 640px) { .steps { grid-template-columns: 1fr; } }
 
-        .lede { font-size: 18px; max-width: 40rem; margin: 0 0 28px; }
+        ul.features { list-style: none; padding: 0; margin: 0; display: grid; gap: 0; }
+        ul.features li { padding: 14px 0; border-top: 1px solid var(--outline-var); display: grid; grid-template-columns: minmax(160px, 1fr) 2.5fr; gap: 16px; align-items: baseline; }
+        ul.features li:last-child { border-bottom: 1px solid var(--outline-var); }
+        ul.features .name { font-weight: 600; color: var(--on-surface); }
+        ul.features .desc { color: var(--on-surf-var); }
+        @media (max-width: 540px) { ul.features li { grid-template-columns: 1fr; gap: 4px; } }
 
-        .ctas { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 26px; }
-        .btn {
-            display: inline-block;
-            padding: 11px 22px;
-            border-radius: 8px;
-            font-weight: 600;
-            text-decoration: none;
-            border: 1px solid var(--border);
-        }
-        .btn-primary { background: var(--navy); border-color: var(--navy); color: #fff; }
-        .btn-primary:hover { background: var(--navy-deep); border-color: var(--navy-deep); color: #fff; }
-        .btn-secondary { color: inherit; background: var(--surface); }
-        .btn-secondary:hover { border-color: var(--navy); color: var(--navy); }
+        ul.disclaimers { list-style: none; padding: 0; margin: 0; }
+        ul.disclaimers li { padding: 8px 0 8px 18px; color: var(--on-surf-var); position: relative; }
+        ul.disclaimers li::before { content: "—"; position: absolute; left: 0; color: var(--outline); }
 
-        .meta-row { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 14px; color: var(--muted); }
-        .meta-row strong { color: inherit; font-weight: 600; }
+        .code { background: var(--surface); border: 1px solid var(--outline-var); border-left: 3px solid var(--amber); border-radius: 4px;
+                font-family: var(--mono); font-size: 13px; line-height: 1.7; padding: 18px 20px; overflow-x: auto; color: var(--on-surface); margin-top: 8px; white-space: pre; }
+        .code .h { color: var(--amber); }
+        .code .lnk { color: var(--amber-2); }
+        .code .c { color: var(--on-surf-var); }
 
-        /* ── sections ─────────────────────────────────────────── */
-        section { padding: 44px 0; border-bottom: 1px solid var(--border-soft); }
-        h2 {
-            font-size: 26px;
-            font-weight: 700;
-            letter-spacing: -.01em;
-            margin: 0 0 16px;
-        }
-        h3 { font-size: 18px; margin: 0 0 8px; }
+        .dl-grid { display: grid; gap: 0; margin: 8px 0 24px; }
+        .dl-row { display: grid; grid-template-columns: minmax(140px, 1fr) 2fr auto; gap: 16px; align-items: center; padding: 14px 0; border-top: 1px solid var(--outline-var); }
+        .dl-row:last-child { border-bottom: 1px solid var(--outline-var); }
+        .dl-row .platform { font-weight: 600; color: var(--on-surface); }
+        .dl-row .desc { color: var(--on-surf-var); font-size: 14px; }
+        .dl-row .desc code { background: var(--surface-var); padding: 1px 6px; border-radius: 3px; }
+        .dl-row .dl-link { font-family: var(--body); font-weight: 600; font-size: 14px; padding: 8px 14px; border-radius: 6px; text-decoration: none;
+                           background: transparent; color: var(--amber); border: 1px solid var(--outline); white-space: nowrap; }
+        .dl-row .dl-link:hover { border-color: var(--amber); color: var(--amber-2); }
+        @media (max-width: 600px) { .dl-row { grid-template-columns: 1fr; gap: 6px; padding: 16px 0; } .dl-row .dl-link { justify-self: start; } }
 
-        .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 14px; margin: 22px 0; }
-        .step { border: 1px solid var(--border); border-radius: 12px; padding: 18px; background: var(--surface); }
-        .step .n { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--navy); font-weight: 700; margin-bottom: 6px; }
-        .step .t { font-weight: 600; margin-bottom: 6px; }
-        .step .d { font-size: 14.5px; color: var(--muted); }
+        .privacy-card { border: 1px solid var(--outline); border-left: 3px solid var(--amber); background: var(--surface); padding: 20px 24px; border-radius: 4px; }
+        .privacy-card h3 { margin-top: 0; }
 
-        .gmi {
-            font-family: var(--mono);
-            font-size: 14px;
-            line-height: 1.6;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 18px 20px;
-            white-space: pre;
-            overflow-x: auto;
-        }
-        .gmi .h { color: var(--navy); font-weight: 700; }
-        .gmi .lnk { color: var(--navy); }
-        .gmi .c { color: var(--muted); }
+        .tech-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-top: 24px; }
+        .tech-grid .cell { background: var(--surface); border: 1px solid var(--outline-var); padding: 14px 16px; border-radius: 4px; }
+        .tech-grid .cell .k { font-family: var(--mono); font-size: 12px; color: var(--on-surf-var); text-transform: uppercase; letter-spacing: 0.04em; }
+        .tech-grid .cell .v { font-weight: 500; color: var(--on-surface); margin-top: 4px; font-size: 15px; }
 
-        .features { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 12px; }
-        .features li { border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--surface); }
-        .features .name { display: block; font-weight: 600; margin-bottom: 5px; }
-        .features .desc { display: block; font-size: 14.5px; color: var(--muted); }
-
-        .disclaimers { padding-left: 1.2rem; }
-        .disclaimers li { margin: .5rem 0; }
-
-        .privacy-card {
-            border: 1px solid var(--navy);
-            border-radius: 12px;
-            padding: 22px 24px;
-            background: var(--surface);
-        }
-        .privacy-card h3 { color: var(--navy); }
-        .privacy-card p { margin: .6rem 0 0; }
-
-        .tech-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 12px; margin-top: 20px; }
-        .cell { border: 1px solid var(--border); border-radius: 10px; padding: 13px 15px; background: var(--surface); }
-        .cell .k { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--navy); font-weight: 700; margin-bottom: 3px; }
-        .cell .v { font-size: 14.5px; }
-
-        .dl-grid { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
-        .dl-row {
-            display: grid;
-            grid-template-columns: 11rem 1fr auto;
-            gap: 12px;
-            align-items: center;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 12px 16px;
-            background: var(--surface);
-        }
-        .dl-row .platform { font-weight: 600; font-family: var(--mono); font-size: 14px; }
-        .dl-row .desc { font-size: 14px; color: var(--muted); }
-        .dl-link {
-            font-weight: 600;
-            text-decoration: none;
-            border: 1px solid var(--navy);
-            color: var(--navy);
-            border-radius: 8px;
-            padding: 7px 16px;
-            white-space: nowrap;
-        }
-        .dl-link:hover { background: var(--navy); color: #fff; }
-        @media (max-width: 620px) {
-            .dl-row { grid-template-columns: 1fr auto; }
-            .dl-row .desc { grid-column: 1 / -1; }
-        }
-        .dl-note { font-size: 14px; color: var(--muted); }
-
-        footer { padding: 30px 0 44px; font-size: 14px; color: var(--muted); }
-        .footer-row { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
-        .patp { font-family: var(--mono); }
+        footer { padding: 32px 0 56px; color: var(--on-surf-var); font-size: 13px; }
+        footer .footer-row { display: flex; flex-wrap: wrap; gap: 8px 20px; justify-content: space-between; align-items: center; }
+        footer .patp { font-family: var(--mono); color: var(--on-surf-var); }
     </style>
 </head>
 <body>
@@ -192,26 +136,27 @@
             <span class="wordmark">lattice</span>
         </div>
 
-        <h1>your knowledge, <br>on your <span class="accent">ship</span>.</h1>
+        <h1>Your pages, your knowledge,<br><span class="accent">your ship</span>.</h1>
 
         <p class="lede">
-            Pages in markdown, gemtext, or HTML, or Hoon pages that compute their own
-            content. A private, tagged memory you share with your AI. Search across all of
-            it, and publish any of it peer-to-peer as
-            <span class="url">urb://~ship/path</span>. No DNS, no web server, no host in
-            the middle. <a href="https://urbit.org/overview/running-urbit">Bring your own ship</a>.
+            A personal knowledge platform that runs on your own Urbit ship. Write pages in
+            markdown, gemtext, or HTML, or in Hoon so they compute their own content. Keep a
+            private, tagged knowledge store that you and your AI agents share. Search all of it.
+            Everything you publish is addressed <span class="url">urb://~ship/path</span> and
+            travels peer-to-peer between ships, with no DNS, no web server, and no host in the middle.
         </p>
 
         <div class="ctas">
-            <a class="btn btn-primary" href="#get-started">Get&nbsp;started</a>
+            <a class="btn btn-primary" href="#install">Install on your ship</a>
             <a class="btn btn-secondary" href="https://github.com/nisfeb/lattice">Source&nbsp;on&nbsp;GitHub</a>
         </div>
 
         <div class="meta-row">
-            <span><strong>Web · Desktop · Filesystem · MCP</strong></span>
-            <span><strong>Installable PWA</strong> · served by your ship</span>
-            <span><strong>Peer-to-peer</strong> · no servers</span>
-            <span><strong>Open source</strong> · PolyForm Noncommercial</span>
+            <span><strong>Web + PWA</strong> · served by your ship</span>
+            <span><strong>Desktop</strong> · Linux, macOS</span>
+            <span><strong>Filesystem mount</strong></span>
+            <span><strong>MCP</strong> · memory for AI agents</span>
+            <span><strong>Open source</strong> · MIT</span>
         </div>
     </div>
 </header>
@@ -220,36 +165,33 @@
     <div class="wrap">
         <h2>How it works</h2>
         <p>
-            One store on your ship, and every surface you would want on top of it.
-            Publish a page and anyone on the network can read it instantly, straight
-            from your ship. Save a memory and your assistant recalls it next session.
+            lattice's ship side is a <em>nexus</em> inside the
+            <a href="https://github.com/gwbtc/grubbery">grubbery</a> framework. Your pages and
+            your knowledge live in grubbery's vault on your ship. The client is served by the ship
+            too, so there is nothing to install beyond one dojo command.
         </p>
         <div class="steps">
             <div class="step">
-                <div class="n">the ship side</div>
-                <div class="t">lattice on your ship</div>
-                <div class="d">Publishes your pages to the Urbit namespace and serves them to other ships over remote scry. Follows files you subscribe to.</div>
+                <div class="n">the ship</div>
+                <div class="t">one desk, one command</div>
+                <div class="d"><code>|install ~ricsul-bilwyt %grubbery</code> pulls the desk, boots the lattice nexus and binds <code>/apps/lattice</code>. Updates arrive on their own through kiln.</div>
+            </div>
+            <div class="step">
+                <div class="n">the client</div>
+                <div class="t">reader, workspace, PWA</div>
+                <div class="d">Open <code>/apps/lattice</code> to read and <code>/apps/lattice/app</code> to write. On a phone, add it to your home screen: it is a full PWA that works offline.</div>
             </div>
             <div class="step">
                 <div class="n">the surfaces</div>
-                <div class="t">browse &amp; edit anywhere</div>
-                <div class="d">A web workspace with live preview and drag-and-drop upload, an installable PWA that works offline, a desktop app for Linux and macOS, and a FUSE client that mounts your pages as plain files. lattice hosts its own client.</div>
-            </div>
-            <div class="step">
-                <div class="n">the agents</div>
-                <div class="t">your AI remembers here</div>
-                <div class="d">MCP knowledge tools are compiled into the ship and served at <code>/grubbery/mcp</code>. Your assistant reads and writes the same tagged memory you browse in the workspace.</div>
+                <div class="t">desktop, filesystem, agents</div>
+                <div class="d">An optional desktop app, a FUSE mount that makes your pages plain files, and eleven MCP tools your AI assistant uses as memory. One store behind all of them.</div>
             </div>
         </div>
 
-        <div class="gmi" aria-label="example gemtext page">
-<span class="h"># ~nisfeb's notebook</span>
-
-Welcome. Everything here is a gemtext file in /pub.
-
-<span class="lnk">=&gt; urb://~nisfeb/notes/urbit  Notes on Urbit</span>
-<span class="lnk">=&gt; urb://~nisfeb/now          What I'm doing now</span>
-<span class="c">=&gt; https://urbit.org         The wider web still works too</span>
+        <div class="code" aria-label="what a published page looks like from another ship">
+<span class="h">urb://~nisfeb/notes/urbit</span>        <span class="c">a page, straight from ~nisfeb's ship</span>
+<span class="h">urb://~nisfeb/manifest</span>           <span class="c">everything ~nisfeb has published</span>
+<span class="lnk">https://…/apps/lattice/c/site</span>  <span class="c">the same page, if you choose to put it on the clearweb</span>
         </div>
     </div>
 </section>
@@ -259,62 +201,79 @@ Welcome. Everything here is a gemtext file in /pub.
         <h2>What it does</h2>
         <ul class="features">
             <li>
-                <span class="name">Pages that run</span>
-                <span class="desc">Markdown, gemtext, HTML, JS, CSS. Or write a page in Hoon and it computes its content, with commands, state, and dependencies on other pages, live-previewed in the editor.</span>
+                <span class="name">Pages, not just gemtext</span>
+                <span class="desc">Markdown, gemtext, HTML, plain text, JS, or CSS. Or write a page in Hoon and it <em>computes</em> its content: programmable pages with commands, state, and dependencies on other pages.</span>
             </li>
             <li>
-                <span class="name">Knowledge &amp; AI memory</span>
-                <span class="desc">A private, tagged note store with history and trash. Browse it at <code>/know</code>. Your agents read and write the same store over MCP, served by the ship itself.</span>
+                <span class="name">Knowledge store</span>
+                <span class="desc">A private, tagged note store with per-entry history and a trash you can restore from. Browse it with folders, tag filters, and live updates; drive it from the web app, HTTP, MCP, or the filesystem mount.</span>
             </li>
             <li>
-                <span class="name">Search everything</span>
-                <span class="desc">A term index over your pages and your knowledge store, right from the reader’s omnibar. Every hit is badged with its scope, so a published page never reads like a private note.</span>
+                <span class="name">Search</span>
+                <span class="desc">A term index over your pages and your knowledge store, queried from the reader's omnibar. Every hit is badged with its scope, so a published page never reads like a private note.</span>
             </li>
             <li>
                 <span class="name">A real filesystem</span>
-                <span class="desc">Mount your pages as local files with <code>lattice-fs</code>. A cold mount warms in one round-trip, so grep runs from RAM. Edit in your own editor and saves round-trip safely.</span>
-            </li>
-            <li>
-                <span class="name">Browse <code>urb://</code></span>
-                <span class="desc">Fetch and read pages published by any ship, peer-to-peer over Urbit remote scry. The bytes come straight from the author.</span>
+                <span class="desc"><code>lattice-fs</code> mounts your pages as local files, over HTTP or grubbery's local IPC. A cold mount warms in one round-trip, so <code>grep</code> and <code>cat</code> run from RAM, and editor backup files never touch the ship.</span>
             </li>
             <li>
                 <span class="name">Publish</span>
-                <span class="desc">Anything you publish is instantly readable by anyone as <span class="mono">urb://~you/that/path</span>. A page can also go clearweb-public, served over HTTP from your ship.</span>
+                <span class="desc">Every page you save is a signed value in the Urbit namespace, readable by anyone as <span class="mono">urb://~you/that/path</span>. Pages and whole folders can also go clearweb-public over plain HTTP. Share a folder and you've published a site.</span>
             </li>
             <li>
-                <span class="name">Follow &amp; subscribe</span>
-                <span class="desc">Follow ships to see what they publish. Subscribe to a file for a live push when it changes. Discover publishers via <code>%contacts</code>. Copy any remote file onto your own ship.</span>
-            </li>
-            <li>
-                <span class="name">Web workspace</span>
-                <span class="desc">A three-pane editor with tree, live preview, and drag-and-drop upload of files or whole directories. Installs as a PWA with the flat-green tile you are looking at.</span>
-            </li>
-            <li>
-                <span class="name">Share whole sites</span>
-                <span class="desc">Share a folder and everything under it goes clearweb-public at <span class="mono">/c/&lt;folder&gt;/</span> with the theme inherited. A site, published and unpublished in one click.</span>
+                <span class="name">Editor</span>
+                <span class="desc">Syntax highlighting for every page kind, live preview, compile errors for Hoon pages, templates, folder-level share, move, and delete, and drag-and-drop upload of files or whole directories. Name a page "My Page" and it keeps that name in the tree.</span>
             </li>
             <li>
                 <span class="name">Works offline</span>
-                <span class="desc">Lose the ship mid-session and saves queue locally (pages and memories both), then replay on reconnect. Concurrent edits are never lost. The newest wins and the other is kept as a real page under <span class="mono">conflicts/</span>.</span>
+                <span class="desc">Lose the ship mid-session and saves queue locally, then replay when it returns. Deletes, moves, and renames queue too, in order. Concurrent edits are never lost: the overwritten version is kept as a real page under <code>conflicts/</code>.</span>
             </li>
             <li>
-                <span class="name">Bookmarks</span>
-                <span class="desc">Star any <span class="mono">urb://</span> page from the reader bar. The full list is organized into folders and searchable as you type. The omnibar ranks bookmarks above history.</span>
+                <span class="name">Export and restore</span>
+                <span class="desc">One button downloads every page and every memory as a single tar of plain files you can read, grep, or put in git without lattice. Restore takes an archive back, paths, tags, and dates intact, and says what it will overwrite before it acts. The desktop app schedules these backups to a folder on your machine.</span>
             </li>
             <li>
-                <span class="name">Comments &amp; moderation</span>
-                <span class="desc">Readers can leave comments on pages you publish. An inbox in the workspace lists every comment and removes any of them in one click.</span>
+                <span class="name">Sharing that scales</span>
+                <span class="desc">Named groups of ships with per-path read and edit grants, per-file grants from the editor, and a banlist that revokes on ban. Readers can leave comments on the pages you publish; a moderation inbox lists and removes them.</span>
             </li>
             <li>
-                <span class="name">Groups &amp; bans</span>
-                <span class="desc">Named groups of ships with per-path read/edit grants, a full ACL editor, per-file sharing to a ship or a group, and a banlist that revokes on ban, not just labels.</span>
+                <span class="name">Follow &amp; subscribe</span>
+                <span class="desc">Follow ships to keep track of what they publish, or subscribe to a single file and get the edit the moment it happens, over a live namespace subscription rather than a timer.</span>
             </li>
             <li>
-                <span class="name">Live location</span>
-                <span class="desc">A template page that shares your position with chosen ships: a map with a trail of recent fixes, periodic auto-updates while open, and a hard expiry it enforces itself.</span>
+                <span class="name">Browse <code>urb://</code></span>
+                <span class="desc">Read anything any ship publishes, peer-to-peer over remote scry, from the web reader. Star pages as bookmarks; fetch <code>urb://~ship/manifest</code> to see a stranger's index; copy a remote file onto your own ship at a path you choose.</span>
+            </li>
+            <li>
+                <span class="name">Light and dark</span>
+                <span class="desc">The reader, the editor, and the PWA follow your system theme.</span>
             </li>
         </ul>
+    </div>
+</section>
+
+<section>
+    <div class="wrap">
+        <h2>Memory for your AI agents</h2>
+        <p>
+            The knowledge store speaks <a href="https://modelcontextprotocol.io">MCP</a> through
+            eleven tools compiled into the ship itself: save, read, list, search, explore by tag,
+            move, delete, restore, tag, untag, and list tags. Anything an agent saves shows up in
+            the knowledge browser, and vice-versa. There is nothing to run beside the ship and
+            nothing to register; the tools survive restarts and redeploys.
+        </p>
+        <div class="code" aria-label="MCP client configuration">
+<span class="c">// your MCP client's config: the ship is the server</span>
+{ "mcpServers": { "myship": {
+    "url": "https://your-ship.example.com/grubbery/mcp",
+    "headers": { "Cookie": "urbauth-~your-ship=0v…" } } } }
+        </div>
+        <p style="margin-top:16px;">
+            The cookie is a normal ship session, minted from <code>/~/login</code> with your
+            <span class="mono">+code</span>, and it is the only credential involved. Your
+            assistant's memory lives on your ship, not in someone's cloud.
+            <a href="https://github.com/nisfeb/lattice/blob/main/docs/agent-knowledge.md">Details in the docs.</a>
+        </p>
     </div>
 </section>
 
@@ -323,8 +282,9 @@ Welcome. Everything here is a gemtext file in /pub.
         <h2>What it isn't</h2>
         <ul class="disclaimers">
             <li>Not a host. <a href="https://urbit.org/overview/running-urbit">Bring your own ship</a>: yours, a friend's, or a hosted one.</li>
-            <li>Not the HTTP web. Pages are Urbit-native (<span class="mono">urb://~ship/path</span>) and move between ships over remote scry, not over DNS and HTTP.</li>
-            <li>Not an app you must install. The client is served by your ship. The desktop app and the filesystem client are optional local extras.</li>
+            <li>Not the HTTP web. Pages are Urbit-native (<span class="mono">urb://~ship/path</span>) and move between ships over remote scry. The exception is what you <em>choose</em> to publish clearweb, which your ship serves itself.</li>
+            <li>Not an app to install. The client is served by your ship. The desktop app and the filesystem mount are optional extras.</li>
+            <li>Desktop builds are unsigned for now: Gatekeeper will warn on first launch on macOS.</li>
         </ul>
     </div>
 </section>
@@ -335,14 +295,14 @@ Welcome. Everything here is a gemtext file in /pub.
         <div class="privacy-card">
             <h3>The only server lattice talks to is your ship.</h3>
             <p>
-                No analytics, no third-party SDKs, no telemetry. Every client speaks only to the Urbit
-                ship you point it at. That's the entire network surface. Your session never
-                leaves the device unencrypted. lattice refuses to send your <span class="mono">+code</span>
-                or cookie in cleartext to a remote ship, and stores it owner-only at rest.
+                No analytics, no third-party SDKs, no telemetry. The client is served by your ship
+                and speaks only to it. Access is enforced by grubbery's per-directory ACLs: the
+                knowledge store is owner-only, the HTTP API and the MCP tools require a valid ship
+                session, and shared pages are readable only by the ships and groups you grant.
             </p>
             <p>
-                Everything you put in <code>/pub</code> is public by design. That's the whole
-                point of a publishing tool. Nothing else on your ship is exposed.
+                What you publish is public by design, in the Urbit namespace and, if you choose,
+                on the clearweb. Nothing else leaves your ship.
             </p>
         </div>
     </div>
@@ -352,75 +312,121 @@ Welcome. Everything here is a gemtext file in /pub.
     <div class="wrap">
         <h2>Under the hood</h2>
         <p>
-            On your ship, lattice runs as a nexus in the <span class="mono">grubbery</span>
-            framework. Pages and knowledge live as grubs in the vault, published pages answer
-            remote scry, and the MCP knowledge tools are compiled into the same ball they serve.
-            The web client is itself hosted on lattice. The editor, reader, and PWA are grubs
-            in the same ball they edit, over an authenticated HTTP API with live SSE updates.
-            The filesystem client is Rust over a pluggable transport (HTTP or grubbery's
-            local IPC). Hoon unit tests on the nexus, a 19-assertion ship-verified
-            regression matrix on the filesystem client.
+            The ship side is Hoon: a grubbery nexus whose pages and memories are grubs in the
+            vault, published into the Urbit namespace and served to other ships over remote
+            scry. The web client is served by the same nexus, with live updates over an Eyre
+            SSE channel and a service worker that keeps the shell and your last-known tree
+            at hand offline. The filesystem client is Rust, the desktop app is Tauri, and the
+            MCP tools are Hoon compiled into the desk.
         </p>
         <div class="tech-grid">
-            <div class="cell"><div class="k">clients</div><div class="v">Web + PWA · FUSE · MCP</div></div>
-            <div class="cell"><div class="k">served from</div><div class="v">your ship, no separate host</div></div>
-            <div class="cell"><div class="k">backend</div><div class="v">Your Urbit ship</div></div>
+            <div class="cell"><div class="k">ship side</div><div class="v">grubbery nexus · Hoon</div></div>
+            <div class="cell"><div class="k">web</div><div class="v">Reader, workspace, PWA · served by the ship</div></div>
+            <div class="cell"><div class="k">desktop</div><div class="v">Tauri · Linux, macOS</div></div>
+            <div class="cell"><div class="k">filesystem</div><div class="v">lattice-fs · Rust FUSE</div></div>
+            <div class="cell"><div class="k">agents</div><div class="v">11 MCP tools · in the ship</div></div>
             <div class="cell"><div class="k">transport</div><div class="v">Remote scry · peer-to-peer</div></div>
         </div>
     </div>
 </section>
 
-<section id="get-started">
+<section id="install">
     <div class="wrap">
-        <h2>Get started</h2>
-        <p>
-            lattice hosts its own client, so there is nothing to download. Put the nexus on
-            your ship (see the <a href="https://github.com/nisfeb/lattice#install">install
-            notes</a>), log in at your ship's web login, and open:
+        <h2>Install</h2>
+        <h3>1. On your ship</h3>
+        <div class="code" aria-label="dojo install command">
+<span class="c">:: in your dojo</span>
+|install ~ricsul-bilwyt %grubbery
+        </div>
+        <p style="margin-top:16px;font-size:14px;color:var(--on-surf-var);">
+            The desk is grubbery with lattice and its MCP server and nothing else. If you already
+            run a full grubbery from another publisher, read the
+            <a href="https://github.com/nisfeb/lattice/blob/main/docs/grubbery-ops.md">notes on switching</a> first.
+            On first boot lattice also installs <code>%obelisk</code> for the optional search mirror.
+        </p>
+
+        <h3>2. Open it</h3>
+        <p style="font-size:14px;color:var(--on-surf-var);">
+            Log into your ship's web login with your <span class="mono">+code</span>, then open
+            <code>/apps/lattice</code> to read and <code>/apps/lattice/app</code> to write. On a phone,
+            use your browser's <em>Add to Home Screen</em>: lattice is a full PWA with its own icon
+            and standalone window.
+        </p>
+
+        <h3>3. Optional: the desktop app</h3>
+        <p style="font-size:14px;color:var(--on-surf-var);">
+            The same ship-served client in its own window, plus managed filesystem mounts,
+            scheduled backups, and auto-detection of piers running on the same machine.
+            Direct links resolve to the latest release; the
+            <a href="https://github.com/nisfeb/lattice/releases/latest">releases page</a> has older
+            versions and notes.
         </p>
         <div class="dl-grid">
             <div class="dl-row">
-                <span class="platform mono">/apps/lattice</span>
-                <span class="desc">The reader. Your pages, the urb:// omnibar, search, ships you follow.</span>
+                <span class="platform">Linux AppImage</span>
+                <span class="desc"><code>chmod +x</code> and run. Portable, needs FUSE 2.</span>
+                <a class="dl-link" data-asset-pattern="^lattice_[0-9.]+_amd64\.AppImage$" href="https://github.com/nisfeb/lattice/releases/latest">Download</a>
             </div>
             <div class="dl-row">
-                <span class="platform mono">/apps/lattice/app</span>
-                <span class="desc">The workspace. Editor with highlighting and live preview, sharing, uploads, knowledge browser.</span>
+                <span class="platform">Linux .deb</span>
+                <span class="desc"><code>sudo apt install ./lattice_*.deb</code> on Debian, Ubuntu and derivatives.</span>
+                <a class="dl-link" data-asset-pattern="^lattice_[0-9.]+_amd64\.deb$" href="https://github.com/nisfeb/lattice/releases/latest">Download</a>
             </div>
-        </div>
-        <div class="dl-grid" style="margin-top:16px;">
             <div class="dl-row">
-                <span class="platform mono">desktop app</span>
-                <span class="desc">Linux (deb, AppImage) and macOS (dmg, Apple&nbsp;Silicon + Intel). The ship-served client in its own window, plus managed filesystem mounts and pier auto-detection.</span>
-                <a class="dl-link" href="https://github.com/nisfeb/lattice/releases">Releases</a>
+                <span class="platform">macOS, Apple Silicon</span>
+                <span class="desc">Disk image. First launch: right-click → Open (unsigned).</span>
+                <a class="dl-link" data-asset-pattern="^lattice_[0-9.]+_aarch64\.dmg$" href="https://github.com/nisfeb/lattice/releases/latest">Download</a>
+            </div>
+            <div class="dl-row">
+                <span class="platform">macOS, Intel</span>
+                <span class="desc">Disk image. Same first-launch step.</span>
+                <a class="dl-link" data-asset-pattern="^lattice_[0-9.]+_x64\.dmg$" href="https://github.com/nisfeb/lattice/releases/latest">Download</a>
             </div>
         </div>
-        <p class="dl-note" style="margin-top:16px;">
-            On a phone, use your browser's <em>Install app / Add to Home Screen</em>. lattice
-            is a full PWA with its own icon and standalone window. It resumes where you left
-            off and keeps working offline. Prefer real files? Build the
-            FUSE client (<span class="mono">cargo build --release</span> in
-            <span class="mono">lattice-fs-rs/</span>) and mount your page tree, or
-            <span class="mono">nix build .#lattice-desktop</span>.
+        <p style="font-size:14px;color:var(--on-surf-var);">
+            Windows and Android use the PWA. The filesystem client on its own is
+            <code>lattice-fs</code> in the repo, built with <code>cargo build --release</code>.
         </p>
 
         <p style="margin-top:32px;">
             New to Urbit?
             <a href="https://urbit.org/overview/running-urbit">urbit.org/overview/running-urbit</a>
-            walks you through booting a ship. Once you have its HTTP URL and <span class="mono">+code</span>,
-            log in and you're browsing.
+            walks you through booting a ship.
         </p>
 
         <div class="ctas" style="margin-top:24px;">
             <a class="btn btn-secondary" href="https://github.com/nisfeb/lattice">Source&nbsp;&amp;&nbsp;issues</a>
+            <a class="btn btn-secondary" href="lattice">Gemtext edition</a>
         </div>
     </div>
 </section>
 
+<script>
+// Resolve data-asset-pattern links to direct GitHub Release asset URLs from the
+// latest release. Without JS the anchor falls through to the releases page.
+(function () {
+    const links = document.querySelectorAll('.dl-link[data-asset-pattern]');
+    if (links.length === 0) return;
+    fetch('https://api.github.com/repos/nisfeb/lattice/releases/latest', {
+        headers: { 'Accept': 'application/vnd.github+json' },
+    })
+        .then(r => r.ok ? r.json() : null)
+        .then(release => {
+            if (!release || !release.assets) return;
+            for (const link of links) {
+                const re = new RegExp(link.dataset.assetPattern);
+                const match = release.assets.find(a => re.test(a.name));
+                if (match) link.href = match.browser_download_url;
+            }
+        })
+        .catch(() => { /* leave fallback /releases/latest links in place */ });
+})();
+</script>
+
 <footer>
     <div class="wrap footer-row">
-        <span>© lattice, built by <span class="patp">~nisfeb</span>. PolyForm Noncommercial 1.0.0 licensed.</span>
-        <span><a href="lattice">gemtext edition</a> · <a href="https://github.com/nisfeb/lattice">github.com/nisfeb/lattice</a></span>
+        <span>© lattice — built by <span class="patp">~nisfeb</span>. MIT licensed.</span>
+        <span><a href="https://github.com/nisfeb/lattice">github.com/nisfeb/lattice</a></span>
     </div>
 </footer>
 
