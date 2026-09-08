@@ -3804,6 +3804,15 @@
         + '<style>:root{color-scheme:light dark}'
         + 'body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;background:#fafafa}'
         + '@media(prefers-color-scheme:dark){body{background:#1a1a1a}}'
+        // the same flat scrollbars index.html gives the main document. A frame
+        // without these draws the engine's NATIVE scrollbars, which follow the
+        // window theme rather than the page: in the desktop app on Linux that
+        // was a white scrollbar on a dark preview. #8886 is --border, an alpha
+        // grey that reads on both schemes.
+        + 'html{scrollbar-width:thin;scrollbar-color:#8886 transparent}'
+        + '::-webkit-scrollbar{width:10px;height:10px}'
+        + '::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}'
+        + '::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
         + 'img{max-width:100%}pre{overflow-x:auto}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
         + '</style>' + localHtml(pkind.value, src.value);
@@ -6602,6 +6611,21 @@
   // the ship and the menu ships in the binary, so they update independently:
   // testing for the desktop alone would hide these on an older build with no
   // menubar behind them and make every one of these commands unreachable.
+  //
+  // The window's native surfaces (the GTK menubar, the engine's own
+  // scrollbars) follow the WINDOW theme, which on Linux is GTK's light
+  // default whatever the desktop portal says, so a dark page sat under a
+  // white menubar. The page is the one that knows prefers-color-scheme, so it
+  // tells the shell, now and on every change. An older shell without the
+  // command refuses the invoke; that is caught and nothing else changes.
+  if (window.__TAURI__) {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const tell = () => {
+      try { window.__TAURI__.core.invoke('set_theme', { dark: mq.matches }).catch(() => {}); } catch {}
+    };
+    tell();
+    mq.addEventListener('change', tell);
+  }
   if (window.__TAURI__ && window.__LATTICE_FILE_MENU__) {
     for (const id of ['newfile', 'newfolder', 'newtmpl', 'upfiles', 'updir', 'save']) {
       const el = document.getElementById(id);

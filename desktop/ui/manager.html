@@ -210,6 +210,15 @@
 <script>
   const invoke = window.__TAURI__.core.invoke;
   const $ = (id) => document.getElementById(id);
+  // the window's native chrome (the GTK menubar) follows the window theme,
+  // not the page's; mirror prefers-color-scheme into it here too, so the
+  // manager page is not the one page with a white menubar over a dark ground
+  {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const tell = () => { invoke('set_theme', { dark: mq.matches }).catch(() => {}); };
+    tell();
+    mq.addEventListener('change', tell);
+  }
 
   // Show the login form only when logging in is actually the thing to do.
   // `connected` comes from a real authenticated request, not from "we have a

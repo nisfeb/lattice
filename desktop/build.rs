@@ -59,6 +59,9 @@ fn main() {
             // capabilities, because three times is a pattern, not luck.
             "pandoc_probe",
             "convert_tex",
+            // the page reports its colour scheme so the GTK menubar and
+            // native scrollbars follow it (both windows: manager + ship page)
+            "set_theme",
         ]),
     ))
     .expect("tauri-build failed")

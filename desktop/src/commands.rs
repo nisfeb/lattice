@@ -121,6 +121,19 @@ pub fn show_manager(app: &AppHandle, section: Option<&str>) -> Result<(), String
     Ok(())
 }
 
+/// The page mirrors its colour scheme into the window. The native surfaces
+/// (the GTK menubar, and WebKitGTK's own scrollbars in any frame that does
+/// not style them) follow the WINDOW theme, not the page, and on Linux the
+/// window theme is GTK's light default whatever the desktop portal says.
+/// The page does know prefers-color-scheme, so it tells us, on load and
+/// whenever it changes. macOS honours the same call.
+#[tauri::command]
+pub fn set_theme(app: AppHandle, dark: bool) -> Result<(), String> {
+    let Some(w) = app.get_webview_window("workspace") else { return Ok(()) };
+    w.set_theme(Some(if dark { tauri::Theme::Dark } else { tauri::Theme::Light }))
+        .map_err(|e| e.to_string())
+}
+
 /// Up while show_manager is between destroying the workspace window and
 /// making its replacement. The window is the app's only one, so its
 /// destruction reads as "last window closed, exit"; main.rs checks this
