@@ -6116,7 +6116,7 @@
   (send-typed eyre-id (mime-of vmode) 'no-cache' body)
 ++  preview-scrollbar-css
   ^-  @t
-  '<style>html{scrollbar-width:thin;scrollbar-color:#8886 transparent}::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}</style>'
+  '<style>:root{color-scheme:light dark}html{scrollbar-width:thin;scrollbar-color:#8886 transparent}::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}</style>'
 ::  +find-theme: the nearest folder AT or ABOVE pax's parent holding a clearweb
 ::  css `theme` page, so a rendered clearweb page auto-inherits a site theme
 ::  (nearest wins, a subfolder theme overrides). ~ if none up to the root.
