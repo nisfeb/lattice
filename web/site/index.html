@@ -7,14 +7,14 @@
     <meta name="description" content="A personal knowledge platform on your Urbit ship: pages in markdown, gemtext, HTML or programmable Hoon; a private tagged memory you share with your AI; full-text search; peer-to-peer publishing. Web, filesystem, MCP.">
     <meta property="og:title" content="lattice: your knowledge, on your ship">
     <meta property="og:description" content="Pages, private knowledge, and AI memory on your Urbit ship. Search everything, publish peer-to-peer, reach it from the web, your filesystem, or an agent.">
-    <meta name="theme-color" content="#4a7c59">
+    <meta name="theme-color" content="#101541">
     <link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="%234a7c59"/><g stroke="%23e9f1ec" stroke-width="3" stroke-linecap="round" fill="none"><path d="M8 24 24 8M8 40 40 8M8 56 56 8M24 56 56 24M40 56 56 40"/><path d="M40 8 56 24M24 8 56 40M8 8 56 56M8 24 40 56M8 40 24 56"/></g></svg>'>
     <style>
         :root {
-            /* Flat green identity. Same green + mist as the app tile / PWA icon. */
-            --green:      #4a7c59;
-            --green-deep: #3a6347;
-            --mist:       #e9f1ec;
+            /* Navy and amber, the palette shared by sneagan's apps (talon, party manager); same as the app tile / PWA icon. */
+            --navy:      #101541;
+            --navy-deep: #0b0e2c;
+            --mist:       #f9a804;
 
             --bg:      #fafafa;
             --surface: #8881;   /* translucent, works on both grounds */
@@ -48,8 +48,8 @@
 
         .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
 
-        a { color: var(--green); }
-        a:hover { color: var(--green-deep); }
+        a { color: var(--navy); }
+        a:hover { color: var(--navy-deep); }
         @media (prefers-color-scheme: dark) {
             a:hover { color: var(--mist); }
         }
@@ -75,7 +75,7 @@
             letter-spacing: -.02em;
             margin: 0 0 20px;
         }
-        .accent { color: var(--green); }
+        .accent { color: var(--navy); }
 
         .lede { font-size: 18px; max-width: 40rem; margin: 0 0 28px; }
 
@@ -88,10 +88,10 @@
             text-decoration: none;
             border: 1px solid var(--border);
         }
-        .btn-primary { background: var(--green); border-color: var(--green); color: #fff; }
-        .btn-primary:hover { background: var(--green-deep); border-color: var(--green-deep); color: #fff; }
+        .btn-primary { background: var(--navy); border-color: var(--navy); color: #fff; }
+        .btn-primary:hover { background: var(--navy-deep); border-color: var(--navy-deep); color: #fff; }
         .btn-secondary { color: inherit; background: var(--surface); }
-        .btn-secondary:hover { border-color: var(--green); color: var(--green); }
+        .btn-secondary:hover { border-color: var(--navy); color: var(--navy); }
 
         .meta-row { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 14px; color: var(--muted); }
         .meta-row strong { color: inherit; font-weight: 600; }
@@ -108,7 +108,7 @@
 
         .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 14px; margin: 22px 0; }
         .step { border: 1px solid var(--border); border-radius: 12px; padding: 18px; background: var(--surface); }
-        .step .n { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--green); font-weight: 700; margin-bottom: 6px; }
+        .step .n { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--navy); font-weight: 700; margin-bottom: 6px; }
         .step .t { font-weight: 600; margin-bottom: 6px; }
         .step .d { font-size: 14.5px; color: var(--muted); }
 
@@ -123,8 +123,8 @@
             white-space: pre;
             overflow-x: auto;
         }
-        .gmi .h { color: var(--green); font-weight: 700; }
-        .gmi .lnk { color: var(--green); }
+        .gmi .h { color: var(--navy); font-weight: 700; }
+        .gmi .lnk { color: var(--navy); }
         .gmi .c { color: var(--muted); }
 
         .features { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 12px; }
@@ -136,17 +136,17 @@
         .disclaimers li { margin: .5rem 0; }
 
         .privacy-card {
-            border: 1px solid var(--green);
+            border: 1px solid var(--navy);
             border-radius: 12px;
             padding: 22px 24px;
             background: var(--surface);
         }
-        .privacy-card h3 { color: var(--green); }
+        .privacy-card h3 { color: var(--navy); }
         .privacy-card p { margin: .6rem 0 0; }
 
         .tech-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 12px; margin-top: 20px; }
         .cell { border: 1px solid var(--border); border-radius: 10px; padding: 13px 15px; background: var(--surface); }
-        .cell .k { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--green); font-weight: 700; margin-bottom: 3px; }
+        .cell .k { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--navy); font-weight: 700; margin-bottom: 3px; }
         .cell .v { font-size: 14.5px; }
 
         .dl-grid { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
@@ -165,13 +165,13 @@
         .dl-link {
             font-weight: 600;
             text-decoration: none;
-            border: 1px solid var(--green);
-            color: var(--green);
+            border: 1px solid var(--navy);
+            color: var(--navy);
             border-radius: 8px;
             padding: 7px 16px;
             white-space: nowrap;
         }
-        .dl-link:hover { background: var(--green); color: #fff; }
+        .dl-link:hover { background: var(--navy); color: #fff; }
         @media (max-width: 620px) {
             .dl-row { grid-template-columns: 1fr auto; }
             .dl-row .desc { grid-column: 1 / -1; }
@@ -188,7 +188,7 @@
 <header class="hero">
     <div class="wrap hero-inner">
         <div class="icon-wordmark">
-            <svg viewBox="0 0 64 64" role="img" aria-label="lattice icon"><rect width="64" height="64" rx="12" fill="#4a7c59"/><g stroke="#e9f1ec" stroke-width="3" stroke-linecap="round" fill="none"><path d="M8 24 24 8M8 40 40 8M8 56 56 8M24 56 56 24M40 56 56 40"/><path d="M40 8 56 24M24 8 56 40M8 8 56 56M8 24 40 56M8 40 24 56"/></g></svg>
+            <svg viewBox="0 0 64 64" role="img" aria-label="lattice icon"><rect width="64" height="64" rx="12" fill="#101541"/><g stroke="#f9a804" stroke-width="3" stroke-linecap="round" fill="none"><path d="M8 24 24 8M8 40 40 8M8 56 56 8M24 56 56 24M40 56 56 40"/><path d="M40 8 56 24M24 8 56 40M8 8 56 56M8 24 40 56M8 40 24 56"/></g></svg>
             <span class="wordmark">lattice</span>
         </div>
 
