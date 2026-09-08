@@ -1,56 +1,56 @@
 # lattice
 
-your knowledge, on your ship.
+Your pages, your knowledge, your ship.
 
-Write pages in markdown, gemtext, or HTML, or write Hoon pages that compute their own content. Keep a private, tagged memory you share with your AI. Search all of it in full text. Publishing is peer-to-peer. Every published page is addressed as urb://~ship/path and travels ship-to-ship over remote scry. No DNS, no web server, no host in the middle.
+A personal knowledge platform that runs on your own Urbit ship. Write pages in markdown, gemtext, or HTML, or in Hoon so they compute their own content. Keep a private, tagged knowledge store that you and your AI agents share. Search all of it. Everything you publish is addressed urb://~ship/path and travels peer-to-peer between ships, with no DNS, no web server, and no host in the middle.
 
 (You may well be reading this page through lattice right now.)
 
-## One store, every surface
+## How it works
 
-* The ship. A lattice nexus in the grubbery framework. Pages and knowledge live as grubs in the vault. Published pages answer remote scry, and followed files push you updates.
-* The web. A reader, a workspace editor with live preview and drag-and-drop upload, a knowledge browser, and an installable PWA that works offline, all served straight from the ship. lattice hosts its own client. There is nothing to install.
-* The desktop. An optional app for Linux and macOS: the same ship-served client in its own window, plus managed filesystem mounts and auto-detection of piers on the machine.
-* The filesystem. lattice-fs mounts your pages as local files. grep runs from RAM, and you edit in your own editor.
-* The agents. MCP knowledge tools compiled into the ship, served at /grubbery/mcp. Your assistant's memory lives on your ship.
+lattice's ship side is a nexus inside the grubbery framework. Your pages and your knowledge live in grubbery's vault on your ship, and the client is served by the ship too.
 
-## What pages look like
+* The ship: one desk, one command. |install ~ricsul-bilwyt %grubbery pulls the desk, boots the lattice nexus and binds /apps/lattice. Updates arrive on their own through kiln.
+* The client: /apps/lattice to read, /apps/lattice/app to write. On a phone, add it to your home screen: it is a full PWA that works offline.
+* The surfaces: an optional desktop app for Linux and macOS, a FUSE mount that makes your pages plain files, and eleven MCP tools your AI assistant uses as memory. One store behind all of them.
 
-Publish a page, and anyone on the network can read it instantly, straight from your ship:
+## What it does
 
-```
-# ~nisfeb's notebook
+* Pages, not just gemtext: markdown, gemtext, HTML, plain text, JS, CSS, or Hoon pages that compute their content, with commands, state, and dependencies on other pages.
+* Knowledge store: a private, tagged note store with per-entry history and a trash. Browse it with folders and tag filters; drive it from the web app, HTTP, MCP, or the filesystem mount.
+* Search: a term index over pages and knowledge, from the reader's omnibar, every hit badged with its scope.
+* A real filesystem: lattice-fs mounts your pages as local files, so grep and cat run from RAM and your editor's backup files never touch the ship.
+* Publish: every saved page is a signed value in the Urbit namespace, readable as urb://~you/that/path. Pages and folders can also go clearweb-public over plain HTTP. Share a folder and you've published a site.
+* Editor: highlighting for every page kind, live preview, compile errors for Hoon pages, templates, folder-level share, move and delete, drag-and-drop upload of files or directories. A page named "My Page" keeps that name in the tree.
+* Works offline: saves, deletes, moves and renames queue locally and replay in order when the ship returns; an overwritten concurrent edit is kept as a real page under conflicts/.
+* Export and restore: every page and memory as one tar of plain files; restore puts them back with paths, tags and dates intact. The desktop app schedules backups to a folder on your machine.
+* Sharing that scales: named groups of ships with per-path read and edit grants, per-file grants, a banlist that revokes on ban, and comments from readers with a moderation inbox.
+* Follow and subscribe: follow ships, or subscribe to one file and get each edit as it happens over a live namespace subscription.
+* Browse urb://: read what any ship publishes, bookmark it, fetch urb://~ship/manifest for a stranger's index, or copy a remote file onto your own ship.
+* Light and dark, following your system.
 
-Welcome. Everything here is a page on my ship.
+## Memory for your AI agents
 
-=> urb://~nisfeb/notes/urbit  Notes on Urbit
-=> urb://~nisfeb/now          What I'm doing now
-```
-
-A page can also be Hoon that computes its content, with state, commands, and dependencies on other pages. A page or a whole folder can go clearweb-public, served over plain HTTP from your ship.
-
-## And besides
-
-* Offline editing. Saves queue while the ship is unreachable (pages and memories both) and replay on reconnect. A concurrent edit is never lost. The newest wins and the other is kept as a page under conflicts/.
-* Bookmarks. Star any urb:// page. The list is foldered and searchable.
-* Comments. Readers comment on what you publish. A moderation inbox removes anything in one click.
-* Groups and bans. Named ship-groups with per-path read/edit grants, per-file sharing, and a banlist that revokes on ban.
-* Live location. A template page that shares your position with chosen ships: map, trail, auto-updates, hard expiry.
+The knowledge store speaks MCP through eleven tools compiled into the ship: save, read, list, search, explore by tag, move, delete, restore, tag, untag, and list tags. Point your MCP client at https://your-ship/grubbery/mcp with a normal ship session cookie. Nothing runs beside the ship and nothing is registered; your assistant's memory lives on your ship.
 
 ## What it isn't
 
-* Not a host. Bring your own ship: yours, a friend's, or a hosted one.
-* Not the HTTP web. Published pages are Urbit-native and move between ships over remote scry.
-* Not an app you must install. The client is served by your ship. The desktop app and the filesystem client are optional local extras.
+* Not a host. Bring your own ship.
+* Not the HTTP web, except for what you choose to publish clearweb, which your ship serves itself.
+* Not an app to install. The client is served by your ship; the desktop app and the filesystem mount are optional extras.
 
-## Privacy
+## Install
 
-The only server lattice talks to is your ship. No analytics, no third-party SDKs, no telemetry. Published pages are public by design. The knowledge store is private by default, and foreign access is deny-by-default at the ship.
+In your dojo:
 
-## Get it
+```
+|install ~ricsul-bilwyt %grubbery
+```
 
+Then log into your ship's web login with your +code and open /apps/lattice. The optional desktop app for Linux and macOS is on the releases page:
+
+=> https://github.com/nisfeb/lattice/releases/latest  Releases
 => https://github.com/nisfeb/lattice  Source on GitHub
-=> https://github.com/nisfeb/lattice/releases  Desktop app downloads
 => https://urbit.org/overview/running-urbit  New to Urbit? Boot a ship
 
-© lattice, built by ~nisfeb. PolyForm Noncommercial 1.0.0.
+MIT licensed. Built by ~nisfeb.
