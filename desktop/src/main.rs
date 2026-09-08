@@ -195,6 +195,56 @@ fn spawn_backup_scheduler(h: tauri::AppHandle) {
     });
 }
 
+/// Does this desktop prefer dark? The same signals WebKitGTK reads for
+/// prefers-color-scheme, most authoritative first: the desktop portal's
+/// color-scheme (1 = prefer dark), then gsettings' color-scheme, then a
+/// gtk theme name containing "dark", then gtk-3.0/settings.ini. Shells out
+/// rather than pulling in a dbus crate; every probe is optional and a
+/// missing tool just means "no opinion".
+#[cfg(target_os = "linux")]
+fn prefers_dark() -> bool {
+    let out = |cmd: &str, args: &[&str]| -> Option<String> {
+        std::process::Command::new(cmd)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    // busctl prints "v v u 1"; gdbus prints "(<<uint32 1>>,)"
+    if let Some(s) = out("busctl", &["--user", "call", "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings", "Read", "ss",
+        "org.freedesktop.appearance", "color-scheme"])
+    {
+        if let Some(last) = s.split_whitespace().last() { return last == "1"; }
+    }
+    if let Some(s) = out("gdbus", &["call", "--session", "--dest", "org.freedesktop.portal.Desktop",
+        "--object-path", "/org/freedesktop/portal/desktop", "--method",
+        "org.freedesktop.portal.Settings.Read", "org.freedesktop.appearance", "color-scheme"])
+    {
+        return s.contains("uint32 1");
+    }
+    if let Some(s) = out("gsettings", &["get", "org.gnome.desktop.interface", "color-scheme"]) {
+        if s.contains("prefer-dark") { return true; }
+        if s.contains("prefer-light") { return false; }
+    }
+    if let Some(s) = out("gsettings", &["get", "org.gnome.desktop.interface", "gtk-theme"]) {
+        if s.to_lowercase().contains("dark") { return true; }
+    }
+    let ini = std::env::var("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|_| std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+        .map(|c| c.join("gtk-3.0").join("settings.ini"));
+    if let Ok(p) = ini {
+        if let Ok(s) = std::fs::read_to_string(p) {
+            if s.lines().any(|l| l.trim().replace(' ', "") == "gtk-application-prefer-dark-theme=true") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn main() {
     // webkit2gtk's dmabuf renderer crashes some Wayland stacks outright
     // ("Error 71 (Protocol error) dispatching to Wayland display"). Opt out
@@ -206,6 +256,23 @@ fn main() {
         && std::env::var_os("GDK_BACKEND").is_none_or(|b| b != "x11")
     {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+    // The AppImage launcher (linuxdeploy-plugin-gtk) exports
+    // GTK_THEME="Adwaita:<variant>", and picks the variant by grepping the
+    // word "dark" in gsettings' gtk-theme NAME. Modern desktops signal dark
+    // through the separate color-scheme setting with the theme still called
+    // "Adwaita", so the launcher forces LIGHT Adwaita, and a forced
+    // GTK_THEME makes GTK ignore the prefer-dark switch that set_theme flips
+    // later. WebKit's content follows the portal instead: a dark page under
+    // a white menubar. Correct the variant here, before GTK initialises,
+    // from the same signals WebKit reads. Only when the launcher's Adwaita
+    // is what is set; a theme the user chose is left alone.
+    #[cfg(target_os = "linux")]
+    if let Ok(t) = std::env::var("GTK_THEME") {
+        if (t == "Adwaita" || t == "Adwaita:" || t == "Adwaita:light") && prefers_dark() {
+            std::env::set_var("GTK_THEME", "Adwaita:dark");
+            commands::dlog("gtk theme: launcher forced Adwaita light, system prefers dark, using Adwaita:dark");
+        }
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
