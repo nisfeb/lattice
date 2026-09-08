@@ -290,6 +290,7 @@ fn main() {
             commands::connection_status,
             commands::get_config,
             commands::go_home,
+            commands::set_theme,
             commands::pick_upload,
             commands::open_external_url,
             commands::save_vault,

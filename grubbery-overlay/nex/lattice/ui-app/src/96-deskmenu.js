@@ -16,6 +16,21 @@
   // the ship and the menu ships in the binary, so they update independently:
   // testing for the desktop alone would hide these on an older build with no
   // menubar behind them and make every one of these commands unreachable.
+  //
+  // The window's native surfaces (the GTK menubar, the engine's own
+  // scrollbars) follow the WINDOW theme, which on Linux is GTK's light
+  // default whatever the desktop portal says, so a dark page sat under a
+  // white menubar. The page is the one that knows prefers-color-scheme, so it
+  // tells the shell, now and on every change. An older shell without the
+  // command refuses the invoke; that is caught and nothing else changes.
+  if (window.__TAURI__) {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const tell = () => {
+      try { window.__TAURI__.core.invoke('set_theme', { dark: mq.matches }).catch(() => {}); } catch {}
+    };
+    tell();
+    mq.addEventListener('change', tell);
+  }
   if (window.__TAURI__ && window.__LATTICE_FILE_MENU__) {
     for (const id of ['newfile', 'newfolder', 'newtmpl', 'upfiles', 'updir', 'save']) {
       const el = document.getElementById(id);

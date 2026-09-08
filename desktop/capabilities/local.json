@@ -21,6 +21,7 @@
     "allow-set-backup-schedules",
     "allow-pick-backup-dir",
     "allow-run-backup-now",
-    "allow-verify-backup"
+    "allow-verify-backup",
+    "allow-set-theme"
   ]
 }
