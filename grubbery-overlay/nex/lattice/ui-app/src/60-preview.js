@@ -78,13 +78,33 @@
     if (kind === 'tex') return texPreviewHtml(body);
     return body;   // html: the document is already its own rendering
   };
+  const PREVIEW_SCROLLBARS = '<style>'
+    + 'html{scrollbar-width:thin;scrollbar-color:#8886 transparent}'
+    + '::-webkit-scrollbar{width:10px;height:10px}'
+    + '::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}'
+    + '::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
+    + '</style>';
+  const withPreviewScrollbars = (html) => {
+    const head = /<head\b[^>]*>/i.exec(html);
+    if (head) return html.slice(0, head.index + head[0].length) + PREVIEW_SCROLLBARS + html.slice(head.index + head[0].length);
+    const root = /<html\b[^>]*>/i.exec(html);
+    if (root) return html.slice(0, root.index + root[0].length) + PREVIEW_SCROLLBARS + html.slice(root.index + root[0].length);
+    return PREVIEW_SCROLLBARS + html;
+  };
   const paintLocal = () => {
     if (!CONTENT() || document.hidden) return;
     if (isMobile() && ws.dataset.mv !== 'prev') return;
     try {
       // html pages own their whole document, chrome and all. The content kinds
       // get the same bare shell the markdown preview always used.
-      if (pkind.value === 'html') { prev.srcdoc = src.value; return; }
+      // ...but a document that styles no scrollbars gets the engine's NATIVE
+      // ones, which on WebKitGTK follow the window theme and drew white in a
+      // dark editor. Slip the same flat scrollbar rules the rest of the
+      // editor uses into the preview copy only: after <head> when there is
+      // one, else after <html>, else in front. The rules touch nothing but
+      // scrollbars (an alpha grey that reads on both schemes), so the
+      // document's own colour scheme is left exactly as written.
+      if (pkind.value === 'html') { prev.srcdoc = withPreviewScrollbars(src.value); return; }
       // color-scheme belongs on :root, not body — on body it does not reach the
       // canvas, so the frame painted opaque WHITE in dark theme. That was true
       // of every local paint since it landed and went unseen because only the
@@ -143,7 +163,10 @@
       paintLocal();
     } else if (current) {
       prev.removeAttribute('srcdoc');
-      prev.src = api + '/f/' + current + '?t=' + Date.now();
+      // preview=1: the ship adds the editor's scrollbar rules to an html
+      // answer, so a computed page's live document scrolls like the rest of
+      // the editor instead of with the engine's native, theme-following bars
+      prev.src = api + '/f/' + current + '?preview=1&t=' + Date.now();
     }
   }
   let localTimer = null;

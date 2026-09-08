@@ -969,7 +969,7 @@
   ::  render mode (js -> text/javascript, css -> text/css, ...), so an html file
   ::  can import a js/css file by URL. Owner-gated (fetched with the session).
   ?:  &(?=([%f ^] suffix) =(%'GET' method.request.req))
-    (serve-asset eyre-id t.suffix)
+    (serve-asset eyre-id t.suffix (~(has by args) 'preview'))
   ::  /know[/<key…>]: the private knowledge view. Browse the memory store in
   ::  the reader. Owner-only like every non-clearweb route (gated above).
   ?:  &(?=([%know *] suffix) =(%'GET' method.request.req))
@@ -6093,8 +6093,14 @@
   ?.  authed  "</form>"
   %-  trip
   '<a class="home" href="/apps/lattice" title="lattice home">&#8962;</a><input name="url" value="" autocomplete="off" placeholder="urb:// address or search your pages"><button type="submit">Go</button><span class="hamw"><button type="button" id="ham" title="menu">&#9776;</button><div id="hammenu" hidden><a href="/apps/lattice/app">&#9998; editor</a><a href="/apps/lattice/know">&#9670; knowledge</a><a href="/apps/lattice/marks">&#9733; bookmarks</a><a href="/apps/lattice/settings">&#9881; settings</a></div></span></form>'
+::  `preview`: the editor's preview frame asked (?preview=1). An html answer
+::  gets the editor's flat scrollbar rules appended, because a document that
+::  styles no scrollbars gets the engine's native, window-theme-following ones
+::  (white in a dark editor on WebKitGTK). Appended, not prepended, so the
+::  doctype still leads and parsing is unchanged; the rules touch scrollbars
+::  only. Anything fetched for real (no flag) is served byte for byte.
 ++  serve-asset
-  |=  [eyre-id=@ta pax=path]
+  |=  [eyre-id=@ta pax=path preview=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?.  (levy pax |=(seg=@ta ((sane %ta) seg)))  (send-err eyre-id 404 'not found')
@@ -6104,7 +6110,13 @@
   ;<  vmode=view-mode:pg  bind:m  (read-show-mode pdir)
   =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.dsn))))
   ?:  ?=(%| -.res)  (send-err eyre-id 415 'not servable')
-  (send-typed eyre-id (mime-of vmode) 'no-cache' p.res)
+  =/  body=@t
+    ?.  &(preview ?=(%html vmode))  p.res
+    (cat 3 p.res preview-scrollbar-css)
+  (send-typed eyre-id (mime-of vmode) 'no-cache' body)
+++  preview-scrollbar-css
+  ^-  @t
+  '<style>html{scrollbar-width:thin;scrollbar-color:#8886 transparent}::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}</style>'
 ::  +find-theme: the nearest folder AT or ABOVE pax's parent holding a clearweb
 ::  css `theme` page, so a rendered clearweb page auto-inherits a site theme
 ::  (nearest wins, a subfolder theme overrides). ~ if none up to the root.
