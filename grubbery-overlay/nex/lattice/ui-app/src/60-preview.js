@@ -78,7 +78,13 @@
     if (kind === 'tex') return texPreviewHtml(body);
     return body;   // html: the document is already its own rendering
   };
+  // color-scheme first: WebKit picks its NATIVE scrollbar colours from the
+  // document's colour scheme, and older WebKitGTK builds honour nothing else
+  // below. A document that declares none is light, whatever the app is, so
+  // its bars stayed white in a dark editor even with these rules present.
+  // The rules that follow style them where the engine supports that.
   const PREVIEW_SCROLLBARS = '<style>'
+    + ':root{color-scheme:light dark}'
     + 'html{scrollbar-width:thin;scrollbar-color:#8886 transparent}'
     + '::-webkit-scrollbar{width:10px;height:10px}'
     + '::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}'
