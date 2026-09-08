@@ -4,7 +4,7 @@
 served from your ship:
 
 - `site/index.html`: the landing page. Fully self-contained: inline CSS,
-  system fonts, the flat-green crosshatch icon inlined as SVG + data-URI
+  system fonts, the navy-and-amber crosshatch icon inlined as SVG + data-URI
   favicon. No external assets, no fonts CDN, no images to upload.
 - `site/lattice.gmi`: the gemtext edition, readable through the lattice app
   as `urb://~you/…`. The HTML footer links to it as a sibling page

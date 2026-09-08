@@ -1,10 +1,18 @@
 <!-- the lattice logo — the same grid the web client ships (nex/lattice
-     icon-svg), on the DESKTOP's green (#4a7c59, the `green` custom property in ui-app/index.html)
-     instead of the reader's blue. This file is the single source; every file
-     in icons/ is generated from it by `cargo tauri icon`. -->
+     icon-svg), in the shared palette of sneagan's apps (talon, party manager):
+     amber (#f9a804) on deep navy (#101541, vignetting to #080b25), so the
+     icons sit together on a home screen. This file is the single source;
+     every file in icons/ is generated from it by `cargo tauri icon`. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 512 512">
-  <rect width="512" height="512" fill="#4a7c59"/>
-  <g stroke="#ffffff" stroke-width="14" stroke-linecap="round" fill="#ffffff">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="72%">
+      <stop offset="0" stop-color="#171c52"/>
+      <stop offset="0.6" stop-color="#101541"/>
+      <stop offset="1" stop-color="#080b25"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <g stroke="#f9a804" stroke-width="14" stroke-linecap="round" fill="#f9a804">
     <line x1="140" y1="140" x2="372" y2="140"/>
     <line x1="140" y1="256" x2="372" y2="256"/>
     <line x1="140" y1="372" x2="372" y2="372"/>
