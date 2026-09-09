@@ -250,9 +250,13 @@ select, option { color-scheme: light dark; }
    otherwise an opaque white flash on a dark theme. */
 .prevwrap { grid-row: 3; grid-column: 3; overflow: auto; background: var(--bg); }
 /* the frame grows to its content (min-height set by 60-preview.js) and the
-   wrap scrolls, so the frame's own light native scrollbar never appears */
+   wrap scrolls. WebKit takes a frame's scrollbar style from its OWNING
+   element too, so the editor's universal ::-webkit-scrollbar rules above
+   reached the preview frame and drew a light track over its canvas. This is
+   the bar that stayed white through every attempt inside the document. Off. */
 .prev { display: block; width: 100%; height: 100%; border: 0;
   background: var(--bg); color-scheme: light dark; }
+.prev::-webkit-scrollbar { display: none; }
 .ctl { grid-row: 3; grid-column: 4; overflow: auto; padding: 10px;
   border-left: 1px solid var(--border-soft); }
 .ctl h3 { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em;

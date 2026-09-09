@@ -3711,6 +3711,10 @@
   // ── preview pane: <lat-preview> ──────────────────────────────────────────
   // Content kinds render locally (srcdoc). Computed kinds (hoon,
   // js, css) show the page's live DATA via /f/<name>, refreshed after save/cmd.
+  // fit state for the document currently in the frame (see the message
+  // handler below). fitCur is the seq previewFit stamped into that document;
+  // null forces the next report to start a new document.
+  let fitCur = null, fitH = 0, fitOff = false;
   customElements.define('lat-preview', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML =
@@ -3741,7 +3745,7 @@
         // to be real. The base target below is what points those clicks
         // upward instead of at the frame.
         // The frame sits in a scrolling DIV and is sized to its own content
-        // (see PREVIEW_FIT), so the frame's document never scrolls and never
+        // (see previewFit), so the frame's document never scrolls and never
         // shows the engine's native scrollbar. That bar is the one WebKitGTK
         // paints light no matter what: measured on 2.50, a sub-frame's bar
         // ignores color-scheme, ::-webkit-scrollbar, scrollbar-color, the
@@ -3750,21 +3754,22 @@
         '<div class="prevwrap"><iframe class="prev" id="prev" title="live preview" '
           + 'sandbox="allow-scripts allow-top-navigation-by-user-activation"></iframe></div>';
       prev = $('prev');
-      // the frame reports its content height; the wrap scrolls. A document
-      // whose height follows the viewport (min-height:100vh) would grow one
-      // margin per round for ever, so growth stops after three consecutive
-      // increases; a new document (every paint) resets the count.
-      // ponytail: counter guard, not a layout solver. Good enough for notes.
-      let fitH = 0, fitUp = 0;
-      prev.addEventListener('load', () => { fitH = 0; fitUp = 0; });
+      // the frame reports its content height once its document has loaded;
+      // the wrap scrolls. The FIRST report per document wins, measured with
+      // the frame at pane height (previewFit clears min-height before every
+      // write). If the content then grows in response to the frame growing,
+      // the document is viewport-relative (a 100vh slide deck) and fitting
+      // can never settle: drop the fit and let it scroll inside the frame,
+      // whose own bars are hidden. A late image load trips the same rule and
+      // degrades the same way, which beats a frame that grows without bound.
       window.addEventListener('message', (e) => {
         if (e.source !== prev.contentWindow) return;
-        const h = e.data && e.data.latPrev;
-        if (typeof h !== 'number' || !(h > 0) || Math.abs(h - fitH) < 2) return;
-        fitUp = h > fitH ? fitUp + 1 : 0;
-        if (fitUp > 3) return;
-        fitH = h;
-        prev.style.minHeight = h + 'px';
+        const m = e.data;
+        if (!m || typeof m.latPrev !== 'number' || !(m.latPrev > 0)) return;
+        if (m.seq !== fitCur) { fitCur = m.seq; fitH = 0; fitOff = false; }
+        if (fitOff) return;
+        if (!fitH) { fitH = m.latPrev; prev.style.minHeight = fitH + 'px'; return; }
+        if (m.latPrev > fitH + 2) { fitOff = true; prev.style.minHeight = ''; }
       });
       // blank it NOW, not when the first page opens. An iframe with no srcdoc
       // is an opaque white canvas, and the first thing that used to call
@@ -3816,23 +3821,35 @@
   // below. A document that declares none is light, whatever the app is, so
   // its bars stayed white in a dark editor even with these rules present.
   // The rules that follow style them where the engine supports that.
-  const PREVIEW_SCROLLBARS = '<style>'
-    + ':root{color-scheme:light dark}'
-    + 'html{scrollbar-width:thin;scrollbar-color:#8886 transparent}'
-    + '::-webkit-scrollbar{width:10px;height:10px}'
-    + '::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}'
-    + '::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
-    + '</style>';
-  // the height reporter the wrap above listens for. Mirrored verbatim in
-  // app.hoon (+preview-scrollbar-css) for the /f/ computed-kind preview.
-  const PREVIEW_FIT = PREVIEW_SCROLLBARS
-    + '<script>(function(){var d=document.documentElement;function s(){var b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0)},"*")}new ResizeObserver(s).observe(d);addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)});s()})()</script>';
+  // WebKitGTK paints a sub-frame's OWN scrollbar light whatever the theme or
+  // the document's colour scheme say, so the frame's bar is hidden outright
+  // and the pane scrolls instead. Two things measured in a bare WebKit view:
+  // html::-webkit-scrollbar{display:none} does hide it, and ANY standard
+  // scrollbar-width / scrollbar-color on the document switches every
+  // ::-webkit-scrollbar rule off, so neither may appear in a preview
+  // document. Scoped to html so an inner scroll box (a wide <pre>) keeps its
+  // own styled bar.
+  const PREVIEW_SCROLLBARS = '<style>:root{color-scheme:light dark}html::-webkit-scrollbar{display:none}</style>';
+  // the height reporter the wrap listens for: posts once the document has
+  // loaded, and again when its body resizes. Each call stamps a fresh seq so
+  // the parent can tell a new document from a resize of the old one. Mirrored
+  // (without the seq) in app.hoon (+preview-scrollbar-css) for the /f/
+  // computed-kind preview. Clearing min-height here is deliberate: every
+  // srcdoc write goes through this, and the first measurement must be taken
+  // with the frame at pane height, not at the previous document's.
+  let fitSeq = 0;
+  const previewFit = () => {
+    if (prev) prev.style.minHeight = '';
+    return PREVIEW_SCROLLBARS
+      + '<script>(function(){var S=' + (++fitSeq) + ';function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0),seq:S},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)})})()</script>';
+  };
   const withPreviewScrollbars = (html) => {
     const head = /<head\b[^>]*>/i.exec(html);
-    if (head) return html.slice(0, head.index + head[0].length) + PREVIEW_FIT + html.slice(head.index + head[0].length);
+    const fit = previewFit();
+    if (head) return html.slice(0, head.index + head[0].length) + fit + html.slice(head.index + head[0].length);
     const root = /<html\b[^>]*>/i.exec(html);
-    if (root) return html.slice(0, root.index + root[0].length) + PREVIEW_FIT + html.slice(root.index + root[0].length);
-    return PREVIEW_FIT + html;
+    if (root) return html.slice(0, root.index + root[0].length) + fit + html.slice(root.index + root[0].length);
+    return fit + html;
   };
   const paintLocal = () => {
     if (!CONTENT() || document.hidden) return;
@@ -3864,18 +3881,14 @@
         + '<style>:root{color-scheme:light dark}'
         + 'body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;background:#fafafa}'
         + '@media(prefers-color-scheme:dark){body{background:#1a1a1a}}'
-        // the same flat scrollbars index.html gives the main document. A frame
-        // without these draws the engine's NATIVE scrollbars, which follow the
-        // window theme rather than the page: in the desktop app on Linux that
-        // was a white scrollbar on a dark preview. #8886 is --border, an alpha
-        // grey that reads on both schemes.
-        + 'html{scrollbar-width:thin;scrollbar-color:#8886 transparent}'
-        + '::-webkit-scrollbar{width:10px;height:10px}'
-        + '::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}'
-        + '::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
+        // NO scrollbar-width / scrollbar-color here: either one switches the
+        // ::-webkit-scrollbar rules off, including the html-level hide that
+        // previewFit appends. Inner scroll boxes (a wide <pre>) keep flat bars.
+        + 'pre::-webkit-scrollbar{width:10px;height:10px}'
+        + 'pre::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
         + 'img{max-width:100%}pre{overflow-x:auto}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
-        + '</style>' + PREVIEW_FIT + localHtml(pkind.value, src.value);
+        + '</style>' + previewFit() + localHtml(pkind.value, src.value);
     } catch {}
   };
 
@@ -3906,6 +3919,7 @@
       paintLocal();
     } else if (current) {
       prev.removeAttribute('srcdoc');
+      fitCur = null; prev.style.minHeight = '';
       // preview=1: the ship adds the editor's scrollbar rules to an html
       // answer, so a computed page's live document scrolls like the rest of
       // the editor instead of with the engine's native, theme-following bars

@@ -6117,11 +6117,11 @@
 ++  preview-scrollbar-css
   ^-  @t
   %+  rap  3
-  :~  '<style>:root{color-scheme:light dark}html{scrollbar-width:thin;scrollbar-color:#8886 transparent}::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}</style>'
+  :~  '<style>:root{color-scheme:light dark}html::-webkit-scrollbar{display:none}</style>'
       ::  height reporter: the editor sizes the preview frame to its content and
-      ::  scrolls the pane itself, so the frame never shows the engine's native
-      ::  (light-on-WebKitGTK) scrollbar. Same text as PREVIEW_FIT in 60-preview.js.
-      '<script>(function(){var d=document.documentElement;function s(){var b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0)},"*")}new ResizeObserver(s).observe(d);addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)});s()})()</script>'
+      ::  scrolls the pane itself; the frame's own (light-on-WebKitGTK) bar is
+      ::  hidden above. Same text as previewFit in 60-preview.js, minus the seq.
+      '<script>(function(){function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0)},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)})})()</script>'
   ==
 ::  +find-theme: the nearest folder AT or ABOVE pax's parent holding a clearweb
 ::  css `theme` page, so a rendered clearweb page auto-inherits a site theme
