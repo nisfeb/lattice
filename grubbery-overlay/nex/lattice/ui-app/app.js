@@ -2746,8 +2746,14 @@
     //  ship has no LaTeX and is not getting one. The local conversion is the
     //  only true render, and it arrives first, so letting the ship's answer
     //  land here would overwrite a rendered document with its own source.
+    //  ...and through the same fit wrapper the local paint uses: the frame
+    //  is sized to its content by a reporter inside the document, and the
+    //  ship's render has none. Written verbatim it replaced the fitted local
+    //  paint a moment later, and the frame scrolled itself again with the
+    //  engine's native (light) bar. Every screenshot taken before this answer
+    //  landed looked fixed; the one the user looks at is after it.
     if (typeof d.html === 'string' && d.kind !== 'tex') {
-      prev.removeAttribute('src'); prev.srcdoc = d.html;
+      prev.removeAttribute('src'); prev.srcdoc = withPreviewScrollbars(d.html);
     }
     else if (!quiet) refreshPreview();
     // A quiet open is the COMMON one: the tree dump already carried the body,
