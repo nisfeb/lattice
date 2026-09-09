@@ -785,6 +785,7 @@
   // and the pane's theme background shows through.
   const prevBlank = () => {
     prev.removeAttribute('src');
+    prev.style.minHeight = '';
     // the srcdoc paints its OWN theme background rather than relying on the
     // engine to composite a mismatched-scheme iframe as transparent. That
     // reliance is exactly the kind of behavior that differs between the
@@ -3733,9 +3734,32 @@
         // the frame can drive the top page anywhere on its own; the click has
         // to be real. The base target below is what points those clicks
         // upward instead of at the frame.
-        '<iframe class="prev" id="prev" title="live preview" '
-          + 'sandbox="allow-scripts allow-top-navigation-by-user-activation"></iframe>';
+        // The frame sits in a scrolling DIV and is sized to its own content
+        // (see PREVIEW_FIT), so the frame's document never scrolls and never
+        // shows the engine's native scrollbar. That bar is the one WebKitGTK
+        // paints light no matter what: measured on 2.50, a sub-frame's bar
+        // ignores color-scheme, ::-webkit-scrollbar, scrollbar-color, the
+        // GTK dark variant and gtk-application-prefer-dark-theme alike.
+        // The div scrolls with the app's own styled bars instead.
+        '<div class="prevwrap"><iframe class="prev" id="prev" title="live preview" '
+          + 'sandbox="allow-scripts allow-top-navigation-by-user-activation"></iframe></div>';
       prev = $('prev');
+      // the frame reports its content height; the wrap scrolls. A document
+      // whose height follows the viewport (min-height:100vh) would grow one
+      // margin per round for ever, so growth stops after three consecutive
+      // increases; a new document (every paint) resets the count.
+      // ponytail: counter guard, not a layout solver. Good enough for notes.
+      let fitH = 0, fitUp = 0;
+      prev.addEventListener('load', () => { fitH = 0; fitUp = 0; });
+      window.addEventListener('message', (e) => {
+        if (e.source !== prev.contentWindow) return;
+        const h = e.data && e.data.latPrev;
+        if (typeof h !== 'number' || !(h > 0) || Math.abs(h - fitH) < 2) return;
+        fitUp = h > fitH ? fitUp + 1 : 0;
+        if (fitUp > 3) return;
+        fitH = h;
+        prev.style.minHeight = h + 'px';
+      });
       // blank it NOW, not when the first page opens. An iframe with no srcdoc
       // is an opaque white canvas, and the first thing that used to call
       // prevBlank was boot's trailing newFile(). So the pane sat white for
@@ -3793,12 +3817,16 @@
     + '::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}'
     + '::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
     + '</style>';
+  // the height reporter the wrap above listens for. Mirrored verbatim in
+  // app.hoon (+preview-scrollbar-css) for the /f/ computed-kind preview.
+  const PREVIEW_FIT = PREVIEW_SCROLLBARS
+    + '<script>(function(){var d=document.documentElement;function s(){var b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0)},"*")}new ResizeObserver(s).observe(d);addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)});s()})()</script>';
   const withPreviewScrollbars = (html) => {
     const head = /<head\b[^>]*>/i.exec(html);
-    if (head) return html.slice(0, head.index + head[0].length) + PREVIEW_SCROLLBARS + html.slice(head.index + head[0].length);
+    if (head) return html.slice(0, head.index + head[0].length) + PREVIEW_FIT + html.slice(head.index + head[0].length);
     const root = /<html\b[^>]*>/i.exec(html);
-    if (root) return html.slice(0, root.index + root[0].length) + PREVIEW_SCROLLBARS + html.slice(root.index + root[0].length);
-    return PREVIEW_SCROLLBARS + html;
+    if (root) return html.slice(0, root.index + root[0].length) + PREVIEW_FIT + html.slice(root.index + root[0].length);
+    return PREVIEW_FIT + html;
   };
   const paintLocal = () => {
     if (!CONTENT() || document.hidden) return;
@@ -3841,7 +3869,7 @@
         + '::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
         + 'img{max-width:100%}pre{overflow-x:auto}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
-        + '</style>' + localHtml(pkind.value, src.value);
+        + '</style>' + PREVIEW_FIT + localHtml(pkind.value, src.value);
     } catch {}
   };
 

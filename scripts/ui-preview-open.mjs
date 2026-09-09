@@ -123,7 +123,9 @@ try {
 const dt = Date.now() - t0;
 check('switching documents repaints the preview locally (' + dt + 'ms, ship held ' + SHIP_DELAY + 'ms)', painted,
   'pane still showed: ' + (await srcdoc()).slice(0, 80));
-check('and it is the NEW document, not the one left behind', !(await srcdoc()).includes(pair.wa));
+//  whole-word: the srcdoc shell wraps every render in script text, and a
+//  marker can be a prefix of an identifier there ("scroll" in scrollHeight)
+check('and it is the NEW document, not the one left behind', !new RegExp('\\b' + pair.wa + '\\b').test(await srcdoc()));
 
 //  typing must still be instant — the path that already worked
 await p.evaluate(() => {

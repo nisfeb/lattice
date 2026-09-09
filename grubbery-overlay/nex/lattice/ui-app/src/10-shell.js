@@ -128,6 +128,7 @@
   // and the pane's theme background shows through.
   const prevBlank = () => {
     prev.removeAttribute('src');
+    prev.style.minHeight = '';
     // the srcdoc paints its OWN theme background rather than relying on the
     // engine to composite a mismatched-scheme iframe as transparent. That
     // reliance is exactly the kind of behavior that differs between the

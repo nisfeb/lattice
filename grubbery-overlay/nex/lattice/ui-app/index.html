@@ -198,7 +198,7 @@ select, option { color-scheme: light dark; }
   font-size: .78rem; text-decoration: none; color: inherit; background: var(--surface);
   cursor: pointer; }
 .chips a.on, .chips a:hover { border-color: var(--green); color: var(--green); }
-.ws.know .prev, .ws.know #sharesec, .ws.know #pkind,
+.ws.know .prevwrap, .ws.know #sharesec, .ws.know #pkind,
 .ws.know #histsec, .ws.know #linksec { display: none; }
 #histview { margin-bottom: 8px; }
 .ws.know .edwrap { grid-column: 2 / 4; }
@@ -248,7 +248,10 @@ select, option { color-scheme: light dark; }
 /* color-scheme here too, not only in the blank srcdoc: it covers the instant
    between the iframe being created and its srcdoc being assigned, which is
    otherwise an opaque white flash on a dark theme. */
-.prev { grid-row: 3; grid-column: 3; width: 100%; height: 100%; border: 0;
+.prevwrap { grid-row: 3; grid-column: 3; overflow: auto; background: var(--bg); }
+/* the frame grows to its content (min-height set by 60-preview.js) and the
+   wrap scrolls, so the frame's own light native scrollbar never appears */
+.prev { display: block; width: 100%; height: 100%; border: 0;
   background: var(--bg); color-scheme: light dark; }
 .ctl { grid-row: 3; grid-column: 4; overflow: auto; padding: 10px;
   border-left: 1px solid var(--border-soft); }
@@ -427,11 +430,11 @@ select, option { color-scheme: light dark; }
   .ws.full[data-mv="code"] .edwrap { min-height: 100vh; min-height: 100dvh; }
   #wrapt, #treet, #ctlt { display: none; }
   .mtabs { display: flex; }
-  .tree, .edwrap, .prev, .ctl { grid-column: 1; grid-row: 3; display: none;
+  .tree, .edwrap, .prevwrap, .ctl { grid-column: 1; grid-row: 3; display: none;
     border: 0; }
   .ws[data-mv="tree"] .tree { display: block; }
   .ws[data-mv="code"] .edwrap { display: block; min-height: 68vh; }
-  .ws[data-mv="prev"] .prev { display: block; min-height: 68vh; }
+  .ws[data-mv="prev"] .prevwrap { display: block; min-height: 68vh; }
   .ws[data-mv="ctl"] .ctl { display: block; }
   /* never below 16px on mobile. A smaller textarea font makes iOS zoom on
      focus. Still one rule for both layers, so the metrics stay identical. */
