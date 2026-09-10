@@ -41,12 +41,13 @@ OVERLAY="$HERE/../grubbery-overlay"
 #
 # See docs/distribution-proposal.md in the auspex repo.
 #
-# ONE OPEN QUESTION, deliberately not answered here: lib/mcp/lattice-*.hoon
-# are tool sources loaded by the MCP NEXUS, not by lattice. In the desk shape
-# they simply share gub/lib. In a code namespace they belong to somebody -
-# either lattice publishes them and the mcp nexus reaches across, or the mcp
-# nexus grows a way to accept tools from an installed app. They are copied
-# here so nothing is lost; where they should live is a question for grubbery.
+# ONE OPEN QUESTION, deliberately not answered here: lib/tool-bundle/tools/
+# lattice-*.hoon are tool sources loaded by the MCP NEXUS, not by lattice. In
+# the desk shape they share gub/lib with upstream's own bundle. In a code
+# namespace they belong to somebody - either lattice publishes them and the
+# mcp nexus reaches across, or the mcp nexus grows a way to accept tools from
+# an installed app. They are copied here so nothing is lost; where they should
+# live is a question for grubbery.
 # ---------------------------------------------------------------------------
 CODE_DIR=0
 if [ "${1:-}" = "--code-dir" ]; then
@@ -70,7 +71,7 @@ if [ "$CODE_DIR" -eq 1 ]; then
   git -C "$HERE/.." describe --tags --always --dirty 2>/dev/null > "$DEST/version.txt" \
     || date -u +%Y%m%d%H%M%S > "$DEST/version.txt"
   cnt() { [ -d "$1" ] || { echo 0; return 0; }; find "$1" "${@:2}" | wc -l; }
-  echo "code dir -> $DEST (nex: $(cnt "$DEST/nex/lattice" -type f), libs: $(cnt "$DEST/lib" -maxdepth 1 -name 'lattice-*.hoon'), mcp tools: $(cnt "$DEST/lib/mcp" -maxdepth 1 -name '*.hoon'), marcs: $(cnt "$DEST/mar/lattice" -type f), version: $(cat "$DEST/version.txt"))"
+  echo "code dir -> $DEST (nex: $(cnt "$DEST/nex/lattice" -type f), libs: $(cnt "$DEST/lib" -maxdepth 1 -name 'lattice-*.hoon'), mcp tools: $(cnt "$DEST/lib/tool-bundle/tools" -maxdepth 1 -name 'lattice-*.hoon'), marcs: $(cnt "$DEST/mar/lattice" -type f), version: $(cat "$DEST/version.txt"))"
   #  Deliberately NOT here: mar-core (desk-level marks a DOJO poke resolves)
   #  and tests/. Ford builds those against a DESK's lib, which a published
   #  app has none of; tests keep running against a dev ship's desk.

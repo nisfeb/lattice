@@ -1,4 +1,4 @@
-/<  tools  /lib/nex/tools.hoon
+/<  tools  /lib/tools.hoon
 /<  lm  /lib/lattice-mcp.hoon
 /<  lk  /lib/lattice-know.hoon
 !:
