@@ -120,8 +120,12 @@ done
 [ "$SHADOW" -eq 0 ] || exit 69
 
 # Pure libs: into gub/lib for the nexus, and into desk-level lib for tests.
+# tool-bundle/ is excluded from the DESK-level copy: it is mcp's seed source,
+# reached only from gub/, and no test imports a tool. Mirrored there it was 22
+# unresolvable imports - the tools asking for a /lib/tools.hoon that only ever
+# exists under gub/.
 rsync -a "$OVERLAY/lib/" "$DEST/gub/lib/"
-rsync -a "$OVERLAY/lib/" "$DEST/lib/"
+rsync -a --exclude 'tool-bundle/' "$OVERLAY/lib/" "$DEST/lib/"
 # THE BUNDLE IS HERMETIC. lib/tool-bundle/ is not compiled in the desk's
 # namespace: mcp.hoon imports it as a directory and seeds it into its
 # tools.tools child as that instance's OWN /code/lib, and a grubbery code
