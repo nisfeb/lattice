@@ -41,13 +41,18 @@ OVERLAY="$HERE/../grubbery-overlay"
 #
 # See docs/distribution-proposal.md in the auspex repo.
 #
-# ONE OPEN QUESTION, deliberately not answered here: lib/tool-bundle/tools/
-# lattice-*.hoon are tool sources loaded by the MCP NEXUS, not by lattice. In
-# the desk shape they share gub/lib with upstream's own bundle. In a code
-# namespace they belong to somebody - either lattice publishes them and the
-# mcp nexus reaches across, or the mcp nexus grows a way to accept tools from
-# an installed app. They are copied here so nothing is lost; where they should
-# live is a question for grubbery.
+# THE MCP TOOLS, in a code namespace. lib/tool-bundle/tools/lattice-*.hoon
+# are tool sources loaded by the MCP NEXUS, not by lattice. In the desk shape
+# they share gub/lib with upstream's own bundle, and mcp.hoon seeds the whole
+# bundle into its tools.tools child.
+#
+# `develop` answers the code-namespace half: mcp's +get-app-mcp-paths walks
+# /apps and scans /apps/<app>/desk/code/lib/tools, so an installed app ships
+# its own tools and the mcp app lists them under its own heading. That path is
+# hermetic too, so a published lattice would need lib/tools.hoon and the
+# lattice libs sitting beside lib/tools/. NOT DONE HERE: the code-dir output
+# still emits lib/tool-bundle/tools/, which nothing scans. Left until an app
+# actually installs this way.
 # ---------------------------------------------------------------------------
 CODE_DIR=0
 if [ "${1:-}" = "--code-dir" ]; then
@@ -111,6 +116,29 @@ done
 # Pure libs: into gub/lib for the nexus, and into desk-level lib for tests.
 rsync -a "$OVERLAY/lib/" "$DEST/gub/lib/"
 rsync -a "$OVERLAY/lib/" "$DEST/lib/"
+# THE BUNDLE IS HERMETIC. lib/tool-bundle/ is not compiled in the desk's
+# namespace: mcp.hoon imports it as a directory and seeds it into its
+# tools.tools child as that instance's OWN /code/lib, and a grubbery code
+# namespace never falls back to a parent ("Lower namespaces must include
+# marks/libs they need" - app/grubbery.hoon +find-code-ns). So a tool's
+# `/<  tools  /lib/tools.hoon` resolves to tool-bundle/tools.hoon, NOT to
+# gub/lib/tools.hoon, and every dep must be copied in beside it.
+#
+# Getting this wrong is silent: +scan-own skips a tool that does not compile
+# without a word, so all eleven vanish and the mcp app lists zero tools.
+BUNDLE="$DEST/gub/lib/tool-bundle"
+mkdir -p "$BUNDLE"
+# upstream's own copy of the tool interface, byte-identical to gub/lib/tools.hoon
+if [ -e "$DEST/gub/lib/tools.hoon" ]; then
+  cp -f "$DEST/gub/lib/tools.hoon" "$BUNDLE/tools.hoon"
+else
+  echo "WARNING: no gub/lib/tools.hoon - lattice's mcp tools will not compile" >&2
+fi
+# lattice's own libs, the transitive closure of what the tools import
+for b in lattice-know.hoon lattice-mcp.hoon; do
+  cp -f "$OVERLAY/lib/$b" "$BUNDLE/$b"
+done
+
 # Nexus + marks: into the gub tree only. ui-app/src is build SOURCE. Only the
 # built app.js ships. The desk must not carry files the ball never loads.
 [ -d "$OVERLAY/nex/lattice" ] && rsync -a --exclude 'ui-app/src' "$OVERLAY/nex/lattice/" "$DEST/gub/nex/lattice/"
@@ -134,7 +162,13 @@ rsync -a "$OVERLAY/tests/" "$DEST/tests/"
 # the next |commit will cull lattice from clay and take the app down.
 NEX=$(find "$DEST/gub/nex/lattice" -type f | wc -l)
 LIB=$(ls "$DEST/gub/lib" | grep -c '^lattice' || true)
-echo "synced overlay -> $DEST (nex/lattice: $NEX files, lattice libs: $LIB)"
+TLS=$(ls "$BUNDLE/tools" 2>/dev/null | grep -c '^lattice-' || true)
+BDEP=$(ls "$BUNDLE" 2>/dev/null | grep -cE '^(tools|lattice-know|lattice-mcp)\.hoon$' || true)
+echo "synced overlay -> $DEST (nex/lattice: $NEX files, lattice libs: $LIB, mcp tools: $TLS, bundle deps: $BDEP/3)"
+if [ "$TLS" -gt 0 ] && [ "$BDEP" -ne 3 ]; then
+  echo "WARNING: the tool bundle is missing deps — the mcp app will list zero tools" >&2
+  exit 70
+fi
 if [ "$NEX" -eq 0 ] || [ "$LIB" -eq 0 ]; then
   echo "WARNING: overlay did not land — do NOT commit the desk" >&2
   exit 68
