@@ -64,7 +64,13 @@ DEST="${1:?usage: sync-overlay.sh <grubbery-desk-root> | --code-dir <out-dir>}"
 if [ "$CODE_DIR" -eq 1 ]; then
   mkdir -p "$DEST/nex" "$DEST/lib" "$DEST/mar"
   rsync -a --exclude 'ui-app/src' "$OVERLAY/nex/lattice/" "$DEST/nex/lattice/"
-  rsync -a "$OVERLAY/lib/" "$DEST/lib/"
+  #  tool-bundle/ is EXCLUDED. It is not a lattice library: it is the source
+  #  mcp.hoon seeds into its tools.tools child, and it is hermetic there. In
+  #  a published code dir it would resolve nothing (its /lib/tools.hoon has
+  #  no copy here) and nothing scans that path anyway - +get-app-mcp-paths
+  #  reads /apps/<app>/desk/code/lib/TOOLS. Emitting eleven files that can
+  #  never compile is worse than emitting none; see the open question above.
+  rsync -a --exclude 'tool-bundle/' "$OVERLAY/lib/" "$DEST/lib/"
   [ -d "$OVERLAY/mar/lattice" ] && rsync -a "$OVERLAY/mar/lattice/" "$DEST/mar/lattice/"
   [ -d "$OVERLAY/mar-clay" ] && rsync -a "$OVERLAY/mar-clay/" "$DEST/mar/clay/"
   #  bill.json: the ONE desk-level file. instance name -> the nexus's code
@@ -76,11 +82,11 @@ if [ "$CODE_DIR" -eq 1 ]; then
   git -C "$HERE/.." describe --tags --always --dirty 2>/dev/null > "$DEST/version.txt" \
     || date -u +%Y%m%d%H%M%S > "$DEST/version.txt"
   cnt() { [ -d "$1" ] || { echo 0; return 0; }; find "$1" "${@:2}" | wc -l; }
-  echo "code dir -> $DEST (nex: $(cnt "$DEST/nex/lattice" -type f), libs: $(cnt "$DEST/lib" -maxdepth 1 -name 'lattice-*.hoon'), mcp tools: $(cnt "$DEST/lib/tool-bundle/tools" -maxdepth 1 -name 'lattice-*.hoon'), marcs: $(cnt "$DEST/mar/lattice" -type f), version: $(cat "$DEST/version.txt"))"
+  echo "code dir -> $DEST (nex: $(cnt "$DEST/nex/lattice" -type f), libs: $(cnt "$DEST/lib" -maxdepth 1 -name 'lattice-*.hoon'), marcs: $(cnt "$DEST/mar/lattice" -type f), version: $(cat "$DEST/version.txt"))"
   #  Deliberately NOT here: mar-core (desk-level marks a DOJO poke resolves)
   #  and tests/. Ford builds those against a DESK's lib, which a published
   #  app has none of; tests keep running against a dev ship's desk.
-  echo "  (desk-level and omitted: mar-core, tests)"
+  echo "  (desk-level and omitted: mar-core, tests; unresolved: lib/tool-bundle)"
   exit 0
 fi
 
