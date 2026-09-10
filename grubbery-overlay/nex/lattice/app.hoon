@@ -70,6 +70,25 @@
                 image+s+'/grubbery/tiles/icon/lattice'
                 href+s+'/apps/lattice'
             ==
+        ::  alias.json: WHO THIS NEXUS CLAIMS TO BE. The shell reads it and
+        ::  enters the claim in its alias book, which is how a peer resolves
+        ::  the name `lattice` to wherever this instance actually lives in
+        ::  that ship's namespace rather than to a path we both hardcoded.
+        ::  Inert until a shell is there to read it; one grub, and the whole
+        ::  of what this app says about its own identity.
+            :^  %over  %&  [/ %'alias.json']
+            :-  [/ %json]
+            %-  pairs:enjs:format
+            :~  name+s+'lattice'
+                description+s+'Pages, knowledge & publishing'
+            ==
+        ::  weir.json: WHAT THIS NEXUS REACHES OUTSIDE ITS OWN TREE, and why,
+        ::  in words meant for the person being asked. A desk-installed
+        ::  instance is created with an empty weir - permit nothing - and
+        ::  earns each road through this file and the shell's consent.
+        ::  Lattice's own subtree is not declared: it never crosses its own
+        ::  boundary.
+            [%over %& [/ %'weir.json'] [[/ %json] weir-json]]
             [%over %& [/ %'icon.svg'] [[/ %mime] icon]]
             [%over %& [/ %'prism.js'] [[/ %mime] pjs]]
         ::  the lattice-hosted UI (docs/ui-migration/PLAN.md): real files in
@@ -2898,6 +2917,51 @@
 ::  chains http->https->www->canonical, and stopping at the first hop reported
 ::  "could not fetch" for pages that were perfectly reachable.
 ++  fetch-hops  ^-(@ud 5)
+::  +weir-json: every road lattice reaches outside its own tree, with the
+::  reason a person would need to judge it.
+::
+::    The `why` strings are the text the shell shows when it asks, so each
+::    says what the road buys the user rather than what the code does.
+::
+::    Four of these six are ambient - deny any and lattice does not run at
+::    all, so "no" is not a considered answer. Two are real decisions, and
+::    both are real only because the road is coarser than the need:
+::
+::      /sys/iris  is "fetch any URL on the internet". Lattice wants it to
+::      read a web page and keep it as a note. A user who only writes local
+::      notes could rationally refuse, and should be able to.
+::
+::      /sys/gall  is "poke any agent with any mark", which includes %hood
+::      with %kiln-install - so this one road is also "install software on
+::      this ship". Lattice uses it for exactly one thing a user asked for
+::      (installing obelisk from the settings page) and for talking to
+::      grubbery on other ships. Nothing narrower can be asked for today.
+::
+::    See docs/distribution-proposal.md in the auspex repo, section 4.5.
+::
+++  weir-json
+  ^-  json
+  =/  line
+    |=  [r=@t w=@t]
+    `json`(pairs:enjs:format ~[['road' s+r] ['why' s+w]])
+  %-  pairs:enjs:format
+  :~  :-  'poke'
+      :-  %a
+      :~  %+  line  '/sys/bowl.sig'
+          'read the clock and the name of this ship: every page records when it changed and who wrote it'
+          %+  line  '/sys/behn/'
+          'run scheduled work - backups, the mirror pass - and give up on a fetch that is not coming'
+          %+  line  '/sys/eyre/'
+          'serve the reader, the editor and your published pages at /apps/lattice'
+          %+  line  '/sys/scry/'
+          'publish your public pages so other ships can read them, read theirs, and check whether obelisk is installed'
+          %+  line  '/sys/iris/'
+          'fetch a web page you ask for and keep it as a note. This road is any URL, not only the ones you name'
+          %+  line  '/sys/gall/'
+          'talk to other agents on this ship and to grubbery on other ships. This one road also reaches %hood, so it can install software here - lattice uses that only for the obelisk install button'
+      ==
+  ==
+::
 ::  +fetch-url: GET a clearweb url through iris, following redirects.
 ::
 ::  Returns the body, or a REASON. Never bails. A request fiber that crashes

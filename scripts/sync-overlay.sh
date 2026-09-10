@@ -23,7 +23,61 @@ OVERLAY="$HERE/../grubbery-overlay"
 # DEST is REQUIRED. The old default pointed at ~zod, a scratch ship that gets
 # rebuilt and renamed. An implicit deploy target is how code lands on the wrong
 # pier. Say where it goes.
-DEST="${1:?usage: sync-overlay.sh <grubbery-desk-root>}"
+# ---------------------------------------------------------------------------
+# TWO SHAPES, ONE SOURCE.
+#
+#   sync-overlay.sh <grubbery-desk-root>     the desk shape (everything below)
+#   sync-overlay.sh --code-dir <out-dir>     the CODE NAMESPACE shape
+#
+# The desk shape is how lattice reaches a ship today: copied into a %grubbery
+# desk, which kiln syncs whole, so everything in it lands on everyone.
+#
+# The code-namespace shape is how grubbery distributes apps on `develop`: a
+# directory of `nex/ lib/ mar/` plus a bill.json naming the instances to
+# create, published at a path in the publisher's namespace and mirrored by a
+# `desk` nexus on each installer's ship, gated by an opaque `version.*` tag.
+# The installed instance is created sandboxed - an empty weir, permit nothing
+# - and earns its roads from the weir.json the nexus declares in on-load.
+#
+# See docs/distribution-proposal.md in the auspex repo.
+#
+# ONE OPEN QUESTION, deliberately not answered here: lib/mcp/lattice-*.hoon
+# are tool sources loaded by the MCP NEXUS, not by lattice. In the desk shape
+# they simply share gub/lib. In a code namespace they belong to somebody -
+# either lattice publishes them and the mcp nexus reaches across, or the mcp
+# nexus grows a way to accept tools from an installed app. They are copied
+# here so nothing is lost; where they should live is a question for grubbery.
+# ---------------------------------------------------------------------------
+CODE_DIR=0
+if [ "${1:-}" = "--code-dir" ]; then
+  CODE_DIR=1
+  shift
+fi
+DEST="${1:?usage: sync-overlay.sh <grubbery-desk-root> | --code-dir <out-dir>}"
+
+if [ "$CODE_DIR" -eq 1 ]; then
+  mkdir -p "$DEST/nex" "$DEST/lib" "$DEST/mar"
+  rsync -a --exclude 'ui-app/src' "$OVERLAY/nex/lattice/" "$DEST/nex/lattice/"
+  rsync -a "$OVERLAY/lib/" "$DEST/lib/"
+  [ -d "$OVERLAY/mar/lattice" ] && rsync -a "$OVERLAY/mar/lattice/" "$DEST/mar/lattice/"
+  [ -d "$OVERLAY/mar-clay" ] && rsync -a "$OVERLAY/mar-clay/" "$DEST/mar/clay/"
+  #  bill.json: the ONE desk-level file. instance name -> the nexus's code
+  #  path. `/lattice/app` resolves to the rail [/lattice %app], the same neck
+  #  root.hoon names today.
+  printf '{"lattice": "/lattice/app"}\n' > "$DEST/bill.json"
+  #  version.*: the tag an installer's desk nexus watches. Opaque - it
+  #  re-syncs when the CONTENT changes and never parses it.
+  git -C "$HERE/.." describe --tags --always --dirty 2>/dev/null > "$DEST/version.txt" \
+    || date -u +%Y%m%d%H%M%S > "$DEST/version.txt"
+  cnt() { [ -d "$1" ] || { echo 0; return 0; }; find "$1" "${@:2}" | wc -l; }
+  echo "code dir -> $DEST (nex: $(cnt "$DEST/nex/lattice" -type f), libs: $(cnt "$DEST/lib" -maxdepth 1 -name 'lattice-*.hoon'), mcp tools: $(cnt "$DEST/lib/mcp" -maxdepth 1 -name '*.hoon'), marcs: $(cnt "$DEST/mar/lattice" -type f), version: $(cat "$DEST/version.txt"))"
+  #  Deliberately NOT here: mar-core (desk-level marks a DOJO poke resolves)
+  #  and tests/. Ford builds those against a DESK's lib, which a published
+  #  app has none of; tests keep running against a dev ship's desk.
+  echo "  (desk-level and omitted: mar-core, tests)"
+  exit 0
+fi
+
 
 if [ ! -d "$OVERLAY" ]; then echo "no overlay at $OVERLAY" >&2; exit 66; fi
 if [ ! -d "$DEST" ]; then echo "no grubbery desk root at $DEST" >&2; exit 67; fi
