@@ -6295,6 +6295,11 @@
     try { localStorage.latBeaconRev = rev; } catch {}
   };
   let dropStream = null;
+  // consecutive attempts that never reached registration. A stream that
+  // registers and later ends is the NORMAL cycle, not a failure: the keep
+  // closes itself after ~80s (measured against ~ricsul-bilwyt), so every
+  // open editor reconnects about once a minute and must do so promptly.
+  let fail = 0;
   (async () => {
     for (;;) {
       // a HIDDEN editor holds no stream: vere is HTTP/1.1 and the browser
@@ -6306,6 +6311,8 @@
         await new Promise((r) => setTimeout(r, 1000));
         continue;
       }
+      // did this attempt get as far as the ship's registration event?
+      let registered = false;
       try {
         const ac = new AbortController();
         dropStream = () => ac.abort();
@@ -6351,6 +6358,7 @@
               // swallow one real remote bump later.
               pendingEchoes = 0;
               streamLive = true;
+              registered = true;
               if (lastRev && data && data !== lastRev) bumped();
               noteRev(data);
               continue;
@@ -6368,8 +6376,24 @@
       } catch {}
       // stream severed: pier restart or proxy hiccup. The rev comparison at
       // the NEXT registration covers whatever happens in this gap.
+      //
+      // An attempt that REGISTERED and then ended is the keep expiring on
+      // schedule, so go straight back and reset the count. An attempt that
+      // never registered failed — ship down, proxy refusing, 502 — and
+      // retrying that every 3s forever is how one outage becomes a steady
+      // drum on a pier that is already struggling. Double up to 30s.
+      //
+      // Jitter BOTH cases. A pier restart drops every client at the same
+      // instant, and tabs opened together expire their keeps together, so a
+      // fixed delay brings them all back on the same tick. Half to one and a
+      // half of the delay spreads them out and costs nothing when it is one
+      // tab. (Reconnect itself is cheap by design: registration replays the
+      // current rev and the client does nothing unless it moved.)
       streamLive = false;
-      await new Promise((r) => setTimeout(r, 3000));
+      fail = registered ? 0 : Math.min(fail + 1, 5);
+      const base = Math.min(3000 * (1 << Math.max(0, fail - 1)), 30000);
+      const wait = Math.min(Math.round(base * (0.5 + Math.random())), 30000);
+      await new Promise((r) => setTimeout(r, wait));
     }
   })();
   // coming back to the tab/window is the moment staleness shows. Catch it
