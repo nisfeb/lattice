@@ -2999,6 +2999,20 @@
           'fetch a web page you ask for and keep it as a note. This road is any URL, not only the ones you name'
           %+  line  '/sys/gall/'
           'talk to other agents on this ship and to grubbery on other ships. This one road also reaches %hood, so it can install software here - lattice uses that only for the obelisk install button'
+        ::  Both of these were reached and never declared, and scripts/
+        ::  weir-check.py is what found them - neither road appears in this
+        ::  file, because both live inside the io arm.
+        ::
+        ::  The registry is +send-public-how on the writer's rise, through
+        ::  reg-register-at:io and reg-how:io. Auspex had the identical
+        ::  omission and it cost a day: the veto rolls back whatever the
+        ::  fiber wrote before it, so the symptom lands somewhere else.
+          %+  line  '/sys/ames/registry'
+          'publish the pages you mark public so other ships can read them. Refuse this and everything local still works; your published pages just stay on this ship'
+        ::  lick is the filesystem socket behind fs.sig - the mount that
+        ::  lets you edit pages as files.
+          %+  line  '/sys/lick/'
+          'let you mount your pages as a folder on your computer and edit them as files. Refuse this and the web editor is unaffected'
       ==
     ::  the usergroup road is a READ, and it is OPTIONAL: refuse it and
     ::  every local feature still works. +exists-soft is what makes that
