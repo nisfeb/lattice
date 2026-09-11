@@ -8322,7 +8322,7 @@
     ::  drop out of the dir wave. born is a high-water mark, so it reads the
     ::  [%temp ~] cass the cull appended, which is exactly where %del-page
     ::  bound the tombstone. 0 only when the page has never been published.
-    ;<  prev-rev=@ud  bind:m  (pub-grub-rev pax.u.or nom.u.or)
+    ;<  prev-rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
     ;<  ~  bind:m  (put-file road [/lattice %page] body.act)
     ;<  ~  bind:m  (gain:io road %.y)
     ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
@@ -8335,7 +8335,7 @@
     ::  and a fresh /pub/index/<seq> manifest. %grow is fire-and-forget, so a
     ::  crash between the vault write and the grow can leave the namespace one
     ::  save behind. POST /pub-regrow re-grows the current state.
-    ;<  rev=@ud  bind:m  (pub-grub-rev pax.u.or nom.u.or)
+    ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
     ::  ORDERING (mesa D2): the subscriber's wave carries this cass, and gall
     ::  PARKS a keen at an unbound spur. That is the documented remote-scry
     ::  deficiency, a hang rather than an error. The put-file above already
@@ -8401,7 +8401,7 @@
     ::  the latest published rev, read BEFORE the vault cull appends its
     ::  [%temp ~] hist entry. It names the body binding the cull-farm below
     ::  retracts.
-    ;<  rev=@ud  bind:m  (pub-grub-rev pax.u.or nom.u.or)
+    ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
     ::  cull tombs the grub (gain=%.y keeps the body in born history). Drop its
     ::  index row so it's no longer live. No trash row. Pages have no restore.
     ;<  ~  bind:m  (cull:io road)
@@ -8418,7 +8418,7 @@
     ::  but ames transmission is orders slower than local card application
     ::  (and the reader retries once after ~s2), so the binding is live well
     ::  before any keen can arrive.
-    ;<  post=@ud  bind:m  (pub-grub-rev pax.u.or nom.u.or)
+    ;<  post=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
     =/  inner=path  (snip (strip-pub:lp key))
     ;<  ~  bind:m
       ?:  =(post rev)  (pure:m ~)
@@ -8495,11 +8495,17 @@
 ::  absent. Same one-dir-peek read +page-rev uses (the wave carries the cass),
 ::  aimed at the vault grub instead of a /page code grub.
 ::
+::  Takes the DEPTH. [%& %| pax] made this an absolute read of our own vault
+::  dir, which a sandboxed install vetoes - and the veto killed the writer
+::  AFTER +apply-share had already written the new mode, so the whole fiber
+::  rolled back and a re-publish silently did nothing while answering 200.
+::  Only re-publishes: a first publish never reaches here with a dir to read.
+::
 ++  pub-grub-rev
-  |=  [pax=path nom=@ta]
+  |=  [up=@ud pax=path nom=@ta]
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
-  ;<  dv=view:nexus  bind:m  (peek:io [%& %| pax] ~)
+  ;<  dv=view:nexus  bind:m  (peek:io (rv up pax) ~)
   ?.  ?=([%ball *] dv)  (pure:m 0)
   =/  wfil=(map @ta cass:clay)  ?~(fil.wave.dv ~ file.u.fil.wave.dv)
   =/  c=(unit cass:clay)  (~(get by wfil) nom)
@@ -8619,7 +8625,7 @@
   ::  hand-edited) must skip, not kill the whole backfill.
   =/  body=(unit @t)  (mole |.(!<(@t (need-vase:tarball sang.seen))))
   ?~  body  (pub-regrow-loop t.keys cnt)
-  ;<  rev=@ud  bind:m  (pub-grub-rev pax.u.or nom.u.or)
+  ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
   ;<  ~  bind:m  (grow-pub-page i.keys u.body rev)
   (pub-regrow-loop t.keys +(cnt))
 ::  +pub-reconcile: the ONE-SHOT leak cleanup behind POST /pub-reconcile.

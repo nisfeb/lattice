@@ -38,6 +38,10 @@ for i, raw in enumerate(open(sys.argv[1])):
     #  it builds names a place we do not own and absolute is the only thing
     #  it could be.
     if cur == 'handle-remote-save': continue
+    #  +explore renders an ARBITRARY namespace location out of a
+    #  /x/<ship>/<path> url - a peer's tree as often as ours. Its pax is a
+    #  request path, so absolute is the only thing it could be.
+    if cur == 'explore': continue
     for road in re.finditer(r'\[%& %[&|] ([^\]]+)\]', l):
         body = road.group(1)
         if '/sys/' in body: continue                 # a runtime service
@@ -49,12 +53,21 @@ for i, raw in enumerate(open(sys.argv[1])):
         #  meant thirty-five of them were never looked at. Name the variables
         #  that legitimately hold somebody else's path instead, and flag the
         #  rest - a shorter list to keep honest than a silent one.
-        #  'dir' was on this list and hid +ensure-dirs, which builds an
-        #  absolute road out of OUR OWN path and vetoed every template
-        #  laydown on a sandboxed install. A name earns a place here by
-        #  being specific about whose path it holds; 'dir' and 'path' say
-        #  nothing, so they are not allowed to buy silence.
-        FOREIGN = ('gdir','ug-base','public-grp','prefix','p.pp','pax',
+        #  This list cost two rounds of silent data loss, both the same way:
+        #  a GENERIC variable name on it. 'dir' hid +ensure-dirs (every
+        #  directory make vetoed); 'pax' hid +pub-grub-rev (every re-publish
+        #  vetoed, which rolled back the share write that ran before it).
+        #
+        #  A name earns a place here only by saying WHOSE path it holds. If
+        #  the name would be at home in any arm in the file, it does not
+        #  qualify, however obvious the one case in front of you looks.
+        #
+        #    gdir, ug-base, public-grp   the usergroup registry, under /sys
+        #    prefix                      +remote-road's /sys/ames/ships prefix
+        #    app-base                    a PEER's install path
+        #    p.pp, u.pp                  a path parsed out of a REQUEST url
+        #    tree-path                   a /t/ tree address from a urb:// url
+        FOREIGN = ('gdir','ug-base','public-grp','prefix','p.pp',
                    'app-base','u.pp','tree-path')
         lit = re.search(r'/[a-z][a-z0-9/-]*', body)
         if lit:
@@ -82,6 +95,10 @@ for i, raw in enumerate(open(sys.argv[1])):
     #  +remote-install names a PEER's desk install - where THEY keep the app,
     #  which we reach over ames and could not learn from our own /sys/link.
     if cur == 'remote-install': continue
+    #  +app-base IS the old app-tier constant, deliberately: it is where a
+    #  PEER still running at the app tier keeps lattice, and +self-base's
+    #  fallback for our own trusted-tier install. See +self-base.
+    if cur == 'app-base': continue
     for mm in inst.finditer(l):
         lit.append((i + 1, mm.group(1), l.strip()[:62]))
 for ln, nm, txt in lit:
