@@ -8140,7 +8140,20 @@
   ::  data road, and the share/comment inbox pokes. Callers run in the
   ::  writer fiber, whose rail the registration names; the register is
   ::  idempotent. Deep walk, so nested shared pages are granted too.
-  ;<  ~  bind:m  (reg-register-at:io writer-rail)
+  ::  SOFT. Both registry pokes below are, and the reason is the shape that
+  ::  cost this migration its longest hunts: a veto is a crashed event, so
+  ::  it rolls back everything this fiber already wrote. The hard versions
+  ::  took +apply-share's mode write and auspex's /caps write down with
+  ::  them, and the symptom surfaced somewhere with no visible connection
+  ::  to the road that was refused.
+  ::
+  ::  weir.json promises "refuse this and everything local still works".
+  ::  These two lines are what make that true rather than aspirational -
+  ::  the same job +exists-soft does for the usergroup READ just above.
+  ;<  reg=(unit tang)  bind:m  (reg-register-at-soft:io writer-rail)
+  ?^  reg
+    %-  (slog leaf+"lattice: no registry road; published pages stay local" u.reg)
+    (pure:m ~)
   =/  pubdir=road:tarball  (rv root /pub)
   =/  pokes=(set road:tarball)
     %-  silt
@@ -8155,7 +8168,11 @@
   =|  peeks=(set road:tarball)
   |-
   ?~  rels
-    (reg-how:io /public [make=~ poke=pokes peek=(~(put in peeks) pubdir)])
+    ;<  how=(unit tang)  bind:m
+      (reg-how-soft:io /public [make=~ poke=pokes peek=(~(put in peeks) pubdir)])
+    ?~  how  (pure:m ~)
+    %-  (slog leaf+"lattice: registry refused the public grant" u.how)
+    (pure:m ~)
   =/  pp=path  (weld /page i.rels)
   ;<  mode=share-mode:le  bind:m  (read-share pp)
   =?  peeks  !=(%private mode)  (~(put in peeks) (rf up pp %data))
