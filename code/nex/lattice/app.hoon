@@ -631,6 +631,7 @@
   |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t)]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   =/  name=(unit @t)  (~(get by args) 'name')
   ?~  name  (send-err eyre-id 400 'missing name')
   =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'hoon')
@@ -643,7 +644,7 @@
   ::  never used the answer.
   ;<  ex=?  bind:m
     ?.  (~(has by args) 'new')  (pure:(fiber:fiber:nexus ,?) %.n)
-    (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.name))) %code])
+    (peek-exists:io (rf up (weld /page (pax-of u.name)) %code))
   ?:  &((~(has by args) 'new') ex)  (send-err eyre-id 409 'page exists')
   ::  ?base=<rev>: the revision the caller edited FROM (the offline queue
   ::  stamps it at enqueue). Compared HERE rather than by the client. A
@@ -935,6 +936,7 @@
   |=  eyre-id=@ta
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ;<  [src=@p req=inbound-request:eyre]  bind:m
     (get-state-as:io ,[src=@p inbound-request:eyre])
   =/  parsed  (parse-url:http-utils url.request.req)
@@ -1149,7 +1151,7 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    =/  pdir=path  (weld app-base:lu (weld /page (pax-of u.name)))
+    =/  pdir=path  (weld /page (pax-of u.name))
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io [%& %& pdir %code] [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
@@ -1179,7 +1181,7 @@
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     =/  rv=(unit @ud)  (rush (~(gut by args) 'rev' '') dim:ag)
     ?~  rv  (send-err eyre-id 400 'bad rev')
-    =/  pdir=path  (weld app-base:lu (weld /page (pax-of u.name)))
+    =/  pdir=path  (weld /page (pax-of u.name))
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io [%& %& pdir %code] [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
@@ -1205,7 +1207,7 @@
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     =/  needle=tape  :(weld "[[" (trip u.name) "]]")
-    ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
+    ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
     ?.  ?=([%ball *] sn)
       (send-json eyre-id (pairs:enjs:format ~[['links' a+~]]))
     =/  pages=(list [pax=path when=@da code=@t])  (recent-walk ball.sn wave.sn ~)
@@ -1347,7 +1349,7 @@
     ?:  (gth ~(wyt in bans) ban-cap:ls)
       (send-err eyre-id 400 'banlist is full')
     ;<  ~  bind:m
-      (over:io ban-road [[/lattice %banned] (~(put in bans) u.who)])
+      (over:io (ban-road up) [[/lattice %banned] (~(put in bans) u.who)])
     ;<  n=@ud  bind:m  (strip-ship-from-groups u.who)
     %+  send-json  eyre-id
     (pairs:enjs:format ~[['ok' b+&] ['revoked' (numb:enjs:format n)]])
@@ -1361,7 +1363,7 @@
     ::  unban restores nothing. The grants were revoked, and re-granting is a
     ::  deliberate act, not a side effect of lifting a ban.
     ;<  ~  bind:m
-      (over:io ban-road [[/lattice %banned] (~(del in bans) u.who)])
+      (over:io (ban-road up) [[/lattice %banned] (~(del in bans) u.who)])
     (send-ok eyre-id)
   ::  ── sharing groups: the permission editor (see +share-groups-json) ──
       [%'GET' %share-groups]
@@ -1396,7 +1398,7 @@
       (send-err eyre-id 403 'that ship is banned — unban it first')
     =/  mode=@t  (~(gut by args) 'mode' 'read')
     ?.  |(=('read' mode) =('edit' mode))  (send-err eyre-id 400 'mode: read or edit')
-    =/  pdir=path  (weld app-base:lu (weld /page (pax-of u.name)))
+    =/  pdir=path  (weld /page (pax-of u.name))
     ;<  pe=?  bind:m  (peek-exists:io [%& %| pdir])
     ?.  pe  (send-err eyre-id 404 'no such page')
     =/  droad=road:tarball  [%& %| pdir]
@@ -1420,7 +1422,7 @@
   ::  shared-with-me: the notices other ships sent us. Claims, not
   ::  capabilities. Opening one is what proves the grant is still real.
       [%'GET' %shared-with-me]
-    ;<  sn=view:nexus  bind:m  (peek:io [%& %& app-base:lu %shared] ~)
+    ;<  sn=view:nexus  bind:m  (peek:io (rf up / %shared) ~)
     =/  sh=shared:ls
       ?.  ?=([%file *] sn)  ~
       (fall (mole |.(;;(shared:ls (sang-noun:tarball sang.sn)))) ~)
@@ -1444,7 +1446,7 @@
     =/  pp=(each path tang)  (mule |.((stab u.pt)))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
     ;<  ~  bind:m
-      %+  poke:io  &+&+[app-base:lu %'shares.sig']
+      %+  poke:io  (rf up / %'shares.sig')
       [[/lattice %share-notice] `action:ls`[%del u.hp p.pp]]
     (send-ok eyre-id)
       [%'POST' %share-group-del]
@@ -1497,7 +1499,7 @@
   ::  ── pub writes (POST) ──
   ::  ── programmable pages (docs/platform.md step 2) ──
       [%'GET' %'prism.js']
-    ;<  pv=view:nexus  bind:m  (peek:io [%& %& app-base:lu %'prism.js'] ~)
+    ;<  pv=view:nexus  bind:m  (peek:io (rf up / %'prism.js') ~)
     ?.  ?=([%file *] pv)  (send-err eyre-id 404 'not found')
     =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
     ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
@@ -1559,7 +1561,7 @@
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     ::  404 a command to a nonexistent page (the writer guards too, but this
     ::  gives the client real feedback instead of a fire-and-forget 200).
-    ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.name))) %code])
+    ;<  ex=?  bind:m  (peek-exists:io (rf up (weld /page (pax-of u.name)) %code))
     ?.  ex  (send-err eyre-id 404 'no such page')
     ::  a browser form POSTs cmd in the (form-urlencoded) body; parse it as a
     ::  query (same k=v&k=v grammar). Query cmd is the fallback for programmatic
@@ -1608,7 +1610,7 @@
     ::  never clobber: a collision replaced the destination silently (and
     ::  prune-hist's coalesce window could make it unrecoverable). /know-move
     ::  has refused this from the start; pages get the same 409.
-    =/  dbase=path  (weld app-base:lu (weld /page pt))
+    =/  dbase=path  (weld /page pt)
     ;<  dpg=?  bind:m  (peek-exists:io [%& %& dbase %code])
     ?:  dpg  (send-err eyre-id 409 'destination exists')
     ;<  ddr=?  bind:m  (peek-exists:io [%& %| dbase])
@@ -1642,7 +1644,7 @@
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     =/  mode=(unit share-mode:le)  (mode-arg args)
     ?~  mode  (send-err eyre-id 400 'mode: shared, urbit, or clearweb')
-    ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.name))) %code])
+    ;<  ex=?  bind:m  (peek-exists:io (rf up (weld /page (pax-of u.name)) %code))
     ?.  ex  (send-err eyre-id 404 'no such page')
     ;<  ~  bind:m  (poke-eval [%share (pax-of u.name) u.mode])
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
@@ -1706,7 +1708,7 @@
   ::  so an old store self-heals on its next comment.
       [%'GET' %comments-latest]
     ;<  v=view:nexus  bind:m
-      (peek:io [%& %& (weld app-base:lu /beacon) %comments] ~)
+      (peek:io (rf up /beacon %comments) ~)
     =/  latest=json
       ?.  ?=([%file *] v)  ~
       (fall (mole |.(;;(json (sang-noun:tarball sang.v)))) ~)
@@ -1723,7 +1725,7 @@
     ?~  id  (send-err eyre-id 400 'missing id')
     ?.  ((sane %ta) u.id)  (send-err eyre-id 400 'bad id')
     =/  croad=road:tarball
-      [%& %& (weld (weld app-base:lu /comments) (pax-of u.pg)) `@ta`u.id]
+      [%& %& (weld /comments (pax-of u.pg)) `@ta`u.id]
     ;<  *  bind:m  (cull-soft:io croad)
     (send-ok eyre-id)
   ::
@@ -1731,7 +1733,7 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    ;<  ex=?  bind:m  (peek-exists:io [%& %| (weld app-base:lu (weld /page (pax-of u.name)))])
+    ;<  ex=?  bind:m  (peek-exists:io (rv up (weld /page (pax-of u.name))))
     ?.  ex  (send-err eyre-id 404 'no such page or folder')
     ;<  ~  bind:m  (poke-eval [%comments (pax-of u.name) =('1' (~(gut by args) 'on' '0'))])
     (send-ok eyre-id)
@@ -1987,7 +1989,7 @@
     (send-ok eyre-id)
       ::  what templates exist, so a client can offer them by name.
       [%'GET' %template-list]
-    ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /template)] ~)
+    ;<  sn=view:nexus  bind:m  (peek:io (rv up /template) ~)
     =/  names=(list @ta)
       ?.  ?=([%ball *] sn)  ~
       (turn ~(tap by dir.ball.sn) |=([nom=@ta *] nom))
@@ -2005,7 +2007,7 @@
     ?.  ((sane %tas) u.tmpl)  (send-err eyre-id 400 'bad template')
     ?.  (valid-name u.nm)     (send-err eyre-id 400 'bad name')
     ;<  ex=?  bind:m
-      (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of u.nm))) %code])
+      (peek-exists:io (rf up (weld /page (pax-of u.nm)) %code))
     ?:  ex  (send-err eyre-id 409 'a page by that name exists')
     ;<  ~  bind:m  (instantiate-template `@tas`u.tmpl (pax-of u.nm))
     ;<  ~  bind:m  (poke-dnames args (pax-of u.nm))
@@ -2231,7 +2233,7 @@
     ?~  keep  (send-err eyre-id 400 'bad keep')
     =/  ko=(unit path)  (know-key u.raw)
     ?~  ko  (send-err eyre-id 400 'invalid key')
-    =/  road=road:tarball  (entry-road (weld app-base:lu /know/vault) u.ko)
+    =/  road=road:tarball  (entry-road /know/vault u.ko)
     ;<  live=(unit know-entry:lk)  bind:m  (read-entry road)
     ?~  live  (send-err eyre-id 404 'not found')
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
@@ -2311,7 +2313,7 @@
     ?.  |(=('true' u.en) =('false' u.en))
       (send-err eyre-id 400 'enabled=true|false required')
     ;<  ~  bind:m
-      %^  put-file  [%& %& (weld app-base:lu /mirror) %'config.json']
+      %^  put-file  (rf up /mirror %'config.json')
         [/ %json]
       (pairs:enjs:format ~[['enabled' b+=('true' u.en)]])
     (send-ok eyre-id)
@@ -2431,7 +2433,7 @@
   ::
   ::  Same walk +content-reindex does, without the term extraction.
       [%'GET' %page-scopes]
-    ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
+    ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
     =/  pages=(list [rel=path body=@t shr=share-mode:le])
       ?.  ?=([%ball *] sn)  ~
       (index-walk ball.sn ~)
@@ -2624,11 +2626,14 @@
 ::  the whole signal (the body is detail for humans), so the read is a
 ::  peek-exists and can never mis-parse. Written on a completed import AND on
 ::  an explicit dismissal, so neither path ever prompts again.
-++  legacy-mark-road  ^-(road:tarball [%& %& (weld app-base:lu /legacy) %state])
+::  takes the depth rather than reading one: it is not a fiber, so it cannot
+::  ask +nexus-up itself, and its one caller is.
+++  legacy-mark-road  |=(up=@ud ^-(road:tarball (rf up /legacy %state)))
 ++  legacy-resolved
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  (peek-exists:io legacy-mark-road)
+  ;<  up=@ud  bind:m  nexus-up
+  (peek-exists:io (legacy-mark-road up))
 ::  +legacy-pages: how many PAGES the retired agent still holds. This import
 ::  moves knowledge only. The old agent exposes no arm for page BODIES
 ::  (%published and %live-list give paths and hashes, nothing more), so pages
@@ -2690,8 +2695,9 @@
 ++  legacy-triggered
   =/  m  (fiber:fiber:nexus ,(list path))
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ;<  sn=view:nexus  bind:m
-    (peek:io [%& %& (weld app-base:lu /legacy) %pages] ~)
+    (peek:io (rf up /legacy %pages) ~)
   ?.  ?=([%file *] sn)  (pure:m ~)
   =/  j=(unit json)  (mole |.(;;(json (sang-noun:tarball sang.sn))))
   ?~  j  (pure:m ~)
@@ -2748,7 +2754,7 @@
   ^-  form:m
   ?~  rels  (pure:m ~)
   ;<  ex=?  bind:m
-    (peek-exists:io [%& %& (weld (weld app-base:lu /pub/vault) i.rels) %gmi])
+    (peek-exists:io [%& %& (weld /pub/vault i.rels) %gmi])
   ;<  rest=(list path)  bind:m  $(rels t.rels)
   (pure:m ?:(ex [i.rels rest] rest))
 ::  +page-sources-present: which of `rels` already exist as editable pages.
@@ -2758,9 +2764,10 @@
   |=  rels=(list path)
   =/  m  (fiber:fiber:nexus ,(list path))
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ?~  rels  (pure:m ~)
   ;<  ex=?  bind:m
-    (peek-exists:io [%& %& (weld app-base:lu (weld /page i.rels)) %code])
+    (peek-exists:io (rf up (weld /page i.rels) %code))
   ;<  rest=(list path)  bind:m  $(rels t.rels)
   (pure:m ?:(ex [i.rels rest] rest))
 ::  +write-legacy-pages: create an editable page per legacy body. Skips any
@@ -2771,7 +2778,7 @@
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
   ?~  items  (pure:m made)
-  =/  pdir=path  (weld app-base:lu (weld /page rel.i.items))
+  =/  pdir=path  (weld /page rel.i.items)
   ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
   ?:  ex  $(items t.items)
   ::  the editable source…
@@ -2795,11 +2802,11 @@
   =|  made=@ud
   |-  ^-  form:m
   ?~  rels  (pure:m made)
-  =/  pdir=path  (weld app-base:lu (weld /page i.rels))
+  =/  pdir=path  (weld /page i.rels)
   ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
   ?:  ex  $(rels t.rels)
   ;<  vn=view:nexus  bind:m
-    (peek:io [%& %& (weld (weld app-base:lu /pub/vault) i.rels) %gmi] ~)
+    (peek:io [%& %& (weld /pub/vault i.rels) %gmi] ~)
   ?.  ?=([%file *] vn)  $(rels t.rels)
   =/  body=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.vn)))) '')
   ?:  =('' body)  $(rels t.rels)
@@ -3156,12 +3163,13 @@
   |=  slug=@t
   =/  m  (fiber:fiber:nexus ,(unit path))
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   =|  n=@ud
   |-  ^-  form:m
   ?:  (gth n 9)  (pure:m ~)
   =/  nom=@t  ?:(=(0 n) slug (crip :(weld (trip slug) "-" (a-co:co +(n)))))
   =/  rel=path  ~[%clips nom]
-  ;<  ex=?  bind:m  (peek-exists:io [%& %& (weld app-base:lu (weld /page rel)) %code])
+  ;<  ex=?  bind:m  (peek-exists:io (rf up (weld /page rel) %code))
   ?.  ex  (pure:m `rel)
   $(n +(n))
 ::  +poke-know / +poke-pub: poke the single writer fiber (root /main.sig) with a
@@ -3225,10 +3233,11 @@
   |=  now=@da
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ::  the beacon must be NESTED (under /beacon). grubbery's keep-SSE does not
   ::  stream a grub at the nexus root (verified: /rev and /bookmarks keeps stay
   ::  silent. Nested grubs like /pub/index stream fine). Gain is not required.
-  (put-file [%& %& (weld app-base:lu /beacon) %rev] [/ %json] (numb:enjs:format `@ud`now))
+  (put-file (rf up /beacon %rev) [/ %json] (numb:enjs:format `@ud`now))
 ::  +poke-eval: send an eval-action to the writer (serialized like all writes).
 ::
 ++  poke-eval
@@ -3247,7 +3256,8 @@
   |=  act=eval-action:le
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (poke:io &+&+[app-base:lu %'main.sig'] [[/lattice %eval-action] act])
+  ;<  up=@ud  bind:m  nexus-up
+  (poke:io (rf up / %'main.sig') [[/lattice %eval-action] act])
 ::  +poke-comment: hand a comment to the owner writer (author = us). The public
 ::  inbox fiber pokes apply-comment directly with the sender ship instead.
 ::
@@ -3493,7 +3503,7 @@
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   |-  ^-  form:m
-  =/  fdir=path  (weld app-base:lu (weld /page page))
+  =/  fdir=path  (weld /page page)
   ;<  seen=view:nexus  bind:m  (peek:io [%& %& fdir %comment-on] ~)
   ?:  ?=([%file *] seen)
     (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.seen)))) %.n))
@@ -3576,7 +3586,8 @@
 ++  read-history
   =/  m  (fiber:fiber:nexus ,history:lh)
   ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %& app-base:lu %history] ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  seen=view:nexus  bind:m  (peek:io (rf up / %history) ~)
   ?.  ?=([%file *] seen)  (pure:m ~)
   (pure:m (fall (mole |.(!<(history:lh (need-vase:tarball sang.seen)))) ~))
 ::  +read-bookmarks: the stored bookmark list (newest first; ~ if none yet).
@@ -3584,7 +3595,8 @@
 ++  read-bookmarks
   =/  m  (fiber:fiber:nexus ,bookmarks:lb)
   ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %& app-base:lu %bookmarks] ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  seen=view:nexus  bind:m  (peek:io (rf up / %bookmarks) ~)
   ?.  ?=([%file *] seen)  (pure:m ~)
   =/  vs=vase  (need-vase:tarball sang.seen)
   =/  new=(unit bookmarks:lb)  (mole |.(!<(bookmarks:lb vs)))
@@ -3603,10 +3615,11 @@
   |=  n=@ud
   =/  m  (fiber:fiber:nexus ,(list [pax=path prev=@t]))
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ::  ONE deep peek: the ball carries every code grub and the wave every cass.
   ::  The old shape listed the names then re-peeked each page, O(pages)
   ::  serialized darts on every home load, just to pick the newest n.
-  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
+  ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
   ?.  ?=([%ball *] sn)  (pure:m ~)
   =/  sorted=(list [pax=path when=@da code=@t])
     %+  sort  (recent-walk ball.sn wave.sn ~)
@@ -3929,7 +3942,7 @@
   |=  [from=path to=path]
   =/  m  (fiber:fiber:nexus ,(unit @ud))
   ^-  form:m
-  =/  sdir=path  (weld app-base:lu (weld /page from))
+  =/  sdir=path  (weld /page from)
   =/  from-str=tape   (spud from)
   =/  to-str=tape     (spud to)
   =/  from-bare=tape  (pax-str from)
@@ -3990,7 +4003,7 @@
   |=  [name=@tas to=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  troot=path    (weld app-base:lu (weld /template /[name]))
+  =/  troot=path    (weld /template /[name])
   =/  from-str=tape  (spud /[name])
   =/  to-str=tape    (spud to)
   ;<  dn=view:nexus  bind:m  (peek:io [%& %| troot] ~)
@@ -4400,7 +4413,7 @@
   |=  rel=path
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
-  =/  pdir=path  (weld app-base:lu (weld /page rel))
+  =/  pdir=path  (weld /page rel)
   ;<  cv=view:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
   ?.  ?=([%file *] cv)  (pure:m ~)
   (pure:m (mole |.(;;(@t (sang-noun:tarball sang.cv)))))
@@ -4430,7 +4443,7 @@
   |=  rel=path
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
-  =/  pdir=path  (weld app-base:lu (weld /page rel))
+  =/  pdir=path  (weld /page rel)
   ;<  dv=view:nexus  bind:m  (peek:io [%& %| pdir] ~)
   ?.  ?=([%ball *] dv)  (pure:m 0)
   =/  wfil=(map @ta cass:clay)  ?~(fil.wave.dv ~ file.u.fil.wave.dv)
@@ -4459,7 +4472,7 @@
   ^-  (unit road:tarball)
   =/  pp=(each path tang)  (mule |.((pub-path raw)))
   ?:  ?=(%| -.pp)  ~
-  =/  vr=(unit vrail:lp)  (key-to-rail:lp (weld app-base:lu /pub/vault) p.pp)
+  =/  vr=(unit vrail:lp)  (key-to-rail:lp /pub/vault p.pp)
   ?~  vr  ~
   `[%& %& pax.u.vr nom.u.vr]
 ::  +know-hist-road: the ABSOLUTE road of a know key's entry grub, for reading its
@@ -4476,7 +4489,7 @@
   ^-  form:m
   =/  ko=(unit path)  (know-key raw)
   ?~  ko  (pure:m ~)
-  =/  live=road:tarball   (entry-road (weld app-base:lu /know/vault) u.ko)
+  =/  live=road:tarball   (entry-road /know/vault u.ko)
   =/  trash=road:tarball  (entry-road (weld app-base:lu /know/trash-vault) u.ko)
   ;<  el=(unit know-entry:lk)  bind:m  (read-entry live)
   ?^  el  (pure:m `[live %.n])
@@ -4530,7 +4543,8 @@
 ++  fs-tree-json
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
-  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
   ?.  ?=([%ball *] sn)  (pure:m (pairs:enjs:format ~[['nodes' a+~]]))
   =/  nodes=(list [pax=path j=json])  (tree-walk ball.sn wave.sn ~)
   =/  srt  (sort nodes |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
@@ -4603,7 +4617,8 @@
 ++  content-reindex
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
   =/  pages=(list [rel=path body=@t shr=share-mode:le])
     ?.  ?=([%ball *] sn)  ~
     (index-walk ball.sn ~)
@@ -4646,6 +4661,7 @@
   |=  full=(map @ta bucket:li)
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   =/  contents=(map @ta [=bask:tarball gain=?])
     %-  ~(gas by *(map @ta [bask:tarball ?]))
     %+  turn  all-names:li
@@ -4672,7 +4688,7 @@
   ::  Safe because /idx/b holds only derived postings and the whole point of this
   ::  arm is to replace all of them. The on-load %fall row recreates the dir if a
   ::  reload lands in the gap.
-  =/  dst=road:tarball  [%& %| (weld app-base:lu /idx/b)]
+  =/  dst=road:tarball  (rv up /idx/b)
   ;<  *  bind:m  (cull-soft:io dst)
   ;<  err=(unit tang)  bind:m  (make-soft:io dst &+bol)
   ?~  err  (pure:m ~)
@@ -4683,8 +4699,9 @@
   |=  term=@t
   =/  m  (fiber:fiber:nexus ,(list [scope=@t key=@t tf=@ud]))
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ;<  vn=view:nexus  bind:m
-    (peek:io [%& %& (weld app-base:lu /idx/b) (name-of:li term)] ~)
+    (peek:io (rf up /idx/b (name-of:li term)) ~)
   ?.  ?=([%file *] vn)  (pure:m ~)
   =/  bk=bucket:li
     (fall (mole |.(!<(bucket:li (need-vase:tarball sang.vn)))) *bucket:li)
@@ -4750,6 +4767,7 @@
 ++  fs-dump-json
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ::  the current /beacon/rev rides along. The dump is a SNAPSHOT, and the
   ::  client's beacon stream only reports changes from its registration
   ::  onward — a bump between this snapshot and that registration was
@@ -4758,11 +4776,11 @@
   ::  client always has a baseline, and the gap closes by comparison for
   ::  fresh profiles exactly as it does for returning ones.
   ;<  bv=view:nexus  bind:m
-    (peek:io [%& %& (weld app-base:lu /beacon) %rev] ~)
+    (peek:io (rf up /beacon %rev) ~)
   =/  rev=json
     ?.  ?=([%file *] bv)  ~
     (fall (mole |.(;;(json (sang-noun:tarball sang.bv)))) ~)
-  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
+  ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
   ?.  ?=([%ball *] sn)
     (pure:m (pairs:enjs:format ~[['nodes' a+~] ['rev' rev]]))
   =/  nodes=(list [pax=path j=json])  (dump-walk ball.sn wave.sn ~)
@@ -4908,7 +4926,7 @@
   ^-  form:m
   ?.  (valid-name name)  (pure:m [%| 400 'bad name'])
   =/  pax=path  (pax-of name)
-  =/  pdir=path  (weld app-base:lu (weld /page pax))
+  =/  pdir=path  (weld /page pax)
   ;<  cn=view:nexus  bind:m  (peek:io [%& %& pdir %code] ~)
   ?.  ?=([%file *] cn)  (pure:m [%| 404 'no such page'])
   ;<  mode=share-mode:le  bind:m  (read-share pdir)
@@ -4942,7 +4960,7 @@
   =/  m  (fiber:fiber:nexus ,@t)
   ^-  form:m
   ?.  (valid-name name)  (pure:m '')
-  =/  pdir=path  (weld app-base:lu (weld /page (pax-of name)))
+  =/  pdir=path  (weld /page (pax-of name))
   ;<  en=view:nexus  bind:m  (peek:io [%& %& pdir %err] ~)
   ?.  ?=([%file *] en)  (pure:m '')
   (pure:m (fall (mole |.(;;(@t (sang-noun:tarball sang.en)))) ''))
@@ -4963,11 +4981,12 @@
   |=  [name=@t ptype=@tas new=? raw=@t]
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   =/  sr  (save-src name ptype raw)
   ?:  ?=(%| -.sr)  (pure:m [code.p.sr msg.p.sr])
   =/  src=@t  p.sr
   ;<  ex=?  bind:m
-    (peek-exists:io [%& %& (weld app-base:lu (weld /page (pax-of name))) %code])
+    (peek-exists:io (rf up (weld /page (pax-of name)) %code))
   ?:  &(new ex)  (pure:m [409 'page exists'])
   ;<  ~  bind:m  (fs-poke-eval [%make (pax-of name) src])
   (pure:m [200 ''])
@@ -5077,6 +5096,7 @@
   |=  [eyre-id=@ta rest=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   =/  nam=@ta  ?~(rest %'index.html' i.rest)
   =/  ct=(unit @t)
     ?:  =(%'index.html' nam)  `'text/html'
@@ -5084,7 +5104,7 @@
     ?:  =(%'vault.js' nam)    `'text/javascript'
     ~
   ?~  ct  (send-err eyre-id 404 'not found')
-  ;<  pv=view:nexus  bind:m  (peek:io [%& %& (weld app-base:lu /app) nam] ~)
+  ;<  pv=view:nexus  bind:m  (peek:io (rf up /app nam) ~)
   ?.  ?=([%file *] pv)  (send-err eyre-id 404 'not found')
   =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
   ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
@@ -5291,6 +5311,38 @@
 ::  a %peek dart routes to that ship. Mirrors peek-remote's own rewrite (kept
 ::  local so peek-remote-wait doesn't fork fiberio just to add a deadline).
 ::
+::  ── nexus-relative addressing ───────────────────────────────────────
+::
+::  A road is [%| steps lane]: climb `steps` to the nexus root, then descend.
+::  `steps` is the depth of the fiber that BUILDS the road, which is why an
+::  absolute road was easier and why it stopped working - a desk-installed
+::  app may not learn where it sits (+walk-here stops at its boundary), and
+::  +get-here-abs asserts otherwise and crashes the fiber.
+::
+::  +nexus-up: this fiber's distance from the nexus root, CORRECT IN BOTH
+::  TIERS. lattice has to run in /apps on ricsul today and in a desk after
+::  the migration, so a constant that is right for one is wrong for the
+::  other.
+::
+::    +get-here is not +get-here-abs: it never asserts. +walk-here reveals
+::    the ancestors this grub may peek and stops, so a SANDBOXED fiber gets
+::    a pant that is already relative to its nexus and root=%.n. A TRUSTED
+::    fiber walks all the way up, so its pant is absolute and the app base
+::    has to come off. The flag says which world we are in.
+::
+++  nexus-up
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  h=here:nexus  bind:m  get-here:io
+  =/  n=@ud  (lent pant.h)
+  ::  trusted: the walk reached root, so strip the app dir we sit under.
+  ::  sandboxed: the walk stopped at our own root, so n already is it.
+  (pure:m ?.(root.h n ?:((lth n (lent app-base:lu)) 0 (sub n (lent app-base:lu)))))
+::  +rf, +rv: a file road and a directory road, `up` steps from here.
+::
+++  rf  |=([up=@ud p=path n=@ta] ^-(road:tarball [%| up [%& p n]]))
+++  rv  |=([up=@ud p=path] ^-(road:tarball [%| up [%| p]]))
+::
 ++  remote-road
   |=  [=road:tarball shp=@p]
   ^-  road:tarball
@@ -5496,14 +5548,15 @@
     (over:io [%& %& gdir %'who.ships'] [[/ %ships] (~(del in ships) who)])
   $(names t.names, hit +(hit))
 ::  +ban-road: where the banlist lives.
-++  ban-road  ^-(road:tarball [%& %& app-base:lu %banned])
+++  ban-road  |=(up=@ud ^-(road:tarball (rf up / %banned)))
 ::  +read-banned: the banlist, empty if never written. Every enforcement point
 ::  reads it fresh. A ban has to take effect on the next poke, not on the next
 ::  restart.
 ++  read-banned
   =/  m  (fiber:fiber:nexus ,banned:ls)
   ^-  form:m
-  ;<  bv=view:nexus  bind:m  (peek:io ban-road ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  bv=view:nexus  bind:m  (peek:io (ban-road up) ~)
   ?.  ?=([%file *] bv)  (pure:m ~)
   (pure:m (fall (mole |.(;;(banned:ls (sang-noun:tarball sang.bv)))) ~))
 ::  +ug-merge: fold ships and grants INTO a usergroup, creating it if absent.
@@ -5827,7 +5880,7 @@
   ::  own pages: ABSOLUTE road via app-base (the nexus's fixed tree path), so this
   ::  resolves the same at every fiber depth.
   =/  road=road:tarball
-    [%& %& (weld (weld app-base:lu /pub/vault) rel) %gmi]
+    [%& %& (weld /pub/vault rel) %gmi]
   ?:  =(shp our)
     ;<  seen=view:nexus  bind:m  (peek:io road ~)
     ?.  ?=([%file *] seen)  (pure:m ~)
@@ -6177,7 +6230,7 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?.  (levy pax |=(seg=@ta ((sane %ta) seg)))  (send-err eyre-id 404 'not found')
-  =/  pdir=path  (weld app-base:lu (weld /page pax))
+  =/  pdir=path  (weld /page pax)
   ;<  dsn=view:nexus  bind:m  (peek:io [%& %& pdir %data] ~)
   ?.  ?=([%file *] dsn)  (send-err eyre-id 404 'not found')
   ;<  vmode=view-mode:pg  bind:m  (read-show-mode pdir)
@@ -6208,7 +6261,7 @@
   ^-  form:m
   =/  anc=path  (snip `path`pax)
   |-  ^-  form:m
-  =/  tdir=path  (weld app-base:lu (weld /page (weld anc /theme)))
+  =/  tdir=path  (weld /page (weld anc /theme))
   ;<  mode=share-mode:le  bind:m  (read-share tdir)
   ;<  show=view-mode:pg   bind:m  (read-show-mode tdir)
   ?:  &(?=(%clearweb mode) ?=(%css show))  (pure:m `anc)
@@ -6271,7 +6324,8 @@
 ++  comments-inbox-json
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
-  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /comments)] ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sn=view:nexus  bind:m  (peek:io (rv up /comments) ~)
   ?.  ?=([%ball *] sn)  (pure:m (pairs:enjs:format ~[['items' a+~]]))
   =/  all=(list [pax=path id=@ta c=comment:lc])  (comment-walk ball.sn ~)
   =/  sorted=(list [pax=path id=@ta c=comment:lc])
@@ -6298,8 +6352,9 @@
   |=  [page=path on=? box=tape]
   =/  m  (fiber:fiber:nexus ,tape)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ?.  on  (pure:m "")
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu (weld /comments page))] ~)
+  ;<  seen=view:nexus  bind:m  (peek:io (rv up (weld /comments page)) ~)
   =/  cs=(list comment:lc)
     ?.  ?=([%ball *] seen)  ~
     =/  b=ball:tarball  ball.seen
@@ -6349,7 +6404,7 @@
   ^-  form:m
   =/  anc=path  (snip `path`pax)
   |-  ^-  form:m
-  =/  tdir=path  (weld app-base:lu (weld /page (weld anc /theme)))
+  =/  tdir=path  (weld /page (weld anc /theme))
   ;<  show=view-mode:pg  bind:m  (read-show-mode tdir)
   ?:  ?=(%css show)
     ;<  dsn=view:nexus  bind:m  (peek:io [%& %& tdir %data] ~)
@@ -6383,7 +6438,7 @@
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   |-  ^-  form:m
-  =/  fdir=path  (weld app-base:lu (weld /page page))
+  =/  fdir=path  (weld /page page)
   ;<  seen=view:nexus  bind:m  (peek:io [%& %& fdir %forms-on] ~)
   ?:  ?=([%file *] seen)
     (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.seen)))) %.n))
@@ -6397,7 +6452,7 @@
   =/  m  (fiber:fiber:nexus ,form-cfg:le)
   ^-  form:m
   |-  ^-  form:m
-  =/  fdir=path  (weld app-base:lu (weld /page page))
+  =/  fdir=path  (weld /page page)
   ;<  seen=view:nexus  bind:m  (peek:io [%& %& fdir %'forms-cfg'] ~)
   ?:  ?=([%file *] seen)
     (pure:m (fall (mole |.(;;(form-cfg:le (sang-noun:tarball sang.seen)))) [0 *@dr]))
@@ -6409,7 +6464,7 @@
   |=  page=path
   =/  m  (fiber:fiber:nexus ,form-use:le)
   ^-  form:m
-  =/  fdir=path  (weld app-base:lu (weld /page page))
+  =/  fdir=path  (weld /page page)
   ;<  seen=view:nexus  bind:m  (peek:io [%& %& fdir %'forms-use'] ~)
   ?.  ?=([%file *] seen)  (pure:m [0 *@da])
   (pure:m (fall (mole |.(;;(form-use:le (sang-noun:tarball sang.seen)))) [0 *@da]))
@@ -6423,7 +6478,7 @@
   ^-  form:m
   ?.  (levy pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
     (send-err eyre-id 404 'not found')
-  =/  pdir=path  (weld app-base:lu (weld /page pax))
+  =/  pdir=path  (weld /page pax)
   ;<  mode=share-mode:le  bind:m  (read-share pdir)
   ?.  ?=(%clearweb mode)  (send-err eyre-id 404 'not found')
   ;<  on=?  bind:m  (forms-on pax)
@@ -6467,7 +6522,7 @@
   ::  %clearweb check below is the only public/private gate.
   ?.  (levy pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
     (send-err eyre-id 404 'not found')
-  =/  pdir=path  (weld app-base:lu (weld /page pax))
+  =/  pdir=path  (weld /page pax)
   ;<  mode=share-mode:le  bind:m  (read-share pdir)
   ?.  ?=(%clearweb mode)  (send-err eyre-id 404 'not found')
   ;<  dsn=view:nexus  bind:m  (peek:io [%& %& pdir %data] ~)
@@ -7373,7 +7428,8 @@
 ++  read-tree
   =/  m  (fiber:fiber:nexus ,(list [pax=path page=?]))
   ^-  form:m
-  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
   ?.  ?=([%ball *] sn)  (pure:m ~)
   %-  pure:m
   %+  sort  (collect-tree ball.sn ~)
@@ -7839,8 +7895,9 @@
 ++  beacon-rev-tape
   =/  m  (fiber:fiber:nexus ,tape)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ;<  v=view:nexus  bind:m
-    (peek:io [%& %& (weld app-base:lu /beacon) %rev] ~)
+    (peek:io (rf up /beacon %rev) ~)
   ?.  ?=([%file *] v)  (pure:m "")
   =/  j=json  (fall (mole |.(;;(json (sang-noun:tarball sang.v)))) ~)
   ?~  j  (pure:m "")
@@ -7888,6 +7945,7 @@
   |=  root=path
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   =/  gdir=road:tarball  [%& %| public-grp]
   ;<  ok=?  bind:m  (peek-exists:io gdir)
   ?.  ok  ~&([%lattice-no-public-group ~] (pure:m ~))
@@ -7910,8 +7968,8 @@
   =/  pubdir=road:tarball  [%& %| (weld root /pub)]
   =/  pokes=(set road:tarball)
     %-  silt
-    :~  `road:tarball`[%& %& app-base:lu %'shares.sig']
-        `road:tarball`[%& %& app-base:lu %'comments.sig']
+    :~  `road:tarball`(rf up / %'shares.sig')
+        `road:tarball`(rf up / %'comments.sig')
     ==
   ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld root /page)] ~)
   =/  rels=(list path)
@@ -8398,12 +8456,13 @@
 ++  pub-regrow
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ::  Grants live in the registry-canonical %how act, laid at writer boot
   ::  (+send-public-how). The regrow route runs in a request fiber, whose
   ::  rail the registry does not know, so grant repair belongs to a writer
   ::  restart and this route only rebuilds namespace bindings.
   ;<  ix=pub-index:lp  bind:m
-    (read-pub-index [%& %& (weld app-base:lu /pub) %index])
+    (read-pub-index (rf up /pub %index))
   ;<  n=@ud  bind:m  (pub-regrow-loop ~(tap in ~(key by ix)) 0)
   ::  the seq advances like any publish. Subscribers do no seq bookkeeping
   ::  (the rev rides each page keep's own wave), so a regrow is invisible to
@@ -8415,7 +8474,7 @@
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
   ?~  keys  (pure:m cnt)
-  =/  or=(unit vrail:lp)  (key-to-rail:lp (weld app-base:lu /pub/vault) i.keys)
+  =/  or=(unit vrail:lp)  (key-to-rail:lp /pub/vault i.keys)
   ?~  or  (pub-regrow-loop t.keys cnt)
   ;<  seen=view:nexus  bind:m  (peek:io [%& %& pax.u.or nom.u.or] ~)
   ?.  ?=([%file *] seen)  (pub-regrow-loop t.keys cnt)
@@ -8752,7 +8811,7 @@
   =/  m  (fiber:fiber:nexus ,(unit pub-index:lp))
   ^-  form:m
   ;<  ms=(unit view:nexus)  bind:m
-    (peek-remote-wait [%& %& (weld app-base:lu /pub) %index] shp)
+    (peek-remote-wait [%& %& /pub %index] shp)
   ::  ~ means the read FAILED (timeout / not-a-file / bad clam), distinct from a
   ::  reachable peer with a genuinely empty index (`~ *pub-index). Callers use the
   ::  difference: reconcile must NOT run on a failure (it would delete every row).
@@ -8772,9 +8831,10 @@
   |=  shp=@p
   =/  m  (fiber:fiber:nexus ,(unit pub-index:lp))
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ;<  our=@p  bind:m  bowl-our
   ?.  =(shp our)  (read-pub-index-remote shp)
-  ;<  ix=pub-index:lp  bind:m  (read-pub-index [%& %& (weld app-base:lu /pub) %index])
+  ;<  ix=pub-index:lp  bind:m  (read-pub-index (rf up /pub %index))
   (pure:m `ix)
 ::  +read-follows: the ships we follow. ABSOLUTE road (app-base) so it reads the
 ::  same from a depth-2 request fiber and a depth-0 app-root fiber.
@@ -8782,7 +8842,8 @@
 ++  read-follows
   =/  m  (fiber:fiber:nexus ,follows:lp)
   ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %& (weld app-base:lu /sub) %follows] ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  seen=view:nexus  bind:m  (peek:io (rf up /sub %follows) ~)
   ?.  ?=([%file *] seen)  (pure:m *follows:lp)
   (pure:m !<(follows:lp (need-vase:tarball sang.seen)))
 ::  +read-subs: every live per-file subscription. Peeks /sub/pages as a ball and
@@ -8791,7 +8852,8 @@
 ++  read-subs
   =/  m  (fiber:fiber:nexus ,(list page-sub:lp))
   ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /sub/pages)] ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  seen=view:nexus  bind:m  (peek:io (rv up /sub/pages) ~)
   ?.  ?=([%ball *] seen)  (pure:m ~)
   =/  b=ball:tarball  ball.seen
   ?~  fil.b  (pure:m ~)
@@ -9276,16 +9338,18 @@
   |=  msg=@ta
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ;<  now=@da  bind:m  get-time:io
-  ;<  ~  bind:m  (ensure-dirs (weld app-base:lu /mirror) /tr)
-  (put-file [%& %& (weld app-base:lu /mirror/tr) msg] [/ %json] s+(scot %da now))
+  ;<  ~  bind:m  (ensure-dirs /mirror /tr)
+  (put-file (rf up /mirror/tr msg) [/ %json] s+(scot %da now))
 ::  +mirror-tracev: a trace carrying a value instead of a timestamp.
 ++  mirror-tracev
   |=  [msg=@ta val=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  ~  bind:m  (ensure-dirs (weld app-base:lu /mirror) /tr)
-  (put-file [%& %& (weld app-base:lu /mirror/tr) msg] [/ %json] s+val)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  ~  bind:m  (ensure-dirs /mirror /tr)
+  (put-file (rf up /mirror/tr msg) [/ %json] s+val)
 ++  mirror-run
   |=  urql=tape
   =/  m  (fiber:fiber:nexus ,obk-out:lm)
@@ -9393,7 +9457,8 @@
 ++  mirror-enabled
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  ;<  vw=view:nexus  bind:m  (peek:io [%& %& (weld app-base:lu /mirror) %'config.json'] ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=view:nexus  bind:m  (peek:io (rf up /mirror %'config.json') ~)
   ?.  ?=([%file *] vw)  (pure:m %.n)
   =/  jon=json  (fall (mole |.(!<(json (need-vase:tarball sang.vw)))) ~)
   ?.  ?=([%o *] jon)  (pure:m %.n)
@@ -9404,7 +9469,8 @@
 ++  read-beacon-val
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
-  ;<  vw=view:nexus  bind:m  (peek:io [%& %& (weld app-base:lu /beacon) %rev] ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=view:nexus  bind:m  (peek:io (rf up /beacon %rev) ~)
   ?.  ?=([%file *] vw)  (pure:m 0)
   =/  jon=json  (fall (mole |.(!<(json (need-vase:tarball sang.vw)))) ~)
   ?.  ?=([%n *] jon)  (pure:m 0)
@@ -9412,7 +9478,8 @@
 ++  read-mirror-cursor
   =/  m  (fiber:fiber:nexus ,mirror-cursor:lm)
   ^-  form:m
-  ;<  vw=view:nexus  bind:m  (peek:io [%& %& (weld app-base:lu /mirror) %cursor] ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=view:nexus  bind:m  (peek:io (rf up /mirror %cursor) ~)
   ?.  ?=([%file *] vw)  (pure:m *mirror-cursor:lm)
   ::  the marc is a noun passthrough (see mar/lattice/mirror-cursor),
   ::  so the vase is untyped and molding (;;) is the only clam that
@@ -9436,7 +9503,8 @@
   |=  cur=mirror-cursor:lm
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (put-file [%& %& (weld app-base:lu /mirror) %cursor] [/lattice %mirror-cursor] cur)
+  ;<  up=@ud  bind:m  nexus-up
+  (put-file (rf up /mirror %cursor) [/lattice %mirror-cursor] cur)
 ::  +mirror-bootstrap: probe, create, re-probe. `set = the schema is
 ::  live, carrying the indices of tables MISSING at first probe (their
 ::  cursor state must zero: a missing table that now exists is a wipe
@@ -9617,10 +9685,11 @@
   |=  cur=mirror-cursor:lm
   =/  m  (fiber:fiber:nexus ,[? mirror-cursor:lm])
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ;<  ~  bind:m  (mirror-trace %pages-start)
   ;<  our=@p  bind:m  get-our:io
   ;<  now=@da  bind:m  get-time:io
-  ;<  vw=view:nexus  bind:m  (peek:io [%& %| (weld app-base:lu /page)] ~)
+  ;<  vw=view:nexus  bind:m  (peek:io (rv up /page) ~)
   =/  pages=(list [rel=path body=@t shr=share-mode:le])
     ?.  ?=([%ball *] vw)  ~
     (index-walk ball.vw ~)
@@ -9656,13 +9725,14 @@
   |=  cur=mirror-cursor:lm
   =/  m  (fiber:fiber:nexus ,[? mirror-cursor:lm])
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ;<  ~  bind:m  (mirror-trace %knows-start)
   ::  an ABSOLUTE sweep, never read-know-map: that arm peeks up-2
   ::  relative for request fibers, and from the reconciler's depth it
   ::  climbs past the nexus root into the void, crashing the fiber
   ::  into a respawn storm.
   ;<  seen=view:nexus  bind:m
-    (peek:io [%& %| (weld app-base:lu /know/vault)] ~)
+    (peek:io (rv up /know/vault) ~)
   =/  es=(map path know-entry:lk)
     ?.  ?=([%ball *] seen)  ~
     (collect-entries ~ ball.seen)
@@ -9713,8 +9783,9 @@
   |=  cur=mirror-cursor:lm
   =/  m  (fiber:fiber:nexus ,[? mirror-cursor:lm])
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ;<  ~  bind:m  (mirror-trace %follows-start)
-  ;<  vw=view:nexus  bind:m  (peek:io [%& %& (weld app-base:lu /sub) %follows] ~)
+  ;<  vw=view:nexus  bind:m  (peek:io (rf up /sub %follows) ~)
   =/  fs=(set @p)
     ?.  ?=([%file *] vw)  ~
     (fall (mole |.(!<(follows:lp (need-vase:tarball sang.vw)))) ~)
@@ -9734,7 +9805,8 @@
 ++  visit-rows
   =/  m  (fiber:fiber:nexus ,(list [url=@t stamp=@ r=visit-row:lm]))
   ^-  form:m
-  ;<  vw=view:nexus  bind:m  (peek:io [%& %& app-base:lu %history] ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=view:nexus  bind:m  (peek:io (rf up / %history) ~)
   =/  hist=history:lh
     ?.  ?=([%file *] vw)  ~
     (fall (mole |.(!<(history:lh (need-vase:tarball sang.vw)))) ~)

@@ -3,7 +3,16 @@
   1. does an arm use `rail` without binding one?
   2. do calls to the arms whose arity I changed pass the right count?"""
 import re, sys
-lines = open(sys.argv[1]).read().split('\n')
+#  Strip strings and comments before looking for free names. Without this
+#  the word "up" inside a paragraph of HTML, and the /root segment of an
+#  ames path, both read as code.
+def _strip(l):
+    l = re.sub(r'\\"', '', l)
+    l = re.sub(r'"[^"]*"', '""', l)
+    l = re.sub(r"'[^']*'", "''", l)
+    i = l.find('::')
+    return l[:i] if i >= 0 else l
+lines = [_strip(l) for l in open(sys.argv[1]).read().split('\n')]
 CHANGED = {'ensure-dir':2,'ensure-nodes':3,'cull-dirs':3,'run-probe':2,
            'run-fetch':2,'run-key-probe':1,'nexus-root':0,'grant-public':1,
            'grant-blob':2,'handle-request':1,'rf':3,'rv':2,
@@ -37,7 +46,9 @@ for i,l in enumerate(lines):
     if m: cur = m.group(1)
     if of_start <= i <= of_end: continue          # rail is in scope here
     for nm in FREE:
-        if re.search(r'(?<![\w-])'+nm+r'(?![\w:=-])', l) and (cur,nm) not in binds and '::' not in l:
+        #  not a free name when it is a FACE ACCESS (root.h) or a PATH
+        #  SEGMENT (/sys/ames/.../root) - both read as the bare name.
+        if re.search(r'(?<![\w/-])'+nm+r'(?![\w:=.-])', l) and (cur,nm) not in binds and '::' not in l:
             bad.append(f'  {i+1:5} +{cur}: uses `{nm}`, binds none | {l.strip()[:56]}')
     for nm,want in CHANGED.items():
         for c in re.finditer(r'\((%s)((?:\s+(?:\([^()]*\)|[^\s()]+))*)\)' % re.escape(nm), l):

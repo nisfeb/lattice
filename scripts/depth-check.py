@@ -133,14 +133,19 @@ for case,(d,names) in entries.items():
 #  Checked against auspex, which was converted by threading `root=@ud`: the
 #  first version of this test called five of its arms hazards. They are the
 #  cure, not the disease.
-BUILDS = re.compile(r'\((?:rf|rv)\s|nex-road|\[%\|\s')
+#  `[%| ...]` is NOT a road pattern. It is the failure side of every each in
+#  the file - [%| 400 'bad name'] - so matching it called four arms hazards
+#  that build no road at all. A road is built by +rf, +rv or +nex-road, or
+#  named by the old absolute constant.
+BUILDS = re.compile(r'\((?:rf|rv)\s|nex-road')
 FIXED  = re.compile(r'(?<![\w-])(nexus-root|app-base|req-dir|writer-rail)(?![\w-])')
 TAKES  = re.compile(r'(?<![\w-])(root|up|depth)=@ud')
 def hazardous(body):
     t = '\n'.join(body)
     if not (BUILDS.search(t) or FIXED.search(t)): return False
     return not TAKES.search(t)
-sens = {a for a,b in arms.items() if hazardous(b)}
+#  +nexus-up DEFINES the depth; it is not a consumer of one.
+sens = {a for a,b in arms.items() if hazardous(b)} - {'nexus-up'}
 #  `arms` holds STRIPPED lines already, so a mention of app-base in a
 #  comment no longer makes an arm look depth-sensitive.
 
