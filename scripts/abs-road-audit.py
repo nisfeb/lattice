@@ -66,3 +66,24 @@ for i, raw in enumerate(open(sys.argv[1])):
 for ln, arm, txt in bad:
     print(f'  {ln:5}  +{arm}: absolute road into our own tree | {txt}')
 print(f'{len(bad)} absolute road(s) naming our own tree')
+
+#  A second class, and the one that survived the whole road conversion: our
+#  own install path spelled out inside a STRING. These are not roads, so
+#  nothing above sees them, and they are not compile errors either - they
+#  are URLs handed to a browser. Hardcoded, they worked at the app tier and
+#  silently 404'd every clearweb read and public form once the app moved
+#  into a desk. Learn the path from /sys/link at runtime (+self-base).
+inst = re.compile(r"['\"/]((?:[a-z][a-z0-9-]*)\.[a-z][a-z0-9_-]*_app)")
+lit, cur = [], None
+for i, raw in enumerate(open(sys.argv[1])):
+    l = re.sub(r'::.*', '', raw)
+    m = re.match(r'^\+\+  ([a-z][a-z0-9-]*)', raw)
+    if m: cur = m.group(1)
+    #  +remote-install names a PEER's desk install - where THEY keep the app,
+    #  which we reach over ames and could not learn from our own /sys/link.
+    if cur == 'remote-install': continue
+    for mm in inst.finditer(l):
+        lit.append((i + 1, mm.group(1), l.strip()[:62]))
+for ln, nm, txt in lit:
+    print(f'  {ln:5}  hardcoded install path {nm!r} | {txt}')
+print(f'{len(lit)} hardcoded install path(s) in a string')

@@ -1034,14 +1034,15 @@
       ::  edit auto-refreshes the open reader.
       ;<  home=(unit @t)  bind:m  (read-page-body our our /index)
       ;<  rv=tape  bind:m  beacon-rev-tape
+      ;<  sb=path  bind:m  self-base
       ?~  home
         ;<  recent=(list [pax=path prev=@t])  bind:m  (read-recent 10)
         ;<  bms=bookmarks:lb  bind:m  read-bookmarks
         ;<  kes=(map path know-entry:lk)  bind:m  read-know-map
-        (send-view-long eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url "beacon/rev") rv (home-index-html our recent bms (know-quick-html:lkv kes 6))))
+        (send-view-long eyre-id (render-page (weld "urb://" (scow %p our)) (keep-url sb "beacon/rev") rv (home-index-html our recent bms (know-quick-html:lkv kes 6))))
       =/  ttl=tape  (trip (page-title-of u.home 'lattice'))
       %+  send-view-long  eyre-id
-      (render-page-titled (weld "urb://" (scow %p our)) (keep-url "beacon/rev") rv ttl (render-gmi u.home))
+      (render-page-titled (weld "urb://" (scow %p our)) (keep-url sb "beacon/rev") rv ttl (render-gmi u.home))
     =/  ref=(unit referent:lu)  (de-urb:lu u.raw)
     ::  omnibar: input that isn't a urb:// address is a SEARCH query. Serve a
     ::  results page that queries the term index (client-side, via the
@@ -1063,7 +1064,8 @@
         (send-view eyre-id (render-page canon "" "" "<p class=\"err\">not published here</p>"))
       ::  own pages get a live reader (keep /pub/index: its per-page hash changes
       ::  on every edit). Remote pages stay static (can't keep a peer's grub).
-      =/  rk=tape  ?:(=(ship.u.ref our) (keep-url "beacon/rev") "")
+      ;<  sb=path  bind:m  self-base
+      =/  rk=tape  ?:(=(ship.u.ref our) (keep-url sb "beacon/rev") "")
       ::  Respond FIRST, then record the visit. A history write is a poke to the
       ::  serialised writer. Doing it before the response would put a write on
       ::  the critical path of every page READ, which is exactly what the perf
@@ -1492,7 +1494,8 @@
   ::  and pub are DIRECTORY subscriptions (one frame per changed entry/page).
   ::  follows is the single follow-set grub.
       [%'GET' %streams]
-    =/  base=tape  "/grubbery/api/keep/apps/lattice.lattice_app/"
+    ;<  sb=path  bind:m  self-base
+    =/  base=tape  (weld (keep-url sb "") "")
     %+  send-json  eyre-id
     %-  pairs:enjs:format
     :~  :-  'streams'
@@ -1590,7 +1593,8 @@
     ::  lands on the live view. The JSON ok stays for programmatic callers.
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
     %+  send-see-other  eyre-id
-    :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.name) "/")
+    ;<  sb=path  bind:m  self-base
+    :(weld "/apps/lattice/x/" (scow %p our) (spud sb) "/page/" (trip u.name) "/")
       [%'POST' %page-del]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -1664,7 +1668,8 @@
     ;<  ~  bind:m  (poke-eval [%share (pax-of u.name) u.mode])
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
     %+  send-see-other  eyre-id
-    :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.name) "/")
+    ;<  sb=path  bind:m  self-base
+    :(weld "/apps/lattice/x/" (scow %p our) (spud sb) "/page/" (trip u.name) "/")
       ::  owner: turn PUBLIC FORM submissions on/off at a page or folder. Same
       ::  nearest-flag-wins shape as comments. Off by default: a page is only
       ::  publicly writable when the owner says so AND it is clearweb.
@@ -1768,7 +1773,8 @@
     ::  comment. The write is a separate transaction, so a stale reload just needs
     ::  a refresh (acceptable, like page-cmd).
     %+  send-see-other  eyre-id
-    :(weld "/apps/lattice/x/" (scow %p our) "/apps/lattice.lattice_app/page/" (trip u.page) "/")
+    ;<  sb=path  bind:m  self-base
+    :(weld "/apps/lattice/x/" (scow %p our) (spud sb) "/page/" (trip u.page) "/")
   ::  comment on ANOTHER ship's page. Owner-gated like everything here: this
   ::  is us, using our own session, choosing to say something on a page we are
   ::  reading. The peer decides whether it lands, by their banlist and their
@@ -3003,6 +3009,8 @@
       :-  %a
       :~  %+  line  '/sys/ames/usergroups/'
           'let other ships read the pages you publish. Refuse this and lattice still works completely for you - your published pages just stay on this ship'
+          %+  line  '/sys/link/'
+          'look up where this app is installed, so the live-reload stream and the links to your published pages point at the right place. Refuse this and pages still render, but they will not refresh as you edit them'
       ==
   ==
 ::
@@ -5173,20 +5181,21 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  es=(map path know-entry:lk)  bind:m  read-know-map
+  ;<  sb=path  bind:m  self-base
   ::  tolerate accidental double slashes (/know//feedback): drop empty segments.
   =.  rest  (skip rest |=(s=@ta =('' s)))
   ?~  rest
     =/  tsel=(unit @t)  (~(get by args) 'tag')
     ?^  tsel
       ;<  rv=tape  bind:m  beacon-rev-tape
-      (send-view-long eyre-id (render-page-titled "know" (keep-url "beacon/rev") rv "memories" (know-flat-html:lkv es u.tsel)))
+      (send-view-long eyre-id (render-page-titled "know" (keep-url sb "beacon/rev") rv "memories" (know-flat-html:lkv es u.tsel)))
     ;<  rv=tape  bind:m  beacon-rev-tape
-    (send-view-long eyre-id (render-page-titled "know" (keep-url "beacon/rev") rv "memories" (know-dir-html:lkv es ~ ~ (tag-chips:lkv es ''))))
+    (send-view-long eyre-id (render-page-titled "know" (keep-url sb "beacon/rev") rv "memories" (know-dir-html:lkv es ~ ~ (tag-chips:lkv es ''))))
   =/  page=(unit tape)  (know-node-html:lkv es `path`rest)
   ?~  page
     (send-view eyre-id (render-page-titled "know" "" "" "memories" "<p class=\"err\">no such entry</p>"))
   ;<  rv=tape  bind:m  beacon-rev-tape
-  (send-view-long eyre-id (render-page-titled (weld "know" (spud rest)) (keep-url "beacon/rev") rv (trip (rear rest)) u.page))
+  (send-view-long eyre-id (render-page-titled (weld "know" (spud rest)) (keep-url sb "beacon/rev") rv (trip (rear rest)) u.page))
 ::  ── JSON renderers (ported from /lib/lattice; client contract, byte-for-byte) ──
 ::
 ++  tags-json
@@ -6130,7 +6139,8 @@
   ::  /txt on the initial snapshot, and the reload script reads only event
   ::  names, never the payload, so keep="" to render-* and append a blot-free
   ::  stream here.
-  =/  keep=tape  (keep-url "beacon/rev")
+  ;<  sb=path  bind:m  self-base
+  =/  keep=tape  (keep-url sb "beacon/rev")
   ;<  rev=tape  bind:m  ?:(local beacon-rev-tape (pure:(fiber:fiber:nexus ,tape) ""))
   ?:  embed
     ::  bare preview: just the rendered data (+ any error) and the live stream.
@@ -7968,12 +7978,50 @@
   =/  j=json  (fall (mole |.(;;(json (sang-noun:tarball sang.v)))) ~)
   ?~  j  (pure:m "")
   (pure:m (trip (en:json:html j)))
+::  +self-base: this nexus's ABSOLUTE tree path, learned from the shell's
+::  /sys/link registry instead of from +get-here-abs, which a sandboxed
+::  install may not call.
+::
+::  Every road in this file is relative, and that is right - an app should
+::  not need to know where it is installed. The URLs below are the one
+::  exception and not one we can design away: /grubbery/api/keep/<path> and
+::  /apps/lattice/x/<ship>/<path> are grubbery's OWN endpoints and they take
+::  an absolute namespace path. The browser follows them, so the path has to
+::  be spelled out. Hardcoding it worked at the app tier and silently broke
+::  every clearweb read and public form once lattice moved into a desk.
+::
+::  The shell publishes it for us: +read-app-aliases reads each app's
+::  link.json and records that app's root at /sys/link/<name>/dest.lanes, a
+::  (set lane). One local peek, correct in BOTH tiers, and nothing for us to
+::  keep in sync - we already ship the link.json it reads.
+::
+::  Veto-tolerant, falling back to +app-base. An install that refuses the
+::  /sys/link road keeps every local feature and loses only live reload and
+::  clearweb links, and an app-tier install gets the right answer from the
+::  fallback alone.
+::
+++  self-base
+  =/  m  (fiber:fiber:nexus ,path)
+  ^-  form:m
+  ;<  vw=(unit view:nexus)  bind:m
+    (peek-soft:io [%& %& /sys/link/lattice %'dest.lanes'] ~)
+  ?.  ?=([~ %file *] vw)  (pure:m app-base:lu)
+  =/  ls=(unit (set lane:tarball))
+    (mole |.(!<((set lane:tarball) (need-vase:tarball sang.u.vw))))
+  ?~  ls  (pure:m app-base:lu)
+  ::  our own row is a DIRECTORY lane; ignore a file lane if one ever appears.
+  =/  dirs=(list path)
+    %+  murn  ~(tap in u.ls)
+    |=(=lane:tarball ?:(?=(%| -.lane) `p.lane ~))
+  ?~  dirs  (pure:m app-base:lu)
+  (pure:m i.dirs)
 ::  +keep-url: grubbery's native keep-SSE endpoint for one of our grubs.
+::  Takes the base because it is a URL, not a road - see +self-base.
 ::
 ++  keep-url
-  |=  sub=tape
+  |=  [base=path sub=tape]
   ^-  tape
-  (weld "/grubbery/api/keep/apps/lattice.lattice_app/" sub)
+  :(weld "/grubbery/api/keep" (spud base) "/" sub)
 ::  +sse-script: reactive live-view client JS. Streams grubbery's keep-SSE
 ::  for `keep`, acting only on " /rev" events (the stream carries the whole
 ::  /beacon directory). The initial `old` event's rev mismatching the baked
