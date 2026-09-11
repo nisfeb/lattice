@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unit tests for smart list continuation (ui-app/src/22-listedit.js).
+// Unit tests for smart list continuation (ui-src/lattice/22-listedit.js).
 //
 // That file is a single pure function with no DOM and no app state, so it can
 // be evaluated straight out of the source and exercised here: no browser, no
@@ -15,7 +15,7 @@ import { dirname, join } from 'path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(
-  join(here, '../code/nex/lattice/ui-app/src/22-listedit.js'), 'utf8');
+  join(here, '../ui-src/lattice/22-listedit.js'), 'utf8');
 const listEnter = new Function(`${src}\nreturn listEnter;`)();
 const listTab = new Function(`${src}\nreturn listTab;`)();
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Property tests for the browser UI's pure functions (ui-app/src/*.js).
+// Property tests for the browser UI's pure functions (ui-src/lattice/*.js).
 //
 // The example-based suites (ui-listedit.mjs, ui-shortpath.mjs) pin the cases
 // someone thought of. This one pins the cases nobody thought of: fast-check
@@ -14,7 +14,7 @@
 //   seg        - an uploaded filename can never grow a path separator
 //   acRank     - the dropdown only ever offers pages that match what you typed
 //
-// Sources are read and evaluated straight out of ui-app/src, the same idiom
+// Sources are read and evaluated straight out of ui-src/lattice, the same idiom
 // as scripts/ui-listedit.mjs, so this needs no browser and no ship.
 //
 // Usage:  node scripts/ui-props.mjs
@@ -29,7 +29,7 @@ try { fc = (await import('fast-check')).default; }
 catch { console.error('fast-check missing: npm i --no-save fast-check'); process.exit(2); }
 
 const here = dirname(fileURLToPath(import.meta.url));
-const read = (f) => readFileSync(join(here, '../code/nex/lattice/ui-app/src', f), 'utf8');
+const read = (f) => readFileSync(join(here, '../ui-src/lattice', f), 'utf8');
 const cut = (file, re, what) => {
   const m = read(file).match(re);
   if (!m) { console.error(`could not find ${what} in ${file}`); process.exit(2); }

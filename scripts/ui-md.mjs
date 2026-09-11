@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unit tests for the local preview renderer (ui-app/src/59-md.js).
+// Unit tests for the local preview renderer (ui-src/lattice/59-md.js).
 //
 // This renderer exists for speed, not authority. The ship's render-md defines
 // what a page IS, and its answer replaces this one a moment later. So the bar
@@ -19,7 +19,7 @@ import { dirname, join } from 'path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(
-  join(here, '../code/nex/lattice/ui-app/src/59-md.js'), 'utf8');
+  join(here, '../ui-src/lattice/59-md.js'), 'utf8');
 const mdToHtml = new Function(`${src}\nreturn mdToHtml;`)();
 
 let fails = 0;

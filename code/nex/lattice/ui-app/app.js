@@ -1,4 +1,4 @@
-/* BUILT FILE — do not edit. Source: ui-app/src/, build: scripts/build-ui.mjs */
+/* BUILT FILE — do not edit. Source: ui-src/lattice/, build: scripts/build-ui.mjs */
 (function () {
 'use strict';
 // ── src/05-prefs.js ───────────────────────────────────────────────────────

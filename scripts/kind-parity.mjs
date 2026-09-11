@@ -49,7 +49,7 @@ function jsExtKindTable(src, constName) {
   return out;
 }
 
-const treePath = join(root, 'code/nex/lattice/ui-app/src/30-tree.js');
+const treePath = join(root, 'ui-src/lattice/30-tree.js');
 const vaultPath = join(root, 'code/nex/lattice/ui-app/vault.js');
 const projPath = join(root, 'lattice-fs-rs/src/projection.rs');
 

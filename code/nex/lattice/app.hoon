@@ -3204,7 +3204,7 @@
 ::  so every mutation runs through one place (and is followed by a +bump-rev).
 ::
 ++  apply-action
-  |=  [root=path now=@da =sage:tarball]
+  |=  [root=@ud now=@da =sage:tarball]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?:  =([/lattice %know-action] p.sage)
@@ -3282,7 +3282,7 @@
 ::  +apply-eval: page create/command/delete, in the writer fiber.
 ::
 ++  apply-eval
-  |=  [root=path now=@da act=eval-action:le]
+  |=  [root=@ud now=@da act=eval-action:le]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ::  name.act only resolves after ?- narrows the fork (%del is a 2-cell,
@@ -3313,23 +3313,23 @@
     ::  A legacy page name may collide with a page the nexus published itself,
     ::  and only this record distinguishes "we put it in the vault" from "it
     ::  was already the user's".
-    %^  put-file  [%& %& (weld root /legacy) %pages]  [/ %json]
+    %^  put-file  (rf root /legacy %pages)  [/ %json]
     a+(turn rels.act |=(r=path s+(crip (pax-str r))))
       %legacy-seen
     ::  one marker for both outcomes (imported N, or dismissed with 0). Its
     ::  existence is what silences the prompt. See +legacy-mark-road.
-    %^  put-file  [%& %& (weld root /legacy) %state]  [/ %json]
+    %^  put-file  (rf root /legacy %state)  [/ %json]
     (pairs:enjs:format ~[['imported' (numb:enjs:format imported.act)]])
       %tmpl-del
     ::  delete a template, cull its subtree. A shipped template comes back on
     ::  the next writer start (ensure-shipped-templates), which is intended.
-    =/  tdir=path  (weld root (weld /template /[name.act]))
+    =/  tdir=path  (weld /template /[name.act])
     ;<  ex=?  bind:m  (peek-exists:io [%& %| tdir])
     ?.  ex  (pure:m ~)
     ;<  *  bind:m  (cull-soft:io [%& %| tdir])
     (pure:m ~)
       %cmd
-    =/  pdir=path  (weld root (weld /page pax.act))
+    =/  pdir=path  (weld /page pax.act)
     ::  authoritative existence guard: no code grub -> no page (and no
     ::  evaluator fiber), so writing a cmd grub would orphan it inside a
     ::  possibly-culled dir and swallow the command (caught by review). The
@@ -3346,7 +3346,7 @@
     ::  %unsub-page guards against). No-op a delete of a gone page. Also
     ::  drop the data road from the public weir so a deleted page leaves no
     ::  dangling grant.
-    =/  pdir=path  (weld root (weld /page pax.act))
+    =/  pdir=path  (weld /page pax.act)
     ;<  ex=?  bind:m  (peek-exists:io [%& %| pdir])
     ?.  ex  (pure:m ~)
     ::  unpublish FIRST: the vault copy at urb://<name> (and its /pub/index
@@ -3374,7 +3374,7 @@
     ::
     ::  Guarded, because cull-soft on an absent dir veto-crashes the writer,
     ::  and most pages never had a comment.
-    =/  cdir=path  (weld root (weld /comments pax.act))
+    =/  cdir=path  (weld /comments pax.act)
     ;<  cex=?  bind:m  (peek-exists:io [%& %| cdir])
     ?.  cex  (pure:m ~)
     ;<  *  bind:m  (cull-soft:io [%& %| cdir])
@@ -3385,7 +3385,7 @@
     ::  publish/unpublish a whole subtree: apply the mode to every PAGE under
     ::  pax (folders have no /data grub, so skip them). Idempotent, so
     ::  re-publishing is safe. A %private sweep revokes each page's weir too.
-    =/  base=path  (weld root (weld /page pax.act))
+    =/  base=path  (weld /page pax.act)
     ;<  dn=view:nexus  bind:m  (peek:io [%& %| base] ~)
     ?.  ?=([%ball *] dn)  (pure:m ~)
     =/  rels=(list path)
@@ -3398,12 +3398,12 @@
       %mkdir
     ::  create an empty folder (and any missing parents). ensure-dirs is
     ::  idempotent, so mkdir over an existing page/folder is a harmless no-op.
-    (ensure-dirs (weld root /page) pax.act)
+    (ensure-dirs /page pax.act)
       %dname
     ::  the display name sits beside a page's %code or a folder's flags, as
     ::  a %name grub. '' clears it: the name typed at a rename was a valid
     ::  segment, which is its own display name, so nothing is stored.
-    =/  fdir=path  (weld root (weld /page pax.act))
+    =/  fdir=path  (weld /page pax.act)
     ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
     ?.  ex  (pure:m ~)
     ?:  =('' name.act)
@@ -3414,7 +3414,7 @@
     ::  set the comments on/off flag at pax (a page or folder). The nearest flag
     ::  at/above a page decides, so this enables/disables a whole subtree or one
     ::  page. Owner-only (an eval-action), unlike the public comment-add path.
-    =/  fdir=path  (weld root (weld /page pax.act))
+    =/  fdir=path  (weld /page pax.act)
     ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
     ?.  ex  (pure:m ~)
     (put-file [%& %& fdir %comment-on] [/lattice %comment-flag] on.act)
@@ -3422,7 +3422,7 @@
     ::  set the public-form flag at pax. Same nearest-flag-wins shape as
     ::  %comments, and equally owner-only: this is the switch that makes a
     ::  clearweb page publicly writable, so it is never implicit.
-    =/  fdir=path  (weld root (weld /page pax.act))
+    =/  fdir=path  (weld /page pax.act)
     ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
     ?.  ex  (pure:m ~)
     ;<  ~  bind:m  (put-file [%& %& fdir %forms-on] [/lattice %comment-flag] on.act)
@@ -3431,13 +3431,13 @@
     ::  one accepted public submission: bump the tally. Runs in the writer so
     ::  concurrent submissions serialize (the cap check itself happens in the
     ::  request fiber, so a burst can overshoot by the number in flight).
-    =/  fdir=path  (weld root (weld /page pax.act))
+    =/  fdir=path  (weld /page pax.act)
     ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
     ?.  ex  (pure:m ~)
     ;<  u=form-use:le  bind:m  (read-form-use pax.act)
     (put-file [%& %& fdir %forms-use] [/lattice %eval-data] `form-use:le`[+(count.u) now.act])
       %form-reset
-    =/  fdir=path  (weld root (weld /page pax.act))
+    =/  fdir=path  (weld /page pax.act)
     ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
     ?.  ex  (pure:m ~)
     (put-file [%& %& fdir %forms-use] [/lattice %eval-data] `form-use:le`[0 *@da])
@@ -3449,7 +3449,7 @@
 ::  HTML-escaped at render time (they are other ships' text).
 ::
 ++  apply-comment
-  |=  [root=path author=@p now=@da act=comment-action:lc]
+  |=  [root=@ud author=@p now=@da act=comment-action:lc]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?:  =('' body.act)  (pure:m ~)
@@ -3481,7 +3481,7 @@
     ?:((gth (met 3 body.act) max-body:lc) (end [3 max-body:lc] body.act) body.act)
   =/  =comment:lc  [author now body]
   =/  id=@ta  (scot %uv (sham comment))
-  =/  cbase=path  (weld root /comments)
+  =/  cbase=path  /comments
   ;<  ~  bind:m  (ensure-dirs cbase page.act)
   ;<  ~  bind:m
     (put-file [%& %& (weld cbase page.act) id] [/lattice %comment] comment)
@@ -3493,7 +3493,7 @@
   ::  here, so this stamp cannot miss a comment. Deletes leave it alone:
   ::  they cannot create anything new, and the badge reads the stamp as a
   ::  CHANGE detector, not a count.
-  (put-file [%& %& (weld root /beacon) %comments] [/ %json] (numb:enjs:format `@ud`now))
+  (put-file (rf root /beacon %comments) [/ %json] (numb:enjs:format `@ud`now))
 ::  +comments-on: is `page` comments-enabled? The nearest `comment-on` flag grub
 ::  AT or ABOVE it in /page wins (like find-theme). Absent everywhere = off. One
 ::  flag on a site folder enables all its pages; a page can override its own.
@@ -3513,7 +3513,7 @@
 ::  in the writer since it read-modify-writes the single /bookmarks grub.
 ::
 ++  apply-bookmark
-  |=  [root=path act=bookmark-action:lb]
+  |=  [root=@ud act=bookmark-action:lb]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  cur=bookmarks:lb  bind:m  read-bookmarks
@@ -3531,7 +3531,7 @@
       |=  b=bookmark:lb
       ?.(=(url.b url.act) b b(folder folder.act))
     ==
-  (put-file [%& %& root %bookmarks] [/lattice %bookmarks] new)
+  (put-file (rf root / %bookmarks) [/lattice %bookmarks] new)
 ::  +apply-history: record a visit, forget one, or clear. Runs in the writer.
 ::
 ::  Expiry happens HERE, on write, not on read. A read must never be a write
@@ -3539,7 +3539,7 @@
 ::  mutation keeps the list bounded without a timer to maintain.
 ::
 ++  apply-history
-  |=  [root=path now=@da act=history-action:lh]
+  |=  [root=@ud now=@da act=history-action:lh]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  cur=history:lh  bind:m  read-history
@@ -3564,7 +3564,7 @@
       ::  same trap +apply-bookmark documents.
       (scag cap:lh `history:lh`[[url.act ttl now hits] kept])
     ==
-  (put-file [%& %& root %history] [/lattice %history] new)
+  (put-file (rf root / %history) [/lattice %history] new)
 ::  +page-title-of: a page's display title for history, its first heading line,
 ::  falling back to the url. Gemtext and markdown both open a heading with '#',
 ::  so one rule covers every page kind the reader serves.
@@ -3679,10 +3679,10 @@
 ::  sit in the vault (readable by any ship, since /pub is publicly granted)
 ::  while still labelled private. Drive the vault from the preset instead.
 ++  apply-share
-  |=  [root=path now=@da rel=path mode=share-mode:le]
+  |=  [root=@ud now=@da rel=path mode=share-mode:le]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  pdir=path  (weld root (weld /page rel))
+  =/  pdir=path  (weld /page rel)
   ;<  cx=?  bind:m  (peek-exists:io [%& %& pdir %code])
   ?.  cx  (pure:m ~)
   =/  data-road=road:tarball  [%& %& pdir %data]
@@ -3727,12 +3727,12 @@
 ::  Non-content saves cost nothing. Private content pages cost one peek.
 ::
 ++  republish-if-shared
-  |=  [root=path now=@da rel=path src=@t]
+  |=  [root=@ud now=@da rel=path src=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
   ?~  un  (pure:m ~)
-  =/  pdir=path  (weld root (weld /page rel))
+  =/  pdir=path  (weld /page rel)
   ;<  sx=?  bind:m  (peek-exists:io [%& %& pdir %share])
   ?.  sx  (pure:m ~)
   ;<  sv=view:nexus  bind:m  (peek:io [%& %& pdir %share] ~)
@@ -3823,10 +3823,10 @@
   ?:  =(0 cut)  (pure:m ~)
   (lose:io road [%numb ~ `(dec cut)])
 ++  make-page
-  |=  [root=path pax=path src=@t]
+  |=  [root=@ud pax=path src=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  pdir=path  (weld root (weld /page pax))
+  =/  pdir=path  (weld /page pax)
   ::  ONE existence probe. An overwrite (code present) already has its dirs,
   ::  cmd and deps from creation. The old per-save re-probing of each was
   ::  3+ wasted darts on every autosave. A half-created page (crash between
@@ -3834,7 +3834,7 @@
   ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
   ;<  ~  bind:m
     ?:  ex  (pure:m ~)
-    ;<  ~  bind:m  (ensure-dirs (weld root /page) pax)
+    ;<  ~  bind:m  (ensure-dirs /page pax)
     ;<  ~  bind:m  (put-file [%& %& pdir %cmd] [/lattice %eval-cmd] `eval-cmd:le`[0 '' 0])
     (put-file [%& %& pdir %deps] [/lattice %eval-deps] `(list path)`~)
   ;<  ~  bind:m  (put-file [%& %& pdir %code] [/lattice %page] src)
@@ -3885,10 +3885,10 @@
 ::  (evaluated); %.n -> an inert code grub (a template).
 ::
 ++  copy-tree
-  |=  [root=path src=[base=@tas rel=path] dst=[base=@tas rel=path] live=?]
+  |=  [root=@ud src=[base=@tas rel=path] dst=[base=@tas rel=path] live=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  src-root=path  (weld root (weld /[base.src] rel.src))
+  =/  src-root=@ud  (weld /[base.src] rel.src)
   =/  from-str=tape  (spud rel.src)
   =/  to-str=tape    (spud rel.dst)
   ;<  dn=view:nexus  bind:m  (peek:io [%& %| src-root] ~)
@@ -3906,7 +3906,7 @@
   ;<  ~  bind:m
     ?:  live
       (make-page root (weld rel.dst i.rels) newcode)
-    =/  ddir=path  (weld root (weld /[base.dst] (weld rel.dst i.rels)))
+    =/  ddir=path  (weld /[base.dst] (weld rel.dst i.rels))
     ;<  ~  bind:m  (ensure-dirs (weld root /[base.dst]) (weld rel.dst i.rels))
     (put-file [%& %& ddir %code] [/lattice %page] newcode)
   $(rels t.rels)
@@ -4003,7 +4003,7 @@
   |=  [name=@tas to=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  troot=path    (weld /template /[name])
+  =/  troot=@ud    (weld /template /[name])
   =/  from-str=tape  (spud /[name])
   =/  to-str=tape    (spud to)
   ;<  dn=view:nexus  bind:m  (peek:io [%& %| troot] ~)
@@ -4037,7 +4037,7 @@
 ::  row so it survives reload.
 ::
 ++  ensure-shipped-templates
-  |=  root=path
+  |=  root=@ud
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ::  flatten every shipped template into one [<name>/<rel> kind body] list, so
@@ -4054,14 +4054,14 @@
   |-  ^-  form:m
   ?~  pages  (pure:m ~)
   =/  prel=path  prel.i.pages
-  =/  pdir=path  (weld root (weld /template prel))
+  =/  pdir=path  (weld /template prel)
   ::  per-page: skip a page that already exists (never overwrite a user edit,
   ::  and a laydown interrupted after some pages completes on the next start),
   ::  else write it.
   ;<  ex=?  bind:m  (peek-exists:io [%& %& pdir %code])
   ?:  ex  $(pages t.pages)
   =/  code=@t  (page-code prel kind.i.pages body.i.pages)
-  ;<  ~  bind:m  (ensure-dirs (weld root /template) prel)
+  ;<  ~  bind:m  (ensure-dirs /template prel)
   ;<  ~  bind:m  (put-file [%& %& pdir %code] [/lattice %page] code)
   $(pages t.pages)
 ::  +public-grp: the public usergroup's storage dir. Grubbery names usergroup
@@ -5461,7 +5461,7 @@
 ::  dropped. The transport decides who the sender is, never the payload.
 ::
 ++  apply-share-notice
-  |=  [root=path =from:fiber:nexus =sage:tarball now=@da]
+  |=  [root=@ud =from:fiber:nexus =sage:tarball now=@da]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  src=(unit @p)  (get-poke-src:io from)
@@ -5471,7 +5471,7 @@
   ?.  =([/lattice %share-notice] p.sage)  (pure:m ~)
   =/  na=(unit action:ls)  (mole |.(;;(action:ls q.q.sage)))
   ?~  na  (pure:m ~)
-  ;<  sn=view:nexus  bind:m  (peek:io [%& %& root %shared] ~)
+  ;<  sn=view:nexus  bind:m  (peek:io (rf root / %shared) ~)
   =/  cur=shared:ls
     ?.  ?=([%file *] sn)  ~
     (fall (mole |.(;;(shared:ls (sang-noun:tarball sang.sn)))) ~)
@@ -5485,12 +5485,12 @@
     ?:  (is-banned:ls bans u.src)  (pure:m ~)
     ?.  ?=([%apps *] pax.u.na)  (pure:m ~)
     ?.  |(=('read' mode.u.na) =('edit' mode.u.na))  (pure:m ~)
-    %^  put-file  [%& %& root %shared]  [/lattice %shared]
+    %^  put-file  (rf root / %shared)  [/lattice %shared]
     (put-entry:ls cur [u.src pax.u.na mode.u.na now])
   ::
       %del
     ?^  src  (pure:m ~)                      ::  curation is owner-only
-    %^  put-file  [%& %& root %shared]  [/lattice %shared]
+    %^  put-file  (rf root / %shared)  [/lattice %shared]
     (del-entry:ls cur host.u.na pax.u.na)
   ==
 ::  +strip-ship-from-groups: remove one ship from every usergroup's who.ships,
@@ -5510,7 +5510,7 @@
 ::  the address is live, the same reasoning the shares inbox uses.
 ::
 ++  apply-comment-notice
-  |=  [root=path =from:fiber:nexus =sage:tarball now=@da]
+  |=  [root=@ud =from:fiber:nexus =sage:tarball now=@da]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  src=(unit @p)  (get-poke-src:io from)
@@ -7942,7 +7942,7 @@
 ::  next time the writer starts after a peer shows up.
 ::
 ++  send-public-how
-  |=  root=path
+  |=  root=@ud
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -7965,13 +7965,13 @@
   ::  writer fiber, whose rail the registration names; the register is
   ::  idempotent. Deep walk, so nested shared pages are granted too.
   ;<  ~  bind:m  (reg-register-at:io [root %'main.sig'])
-  =/  pubdir=road:tarball  [%& %| (weld root /pub)]
+  =/  pubdir=road:tarball  (rv root /pub)
   =/  pokes=(set road:tarball)
     %-  silt
     :~  `road:tarball`(rf up / %'shares.sig')
         `road:tarball`(rf up / %'comments.sig')
     ==
-  ;<  sn=view:nexus  bind:m  (peek:io [%& %| (weld root /page)] ~)
+  ;<  sn=view:nexus  bind:m  (peek:io (rv root /page) ~)
   =/  rels=(list path)
     ?.  ?=([%ball *] sn)  ~
     %+  murn  (collect-tree ball.sn ~)
@@ -7980,22 +7980,22 @@
   |-
   ?~  rels
     (reg-how:io /public [make=~ poke=pokes peek=(~(put in peeks) pubdir)])
-  =/  pp=path  (weld (weld root /page) i.rels)
+  =/  pp=path  (weld /page i.rels)
   ;<  mode=share-mode:le  bind:m  (read-share pp)
   =?  peeks  !=(%private mode)  (~(put in peeks) [%& %& pp %data])
   $(rels t.rels)
 ::  +apply: dispatch one knowledge action. root is the nexus dir (/lattice).
 ::
 ++  apply
-  |=  [root=path now=@da act=know-action:lk]
+  |=  [root=@ud now=@da act=know-action:lk]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  vbase=path  (weld root /know/vault)
+  =/  vbase=path  /know/vault
   ::  trash-vault: deleted entry grubs MOVE here (not culled) so restore is a
   ::  plain move-back (robust, no born-history/cass recovery). /know/trash is the
   ::  derived metadata index over it.
   =/  tvbase=path  (weld root /know/trash-vault)
-  =/  tx=road:tarball  [%& %& (weld root /know) %trash]
+  =/  tx=road:tarball  (rf root /know %trash)
   ?-    -.act
       %save
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
@@ -8154,11 +8154,11 @@
 ::  with no trash/restore. The derived /pub/index row carries the parity hash.
 ::
 ++  apply-pub
-  |=  [root=path now=@da act=pub-action:lp]
+  |=  [root=@ud now=@da act=pub-action:lp]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  vbase=path  (weld root /pub/vault)
-  =/  px=road:tarball  [%& %& (weld root /pub) %index]
+  =/  vbase=path  /pub/vault
+  =/  px=road:tarball  (rf root /pub %index)
   ?-    -.act
       %save-page
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
@@ -8412,10 +8412,10 @@
 ::  Returns the seq it grew. Nothing consumes it. Callers discard it.
 ::
 ++  grow-pub-index
-  |=  [root=path ix=pub-index:lp]
+  |=  [root=@ud ix=pub-index:lp]
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
-  =/  mx=road:tarball  [%& %& (weld root /pub) %meta]
+  =/  mx=road:tarball  (rf root /pub %meta)
   ;<  seq=@ud  bind:m  (read-pub-seq mx)
   =/  nseq=@ud  +(seq)
   ;<  ~  bind:m  (grow:io /pub/index/[(scot %ud nseq)] [%gmi (manifest-gmi ix)])
@@ -8870,7 +8870,7 @@
 ::  a per-page grub under /sub/pages/ (whose on-file fiber owns the live keep).
 ::
 ++  apply-sub
-  |=  [root=path act=sub-action:lp]
+  |=  [root=@ud act=sub-action:lp]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?:  ?=(?(%follow %unfollow) -.act)
@@ -8880,11 +8880,11 @@
         %follow    (~(put in fs) ship.act)
         %unfollow  (~(del in fs) ship.act)
       ==
-    (put-file [%& %& (weld root /sub) %follows] [/lattice %sub-follows] fs2)
+    (put-file (rf root /sub %follows) [/lattice %sub-follows] fs2)
   ::  a page grub's name is a deterministic hash of [ship pax], so /unsub culls the
   ::  exact grub /sub created (and re-subscribing is an idempotent over).
   =/  nom=@ta  (scot %uv (sham page-sub.act))
-  =/  road=road:tarball  [%& %& (weld root /sub/pages) nom]
+  =/  road=road:tarball  (rf root /sub/pages nom)
   ?:  ?=(%sub-page -.act)
     (put-file road [/lattice %sub-page] page-sub.act)
   ::  %unsub-page: cull only if present, so a stray /unsub can't veto-crash the writer.
@@ -8894,10 +8894,10 @@
 ::  +retag: %tag / %untag, touch the entry's tag set + refresh its index row.
 ::
 ++  retag
-  |=  [root=path key-t=@t tag=@t add=?]
+  |=  [root=@ud key-t=@t tag=@t add=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  vbase=path  (weld root /know/vault)
+  =/  vbase=path  /know/vault
   ::  guard the key: %tag/%untag are reachable un-normalized via the direct
   ::  grubbery poke API (mar know-action). A bad key crashes+parks the writer.
   =/  ko=(unit path)  (know-key key-t)
