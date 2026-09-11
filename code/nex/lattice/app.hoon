@@ -2994,6 +2994,16 @@
           %+  line  '/sys/gall/'
           'talk to other agents on this ship and to grubbery on other ships. This one road also reaches %hood, so it can install software here - lattice uses that only for the obelisk install button'
       ==
+    ::  the usergroup road is a READ, and it is OPTIONAL: refuse it and
+    ::  every local feature still works. +exists-soft is what makes that
+    ::  true rather than aspirational - it treats a veto as "no such group"
+    ::  and the arm takes its existing local-only branch.
+    ::
+      :-  'peek'
+      :-  %a
+      :~  %+  line  '/sys/ames/usergroups/'
+          'let other ships read the pages you publish. Refuse this and lattice still works completely for you - your published pages just stay on this ship'
+      ==
   ==
 ::
 ::  +fetch-url: GET a clearweb url through iris, following redirects.
@@ -7997,13 +8007,33 @@
 ::  no public group exists yet (no peer has ever connected). It re-applies the
 ::  next time the writer starts after a peer shows up.
 ::
+::  +exists-soft: peek-exists, but a VETO answers no instead of killing
+::  the fiber. +peek-soft handles [~ %veto *] with [%done ~]; the hard
+::  peek does not, and the writer is not a fiber that may die - a crashed
+::  sig fiber respawns, so one refused road is a crash loop.
+::
+::  This is what makes the usergroup road OPTIONAL rather than required.
+::  An install not granted it keeps every local feature and loses only
+::  cross-ship publishing, which is the degradation weir.json's copy
+::  promises. Ported from auspex, which found it the hard way: the road was
+::  declared as a poke only, the peek was refused, and the writer
+::  crash-looped on a road the arm already knew how to do without.
+::
+++  exists-soft
+  |=  =road:tarball
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io road ~)
+  ?~  vw  (pure:m %.n)
+  (pure:m !?=(?(%none %miss %veto %tomb) -.u.vw))
+::
 ++  send-public-how
   |=  root=@ud
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   =/  gdir=road:tarball  [%& %| public-grp]
-  ;<  ok=?  bind:m  (peek-exists:io gdir)
+  ;<  ok=?  bind:m  (exists-soft gdir)
   ?.  ok  ~&([%lattice-no-public-group ~] (pure:m ~))
   ::  THE SANCTIONED PATH. Group weirs belong to grubbery's usergroup
   ::  machinery: a grant lands through the registry's %how action, which
