@@ -18,7 +18,7 @@ import { dirname, join } from 'path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(
-  join(here, '../grubbery-overlay/nex/lattice/ui-app/src/10-shell.js'), 'utf8');
+  join(here, '../code/nex/lattice/ui-app/src/10-shell.js'), 'utf8');
 const m = src.match(/const shortPath = \([\s\S]*?\n {2}\};/);
 if (!m) { console.error('could not find shortPath in 10-shell.js'); process.exit(2); }
 const shortPath = new Function(`${m[0]}\nreturn shortPath;`)();

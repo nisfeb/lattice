@@ -18,7 +18,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const src = join(dirname(fileURLToPath(import.meta.url)),
-  '..', 'grubbery-overlay', 'nex', 'lattice', 'ui-app', 'src');
+  '..', 'code', 'nex', 'lattice', 'ui-app', 'src');
 
 //  the helpers that report failure through their return value
 const GUARDED = ['enqueueSave', 'enqueueKnow'];

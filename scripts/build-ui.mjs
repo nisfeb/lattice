@@ -7,7 +7,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const ui = join(dirname(fileURLToPath(import.meta.url)),
-  '..', 'grubbery-overlay', 'nex', 'lattice', 'ui-app');
+  '..', 'code', 'nex', 'lattice', 'ui-app');
 const srcDir = join(ui, 'src');
 const files = readdirSync(srcDir).filter((f) => f.endsWith('.js')).sort();
 if (!files.length) { console.error('no src files'); process.exit(1); }

@@ -7,7 +7,7 @@
 # exactly the regression the fingerprint exists to catch.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-APP="$HERE/../grubbery-overlay/nex/lattice/app.hoon"
+APP="$HERE/../code/nex/lattice/app.hoon"
 OUT="$HERE/route-list.txt"
 grep -oE "\[%'(GET|POST|PUT|DELETE)' %[a-z0-9-]+\]" "$APP" \
   | sed "s/\[%'//; s/' %/ /; s/\]//" \

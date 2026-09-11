@@ -29,7 +29,7 @@ try { fc = (await import('fast-check')).default; }
 catch { console.error('fast-check missing: npm i --no-save fast-check'); process.exit(2); }
 
 const here = dirname(fileURLToPath(import.meta.url));
-const read = (f) => readFileSync(join(here, '../grubbery-overlay/nex/lattice/ui-app/src', f), 'utf8');
+const read = (f) => readFileSync(join(here, '../code/nex/lattice/ui-app/src', f), 'utf8');
 const cut = (file, re, what) => {
   const m = read(file).match(re);
   if (!m) { console.error(`could not find ${what} in ${file}`); process.exit(2); }

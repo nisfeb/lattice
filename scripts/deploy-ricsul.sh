@@ -14,7 +14,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-OVERLAY="$REPO/grubbery-overlay"
+OVERLAY="$RE../code"
 
 RIC="sneagan@45.33.75.69"
 #  One connection, reused. The staging step fires six rsyncs back to back and

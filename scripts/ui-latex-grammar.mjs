@@ -12,7 +12,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const PRISM = join(here, '..', 'grubbery-overlay', 'nex', 'lattice', 'prism.js');
+const PRISM = join(here, '..', 'code', 'nex', 'lattice', 'prism.js');
 
 globalThis.window = globalThis;
 globalThis.WorkerGlobalScope = undefined;

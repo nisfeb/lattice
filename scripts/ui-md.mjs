@@ -19,7 +19,7 @@ import { dirname, join } from 'path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(
-  join(here, '../grubbery-overlay/nex/lattice/ui-app/src/59-md.js'), 'utf8');
+  join(here, '../code/nex/lattice/ui-app/src/59-md.js'), 'utf8');
 const mdToHtml = new Function(`${src}\nreturn mdToHtml;`)();
 
 let fails = 0;

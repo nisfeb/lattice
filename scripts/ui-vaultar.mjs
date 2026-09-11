@@ -20,7 +20,7 @@ import { tmpdir } from 'os';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(
-  join(here, '../grubbery-overlay/nex/lattice/ui-app/vault.js'), 'utf8');
+  join(here, '../code/nex/lattice/ui-app/vault.js'), 'utf8');
 
 // the pure half only: everything from the encoder down to the end of the tar
 // reader/writer. The rest of vault.js talks to the ship and the DOM. The

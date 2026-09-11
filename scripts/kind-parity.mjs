@@ -49,8 +49,8 @@ function jsExtKindTable(src, constName) {
   return out;
 }
 
-const treePath = join(root, 'grubbery-overlay/nex/lattice/ui-app/src/30-tree.js');
-const vaultPath = join(root, 'grubbery-overlay/nex/lattice/ui-app/vault.js');
+const treePath = join(root, 'code/nex/lattice/ui-app/src/30-tree.js');
+const vaultPath = join(root, 'code/nex/lattice/ui-app/vault.js');
 const projPath = join(root, 'lattice-fs-rs/src/projection.rs');
 
 const extKind = jsExtKindTable(readFileSync(treePath, 'utf8'), 'EXT_KIND');
