@@ -8586,7 +8586,7 @@
     ?.  ?=([%ball *] dv)  ~
     (wave-grubs wave.dv)
   ;<  rc=@ud  bind:m  (pub-reconcile-revs /pub/vault grubs 0)
-  ;<  sc=@ud  bind:m  (pub-reconcile-seqs base)
+  ;<  sc=@ud  bind:m  pub-reconcile-seqs
   ;<  now=@da  bind:m  bowl-now
   ;<  ~  bind:m  (put-file markr [/ %ud] `@ud`now)
   (pure:m `[rc sc])
@@ -8665,7 +8665,6 @@
 ::  +pub-reconcile-seqs: cull every index seq below the live counter.
 ::
 ++  pub-reconcile-seqs
-  |=  base=path
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
