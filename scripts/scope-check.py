@@ -15,7 +15,7 @@ def _strip(l):
 lines = [_strip(l) for l in open(sys.argv[1]).read().split('\n')]
 CHANGED = {'ensure-dir':2,'ensure-nodes':3,'cull-dirs':3,'run-probe':2,
            'run-fetch':2,'run-key-probe':1,'nexus-root':0,'grant-public':1,
-           'grant-blob':2,'handle-request':1,'rf':3,'rv':2,
+           'grant-blob':2,'handle-request':2,'rf':3,'rv':2,
            'cull-slots':3,'put-slots':3}
 #  the names that carry position. An arm using one it never bound is the
 #  bug that cost three publish rounds: `root` silently resolved to an arm
@@ -43,6 +43,26 @@ for i,l in enumerate(lines):
 of_start = next(i for i,l in enumerate(lines) if l.strip()=='++  on-file')
 of_end   = next(i for i,l in enumerate(lines) if i>of_start and l.strip()=='--')
 bad=[]
+#  every arm's declared arity, read from its own |= head
+arity_of = {}
+for i, l in enumerate(lines):
+    m = re.match(r'^\+\+  ([a-z][a-z0-9-]*)', l)
+    if not m: continue
+    head = '\n'.join(lines[i:i+3])
+    g = (re.search(r'\|=\s*\[([^\]]*)\]', head)
+         or re.search(r'\|=\s*([a-z][a-z0-9-]*=[^\s)]+)', head))
+    if not g: continue
+    #  count only TOP-LEVEL samples: a nested type carries faces of its own,
+    #  and [up=@ud dir=path xs=(list [pk=path st=..])] is three arguments,
+    #  not five.
+    body, depth, n = g.group(1), 0, 0
+    for tok in re.finditer(r'[\[\](]|[a-z][a-z0-9-]*=', body):
+        t = tok.group(0)
+        if t in '[(': depth += 1
+        elif t == ']': depth -= 1
+        elif depth == 0: n += 1
+    arity_of[m.group(1)] = max(1, n)
+
 cur=None
 for i,l in enumerate(lines):
     m = re.match(r'^\+\+  ([a-z][a-z0-9-]*)', l)
@@ -66,11 +86,16 @@ for i,l in enumerate(lines):
         if re.search(r'(?<![\w/-])'+nm+r'(?![\w:=.-])', l) and '::' not in l:
             where = cur if not in_of else f'on-file case @{case0+1}'
             bad.append(f'  {i+1:5} +{where}: uses `{nm}`, binds none | {l.strip()[:50]}')
-    for nm,want in CHANGED.items():
+    #  arity comes from the arm's OWN signature in THIS file, not a table.
+    #  A fixed table is wrong the moment two apps differ - auspex's
+    #  handle-request takes one argument and lattice's takes two.
+    for nm in CHANGED:
+        if nm not in arity_of: continue
+        want = arity_of[nm]
         for c in re.finditer(r'\((%s)((?:\s+(?:\([^()]*\)|[^\s()]+))*)\)' % re.escape(nm), l):
             got = len(re.findall(r'\([^()]*\)|[^\s()]+', c.group(2)))
-            if got != want:
-                bad.append(f'  {i+1:5} +{cur}: ({nm} ..) got {got} wants {want} | {l.strip()[:56]}')
+            if got and got != want:
+                bad.append(f'  {i+1:5} +{cur}: ({nm} ..) got {got} wants {want} | {l.strip()[:52]}')
 #  [root %'x'] / [up %'x'] is a RAIL literal - [path name] - and `root`
 #  and `up` are counts now. It compiles and nest-fails at run time against
 #  a path, which is a slow way to learn it. Both apps hit this at

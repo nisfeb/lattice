@@ -277,7 +277,7 @@
       ::  /ui/requests/*: one ephemeral fiber per in-flight HTTP request.
           [[%ui %requests ~] @]
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /ui/requests: failed")
-        (handle-request name.rail)
+        (handle-request (lent path.rail) name.rail)
       ::  /sub/pages/*: one live per-file subscription. keep the peer's page grub
       ::  and act on every wave, so an edit is noticed as it happens. The body
       ::  arrives entirely over the namespace: %keen
@@ -943,11 +943,15 @@
 ::  largest handlers live in their own arms above; every other route answers
 ::  inline here so the whole contract stays readable in one place.
 ::
+::  takes the depth rather than asking for it. +nexus-up is a dart and a
+::  wait, and a request fiber's FIRST act has to be reading its own state -
+::  interposing a round trip before that left the request grub unread and
+::  every HTTP request hanging. The dispatch arm holds the rail, so the
+::  depth costs nothing there.
 ++  handle-request
-  |=  eyre-id=@ta
+  |=  [up=@ud eyre-id=@ta]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  up=@ud  bind:m  nexus-up
   ;<  [src=@p req=inbound-request:eyre]  bind:m
     (get-state-as:io ,[src=@p inbound-request:eyre])
   =/  parsed  (parse-url:http-utils url.request.req)
