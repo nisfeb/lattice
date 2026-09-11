@@ -44,11 +44,19 @@
 ++  sends  |=([r=result p=(list [@ta @t])] r(pokes p)) ::  poke pages
 ::  composition. Name another OWN page in a `needs` list to depend on it:
 ::    data-of  its raw data value      view-of  its rendered view (html @t)
+::
+::  These three return PAGE-RELATIVE paths (/page/<name>/…). They used to
+::  carry the install path in front, which the evaluator then treated as a
+::  relative lane - so every dep resolved to nothing and every composed
+::  page came out empty. Page-relative is also what makes them survive the
+::  move into a desk: a page's source names another page, never a location.
+::  User page source is unaffected either way; it says /my/page and these
+::  arms build the rest.
 ::  A view-dep re-runs this page whenever the named page's data or render mode
 ::  changes, and its rendered html arrives in `deps` (pull it out with +shown).
 ::
-++  data-of  |=(name=@ta ^-(path /apps/'lattice.lattice_app'/page/[name]/data))
-++  view-of  |=(name=@ta ^-(path /apps/'lattice.lattice_app'/page/[name]/view))
+++  data-of  |=(name=@ta ^-(path /page/[name]/data))
+++  view-of  |=(name=@ta ^-(path /page/[name]/view))
 ::  +shown: the rendered html fragment of a view-dep, by page name ('' until
 ::  the first run that resolves it). Use it to lay out embedded page views.
 ::
@@ -67,7 +75,7 @@
 ::    dir-of  the dep path for a folder      tree-in  its listing, from `deps`
 ::
 +$  entry  [pax=path page=?]  ::  a listed node: a page (%.y) or a folder (%.n)
-++  dir-of  |=(rel=path ^-(path (weld /apps/'lattice.lattice_app'/page rel)))
+++  dir-of  |=(rel=path ^-(path (weld /page rel)))
 ::  +pub-of: the PUBLIC (clearweb) url of a page, by its slash path. Link
 ::  between published pages with it so a logged-out visitor can navigate (the
 ::  /x explorer path is owner-gated). The page must itself be shared %clearweb.

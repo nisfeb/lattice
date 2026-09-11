@@ -4230,9 +4230,15 @@
 ++  view-src
   |=  pax=path
   ^-  (unit path)
-  ?.  ?=([@ @ %page @ %view ~] pax)  ~
-  ?.  =(`path`[i.pax i.t.pax ~] app-base:lu)  ~
-  `(weld app-base:lu /page/[i.t.t.t.pax])
+  ::  A dep path is OURS and page-relative - /page/<name>/view - because
+  ::  +view-of built it that way. It used to carry the install path in
+  ::  front, and +read-dep-vals then handed that absolute path to (rf up …)
+  ::  as a RELATIVE lane, which resolved to <instance>/apps/… and matched
+  ::  nothing. Every view and directory dependency was silently empty, at
+  ::  BOTH tiers: the shipped `site` template rendered its folder nav as
+  ::  <ul class="nav"></ul> on a stock install.
+  ?.  ?=([%page @ %view ~] pax)  ~
+  `/page/[i.t.pax]
 ::  +arm-eval-deps: keep any dep target not yet armed (one wire, /ev). Deps
 ::  name FILE paths; the last segment is the grub name. A view-dep instead
 ::  keeps on the source page's data+show grubs (re-render me when it changes).
@@ -6117,9 +6123,22 @@
 ++  page-dir-name
   |=  pax=path
   ^-  (unit @t)
-  ?.  ?=([@ @ %page @ *] pax)  ~
-  ?.  =(`path`[i.pax i.t.pax ~] app-base:lu)  ~
-  `(crip (pax-str `path`t.t.t.pax))
+  ::  STRUCTURAL, and deliberately not prefix-matched. It used to require
+  ::  the path to begin with +app-base, which names ONE install location -
+  ::  so it answered no for our own pages the moment we moved into a desk,
+  ::  and it would answer no for a PEER who moved before us. Both callers
+  ::  pass a path out of a /x/<ship>/<path> url, one for our tree and one
+  ::  for somebody else's, and we cannot know where they keep lattice.
+  ::
+  ::  What makes a path a page is a `page` segment with at least one
+  ::  segment after it. The caller then checks the dir for a /code grub,
+  ::  which is what actually separates a page from a plain folder - so a
+  ::  structural false positive is filtered there, as it always was.
+  |-  ^-  (unit @t)
+  ?~  pax  ~
+  ?:  &(=(%page i.pax) ?=(^ t.pax))
+    `(crip (pax-str `path`t.pax))
+  $(pax t.pax)
 ::  +render-page-view: the live view of one of our programmable pages,
 ::  rendered data + any error + a command form, with keep-SSE on the data
 ::  grub so a command from ANY browser reloads every open view (step 3).
