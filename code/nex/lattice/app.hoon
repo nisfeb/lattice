@@ -2397,7 +2397,7 @@
     ?:  ex  (send-err eyre-id 409 'already exists')
     ::  +ensure-dirs walks the whole chain, so a new app's nested folders come
     ::  up in one call and it is idempotent if a parent already exists.
-    ;<  ~  bind:m  (ensure-dirs ~ p.pp)
+    ;<  ~  bind:m  (ensure-dirs up ~ p.pp)
     (send-ok eyre-id)
   ::  ── unified search (the omnibar's private half) ─────────────────────────
   ::  content-search: own pages + knowledge entries carrying `term`, each row
@@ -3427,7 +3427,7 @@
       %mkdir
     ::  create an empty folder (and any missing parents). ensure-dirs is
     ::  idempotent, so mkdir over an existing page/folder is a harmless no-op.
-    (ensure-dirs /page pax.act)
+    (ensure-dirs up /page pax.act)
       %dname
     ::  the display name sits beside a page's %code or a folder's flags, as
     ::  a %name grub. '' clears it: the name typed at a rename was a valid
@@ -3512,7 +3512,7 @@
   =/  =comment:lc  [author now body]
   =/  id=@ta  (scot %uv (sham comment))
   =/  cbase=path  /comments
-  ;<  ~  bind:m  (ensure-dirs cbase page.act)
+  ;<  ~  bind:m  (ensure-dirs up cbase page.act)
   ;<  ~  bind:m
     (put-file (rf up (weld cbase page.act) id) [/lattice %comment] comment)
   ::  stamp /beacon/comments so the badge can ask "anything new?" for the
@@ -3868,7 +3868,7 @@
   ;<  ex=?  bind:m  (peek-exists:io (rf up pdir %code))
   ;<  ~  bind:m
     ?:  ex  (pure:m ~)
-    ;<  ~  bind:m  (ensure-dirs /page pax)
+    ;<  ~  bind:m  (ensure-dirs up /page pax)
     ;<  ~  bind:m  (put-file (rf up pdir %cmd) [/lattice %eval-cmd] `eval-cmd:le`[0 '' 0])
     (put-file (rf up pdir %deps) [/lattice %eval-deps] `(list path)`~)
   ;<  ~  bind:m  (put-file (rf up pdir %code) [/lattice %page] src)
@@ -3942,7 +3942,7 @@
     ?:  live
       (make-page root (weld rel.dst i.rels) newcode)
     =/  ddir=path  (weld /[base.dst] (weld rel.dst i.rels))
-    ;<  ~  bind:m  (ensure-dirs /[base.dst] (weld rel.dst i.rels))
+    ;<  ~  bind:m  (ensure-dirs up /[base.dst] (weld rel.dst i.rels))
     (put-file (rf root ddir %code) [/lattice %page] newcode)
   $(rels t.rels)
 ::  +rewrite-wikilinks: rewrite [[from]] and [[from/...]] references in code
@@ -3993,7 +3993,7 @@
   ::  structure first, parents before children, preserves empty subfolders.
   ::  Display names of the root and every subfolder ride along after the
   ::  mkdirs (pages carry theirs in the per-page loop below).
-  ;<  dacts=(list eval-action:le)  bind:m  (dname-acts sdir to [`path`~ dirs])
+  ;<  dacts=(list eval-action:le)  bind:m  (dname-acts up sdir to [`path`~ dirs])
   =/  todo=(list eval-action:le)
     %+  weld
       ^-  (list eval-action:le)
@@ -4013,7 +4013,7 @@
     ?.  ?=([%file *] cn)  ''
     (fall (mole |.(;;(@t (sang-noun:tarball sang.cn)))) '')
   ;<  mode=share-mode:le  bind:m  (read-share pdir)
-  ;<  dn=(unit @t)  bind:m  (read-dname pdir)
+  ;<  dn=(unit @t)  bind:m  (read-dname up pdir)
   =/  dst=path  (weld to i.rels)
   =/  newcode=@t
     %-  crip
@@ -4099,7 +4099,7 @@
   ;<  ex=?  bind:m  (peek-exists:io (rf up pdir %code))
   ?:  ex  $(pages t.pages)
   =/  code=@t  (page-code prel kind.i.pages body.i.pages)
-  ;<  ~  bind:m  (ensure-dirs /template prel)
+  ;<  ~  bind:m  (ensure-dirs up /template prel)
   ;<  ~  bind:m  (put-file (rf up pdir %code) [/lattice %page] code)
   $(pages t.pages)
 ::  +public-grp: the public usergroup's storage dir. Grubbery names usergroup
@@ -4901,10 +4901,10 @@
 ::  +read-dname: a page's or folder's display name, by peek. Used where the
 ::  ball is not already in hand (moves).
 ++  read-dname
-  |=  dir=path
+  |=  [up=@ud dir=path]
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
-  ;<  nn=view:nexus  bind:m  (peek:io [%& %& dir %name] ~)
+  ;<  nn=view:nexus  bind:m  (peek:io (rf up dir %name) ~)
   %-  pure:m
   ?.  ?=([%file *] nn)  ~
   =/  j=(unit json)  (mole |.(;;(json (sang-noun:tarball sang.nn))))
@@ -4915,11 +4915,11 @@
 ::  (relative to sdir) to the same rels under `to`. One peek per dir; moves
 ::  are rare.
 ++  dname-acts
-  |=  [sdir=path to=path dirs=(list path)]
+  |=  [up=@ud sdir=path to=path dirs=(list path)]
   =/  m  (fiber:fiber:nexus ,(list eval-action:le))
   ^-  form:m
   ?~  dirs  (pure:m ~)
-  ;<  dn=(unit @t)  bind:m  (read-dname (weld sdir i.dirs))
+  ;<  dn=(unit @t)  bind:m  (read-dname up (weld sdir i.dirs))
   ;<  rest=(list eval-action:le)  bind:m  $(dirs t.dirs)
   %-  pure:m
   ?~  dn  rest
@@ -8104,7 +8104,7 @@
     ::  them (the trash tomb is then cleared below, as for any re-save).
     ;<  tomb=(unit know-entry:lk)  bind:m  (read-entry (entry-road up tvbase key))
     =/  e=know-entry:lk  (merge-save:lk ?^(old old tomb) body.act now)
-    ;<  ~  bind:m  (ensure-dirs vbase key)
+    ;<  ~  bind:m  (ensure-dirs up vbase key)
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] e)
     ;<  ~  bind:m  (gain:io road %.y)
     ::  memories are gained too, and autosave saves one revision per typing
@@ -8133,7 +8133,7 @@
     ?~  old  ~&([%lattice-del-missing key] (pure:m ~))
     ::  MOVE to the trash vault: write the trash copy first (duplicate-on-crash,
     ::  never lose), then cull the live grub, then swing the index rows.
-    ;<  ~  bind:m  (ensure-dirs tvbase key)
+    ;<  ~  bind:m  (ensure-dirs up tvbase key)
     ;<  ~  bind:m  (put-file troad [/lattice %know-entry] u.old)
     ;<  ~  bind:m  (gain:io troad %.y)
     ;<  ~  bind:m  (cull:io road)
@@ -8162,7 +8162,7 @@
     ;<  liv=(unit know-entry:lk)  bind:m  (read-entry troad)
     ?^  liv  ~&([%lattice-move-target-exists tk] (pure:m ~))
     ::  make target first (duplicate-on-crash, never lose), cull source after.
-    ;<  ~  bind:m  (ensure-dirs vbase tk)
+    ;<  ~  bind:m  (ensure-dirs up vbase tk)
     ;<  ~  bind:m  (put-file troad [/lattice %know-entry] u.old)
     ;<  ~  bind:m  (gain:io troad %.y)
     ;<  ~  bind:m  (cull:io froad)
@@ -8192,7 +8192,7 @@
     ?^  live  ~&([%lattice-restore-target-live key] (pure:m ~))
     ::  MOVE back from the trash vault: write the live grub, then cull the trash
     ::  copy, then swing the index rows.
-    ;<  ~  bind:m  (ensure-dirs vbase key)
+    ;<  ~  bind:m  (ensure-dirs up vbase key)
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] u.old)
     ;<  ~  bind:m  (gain:io road %.y)
     ;<  ~  bind:m  (cull:io troad)
@@ -8211,7 +8211,7 @@
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
     =/  key=path  u.ko
     =/  road=road:tarball  (entry-road up vbase key)
-    ;<  ~  bind:m  (ensure-dirs vbase key)
+    ;<  ~  bind:m  (ensure-dirs up vbase key)
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] entry.act)
     ;<  ~  bind:m  (gain:io road %.y)
     ;<  trash=know-index:lk  bind:m  (read-index tx)
@@ -8230,7 +8230,7 @@
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
     =/  key=path  u.ko
     =/  troad=road:tarball  (entry-road up tvbase key)
-    ;<  ~  bind:m  (ensure-dirs tvbase key)
+    ;<  ~  bind:m  (ensure-dirs up tvbase key)
     ;<  ~  bind:m  (put-file troad [/lattice %know-entry] entry.act)
     ;<  ~  bind:m  (gain:io troad %.y)
     ;<  trash=know-index:lk  bind:m  (read-index tx)
@@ -8265,7 +8265,7 @@
     =/  or=(unit vrail:lp)  (key-to-rail:lp vbase key)
     ?~  or  ~&([%lattice-pub-bad-key key] (pure:m ~))
     =/  road=road:tarball  (rf up pax.u.or nom.u.or)
-    ;<  ~  bind:m  (ensure-dirs vbase (slag (lent vbase) pax.u.or))
+    ;<  ~  bind:m  (ensure-dirs up vbase (slag (lent vbase) pax.u.or))
     ::  the rev bound in the namespace by the PREVIOUS publish of this page,
     ::  read BEFORE this save's put-file bumps the vault grub's cass. This is
     ::  the exact predecessor spur the keep-only-current cull below retracts.
@@ -9048,13 +9048,23 @@
 ::  deep key's entry has a parent. ponytail: empty key-dirs are left behind on
 ::  delete. Add pruning if the tree clutters.
 ::
+::  Takes the DEPTH. It builds a road out of a path its caller handed it,
+::  and every one of those paths is ours - /page, /template, /mirror, a
+::  vault base. Written [%& %| dir] it addressed the old app-tier location
+::  and a sandboxed install vetoed every directory it tried to make, which
+::  silently broke page creation, folders, templates and the mirror: the
+::  writer died on the veto and the HTTP handler had already answered ok.
+::
+::  The road audit hid this because 'dir' was on its allow-list of names
+::  that legitimately hold somebody else's path. It does not any more.
+::
 ++  ensure-dirs
-  |=  [base=path segs=path]
+  |=  [up=@ud base=path segs=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?~  segs  (pure:m ~)
   =/  dir=path  (weld base /[i.segs])
-  =/  road=road:tarball  [%& %| dir]
+  =/  road=road:tarball  (rv up dir)
   ;<  exists=?  bind:m  (peek-exists:io road)
   ;<  ~  bind:m  ?:(exists (pure:m ~) (make:io road &+empty-dir:loader))
   $(base dir, segs t.segs)
@@ -9433,7 +9443,7 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  now=@da  bind:m  get-time:io
-  ;<  ~  bind:m  (ensure-dirs /mirror /tr)
+  ;<  ~  bind:m  (ensure-dirs up /mirror /tr)
   (put-file (rf up /mirror/tr msg) [/ %json] s+(scot %da now))
 ::  +mirror-tracev: a trace carrying a value instead of a timestamp.
 ++  mirror-tracev
@@ -9441,7 +9451,7 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  ~  bind:m  (ensure-dirs /mirror /tr)
+  ;<  ~  bind:m  (ensure-dirs up /mirror /tr)
   (put-file (rf up /mirror/tr msg) [/ %json] s+val)
 ++  mirror-run
   |=  urql=tape

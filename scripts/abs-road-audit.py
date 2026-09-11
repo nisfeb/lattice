@@ -33,6 +33,11 @@ for i, raw in enumerate(open(sys.argv[1])):
     #  +grub-road takes a path parsed out of a request, so its road names
     #  whatever the caller asked for and absolute is right.
     if cur == 'grub-road': continue
+    #  +handle-remote-save writes onto ANOTHER ship's grubbery - it refuses
+    #  our own ship explicitly ('own ship: use /grub-save'), so every road
+    #  it builds names a place we do not own and absolute is the only thing
+    #  it could be.
+    if cur == 'handle-remote-save': continue
     for road in re.finditer(r'\[%& %[&|] ([^\]]+)\]', l):
         body = road.group(1)
         if '/sys/' in body: continue                 # a runtime service
@@ -44,7 +49,12 @@ for i, raw in enumerate(open(sys.argv[1])):
         #  meant thirty-five of them were never looked at. Name the variables
         #  that legitimately hold somebody else's path instead, and flag the
         #  rest - a shorter list to keep honest than a silent one.
-        FOREIGN = ('gdir','ug-base','public-grp','prefix','p.pp','pax','dir',
+        #  'dir' was on this list and hid +ensure-dirs, which builds an
+        #  absolute road out of OUR OWN path and vetoed every template
+        #  laydown on a sandboxed install. A name earns a place here by
+        #  being specific about whose path it holds; 'dir' and 'path' say
+        #  nothing, so they are not allowed to buy silence.
+        FOREIGN = ('gdir','ug-base','public-grp','prefix','p.pp','pax',
                    'app-base','u.pp','tree-path')
         lit = re.search(r'/[a-z][a-z0-9/-]*', body)
         if lit:
