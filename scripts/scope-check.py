@@ -47,12 +47,25 @@ cur=None
 for i,l in enumerate(lines):
     m = re.match(r'^\+\+  ([a-z][a-z0-9-]*)', l)
     if m: cur = m.group(1)
-    if of_start <= i <= of_end: continue          # rail is in scope here
+    #  +on-file is INDENTED, so the ^++ arm regex never matches it and
+    #  nothing inside it is attributed to an arm. It binds `rail` for every
+    #  case; anything else it binds PER CASE, and only from the line the
+    #  binding appears on. That is where a binding got renamed to pdir-up
+    #  and every `up` beneath it went unbound, unseen, to the ship.
+    in_of = of_start <= i <= of_end
+    case0 = (max((j for j in range(of_start, i + 1)
+                  if re.match(r'^\s+\[[\[~]', lines[j])), default=of_start)
+             if in_of else 0)
     for nm in FREE:
+        if in_of:
+            if nm == 'rail': continue
+            if re.search(r'(?<![\w-])' + nm + r'=', '\n'.join(lines[case0:i + 1])): continue
+        elif (cur, nm) in binds: continue
         #  not a free name when it is a FACE ACCESS (root.h) or a PATH
         #  SEGMENT (/sys/ames/.../root) - both read as the bare name.
-        if re.search(r'(?<![\w/-])'+nm+r'(?![\w:=.-])', l) and (cur,nm) not in binds and '::' not in l:
-            bad.append(f'  {i+1:5} +{cur}: uses `{nm}`, binds none | {l.strip()[:56]}')
+        if re.search(r'(?<![\w/-])'+nm+r'(?![\w:=.-])', l) and '::' not in l:
+            where = cur if not in_of else f'on-file case @{case0+1}'
+            bad.append(f'  {i+1:5} +{where}: uses `{nm}`, binds none | {l.strip()[:50]}')
     for nm,want in CHANGED.items():
         for c in re.finditer(r'\((%s)((?:\s+(?:\([^()]*\)|[^\s()]+))*)\)' % re.escape(nm), l):
             got = len(re.findall(r'\([^()]*\)|[^\s()]+', c.group(2)))

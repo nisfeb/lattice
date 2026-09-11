@@ -339,7 +339,11 @@
       ::  cycle spins. A converging one terminates via no-op suppression.
           [[%page @ *] %code]
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /page eval: failed")
-        =/  pdir-up=@ud  (lent path.rail)
+        ::  this fiber IS the page dir: on-file hands it a rail already
+        ::  relativised to the nexus, so its path is /page/<name> and its
+        ::  length is the climb back to the root.
+        =/  up=@ud  (lent path.rail)
+        =/  pdir=path  path.rail
         ::  one wire for everything: code (self), cmd inbox, deps grub, and
         ::  each declared dep target. Any change wakes the loop.
         ;<  *  bind:m  (keep:io /ev (rf up pdir %code) ~)
