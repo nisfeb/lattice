@@ -9,8 +9,24 @@
 ::  arms stay bare at every call site.
 ::
 |%
-::  +app-base: the nexus's absolute tree path (its app dir, fixed by root.hoon).
-::  Needed to build remote roads for peek-remote (rewritten to /sys/ames/ships/…).
+::  +app-base: WHERE LATTICE LIVES ON SOMEBODY ELSE'S SHIP.
+::
+::    It used to be our own path too, fixed by root.hoon, and both jobs were
+::    the same string because every ship installed lattice in one place. A
+::    desk install retires that: a sandboxed app cannot read its own absolute
+::    path (+walk-here stops at the boundary, which is the sandbox working),
+::    and the desk NAME is chosen by whoever installs it.
+::
+::    LOCAL addressing is therefore relative now - roads are [%| steps lane],
+::    counted from the fiber that builds them. This constant survives for the
+::    handful of REMOTE roads that name a peer's tree: their /pub index, their
+::    published gemtext, their knowledge vault. Those are wrong for a peer who
+::    named their desk differently, and the fix is the alias book - link.json
+::    claims @lattice, the shell folds it into /sys/link, and a reader
+::    resolves the name against THEIR registry instead of assuming ours.
+::
+::    Remote roads built from a path the CALLER supplied - a /t/ tree address
+::    out of a urb:// url - are already location-independent and untouched.
 ::
 ++  app-base  `path`/apps/'lattice.lattice_app'
 ::  +parse-urb-url: "urb://~ship/rel" -> [ship rel-path]. ~ on a malformed url

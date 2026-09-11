@@ -82,6 +82,19 @@
             :~  name+s+'lattice'
                 description+s+'Pages, knowledge & publishing'
             ==
+        ::  link.json: the same claim in the form the shell actually SCANS.
+        ::  +read-app-aliases walks /apps and each desk's data children
+        ::  reading link.json, not alias.json, and folds what it finds into
+        ::  the /sys/link registry. Without this grub lattice claims the name
+        ::  nowhere, and a peer cannot resolve @lattice to wherever this
+        ::  instance lives - which is the whole problem once desks are named
+        ::  at install time. See +app-base for the constant it should retire.
+            :^  %over  %&  [/ %'link.json']
+            :-  [/ %json]
+            %-  pairs:enjs:format
+            :~  name+s+'lattice'
+                description+s+'Pages, knowledge & publishing'
+            ==
         ::  weir.json: WHAT THIS NEXUS REACHES OUTSIDE ITS OWN TREE, and why,
         ::  in words meant for the person being asked. A desk-installed
         ::  instance is created with an empty weir - permit nothing - and
@@ -206,8 +219,7 @@
       ?+    rail  stay:m
           [~ %'main.sig']
         ;<  ~     bind:m  (rise-wait:io prod "%lattice writer failed")
-        ;<  here=rail:tarball  bind:m  get-here-abs:io
-        =/  root=path  path.here
+        =/  root=@ud  (lent path.rail)
         ::  lay lattice's COMPLETE public grant set through the registry's
         ::  %how action: /pub for foreign readers, every shared page's data
         ::  road, and the share/comment inboxes. One act, server-side merged,
@@ -239,8 +251,7 @@
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /shares: failed")
         ::  root is NOT ambient in on-file. Each case that needs it derives it
         ::  from its own rail, exactly as the writer above does.
-        ;<  here=rail:tarball  bind:m  get-here-abs:io
-        =/  root=path  path.here
+        =/  root=@ud  (lent path.rail)
         |-
         ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
         ;<  now=@da  bind:m  bowl-now
@@ -251,8 +262,7 @@
       ::  payload, so it cannot be forged. Same take-poke loop as /shares.sig.
           [~ %'comments.sig']
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /comments: failed")
-        ;<  here=rail:tarball  bind:m  get-here-abs:io
-        =/  root=path  path.here
+        =/  root=@ud  (lent path.rail)
         |-
         ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
         ;<  now=@da  bind:m  bowl-now
@@ -262,7 +272,7 @@
       ::  per-request fiber under /ui/requests (same pattern as counter).
           [[%ui ~] %'main.sig']
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /ui/main: failed")
-        ;<  ~  bind:m  (bind-http:io [~ /apps/lattice])
+        ;<  ~  bind:m  (bind-http-self:io [~ /apps/lattice])
         (http-dispatch:io %lattice)
       ::  /ui/requests/*: one ephemeral fiber per in-flight HTTP request.
           [[%ui %requests ~] @]
@@ -329,8 +339,7 @@
       ::  cycle spins. A converging one terminates via no-op suppression.
           [[%page @ *] %code]
         ;<  ~  bind:m  (rise-wait:io prod "%lattice /page eval: failed")
-        ;<  here=rail:tarball  bind:m  get-here-abs:io
-        =/  pdir=path  path.here
+        =/  pdir-up=@ud  (lent path.rail)
         ::  one wire for everything: code (self), cmd inbox, deps grub, and
         ::  each declared dep target. Any change wakes the loop.
         ;<  *  bind:m  (keep:io /ev [%& %& pdir %code] ~)
