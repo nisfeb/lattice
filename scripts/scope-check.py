@@ -68,5 +68,25 @@ for i, l in enumerate(lines):
 for i, l in enumerate(lines):
     for m in re.finditer(r"\[(root|up)\s+%", l):
         bad.append(f'  {i+1:5} rail literal built from a COUNT: [{m.group(1)} %..] | {l.strip()[:48]}')
+#  A COUNT handed to an arm whose sample is a `path`. This is the shape
+#  that survived every other check and cost three deploy cycles: it
+#  compiles, and nest-fails on the manifest so the whole nexus BANGs.
+_sig, _cur = {}, None
+for i, l in enumerate(lines):
+    m = re.match(r'^\+\+  ([a-z][a-z0-9-]*)', l)
+    if not m: continue
+    _cur = m.group(1)
+    head = '\n'.join(lines[i:i+3])
+    g = (re.search(r'\|=\s*\[([^\]]*)\]', head)
+         or re.search(r'\|=\s*([a-z][a-z0-9-]*=[a-z@][\w:-]*)', head))
+    if g: _sig[_cur] = re.findall(r'[a-z][a-z0-9-]*=([a-z@][\w:-]*)', g.group(1))
+for i, l in enumerate(lines):
+    for c in re.finditer(r'\(([a-z][a-z0-9-]{2,})((?:\s+(?:\([^()]*\)|[^\s()]+))+)\)', l):
+        nm = c.group(1)
+        if nm not in _sig: continue
+        args = re.findall(r'\([^()]*\)|[^\s()]+', c.group(2))
+        for k, a in enumerate(args):
+            if k < len(_sig[nm]) and a in ('root','up') and _sig[nm][k] == 'path':
+                bad.append(f'  {i+1:5} ({nm} ..): a COUNT in a `path` slot #{k+1} | {l.strip()[:46]}')
 print('\n'.join(bad) if bad else '  clean')
 print(len(bad),'suspect')
