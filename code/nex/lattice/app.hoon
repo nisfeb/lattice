@@ -4523,7 +4523,7 @@
   =/  ko=(unit path)  (know-key raw)
   ?~  ko  (pure:m ~)
   =/  live=road:tarball   (entry-road up /know/vault u.ko)
-  =/  trash=road:tarball  (entry-road up (weld app-base:lu /know/trash-vault) u.ko)
+  =/  trash=road:tarball  (entry-road up /know/trash-vault u.ko)
   ;<  el=(unit know-entry:lk)  bind:m  (read-entry live)
   ?^  el  (pure:m `[live %.n])
   ;<  et=(unit know-entry:lk)  bind:m  (read-entry trash)
@@ -8517,7 +8517,7 @@
   ::  the seq advances like any publish. Subscribers do no seq bookkeeping
   ::  (the rev rides each page keep's own wave), so a regrow is invisible to
   ::  them until a page's next real edit wave.
-  ;<  *  bind:m  (grow-pub-index app-base:lu ix)
+  ;<  *  bind:m  (grow-pub-index up ix)
   (pure:m n)
 ++  pub-regrow-loop
   |=  [keys=(list path) cnt=@ud]
