@@ -1,1 +1,11 @@
-{"lattice.lattice_app": "/lattice/app"}
+{
+  "lattice.lattice_app": "/lattice/app",
+  "adopt": {
+    "lattice.lattice_app": {
+      "from": "/apps/lattice.lattice_app",
+      "omit": [
+        "/ui"
+      ]
+    }
+  }
+}
