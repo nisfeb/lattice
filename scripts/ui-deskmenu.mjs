@@ -31,7 +31,7 @@ const check = (m, c, d) => {
 // main.rs maps a menu id to an element id. Parsing it here means the test
 // cannot drift from the menu: add an item, and its button is checked too.
 const mainRs = readFileSync(ROOT + 'desktop/src/main.rs', 'utf8');
-const appJs = readFileSync(ROOT + 'grubbery-overlay/nex/lattice/ui-app/app.js', 'utf8');
+const appJs = readFileSync(ROOT + 'code/nex/lattice/ui-app/app.js', 'utf8');
 const ids = [...mainRs.matchAll(/"file-[a-z-]+" => "([a-z]+)"/g)].map((m) => m[1]);
 check('the File menu maps at least the five commands that moved', ids.length >= 5,
   'found ' + ids.length + ': ' + ids.join(','));

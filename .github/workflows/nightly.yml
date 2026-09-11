@@ -50,7 +50,7 @@ jobs:
         run: |
           set -uo pipefail
           fail=0
-          for f in grubbery-overlay/tests/lib/*.hoon; do
+          for f in tests/lib/*.hoon; do
             name=$(basename "$f" .hoon)
             body=$(python3 - "$name" <<'PY'
           import json, sys

@@ -8,7 +8,7 @@
 #  So a parser that crashes on hostile input is a caught, reportable failure,
 #  and a parser that SPINS on hostile input is an event that never completes:
 #  the Arvo event loop is single-threaded, the pier stops answering, and every
-#  in-ship test runner (including %quiz, see grubbery-overlay/lib/quiz.hoon)
+#  in-ship test runner (including %quiz, see code/lib/quiz.hoon)
 #  is inside the thing that stopped. A test that hangs reports nothing. It
 #  cannot report anything. It is not running any more.
 #

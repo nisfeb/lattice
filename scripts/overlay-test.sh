@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the lattice nexus's Hoon unit tests against the running ~zod fakezod (via
-# the MCP server; see scripts/mcp-zod.sh). Assumes the grubbery-overlay has been
+# the MCP server; see scripts/mcp-zod.sh). Assumes the code has been
 # synced into the ship's grubbery desk (scripts/sync-overlay.sh). Commits the
 # grubbery desk, runs /tests, and exits non-zero on any failure.
 #

@@ -59,7 +59,7 @@ jobs:
       - name: the served UI artifact is current
         run: |
           node scripts/build-ui.mjs
-          git diff --exit-code grubbery-overlay/nex/lattice/ui-app/app.js
+          git diff --exit-code code/nex/lattice/ui-app/app.js
 
   # ONE release, made once. Each of the three build jobs used to run
   # "find the draft release for this tag, or create it" concurrently, and

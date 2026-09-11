@@ -96,8 +96,8 @@ jobs:
       - name: UI builds and the served artifact is current
         run: |
           node scripts/build-ui.mjs
-          git diff --exit-code grubbery-overlay/nex/lattice/ui-app/app.js
-          node --check grubbery-overlay/nex/lattice/ui-app/app.js
+          git diff --exit-code code/nex/lattice/ui-app/app.js
+          node --check code/nex/lattice/ui-app/app.js
       # every suite, not just ui-matrix: a syntax error in one that CI never
       # parsed is a suite that silently stops testing anything.
       - name: test scripts parse
