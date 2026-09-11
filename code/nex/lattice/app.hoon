@@ -186,6 +186,15 @@
         ::  shared /server materialization cannot cross results between
         ::  callers. mirror.sig is the reconciler, cursor its per-source
         ::  memory, config.json the enabled flag.
+            ::  /mirror/tr: the reconciler's trace notes. +mirror-trace
+            ::  creates this with ensure-dirs at runtime, so it worked
+            ::  without a row - but an undeclared directory cannot be
+            ::  ADOPTED. A desk adopt folds the old instance's tree in,
+            ::  and a fold populates directories this on-load declares;
+            ::  /mirror/tr was the one grub out of fifty-one that did not
+            ::  survive the migration test, for exactly that reason.
+            ::  Declaring it is also just more honest about the layout.
+            [%fall %| /mirror/tr empty-dir:loader]
             [%fall %& [/mirror %'mirror.sig'] [[/ %sig] ~]]
             [%fall %& [/mirror %cursor] [[/lattice %mirror-cursor] *mirror-cursor:lm]]
             [%fall %& [/mirror %'config.json'] [[/ %json] (pairs:enjs:format ~[['enabled' b+|]])]]
