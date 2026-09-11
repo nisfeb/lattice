@@ -8560,6 +8560,22 @@
   =/  mx=road:tarball  (rf root /pub %meta)
   ;<  seq=@ud  bind:m  (read-pub-seq mx)
   =/  nseq=@ud  +(seq)
+  ::  COUNTER FIRST. It used to be written last, and a crash between the grow
+  ::  and the write left the counter BEHIND a bound spur - after which every
+  ::  later publish recomputed the same nseq, re-grew it (harmless, appends a
+  ::  case) and then re-culled its predecessor, which is the one thing the
+  ::  comment below says cull-farm cannot survive. A 500 on every publish,
+  ::  forever, from one interrupted event.
+  ::
+  ::  Written first, a crash leaves the counter AHEAD instead, and ahead is
+  ::  already handled: the next publish grows a fresh seq and culls a
+  ::  predecessor that was never grown, which farm-top finds unbound and
+  ::  treats as a no-op - exactly the seq=0 first-publish case below.
+  ::  Over-counting wastes a number; under-counting breaks publishing.
+  ::
+  ::  [/ %ud], grubbery's own atom mark (see the /pub/meta covering row in
+  ::  +on-load). A put-file under a mark with no source file lays a boom.
+  ;<  ~  bind:m  (put-file mx [/ %ud] nseq)
   ;<  ~  bind:m  (grow:io /pub/index/[(scot %ud nseq)] [%gmi (manifest-gmi ix)])
   ::  keep-only-current INVARIANT for the manifest: at most one /pub/index seq
   ::  is ever bound. Retract the predecessor seq now that the successor is
@@ -8574,9 +8590,6 @@
   ::  live seq and break that. Runs on save, delete AND regrow, so every
   ::  manifest grow maintains the one-live-seq rule.
   ;<  ~  bind:m  (cull-farm:io /pub/index/[(scot %ud seq)])
-  ::  [/ %ud], grubbery's own atom mark (see the /pub/meta covering row in
-  ::  +on-load). A put-file under a mark with no source file lays a boom.
-  ;<  ~  bind:m  (put-file mx [/ %ud] nseq)
   (pure:m nseq)
 ::  +pub-regrow: backfill the namespace from the existing pub vault, every
 ::  page at its CURRENT vault rev, then one fresh index seq. For piers that
