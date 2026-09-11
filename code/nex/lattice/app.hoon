@@ -3895,7 +3895,7 @@
   |=  [root=@ud src=[base=@tas rel=path] dst=[base=@tas rel=path] live=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  src-root=@ud  (weld /[base.src] rel.src)
+  =/  src-root=path  (weld /[base.src] rel.src)
   =/  from-str=tape  (spud rel.src)
   =/  to-str=tape    (spud rel.dst)
   ;<  dn=view:nexus  bind:m  (peek:io [%& %| src-root] ~)
@@ -4011,7 +4011,7 @@
   |=  [name=@tas to=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  troot=@ud    (weld /template /[name])
+  =/  troot=path    (weld /template /[name])
   =/  from-str=tape  (spud /[name])
   =/  to-str=tape    (spud to)
   ;<  dn=view:nexus  bind:m  (peek:io [%& %| troot] ~)
@@ -5361,6 +5361,10 @@
   (pure:m ?.(root.h n ?:((lth n (lent app-base:lu)) 0 (sub n (lent app-base:lu)))))
 ::  +rf, +rv: a file road and a directory road, `up` steps from here.
 ::
+::  +writer-rail: the writer's own rail, nexus-relative - declared by the
+::  /main.sig row in +on-load. The usergroup registry wants a RAIL, and a
+::  sandboxed app has no absolute one to hand it.
+++  writer-rail  ^-(rail:tarball [/ %'main.sig'])
 ++  rf  |=([up=@ud p=path n=@ta] ^-(road:tarball [%| up [%& p n]]))
 ++  rv  |=([up=@ud p=path] ^-(road:tarball [%| up [%| p]]))
 ::
@@ -7991,7 +7995,7 @@
   ::  data road, and the share/comment inbox pokes. Callers run in the
   ::  writer fiber, whose rail the registration names; the register is
   ::  idempotent. Deep walk, so nested shared pages are granted too.
-  ;<  ~  bind:m  (reg-register-at:io [root %'main.sig'])
+  ;<  ~  bind:m  (reg-register-at:io writer-rail)
   =/  pubdir=road:tarball  (rv root /pub)
   =/  pokes=(set road:tarball)
     %-  silt

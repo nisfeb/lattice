@@ -55,5 +55,18 @@ for i,l in enumerate(lines):
             got = len(re.findall(r'\([^()]*\)|[^\s()]+', c.group(2)))
             if got != want:
                 bad.append(f'  {i+1:5} +{cur}: ({nm} ..) got {got} wants {want} | {l.strip()[:56]}')
+#  [root %'x'] / [up %'x'] is a RAIL literal - [path name] - and `root`
+#  and `up` are counts now. It compiles and nest-fails at run time against
+#  a path, which is a slow way to learn it. Both apps hit this at
+#  reg-register-at; neither checker saw it.
+#  A var declared @ud but ASSIGNED a path. The root=path -> root=@ud pass
+#  was a substring replace, so it also hit troot=path and src-root=path and
+#  left them counting a path. Compiles; nest-fails at run time.
+for i, l in enumerate(lines):
+    m2 = re.search(r'=/\s+[a-z][a-z0-9-]*=@ud\s+(\(weld |/[a-z])', l)
+    if m2: bad.append(f'  {i+1:5} declared @ud but assigned a PATH | {l.strip()[:52]}')
+for i, l in enumerate(lines):
+    for m in re.finditer(r"\[(root|up)\s+%", l):
+        bad.append(f'  {i+1:5} rail literal built from a COUNT: [{m.group(1)} %..] | {l.strip()[:48]}')
 print('\n'.join(bad) if bad else '  clean')
 print(len(bad),'suspect')
