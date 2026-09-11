@@ -8560,23 +8560,33 @@
   =/  mx=road:tarball  (rf root /pub %meta)
   ;<  seq=@ud  bind:m  (read-pub-seq mx)
   =/  nseq=@ud  +(seq)
-  ::  COUNTER FIRST. It used to be written last, and a crash between the grow
-  ::  and the write left the counter BEHIND a bound spur - after which every
-  ::  later publish recomputed the same nseq, re-grew it (harmless, appends a
-  ::  case) and then re-culled its predecessor, which is the one thing the
-  ::  comment below says cull-farm cannot survive. A 500 on every publish,
-  ::  forever, from one interrupted event.
+  ::  ORDER: grow, then the counter, then the cull. It is the only one of the
+  ::  three that survives a crash in either window, and this arm runs in a long
+  ::  loop during a migration, so an interrupted event has to be recoverable.
   ::
-  ::  Written first, a crash leaves the counter AHEAD instead, and ahead is
-  ::  already handled: the next publish grows a fresh seq and culls a
-  ::  predecessor that was never grown, which farm-top finds unbound and
-  ::  treats as a no-op - exactly the seq=0 first-publish case below.
-  ::  Over-counting wastes a number; under-counting breaks publishing.
+  ::    grow, cull, counter   crash after the cull leaves the counter BEHIND a
+  ::                          culled spur. Every later publish recomputes the
+  ::                          same nseq and re-culls its predecessor, which the
+  ::                          comment below says cull-farm cannot survive: one
+  ::                          interrupted event, and publishing 500s forever.
+  ::    counter, grow, cull   crash after the counter leaves a seq that was
+  ::                          never grown, and the next publish culls an
+  ::                          UNBOUND spur. Measured: that crashes too, so the
+  ::                          seq=0 no-op below does not generalise.
+  ::    grow, counter, cull   crash before the counter: predecessor not yet
+  ::                          culled, so the retry re-grows (harmless, gall
+  ::                          appends a case) and culls a spur still bound.
+  ::                          Crash after the counter: the predecessor leaks,
+  ::                          bound and harmless, and the next publish culls
+  ::                          its own bound predecessor. Both recover.
+  ::
+  ::  So the cost of a crash is a leaked spur - farm space - instead of a
+  ::  permanently wedged publish path.
   ::
   ::  [/ %ud], grubbery's own atom mark (see the /pub/meta covering row in
   ::  +on-load). A put-file under a mark with no source file lays a boom.
-  ;<  ~  bind:m  (put-file mx [/ %ud] nseq)
   ;<  ~  bind:m  (grow:io /pub/index/[(scot %ud nseq)] [%gmi (manifest-gmi ix)])
+  ;<  ~  bind:m  (put-file mx [/ %ud] nseq)
   ::  keep-only-current INVARIANT for the manifest: at most one /pub/index seq
   ::  is ever bound. Retract the predecessor seq now that the successor is
   ::  grown. Grow-then-cull, so a reader never sees zero manifests. seq
