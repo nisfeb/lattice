@@ -20,6 +20,9 @@ CHANGED = {'ensure-dir':2,'ensure-nodes':3,'cull-dirs':3,'run-probe':2,
 #  the names that carry position. An arm using one it never bound is the
 #  bug that cost three publish rounds: `root` silently resolved to an arm
 #  of the same name in another core and nest-failed against @ud.
+#  `base` is deliberately NOT here: it names a JSON field, a URL tape and a
+#  revision number elsewhere in this file, so checking it produced 25 false
+#  positives - and a check that cries wolf is one you stop reading.
 FREE = ('rail','root','up')
 #  which arms bind a rail sample
 binds, cur = set(), None

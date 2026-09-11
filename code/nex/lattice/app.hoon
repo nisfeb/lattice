@@ -8585,7 +8585,7 @@
   =/  grubs=(list [segs=path nom=@ta])
     ?.  ?=([%ball *] dv)  ~
     (wave-grubs wave.dv)
-  ;<  rc=@ud  bind:m  (pub-reconcile-revs (weld base /pub/vault) grubs 0)
+  ;<  rc=@ud  bind:m  (pub-reconcile-revs /pub/vault grubs 0)
   ;<  sc=@ud  bind:m  (pub-reconcile-seqs base)
   ;<  now=@da  bind:m  bowl-now
   ;<  ~  bind:m  (put-file markr [/ %ud] `@ud`now)
