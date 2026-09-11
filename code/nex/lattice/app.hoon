@@ -8560,33 +8560,35 @@
   =/  mx=road:tarball  (rf root /pub %meta)
   ;<  seq=@ud  bind:m  (read-pub-seq mx)
   =/  nseq=@ud  +(seq)
-  ::  ORDER: grow, then the counter, then the cull. It is the only one of the
-  ::  three that survives a crash in either window, and this arm runs in a long
-  ::  loop during a migration, so an interrupted event has to be recoverable.
+  ::  KNOWN FRAGILITY, not fixed here. If the counter and the farm ever
+  ::  disagree - counter behind a bound spur, or ahead of an unbound one -
+  ::  every later publish 500s and nothing in the app can repair it; the
+  ::  counter has to be force-written by hand to a seq that is grown and not
+  ::  yet culled. Seen on ~wex after this session's writer crash loop.
   ::
-  ::    grow, cull, counter   crash after the cull leaves the counter BEHIND a
-  ::                          culled spur. Every later publish recomputes the
-  ::                          same nseq and re-culls its predecessor, which the
-  ::                          comment below says cull-farm cannot survive: one
-  ::                          interrupted event, and publishing 500s forever.
-  ::    counter, grow, cull   crash after the counter leaves a seq that was
-  ::                          never grown, and the next publish culls an
-  ::                          UNBOUND spur. Measured: that crashes too, so the
-  ::                          seq=0 no-op below does not generalise.
-  ::    grow, counter, cull   crash before the counter: predecessor not yet
-  ::                          culled, so the retry re-grows (harmless, gall
-  ::                          appends a case) and culls a spur still bound.
-  ::                          Crash after the counter: the predecessor leaks,
-  ::                          bound and harmless, and the next publish culls
-  ::                          its own bound predecessor. Both recover.
+  ::  Two reorderings were tried and BOTH were worse, so the shipped order
+  ::  stands until someone can see the farm:
   ::
-  ::  So the cost of a crash is a leaked spur - farm space - instead of a
-  ::  permanently wedged publish path.
+  ::    counter, grow, cull   a crash after the counter leaves a seq never
+  ::                          grown, and the next publish culls an UNBOUND
+  ::                          spur. Measured: 17 failures against 12.
+  ::    grow, counter, cull   reasoned to survive both windows; measured no
+  ::                          better. The reasoning assumed a failed event
+  ::                          leaves its grow behind, and it does not - the
+  ::                          event is transactional, so the whole triple
+  ::                          rolls back together and the disagreement must
+  ::                          come from somewhere else.
   ::
+  ::  What is missing is a way to ASK what /pub/index spurs are bound. With
+  ::  that, this arm culls what exists instead of what it computes, and the
+  ::  invariant stops depending on a counter that can drift. Until then the
+  ::  order below is the one with a long production history.
+  ::
+  ::  Whoever picks this up: /pub-regrow is the intended repair path and is
+  ::  worth testing first.
   ::  [/ %ud], grubbery's own atom mark (see the /pub/meta covering row in
   ::  +on-load). A put-file under a mark with no source file lays a boom.
   ;<  ~  bind:m  (grow:io /pub/index/[(scot %ud nseq)] [%gmi (manifest-gmi ix)])
-  ;<  ~  bind:m  (put-file mx [/ %ud] nseq)
   ::  keep-only-current INVARIANT for the manifest: at most one /pub/index seq
   ::  is ever bound. Retract the predecessor seq now that the successor is
   ::  grown. Grow-then-cull, so a reader never sees zero manifests. seq
@@ -8600,6 +8602,7 @@
   ::  live seq and break that. Runs on save, delete AND regrow, so every
   ::  manifest grow maintains the one-live-seq rule.
   ;<  ~  bind:m  (cull-farm:io /pub/index/[(scot %ud seq)])
+  ;<  ~  bind:m  (put-file mx [/ %ud] nseq)
   (pure:m nseq)
 ::  +pub-regrow: backfill the namespace from the existing pub vault, every
 ::  page at its CURRENT vault rev, then one fresh index seq. For piers that
