@@ -741,6 +741,13 @@
     (send-err eyre-id 400 'grant paths must be absolute and under /apps')
   =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
   ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
+  ::  OPEN: these are weir roads granted to OTHER ships, built from paths
+  ::  the request supplied. Whether they should be absolute (as a grantee
+  ::  addresses them, which needs our own path) or relative (as the
+  ::  registry resolves them against our registered rail) is a question
+  ::  about the sharing model, not a rename - so they are left as they
+  ::  were. +send-public-how's grants went relative; if that proves right
+  ::  these follow it.
   =/  to-roads
     |=  ps=(list path)
     ^-  (set road:tarball)
@@ -2041,7 +2048,7 @@
       [%'GET' %pub-history]
     =/  raw=(unit @t)  (~(get by args) 'path')
     ?~  raw  (send-err eyre-id 400 'missing path')
-    =/  ro=(unit road:tarball)  (pub-road u.raw)
+    =/  ro=(unit road:tarball)  (pub-road up u.raw)
     ?~  ro  (send-err eyre-id 400 'invalid path')
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io u.ro [%numb ~ ~])
@@ -2067,7 +2074,7 @@
     ?~  rv  (send-err eyre-id 400 'missing rev')
     =/  rev=(unit @ud)  (rush u.rv dim:ag)
     ?~  rev  (send-err eyre-id 400 'bad rev')
-    =/  ro=(unit road:tarball)  (pub-road u.raw)
+    =/  ro=(unit road:tarball)  (pub-road up u.raw)
     ?~  ro  (send-err eyre-id 400 'invalid path')
     ::  validate the rev against real history before peek-at (which bails on a miss).
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
@@ -2090,7 +2097,7 @@
     ?~  rv  (send-err eyre-id 400 'missing rev')
     =/  rev=(unit @ud)  (rush u.rv dim:ag)
     ?~  rev  (send-err eyre-id 400 'bad rev')
-    =/  ro=(unit road:tarball)  (pub-road u.raw)
+    =/  ro=(unit road:tarball)  (pub-road up u.raw)
     ?~  ro  (send-err eyre-id 400 'invalid path')
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io u.ro [%numb ~ ~])
@@ -2119,7 +2126,7 @@
       =/  k=(unit @ud)  (rush u.kp dim:ag)
       ?~(k ~ `(max 1 u.k))
     ?~  keep  (send-err eyre-id 400 'bad keep')
-    =/  ro=(unit road:tarball)  (pub-road u.raw)
+    =/  ro=(unit road:tarball)  (pub-road up u.raw)
     ?~  ro  (send-err eyre-id 400 'invalid path')
     ;<  ex=?  bind:m  (peek-exists:io u.ro)
     ?.  ex  (send-err eyre-id 404 'not found')
@@ -2233,7 +2240,7 @@
     ?~  keep  (send-err eyre-id 400 'bad keep')
     =/  ko=(unit path)  (know-key u.raw)
     ?~  ko  (send-err eyre-id 400 'invalid key')
-    =/  road=road:tarball  (entry-road /know/vault u.ko)
+    =/  road=road:tarball  (entry-road up /know/vault u.ko)
     ;<  live=(unit know-entry:lk)  bind:m  (read-entry road)
     ?~  live  (send-err eyre-id 404 'not found')
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
@@ -3408,43 +3415,43 @@
     ::  a %name grub. '' clears it: the name typed at a rename was a valid
     ::  segment, which is its own display name, so nothing is stored.
     =/  fdir=path  (weld /page pax.act)
-    ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
+    ;<  ex=?  bind:m  (peek-exists:io (rv up fdir))
     ?.  ex  (pure:m ~)
     ?:  =('' name.act)
-      ;<  *  bind:m  (cull-soft:io [%& %& fdir %name])
+      ;<  *  bind:m  (cull-soft:io (rf up fdir %name))
       (pure:m ~)
-    (put-file [%& %& fdir %name] [/ %json] `json`s+name.act)
+    (put-file (rf up fdir %name) [/ %json] `json`s+name.act)
       %comments
     ::  set the comments on/off flag at pax (a page or folder). The nearest flag
     ::  at/above a page decides, so this enables/disables a whole subtree or one
     ::  page. Owner-only (an eval-action), unlike the public comment-add path.
     =/  fdir=path  (weld /page pax.act)
-    ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
+    ;<  ex=?  bind:m  (peek-exists:io (rv up fdir))
     ?.  ex  (pure:m ~)
-    (put-file [%& %& fdir %comment-on] [/lattice %comment-flag] on.act)
+    (put-file (rf up fdir %comment-on) [/lattice %comment-flag] on.act)
       %forms
     ::  set the public-form flag at pax. Same nearest-flag-wins shape as
     ::  %comments, and equally owner-only: this is the switch that makes a
     ::  clearweb page publicly writable, so it is never implicit.
     =/  fdir=path  (weld /page pax.act)
-    ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
+    ;<  ex=?  bind:m  (peek-exists:io (rv up fdir))
     ?.  ex  (pure:m ~)
-    ;<  ~  bind:m  (put-file [%& %& fdir %forms-on] [/lattice %comment-flag] on.act)
-    (put-file [%& %& fdir %forms-cfg] [/lattice %eval-data] `form-cfg:le`[cap.act gap.act])
+    ;<  ~  bind:m  (put-file (rf up fdir %forms-on) [/lattice %comment-flag] on.act)
+    (put-file (rf up fdir %forms-cfg) [/lattice %eval-data] `form-cfg:le`[cap.act gap.act])
       %form-hit
     ::  one accepted public submission: bump the tally. Runs in the writer so
     ::  concurrent submissions serialize (the cap check itself happens in the
     ::  request fiber, so a burst can overshoot by the number in flight).
     =/  fdir=path  (weld /page pax.act)
-    ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
+    ;<  ex=?  bind:m  (peek-exists:io (rv up fdir))
     ?.  ex  (pure:m ~)
     ;<  u=form-use:le  bind:m  (read-form-use pax.act)
-    (put-file [%& %& fdir %forms-use] [/lattice %eval-data] `form-use:le`[+(count.u) now.act])
+    (put-file (rf up fdir %forms-use) [/lattice %eval-data] `form-use:le`[+(count.u) now.act])
       %form-reset
     =/  fdir=path  (weld /page pax.act)
-    ;<  ex=?  bind:m  (peek-exists:io [%& %| fdir])
+    ;<  ex=?  bind:m  (peek-exists:io (rv up fdir))
     ?.  ex  (pure:m ~)
-    (put-file [%& %& fdir %forms-use] [/lattice %eval-data] `form-use:le`[0 *@da])
+    (put-file (rf up fdir %forms-use) [/lattice %eval-data] `form-use:le`[0 *@da])
   ==
 ::  +apply-comment: store one comment under /comments/<page>/<id>. `author` is us
 ::  (owner writer) or the poking ship (public inbox), NEVER from the payload,
@@ -3456,6 +3463,7 @@
   |=  [root=@ud author=@p now=@da act=comment-action:lc]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ?:  =('' body.act)  (pure:m ~)
   ::  reject an empty page path (levy is vacuously true on ~) so a comment can't
   ::  land loose in the /comments root. Value-eq, not ?=, so page.act keeps its
@@ -3488,7 +3496,7 @@
   =/  cbase=path  /comments
   ;<  ~  bind:m  (ensure-dirs cbase page.act)
   ;<  ~  bind:m
-    (put-file [%& %& (weld cbase page.act) id] [/lattice %comment] comment)
+    (put-file (rf up (weld cbase page.act) id) [/lattice %comment] comment)
   ::  stamp /beacon/comments so the badge can ask "anything new?" for the
   ::  price of ONE grub read. Without it the only answer was the full inbox
   ::  — every comment body under /comments materialized and sorted, ~6s of
@@ -3506,9 +3514,10 @@
   |=  page=path
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   |-  ^-  form:m
   =/  fdir=path  (weld /page page)
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %& fdir %comment-on] ~)
+  ;<  seen=view:nexus  bind:m  (peek:io (rf up fdir %comment-on) ~)
   ?:  ?=([%file *] seen)
     (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.seen)))) %.n))
   ?~  page  (pure:m %.n)
@@ -3895,17 +3904,18 @@
   |=  [root=@ud src=[base=@tas rel=path] dst=[base=@tas rel=path] live=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   =/  src-root=path  (weld /[base.src] rel.src)
   =/  from-str=tape  (spud rel.src)
   =/  to-str=tape    (spud rel.dst)
-  ;<  dn=view:nexus  bind:m  (peek:io [%& %| src-root] ~)
+  ;<  dn=view:nexus  bind:m  (peek:io (rv up src-root) ~)
   ?.  ?=([%ball *] dn)  (pure:m ~)
   =/  rels=(list path)
     %+  murn  (collect-tree ball.dn ~)
     |=([pax=path page=?] ?:(page `pax ~))
   |-  ^-  form:m
   ?~  rels  (pure:m ~)
-  ;<  cn=view:nexus  bind:m  (peek:io [%& %& (weld src-root i.rels) %code] ~)
+  ;<  cn=view:nexus  bind:m  (peek:io (rf up (weld src-root i.rels) %code) ~)
   =/  code=@t
     ?.  ?=([%file *] cn)  ''
     (fall (mole |.(;;(@t (sang-noun:tarball sang.cn)))) '')
@@ -3914,8 +3924,8 @@
     ?:  live
       (make-page root (weld rel.dst i.rels) newcode)
     =/  ddir=path  (weld /[base.dst] (weld rel.dst i.rels))
-    ;<  ~  bind:m  (ensure-dirs (weld root /[base.dst]) (weld rel.dst i.rels))
-    (put-file [%& %& ddir %code] [/lattice %page] newcode)
+    ;<  ~  bind:m  (ensure-dirs /[base.dst] (weld rel.dst i.rels))
+    (put-file (rf root ddir %code) [/lattice %page] newcode)
   $(rels t.rels)
 ::  +rewrite-wikilinks: rewrite [[from]] and [[from/...]] references in code
 ::  text to the new name, the bare-name form wikilinks use (+rewrite-root
@@ -3955,7 +3965,7 @@
   =/  to-str=tape     (spud to)
   =/  from-bare=tape  (pax-str from)
   =/  to-bare=tape    (pax-str to)
-  ;<  dn=view:nexus  bind:m  (peek:io [%& %| sdir] ~)
+  ;<  dn=view:nexus  bind:m  (peek:io (rv up sdir) ~)
   ?.  ?=([%ball *] dn)  (pure:m ~)
   =/  all=(list [pax=path page=?])  (collect-tree ball.dn ~)
   =/  dirs=(list path)
@@ -4011,10 +4021,11 @@
   |=  [name=@tas to=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   =/  troot=path    (weld /template /[name])
   =/  from-str=tape  (spud /[name])
   =/  to-str=tape    (spud to)
-  ;<  dn=view:nexus  bind:m  (peek:io [%& %| troot] ~)
+  ;<  dn=view:nexus  bind:m  (peek:io (rv up troot) ~)
   ?.  ?=([%ball *] dn)  (pure:m ~)
   =/  rels=(list path)
     %+  sort
@@ -4023,7 +4034,7 @@
     aor
   |-  ^-  form:m
   ?~  rels  (pure:m ~)
-  ;<  cn=view:nexus  bind:m  (peek:io [%& %& (weld troot i.rels) %code] ~)
+  ;<  cn=view:nexus  bind:m  (peek:io (rf up (weld troot i.rels) %code) ~)
   =/  code=@t
     ?.  ?=([%file *] cn)  ''
     (fall (mole |.(;;(@t (sang-noun:tarball sang.cn)))) '')
@@ -4190,16 +4201,17 @@
   |=  [armed=(set path) deps=(list path)]
   =/  m  (fiber:fiber:nexus ,(set path))
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ?~  deps  (pure:m armed)
   ?:  (~(has in armed) i.deps)  $(deps t.deps)
   ?:  =(~ i.deps)  $(deps t.deps)
   =/  src=(unit path)  (view-src i.deps)
   ?^  src
-    ;<  *  bind:m  (keep:io /ev [%& %& u.src %data] ~)
-    ;<  *  bind:m  (keep:io /ev [%& %& u.src %show] ~)
+    ;<  *  bind:m  (keep:io /ev (rf up u.src %data) ~)
+    ;<  *  bind:m  (keep:io /ev (rf up u.src %show) ~)
     $(deps t.deps, armed (~(put in armed) i.deps))
   =/  n=@ud  (dec (lent i.deps))
-  =/  file-road=road:tarball  [%& %& (scag n i.deps) (snag n i.deps)]
+  =/  file-road=road:tarball  (rf up (scag n i.deps) (snag n i.deps))
   ;<  fsn=view:nexus  bind:m  (peek:io file-road ~)
   ?:  ?=([%file *] fsn)
     ;<  *  bind:m  (keep:io /ev file-road ~)
@@ -4207,8 +4219,8 @@
   ::  not a file: a DIRECTORY dep keeps on the dir road so a child add/remove
   ::  re-runs us. If it is neither (a not-yet-created grub), keep the file road
   ::  so a later write of that grub still fires. Mirrors read-dep-vals.
-  ;<  dsn=view:nexus  bind:m  (peek:io [%& %| i.deps] ~)
-  =/  keep-road=road:tarball  ?:(?=([%ball *] dsn) [%& %| i.deps] file-road)
+  ;<  dsn=view:nexus  bind:m  (peek:io (rv up i.deps) ~)
+  =/  keep-road=road:tarball  ?:(?=([%ball *] dsn) (rv up i.deps) file-road)
   ;<  *  bind:m  (keep:io /ev keep-road ~)
   $(deps t.deps, armed (~(put in armed) i.deps))
 ::  +read-dep-vals: resolve each dep to its current value. A data dep gives the
@@ -4220,11 +4232,12 @@
   |=  deps=(list path)
   =/  m  (fiber:fiber:nexus ,(list [path *]))
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ?~  deps  (pure:m ~)
   ?:  =(~ i.deps)  $(deps t.deps)
   =/  src=(unit path)  (view-src i.deps)
   ?^  src
-    ;<  dsn=view:nexus       bind:m  (peek:io [%& %& u.src %data] ~)
+    ;<  dsn=view:nexus       bind:m  (peek:io (rf up u.src %data) ~)
     ;<  vmode=view-mode:pg   bind:m  (read-show-mode u.src)
     ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
     =/  frag=@t
@@ -4237,7 +4250,7 @@
       (crip (render-shown sang.dsn vmode "/apps/lattice/c/"))
     (pure:m [[i.deps frag] rest])
   =/  n=@ud  (dec (lent i.deps))
-  ;<  sn=view:nexus  bind:m  (peek:io [%& %& (scag n i.deps) (snag n i.deps)] ~)
+  ;<  sn=view:nexus  bind:m  (peek:io (rf up (scag n i.deps) (snag n i.deps)) ~)
   ?:  ?=([%file *] sn)
     ::  a file grub -> its raw noun.
     ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
@@ -4245,7 +4258,7 @@
   ::  not a file -> a DIRECTORY dep resolves to its tree listing (a
   ::  (list [pax=path page=?]) of pages+folders under it, paths relative to the
   ::  dir), so a page can enumerate a structured subtree. ~ if it is neither.
-  ;<  dn=view:nexus  bind:m  (peek:io [%& %| i.deps] ~)
+  ;<  dn=view:nexus  bind:m  (peek:io (rv up i.deps) ~)
   ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
   =/  val=*  ?.(?=([%ball *] dn) ~ (collect-tree ball.dn ~))
   (pure:m [[i.deps val] rest])
@@ -4487,13 +4500,13 @@
 ::  Used by the version-history routes to peep/peek-at a page's prior revisions.
 ::
 ++  pub-road
-  |=  raw=@t
+  |=  [up=@ud raw=@t]
   ^-  (unit road:tarball)
   =/  pp=(each path tang)  (mule |.((pub-path raw)))
   ?:  ?=(%| -.pp)  ~
   =/  vr=(unit vrail:lp)  (key-to-rail:lp /pub/vault p.pp)
   ?~  vr  ~
-  `[%& %& pax.u.vr nom.u.vr]
+  `(rf up pax.u.vr nom.u.vr)
 ::  +know-hist-road: the ABSOLUTE road of a know key's entry grub, for reading its
 ::  revision history. A live key's grub is under /know/vault; a DELETED key was
 ::  MOVED to /know/trash-vault (%del moves the grub, it doesn't tomb in place), so
@@ -4506,10 +4519,11 @@
   |=  raw=@t
   =/  m  (fiber:fiber:nexus ,(unit [road=road:tarball trashed=?]))
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   =/  ko=(unit path)  (know-key raw)
   ?~  ko  (pure:m ~)
-  =/  live=road:tarball   (entry-road /know/vault u.ko)
-  =/  trash=road:tarball  (entry-road (weld app-base:lu /know/trash-vault) u.ko)
+  =/  live=road:tarball   (entry-road up /know/vault u.ko)
+  =/  trash=road:tarball  (entry-road up (weld app-base:lu /know/trash-vault) u.ko)
   ;<  el=(unit know-entry:lk)  bind:m  (read-entry live)
   ?^  el  (pure:m `[live %.n])
   ;<  et=(unit know-entry:lk)  bind:m  (read-entry trash)
@@ -6465,9 +6479,10 @@
   |=  page=path
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   |-  ^-  form:m
   =/  fdir=path  (weld /page page)
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %& fdir %forms-on] ~)
+  ;<  seen=view:nexus  bind:m  (peek:io (rf up fdir %forms-on) ~)
   ?:  ?=([%file *] seen)
     (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.seen)))) %.n))
   ?~  page  (pure:m %.n)
@@ -6479,9 +6494,10 @@
   |=  page=path
   =/  m  (fiber:fiber:nexus ,form-cfg:le)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   |-  ^-  form:m
   =/  fdir=path  (weld /page page)
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %& fdir %'forms-cfg'] ~)
+  ;<  seen=view:nexus  bind:m  (peek:io (rf up fdir %'forms-cfg') ~)
   ?:  ?=([%file *] seen)
     (pure:m (fall (mole |.(;;(form-cfg:le (sang-noun:tarball sang.seen)))) [0 *@dr]))
   ?~  page  (pure:m [0 *@dr])
@@ -6492,8 +6508,9 @@
   |=  page=path
   =/  m  (fiber:fiber:nexus ,form-use:le)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   =/  fdir=path  (weld /page page)
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %& fdir %'forms-use'] ~)
+  ;<  seen=view:nexus  bind:m  (peek:io (rf up fdir %'forms-use') ~)
   ?.  ?=([%file *] seen)  (pure:m [0 *@da])
   (pure:m (fall (mole |.(;;(form-use:le (sang-noun:tarball sang.seen)))) [0 *@da]))
 ::  +serve-form: accept a public form POST for a page and deliver it as a
@@ -8013,7 +8030,7 @@
     (reg-how:io /public [make=~ poke=pokes peek=(~(put in peeks) pubdir)])
   =/  pp=path  (weld /page i.rels)
   ;<  mode=share-mode:le  bind:m  (read-share pp)
-  =?  peeks  !=(%private mode)  (~(put in peeks) [%& %& pp %data])
+  =?  peeks  !=(%private mode)  (~(put in peeks) (rf up pp %data))
   $(rels t.rels)
 ::  +apply: dispatch one knowledge action. root is the nexus dir (/lattice).
 ::
@@ -8021,11 +8038,12 @@
   |=  [root=@ud now=@da act=know-action:lk]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   =/  vbase=path  /know/vault
   ::  trash-vault: deleted entry grubs MOVE here (not culled) so restore is a
   ::  plain move-back (robust, no born-history/cass recovery). /know/trash is the
   ::  derived metadata index over it.
-  =/  tvbase=path  (weld root /know/trash-vault)
+  =/  tvbase=path  /know/trash-vault
   =/  tx=road:tarball  (rf root /know %trash)
   ?-    -.act
       %save
@@ -8040,13 +8058,13 @@
     ::  the tags but wipes the body). The /know-save route guards this; guard it here
     ::  too so the direct know-action poke can't bypass it. skip+log, like a bad key.
     ?:  =('' body.act)  ~&([%lattice-save-empty-body key] (pure:m ~))
-    =/  road=road:tarball  (entry-road vbase key)
+    =/  road=road:tarball  (entry-road up vbase key)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry road)
     ::  reviving a soft-deleted key: %del culled the live grub, so `old` is ~ and
     ::  a fresh merge-save would drop the tags+vector the trashed copy still holds.
     ::  Read the trash-vault entry too and fall back to it, so a re-save recovers
     ::  them (the trash tomb is then cleared below, as for any re-save).
-    ;<  tomb=(unit know-entry:lk)  bind:m  (read-entry (entry-road tvbase key))
+    ;<  tomb=(unit know-entry:lk)  bind:m  (read-entry (entry-road up tvbase key))
     =/  e=know-entry:lk  (merge-save:lk ?^(old old tomb) body.act now)
     ;<  ~  bind:m  (ensure-dirs vbase key)
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] e)
@@ -8060,7 +8078,7 @@
     ::  live entry.
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     ?.  (~(has by trash) key)  (pure:m ~)
-    ;<  *  bind:m  (cull-soft:io (entry-road tvbase key))
+    ;<  *  bind:m  (cull-soft:io (entry-road up tvbase key))
     (put-file tx [/lattice %know-index] (~(del by trash) key))
   ::
       %del
@@ -8071,8 +8089,8 @@
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
     =/  key=path  u.ko
-    =/  road=road:tarball  (entry-road vbase key)
-    =/  troad=road:tarball  (entry-road tvbase key)
+    =/  road=road:tarball  (entry-road up vbase key)
+    =/  troad=road:tarball  (entry-road up tvbase key)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry road)
     ?~  old  ~&([%lattice-del-missing key] (pure:m ~))
     ::  MOVE to the trash vault: write the trash copy first (duplicate-on-crash,
@@ -8097,8 +8115,8 @@
     ?~  tko  ~&([%lattice-move-bad-key to.act] (pure:m ~))
     =/  fk=path  u.fko
     =/  tk=path  u.tko
-    =/  froad=road:tarball  (entry-road vbase fk)
-    =/  troad=road:tarball  (entry-road vbase tk)
+    =/  froad=road:tarball  (entry-road up vbase fk)
+    =/  troad=road:tarball  (entry-road up vbase tk)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry froad)
     ?~  old  ~&([%lattice-move-missing fk] (pure:m ~))
     ::  refuse to clobber a LIVE target (the route pre-checks and 409s. This is
@@ -8114,7 +8132,7 @@
     ::  row so a later %restore can't resurrect it over the moved-in entry.
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     ?.  (~(has by trash) tk)  (pure:m ~)
-    ;<  *  bind:m  (cull-soft:io (entry-road tvbase tk))
+    ;<  *  bind:m  (cull-soft:io (entry-road up tvbase tk))
     (put-file tx [/lattice %know-index] (~(del by trash) tk))
   ::
       %restore
@@ -8125,8 +8143,8 @@
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
     =/  key=path  u.ko
-    =/  road=road:tarball  (entry-road vbase key)
-    =/  troad=road:tarball  (entry-road tvbase key)
+    =/  road=road:tarball  (entry-road up vbase key)
+    =/  troad=road:tarball  (entry-road up tvbase key)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry troad)
     ?~  old  ~&([%lattice-restore-missing key] (pure:m ~))
     ::  refuse to resurrect over a LIVE entry. The save/move/import writers already
@@ -8154,13 +8172,13 @@
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
     =/  key=path  u.ko
-    =/  road=road:tarball  (entry-road vbase key)
+    =/  road=road:tarball  (entry-road up vbase key)
     ;<  ~  bind:m  (ensure-dirs vbase key)
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] entry.act)
     ;<  ~  bind:m  (gain:io road %.y)
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     ?.  (~(has by trash) key)  (pure:m ~)
-    ;<  *  bind:m  (cull-soft:io (entry-road tvbase key))
+    ;<  *  bind:m  (cull-soft:io (entry-road up tvbase key))
     (put-file tx [/lattice %know-index] (~(del by trash) key))
   ::
       %import-trashed
@@ -8173,7 +8191,7 @@
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
     =/  key=path  u.ko
-    =/  troad=road:tarball  (entry-road tvbase key)
+    =/  troad=road:tarball  (entry-road up tvbase key)
     ;<  ~  bind:m  (ensure-dirs tvbase key)
     ;<  ~  bind:m  (put-file troad [/lattice %know-entry] entry.act)
     ;<  ~  bind:m  (gain:io troad %.y)
@@ -8188,6 +8206,7 @@
   |=  [root=@ud now=@da act=pub-action:lp]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   =/  vbase=path  /pub/vault
   =/  px=road:tarball  (rf root /pub %index)
   ?-    -.act
@@ -8207,7 +8226,7 @@
       ~&([%lattice-pub-name-reserved key] (pure:m ~))
     =/  or=(unit vrail:lp)  (key-to-rail:lp vbase key)
     ?~  or  ~&([%lattice-pub-bad-key key] (pure:m ~))
-    =/  road=road:tarball  [%& %& pax.u.or nom.u.or]
+    =/  road=road:tarball  (rf up pax.u.or nom.u.or)
     ;<  ~  bind:m  (ensure-dirs vbase (slag (lent vbase) pax.u.or))
     ::  the rev bound in the namespace by the PREVIOUS publish of this page,
     ::  read BEFORE this save's put-file bumps the vault grub's cass. This is
@@ -8269,7 +8288,7 @@
     =/  key=path  u.ko
     =/  or=(unit vrail:lp)  (key-to-rail:lp vbase key)
     ?~  or  ~&([%lattice-pub-bad-key key] (pure:m ~))
-    =/  road=road:tarball  [%& %& pax.u.or nom.u.or]
+    =/  road=road:tarball  (rf up pax.u.or nom.u.or)
     ;<  exists=?  bind:m  (peek-exists:io road)
     ?.  exists
       ::  FOLDER delete/move: the key names no gmi grub of its own. The eval
@@ -8504,10 +8523,11 @@
   |=  [keys=(list path) cnt=@ud]
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ?~  keys  (pure:m cnt)
   =/  or=(unit vrail:lp)  (key-to-rail:lp /pub/vault i.keys)
   ?~  or  (pub-regrow-loop t.keys cnt)
-  ;<  seen=view:nexus  bind:m  (peek:io [%& %& pax.u.or nom.u.or] ~)
+  ;<  seen=view:nexus  bind:m  (peek:io (rf up pax.u.or nom.u.or) ~)
   ?.  ?=([%file *] seen)  (pub-regrow-loop t.keys cnt)
   ::  clam in a mole. One malformed grub (an index row whose vault copy was
   ::  hand-edited) must skip, not kill the whole backfill.
@@ -8596,11 +8616,12 @@
   |=  [vbase=path grubs=(list [segs=path nom=@ta]) cnt=@ud]
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ?~  grubs  (pure:m cnt)
   ::  only gmi grubs are pages. Nothing else was ever grown.
   ?.  =(%gmi nom.i.grubs)  (pub-reconcile-revs vbase t.grubs cnt)
   ;<  hs=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m
-    (born:io [%& %& (weld vbase segs.i.grubs) nom.i.grubs])
+    (born:io (rf up (weld vbase segs.i.grubs) nom.i.grubs))
   ?:  ?=(%| -.hs)  (pub-reconcile-revs vbase t.grubs cnt)
   ::  the LIVE (non-tomb) rev numbers, one per content write, each of which
   ::  +grow-pub-page bound a spur for. The current grown spur is the MAX of
@@ -8929,13 +8950,14 @@
   |=  [root=@ud key-t=@t tag=@t add=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   =/  vbase=path  /know/vault
   ::  guard the key: %tag/%untag are reachable un-normalized via the direct
   ::  grubbery poke API (mar know-action). A bad key crashes+parks the writer.
   =/  ko=(unit path)  (know-key key-t)
   ?~  ko  ~&([%lattice-tag-bad-key key-t] (pure:m ~))
   =/  key=path  u.ko
-  =/  road=road:tarball  (entry-road vbase key)
+  =/  road=road:tarball  (entry-road up vbase key)
   ;<  old=(unit know-entry:lk)  bind:m  (read-entry road)
   ?~  old  ~&([%lattice-tag-missing key] (pure:m ~))
   ::  case-fold the tag at the write boundary so explore (which normalizes the
@@ -8952,10 +8974,10 @@
 ::  +entry-road: absolute road to a key's entry grub.
 ::
 ++  entry-road
-  |=  [vbase=path key=path]
+  |=  [up=@ud vbase=path key=path]
   ^-  road:tarball
   =/  vr=vrail:lk  (key-to-rail:lk vbase key)
-  [%& %& pax.vr nom.vr]
+  (rf up pax.vr nom.vr)
 ::  +read-entry: peek a vault grub. ~ if absent/tombstoned.
 ::
 ++  read-entry
@@ -9058,7 +9080,8 @@
   |=  our=@p
   =/  m  (fiber:fiber:nexus ,?(%none %dead %live))
   ^-  form:m
-  =/  road=road:tarball  [%& %& (obelisk-sub-base our) %live]
+  ;<  up=@ud  bind:m  nexus-up
+  =/  road=road:tarball  (rf up (obelisk-sub-base our) %live)
   ;<  ex=?  bind:m  (peek-exists:io road)
   ?.  ex  (pure:m %none)
   ;<  vw=view:nexus  bind:m  (peek:io road ~)
@@ -9248,8 +9271,9 @@
   |=  [db=@tas urql=tape tries=@ud]
   =/  m  (fiber:fiber:nexus ,obk-out:lm)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ;<  our=@p  bind:m  get-our:io
-  =/  data-road=road:tarball  [%& %& (obelisk-sub-base our) %data]
+  =/  data-road=road:tarball  (rf up (obelisk-sub-base our) %data)
   ;<  ~  bind:m  (obelisk-ensure-sub our)
   ::  no live subscription means no poke, for two reasons. The mild
   ::  one: obelisk answers ONLY on /server, so a poke sent with no
