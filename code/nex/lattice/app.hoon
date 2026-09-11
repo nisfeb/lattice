@@ -1592,8 +1592,8 @@
     ::  web=1 (a page-view form submit) -> 303 back to the page so the browser
     ::  lands on the live view. The JSON ok stays for programmatic callers.
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
-    %+  send-see-other  eyre-id
     ;<  sb=path  bind:m  self-base
+    %+  send-see-other  eyre-id
     :(weld "/apps/lattice/x/" (scow %p our) (spud sb) "/page/" (trip u.name) "/")
       [%'POST' %page-del]
     =/  name=(unit @t)  (~(get by args) 'name')
@@ -1667,8 +1667,8 @@
     ?.  ex  (send-err eyre-id 404 'no such page')
     ;<  ~  bind:m  (poke-eval [%share (pax-of u.name) u.mode])
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
-    %+  send-see-other  eyre-id
     ;<  sb=path  bind:m  self-base
+    %+  send-see-other  eyre-id
     :(weld "/apps/lattice/x/" (scow %p our) (spud sb) "/page/" (trip u.name) "/")
       ::  owner: turn PUBLIC FORM submissions on/off at a page or folder. Same
       ::  nearest-flag-wins shape as comments. Off by default: a page is only
@@ -1772,8 +1772,8 @@
     ::  303 back to the page (target=_top on the box), so it reloads with the new
     ::  comment. The write is a separate transaction, so a stale reload just needs
     ::  a refresh (acceptable, like page-cmd).
-    %+  send-see-other  eyre-id
     ;<  sb=path  bind:m  self-base
+    %+  send-see-other  eyre-id
     :(weld "/apps/lattice/x/" (scow %p our) (spud sb) "/page/" (trip u.page) "/")
   ::  comment on ANOTHER ship's page. Owner-gated like everything here: this
   ::  is us, using our own session, choosing to say something on a page we are
