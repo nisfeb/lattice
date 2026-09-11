@@ -4,7 +4,15 @@
     "lattice.lattice_app": {
       "from": "/apps/lattice.lattice_app",
       "omit": [
-        "/ui"
+        "/ui",
+        "/app",
+        "/weir.json",
+        "/alias.json",
+        "/link.json",
+        "/manifest.json",
+        "/tile.json",
+        "/icon.svg",
+        "/prism.js"
       ]
     }
   }
