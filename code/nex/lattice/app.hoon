@@ -3055,7 +3055,7 @@
         ::  Refusing it is safe and loses nothing that is not still there:
         ::  the old instance keeps its data, so the carry can be re-run by a
         ::  later version once the road is granted.
-          %+  line  '/apps/lattice.lattice_app'
+          %+  line  '/apps/lattice.lattice_app/'
           'copy your existing pages, memories and bookmarks across from where lattice used to live. This is read-only, happens once, and the old copy is left untouched. Refuse it and this install simply starts empty'
       ==
   ==
@@ -8172,10 +8172,26 @@
   ;<  up=@ud  bind:m  nexus-up
   ;<  done=(unit json)  bind:m  (peek-as:io (rf up / %'carried.json') ,json)
   ?:  ?=([~ %b %.y] done)  (pure:m ~)
-  ::  the old instance, read SOFT: an install that never had one, or was
-  ::  refused the road, marks itself carried and gets on with its life.
+  ::  the old instance, read SOFT. Two outcomes that are NOT the same:
+  ::
+  ::  ~ means the road was REFUSED. peek-soft returns ~ only for [~ %veto *];
+  ::  a peek that reached the namespace and found nothing comes back as
+  ::  [~ %none]. So do not mark carried here - the data is still sitting in
+  ::  the old instance, and marking would skip it permanently. Say so and
+  ::  leave the marker alone, so granting the road later re-runs the carry.
+  ::
+  ::  The first run of this got that wrong and marked carried on a veto. The
+  ::  veto was real: the road was declared as '/apps/lattice.lattice_app',
+  ::  which parses as the GRUB lattice.lattice_app inside /apps, while the
+  ::  peek below asks for the DIRECTORY. Different lanes, so the grant never
+  ::  matched what was asked - and the arm then wrote itself off as done.
   ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| app-base:lu] ~)
-  ?.  ?=([~ %ball *] vw)
+  ?~  vw
+    ~&  >>>  [%lattice-carry-road-refused app-base:lu]
+    (pure:m ~)
+  ::  reached it and there is no old instance (or it is not a tree): nothing
+  ::  to carry, and never will be. Mark it and get on with life.
+  ?.  ?=([%ball *] u.vw)
     ;<  ~  bind:m  (mark-carried up)
     (pure:m ~)
   =/  bol=bole:tarball  (carry-bole (ball-to-bole:tarball ball.u.vw) /)
