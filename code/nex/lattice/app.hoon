@@ -8222,21 +8222,57 @@
   ;<  ~  bind:m  (over:io (rf up / nam.i.fis) bask.i.fis)
   ;<  ~  bind:m  (gain:io (rf up / nam.i.fis) gain.i.fis)
   (carry-files up t.fis)
-::  +carry-dirs: one fold per top-level subtree.
+::  +carry-dirs: one fold per top-level subtree, merged over what is there.
 ::
 ::    An empty sub-bole is SKIPPED rather than folded. carry-bole expresses
 ::    "do not carry this directory" as [~ ~], and folding that over a
 ::    directory we already populated would empty it - /ui is the one that
 ::    matters, and it holds in-flight requests.
 ::
+::    The fold is a MERGE, not a bare overwrite, and the first version's
+::    missing merge cost /mirror/mirror.sig: an %over on a directory removes
+::    whatever the bole does not list, carry-bole strips every .sig (they are
+::    processes, and we run our own), so the fold deleted the reconciler this
+::    install had already spawned. 61 of 62 grubs matched and the one that did
+::    not was a process we killed.
+::
 ++  carry-dirs
   |=  [up=@ud kids=(list [nam=@ta sub=bole:tarball])]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?~  kids  (pure:m ~)
-  ?:  =([~ ~] sub.i.kids)  (carry-dirs up t.kids)
-  ;<  ~  bind:m  (over-fold:io (rv up ~[nam.i.kids]) sub.i.kids)
+  ?:  =(*bole:tarball sub.i.kids)  (carry-dirs up t.kids)
+  =/  rod=road:tarball  (rv up ~[nam.i.kids])
+  ;<  cur=view:nexus  bind:m  (peek:io rod ~)
+  =/  dst=bole:tarball
+    ?.(?=([%ball *] cur) *bole:tarball (ball-to-bole:tarball ball.cur))
+  ;<  ~  bind:m  (over-fold:io rod (carry-merge dst sub.i.kids))
   (carry-dirs up t.kids)
+::  +carry-merge: the carried tree laid over the tree that is already here.
+::
+::    Per grub the CARRIED copy wins - that is the whole point, and the
+::    alternative (keep what the destination has) is what lost the user's
+::    bookmarks once already, because a %fall row lays a bunt that looks
+::    exactly like real data.
+::
+::    But a grub only THIS install has survives, which is what a bare
+::    overwrite gets wrong. Processes are the reason: .sig grubs never
+::    travel, so without this the fold removes the ones already running.
+::
+::    Directory necks stay ours as well. A neck is a mark prefix, which our
+::    own load establishes for the code we are running; the old instance's is
+::    by definition the older one.
+::
+++  carry-merge
+  |=  [dst=bole:tarball src=bole:tarball]
+  ^-  bole:tarball
+  :_  %-  ~(gas by dir.src)
+      %+  turn  ~(tap by dir.dst)
+      |=  [k=@ta sub=bole:tarball]
+      [k (carry-merge sub (~(gut by dir.src) k *bole:tarball))]
+  ?~  fil.dst  fil.src
+  ?~  fil.src  fil.dst
+  `u.fil.dst(contents (~(uni by contents.u.fil.dst) contents.u.fil.src))
 ::  +mark-carried: flip the marker, so this never runs twice.
 ::
 ++  mark-carried
