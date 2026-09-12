@@ -8222,10 +8222,14 @@
 ++  carry-bole
   |=  [bol=bole:tarball here=path]
   ^-  bole:tarball
-  =/  skip=(list path)  ~[/ui]
+  ::  `omit`, not `skip`: a local named skip shadows the stdlib gate used
+  ::  three lines down, and the nexus bangs with -find.$.+2 - a (list path)
+  ::  applied as a function. Cost a deploy cycle; no checker here compiles
+  ::  hoon, so only the ship catches it.
+  =/  omit=(list path)  ~[/ui]
   =/  ours=(list @ta)
     ~['weir.json' 'alias.json' 'link.json' 'manifest.json' 'tile.json' 'icon.svg' 'prism.js' 'carried.json']
-  ?:  (lien skip |=(o=path =(o here)))  [~ ~]
+  ?:  (lien omit |=(o=path =(o here)))  [~ ~]
   =?  fil.bol  ?=(^ fil.bol)
     =/  pp=pulp:tarball  u.fil.bol
     =.  contents.pp
