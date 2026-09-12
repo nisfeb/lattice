@@ -115,6 +115,11 @@
         ::  standalone so the editor bundle and the settings page (a separate
         ::  document) share one tar writer/reader instead of two.
             [%over %& [/app %'vault.js'] [[/ %mime] vjs]]
+            ::  carried.json: has the one-time carry from the app-tier
+            ::  instance run? DECLARED, so it outlives a reload - an
+            ::  undeclared grub does not, which is the lesson /mirror/tr
+            ::  taught. See +carry-old-data.
+            [%fall %& [/ %'carried.json'] [[/ %json] `json`[%b %.n]]]
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
         ::  /legacy: the retired-agent marker lives here (see +legacy-mark-road)
             [%fall %| /legacy empty-dir:loader]
@@ -229,6 +234,13 @@
           [~ %'main.sig']
         ;<  ~     bind:m  (rise-wait:io prod "%lattice writer failed")
         =/  root=@ud  (lent path.rail)
+        ::  THE MIGRATION, and it belongs here rather than in the desk.
+        ::  Reaching it at all means consent has been granted - a jailed
+        ::  writer never gets past rise-wait - so there is no weir to check,
+        ::  no marker for the desk to keep, and nothing to wake: the copy
+        ::  happens exactly when this app can first run, which is the only
+        ::  moment it could have happened anyway.
+        ;<  ~  bind:m  (carry-old-data root)
         ::  lay lattice's COMPLETE public grant set through the registry's
         ::  %how action: /pub for foreign readers, every shared page's data
         ::  road, and the share/comment inboxes. One act, server-side merged,
@@ -3034,6 +3046,17 @@
           'let other ships read the pages you publish. Refuse this and lattice still works completely for you - your published pages just stay on this ship'
           %+  line  '/sys/link/'
           'look up where this app is installed, so the live-reload stream and the links to your published pages point at the right place. Refuse this and pages still render, but they will not refresh as you edit them'
+        ::  THE CARRY ROAD, and it is temporary. Lattice used to live at
+        ::  /apps/lattice.lattice_app; this reads that dormant instance once,
+        ::  on the first writer rise after the move, and copies the data
+        ::  across. +carry-old-data marks itself done and never reads it
+        ::  again, and the release after this one drops this line.
+        ::
+        ::  Refusing it is safe and loses nothing that is not still there:
+        ::  the old instance keeps its data, so the carry can be re-run by a
+        ::  later version once the road is granted.
+          %+  line  '/apps/lattice.lattice_app'
+          'copy your existing pages, memories and bookmarks across from where lattice used to live. This is read-only, happens once, and the old copy is left untouched. Refuse it and this install simply starts empty'
       ==
   ==
 ::
@@ -8116,6 +8139,108 @@
   ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io road ~)
   ?~  vw  (pure:m %.n)
   (pure:m !?=(?(%none %miss %veto %tomb) -.u.vw))
+::
+::  +carry-old-data: the ONE-TIME carry from the app-tier instance.
+::
+::    Lattice used to live at /apps/lattice.lattice_app, created by a %fall
+::    row in grubbery's root.hoon. It now installs as a stock desk, and the
+::    release that moves it removes that row and lattice's code from the
+::    ball - which leaves the old instance DORMANT with its data intact,
+::    readable as raw nouns because ball-to-bole reads through sang-noun.
+::    Nothing is deleted; this copies.
+::
+::    WHY HERE. The first version of this lived in grubbery's desk.hoon as
+::    a generic `adopt`, and that was wrong twice over: it meant carrying a
+::    patch to code we do not own, and it created the problem it then had
+::    to solve. Folding data into an instance that has no consent yet
+::    spawns a fiber per page into a weir of [{} {} {}], and needs a weir
+::    check, a marker on the desk, and a poke from the shell to wake it.
+::
+::    Reaching this line means consent was granted - a jailed writer never
+::    gets past rise-wait above. So the copy happens exactly when this app
+::    can first run, and none of that machinery is needed.
+::
+::    THE ROAD is absolute and it is the only absolute road in this file
+::    that names a place we might once have been. It is declared in
+::    weir.json, gated like every other road, and the release after this
+::    one drops it.
+::
+++  carry-old-data
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  done=(unit json)  bind:m  (peek-as:io (rf up / %'carried.json') ,json)
+  ?:  ?=([~ %b %.y] done)  (pure:m ~)
+  ::  the old instance, read SOFT: an install that never had one, or was
+  ::  refused the road, marks itself carried and gets on with its life.
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| app-base:lu] ~)
+  ?.  ?=([~ %ball *] vw)
+    ;<  ~  bind:m  (mark-carried up)
+    (pure:m ~)
+  =/  bol=bole:tarball  (carry-bole (ball-to-bole:tarball ball.u.vw) /)
+  ::  fold the whole tree in one event, preserving our own neck exactly as
+  ::  desk.hoon's +sync-dir does - the overwrite must not strip what our
+  ::  on-load established.
+  ;<  cur=view:nexus  bind:m  (peek:io (rv up /) ~)
+  =/  nek  ?.(?=([%ball *] cur) ~ ?~(fil.ball.cur ~ neck.u.fil.ball.cur))
+  =/  rut=pulp:tarball  (fall fil.bol `pulp:tarball`[~ ~ %.n ~])
+  =.  bol  bol(fil `rut(neck nek))
+  ~&  >  [%lattice-carrying-old-data app-base:lu]
+  ;<  ~  bind:m  (over-fold:io (rv up /) bol)
+  ;<  ~  bind:m  (mark-carried up)
+  (pure:m ~)
+::  +mark-carried: flip the marker, so this never runs twice.
+::
+++  mark-carried
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (over:io (rf up / %'carried.json') [[/ %json] `json`[%b %.y]])
+::  +carry-bole: what comes across, and what does not.
+::
+::    NEVER a .sig - a process, and we already run our own. NEVER anything
+::    this on-load lays for itself: the UI bundle, the json manifests, the
+::    icon, prism.js. Those are %over rows from THIS version of the code,
+::    and the old instance's copies are by definition staler.
+::
+::    /ui goes too: main.sig is a process and /ui/requests holds in-flight
+::    HTTP requests, meaningless a moment later.
+::
+::    Everything else is data and comes: pages with their code, data, deps,
+::    errors and eval state; the know vault and its trash; /pub/vault, its
+::    index and the publish counter; comments, subscriptions, templates,
+::    the term index, bookmarks, history, shares, the mirror cursor.
+::
+::    The rule is deliberately NOT "keep what we already have". A %fall row
+::    lays a grub with its mark's BUNT, so a fresh instance already holds
+::    /bookmarks, /history, /pub/index and seven more, present and empty -
+::    skipping those as "already there" silently dropped the user's
+::    bookmarks in testing. Nothing distinguishes a %fall placeholder from
+::    an %over asset by looking, so the list below is explicit.
+::
+++  carry-bole
+  |=  [bol=bole:tarball here=path]
+  ^-  bole:tarball
+  =/  skip=(list path)  ~[/ui]
+  =/  ours=(list @ta)
+    ~['weir.json' 'alias.json' 'link.json' 'manifest.json' 'tile.json' 'icon.svg' 'prism.js' 'carried.json']
+  ?:  (lien skip |=(o=path =(o here)))  [~ ~]
+  =?  fil.bol  ?=(^ fil.bol)
+    =/  pp=pulp:tarball  u.fil.bol
+    =.  contents.pp
+      %-  ~(gas by *(map @ta [bask:tarball ?]))
+      %+  skip  ~(tap by contents.pp)
+      |=  [nm=@ta [=bask:tarball gain=?]]
+      ?|  =(%sig name.p.bask)
+          &(?=(~ here) (lien ours |=(o=@ta =(o nm))))
+      ==
+    `pp
+  %=    bol
+      dir
+    %-  ~(urn by dir.bol)
+    |=([k=@ta v=bole:tarball] (carry-bole v (snoc here k)))
+  ==
 ::
 ++  send-public-how
   |=  root=@ud
