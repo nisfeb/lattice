@@ -8195,17 +8195,48 @@
     ;<  ~  bind:m  (mark-carried up)
     (pure:m ~)
   =/  bol=bole:tarball  (carry-bole (ball-to-bole:tarball ball.u.vw) /)
-  ::  fold the whole tree in one event, preserving our own neck exactly as
-  ::  desk.hoon's +sync-dir does - the overwrite must not strip what our
-  ::  on-load established.
-  ;<  cur=view:nexus  bind:m  (peek:io (rv up /) ~)
-  =/  nek  ?.(?=([%ball *] cur) ~ ?~(fil.ball.cur ~ neck.u.fil.ball.cur))
-  =/  rut=pulp:tarball  (fall fil.bol `pulp:tarball`[~ ~ %.n ~])
-  =.  bol  bol(fil `rut(neck nek))
   ~&  >  [%lattice-carrying-old-data app-base:lu]
-  ;<  ~  bind:m  (over-fold:io (rv up /) bol)
+  ::  NOT one fold at our own root, which is what the first version did and
+  ::  cannot work. A directory's entry is owned by its PARENT, so grubbery's
+  ::  +nearest-governor puts a dir road at our own root under the desk above
+  ::  us - outside our sandbox, vetoed, and +over-fold is hard, so the writer
+  ::  crash-loops. (It is worth knowing this cuts both ways: peeking our own
+  ::  root as a directory is refused for the same reason.)
+  ::
+  ::  Everything one level down is ours: for a file at our root, and for any
+  ::  directory below it, the governor IS our root, so the walk stops before
+  ::  checking a weir at all. So carry the root's grubs one at a time and the
+  ::  subtrees one fold each. Our own root keeps its neck for free this way,
+  ::  which the root fold had to preserve by hand.
+  ;<  ~  bind:m  (carry-files up ?~(fil.bol ~ ~(tap by contents.u.fil.bol)))
+  ;<  ~  bind:m  (carry-dirs up ~(tap by dir.bol))
   ;<  ~  bind:m  (mark-carried up)
   (pure:m ~)
+::  +carry-files: the old root's grubs, one write each, gain flag and all.
+::
+++  carry-files
+  |=  [up=@ud fis=(list [nam=@ta =bask:tarball gain=?])]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  fis  (pure:m ~)
+  ;<  ~  bind:m  (over:io (rf up / nam.i.fis) bask.i.fis)
+  ;<  ~  bind:m  (gain:io (rf up / nam.i.fis) gain.i.fis)
+  (carry-files up t.fis)
+::  +carry-dirs: one fold per top-level subtree.
+::
+::    An empty sub-bole is SKIPPED rather than folded. carry-bole expresses
+::    "do not carry this directory" as [~ ~], and folding that over a
+::    directory we already populated would empty it - /ui is the one that
+::    matters, and it holds in-flight requests.
+::
+++  carry-dirs
+  |=  [up=@ud kids=(list [nam=@ta sub=bole:tarball])]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  kids  (pure:m ~)
+  ?:  =([~ ~] sub.i.kids)  (carry-dirs up t.kids)
+  ;<  ~  bind:m  (over-fold:io (rv up ~[nam.i.kids]) sub.i.kids)
+  (carry-dirs up t.kids)
 ::  +mark-carried: flip the marker, so this never runs twice.
 ::
 ++  mark-carried
