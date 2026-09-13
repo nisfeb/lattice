@@ -324,8 +324,11 @@
         ::  the %del tombstone). So the wave alone teaches the rev and we keen
         ::  at it. No pointer, no seq bookkeeping. The wave is the whole
         ::  rev-discovery channel.
+        ::  the peer's install is wherever +peer-base finds it; an unanswered
+        ::  probe keeps at the desk address so the failure reads as it did.
+        ;<  base=(unit path)  bind:m  (peer-base ship.ps)
         =/  road=road:tarball
-          (remote-road [%& %& (weld (weld app-base:lu /pub/vault) rel) %gmi] ship.ps)
+          (remote-road [%& %& (weld (weld (fall base desk-base:lu) /pub/vault) rel) %gmi] ship.ps)
         ::  keep:io RETURNS the bond wave (grubbery answers a new watcher with
         ::  +wave-at, the live state). Feed it through the same wave handler as
         ::  an edit wave, so a fresh subscription indexes NOW instead of at the
@@ -1450,9 +1453,10 @@
       (~(gas in *(set road:tarball)) ~[droad])
     ::  what the peer should OPEN: the page's code grub, not the dir.
     =/  npax=path  (snoc pdir %code)
+    ;<  base=(unit path)  bind:m  (peer-base u.shp)
     ;<  told=?  bind:m
       %^  remote-load-poke-wait  u.shp
-        :-  [/share-notice %& app-base:lu %'shares.sig']
+        :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
         [%poke [/lattice %share-notice] `action:ls`[%add npax mode]]
       ~s15
     %+  send-json  eyre-id
@@ -1821,9 +1825,10 @@
     ::  cap before sending, so a peer never has to defend against our client
     =/  body=@t
       ?:((gth (met 3 body) max-body:lc) (end [3 max-body:lc] body) body)
+    ;<  base=(unit path)  bind:m  (peer-base u.shp)
     ;<  told=?  bind:m
       %^  remote-load-poke-wait  u.shp
-        :-  [/comment-notice %& app-base:lu %'comments.sig']
+        :-  [/comment-notice %& (fall base desk-base:lu) %'comments.sig']
         [%poke [/lattice %comment-action] `comment-action:lc`[(pax-of u.page) body]]
       ~s15
     ::  303 back to the reader view of the page just commented on, the same
@@ -5477,6 +5482,24 @@
 ::  timeout or veto. `seen otherwise. This is peek-remote (nonce + %peek dart +
 ::  take-peek) with a concurrent timer, resolving on whichever lands first.
 ::
+::  +peer-base: which of +peer-bases:lu a peer runs lattice at. The desk
+::  install is asked first, the ball instance second; the first whose
+::  /pub/index answers is it. ~ when neither does: the peer is not running
+::  lattice, has not granted /pub, or did not answer within remote-timeout.
+::  Two remote round trips at worst, one at best; nothing is cached, so a
+::  peer that migrates is found at its new address on the next ask.
+::
+++  peer-base
+  |=  shp=@p
+  =/  m  (fiber:fiber:nexus ,(unit path))
+  ^-  form:m
+  =/  bases=(list path)  peer-bases:lu
+  |-  ^-  form:m
+  ?~  bases  (pure:m ~)
+  ;<  ms=(unit view:nexus)  bind:m
+    (peek-remote-wait [%& %& (weld i.bases /pub) %index] shp)
+  ?:  ?&(?=(^ ms) ?=([%file *] u.ms))  (pure:m `i.bases)
+  $(bases t.bases)
 ++  peek-remote-wait
   |=  [=road:tarball shp=@p]
   =/  m  (fiber:fiber:nexus ,(unit view:nexus))
@@ -6004,7 +6027,13 @@
     ;<  seen=view:nexus  bind:m  (peek:io road ~)
     ?.  ?=([%file *] seen)  (pure:m ~)
     (pure:m `[ud.cass.seen !<(@t (need-vase:tarball sang.seen))])
-  ;<  ms=(unit view:nexus)  bind:m  (peek-remote-wait road shp)
+  ::  a peer's page: `road` is relative to THIS nexus and +remote-road
+  ::  passes relative roads through untouched, so it never reached the
+  ::  peer. Absolute, at wherever the peer runs lattice.
+  ;<  base=(unit path)  bind:m  (peer-base shp)
+  ?~  base  (pure:m ~)
+  ;<  ms=(unit view:nexus)  bind:m
+    (peek-remote-wait [%& %& (weld (weld u.base /pub/vault) rel) %gmi] shp)
   ?~  ms  (pure:m ~)
   ?.  ?=([%file *] u.ms)  (pure:m ~)
   ::  CROSS-SHIP peek content is a boom (raw noun), NOT a vase. need-vase would
@@ -9244,15 +9273,17 @@
   ?~  pg  (pure:m ~)
   ?.  =(%gmi p.u.pg)  (pure:m ~)
   (pure:m `q.u.pg)
-::  +read-pub-index-remote: a peer's /pub/index via peek-remote (clean break:
-::  the peer must run the grubbery-native lattice at the same app-base).
+::  +read-pub-index-remote: a peer's /pub/index via peek-remote, at whichever
+::  install +peer-base finds.
 ::
 ++  read-pub-index-remote
   |=  shp=@p
   =/  m  (fiber:fiber:nexus ,(unit pub-index:lp))
   ^-  form:m
+  ;<  base=(unit path)  bind:m  (peer-base shp)
+  ?~  base  (pure:m ~)
   ;<  ms=(unit view:nexus)  bind:m
-    (peek-remote-wait [%& %& (weld app-base:lu /pub) %index] shp)
+    (peek-remote-wait [%& %& (weld u.base /pub) %index] shp)
   ::  ~ means the read FAILED (timeout / not-a-file / bad clam), distinct from a
   ::  reachable peer with a genuinely empty index (`~ *pub-index). Callers use the
   ::  difference: reconcile must NOT run on a failure (it would delete every row).

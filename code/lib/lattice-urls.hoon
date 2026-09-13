@@ -29,6 +29,14 @@
 ::    out of a urb:// url - are already location-independent and untouched.
 ::
 ++  app-base  `path`/apps/'lattice.lattice_app'
+::  +desk-base: where lattice lives once installed as a stock desk, which is
+::  every install from the ~ricsul-bilwyt release on. +app-base is the
+::  ball-compiled instance that preceded it. A peer is at one or the other,
+::  and +peer-bases lists them most-likely first for whoever has to ask.
+::
+++  desk-base
+  `path`/apps/'shell.shell'/desks/'lattice.desk'/desk/data/'lattice.lattice_app'
+++  peer-bases  ^-((list path) ~[desk-base app-base])
 ::  +parse-urb-url: "urb://~ship/rel" -> [ship rel-path]. ~ on a malformed url
 ::  (+stab is mule-guarded against bad knots).
 ::
