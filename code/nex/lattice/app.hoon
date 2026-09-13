@@ -3051,6 +3051,12 @@
           'let other ships read the pages you publish. Refuse this and lattice still works completely for you - your published pages just stay on this ship'
           %+  line  '/sys/link/'
           'look up where this app is installed, so the live-reload stream and the links to your published pages point at the right place. Refuse this and pages still render, but they will not refresh as you edit them'
+        ::  the peer mirror: every other ship's namespace appears under
+        ::  /sys/ames/ships/<ship>/root, and reading a page someone else
+        ::  published is a peek there. Without it the read is vetoed at
+        ::  home, before it leaves the ship.
+          %+  line  '/sys/ames/ships/'
+          'read the pages other ships publish, and follow them as they change. Refuse this and your own pages are unaffected; you just cannot read anyone else\'s'
         ::  THE CARRY ROAD, and it is temporary. Lattice used to live at
         ::  /apps/lattice.lattice_app; this reads that dormant instance once,
         ::  on the first writer rise after the move, and copies the data
