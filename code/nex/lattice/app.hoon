@@ -3056,7 +3056,7 @@
         ::  published is a peek there. Without it the read is vetoed at
         ::  home, before it leaves the ship.
           %+  line  '/sys/ames/ships/'
-          'read the pages other ships publish, and follow them as they change. Refuse this and your own pages are unaffected; you just cannot read anyone else\'s'
+          'read the pages other ships publish, and follow them as they change. Refuse this and your own pages are unaffected; you just cannot read what other ships publish'
         ::  THE CARRY ROAD, and it is temporary. Lattice used to live at
         ::  /apps/lattice.lattice_app; this reads that dormant instance once,
         ::  on the first writer rise after the move, and copies the data
