@@ -230,6 +230,13 @@
       |=  =prod:fiber:nexus
       =/  m  (fiber:fiber:nexus ,~)
       ^-  process:fiber:nexus
+      ::  WHERE THIS FIBER IS, once, for every helper below. The rail a
+      ::  fiber is spawned with is nexus-relative, so its depth is the
+      ::  number of steps up to the nexus root: 0 for the writer, 2 for a
+      ::  request at /ui/requests/<id>. +nexus-up used to ask the kernel
+      ::  for this on every call - a %here dart, whose walk ends in a veto
+      ::  of our own root - 84 times across the app, on most requests.
+      =.  up  (lent path.rail)
       ?+    rail  stay:m
           [~ %'main.sig']
         ;<  ~     bind:m  (rise-wait:io prod "%lattice writer failed")
@@ -477,6 +484,10 @@
         mirror-loop
       ==
     --
+::  +up: how many steps this fiber is from the nexus root. Set once per
+::  fiber by +on-file; read by +nexus-up. Zero until a fiber sets it,
+::  which only the writer is, at the root.
+=|  up=@ud
 |%
 ::  +srv: HTTP response door, the road from a /ui/requests/* fiber up to
 ::  /ui/main.sig, through which all responses are sent (so the dispatcher can
@@ -5458,11 +5469,10 @@
 ++  nexus-up
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
-  ;<  h=here:nexus  bind:m  get-here:io
-  =/  n=@ud  (lent pant.h)
-  ::  trusted: the walk reached root, so strip the app dir we sit under.
-  ::  sandboxed: the walk stopped at our own root, so n already is it.
-  (pure:m ?.(root.h n ?:((lth n (lent app-base:lu)) 0 (sub n (lent app-base:lu)))))
+  ::  set by +on-file from the spawning rail; no dart, no walk, no veto.
+  ::  The same number in both worlds: a rail is nexus-relative whether
+  ::  the nexus is the ball-compiled instance or the desk install.
+  (pure:m up)
 ::  +rf, +rv: a file road and a directory road, `up` steps from here.
 ::
 ::  +writer-rail: the writer's own rail, nexus-relative - declared by the
