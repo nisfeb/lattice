@@ -64,7 +64,7 @@
             %-  pairs:enjs:format
             :~  title+s+'Lattice'
                 info+s+'Pages, knowledge & publishing'
-                color+s+'#4a7c59'
+                color+s+'#101541'
                 ::  the tiles icon route matches the app SLUG (name before the
                 ::  first dot), not the folder name.
                 image+s+'/grubbery/tiles/icon/lattice'

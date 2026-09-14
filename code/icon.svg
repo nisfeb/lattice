@@ -1,5 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="12" fill="#101541"/>
+<!-- the lattice tile icon: the same hatch as before, now square and
+     full-bleed (the tile does its own rounding; a rounded rect here let the
+     tile's colour show at the corners) on the vignetted navy the desktop
+     icon and the other apps (auspex, talon, calendar) use. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="72%">
+      <stop offset="0" stop-color="#171c52"/>
+      <stop offset="0.6" stop-color="#101541"/>
+      <stop offset="1" stop-color="#080b25"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" fill="url(#bg)"/>
   <g stroke="#f9a804" stroke-width="3" stroke-linecap="round" fill="none">
     <path d="M8 24 24 8M8 40 40 8M8 56 56 8M24 56 56 24M40 56 56 40"/>
     <path d="M40 8 56 24M24 8 56 40M8 8 56 56M8 24 40 56M8 40 24 56"/>
