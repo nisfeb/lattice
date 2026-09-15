@@ -19,6 +19,17 @@
 ::  Vault layout uses the fixed `entry` leaf under each key-dir so /a and /a/b
 ::  can both be entries (see lattice-know).
 ::
+::  v30 carries no behaviour change, and that is deliberate. A desk sync is
+::  content-addressed, so a release touching only version.json writes one
+::  file and reloads nothing. An instance still holding a stale BANG —
+::  "no built nexus %lattice--app", recorded when a neck-less /desk/code
+::  could not compile its contents — is re-evaluated only when its own code
+::  blot changes: +apply-bill skips instances that already exist, and
+::  +reload-billed fires only on the neck-repair path, which returns early
+::  once the neck is healthy. Changed nexus code reloads naturally, and that
+::  reload IS the repair. Measured on ~martyr-sanryg, where /apps/lattice
+::  hung past 25s while an already-repaired auspex answered in 190ms.
+::
 /<  lk   /lib/lattice-know.hoon
 /<  lp   /lib/lattice-pub.hoon
 /<  lgmi  /lib/lattice-gmi.hoon
