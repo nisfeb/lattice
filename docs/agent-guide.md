@@ -105,7 +105,7 @@ and parameters go in the query string.
 | `GET /page-dump` | (none) | same, **plus `body` inline** per page (omitted for bodies >256 KB). One call for the whole tree. |
 | `GET /page-source?name=<p>` | `name` | one page's `{body,kind,…}` |
 | `GET /page-errors?name=<p>` | `name` | the page's latest evaluator error as text (`''` = clean) |
-| `GET /fetch?url=urb://~ship/rel` | `url` | read a *published* page (own vault, or a remote peer via grubbery namespace) |
+| `GET /fetch?url=urb://~ship/rel` | `url` | read a *published* page (own vault, or a remote peer via a grubbery peek) |
 
 `page` is `true` for a file, `false` for a folder. `path` is the page-relative key (no
 leading slash, no extension). `kind` is one of `md gmi html text js css hoon index`. Derive

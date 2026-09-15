@@ -11,10 +11,7 @@ behaves like a spreadsheet. Every page is a function over its subtree, updated w
 dependencies change. Its weakness is distribution. Sharing is
 clearweb-flag-or-nothing, and the whole thing is web-first with urbit underneath.
 
-Grubbery already provides everything hawk built *except* the programmable-page
-layer. And it provides the one thing hawk lacks: **ames-native federation** (gained
-namespaces, remote peeks, live remote subscriptions, per-directory ACLs bound to
-urbit identity).
+Grubbery already provides everything hawk built *except* the programmable-page layer. And it provides the one thing hawk lacks: **ames-native federation** (remote peeks, live remote subscriptions, a remote-scry namespace, and per-directory ACLs bound to urbit identity).
 
 The platform is therefore **hawk's page model expressed in grubbery primitives,
 with sharing defaulting to ames and the clearweb as an optional projection.**
@@ -48,11 +45,7 @@ you share is *live on the other ship*, not a snapshot on a website.
 - **Grub** = file (`[mark noun]`) + owning fiber, in a tree (`ball`/`born`) held
   in `%grubbery`'s agent state. Per-grub revision history (`hist`, clay-shaped
   `cass` cases) with `%lose` pruning and `%tag` (tags on history entries).
-- **Dart** = `[%node =wire road=road:tarball =load]`, the effect vocabulary.
-  `load` includes `%make` / `%cull` / `%poke` / `%peek` (with `blot` view
-  conversion, `case` historical reads, remote destinations under
-  `/sys/ames/ships/<ship>/root/`), `%keep` / `%drop` (subscriptions), `%gain`
-  (publish flag, recursive), `%sand` (set weir), `%lose`, `%tag`, `%firm`.
+- **Dart** = `[%node =wire road=road:tarball =load]`, the effect vocabulary. `load` includes `%make` / `%cull` / `%poke` / `%peek` (with `blot` view conversion, `case` historical reads, remote destinations under `/sys/ames/ships/<ship>/root/`), `%keep` / `%drop` (subscriptions), `%gain` (retention flag, recursive. A gained grub keeps its revisions as permanent history, and an un-gained one keeps only its latest. It grants no access), `%sand` (set weir), `%lose`, `%tag`, `%firm`.
 - **Weir** = per-directory ACL: `{make=(set road) poke=(set road) peek=(set
   road)}`, naming which *sources* may make, poke, or peek here. Foreign ships
   enter the tree as darts from `/sys/ames/ships/<ship>/ship.sig`, so weirs bind
@@ -74,7 +67,7 @@ you share is *live on the other ship*, not a snapshot on a website.
 | peek / poke | peek surface / poke darts | exists |
 | admin-vs-poke permission binary | weirs + usergroups | exists, richer |
 | `/peek/public` clearweb flag | eyre public binding, per-page opt-in | build (thin) |
-| sharing "on the urbit network" | `%gain` + remote peek + **remote keeps** | exists, the differentiator |
+| sharing "on the urbit network" | `/public` weir grant + remote peek + **remote keeps** + remote scry | exists, the differentiator |
 | pulse timers | `rise-wait` / sleep fibers | exists |
 | `%shed` thread offload | spawn / khan | exists |
 | backups | per-grub `hist` + `%lose` prune | exists, better |
@@ -87,9 +80,7 @@ Two deliberate divergences from hawk:
    the data grub keeps its mark (gemtext, markdown, json, whatever) and rendering
    happens in the serve path. Pages without code are just files. The degenerate
    case costs nothing and is exactly the current lattice vault.
-2. **Ames first.** Hawk's unit of sharing is a public URL. Ours is a weir grant.
-   The recipient's *ship* reads and live-subscribes to the page over ames.
-   Clearweb is a projection, not the primary surface.
+2. **Ames first.** Hawk's unit of sharing is a public URL. Ours is a weir grant, either to one ship or to every ship through the `/public` usergroup. The reading *ship* reads and live-subscribes to the page over ames. Clearweb is a projection, not the primary surface.
 
 ## The page convention
 
@@ -171,16 +162,15 @@ Three presets, all per-directory, all one poke:
 
 | Preset | Mechanics | Who can read |
 |---|---|---|
-| **private** (default) | `gain=%.n`, owner-only weir | you |
-| **shared** | `%gain` + weir peek granted to ships/usergroup | named ships, over ames, **live** (remote keeps) |
+| **private** (default) | data grub un-gained, no `/public` grant, no copy in the published vault | you |
+| **shared** | copy in the published vault, bound in the scry namespace, data grub gained, data road added to the `/public` peek set | any ship that knows the address, over ames, **live** (remote keeps) |
 | **clearweb** | shared + page tagged `clearweb` → included in public eyre binding | anyone with the URL |
+
+A per-ship grant (`POST /share-file`) is separate from the presets. It gives one ship read or edit access to one page, through an auto-usergroup named after that ship.
 
 Notes:
 
-- "Shared" is the platform default for *accessible* content, which was the
-  recast's core request. The recipient's ship subscribes, edits propagate as
-  waves, and their explorer view is live. No accounts and no tokens. Ames
-  identity is the auth.
+- "Shared" means every ship can read the page, which is what publishing means. To reach one specific ship, use a per-ship grant instead. A reading ship subscribes, edits propagate as waves, and its explorer view is live. No accounts and no tokens. Ames identity is the auth.
 - Clearweb serving reuses hawk's tricks: server-rendered, permission-filtered
   (strip elements by class based on requester, whether owner, authorized ship
   via eyre login, or anonymous), with forms POSTing commands only where the
@@ -205,11 +195,7 @@ original pivot idea, and they need no browser extension:
   response types" applies to cages equally. Unknown marks get a mark-labeled
   raw view.
 - Live views via keep-SSE (exists: `/streams`, reader auto-reload).
-- Remote pages: a `<path>` beginning `~ship/…` resolves through remote peek
-  against the peer's gained tree, the federated dimension hawk doesn't have.
-  `urb://` remains a *notation* for cross-context links. In-browser it's just a
-  path. `web+urb` registration and the mobile intent-filter wrapper stay as the
-  optional layer-2 from the explorer design.
+- Remote pages: a `<path>` beginning `~ship/…` resolves through remote peek against whatever part of the peer's tree its weirs grant you, the federated dimension hawk doesn't have. `urb://` remains a *notation* for cross-context links. In-browser it's just a path. `web+urb` registration and the mobile intent-filter wrapper stay as the optional layer-2 from the explorer design.
 
 ## Performance and safety budget
 
@@ -260,7 +246,7 @@ Each step ships something usable on ricsul, and each has a verification gate.
 1. **Explorer generalization**: any-subtree browsing, hawk URL conventions
    (trailing slash, `?data`/`?view`/`?history`), mark-aware rendering, SSE
    live.
-   *Gate: browse own tree + a peer's gained tree from a phone browser (PWA).*
+   *Gate: browse own tree + a peer's granted tree from a phone browser (PWA).*
 2. **Page convention + evaluator, explicit deps**: `.code`/`.deps`,
    compile-on-change, `.error` surfacing, budgeted recompute. The first
    programmable page is a counter.

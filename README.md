@@ -5,7 +5,7 @@ Write pages in markdown, gemtext, or HTML, or write programmable pages in Hoon
 that compute their own content. Keep a private, tagged knowledge store that you
 and your AI agents share. Search all of it in full text. Publishing is
 peer-to-peer. Every published page is addressed as `urb://~ship/path` and
-travels ship-to-ship over remote scry, with no DNS, no web server, and no host
+travels ship-to-ship over Urbit's network, with no DNS, no web server, and no host
 in the middle.
 
 One store, every surface:
@@ -31,7 +31,7 @@ One store, every surface:
 The ship side is a `lattice` **nexus** running inside the
 [**grubbery**](https://github.com/gwbtc/grubbery) framework. Pages and
 knowledge live as grubs in grubbery's vault. Published pages are served to
-other ships over remote scry, and followed remote files push you updates.
+other ships over ames, and followed remote files push you updates.
 
 ## What it does
 
@@ -50,12 +50,8 @@ other ships over remote scry, and followed remote files push you updates.
   `cat` run from RAM. Editor saves round-trip safely, and backup or swap
   files never touch the ship.
 - **Browse `urb://`.** Fetch and read gemtext published by any ship,
-  peer-to-peer over Urbit's remote scry, from the web reader.
-- **Publish.** Every page you save is written as a *published grub*: a signed
-  value in the Urbit namespace, instantly readable by anyone as
-  `urb://~you/that/path`. Pages and whole folders can also go
-  clearweb-public, served over plain HTTP at `/c/<path>`. Share a folder
-  and you've published a site.
+  peer-to-peer over ames, from the web reader.
+- **Publish.** Pages are private until you share them. Share one and it is published: copied into your published vault, bound in the Urbit scry namespace, and readable by any ship as `urb://~you/that/path`. Pages and whole folders can also go clearweb-public, served over plain HTTP at `/c/<path>`. Share a folder and you've published a site.
 - **Editor.** A web workspace with syntax highlighting for every page kind,
   live preview, compile errors for Hoon pages, folder-level share, move, and
   delete, and drag-and-drop upload of files or whole directories (batched
@@ -93,10 +89,7 @@ other ships over remote scry, and followed remote files push you updates.
   grants, editable in a full ACL pane; per-file grants to a ship or a group
   from the editor; and a banlist that revokes on ban. A banned ship is
   stripped from every group, and new grants to it are refused.
-- **Follow & subscribe.** Follow ships to keep track of what they publish, or
-  subscribe to a specific file. Your own files push live over an Eyre SSE
-  channel. A subscribed remote file rides a live namespace subscription, so
-  an edit on the other ship arrives as it happens rather than on a timer.
+- **Follow & subscribe.** Follow ships to keep track of what they publish, or subscribe to a specific file. Your own files push live over an Eyre SSE channel. A subscribed remote file rides a live subscription to that file on the other ship. Each edit announces its new revision, and your ship fetches exactly that revision from the publisher's scry namespace, so it arrives as it happens rather than on a timer.
 - **Discovery.** Every lattice ship serves a small gemtext manifest of what
   it has published. Fetch `urb://~ship/manifest` to see a stranger's index.
 - **Copy to your ship.** Like a bookmark, but real: copy a remote file onto
@@ -106,16 +99,9 @@ other ships over remote scry, and followed remote files push you updates.
 
 ## How a page reaches your screen
 
-Every published page is addressed `urb://~ship/path` and travels
-**peer-to-peer over Urbit's remote scry**. There is no DNS, no web server,
-and no host in the middle. Here's the full path from a publisher's ship to
-your screen when you open a remote page.
+Every published page is addressed `urb://~ship/path` and travels **peer-to-peer over Urbit's network**. There is no DNS, no web server, and no host in the middle. Here's the full path from a publisher's ship to your screen, first when you open a remote page and then when you follow one.
 
-**Publishing (on `~remote`).** Saving a page writes its gemtext as a grub and
-**publishes it into the Urbit namespace** as a "gained" grub: a signed value
-at a fixed address that other ships can read by remote scry. That publish
-step is what makes the page reachable at all. Nothing else about your ship
-is exposed.
+**Publishing (on `~remote`).** Sharing a page **publishes it**. Its gemtext is copied into the published vault, which grubbery's `/public` usergroup lets every ship read. Each revision is also bound in the Urbit scry namespace at its own permanent address, `/pub/page/<name>/<rev>`. That publish step is what makes the page reachable at all. Private pages are never copied there, and nothing else about your ship is exposed.
 
 **Reading (on your ship).** You tap `urb://~remote/page` in the reader:
 
@@ -128,9 +114,9 @@ sequenceDiagram
     participant Peer as ~remote (publisher)
     App->>You: GET /apps/lattice/fetch?url=urb://~remote/page
     Note over You: parse url → [~remote, /page]<br/>spawn a per-request fiber
-    You->>Ames: remote scry, latest version of the page
-    Ames->>Peer: read the published (gained) grub
-    Peer-->>Ames: signed gemtext body
+    You->>Ames: grubbery peek, current version of the page
+    Ames->>Peer: peer's grubbery checks its weirs, reads /pub/vault
+    Peer-->>Ames: gemtext body
     Ames-->>You: body, or nothing
     Note over You: clam untrusted noun → text<br/>(malformed body → clean 404)
     You-->>App: 200, gemtext body as JSON
@@ -141,11 +127,8 @@ sequenceDiagram
    its authenticated session. It never talks to the publisher directly.
 2. **Per-request handling.** Your ship parses the `urb://` URL into
    `[ship, path]` and spawns a short-lived fiber for just this request.
-3. **Remote scry to the publisher.** Since the ship isn't yours, your ship
-   issues a one-shot **remote scry** to `~remote` for the *latest* published
-   version of that page, over ames, Urbit's peer-to-peer transport. The two
-   ships talk directly. There is no central server.
-4. **Untrusted by default.** The peer's reply is a raw signed noun. Your ship
+3. **A peek to the publisher.** Since the ship isn't yours, your ship sends a one-shot **grubbery peek** to `~remote` for the *current* published version of that page, over ames, Urbit's encrypted peer-to-peer transport. The publisher's grubbery checks its access rules before it answers. The two ships talk directly. There is no central server.
+4. **Untrusted by default.** The peer's reply is a raw noun. Your ship
    converts it to text inside a guard, so a malformed or hostile body yields
    a clean 404, never a crash. You're parsing a stranger's data, and it's
    treated as such.
@@ -158,10 +141,8 @@ sequenceDiagram
 - **Latest-version, clean break.** A fetch reads the *current* published
   version in one shot. There is no walk-to-latest and no revision chain. The
   publisher must be running lattice for a peer read to resolve.
-- **Following is a live subscription, not a poll.** Subscribing to a peer's
-  page rides one keep on the published grub. The peer's edit sends a wave
-  carrying the new revision, and your ship reads that exact revision out of
-  the namespace. Nothing is fetched on a timer.
+- **Following is a live subscription, not a poll.** Subscribing to a peer's page rides one keep on the published grub. The peer's edit sends a wave carrying only the new revision number. Your ship then reads that exact revision out of the publisher's scry namespace with a remote scry request (Urbit's directed messaging), which the publisher's kernel answers without waking lattice. Nothing is fetched on a timer.
+- **Namespace reads are not encrypted.** Those remote scry requests use Urbit's unencrypted mode, so a shared page's revisions are readable in transit. That matches what sharing already means, since every ship may read a shared page. A page granted to one specific ship travels by peek over encrypted ames instead.
 
 ## Install
 
@@ -286,7 +267,7 @@ and update the header. There is nothing else to re-register. Test with
 
 - **Not a host.** Bring your own ship: yours, a friend's, or a hosted one.
 - **Not the HTTP web.** Pages are Urbit-native (`urb://~ship/path`) and move
-  between ships over remote scry, not over DNS/HTTP. The exception is what
+  between ships over ames, not over DNS/HTTP. The exception is what
   you *choose* to publish clearweb, which your ship serves itself at
   `/c/<path>`.
 - **Not an app to install.** The client is served by your ship. The only

@@ -14,7 +14,7 @@ urb://~ship/<word>/...     a published note  (bare = canonical; "word" is 2+ cha
 urb://~ship/p/<name>/...   a programmable page, or a grub inside it
 urb://~ship/n/<rel>        a published note, explicit form
 urb://~ship/k/<rel>        a knowledge-vault entry            (reserved; store TBD)
-urb://~ship/t/<abs-path>   the raw grubbery tree (any gained grub, any app)
+urb://~ship/t/<abs-path>   the raw grubbery tree (any grub the ship grants you, any app)
 ```
 
 **The rule:** the first path component decides by *length*.

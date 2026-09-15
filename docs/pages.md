@@ -166,9 +166,7 @@ you embed.
 Each page has a one-click preset, shown in its live view:
 
 - **private** (default): only you, over authenticated HTTP.
-- **shared**: the `data` grub is published to the Urbit namespace and any
-  ship can read it over ames, the same federation the published pages use.
-  It is live, so a subscribing ship sees updates.
+- **shared**: the page is published. Any ship can read it over ames, the same federation the published pages use, and a copy is bound in the Urbit scry namespace. It is live, so a subscribing ship sees updates.
 - **clearweb**: shared, and the data is *also* served over unauthenticated
   HTTP at `/apps/lattice/c/<name>`. This is the only public surface. It
   serves that one page's rendered data and nothing else: no tree, no code,
