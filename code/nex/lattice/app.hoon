@@ -3062,6 +3062,24 @@
           'let other ships read the pages you publish. Refuse this and lattice still works completely for you - your published pages just stay on this ship'
           %+  line  '/sys/link/'
           'look up where this app is installed, so the live-reload stream and the links to your published pages point at the right place. Refuse this and pages still render, but they will not refresh as you edit them'
+        ::  the obelisk bridge's own subscription state. grubbery
+        ::  materializes a gall subscription at /sys/gall/subs/<ship>/
+        ::  <agent>/<path>/, and +obelisk-sub-state reads the `live` grub
+        ::  there to decide whether the /server watch is established.
+        ::
+        ::  /sys/gall/ was declared as a POKE road only, so that read was
+        ::  vetoed at our own boundary and the mole fell to %.n — a LIVE
+        ::  subscription read as %dead, forever. Two visible symptoms, both
+        ::  seen on ~ricsul-bilwyt with obelisk installed and answering:
+        ::  the settings page reported "not installed", and +obelisk-
+        ::  ensure-sub treated %dead as "gall holds nothing" and re-watched,
+        ::  which collides with grubbery's auto-resubscribe and prints
+        ::  %watch-not-unique on every kick.
+        ::
+        ::  Refuse this and lattice is unaffected except for the obelisk
+        ::  mirror, which goes back to reporting not-installed.
+          %+  line  '/sys/gall/'
+          'check whether the obelisk mirror is connected, by reading the subscription grubbery keeps for it. Refuse this and lattice still works; the settings page just cannot tell you whether the mirror is running'
         ::  the peer mirror: every other ship's namespace appears under
         ::  /sys/ames/ships/<ship>/root, and reading a page someone else
         ::  published is a peek there. Without it the read is vetoed at
