@@ -19,16 +19,23 @@
 ::  Vault layout uses the fixed `entry` leaf under each key-dir so /a and /a/b
 ::  can both be entries (see lattice-know).
 ::
-::  v30 carries no behaviour change, and that is deliberate. A desk sync is
-::  content-addressed, so a release touching only version.json writes one
-::  file and reloads nothing. An instance still holding a stale BANG —
-::  "no built nexus %lattice--app", recorded when a neck-less /desk/code
-::  could not compile its contents — is re-evaluated only when its own code
-::  blot changes: +apply-bill skips instances that already exist, and
-::  +reload-billed fires only on the neck-repair path, which returns early
-::  once the neck is healthy. Changed nexus code reloads naturally, and that
-::  reload IS the repair. Measured on ~martyr-sanryg, where /apps/lattice
-::  hung past 25s while an already-repaired auspex answered in 190ms.
+::  v30 carried no behaviour change, and it did not fix what it was meant
+::  to fix. Recording that here because the reasoning was wrong in a way
+::  worth not repeating: it assumed a changed code blot would reload a
+::  subscriber's instance and clear a stale "no built nexus %lattice--app"
+::  BANG. That holds ONLY where /desk/code carries the [/ %code] neck. A
+::  neck-less code dir is not a code namespace, so grubbery never runs
+::  +build-code over it, nothing compiles the mirrored source, and the
+::  instance stays dead through any number of releases.
+::
+::  Measured on ~martyr-sanryg: at v30, with the v30 source mirrored and
+::  the desk page reporting up to date, /apps/lattice still hung past 30s
+::  while auspex answered in 0.2s. It recovered only when the desk nexus
+::  was reloaded, letting grubbery's +ensure-code-nexus repair the neck and
+::  restart the instance.
+::
+::  The fix belongs in the kernel, not here: +sync-release runs that repair
+::  when a release arrives. Nothing in this file can reach it.
 ::
 /<  lk   /lib/lattice-know.hoon
 /<  lp   /lib/lattice-pub.hoon
