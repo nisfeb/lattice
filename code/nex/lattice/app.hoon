@@ -9544,7 +9544,15 @@
   =/  m  (fiber:fiber:nexus ,?(%none %dead %live))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  =/  road=road:tarball  (rf up (obelisk-sub-base our) %live)
+  ::  ABSOLUTE, not relative. (rf up …) builds [%| up lane]: climb `up`
+  ::  steps to the nexus root, then DESCEND — so an absolute path handed
+  ::  to rf lands at <our own root>/sys/gall/subs/…, which does not
+  ::  exist. The peek misses, the mole falls to %.n, and a live
+  ::  subscription reads %dead forever. Every other outside-our-tree road
+  ::  in this app (and +reg-road in fiberio) is the [%& %& …] form; of
+  ::  the 191 rf/rv calls here, this and its sibling in +obelisk-read-data
+  ::  were the only two aimed outside lattice's own tree.
+  =/  road=road:tarball  `road:tarball`[%& %& (obelisk-sub-base our) %live]
   ;<  ex=?  bind:m  (peek-exists:io road)
   ?.  ex  (pure:m %none)
   ;<  vw=view:nexus  bind:m  (peek:io road ~)
@@ -9736,7 +9744,8 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  our=@p  bind:m  get-our:io
-  =/  data-road=road:tarball  (rf up (obelisk-sub-base our) %data)
+  ::  absolute, for the reason spelled out in +obelisk-sub-state
+  =/  data-road=road:tarball  `road:tarball`[%& %& (obelisk-sub-base our) %data]
   ;<  ~  bind:m  (obelisk-ensure-sub our)
   ::  no live subscription means no poke, for two reasons. The mild
   ::  one: obelisk answers ONLY on /server, so a poke sent with no
