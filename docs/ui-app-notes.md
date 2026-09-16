@@ -64,7 +64,7 @@ from the desk. The ball never sees the source files.
 | 70-upload.js | pickers, drag-drop, upload progress |
 | 75-move.js | movePage/moveFolder |
 | 77-history.js | `<lat-history>`/`<lat-links>`, revisions, backlinks |
-| 85-layout.js | pane toggles, mobile tabs behavior |
+| 85-layout.js | pane toggles, the edit/split/preview view, mobile tabs behavior |
 | 90-sync.js | beacon SSE + focus + 30s poll refresh |
 | 95-know.js | knowledge mode + setMode |
 | 98-legacy.js | one-time legacy agent import |

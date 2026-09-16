@@ -141,9 +141,14 @@
     if (root) return html.slice(0, root.index + root[0].length) + fit + html.slice(root.index + root[0].length);
     return fit + html;
   };
+  // nobody sees the preview on a phone off its tab, or on a desktop in the
+  // editor-only view (85-layout.js); the view buttons refresh it on the way
+  // back, the tab strip likewise
+  const previewHidden = () =>
+    (isMobile() ? ws.dataset.mv !== 'prev' : ws.classList.contains('ve'));
   const paintLocal = () => {
     if (!CONTENT() || document.hidden) return;
-    if (isMobile() && ws.dataset.mv !== 'prev') return;
+    if (previewHidden()) return;
     try {
       // html pages own their whole document, chrome and all. The content kinds
       // get the same bare shell the markdown preview always used.
@@ -187,7 +192,7 @@
     // time and delays the autosave queued behind it (worst on mobile, where
     // the code tab hides the preview entirely).
     if (document.hidden) return;
-    if (isMobile() && ws.dataset.mv !== 'prev') return;
+    if (previewHidden()) return;
     if (CONTENT()) {
       // Paint locally FIRST, on every path into this function, not just while
       // typing. The local render used to hang off the input event alone, so

@@ -44,6 +44,14 @@
        counts them and opens the resolve pane. -->
   <button id="cflt" class="ico" title="sync conflicts to resolve" aria-label="sync conflicts to resolve" hidden>&#9873;</button>
   <button id="aclt" class="ico" title="access control &mdash; groups, sharing, banned ships" aria-label="access control &mdash; groups, sharing, banned ships">&#128273;</button>
+  <!-- edit | split | preview is ONE three-way choice, not two toggles: an
+       editor-less, preview-less layout is not a layout. State and handlers
+       in 85-layout.js; the desktop View menu clicks these very buttons. -->
+  <span id="viewseg" role="group" aria-label="editor layout">
+    <button id="viewedit" class="ico" title="editor only">edit</button>
+    <button id="viewsplit" class="ico" title="editor and preview">split</button>
+    <button id="viewprev" class="ico" title="preview only">preview</button>
+  </span>
   <button id="treet" class="ico" title="toggle tree pane" aria-label="toggle tree pane">&#9776;</button>
   <button id="ctlt" class="ico" title="toggle controls pane" aria-label="toggle controls pane">&#9881;</button>
 </header>`;

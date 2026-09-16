@@ -902,6 +902,14 @@
        counts them and opens the resolve pane. -->
   <button id="cflt" class="ico" title="sync conflicts to resolve" aria-label="sync conflicts to resolve" hidden>&#9873;</button>
   <button id="aclt" class="ico" title="access control &mdash; groups, sharing, banned ships" aria-label="access control &mdash; groups, sharing, banned ships">&#128273;</button>
+  <!-- edit | split | preview is ONE three-way choice, not two toggles: an
+       editor-less, preview-less layout is not a layout. State and handlers
+       in 85-layout.js; the desktop View menu clicks these very buttons. -->
+  <span id="viewseg" role="group" aria-label="editor layout">
+    <button id="viewedit" class="ico" title="editor only">edit</button>
+    <button id="viewsplit" class="ico" title="editor and preview">split</button>
+    <button id="viewprev" class="ico" title="preview only">preview</button>
+  </span>
   <button id="treet" class="ico" title="toggle tree pane" aria-label="toggle tree pane">&#9776;</button>
   <button id="ctlt" class="ico" title="toggle controls pane" aria-label="toggle controls pane">&#9881;</button>
 </header>`;
@@ -3851,9 +3859,14 @@
     if (root) return html.slice(0, root.index + root[0].length) + fit + html.slice(root.index + root[0].length);
     return fit + html;
   };
+  // nobody sees the preview on a phone off its tab, or on a desktop in the
+  // editor-only view (85-layout.js); the view buttons refresh it on the way
+  // back, the tab strip likewise
+  const previewHidden = () =>
+    (isMobile() ? ws.dataset.mv !== 'prev' : ws.classList.contains('ve'));
   const paintLocal = () => {
     if (!CONTENT() || document.hidden) return;
-    if (isMobile() && ws.dataset.mv !== 'prev') return;
+    if (previewHidden()) return;
     try {
       // html pages own their whole document, chrome and all. The content kinds
       // get the same bare shell the markdown preview always used.
@@ -3897,7 +3910,7 @@
     // time and delays the autosave queued behind it (worst on mobile, where
     // the code tab hides the preview entirely).
     if (document.hidden) return;
-    if (isMobile() && ws.dataset.mv !== 'prev') return;
+    if (previewHidden()) return;
     if (CONTENT()) {
       // Paint locally FIRST, on every path into this function, not just while
       // typing. The local render used to hang off the input event alone, so
@@ -6038,10 +6051,23 @@
   // soft-wrap is the default (long lines running off-screen are unusable on
   // mobile). The toggle still turns it off, and a saved preference wins.
   if (!('appWrap' in localStorage)) localStorage.appWrap = '1';
+  // the view: edit | split | prev. Three buttons, one pressed. It persists
+  // like the other layout toggles, and the way back is always in the bar.
+  // Desktop only: the phone's tab strip is already one pane at a time, and
+  // its CSS block never sees these classes.
+  const VIEWS = ['edit', 'split', 'prev'];
+  const view = () => (VIEWS.includes(localStorage.appView) ? localStorage.appView : 'split');
   const applyToggles = () => {
     ws.classList.toggle('nt', localStorage.appNT === '1');
     ws.classList.toggle('nc', localStorage.appNC === '1');
     ws.classList.toggle('wrap', localStorage.appWrap === '1');
+    ws.classList.toggle('ve', view() === 'edit');
+    ws.classList.toggle('vp', view() === 'prev');
+    for (const v of VIEWS) {
+      const b = $('view' + v);
+      b.className = 'ico' + (v === view() ? ' on' : '');
+      b.setAttribute('aria-pressed', v === view() ? 'true' : 'false');
+    }
     //  the on class is paint alone, so mirror the state in aria-pressed the
     //  way setFull below does
     for (const [id, key] of [['wrapt', 'appWrap'], ['treet', 'appNT'], ['ctlt', 'appNC']]) {
@@ -6055,6 +6081,14 @@
   $('wrapt').onclick = () => flip('appWrap');
   $('treet').onclick = () => flip('appNT');
   $('ctlt').onclick = () => flip('appNC');
+  for (const v of VIEWS)
+    $('view' + v).onclick = () => {
+      const hidden = view() === 'edit';
+      localStorage.appView = v;
+      applyToggles();
+      // the preview skipped its renders while off screen (60-preview.js)
+      if (hidden && v !== 'edit') refreshPreview();
+    };
   applyToggles();
 
   // ── mobile: full-screen editing ──────────────────────────────────────────

@@ -106,7 +106,25 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         .paste()
         .select_all()
         .build()?;
-    app.set_menu(tauri::menu::MenuBuilder::new(app).items(&[&file, &edit, &prefs]).build()?)?;
+    // View: which panes are on screen. Editor / split / preview is one
+    // three-way choice (85-layout.js), because an editor-less, preview-less
+    // layout is not a layout; the tree and controls panes are toggles. Like
+    // File, every item clicks the page's own button, so the state lives in
+    // the page and the menu has nothing to drift from it. Accelerators: the
+    // page owns ctrl-S and ctrl-K (and vim mode ctrl-R, ctrl-[); none of
+    // these collide.
+    let view_item = |id: &str, label: &str, key: &str| {
+        tauri::menu::MenuItemBuilder::with_id(id, label).accelerator(key).build(app)
+    };
+    let view = tauri::menu::SubmenuBuilder::new(app, "View")
+        .item(&view_item("view-editor", "Editor only", "CmdOrCtrl+1")?)
+        .item(&view_item("view-split", "Editor and preview", "CmdOrCtrl+2")?)
+        .item(&view_item("view-preview", "Preview only", "CmdOrCtrl+3")?)
+        .separator()
+        .item(&view_item("view-tree", "Tree pane", "CmdOrCtrl+B")?)
+        .item(&view_item("view-controls", "Controls pane", "CmdOrCtrl+Shift+B")?)
+        .build()?;
+    app.set_menu(tauri::menu::MenuBuilder::new(app).items(&[&file, &edit, &view, &prefs]).build()?)?;
     Ok(())
 }
 
@@ -308,6 +326,11 @@ fn main() {
                 "file-upload-files" => "upfiles",
                 "file-upload-folder" => "updir",
                 "file-save" => "save",
+                "view-editor" => "viewedit",
+                "view-split" => "viewsplit",
+                "view-preview" => "viewprev",
+                "view-tree" => "treet",
+                "view-controls" => "ctlt",
                 _ => return,
             };
             if let Some(w) = app.get_webview_window("workspace") {

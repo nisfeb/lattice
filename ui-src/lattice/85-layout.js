@@ -3,10 +3,23 @@
   // soft-wrap is the default (long lines running off-screen are unusable on
   // mobile). The toggle still turns it off, and a saved preference wins.
   if (!('appWrap' in localStorage)) localStorage.appWrap = '1';
+  // the view: edit | split | prev. Three buttons, one pressed. It persists
+  // like the other layout toggles, and the way back is always in the bar.
+  // Desktop only: the phone's tab strip is already one pane at a time, and
+  // its CSS block never sees these classes.
+  const VIEWS = ['edit', 'split', 'prev'];
+  const view = () => (VIEWS.includes(localStorage.appView) ? localStorage.appView : 'split');
   const applyToggles = () => {
     ws.classList.toggle('nt', localStorage.appNT === '1');
     ws.classList.toggle('nc', localStorage.appNC === '1');
     ws.classList.toggle('wrap', localStorage.appWrap === '1');
+    ws.classList.toggle('ve', view() === 'edit');
+    ws.classList.toggle('vp', view() === 'prev');
+    for (const v of VIEWS) {
+      const b = $('view' + v);
+      b.className = 'ico' + (v === view() ? ' on' : '');
+      b.setAttribute('aria-pressed', v === view() ? 'true' : 'false');
+    }
     //  the on class is paint alone, so mirror the state in aria-pressed the
     //  way setFull below does
     for (const [id, key] of [['wrapt', 'appWrap'], ['treet', 'appNT'], ['ctlt', 'appNC']]) {
@@ -20,6 +33,14 @@
   $('wrapt').onclick = () => flip('appWrap');
   $('treet').onclick = () => flip('appNT');
   $('ctlt').onclick = () => flip('appNC');
+  for (const v of VIEWS)
+    $('view' + v).onclick = () => {
+      const hidden = view() === 'edit';
+      localStorage.appView = v;
+      applyToggles();
+      // the preview skipped its renders while off screen (60-preview.js)
+      if (hidden && v !== 'edit') refreshPreview();
+    };
   applyToggles();
 
   // ── mobile: full-screen editing ──────────────────────────────────────────
