@@ -726,3 +726,120 @@ For the current fleet: ricsul reports 14.286 versions with zero `LATEST`, so
 leave it. Run 13a/13b when a user reports a page or a revision whose read
 crashes the ship — that is the symptom this section exists for, and it has not
 been seen.
+
+---
+
+## 14. Tracking: the branch we ship, and the open PRs
+
+**This section goes stale.** Treat the numbers as of 2026-09-16 and re-derive
+before relying on them — the commands to do so are in 14d.
+
+### 14a. Why we ship a branch at all
+
+`nisfeb/grubbery` branch **`dist/single-release`** is what `~ricsul-bilwyt`
+actually runs. It exists for one reason: **we fix things faster than upstream
+merges them.** The goal is to stop needing it. Every fix therefore goes to two
+places — the branch (so ricsul gets it now) and a PR against upstream `develop`
+(so the branch can eventually be deleted).
+
+Shape: latest `develop` plus most of our unmerged PRs, cherry-picked.
+
+### 14b. Branch position, 2026-09-16
+
+| comparison | behind | ahead |
+|---|---|---|
+| vs `origin/develop` (gwbtc, tip `d0158d9`) | **17** | 88 |
+| vs `origin/main` (gwbtc) | 0 | 274 |
+| vs `origin/dist/single-release` (gwbtc) | 0 | 3 |
+| vs `fork/dist/single-release` (nisfeb) | 0 | 0 |
+
+Tip: `50740a0`.
+
+Two things to read off that table:
+
+- **It is 17 commits behind `develop`,** so the invariant "latest develop plus
+  our PRs" is currently false. Catching up is real work, not a fast-forward: a
+  trial merge of `origin/develop` conflicts in **13 files**, including
+  modify/delete cases where our ball trim *deleted* files develop has since
+  modified (`anthropic.*`, `itinerary.*`, `claw/agent.hoon`). Those resolutions
+  are judgement calls — taking develop's version would undo the trim.
+  `gub/nex/desk.hoon` auto-merges clean; `lib/fiberio.hoon` and
+  `app/grubbery.hoon` do not.
+- **Our fork is the push target, not gwbtc.** `origin` is upstream
+  (`gwbtc/grubbery`); pushing our dist branch there is not ours to do. It stays
+  3 ahead of gwbtc's copy on purpose.
+
+### 14c. Open PRs — 15, as of 2026-09-16
+
+14 target `develop`; **#67 is stacked on #61's branch**, not on develop, so it
+cannot merge before #61 does.
+
+| PR | head branch | what |
+|---|---|---|
+| #74 | `fix/silo-refcount-and-traces` | a remote file peek leaks a ject ref; the silo traces bury real warnings |
+| #73 | `fix/code-nexus-repair` | a neck-less `/desk/code` wedges an app for ever, and a release cannot heal it |
+| #72 | `fix/stock-repos-poll` | stock mirrors poll github |
+| #71 | `fix/remote-drop-fell` | a fiber dropping a remote subscription gets its `%fell` |
+| #70 | `fix/quiet-traces` | routine traces off unless `dbg` says otherwise |
+| #69 | `fix/explorer-traces-off` | the explorer's per-request traces off unless `dbg` |
+| #68 | `fix/quiet-bang-file` | a banged nexus prints once, not once per grub |
+| #67 | `fix/registry-resolves-relative` → **#61** | the registry resolves a sandboxed sender's relative rail and roads |
+| #66 | `fix/permits-ui-responsiveness` | the permissions page answers before it works |
+| #63 | `fix/desk-source-retries` | a desk retries its source instead of parking for ever |
+| #62 | `fix/apply-bill-tolerates-unknown-keys` | one unreadable bill entry no longer loses the whole install |
+| #61 | `fix/registry-nested-registrations` | nested registrants coexist and keep their grants |
+| #60 | `fix/stock-desk-provisioning-hangs` | stock desk provisioning hangs on a lost git fetch |
+| #58 | `fix/farm-top-ledger` | `+farm-top` keeps its own ledger instead of scrying the farm |
+| #49 | `perf/conns-in-agent-state` | stop bound HTTP requests getting slower for ever |
+
+**#73 and #74 are the 2026-09-15 work** (§13 and the code-nexus repair). Both
+were developed on this branch and cherry-picked onto branches off `develop`;
+they apply cleanly there but have **not** been run against develop's tree, which
+carries state migrations (`%tags`, subject-as-dependency, artifacts-by-source-rail)
+the rehearsal base did not. That caveat is in both PR bodies.
+
+### 14d. On the branch but deliberately NOT upstream
+
+`50740a0` — *"desk: reload a BANGED instance, not only after a neck repair."*
+
+It is a **safety net that has never been observed to fire.** Proven inert: it
+compiles, `tests/nexus` stays green at 83 OK, and a sync against five healthy
+desks logged zero `%desk-instance-reloaded`, which is the reload storm the
+per-instance bang gate exists to prevent. But two reproductions of the exact
+subscriber fault both healed via the natural `build-code` →
+`reload-changed-nexuses` cascade *before* `+reload-billed` peeked, so it
+correctly no-opped and was never seen to catch anything.
+
+It is on the branch because the failure it guards cost three manual
+interventions in one evening (auspex 404, lattice 504, calendar 504), and it is
+out of #73 because offering upstream a net nobody has watched work is not
+honest. **Promote it into #73 if and when it is observed to fire.**
+
+### 14e. Re-deriving all of the above
+
+```sh
+cd <grubbery checkout>
+git fetch origin --prune && git fetch fork --prune
+
+# branch position
+git rev-list --left-right --count origin/develop...dist/single-release
+git rev-list --left-right --count fork/dist/single-release...dist/single-release
+
+# open PRs with their bases (catches stacked ones like #67)
+gh pr list --repo gwbtc/grubbery --state open --limit 40 \
+  --json number,title,headRefName,baseRefName
+
+# what is unpushed
+git log --oneline @{u}..HEAD
+
+# does catching up to develop conflict? (throwaway worktree, no risk)
+git worktree add -q --detach /tmp/gw-trial dist/single-release
+git -C /tmp/gw-trial merge --no-commit --no-ff origin/develop
+git -C /tmp/gw-trial diff --name-only --diff-filter=U
+git -C /tmp/gw-trial merge --abort; git worktree remove --force /tmp/gw-trial
+```
+
+Note that our commits reach upstream as **cherry-picks onto separate branches**,
+so `git branch --contains <sha>` will say a PR does not contain them even when
+the equivalent change is in flight. Ancestry is the wrong test here; compare the
+diffs.
