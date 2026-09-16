@@ -5,6 +5,10 @@
   let knowKeys = [];        // [{key, tags, updated, bytes}] from know-list
   let knowTag = '';         // active tag filter ('' = all)
   const chipsEl = $('chips'), knowMeta = $('knowmeta'), ktagsEl = $('ktags');
+  // folded by default and remembered, like the other layout choices
+  const tagSec = $('tagsec'), tagSum = $('tagsh');
+  tagSec.open = localStorage.knowTagsOpen === '1';
+  tagSec.addEventListener('toggle', () => { localStorage.knowTagsOpen = tagSec.open ? '1' : '0'; });
 
   async function loadKnow() {
     const gen = knowGen;
@@ -35,6 +39,9 @@
     };
     mk('all', '');
     for (const t of tags) mk('#' + t, t);
+    // folded, the heading still says what the tree is filtered by, so a
+    // hidden filter can never silently narrow it
+    tagSum.textContent = 'tags \u00b7 ' + (knowTag ? '#' + knowTag : tags.length);
   }
 
   const kColl = () => {
@@ -252,7 +259,7 @@
     ws.classList.toggle('know', m === 'know');
     $('modet').className = m === 'know' ? 'on' : '';
     $('modet').innerHTML = m === 'know' ? '\u25c6 knowledge' : '\u270e pages';
-    chipsEl.hidden = m !== 'know';
+    tagSec.hidden = m !== 'know';
     knowMeta.hidden = m !== 'know';
     $('treesec').textContent = m === 'know' ? 'memories' : 'files';
     curFolder = null;

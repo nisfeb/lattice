@@ -2406,7 +2406,13 @@
     <div class="upbar"><div id="upfill"></div></div>
     <div id="uperr" class="uperr"></div>
   </div>
-  <div id="chips" class="chips" hidden></div>
+  <!-- the tag chips outgrew the pane top (one row per dozen tags), so they
+       fold under a heading like history does. Native details: the fold,
+       the keyboard and the marker come free. 95-know.js fills and labels it. -->
+  <details id="tagsec" hidden>
+    <summary class="sec" id="tagsh">tags</summary>
+    <div id="chips" class="chips"></div>
+  </details>
   <div class="sec" id="treesec">files</div>
   <div id="treelist"></div>
 </aside>`;
@@ -6456,6 +6462,10 @@
   let knowKeys = [];        // [{key, tags, updated, bytes}] from know-list
   let knowTag = '';         // active tag filter ('' = all)
   const chipsEl = $('chips'), knowMeta = $('knowmeta'), ktagsEl = $('ktags');
+  // folded by default and remembered, like the other layout choices
+  const tagSec = $('tagsec'), tagSum = $('tagsh');
+  tagSec.open = localStorage.knowTagsOpen === '1';
+  tagSec.addEventListener('toggle', () => { localStorage.knowTagsOpen = tagSec.open ? '1' : '0'; });
 
   async function loadKnow() {
     const gen = knowGen;
@@ -6486,6 +6496,9 @@
     };
     mk('all', '');
     for (const t of tags) mk('#' + t, t);
+    // folded, the heading still says what the tree is filtered by, so a
+    // hidden filter can never silently narrow it
+    tagSum.textContent = 'tags \u00b7 ' + (knowTag ? '#' + knowTag : tags.length);
   }
 
   const kColl = () => {
@@ -6703,7 +6716,7 @@
     ws.classList.toggle('know', m === 'know');
     $('modet').className = m === 'know' ? 'on' : '';
     $('modet').innerHTML = m === 'know' ? '\u25c6 knowledge' : '\u270e pages';
-    chipsEl.hidden = m !== 'know';
+    tagSec.hidden = m !== 'know';
     knowMeta.hidden = m !== 'know';
     $('treesec').textContent = m === 'know' ? 'memories' : 'files';
     curFolder = null;

@@ -50,7 +50,13 @@
     <div class="upbar"><div id="upfill"></div></div>
     <div id="uperr" class="uperr"></div>
   </div>
-  <div id="chips" class="chips" hidden></div>
+  <!-- the tag chips outgrew the pane top (one row per dozen tags), so they
+       fold under a heading like history does. Native details: the fold,
+       the keyboard and the marker come free. 95-know.js fills and labels it. -->
+  <details id="tagsec" hidden>
+    <summary class="sec" id="tagsh">tags</summary>
+    <div id="chips" class="chips"></div>
+  </details>
   <div class="sec" id="treesec">files</div>
   <div id="treelist"></div>
 </aside>`;

@@ -107,6 +107,21 @@ await desk.waitForFunction((pg) => document.getElementById('treesec').textConten
   && ([...document.querySelectorAll('#treelist a.pg')].some((a) => !pg.includes(a.textContent))
       || /no memories yet/.test(document.getElementById('treelist').textContent)),
   { timeout: 90000 }, pages);
+// the tag chips fold under a heading (they used to fill the pane top)
+const tagsec = await desk.evaluate(() => {
+  const d = document.getElementById('tagsec');
+  //  checkVisibility, not a rect: Chromium keeps a layout box for a closed
+  //  details' content (content-visibility: hidden), so its rect is not 0
+  return { open: d.open, shown: !d.hidden, chips: document.getElementById('chips').checkVisibility(),
+    label: document.getElementById('tagsh').textContent };
+});
+check('knowledge mode: the tags fold is shown and folded by default',
+  tagsec.shown && !tagsec.open && !tagsec.chips, JSON.stringify(tagsec));
+check('knowledge mode: its heading counts the tags', /^tags \u00b7 \d+$/.test(tagsec.label), tagsec.label);
+await desk.evaluate(() => document.getElementById('tagsh').click());
+check('knowledge mode: one click unfolds the chips',
+  await desk.evaluate(() => document.getElementById('chips').checkVisibility()));
+await desk.evaluate(() => document.getElementById('tagsh').click());
 const memory = await desk.evaluate((pg) => {
   const a = [...document.querySelectorAll('#treelist a.pg')].find((x) => !pg.includes(x.textContent));
   if (!a) return null;
