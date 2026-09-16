@@ -77,18 +77,16 @@ select, option { color-scheme: light dark; }
 #ph2 { grid-column: 3; }
 #ph3 { grid-column: 4; }
 .psplit:hover, .psplit.drag { background: var(--green); opacity: .35; }
-.ws.nt #ph1, .ws.nc #ph3, .ws.know #ph2 { display: none; }
+.ws.nt #ph1, .ws.nc #ph3 { display: none; }
 /* the view (85-layout.js): .ve is editor only, .vp preview only, neither is
-   split. The survivor spans both middle columns, the way knowledge mode's
-   editor already does. Knowledge mode has no preview, so it keeps its editor
-   whatever view is remembered, and the control has nothing to offer there.
-   Desktop only: at phone width the tab strip shows one pane at a time, and
-   this media query is the exact complement of the 820px block below. */
+   split. The survivor spans both middle columns. Pages and memories alike:
+   a memory previews as markdown (60-preview.js). Desktop only: at phone
+   width the tab strip shows one pane at a time, and this media query is the
+   exact complement of the 820px block below. */
 @media not all and (max-width: 820px) {
-  .ws.ve .prevwrap, .ws.vp:not(.know) .edwrap, .ws.ve #ph2, .ws.vp #ph2 { display: none; }
-  .ws.ve .edwrap, .ws.vp:not(.know) .prevwrap { grid-column: 2 / 4; }
+  .ws.ve .prevwrap, .ws.vp .edwrap, .ws.ve #ph2, .ws.vp #ph2 { display: none; }
+  .ws.ve .edwrap, .ws.vp .prevwrap { grid-column: 2 / 4; }
 }
-.ws.know #viewseg { display: none; }
 #viewseg { display: inline-flex; }
 #viewseg .ico { border-radius: 0; margin-left: -1px; }
 #viewseg .ico:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
@@ -214,10 +212,9 @@ select, option { color-scheme: light dark; }
   font-size: .78rem; text-decoration: none; color: inherit; background: var(--surface);
   cursor: pointer; }
 .chips a.on, .chips a:hover { border-color: var(--green); color: var(--green); }
-.ws.know .prevwrap, .ws.know #sharesec, .ws.know #pkind,
+.ws.know #sharesec, .ws.know #pkind,
 .ws.know #histsec, .ws.know #linksec { display: none; }
 #histview { margin-bottom: 8px; }
-.ws.know .edwrap { grid-column: 2 / 4; }
 #modet.on { border-color: var(--green); color: var(--green); }
 .uppanel { margin: 8px 0; padding: 9px 10px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--surface); font-size: .78rem;

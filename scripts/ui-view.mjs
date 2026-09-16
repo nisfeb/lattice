@@ -7,8 +7,9 @@
 //
 //  Checked here: the menu's id contract (no ship needed), then against a
 //  ship: each view shows the panes it should, the choice survives a reload,
-//  knowledge mode still gets its editor, and the phone tab strip ignores a
-//  desktop preference (it has its own one-pane-at-a-time model).
+//  knowledge mode has the same three views and previews a memory as
+//  markdown, and the phone tab strip ignores a desktop preference (it has
+//  its own one-pane-at-a-time model).
 //
 //  Usage: node scripts/ui-view.mjs      (defaults to the harness ship on :8080)
 import { readFileSync } from 'fs';
@@ -93,13 +94,34 @@ await desk.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #tre
 const again = await widths(desk);
 check('the choice survives a reload', again.ed === 0 && again.pv > 0, JSON.stringify(again));
 
-// knowledge mode has no preview; it must not inherit an editor-less layout
+// knowledge mode: the same view, and a memory previews as markdown
+// the memory listing arrives after a fetch, so the tree still shows PAGES
+// for a moment; remember them to tell a memory row from a page row
+const pages = await desk.evaluate(() => [...document.querySelectorAll('#treelist a.pg')].map((a) => a.textContent));
 await click(desk, 'modet');
 const know = await widths(desk);
-check('knowledge mode: the editor is back even with preview-only remembered',
-  know.ed > 0 && know.pv === 0, JSON.stringify(know));
-check('knowledge mode: the view control is off screen (nothing to choose)',
-  await desk.evaluate(() => document.getElementById('viewseg').getBoundingClientRect().width === 0));
+check('knowledge mode: preview-only holds', know.ed === 0 && know.pv > 0, JSON.stringify(know));
+check('knowledge mode: the view control is still in the bar',
+  await desk.evaluate(() => document.getElementById('viewseg').getBoundingClientRect().width > 0));
+await desk.waitForFunction((pg) => document.getElementById('treesec').textContent === 'memories'
+  && ([...document.querySelectorAll('#treelist a.pg')].some((a) => !pg.includes(a.textContent))
+      || /no memories yet/.test(document.getElementById('treelist').textContent)),
+  { timeout: 90000 }, pages);
+const memory = await desk.evaluate((pg) => {
+  const a = [...document.querySelectorAll('#treelist a.pg')].find((x) => !pg.includes(x.textContent));
+  if (!a) return null;
+  a.click();
+  return a.textContent;
+}, pages);
+if (memory) {
+  let painted = false;
+  try {
+    await desk.waitForFunction(() => /<(p|h[1-6]|ul|pre)\b/.test(document.getElementById('prev').srcdoc || ''),
+      { timeout: 20000 });
+    painted = true;
+  } catch {}
+  check('knowledge mode: opening a memory paints it into the preview', painted, memory);
+} else console.log('  skip - no memory on this ship to open');
 await click(desk, 'modet');
 const back = await widths(desk);
 check('pages mode again: preview-only resumes', back.ed === 0 && back.pv > 0, JSON.stringify(back));

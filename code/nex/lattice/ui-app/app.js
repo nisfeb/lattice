@@ -3798,7 +3798,10 @@
   //  the local paint IS the preview and there is no server answer to wait
   //  for. It differs in one way, that its renderer is a subprocess and
   //  therefore async, which is what texPreviewHtml in 71-latex.js handles.
-  const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex'].includes(pkind.value);
+  //  a memory has no kind picker: it is markdown (proseFlavor in 45-templates
+  //  says the same), so knowledge mode previews like an md page
+  const kindNow = () => (mode === 'know' ? 'md' : pkind.value);
+  const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex'].includes(kindNow());
 
   // Paint locally NOW, and let the ship's answer replace it when it arrives.
   //
@@ -3901,7 +3904,7 @@
         + 'pre::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
         + 'img{max-width:100%}pre{overflow-x:auto}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
-        + '</style>' + previewFit() + localHtml(pkind.value, src.value);
+        + '</style>' + previewFit() + localHtml(kindNow(), src.value);
     } catch {}
   };
 
@@ -6570,6 +6573,7 @@
     src.value = d.body;
     dirty = false;
     render(); sync();
+    paintLocal();                    // the preview pane shows the memory too
     markCurrent();
     renderKnowTags(d.tags || []);
     $('kupd').textContent = 'updated ' + (d.updated || '');
@@ -6710,6 +6714,7 @@
     pname.placeholder = m === 'know' ? 'memory key (e.g. user/preferences)' : 'page name (e.g. notes/todo)';
     src.value = '';
     render();
+    prevBlank();
     if (m === 'know') loadKnow(); else loadTree();
     history.replaceState(null, '', '/apps/lattice/app' + (m === 'know' ? '?view=know' : ''));
     // the toggle's visible result is the tree listing. Make sure it can be

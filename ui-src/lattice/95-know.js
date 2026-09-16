@@ -122,6 +122,7 @@
     src.value = d.body;
     dirty = false;
     render(); sync();
+    paintLocal();                    // the preview pane shows the memory too
     markCurrent();
     renderKnowTags(d.tags || []);
     $('kupd').textContent = 'updated ' + (d.updated || '');
@@ -262,6 +263,7 @@
     pname.placeholder = m === 'know' ? 'memory key (e.g. user/preferences)' : 'page name (e.g. notes/todo)';
     src.value = '';
     render();
+    prevBlank();
     if (m === 'know') loadKnow(); else loadTree();
     history.replaceState(null, '', '/apps/lattice/app' + (m === 'know' ? '?view=know' : ''));
     // the toggle's visible result is the tree listing. Make sure it can be
