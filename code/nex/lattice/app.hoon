@@ -59,6 +59,8 @@
 /<  lcl  /lib/lattice-clip.hoon
 /<  li   /lib/lattice-index.hoon
 /<  ls   /lib/lattice-share.hoon
+::  signing. `lsg` and not `ls`: that face is lattice-share above.
+/<  lsg  /lib/lattice-sign.hoon
 ::  the commons mirror (docs/obelisk-mirror.md). lm builds the urQL and
 ::  carries the result-type vocabulary matched to %obelisk the DESK.
 /<  lm   /lib/lattice-mirror.hoon
@@ -1711,6 +1713,103 @@
     ;<  res=obk-out:lm  bind:m
       (obelisk-run-one db (trip bod))
     (send-json eyre-id (obelisk-json res))
+      ::  sign the REQUEST BODY with this ship's key. The body is the
+      ::  content, raw: signing a file and signing a sentence are the same
+      ::  operation because +digest hashes first, so nothing here parses a
+      ::  body shape. There is deliberately no multipart branch — lattice
+      ::  has no multipart parser anywhere (the editor uploads JSON), and
+      ::  adding one to sign bytes a client can simply POST would be a
+      ::  parser earning its keep on nothing.
+      ::
+      ::    ?save=<name> also writes the record as a JSON page, so a
+      ::    signature can be published or shared like any other page. The
+      ::    signature is returned either way; saving is the option, not
+      ::    the point.
+      ::
+      ::    A REFUSED /sys/scry GRANT FAILS THIS REQUEST rather than
+      ::    answering 403, and that is a known rough edge: +typed-scry maps
+      ::    a veto to [%fail ...] and fiberio has no soft scry to catch it.
+      ::    It costs this one request fiber, which is ephemeral — the app is
+      ::    unaffected, unlike auspex, whose signing sits on the long-lived
+      ::    /main.sig and therefore needs a pre-check. A +scry-soft in
+      ::    fiberio is the real fix and belongs in grubbery, not here.
+      [%'POST' %sign]
+    =/  content=@t  (req-body req)
+    ?:  =('' content)  (send-err eyre-id 400 'nothing to sign: body is empty')
+    ;<  lyf=@ud  bind:m  (our-life our)
+    ;<  rng=ring  bind:m  (our-ring lyf)
+    =/  rec=signed:lsg  (record:lsg our lyf rng content)
+    =/  jon=json  (signed-json rec)
+    =/  save=(unit @t)  (~(get by args) 'save')
+    ?~  save  (send-json eyre-id jon)
+    ::  TEXT IS ALL THAT IS EVER SAVED. What lands on the page is the
+    ::  signature RECORD — ship, life, digest, sig, all ascii json — and
+    ::  never the signed bytes, so signing a binary file still saves a
+    ::  readable page and no binary is wrapped into page source.
+    ::
+    ::    Through +save-src rather than around it. A lattice page's source
+    ::    is HOON: %hoon and %index are the only types content-builders
+    ::    leaves alone, so raw json poked straight at %make would be stored
+    ::    as hoon source and fail to evaluate. +save-src applies the same
+    ::    %text wrap the editor uses, and it is also the name validator —
+    ::    it answers [%| 400 'bad name'] itself, so there is no separate
+    ::    check here.
+    =/  sr  (save-src u.save %text (en:json:html jon))
+    ?:  ?=(%| -.sr)  (send-err eyre-id code.p.sr msg.p.sr)
+    ;<  ~  bind:m  (poke-eval [%make (pax-of u.save) p.sr])
+    (send-json eyre-id jon)
+      ::  check a signature. Takes the record /sign returned — ship, life,
+      ::  digest, sig — and answers {ok}. The signer's key is looked up at
+      ::  the life the record names, which is why life travels with the
+      ::  signature: a record made under life 3 stays checkable after a
+      ::  rotation to life 4.
+      ::
+      ::    `content` is OPTIONAL and checking it matters: given the bytes,
+      ::    the digest is re-derived and compared, which catches a record
+      ::    whose stated digest disagrees with its stated content. Without
+      ::    it this only proves the signature covers the digest as given.
+      [%'POST' %verify]
+    =/  jon=(unit json)  (de:json:html (req-body req))
+    ?~  jon  (send-err eyre-id 400 'bad json')
+    ::  the four REQUIRED fields through ot, and `content` read off the
+    ::  object by hand. dejs has no optional-key combinator to reach for
+    ::  here, so this uses the refinement this file already uses twice
+    ::  (?=([%o *] jon), then the map) rather than an arm invented for the
+    ::  occasion — the first attempt named a `uf` that does not exist and
+    ::  cost a compile.
+    =/  pr=(each [who=@p lyf=@ud dig=@ sig=@ux] tang)
+      %-  mule  |.
+      %.  u.jon
+      %-  ot:dejs:format
+      :~  ship+(se:dejs:format %p)
+          life+ni:dejs:format
+          digest+ni:dejs:format
+          sig+ni:dejs:format
+      ==
+    ?:  ?=(%| -.pr)
+      (send-err eyre-id 400 'expected {ship, life, digest, sig, content?}')
+    =/  rq  p.pr
+    ::  content is optional, and only a json string counts: anything else
+    ::  present under that key is treated as absent rather than refused,
+    ::  because the signature check below is still meaningful without it.
+    =/  con=(unit @t)
+      ?.  ?=([%o *] u.jon)  ~
+      =/  got=(unit json)  (~(get by p.u.jon) 'content')
+      ?~  got  ~
+      ?.  ?=([%s *] u.got)  ~
+      `p.u.got
+    ::  content given: the digest must be the digest OF that content, or
+    ::  the record is internally inconsistent and no signature check on it
+    ::  means anything.
+    ?:  ?&  ?=(^ con)
+            !=(dig.rq (digest:lsg u.con))
+        ==
+      (send-json eyre-id (pairs:enjs:format ~[['ok' b+|] ['reason' s+'digest does not match content']]))
+    ;<  pas=(unit pass)  bind:m  (peer-pass who.rq lyf.rq)
+    ?~  pas
+      (send-json eyre-id (pairs:enjs:format ~[['ok' b+|] ['reason' s+'no key for that ship at that life']]))
+    =/  good=?  (verify-with:lsg u.pas sig.rq dig.rq)
+    (send-json eyre-id (pairs:enjs:format ~[['ok' b+good]]))
       [%'POST' %page-share]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -4665,6 +4764,64 @@
   ;<  et=(unit know-entry:lk)  bind:m  (read-entry trash)
   ?^  et  (pure:m `[trash %.y])
   (pure:m ~)
+::  ── signing (lib/lattice-sign) ────────────────────────────────────────
+::
+::  Three thin fiber wrappers over jael, and the JSON shape /sign answers.
+::  The arithmetic lives in the lib, where it is unit-tested; these only
+::  fetch keys and encode.
+::
+::  +our-life / +our-ring: this ship's current life, and the ring at that
+::  life. Both are jael reads down /sys/scry, the road lattice already
+::  holds. A refused grant fails the calling request fiber — see the note
+::  at the %sign route.
+::
+++  our-life
+  |=  our=@p
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  n=noun  bind:m  (typed-scry:io noun %noun ~[%j %life (scot %p our)])
+  (pure:m ;;(@ud n))
+::
+++  our-ring
+  |=  lyf=@ud
+  =/  m  (fiber:fiber:nexus ,ring)
+  ^-  form:m
+  ;<  n=noun  bind:m  (typed-scry:io noun %noun ~[%j %vein (scot %ud lyf)])
+  (pure:m ;;(ring n))
+::
+::  +peer-pass: a ship's public key at a given life, or ~ when we hold
+::  none. %puby is the UNITIZED scry, so an unknown ship answers ~ rather
+::  than blocking the fiber for ever.
+::
+++  peer-pass
+  |=  [who=@p lyf=@ud]
+  =/  m  (fiber:fiber:nexus ,(unit pass))
+  ^-  form:m
+  ;<  n=noun  bind:m
+    (typed-scry:io noun %noun ~[%j %puby (scot %p who) (scot %ud lyf)])
+  ::  the %puby shape is [crypto-suite pass], and the coercion is wrapped
+  ::  because this runs on whatever jael hands back: a shape we cannot read
+  ::  is "no key", never a crash. Same handling as auspex's +peer-pass.
+  =/  res  (mule |.(;;((unit [crypto-suite=@ud =pass]) n)))
+  ?:  ?=(%| -.res)  (pure:m ~)
+  ?~  p.res  (pure:m ~)
+  (pure:m `pass.u.p.res)
+::
+::  +signed-json: the record as JSON. `digest` and `sig` go out as
+::  decimal @ud, not @ux literals — json has no hex and a client that
+::  round-trips the number back to /verify must land on the same atom.
+::
+++  signed-json
+  |=  rec=signed:lsg
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['ship' s+(scot %p ship.rec)]
+      ['life' (numb:enjs:format life.rec)]
+      ['alg' s+'ed25519']
+      ['salt' s+'lattice']
+      ['digest' (numb:enjs:format digest.rec)]
+      ['sig' (numb:enjs:format sig.rec)]
+  ==
 ::  +req-body: the request body as a cord ('' if none).
 ::
 ++  req-body
