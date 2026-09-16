@@ -6715,7 +6715,24 @@
     src.value = '';
     render();
     prevBlank();
-    if (m === 'know') loadKnow(); else loadTree();
+    // paint what is already in memory NOW, and let the fetch correct it.
+    // Both listings used to paint only when their round trip returned, so
+    // the OTHER mode's listing sat under this mode's heading for as long as
+    // the pier took: seconds on ricsul, longer through the desktop proxy.
+    // The page tree is always in memory after boot. Memories are, after the
+    // first visit; before it the honest paint is a placeholder, not the
+    // pages listing and not "no memories yet".
+    if (m === 'know') {
+      if (knowKeys.length) { renderKnowChips(); renderKnowTree(); }
+      else {
+        const wait = document.createElement('div');
+        wait.className = 'muted';
+        wait.style.padding = '4px 8px';
+        wait.textContent = 'loading memories\u2026';
+        treeList.replaceChildren(wait);
+      }
+      loadKnow();
+    } else { renderTree(); loadTree(); }
     history.replaceState(null, '', '/apps/lattice/app' + (m === 'know' ? '?view=know' : ''));
     // the toggle's visible result is the tree listing. Make sure it can be
     // seen: un-hide the pane on desktop, jump to the tree tab on mobile.
