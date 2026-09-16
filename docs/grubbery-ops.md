@@ -3,6 +3,14 @@
 Hard-won operational reference. Every item here cost real debugging time. Read this
 before touching a grubbery deploy again.
 
+**For the ongoing release path — what makes `~ricsul-bilwyt` update, what makes
+its subscribers update, and why `code/version.json` is the only thing that
+triggers either — see [`releasing.md`](releasing.md).** That file also lists the
+ways a release silently does nothing: a version bump with no code change, a code
+change with no version bump, a desk whose version matches while its code tree is
+empty, and an instance that stays dead through a clean compile. This file is the
+deploy mechanics; that one is the distribution path.
+
 ---
 
 ## 1. A route binds where its nexus's `bind-http` says. For apps that is `/apps/<name>`
