@@ -574,3 +574,155 @@ Code: `grubbery-overlay/nex/lattice/app.hoon` (`+fs-dump-json`, `+dump-walk`, th
 `[%'GET' %page-dump]` route, and the `%page-dump` arm in `+fs-op`).
 Client: `lattice-fs-rs/src/{projection,lattice,core}.rs` (`Projection::dump`,
 warm-on-mount, non-blocking `ensure_fresh`, `write_gen` stale-swap guard).
+
+---
+
+## 13. Silo damage: how to check a ship, and when NOT to repair it
+
+Grubbery's silo is a refcounted content store: `nouns` (raw data) and `jects`
+(the file-as-experienced — noun + mark + health). A refcount bug can drop a
+ject that something still references, leaving a history entry pointing at
+content that is gone. `+audit-silo` calls those *"the landmines left by
+refcount bugs, each a read that will boom when touched."*
+
+Measured 2026-09-15 on `~feb` and `~wex`. The headline is that **on both ships
+every single hit was historical, and the right action was to do nothing.**
+
+### 13a. Check first — one line, read-only
+
+```sh
+# on the affected ship
+curl -b <cookie> 'http://<ship>/~/scry/grubbery/peek/audit.txt' | head -1
+# -> "14286 referenced-but-absent lobes"
+```
+
+In its dojo, if you have no HTTP session:
+
+```
+(snag 0 .^(wain %gx /=grubbery=/peek/audit/txt))
+```
+
+Do not dump the whole thing — on a real ship it is tens of thousands of lines.
+
+### 13b. The count is NOT the decision. `LATEST` is
+
+`+audit-render` marks any hit that is a file's current revision with `LATEST`.
+That is the only thing that matters:
+
+```sh
+curl -b <cookie> 'http://<ship>/~/scry/grubbery/peek/audit.txt' | grep -c LATEST
+```
+
+| result | meaning | action |
+|---|---|---|
+| `0` | every hit is in history. Nothing live can reach it. | **nothing.** Leave it alone. |
+| non-zero | a *current* revision is missing content — a read that will boom | repair (13c) |
+
+Measured: `~feb` 2.657 distinct absent lobes across 693 paths (13.775 referencing
+versions), `~wex` 6.254 across 1.473 paths (60.704 versions), `~ricsul-bilwyt`
+14.286 versions — and **zero `LATEST` on every one of them**. `~wex` carried
+6.254 absent lobes with a completely silent console and every route healthy.
+Volume is not severity here.
+
+Every hit on both measured ships was kind `%ject`, never `%noun`.
+
+### 13c. Repair, if 13b said non-zero
+
+In that ship's dojo:
+
+```
+:grubbery &noun %silo-repair
+```
+
+`+repair-silo` runs `+audit-silo`, and for each damaged version calls
+`+tomb-version`: rewrites that revision's `pace` to `%tomb` and releases the ref
+it held. It loops to a fixpoint (capped at 100 rounds) because shared deep
+damage is attributed one layer per sweep. Then re-check 13a; the count should
+fall to zero or to a latest-guarded remainder that clears on its next natural
+demotion.
+
+Three properties worth understanding before running it:
+
+- **It tombstones, it does not recover.** The content is already gone. Its own
+  comment: *"the tomb makes the books say so instead of booming readers."* A
+  crash becomes a clean "tombed" answer.
+- **Latest versions are never touched** — `+tomb-version` skips them with
+  `%silo-repair-skipping-latest`. Live data is safe by construction.
+- **It is thousands of writes** on a large ship. Pointless if 13b said `0`.
+
+It is deliberately manual (`%silo-repair` poke only, never automatic) because
+*"corruption from a bug should stay loud until a human has seen it."*
+
+### 13d. This is per-ship and cannot be done centrally
+
+The silo is local agent state. **`~ricsul-bilwyt` cannot repair a subscriber.**
+Each affected ship runs the poke in its own dojo, which means for other
+people's ships it is a request, not something you can push out in a release.
+
+### 13e. The cause is UNDETERMINED
+
+Do not let this section imply otherwise. As of 2026-09-15 the origin of the
+historical damage is not established. It predates every console capture
+available and was not reproducible on demand.
+
+Ruled out, each investigated and dropped:
+
+| theory | why not |
+|---|---|
+| nouns stored at `refs=0` while jects start at 1 | deliberate; `test-si-put-stores-at-zero` asserts it. Leaf jects own noun refs via `+bump-ref` |
+| batch inserts out of order | `+record-trees` climbs bottom-up; the transfer merge topologically sorts |
+| double release via `+drop-pend-refs` | the no-proc and nack paths handle takes that were never hydrated — they complement `+hydrate` |
+| `+refs-dec` | operates on `bins` (build cache, keyed by ckey), never on `silo` |
+| the lick `fs.sig` fiber | 2 occurrences, not a loop (lattice#240: `+rise-wait` parks it) |
+| `+repair-silo` itself | never automatic, and no repair markers present on the affected ship |
+| `+drop-ject` lacking `+reachable`'s seen-set | real asymmetry, but it returns immediately on an absent lobe so it cannot recurse |
+| the snap pin path | bump, `snaps.remo` put and expiry timer all gated on the same `pinned`, so it never releases refs it did not take |
+
+**Leading unproven candidate:** the cross-ship transfer merge in
+`app/grubbery.hoon`, whose own comment describes the hole —
+
+> Nothing ready but work remains: refs point outside this transfer and are
+> absent — **insert anyway** rather than loop.
+
+That deliberately stores a tree naming children that are not present, which is
+exactly the shape of the damage, and fits the all-`%ject`/no-`%noun` signature.
+But its trace `%data-merge-unresolved-children` fired **zero** times on `~feb`,
+`~martyr-sanryg` and `~wex`, so there is no positive evidence. The damage is
+old enough that a historical firing would not appear in any reachable log.
+
+Second candidate: a historical underflow in the tomb/prune paths
+(`+tomb-temp`, `+drop-hist`, `%lose`), which drop jects on every write and are
+where old revisions die. That would also concentrate damage at low version
+numbers, which is what the audit shows. Also unproven.
+
+Context: this is acknowledged pre-existing upstream. Commit `08699d44`
+(2026-08-04) is titled *"silo: audit and repair tooling"* — the audit and the
+repair exist **because** someone already knew there was refcount damage.
+
+### 13f. What was fixed, and what it does not explain
+
+A duplicated `%file` bump in `+discharge-peeks` (`app/grubbery.hoon`) meant every
+discharged remote **file** peek netted +1: the `%file` branch was written twice,
+once by `6d3d5e10` and again by `08699d44`, which added the explaining comment
+plus a bump that already existed. Two bumps against `+hydrate`'s single drop, so
+a ject whose refcount never reaches zero is never collected and the silo grows
+for the life of the ship.
+
+**That is a leak, and a leak cannot produce referenced-but-absent lobes.** It
+stops the silo growing; it does not explain the damage in 13e.
+
+The same change gated the four silo refcount traces
+(`%silo-{drop,bump}-{ject,noun}-absent`) on a per-file `+dbg`, off by default.
+They were unconditional `~& >>>` and one ship logged **3.041 identical lines for
+a single lobe** in one burst — while that lobe did not appear in the audit at
+all, i.e. it was already fully collected with nothing referencing it. The
+warnings were not reporting damage. `+audit-silo` is the authority; these are
+noise. A side effect is that `+repair-silo` now runs quietly, since
+`+tomb-version`'s cascade prints were most of that noise.
+
+### 13g. Practical guidance
+
+For the current fleet: ricsul reports 14.286 versions with zero `LATEST`, so
+leave it. Run 13a/13b when a user reports a page or a revision whose read
+crashes the ship — that is the symptom this section exists for, and it has not
+been seen.
