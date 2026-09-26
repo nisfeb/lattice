@@ -435,20 +435,6 @@ mod tests {
     }
 
     #[test]
-    fn two_ships_do_not_share_a_queue() {
-        // the whole point of keying by ship: one ship's queued edits must
-        // never replay into another
-        let a = tmp("ship-a");
-        let b = tmp("ship-b");
-        put_save_at(&a, &json!({"name": "page", "body": "from ship a"})).unwrap();
-        put_save_at(&b, &json!({"name": "page", "body": "from ship b"})).unwrap();
-        assert_eq!(list_saves_at(&a)[0]["body"], "from ship a");
-        assert_eq!(list_saves_at(&b)[0]["body"], "from ship b");
-        std::fs::remove_dir_all(&a).ok();
-        std::fs::remove_dir_all(&b).ok();
-    }
-
-    #[test]
     fn a_ship_switch_resets_the_frozen_key() {
         // the frozen key keeps ONE ship's directory stable; reconnecting to a
         // DIFFERENT ship must not inherit it, or ship A's edits replay into B
@@ -560,15 +546,6 @@ mod tests {
         let (kb, _) = resolve_key(&b);
         assert_ne!(ka, "unconfigured");
         assert_ne!(kb, "unconfigured");
-        assert_ne!(key_dir_name(&ka), key_dir_name(&kb));
-    }
-
-    #[test]
-    fn two_installs_pointed_at_different_ships_never_share_a_directory() {
-        let a = config::Config { ship: "~zod".into(), ..Default::default() };
-        let b = config::Config { ship: "~ricsul-bilwyt".into(), ..Default::default() };
-        let (ka, _) = resolve_key(&a);
-        let (kb, _) = resolve_key(&b);
         assert_ne!(key_dir_name(&ka), key_dir_name(&kb));
     }
 

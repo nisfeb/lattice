@@ -445,9 +445,11 @@ fn exercise(mnt: &Path, ship: &Ship) {
 /// unreachable vpath, never a host path. The vtree is a flat map keyed by
 /// absolute vpath and `lookup` only ever does `vt.get(join(parent, name))`,
 /// so there is no path traversal to exploit. But a ship is untrusted input,
-/// so pin the behaviour.
+/// so pin the behaviour. (The kernel resolves `..` in a host path before
+/// FUSE sees it, so an escape is not observable from here; what this pins
+/// is that a hostile rel never becomes a readable file.)
 #[test]
-fn a_hostile_page_name_cannot_reach_outside_the_mount() {
+fn a_hostile_page_name_never_surfaces_as_a_readable_file() {
     let ship = Ship::with(
         &[("../escape", "md", "nope\n"), ("/abs", "md", "nope\n"), ("ok", "md", "fine\n")],
         &[],

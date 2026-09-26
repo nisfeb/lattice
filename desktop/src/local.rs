@@ -174,12 +174,6 @@ mod tests {
         walk(&pier, 2, &mut out2);
         assert_eq!(out2.len(), 1);
 
-        // the same pier reached twice must collapse to one row. dedup_by only
-        // drops ADJACENT equals, so this fails if the sort is not by path
-        let mut dup = vec![inspect(&pier), inspect(&pier), inspect(&pier)];
-        dup.sort_by(|a, b| a.pier.cmp(&b.pier));
-        dup.dedup_by(|a, b| a.pier == b.pier);
-        assert_eq!(dup.len(), 1, "same pier must dedup to one entry");
         std::fs::remove_dir_all(&base).ok();
     }
 

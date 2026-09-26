@@ -373,16 +373,26 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         let ship = ship.to_string();
-        let t = std::thread::spawn(move || {
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
-            let _ = serve(conn, &ship);
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(conn, &ship)));
+            let _ = done.send(r.is_ok());
         });
+        // bounded, so a relay that stalls is a failure and not a hung suite:
+        // a header relayed when it should have been dropped (a lying
+        // content-length) leaves the ship waiting for a body that never comes
+        let limit = std::time::Duration::from_secs(20);
         let mut c = TcpStream::connect(addr).unwrap();
+        c.set_read_timeout(Some(limit)).ok();
         c.write_all(req).ok();
         c.shutdown(std::net::Shutdown::Write).ok();
         let mut out = Vec::new();
         let _ = c.read_to_end(&mut out);
-        t.join().expect("serve must not panic");
+        match finished.recv_timeout(limit) {
+            Ok(ok) => assert!(ok, "serve must not panic"),
+            Err(_) => panic!("the bridge stalled relaying this request"),
+        }
         out
     }
 
@@ -411,10 +421,13 @@ mod tests {
         // would arrive at the ship empty while the webview saw a 200.
         let ship = Stub::new(|_| (200, "saved".to_string()));
         let body = r#"{"page":"note","text":"body bytes that must survive the hop"}"#;
+        // header names as WebKit sends them: capitalised. The drop list is
+        // matched on the lowercased name, so this is what proves the
+        // lowercasing happens; lowercase names here passed without it.
         let req = format!(
-            "POST /apps/lattice/save?id=7 HTTP/1.1\r\nhost: 127.0.0.1:{PORT_BASE}\r\n\
-             cookie: webview-junk=1\r\ncontent-length: {}\r\n\
-             x-lattice-probe: keep-me\r\naccept-encoding: gzip\r\n\r\n{body}",
+            "POST /apps/lattice/save?id=7 HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\n\
+             Cookie: webview-junk=1\r\nContent-Length: {}\r\n\
+             X-Lattice-Probe: keep-me\r\nAccept-Encoding: gzip\r\n\r\n{body}",
             body.len()
         );
         let back = through_bridge(req.as_bytes(), &ship.base);
@@ -534,18 +547,6 @@ mod tests {
             poke_bridge(req.as_bytes());
         }
 
-        // header names are matched lowercased at the call site, so the drop
-        // list must be total and hit regardless of the wire casing
-        #[test]
-        fn drop_request_header_is_total_and_case_blind(name in "[!-~]{1,24}") {
-            let dropped = drop_request_header(&name.to_ascii_lowercase());
-            let expected = matches!(
-                name.to_ascii_lowercase().as_str(),
-                "host" | "connection" | "cookie" | "content-length" | "upgrade"
-                    | "keep-alive" | "proxy-connection" | "transfer-encoding"
-            );
-            prop_assert_eq!(dropped, expected);
-        }
     }
 
     /// Wait for exclusive use of the bridge port range. What can hold a port in

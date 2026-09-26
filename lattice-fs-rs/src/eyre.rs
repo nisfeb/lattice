@@ -466,6 +466,10 @@ mod tests {
         t.store("urbauth-~tyr=0v1").unwrap();
         let e = t.get_bytes("/apps/lattice/page-dump", &[]).unwrap_err();
         assert_eq!(e.code, 404, "a 404 must reach the projection unchanged");
+        // and nothing else was asked: no login, no retry. Without this the
+        // test caught a login only when it happened to fail for want of
+        // LATTICE_CODE, which another test sets for the whole process
+        assert_eq!(s.seen().len(), 1, "one request, no login: {:?}", s.seen());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

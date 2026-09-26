@@ -169,8 +169,8 @@ mod tests {
         let p = tmp("roundtrip");
         let c = Config {
             url: "http://localhost:8080".into(),
-            ship: String::new(),
-            queue_key: String::new(),
+            ship: "~zod".into(),
+            queue_key: "k1".into(),
             // a schedule must survive the round trip too: it is the only thing
             // in here whose loss silently stops backups from ever running
             backups: vec![BackupSchedule {
@@ -192,6 +192,9 @@ mod tests {
         save_at(&p, &c).unwrap();
         let back = load_at(&p);
         assert_eq!(back.url, c.url);
+        assert_eq!(back.ship, c.ship);
+        assert_eq!(back.queue_key, c.queue_key);
+        assert_eq!(back.backups, c.backups);
         assert_eq!(back.mounts.len(), 1);
         assert_eq!(back.mounts[0].root, "notes");
         std::fs::remove_file(&p).ok();
