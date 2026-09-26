@@ -1114,13 +1114,19 @@
       =/  s=tape  (trip u.raw)
       =/  slash=tape  ?:(&(?=(^ s) =('/' (rear s))) "/" "")
       ::  de-urb speaks the codec's layout (+app-base); unfold it to where
-      ::  lattice really lives: our own install for us, a desk install for a
-      ::  peer (+explore retries a missing app-base node at the desk once).
-      ::  Verbatim, a desk-tier /p/ url 404'd at the app-base path.
-      ;<  sb=path  bind:m
-        ?:  =(ship.u.ref our)  self-base
-        (pure:(fiber:fiber:nexus ,path) desk-base:lu)
-      =/  to=path  (unfold-base:lu sb pax.u.ref)
+      ::  lattice really lives. Ours is +self-base. A peer's is ASKED, not
+      ::  guessed: +peer-base finds which layout answers there (a desk
+      ::  install, or the older app-tier one). Verbatim, a desk-tier /p/ url
+      ::  404'd at the app-base path; a fixed desk guess would 404 an app-tier
+      ::  peer instead. A peer that answers at neither gets the 504 here,
+      ::  without a third wait in the explorer.
+      ?:  =(ship.u.ref our)
+        ;<  sb=path  bind:m  self-base
+        =/  to=path  (unfold-base:lu sb pax.u.ref)
+        (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p ship.u.ref) (spud to) slash))
+      ;<  pb=(unit path)  bind:m  (peer-base ship.u.ref)
+      ?~  pb  (send-err eyre-id 504 'that ship is unreachable, or is not sharing lattice')
+      =/  to=path  (unfold-base:lu u.pb pax.u.ref)
       (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p ship.u.ref) (spud to) slash))
     ::
         %pub
@@ -6504,7 +6510,9 @@
   ::  the canonical urb:// address for this node, shown in the chrome bar so any
   ::  view is copy-shareable (the browser url stays the /x projection). The
   ::  path is physical; fold it to the codec's layout first, or a desk-tier
-  ::  page is named by the /t/ raw form instead of /p/.
+  ::  page is named by the /t/ raw form instead of /p/. A peer needs no probe
+  ::  here: its path is either in the desk layout (folded) or already in the
+  ::  app-base one (untouched), so folding at +desk-base names both.
   ;<  fb=path  bind:m
     ?:  =(u.shp our)  self-base
     (pure:(fiber:fiber:nexus ,path) desk-base:lu)
@@ -6561,7 +6569,7 @@
       (render-page-view eyre-id u.shp pax canon u.pn ball.u.md %.n %.n)
     ;<  mf=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
     ?~  mf  (send-err eyre-id 504 'unreachable or denied')
-    ?.  ?=([%file *] u.mf)  (peer-missing eyre-id u.shp pax slashed)
+    ?.  ?=([%file *] u.mf)  (send-err eyre-id 404 'not found')
     ?:  want-raw  (send-raw eyre-id sang.u.mf %.n)
     (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-file-html u.shp pax sang.u.mf %.n)))
   ;<  mf=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
@@ -6571,23 +6579,8 @@
     (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-file-html u.shp pax sang.u.mf %.n)))
   ;<  md=(unit view:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
   ?~  md  (send-err eyre-id 504 'unreachable or denied')
-  ?.  ?=([%ball *] u.md)  (peer-missing eyre-id u.shp pax slashed)
+  ?.  ?=([%ball *] u.md)  (send-err eyre-id 404 'not found')
   (send-redirect eyre-id (weld base "/"))
-::  +peer-missing: a peer's node that is not there. A path in the codec's
-::  layout (+app-base) may name a desk install that keeps it at +desk-base,
-::  so send the browser there, once. The desk path is not under +app-base,
-::  so a node missing in both layouts 404s there instead of bouncing back.
-::
-++  peer-missing
-  |=  [eyre-id=@ta shp=@p pax=path slashed=?]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ?~  (strip-prefix:lu app-base:lu pax)  (send-err eyre-id 404 'not found')
-  %+  send-redirect  eyre-id
-  ;:  weld
-    "/apps/lattice/x/"  (scow %p shp)
-    (spud (unfold-base:lu desk-base:lu pax))  ?:(slashed "/" "")
-  ==
 ::  +url-path-part: the path portion of a raw request url (strip ?query).
 ::
 ++  url-path-part
