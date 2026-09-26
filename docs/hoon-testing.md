@@ -62,7 +62,11 @@ Tested on `~wex` (stock kernel; the app's own messages acted):
 | 8: `/sys/bowl.sig` refused as well | every fiber parks: the route dies, the explorer answers, CPU near 0 |
 | injected writer crash, then a write | 503 in 0.6 s; reads still 200; refused pokes don't count as crashes |
 
-Seen along the way, and not fixed here: the fs port's `%keep` on
-`/sys/lick/lattice/fs/in` is vetoed on some reloads, because `/sys/lick/`
-is in the weir's poke list but not its peek list. Under `rise-wait` that
-fiber stayed dead after it; now it comes back after a minute.
+Seen along the way, and fixed after: the fs port's `%keep` on
+`/sys/lick/lattice/fs/in` was vetoed on some reloads (2 of about 7),
+because grubbery weighs a keep as a read and `/sys/lick/` was declared only
+as a poke. It is now in `+weir-json`'s peek list too, which puts it in
+`ask.json`, so subscribers get a consent prompt for it on that release.
+With it granted on `~wex`: 8 reloads, no fs port failure, and
+`lattice-fs` mounted over lick and read pages. `scripts/weir-check.py`
+did not catch it: it matches roads, not their category.

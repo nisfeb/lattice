@@ -3182,6 +3182,12 @@
           'let other ships read the pages you publish. Refuse this and lattice still works completely for you - your published pages just stay on this ship'
           %+  line  '/sys/link/'
           'look up where this app is installed, so the live-reload stream and the links to your published pages point at the right place. Refuse this and pages still render, but they will not refresh as you edit them'
+        ::  lick-serve:io keeps and peeks its socket's /in grub, and grubbery
+        ::  weighs a %keep as a read. Declared only as a poke, the keep was
+        ::  vetoed on some reloads and the fs port crashed. weir-check.py
+        ::  missed it: it matches a road, not the road's category.
+          %+  line  '/sys/lick/'
+          'let you mount your pages as a folder on your computer and edit them as files. Refuse this and the web editor is unaffected'
         ::  the obelisk bridge's own subscription state. grubbery
         ::  materializes a gall subscription at /sys/gall/subs/<ship>/
         ::  <agent>/<path>/, and +obelisk-sub-state reads the `live` grub
