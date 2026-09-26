@@ -65,35 +65,14 @@
     (crip :(weld "<a href=\"" lead sch "alert(1)\">x</a>"))
   (crip :(weld "<img src=\"" lead sch "alert(1)\" alt=\"x\">"))
 ::
-::  ── C1/C2: totality ─────────────────────────────────────────────────────────
-::
-::  Reaching the last line IS the property: +mong reports a bail inside the lib
-::  as a refutation. The size checks below stand in for `&`, so there is no
-::  bound to tighten in either arm.
-++  test-prop-to-md-total
-  =/  fate=vase
-    !>
-    |=  h=@t
-    ^-  ?
-    =/  o=@t  (to-md:clip h)
-    (gte (met 3 o) 0)
-  (expect !>((chk fate `gen-html `cord-alts:fz)))
-::
-++  test-prop-page-title-total
-  =/  fate=vase
-    !>
-    |=  h=@t
-    ^-  ?
-    =/  o=(unit @t)  (page-title:clip h)
-    ?~(o & (gte (met 3 u.o) 0))
-  (expect !>((chk fate `gen-html `cord-alts:fz)))
-::
 ::  ── C3: bounded growth ──────────────────────────────────────────────────────
 ::
 ::  The converter is a single linear pass that appends only short literals, so
 ::  output size must stay a small multiple of input size. The worst per-byte
 ::  expansion in the table is <h6> (4 bytes in, "\n\n###### " 9 bytes out), so
-::  4x plus a constant is generous. If this ever fails, some branch has started
+::  4x plus a constant is generous. It is the totality check too: +mong reports
+::  a crash inside the lib as a refutation (the separate totality tests drew
+::  the same samples and added nothing). If this ever fails, some branch has started
 ::  re-emitting input it already consumed, which is the quadratic the lib's own
 ::  header says has wedged this ship before.
 ++  test-prop-to-md-bounded

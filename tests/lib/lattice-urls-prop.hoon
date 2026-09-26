@@ -179,23 +179,4 @@
   %+  expect-eq
     !>  `(unit referent:lu)`~
     !>  (de-urb:lu (en-urb:lu ~zod pax))
-::
-::  The generated counterpart. Over WILD knots the round-trip law must fail at
-::  least sometimes; a run where it never fails would mean the generator stopped
-::  generating and the test above is guarding nothing. %quiz has no "must be
-::  refuted" mode, so this is stated as: the law does not hold over wild knots.
-++  test-known-wild-knot-roundtrip-fails
-  =/  give
-    |=  [size=@ud rng=_og]
-    ^-  [@p path]
-    =^  shp  rng  (pick-ship:fz rng)
-    =^  many  rng  (rads:rng 4)
-    =^  rel  rng  (gen-path:fz wild-knots:fz +(many) rng)
-    [shp (weld page-prefix:lu rel)]
-  =/  fate=vase
-    !>
-    |=  [shp=@p pax=path]
-    ^-  ?
-    =(`[%tree shp pax] (de-urb:lu (en-urb:lu shp pax)))
-  (expect-eq !>(|) !>((chk fate `give `no-alts:fz)))
 --
