@@ -21,8 +21,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: fuse build deps
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+      #  --release for speed, but with overflow checks: the overflow
+      #  regressions (da_extreme_fields_do_not_overflow, da_is_total*, and
+      #  cue's atom-length guard) only panic when they are on, and release
+      #  turns them off. Without this they pass with their guards deleted.
       - name: cargo test
         working-directory: lattice-fs-rs
+        env:
+          CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: "true"
         run: cargo test --release
       #  Lints are a ratchet or they are nothing: the findings this removed
       #  come straight back the first time nobody runs it by hand.
@@ -123,6 +129,14 @@ jobs:
             echo "--- $(basename "$f") ---"
             node "$f"
           done
+      # The desk's own closure: every marc and import the code names is in
+      # code/ (a guest install resolves nothing outside it), and bill.json
+      # names only nexuses that exist. code-closure caught the rise-later
+      # port's missing timer marks, which ~wex's trusted install hid.
+      - name: desk closure + bill
+        run: |
+          python3 scripts/code-closure.py code
+          python3 scripts/bill-check.py code
       - name: supply chain (licences + bans)
         run: |
           cargo install cargo-deny --locked

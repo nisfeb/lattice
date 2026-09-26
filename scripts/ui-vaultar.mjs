@@ -200,7 +200,12 @@ console.log('\nreading an archive the system tar wrote');
   const arc = join(dir, 'sys.tar');
   execFileSync(tar, ['cf', arc, '-C', stage, '.']);
   const m = new Map();
-  for (const e of untar(readFileSync(arc).buffer)) m.set(e.name.replace(/^\.\//, ''), e.text);
+  // a small file comes back as a view into node's shared pool, so its
+  // .buffer holds other bytes before it: hand over this file's bytes only,
+  // as the browser's file.arrayBuffer() does
+  const buf = readFileSync(arc);
+  const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  for (const e of untar(ab)) m.set(e.name.replace(/^\.\//, ''), e.text);
   eq('a system-tar entry reads back', m.get('pages/one.md'), '# one\n');
   eq('nested, with utf-8', m.get('pages/sub/two.md'), 'two ⚡\n');
   eq('and the json rides along', m.get('know.json'), '{"items":[]}');

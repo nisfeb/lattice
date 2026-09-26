@@ -18,7 +18,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const src = join(dirname(fileURLToPath(import.meta.url)),
-  '..', 'code', 'nex', 'lattice', 'ui-app', 'src');
+  '..', 'ui-src', 'lattice');
 
 //  the helpers that report failure through their return value
 const GUARDED = ['enqueueSave', 'enqueueKnow'];
