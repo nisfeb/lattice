@@ -238,7 +238,14 @@ app is a couple of hundred commits.
   ^C, and 60 mutants later another `+rb` mutant killed the ship. Set
   `MUTANT_T` near a few honest runs (30 s where a mutant takes 7), and
   once an arm spins, move on without its other mutants.
-  With `MUTANT_T=30`, lattice's next pass took two spins and lived.
+  With `MUTANT_T=30`, lattice's next pass took two spins and lived, but
+  `+block-start` `gth`->`gte` killed `~feb` again at 30 s: the spin ran
+  the worker to 1.1 GB, `hoon-test.sh` exited 4 (no answer), so the
+  runner read it as a dead ship and sent no ^C, and the ^C sent by hand
+  was followed within seconds by the segfault. `MUTANT_T` shortens
+  runs; it does not save the ship. **Keep a list of the arms whose
+  mutants kill the ship, and leave them out of every run** (`--only`
+  the rest).
   The cause is open; the common factor is vere 4.6 under the kit's
   steady socket traffic, a commit and a build every few seconds. To size
   the risk on your ship, read `total marked:` from `|mass` before and
