@@ -58,4 +58,7 @@
 ::  a \0d from a CRLF document is not content and must not reach the output
 ++  test-crlf      (yes (has "<h1>Title</h1>" (r '# Title\0d\0amore')))
 ++  test-crlf-para  (yes (has "<p>more</p>" (r '# Title\0d\0amore\0d')))
+::  plain http links open like https ones (hoon-mutate, 2026-09-26)
+++  test-link-plain-http
+  (yes (has "rel=\"noopener noreferrer\"" (r '=> http://example.com site')))
 --

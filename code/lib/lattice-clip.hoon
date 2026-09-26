@@ -166,7 +166,7 @@
   |=  t=tape
   ^-  tape
   ?~  t  t
-  ?:  |(=(' ' i.t) (lth `@`i.t 33))  $(t t.t)
+  ?:  (lth `@`i.t 33)  $(t t.t)
   t
 ::
 ::  +walk: the pass.
@@ -377,7 +377,9 @@
   =/  gs=tape  ?:(hex (slag 1 dd) dd)
   =/  n=(unit @ud)  (parse-num gs hex)
   ?~  n  ~
-  ?:  =(0 u.n)  ~
+  ::  0 and anything past the last codepoint (U+10FFFF) stay literal.
+  ::  +parse-num's cap only bounds the work, and let up to ~2.000.009 through
+  ?:  |(=(0 u.n) (gth u.n 0x10.ffff))  ~
   `[(trip (tuft `@c`u.n)) rest]
 ::
 ::  +parse-num: digits -> number, base 10 or 16. ~ on any non-digit, so a

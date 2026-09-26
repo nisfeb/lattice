@@ -63,4 +63,11 @@
   (yes (has "[Some Label](/w/a/b)" (wl "[[a/b|Some Label]]" "/w/")))
 ++  test-wiki-escape
   (yes (has "[[a/b|x]]" (wl "`[[a/b|x]]`" "/w/")))
+::  ordered markers: 0 and 9 are digits, and a marker needs digits and text
+::  (hoon-mutate, 2026-09-26)
+++  test-ol-zero  (yes (has "<ol>" (r '0. a')))
+++  test-ol-nine  (yes (has "<ol>" (r '9. a')))
+++  test-ol-letter-not-digit  (yes !(has "<ol>" (r 'a. b')))
+++  test-ol-needs-digits  (yes !(has "<ol>" (r '. a')))
+++  test-ol-bare-number   (yes !(has "<ol>" (r '12')))
 --

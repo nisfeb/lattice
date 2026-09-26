@@ -285,9 +285,10 @@ The desktop app builds with `cargo build --release` in
 in `desktop/tauri.conf.json`) trigger a release workflow that builds and
 drafts all four bundles.
 
-The nexus's pure lib has Hoon unit tests under
-[`grubbery-overlay/tests/`](grubbery-overlay/tests/), run via grubbery's
-`run-tests`. The FUSE client has a 19-assertion ship-verified regression
+The nexus's pure libs have Hoon unit tests under [`tests/lib/`](tests/lib/),
+run on a fake ship in seconds, and mutation-checked, by the vendored
+[hoon-test-kit](scripts/hoon-test-kit/README.md) (`hoon-test.conf` at the
+root; `scripts/hoon-test-kit/hoon-test.sh <pier>`). The FUSE client has a 19-assertion ship-verified regression
 matrix (`scripts/fs-matrix.sh`). Seven integration matrices exercise a
 running harness ship end to end: `ui-matrix`, `ui-boot`, `ui-perf`,
 `ui-offline`, and `ui-acl-prefs` drive the web app through headless
