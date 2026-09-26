@@ -81,7 +81,8 @@ bookmarks, keys on the canonical form, so aliasing never splits state.
   not guessed: up to two remote round trips, and a 504 when neither
   answers). Published pages (`%pub`: the bare and `/n/` forms) never needed
   this: they are read over mesa at a scry path with no install location in
-  it (`+keen-path`). Only `/p/`, `/k/` and `/t/` name the peer's tree. `+explore` folds the physical path before `en-urb`; for a peer
+  it (`+keen-path`). Only `/p/`, `/k/` and `/t/` name the peer's tree.
+  `+explore` folds the physical path before `en-urb`; for a peer
   that needs no probe, since folding at `+desk-base` names both layouts.
 - **Not yet:** a desk installed under a name other than `lattice.desk` is
   found for our own ship (`+self-base`) but not for a peer. That needs the
