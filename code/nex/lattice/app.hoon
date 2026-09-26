@@ -259,11 +259,11 @@
       =.  up  (lent path.rail)
       ?+    rail  stay:m
           [~ %'main.sig']
-        ;<  ~     bind:m  (rise-wait:io prod "%lattice writer failed")
+        ;<  ~     bind:m  (rise-later prod "%lattice writer failed")
         =/  root=@ud  (lent path.rail)
         ::  THE MIGRATION, and it belongs here rather than in the desk.
         ::  Reaching it at all means consent has been granted - a jailed
-        ::  writer never gets past rise-wait - so there is no weir to check,
+        ::  writer never gets past rise-later - so there is no weir to check,
         ::  no marker for the desk to keep, and nothing to wake: the copy
         ::  happens exactly when this app can first run, which is the only
         ::  moment it could have happened anyway.
@@ -296,7 +296,7 @@
       ::  forged payload cannot curate our list). Same take-poke loop shape as
       ::  the writer below.
           [~ %'shares.sig']
-        ;<  ~  bind:m  (rise-wait:io prod "%lattice /shares: failed")
+        ;<  ~  bind:m  (rise-later prod "%lattice /shares: failed")
         ::  root is NOT ambient in on-file. Each case that needs it derives it
         ::  from its own rail, exactly as the writer above does.
         =/  root=@ud  (lent path.rail)
@@ -309,7 +309,7 @@
       ::  comment-action; we take the author from the TRANSPORT, never from the
       ::  payload, so it cannot be forged. Same take-poke loop as /shares.sig.
           [~ %'comments.sig']
-        ;<  ~  bind:m  (rise-wait:io prod "%lattice /comments: failed")
+        ;<  ~  bind:m  (rise-later prod "%lattice /comments: failed")
         =/  root=@ud  (lent path.rail)
         |-
         ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
@@ -319,12 +319,15 @@
       ::  /ui/main.sig: bind the HTTP endpoint and dispatch each request into a
       ::  per-request fiber under /ui/requests (same pattern as counter).
           [[%ui ~] %'main.sig']
-        ;<  ~  bind:m  (rise-wait:io prod "%lattice /ui/main: failed")
+        ;<  ~  bind:m  (rise-later prod "%lattice /ui/main: failed")
         ;<  ~  bind:m  (bind-http-self:io [~ /apps/lattice])
         (http-dispatch:io %lattice)
       ::  /ui/requests/*: one ephemeral fiber per in-flight HTTP request.
           [[%ui %requests ~] @]
-        ;<  ~  bind:m  (rise-wait:io prod "%lattice /ui/requests: failed")
+        ?^  prod
+          %-  (slog leaf+"%lattice /ui/requests: failed" u.prod)
+          ;<  ~  bind:m  take-kick
+          (crash-503 name.rail)
         (handle-request (lent path.rail) name.rail)
       ::  /sub/pages/*: one live per-file subscription. keep the peer's page grub
       ::  and act on every wave, so an edit is noticed as it happens. The body
@@ -336,7 +339,7 @@
       ::  page-sub on reload. Culling the grub (via /unsub) tears down the
       ::  fiber and its keep (delete -> sub-wipe).
           [[%sub %pages ~] @]
-        ;<  ~  bind:m  (rise-wait:io prod "%lattice /sub/pages: failed")
+        ;<  ~  bind:m  (rise-later prod "%lattice /sub/pages/{(trip name.rail)}: failed")
         ;<  ps=page-sub:lp  bind:m  (get-state-as:io ,page-sub:lp)
         =/  rel=path  (page-rel pax.ps)
         ::  Keep the peer's page gmi FILE, the node apply-pub GAINS, so a keep
@@ -389,7 +392,7 @@
       ::  plumbing lands with darts (platform decision). A divergent dep
       ::  cycle spins. A converging one terminates via no-op suppression.
           [[%page @ *] %code]
-        ;<  ~  bind:m  (rise-wait:io prod "%lattice /page eval: failed")
+        ;<  ~  bind:m  (rise-later prod "%lattice {(spud path.rail)} eval: failed")
         ::  this fiber IS the page dir: on-file hands it a rail already
         ::  relativised to the nexus, so its path is /page/<name> and its
         ::  length is the climb back to the root.
@@ -494,12 +497,12 @@
       ::  lattice-specific part is the +fs-op handler. Auth is filesystem-presence.
       ::  The socket lives in the pier.
           [~ %'fs.sig']
-        ;<  ~  bind:m  (rise-wait:io prod "%lattice fs port: failed")
+        ;<  ~  bind:m  (rise-later prod "%lattice fs port: failed")
         (lick-serve:io fs-port fs-op)
       ::  /mirror/mirror.sig: the commons reconciler (docs/obelisk-mirror.md
       ::  section 5). The loop lives in +mirror-loop.
           [[%mirror ~] %'mirror.sig']
-        ;<  ~  bind:m  (rise-wait:io prod "%lattice mirror: failed")
+        ;<  ~  bind:m  (rise-later prod "%lattice mirror: failed")
         ;<  ~  bind:m  (mirror-trace %reconciler-started)
         mirror-loop
       ==
@@ -6042,6 +6045,203 @@
     ?.  =([/ %time] p.sage.u.in)  [%skip ~]
     [%done !<(@da q.sage.u.in)]
   ==
+::  +rise-later: how a long-lived fiber comes back from a crash, ported from
+::  calendar (hoon-test-kit PLAYBOOK, "Never ship a crash loop"). rise-wait
+::  took the first poke after a crash as its restart signal and dropped it
+::  (to the writer, that is a user's save), and a fiber nobody pokes
+::  (/ui/main, the mirror, a sub, a page) stayed down until a reload.
+::
+::  This one goes on by itself after 1, 2, 4, up to 60 minutes (the count
+::  starts over two quiet hours after the last crash), prints the whole trace
+::  only for the first two, and refuses a poke while it waits rather than
+::  holding it: a held poke hangs its sender, and grubbery re-offers every
+::  held one on each step. It never fails. grubbery restarts a failed fiber
+::  in the same event, so a failure in here would spin the ship. Its clock
+::  and timer are soft and on fixed wires (a nonce is itself a bowl.sig
+::  poke), and with either refused it parks until a poke comes.
+::
+::  The crash record is /rise.json at the nexus root, one row per msg, so a
+::  page's fiber leaves nothing in the page's own tree. A reload prunes it,
+::  which resets the counts.
+++  rise-later
+  |=  [=prod:fiber:nexus msg=tape]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ::  the first step takes the start's own kick (~). A real input queued
+  ::  ahead of it (a wake, news, a late answer, across a reload) reaching a
+  ::  step that only sends is a crash on every reload.
+  ;<  ~  bind:m  take-kick
+  ::  a clean start takes down any wait an earlier run left set
+  ?~  prod
+    ;<  *  bind:m  (soft-behn /rise/rest [[/ %timer-rest] `wire`/rise])
+    (pure:m ~)
+  =/  key=@t  (crip msg)
+  ::  what a refused poke fails with; the restart that follows is not a crash
+  =/  note=tang  ~[leaf+"{msg}: waiting after a crash; the poke was refused"]
+  =/  crash=?  !=(note u.prod)
+  ;<  clock=(unit @da)  bind:m  soft-now
+  ?~  clock
+    %-  ?.(crash same (slog [leaf+"{msg}: no clock (weir?); waiting for a poke" u.prod]))
+    (rise-park note)
+  =/  now=@da  u.clock
+  ;<  log=json  bind:m  rise-log
+  =/  row=json  (fall (~(get by (rise-omap log)) key) [%o ~])
+  =/  n=@ud
+    =/  was=@ud  (fall (rise-gn row 'n') 0)
+    ?.  crash  was
+    ?:((gth now (add (rise-ms-da (fall (rise-gn row 'last_ms') 0)) ~h2)) 1 +(was))
+  =/  until=@da
+    ?.  crash  (rise-ms-da (fall (rise-gn row 'until_ms') 0))
+    (add now (min ~h1 (mul ~m1 (bex (dec (min n 7))))))
+  ?.  (gth until now)  (pure:m ~)
+  ;<  ~  bind:m
+    =/  m  (fiber:fiber:nexus ,~)
+    ?.  crash  (pure:m ~)
+    %-  %-  slog
+        ?:  (lte n 2)  [leaf+msg u.prod]
+        ~[leaf+"{msg} again ({(a-co:co n)} times running); next try in {(a-co:co (div (sub until now) ~m1))} min"]
+    ;<  *  bind:m
+      %^  over-as-soft:io  rise-road
+        :-  [/ %json]
+        :-  %o
+        %+  ~(put by (rise-omap log))  key
+        %-  pairs:enjs:format
+        :~  ['n' (numb:enjs:format n)]
+            ['last_ms' (numb:enjs:format (rise-da-ms now))]
+            ['until_ms' (numb:enjs:format (rise-da-ms until))]
+        ==
+      [/ %json]
+    (pure:m ~)
+  ;<  set=?  bind:m
+    (soft-behn /rise/set [[/ %timer-set] `[wire @da]`[/rise until]])
+  %-  ?:(|(set !crash) same (slog leaf+"{msg}: no timer (weir?); waiting for a poke" ~))
+  (rise-park note)
+::  +take-kick: wait for the null input that starts a fiber; anything
+::  real before it is held for the steps that follow
+++  take-kick
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?~(in [%done ~] [%skip ~])
+::  +rise-park: wait for the /rise wake; a poke meanwhile is refused with
+::  note (the restart it brings is not a crash, see +rise-later)
+++  rise-park
+  |=  note=tang
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%wait ~]
+      [~ %poke * *]
+    ?.  =([/ %timer-wake] p.sage.u.in)  [%fail note]
+    ?.  ?=([%rise *] !<(path q.sage.u.in))  [%wait ~]
+    [%done ~]
+  ==
+::  +soft-behn: a poke to the timer service, & when it landed. A refusal
+::  (a weir without /sys/behn) is | rather than a failure.
+++  soft-behn
+  |=  [=wire =bask:tarball]
+  (soft-poke wire &+&+[/sys/behn %'main.behn-state'] bask)
+::  +soft-poke: a poke, & when it landed, and never a failure. The wire is
+::  fixed: a nonce would ask /sys/bowl.sig for entropy, refusable too.
+++  soft-poke
+  |=  [=wire =road:tarball =bask:tarball]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  ~  bind:m  (send-dart:io %node wire road %poke bask)
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %veto *]  [%done |]
+      [~ %pack * *]
+    ?.  =(wire wire.u.in)  [%skip ~]
+    [%done =(~ err.u.in)]
+  ==
+::  +soft-now: the time, or ~ when /sys/bowl.sig refuses (+bowl-now fails
+::  instead). The answer and its ack come in either order.
+++  soft-now
+  =/  m  (fiber:fiber:nexus ,(unit @da))
+  ^-  form:m
+  ;<  ~  bind:m
+    (send-dart:io %node /rise/now &+&+[/sys %'bowl.sig'] %poke [[/ %bowl-req] %now])
+  ;<  first=(unit (each @da ~))  bind:m
+    =/  mi  (fiber:fiber:nexus ,(unit (each @da ~)))
+    ^-  form:mi
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?+  in  [%skip ~]
+        ~  [%wait ~]
+        [~ %veto *]  [%done ~]
+        [~ %pack * *]  ?^(err.u.in [%done ~] [%done `[%| ~]])
+        [~ %poke * *]
+      ?.  =([/ %time] p.sage.u.in)  [%skip ~]
+      [%done `[%& !<(@da q.sage.u.in)]]
+    ==
+  ?~  first  (pure:m ~)
+  ?:  ?=(%| -.u.first)
+    ::  acked: now the answer
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?+  in  [%skip ~]
+        ~  [%wait ~]
+        [~ %poke * *]
+      ?.  =([/ %time] p.sage.u.in)  [%skip ~]
+      [%done `!<(@da q.sage.u.in)]
+    ==
+  ::  the answer first: take its ack
+  ;<  ~  bind:m
+    =/  md  (fiber:fiber:nexus ,~)
+    ^-  form:md
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?+  in  [%skip ~]
+        ~  [%wait ~]
+        [~ %pack *]  [%done ~]
+    ==
+  (pure:m `p.u.first)
+::  +crash-503: a request fiber that crashed answers 503 and ends. It used
+::  to park in rise-wait with the browser waiting until it gave up, and
+::  since the writer refuses pokes while it waits after a crash, every
+::  write would do that. Soft: if /ui/main is down too, a hard poke would
+::  fail, and a fiber that fails again at once restarts forever within
+::  one event.
+++  crash-503
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  msg=json
+    (pairs:enjs:format ~[['error' s+'lattice is recovering from a crash; try again in a minute']])
+  ;<  *  bind:m
+    %^  soft-poke  /crash-503  [%| 1 %& ~ %'main.sig']
+    :-  [/ %eyre-action]
+    ^-  eyre-action:nexus
+    :+  %send  eyre-id
+    [%simple [503 ['content-type' 'application/json']~] `(as-octs:mimes:html (en:json:html msg))]
+  (pure:m ~)
+::  +rise-road / +rise-log: the crash record, at the nexus root whatever
+::  the fiber's depth. Unreadable reads as empty.
+++  rise-road  (rf up / %'rise.json')
+++  rise-log
+  =/  m  (fiber:fiber:nexus ,json)
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:io rise-road ~)
+  ?.  ?=([%file *] vw)  (pure:m [%o ~])
+  (pure:m (fall (mole |.(!<(json (need-vase:tarball sang.vw)))) [%o ~]))
+::  milliseconds both ways: the record's times are numbers, and must be
+::  read back in the unit they were written in
+++  rise-omap  |=(j=json ^-((map @t json) ?:(?=([%o *] j) p.j ~)))
+++  rise-gn
+  |=  [jon=json k=@t]
+  ^-  (unit @ud)
+  ?.  ?=([%o *] jon)  ~
+  =/  j=(unit json)  (~(get by p.jon) k)
+  ?~  j  ~
+  ?.  ?=([%n *] u.j)  ~
+  (rush p.u.j dem)
+++  rise-ms-da  |=(ms=@ud `@da`(add ~1970.1.1 (div (mul ms ~s1) 1.000)))
+++  rise-da-ms  |=(d=@da `@ud`?:((lth d ~1970.1.1) 0 (div (mul (sub d ~1970.1.1) 1.000) ~s1)))
 ::  +take-news-or-wake-until: like fiberio's take-news-or-wake, but the timer-wake
 ::  branch matches ONLY our own `until` timer (mirrors take-peek-or-wake). fiberio's
 ::  version matches ANY %timer-wake, so a stale timer left armed by an earlier
@@ -8395,7 +8595,7 @@
 ::    check, a marker on the desk, and a poke from the shell to wake it.
 ::
 ::    Reaching this line means consent was granted - a jailed writer never
-::    gets past rise-wait above. So the copy happens exactly when this app
+::    gets past rise-later above. So the copy happens exactly when this app
 ::    can first run, and none of that machinery is needed.
 ::
 ::    THE ROAD is absolute and it is the only absolute road in this file
@@ -8643,8 +8843,8 @@
   ?-    -.act
       %save
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
-    ::  would crash this single writer fiber, and rise-wait would then swallow the
-    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab. skip+log
+    ::  would crash this single writer fiber, and rise-later would then refuse the
+    ::  mutations that follow, for a minute or more. know-key mule-guards the stab. skip+log
     ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
@@ -8678,8 +8878,8 @@
   ::
       %del
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
-    ::  would crash this single writer fiber, and rise-wait would then swallow the
-    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab. skip+log
+    ::  would crash this single writer fiber, and rise-later would then refuse the
+    ::  mutations that follow, for a minute or more. know-key mule-guards the stab. skip+log
     ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
@@ -8732,8 +8932,8 @@
   ::
       %restore
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
-    ::  would crash this single writer fiber, and rise-wait would then swallow the
-    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab. skip+log
+    ::  would crash this single writer fiber, and rise-later would then refuse the
+    ::  mutations that follow, for a minute or more. know-key mule-guards the stab. skip+log
     ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
@@ -8761,8 +8961,8 @@
     ::  not a user edit, so no merge-save now-stamp. Mirror of %save minus the
     ::  body merge. index row derives from the entry's own metadata.
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
-    ::  would crash this single writer fiber, and rise-wait would then swallow the
-    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab. skip+log
+    ::  would crash this single writer fiber, and rise-later would then refuse the
+    ::  mutations that follow, for a minute or more. know-key mule-guards the stab. skip+log
     ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
@@ -8780,8 +8980,8 @@
     ::  land a trashed entry straight into the trash vault (import of an
     ::  already-deleted entry). No live grub, no cull dance, just write + index.
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
-    ::  would crash this single writer fiber, and rise-wait would then swallow the
-    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab. skip+log
+    ::  would crash this single writer fiber, and rise-later would then refuse the
+    ::  mutations that follow, for a minute or more. know-key mule-guards the stab. skip+log
     ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
@@ -8807,8 +9007,8 @@
   ?-    -.act
       %save-page
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
-    ::  would crash this single writer fiber, and rise-wait would then swallow the
-    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab. skip+log
+    ::  would crash this single writer fiber, and rise-later would then refuse the
+    ::  mutations that follow, for a minute or more. know-key mule-guards the stab. skip+log
     ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
@@ -8875,8 +9075,8 @@
   ::
       %del-page
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
-    ::  would crash this single writer fiber, and rise-wait would then swallow the
-    ::  NEXT mutation as a strange-restart. know-key mule-guards the stab. skip+log
+    ::  would crash this single writer fiber, and rise-later would then refuse the
+    ::  mutations that follow, for a minute or more. know-key mule-guards the stab. skip+log
     ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
     =/  ko=(unit path)  (know-key key.act)
     ?~  ko  ~&([%lattice-import-bad-key key.act] (pure:m ~))
