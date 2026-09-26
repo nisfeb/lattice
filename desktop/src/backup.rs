@@ -710,12 +710,18 @@ mod tests {
         let ck = format!("{sum:06o}\0 ");
         ll[148..156].copy_from_slice(ck.as_bytes());
         v.extend(ll);
-        v.extend(tar_entry(&long[..100.min(long.len())], b"x"));
+        // the header's own name is NOT a page path, so the page is counted
+        // only if its name really came from the @LongLink body (GNU tar
+        // writes the name cut to 100 bytes here, which still starts with
+        // pages/ and hid a reader that ignored the long name)
+        v.extend(tar_entry("longlink-target", b"x"));
         v.extend(tar_entry("share.json", b"{}"));
         v.extend(tar_entry("know.json", b"{}"));
         v.extend(std::iter::repeat_n(0, 1024));
         let r = verify_bytes("t.tar", &v);
         assert_eq!(r.pages, 1, "{:?}", r.problems);
+        // and the L record names the next entry; it is not an entry itself
+        assert_eq!(r.entries, 3, "{:?}", r.problems);
         assert!(r.ok(), "{:?}", r.problems);
     }
 }

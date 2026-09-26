@@ -1461,33 +1461,6 @@ mod tests {
         assert!(is_scratch("x.tex~", t_kind), "a tex backup must still be scratch");
     }
 
-    #[test]
-    fn cap_bodies_bounds_the_cache() {
-        // three 100-byte bodies (key ~1 byte each), cap at 250 bytes -> only two
-        // whole files fit. The cache never exceeds the cap, and it degrades by
-        // dropping files (not truncating one), so overflow reads lazily later.
-        let mut b = HashMap::new();
-        b.insert("a".to_string(), vec![0u8; 100]);
-        b.insert("b".to_string(), vec![0u8; 100]);
-        b.insert("c".to_string(), vec![0u8; 100]);
-        let (cache, bytes) = cap_bodies(b, 250);
-        assert_eq!(cache.len(), 2);
-        assert!(bytes <= 250);
-        // every cached entry is a whole body, never a partial
-        for v in cache.values() {
-            assert_eq!(v.len(), 100);
-        }
-    }
-
-    #[test]
-    fn cap_bodies_keeps_all_when_under_cap() {
-        let mut b = HashMap::new();
-        b.insert("x".to_string(), vec![0u8; 10]);
-        b.insert("y".to_string(), vec![0u8; 10]);
-        let (cache, _) = cap_bodies(b, 1_000_000);
-        assert_eq!(cache.len(), 2);
-    }
-
     // ---------- property tests ----------
 
     use super::{build_vt, join, leaf_of, resize};

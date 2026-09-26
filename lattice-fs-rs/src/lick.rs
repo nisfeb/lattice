@@ -455,9 +455,8 @@ mod tests {
         // each of these was a production defect on a corrupt/hostile frame:
         assert!(cue(&[]).is_err()); // infinite loop (phantom zero bits)
         assert!(cue(&[0x00]).is_err()); // infinite loop in rub's zero-run scan
-        let mut long_run = vec![0u8; 9]; // 72 zero bits then ones:
-        long_run.push(0xFF); // shift-overflow panic in rub
-        assert!(cue(&long_run).is_err());
+        // (a 72-zero-bit run is cue_rejects_an_atom_length_it_cannot_represent's:
+        // here it was refused by running out of input, guard or no guard)
         // 0x55 = LSB-first bits 1,0,1,0… = an endless nest of cell tags:
         // stack overflow in the recursive cue
         assert!(cue(&vec![0x55; 200_000]).is_err());
@@ -581,15 +580,27 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("fs");
         let l = std::os::unix::net::UnixListener::bind(&path).unwrap();
-        // accept and immediately hang up, every time
+        // accept and immediately hang up, every time, counting the attempts
+        let accepts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let n = accepts.clone();
         std::thread::spawn(move || {
             for s in l.incoming() {
+                n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 drop(s);
             }
         });
         let t = LickTransport::new(path.to_str().unwrap(), "~zod");
         let e = t.get_bytes("/x", &[("name", "n")]).unwrap_err();
         assert_ne!(e.code, 400, "not the query guard: a real transport failure");
+        // the first try and ONE retry: two connections, never three. The
+        // accept thread may trail the client by a moment, so let it settle.
+        let count = || accepts.load(std::sync::atomic::Ordering::SeqCst);
+        for _ in 0..100 {
+            if count() >= 2 { break; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(count(), 2, "one try plus exactly one retry");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
