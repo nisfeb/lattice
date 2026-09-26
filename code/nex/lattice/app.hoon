@@ -1113,7 +1113,15 @@
       ::  dir goes straight to its live view (no extra dir-slash redirect).
       =/  s=tape  (trip u.raw)
       =/  slash=tape  ?:(&(?=(^ s) =('/' (rear s))) "/" "")
-      (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p ship.u.ref) (spud pax.u.ref) slash))
+      ::  de-urb speaks the codec's layout (+app-base); unfold it to where
+      ::  lattice really lives: our own install for us, a desk install for a
+      ::  peer (+explore retries a missing app-base node at the desk once).
+      ::  Verbatim, a desk-tier /p/ url 404'd at the app-base path.
+      ;<  sb=path  bind:m
+        ?:  =(ship.u.ref our)  self-base
+        (pure:(fiber:fiber:nexus ,path) desk-base:lu)
+      =/  to=path  (unfold-base:lu sb pax.u.ref)
+      (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p ship.u.ref) (spud to) slash))
     ::
         %pub
       ;<  body=(unit @t)  bind:m  (read-page-body our ship.u.ref rel.u.ref)
@@ -6494,8 +6502,13 @@
   =/  slashed=?  &(?=(^ base) =('/' (rear base)))
   =/  want-raw=?  (~(has by args) 'data')
   ::  the canonical urb:// address for this node, shown in the chrome bar so any
-  ::  view is copy-shareable (the browser url stays the /x projection).
-  =/  canon=tape  (trip (en-urb:lu u.shp pax))
+  ::  view is copy-shareable (the browser url stays the /x projection). The
+  ::  path is physical; fold it to the codec's layout first, or a desk-tier
+  ::  page is named by the /t/ raw form instead of /p/.
+  ;<  fb=path  bind:m
+    ?:  =(u.shp our)  self-base
+    (pure:(fiber:fiber:nexus ,path) desk-base:lu)
+  =/  canon=tape  (trip (en-urb:lu u.shp (fold-base:lu fb pax)))
   =/  dir-road=road:tarball  [%& %| pax]
   ?~  pax
     ::  ship root: always a directory
@@ -6521,7 +6534,7 @@
           ?~(fil.ball.dn ~ contents.u.fil.ball.dn)
         ?:  |(?=(~ pn) ?!((~(has by fils) %code)) (~(has by args) 'raw'))
           (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-dir-html u.shp pax ball.dn)))
-        (render-page-view eyre-id u.shp pax u.pn ball.dn (~(has by args) 'embed') %.y)
+        (render-page-view eyre-id u.shp pax canon u.pn ball.dn (~(has by args) 'embed') %.y)
       ;<  fn=view:nexus  bind:m  (peek:io file-road ~)
       ?.  ?=([%file *] fn)  (send-err eyre-id 404 'not found')
       ?:  want-raw  (send-raw eyre-id sang.fn %.y)
@@ -6545,10 +6558,10 @@
         ?~(fil.ball.u.md ~ contents.u.fil.ball.u.md)
       ?:  |(?=(~ pn) ?!((~(has by fils) %code)) (~(has by args) 'raw'))
         (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-dir-html u.shp pax ball.u.md)))
-      (render-page-view eyre-id u.shp pax u.pn ball.u.md %.n %.n)
+      (render-page-view eyre-id u.shp pax canon u.pn ball.u.md %.n %.n)
     ;<  mf=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
     ?~  mf  (send-err eyre-id 504 'unreachable or denied')
-    ?.  ?=([%file *] u.mf)  (send-err eyre-id 404 'not found')
+    ?.  ?=([%file *] u.mf)  (peer-missing eyre-id u.shp pax slashed)
     ?:  want-raw  (send-raw eyre-id sang.u.mf %.n)
     (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-file-html u.shp pax sang.u.mf %.n)))
   ;<  mf=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
@@ -6558,8 +6571,23 @@
     (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-file-html u.shp pax sang.u.mf %.n)))
   ;<  md=(unit view:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
   ?~  md  (send-err eyre-id 504 'unreachable or denied')
-  ?.  ?=([%ball *] u.md)  (send-err eyre-id 404 'not found')
+  ?.  ?=([%ball *] u.md)  (peer-missing eyre-id u.shp pax slashed)
   (send-redirect eyre-id (weld base "/"))
+::  +peer-missing: a peer's node that is not there. A path in the codec's
+::  layout (+app-base) may name a desk install that keeps it at +desk-base,
+::  so send the browser there, once. The desk path is not under +app-base,
+::  so a node missing in both layouts 404s there instead of bouncing back.
+::
+++  peer-missing
+  |=  [eyre-id=@ta shp=@p pax=path slashed=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  (strip-prefix:lu app-base:lu pax)  (send-err eyre-id 404 'not found')
+  %+  send-redirect  eyre-id
+  ;:  weld
+    "/apps/lattice/x/"  (scow %p shp)
+    (spud (unfold-base:lu desk-base:lu pax))  ?:(slashed "/" "")
+  ==
 ::  +url-path-part: the path portion of a raw request url (strip ?query).
 ::
 ++  url-path-part
@@ -6629,7 +6657,8 @@
   ::  local=%.n: a PEER's page (browsed over ames), rendered in a SANDBOXED frame
   ::  (its html/js is untrusted), no theme peek (that would read OUR tree), no Edit
   ::  button, no live keep. local=%.y: our own page, fully themed + editable + live.
-  |=  [eyre-id=@ta shp=@p pax=path name=@t b=ball:tarball embed=? local=?]
+  ::  canon: the node's urb:// address, already folded by +explore.
+  |=  [eyre-id=@ta shp=@p pax=path canon=tape name=@t b=ball:tarball embed=? local=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
@@ -6719,7 +6748,7 @@
   ::  no stream — it keeps the short tier.
   =/  htm=@t
     %^    render-browser-page
-        (trip (en-urb:lu shp pax))
+        canon
       doc
     [?:(local `name ~) ?!(local) ?:(local keep "") ?:(local rev "") ttl]
   ?:  local  (send-view-long eyre-id htm)

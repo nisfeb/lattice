@@ -82,6 +82,24 @@
   ^-  (unit path)
   ?.  &((gte (lent p) (lent base)) =(base (scag (lent base) p)))  ~
   `(slag (lent base) p)
+::  +fold-base / +unfold-base: the codec speaks ONE layout, +app-base, so a
+::  urb:// url reads the same whichever tier the ship runs. The app maps at
+::  its edges, with `base` the place lattice really lives on that ship (our
+::  +self-base, or +desk-base for a peer): a physical path under `base`
+::  folds to the codec's layout before +en-urb, and a path out of +de-urb
+::  unfolds to `base` before anything peeks it. A path outside the base
+::  passes through untouched, either way.
+::
+++  fold-base
+  |=  [base=path pax=path]
+  ^-  path
+  =/  r=(unit path)  (strip-prefix base pax)
+  ?~(r pax (weld app-base u.r))
+++  unfold-base
+  |=  [base=path pax=path]
+  ^-  path
+  =/  r=(unit path)  (strip-prefix app-base pax)
+  ?~(r pax (weld base u.r))
 ::  +de-urb: parse a urb:// url into its referent (~ if malformed). Pure.
 ::
 ++  de-urb

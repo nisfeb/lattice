@@ -63,15 +63,24 @@ bookmarks, keys on the canonical form, so aliasing never splits state.
 
 ## Implementation
 
-- The codec lives in `grubbery-overlay/lib/lattice-urls.hoon`, a pure,
-  import-free lib. The round-trip laws above are enforced by
-  `grubbery-overlay/tests/lib/lattice-urls.hoon`.
+- The codec lives in `code/lib/lattice-urls.hoon`, a pure, import-free lib.
+  The round-trip laws above are enforced by `tests/lib/lattice-urls.hoon`.
 - `+de-urb`: `@t → (unit referent)`, referent = `%pub`/`%tree`.
 - `+en-urb`: `[ship path] → @t`, the canonical URL for a tree node.
 - The address bar (`GET /apps/lattice?url=…`) resolves via `de-urb`. `%pub`
   is read and rendered inline. `%tree` redirects to the `/x` explorer
   projection, which renders the node and shows its canonical address.
 - `/x/~ship/<path>` remains the explorer's own URL (the projection target).
+- **One layout on every tier.** The codec speaks `+app-base`
+  (`/apps/lattice.lattice_app`), so a url's text is the same whether a ship
+  runs the old app-tier instance or the stock desk
+  (`+desk-base`, `/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app`).
+  The app maps at its edges with `+fold-base` / `+unfold-base`: the address
+  bar unfolds `de-urb`'s path to our own `+self-base` (from `/sys/link`), or to
+  `+desk-base` for a peer; `+explore` folds the physical path before `en-urb`.
+  A peer node in the app-base layout that peeks as missing is retried once at
+  `+desk-base` (a redirect; the desk path is not under app-base, so a node
+  missing in both 404s instead of looping).
 
 ## Not yet
 

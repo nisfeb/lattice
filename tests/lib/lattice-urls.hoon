@@ -113,4 +113,40 @@
         ?>  ?=([~ %tree *] d2)
         (en-urb:lu ship.u.d2 pax.u.d2)
   ==
+::
+::  +fold-base / +unfold-base: the codec speaks +app-base on every tier; the
+::  app folds a physical path in and unfolds a decoded one out. The case is
+::  the report's: a desk-tier page that de-urb sent to the app-base path,
+::  which 404s there, and that en-urb named /t/ instead of /p/.
+::
+++  desk-page  `path`(weld desk-base:lu /page/site/talon/index)
+++  test-fold-names-a-desk-page-p
+  ;:  weld
+    (expect-eq !>(`path`(weld app-base:lu /page/site/talon/index)) !>((fold-base:lu desk-base:lu desk-page)))
+    %+  expect-eq  !>('urb://~nisfeb/p/site/talon/index')
+    !>((en-urb:lu ~nisfeb (fold-base:lu desk-base:lu desk-page)))
+  ==
+++  test-unfold-reaches-the-desk-page
+  =/  r=(unit referent:lu)  (de-urb:lu 'urb://~nisfeb/p/site/talon/index')
+  ?>  ?=([~ %tree *] r)
+  (expect-eq !>(desk-page) !>((unfold-base:lu desk-base:lu pax.u.r)))
+::  the url round-trips through the fold, and so does the physical path
+++  test-fold-round-trips
+  =/  url=@t  (en-urb:lu ~nisfeb (fold-base:lu desk-base:lu desk-page))
+  =/  r=(unit referent:lu)  (de-urb:lu url)
+  ?>  ?=([~ %tree *] r)
+  ;:  weld
+    (expect-eq !>(desk-page) !>((unfold-base:lu desk-base:lu pax.u.r)))
+    %+  expect-eq  !>(`path`(weld app-base:lu /know/vault/a))
+    !>((fold-base:lu desk-base:lu (unfold-base:lu desk-base:lu (weld app-base:lu /know/vault/a))))
+  ==
+::  a path outside the base passes through both ways, and on the app tier
+::  (base = app-base) both are the identity
+++  test-fold-passes-other-paths
+  ;:  weld
+    (expect-eq !>(`path`/sys/link/lattice) !>((fold-base:lu desk-base:lu /sys/link/lattice)))
+    (expect-eq !>(`path`/sys/link/lattice) !>((unfold-base:lu desk-base:lu /sys/link/lattice)))
+    (expect-eq !>(desk-page) !>((fold-base:lu app-base:lu desk-page)))
+    (expect-eq !>(`path`(weld app-base:lu /page/x)) !>((unfold-base:lu app-base:lu (weld app-base:lu /page/x))))
+  ==
 --
