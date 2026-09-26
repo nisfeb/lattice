@@ -19,7 +19,8 @@ default 120 s let the spin kill the ship first. With 30 s, two spins were
 interrupted and the ship lived. These arms have a mutant that spins or kills
 the ship; mutate them only with `MUTANT_T=30`, one arm at a time:
 `parse-num` (clip), `block-start` and `rb` (md), `render-gmi` (gmi),
-`check-verbose` (quiz).
+`check-verbose` (quiz). `MUTANT_T` does not save the ship from the first
+three: `block-start` killed it at 30 s. Leave them out of every run.
 
 Found and fixed: `lattice-clip`'s `+unent-one` decoded numeric entities past
 U+10FFFF (`&#1999999;`) into bytes that aren't valid UTF-8. `+parse-num`'s
@@ -35,8 +36,8 @@ tested alone.
 | clip | done. 6 equivalent: `?=(^ acc)` before a flushed space ×3 (`+squeeze` trims both ends), `'>'` in `+attr` (the tag's text ends before any `>`), `+parse-num`'s `gth` (cost bound). 1 accepted: `+lead-strip` `lth->lte` 33 also strips `!`, which only refuses `!javascript:`, a link no browser runs |
 | gmi | done except `render-gmi`'s `lst` mutant (spins) |
 | share, urls, pub, fuzz, know, sign | done. urls `+strip-prefix` `gte` is a fast path (equivalent) |
-| md | **open**: 32 survivors in the block parser (tables, lists, quotes, footnote refs, `+wiki-name-len`), and the arms after `rb` unrun |
-| pg | **open**: `+live-location` has 23 survivors against one flow test; `+folder-index` 2 |
+| md | done, 19 tests. 5 equivalent: the autolink's `'<'` and `"<https"` checks repeat `"<http"`, its no-set guard and the blank-row check in `+take-table-rows` only save work, `+render-footnotes` sorts distinct numbers, `+rb`'s heading `gth` sees n>0 always, `+cap-quote-depth` at exactly 32 rewrites to itself, `+safe-url` compares two different bytes' positions. 3 accepted: `+take-task` at exactly 4 bytes, `+join-para` on a line of two spaces, `+find-cap`'s cost cap. **Unmeasured**: `+block-start` and `+rb` (their mutants kill the ship) |
+| pg | done, 7 tests. 7 equivalent: the 1.440-minute cap gives 1.440 either way; state has 0 or 5 fields, never 4, so the `(lent next)` checks at 363, 367 and 570 can't differ, and `live` implies 5 |
 | quiz | test tooling, not triaged |
 
 ## Crash handling (playbook: "Never ship a crash loop"), 2026-09-26

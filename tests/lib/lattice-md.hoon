@@ -70,4 +70,39 @@
 ++  test-ol-letter-not-digit  (yes !(has "<ol>" (r 'a. b')))
 ++  test-ol-needs-digits  (yes !(has "<ol>" (r '. a')))
 ++  test-ol-bare-number   (yes !(has "<ol>" (r '12')))
+::  one case per clause (hoon-mutate, 2026-09-26)
+::  an image needs "![": a lone '!' leaves the links after it alone
+++  test-bang-then-link  (yes (has "<a href=\"/u\"" (r '!x [a](/u)')))
+::  a tab indents a nested list like spaces do
+++  test-nested-tab  (yes (has "<ul><li>a<ul>" (r '- a\0a\09- b')))
+::  a footnote ref needs both '[' and '^'
+++  test-foot-needs-bracket  (yes !(has "<sup" (r 'x^a] y\0a\0a[^a]: n')))
+::  the mutant reads the id 2 bytes on, so [xa] is what would pass for [^a]
+++  test-foot-needs-caret    (yes !(has "<sup" (r '[xa] y\0a\0a[^a]: n')))
+::  list markers: text alone is no bullet, ')' ends a number, and digits
+::  need a '.' or ')'
+++  test-no-bullet   (yes !(has "<ul>" (r 'a b')))
+++  test-ol-paren    (yes (has "<ol>" (r '1) a')))
+++  test-ol-needs-dot  (yes !(has "<ol>" (r '12x y')))
+::  a blank line inside a list keeps one list; an unindented line ends it
+++  test-list-loose  (yes (has "</li><li>b" (r '- a\0a\0a- b')))
+++  test-list-ends   (yes (has "<p>next</p>" (r '- a\0anext')))
+::  tables: outer pipes are optional, an escape is not a pipe, an empty
+::  separator cell or a bare "|" row doesn't crash, alignment is per side,
+::  and a line with no pipe ends the table
+++  test-table-bare-pipes
+  =/  h=tape  (r 'a | b\0a--|--\0a1 | 2')
+  (yes &((has "<th>a</th>" h) (has "<th>b</th>" h) (has "<td>2</td>" h)))
+++  test-table-escaped-pipe  (yes (has "<th>a*b</th>" (r '| a\\*b |\0a|---|\0a| x |')))
+++  test-table-empty-sep     (yes (has "<table>" (r '| a | b |\0a|---| |\0a| 1 | 2 |')))
+++  test-table-bare-row      (yes (has "<table>" (r '| a |\0a|---|\0a|')))
+++  test-table-right  (yes (has "text-align:right" (r '| a |\0a|--:|\0a| 1 |')))
+++  test-table-left   (yes (has "text-align:left" (r '| a |\0a|:--|\0a| 1 |')))
+++  test-table-ends   (yes (has "<p>after</p>" (r '| a |\0a|---|\0a| 1 |\0aafter')))
+::  a quote takes only its '>' lines
+++  test-quote-ends  (yes (has "</blockquote><p>after</p>" (r '> q\0a\0aafter')))
+::  a wiki name runs over both ends of each range
+++  test-wiki-name-edges  (yes (has "[az09](/w/az09)" (wl "[[az09]]" "/w/")))
+::  a space is below '0' and not a name byte
+++  test-wiki-name-space  (yes (has "[[a b]]" (wl "[[a b]]" "/w/")))
 --
