@@ -86,5 +86,20 @@ const ghostGrants = [...granted].filter((g) => !handledKebab.has(g));
 check('capabilities grant no command the handler lacks', ghostGrants.length === 0,
   'granted but not handled: ' + JSON.stringify(ghostGrants));
 
+//  ── native menu items click a button in the page ─────────────────────────
+//  main.rs maps each menu id to an element id and clicks it. Rename the
+//  button and the menu item silently does nothing. Every mapping is checked,
+//  read straight out of the match, so a new item is checked too. (This used
+//  to be copied into ui-view and ui-deskmenu, browser suites that need a
+//  ship, so in practice it never ran.)
+const appJs = readFileSync(join(here, '..', 'code', 'nex', 'lattice', 'ui-app', 'app.js'), 'utf8');
+const menu = [...main.matchAll(/"((?:file|view)-[a-z-]+)" => "([a-z]+)"/g)];
+check('the native menu maps its items to page elements', menu.length >= 11,
+  'found ' + menu.length + ' mappings in src/main.rs');
+for (const [, item, id] of menu) {
+  check('menu ' + item + ' clicks #' + id + ', which the shipped UI has',
+    appJs.includes('id="' + id + '"'));
+}
+
 console.log(fails ? '\n' + fails + ' FAILED' : '\nall checks passed');
 process.exit(fails ? 1 : 0);

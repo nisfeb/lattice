@@ -34,7 +34,7 @@ const check = (m, c, d) => {
   if (!c) fails++;
 };
 
-const b = await pp.launch({ executablePath: '/usr/bin/chromium', headless: 'new', args: ['--no-sandbox'] });
+const b = await pp.launch({ executablePath: process.env.CHROME || '/usr/bin/chromium', headless: 'new', args: ['--no-sandbox'] });
 const p = await b.newPage();
 await p.setViewport({ width: 1400, height: 900 });
 await p.setCookie({ name: cn, value: cr.join('='), domain: new URL(BASE).hostname, path: '/' });

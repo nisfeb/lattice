@@ -158,3 +158,4 @@ if show_all:
     for a in sorted(sens):
         if a not in bad: print(f'  ok      +{a}: depth {sorted(reach.get(a,[])) or "unreached"}')
 print(f'{len(bad)} arm(s) must take the depth as an argument')
+sys.exit(1 if bad else 0)

@@ -133,10 +133,13 @@ jobs:
       # code/ (a guest install resolves nothing outside it), and bill.json
       # names only nexuses that exist. code-closure caught the rise-later
       # port's missing timer marks, which ~wex's trusted install hid.
-      - name: desk closure + bill
+      - name: desk closure, bill and fiber depths
         run: |
           python3 scripts/code-closure.py code
           python3 scripts/bill-check.py code
+          #  every road-building arm is reachable at one depth only, or its
+          #  road climbs past the root and the fiber crash-loops
+          python3 scripts/depth-check.py code/nex/lattice/app.hoon
       - name: supply chain (licences + bans)
         run: |
           cargo install cargo-deny --locked
