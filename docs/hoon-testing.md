@@ -39,10 +39,29 @@ tested alone.
 | pg | **open**: `+live-location` has 23 survivors against one flow test; `+folder-index` 2 |
 | quiz | test tooling, not triaged |
 
-## Not yet applied from the playbook
+## Crash handling (playbook: "Never ship a crash loop"), 2026-09-26
 
-Every fiber in `code/nex/lattice/app.hoon` restarts through `rise-wait:io`.
-After a crash it swallows the first real poke and leaves unpoked fibers
-(`/ui/main`, the mirror, `sub/pages`, the fs port, page eval) down until a
-reload. The playbook's "Never ship a crash loop" says port calendar's
-`+rise-later`, and never release it without tests 7 and 8.
+Every long-lived fiber restarted through `rise-wait:io`, which took the
+first poke after a crash as its restart signal and dropped it (to the
+writer, a user's save), and left fibers nobody pokes (`/ui/main`, the
+mirror, a sub, a page, the fs port) down until a reload. They now use
+`+rise-later`, ported from calendar: a wait of 1, 2, 4 up to 60 minutes,
+pokes refused while waiting, a soft clock and timer, and the record in
+`/rise.json` at the nexus root. A crashed request fiber answers 503
+(`+crash-503`) instead of parking with the browser waiting, which every
+write would otherwise do while the writer waits.
+
+Tested on `~wex` (stock kernel; the app's own messages acted):
+
+| test | result |
+|---|---|
+| 7: upgrade over the existing data, 3 reloads, then 3 more with 40 writes in flight | route 200 throughout, 40/40 writes 200, no crash record |
+| injected crash in the mirror | record n=2, 3 at 2 and 4 minute gaps; CPU near 0; "again (3 times running)" |
+| 8: `/sys/behn/` refused | crashed fibers print "no timer (weir?)" and park; CPU near 0 |
+| 8: `/sys/bowl.sig` refused as well | every fiber parks: the route dies, the explorer answers, CPU near 0 |
+| injected writer crash, then a write | 503 in 0.6 s; reads still 200; refused pokes don't count as crashes |
+
+Seen along the way, and not fixed here: the fs port's `%keep` on
+`/sys/lick/lattice/fs/in` is vetoed on some reloads, because `/sys/lick/`
+is in the weir's poke list but not its peek list. Under `rise-wait` that
+fiber stayed dead after it; now it comes back after a minute.
