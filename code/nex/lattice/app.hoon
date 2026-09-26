@@ -488,7 +488,7 @@
         ::  loop. (Same bowl-now -> send-wait pattern used by the sub/pub loops.)
         ;<  arm-now=@da  bind:m  bowl-now
         =/  until=@da  (add arm-now u.wake)
-        ;<  ~  bind:m  (send-wait:io until)
+        ;<  ~  bind:m  (send-wait-dated until)
         ;<  *  bind:m  (take-news-or-wake-until /ev until)
         $
       ::  /fs.sig: the lick (local IPC) port for the FUSE client. The serve-loop
@@ -5726,7 +5726,7 @@
   =/  until=@da  (add now remote-timeout)
   ;<  pw=wire  bind:m  (nonce:io /peek)
   ;<  ~  bind:m  (send-dart:io %node pw (remote-road road shp) %peek ~ ~ %.y)
-  ;<  ~  bind:m  (send-wait:io until)
+  ;<  ~  bind:m  (send-wait-dated until)
   (take-peek-or-wake pw until)
 ::  +peek-remote-shallow-wait: peek-remote-wait but deep=%.n, one directory level
 ::  (files here + subdir names, no recursion). Used by the cross-ship browser: a
@@ -5742,7 +5742,7 @@
   =/  until=@da  (add now remote-timeout)
   ;<  pw=wire  bind:m  (nonce:io /peek)
   ;<  ~  bind:m  (send-dart:io %node pw (remote-road road shp) %peek ~ ~ %.n)
-  ;<  ~  bind:m  (send-wait:io until)
+  ;<  ~  bind:m  (send-wait-dated until)
   (take-peek-or-wake pw until)
 ::  ── sharing groups (the permission editor's backend) ────────────────────
 ::  A grubbery usergroup is a directory /sys/ames/usergroups/<name>.grp/ with
@@ -5953,7 +5953,7 @@
   ;<  ~  bind:m
     %+  poke:io  &+&+[/sys/gall %'main.sig']
     [[/ %gall-poke] [[target %grubbery] grubbery-load+req]]
-  ;<  ~  bind:m  (send-wait:io until)
+  ;<  ~  bind:m  (send-wait-dated until)
   |=  input:fiber:nexus
   :+  ~  q.state
   ?+  in  [%skip ~]
@@ -6254,6 +6254,17 @@
 ::  read in the SAME long-lived fiber (a keep fiber runs many in sequence)
 ::  would spuriously abort a later query. Checking until makes a stale wake skip.
 ::
+::  +send-wait-dated: send-wait:io, on a wire that carries its deadline.
+::  fiberio's send-wait sets every timer on the one wire /wait (grubbery
+::  5e85d314, 2026-08-20), so its wake names no deadline. The takes here
+::  tell THIS wait's wake from a stale one by the date in the wire, so they
+::  matched nothing and every such wait hung: a remote peek at a ship that
+::  never answers, a page's `every` timer, a remote save nobody acks.
+::  Each dated timer is its own behn entry, dropped when it fires.
+::
+++  send-wait-dated
+  |=  until=@da
+  (set-timer:io /wait/(scot %da until) until)
 ++  take-news-or-wake-until
   |=  [news-wire=wire until=@da]
   =/  m  (fiber:fiber:nexus ,news-or-wake:io)
