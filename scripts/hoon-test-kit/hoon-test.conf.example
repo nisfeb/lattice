@@ -1,0 +1,18 @@
+# hoon-test-kit: what the Hoon suites build, and where it goes on the test
+# desk. Sourced by bash and parsed by python, so plain KEY="value" lines only.
+# Paths are relative to this file. See scripts/hoon-test-kit/README.md.
+
+# the test desk: never the app's own
+DESK=myapp-test
+
+# the libs under test, and any lib they import; each lands at lib/<name>.hoon
+LIBS="code/lib/myapp.hoon"
+
+# every *.hoon here lands in tests/lib/
+TESTS=tests/lib
+
+# fixtures at the same path on the desk, or src=dest (optional)
+FILES=""
+
+# marks copied from %base at setup: json builds through mime
+MARKS="json mime"

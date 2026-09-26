@@ -73,4 +73,10 @@
     (expect-eq !>(%.y) !>(?=(~ (find "openstreetmap" b4))))
     (expect-eq !>(%.y) !>(?=(^ (find "No position is being broadcast" b4))))
   ==
+::  both ends of the digit range, and a byte just below it
+++  test-tape-num
+  ;:  weld
+    (expect-eq !>(`(unit @ud)`[~ 90]) !>((tape-num:pg "90")))
+    (expect-eq !>(`(unit @ud)`~) !>((tape-num:pg "/")))
+  ==
 --

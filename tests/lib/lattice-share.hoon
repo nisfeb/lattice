@@ -77,4 +77,11 @@
     ::  deleting something absent is a no-op, not a crash
     (expect-eq !>(2) !>((lent (del-entry:ls both nec /apps/zzz))))
   ==
+::  the path is half the key: one host's other page survives (hoon-mutate,
+::  2026-09-26)
+++  test-del-entry-same-host
+  =/  a=entry:ls  [zod /apps/x 'read' ~2024.1.1]
+  =/  b=entry:ls  [zod /apps/y 'read' ~2024.1.1]
+  =/  both=shared:ls  (put-entry:ls (put-entry:ls ~ a) b)
+  (expect-eq !>(`(list path)`~[/apps/y]) !>((turn (del-entry:ls both zod /apps/x) |=(e=entry:ls pax.e))))
 --

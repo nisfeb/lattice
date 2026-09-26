@@ -97,4 +97,49 @@
 ++  test-large
   =/  big=@t  (crip (zing (reap 2.000 "<p>paragraph text here</p>")))
   (yes (gth (met 3 (m big)) 10.000))
+::  one case per clause: each of these alone was dropped by a mutant and
+::  every test still passed (hoon-mutate, 2026-09-26)
+++  test-i  (yes (has "a *x* b" (m '<p>a <i>x</i> b</p>')))
+++  test-td  (yes (has "a  b" (m '<table><tr><td>a</td><td>b</td></tr></table>')))
+++  test-th  (yes (has "a  b" (m '<table><tr><th>a</th><th>b</th></tr></table>')))
+++  test-ws-tab  (yes (has "a b" (m '<p>a\09b</p>')))
+++  test-ws-nl   (yes (has "a b" (m '<p>a\0ab</p>')))
+++  test-ws-cr   (yes (has "a b" (m '<p>a\0db</p>')))
+::  a tag name ends at a tab, a newline or a '/', as well as a space
+++  test-tag-tab    (yes (has "[t](/u)" (m '<a\09href="/u">t</a>')))
+++  test-tag-nl     (yes (has "[t](/u)" (m '<a\0ahref="/u">t</a>')))
+++  test-tag-slash  (no (has "ab" (m '<p>a<br/>b</p>')))
+::  attribute values: single-quoted, and bare up to the next space
+++  test-attr-single  (yes (has "[t](/u)" (m '<a href=\'/u\'>t</a>')))
+++  test-attr-bare    (yes (has "[t](/u)" (m '<a href=/u title=x>t</a>')))
+::  no url is no link, and vbscript: is as dead as javascript:
+++  test-link-no-href  (no (has "[" (m '<a>t</a>')))
+++  test-img-no-src    (no (has "![" (m '<img alt="a">')))
+++  test-link-vbscript  (no (has "vbscript:" (m '<a href="vbscript:x">t</a>')))
+::  a comment opens only at '<'
+++  test-bang-dash-prose  (yes (has "a!--b" (m '<p>a!--b--></p>')))
+::  a stray closing </script> drops nothing after it
+++  test-stray-close-script  (yes (has "after" (m '<p>keep</script> after</p>')))
+::  </pre> ends verbatim mode, so markup after it counts again
+++  test-pre-closes  (yes (has "**y**" (m '<pre>x</pre><p>after <b>y</b></p>')))
+::  no pending space, no space before the marker
+++  test-no-space-before-strong  (yes (has "a**x**" (m '<p>a<b>x</b></p>')))
+::  h<non-digit> is not a heading, and must not crash
+++  test-h-bang  (yes (has "x" (m '<h!>x</h!>')))
+++  test-h7      (no (has "#" (m '<h7>x</h7>')))
+::  numeric entities: every digit range's edges, and an upper-case X
+++  test-ent-hex-upper-x  (yes (has "A" (m '<p>&#X41;</p>')))
+++  test-ent-num-edges    (yes (has "Z" (m '<p>&#90;</p>')))
+++  test-ent-hex-a  (yes (has "j" (m '<p>&#x6a;</p>')))
+++  test-ent-hex-f  (yes (has "o" (m '<p>&#x6f;</p>')))
+++  test-ent-hex-big-a  (yes (has "J" (m '<p>&#x4A;</p>')))
+++  test-ent-hex-big-f  (yes (has "O" (m '<p>&#x4F;</p>')))
+::  the last codepoint decodes; one past it stays literal
+++  test-ent-max       (no (has "&#1114111;" (m '<p>&#1114111;</p>')))
+++  test-ent-past-max  (yes (has "&#1114112;" (m '<p>&#1114112;</p>')))
+::  &#0; is not a character: it stays literal, it does not vanish
+++  test-ent-zero  (yes (has "&#0;" (m '<p>&#0;</p>')))
+::  the output is trimmed at the end: no trailing newline or space
+++  test-trim-end-nl     (yes =('a' (m '<p>a</p>')))
+++  test-trim-end-space  (yes =('a' (m '<p>a</p><td></td>')))
 --
