@@ -15,7 +15,6 @@
 import { readFileSync } from 'fs';
 import { homedir } from 'os';
 
-const ROOT = new globalThis.URL('..', import.meta.url).pathname;
 const BASE = process.env.LATTICE_UI || 'http://localhost:8080';
 const CKF = process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/cookie';
 const APP = BASE + '/apps/lattice/app';
@@ -26,15 +25,7 @@ const check = (m, c, d) => {
   if (!c) fails++;
 };
 
-// ── 1. the id contract, straight out of the Rust ──────────────────────────
-const mainRs = readFileSync(ROOT + 'desktop/src/main.rs', 'utf8');
-const appJs = readFileSync(ROOT + 'code/nex/lattice/ui-app/app.js', 'utf8');
-const ids = [...mainRs.matchAll(/"view-[a-z-]+" => "([a-z]+)"/g)].map((m) => m[1]);
-check('the View menu maps the three views and the two side panes', ids.length === 5,
-  'found ' + ids.length + ': ' + ids.join(','));
-for (const id of ids) {
-  check('menu target #' + id + ' exists in the shipped UI', appJs.includes('id="' + id + '"'));
-}
+// (the menu-id contract is checked ship-free in scripts/desktop-commands.mjs)
 
 // ── 2. behaviour, against a ship ──────────────────────────────────────────
 let puppeteer;

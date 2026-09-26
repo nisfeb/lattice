@@ -7,15 +7,18 @@
 # route that quietly falls through to the 404 default because its case ended up
 # in an arm that never runs.
 #
-# The route names live in scripts/route-list.txt, regenerated from app.hoon by
-# scripts/route-list.sh. They are a checked-in data file rather than a run-time
-# grep so the fingerprint stays stable while app.hoon is being restructured,
-# which is the whole point of a characterization test.
+# The route names come from +handle-request's switch in app.hoon AT A GIT REF
+# (ROUTE_REF, default HEAD), not from the working tree, so the fingerprint stays
+# stable while app.hoon is being restructured: pin the ref from before the
+# refactor for both runs. (They used to live in a checked-in list, which fell
+# six routes behind the router with nobody noticing.)
 #
-# Usage:  LATTICE_URL=http://localhost:8081 LATTICE_COOKIE=/path/to/cookie \
-#           scripts/route-smoke.sh > before.txt
+# Usage:  base=$(git rev-parse HEAD)
+#         ROUTE_REF=$base LATTICE_URL=http://localhost:8081 \
+#           LATTICE_COOKIE=/path/to/cookie scripts/route-smoke.sh > before.txt
 #         (refactor)
-#         LATTICE_URL=... LATTICE_COOKIE=... scripts/route-smoke.sh > after.txt
+#         ROUTE_REF=$base LATTICE_URL=... LATTICE_COOKIE=... \
+#           scripts/route-smoke.sh > after.txt
 #         diff before.txt after.txt   # must be empty
 #
 # Run it against a THROWAWAY ship. Requests carry no parameters, so handlers
@@ -26,8 +29,11 @@ URL="${LATTICE_URL:-http://localhost:8081}"; URL="${URL%/}"
 CKF="${LATTICE_COOKIE:?set LATTICE_COOKIE to a file holding the urbauth cookie}"
 CK="Cookie: $(cat "$CKF")"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-LIST="${ROUTE_LIST:-$HERE/route-list.txt}"
-[ -r "$LIST" ] || { echo "no route list at $LIST" >&2; exit 66; }
+LIST="$(mktemp)"; trap 'rm -f "$LIST"' EXIT
+git -C "$HERE/.." show "${ROUTE_REF:-HEAD}:code/nex/lattice/app.hoon" \
+  | grep -oE "\[%'(GET|POST|PUT|DELETE)' %[a-z0-9-]+\]" \
+  | sed "s/\[%'//; s/' %/ /; s/\]//" | sort -u > "$LIST"
+[ -s "$LIST" ] || { echo "no routes found in app.hoon at ${ROUTE_REF:-HEAD}" >&2; exit 66; }
 
 # Routes that DO something and are not idempotent: their status legitimately
 # differs between runs, so a status here would make the fingerprint flap and

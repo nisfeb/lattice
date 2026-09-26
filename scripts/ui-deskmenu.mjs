@@ -16,7 +16,6 @@
 import { readFileSync } from 'fs';
 import { homedir } from 'os';
 
-const ROOT = new globalThis.URL('..', import.meta.url).pathname;
 const BASE = process.env.LATTICE_UI || 'http://localhost:8080';
 const CKF = process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/nec-cookie';
 const APP = BASE + '/apps/lattice/app';
@@ -27,17 +26,7 @@ const check = (m, c, d) => {
   if (!c) fails++;
 };
 
-// ── 1. the id contract, straight out of the Rust ──────────────────────────
-// main.rs maps a menu id to an element id. Parsing it here means the test
-// cannot drift from the menu: add an item, and its button is checked too.
-const mainRs = readFileSync(ROOT + 'desktop/src/main.rs', 'utf8');
-const appJs = readFileSync(ROOT + 'code/nex/lattice/ui-app/app.js', 'utf8');
-const ids = [...mainRs.matchAll(/"file-[a-z-]+" => "([a-z]+)"/g)].map((m) => m[1]);
-check('the File menu maps at least the five commands that moved', ids.length >= 5,
-  'found ' + ids.length + ': ' + ids.join(','));
-for (const id of ids) {
-  check('menu target #' + id + ' exists in the shipped UI', appJs.includes('id="' + id + '"'));
-}
+// (the menu-id contract is checked ship-free in scripts/desktop-commands.mjs)
 
 // ── 2. behaviour, against a ship ──────────────────────────────────────────
 let puppeteer;
