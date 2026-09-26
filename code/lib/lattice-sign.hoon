@@ -71,13 +71,4 @@
   ^-  signed
   =/  d=@  (digest content)
   [ship life d (sign-with ring d)]
-::
-::  fake ships: jael derives every keypair from the @p, so on a fake ship
-::  any ship's keys are computable. This mirrors the fake branch of the
-::  %deed scry in sys/vane/jael.hoon, and it is what lets the arms above
-::  be unit-tested with no network and no real key.
-::
-++  fake-core  |=(who=ship (pit:nu:cric:crypto 512 who %b ~))
-++  fake-ring  |=(who=ship `ring`sec:ex:(fake-core who))
-++  fake-pass  |=(who=ship `pass`pub:ex:(fake-core who))
 --

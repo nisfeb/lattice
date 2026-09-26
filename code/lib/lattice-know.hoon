@@ -86,14 +86,4 @@
   |=  [base=path key=path]
   ^-  vrail
   [(weld base key) entry-leaf]
-::  +rail-to-key: inverse of +key-to-rail. ~ if [vrail] is not an entry leaf
-::  under [base] (wrong leaf name, or outside the vault subtree).
-::
-++  rail-to-key
-  |=  [base=path =vrail]
-  ^-  (unit path)
-  ?.  =(nom.vrail entry-leaf)  ~
-  =/  bl=@ud  (lent base)
-  ?.  =(base (scag bl pax.vrail))  ~
-  `(slag bl pax.vrail)
 --

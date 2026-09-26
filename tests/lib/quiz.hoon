@@ -43,8 +43,15 @@
     (expect-eq !>(|) !>((chk !>(|=(a=@ ^-(? =(8 a)))) `give ~)))
   ==
 ::
-::  %drop reports uninteresting samples without failing the check.
+::  %drop reports uninteresting samples without failing the check, and is
+::  COUNTED: a law that drops every sample it is given would otherwise pass
+::  having tested nothing. Only +check-verbose reports the count.
 ++  test-quiz-drops
   =/  fate=vase  !>(|=([a=@ b=@] ^-($?(%drop ?) ?:((lth b a) %drop =(b (add (sub b a) a))))))
-  (expect !>((chk fate ~ ~)))
+  =/  res  (~(check-verbose quiz `@uv`0xca55.e77e 64) fate ~ ~)
+  ;:  weld
+    (expect !>(=(~ defy.res)))
+    (expect !>((gth drops.res 0)))
+  ==
+  ::  (b < a drops about half the draws of two random atoms)
 --

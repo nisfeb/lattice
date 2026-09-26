@@ -20,10 +20,8 @@
 ++  test-h1-tight  (yes (has "<h1>Title</h1>" (r '#Title')))
 ++  test-h3-tight  (yes (has "<h3>Deep</h3>" (r '###Deep')))
 ::  REGRESSION: a bullet rendered as <p>* item</p>, asterisk and all
-++  test-list      (yes (has "<li>item</li>" (r '* item')))
-++  test-list-ul   (yes (has "<ul>" (r '* item')))
-++  test-list-close  (yes (has "</ul>" (r '* item')))
-++  test-list-no-star  (no (has "<p>* item</p>" (r '* item')))
+::  (exact: one comparison is all four substring checks it replaced)
+++  test-list      (yes =("<ul><li>item</li></ul>" (r '* item')))
 ::  a run of bullets is ONE list, not one list each
 ++  test-list-run
   =/  out  (r '* one\0a* two')

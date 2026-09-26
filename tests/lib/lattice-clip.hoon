@@ -41,7 +41,8 @@
 ++  test-pre-verbatim
   (yes (has "a  b" (m '<pre>a  b</pre>')))
 ::  entities
-++  test-ent-amp    (yes (has "&" (m '<p>&amp;</p>')))
+::  exact: "&" is also inside an undecoded "&amp;"
+++  test-ent-amp    (yes =('&' (m '<p>&amp;</p>')))
 ++  test-ent-lt     (yes (has "<" (m '<p>&lt;tag&gt;</p>')))
 ++  test-ent-quot   (yes (has "\"q\"" (m '<p>&quot;q&quot;</p>')))
 ++  test-ent-num    (yes (has "A" (m '<p>&#65;</p>')))
@@ -135,7 +136,8 @@
 ++  test-ent-hex-big-a  (yes (has "J" (m '<p>&#x4A;</p>')))
 ++  test-ent-hex-big-f  (yes (has "O" (m '<p>&#x4F;</p>')))
 ::  the last codepoint decodes; one past it stays literal
-++  test-ent-max       (no (has "&#1114111;" (m '<p>&#1114111;</p>')))
+::  (U+10FFFF is F4 8F BF BF in UTF-8)
+++  test-ent-max       (yes =((tuft `@c`0x10.ffff) (m '<p>&#1114111;</p>')))
 ++  test-ent-past-max  (yes (has "&#1114112;" (m '<p>&#1114112;</p>')))
 ::  &#0; is not a character: it stays literal, it does not vanish
 ++  test-ent-zero  (yes (has "&#0;" (m '<p>&#0;</p>')))

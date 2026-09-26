@@ -133,25 +133,6 @@
       "data:text/html,"  "DATA:text/html,"  "data:"
   ==
 ::
-::  +gem-pool: gemtext fragments. Line prefixes at every heading depth, both
-::  line terminators (LF and CRLF), `%meta` preamble lines with known and
-::  unknown keys, tag lines valid and invalid, and the punctuation and control
-::  bytes a tokenizer has to survive (quote, backslash, tab, NUL-adjacent).
-++  gem-pool
-  ^-  (list tape)
-  :~  "# "  "## "  "### "  "#### "  "#"  "# "  "  # "
-      "=> "  "=>"  "=>  "  "=> gemini://a.b/c "  "=> /x"
-      "#tag"  "#tag "  "# tag"  "#"  "##"  "#a #b"  "#a b"
-      "%meta "  "%meta category: "  "%meta summary: "  "%meta bogus: "
-      "%meta category"  "%metacategory: "  "%meta : "
-      "\0a"  "\0d\0a"  "\0d"  "\09"  "\01"  "\0b"
-      "word"  "the"  "and"  "a"  "aa"  "aaa"  " "  "  "
-      "'"  "\\"  "\\'"  "''"  "\""  "`"  "%"  ":"  "-"  "."
-      "~ricsul-bilwyt"  "C++"  "UPPER"  "MiXeD"
-      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      "title text"  "some longer body sentence here"
-  ==
-::
 ::  +url-pool: fragments for /lib/lattice-urls. Scheme prefixes correct and
 ::  near-correct, ship names valid and invalid, mount letters assigned and
 ::  unassigned, and path bytes @ta does not admit (space, uppercase, %) so the
@@ -176,14 +157,6 @@
   ^-  (list @ta)
   :~  'a'  'b'  'foo'  'bar'  'notes'  'index'  'x'  'p'  'n'  'k'  't'
       '2026'  'a.b'  'a_b'  'a-b'  'counter'  'lattice.lattice_app'  'q'
-  ==
-::
-::  +wild-knots: knots that are perfectly legal @t VALUES but that @ta's
-::  SYNTAX does not admit. +spud will happily render them; +stab cannot read
-::  them back. Used to pin where the round-trip law stops holding.
-++  wild-knots
-  ^-  (list @ta)
-  :~  'A'  ''  'a b'  'a/b'  '%'  'Foo'  '..'  'a+b'  'a?b'
   ==
 ::
 ++  pick-knot

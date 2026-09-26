@@ -4,31 +4,17 @@
 /+  *test, *lattice-know
 |%
 ++  base  `path`/lattice/know/vault
-::  Every key maps to [base+key %entry], and round-trips back.
+::  Every key maps to [base+key %entry]: the storage layout the vault uses.
 ::
 ++  test-key-to-rail
   ;:  weld
     (expect-eq !>(`vrail`[/lattice/know/vault/projects/x %entry]) !>((key-to-rail base /projects/x)))
     ::  empty key -> the `entry` file directly under the vault root
     (expect-eq !>(`vrail`[/lattice/know/vault %entry]) !>((key-to-rail base ~)))
-  ==
-::
-++  test-rail-key-roundtrip
-  ;:  weld
-    (expect-eq !>(`(unit path)`[~ /projects/x]) !>((rail-to-key base (key-to-rail base /projects/x))))
-    ::  prefix coexistence: /a and /a/b both round-trip distinctly
-    (expect-eq !>(`(unit path)`[~ /a]) !>((rail-to-key base (key-to-rail base /a))))
-    (expect-eq !>(`(unit path)`[~ /a/b]) !>((rail-to-key base (key-to-rail base /a/b))))
-    ::  empty key round-trips to the empty path
-    (expect-eq !>(`(unit path)`[~ ~]) !>((rail-to-key base (key-to-rail base ~))))
-  ==
-::
-++  test-rail-to-key-rejects-foreign
-  ;:  weld
-    ::  wrong leaf name (an index grub, not an entry)
-    (expect-eq !>(`(unit path)`~) !>((rail-to-key base [/lattice/know/vault/a %index])))
-    ::  outside the vault subtree
-    (expect-eq !>(`(unit path)`~) !>((rail-to-key base [/lattice/pub/a %entry])))
+    ::  prefix coexistence: /a and /a/b are distinct leaves, neither inside
+    ::  the other's entry
+    (expect-eq !>(`vrail`[/lattice/know/vault/a %entry]) !>((key-to-rail base /a)))
+    (expect-eq !>(`vrail`[/lattice/know/vault/a/b %entry]) !>((key-to-rail base /a/b)))
   ==
 ::  sample entries for derivation tests.
 ::
