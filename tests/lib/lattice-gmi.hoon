@@ -59,4 +59,14 @@
 ::  plain http links open like https ones (hoon-mutate, 2026-09-26)
 ++  test-link-plain-http
   (yes (has "rel=\"noopener noreferrer\"" (r '=> http://example.com site')))
+::  an html page's published copy is its markup; the reader must frame it,
+::  not render it as gemtext (hoon-test: talon's site page showed its source)
+++  test-looks-html
+  ;:  weld
+    (yes (looks-html:gmi '<!doctype html><p>x</p>'))
+    (yes (looks-html:gmi '\0a  <!-- a comment first -->\0a<div>'))
+    (yes !(looks-html:gmi '# a heading\0a<b>not first</b>'))
+    (yes !(looks-html:gmi ''))
+    (yes !(looks-html:gmi '   '))
+  ==
 --

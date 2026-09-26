@@ -1124,7 +1124,7 @@
         ;<  sb=path  bind:m  self-base
         =/  to=path  (unfold-base:lu sb pax.u.ref)
         (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p ship.u.ref) (spud to) slash))
-      ;<  pb=(unit path)  bind:m  (peer-base ship.u.ref)
+      ;<  pb=(unit path)  bind:m  (peer-base-cached ship.u.ref)
       ?~  pb  (send-err eyre-id 504 'that ship is unreachable, or is not sharing lattice')
       =/  to=path  (unfold-base:lu u.pb pax.u.ref)
       (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p ship.u.ref) (spud to) slash))
@@ -1156,6 +1156,15 @@
       =/  ttl=@t  (page-title-of u.body u.raw)
       ;<  ~  bind:m
         ;<  rv=tape  bind:m  ?:(=("" rk) (pure:(fiber:fiber:nexus ,tape) "") beacon-rev-tape)
+        ::  an html page's published copy is its markup: frame it like the
+        ::  /p/ view does (sandboxed for a peer, whose markup is untrusted),
+        ::  instead of rendering the source as gemtext. The comment box is a
+        ::  form, which a sandboxed frame cannot submit, so it is gemtext-only.
+        ?:  (looks-html:lgmi u.body)
+          =/  htm=@t
+            (render-browser-page canon u.body ~ ?!(=(ship.u.ref our)) rk rv (trip ttl))
+          ?:  =("" rk)  (send-view eyre-id htm)
+          (send-view-long eyre-id htm)
         ?:  =("" rk)
           (send-view eyre-id (render-page-titled canon rk "" (trip ttl) (weld (render-gmi u.body) cbox)))
         (send-view-long eyre-id (render-page-titled canon rk rv (trip ttl) (weld (render-gmi u.body) cbox)))
@@ -5710,6 +5719,44 @@
         %|  [%& %| (weld prefix p.p.road)]
       ==
   ==
+::  +peer-base-cached: +peer-base, remembered. The probe asks the peer for
+::  its /pub/index to learn which layout it runs: a remote round trip, and
+::  the whole index, before every page read from that peer. The answer only
+::  changes when the peer migrates, so it is kept in /peers.json at the
+::  nexus root. It is a cache: a reload prunes the file, and a stale entry
+::  is found out by +read-page-body-rev, which asks again.
+::
+++  peers-road  (rf up / %'peers.json')
+++  read-peers
+  =/  m  (fiber:fiber:nexus ,(map @t json))
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:io peers-road ~)
+  ?.  ?=([%file *] vw)  (pure:m ~)
+  =/  j=(unit json)  (mole |.(!<(json (need-vase:tarball sang.vw))))
+  (pure:m ?.(?=([~ %o *] j) ~ p.u.j))
+++  peer-base-cached
+  |=  shp=@p
+  =/  m  (fiber:fiber:nexus ,(unit path))
+  ^-  form:m
+  ;<  known=(map @t json)  bind:m  read-peers
+  =/  hit=(unit json)  (~(get by known) (scot %p shp))
+  =/  pb=(unit path)  ?.(?=([~ %s *] hit) ~ (rush p.u.hit stap))
+  ?^  pb  (pure:m pb)
+  (peer-base-remember shp)
+::  +peer-base-remember: ask the peer (+peer-base) and record the answer. A
+::  peer that answers at neither layout is not recorded.
+++  peer-base-remember
+  |=  shp=@p
+  =/  m  (fiber:fiber:nexus ,(unit path))
+  ^-  form:m
+  ;<  pb=(unit path)  bind:m  (peer-base shp)
+  ?~  pb  (pure:m ~)
+  ;<  known=(map @t json)  bind:m  read-peers
+  ;<  *  bind:m
+    %^  over-as-soft:io  peers-road
+      [[/ %json] [%o (~(put by known) (scot %p shp) s+(spat u.pb))]]
+    [/ %json]
+  (pure:m pb)
 ::  +peek-remote-wait: peek a remote road, but give up after remote-timeout. ~ on
 ::  timeout or veto. `seen otherwise. This is peek-remote (nonce + %peek dart +
 ::  take-peek) with a concurrent timer, resolving on whichever lands first.
@@ -6091,6 +6138,7 @@
   ::  ahead of it (a wake, news, a late answer, across a reload) reaching a
   ::  step that only sends is a crash on every reload.
   ;<  ~  bind:m  take-kick
+  ;<  ~  bind:m  drain-vetoes
   ::  a clean start takes down any wait an earlier run left set
   ?~  prod
     ;<  *  bind:m  (soft-behn /rise/rest [[/ %timer-rest] `wire`/rise])
@@ -6136,6 +6184,54 @@
     (soft-behn /rise/set [[/ %timer-set] `[wire @da]`[/rise until]])
   %-  ?:(|(set !crash) same (slog leaf+"{msg}: no timer (weir?); waiting for a poke" ~))
   (rise-park note)
+::  +drain-vetoes: drop every refusal a jailed run left queued for us. A
+::  fiber the kernel parked for a refused dart (grubbery 79c66b9, on
+::  ricsul) keeps its queue, and a reload or a sync respawns it with that
+::  queue: the stale %veto then fails the first take that is not veto-
+::  tolerant, and the kernel parks the fiber again. So "grant the permits,
+::  then reload" never revived a lattice writer, and every save 503'd.
+::
+::  The fence is one poke to our own clock. Its answer and its ack queue
+::  behind everything already waiting, so every refusal before them is
+::  stale, and is consumed here instead of failing a later take. A refused
+::  fence (a still-jailed run) is itself the last one. Never fails.
+::
+++  drain-vetoes
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m
+    (send-dart:io %node /rise/fence &+&+[/sys %'bowl.sig'] %poke [[/ %bowl-req] %now])
+  ;<  first=?(%veto %nack %pack %time)  bind:m  (take-fence ~)
+  ::  a refused or nacked fence sends nothing more; otherwise take the
+  ::  other half too, so no later take trips over it
+  ?:  ?=(?(%veto %nack) first)  (pure:m ~)
+  ;<  *  bind:m  (take-fence `first)
+  (pure:m ~)
+::  +take-fence: one half of the fence's answer (its ack, or the time it
+::  pokes back), skipping the half already taken. Every other refusal is
+::  consumed and dropped.
+++  take-fence
+  |=  got=(unit ?(%pack %time))
+  =/  m  (fiber:fiber:nexus ,?(%veto %nack %pack %time))
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %veto %node * * *]
+    ?.  =(/rise/fence wire.dart.u.in)  [%wait ~]
+    [%done %veto]
+      [~ %veto *]  [%wait ~]
+      [~ %pack * *]
+    ?.  =(/rise/fence wire.u.in)  [%skip ~]
+    ?:  =(`%pack got)  [%skip ~]
+    ?^  err.u.in  [%done %nack]
+    [%done %pack]
+      [~ %poke * *]
+    ?.  =([/ %time] p.sage.u.in)  [%skip ~]
+    ?:  =(`%time got)  [%skip ~]
+    [%done %time]
+  ==
 ::  +take-kick: wait for the null input that starts a fiber; anything
 ::  real before it is held for the steps that follow
 ++  take-kick
@@ -6469,19 +6565,37 @@
     (pure:m `[ud.cass.seen !<(@t (need-vase:tarball sang.seen))])
   ::  a peer's page: `road` is relative to THIS nexus and +remote-road
   ::  passes relative roads through untouched, so it never reached the
-  ::  peer. Absolute, at wherever the peer runs lattice.
-  ;<  base=(unit path)  bind:m  (peer-base shp)
+  ::  peer. Absolute, at wherever the peer runs lattice, remembered from
+  ::  the last ask (+peer-base-cached) so a page read is one round trip.
+  ;<  base=(unit path)  bind:m  (peer-base-cached shp)
   ?~  base  (pure:m ~)
+  ;<  got=(unit (unit [rev=@ud body=@t]))  bind:m  (peek-page-at u.base shp rel)
+  ::  ~ is no answer (unreachable, or refused): nothing learned, cache kept
+  ?~  got  (pure:m ~)
+  ?^  u.got  (pure:m u.got)
+  ::  answered, nothing there. A peer that moved leaves a stale entry, so
+  ::  ask where it is now, once, and read again only if that changed
+  ;<  fresh=(unit path)  bind:m  (peer-base-remember shp)
+  ?:  |(?=(~ fresh) =(fresh base))  (pure:m ~)
+  ;<  again=(unit (unit [rev=@ud body=@t]))  bind:m  (peek-page-at u.fresh shp rel)
+  (pure:m ?~(again ~ u.again))
+::  +peek-page-at: one published page off a peer, at a known base. ~ no
+::  answer; [~ ~] answered and nothing (usable) there; [~ ~ page] the page.
+::
+++  peek-page-at
+  |=  [base=path shp=@p rel=path]
+  =/  m  (fiber:fiber:nexus ,(unit (unit [rev=@ud body=@t])))
+  ^-  form:m
   ;<  ms=(unit view:nexus)  bind:m
-    (peek-remote-wait [%& %& (weld (weld u.base /pub/vault) rel) %gmi] shp)
+    (peek-remote-wait [%& %& (weld (weld base /pub/vault) rel) %gmi] shp)
   ?~  ms  (pure:m ~)
-  ?.  ?=([%file *] u.ms)  (pure:m ~)
+  ?.  ?=([%file *] u.ms)  (pure:m `~)
   ::  CROSS-SHIP peek content is a boom (raw noun), NOT a vase. need-vase would
   ::  crash. Extract via sang-noun and clam in a mule so a malformed/hostile peer
-  ::  body yields ~ (clean 404) instead of a crash.
+  ::  body yields [~ ~] (clean 404) instead of a crash.
   =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.u.ms))))
-  ?:  ?=(%| -.res)  (pure:m ~)
-  (pure:m `[ud.cass.u.ms p.res])
+  ?:  ?=(%| -.res)  (pure:m `~)
+  (pure:m ``[ud.cass.u.ms p.res])
 ::  +explore: GET /x/<ship>/<path...>, the server-rendered tree explorer
 ::  (docs/platform.md, build step 1). Directories render as listings with
 ::  relative child links; trailing slash is forced on directory urls (hawk

@@ -126,4 +126,17 @@
     $(lines t.lines, acc [:(weld "<blockquote>" (esc (ltrim (slag 2 ln))) "</blockquote>") acc])
   ?:  =("" ln)  $(lines t.lines)
   $(lines t.lines, acc [:(weld "<p>" (esc ln) "</p>") acc])
+::  +looks-html: is a published body HTML rather than gemtext? Publishing
+::  a page stores its output as-is, and an html page's output is its
+::  markup; rendering that as gemtext showed the source. The first
+::  non-blank byte decides: gemtext has no line that opens with '<'.
+::
+++  looks-html
+  |=  body=@t
+  ^-  ?
+  =/  t=tape  (trip (end [3 256] body))
+  |-  ^-  ?
+  ?~  t  |
+  ?:  ?|(=(' ' i.t) =(`@tD`9 i.t) =(`@tD`10 i.t) =(`@tD`13 i.t))  $(t t.t)
+  =('<' i.t)
 --
