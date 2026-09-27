@@ -8669,10 +8669,20 @@
     %-  trip
     '(function(){var bar=document.querySelector(".bar");var inp=bar?bar.querySelector("input[name=url]"):null;if(!inp)return;var box=document.createElement("div");box.className="omni";box.hidden=true;bar.appendChild(box);var items=[],sel=-1,timer=null,seq=0;function hide(){box.hidden=true;sel=-1;}function pick(i){if(i<0||i>=items.length)return;inp.value=items[i].url;hide();bar.submit();}function draw(){box.textContent="";if(!items.length){hide();return}items.forEach(function(it,i){var row=document.createElement("div");row.className="omnirow"+(i===sel?" on":"");var b=document.createElement("span");b.className="omnisrc "+it.source;b.textContent=it.source==="bookmark"?"saved":"visited";var t=document.createElement("span");t.className="omnittl";t.textContent=it.title||it.url;var u=document.createElement("span");u.className="omniurl";u.textContent=it.url;row.appendChild(b);row.appendChild(t);row.appendChild(u);row.addEventListener("mousedown",function(e){e.preventDefault();pick(i)});box.appendChild(row);});box.hidden=false;}function fetchSug(){var q=inp.value.trim();var my=++seq;fetch("/apps/lattice/omni-suggest?q="+encodeURIComponent(q)).then(function(r){return r.ok?r.json():{items:[]}}).then(function(j){if(my!==seq)return;items=(j.items||[]);sel=-1;draw();}).catch(function(){if(my===seq){items=[];hide()}});}inp.addEventListener("input",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("focus",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("blur",function(){setTimeout(hide,120)});inp.addEventListener("keydown",function(e){if(box.hidden)return;if(e.key==="ArrowDown"){e.preventDefault();sel=Math.min(sel+1,items.length-1);draw()}else if(e.key==="ArrowUp"){e.preventDefault();sel=Math.max(sel-1,-1);draw()}else if(e.key==="Enter"){if(sel>=0){e.preventDefault();pick(sel)}}else if(e.key==="Escape"){hide()}});})();'
     "</script>"
-    %-  trip
-    '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})};fetch("/apps/lattice/bookmarks").then(function(r){return r.ok?r.json():null}).then(function(j){var cu=document.querySelector(".bar input").value;if(!cu||!j)return;if((j.items||[]).some(function(it){return it.url===cu})){b.innerHTML="&#9733;";b.title="Bookmarked"}}).catch(function(x){})})();</script>'
+    bm-script
     (sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
   ==
+::  +bm-script: the address bar's bookmark star. It paints from a copy of
+::  the bookmark urls kept in localStorage, so a page view does not wait on
+::  a /bookmarks request queued behind the page's own assets on a pier that
+::  serves one request at a time. The copy is refetched after load once it
+::  is ten minutes old. ponytail: a bookmark removed elsewhere can show as
+::  starred for up to ten minutes; bake the state server-side if that
+::  matters.
+::
+++  bm-script  ^-  tape
+  %-  trip
+  '<script>(function(){var b=document.querySelector(".bm");if(!b)return;var K="latBm";function rd(){try{return JSON.parse(localStorage[K]||"null")}catch(x){return null}}function wr(v){try{localStorage[K]=JSON.stringify(v)}catch(x){}}function on(){b.innerHTML="&#9733;";b.title="Bookmarked"}var cu=document.querySelector(".bar input").value;function paint(d){if(d&&cu&&d.u.indexOf(cu)>=0)on()}var c=rd();paint(c);b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){on();var d=rd();if(d){d.u.push(u);wr(d)}}})};if(c&&Date.now()-c.t<600000)return;addEventListener("load",function(){fetch("/apps/lattice/bookmarks").then(function(r){return r.ok?r.json():null}).then(function(j){if(!j)return;var d={t:Date.now(),u:(j.items||[]).map(function(it){return it.url})};wr(d);paint(d)}).catch(function(x){})})})();</script>'
 ::  +render-browser-page: the browser's page view, the address bar (+ an Edit
 ::  button when `edit` names an editable own page) above the page rendered in a
 ::  viewport-filling iframe, so the page's theme owns its whole document (no
@@ -8717,8 +8727,7 @@
     " srcdoc=\""  (esc (trip doc))  "\"></iframe></main>"
     ::  bookmark button: POST the address-bar url to /bookmark (owner-gated, same
     ::  origin). single-quote cord so the js braces stay literal.
-    %-  trip
-    '<script>(function(){var b=document.querySelector(".bm");if(!b)return;b.onclick=function(){var u=document.querySelector(".bar input").value;if(!u)return;fetch("/apps/lattice/bookmark?url="+encodeURIComponent(u)+"&title="+encodeURIComponent(u),{method:"POST"}).then(function(r){if(r.ok){b.innerHTML="&#9733;";b.title="Bookmarked"}})};fetch("/apps/lattice/bookmarks").then(function(r){return r.ok?r.json():null}).then(function(j){var cu=document.querySelector(".bar input").value;if(!cu||!j)return;if((j.items||[]).some(function(it){return it.url===cu})){b.innerHTML="&#9733;";b.title="Bookmarked"}}).catch(function(x){})})();</script>'
+    bm-script
     (page-sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
   ==
 ::  +beacon-rev-tape: the current /beacon/rev value, rendered as the same
