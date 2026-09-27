@@ -94,4 +94,53 @@
   ^-  path
   ?.  ?=(^ key)  key
   ?:(=(%pub i.key) t.key key)
+::  +page-name: a published page's name in the revision list, the path
+::  under /pub/page its scry bindings share: vault key /pub/<name>/gmi
+::  -> '/<name>'.
+::
+++  page-name
+  |=  key=path
+  ^-  @t
+  (spat (snip (strip-pub key)))
+::  +page-id: the unguessable last segment of a revision's scry binding,
+::  /pub/page/<name>/<id>. A counter there let anyone who knew a page's
+::  name walk its old revisions, and the publisher's runtime keeps serving
+::  a fetched one after the cull. The id is the salted shax of the name and
+::  revision: without the ship's private salt it cannot be guessed, and it
+::  says nothing about the body. Deterministic, so the publisher recomputes
+::  any revision's id to cull it.
+::
+++  page-id
+  |=  [salt=@ nam=@t rev=@ud]
+  ^-  @uv
+  (end [3 16] (shax (jam [salt nam rev])))
+::  +revs-json / +json-revs: the revision list peers read, [/pub %revs],
+::  as {"/<name>": {"rev": n, "id": "0v…"}}. A reader looks a page up
+::  here and %keens exactly that id: remote scry has no "latest", and the
+::  list is the only place the id is published. json-revs keeps what
+::  parses and drops the rest: one odd row must not cost the whole list.
+::
+++  revs-json
+  |=  revs=(map @t [rev=@ud id=@uv])
+  ^-  json
+  :-  %o
+  %-  ~(run by revs)
+  |=  [rev=@ud id=@uv]
+  (pairs:enjs:format ~[['rev' (numb:enjs:format rev)] ['id' s+(scot %uv id)]])
+++  json-revs
+  |=  jon=json
+  ^-  (map @t [rev=@ud id=@uv])
+  ?.  ?=([%o *] jon)  ~
+  %-  malt
+  %+  murn  ~(tap by p.jon)
+  |=  [k=@t v=json]
+  ^-  (unit [@t @ud @uv])
+  ?.  ?=([%o *] v)  ~
+  =/  r=(unit json)  (~(get by p.v) 'rev')
+  =/  d=(unit json)  (~(get by p.v) 'id')
+  ?.  &(?=([~ %n *] r) ?=([~ %s *] d))  ~
+  =/  rev=(unit @ud)  (rush p.u.r dem)
+  =/  id=(unit @uv)  (slaw %uv p.u.d)
+  ?.  &(?=(^ rev) ?=(^ id))  ~
+  `[k u.rev u.id]
 --

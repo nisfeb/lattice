@@ -1045,6 +1045,30 @@
     $('dlgok').focus();
     return p.then((v) => v !== null);
   };
+  // askPublish: publishing cannot be fully taken back. Once a peer has
+  // read a page, its copy and the network's cached answer can outlive an
+  // unpublish or a delete. -> true to publish. "don't ask again" is kept
+  // in localStorage, and only a publish sets it: ticking it and aborting
+  // must not turn the next click into a silent publish.
+  const askPublish = async () => {
+    try { if (localStorage.latPubOk === '1') return true; } catch {}
+    dlgSel.hidden = true;
+    dlgKind.hidden = true;
+    dlgIn.hidden = true;
+    const row = $('dlgchkrow'), chk = $('dlgchk'), no = $('dlgcancel');
+    chk.checked = false;
+    row.hidden = false;
+    const p = dlgOpen('Once published, deletion is not assured. Anyone who has read '
+      + 'this page can keep a copy, and the network may go on serving it after '
+      + 'you unpublish or delete it.', 'publish');
+    no.textContent = 'abort';
+    no.focus();
+    const ok = (await p) !== null;
+    row.hidden = true;
+    no.textContent = 'cancel';
+    if (ok && chk.checked) try { localStorage.latPubOk = '1'; } catch {}
+    return ok;
+  };
   // askChoice: pick one of a list -> the chosen value, or null on cancel.
   // Rendered as real buttons in the app's own style, NEVER a <select>. A
   // select opens an OS-drawn list, which is a browser-native popup, and this
@@ -1100,6 +1124,8 @@
     <input id="dlginput" aria-label="name" autocomplete="off" spellcheck="false">
     <!-- the kind to save as. Only askNameKind shows it. -->
     <select id="dlgkind" class="dlgkind" aria-label="page kind" hidden></select>
+    <!-- only askPublish shows it -->
+    <label id="dlgchkrow" class="dlgchk" hidden><input type="checkbox" id="dlgchk"> don't ask again</label>
     <div class="dlgbtns">
       <button type="button" id="dlgcancel">cancel</button>
       <button type="submit" id="dlgok">ok</button>
@@ -4124,6 +4150,12 @@
   for (const b of document.querySelectorAll('.share button')) {
     b.onclick = async () => {
       const m = b.dataset.m;
+      // going public from private (or from a folder, which may be mixed)
+      // asks first; moving between the two public modes does not
+      const was = curFolder ? null
+        : (nodes.find((x) => x.page && x.path === current) || {}).share;
+      const pub = (x) => x === 'shared' || x === 'clearweb';
+      if (pub(m) && !pub(was) && !(await askPublish())) return;
       // a share write is a real round trip (0.3-2s), and all three buttons
       // stayed clickable through it — enough time for a second click to fire
       // a second mutation against the same target. Freeze the row for the

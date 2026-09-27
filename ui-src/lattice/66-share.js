@@ -54,6 +54,12 @@
   for (const b of document.querySelectorAll('.share button')) {
     b.onclick = async () => {
       const m = b.dataset.m;
+      // going public from private (or from a folder, which may be mixed)
+      // asks first; moving between the two public modes does not
+      const was = curFolder ? null
+        : (nodes.find((x) => x.page && x.path === current) || {}).share;
+      const pub = (x) => x === 'shared' || x === 'clearweb';
+      if (pub(m) && !pub(was) && !(await askPublish())) return;
       // a share write is a real round trip (0.3-2s), and all three buttons
       // stayed clickable through it — enough time for a second click to fire
       // a second mutation against the same target. Freeze the row for the

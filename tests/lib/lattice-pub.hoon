@@ -45,4 +45,32 @@
     (expect-eq !>(`pub-row:lp`[~2026.1.1 2 (sham 'hi')]) !>((to-pub-row:lp 'hi' ~2026.1.1)))
     (expect-eq !>(`pub-row:lp`[~2026.2.2 5 (sham 'hello')]) !>((to-pub-row:lp 'hello' ~2026.2.2)))
   ==
+::  a page's name in the revision list: the vault key without /pub and /gmi
+++  test-page-name
+  ;:  weld
+    (expect-eq !>('/site/talon/index') !>((page-name:lp /pub/site/talon/index/gmi)))
+    (expect-eq !>('/index') !>((page-name:lp /pub/index/gmi)))
+  ==
+::  a revision's id depends on the salt, the name and the revision, and
+::  only on them
+++  test-page-id
+  ;:  weld
+    (expect-eq !>((page-id:lp 1 '/a' 3)) !>((page-id:lp 1 '/a' 3)))
+    (expect-eq !>(%.n) !>(=((page-id:lp 1 '/a' 3) (page-id:lp 2 '/a' 3))))
+    (expect-eq !>(%.n) !>(=((page-id:lp 1 '/a' 3) (page-id:lp 1 '/b' 3))))
+    (expect-eq !>(%.n) !>(=((page-id:lp 1 '/a' 3) (page-id:lp 1 '/a' 4))))
+    (expect-eq !>(%.y) !>((lte (met 3 (page-id:lp 1 '/a' 3)) 16)))
+  ==
+::  the revision list round-trips, and a row that does not parse is
+::  dropped rather than failing the whole list
+++  test-revs-json
+  =/  revs=(map @t [rev=@ud id=@uv])  (malt ~[['/a' 3 0v1f] ['/b/c' 12 0v2]])
+  =/  good=json
+    (pairs:enjs:format ~[['rev' n+'3'] ['id' s+'0v1f']])
+  ;:  weld
+    (expect-eq !>(revs) !>((json-revs:lp (revs-json:lp revs))))
+    %+  expect-eq  !>(`(map @t [rev=@ud id=@uv])`(malt ~[['/a' 3 0v1f]]))
+    !>((json-revs:lp [%o (malt `(list [@t json])`~[['/a' good] ['/x' n+'3'] ['/y' (pairs:enjs:format ~[['rev' n+'1'] ['id' s+'zz']])]])]))
+    (expect-eq !>(`(map @t [rev=@ud id=@uv])`~) !>((json-revs:lp s+'nope')))
+  ==
 --
