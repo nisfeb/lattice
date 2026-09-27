@@ -160,6 +160,11 @@
         ::  crash on it, killing the writer fiber and hanging every publish.
         ::  The counter is one bare atom and /mar/ud.hoon already is that mark.
             [%fall %& [/pub %meta] [[/ %ud] 0]]
+        ::  /salt: the private salt behind every published revision's scry
+        ::  id (+page-id:lp). Outside /pub, so no peer can read it; 0 until
+        ::  +ensure-pub-ids mints it. Covered, because a new salt renames
+        ::  every binding.
+            [%fall %& [/ %salt] [[/ %ud] 0]]
         ::  There is no pointer row. The subscription rev rides the page
         ::  keep's own wave (see /sub/pages), and nothing writes or reads
         ::  /pub/note/ptr. A pier that still carries that grub keeps it as
@@ -277,6 +282,8 @@
         ::  lay down the built-in page-tree templates (idempotent; skips if the
         ::  user already has them). Users instantiate a copy under /page.
         ;<  ~  bind:m  (ensure-shipped-templates root)
+        ::  the salt and the revision list peers read (+ensure-pub-ids)
+        ;<  ~  bind:m  (ensure-pub-ids root)
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
         ;<  now=@da  bind:m  bowl-now
@@ -4659,16 +4666,12 @@
 ::
 ++  body-cap  ^-(@ud 1.048.576)
 ::  +sub-apply-wave: act on ONE wave of a subscribed page (mesa D2). The wave
-::  (initial bond or edit) carries the kept gmi grub's cass, which IS the rev
-::  the publisher last grew a namespace binding at. For a save that binding
-::  is a body, [%gmi @t]. For a delete it is a tombstone, [%del ''].
-::  grubbery's born is a high-water mark, so a deleted grub NEVER drops out
-::  of the wave's file map. It reads cass N+1, the [%temp ~] hist entry the
-::  vault cull appended, which is why the delete signal must be a binding
-::  the keen can hit, not an absent cass. The bulk fetch goes over the
-::  namespace: one %keen at /pub/page/<rel>/<rev>, answered by the peer's
-::  kernel out of gall's scry farm. No weir negotiation, no per-reader work
-::  in the peer's %grubbery, and the signed answer is relay-cacheable. The
+::  (initial bond or edit) carries the kept gmi grub's cass, the revision
+::  the publisher last saved. Its binding's id is in the publisher's
+::  revision list, so the list is read fresh and the id keened. A delete is
+::  the page leaving that list: grubbery's born is a high-water mark, so a
+::  deleted grub never drops out of the wave's file map (it reads the cass
+::  the vault cull appended), and the list is what tells the two apart. The
 ::  kiln/clay shape: notify over the flow, bulk over the namespace.
 ::
 ::  Returns the new lrev. A keen MISS (timeout, unbound spur, unknown mark)
@@ -4689,18 +4692,25 @@
   =/  r=@ud  ?~(c 0 ud.u.c)
   ?:  =(0 r)  (pure:m lrev)
   ?.  (gth r lrev)  (pure:m lrev)
+  ::  the wave names a revision, the publisher's list names its id: read
+  ::  the list fresh, since the cached one predates the wave
+  =/  nam=@t  (spat (page-rel rel))
   =/  try=@ud  0
   |-
-  ;<  pg=(unit [p=@tas q=@t])  bind:m  (keen-page-raw pub rel r)
-  ?~  pg
+  ;<  revs=(map @t [rev=@ud id=@uv])  bind:m  (fresh-peer-revs pub)
+  =/  ent=(unit [rev=@ud id=@uv])  (~(get by revs) nam)
+  ::  DELETE: a list that answered without the page. lrev advances to r so
+  ::  a later re-publish (cass r+1 and up) still registers. An empty list
+  ::  is no answer (unreachable reads the same), so it retries instead.
+  ?:  &(?=(~ ent) !=(~ revs))  (pure:m r)
+  ;<  pg=(unit [p=@tas q=@t])  bind:m
+    ?:  |(?=(~ ent) (lth rev.u.ent r))
+      (pure:(fiber:fiber:nexus ,(unit [p=@tas q=@t])) ~)
+    (keen-page-raw pub rel id.u.ent)
+  ?.  ?=([~ %gmi *] pg)
     ?:  (gte try 1)  (pure:m lrev)
     ;<  ~  bind:m  (sleep-draining ~s2)
     $(try +(try))
-  ?:  =(%del p.u.pg)
-    ::  DELETE: the publisher grew a tombstone at the post-cull cass. lrev
-    ::  advances to r so a later re-publish (cass r+1 and up) still registers.
-    (pure:m r)
-  ?.  =(%gmi p.u.pg)  (pure:m lrev)
   ::  SAVE/EDIT: the fetch above is what proves the wave carried a real body,
   ::  so lrev may advance past it.
   (pure:m r)
@@ -6540,6 +6550,11 @@
 ::  That is the only rev source a reader has (docs D1), and it is why the mesa
 ::  read path never costs an extra round trip to learn one.
 ::
+::  A peer's page is first one %keen at the id its revision list names
+::  (+peer-page-id), and only then the peek: a page missing from the list
+::  has no id to ask for, and a miss means the list went stale, so it is
+::  dropped and fetched again on the next view.
+::
 ++  read-page-body-rev
   |=  [our=@p shp=@p rel=path]
   =/  m  (fiber:fiber:nexus ,(unit [rev=@ud body=@t]))
@@ -6563,6 +6578,18 @@
     ;<  seen=view:nexus  bind:m  (peek:io road ~)
     ?.  ?=([%file *] seen)  (pure:m ~)
     (pure:m `[ud.cass.seen !<(@t (need-vase:tarball sang.seen))])
+  ;<  ent=(unit [rev=@ud id=@uv])  bind:m  (peer-page-id shp (spat rel))
+  ?~  ent  (peek-peer-page shp rel)
+  ;<  kp=(unit [p=@tas q=@t])  bind:m  (keen-page-wait shp rel id.u.ent keen-wait)
+  ?:  ?=([~ %gmi *] kp)  (pure:m `[rev.u.ent q.u.kp])
+  ;<  ~  bind:m  (drop-peer-revs shp)
+  (peek-peer-page shp rel)
+::  +peek-peer-page: a peer's published page by remote peek, the slow path.
+::
+++  peek-peer-page
+  |=  [shp=@p rel=path]
+  =/  m  (fiber:fiber:nexus ,(unit [rev=@ud body=@t]))
+  ^-  form:m
   ::  a peer's page: `road` is relative to THIS nexus and +remote-road
   ::  passes relative roads through untouched, so it never reached the
   ::  peer. Absolute, at wherever the peer runs lattice, remembered from
@@ -6579,6 +6606,86 @@
   ?:  |(?=(~ fresh) =(fresh base))  (pure:m ~)
   ;<  again=(unit (unit [rev=@ud body=@t]))  bind:m  (peek-page-at u.fresh shp rel)
   (pure:m ?~(again ~ u.again))
+::  +peer-page-id: a page's current revision and id in the peer's
+::  published revision list ([/pub %revs]), from the cache, fetched when
+::  stale.
+::
+++  peer-page-id
+  |=  [shp=@p nam=@t]
+  =/  m  (fiber:fiber:nexus ,(unit [rev=@ud id=@uv]))
+  ^-  form:m
+  ;<  revs=(map @t [rev=@ud id=@uv])  bind:m  (peer-revs-cached shp)
+  (pure:m (~(get by revs) nam))
+::  +peer-revs-cached: a peer's revision list, kept in /peer-revs.json at
+::  the nexus root for +revs-ttl. The ttl is how long a reader can see an
+::  edited page's old revision: the publisher's runtime keeps answering an
+::  id it once served, cull or not, so an id stays readable to whoever
+::  holds it. A peer that publishes no list (an older lattice) is kept as
+::  an empty one, so it is not asked again every view. A cache: a reload
+::  prunes the file.
+::
+++  peer-revs-road  (rf up / %'peer-revs.json')
+++  revs-ttl  ^-(@dr ~s60)
+++  keen-wait  ^-(@dr ~s3)
+++  read-peer-revs
+  =/  m  (fiber:fiber:nexus ,(map @t json))
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:io peer-revs-road ~)
+  ?.  ?=([%file *] vw)  (pure:m ~)
+  =/  j=(unit json)  (mole |.(!<(json (need-vase:tarball sang.vw))))
+  (pure:m ?.(?=([~ %o *] j) ~ p.u.j))
+++  peer-revs-cached
+  |=  shp=@p
+  =/  m  (fiber:fiber:nexus ,(map @t [rev=@ud id=@uv]))
+  ^-  form:m
+  ;<  now=@da  bind:m  bowl-now
+  ;<  all=(map @t json)  bind:m  read-peer-revs
+  =/  hit=(unit json)  (~(get by all) (scot %p shp))
+  =/  cached=(unit (map @t [rev=@ud id=@uv]))
+    ?.  ?=([~ %o *] hit)  ~
+    =/  at=(unit @ud)  (rise-gn u.hit 'at')
+    ?~  at  ~
+    ?.  (lth now (add (rise-ms-da u.at) revs-ttl))  ~
+    `(json-revs:lp (fall (~(get by p.u.hit) 'revs') [%o ~]))
+  ?^  cached  (pure:m u.cached)
+  (fresh-peer-revs shp)
+::  +fresh-peer-revs: fetch a peer's list now, and cache it.
+::
+++  fresh-peer-revs
+  |=  shp=@p
+  =/  m  (fiber:fiber:nexus ,(map @t [rev=@ud id=@uv]))
+  ^-  form:m
+  ;<  now=@da  bind:m  bowl-now
+  ;<  base=(unit path)  bind:m  (peer-base-cached shp)
+  ;<  got=(map @t [rev=@ud id=@uv])  bind:m  (fetch-peer-revs shp base)
+  ;<  all=(map @t json)  bind:m  read-peer-revs
+  =/  row=json
+    (pairs:enjs:format ~[['at' (numb:enjs:format (rise-da-ms now))] ['revs' (revs-json:lp got)]])
+  ;<  *  bind:m
+    (over-as-soft:io peer-revs-road [[/ %json] [%o (~(put by all) (scot %p shp) row)]] [/ %json])
+  (pure:m got)
+++  fetch-peer-revs
+  |=  [shp=@p base=(unit path)]
+  =/  m  (fiber:fiber:nexus ,(map @t [rev=@ud id=@uv]))
+  ^-  form:m
+  ?~  base  (pure:m ~)
+  ;<  ms=(unit view:nexus)  bind:m
+    (peek-remote-wait [%& %& (weld u.base /pub) %revs] shp)
+  ?.  ?=([~ %file *] ms)  (pure:m ~)
+  ::  cross-ship content is a raw noun: clam it in a mole, so a hostile or
+  ::  malformed list reads as empty instead of crashing the reader
+  (pure:m (fall (mole |.((json-revs:lp ;;(json (sang-noun:tarball sang.u.ms))))) ~))
+::  +drop-peer-revs: forget a peer's list after one of its ids missed, so
+::  the next view fetches it again.
+::
+++  drop-peer-revs
+  |=  shp=@p
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  all=(map @t json)  bind:m  read-peer-revs
+  ;<  *  bind:m
+    (over-as-soft:io peer-revs-road [[/ %json] [%o (~(del by all) (scot %p shp))]] [/ %json])
+  (pure:m ~)
 ::  +peek-page-at: one published page off a peer, at a known base. ~ no
 ::  answer; [~ ~] answered and nothing (usable) there; [~ ~ page] the page.
 ::
@@ -9205,6 +9312,8 @@
     ::  local card application (and the reader retries once), so growing here
     ::  binds the rev well before any keen can arrive.
     ;<  ~  bind:m  (grow-pub-page key body.act rev)
+    ::  the revision list peers read to %keen this exact revision
+    ;<  ~  bind:m  (set-pub-rev root key `rev)
     ::  keep-only-current INVARIANT: at most one rev spur per page is ever
     ::  bound. Retract the PREDECESSOR rev spur now that the new one is
     ::  grown. Grow-then-cull, in this order, so a reader never observes zero
@@ -9220,9 +9329,10 @@
     ::  +cull-farm:io. A pre-mesa page whose old rev was never grown culls
     ::  as a no-op (farm-top finds nothing listed).
     =/  inner=path  (snip (strip-pub:lp key))
+    ;<  salt=@  bind:m  pub-salt
     ;<  ~  bind:m
       ?:  |(=(0 prev-rev) =(prev-rev rev))  (pure:m ~)
-      (cull-farm:io (snoc (weld /pub/page inner) (scot %ud prev-rev)))
+      (cull-farm:io (page-spur salt inner prev-rev))
     ;<  *  bind:m  (grow-pub-index root nix)
     (pure:m ~)
   ::
@@ -9267,24 +9377,8 @@
     ::  cull tombs the grub (gain=%.y keeps the body in born history). Drop its
     ::  index row so it's no longer live. No trash row. Pages have no restore.
     ;<  ~  bind:m  (cull:io road)
-    ::  DELETE TOMBSTONE (mesa D2): the subscriber's wave reads the
-    ::  post-cull cass. born is a high-water mark, so the grub never drops
-    ::  out of the wave's file map and an absent cass can never signal a
-    ::  delete. Grow a [%del ''] binding at exactly that cass, so the
-    ::  subscriber's keen at the wave's rev HITS a tombstone instead of
-    ::  parking on an unbound spur, and the delete propagates over the same
-    ::  wave->keen path as a save. The next re-save culls this spur as its
-    ::  ordinary predecessor (see %save-page's prev-rev). A reader without
-    ::  the tombstone protocol ignores the unknown mark, so there is no flag
-    ::  day. The vault cull's own wave leaves as a card ahead of this grow's,
-    ::  but ames transmission is orders slower than local card application
-    ::  (and the reader retries once after ~s2), so the binding is live well
-    ::  before any keen can arrive.
-    ;<  post=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
-    =/  inner=path  (snip (strip-pub:lp key))
-    ;<  ~  bind:m
-      ?:  =(post rev)  (pure:m ~)
-      (grow:io (snoc (weld /pub/page inner) (scot %ud post)) [%del ''])
+    ::  No tombstone binding: a subscriber learns of the delete from the
+    ::  page leaving the revision list (+sub-apply-wave).
     ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
     =/  nix=pub-index:lp  (~(del by ix) key)
     ;<  ~  bind:m  (put-file px [/lattice %pub-index] nix)
@@ -9321,7 +9415,9 @@
     ::  The successor index seq is grown, and the predecessor seq culled inside
     ::  +grow-pub-index, so followers see the page leave the manifest and no
     ::  stale seq lingers.
-    ;<  ~  bind:m  (cull-farm:io (snoc (weld /pub/page inner) (scot %ud rev)))
+    ;<  salt=@  bind:m  pub-salt
+    ;<  ~  bind:m  (cull-farm:io (page-spur salt (snip (strip-pub:lp key)) rev))
+    ;<  ~  bind:m  (set-pub-rev root key ~)
     ;<  *  bind:m  (grow-pub-index root nix)
     (pure:m ~)
   ==
@@ -9338,19 +9434,18 @@
 ::  Every pub-vault save/delete ALSO drives the ship's remote-scry namespace,
 ::  so a peer can read pages with %keen (content-addressed, kernel-cached)
 ::  instead of negotiating grubbery peeks. The scheme:
-::    /pub/page/<name-segments>/<rev>   one immutable binding per published
-::                                      body ([%gmi @t], rev = the vault
-::                                      grub's cass), or the [%del '']
-::                                      TOMBSTONE a delete grows at its
-::                                      post-cull cass, so subscribers learn
-::                                      the delete over the same wave->keen
-::                                      path as a save
+::    /pub/page/<name-segments>/<id>    one immutable binding per published
+::                                      body ([%gmi @t]), id = +page-id:lp of
+::                                      the private salt, the name and the
+::                                      vault grub's cass, so it cannot be
+::                                      guessed
+::    [/pub %revs] grub                 each page's current rev and id, the
+::                                      one place an id is published
 ::    /pub/index/<seq>                  the discovery manifest (manifest-gmi),
 ::                                      re-grown on every publish and delete
 ::    [/pub %meta] grub                 the seq counter, monotonic @ud
 ::  Bindings are immutable per spur (the rev/seq segment makes each grow
-::  fresh), which is what the namespace requires. Rev discovery rides the
-::  page keep's own wave (see /sub/pages). There is no pointer grub. Compiles
+::  fresh), which is what the namespace requires. Compiles
 ::  only against grubbery feat/scry-io (grow:io / cull-farm:io / keen:io).
 ::
 ::  +pub-grub-rev: the current cass revision of one pub-vault grub, 0 if
@@ -9404,8 +9499,25 @@
   |=  [key=path body=@t rev=@ud]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  inner=path  (snip (strip-pub:lp key))
-  (grow:io (snoc (weld /pub/page inner) (scot %ud rev)) [%gmi body])
+  ;<  salt=@  bind:m  pub-salt
+  (grow:io (page-spur salt (snip (strip-pub:lp key)) rev) [%gmi body])
+::  +pub-salt: the private salt behind every +page-id:lp, [/ %salt] at the
+::  nexus root. 0 until +ensure-pub-ids mints it.
+::
+++  pub-salt
+  =/  m  (fiber:fiber:nexus ,@)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=view:nexus  bind:m  (peek:io (rf up / %salt) ~)
+  ?.  ?=([%file *] vw)  (pure:m 0)
+  (pure:m (fall (mole |.(;;(@ (sang-noun:tarball sang.vw)))) 0))
+::  +page-spur: the scry binding of one revision of the page at `inner`,
+::  /pub/page/<inner>/<id>.
+::
+++  page-spur
+  |=  [salt=@ inner=path rev=@ud]
+  ^-  path
+  (snoc (weld /pub/page inner) (scot %uv (page-id:lp salt (spat inner) rev)))
 ::  +grow-pub-index: grow the successor discovery manifest. Reads the seq
 ::  counter, grows /pub/index/<seq+1> carrying manifest-gmi of the index the
 ::  caller JUST wrote, then persists the bumped counter. Counter write comes
@@ -9493,29 +9605,86 @@
   ::  restart and this route only rebuilds namespace bindings.
   ;<  ix=pub-index:lp  bind:m
     (read-pub-index (rf up /pub %index))
-  ;<  n=@ud  bind:m  (pub-regrow-loop ~(tap in ~(key by ix)) 0)
+  ;<  salt=@  bind:m  pub-salt
+  ;<  [n=@ud revs=(map @t [rev=@ud id=@uv])]  bind:m
+    (pub-regrow-loop salt ~(tap in ~(key by ix)) 0 ~)
+  ;<  ~  bind:m  (put-file (rf up /pub %revs) [/ %json] (revs-json:lp revs))
   ::  the seq advances like any publish. Subscribers do no seq bookkeeping
   ::  (the rev rides each page keep's own wave), so a regrow is invisible to
   ::  them until a page's next real edit wave.
   ;<  *  bind:m  (grow-pub-index up ix)
   (pure:m n)
 ++  pub-regrow-loop
-  |=  [keys=(list path) cnt=@ud]
-  =/  m  (fiber:fiber:nexus ,@ud)
+  |=  [salt=@ keys=(list path) cnt=@ud revs=(map @t [rev=@ud id=@uv])]
+  =/  m  (fiber:fiber:nexus ,[@ud (map @t [rev=@ud id=@uv])])
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ?~  keys  (pure:m cnt)
+  ?~  keys  (pure:m [cnt revs])
   =/  or=(unit vrail:lp)  (key-to-rail:lp /pub/vault i.keys)
-  ?~  or  (pub-regrow-loop t.keys cnt)
+  ?~  or  (pub-regrow-loop salt t.keys cnt revs)
   ;<  seen=view:nexus  bind:m  (peek:io (rf up pax.u.or nom.u.or) ~)
-  ?.  ?=([%file *] seen)  (pub-regrow-loop t.keys cnt)
+  ?.  ?=([%file *] seen)  (pub-regrow-loop salt t.keys cnt revs)
   ::  clam in a mole. One malformed grub (an index row whose vault copy was
   ::  hand-edited) must skip, not kill the whole backfill.
   =/  body=(unit @t)  (mole |.(!<(@t (need-vase:tarball sang.seen))))
-  ?~  body  (pub-regrow-loop t.keys cnt)
+  ?~  body  (pub-regrow-loop salt t.keys cnt revs)
   ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
   ;<  ~  bind:m  (grow-pub-page i.keys u.body rev)
-  (pub-regrow-loop t.keys +(cnt))
+  =/  nam=@t  (page-name:lp i.keys)
+  (pub-regrow-loop salt t.keys +(cnt) (~(put by revs) nam rev (page-id:lp salt nam rev)))
+::  +set-pub-rev: one page's row in the revision list, [/pub %revs]: its
+::  current revision after a save, gone after a delete. Peers read the list
+::  to %keen a page at its exact revision (remote scry has no "latest").
+::  An unreadable list starts over empty rather than failing the save; the
+::  next +pub-regrow rebuilds it whole.
+::
+++  set-pub-rev
+  |=  [root=@ud key=path rev=(unit @ud)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  rd=road:tarball  (rf root /pub %revs)
+  ;<  vw=view:nexus  bind:m  (peek:io rd ~)
+  =/  old=(map @t [rev=@ud id=@uv])
+    ?.  ?=([%file *] vw)  ~
+    (fall (mole |.((json-revs:lp !<(json (need-vase:tarball sang.vw))))) ~)
+  ;<  salt=@  bind:m  pub-salt
+  =/  nam=@t  (page-name:lp key)
+  =/  new=(map @t [rev=@ud id=@uv])
+    ?~  rev  (~(del by old) nam)
+    (~(put by old) nam u.rev (page-id:lp salt nam u.rev))
+  (put-file rd [/ %json] (revs-json:lp new))
+::  +ensure-pub-ids: at writer start, mint the salt if there is none, and
+::  lay the revision list (and every binding behind it) when it is absent.
+::  Minting it is the move off counter spurs: every page's current
+::  /pub/page/<name>/<rev> binding is culled once the id one is grown, so
+::  no guessable path survives. ponytail: a crash between the salt write
+::  and the last cull leaves the rest of those bound, and nothing reruns
+::  it; that would take a hand cull.
+::
+++  ensure-pub-ids
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  salt=@  bind:m  pub-salt
+  ;<  has=?  bind:m  (peek-exists:io (rf root /pub %revs))
+  ?:  &(!=(0 salt) has)  (pure:m ~)
+  ?.  =(0 salt)
+    ;<  *  bind:m  pub-regrow
+    (pure:m ~)
+  ;<  eny=@uvJ  bind:m  get-entropy:io
+  ;<  ~  bind:m  (put-file (rf root / %salt) [/ %ud] `@ud`(end [3 32] eny))
+  ;<  *  bind:m  pub-regrow
+  ;<  vw=view:nexus  bind:m  (peek:io (rf root /pub %revs) ~)
+  =/  revs=(map @t [rev=@ud id=@uv])
+    ?.  ?=([%file *] vw)  ~
+    (fall (mole |.((json-revs:lp !<(json (need-vase:tarball sang.vw))))) ~)
+  =/  todo=(list [nam=@t rev=@ud id=@uv])  ~(tap by revs)
+  |-
+  ?~  todo  (pure:m ~)
+  =/  inner=(unit path)  (rush nam.i.todo stap)
+  ?~  inner  $(todo t.todo)
+  ;<  ~  bind:m  (cull-farm:io (snoc (weld /pub/page u.inner) (scot %ud rev.i.todo)))
+  $(todo t.todo)
 ::  +pub-reconcile: the ONE-SHOT leak cleanup behind POST /pub-reconcile.
 ::  Walks the ENTIRE pub-vault tree in one dir peek. The wave is a full
 ::  recursive axal, and born is a high-water mark, so DELETED (tombed) grubs
@@ -9722,7 +9891,7 @@
 ::                 normal.
 ::      1          the namespace version marker gall's +scry requires
 ::                 (?=([%'1' *] path) on the beam's path AFTER the split above)
-::      pub/page/… the spur +grow-pub-page grew: /pub/page/<rel>/<rev>
+::      pub/page/… the spur +grow-pub-page grew: /pub/page/<rel>/<id>
 ::
 ::  ames prepends /<ship>/<rift>/<life> itself (+fi-full-path), so the spar
 ::  path starts at the vane letter. rel runs through +page-rel so a caller may
@@ -9734,14 +9903,13 @@
 ::  nobody notices is missing.
 ::
 ++  keen-path
-  |=  [rel=path rev=@ud]
+  |=  [rel=path id=@uv]
   ^-  path
   %+  weld  `path`[%g %x %'1' mesa-agent %$ %'1' %pub %page ~]
-  (snoc (page-rel rel) (scot %ud rev))
+  (snoc (page-rel rel) (scot %uv id))
 ::  +keen-page-raw: read one page binding out of a PEER's namespace, mark and
-::  all. `~ on every failure. The mark matters to the /sub reader. The mirror
-::  grows [%gmi body] for a save and a [%del ''] tombstone for a delete, and
-::  the subscriber acts on which one the keen returned.
+::  all. `~ on every failure. The mirror grows [%gmi body]; older
+::  publishers also grew a [%del ''] tombstone for a delete.
 ::
 ::  On our own deadline firing, %yawn the request. ames otherwise holds an
 ::  unanswerable keen forever (a parked request per missed keen, growing
@@ -9800,14 +9968,20 @@
     %skip  [%skip ~]
   ==
 ++  keen-page-raw
-  |=  [shp=@p rel=path rev=@ud]
+  |=  [shp=@p rel=path id=@uv]
+  (keen-page-wait shp rel id mesa-timeout)
+::  +keen-page-wait: +keen-page-raw with the caller's deadline. The reader
+::  uses a short one: an exact revision the publisher no longer binds (an
+::  edit since the list was read) gets no answer at all, only the deadline.
+++  keen-page-wait
+  |=  [shp=@p rel=path id=@uv wait=@dr]
   =/  m  (fiber:fiber:nexus ,(unit [p=@tas q=@t]))
   ^-  form:m
-  =/  pax=path  (keen-path rel rev)
+  =/  pax=path  (keen-path rel id)
   ;<  res=(unit (unit page))  bind:m
     ::  +deadline, not +with-timeout:io, so this file builds on every
     ::  grubbery generation the fleet runs. See the arm above.
-    ((deadline ,(unit page)) mesa-timeout (keen:io shp pax))
+    ((deadline ,(unit page)) wait (keen:io shp pax))
   ::  outer ~: our own deadline fired, so cancel the parked request.
   ::  inner ~: the publisher bound nothing at that spur (never grown, or
   ::  culled). keen:io hands back the page the kernel's verified %sage
@@ -9828,10 +10002,10 @@
 ::  miss, a tombstone, or a mark we do not understand.
 ::
 ++  keen-page
-  |=  [shp=@p rel=path rev=@ud]
+  |=  [shp=@p rel=path id=@uv]
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
-  ;<  pg=(unit [p=@tas q=@t])  bind:m  (keen-page-raw shp rel rev)
+  ;<  pg=(unit [p=@tas q=@t])  bind:m  (keen-page-raw shp rel id)
   ?~  pg  (pure:m ~)
   ?.  =(%gmi p.u.pg)  (pure:m ~)
   (pure:m `q.u.pg)
