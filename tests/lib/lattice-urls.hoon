@@ -27,6 +27,13 @@
     ::  bare ship -> the published front door
     (expect-eq !>(`(unit referent:lu)``[%pub zod /index]) !>((de-urb:lu 'urb://~zod')))
     (expect-eq !>(`(unit referent:lu)``[%pub zod /index]) !>((de-urb:lu 'urb://~zod/')))
+    ::  a folder's trailing slash names the folder
+    %+  expect-eq
+      !>  `(unit referent:lu)``[%pub zod /site]
+      !>  (de-urb:lu 'urb://~zod/site/')
+    %+  expect-eq
+      !>  `(unit referent:lu)``[%tree zod (weld page-prefix:lu /docs)]
+      !>  (de-urb:lu 'urb://~zod/p/docs/')
     ::  multi-char first component -> frozen legacy pub form
     %+  expect-eq
       !>  `(unit referent:lu)``[%pub zod /notes/'2026'/intro]

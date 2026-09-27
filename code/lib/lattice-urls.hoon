@@ -113,6 +113,9 @@
   ?~  shp  ~
   ?~  cut  `[%pub u.shp /index]
   =/  ta=tape  (slag +(u.cut) rest)
+  ::  a folder's trailing slash names the folder: urb://~ship/site/ is
+  ::  urb://~ship/site
+  =.  ta  ?.(&(?=(^ ta) =('/' (rear ta))) ta (snip `tape`ta))
   ?:  =("" ta)  `[%pub u.shp /index]
   =/  parsed=(each path tang)  (mule |.((stab (crip (weld "/" ta)))))
   ?:  ?=(%| -.parsed)  ~

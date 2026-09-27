@@ -1137,10 +1137,16 @@
       (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p ship.u.ref) (spud to) slash))
     ::
         %pub
-      ;<  body=(unit @t)  bind:m  (read-page-body our ship.u.ref rel.u.ref)
-      =/  canon=tape  (trip (en-urb:lu ship.u.ref (weld pub-prefix:lu rel.u.ref)))
-      ?~  body
+      ::  a folder's address reads its index, the way the bare ship reads
+      ::  /index, and the bar then names the index so its relative links
+      ::  resolve under the folder
+      ;<  got=(unit [rel=path body=@t])  bind:m
+        (read-page-or-index our ship.u.ref rel.u.ref)
+      =/  rel=path  ?~(got rel.u.ref rel.u.got)
+      =/  canon=tape  (trip (en-urb:lu ship.u.ref (weld pub-prefix:lu rel)))
+      ?~  got
         (send-view eyre-id (render-page canon "" "" "<p class=\"err\">not published here</p>"))
+      =/  body=@t  body.u.got
       ::  own pages get a live reader (keep /pub/index: its per-page hash changes
       ::  on every edit). Remote pages stay static (can't keep a peer's grub).
       ;<  sb=path  bind:m  self-base
@@ -1157,24 +1163,24 @@
       ::  view instead, so this does not double up there.
       =/  cbox=tape
         ?:  =(ship.u.ref our)  ""
-        (remote-comment-box ship.u.ref rel.u.ref)
+        (remote-comment-box ship.u.ref rel)
       ::  the tab/history title: a real `#` heading, else the raw address.
       ::  Computed once here, shared with the history-log write below.
-      =/  ttl=@t  (page-title-of u.body u.raw)
+      =/  ttl=@t  (page-title-of body u.raw)
       ;<  ~  bind:m
         ;<  rv=tape  bind:m  ?:(=("" rk) (pure:(fiber:fiber:nexus ,tape) "") beacon-rev-tape)
         ::  an html page's published copy is its markup: frame it like the
         ::  /p/ view does (sandboxed for a peer, whose markup is untrusted),
         ::  instead of rendering the source as gemtext. The comment box is a
         ::  form, which a sandboxed frame cannot submit, so it is gemtext-only.
-        ?:  (looks-html:lgmi u.body)
+        ?:  (looks-html:lgmi body)
           =/  htm=@t
-            (render-browser-page canon u.body ~ ?!(=(ship.u.ref our)) rk rv (trip ttl))
+            (render-browser-page canon body ~ ?!(=(ship.u.ref our)) rk rv (trip ttl))
           ?:  =("" rk)  (send-view eyre-id htm)
           (send-view-long eyre-id htm)
         ?:  =("" rk)
-          (send-view eyre-id (render-page-titled canon rk "" (trip ttl) (weld (render-gmi u.body) cbox)))
-        (send-view-long eyre-id (render-page-titled canon rk rv (trip ttl) (weld (render-gmi u.body) cbox)))
+          (send-view eyre-id (render-page-titled canon rk "" (trip ttl) (weld (render-gmi body) cbox)))
+        (send-view-long eyre-id (render-page-titled canon rk rv (trip ttl) (weld (render-gmi body) cbox)))
       ::  the background self-refetch and SSE-forced refreshes re-run this
       ::  handler; they are machinery, not reading, and they mark themselves
       ::  (x-lattice-bg). Counting them double-counted every cold view and
@@ -6543,6 +6549,35 @@
   ^-  form:m
   ;<  pr=(unit [rev=@ud body=@t])  bind:m  (read-page-body-rev our shp rel)
   (pure:m ?~(pr ~ `body.u.pr))
+::  +read-page-or-index: a published page, or, when `rel` names none, the
+::  index under it: urb://~ship/site reads /site/index the way urb://~ship
+::  reads /index. Hands back the path that answered. A peer's cached
+::  revision list says which of the two exists, so a folder address costs
+::  one read rather than a failed one first.
+::
+++  read-page-or-index
+  |=  [our=@p shp=@p rel=path]
+  =/  m  (fiber:fiber:nexus ,(unit [rel=path body=@t]))
+  ^-  form:m
+  =/  dex=path  (snoc rel %index)
+  ;<  revs=(map @t [rev=@ud id=@uv])  bind:m
+    ?:  |(=(shp our) ?=(~ rel) =(%index (rear rel)))
+      (pure:(fiber:fiber:nexus ,(map @t [rev=@ud id=@uv])) ~)
+    (peer-revs-cached shp)
+  ::  ponytail: a list that names neither is trusted, so an index
+  ::  published in the last +revs-ttl is not found by its folder address
+  ::  until the list is fetched again
+  =/  hit  |=(p=path (~(has by revs) (spat p)))
+  =/  try=(list path)
+    ?:  |(?=(~ rel) =(%index (rear rel)))  ~[rel]
+    ?:  &(!(hit rel) (hit dex))  ~[dex]
+    ?:  &(!=(~ revs) !(hit rel))  ~[rel]
+    ~[rel dex]
+  |-
+  ?~  try  (pure:m ~)
+  ;<  body=(unit @t)  bind:m  (read-page-body our shp i.try)
+  ?^  body  (pure:m `[i.try u.body])
+  $(try t.try)
 ::  +read-page-body-rev: +read-page-body, but it also hands back the REVISION
 ::  the body came from. The peek view already carries the grub's cass ([%file
 ::  =cass =sang], and a cross-ship discharge fills it from the remote's own
