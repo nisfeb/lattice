@@ -6615,7 +6615,10 @@
     (pure:m `[ud.cass.seen !<(@t (need-vase:tarball sang.seen))])
   ;<  ent=(unit [rev=@ud id=@uv])  bind:m  (peer-page-id shp (spat rel))
   ?~  ent  (peek-peer-page shp rel)
-  ;<  kp=(unit [p=@tas q=@t])  bind:m  (keen-page-wait shp rel id.u.ent keen-wait)
+  ::  the full +mesa-timeout. The id comes from the list, so it is almost
+  ::  always bound, and a big page can take seconds to arrive: a 3 s wait
+  ::  cut a 198 KB page off mid-transfer, then paid a peek on top.
+  ;<  kp=(unit [p=@tas q=@t])  bind:m  (keen-page-raw shp rel id.u.ent)
   ?:  ?=([~ %gmi *] kp)  (pure:m `[rev.u.ent q.u.kp])
   ;<  ~  bind:m  (drop-peer-revs shp)
   (peek-peer-page shp rel)
@@ -6661,7 +6664,6 @@
 ::
 ++  peer-revs-road  (rf up / %'peer-revs.json')
 ++  revs-ttl  ^-(@dr ~s60)
-++  keen-wait  ^-(@dr ~s3)
 ++  read-peer-revs
   =/  m  (fiber:fiber:nexus ,(map @t json))
   ^-  form:m
@@ -10013,19 +10015,13 @@
   ==
 ++  keen-page-raw
   |=  [shp=@p rel=path id=@uv]
-  (keen-page-wait shp rel id mesa-timeout)
-::  +keen-page-wait: +keen-page-raw with the caller's deadline. The reader
-::  uses a short one: an exact revision the publisher no longer binds (an
-::  edit since the list was read) gets no answer at all, only the deadline.
-++  keen-page-wait
-  |=  [shp=@p rel=path id=@uv wait=@dr]
   =/  m  (fiber:fiber:nexus ,(unit [p=@tas q=@t]))
   ^-  form:m
   =/  pax=path  (keen-path rel id)
   ;<  res=(unit (unit page))  bind:m
     ::  +deadline, not +with-timeout:io, so this file builds on every
     ::  grubbery generation the fleet runs. See the arm above.
-    ((deadline ,(unit page)) wait (keen:io shp pax))
+    ((deadline ,(unit page)) mesa-timeout (keen:io shp pax))
   ::  outer ~: our own deadline fired, so cancel the parked request.
   ::  inner ~: the publisher bound nothing at that spur (never grown, or
   ::  culled). keen:io hands back the page the kernel's verified %sage
