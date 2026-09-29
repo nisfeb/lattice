@@ -90,5 +90,52 @@ const mine = (extra = {}) => ({ bucket: Object.assign({ themes: JSON.stringify({
   check('a theme with a bad colour is skipped, not half-applied', props['--accent'] === '#2f6b3a', props['--accent']);
 }
 
+// ── the six a theme may name instead of deriving ─────────────────────────────
+const talonWith = (t) => ({ 'bucket/lattice/ui-prefs': { bucket: {} },
+  'entry/talon/ui-prefs/themes': { entry: JSON.stringify({ themes: [t], activeId: t.id }) } });
+{
+  // today's variables, exactly, for a theme with none of the six (as main's
+  // theme.js, before the six, drew Dusk)
+  const want = { 'color-scheme': 'dark', '--bg': '#0f0d1a', '--text': '#fafaf9', '--muted': '#a8a7ab',
+    '--pop': '#1a1625', '--accent': '#fbbf24', '--on-accent': '#1c1917', '--accent-deep': '#c9991d',
+    '--accent-tint': '#fbbf2422', '--secondary': '#a5b4fc', '--tertiary': '#34d399' };
+  const { props } = await boot({ ship: talonWith(dusk) });
+  const got = Object.assign({}, props); delete got['--link'];
+  check("a theme without the six draws as it did", JSON.stringify(got) === JSON.stringify(want), JSON.stringify(got));
+  check('a custom theme without a link colour takes the link blue', props['--link'] === '#2962ff', props['--link']);
+  check('unnamed raised, error and selection leave the stylesheets their own',
+    !('--raised' in props) && !('--error' in props) && !('--selection' in props));
+  const blank = Object.assign({}, dusk, { text: '', muted: '', raised: '', error: '', selection: '', link: '' });
+  const { props: p2 } = await boot({ ship: talonWith(blank) });
+  check('"" is the same as not naming it', JSON.stringify(p2) === JSON.stringify(props), JSON.stringify(p2));
+}
+{
+  const all = Object.assign({}, dusk, { text: '#E0E0FF', muted: '#777799', raised: '#223344',
+    error: '#FF5555', selection: '#445566', link: '#88CCFF' });
+  const { props } = await boot({ ship: talonWith(all) });
+  check('each named colour lands in its variable',
+    props['--text'] === '#e0e0ff' && props['--muted'] === '#777799' && props['--raised'] === '#223344'
+      && props['--error'] === '#ff5555' && props['--selection'] === '#445566' && props['--link'] === '#88ccff',
+    JSON.stringify(props));
+  const textOnly = Object.assign({}, dusk, { text: '#E0E0FF' });
+  const { props: p2 } = await boot({ ship: talonWith(textOnly) });
+  check('muted follows a named text colour', p2['--muted'] === '#9796af', p2['--muted']);
+}
+{
+  const { props } = await boot({ cache: { latTheme: JSON.stringify({ mode: 'dark' }) } });
+  check('the built-in look sets no link colour: the reader keeps its blue, the editor its green', !('--link' in props));
+}
+{
+  // an older lattice rewrote the theme without the six: ours stand; "" clears
+  const local = Object.assign({}, moss, { link: '#AA0000', text: '#111111' });
+  const arrived = Object.assign({}, moss, { text: '' });
+  const cached = { latTheme: JSON.stringify({ mine: { themes: [local], activeId: 'm' }, useTalon: false }) };
+  const ship = { 'bucket/lattice/ui-prefs': { bucket: {
+    themes: JSON.stringify({ themes: [arrived], activeId: 'm' }), 'use-talon-theme': JSON.stringify({ enabled: false }) } } };
+  const { props } = await boot({ cache: cached, ship });
+  check('a colour an older writer dropped is kept', props['--link'] === '#aa0000', props['--link']);
+  check('a colour cleared with "" stays cleared', props['--text'] === '#1c1917', props['--text']);
+}
+
 console.log(fails ? `\n${fails} FAILED` : '\nall passed');
 process.exit(fails ? 1 : 0);

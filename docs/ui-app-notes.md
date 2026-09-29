@@ -77,7 +77,12 @@ like vault.js. It writes the theme as inline properties on `<html>`
 (`--bg`, `--text`, `--accent`, `--pop`, ... and `color-scheme`). Every
 stylesheet reads them as `var(--x, <its own colour>)`, so with no theme
 nothing changes. A new colour that should follow the theme goes through one
-of those tokens, never a literal. The preview frame is its own document, so
+of those tokens, never a literal. A theme may also name six colours Talon
+lets it name (text, muted, raised, error, selection, link): they drive
+`--text`, `--muted`, `--raised` (code, cards, inputs), `--error`,
+`--selection` (only where named, via `:root[style*="--selection"]`) and
+`--link`. Under any custom theme `--link` is set, the link blue `#2962ff`
+unless named; the built-in look sets none. The preview frame is its own document, so
 `themeRoot()` (10-shell.js) copies the inline set into it.
 
 ## Dev loop

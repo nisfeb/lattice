@@ -130,9 +130,14 @@
   // gets a copy of what theme.js set inline on <html>: the colours and the
   // forced color-scheme. Empty when nothing is forced, so the frame follows
   // the OS as it always did.
+  // the theme into a preview document, and its link and selection colours
+  // only where it names them: unset, the page keeps the engine's own
   const themeRoot = () => {
     const s = document.documentElement.style;
-    return s.colorScheme ? 'html:root{' + s.cssText + '}' : '';
+    if (!s.colorScheme) return '';
+    return 'html:root{' + s.cssText + '}'
+      + (s.getPropertyValue('--link') ? 'a{color:var(--link)}' : '')
+      + (s.getPropertyValue('--selection') ? '::selection{background:var(--selection)}' : '');
   };
   const prevBlank = () => {
     prev.removeAttribute('src');
