@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Unit tests for ui-app/theme.js: Talon's palette derivation, which theme
-// wins (Talon's, then lattice's own, then a forced light/dark), and what a
-// ship with nothing, or no ship at all, leaves behind. theme.js runs as-is in
-// a vm with a stub document and a fake %settings behind fetch.
+// Unit tests for ui-app/theme.js: Talon's palette derivation (Oklab mixing
+// included), which theme and which accent win (Talon's, then lattice's own,
+// then a forced light/dark), the %contacts profile colour, and what a ship
+// with nothing, or no ship at all, leaves behind. theme.js runs as-is in a vm
+// with a stub document and a fake ship behind fetch.
 import { readFileSync } from 'fs';
 import vm from 'vm';
 
@@ -13,7 +14,8 @@ const check = (name, ok, detail = '') => {
   if (!ok) fails++;
 };
 
-// ship: scry path -> JSON body (absent = 404). offline: every fetch throws.
+// ship: scry path after /~/scry/ -> JSON body (absent = 404). offline: every
+// fetch throws.
 async function boot({ ship = {}, cache = {}, offline = false } = {}) {
   const props = {}, asked = [];
   const style = {
@@ -26,7 +28,7 @@ async function boot({ ship = {}, cache = {}, offline = false } = {}) {
   const fetch = async (url) => {
     asked.push(url);
     if (offline) throw new Error('offline');
-    const p = /^\/~\/scry\/settings\/(.*)\.json$/.exec(url)[1];
+    const p = /^\/~\/scry\/(.*)\.json$/.exec(url)[1];
     return p in ship ? reply(200, ship[p]) : reply(404);
   };
   vm.runInNewContext(src, {
@@ -38,16 +40,19 @@ async function boot({ ship = {}, cache = {}, offline = false } = {}) {
   return { props, asked, vars: JSON.parse(localStorage.latThemeVars || 'null') };
 }
 
+const LAT = 'settings/bucket/lattice/ui-prefs', TAL = 'settings/bucket/talon/ui-prefs', ME = 'contacts/v1/self';
+// a %settings bucket as the scry answers it: every entry a JSON string
+const bucket = (o) => ({ bucket: Object.fromEntries(Object.entries(o).map(([k, v]) => [k, JSON.stringify(v)])) });
 // Talon's own dark palette as a custom theme, and a lattice one
 const dusk = { id: 'd', name: 'Dusk', dark: true, primary: '#FBBF24', secondary: '#A5B4FC',
   tertiary: '#34D399', background: '#0F0D1A', surface: '#1A1625' };
 const moss = { id: 'm', name: 'Moss', dark: false, primary: '#2F6B3A', secondary: '#7A5AF8',
   tertiary: '#0A9A6A', background: '#FAFAF9', surface: '#FFFFFF' };
-const talon = (activeId) => ({ entry: JSON.stringify({ themes: [dusk], activeId }) });
-const mine = (extra = {}) => ({ bucket: Object.assign({ themes: JSON.stringify({ themes: [moss], activeId: 'm' }) }, extra) });
+const talon = (activeId, extra = {}) => bucket(Object.assign({ themes: { themes: [dusk], activeId } }, extra));
+const mine = (extra = {}) => bucket(Object.assign({ themes: { themes: [moss], activeId: 'm' } }, extra));
 
 {
-  const { props } = await boot({ ship: { 'bucket/lattice/ui-prefs': mine(), 'entry/talon/ui-prefs/themes': talon('d') } });
+  const { props } = await boot({ ship: { [LAT]: mine(), [TAL]: talon('d') } });
   check("Talon's active theme wins by default", props['--bg'] === '#0f0d1a', props['--bg']);
   check('a custom theme brings its own dark', props['color-scheme'] === 'dark');
   check('on-colours come from luminance (ink on amber, paper on dusk)',
@@ -55,14 +60,12 @@ const mine = (extra = {}) => ({ bucket: Object.assign({ themes: JSON.stringify({
   check('popups take the surface colour', props['--pop'] === '#1a1625');
 }
 {
-  const { props, asked } = await boot({ ship: {
-    'bucket/lattice/ui-prefs': mine({ 'use-talon-theme': JSON.stringify({ enabled: false }) }),
-    'entry/talon/ui-prefs/themes': talon('d') } });
+  const { props, asked } = await boot({ ship: { [LAT]: mine({ 'use-talon-theme': { enabled: false } }), [TAL]: talon('d') } });
   check("turned off, lattice's own theme applies", props['--accent'] === '#2f6b3a', props['--accent']);
-  check("turned off, Talon is not even asked", !asked.some((u) => u.includes('/talon/')));
+  check('turned off, Talon is not even asked', !asked.some((u) => u.includes('/talon/')));
 }
 {
-  const { props } = await boot({ ship: { 'bucket/lattice/ui-prefs': mine(), 'entry/talon/ui-prefs/themes': talon(null) } });
+  const { props } = await boot({ ship: { [LAT]: mine(), [TAL]: talon(null) } });
   check("Talon on its built-in theme leaves lattice's own", props['--accent'] === '#2f6b3a', props['--accent']);
 }
 {
@@ -85,19 +88,59 @@ const mine = (extra = {}) => ({ bucket: Object.assign({ themes: JSON.stringify({
 }
 {
   const broken = Object.assign({}, dusk, { primary: 'amber' });
-  const { props } = await boot({ ship: { 'bucket/lattice/ui-prefs': mine(),
-    'entry/talon/ui-prefs/themes': { entry: JSON.stringify({ themes: [broken], activeId: 'd' }) } } });
+  const { props } = await boot({ ship: { [LAT]: mine(), [TAL]: bucket({ themes: { themes: [broken], activeId: 'd' } }) } });
   check('a theme with a bad colour is skipped, not half-applied', props['--accent'] === '#2f6b3a', props['--accent']);
+}
+{
+  // white toward black by 0.2 in Oklab is L 0.8: 0.512 linear, byte 190.
+  // Mixed in sRGB it would be #cccccc.
+  const white = Object.assign({}, moss, { primary: '#FFFFFF' });
+  const { props } = await boot({ ship: { [LAT]: bucket({ themes: { themes: [white], activeId: 'm' } }) } });
+  check('shades mix in Oklab, as Compose does', props['--accent-deep'] === '#bebebe', props['--accent-deep']);
+}
+{
+  const { props } = await boot({ ship: { [LAT]: mine({ accent: { enabled: true, mode: 'Custom', customHex: '#aa3377' } }),
+    [TAL]: talon('d', { accent: { enabled: true, mode: 'Custom', customHex: '#336699' } }) } });
+  check("Talon's custom accent repaints its theme's primary, over lattice's own",
+    props['--accent'] === '#336699' && props['--bg'] === '#0f0d1a', props['--accent']);
+  check("text on an accent is Talon's: white, not paper", props['--on-accent'] === '#ffffff', props['--on-accent']);
+}
+{
+  const { props, asked } = await boot({ ship: { [LAT]: mine(),
+    [TAL]: talon('d', { accent: { enabled: true, mode: 'Profile' } }),
+    [ME]: { nickname: { type: 'text', value: 'x' }, color: { type: 'tint', value: 'ff.5050' } } } });
+  check('a profile accent takes the %contacts colour', props['--accent'] === '#ff5050', props['--accent']);
+  check('...asking %contacts once', asked.filter((u) => u.includes('contacts')).length === 1, asked.join());
+}
+{
+  const { props, asked } = await boot({ ship: {
+    [LAT]: mine({ accent: { enabled: true, mode: 'Custom', customHex: '#aa3377' } }),
+    [TAL]: talon(null, { accent: { mode: 'Custom', customHex: '#336699' } }) } });
+  check("Talon's accent left unset is off, so lattice's own applies", props['--accent'] === '#aa3377', props['--accent']);
+  check('no accent wants the profile colour: %contacts not asked', !asked.some((u) => u.includes('contacts')), asked.join());
+}
+{
+  const { props } = await boot({ ship: {
+    [LAT]: bucket({ accent: { enabled: true, mode: 'Custom', customHex: '#aa3377' }, 'use-talon-theme': { enabled: false } }),
+    [TAL]: talon('d', { accent: { enabled: true, mode: 'Custom', customHex: '#336699' } }) } });
+  check("turned off, Talon's accent is ignored too", props['--accent'] === '#aa3377', props['--accent']);
+  check('an accent over the built-in theme forces nothing else', !props['color-scheme'] && !props['--bg'], JSON.stringify(props));
+}
+{
+  const { props } = await boot({ ship: { [LAT]: mine({ accent: { enabled: true, mode: 'Profile' } }),
+    [ME]: { color: { type: 'tint', value: 'zz' } } } });
+  check('a profile with no readable colour leaves the theme alone', props['--accent'] === '#2f6b3a', props['--accent']);
 }
 
 // ── the six a theme may name instead of deriving ─────────────────────────────
-const talonWith = (t) => ({ 'bucket/lattice/ui-prefs': { bucket: {} },
-  'entry/talon/ui-prefs/themes': { entry: JSON.stringify({ themes: [t], activeId: t.id }) } });
+const talonWith = (t) => ({ [LAT]: { bucket: {} }, [TAL]: bucket({ themes: { themes: [t], activeId: t.id } }) });
 {
-  // today's variables, exactly, for a theme with none of the six (as main's
-  // theme.js, before the six, drew Dusk)
-  const want = { 'color-scheme': 'dark', '--bg': '#0f0d1a', '--text': '#fafaf9', '--muted': '#a8a7ab',
-    '--pop': '#1a1625', '--accent': '#fbbf24', '--on-accent': '#1c1917', '--accent-deep': '#c9991d',
+  // today's variables, exactly, for a theme with none of the six (as
+  // theme.js drew Dusk before the six). Muted and the pressed accent are
+  // mixed in Oklab, as Compose mixes them; the values were checked against a
+  // separate Oklab implementation, not read back from this one.
+  const want = { 'color-scheme': 'dark', '--bg': '#0f0d1a', '--text': '#fafaf9', '--muted': '#9e9da3',
+    '--pop': '#1a1625', '--accent': '#fbbf24', '--on-accent': '#1c1917', '--accent-deep': '#ba8d18',
     '--accent-tint': '#fbbf2422', '--secondary': '#a5b4fc', '--tertiary': '#34d399' };
   const { props } = await boot({ ship: talonWith(dusk) });
   const got = Object.assign({}, props); delete got['--link'];
@@ -119,7 +162,7 @@ const talonWith = (t) => ({ 'bucket/lattice/ui-prefs': { bucket: {} },
     JSON.stringify(props));
   const textOnly = Object.assign({}, dusk, { text: '#E0E0FF' });
   const { props: p2 } = await boot({ ship: talonWith(textOnly) });
-  check('muted follows a named text colour', p2['--muted'] === '#9796af', p2['--muted']);
+  check('muted follows a named text colour', p2['--muted'] === '#8e8ea7', p2['--muted']);
 }
 {
   const { props } = await boot({ cache: { latTheme: JSON.stringify({ mode: 'dark' }) } });
@@ -130,7 +173,7 @@ const talonWith = (t) => ({ 'bucket/lattice/ui-prefs': { bucket: {} },
   const local = Object.assign({}, moss, { link: '#AA0000', text: '#111111' });
   const arrived = Object.assign({}, moss, { text: '' });
   const cached = { latTheme: JSON.stringify({ mine: { themes: [local], activeId: 'm' }, useTalon: false }) };
-  const ship = { 'bucket/lattice/ui-prefs': { bucket: {
+  const ship = { [LAT]: { bucket: {
     themes: JSON.stringify({ themes: [arrived], activeId: 'm' }), 'use-talon-theme': JSON.stringify({ enabled: false }) } } };
   const { props } = await boot({ cache: cached, ship });
   check('a colour an older writer dropped is kept', props['--link'] === '#aa0000', props['--link']);

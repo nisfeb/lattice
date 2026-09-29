@@ -5,8 +5,11 @@
  *     muted, raised, error, selection, link; "" or absent is derived). They
  *     live in the ship's %settings (desk lattice, bucket ui-prefs, entry
  *     themes, Talon's exact shape), so they follow the user to every device
- *   - "use Talon's theme", on unless turned off: Talon's active custom theme,
- *     read from its own %settings entry, wins over lattice's.
+ *   - an accent, as Talon's: off, the %contacts profile colour, or any
+ *     colour, laid over whichever theme is in use (entry accent)
+ *   - "use Talon's theme", on unless turned off: Talon's active custom theme
+ *     and its accent, read from its own %settings bucket, win over lattice's
+ *     wherever Talon has one.
  * A custom theme brings its own light or dark, as it does in Talon.
  *
  * Served standalone at /apps/lattice/app/theme.js and loaded (defer) by every
@@ -22,12 +25,30 @@
   const hex6 = (s) => { const m = /^#?([0-9a-f]{6})$/i.exec(String(s || '').trim()); return m && m[1]; };
   const rgb = (s) => { const h = hex6(s); return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)); };
   const css = (c) => '#' + c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
-  const lerp = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
-  // Compose's Color.luminance(): linear sRGB, Rec. 709 weights
-  const lum = (c) => {
-    const [r, g, b] = c.map((v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const toLin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const toByte = (v) => Math.min(255, Math.max(0, 255 * (v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055)));
+  // Compose's lerp(Color, Color, Float) mixes in Oklab, so the derived
+  // shades come out as Talon's do (Björn Ottosson's matrices)
+  const oklab = (c) => {
+    const [r, g, b] = c.map(toLin);
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    return [0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+      1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+      0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s];
   };
+  const fromOklab = ([L, A, B]) => {
+    const l = (L + 0.3963377774 * A + 0.2158037573 * B) ** 3;
+    const m = (L - 0.1055613458 * A - 0.0638541728 * B) ** 3;
+    const s = (L - 0.0894841775 * A - 1.2914855480 * B) ** 3;
+    return [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+      -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+      -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s].map(toByte);
+  };
+  const lerp = (a, b, t) => { const x = oklab(a), y = oklab(b); return fromOklab(x.map((v, i) => v + (y[i] - v) * t)); };
+  // Compose's Color.luminance(): linear sRGB, Rec. 709 weights
+  const lum = (c) => { const [r, g, b] = c.map(toLin); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
   const INK = [0x1c, 0x19, 0x17], PAPER = [0xfa, 0xfa, 0xf9];
   const on = (c) => (lum(c) > 0.4 ? INK : PAPER);
   const valid = (t) => !!t && String(t.name || '').trim() !== '' && FIVE.every((k) => hex6(t[k]));
@@ -68,6 +89,12 @@
     });
     return arrived;
   }
+  // Talon's accentOverride: the primary colour and the text on it (ink or
+  // white, by its own threshold). A tint and a pressed shade follow it.
+  const tinted = (v, a) => Object.assign({}, v, {
+    '--accent': css(a), '--on-accent': lum(a) > 0.5 ? '#1c1917' : '#ffffff',
+    '--accent-deep': css(lerp(a, [0, 0, 0], 0.2)), '--accent-tint': css(a) + '22',
+  });
   // light or dark forced over the built-in look: ground and ink only, so the
   // editor keeps its green and the reader its blue
   const FORCED = {
@@ -79,15 +106,30 @@
   const SEED_BG = { false: ['#fafafa', '#ffffff'], true: ['#1a1a1a', '#242424'] };
 
   // ── state: localStorage.latTheme, a cache of the ship's word plus the mode ─
-  // mine/talon are Talon's ThemeSettings shape: { themes: [...], activeId }
-  const DEFAULTS = { mode: 'system', mine: {}, useTalon: true, talon: null, at: 0 };
+  // mine/talon are Talon's ThemeSettings shape: { themes: [...], activeId };
+  // accent/talonAccent its AccentSettings: { enabled, mode, customHex };
+  // profile the %contacts profile colour, when an accent asked for it
+  const DEFAULTS = { mode: 'system', mine: {}, accent: {}, useTalon: true, talon: null,
+    talonAccent: null, profile: null, at: 0 };
   const load = () => { try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.latTheme || '{}')); } catch { return Object.assign({}, DEFAULTS); } };
   let st = load();
   const activeOf = (ts) => (ts && Array.isArray(ts.themes) && ts.themes.find((t) => t.id === ts.activeId && valid(t))) || null;
   const talonActive = () => (st.useTalon ? activeOf(st.talon) : null);
+  // an accent's colour, when it is on and has one. Unset reads as off: Talon
+  // turns it on by itself only for a multi-ship login, which we cannot see.
+  // An unknown mode reads as Profile, as Talon reads it.
+  const wantsProfile = (a) => !!a && a.enabled === true && a.mode !== 'Custom' && a.mode !== 'Brand';
+  const accentOf = (a) => {
+    if (!a || a.enabled !== true || a.mode === 'Brand') return null;
+    const h = a.mode === 'Custom' ? a.customHex : st.profile;
+    return hex6(h) ? rgb(h) : null;
+  };
+  const talonAccent = () => (st.useTalon ? accentOf(st.talonAccent) : null);
   function resolve() {
     const t = talonActive() || activeOf(st.mine);
-    return t ? themeVars(t) : FORCED[st.mode] || {};
+    const v = t ? themeVars(t) : FORCED[st.mode] || {};
+    const a = talonAccent() || accentOf(st.accent);
+    return a ? tinted(v, a) : v;
   }
 
   const mq = window.matchMedia('(prefers-color-scheme: dark)');
@@ -124,7 +166,7 @@
   // we could not ask, and the cached copy stands.
   const unwrap = (s) => { try { return typeof s === 'string' ? JSON.parse(s) : s; } catch { return null; } };
   async function scry(p) {
-    const r = await fetch('/~/scry/settings/' + p + '.json');
+    const r = await fetch('/~/scry/' + p + '.json');
     if (r.status === 404) return null;
     if (!r.ok) throw new Error(String(r.status));
     return r.json();
@@ -135,15 +177,28 @@
     const g = gen;
     const next = {};
     try {
-      const b = ((await scry('bucket/lattice/ui-prefs')) || {}).bucket || {};
+      const b = ((await scry('settings/bucket/lattice/ui-prefs')) || {}).bucket || {};
       next.mine = keepMore(unwrap(b.themes) || {}, st.mine);
+      next.accent = unwrap(b.accent) || {};
       next.useTalon = (unwrap(b['use-talon-theme']) || {}).enabled !== false;
     } catch { return; }
-    next.talon = st.talon;
+    next.talon = st.talon; next.talonAccent = st.talonAccent;
     if (next.useTalon) {
       try {
-        const e = await scry('entry/talon/ui-prefs/themes');
-        next.talon = e ? unwrap(e.entry) : null;
+        const b = ((await scry('settings/bucket/talon/ui-prefs')) || {}).bucket || {};
+        next.talon = unwrap(b.themes) || null;
+        next.talonAccent = unwrap(b.accent) || null;
+      } catch {}
+    }
+    // %contacts, v1: { color: { type: 'tint', value: 'ff.5050' } }. Asked
+    // only when an accent wants it; a %contacts that cannot answer leaves the
+    // last colour we had.
+    next.profile = st.profile;
+    if ((next.useTalon && wantsProfile(next.talonAccent)) || wantsProfile(next.accent)) {
+      try {
+        const c = ((await scry('contacts/v1/self')) || {}).color;
+        const h = String((c && typeof c === 'object' ? c.value : c) || '').replace(/^(0x|#)/i, '').replace(/\./g, '');
+        next.profile = /^[0-9a-f]{1,6}$/i.test(h) ? '#' + h.padStart(6, '0') : null;
       } catch {}
     }
     if (g !== gen) return;
@@ -184,7 +239,8 @@
       + '.thed input[type=color]{width:2.2em;height:1.8em;padding:0;border:1px solid #8886;border-radius:6px;background:none;vertical-align:middle;cursor:pointer}'
       + '.thdemo{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px;margin:.4rem 0;border:1px solid #8886;border-radius:8px}'
       + '.thdemo span{padding:4px 10px;border-radius:6px}.thdemo span:first-child{border:1px solid #8886}'
-      + '.thdemo ::selection{background:var(--selection,Highlight)}.thed summary{cursor:pointer;margin:.4rem 0}';
+      + '.thdemo ::selection{background:var(--selection,Highlight)}.thed summary{cursor:pointer;margin:.4rem 0}'
+      + '.thwell{width:2.6em;height:2.2em;padding:0;border:1px solid #8886;border-radius:6px;background:none;vertical-align:middle;cursor:pointer}';
     document.head.append(sty);
     const btn = (label, onclick, on) => {
       const b = document.createElement('button');
@@ -228,8 +284,39 @@
         ...(cur ? [btn('Edit', () => { draft = Object.assign({}, cur); draw(); }),
           btn('Delete', () => setMine({ themes: themes.filter((t) => t.id !== cur.id), activeId: null }))] : [])));
       if (draft) el.append(editor());
+      el.append(...accentSection());
       if (status) { const s = note(status); s.className = 'err'; el.append(s); }
     };
+    // Talon's accent: off, the profile colour, or any colour. A pick in the
+    // colour well paints as it moves and reaches the ship once it settles.
+    // mid-drag only repaints: a redraw would take the well, and the open
+    // picker with it, out from under the pointer
+    const setAccent = (a, send = true) => {
+      st.accent = a;
+      if (!send) { apply(resolve()); return; }
+      commit();
+      put('accent', a).then(() => { if (wantsProfile(a)) refresh(); });
+    };
+    function accentSection() {
+      const a = st.accent || {}, lit = a.enabled === true && a.mode !== 'Brand';
+      const how = !lit ? 'off' : a.mode === 'Custom' ? 'custom' : 'profile';
+      const hex = hex6(a.customHex) ? '#' + hex6(a.customHex).toLowerCase() : '#4a7c59';
+      const custom = (h) => ({ enabled: true, mode: 'Custom', customHex: h.toUpperCase() });
+      const well = document.createElement('input');
+      well.type = 'color'; well.value = hex; well.className = 'thwell';
+      well.oninput = () => setAccent(custom(well.value), false);
+      well.onchange = () => setAccent(custom(well.value));
+      const out = [note('An accent: one colour over whichever theme is in use, as in Talon.'),
+        row(btn('Off', () => setAccent({ enabled: false, mode: a.mode || 'Profile', customHex: a.customHex }), how === 'off'),
+          btn('Profile colour', () => setAccent({ enabled: true, mode: 'Profile', customHex: a.customHex }), how === 'profile'),
+          btn('Custom', () => setAccent(custom(hex)), how === 'custom'),
+          ...(how === 'custom' ? [well] : []))];
+      if (how === 'profile') {
+        out.push(note(st.profile ? 'Your %contacts profile colour is ' + st.profile + '.' : 'Your %contacts profile has no colour.'));
+      }
+      if (talonAccent()) out.push(note('Talon’s accent is on, so lattice wears it. Turn off “Use Talon’s theme” to use this one.'));
+      return out;
+    }
     function editor() {
       const box = document.createElement('div');
       box.className = 'thed';
@@ -308,8 +395,9 @@
   });
   const ui = document.getElementById('themeui');
   if (ui) mount(ui);
-  // ponytail: a page load asks the ship at most once a minute, so a theme
-  // changed in Talon shows up on the next page after that. The settings page
+  // ponytail: a page load asks the ship at most once a minute, so a theme or
+  // accent changed in Talon (or a new profile colour) shows up on the next
+  // page after that. The settings page
   // always asks. Live updates would need a %settings subscription.
   if (ui || Date.now() - st.at > 60000) refresh();
 })();
