@@ -783,6 +783,14 @@
   // mismatches the app's declared scheme and makes the iframe an opaque
   // white canvas in dark theme. Declare the scheme so it stays transparent
   // and the pane's theme background shows through.
+  // the preview frame is its own document, out of the theme's reach, so it
+  // gets a copy of what theme.js set inline on <html>: the colours and the
+  // forced color-scheme. Empty when nothing is forced, so the frame follows
+  // the OS as it always did.
+  const themeRoot = () => {
+    const s = document.documentElement.style;
+    return s.colorScheme ? 'html:root{' + s.cssText + '}' : '';
+  };
   const prevBlank = () => {
     prev.removeAttribute('src');
     prev.style.minHeight = '';
@@ -791,8 +799,8 @@
     // reliance is exactly the kind of behavior that differs between the
     // Chromium the tests run and the webkitgtk the desktop runs
     prev.srcdoc = '<style>:root{color-scheme:light dark}' +
-      'body{margin:0;background:#fafafa}' +
-      '@media(prefers-color-scheme:dark){body{background:#1a1a1a}}</style>';
+      'body{margin:0;background:var(--bg,#fafafa)}' +
+      '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot() + '</style>';
   };
   // grant paths are shown in the share/ACL surfaces, and every one carries
   // the same app base, pure noise on screen. Strip it, then keep the
@@ -2793,7 +2801,7 @@
     //  engine's native (light) bar. Every screenshot taken before this answer
     //  landed looked fixed; the one the user looks at is after it.
     if (typeof d.html === 'string' && d.kind !== 'tex') {
-      prev.removeAttribute('src'); prev.srcdoc = withPreviewScrollbars(d.html);
+      prev.removeAttribute('src'); prev.srcdoc = withPreviewScrollbars(d.html, true);
     }
     else if (!quiet) refreshPreview();
     // A quiet open is the COMMON one: the tree dump already carried the body,
@@ -3872,7 +3880,9 @@
   // ::-webkit-scrollbar rule off, so neither may appear in a preview
   // document. Scoped to html so an inner scroll box (a wide <pre>) keeps its
   // own styled bar.
-  const PREVIEW_SCROLLBARS = '<style>:root{color-scheme:light dark}html::-webkit-scrollbar{display:none}</style>';
+  // html:root, so a forced scheme outranks the document's own :root rule
+  const previewScrollbars = () => '<style>html:root{color-scheme:'
+    + (document.documentElement.style.colorScheme || 'light dark') + '}html::-webkit-scrollbar{display:none}</style>';
   // the height reporter the wrap listens for: posts once the document has
   // loaded, and again when its body resizes. Each call stamps a fresh seq so
   // the parent can tell a new document from a resize of the old one. Mirrored
@@ -3883,12 +3893,14 @@
   let fitSeq = 0;
   const previewFit = () => {
     if (prev) prev.style.minHeight = '';
-    return PREVIEW_SCROLLBARS
+    return previewScrollbars()
       + '<script>(function(){var S=' + (++fitSeq) + ';function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0),seq:S},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)})})()</script>';
   };
-  const withPreviewScrollbars = (html) => {
+  // `ours`: the document is lattice's own render (the ship's reader css), so
+  // it takes the theme's colours too. A user's html page keeps its own.
+  const withPreviewScrollbars = (html, ours) => {
     const head = /<head\b[^>]*>/i.exec(html);
-    const fit = previewFit();
+    const fit = previewFit() + (ours && themeRoot() ? '<style>' + themeRoot() + '</style>' : '');
     if (head) return html.slice(0, head.index + head[0].length) + fit + html.slice(head.index + head[0].length);
     const root = /<html\b[^>]*>/i.exec(html);
     if (root) return html.slice(0, root.index + root[0].length) + fit + html.slice(root.index + root[0].length);
@@ -3927,8 +3939,8 @@
       // to the top page is what the sandbox token above actually permits.
       prev.srcdoc = '<!doctype html><meta charset="utf-8"><base target="_top">'
         + '<style>:root{color-scheme:light dark}'
-        + 'body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;background:#fafafa}'
-        + '@media(prefers-color-scheme:dark){body{background:#1a1a1a}}'
+        + 'body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;background:var(--bg,#fafafa);color:var(--text)}'
+        + '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot()
         // NO scrollbar-width / scrollbar-color here: either one switches the
         // ::-webkit-scrollbar rules off, including the html-level hide that
         // previewFit appends. Inner scroll boxes (a wide <pre>) keep flat bars.
@@ -6814,20 +6826,8 @@
   // testing for the desktop alone would hide these on an older build with no
   // menubar behind them and make every one of these commands unreachable.
   //
-  // The window's native surfaces (the GTK menubar, the engine's own
-  // scrollbars) follow the WINDOW theme, which on Linux is GTK's light
-  // default whatever the desktop portal says, so a dark page sat under a
-  // white menubar. The page is the one that knows prefers-color-scheme, so it
-  // tells the shell, now and on every change. An older shell without the
-  // command refuses the invoke; that is caught and nothing else changes.
-  if (window.__TAURI__) {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const tell = () => {
-      try { window.__TAURI__.core.invoke('set_theme', { dark: mq.matches }).catch(() => {}); } catch {}
-    };
-    tell();
-    mq.addEventListener('change', tell);
-  }
+  // (The window's light/dark, set_theme, is ui-app/theme.js's job: a theme
+  // can force it, and the reader pages need it too.)
   if (window.__TAURI__ && window.__LATTICE_FILE_MENU__) {
     for (const id of ['newfile', 'newfolder', 'newtmpl', 'upfiles', 'updir', 'save']) {
       const el = document.getElementById(id);

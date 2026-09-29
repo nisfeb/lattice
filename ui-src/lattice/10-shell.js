@@ -126,6 +126,14 @@
   // mismatches the app's declared scheme and makes the iframe an opaque
   // white canvas in dark theme. Declare the scheme so it stays transparent
   // and the pane's theme background shows through.
+  // the preview frame is its own document, out of the theme's reach, so it
+  // gets a copy of what theme.js set inline on <html>: the colours and the
+  // forced color-scheme. Empty when nothing is forced, so the frame follows
+  // the OS as it always did.
+  const themeRoot = () => {
+    const s = document.documentElement.style;
+    return s.colorScheme ? 'html:root{' + s.cssText + '}' : '';
+  };
   const prevBlank = () => {
     prev.removeAttribute('src');
     prev.style.minHeight = '';
@@ -134,8 +142,8 @@
     // reliance is exactly the kind of behavior that differs between the
     // Chromium the tests run and the webkitgtk the desktop runs
     prev.srcdoc = '<style>:root{color-scheme:light dark}' +
-      'body{margin:0;background:#fafafa}' +
-      '@media(prefers-color-scheme:dark){body{background:#1a1a1a}}</style>';
+      'body{margin:0;background:var(--bg,#fafafa)}' +
+      '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot() + '</style>';
   };
   // grant paths are shown in the share/ACL surfaces, and every one carries
   // the same app base, pure noise on screen. Strip it, then keep the

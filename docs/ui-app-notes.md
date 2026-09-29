@@ -70,6 +70,16 @@ from the desk. The ball never sees the source files.
 | 98-legacy.js | one-time legacy agent import |
 | 99-boot.js | boot snapshot + URL dispatch |
 
+## Theme
+
+`ui-app/theme.js` is shared by the editor and every reader page (+pwa-head),
+like vault.js. It writes the theme as inline properties on `<html>`
+(`--bg`, `--text`, `--accent`, `--pop`, ... and `color-scheme`). Every
+stylesheet reads them as `var(--x, <its own colour>)`, so with no theme
+nothing changes. A new colour that should follow the theme goes through one
+of those tokens, never a literal. The preview frame is its own document, so
+`themeRoot()` (10-shell.js) copies the inline set into it.
+
 ## Dev loop
 
 Edit `src/` → `node scripts/build-ui.mjs` → deploy to the tyr harness →
