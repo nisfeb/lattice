@@ -122,7 +122,9 @@
   // ::-webkit-scrollbar rule off, so neither may appear in a preview
   // document. Scoped to html so an inner scroll box (a wide <pre>) keeps its
   // own styled bar.
-  const PREVIEW_SCROLLBARS = '<style>:root{color-scheme:light dark}html::-webkit-scrollbar{display:none}</style>';
+  // html:root, so a forced scheme outranks the document's own :root rule
+  const previewScrollbars = () => '<style>html:root{color-scheme:'
+    + (document.documentElement.style.colorScheme || 'light dark') + '}html::-webkit-scrollbar{display:none}</style>';
   // the height reporter the wrap listens for: posts once the document has
   // loaded, and again when its body resizes. Each call stamps a fresh seq so
   // the parent can tell a new document from a resize of the old one. Mirrored
@@ -133,12 +135,14 @@
   let fitSeq = 0;
   const previewFit = () => {
     if (prev) prev.style.minHeight = '';
-    return PREVIEW_SCROLLBARS
+    return previewScrollbars()
       + '<script>(function(){var S=' + (++fitSeq) + ';function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0),seq:S},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)})})()</script>';
   };
-  const withPreviewScrollbars = (html) => {
+  // `ours`: the document is lattice's own render (the ship's reader css), so
+  // it takes the theme's colours too. A user's html page keeps its own.
+  const withPreviewScrollbars = (html, ours) => {
     const head = /<head\b[^>]*>/i.exec(html);
-    const fit = previewFit();
+    const fit = previewFit() + (ours && themeRoot() ? '<style>' + themeRoot() + '</style>' : '');
     if (head) return html.slice(0, head.index + head[0].length) + fit + html.slice(head.index + head[0].length);
     const root = /<html\b[^>]*>/i.exec(html);
     if (root) return html.slice(0, root.index + root[0].length) + fit + html.slice(root.index + root[0].length);
@@ -177,8 +181,8 @@
       // to the top page is what the sandbox token above actually permits.
       prev.srcdoc = '<!doctype html><meta charset="utf-8"><base target="_top">'
         + '<style>:root{color-scheme:light dark}'
-        + 'body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;background:#fafafa}'
-        + '@media(prefers-color-scheme:dark){body{background:#1a1a1a}}'
+        + 'body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;background:var(--bg,#fafafa);color:var(--text)}'
+        + '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot()
         // NO scrollbar-width / scrollbar-color here: either one switches the
         // ::-webkit-scrollbar rules off, including the html-level hide that
         // previewFit appends. Inner scroll boxes (a wide <pre>) keep flat bars.

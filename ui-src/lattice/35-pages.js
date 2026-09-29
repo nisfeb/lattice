@@ -127,7 +127,7 @@
     //  engine's native (light) bar. Every screenshot taken before this answer
     //  landed looked fixed; the one the user looks at is after it.
     if (typeof d.html === 'string' && d.kind !== 'tex') {
-      prev.removeAttribute('src'); prev.srcdoc = withPreviewScrollbars(d.html);
+      prev.removeAttribute('src'); prev.srcdoc = withPreviewScrollbars(d.html, true);
     }
     else if (!quiet) refreshPreview();
     // A quiet open is the COMMON one: the tree dump already carried the body,

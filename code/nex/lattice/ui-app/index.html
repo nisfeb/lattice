@@ -9,6 +9,10 @@
      runtime and track the theme, so keep them equal to --bg in both schemes. -->
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fafafa">
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1a1a">
+<!-- theme (ui-app/theme.js): paint the last resolved one before the body does.
+     Same line as app.hoon's +pwa-head, which the reader pages carry. -->
+<script>try{var v=JSON.parse(localStorage.latThemeVars||"{}"),s=document.documentElement.style;for(var k in v)s.setProperty(k,v[k])}catch(e){}</script>
+<script src="/apps/lattice/app/theme.js" defer></script>
 <title>lattice</title>
 <!-- css + icon inlined: every asset request costs ~2s on the serialized
      pier, so the shell ships as one document -->
@@ -17,7 +21,8 @@
 * { box-sizing: border-box; }
 :root {
   color-scheme: light dark;
-  --green: #4a7c59; --green-deep: #3a6347;
+  /* a theme (theme.js) sets --accent and friends inline on <html> */
+  --green: var(--accent, #4a7c59); --green-deep: var(--accent-deep, #3a6347);
   --bg: #fafafa; --text: #1a1a1a; --muted: #8a8a8a;
   --border: #8886; --border-soft: #8883; --surface: #8881;
   /* editor typography, overridden from the settings page (see 05-prefs.js).
@@ -56,7 +61,7 @@ select { appearance: none; -webkit-appearance: none; cursor: pointer;
 select:hover, select:focus { border-color: var(--green); }
 /* the popup list itself is OS-drawn. color-scheme is what makes it follow
    the theme instead of rendering white-on-white in dark mode. */
-select, option { color-scheme: light dark; }
+select, option { color-scheme: inherit; }
 .muted { color: var(--muted); }
 
 /* pane widths are custom properties so the drag handles (.psplit) can move
@@ -187,7 +192,7 @@ select, option { color-scheme: light dark; }
 .offbadge::before { content: ""; width: .5em; height: .5em; border-radius: 50%;
   background: currentColor; }
 .offbadge.syncing { border-color: var(--green); color: var(--green);
-  background: #4a7c591a; }
+  background: var(--accent-tint, #4a7c591a); }
 @media (prefers-color-scheme: dark) {
   .offbadge { border-color: #d4a017; color: #d4a017; background: #d4a01722; }
   .offbadge.syncing { border-color: #7fb08a; color: #7fb08a; background: #7fb08a22; }
@@ -200,7 +205,7 @@ select, option { color-scheme: light dark; }
   content: attr(data-n);
   position: absolute; top: -5px; right: -5px;
   min-width: 1.05em; padding: 0 .25em;
-  border-radius: 999px; background: var(--green); color: #fff;
+  border-radius: 999px; background: var(--green); color: var(--on-accent, #fff);
   font-size: .62rem; font-weight: 700; line-height: 1.35;
   text-align: center; pointer-events: none;
 }
@@ -231,7 +236,7 @@ select, option { color-scheme: light dark; }
   text-decoration: none; color: inherit; white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; }
 .tree a.pg:hover { background: var(--surface); }
-.tree a.pg.cur { background: #4a7c5922; color: var(--green); font-weight: 600; }
+.tree a.pg.cur { background: var(--accent-tint, #4a7c5922); color: var(--green); font-weight: 600; }
 /*  A row for a page the ship has not confirmed yet. It pulses rather than
     spinning: a spinner in a dense tree reads as an error badge, and this has
     to sit inside a row of text without changing its size or its position.
@@ -254,14 +259,15 @@ select, option { color-scheme: light dark; }
 .tree .fld .cx { width: .9em; font-size: .7rem; flex: none; user-select: none; }
 .tree .fld .addf { margin-left: auto; color: var(--green); font-weight: 700;
   padding: 0 6px; border-radius: 4px; text-decoration: none; flex: none; }
-.tree .fld .addf:hover { background: #4a7c5922; }
+.tree .fld .addf:hover { background: var(--accent-tint, #4a7c5922); }
 .tree .ind { margin-left: 14px; }
 
 .edwrap { grid-row: 3; grid-column: 2; position: relative; overflow: hidden;
   border-right: 1px solid var(--border-soft); }
-/* color-scheme here too, not only in the blank srcdoc: it covers the instant
-   between the iframe being created and its srcdoc being assigned, which is
-   otherwise an opaque white flash on a dark theme. */
+/* the frame inherits the root's color-scheme (a theme can force it), not
+   only the srcdoc's: that covers the instant between the iframe being created
+   and its srcdoc being assigned, otherwise an opaque white flash on a dark
+   theme. */
 .prevwrap { grid-row: 3; grid-column: 3; overflow: auto; background: var(--bg); }
 /* the frame grows to its content (min-height set by 60-preview.js) and the
    wrap scrolls. WebKit takes a frame's scrollbar style from its OWNING
@@ -269,7 +275,7 @@ select, option { color-scheme: light dark; }
    reached the preview frame and drew a light track over its canvas. This is
    the bar that stayed white through every attempt inside the document. Off. */
 .prev { display: block; width: 100%; height: 100%; border: 0;
-  background: var(--bg); color-scheme: light dark; }
+  background: var(--bg); }
 .prev::-webkit-scrollbar { display: none; }
 .ctl { grid-row: 3; grid-column: 4; overflow: auto; padding: 10px;
   border-left: 1px solid var(--border-soft); }
@@ -302,14 +308,14 @@ select, option { color-scheme: light dark; }
   color: inherit; cursor: pointer; }
 .grow-row button:hover { border-color: var(--green); }
 .grow-row button.on { border-color: var(--green); color: var(--green);
-  background: #4a7c5922; }
+  background: var(--accent-tint, #4a7c5922); }
 #cwurl { font-size: .85rem; margin-top: 6px; word-break: break-all; }
 .mvbtn { margin-top: 18px; width: 100%; }
 .del { margin-top: 8px; color: #c0392b; border-color: #c0392b55 !important;
   width: 100%; }
 .tree .fld .mvf { color: var(--muted); text-decoration: none; padding: 0 4px;
   border-radius: 4px; flex: none; }
-.tree .fld .mvf:hover { color: var(--green); background: #4a7c5922; }
+.tree .fld .mvf:hover { color: var(--green); background: var(--accent-tint, #4a7c5922); }
 /* wikilink autocomplete. #acmirror is an offscreen clone of the textarea's
    text geometry used only to locate the caret. The editor soft-wraps, so a
    monospace column calculation would be wrong on any wrapped line. */
@@ -317,12 +323,12 @@ select, option { color-scheme: light dark; }
   top: 0; left: 0; white-space: pre-wrap; overflow-wrap: break-word; }
 .ac { position: absolute; z-index: 3; min-width: 13rem; max-width: 26rem;
   max-height: 13rem; overflow-y: auto; padding: 4px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  background: var(--pop, var(--bg)); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 6px 24px #0003; font: 13px/1.5 ui-monospace, monospace; }
 .ac[hidden] { display: none; }
 .ac .row { display: flex; align-items: baseline; gap: 6px; padding: 4px 8px;
   border-radius: 5px; cursor: pointer; white-space: nowrap; }
-.ac .row.on { background: #4a7c5922; }
+.ac .row.on { background: var(--accent-tint, #4a7c5922); }
 .ac .row .nm { color: var(--text); font-weight: 600; }
 .ac .row .dir { color: var(--muted); font-size: .85em; overflow: hidden;
   text-overflow: ellipsis; }
@@ -407,7 +413,7 @@ select, option { color-scheme: light dark; }
   #mmore { display: flex; }
   #msheet { position: absolute; right: 8px; top: 100%; z-index: 40;
     display: flex; flex-direction: column; min-width: 13rem;
-    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    background: var(--pop, var(--bg)); border: 1px solid var(--border); border-radius: 8px;
     overflow: hidden; box-shadow: 0 6px 24px #0003; }
   #msheet[hidden] { display: none; }
   #msheet button { font: 16px/1 inherit; font-size: 16px; text-align: left;
@@ -495,7 +501,7 @@ select, option { color-scheme: light dark; }
 .aclbody > .row input:focus { outline: none; border-color: var(--green); }
 .aclbody > .row button { font: inherit; padding: 7px 14px; cursor: pointer;
   border: 1px solid var(--green-deep); border-radius: 6px;
-  background: var(--green); color: #fff; }
+  background: var(--green); color: var(--on-accent, #fff); }
 .aclgrid { display: grid; gap: 14px; max-width: 1100px; margin: 0 auto;
   grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); }
 .aclcard { border: 1px solid var(--border); border-radius: 10px; padding: 12px;
@@ -539,7 +545,7 @@ select, option { color-scheme: light dark; }
 .dlg { position: fixed; inset: 0; background: #0008; display: grid;
   place-items: center; z-index: 50; }
 .dlg[hidden] { display: none; }
-.dlgbox { background: var(--bg); border: 1px solid var(--border);
+.dlgbox { background: var(--pop, var(--bg)); border: 1px solid var(--border);
   border-radius: 10px; padding: 18px; width: min(400px, 92vw);
   display: grid; gap: 12px; box-shadow: 0 8px 30px #0004; }
 #dlgmsg { overflow-wrap: break-word; white-space: pre-wrap; }
@@ -567,12 +573,12 @@ select, option { color-scheme: light dark; }
 .dlgbtns { display: flex; gap: 8px; justify-content: flex-end; }
 .dlgbtns button { font: inherit; padding: 6px 14px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--surface); color: inherit; cursor: pointer; }
-#dlgok { background: var(--green); border-color: var(--green); color: #fff; }
+#dlgok { background: var(--green); border-color: var(--green); color: var(--on-accent, #fff); }
 
 /* folder selection + clearweb indicator */
 .tree .fld { cursor: pointer; }
 .tree .fld.cur > span:nth-child(2) { color: var(--green); font-weight: 600; }
-.tree .fld .cw { color: #1a6ed8; margin-left: 5px; font-size: .85em; }
+.tree .fld .cw { color: var(--accent, #1a6ed8); margin-left: 5px; font-size: .85em; }
 
 /* lazy control panels: header is the toggle, content loads on first expand */
 #histh, #linkh { cursor: pointer; user-select: none; }
@@ -603,10 +609,10 @@ ul.qlist a:hover { background: var(--surface); }
   display: inline-block; padding: 1px 7px; border-radius: 999px;
   border: 1px solid #8886; font-size: .75rem; white-space: nowrap; flex: 0 0 auto;
 }
-.qbadge.clearweb { border-color: #1a6ed8; color: #1a6ed8; }
-.qbadge.urbit    { border-color: #7a5af8; color: #7a5af8; }
-.qbadge.private  { border-color: #8a8a8a; color: #8a8a8a; }
-.qbadge.knowledge{ border-color: #0a9a6a; color: #0a9a6a; }
+.qbadge.clearweb { border-color: var(--accent, #1a6ed8); color: var(--accent, #1a6ed8); }
+.qbadge.urbit    { border-color: var(--secondary, #7a5af8); color: var(--secondary, #7a5af8); }
+.qbadge.private  { border-color: var(--muted); color: var(--muted); }
+.qbadge.knowledge{ border-color: var(--tertiary, #0a9a6a); color: var(--tertiary, #0a9a6a); }
 /*  exposure could not be determined. Deliberately NOT styled like private:
     the whole point is that it is not a claim. */
 .qbadge.unknown  { border-color: #c07000; color: #c07000; }
