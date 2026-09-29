@@ -1,6 +1,8 @@
 /* Lattice theming, the same model as Talon's (composeApp ui/theme/*.kt):
  *   - a per-device mode: system, light or dark
- *   - user-made themes: five colours picked, everything else derived. They
+ *   - user-made themes: five colours picked, everything else derived, and
+ *     six more a theme may set instead of having them derived (MORE: text,
+ *     muted, raised, error, selection, link; "" or absent is derived). They
  *     live in the ship's %settings (desk lattice, bucket ui-prefs, entry
  *     themes, Talon's exact shape), so they follow the user to every device
  *   - "use Talon's theme", on unless turned off: Talon's active custom theme,
@@ -29,21 +31,42 @@
   const INK = [0x1c, 0x19, 0x17], PAPER = [0xfa, 0xfa, 0xf9];
   const on = (c) => (lum(c) > 0.4 ? INK : PAPER);
   const valid = (t) => !!t && String(t.name || '').trim() !== '' && FIVE.every((k) => hex6(t[k]));
+  // the six a theme may set instead of having them derived, Talon's names.
+  // Writers write all six, "" for derived, so an absent one means an older
+  // writer dropped it (see keepMore)
+  const MORE = ['text', 'muted', 'raised', 'error', 'selection', 'link'];
+  // links under a custom theme: Talon's link blue, unless the theme says
+  const LINK = '#2962ff';
   // the inline properties a theme may set on <html>; each stylesheet reads
   // them as var(--x, <its own colour>), so an unset one changes nothing
   const KEYS = ['color-scheme', '--bg', '--text', '--muted', '--pop', '--accent', '--accent-deep',
-    '--on-accent', '--accent-tint', '--secondary', '--tertiary'];
+    '--on-accent', '--accent-tint', '--secondary', '--tertiary', '--link', '--raised', '--error', '--selection'];
   function themeVars(t) {
-    const p = rgb(t.primary), bg = rgb(t.background), text = on(bg);
-    return {
+    const p = rgb(t.primary), bg = rgb(t.background);
+    const text = hex6(t.text) ? rgb(t.text) : on(bg);
+    const v = {
       'color-scheme': t.dark ? 'dark' : 'light',
-      '--bg': css(bg), '--text': css(text), '--muted': css(lerp(text, bg, 0.35)),
+      '--bg': css(bg), '--text': css(text), '--muted': css(hex6(t.muted) ? rgb(t.muted) : lerp(text, bg, 0.35)),
       // Talon draws every popup in the surface colour; lattice has no cards
       '--pop': css(rgb(t.surface)),
       '--accent': css(p), '--on-accent': css(on(p)),
       '--accent-deep': css(lerp(p, [0, 0, 0], 0.2)), '--accent-tint': css(p) + '22',
       '--secondary': css(rgb(t.secondary)), '--tertiary': css(rgb(t.tertiary)),
+      '--link': hex6(t.link) ? css(rgb(t.link)) : LINK,
     };
+    // the rest only when named: unset, each stylesheet keeps its own
+    for (const k of ['raised', 'error', 'selection']) if (hex6(t[k])) v['--' + k] = css(rgb(t[k]));
+    return v;
+  }
+  // A theme the ship sends back with one of MORE missing was rewritten by an
+  // older writer that did not know it: keep ours. "" is a real answer.
+  function keepMore(arrived, local) {
+    const ours = new Map(((local && local.themes) || []).map((t) => [t.id, t]));
+    ((arrived && arrived.themes) || []).forEach((t) => {
+      const o = ours.get(t.id);
+      if (o) MORE.forEach((k) => { if (!(k in t) && k in o) t[k] = o[k]; });
+    });
+    return arrived;
   }
   // light or dark forced over the built-in look: ground and ink only, so the
   // editor keeps its green and the reader its blue
@@ -113,7 +136,7 @@
     const next = {};
     try {
       const b = ((await scry('bucket/lattice/ui-prefs')) || {}).bucket || {};
-      next.mine = unwrap(b.themes) || {};
+      next.mine = keepMore(unwrap(b.themes) || {}, st.mine);
       next.useTalon = (unwrap(b['use-talon-theme']) || {}).enabled !== false;
     } catch { return; }
     next.talon = st.talon;
@@ -154,13 +177,14 @@
   // ── settings page: #themeui ───────────────────────────────────────────────
   let draw = null;
   function mount(el) {
-    let draft = null;
+    let draft = null, moreOpen = false;
     const sty = document.createElement('style');
     sty.textContent = '.btn.on{border-color:var(--accent,#1a6ed8);color:var(--accent,#1a6ed8)}'
       + '.thed input:not([type]){font:inherit;padding:6px 9px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}'
       + '.thed input[type=color]{width:2.2em;height:1.8em;padding:0;border:1px solid #8886;border-radius:6px;background:none;vertical-align:middle;cursor:pointer}'
       + '.thdemo{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px;margin:.4rem 0;border:1px solid #8886;border-radius:8px}'
-      + '.thdemo span{padding:4px 10px;border-radius:6px}.thdemo span:first-child{border:1px solid #8886}';
+      + '.thdemo span{padding:4px 10px;border-radius:6px}.thdemo span:first-child{border:1px solid #8886}'
+      + '.thdemo ::selection{background:var(--selection,Highlight)}.thed summary{cursor:pointer;margin:.4rem 0}';
     document.head.append(sty);
     const btn = (label, onclick, on) => {
       const b = document.createElement('button');
@@ -197,7 +221,8 @@
       el.append(row(
         btn('New theme', () => {
           const d = isDark(), [bg, sf] = SEED_BG[d];
-          draft = Object.assign({ id: Math.random().toString(36).slice(2), name: '', dark: d }, SEED, { background: bg, surface: sf });
+          draft = Object.assign({ id: Math.random().toString(36).slice(2), name: '', dark: d }, SEED, { background: bg, surface: sf },
+            Object.fromEntries(MORE.map((k) => [k, ''])));
           draw();
         }),
         ...(cur ? [btn('Edit', () => { draft = Object.assign({}, cur); draw(); }),
@@ -213,6 +238,7 @@
       const save = btn('Save and use', () => {
         const others = (Array.isArray(st.mine.themes) ? st.mine.themes : []).filter((t) => t.id !== draft.id);
         const d = draft; draft = null;
+        MORE.forEach((k) => { d[k] = hex6(d[k]) ? '#' + hex6(d[k]).toUpperCase() : ''; });
         setMine({ themes: others.concat(d), activeId: d.id });
       });
       const sync = () => {
@@ -222,6 +248,10 @@
         Object.assign(pill.style, { background: v['--accent'], color: v['--on-accent'] });
         Object.assign(pop.style, { background: v['--pop'] });
         sec.style.color = v['--secondary']; ter.style.color = v['--tertiary'];
+        lnk.style.color = v['--link']; er.style.color = v['--error'] || '#c0392b';
+        Object.assign(rz.style, { background: v['--raised'] || '#8881' });
+        if (v['--selection']) demo.style.setProperty('--selection', v['--selection']);
+        else demo.style.removeProperty('--selection');
       };
       name.oninput = () => { draft.name = name.value; sync(); };
       box.append(row(name), row(
@@ -234,13 +264,32 @@
         l.append(c, ' ' + k[0].toUpperCase() + k.slice(1));
         return l;
       })));
+      // the six Talon lets a theme name instead of deriving: Auto until set
+      const LABEL = { text: 'Text', muted: 'Muted text', raised: 'Raised', error: 'Error', selection: 'Selection', link: 'Links' };
+      const more = document.createElement('details'), sum = document.createElement('summary');
+      sum.textContent = 'More colours';
+      more.open = moreOpen || MORE.some((k) => hex6(draft[k]));
+      more.ontoggle = () => { moreOpen = more.open; };
+      more.append(sum, ...MORE.map((k) => {
+        const l = document.createElement('label'), c = document.createElement('input');
+        const v = themeVars(draft), shown = { text: v['--text'], muted: v['--muted'], raised: v['--pop'],
+          error: '#c0392b', selection: v['--accent'], link: v['--link'] }[k];
+        c.type = 'color'; c.value = '#' + (hex6(draft[k]) || hex6(shown)).toLowerCase();
+        const auto = btn('Auto', () => { draft[k] = ''; draw(); }, !hex6(draft[k]));
+        c.oninput = () => { draft[k] = c.value.toUpperCase(); auto.classList.remove('on'); sync(); };
+        l.append(c, ' ' + LABEL[k]);
+        return row(l, auto);
+      }));
+      box.append(more);
       // the same preview Talon's editor shows: ground, a popup, the accents
       const demo = document.createElement('div'), pop = document.createElement('span'),
-        pill = document.createElement('span'), sec = document.createElement('span'), ter = document.createElement('span');
+        pill = document.createElement('span'), sec = document.createElement('span'), ter = document.createElement('span'),
+        lnk = document.createElement('a'), er = document.createElement('span'), rz = document.createElement('span');
       demo.className = 'thdemo';
       pop.textContent = 'A menu on a surface.'; pill.textContent = 'Primary';
       sec.textContent = 'Secondary'; ter.textContent = 'Tertiary';
-      demo.append(pop, pill, sec, ter);
+      lnk.textContent = 'A link'; er.textContent = 'An error'; rz.textContent = 'Raised';
+      demo.append(pop, pill, sec, ter, lnk, er, rz);
       box.append(demo, row(save, btn('Cancel', () => { draft = null; draw(); })));
       sync();
       return box;
