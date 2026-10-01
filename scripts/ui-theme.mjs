@@ -5,6 +5,7 @@
 // with nothing, or no ship at all, leaves behind. theme.js runs as-is in a vm
 // with a stub document and a fake ship behind fetch.
 import { readFileSync } from 'fs';
+import { createHash, webcrypto } from 'crypto';
 import vm from 'vm';
 
 const src = readFileSync(new URL('../code/nex/lattice/ui-app/theme.js', import.meta.url), 'utf8');
@@ -14,30 +15,33 @@ const check = (name, ok, detail = '') => {
   if (!ok) fails++;
 };
 
-// ship: scry path after /~/scry/ -> JSON body (absent = 404). offline: every
-// fetch throws.
+// ship: scry path after /~/scry/ -> JSON body, or any other url -> its bytes
+// (absent = 404). offline: every fetch throws. faces: the page fonts added.
 async function boot({ ship = {}, cache = {}, offline = false } = {}) {
-  const props = {}, asked = [];
+  const props = {}, asked = [], faces = [];
   const style = {
     setProperty: (k, v) => { props[k] = v; },
     removeProperty: (k) => { delete props[k]; },
     get colorScheme() { return props['color-scheme'] || ''; },
   };
   const localStorage = Object.assign({}, cache);
-  const reply = (status, body) => ({ status, ok: status < 300, json: async () => body, text: async () => body });
+  const reply = (status, body) => ({ status, ok: status < 300, json: async () => body, text: async () => body,
+    arrayBuffer: async () => body });
   const fetch = async (url) => {
     asked.push(url);
     if (offline) throw new Error('offline');
-    const p = /^\/~\/scry\/(.*)\.json$/.exec(url)[1];
+    const m = /^\/~\/scry\/(.*)\.json$/.exec(url), p = m ? m[1] : url;
     return p in ship ? reply(200, ship[p]) : reply(404);
   };
   vm.runInNewContext(src, {
     window: { matchMedia: () => ({ matches: false, addEventListener() {} }), addEventListener() {} },
-    document: { documentElement: { style }, querySelectorAll: () => [], getElementById: () => null },
-    localStorage, fetch,
+    document: { documentElement: { style }, querySelectorAll: () => [], getElementById: () => null,
+      fonts: { add: (f) => faces.push(f) } },
+    FontFace: class { constructor(family, bytes, d) { Object.assign(this, { family, d }); } async load() { return this; } },
+    crypto: webcrypto, localStorage, fetch,
   });
-  await new Promise((r) => setTimeout(r, 20));
-  return { props, asked, vars: JSON.parse(localStorage.latThemeVars || 'null') };
+  await new Promise((r) => setTimeout(r, 60));
+  return { props, asked, faces, vars: JSON.parse(localStorage.latThemeVars || 'null') };
 }
 
 const LAT = 'settings/bucket/lattice/ui-prefs', TAL = 'settings/bucket/talon/ui-prefs', ME = 'contacts/v1/self';
@@ -60,9 +64,11 @@ const mine = (extra = {}) => bucket(Object.assign({ themes: { themes: [moss], ac
   check('popups take the surface colour', props['--pop'] === '#1a1625');
 }
 {
-  const { props, asked } = await boot({ ship: { [LAT]: mine({ 'use-talon-theme': { enabled: false } }), [TAL]: talon('d') } });
+  const { props } = await boot({ ship: { [LAT]: mine({ 'use-talon-theme': { enabled: false } }), [TAL]: talon('d') } });
   check("turned off, lattice's own theme applies", props['--accent'] === '#2f6b3a', props['--accent']);
-  check('turned off, Talon is not even asked', !asked.some((u) => u.includes('/talon/')));
+  const { asked } = await boot({ ship: { [LAT]: mine({ 'use-talon-theme': { enabled: false }, 'use-talon-font': { enabled: false } }),
+    [TAL]: talon('d') } });
+  check("theme and font both turned off: Talon is not even asked", !asked.some((u) => u.includes('/talon/')));
 }
 {
   const { props } = await boot({ ship: { [LAT]: mine(), [TAL]: talon(null) } });
@@ -193,6 +199,52 @@ const talonWith = (t) => ({ [LAT]: { bucket: {} }, [TAL]: bucket({ themes: { the
   check("as Talon draws it: the surface for ground, outlineVariant for dividers, the open row's tint",
     props['--bg'] === '#091d25' && props['--border-soft'] === '#283940' && props['--accent-tint'] === '#90fb6038',
     JSON.stringify(props));
+}
+
+// ── Talon's font ────────────────────────────────────────────────────────────
+const fontFile = new Uint8Array([0, 1, 0, 0, 7, 7, 7]).buffer;   // stands in for a .ttf
+const fontId = createHash('sha256').update(Buffer.from(fontFile)).digest('hex');
+const fontUrl = (id) => '/grubbery/api/file/talon/fonts/' + id + '.font';
+const berkeley = (extra = {}) => Object.assign({ fonts: [{ id: fontId, family: 'Berkeley Mono', weight: 700, italic: false }],
+  family: 'Berkeley Mono', removed: [] }, extra);
+{
+  const { props, faces } = await boot({ ship: { [LAT]: { bucket: {} }, [TAL]: bucket({ fonts: berkeley() }), [fontUrl(fontId)]: fontFile } });
+  check("Talon's installed font is lattice's, with a fallback", props['--font'] === '"Berkeley Mono", system-ui, sans-serif', props['--font']);
+  check('...its file fetched from the ship and made a page font at its weight',
+    faces.length === 1 && faces[0].family === 'Berkeley Mono' && faces[0].d.weight === '700', JSON.stringify(faces));
+}
+{
+  const bad = 'f'.repeat(64);
+  const { props, faces } = await boot({ ship: { [LAT]: { bucket: {} },
+    [TAL]: bucket({ fonts: berkeley({ fonts: [{ id: bad, family: 'Berkeley Mono', weight: 700 }] }) }), [fontUrl(bad)]: fontFile } });
+  check("a file that is not the one listed (its sha256 is not its id) is not used",
+    faces.length === 0 && props['--font'].startsWith('"Berkeley Mono"'), JSON.stringify(faces));
+}
+{
+  const { props, asked } = await boot({ ship: { [LAT]: { bucket: {} }, [TAL]: bucket({ fonts: { fonts: [], family: 'monospace' } }) } });
+  check("Talon's monospace is the generic stack, and no file is asked for",
+    props['--font'] === 'ui-monospace, Menlo, Consolas, monospace' && !asked.some((u) => u.includes('/fonts/')), props['--font']);
+}
+{
+  const { props } = await boot({ ship: { [LAT]: { bucket: {} }, [TAL]: bucket({ fonts: { fonts: [], family: null } }) } });
+  check("Talon on the system's font sets nothing", !('--font' in props), JSON.stringify(props));
+}
+{
+  const { props, faces, asked } = await boot({ ship: { [LAT]: bucket({ 'use-talon-font': { enabled: false } }),
+    [TAL]: bucket({ fonts: berkeley() }), [fontUrl(fontId)]: fontFile } });
+  check("turned off, Talon's font is ignored and no file fetched",
+    !('--font' in props) && faces.length === 0 && !asked.some((u) => u.includes('/fonts/')), JSON.stringify(props));
+}
+{
+  const { props } = await boot({ ship: { [LAT]: bucket({ 'use-talon-theme': { enabled: false } }),
+    [TAL]: talon('d', { fonts: berkeley() }), [fontUrl(fontId)]: fontFile } });
+  check("the font is its own setting: Talon's theme off, its font still followed",
+    props['--font'] === '"Berkeley Mono", system-ui, sans-serif' && !props['--bg'], JSON.stringify(props));
+}
+{
+  const { faces } = await boot({ ship: { [LAT]: { bucket: {} }, [TAL]: bucket({ fonts: berkeley({ removed: [fontId] }) }),
+    [fontUrl(fontId)]: fontFile } });
+  check('a file Talon says was removed is not fetched', faces.length === 0, JSON.stringify(faces));
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nall passed');

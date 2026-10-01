@@ -181,7 +181,7 @@
       // to the top page is what the sandbox token above actually permits.
       prev.srcdoc = '<!doctype html><meta charset="utf-8"><base target="_top">'
         + '<style>:root{color-scheme:light dark}'
-        + 'body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;background:var(--bg,#fafafa);color:var(--text)}'
+        + 'body{margin:0;padding:14px;font:15px/1.6 var(--font,system-ui,sans-serif);background:var(--bg,#fafafa);color:var(--text)}'
         + '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot()
         // NO scrollbar-width / scrollbar-color here: either one switches the
         // ::-webkit-scrollbar rules off, including the html-level hide that

@@ -10,6 +10,9 @@
  *   - "use Talon's theme", on unless turned off: Talon's active custom theme
  *     and its accent, read from its own %settings bucket, win over lattice's
  *     wherever Talon has one.
+ *   - "use Talon's font", on unless turned off, apart from the theme: the
+ *     font Talon sets its text in, for lattice's own text (the editor keeps
+ *     its Typography choice). An installed one comes from the ship.
  * A custom theme brings its own light or dark, as it does in Talon.
  *
  * Served standalone at /apps/lattice/app/theme.js and loaded (defer) by every
@@ -62,7 +65,7 @@
   // them as var(--x, <its own colour>), so an unset one changes nothing
   const KEYS = ['color-scheme', '--bg', '--text', '--muted', '--pop', '--accent', '--accent-deep',
     '--on-accent', '--accent-tint', '--secondary', '--tertiary', '--link', '--raised', '--error', '--selection',
-    '--border', '--border-soft'];
+    '--border', '--border-soft', '--font'];
   // Talon's highlight on the open row: the primary at 22% (DmListScreen)
   const TINT = '38';
   // Talon draws its screens in the SURFACE colour, and popups too; its
@@ -117,7 +120,7 @@
   // accent/talonAccent its AccentSettings: { enabled, mode, customHex };
   // profile the %contacts profile colour, when an accent asked for it
   const DEFAULTS = { mode: 'system', mine: {}, accent: {}, useTalon: true, talon: null,
-    talonAccent: null, profile: null, at: 0 };
+    talonAccent: null, profile: null, useTalonFont: true, talonFonts: null, at: 0 };
   const load = () => { try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.latTheme || '{}')); } catch { return Object.assign({}, DEFAULTS); } };
   let st = load();
   const activeOf = (ts) => (ts && Array.isArray(ts.themes) && ts.themes.find((t) => t.id === ts.activeId && valid(t))) || null;
@@ -134,9 +137,65 @@
   const talonAccent = () => (st.useTalon ? accentOf(st.talonAccent) : null);
   function resolve() {
     const t = talonActive() || activeOf(st.mine);
-    const v = t ? themeVars(t) : FORCED[st.mode] || {};
+    let v = t ? themeVars(t) : FORCED[st.mode] || {};
     const a = talonAccent() || accentOf(st.accent);
-    return a ? tinted(v, a) : v;
+    if (a) v = tinted(v, a);
+    const f = fontChoice();
+    return f ? Object.assign({}, v, { '--font': fontStack(f.family) }) : v;
+  }
+
+  // ── Talon's font: its FontSettings ({ fonts: [{ id, family, weight,
+  // italic }], family, removed }), entry fonts of its ui-prefs bucket.
+  // family null is the system's font, 'serif' and 'monospace' the generic
+  // ones, anything else an installed family whose files are on the ship in
+  // grubbery's store, talon/fonts/<id>.font, named by their sha256.
+  const fontChoice = () => {
+    const f = st.useTalonFont && st.talonFonts;
+    return f && typeof f.family === 'string' && f.family ? f : null;
+  };
+  const fontStack = (fam) => (fam === 'serif' ? 'Georgia, "Times New Roman", serif'
+    : fam === 'monospace' ? 'ui-monospace, Menlo, Consolas, monospace'
+      : '"' + fam.replace(/["\\]/g, '') + '", system-ui, sans-serif');
+  // An installed family's files, made page fonts (each document needs its
+  // own). Kept in the 'lattice-fonts' cache by id so each is fetched once,
+  // and used only if its sha256 is its id, as Talon checks it. Until it
+  // arrives, and wherever it cannot, the stack's fallback is used.
+  const loaded = new Set();
+  async function fontBytes(id) {
+    const key = '/lattice-fonts/' + id;
+    let cache = null;
+    try {
+      cache = await caches.open('lattice-fonts');
+      const hit = await cache.match(key);
+      if (hit) return await hit.arrayBuffer();
+    } catch {}
+    const r = await fetch('/grubbery/api/file/talon/fonts/' + id + '.font');
+    if (!r.ok) return null;
+    const bytes = await r.arrayBuffer();
+    // without subtle crypto (not a secure context) the face's own load is
+    // the only check left
+    try {
+      const sum = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+        .map((b) => b.toString(16).padStart(2, '0')).join('');
+      if (sum !== id) return null;
+    } catch {}
+    try { if (cache) await cache.put(key, new Response(bytes)); } catch {}
+    return bytes;
+  }
+  async function faces() {
+    const f = fontChoice();
+    if (!f || f.family === 'serif' || f.family === 'monospace' || typeof FontFace === 'undefined') return;
+    const gone = new Set(f.removed || []);
+    for (const x of f.fonts || []) {
+      if (x.family !== f.family || gone.has(x.id) || !/^[0-9a-f]{64}$/.test(x.id) || loaded.has(x.id)) continue;
+      loaded.add(x.id);
+      try {
+        const bytes = await fontBytes(x.id);
+        if (!bytes) continue;
+        const face = new FontFace(f.family, bytes, { weight: String(x.weight || 400), style: x.italic ? 'italic' : 'normal' });
+        document.fonts.add(await face.load());
+      } catch {}
+    }
   }
 
   const mq = window.matchMedia('(prefers-color-scheme: dark)');
@@ -169,6 +228,7 @@
       shown = sig;
       try { window.dispatchEvent(new Event('lattheme')); } catch {}
     }
+    faces();
   }
   function commit() {
     const v = resolve();
@@ -197,13 +257,15 @@
       next.mine = keepMore(unwrap(b.themes) || {}, st.mine);
       next.accent = unwrap(b.accent) || {};
       next.useTalon = (unwrap(b['use-talon-theme']) || {}).enabled !== false;
+      next.useTalonFont = (unwrap(b['use-talon-font']) || {}).enabled !== false;
     } catch { return; }
-    next.talon = st.talon; next.talonAccent = st.talonAccent;
-    if (next.useTalon) {
+    next.talon = st.talon; next.talonAccent = st.talonAccent; next.talonFonts = st.talonFonts;
+    if (next.useTalon || next.useTalonFont) {
       try {
         const b = ((await scry('settings/bucket/talon/ui-prefs')) || {}).bucket || {};
         next.talon = unwrap(b.themes) || null;
         next.talonAccent = unwrap(b.accent) || null;
+        next.talonFonts = unwrap(b.fonts) || null;
       } catch {}
     }
     // %contacts, v1: { color: { type: 'tint', value: 'ff.5050' } }. Asked
@@ -286,6 +348,19 @@
       el.append(note(!st.useTalon ? 'Talon’s theme is ignored here.'
         : ta ? 'Talon is using “' + ta.name + '”, so lattice is too. Turn this off to use your own.'
           : 'Talon is on its built-in theme, so lattice uses its own below.'));
+      const fl = document.createElement('label'), fb = document.createElement('input');
+      fb.type = 'checkbox'; fb.checked = st.useTalonFont;
+      fb.onchange = () => {
+        st.useTalonFont = fb.checked; commit();
+        put('use-talon-font', { enabled: fb.checked }).then(() => { if (st.useTalonFont) refresh(); });
+      };
+      fl.append(fb, " Use Talon's font");
+      el.append(row(fl));
+      const fam = (st.talonFonts || {}).family;
+      el.append(note(!st.useTalonFont ? 'Talon’s font is ignored here.'
+        : !fam ? 'Talon uses the system’s font, and so does lattice.'
+          : 'Talon sets its text in ' + ({ serif: 'a serif', monospace: 'monospace' }[fam] || fam)
+            + ', so lattice does too. The editor keeps its own, under Typography.'));
       el.append(note('Your own themes: pick five colours and the rest is worked out. Saved to your ship, so they follow you to every device.'));
       el.append(row(btn('Built-in', () => setMine(Object.assign({}, mine, { activeId: null })), !activeOf(mine)),
         ...themes.map((t) => btn(t.name, () => setMine(Object.assign({}, mine, { activeId: t.id })), mine.activeId === t.id))));
