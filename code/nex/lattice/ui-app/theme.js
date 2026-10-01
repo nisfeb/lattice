@@ -61,17 +61,24 @@
   // the inline properties a theme may set on <html>; each stylesheet reads
   // them as var(--x, <its own colour>), so an unset one changes nothing
   const KEYS = ['color-scheme', '--bg', '--text', '--muted', '--pop', '--accent', '--accent-deep',
-    '--on-accent', '--accent-tint', '--secondary', '--tertiary', '--link', '--raised', '--error', '--selection'];
+    '--on-accent', '--accent-tint', '--secondary', '--tertiary', '--link', '--raised', '--error', '--selection',
+    '--border', '--border-soft'];
+  // Talon's highlight on the open row: the primary at 22% (DmListScreen)
+  const TINT = '38';
+  // Talon draws its screens in the SURFACE colour, and popups too; its
+  // background only shows in its own theme editor. So the ground here is
+  // the surface, with Talon's onSurface, onSurfaceVariant, outline and
+  // outlineVariant on it.
   function themeVars(t) {
-    const p = rgb(t.primary), bg = rgb(t.background);
-    const text = hex6(t.text) ? rgb(t.text) : on(bg);
+    const p = rgb(t.primary), sf = rgb(t.surface);
+    const text = hex6(t.text) ? rgb(t.text) : on(sf);
     const v = {
       'color-scheme': t.dark ? 'dark' : 'light',
-      '--bg': css(bg), '--text': css(text), '--muted': css(hex6(t.muted) ? rgb(t.muted) : lerp(text, bg, 0.35)),
-      // Talon draws every popup in the surface colour; lattice has no cards
-      '--pop': css(rgb(t.surface)),
+      '--bg': css(sf), '--text': css(text), '--muted': css(hex6(t.muted) ? rgb(t.muted) : lerp(text, sf, 0.35)),
+      '--pop': css(sf),
+      '--border': css(lerp(sf, text, 0.4)), '--border-soft': css(lerp(sf, text, 0.15)),
       '--accent': css(p), '--on-accent': css(on(p)),
-      '--accent-deep': css(lerp(p, [0, 0, 0], 0.2)), '--accent-tint': css(p) + '22',
+      '--accent-deep': css(lerp(p, [0, 0, 0], 0.2)), '--accent-tint': css(p) + TINT,
       '--secondary': css(rgb(t.secondary)), '--tertiary': css(rgb(t.tertiary)),
       '--link': hex6(t.link) ? css(rgb(t.link)) : LINK,
     };
@@ -93,7 +100,7 @@
   // white, by its own threshold). A tint and a pressed shade follow it.
   const tinted = (v, a) => Object.assign({}, v, {
     '--accent': css(a), '--on-accent': lum(a) > 0.5 ? '#1c1917' : '#ffffff',
-    '--accent-deep': css(lerp(a, [0, 0, 0], 0.2)), '--accent-tint': css(a) + '22',
+    '--accent-deep': css(lerp(a, [0, 0, 0], 0.2)), '--accent-tint': css(a) + TINT,
   });
   // light or dark forced over the built-in look: ground and ink only, so the
   // editor keeps its green and the reader its blue
@@ -143,6 +150,10 @@
   const tell = () => {
     try { window.__TAURI__.core.invoke('set_theme', { dark: isDark() }).catch(() => {}); } catch {}
   };
+  // what the page last drew with: the head line's paint, from the cache. A
+  // change is announced, so the editor can repaint its preview frame, which
+  // is its own document and keeps the colours it was written with.
+  let shown = (() => { try { return JSON.stringify(JSON.parse(localStorage.latThemeVars || '{}')); } catch { return '{}'; } })();
   function apply(v) {
     const s = document.documentElement.style;
     KEYS.forEach((k) => s.removeProperty(k));
@@ -153,6 +164,11 @@
       m.content = v['--bg'] || m.dataset.c;
     });
     tell();
+    const sig = JSON.stringify(v);
+    if (sig !== shown) {
+      shown = sig;
+      try { window.dispatchEvent(new Event('lattheme')); } catch {}
+    }
   }
   function commit() {
     const v = resolve();
@@ -331,7 +347,10 @@
       const sync = () => {
         save.disabled = !valid(draft);
         const v = themeVars(draft);
-        Object.assign(demo.style, { background: v['--bg'], color: v['--text'], colorScheme: v['color-scheme'] });
+        // Talon's editor preview: the background, with a card of surface on it
+        const bg = rgb(draft.background);
+        Object.assign(demo.style, { background: css(bg), colorScheme: v['color-scheme'],
+          color: hex6(draft.text) ? css(rgb(draft.text)) : css(on(bg)) });
         Object.assign(pill.style, { background: v['--accent'], color: v['--on-accent'] });
         Object.assign(pop.style, { background: v['--pop'] });
         sec.style.color = v['--secondary']; ter.style.color = v['--tertiary'];

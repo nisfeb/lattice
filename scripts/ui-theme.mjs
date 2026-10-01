@@ -53,7 +53,7 @@ const mine = (extra = {}) => bucket(Object.assign({ themes: { themes: [moss], ac
 
 {
   const { props } = await boot({ ship: { [LAT]: mine(), [TAL]: talon('d') } });
-  check("Talon's active theme wins by default", props['--bg'] === '#0f0d1a', props['--bg']);
+  check("Talon's active theme wins by default, grounded on its surface as Talon is", props['--bg'] === '#1a1625', props['--bg']);
   check('a custom theme brings its own dark', props['color-scheme'] === 'dark');
   check('on-colours come from luminance (ink on amber, paper on dusk)',
     props['--on-accent'] === '#1c1917' && props['--text'] === '#fafaf9', props['--on-accent'] + ' ' + props['--text']);
@@ -102,7 +102,7 @@ const mine = (extra = {}) => bucket(Object.assign({ themes: { themes: [moss], ac
   const { props } = await boot({ ship: { [LAT]: mine({ accent: { enabled: true, mode: 'Custom', customHex: '#aa3377' } }),
     [TAL]: talon('d', { accent: { enabled: true, mode: 'Custom', customHex: '#336699' } }) } });
   check("Talon's custom accent repaints its theme's primary, over lattice's own",
-    props['--accent'] === '#336699' && props['--bg'] === '#0f0d1a', props['--accent']);
+    props['--accent'] === '#336699' && props['--bg'] === '#1a1625', props['--accent']);
   check("text on an accent is Talon's: white, not paper", props['--on-accent'] === '#ffffff', props['--on-accent']);
 }
 {
@@ -139,9 +139,12 @@ const talonWith = (t) => ({ [LAT]: { bucket: {} }, [TAL]: bucket({ themes: { the
   // theme.js drew Dusk before the six). Muted and the pressed accent are
   // mixed in Oklab, as Compose mixes them; the values were checked against a
   // separate Oklab implementation, not read back from this one.
-  const want = { 'color-scheme': 'dark', '--bg': '#0f0d1a', '--text': '#fafaf9', '--muted': '#9e9da3',
-    '--pop': '#1a1625', '--accent': '#fbbf24', '--on-accent': '#1c1917', '--accent-deep': '#ba8d18',
-    '--accent-tint': '#fbbf2422', '--secondary': '#a5b4fc', '--tertiary': '#34d399' };
+  // Grounded on the surface since Talon is (its background shows only in
+  // its theme editor), with its outline and outlineVariant as the borders.
+  const want = { 'color-scheme': 'dark', '--bg': '#1a1625', '--text': '#fafaf9', '--muted': '#a3a2a8',
+    '--pop': '#1a1625', '--border': '#6a6772', '--border-soft': '#363241',
+    '--accent': '#fbbf24', '--on-accent': '#1c1917', '--accent-deep': '#ba8d18',
+    '--accent-tint': '#fbbf2438', '--secondary': '#a5b4fc', '--tertiary': '#34d399' };
   const { props } = await boot({ ship: talonWith(dusk) });
   const got = Object.assign({}, props); delete got['--link'];
   check("a theme without the six draws as it did", JSON.stringify(got) === JSON.stringify(want), JSON.stringify(got));
@@ -162,7 +165,7 @@ const talonWith = (t) => ({ [LAT]: { bucket: {} }, [TAL]: bucket({ themes: { the
     JSON.stringify(props));
   const textOnly = Object.assign({}, dusk, { text: '#E0E0FF' });
   const { props: p2 } = await boot({ ship: talonWith(textOnly) });
-  check('muted follows a named text colour', p2['--muted'] === '#8e8ea7', p2['--muted']);
+  check('muted follows a named text colour', p2['--muted'] === '#9492ac', p2['--muted']);
 }
 {
   const { props } = await boot({ cache: { latTheme: JSON.stringify({ mode: 'dark' }) } });
@@ -178,6 +181,18 @@ const talonWith = (t) => ({ [LAT]: { bucket: {} }, [TAL]: bucket({ themes: { the
   const { props } = await boot({ cache: cached, ship });
   check('a colour an older writer dropped is kept', props['--link'] === '#aa0000', props['--link']);
   check('a colour cleared with "" stays cleared', props['--text'] === '#1c1917', props['--text']);
+}
+
+{
+  // a real theme ("green", on ricsul 2026-10-01) against Talon's own pixels
+  // in a screenshot of it: ground #091d25, divider #283940, and the open
+  // row #274e32, which is the primary at 0x38 over the ground
+  const green = { id: 'g', name: 'green', dark: true, primary: '#90FB60', secondary: '#A5B4FC',
+    tertiary: '#34D399', background: '#121E03', surface: '#091D25' };
+  const { props } = await boot({ ship: talonWith(green) });
+  check("as Talon draws it: the surface for ground, outlineVariant for dividers, the open row's tint",
+    props['--bg'] === '#091d25' && props['--border-soft'] === '#283940' && props['--accent-tint'] === '#90fb6038',
+    JSON.stringify(props));
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nall passed');

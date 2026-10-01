@@ -194,6 +194,15 @@
     } catch {}
   };
 
+  // a theme that lands after the frame was painted (theme.js runs after
+  // this bundle, and the ship or another tab can change it later) repaints
+  // it: the local render of a content page (an unsaved new one too), or
+  // blank with nothing open. A computed page's frame is the ship's, and
+  // refetching it costs a request.
+  window.addEventListener('lattheme', () => {
+    if (CONTENT() && (current || src.value)) paintLocal();
+    else if (!current) prevBlank();
+  });
   async function refreshPreview() {
     // a hidden pane renders to nobody, but the POST still costs ~2s of pier
     // time and delays the autosave queued behind it (worst on mobile, where
