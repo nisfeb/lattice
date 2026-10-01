@@ -6269,11 +6269,13 @@
       %+  ~(put by (rise-omap log))  key
       %-  pairs:enjs:format
       %+  weld
+        ^-  (list [@t json])
         :~  ['what' s+(crip what)]
             ['n' (numb:enjs:format ?:(fresh 1 +((fall (rise-gn row 'n') 0))))]
             ['first_ms' (numb:enjs:format ?:(fresh now (fall (rise-gn row 'first_ms') now)))]
             ['last_ms' (numb:enjs:format now)]
         ==
+      ^-  (list [@t json])
       ?~(tang ~ ~[['trace' (trace-json tang)]])
     [/ %json]
   %-  ?:(|(!fresh =(0 pri)) same (say pri ~[leaf+what]))
@@ -11038,6 +11040,11 @@
 ++  obelisk-installed
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
+  ::  not running answers without a round trip: its watch would go to an
+  ::  agent gall does not run, which gall refuses and the kernel prints a
+  ::  whole trace for, on every settings page load (docs/logging.md)
+  ;<  running=?  bind:m  (typed-scry:io ? %loob /gu/obelisk/$)
+  ?.  running  (pure:m %.n)
   ;<  our=@p  bind:m  get-our:io
   ;<  live=?  bind:m  (obelisk-live our)
   ?:  live  (pure:m %.y)
@@ -11307,6 +11314,12 @@
     ::  a short disabled tick (one local config read) so the settings
     ::  toggle takes effect within minutes, not half an hour.
     ;<  ~  bind:m  (sleep-draining ~m5)
+    $
+  ::  on, but %obelisk not running (an install still arriving): wait
+  ::  without a round trip, whose watch gall would refuse with a trace
+  ;<  running=?  bind:m  (typed-scry:io ? %loob /gu/obelisk/$)
+  ?.  running
+    ;<  ~  bind:m  (sleep-draining ~m30)
     $
   ;<  bv=@ud  bind:m  read-beacon-val
   ;<  cur=mirror-cursor:lm  bind:m  read-mirror-cursor

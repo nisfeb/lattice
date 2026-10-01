@@ -283,23 +283,28 @@
     Object.assign(st, next, { at: Date.now() });
     commit();
   }
-  // Talon's pokePutEntry: a JSON-stringified value, fire and forget. One PUT
-  // opens a channel, pokes, and deletes the channel again.
+  // Talon's pokePutEntry: a JSON-stringified value. A PUT opens a channel
+  // and pokes; the channel is deleted once the poke's ack is on it. Deleted
+  // in the same PUT, the ack found no channel and eyre printed a crud for
+  // it, on every change.
   let ship = null;
   async function put(entry, value) {
     gen++;
     try {
       if (!ship) ship = (await (await fetch('/~/host')).text()).trim().replace(/^~/, '');
-      const r = await fetch('/~/channel/lattice-theme-' + Date.now().toString(36) + Math.random().toString(36).slice(2), {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify([
-          { id: 1, action: 'poke', ship, app: 'settings', mark: 'settings-event',
-            json: { 'put-entry': { desk: 'lattice', 'bucket-key': 'ui-prefs', 'entry-key': entry, value: JSON.stringify(value) } } },
-          { id: 2, action: 'delete' },
-        ]),
-      });
+      const url = '/~/channel/lattice-theme-' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+      const send = (acts) => fetch(url, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(acts) });
+      const r = await send([{ id: 1, action: 'poke', ship, app: 'settings', mark: 'settings-event',
+        json: { 'put-entry': { desk: 'lattice', 'bucket-key': 'ui-prefs', 'entry-key': entry, value: JSON.stringify(value) } } }]);
       if (!r.ok) throw new Error(String(r.status));
+      // the ack is the stream's first event; five seconds is a ship that
+      // is not answering, and the channel goes anyway
+      try {
+        const rd = (await fetch(url, { headers: { accept: 'text/event-stream' } })).body.getReader();
+        await Promise.race([rd.read(), new Promise((ok) => setTimeout(ok, 5000))]);
+        rd.cancel().catch(() => {});
+      } catch {}
+      send([{ id: 2, action: 'delete' }]).catch(() => {});
       status = '';
     } catch {
       status = 'Could not reach your ship: kept in this browser only.';
