@@ -38,7 +38,7 @@
   :root { --bg: #1a1a1a; --text: #e6e6e6; }
 }
 html, body { margin: 0; height: 100vh; background: var(--bg); color: var(--text);
-  font: 15px/1.5 system-ui, sans-serif; overflow: hidden; }
+  font: 15px/1.5 var(--font, system-ui, sans-serif); overflow: hidden; }
 /* flat scrollbars matching the UI: thin, trackless, muted thumb.
    scrollbar-color covers Firefox + Chrome 121+. The -webkit rules cover
    Safari and older Chrome (ignored wherever scrollbar-color wins). */
@@ -439,7 +439,7 @@ select, option { color-scheme: inherit; }
      and the bottom of a phone is where the keyboard comes up. */
   .ws[data-mv="code"] #fullt {
     display: block; position: fixed; right: 10px; bottom: 12px; z-index: 30;
-    font: 12px/1 system-ui, sans-serif; padding: 7px 11px; border-radius: 999px;
+    font: 12px/1 var(--font, system-ui, sans-serif); padding: 7px 11px; border-radius: 999px;
     border: 1px solid var(--border); background: var(--bg); color: var(--muted);
     opacity: .8;
   }
@@ -449,7 +449,7 @@ select, option { color-scheme: inherit; }
      Above the keyboard by being bottom-anchored in the visual viewport. */
   .ws[data-mv="code"] #lbtns.on { display: flex; gap: 8px; position: fixed;
     left: 10px; bottom: 12px; z-index: 30; }
-  #lbtns button { font: 16px/1 system-ui, sans-serif; padding: 8px 13px;
+  #lbtns button { font: 16px/1 var(--font, system-ui, sans-serif); padding: 8px 13px;
     border-radius: 999px; border: 1px solid var(--border);
     background: var(--bg); color: var(--muted); opacity: .85; }
   .ws.full[data-mv="code"] .bar,

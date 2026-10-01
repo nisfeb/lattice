@@ -127,14 +127,16 @@
   // white canvas in dark theme. Declare the scheme so it stays transparent
   // and the pane's theme background shows through.
   // the preview frame is its own document, out of the theme's reach, so it
-  // gets a copy of what theme.js set inline on <html>: the colours and the
-  // forced color-scheme. Empty when nothing is forced, so the frame follows
-  // the OS as it always did.
+  // gets a copy of what theme.js set inline on <html>: the colours, the
+  // forced color-scheme, Talon's font. Empty when none is set, so the frame
+  // follows the OS as it always did. (An installed font is a face of THIS
+  // document, so the frame gets its name and falls back unless the system
+  // has it too.)
   // the theme into a preview document, and its link and selection colours
   // only where it names them: unset, the page keeps the engine's own
   const themeRoot = () => {
     const s = document.documentElement.style;
-    if (!s.colorScheme) return '';
+    if (!s.colorScheme && !s.getPropertyValue('--font')) return '';
     return 'html:root{' + s.cssText + '}'
       + (s.getPropertyValue('--link') ? 'a{color:var(--link)}' : '')
       + (s.getPropertyValue('--selection') ? '::selection{background:var(--selection)}' : '');
