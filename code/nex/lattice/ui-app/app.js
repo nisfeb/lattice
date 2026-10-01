@@ -784,14 +784,16 @@
   // white canvas in dark theme. Declare the scheme so it stays transparent
   // and the pane's theme background shows through.
   // the preview frame is its own document, out of the theme's reach, so it
-  // gets a copy of what theme.js set inline on <html>: the colours and the
-  // forced color-scheme. Empty when nothing is forced, so the frame follows
-  // the OS as it always did.
+  // gets a copy of what theme.js set inline on <html>: the colours, the
+  // forced color-scheme, Talon's font. Empty when none is set, so the frame
+  // follows the OS as it always did. (An installed font is a face of THIS
+  // document, so the frame gets its name and falls back unless the system
+  // has it too.)
   // the theme into a preview document, and its link and selection colours
   // only where it names them: unset, the page keeps the engine's own
   const themeRoot = () => {
     const s = document.documentElement.style;
-    if (!s.colorScheme) return '';
+    if (!s.colorScheme && !s.getPropertyValue('--font')) return '';
     return 'html:root{' + s.cssText + '}'
       + (s.getPropertyValue('--link') ? 'a{color:var(--link)}' : '')
       + (s.getPropertyValue('--selection') ? '::selection{background:var(--selection)}' : '');
@@ -3944,7 +3946,7 @@
       // to the top page is what the sandbox token above actually permits.
       prev.srcdoc = '<!doctype html><meta charset="utf-8"><base target="_top">'
         + '<style>:root{color-scheme:light dark}'
-        + 'body{margin:0;padding:14px;font:15px/1.6 system-ui,sans-serif;background:var(--bg,#fafafa);color:var(--text)}'
+        + 'body{margin:0;padding:14px;font:15px/1.6 var(--font,system-ui,sans-serif);background:var(--bg,#fafafa);color:var(--text)}'
         + '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot()
         // NO scrollbar-width / scrollbar-color here: either one switches the
         // ::-webkit-scrollbar rules off, including the html-level hide that
@@ -3957,6 +3959,15 @@
     } catch {}
   };
 
+  // a theme that lands after the frame was painted (theme.js runs after
+  // this bundle, and the ship or another tab can change it later) repaints
+  // it: the local render of a content page (an unsaved new one too), or
+  // blank with nothing open. A computed page's frame is the ship's, and
+  // refetching it costs a request.
+  window.addEventListener('lattheme', () => {
+    if (CONTENT() && (current || src.value)) paintLocal();
+    else if (!current) prevBlank();
+  });
   async function refreshPreview() {
     // a hidden pane renders to nobody, but the POST still costs ~2s of pier
     // time and delays the autosave queued behind it (worst on mobile, where

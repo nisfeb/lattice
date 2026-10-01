@@ -63,8 +63,8 @@ other ships over ames, and followed remote files push you updates.
   if you want them, your own text, muted, raised, error, selection and link
   colours), and an accent (your `%contacts` profile colour, or any colour),
   saved in your ship's `%settings` so they follow you to every device. If you
-  use [Talon](https://github.com/nisfeb/talon), lattice wears Talon's theme
-  and accent too, unless you turn that off in Settings.
+  use [Talon](https://github.com/nisfeb/talon), lattice wears Talon's theme,
+  accent and font too, each unless you turn it off in Settings.
 - **Works offline.** Lose the ship mid-session and saves queue locally
   (pages and knowledge entries both), then replay when it returns. Deletes,
   moves and renames queue too, in an ordered log that drains ahead of the

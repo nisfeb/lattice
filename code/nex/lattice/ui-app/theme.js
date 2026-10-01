@@ -10,6 +10,9 @@
  *   - "use Talon's theme", on unless turned off: Talon's active custom theme
  *     and its accent, read from its own %settings bucket, win over lattice's
  *     wherever Talon has one.
+ *   - "use Talon's font", on unless turned off, apart from the theme: the
+ *     font Talon sets its text in, for lattice's own text (the editor keeps
+ *     its Typography choice). An installed one comes from the ship.
  * A custom theme brings its own light or dark, as it does in Talon.
  *
  * Served standalone at /apps/lattice/app/theme.js and loaded (defer) by every
@@ -61,17 +64,24 @@
   // the inline properties a theme may set on <html>; each stylesheet reads
   // them as var(--x, <its own colour>), so an unset one changes nothing
   const KEYS = ['color-scheme', '--bg', '--text', '--muted', '--pop', '--accent', '--accent-deep',
-    '--on-accent', '--accent-tint', '--secondary', '--tertiary', '--link', '--raised', '--error', '--selection'];
+    '--on-accent', '--accent-tint', '--secondary', '--tertiary', '--link', '--raised', '--error', '--selection',
+    '--border', '--border-soft', '--font'];
+  // Talon's highlight on the open row: the primary at 22% (DmListScreen)
+  const TINT = '38';
+  // Talon draws its screens in the SURFACE colour, and popups too; its
+  // background only shows in its own theme editor. So the ground here is
+  // the surface, with Talon's onSurface, onSurfaceVariant, outline and
+  // outlineVariant on it.
   function themeVars(t) {
-    const p = rgb(t.primary), bg = rgb(t.background);
-    const text = hex6(t.text) ? rgb(t.text) : on(bg);
+    const p = rgb(t.primary), sf = rgb(t.surface);
+    const text = hex6(t.text) ? rgb(t.text) : on(sf);
     const v = {
       'color-scheme': t.dark ? 'dark' : 'light',
-      '--bg': css(bg), '--text': css(text), '--muted': css(hex6(t.muted) ? rgb(t.muted) : lerp(text, bg, 0.35)),
-      // Talon draws every popup in the surface colour; lattice has no cards
-      '--pop': css(rgb(t.surface)),
+      '--bg': css(sf), '--text': css(text), '--muted': css(hex6(t.muted) ? rgb(t.muted) : lerp(text, sf, 0.35)),
+      '--pop': css(sf),
+      '--border': css(lerp(sf, text, 0.4)), '--border-soft': css(lerp(sf, text, 0.15)),
       '--accent': css(p), '--on-accent': css(on(p)),
-      '--accent-deep': css(lerp(p, [0, 0, 0], 0.2)), '--accent-tint': css(p) + '22',
+      '--accent-deep': css(lerp(p, [0, 0, 0], 0.2)), '--accent-tint': css(p) + TINT,
       '--secondary': css(rgb(t.secondary)), '--tertiary': css(rgb(t.tertiary)),
       '--link': hex6(t.link) ? css(rgb(t.link)) : LINK,
     };
@@ -93,7 +103,7 @@
   // white, by its own threshold). A tint and a pressed shade follow it.
   const tinted = (v, a) => Object.assign({}, v, {
     '--accent': css(a), '--on-accent': lum(a) > 0.5 ? '#1c1917' : '#ffffff',
-    '--accent-deep': css(lerp(a, [0, 0, 0], 0.2)), '--accent-tint': css(a) + '22',
+    '--accent-deep': css(lerp(a, [0, 0, 0], 0.2)), '--accent-tint': css(a) + TINT,
   });
   // light or dark forced over the built-in look: ground and ink only, so the
   // editor keeps its green and the reader its blue
@@ -110,7 +120,7 @@
   // accent/talonAccent its AccentSettings: { enabled, mode, customHex };
   // profile the %contacts profile colour, when an accent asked for it
   const DEFAULTS = { mode: 'system', mine: {}, accent: {}, useTalon: true, talon: null,
-    talonAccent: null, profile: null, at: 0 };
+    talonAccent: null, profile: null, useTalonFont: true, talonFonts: null, at: 0 };
   const load = () => { try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.latTheme || '{}')); } catch { return Object.assign({}, DEFAULTS); } };
   let st = load();
   const activeOf = (ts) => (ts && Array.isArray(ts.themes) && ts.themes.find((t) => t.id === ts.activeId && valid(t))) || null;
@@ -127,9 +137,65 @@
   const talonAccent = () => (st.useTalon ? accentOf(st.talonAccent) : null);
   function resolve() {
     const t = talonActive() || activeOf(st.mine);
-    const v = t ? themeVars(t) : FORCED[st.mode] || {};
+    let v = t ? themeVars(t) : FORCED[st.mode] || {};
     const a = talonAccent() || accentOf(st.accent);
-    return a ? tinted(v, a) : v;
+    if (a) v = tinted(v, a);
+    const f = fontChoice();
+    return f ? Object.assign({}, v, { '--font': fontStack(f.family) }) : v;
+  }
+
+  // ── Talon's font: its FontSettings ({ fonts: [{ id, family, weight,
+  // italic }], family, removed }), entry fonts of its ui-prefs bucket.
+  // family null is the system's font, 'serif' and 'monospace' the generic
+  // ones, anything else an installed family whose files are on the ship in
+  // grubbery's store, talon/fonts/<id>.font, named by their sha256.
+  const fontChoice = () => {
+    const f = st.useTalonFont && st.talonFonts;
+    return f && typeof f.family === 'string' && f.family ? f : null;
+  };
+  const fontStack = (fam) => (fam === 'serif' ? 'Georgia, "Times New Roman", serif'
+    : fam === 'monospace' ? 'ui-monospace, Menlo, Consolas, monospace'
+      : '"' + fam.replace(/["\\]/g, '') + '", system-ui, sans-serif');
+  // An installed family's files, made page fonts (each document needs its
+  // own). Kept in the 'lattice-fonts' cache by id so each is fetched once,
+  // and used only if its sha256 is its id, as Talon checks it. Until it
+  // arrives, and wherever it cannot, the stack's fallback is used.
+  const loaded = new Set();
+  async function fontBytes(id) {
+    const key = '/lattice-fonts/' + id;
+    let cache = null;
+    try {
+      cache = await caches.open('lattice-fonts');
+      const hit = await cache.match(key);
+      if (hit) return await hit.arrayBuffer();
+    } catch {}
+    const r = await fetch('/grubbery/api/file/talon/fonts/' + id + '.font');
+    if (!r.ok) return null;
+    const bytes = await r.arrayBuffer();
+    // without subtle crypto (not a secure context) the face's own load is
+    // the only check left
+    try {
+      const sum = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+        .map((b) => b.toString(16).padStart(2, '0')).join('');
+      if (sum !== id) return null;
+    } catch {}
+    try { if (cache) await cache.put(key, new Response(bytes)); } catch {}
+    return bytes;
+  }
+  async function faces() {
+    const f = fontChoice();
+    if (!f || f.family === 'serif' || f.family === 'monospace' || typeof FontFace === 'undefined') return;
+    const gone = new Set(f.removed || []);
+    for (const x of f.fonts || []) {
+      if (x.family !== f.family || gone.has(x.id) || !/^[0-9a-f]{64}$/.test(x.id) || loaded.has(x.id)) continue;
+      loaded.add(x.id);
+      try {
+        const bytes = await fontBytes(x.id);
+        if (!bytes) continue;
+        const face = new FontFace(f.family, bytes, { weight: String(x.weight || 400), style: x.italic ? 'italic' : 'normal' });
+        document.fonts.add(await face.load());
+      } catch {}
+    }
   }
 
   const mq = window.matchMedia('(prefers-color-scheme: dark)');
@@ -143,6 +209,10 @@
   const tell = () => {
     try { window.__TAURI__.core.invoke('set_theme', { dark: isDark() }).catch(() => {}); } catch {}
   };
+  // what the page last drew with: the head line's paint, from the cache. A
+  // change is announced, so the editor can repaint its preview frame, which
+  // is its own document and keeps the colours it was written with.
+  let shown = (() => { try { return JSON.stringify(JSON.parse(localStorage.latThemeVars || '{}')); } catch { return '{}'; } })();
   function apply(v) {
     const s = document.documentElement.style;
     KEYS.forEach((k) => s.removeProperty(k));
@@ -153,6 +223,12 @@
       m.content = v['--bg'] || m.dataset.c;
     });
     tell();
+    const sig = JSON.stringify(v);
+    if (sig !== shown) {
+      shown = sig;
+      try { window.dispatchEvent(new Event('lattheme')); } catch {}
+    }
+    faces();
   }
   function commit() {
     const v = resolve();
@@ -181,13 +257,15 @@
       next.mine = keepMore(unwrap(b.themes) || {}, st.mine);
       next.accent = unwrap(b.accent) || {};
       next.useTalon = (unwrap(b['use-talon-theme']) || {}).enabled !== false;
+      next.useTalonFont = (unwrap(b['use-talon-font']) || {}).enabled !== false;
     } catch { return; }
-    next.talon = st.talon; next.talonAccent = st.talonAccent;
-    if (next.useTalon) {
+    next.talon = st.talon; next.talonAccent = st.talonAccent; next.talonFonts = st.talonFonts;
+    if (next.useTalon || next.useTalonFont) {
       try {
         const b = ((await scry('settings/bucket/talon/ui-prefs')) || {}).bucket || {};
         next.talon = unwrap(b.themes) || null;
         next.talonAccent = unwrap(b.accent) || null;
+        next.talonFonts = unwrap(b.fonts) || null;
       } catch {}
     }
     // %contacts, v1: { color: { type: 'tint', value: 'ff.5050' } }. Asked
@@ -205,23 +283,28 @@
     Object.assign(st, next, { at: Date.now() });
     commit();
   }
-  // Talon's pokePutEntry: a JSON-stringified value, fire and forget. One PUT
-  // opens a channel, pokes, and deletes the channel again.
+  // Talon's pokePutEntry: a JSON-stringified value. A PUT opens a channel
+  // and pokes; the channel is deleted once the poke's ack is on it. Deleted
+  // in the same PUT, the ack found no channel and eyre printed a crud for
+  // it, on every change.
   let ship = null;
   async function put(entry, value) {
     gen++;
     try {
       if (!ship) ship = (await (await fetch('/~/host')).text()).trim().replace(/^~/, '');
-      const r = await fetch('/~/channel/lattice-theme-' + Date.now().toString(36) + Math.random().toString(36).slice(2), {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify([
-          { id: 1, action: 'poke', ship, app: 'settings', mark: 'settings-event',
-            json: { 'put-entry': { desk: 'lattice', 'bucket-key': 'ui-prefs', 'entry-key': entry, value: JSON.stringify(value) } } },
-          { id: 2, action: 'delete' },
-        ]),
-      });
+      const url = '/~/channel/lattice-theme-' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+      const send = (acts) => fetch(url, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(acts) });
+      const r = await send([{ id: 1, action: 'poke', ship, app: 'settings', mark: 'settings-event',
+        json: { 'put-entry': { desk: 'lattice', 'bucket-key': 'ui-prefs', 'entry-key': entry, value: JSON.stringify(value) } } }]);
       if (!r.ok) throw new Error(String(r.status));
+      // the ack is the stream's first event; five seconds is a ship that
+      // is not answering, and the channel goes anyway
+      try {
+        const rd = (await fetch(url, { headers: { accept: 'text/event-stream' } })).body.getReader();
+        await Promise.race([rd.read(), new Promise((ok) => setTimeout(ok, 5000))]);
+        rd.cancel().catch(() => {});
+      } catch {}
+      send([{ id: 2, action: 'delete' }]).catch(() => {});
       status = '';
     } catch {
       status = 'Could not reach your ship: kept in this browser only.';
@@ -270,6 +353,19 @@
       el.append(note(!st.useTalon ? 'Talon’s theme is ignored here.'
         : ta ? 'Talon is using “' + ta.name + '”, so lattice is too. Turn this off to use your own.'
           : 'Talon is on its built-in theme, so lattice uses its own below.'));
+      const fl = document.createElement('label'), fb = document.createElement('input');
+      fb.type = 'checkbox'; fb.checked = st.useTalonFont;
+      fb.onchange = () => {
+        st.useTalonFont = fb.checked; commit();
+        put('use-talon-font', { enabled: fb.checked }).then(() => { if (st.useTalonFont) refresh(); });
+      };
+      fl.append(fb, " Use Talon's font");
+      el.append(row(fl));
+      const fam = (st.talonFonts || {}).family;
+      el.append(note(!st.useTalonFont ? 'Talon’s font is ignored here.'
+        : !fam ? 'Talon uses the system’s font, and so does lattice.'
+          : 'Talon sets its text in ' + ({ serif: 'a serif', monospace: 'monospace' }[fam] || fam)
+            + ', so lattice does too. The editor keeps its own, under Typography.'));
       el.append(note('Your own themes: pick five colours and the rest is worked out. Saved to your ship, so they follow you to every device.'));
       el.append(row(btn('Built-in', () => setMine(Object.assign({}, mine, { activeId: null })), !activeOf(mine)),
         ...themes.map((t) => btn(t.name, () => setMine(Object.assign({}, mine, { activeId: t.id })), mine.activeId === t.id))));
@@ -331,7 +427,10 @@
       const sync = () => {
         save.disabled = !valid(draft);
         const v = themeVars(draft);
-        Object.assign(demo.style, { background: v['--bg'], color: v['--text'], colorScheme: v['color-scheme'] });
+        // Talon's editor preview: the background, with a card of surface on it
+        const bg = rgb(draft.background);
+        Object.assign(demo.style, { background: css(bg), colorScheme: v['color-scheme'],
+          color: hex6(draft.text) ? css(rgb(draft.text)) : css(on(bg)) });
         Object.assign(pill.style, { background: v['--accent'], color: v['--on-accent'] });
         Object.assign(pop.style, { background: v['--pop'] });
         sec.style.color = v['--secondary']; ter.style.color = v['--tertiary'];
