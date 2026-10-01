@@ -6150,10 +6150,13 @@
 ::  wires (a nonce is itself a bowl.sig poke), and with either refused it
 ::  parks until a poke comes.
 ::
-::  It prints one line, with the trace, when a KIND of fiber starts
-::  crashing (the 764 pages a bad build takes down are one line), at >> if
-::  it will retry by itself and >>> if it cannot, then nothing while it
+::  It prints one >> line when a KIND of fiber starts crashing (the 764
+::  pages a bad build takes down are one line), then nothing while it
 ::  retries (docs/logging.md). kind is the stable source, who the instance.
+::  No trace: the kernel prints %fiber-crash with it on every crash, so
+::  the trace goes in the record instead. With its clock or its timer
+::  refused it says nothing: the kernel's line when a fiber parks on that
+::  road is the one line for it, and the row records timer: false.
 ::
 ::  The crash record is /rise.json at the nexus root, one row per fiber,
 ::  so a page's fiber leaves nothing in the page's own tree. A reload
@@ -6177,12 +6180,7 @@
   =/  note=tang  ~[leaf+"{kind}: waiting after a crash; the poke was refused{at}"]
   =/  crash=?  !=(note u.prod)
   ;<  clock=(unit @da)  bind:m  soft-now
-  ?~  clock
-    %-  ?.  crash  same
-        %+  say  3
-        :_  u.prod
-        leaf+"{kind}: crashed, and reading the time is refused, so it waits for a poke; grant lattice's permits, then reload{at}"
-    (rise-park note)
+  ?~  clock  (rise-park note)
   =/  now=@da  u.clock
   ;<  log=json  bind:m  rise-log
   =/  rows=(map @t json)  (rise-omap log)
@@ -6209,12 +6207,8 @@
               (gth now (add (rise-ms-da (fall (rise-gn r 'last_ms') 0)) ~h2))
           ==
       ==
-    %-  ?.  first  same
-        %+  say  ?:(set 2 3)
-        :_  u.prod
-        ?:  set
-          leaf+"{kind}: crashed and retries by itself; reload lattice to retry at once{at}"
-        leaf+"{kind}: crashed, and its retry timer is refused, so it waits for a poke; grant lattice's permits, then reload{at}"
+    %-  ?.  &(first set)  same
+        (say 2 ~[leaf+"{kind}: crashed (trace in /rise.json) and retries by itself; reload lattice to retry at once{at}"])
     ;<  *  bind:m
       %^  over-as-soft:io  rise-road
         :-  [/ %json]
@@ -6226,6 +6220,7 @@
             ['last_ms' (numb:enjs:format (rise-da-ms now))]
             ['until_ms' (numb:enjs:format (rise-da-ms until))]
             ['timer' b+set]
+            ['trace' (trace-json u.prod)]
         ==
       [/ %json]
     (pure:m ~)
@@ -6245,12 +6240,14 @@
   $(tang t.tang)
 ::  +fault: write the fault record, /faults.json at the nexus root. One row
 ::  per condition: what it is (stable words first, the variable part
-::  last), how many times, first and last (ms). It prints once, at level
-::  pri and with its trace, when the condition begins: a new row, or one
-::  two quiet hours old. pri 0 records without printing, for an expected
-::  condition or a refusal with no other way back. Soft throughout and
-::  never fails, so it is safe on a crash path. With the clock refused it
-::  records nothing: the kernel has printed that veto.
+::  last), how many times, first and last (ms), and its latest trace if it
+::  has one. It prints `what` once, at level pri, when the condition
+::  begins: a new row, or one two quiet hours old. The trace stays in the
+::  record (for a crash the kernel has printed it already). pri 0 records
+::  without printing, for an expected condition or a refusal with no other
+::  way back. Soft throughout and never fails, so it is safe on a crash
+::  path. With the clock refused it records nothing: the kernel's line
+::  when a fiber parks on that road says so.
 ::  ponytail: read, then write, from any fiber, so two at once can drop a
 ::  count. The row stands either way.
 ++  fault-road  (rf up / %'faults.json')
@@ -6271,14 +6268,23 @@
       :-  %o
       %+  ~(put by (rise-omap log))  key
       %-  pairs:enjs:format
-      :~  ['what' s+(crip what)]
-          ['n' (numb:enjs:format ?:(fresh 1 +((fall (rise-gn row 'n') 0))))]
-          ['first_ms' (numb:enjs:format ?:(fresh now (fall (rise-gn row 'first_ms') now)))]
-          ['last_ms' (numb:enjs:format now)]
-      ==
+      %+  weld
+        :~  ['what' s+(crip what)]
+            ['n' (numb:enjs:format ?:(fresh 1 +((fall (rise-gn row 'n') 0))))]
+            ['first_ms' (numb:enjs:format ?:(fresh now (fall (rise-gn row 'first_ms') now)))]
+            ['last_ms' (numb:enjs:format now)]
+        ==
+      ?~(tang ~ ~[['trace' (trace-json tang)]])
     [/ %json]
-  %-  ?:(|(!fresh =(0 pri)) same (say pri [leaf+what tang]))
+  %-  ?:(|(!fresh =(0 pri)) same (say pri ~[leaf+what]))
   (pure:m ~)
+::  +trace-json: a trace as a record keeps it: its first 24 lines of text
+++  trace-json
+  |=  =tang
+  ^-  json
+  :-  %a
+  %+  turn  (scag 24 `wall`(zing (turn tang |=(t=tank (wash [0 120] t)))))
+  |=(l=tape s+(crip l))
 ::  +fault-clear: the conditions in keys are over, so their rows go.
 ++  fault-clear
   |=  keys=(list @t)
@@ -6315,7 +6321,7 @@
     |=(r=json (gth (rise-ms-da (fall (rise-gn r 'until_ms') 0)) u.clock))
   ?:  waiting
     (fault 'request-refused' 0 "lattice /ui/requests: answered 503 while a fiber waits after a crash" ~)
-  (fault 'request-crash' 2 "lattice /ui/requests: a request crashed and was answered 503; report it if it happens again" tang)
+  (fault 'request-crash' 2 "lattice /ui/requests: a request crashed (trace in /faults.json) and was answered 503; report it if it happens again" tang)
 ::  +drain-vetoes: drop every refusal a jailed run left queued for us. A
 ::  fiber the kernel parked for a refused dart (grubbery 79c66b9, on
 ::  ricsul) keeps its queue, and a reload or a sync respawns it with that
