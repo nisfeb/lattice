@@ -140,6 +140,9 @@ jobs:
           #  every road-building arm is reachable at one depth only, or its
           #  road climbs past the root and the fiber crash-loops
           python3 scripts/depth-check.py code/nex/lattice/app.hoon
+          #  a healthy ship prints nothing: every print goes through +say
+          #  at a level (docs/logging.md)
+          python3 scripts/quiet-check.py code
       - name: supply chain (licences + bans)
         run: |
           cargo install cargo-deny --locked
