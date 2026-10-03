@@ -144,8 +144,11 @@ def hazardous(body):
     t = '\n'.join(body)
     if not (BUILDS.search(t) or FIXED.search(t)): return False
     return not TAKES.search(t)
-#  +nexus-up DEFINES the depth; it is not a consumer of one.
-sens = {a for a,b in arms.items() if hazardous(b)} - {'nexus-up'}
+#  +nexus-up DEFINES the depth; it is not a consumer of one. +self-base
+#  names app-base only as the ABSOLUTE path it falls back to returning, and
+#  reads /sys/link by an absolute road: right at every depth, and reached
+#  from them all once a filesystem delete moved grants (+move-grants).
+sens = {a for a,b in arms.items() if hazardous(b)} - {'nexus-up', 'self-base'}
 #  `arms` holds STRIPPED lines already, so a mention of app-base in a
 #  comment no longer makes an arm look depth-sensitive.
 

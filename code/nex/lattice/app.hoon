@@ -1736,6 +1736,7 @@
     =/  dpax=(unit path)  (raw-name-pax u.name)
     ?~  dpax  (send-err eyre-id 400 'bad name')
     ;<  ~  bind:m  (poke-eval [%del u.dpax])
+    ;<  ~  bind:m  (move-grants u.dpax ~)
     (send-ok eyre-id)
   ::  page-move: server-side move/rename of a page or a whole folder subtree.
   ::  Replaces the old client choreography (page-source + page-save + page-del
@@ -4312,6 +4313,7 @@
   ?~  rels
     ;<  ~  bind:m  (poke-eval [%del from])
     ;<  ~  bind:m  (record-move from to)
+    ;<  ~  bind:m  (move-grants from `to)
     (pure:m `count)
   =/  pdir=path  (weld sdir i.rels)
   ;<  cn=view:nexus  bind:m  (peek:io (rf up pdir %code) ~)
@@ -5459,6 +5461,7 @@
   ^-  form:m
   ?.  (valid-name name)  (pure:m [400 'bad name'])
   ;<  ~  bind:m  (fs-poke-eval [%del (pax-of name)])
+  ;<  ~  bind:m  (move-grants (pax-of name) ~)
   (pure:m [200 ''])
 ::  +fs-op: the shared request dispatcher. `path`'s last segment selects the op.
 ::  `query` is "k=v&k=v" (raw, page names are @ta so need no url-decode). Returns
@@ -5956,6 +5959,51 @@
   ;<  ok=?  bind:m  (ug-over [%& %& gdir %'who.ships'] [[/ %ships] who])
   ?.  ok  (pure:m %.n)
   (ug-over [%& %& gdir %'how.weir'] [[/ %weir] weir])
+::  +move-grants: grants follow a page. A group road names a path, so a
+::  move would leave the ship it was shared with holding the old one, and
+::  a delete would hand that ship whatever page is made there next. Every
+::  road on `from` or under it moves to `to`, or with `to` = ~ goes. Soft:
+::  a refused usergroup road leaves the grants as they were, and the move
+::  or delete stands.
+++  move-grants
+  |=  [from=path to=(unit path)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  =/  old=path  (weld sb (weld /page from))
+  =/  n=@ud  (lent old)
+  =/  under  |=(r=road:tarball &(?=([%& %| *] r) =(old (scag n p.p.r))))
+  =/  re
+    |=  rs=(set road:tarball)
+    ^-  (set road:tarball)
+    ?~  to  (~(gas in *(set road:tarball)) (skip ~(tap in rs) under))
+    %-  ~(run in rs)
+    |=  r=road:tarball
+    ?.  (under r)  r
+    ?>  ?=([%& %| *] r)
+    [%& %| (weld (weld sb (weld /page u.to)) (slag n p.p.r))]
+  ::  one SOFT deep read of every group. The usergroup read is optional
+  ::  (weir.json), and this runs on every move and delete: a hard peek
+  ::  there would park each one on an install that refused it.
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  =/  gs=(list [nom=@ta gb=ball:tarball])  ~(tap by dir.ball.u.vw)
+  |-  ^-  form:m
+  ?~  gs  (pure:m ~)
+  =/  nt=tape  (trip nom.i.gs)
+  ?.  &((gth (lent nt) 4) =(".grp" (slag (sub (lent nt) 4) nt)))
+    $(gs t.gs)
+  =/  fils  ?~(fil.gb.i.gs ~ contents.u.fil.gb.i.gs)
+  =/  hw  (~(get by fils) %'how.weir')
+  =/  w=(unit weir:nexus)
+    ?~  hw  ~
+    (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hw))))
+  ?~  w  $(gs t.gs)
+  =/  nw=weir:nexus  [(re make.u.w) poke.u.w (re peek.u.w)]
+  ?:  =(nw u.w)  $(gs t.gs)
+  ;<  *  bind:m
+    (ug-over [%& %& (snoc ug-base nom.i.gs) %'how.weir'] [[/ %weir] nw])
+  $(gs t.gs)
 ::  +ug-refused: the answer when lattice may not write usergroups.
 ++  ug-refused
   |=  eyre-id=@ta
