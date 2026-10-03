@@ -48,4 +48,186 @@
     ::  deleting an absent tag is a no-op
     (expect-eq !>(e2) !>((del-tag e2 'nope')))
   ==
+::  ==  recall
+::
+::  +terms: lower-cased, split on punctuation, a compound kept whole AND as
+::  its parts, stop words and one-letter words gone, then stemmed.
+++  test-terms
+  ;:  weld
+    %+  expect-eq
+      !>(`(list @t)`~['release' 'ricsul-bilwyt' 'ricsul' 'bilwyt' 'ship'])
+    !>((terms 'Releases of ~ricsul-bilwyt, the Ship!'))
+    ::  a key reads as its whole path and its segments
+    (expect-eq !>(`(list @t)`~['user/ai-model' 'user' 'ai' 'model']) !>((terms '/user/ai-models')))
+    (expect-eq !>(`(list @t)`~) !>((terms 'a I of the -- ~')))
+  ==
+++  test-stem
+  ;:  weld
+    (expect-eq !>("follow") !>((stem "following")))
+    (expect-eq !>("follow") !>((stem "follows")))
+    (expect-eq !>("class") !>((stem "classes")))
+    (expect-eq !>("policy") !>((stem "policies")))
+    (expect-eq !>("status") !>((stem "status")))
+    (expect-eq !>("glass") !>((stem "glass")))
+    (expect-eq !>("ship") !>((stem "ship")))
+    (expect-eq !>("used") !>((stem "used")))
+  ==
+::  +front / +with-front: front matter round-trips byte for byte, and a body
+::  without it passes through.
+++  test-front
+  =/  b=@t  '---\0aauthor: lattice-53\0asource: user\0a---\0aHello\0a'
+  =/  f  (front b)
+  ;:  weld
+    (expect-eq !>(`(list [@t @t])`~[['author' 'lattice-53'] ['source' 'user']]) !>(meta.f))
+    (expect-eq !>('Hello\0a') !>(rest.f))
+    (expect-eq !>(b) !>((with-front meta.f rest.f)))
+    (expect-eq !>([`(list [k=@t v=@t])`~ 'plain']) !>((front 'plain')))
+    ::  an unclosed fence is not front matter
+    (expect-eq !>(`(list [k=@t v=@t])`~) !>(meta:(front '---\0aa: b\0ano close')))
+    (expect-eq !>('x') !>((with-front ~ 'x')))
+  ==
+++  test-meta
+  =/  m=(list [k=@t v=@t])  ~[['a' '1'] ['b' '2']]
+  ;:  weld
+    (expect-eq !>(`(unit @t)``'2') !>((meta-get m 'b')))
+    (expect-eq !>(`(unit @t)`~) !>((meta-get m 'c')))
+    (expect-eq !>(`(list [k=@t v=@t])`~[['a' '9'] ['b' '2']]) !>((meta-put m 'a' '9')))
+    (expect-eq !>(`(list [k=@t v=@t])`~[['a' '1'] ['b' '2'] ['c' '3']]) !>((meta-put m 'c' '3')))
+    (expect-eq !>(`(list [k=@t v=@t])`~[['b' '2']]) !>((meta-put m 'a' '')))
+  ==
+++  test-links
+  ;:  weld
+    %+  expect-eq  !>(`(list path)`~[/user/x /project/y])
+    !>((links 'see [[user/x]] and [[/project/y|Y]], [[user/x]] again, [[Bad Key]]'))
+    (expect-eq !>(`(list path)`~) !>((links 'no links [[unclosed')))
+  ==
+++  test-lg2m
+  =/  l3=@ud  (lg2m 3 1)
+  ;:  weld
+    (expect-eq !>(3.000) !>((lg2m 8 1)))
+    (expect-eq !>(1.000) !>((lg2m 6 3)))
+    ::  log2 3 = 1.58496, to the fixed point's last bit
+    (expect-eq !>(&) !>(&((gte l3 1.583) (lte l3 1.585))))
+    (expect-eq !>(0) !>((lg2m 1 1)))
+    (expect-eq !>(0) !>((lg2m 1 3)))
+    (expect-eq !>(0) !>((lg2m 5 0)))
+  ==
+::  +rank: only docs with a query term, best first; a doc with every term
+::  carries all the query's IDF, so strength 100.
+++  test-rank
+  =/  ds=(list doc)
+    :~  (to-doc /user/x ['alpha beta' ~2026.1.1 ~ ~])
+        (to-doc /p/y ['beta gamma gamma' ~2026.1.1 ~ ~])
+        (to-doc /p/z ['delta' ~2026.1.1 ~ ~])
+    ==
+  =/  bg=(list hit)  (rank ds 'beta gamma')
+  ;:  weld
+    (expect-eq !>(`(list path)`~[/p/y]) !>((turn (rank ds 'gamma') |=(h=hit key.h))))
+    (expect-eq !>(`(list path)`~[/p/y /user/x]) !>((turn bg |=(h=hit key.h))))
+    (expect-eq !>(100) !>(?~(bg 0 strength.i.bg)))
+    (expect-eq !>(&) !>(?.(?=([* * ~] bg) | (lth strength.i.t.bg 100))))
+    (expect-eq !>(`(list hit)`~) !>((rank ds 'nothing here')))
+    (expect-eq !>(`(list hit)`~) !>((rank ~ 'beta')))
+    ::  front matter is not ranked
+    %+  expect-eq  !>(`(list hit)`~)
+    !>((rank ~[(to-doc /a ['---\0aauthor: zeta\0a---\0abody' ~2026.1.1 ~ ~])] 'zeta'))
+  ==
+++  test-snippet
+  =/  long=@t  (crip (weld (reap 300 'x') " gamma tail"))
+  =/  s=@t  (snippet long 'gamma')
+  ;:  weld
+    %+  expect-eq  !>('the gamma line')
+    !>((snippet '---\0aa: b\0a---\0afirst line\0athe gamma line\0alast' 'gamma'))
+    ::  no line carries a term: the first line
+    (expect-eq !>('first') !>((snippet 'first\0asecond' 'zeta')))
+    (expect-eq !>(&) !>(&(?=(^ (find "gamma" (trip s))) (lte (met 3 s) 206))))
+    (expect-eq !>("...") !>((scag 3 (trip s))))
+  ==
+++  test-utf8-trims
+  ;:  weld
+    (expect-eq !>("a") !>((drop-cont ~[`@tD`0x80 `@tD`0xbf 'a'])))
+    (expect-eq !>("ab") !>((flop (drop-high (flop ~['a' 'b' `@tD`0xc3 `@tD`0xa9])))))
+  ==
+++  test-overlap
+  ;:  weld
+    (expect-eq !>(50) !>((overlap (sy ~['a' 'b' 'c']) (sy ~['b' 'c' 'd']))))
+    (expect-eq !>(0) !>((overlap ~ ~)))
+    (expect-eq !>(100) !>((overlap (term-set 'alpha beta') (term-set '---\0ax: y\0a---\0abeta alpha'))))
+  ==
+::  +search: a superseded entry is left out unless asked for; a quoted
+::  query must appear verbatim.
+++  test-search
+  =/  es=(list [key=path e=know-entry])
+    :~  [/a ['alpha beta' ~2026.1.1 ~ ~]]
+        [/b ['---\0asuperseded-by: /a\0a---\0aalpha gamma' ~2026.1.1 ~ ~]]
+        [/c ['beta then alpha' ~2026.1.1 ~ ~]]
+    ==
+  =/  keys  |=(hs=(list hit) (sort (turn hs |=(h=hit key.h)) aor))
+  ;:  weld
+    (expect-eq !>(`(list path)`~[/a /c]) !>((keys (search es ~ 'alpha' |))))
+    (expect-eq !>(`(list path)`~[/a /b /c]) !>((keys (search es ~ 'alpha' &))))
+    (expect-eq !>(`(list path)`~[/a]) !>((keys (search es ~ '"Alpha Beta"' |))))
+    (expect-eq !>(`(unit @t)``'/a') !>((superseded e:(snag 1 es))))
+  ==
+::  the term cache: a current row is used as is, a stale or missing one is
+::  recomputed, and refresh drops rows for entries that are gone
+++  test-term-cache
+  =/  e1=know-entry  ['alpha beta' ~2026.1.1 ~ ~]
+  =/  e2=know-entry  ['gamma' ~2026.1.1 ~ ~]
+  =/  bogus=term-row  [~2026.1.1 ~ [/a (my ~[['zeta' 1]]) 1]]
+  =/  tc=term-cache  (my ~[[/a bogus] [/gone (row-of /gone e2)]])
+  =/  r  (refresh ~[[/a e1] [/b e2]] tc)
+  ;:  weld
+    ::  /a's row is current by updated and tags, so search believes it
+    (expect-eq !>(`(list path)`~[/a]) !>((turn (search ~[[/a e1]] tc 'zeta' |) |=(h=hit key.h))))
+    ::  edited since: the row is stale and the entry is read again
+    (expect-eq !>(`(list hit)`~) !>((search ~[[/a e1(updated ~2026.2.2)]] tc 'zeta' |)))
+    (expect-eq !>(&) !>(chg.r))
+    (expect-eq !>(`(list path)`~[/a /b]) !>((sort ~(tap in ~(key by tc.r)) aor)))
+    (expect-eq !>(bogus) !>((~(got by tc.r) /a)))
+  ==
+++  test-near
+  =/  es=(list [key=path e=know-entry])
+    :~  [/a ['zebra quokka narwhal axolotl pangolin' ~2026.1.1 ~ ~]]
+        [/b ['completely unrelated words here' ~2026.1.1 ~ ~]]
+    ==
+  =/  tc=term-cache  (malt (turn es |=([k=path e=know-entry] [k (row-of k e)])))
+  ;:  weld
+    (expect-eq !>(`(list path)`~[/a]) !>((turn (near es tc 'zebra quokka narwhal axolotl okapi') |=([* k=path] k))))
+    (expect-eq !>(`(list path)`~[/a]) !>((turn (near es ~ 'zebra quokka narwhal axolotl okapi') |=([* k=path] k))))
+    (expect-eq !>(`(list [@ud path])`~) !>((near es tc 'nothing alike at all')))
+  ==
+++  test-lint
+  =/  es=(list [key=path e=know-entry])
+    :~  [/a ['see [[b]] and [[missing]]' ~2026.2.28 ~ ~]]
+        [/b ['x' ~2026.2.28 (sy ~['t']) ~]]
+        [/c ['---\0asuperseded-by: /nope\0a---\0afix foo.hoon' ~2026.1.1 ~ ~]]
+        [/d ['---\0averified: 2026-02-27\0a---\0asee app.hoon' ~2026.1.1 (sy ~['t']) ~]]
+    ==
+  =/  l=lint  (lint-run es ~2026.3.1)
+  ;:  weld
+    (expect-eq !>(`(list [path path])`~[[/a /missing]]) !>(broken.l))
+    (expect-eq !>(`(list [path @t])`~[[/c '/nope']]) !>(bad-super.l))
+    (expect-eq !>(`(list path)`~[/a /c]) !>(untagged.l))
+    ::  /c names code and is 59 days unchecked; /d was verified two days ago
+    (expect-eq !>(`(list [path @ud])`~[[/c 59]]) !>(stale.l))
+    (expect-eq !>(`(list path)`~[/c /d]) !>(orphans.l))
+    (expect-eq !>(`(list [path path @ud])`~) !>(dups.l))
+  ==
+++  test-lint-dups
+  =/  body=@t  'zebra quokka narwhal axolotl pangolin okapi tapir dugong'
+  =/  es=(list [key=path e=know-entry])
+    :~  [/old [body ~2026.1.1 ~ ~]]
+        [/new [(cat 3 body ' plus') ~2026.1.1 ~ ~]]
+        [/other ['something else entirely different' ~2026.1.1 ~ ~]]
+    ==
+  =/  l=lint  (lint-run es ~2026.1.2)
+  (expect-eq !>(`(list [path path])`~[[/new /old]]) !>((turn dups.l |=([a=path b=path *] [a b]))))
+++  test-iso-day
+  ;:  weld
+    (expect-eq !>('2026-10-03') !>((iso-day ~2026.10.3..14.05.11)))
+    (expect-eq !>(`(unit @da)``~2026.10.3) !>((from-iso-day '2026-10-03')))
+    (expect-eq !>(`(unit @da)`~) !>((from-iso-day '2026-13-01')))
+    (expect-eq !>(`(unit @da)`~) !>((from-iso-day 'soon')))
+  ==
 --
