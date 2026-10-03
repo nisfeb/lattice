@@ -166,7 +166,9 @@ Three presets, all per-directory, all one poke:
 | **shared** | copy in the published vault, bound in the scry namespace, data grub gained, data road added to the `/public` peek set | any ship that knows the address, over ames, **live** (remote keeps) |
 | **clearweb** | shared + page tagged `clearweb` → included in public eyre binding | anyone with the URL |
 
-A per-ship grant (`POST /share-file`) is separate from the presets. It gives one ship read or edit access to one page, through an auto-usergroup named after that ship.
+A per-ship grant (`POST /share-file`) is separate from the presets. It gives one ship read or edit access to one page, through an auto-usergroup named after that ship, and sends that ship a notice. Their editor lists the page in its files tree under "shared with me", in a folder named after the sharing ship, by the page's name there (`site/logging`). Opening it reads the page's prose, and saving wraps the edit back in the page's envelope.
+
+Lattice writes the usergroup itself, so it declares `make /sys/ames/usergroups/`. That road can change any sharing group on the ship; grubbery has no narrower membership action. Refuse it and sharing with ships answers 403, saying so, and nothing else changes. Grant roads in a group are absolute (`<install path>/page/<name>/`): the kernel copies a group's weir into each member's weir as written, so a relative road there would grant nothing. A grant follows its page: moving a page or a folder rewrites every group road on it or under it to the new path, and deleting one drops them, so a page made later at the same name is not shared by accident.
 
 Notes:
 

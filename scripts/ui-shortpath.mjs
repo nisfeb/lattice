@@ -31,6 +31,10 @@ const eq = (name, got, want) => {
 const B = '/apps/lattice.lattice_app/';
 
 console.log('shortening');
+const D = '/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app/';
+eq('a desk install drops its longer base too', shortPath(`${D}page/notes`, [`${D}page/notes`]), 'notes');
+eq('and keeps it out of the ambiguous fallback',
+  shortPath(`${D}page/foo`, [`${D}page/foo`, `${D}foo`]), 'page/foo');
 eq('a page grant drops the app base', shortPath(`${B}page/notes`, [`${B}page/notes`]), 'notes');
 eq('a pub grant drops it too', shortPath(`${B}pub`, [`${B}pub`]), 'pub');
 // the ellipsis marks a TRUNCATED tail: present when segments were dropped,

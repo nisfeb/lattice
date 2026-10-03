@@ -14,12 +14,19 @@
   // list is deferred off boot's critical path. Without this flag the panel
   // asserts you have no groups for the second or two before the answer lands.
   let permsLoaded = false;
+  // latBase(), once known: a grant on one of our pages is a road under it
+  let selfBase = null;
   //  bg: boot's deferred call yields to user activity (bgFetch). Panel
   //  opens and post-save re-reads stay on the user lane.
   async function loadPerms(bg = false) {
+    const get = bg ? bgFetch : fetch;
     let r = null;
-    try { r = await (bg ? bgFetch : fetch)(api + '/share-groups'); } catch {}
-    if (!r || !r.ok) {
+    try {
+      const [b, g] = await Promise.all([latBase().catch(() => null), get(api + '/share-groups')]);
+      selfBase = b;
+      r = g;
+    } catch {}
+    if (!r || !r.ok || !selfBase) {
       st('could not load groups (' + (r ? r.status : 'network') + ')', false);
       return;
     }

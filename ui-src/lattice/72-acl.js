@@ -50,7 +50,6 @@
 
   const aclOpen = () => {
     $('aclwrap').hidden = false;
-    aclPathOptions();
     // permGroups is populated by boot's deferred load. Only pay a request if
     // the pane was opened before that landed. Guard on permsLoaded, not the
     // array's length: a ship with zero groups is a real, load-complete
@@ -67,7 +66,7 @@
     const dl = $('aclpaths');
     if (!dl) return;
     dl.textContent = '';
-    const base = '/apps/lattice.lattice_app';
+    const base = selfBase;
     const seen = new Set([base + '/pub', base + '/page']);
     for (const n of nodes) seen.add(base + '/page/' + n.path);
     for (const p of seen) {
@@ -154,7 +153,7 @@
     const prow = document.createElement('div');
     prow.className = 'row';
     const pin = document.createElement('input');
-    pin.placeholder = '/apps/lattice.lattice_app/pub';
+    pin.placeholder = selfBase + '/pub';
     pin.setAttribute('list', 'aclpaths');
     pin.autocomplete = 'off';
     const radd = document.createElement('button');
@@ -223,6 +222,7 @@
   function renderAcl() {
     const grid = $('aclgrid');
     if (!grid) return;
+    aclPathOptions();             // after a load, so selfBase is known
     grid.textContent = '';
     $('aclsum').textContent = permGroups.length
       ? permGroups.length + ' group' + (permGroups.length === 1 ? '' : 's')

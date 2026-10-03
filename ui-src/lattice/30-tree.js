@@ -30,6 +30,9 @@
   // 70-upload). Those files run after this component upgrades, so their
   // $-lookups find the rendered elements.
   let treeList;
+  // pages other ships shared with us (/shared-with-me), drawn as a folder
+  // after the pages. Filled by 69-shared.js.
+  let sharedWithMe = [];
   customElements.define('lat-tree', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -234,6 +237,7 @@
       rowByPath.set(n.path, row);
       treeList.appendChild(row);
     }
+    if (sharedWithMe.length) renderShared(coll);
     // the conflict badge is a count of conflicts/ pages in this very tree, so
     // it repaints exactly when the tree does. Defined in 80-conflicts.js.
     if (typeof renderConfBadge === 'function') renderConfBadge();

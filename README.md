@@ -52,6 +52,7 @@ other ships over ames, and followed remote files push you updates.
 - **Browse `urb://`.** Fetch and read gemtext published by any ship,
   peer-to-peer over ames, from the web reader.
 - **Publish.** Pages are private until you share them. Share one and it is published: copied into your published vault, bound in the Urbit scry namespace, and readable by any ship as `urb://~you/that/path`. Pages and whole folders can also go clearweb-public, served over plain HTTP at `/c/<path>`. Share a folder and you've published a site.
+- **Share with one ship.** Give one ship read or edit access to one page, without publishing it. Their editor lists it under "shared with me", in a folder named after your ship, and they read and save it there, over encrypted ames.
 - **Editor.** A web workspace with syntax highlighting for every page kind,
   live preview, compile errors for Hoon pages, folder-level share, move, and
   delete, and drag-and-drop upload of files or whole directories (batched
@@ -65,6 +66,10 @@ other ships over ames, and followed remote files push you updates.
   saved in your ship's `%settings` so they follow you to every device. If you
   use [Talon](https://github.com/nisfeb/talon), lattice wears Talon's theme,
   accent and font too, each unless you turn it off in Settings.
+- **Send to orrery.** When [orrery](https://github.com/nisfeb/orrery) is on
+  your ship, one button hands it a page as a situation to look after: it
+  works out the trip, the dates and the people, proposes what to do, and
+  follows the page as you edit it ([docs/orrery.md](docs/orrery.md)).
 - **Works offline.** Lose the ship mid-session and saves queue locally
   (pages and knowledge entries both), then replay when it returns. Deletes,
   moves and renames queue too, in an ordered log that drains ahead of the

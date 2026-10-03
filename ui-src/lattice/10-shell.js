@@ -153,12 +153,13 @@
       '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot() + '</style>';
   };
   // grant paths are shown in the share/ACL surfaces, and every one carries
-  // the same app base, pure noise on screen. Strip it, then keep the
+  // the same app base, pure noise on screen: /apps/lattice.lattice_app, or
+  // a desk install's longer path ending in it. Strip it, then keep the
   // SHORTEST tail that stays unique among the paths shown alongside (`all`),
   // growing only where disambiguation demands. Callers put the full path in
   // `title`, so hover always has the truth.
   const shortPath = (p, all) => {
-    const strip = (x) => x.replace(/^\/apps\/lattice\.lattice_app\/(page\/)?/, '');
+    const strip = (x) => x.replace(/^.*?\/lattice\.lattice_app\/(page\/)?/, '');
     const label = (x) => {
       const me = strip(x);
       if (!me) return x;
@@ -173,7 +174,7 @@
       // extend, and two different grants rendered identically in the ACL pane.
       // Fall back to keeping that prefix, which is what actually distinguishes
       // them. Showing a longer path beats showing the wrong one.
-      if (clashes()) return x.replace(/^\/apps\/lattice\.lattice_app\//, '');
+      if (clashes()) return x.replace(/^.*?\/lattice\.lattice_app\//, '');
       return (n < segs.length ? '\u2026/' : '') + tail();
     };
     // Growing the tail compares TAILS, which is not the same as comparing

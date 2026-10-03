@@ -143,6 +143,15 @@ jobs:
           #  a healthy ship prints nothing: every print goes through +say
           #  at a level (docs/logging.md)
           python3 scripts/quiet-check.py code
+      #  every system road the app reaches is declared in weir.json, in the
+      #  category it is reached in. On a desk install an undeclared road is
+      #  a veto that parks the fiber; sharing with ships shipped that way.
+      #  Checked against the fiberio users actually run.
+      - name: weir declares every road reached
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/fiberio.hoon" \
+            https://raw.githubusercontent.com/nisfeb/grubbery/dist/single-release/desk/lib/fiberio.hoon
+          python3 scripts/weir-check.py code/nex/lattice/app.hoon --io "$RUNNER_TEMP/fiberio.hoon"
       - name: supply chain (licences + bans)
         run: |
           cargo install cargo-deny --locked

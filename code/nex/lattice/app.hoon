@@ -54,6 +54,7 @@
 /<  uij  ui-app/app.js
 /<  vjs  ui-app/vault.js
 /<  tjs  ui-app/theme.js
+/<  ojs  ui-app/orrery.js
 /<  lc   /lib/lattice-comment.hoon
 /<  lb   /lib/lattice-bookmark.hoon
 /<  lh   /lib/lattice-history.hoon
@@ -139,6 +140,9 @@
         ::  theme.js: light/dark and custom themes (Talon's model), loaded by
         ::  every owner document. See its header.
             [%over %& [/app %'theme.js'] [[/ %mime] tjs]]
+        ::  orrery.js: "Send to orrery" in the editor and the reader
+        ::  (docs/orrery.md).
+            [%over %& [/app %'orrery.js'] [[/ %mime] ojs]]
             ::  carried.json: has the one-time carry from the app-tier
             ::  instance run? DECLARED, so it outlives a reload - an
             ::  undeclared grub does not, which is the lesson /mirror/tr
@@ -147,6 +151,9 @@
             ::  faults.json: the fault record (+fault). Declared, so a fault
             ::  that stands across a reload is not printed again for it.
             [%fall %& [/ %'faults.json'] [[/ %json] `json`[%o ~]]]
+            ::  moves.json: where moved pages went (+record-move). Declared,
+            ::  so it outlives a reload.
+            [%fall %& [/ %'moves.json'] [[/ %json] `json`[%o ~]]]
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
         ::  /legacy: the retired-agent marker lives here (see +legacy-mark-road)
             [%fall %| /legacy empty-dir:loader]
@@ -774,7 +781,7 @@
 ::  silent drop reads as a grant that was made and was not.
 ::
 ++  handle-share-group-save
-  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t)]
+  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t) our=@p]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  gname=(unit @t)  (~(get by args) 'name')
@@ -797,6 +804,9 @@
     ::  a typo'd ship silently dropped = someone believes they granted
     ::  access and did not. Reject the whole save instead.
     (send-err eyre-id 400 'bad ship name in list')
+  ::  this ship needs no grant: it already reads and writes everything here
+  ?:  (lien ships |=(u=(unit @p) =(u `our)))
+    (send-err eyre-id 400 'that is you: your own ship already has full access')
   =/  parse-paths
     |=  ts=(list @t)
     ^-  (unit (list path))
@@ -817,13 +827,11 @@
     (send-err eyre-id 400 'grant paths must be absolute and under /apps')
   =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
   ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
-  ::  OPEN: these are weir roads granted to OTHER ships, built from paths
-  ::  the request supplied. Whether they should be absolute (as a grantee
-  ::  addresses them, which needs our own path) or relative (as the
-  ::  registry resolves them against our registered rail) is a question
-  ::  about the sharing model, not a rename - so they are left as they
-  ::  were. +send-public-how's grants went relative; if that proves right
-  ::  these follow it.
+  ::  ABSOLUTE, as the grantee's weir matches them. A group weir is read
+  ::  as written into each member's weir under /sys/ames/ships, so a
+  ::  relative road there is relative to the peer's dir and grants
+  ::  nothing. Only the registry's %how resolves relative roads, and it
+  ::  confines them to the sender's prefix, which this editor is not.
   =/  to-roads
     |=  ps=(list path)
     ^-  (set road:tarball)
@@ -839,8 +847,8 @@
   ::  access and did not, which is this editor's worst failure mode.
   ?:  (lien ~(tap in who) |=(w=@p (is-banned:ls bans w)))
     (send-err eyre-id 403 'that group names a banned ship')
-  ;<  ~  bind:m  (over:io [%& %& gdir %'who.ships'] [[/ %ships] who])
-  ;<  ~  bind:m  (over:io [%& %& gdir %'how.weir'] [[/ %weir] weir])
+  ;<  ok=?  bind:m  (ug-put gdir who weir)
+  ?.  ok  (ug-refused eyre-id)
   (send-ok eyre-id)
 ::  +handle-remote-save: POST /remote-save. Write a grub onto ANOTHER ship's
 ::  grubbery, which is why it takes `our`: saving to yourself is a different
@@ -870,7 +878,14 @@
   ::  v1 edits EXISTING files only. Remote create needs a make grant plus a
   ::  blot decision the client can't make for a tree it doesn't own.
   ?.  ?=([%file *] u.ms)  (send-err eyre-id 404 'no such file on that ship')
-  ?:  =((grub-text sang.u.ms) `body)
+  ::  a lattice content page was handed out as its prose (+browse-file-
+  ::  respond): the edit goes back in that page's own envelope
+  =/  cur=(unit @t)  (grub-text sang.u.ms)
+  =/  un=(unit [builder=@tas body=@t])
+    ?.  &(=([/lattice %page] p.sang.u.ms) ?=(^ cur))  ~
+    (unwrap-content u.cur)
+  =?  body  ?=(^ un)  (wrap-content builder.u.un body)
+  ?:  =(cur `body)
     ::  no-op save: nothing to send, and grubbery skips unchanged writes
     ::  anyway, so the revision check below would misread it as a denial.
     (send-ok eyre-id)
@@ -1468,9 +1483,14 @@
       (send-err eyre-id 400 'banlist is full')
     ;<  ~  bind:m
       (over:io (ban-road up) [[/lattice %banned] (~(put in bans) u.who)])
-    ;<  n=@ud  bind:m  (strip-ship-from-groups u.who)
+    ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
+    ::  the ban is written; the revocation is not. Say so: a ban that left
+    ::  the grants in place is the label this route exists not to be.
+    ?~  n
+      %^  send-err  eyre-id  403
+      'banned, but lattice may not change your sharing groups, so the ship keeps what its groups grant: grant lattice make /sys/ames/usergroups/ at /apps/grubbery/permits, then ban again'
     %+  send-json  eyre-id
-    (pairs:enjs:format ~[['ok' b+&] ['revoked' (numb:enjs:format n)]])
+    (pairs:enjs:format ~[['ok' b+&] ['revoked' (numb:enjs:format u.n)]])
   ::
       [%'POST' %unban]
     =/  st=(unit @t)  (~(get by args) 'ship')
@@ -1494,7 +1514,7 @@
   ::  granting eval power) and any road shape the editor can't render, both
   ::  carried through from the stored weir verbatim.
       [%'POST' %share-group-save]
-    (handle-share-group-save eyre-id req args)
+    (handle-share-group-save eyre-id req args our)
   ::  share-file: the per-file shortcut. Grant a ship read or edit on ONE
   ::  page, and tell them. The grant goes into an auto-group named after the
   ::  ship (visible and editable in the peers panel like any other group).
@@ -1519,17 +1539,24 @@
     =/  pdir=path  (weld /page (pax-of u.name))
     ;<  pe=?  bind:m  (peek-exists:io (rv up pdir))
     ?.  pe  (send-err eyre-id 404 'no such page')
-    =/  droad=road:tarball  (rv up pdir)
+    ::  absolute, the road the ACL pane shows and the peer's weir matches
+    ::  (see +handle-share-group-save)
+    ;<  sb=path  bind:m  self-base
+    =/  droad=road:tarball  [%& %| (weld sb pdir)]
     =/  gname=@t  (crip (slag 1 (scow %p u.shp)))
-    ;<  ~  bind:m
+    ;<  ok=?  bind:m
       %-  ug-merge
       :^    gname
           (~(gas in *(set @p)) ~[u.shp])
         (~(gas in *(set road:tarball)) ~[droad])
       ?.  =('edit' mode)  ~
       (~(gas in *(set road:tarball)) ~[droad])
-    ::  what the peer should OPEN: the page's code grub, not the dir.
-    =/  npax=path  (snoc pdir %code)
+    ?.  ok  (ug-refused eyre-id)
+    ::  what the peer should OPEN: the page's code grub, not the dir. By its
+    ::  absolute path: they peek it on our ship, and +apply-share-notice
+    ::  drops a path not under /apps (every notice did, from the move to
+    ::  relative roads until this).
+    =/  npax=path  (weld sb (snoc pdir %code))
     ;<  base=(unit path)  bind:m  (peer-base u.shp)
     ;<  told=?  bind:m
       %^  remote-load-poke-wait  u.shp
@@ -1573,7 +1600,8 @@
     ?~  gname  (send-err eyre-id 400 'missing name')
     ?.  ((sane %tas) u.gname)  (send-err eyre-id 400 'bad name')
     =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
-    ;<  *  bind:m  (cull-soft:io [%& %| gdir])
+    ;<  e=(unit tang)  bind:m  (cull-soft:io [%& %| gdir])
+    ?^  e  (ug-refused eyre-id)
     (send-ok eyre-id)
   ::  ── follows (the ship-level follow list) ──
       [%'GET' %follows]
@@ -1600,7 +1628,10 @@
     =/  base=tape  (weld (keep-url sb "") "")
     %+  send-json  eyre-id
     %-  pairs:enjs:format
-    :~  :-  'streams'
+    ::  base: where this install lives in the tree, the prefix of every
+    ::  grant road the ACL pane shows for our own pages
+    :~  ['base' s+(spat sb)]
+        :-  'streams'
         %-  pairs:enjs:format
         :~  ['know' s+(crip (weld base "know/vault?blot=/json"))]
             ['pub' s+(crip (weld base "pub/vault?blot=/json"))]
@@ -1705,6 +1736,7 @@
     =/  dpax=(unit path)  (raw-name-pax u.name)
     ?~  dpax  (send-err eyre-id 400 'bad name')
     ;<  ~  bind:m  (poke-eval [%del u.dpax])
+    ;<  ~  bind:m  (move-grants u.dpax ~)
     (send-ok eyre-id)
   ::  page-move: server-side move/rename of a page or a whole folder subtree.
   ::  Replaces the old client choreography (page-source + page-save + page-del
@@ -3268,6 +3300,16 @@
           %+  line  '/apps/lattice.lattice_app/'
           'copy your existing pages, memories and bookmarks across from where lattice used to live. This is read-only, happens once, and the old copy is left untouched. Refuse it and this install simply starts empty'
       ==
+    ::  sharing with ships IS writing usergroups: who.ships and how.weir,
+    ::  from the share box, the ACL pane and a ban. The registry has no
+    ::  membership action, so there is no narrower road. Every write is
+    ::  soft (+ug-over), so a refusal answers the request with a reason
+    ::  instead of parking it.
+      :-  'make'
+      :-  %a
+      :~  %+  line  '/sys/ames/usergroups/'
+          'share pages with other ships: add a ship to a sharing group and grant the group read or edit on your pages, and take a banned ship out of every group. This road can change any sharing group on this ship. Refuse it and lattice works fully for you; you just cannot share pages with other ships'
+      ==
   ==
 ::
 ::  +fetch-url: GET a clearweb url through iris, following redirects.
@@ -4270,6 +4312,8 @@
     $(todo t.todo)
   ?~  rels
     ;<  ~  bind:m  (poke-eval [%del from])
+    ;<  ~  bind:m  (record-move from to)
+    ;<  ~  bind:m  (move-grants from `to)
     (pure:m `count)
   =/  pdir=path  (weld sdir i.rels)
   ;<  cn=view:nexus  bind:m  (peek:io (rf up pdir %code) ~)
@@ -4292,6 +4336,37 @@
     ^-  (list eval-action:le)
     ?:(=(%private mode) ~ [%share dst mode]~)
   $(todo acts, rels t.rels, count +(count))
+::  +record-move: /moves.json at the nexus root, the last 100 moves newest
+::  first: {"moves": [{"from": "a/b", "to": "c/b", "at_ms": n}]}. A page at
+::  `from` is now at `to`, and a page under from/ is under to/. So a reader
+::  holding an old path (orrery's follow, docs/orrery.md) finds where it went
+::  with a peek and no call. Soft and never fails: the move stands whether
+::  or not this lands.
+::  ponytail: read, then write, so two moves at once can drop a row.
+++  moves-road  (rf up / %'moves.json')
+++  record-move
+  |=  [from=path to=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  clock=(unit @da)  bind:m  soft-now
+  ?~  clock  (pure:m ~)
+  ;<  log=json  bind:m  (json-at moves-road)
+  =/  old=(list json)
+    =/  ms=(unit json)  (~(get by (rise-omap log)) 'moves')
+    ?.  ?=([~ %a *] ms)  ~
+    p.u.ms
+  =/  row=json
+    %-  pairs:enjs:format
+    :~  ['from' s+(crip (pax-str from))]
+        ['to' s+(crip (pax-str to))]
+        ['at_ms' (numb:enjs:format (rise-da-ms u.clock))]
+    ==
+  ;<  *  bind:m
+    %^  over-as-soft:io  moves-road
+      :-  [/ %json]
+      (pairs:enjs:format ~[['moves' a+(scag 100 `(list json)`[row old])]])
+    [/ %json]
+  (pure:m ~)
 ::  +instantiate-template: create a live page-tree from a template. Runs in a
 ::  REQUEST fiber and pokes one %make PER page (a separate writer transaction
 ::  each), in sorted order, so every page commits before the next and its
@@ -5386,6 +5461,7 @@
   ^-  form:m
   ?.  (valid-name name)  (pure:m [400 'bad name'])
   ;<  ~  bind:m  (fs-poke-eval [%del (pax-of name)])
+  ;<  ~  bind:m  (move-grants (pax-of name) ~)
   (pure:m [200 ''])
 ::  +fs-op: the shared request dispatcher. `path`'s last segment selects the op.
 ::  `query` is "k=v&k=v" (raw, page names are @ta so need no url-decode). Returns
@@ -5485,6 +5561,7 @@
     ?:  =(%'app.js' nam)      `'text/javascript'
     ?:  =(%'vault.js' nam)    `'text/javascript'
     ?:  =(%'theme.js' nam)    `'text/javascript'
+    ?:  =(%'orrery.js' nam)   `'text/javascript'
     ~
   ?~  ct  (send-err eyre-id 404 'not found')
   ;<  pv=view:nexus  bind:m  (peek:io (rf up /app nam) ~)
@@ -5855,6 +5932,83 @@
   ^-  (set road:tarball)
   %-  ~(gas in *(set road:tarball))
   (skip ~(tap in rs) |=(r=road:tarball ?=([%& %| *] r)))
+::  +ug-over: write one usergroup grub, SOFT. %.n = not written. A hard
+::  over:io on a road this install was not granted parks the request
+::  fiber, and the browser waits on an answer that never comes.
+++  ug-over
+  |=  [=road:tarball =bask:tarball]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  =wire  bind:m  (nonce:io /make)
+  ;<  ~  bind:m  (send-dart:io %node wire road %make %.y %.n |+[bask ~])
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %veto *]  [%done %.n]
+      [~ %made * *]
+    ?.  =(wire wire.u.in)  [%skip ~]
+    [%done =(~ err.u.in)]
+  ==
+::  +ug-put: a group's members and weir, both or neither as far as a
+::  refusal goes (one road covers both grubs).
+++  ug-put
+  |=  [gdir=path who=(set @p) =weir:nexus]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  ok=?  bind:m  (ug-over [%& %& gdir %'who.ships'] [[/ %ships] who])
+  ?.  ok  (pure:m %.n)
+  (ug-over [%& %& gdir %'how.weir'] [[/ %weir] weir])
+::  +move-grants: grants follow a page. A group road names a path, so a
+::  move would leave the ship it was shared with holding the old one, and
+::  a delete would hand that ship whatever page is made there next. Every
+::  road on `from` or under it moves to `to`, or with `to` = ~ goes. Soft:
+::  a refused usergroup road leaves the grants as they were, and the move
+::  or delete stands.
+++  move-grants
+  |=  [from=path to=(unit path)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  =/  old=path  (weld sb (weld /page from))
+  =/  n=@ud  (lent old)
+  =/  under  |=(r=road:tarball &(?=([%& %| *] r) =(old (scag n p.p.r))))
+  =/  re
+    |=  rs=(set road:tarball)
+    ^-  (set road:tarball)
+    ?~  to  (~(gas in *(set road:tarball)) (skip ~(tap in rs) under))
+    %-  ~(run in rs)
+    |=  r=road:tarball
+    ?.  (under r)  r
+    ?>  ?=([%& %| *] r)
+    [%& %| (weld (weld sb (weld /page u.to)) (slag n p.p.r))]
+  ::  one SOFT deep read of every group. The usergroup read is optional
+  ::  (weir.json), and this runs on every move and delete: a hard peek
+  ::  there would park each one on an install that refused it.
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  =/  gs=(list [nom=@ta gb=ball:tarball])  ~(tap by dir.ball.u.vw)
+  |-  ^-  form:m
+  ?~  gs  (pure:m ~)
+  =/  nt=tape  (trip nom.i.gs)
+  ?.  &((gth (lent nt) 4) =(".grp" (slag (sub (lent nt) 4) nt)))
+    $(gs t.gs)
+  =/  fils  ?~(fil.gb.i.gs ~ contents.u.fil.gb.i.gs)
+  =/  hw  (~(get by fils) %'how.weir')
+  =/  w=(unit weir:nexus)
+    ?~  hw  ~
+    (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hw))))
+  ?~  w  $(gs t.gs)
+  =/  nw=weir:nexus  [(re make.u.w) poke.u.w (re peek.u.w)]
+  ?:  =(nw u.w)  $(gs t.gs)
+  ;<  *  bind:m
+    (ug-over [%& %& (snoc ug-base nom.i.gs) %'how.weir'] [[/ %weir] nw])
+  $(gs t.gs)
+::  +ug-refused: the answer when lattice may not write usergroups.
+++  ug-refused
+  |=  eyre-id=@ta
+  %^  send-err  eyre-id  403
+  'lattice may not change your sharing groups: grant it make /sys/ames/usergroups/ at /apps/grubbery/permits'
 ::  +ug-read-weir: a group's stored weir, bunt if absent/undecodable.
 ++  ug-read-weir
   |=  gdir=path
@@ -5941,7 +6095,7 @@
 ::  rather than a note. Grants are unioned across the groups a ship belongs to,
 ::  so membership IS access, and leaving it in place would leave it reachable.
 ::  The grant ROADS are untouched. They belong to the group, not the ship, and
-::  other members still need them.
+::  other members still need them. ~ = refused, partway through.
 ::  +apply-comment-notice: a comment poked by ANOTHER ship.
 ::
 ::  Everything that decides whether it lands is read here, never from the
@@ -5969,14 +6123,14 @@
   (apply-comment root u.src now u.na)
 ++  strip-ship-from-groups
   |=  who=@p
-  =/  m  (fiber:fiber:nexus ,@ud)
+  =/  m  (fiber:fiber:nexus ,(unit @ud))
   ^-  form:m
   ;<  dn=view:nexus  bind:m  (peek-shallow:io [%& %| ug-base] ~)
-  ?.  ?=([%ball *] dn)  (pure:m 0)
+  ?.  ?=([%ball *] dn)  (pure:m `0)
   =/  names=(list @ta)  (sort ~(tap in ~(key by dir.ball.dn)) aor)
   =|  hit=@ud
   |-  ^-  form:m
-  ?~  names  (pure:m hit)
+  ?~  names  (pure:m `hit)
   =/  nt=tape  (trip i.names)
   ?.  &((gth (lent nt) 4) =(".grp" (slag (sub (lent nt) 4) nt)))
     $(names t.names)
@@ -5987,8 +6141,9 @@
     (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
   ?.  (~(has in ships) who)
     $(names t.names)
-  ;<  ~  bind:m
-    (over:io [%& %& gdir %'who.ships'] [[/ %ships] (~(del in ships) who)])
+  ;<  ok=?  bind:m
+    (ug-over [%& %& gdir %'who.ships'] [[/ %ships] (~(del in ships) who)])
+  ?.  ok  (pure:m ~)
   $(names t.names, hit +(hit))
 ::  +ban-road: where the banlist lives.
 ++  ban-road  |=(up=@ud ^-(road:tarball (rf up / %banned)))
@@ -6003,12 +6158,13 @@
   ?.  ?=([%file *] bv)  (pure:m ~)
   (pure:m (fall (mole |.(;;(banned:ls (sang-noun:tarball sang.bv)))) ~))
 ::  +ug-merge: fold ships and grants INTO a usergroup, creating it if absent.
+::  %.n = refused, nothing written.
 ::  The per-file share flow uses this (one auto-group per ship, named after
 ::  it) so repeated shares accumulate instead of replacing.
 ::
 ++  ug-merge
   |=  [gname=@t ships=(set @p) pk=(set road:tarball) mk=(set road:tarball)]
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
   ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
@@ -6020,9 +6176,7 @@
     :+  (~(uni in make.old) mk)
       poke.old
     (~(uni in peek.old) pk)
-  ;<  ~  bind:m  (over:io [%& %& gdir %'who.ships'] [[/ %ships] (~(uni in cur) ships)])
-  ;<  ~  bind:m  (over:io [%& %& gdir %'how.weir'] [[/ %weir] weir])
-  (pure:m ~)
+  (ug-put gdir (~(uni in cur) ships) weir)
 ::  +remote-load-poke-wait: +remote-load-poke with a deadline. %.y = acked in
 ::  time. An offline ship never acks a gall poke, and a share notice must not
 ::  hang the save that triggered it. The GRANT is already durable by the time
@@ -7962,10 +8116,16 @@
   ::  /grub-source's contract so the client can grey out what it must not save.
   =/  txt=(unit @t)  (grub-text sang.sn)
   ?~  txt  (send-err eyre-id 415 'not text')
+  ::  a lattice content page (a page shared with us) reads as its prose, not
+  ::  its hoon envelope; /remote-save wraps an edit back in the same builder
+  =/  un=(unit [builder=@tas body=@t])
+    ?.  =([/lattice %page] p.sang.sn)  ~
+    (unwrap-content u.txt)
   %+  send-json  eyre-id
   %-  pairs:enjs:format
-  :~  ['body' s+u.txt]
+  :~  ['body' s+?~(un u.txt body.u.un)]
       ['mark' s+name.p.sang.sn]
+      ['builder' ?~(un ~ s+builder.u.un)]
       ['editable' b+&]
   ==
 ::  +send-html: a 200 text/html response.
@@ -8165,20 +8325,20 @@
   ::  also keeps command 303s (send-see-other's buster) network-fresh, and
   ::  activate-time eviction spares this cache: its freshness is rev-based.
   =/  ver=@t
-    (scot %ux (mug [uih uij vjs tjs icon pjs manifest-json icon-192-b64 icon-512-b64]))
+    (scot %ux (mug [uih uij vjs tjs ojs icon pjs manifest-json icon-192-b64 icon-512-b64]))
   ::  PV versions the RENDERED reader documents (their inline css + scripts).
   ::  V only covers shell assets, so a deploy that restyled the reader left
   ::  every cached page serving the old markup indefinitely: content revs
   ::  converge quietly, but a CODE deploy bumped nothing — the activate
   ::  handler below wipes 'lattice-pages' when PV moves.
   =/  pv=@t
-    (scot %ux (mug [web-css pwa-head nav-script page-cache-script sse-script page-sse-script]))
+    (scot %ux (mug [web-css pwa-head orrery-slot nav-script page-cache-script sse-script page-sse-script]))
   %+  rap  3
   :~  'var V="lattice-'
       ver
       '";var PV="'
       pv
-      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){e.waitUntil(caches.open(V).then(function(c){return Promise.all(SHELL.map(function(u){return c.add(u).catch(function(){})}))}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=q.url+(q.url.indexOf("?")<0?"?":"&")+"u=sw"+Date.now();e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){e.waitUntil(caches.open(V).then(function(c){return Promise.all(SHELL.map(function(u){return c.add(u).catch(function(){})}))}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=q.url+(q.url.indexOf("?")<0?"?":"&")+"u=sw"+Date.now();e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
@@ -8805,7 +8965,9 @@
   ::  Hoisted =/ (not inline in the weld): see the fuse-loop trap.
   =/  bmbtn=tape
     ?.  (has-prefix "urb://" current)  ""
-    "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
+    %+  weld
+      "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
+    orrery-slot
   %-  crip
   ;:  weld
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -8844,6 +9006,13 @@
     bm-script
     (sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
   ==
+::  +orrery-slot: the reader's place for "Send to orrery" (ui-app/orrery.js,
+::  docs/orrery.md). orrery.js fills it on the owner's own pages while orrery
+::  is installed, and leaves it hidden everywhere else.
+++  orrery-slot
+  ^-  tape
+  %-  trip
+  '<span id="orw" hidden></span><script src="/apps/lattice/app/orrery.js" defer></script>'
 ::  +bm-script: the address bar's bookmark star. It paints from a copy of
 ::  the bookmark urls kept in localStorage, so a page view does not wait on
 ::  a /bookmarks request queued behind the page's own assets on a pier that
@@ -8887,6 +9056,7 @@
     "<button type=\"submit\">Go</button>"
     editbtn
     "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
+    orrery-slot
     "<span class=\"hamw\"><button type=\"button\" id=\"ham\" title=\"menu\">&#9776;</button>"
     "<div id=\"hammenu\" hidden>"
     "<a href=\"/apps/lattice/app\">&#9998; editor</a>"

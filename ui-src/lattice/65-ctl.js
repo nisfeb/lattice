@@ -15,7 +15,6 @@
   <div id="cerr" class="ok">&nbsp;</div>
   <lat-knowtags></lat-knowtags>
   <lat-share></lat-share>
-  <lat-shared></lat-shared>
   <lat-history></lat-history>
   <lat-links></lat-links>
   <button id="mv" class="mvbtn">move / rename</button>
