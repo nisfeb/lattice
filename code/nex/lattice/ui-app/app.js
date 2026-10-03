@@ -810,12 +810,13 @@
       '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot() + '</style>';
   };
   // grant paths are shown in the share/ACL surfaces, and every one carries
-  // the same app base, pure noise on screen. Strip it, then keep the
+  // the same app base, pure noise on screen: /apps/lattice.lattice_app, or
+  // a desk install's longer path ending in it. Strip it, then keep the
   // SHORTEST tail that stays unique among the paths shown alongside (`all`),
   // growing only where disambiguation demands. Callers put the full path in
   // `title`, so hover always has the truth.
   const shortPath = (p, all) => {
-    const strip = (x) => x.replace(/^\/apps\/lattice\.lattice_app\/(page\/)?/, '');
+    const strip = (x) => x.replace(/^.*?\/lattice\.lattice_app\/(page\/)?/, '');
     const label = (x) => {
       const me = strip(x);
       if (!me) return x;
@@ -830,7 +831,7 @@
       // extend, and two different grants rendered identically in the ACL pane.
       // Fall back to keeping that prefix, which is what actually distinguishes
       // them. Showing a longer path beats showing the wrong one.
-      if (clashes()) return x.replace(/^\/apps\/lattice\.lattice_app\//, '');
+      if (clashes()) return x.replace(/^.*?\/lattice\.lattice_app\//, '');
       return (n < segs.length ? '\u2026/' : '') + tail();
     };
     // Growing the tail compares TAILS, which is not the same as comparing
@@ -1373,6 +1374,22 @@
     //  late on a slow pier, and a window it misses turns into refetches
     finally { echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt)); }
   }
+
+  // where this install lives in the tree: /apps/lattice.lattice_app for the
+  // ball-era instance, under /apps/shell.shell/desks/ for a desk install.
+  // Grubbery's own endpoints (the beacon keep) and grant roads on our pages
+  // spell it out. Asked of /streams once and remembered. forgetBase() when a
+  // keep under it fails, so a moved install is found again.
+  let basePr = null;
+  const latBase = () => basePr || (basePr = (async () => {
+    try { if (localStorage.latBase) return localStorage.latBase; } catch {}
+    const r = await fetch(api + '/streams');
+    const b = r.ok ? (await r.json()).base : null;
+    if (!b) throw new Error('no base');
+    try { localStorage.latBase = b; } catch {}
+    return b;
+  })().catch((e) => { basePr = null; throw e; }));
+  const forgetBase = () => { basePr = null; try { delete localStorage.latBase; } catch {} };
 
   const collapsed = () => {
     try { return JSON.parse(localStorage.appColl || '[]'); } catch { return []; }
@@ -2427,6 +2444,9 @@
   // 70-upload). Those files run after this component upgrades, so their
   // $-lookups find the rendered elements.
   let treeList;
+  // pages other ships shared with us (/shared-with-me), drawn as a folder
+  // after the pages. Filled by 69-shared.js.
+  let sharedWithMe = [];
   customElements.define('lat-tree', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -2631,6 +2651,7 @@
       rowByPath.set(n.path, row);
       treeList.appendChild(row);
     }
+    if (sharedWithMe.length) renderShared(coll);
     // the conflict badge is a count of conflicts/ pages in this very tree, so
     // it repaints exactly when the tree does. Defined in 80-conflicts.js.
     if (typeof renderConfBadge === 'function') renderConfBadge();
@@ -3146,7 +3167,9 @@
     // rules (proseFlavor), so it needs to follow this file's real language.
     // Left alone it keeps whatever page kind was open before, and editing
     // calendar.html ends up highlighted and indented as that stale kind.
-    const mk = extKind(String(blot).split('/').pop()) || 'hoon';
+    // a shared lattice page arrives as its prose, with the builder it is
+    // wrapped in, which is its page kind
+    const mk = d.builder || extKind(String(blot).split('/').pop()) || 'hoon';
     if ([...pkind.options].some((o) => o.value === mk)) pkind.value = mk;
     curKind = mk;
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
@@ -4055,7 +4078,6 @@
   <div id="cerr" class="ok">&nbsp;</div>
   <lat-knowtags></lat-knowtags>
   <lat-share></lat-share>
-  <lat-shared></lat-shared>
   <lat-history></lat-history>
   <lat-links></lat-links>
   <button id="mv" class="mvbtn">move / rename</button>
@@ -4264,7 +4286,8 @@
   // A group's grant on a page is the page's own ball path in its peek/make,
   // exactly what the server's share-file writes, so a per-ship grant and a
   // per-group grant are the same kind of rule and read back the same way.
-  const pagePath = (name) => '/apps/lattice.lattice_app/page/' + name;
+  // selfBase is set before permsLoaded, and nothing here runs before that.
+  const pagePath = (name) => selfBase + '/page/' + name;
 
   function renderGroupAccess() {
     const host = $('grouplist');
@@ -4342,12 +4365,19 @@
   // list is deferred off boot's critical path. Without this flag the panel
   // asserts you have no groups for the second or two before the answer lands.
   let permsLoaded = false;
+  // latBase(), once known: a grant on one of our pages is a road under it
+  let selfBase = null;
   //  bg: boot's deferred call yields to user activity (bgFetch). Panel
   //  opens and post-save re-reads stay on the user lane.
   async function loadPerms(bg = false) {
+    const get = bg ? bgFetch : fetch;
     let r = null;
-    try { r = await (bg ? bgFetch : fetch)(api + '/share-groups'); } catch {}
-    if (!r || !r.ok) {
+    try {
+      const [b, g] = await Promise.all([latBase().catch(() => null), get(api + '/share-groups')]);
+      selfBase = b;
+      r = g;
+    } catch {}
+    if (!r || !r.ok || !selfBase) {
       st('could not load groups (' + (r ? r.status : 'network') + ')', false);
       return;
     }
@@ -4386,52 +4416,92 @@
   });
 
 // ── src/69-shared.js ──────────────────────────────────────────────────────
-  // ── shared with me: <lat-shared>, files other ships granted us ───────────
-  // Fed by their share notices. These are claims, not capabilities. The entry
-  // proves itself when opened, and a stale one can just be removed.
-  customElements.define('lat-shared', class extends HTMLElement {
-    connectedCallback() {
-      this.innerHTML = `
-<div id="swmsec">
-<h3>shared with me</h3>
-<div id="swmlist" class="muted">loading…</div>
-</div>`;
-    }
-  });
+  // ── shared with me: a folder in the files tree ──────────────────────────
+  // Pages other ships granted us, fed by their share notices: "shared with
+  // me", a folder per ship, and each page by its own name on that ship.
+  // These are claims, not capabilities. An entry proves itself when opened,
+  // and a stale one can just be removed. The folder exists only while there
+  // is something in it.
+  //
+  // A notice names the page's code grub, <their base>/page/<name>/code. The
+  // base is wherever lattice is installed there, so only the tail is read.
+  const sharedName = (p) => {
+    const m = /\/page\/(.+)\/code$/.exec(p);
+    return m ? m[1] : p.replace(/^\/+/, '');
+  };
   //  bg as in loadPerms: only boot uses it
   async function loadShared(bg = false) {
     let r = null;
     try { r = await (bg ? bgFetch : fetch)(api + '/shared-with-me'); } catch {}
-    if (!r || !r.ok) { $('swmlist').textContent = 'could not load'; return; }
-    const items = await r.json();
-    const host = $('swmlist');
-    host.textContent = '';
-    if (!items.length) {
-      host.className = 'muted';
-      host.textContent = 'nothing yet — when a peer shares a file with you it appears here.';
-      return;
-    }
-    host.className = '';
-    for (const it of items) {
+    if (!r || !r.ok) return;           // the folder just stays as it was
+    sharedWithMe = await r.json();
+    if (mode !== 'know') renderTree();
+  }
+  async function openShared(it) {
+    if (!(await guardDirty())) return;
+    history.replaceState(null, '', '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
+      '&ship=' + encodeURIComponent(it.host));
+    openGrub(it.path, it.host);
+  }
+  // keys for the collapsed list: a leading space is in no page name, so a
+  // page can never share a fold with this folder
+  const SWM = ' shared';
+  // appended by renderTree, after the pages
+  function renderShared(coll) {
+    const fold = (key, label, depth) => {
       const row = document.createElement('div');
-      row.className = 'chips';
-      const a = document.createElement('a');
-      a.textContent = it.host + ' ' + shortPath(it.path, items.map((x) => x.path)) +
-        ' (' + it.mode + ')';
-      a.title = it.path + ' — open in the editor';
-      a.href = '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
-        '&ship=' + encodeURIComponent(it.host);
-      const x = document.createElement('a');
-      x.textContent = '×';
-      x.title = 'remove from this list (does not touch their grant)';
-      x.onclick = async () => {
-        const r = await fetch(api + '/shared-with-me-del?host=' + encodeURIComponent(it.host) +
-          '&path=' + encodeURIComponent(it.path), { method: 'POST' }).catch(() => null);
-        if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
-        loadShared();
+      row.className = 'fld';
+      row.style.marginLeft = (depth * 14) + 'px';
+      const cx = document.createElement('span');
+      cx.className = 'cx';
+      cx.textContent = coll.includes(key) ? '▸' : '▾';
+      const lb = document.createElement('span');
+      lb.textContent = '\u{1F4C1} ' + label;
+      row.append(cx, lb);
+      row.onclick = () => {
+        const c = collapsed();
+        const i = c.indexOf(key);
+        if (i >= 0) c.splice(i, 1); else c.push(key);
+        setCollapsed(c);
+        renderTree();
       };
-      row.appendChild(a); row.appendChild(x);
-      host.appendChild(row);
+      treeList.appendChild(row);
+      return !coll.includes(key);
+    };
+    if (!fold(SWM, 'shared with me', 0)) return;
+    for (const host of [...new Set(sharedWithMe.map((s) => s.host))].sort()) {
+      if (!fold(SWM + '/' + host, host, 1)) continue;
+      const mine = sharedWithMe.filter((s) => s.host === host)
+        .sort((a, b) => sharedName(a.path).localeCompare(sharedName(b.path)));
+      for (const it of mine) {
+        const a = document.createElement('a');
+        a.className = 'pg swm';
+        a.style.marginLeft = '28px';
+        a.href = '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
+          '&ship=' + encodeURIComponent(host);
+        a.title = host + ' ' + it.path;
+        // the name gives way to the tag and the ×, never the other way round
+        const nm = document.createElement('span');
+        nm.className = 'swn';
+        nm.textContent = sharedName(it.path);
+        const md = document.createElement('span');
+        md.className = 'swmode';
+        md.textContent = it.mode;
+        const x = document.createElement('span');
+        x.className = 'swrm';
+        x.textContent = '×';
+        x.title = 'remove from this list (their grant is untouched)';
+        x.onclick = async (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const r = await fetch(api + '/shared-with-me-del?host=' + encodeURIComponent(host) +
+            '&path=' + encodeURIComponent(it.path), { method: 'POST' }).catch(() => null);
+          if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
+          loadShared();
+        };
+        a.append(nm, md, x);
+        a.onclick = (e) => { e.preventDefault(); openShared(it); };
+        treeList.appendChild(a);
+      }
     }
   }
   // deferred to boot, same reason as loadPerms. See 67-perms.js.
@@ -4881,7 +4951,6 @@
 
   const aclOpen = () => {
     $('aclwrap').hidden = false;
-    aclPathOptions();
     // permGroups is populated by boot's deferred load. Only pay a request if
     // the pane was opened before that landed. Guard on permsLoaded, not the
     // array's length: a ship with zero groups is a real, load-complete
@@ -4898,7 +4967,7 @@
     const dl = $('aclpaths');
     if (!dl) return;
     dl.textContent = '';
-    const base = '/apps/lattice.lattice_app';
+    const base = selfBase;
     const seen = new Set([base + '/pub', base + '/page']);
     for (const n of nodes) seen.add(base + '/page/' + n.path);
     for (const p of seen) {
@@ -4985,7 +5054,7 @@
     const prow = document.createElement('div');
     prow.className = 'row';
     const pin = document.createElement('input');
-    pin.placeholder = '/apps/lattice.lattice_app/pub';
+    pin.placeholder = selfBase + '/pub';
     pin.setAttribute('list', 'aclpaths');
     pin.autocomplete = 'off';
     const radd = document.createElement('button');
@@ -5054,6 +5123,7 @@
   function renderAcl() {
     const grid = $('aclgrid');
     if (!grid) return;
+    aclPathOptions();             // after a load, so selfBase is known
     grid.textContent = '';
     $('aclsum').textContent = permGroups.length
       ? permGroups.length + ' group' + (permGroups.length === 1 ? '' : 's')
@@ -6419,8 +6489,9 @@
       try {
         const ac = new AbortController();
         dropStream = () => ac.abort();
-        const resp = await fetch('/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev',
+        const resp = await fetch('/grubbery/api/keep' + await latBase() + '/beacon/rev',
           { headers: { Accept: 'text/event-stream' }, signal: ac.signal });
+        if (!resp.ok) forgetBase();
         const rd = resp.body.getReader();
         const dec = new TextDecoder();
         let buf = '';

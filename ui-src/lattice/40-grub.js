@@ -50,7 +50,9 @@
     // rules (proseFlavor), so it needs to follow this file's real language.
     // Left alone it keeps whatever page kind was open before, and editing
     // calendar.html ends up highlighted and indented as that stale kind.
-    const mk = extKind(String(blot).split('/').pop()) || 'hoon';
+    // a shared lattice page arrives as its prose, with the builder it is
+    // wrapped in, which is its page kind
+    const mk = d.builder || extKind(String(blot).split('/').pop()) || 'hoon';
     if ([...pkind.options].some((o) => o.value === mk)) pkind.value = mk;
     curKind = mk;
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'

@@ -201,6 +201,22 @@
     finally { echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt)); }
   }
 
+  // where this install lives in the tree: /apps/lattice.lattice_app for the
+  // ball-era instance, under /apps/shell.shell/desks/ for a desk install.
+  // Grubbery's own endpoints (the beacon keep) and grant roads on our pages
+  // spell it out. Asked of /streams once and remembered. forgetBase() when a
+  // keep under it fails, so a moved install is found again.
+  let basePr = null;
+  const latBase = () => basePr || (basePr = (async () => {
+    try { if (localStorage.latBase) return localStorage.latBase; } catch {}
+    const r = await fetch(api + '/streams');
+    const b = r.ok ? (await r.json()).base : null;
+    if (!b) throw new Error('no base');
+    try { localStorage.latBase = b; } catch {}
+    return b;
+  })().catch((e) => { basePr = null; throw e; }));
+  const forgetBase = () => { basePr = null; try { delete localStorage.latBase; } catch {} };
+
   const collapsed = () => {
     try { return JSON.parse(localStorage.appColl || '[]'); } catch { return []; }
   };

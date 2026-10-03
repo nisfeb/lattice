@@ -215,12 +215,23 @@ consts = {}
 for nm, body in app_arms.items():
     #  ^-(path /sys/...), or a gate whose product is a path spelled out
     #  with a face in it (+obelisk-sub-base): the literal part is the road
-    m = re.search(r"\^-\(?\s*path\s+((?:/(?:'[^']+'|[a-z0-9._-]+))+)", body)
+    m = (re.search(r"\^-\(?\s*path\s+((?:/(?:'[^']+'|[a-z0-9._-]+))+)", body)
+         or re.search(r"`path`((?:/(?:'[^']+'|[a-z0-9._-]+))+)", body))
     if m and m.group(1).startswith('/sys/'): consts[nm] = m.group(1)
 for nm, road in consts.items():
     for m in re.finditer(r"\[%&\s+%[&|]\s+\(?" + re.escape(nm) + r"[\s\]]", app_txt):
         for c in (cats_at(app_txt, m, app_pc) or {'?'}):
             used.setdefault((road, c), set()).add(f'(via +{nm})')
+    #  ...or through a face built on it, which is how lattice wrote every
+    #  usergroup grub and how its missing make road shipped unseen:
+    #    =/  gdir=path  (snoc ug-base i.names)
+    #    (ug-over [%& %& gdir %'who.ships'] ...)
+    for b in re.finditer(r"=/\s+([a-z][a-z0-9-]*)=path\s+\((?:snoc|weld)\s+" + re.escape(nm) + r"\b", app_txt):
+        #  ponytail: the face's scope is approximated by the next 3000 chars
+        seg = app_txt[b.end():b.end() + 3000]
+        for m in re.finditer(r"\[%&\s+%[&|]\s+" + re.escape(b.group(1)) + r"[\s\]]", seg):
+            for c in (cats_at(seg, m, app_pc) or {'?'}):
+                used.setdefault((road, c), set()).add(f'(via +{nm} as {b.group(1)})')
 
 #  a use this could not weigh adds nothing when another use of the same
 #  road was weighed: the constant's own '?' line, say

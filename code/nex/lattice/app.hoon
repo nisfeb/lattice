@@ -774,7 +774,7 @@
 ::  silent drop reads as a grant that was made and was not.
 ::
 ++  handle-share-group-save
-  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t)]
+  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t) our=@p]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  gname=(unit @t)  (~(get by args) 'name')
@@ -797,6 +797,9 @@
     ::  a typo'd ship silently dropped = someone believes they granted
     ::  access and did not. Reject the whole save instead.
     (send-err eyre-id 400 'bad ship name in list')
+  ::  this ship needs no grant: it already reads and writes everything here
+  ?:  (lien ships |=(u=(unit @p) =(u `our)))
+    (send-err eyre-id 400 'that is you: your own ship already has full access')
   =/  parse-paths
     |=  ts=(list @t)
     ^-  (unit (list path))
@@ -817,13 +820,11 @@
     (send-err eyre-id 400 'grant paths must be absolute and under /apps')
   =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
   ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
-  ::  OPEN: these are weir roads granted to OTHER ships, built from paths
-  ::  the request supplied. Whether they should be absolute (as a grantee
-  ::  addresses them, which needs our own path) or relative (as the
-  ::  registry resolves them against our registered rail) is a question
-  ::  about the sharing model, not a rename - so they are left as they
-  ::  were. +send-public-how's grants went relative; if that proves right
-  ::  these follow it.
+  ::  ABSOLUTE, as the grantee's weir matches them. A group weir is read
+  ::  as written into each member's weir under /sys/ames/ships, so a
+  ::  relative road there is relative to the peer's dir and grants
+  ::  nothing. Only the registry's %how resolves relative roads, and it
+  ::  confines them to the sender's prefix, which this editor is not.
   =/  to-roads
     |=  ps=(list path)
     ^-  (set road:tarball)
@@ -839,8 +840,8 @@
   ::  access and did not, which is this editor's worst failure mode.
   ?:  (lien ~(tap in who) |=(w=@p (is-banned:ls bans w)))
     (send-err eyre-id 403 'that group names a banned ship')
-  ;<  ~  bind:m  (over:io [%& %& gdir %'who.ships'] [[/ %ships] who])
-  ;<  ~  bind:m  (over:io [%& %& gdir %'how.weir'] [[/ %weir] weir])
+  ;<  ok=?  bind:m  (ug-put gdir who weir)
+  ?.  ok  (ug-refused eyre-id)
   (send-ok eyre-id)
 ::  +handle-remote-save: POST /remote-save. Write a grub onto ANOTHER ship's
 ::  grubbery, which is why it takes `our`: saving to yourself is a different
@@ -870,7 +871,14 @@
   ::  v1 edits EXISTING files only. Remote create needs a make grant plus a
   ::  blot decision the client can't make for a tree it doesn't own.
   ?.  ?=([%file *] u.ms)  (send-err eyre-id 404 'no such file on that ship')
-  ?:  =((grub-text sang.u.ms) `body)
+  ::  a lattice content page was handed out as its prose (+browse-file-
+  ::  respond): the edit goes back in that page's own envelope
+  =/  cur=(unit @t)  (grub-text sang.u.ms)
+  =/  un=(unit [builder=@tas body=@t])
+    ?.  &(=([/lattice %page] p.sang.u.ms) ?=(^ cur))  ~
+    (unwrap-content u.cur)
+  =?  body  ?=(^ un)  (wrap-content builder.u.un body)
+  ?:  =(cur `body)
     ::  no-op save: nothing to send, and grubbery skips unchanged writes
     ::  anyway, so the revision check below would misread it as a denial.
     (send-ok eyre-id)
@@ -1468,9 +1476,14 @@
       (send-err eyre-id 400 'banlist is full')
     ;<  ~  bind:m
       (over:io (ban-road up) [[/lattice %banned] (~(put in bans) u.who)])
-    ;<  n=@ud  bind:m  (strip-ship-from-groups u.who)
+    ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
+    ::  the ban is written; the revocation is not. Say so: a ban that left
+    ::  the grants in place is the label this route exists not to be.
+    ?~  n
+      %^  send-err  eyre-id  403
+      'banned, but lattice may not change your sharing groups, so the ship keeps what its groups grant: grant lattice make /sys/ames/usergroups/ at /apps/grubbery/permits, then ban again'
     %+  send-json  eyre-id
-    (pairs:enjs:format ~[['ok' b+&] ['revoked' (numb:enjs:format n)]])
+    (pairs:enjs:format ~[['ok' b+&] ['revoked' (numb:enjs:format u.n)]])
   ::
       [%'POST' %unban]
     =/  st=(unit @t)  (~(get by args) 'ship')
@@ -1494,7 +1507,7 @@
   ::  granting eval power) and any road shape the editor can't render, both
   ::  carried through from the stored weir verbatim.
       [%'POST' %share-group-save]
-    (handle-share-group-save eyre-id req args)
+    (handle-share-group-save eyre-id req args our)
   ::  share-file: the per-file shortcut. Grant a ship read or edit on ONE
   ::  page, and tell them. The grant goes into an auto-group named after the
   ::  ship (visible and editable in the peers panel like any other group).
@@ -1519,17 +1532,24 @@
     =/  pdir=path  (weld /page (pax-of u.name))
     ;<  pe=?  bind:m  (peek-exists:io (rv up pdir))
     ?.  pe  (send-err eyre-id 404 'no such page')
-    =/  droad=road:tarball  (rv up pdir)
+    ::  absolute, the road the ACL pane shows and the peer's weir matches
+    ::  (see +handle-share-group-save)
+    ;<  sb=path  bind:m  self-base
+    =/  droad=road:tarball  [%& %| (weld sb pdir)]
     =/  gname=@t  (crip (slag 1 (scow %p u.shp)))
-    ;<  ~  bind:m
+    ;<  ok=?  bind:m
       %-  ug-merge
       :^    gname
           (~(gas in *(set @p)) ~[u.shp])
         (~(gas in *(set road:tarball)) ~[droad])
       ?.  =('edit' mode)  ~
       (~(gas in *(set road:tarball)) ~[droad])
-    ::  what the peer should OPEN: the page's code grub, not the dir.
-    =/  npax=path  (snoc pdir %code)
+    ?.  ok  (ug-refused eyre-id)
+    ::  what the peer should OPEN: the page's code grub, not the dir. By its
+    ::  absolute path: they peek it on our ship, and +apply-share-notice
+    ::  drops a path not under /apps (every notice did, from the move to
+    ::  relative roads until this).
+    =/  npax=path  (weld sb (snoc pdir %code))
     ;<  base=(unit path)  bind:m  (peer-base u.shp)
     ;<  told=?  bind:m
       %^  remote-load-poke-wait  u.shp
@@ -1573,7 +1593,8 @@
     ?~  gname  (send-err eyre-id 400 'missing name')
     ?.  ((sane %tas) u.gname)  (send-err eyre-id 400 'bad name')
     =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
-    ;<  *  bind:m  (cull-soft:io [%& %| gdir])
+    ;<  e=(unit tang)  bind:m  (cull-soft:io [%& %| gdir])
+    ?^  e  (ug-refused eyre-id)
     (send-ok eyre-id)
   ::  ── follows (the ship-level follow list) ──
       [%'GET' %follows]
@@ -1600,7 +1621,10 @@
     =/  base=tape  (weld (keep-url sb "") "")
     %+  send-json  eyre-id
     %-  pairs:enjs:format
-    :~  :-  'streams'
+    ::  base: where this install lives in the tree, the prefix of every
+    ::  grant road the ACL pane shows for our own pages
+    :~  ['base' s+(spat sb)]
+        :-  'streams'
         %-  pairs:enjs:format
         :~  ['know' s+(crip (weld base "know/vault?blot=/json"))]
             ['pub' s+(crip (weld base "pub/vault?blot=/json"))]
@@ -3267,6 +3291,16 @@
         ::  later version once the road is granted.
           %+  line  '/apps/lattice.lattice_app/'
           'copy your existing pages, memories and bookmarks across from where lattice used to live. This is read-only, happens once, and the old copy is left untouched. Refuse it and this install simply starts empty'
+      ==
+    ::  sharing with ships IS writing usergroups: who.ships and how.weir,
+    ::  from the share box, the ACL pane and a ban. The registry has no
+    ::  membership action, so there is no narrower road. Every write is
+    ::  soft (+ug-over), so a refusal answers the request with a reason
+    ::  instead of parking it.
+      :-  'make'
+      :-  %a
+      :~  %+  line  '/sys/ames/usergroups/'
+          'share pages with other ships: add a ship to a sharing group and grant the group read or edit on your pages, and take a banned ship out of every group. This road can change any sharing group on this ship. Refuse it and lattice works fully for you; you just cannot share pages with other ships'
       ==
   ==
 ::
@@ -5855,6 +5889,38 @@
   ^-  (set road:tarball)
   %-  ~(gas in *(set road:tarball))
   (skip ~(tap in rs) |=(r=road:tarball ?=([%& %| *] r)))
+::  +ug-over: write one usergroup grub, SOFT. %.n = not written. A hard
+::  over:io on a road this install was not granted parks the request
+::  fiber, and the browser waits on an answer that never comes.
+++  ug-over
+  |=  [=road:tarball =bask:tarball]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  =wire  bind:m  (nonce:io /make)
+  ;<  ~  bind:m  (send-dart:io %node wire road %make %.y %.n |+[bask ~])
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %veto *]  [%done %.n]
+      [~ %made * *]
+    ?.  =(wire wire.u.in)  [%skip ~]
+    [%done =(~ err.u.in)]
+  ==
+::  +ug-put: a group's members and weir, both or neither as far as a
+::  refusal goes (one road covers both grubs).
+++  ug-put
+  |=  [gdir=path who=(set @p) =weir:nexus]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  ok=?  bind:m  (ug-over [%& %& gdir %'who.ships'] [[/ %ships] who])
+  ?.  ok  (pure:m %.n)
+  (ug-over [%& %& gdir %'how.weir'] [[/ %weir] weir])
+::  +ug-refused: the answer when lattice may not write usergroups.
+++  ug-refused
+  |=  eyre-id=@ta
+  %^  send-err  eyre-id  403
+  'lattice may not change your sharing groups: grant it make /sys/ames/usergroups/ at /apps/grubbery/permits'
 ::  +ug-read-weir: a group's stored weir, bunt if absent/undecodable.
 ++  ug-read-weir
   |=  gdir=path
@@ -5941,7 +6007,7 @@
 ::  rather than a note. Grants are unioned across the groups a ship belongs to,
 ::  so membership IS access, and leaving it in place would leave it reachable.
 ::  The grant ROADS are untouched. They belong to the group, not the ship, and
-::  other members still need them.
+::  other members still need them. ~ = refused, partway through.
 ::  +apply-comment-notice: a comment poked by ANOTHER ship.
 ::
 ::  Everything that decides whether it lands is read here, never from the
@@ -5969,14 +6035,14 @@
   (apply-comment root u.src now u.na)
 ++  strip-ship-from-groups
   |=  who=@p
-  =/  m  (fiber:fiber:nexus ,@ud)
+  =/  m  (fiber:fiber:nexus ,(unit @ud))
   ^-  form:m
   ;<  dn=view:nexus  bind:m  (peek-shallow:io [%& %| ug-base] ~)
-  ?.  ?=([%ball *] dn)  (pure:m 0)
+  ?.  ?=([%ball *] dn)  (pure:m `0)
   =/  names=(list @ta)  (sort ~(tap in ~(key by dir.ball.dn)) aor)
   =|  hit=@ud
   |-  ^-  form:m
-  ?~  names  (pure:m hit)
+  ?~  names  (pure:m `hit)
   =/  nt=tape  (trip i.names)
   ?.  &((gth (lent nt) 4) =(".grp" (slag (sub (lent nt) 4) nt)))
     $(names t.names)
@@ -5987,8 +6053,9 @@
     (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
   ?.  (~(has in ships) who)
     $(names t.names)
-  ;<  ~  bind:m
-    (over:io [%& %& gdir %'who.ships'] [[/ %ships] (~(del in ships) who)])
+  ;<  ok=?  bind:m
+    (ug-over [%& %& gdir %'who.ships'] [[/ %ships] (~(del in ships) who)])
+  ?.  ok  (pure:m ~)
   $(names t.names, hit +(hit))
 ::  +ban-road: where the banlist lives.
 ++  ban-road  |=(up=@ud ^-(road:tarball (rf up / %banned)))
@@ -6003,12 +6070,13 @@
   ?.  ?=([%file *] bv)  (pure:m ~)
   (pure:m (fall (mole |.(;;(banned:ls (sang-noun:tarball sang.bv)))) ~))
 ::  +ug-merge: fold ships and grants INTO a usergroup, creating it if absent.
+::  %.n = refused, nothing written.
 ::  The per-file share flow uses this (one auto-group per ship, named after
 ::  it) so repeated shares accumulate instead of replacing.
 ::
 ++  ug-merge
   |=  [gname=@t ships=(set @p) pk=(set road:tarball) mk=(set road:tarball)]
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
   ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
@@ -6020,9 +6088,7 @@
     :+  (~(uni in make.old) mk)
       poke.old
     (~(uni in peek.old) pk)
-  ;<  ~  bind:m  (over:io [%& %& gdir %'who.ships'] [[/ %ships] (~(uni in cur) ships)])
-  ;<  ~  bind:m  (over:io [%& %& gdir %'how.weir'] [[/ %weir] weir])
-  (pure:m ~)
+  (ug-put gdir (~(uni in cur) ships) weir)
 ::  +remote-load-poke-wait: +remote-load-poke with a deadline. %.y = acked in
 ::  time. An offline ship never acks a gall poke, and a share notice must not
 ::  hang the save that triggered it. The GRANT is already durable by the time
@@ -7962,10 +8028,16 @@
   ::  /grub-source's contract so the client can grey out what it must not save.
   =/  txt=(unit @t)  (grub-text sang.sn)
   ?~  txt  (send-err eyre-id 415 'not text')
+  ::  a lattice content page (a page shared with us) reads as its prose, not
+  ::  its hoon envelope; /remote-save wraps an edit back in the same builder
+  =/  un=(unit [builder=@tas body=@t])
+    ?.  =([/lattice %page] p.sang.sn)  ~
+    (unwrap-content u.txt)
   %+  send-json  eyre-id
   %-  pairs:enjs:format
-  :~  ['body' s+u.txt]
+  :~  ['body' s+?~(un u.txt body.u.un)]
       ['mark' s+name.p.sang.sn]
+      ['builder' ?~(un ~ s+builder.u.un)]
       ['editable' b+&]
   ==
 ::  +send-html: a 200 text/html response.

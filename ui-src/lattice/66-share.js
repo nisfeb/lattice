@@ -140,7 +140,8 @@
   // A group's grant on a page is the page's own ball path in its peek/make,
   // exactly what the server's share-file writes, so a per-ship grant and a
   // per-group grant are the same kind of rule and read back the same way.
-  const pagePath = (name) => '/apps/lattice.lattice_app/page/' + name;
+  // selfBase is set before permsLoaded, and nothing here runs before that.
+  const pagePath = (name) => selfBase + '/page/' + name;
 
   function renderGroupAccess() {
     const host = $('grouplist');

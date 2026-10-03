@@ -157,8 +157,9 @@
       try {
         const ac = new AbortController();
         dropStream = () => ac.abort();
-        const resp = await fetch('/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev',
+        const resp = await fetch('/grubbery/api/keep' + await latBase() + '/beacon/rev',
           { headers: { Accept: 'text/event-stream' }, signal: ac.signal });
+        if (!resp.ok) forgetBase();
         const rd = resp.body.getReader();
         const dec = new TextDecoder();
         let buf = '';

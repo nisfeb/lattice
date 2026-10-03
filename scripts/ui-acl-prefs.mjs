@@ -157,11 +157,13 @@ try {
     [...row.querySelectorAll('button')].find((b) => b.textContent === 'read').click();
   }, GROUP);
   await sleep(6000);
+  // where this install lives: the ball-era instance or a desk install
+  const base = await page.evaluate(async () => (await (await fetch('/apps/lattice/streams')).json()).base);
   const granted = await page.evaluate(async (g, path) => {
     const gs = await (await fetch('/apps/lattice/share-groups')).json();
     const me = gs.find((x) => x.name === g);
     return !!me && me.peek.includes(path);
-  }, GROUP, '/apps/lattice.lattice_app/page/' + GROUP + '/target');
+  }, GROUP, base + '/page/' + GROUP + '/target');
   check('per-file group grant reaches the ship as a read rule', granted);
   const lit = await page.evaluate((g) => {
     const row = [...document.querySelectorAll('#grouplist .grow-row')]
@@ -173,7 +175,7 @@ try {
   step = 'short paths';
   await page.evaluate(() => document.getElementById('aclt').click());
   await page.waitForFunction(() => !document.getElementById('aclwrap').hidden, { timeout: 30000 });
-  const fullPath = '/apps/lattice.lattice_app/page/' + GROUP + '/target';
+  const fullPath = base + '/page/' + GROUP + '/target';
   const chip = await page.evaluate((full) => {
     const a = [...document.querySelectorAll('#aclgrid .chips a')]
       .find((x) => x.title === 'remove ' + full);
@@ -251,6 +253,17 @@ try {
     .find((x) => x.name === GROUP + '-ban');
   check('unban: does NOT silently restore the revoked grant',
     !!g2 && !g2.ships.includes(BANNED), JSON.stringify(g2 && g2.ships));
+
+  // ── no grant to yourself: this ship already has full access ─────────────
+  step = 'self grant';
+  const me = await page.evaluate(async () => (await (await fetch('/~/host')).text()).trim());
+  const selfFile = await api('/share-file?name=' + encodeURIComponent(GROUP + '/target') +
+    '&ship=' + encodeURIComponent(me) + '&mode=edit');
+  check('self: a per-ship share to this ship is refused', selfFile.status === 400, JSON.stringify(selfFile));
+  const selfGroup = await api('/share-group-save?name=' + GROUP + '-ban', {
+    method: 'POST', body: JSON.stringify({ ships: ['~bus', me], peek: [], make: [] }),
+  });
+  check('self: a group naming this ship is refused', selfGroup.status === 400, JSON.stringify(selfGroup));
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 140), false);
 } finally {
