@@ -4162,7 +4162,8 @@
 <div id="shres" class="muted"></div>
 <h3 class="grouphead">give a group access <a id="aclopen" title="create and edit groups">manage &rarr;</a></h3>
 <div id="grouplist" class="muted"></div>
-</div>`;
+</div>
+<div id="orrsec" hidden><h3>orrery</h3><div id="orr"></div></div>`;
       cwurl = $('cwurl');
     }
   });
@@ -4178,6 +4179,7 @@
     // the group toggles are about THIS file, so they follow the same
     // every-target-change hook the grant message does
     renderGroupAccess();
+    orreryShow();
     const target = curFolder || current;
     const suffix = curFolder ? '/' : '';
     // Build the public link as DOM, never innerHTML: a page/folder name is
@@ -5417,6 +5419,26 @@
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !$('cmwrap').hidden) cmClose();
   });
+
+// ── src/74-orrery.js ──────────────────────────────────────────────────────
+  // ── send the open page to orrery (ui-app/orrery.js, docs/orrery.md) ──────
+  // A section of the controls pane, shown only while orrery is installed and
+  // a saved page is open: a folder, or a new page not saved yet, has nothing
+  // for orrery to follow. Follows every target change through +showShare.
+  function orreryShow() {
+    const sec = $('orrsec'), el = $('orr');
+    if (!sec || !el || !window.LatticeOrrery) return;
+    if (curFolder || !current) {
+      LatticeOrrery.unmount(el);
+      sec.hidden = true;
+      return;
+    }
+    const path = current;
+    LatticeOrrery.mount(el, path, () => {
+      const n = nodes.find((x) => x.path === path);
+      return { title: (n && n.dname) || path.split('/').pop(), text: src.value };
+    }, sec);
+  }
 
 // ── src/75-move.js ────────────────────────────────────────────────────────
   // ── move / rename ────────────────────────────────────────────────────────

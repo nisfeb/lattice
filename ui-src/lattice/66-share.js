@@ -16,7 +16,8 @@
 <div id="shres" class="muted"></div>
 <h3 class="grouphead">give a group access <a id="aclopen" title="create and edit groups">manage &rarr;</a></h3>
 <div id="grouplist" class="muted"></div>
-</div>`;
+</div>
+<div id="orrsec" hidden><h3>orrery</h3><div id="orr"></div></div>`;
       cwurl = $('cwurl');
     }
   });
@@ -32,6 +33,7 @@
     // the group toggles are about THIS file, so they follow the same
     // every-target-change hook the grant message does
     renderGroupAccess();
+    orreryShow();
     const target = curFolder || current;
     const suffix = curFolder ? '/' : '';
     // Build the public link as DOM, never innerHTML: a page/folder name is

@@ -66,6 +66,10 @@ other ships over ames, and followed remote files push you updates.
   saved in your ship's `%settings` so they follow you to every device. If you
   use [Talon](https://github.com/nisfeb/talon), lattice wears Talon's theme,
   accent and font too, each unless you turn it off in Settings.
+- **Send to orrery.** When [orrery](https://github.com/nisfeb/orrery) is on
+  your ship, one button hands it a page as a situation to look after: it
+  works out the trip, the dates and the people, proposes what to do, and
+  follows the page as you edit it ([docs/orrery.md](docs/orrery.md)).
 - **Works offline.** Lose the ship mid-session and saves queue locally
   (pages and knowledge entries both), then replay when it returns. Deletes,
   moves and renames queue too, in an ordered log that drains ahead of the

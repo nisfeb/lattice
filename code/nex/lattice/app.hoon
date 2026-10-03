@@ -54,6 +54,7 @@
 /<  uij  ui-app/app.js
 /<  vjs  ui-app/vault.js
 /<  tjs  ui-app/theme.js
+/<  ojs  ui-app/orrery.js
 /<  lc   /lib/lattice-comment.hoon
 /<  lb   /lib/lattice-bookmark.hoon
 /<  lh   /lib/lattice-history.hoon
@@ -139,6 +140,9 @@
         ::  theme.js: light/dark and custom themes (Talon's model), loaded by
         ::  every owner document. See its header.
             [%over %& [/app %'theme.js'] [[/ %mime] tjs]]
+        ::  orrery.js: "Send to orrery" in the editor and the reader
+        ::  (docs/orrery.md).
+            [%over %& [/app %'orrery.js'] [[/ %mime] ojs]]
             ::  carried.json: has the one-time carry from the app-tier
             ::  instance run? DECLARED, so it outlives a reload - an
             ::  undeclared grub does not, which is the lesson /mirror/tr
@@ -147,6 +151,9 @@
             ::  faults.json: the fault record (+fault). Declared, so a fault
             ::  that stands across a reload is not printed again for it.
             [%fall %& [/ %'faults.json'] [[/ %json] `json`[%o ~]]]
+            ::  moves.json: where moved pages went (+record-move). Declared,
+            ::  so it outlives a reload.
+            [%fall %& [/ %'moves.json'] [[/ %json] `json`[%o ~]]]
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
         ::  /legacy: the retired-agent marker lives here (see +legacy-mark-road)
             [%fall %| /legacy empty-dir:loader]
@@ -4304,6 +4311,7 @@
     $(todo t.todo)
   ?~  rels
     ;<  ~  bind:m  (poke-eval [%del from])
+    ;<  ~  bind:m  (record-move from to)
     (pure:m `count)
   =/  pdir=path  (weld sdir i.rels)
   ;<  cn=view:nexus  bind:m  (peek:io (rf up pdir %code) ~)
@@ -4326,6 +4334,37 @@
     ^-  (list eval-action:le)
     ?:(=(%private mode) ~ [%share dst mode]~)
   $(todo acts, rels t.rels, count +(count))
+::  +record-move: /moves.json at the nexus root, the last 100 moves newest
+::  first: {"moves": [{"from": "a/b", "to": "c/b", "at_ms": n}]}. A page at
+::  `from` is now at `to`, and a page under from/ is under to/. So a reader
+::  holding an old path (orrery's follow, docs/orrery.md) finds where it went
+::  with a peek and no call. Soft and never fails: the move stands whether
+::  or not this lands.
+::  ponytail: read, then write, so two moves at once can drop a row.
+++  moves-road  (rf up / %'moves.json')
+++  record-move
+  |=  [from=path to=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  clock=(unit @da)  bind:m  soft-now
+  ?~  clock  (pure:m ~)
+  ;<  log=json  bind:m  (json-at moves-road)
+  =/  old=(list json)
+    =/  ms=(unit json)  (~(get by (rise-omap log)) 'moves')
+    ?.  ?=([~ %a *] ms)  ~
+    p.u.ms
+  =/  row=json
+    %-  pairs:enjs:format
+    :~  ['from' s+(crip (pax-str from))]
+        ['to' s+(crip (pax-str to))]
+        ['at_ms' (numb:enjs:format (rise-da-ms u.clock))]
+    ==
+  ;<  *  bind:m
+    %^  over-as-soft:io  moves-road
+      :-  [/ %json]
+      (pairs:enjs:format ~[['moves' a+(scag 100 `(list json)`[row old])]])
+    [/ %json]
+  (pure:m ~)
 ::  +instantiate-template: create a live page-tree from a template. Runs in a
 ::  REQUEST fiber and pokes one %make PER page (a separate writer transaction
 ::  each), in sorted order, so every page commits before the next and its
@@ -5519,6 +5558,7 @@
     ?:  =(%'app.js' nam)      `'text/javascript'
     ?:  =(%'vault.js' nam)    `'text/javascript'
     ?:  =(%'theme.js' nam)    `'text/javascript'
+    ?:  =(%'orrery.js' nam)   `'text/javascript'
     ~
   ?~  ct  (send-err eyre-id 404 'not found')
   ;<  pv=view:nexus  bind:m  (peek:io (rf up /app nam) ~)
@@ -8237,20 +8277,20 @@
   ::  also keeps command 303s (send-see-other's buster) network-fresh, and
   ::  activate-time eviction spares this cache: its freshness is rev-based.
   =/  ver=@t
-    (scot %ux (mug [uih uij vjs tjs icon pjs manifest-json icon-192-b64 icon-512-b64]))
+    (scot %ux (mug [uih uij vjs tjs ojs icon pjs manifest-json icon-192-b64 icon-512-b64]))
   ::  PV versions the RENDERED reader documents (their inline css + scripts).
   ::  V only covers shell assets, so a deploy that restyled the reader left
   ::  every cached page serving the old markup indefinitely: content revs
   ::  converge quietly, but a CODE deploy bumped nothing — the activate
   ::  handler below wipes 'lattice-pages' when PV moves.
   =/  pv=@t
-    (scot %ux (mug [web-css pwa-head nav-script page-cache-script sse-script page-sse-script]))
+    (scot %ux (mug [web-css pwa-head orrery-slot nav-script page-cache-script sse-script page-sse-script]))
   %+  rap  3
   :~  'var V="lattice-'
       ver
       '";var PV="'
       pv
-      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){e.waitUntil(caches.open(V).then(function(c){return Promise.all(SHELL.map(function(u){return c.add(u).catch(function(){})}))}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=q.url+(q.url.indexOf("?")<0?"?":"&")+"u=sw"+Date.now();e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){e.waitUntil(caches.open(V).then(function(c){return Promise.all(SHELL.map(function(u){return c.add(u).catch(function(){})}))}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=q.url+(q.url.indexOf("?")<0?"?":"&")+"u=sw"+Date.now();e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
@@ -8877,7 +8917,9 @@
   ::  Hoisted =/ (not inline in the weld): see the fuse-loop trap.
   =/  bmbtn=tape
     ?.  (has-prefix "urb://" current)  ""
-    "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
+    %+  weld
+      "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
+    orrery-slot
   %-  crip
   ;:  weld
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -8916,6 +8958,13 @@
     bm-script
     (sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
   ==
+::  +orrery-slot: the reader's place for "Send to orrery" (ui-app/orrery.js,
+::  docs/orrery.md). orrery.js fills it on the owner's own pages while orrery
+::  is installed, and leaves it hidden everywhere else.
+++  orrery-slot
+  ^-  tape
+  %-  trip
+  '<span id="orw" hidden></span><script src="/apps/lattice/app/orrery.js" defer></script>'
 ::  +bm-script: the address bar's bookmark star. It paints from a copy of
 ::  the bookmark urls kept in localStorage, so a page view does not wait on
 ::  a /bookmarks request queued behind the page's own assets on a pier that
@@ -8959,6 +9008,7 @@
     "<button type=\"submit\">Go</button>"
     editbtn
     "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
+    orrery-slot
     "<span class=\"hamw\"><button type=\"button\" id=\"ham\" title=\"menu\">&#9776;</button>"
     "<div id=\"hammenu\" hidden>"
     "<a href=\"/apps/lattice/app\">&#9998; editor</a>"
