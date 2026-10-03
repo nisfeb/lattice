@@ -239,4 +239,84 @@
     ?~  e  ~
     `(know-entry-html at u.e)
   `(know-dir-html es at e "")
+::  +know-lint-html: the tidy review (/know?lint=1). Every row is a proposal.
+::  A button makes one small edit (supersede, clear, verify) and nothing runs
+::  on its own; merging two entries' text or fixing a link is a person's or
+::  an agent's job, so those rows link to the entry.
+++  know-lint-html
+  |=  l=lint:lk
+  ^-  tape
+  =/  ka
+    |=  p=path
+    ^-  tape
+    =/  h=tape  (spud p)
+    =/  t=tape  (esc (slag 1 h))
+    :(weld "<a href=\"/apps/lattice/know" h "\">" t "</a>")
+  =/  btn
+    |=  [act=tape q=tape label=tape]
+    ^-  tape
+    :(weld "<button data-act=\"" act "\" data-q=\"" q "\">" label "</button>")
+  =/  sec
+    |=  [title=tape n=@ud rows=tape]
+    ^-  tape
+    =/  c=tape  (a-co:co n)
+    =/  body=tape  ?:(=(0 n) "<p class=\"muted\">none</p>" :(weld "<ul class=\"tidy\">" rows "</ul>"))
+    :(weld "<h2>" title " (" c ")</h2>" body)
+  =/  dups=tape
+    %-  zing
+    %+  turn  dups.l
+    |=  [a=path b=path p=@ud]
+    =/  la=tape  (ka a)
+    =/  lb=tape  (ka b)
+    =/  pc=tape  (a-co:co p)
+    =/  sa=tape  (spud a)
+    =/  sb=tape  (spud b)
+    =/  keep-b=tape  (btn "know-supersede" :(weld "old=" sa "&new=" sb) (weld "keep " (esc (slag 1 sb))))
+    =/  keep-a=tape  (btn "know-supersede" :(weld "old=" sb "&new=" sa) (weld "keep " (esc (slag 1 sa))))
+    :(weld "<li>" la " ~ " lb " (" pc "% shared) " keep-b " " keep-a "<span class=\"st\"></span></li>")
+  =/  broken=tape
+    %-  zing
+    %+  turn  broken.l
+    |=  [f=path t=path]
+    =/  lf=tape  (ka f)
+    =/  tt=tape  (esc (spud t))
+    :(weld "<li>" lf " links to " tt ", which does not exist</li>")
+  =/  bad=tape
+    %-  zing
+    %+  turn  bad-super.l
+    |=  [k=path t=@t]
+    =/  lnk=tape  (ka k)
+    =/  tt=tape  (esc (trip t))
+    =/  b=tape  (btn "know-supersede" (weld "new=&old=" (spud k)) "clear")
+    :(weld "<li>" lnk " says it is superseded by " tt ", which does not exist " b "<span class=\"st\"></span></li>")
+  =/  untagged=tape  (zing (turn untagged.l |=(k=path `tape`:(weld "<li>" (ka k) "</li>"))))
+  =/  big=tape
+    %-  zing
+    %+  turn  big.l
+    |=  [k=path n=@ud]
+    =/  lnk=tape  (ka k)
+    =/  nb=tape  (a-co:co n)
+    :(weld "<li>" lnk ", " nb " bytes</li>")
+  =/  stale=tape
+    %-  zing
+    %+  turn  stale.l
+    |=  [k=path d=@ud]
+    =/  lnk=tape  (ka k)
+    =/  dd=tape  (a-co:co d)
+    =/  b=tape  (btn "know-verify" (weld "key=" (spud k)) "still true")
+    :(weld "<li>" lnk ", unchecked for " dd " days " b "<span class=\"st\"></span></li>")
+  =/  orphans=tape  (zing (turn orphans.l |=(k=path `tape`:(weld "<li>" (ka k) "</li>"))))
+  =/  s1=tape  (sec "duplicates" (lent dups.l) dups)
+  =/  s2=tape  (sec "links to nothing" (lent broken.l) broken)
+  =/  s3=tape  (sec "superseded by nothing" (lent bad-super.l) bad)
+  =/  s4=tape  (sec "stale: names code, not checked in 30 days" (lent stale.l) stale)
+  =/  s5=tape  (sec "untagged" (lent untagged.l) untagged)
+  =/  s6=tape  (sec "over 4 KB: one fact per entry?" (lent big.l) big)
+  =/  s7=tape  (sec "orphans: no links in or out" (lent orphans.l) orphans)
+  ;:  weld
+    "<p class=\"muted\">What a tidy would fix. Proposals only: a button makes one small edit, the rest needs you or an agent.</p>"
+    s1  s2  s3  s4  s5  s6  s7
+    ::  a cord, not a tape: { in a tape interpolates
+    (trip '<script>document.addEventListener("click",function(e){var b=e.target.closest("button[data-act]");if(!b)return;b.disabled=true;var s=b.parentNode.querySelector(".st");fetch("/apps/lattice/"+b.dataset.act+"?"+b.dataset.q,{method:"POST"}).then(function(r){if(r.ok){b.closest("li").style.opacity=".45";if(s)s.textContent=" done"}else{b.disabled=false;if(s)s.textContent=" failed ("+r.status+")"}},function(){b.disabled=false;if(s)s.textContent=" failed"})})</script>')
+  ==
 --

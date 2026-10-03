@@ -160,6 +160,10 @@
             [%fall %| /know/vault empty-dir:loader]
             [%fall %| /know/trash-vault empty-dir:loader]
             [%fall %& [/know %trash] [[/lattice %know-index] *know-index:lk]]
+        ::  /know/terms: each memory's ranking terms (+term-cache:lk). A
+        ::  cache: the writer keeps it current, /know-search fills and heals
+        ::  it, and every reader checks each row against its entry.
+            [%fall %& [/know %terms] [[/lattice %know-terms] *term-cache:lk]]
             [%fall %| /pub/vault empty-dir:loader]
             [%fall %& [/pub %index] [[/lattice %pub-index] *pub-index:lp]]
         ::  /pub/meta: the mesa publish sequence counter (docs D1). Every
@@ -1248,6 +1252,62 @@
     =/  q=@t  (~(gut by args) 'q' '')
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
     (send-json eyre-id (know-list-json (filter-explore es tags all q)))
+  ::  know-search: ranked recall (+search:lk, the code the MCP tools run, so
+  ::  both rank alike). q= words, or "a phrase" in double quotes; k= how many
+  ::  (10); superseded=1 also returns entries a newer one replaced.
+      [%'GET' %know-search]
+    =/  q=@t  (~(gut by args) 'q' '')
+    ?:  =('' q)  (send-err eyre-id 400 'missing q')
+    =/  k=@ud  (fall (rush (~(gut by args) 'k' '10') dem) 10)
+    ;<  es=(map path know-entry:lk)  bind:m  read-know-map
+    =/  old=?  =('1' (~(gut by args) 'superseded' '0'))
+    ::  the term cache, made current; stored back when that changed it, so
+    ::  the first search after an upgrade fills it for everyone after
+    =/  tr=road:tarball  (rf up /know %terms)
+    ;<  tc=term-cache:lk  bind:m  (read-terms tr)
+    =/  [chg=? cur=term-cache:lk]  (refresh:lk ~(tap by es) tc)
+    ;<  *  bind:m
+      ?.  chg  (pure:(fiber:fiber:nexus ,(unit tang)) ~)
+      (over-as-soft:io tr [[/lattice %know-terms] cur] [/lattice %know-terms])
+    (send-json eyre-id (hits-json:lk es (search:lk ~(tap by es) cur q old) q k))
+  ::  know-lint: what a tidy would fix (+lint-run:lk), proposed and never
+  ::  applied. Computed when asked, so always current. /know?lint=1 reviews it.
+      [%'GET' %know-lint]
+    ;<  es=(map path know-entry:lk)  bind:m  read-know-map
+    ;<  now=@da  bind:m  bowl-now
+    (send-json eyre-id (lint-json:lk (lint-run:lk ~(tap by es) now)))
+  ::  know-verify: an agent or the owner confirms an entry still holds.
+  ::  verified (and verified-by, from author=) land in its front matter.
+      [%'POST' %know-verify]
+    =/  ko=(unit path)  (know-key (~(gut by args) 'key' ''))
+    ?~  ko  (send-err eyre-id 400 'bad key')
+    ;<  e=(unit know-entry:lk)  bind:m  (know-one u.ko)
+    ?~  e  (send-err eyre-id 404 'not found')
+    ;<  now=@da  bind:m  bowl-now
+    =/  f  (front:lk body.u.e)
+    =/  meta  (meta-put:lk meta.f 'verified' (iso-day:lk now))
+    =/  by=@t  (~(gut by args) 'author' '')
+    =?  meta  !=('' by)  (meta-put:lk meta 'verified-by' by)
+    ;<  ~  bind:m  (poke-know [%save (spat u.ko) (with-front:lk meta rest.f)])
+    (send-ok eyre-id)
+  ::  know-supersede: old= is replaced by new=, which must exist. Search then
+  ::  leaves old out and reading it points at new; history keeps both. An
+  ::  empty new= clears it.
+      [%'POST' %know-supersede]
+    =/  ok=(unit path)  (know-key (~(gut by args) 'old' ''))
+    ?~  ok  (send-err eyre-id 400 'bad old')
+    =/  nraw=@t  (~(gut by args) 'new' '')
+    =/  nk=(unit path)  (know-key nraw)
+    ?:  &(!=('' nraw) ?=(~ nk))  (send-err eyre-id 400 'bad new')
+    ?:  =(`(unit path)`ok nk)  (send-err eyre-id 400 'an entry cannot replace itself')
+    ;<  e=(unit know-entry:lk)  bind:m  (know-one u.ok)
+    ?~  e  (send-err eyre-id 404 'no such old entry')
+    ;<  n=(unit know-entry:lk)  bind:m  (know-one (fall nk u.ok))
+    ?:  &(?=(^ nk) ?=(~ n))  (send-err eyre-id 404 'no such new entry')
+    =/  f  (front:lk body.u.e)
+    =/  meta  (meta-put:lk meta.f 'superseded-by' ?~(nk '' (spat u.nk)))
+    ;<  ~  bind:m  (poke-know [%save (spat u.ok) (with-front:lk meta rest.f)])
+    (send-ok eyre-id)
   ::
       [%'GET' %know-read]
     =/  ko=(unit path)  (know-key (~(gut by args) 'key' ''))
@@ -3534,6 +3594,40 @@
   =/  kept=wall  (skip rendered |=(l=tape ?=(^ (find "app.hoon" l))))
   =/  out=wall  [(trip lab) ?~(kept rendered kept)]
   (crip (of-wall:format out))
+::  +terms-sync: /know/terms in step with the vault after one memory action,
+::  so the next search finds every row current. Only the keys the action
+::  touched are read. A row the sync misses is recomputed by its reader.
+::
+++  terms-sync
+  |=  [root=@ud act=know-action:lk]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  tr=road:tarball  (rf root /know %terms)
+  ;<  tc=term-cache:lk  bind:m  (read-terms tr)
+  =/  ks=(list path)
+    %+  murn
+      ?-  -.act
+        %move  ~[from.act to.act]
+      ::  split by shape: a bare key and a key with a second field sit at
+      ::  different axes, so one case cannot name key.act for both
+        ?(%del %restore)  ~[key.act]
+        ?(%save %tag %untag %import %import-trashed)  ~[key.act]
+      ==
+    know-key
+  |-  ^-  form:m
+  ?~  ks  (put-file tr [/lattice %know-terms] tc)
+  ;<  e=(unit know-entry:lk)  bind:m  (read-entry (entry-road up /know/vault i.ks))
+  $(ks t.ks, tc ?~(e (~(del by tc) i.ks) (~(put by tc) i.ks (row-of:lk i.ks u.e))))
+::  +read-terms: the term cache, ~ when absent or undecodable.
+::
+++  read-terms
+  |=  tr=road:tarball
+  =/  m  (fiber:fiber:nexus ,term-cache:lk)
+  ^-  form:m
+  ;<  tv=view:nexus  bind:m  (peek:io tr ~)
+  ?.  ?=([%file *] tv)  (pure:m ~)
+  (pure:m (fall (mole |.(!<(term-cache:lk (need-vase:tarball sang.tv)))) ~))
 ::  +apply-action: the writer's action dispatch, split out of the take-poke loop
 ::  so every mutation runs through one place (and is followed by a +bump-rev).
 ::
@@ -3542,7 +3636,9 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?:  =([/lattice %know-action] p.sage)
-    (apply root now !<(know-action:lk q.sage))
+    =/  act=know-action:lk  !<(know-action:lk q.sage)
+    ;<  ~  bind:m  (apply root now act)
+    (terms-sync root act)
   ?:  =([/lattice %pub-action] p.sage)
     (apply-pub root now !<(pub-action:lp q.sage))
   ?:  =([/lattice %sub-action] p.sage)
@@ -5537,6 +5633,16 @@
   ;<  seen=view:nexus  bind:m  (peek:io [%| 2 %| /know/vault] ~)
   ?.  ?=([%ball *] seen)  (pure:m ~)
   (pure:m (collect-entries ~ ball.seen))
+::  +know-one: one entry by key, one peek, ~ when absent or unreadable.
+++  know-one
+  |=  key=path
+  =/  m  (fiber:fiber:nexus ,(unit know-entry:lk))
+  ^-  form:m
+  ;<  kn=view:nexus  bind:m
+    (peek:io [%| 2 %& (weld /know/vault key) entry-leaf:lk] ~)
+  ?.  ?=([%file *] kn)  (pure:m ~)
+  ?:  (is-boom:tarball sang.kn)  (pure:m ~)
+  (pure:m (mole |.(!<(know-entry:lk (need-vase:tarball sang.kn)))))
 ::  +read-know-vault-safe: +read-know-map, but distinguishing "the vault is
 ::  empty" from "the vault could not be read" (~). Callers that would OVERWRITE
 ::  based on absence must use this one.
@@ -5584,12 +5690,18 @@
   ::  tolerate accidental double slashes (/know//feedback): drop empty segments.
   =.  rest  (skip rest |=(s=@ta =('' s)))
   ?~  rest
+    ?:  (~(has by args) 'lint')
+      ;<  now=@da  bind:m  bowl-now
+      =/  html=tape  (know-lint-html:lkv (lint-run:lk ~(tap by es) now))
+      (send-view eyre-id (render-page-titled "know" "" "" "memory tidy" html))
     =/  tsel=(unit @t)  (~(get by args) 'tag')
     ?^  tsel
       ;<  rv=tape  bind:m  beacon-rev-tape
       (send-view-long eyre-id (render-page-titled "know" (keep-url sb "beacon/rev") rv "memories" (know-flat-html:lkv es u.tsel)))
     ;<  rv=tape  bind:m  beacon-rev-tape
-    (send-view-long eyre-id (render-page-titled "know" (keep-url sb "beacon/rev") rv "memories" (know-dir-html:lkv es ~ ~ (tag-chips:lkv es ''))))
+    =/  dir=tape  (know-dir-html:lkv es ~ ~ (tag-chips:lkv es ''))
+    =/  tidy=tape  "<p class=\"muted\"><a href=\"/apps/lattice/know?lint=1\">tidy the memories</a></p>"
+    (send-view-long eyre-id (render-page-titled "know" (keep-url sb "beacon/rev") rv "memories" (weld tidy dir)))
   =/  page=(unit tape)  (know-node-html:lkv es `path`rest)
   ?~  page
     (send-view eyre-id (render-page-titled "know" "" "" "memories" "<p class=\"err\">no such entry</p>"))
