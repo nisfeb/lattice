@@ -136,11 +136,17 @@
     try { localStorage.latBeaconRev = rev; } catch {}
   };
   let dropStream = null;
-  // consecutive attempts that never reached registration. A stream that
-  // registers and later ends is the NORMAL cycle, not a failure: the keep
-  // closes itself after ~80s (measured against ~ricsul-bilwyt), so every
-  // open editor reconnects about once a minute and must do so promptly.
+  // consecutive attempts that failed. A stream that registers, then lives
+  // a minute or carries a live bump, and then ends is the NORMAL cycle: the
+  // keep closes itself after ~80s (measured against ~ricsul-bilwyt), so
+  // every open editor reconnects about once a minute and must do so
+  // promptly. A stream that registers and breaks sooner is a failure: a
+  // saturated ricsul breaks streams mid-body ("invalid chunked response"),
+  // and treating that as the normal cycle reconnected every 1.5 to 4.5 s
+  // into the load, 179 times in one afternoon from one client.
   let fail = 0;
+  const streamFail = (fail, registered, livedMs, bumpedLive) =>
+    (registered && (livedMs >= 60000 || bumpedLive)) ? 0 : Math.min(fail + 1, 5);
   (async () => {
     for (;;) {
       // a HIDDEN editor holds no stream: vere is HTTP/1.1 and the browser
@@ -152,8 +158,9 @@
         await new Promise((r) => setTimeout(r, 1000));
         continue;
       }
-      // did this attempt get as far as the ship's registration event?
-      let registered = false;
+      // did this attempt get as far as the ship's registration event, when,
+      // and did it carry a live bump after it?
+      let registered = false, registeredAt = 0, bumpedLive = false;
       try {
         const ac = new AbortController();
         dropStream = () => ac.abort();
@@ -201,6 +208,7 @@
               pendingEchoes = 0;
               streamLive = true;
               registered = true;
+              registeredAt = Date.now();
               if (lastRev && data && data !== lastRev) bumped();
               noteRev(data);
               continue;
@@ -209,6 +217,7 @@
             // tree + source to learn what this client just wrote was ~4s
             // of pier time per save, so our own expected echoes are
             // consumed by count (see pendingEchoes).
+            bumpedLive = true;
             noteRev(data);
             if (pendingEchoes > 0) { pendingEchoes--; continue; }
             if (Date.now() < echoUntil) continue;
@@ -219,11 +228,12 @@
       // stream severed: pier restart or proxy hiccup. The rev comparison at
       // the NEXT registration covers whatever happens in this gap.
       //
-      // An attempt that REGISTERED and then ended is the keep expiring on
-      // schedule, so go straight back and reset the count. An attempt that
-      // never registered failed — ship down, proxy refusing, 502 — and
-      // retrying that every 3s forever is how one outage becomes a steady
-      // drum on a pier that is already struggling. Double up to 30s.
+      // An attempt that registered and lived (+streamFail above) is the keep
+      // expiring on schedule, so go straight back and reset the count. Any
+      // other attempt failed: never registered (ship down, proxy refusing,
+      // 502) or broke soon after. Retrying that every 3s forever is how one
+      // outage becomes a steady drum on a pier that is already struggling.
+      // Double up to 30s.
       //
       // Jitter BOTH cases. A pier restart drops every client at the same
       // instant, and tabs opened together expire their keeps together, so a
@@ -232,7 +242,7 @@
       // tab. (Reconnect itself is cheap by design: registration replays the
       // current rev and the client does nothing unless it moved.)
       streamLive = false;
-      fail = registered ? 0 : Math.min(fail + 1, 5);
+      fail = streamFail(fail, registered, registered ? Date.now() - registeredAt : 0, bumpedLive);
       const base = Math.min(3000 * (1 << Math.max(0, fail - 1)), 30000);
       const wait = Math.min(Math.round(base * (0.5 + Math.random())), 30000);
       await new Promise((r) => setTimeout(r, wait));
