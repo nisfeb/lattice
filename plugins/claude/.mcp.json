@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "lattice": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server.mjs"],
+      "env": {
+        "LATTICE_URL": "${user_config.ship_url}",
+        "LATTICE_KEY": "${user_config.key}"
+      }
+    }
+  }
+}
