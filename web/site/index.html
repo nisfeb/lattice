@@ -6,7 +6,7 @@
     <title>lattice — a personal knowledge platform on your Urbit ship</title>
     <meta name="description" content="Pages in markdown, gemtext, HTML, or programmable Hoon; a private knowledge store shared with your AI agents; full-text search; a filesystem mount; peer-to-peer publishing as urb://~ship/path. All of it served from your own Urbit ship.">
     <meta property="og:title" content="lattice — a personal knowledge platform on your Urbit ship">
-    <meta property="og:description" content="Pages, a private knowledge store, search, a filesystem mount and MCP memory for AI agents. Published peer-to-peer as urb://~ship/path, served from your own ship.">
+    <meta property="og:description" content="Pages, a private knowledge store, search, a filesystem mount and memory for AI agents. Published peer-to-peer as urb://~ship/path, served from your own ship.">
     <meta property="og:image" content="https://lattice.nisfeb.com/lattice.png">
     <meta name="theme-color" content="#101541">
     <link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="%23101541"/><g stroke="%23f9a804" stroke-width="3" stroke-linecap="round" fill="none"><path d="M8 24 24 8M8 40 40 8M8 56 56 8M24 56 56 24M40 56 56 40"/><path d="M40 8 56 24M24 8 56 40M8 8 56 56M8 24 40 56M8 40 24 56"/></g></svg>'>
@@ -155,8 +155,8 @@
             <span><strong>Web + PWA</strong> · served by your ship</span>
             <span><strong>Desktop</strong> · Linux, macOS</span>
             <span><strong>Filesystem mount</strong></span>
-            <span><strong>MCP</strong> · memory for AI agents</span>
-            <span><strong>Open source</strong> · MIT</span>
+            <span><strong>Claude Code + Hermes</strong> · memory for AI agents</span>
+            <span><strong>Source available</strong> · PolyForm Noncommercial</span>
         </div>
     </div>
 </header>
@@ -173,8 +173,8 @@
         <div class="steps">
             <div class="step">
                 <div class="n">the ship</div>
-                <div class="t">one desk, one command</div>
-                <div class="d"><code>|install ~ricsul-bilwyt %grubbery</code> pulls the desk, boots the lattice nexus and binds <code>/apps/lattice</code>. Updates arrive on their own through kiln.</div>
+                <div class="t">one command, one approval</div>
+                <div class="d"><code>|install ~ricsul-bilwyt %grubbery</code> installs grubbery, which adds lattice. Approve its permissions and it binds <code>/apps/lattice</code>. New versions arrive on their own.</div>
             </div>
             <div class="step">
                 <div class="n">the client</div>
@@ -184,7 +184,7 @@
             <div class="step">
                 <div class="n">the surfaces</div>
                 <div class="t">desktop, filesystem, agents</div>
-                <div class="d">An optional desktop app, a FUSE mount that makes your pages plain files, and eleven MCP tools your AI assistant uses as memory. One store behind all of them.</div>
+                <div class="d">An optional desktop app, a FUSE mount that makes your pages plain files, and plugins that make it your AI assistants' memory. One store behind all of them.</div>
             </div>
         </div>
 
@@ -256,22 +256,25 @@
     <div class="wrap">
         <h2>Memory for your AI agents</h2>
         <p>
-            The knowledge store speaks <a href="https://modelcontextprotocol.io">MCP</a> through
-            eleven tools compiled into the ship itself: save, read, list, search, explore by tag,
-            move, delete, restore, tag, untag, and list tags. Anything an agent saves shows up in
-            the knowledge browser, and vice-versa. There is nothing to run beside the ship and
-            nothing to register; the tools survive restarts and redeploys.
+            Plugins for Claude Code and Hermes make the knowledge store your assistants' memory.
+            At the start of a session the agent loads your core rules and an index of what it
+            knows. With each prompt it recalls what bears on the task. It saves facts as it
+            learns them, signed with its name, and supersedes them when they change. It can
+            search and read your wiki and pages other ships publish, and write private pages
+            such as reports. Anything an agent saves shows up in the knowledge browser, and
+            vice-versa.
         </p>
-        <div class="code" aria-label="MCP client configuration">
-<span class="c">// your MCP client's config: the ship is the server</span>
-{ "mcpServers": { "myship": {
-    "url": "https://your-ship.example.com/grubbery/mcp",
-    "headers": { "Cookie": "urbauth-~your-ship=0v…" } } } }
+        <div class="code" aria-label="Installing the Claude Code plugin">
+<span class="c">// in Claude Code</span>
+/plugin marketplace add nisfeb/lattice
+/plugin install lattice@lattice
         </div>
         <p style="margin-top:16px;">
-            The cookie is a normal ship session, minted from <code>/~/login</code> with your
-            <span class="mono">+code</span>, and it is the only credential involved. Your
-            assistant's memory lives on your ship, not in someone's cloud.
+            Each agent gets its own key, made in lattice's settings. A key reaches only memory
+            and pages, as far as its scope says. Publishing, sharing and settings stay yours,
+            and you can revoke a key on its own. Other clients use the same HTTP routes, or
+            grubbery's MCP tools. Your assistant's memory lives on your ship, not in someone's
+            cloud.
             <a href="https://github.com/nisfeb/lattice/blob/main/docs/agent-knowledge.md">Details in the docs.</a>
         </p>
     </div>
@@ -298,7 +301,7 @@
                 No analytics, no third-party SDKs, no telemetry. The client is served by your ship
                 and speaks only to it. Access is enforced by grubbery's per-directory ACLs: the
                 knowledge store is owner-only, the HTTP API and the MCP tools require a valid ship
-                session, and shared pages are readable only by the ships and groups you grant.
+                session or a scoped agent key, and shared pages are readable only by the ships and groups you grant.
             </p>
             <p>
                 What you publish is public by design, in the Urbit namespace and, if you choose,
@@ -317,14 +320,14 @@
             scry. The web client is served by the same nexus, with live updates over an Eyre
             SSE channel and a service worker that keeps the shell and your last-known tree
             at hand offline. The filesystem client is Rust, the desktop app is Tauri, and the
-            MCP tools are Hoon compiled into the desk.
+            agent plugins are small Node and Python clients of the ship's HTTP routes.
         </p>
         <div class="tech-grid">
             <div class="cell"><div class="k">ship side</div><div class="v">grubbery nexus · Hoon</div></div>
             <div class="cell"><div class="k">web</div><div class="v">Reader, workspace, PWA · served by the ship</div></div>
             <div class="cell"><div class="k">desktop</div><div class="v">Tauri · Linux, macOS</div></div>
             <div class="cell"><div class="k">filesystem</div><div class="v">lattice-fs · Rust FUSE</div></div>
-            <div class="cell"><div class="k">agents</div><div class="v">11 MCP tools · in the ship</div></div>
+            <div class="cell"><div class="k">agents</div><div class="v">Claude Code, Hermes · scoped keys</div></div>
             <div class="cell"><div class="k">transport</div><div class="v">Remote scry · peer-to-peer</div></div>
         </div>
     </div>
@@ -339,10 +342,11 @@
 |install ~ricsul-bilwyt %grubbery
         </div>
         <p style="margin-top:16px;font-size:14px;color:var(--on-surf-var);">
-            The desk is grubbery with lattice and its MCP server and nothing else. If you already
-            run a full grubbery from another publisher, read the
+            On first boot grubbery adds lattice, with the other apps <span class="patp">~ricsul-bilwyt</span>
+            publishes. Approve lattice's permissions at <code>/apps/grubbery/permits</code>. It stays
+            unavailable until you do. New versions arrive on their own, and one that needs a new
+            permission asks first. If you already run grubbery from another publisher, read the
             <a href="https://github.com/nisfeb/lattice/blob/main/docs/grubbery-ops.md">notes on switching</a> first.
-            On first boot lattice also installs <code>%obelisk</code> for the optional search mirror.
         </p>
 
         <h3>2. Open it</h3>
@@ -425,7 +429,7 @@
 
 <footer>
     <div class="wrap footer-row">
-        <span>© lattice — built by <span class="patp">~nisfeb</span>. MIT licensed.</span>
+        <span>© lattice — built by <span class="patp">~nisfeb</span>. PolyForm Noncommercial licensed.</span>
         <span><a href="https://github.com/nisfeb/lattice">github.com/nisfeb/lattice</a></span>
     </div>
 </footer>

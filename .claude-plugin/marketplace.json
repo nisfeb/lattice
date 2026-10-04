@@ -1,0 +1,11 @@
+{
+  "name": "lattice",
+  "owner": { "name": "nisfeb" },
+  "plugins": [
+    {
+      "name": "lattice",
+      "source": "./plugins/claude",
+      "description": "Lattice on your Urbit ship as Claude's memory, and your wiki and other ships' pages as its knowledge."
+    }
+  ]
+}

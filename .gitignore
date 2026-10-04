@@ -1,5 +1,7 @@
 # Local MCP server config — contains a session cookie, never commit
 .mcp.json
+# the plugin's server config: placeholders only, no secrets
+!plugins/claude/.mcp.json
 
 # KMP app build artifacts
 app/local.properties
