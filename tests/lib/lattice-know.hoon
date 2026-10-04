@@ -208,10 +208,11 @@
   ;:  weld
     (expect-eq !>(`(list [path path])`~[[/a /missing]]) !>(broken.l))
     (expect-eq !>(`(list [path @t])`~[[/c '/nope']]) !>(bad-super.l))
-    (expect-eq !>(`(list path)`~[/a /c]) !>(untagged.l))
-    ::  /c names code and is 59 days unchecked; /d was verified two days ago
-    (expect-eq !>(`(list [path @ud])`~[[/c 59]]) !>(stale.l))
-    (expect-eq !>(`(list path)`~[/c /d]) !>(orphans.l))
+    ::  /c is superseded, so resolved: only its broken supersede link counts
+    (expect-eq !>(`(list path)`~[/a]) !>(untagged.l))
+    ::  /d was verified two days ago; /c would be stale but is superseded
+    (expect-eq !>(`(list [path @ud])`~) !>(stale.l))
+    (expect-eq !>(`(list path)`~[/d]) !>(orphans.l))
     (expect-eq !>(`(list [path path @ud])`~) !>(dups.l))
   ==
 ++  test-lint-dups
@@ -222,7 +223,15 @@
         [/other ['something else entirely different' ~2026.1.1 ~ ~]]
     ==
   =/  l=lint  (lint-run es ~2026.1.2)
-  (expect-eq !>(`(list [path path])`~[[/new /old]]) !>((turn dups.l |=([a=path b=path *] [a b]))))
+  ::  once one copy is superseded, the pair is resolved and not proposed
+  =/  done=lint
+    %+  lint-run
+      (turn es |=([k=path e=know-entry] ?.(=(k /old) [k e] [k e(body (cat 3 '---\0asuperseded-by: /new\0a---\0a' body.e))])))
+    ~2026.1.2
+  ;:  weld
+    (expect-eq !>(`(list [path path])`~[[/new /old]]) !>((turn dups.l |=([a=path b=path *] [a b]))))
+    (expect-eq !>(`(list [path path @ud])`~) !>(dups.done))
+  ==
 ++  test-iso-day
   ;:  weld
     (expect-eq !>('2026-10-03') !>((iso-day ~2026.10.3..14.05.11)))

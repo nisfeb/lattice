@@ -557,6 +557,11 @@
   |=  [es=(list [key=path e=know-entry]) now=@da]
   ^-  lint
   =/  keys=(set path)  (silt (turn es |=([k=path *] k)))
+  ::  a superseded entry is resolved. It still counts as a link target and
+  ::  its own supersede link is checked, but nothing else in the tidy is
+  ::  about it, or every pair a tidy resolved would be proposed again.
+  =/  all=(list [key=path e=know-entry])  es
+  =.  es  (skim es |=([* e=know-entry] =(~ (superseded e))))
   =/  sets=(map path (set @t))
     (malt (turn es |=([k=path e=know-entry] [k (term-set body.e)])))
   ::  bound before use: a zing straight into +roll is a fuse-loop
@@ -613,7 +618,7 @@
   :*  dups
       (skip outs |=([* t=path] (~(has in keys) t)))
     ::
-      %+  murn  es
+      %+  murn  all
       |=  [k=path e=know-entry]
       ^-  (unit [key=path to=@t])
       =/  s=(unit @t)  (superseded e)
@@ -637,7 +642,7 @@
       ?.  &((gte d stale-days) (names-code body.e))  ~
       `[k d]
     ::
-      (sort (skip ~(tap in keys) |=(k=path (~(has in linked) k))) aor)
+      (sort (murn es |=([k=path *] ?:((~(has in linked) k) ~ `k))) aor)
   ==
 ++  lint-json
   |=  l=lint
