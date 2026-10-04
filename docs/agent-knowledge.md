@@ -48,7 +48,7 @@ Search ranks with BM25 over the key (counted twice), the tags and the body. Word
 
 Measured on the live store (455 entries) with a private set of 42 questions an agent would ask: the old whole-string substring search put an expected entry in the top five for none of them. This ranking does for 40. Of five questions about things never stored, four came back weak. `scripts/know-eval.mjs` reruns the measurement. The question set is private, so it lives as a lattice page (`eval/memory-recall`), not in this repo.
 
-The plugins add recalled memories to a prompt only when the best match reaches strength 50, three at most, so a weak match adds nothing to the conversation.
+The plugins add recalled memories to a prompt only when a hit reaches strength 50 and score 10,000, three at most. Strength alone is not enough on a short prompt: "are you on the new system now?" covers all of one entry's matches by coincidence (strength 100) at score 7,596. On 16 real prompts the score floor cut injections from 12 to 4, and on the 42-question eval it kept the right entry for 34 of 35. Anything the gate misses is still a `memory_recall` away.
 
 ## Provenance and supersession
 
