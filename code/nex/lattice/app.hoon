@@ -1286,7 +1286,11 @@
     ::  the cache is kept over every entry; the ranking only over what
     ::  this request may see
     ;<  tc=term-cache:lk  bind:m  (current-terms all)
-    =/  es=(map path know-entry:lk)  (searchable key all)
+    ::  sensitive=0: only what a listing shows, so an automatic search
+    ::  (a plugin hook) never taints a cleared key
+    =/  es=(map path know-entry:lk)
+      ?:  =('0' (~(gut by args) 'sensitive' ''))  (listed key all)
+      (searchable key all)
     =/  hs=(list hit:lk)  (search:lk ~(tap by es) tc q old)
     ;<  ~  bind:m
       (taint-if key (lien (scag k hs) |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
@@ -1299,7 +1303,9 @@
     =/  k=@ud  (fall (rush (~(gut by args) 'k' '8') dem) 8)
     ;<  all=(map path know-entry:lk)  bind:m  read-know-map
     ;<  tc=term-cache:lk  bind:m  (current-terms all)
-    =/  es=(map path know-entry:lk)  (searchable key all)
+    =/  es=(map path know-entry:lk)
+      ?:  =('0' (~(gut by args) 'sensitive' ''))  (listed key all)
+      (searchable key all)
     =/  hs=(list hit:lk)  (search:lk ~(tap by es) tc task |)
     ;<  ~  bind:m
       (taint-if key (lien (scag k hs) |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
@@ -1318,7 +1324,8 @@
       [%'GET' %know-lint]
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
     ;<  now=@da  bind:m  bowl-now
-    (send-json eyre-id (lint-json:lk (lint-run:lk ~(tap by (listed key es)) now)))
+    =/  hid=(set path)  ~(key by (~(dif by es) (listed key es)))
+    (send-json eyre-id (lint-json:lk (lint-without:lk (lint-run:lk ~(tap by es) now) hid)))
   ::  know-verify: an agent or the owner confirms an entry still holds.
   ::  verified (and verified-by, from author=) land in its front matter.
       [%'POST' %know-verify]
@@ -3010,6 +3017,11 @@
     ;<  old=(unit know-entry:lk)  bind:m  (know-one u.ko)
     ?:  &(?=(^ old) !(may-see key u.old))
       (send-err eyre-id 403 'that key is not available to this agent key')
+    ::  a tainted key's new entries are sensitive, but an ordinary entry it
+    ::  edited would vanish for every other key, so that is refused
+    ;<  snow=@da  bind:m  bowl-now
+    ?:  &(?=(^ key) ?=(^ old) !(sensitive:lk u.old) (tainted:ky u.key snow))
+      (send-err eyre-id 403 tainted-msg)
     ?:  &(!=('' expect) |(?=(~ old) !=(expect (scot %da updated.u.old))))
       %^  send-err  eyre-id  409
       ?~  old  'conflict: no such entry'

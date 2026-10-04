@@ -651,6 +651,21 @@
   ==
 ++  stale-days  ^-(@ud 30)
 ++  big-bytes  ^-(@ud 4.000)
+::  +lint-without: the report with every item about a hidden entry left
+::  out. Run over the whole store first, so a link to a hidden entry is
+::  not reported as broken (and then "fixed" by deleting it).
+++  lint-without
+  |=  [l=lint hid=(set path)]
+  ^-  lint
+  =/  in  |=(k=path (~(has in hid) k))
+  :*  (skip dups.l |=([a=path b=path *] |((in a) (in b))))
+      (skip broken.l |=([f=path *] (in f)))
+      (skip bad-super.l |=([k=path *] (in k)))
+      (skip untagged.l in)
+      (skip big.l |=([k=path *] (in k)))
+      (skip stale.l |=([k=path *] (in k)))
+      (skip orphans.l in)
+  ==
 ++  names-code
   |=  body=@t
   ^-  ?

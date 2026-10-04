@@ -173,7 +173,8 @@ class LatticeMemoryProvider(MemoryProvider):
             return self._last[1]
         out = ""
         try:
-            r = json.loads(self._call("GET", "know-recall", {"task": query[:1500], "k": 3}, timeout=8))["recall"]
+            # sensitive=0: automatic recall never taints a cleared key
+            r = json.loads(self._call("GET", "know-recall", {"task": query[:1500], "k": 3, "sensitive": "0"}, timeout=8))["recall"]
             gate = (self._cfg or _config())["recall_strength"]
             hits = [h for h in r.get("results", []) if h.get("strength", 0) >= gate and h.get("score", 0) >= MIN_SCORE]
             if hits and not r.get("weak"):

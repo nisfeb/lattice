@@ -300,4 +300,16 @@
     (expect !>(?=(^ (find "\"/c\"" out))))
     (expect !>(?=(~ (find "\"/b\"" out))))
   ==
+::  a keyed tidy leaves out hidden entries, and a link to one is not broken
+++  test-lint-without
+  =/  es=(list [key=path e=know-entry])
+    :~  [/a ['see [[/h]]' ~2026.1.1 ~ ~]]
+        [/h ['---\0asensitive: yes\0a---\0ahidden' ~2026.1.1 ~ ~]]
+    ==
+  =/  l  (lint-without (lint-run es ~2026.1.2) (sy ~[/h]))
+  ;:  weld
+    (expect-eq !>(`(list [path path])`~) !>(broken.l))
+    (expect-eq !>(|) !>((lien untagged.l |=(k=path =(k /h)))))
+    (expect-eq !>(|) !>((lien orphans.l |=(k=path =(k /h)))))
+  ==
 --
