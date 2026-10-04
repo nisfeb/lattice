@@ -29,7 +29,10 @@ from utils import atomic_json_write, read_json_or_empty
 logger = logging.getLogger(__name__)
 
 RECALL_STRENGTH = 50   # prefetch adds memories only at or above this
-INDEX_CAP = 7000       # bytes of core rules in the system prompt
+# and only at this score: strength alone lets noise through on short
+# messages (see the Claude plugin's hooks/lattice-hook.mjs for the data)
+MIN_SCORE = 10000
+INDEX_CAP = 20000      # bytes of core rules in the system prompt (no 10,000-char hook cap here)
 
 
 def _config() -> Dict[str, Any]:
@@ -172,7 +175,7 @@ class LatticeMemoryProvider(MemoryProvider):
         try:
             r = json.loads(self._call("GET", "know-recall", {"task": query[:1500], "k": 3}, timeout=8))["recall"]
             gate = (self._cfg or _config())["recall_strength"]
-            hits = [h for h in r.get("results", []) if h.get("strength", 0) >= gate]
+            hits = [h for h in r.get("results", []) if h.get("strength", 0) >= gate and h.get("score", 0) >= MIN_SCORE]
             if hits and not r.get("weak"):
                 out = "## Lattice memory\n" + "\n".join(
                     f"- {h['key']} (strength {h['strength']}): {h['snippet']}" for h in hits)

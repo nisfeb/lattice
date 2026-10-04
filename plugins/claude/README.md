@@ -2,8 +2,8 @@
 
 This plugin makes lattice on your Urbit ship Claude's memory, and makes your wiki and other ships' published pages its knowledge.
 
-- **At session start** a hook loads the memory index: every area, and the core rules (entries tagged `core`) in full.
-- **On each prompt** a hook recalls memories that strongly match it, three at most, and adds them as background. A weak match adds nothing.
+- **At session start** a hook loads the memory index: every area, and the core rules (entries tagged `core`) in full, in two parts when they run past one hook's 10,000 characters.
+- **On each prompt** a hook recalls memories that strongly match it, three at most, and adds them as background. A weak or merely coincidental match adds nothing.
 - **Tools** cover memory (`memory_recall`, `memory_search`, `memory_read`, `memory_save`, `memory_verify`, `memory_supersede`, `memory_tag`, `memory_explore`, `memory_tidy`, `memory_index`) and knowledge (`wiki_search`, `wiki_read`, `wiki_write`, `web_read`).
 - **Skills** say when and how to use them. **Commands:** `/lattice:recall`, `/lattice:remember`, `/lattice:tidy`.
 
@@ -45,4 +45,4 @@ If your `CLAUDE.md` describes reaching lattice some other way (such as grubbery'
 
 - **Ship URL**: such as `https://urbit.example.com`.
 - **Agent key**: from lattice's Settings.
-- **Prompt recall strength** (default 50): memories are added to a prompt only when the best match is at least this strong, from 0 to 100. 101 turns prompt recall off. The session index loads either way.
+- **Prompt recall strength** (default 50): memories are added to a prompt only when the best match is at least this strong, from 0 to 100, and also scores at least 10,000, so a short prompt that happens to share common words with an entry adds nothing. 101 turns prompt recall off. The session index loads either way.

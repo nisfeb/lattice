@@ -1,7 +1,8 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/lattice-hook.mjs\" session", "timeout": 30 } ] }
+      { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/lattice-hook.mjs\" session", "timeout": 30 } ] },
+      { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/lattice-hook.mjs\" session-more", "timeout": 30 } ] }
     ],
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/lattice-hook.mjs\" prompt", "timeout": 15 } ] }
