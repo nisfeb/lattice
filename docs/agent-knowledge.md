@@ -11,7 +11,7 @@ Lattice keeps a **private, tagged knowledge store** on your ship: the memory you
 | HTTP routes under `/apps/lattice` | your own scripts and agents | an agent key, or your login cookie |
 | grubbery's MCP tools (`lattice-*`) | any MCP client without a plugin | your login cookie |
 
-Use a plugin with an agent key where you can. A key reaches memory and pages and nothing else, and you can revoke it on its own. It never expires. Everything it saves is signed with its name. Your login cookie is the opposite: it is you, with every power you have over the ship (grubbery's MCP serves dojo too). It expires after a week or on a ship restart. Coming from the cookie setup? See [Migrating](#migrating-from-the-cookie-and-mcp-setup).
+Use a plugin with an agent key where you can. A key reaches memory and pages and nothing else, and you can revoke it on its own. It never expires. Everything it saves is signed with its name. Your login cookie is meant for you. It carries every power you have over the ship and expires after a week or on a ship restart, which suits your own tools better than an agent. Coming from the cookie setup? See [Migrating](#migrating-from-the-cookie-and-mcp-setup).
 
 ## Agent keys
 
@@ -46,7 +46,7 @@ The plugins' skills carry this routine. An agent reaching lattice some other way
 
 Search ranks with BM25 over the key (counted twice), the tags and the body. Words are lower-cased and split on punctuation (`~ricsul-bilwyt` is one word, and also `ricsul` and `bilwyt`). Stop words are dropped and words lightly stemmed. Each hit carries a `strength`, the share of the query's weight the entry carries, and an answer whose best hit is under 35 says `weak`: probably nothing is stored about the question. The code is `+search` in `lib/lattice-know.hoon`, shared by the routes, the MCP tools and the eval.
 
-Measured on the live store (455 entries) with a private set of 42 questions an agent would ask: the old whole-string substring search put an expected entry in the top five for none of them. This ranking does for 40. Of five questions about things never stored, four came back weak. `scripts/know-eval.mjs` reruns the measurement. The question set is private, so it lives as a lattice page (`eval/memory-recall`), not in this repo.
+Measured on the live store (455 entries) with a private set of 42 questions an agent would ask: this ranking puts an expected entry in the top five for 40 of them. Of five questions about things never stored, four came back weak. `scripts/know-eval.mjs` reruns the measurement. The question set is private, so it lives as a lattice page (`eval/memory-recall`), not in this repo.
 
 The plugins add recalled memories to a prompt only when a hit reaches strength 50 and score 10,000, three at most. Strength alone is not enough on a short prompt: "are you on the new system now?" covers all of one entry's matches by coincidence (strength 100) at score 7,596. On 16 real prompts the score floor cut injections from 12 to 4, and on the 42-question eval it kept the right entry for 34 of 35. Anything the gate misses is still a `memory_recall` away.
 
@@ -129,7 +129,7 @@ Revision history is read over HTTP (`know-history`, `know-read-at`), not through
 
 ## Migrating from the cookie and MCP setup
 
-Before agent keys, an agent reached lattice through grubbery's MCP endpoint with your login cookie, told how by a memory section in its instructions (a `CLAUDE.md`, say) that listed the `lattice-*` tools and the call-by-name trick. That still works. Moving to a plugin and a key narrows what the agent can do, ends the weekly cookie refresh, signs everything it saves, and replaces the hand-written instructions with the plugin's hooks and skills.
+Before agent keys, an agent reached lattice through grubbery's MCP endpoint with your login cookie, told how by a memory section in its instructions (a `CLAUDE.md`, say) that listed the `lattice-*` tools and the call-by-name trick. That still works. Moving to a plugin and a key scopes what the agent can do, needs no cookie refresh, signs everything it saves, and lets the plugin's hooks and skills carry the instructions.
 
 Your memories need no conversion. The same store serves both, so you can move one agent at a time and run old and new side by side while you check.
 
@@ -162,7 +162,7 @@ Swap the `Cookie:` header for `Authorization: Bearer <key>` with a key scoped to
 
 - **Who wrote it.** Under the cookie, an agent passed its own `author` (often a session name) and `source`. With a key, every save is signed with the key's `by` and `source: agent`. An agent can no longer mark a fact as said by you. Entries saved before keep what they say.
 - **Old entries.** Entries with no front matter work as they are and gain it on their next save.
-- **Duplicates.** Agents working from instructions alone often saved near-copies under new keys. Run the tidy once (`/lattice:tidy` or `/apps/lattice/know?lint=1`): keep one of each pair and supersede the other. Saves through a key are checked for duplicates from then on.
+- **Duplicates.** If the store has near-duplicate entries, run the tidy once (`/lattice:tidy` or `/apps/lattice/know?lint=1`): keep one of each pair and supersede the other. Saves through a key are checked for duplicates from then on.
 
 ### Rolling back
 

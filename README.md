@@ -14,7 +14,7 @@ The ship side is a `lattice` **nexus** running inside the [**grubbery**](https:/
 ## What it does
 
 - **Pages, not just gemtext.** Write in markdown, gemtext, HTML, plain text, JS, or CSS. Or write a page in Hoon and it *computes* its content: programmable pages with commands, state, and dependencies on other pages.
-- **Knowledge store.** A private, tagged note store with per-entry history and a trash you can restore from. Browse it in the workspace with folders, tag filters, and live updates. Drive it from the web app, HTTP, MCP, or the FUSE mount.
+- **Knowledge store.** A private, tagged note store with per-entry history and a trash you can restore from. Browse it in the workspace with folders, tag filters, and live updates. Drive it from the web app, HTTP, MCP, the FUSE mount, or your AI agents. Search ranks by relevance, every entry records who wrote it and when it was last confirmed, and a changed fact is superseded rather than lost.
 - **Search.** A term index over your pages and your knowledge store, queried from the reader's omnibar. Every hit is badged with its scope, so a published page never reads like a private note.
 - **A real filesystem.** `lattice-fs` mounts your pages as files over HTTP or grubbery's local IPC. A cold mount warms in one round-trip, so `grep` and `cat` run from RAM. Editor saves round-trip safely, and backup or swap files never touch the ship.
 - **Browse `urb://`.** Fetch and read gemtext published by any ship, peer-to-peer over ames, from the web reader.
@@ -105,9 +105,9 @@ On a phone, use your browser's *Install app / Add to Home Screen*. lattice is a 
 
 ## Connect an AI agent
 
-lattice keeps a **private knowledge store** your AI agents share with you, and they can read your wiki and pages other ships publish. Agents connect with an **agent key**: a token you make in Settings, Agent keys. A key reaches only memory and pages, as far as its scope says. Everything it saves is signed with its name, and you can revoke it on its own.
+lattice keeps a **private knowledge store** your AI agents share with you, and they can read your wiki and pages other ships publish. Agents connect with an **agent key** you make in Settings, Agent keys.
 
-- **Claude Code**: the [lattice plugin](plugins/claude/README.md) loads your memory index at session start, recalls relevant memories with each prompt, and gives Claude memory and wiki tools.
+- **Claude Code**: the [lattice plugin](plugins/claude/README.md).
   ```
   /plugin marketplace add nisfeb/lattice
   /plugin install lattice@lattice
@@ -115,11 +115,20 @@ lattice keeps a **private knowledge store** your AI agents share with you, and t
 - **Hermes**: the [lattice memory provider](plugins/hermes/README.md).
 - **Anything else**: the HTTP routes with `Authorization: Bearer <key>`, or grubbery's MCP endpoint and its sixteen `lattice-*` tools with your login cookie (below).
 
-Anything an agent saves shows up in the knowledge browser, and vice versa. Recall is ranked, entries record who wrote them, and a changed fact is superseded rather than lost. [docs/agent-knowledge.md](docs/agent-knowledge.md) has the details, including how to move an agent from the cookie-and-MCP setup to a key.
+What your agents get:
+
+- **Ranked recall.** Memory search ranks by relevance, takes several words or an exact phrase, and recalls by task: an agent describes what it is about to do and gets the memories that bear on it, plus the entries those link to. On a set of 42 real questions, it puts the right memory in the top five for 40. A **weak** answer says nothing relevant is stored, so an agent can say so plainly.
+- **Context without asking.** At session start the plugins load the memory index and your core rules (entries tagged `core`) in full, so every session follows them from the first message. With each prompt, memories that clearly match are added as background, three at most. A coincidental match on common words adds nothing.
+- **A record you can trust.** Every memory carries who saved it, whether an agent wrote it, when it was created and when it was last confirmed true. A changed fact supersedes the old entry instead of deleting it, so search shows the current fact and history keeps the old one. Saving refuses near-duplicates and edits made over a newer version, and a **tidy** report proposes fixes for duplicates, broken links and facts not checked in 30 days, changing nothing until you act.
+- **Agent keys.** A key reaches only memory and pages, as far as its scope says. Publishing, sharing, deleting and settings stay yours. Everything a key saves is signed with its name, and it writes private pages only, never a published page or one in a folder you share. A key never expires, the list shows when each was last used, and revoking one stops it at once.
+- **Your wiki and the network.** Agents search your pages ranked the same way, read them, and write private pages such as reports. They read pages other ships publish, and that text, like pages you clipped from the web, reaches the model labelled as quoted material rather than instructions, so a page cannot plant a memory.
+- **One store for every agent.** Claude Code, Hermes and your own scripts read and write the same memories, and anything an agent saves shows up in the knowledge browser, and vice versa. It all lives on your ship, not in someone's cloud.
+
+[docs/agent-knowledge.md](docs/agent-knowledge.md) has the details, including how to move an agent from the cookie-and-MCP setup to a key.
 
 ### grubbery's MCP tools, with your cookie
 
-For an MCP client without a plugin, the `lattice-*` tools are **compiled into the ship itself**: they live in grubbery's tool bundle, execute in-ship against the vault, and are served by grubbery's own MCP endpoint at `<ship>/grubbery/mcp`. There is nothing to install or register. Make the ship reachable over `https` with a reverse proxy that terminates TLS. Don't expose the raw `--http-port`. The cookie carries all your powers over the ship, so prefer a key wherever a plugin or the HTTP routes will do.
+For an MCP client without a plugin, the `lattice-*` tools are **compiled into the ship itself**: they live in grubbery's tool bundle, execute in-ship against the vault, and are served by grubbery's own MCP endpoint at `<ship>/grubbery/mcp`. There is nothing to install or register. Make the ship reachable over `https` with a reverse proxy that terminates TLS. Don't expose the raw `--http-port`. For agents, a key is the better fit wherever a plugin or the HTTP routes will do.
 
 **Authenticating, the part that trips people up.** Two different things, don't mix them:
 
