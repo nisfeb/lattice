@@ -522,6 +522,107 @@
       ^-  (list [@t json])
       ?~(sup ~ ~[['superseded_by' s+u.sup]])
   ==
+::  +recall-json: the hits for a task, plus what the best three link to:
+::  one hop, live entries not already shown, five at most. The recall tool
+::  and the /know-recall route both answer this.
+++  recall-json
+  |=  [es=(map path know-entry) tc=term-cache task=@t k=@ud]
+  ^-  json
+  =/  hs=(list hit)  (search ~(tap by es) tc task |)
+  =/  shown=(set path)  (silt (turn (scag k hs) |=(h=hit key.h)))
+  =/  hops=(list [to=path via=path])
+    %+  scag  5
+    =|  [out=(list [to=path via=path]) seen=(set path)]
+    =/  top=(list hit)  (scag 3 hs)
+    |-  ^-  (list [to=path via=path])
+    ?~  top  (flop out)
+    =/  ls=(list path)
+      %+  skim  (links body:(~(got by es) key.i.top))
+      |=  t=path
+      ?&  (~(has by es) t)
+          !(~(has in shown) t)
+          !(~(has in seen) t)
+          =(~ (superseded (~(got by es) t)))
+      ==
+    $(top t.top, out (weld (flop (turn ls |=(t=path [t key.i.top]))) out), seen (~(gas in seen) ls))
+  %-  pairs:enjs:format
+  :~  ['recall' (hits-json es hs task k)]
+      :-  'linked'
+      :-  %a
+      %+  turn  hops
+      |=  [to=path via=path]
+      %-  pairs:enjs:format
+      :~  ['key' s+(spat to)]
+          ['via' s+(spat via)]
+          ['snippet' s+(snippet body:(~(got by es) to) task)]
+      ==
+  ==
+::  +index-text: what an agent loads at session start: every live key by
+::  area (the first segment, or two for a key three deep), then the core
+::  entries in full, up to cap bytes; past it they are listed only. brief
+::  gives each area's count instead of its keys, for a session hook, whose
+::  added context Claude Code caps at 10,000 characters. The index tool and
+::  the /know-index route both answer this.
+++  core-cap  ^-(@ud 14.000)
+++  index-text
+  |=  [es=(map path know-entry) brief=? cap=@ud]
+  ^-  @t
+  =/  live=(list [k=path e=know-entry])
+    (skim ~(tap by es) |=([* e=know-entry] =(~ (superseded e))))
+  =/  area
+    |=  k=path
+    ^-  [path path]
+    ::  cast first: scag and slag are wet, and fail on a narrowed list
+    =/  p=path  k
+    ?:  ?=([@ @ @ *] k)  [(scag 2 p) (slag 2 p)]
+    [(scag 1 p) (slag 1 p)]
+  =/  groups=(map path (list path))
+    %+  roll  live
+    |=  [[k=path *] g=(map path (list path))]
+    =/  [a=path r=path]  (area k)
+    (~(put by g) a [r (~(gut by g) a ~)])
+  =/  lines=(list tape)
+    %+  turn  (sort ~(tap by groups) |=([a=[p=path *] b=[p=path *]] (aor p.a p.b)))
+    |=  [a=path rs=(list path)]
+    =/  head=tape  :(weld (slag 1 (spud a)) " (" (a-co:co (lent rs)) ")")
+    ?:  brief  head
+    =/  names=(list tape)  (turn (sort rs aor) |=(r=path (slag 1 (spud r))))
+    ::  bound with its type: zing inline in a weld is a fuse-loop
+    =/  joined=tape  (zing (join ", " names))
+    :(weld head ": " joined)
+  =/  core=(list [k=path e=know-entry])
+    (sort (skim live |=([* e=know-entry] (~(has in tags.e) 'core'))) |=([a=[k=path *] b=[k=path *]] (aor k.a k.b)))
+  =/  core-text=tape
+    =|  [out=tape used=@ud]
+    |-  ^-  tape
+    ?~  core  out
+    =/  body=tape  (trip rest:(front body.e.i.core))
+    =/  key=tape  (spud k.i.core)
+    ?:  (gth (add used (lent body)) cap)
+      $(core t.core, out :(weld out "## " key " (over the cap: read it)\0a\0a"))
+    $(core t.core, out :(weld out "## " key "\0a" body "\0a\0a"), used (add used (lent body)))
+  =/  index=tape  (zing (join "\0a" lines))
+  %-  crip
+  ;:  weld
+    (a-co:co (lent live))  " memories"
+    ?:(brief " in these areas. Recall finds them by task; the full index lists every key.\0a\0a" ". Recall finds them by task; read opens one by key.\0a\0a")
+    index
+    ?~(core "" "\0a\0aCore (applies to every task):\0a\0a")
+    core-text
+  ==
+::  +stamp: the body a save stores: the prose under the old entry's front
+::  matter, created kept (or set), author and source set when given, and
+::  verified today, by the author when there is one.
+++  stamp
+  |=  [old=(unit know-entry) prose=@t author=@t source=@t now=@da]
+  ^-  @t
+  =/  meta=(list [k=@t v=@t])  ?~(old ~ meta:(front body.u.old))
+  =?  meta  =(~ (meta-get meta 'created'))  (meta-put meta 'created' (iso-day ?~(old now updated.u.old)))
+  =?  meta  !=('' author)  (meta-put meta 'author' author)
+  =?  meta  !=('' source)  (meta-put meta 'source' source)
+  =.  meta  (meta-put meta 'verified' (iso-day now))
+  =?  meta  !=('' author)  (meta-put meta 'verified-by' author)
+  (with-front meta prose)
 ::  ==  Lint: what a periodic tidy would fix, proposed, never applied here.
 ::
 ::  stale is an entry that names code (a file, an arm, a port, a commit) and

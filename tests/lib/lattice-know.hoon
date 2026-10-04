@@ -239,4 +239,37 @@
     (expect-eq !>(`(unit @da)`~) !>((from-iso-day '2026-13-01')))
     (expect-eq !>(`(unit @da)`~) !>((from-iso-day 'soon')))
   ==
+::  the session index: areas, then core rules up to the cap
+++  test-index-text
+  =/  es=(map path know-entry)
+    %-  malt
+    ^-  (list [path know-entry])
+    :~  [/feedback/a ['rule one' ~2026.1.1 (sy 'core' ~) ~]]
+        [/feedback/b ['a long rule that will not fit' ~2026.1.1 (sy 'core' ~) ~]]
+        [/project/x/y ['plain' ~2026.1.1 ~ ~]]
+        [/feedback/old ['---\0asuperseded-by: /feedback/a\0a---\0agone' ~2026.1.1 ~ ~]]
+    ==
+  =/  full=tape  (trip (index-text es | 100))
+  =/  brief=tape  (trip (index-text es & 10))
+  ;:  weld
+    (expect !>(?=(^ (find "feedback (2): a, b" full))))
+    (expect !>(?=(^ (find "project/x (1): y" full))))
+    (expect !>(?=(~ (find "old" full))))
+    (expect !>(?=(^ (find "feedback (2)\0a" brief))))
+    (expect !>(?=(~ (find "a, b" brief))))
+    (expect !>(?=(^ (find "## /feedback/a\0arule one" brief))))
+    (expect !>(?=(^ (find "## /feedback/b (over the cap: read it)" brief))))
+  ==
+::  a save keeps created, sets author and source, and stamps verified
+++  test-stamp
+  =/  old=know-entry  ['---\0acreated: 2025-01-02\0aauthor: someone\0a---\0aold fact' ~2026.1.1 ~ ~]
+  =/  m  meta:(front (stamp `old 'new fact' 'claude-laptop' 'agent' ~2026.10.4))
+  ;:  weld
+    (expect-eq !>(`(unit @t)``'2025-01-02') !>((meta-get m 'created')))
+    (expect-eq !>(`(unit @t)``'claude-laptop') !>((meta-get m 'author')))
+    (expect-eq !>(`(unit @t)``'agent') !>((meta-get m 'source')))
+    (expect-eq !>(`(unit @t)``'2026-10-04') !>((meta-get m 'verified')))
+    (expect-eq !>('new fact') !>(rest:(front (stamp `old 'new fact' '' '' ~2026.10.4))))
+    (expect-eq !>(`(unit @t)``'2026-10-04') !>((meta-get meta:(front (stamp ~ 'x' '' '' ~2026.10.4)) 'created')))
+  ==
 --

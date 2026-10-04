@@ -38,6 +38,7 @@
 ::  when a release arrives. Nothing in this file can reach it.
 ::
 /<  lk   /lib/lattice-know.hoon
+/<  ky   /lib/lattice-keys.hoon
 /<  lp   /lib/lattice-pub.hoon
 /<  lgmi  /lib/lattice-gmi.hoon
 /<  le   /lib/lattice-eval.hoon
@@ -183,6 +184,9 @@
         ::  +ensure-pub-ids mints it. Covered, because a new salt renames
         ::  every binding.
             [%fall %& [/ %salt] [[/ %ud] 0]]
+        ::  /keys: the agent keys (/lib/lattice-keys), salted hashes only.
+        ::  Outside /pub, so no peer reads it; covered, so it survives reload.
+            [%fall %& [/ %keys] [[/lattice %keys] *keys:ky]]
         ::  There is no pointer row. The subscription rev rides the page
         ::  keep's own wave (see /sub/pages), and nothing writes or reads
         ::  /pub/note/ptr. A pier that still carries that grub keeps it as
@@ -312,8 +316,10 @@
         ::  beacon on each one would make browsing live-reload every other open
         ::  reader, a reload storm produced by nothing the reader can see.
         ::  History is not content; it does not belong on the content beacon.
+        ::  Nor for agent keys: a key's hourly last-use stamp is not content.
         ;<  ~  bind:m
           ?:  =([/lattice %history-action] p.sage)  (pure:m ~)
+          ?:  =([/lattice %key-action] p.sage)  (pure:m ~)
           (bump-rev now)
         $
       ::  /shares.sig: the cross-ship share-notice inbox. Foreign ships %add.
@@ -1092,10 +1098,26 @@
   ::  src=our, so `authenticated` (already in hand, synchronous) IS the src==our
   ::  check. Reading `our` via a /sys/bowl round trip (bowl-our) just to compare
   ::  cost ~0.2s on EVERY request. Gate on the flag. `our` is then simply `src`.
-  ?.  authenticated.req
+  ::
+  ::  An agent key (Authorization: Bearer, /lib/lattice-keys) is the one
+  ::  other way in, and only to the routes its scope names (+may:ky). The
+  ::  owner's cookie is never scoped. A keyed request pays one bowl read
+  ::  for `our`, since its src is not us.
+  =/  au=(unit @t)
+    ?:  authenticated.req  ~
+    (get-header:http 'authorization' header-list.request.req)
+  ;<  key=(unit key-row:ky)  bind:m
+    ?~  au  (pure:(fiber:fiber:nexus ,(unit key-row:ky)) ~)
+    (key-of u.au)
+  ?.  |(authenticated.req ?=(^ key))
     ::  JSON error, like every other route (was a bare text 'Forbidden').
-    (send-err eyre-id 403 'forbidden')
-  =/  our=@p  src
+    ?~  au  (send-err eyre-id 403 'forbidden')
+    (send-err eyre-id 401 'invalid or revoked key')
+  ?:  &(?=(^ key) !(may:ky u.key method.request.req suffix))
+    (send-err eyre-id 403 'outside this key\'s scope')
+  ;<  our=@p  bind:m
+    ?~  key  (pure:(fiber:fiber:nexus ,@p) src)
+    bowl-our
   ::  /x/<ship>/<path...>: the server-rendered tree explorer (docs/platform.md,
   ::  build step 1). Consumes the rest of the path, so it dispatches before the
   ::  (rear suffix) route table below.
@@ -1261,15 +1283,26 @@
     =/  k=@ud  (fall (rush (~(gut by args) 'k' '10') dem) 10)
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
     =/  old=?  =('1' (~(gut by args) 'superseded' '0'))
-    ::  the term cache, made current; stored back when that changed it, so
-    ::  the first search after an upgrade fills it for everyone after
-    =/  tr=road:tarball  (rf up /know %terms)
-    ;<  tc=term-cache:lk  bind:m  (read-terms tr)
-    =/  [chg=? cur=term-cache:lk]  (refresh:lk ~(tap by es) tc)
-    ;<  *  bind:m
-      ?.  chg  (pure:(fiber:fiber:nexus ,(unit tang)) ~)
-      (over-as-soft:io tr [[/lattice %know-terms] cur] [/lattice %know-terms])
-    (send-json eyre-id (hits-json:lk es (search:lk ~(tap by es) cur q old) q k))
+    ;<  tc=term-cache:lk  bind:m  (current-terms es)
+    (send-json eyre-id (hits-json:lk es (search:lk ~(tap by es) tc q old) q k))
+  ::  know-recall: what to know before a task (+recall-json:lk, the answer
+  ::  the lattice-recall tool gives). task= the description, k= how many (8).
+      [%'GET' %know-recall]
+    =/  task=@t  (~(gut by args) 'task' '')
+    ?:  =('' task)  (send-err eyre-id 400 'missing task')
+    =/  k=@ud  (fall (rush (~(gut by args) 'k' '8') dem) 8)
+    ;<  es=(map path know-entry:lk)  bind:m  read-know-map
+    ;<  tc=term-cache:lk  bind:m  (current-terms es)
+    (send-json eyre-id (recall-json:lk es tc task k))
+  ::  know-index: what an agent loads at session start (+index-text:lk, as
+  ::  the lattice-index tool), as plain text for a hook to print. brief=1
+  ::  counts each area instead of listing its keys; cap= bounds the core
+  ::  text in bytes (14.000).
+      [%'GET' %know-index]
+    ;<  es=(map path know-entry:lk)  bind:m  read-know-map
+    =/  brief=?  =('1' (~(gut by args) 'brief' '0'))
+    =/  cap=@ud  (fall (rush (~(gut by args) 'cap' '') dem) core-cap:lk)
+    (send-typed eyre-id 'text/plain; charset=utf-8' 'no-store' (index-text:lk es brief cap))
   ::  know-lint: what a tidy would fix (+lint-run:lk), proposed and never
   ::  applied. Computed when asked, so always current. /know?lint=1 reviews it.
       [%'GET' %know-lint]
@@ -1286,7 +1319,7 @@
     ;<  now=@da  bind:m  bowl-now
     =/  f  (front:lk body.u.e)
     =/  meta  (meta-put:lk meta.f 'verified' (iso-day:lk now))
-    =/  by=@t  (~(gut by args) 'author' '')
+    =/  by=@t  ?^(key by.u.key (~(gut by args) 'author' ''))
     =?  meta  !=('' by)  (meta-put:lk meta 'verified-by' by)
     ;<  ~  bind:m  (poke-know [%save (spat u.ko) (with-front:lk meta rest.f)])
     (send-ok eyre-id)
@@ -1747,7 +1780,91 @@
     (handle-page-save-batch eyre-id req args)
   ::
       [%'POST' %page-save]
+    ::  a key writes private pages only. A save to a published page
+    ::  republishes it, and a page inside a folder shared with a group is
+    ::  that group's to read, so both are refused.
+    ?~  key  (handle-page-save eyre-id req args)
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ;<  shr=share-mode:le  bind:m  (read-share (weld /page (pax-of u.name)))
+    ?.  =(%private shr)  (send-err eyre-id 403 'a key writes private pages only')
+    ;<  gr=?  bind:m  (granted (pax-of u.name))
+    ?:  gr  (send-err eyre-id 403 'a key writes private pages only: a group is granted this path')
     (handle-page-save eyre-id req args)
+  ::  page-search: the wiki ranked the way memory is (+rank:lk: key words
+  ::  count double), each hit labelled with where it lives. q= words, k= how
+  ::  many (10). The omnibar's term index is rebuilt by hand and unranked.
+  ::  ponytail: tokenizes every page on each query; a page term cache like
+  ::  /know/terms when that gets slow.
+      [%'GET' %page-search]
+    =/  q=@t  (~(gut by args) 'q' '')
+    ?:  =('' q)  (send-err eyre-id 400 'missing q')
+    =/  k=@ud  (fall (rush (~(gut by args) 'k' '10') dem) 10)
+    ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
+    =/  pages=(list [rel=path body=@t shr=share-mode:le])
+      ?.  ?=([%ball *] sn)  ~
+      (index-walk ball.sn ~)
+    =/  by-rel=(map path [body=@t shr=share-mode:le])
+      (malt (turn pages |=([r=path b=@t s=share-mode:le] [r b s])))
+    =/  hs=(list hit:lk)
+      %+  rank:lk
+        %+  turn  pages
+        |=  [r=path b=@t *]
+        =|  e=know-entry:lk
+        (to-doc:lk r e(body b))
+      q
+    =/  best=@ud  ?~(hs 0 strength.i.hs)
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['query' s+q]
+        ['strength' (numb:enjs:format best)]
+        ['weak' b+(lth best weak-at:lk)]
+        :-  'results'
+        :-  %a
+        %+  turn  (scag k hs)
+        |=  h=hit:lk
+        =/  p  (~(got by by-rel) key.h)
+        %-  pairs:enjs:format
+        :~  ['name' s+(crip (pax-str key.h))]
+            ['scope' s+(scope-of shr.p)]
+            ['score' (numb:enjs:format score.h)]
+            ['strength' (numb:enjs:format strength.h)]
+            ['snippet' s+(snippet:lk body.p q)]
+        ==
+    ==
+  ::  agent keys (/lib/lattice-keys, docs/agent-knowledge.md): the owner's
+  ::  alone, whatever a key's scope. The secret is answered once and kept
+  ::  only as a salted hash; every change goes through the writer.
+      [%'GET' %keys]
+    ;<  ks=keys:ky  bind:m  (read-keys (rf up / %keys))
+    %+  send-json  eyre-id
+    :-  %a
+    %+  turn  (sort ~(val by ks) |=([a=key-row:ky b=key-row:ky] (gth made.a made.b)))
+    en-view:ky
+      [%'POST' %key-mint]
+    =/  jon=(unit json)  (de:json:html (req-body req))
+    ?~  jon  (send-err eyre-id 400 'expected json')
+    =/  r  (de-mint:ky u.jon)
+    ?:  ?=(%| -.r)  (send-err eyre-id 400 p.r)
+    ;<  ks=keys:ky  bind:m  (read-keys (rf up / %keys))
+    ?:  (gte ~(wyt by ks) max-keys:ky)  (send-err eyre-id 409 'keys: 50 at most')
+    ;<  eny=@uvJ  bind:m  get-entropy:io
+    ;<  now=@da  bind:m  bowl-now
+    =/  id=@t  (id-of:ky eny)
+    ?:  (~(has by ks) id)  (send-err eyre-id 409 'id taken, try again')
+    =/  salt=@t  (scot %uv (end [3 10] (rsh [3 5] eny)))
+    =/  secret=@t  (secret-of:ky (rsh [3 15] eny))
+    =/  row=key-row:ky  [id name.p.r by.p.r scope.p.r salt (hash-token:ky salt secret) now ~]
+    ;<  ~  bind:m  (poke-keys [%add row])
+    %+  send-json  eyre-id
+    (pairs:enjs:format ~[['key' (en-view:ky row)] ['token' s+(rap 3 id '.' secret ~)]])
+      [%'POST' %key-revoke]
+    =/  id=@t  (~(gut by args) 'id' '')
+    ;<  ks=keys:ky  bind:m  (read-keys (rf up / %keys))
+    ?.  (~(has by ks) id)  (send-err eyre-id 404 'no such key')
+    ;<  ~  bind:m  (poke-keys [%del id])
+    (send-ok eyre-id)
       [%'POST' %folder-new]
     ::  create an empty folder (nested ok, e.g. "a/b"). The tree shows it and
     ::  ?into= drops new files inside. Idempotent over an existing page/folder.
@@ -2847,8 +2964,47 @@
     ::  overwrite body with '' while keeping tags). Require a body, like /save.
     =/  bod=@t  (req-body req)
     ?:  =('' bod)  (send-err eyre-id 400 'missing body')
-    ;<  ~  bind:m  (poke-know [%save (spat u.ko) bod])
-    (send-ok eyre-id)
+    ::  provenance (docs/agent-knowledge.md). A key always writes as its by,
+    ::  source agent, whatever the request says. The owner's saves stay
+    ::  verbatim unless they pass author=, source= or expected_updated=, so
+    ::  the editor's own front matter is never rewritten.
+    =/  author=@t  ?^(key by.u.key (~(gut by args) 'author' ''))
+    =/  source=@t  ?^(key 'agent' (~(gut by args) 'source' ''))
+    =/  expect=@t  (~(gut by args) 'expected_updated' '')
+    ?.  |(=('' source) =('user' source) =('agent' source))
+      (send-err eyre-id 400 'source must be user or agent')
+    ?:  &(=('' author) =('' source) =('' expect))
+      ;<  ~  bind:m  (poke-know [%save (spat u.ko) bod])
+      (send-ok eyre-id)
+    =/  prose=@t  rest:(front:lk bod)
+    ?:  =('' prose)  (send-err eyre-id 400 'empty body')
+    ;<  old=(unit know-entry:lk)  bind:m  (know-one u.ko)
+    ?:  &(!=('' expect) |(?=(~ old) !=(expect (scot %da updated.u.old))))
+      %^  send-err  eyre-id  409
+      ?~  old  'conflict: no such entry'
+      (crip "conflict: changed since you read it (now {(scow %da updated.u.old)}); read it again and merge")
+    ::  a new key: the duplicate check, the term cache ruling most out
+    ;<  near=(list [o=@ud k=path])  bind:m
+      =/  n  (fiber:fiber:nexus ,(list [o=@ud k=path]))
+      ?^  old  (pure:n ~)
+      ;<  es=(map path know-entry:lk)  bind:n  read-know-map
+      ;<  tc=term-cache:lk  bind:n  (current-terms es)
+      (pure:n (near:lk ~(tap by es) tc prose))
+    ?:  &(?=(^ near) (gte o.i.near dup-at:lk) !=('1' (~(gut by args) 'force_new' '')))
+      %^  send-err  eyre-id  409
+      (crip "likely duplicate of {(spud k.i.near)} ({(a-co:co o.i.near)}% of terms shared): update that entry, or pass force_new=1 if this is a different fact")
+    ;<  now=@da  bind:m  bowl-now
+    ;<  ~  bind:m  (poke-know [%save (spat u.ko) (stamp:lk old prose author source now)])
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['ok' b+&]
+        ['created' b+?=(~ old)]
+        :-  'similar'
+        :-  %a
+        %+  turn  (scag 3 near)
+        |=  [o=@ud k=path]
+        (pairs:enjs:format ~[['key' s+(spat k)] ['shared' (numb:enjs:format o)]])
+    ==
   ::
       [%'POST' %know-delete]
     =/  k=(unit @t)  (~(get by args) 'key')
@@ -3628,6 +3784,95 @@
   ;<  tv=view:nexus  bind:m  (peek:io tr ~)
   ?.  ?=([%file *] tv)  (pure:m ~)
   (pure:m (fall (mole |.(!<(term-cache:lk (need-vase:tarball sang.tv)))) ~))
+::  +current-terms: the term cache made current for es, stored back when
+::  that changed it, so the first search after an upgrade fills it for
+::  everyone after.
+::
+++  current-terms
+  |=  es=(map path know-entry:lk)
+  =/  m  (fiber:fiber:nexus ,term-cache:lk)
+  ^-  form:m
+  =/  tr=road:tarball  (rf up /know %terms)
+  ;<  tc=term-cache:lk  bind:m  (read-terms tr)
+  =/  [chg=? cur=term-cache:lk]  (refresh:lk ~(tap by es) tc)
+  ;<  *  bind:m
+    ?.  chg  (pure:(fiber:fiber:nexus ,(unit tang)) ~)
+    (over-as-soft:io tr [[/lattice %know-terms] cur] [/lattice %know-terms])
+  (pure:m cur)
+::  +read-keys: the agent keys, ~ when absent or undecodable.
+::
+++  read-keys
+  |=  kr=road:tarball
+  =/  m  (fiber:fiber:nexus ,keys:ky)
+  ^-  form:m
+  ;<  kv=view:nexus  bind:m  (peek:io kr ~)
+  ?.  ?=([%file *] kv)  (pure:m ~)
+  (pure:m (fall (mole |.(!<(keys:ky (need-vase:tarball sang.kv)))) ~))
+::  +key-of: the agent key an Authorization header presents, or ~. Its
+::  last use is stamped through the writer, at most hourly.
+::
+++  key-of
+  |=  au=@t
+  =/  m  (fiber:fiber:nexus ,(unit key-row:ky))
+  ^-  form:m
+  =/  tok=(unit [id=@t secret=@t])  (parse-bearer:ky au)
+  ?~  tok  (pure:m ~)
+  ;<  ks=keys:ky  bind:m  (read-keys (rf up / %keys))
+  =/  k=(unit key-row:ky)  (~(get by ks) id.u.tok)
+  ?~  k  (pure:m ~)
+  ?.  (key-ok:ky u.k secret.u.tok)  (pure:m ~)
+  ;<  now=@da  bind:m  get-time:io
+  ;<  ~  bind:m
+    ?.  (touch-due:ky used.u.k now)  (pure:(fiber:fiber:nexus ,~) ~)
+    (poke-keys [%touch id.u.k now])
+  (pure:m k)
+++  poke-keys
+  |=  act=key-action:ky
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %key-action] act])
+::  +apply-key: one agent-key change, in the writer. A revoked key fails
+::  its next request.
+::
+++  apply-key
+  |=  [root=@ud act=key-action:ky]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  kr=road:tarball  (rf root / %keys)
+  ;<  ks=keys:ky  bind:m  (read-keys kr)
+  =.  ks
+    ?-  -.act
+      %add  ?:((gte ~(wyt by ks) max-keys:ky) ks (~(put by ks) id.row.act row.act))
+      %del  (~(del by ks) id.act)
+        %touch
+      =/  k=(unit key-row:ky)  (~(get by ks) id.act)
+      ?~(k ks (~(put by ks) id.act u.k(used `when.act)))
+    ==
+  (put-file kr [/lattice %keys] ks)
+::  +granted: does a sharing group's read road reach this page, on it or
+::  on a folder above it? Soft, like +move-grants: when lattice may not
+::  read the groups it cannot have granted one either.
+::
+++  granted
+  |=  name=path
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  =/  pg=path  (weld sb (weld /page name))
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m |)
+  %-  pure:m
+  %+  lien  ~(tap by dir.ball.u.vw)
+  |=  [nom=@ta gb=ball:tarball]
+  =/  fils  ?~(fil.gb ~ contents.u.fil.gb)
+  =/  hw  (~(get by fils) %'how.weir')
+  ?~  hw  |
+  =/  w=(unit weir:nexus)  (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hw))))
+  ?~  w  |
+  %+  lien  ~(tap in peek.u.w)
+  |=  r=road:tarball
+  ?.  ?=([%& %| *] r)  |
+  =(p.p.r (scag (lent p.p.r) pg))
 ::  +apply-action: the writer's action dispatch, split out of the take-poke loop
 ::  so every mutation runs through one place (and is followed by a +bump-rev).
 ::
@@ -3654,6 +3899,8 @@
     (apply-bookmark root !<(bookmark-action:lb q.sage))
   ?:  =([/lattice %history-action] p.sage)
     (apply-history root now !<(history-action:lh q.sage))
+  ?:  =([/lattice %key-action] p.sage)
+    (apply-key root !<(key-action:ky q.sage))
   (refuse "a poke with an unknown mark: {<p.sage>}")
 ::  +bump-rev: write `now` to the /rev change beacon. A distinct value each call
 ::  (bowl-now is monotonic) guarantees a keep-SSE news event fires, so every open
@@ -8820,6 +9067,24 @@
     "<p><button type=\"button\" id=\"sreidx\" class=\"btn\">Reindex my content</button> <span id=\"srst\" class=\"muted\"></span></p>"
     %-  trip
     '<script>(function(){var b=document.getElementById("sreidx");var s=document.getElementById("srst");b.onclick=function(){b.disabled=true;s.textContent="reindexing...";fetch("/apps/lattice/search-reindex",{method:"POST"}).then(function(r){return r.ok?"done - your pages and notes are searchable.":r.json().then(function(j){return "failed: "+(j.error||r.status)},function(){return "failed ("+r.status+")"})}).then(function(t){s.textContent=t;b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
+    ::  agent keys (/lib/lattice-keys). The token comes back once, from
+    ::  /key-mint, and is shown in a code element; names are set as text.
+    "<h2>Agent keys</h2>"
+    "<p class=\"muted\">A key lets an agent, such as the lattice plugin for Claude Code or Hermes, use your memory and pages without your login. Everything a key saves is signed with the name it writes as, and its scope says what it may touch. Publishing, sharing and settings stay yours whatever the scope.</p>"
+    %-  trip
+    '<style>#keyform input:not([type=checkbox]){font:inherit;color:inherit;background:transparent;border:1px solid #8886;border-radius:6px;padding:5px 8px}#keytok code{user-select:all;word-break:break-all}</style>'
+    "<form id=\"keyform\" class=\"bkrow\">"
+    "<label for=\"kname\">Name</label><input id=\"kname\" name=\"kname\" required maxlength=\"200\" placeholder=\"laptop Claude\">"
+    "<label for=\"kby\">Writes as</label><input id=\"kby\" name=\"kby\" required maxlength=\"64\" pattern=\"[A-Za-z0-9._-]+\" placeholder=\"claude-laptop\">"
+    "<label for=\"kmem\">Memory</label><select id=\"kmem\" name=\"kmem\"><option value=\"write\">read and write</option><option value=\"read\">read</option><option value=\"none\">none</option></select>"
+    "<label for=\"kpages\">Pages</label><select id=\"kpages\" name=\"kpages\"><option value=\"read\">read</option><option value=\"write\">read, write private pages</option><option value=\"none\">none</option></select>"
+    "<label for=\"kweb\"><input type=\"checkbox\" id=\"kweb\" name=\"kweb\" checked> read other ships&rsquo; pages</label>"
+    "<button class=\"btn\" type=\"submit\">Make key</button></form>"
+    "<p id=\"keytok\" hidden>Copy this key now. It is not shown again. <code></code></p>"
+    "<p id=\"keyerr\" class=\"err\"></p>"
+    "<ul id=\"keylist\" class=\"bklist\"></ul>"
+    %-  trip
+    '<script>(function(){var L=document.getElementById("keylist"),F=document.getElementById("keyform"),T=document.getElementById("keytok"),E=document.getElementById("keyerr");function pad(n){return ("0"+n).slice(-2)}function day(da){var p=da.slice(1).split(".."),d=p[0].split("."),t=(p[1]||"").split(".");return d[0]+"-"+pad(d[1])+"-"+pad(d[2])+(p[1]?" "+pad(t[0])+":"+pad(t[1])+" UTC":"")}function row(k){var li=document.createElement("li"),a=document.createElement("div"),b=document.createElement("div"),x=document.createElement("button"),s=k.scope;a.textContent=k.name+" (writes as "+k.by+")";b.className="muted";b.textContent="memory "+s.memory+", pages "+s.pages+(s.web?", reads other ships":"")+". Made "+day(k.made)+(k.used?", last used "+day(k.used):", never used");x.type="button";x.className="btn";x.textContent="Revoke";x.onclick=function(){x.disabled=true;fetch("/apps/lattice/key-revoke?id="+encodeURIComponent(k.id),{method:"POST"}).then(load,load)};li.append(a,b,x);return li}function load(){fetch("/apps/lattice/keys").then(function(r){return r.json()}).then(function(ks){L.replaceChildren.apply(L,ks.map(row));if(!ks.length){var li=document.createElement("li");li.className="muted";li.textContent="No keys yet.";L.append(li)}}).catch(function(){E.textContent="could not load keys"})}F.onsubmit=function(ev){ev.preventDefault();E.textContent="";T.hidden=true;var f=F.elements;var body={name:f.kname.value.trim(),by:f.kby.value.trim(),scope:{memory:f.kmem.value,pages:f.kpages.value,web:f.kweb.checked}};fetch("/apps/lattice/key-mint",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||r.status);return j})}).then(function(j){T.querySelector("code").textContent=j.token;T.hidden=false;F.reset();load()}).catch(function(e){E.textContent="could not make the key: "+e.message})};load()})();</script>'
     ::  backup: manual export/restore for everyone, plus (desktop only) the
     ::  scheduled backups. The whole UI is rendered by ui-app/vault.js's
     "<h2>Commons mirror</h2>"

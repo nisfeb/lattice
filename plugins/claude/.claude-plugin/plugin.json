@@ -1,0 +1,32 @@
+{
+  "name": "lattice",
+  "version": "0.1.0",
+  "description": "Lattice on your Urbit ship as Claude's memory, and your wiki and other ships' pages as its knowledge.",
+  "author": { "name": "nisfeb" },
+  "homepage": "https://github.com/nisfeb/lattice/tree/main/plugins/claude",
+  "repository": "https://github.com/nisfeb/lattice",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "userConfig": {
+    "ship_url": {
+      "type": "string",
+      "title": "Ship URL",
+      "description": "Your ship's web address, such as https://urbit.example.com",
+      "required": true
+    },
+    "key": {
+      "type": "string",
+      "title": "Agent key",
+      "description": "Make one in lattice: Settings, Agent keys",
+      "required": true,
+      "sensitive": true
+    },
+    "recall_strength": {
+      "type": "number",
+      "title": "Prompt recall strength",
+      "description": "Add memories to a prompt only when the best match is at least this strong (0 to 100). 101 turns prompt recall off.",
+      "default": 50,
+      "min": 0,
+      "max": 101
+    }
+  }
+}

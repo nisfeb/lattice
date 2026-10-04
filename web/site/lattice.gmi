@@ -10,9 +10,9 @@ A personal knowledge platform that runs on your own Urbit ship. Write pages in m
 
 lattice's ship side is a nexus inside the grubbery framework. Your pages and your knowledge live in grubbery's vault on your ship, and the client is served by the ship too.
 
-* The ship: one desk, one command. |install ~ricsul-bilwyt %grubbery pulls the desk, boots the lattice nexus and binds /apps/lattice. Updates arrive on their own through kiln.
+* The ship: one command, one approval. |install ~ricsul-bilwyt %grubbery installs grubbery, which adds lattice. Approve its permissions and it binds /apps/lattice. New versions arrive on their own.
 * The client: /apps/lattice to read, /apps/lattice/app to write. On a phone, add it to your home screen: it is a full PWA that works offline.
-* The surfaces: an optional desktop app for Linux and macOS, a FUSE mount that makes your pages plain files, and eleven MCP tools your AI assistant uses as memory. One store behind all of them.
+* The surfaces: an optional desktop app for Linux and macOS, a FUSE mount that makes your pages plain files, and plugins that make it your AI assistants' memory. One store behind all of them.
 
 ## What it does
 
@@ -31,7 +31,11 @@ lattice's ship side is a nexus inside the grubbery framework. Your pages and you
 
 ## Memory for your AI agents
 
-The knowledge store speaks MCP through eleven tools compiled into the ship: save, read, list, search, explore by tag, move, delete, restore, tag, untag, and list tags. Point your MCP client at https://your-ship/grubbery/mcp with a normal ship session cookie. Nothing runs beside the ship and nothing is registered; your assistant's memory lives on your ship.
+Plugins for Claude Code and Hermes make the knowledge store your assistants' memory. At the start of a session the agent loads your core rules and an index of what it knows. With each prompt it recalls what bears on the task. It saves facts signed with its name, and supersedes them when they change. It can search and read your wiki and pages other ships publish, and write private pages such as reports.
+
+Each agent gets its own key, made in lattice's settings. A key reaches only memory and pages, as far as its scope says. Publishing, sharing and settings stay yours, and you can revoke a key on its own. Your assistant's memory lives on your ship.
+
+=> https://github.com/nisfeb/lattice/blob/main/docs/agent-knowledge.md Details, and moving an agent off the cookie setup
 
 ## What it isn't
 
@@ -47,10 +51,10 @@ In your dojo:
 |install ~ricsul-bilwyt %grubbery
 ```
 
-Then log into your ship's web login with your +code and open /apps/lattice. The optional desktop app for Linux and macOS is on the releases page:
+On first boot grubbery adds lattice. Approve its permissions at /apps/grubbery/permits, where it says what it needs and why. Then log into your ship's web login with your +code and open /apps/lattice. New versions arrive on their own. The optional desktop app for Linux and macOS is on the releases page:
 
 => https://github.com/nisfeb/lattice/releases/latest  Releases
 => https://github.com/nisfeb/lattice  Source on GitHub
 => https://urbit.org/overview/running-urbit  New to Urbit? Boot a ship
 
-MIT licensed. Built by ~nisfeb.
+PolyForm Noncommercial licensed. Built by ~nisfeb.
