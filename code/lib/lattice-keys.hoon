@@ -12,9 +12,12 @@
 |%
 +$  level  ?(%none %read %write)
 ::  +$  scope: memory and pages each none, read or write; web is reading
-::  other ships' published pages. Publishing, sharing, bans, permissions,
-::  settings and the keys themselves are never in a scope.
-+$  scope  [memory=level pages=level web=?]
+::  other ships' published pages; sensitive is clearance for memories
+::  marked sensitive. Publishing, sharing, bans, permissions, settings and
+::  the keys themselves are never in a scope.
++$  scope  [memory=level pages=level web=? sensitive=?]
+::  taint: when the key last received sensitive text. For +taint-for after
+::  it, everything the key writes is sensitive too (+tainted).
 +$  key-row
   $:  id=@t
       name=@t
@@ -24,14 +27,46 @@
       hash=@t
       made=@da
       used=(unit @da)
+      taint=(unit @da)
   ==
 +$  keys  (map @t key-row)
+::  the row before clearance (lattice 45). +upgrade reads either.
++$  key-row-0
+  $:  id=@t
+      name=@t
+      by=@t
+      scope=[memory=level pages=level web=?]
+      salt=@t
+      hash=@t
+      made=@da
+      used=(unit @da)
+  ==
+++  upgrade
+  |=  n=*
+  ^-  keys
+  =/  new=(unit keys)  (mole |.(;;(keys n)))
+  ?^  new  u.new
+  =/  old=(unit (map @t key-row-0))  (mole |.(;;((map @t key-row-0) n)))
+  ?~  old  ~
+  %-  ~(run by u.old)
+  |=  k=key-row-0
+  ^-  key-row
+  [id.k name.k by.k [memory.scope.k pages.scope.k web.scope.k %.n] salt.k hash.k made.k used.k ~]
+::  +taint-for: how long a key that received sensitive text writes only
+::  sensitive things. A session's length, roughly.
+++  taint-for  ~h12
+++  tainted
+  |=  [k=key-row now=@da]
+  ^-  ?
+  ?~  taint.k  |
+  (lth now (add u.taint.k taint-for))
 ::  +$  key-action: the writer's, so mint, revoke and last-use stamps never
 ::  race each other
 +$  key-action
   $%  [%add row=key-row]
       [%del id=@t]
       [%touch id=@t when=@da]
+      [%taint id=@t when=@da]
   ==
 ++  max-keys  50
 ::  +hash-token: a salted sha-256 as text
@@ -157,7 +192,8 @@
     =/  s=(unit json)  (~(get by p.j) 'scope')
     ?.(?=([~ %o *] s) ~ p.u.s)
   =/  web=?  ?=([~ %b %.y] (~(get by sc) 'web'))
-  &+[p.u.name p.u.who [(de-level (~(get by sc) 'memory')) (de-level (~(get by sc) 'pages')) web]]
+  =/  sen=?  ?=([~ %b %.y] (~(get by sc) 'sensitive'))
+  &+[p.u.name p.u.who [(de-level (~(get by sc) 'memory')) (de-level (~(get by sc) 'pages')) web sen]]
 ++  by-char
   |=  c=@t
   ^-  ?
@@ -173,10 +209,12 @@
   :~  ['memory' s+memory.s]
       ['pages' s+pages.s]
       ['web' b+web.s]
+      ['sensitive' b+sensitive.s]
   ==
-::  +en-view: a key as the owner sees it: never the salt or the hash
+::  +en-view: a key as the owner sees it: never the salt or the hash.
+::  tainted_until only while the key is tainted.
 ++  en-view
-  |=  k=key-row
+  |=  [k=key-row now=@da]
   ^-  json
   %-  pairs:enjs:format
   :~  ['id' s+id.k]
@@ -185,5 +223,10 @@
       ['scope' (en-scope scope.k)]
       ['made' s+(scot %da made.k)]
       ['used' ?~(used.k ~ s+(scot %da (sub u.used.k (mod u.used.k ~h1))))]
+      :-  'tainted_until'
+      ?.  (tainted k now)  ~
+      ?~  taint.k  ~
+      =/  until=@da  (add u.taint.k taint-for)
+      s+(scot %da (sub until (mod until ~m1)))
   ==
 --

@@ -6,7 +6,7 @@
 ++  row
   |=  s=scope
   ^-  key-row
-  ['abc123' 'laptop' 'claude-laptop' s 'salt' (hash-token 'salt' 'sekrit') ~2026.1.1 ~]
+  ['abc123' 'laptop' 'claude-laptop' s 'salt' (hash-token 'salt' 'sekrit') ~2026.1.1 ~ ~]
 ++  test-parse-bearer
   ;:  weld
     (expect-eq !>(`(unit [@t @t])``['abc' 'x.y']) !>((parse-bearer 'Bearer abc.x.y')))
@@ -23,8 +23,8 @@
   ==
 ::  a key reaches only the one-segment routes its scope names
 ++  test-may
-  =/  rw  (row [%write %read |])
-  =/  ro  (row [%read %none &])
+  =/  rw  (row [%write %read | |])
+  =/  ro  (row [%read %none & |])
   ;:  weld
     (expect-eq !>(&) !>((may rw 'POST' /know-save)))
     (expect-eq !>(&) !>((may rw 'GET' /page-source)))
@@ -44,8 +44,10 @@
   ==
 ++  test-de-mint
   =/  ok  (de-mint (need (de:json:html '{"name":"laptop","by":"claude-laptop","scope":{"memory":"write","web":true}}')))
+  =/  sen  (de-mint (need (de:json:html '{"name":"l","by":"b","scope":{"memory":"read","sensitive":true}}')))
   ;:  weld
-    (expect-eq !>(`(each [@t @t scope] @t)`&+['laptop' 'claude-laptop' [%write %none &]]) !>(ok))
+    (expect-eq !>(`(each [@t @t scope] @t)`&+['laptop' 'claude-laptop' [%write %none & |]]) !>(ok))
+    (expect-eq !>(`(each [@t @t scope] @t)`&+['l' 'b' [%read %none | &]]) !>(sen))
     ::  by is one line of front matter: no newline, no colon
     (expect-eq !>(%|) !>(-:(de-mint (need (de:json:html '{"name":"a","by":"x\\nsuperseded-by: /y"}')))))
     (expect-eq !>(%|) !>(-:(de-mint (need (de:json:html '{"name":"a","by":""}')))))
@@ -56,5 +58,25 @@
     (expect-eq !>(&) !>((touch-due ~ ~2026.1.1)))
     (expect-eq !>(|) !>((touch-due `~2026.1.1 ~2026.1.1..00.59.59)))
     (expect-eq !>(&) !>((touch-due `~2026.1.1 ~2026.1.1..01.00.00)))
+  ==
+::  keys stored before clearance existed read back, uncleared and untainted
+++  test-upgrade
+  =/  old=(map @t key-row-0)
+    (my ~[['abc' ['abc' 'n' 'b' [%write %read &] 's' 'h' ~2026.1.1 `~2026.1.2]]])
+  =/  new=keys  (upgrade old)
+  =/  k=key-row  (~(got by new) 'abc')
+  ;:  weld
+    (expect-eq !>(`scope`[%write %read & |]) !>(scope.k))
+    (expect-eq !>(`(unit @da)`~) !>(taint.k))
+    (expect-eq !>(`(unit @da)``~2026.1.2) !>(used.k))
+    (expect-eq !>(new) !>((upgrade new)))
+    (expect-eq !>(`keys`~) !>((upgrade 42)))
+  ==
+++  test-tainted
+  =/  k  (row *scope)
+  ;:  weld
+    (expect-eq !>(|) !>((tainted k ~2026.1.1)))
+    (expect-eq !>(&) !>((tainted k(taint `~2026.1.1) ~2026.1.1..11.59.59)))
+    (expect-eq !>(|) !>((tainted k(taint `~2026.1.1) ~2026.1.1..12.00.00)))
   ==
 --
