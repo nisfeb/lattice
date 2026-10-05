@@ -10,7 +10,6 @@ fn main() {
             "stack_status",
             "install_grubbery",
             "connection_status",
-            "get_config",
             "go_home",
             "pick_upload",
             "open_external_url",

@@ -14,41 +14,29 @@
 use std::sync::Arc;
 
 use lattice_fs::eyre::EyreTransport;
-use lattice_fs::generic::GenericProjection;
-use lattice_fs::lattice::LatticeProjection;
-use lattice_fs::lick::LickTransport;
 use lattice_fs::projection::Projection;
 use lattice_fs::transport::Transport;
 use lattice_fs::vfs::GrubberyFs;
-use lattice_fs::{default_cookie_path as cookie_path, mount_config, resolve_root, Root};
-
-/// Pick a transport: lick when LATTICE_SOCK is set (native local IPC, no cookie),
-/// else Eyre HTTP. Both drive the same projection.
-fn make_transport() -> Result<Box<dyn Transport>, String> {
-    if let Ok(sock) = std::env::var("LATTICE_SOCK") {
-        let ship = std::env::var("LATTICE_SHIP")
-            .map_err(|_| "LATTICE_SOCK set but LATTICE_SHIP missing (e.g. ~tyr)".to_string())?;
-        Ok(Box::new(LickTransport::new(&sock, &ship)))
-    } else {
-        Ok(Box::new(EyreTransport::new(&base_url(), &cookie_path())))
-    }
-}
+use lattice_fs::{
+    default_cookie_path as cookie_path, mount_config, projection_http, projection_lick,
+    resolve_root, Root,
+};
 
 fn base_url() -> String {
     std::env::var("LATTICE_URL").unwrap_or_else(|_| "http://localhost:8080".into())
 }
 
+/// lick when LATTICE_SOCK is set (native local IPC, no cookie), else Eyre
+/// HTTP. The generic ball API is HTTP-only, so a generic root takes HTTP
+/// whatever LATTICE_SOCK says.
 fn make_projection(root: &str) -> Result<Arc<dyn Projection>, String> {
-    match resolve_root(root) {
-        Root::Lattice(sub) => {
-            Ok(Arc::new(LatticeProjection::new(make_transport()?, &sub).map_err(|e| e.msg)?))
+    match (std::env::var("LATTICE_SOCK"), resolve_root(root)) {
+        (Ok(sock), Root::Lattice(_)) => {
+            let ship = std::env::var("LATTICE_SHIP")
+                .map_err(|_| "LATTICE_SOCK set but LATTICE_SHIP missing (e.g. ~tyr)".to_string())?;
+            projection_lick(&sock, &ship, root)
         }
-        // The generic ball API is HTTP-only (not on the lick fs.sig port), so a
-        // generic root always uses the Eyre transport regardless of LATTICE_SOCK.
-        Root::Generic(path) => {
-            let t = Box::new(EyreTransport::new(&base_url(), &cookie_path()));
-            Ok(Arc::new(GenericProjection::new(t, &path).map_err(|e| e.msg)?))
-        }
+        _ => projection_http(&base_url(), &cookie_path(), root),
     }
 }
 

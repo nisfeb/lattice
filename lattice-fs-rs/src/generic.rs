@@ -267,10 +267,7 @@ impl Projection for GenericProjection {
     }
 }
 
-fn now() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
-}
+use crate::vfs::now_secs as now;
 
 /// Absolute ball dir + grub name for a rel under `root`, as the MCP tools expect.
 fn split_rel(root: &str, rel: &str) -> (String, String) {

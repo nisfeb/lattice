@@ -12,131 +12,18 @@
 //! Every op runs on a worker thread behind a deadline: a mutant that wedges
 //! the mount fails this test instead of hanging it.
 
-use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
-use lattice_fs::projection::{Dump, Node, PErr, Projection};
+use lattice_fs::projection::Projection;
 
-/// The ship, in memory. Records every mutation so the test can assert what
-/// actually reached it, not merely what the mount reported.
-#[derive(Default)]
-struct Ship {
-    pages: Mutex<HashMap<String, (String, Vec<u8>)>>, // rel -> (kind, body)
-    dirs: Mutex<Vec<String>>,
-    log: Mutex<Vec<String>>,
-    dumps: AtomicUsize,
-}
+mod common;
+use common::Ship;
 
-impl Ship {
-    fn with(pages: &[(&str, &str, &str)], dirs: &[&str]) -> Arc<Self> {
-        let s = Ship::default();
-        for (rel, kind, body) in pages {
-            s.pages
-                .lock()
-                .unwrap()
-                .insert(rel.to_string(), (kind.to_string(), body.as_bytes().to_vec()));
-        }
-        *s.dirs.lock().unwrap() = dirs.iter().map(|d| d.to_string()).collect();
-        Arc::new(s)
-    }
-    fn body(&self, rel: &str) -> Option<Vec<u8>> {
-        self.pages.lock().unwrap().get(rel).map(|(_, b)| b.clone())
-    }
-    fn has(&self, rel: &str) -> bool {
-        self.pages.lock().unwrap().contains_key(rel)
-    }
-    fn log(&self) -> Vec<String> {
-        self.log.lock().unwrap().clone()
-    }
-    fn note(&self, s: String) {
-        self.log.lock().unwrap().push(s);
-    }
-}
-
-impl Projection for Ship {
-    fn ship(&self) -> String {
-        "~test".into()
-    }
-    fn list(&self) -> Result<Vec<Node>, PErr> {
-        Ok(self.dump()?.0)
-    }
-    fn read(&self, rel: &str) -> Result<Vec<u8>, PErr> {
-        self.body(rel).ok_or_else(|| PErr::new(libc::ENOENT, "no such page"))
-    }
-    fn dump(&self) -> Result<Dump, PErr> {
-        self.dumps.fetch_add(1, Ordering::SeqCst);
-        let pages = self.pages.lock().unwrap();
-        let mut nodes: Vec<Node> = self
-            .dirs
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|d| Node {
-                rel: d.clone(),
-                is_dir: true,
-                is_page: false,
-                kind: String::new(),
-                size: 0,
-                mtime: 1_780_000_000,
-                readonly: false,
-            })
-            .collect();
-        let mut bodies = HashMap::new();
-        for (rel, (kind, body)) in pages.iter() {
-            nodes.push(Node {
-                rel: rel.clone(),
-                is_dir: false,
-                is_page: true,
-                kind: kind.clone(),
-                size: body.len() as u64,
-                mtime: 1_780_000_000,
-                readonly: false,
-            });
-            bodies.insert(rel.clone(), body.clone());
-        }
-        Ok((nodes, bodies))
-    }
-    fn errors(&self, _rel: &str) -> Result<String, PErr> {
-        Ok(String::new())
-    }
-    fn write(&self, rel: &str, kind: &str, data: &[u8], create: bool) -> Result<(), PErr> {
-        self.note(format!("write {rel} {kind} new={create} {}", data.len()));
-        if create && self.has(rel) {
-            return Err(PErr::new(libc::EEXIST, "page exists")); // page-save new=1 409s
-        }
-        self.pages
-            .lock()
-            .unwrap()
-            .insert(rel.to_string(), (kind.to_string(), data.to_vec()));
-        Ok(())
-    }
-    fn mkdir(&self, rel: &str) -> Result<(), PErr> {
-        self.note(format!("mkdir {rel}"));
-        self.dirs.lock().unwrap().push(rel.to_string());
-        Ok(())
-    }
-    fn delete(&self, rel: &str) -> Result<(), PErr> {
-        self.note(format!("delete {rel}"));
-        self.pages.lock().unwrap().remove(rel);
-        self.dirs.lock().unwrap().retain(|d| d != rel);
-        Ok(())
-    }
-    fn mv(&self, src: &str, dst: &str) -> Result<(), PErr> {
-        self.note(format!("mv {src} {dst}"));
-        let v = self.pages.lock().unwrap().remove(src);
-        if let Some(v) = v {
-            self.pages.lock().unwrap().insert(dst.to_string(), v);
-        }
-        Ok(())
-    }
-    fn watch(&self, _on_event: &(dyn Fn(lattice_fs::transport::WatchEvent) + Send + Sync)) {}
-}
 
 fn read_to_string(p: &Path) -> String {
     fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))

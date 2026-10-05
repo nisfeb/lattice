@@ -478,6 +478,15 @@ fn cache_take(cache: &mut HashMap<String, Vec<u8>>, total: &mut usize, rel: &str
 }
 
 impl State {
+    /// A mutation the ship accepted: note it in the recent-mutation ledger
+    /// (`live`: the path exists now) so a stale dump can't undo it, and mark
+    /// the tree stale and any in-flight dump swap outdated.
+    fn mutated(&mut self, path: &str, live: bool) {
+        self.recent.insert(path.to_string(), (Instant::now(), live));
+        self.vt_ts = None;
+        self.write_gen += 1;
+    }
+
     /// Cache a body, keeping read_cache_bytes exact. Callers hold the state
     /// behind a mutex guard, which cannot be split into two field borrows.
     fn cache_put(&mut self, rel: &str, bytes: Vec<u8>) {
@@ -596,7 +605,7 @@ fn to_systime(secs: i64) -> SystemTime {
     }
 }
 
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -824,7 +833,7 @@ impl Filesystem for GrubberyFs {
             let mut done = false;
             if let Some(fhv) = fh {
                 if let Some(h) = s.handles.get_mut(&fhv.0) {
-                    resize(&mut h.buf, sz);
+                    h.buf.resize(sz as usize, 0);
                     h.dirty = true;
                     done = true;
                 }
@@ -834,7 +843,7 @@ impl Filesystem for GrubberyFs {
                 let (rel, _) = self.rel_kind_of(&s, &path);
                 if let Some((&hfh, _)) = s.handles.iter().find(|(_, h)| h.rel == rel) {
                     let h = s.handles.get_mut(&hfh).unwrap();
-                    resize(&mut h.buf, sz);
+                    h.buf.resize(sz as usize, 0);
                     h.dirty = true;
                     done = true;
                 }
@@ -975,7 +984,7 @@ impl Filesystem for GrubberyFs {
         };
         let mut dirty = false;
         if let Some(sz) = pending {
-            resize(&mut buf, sz);
+            buf.resize(sz as usize, 0);
             dirty = true;
         }
         let mut s = self.st.lock().unwrap();
@@ -1165,10 +1174,8 @@ impl Filesystem for GrubberyFs {
             Ok(()) => {
                 let mut s = self.st.lock().unwrap();
                 let ino = ino_for(&mut s, &path);
-                s.recent.insert(path.clone(), (Instant::now(), true));
+                s.mutated(&path, true);
                 s.vt.insert(path, VEntry { kind: VKind::Dir, node: None });
-                s.vt_ts = None;
-                s.write_gen += 1;
                 drop(s);
                 let attr = dir_attr(ino, SystemTime::now(), self.uid, self.gid);
                 reply.entry(&TTL, &attr, Generation(0));
@@ -1201,10 +1208,8 @@ impl Filesystem for GrubberyFs {
         match self.proj.delete(&rel) {
             Ok(()) => {
                 let mut s = self.st.lock().unwrap();
-                s.recent.insert(path.clone(), (Instant::now(), false));
+                s.mutated(&path, false);
                 s.vt.remove(&path);
-                s.vt_ts = None;
-                s.write_gen += 1;
                 drop(s);
                 reply.ok();
             }
@@ -1238,10 +1243,8 @@ impl Filesystem for GrubberyFs {
         match self.proj.delete(&rel) {
             Ok(()) => {
                 let mut s = self.st.lock().unwrap();
-                s.recent.insert(path.clone(), (Instant::now(), false));
+                s.mutated(&path, false);
                 s.vt.remove(&path);
-                s.vt_ts = None;
-                s.write_gen += 1;
                 drop(s);
                 reply.ok();
             }
@@ -1375,9 +1378,7 @@ impl Filesystem for GrubberyFs {
                     s.cache_put(&dst_rel, b);
                 }
                 s.recent.insert(src_path.clone(), (Instant::now(), false));
-                s.recent.insert(dst_path.clone(), (Instant::now(), true));
-                s.vt_ts = None;
-                s.write_gen += 1;
+                s.mutated(&dst_path, true);
                 remap_ino(&mut s, &src_path, &dst_path);
                 drop(s);
                 reply.ok();
@@ -1401,15 +1402,6 @@ fn remap_ino(s: &mut State, src: &str, dst: &str) {
 }
 
 /// Truncate/extend a buffer to exactly `sz` bytes (zero-fill on grow).
-fn resize(buf: &mut Vec<u8>, sz: u64) {
-    let sz = sz as usize;
-    if buf.len() > sz {
-        buf.truncate(sz);
-    } else if buf.len() < sz {
-        buf.resize(sz, 0);
-    }
-}
-
 // The ordinary unit tests run on std primitives and real sleeps, so they are
 // compiled out of a `--cfg shuttle` build: shuttle's Mutex panics if it is
 // touched outside a shuttle execution. `cargo test` (no cfg) runs these and
@@ -1463,7 +1455,7 @@ mod tests {
 
     // ---------- property tests ----------
 
-    use super::{build_vt, join, leaf_of, resize};
+    use super::{build_vt, join, leaf_of};
     use crate::projection::Node;
     use proptest::prelude::*;
 
@@ -1546,18 +1538,6 @@ mod tests {
                 };
                 prop_assert!(vt.contains_key(&parent), "{} orphaned: no {}", k, parent);
             }
-        }
-
-        // resize is exact, prefix-preserving, and zero-fills growth (a
-        // truncate/extend must never expose stale bytes)
-        #[test]
-        fn resize_is_exact(orig in proptest::collection::vec(any::<u8>(), 0..64), sz in 0u64..256) {
-            let mut b = orig.clone();
-            resize(&mut b, sz);
-            prop_assert_eq!(b.len(), sz as usize);
-            let keep = orig.len().min(sz as usize);
-            prop_assert_eq!(&b[..keep], &orig[..keep]);
-            prop_assert!(b[keep..].iter().all(|&x| x == 0));
         }
 
         // join/leaf_of roundtrip: the leaf of a joined path is the name

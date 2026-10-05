@@ -128,52 +128,6 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// The headless test harness, inert unless LATTICE_AUTOCONNECT is set.
-///
-/// LATTICE_AUTOCONNECT="url,+code": drive the real connect flow
-/// without a display, the harness's entry point.
-fn spawn_test_harness(handle: &tauri::AppHandle) {
-    if let Ok(spec) = std::env::var("LATTICE_AUTOCONNECT") {
-        if let Some((u, c)) = spec.split_once(',') {
-            let h = handle.clone();
-            let (u, c) = (u.to_string(), c.to_string());
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(3));
-                let r = tauri::async_runtime::block_on(commands::connect(h.clone(), u, c));
-                commands::dlog(&format!("autoconnect: {r:?}"));
-                // LATTICE_AUTOMANAGER=1: after connect, drive the
-                // menu's ship-page -> manager-page navigation, the
-                // headless check for the app-protocol round trip
-                if std::env::var_os("LATTICE_AUTOMANAGER").is_some() {
-                    std::thread::sleep(std::time::Duration::from_secs(8));
-                    commands::show_manager(&h, None).ok();
-                }
-                // LATTICE_AUTOSTACK=1: report what is installed on the
-                // ship we just logged in to, the headless check for
-                // the %mcp / %grubbery / lattice probe.
-                if std::env::var_os("LATTICE_AUTOSTACK").is_some() {
-                    let s = tauri::async_runtime::block_on(stack::stack_status(h.clone()));
-                    let _ = s;
-                }
-                // LATTICE_AUTONAV=/path: follow the connect with a
-                // fresh top-level navigation, the headless harness's
-                // regression check for the 403-on-navigation class
-                if let Ok(nav) = std::env::var("LATTICE_AUTONAV") {
-                    std::thread::sleep(std::time::Duration::from_secs(8));
-                    if let Some(w) = h.get_webview_window("workspace") {
-                        if let Ok(cur) = w.url() {
-                            let t = format!("{}://{}:{}{nav}",
-                                cur.scheme(), cur.host_str().unwrap_or(""), cur.port().unwrap_or(80));
-                            commands::dlog(&format!("autonav: {t}"));
-                            w.navigate(t.parse().unwrap()).ok();
-                        }
-                    }
-                }
-            });
-        }
-    }
-}
-
 /// The backup tick. One minute is far finer than any period anyone
 /// will set, and the work in a tick with nothing due is reading a
 /// small json file, so the cost of checking often is nothing and it
@@ -346,7 +300,6 @@ fn main() {
         .setup(|app| {
             build_menu(app)?;
             let handle = app.handle().clone();
-            spawn_test_harness(&handle);
             let cfg = config::load(&handle);
             if cfg.url.is_empty() {
                 // first run: the single window opens on the connect page
@@ -378,7 +331,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::connect,
             commands::connection_status,
-            commands::get_config,
             commands::go_home,
             commands::set_theme,
             commands::pick_upload,

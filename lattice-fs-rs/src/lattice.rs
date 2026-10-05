@@ -148,7 +148,7 @@ impl Projection for LatticeProjection {
     fn write(&self, rel: &str, kind: &str, data: &[u8], create: bool) -> Result<(), PErr> {
         let ptype = match kind {
             "index" => "index",
-            "md" | "gmi" | "html" | "text" | "js" | "css" => kind,
+            "md" | "gmi" | "html" | "text" | "js" | "css" | "tex" => kind,
             _ => "hoon",
         };
         let name = self.full(rel);
@@ -267,12 +267,7 @@ fn parse_dump(v: &Value) -> Result<Dump, PErr> {
     Ok((out, bodies))
 }
 
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+use crate::vfs::now_secs as now;
 
 /// Parse an Urbit `@da` string '~2026.7.22..18.30.00..cafe' -> unix seconds
 /// (UTC). Whole-second precision. The sub-second `..hex` fraction is dropped.
@@ -603,12 +598,13 @@ mod tests {
     fn write_maps_kind_to_page_type_and_seeds_only_a_new_empty_body() {
         // the `type` decides the mark the page is stored under. A wrong one
         // stores markdown as hoon (or worse, clobbers a generated %index).
-        let (rec, p) = lp("", (0..5).map(|_| ok("{}")).collect());
+        let (rec, p) = lp("", (0..6).map(|_| ok("{}")).collect());
         p.write("n", "md", b"hi", false).unwrap();
         p.write("n", "index", b"", true).unwrap();
         p.write("n", "md", b"", true).unwrap();
         p.write("n", "md", b"hi", true).unwrap();
         p.write("n", "bespoke", b"x", false).unwrap();
+        p.write("n", "tex", b"\\x", false).unwrap();
         assert_eq!(
             rec.log(),
             vec![
@@ -621,6 +617,8 @@ mod tests {
                 // ...but only when it IS empty. Never overwrite real content.
                 r#"POST /apps/lattice/page-save?name=n&type=md&new=1 "hi""#,
                 r#"POST /apps/lattice/page-save?name=n&type=hoon "x""#,
+                // LaTeX is its own kind: sent as hoon it went to the compiler
+                r#"POST /apps/lattice/page-save?name=n&type=tex "\\x""#,
             ]
         );
     }

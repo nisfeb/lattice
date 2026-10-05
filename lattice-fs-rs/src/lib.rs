@@ -47,8 +47,8 @@ pub fn default_cookie_path() -> String {
     format!("{home}/.config/lattice-fs/cookie")
 }
 
-/// Build a projection over the Eyre (HTTP) transport only, the desktop
-/// shell's path. The CLI keeps its lick branch in main.rs.
+/// Build a projection over the Eyre (HTTP) transport, used by the desktop
+/// shell and by the CLI when it is not on lick.
 pub fn projection_http(
     url: &str,
     cookie_path: &str,

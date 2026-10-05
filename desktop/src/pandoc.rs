@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
 
 use serde::Serialize;
 
@@ -29,56 +30,24 @@ const EXTRA_DIRS: &[&str] = &[
     "/opt/local/bin",      // macports
     "/usr/bin",
 ];
-#[cfg(target_os = "windows")]
-const EXTRA_DIRS: &[&str] = &[
-    r"C:\Program Files\Pandoc",
-    r"C:\Program Files (x86)\Pandoc",
-];
-#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+#[cfg(not(target_os = "macos"))]
 const EXTRA_DIRS: &[&str] = &["/usr/local/bin", "/usr/bin", "/bin", "/snap/bin"];
 
-fn exe_name() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "pandoc.exe"
-    } else {
-        "pandoc"
-    }
+/// Find a pandoc we can run, with its version. PATH first, because a user who
+/// put it somewhere deliberate should win over our guesses; then the fixed
+/// dirs, then the per-user ones under $HOME.
+fn locate() -> Option<(PathBuf, String)> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let user_dirs = home.iter().flat_map(|h| [h.join(".local/bin"), h.join("bin")]);
+    // a missing path fails to start at once (ENOENT), so no is_file check first
+    std::iter::once(PathBuf::from("pandoc"))
+        .chain(EXTRA_DIRS.iter().map(|d| PathBuf::from(d).join("pandoc")))
+        .chain(user_dirs.map(|d| d.join("pandoc")))
+        .find_map(|p| version_of(&p).map(|v| (p, v)))
 }
 
-/// Per-user install locations that are not fixed strings.
-fn home_dirs() -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if cfg!(target_os = "windows") {
-        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            out.push(PathBuf::from(local).join("Pandoc"));
-        }
-    } else if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        out.push(home.join(".local/bin"));
-        out.push(home.join("bin"));
-    }
-    out
-}
-
-/// Find a pandoc we can run. PATH first, because a user who put it somewhere
-/// deliberate should win over our guesses.
-fn locate() -> Option<PathBuf> {
-    if runs(&PathBuf::from(exe_name())) {
-        return Some(PathBuf::from(exe_name()));
-    }
-    let mut dirs: Vec<PathBuf> = EXTRA_DIRS.iter().map(PathBuf::from).collect();
-    dirs.extend(home_dirs());
-    dirs.into_iter()
-        .map(|d| d.join(exe_name()))
-        .find(|p| p.is_file() && runs(p))
-}
-
-/// Does this path actually execute? `--version` is the cheapest proof, and its
+/// `--version` is the cheapest proof that a path actually executes, and its
 /// output is the version string we want anyway.
-fn runs(p: &PathBuf) -> bool {
-    version_of(p).is_some()
-}
-
 fn version_of(p: &PathBuf) -> Option<String> {
     let out = Command::new(p).arg("--version").output().ok()?;
     if !out.status.success() {
@@ -97,8 +66,9 @@ pub struct PandocStatus {
 
 /// Is pandoc usable right now?
 ///
-/// Probed per call, never cached: someone who installs pandoc and comes back
-/// should find the button live without restarting the app.
+/// Probed per call, never cached (unlike a conversion's FOUND): someone who
+/// installs pandoc and comes back should find the button live without
+/// restarting the app.
 ///
 /// Async, like the commands in commands.rs: the probe spawns processes, it
 /// runs on every .tex page open, and a sync command would hold the main
@@ -111,12 +81,11 @@ pub async fn pandoc_probe() -> PandocStatus {
 /// The probe's actual work, sync so the tests need no runtime.
 fn probe() -> PandocStatus {
     match locate() {
-        Some(p) => {
-            let v = version_of(&p);
-            dlog(&format!("pandoc: found at {} ({:?})", p.display(), v));
+        Some((p, v)) => {
+            dlog(&format!("pandoc: found at {} ({v})", p.display()));
             PandocStatus {
                 available: true,
-                version: v,
+                version: Some(v),
                 path: Some(p.display().to_string()),
             }
         }
@@ -144,22 +113,35 @@ pub async fn convert_tex(src: String) -> Result<String, String> {
     convert(&src)
 }
 
+/// The pandoc the last conversion ran. The live preview converts on every
+/// debounced keystroke, and without this each conversion first proved pandoc
+/// ran with a `--version` spawn of its own.
+///
+/// ponytail: cleared when starting it fails, so an uninstalled or moved pandoc
+/// costs that one conversion an error and the next one looks again.
+static FOUND: Mutex<Option<PathBuf>> = Mutex::new(None);
+
 /// The conversion's actual work, sync so the tests need no runtime.
 fn convert(src: &str) -> Result<String, String> {
     use std::io::Write;
     use std::process::Stdio;
 
-    let exe = locate().ok_or_else(|| {
-        "pandoc not found. Install it from pandoc.org and try again.".to_string()
-    })?;
+    let cached = FOUND.lock().unwrap().clone();
+    let exe = match cached {
+        Some(p) => p,
+        None => locate().map(|(p, _)| p).ok_or_else(|| {
+            "pandoc not found. Install it from pandoc.org and try again.".to_string()
+        })?,
+    };
 
-    let mut child = Command::new(&exe)
+    let spawned = Command::new(&exe)
         .args(["-f", "latex", "-t", "html5", "--mathml"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not run pandoc: {e}"))?;
+        .spawn();
+    *FOUND.lock().unwrap() = spawned.is_ok().then(|| exe.clone());
+    let mut child = spawned.map_err(|e| format!("could not run pandoc: {e}"))?;
 
     child
         .stdin

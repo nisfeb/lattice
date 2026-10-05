@@ -159,11 +159,6 @@ fn ensure_workspace(app: &AppHandle) -> Result<(tauri::WebviewWindow, bool), Str
     }
 }
 
-#[tauri::command]
-pub fn get_config(app: AppHandle) -> config::Config {
-    config::load(&app)
-}
-
 #[derive(serde::Serialize)]
 pub struct ConnStatus {
     pub url: String,
@@ -449,8 +444,7 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     // own.
     //
     // Test-only and inert unless the variable is set. Setting it requires
-    // already controlling this process's environment, the same bar as
-    // LATTICE_AUTOCONNECT, which takes a +code.
+    // already controlling this process's environment.
     let probe = std::env::var("LATTICE_PROBE_JS")
         .ok()
         .and_then(|p| std::fs::read_to_string(p).ok());
