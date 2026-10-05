@@ -393,7 +393,9 @@ impl Transport for LickTransport {
         Ok(self.our.clone())
     }
     // watch: a future enhancement. The nexus can lick-spit change frames on a
-    // second port. For now freshness rides the core's TTL poll (no-op default).
+    // second port. For now freshness rides the core's TTL poll (no-op default),
+    // which asks beacon-rev before it dumps, so a quiet ship costs one tiny
+    // request per poll rather than a page-dump holding this one connection.
 }
 
 #[cfg(test)]

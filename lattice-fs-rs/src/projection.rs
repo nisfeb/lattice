@@ -45,6 +45,11 @@ pub struct Node {
     pub size: u64,       // byte length of the editable body
     pub mtime: i64,      // unix seconds
     pub readonly: bool,  // generated %index pages
+    // The page's own revision, which moves whenever its content does. None
+    // when the server didn't say (a folder, an old route, a projection with
+    // no such counter), and None never matches anything, so a body is only
+    // ever kept across a refresh on the server's word that it is unchanged.
+    pub rev: Option<u64>,
 }
 
 pub trait Projection: Send + Sync {
@@ -59,6 +64,28 @@ pub trait Projection: Send + Sync {
     /// it from a single page-dump peek, falling back to list()+read() on an old
     /// nexus that lacks the route.
     fn dump(&self) -> Result<Dump, PErr>;
+
+    /// dump(), but incremental where the server can do it. `since` is the
+    /// token the previous answer carried. A server that understands it leaves
+    /// out the body of every page whose content has not changed since that
+    /// answer (the node is still listed, with its `rev`), and the second half
+    /// of the result is the token to pass next time. None there means the
+    /// server has no such thing (an old ship, or a projection with no bulk
+    /// route at all), every body it could inline is inlined, and the core
+    /// treats the answer exactly like a plain dump().
+    fn dump_since(&self, _since: Option<&str>) -> Result<(Dump, Option<String>), PErr> {
+        Ok((self.dump()?, None))
+    }
+
+    /// A cheap "has anything changed?" probe: an opaque token that moves
+    /// whenever any page does. The core asks it before a refresh that only a
+    /// clock asked for, and skips the dump when it matches the token seen
+    /// before the last one. None when there is no such probe or it failed,
+    /// which always means "dump", so a missing probe can only cost a refresh,
+    /// never skip a needed one.
+    fn change_token(&self) -> Option<String> {
+        None
+    }
 
     fn errors(&self, rel: &str) -> Result<String, PErr>;
     fn write(&self, rel: &str, kind: &str, data: &[u8], create: bool) -> Result<(), PErr>;

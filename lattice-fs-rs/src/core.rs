@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // std in every build that ships. Only a `--cfg shuttle` lib test swaps these
 // for shuttle's, so its scheduler can permute the three threads below. See
 // src/sync.rs.
-use crate::sync::{thread, Arc, Mutex};
+use crate::sync::{thread, Arc, Condvar, Mutex};
 
 use fuser::{
     BsdFileFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation,
@@ -32,6 +32,14 @@ const FILE_TTL: Duration = Duration::from_secs(0);
 const TREE_TTL: Duration = Duration::from_secs(5);
 const RECENT_TTL: Duration = Duration::from_secs(10); // grace window for the recent-mutation ledger // our vtree refresh floor (watch() is a no-op, so this is the only floor)
 const READ_CACHE_MAX: usize = 256 * 1024 * 1024; // body-cache ceiling. Past it, degrade to lazy read
+// How long a body() miss waits for the dump already in flight before it gives
+// up and asks for the one page itself. A wedge-breaker, not a latency budget:
+// the dump is normally back in a second or two, and the page-source it would
+// otherwise send queues behind that dump anyway (lick holds its one
+// connection for the whole dump, and the ship's event loop is serial on
+// either transport). Waiting is what turns a `grep -r` over a refreshing tree
+// into one round trip instead of one per file on the only FUSE thread.
+const DUMP_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, PartialEq)]
 enum VKind {
@@ -70,6 +78,26 @@ struct State {
     // is the floor again, exactly as when there is no stream at all.
     watch_live: bool,
     write_gen: u64,                       // bumped on every mutation. Guards stale dump swaps
+    // The page-dump token of the snapshot now installed, sent back as
+    // `?since=` so the next dump only carries the bodies that changed. Moves
+    // only in apply_swap, i.e. only when that snapshot really landed: a token
+    // for a discarded swap would vouch for bodies this cache never got.
+    since: Option<String>,
+    // The change token (beacon-rev) read just BEFORE the installed
+    // snapshot's dump. A clock-driven refresh compares against it and skips
+    // the dump when nothing has moved. Read before, not after: a change in
+    // between then costs one redundant dump, where reading after would mark
+    // a change the snapshot never saw as already seen.
+    beacon_seen: Option<String>,
+    // rel -> the rev of the cached body, for exactly the bodies that arrived
+    // in a dump answer. Anything cached any other way (a save, a lazy read, a
+    // rename) is untagged, and an untagged body is never kept across a swap,
+    // because nothing says which revision it is.
+    body_rev: HashMap<String, u64>,
+    // Cached bodies an external change may have outdated. A read treats one
+    // as a miss. It stays in the cache only so the next swap can keep it if
+    // the server says its page did not change, instead of re-downloading it.
+    stale: HashSet<String>,
     handles: HashMap<u64, Handle>,        // fh -> handle
     next_fh: u64,
     pending_trunc: HashMap<u64, u64>, // ino -> size (handle-less truncate deferred to open)
@@ -85,6 +113,10 @@ struct State {
 pub struct GrubberyFs {
     proj: Arc<dyn Projection>,
     st: Arc<Mutex<State>>,
+    // Signalled every time a background refresh ends (swapped, discarded,
+    // failed or skipped), which is when refresh_pending goes false. body()
+    // waits on it rather than racing that dump with a page-source of its own.
+    swapped: Arc<Condvar>,
     uid: u32,
     gid: u32,
 }
@@ -107,6 +139,10 @@ impl GrubberyFs {
             refresh_pending: false,
             watch_live: false,
             write_gen: 0,
+            since: None,
+            beacon_seen: None,
+            body_rev: HashMap::new(),
+            stale: HashSet::new(),
             handles: HashMap::new(),
             next_fh: 1,
             pending_trunc: HashMap::new(),
@@ -131,17 +167,7 @@ impl GrubberyFs {
                             if ev == W::Up {
                                 s.watch_live = true;
                             }
-                            // an external change must also invalidate any dump
-                            // already IN FLIGHT: its snapshot may predate the
-                            // edit, and the swap guard only checks write_gen —
-                            // without this bump the stale swap lands, resets
-                            // vt_ts, and (watch_live silencing the TTL clock)
-                            // the mount serves the pre-edit tree until the
-                            // next bump, potentially hours on a quiet ship.
-                            s.write_gen += 1;
-                            s.vt_ts = None;
-                            s.read_cache.clear();
-                            s.read_cache_bytes = 0; // else the stale total blocks re-caching
+                            invalidate(&mut s);
                         }
                     }
                 }
@@ -156,19 +182,24 @@ impl GrubberyFs {
         let west = st.clone();
         let wproj2 = proj.clone();
         thread::spawn(move || {
-            let start_gen = west.lock().unwrap().write_gen;
-            if let Ok((nodes, bodies)) = wproj2.dump() {
-                let vt = build_vt(&nodes, |k| wproj2.ext_for_kind(k));
-                let (cache, bytes) = cap_bodies(bodies, READ_CACHE_MAX);
+            let (start_gen, since) = {
+                let s = west.lock().unwrap();
+                (s.write_gen, s.since.clone())
+            };
+            // probed here too, so the first clock-driven refresh after mount
+            // has a token to compare against instead of one redundant dump
+            let beacon = wproj2.change_token();
+            if let Ok(snap) = snapshot(&*wproj2, since.as_deref(), beacon) {
                 let mut s = west.lock().unwrap();
                 if s.write_gen == start_gen {
-                    apply_swap(&mut s, vt, cache, bytes);
+                    apply_swap(&mut s, snap);
                 }
             }
         });
         GrubberyFs {
             proj,
             st,
+            swapped: Arc::new(Condvar::new()),
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
         }
@@ -180,6 +211,13 @@ impl GrubberyFs {
     /// past TREE_TTL, coalesced by refresh_pending. The background swap is
     /// discarded if a write moved write_gen while the dump was in flight. Else a
     /// stale snapshot would resurrect an edited body or a just-deleted entry.
+    ///
+    /// A refresh only the clock asked for asks the server's change token
+    /// first, and skips the dump when it still matches the one read before
+    /// the installed snapshot. That is the lick case all the time (it has no
+    /// change stream) and Eyre's whenever its stream is down: either way the
+    /// steady state is one tiny request per TREE_TTL, not a page-dump holding
+    /// lick's only connection while a save waits behind it.
     fn ensure_fresh(&self) {
         if !self.st.lock().unwrap().warm {
             return self.refresh_blocking();
@@ -197,30 +235,53 @@ impl GrubberyFs {
             };
             if stale && !s.refresh_pending {
                 s.refresh_pending = true;
-                true
+                // Some(true): only the clock asked. Some(false): a known change
+                Some(s.vt_ts.is_some())
             } else {
-                false
+                None
             }
         };
-        if !go {
+        let Some(by_clock) = go else {
             return; // serve the current vtree, zero network on the FUSE path
-        }
+        };
         let st = self.st.clone();
         let proj = self.proj.clone();
+        let swapped = self.swapped.clone();
         thread::spawn(move || {
-            let start_gen = st.lock().unwrap().write_gen;
-            let built = proj.dump().map(|(nodes, bodies)| {
-                let vt = build_vt(&nodes, |k| proj.ext_for_kind(k));
-                let (cache, bytes) = cap_bodies(bodies, READ_CACHE_MAX);
-                (vt, cache, bytes)
-            });
+            let (start_gen, since, seen) = {
+                let s = st.lock().unwrap();
+                (s.write_gen, s.since.clone(), s.beacon_seen.clone())
+            };
+            let beacon = proj.change_token();
+            let built = if by_clock && beacon.is_some() && beacon == seen {
+                None // nothing has moved since the installed snapshot
+            } else {
+                Some(snapshot(&*proj, since.as_deref(), beacon))
+            };
             let mut s = st.lock().unwrap();
             s.refresh_pending = false;
-            if let Ok((vt, cache, bytes)) = built {
-                if s.write_gen == start_gen {
-                    apply_swap(&mut s, vt, cache, bytes);
+            match built {
+                // The tree is current: restart the clock instead of
+                // re-dumping, unless something invalidated it meanwhile. A
+                // write or a watch event sets vt_ts = None, and so does the
+                // backup rename WITHOUT moving write_gen, so vt_ts itself is
+                // the test, not the generation.
+                None => {
+                    if s.vt_ts.is_some() {
+                        s.vt_ts = Some(Instant::now());
+                    }
                 }
+                Some(Ok(snap)) => {
+                    if s.write_gen == start_gen {
+                        apply_swap(&mut s, snap);
+                    }
+                }
+                Some(Err(_)) => {}
             }
+            drop(s);
+            // every way out of here has cleared refresh_pending, so every way
+            // out wakes a body() that is waiting on this refresh
+            swapped.notify_all();
         });
     }
 
@@ -237,16 +298,15 @@ impl GrubberyFs {
     /// still-cold serves an empty tree. Bounded, so a save storm can't spin.
     fn refresh_blocking(&self) {
         for _ in 0..3 {
-            let start_gen = {
+            let (start_gen, since) = {
                 let s = self.st.lock().unwrap();
                 if s.warm {
                     return;
                 }
-                s.write_gen
+                (s.write_gen, s.since.clone())
             };
-            let Ok((nodes, bodies)) = self.proj.dump() else { return };
-            let vt = build_vt(&nodes, |k| self.proj.ext_for_kind(k));
-            let (cache, bytes) = cap_bodies(bodies, READ_CACHE_MAX);
+            let beacon = self.proj.change_token();
+            let Ok(snap) = snapshot(&*self.proj, since.as_deref(), beacon) else { return };
             let mut s = self.st.lock().unwrap();
             // another cold dump landed while ours was on the wire. It passed
             // this same guard, so it is at least as new as ours: leave it.
@@ -254,7 +314,7 @@ impl GrubberyFs {
                 return;
             }
             if s.write_gen == start_gen {
-                apply_swap(&mut s, vt, cache, bytes);
+                apply_swap(&mut s, snap);
                 return;
             }
         }
@@ -264,12 +324,36 @@ impl GrubberyFs {
     /// rel is already present, so this fetch only fires for a page created since
     /// the last dump. Skip-past-cap: always serve the bytes, but stop caching once
     /// past READ_CACHE_MAX so an oversized tree degrades to lazy read, never OOMs.
+    ///
+    /// A body marked stale (an external change since it was cached) is a miss.
+    /// A miss while a background dump is in flight waits for that dump, bounded
+    /// by DUMP_WAIT, because the dump is about to install this very body (or
+    /// confirm the cached one) and asking for it separately only queues one
+    /// more round trip behind it. Only what the dump didn't bring is fetched.
     fn body(&self, rel: &str) -> Result<Vec<u8>, PErr> {
-        if let Some(b) = self.st.lock().unwrap().read_cache.get(rel) {
-            return Ok(b.clone());
+        {
+            let deadline = Instant::now() + DUMP_WAIT;
+            let mut s = self.st.lock().unwrap();
+            loop {
+                if !s.stale.contains(rel) {
+                    if let Some(b) = s.read_cache.get(rel) {
+                        return Ok(b.clone());
+                    }
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                if !s.refresh_pending || left.is_zero() {
+                    break;
+                }
+                s = self.swapped.wait_timeout(s, left).unwrap().0;
+            }
         }
         let data = self.proj.read(rel)?;
         let mut s = self.st.lock().unwrap();
+        // what just came off the wire supersedes a stale copy, unless a swap
+        // already settled that copy while we were out
+        if s.stale.contains(rel) {
+            s.cache_take(rel);
+        }
         // re-check under the lock. A concurrent body() for the same rel may have
         // fetched and inserted while we were on the wire. Inserting again would
         // double-count the bytes and slowly rot the cap accounting.
@@ -489,14 +573,39 @@ impl State {
 
     /// Cache a body, keeping read_cache_bytes exact. Callers hold the state
     /// behind a mutex guard, which cannot be split into two field borrows.
+    ///
+    /// The bytes are current (a save, a fresh read), so not stale, and of no
+    /// revision a dump vouched for, so untagged: only apply_swap tags a body.
     fn cache_put(&mut self, rel: &str, bytes: Vec<u8>) {
         cache_put(&mut self.read_cache, &mut self.read_cache_bytes, rel, bytes);
+        self.stale.remove(rel);
+        self.body_rev.remove(rel);
     }
 
     /// Take a body back out, keeping read_cache_bytes exact.
     fn cache_take(&mut self, rel: &str) -> Option<Vec<u8>> {
+        self.stale.remove(rel);
+        self.body_rev.remove(rel);
         cache_take(&mut self.read_cache, &mut self.read_cache_bytes, rel)
     }
+}
+
+/// An external change happened (the watch stream said so, or reconnected
+/// after a gap it could not see into). Invalidate the tree, and any dump
+/// already IN FLIGHT: its snapshot may predate the edit, and the swap guard
+/// only checks write_gen. Without the bump that stale swap lands, resets
+/// vt_ts, and (watch_live silencing the TTL clock) the mount serves the
+/// pre-edit tree until the next bump, potentially hours on a quiet ship.
+///
+/// Cached bodies are marked stale, not dropped. A read already treats a
+/// stale body as a miss, so nothing pre-edit is served, but the next swap
+/// can keep every one whose page the server says did not change, rather
+/// than downloading the whole tree again because one page moved.
+fn invalidate(s: &mut State) {
+    s.write_gen += 1;
+    s.vt_ts = None;
+    let State { read_cache, stale, .. } = s;
+    stale.extend(read_cache.keys().cloned());
 }
 
 // ---------- free helpers ----------
@@ -683,16 +792,73 @@ fn cap_bodies(bodies: HashMap<String, Vec<u8>>, limit: usize) -> (HashMap<String
     (out, bytes)
 }
 
-/// Install a freshly-dumped snapshot, as a MERGE, not a blind replace. The
-/// recent-mutation ledger overrides the snapshot both ways. A just-created
-/// entry the (lagging) snapshot lacks is carried forward from the old vt,
-/// with its cached body. A just-deleted one it still carries is stripped.
-fn apply_swap(
-    s: &mut State,
-    mut vt: HashMap<String, VEntry>,
-    mut cache: HashMap<String, Vec<u8>>,
-    mut bytes: usize,
-) {
+/// One refresh's network half, built OUTSIDE the lock: the new tree, the
+/// bodies the answer inlined (already capped), and the two tokens it came with.
+struct Snapshot {
+    vt: HashMap<String, VEntry>,
+    cache: HashMap<String, Vec<u8>>,
+    bytes: usize,
+    since: Option<String>,  // the dump's own token. None from an old ship
+    beacon: Option<String>, // the change token read just before the dump
+}
+
+/// Dump (incrementally when `since` is set and the server can) and build the
+/// snapshot. The one copy of this for all three swappers: the warm thread,
+/// the cold path and the background refresh.
+fn snapshot(
+    proj: &dyn Projection,
+    since: Option<&str>,
+    beacon: Option<String>,
+) -> Result<Snapshot, PErr> {
+    let ((nodes, bodies), since) = proj.dump_since(since)?;
+    let vt = build_vt(&nodes, |k| proj.ext_for_kind(k));
+    let (cache, bytes) = cap_bodies(bodies, READ_CACHE_MAX);
+    Ok(Snapshot { vt, cache, bytes, since, beacon })
+}
+
+/// Install a freshly-dumped snapshot, as a MERGE, not a blind replace.
+///
+/// Bodies first. Every body the answer inlined is tagged with its node's rev.
+/// When the answer carried a `since` token, a page it listed WITHOUT a body
+/// is one the server says has not changed since the last dump, so the body
+/// cached for it is kept, but only if that body is tagged with exactly the
+/// rev the node carries now. Anything else (a different rev, an untagged
+/// body from a save or a lazy read, nothing cached) is dropped and read on
+/// demand, the same as an oversized page the server never inlines. An answer
+/// with no token (an old ship) keeps nothing, which is exactly the old
+/// whole-replace behaviour. The old cache is consumed, not copied: a kept
+/// body moves across, so a refresh never holds the tree's bodies twice.
+///
+/// Then the recent-mutation ledger overrides the snapshot both ways. A
+/// just-created entry the (lagging) snapshot lacks is carried forward from
+/// the old vt, with its cached body. A just-deleted one it still carries is
+/// stripped.
+fn apply_swap(s: &mut State, snap: Snapshot) {
+    let Snapshot { mut vt, mut cache, mut bytes, since, beacon } = snap;
+    let mut old = std::mem::take(&mut s.read_cache);
+    let old_rev = std::mem::take(&mut s.body_rev);
+    let mut body_rev = HashMap::new();
+    for e in vt.values_mut() {
+        if e.kind != VKind::File {
+            continue;
+        }
+        let Some(n) = e.node.as_mut() else { continue };
+        let Some(r) = n.rev else { continue };
+        if cache.contains_key(&n.rel) {
+            body_rev.insert(n.rel.clone(), r);
+        } else if since.is_some() && old_rev.get(&n.rel) == Some(&r) {
+            if let Some(b) = old.remove(&n.rel) {
+                if bytes + n.rel.len() + b.len() <= READ_CACHE_MAX {
+                    // the same rev is the same bytes, but st_size is derived
+                    // from the bytes served wherever we have them (see
+                    // parse_dump), so a read can never short-read
+                    n.size = b.len() as u64;
+                    cache_put(&mut cache, &mut bytes, &n.rel, b);
+                    body_rev.insert(n.rel.clone(), r);
+                }
+            }
+        }
+    }
     s.recent.retain(|_, (t, _)| t.elapsed() < RECENT_TTL);
     for (path, (_, alive)) in &s.recent {
         if *alive {
@@ -704,15 +870,16 @@ fn apply_swap(
             // carry the cached body when the snapshot has none for this rel.
             // The old cache holds the exact bytes of the recent write.
             if let Some(rel) = vt.get(path).and_then(|e| e.node.as_ref()).map(|n| n.rel.clone()) {
-                if let Some(b) = s.read_cache.get(&rel) {
-                    if !cache.contains_key(&rel) {
-                        cache_put(&mut cache, &mut bytes, &rel, b.clone());
+                if !cache.contains_key(&rel) {
+                    if let Some(b) = old.remove(&rel) {
+                        cache_put(&mut cache, &mut bytes, &rel, b);
                     }
                 }
             }
         } else if let Some(gone) = vt.remove(path) {
             if let Some(n) = gone.node {
                 cache_take(&mut cache, &mut bytes, &n.rel);
+                body_rev.remove(&n.rel);
             }
         }
     }
@@ -720,6 +887,11 @@ fn apply_swap(
     s.vt_ts = Some(Instant::now());
     s.read_cache = cache;
     s.read_cache_bytes = bytes;
+    s.body_rev = body_rev;
+    // every body cached now is as of this snapshot (or is our own recent write)
+    s.stale.clear();
+    s.since = since;
+    s.beacon_seen = beacon;
     s.warm = true;
 }
 
@@ -1147,6 +1319,7 @@ impl Filesystem for GrubberyFs {
             size: 0,
             mtime: now_secs(),
             readonly: false,
+            rev: None,
         };
         s.vt.insert(path, VEntry { kind: VKind::File, node: Some(node) });
         drop(s);
@@ -1328,6 +1501,7 @@ impl Filesystem for GrubberyFs {
                                     size: 0,
                                     mtime: now_secs(),
                                     readonly: false,
+                                    rev: None,
                                 }),
                             });
                             // and the promoted bytes ARE that page now
@@ -1522,6 +1696,7 @@ mod tests {
                     size: 0,
                     mtime: 0,
                     readonly: false,
+                    rev: None,
                 })
                 .collect();
             let vt = build_vt(&nodes, |_| "md");
@@ -1572,6 +1747,13 @@ mod tests {
         hold: AtomicBool,    // stall dump() mid-flight
         delay_ms: AtomicU64, // make dump() slow, so "blocking" is observable
         no_inline: AtomicBool, // dump carries nodes but no bodies (oversized pages)
+        // the `since` token every answer carries. None is a ship that predates it
+        token: Mutex<Option<String>>,
+        sent: Mutex<Vec<Option<String>>>, // the `since` each dump was asked with
+        changed: Mutex<HashSet<String>>,  // rels written since the last answer
+        beacon: Mutex<Option<String>>,    // what change_token() answers
+        probes: AtomicUsize,
+        hold_probe: AtomicBool, // stall change_token() mid-flight
     }
 
     impl Fake {
@@ -1586,6 +1768,20 @@ mod tests {
         }
         fn log(&self) -> Vec<String> {
             self.log.lock().unwrap().clone()
+        }
+        fn sent(&self) -> Vec<Option<String>> {
+            self.sent.lock().unwrap().clone()
+        }
+        /// An edit from somewhere else: the ship's copy and rev move, and it
+        /// is one of the bodies the next incremental answer has to carry.
+        fn edit(&self, rel: &str, body: &str) {
+            let mut nodes = self.nodes.lock().unwrap();
+            let n = nodes.iter_mut().find(|n| n.rel == rel).unwrap();
+            n.size = body.len() as u64;
+            n.rev = n.rev.map(|r| r + 1);
+            drop(nodes);
+            self.bodies.lock().unwrap().insert(rel.into(), body.as_bytes().to_vec());
+            self.changed.lock().unwrap().insert(rel.into());
         }
     }
 
@@ -1628,6 +1824,29 @@ mod tests {
             self.dumps.fetch_add(1, Ordering::SeqCst);
             Ok((nodes, bodies))
         }
+        fn dump_since(
+            &self,
+            since: Option<&str>,
+        ) -> Result<(crate::projection::Dump, Option<String>), PErr> {
+            self.sent.lock().unwrap().push(since.map(str::to_string));
+            let token = self.token.lock().unwrap().clone();
+            let (nodes, mut bodies) = self.dump()?;
+            // a ship that speaks `since` leaves out every body that has not
+            // changed since the answer that token came from
+            let changed = std::mem::take(&mut *self.changed.lock().unwrap());
+            if since.is_some() && token.is_some() {
+                bodies.retain(|rel, _| changed.contains(rel));
+            }
+            Ok(((nodes, bodies), token))
+        }
+        fn change_token(&self) -> Option<String> {
+            self.probes.fetch_add(1, Ordering::SeqCst);
+            let t = self.beacon.lock().unwrap().clone();
+            while self.hold_probe.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            t
+        }
         fn errors(&self, _rel: &str) -> Result<String, PErr> {
             Ok(String::new())
         }
@@ -1643,11 +1862,15 @@ mod tests {
             // never deadlock against each other.
             let mut nodes = self.nodes.lock().unwrap();
             match nodes.iter_mut().find(|n| n.rel == rel) {
-                Some(n) => n.size = data.len() as u64,
+                Some(n) => {
+                    n.size = data.len() as u64;
+                    n.rev = n.rev.map(|r| r + 1);
+                }
                 None => nodes.push(page(rel, kind, data.len() as u64)),
             }
             drop(nodes);
             self.bodies.lock().unwrap().insert(rel.to_string(), data.to_vec());
+            self.changed.lock().unwrap().insert(rel.to_string());
             Ok(())
         }
         fn mkdir(&self, rel: &str) -> Result<(), PErr> {
@@ -1674,6 +1897,7 @@ mod tests {
             size,
             mtime: 100,
             readonly: false,
+            rev: Some(1),
         }
     }
 
@@ -1686,6 +1910,7 @@ mod tests {
             size: 0,
             mtime: 100,
             readonly: false,
+            rev: None,
         }
     }
 
@@ -1702,6 +1927,10 @@ mod tests {
             refresh_pending: false,
             watch_live: false,
             write_gen: 0,
+            since: None,
+            beacon_seen: None,
+            body_rev: HashMap::new(),
+            stale: HashSet::new(),
             handles: HashMap::new(),
             next_fh: 1,
             pending_trunc: HashMap::new(),
@@ -1902,7 +2131,7 @@ mod tests {
         cache.insert("keep".to_string(), b"live".to_vec());
         let bytes = "gone".len() + 4 + "keep".len() + 4;
 
-        apply_swap(&mut s, vt, cache, bytes);
+        apply_swap(&mut s, Snapshot { vt, cache, bytes, since: None, beacon: None });
 
         assert!(s.vt.contains_key("/fresh.md"), "a just-created page must survive the snapshot");
         assert_eq!(s.read_cache["fresh"], b"hi", "and keep its cached body");
@@ -2037,13 +2266,20 @@ mod tests {
         fs.ensure_fresh();
         wait_until("the refresh to start", || f.entered.load(Ordering::SeqCst));
 
-        // the beacon fires mid-flight: exactly what the watch handler does
+        // the beacon fires mid-flight: the watch handler's own code
+        invalidate(&mut fs.st.lock().unwrap());
         {
-            let mut s = fs.st.lock().unwrap();
-            s.write_gen += 1;
-            s.vt_ts = None;
-            s.read_cache.clear();
-            s.read_cache_bytes = 0;
+            // A change used to empty the cache, which made the next refresh
+            // download every body again. Now the bodies stay, marked stale:
+            // no read serves one, and the next swap keeps the ones the
+            // server says are unchanged.
+            let s = fs.st.lock().unwrap();
+            assert_eq!(s.read_cache["note"], b"old", "a change must not drop the body");
+            assert!(s.stale.contains("note"), "but it must mark it stale");
+            assert_eq!(
+                s.read_cache_bytes,
+                s.read_cache.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
+            );
         }
 
         f.hold.store(false, Ordering::SeqCst);
@@ -2052,6 +2288,229 @@ mod tests {
         let s = fs.st.lock().unwrap();
         assert!(s.vt_ts.is_none(),
             "a dump that raced an external change must not resurrect vt_ts");
+        assert!(s.stale.contains("note"), "nor clear the stale mark its snapshot predates");
+    }
+
+    /// A cache as one dump left it: three bodies tagged with the revs that
+    /// dump reported, one the mount saved itself since (untagged), and an
+    /// external change marking all of them stale. Plus the next answer's
+    /// tree, which lists every page but inlines only `fresh`.
+    fn cache_before_and_answer_after() -> (State, HashMap<String, VEntry>, HashMap<String, Vec<u8>>, usize) {
+        let mut s = bare_state();
+        for (rel, body, rev) in [("same", "kept", 3), ("moved", "old", 3), ("gone", "bye", 1)] {
+            s.cache_put(rel, body.as_bytes().to_vec());
+            s.body_rev.insert(rel.into(), rev);
+        }
+        s.cache_put("saved", b"mine".to_vec());
+        invalidate(&mut s);
+        let at = |rel: &str, rev, size| Node { rev: Some(rev), ..page(rel, "md", size) };
+        let nodes = vec![
+            at("same", 3, 999), // a reported size that disagrees with the bytes
+            at("moved", 4, 3),
+            at("saved", 2, 4),
+            at("fresh", 1, 3),
+        ];
+        let vt = build_vt(&nodes, |_| "md");
+        let mut cache = HashMap::new();
+        cache.insert("fresh".to_string(), b"new".to_vec());
+        (s, vt, cache, "fresh".len() + 3)
+    }
+
+    #[test]
+    fn a_since_swap_keeps_unchanged_bodies_and_drops_changed_ones() {
+        let (mut s, vt, cache, bytes) = cache_before_and_answer_after();
+        let snap = Snapshot { vt, cache, bytes, since: Some("T2".into()), beacon: Some("B".into()) };
+        apply_swap(&mut s, snap);
+
+        assert_eq!(s.read_cache["same"], b"kept", "same rev: keep it, don't download it again");
+        assert!(!s.read_cache.contains_key("moved"), "its rev moved: read it on demand");
+        assert!(!s.read_cache.contains_key("saved"), "untagged: nothing vouches for its rev");
+        assert!(!s.read_cache.contains_key("gone"), "no longer listed: deleted");
+        assert_eq!(s.read_cache["fresh"], b"new", "an inlined body lands as before");
+        assert_eq!(s.body_rev, HashMap::from([("same".into(), 3), ("fresh".into(), 1)]));
+        assert!(s.stale.is_empty(), "everything left is as of this snapshot");
+        assert_eq!(
+            s.vt["/same.md"].node.as_ref().unwrap().size,
+            4,
+            "st_size comes from the bytes a read will serve, never a reported size"
+        );
+        assert_eq!(
+            s.read_cache_bytes,
+            s.read_cache.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
+        );
+        assert_eq!(s.since.as_deref(), Some("T2"), "the next dump sends this back");
+        assert_eq!(s.beacon_seen.as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn an_answer_with_no_since_token_is_taken_whole_like_before() {
+        // An old ship ignores `since` and sends no token back. Its answer is
+        // the whole tree, so a page listed without a body is an oversized
+        // one, read on demand: nothing is kept, matching rev or not.
+        let (mut s, vt, cache, bytes) = cache_before_and_answer_after();
+        apply_swap(&mut s, Snapshot { vt, cache, bytes, since: None, beacon: None });
+        assert_eq!(s.read_cache.keys().collect::<Vec<_>>(), vec!["fresh"]);
+        assert_eq!(s.read_cache_bytes, "fresh".len() + 3);
+        assert!(s.since.is_none(), "so the next dump is a plain one again");
+    }
+
+    #[test]
+    fn the_next_dump_sends_back_the_last_token_and_only_changes_travel() {
+        let tok = "1234567890".repeat(6); // longer than any integer type
+        let f = Fake::new(vec![page("a", "md", 2), page("b", "md", 2)], &[("a", "aa"), ("b", "bb")]);
+        *f.token.lock().unwrap() = Some(tok.clone());
+        let fs = warm_fs(f.clone());
+        assert_eq!(f.sent(), vec![None], "the first dump of a mount is a plain one");
+
+        // b is edited elsewhere and the watch stream says so
+        f.edit("b", "BB!");
+        invalidate(&mut fs.st.lock().unwrap());
+        fs.ensure_fresh();
+        wait_until("the refresh", || !fs.st.lock().unwrap().refresh_pending);
+
+        assert_eq!(f.sent(), vec![None, Some(tok)]);
+        assert_eq!(fs.body("a").unwrap(), b"aa", "unchanged: kept from the last dump");
+        assert_eq!(fs.body("b").unwrap(), b"BB!", "changed: the answer carried it");
+        assert_eq!(f.reads.load(Ordering::SeqCst), 0, "and neither cost a page-source");
+    }
+
+    #[test]
+    fn an_old_ship_is_never_sent_a_token() {
+        // no token back from the first answer: every later dump is plain,
+        // and a stale body is replaced by the whole answer, as before
+        let f = Fake::new(vec![page("a", "md", 2)], &[("a", "aa")]);
+        let fs = warm_fs(f.clone());
+        f.edit("a", "AA!");
+        invalidate(&mut fs.st.lock().unwrap());
+        fs.ensure_fresh();
+        wait_until("the refresh", || !fs.st.lock().unwrap().refresh_pending);
+        assert_eq!(f.sent(), vec![None, None]);
+        assert_eq!(fs.body("a").unwrap(), b"AA!");
+        assert_eq!(f.reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_stale_body_is_never_served() {
+        // marked, not dropped, but a read still treats it as a miss: with no
+        // dump in flight to wait for, that is a page-source, and the fresh
+        // bytes replace the stale ones
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        let fs = warm_fs(f.clone());
+        f.edit("note", "new!");
+        invalidate(&mut fs.st.lock().unwrap());
+        assert_eq!(fs.body("note").unwrap(), b"new!");
+        assert_eq!(fs.body("note").unwrap(), b"new!");
+        assert_eq!(f.reads.load(Ordering::SeqCst), 1, "fetched once, then cached fresh");
+        let s = fs.st.lock().unwrap();
+        assert!(!s.stale.contains("note"));
+        assert_eq!(s.read_cache_bytes, "note".len() + 4);
+    }
+
+    #[test]
+    fn a_miss_waits_for_the_dump_in_flight_instead_of_reading_alone() {
+        // `grep -r` on a tree that is refreshing: every open misses. Each
+        // miss used to send its own page-source, one at a time on the only
+        // FUSE thread. Now it waits for the dump that is already coming.
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        let fs = warm_fs(f.clone());
+        f.edit("note", "new!");
+        f.entered.store(false, Ordering::SeqCst);
+        f.hold.store(true, Ordering::SeqCst);
+        invalidate(&mut fs.st.lock().unwrap());
+        fs.ensure_fresh();
+        wait_until("the refresh to start", || f.entered.load(Ordering::SeqCst));
+
+        std::thread::scope(|sc| {
+            let r = sc.spawn(|| fs.body("note"));
+            std::thread::sleep(Duration::from_millis(30));
+            f.hold.store(false, Ordering::SeqCst);
+            assert_eq!(r.join().unwrap().unwrap(), b"new!");
+        });
+        assert_eq!(f.reads.load(Ordering::SeqCst), 0, "the dump brought it: no page-source");
+    }
+
+    #[test]
+    fn a_miss_the_dump_did_not_bring_is_read_once_it_lands() {
+        // an oversized page is never inlined: the waiter wakes when the dump
+        // lands without it and reads it itself, exactly once
+        let f = Fake::new(vec![page("big", "md", 3)], &[("big", "BIG")]);
+        f.no_inline.store(true, Ordering::SeqCst);
+        let fs = warm_fs(f.clone());
+        f.entered.store(false, Ordering::SeqCst);
+        f.hold.store(true, Ordering::SeqCst);
+        fs.st.lock().unwrap().vt_ts = None;
+        fs.ensure_fresh();
+        wait_until("the refresh to start", || f.entered.load(Ordering::SeqCst));
+
+        std::thread::scope(|sc| {
+            let r = sc.spawn(|| fs.body("big"));
+            std::thread::sleep(Duration::from_millis(30));
+            assert_eq!(f.reads.load(Ordering::SeqCst), 0, "parked on the dump, not on the wire");
+            f.hold.store(false, Ordering::SeqCst);
+            assert_eq!(r.join().unwrap().unwrap(), b"BIG");
+        });
+        assert_eq!(f.reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_clock_refresh_asks_the_change_token_before_dumping() {
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        *f.beacon.lock().unwrap() = Some("7".into());
+        let fs = warm_fs(f.clone());
+        assert_eq!(fs.st.lock().unwrap().beacon_seen.as_deref(), Some("7"));
+        let dumps = || f.dumps.load(Ordering::SeqCst);
+        let aged = || fs.st.lock().unwrap().vt_ts = Some(Instant::now() - TREE_TTL * 2);
+        let refresh = || {
+            fs.ensure_fresh();
+            wait_until("the refresh", || !fs.st.lock().unwrap().refresh_pending);
+        };
+        let d0 = dumps();
+
+        // nothing moved: one probe, no dump, and the clock starts over
+        aged();
+        refresh();
+        assert_eq!(dumps(), d0, "an unchanged token must not cost a page-dump");
+        assert!(fs.st.lock().unwrap().vt_ts.unwrap().elapsed() < TREE_TTL);
+
+        // the token moved: dump, and remember the new one
+        *f.beacon.lock().unwrap() = Some("8".into());
+        aged();
+        refresh();
+        assert_eq!(dumps(), d0 + 1);
+        assert_eq!(fs.st.lock().unwrap().beacon_seen.as_deref(), Some("8"));
+
+        // a known change (a write through the mount) dumps whatever the token
+        fs.st.lock().unwrap().vt_ts = None;
+        refresh();
+        assert_eq!(dumps(), d0 + 2);
+
+        // no token (an old ship 404s beacon-rev): every clock refresh dumps,
+        // and two missing tokens are never "the same"
+        *f.beacon.lock().unwrap() = None;
+        for n in 3..5 {
+            aged();
+            refresh();
+            assert_eq!(dumps(), d0 + n);
+        }
+    }
+
+    #[test]
+    fn a_skipped_dump_never_revalidates_a_tree_invalidated_meanwhile() {
+        // The probe is on the wire, the token will match, and meanwhile the
+        // backup rename sets vt_ts = None WITHOUT moving write_gen. Restarting
+        // the clock on the probe's word would swallow that invalidation.
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        *f.beacon.lock().unwrap() = Some("7".into());
+        let fs = warm_fs(f.clone());
+        let probes = f.probes.load(Ordering::SeqCst);
+        f.hold_probe.store(true, Ordering::SeqCst);
+        fs.st.lock().unwrap().vt_ts = Some(Instant::now() - TREE_TTL * 2);
+        fs.ensure_fresh();
+        wait_until("the probe", || f.probes.load(Ordering::SeqCst) > probes);
+        fs.st.lock().unwrap().vt_ts = None;
+        f.hold_probe.store(false, Ordering::SeqCst);
+        wait_until("the skipped refresh", || !fs.st.lock().unwrap().refresh_pending);
+        assert!(fs.st.lock().unwrap().vt_ts.is_none(), "the invalidation must survive the skip");
     }
 
     #[test]

@@ -136,6 +136,7 @@ impl Projection for GenericProjection {
                 size: 0,
                 mtime: now(),
                 readonly: is_dir, // files editable in place. Dirs aren't
+                rev: None,
             })
             .collect())
     }
@@ -176,6 +177,7 @@ impl Projection for GenericProjection {
                     size: 0,
                     mtime: now(),
                     readonly: true,
+                    rev: None,
                 });
                 continue;
             }
@@ -192,6 +194,7 @@ impl Projection for GenericProjection {
                 size,
                 mtime: now(),
                 readonly: false, // editable in place via edit_file
+                rev: None,
             });
         }
         Ok((nodes, bodies))

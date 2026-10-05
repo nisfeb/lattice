@@ -2,8 +2,8 @@
 //!
 //! Production is always `std`. The ONLY other case is the shuttle concurrency
 //! harness (see the `shuttle_tests` module at the bottom of core.rs), which
-//! needs its own `Mutex`/`thread` so its scheduler can see every lock and every
-//! spawn and permute them.
+//! needs its own `Mutex`/`Condvar`/`thread` so its scheduler can see every lock,
+//! wait and spawn and permute them.
 //!
 //! Why a re-export module rather than a pair of `use` lines at each call site:
 //! the swap has to be all-or-nothing. A `Mutex` from `std` locked by a thread
@@ -19,11 +19,11 @@
 //! set through RUSTFLAGS and declared in Cargo.toml's `[lints.rust]`.
 
 #[cfg(all(test, shuttle))]
-pub use shuttle::sync::{Arc, Mutex};
+pub use shuttle::sync::{Arc, Condvar, Mutex};
 #[cfg(all(test, shuttle))]
 pub use shuttle::thread;
 
 #[cfg(not(all(test, shuttle)))]
-pub use std::sync::{Arc, Mutex};
+pub use std::sync::{Arc, Condvar, Mutex};
 #[cfg(not(all(test, shuttle)))]
 pub use std::thread;
