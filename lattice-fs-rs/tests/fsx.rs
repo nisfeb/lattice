@@ -28,13 +28,12 @@
 //! `-S <seed>` and a bounded `-N` keep it a fixed, CI-sized run rather than an
 //! open-ended fuzz.
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use lattice_fs::projection::{Dump, Node, PErr, Projection};
+use lattice_fs::projection::Projection;
 
 const OPS: usize = 20_000; // bounded for CI (a few seconds). Millions is a soak, not a test.
 const SEED: u32 = 20_260_803; // fixed, so a failure is reproducible by rerunning
@@ -49,73 +48,9 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
-/// The smallest ship that can hold one page. fsx only ever touches one file,
-/// so nothing here needs to be clever: it exists to give the FUSE layer
-/// somewhere to flush to.
-#[derive(Default)]
-struct Ship {
-    pages: Mutex<HashMap<String, (String, Vec<u8>)>>,
-}
+mod common;
+use common::Ship;
 
-impl Projection for Ship {
-    fn ship(&self) -> String {
-        "~fsx".into()
-    }
-    fn list(&self) -> Result<Vec<Node>, PErr> {
-        Ok(self.dump()?.0)
-    }
-    fn read(&self, rel: &str) -> Result<Vec<u8>, PErr> {
-        self.pages
-            .lock()
-            .unwrap()
-            .get(rel)
-            .map(|(_, b)| b.clone())
-            .ok_or_else(|| PErr::new(libc::ENOENT, "no such page"))
-    }
-    fn dump(&self) -> Result<Dump, PErr> {
-        let pages = self.pages.lock().unwrap();
-        let mut nodes = Vec::new();
-        let mut bodies = HashMap::new();
-        for (rel, (kind, body)) in pages.iter() {
-            nodes.push(Node {
-                rel: rel.clone(),
-                is_dir: false,
-                is_page: true,
-                kind: kind.clone(),
-                size: body.len() as u64,
-                mtime: 1_780_000_000,
-                readonly: false,
-            });
-            bodies.insert(rel.clone(), body.clone());
-        }
-        Ok((nodes, bodies))
-    }
-    fn errors(&self, _rel: &str) -> Result<String, PErr> {
-        Ok(String::new())
-    }
-    fn write(&self, rel: &str, kind: &str, data: &[u8], _create: bool) -> Result<(), PErr> {
-        self.pages
-            .lock()
-            .unwrap()
-            .insert(rel.to_string(), (kind.to_string(), data.to_vec()));
-        Ok(())
-    }
-    fn mkdir(&self, _rel: &str) -> Result<(), PErr> {
-        Ok(())
-    }
-    fn delete(&self, rel: &str) -> Result<(), PErr> {
-        self.pages.lock().unwrap().remove(rel);
-        Ok(())
-    }
-    fn mv(&self, src: &str, dst: &str) -> Result<(), PErr> {
-        let v = self.pages.lock().unwrap().remove(src);
-        if let Some(v) = v {
-            self.pages.lock().unwrap().insert(dst.to_string(), v);
-        }
-        Ok(())
-    }
-    fn watch(&self, _on_event: &(dyn Fn(lattice_fs::transport::WatchEvent) + Send + Sync)) {}
-}
 
 fn fsx_bin() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("FSX_BIN") {

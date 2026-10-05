@@ -267,12 +267,7 @@ fn parse_dump(v: &Value) -> Result<Dump, PErr> {
     Ok((out, bodies))
 }
 
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+use crate::vfs::now_secs as now;
 
 /// Parse an Urbit `@da` string '~2026.7.22..18.30.00..cafe' -> unix seconds
 /// (UTC). Whole-second precision. The sub-second `..hex` fraction is dropped.
