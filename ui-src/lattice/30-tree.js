@@ -75,6 +75,11 @@
   // a megabyte, page it or go back to page-tree plus a lazy body cache.
   // the beacon rev the last applied dump was fetched at (see revFresh)
   let treeAt = '';
+  // whether `nodes` carries each page's share mode: a dump with a `since`
+  // token does (a share-less node is private). A tree an older ship sent,
+  // or one restored from before it did, does not, and absent there means
+  // unknown, not private.
+  let treeShares = false;
   async function loadTree() {
     const gen = treeGen;
     const at = lastRev;
@@ -97,6 +102,7 @@
     // overwrite a stream-observed rev — the snapshot may already trail it.
     if (!lastRev && d.rev != null) noteRev(String(d.rev));
     nodes = d.nodes;
+    treeShares = typeof d.since === 'string';
     treeAt = at;
     // drop only the cached renders the dump says have moved FORWARD. Blanket-
     // clearing on every change cost every other page its cache. Comparing

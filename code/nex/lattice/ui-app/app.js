@@ -2473,6 +2473,11 @@
   // a megabyte, page it or go back to page-tree plus a lazy body cache.
   // the beacon rev the last applied dump was fetched at (see revFresh)
   let treeAt = '';
+  // whether `nodes` carries each page's share mode: a dump with a `since`
+  // token does (a share-less node is private). A tree an older ship sent,
+  // or one restored from before it did, does not, and absent there means
+  // unknown, not private.
+  let treeShares = false;
   async function loadTree() {
     const gen = treeGen;
     const at = lastRev;
@@ -2495,6 +2500,7 @@
     // overwrite a stream-observed rev — the snapshot may already trail it.
     if (!lastRev && d.rev != null) noteRev(String(d.rev));
     nodes = d.nodes;
+    treeShares = typeof d.since === 'string';
     treeAt = at;
     // drop only the cached renders the dump says have moved FORWARD. Blanket-
     // clearing on every change cost every other page its cache. Comparing
@@ -5759,10 +5765,11 @@
   // request per keystroke, and needs no index to maintain. For a personal store
   // this is milliseconds.
   //
-  // What the dump does NOT carry is the share mode, which is why /page-scopes
-  // exists. A results list that cannot say which hits are published would show
-  // private notes and clearweb pages looking identical, on a screen someone may
-  // be sharing. That badge is a safety signal, so it is worth one request.
+  // The dump carries each page's share mode too. A results list that cannot
+  // say which hits are published would show private notes and clearweb pages
+  // looking identical, on a screen someone may be sharing. That badge is a
+  // safety signal, so a tree that may not carry share modes (treeShares,
+  // 30-tree.js) still asks /page-scopes rather than call a page private.
   customElements.define('lat-search', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -5810,7 +5817,13 @@
   async function qLoadContextOnce() {
     qCtxAttempts += 1;
     const at = bothAt();
-    try {
+    if (treeShares) {
+      const m = new Map();
+      for (const n of nodes) {
+        if (n.page) m.set(n.path, n.share === 'clearweb' ? 'clearweb' : n.share === 'shared' ? 'urbit' : 'private');
+      }
+      qScopes = m;
+    } else try {
       const r = await fetch(api + '/page-scopes');
       if (r.ok) {
         const m = new Map();

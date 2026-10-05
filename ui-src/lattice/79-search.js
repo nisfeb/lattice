@@ -18,10 +18,11 @@
   // request per keystroke, and needs no index to maintain. For a personal store
   // this is milliseconds.
   //
-  // What the dump does NOT carry is the share mode, which is why /page-scopes
-  // exists. A results list that cannot say which hits are published would show
-  // private notes and clearweb pages looking identical, on a screen someone may
-  // be sharing. That badge is a safety signal, so it is worth one request.
+  // The dump carries each page's share mode too. A results list that cannot
+  // say which hits are published would show private notes and clearweb pages
+  // looking identical, on a screen someone may be sharing. That badge is a
+  // safety signal, so a tree that may not carry share modes (treeShares,
+  // 30-tree.js) still asks /page-scopes rather than call a page private.
   customElements.define('lat-search', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -69,7 +70,13 @@
   async function qLoadContextOnce() {
     qCtxAttempts += 1;
     const at = bothAt();
-    try {
+    if (treeShares) {
+      const m = new Map();
+      for (const n of nodes) {
+        if (n.page) m.set(n.path, n.share === 'clearweb' ? 'clearweb' : n.share === 'shared' ? 'urbit' : 'private');
+      }
+      qScopes = m;
+    } else try {
       const r = await fetch(api + '/page-scopes');
       if (r.ok) {
         const m = new Map();
