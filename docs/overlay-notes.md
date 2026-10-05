@@ -63,9 +63,9 @@ synced over, which aborts commits. Grubbery sidesteps that entirely.)
 
 ```bash
 scripts/sync-overlay.sh                      # overlay -> ~zod pier grubbery desk
-scripts/mcp-zod.sh commit-desk '{"desk":"grubbery"}'   # may MCP-timeout but still
-                                                       # completes. Verify via test
-scripts/mcp-zod.sh run-tests '{"desk":"grubbery","path":"/tests/lib/lattice-know"}'
+scripts/hoon-mcp.sh mcp/commit-desk '{"desk":"grubbery"}' 280   # may MCP-timeout but still
+                                                                # completes. Verify via test
+scripts/hoon-mcp.sh mcp/run-tests '{"desk":"grubbery","path":"/tests/lib/lattice-know"}'
 ```
 
 Pure logic gets thorough hoon test-arms here (matching how grubbery tests its
