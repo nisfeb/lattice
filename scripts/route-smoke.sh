@@ -44,7 +44,7 @@ git -C "$HERE/.." show "${ROUTE_REF:-HEAD}:code/nex/lattice/app.hoon" \
 # grub, and on a ship where that marker did not stick, every later call re-culls
 # already-culled seqs and 500s. The first run of this harness is what exposed
 # that, which is worth knowing before you read a diff here as a refactor bug.
-NOIDEM=" pub-reconcile pub-regrow pub-prune
+NOIDEM=" pub-reconcile pub-regrow
  search-reindex know-prune history-clear legacy-dismiss legacy-migrate "
 
 # the bare app root, which the switch reaches as an empty suffix
