@@ -151,7 +151,7 @@
     // Saves coalesce in a map, structural ops go in an ordered log, and both
     // drain together. Everything else (sharing, tagging, the legacy migration)
     // still refuses honestly rather than pretending.
-    if (degraded || offCount) {
+    const offline = async () => {
       const q = offlineOp(url);
       if (q) {
         await enqueueOp(q);
@@ -164,7 +164,8 @@
       }
       st('offline — edits are queued, but this change needs the ship', false);
       return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
-    }
+    };
+    if (degraded || offCount) return offline();
     echoUntil = Date.now() + 60000;
     const sentAt = Date.now();
     try {
@@ -174,17 +175,7 @@
       // queue what can be queued and ENGAGE degraded — the old path only
       // queued when degraded was already true, so the FIRST offline action
       // being structural threw past every caller and did nothing at all
-      if (!r || r.status === 502 || r.status === 504) {
-        const q = offlineOp(url);
-        setDegraded(true);
-        if (q) {
-          await enqueueOp(q);
-          return { ok: true, offline: true, status: 200,
-                   json: async () => ({ offline: true }) };
-        }
-        st('offline — edits are queued, but this change needs the ship', false);
-        return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
-      }
+      if (shipGone(r)) { setDegraded(true); return await offline(); }
       if (r.ok) {
         pendingEchoes++;              // one bump is ours; consume it on arrival
         // every mutate names its target the same way; a move dirties both ends

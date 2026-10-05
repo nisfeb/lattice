@@ -63,25 +63,27 @@
     rq.onsuccess = () => res(rq.result);
     rq.onerror = () => res(null);
   });
-  const offStore = async (mode) => {
+  //  one object store of the three (saves, ops, kv), in its own transaction
+  const idbStore = async (name, mode) => {
     const d = await offOpen();
-    try { return d && d.transaction('saves', mode).objectStore('saves'); } catch { return null; }
+    try { return d && d.transaction(name, mode).objectStore(name); } catch { return null; }
   };
   const idbGet = async (name) => {
-    const s = await offStore('readonly'); return s ? offReq(s.get(name)) : null;
+    const s = await idbStore('saves', 'readonly'); return s ? offReq(s.get(name)) : null;
   };
   const idbAll = async () => {
-    const s = await offStore('readonly'); return (s && await offReq(s.getAll())) || [];
+    const s = await idbStore('saves', 'readonly'); return (s && await offReq(s.getAll())) || [];
   };
-  const opStore = async (mode) => {
-    const d = await offOpen();
-    try { return d && d.transaction('ops', mode).objectStore('ops'); } catch { return null; }
+  //  how many records, without reading them: a queued save carries its
+  //  whole body, and the badge recount runs after every queue write
+  const idbCount = async (name) => {
+    const s = await idbStore(name, 'readonly'); return (s && await offReq(s.count())) || 0;
   };
   //  getAll and getAllKeys both come back in key order, which is the order
   //  they were queued in. That ordering IS the data structure here. The keys
   //  come along so a partly drained queue can delete exactly what landed.
   const idbOpAll = async () => {
-    const s = await opStore('readonly');
+    const s = await idbStore('ops', 'readonly');
     if (!s) return [];
     //  both requests are issued before either is awaited: a transaction ends
     //  once the microtask queue drains with nothing pending on it
@@ -92,11 +94,11 @@
     return vals.map((v, i) => ({ ...v, _k: keys[i] }));
   };
   const idbOpPut = async (rec) => {
-    const s = await opStore('readwrite'); if (s) await offReq(s.add(rec));
+    const s = await idbStore('ops', 'readwrite'); if (s) await offReq(s.add(rec));
     await offRecount();
   };
   const idbOpDel = async (k) => {
-    const s = await opStore('readwrite'); if (s) await offReq(s.delete(k));
+    const s = await idbStore('ops', 'readwrite'); if (s) await offReq(s.delete(k));
     await offRecount();
   };
   // ── where the queue actually lives ───────────────────────────────────
@@ -188,8 +190,12 @@
     await offRecount();
   }
 
+  //  the desktop's Rust store has no count command, so there the lists
+  //  are still read whole
   const offRecount = async () => {
-    offCount = (await offAll()).length + (await opAll()).length;
+    offCount = qrust()
+      ? (await offAll()).length + (await opAll()).length
+      : (await idbCount('saves')) + (await idbCount('ops'));
     renderOffline();
   };
   // Resolve TRUE only when the write actually completed. offReq resolves the
@@ -204,21 +210,17 @@
   });
   //  returns whether the record is now durably in the queue
   const idbPut = async (rec) => {
-    const s = await offStore('readwrite');
+    const s = await idbStore('saves', 'readwrite');
     let ok = false;
     if (s) { try { ok = await offOk(s.put(rec)); } catch { ok = false; } }
     return ok;
   };
   const idbDel = async (name) => {
-    const s = await offStore('readwrite'); if (s) await offReq(s.delete(name));
+    const s = await idbStore('saves', 'readwrite'); if (s) await offReq(s.delete(name));
   };
   offRecount();
-  const kvStore = async (mode) => {
-    const d = await offOpen();
-    try { return d && d.transaction('kv', mode).objectStore('kv'); } catch { return null; }
-  };
   const kvGet = async (k) => {
-    const st = await kvStore('readonly');
+    const st = await idbStore('kv', 'readonly');
     const r = st && await offReq(st.get(k));
     return r ? r.v : null;
   };
@@ -226,7 +228,7 @@
   // paths, and a snapshot write that loses a race with app close costs one
   // boot's paint, not data. The ship copy is the durable one.
   const kvPut = async (k, v) => {
-    const st = await kvStore('readwrite');
+    const st = await idbStore('kv', 'readwrite');
     if (st) await offReq(st.put({ k, v }));
   };
 
