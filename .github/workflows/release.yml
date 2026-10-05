@@ -22,6 +22,9 @@ on:
 permissions:
   contents: write        # needed to create the release and upload assets
 
+# Runners are pinned to ubuntu-24.04, not ubuntu-latest: the latter moves to
+# Ubuntu 26 on 2026-10-19, and the desktop jobs install GTK, WebKit and FUSE
+# packages by name. Move to 26 deliberately, after a trial run.
 jobs:
   # A tag that disagrees with the version tauri stamps into the bundles would
   # ship "lattice 0.1.0" from a tag called v0.4.0. Wrong in the filename, the
@@ -29,9 +32,9 @@ jobs:
   # Fail before spending 20 minutes of matrix build time.
   verify:
     name: version + tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: tag matches tauri.conf.json
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -71,7 +74,7 @@ jobs:
   # of narrowing it.
   create-release:
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       release_id: ${{ steps.mk.outputs.id }}
     steps:
@@ -139,7 +142,7 @@ jobs:
             label: macos-x86_64 (dmg, cross from arm64)
             target: x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -175,7 +178,7 @@ jobs:
           }
 
       - name: build and upload
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # pkg-config refuses to answer when target != host unless told it is

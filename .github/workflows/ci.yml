@@ -13,12 +13,31 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Runners are pinned to ubuntu-24.04, not ubuntu-latest: the latter moves to
+# Ubuntu 26 on 2026-10-19, and the desktop jobs install GTK, WebKit and FUSE
+# packages by name. Move to 26 deliberately, after a trial run.
 jobs:
+  # deny.toml's advisories, licenses, bans and sources, for both Rust crates.
+  # A known advisory in a lockfile fails CI instead of waiting to be noticed.
+  rust-deps:
+    name: rust deps — cargo deny
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [lattice-fs-rs, desktop]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: ${{ matrix.crate }}/Cargo.toml
+          command: check
+
   fs-client:
     name: lattice-fs — cargo test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: fuse build deps
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
       #  --release for speed, but with overflow checks: the overflow
@@ -40,9 +59,9 @@ jobs:
 
   desktop:
     name: desktop — cargo test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # tauri pulls the webkit stack in at COMPILE time, so the deps are needed
       # even though every test here is pure logic (pier detection, ship-name
       # shape, config round-trip, eyre binding classification).
@@ -77,9 +96,9 @@ jobs:
 
   nix:
     name: nix — flake build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@main
       # No magic-nix-cache: it authenticates against FlakeHub and hard-fails
       # without an account. Builds are uncached and slower. Correctness first.
@@ -96,9 +115,9 @@ jobs:
 
   static:
     name: web client + scripts — static checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: UI builds and the served artifact is current
         run: |
           node scripts/build-ui.mjs

@@ -16,16 +16,19 @@ on:
     - cron: '0 7 * * *'   # 07:00 UTC daily
   workflow_dispatch:
 
+# Runners are pinned to ubuntu-24.04, not ubuntu-latest: the latter moves to
+# Ubuntu 26 on 2026-10-19, and the desktop jobs install GTK, WebKit and FUSE
+# packages by name. Move to 26 deliberately, after a trial run.
 jobs:
   e2e:
     name: e2e — HTTP round-trip vs a live ship
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
       LATTICE_CODE: ${{ secrets.LATTICE_CODE }}
       LATTICE_PEER_SHIP: ${{ secrets.LATTICE_PEER_SHIP }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: e2e.sh
         if: ${{ env.LATTICE_URL != '' }}
         run: ./scripts/e2e.sh
@@ -35,12 +38,12 @@ jobs:
 
   nexus-tests:
     name: nexus — Hoon unit tests via dojo -test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
       LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The in-ball run_tests tool 500s on current grubbery builds, so drive
       # the dojo -test thread per test file instead. ok=%.y is the pass signal
       # (per-test detail goes to the pier's terminal, which CI can't see).
@@ -79,12 +82,12 @@ jobs:
 
   api-matrix:
     name: api — HTTP route matrix
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
       LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: api-matrix.sh
         if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
         run: |
@@ -96,12 +99,12 @@ jobs:
 
   mcp-matrix:
     name: mcp — knowledge-tool matrix
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
       LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: mcp-matrix.sh
         if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
         run: |
@@ -113,12 +116,12 @@ jobs:
 
   ui-boot:
     name: ui — boot UX + mobile defaults
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
       LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: ui-boot.mjs
         if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
         run: |
@@ -132,12 +135,12 @@ jobs:
 
   ui-perf:
     name: ui — request counts (perf contract)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
       LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: ui-perf.mjs
         if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
         run: |
@@ -151,12 +154,12 @@ jobs:
 
   ui-acl-prefs:
     name: ui — typography, ACL pane, banlist
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
       LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: ui-acl-prefs.mjs
         if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
         run: |
@@ -170,9 +173,9 @@ jobs:
 
   shuttle:
     name: lattice-fs — concurrency permutations
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: fuse build deps
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
       #  shuttle is RANDOMISED, not exhaustive, so one CI pass proves less than
@@ -188,9 +191,9 @@ jobs:
 
   fsx:
     name: lattice-fs — fsx torture
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: fuse build deps
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
       #  fsx keeps a shadow buffer and diffs it against the filesystem after
@@ -202,12 +205,12 @@ jobs:
 
   hoon-hang:
     name: hoon — parser hang probe
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
       LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: hoon-hang.sh
         if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
         run: |
@@ -219,12 +222,12 @@ jobs:
 
   fuzz-api:
     name: api — hostile-input fuzz
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
       LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: fuzz-api.mjs --quick
         if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
         run: |
@@ -236,12 +239,12 @@ jobs:
 
   ui-offline:
     name: ui — offline queue + replay
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
       LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: ui-offline.mjs
         if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
         run: |
@@ -255,12 +258,12 @@ jobs:
 
   ui-matrix:
     name: ui — headless-browser matrix
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
       LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: ui-matrix.mjs
         if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
         run: |
@@ -274,14 +277,14 @@ jobs:
 
   ui-rest:
     name: ui — remaining browser suites (drift guard)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # harnesses read the ship URL as either LATTICE_UI or LATTICE_URL; set both.
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
       LATTICE_UI: ${{ secrets.LATTICE_URL }}
       LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Every puppeteer harness that does NOT already have its own job above,
       # found by glob so a new ui-*.mjs browser suite runs the day it lands
       # instead of being silently untested. ui-manager is ship-free (ci.yml).
