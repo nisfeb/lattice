@@ -135,6 +135,11 @@
     lastRev = rev;
     try { localStorage.latBeaconRev = rev; } catch {}
   };
+  // whether a listing fetched when the beacon stood at `at` is still the
+  // ship's truth. Every write on the ship bumps /rev, so while a stream is
+  // registered an unmoved rev means nothing changed. With the stream down
+  // nothing moves lastRev at all, so nothing counts as fresh then.
+  const revFresh = (at) => streamLive && !!at && at === lastRev;
   let dropStream = null;
   // consecutive attempts that failed. A stream that registers, then lives
   // a minute or carries a live bump, and then ends is the NORMAL cycle: the

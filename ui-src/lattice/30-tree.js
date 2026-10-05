@@ -73,8 +73,11 @@
   // Such a node has no `body` and falls back to the per-page fetch.
   // ponytail: whole-store payload (~55KB today). If the tree ever grows past
   // a megabyte, page it or go back to page-tree plus a lazy body cache.
+  // the beacon rev the last applied dump was fetched at (see revFresh)
+  let treeAt = '';
   async function loadTree() {
     const gen = treeGen;
+    const at = lastRev;
     let d = null;
     // this one RESOLVES, always. Boot chains its whole reconcile off it
     // (99-boot.js) with no .catch, so a rejection here would silently cancel
@@ -94,6 +97,7 @@
     // overwrite a stream-observed rev — the snapshot may already trail it.
     if (!lastRev && d.rev != null) noteRev(String(d.rev));
     nodes = d.nodes;
+    treeAt = at;
     // drop only the cached renders the dump says have moved FORWARD. Blanket-
     // clearing on every change cost every other page its cache. Comparing
     // for mere inequality evicted good entries whenever the dump trailed

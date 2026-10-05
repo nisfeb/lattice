@@ -10,8 +10,11 @@
   tagSec.open = localStorage.knowTagsOpen === '1';
   tagSec.addEventListener('toggle', () => { localStorage.knowTagsOpen = tagSec.open ? '1' : '0'; });
 
+  // the beacon rev the last applied know-list was fetched at (see revFresh)
+  let knowAt = '';
   async function loadKnow() {
     const gen = knowGen;
+    const at = lastRev;
     let d = null;
     // resolves either way, like loadTree: the drain and the mode switch both
     // call this without a .catch, and a rejection there would take the rest of
@@ -23,6 +26,7 @@
     } catch { st('know-list failed (network)', false); return; }
     if (gen !== knowGen) return;   // a local patch superseded this response
     knowKeys = d.keys;
+    knowAt = at;
     renderKnowChips();
     renderKnowTree();
   }
@@ -261,6 +265,11 @@
     // The page tree is always in memory after boot. Memories are, after the
     // first visit; before it the honest paint is a placeholder, not the
     // pages listing and not "no memories yet".
+    //
+    // The fetch itself is skipped when the listing in memory was fetched at
+    // the beacon rev the live stream still reports (revFresh, 90-sync.js):
+    // flipping between the modes used to cost a pier round-trip each way
+    // to learn nothing.
     if (m === 'know') {
       if (knowKeys.length) { renderKnowChips(); renderKnowTree(); }
       else {
@@ -270,8 +279,8 @@
         wait.textContent = 'loading memories\u2026';
         treeList.replaceChildren(wait);
       }
-      loadKnow();
-    } else { renderTree(); loadTree(); }
+      if (!revFresh(knowAt)) loadKnow();
+    } else { renderTree(); if (!revFresh(treeAt)) loadTree(); }
     history.replaceState(null, '', '/apps/lattice/app' + (m === 'know' ? '?view=know' : ''));
     // the toggle's visible result is the tree listing. Make sure it can be
     // seen: un-hide the pane on desktop, jump to the tree tab on mobile.

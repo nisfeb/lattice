@@ -2442,8 +2442,11 @@
   // Such a node has no `body` and falls back to the per-page fetch.
   // ponytail: whole-store payload (~55KB today). If the tree ever grows past
   // a megabyte, page it or go back to page-tree plus a lazy body cache.
+  // the beacon rev the last applied dump was fetched at (see revFresh)
+  let treeAt = '';
   async function loadTree() {
     const gen = treeGen;
+    const at = lastRev;
     let d = null;
     // this one RESOLVES, always. Boot chains its whole reconcile off it
     // (99-boot.js) with no .catch, so a rejection here would silently cancel
@@ -2463,6 +2466,7 @@
     // overwrite a stream-observed rev — the snapshot may already trail it.
     if (!lastRev && d.rev != null) noteRev(String(d.rev));
     nodes = d.nodes;
+    treeAt = at;
     // drop only the cached renders the dump says have moved FORWARD. Blanket-
     // clearing on every change cost every other page its cache. Comparing
     // for mere inequality evicted good entries whenever the dump trailed
@@ -5756,6 +5760,7 @@
   let qKnow = [];              // [{key, body}]
   let qKnowFailed = false;     // /know-all never answered this panel-open
   let qLoading = null;         // in-flight load, shared
+  let qAt = '';                // beacon rev both last loaded at (see revFresh)
   // never-loaded and load-failed are different states. qCtxAttempts counts
   // how many times qLoadContextOnce has actually run since the panel opened,
   // capped at two: the open-time load and one retry. A failure short of that
@@ -5777,6 +5782,7 @@
   }
   async function qLoadContextOnce() {
     qCtxAttempts += 1;
+    const at = lastRev;
     try {
       const r = await fetch(api + '/page-scopes');
       if (r.ok) {
@@ -5790,6 +5796,8 @@
       if (r.ok) { qKnow = (await r.json()).items || []; qKnowFailed = false; }
       else qKnowFailed = true;
     } catch { qKnowFailed = true; }
+    //  stamped only when BOTH landed, so a half-failed load is retried
+    qAt = qScopes && !qKnowFailed ? at : '';
   }
 
   // non-overlapping occurrence count: split yields pieces-1 = matches. The
@@ -5947,11 +5955,14 @@
     $('qlist').className = 'aclempty';
     $('qlist').textContent = 'type at least two characters';
     $('qsum').textContent = '';
-    qScopes = null;                          // refresh exposure each open
-    qCtxAttempts = 0;                        // this open gets its own retry
     qResults = [];
     qRows = [];
     qSel = -1;
+    //  the exposure map and the memories are refetched only when the beacon
+    //  moved since they loaded (revFresh, 90-sync.js), not on every ctrl-K
+    if (revFresh(qAt)) return;
+    qScopes = null;                          // refresh exposure
+    qCtxAttempts = 0;                        // this open gets its own retry
     qLoadContext();
   };
 
@@ -6403,6 +6414,11 @@
     lastRev = rev;
     try { localStorage.latBeaconRev = rev; } catch {}
   };
+  // whether a listing fetched when the beacon stood at `at` is still the
+  // ship's truth. Every write on the ship bumps /rev, so while a stream is
+  // registered an unmoved rev means nothing changed. With the stream down
+  // nothing moves lastRev at all, so nothing counts as fresh then.
+  const revFresh = (at) => streamLive && !!at && at === lastRev;
   let dropStream = null;
   // consecutive attempts that failed. A stream that registers, then lives
   // a minute or carries a live bump, and then ends is the NORMAL cycle: the
@@ -6558,8 +6574,11 @@
   tagSec.open = localStorage.knowTagsOpen === '1';
   tagSec.addEventListener('toggle', () => { localStorage.knowTagsOpen = tagSec.open ? '1' : '0'; });
 
+  // the beacon rev the last applied know-list was fetched at (see revFresh)
+  let knowAt = '';
   async function loadKnow() {
     const gen = knowGen;
+    const at = lastRev;
     let d = null;
     // resolves either way, like loadTree: the drain and the mode switch both
     // call this without a .catch, and a rejection there would take the rest of
@@ -6571,6 +6590,7 @@
     } catch { st('know-list failed (network)', false); return; }
     if (gen !== knowGen) return;   // a local patch superseded this response
     knowKeys = d.keys;
+    knowAt = at;
     renderKnowChips();
     renderKnowTree();
   }
@@ -6809,6 +6829,11 @@
     // The page tree is always in memory after boot. Memories are, after the
     // first visit; before it the honest paint is a placeholder, not the
     // pages listing and not "no memories yet".
+    //
+    // The fetch itself is skipped when the listing in memory was fetched at
+    // the beacon rev the live stream still reports (revFresh, 90-sync.js):
+    // flipping between the modes used to cost a pier round-trip each way
+    // to learn nothing.
     if (m === 'know') {
       if (knowKeys.length) { renderKnowChips(); renderKnowTree(); }
       else {
@@ -6818,8 +6843,8 @@
         wait.textContent = 'loading memories\u2026';
         treeList.replaceChildren(wait);
       }
-      loadKnow();
-    } else { renderTree(); loadTree(); }
+      if (!revFresh(knowAt)) loadKnow();
+    } else { renderTree(); if (!revFresh(treeAt)) loadTree(); }
     history.replaceState(null, '', '/apps/lattice/app' + (m === 'know' ? '?view=know' : ''));
     // the toggle's visible result is the tree listing. Make sure it can be
     // seen: un-hide the pane on desktop, jump to the tree tab on mobile.
