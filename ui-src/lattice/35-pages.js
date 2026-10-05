@@ -216,8 +216,9 @@
   //  trip again, so scale the window to what the pier just showed us. Too
   //  short meant refetching the page we just wrote — two more pier requests
   //  to learn nothing.
-  const noteRtt = (sentAt) => {
-    echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
+  //  `url` picks the beacon: autosave writes memories as well as pages
+  const noteRtt = (sentAt, url) => {
+    echoOf(url).until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
   };
   //  we know exactly what we just wrote. Patch the local copies so reopening
   //  this page paints the saved text, not the dump's pre-save body. The
@@ -293,7 +294,7 @@
     catch {}
     finally {
       saving = false;
-      noteRtt(sentAt);
+      noteRtt(sentAt, url);
     }
     if (shipGone(r)) {
       // the ship is unreachable. Queue the edit and complete the save's
@@ -319,7 +320,7 @@
     }
     if (r && r.status === 409) { st('that page already exists', false); return; }
     if (!r || !r.ok) { st('save failed' + await errText(r), false); return; }
-    pendingEchoes++;                  // this save's own beacon bump
+    echoes.rev.n++;                   // this save's own beacon bump
     bustPages(name);
     current = name;
     curKind = kind;
@@ -373,9 +374,9 @@
     const sentAt = Date.now();
     try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
     saving = false;
-    noteRtt(sentAt);
+    noteRtt(sentAt, url);
     if (r && r.ok) {
-      pendingEchoes++;                // this save's own beacon bump
+      echoOf(url).n++;                // this save's own beacon bump
       bustPages(current);
     }
     if (shipGone(r)) {

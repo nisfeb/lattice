@@ -10,11 +10,11 @@
   tagSec.open = localStorage.knowTagsOpen === '1';
   tagSec.addEventListener('toggle', () => { localStorage.knowTagsOpen = tagSec.open ? '1' : '0'; });
 
-  // the beacon rev the last applied know-list was fetched at (see revFresh)
+  // the memory beacon the last applied know-list was fetched at (knowFresh)
   let knowAt = '';
   async function loadKnow() {
     const gen = knowGen;
-    const at = lastRev;
+    const at = lastKnow;
     let d = null;
     // resolves either way, like loadTree: the drain and the mode switch both
     // call this without a .catch, and a rejection there would take the rest of
@@ -176,12 +176,12 @@
     if (saving) { savePending = true; return; }
     saving = true;
     const sent = src.value;
-    echoUntil = Date.now() + 60000;
+    echoes.know.until = Date.now() + 60000;
     let r = null;
     try { r = await tfetch(api + '/know-save?key=' + encodeURIComponent(key),
       { method: 'POST', body: sent }); } catch {}
     saving = false;
-    echoUntil = Date.now() + 4000;
+    echoes.know.until = Date.now() + 4000;
     if (shipGone(r)) {
       //  if the queue would not take it, it is NOT saved: leave the editor
       //  dirty and the key still editable, so the text under the cursor is not
@@ -273,7 +273,7 @@
         wait.textContent = 'loading memories\u2026';
         treeList.replaceChildren(wait);
       }
-      if (!revFresh(knowAt)) loadKnow();
+      if (!knowFresh(knowAt)) loadKnow();
     } else { renderTree(); if (!revFresh(treeAt)) loadTree(); }
     // the toggle's visible result is the tree listing. Make sure it can be
     // seen: un-hide the pane on desktop, jump to the tree tab on mobile.

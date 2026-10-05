@@ -92,10 +92,21 @@
   //  coalesce or an untracked mutation can make this swallow a real remote
   //  update; the 30s poll / focus refresh is the floor that catches it,
   //  the same tradeoff the time window has always accepted.
-  let pendingEchoes = 0;
-  let echoUntil = 0;       // our own save bumps the beacon. Ignore that echo or
-                           // every save triggers a tree+source refetch of content
-                           // this client just wrote (~4s of pier time each)
+  //
+  //  Two beacons, so two of each: a page write bumps /beacon/rev and a
+  //  memory write /beacon/know. One shared count let a memory save's echo
+  //  swallow a real page bump that arrived first. `n` is the bumps still
+  //  owed to us, `until` the window while a write is in flight and after.
+  //  Without them every save triggers a tree+source refetch of content
+  //  this client just wrote (~4s of pier time each).
+  const echoes = { rev: { n: 0, until: 0 }, know: { n: 0, until: 0 } };
+  // the beacon a write route bumps: the memory routes bump /know, all the
+  // rest /rev (know-publish too, since it publishes a page)
+  const echoOf = (url) => {
+    let p = '';
+    try { p = new URL(url, location.href).pathname; } catch {}
+    return /\/know-(?!publish$)[a-z-]+$/.test(p) ? echoes.know : echoes.rev;
+  };
   const qs = new URLSearchParams(location.search);
 
   // every request to the ship costs ~2s and they serialize (single-threaded
@@ -183,7 +194,8 @@
       return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
     };
     if (degraded || offCount) return offline();
-    echoUntil = Date.now() + 60000;
+    const echo = echoOf(url);
+    echo.until = Date.now() + 60000;
     const sentAt = Date.now();
     try {
       let r = null;
@@ -194,7 +206,7 @@
       // being structural threw past every caller and did nothing at all
       if (shipGone(r)) { setDegraded(true); return await offline(); }
       if (r.ok) {
-        pendingEchoes++;              // one bump is ours; consume it on arrival
+        echo.n++;                     // one bump is ours; consume it on arrival
         // every mutate names its target the same way; a move dirties both ends
         try {
           const q = new URL(url, location.href).searchParams;
@@ -206,7 +218,7 @@
     }
     //  RTT-scaled like the save paths: our own bump arrives a queue-length
     //  late on a slow pier, and a window it misses turns into refetches
-    finally { echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt)); }
+    finally { echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt)); }
   }
 
   // where this install lives in the tree: /apps/lattice.lattice_app for the

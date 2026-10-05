@@ -140,6 +140,18 @@
   // registered an unmoved rev means nothing changed. With the stream down
   // nothing moves lastRev at all, so nothing counts as fresh then.
   const revFresh = (at) => streamLive && !!at && at === lastRev;
+  // memories have their own beacon, /beacon/know (a memory write never
+  // bumps /rev), with the same bookkeeping
+  let lastKnow = '';
+  try { lastKnow = localStorage.latBeaconKnow || ''; } catch {}
+  const noteKnow = (rev) => {
+    if (!rev) return;
+    lastKnow = rev;
+    try { localStorage.latBeaconKnow = rev; } catch {}
+  };
+  const knowFresh = (at) => streamLive && !!at && at === lastKnow;
+  // a load that spans pages and memories (ctrl-K) is fresh while neither moved
+  const bothAt = () => lastRev + '|' + lastKnow;
   let dropStream = null;
   // consecutive attempts that failed. A stream that registers, then lives
   // a minute or carries a live bump, and then ends is the NORMAL cycle: the
@@ -197,6 +209,22 @@
             // never touching lastRev. (Historical note: the pre-raw
             // EventSource listened for a literal 'upd' event, which never
             // existed — live refresh was ALWAYS the 30s poll.)
+            // /know: a memory changed. Only the memory mode shows them, so
+            // only it refreshes. Elsewhere the moved beacon is enough to
+            // mark the memory listing stale (knowFresh).
+            if (name.slice(-6) === ' /know') {
+              if (name.slice(0, 3) === 'old') {
+                echoes.know.n = 0;
+                if (lastKnow && data && data !== lastKnow && mode === 'know') bumped();
+                noteKnow(data);
+                continue;
+              }
+              noteKnow(data);
+              if (echoes.know.n > 0) { echoes.know.n--; continue; }
+              if (Date.now() < echoes.know.until) continue;
+              if (mode === 'know') bumped();
+              continue;
+            }
             if (name.slice(-5) !== ' /rev') {
               // registration ("old /comments") just reports the stamp as it
               // already stood, nothing to react to. A live bump is the
@@ -210,7 +238,7 @@
               // Echoes still pending were emitted BEFORE this point and
               // will never arrive as upd — left counted, each would
               // swallow one real remote bump later.
-              pendingEchoes = 0;
+              echoes.rev.n = 0;
               streamLive = true;
               registered = true;
               registeredAt = Date.now();
@@ -221,11 +249,11 @@
             // a live bump. Our own save bumps the beacon too: refetching
             // tree + source to learn what this client just wrote was ~4s
             // of pier time per save, so our own expected echoes are
-            // consumed by count (see pendingEchoes).
+            // consumed by count (see echoes, 20-state.js).
             bumpedLive = true;
             noteRev(data);
-            if (pendingEchoes > 0) { pendingEchoes--; continue; }
-            if (Date.now() < echoUntil) continue;
+            if (echoes.rev.n > 0) { echoes.rev.n--; continue; }
+            if (Date.now() < echoes.rev.until) continue;
             bumped();
           }
         }
