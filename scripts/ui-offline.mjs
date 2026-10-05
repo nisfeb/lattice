@@ -102,7 +102,12 @@ try {
 
   // ── 3. non-save operations refuse honestly while offline ────────────────
   step = 'mutate guard';
-  await page.evaluate(() => document.querySelector('.share button[data-m="clearweb"]').click());
+  // publishing asks first; the dialog is ui-publish-confirm's to test, and
+  // here it stood between the click and the offline refusal under test
+  await page.evaluate(() => {
+    localStorage.latPubOk = '1';
+    document.querySelector('.share button[data-m="clearweb"]').click();
+  });
   // the guard's own message is immediately followed by the caller's failure
   // line ("share failed offline"). The FINAL status is what the user reads
   await wait(() => (document.getElementById('status').textContent || '').includes('share failed offline'));

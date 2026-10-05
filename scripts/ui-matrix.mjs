@@ -444,6 +444,10 @@ try {
 
   step = 'share tree';
   // ── 5. share tree clearweb: public read + indicator. Then private ────────
+  // publishing asks first (askPublish, since 2026-09-27); this suite is not
+  // testing that dialog (ui-publish-confirm is), so take its "don't ask
+  // again". Without it the click opened the dialog and nothing else.
+  await page.evaluate(() => { localStorage.latPubOk = '1'; });
   await page.evaluate(() => [...document.querySelectorAll('.share button')]
     .find((b) => b.dataset.m === 'clearweb').click());
   await wait(() => document.getElementById('cwurl').textContent.includes('public'));
