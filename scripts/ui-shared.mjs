@@ -5,11 +5,15 @@
 // runs as-is in a vm with a stub DOM, so this needs no browser and no ship.
 //
 // Usage:  node scripts/ui-shared.mjs
-import { readFileSync } from 'fs';
 import vm from 'vm';
-import { makeCheck } from './lib/check.mjs';
+import { makeCheck, read, cut } from './lib/check.mjs';
 
-const src = readFileSync(new URL('../ui-src/lattice/69-shared.js', import.meta.url), 'utf8');
+// the folder row and the fold store are shared with the other two trees,
+// so they are lifted from where they live and run ahead of 69-shared.js
+const L = 'ui-src/lattice/';
+const src = cut(L + '20-state.js', /const collStore = [\s\S]*?\n {2}const paneColl = .*/, 'collStore') + '\n'
+  + cut(L + '30-tree.js', /function folderRow\([\s\S]*?\n {2}\}/, 'folderRow') + '\n'
+  + read(L + '69-shared.js');
 const check = makeCheck();
 
 function El(tag) { this.tag = tag; this.kids = []; this.style = {}; this.className = ''; this.text = ''; }
@@ -23,17 +27,16 @@ El.prototype.appendChild = function (k) { this.kids.push(k); };
 const D = '/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app';
 function boot(items, coll = []) {
   const treeList = new El('div'), opened = [];
-  let stored = coll;
+  const localStorage = { appColl: JSON.stringify(coll) };
   const ctx = {
-    treeList, sharedWithMe: items, mode: 'pages', api: '/apps/lattice',
-    collapsed: () => stored.slice(), setCollapsed: (c) => { stored = c; },
-    renderTree: () => { treeList.kids = []; ctx.renderShared(stored); },
+    treeList, sharedWithMe: items, mode: 'pages', api: '/apps/lattice', localStorage,
+    renderTree: () => { treeList.kids = []; ctx.renderShared(JSON.parse(localStorage.appColl)); },
     guardDirty: async () => true, history: { replaceState() {} },
     openGrub: (p, s) => opened.push([p, s]),
     document: { createElement: (t) => new El(t), createTextNode: (t) => ({ textContent: t }) },
   };
   vm.runInNewContext(src, ctx);
-  ctx.renderShared(stored);
+  ctx.renderShared(coll);
   const rows = () => treeList.kids.map((r) => (r.className.includes('pg') ? 'page ' : 'fold ') + r.textContent);
   return { ctx, treeList, rows, opened };
 }

@@ -1362,10 +1362,23 @@
   })().catch((e) => { basePr = null; throw e; }));
   const forgetBase = () => { basePr = null; try { delete localStorage.latBase; } catch {} };
 
-  const collapsed = () => {
-    try { return JSON.parse(localStorage.appColl || '[]'); } catch { return []; }
+  // a tree's folded folders, remembered under one localStorage key: get()
+  // reads the list, flip(key) folds or unfolds one folder in it. The files
+  // tree (with its shared-with-me folder) keeps appColl; memories keep
+  // knowColl (95-know.js).
+  const collStore = (k) => {
+    const get = () => {
+      try { return JSON.parse(localStorage[k] || '[]'); } catch { return []; }
+    };
+    const flip = (key) => {
+      const c = get();
+      const i = c.indexOf(key);
+      if (i >= 0) c.splice(i, 1); else c.push(key);
+      localStorage[k] = JSON.stringify(c);
+    };
+    return { get, flip };
   };
-  const setCollapsed = (c) => { localStorage.appColl = JSON.stringify(c); };
+  const paneColl = collStore('appColl');
 
 // ── src/22-listedit.js ────────────────────────────────────────────────────
   // ── smart list continuation ──────────────────────────────────────────────
@@ -2521,19 +2534,40 @@
     nodes = nodes.filter((n) => n.path !== path && !n.path.startsWith(path + '/'));
   }
 
+  // one folder row, the same in all three trees (files, shared with me,
+  // memories): the fold arrow, then the folder icon and its label, indented
+  // by depth. `fold` folds or unfolds it and repaints. A click anywhere on
+  // the row folds, unless the row has a `pick` of its own (the files tree
+  // selects the folder): then the row picks and only the arrow folds.
+  function folderRow(label, depth, folded, fold, pick) {
+    const row = document.createElement('div');
+    row.className = 'fld';
+    row.style.marginLeft = (depth * 14) + 'px';
+    const cx = document.createElement('span');
+    cx.className = 'cx';
+    cx.textContent = folded ? '▸' : '▾';
+    const lb = document.createElement('span');
+    lb.textContent = '\u{1F4C1} ' + label;
+    row.append(cx, lb);
+    if (pick) {
+      cx.onclick = (e) => { e.stopPropagation(); fold(); };
+      row.onclick = pick;
+    } else row.onclick = fold;
+    return row;
+  }
+
   function renderTree() {
-    const coll = collapsed();
+    const coll = paneColl.get();
     const byPath = [...nodes].sort((a, b) => a.path.localeCompare(b.path));
     treeList.textContent = '';
     rowByPath = new Map();
     for (const n of byPath) {
       const depth = n.path.split('/').length - 1;
-      const parent = n.path.includes('/') ? n.path.slice(0, n.path.lastIndexOf('/')) : '';
       const hidden = coll.some((c) => n.path === c ? false : n.path.startsWith(c + '/'));
-      const row = document.createElement(n.page ? 'a' : 'div');
-      row.style.marginLeft = (depth * 14) + 'px';
-      if (hidden) row.style.display = 'none';
+      let row;
       if (n.page) {
+        row = document.createElement('a');
+        row.style.marginLeft = (depth * 14) + 'px';
         row.className = 'pg' + (n.path === current ? ' cur' : '')
           + (n.pending ? ' pend' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
@@ -2550,22 +2584,10 @@
         }
         row.onclick = (e) => { e.preventDefault(); openPage(n.path); };
       } else {
-        row.className = 'fld' + (n.path === curFolder ? ' cur' : '');
-        const cx = document.createElement('span');
-        cx.className = 'cx';
-        cx.textContent = coll.includes(n.path) ? '▸' : '▾';
-        cx.onclick = (e) => {
-          e.stopPropagation();
-          const c = collapsed();
-          const i = c.indexOf(n.path);
-          if (i >= 0) c.splice(i, 1); else c.push(n.path);
-          setCollapsed(c);
-          renderTree();
-        };
-        const label = document.createElement('span');
-        label.textContent = '\u{1F4C1} ' + (n.dname || n.path.split('/').pop());
-        if (n.dname) label.title = n.path;
-        row.append(cx, label);
+        row = folderRow(n.dname || n.path.split('/').pop(), depth, coll.includes(n.path),
+          () => { paneColl.flip(n.path); renderTree(); }, () => selectFolder(n.path));
+        if (n.path === curFolder) row.classList.add('cur');
+        if (n.dname) row.lastChild.title = n.path;     // the label's tip
         if (treeShare(n.path) === 'clearweb') {
           const cw = document.createElement('span');
           cw.className = 'cw';
@@ -2580,8 +2602,8 @@
         add.href = '#';
         add.onclick = (e) => { e.preventDefault(); e.stopPropagation(); newFile(n.path); };
         row.append(add);
-        row.onclick = () => selectFolder(n.path);
       }
+      if (hidden) row.style.display = 'none';
       rowByPath.set(n.path, row);
       treeList.appendChild(row);
     }
@@ -4372,23 +4394,8 @@
   // appended by renderTree, after the pages
   function renderShared(coll) {
     const fold = (key, label, depth) => {
-      const row = document.createElement('div');
-      row.className = 'fld';
-      row.style.marginLeft = (depth * 14) + 'px';
-      const cx = document.createElement('span');
-      cx.className = 'cx';
-      cx.textContent = coll.includes(key) ? '▸' : '▾';
-      const lb = document.createElement('span');
-      lb.textContent = '\u{1F4C1} ' + label;
-      row.append(cx, lb);
-      row.onclick = () => {
-        const c = collapsed();
-        const i = c.indexOf(key);
-        if (i >= 0) c.splice(i, 1); else c.push(key);
-        setCollapsed(c);
-        renderTree();
-      };
-      treeList.appendChild(row);
+      treeList.appendChild(folderRow(label, depth, coll.includes(key),
+        () => { paneColl.flip(key); renderTree(); }));
       return !coll.includes(key);
     };
     if (!fold(SWM, 'shared with me', 0)) return;
@@ -6571,10 +6578,7 @@
     tagSum.textContent = 'tags \u00b7 ' + (knowTag ? '#' + knowTag : tags.length);
   }
 
-  const kColl = () => {
-    try { return JSON.parse(localStorage.knowColl || '[]'); } catch { return []; }
-  };
-  const setKColl = (c) => { localStorage.knowColl = JSON.stringify(c); };
+  const knowColl = collStore('knowColl');
 
   function renderKnowTree() {
     const shown = knowTag ? knowKeys.filter((k) => k.tags.includes(knowTag)) : knowKeys;
@@ -6591,7 +6595,7 @@
       treeList.appendChild(empty);
       return;
     }
-    const coll = kColl();
+    const coll = knowColl.get();
     const folded = (path) => coll.some((c) => path !== c && path.startsWith(c + '/'));
     const seen = new Set();
     for (const key of keys) {
@@ -6600,23 +6604,9 @@
         const dir = parts.slice(0, d + 1).join('/');
         if (seen.has(dir)) continue;
         seen.add(dir);
-        const row = document.createElement('div');
-        row.className = 'fld';
-        row.style.marginLeft = (d * 14) + 'px';
+        const row = folderRow(parts[d], d, coll.includes(dir),
+          () => { knowColl.flip(dir); renderKnowTree(); });
         if (folded(dir)) row.style.display = 'none';
-        const cx = document.createElement('span');
-        cx.className = 'cx';
-        cx.textContent = coll.includes(dir) ? '▸' : '▾';
-        const label = document.createElement('span');
-        label.textContent = '\u{1F4C1} ' + parts[d];
-        row.append(cx, label);
-        row.onclick = () => {
-          const c = kColl();
-          const i = c.indexOf(dir);
-          if (i >= 0) c.splice(i, 1); else c.push(dir);
-          setKColl(c);
-          renderKnowTree();
-        };
         treeList.appendChild(row);
       }
       const row = document.createElement('a');

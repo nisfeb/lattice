@@ -44,10 +44,7 @@
     tagSum.textContent = 'tags \u00b7 ' + (knowTag ? '#' + knowTag : tags.length);
   }
 
-  const kColl = () => {
-    try { return JSON.parse(localStorage.knowColl || '[]'); } catch { return []; }
-  };
-  const setKColl = (c) => { localStorage.knowColl = JSON.stringify(c); };
+  const knowColl = collStore('knowColl');
 
   function renderKnowTree() {
     const shown = knowTag ? knowKeys.filter((k) => k.tags.includes(knowTag)) : knowKeys;
@@ -64,7 +61,7 @@
       treeList.appendChild(empty);
       return;
     }
-    const coll = kColl();
+    const coll = knowColl.get();
     const folded = (path) => coll.some((c) => path !== c && path.startsWith(c + '/'));
     const seen = new Set();
     for (const key of keys) {
@@ -73,23 +70,9 @@
         const dir = parts.slice(0, d + 1).join('/');
         if (seen.has(dir)) continue;
         seen.add(dir);
-        const row = document.createElement('div');
-        row.className = 'fld';
-        row.style.marginLeft = (d * 14) + 'px';
+        const row = folderRow(parts[d], d, coll.includes(dir),
+          () => { knowColl.flip(dir); renderKnowTree(); });
         if (folded(dir)) row.style.display = 'none';
-        const cx = document.createElement('span');
-        cx.className = 'cx';
-        cx.textContent = coll.includes(dir) ? '▸' : '▾';
-        const label = document.createElement('span');
-        label.textContent = '\u{1F4C1} ' + parts[d];
-        row.append(cx, label);
-        row.onclick = () => {
-          const c = kColl();
-          const i = c.indexOf(dir);
-          if (i >= 0) c.splice(i, 1); else c.push(dir);
-          setKColl(c);
-          renderKnowTree();
-        };
         treeList.appendChild(row);
       }
       const row = document.createElement('a');

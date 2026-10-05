@@ -31,23 +31,8 @@
   // appended by renderTree, after the pages
   function renderShared(coll) {
     const fold = (key, label, depth) => {
-      const row = document.createElement('div');
-      row.className = 'fld';
-      row.style.marginLeft = (depth * 14) + 'px';
-      const cx = document.createElement('span');
-      cx.className = 'cx';
-      cx.textContent = coll.includes(key) ? '▸' : '▾';
-      const lb = document.createElement('span');
-      lb.textContent = '\u{1F4C1} ' + label;
-      row.append(cx, lb);
-      row.onclick = () => {
-        const c = collapsed();
-        const i = c.indexOf(key);
-        if (i >= 0) c.splice(i, 1); else c.push(key);
-        setCollapsed(c);
-        renderTree();
-      };
-      treeList.appendChild(row);
+      treeList.appendChild(folderRow(label, depth, coll.includes(key),
+        () => { paneColl.flip(key); renderTree(); }));
       return !coll.includes(key);
     };
     if (!fold(SWM, 'shared with me', 0)) return;

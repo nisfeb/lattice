@@ -208,7 +208,20 @@
   })().catch((e) => { basePr = null; throw e; }));
   const forgetBase = () => { basePr = null; try { delete localStorage.latBase; } catch {} };
 
-  const collapsed = () => {
-    try { return JSON.parse(localStorage.appColl || '[]'); } catch { return []; }
+  // a tree's folded folders, remembered under one localStorage key: get()
+  // reads the list, flip(key) folds or unfolds one folder in it. The files
+  // tree (with its shared-with-me folder) keeps appColl; memories keep
+  // knowColl (95-know.js).
+  const collStore = (k) => {
+    const get = () => {
+      try { return JSON.parse(localStorage[k] || '[]'); } catch { return []; }
+    };
+    const flip = (key) => {
+      const c = get();
+      const i = c.indexOf(key);
+      if (i >= 0) c.splice(i, 1); else c.push(key);
+      localStorage[k] = JSON.stringify(c);
+    };
+    return { get, flip };
   };
-  const setCollapsed = (c) => { localStorage.appColl = JSON.stringify(c); };
+  const paneColl = collStore('appColl');
