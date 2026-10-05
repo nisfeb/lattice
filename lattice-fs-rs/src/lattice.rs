@@ -113,7 +113,15 @@ impl Projection for LatticeProjection {
     }
 
     fn dump(&self) -> Result<Dump, PErr> {
-        let v = match self.t.get_json("/apps/lattice/page-dump", &[]) {
+        Ok(self.dump_since(None)?.0)
+    }
+
+    fn dump_since(&self, since: Option<&str>) -> Result<(Dump, Option<String>), PErr> {
+        // `since` goes on the wire only when there is one: the very first dump
+        // of a mount is a plain one, and so is every dump against a ship that
+        // never handed a token back. An old ship ignores the parameter anyway.
+        let q: Vec<(&str, &str)> = since.map(|t| vec![("since", t)]).unwrap_or_default();
+        let v = match self.t.get_json("/apps/lattice/page-dump", &q) {
             Ok(v) => v,
             // old nexus without the route -> fall back to list()+read() (N+1).
             Err(e) if e.code == 404 => {
@@ -126,12 +134,31 @@ impl Projection for LatticeProjection {
                         }
                     }
                 }
-                return Ok((nodes, bodies));
+                return Ok(((nodes, bodies), None));
             }
             Err(e) => return Err(e.into()),
         };
+        // An opaque token, kept as the string it arrived as. It may be far
+        // too long for any integer type, and only the server reads it. A
+        // missing (old ship), non-string or empty one means "no token", so
+        // the next dump is a plain one and this answer is taken whole.
+        let token = v
+            .get("since")
+            .and_then(|t| t.as_str())
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
         let (nodes, bodies) = parse_dump(&v)?;
-        Ok(self.remap_dump(nodes, bodies))
+        Ok((self.remap_dump(nodes, bodies), token))
+    }
+
+    fn change_token(&self) -> Option<String> {
+        // Any failure is "no token", which makes the caller dump: a 404 from
+        // a ship that predates the route, a dropped socket, anything. The
+        // server answers "" when it can't read its own counter, and that
+        // must not compare equal to an earlier "".
+        let b = self.t.get_bytes("/apps/lattice/beacon-rev", &[]).ok()?;
+        let t = String::from_utf8_lossy(&b).trim().to_string();
+        (!t.is_empty()).then_some(t)
     }
 
     fn errors(&self, rel: &str) -> Result<String, PErr> {
@@ -201,7 +228,8 @@ fn page_node(v: &Value, rel: String, size: u64) -> Node {
     let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("hoon").to_string();
     let readonly = kind == "index"; // a generated %index page is not editable
     let mtime = da_to_unix(v.get("mtime").and_then(|m| m.as_str()).unwrap_or(""));
-    Node { rel, is_dir: false, is_page: true, kind, size, mtime, readonly }
+    let rev = v.get("rev").and_then(|r| r.as_u64());
+    Node { rel, is_dir: false, is_page: true, kind, size, mtime, readonly, rev }
 }
 
 /// A non-page node: a lattice folder, which carries none of a page's fields.
@@ -215,6 +243,7 @@ fn dir_node(rel: String) -> Node {
         size: 0,
         mtime: now(),
         readonly: false,
+        rev: None,
     }
 }
 
@@ -670,6 +699,79 @@ mod tests {
         let (rec, p) = lp("", vec![bad(500)]);
         assert!(p.dump().is_err());
         assert_eq!(rec.log().len(), 1);
+
+        // and the fallback has no token to hand back
+        let (_, p) = lp("", vec![bad(404), ok(tree), ok(r#"{"body":"hi","kind":"md"}"#)]);
+        assert_eq!(p.dump_since(Some("5")).unwrap().1, None);
+    }
+
+    #[test]
+    fn dump_since_sends_the_token_back_and_keeps_the_next_one_a_string() {
+        // far past u64, and digits only: anything that parsed it as a number
+        // would hand the server back a different token
+        let tok = "98765432109876543210".repeat(3);
+        let answer = format!(
+            r#"{{"since":"{tok}","nodes":[
+                {{"path":"a","page":true,"kind":"md","size":5,"rev":7,"mtime":"~2026.7.20"}},
+                {{"path":"b","page":true,"kind":"md","body":"bb","size":2,"rev":2,"mtime":"~2026.7.20"}}
+            ]}}"#
+        );
+        let (rec, p) = lp("", vec![ok(&answer), ok(&answer)]);
+        let ((nodes, bodies), next) = p.dump_since(None).unwrap();
+        assert_eq!(next.as_deref(), Some(tok.as_str()));
+        let n = |r: &str| nodes.iter().find(|n| n.rel == r).unwrap();
+        assert_eq!(n("a").rev, Some(7), "every page node carries its rev");
+        assert_eq!(n("a").size, 5, "an unchanged page's size is the reported one");
+        assert!(!bodies.contains_key("a"), "and it has no body to cache");
+        assert_eq!(bodies["b"], b"bb");
+
+        p.dump_since(next.as_deref()).unwrap();
+        assert_eq!(
+            rec.log(),
+            vec![
+                "GET /apps/lattice/page-dump?".to_string(),
+                format!("GET /apps/lattice/page-dump?since={tok}"),
+            ],
+            "the first dump is plain, the next one sends the token back verbatim"
+        );
+    }
+
+    #[test]
+    fn a_dump_with_no_usable_token_reads_as_an_old_ship() {
+        // missing (a ship that predates it), not a string, or empty: no token,
+        // so the next dump is a plain one and this answer is taken whole
+        for answer in [
+            r#"{"nodes":[]}"#,
+            r#"{"since":12345,"nodes":[]}"#,
+            r#"{"since":"","nodes":[]}"#,
+        ] {
+            let (_, p) = lp("", vec![ok(answer)]);
+            assert_eq!(p.dump_since(Some("9")).unwrap().1, None, "{answer}");
+        }
+    }
+
+    #[test]
+    fn change_token_is_beacon_rev_and_none_on_any_failure() {
+        let tok = "4".repeat(80);
+        let (rec, p) = lp("", vec![ok(&format!("{tok}\n"))]);
+        assert_eq!(p.change_token(), Some(tok));
+        assert_eq!(rec.log(), vec!["GET /apps/lattice/beacon-rev?"]);
+        // a ship that predates the route, and one that can't read its own
+        // counter: neither may ever compare equal to anything
+        for failure in [bad(404), bad(500), ok(""), ok("  \n")] {
+            let (_, p) = lp("", vec![failure]);
+            assert_eq!(p.change_token(), None);
+        }
+    }
+
+    #[test]
+    fn a_sub_root_dump_keeps_each_page_rev() {
+        let answer = r#"{"since":"1","nodes":[
+            {"path":"notes/a","page":true,"kind":"md","size":1,"rev":4,"mtime":"~2026.7.20"}
+        ]}"#;
+        let (_, p) = lp("notes", vec![ok(answer)]);
+        let ((nodes, _), _) = p.dump_since(None).unwrap();
+        assert_eq!((nodes[0].rel.as_str(), nodes[0].rev), ("a", Some(4)));
     }
 
     #[test]

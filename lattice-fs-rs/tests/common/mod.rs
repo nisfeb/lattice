@@ -71,6 +71,7 @@ impl Projection for Ship {
                 size: 0,
                 mtime: 1_780_000_000,
                 readonly: false,
+                rev: None,
             })
             .collect();
         let mut bodies = HashMap::new();
@@ -83,6 +84,7 @@ impl Projection for Ship {
                 size: body.len() as u64,
                 mtime: 1_780_000_000,
                 readonly: false,
+                rev: None,
             });
             bodies.insert(rel.clone(), body.clone());
         }

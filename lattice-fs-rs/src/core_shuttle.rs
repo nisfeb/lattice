@@ -107,6 +107,7 @@ impl Projection for Ship {
                 size: body.len() as u64,
                 mtime: 1_780_000_000,
                 readonly: false,
+                rev: None,
             });
             bodies.insert(rel.clone(), body.clone());
         }
@@ -355,6 +356,7 @@ fn a_failing_dump_still_clears_refresh_pending() {
             let fs = Arc::new(GrubberyFs {
                 proj: broken.clone() as Arc<dyn Projection>,
                 st: fs.st.clone(),
+                swapped: fs.swapped.clone(),
                 uid: fs.uid,
                 gid: fs.gid,
             });
@@ -385,14 +387,15 @@ fn a_failing_dump_still_clears_refresh_pending() {
 #[test]
 fn cache_accounting_survives_concurrent_insert_evict_and_swap() {
     // Every writer of read_cache also has to move read_cache_bytes by exactly
-    // the same amount: body()'s read-through insert, publish()'s overwrite,
-    // apply_swap's wholesale replace plus its recent-ledger carry-forward, and
-    // the watch thread's clear. Four sites, one running total, all under one
-    // lock but in any order.
+    // the same amount: body()'s read-through insert (and its take of a stale
+    // copy), publish()'s overwrite, and apply_swap's wholesale replace plus
+    // its carry-forwards. The watch thread no longer empties the cache, it
+    // marks it stale, which is what sends body() down its take-then-insert
+    // path. All under one lock but in any order.
     shuttle::check_random(
         || {
-            // `watching` puts the watch thread's cache-clear into the mix as a
-            // fourth writer of read_cache/read_cache_bytes
+            // `watching` puts the watch thread's stale marking into the mix,
+            // racing every writer of read_cache/read_cache_bytes
             let ship = Ship::watching(&[("note", "old"), ("other", "hello")]);
             let fs = warmed(ship.clone());
 
@@ -441,7 +444,50 @@ fn cache_accounting_survives_concurrent_insert_evict_and_swap() {
     );
 }
 
-// ---------- 5. no deadlock, no panic, under everything at once ----------
+// ---------- 5. a read parked on a refresh ----------
+
+#[test]
+fn a_read_parked_on_a_refresh_is_always_woken_and_never_served_stale() {
+    // A body() miss while a background refresh is in flight waits on the
+    // condvar for it. shuttle's wait_timeout never times out, so a refresh
+    // that ends on ANY path (swapped, discarded, failed) without notify_all
+    // shows up here as a deadlock instead of hiding behind DUMP_WAIT. And in
+    // every order the read returns what the ship holds now, never the stale
+    // copy the watch marked.
+    shuttle::check_random(
+        || {
+            for fail_dumps in [false, true] {
+                let warm = warmed(Ship::with(&[("note", "old")]));
+                // the ship moved on, and its next dump may or may not work
+                let ship = Arc::new(Ship { pages: Ship::seed(&[("note", "new")]), fail_dumps, ..Default::default() });
+                let fs = Arc::new(GrubberyFs {
+                    proj: ship as Arc<dyn Projection>,
+                    st: warm.st.clone(),
+                    swapped: warm.swapped.clone(),
+                    uid: warm.uid,
+                    gid: warm.gid,
+                });
+                invalidate(&mut fs.st.lock().unwrap()); // what the watch thread does
+
+                let reader = {
+                    let fs = fs.clone();
+                    thread::spawn(move || fs.body("note").unwrap())
+                };
+                let kick = {
+                    let fs = fs.clone();
+                    thread::spawn(move || fs.ensure_fresh())
+                };
+                kick.join().unwrap();
+                assert_eq!(reader.join().unwrap(), b"new", "a stale body was served");
+                settle("the refresh", || !fs.st.lock().unwrap().refresh_pending);
+                assert_accounting(&fs.st.lock().unwrap(), "the end of the parked-read test");
+            }
+        },
+        iters(),
+    );
+}
+
+// ---------- 6. no deadlock, no panic, under everything at once ----------
 
 #[test]
 fn the_whole_refresh_path_is_deadlock_free() {
