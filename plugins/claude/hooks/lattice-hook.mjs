@@ -11,6 +11,9 @@
 // hooks for every option, sensitive ones included.
 import http from 'node:http';
 import https from 'node:https';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const mode = process.argv[2];
 const opt = (k) => process.env[`CLAUDE_PLUGIN_OPTION_${k}`] || '';
@@ -74,13 +77,48 @@ function parts(index) {
   return out.map((x) => x.join(''));
 }
 
+// Claude Code starts both SessionStart hooks at once, and each used to
+// build the whole index on the ship. The first saves the index it fetched
+// for this session; the second waits for that file instead of asking
+// again. A file older than this run is a previous start's, never used.
+const shared = (sid) => path.join(os.tmpdir(), `lattice-index-${String(sid).replace(/[^\w-]/g, '')}.txt`);
+async function indexFor(n, sid) {
+  if (n === 0) {
+    const text = await get('know-index', { brief: '1', cap: '50000' });
+    if (sid) {
+      try {
+        const f = shared(sid);
+        fs.writeFileSync(f + '.tmp', text, { mode: 0o600 });
+        fs.renameSync(f + '.tmp', f);
+      } catch {}
+    }
+    return text;
+  }
+  const started = Date.now();
+  const f = sid && shared(sid);
+  // ponytail: a 20 s poll, the first hook's own fetch timeout; part 2 is
+  // dropped if the first never saves (it reports the failure itself)
+  while (f && Date.now() - started < 20000) {
+    try {
+      if (fs.statSync(f).mtimeMs >= started - 1000) {
+        const text = fs.readFileSync(f, 'utf8');
+        fs.rmSync(f, { force: true });
+        return text;
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return '';
+}
+
 async function session(n) {
   if (!key || base === '/apps/lattice') {
     if (n === 0) say('SessionStart', 'lattice memory: the plugin has no ship URL or agent key yet. Tell the user to set them (/plugin, lattice, configure).');
     return;
   }
   try {
-    const part = parts(await get('know-index', { brief: '1', cap: '50000' }))[n];
+    const sid = (await stdin()).session_id;
+    const part = parts(await indexFor(n, sid))[n];
     if (n === 0) {
       say('SessionStart',
         'Lattice is your persistent memory, shared by the owner\'s agents (the lattice memory skill says how to use it). ' +

@@ -101,6 +101,7 @@ PROMPT = (
 class LatticeMemoryProvider(MemoryProvider):
     def __init__(self) -> None:
         self._cfg: Dict[str, Any] = {}
+        self._index: str | None = None
         self._last: tuple = ("", "")
 
     @property
@@ -116,6 +117,7 @@ class LatticeMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._cfg = _config()
+        self._index = None
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return [
@@ -159,11 +161,16 @@ class LatticeMemoryProvider(MemoryProvider):
     # -- prompt and prefetch -----------------------------------------------
 
     def system_prompt_block(self) -> str:
-        try:
-            return PROMPT + self._call("GET", "know-index", {"brief": 1, "cap": INDEX_CAP}, timeout=20)
-        except Exception as e:  # noqa: BLE001 - the agent runs without memory, and says so
-            logger.warning("lattice index failed: %s", e)
-            return PROMPT + f"Lattice is unreachable right now ({e}). Tell the user if the task depends on memory."
+        # Hermes asks for this block more than once a session, and each ask
+        # built the whole index on the ship. Fetched once per session; a
+        # failure is not kept, so the next ask tries again.
+        if self._index is None:
+            try:
+                self._index = self._call("GET", "know-index", {"brief": 1, "cap": INDEX_CAP}, timeout=20)
+            except Exception as e:  # noqa: BLE001 - the agent runs without memory, and says so
+                logger.warning("lattice index failed: %s", e)
+                return PROMPT + f"Lattice is unreachable right now ({e}). Tell the user if the task depends on memory."
+        return PROMPT + self._index
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         # once per message: Hermes may prefetch before every model call in a turn
