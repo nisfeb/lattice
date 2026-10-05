@@ -55,6 +55,9 @@
     // wrapped in, which is its page kind
     const mk = d.builder || extKind(String(blot).split('/').pop()) || 'hoon';
     if ([...pkind.options].some((o) => o.value === mk)) pkind.value = mk;
+    //  setOpen ran before this file's kind was known, so tell the desktop
+    //  label (its tip names the kind) the same way setOpen does
+    pname.dispatchEvent(new Event('input'));
     curKind = mk;
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'on ' + grubShip + ': saves need its permission'

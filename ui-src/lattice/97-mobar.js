@@ -18,9 +18,8 @@
     mpath.id = 'mpath';
     mpath.setAttribute('aria-live', 'polite');
     pname.after(mpath);
-    // the name it last showed: the 500ms poll is then one compare when
-    // nothing changed, and the aria-live label is not rewritten with the
-    // same text twice a second
+    // the name it last showed, so a repaint with nothing new never rewrites
+    // the aria-live label with the text it already holds
     let mshown = null;
     const mpaint = () => {
       const v = (pname.value || '').trim();
@@ -30,9 +29,9 @@
       mpath.className = v ? '' : 'muted';
     };
     mpaint();
+    // setOpen (20-state.js) dispatches 'input' whenever what is open
+    // changes, and typing fires it natively, so this needs no poll
     pname.addEventListener('input', mpaint);
-    pname.addEventListener('change', mpaint);
-    setInterval(mpaint, 500);
 
     // tap: rename what is open (the controls pane's own move/rename flow),
     // or start a page when nothing is. Both are existing buttons.

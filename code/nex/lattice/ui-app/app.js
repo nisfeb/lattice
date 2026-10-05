@@ -3146,6 +3146,9 @@
     // wrapped in, which is its page kind
     const mk = d.builder || extKind(String(blot).split('/').pop()) || 'hoon';
     if ([...pkind.options].some((o) => o.value === mk)) pkind.value = mk;
+    //  setOpen ran before this file's kind was known, so tell the desktop
+    //  label (its tip names the kind) the same way setOpen does
+    pname.dispatchEvent(new Event('input'));
     curKind = mk;
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'on ' + grubShip + ': saves need its permission'
@@ -6915,13 +6918,7 @@
     label.id = 'pathlabel';
     label.setAttribute('aria-live', 'polite');
     pname.after(label);
-    // what the label was last painted from. The resize listener and the
-    // events always repaint (a resize must re-measure); the poll below only
-    // repaints when this changed, so its idle tick is one string compare.
-    let painted = '';
-    const paintKey = () => pname.value + '\n' + pkind.value;
     const paint = () => {
-      painted = paintKey();
       const v = (pname.value || '').trim();
       label.textContent = v || 'no page open';
       label.className = v ? '' : 'muted';
@@ -6945,15 +6942,14 @@
     };
     addEventListener('resize', paint);
     paint();
+    // No poll. Assigning pname.value fires no event, which is why this used
+    // to check twice a second, but every writer now goes through setOpen
+    // (20-state.js), which dispatches 'input' on the field, and typing
+    // fires it natively. The kind in the tip changes by hand ('change' on
+    // the picker), inside setOpen, or just before one; openGrub, which
+    // learns its kind only after the fetch, dispatches the same event.
     pname.addEventListener('input', paint);
-    pname.addEventListener('change', paint);
-    // pname is set from a dozen places (applyPage, newFile, rename, the
-    // offline replay) and every one of them assigns the value PROPERTY. That
-    // fires no event and leaves the value attribute alone, so a
-    // MutationObserver cannot see it either. Until those writers go through
-    // one setter, the poll is the mechanism here, not a safety net. The
-    // mobile bar (97-mobar.js) polls its own label for the same reason.
-    setInterval(() => { if (paintKey() !== painted) paint(); }, 500);
+    pkind.addEventListener('change', paint);
   }
 
   // ── naming a new page when the name field is not on screen ───────────────
@@ -7057,9 +7053,8 @@
     mpath.id = 'mpath';
     mpath.setAttribute('aria-live', 'polite');
     pname.after(mpath);
-    // the name it last showed: the 500ms poll is then one compare when
-    // nothing changed, and the aria-live label is not rewritten with the
-    // same text twice a second
+    // the name it last showed, so a repaint with nothing new never rewrites
+    // the aria-live label with the text it already holds
     let mshown = null;
     const mpaint = () => {
       const v = (pname.value || '').trim();
@@ -7069,9 +7064,9 @@
       mpath.className = v ? '' : 'muted';
     };
     mpaint();
+    // setOpen (20-state.js) dispatches 'input' whenever what is open
+    // changes, and typing fires it natively, so this needs no poll
     pname.addEventListener('input', mpaint);
-    pname.addEventListener('change', mpaint);
-    setInterval(mpaint, 500);
 
     // tap: rename what is open (the controls pane's own move/rename flow),
     // or start a page when nothing is. Both are existing buttons.
