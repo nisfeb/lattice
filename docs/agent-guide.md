@@ -73,12 +73,13 @@ All routes are under `/apps/lattice/…`, authenticated with the session cookie 
 | Route | Params | Returns |
 |---|---|---|
 | `GET /page-tree` | (none) | `{"nodes":[{path,page,kind,size,rev,mtime,share}]}`, shape only, no bodies |
-| `GET /page-dump` | (none) | same, **plus `body` inline** per page (omitted for bodies >256 KB). One call for the whole tree. |
+| `GET /page-dump` | `since` (optional) | same, **plus `body` inline** per page (omitted for bodies >256 KB). One call for the whole tree. The answer's `since` is a token: pass it back as `?since=` and the next dump leaves out the bodies that have not changed (a node's `rev` says whether the body you hold is current). |
+| `GET /beacon-rev` | (none) | the change token alone, as text. It moves whenever any page changes, so a client with no change stream can poll it cheaply before dumping. |
 | `GET /page-source?name=<p>` | `name` | one page's `{body,kind,…}` |
 | `GET /page-errors?name=<p>` | `name` | the page's latest evaluator error as text (`''` = clean) |
 | `GET /fetch?url=urb://~ship/rel` | `url` | read a *published* page (own vault, or a remote peer via a grubbery peek) |
 
-`page` is `true` for a file, `false` for a folder. `path` is the page-relative key (no leading slash, no extension). `kind` is one of `md gmi html text js css hoon index`. Derive file size from the actual `body` bytes when present. Trust the reported `size` only when `body` is absent.
+`page` is `true` for a file, `false` for a folder. `path` is the page-relative key (no leading slash, no extension). `kind` is one of `md gmi html text js css tex hoon index`. Derive file size from the actual `body` bytes when present. Trust the reported `size` only when `body` is absent.
 
 ```bash
 CK="Cookie: $(cat ~/.config/lattice-fs/cookie)"
