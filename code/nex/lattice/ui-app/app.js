@@ -4431,8 +4431,9 @@
 
 // ── src/70-upload.js ──────────────────────────────────────────────────────
   // ── upload (pickers + drag-and-drop, progress panel) ─────────────────────
-  //  which extensions arrive as which kind is EXT_KIND, in 30-tree.js
-  const seg = (x) => x.toLowerCase().replace(/[^a-z0-9._~-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
+  //  which extensions arrive as which kind is EXT_KIND, in 30-tree.js. Each
+  //  path segment is slugged by slugSeg (10-shell.js), the same rule a typed
+  //  page name gets.
   const upPanel = $('uppanel'), upMsg = $('upmsg'), upFill = $('upfill'), upErr = $('uperr');
 
   const upShow = () => { upPanel.hidden = false; upErr.textContent = ''; upFill.style.width = '0%'; };
@@ -4441,20 +4442,13 @@
     upFill.style.width = Math.round(done * 100 / Math.max(total, 1)) + '%';
   };
 
-  // opts.verbatim: the paths are ones this app itself wrote (a vault restore),
-  // so take them as they are. seg() lowercases and rewrites characters, which
-  // is right for a file dragged in off a disk and wrong for a page being put
-  // back where it came from. folderCtx is ignored for the same reason: a
-  // restore goes to the original path, not under whatever folder is selected.
-  async function uploadItems(items, opts) {
-    const verbatim = !!(opts && opts.verbatim);
+  async function uploadItems(items) {
     if (degraded || offCount) {
       upShow();
       upMsg.textContent = 'offline — uploads need the ship (queued edits will sync first)';
       return;
     }
     const list = [];
-    const dirs = new Set();
     //  names, not just a count: a batch of thirty dropped files that skips
     //  three leaves the user guessing which three without this
     const skippedNames = [];
@@ -4463,15 +4457,11 @@
       const kind = dot > 0 ? extKind(rel.slice(dot + 1)) : null;
       if (!kind) { skippedNames.push(rel); continue; }
       const stem = rel.slice(0, dot);
-      const parts = verbatim
-        ? stem.split('/').filter(Boolean)
-        : stem.split('/').map(seg).filter(Boolean);
-      if (folderCtx && !verbatim) parts.unshift(...folderCtx.split('/'));
+      const parts = stem.split('/').map(slugSeg).filter(Boolean);
+      if (folderCtx) parts.unshift(...folderCtx.split('/'));
       const name = parts.join('/');
       if (!name) { skippedNames.push(rel); continue; }
       list.push({ file, name, kind });
-      const pp = name.split('/'); pp.pop();
-      for (let i = 1; i <= pp.length; i++) dirs.add(pp.slice(0, i).join('/'));
     }
     if (!list.length) {
       upShow();
@@ -4489,14 +4479,11 @@
         : skippedNames.join(', ');
       upErr.textContent = `skipped ${skippedNames.length} unsupported\n  ${shown}\n`;
     }
-    // only create folders the tree does not already have. Each folder-new is
-    // a ~2s writer round-trip, and re-uploading into an existing tree used to
-    // pay it for every directory.
-    for (const d of [...dirs].sort()) {
-      if (hasNode(d)) continue;
-      try { await mutate(api + '/folder-new?name=' + encodeURIComponent(d)); }
-      catch {}
-    }
+    // No folder-new first: every name in the batch is a full path, and the
+    // ship's %make-many creates each page's missing parent folders itself
+    // (make-page, ensure-dirs), the way a single save does. A folder-new per
+    // directory was a ~2s writer round-trip apiece for nothing.
+    //
     // ONE request per chunk, not one per file: every request pays the pier's
     // ~0.5s floor serially, so a 20-file drop used to be ~20 round-trips of
     // pure overhead doing work the server can batch. Chunked because the
