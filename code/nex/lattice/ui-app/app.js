@@ -1681,18 +1681,15 @@
   function vimOn(){ return localStorage.getItem(LS) === "1"; }   // default OFF
 
   /* ---- mode indicator element (created once, lives by the status bar) ---- */
-  var ind = document.getElementById("vimInd");
-  if(!ind){
-    ind = document.createElement("span");
-    ind.id = "vimInd";
-    ind.style.cssText =
-      "display:none;margin-left:8px;padding:1px 6px;border-radius:3px;"+
-      "font:11px/1.6 monospace;font-weight:bold;letter-spacing:.5px;"+
-      "color:#fff;background:#666;vertical-align:middle;";
-    var stEl = document.getElementById("status");
-    if(stEl && stEl.parentNode) stEl.parentNode.insertBefore(ind, stEl.nextSibling);
-    else document.body.appendChild(ind);
-  }
+  var ind = document.createElement("span");
+  ind.id = "vimInd";
+  ind.style.cssText =
+    "display:none;margin-left:8px;padding:1px 6px;border-radius:3px;"+
+    "font:11px/1.6 monospace;font-weight:bold;letter-spacing:.5px;"+
+    "color:#fff;background:#666;vertical-align:middle;";
+  var stEl = document.getElementById("status");
+  if(stEl && stEl.parentNode) stEl.parentNode.insertBefore(ind, stEl.nextSibling);
+  else document.body.appendChild(ind);
 
   /* ---- state ---- */
   var MODE = "normal";        // "normal" | "insert" | "visual"
@@ -1821,12 +1818,9 @@
   function visSync(){
     if(MODE !== "visual") return;
     var r = visRange();
-    // put the DOM caret AT visCaret so pos()-based motions read the right spot,
-    // then extend the visible selection to cover the range.
-    if(visCaret >= visAnchor) setSel(r[0], r[1]);
-    else setSel(r[0], r[1]);
-    // keep selectionStart at visCaret side for motion reads is not needed;
-    // visual handler uses visCaret directly.
+    // the selection runs low to high whichever way the caret moved: the
+    // visual handler reads visCaret directly, never the DOM caret.
+    setSel(r[0], r[1]);
   }
 
   /* ============================================================================
@@ -2341,7 +2335,7 @@
   ta.addEventListener("focus", function(){ if(vimOn() && MODE !== "insert") fixCaret(); });
 
   /* ============================================================================
-     TOGGLE BUTTON + localStorage (same flip-flag-then-reapply pattern as edNT)
+     ON/OFF: localStorage, flipped from the settings page
      ============================================================================ */
   function applyVim(){
     if(vimOn()){
@@ -2353,30 +2347,16 @@
       ta.classList.remove("vim-on");
     }
     setInd();
-    if(btn) btn.textContent = "vim: " + (vimOn() ? "on" : "off");
   }
-  // Global so an explicit template button `onclick="vimToggle()"` can drive it.
-  window.vimToggle = function(){
-    localStorage.setItem(LS, vimOn() ? "0" : "1");
-    MODE = "normal"; reset();
-    applyVim();
-    ta.focus();
-    var stEl2 = document.getElementById("status");
-    if(stEl2) stEl2.textContent = "vim " + (vimOn() ? "on" : "off");
-  };
 
   //  The toggle lives on the settings page, which is a SEPARATE document on
   //  this origin, exactly like the font and size preferences. It writes the
   //  flag and the storage event brings it here, so no button is injected into
-  //  the bar (which is managed markup now).
-  var btn = document.getElementById("vimToggle");
-  if(btn) btn.onclick = window.vimToggle;
+  //  the bar (which is managed markup now). An unset flag is off: vimOn()
+  //  and the settings checkbox both test for "1".
   window.addEventListener("storage", function(e){
     if(!e.key || e.key === LS) applyVim();
   });
-
-  // Persist an explicit default of OFF on first run.
-  if(localStorage.getItem(LS) === null) localStorage.setItem(LS, "0");
   applyVim();
 })();
 
