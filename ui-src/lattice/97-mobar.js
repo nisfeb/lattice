@@ -18,8 +18,14 @@
     mpath.id = 'mpath';
     mpath.setAttribute('aria-live', 'polite');
     pname.after(mpath);
+    // the name it last showed: the 500ms poll is then one compare when
+    // nothing changed, and the aria-live label is not rewritten with the
+    // same text twice a second
+    let mshown = null;
     const mpaint = () => {
       const v = (pname.value || '').trim();
+      if (v === mshown) return;
+      mshown = v;
       mpath.textContent = v || 'no page open';
       mpath.className = v ? '' : 'muted';
     };

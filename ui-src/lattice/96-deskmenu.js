@@ -47,7 +47,13 @@
     label.id = 'pathlabel';
     label.setAttribute('aria-live', 'polite');
     pname.after(label);
+    // what the label was last painted from. The resize listener and the
+    // events always repaint (a resize must re-measure); the poll below only
+    // repaints when this changed, so its idle tick is one string compare.
+    let painted = '';
+    const paintKey = () => pname.value + '\n' + pkind.value;
     const paint = () => {
+      painted = paintKey();
       const v = (pname.value || '').trim();
       label.textContent = v || 'no page open';
       label.className = v ? '' : 'muted';
@@ -79,7 +85,7 @@
     // MutationObserver cannot see it either. Until those writers go through
     // one setter, the poll is the mechanism here, not a safety net. The
     // mobile bar (97-mobar.js) polls its own label for the same reason.
-    setInterval(paint, 500);
+    setInterval(() => { if (paintKey() !== painted) paint(); }, 500);
   }
 
   // ── naming a new page when the name field is not on screen ───────────────
