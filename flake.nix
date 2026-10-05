@@ -1,6 +1,8 @@
 {
   description = "lattice — desktop client for the lattice nexus";
 
+  # flake.lock pins the revision, so a build is reproducible; move it on
+  # purpose with `nix flake update` (and let CI build the result).
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs = { self, nixpkgs }:
