@@ -48,15 +48,6 @@
       src.addEventListener('scroll', sync);
     }
   });
-  // stale-shell guard: a cached index.html predating <lat-editor> still has
-  // the literal .edwrap block (and lacks the lat-* display rule). Swap it.
-  if (!document.querySelector('lat-editor')) {
-    const stale = document.querySelector('.edwrap');
-    if (stale) stale.remove();
-    const el = document.createElement('lat-editor');
-    el.style.display = 'contents';
-    document.getElementById('ws').appendChild(el);
-  }
   pkind.addEventListener('change', () => {
     curKind = pkind.value;
     render();

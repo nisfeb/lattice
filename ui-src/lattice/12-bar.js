@@ -71,18 +71,3 @@
 </nav>`;
     }
   });
-  // stale-shell guard: replace a cached pre-component shell's literal bar and
-  // tabs. The bar relies on source order for its grid row, so it is PREPENDED.
-  if (!document.querySelector('lat-bar')) {
-    for (const sel of ['header.bar', 'nav.mtabs']) {
-      const stale = document.querySelector(sel);
-      if (stale) stale.remove();
-    }
-    const wsEl = document.getElementById('ws');
-    const tabs = document.createElement('lat-tabs');
-    const bar = document.createElement('lat-bar');
-    tabs.style.display = 'contents';
-    bar.style.display = 'contents';
-    wsEl.prepend(tabs);
-    wsEl.prepend(bar);
-  }

@@ -197,12 +197,3 @@
       });
     }
   });
-  // stale-shell guard: a cached index.html predating <lat-dialog> still
-  // carries the literal #dlg block, which would shadow the component's ids.
-  // Swap it out so dialogs keep working during the skew window (the service
-  // worker caches the shell and this file independently).
-  if (!document.querySelector('lat-dialog')) {
-    const stale = document.getElementById('dlg');
-    if (stale) stale.remove();
-    document.body.appendChild(document.createElement('lat-dialog'));
-  }

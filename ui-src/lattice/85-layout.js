@@ -104,7 +104,6 @@
     const lim = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
     const wire = (id, key, drag) => {
       const h = $(id);
-      if (!h) return;                    // stale cached shell without handles
       // the reset gesture is detected from pointerup pairs, NOT dblclick.
       // pointerdown must preventDefault (otherwise native selection starts
       // and eats the pointer stream mid-drag), and a cancelled pointerdown

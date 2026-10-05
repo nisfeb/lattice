@@ -23,14 +23,6 @@
       cerr = $('cerr');
     }
   });
-  // stale-shell guard: swap a cached pre-component shell's literal pane
-  if (!document.querySelector('lat-ctl')) {
-    const stale = document.querySelector('aside.ctl');
-    if (stale) stale.remove();
-    const el = document.createElement('lat-ctl');
-    el.style.display = 'contents';
-    document.getElementById('ws').appendChild(el);
-  }
 
   // NB: the command box is gone from this panel. It POSTed to /page-cmd, the
   // input channel for a programmable page. The ROUTE stays, since public form

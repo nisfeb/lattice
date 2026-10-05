@@ -66,14 +66,6 @@
       treeList = $('treelist');
     }
   });
-  // stale-shell guard: swap a cached pre-component shell's literal pane
-  if (!document.querySelector('lat-tree')) {
-    const stale = document.getElementById('tree');
-    if (stale) stale.remove();
-    const el = document.createElement('lat-tree');
-    el.style.display = 'contents';
-    document.getElementById('ws').appendChild(el);
-  }
   // page-dump, not page-tree: it returns the same nodes PLUS every page's body
   // inline from ONE deep peek, and measures FASTER than page-tree (which
   // re-peeks each code grub). Those bodies are what make opening a page cost

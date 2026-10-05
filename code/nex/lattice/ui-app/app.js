@@ -947,21 +947,6 @@
 </nav>`;
     }
   });
-  // stale-shell guard: replace a cached pre-component shell's literal bar and
-  // tabs. The bar relies on source order for its grid row, so it is PREPENDED.
-  if (!document.querySelector('lat-bar')) {
-    for (const sel of ['header.bar', 'nav.mtabs']) {
-      const stale = document.querySelector(sel);
-      if (stale) stale.remove();
-    }
-    const wsEl = document.getElementById('ws');
-    const tabs = document.createElement('lat-tabs');
-    const bar = document.createElement('lat-bar');
-    tabs.style.display = 'contents';
-    bar.style.display = 'contents';
-    wsEl.prepend(tabs);
-    wsEl.prepend(bar);
-  }
 
 // ── src/15-dialog.js ──────────────────────────────────────────────────────
   // ── in-app dialogs, NEVER browser-native prompt/confirm/alert ────────────
@@ -1163,15 +1148,6 @@
       });
     }
   });
-  // stale-shell guard: a cached index.html predating <lat-dialog> still
-  // carries the literal #dlg block, which would shadow the component's ids.
-  // Swap it out so dialogs keep working during the skew window (the service
-  // worker caches the shell and this file independently).
-  if (!document.querySelector('lat-dialog')) {
-    const stale = document.getElementById('dlg');
-    if (stale) stale.remove();
-    document.body.appendChild(document.createElement('lat-dialog'));
-  }
 
 // ── src/20-state.js ───────────────────────────────────────────────────────
   // ── state ────────────────────────────────────────────────────────────────
@@ -1661,15 +1637,6 @@
       src.addEventListener('scroll', sync);
     }
   });
-  // stale-shell guard: a cached index.html predating <lat-editor> still has
-  // the literal .edwrap block (and lacks the lat-* display rule). Swap it.
-  if (!document.querySelector('lat-editor')) {
-    const stale = document.querySelector('.edwrap');
-    if (stale) stale.remove();
-    const el = document.createElement('lat-editor');
-    el.style.display = 'contents';
-    document.getElementById('ws').appendChild(el);
-  }
   pkind.addEventListener('change', () => {
     curKind = pkind.value;
     render();
@@ -2482,14 +2449,6 @@
       treeList = $('treelist');
     }
   });
-  // stale-shell guard: swap a cached pre-component shell's literal pane
-  if (!document.querySelector('lat-tree')) {
-    const stale = document.getElementById('tree');
-    if (stale) stale.remove();
-    const el = document.createElement('lat-tree');
-    el.style.display = 'contents';
-    document.getElementById('ws').appendChild(el);
-  }
   // page-dump, not page-tree: it returns the same nodes PLUS every page's body
   // inline from ONE deep peek, and measures FASTER than page-tree (which
   // re-peeks each code grub). Those bodies are what make opening a page cost
@@ -3861,14 +3820,6 @@
       prevBlank();
     }
   });
-  // stale-shell guard: swap a cached pre-component shell's literal iframe
-  if (!document.querySelector('lat-preview')) {
-    const stale = document.querySelector('iframe.prev');
-    if (stale) stale.remove();
-    const el = document.createElement('lat-preview');
-    el.style.display = 'contents';
-    document.getElementById('ws').appendChild(el);
-  }
   //  tex is here for the same reason html is: the ship cannot render it, so
   //  the local paint IS the preview and there is no server answer to wait
   //  for. It differs in one way, that its renderer is a subprocess and
@@ -4091,14 +4042,6 @@
       cerr = $('cerr');
     }
   });
-  // stale-shell guard: swap a cached pre-component shell's literal pane
-  if (!document.querySelector('lat-ctl')) {
-    const stale = document.querySelector('aside.ctl');
-    if (stale) stale.remove();
-    const el = document.createElement('lat-ctl');
-    el.style.display = 'contents';
-    document.getElementById('ws').appendChild(el);
-  }
 
   // NB: the command box is gone from this panel. It POSTed to /page-cmd, the
   // input channel for a programmable page. The ROUTE stays, since public form
@@ -6318,7 +6261,6 @@
     const lim = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
     const wire = (id, key, drag) => {
       const h = $(id);
-      if (!h) return;                    // stale cached shell without handles
       // the reset gesture is detected from pointerup pairs, NOT dblclick.
       // pointerdown must preventDefault (otherwise native selection starts
       // and eats the pointer stream mid-drag), and a cancelled pointerdown
