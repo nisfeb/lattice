@@ -14,19 +14,12 @@
 #                                          fetch of urb://<peer>/<file>
 set -uo pipefail
 
-URL="${1:-${LATTICE_URL:-http://localhost:8081}}"
+LATTICE_URL="${1:-${LATTICE_URL:-http://localhost:8081}}"
 CODE="${2:-${LATTICE_CODE:-lidlut-tabwed-pillex-ridrup}}"
-URL="${URL%/}"
+# no cookie file: e2e logs in with the code, as a real client does
+. "$(dirname "${BASH_SOURCE[0]}")/lib/matrix.sh"
 JAR="$(mktemp)"
 trap 'rm -f "$JAR"' EXIT
-
-fail=0
-ok()   { echo "  ok   — $1"; }
-bad()  { echo "  FAIL — $1"; fail=1; }
-# has   <name> <needle> <haystack>   — the order api-matrix.sh and mcp-matrix.sh
-# hasnt <name> <needle> <haystack>     use, so a call copied between them holds
-has()  { if printf '%s' "$3" | grep -qF -- "$2"; then ok "$1"; else bad "$1 (expected '$2' in: $3)"; fi; }
-hasnt(){ if printf '%s' "$3" | grep -qF -- "$2"; then bad "$1 (unexpected '$2' in: $3)"; else ok "$1"; fi; }
 
 echo "==> login $URL"
 code=$(curl -s -o /dev/null -w '%{http_code}' -c "$JAR" -X POST "$URL/~/login" --data "password=${CODE#+}")
@@ -34,7 +27,6 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -c "$JAR" -X POST "$URL/~/login" -
 
 SHIP=$(curl -s -b "$JAR" "$URL/~/host")
 echo "==> ship: $SHIP"
-B="$URL/apps/lattice"
 P="scratch/e2e-$$"
 
 echo "==> list"
@@ -60,6 +52,4 @@ if [ -n "${LATTICE_PEER_SHIP:-}" ]; then
   has "cross-ship fetch returns a gmi body" '"mark":"gmi"' "$resp"
 fi
 
-echo
-if [ "$fail" = 0 ]; then echo "e2e PASSED"; else echo "e2e FAILED"; fi
-exit "$fail"
+finish

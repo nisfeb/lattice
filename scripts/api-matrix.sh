@@ -9,18 +9,10 @@
 #         LATTICE_COOKIE  cookie file (default ~/.config/lattice-fs/cookie)
 set -uo pipefail
 
-URL="${LATTICE_URL:-http://localhost:8080}"; URL="${URL%/}"
-CKF="${LATTICE_COOKIE:-$HOME/.config/lattice-fs/cookie}"
-CK="Cookie: $(cat "$CKF")"
-B="$URL/apps/lattice"
+. "$(dirname "${BASH_SOURCE[0]}")/lib/matrix.sh"
+need_cookie
 P="apimx-$$"                 # per-run namespace, deleted at the end
 
-fail=0
-ok()  { echo "  ok   - $1"; }
-bad() { echo "  FAIL - $1${2:+ ($2)}"; fail=1; }
-# is <name> <expected> <actual>
-is()  { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1" "want $2 got $3"; fi; }
-has() { if printf '%s' "$3" | grep -qF -- "$2"; then ok "$1"; else bad "$1" "no '$2' in: $(printf '%s' "$3" | head -c 120)"; fi; }
 code(){ curl -s -o /dev/null -w '%{http_code}' "$@"; }
 G()   { curl -s -H "$CK" "$@"; }
 sc()  { code -H "$CK" "$@"; }
@@ -247,6 +239,4 @@ sleep 2
 is "subtree gone from tree" NO-NODE "$(G "$B/page-tree" | node_field "$P/note" kind)"
 is "page-tree healthy after everything" 200 "$(sc "$B/page-tree")"
 
-echo
-if [ "$fail" = 0 ]; then echo "api-matrix PASSED"; else echo "api-matrix FAILED"; fi
-exit "$fail"
+finish

@@ -9,17 +9,10 @@
 #         LATTICE_COOKIE  cookie file (default ~/.config/lattice-fs/cookie)
 set -uo pipefail
 
-URL="${LATTICE_URL:-http://localhost:8080}"; URL="${URL%/}"
-CKF="${LATTICE_COOKIE:-$HOME/.config/lattice-fs/cookie}"
-CK="Cookie: $(cat "$CKF")"
+. "$(dirname "${BASH_SOURCE[0]}")/lib/matrix.sh"
+need_cookie
 MCP="$URL/grubbery/mcp"
 K="mcpmx/$$"
-
-fail=0
-ok()  { echo "  ok   - $1"; }
-bad() { echo "  FAIL - $1${2:+ ($2)}"; fail=1; }
-has() { if printf '%s' "$3" | grep -qF -- "$2"; then ok "$1"; else bad "$1" "no '$2' in: $(printf '%s' "$3" | head -c 140)"; fi; }
-hasnt(){ if printf '%s' "$3" | grep -qF -- "$2"; then bad "$1" "unexpected '$2'"; else ok "$1"; fi; }
 
 # tool <name> <json-args>  -> the tool's text result on stdout
 tool() {
@@ -71,6 +64,4 @@ echo "==> cleanup"
 has "final delete"   "deleted"          "$(tool lattice-delete "{\"key\":\"$K-moved\"}")"
 hasnt "scratch key gone" "$K"           "$(tool lattice-list '{}')"
 
-echo
-if [ "$fail" = 0 ]; then echo "mcp-matrix PASSED"; else echo "mcp-matrix FAILED"; fi
-exit "$fail"
+finish

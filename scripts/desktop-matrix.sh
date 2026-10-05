@@ -22,22 +22,18 @@
 #
 # Usage:  scripts/desktop-matrix.sh [ship-url]
 # Env:    LATTICE_URL     ship base (default http://localhost:8080)
-#         LATTICE_COOKIE  cookie file (default ~/.config/lattice-fs/nec-cookie)
+#         LATTICE_COOKIE  cookie file (default ~/.config/lattice-fs/cookie)
 #         LATTICE_BIN     binary (default desktop/target/debug/lattice-desktop)
 #
 # NOT for production ships: it writes a backup archive and drives real saves.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-URL="${1:-${LATTICE_URL:-http://localhost:8080}}"
-URL="${URL%/}"
-COOKIE="${LATTICE_COOKIE:-$HOME/.config/lattice-fs/nec-cookie}"
+LATTICE_URL="${1:-${LATTICE_URL:-}}"
+. "$(dirname "${BASH_SOURCE[0]}")/lib/matrix.sh"
 BIN="${LATTICE_BIN:-$ROOT/desktop/target/debug/lattice-desktop}"
 RUNFOR="${LATTICE_RUNFOR:-95}"
 
-fails=0
-ok()  { echo "  ok   - $1"; }
-bad() { echo "  FAIL - $1${2:+ ($2)}"; fails=$((fails + 1)); }
 chk() { if [ "$2" = "1" ]; then ok "$1"; else bad "$1" "${3:-}"; fi; }
 
 case "$URL" in
@@ -47,13 +43,13 @@ case "$URL" in
 esac
 [ -x "$BIN" ] || { echo "no binary at $BIN (cargo build in desktop/)" >&2; exit 2; }
 command -v xvfb-run >/dev/null || { echo "xvfb-run not found" >&2; exit 2; }
-[ -r "$COOKIE" ] || { echo "no cookie at $COOKIE" >&2; exit 2; }
+need_cookie
 
 T="$(mktemp -d)"
 BK="$T/archives"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/home/.config/lattice-fs" "$T/home/.config/org.lattice.desktop" "$BK"
-cp "$COOKIE" "$T/home/.config/lattice-fs/cookie"
+cp "$CKF" "$T/home/.config/lattice-fs/cookie"
 
 # A schedule that is due immediately (last_run 0), so one tick backs up.
 cat > "$T/home/.config/org.lattice.desktop/config.json" <<JSON
@@ -167,6 +163,4 @@ if [ -n "$tar_file" ]; then
     || bad "the schedule recorded when it ran" "last_run still 0"
 fi
 
-echo
-if [ "$fails" -gt 0 ]; then echo "desktop-matrix FAILED ($fails)"; exit 1; fi
-echo "desktop-matrix PASSED"
+finish
