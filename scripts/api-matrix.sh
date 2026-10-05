@@ -1,33 +1,41 @@
 #!/usr/bin/env bash
 # HTTP API integration matrix for the lattice nexus. Exercises the editor
 # routes, sharing (page + tree), recursive delete, the knowledge store, the
-# compile-error surface, redirects, and the auth boundary against a running
-# ship (the tyr harness by default). Never run against production.
+# compile-error surface, redirects, the auth boundary, the write and publish
+# lifecycle and display names against a running ship (the tyr harness by
+# default). Never run against production.
 #
 # Usage:  scripts/api-matrix.sh
 # Env:    LATTICE_URL     ship base (default http://localhost:8080)
 #         LATTICE_COOKIE  cookie file (default ~/.config/lattice-fs/cookie)
 set -uo pipefail
 
-URL="${LATTICE_URL:-http://localhost:8080}"; URL="${URL%/}"
-CKF="${LATTICE_COOKIE:-$HOME/.config/lattice-fs/cookie}"
-CK="Cookie: $(cat "$CKF")"
-B="$URL/apps/lattice"
+. "$(dirname "${BASH_SOURCE[0]}")/lib/matrix.sh"
+need_cookie
 P="apimx-$$"                 # per-run namespace, deleted at the end
 
-fail=0
-ok()  { echo "  ok   - $1"; }
-bad() { echo "  FAIL - $1${2:+ ($2)}"; fail=1; }
-# is <name> <expected> <actual>
-is()  { if [ "$3" = "$2" ]; then ok "$1"; else bad "$1" "want $2 got $3"; fi; }
-has() { if printf '%s' "$3" | grep -qF -- "$2"; then ok "$1"; else bad "$1" "no '$2' in: $(printf '%s' "$3" | head -c 120)"; fi; }
 code(){ curl -s -o /dev/null -w '%{http_code}' "$@"; }
 G()   { curl -s -H "$CK" "$@"; }
 sc()  { code -H "$CK" "$@"; }
-node_field() { python3 -c "
+# field <route> <path> <key>: one node's field, as page-tree or page-dump
+# reports it. <none> when the node has no such key, <missing> when there is
+# no such node.
+field() { G "$B/$1" | python3 -c "
 import json,sys
-ns=[n for n in json.load(sys.stdin)['nodes'] if n['path']=='$1']
-print(ns[0].get('$2','ABSENT') if ns else 'NO-NODE')"; }
+ns=[n for n in json.load(sys.stdin)['nodes'] if n['path']=='$2']
+print(ns[0].get('$3','<none>') if ns else '<missing>')"; }
+
+# settle gate: right after a deploy the pier answers at 5-10s and every
+# timing-adjacent assertion below would measure churn instead of behavior
+okr=0
+for i in $(seq 1 40); do
+  t0=$(date +%s%N)
+  curl -s -m 30 -o /dev/null -H "$CK" "$B"
+  el=$(( ($(date +%s%N) - t0) / 1000000 ))
+  if [ "$el" -lt 4000 ]; then okr=$((okr+1)); [ $okr -ge 3 ] && break; else okr=0; fi
+  sleep 5
+done
+[ $okr -lt 3 ] && { echo "ship never settled"; exit 1; }
 
 echo "==> editor routes"
 is "folder-new"            200 "$(sc -X POST "$B/folder-new?name=$P")"
@@ -37,13 +45,13 @@ is "create-only conflict"  409 "$(sc -X POST "$B/page-save?name=$P/note&type=md&
 has "page-source body"     '# api matrix' "$(G "$B/page-source?name=$P/note")"
 is "kind round-trips (md)" md    "$(G "$B/page-source?name=$P/note" | python3 -c 'import json,sys;print(json.load(sys.stdin)["kind"])')"
 is "no type stores hoon"   hoon  "$(G "$B/page-source?name=$P/untyped" | python3 -c 'import json,sys;print(json.load(sys.stdin)["kind"])')"
-is "tree carries the node" md    "$(G "$B/page-tree" | node_field "$P/note" kind)"
+is "tree carries the node" md    "$(field page-tree "$P/note" kind)"
 has "page-preview renders" '<h1' "$(curl -s -H "$CK" -X POST "$B/page-preview?type=md" --data-binary '# preview probe')"
 
 echo "==> sharing: page"
 is "share=shared"          200 "$(sc -X POST "$B/page-share?name=$P/note&mode=shared")"
 is "source sees shared"    shared "$(G "$B/page-source?name=$P/note" | python3 -c 'import json,sys;print(json.load(sys.stdin)["share"])')"
-is "tree sees shared"      shared "$(G "$B/page-tree" | node_field "$P/note" share)"
+is "tree sees shared"      shared "$(field page-tree "$P/note" share)"
 # an unknown mode is refused, and the page keeps the share it had (the
 # server has answered 400 since 2026-07-30). Pin that so a client sending a
 # bad mode can never silently *publish*
@@ -55,7 +63,7 @@ echo "==> sharing: tree (clearweb site publish)"
 is "share-tree clearweb"   200 "$(sc -X POST "$B/page-share-tree?name=$P&mode=clearweb")"
 sleep 2
 is "public /c/ read, no cookie" 200 "$(code "$B/c/$P/note")"
-is "tree reflects clearweb" clearweb "$(G "$B/page-tree" | node_field "$P/note" share)"
+is "tree reflects clearweb" clearweb "$(field page-tree "$P/note" share)"
 is "share-tree private"    200 "$(sc -X POST "$B/page-share-tree?name=$P&mode=private")"
 sleep 2
 is "public read revoked"   404 "$(code "$B/c/$P/note")"
@@ -120,7 +128,7 @@ is "  page inside"         200 "$(sc -X POST "$B/page-save?name=$P/mvdir/x&type=
 is "  move the folder"     200 "$(sc -X POST "$B/page-move?from=$P/mvdir&to=$P/mvdir2")"
 sleep 2
 has "  page landed"        'inside' "$(G "$B/page-source?name=$P/mvdir2/x")"
-is "  old folder gone"     NO-NODE "$(G "$B/page-tree" | node_field "$P/mvdir/x" kind)"
+is "  old folder gone"     "<missing>" "$(field page-tree "$P/mvdir/x" kind)"
 is "move under itself 400" 400 "$(sc -X POST "$B/page-move?from=$P/mvdir2&to=$P/mvdir2/sub")"
 is "move missing 404"      404 "$(sc -X POST "$B/page-move?from=$P/ghost-move&to=$P/anywhere")"
 is "page-move gated"       403 "$(code -X POST "$B/page-move?from=$P/mvdir2&to=$P/free")"
@@ -241,12 +249,168 @@ sleep 2
 UB="$(G "$B/bookmarks")"
 if printf '%s' "$UB" | grep -qF -- "$BM"; then bad "unbookmark removes it" "still listed"; else ok "unbookmark removes it"; fi
 
+echo "==> write lifecycle: moves, CAS, names"
+# Each of these is a bug that shipped and was caught later by a review pass
+# (#173-#178): silent move clobbering, the missing no-CAS spelling, invalid
+# names answered 400 after the client queued them.
+G -X POST "$B/page-save?name=$P/lc-src&type=md" --data-binary '# src' >/dev/null
+G -X POST "$B/page-save?name=$P/lc-dst&type=md" --data-binary '# dst' >/dev/null
+is "move onto an existing page is refused" 409 "$(sc -X POST "$B/page-move?from=$P/lc-src&to=$P/lc-dst")"
+is "move to a fresh name lands"            200 "$(sc -X POST "$B/page-move?from=$P/lc-src&to=$P/lc-moved")"
+has "batch base 0 is a no-CAS claim (applies clean)" '"conflicted":false' \
+  "$(G -X POST "$B/page-save-batch?report=1" --data-binary "[{\"name\":\"$P/lc-dst\",\"type\":\"md\",\"body\":\"# dst base0\",\"base\":0}]")"
+has "a genuinely stale base still conflicts (CAS intact)" '"conflicted":true' \
+  "$(G -X POST "$B/page-save-batch?report=1" --data-binary "[{\"name\":\"$P/lc-dst\",\"type\":\"md\",\"body\":\"# dst stale\",\"base\":999}]")"
+is "an invalid name is refused with 400"   400 "$(sc -X POST "$B/page-save?name=$P/Bad%20Name&type=md" --data-binary '# nope')"
+is "a create onto a taken name is refused with 409" 409 "$(sc -X POST "$B/page-save?name=$P/lc-dst&type=md&new=1" --data-binary '# claim')"
+
+echo "==> publish lifecycle: a shared page serves, moves and unpublishes"
+# deleted pages left published, moved shared pages left unpublished, and the
+# 'urbit' scope label privatizing restores. Read back through the reader at
+# this ship's own urb:// key.
+SHIP="$(G "$URL/~/host")"
+view() { G "$B?url=urb%3A%2F%2F$SHIP%2F$1&u=lc$RANDOM"; }
+G -X POST "$B/page-save?name=$P/lc-pub&type=md" --data-binary '# lifecycle pub body' >/dev/null
+is "the archive label 'urbit' is accepted as shared" 200 "$(sc -X POST "$B/page-share?name=$P/lc-pub&mode=urbit")"
+sleep 3
+has "a shared page serves at its urb:// key" 'lifecycle pub body' "$(view "$P%2Flc-pub")"
+G -X POST "$B/page-move?from=$P/lc-pub&to=$P/lc-pub2" >/dev/null
+sleep 3
+has "a MOVED shared page serves at its NEW key" 'lifecycle pub body' "$(view "$P%2Flc-pub2")"
+G -X POST "$B/page-del?name=$P/lc-pub2" >/dev/null
+sleep 3
+hasnt "a DELETED shared page stops serving" 'lifecycle pub body' "$(view "$P%2Flc-pub2")"
+
+echo "==> mesa: the remote-scry namespace backfill"
+# backfill answers and reports a count. Harmless to re-run (the route's own
+# comment): each re-grow lands a fresh case on the same rev spur.
+r="$(G -X POST "$B/pub-regrow")"
+has "pub-regrow answers ok" '"ok":true' "$r"
+has "pub-regrow reports a grown count" '"grown":' "$r"
+# The rest of mesa needs a second ship, so it is a manual procedure, not a
+# check. Do not fake it with a single-ship curl.
+#
+# A publish must land a namespace binding readable by keen. The spar path
+# the reader builds is +keen-path. Note the EMPTY SEGMENT after the agent
+# name. It is load-bearing. Without it gall routes into the agent's
+# +on-peek instead of the scry farm, and the keen parks forever. The path:
+#     /g/x/1/grubbery//1/pub/page/<name>/<rev>
+# From a peer's dojo (a keen is answered by the OTHER ship's kernel):
+#     -keen [~tyr /g/x/1/grubbery//1/pub/page/<name>/<rev>]
+#   expect a [%gmi body] page. After page-del, a keen at the NEXT cass
+#   (rev+1) answers the [%del ''] tombstone the delete grew.
+#
+# READ side (phase C), peer reads:
+#   1. on ~peer (running the same lattice): page-save a page, page-share it.
+#   2. on this ship: POST /follow?ship=~peer. GET /follows must list the
+#      peer, and the entry must survive a restart. The follow set is one
+#      covering grub, not fiber state.
+#   3. read the page here (GET /apps/lattice?url=urb://~peer/<name>). Expect
+#      the body.
+#   4. edit the page on ~peer, re-read here. The new body must come back.
+#      The reader holds no cache, so there is nothing to invalidate.
+#   5. stop ~peer entirely and read. +read-pub-index-remote answers ~ and
+#      the read fails bounded, on +peek-remote-wait's own deadline. It must
+#      never park the request fiber waiting on a ship that is gone.
+#
+# NOT converted, and not pending: /fetch, the web reader and the /x/
+# explorer stay on peek-remote, since no rev is knowable in a per-request
+# fiber (see the comment on +read-page-body). Every write path (comments,
+# /remote-save, share notices) stays on the weir-gated poke by design.
+#
+# SUBSCRIPTION leg (mesa D2), wave -> keen. The reader rides ONE keep on the
+# peer's page gmi grub. The keep's wave (the initial bond AND every edit)
+# carries the grub's cass = the rev the publisher last grew, and the fiber
+# keens the body at exactly that rev. No pointer, no seq, no peek fallback.
+# With ~peer running this same overlay:
+#   1. on ~peer: page-save + page-share a page P.
+#   2. on this ship: POST /sub?url=urb://~peer/P. The BOND wave alone must
+#      carry P's current cass and fetch the body at that rev, with NO edit
+#      on ~peer. That is the initial-bond leg. /subs must list P.
+#   3. edit P on ~peer. Expect here: the wave carries P's new cass, the
+#      fiber keens /pub/page/P/<rev> (publisher log shows NO lattice peek),
+#      and lrev advances to that rev.
+#   4. reboot THIS ship, then edit P on ~peer while it is down, restart.
+#      The re-armed keep's bond wave carries the newest cass and the missed
+#      edit lands. Offline catch-up rides the same bond leg as step 2.
+#   5. page-del P on ~peer. The delete grows a [%del ''] tombstone at the
+#      post-cull cass. The wave names it and the keen here hits it, so the
+#      delete is noticed as it happens. A re-save of P after that must
+#      still be picked up (rev keeps rising past the tombstone).
+#   6. the mixed-fleet limitation, BY DESIGN: subscribe to a peer that
+#      does not mirror (old lattice / never regrown). Every wave keens an
+#      unbound spur. Each wave costs one retry then a give-up (~20s in the
+#      fiber, lrev NOT advanced) and nothing lands. The abandoned
+#      request is %yawn-cancelled, so parked keens never pile up on the
+#      publisher. The subscription starts working the moment the peer runs
+#      /pub-regrow.
+
+echo "==> display names: create"
+# folder-new and page-save take ?dname=. page-tree and page-dump carry it,
+# and a name that was valid as typed carries none.
+R="dn$$"                     # its own namespace, deleted at the end of this
+is "folder-new with a dname"      200 "$(sc -X POST "$B/folder-new?name=$R/my-folder&dname=My%20Folder")"
+sleep 1
+is "dump: folder dname"           "My Folder" "$(field page-dump "$R/my-folder" dname)"
+is "tree: folder dname"           "My Folder" "$(field page-tree "$R/my-folder" dname)"
+is "page-save with a dname"       200 "$(sc -X POST "$B/page-save?name=$R/my-folder/my-page&type=md&new=1&dname=My%20Page" --data-binary '# hi')"
+is "plain page-save"              200 "$(sc -X POST "$B/page-save?name=$R/my-folder/plain&type=md&new=1" --data-binary '# plain')"
+sleep 1
+is "dump: page dname"             "My Page" "$(field page-dump "$R/my-folder/my-page" dname)"
+is "a valid name stores no dname" "<none>" "$(field page-dump "$R/my-folder/plain" dname)"
+is "page fields intact"           md "$(field page-dump "$R/my-folder/my-page" kind)"
+
+echo "==> display names: page-move"
+# '' clears, a new dname applies, a same-path move sets the name alone, and
+# a folder move carries the names of everything under it
+is "move (clear)"                 200 "$(sc -X POST "$B/page-move?from=$R/my-folder/my-page&to=$R/my-folder/renamed&dname=")"
+sleep 1
+is "'' cleared the dname"         "<none>" "$(field page-dump "$R/my-folder/renamed" dname)"
+is "move (set)"                   200 "$(sc -X POST "$B/page-move?from=$R/my-folder/renamed&to=$R/my-folder/other-name&dname=Other%20Name")"
+sleep 1
+is "new dname applied"            "Other Name" "$(field page-dump "$R/my-folder/other-name" dname)"
+is "same-path move"               200 "$(sc -X POST "$B/page-move?from=$R/my-folder/plain&to=$R/my-folder/plain&dname=Plain%20Page")"
+is "same-path folder move"        200 "$(sc -X POST "$B/page-move?from=$R/my-folder&to=$R/my-folder&dname=Folder%20Renamed")"
+is "same-path without dname still 400" 400 "$(sc -X POST "$B/page-move?from=$R/my-folder/plain&to=$R/my-folder/plain")"
+sleep 1
+is "page dname set in place"      "Plain Page" "$(field page-dump "$R/my-folder/plain" dname)"
+is "folder dname set in place"    "Folder Renamed" "$(field page-dump "$R/my-folder" dname)"
+is "sub folder with a dname"      200 "$(sc -X POST "$B/folder-new?name=$R/my-folder/sub&dname=Sub%20Folder")"
+is "folder move"                  200 "$(sc -X POST "$B/page-move?from=$R/my-folder&to=$R/moved&dname=Moved%20Folder")"
+sleep 2
+is "moved folder has the new dname" "Moved Folder" "$(field page-dump "$R/moved" dname)"
+is "subfolder dname carried"      "Sub Folder" "$(field page-dump "$R/moved/sub" dname)"
+is "page dname carried"           "Other Name" "$(field page-dump "$R/moved/other-name" dname)"
+is "second page dname carried"    "Plain Page" "$(field page-dump "$R/moved/plain" dname)"
+is "source is gone"               "<missing>" "$(field page-dump "$R/my-folder/plain" dname)"
+
+echo "==> display names: per segment, the folders a save creates get theirs too"
+# "$R/Sub Folder/Deep Page" typed -> name $R/sub-folder/deep-page, dnames "/Sub Folder/Deep Page"
+is "nested page-save"             200 "$(sc -X POST "$B/page-save?name=$R/sub-folder/deep-page&type=md&new=1&dname=Deep%20Page&dnames=%2FSub%20Folder%2FDeep%20Page" --data-binary '# deep')"
+sleep 1
+is "the folder the save made has its display name" "Sub Folder" "$(field page-dump "$R/sub-folder" dname)"
+is "the page has its display name" "Deep Page" "$(field page-dump "$R/sub-folder/deep-page" dname)"
+is "a segment that was fine as typed gets none" "<none>" "$(field page-dump "$R" dname)"
+# a second page inside, typed with the plain slug, must not clear the folder's name
+is "a second page inside"         200 "$(sc -X POST "$B/page-save?name=$R/sub-folder/more&type=md&new=1" --data-binary '# more')"
+sleep 1
+is "a plain save inside keeps the folder's name" "Sub Folder" "$(field page-dump "$R/sub-folder" dname)"
+# a move into a new typed folder names that folder
+is "move into a new folder"       200 "$(sc -X POST "$B/page-move?from=$R/sub-folder/more&to=$R/new-dir/more&dname=&dnames=%2FNew%20Dir%2F")"
+sleep 1
+is "the folder the move made has its display name" "New Dir" "$(field page-dump "$R/new-dir" dname)"
+is "the moved page has none"      "<none>" "$(field page-dump "$R/new-dir/more" dname)"
+# nested folder-new names every new segment
+is "nested folder-new"            200 "$(sc -X POST "$B/folder-new?name=$R/alpha-one/beta-two&dnames=%2FAlpha%20One%2FBeta%20Two&dname=Beta%20Two")"
+sleep 1
+is "outer folder named"           "Alpha One" "$(field page-dump "$R/alpha-one" dname)"
+is "inner folder named"           "Beta Two" "$(field page-dump "$R/alpha-one/beta-two" dname)"
+is "display-name pages deleted"   200 "$(sc -X POST "$B/page-del?name=$R")"
+
 echo "==> recursive folder delete"
 is "page-del on folder" 200 "$(sc -X POST "$B/page-del?name=$P")"
 sleep 2
-is "subtree gone from tree" NO-NODE "$(G "$B/page-tree" | node_field "$P/note" kind)"
+is "subtree gone from tree" "<missing>" "$(field page-tree "$P/note" kind)"
 is "page-tree healthy after everything" 200 "$(sc "$B/page-tree")"
 
-echo
-if [ "$fail" = 0 ]; then echo "api-matrix PASSED"; else echo "api-matrix FAILED"; fi
-exit "$fail"
+finish

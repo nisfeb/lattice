@@ -14,29 +14,20 @@
 
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync, statSync } from 'fs';
 import { execFileSync } from 'child_process';
-import { fileURLToPath } from 'url';
-import { dirname, join, relative } from 'path';
+import { join, relative } from 'path';
 import { tmpdir } from 'os';
-
-const here = dirname(fileURLToPath(import.meta.url));
-const src = readFileSync(
-  join(here, '../code/nex/lattice/ui-app/vault.js'), 'utf8');
+import { makeCheck, cut } from './lib/check.mjs';
 
 // the pure half only: everything from the encoder down to the end of the tar
 // reader/writer. The rest of vault.js talks to the ship and the DOM. The
 // consts in between (cfg, mutate, uploadPages) reference window/fetch/document
 // only inside function bodies, so defining them here is harmless.
-const a = src.indexOf('const te = new TextEncoder();');
-const b = src.indexOf('async function restoreVault');
-if (a < 0 || b < 0) { console.error('could not find the tar code in vault.js'); process.exit(2); }
+const tarCode = cut('code/nex/lattice/ui-app/vault.js',
+  /const te = new TextEncoder\(\);[\s\S]*?(?=async function restoreVault)/, 'the tar code');
 const { tarBlob, splitName, untar } =
-  new Function(`${src.slice(a, b)}\nreturn { tarBlob, splitName, untar };`)();
+  new Function(`${tarCode}\nreturn { tarBlob, splitName, untar };`)();
 
-let fails = 0;
-const eq = (name, got, want) => {
-  if (got === want) console.log('  ok   - ' + name);
-  else { console.log(`  FAIL - ${name}\n         want ${JSON.stringify(want)}\n         got  ${JSON.stringify(got)}`); fails++; }
-};
+const { eq, done } = makeCheck();
 
 let tar = 'tar';
 try { execFileSync(tar, ['--version'], { stdio: 'ignore' }); }
@@ -226,5 +217,4 @@ console.log('\nrefusing a corrupt archive');
   eq('a flipped byte is caught by the checksum', /checksum/.test(threw), true);
 }
 
-console.log(fails ? `\n${fails} check(s) FAILED` : '\nall checks passed');
-process.exit(fails ? 1 : 0);
+done();

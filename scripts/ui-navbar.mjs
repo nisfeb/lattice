@@ -4,29 +4,16 @@
 //  bookmarks/settings, Go beside the omnibar, and Enter == Go.
 //
 //  Env:    LATTICE_URL, LATTICE_COOKIE, CHROME   (as ui-matrix.mjs)
-import { readFileSync } from 'fs';
-import { homedir } from 'os';
+import { shipEnv, launchBrowser, openPage, makeCheck, sleep, shipName, seed } from './lib/harness.mjs';
 
-const BASE = (process.env.LATTICE_URL || 'http://localhost:8080').replace(/\/$/, '');
-const CKF = (process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/cookie')
-  .replace(/^~/, homedir());
-const CHROME = process.env.CHROME || '/usr/bin/chromium';
-const puppeteer = (await import('puppeteer-core')).default;
-const ck = readFileSync(CKF, 'utf8').trim();
-const [cn, ...cr] = ck.split('=');
-let fails = 0;
-const check = (m, c, d) => {
-  console.log((c ? '  ok   - ' : '  FAIL - ') + m + (c || !d ? '' : ' (' + d + ')'));
-  if (!c) fails++;
-};
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const browser = await puppeteer.launch({
-  executablePath: CHROME, headless: 'new', args: ['--no-sandbox'],
-});
-const p = await browser.newPage();
-await p.setCookie({ name: cn, value: cr.join('='), domain: new globalThis.URL(BASE).hostname, path: '/' });
-const HOME = BASE + '/apps/lattice';
-const PAGE = HOME + '?url=' + encodeURIComponent('urb://~tyr/harnessdir/one');
+const env = shipEnv();
+const check = makeCheck();
+const SHIP = await shipName(env);
+await seed(env, [['harnessdir/one', '# one'], ['harnessdir/other', '# other']]);
+const browser = await launchBrowser();
+const p = await openPage(browser, env);
+const HOME = env.base + '/apps/lattice';
+const PAGE = HOME + '?url=' + encodeURIComponent('urb://' + SHIP + '/harnessdir/one');
 const st = () => p.evaluate(() => ({
   b: document.getElementById('navb')?.disabled,
   f: document.getElementById('navf')?.disabled,
@@ -92,7 +79,7 @@ check('and closes on a click elsewhere', s.menuHidden === true);
 // above leaves headless focus in a state that eats synthetic keys)
 await p.goto(PAGE, { waitUntil: 'domcontentloaded', timeout: 60000 });
 await p.click('.bar input[name=url]', { clickCount: 3 });
-await p.type('.bar input[name=url]', 'urb://~tyr/harnessdir/other');
+await p.type('.bar input[name=url]', 'urb://' + SHIP + '/harnessdir/other');
 await p.keyboard.press('Enter');
 // poll rather than waitForNavigation: SW-served navigations can commit
 // before the waiter attaches, and the suggest box may be mid-fetch
@@ -104,5 +91,4 @@ for (let i = 0; i < 20 && !landed; i++) {
 check('Enter in the omnibar navigates like Go', landed, p.url());
 
 await browser.close();
-console.log(fails === 0 ? '\nall checks passed' : '\n' + fails + ' FAILURES');
-process.exit(fails === 0 ? 0 : 1);
+check.done();

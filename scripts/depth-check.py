@@ -20,6 +20,7 @@ it from a constant.
 """
 import re, sys
 from collections import defaultdict
+import hoonarms
 
 path = sys.argv[1]
 show_all = '--all' in sys.argv
@@ -28,12 +29,7 @@ raw = open(path).read().split('\n')
 #  graph from every lowercase word it saw, so prose in a comment - and this
 #  file is mostly prose - wired every arm to every other and reported 40
 #  hazards where there were a handful. Strip both before reading calls.
-def strip(l):
-    l = re.sub(r"'[^']*'", "''", l)
-    l = re.sub(r'"[^"]*"', '""', l)
-    i = l.find('::')
-    return l[:i] if i >= 0 else l
-lines = [strip(l) for l in raw]
+lines = [hoonarms.code(l) for l in raw]
 
 #  ── the dispatch arms, and the depth each one runs at ──────────────────
 #  a case reads [<path pattern> <name pattern>]; the path half's segment
@@ -90,12 +86,9 @@ for i in range(of_a, of_b):
             entries[cur_case][1].append(n)
 
 #  ── every arm, its body, and the arms it calls ─────────────────────────
-arms, order = {}, []
-cur = None
-for i,l in enumerate(lines):
-    m = re.match(r'^\+\+  ([a-z][a-z0-9-]*)', l)
-    if m: cur = m.group(1); arms[cur] = []; order.append(cur)
-    elif cur: arms[cur].append(l)
+#  the body without its `++  name` line: FIXED below matches names like
+#  app-base, and an arm called app-base is not a reader of itself
+arms = {a: b[1:] for a, b in hoonarms.arms(lines).items()}
 CALL = re.compile(r'\(([a-z][a-z0-9-]{2,})[\s)]|bind:m\s+([a-z][a-z0-9-]{2,})\s*$|^\s+([a-z][a-z0-9-]{2,})\s*$')
 def callees(body):
     #  Calls, AND arms passed as values. +fs-op is handed to lick-serve as a

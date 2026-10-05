@@ -13,28 +13,18 @@
 //
 // Usage:  node scripts/ui-md.mjs
 
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { makeCheck, read } from './lib/check.mjs';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const src = readFileSync(
-  join(here, '../ui-src/lattice/59-md.js'), 'utf8');
-const mdToHtml = new Function(`${src}\nreturn mdToHtml;`)();
+const mdToHtml = new Function(`${read('ui-src/lattice/59-md.js')}\nreturn mdToHtml;`)();
 
-let fails = 0;
-const ok = (n) => console.log('  ok   - ' + n);
-const bad = (n, got, want) => {
-  console.log(`  FAIL - ${n}\n         want ${JSON.stringify(want)}\n         got  ${JSON.stringify(got)}`);
-  fails++;
-};
+const check = makeCheck();
 const has = (name, input, needle) => {
   const got = mdToHtml(input);
-  got.includes(needle) ? ok(name) : bad(name, got, 'containing ' + needle);
+  check(name, got.includes(needle), `want containing ${JSON.stringify(needle)} got ${JSON.stringify(got)}`);
 };
 const hasnt = (name, input, needle) => {
   const got = mdToHtml(input);
-  !got.includes(needle) ? ok(name) : bad(name, got, 'NOT containing ' + needle);
+  check(name, !got.includes(needle), `want NOT containing ${JSON.stringify(needle)} got ${JSON.stringify(got)}`);
 };
 
 console.log('safety: a document is text, never markup');
@@ -92,8 +82,7 @@ console.log('\nthings that must not throw');
 for (const [n, v] of [['empty', ''], ['null', null], ['undefined', undefined],
   ['only a fence', '```'], ['unclosed fence', '```\nx'], ['lone pipe', '|'],
   ['table marker only', '---|---'], ['deep nesting', '- a\n  - b\n    - c']]) {
-  try { mdToHtml(v); ok('survives ' + n); } catch (e) { bad('survives ' + n, e.message, 'no throw'); }
+  try { mdToHtml(v); check.ok('survives ' + n); } catch (e) { check.bad('survives ' + n, 'threw ' + e.message); }
 }
 
-console.log(fails ? `\n${fails} check(s) FAILED` : '\nall checks passed');
-process.exit(fails ? 1 : 0);
+check.done();

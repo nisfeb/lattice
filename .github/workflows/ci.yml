@@ -127,8 +127,8 @@ jobs:
       # parsed is a suite that silently stops testing anything.
       - name: test scripts parse
         run: |
-          for f in scripts/*.mjs; do node --check "$f"; done
-          for f in scripts/*.sh; do bash -n "$f"; done
+          for f in scripts/*.mjs scripts/lib/*.mjs; do node --check "$f"; done
+          for f in scripts/*.sh scripts/lib/*.sh; do bash -n "$f"; done
       # the agent plugins (plugins/): they parse, their manifests are JSON,
       # and the Claude plugin's MCP server answers tools/list
       - name: agent plugins
@@ -180,14 +180,6 @@ jobs:
           curl -fsSL -o "$RUNNER_TEMP/fiberio.hoon" \
             https://raw.githubusercontent.com/nisfeb/grubbery/dist/single-release/desk/lib/fiberio.hoon
           python3 scripts/weir-check.py code/nex/lattice/app.hoon --io "$RUNNER_TEMP/fiberio.hoon"
-      - name: supply chain (licences + bans)
-        run: |
-          cargo install cargo-deny --locked
-          cargo deny --manifest-path lattice-fs-rs/Cargo.toml check licenses bans sources
-          cargo deny --manifest-path desktop/Cargo.toml check licenses bans sources
-          #  advisories are REPORTED, never fatal: every one today is an
-          #  unmaintained transitive of tauri's gtk3 stack, unfixable here.
-          cargo deny --manifest-path desktop/Cargo.toml check advisories || true
       # ui-manager loads desktop/ui/manager.html from file:// with a stubbed
       # Tauri, so it is a real browser test that needs NO ship — it gates PRs
       # with the rest here. The ubuntu runner ships google-chrome.

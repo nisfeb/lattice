@@ -13,11 +13,6 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
-    inputs:
-      draft:
-        description: 'create the release as a draft'
-        type: boolean
-        default: true
 
 permissions:
   contents: write        # needed to create the release and upload assets

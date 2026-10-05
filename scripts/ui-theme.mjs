@@ -7,13 +7,10 @@
 import { readFileSync } from 'fs';
 import { createHash, webcrypto } from 'crypto';
 import vm from 'vm';
+import { makeCheck } from './lib/check.mjs';
 
 const src = readFileSync(new URL('../code/nex/lattice/ui-app/theme.js', import.meta.url), 'utf8');
-let fails = 0;
-const check = (name, ok, detail = '') => {
-  console.log((ok ? '  ok   ' : '  FAIL ') + name + (ok ? '' : '  ' + detail));
-  if (!ok) fails++;
-};
+const check = makeCheck();
 
 // ship: scry path after /~/scry/ -> JSON body, or any other url -> its bytes
 // (absent = 404). offline: every fetch throws. faces: the page fonts added.
@@ -247,5 +244,4 @@ const berkeley = (extra = {}) => Object.assign({ fonts: [{ id: fontId, family: '
   check('a file Talon says was removed is not fetched', faces.length === 0, JSON.stringify(faces));
 }
 
-console.log(fails ? `\n${fails} FAILED` : '\nall passed');
-process.exit(fails ? 1 : 0);
+check.done();

@@ -7,13 +7,10 @@
 // Usage:  node scripts/ui-shared.mjs
 import { readFileSync } from 'fs';
 import vm from 'vm';
+import { makeCheck } from './lib/check.mjs';
 
 const src = readFileSync(new URL('../ui-src/lattice/69-shared.js', import.meta.url), 'utf8');
-let fails = 0;
-const check = (name, ok, detail = '') => {
-  console.log((ok ? '  ok   ' : '  FAIL ') + name + (ok ? '' : '  ' + detail));
-  if (!ok) fails++;
-};
+const check = makeCheck();
 
 function El(tag) { this.tag = tag; this.kids = []; this.style = {}; this.className = ''; this.text = ''; }
 Object.defineProperty(El.prototype, 'textContent', {
@@ -76,5 +73,4 @@ const items = [
     JSON.stringify(opened) === JSON.stringify([[D + '/page/site/logging/code', '~nec']]), JSON.stringify(opened));
 }
 
-console.log(fails ? `\n${fails} FAILED` : '\nall passed');
-process.exit(fails ? 1 : 0);
+check.done();

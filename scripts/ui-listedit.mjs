@@ -9,18 +9,13 @@
 //
 // Usage:  node scripts/ui-listedit.mjs
 
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { makeCheck, read } from './lib/check.mjs';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const src = readFileSync(
-  join(here, '../ui-src/lattice/22-listedit.js'), 'utf8');
+const src = read('ui-src/lattice/22-listedit.js');
 const listEnter = new Function(`${src}\nreturn listEnter;`)();
 const listTab = new Function(`${src}\nreturn listTab;`)();
 
-let fails = 0;
-const show = (s) => JSON.stringify(s);
+const check = makeCheck();
 
 // Drive it the way a keypress does: "|" marks the caret in the input, and the
 // expected string carries "|" where the caret must land. Reading a case is
@@ -35,11 +30,7 @@ function press(name, input, want, flavor) {
     const out = value.slice(0, r.from) + r.text + value.slice(r.to);
     got = out.slice(0, r.caret) + '|' + out.slice(r.caret);
   }
-  if (got === want) console.log('  ok   - ' + name);
-  else {
-    console.log(`  FAIL - ${name}\n         want ${show(want)}\n         got  ${show(got)}`);
-    fails++;
-  }
+  check.eq(name, got, want);
 }
 
 console.log('unordered');
@@ -183,11 +174,7 @@ function pressRange(name, input, want) {
     const out = value.slice(0, r.from) + r.text + value.slice(r.to);
     got = out.slice(0, r.caret) + '|' + out.slice(r.caret);
   }
-  if (got === want) console.log('  ok   - ' + name);
-  else {
-    console.log(`  FAIL - ${name}\n         want ${show(want)}\n         got  ${show(got)}`);
-    fails++;
-  }
+  check.eq(name, got, want);
 }
 pressRange('within one item', '- one| tw|o', '- one\n- |o');
 pressRange('across two items', '- one|\n- tw|o', '- one\n- |o');
@@ -243,11 +230,7 @@ function tab(name, input, want, dir, flavor = 'md') {
     if (r.caretEnd == null) got = out.slice(0, r.caret) + '|' + out.slice(r.caret);
     else got = out.slice(0, r.caret) + '[' + out.slice(r.caret, r.caretEnd) + ']' + out.slice(r.caretEnd);
   }
-  if (got === want) console.log('  ok   - ' + name);
-  else {
-    console.log(`  FAIL - ${name}\n         want ${show(want)}\n         got  ${show(got)}`);
-    fails++;
-  }
+  check.eq(name, got, want);
 }
 
 console.log('\ntab: indent');
@@ -278,5 +261,4 @@ tab('non-list lines inside the selection stay put',
 tab('a selection outdents together',
   '[  - a\n  - b]', '[- a\n- b]', -1);
 
-console.log(fails ? `\n${fails} check(s) FAILED` : '\nall checks passed');
-process.exit(fails ? 1 : 0);
+check.done();

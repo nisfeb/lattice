@@ -138,7 +138,10 @@ try {
   // ── 1. an invalid name is refused BEFORE it can queue ─────────────────────
   shipDown = true;
   await page.evaluate(() => document.getElementById('newf') ? document.getElementById('newf').click() : null);
-  await nameAndType('qh/Bad Name', '# doc the drain would have discarded');
+  // a name with nothing to slug: a typed name with capitals or spaces is
+  // saved under its slug with the typed text as its display name, so only
+  // one that slugs to nothing is still refused
+  await nameAndType('qh/!!!', '# doc the drain would have discarded');
   await page.evaluate(() => document.getElementById('save').click());
   await sleep(2000);
   check('an invalid name is refused loudly', /bad name/.test(await status()), await status());

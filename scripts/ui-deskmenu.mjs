@@ -12,42 +12,23 @@
 //  Both are checked here. The id contract is checked without a ship; the
 //  behaviour needs one.
 //
-//  Usage: node scripts/ui-deskmenu.mjs      (defaults to ~nec on :8080)
-import { readFileSync } from 'fs';
-import { homedir } from 'os';
+//  Usage: node scripts/ui-deskmenu.mjs      (defaults to the harness ship on :8080)
+import { shipEnv, launchBrowser, openPage, makeCheck } from './lib/harness.mjs';
 
-const BASE = process.env.LATTICE_UI || 'http://localhost:8080';
-const CKF = process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/nec-cookie';
-const APP = BASE + '/apps/lattice/app';
-
-let fails = 0;
-const check = (m, c, d) => {
-  console.log((c ? '  ok   - ' : '  FAIL - ') + m + (c || !d ? '' : ' (' + d + ')'));
-  if (!c) fails++;
-};
+const env = shipEnv();
+const APP = env.app;
+const check = makeCheck();
 
 // (the menu-id contract is checked ship-free in scripts/desktop-commands.mjs)
 
 // ── 2. behaviour, against a ship ──────────────────────────────────────────
-let puppeteer;
-try { puppeteer = (await import('puppeteer-core')).default; }
-catch { console.error('puppeteer-core missing: npm i --no-save puppeteer-core'); process.exit(2); }
-
-const ck = readFileSync(CKF, 'utf8').trim();
-const [cn, ...cr] = ck.split('=');
 const MOVED = ['newfile', 'newfolder', 'newtmpl', 'upfiles', 'updir', 'save'];
 
-const browser = await puppeteer.launch({
-  executablePath: process.env.CHROME || '/usr/bin/chromium',
-  headless: 'new',
-  args: ['--no-sandbox'],
-});
+const browser = await launchBrowser();
 
 /** Boot the app, optionally pretending to be the desktop shell. */
 const boot = async (desktop) => {
-  const p = await browser.newPage();
-  await p.setViewport({ width: 1400, height: 900 });
-  await p.setCookie({ name: cn, value: cr.join('='), domain: new globalThis.URL(BASE).hostname, path: '/' });
+  const p = await openPage(browser, env, { viewport: { width: 1400, height: 900 } });
   if (desktop) {
     // invoke is stubbed because 10-shell.js and 70-upload.js route through it
     // on desktop. __LATTICE_FILE_MENU__ is what commands.rs injects, and is
@@ -158,5 +139,4 @@ if (plus === null) {
 await desk.close();
 
 await browser.close();
-console.log(fails ? '\n' + fails + ' FAILED' : '\nall checks passed');
-process.exit(fails ? 1 : 0);
+check.done();

@@ -12,33 +12,21 @@
 //  document you just opened. If it only paints when the ship answers, this
 //  fails — which is precisely the regression.
 //
-//  Usage: node scripts/ui-preview-open.mjs      (defaults to ~nec on :8080)
-import { readFileSync } from 'fs';
-import { homedir } from 'os';
+//  Usage: node scripts/ui-preview-open.mjs      (defaults to the harness ship on :8080)
+import { shipEnv, launchBrowser, openPage, makeCheck } from './lib/harness.mjs';
 
-const pp = (await import('puppeteer-core')).default;
-const BASE = process.env.LATTICE_UI || 'http://localhost:8080';
-const CKF = process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/nec-cookie';
-const APP = BASE + '/apps/lattice/app';
+const env = shipEnv();
+const APP = env.app;
 //  how long the ship is made to take. Longer than the budget below, so a pass
 //  cannot be a fast server answer wearing a local paint's clothes.
 const SHIP_DELAY = 9000;
 const BUDGET = 2000;
 
-const ck = readFileSync(CKF, 'utf8').trim();
-const [cn, ...cr] = ck.split('=');
 const RUN = 'prevopen' + (process.pid % 100000);
-let fails = 0;
-const check = (m, c, d) => {
-  console.log((c ? '  ok   - ' : '  FAIL - ') + m + (c || !d ? '' : ' (' + d + ')'));
-  if (!c) fails++;
-};
+const check = makeCheck();
 
-const b = await pp.launch({ executablePath: process.env.CHROME || '/usr/bin/chromium', headless: 'new', args: ['--no-sandbox'] });
-const p = await b.newPage();
-await p.setViewport({ width: 1400, height: 900 });
-await p.setCookie({ name: cn, value: cr.join('='), domain: new URL(BASE).hostname, path: '/' });
-const sleep = (ms) => new Promise((z) => setTimeout(z, ms));
+const b = await launchBrowser();
+const p = await openPage(b, env, { viewport: { width: 1400, height: 900 } });
 const goto = async () => {
   await p.goto(APP, { waitUntil: 'domcontentloaded', timeout: 90000 });
   await p.waitForFunction(() => document.querySelectorAll('#treelist a.pg').length > 0, { timeout: 90000 });
@@ -72,7 +60,7 @@ const pair = await p.evaluate(async () => {
 });
 check('found two existing pages with distinguishable text', !!pair,
   pair ? '' : 'no suitable pair in the dump');
-if (!pair) { await b.close(); console.log('\n' + fails + ' FAILED'); process.exit(1); }
+if (!pair) { await b.close(); check.done(); }
 console.log('    using ' + pair.a + ' ("' + pair.wa + '") and ' + pair.b + ' ("' + pair.wb + '")');
 const A = pair.a;
 const B = pair.b;
@@ -145,5 +133,4 @@ await p.setRequestInterception(false);
 //  nothing to clean up: this drives existing pages and never writes. The typing
 //  check edits the textarea only, and no save is issued.
 await b.close();
-console.log(fails ? '\n' + fails + ' FAILED' : '\nall checks passed');
-process.exit(fails ? 1 : 0);
+check.done();

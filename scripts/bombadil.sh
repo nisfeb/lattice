@@ -8,7 +8,8 @@
 #
 # Runs with scripts/bombadil-spec.js unless LATTICE_SPEC says otherwise. The
 # spec steers exploration into the sharing flow (grants to ~nec). It adds
-# lattice properties (shared-with-me dedupe, saving/granting resolve <30s).
+# lattice properties (saving/granting resolve <30s, full screen keeps an exit,
+# the conflicts badge counts something).
 #
 # Usage: scripts/bombadil.sh [minutes] [output-dir]
 #   cookie: ~/.config/lattice-fs/cookie (tyr). Override with LATTICE_COOKIE_FILE.

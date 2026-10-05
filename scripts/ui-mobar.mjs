@@ -7,37 +7,21 @@
 //  silent: a control that is hidden with no working replacement is just
 //  gone, and nothing throws (the tree-+ bug shipped exactly that way).
 //
-//  Needs a ship with at least one folder ("harnessdir" is seeded on ~tyr).
+//  Seeds harnessdir/one, so the ship has at least one folder.
 //
-//  Usage:  LATTICE_UI=http://localhost:8081 \
+//  Usage:  LATTICE_URL=http://localhost:8081 \
 //          LATTICE_COOKIE=~/.config/lattice-fs/cookie node scripts/ui-mobar.mjs
-import { readFileSync } from 'fs';
-import { homedir } from 'os';
+import { shipEnv, launchBrowser, openPage, makeCheck, seed } from './lib/harness.mjs';
 
-const BASE = process.env.LATTICE_UI || 'http://localhost:8080';
-const CKF = (process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/nec-cookie')
-  .replace(/^~/, homedir());
-const APP = BASE + '/apps/lattice/app';
-
-let fails = 0;
-const check = (m, c, d) => {
-  console.log((c ? '  ok   - ' : '  FAIL - ') + m + (c || !d ? '' : ' (' + d + ')'));
-  if (!c) fails++;
-};
-
-const puppeteer = (await import('puppeteer-core')).default;
-const ck = readFileSync(CKF, 'utf8').trim();
-const [cn, ...cr] = ck.split('=');
-const browser = await puppeteer.launch({
-  executablePath: process.env.CHROME || '/usr/bin/chromium',
-  headless: 'new', args: ['--no-sandbox'],
-});
+const env = shipEnv();
+await seed(env, [['harnessdir/one', '# one']]);
+const check = makeCheck();
+const browser = await launchBrowser();
 
 const boot = async (width, height) => {
-  const p = await browser.newPage();
-  await p.setViewport({ width, height, isMobile: width < 820, hasTouch: width < 820 });
-  await p.setCookie({ name: cn, value: cr.join('='), domain: new globalThis.URL(BASE).hostname, path: '/' });
-  await p.goto(APP, { waitUntil: 'domcontentloaded', timeout: 90000 });
+  const p = await openPage(browser, env,
+    { viewport: { width, height, isMobile: width < 820, hasTouch: width < 820 } });
+  await p.goto(env.app, { waitUntil: 'domcontentloaded', timeout: 90000 });
   await p.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0,
     { timeout: 90000 });
   return p;
@@ -78,11 +62,15 @@ await m.evaluate(() => document.getElementById('qclose').click());
 
 // label: open a page, the label says so, tapping it is rename
 await m.evaluate(() => { document.querySelector('.mtabs button[data-mv="tree"]').click(); });
-await m.evaluate(() => { document.querySelector('#treelist a.pg').click(); });
+const opened = await m.evaluate(() => {
+  const a = document.querySelector('#treelist a.pg');
+  a.click();
+  return new URL(a.href, location.href).searchParams.get('name');
+});
 await m.waitForFunction(() => document.getElementById('mpath').textContent !== 'no page open',
   { timeout: 15000 });
 const label = await m.evaluate(() => document.getElementById('mpath').textContent);
-check('the label carries the open page', /harnessdir\//.test(label), label);
+check('the label carries the open page', !!opened && label.includes(opened), label + ' (opened ' + opened + ')');
 await m.evaluate(() => document.getElementById('mpath').click());
 let renameOpen = false;
 try { await m.waitForFunction(() => !document.getElementById('dlg').hidden, { timeout: 5000 }); renameOpen = true; } catch {}
@@ -176,5 +164,4 @@ check('desktop web: no ⋯', !(await vis(d, 'mmore')));
 await d.close();
 
 await browser.close();
-console.log(fails ? '\n' + fails + ' FAILED' : '\nall checks passed');
-process.exit(fails ? 1 : 0);
+check.done();

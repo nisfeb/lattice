@@ -16,6 +16,7 @@
 import { readdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { makeCheck } from './lib/check.mjs';
 
 const src = join(dirname(fileURLToPath(import.meta.url)),
   '..', 'ui-src', 'lattice');
@@ -23,10 +24,8 @@ const src = join(dirname(fileURLToPath(import.meta.url)),
 //  the helpers that report failure through their return value
 const GUARDED = ['enqueueSave', 'enqueueKnow'];
 
-let fails = 0;
+const { ok, bad, done } = makeCheck();
 let checked = 0;
-const ok = (m) => console.log('  ok   - ' + m);
-const bad = (m) => { console.log('  FAIL - ' + m); fails++; };
 
 for (const f of readdirSync(src).filter((n) => n.endsWith('.js')).sort()) {
   const text = readFileSync(join(src, f), 'utf8');
@@ -70,6 +69,5 @@ for (const f of readdirSync(src).filter((n) => n.endsWith('.js')).sort()) {
 }
 
 console.log(`\nchecked ${checked} call site(s)`);
-if (!checked) { console.log('FAIL - found no call sites at all; did the helpers get renamed?'); fails++; }
-if (fails) { console.log(`\n${fails} failure(s)`); process.exit(1); }
-console.log('\nall checks passed');
+if (!checked) bad('found no call sites at all; did the helpers get renamed?');
+done();
