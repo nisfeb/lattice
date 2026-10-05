@@ -2498,7 +2498,13 @@
     // remembered the registration comparison had nothing to catch a bump
     // that landed between this snapshot and that registration. Never
     // overwrite a stream-observed rev — the snapshot may already trail it.
-    if (!lastRev && d.rev != null) noteRev(String(d.rev));
+    //
+    // From `since`, the token string, never `rev`: that is a JSON number near
+    // 1.7e38, which JSON.parse rounds, so String(d.rev) read
+    // "1.701411845081946e+38" against the stream's exact digits. They never
+    // matched, and every first session refetched the whole dump once the
+    // stream registered.
+    if (!lastRev && typeof d.since === 'string') noteRev(d.since);
     nodes = d.nodes;
     treeShares = typeof d.since === 'string';
     treeAt = at;
