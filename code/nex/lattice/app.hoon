@@ -1960,25 +1960,13 @@
         (send-err eyre-id 400 'same name')
       ;<  ~  bind:m  (poke-dnames args (pax-of u.to))
       (send-json eyre-id (pairs:enjs:format ~[['moved' (numb:enjs:format 0)]]))
-    =/  pf=path  (pax-of u.from)
-    =/  pt=path  (pax-of u.to)
-    ?:  &((gth (lent pt) (lent pf)) =(pf `path`(scag (lent pf) `path`pt)))
-      (send-err eyre-id 400 'cannot move under itself')
-    ::  never clobber: a collision replaced the destination silently (and
-    ::  prune-hist's coalesce window could make it unrecoverable). /know-move
-    ::  has refused this from the start; pages get the same 409.
-    =/  dbase=path  (weld /page pt)
-    ;<  dpg=?  bind:m  (peek-exists:io (rf up dbase %code))
-    ?:  dpg  (send-err eyre-id 409 'destination exists')
-    ;<  ddr=?  bind:m  (peek-exists:io (rv up dbase))
-    ?:  ddr  (send-err eyre-id 409 'destination exists')
-    ;<  n=(unit @ud)  bind:m  (move-pages pf pt)
-    ?~  n  (send-err eyre-id 404 'no such page or folder')
+    ;<  r=(each @ud [code=@ud msg=@t])  bind:m  (fs-move u.from u.to)
+    ?:  ?=(%| -.r)  (send-err eyre-id code.p.r msg.p.r)
     ::  ?dname= / ?dnames=: the display names for the NEW path ('' on dname
     ::  clears the one the move carried over, because the typed name was
     ::  valid as it stands; dnames names the folders the move made)
-    ;<  ~  bind:m  (poke-dnames args pt)
-    (send-json eyre-id (pairs:enjs:format ~[['moved' (numb:enjs:format u.n)]]))
+    ;<  ~  bind:m  (poke-dnames args (pax-of u.to))
+    (send-json eyre-id (pairs:enjs:format ~[['moved' (numb:enjs:format p.r)]]))
       ::  the commons query bridge (docs/obelisk-mirror.md section 6): raw
       ::  urQL in the body, the desk's result as JSON out. Owner-gated by
       ::  the dispatch gate above like every other route. The round-trip
@@ -2489,113 +2477,6 @@
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'invalid path')
     ;<  ~  bind:m  (poke-pub [%del-page (spat p.pp)])
     (send-ok eyre-id)
-  ::  ── pub version history ──
-  ::  every published page is a firm grub, so grubbery keeps every prior revision.
-  ::  list a page's revisions (rev = the opaque grub revision id, with its date.
-  ::  Key the UI on the date, revs are not contiguous). read-at + restore ONLY ever
-  ::  pass a rev that came from this list. peek-at -> resolve-case BAILS the whole
-  ::  event on a missing case, so an unvalidated number would crash the request.
-      [%'GET' %pub-history]
-    =/  raw=(unit @t)  (~(get by args) 'path')
-    ?~  raw  (send-err eyre-id 400 'missing path')
-    =/  ro=(unit road:tarball)  (pub-road up u.raw)
-    ?~  ro  (send-err eyre-id 400 'invalid path')
-    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
-      (peep:io u.ro [%numb ~ ~])
-    ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
-    =/  revs=(list [ud=@ud da=@da])
-      %+  sort  (turn p.pe |=([c=cass:clay *] [ud.c da.c]))
-      |=  [a=[ud=@ud da=@da] b=[ud=@ud da=@da]]
-      (lth ud.a ud.b)
-    %+  send-json  eyre-id
-    %-  pairs:enjs:format
-    :~  ['path' s+u.raw]
-        :-  'revisions'
-        :-  %a
-        %+  turn  revs
-        |=  [ud=@ud da=@da]
-        (pairs:enjs:format ~[['rev' (numb:enjs:format ud)] ['updated' s+(scot %da da)]])
-    ==
-  ::  a page's body AS OF a revision. rev must be one returned by /pub-history.
-      [%'GET' %pub-read-at]
-    =/  raw=(unit @t)  (~(get by args) 'path')
-    ?~  raw  (send-err eyre-id 400 'missing path')
-    =/  rv=(unit @t)  (~(get by args) 'rev')
-    ?~  rv  (send-err eyre-id 400 'missing rev')
-    =/  rev=(unit @ud)  (rush u.rv dim:ag)
-    ?~  rev  (send-err eyre-id 400 'bad rev')
-    =/  ro=(unit road:tarball)  (pub-road up u.raw)
-    ?~  ro  (send-err eyre-id 400 'invalid path')
-    ::  validate the rev against real history before peek-at (which bails on a miss).
-    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
-      (peep:io u.ro [%numb ~ ~])
-    ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
-    ?.  (lien p.pe |=([c=cass:clay *] =(ud.c u.rev)))
-      (send-err eyre-id 404 'no such revision')
-    ;<  sn=view:nexus  bind:m  (peek-at:io u.ro ~ [%ud u.rev])
-    ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
-    =/  body=@t  !<(@t (need-vase:tarball sang.sn))
-    %+  send-json  eyre-id
-    (pairs:enjs:format ~[['body' s+body] ['rev' (numb:enjs:format u.rev)] ['mark' s+'gmi']])
-  ::  restore a prior revision: read its body, then re-save through the writer so it
-  ::  lands as a fresh firm revision (index + gain stay consistent). Non-destructive.
-  ::  The current body is itself retained in history.
-      [%'POST' %pub-restore-rev]
-    =/  raw=(unit @t)  (~(get by args) 'path')
-    ?~  raw  (send-err eyre-id 400 'missing path')
-    =/  rv=(unit @t)  (~(get by args) 'rev')
-    ?~  rv  (send-err eyre-id 400 'missing rev')
-    =/  rev=(unit @ud)  (rush u.rv dim:ag)
-    ?~  rev  (send-err eyre-id 400 'bad rev')
-    =/  ro=(unit road:tarball)  (pub-road up u.raw)
-    ?~  ro  (send-err eyre-id 400 'invalid path')
-    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
-      (peep:io u.ro [%numb ~ ~])
-    ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
-    ?.  (lien p.pe |=([c=cass:clay *] =(ud.c u.rev)))
-      (send-err eyre-id 404 'no such revision')
-    ;<  sn=view:nexus  bind:m  (peek-at:io u.ro ~ [%ud u.rev])
-    ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
-    =/  body=@t  !<(@t (need-vase:tarball sang.sn))
-    =/  pp=(each path tang)  (mule |.((pub-path u.raw)))
-    ?:  ?=(%| -.pp)  (send-err eyre-id 400 'invalid path')
-    ;<  ~  bind:m  (poke-pub [%save-page (spat p.pp) body])
-    (send-ok eyre-id)
-  ::  prune a page's history to the newest `keep` revisions (default 10, floor 1).
-  ::  Destructive + irreversible, same contract as /know-prune: %lose [%pick ...]
-  ::  drops the picked old revisions and decrements silo refs. The live rev is never
-  ::  dropped (keep>=1 keeps the newest, and the top cass is excluded from the drop
-  ::  set). Request-fiber + explicit cass set: no writer serialization, no open
-  ::  range. Shrinks what /pub-history lists. /pub-read-at on a dropped rev 404s.
-      [%'POST' %pub-prune]
-    =/  raw=(unit @t)  (~(get by args) 'path')
-    ?~  raw  (send-err eyre-id 400 'missing path')
-    =/  keep=(unit @ud)
-      =/  kp=(unit @t)  (~(get by args) 'keep')
-      ?~  kp  `10
-      =/  k=(unit @ud)  (rush u.kp dim:ag)
-      ?~(k ~ `(max 1 u.k))
-    ?~  keep  (send-err eyre-id 400 'bad keep')
-    =/  ro=(unit road:tarball)  (pub-road up u.raw)
-    ?~  ro  (send-err eyre-id 400 'invalid path')
-    ;<  ex=?  bind:m  (peek-exists:io u.ro)
-    ?.  ex  (send-err eyre-id 404 'not found')
-    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
-      (peep:io u.ro [%numb ~ ~])
-    ?:  ?=(%| -.pe)  (send-err eyre-id 500 'peep failed')
-    =/  revs=(list cass:clay)
-      %+  sort  (turn p.pe |=([c=cass:clay *] c))
-      |=([a=cass:clay b=cass:clay] (lth ud.a ud.b))
-    =/  ntot=@ud  (lent revs)
-    ?:  (lte ntot u.keep)
-      (send-json eyre-id (pairs:enjs:format ~[['dropped' (numb:enjs:format 0)] ['kept' (numb:enjs:format ntot)]]))
-    =/  top=cass:clay  (rear revs)
-    =/  drop-set=(set cass:clay)  (~(del in (sy (scag (sub ntot u.keep) revs))) top)
-    ?:  =(~ drop-set)
-      (send-json eyre-id (pairs:enjs:format ~[['dropped' (numb:enjs:format 0)] ['kept' (numb:enjs:format ntot)]]))
-    ;<  ~  bind:m  (lose:io u.ro [%pick drop-set])
-    =/  nd=@ud  ~(wyt in drop-set)
-    (send-json eyre-id (pairs:enjs:format ~[['dropped' (numb:enjs:format nd)] ['kept' (numb:enjs:format (sub ntot nd))]]))
   ::  ── know version history ──
   ::  every know entry is a firm grub, so grubbery keeps its prior revisions. A live
   ::  key's history is under /know/vault. A deleted key's is under /know/trash-vault
@@ -3779,16 +3660,28 @@
 ::  typed action. grubbery vales the noun through the action marc. The writer
 ::  serialises all mutations, so concurrent requests can't race the index.
 ::
+::  +poke-writer: hand one action to the writer, main.sig at the app root.
+::  Through `up`, so the road is right from any fiber depth. A fixed hop
+::  count served only one: up-2 is the request fibers', and from the lick
+::  port at the root it climbed out of the app, where the veto parked the
+::  port on its first page-move.
+::
+++  poke-writer
+  |=  [mak=@tas act=*]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  (poke:io (rf up / %'main.sig') [[/lattice mak] act])
 ++  poke-know
   |=  act=know-action:lk
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %know-action] act])
+  (poke-writer %know-action act)
 ++  poke-pub
   |=  act=pub-action:lp
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %pub-action] act])
+  (poke-writer %pub-action act)
 ::  +render-tang: a compile/run-error tang as the readable multi-line text
 ::  dojo would print, NOT a raw [i=[%palm ...]] noun dump. The page is
 ::  compiled via (slap !>(pg) (ream src)), so slap stamps its own call site
@@ -3884,7 +3777,7 @@
   |=  act=key-action:ky
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %key-action] act])
+  (poke-writer %key-action act)
 ::  +apply-key: one agent-key change, in the writer. A revoked key fails
 ::  its next request.
 ::
@@ -4051,20 +3944,7 @@
   |=  act=eval-action:le
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %eval-action] act])
-::  +poke-eval-abs: like +poke-eval, but an ABSOLUTE road to the writer.
-::
-::  +poke-eval's up-2 is only correct from /ui/requests. The /sub keep fibers
-::  and /fs.sig sit at other depths, so no fixed hop count serves them all. An
-::  absolute road is depth-independent; a relative one from the app root
-::  overshoots and the poke nacks.
-::
-++  poke-eval-abs
-  |=  act=eval-action:le
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  up=@ud  bind:m  nexus-up
-  (poke:io (rf up / %'main.sig') [[/lattice %eval-action] act])
+  (poke-writer %eval-action act)
 ::  +poke-comment: hand a comment to the owner writer (author = us). The public
 ::  inbox fiber pokes apply-comment directly with the sender ship instead.
 ::
@@ -4072,20 +3952,20 @@
   |=  act=comment-action:lc
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %comment-action] act])
+  (poke-writer %comment-action act)
 ::  +poke-bookmark: add/remove a browser bookmark via the owner writer.
 ::
 ++  poke-bookmark
   |=  act=bookmark-action:lb
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %bookmark-action] act])
+  (poke-writer %bookmark-action act)
 ::  +poke-history: record/forget a visit via the owner writer.
 ++  poke-history
   |=  act=history-action:lh
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %history-action] act])
+  (poke-writer %history-action act)
 ::  +apply-eval: page create/command/delete, in the writer fiber.
 ::
 ++  apply-eval
@@ -5166,13 +5046,13 @@
   ^-  form:m
   ?:  =(0 bud)  (pure:m ~)
   ?~  pokes  (pure:m ~)
-  ;<  ~  bind:m  (poke-eval-abs [%cmd ~[name.i.pokes] txt.i.pokes (dec bud)])
+  ;<  ~  bind:m  (poke-eval [%cmd ~[name.i.pokes] txt.i.pokes (dec bud)])
   $(pokes t.pokes)
 ++  poke-sub
   |=  act=sub-action:lp
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (poke:io [%| 2 %& ~ %'main.sig'] [[/lattice %sub-action] act])
+  (poke-writer %sub-action act)
 ::  +parse-import: decode a /know-all export ({items:[{key,body,updated,tags}]})
 ::  into [key entry] pairs for a verbatim %import. Mirrors know-entry-json's shape.
 ::  vector is not exported (a derived embedding) so it lands ~.
@@ -5333,19 +5213,6 @@
   =/  raw=tape   (trip rel)
   =/  bare=tape  ?~(raw raw ?:(=('/' i.raw) t.raw raw))
   :(welp /pub (stab (crip (weld "/" bare))) /gmi)
-::  +pub-road: the ABSOLUTE vault road of a published page's gmi grub, from a raw
-::  url path. Built exactly as apply-pub writes it (pub-path -> key-to-rail), so
-::  history reads land on the same grub. ~ if the path is unparseable/degenerate.
-::  Used by the version-history routes to peep/peek-at a page's prior revisions.
-::
-++  pub-road
-  |=  [up=@ud raw=@t]
-  ^-  (unit road:tarball)
-  =/  pp=(each path tang)  (mule |.((pub-path raw)))
-  ?:  ?=(%| -.pp)  ~
-  =/  vr=(unit vrail:lp)  (key-to-rail:lp /pub/vault p.pp)
-  ?~  vr  ~
-  `(rf up pax.u.vr nom.u.vr)
 ::  +know-hist-road: the ABSOLUTE road of a know key's entry grub, for reading its
 ::  revision history. A live key's grub is under /know/vault; a DELETED key was
 ::  MOVED to /know/trash-vault (%del moves the grub, it doesn't tomb in place), so
@@ -5894,14 +5761,6 @@
   ;<  en=view:nexus  bind:m  (peek:io (rf up pdir %err) ~)
   ?.  ?=([%file *] en)  (pure:m '')
   (pure:m (fall (mole |.(;;(@t (sang-noun:tarball sang.en)))) ''))
-::  +fs-poke-eval: poke the writer (main.sig) with an eval-action. Called from the
-::  /fs.sig fiber, which sits at the app root as a sibling of main.sig, so the
-::  road is a fixed up-0 (unlike +poke-eval's up-2 from /ui/requests).
-++  fs-poke-eval
-  |=  act=eval-action:le
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  (poke:io [%| 0 %& ~ %'main.sig'] [[/lattice %eval-action] act])
 ::  +fs-save: create/overwrite a page (POST /page-save + lick %page-save). The
 ::  name and body rules are +save-src, the same front half the HTTP route runs.
 ::  ?new rejects an existing page with 409. The route's ?base= conflict protocol
@@ -5918,7 +5777,7 @@
   ;<  ex=?  bind:m
     (peek-exists:io (rf up (weld /page (pax-of name)) %code))
   ?:  &(new ex)  (pure:m [409 'page exists'])
-  ;<  ~  bind:m  (fs-poke-eval [%make (pax-of name) src])
+  ;<  ~  bind:m  (poke-eval [%make (pax-of name) src])
   (pure:m [200 ''])
 ::  +fs-mkdir / +fs-del: folder create / page-or-folder delete.
 ++  fs-mkdir
@@ -5926,16 +5785,41 @@
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
   ^-  form:m
   ?.  (valid-name name)  (pure:m [400 'bad name'])
-  ;<  ~  bind:m  (fs-poke-eval [%mkdir (pax-of name)])
+  ;<  ~  bind:m  (poke-eval [%mkdir (pax-of name)])
   (pure:m [200 ''])
 ++  fs-del
   |=  name=@t
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
   ^-  form:m
   ?.  (valid-name name)  (pure:m [400 'bad name'])
-  ;<  ~  bind:m  (fs-poke-eval [%del (pax-of name)])
+  ;<  ~  bind:m  (poke-eval [%del (pax-of name)])
   ;<  ~  bind:m  (move-grants (pax-of name) ~)
   (pure:m [200 ''])
+::  +fs-move: move/rename a page or a folder subtree (POST /page-move + lick
+::  %page-move), answering how many pages moved. Display names are the HTTP
+::  route's own (?dname= / ?dnames=).
+++  fs-move
+  |=  [from=@t to=@t]
+  =/  m  (fiber:fiber:nexus ,(each @ud [code=@ud msg=@t]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ?.  &((valid-name from) (valid-name to))  (pure:m |+[400 'bad name'])
+  ?:  =(from to)  (pure:m |+[400 'same name'])
+  =/  pf=path  (pax-of from)
+  =/  pt=path  (pax-of to)
+  ?:  &((gth (lent pt) (lent pf)) =(pf `path`(scag (lent pf) `path`pt)))
+    (pure:m |+[400 'cannot move under itself'])
+  ::  never clobber: a collision replaced the destination silently (and
+  ::  prune-hist's coalesce window could make it unrecoverable). /know-move
+  ::  has refused this from the start; pages get the same 409.
+  =/  dbase=path  (weld /page pt)
+  ;<  dpg=?  bind:m  (peek-exists:io (rf up dbase %code))
+  ?:  dpg  (pure:m |+[409 'destination exists'])
+  ;<  ddr=?  bind:m  (peek-exists:io (rv up dbase))
+  ?:  ddr  (pure:m |+[409 'destination exists'])
+  ;<  n=(unit @ud)  bind:m  (move-pages pf pt)
+  ?~  n  (pure:m |+[404 'no such page or folder'])
+  (pure:m &+u.n)
 ::  +fs-op: the shared request dispatcher. `path`'s last segment selects the op.
 ::  `query` is "k=v&k=v" (raw, page names are @ta so need no url-decode). Returns
 ::  [status body], for the lick port to spit, and for the HTTP routes to send.
@@ -5978,6 +5862,14 @@
     =/  name=(unit @t)  (~(get by q) 'name')
     ?~  name  (pure:m [400 'missing name'])
     (fs-del u.name)
+      %page-move
+    =/  from=(unit @t)  (~(get by q) 'from')
+    =/  to=(unit @t)    (~(get by q) 'to')
+    ?~  from  (pure:m [400 'missing from'])
+    ?~  to    (pure:m [400 'missing to'])
+    ;<  r=(each @ud [code=@ud msg=@t])  bind:m  (fs-move u.from u.to)
+    ?:  ?=(%| -.r)  (pure:m p.r)
+    (pure:m [200 (en:json:html (pairs:enjs:format ~[['moved' (numb:enjs:format p.r)]]))])
   ==
 ::  +fs-port: the lick unix-socket port; vere serves it at the pier path
 ::  .urb/dev/grubbery/lattice/fs.
@@ -10092,6 +9984,7 @@
     ;<  ~  bind:m  (ensure-dirs up vbase key)
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] entry.act)
     ;<  ~  bind:m  (gain:io road %.y)
+    ;<  ~  bind:m  (prune-hist road know-keep history-window)
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     ?.  (~(has by trash) key)  (pure:m ~)
     ;<  *  bind:m  (cull-soft:io (entry-road up tvbase key))
@@ -10111,6 +10004,7 @@
     ;<  ~  bind:m  (ensure-dirs up tvbase key)
     ;<  ~  bind:m  (put-file troad [/lattice %know-entry] entry.act)
     ;<  ~  bind:m  (gain:io troad %.y)
+    ;<  ~  bind:m  (prune-hist troad know-keep history-window)
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     (put-file tx [/lattice %know-index] (~(put by trash) key (to-index-entry:lk entry.act)))
   ==
@@ -10155,6 +10049,9 @@
     ;<  prev-rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
     ;<  ~  bind:m  (put-file road [/lattice %page] body.act)
     ;<  ~  bind:m  (gain:io road %.y)
+    ::  nothing reads a published page's old revisions (peers %keen the
+    ::  current one, and the page keeps its own history), so keep only it
+    ;<  ~  bind:m  (prune-hist road 1 ~s0)
     ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
     =/  nix=pub-index:lp  (~(put by ix) key (to-pub-row:lp body.act now))
     ;<  ~  bind:m  (put-file px [/lattice %pub-index] nix)
@@ -10583,6 +10480,10 @@
 ::  cannot retract. That spur stays leaked. There is no farm listing a
 ::  nexus fiber can fall back on (%gt/%gw are the agent's own gall scries),
 ::  so born history is the whole enumeration. The report says so plainly.
+::  A publish now prunes its page's history to the current revision, which
+::  narrows this further. It costs nothing that still works: +ensure-pub-ids
+::  culled each page's then-current counter spur, so on any pier that has
+::  re-saved a page since, this sweep re-culls that spur and crashes anyway.
 ::
 ++  pub-reconcile
   =/  m  (fiber:fiber:nexus ,(unit [revs=@ud seqs=@ud]))
@@ -10908,7 +10809,9 @@
   ;<  up=@ud  bind:m  nexus-up
   ;<  seen=view:nexus  bind:m  (peek:io (rf up /sub %follows) ~)
   ?.  ?=([%file *] seen)  (pure:m *follows:lp)
-  (pure:m !<(follows:lp (need-vase:tarball sang.seen)))
+  ::  sang-noun, not need-vase: a boomed grub (mark failed to vale) has no
+  ::  vase, and need-vase would crash every fiber that reads the follows
+  (pure:m (fall (mole |.(;;(follows:lp (sang-noun:tarball sang.seen)))) *follows:lp))
 ::  +read-subs: every live per-file subscription. Peeks /sub/pages as a ball and
 ::  reads each page-sub grub out of the dir node's contents (booms skipped).
 ::
