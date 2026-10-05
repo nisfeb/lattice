@@ -176,13 +176,13 @@
     if (saving) { savePending = true; return; }
     saving = true;
     const sent = src.value;
-    echoes.know.until = Date.now() + 60000;
-    let r = null;
-    try { r = await tfetch(api + '/know-save?key=' + encodeURIComponent(key),
-      { method: 'POST', body: sent }); } catch {}
-    saving = false;
-    echoes.know.until = Date.now() + 4000;
-    if (shipGone(r)) {
+    let w = { gone: true };
+    try {
+      w = await shipWrite(api + '/know-save?key=' + encodeURIComponent(key),
+        { method: 'POST', body: sent }, { save: true });
+    } finally { saving = false; }
+    const r = w.r;
+    if (w.gone) {
       //  if the queue would not take it, it is NOT saved: leave the editor
       //  dirty and the key still editable, so the text under the cursor is not
       //  presented as stored. Same rule the page paths enforce (35-pages.js),
@@ -199,7 +199,6 @@
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
     st('memory saved');
-    bustPages(key);
     knowGen++;
     const k = knowEntry(key);
     if (k) k.bytes = sent.length;

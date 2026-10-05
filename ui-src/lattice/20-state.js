@@ -44,11 +44,7 @@
     // defaults to 30s (08-offline.js, widened deliberately for a queued
     // pier), so a shorter cap here reintroduced the false discard prompt
     // for any save landing past it. 30s of flight plus a beat to settle.
-    let waited = 0;
-    while (saving && waited < 32000) {
-      await new Promise((r) => setTimeout(r, 100));
-      waited += 100;
-    }
+    if (saving && saveFlight) await saveFlight;
     if (!dirty) return true;
     // still dirty and nothing is in flight: the wait either never started or
     // timed out with the buffer untouched. Only now is a flush worth trying.
@@ -175,6 +171,45 @@
     return null;
   };
 
+  // shipWrite: the one way a write reaches the ship, so what every write
+  // needs is done the same way each time. The echo it causes is expected on
+  // the right beacon (echoOf), held open while it flies and then for twice
+  // the round trip (our own bump arrives a queue-length late on a slow
+  // pier), and counted once it lands. The renders it touches are busted.
+  // It answers {r}, or {gone: true} when the ship is unreachable (no
+  // answer, or a bridge 502/504), and the caller queues what it can.
+  //
+  // `ms` is the timeout: 30s for a save (tfetch's own reasoning), 0 for none.
+  // A folder move pokes the writer for every page, and timing that out would
+  // read as offline and queue a second move. `save` marks a document save,
+  // the flight guardDirty waits for.
+  let saveFlight = null;
+  async function shipWrite(url, init, { ms = 30000, save = false } = {}) {
+    const echo = echoOf(url);
+    echo.until = Date.now() + 60000;
+    lastAction = Date.now();          // a write is user activity (see bgFetch)
+    const sentAt = Date.now();
+    const req = (ms ? tfetch(url, init, ms) : fetch(url, init)).catch(() => null);
+    if (save) saveFlight = req;
+    let r = null;
+    try { r = await req; }
+    finally {
+      if (saveFlight === req) saveFlight = null;
+      echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
+    }
+    if (shipGone(r)) return { gone: true };
+    if (r.ok) {
+      echo.n++;                         // one bump is ours; consume it on arrival
+      // every write names its target the same way; a move dirties both ends
+      try {
+        const q = new URL(url, location.href).searchParams;
+        bustPages(q.get('name') || q.get('from') || q.get('key'));
+        if (q.get('to')) bustPages(q.get('to'));
+      } catch {}
+    }
+    return { r };
+  }
+
   async function mutate(url, opts) {
     // Saves coalesce in a map, structural ops go in an ordered log, and both
     // drain together. Everything else (sharing, tagging, the legacy migration)
@@ -194,31 +229,13 @@
       return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
     };
     if (degraded || offCount) return offline();
-    const echo = echoOf(url);
-    echo.until = Date.now() + 60000;
-    const sentAt = Date.now();
-    try {
-      let r = null;
-      try { r = await fetch(url, opts || { method: 'POST' }); } catch {}
-      // a rejected fetch or a bridge 502/504 is the ship being unreachable:
-      // queue what can be queued and ENGAGE degraded — the old path only
-      // queued when degraded was already true, so the FIRST offline action
-      // being structural threw past every caller and did nothing at all
-      if (shipGone(r)) { setDegraded(true); return await offline(); }
-      if (r.ok) {
-        echo.n++;                     // one bump is ours; consume it on arrival
-        // every mutate names its target the same way; a move dirties both ends
-        try {
-          const q = new URL(url, location.href).searchParams;
-          bustPages(q.get('name') || q.get('from') || q.get('key'));
-          if (q.get('to')) bustPages(q.get('to'));
-        } catch {}
-      }
-      return r;
-    }
-    //  RTT-scaled like the save paths: our own bump arrives a queue-length
-    //  late on a slow pier, and a window it misses turns into refetches
-    finally { echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt)); }
+    const w = await shipWrite(url, opts || { method: 'POST' }, { ms: 0 });
+    // an unreachable ship: queue what can be queued and ENGAGE degraded.
+    // The old path only queued when degraded was already true, so the FIRST
+    // offline action being structural threw past every caller and did
+    // nothing at all
+    if (w.gone) { setDegraded(true); return offline(); }
+    return w.r;
   }
 
   // where this install lives in the tree: /apps/lattice.lattice_app for the

@@ -211,15 +211,6 @@
     if (!dirty) return;
     if (pending === true) autosave(); else save(pending);
   };
-  //  the echo window covers OUR OWN beacon bump. A fixed 4s assumed the bump
-  //  lands promptly; on a queued pier it arrives after the save's own round
-  //  trip again, so scale the window to what the pier just showed us. Too
-  //  short meant refetching the page we just wrote — two more pier requests
-  //  to learn nothing.
-  //  `url` picks the beacon: autosave writes memories as well as pages
-  const noteRtt = (sentAt, url) => {
-    echoOf(url).until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
-  };
   //  we know exactly what we just wrote. Patch the local copies so reopening
   //  this page paints the saved text, not the dump's pre-save body. The
   //  cached render is stale by definition. Drop it and let it re-render.
@@ -285,18 +276,11 @@
     }
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc);
-    let r = null;
-    //  a save is user activity even when it arrives by hotkey or autosave,
-    //  so the background lane (bgFetch) holds its traffic out of its way
-    lastAction = Date.now();
-    const sentAt = Date.now();
-    try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); }
-    catch {}
-    finally {
-      saving = false;
-      noteRtt(sentAt, url);
-    }
-    if (shipGone(r)) {
+    let w = { gone: true };
+    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
+    finally { saving = false; }
+    const r = w.r;
+    if (w.gone) {
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
       // does not care which kind it got
@@ -319,9 +303,7 @@
       return;
     }
     if (r && r.status === 409) { st('that page already exists', false); return; }
-    if (!r || !r.ok) { st('save failed' + await errText(r), false); return; }
-    echoes.rev.n++;                   // this save's own beacon bump
-    bustPages(name);
+    if (!r.ok) { st('save failed' + await errText(r), false); return; }
     current = name;
     curKind = kind;
     pname.readOnly = true;
@@ -369,17 +351,11 @@
       ? api + '/know-save?key=' + encodeURIComponent(current)
       : api + '/page-save?name=' + encodeURIComponent(current) +
         '&type=' + (curKind || pkind.value);
-    let r = null;
-    lastAction = Date.now();       // saves are user activity (see above)
-    const sentAt = Date.now();
-    try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
-    saving = false;
-    noteRtt(sentAt, url);
-    if (r && r.ok) {
-      echoOf(url).n++;                // this save's own beacon bump
-      bustPages(current);
-    }
-    if (shipGone(r)) {
+    let w = { gone: true };
+    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
+    finally { saving = false; }
+    const r = w.r;
+    if (w.gone) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
       if (mode === 'know') {
@@ -393,7 +369,7 @@
       flushPending();
       return;
     }
-    if (!r || !r.ok) { st('autosave failed' + await errText(r), false); return; }
+    if (!r.ok) { st('autosave failed' + await errText(r), false); return; }
     if (src.value === sent) dirty = false;   // typed during the request? stay dirty
     let vr = null;
     if (mode !== 'know') {

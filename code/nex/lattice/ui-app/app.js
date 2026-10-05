@@ -1198,11 +1198,7 @@
     // defaults to 30s (08-offline.js, widened deliberately for a queued
     // pier), so a shorter cap here reintroduced the false discard prompt
     // for any save landing past it. 30s of flight plus a beat to settle.
-    let waited = 0;
-    while (saving && waited < 32000) {
-      await new Promise((r) => setTimeout(r, 100));
-      waited += 100;
-    }
+    if (saving && saveFlight) await saveFlight;
     if (!dirty) return true;
     // still dirty and nothing is in flight: the wait either never started or
     // timed out with the buffer untouched. Only now is a flush worth trying.
@@ -1329,6 +1325,45 @@
     return null;
   };
 
+  // shipWrite: the one way a write reaches the ship, so what every write
+  // needs is done the same way each time. The echo it causes is expected on
+  // the right beacon (echoOf), held open while it flies and then for twice
+  // the round trip (our own bump arrives a queue-length late on a slow
+  // pier), and counted once it lands. The renders it touches are busted.
+  // It answers {r}, or {gone: true} when the ship is unreachable (no
+  // answer, or a bridge 502/504), and the caller queues what it can.
+  //
+  // `ms` is the timeout: 30s for a save (tfetch's own reasoning), 0 for none.
+  // A folder move pokes the writer for every page, and timing that out would
+  // read as offline and queue a second move. `save` marks a document save,
+  // the flight guardDirty waits for.
+  let saveFlight = null;
+  async function shipWrite(url, init, { ms = 30000, save = false } = {}) {
+    const echo = echoOf(url);
+    echo.until = Date.now() + 60000;
+    lastAction = Date.now();          // a write is user activity (see bgFetch)
+    const sentAt = Date.now();
+    const req = (ms ? tfetch(url, init, ms) : fetch(url, init)).catch(() => null);
+    if (save) saveFlight = req;
+    let r = null;
+    try { r = await req; }
+    finally {
+      if (saveFlight === req) saveFlight = null;
+      echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
+    }
+    if (shipGone(r)) return { gone: true };
+    if (r.ok) {
+      echo.n++;                         // one bump is ours; consume it on arrival
+      // every write names its target the same way; a move dirties both ends
+      try {
+        const q = new URL(url, location.href).searchParams;
+        bustPages(q.get('name') || q.get('from') || q.get('key'));
+        if (q.get('to')) bustPages(q.get('to'));
+      } catch {}
+    }
+    return { r };
+  }
+
   async function mutate(url, opts) {
     // Saves coalesce in a map, structural ops go in an ordered log, and both
     // drain together. Everything else (sharing, tagging, the legacy migration)
@@ -1348,31 +1383,13 @@
       return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
     };
     if (degraded || offCount) return offline();
-    const echo = echoOf(url);
-    echo.until = Date.now() + 60000;
-    const sentAt = Date.now();
-    try {
-      let r = null;
-      try { r = await fetch(url, opts || { method: 'POST' }); } catch {}
-      // a rejected fetch or a bridge 502/504 is the ship being unreachable:
-      // queue what can be queued and ENGAGE degraded — the old path only
-      // queued when degraded was already true, so the FIRST offline action
-      // being structural threw past every caller and did nothing at all
-      if (shipGone(r)) { setDegraded(true); return await offline(); }
-      if (r.ok) {
-        echo.n++;                     // one bump is ours; consume it on arrival
-        // every mutate names its target the same way; a move dirties both ends
-        try {
-          const q = new URL(url, location.href).searchParams;
-          bustPages(q.get('name') || q.get('from') || q.get('key'));
-          if (q.get('to')) bustPages(q.get('to'));
-        } catch {}
-      }
-      return r;
-    }
-    //  RTT-scaled like the save paths: our own bump arrives a queue-length
-    //  late on a slow pier, and a window it misses turns into refetches
-    finally { echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt)); }
+    const w = await shipWrite(url, opts || { method: 'POST' }, { ms: 0 });
+    // an unreachable ship: queue what can be queued and ENGAGE degraded.
+    // The old path only queued when degraded was already true, so the FIRST
+    // offline action being structural threw past every caller and did
+    // nothing at all
+    if (w.gone) { setDegraded(true); return offline(); }
+    return w.r;
   }
 
   // where this install lives in the tree: /apps/lattice.lattice_app for the
@@ -2912,15 +2929,6 @@
     if (!dirty) return;
     if (pending === true) autosave(); else save(pending);
   };
-  //  the echo window covers OUR OWN beacon bump. A fixed 4s assumed the bump
-  //  lands promptly; on a queued pier it arrives after the save's own round
-  //  trip again, so scale the window to what the pier just showed us. Too
-  //  short meant refetching the page we just wrote — two more pier requests
-  //  to learn nothing.
-  //  `url` picks the beacon: autosave writes memories as well as pages
-  const noteRtt = (sentAt, url) => {
-    echoOf(url).until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
-  };
   //  we know exactly what we just wrote. Patch the local copies so reopening
   //  this page paints the saved text, not the dump's pre-save body. The
   //  cached render is stale by definition. Drop it and let it re-render.
@@ -2986,18 +2994,11 @@
     }
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc);
-    let r = null;
-    //  a save is user activity even when it arrives by hotkey or autosave,
-    //  so the background lane (bgFetch) holds its traffic out of its way
-    lastAction = Date.now();
-    const sentAt = Date.now();
-    try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); }
-    catch {}
-    finally {
-      saving = false;
-      noteRtt(sentAt, url);
-    }
-    if (shipGone(r)) {
+    let w = { gone: true };
+    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
+    finally { saving = false; }
+    const r = w.r;
+    if (w.gone) {
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
       // does not care which kind it got
@@ -3020,9 +3021,7 @@
       return;
     }
     if (r && r.status === 409) { st('that page already exists', false); return; }
-    if (!r || !r.ok) { st('save failed' + await errText(r), false); return; }
-    echoes.rev.n++;                   // this save's own beacon bump
-    bustPages(name);
+    if (!r.ok) { st('save failed' + await errText(r), false); return; }
     current = name;
     curKind = kind;
     pname.readOnly = true;
@@ -3070,17 +3069,11 @@
       ? api + '/know-save?key=' + encodeURIComponent(current)
       : api + '/page-save?name=' + encodeURIComponent(current) +
         '&type=' + (curKind || pkind.value);
-    let r = null;
-    lastAction = Date.now();       // saves are user activity (see above)
-    const sentAt = Date.now();
-    try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
-    saving = false;
-    noteRtt(sentAt, url);
-    if (r && r.ok) {
-      echoOf(url).n++;                // this save's own beacon bump
-      bustPages(current);
-    }
-    if (shipGone(r)) {
+    let w = { gone: true };
+    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
+    finally { saving = false; }
+    const r = w.r;
+    if (w.gone) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
       if (mode === 'know') {
@@ -3094,7 +3087,7 @@
       flushPending();
       return;
     }
-    if (!r || !r.ok) { st('autosave failed' + await errText(r), false); return; }
+    if (!r.ok) { st('autosave failed' + await errText(r), false); return; }
     if (src.value === sent) dirty = false;   // typed during the request? stay dirty
     let vr = null;
     if (mode !== 'know') {
@@ -6814,13 +6807,13 @@
     if (saving) { savePending = true; return; }
     saving = true;
     const sent = src.value;
-    echoes.know.until = Date.now() + 60000;
-    let r = null;
-    try { r = await tfetch(api + '/know-save?key=' + encodeURIComponent(key),
-      { method: 'POST', body: sent }); } catch {}
-    saving = false;
-    echoes.know.until = Date.now() + 4000;
-    if (shipGone(r)) {
+    let w = { gone: true };
+    try {
+      w = await shipWrite(api + '/know-save?key=' + encodeURIComponent(key),
+        { method: 'POST', body: sent }, { save: true });
+    } finally { saving = false; }
+    const r = w.r;
+    if (w.gone) {
       //  if the queue would not take it, it is NOT saved: leave the editor
       //  dirty and the key still editable, so the text under the cursor is not
       //  presented as stored. Same rule the page paths enforce (35-pages.js),
@@ -6837,7 +6830,6 @@
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
     st('memory saved');
-    bustPages(key);
     knowGen++;
     const k = knowEntry(key);
     if (k) k.bytes = sent.length;
