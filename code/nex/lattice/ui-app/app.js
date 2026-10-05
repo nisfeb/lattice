@@ -1644,7 +1644,7 @@
     //  page must dirty the editor or navigating away silently reverts the
     //  choice. A page with no name yet gets its kind from the first save.
     if (current) edited();
-    if (typeof refreshTexButton === 'function') refreshTexButton();
+    refreshTexButton();
   });
 
 // ── src/27-vim.js ─────────────────────────────────────────────────────────
@@ -2595,7 +2595,7 @@
     if (sharedWithMe.length) renderShared(coll);
     // the conflict badge is a count of conflicts/ pages in this very tree, so
     // it repaints exactly when the tree does. Defined in 80-conflicts.js.
-    if (typeof renderConfBadge === 'function') renderConfBadge();
+    renderConfBadge();
   }
 
   // ── folder selection ─────────────────────────────────────────────────────
@@ -2744,7 +2744,7 @@
     curKind = d.kind;
     curRev = d.rev || 0;
     if ([...pkind.options].some((o) => o.value === d.kind)) pkind.value = d.kind;
-    if (typeof refreshTexButton === 'function') refreshTexButton();
+    refreshTexButton();
     src.value = d.body;
     dirty = false;
     // A fresh editor state begins here. everTyped answers "did the user type
@@ -2794,7 +2794,7 @@
     current = null;
     curFolder = null;
     curKind = null;
-    if (typeof refreshTexButton === 'function') refreshTexButton();
+    refreshTexButton();
     exitGrub();
     exitRev();
     $('histsec').hidden = true;
@@ -4314,8 +4314,8 @@
     permGroups = await r.json();
     permsLoaded = true;
     // every surface that renders groups repaints from this one load
-    if (typeof renderAcl === 'function') renderAcl();
-    if (typeof renderGroupAccess === 'function') renderGroupAccess();
+    renderAcl();
+    renderGroupAccess();
   }
   async function permSave(g) {
     const r = await fetch(api + '/share-group-save?name=' + encodeURIComponent(g.name), {
@@ -4825,7 +4825,7 @@
     };
     //  the body may have moved on while pandoc ran
     if (src.value !== body) { scheduleTexRender(src.value); return; }
-    if (typeof paintLocal === 'function') paintLocal();
+    paintLocal();
   }
 
 // ── src/72-acl.js ─────────────────────────────────────────────────────────
