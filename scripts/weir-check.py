@@ -41,6 +41,7 @@ sends on a road it was handed.
 Exit 1 if a reached road is undeclared in the category it is reached in.
 """
 import re, sys, os
+import hoonarms
 
 args = [a for a in sys.argv[1:] if not a.startswith('--')]
 if not args:
@@ -58,17 +59,8 @@ if not io_path or not os.path.exists(io_path):
     print('weir-check: cannot find lib/fiberio.hoon (pass --io)'); sys.exit(2)
 
 def arms(src):
-    """arm name -> its body text"""
-    out, cur, buf = {}, None, []
-    for l in src.split('\n'):
-        m = re.match(r'^\+\+  ([a-z][a-z0-9-]*)', l)
-        if m:
-            if cur: out[cur] = '\n'.join(buf)
-            cur, buf = m.group(1), [l]
-        elif cur is not None:
-            buf.append(l)
-    if cur: out[cur] = '\n'.join(buf)
-    return out
+    """arm name -> its text, the `++  name` line included"""
+    return {n: '\n'.join(b) for n, b in hoonarms.arms(src.split('\n')).items()}
 
 #  A ROAD, not a wire. This distinction is the whole accuracy of the tool:
 #  (send-dart %node wire &+&+[/sys %'bowl.sig'] %poke ...) carries a wire
@@ -140,7 +132,7 @@ def roads_in(txt, pc):
 
 #  ── io: arm -> system roads, resolved through arm-to-arm calls ────────
 io = arms(open(io_path).read())
-bodies = {n: re.sub(r'::.*', '', b) for n, b in io.items()}
+bodies = {n: hoonarms.uncomment(b) for n, b in io.items()}
 
 def calls_of(txt, known):
     #  a CALL, not any word that happens to be an arm name. `%poke` is a
@@ -187,10 +179,10 @@ reach = closure(direct)
 
 #  ── the app: which io arms does it call, and what does it name inline ─
 app = open(app_path).read()
-app_txt = re.sub(r'::.*', '', app)
+app_txt = hoonarms.uncomment(app)
 
 app_arms = arms(app)
-app_bodies = {n: re.sub(r'::.*', '', b) for n, b in app_arms.items()}
+app_bodies = {n: hoonarms.uncomment(b) for n, b in app_arms.items()}
 #  the app's own arms that hand a road on (+soft-poke, +bowl-now): what
 #  they send on it, directly or through io
 app_param = {n: {CAT[l] for _, l in PARAM.findall(t) if l in CAT}
@@ -243,7 +235,7 @@ for road, c in [k for k in used if k[1] == '?']:
 wj = arms(app).get('weir-json', '')
 declared = []                               # [(road, category)]
 section = None
-for l in re.sub(r'::.*', '', wj).split('\n'):
+for l in hoonarms.uncomment(wj).split('\n'):
     m = re.search(r":-\s+'(poke|peek|make)'", l)
     if m: section = m.group(1)
     for r in re.findall(r"line\s+'(/[^']+)'", l):
