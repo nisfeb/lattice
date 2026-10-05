@@ -135,6 +135,11 @@
     lastRev = rev;
     try { localStorage.latBeaconRev = rev; } catch {}
   };
+  // whether a listing fetched when the beacon stood at `at` is still the
+  // ship's truth. Every write on the ship bumps /rev, so while a stream is
+  // registered an unmoved rev means nothing changed. With the stream down
+  // nothing moves lastRev at all, so nothing counts as fresh then.
+  const revFresh = (at) => streamLive && !!at && at === lastRev;
   let dropStream = null;
   // consecutive attempts that failed. A stream that registers, then lives
   // a minute or carries a live bump, and then ends is the NORMAL cycle: the
@@ -253,10 +258,24 @@
   // registered it would have said so, and polling anyway cost one pier
   // request per open editor per 30s, forever (the same clock-vs-stream
   // trust the mount fixed in #160).
-  window.addEventListener('focus', refreshAll);
+  //
+  // Both events go through bumped()'s debounce: un-hiding a tab fires
+  // visibilitychange AND focus, and refreshAll has no in-flight guard, so
+  // each pair was two full tree-and-page refreshes. And while the stream
+  // is live it has already reported any change, so a focus refresh is a
+  // floor, not news: at most one per 30s, however often the window is
+  // clicked back into. An un-hidden tab dropped its stream, so it is not
+  // live and always refreshes.
+  let focusAt = 0;
+  const refocused = () => {
+    if (streamLive && Date.now() - focusAt < 30000) return;
+    focusAt = Date.now();
+    bumped();
+  };
+  window.addEventListener('focus', refocused);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { if (dropStream) dropStream(); return; }
-    refreshAll();
+    refocused();
   });
   //  the poll covers a DOWN stream — but a hidden tab's stream is down on
   //  purpose, and polling for it would spend the pier request the parking

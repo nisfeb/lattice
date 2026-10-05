@@ -8,21 +8,31 @@
   // rn: the realName() split of the new name. Its dname is ALWAYS sent: ''
   // (the typed name was a valid path) clears the one the move would
   // otherwise carry over; dnames names the folders the move creates.
-  async function movePage(oldName, newName, rn) {
-    const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldName) +
-      '&to=' + encodeURIComponent(newName) + '&dname=' + encodeURIComponent((rn && rn.dname) || '') +
+  const moveReq = (from, to, rn) =>
+    mutate(api + '/page-move?from=' + encodeURIComponent(from) +
+      '&to=' + encodeURIComponent(to) + '&dname=' + encodeURIComponent((rn && rn.dname) || '') +
       (rn && rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
-    if (!r.ok) { st('move failed' + await errText(r), false); return false; }
-    // the server moves the WHOLE subtree (a page can parent nested pages, and
-    // move-pages rewrites every rel under it). Renaming only the exact node
-    // left those children pointing at paths that no longer exist — ghosts in
-    // the tree until the next full loadTree. Same suffix-preserving remap as
-    // moveFolder, and as the offline queue's own move reconciliation.
-    const mapped = (p) => newName + p.slice(oldName.length);
+  // the server moves the WHOLE subtree (a page can parent nested pages, and
+  // move-pages rewrites every rel under it). Renaming only the exact node
+  // left those children pointing at paths that no longer exist, ghosts in
+  // the tree until the next full loadTree. So the local tree gets the same
+  // suffix-preserving remap, as does the offline queue's own move
+  // reconciliation. Returns how many pages moved.
+  const remapMoved = (from, to, rn) => {
+    let moved = 0;
     for (const n of nodes)
-      if (n.path === oldName || n.path.startsWith(oldName + '/')) n.path = mapped(n.path);
-    if (newName.includes('/')) addFolderNodes(newName.slice(0, newName.lastIndexOf('/')));
-    applyDnames(rn || { name: newName, dname: '', dnames: '' });
+      if (n.path === from || n.path.startsWith(from + '/')) {
+        if (n.page) moved++;
+        n.path = to + n.path.slice(from.length);
+      }
+    if (to.includes('/')) addFolderNodes(to.slice(0, to.lastIndexOf('/')));
+    applyDnames(rn || { name: to, dname: '', dnames: '' });
+    return moved;
+  };
+  async function movePage(oldName, newName, rn) {
+    const r = await moveReq(oldName, newName, rn);
+    if (!r.ok) { st('move failed' + await errText(r), false); return false; }
+    remapMoved(oldName, newName, rn);
     snapTree();
     renderTree();
     //  the response, not a bare true: the caller's message must say when the
@@ -38,11 +48,8 @@
       const rn = realName(typed);
       const newPath = rn.name;
       if (newPath === oldPath && !rn.dname) return;
-      const mapped = (p) => newPath + p.slice(oldPath.length);
       st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
-      const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldPath) +
-        '&to=' + encodeURIComponent(newPath) + '&dname=' + encodeURIComponent(rn.dname) +
-        (rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
+      const r = await moveReq(oldPath, newPath, rn);
       if (!(r.ok || r.offline)) {
         // the server refused this name \u2014 loop back into askName seeded with
         // it, so the retry is an edit, not a full retype
@@ -50,16 +57,9 @@
         seed = typed;
         continue;
       }
-      let moved = 0;
-      for (const n of nodes)
-        if (n.path === oldPath || n.path.startsWith(oldPath + '/')) {
-          if (n.page) moved++;
-          n.path = mapped(n.path);
-        }
-      if (newPath.includes('/')) addFolderNodes(newPath.slice(0, newPath.lastIndexOf('/')));
-      applyDnames(rn);
+      const moved = remapMoved(oldPath, newPath, rn);
       if (current && (current === oldPath || current.startsWith(oldPath + '/')))
-        current = mapped(current);
+        current = newPath + current.slice(oldPath.length);
       snapTree();
       renderTree();
       st('moved ' + oldPath + ' \u2192 ' + newPath +

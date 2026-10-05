@@ -46,6 +46,7 @@
   let qKnow = [];              // [{key, body}]
   let qKnowFailed = false;     // /know-all never answered this panel-open
   let qLoading = null;         // in-flight load, shared
+  let qAt = '';                // beacon rev both last loaded at (see revFresh)
   // never-loaded and load-failed are different states. qCtxAttempts counts
   // how many times qLoadContextOnce has actually run since the panel opened,
   // capped at two: the open-time load and one retry. A failure short of that
@@ -67,6 +68,7 @@
   }
   async function qLoadContextOnce() {
     qCtxAttempts += 1;
+    const at = lastRev;
     try {
       const r = await fetch(api + '/page-scopes');
       if (r.ok) {
@@ -80,6 +82,8 @@
       if (r.ok) { qKnow = (await r.json()).items || []; qKnowFailed = false; }
       else qKnowFailed = true;
     } catch { qKnowFailed = true; }
+    //  stamped only when BOTH landed, so a half-failed load is retried
+    qAt = qScopes && !qKnowFailed ? at : '';
   }
 
   // non-overlapping occurrence count: split yields pieces-1 = matches. The
@@ -237,11 +241,14 @@
     $('qlist').className = 'aclempty';
     $('qlist').textContent = 'type at least two characters';
     $('qsum').textContent = '';
-    qScopes = null;                          // refresh exposure each open
-    qCtxAttempts = 0;                        // this open gets its own retry
     qResults = [];
     qRows = [];
     qSel = -1;
+    //  the exposure map and the memories are refetched only when the beacon
+    //  moved since they loaded (revFresh, 90-sync.js), not on every ctrl-K
+    if (revFresh(qAt)) return;
+    qScopes = null;                          // refresh exposure
+    qCtxAttempts = 0;                        // this open gets its own retry
     qLoadContext();
   };
 

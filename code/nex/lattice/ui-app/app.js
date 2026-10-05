@@ -100,25 +100,27 @@
     rq.onsuccess = () => res(rq.result);
     rq.onerror = () => res(null);
   });
-  const offStore = async (mode) => {
+  //  one object store of the three (saves, ops, kv), in its own transaction
+  const idbStore = async (name, mode) => {
     const d = await offOpen();
-    try { return d && d.transaction('saves', mode).objectStore('saves'); } catch { return null; }
+    try { return d && d.transaction(name, mode).objectStore(name); } catch { return null; }
   };
   const idbGet = async (name) => {
-    const s = await offStore('readonly'); return s ? offReq(s.get(name)) : null;
+    const s = await idbStore('saves', 'readonly'); return s ? offReq(s.get(name)) : null;
   };
   const idbAll = async () => {
-    const s = await offStore('readonly'); return (s && await offReq(s.getAll())) || [];
+    const s = await idbStore('saves', 'readonly'); return (s && await offReq(s.getAll())) || [];
   };
-  const opStore = async (mode) => {
-    const d = await offOpen();
-    try { return d && d.transaction('ops', mode).objectStore('ops'); } catch { return null; }
+  //  how many records, without reading them: a queued save carries its
+  //  whole body, and the badge recount runs after every queue write
+  const idbCount = async (name) => {
+    const s = await idbStore(name, 'readonly'); return (s && await offReq(s.count())) || 0;
   };
   //  getAll and getAllKeys both come back in key order, which is the order
   //  they were queued in. That ordering IS the data structure here. The keys
   //  come along so a partly drained queue can delete exactly what landed.
   const idbOpAll = async () => {
-    const s = await opStore('readonly');
+    const s = await idbStore('ops', 'readonly');
     if (!s) return [];
     //  both requests are issued before either is awaited: a transaction ends
     //  once the microtask queue drains with nothing pending on it
@@ -129,11 +131,11 @@
     return vals.map((v, i) => ({ ...v, _k: keys[i] }));
   };
   const idbOpPut = async (rec) => {
-    const s = await opStore('readwrite'); if (s) await offReq(s.add(rec));
+    const s = await idbStore('ops', 'readwrite'); if (s) await offReq(s.add(rec));
     await offRecount();
   };
   const idbOpDel = async (k) => {
-    const s = await opStore('readwrite'); if (s) await offReq(s.delete(k));
+    const s = await idbStore('ops', 'readwrite'); if (s) await offReq(s.delete(k));
     await offRecount();
   };
   // ── where the queue actually lives ───────────────────────────────────
@@ -225,8 +227,12 @@
     await offRecount();
   }
 
+  //  the desktop's Rust store has no count command, so there the lists
+  //  are still read whole
   const offRecount = async () => {
-    offCount = (await offAll()).length + (await opAll()).length;
+    offCount = qrust()
+      ? (await offAll()).length + (await opAll()).length
+      : (await idbCount('saves')) + (await idbCount('ops'));
     renderOffline();
   };
   // Resolve TRUE only when the write actually completed. offReq resolves the
@@ -241,21 +247,17 @@
   });
   //  returns whether the record is now durably in the queue
   const idbPut = async (rec) => {
-    const s = await offStore('readwrite');
+    const s = await idbStore('saves', 'readwrite');
     let ok = false;
     if (s) { try { ok = await offOk(s.put(rec)); } catch { ok = false; } }
     return ok;
   };
   const idbDel = async (name) => {
-    const s = await offStore('readwrite'); if (s) await offReq(s.delete(name));
+    const s = await idbStore('saves', 'readwrite'); if (s) await offReq(s.delete(name));
   };
   offRecount();
-  const kvStore = async (mode) => {
-    const d = await offOpen();
-    try { return d && d.transaction('kv', mode).objectStore('kv'); } catch { return null; }
-  };
   const kvGet = async (k) => {
-    const st = await kvStore('readonly');
+    const st = await idbStore('kv', 'readonly');
     const r = st && await offReq(st.get(k));
     return r ? r.v : null;
   };
@@ -263,7 +265,7 @@
   // paths, and a snapshot write that loses a race with app close costs one
   // boot's paint, not data. The ship copy is the durable one.
   const kvPut = async (k, v) => {
-    const st = await kvStore('readwrite');
+    const st = await idbStore('kv', 'readwrite');
     if (st) await offReq(st.put({ k, v }));
   };
 
@@ -947,21 +949,6 @@
 </nav>`;
     }
   });
-  // stale-shell guard: replace a cached pre-component shell's literal bar and
-  // tabs. The bar relies on source order for its grid row, so it is PREPENDED.
-  if (!document.querySelector('lat-bar')) {
-    for (const sel of ['header.bar', 'nav.mtabs']) {
-      const stale = document.querySelector(sel);
-      if (stale) stale.remove();
-    }
-    const wsEl = document.getElementById('ws');
-    const tabs = document.createElement('lat-tabs');
-    const bar = document.createElement('lat-bar');
-    tabs.style.display = 'contents';
-    bar.style.display = 'contents';
-    wsEl.prepend(tabs);
-    wsEl.prepend(bar);
-  }
 
 // ── src/15-dialog.js ──────────────────────────────────────────────────────
   // ── in-app dialogs, NEVER browser-native prompt/confirm/alert ────────────
@@ -1163,15 +1150,6 @@
       });
     }
   });
-  // stale-shell guard: a cached index.html predating <lat-dialog> still
-  // carries the literal #dlg block, which would shadow the component's ids.
-  // Swap it out so dialogs keep working during the skew window (the service
-  // worker caches the shell and this file independently).
-  if (!document.querySelector('lat-dialog')) {
-    const stale = document.getElementById('dlg');
-    if (stale) stale.remove();
-    document.body.appendChild(document.createElement('lat-dialog'));
-  }
 
 // ── src/20-state.js ───────────────────────────────────────────────────────
   // ── state ────────────────────────────────────────────────────────────────
@@ -1233,6 +1211,23 @@
       if (!dirty) return true;
     }
     return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+  }
+  // setOpen: what the bar says is open, set in one place. `name` becomes
+  // `current`, the open page or memory, or null when nothing named is open
+  // (a new page, a folder, a grub, a fresh mode). The name field shows
+  // `name` unless `shown` says otherwise (a folder's path, a grub's road, a
+  // new page's folder prefix, a typed name slugged mid-save) and is locked
+  // when readOnly. `kind` moves the kind picker when it has that option.
+  // `url`, when given, replaces the address. Assigning .value fires no
+  // event, so this ends by dispatching 'input' on the field: the desktop
+  // and phone labels (96-deskmenu.js, 97-mobar.js) repaint on it.
+  function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
+    current = name;
+    pname.value = shown === undefined ? (name || '') : shown;
+    pname.readOnly = readOnly;
+    if (kind && [...pkind.options].some((o) => o.value === kind)) pkind.value = kind;
+    if (url) history.replaceState(null, '', url);
+    pname.dispatchEvent(new Event('input'));
   }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
@@ -1327,7 +1322,7 @@
     // Saves coalesce in a map, structural ops go in an ordered log, and both
     // drain together. Everything else (sharing, tagging, the legacy migration)
     // still refuses honestly rather than pretending.
-    if (degraded || offCount) {
+    const offline = async () => {
       const q = offlineOp(url);
       if (q) {
         await enqueueOp(q);
@@ -1340,7 +1335,8 @@
       }
       st('offline — edits are queued, but this change needs the ship', false);
       return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
-    }
+    };
+    if (degraded || offCount) return offline();
     echoUntil = Date.now() + 60000;
     const sentAt = Date.now();
     try {
@@ -1350,17 +1346,7 @@
       // queue what can be queued and ENGAGE degraded — the old path only
       // queued when degraded was already true, so the FIRST offline action
       // being structural threw past every caller and did nothing at all
-      if (!r || r.status === 502 || r.status === 504) {
-        const q = offlineOp(url);
-        setDegraded(true);
-        if (q) {
-          await enqueueOp(q);
-          return { ok: true, offline: true, status: 200,
-                   json: async () => ({ offline: true }) };
-        }
-        st('offline — edits are queued, but this change needs the ship', false);
-        return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
-      }
+      if (shipGone(r)) { setDegraded(true); return await offline(); }
       if (r.ok) {
         pendingEchoes++;              // one bump is ours; consume it on arrival
         // every mutate names its target the same way; a move dirties both ends
@@ -1393,10 +1379,23 @@
   })().catch((e) => { basePr = null; throw e; }));
   const forgetBase = () => { basePr = null; try { delete localStorage.latBase; } catch {} };
 
-  const collapsed = () => {
-    try { return JSON.parse(localStorage.appColl || '[]'); } catch { return []; }
+  // a tree's folded folders, remembered under one localStorage key: get()
+  // reads the list, flip(key) folds or unfolds one folder in it. The files
+  // tree (with its shared-with-me folder) keeps appColl; memories keep
+  // knowColl (95-know.js).
+  const collStore = (k) => {
+    const get = () => {
+      try { return JSON.parse(localStorage[k] || '[]'); } catch { return []; }
+    };
+    const flip = (key) => {
+      const c = get();
+      const i = c.indexOf(key);
+      if (i >= 0) c.splice(i, 1); else c.push(key);
+      localStorage[k] = JSON.stringify(c);
+    };
+    return { get, flip };
   };
-  const setCollapsed = (c) => { localStorage.appColl = JSON.stringify(c); };
+  const paneColl = collStore('appColl');
 
 // ── src/22-listedit.js ────────────────────────────────────────────────────
   // ── smart list continuation ──────────────────────────────────────────────
@@ -1661,15 +1660,6 @@
       src.addEventListener('scroll', sync);
     }
   });
-  // stale-shell guard: a cached index.html predating <lat-editor> still has
-  // the literal .edwrap block (and lacks the lat-* display rule). Swap it.
-  if (!document.querySelector('lat-editor')) {
-    const stale = document.querySelector('.edwrap');
-    if (stale) stale.remove();
-    const el = document.createElement('lat-editor');
-    el.style.display = 'contents';
-    document.getElementById('ws').appendChild(el);
-  }
   pkind.addEventListener('change', () => {
     curKind = pkind.value;
     render();
@@ -1677,7 +1667,7 @@
     //  page must dirty the editor or navigating away silently reverts the
     //  choice. A page with no name yet gets its kind from the first save.
     if (current) edited();
-    if (typeof refreshTexButton === 'function') refreshTexButton();
+    refreshTexButton();
   });
 
 // ── src/27-vim.js ─────────────────────────────────────────────────────────
@@ -1714,18 +1704,15 @@
   function vimOn(){ return localStorage.getItem(LS) === "1"; }   // default OFF
 
   /* ---- mode indicator element (created once, lives by the status bar) ---- */
-  var ind = document.getElementById("vimInd");
-  if(!ind){
-    ind = document.createElement("span");
-    ind.id = "vimInd";
-    ind.style.cssText =
-      "display:none;margin-left:8px;padding:1px 6px;border-radius:3px;"+
-      "font:11px/1.6 monospace;font-weight:bold;letter-spacing:.5px;"+
-      "color:#fff;background:#666;vertical-align:middle;";
-    var stEl = document.getElementById("status");
-    if(stEl && stEl.parentNode) stEl.parentNode.insertBefore(ind, stEl.nextSibling);
-    else document.body.appendChild(ind);
-  }
+  var ind = document.createElement("span");
+  ind.id = "vimInd";
+  ind.style.cssText =
+    "display:none;margin-left:8px;padding:1px 6px;border-radius:3px;"+
+    "font:11px/1.6 monospace;font-weight:bold;letter-spacing:.5px;"+
+    "color:#fff;background:#666;vertical-align:middle;";
+  var stEl = document.getElementById("status");
+  if(stEl && stEl.parentNode) stEl.parentNode.insertBefore(ind, stEl.nextSibling);
+  else document.body.appendChild(ind);
 
   /* ---- state ---- */
   var MODE = "normal";        // "normal" | "insert" | "visual"
@@ -1854,12 +1841,9 @@
   function visSync(){
     if(MODE !== "visual") return;
     var r = visRange();
-    // put the DOM caret AT visCaret so pos()-based motions read the right spot,
-    // then extend the visible selection to cover the range.
-    if(visCaret >= visAnchor) setSel(r[0], r[1]);
-    else setSel(r[0], r[1]);
-    // keep selectionStart at visCaret side for motion reads is not needed;
-    // visual handler uses visCaret directly.
+    // the selection runs low to high whichever way the caret moved: the
+    // visual handler reads visCaret directly, never the DOM caret.
+    setSel(r[0], r[1]);
   }
 
   /* ============================================================================
@@ -2374,7 +2358,7 @@
   ta.addEventListener("focus", function(){ if(vimOn() && MODE !== "insert") fixCaret(); });
 
   /* ============================================================================
-     TOGGLE BUTTON + localStorage (same flip-flag-then-reapply pattern as edNT)
+     ON/OFF: localStorage, flipped from the settings page
      ============================================================================ */
   function applyVim(){
     if(vimOn()){
@@ -2386,30 +2370,16 @@
       ta.classList.remove("vim-on");
     }
     setInd();
-    if(btn) btn.textContent = "vim: " + (vimOn() ? "on" : "off");
   }
-  // Global so an explicit template button `onclick="vimToggle()"` can drive it.
-  window.vimToggle = function(){
-    localStorage.setItem(LS, vimOn() ? "0" : "1");
-    MODE = "normal"; reset();
-    applyVim();
-    ta.focus();
-    var stEl2 = document.getElementById("status");
-    if(stEl2) stEl2.textContent = "vim " + (vimOn() ? "on" : "off");
-  };
 
   //  The toggle lives on the settings page, which is a SEPARATE document on
   //  this origin, exactly like the font and size preferences. It writes the
   //  flag and the storage event brings it here, so no button is injected into
-  //  the bar (which is managed markup now).
-  var btn = document.getElementById("vimToggle");
-  if(btn) btn.onclick = window.vimToggle;
+  //  the bar (which is managed markup now). An unset flag is off: vimOn()
+  //  and the settings checkbox both test for "1".
   window.addEventListener("storage", function(e){
     if(!e.key || e.key === LS) applyVim();
   });
-
-  // Persist an explicit default of OFF on first run.
-  if(localStorage.getItem(LS) === null) localStorage.setItem(LS, "0");
   applyVim();
 })();
 
@@ -2482,14 +2452,6 @@
       treeList = $('treelist');
     }
   });
-  // stale-shell guard: swap a cached pre-component shell's literal pane
-  if (!document.querySelector('lat-tree')) {
-    const stale = document.getElementById('tree');
-    if (stale) stale.remove();
-    const el = document.createElement('lat-tree');
-    el.style.display = 'contents';
-    document.getElementById('ws').appendChild(el);
-  }
   // page-dump, not page-tree: it returns the same nodes PLUS every page's body
   // inline from ONE deep peek, and measures FASTER than page-tree (which
   // re-peeks each code grub). Those bodies are what make opening a page cost
@@ -2497,8 +2459,11 @@
   // Such a node has no `body` and falls back to the per-page fetch.
   // ponytail: whole-store payload (~55KB today). If the tree ever grows past
   // a megabyte, page it or go back to page-tree plus a lazy body cache.
+  // the beacon rev the last applied dump was fetched at (see revFresh)
+  let treeAt = '';
   async function loadTree() {
     const gen = treeGen;
+    const at = lastRev;
     let d = null;
     // this one RESOLVES, always. Boot chains its whole reconcile off it
     // (99-boot.js) with no .catch, so a rejection here would silently cancel
@@ -2518,6 +2483,7 @@
     // overwrite a stream-observed rev — the snapshot may already trail it.
     if (!lastRev && d.rev != null) noteRev(String(d.rev));
     nodes = d.nodes;
+    treeAt = at;
     // drop only the cached renders the dump says have moved FORWARD. Blanket-
     // clearing on every change cost every other page its cache. Comparing
     // for mere inequality evicted good entries whenever the dump trailed
@@ -2589,19 +2555,40 @@
     nodes = nodes.filter((n) => n.path !== path && !n.path.startsWith(path + '/'));
   }
 
+  // one folder row, the same in all three trees (files, shared with me,
+  // memories): the fold arrow, then the folder icon and its label, indented
+  // by depth. `fold` folds or unfolds it and repaints. A click anywhere on
+  // the row folds, unless the row has a `pick` of its own (the files tree
+  // selects the folder): then the row picks and only the arrow folds.
+  function folderRow(label, depth, folded, fold, pick) {
+    const row = document.createElement('div');
+    row.className = 'fld';
+    row.style.marginLeft = (depth * 14) + 'px';
+    const cx = document.createElement('span');
+    cx.className = 'cx';
+    cx.textContent = folded ? '▸' : '▾';
+    const lb = document.createElement('span');
+    lb.textContent = '\u{1F4C1} ' + label;
+    row.append(cx, lb);
+    if (pick) {
+      cx.onclick = (e) => { e.stopPropagation(); fold(); };
+      row.onclick = pick;
+    } else row.onclick = fold;
+    return row;
+  }
+
   function renderTree() {
-    const coll = collapsed();
+    const coll = paneColl.get();
     const byPath = [...nodes].sort((a, b) => a.path.localeCompare(b.path));
     treeList.textContent = '';
     rowByPath = new Map();
     for (const n of byPath) {
       const depth = n.path.split('/').length - 1;
-      const parent = n.path.includes('/') ? n.path.slice(0, n.path.lastIndexOf('/')) : '';
       const hidden = coll.some((c) => n.path === c ? false : n.path.startsWith(c + '/'));
-      const row = document.createElement(n.page ? 'a' : 'div');
-      row.style.marginLeft = (depth * 14) + 'px';
-      if (hidden) row.style.display = 'none';
+      let row;
       if (n.page) {
+        row = document.createElement('a');
+        row.style.marginLeft = (depth * 14) + 'px';
         row.className = 'pg' + (n.path === current ? ' cur' : '')
           + (n.pending ? ' pend' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
@@ -2618,22 +2605,10 @@
         }
         row.onclick = (e) => { e.preventDefault(); openPage(n.path); };
       } else {
-        row.className = 'fld' + (n.path === curFolder ? ' cur' : '');
-        const cx = document.createElement('span');
-        cx.className = 'cx';
-        cx.textContent = coll.includes(n.path) ? '▸' : '▾';
-        cx.onclick = (e) => {
-          e.stopPropagation();
-          const c = collapsed();
-          const i = c.indexOf(n.path);
-          if (i >= 0) c.splice(i, 1); else c.push(n.path);
-          setCollapsed(c);
-          renderTree();
-        };
-        const label = document.createElement('span');
-        label.textContent = '\u{1F4C1} ' + (n.dname || n.path.split('/').pop());
-        if (n.dname) label.title = n.path;
-        row.append(cx, label);
+        row = folderRow(n.dname || n.path.split('/').pop(), depth, coll.includes(n.path),
+          () => { paneColl.flip(n.path); renderTree(); }, () => selectFolder(n.path));
+        if (n.path === curFolder) row.classList.add('cur');
+        if (n.dname) row.lastChild.title = n.path;     // the label's tip
         if (treeShare(n.path) === 'clearweb') {
           const cw = document.createElement('span');
           cw.className = 'cw';
@@ -2648,15 +2623,15 @@
         add.href = '#';
         add.onclick = (e) => { e.preventDefault(); e.stopPropagation(); newFile(n.path); };
         row.append(add);
-        row.onclick = () => selectFolder(n.path);
       }
+      if (hidden) row.style.display = 'none';
       rowByPath.set(n.path, row);
       treeList.appendChild(row);
     }
     if (sharedWithMe.length) renderShared(coll);
     // the conflict badge is a count of conflicts/ pages in this very tree, so
     // it repaints exactly when the tree does. Defined in 80-conflicts.js.
-    if (typeof renderConfBadge === 'function') renderConfBadge();
+    renderConfBadge();
   }
 
   // ── folder selection ─────────────────────────────────────────────────────
@@ -2679,7 +2654,6 @@
   };
 
   function selectFolder(path) {
-    current = null;
     curFolder = path;
     curKind = null;
     exitGrub();
@@ -2687,13 +2661,12 @@
     $('histsec').hidden = true;
     $('linksec').hidden = true;
     folderCtx = path;
-    pname.value = path;
-    pname.readOnly = true;
+    setOpen(null, { shown: path, readOnly: true,
+      url: '/apps/lattice/app?into=' + encodeURIComponent(path) });
     src.value = '';
     render();
     prevBlank();
     cerr.textContent = ' '; cerr.className = 'ok';
-    history.replaceState(null, '', '/apps/lattice/app?into=' + encodeURIComponent(path));
     markCurrent();
     setCtlLabels();
     showShare(treeShare(path));
@@ -2797,15 +2770,13 @@
     applyPage(name, d);
   }
   function applyPage(name, d, quiet) {
-    current = name;
     curFolder = null;
     setCtlLabels();
-    pname.value = name;
-    pname.readOnly = true;
+    setOpen(name, { readOnly: true, kind: d.kind,
+      url: '/apps/lattice/app?name=' + encodeURIComponent(name) });
     curKind = d.kind;
     curRev = d.rev || 0;
-    if ([...pkind.options].some((o) => o.value === d.kind)) pkind.value = d.kind;
-    if (typeof refreshTexButton === 'function') refreshTexButton();
+    refreshTexButton();
     src.value = d.body;
     dirty = false;
     // A fresh editor state begins here. everTyped answers "did the user type
@@ -2813,7 +2784,6 @@
     // it across a navigation would mark every later untouched page as touched.
     everTyped = false;
     render(); sync();
-    history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
     markCurrent();
     st(d.kind + ' · rev ' + d.rev);
     exitRev();
@@ -2852,22 +2822,19 @@
   // already typing a filename you did not ask to type.
   function newFile(into, focusName = true) {
     folderCtx = into || '';
-    current = null;
     curFolder = null;
     curKind = null;
-    if (typeof refreshTexButton === 'function') refreshTexButton();
+    refreshTexButton();
     exitGrub();
     exitRev();
     $('histsec').hidden = true;
     $('linksec').hidden = true;
     setCtlLabels();
-    pname.readOnly = false;
-    pname.value = into ? into + '/' : '';
+    setOpen(null, { shown: into ? into + '/' : '', url: '/apps/lattice/app' });
     src.value = '';
     dirty = false;
     everTyped = false;   // a new file is a fresh editor state, like applyPage
     render();
-    history.replaceState(null, '', '/apps/lattice/app');
     renderTree();
     if (focusName) pname.focus();
     st('new page — name it, write, save');
@@ -2986,7 +2953,12 @@
     const rnc = !creating ? null : rn.dnames ? rn : newRn;
     newRn = null;
     const dname = rnc ? rnc.dname : '';
-    if (rn.name !== name) { name = rn.name; pname.value = name; }
+    //  the field shows the slug from here on; nothing else about what is
+    //  open changes, so `current` and the lock are passed through as they are
+    if (rn.name !== name) {
+      name = rn.name;
+      setOpen(current, { shown: name, readOnly: pname.readOnly });
+    }
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc);
     let r = null;
@@ -3142,13 +3114,11 @@
     grubPath = p;
     grubShip = ship || null;
     if (grubPrevKind === null) grubPrevKind = pkind.value;
-    current = null;
     curFolder = null;
     // a shared lattice page reads as "~ship: its/name", not its whole ball
     // path; the name field is only a label here (Save goes by grubPath)
     const pg = /\/page\/(.+)\/code$/.exec(p);
-    pname.value = grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p;
-    pname.readOnly = true;
+    setOpen(null, { shown: grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p, readOnly: true });
     $('histsec').hidden = true;
     $('linksec').hidden = true;
     st('loading ' + p + '…');
@@ -3176,6 +3146,9 @@
     // wrapped in, which is its page kind
     const mk = d.builder || extKind(String(blot).split('/').pop()) || 'hoon';
     if ([...pkind.options].some((o) => o.value === mk)) pkind.value = mk;
+    //  setOpen ran before this file's kind was known, so tell the desktop
+    //  label (its tip names the kind) the same way setOpen does
+    pname.dispatchEvent(new Event('input'));
     curKind = mk;
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'on ' + grubShip + ': saves need its permission'
@@ -3861,14 +3834,6 @@
       prevBlank();
     }
   });
-  // stale-shell guard: swap a cached pre-component shell's literal iframe
-  if (!document.querySelector('lat-preview')) {
-    const stale = document.querySelector('iframe.prev');
-    if (stale) stale.remove();
-    const el = document.createElement('lat-preview');
-    el.style.display = 'contents';
-    document.getElementById('ws').appendChild(el);
-  }
   //  tex is here for the same reason html is: the ship cannot render it, so
   //  the local paint IS the preview and there is no server answer to wait
   //  for. It differs in one way, that its renderer is a subprocess and
@@ -4091,14 +4056,6 @@
       cerr = $('cerr');
     }
   });
-  // stale-shell guard: swap a cached pre-component shell's literal pane
-  if (!document.querySelector('lat-ctl')) {
-    const stale = document.querySelector('aside.ctl');
-    if (stale) stale.remove();
-    const el = document.createElement('lat-ctl');
-    el.style.display = 'contents';
-    document.getElementById('ws').appendChild(el);
-  }
 
   // NB: the command box is gone from this panel. It POSTed to /page-cmd, the
   // input channel for a programmable page. The ROUTE stays, since public form
@@ -4391,8 +4348,8 @@
     permGroups = await r.json();
     permsLoaded = true;
     // every surface that renders groups repaints from this one load
-    if (typeof renderAcl === 'function') renderAcl();
-    if (typeof renderGroupAccess === 'function') renderGroupAccess();
+    renderAcl();
+    renderGroupAccess();
   }
   async function permSave(g) {
     const r = await fetch(api + '/share-group-save?name=' + encodeURIComponent(g.name), {
@@ -4456,23 +4413,8 @@
   // appended by renderTree, after the pages
   function renderShared(coll) {
     const fold = (key, label, depth) => {
-      const row = document.createElement('div');
-      row.className = 'fld';
-      row.style.marginLeft = (depth * 14) + 'px';
-      const cx = document.createElement('span');
-      cx.className = 'cx';
-      cx.textContent = coll.includes(key) ? '▸' : '▾';
-      const lb = document.createElement('span');
-      lb.textContent = '\u{1F4C1} ' + label;
-      row.append(cx, lb);
-      row.onclick = () => {
-        const c = collapsed();
-        const i = c.indexOf(key);
-        if (i >= 0) c.splice(i, 1); else c.push(key);
-        setCollapsed(c);
-        renderTree();
-      };
-      treeList.appendChild(row);
+      treeList.appendChild(folderRow(label, depth, coll.includes(key),
+        () => { paneColl.flip(key); renderTree(); }));
       return !coll.includes(key);
     };
     if (!fold(SWM, 'shared with me', 0)) return;
@@ -4515,8 +4457,9 @@
 
 // ── src/70-upload.js ──────────────────────────────────────────────────────
   // ── upload (pickers + drag-and-drop, progress panel) ─────────────────────
-  //  which extensions arrive as which kind is EXT_KIND, in 30-tree.js
-  const seg = (x) => x.toLowerCase().replace(/[^a-z0-9._~-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
+  //  which extensions arrive as which kind is EXT_KIND, in 30-tree.js. Each
+  //  path segment is slugged by slugSeg (10-shell.js), the same rule a typed
+  //  page name gets.
   const upPanel = $('uppanel'), upMsg = $('upmsg'), upFill = $('upfill'), upErr = $('uperr');
 
   const upShow = () => { upPanel.hidden = false; upErr.textContent = ''; upFill.style.width = '0%'; };
@@ -4525,20 +4468,13 @@
     upFill.style.width = Math.round(done * 100 / Math.max(total, 1)) + '%';
   };
 
-  // opts.verbatim: the paths are ones this app itself wrote (a vault restore),
-  // so take them as they are. seg() lowercases and rewrites characters, which
-  // is right for a file dragged in off a disk and wrong for a page being put
-  // back where it came from. folderCtx is ignored for the same reason: a
-  // restore goes to the original path, not under whatever folder is selected.
-  async function uploadItems(items, opts) {
-    const verbatim = !!(opts && opts.verbatim);
+  async function uploadItems(items) {
     if (degraded || offCount) {
       upShow();
       upMsg.textContent = 'offline — uploads need the ship (queued edits will sync first)';
       return;
     }
     const list = [];
-    const dirs = new Set();
     //  names, not just a count: a batch of thirty dropped files that skips
     //  three leaves the user guessing which three without this
     const skippedNames = [];
@@ -4547,15 +4483,11 @@
       const kind = dot > 0 ? extKind(rel.slice(dot + 1)) : null;
       if (!kind) { skippedNames.push(rel); continue; }
       const stem = rel.slice(0, dot);
-      const parts = verbatim
-        ? stem.split('/').filter(Boolean)
-        : stem.split('/').map(seg).filter(Boolean);
-      if (folderCtx && !verbatim) parts.unshift(...folderCtx.split('/'));
+      const parts = stem.split('/').map(slugSeg).filter(Boolean);
+      if (folderCtx) parts.unshift(...folderCtx.split('/'));
       const name = parts.join('/');
       if (!name) { skippedNames.push(rel); continue; }
       list.push({ file, name, kind });
-      const pp = name.split('/'); pp.pop();
-      for (let i = 1; i <= pp.length; i++) dirs.add(pp.slice(0, i).join('/'));
     }
     if (!list.length) {
       upShow();
@@ -4573,14 +4505,11 @@
         : skippedNames.join(', ');
       upErr.textContent = `skipped ${skippedNames.length} unsupported\n  ${shown}\n`;
     }
-    // only create folders the tree does not already have. Each folder-new is
-    // a ~2s writer round-trip, and re-uploading into an existing tree used to
-    // pay it for every directory.
-    for (const d of [...dirs].sort()) {
-      if (hasNode(d)) continue;
-      try { await mutate(api + '/folder-new?name=' + encodeURIComponent(d)); }
-      catch {}
-    }
+    // No folder-new first: every name in the batch is a full path, and the
+    // ship's %make-many creates each page's missing parent folders itself
+    // (make-page, ensure-dirs), the way a single save does. A folder-new per
+    // directory was a ~2s writer round-trip apiece for nothing.
+    //
     // ONE request per chunk, not one per file: every request pays the pier's
     // ~0.5s floor serially, so a 20-file drop used to be ~20 round-trips of
     // pure overhead doing work the server can batch. Chunked because the
@@ -4902,7 +4831,7 @@
     };
     //  the body may have moved on while pandoc ran
     if (src.value !== body) { scheduleTexRender(src.value); return; }
-    if (typeof paintLocal === 'function') paintLocal();
+    paintLocal();
   }
 
 // ── src/72-acl.js ─────────────────────────────────────────────────────────
@@ -5456,21 +5385,31 @@
   // rn: the realName() split of the new name. Its dname is ALWAYS sent: ''
   // (the typed name was a valid path) clears the one the move would
   // otherwise carry over; dnames names the folders the move creates.
-  async function movePage(oldName, newName, rn) {
-    const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldName) +
-      '&to=' + encodeURIComponent(newName) + '&dname=' + encodeURIComponent((rn && rn.dname) || '') +
+  const moveReq = (from, to, rn) =>
+    mutate(api + '/page-move?from=' + encodeURIComponent(from) +
+      '&to=' + encodeURIComponent(to) + '&dname=' + encodeURIComponent((rn && rn.dname) || '') +
       (rn && rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
-    if (!r.ok) { st('move failed' + await errText(r), false); return false; }
-    // the server moves the WHOLE subtree (a page can parent nested pages, and
-    // move-pages rewrites every rel under it). Renaming only the exact node
-    // left those children pointing at paths that no longer exist — ghosts in
-    // the tree until the next full loadTree. Same suffix-preserving remap as
-    // moveFolder, and as the offline queue's own move reconciliation.
-    const mapped = (p) => newName + p.slice(oldName.length);
+  // the server moves the WHOLE subtree (a page can parent nested pages, and
+  // move-pages rewrites every rel under it). Renaming only the exact node
+  // left those children pointing at paths that no longer exist, ghosts in
+  // the tree until the next full loadTree. So the local tree gets the same
+  // suffix-preserving remap, as does the offline queue's own move
+  // reconciliation. Returns how many pages moved.
+  const remapMoved = (from, to, rn) => {
+    let moved = 0;
     for (const n of nodes)
-      if (n.path === oldName || n.path.startsWith(oldName + '/')) n.path = mapped(n.path);
-    if (newName.includes('/')) addFolderNodes(newName.slice(0, newName.lastIndexOf('/')));
-    applyDnames(rn || { name: newName, dname: '', dnames: '' });
+      if (n.path === from || n.path.startsWith(from + '/')) {
+        if (n.page) moved++;
+        n.path = to + n.path.slice(from.length);
+      }
+    if (to.includes('/')) addFolderNodes(to.slice(0, to.lastIndexOf('/')));
+    applyDnames(rn || { name: to, dname: '', dnames: '' });
+    return moved;
+  };
+  async function movePage(oldName, newName, rn) {
+    const r = await moveReq(oldName, newName, rn);
+    if (!r.ok) { st('move failed' + await errText(r), false); return false; }
+    remapMoved(oldName, newName, rn);
     snapTree();
     renderTree();
     //  the response, not a bare true: the caller's message must say when the
@@ -5486,11 +5425,8 @@
       const rn = realName(typed);
       const newPath = rn.name;
       if (newPath === oldPath && !rn.dname) return;
-      const mapped = (p) => newPath + p.slice(oldPath.length);
       st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
-      const r = await mutate(api + '/page-move?from=' + encodeURIComponent(oldPath) +
-        '&to=' + encodeURIComponent(newPath) + '&dname=' + encodeURIComponent(rn.dname) +
-        (rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
+      const r = await moveReq(oldPath, newPath, rn);
       if (!(r.ok || r.offline)) {
         // the server refused this name \u2014 loop back into askName seeded with
         // it, so the retry is an edit, not a full retype
@@ -5498,16 +5434,9 @@
         seed = typed;
         continue;
       }
-      let moved = 0;
-      for (const n of nodes)
-        if (n.path === oldPath || n.path.startsWith(oldPath + '/')) {
-          if (n.page) moved++;
-          n.path = mapped(n.path);
-        }
-      if (newPath.includes('/')) addFolderNodes(newPath.slice(0, newPath.lastIndexOf('/')));
-      applyDnames(rn);
+      const moved = remapMoved(oldPath, newPath, rn);
       if (current && (current === oldPath || current.startsWith(oldPath + '/')))
-        current = mapped(current);
+        current = newPath + current.slice(oldPath.length);
       snapTree();
       renderTree();
       st('moved ' + oldPath + ' \u2192 ' + newPath +
@@ -5741,8 +5670,7 @@
         knowGen++;
         const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
         if (k) k.key = newName;
-        current = newName;
-        pname.value = newName;
+        setOpen(newName, { readOnly: true });
         renderKnowChips();
         renderKnowTree();
         st('moved to ' + newName);
@@ -5846,6 +5774,7 @@
   let qKnow = [];              // [{key, body}]
   let qKnowFailed = false;     // /know-all never answered this panel-open
   let qLoading = null;         // in-flight load, shared
+  let qAt = '';                // beacon rev both last loaded at (see revFresh)
   // never-loaded and load-failed are different states. qCtxAttempts counts
   // how many times qLoadContextOnce has actually run since the panel opened,
   // capped at two: the open-time load and one retry. A failure short of that
@@ -5867,6 +5796,7 @@
   }
   async function qLoadContextOnce() {
     qCtxAttempts += 1;
+    const at = lastRev;
     try {
       const r = await fetch(api + '/page-scopes');
       if (r.ok) {
@@ -5880,6 +5810,8 @@
       if (r.ok) { qKnow = (await r.json()).items || []; qKnowFailed = false; }
       else qKnowFailed = true;
     } catch { qKnowFailed = true; }
+    //  stamped only when BOTH landed, so a half-failed load is retried
+    qAt = qScopes && !qKnowFailed ? at : '';
   }
 
   // non-overlapping occurrence count: split yields pieces-1 = matches. The
@@ -6037,11 +5969,14 @@
     $('qlist').className = 'aclempty';
     $('qlist').textContent = 'type at least two characters';
     $('qsum').textContent = '';
-    qScopes = null;                          // refresh exposure each open
-    qCtxAttempts = 0;                        // this open gets its own retry
     qResults = [];
     qRows = [];
     qSel = -1;
+    //  the exposure map and the memories are refetched only when the beacon
+    //  moved since they loaded (revFresh, 90-sync.js), not on every ctrl-K
+    if (revFresh(qAt)) return;
+    qScopes = null;                          // refresh exposure
+    qCtxAttempts = 0;                        // this open gets its own retry
     qLoadContext();
   };
 
@@ -6318,7 +6253,6 @@
     const lim = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
     const wire = (id, key, drag) => {
       const h = $(id);
-      if (!h) return;                    // stale cached shell without handles
       // the reset gesture is detected from pointerup pairs, NOT dblclick.
       // pointerdown must preventDefault (otherwise native selection starts
       // and eats the pointer stream mid-drag), and a cancelled pointerdown
@@ -6494,6 +6428,11 @@
     lastRev = rev;
     try { localStorage.latBeaconRev = rev; } catch {}
   };
+  // whether a listing fetched when the beacon stood at `at` is still the
+  // ship's truth. Every write on the ship bumps /rev, so while a stream is
+  // registered an unmoved rev means nothing changed. With the stream down
+  // nothing moves lastRev at all, so nothing counts as fresh then.
+  const revFresh = (at) => streamLive && !!at && at === lastRev;
   let dropStream = null;
   // consecutive attempts that failed. A stream that registers, then lives
   // a minute or carries a live bump, and then ends is the NORMAL cycle: the
@@ -6612,10 +6551,24 @@
   // registered it would have said so, and polling anyway cost one pier
   // request per open editor per 30s, forever (the same clock-vs-stream
   // trust the mount fixed in #160).
-  window.addEventListener('focus', refreshAll);
+  //
+  // Both events go through bumped()'s debounce: un-hiding a tab fires
+  // visibilitychange AND focus, and refreshAll has no in-flight guard, so
+  // each pair was two full tree-and-page refreshes. And while the stream
+  // is live it has already reported any change, so a focus refresh is a
+  // floor, not news: at most one per 30s, however often the window is
+  // clicked back into. An un-hidden tab dropped its stream, so it is not
+  // live and always refreshes.
+  let focusAt = 0;
+  const refocused = () => {
+    if (streamLive && Date.now() - focusAt < 30000) return;
+    focusAt = Date.now();
+    bumped();
+  };
+  window.addEventListener('focus', refocused);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { if (dropStream) dropStream(); return; }
-    refreshAll();
+    refocused();
   });
   //  the poll covers a DOWN stream — but a hidden tab's stream is down on
   //  purpose, and polling for it would spend the pier request the parking
@@ -6635,8 +6588,11 @@
   tagSec.open = localStorage.knowTagsOpen === '1';
   tagSec.addEventListener('toggle', () => { localStorage.knowTagsOpen = tagSec.open ? '1' : '0'; });
 
+  // the beacon rev the last applied know-list was fetched at (see revFresh)
+  let knowAt = '';
   async function loadKnow() {
     const gen = knowGen;
+    const at = lastRev;
     let d = null;
     // resolves either way, like loadTree: the drain and the mode switch both
     // call this without a .catch, and a rejection there would take the rest of
@@ -6648,6 +6604,7 @@
     } catch { st('know-list failed (network)', false); return; }
     if (gen !== knowGen) return;   // a local patch superseded this response
     knowKeys = d.keys;
+    knowAt = at;
     renderKnowChips();
     renderKnowTree();
   }
@@ -6669,10 +6626,7 @@
     tagSum.textContent = 'tags \u00b7 ' + (knowTag ? '#' + knowTag : tags.length);
   }
 
-  const kColl = () => {
-    try { return JSON.parse(localStorage.knowColl || '[]'); } catch { return []; }
-  };
-  const setKColl = (c) => { localStorage.knowColl = JSON.stringify(c); };
+  const knowColl = collStore('knowColl');
 
   function renderKnowTree() {
     const shown = knowTag ? knowKeys.filter((k) => k.tags.includes(knowTag)) : knowKeys;
@@ -6689,7 +6643,7 @@
       treeList.appendChild(empty);
       return;
     }
-    const coll = kColl();
+    const coll = knowColl.get();
     const folded = (path) => coll.some((c) => path !== c && path.startsWith(c + '/'));
     const seen = new Set();
     for (const key of keys) {
@@ -6698,23 +6652,9 @@
         const dir = parts.slice(0, d + 1).join('/');
         if (seen.has(dir)) continue;
         seen.add(dir);
-        const row = document.createElement('div');
-        row.className = 'fld';
-        row.style.marginLeft = (d * 14) + 'px';
+        const row = folderRow(parts[d], d, coll.includes(dir),
+          () => { knowColl.flip(dir); renderKnowTree(); });
         if (folded(dir)) row.style.display = 'none';
-        const cx = document.createElement('span');
-        cx.className = 'cx';
-        cx.textContent = coll.includes(dir) ? '▸' : '▾';
-        const label = document.createElement('span');
-        label.textContent = '\u{1F4C1} ' + parts[d];
-        row.append(cx, label);
-        row.onclick = () => {
-          const c = kColl();
-          const i = c.indexOf(dir);
-          if (i >= 0) c.splice(i, 1); else c.push(dir);
-          setKColl(c);
-          renderKnowTree();
-        };
         treeList.appendChild(row);
       }
       const row = document.createElement('a');
@@ -6748,9 +6688,7 @@
       if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return; }
       d = await r.json();
     }
-    current = key;
-    pname.value = key;
-    pname.readOnly = true;
+    setOpen(key, { readOnly: true });
     src.value = d.body;
     dirty = false;
     render(); sync();
@@ -6862,9 +6800,7 @@
     // uncued, one keystroke from autosaving history over the live memory.
     // An aborted delete keeps the revision view exactly as it was.
     exitRev();
-    current = null;
-    pname.value = '';
-    pname.readOnly = false;
+    setOpen(null);
     src.value = '';
     render();
     st('memory deleted (restorable via know-restore)');
@@ -6889,9 +6825,7 @@
     $('treesec').textContent = m === 'know' ? 'memories' : 'files';
     curFolder = null;
     setCtlLabels();
-    current = null;
-    pname.value = '';
-    pname.readOnly = false;
+    setOpen(null, { url: '/apps/lattice/app' + (m === 'know' ? '?view=know' : '') });
     pname.placeholder = m === 'know' ? 'memory key (e.g. user/preferences)' : 'page name (e.g. notes/todo)';
     src.value = '';
     render();
@@ -6903,6 +6837,11 @@
     // The page tree is always in memory after boot. Memories are, after the
     // first visit; before it the honest paint is a placeholder, not the
     // pages listing and not "no memories yet".
+    //
+    // The fetch itself is skipped when the listing in memory was fetched at
+    // the beacon rev the live stream still reports (revFresh, 90-sync.js):
+    // flipping between the modes used to cost a pier round-trip each way
+    // to learn nothing.
     if (m === 'know') {
       if (knowKeys.length) { renderKnowChips(); renderKnowTree(); }
       else {
@@ -6912,9 +6851,8 @@
         wait.textContent = 'loading memories\u2026';
         treeList.replaceChildren(wait);
       }
-      loadKnow();
-    } else { renderTree(); loadTree(); }
-    history.replaceState(null, '', '/apps/lattice/app' + (m === 'know' ? '?view=know' : ''));
+      if (!revFresh(knowAt)) loadKnow();
+    } else { renderTree(); if (!revFresh(treeAt)) loadTree(); }
     // the toggle's visible result is the tree listing. Make sure it can be
     // seen: un-hide the pane on desktop, jump to the tree tab on mobile.
     if (localStorage.appNT === '1') { localStorage.appNT = '0'; applyToggles(); }
@@ -7004,15 +6942,14 @@
     };
     addEventListener('resize', paint);
     paint();
+    // No poll. Assigning pname.value fires no event, which is why this used
+    // to check twice a second, but every writer now goes through setOpen
+    // (20-state.js), which dispatches 'input' on the field, and typing
+    // fires it natively. The kind in the tip changes by hand ('change' on
+    // the picker), inside setOpen, or just before one; openGrub, which
+    // learns its kind only after the fetch, dispatches the same event.
     pname.addEventListener('input', paint);
-    pname.addEventListener('change', paint);
-    // pname is set from a dozen places (applyPage, newFile, rename, the
-    // offline replay) and every one of them assigns the value PROPERTY. That
-    // fires no event and leaves the value attribute alone, so a
-    // MutationObserver cannot see it either. Until those writers go through
-    // one setter, the poll is the mechanism here, not a safety net. The
-    // mobile bar (97-mobar.js) polls its own label for the same reason.
-    setInterval(paint, 500);
+    pkind.addEventListener('change', paint);
   }
 
   // ── naming a new page when the name field is not on screen ───────────────
@@ -7068,9 +7005,9 @@
       name = rn.name;
       newRn = rn;
       pkind.value = kind;
-      pname.value = name;
-      //  both labels (desktop deskbar, mobile bar) repaint off this event
-      pname.dispatchEvent(new Event('change'));
+      //  newFile above left nothing open and the field editable; this names
+      //  the buffer, and setOpen's event repaints both labels
+      setOpen(null, { shown: name });
       //  Show it in the tree NOW, pulsing, before the ship has agreed. The
       //  write is a pier round trip and the tree sitting unchanged through it
       //  reads as nothing having happened, which is the report that started
@@ -7116,15 +7053,20 @@
     mpath.id = 'mpath';
     mpath.setAttribute('aria-live', 'polite');
     pname.after(mpath);
+    // the name it last showed, so a repaint with nothing new never rewrites
+    // the aria-live label with the text it already holds
+    let mshown = null;
     const mpaint = () => {
       const v = (pname.value || '').trim();
+      if (v === mshown) return;
+      mshown = v;
       mpath.textContent = v || 'no page open';
       mpath.className = v ? '' : 'muted';
     };
     mpaint();
+    // setOpen (20-state.js) dispatches 'input' whenever what is open
+    // changes, and typing fires it natively, so this needs no poll
     pname.addEventListener('input', mpaint);
-    pname.addEventListener('change', mpaint);
-    setInterval(mpaint, 500);
 
     // tap: rename what is open (the controls pane's own move/rename flow),
     // or start a page when nothing is. Both are existing buttons.
@@ -7240,7 +7182,7 @@
       // 504/502 is the reverse proxy giving up, not the ship failing. The
       // import keeps running server-side and is usually PARTLY done. Say what
       // landed, and name the cause, because the fix is a proxy setting.
-      const cut = r && (r.status === 504 || r.status === 502);
+      const cut = r && shipGone(r);
       let listed = null;
       try { listed = await (await fetch(api + '/know-list')).json(); } catch {}
       const have = listed && listed.keys ? listed.keys.length : null;

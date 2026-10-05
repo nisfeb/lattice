@@ -12,6 +12,7 @@
 //   shortPath  - no two grants in one list ever render as the same string
 //   esc        - the output can never open a tag
 //   seg        - an uploaded filename can never grow a path separator
+//                (slugSeg in 10-shell.js, which the uploader slugs with)
 //   acRank     - the dropdown only ever offers pages that match what you typed
 //
 // Sources are read and evaluated straight out of ui-src/lattice, the same idiom
@@ -36,7 +37,8 @@ const shortPath = new Function(
 const esc = new Function(
   `${cut(L + '25-editor.js', /const esc = .*/, 'esc')}\nreturn esc;`)();
 const seg = new Function(
-  `${cut(L + '70-upload.js', /const seg = .*/, 'seg')}\nreturn seg;`)();
+  `${cut(L + '10-shell.js', /const slugSeg = .*/, 'slugSeg')}
+return slugSeg;`)();
 const mkAcRank = new Function('nodes', 'current', 'folderCtx',
   cut(L + '55-autocomplete.js', /const dirOf = .*\n\s*const segOf = .*/, 'dirOf/segOf') + '\n'
   + cut(L + '55-autocomplete.js', /function acRank\(q\) \{[\s\S]*?\n {2}\}/, 'acRank')
@@ -319,7 +321,7 @@ prop('escaping is reversible, so nothing is lost on screen', fc.property(textArb
 prop('the output is never shorter than the input', fc.property(textArb, (t) =>
   esc(t).length >= t.length));
 
-// ═══ seg (70-upload.js) ════════════════════════════════════════════════════
+// ═══ seg (slugSeg, 10-shell.js) ═══════════════════════════════════════════
 // seg sanitises one segment of an uploaded file's relative path before it is
 // joined back with "/" into a page name. Anything that survives here reaches
 // the ship as part of a path.

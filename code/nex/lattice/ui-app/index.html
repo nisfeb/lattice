@@ -19,6 +19,10 @@
 <style>
 /* lattice app, flat green identity */
 * { box-sizing: border-box; }
+/* the hidden attribute always hides. The UA rule is plain display:none, so
+   any author display (flex rows, grid overlays) used to beat it, and every
+   component carried its own X[hidden] override, or silently did not. */
+[hidden] { display: none !important; }
 :root {
   color-scheme: light dark;
   /* a theme (theme.js) sets --accent and friends inline on <html> */
@@ -217,11 +221,7 @@ select, option { color-scheme: inherit; }
   font-size: .62rem; font-weight: 700; line-height: 1.35;
   text-align: center; pointer-events: none;
 }
-.offbadge[hidden] { display: none; }
-.chips[hidden] { display: none; }
 #tagsh { cursor: pointer; }
-.grp { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
-.grp > div:first-child { display: flex; justify-content: space-between; align-items: center; }
 .chips a { padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px;
   font-size: .78rem; text-decoration: none; color: inherit; background: var(--surface);
   cursor: pointer; }
@@ -326,9 +326,6 @@ select, option { color-scheme: inherit; }
 .mvbtn { margin-top: 18px; width: 100%; }
 .del { margin-top: 8px; color: var(--err); border-color: var(--err-soft) !important;
   width: 100%; }
-.tree .fld .mvf { color: var(--muted); text-decoration: none; padding: 0 4px;
-  border-radius: 4px; flex: none; }
-.tree .fld .mvf:hover { color: var(--green); background: var(--accent-tint, #4a7c5922); }
 /* wikilink autocomplete. #acmirror is an offscreen clone of the textarea's
    text geometry used only to locate the caret. The editor soft-wraps, so a
    monospace column calculation would be wrong on any wrapped line. */
@@ -338,7 +335,6 @@ select, option { color-scheme: inherit; }
   max-height: 13rem; overflow-y: auto; padding: 4px;
   background: var(--pop, var(--bg)); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 6px 24px #0003; font: 13px/1.5 ui-monospace, monospace; }
-.ac[hidden] { display: none; }
 .ac .row { display: flex; align-items: baseline; gap: 6px; padding: 4px 8px;
   border-radius: 5px; cursor: pointer; white-space: nowrap; }
 .ac .row.on { background: var(--accent-tint, #4a7c5922); }
@@ -428,7 +424,6 @@ select, option { color-scheme: inherit; }
     display: flex; flex-direction: column; min-width: 13rem;
     background: var(--pop, var(--bg)); border: 1px solid var(--border); border-radius: 8px;
     overflow: hidden; box-shadow: 0 6px 24px #0003; }
-  #msheet[hidden] { display: none; }
   #msheet button { font: 16px/1 inherit; font-size: 16px; text-align: left;
     padding: 12px 14px; border: 0; background: none; color: inherit;
     border-bottom: 1px solid var(--border-soft); cursor: pointer; }
@@ -500,7 +495,6 @@ select, option { color-scheme: inherit; }
    tree/editor lifecycle, and access control has nothing to do with either. */
 .aclwrap { position: fixed; inset: 0; z-index: 45; background: var(--bg);
   display: flex; flex-direction: column; }
-.aclwrap[hidden] { display: none; }
 .aclbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
   border-bottom: 1px solid var(--border-soft); }
 .aclbar h2 { font-size: 1.05rem; margin: 0; }
@@ -557,14 +551,12 @@ select, option { color-scheme: inherit; }
 /* in-app dialog (no browser-native popups, ever) */
 .dlg { position: fixed; inset: 0; background: #0008; display: grid;
   place-items: center; z-index: 50; }
-.dlg[hidden] { display: none; }
 .dlgbox { background: var(--pop, var(--bg)); border: 1px solid var(--border);
   border-radius: 10px; padding: 18px; width: min(400px, 92vw);
   display: grid; gap: 12px; box-shadow: 0 8px 30px #0004; }
 #dlgmsg { overflow-wrap: break-word; white-space: pre-wrap; }
 #dlginput { font: inherit; padding: 6px 9px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--surface); color: inherit; width: 100%; }
-#dlginput[hidden] { display: none; }
 /* the iOS zoom-on-focus opt-out (see the 820px block above) has to live HERE,
    after `font: inherit`. Same specificity, so source order decides. This is
    the input every new page and every rename goes through. */
@@ -573,16 +565,13 @@ select, option { color-scheme: inherit; }
 /* choice list: real buttons in the app's own style. A <select> opens an
    OS-drawn list (a browser-native popup), which this UI never uses. */
 .dlgopts { display: grid; gap: 6px; }
-.dlgopts[hidden] { display: none; }
 .dlgopt { font: inherit; text-align: left; padding: 9px 12px; cursor: pointer;
   border: 1px solid var(--border); border-radius: 6px;
   background: var(--surface); color: inherit; }
 .dlgopt:hover, .dlgopt:focus { border-color: var(--green); color: var(--green);
   outline: none; }
 .dlgopt.on { border-color: var(--green); }
-#dlgsel[hidden] { display: none; }
 .dlgchk { display: flex; gap: 6px; align-items: center; }
-.dlgchk[hidden] { display: none; }
 .dlgbtns { display: flex; gap: 8px; justify-content: flex-end; }
 .dlgbtns button { font: inherit; padding: 6px 14px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--surface); color: inherit; cursor: pointer; }
@@ -596,7 +585,6 @@ select, option { color-scheme: inherit; }
 /* lazy control panels: header is the toggle, content loads on first expand */
 #histh, #linkh { cursor: pointer; user-select: none; }
 #histh:hover, #linkh:hover { color: var(--green); }
-#histlist[hidden], #linklist[hidden] { display: none; }
 
 /* custom-element wrappers are invisible to layout. Their inner divs stay
    direct grid items of .ws (and .dlg stays a fixed overlay). Without this,

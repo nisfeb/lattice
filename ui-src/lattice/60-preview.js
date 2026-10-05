@@ -68,14 +68,6 @@
       prevBlank();
     }
   });
-  // stale-shell guard: swap a cached pre-component shell's literal iframe
-  if (!document.querySelector('lat-preview')) {
-    const stale = document.querySelector('iframe.prev');
-    if (stale) stale.remove();
-    const el = document.createElement('lat-preview');
-    el.style.display = 'contents';
-    document.getElementById('ws').appendChild(el);
-  }
   //  tex is here for the same reason html is: the ship cannot render it, so
   //  the local paint IS the preview and there is no server answer to wait
   //  for. It differs in one way, that its renderer is a subprocess and

@@ -58,6 +58,23 @@
     }
     return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
   }
+  // setOpen: what the bar says is open, set in one place. `name` becomes
+  // `current`, the open page or memory, or null when nothing named is open
+  // (a new page, a folder, a grub, a fresh mode). The name field shows
+  // `name` unless `shown` says otherwise (a folder's path, a grub's road, a
+  // new page's folder prefix, a typed name slugged mid-save) and is locked
+  // when readOnly. `kind` moves the kind picker when it has that option.
+  // `url`, when given, replaces the address. Assigning .value fires no
+  // event, so this ends by dispatching 'input' on the field: the desktop
+  // and phone labels (96-deskmenu.js, 97-mobar.js) repaint on it.
+  function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
+    current = name;
+    pname.value = shown === undefined ? (name || '') : shown;
+    pname.readOnly = readOnly;
+    if (kind && [...pkind.options].some((o) => o.value === kind)) pkind.value = kind;
+    if (url) history.replaceState(null, '', url);
+    pname.dispatchEvent(new Event('input'));
+  }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
                            // option, so pkind.value would silently convert it
@@ -151,7 +168,7 @@
     // Saves coalesce in a map, structural ops go in an ordered log, and both
     // drain together. Everything else (sharing, tagging, the legacy migration)
     // still refuses honestly rather than pretending.
-    if (degraded || offCount) {
+    const offline = async () => {
       const q = offlineOp(url);
       if (q) {
         await enqueueOp(q);
@@ -164,7 +181,8 @@
       }
       st('offline — edits are queued, but this change needs the ship', false);
       return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
-    }
+    };
+    if (degraded || offCount) return offline();
     echoUntil = Date.now() + 60000;
     const sentAt = Date.now();
     try {
@@ -174,17 +192,7 @@
       // queue what can be queued and ENGAGE degraded — the old path only
       // queued when degraded was already true, so the FIRST offline action
       // being structural threw past every caller and did nothing at all
-      if (!r || r.status === 502 || r.status === 504) {
-        const q = offlineOp(url);
-        setDegraded(true);
-        if (q) {
-          await enqueueOp(q);
-          return { ok: true, offline: true, status: 200,
-                   json: async () => ({ offline: true }) };
-        }
-        st('offline — edits are queued, but this change needs the ship', false);
-        return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
-      }
+      if (shipGone(r)) { setDegraded(true); return await offline(); }
       if (r.ok) {
         pendingEchoes++;              // one bump is ours; consume it on arrival
         // every mutate names its target the same way; a move dirties both ends
@@ -217,7 +225,20 @@
   })().catch((e) => { basePr = null; throw e; }));
   const forgetBase = () => { basePr = null; try { delete localStorage.latBase; } catch {} };
 
-  const collapsed = () => {
-    try { return JSON.parse(localStorage.appColl || '[]'); } catch { return []; }
+  // a tree's folded folders, remembered under one localStorage key: get()
+  // reads the list, flip(key) folds or unfolds one folder in it. The files
+  // tree (with its shared-with-me folder) keeps appColl; memories keep
+  // knowColl (95-know.js).
+  const collStore = (k) => {
+    const get = () => {
+      try { return JSON.parse(localStorage[k] || '[]'); } catch { return []; }
+    };
+    const flip = (key) => {
+      const c = get();
+      const i = c.indexOf(key);
+      if (i >= 0) c.splice(i, 1); else c.push(key);
+      localStorage[k] = JSON.stringify(c);
+    };
+    return { get, flip };
   };
-  const setCollapsed = (c) => { localStorage.appColl = JSON.stringify(c); };
+  const paneColl = collStore('appColl');

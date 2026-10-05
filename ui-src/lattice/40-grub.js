@@ -23,13 +23,11 @@
     grubPath = p;
     grubShip = ship || null;
     if (grubPrevKind === null) grubPrevKind = pkind.value;
-    current = null;
     curFolder = null;
     // a shared lattice page reads as "~ship: its/name", not its whole ball
     // path; the name field is only a label here (Save goes by grubPath)
     const pg = /\/page\/(.+)\/code$/.exec(p);
-    pname.value = grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p;
-    pname.readOnly = true;
+    setOpen(null, { shown: grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p, readOnly: true });
     $('histsec').hidden = true;
     $('linksec').hidden = true;
     st('loading ' + p + '…');
@@ -57,6 +55,9 @@
     // wrapped in, which is its page kind
     const mk = d.builder || extKind(String(blot).split('/').pop()) || 'hoon';
     if ([...pkind.options].some((o) => o.value === mk)) pkind.value = mk;
+    //  setOpen ran before this file's kind was known, so tell the desktop
+    //  label (its tip names the kind) the same way setOpen does
+    pname.dispatchEvent(new Event('input'));
     curKind = mk;
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'on ' + grubShip + ': saves need its permission'

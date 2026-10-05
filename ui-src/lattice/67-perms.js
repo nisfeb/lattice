@@ -33,8 +33,8 @@
     permGroups = await r.json();
     permsLoaded = true;
     // every surface that renders groups repaints from this one load
-    if (typeof renderAcl === 'function') renderAcl();
-    if (typeof renderGroupAccess === 'function') renderGroupAccess();
+    renderAcl();
+    renderGroupAccess();
   }
   async function permSave(g) {
     const r = await fetch(api + '/share-group-save?name=' + encodeURIComponent(g.name), {

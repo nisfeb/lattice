@@ -55,7 +55,7 @@
       // 504/502 is the reverse proxy giving up, not the ship failing. The
       // import keeps running server-side and is usually PARTLY done. Say what
       // landed, and name the cause, because the fix is a proxy setting.
-      const cut = r && (r.status === 504 || r.status === 502);
+      const cut = r && shipGone(r);
       let listed = null;
       try { listed = await (await fetch(api + '/know-list')).json(); } catch {}
       const have = listed && listed.keys ? listed.keys.length : null;

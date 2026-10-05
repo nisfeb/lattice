@@ -1,9 +1,9 @@
 /* Shared vault module. Served standalone at /apps/lattice/app/vault.js and
  * loaded by BOTH the editor bundle (ui-app/src/78-export.js) and the settings
  * page (settings-html), so the tar writer/reader and the export/restore
- * orchestration exist once. Environment touchpoints (status line, confirm
- * dialog, tree lookups) are INJECTED via LatticeVault.configure({...}); the
- * editor injects its rich helpers, the settings page injects simple ones.
+ * orchestration exist once. Two environment touchpoints, the status line and
+ * the offline check, are INJECTED via LatticeVault.configure({...}): the
+ * editor passes its own, the settings page shows status in its own pane.
  *
  * exportVault(autoId?) and restoreVault(file) are byte-for-byte the same paths
  * that ui-app/src/78-export.js used to own — moved here verbatim so a manual
@@ -157,14 +157,11 @@ editor, or git will do if you only want to look.
   // ── injected environment ─────────────────────────────────────────────────────
   // Defaults are the browser/settings flavour; the editor overrides them.
   const cfg = {
-    api: '/apps/lattice',
-    desk: () => (window.__TAURI__ && window.__TAURI__.core) || null,
     status: (msg) => { try { console.log('[vault]', msg); } catch (e) {} },
-    confirm: (msg) => Promise.resolve(window.confirm(msg)),
-    hasNode: () => false,       // no tree here, so no overwrite pre-count
-    afterRestore: () => {},
     isDegraded: () => false,
   };
+  const api = '/apps/lattice';
+  const desk = () => (window.__TAURI__ && window.__TAURI__.core) || null;
   function configure(o) { Object.assign(cfg, o || {}); }
   const st = (m, ok) => cfg.status(m, ok !== false);
   const mutate = (url, opts) =>
@@ -191,8 +188,9 @@ editor, or git will do if you only want to look.
       const pp = name.split('/'); pp.pop();
       for (let i = 1; i <= pp.length; i++) dirs.add(pp.slice(0, i).join('/'));
     }
-    for (const d of [...dirs].sort())
-      if (!cfg.hasNode(d)) { try { await mutate(cfg.api + '/folder-new?name=' + encodeURIComponent(d)); } catch (e) {} }
+    for (const d of [...dirs].sort()) {
+      try { await mutate(api + '/folder-new?name=' + encodeURIComponent(d)); } catch (e) {}
+    }
     const CHUNK = 50;
     let ok = 0, bad = 0;
     const failed = [];        // first few names the ship itself refused
@@ -200,7 +198,7 @@ editor, or git will do if you only want to look.
       const part = list.slice(i, i + CHUNK);
       let r = null;
       try {
-        r = await mutate(cfg.api + '/page-save-batch', {
+        r = await mutate(api + '/page-save-batch', {
           method: 'POST',
           body: JSON.stringify(part.map((it) => ({ name: it.name, type: it.kind, body: it.body || '\n' }))),
         });
@@ -213,7 +211,7 @@ editor, or git will do if you only want to look.
       for (const it of part) {
         let one = null;
         try {
-          one = await mutate(cfg.api + '/page-save?name=' + encodeURIComponent(it.name) +
+          one = await mutate(api + '/page-save?name=' + encodeURIComponent(it.name) +
             '&type=' + it.kind, { method: 'POST', body: it.body || '\n' });
         } catch (e) {}
         if (one && one.ok) { ok++; continue; }
@@ -246,14 +244,10 @@ editor, or git will do if you only want to look.
     let names = {};
     if (namesJson) { try { names = JSON.parse(namesJson) || {}; } catch (e) { st('names.json is unreadable — display names will not come back', false); } }
 
-    const stem = (rel) => { const d = rel.lastIndexOf('.'); return d > 0 ? rel.slice(0, d) : rel; };
-    const clash = pages.filter((p) => cfg.hasNode(stem(p.rel))).length;
     const msg = 'restore ' + pages.length + ' page(s)' +
       (knowJson ? ' and the memories' : '') +
-      (shared ? ' (' + shared + ' shared/public)' : '') +
-      (clash ? '? ' + clash + ' of them already exist and will be overwritten. The '
-        + "version you have now stays in each page's history." : '?');
-    if (!(await cfg.confirm(msg, 'restore'))) return;
+      (shared ? ' (' + shared + ' shared/public)' : '') + '?';
+    if (!window.confirm(msg)) return;
 
     if (pages.length) {
       st('restoring pages…');
@@ -277,7 +271,7 @@ editor, or git will do if you only want to look.
       for (const [name, mode] of Object.entries(share)) {
         try {
           const wire = mode === 'urbit' ? 'shared' : mode;   // /page-scopes labels ames-shared 'urbit'; the route's word is 'shared'
-          const r = await mutate(cfg.api + '/page-share?name=' + encodeURIComponent(name) + '&mode=' + encodeURIComponent(wire));
+          const r = await mutate(api + '/page-share?name=' + encodeURIComponent(name) + '&mode=' + encodeURIComponent(wire));
           if (r && r.ok) ok++; else bad++;
         } catch (e) { bad++; }
       }
@@ -292,7 +286,7 @@ editor, or git will do if you only want to look.
       for (const [path, dname] of Object.entries(names)) {
         if (typeof dname !== 'string' || !dname) continue;
         try {
-          const r = await mutate(cfg.api + '/page-move?from=' + encodeURIComponent(path) +
+          const r = await mutate(api + '/page-move?from=' + encodeURIComponent(path) +
             '&to=' + encodeURIComponent(path) + '&dname=' + encodeURIComponent(dname));
           if (!(r && r.ok)) bad++;
         } catch (e) { bad++; }
@@ -303,11 +297,10 @@ editor, or git will do if you only want to look.
     if (knowJson) {
       st('restoring memories…');
       let r = null;
-      try { r = await mutate(cfg.api + '/know-import', { method: 'POST', body: knowJson }); } catch (e) {}
+      try { r = await mutate(api + '/know-import', { method: 'POST', body: knowJson }); } catch (e) {}
       if (r && r.ok) st('memories restored');
       else st('pages restored, but the memories did not: ' + (r ? r.status : 'no answer'), false);
     }
-    cfg.afterRestore();
   }
 
   // ── export ───────────────────────────────────────────────────────────────────
@@ -317,7 +310,7 @@ editor, or git will do if you only want to look.
     if (cfg.isDegraded()) { st('the ship is not answering, so there is nothing to export from', false); return; }
     st('reading the store…');
     let dump = null;
-    try { dump = await (await mutate(cfg.api + '/page-dump')).json(); } catch (e) {}
+    try { dump = await (await mutate(api + '/page-dump')).json(); } catch (e) {}
     if (!dump) { st('export failed: could not read the page tree', false); return; }
 
     const now = Math.floor(Date.now() / 1000);
@@ -345,7 +338,7 @@ editor, or git will do if you only want to look.
       if (typeof body !== 'string') {
         st('fetching ' + n.path + '…');
         try {
-          const r = await mutate(cfg.api + '/page-source?name=' + encodeURIComponent(n.path));
+          const r = await mutate(api + '/page-source?name=' + encodeURIComponent(n.path));
           body = r.ok ? (await r.json()).body : null;
         } catch (e) { body = null; }
       }
@@ -355,7 +348,7 @@ editor, or git will do if you only want to look.
 
     st('reading memories…');
     let know = null;
-    try { know = await (await mutate(cfg.api + '/know-all')).json(); } catch (e) {}
+    try { know = await (await mutate(api + '/know-all')).json(); } catch (e) {}
     if (know) {
       for (const it of (know.items || []))
         files.push({ name: 'know/' + String(it.key || '').replace(/^\/+/, '') + '.md', body: it.body || '', mtime: daToUnix(it.updated) });
@@ -363,7 +356,7 @@ editor, or git will do if you only want to look.
     } else missing.push('the memories');
 
     let scopes = null;
-    try { scopes = await (await mutate(cfg.api + '/page-scopes')).json(); } catch (e) {}
+    try { scopes = await (await mutate(api + '/page-scopes')).json(); } catch (e) {}
     if (scopes && scopes.items) {
       const share = {};
       for (const it of scopes.items) if (it.scope && it.scope !== 'private') share[it.path] = it.scope;
@@ -393,7 +386,7 @@ editor, or git will do if you only want to look.
       : '';
 
     if (autoId) {
-      const d = cfg.desk();
+      const d = desk();
       if (!d) return;
       try {
         const where = await d.invoke('backup_write', { id: autoId, b64: await blobToB64(blob) });
@@ -402,7 +395,7 @@ editor, or git will do if you only want to look.
       } catch (e) { st('scheduled backup failed: ' + e, false); }
       return;
     }
-    const d = cfg.desk();
+    const d = desk();
     if (d) {
       let where = '';
       try { where = await d.invoke('save_vault', { name: fname, b64: await blobToB64(blob) }); }
@@ -456,16 +449,12 @@ editor, or git will do if you only want to look.
 
   // manual export and restore: the browser (download / file input) and the
   // desktop shell (native save / open dialog, chosen inside exportVault/desk())
-  // both get these. This is also where the module's cfg callbacks are
-  // installed, so mounting the pane is what wires up status and confirm.
+  // both get these. This is also where the module's status callback is
+  // installed, so mounting the pane is what wires up its status line.
   function mountManual(root) {
     const status = el('span', { class: 'muted' });
     configure({
       status: (m, ok) => { status.textContent = m || ''; status.className = ok === false ? 'err' : 'muted'; },
-      confirm: (m) => Promise.resolve(window.confirm(m)),
-      hasNode: () => false,
-      isDegraded: () => false,
-      afterRestore: () => {},
     });
 
     const exportBtn = el('button', { type: 'button', class: 'btn', text: 'Export vault' });
@@ -474,7 +463,7 @@ editor, or git will do if you only want to look.
     pick.onchange = () => { const f = pick.files[0]; pick.value = ''; if (f) restoreVault(f); };
     const restoreBtn = el('button', { type: 'button', class: 'btn', text: 'Restore vault…' });
     restoreBtn.onclick = async () => {
-      const d = cfg.desk();
+      const d = desk();
       if (!d) { pick.click(); return; }
       let b64 = '';
       try { b64 = await d.invoke('pick_vault'); } catch (e) { st('could not read that file: ' + e, false); return; }
@@ -560,7 +549,7 @@ editor, or git will do if you only want to look.
     mountManual(root);
     // automated: desktop only. In a browser there is no scheduler and nowhere on
     // the machine to write to, so say that rather than showing dead controls.
-    const d = cfg.desk();
+    const d = desk();
     if (!d) {
       root.append(el('p', { class: 'muted', text: 'Automatic scheduled backups run in the lattice desktop app. Open lattice on your computer to set them up.' }));
       return;
@@ -568,6 +557,8 @@ editor, or git will do if you only want to look.
     mountSchedules(root, window.__TAURI__.core.invoke);
   }
 
-  window.LatticeVault = { configure, exportVault, restoreVault, mountSettings,
-    tarBlob, untar, b64ToBytes, blobToB64, isDesktop: () => !!cfg.desk() };
+  //  the editor (78-export.js) configures and runs exportVault for the
+  //  desktop scheduler; the settings page mounts the pane. Nothing else
+  //  reaches in.
+  window.LatticeVault = { configure, exportVault, mountSettings };
 })();

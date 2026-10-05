@@ -195,5 +195,5 @@
     };
     //  the body may have moved on while pandoc ran
     if (src.value !== body) { scheduleTexRender(src.value); return; }
-    if (typeof paintLocal === 'function') paintLocal();
+    paintLocal();
   }

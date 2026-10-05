@@ -66,14 +66,6 @@
       treeList = $('treelist');
     }
   });
-  // stale-shell guard: swap a cached pre-component shell's literal pane
-  if (!document.querySelector('lat-tree')) {
-    const stale = document.getElementById('tree');
-    if (stale) stale.remove();
-    const el = document.createElement('lat-tree');
-    el.style.display = 'contents';
-    document.getElementById('ws').appendChild(el);
-  }
   // page-dump, not page-tree: it returns the same nodes PLUS every page's body
   // inline from ONE deep peek, and measures FASTER than page-tree (which
   // re-peeks each code grub). Those bodies are what make opening a page cost
@@ -81,8 +73,11 @@
   // Such a node has no `body` and falls back to the per-page fetch.
   // ponytail: whole-store payload (~55KB today). If the tree ever grows past
   // a megabyte, page it or go back to page-tree plus a lazy body cache.
+  // the beacon rev the last applied dump was fetched at (see revFresh)
+  let treeAt = '';
   async function loadTree() {
     const gen = treeGen;
+    const at = lastRev;
     let d = null;
     // this one RESOLVES, always. Boot chains its whole reconcile off it
     // (99-boot.js) with no .catch, so a rejection here would silently cancel
@@ -102,6 +97,7 @@
     // overwrite a stream-observed rev — the snapshot may already trail it.
     if (!lastRev && d.rev != null) noteRev(String(d.rev));
     nodes = d.nodes;
+    treeAt = at;
     // drop only the cached renders the dump says have moved FORWARD. Blanket-
     // clearing on every change cost every other page its cache. Comparing
     // for mere inequality evicted good entries whenever the dump trailed
@@ -173,19 +169,40 @@
     nodes = nodes.filter((n) => n.path !== path && !n.path.startsWith(path + '/'));
   }
 
+  // one folder row, the same in all three trees (files, shared with me,
+  // memories): the fold arrow, then the folder icon and its label, indented
+  // by depth. `fold` folds or unfolds it and repaints. A click anywhere on
+  // the row folds, unless the row has a `pick` of its own (the files tree
+  // selects the folder): then the row picks and only the arrow folds.
+  function folderRow(label, depth, folded, fold, pick) {
+    const row = document.createElement('div');
+    row.className = 'fld';
+    row.style.marginLeft = (depth * 14) + 'px';
+    const cx = document.createElement('span');
+    cx.className = 'cx';
+    cx.textContent = folded ? '▸' : '▾';
+    const lb = document.createElement('span');
+    lb.textContent = '\u{1F4C1} ' + label;
+    row.append(cx, lb);
+    if (pick) {
+      cx.onclick = (e) => { e.stopPropagation(); fold(); };
+      row.onclick = pick;
+    } else row.onclick = fold;
+    return row;
+  }
+
   function renderTree() {
-    const coll = collapsed();
+    const coll = paneColl.get();
     const byPath = [...nodes].sort((a, b) => a.path.localeCompare(b.path));
     treeList.textContent = '';
     rowByPath = new Map();
     for (const n of byPath) {
       const depth = n.path.split('/').length - 1;
-      const parent = n.path.includes('/') ? n.path.slice(0, n.path.lastIndexOf('/')) : '';
       const hidden = coll.some((c) => n.path === c ? false : n.path.startsWith(c + '/'));
-      const row = document.createElement(n.page ? 'a' : 'div');
-      row.style.marginLeft = (depth * 14) + 'px';
-      if (hidden) row.style.display = 'none';
+      let row;
       if (n.page) {
+        row = document.createElement('a');
+        row.style.marginLeft = (depth * 14) + 'px';
         row.className = 'pg' + (n.path === current ? ' cur' : '')
           + (n.pending ? ' pend' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
@@ -202,22 +219,10 @@
         }
         row.onclick = (e) => { e.preventDefault(); openPage(n.path); };
       } else {
-        row.className = 'fld' + (n.path === curFolder ? ' cur' : '');
-        const cx = document.createElement('span');
-        cx.className = 'cx';
-        cx.textContent = coll.includes(n.path) ? '▸' : '▾';
-        cx.onclick = (e) => {
-          e.stopPropagation();
-          const c = collapsed();
-          const i = c.indexOf(n.path);
-          if (i >= 0) c.splice(i, 1); else c.push(n.path);
-          setCollapsed(c);
-          renderTree();
-        };
-        const label = document.createElement('span');
-        label.textContent = '\u{1F4C1} ' + (n.dname || n.path.split('/').pop());
-        if (n.dname) label.title = n.path;
-        row.append(cx, label);
+        row = folderRow(n.dname || n.path.split('/').pop(), depth, coll.includes(n.path),
+          () => { paneColl.flip(n.path); renderTree(); }, () => selectFolder(n.path));
+        if (n.path === curFolder) row.classList.add('cur');
+        if (n.dname) row.lastChild.title = n.path;     // the label's tip
         if (treeShare(n.path) === 'clearweb') {
           const cw = document.createElement('span');
           cw.className = 'cw';
@@ -232,15 +237,15 @@
         add.href = '#';
         add.onclick = (e) => { e.preventDefault(); e.stopPropagation(); newFile(n.path); };
         row.append(add);
-        row.onclick = () => selectFolder(n.path);
       }
+      if (hidden) row.style.display = 'none';
       rowByPath.set(n.path, row);
       treeList.appendChild(row);
     }
     if (sharedWithMe.length) renderShared(coll);
     // the conflict badge is a count of conflicts/ pages in this very tree, so
     // it repaints exactly when the tree does. Defined in 80-conflicts.js.
-    if (typeof renderConfBadge === 'function') renderConfBadge();
+    renderConfBadge();
   }
 
   // ── folder selection ─────────────────────────────────────────────────────
@@ -263,7 +268,6 @@
   };
 
   function selectFolder(path) {
-    current = null;
     curFolder = path;
     curKind = null;
     exitGrub();
@@ -271,13 +275,12 @@
     $('histsec').hidden = true;
     $('linksec').hidden = true;
     folderCtx = path;
-    pname.value = path;
-    pname.readOnly = true;
+    setOpen(null, { shown: path, readOnly: true,
+      url: '/apps/lattice/app?into=' + encodeURIComponent(path) });
     src.value = '';
     render();
     prevBlank();
     cerr.textContent = ' '; cerr.className = 'ok';
-    history.replaceState(null, '', '/apps/lattice/app?into=' + encodeURIComponent(path));
     markCurrent();
     setCtlLabels();
     showShare(treeShare(path));

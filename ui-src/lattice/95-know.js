@@ -10,8 +10,11 @@
   tagSec.open = localStorage.knowTagsOpen === '1';
   tagSec.addEventListener('toggle', () => { localStorage.knowTagsOpen = tagSec.open ? '1' : '0'; });
 
+  // the beacon rev the last applied know-list was fetched at (see revFresh)
+  let knowAt = '';
   async function loadKnow() {
     const gen = knowGen;
+    const at = lastRev;
     let d = null;
     // resolves either way, like loadTree: the drain and the mode switch both
     // call this without a .catch, and a rejection there would take the rest of
@@ -23,6 +26,7 @@
     } catch { st('know-list failed (network)', false); return; }
     if (gen !== knowGen) return;   // a local patch superseded this response
     knowKeys = d.keys;
+    knowAt = at;
     renderKnowChips();
     renderKnowTree();
   }
@@ -44,10 +48,7 @@
     tagSum.textContent = 'tags \u00b7 ' + (knowTag ? '#' + knowTag : tags.length);
   }
 
-  const kColl = () => {
-    try { return JSON.parse(localStorage.knowColl || '[]'); } catch { return []; }
-  };
-  const setKColl = (c) => { localStorage.knowColl = JSON.stringify(c); };
+  const knowColl = collStore('knowColl');
 
   function renderKnowTree() {
     const shown = knowTag ? knowKeys.filter((k) => k.tags.includes(knowTag)) : knowKeys;
@@ -64,7 +65,7 @@
       treeList.appendChild(empty);
       return;
     }
-    const coll = kColl();
+    const coll = knowColl.get();
     const folded = (path) => coll.some((c) => path !== c && path.startsWith(c + '/'));
     const seen = new Set();
     for (const key of keys) {
@@ -73,23 +74,9 @@
         const dir = parts.slice(0, d + 1).join('/');
         if (seen.has(dir)) continue;
         seen.add(dir);
-        const row = document.createElement('div');
-        row.className = 'fld';
-        row.style.marginLeft = (d * 14) + 'px';
+        const row = folderRow(parts[d], d, coll.includes(dir),
+          () => { knowColl.flip(dir); renderKnowTree(); });
         if (folded(dir)) row.style.display = 'none';
-        const cx = document.createElement('span');
-        cx.className = 'cx';
-        cx.textContent = coll.includes(dir) ? '▸' : '▾';
-        const label = document.createElement('span');
-        label.textContent = '\u{1F4C1} ' + parts[d];
-        row.append(cx, label);
-        row.onclick = () => {
-          const c = kColl();
-          const i = c.indexOf(dir);
-          if (i >= 0) c.splice(i, 1); else c.push(dir);
-          setKColl(c);
-          renderKnowTree();
-        };
         treeList.appendChild(row);
       }
       const row = document.createElement('a');
@@ -123,9 +110,7 @@
       if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return; }
       d = await r.json();
     }
-    current = key;
-    pname.value = key;
-    pname.readOnly = true;
+    setOpen(key, { readOnly: true });
     src.value = d.body;
     dirty = false;
     render(); sync();
@@ -237,9 +222,7 @@
     // uncued, one keystroke from autosaving history over the live memory.
     // An aborted delete keeps the revision view exactly as it was.
     exitRev();
-    current = null;
-    pname.value = '';
-    pname.readOnly = false;
+    setOpen(null);
     src.value = '';
     render();
     st('memory deleted (restorable via know-restore)');
@@ -264,9 +247,7 @@
     $('treesec').textContent = m === 'know' ? 'memories' : 'files';
     curFolder = null;
     setCtlLabels();
-    current = null;
-    pname.value = '';
-    pname.readOnly = false;
+    setOpen(null, { url: '/apps/lattice/app' + (m === 'know' ? '?view=know' : '') });
     pname.placeholder = m === 'know' ? 'memory key (e.g. user/preferences)' : 'page name (e.g. notes/todo)';
     src.value = '';
     render();
@@ -278,6 +259,11 @@
     // The page tree is always in memory after boot. Memories are, after the
     // first visit; before it the honest paint is a placeholder, not the
     // pages listing and not "no memories yet".
+    //
+    // The fetch itself is skipped when the listing in memory was fetched at
+    // the beacon rev the live stream still reports (revFresh, 90-sync.js):
+    // flipping between the modes used to cost a pier round-trip each way
+    // to learn nothing.
     if (m === 'know') {
       if (knowKeys.length) { renderKnowChips(); renderKnowTree(); }
       else {
@@ -287,9 +273,8 @@
         wait.textContent = 'loading memories\u2026';
         treeList.replaceChildren(wait);
       }
-      loadKnow();
-    } else { renderTree(); loadTree(); }
-    history.replaceState(null, '', '/apps/lattice/app' + (m === 'know' ? '?view=know' : ''));
+      if (!revFresh(knowAt)) loadKnow();
+    } else { renderTree(); if (!revFresh(treeAt)) loadTree(); }
     // the toggle's visible result is the tree listing. Make sure it can be
     // seen: un-hide the pane on desktop, jump to the tree tab on mobile.
     if (localStorage.appNT === '1') { localStorage.appNT = '0'; applyToggles(); }

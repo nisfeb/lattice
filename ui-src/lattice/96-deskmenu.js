@@ -71,15 +71,14 @@
     };
     addEventListener('resize', paint);
     paint();
+    // No poll. Assigning pname.value fires no event, which is why this used
+    // to check twice a second, but every writer now goes through setOpen
+    // (20-state.js), which dispatches 'input' on the field, and typing
+    // fires it natively. The kind in the tip changes by hand ('change' on
+    // the picker), inside setOpen, or just before one; openGrub, which
+    // learns its kind only after the fetch, dispatches the same event.
     pname.addEventListener('input', paint);
-    pname.addEventListener('change', paint);
-    // pname is set from a dozen places (applyPage, newFile, rename, the
-    // offline replay) and every one of them assigns the value PROPERTY. That
-    // fires no event and leaves the value attribute alone, so a
-    // MutationObserver cannot see it either. Until those writers go through
-    // one setter, the poll is the mechanism here, not a safety net. The
-    // mobile bar (97-mobar.js) polls its own label for the same reason.
-    setInterval(paint, 500);
+    pkind.addEventListener('change', paint);
   }
 
   // ── naming a new page when the name field is not on screen ───────────────
@@ -135,9 +134,9 @@
       name = rn.name;
       newRn = rn;
       pkind.value = kind;
-      pname.value = name;
-      //  both labels (desktop deskbar, mobile bar) repaint off this event
-      pname.dispatchEvent(new Event('change'));
+      //  newFile above left nothing open and the field editable; this names
+      //  the buffer, and setOpen's event repaints both labels
+      setOpen(null, { shown: name });
       //  Show it in the tree NOW, pulsing, before the ship has agreed. The
       //  write is a pier round trip and the tree sitting unchanged through it
       //  reads as nothing having happened, which is the report that started
