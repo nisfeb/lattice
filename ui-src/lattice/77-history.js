@@ -220,8 +220,7 @@
         knowGen++;
         const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
         if (k) k.key = newName;
-        current = newName;
-        pname.value = newName;
+        setOpen(newName, { readOnly: true });
         renderKnowChips();
         renderKnowTree();
         st('moved to ' + newName);

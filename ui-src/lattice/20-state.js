@@ -58,6 +58,23 @@
     }
     return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
   }
+  // setOpen: what the bar says is open, set in one place. `name` becomes
+  // `current`, the open page or memory, or null when nothing named is open
+  // (a new page, a folder, a grub, a fresh mode). The name field shows
+  // `name` unless `shown` says otherwise (a folder's path, a grub's road, a
+  // new page's folder prefix, a typed name slugged mid-save) and is locked
+  // when readOnly. `kind` moves the kind picker when it has that option.
+  // `url`, when given, replaces the address. Assigning .value fires no
+  // event, so this ends by dispatching 'input' on the field: the desktop
+  // and phone labels (96-deskmenu.js, 97-mobar.js) repaint on it.
+  function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
+    current = name;
+    pname.value = shown === undefined ? (name || '') : shown;
+    pname.readOnly = readOnly;
+    if (kind && [...pkind.options].some((o) => o.value === kind)) pkind.value = kind;
+    if (url) history.replaceState(null, '', url);
+    pname.dispatchEvent(new Event('input'));
+  }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
                            // option, so pkind.value would silently convert it

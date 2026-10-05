@@ -23,13 +23,11 @@
     grubPath = p;
     grubShip = ship || null;
     if (grubPrevKind === null) grubPrevKind = pkind.value;
-    current = null;
     curFolder = null;
     // a shared lattice page reads as "~ship: its/name", not its whole ball
     // path; the name field is only a label here (Save goes by grubPath)
     const pg = /\/page\/(.+)\/code$/.exec(p);
-    pname.value = grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p;
-    pname.readOnly = true;
+    setOpen(null, { shown: grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p, readOnly: true });
     $('histsec').hidden = true;
     $('linksec').hidden = true;
     st('loading ' + p + '…');

@@ -1212,6 +1212,23 @@
     }
     return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
   }
+  // setOpen: what the bar says is open, set in one place. `name` becomes
+  // `current`, the open page or memory, or null when nothing named is open
+  // (a new page, a folder, a grub, a fresh mode). The name field shows
+  // `name` unless `shown` says otherwise (a folder's path, a grub's road, a
+  // new page's folder prefix, a typed name slugged mid-save) and is locked
+  // when readOnly. `kind` moves the kind picker when it has that option.
+  // `url`, when given, replaces the address. Assigning .value fires no
+  // event, so this ends by dispatching 'input' on the field: the desktop
+  // and phone labels (96-deskmenu.js, 97-mobar.js) repaint on it.
+  function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
+    current = name;
+    pname.value = shown === undefined ? (name || '') : shown;
+    pname.readOnly = readOnly;
+    if (kind && [...pkind.options].some((o) => o.value === kind)) pkind.value = kind;
+    if (url) history.replaceState(null, '', url);
+    pname.dispatchEvent(new Event('input'));
+  }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
                            // option, so pkind.value would silently convert it
@@ -2637,7 +2654,6 @@
   };
 
   function selectFolder(path) {
-    current = null;
     curFolder = path;
     curKind = null;
     exitGrub();
@@ -2645,13 +2661,12 @@
     $('histsec').hidden = true;
     $('linksec').hidden = true;
     folderCtx = path;
-    pname.value = path;
-    pname.readOnly = true;
+    setOpen(null, { shown: path, readOnly: true,
+      url: '/apps/lattice/app?into=' + encodeURIComponent(path) });
     src.value = '';
     render();
     prevBlank();
     cerr.textContent = ' '; cerr.className = 'ok';
-    history.replaceState(null, '', '/apps/lattice/app?into=' + encodeURIComponent(path));
     markCurrent();
     setCtlLabels();
     showShare(treeShare(path));
@@ -2755,14 +2770,12 @@
     applyPage(name, d);
   }
   function applyPage(name, d, quiet) {
-    current = name;
     curFolder = null;
     setCtlLabels();
-    pname.value = name;
-    pname.readOnly = true;
+    setOpen(name, { readOnly: true, kind: d.kind,
+      url: '/apps/lattice/app?name=' + encodeURIComponent(name) });
     curKind = d.kind;
     curRev = d.rev || 0;
-    if ([...pkind.options].some((o) => o.value === d.kind)) pkind.value = d.kind;
     refreshTexButton();
     src.value = d.body;
     dirty = false;
@@ -2771,7 +2784,6 @@
     // it across a navigation would mark every later untouched page as touched.
     everTyped = false;
     render(); sync();
-    history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
     markCurrent();
     st(d.kind + ' · rev ' + d.rev);
     exitRev();
@@ -2810,7 +2822,6 @@
   // already typing a filename you did not ask to type.
   function newFile(into, focusName = true) {
     folderCtx = into || '';
-    current = null;
     curFolder = null;
     curKind = null;
     refreshTexButton();
@@ -2819,13 +2830,11 @@
     $('histsec').hidden = true;
     $('linksec').hidden = true;
     setCtlLabels();
-    pname.readOnly = false;
-    pname.value = into ? into + '/' : '';
+    setOpen(null, { shown: into ? into + '/' : '', url: '/apps/lattice/app' });
     src.value = '';
     dirty = false;
     everTyped = false;   // a new file is a fresh editor state, like applyPage
     render();
-    history.replaceState(null, '', '/apps/lattice/app');
     renderTree();
     if (focusName) pname.focus();
     st('new page — name it, write, save');
@@ -2944,7 +2953,12 @@
     const rnc = !creating ? null : rn.dnames ? rn : newRn;
     newRn = null;
     const dname = rnc ? rnc.dname : '';
-    if (rn.name !== name) { name = rn.name; pname.value = name; }
+    //  the field shows the slug from here on; nothing else about what is
+    //  open changes, so `current` and the lock are passed through as they are
+    if (rn.name !== name) {
+      name = rn.name;
+      setOpen(current, { shown: name, readOnly: pname.readOnly });
+    }
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc);
     let r = null;
@@ -3100,13 +3114,11 @@
     grubPath = p;
     grubShip = ship || null;
     if (grubPrevKind === null) grubPrevKind = pkind.value;
-    current = null;
     curFolder = null;
     // a shared lattice page reads as "~ship: its/name", not its whole ball
     // path; the name field is only a label here (Save goes by grubPath)
     const pg = /\/page\/(.+)\/code$/.exec(p);
-    pname.value = grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p;
-    pname.readOnly = true;
+    setOpen(null, { shown: grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p, readOnly: true });
     $('histsec').hidden = true;
     $('linksec').hidden = true;
     st('loading ' + p + '…');
@@ -5655,8 +5667,7 @@
         knowGen++;
         const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
         if (k) k.key = newName;
-        current = newName;
-        pname.value = newName;
+        setOpen(newName, { readOnly: true });
         renderKnowChips();
         renderKnowTree();
         st('moved to ' + newName);
@@ -6674,9 +6685,7 @@
       if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return; }
       d = await r.json();
     }
-    current = key;
-    pname.value = key;
-    pname.readOnly = true;
+    setOpen(key, { readOnly: true });
     src.value = d.body;
     dirty = false;
     render(); sync();
@@ -6788,9 +6797,7 @@
     // uncued, one keystroke from autosaving history over the live memory.
     // An aborted delete keeps the revision view exactly as it was.
     exitRev();
-    current = null;
-    pname.value = '';
-    pname.readOnly = false;
+    setOpen(null);
     src.value = '';
     render();
     st('memory deleted (restorable via know-restore)');
@@ -6815,9 +6822,7 @@
     $('treesec').textContent = m === 'know' ? 'memories' : 'files';
     curFolder = null;
     setCtlLabels();
-    current = null;
-    pname.value = '';
-    pname.readOnly = false;
+    setOpen(null, { url: '/apps/lattice/app' + (m === 'know' ? '?view=know' : '') });
     pname.placeholder = m === 'know' ? 'memory key (e.g. user/preferences)' : 'page name (e.g. notes/todo)';
     src.value = '';
     render();
@@ -6845,7 +6850,6 @@
       }
       if (!revFresh(knowAt)) loadKnow();
     } else { renderTree(); if (!revFresh(treeAt)) loadTree(); }
-    history.replaceState(null, '', '/apps/lattice/app' + (m === 'know' ? '?view=know' : ''));
     // the toggle's visible result is the tree listing. Make sure it can be
     // seen: un-hide the pane on desktop, jump to the tree tab on mobile.
     if (localStorage.appNT === '1') { localStorage.appNT = '0'; applyToggles(); }
@@ -7005,9 +7009,9 @@
       name = rn.name;
       newRn = rn;
       pkind.value = kind;
-      pname.value = name;
-      //  both labels (desktop deskbar, mobile bar) repaint off this event
-      pname.dispatchEvent(new Event('change'));
+      //  newFile above left nothing open and the field editable; this names
+      //  the buffer, and setOpen's event repaints both labels
+      setOpen(null, { shown: name });
       //  Show it in the tree NOW, pulsing, before the ship has agreed. The
       //  write is a pier round trip and the tree sitting unchanged through it
       //  reads as nothing having happened, which is the report that started

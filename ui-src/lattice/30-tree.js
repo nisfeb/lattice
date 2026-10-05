@@ -268,7 +268,6 @@
   };
 
   function selectFolder(path) {
-    current = null;
     curFolder = path;
     curKind = null;
     exitGrub();
@@ -276,13 +275,12 @@
     $('histsec').hidden = true;
     $('linksec').hidden = true;
     folderCtx = path;
-    pname.value = path;
-    pname.readOnly = true;
+    setOpen(null, { shown: path, readOnly: true,
+      url: '/apps/lattice/app?into=' + encodeURIComponent(path) });
     src.value = '';
     render();
     prevBlank();
     cerr.textContent = ' '; cerr.className = 'ok';
-    history.replaceState(null, '', '/apps/lattice/app?into=' + encodeURIComponent(path));
     markCurrent();
     setCtlLabels();
     showShare(treeShare(path));

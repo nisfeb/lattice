@@ -93,14 +93,12 @@
     applyPage(name, d);
   }
   function applyPage(name, d, quiet) {
-    current = name;
     curFolder = null;
     setCtlLabels();
-    pname.value = name;
-    pname.readOnly = true;
+    setOpen(name, { readOnly: true, kind: d.kind,
+      url: '/apps/lattice/app?name=' + encodeURIComponent(name) });
     curKind = d.kind;
     curRev = d.rev || 0;
-    if ([...pkind.options].some((o) => o.value === d.kind)) pkind.value = d.kind;
     refreshTexButton();
     src.value = d.body;
     dirty = false;
@@ -109,7 +107,6 @@
     // it across a navigation would mark every later untouched page as touched.
     everTyped = false;
     render(); sync();
-    history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
     markCurrent();
     st(d.kind + ' · rev ' + d.rev);
     exitRev();
@@ -148,7 +145,6 @@
   // already typing a filename you did not ask to type.
   function newFile(into, focusName = true) {
     folderCtx = into || '';
-    current = null;
     curFolder = null;
     curKind = null;
     refreshTexButton();
@@ -157,13 +153,11 @@
     $('histsec').hidden = true;
     $('linksec').hidden = true;
     setCtlLabels();
-    pname.readOnly = false;
-    pname.value = into ? into + '/' : '';
+    setOpen(null, { shown: into ? into + '/' : '', url: '/apps/lattice/app' });
     src.value = '';
     dirty = false;
     everTyped = false;   // a new file is a fresh editor state, like applyPage
     render();
-    history.replaceState(null, '', '/apps/lattice/app');
     renderTree();
     if (focusName) pname.focus();
     st('new page — name it, write, save');
@@ -282,7 +276,12 @@
     const rnc = !creating ? null : rn.dnames ? rn : newRn;
     newRn = null;
     const dname = rnc ? rnc.dname : '';
-    if (rn.name !== name) { name = rn.name; pname.value = name; }
+    //  the field shows the slug from here on; nothing else about what is
+    //  open changes, so `current` and the lock are passed through as they are
+    if (rn.name !== name) {
+      name = rn.name;
+      setOpen(current, { shown: name, readOnly: pname.readOnly });
+    }
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc);
     let r = null;

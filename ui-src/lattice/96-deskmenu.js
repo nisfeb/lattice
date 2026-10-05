@@ -141,9 +141,9 @@
       name = rn.name;
       newRn = rn;
       pkind.value = kind;
-      pname.value = name;
-      //  both labels (desktop deskbar, mobile bar) repaint off this event
-      pname.dispatchEvent(new Event('change'));
+      //  newFile above left nothing open and the field editable; this names
+      //  the buffer, and setOpen's event repaints both labels
+      setOpen(null, { shown: name });
       //  Show it in the tree NOW, pulsing, before the ship has agreed. The
       //  write is a pier round trip and the tree sitting unchanged through it
       //  reads as nothing having happened, which is the report that started

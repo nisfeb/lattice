@@ -110,9 +110,7 @@
       if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return; }
       d = await r.json();
     }
-    current = key;
-    pname.value = key;
-    pname.readOnly = true;
+    setOpen(key, { readOnly: true });
     src.value = d.body;
     dirty = false;
     render(); sync();
@@ -224,9 +222,7 @@
     // uncued, one keystroke from autosaving history over the live memory.
     // An aborted delete keeps the revision view exactly as it was.
     exitRev();
-    current = null;
-    pname.value = '';
-    pname.readOnly = false;
+    setOpen(null);
     src.value = '';
     render();
     st('memory deleted (restorable via know-restore)');
@@ -251,9 +247,7 @@
     $('treesec').textContent = m === 'know' ? 'memories' : 'files';
     curFolder = null;
     setCtlLabels();
-    current = null;
-    pname.value = '';
-    pname.readOnly = false;
+    setOpen(null, { url: '/apps/lattice/app' + (m === 'know' ? '?view=know' : '') });
     pname.placeholder = m === 'know' ? 'memory key (e.g. user/preferences)' : 'page name (e.g. notes/todo)';
     src.value = '';
     render();
@@ -281,7 +275,6 @@
       }
       if (!revFresh(knowAt)) loadKnow();
     } else { renderTree(); if (!revFresh(treeAt)) loadTree(); }
-    history.replaceState(null, '', '/apps/lattice/app' + (m === 'know' ? '?view=know' : ''));
     // the toggle's visible result is the tree listing. Make sure it can be
     // seen: un-hide the pane on desktop, jump to the tree tab on mobile.
     if (localStorage.appNT === '1') { localStorage.appNT = '0'; applyToggles(); }
