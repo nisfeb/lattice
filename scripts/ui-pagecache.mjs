@@ -20,7 +20,7 @@
 import { rmSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { shipEnv, launchBrowser, openPage, makeCheck, settle, sleep } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, settle, sleep, shipName, seed } from './lib/harness.mjs';
 
 const env = shipEnv();
 const BASE = env.base;
@@ -29,8 +29,10 @@ const PROFILE = mkdtempSync(join(process.env.LATTICE_PROFILE_DIR || tmpdir(), 'l
 // A fresh profile's SW install (sw.js + activation) queues behind whatever the
 // pier is already doing, so wait for a settled ship before any of it starts.
 await settle(env);
+const SHIP = encodeURIComponent(await shipName(env));
+await seed(env, [['harnessdir/one', '# one'], ['harnessdir/other', '# other']]);
 
-const PAGE = BASE + '/apps/lattice?url=urb%3A%2F%2F~tyr%2Fharnessdir%2Fone';
+const PAGE = BASE + '/apps/lattice?url=urb%3A%2F%2F' + SHIP + '%2Fharnessdir%2Fone';
 const HOME = BASE + '/apps/lattice';
 //  Every detail here is a measurement — the ms a view took, the number of
 //  navigations — and the margin is worth reading on a pass, not only on a
@@ -210,11 +212,11 @@ try {
   let landed = false;
   for (let i = 0; i < 25 && !landed; i++) {
     await sleep(1000);
-    landed = await p.evaluate(async (s) => {
-      const r = await fetch('/apps/lattice?url=urb%3A%2F%2F~tyr%2Fharnessdir%2Fone&u=pc' + Date.now(),
+    landed = await p.evaluate(async (s, ship) => {
+      const r = await fetch('/apps/lattice?url=urb%3A%2F%2F' + ship + '%2Fharnessdir%2Fone&u=pc' + Date.now(),
         { cache: 'no-store' });
       return (await r.text()).includes(s);
-    }, stamp3).catch(() => false);
+    }, stamp3, SHIP).catch(() => false);
   }
   check('(setup) editor save landed on ship', landed);
   await sleep(2000);
@@ -249,7 +251,7 @@ try {
       { method: 'POST', body: '# doomed\ntmpdel-body' });
   });
   await sleep(2000);
-  const DOOMED = BASE + '/apps/lattice?url=urb%3A%2F%2F~tyr%2Fharnessdir%2Ftmpdel';
+  const DOOMED = BASE + '/apps/lattice?url=urb%3A%2F%2F' + SHIP + '%2Fharnessdir%2Ftmpdel';
   await nav(DOOMED);
   check('(setup) doomed page in cache', await waitCached(DOOMED));
   t = await nav(DOOMED);
@@ -279,7 +281,7 @@ try {
 
   // ── /clip is a side-effecting GET: never cached, never self-refetched ───
   const CLIP = BASE + '/apps/lattice/clip?url=' +
-    encodeURIComponent('urb://~tyr/harnessdir/one');
+    encodeURIComponent('urb://' + decodeURIComponent(SHIP) + '/harnessdir/one');
   await nav(CLIP); await sleep(12000);
   const clipCached = await p.evaluate(async () => {
     const c = await caches.open('lattice-pages');

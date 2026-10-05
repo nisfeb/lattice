@@ -66,6 +66,22 @@ export async function openPage(browser, env, { viewport, onPageError } = {}) {
   return page;
 }
 
+//  The ship's own name (~pyl), so a suite reads its pages by urb:// on
+//  whatever ship it runs against, not the one it was first written for.
+export async function shipName(env) {
+  return (await (await fetch(env.base + '/~/host')).text()).trim();
+}
+
+//  The pages a suite needs, created when absent (page-save new=1, which
+//  answers 409 for one already there). Fixtures come from the suite, not
+//  from a ship someone seeded by hand.
+export async function seed(env, pages) {
+  for (const [name, body] of pages) {
+    await fetch(env.base + '/apps/lattice/page-save?type=md&new=1&name=' + encodeURIComponent(name),
+      { method: 'POST', headers: { Cookie: env.cookie }, body });
+  }
+}
+
 //  Three consecutive sub-4s document loads before the suite starts. Right
 //  after a deploy the pier answers everything at 5-10s while the nexus
 //  rebuilds, and a timing assertion made in that window measures deploy churn

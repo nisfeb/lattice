@@ -7,13 +7,14 @@
 //  silent: a control that is hidden with no working replacement is just
 //  gone, and nothing throws (the tree-+ bug shipped exactly that way).
 //
-//  Needs a ship with at least one folder ("harnessdir" is seeded on ~tyr).
+//  Seeds harnessdir/one, so the ship has at least one folder.
 //
 //  Usage:  LATTICE_URL=http://localhost:8081 \
 //          LATTICE_COOKIE=~/.config/lattice-fs/cookie node scripts/ui-mobar.mjs
-import { shipEnv, launchBrowser, openPage, makeCheck } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, seed } from './lib/harness.mjs';
 
 const env = shipEnv();
+await seed(env, [['harnessdir/one', '# one']]);
 const check = makeCheck();
 const browser = await launchBrowser();
 
@@ -61,11 +62,15 @@ await m.evaluate(() => document.getElementById('qclose').click());
 
 // label: open a page, the label says so, tapping it is rename
 await m.evaluate(() => { document.querySelector('.mtabs button[data-mv="tree"]').click(); });
-await m.evaluate(() => { document.querySelector('#treelist a.pg').click(); });
+const opened = await m.evaluate(() => {
+  const a = document.querySelector('#treelist a.pg');
+  a.click();
+  return new URL(a.href, location.href).searchParams.get('name');
+});
 await m.waitForFunction(() => document.getElementById('mpath').textContent !== 'no page open',
   { timeout: 15000 });
 const label = await m.evaluate(() => document.getElementById('mpath').textContent);
-check('the label carries the open page', /harnessdir\//.test(label), label);
+check('the label carries the open page', !!opened && label.includes(opened), label + ' (opened ' + opened + ')');
 await m.evaluate(() => document.getElementById('mpath').click());
 let renameOpen = false;
 try { await m.waitForFunction(() => !document.getElementById('dlg').hidden, { timeout: 5000 }); renameOpen = true; } catch {}

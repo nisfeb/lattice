@@ -4,14 +4,16 @@
 //  bookmarks/settings, Go beside the omnibar, and Enter == Go.
 //
 //  Env:    LATTICE_URL, LATTICE_COOKIE, CHROME   (as ui-matrix.mjs)
-import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, sleep, shipName, seed } from './lib/harness.mjs';
 
 const env = shipEnv();
 const check = makeCheck();
+const SHIP = await shipName(env);
+await seed(env, [['harnessdir/one', '# one'], ['harnessdir/other', '# other']]);
 const browser = await launchBrowser();
 const p = await openPage(browser, env);
 const HOME = env.base + '/apps/lattice';
-const PAGE = HOME + '?url=' + encodeURIComponent('urb://~tyr/harnessdir/one');
+const PAGE = HOME + '?url=' + encodeURIComponent('urb://' + SHIP + '/harnessdir/one');
 const st = () => p.evaluate(() => ({
   b: document.getElementById('navb')?.disabled,
   f: document.getElementById('navf')?.disabled,
@@ -77,7 +79,7 @@ check('and closes on a click elsewhere', s.menuHidden === true);
 // above leaves headless focus in a state that eats synthetic keys)
 await p.goto(PAGE, { waitUntil: 'domcontentloaded', timeout: 60000 });
 await p.click('.bar input[name=url]', { clickCount: 3 });
-await p.type('.bar input[name=url]', 'urb://~tyr/harnessdir/other');
+await p.type('.bar input[name=url]', 'urb://' + SHIP + '/harnessdir/other');
 await p.keyboard.press('Enter');
 // poll rather than waitForNavigation: SW-served navigations can commit
 // before the waiter attaches, and the suggest box may be mid-fetch
