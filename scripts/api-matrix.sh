@@ -44,10 +44,11 @@ echo "==> sharing: page"
 is "share=shared"          200 "$(sc -X POST "$B/page-share?name=$P/note&mode=shared")"
 is "source sees shared"    shared "$(G "$B/page-source?name=$P/note" | python3 -c 'import json,sys;print(json.load(sys.stdin)["share"])')"
 is "tree sees shared"      shared "$(G "$B/page-tree" | node_field "$P/note" share)"
-# an unknown mode folds to private on the server. Pin that so a client
-# sending a bad mode can never silently *publish*
-is "unknown mode folds to private" 200 "$(sc -X POST "$B/page-share?name=$P/note&mode=public")"
-is "  ...and lands private" private "$(G "$B/page-source?name=$P/note" | python3 -c 'import json,sys;print(json.load(sys.stdin)["share"])')"
+# an unknown mode is refused, and the page keeps the share it had (the
+# server has answered 400 since 2026-07-30). Pin that so a client sending a
+# bad mode can never silently *publish*
+is "unknown mode refused" 400 "$(sc -X POST "$B/page-share?name=$P/note&mode=public")"
+is "  ...and the share is unchanged" shared "$(G "$B/page-source?name=$P/note" | python3 -c 'import json,sys;print(json.load(sys.stdin)["share"])')"
 is "share on missing page" 404 "$(sc -X POST "$B/page-share?name=$P/ghost&mode=shared")"
 
 echo "==> sharing: tree (clearweb site publish)"
