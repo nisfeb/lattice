@@ -129,10 +129,8 @@ select, option { color-scheme: inherit; }
 .ws.deskbar #pathlabel {
   display: block; position: absolute; top: 50%; left: 50%;
   transform: translate(-50%, -50%);
-  /* 38%, not 50%: centred means the label grows symmetrically, so half of
-     any extra width runs at the button cluster on each side. The icon
-     cluster is ~266px, and at a 900px window 46% put a long path 23px on
-     top of it. Measured at 820/900/1100/1400. */
+  /* a fallback only: 96-deskmenu.js measures the room on each side and
+     sets the real limit, since the button clusters change width */
   max-width: min(38%, 60ch); pointer-events: none;
   text-align: center; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -157,8 +155,14 @@ select, option { color-scheme: inherit; }
 .bar input, .bar button { font: inherit; padding: 5px 9px;
   border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
   color: inherit; }
-.bar input { min-width: 16rem; cursor: text; }
+.bar input { flex: 0 1 18rem; min-width: 8rem; cursor: text; }
 .bar button { cursor: pointer; }
+/* when the bar runs out of room the status line gives way first: it
+   shrinks and ends in an ellipsis (st() puts the full text in its title),
+   and no button or the home link is ever squeezed into its neighbour */
+@media (min-width: 821px) {
+  .bar > button, .bar > .home, .bar > select, #viewseg { flex-shrink: 0; }
+}
 /* the convert button with no converter behind it: pandoc is missing, or the
    desktop build predates LaTeX support. Dashed reads as "needs something",
    and the button stays clickable to explain itself (71-latex.js). The var
@@ -167,7 +171,8 @@ select, option { color-scheme: inherit; }
   color: var(--muted); }
 .bar button:hover, .bar .home:hover { border-color: var(--green); }
 .bar .grow { flex: 1; }
-#status { font-size: .85rem; }
+#status { font-size: .85rem; flex: 0 5 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @keyframes latspin { to { transform: rotate(360deg); } }
 #spin { display: none; width: 11px; height: 11px; margin-right: 6px; flex: none;
   border: 2px solid var(--border); border-top-color: var(--green);
