@@ -100,7 +100,9 @@ async function prompt() {
   // slash commands and one-word replies ("yes", "go") carry nothing to recall
   if (text.startsWith('/') || text.split(/\s+/).length < 3) return;
   try {
-    const r = JSON.parse(await get('know-recall', { task: text.slice(0, 1500), k: '3' })).recall;
+    // sensitive=0: automatic recall never reaches sensitive memories, so it
+    // never taints a cleared key; asking for them is the agent's own act
+    const r = JSON.parse(await get('know-recall', { task: text.slice(0, 1500), k: '3', sensitive: '0' })).recall;
     const hits = (r.results || []).filter((h) => h.strength >= gate && h.score >= MIN_SCORE);
     if (r.weak || !hits.length) return;
     say('UserPromptSubmit',

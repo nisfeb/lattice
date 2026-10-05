@@ -1253,7 +1253,7 @@
   ::
       [%'GET' %know-list]
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
-    (send-json eyre-id (know-list-json es))
+    (send-json eyre-id (know-list-json (listed key es)))
   ::
       [%'GET' %know-all]
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
@@ -1261,7 +1261,7 @@
   ::
       [%'GET' %know-tags]
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
-    (send-json eyre-id (know-tags-json es))
+    (send-json eyre-id (know-tags-json (listed key es)))
   ::
       [%'GET' %know-trash]
     ;<  tx=know-index:lk  bind:m  (read-index [%| 2 %& /know %trash])
@@ -1273,7 +1273,7 @@
     =/  all=?  =('all' (~(gut by args) 'match' 'any'))
     =/  q=@t  (~(gut by args) 'q' '')
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
-    (send-json eyre-id (know-list-json (filter-explore es tags all q)))
+    (send-json eyre-id (know-list-json (filter-explore (listed key es) tags all q)))
   ::  know-search: ranked recall (+search:lk, the code the MCP tools run, so
   ::  both rank alike). q= words, or "a phrase" in double quotes; k= how many
   ::  (10); superseded=1 also returns entries a newer one replaced.
@@ -1281,19 +1281,35 @@
     =/  q=@t  (~(gut by args) 'q' '')
     ?:  =('' q)  (send-err eyre-id 400 'missing q')
     =/  k=@ud  (fall (rush (~(gut by args) 'k' '10') dem) 10)
-    ;<  es=(map path know-entry:lk)  bind:m  read-know-map
+    ;<  all=(map path know-entry:lk)  bind:m  read-know-map
     =/  old=?  =('1' (~(gut by args) 'superseded' '0'))
-    ;<  tc=term-cache:lk  bind:m  (current-terms es)
-    (send-json eyre-id (hits-json:lk es (search:lk ~(tap by es) tc q old) q k))
+    ::  the cache is kept over every entry; the ranking only over what
+    ::  this request may see
+    ;<  tc=term-cache:lk  bind:m  (current-terms all)
+    ::  sensitive=0: only what a listing shows, so an automatic search
+    ::  (a plugin hook) never taints a cleared key
+    =/  es=(map path know-entry:lk)
+      ?:  =('0' (~(gut by args) 'sensitive' ''))  (listed key all)
+      (searchable key all)
+    =/  hs=(list hit:lk)  (search:lk ~(tap by es) tc q old)
+    ;<  ~  bind:m
+      (taint-if key (lien (scag k hs) |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
+    (send-json eyre-id (hits-json:lk es hs q k))
   ::  know-recall: what to know before a task (+recall-json:lk, the answer
   ::  the lattice-recall tool gives). task= the description, k= how many (8).
       [%'GET' %know-recall]
     =/  task=@t  (~(gut by args) 'task' '')
     ?:  =('' task)  (send-err eyre-id 400 'missing task')
     =/  k=@ud  (fall (rush (~(gut by args) 'k' '8') dem) 8)
-    ;<  es=(map path know-entry:lk)  bind:m  read-know-map
-    ;<  tc=term-cache:lk  bind:m  (current-terms es)
-    (send-json eyre-id (recall-json:lk es tc task k))
+    ;<  all=(map path know-entry:lk)  bind:m  read-know-map
+    ;<  tc=term-cache:lk  bind:m  (current-terms all)
+    =/  es=(map path know-entry:lk)
+      ?:  =('0' (~(gut by args) 'sensitive' ''))  (listed key all)
+      (searchable key all)
+    =/  hs=(list hit:lk)  (search:lk ~(tap by es) tc task |)
+    ;<  ~  bind:m
+      (taint-if key (lien (scag k hs) |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
+    (send-json eyre-id (recall-json:lk es hs task k))
   ::  know-index: what an agent loads at session start (+index-text:lk, as
   ::  the lattice-index tool), as plain text for a hook to print. brief=1
   ::  counts each area instead of listing its keys; cap= bounds the core
@@ -1302,13 +1318,14 @@
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
     =/  brief=?  =('1' (~(gut by args) 'brief' '0'))
     =/  cap=@ud  (fall (rush (~(gut by args) 'cap' '') dem) core-cap:lk)
-    (send-typed eyre-id 'text/plain; charset=utf-8' 'no-store' (index-text:lk es brief cap))
+    (send-typed eyre-id 'text/plain; charset=utf-8' 'no-store' (index-text:lk (listed key es) brief cap))
   ::  know-lint: what a tidy would fix (+lint-run:lk), proposed and never
   ::  applied. Computed when asked, so always current. /know?lint=1 reviews it.
       [%'GET' %know-lint]
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
     ;<  now=@da  bind:m  bowl-now
-    (send-json eyre-id (lint-json:lk (lint-run:lk ~(tap by es) now)))
+    =/  hid=(set path)  ~(key by (~(dif by es) (listed key es)))
+    (send-json eyre-id (lint-json:lk (lint-without:lk (lint-run:lk ~(tap by es) now) hid)))
   ::  know-verify: an agent or the owner confirms an entry still holds.
   ::  verified (and verified-by, from author=) land in its front matter.
       [%'POST' %know-verify]
@@ -1316,6 +1333,7 @@
     ?~  ko  (send-err eyre-id 400 'bad key')
     ;<  e=(unit know-entry:lk)  bind:m  (know-one u.ko)
     ?~  e  (send-err eyre-id 404 'not found')
+    ?.  (may-see key u.e)  (send-err eyre-id 404 'not found')
     ;<  now=@da  bind:m  bowl-now
     =/  f  (front:lk body.u.e)
     =/  meta  (meta-put:lk meta.f 'verified' (iso-day:lk now))
@@ -1333,10 +1351,13 @@
     =/  nk=(unit path)  (know-key nraw)
     ?:  &(!=('' nraw) ?=(~ nk))  (send-err eyre-id 400 'bad new')
     ?:  =(`(unit path)`ok nk)  (send-err eyre-id 400 'an entry cannot replace itself')
+    ;<  g=(unit [code=@ud msg=@t])  bind:m  (key-guard key u.ok &)
+    ?^  g  (send-err eyre-id code.u.g ?:(=(404 code.u.g) 'no such old entry' msg.u.g))
     ;<  e=(unit know-entry:lk)  bind:m  (know-one u.ok)
     ?~  e  (send-err eyre-id 404 'no such old entry')
     ;<  n=(unit know-entry:lk)  bind:m  (know-one (fall nk u.ok))
     ?:  &(?=(^ nk) ?=(~ n))  (send-err eyre-id 404 'no such new entry')
+    ?:  &(?=(^ nk) ?=(^ n) !(may-see key u.n))  (send-err eyre-id 404 'no such new entry')
     =/  f  (front:lk body.u.e)
     =/  meta  (meta-put:lk meta.f 'superseded-by' ?~(nk '' (spat u.nk)))
     ;<  ~  bind:m  (poke-know [%save (spat u.ok) (with-front:lk meta rest.f)])
@@ -1354,6 +1375,8 @@
     =/  e=(unit know-entry:lk)
       (mole |.(!<(know-entry:lk (need-vase:tarball sang.kn))))
     ?~  e  (send-err eyre-id 404 'not found')
+    ?.  (may-see key u.e)  (send-err eyre-id 404 'not found')
+    ;<  ~  bind:m  (taint-if key (sensitive:lk u.e))
     (send-json eyre-id (know-entry-json u.ko u.e))
   ::
   ::  page-source: raw editable source + kind + revision for one page, so a
@@ -1784,6 +1807,9 @@
     ::  republishes it, and a page inside a folder shared with a group is
     ::  that group's to read, so both are refused.
     ?~  key  (handle-page-save eyre-id req args)
+    ::  pages are never sensitive, so a tainted key writes none
+    ;<  pnow=@da  bind:m  bowl-now
+    ?:  (tainted:ky u.key pnow)  (send-err eyre-id 403 tainted-msg)
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
@@ -1838,10 +1864,11 @@
   ::  only as a salted hash; every change goes through the writer.
       [%'GET' %keys]
     ;<  ks=keys:ky  bind:m  (read-keys (rf up / %keys))
+    ;<  now=@da  bind:m  bowl-now
     %+  send-json  eyre-id
     :-  %a
     %+  turn  (sort ~(val by ks) |=([a=key-row:ky b=key-row:ky] (gth made.a made.b)))
-    en-view:ky
+    |=(k=key-row:ky (en-view:ky k now))
       [%'POST' %key-mint]
     =/  jon=(unit json)  (de:json:html (req-body req))
     ?~  jon  (send-err eyre-id 400 'expected json')
@@ -1855,10 +1882,10 @@
     ?:  (~(has by ks) id)  (send-err eyre-id 409 'id taken, try again')
     =/  salt=@t  (scot %uv (end [3 10] (rsh [3 5] eny)))
     =/  secret=@t  (secret-of:ky (rsh [3 15] eny))
-    =/  row=key-row:ky  [id name.p.r by.p.r scope.p.r salt (hash-token:ky salt secret) now ~]
+    =/  row=key-row:ky  [id name.p.r by.p.r scope.p.r salt (hash-token:ky salt secret) now ~ ~]
     ;<  ~  bind:m  (poke-keys [%add row])
     %+  send-json  eyre-id
-    (pairs:enjs:format ~[['key' (en-view:ky row)] ['token' s+(rap 3 id '.' secret ~)]])
+    (pairs:enjs:format ~[['key' (en-view:ky row now)] ['token' s+(rap 3 id '.' secret ~)]])
       [%'POST' %key-revoke]
     =/  id=@t  (~(gut by args) 'id' '')
     ;<  ks=keys:ky  bind:m  (read-keys (rf up / %keys))
@@ -2576,6 +2603,8 @@
       [%'GET' %know-history]
     =/  raw=(unit @t)  (~(get by args) 'key')
     ?~  raw  (send-err eyre-id 400 'missing key')
+    ;<  ok=?  bind:m  (live-visible key u.raw)
+    ?.  ok  (send-err eyre-id 404 'not found')
     ;<  hr=(unit [road=road:tarball trashed=?])  bind:m  (know-hist-road u.raw)
     ?~  hr  (send-err eyre-id 404 'not found')
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
@@ -2605,6 +2634,8 @@
     ?~  rev  (send-err eyre-id 400 'bad rev')
     =/  ko=(unit path)  (know-key u.raw)
     ?~  ko  (send-err eyre-id 400 'invalid key')
+    ;<  ok=?  bind:m  (live-visible key u.raw)
+    ?.  ok  (send-err eyre-id 404 'not found')
     ;<  hr=(unit [road=road:tarball trashed=?])  bind:m  (know-hist-road u.raw)
     ?~  hr  (send-err eyre-id 404 'not found')
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
@@ -2615,6 +2646,9 @@
     ;<  sn=view:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
     ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
     =/  e=know-entry:lk  !<(know-entry:lk (need-vase:tarball sang.sn))
+    ::  a revision can be sensitive when the entry is no longer
+    ?.  (may-see key e)  (send-err eyre-id 404 'not found')
+    ;<  ~  bind:m  (taint-if key (sensitive:lk e))
     (send-json eyre-id (know-entry-json u.ko e))
   ::  restore a prior revision: re-save it live via %import (preserves tags/vector),
   ::  stamped updated=now so it sorts fresh in know-list (matches pub-restore). Works
@@ -2971,14 +3005,23 @@
     =/  author=@t  ?^(key by.u.key (~(gut by args) 'author' ''))
     =/  source=@t  ?^(key 'agent' (~(gut by args) 'source' ''))
     =/  expect=@t  (~(gut by args) 'expected_updated' '')
+    ::  sensitive=1 marks the entry; sensitive=0 clears it, owner only
+    =/  sarg=@t  (~(gut by args) 'sensitive' '')
     ?.  |(=('' source) =('user' source) =('agent' source))
       (send-err eyre-id 400 'source must be user or agent')
-    ?:  &(=('' author) =('' source) =('' expect))
+    ?:  &(=('' author) =('' source) =('' expect) =('' sarg))
       ;<  ~  bind:m  (poke-know [%save (spat u.ko) bod])
       (send-ok eyre-id)
     =/  prose=@t  rest:(front:lk bod)
     ?:  =('' prose)  (send-err eyre-id 400 'empty body')
     ;<  old=(unit know-entry:lk)  bind:m  (know-one u.ko)
+    ?:  &(?=(^ old) !(may-see key u.old))
+      (send-err eyre-id 403 'that key is not available to this agent key')
+    ::  a tainted key's new entries are sensitive, but an ordinary entry it
+    ::  edited would vanish for every other key, so that is refused
+    ;<  snow=@da  bind:m  bowl-now
+    ?:  &(?=(^ key) ?=(^ old) !(sensitive:lk u.old) (tainted:ky u.key snow))
+      (send-err eyre-id 403 tainted-msg)
     ?:  &(!=('' expect) |(?=(~ old) !=(expect (scot %da updated.u.old))))
       %^  send-err  eyre-id  409
       ?~  old  'conflict: no such entry'
@@ -2989,16 +3032,22 @@
       ?^  old  (pure:n ~)
       ;<  es=(map path know-entry:lk)  bind:n  read-know-map
       ;<  tc=term-cache:lk  bind:n  (current-terms es)
-      (pure:n (near:lk ~(tap by es) tc prose))
+      (pure:n (near:lk ~(tap by (listed key es)) tc prose))
     ?:  &(?=(^ near) (gte o.i.near dup-at:lk) !=('1' (~(gut by args) 'force_new' '')))
       %^  send-err  eyre-id  409
       (crip "likely duplicate of {(spud k.i.near)} ({(a-co:co o.i.near)}% of terms shared): update that entry, or pass force_new=1 if this is a different fact")
     ;<  now=@da  bind:m  bowl-now
-    ;<  ~  bind:m  (poke-know [%save (spat u.ko) (stamp:lk old prose author source now)])
+    ::  a key never lowers the mark, and a tainted key's saves are sensitive
+    =/  was=?  ?~(old | (sensitive:lk u.old))
+    =/  sens=?
+      ?~  key  ?:(=('0' sarg) | |(=('1' sarg) was))
+      |(=('1' sarg) was (tainted:ky u.key now))
+    ;<  ~  bind:m  (poke-know [%save (spat u.ko) (stamp:lk old prose author source now sens)])
     %+  send-json  eyre-id
     %-  pairs:enjs:format
     :~  ['ok' b+&]
         ['created' b+?=(~ old)]
+        ['sensitive' b+sens]
         :-  'similar'
         :-  %a
         %+  turn  (scag 3 near)
@@ -3028,6 +3077,8 @@
     ?:  |(?=(~ k) ?=(~ tg))  (send-err eyre-id 400 'missing key or tag')
     =/  ko=(unit path)  (know-key u.k)
     ?~  ko  (send-err eyre-id 400 'invalid key')
+    ;<  g=(unit [code=@ud msg=@t])  bind:m  (key-guard key u.ko &)
+    ?^  g  (send-err eyre-id code.u.g msg.u.g)
     ;<  ~  bind:m  (poke-know [%tag (spat u.ko) u.tg])
     (send-ok eyre-id)
   ::
@@ -3037,6 +3088,8 @@
     ?:  |(?=(~ k) ?=(~ tg))  (send-err eyre-id 400 'missing key or tag')
     =/  ko=(unit path)  (know-key u.k)
     ?~  ko  (send-err eyre-id 400 'invalid key')
+    ;<  g=(unit [code=@ud msg=@t])  bind:m  (key-guard key u.ko &)
+    ?^  g  (send-err eyre-id code.u.g msg.u.g)
     ;<  ~  bind:m  (poke-know [%untag (spat u.ko) u.tg])
     (send-ok eyre-id)
   ::
@@ -3807,7 +3860,8 @@
   ^-  form:m
   ;<  kv=view:nexus  bind:m  (peek:io kr ~)
   ?.  ?=([%file *] kv)  (pure:m ~)
-  (pure:m (fall (mole |.(!<(keys:ky (need-vase:tarball sang.kv)))) ~))
+  ::  by noun, so a row stored before clearance (lattice 45) still reads
+  (pure:m (upgrade:ky (sang-noun:tarball sang.kv)))
 ::  +key-of: the agent key an Authorization header presents, or ~. Its
 ::  last use is stamped through the writer, at most hourly.
 ::
@@ -3847,8 +3901,84 @@
         %touch
       =/  k=(unit key-row:ky)  (~(get by ks) id.act)
       ?~(k ks (~(put by ks) id.act u.k(used `when.act)))
+        %taint
+      =/  k=(unit key-row:ky)  (~(get by ks) id.act)
+      ?~(k ks (~(put by ks) id.act u.k(taint `when.act)))
     ==
   (put-file kr [/lattice %keys] ks)
+::  ==  sensitive memories (docs/agent-knowledge.md, "Sensitive memories")
+::
+::  An entry marked `sensitive: yes` is the owner's and a cleared key's
+::  only. A key without clearance never sees one: not in a listing, a hit,
+::  a snippet, a link or a refusal message. A cleared key finds them by
+::  search, recall or reading, and doing so taints it: for taint-for:ky
+::  everything it writes is sensitive, so it cannot pass what it read on
+::  to keys that may not read it.
+::
+::  +listed: what a keyed listing shows (index, list, tags, explore,
+::  lint): never a sensitive entry, so listing neither leaks one nor
+::  taints a cleared key. The owner sees everything.
+++  listed
+  |=  [key=(unit key-row:ky) es=(map path know-entry:lk)]
+  ^-  (map path know-entry:lk)
+  ?~  key  es
+  (malt (skip ~(tap by es) |=([* e=know-entry:lk] (sensitive:lk e))))
+::  +searchable: what search and recall rank over: sensitive entries too
+::  for the owner and a cleared key.
+++  searchable
+  |=  [key=(unit key-row:ky) es=(map path know-entry:lk)]
+  ^-  (map path know-entry:lk)
+  ?~  key  es
+  ?:  sensitive.scope.u.key  es
+  (listed key es)
+++  may-see
+  |=  [key=(unit key-row:ky) e=know-entry:lk]
+  ^-  ?
+  ?~  key  &
+  |(sensitive.scope.u.key !(sensitive:lk e))
+::  +taint-if: a key just received sensitive text. Stamped through the
+::  writer, at most every ten minutes.
+++  taint-if
+  |=  [key=(unit key-row:ky) got=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  key  (pure:m ~)
+  ?.  got  (pure:m ~)
+  ;<  now=@da  bind:m  get-time:io
+  ?:  &(?=(^ taint.u.key) (lth now (add u.taint.u.key ~m10)))  (pure:m ~)
+  (poke-keys [%taint id.u.key now])
+++  tainted-msg
+  ^-  @t
+  'this key read sensitive memories in the last 12 hours, so until then its own words go only on sensitive memories'
+::  +key-guard: for a keyed write to one entry, ~ to go ahead, or why not.
+::  An entry the key may not see is not found. A tainted key may not put
+::  its own words (words) on an entry other keys can read.
+++  key-guard
+  |=  [key=(unit key-row:ky) ko=path words=?]
+  =/  m  (fiber:fiber:nexus ,(unit [code=@ud msg=@t]))
+  ^-  form:m
+  ?~  key  (pure:m ~)
+  ;<  e=(unit know-entry:lk)  bind:m  (know-one ko)
+  ?~  e  (pure:m `[404 'not found'])
+  ?.  (may-see key u.e)  (pure:m `[404 'not found'])
+  ;<  now=@da  bind:m  get-time:io
+  ?:  &(words !(sensitive:lk u.e) (tainted:ky u.key now))
+    (pure:m `[403 tainted-msg])
+  (pure:m ~)
+::  +live-visible: a key reads history only of a live entry it may see,
+::  and reading a sensitive one taints it. The owner reads any history.
+++  live-visible
+  |=  [key=(unit key-row:ky) raw=@t]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ?~  key  (pure:m &)
+  =/  ko=(unit path)  (know-key raw)
+  ?~  ko  (pure:m |)
+  ;<  e=(unit know-entry:lk)  bind:m  (know-one u.ko)
+  ?~  e  (pure:m |)
+  ?.  (may-see key u.e)  (pure:m |)
+  ;<  ~  bind:m  (taint-if key (sensitive:lk u.e))
+  (pure:m &)
 ::  +granted: does a sharing group's read road reach this page, on it or
 ::  on a folder above it? Soft, like +move-grants: when lattice may not
 ::  read the groups it cannot have granted one either.
@@ -9079,12 +9209,13 @@
     "<label for=\"kmem\">Memory</label><select id=\"kmem\" name=\"kmem\"><option value=\"write\">read and write</option><option value=\"read\">read</option><option value=\"none\">none</option></select>"
     "<label for=\"kpages\">Pages</label><select id=\"kpages\" name=\"kpages\"><option value=\"read\">read</option><option value=\"write\">read, write private pages</option><option value=\"none\">none</option></select>"
     "<label for=\"kweb\"><input type=\"checkbox\" id=\"kweb\" name=\"kweb\" checked> read other ships&rsquo; pages</label>"
+    "<label for=\"ksen\"><input type=\"checkbox\" id=\"ksen\" name=\"ksen\"> read sensitive memories</label>"
     "<button class=\"btn\" type=\"submit\">Make key</button></form>"
     "<p id=\"keytok\" hidden>Copy this key now. It is not shown again. <code></code></p>"
     "<p id=\"keyerr\" class=\"err\"></p>"
     "<ul id=\"keylist\" class=\"bklist\"></ul>"
     %-  trip
-    '<script>(function(){var L=document.getElementById("keylist"),F=document.getElementById("keyform"),T=document.getElementById("keytok"),E=document.getElementById("keyerr");function pad(n){return ("0"+n).slice(-2)}function day(da){var p=da.slice(1).split(".."),d=p[0].split("."),t=(p[1]||"").split(".");return d[0]+"-"+pad(d[1])+"-"+pad(d[2])+(p[1]?" "+pad(t[0])+":"+pad(t[1])+" UTC":"")}function row(k){var li=document.createElement("li"),a=document.createElement("div"),b=document.createElement("div"),x=document.createElement("button"),s=k.scope;a.textContent=k.name+" (writes as "+k.by+")";b.className="muted";b.textContent="memory "+s.memory+", pages "+s.pages+(s.web?", reads other ships":"")+". Made "+day(k.made)+(k.used?", last used "+day(k.used):", never used");x.type="button";x.className="btn";x.textContent="Revoke";x.onclick=function(){x.disabled=true;fetch("/apps/lattice/key-revoke?id="+encodeURIComponent(k.id),{method:"POST"}).then(load,load)};li.append(a,b,x);return li}function load(){fetch("/apps/lattice/keys").then(function(r){return r.json()}).then(function(ks){L.replaceChildren.apply(L,ks.map(row));if(!ks.length){var li=document.createElement("li");li.className="muted";li.textContent="No keys yet.";L.append(li)}}).catch(function(){E.textContent="could not load keys"})}F.onsubmit=function(ev){ev.preventDefault();E.textContent="";T.hidden=true;var f=F.elements;var body={name:f.kname.value.trim(),by:f.kby.value.trim(),scope:{memory:f.kmem.value,pages:f.kpages.value,web:f.kweb.checked}};fetch("/apps/lattice/key-mint",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||r.status);return j})}).then(function(j){T.querySelector("code").textContent=j.token;T.hidden=false;F.reset();load()}).catch(function(e){E.textContent="could not make the key: "+e.message})};load()})();</script>'
+    '<script>(function(){var L=document.getElementById("keylist"),F=document.getElementById("keyform"),T=document.getElementById("keytok"),E=document.getElementById("keyerr");function pad(n){return ("0"+n).slice(-2)}function day(da){var p=da.slice(1).split(".."),d=p[0].split("."),t=(p[1]||"").split(".");return d[0]+"-"+pad(d[1])+"-"+pad(d[2])+(p[1]?" "+pad(t[0])+":"+pad(t[1])+" UTC":"")}function row(k){var li=document.createElement("li"),a=document.createElement("div"),b=document.createElement("div"),x=document.createElement("button"),s=k.scope;a.textContent=k.name+" (writes as "+k.by+")";b.className="muted";b.textContent="memory "+s.memory+", pages "+s.pages+(s.web?", reads other ships":"")+(s.sensitive?", reads sensitive memories":"")+". Made "+day(k.made)+(k.used?", last used "+day(k.used):", never used")+(k.tainted_until?". It read sensitive memories, so until "+day(k.tainted_until)+" it writes only sensitive ones":"");x.type="button";x.className="btn";x.textContent="Revoke";x.onclick=function(){x.disabled=true;fetch("/apps/lattice/key-revoke?id="+encodeURIComponent(k.id),{method:"POST"}).then(load,load)};li.append(a,b,x);return li}function load(){fetch("/apps/lattice/keys").then(function(r){return r.json()}).then(function(ks){L.replaceChildren.apply(L,ks.map(row));if(!ks.length){var li=document.createElement("li");li.className="muted";li.textContent="No keys yet.";L.append(li)}}).catch(function(){E.textContent="could not load keys"})}F.onsubmit=function(ev){ev.preventDefault();E.textContent="";T.hidden=true;var f=F.elements;var body={name:f.kname.value.trim(),by:f.kby.value.trim(),scope:{memory:f.kmem.value,pages:f.kpages.value,web:f.kweb.checked,sensitive:f.ksen.checked}};fetch("/apps/lattice/key-mint",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||r.status);return j})}).then(function(j){T.querySelector("code").textContent=j.token;T.hidden=false;F.reset();load()}).catch(function(e){E.textContent="could not make the key: "+e.message})};load()})();</script>'
     ::  backup: manual export/restore for everyone, plus (desktop only) the
     ::  scheduled backups. The whole UI is rendered by ui-app/vault.js's
     "<h2>Commons mirror</h2>"

@@ -523,12 +523,12 @@
       ?~(sup ~ ~[['superseded_by' s+u.sup]])
   ==
 ::  +recall-json: the hits for a task, plus what the best three link to:
-::  one hop, live entries not already shown, five at most. The recall tool
-::  and the /know-recall route both answer this.
+::  one hop, live entries not already shown and not sensitive, five at
+::  most. hs is the task's +search over es. The recall tool and the
+::  /know-recall route both answer this.
 ++  recall-json
-  |=  [es=(map path know-entry) tc=term-cache task=@t k=@ud]
+  |=  [es=(map path know-entry) hs=(list hit) task=@t k=@ud]
   ^-  json
-  =/  hs=(list hit)  (search ~(tap by es) tc task |)
   =/  shown=(set path)  (silt (turn (scag k hs) |=(h=hit key.h)))
   =/  hops=(list [to=path via=path])
     %+  scag  5
@@ -543,6 +543,7 @@
           !(~(has in shown) t)
           !(~(has in seen) t)
           =(~ (superseded (~(got by es) t)))
+          !(sensitive (~(got by es) t))
       ==
     $(top t.top, out (weld (flop (turn ls |=(t=path [t key.i.top]))) out), seen (~(gas in seen) ls))
   %-  pairs:enjs:format
@@ -611,10 +612,11 @@
     core-text
   ==
 ::  +stamp: the body a save stores: the prose under the old entry's front
-::  matter, created kept (or set), author and source set when given, and
-::  verified today, by the author when there is one.
+::  matter, created kept (or set), author and source set when given,
+::  verified today (by the author when there is one), and marked sensitive
+::  or not as sens says.
 ++  stamp
-  |=  [old=(unit know-entry) prose=@t author=@t source=@t now=@da]
+  |=  [old=(unit know-entry) prose=@t author=@t source=@t now=@da sens=?]
   ^-  @t
   =/  meta=(list [k=@t v=@t])  ?~(old ~ meta:(front body.u.old))
   =?  meta  =(~ (meta-get meta 'created'))  (meta-put meta 'created' (iso-day ?~(old now updated.u.old)))
@@ -622,7 +624,15 @@
   =?  meta  !=('' source)  (meta-put meta 'source' source)
   =.  meta  (meta-put meta 'verified' (iso-day now))
   =?  meta  !=('' author)  (meta-put meta 'verified-by' author)
+  =.  meta  (meta-put meta 'sensitive' ?:(sens 'yes' ''))
   (with-front meta prose)
+::  +sensitive: marked `sensitive: yes` in its front matter. Only the owner
+::  and keys cleared for it see such an entry (docs/agent-knowledge.md).
+++  sensitive
+  |=  e=know-entry
+  ^-  ?
+  =/  v=(unit @t)  (meta-get meta:(front body.e) 'sensitive')
+  ?~(v | |(=('yes' u.v) =('true' u.v)))
 ::  ==  Lint: what a periodic tidy would fix, proposed, never applied here.
 ::
 ::  stale is an entry that names code (a file, an arm, a port, a commit) and
@@ -641,6 +651,21 @@
   ==
 ++  stale-days  ^-(@ud 30)
 ++  big-bytes  ^-(@ud 4.000)
+::  +lint-without: the report with every item about a hidden entry left
+::  out. Run over the whole store first, so a link to a hidden entry is
+::  not reported as broken (and then "fixed" by deleting it).
+++  lint-without
+  |=  [l=lint hid=(set path)]
+  ^-  lint
+  =/  in  |=(k=path (~(has in hid) k))
+  :*  (skip dups.l |=([a=path b=path *] |((in a) (in b))))
+      (skip broken.l |=([f=path *] (in f)))
+      (skip bad-super.l |=([k=path *] (in k)))
+      (skip untagged.l in)
+      (skip big.l |=([k=path *] (in k)))
+      (skip stale.l |=([k=path *] (in k)))
+      (skip orphans.l in)
+  ==
 ++  names-code
   |=  body=@t
   ^-  ?

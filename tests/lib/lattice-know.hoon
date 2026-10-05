@@ -263,13 +263,53 @@
 ::  a save keeps created, sets author and source, and stamps verified
 ++  test-stamp
   =/  old=know-entry  ['---\0acreated: 2025-01-02\0aauthor: someone\0a---\0aold fact' ~2026.1.1 ~ ~]
-  =/  m  meta:(front (stamp `old 'new fact' 'claude-laptop' 'agent' ~2026.10.4))
+  =/  m  meta:(front (stamp `old 'new fact' 'claude-laptop' 'agent' ~2026.10.4 |))
   ;:  weld
     (expect-eq !>(`(unit @t)``'2025-01-02') !>((meta-get m 'created')))
     (expect-eq !>(`(unit @t)``'claude-laptop') !>((meta-get m 'author')))
     (expect-eq !>(`(unit @t)``'agent') !>((meta-get m 'source')))
     (expect-eq !>(`(unit @t)``'2026-10-04') !>((meta-get m 'verified')))
-    (expect-eq !>('new fact') !>(rest:(front (stamp `old 'new fact' '' '' ~2026.10.4))))
-    (expect-eq !>(`(unit @t)``'2026-10-04') !>((meta-get meta:(front (stamp ~ 'x' '' '' ~2026.10.4)) 'created')))
+    (expect-eq !>('new fact') !>(rest:(front (stamp `old 'new fact' '' '' ~2026.10.4 |))))
+    (expect-eq !>(`(unit @t)``'2026-10-04') !>((meta-get meta:(front (stamp ~ 'x' '' '' ~2026.10.4 |)) 'created')))
+  ==
+::  a sensitive entry says so in its front matter; a save can mark or clear it
+++  test-sensitive
+  =/  plain=know-entry  ['a fact' ~2026.1.1 ~ ~]
+  =/  marked=know-entry  ['---\0asensitive: yes\0a---\0aa fact' ~2026.1.1 ~ ~]
+  =/  on=@t  (stamp `plain 'a fact' '' '' ~2026.10.4 &)
+  =/  off=@t  (stamp `marked 'a fact' '' '' ~2026.10.4 |)
+  ;:  weld
+    (expect-eq !>(|) !>((sensitive plain)))
+    (expect-eq !>(&) !>((sensitive marked)))
+    (expect-eq !>(&) !>((sensitive [on ~2026.1.1 ~ ~])))
+    (expect-eq !>(|) !>((sensitive [off ~2026.1.1 ~ ~])))
+    (expect-eq !>('a fact') !>(rest:(front on)))
+  ==
+::  recall never links to a sensitive entry, even for a cleared reader
+++  test-recall-hides-sensitive-links
+  =/  es=(map path know-entry)
+    %-  malt
+    ^-  (list [path know-entry])
+    :~  [/a ['zebra quokka, see [[/b]] and [[/c]]' ~2026.1.1 ~ ~]]
+        [/b ['---\0asensitive: yes\0a---\0ahidden' ~2026.1.1 ~ ~]]
+        [/c ['shown' ~2026.1.1 ~ ~]]
+    ==
+  =/  hs  (search ~(tap by es) ~ 'zebra quokka' |)
+  =/  out=tape  (trip (en:json:html (recall-json es hs 'zebra quokka' 8)))
+  ;:  weld
+    (expect !>(?=(^ (find "\"/c\"" out))))
+    (expect !>(?=(~ (find "\"/b\"" out))))
+  ==
+::  a keyed tidy leaves out hidden entries, and a link to one is not broken
+++  test-lint-without
+  =/  es=(list [key=path e=know-entry])
+    :~  [/a ['see [[/h]]' ~2026.1.1 ~ ~]]
+        [/h ['---\0asensitive: yes\0a---\0ahidden' ~2026.1.1 ~ ~]]
+    ==
+  =/  l  (lint-without (lint-run es ~2026.1.2) (sy ~[/h]))
+  ;:  weld
+    (expect-eq !>(`(list [path path])`~) !>(broken.l))
+    (expect-eq !>(|) !>((lien untagged.l |=(k=path =(k /h)))))
+    (expect-eq !>(|) !>((lien orphans.l |=(k=path =(k /h)))))
   ==
 --

@@ -23,12 +23,25 @@ A key is for a client that does not hold your cookie. The design and the wire fo
   - `memory`: `none`; `read` (search, recall, index, read, list, explore, tags, history, lint); or `write` (also save, verify, supersede, tag, untag).
   - `pages`: `none`; `read` (page-search, page-source, page-backlinks, page-tree); or `write` (also page-save, private pages only).
   - `web`: reading pages other ships publish, through `fetch`.
+  - `sensitive`: clearance to read memories marked sensitive ([Sensitive memories](#sensitive-memories)). Off unless you tick it.
   - Nothing else is reachable with a key. Publishing, sharing, deleting, moving, settings and the keys themselves stay yours, whatever the scope. `+wants` in `lib/lattice-keys.hoon` is the whole list.
 - **Identity.** A key writes as its `by`, with `source: agent`, whatever the request says, so an agent cannot sign a memory as you. Verifying stamps `verified-by` the same way.
 - **Private pages only.** A key may write a page only when that page is private and no sharing group reaches it, on the page or on a folder above it. Saving a published page republishes it, and a page made inside a shared folder is shared, so both are refused.
+- **Sensitive memories** stay out of reach of keys without clearance. See below.
 - **Revoking.** The list in Settings shows when each key was made and last used, to the hour. Revoke a key there, and its next request fails.
 
-Owner routes: `GET /keys`, `POST /key-mint` (JSON `{name, by, scope: {memory, pages, web}}`), `POST /key-revoke?id=`.
+Owner routes: `GET /keys`, `POST /key-mint` (JSON `{name, by, scope: {memory, pages, web, sensitive}}`), `POST /key-revoke?id=`.
+
+## Sensitive memories
+
+Some memories should reach only the agents you trust with them: health, money, a family matter. Mark such an entry sensitive, and only you and keys cleared for sensitive memories can read it.
+
+- **Marking.** Put `sensitive: yes` in the entry's front matter (edit it in the knowledge view), or save it with `sensitive=1`. Any key may mark an entry sensitive. Only you can clear the mark (remove the line, or save with `sensitive=0`). A key's save never lowers it.
+- **A key without clearance** never sees a sensitive entry. It is absent from the index, lists, tags, explore and the tidy, from search and recall results, from the entries recall links to, and from duplicate warnings. Reading, history, tagging, verifying or superseding it answers "not found". Saving over its key is refused.
+- **A cleared key** finds sensitive entries only by asking: search, recall, or reading one by key. Listings never show them, so loading the index at session start exposes nothing, and a core rule marked sensitive does not load at session start for any key. The plugins' automatic recall passes `sensitive=0`, which leaves sensitive entries out, so it never taints a key either.
+- **No passing it on.** When a cleared key receives sensitive text, lattice records it, and for the next 12 hours that key's own words go only on sensitive memories. New entries it saves are sensitive and come back marked (`"sensitive": true`). It may not edit, tag or supersede ordinary entries, since an edited one would silently disappear for every other key, and it may not write pages, since pages are never sensitive. So an agent cannot copy or paraphrase a sensitive memory into a place a key without clearance can read. The key list in Settings shows when the window ends.
+- **Clearance is set when a key is made.** To clear an agent that already has a key, make a new key with clearance and give it to the agent.
+- **What it does not do.** It decides what a key can read and where its writes land, which lattice enforces itself. It cannot stop a cleared agent from repeating what it read in its reply to you, or in an outside tool such as email. The text also reaches the agent's model provider, like everything an agent reads. Your login cookie, and grubbery's MCP tools that use it, see everything.
 
 ## How an agent uses memory
 
@@ -81,13 +94,13 @@ All under `/apps/lattice/`. GET reads, POST writes, parameters go in the query s
 | Route | Parameters | Does | Key scope |
 |---|---|---|---|
 | `GET know-index` | `brief=1`, `cap=` | the session index as plain text. `brief` counts each area instead of listing keys; `cap` bounds the core text in bytes (14,000) | memory read |
-| `GET know-recall` | `task`, `k` (8) | ranked hits for a task, plus entries the best three link to | memory read |
-| `GET know-search` | `q`, `k` (10), `superseded=1` | ranked search with snippets; `"a phrase"` must appear verbatim | memory read |
+| `GET know-recall` | `task`, `k` (8), `sensitive=0` | ranked hits for a task, plus entries the best three link to | memory read |
+| `GET know-search` | `q`, `k` (10), `superseded=1`, `sensitive=0` | ranked search with snippets; `"a phrase"` must appear verbatim. `sensitive=0` leaves sensitive entries out | memory read |
 | `GET know-read` | `key` | one entry | memory read |
 | `GET know-list`, `know-tags`, `know-explore` | `tags`, `match=any\|all`, `q` | listings, without bodies | memory read |
 | `GET know-history`, `know-read-at` | `key`, `rev` | revision history | memory read |
 | `GET know-lint` | | what a tidy would fix | memory read |
-| `POST know-save` | `key`, body; `author`, `source`, `expected_updated`, `force_new=1` | create or update. With none of the four, the body is stored verbatim (the editor's save). A stale `expected_updated` or a likely duplicate answers 409 | memory write |
+| `POST know-save` | `key`, body; `author`, `source`, `expected_updated`, `force_new=1`, `sensitive=1` (or `0`, owner only) | create or update. With none of these, the body is stored verbatim (the editor's save). A stale `expected_updated` or a likely duplicate answers 409 | memory write |
 | `POST know-verify` | `key`, `author` | the entry still holds | memory write |
 | `POST know-supersede` | `old`, `new` | `old` is replaced by `new` (empty `new` clears it) | memory write |
 | `POST know-tag`, `know-untag` | `key`, `tag` | cross-cutting tags | memory write |
