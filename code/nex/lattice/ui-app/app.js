@@ -850,11 +850,13 @@
   const st = (msg, ok = true) => {
     spinner.classList.remove('on');          // any plain status ends the spin
     status.textContent = msg;
+    status.title = msg;                      // in full, when the bar cuts it short
     status.style.color = ok ? '' : '#c0392b';
   };
   // stWork: a status that keeps spinning until the next plain st()
   const stWork = (msg) => {
     status.textContent = msg;
+    status.title = msg;
     status.style.color = '';
     spinner.classList.add('on');
   };
@@ -3142,7 +3144,10 @@
     if (grubPrevKind === null) grubPrevKind = pkind.value;
     current = null;
     curFolder = null;
-    pname.value = (grubShip ? grubShip + ' ' : '') + p;
+    // a shared lattice page reads as "~ship: its/name", not its whole ball
+    // path; the name field is only a label here (Save goes by grubPath)
+    const pg = /\/page\/(.+)\/code$/.exec(p);
+    pname.value = grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p;
     pname.readOnly = true;
     $('histsec').hidden = true;
     $('linksec').hidden = true;
@@ -3173,7 +3178,7 @@
     if ([...pkind.options].some((o) => o.value === mk)) pkind.value = mk;
     curKind = mk;
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
-       : grubShip ? 'remote grub on ' + grubShip + ' — saves need their permission'
+       : grubShip ? 'on ' + grubShip + ': saves need its permission'
        : 'grub ' + blot + ' — manual save (Cmd+S), no autosave here');
   }
   async function saveGrub() {
@@ -6980,7 +6985,24 @@
       label.textContent = v || 'no page open';
       label.className = v ? '' : 'muted';
       label.title = v ? v + ' · ' + (pkind.value || '') : '';
+      // The label floats over the bar's centre, so its width is measured,
+      // not guessed: as wide as it can be while centred and clear of the
+      // right-hand buttons and of the status line's start. The status line,
+      // growing in the flow beside it, then stops where the label begins.
+      const bar = label.parentElement.getBoundingClientRect();
+      const mid = bar.left + bar.width / 2;
+      let right = bar.right;
+      for (let e = label.parentElement.querySelector('.grow')?.nextElementSibling; e; e = e.nextElementSibling) {
+        const r = e.getBoundingClientRect();
+        if (r.width) right = Math.min(right, r.left);
+      }
+      const left = status.getBoundingClientRect().left;
+      const half = Math.max(0, Math.min(mid - left, right - mid) - 12);
+      label.style.maxWidth = 'min(' + (2 * half) + 'px, 60ch)';
+      const room = label.getBoundingClientRect().left - left - 12;
+      status.style.maxWidth = Math.max(0, room) + 'px';
     };
+    addEventListener('resize', paint);
     paint();
     pname.addEventListener('input', paint);
     pname.addEventListener('change', paint);

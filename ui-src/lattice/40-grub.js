@@ -25,7 +25,10 @@
     if (grubPrevKind === null) grubPrevKind = pkind.value;
     current = null;
     curFolder = null;
-    pname.value = (grubShip ? grubShip + ' ' : '') + p;
+    // a shared lattice page reads as "~ship: its/name", not its whole ball
+    // path; the name field is only a label here (Save goes by grubPath)
+    const pg = /\/page\/(.+)\/code$/.exec(p);
+    pname.value = grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p;
     pname.readOnly = true;
     $('histsec').hidden = true;
     $('linksec').hidden = true;
@@ -56,7 +59,7 @@
     if ([...pkind.options].some((o) => o.value === mk)) pkind.value = mk;
     curKind = mk;
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
-       : grubShip ? 'remote grub on ' + grubShip + ' — saves need their permission'
+       : grubShip ? 'on ' + grubShip + ': saves need its permission'
        : 'grub ' + blot + ' — manual save (Cmd+S), no autosave here');
   }
   async function saveGrub() {

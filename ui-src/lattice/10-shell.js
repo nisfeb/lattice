@@ -193,11 +193,13 @@
   const st = (msg, ok = true) => {
     spinner.classList.remove('on');          // any plain status ends the spin
     status.textContent = msg;
+    status.title = msg;                      // in full, when the bar cuts it short
     status.style.color = ok ? '' : '#c0392b';
   };
   // stWork: a status that keeps spinning until the next plain st()
   const stWork = (msg) => {
     status.textContent = msg;
+    status.title = msg;
     status.style.color = '';
     spinner.classList.add('on');
   };
