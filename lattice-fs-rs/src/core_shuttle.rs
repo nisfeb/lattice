@@ -397,7 +397,13 @@ fn cache_accounting_survives_concurrent_insert_evict_and_swap() {
             // `watching` puts the watch thread's stale marking into the mix,
             // racing every writer of read_cache/read_cache_bytes
             let ship = Ship::watching(&[("note", "old"), ("other", "hello")]);
-            let fs = warmed(ship.clone());
+            // Not warmed(): this ship's watch bumps write_gen twice, and a
+            // bump that lands mid-dump rightly discards the warm thread's
+            // swap, so waiting on that swap alone can wait forever (it did,
+            // for every seed tried). The cold path retries past both bumps
+            // and always ends warm.
+            let fs = Arc::new(GrubberyFs::new(ship.clone() as Arc<dyn Projection>));
+            fs.ensure_fresh();
 
             let mut hs = Vec::new();
             {
