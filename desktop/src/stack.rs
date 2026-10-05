@@ -46,18 +46,14 @@ fn bound(status: u16) -> bool {
     status != UNBOUND && status != 404
 }
 
-/// One JSON-RPC tools/call against the ship's %mcp endpoint.
+/// One JSON-RPC request against the ship's %mcp endpoint, returning its
+/// `result`.
 ///
 /// The transport answers as an SSE stream ("data: {json}") even for a single
-/// reply, and it requires the Accept header. Without it the server 406s. A
-/// tool that fails reports `isError` inside a 200, so the HTTP status alone
-/// says nothing about whether the work happened.
-pub fn mcp_call(base: &str, tool: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
-    let body = serde_json::json!({
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": tool, "arguments": args}
-    })
-    .to_string();
+/// reply, and it requires the Accept header. Without it the server 406s.
+fn mcp_rpc(base: &str, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    let body = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+        .to_string();
     let req = crate::proxy::with_cookie(
         crate::proxy::agent()
             .post(&format!("{}/mcp", base.trim_end_matches('/')))
@@ -85,7 +81,13 @@ pub fn mcp_call(base: &str, tool: &str, args: serde_json::Value) -> Result<serde
     if let Some(e) = v.get("error") {
         return Err(format!("%mcp: {e}"));
     }
-    let result = v.get("result").cloned().unwrap_or(serde_json::Value::Null);
+    Ok(v.get("result").cloned().unwrap_or(serde_json::Value::Null))
+}
+
+/// One tools/call. A tool that fails reports `isError` inside a 200, so the
+/// HTTP status alone says nothing about whether the work happened.
+pub fn mcp_call(base: &str, tool: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+    let result = mcp_rpc(base, "tools/call", serde_json::json!({"name": tool, "arguments": args}))?;
     if result.get("isError").and_then(|b| b.as_bool()) == Some(true) {
         return Err(format!(
             "%mcp {tool}: {}",
@@ -103,26 +105,16 @@ fn get_status(agent: &ureq::Agent, url: &str) -> Result<u16, String> {
     }
 }
 
-/// Real MCP `initialize` handshake, not just "something answered /mcp".
-/// Returns serverInfo.name on success. The Accept header is required by the
-/// MCP transport. Without it the server answers 406 and a status-only probe
-/// would call that "present" on the strength of an error.
-fn mcp_handshake(agent: &ureq::Agent, base: &str) -> Option<String> {
-    let req = crate::proxy::with_cookie(
-        agent
-            .post(&format!("{base}/mcp"))
-            .set("content-type", "application/json")
-            .set("accept", "application/json, text/event-stream"),
-    );
-    // ponytail: hand-rolled body string rather than enabling ureq's `json`
-    // feature for one request. The payload is fixed and has nothing to escape.
-    let body = format!(
-        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2024-11-05","capabilities":{{}},"clientInfo":{{"name":"lattice-desktop","version":"{}"}}}}}}"#,
-        env!("CARGO_PKG_VERSION")
-    );
-    let text = req.send_string(&body).ok()?.into_string().ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    Some(v.get("result")?.get("serverInfo")?.get("name")?.as_str()?.to_string())
+/// Real MCP `initialize` handshake, not just "something answered /mcp": a
+/// status-only probe would call a 406 "present" on the strength of an error.
+/// Returns serverInfo.name on success.
+fn mcp_handshake(base: &str) -> Option<String> {
+    let params = serde_json::json!({
+        "protocolVersion": "2024-11-05", "capabilities": {},
+        "clientInfo": {"name": "lattice-desktop", "version": env!("CARGO_PKG_VERSION")}
+    });
+    let r = mcp_rpc(base, "initialize", params).ok()?;
+    Some(r.get("serverInfo")?.get("name")?.as_str()?.to_string())
 }
 
 pub fn probe(base: &str) -> Stack {
@@ -141,26 +133,13 @@ pub fn probe(base: &str) -> Stack {
     if let Ok(s) = get_status(agent, &format!("{base}/apps/lattice")) {
         out.lattice = bound(s);
     }
-    out.mcp_server = mcp_handshake(agent, base);
+    out.mcp_server = mcp_handshake(base);
     out.mcp = out.mcp_server.is_some();
     out
 }
 
 #[tauri::command]
 pub async fn stack_status(app: tauri::AppHandle) -> Stack {
-    // LATTICE_FAKESTACK=mcp|none|all: report a synthetic ship so the install
-    // UI can be exercised without breaking a real one. Test hook only, same
-    // family as the LATTICE_AUTO* hooks in main.rs.
-    if let Ok(f) = std::env::var("LATTICE_FAKESTACK") {
-        return Stack {
-            checked: true,
-            mcp: f != "none",
-            grubbery: f == "all",
-            lattice: f == "all",
-            mcp_server: (f != "none").then(|| "~fake urbit mcp server".to_string()),
-            error: None,
-        };
-    }
     let cfg = crate::config::load(&app);
     if cfg.url.is_empty() {
         return Stack::default();

@@ -292,20 +292,10 @@ fn relay_response(c: &mut TcpStream, resp: ureq::Response) -> std::io::Result<()
         }
     }
     write!(c, "Connection: close\r\n\r\n")?;
-    // stream, flushed per chunk so SSE events arrive as they happen
-    let mut src = resp.into_reader();
-    let mut buf = [0u8; 16 * 1024];
-    loop {
-        match src.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                if c.write_all(&buf[..n]).is_err() {
-                    break;
-                }
-                c.flush().ok();
-            }
-        }
-    }
+    // c is an unbuffered socket, so io::copy hands each chunk on as it
+    // arrives and SSE events go out as they happen. A read or write error
+    // ends the relay, which is all the old loop did with one too.
+    let _ = std::io::copy(&mut resp.into_reader(), c);
     Ok(())
 }
 

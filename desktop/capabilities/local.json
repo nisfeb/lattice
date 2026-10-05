@@ -10,7 +10,6 @@
     "allow-install-grubbery",
     "core:event:default",
     "allow-connection-status",
-    "allow-get-config",
     "allow-go-home",
     "allow-pick-upload",
     "allow-status",
