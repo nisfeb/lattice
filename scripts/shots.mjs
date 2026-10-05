@@ -1,20 +1,15 @@
 // Rendered-verification shots: dark + light desktop, dark mobile.
-import { readFileSync } from 'fs';
-import { homedir } from 'os';
-const puppeteer = (await import('puppeteer-core')).default;
+// Env: LATTICE_URL, LATTICE_COOKIE, CHROME (as ui-matrix.mjs), SHOT_DIR
+import { shipEnv, launchBrowser, openPage } from './lib/harness.mjs';
 
-const URL = (process.env.LATTICE_URL || 'http://localhost:8080').replace(/\/$/, '');
-const APP = URL + '/apps/lattice/app';
-const cookie = readFileSync(homedir() + '/.config/lattice-fs/cookie', 'utf8').trim();
-const [ckName, ...ckRest] = cookie.split('=');
-const host = new globalThis.URL(URL).hostname;
+const env = shipEnv();
+const APP = env.app;
 const out = process.env.SHOT_DIR || '/tmp';
 
-const browser = await puppeteer.launch({ executablePath: '/usr/bin/chromium',
-  headless: 'new', args: ['--no-sandbox'] });
-const page = await browser.newPage();
-await page.setCookie({ name: ckName, value: ckRest.join('='), domain: host, path: '/' });
-page.on('pageerror', (e) => { console.error('PAGE ERROR: ' + e.message); process.exitCode = 1; });
+const browser = await launchBrowser();
+const page = await openPage(browser, env, {
+  onPageError: (e) => { console.error('PAGE ERROR: ' + e.message); process.exitCode = 1; },
+});
 
 const wait = (fn) => page.waitForFunction(fn, { timeout: 60000 });
 const shots = [

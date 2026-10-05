@@ -12,36 +12,18 @@
 //  editor's side of the contract. Pandoc itself is covered by the Rust tests
 //  in desktop/src/pandoc.rs.
 //
-//  Usage: LATTICE_UI=http://localhost:8081 node scripts/ui-texpreview.mjs
-import { readFileSync } from 'fs';
-import { homedir } from 'os';
+//  Usage: LATTICE_URL=http://localhost:8081 LATTICE_COOKIE=~/.config/lattice-fs/nec-cookie \
+//           node scripts/ui-texpreview.mjs
+import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harness.mjs';
 
-let puppeteer;
-try { puppeteer = (await import('puppeteer-core')).default; }
-catch { console.error('puppeteer-core missing: npm i --no-save puppeteer-core'); process.exit(2); }
-
-const BASE = (process.env.LATTICE_UI || 'http://localhost:8080').replace(/\/$/, '');
-const CKF = process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/nec-cookie';
-const CHROME = process.env.CHROME || '/usr/bin/chromium';
+const env = shipEnv();
 const NAME = 'texpreview-probe-' + process.pid;
 const TEX = '\\documentclass{article}\n\\begin{document}\nHello $x^2$.\n\\end{document}';
 const RENDERED = '<p>STUB RENDERED OUTPUT</p>';
 
-let fails = 0;
-const check = (n, ok, extra) => {
-  console.log((ok ? '  ok   - ' : '  FAIL - ') + n + (ok ? '' : '  ' + (extra || '')));
-  if (!ok) fails++;
-};
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-const cookie = readFileSync(CKF, 'utf8').trim();
-const [cn, ...cr] = cookie.split('=');
-const browser = await puppeteer.launch({
-  executablePath: CHROME, args: ['--no-sandbox', '--disable-dev-shm-usage'],
-});
-const page = await browser.newPage();
-await page.setViewport({ width: 1400, height: 900 });
-await page.setCookie({ name: cn, value: cr.join('='), domain: new URL(BASE).hostname, path: '/' });
+const check = makeCheck();
+const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
+const page = await openPage(browser, env, { viewport: { width: 1400, height: 900 } });
 
 //  a pandoc that counts its calls and can be told to fail
 await page.evaluateOnNewDocument((out) => {
@@ -68,7 +50,7 @@ await page.evaluateOnNewDocument((out) => {
 }, RENDERED);
 
 try {
-  await page.goto(BASE + '/apps/lattice/app', { waitUntil: 'networkidle2', timeout: 90000 });
+  await page.goto(env.app, { waitUntil: 'networkidle2', timeout: 90000 });
   await page.waitForFunction(
     () => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0,
     { timeout: 90000 });
@@ -160,5 +142,4 @@ try {
     { method: 'POST', credentials: 'same-origin' }).catch(() => {}), NAME).catch(() => {});
   await browser.close();
 }
-console.log(fails ? '\n' + fails + ' FAILED' : '\nall checks passed');
-process.exit(fails ? 1 : 0);
+check.done();

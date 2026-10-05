@@ -7,35 +7,16 @@
 //  and lets the fetch correct it, so the listing changes with the click.
 //
 //  Usage: node scripts/ui-modeswitch.mjs      (defaults to the harness on :8080)
-import { readFileSync } from 'fs';
-import { homedir } from 'os';
+import { shipEnv, launchBrowser, openPage, makeCheck } from './lib/harness.mjs';
 
-const BASE = process.env.LATTICE_UI || 'http://localhost:8080';
-const CKF = process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/cookie';
+const env = shipEnv();
 //  generous against a remote pier: the round trip is seconds; a paint is not
 const BUDGET = +(process.env.BUDGET || 250);
 
-let fails = 0;
-const check = (m, c, d) => {
-  console.log((c ? '  ok   - ' : '  FAIL - ') + m + (c || !d ? '' : ' (' + d + ')'));
-  if (!c) fails++;
-};
-
-let puppeteer;
-try { puppeteer = (await import('puppeteer-core')).default; }
-catch { console.error('puppeteer-core missing: npm i --no-save puppeteer-core'); process.exit(2); }
-
-const ck = readFileSync(CKF, 'utf8').trim();
-const [cn, ...cr] = ck.split('=');
-const browser = await puppeteer.launch({
-  executablePath: process.env.CHROME || '/usr/bin/chromium',
-  headless: 'new',
-  args: ['--no-sandbox'],
-});
-const p = await browser.newPage();
-await p.setViewport({ width: 1400, height: 800 });
-await p.setCookie({ name: cn, value: cr.join('='), domain: new globalThis.URL(BASE).hostname, path: '/' });
-await p.goto(BASE + '/apps/lattice/app', { waitUntil: 'domcontentloaded', timeout: 90000 });
+const check = makeCheck();
+const browser = await launchBrowser();
+const p = await openPage(browser, env, { viewport: { width: 1400, height: 800 } });
+await p.goto(env.app, { waitUntil: 'domcontentloaded', timeout: 90000 });
 await p.waitForFunction(() => document.querySelectorAll('#treelist a.pg').length > 0, { timeout: 90000 });
 await new Promise((r) => setTimeout(r, 9000));   // the SW takes over and reloads within seconds of a fresh load
 
@@ -71,5 +52,4 @@ check('pages -> know, second visit: the memory listing is back with the click', 
 check('...and it is the memory listing', (await listing()) === memories);
 
 await browser.close();
-console.log(fails ? `\n${fails} failed` : '\nall passed');
-process.exit(fails ? 1 : 0);
+check.done();

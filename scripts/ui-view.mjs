@@ -12,38 +12,19 @@
 //  its own one-pane-at-a-time model).
 //
 //  Usage: node scripts/ui-view.mjs      (defaults to the harness ship on :8080)
-import { readFileSync } from 'fs';
-import { homedir } from 'os';
+import { shipEnv, launchBrowser, openPage, makeCheck } from './lib/harness.mjs';
 
-const BASE = process.env.LATTICE_UI || 'http://localhost:8080';
-const CKF = process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/cookie';
-const APP = BASE + '/apps/lattice/app';
-
-let fails = 0;
-const check = (m, c, d) => {
-  console.log((c ? '  ok   - ' : '  FAIL - ') + m + (c || !d ? '' : ' (' + d + ')'));
-  if (!c) fails++;
-};
+const env = shipEnv();
+const APP = env.app;
+const check = makeCheck();
 
 // (the menu-id contract is checked ship-free in scripts/desktop-commands.mjs)
 
 // ── 2. behaviour, against a ship ──────────────────────────────────────────
-let puppeteer;
-try { puppeteer = (await import('puppeteer-core')).default; }
-catch { console.error('puppeteer-core missing: npm i --no-save puppeteer-core'); process.exit(2); }
-
-const ck = readFileSync(CKF, 'utf8').trim();
-const [cn, ...cr] = ck.split('=');
-const browser = await puppeteer.launch({
-  executablePath: process.env.CHROME || '/usr/bin/chromium',
-  headless: 'new',
-  args: ['--no-sandbox'],
-});
+const browser = await launchBrowser();
 
 const boot = async (width, pre) => {
-  const p = await browser.newPage();
-  await p.setViewport({ width, height: 900 });
-  await p.setCookie({ name: cn, value: cr.join('='), domain: new globalThis.URL(BASE).hostname, path: '/' });
+  const p = await openPage(browser, env, { viewport: { width, height: 900 } });
   if (pre) await p.evaluateOnNewDocument((kv) => { for (const k in kv) localStorage[k] = kv[k]; }, pre);
   await p.goto(APP, { waitUntil: 'domcontentloaded', timeout: 90000 });
   await p.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0,
@@ -149,5 +130,4 @@ check('phone: the view control is not in the bar',
 await phone.close();
 
 await browser.close();
-console.log(fails ? `\n${fails} failed` : '\nall passed');
-process.exit(fails ? 1 : 0);
+check.done();

@@ -7,36 +7,19 @@
 // Env:    LATTICE_URL, LATTICE_COOKIE, CHROME   (as ui-matrix.mjs)
 // Never run against production.
 
-import { readFileSync } from 'fs';
-import { homedir } from 'os';
+import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harness.mjs';
 
-let puppeteer;
-try { puppeteer = (await import('puppeteer-core')).default; }
-catch { console.error('puppeteer-core missing: npm i --no-save puppeteer-core'); process.exit(2); }
-
-const URL = (process.env.LATTICE_URL || 'http://localhost:8080').replace(/\/$/, '');
-const COOKIE_FILE = process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/cookie';
-const CHROME = process.env.CHROME || '/usr/bin/chromium';
-const APP = URL + '/apps/lattice/app';
+const env = shipEnv();
+const APP = env.app;
 const RUN = 'uioff' + (process.pid % 100000);
 const A = RUN + '/alpha', B = RUN + '/beta';
 
-const cookie = readFileSync(COOKIE_FILE, 'utf8').trim();
-const [ckName, ...ckRest] = cookie.split('=');
-const host = new globalThis.URL(URL).hostname;
-
-let fails = 0;
-const check = (name, cond, detail) => {
-  if (cond) console.log('  ok   - ' + name);
-  else { console.log('  FAIL - ' + name + (detail ? ' (' + detail + ')' : '')); fails++; }
-};
-
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox'] });
-const page = await browser.newPage();
-page.on('pageerror', (e) => check('page threw: ' + e.message.slice(0, 90), false));
-await page.setCookie({ name: ckName, value: ckRest.join('='), domain: host, path: '/' });
+const check = makeCheck();
+const browser = await launchBrowser();
+const page = await openPage(browser, env, {
+  onPageError: (e) => check('page threw: ' + e.message.slice(0, 90), false),
+});
 const wait = (fn, ...args) => page.waitForFunction(fn, { timeout: 90000 }, ...args);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const qCount = () => page.evaluate(() => new Promise((res) => {
   const rq = indexedDB.open('lattice-offline');
   rq.onsuccess = () => {
@@ -157,8 +140,8 @@ try {
   });
   await wait(() => (document.getElementById('status').textContent || '').includes('waiting to sync'));
   // the concurrent edit, from outside the browser entirely
-  const cr = await fetch(URL + '/apps/lattice/page-save?name=' + encodeURIComponent(B) + '&type=md',
-    { method: 'POST', headers: { cookie }, body: '# beta CONCURRENT' });
+  const cr = await fetch(env.base + '/apps/lattice/page-save?name=' + encodeURIComponent(B) + '&type=md',
+    { method: 'POST', headers: { cookie: env.cookie }, body: '# beta CONCURRENT' });
   const cj = await cr.json();
   check('concurrent edit landed server-side (the rev to be overwritten)',
     cr.ok && cj.rev > 0, JSON.stringify(cj));
@@ -223,8 +206,8 @@ try {
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await wait(() => (document.getElementById('status').textContent || '').includes('offline edits synced'));
   check('know replay drains the queue', await qCount() === 0, 'count=' + await qCount());
-  const kr = await fetch(URL + '/apps/lattice/know-read?key=' + encodeURIComponent(K),
-    { headers: { cookie } });
+  const kr = await fetch(env.base + '/apps/lattice/know-read?key=' + encodeURIComponent(K),
+    { headers: { cookie: env.cookie } });
   const kb = kr.ok ? (await kr.json()).body : 'HTTP ' + kr.status;
   check('the ship has the offline memory (last write wins, no conflict page)',
     kb === 'memory OFFLINE', JSON.stringify(kb));
@@ -244,5 +227,4 @@ try {
   await browser.close();
 }
 
-console.log(fails ? '\n' + fails + ' check(s) FAILED' : '\nall checks passed');
-process.exit(fails ? 1 : 0);
+check.done();

@@ -9,35 +9,18 @@
 //
 //  Needs a ship with at least one folder ("harnessdir" is seeded on ~tyr).
 //
-//  Usage:  LATTICE_UI=http://localhost:8081 \
+//  Usage:  LATTICE_URL=http://localhost:8081 \
 //          LATTICE_COOKIE=~/.config/lattice-fs/cookie node scripts/ui-mobar.mjs
-import { readFileSync } from 'fs';
-import { homedir } from 'os';
+import { shipEnv, launchBrowser, openPage, makeCheck } from './lib/harness.mjs';
 
-const BASE = process.env.LATTICE_UI || 'http://localhost:8080';
-const CKF = (process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/nec-cookie')
-  .replace(/^~/, homedir());
-const APP = BASE + '/apps/lattice/app';
-
-let fails = 0;
-const check = (m, c, d) => {
-  console.log((c ? '  ok   - ' : '  FAIL - ') + m + (c || !d ? '' : ' (' + d + ')'));
-  if (!c) fails++;
-};
-
-const puppeteer = (await import('puppeteer-core')).default;
-const ck = readFileSync(CKF, 'utf8').trim();
-const [cn, ...cr] = ck.split('=');
-const browser = await puppeteer.launch({
-  executablePath: process.env.CHROME || '/usr/bin/chromium',
-  headless: 'new', args: ['--no-sandbox'],
-});
+const env = shipEnv();
+const check = makeCheck();
+const browser = await launchBrowser();
 
 const boot = async (width, height) => {
-  const p = await browser.newPage();
-  await p.setViewport({ width, height, isMobile: width < 820, hasTouch: width < 820 });
-  await p.setCookie({ name: cn, value: cr.join('='), domain: new globalThis.URL(BASE).hostname, path: '/' });
-  await p.goto(APP, { waitUntil: 'domcontentloaded', timeout: 90000 });
+  const p = await openPage(browser, env,
+    { viewport: { width, height, isMobile: width < 820, hasTouch: width < 820 } });
+  await p.goto(env.app, { waitUntil: 'domcontentloaded', timeout: 90000 });
   await p.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0,
     { timeout: 90000 });
   return p;
@@ -176,5 +159,4 @@ check('desktop web: no ⋯', !(await vis(d, 'mmore')));
 await d.close();
 
 await browser.close();
-console.log(fails ? '\n' + fails + ' FAILED' : '\nall checks passed');
-process.exit(fails ? 1 : 0);
+check.done();

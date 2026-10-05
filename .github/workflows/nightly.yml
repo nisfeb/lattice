@@ -279,9 +279,7 @@ jobs:
     name: ui — remaining browser suites (drift guard)
     runs-on: ubuntu-24.04
     env:
-      # harnesses read the ship URL as either LATTICE_UI or LATTICE_URL; set both.
       LATTICE_URL: ${{ secrets.LATTICE_URL }}
-      LATTICE_UI: ${{ secrets.LATTICE_URL }}
       LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
     steps:
       - uses: actions/checkout@v7

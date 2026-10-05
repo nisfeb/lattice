@@ -13,33 +13,17 @@
 // Needs puppeteer-core:  npm i --no-save puppeteer-core
 // Never run against production. It writes two probe pages and deletes them.
 
-import { readFileSync } from 'fs';
-import { homedir } from 'os';
+import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harness.mjs';
 
-let puppeteer;
-try { puppeteer = (await import('puppeteer-core')).default; }
-catch { console.error('puppeteer-core missing: npm i --no-save puppeteer-core'); process.exit(2); }
-
-const URL = (process.env.LATTICE_URL || 'http://localhost:8080').replace(/\/$/, '');
-const COOKIE_FILE = process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/cookie';
-const CHROME = process.env.CHROME || '/usr/bin/chromium';
-const APP = URL + '/apps/lattice/app';
+const env = shipEnv();
+const APP = env.app;
 const RUN = 'uiperf-' + process.pid;
 
-const cookie = readFileSync(COOKIE_FILE, 'utf8').trim();
-const [ckName, ...ckRest] = cookie.split('=');
-const host = new globalThis.URL(URL).hostname;
-
-let fails = 0;
-const check = (name, cond, detail) => {
-  if (cond) console.log('  ok   - ' + name);
-  else { console.log('  FAIL - ' + name + (detail ? ' (' + detail + ')' : '')); fails++; }
-};
-
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox'] });
-const page = await browser.newPage();
-page.on('pageerror', (e) => check('page threw: ' + e.message.slice(0, 90), false));
-await page.setCookie({ name: ckName, value: ckRest.join('='), domain: host, path: '/' });
+const check = makeCheck();
+const browser = await launchBrowser();
+const page = await openPage(browser, env, {
+  onPageError: (e) => check('page threw: ' + e.message.slice(0, 90), false),
+});
 
 // every /apps/lattice request the page makes, in order
 let reqs = [];
@@ -49,7 +33,6 @@ page.on('request', (r) => {
 });
 const since = (mark, pat) => reqs.slice(mark).filter((u) => u.includes(pat)).length;
 const wait = (fn, ...args) => page.waitForFunction(fn, { timeout: 90000 }, ...args);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const A = RUN + '/alpha', B = RUN + '/beta';
 const BODY_A = '# alpha probe', BODY_B = '# beta probe';
@@ -167,7 +150,7 @@ try {
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 120), false);
 } finally {
-  if (fails || process.env.VERBOSE)
+  if (check.fails || process.env.VERBOSE)
     console.log('\n  full request log:\n' + reqs.map((u, i) => '   ' + i + ' ' + u).join('\n'));
   try {
     await page.evaluate(async (a, b) => {
@@ -178,5 +161,4 @@ try {
   await browser.close();
 }
 
-console.log(fails ? '\n' + fails + ' check(s) FAILED' : '\nall checks passed');
-process.exit(fails ? 1 : 0);
+check.done();

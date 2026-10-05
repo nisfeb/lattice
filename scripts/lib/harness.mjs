@@ -40,14 +40,15 @@ export function shipEnv({
   };
 }
 
-export async function launchBrowser({ profile } = {}) {
+//  `args` are Chrome flags on top of --no-sandbox, which every suite needs.
+export async function launchBrowser({ profile, args = [] } = {}) {
   let puppeteer;
   try { puppeteer = (await import('puppeteer-core')).default; }
   catch { console.error('puppeteer-core missing: npm i --no-save puppeteer-core'); process.exit(2); }
   return puppeteer.launch({
     executablePath: process.env.CHROME || '/usr/bin/chromium',
     headless: 'new',
-    args: ['--no-sandbox'],
+    args: ['--no-sandbox', ...args],
     ...(profile ? { userDataDir: profile } : {}),
   });
 }
