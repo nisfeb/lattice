@@ -13,6 +13,8 @@
 import { readFileSync } from 'fs';
 import { homedir } from 'os';
 
+export { makeCheck } from './check.mjs';
+
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 //  Where the ship is and how to prove we are logged in. The vars are
@@ -61,24 +63,6 @@ export async function openPage(browser, env, { viewport, onPageError } = {}) {
   });
   if (viewport) await page.setViewport(viewport);
   return page;
-}
-
-//  One printer, one counter, handed out together so they cannot come apart.
-//  `detail` is diagnostics for a failure and is hidden on a pass, which keeps
-//  the FAIL lines a reader is scanning for from being buried. A suite whose
-//  detail is a measurement worth seeing either way asks for detailOnPass.
-export function makeCheck({ detailOnPass = false } = {}) {
-  let fails = 0;
-  const check = (name, cond, detail) => {
-    const show = detail && (detailOnPass || !cond);
-    console.log((cond ? '  ok   - ' : '  FAIL - ') + name + (show ? ' (' + detail + ')' : ''));
-    if (!cond) fails++;
-    return cond;
-  };
-  check.ok = (name) => check(name, true);
-  check.bad = (name, detail) => check(name, false, detail);
-  Object.defineProperty(check, 'fails', { get: () => fails });
-  return check;
 }
 
 //  Three consecutive sub-4s document loads before the suite starts. Right

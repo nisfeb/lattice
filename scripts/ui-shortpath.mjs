@@ -12,22 +12,12 @@
 //
 // Usage:  node scripts/ui-shortpath.mjs
 
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { makeCheck, cut } from './lib/check.mjs';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const src = readFileSync(
-  join(here, '../ui-src/lattice/10-shell.js'), 'utf8');
-const m = src.match(/const shortPath = \([\s\S]*?\n {2}\};/);
-if (!m) { console.error('could not find shortPath in 10-shell.js'); process.exit(2); }
-const shortPath = new Function(`${m[0]}\nreturn shortPath;`)();
+const shortPath = new Function(`${cut('ui-src/lattice/10-shell.js',
+  /const shortPath = \([\s\S]*?\n {2}\};/, 'shortPath')}\nreturn shortPath;`)();
 
-let fails = 0;
-const eq = (name, got, want) => {
-  if (got === want) console.log('  ok   - ' + name);
-  else { console.log(`  FAIL - ${name}\n         want ${JSON.stringify(want)}\n         got  ${JSON.stringify(got)}`); fails++; }
-};
+const { eq, done } = makeCheck();
 const B = '/apps/lattice.lattice_app/';
 
 console.log('shortening');
@@ -97,5 +87,4 @@ eq('a foreign app path shortens and says it was cut',
   shortPath('/apps/other.app/page/foo', ['/apps/other.app/page/foo']), '\u2026/foo');
 eq('the bare base is returned as-is', shortPath(B, [B]), B);
 
-console.log(fails ? `\n${fails} check(s) FAILED` : '\nall checks passed');
-process.exit(fails ? 1 : 0);
+done();

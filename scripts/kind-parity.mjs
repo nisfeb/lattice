@@ -29,15 +29,12 @@
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { makeCheck } from './lib/check.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 
-let fails = 0;
-const check = (name, ok, extra) => {
-  console.log((ok ? '  ok   - ' : '  FAIL - ') + name + (ok ? '' : '\n         ' + (extra || '')));
-  if (!ok) fails++;
-};
+const check = makeCheck();
 
 //  pull a `const NAME = { ext: 'kind', ... };` object literal's entries out
 //  of a JS source file, by name
@@ -129,5 +126,4 @@ check(
   'in kind_for_ext but not EXT_KIND: ' + JSON.stringify(projOrphans)
 );
 
-console.log(fails ? '\n' + fails + ' FAILED' : '\nall checks passed');
-process.exit(fails ? 1 : 0);
+check.done();

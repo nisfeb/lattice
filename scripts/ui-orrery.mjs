@@ -5,13 +5,10 @@
 // in a vm with a stub document and a fake orrery behind fetch.
 import { readFileSync } from 'fs';
 import vm from 'vm';
+import { makeCheck } from './lib/check.mjs';
 
 const src = readFileSync(new URL('../code/nex/lattice/ui-app/orrery.js', import.meta.url), 'utf8');
-let fails = 0;
-const check = (name, ok, detail = '') => {
-  console.log((ok ? '  ok   ' : '  FAIL ') + name + (ok ? '' : '  ' + detail));
-  if (!ok) fails++;
-};
+const check = makeCheck();
 
 function El(tag) { this.tag = tag; this.kids = []; this.own = ''; this.hidden = false; this.classList = { add() {} }; }
 Object.defineProperty(El.prototype, 'textContent', {
@@ -148,5 +145,4 @@ const page = (text) => async () => ({ title: 'Trip to Lisbon', text });
       && total >= 29 * 60000 && total <= 31 * 60000, delays.length + ' polls, ' + total / 60000 + ' min');
 }
 
-console.log(fails ? `\n${fails} FAILED` : '\nall passed');
-process.exit(fails ? 1 : 0);
+check.done();

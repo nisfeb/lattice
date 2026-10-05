@@ -10,6 +10,7 @@
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { makeCheck } from './lib/check.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PRISM = join(here, '..', 'code', 'nex', 'lattice', 'prism.js');
@@ -20,11 +21,7 @@ globalThis.WorkerGlobalScope = undefined;
 (0, eval)(readFileSync(PRISM, 'utf8'));
 const { Prism } = globalThis;
 
-let fails = 0;
-const check = (name, cond, extra) => {
-  console.log((cond ? '  ok   - ' : '  FAIL - ') + name + (cond ? '' : '  ' + (extra || '')));
-  if (!cond) fails++;
-};
+const check = makeCheck();
 
 check('prism defines the latex grammar', !!Prism.languages.latex);
 check('tex is an alias of latex', Prism.languages.tex === Prism.languages.latex);
@@ -58,5 +55,4 @@ check('a url is a url', /class="token url">https:\/\/example\.com</.test(html));
 const prose = Prism.highlight('Just words, no commands.', Prism.languages.latex, 'latex');
 check('plain prose is left alone', !/class="token/.test(prose), prose);
 
-console.log(fails ? '\n' + fails + ' FAILED' : '\nall checks passed');
-process.exit(fails ? 1 : 0);
+check.done();

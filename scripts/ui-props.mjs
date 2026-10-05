@@ -20,54 +20,45 @@
 // Usage:  node scripts/ui-props.mjs
 // Setup:  npm i --no-save fast-check     (nothing is added to a manifest)
 
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { makeCheck, read, cut } from './lib/check.mjs';
 
 let fc;
 try { fc = (await import('fast-check')).default; }
 catch { console.error('fast-check missing: npm i --no-save fast-check'); process.exit(2); }
 
-const here = dirname(fileURLToPath(import.meta.url));
-const read = (f) => readFileSync(join(here, '../ui-src/lattice', f), 'utf8');
-const cut = (file, re, what) => {
-  const m = read(file).match(re);
-  if (!m) { console.error(`could not find ${what} in ${file}`); process.exit(2); }
-  return m[0];
-};
+const L = 'ui-src/lattice/';
 
 // ── the functions under test, lifted out of the source ─────────────────────
-const listEnter = new Function(`${read('22-listedit.js')}\nreturn listEnter;`)();
-const listTab = new Function(`${read('22-listedit.js')}\nreturn listTab;`)();
+const listEnter = new Function(`${read(L + '22-listedit.js')}\nreturn listEnter;`)();
+const listTab = new Function(`${read(L + '22-listedit.js')}\nreturn listTab;`)();
 const shortPath = new Function(
-  `${cut('10-shell.js', /const shortPath = \([\s\S]*?\n {2}\};/, 'shortPath')}\nreturn shortPath;`)();
+  `${cut(L + '10-shell.js', /const shortPath = \([\s\S]*?\n {2}\};/, 'shortPath')}\nreturn shortPath;`)();
 const esc = new Function(
-  `${cut('25-editor.js', /const esc = .*/, 'esc')}\nreturn esc;`)();
+  `${cut(L + '25-editor.js', /const esc = .*/, 'esc')}\nreturn esc;`)();
 const seg = new Function(
-  `${cut('70-upload.js', /const seg = .*/, 'seg')}\nreturn seg;`)();
+  `${cut(L + '70-upload.js', /const seg = .*/, 'seg')}\nreturn seg;`)();
 const mkAcRank = new Function('nodes', 'current', 'folderCtx',
-  cut('55-autocomplete.js', /const dirOf = .*\n\s*const segOf = .*/, 'dirOf/segOf') + '\n'
-  + cut('55-autocomplete.js', /function acRank\(q\) \{[\s\S]*?\n {2}\}/, 'acRank')
+  cut(L + '55-autocomplete.js', /const dirOf = .*\n\s*const segOf = .*/, 'dirOf/segOf') + '\n'
+  + cut(L + '55-autocomplete.js', /function acRank\(q\) \{[\s\S]*?\n {2}\}/, 'acRank')
   + '\nreturn acRank;');
 
 // ── harness ────────────────────────────────────────────────────────────────
-let fails = 0, props = 0;
+const check = makeCheck();
+let props = 0;
 const RUNS = Number(process.env.RUNS || 2000);   // RUNS=50000 for a deep hunt
 const prop = (name, property, runs = RUNS) => {
   props++;
   try {
     fc.assert(property, { numRuns: runs, verbose: false });
-    console.log('  ok   - ' + name);
+    check.ok(name);
   } catch (e) {
-    fails++;
-    console.log('  FAIL - ' + name);
+    check.bad(name);
     console.log(String(e.message).split('\n').map((l) => '         ' + l).join('\n'));
   }
 };
 const ok = (name, cond, detail) => {
   props++;
-  if (cond) console.log('  ok   - ' + name);
-  else { console.log('  FAIL - ' + name + (detail ? ' (' + detail + ')' : '')); fails++; }
+  check(name, cond, detail);
 };
 
 // ═══ listEnter (22-listedit.js) ════════════════════════════════════════════
@@ -408,7 +399,7 @@ ok('esc leaves ordinary prose alone', esc('a plain line') === 'a plain line');
 ok('seg keeps a normal filename', seg('My Notes.md') === 'my-notes.md', seg('My Notes.md'));
 ok('shortPath still shortens a lone grant', shortPath(B + 'page/notes', [B + 'page/notes']) === 'notes');
 
-console.log(fails
-  ? `\n${fails} of ${props} propert${props === 1 ? 'y' : 'ies'} FAILED`
+console.log(check.fails
+  ? `\n${check.fails} of ${props} propert${props === 1 ? 'y' : 'ies'} FAILED`
   : `\nall ${props} properties passed`);
-process.exit(fails ? 1 : 0);
+process.exit(check.fails ? 1 : 0);
