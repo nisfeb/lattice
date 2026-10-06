@@ -53,17 +53,18 @@
     const sheet = document.createElement('div');
     sheet.id = 'msheet';
     sheet.hidden = true;
-    // [sheet row id to create, real button id to click, label]
+    // [sheet row id to create, real button id to click, icon, label]
     const rows = [
-      ['ms-q', 'qt', '\u{1F50D} search'],
-      ['ms-cm', 'cmt', '\u{1F4AC} comments'],
-      ['ms-acl', 'aclt', '\u{1F511} access'],
-      ['ms-mode', 'modet', ''],   // label mirrors the live mode button
+      ['ms-q', 'qt', 'search', 'search'],
+      ['ms-cm', 'cmt', 'comment', 'comments'],
+      ['ms-acl', 'aclt', 'key', 'access'],
+      ['ms-mode', 'modet', '', ''],   // label mirrors the live mode button
     ];
-    for (const [rid, target, label] of rows) {
+    for (const [rid, target, icon, label] of rows) {
       const b = document.createElement('button');
       b.id = rid;
-      b.textContent = label;
+      if (icon) b.innerHTML = ico(icon) + ' ';
+      b.append(label);
       b.onclick = () => { sheet.hidden = true; $(target).click(); };
       sheet.appendChild(b);
     }

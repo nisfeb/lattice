@@ -34,16 +34,14 @@
   <span id="offbadge" class="offbadge" role="status" aria-live="polite" hidden></span>
   <span class="grow"></span>
   <button id="wrapt" class="ico" title="toggle line wrap" aria-label="toggle line wrap">&#8617;</button>
-  <!-- a KEY, not U+26BF: that codepoint has almost no font coverage and
-       rendered as an empty box, which is worse than no button at all. -->
-  <button id="qt" class="ico" title="search your pages and notes (ctrl-K)" aria-label="search your pages and notes (ctrl-K)">&#128269;</button>
-  <button id="cmt" class="ico" title="comments from other ships" aria-label="comments from other ships">&#128172;</button>
+  <button id="qt" class="ico" title="search your pages and notes (ctrl-K)" aria-label="search your pages and notes (ctrl-K)">${ico('search')}</button>
+  <button id="cmt" class="ico" title="comments from other ships" aria-label="comments from other ships">${ico('comment')}</button>
   <!-- a save that replaced an edit from elsewhere keeps the losing body as a
        conflicts/ page. Those are invisible unless you already know to look,
        which is the one failure a conflict design must not have. This badge
        counts them and opens the resolve pane. -->
   <button id="cflt" class="ico" title="sync conflicts to resolve" aria-label="sync conflicts to resolve" hidden>&#9873;</button>
-  <button id="aclt" class="ico" title="access control &mdash; groups, sharing, banned ships" aria-label="access control &mdash; groups, sharing, banned ships">&#128273;</button>
+  <button id="aclt" class="ico" title="access control &mdash; groups, sharing, banned ships" aria-label="access control &mdash; groups, sharing, banned ships">${ico('key')}</button>
   <!-- edit | split | preview is ONE three-way choice, not two toggles: an
        editor-less, preview-less layout is not a layout. State and handlers
        in 85-layout.js; the desktop View menu clicks these very buttons. -->

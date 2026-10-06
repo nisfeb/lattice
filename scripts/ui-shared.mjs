@@ -21,7 +21,9 @@ Object.defineProperty(El.prototype, 'textContent', {
   get() { return this.text + this.kids.map((k) => k.textContent).join(''); },
   set(v) { this.text = v; this.kids = []; },
 });
-El.prototype.append = function (...k) { this.kids.push(...k); };
+El.prototype.append = function (...k) {
+  this.kids.push(...k.map((x) => (typeof x === 'string' ? { textContent: x } : x)));
+};
 El.prototype.appendChild = function (k) { this.kids.push(k); };
 
 const D = '/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app';
@@ -32,7 +34,7 @@ function boot(items, coll = []) {
     treeList, sharedWithMe: items, mode: 'pages', api: '/apps/lattice', localStorage,
     renderTree: () => { treeList.kids = []; ctx.renderShared(JSON.parse(localStorage.appColl)); },
     guardDirty: async () => true, history: { replaceState() {} },
-    openGrub: (p, s) => opened.push([p, s]),
+    openGrub: (p, s) => opened.push([p, s]), ico: () => '',
     document: { createElement: (t) => new El(t), createTextNode: (t) => ({ textContent: t }) },
   };
   vm.runInNewContext(src, ctx);
@@ -51,9 +53,9 @@ const items = [
 {
   const { rows } = boot(items);
   const want = [
-    'fold ▾📁 shared with me',
-    'fold ▾📁 ~bus', 'page notes/aread×',
-    'fold ▾📁 ~nec', 'page apps/calendar/thingread×', 'page blog/draftread×', 'page site/loggingedit×',
+    'fold ▾shared with me',
+    'fold ▾~bus', 'page notes/aread×',
+    'fold ▾~nec', 'page apps/calendar/thingread×', 'page blog/draftread×', 'page site/loggingedit×',
   ];
   check('a folder per ship, each page by its own name there, sorted',
     JSON.stringify(rows()) === JSON.stringify(want), JSON.stringify(rows()));
