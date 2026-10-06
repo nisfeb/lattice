@@ -1279,7 +1279,7 @@
   ::
       [%'GET' %know-list]
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
-    (send-json eyre-id (know-list-json (listed key es)))
+    (send-json eyre-id (know-list-json (listed key es ~)))
   ::
       [%'GET' %know-all]
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
@@ -1287,7 +1287,7 @@
   ::
       [%'GET' %know-tags]
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
-    (send-json eyre-id (know-tags-json (listed key es)))
+    (send-json eyre-id (know-tags-json (listed key es ~)))
   ::
       [%'GET' %know-trash]
     ;<  tx=know-index:lk  bind:m  (read-index [%| 2 %& /know %trash])
@@ -1299,7 +1299,7 @@
     =/  all=?  =('all' (~(gut by args) 'match' 'any'))
     =/  q=@t  (~(gut by args) 'q' '')
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
-    (send-json eyre-id (know-list-json (filter-explore (listed key es) tags all q)))
+    (send-json eyre-id (know-list-json (filter-explore (listed key es ~) tags all q)))
   ::  know-search: ranked recall (+search:lk, the code the MCP tools run, so
   ::  both rank alike). q= words, or "a phrase" in double quotes; k= how many
   ::  (10); superseded=1 also returns entries a newer one replaced.
@@ -1315,8 +1315,8 @@
     ::  sensitive=0: only what a listing shows, so an automatic search
     ::  (a plugin hook) never taints a cleared key
     =/  es=(map path know-entry:lk)
-      ?:  =('0' (~(gut by args) 'sensitive' ''))  (listed key all)
-      (searchable key all)
+      ?:  =('0' (~(gut by args) 'sensitive' ''))  (listed key all tc)
+      (searchable key all tc)
     =/  hs=(list hit:lk)  (search:lk ~(tap by es) tc q old)
     ;<  ~  bind:m
       (taint-if key (lien (scag k hs) |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
@@ -1330,8 +1330,8 @@
     ;<  all=(map path know-entry:lk)  bind:m  read-know-map
     ;<  tc=term-cache:lk  bind:m  (current-terms all)
     =/  es=(map path know-entry:lk)
-      ?:  =('0' (~(gut by args) 'sensitive' ''))  (listed key all)
-      (searchable key all)
+      ?:  =('0' (~(gut by args) 'sensitive' ''))  (listed key all tc)
+      (searchable key all tc)
     =/  hs=(list hit:lk)  (search:lk ~(tap by es) tc task |)
     ;<  ~  bind:m
       (taint-if key (lien (scag k hs) |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
@@ -1344,13 +1344,13 @@
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
     =/  brief=?  =('1' (~(gut by args) 'brief' '0'))
     =/  cap=@ud  (fall (rush (~(gut by args) 'cap' '') dem) core-cap:lk)
-    (send-typed eyre-id 'text/plain; charset=utf-8' 'no-store' (index-text:lk (listed key es) brief cap))
+    (send-typed eyre-id 'text/plain; charset=utf-8' 'no-store' (index-text:lk (listed key es ~) brief cap))
   ::  know-lint: what a tidy would fix (+lint-run:lk), proposed and never
   ::  applied. Computed when asked, so always current. /know?lint=1 reviews it.
       [%'GET' %know-lint]
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
     ;<  now=@da  bind:m  bowl-now
-    =/  hid=(set path)  ~(key by (~(dif by es) (listed key es)))
+    =/  hid=(set path)  ~(key by (~(dif by es) (listed key es ~)))
     (send-json eyre-id (lint-json:lk (lint-without:lk (lint-run:lk ~(tap by es) now) hid)))
   ::  know-verify: an agent or the owner confirms an entry still holds.
   ::  verified (and verified-by, from author=) land in its front matter.
@@ -2943,7 +2943,7 @@
       ?^  old  (pure:n ~)
       ;<  es=(map path know-entry:lk)  bind:n  read-know-map
       ;<  tc=term-cache:lk  bind:n  (current-terms es)
-      (pure:n (near:lk ~(tap by (listed key es)) tc prose))
+      (pure:n (near:lk ~(tap by (listed key es tc)) tc prose))
     ?:  &(?=(^ near) (gte o.i.near dup-at:lk) !=('1' (~(gut by args) 'force_new' '')))
       %^  send-err  eyre-id  409
       (crip "likely duplicate of {(spud k.i.near)} ({(a-co:co o.i.near)}% of terms shared): update that entry, or pass force_new=1 if this is a different fact")
@@ -3845,18 +3845,20 @@
 ::  lint): never a sensitive entry, so listing neither leaks one nor
 ::  taints a cleared key. The owner sees everything.
 ++  listed
-  |=  [key=(unit key-row:ky) es=(map path know-entry:lk)]
+  |=  [key=(unit key-row:ky) es=(map path know-entry:lk) tc=term-cache:lk]
   ^-  (map path know-entry:lk)
   ?~  key  es
-  (malt (skip ~(tap by es) |=([* e=know-entry:lk] (sensitive:lk e))))
+  ::  tc: the term cache, whose rows carry the sensitive mark (+sen-of:lk);
+  ::  ~ where a route holds none, and each entry is read instead
+  (malt (skip ~(tap by es) |=([k=path e=know-entry:lk] (sen-of:lk tc k e))))
 ::  +searchable: what search and recall rank over: sensitive entries too
 ::  for the owner and a cleared key.
 ++  searchable
-  |=  [key=(unit key-row:ky) es=(map path know-entry:lk)]
+  |=  [key=(unit key-row:ky) es=(map path know-entry:lk) tc=term-cache:lk]
   ^-  (map path know-entry:lk)
   ?~  key  es
   ?:  sensitive.scope.u.key  es
-  (listed key es)
+  (listed key es tc)
 ++  may-see
   |=  [key=(unit key-row:ky) e=know-entry:lk]
   ^-  ?

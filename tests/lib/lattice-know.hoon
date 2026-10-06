@@ -174,7 +174,7 @@
 ++  test-term-cache
   =/  e1=know-entry  ['alpha beta' ~2026.1.1 ~ ~]
   =/  e2=know-entry  ['gamma' ~2026.1.1 ~ ~]
-  =/  bogus=term-row  [~2026.1.1 ~ [/a (my ~[['zeta' 1]]) 1]]
+  =/  bogus=term-row  [~2026.1.1 ~ [/a (my ~[['zeta' 1]]) 1] %.n %.n]
   =/  tc=term-cache  (my ~[[/a bogus] [/gone (row-of /gone e2)]])
   =/  r  (refresh ~[[/a e1] [/b e2]] tc)
   ;:  weld
@@ -311,5 +311,26 @@
     (expect-eq !>(`(list [path path])`~) !>(broken.l))
     (expect-eq !>(|) !>((lien untagged.l |=(k=path =(k /h)))))
     (expect-eq !>(|) !>((lien orphans.l |=(k=path =(k /h)))))
+  ==
+::  the term row carries the superseded and sensitive marks; a fresh row is
+::  trusted over the entry (so a search parses no front matter), a stale
+::  row falls back to the entry, and +row-of reads both marks
+++  test-row-flags
+  =/  sup=know-entry  [(crip "---\0asuperseded-by: /b\0a---\0aold") ~2026.1.1 ~ ~]
+  =/  sen=know-entry  [(crip "---\0asensitive: yes\0a---\0asecret") ~2026.1.1 ~ ~]
+  =/  tc=term-cache  (my ~[[/a (row-of /a sup)] [/s (row-of /s sen)]])
+  ;:  weld
+    (expect-eq !>(&) !>(sup:(row-of /a sup)))
+    (expect-eq !>(|) !>(sen:(row-of /a sup)))
+    (expect-eq !>(&) !>(sen:(row-of /s sen)))
+    (expect-eq !>(&) !>((sup-of tc /a sup)))
+    (expect-eq !>(&) !>((sen-of tc /s sen)))
+    ::  a fresh row is trusted: the same key and stamp, a plain body
+    (expect-eq !>(&) !>((sup-of tc /a sup(body 'plain'))))
+    ::  a stale row (moved updated) is not: the entry decides
+    (expect-eq !>(|) !>((sup-of tc /a sup(body 'plain', updated ~2026.2.2))))
+    ::  no row at all reads the entry
+    (expect-eq !>(&) !>((sen-of ~ /s sen)))
+    (expect-eq !>(|) !>((sen-of ~ /x e1)))
   ==
 --
