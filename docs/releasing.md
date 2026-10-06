@@ -130,6 +130,8 @@ GET /grubbery/ball/apps/forge.git_forge/repos/lattice.git_repo/data/tree/code/ve
 # 2. did ricsul's desk mirror it?
 GET /grubbery/ball/apps/shell.shell/desks/lattice.desk/desk/code/version.json?raw=1
 GET /grubbery/ball/apps/shell.shell/desks/lattice.desk/version.json?raw=1
+# on grubbery develop's kernel a ?raw=1 read answers 307 to
+# /grubbery/api/file/<path>: follow redirects (curl -L) or the body is empty
 
 # 3. did the instance rebuild, or is it BANGed?
 GET /grubbery/ball/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app?info=1
