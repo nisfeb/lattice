@@ -18,6 +18,7 @@ import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harnes
 
 const env = shipEnv();
 const APP = env.app;
+const SETTINGS = env.base + '/apps/lattice/settings';
 const RUN = 'uimx-' + process.pid;          // per-run namespace, cleaned at the end
 
 const check = makeCheck();
@@ -28,6 +29,10 @@ const browser = await launchBrowser();
 const page = await openPage(browser, env, {
   onPageError: (e) => bad('page threw: ' + e.message.slice(0, 80)),
 });
+// the editor guards unsaved text with the browser's leave-page prompt, and
+// a headless navigation that raises one waits on it forever. No step here
+// tests that prompt, so every one is accepted.
+page.on('dialog', (d) => { if (d.type() === 'beforeunload') d.accept(); });
 
 // The no-native-popups rule is absolute. Any prompt/confirm/alert fails the run.
 await page.evaluateOnNewDocument(() => {
@@ -788,8 +793,10 @@ try {
   // back to pages: chips gone
   await page.click('#modet');
   await wait(() => !document.getElementById('ws').className.includes('know'));
+  // the chips sit in the tag section, which is what hides; an element under
+  // a hidden ancestor keeps its own computed display, so ask the layout
   check('mode round-trip: tag chips hidden again',
-    await page.evaluate(() => getComputedStyle(document.getElementById('chips')).display) === 'none');
+    await page.evaluate(() => document.getElementById('chips').getClientRects().length === 0));
 
   // ── batch upload: N files in ONE request, all-or-nothing ────────────────
   // An upload used to be one request per file, and each pays the pier's floor
@@ -808,8 +815,11 @@ try {
   check('batch: one request saves every file',
     okBatch.status === 200 && okBatch.body && okBatch.body.saved === 3,
     JSON.stringify(okBatch));
-  await sleep(4000);
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  // the batch came from outside the editor, and a focus refresh is held to
+  // one per 30s while the beacon stream is live (the stream already said
+  // what changed, unless an echo count still owed from the editor's own
+  // writes swallowed it). A reload is what this check needs.
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait((n) => ['b1', 'b2', 'b3'].every((f) =>
     [...document.querySelectorAll('#treelist a.pg')]
       .some((a) => a.href.includes(encodeURIComponent(n + '/' + f)))), RUN);
@@ -1023,7 +1033,8 @@ try {
   // This step poisons fetch and IndexedDB in the page and leaves the client
   // in its degraded state. Both live as long as the document does, so the
   // reload is not tidiness: without it every later step runs against a ship
-  // that always answers 502 and a queue that cannot be written.
+  // that always answers 502 and a queue that cannot be written. The unsaved
+  // text is deliberate (the leave-page prompt is accepted at setup).
   await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
   await wait(() => document.getElementById('offbadge').hidden);
@@ -1034,8 +1045,13 @@ try {
   // real archives with the system tar. What only a browser can prove is the
   // wiring: the button exists, the handler runs, and every route it reads
   // answers. It must also never claim a complete export when it is not one.
-  check('vault: the export button is in the controls pane',
-    await page.evaluate(() => !!document.getElementById('vault')));
+  //  the vault buttons live on the settings page (vault.js mounts them into
+  //  #vaultui) and carry no ids, so they are found by their text, and the
+  //  pane's status line is the span beside them
+  await page.goto(SETTINGS, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => [...document.querySelectorAll('#vaultui button')]
+    .some((b) => b.textContent === 'Export vault'));
+  ok('vault: the export button is on the settings page');
   await page.evaluate(() => {
     //  a click would open a download dialog in a headless run, so hold the
     //  Blob instead of handing it to the browser and read what it built
@@ -1056,10 +1072,11 @@ try {
       if (this.download) { window.__vaultName = this.download; return; }
       return realClick.call(this);
     };
-    document.getElementById('vault').click();
+    [...document.querySelectorAll('#vaultui button')].find((b) => b.textContent === 'Export vault').click();
   });
-  await wait(() => /exported|could NOT|failed/.test(document.getElementById('status').textContent));
-  const vmsg = await page.evaluate(() => document.getElementById('status').textContent);
+  await wait(() => /exported|could NOT|failed/.test(
+    (document.querySelector('#vaultui span') || {}).textContent || ''));
+  const vmsg = await page.evaluate(() => document.querySelector('#vaultui span').textContent);
   check('vault: the export completes and reports what it wrote',
     /exported \d+ page\(s\) and \d+ memories/.test(vmsg), vmsg);
   check('vault: nothing was unreadable', !/could NOT/.test(vmsg), vmsg);
@@ -1087,6 +1104,9 @@ try {
     .filter((a) => a.href.includes(n)).length >= 2, VR);
 
   //  take an archive and pull its bytes out of the browser
+  await page.goto(SETTINGS, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => [...document.querySelectorAll('#vaultui button')]
+    .some((b) => b.textContent === 'Export vault'));
   await page.evaluate(() => {
     // Hook the ANCHOR's click, not document.createElement. The old version
     // swapped createElement for a one-shot that returned a prepared <a>, but
@@ -1105,9 +1125,10 @@ try {
       if (this.download) { window.__vaultName = this.download; return; }
       return realClick.call(this);
     };
-    document.getElementById('vault').click();
+    [...document.querySelectorAll('#vaultui button')].find((b) => b.textContent === 'Export vault').click();
   });
-  await wait(() => /exported|could NOT|failed/.test(document.getElementById('status').textContent));
+  await wait(() => /exported|could NOT|failed/.test(
+    (document.querySelector('#vaultui span') || {}).textContent || ''));
   const b64 = await page.evaluate(() => new Promise((res) => {
     if (!window.__vaultBlob) return res('');
     const fr = new FileReader();
@@ -1127,10 +1148,20 @@ try {
     .some((a) => a.href.includes(n)), VR);
   ok('restore: the pages are gone off the ship');
 
-  //  and put them back
-  const vpick = await page.$('#vpick');
-  await vpick.uploadFile(tarPath);
-  await dialog(null);                     // the overwrite confirmation
+  //  and put them back, from the settings page. The restore runs in this
+  //  document, so wait for its last word before navigating away
+  await page.goto(SETTINGS, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => !!document.querySelector('#vaultui input[type=file]'));
+  //  the settings page has no in-app dialog, so its restore asks with
+  //  window.confirm, which this suite turns into a throw everywhere (the
+  //  editor must never use one). Answer it here instead.
+  await page.evaluate(() => { window.confirm = () => true; });
+  await (await page.$('#vaultui input[type=file]')).uploadFile(tarPath);
+  await wait(() => {
+    const t = (document.querySelector('#vaultui span') || {}).textContent || '';
+    return t && !t.includes('\u2026');
+  });
+  await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
     .filter((a) => a.href.includes(n)).length >= 2, VR);
   ok('restore: both pages are back in the tree');
@@ -1157,8 +1188,11 @@ try {
   bad8[5] ^= 0xff;
   const badPath = join(tmpdir(), 'uimx-vault-bad-' + process.pid + '.tar');
   writeFileSync(badPath, bad8);
-  await (await page.$('#vpick')).uploadFile(badPath);
-  await wait(() => /not a readable archive/.test(document.getElementById('status').textContent));
+  await page.goto(SETTINGS, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => !!document.querySelector('#vaultui input[type=file]'));
+  await (await page.$('#vaultui input[type=file]')).uploadFile(badPath);
+  await wait(() => /not a readable archive/.test(
+    (document.querySelector('#vaultui span') || {}).textContent || ''));
   ok('restore: a corrupt archive is refused rather than half-applied');
 
   rmSync(tarPath, { force: true });

@@ -110,7 +110,8 @@ try {
   });
   // the guard's own message is immediately followed by the caller's failure
   // line ("share failed offline"). The FINAL status is what the user reads
-  await wait(() => (document.getElementById('status').textContent || '').includes('share failed offline'));
+  // errText renders the refusal as "share failed: offline"
+  await wait(() => /share failed:? offline/.test(document.getElementById('status').textContent || ''));
   check('a share attempt while offline is refused, named as offline', true);
 
   // ── 4. reconnect: the probe notices, replay drains, the ship converges ───
