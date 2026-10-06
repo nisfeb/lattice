@@ -44,7 +44,9 @@
     // defaults to 30s (08-offline.js, widened deliberately for a queued
     // pier), so a shorter cap here reintroduced the false discard prompt
     // for any save landing past it. 30s of flight plus a beat to settle.
-    if (saving && saveFlight) await saveFlight;
+    //  a loop, not one wait: the save that lands can start the one that
+    //  waited behind it (flushPending), and that one is this document's
+    while (saving && saveFlight) await saveFlight;
     if (!dirty) return true;
     // still dirty and nothing is in flight: the wait either never started or
     // timed out with the buffer untouched. Only now is a flush worth trying.

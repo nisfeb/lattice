@@ -198,18 +198,21 @@
   //  other) stays in each arm, and the bookkeeping that must never drift
   //  between them lives here.
 
-  //  a save arriving mid-flight only set savePending, which now carries the
-  //  kindOverride that call wanted (or bare `true` for a plain save with
-  //  none). A re-run that forgot it and fell back to autosave's own
-  //  curKind/pkind guess is how a restore's revision kind used to vanish.
-  //  Take the trailing save now, honoring that kind, and only if the text
+  //  a save arriving mid-flight only set savePending: the save itself, to
+  //  run again (an explicit save with the kindOverride it wanted, or a
+  //  memory save), or bare `true` for an autosave. A re-run that forgot the
+  //  kind and fell back to autosave's curKind/pkind guess is how a
+  //  restore's revision kind used to vanish. And `true` for an explicit
+  //  save made it an autosave, which does nothing for a page or memory not
+  //  yet named: a Save clicked while another save was in flight on a slow
+  //  pier was simply lost. Take the trailing save now, only if the text
   //  really is still unsaved.
   const flushPending = () => {
     if (!savePending) return;
     const pending = savePending;
     savePending = false;
     if (!dirty) return;
-    if (pending === true) autosave(); else save(pending);
+    if (typeof pending === 'function') pending(); else autosave();
   };
   //  we know exactly what we just wrote. Patch the local copies so reopening
   //  this page paints the saved text, not the dump's pre-save body. The
@@ -242,7 +245,7 @@
     // carry kindOverride into the re-arm: a bare `true` here forgot which
     // kind THIS call wanted, and the trailing run picked whatever the
     // picker happened to show by the time it fired
-    if (saving) { savePending = kindOverride || true; return; }
+    if (saving) { savePending = () => save(kindOverride); return; }
     saving = true;
     st('saving…');
     // capture the exact body being sent: keystrokes landing during the round-trip
@@ -344,7 +347,8 @@
     // never overlap saves. The pier serializes, so a second in-flight save is
     // 3.7s of stale-body work queued behind the first, delaying every preview
     // behind it. Coalesce to one trailing save instead.
-    if (saving) { savePending = true; return; }
+    //  never over an explicit save already waiting: that one names its kind
+    if (saving) { if (!savePending) savePending = true; return; }
     saving = true;
     const sent = src.value;
     const url = mode === 'know'

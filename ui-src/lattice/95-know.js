@@ -173,7 +173,7 @@
     // or page (see save()/autosave()/saveGrub()). Without this guard,
     // guardDirty's flush against a memory whose autosave was already mid-
     // flight fired a second, fully concurrent POST to the same /know-save key.
-    if (saving) { savePending = true; return; }
+    if (saving) { savePending = () => saveKnow(); return; }
     saving = true;
     const sent = src.value;
     let w = { gone: true };
@@ -191,7 +191,7 @@
       current = key;
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
-      if (savePending) { savePending = false; if (dirty) saveKnow(); }
+      flushPending();
       return;
     }
     if (!r.ok) { st('save failed' + await errText(r), false); return; }
@@ -205,7 +205,7 @@
     else knowKeys.push({ key, tags: [], updated: '', bytes: sent.length });
     renderKnowChips();
     renderKnowTree();
-    if (savePending) { savePending = false; if (dirty) saveKnow(); }
+    flushPending();
   }
 
   async function deleteKnow() {
