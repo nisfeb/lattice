@@ -18,10 +18,11 @@
   // request per keystroke, and needs no index to maintain. For a personal store
   // this is milliseconds.
   //
-  // What the dump does NOT carry is the share mode, which is why /page-scopes
-  // exists. A results list that cannot say which hits are published would show
-  // private notes and clearweb pages looking identical, on a screen someone may
-  // be sharing. That badge is a safety signal, so it is worth one request.
+  // The dump carries each page's share mode too. A results list that cannot
+  // say which hits are published would show private notes and clearweb pages
+  // looking identical, on a screen someone may be sharing. That badge is a
+  // safety signal, so a tree that may not carry share modes (treeShares,
+  // 30-tree.js) still asks /page-scopes rather than call a page private.
   customElements.define('lat-search', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -46,7 +47,7 @@
   let qKnow = [];              // [{key, body}]
   let qKnowFailed = false;     // /know-all never answered this panel-open
   let qLoading = null;         // in-flight load, shared
-  let qAt = '';                // beacon rev both last loaded at (see revFresh)
+  let qAt = '';                // both beacons when both last loaded (bothAt)
   // never-loaded and load-failed are different states. qCtxAttempts counts
   // how many times qLoadContextOnce has actually run since the panel opened,
   // capped at two: the open-time load and one retry. A failure short of that
@@ -68,8 +69,14 @@
   }
   async function qLoadContextOnce() {
     qCtxAttempts += 1;
-    const at = lastRev;
-    try {
+    const at = bothAt();
+    if (treeShares) {
+      const m = new Map();
+      for (const n of nodes) {
+        if (n.page) m.set(n.path, n.share === 'clearweb' ? 'clearweb' : n.share === 'shared' ? 'urbit' : 'private');
+      }
+      qScopes = m;
+    } else try {
       const r = await fetch(api + '/page-scopes');
       if (r.ok) {
         const m = new Map();
@@ -244,9 +251,9 @@
     qResults = [];
     qRows = [];
     qSel = -1;
-    //  the exposure map and the memories are refetched only when the beacon
-    //  moved since they loaded (revFresh, 90-sync.js), not on every ctrl-K
-    if (revFresh(qAt)) return;
+    //  the exposure map and the memories are refetched only when a beacon
+    //  moved since they loaded (90-sync.js), not on every ctrl-K
+    if (streamLive && qAt && qAt === bothAt()) return;
     qScopes = null;                          // refresh exposure
     qCtxAttempts = 0;                        // this open gets its own retry
     qLoadContext();

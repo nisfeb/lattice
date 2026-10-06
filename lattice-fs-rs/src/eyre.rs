@@ -232,6 +232,7 @@ impl Transport for EyreTransport {
             let mut reader = std::io::BufReader::new(resp.into_reader());
             let mut line = String::new();
             let mut dirty = false;
+            let mut name: Option<String> = None;
             loop {
                 line.clear();
                 match reader.read_line(&mut line) {
@@ -241,17 +242,21 @@ impl Transport for EyreTransport {
                         if t.is_empty() {
                             // blank line = end of one SSE event. Fire at most
                             // once per event, not once per field line.
-                            if dirty {
+                            if dirty && pages_changed(name.as_deref()) {
                                 on_event(W::Changed);
-                                dirty = false;
                             }
-                        } else if t.starts_with("data:") || t.starts_with("event:") {
+                            dirty = false;
+                            name = None;
+                        } else if let Some(n) = t.strip_prefix("event:") {
+                            name = Some(n.trim().to_string());
+                            dirty = true;
+                        } else if t.starts_with("data:") {
                             dirty = true;
                         }
                     }
                 }
             }
-            if dirty {
+            if dirty && pages_changed(name.as_deref()) {
                 on_event(W::Changed); // stream ended mid-event: keep the nudge
             }
             on_event(W::Down);
@@ -275,6 +280,15 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+/// Whether one beacon event can mean a page changed. The keep streams the
+/// whole /beacon directory, and its events are named after the grub that
+/// moved ("upd /rev", "old /comments"). Comments and memories have beacons
+/// of their own, and refetching every page for one of those only costs the
+/// ship a full dump. Anything else, an unnamed event included, still counts.
+fn pages_changed(name: Option<&str>) -> bool {
+    !matches!(name, Some(n) if n.ends_with(" /comments") || n.ends_with(" /know"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +298,21 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
+
+    #[test]
+    fn only_page_events_refresh_the_mount() {
+        // memories and comments bump beacons of their own; a mount that
+        // re-dumped every page for each of those paid a full dump per agent
+        // memory save
+        assert!(pages_changed(Some("upd /rev")));
+        assert!(pages_changed(Some("old /rev")));
+        assert!(!pages_changed(Some("upd /know")));
+        assert!(!pages_changed(Some("old /know")));
+        assert!(!pages_changed(Some("upd /comments")));
+        // unknown or unnamed: assume it matters
+        assert!(pages_changed(Some("upd /something-new")));
+        assert!(pages_changed(None));
+    }
 
     fn tmpdir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir()

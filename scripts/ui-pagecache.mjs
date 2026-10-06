@@ -30,7 +30,7 @@ const PROFILE = mkdtempSync(join(process.env.LATTICE_PROFILE_DIR || tmpdir(), 'l
 // pier is already doing, so wait for a settled ship before any of it starts.
 await settle(env);
 const SHIP = encodeURIComponent(await shipName(env));
-await seed(env, [['harnessdir/one', '# one'], ['harnessdir/other', '# other']]);
+await seed(env, [['harnessdir/one', '# one'], ['harnessdir/other', '# other']], { share: 'shared' });
 
 const PAGE = BASE + '/apps/lattice?url=urb%3A%2F%2F' + SHIP + '%2Fharnessdir%2Fone';
 const HOME = BASE + '/apps/lattice';

@@ -198,26 +198,21 @@
   //  other) stays in each arm, and the bookkeeping that must never drift
   //  between them lives here.
 
-  //  a save arriving mid-flight only set savePending, which now carries the
-  //  kindOverride that call wanted (or bare `true` for a plain save with
-  //  none). A re-run that forgot it and fell back to autosave's own
-  //  curKind/pkind guess is how a restore's revision kind used to vanish.
-  //  Take the trailing save now, honoring that kind, and only if the text
+  //  a save arriving mid-flight only set savePending: the save itself, to
+  //  run again (an explicit save with the kindOverride it wanted, or a
+  //  memory save), or bare `true` for an autosave. A re-run that forgot the
+  //  kind and fell back to autosave's curKind/pkind guess is how a
+  //  restore's revision kind used to vanish. And `true` for an explicit
+  //  save made it an autosave, which does nothing for a page or memory not
+  //  yet named: a Save clicked while another save was in flight on a slow
+  //  pier was simply lost. Take the trailing save now, only if the text
   //  really is still unsaved.
   const flushPending = () => {
     if (!savePending) return;
     const pending = savePending;
     savePending = false;
     if (!dirty) return;
-    if (pending === true) autosave(); else save(pending);
-  };
-  //  the echo window covers OUR OWN beacon bump. A fixed 4s assumed the bump
-  //  lands promptly; on a queued pier it arrives after the save's own round
-  //  trip again, so scale the window to what the pier just showed us. Too
-  //  short meant refetching the page we just wrote — two more pier requests
-  //  to learn nothing.
-  const noteRtt = (sentAt) => {
-    echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
+    if (typeof pending === 'function') pending(); else autosave();
   };
   //  we know exactly what we just wrote. Patch the local copies so reopening
   //  this page paints the saved text, not the dump's pre-save body. The
@@ -250,7 +245,7 @@
     // carry kindOverride into the re-arm: a bare `true` here forgot which
     // kind THIS call wanted, and the trailing run picked whatever the
     // picker happened to show by the time it fired
-    if (saving) { savePending = kindOverride || true; return; }
+    if (saving) { savePending = () => save(kindOverride); return; }
     saving = true;
     st('saving…');
     // capture the exact body being sent: keystrokes landing during the round-trip
@@ -284,18 +279,11 @@
     }
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc);
-    let r = null;
-    //  a save is user activity even when it arrives by hotkey or autosave,
-    //  so the background lane (bgFetch) holds its traffic out of its way
-    lastAction = Date.now();
-    const sentAt = Date.now();
-    try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); }
-    catch {}
-    finally {
-      saving = false;
-      noteRtt(sentAt);
-    }
-    if (shipGone(r)) {
+    let w = { gone: true };
+    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
+    finally { saving = false; }
+    const r = w.r;
+    if (w.gone) {
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
       // does not care which kind it got
@@ -318,9 +306,7 @@
       return;
     }
     if (r && r.status === 409) { st('that page already exists', false); return; }
-    if (!r || !r.ok) { st('save failed' + await errText(r), false); return; }
-    pendingEchoes++;                  // this save's own beacon bump
-    bustPages(name);
+    if (!r.ok) { st('save failed' + await errText(r), false); return; }
     current = name;
     curKind = kind;
     pname.readOnly = true;
@@ -361,24 +347,19 @@
     // never overlap saves. The pier serializes, so a second in-flight save is
     // 3.7s of stale-body work queued behind the first, delaying every preview
     // behind it. Coalesce to one trailing save instead.
-    if (saving) { savePending = true; return; }
+    //  never over an explicit save already waiting: that one names its kind
+    if (saving) { if (!savePending) savePending = true; return; }
     saving = true;
     const sent = src.value;
     const url = mode === 'know'
       ? api + '/know-save?key=' + encodeURIComponent(current)
       : api + '/page-save?name=' + encodeURIComponent(current) +
         '&type=' + (curKind || pkind.value);
-    let r = null;
-    lastAction = Date.now();       // saves are user activity (see above)
-    const sentAt = Date.now();
-    try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
-    saving = false;
-    noteRtt(sentAt);
-    if (r && r.ok) {
-      pendingEchoes++;                // this save's own beacon bump
-      bustPages(current);
-    }
-    if (shipGone(r)) {
+    let w = { gone: true };
+    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
+    finally { saving = false; }
+    const r = w.r;
+    if (w.gone) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
       if (mode === 'know') {
@@ -392,7 +373,7 @@
       flushPending();
       return;
     }
-    if (!r || !r.ok) { st('autosave failed' + await errText(r), false); return; }
+    if (!r.ok) { st('autosave failed' + await errText(r), false); return; }
     if (src.value === sent) dirty = false;   // typed during the request? stay dirty
     let vr = null;
     if (mode !== 'know') {

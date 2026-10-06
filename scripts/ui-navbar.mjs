@@ -9,7 +9,7 @@ import { shipEnv, launchBrowser, openPage, makeCheck, sleep, shipName, seed } fr
 const env = shipEnv();
 const check = makeCheck();
 const SHIP = await shipName(env);
-await seed(env, [['harnessdir/one', '# one'], ['harnessdir/other', '# other']]);
+await seed(env, [['harnessdir/one', '# one'], ['harnessdir/other', '# other']], { share: 'shared' });
 const browser = await launchBrowser();
 const p = await openPage(browser, env);
 const HOME = env.base + '/apps/lattice';

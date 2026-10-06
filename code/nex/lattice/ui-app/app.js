@@ -1198,11 +1198,16 @@
     // defaults to 30s (08-offline.js, widened deliberately for a queued
     // pier), so a shorter cap here reintroduced the false discard prompt
     // for any save landing past it. 30s of flight plus a beat to settle.
-    let waited = 0;
-    while (saving && waited < 32000) {
-      await new Promise((r) => setTimeout(r, 100));
-      waited += 100;
-    }
+    //  a loop, not one wait: the save that lands can start the one that
+    //  waited behind it (flushPending), and that one is this document's.
+    //  And `saving` itself, not only the request: the request settles a
+    //  few microtasks before the save that sent it clears `saving` and
+    //  `dirty`, and waking in that gap offered to discard a save that was
+    //  about to succeed. Capped past tfetch's 30s, since a grub save holds
+    //  `saving` with no timeout of its own.
+    const t0 = Date.now();
+    while (saving && Date.now() - t0 < 35000)
+      await (saveFlight || new Promise((r) => setTimeout(r, 50)));
     if (!dirty) return true;
     // still dirty and nothing is in flight: the wait either never started or
     // timed out with the buffer untouched. Only now is a flush worth trying.
@@ -1246,10 +1251,21 @@
   //  coalesce or an untracked mutation can make this swallow a real remote
   //  update; the 30s poll / focus refresh is the floor that catches it,
   //  the same tradeoff the time window has always accepted.
-  let pendingEchoes = 0;
-  let echoUntil = 0;       // our own save bumps the beacon. Ignore that echo or
-                           // every save triggers a tree+source refetch of content
-                           // this client just wrote (~4s of pier time each)
+  //
+  //  Two beacons, so two of each: a page write bumps /beacon/rev and a
+  //  memory write /beacon/know. One shared count let a memory save's echo
+  //  swallow a real page bump that arrived first. `n` is the bumps still
+  //  owed to us, `until` the window while a write is in flight and after.
+  //  Without them every save triggers a tree+source refetch of content
+  //  this client just wrote (~4s of pier time each).
+  const echoes = { rev: { n: 0, until: 0, at: 0 }, know: { n: 0, until: 0, at: 0 } };
+  // the beacon a write route bumps: the memory routes bump /know, all the
+  // rest /rev (know-publish too, since it publishes a page)
+  const echoOf = (url) => {
+    let p = '';
+    try { p = new URL(url, location.href).pathname; } catch {}
+    return /\/know-(?!publish$)[a-z-]+$/.test(p) ? echoes.know : echoes.rev;
+  };
   const qs = new URLSearchParams(location.search);
 
   // every request to the ship costs ~2s and they serialize (single-threaded
@@ -1318,6 +1334,46 @@
     return null;
   };
 
+  // shipWrite: the one way a write reaches the ship, so what every write
+  // needs is done the same way each time. The echo it causes is expected on
+  // the right beacon (echoOf), held open while it flies and then for twice
+  // the round trip (our own bump arrives a queue-length late on a slow
+  // pier), and counted once it lands. The renders it touches are busted.
+  // It answers {r}, or {gone: true} when the ship is unreachable (no
+  // answer, or a bridge 502/504), and the caller queues what it can.
+  //
+  // `ms` is the timeout: 30s for a save (tfetch's own reasoning), 0 for none.
+  // A folder move pokes the writer for every page, and timing that out would
+  // read as offline and queue a second move. `save` marks a document save,
+  // the flight guardDirty waits for.
+  let saveFlight = null;
+  async function shipWrite(url, init, { ms = 30000, save = false } = {}) {
+    const echo = echoOf(url);
+    echo.until = Date.now() + 60000;
+    echo.at = Date.now();             // when we last wrote (see refocused)
+    lastAction = Date.now();          // a write is user activity (see bgFetch)
+    const sentAt = Date.now();
+    const req = (ms ? tfetch(url, init, ms) : fetch(url, init)).catch(() => null);
+    if (save) saveFlight = req;
+    let r = null;
+    try { r = await req; }
+    finally {
+      if (saveFlight === req) saveFlight = null;
+      echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
+    }
+    if (shipGone(r)) return { gone: true };
+    if (r.ok) {
+      echo.n++;                         // one bump is ours; consume it on arrival
+      // every write names its target the same way; a move dirties both ends
+      try {
+        const q = new URL(url, location.href).searchParams;
+        bustPages(q.get('name') || q.get('from') || q.get('key'));
+        if (q.get('to')) bustPages(q.get('to'));
+      } catch {}
+    }
+    return { r };
+  }
+
   async function mutate(url, opts) {
     // Saves coalesce in a map, structural ops go in an ordered log, and both
     // drain together. Everything else (sharing, tagging, the legacy migration)
@@ -1337,30 +1393,13 @@
       return { ok: false, status: 'offline', json: async () => ({ error: 'offline' }) };
     };
     if (degraded || offCount) return offline();
-    echoUntil = Date.now() + 60000;
-    const sentAt = Date.now();
-    try {
-      let r = null;
-      try { r = await fetch(url, opts || { method: 'POST' }); } catch {}
-      // a rejected fetch or a bridge 502/504 is the ship being unreachable:
-      // queue what can be queued and ENGAGE degraded — the old path only
-      // queued when degraded was already true, so the FIRST offline action
-      // being structural threw past every caller and did nothing at all
-      if (shipGone(r)) { setDegraded(true); return await offline(); }
-      if (r.ok) {
-        pendingEchoes++;              // one bump is ours; consume it on arrival
-        // every mutate names its target the same way; a move dirties both ends
-        try {
-          const q = new URL(url, location.href).searchParams;
-          bustPages(q.get('name') || q.get('from') || q.get('key'));
-          if (q.get('to')) bustPages(q.get('to'));
-        } catch {}
-      }
-      return r;
-    }
-    //  RTT-scaled like the save paths: our own bump arrives a queue-length
-    //  late on a slow pier, and a window it misses turns into refetches
-    finally { echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt)); }
+    const w = await shipWrite(url, opts || { method: 'POST' }, { ms: 0 });
+    // an unreachable ship: queue what can be queued and ENGAGE degraded.
+    // The old path only queued when degraded was already true, so the FIRST
+    // offline action being structural threw past every caller and did
+    // nothing at all
+    if (w.gone) { setDegraded(true); return offline(); }
+    return w.r;
   }
 
   // where this install lives in the tree: /apps/lattice.lattice_app for the
@@ -2461,6 +2500,11 @@
   // a megabyte, page it or go back to page-tree plus a lazy body cache.
   // the beacon rev the last applied dump was fetched at (see revFresh)
   let treeAt = '';
+  // whether `nodes` carries each page's share mode: a dump with a `since`
+  // token does (a share-less node is private). A tree an older ship sent,
+  // or one restored from before it did, does not, and absent there means
+  // unknown, not private.
+  let treeShares = false;
   async function loadTree() {
     const gen = treeGen;
     const at = lastRev;
@@ -2481,8 +2525,15 @@
     // remembered the registration comparison had nothing to catch a bump
     // that landed between this snapshot and that registration. Never
     // overwrite a stream-observed rev — the snapshot may already trail it.
-    if (!lastRev && d.rev != null) noteRev(String(d.rev));
+    //
+    // From `since`, the token string, never `rev`: that is a JSON number near
+    // 1.7e38, which JSON.parse rounds, so String(d.rev) read
+    // "1.701411845081946e+38" against the stream's exact digits. They never
+    // matched, and every first session refetched the whole dump once the
+    // stream registered.
+    if (!lastRev && typeof d.since === 'string') noteRev(d.since);
     nodes = d.nodes;
+    treeShares = typeof d.since === 'string';
     treeAt = at;
     // drop only the cached renders the dump says have moved FORWARD. Blanket-
     // clearing on every change cost every other page its cache. Comparing
@@ -2875,26 +2926,21 @@
   //  other) stays in each arm, and the bookkeeping that must never drift
   //  between them lives here.
 
-  //  a save arriving mid-flight only set savePending, which now carries the
-  //  kindOverride that call wanted (or bare `true` for a plain save with
-  //  none). A re-run that forgot it and fell back to autosave's own
-  //  curKind/pkind guess is how a restore's revision kind used to vanish.
-  //  Take the trailing save now, honoring that kind, and only if the text
+  //  a save arriving mid-flight only set savePending: the save itself, to
+  //  run again (an explicit save with the kindOverride it wanted, or a
+  //  memory save), or bare `true` for an autosave. A re-run that forgot the
+  //  kind and fell back to autosave's curKind/pkind guess is how a
+  //  restore's revision kind used to vanish. And `true` for an explicit
+  //  save made it an autosave, which does nothing for a page or memory not
+  //  yet named: a Save clicked while another save was in flight on a slow
+  //  pier was simply lost. Take the trailing save now, only if the text
   //  really is still unsaved.
   const flushPending = () => {
     if (!savePending) return;
     const pending = savePending;
     savePending = false;
     if (!dirty) return;
-    if (pending === true) autosave(); else save(pending);
-  };
-  //  the echo window covers OUR OWN beacon bump. A fixed 4s assumed the bump
-  //  lands promptly; on a queued pier it arrives after the save's own round
-  //  trip again, so scale the window to what the pier just showed us. Too
-  //  short meant refetching the page we just wrote — two more pier requests
-  //  to learn nothing.
-  const noteRtt = (sentAt) => {
-    echoUntil = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
+    if (typeof pending === 'function') pending(); else autosave();
   };
   //  we know exactly what we just wrote. Patch the local copies so reopening
   //  this page paints the saved text, not the dump's pre-save body. The
@@ -2927,7 +2973,7 @@
     // carry kindOverride into the re-arm: a bare `true` here forgot which
     // kind THIS call wanted, and the trailing run picked whatever the
     // picker happened to show by the time it fired
-    if (saving) { savePending = kindOverride || true; return; }
+    if (saving) { savePending = () => save(kindOverride); return; }
     saving = true;
     st('saving…');
     // capture the exact body being sent: keystrokes landing during the round-trip
@@ -2961,18 +3007,11 @@
     }
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc);
-    let r = null;
-    //  a save is user activity even when it arrives by hotkey or autosave,
-    //  so the background lane (bgFetch) holds its traffic out of its way
-    lastAction = Date.now();
-    const sentAt = Date.now();
-    try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); }
-    catch {}
-    finally {
-      saving = false;
-      noteRtt(sentAt);
-    }
-    if (shipGone(r)) {
+    let w = { gone: true };
+    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
+    finally { saving = false; }
+    const r = w.r;
+    if (w.gone) {
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
       // does not care which kind it got
@@ -2995,9 +3034,7 @@
       return;
     }
     if (r && r.status === 409) { st('that page already exists', false); return; }
-    if (!r || !r.ok) { st('save failed' + await errText(r), false); return; }
-    pendingEchoes++;                  // this save's own beacon bump
-    bustPages(name);
+    if (!r.ok) { st('save failed' + await errText(r), false); return; }
     current = name;
     curKind = kind;
     pname.readOnly = true;
@@ -3038,24 +3075,19 @@
     // never overlap saves. The pier serializes, so a second in-flight save is
     // 3.7s of stale-body work queued behind the first, delaying every preview
     // behind it. Coalesce to one trailing save instead.
-    if (saving) { savePending = true; return; }
+    //  never over an explicit save already waiting: that one names its kind
+    if (saving) { if (!savePending) savePending = true; return; }
     saving = true;
     const sent = src.value;
     const url = mode === 'know'
       ? api + '/know-save?key=' + encodeURIComponent(current)
       : api + '/page-save?name=' + encodeURIComponent(current) +
         '&type=' + (curKind || pkind.value);
-    let r = null;
-    lastAction = Date.now();       // saves are user activity (see above)
-    const sentAt = Date.now();
-    try { r = await tfetch(url, { method: 'POST', body: sent || '\n' }); } catch {}
-    saving = false;
-    noteRtt(sentAt);
-    if (r && r.ok) {
-      pendingEchoes++;                // this save's own beacon bump
-      bustPages(current);
-    }
-    if (shipGone(r)) {
+    let w = { gone: true };
+    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
+    finally { saving = false; }
+    const r = w.r;
+    if (w.gone) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
       if (mode === 'know') {
@@ -3069,7 +3101,7 @@
       flushPending();
       return;
     }
-    if (!r || !r.ok) { st('autosave failed' + await errText(r), false); return; }
+    if (!r.ok) { st('autosave failed' + await errText(r), false); return; }
     if (src.value === sent) dirty = false;   // typed during the request? stay dirty
     let vr = null;
     if (mode !== 'know') {
@@ -5746,10 +5778,11 @@
   // request per keystroke, and needs no index to maintain. For a personal store
   // this is milliseconds.
   //
-  // What the dump does NOT carry is the share mode, which is why /page-scopes
-  // exists. A results list that cannot say which hits are published would show
-  // private notes and clearweb pages looking identical, on a screen someone may
-  // be sharing. That badge is a safety signal, so it is worth one request.
+  // The dump carries each page's share mode too. A results list that cannot
+  // say which hits are published would show private notes and clearweb pages
+  // looking identical, on a screen someone may be sharing. That badge is a
+  // safety signal, so a tree that may not carry share modes (treeShares,
+  // 30-tree.js) still asks /page-scopes rather than call a page private.
   customElements.define('lat-search', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -5774,7 +5807,7 @@
   let qKnow = [];              // [{key, body}]
   let qKnowFailed = false;     // /know-all never answered this panel-open
   let qLoading = null;         // in-flight load, shared
-  let qAt = '';                // beacon rev both last loaded at (see revFresh)
+  let qAt = '';                // both beacons when both last loaded (bothAt)
   // never-loaded and load-failed are different states. qCtxAttempts counts
   // how many times qLoadContextOnce has actually run since the panel opened,
   // capped at two: the open-time load and one retry. A failure short of that
@@ -5796,8 +5829,14 @@
   }
   async function qLoadContextOnce() {
     qCtxAttempts += 1;
-    const at = lastRev;
-    try {
+    const at = bothAt();
+    if (treeShares) {
+      const m = new Map();
+      for (const n of nodes) {
+        if (n.page) m.set(n.path, n.share === 'clearweb' ? 'clearweb' : n.share === 'shared' ? 'urbit' : 'private');
+      }
+      qScopes = m;
+    } else try {
       const r = await fetch(api + '/page-scopes');
       if (r.ok) {
         const m = new Map();
@@ -5972,9 +6011,9 @@
     qResults = [];
     qRows = [];
     qSel = -1;
-    //  the exposure map and the memories are refetched only when the beacon
-    //  moved since they loaded (revFresh, 90-sync.js), not on every ctrl-K
-    if (revFresh(qAt)) return;
+    //  the exposure map and the memories are refetched only when a beacon
+    //  moved since they loaded (90-sync.js), not on every ctrl-K
+    if (streamLive && qAt && qAt === bothAt()) return;
     qScopes = null;                          // refresh exposure
     qCtxAttempts = 0;                        // this open gets its own retry
     qLoadContext();
@@ -6433,6 +6472,18 @@
   // registered an unmoved rev means nothing changed. With the stream down
   // nothing moves lastRev at all, so nothing counts as fresh then.
   const revFresh = (at) => streamLive && !!at && at === lastRev;
+  // memories have their own beacon, /beacon/know (a memory write never
+  // bumps /rev), with the same bookkeeping
+  let lastKnow = '';
+  try { lastKnow = localStorage.latBeaconKnow || ''; } catch {}
+  const noteKnow = (rev) => {
+    if (!rev) return;
+    lastKnow = rev;
+    try { localStorage.latBeaconKnow = rev; } catch {}
+  };
+  const knowFresh = (at) => streamLive && !!at && at === lastKnow;
+  // a load that spans pages and memories (ctrl-K) is fresh while neither moved
+  const bothAt = () => lastRev + '|' + lastKnow;
   let dropStream = null;
   // consecutive attempts that failed. A stream that registers, then lives
   // a minute or carries a live bump, and then ends is the NORMAL cycle: the
@@ -6490,6 +6541,22 @@
             // never touching lastRev. (Historical note: the pre-raw
             // EventSource listened for a literal 'upd' event, which never
             // existed — live refresh was ALWAYS the 30s poll.)
+            // /know: a memory changed. Only the memory mode shows them, so
+            // only it refreshes. Elsewhere the moved beacon is enough to
+            // mark the memory listing stale (knowFresh).
+            if (name.slice(-6) === ' /know') {
+              if (name.slice(0, 3) === 'old') {
+                echoes.know.n = 0;
+                if (lastKnow && data && data !== lastKnow && mode === 'know') bumped();
+                noteKnow(data);
+                continue;
+              }
+              noteKnow(data);
+              if (echoes.know.n > 0) { echoes.know.n--; continue; }
+              if (Date.now() < echoes.know.until) continue;
+              if (mode === 'know') bumped();
+              continue;
+            }
             if (name.slice(-5) !== ' /rev') {
               // registration ("old /comments") just reports the stamp as it
               // already stood, nothing to react to. A live bump is the
@@ -6503,7 +6570,7 @@
               // Echoes still pending were emitted BEFORE this point and
               // will never arrive as upd — left counted, each would
               // swallow one real remote bump later.
-              pendingEchoes = 0;
+              echoes.rev.n = 0;
               streamLive = true;
               registered = true;
               registeredAt = Date.now();
@@ -6514,11 +6581,11 @@
             // a live bump. Our own save bumps the beacon too: refetching
             // tree + source to learn what this client just wrote was ~4s
             // of pier time per save, so our own expected echoes are
-            // consumed by count (see pendingEchoes).
+            // consumed by count (see echoes, 20-state.js).
             bumpedLive = true;
             noteRev(data);
-            if (pendingEchoes > 0) { pendingEchoes--; continue; }
-            if (Date.now() < echoUntil) continue;
+            if (echoes.rev.n > 0) { echoes.rev.n--; continue; }
+            if (Date.now() < echoes.rev.until) continue;
             bumped();
           }
         }
@@ -6559,9 +6626,17 @@
   // floor, not news: at most one per 30s, however often the window is
   // clicked back into. An un-hidden tab dropped its stream, so it is not
   // live and always refreshes.
+  //
+  // Except around our own writes. The stream can merge two quick bumps into
+  // one event, so an echo count still owed after one of ours swallows the
+  // next real bump: a page another device made right after our autosave
+  // never appeared (ui-boot's "created during a save" case). Only our own
+  // writes create that debt, so within 30s of one a focus always refreshes,
+  // the floor that catches it.
   let focusAt = 0;
   const refocused = () => {
-    if (streamLive && Date.now() - focusAt < 30000) return;
+    const wroteLately = Date.now() - Math.max(echoes.rev.at, echoes.know.at) < 30000;
+    if (streamLive && !wroteLately && Date.now() - focusAt < 30000) return;
     focusAt = Date.now();
     bumped();
   };
@@ -6588,11 +6663,11 @@
   tagSec.open = localStorage.knowTagsOpen === '1';
   tagSec.addEventListener('toggle', () => { localStorage.knowTagsOpen = tagSec.open ? '1' : '0'; });
 
-  // the beacon rev the last applied know-list was fetched at (see revFresh)
+  // the memory beacon the last applied know-list was fetched at (knowFresh)
   let knowAt = '';
   async function loadKnow() {
     const gen = knowGen;
-    const at = lastRev;
+    const at = lastKnow;
     let d = null;
     // resolves either way, like loadTree: the drain and the mode switch both
     // call this without a .catch, and a rejection there would take the rest of
@@ -6751,16 +6826,16 @@
     // or page (see save()/autosave()/saveGrub()). Without this guard,
     // guardDirty's flush against a memory whose autosave was already mid-
     // flight fired a second, fully concurrent POST to the same /know-save key.
-    if (saving) { savePending = true; return; }
+    if (saving) { savePending = () => saveKnow(); return; }
     saving = true;
     const sent = src.value;
-    echoUntil = Date.now() + 60000;
-    let r = null;
-    try { r = await tfetch(api + '/know-save?key=' + encodeURIComponent(key),
-      { method: 'POST', body: sent }); } catch {}
-    saving = false;
-    echoUntil = Date.now() + 4000;
-    if (shipGone(r)) {
+    let w = { gone: true };
+    try {
+      w = await shipWrite(api + '/know-save?key=' + encodeURIComponent(key),
+        { method: 'POST', body: sent }, { save: true });
+    } finally { saving = false; }
+    const r = w.r;
+    if (w.gone) {
       //  if the queue would not take it, it is NOT saved: leave the editor
       //  dirty and the key still editable, so the text under the cursor is not
       //  presented as stored. Same rule the page paths enforce (35-pages.js),
@@ -6769,7 +6844,7 @@
       current = key;
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
-      if (savePending) { savePending = false; if (dirty) saveKnow(); }
+      flushPending();
       return;
     }
     if (!r.ok) { st('save failed' + await errText(r), false); return; }
@@ -6777,14 +6852,13 @@
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
     st('memory saved');
-    bustPages(key);
     knowGen++;
     const k = knowEntry(key);
     if (k) k.bytes = sent.length;
     else knowKeys.push({ key, tags: [], updated: '', bytes: sent.length });
     renderKnowChips();
     renderKnowTree();
-    if (savePending) { savePending = false; if (dirty) saveKnow(); }
+    flushPending();
   }
 
   async function deleteKnow() {
@@ -6851,7 +6925,7 @@
         wait.textContent = 'loading memories\u2026';
         treeList.replaceChildren(wait);
       }
-      if (!revFresh(knowAt)) loadKnow();
+      if (!knowFresh(knowAt)) loadKnow();
     } else { renderTree(); if (!revFresh(treeAt)) loadTree(); }
     // the toggle's visible result is the tree listing. Make sure it can be
     // seen: un-hide the pane on desktop, jump to the tree tab on mobile.

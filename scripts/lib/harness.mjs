@@ -74,11 +74,15 @@ export async function shipName(env) {
 
 //  The pages a suite needs, created when absent (page-save new=1, which
 //  answers 409 for one already there). Fixtures come from the suite, not
-//  from a ship someone seeded by hand.
-export async function seed(env, pages) {
+//  from a ship someone seeded by hand. `share` publishes them too, for a
+//  suite that reads them by urb://, which serves only published pages.
+export async function seed(env, pages, { share } = {}) {
+  const post = (path) => fetch(env.base + '/apps/lattice/' + path,
+    { method: 'POST', headers: { Cookie: env.cookie } });
   for (const [name, body] of pages) {
     await fetch(env.base + '/apps/lattice/page-save?type=md&new=1&name=' + encodeURIComponent(name),
       { method: 'POST', headers: { Cookie: env.cookie }, body });
+    if (share) await post('page-share?mode=' + share + '&name=' + encodeURIComponent(name));
   }
 }
 

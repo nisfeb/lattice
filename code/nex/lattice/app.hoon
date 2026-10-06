@@ -310,17 +310,21 @@
         ;<  =sage:tarball  bind:m  take-poke:io
         ;<  now=@da  bind:m  bowl-now
         ;<  ~  bind:m  (apply-action root now sage)
-        ::  bump the change beacon so open readers live-reload (see +bump-rev).
+        ::  bump the change beacon so open readers live-reload (+bump-beacon).
         ::
         ::  EXCEPT for history. Every page view records a visit, and bumping the
         ::  beacon on each one would make browsing live-reload every other open
         ::  reader, a reload storm produced by nothing the reader can see.
         ::  History is not content; it does not belong on the content beacon.
         ::  Nor for agent keys: a key's hourly last-use stamp is not content.
+        ::  And memories have their own beacon, /beacon/know: an agent saves
+        ::  one every few prompts, and on /rev each save made every open
+        ::  editor, reader tab and mounted filesystem refetch its pages.
         ;<  ~  bind:m
           ?:  =([/lattice %history-action] p.sage)  (pure:m ~)
           ?:  =([/lattice %key-action] p.sage)  (pure:m ~)
-          (bump-rev now)
+          ?:  =([/lattice %know-action] p.sage)  (bump-beacon %know now)
+          (bump-beacon %rev now)
         $
       ::  /shares.sig: the cross-ship share-notice inbox. Foreign ships %add.
       ::  Only our own UI may %del (sender is read from the TRANSPORT, so a
@@ -1167,7 +1171,8 @@
       ::  else the generated listing. Both keep /pub/index so a publish/delete/
       ::  edit auto-refreshes the open reader.
       ;<  home=(unit @t)  bind:m  (read-page-body our our /index)
-      ;<  rv=tape  bind:m  beacon-rev-tape
+      ::  the home view lists recent memories too, so it follows both
+      ;<  rv=tape  bind:m  (beacons ~[%rev %know])
       ;<  sb=path  bind:m  self-base
       ?~  home
         ;<  recent=(list [pax=path prev=@t])  bind:m  (read-recent 10)
@@ -3924,7 +3929,7 @@
   ?.  ?=([%& %| *] r)  |
   =(p.p.r (scag (lent p.p.r) pg))
 ::  +apply-action: the writer's action dispatch, split out of the take-poke loop
-::  so every mutation runs through one place (and is followed by a +bump-rev).
+::  so every mutation runs through one place (and is followed by a +bump-beacon).
 ::
 ++  apply-action
   |=  [root=@ud now=@da =sage:tarball]
@@ -3952,19 +3957,20 @@
   ?:  =([/lattice %key-action] p.sage)
     (apply-key root !<(key-action:ky q.sage))
   (refuse "a poke with an unknown mark: {<p.sage>}")
-::  +bump-rev: write `now` to the /rev change beacon. A distinct value each call
+::  +bump-beacon: write `now` to a change beacon, /rev for pages and /know
+::  for memories. A distinct value each call
 ::  (bowl-now is monotonic) guarantees a keep-SSE news event fires, so every open
 ::  reader watching /rev live-reloads. Cheap. /rev is one json number, not a page.
 ::
-++  bump-rev
-  |=  now=@da
+++  bump-beacon
+  |=  [sub=@ta now=@da]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ::  the beacon must be NESTED (under /beacon). grubbery's keep-SSE does not
   ::  stream a grub at the nexus root (verified: /rev and /bookmarks keeps stay
   ::  silent. Nested grubs like /pub/index stream fine). Gain is not required.
-  (put-file (rf up /beacon %rev) [/ %json] (numb:enjs:format `@ud`now))
+  (put-file (rf up /beacon sub) [/ %json] (numb:enjs:format `@ud`now))
 ::  +poke-eval: send an eval-action to the writer (serialized like all writes).
 ::
 ++  poke-eval
@@ -5966,16 +5972,16 @@
       (send-view eyre-id (render-page-titled "know" "" "" "memory tidy" html))
     =/  tsel=(unit @t)  (~(get by args) 'tag')
     ?^  tsel
-      ;<  rv=tape  bind:m  beacon-rev-tape
+      ;<  rv=tape  bind:m  (beacons ~[%know])
       (send-view-long eyre-id (render-page-titled "know" (keep-url sb "beacon/rev") rv "memories" (know-flat-html:lkv es u.tsel)))
-    ;<  rv=tape  bind:m  beacon-rev-tape
+    ;<  rv=tape  bind:m  (beacons ~[%know])
     =/  dir=tape  (know-dir-html:lkv es ~ ~ (tag-chips:lkv es ''))
     =/  tidy=tape  "<p class=\"muted\"><a href=\"/apps/lattice/know?lint=1\">tidy the memories</a></p>"
     (send-view-long eyre-id (render-page-titled "know" (keep-url sb "beacon/rev") rv "memories" (weld tidy dir)))
   =/  page=(unit tape)  (know-node-html:lkv es `path`rest)
   ?~  page
     (send-view eyre-id (render-page-titled "know" "" "" "memories" "<p class=\"err\">no such entry</p>"))
-  ;<  rv=tape  bind:m  beacon-rev-tape
+  ;<  rv=tape  bind:m  (beacons ~[%know])
   (send-view-long eyre-id (render-page-titled (weld "know" (spud rest)) (keep-url sb "beacon/rev") rv (trip (rear rest)) u.page))
 ::  ── JSON renderers (ported from /lib/lattice; client contract, byte-for-byte) ──
 ::
@@ -7609,7 +7615,7 @@
     ::  bare preview: just the rendered data (+ any error) and the live stream.
     =/  data-html=tape  ?~(cd "<p>no data yet</p>" (render-shown u.cd vmode "/apps/lattice/app?name="))
     =/  errh=tape  ?:(=('' err) "" :(weld "<pre class=\"err\">" (esc (trip err)) "</pre>"))
-    (send-html eyre-id (render-bare :(weld errh "<section class=\"data\">" data-html "</section>" (page-sse-script keep rev))))
+    (send-html eyre-id (render-bare :(weld errh "<section class=\"data\">" data-html "</section>" (sse-script keep rev))))
   ::  standalone browser view: the page rendered exactly as it would publish. For
   ::  our own page the nearest theme is inlined (owner-gated, so it need not be
   ::  clearweb-shared) and it gets an Edit button + live-reload. A peer's page is
@@ -8183,22 +8189,6 @@
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip p.cr)) "</code></pre>")
     %noun  (page-data-html sang)
   ==
-::  +page-sse-script: like +sse-script but WITHOUT ?blot=/txt. The page dir's
-::  noun grubs are megabytes under /txt on connect, and this only needs the
-::  event names. Same refresh/swap loop otherwise.
-::
-++  page-sse-script
-  |=  [keep=tape rev=tape]
-  ^-  tape
-  ?~  keep  ""
-  ;:  weld
-    (trip '<script>(function(){var K="')
-    keep
-    (trip '";var REV="')
-    rev
-    %-  trip
-    '";var pend=0,ac=null,live=false;function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||document.hidden)return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(-5)!==" /rev")continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!document.hidden)upd();continue}location.reload();return}}}catch(x){}live=false;if(!document.hidden)setTimeout(c,3000)}document.addEventListener("visibilitychange",function(){if(document.hidden){if(ac)ac.abort();return}if(window.__latRefresh)upd();setTimeout(c,200)});c()})();</script>'
-  ==
 ::  +explore-crumbs: breadcrumb nav, absolute hrefs from the ship root down,
 ::  each with a trailing slash. The leaf is linked too (self-link; harmless).
 ::
@@ -8726,7 +8716,7 @@
   ::  converge quietly, but a CODE deploy bumped nothing — the activate
   ::  handler below wipes 'lattice-pages' when PV moves.
   =/  pv=@t
-    (scot %ux (mug [web-css pwa-head orrery-slot nav-script page-cache-script sse-script page-sse-script]))
+    (scot %ux (mug [web-css pwa-head orrery-slot nav-script page-cache-script sse-script]))
   %+  rap  3
   :~  'var V="lattice-'
       ver
@@ -9483,7 +9473,7 @@
     ::  bookmark button: POST the address-bar url to /bookmark (owner-gated, same
     ::  origin). single-quote cord so the js braces stay literal.
     bm-script
-    (page-sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
+    (sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
   ==
 ::  +beacon-rev-tape: the current /beacon/rev value, rendered as the same
 ::  text the keep-SSE stream sends in its event data. Baked into live pages
@@ -9495,16 +9485,24 @@
 ::  the cache regime is unavailable. "" (never bumped, or peek failure)
 ::  disables the comparison.
 ::
-++  beacon-rev-tape
+++  beacon-rev-tape  (beacons ~[%rev])
+::  +beacons: the named beacons' current values as the JS object +sse-script
+::  bakes in, {"/rev":"<value>",...}. A beacon never bumped (or a failed
+::  peek) is "", which disables that comparison.
+++  beacons
+  |=  subs=(list @ta)
   =/  m  (fiber:fiber:nexus ,tape)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  v=view:nexus  bind:m
-    (peek:io (rf up /beacon %rev) ~)
-  ?.  ?=([%file *] v)  (pure:m "")
-  =/  j=json  (fall (mole |.(;;(json (sang-noun:tarball sang.v)))) ~)
-  ?~  j  (pure:m "")
-  (pure:m (trip (en:json:html j)))
+  =|  acc=(list [@t json])
+  |-  ^-  form:m
+  ?~  subs  (pure:m (trip (en:json:html (pairs:enjs:format (flop acc)))))
+  ;<  v=view:nexus  bind:m  (peek:io (rf up /beacon i.subs) ~)
+  =/  j=json
+    ?.  ?=([%file *] v)  ~
+    (fall (mole |.(;;(json (sang-noun:tarball sang.v)))) ~)
+  =/  val=@t  ?~(j '' (en:json:html j))
+  $(subs t.subs, acc [[(cat 3 '/' i.subs) s+val] acc])
 ::  +self-base: this nexus's ABSOLUTE tree path, learned from the shell's
 ::  /sys/link registry instead of from +get-here-abs, which a sandboxed
 ::  install may not call.
@@ -9550,9 +9548,12 @@
   ^-  tape
   :(weld "/grubbery/api/keep" (spud base) "/" sub)
 ::  +sse-script: reactive live-view client JS. Streams grubbery's keep-SSE
-::  for `keep`, acting only on " /rev" events (the stream carries the whole
-::  /beacon directory). The initial `old` event's rev mismatching the baked
-::  REV means this paint came from the pages cache stale: refresh that cache
+::  for `keep`, acting only on events for the beacons in `revs` (the stream
+::  carries the whole /beacon directory). `revs` is a JS object of each
+::  followed beacon's baked value, as +beacons renders it: a page view
+::  follows /rev, a memory view /know, the home view both. The initial
+::  `old` event's value mismatching the baked one means this paint came
+::  from the pages cache stale: refresh that cache
 ::  quietly (next view is fresh; reload fallback without the cache regime).
 ::  A later `upd` is a live edit under the user's eyes: force-refresh the
 ::  cache — coalescing bumps that land mid-refresh — then swap to the
@@ -9562,16 +9563,16 @@
 ::  counter.hoon's SSE parse loop.
 ::
 ++  sse-script
-  |=  [keep=tape rev=tape]
+  |=  [keep=tape revs=tape]
   ^-  tape
   ?~  keep  ""
   ;:  weld
     (trip '<script>(function(){var K="')
     keep
-    (trip '";var REV="')
-    rev
+    (trip '";var W=')
+    ?~(revs (trip '{}') revs)
     %-  trip
-    '";var pend=0,ac=null,live=false;function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||document.hidden)return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;if(ev.slice(-5)!==" /rev")continue;if(ev.slice(0,3)==="old"){if(REV&&dt&&dt.trim()!==REV){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!document.hidden)upd();continue}location.reload();return}}}catch(x){}live=false;if(!document.hidden)setTimeout(c,3000)}document.addEventListener("visibilitychange",function(){if(document.hidden){if(ac)ac.abort();return}if(window.__latRefresh)upd();setTimeout(c,200)});c()})();</script>'
+    ';var pend=0,ac=null,live=false;function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||document.hidden)return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;var k=ev.slice(ev.indexOf(" ")+1);if(!W.hasOwnProperty(k))continue;if(ev.slice(0,3)==="old"){if(W[k]&&dt&&dt.trim()!==W[k]){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!document.hidden)upd();continue}location.reload();return}}}catch(x){}live=false;if(!document.hidden)setTimeout(c,3000)}document.addEventListener("visibilitychange",function(){if(document.hidden){if(ac)ac.abort();return}if(window.__latRefresh)upd();setTimeout(c,200)});c()})();</script>'
   ==
 ::  +send-public-how: whitelist <root>/pub in the grubbery `public` usergroup's
 ::  peek set, so any foreign ship may peek/keep published pages. UNION, never

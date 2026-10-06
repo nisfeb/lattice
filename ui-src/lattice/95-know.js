@@ -10,11 +10,11 @@
   tagSec.open = localStorage.knowTagsOpen === '1';
   tagSec.addEventListener('toggle', () => { localStorage.knowTagsOpen = tagSec.open ? '1' : '0'; });
 
-  // the beacon rev the last applied know-list was fetched at (see revFresh)
+  // the memory beacon the last applied know-list was fetched at (knowFresh)
   let knowAt = '';
   async function loadKnow() {
     const gen = knowGen;
-    const at = lastRev;
+    const at = lastKnow;
     let d = null;
     // resolves either way, like loadTree: the drain and the mode switch both
     // call this without a .catch, and a rejection there would take the rest of
@@ -173,16 +173,16 @@
     // or page (see save()/autosave()/saveGrub()). Without this guard,
     // guardDirty's flush against a memory whose autosave was already mid-
     // flight fired a second, fully concurrent POST to the same /know-save key.
-    if (saving) { savePending = true; return; }
+    if (saving) { savePending = () => saveKnow(); return; }
     saving = true;
     const sent = src.value;
-    echoUntil = Date.now() + 60000;
-    let r = null;
-    try { r = await tfetch(api + '/know-save?key=' + encodeURIComponent(key),
-      { method: 'POST', body: sent }); } catch {}
-    saving = false;
-    echoUntil = Date.now() + 4000;
-    if (shipGone(r)) {
+    let w = { gone: true };
+    try {
+      w = await shipWrite(api + '/know-save?key=' + encodeURIComponent(key),
+        { method: 'POST', body: sent }, { save: true });
+    } finally { saving = false; }
+    const r = w.r;
+    if (w.gone) {
       //  if the queue would not take it, it is NOT saved: leave the editor
       //  dirty and the key still editable, so the text under the cursor is not
       //  presented as stored. Same rule the page paths enforce (35-pages.js),
@@ -191,7 +191,7 @@
       current = key;
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
-      if (savePending) { savePending = false; if (dirty) saveKnow(); }
+      flushPending();
       return;
     }
     if (!r.ok) { st('save failed' + await errText(r), false); return; }
@@ -199,14 +199,13 @@
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
     st('memory saved');
-    bustPages(key);
     knowGen++;
     const k = knowEntry(key);
     if (k) k.bytes = sent.length;
     else knowKeys.push({ key, tags: [], updated: '', bytes: sent.length });
     renderKnowChips();
     renderKnowTree();
-    if (savePending) { savePending = false; if (dirty) saveKnow(); }
+    flushPending();
   }
 
   async function deleteKnow() {
@@ -273,7 +272,7 @@
         wait.textContent = 'loading memories\u2026';
         treeList.replaceChildren(wait);
       }
-      if (!revFresh(knowAt)) loadKnow();
+      if (!knowFresh(knowAt)) loadKnow();
     } else { renderTree(); if (!revFresh(treeAt)) loadTree(); }
     // the toggle's visible result is the tree listing. Make sure it can be
     // seen: un-hide the pane on desktop, jump to the tree tab on mobile.
