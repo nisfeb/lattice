@@ -45,8 +45,15 @@
     // pier), so a shorter cap here reintroduced the false discard prompt
     // for any save landing past it. 30s of flight plus a beat to settle.
     //  a loop, not one wait: the save that lands can start the one that
-    //  waited behind it (flushPending), and that one is this document's
-    while (saving && saveFlight) await saveFlight;
+    //  waited behind it (flushPending), and that one is this document's.
+    //  And `saving` itself, not only the request: the request settles a
+    //  few microtasks before the save that sent it clears `saving` and
+    //  `dirty`, and waking in that gap offered to discard a save that was
+    //  about to succeed. Capped past tfetch's 30s, since a grub save holds
+    //  `saving` with no timeout of its own.
+    const t0 = Date.now();
+    while (saving && Date.now() - t0 < 35000)
+      await (saveFlight || new Promise((r) => setTimeout(r, 50)));
     if (!dirty) return true;
     // still dirty and nothing is in flight: the wait either never started or
     // timed out with the buffer untouched. Only now is a flush worth trying.
@@ -97,7 +104,7 @@
   //  owed to us, `until` the window while a write is in flight and after.
   //  Without them every save triggers a tree+source refetch of content
   //  this client just wrote (~4s of pier time each).
-  const echoes = { rev: { n: 0, until: 0 }, know: { n: 0, until: 0 } };
+  const echoes = { rev: { n: 0, until: 0, at: 0 }, know: { n: 0, until: 0, at: 0 } };
   // the beacon a write route bumps: the memory routes bump /know, all the
   // rest /rev (know-publish too, since it publishes a page)
   const echoOf = (url) => {
@@ -189,6 +196,7 @@
   async function shipWrite(url, init, { ms = 30000, save = false } = {}) {
     const echo = echoOf(url);
     echo.until = Date.now() + 60000;
+    echo.at = Date.now();             // when we last wrote (see refocused)
     lastAction = Date.now();          // a write is user activity (see bgFetch)
     const sentAt = Date.now();
     const req = (ms ? tfetch(url, init, ms) : fetch(url, init)).catch(() => null);

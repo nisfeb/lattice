@@ -294,9 +294,17 @@
   // floor, not news: at most one per 30s, however often the window is
   // clicked back into. An un-hidden tab dropped its stream, so it is not
   // live and always refreshes.
+  //
+  // Except around our own writes. The stream can merge two quick bumps into
+  // one event, so an echo count still owed after one of ours swallows the
+  // next real bump: a page another device made right after our autosave
+  // never appeared (ui-boot's "created during a save" case). Only our own
+  // writes create that debt, so within 30s of one a focus always refreshes,
+  // the floor that catches it.
   let focusAt = 0;
   const refocused = () => {
-    if (streamLive && Date.now() - focusAt < 30000) return;
+    const wroteLately = Date.now() - Math.max(echoes.rev.at, echoes.know.at) < 30000;
+    if (streamLive && !wroteLately && Date.now() - focusAt < 30000) return;
     focusAt = Date.now();
     bumped();
   };

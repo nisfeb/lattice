@@ -1199,8 +1199,15 @@
     // pier), so a shorter cap here reintroduced the false discard prompt
     // for any save landing past it. 30s of flight plus a beat to settle.
     //  a loop, not one wait: the save that lands can start the one that
-    //  waited behind it (flushPending), and that one is this document's
-    while (saving && saveFlight) await saveFlight;
+    //  waited behind it (flushPending), and that one is this document's.
+    //  And `saving` itself, not only the request: the request settles a
+    //  few microtasks before the save that sent it clears `saving` and
+    //  `dirty`, and waking in that gap offered to discard a save that was
+    //  about to succeed. Capped past tfetch's 30s, since a grub save holds
+    //  `saving` with no timeout of its own.
+    const t0 = Date.now();
+    while (saving && Date.now() - t0 < 35000)
+      await (saveFlight || new Promise((r) => setTimeout(r, 50)));
     if (!dirty) return true;
     // still dirty and nothing is in flight: the wait either never started or
     // timed out with the buffer untouched. Only now is a flush worth trying.
@@ -1251,7 +1258,7 @@
   //  owed to us, `until` the window while a write is in flight and after.
   //  Without them every save triggers a tree+source refetch of content
   //  this client just wrote (~4s of pier time each).
-  const echoes = { rev: { n: 0, until: 0 }, know: { n: 0, until: 0 } };
+  const echoes = { rev: { n: 0, until: 0, at: 0 }, know: { n: 0, until: 0, at: 0 } };
   // the beacon a write route bumps: the memory routes bump /know, all the
   // rest /rev (know-publish too, since it publishes a page)
   const echoOf = (url) => {
@@ -1343,6 +1350,7 @@
   async function shipWrite(url, init, { ms = 30000, save = false } = {}) {
     const echo = echoOf(url);
     echo.until = Date.now() + 60000;
+    echo.at = Date.now();             // when we last wrote (see refocused)
     lastAction = Date.now();          // a write is user activity (see bgFetch)
     const sentAt = Date.now();
     const req = (ms ? tfetch(url, init, ms) : fetch(url, init)).catch(() => null);
@@ -6621,9 +6629,17 @@
   // floor, not news: at most one per 30s, however often the window is
   // clicked back into. An un-hidden tab dropped its stream, so it is not
   // live and always refreshes.
+  //
+  // Except around our own writes. The stream can merge two quick bumps into
+  // one event, so an echo count still owed after one of ours swallows the
+  // next real bump: a page another device made right after our autosave
+  // never appeared (ui-boot's "created during a save" case). Only our own
+  // writes create that debt, so within 30s of one a focus always refreshes,
+  // the floor that catches it.
   let focusAt = 0;
   const refocused = () => {
-    if (streamLive && Date.now() - focusAt < 30000) return;
+    const wroteLately = Date.now() - Math.max(echoes.rev.at, echoes.know.at) < 30000;
+    if (streamLive && !wroteLately && Date.now() - focusAt < 30000) return;
     focusAt = Date.now();
     bumped();
   };
