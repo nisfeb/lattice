@@ -182,7 +182,8 @@
   }
 
   // one folder row, the same in all three trees (files, shared with me,
-  // memories): the fold arrow, then the folder icon and its label, indented
+  // memories): the fold arrow, then the folder icon (open when unfolded)
+  // and its label, both inside the label span, indented
   // by depth. `fold` folds or unfolds it and repaints. A click anywhere on
   // the row folds, unless the row has a `pick` of its own (the files tree
   // selects the folder): then the row picks and only the arrow folds.
@@ -194,7 +195,8 @@
     cx.className = 'cx';
     cx.textContent = folded ? '▸' : '▾';
     const lb = document.createElement('span');
-    lb.textContent = '\u{1F4C1} ' + label;
+    lb.innerHTML = ico(folded ? 'folder' : 'open');
+    lb.append(label);
     row.append(cx, lb);
     if (pick) {
       cx.onclick = (e) => { e.stopPropagation(); fold(); };
@@ -220,6 +222,7 @@
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
         // the display name when there is one (a typed name that was not a
         // valid path), the path segment otherwise; the real path in the tip
+        row.innerHTML = ico(kindExt(n.kind));
         row.append(document.createTextNode((n.dname || n.path.split('/').pop()) + '.' + kindExt(n.kind)));
         if (n.dname) row.title = n.path;
         if (n.share === 'clearweb') {

@@ -660,6 +660,30 @@
 // lattice app, served from ui-app/src/, built by scripts/build-ui.mjs
   const $ = (id) => document.getElementById(id);
   const api = '/apps/lattice';
+  // ── flat icons ───────────────────────────────────────────────────────────
+  // One-colour glyphs in place of colour emoji: the tree's folders and page
+  // kinds (NERDTree with devicons), and the bar's search, comments and
+  // access. folder/open/search/comment/key are GitHub's Octicons, the page
+  // kinds Seti-UI's, the set NERDTree's devicons draw on; both MIT. Each is
+  // [viewBox, path]; Seti's boxes are cropped to match the Octicons' size.
+  // The colour is CSS (.ic-md and so on), currentColor where it has none.
+  const ICON = {
+    folder: ['0 0 16 16', 'M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z'],
+    open: ['0 0 16 16', 'M.513 1.513A1.75 1.75 0 0 1 1.75 1h3.5c.55 0 1.07.26 1.4.7l.9 1.2a.25.25 0 0 0 .2.1H13a1 1 0 0 1 1 1v.5H2.75a.75.75 0 0 0 0 1.5h11.978a1 1 0 0 1 .994 1.117L15 13.25A1.75 1.75 0 0 1 13.25 15H1.75A1.75 1.75 0 0 1 0 13.25V2.75c0-.464.184-.91.513-1.237Z'],
+    search: ['0 0 16 16', 'M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z'],
+    comment: ['0 0 16 16', 'M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z'],
+    key: ['0 0 16 16', 'M10.5 0a5.499 5.499 0 1 1-1.288 10.848l-.932.932a.749.749 0 0 1-.53.22H7v.75a.749.749 0 0 1-.22.53l-.5.5a.749.749 0 0 1-.53.22H5v.75a.749.749 0 0 1-.22.53l-.5.5a.749.749 0 0 1-.53.22h-2A1.75 1.75 0 0 1 0 14.25v-2c0-.199.079-.389.22-.53l4.932-4.932A5.5 5.5 0 0 1 10.5 0Zm-4 5.5c-.001.431.069.86.205 1.269a.75.75 0 0 1-.181.768L1.5 12.56v1.69c0 .138.112.25.25.25h1.69l.06-.06v-1.19a.75.75 0 0 1 .75-.75h1.19l.06-.06v-1.19a.75.75 0 0 1 .75-.75h1.19l1.023-1.025a.75.75 0 0 1 .768-.18A4 4 0 1 0 6.5 5.5ZM11 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z'],
+    md: ['4 4 24 24', 'M20.7 6.7v9.9h3.8c-2.9 3-5.8 5.9-8.7 8.8-2.7-2.8-5.6-5.8-8.4-8.7h3.5V6.6c1.3.9 4.4 3.1 5 3.1.6 0 3.6-2.2 4.8-3z'],
+    tex: ['4 4 24 24', 'M7.9 17.5H6.5v1.3h4.4v-1.3H9.6V11h.4c1.2 0 1.4.1 1.6 1h1.2l-.2-2.3H4.8l-.3 3.6h1.2v-.5c.2-1.7.3-1.8 1.8-1.8h.4v6.5zM15.8 21.1h-1.7v-2.8h.6c.7 0 .7 0 .7.9v.5h1.2v-4.1h-1.2v.5c0 .9 0 .9-.7.9h-.6v-2.4h1.6c1.5 0 1.6.4 1.7 1.8h1.2l-.3-3.2h-7v1.3h1v6.4h-1v1.3h7.1l.4-2.6h-1.3c0 1.1-.4 1.5-1.7 1.5zM21.7 17.6h-.5l1.5-2.2 1.5 2.2h-.3v1.1h3.6v-1.2H27c-.6 0-.6 0-.7-.2l-2.4-3.5 1.6-2.3c.2-.2.4-.6 1.1-.6h.5V9.6H24v1.2h.5l-.1.1-1.2 1.7-1.3-1.6h.3V9.6h-3.6V11h.5c.6 0 .6 0 .7.2l2.1 3.1-1.8 2.7-.3.3c-.2.2-.5.3-.8.3h-.5v1.2h3.2v-1.2z'],
+    html: ['4 4 24 24', 'M8 15l6-5.6V12l-4.5 4 4.5 4v2.6L8 17v-2zm16 2.1l-6 5.6V20l4.6-4-4.6-4V9.3l6 5.6v2.2z'],
+    css: ['4 4 24 24', 'M10.3 23.3l.8-4H8.6v-2.1h3l.5-2.5H9.5v-2.1h3.1l.8-3.9h2.8l-.8 3.9h2.8l.8-3.9h2.8l-.8 3.9h2.5v2.1h-2.9l-.6 2.5h2.6v2.1h-3l-.8 4H16l.8-4H14l-.8 4h-2.9zm6.9-6.1l.5-2.5h-2.8l-.5 2.5h2.8z'],
+    js: ['4 4 24 24', 'M11.4 10h2.7v7.6c0 3.4-1.6 4.6-4.3 4.6-.6 0-1.5-.1-2-.3l.3-2.2c.4.2.9.3 1.4.3 1.1 0 1.9-.5 1.9-2.4V10zm5.1 9.2c.7.4 1.9.8 3 .8 1.3 0 1.9-.5 1.9-1.3s-.6-1.2-2-1.7c-2-.7-3.3-1.8-3.3-3.6 0-2.1 1.7-3.6 4.6-3.6 1.4 0 2.4.3 3.1.6l-.6 2.2c-.5-.2-1.3-.6-2.5-.6s-1.8.5-1.8 1.2c0 .8.7 1.1 2.2 1.7 2.1.8 3.1 1.9 3.1 3.6 0 2-1.6 3.7-4.9 3.7-1.4 0-2.7-.4-3.4-.7l.6-2.3z'],
+    file: ['250 150 700 700', 'M394.1 537.8h411.7v54.7H394.1v-54.7zm0-130.3H624v54.7H394.1v-54.7zm0-130.3h411.7v54.7H394.1v-54.7zm0 390.9H700v54.7H394.1v-54.7z'],
+  };
+  const ico = (name) => {
+    const k = ICON[name] ? name : 'file';
+    return `<svg class="ic ic-${k}" viewBox="${ICON[k][0]}" fill="currentColor" aria-hidden="true"><path d="${ICON[k][1]}"/></svg>`;
+  };
   // ── background requests yield to the user ────────────────────────────────
   // The pier runs one event at a time, so every request this client sends is
   // one the user's next click queues behind — measured: a page open landed at
@@ -912,16 +936,14 @@
   <span id="offbadge" class="offbadge" role="status" aria-live="polite" hidden></span>
   <span class="grow"></span>
   <button id="wrapt" class="ico" title="toggle line wrap" aria-label="toggle line wrap">&#8617;</button>
-  <!-- a KEY, not U+26BF: that codepoint has almost no font coverage and
-       rendered as an empty box, which is worse than no button at all. -->
-  <button id="qt" class="ico" title="search your pages and notes (ctrl-K)" aria-label="search your pages and notes (ctrl-K)">&#128269;</button>
-  <button id="cmt" class="ico" title="comments from other ships" aria-label="comments from other ships">&#128172;</button>
+  <button id="qt" class="ico" title="search your pages and notes (ctrl-K)" aria-label="search your pages and notes (ctrl-K)">${ico('search')}</button>
+  <button id="cmt" class="ico" title="comments from other ships" aria-label="comments from other ships">${ico('comment')}</button>
   <!-- a save that replaced an edit from elsewhere keeps the losing body as a
        conflicts/ page. Those are invisible unless you already know to look,
        which is the one failure a conflict design must not have. This badge
        counts them and opens the resolve pane. -->
   <button id="cflt" class="ico" title="sync conflicts to resolve" aria-label="sync conflicts to resolve" hidden>&#9873;</button>
-  <button id="aclt" class="ico" title="access control &mdash; groups, sharing, banned ships" aria-label="access control &mdash; groups, sharing, banned ships">&#128273;</button>
+  <button id="aclt" class="ico" title="access control &mdash; groups, sharing, banned ships" aria-label="access control &mdash; groups, sharing, banned ships">${ico('key')}</button>
   <!-- edit | split | preview is ONE three-way choice, not two toggles: an
        editor-less, preview-less layout is not a layout. State and handlers
        in 85-layout.js; the desktop View menu clicks these very buttons. -->
@@ -2607,7 +2629,8 @@
   }
 
   // one folder row, the same in all three trees (files, shared with me,
-  // memories): the fold arrow, then the folder icon and its label, indented
+  // memories): the fold arrow, then the folder icon (open when unfolded)
+  // and its label, both inside the label span, indented
   // by depth. `fold` folds or unfolds it and repaints. A click anywhere on
   // the row folds, unless the row has a `pick` of its own (the files tree
   // selects the folder): then the row picks and only the arrow folds.
@@ -2619,7 +2642,8 @@
     cx.className = 'cx';
     cx.textContent = folded ? '▸' : '▾';
     const lb = document.createElement('span');
-    lb.textContent = '\u{1F4C1} ' + label;
+    lb.innerHTML = ico(folded ? 'folder' : 'open');
+    lb.append(label);
     row.append(cx, lb);
     if (pick) {
       cx.onclick = (e) => { e.stopPropagation(); fold(); };
@@ -2645,6 +2669,7 @@
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
         // the display name when there is one (a typed name that was not a
         // valid path), the path segment otherwise; the real path in the tip
+        row.innerHTML = ico(kindExt(n.kind));
         row.append(document.createTextNode((n.dname || n.path.split('/').pop()) + '.' + kindExt(n.kind)));
         if (n.dname) row.title = n.path;
         if (n.share === 'clearweb') {
@@ -7162,17 +7187,18 @@
     const sheet = document.createElement('div');
     sheet.id = 'msheet';
     sheet.hidden = true;
-    // [sheet row id to create, real button id to click, label]
+    // [sheet row id to create, real button id to click, icon, label]
     const rows = [
-      ['ms-q', 'qt', '\u{1F50D} search'],
-      ['ms-cm', 'cmt', '\u{1F4AC} comments'],
-      ['ms-acl', 'aclt', '\u{1F511} access'],
-      ['ms-mode', 'modet', ''],   // label mirrors the live mode button
+      ['ms-q', 'qt', 'search', 'search'],
+      ['ms-cm', 'cmt', 'comment', 'comments'],
+      ['ms-acl', 'aclt', 'key', 'access'],
+      ['ms-mode', 'modet', '', ''],   // label mirrors the live mode button
     ];
-    for (const [rid, target, label] of rows) {
+    for (const [rid, target, icon, label] of rows) {
       const b = document.createElement('button');
       b.id = rid;
-      b.textContent = label;
+      if (icon) b.innerHTML = ico(icon) + ' ';
+      b.append(label);
       b.onclick = () => { sheet.hidden = true; $(target).click(); };
       sheet.appendChild(b);
     }
