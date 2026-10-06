@@ -305,9 +305,32 @@
 ::  the store (5.5 of 6.2 seconds per query on 455 entries). Every reader
 ::  checks a row against its entry (+docs-of), so a stale or missing row
 ::  costs speed, never a wrong answer.
-+$  term-row  [updated=@da tags=(set @t) =doc]
+::  `sup` and `sen` are the entry's superseded and sensitive marks, read off
+::  its front matter once, when the row is made, under the same freshness
+::  rule as the doc. A search filters on both for every entry, and parsing
+::  every body's front matter per prompt cost about twice the vault's bytes.
++$  term-row  [updated=@da tags=(set @t) =doc sup=? sen=?]
 +$  term-cache  (map path term-row)
-++  row-of  |=([k=path e=know-entry] ^-(term-row [updated.e tags.e (to-doc k e)]))
+++  row-of
+  |=  [k=path e=know-entry]
+  ^-  term-row
+  [updated.e tags.e (to-doc k e) ?=(^ (superseded e)) (sensitive e)]
+::  +sup-of, +sen-of: an entry's superseded and sensitive marks, from its
+::  cache row while that row is current, else read off the entry. (An
+::  %import keeps `updated` across a new body, so the writer remakes an
+::  imported key's row; a stale row only costs a parse.)
+++  sup-of
+  |=  [tc=term-cache k=path e=know-entry]
+  ^-  ?
+  =/  r=(unit term-row)  (~(get by tc) k)
+  ?:  (fresh-row r e)  sup:(need r)
+  ?=(^ (superseded e))
+++  sen-of
+  |=  [tc=term-cache k=path e=know-entry]
+  ^-  ?
+  =/  r=(unit term-row)  (~(get by tc) k)
+  ?:  (fresh-row r e)  sen:(need r)
+  (sensitive e)
 ++  fresh-row
   |=  [r=(unit term-row) e=know-entry]
   ^-  ?
@@ -487,7 +510,7 @@
   =/  live=(list [key=path e=know-entry])
     %+  skim  es
     |=  [key=path e=know-entry]
-    ?&  |(old =(~ (superseded e)))
+    ?&  |(old !(sup-of tc key e))
         ?~  phrase  &
         =/  hay=tape  (cass :(weld (trip (spat key)) " " (trip body.e)))
         ?=(^ (find u.phrase hay))
