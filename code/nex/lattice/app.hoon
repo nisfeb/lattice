@@ -9516,9 +9516,13 @@
 ::  every clearweb read and public form once lattice moved into a desk.
 ::
 ::  The shell publishes it for us: +read-app-aliases reads each app's
-::  link.json and records that app's root at /sys/link/<name>/dest.lanes, a
-::  (set lane). One local peek, correct in BOTH tiers, and nothing for us to
-::  keep in sync - we already ship the link.json it reads.
+::  link.json and records that app's root at /sys/link/<name>/dest.lanes: a
+::  (set lane) on dist, an ordered (list lane) on grubbery develop, which
+::  +lane-dirs:lu reads either way. One local peek, correct in BOTH tiers,
+::  and nothing for us to keep in sync - we already ship the link.json it
+::  reads. A vase read of the set alone failed on develop's list and fell
+::  back to +app-base, which is wrong for a desk install (clearweb links,
+::  public forms and live reload all went to the wrong path).
 ::
 ::  Veto-tolerant, falling back to +app-base. An install that refuses the
 ::  /sys/link road keeps every local feature and loses only live reload and
@@ -9531,13 +9535,8 @@
   ;<  vw=(unit view:nexus)  bind:m
     (peek-soft:io [%& %& /sys/link/lattice %'dest.lanes'] ~)
   ?.  ?=([~ %file *] vw)  (pure:m app-base:lu)
-  =/  ls=(unit (set lane:tarball))
-    (mole |.(!<((set lane:tarball) (need-vase:tarball sang.u.vw))))
-  ?~  ls  (pure:m app-base:lu)
-  ::  our own row is a DIRECTORY lane; ignore a file lane if one ever appears.
-  =/  dirs=(list path)
-    %+  murn  ~(tap in u.ls)
-    |=(=lane:tarball ?:(?=(%| -.lane) `p.lane ~))
+  ::  our own row is a DIRECTORY lane; a file lane is ignored
+  =/  dirs=(list path)  (lane-dirs:lu (sang-noun:tarball sang.u.vw))
   ?~  dirs  (pure:m app-base:lu)
   (pure:m i.dirs)
 ::  +keep-url: grubbery's native keep-SSE endpoint for one of our grubs.

@@ -156,4 +156,19 @@
     (expect-eq !>(desk-page) !>((fold-base:lu app-base:lu desk-page)))
     (expect-eq !>(`path`(weld app-base:lu /page/x)) !>((unfold-base:lu app-base:lu (weld app-base:lu /page/x))))
   ==
+::  /sys/link dest.lanes: develop's ordered list and dist's set both read,
+::  directory lanes only, in claim order; junk reads as none
+++  test-lane-dirs
+  ;:  weld
+    %+  expect-eq  !>(`(list path)`~[/apps/a /apps/b])
+      !>((lane-dirs:lu `(list (each * path))`~[[%| /apps/a] [%& [/x %f]] [%| /apps/b]]))
+    %+  expect-eq  !>(`(list path)`~[/apps/a])
+      !>((lane-dirs:lu (silt `(list (each * path))`~[[%| /apps/a]])))
+    %+  expect-eq  !>(2)
+      !>((lent (lane-dirs:lu (silt `(list (each * path))`~[[%| /apps/a] [%| /apps/b]]))))
+    %+  expect-eq  !>(`(list path)`~)
+      !>((lane-dirs:lu 42))
+    %+  expect-eq  !>(`(list path)`~)
+      !>((lane-dirs:lu ~))
+  ==
 --
