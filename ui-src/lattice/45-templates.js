@@ -45,10 +45,7 @@
     }
   }
   $('newtmpl').onclick = newFromTemplate;
-  //  through guardDirty, like opening another page: New cleared the editor
-  //  outright, so a document whose save was still queued behind another
-  //  (a slow pier) was dropped without a word
-  $('newfile').onclick = async () => { if (await guardDirty()) newFile(''); };
+  $('newfile').onclick = () => newFile('');
   $('newfolder').onclick = newFolder;
   window.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {
