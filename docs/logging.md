@@ -49,7 +49,7 @@ lattice line points at the record that keeps it.
     That crash has already printed, so it is recorded silently.
 
 Read either record with the explorer:
-`GET /grubbery/ball/<lattice instance>/faults.json?raw=1`.
+`GET /grubbery/ball/<lattice instance>/faults.json?raw=1`. On grubbery develop's kernel that answers 307 to `/grubbery/api/file/<path>`, so follow redirects (`curl -L`).
 
 A failure that has a requester goes back to them, not to the console. A
 search reindex that cannot write the index answers 500 with the reason, and
