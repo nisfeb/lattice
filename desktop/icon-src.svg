@@ -1,17 +1,16 @@
-<!-- the lattice logo — the same grid the web client ships (nex/lattice
-     icon-svg), in the shared palette of sneagan's apps (talon, party manager):
-     amber (#f9a804) on deep navy (#101541, vignetting to #080b25), so the
-     icons sit together on a home screen. This file is the single source;
-     every file in icons/ is generated from it by `cargo tauri icon`. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 512 512">
-  <defs>
-    <radialGradient id="bg" cx="50%" cy="50%" r="72%">
-      <stop offset="0" stop-color="#171c52"/>
-      <stop offset="0.6" stop-color="#101541"/>
-      <stop offset="1" stop-color="#080b25"/>
-    </radialGradient>
-  </defs>
-  <rect width="512" height="512" fill="url(#bg)"/>
+<!-- the lattice desktop logo: the grid of dots. Every file in
+     desktop/icons is rendered from this one, and so are app.hoon's
+     +apple-icon-b64, +icon-192-b64 and +icon-512-b64 (full-bleed: navy to
+     the edge, the mark at 64%, as iOS fills a transparent corner black).
+     Drawn the way Talon's icon is (talon scripts/make-icons.py, 2026-10-01):
+     the mark centred by its drawn bounds, its longer side 62% of the
+     canvas, on a rounded square of Talon's navy (#1E1B4B; 920 px with a
+     52 px margin, radius 200), in the family amber (#f9a804). The
+     launcher tile rounds itself and its colour is the same navy, so
+     there the margin is the tile. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect x="52" y="52" width="920" height="920" rx="200" fill="#1E1B4B"/>
+  <g transform="translate(-33.40 -33.40) scale(2.1305)">
   <g stroke="#f9a804" stroke-width="14" stroke-linecap="round" fill="#f9a804">
     <line x1="140" y1="140" x2="372" y2="140"/>
     <line x1="140" y1="256" x2="372" y2="256"/>
@@ -24,5 +23,6 @@
     <circle cx="140" cy="140" r="26"/><circle cx="256" cy="140" r="26"/><circle cx="372" cy="140" r="26"/>
     <circle cx="140" cy="256" r="26"/><circle cx="256" cy="256" r="30"/><circle cx="372" cy="256" r="26"/>
     <circle cx="140" cy="372" r="26"/><circle cx="256" cy="372" r="26"/><circle cx="372" cy="372" r="26"/>
+  </g>
   </g>
 </svg>

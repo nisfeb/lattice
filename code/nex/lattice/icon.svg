@@ -1,18 +1,16 @@
-<!-- the lattice tile icon: the same hatch as before, now square and
-     full-bleed (the tile does its own rounding; a rounded rect here let the
-     tile's colour show at the corners) on the vignetted navy the desktop
-     icon and the other apps (auspex, talon, calendar) use. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 64 64">
-  <defs>
-    <radialGradient id="bg" cx="50%" cy="50%" r="72%">
-      <stop offset="0" stop-color="#171c52"/>
-      <stop offset="0.6" stop-color="#101541"/>
-      <stop offset="1" stop-color="#080b25"/>
-    </radialGradient>
-  </defs>
-  <rect width="64" height="64" fill="url(#bg)"/>
+<!-- the lattice tile icon: the hatch.
+     Drawn the way Talon's icon is (talon scripts/make-icons.py, 2026-10-01):
+     the mark centred by its drawn bounds, its longer side 62% of the
+     canvas, on a rounded square of Talon's navy (#1E1B4B; 920 px with a
+     52 px margin, radius 200), in the family amber (#f9a804). The
+     launcher tile rounds itself and its colour is the same navy, so
+     there the margin is the tile. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect x="52" y="52" width="920" height="920" rx="200" fill="#1E1B4B"/>
+  <g transform="translate(113.64 113.64) scale(12.4486)">
   <g stroke="#f9a804" stroke-width="3" stroke-linecap="round" fill="none">
     <path d="M8 24 24 8M8 40 40 8M8 56 56 8M24 56 56 24M40 56 56 40"/>
     <path d="M40 8 56 24M24 8 56 40M8 8 56 56M8 24 40 56M8 40 24 56"/>
+  </g>
   </g>
 </svg>
