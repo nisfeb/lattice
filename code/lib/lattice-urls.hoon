@@ -29,6 +29,22 @@
 ::    out of a urb:// url - are already location-independent and untouched.
 ::
 ++  app-base  `path`/apps/'lattice.lattice_app'
+::  +lane-dirs: the directory lanes in a /sys/link/<app>/dest.lanes noun, in
+::  claim order. dist's shell stores a (set lane); grubbery develop stores a
+::  (list lane), earliest claimant first (gwbtc 9195838). Read either, the
+::  list first. A file lane is skipped, and anything else reads as none.
+::  The mold mirrors tarball's lane, (each rail fold), with the file side
+::  left open, since only directories are wanted and this lib stays
+::  import-free.
+++  lane-dirs
+  |=  nn=*
+  ^-  (list path)
+  =/  ls=(unit (list (each * path)))
+    =/  l  (mole |.(;;((list (each * path)) nn)))
+    ?^  l  l
+    (bind (mole |.(;;((set (each * path)) nn))) |=(s=(set (each * path)) ~(tap in s)))
+  ?~  ls  ~
+  (murn u.ls |=(l=(each * path) ?:(?=(%| -.l) `p.l ~)))
 ::  +desk-base: where lattice lives once installed as a stock desk, which is
 ::  every install from the ~ricsul-bilwyt release on. +app-base is the
 ::  ball-compiled instance that preceded it. A peer is at one or the other,
