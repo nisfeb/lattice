@@ -100,7 +100,8 @@ All under `/apps/lattice/`. GET reads, POST writes, parameters go in the query s
 | `GET know-list`, `know-tags`, `know-explore` | `tags`, `match=any\|all`, `q` | listings, without bodies | memory read |
 | `GET know-history`, `know-read-at` | `key`, `rev` | revision history | memory read |
 | `GET know-lint` | | what a tidy would fix | memory read |
-| `POST know-save` | `key`, body; `author`, `source`, `expected_updated`, `force_new=1`, `sensitive=1` (or `0`, owner only) | create or update. With none of these, the body is stored verbatim (the editor's save). A stale `expected_updated` or a likely duplicate answers 409 | memory write |
+| `POST know-save` | `key`, body; `author`, `source`, `expected_updated`, `force_new=1`, `sensitive=1` (or `0`, owner only) | create or update. With none of these, the body is stored verbatim (the editor's save). A stale `expected_updated` or a likely duplicate answers 409. `force_new=1` skips the duplicate check | memory write |
+| `POST know-save-batch` | JSON `{"items":[{"key","body", and any know-save option}]}`, at most 50; options are strings, or `true`/`false` for `"1"`/`"0"` | many saves in one request: one store read, one duplicate pass, one cache write, roughly ten times faster than single saves. Each item is checked exactly as `know-save` checks one, and against the earlier items. Answers `{"saved":n,"results":[...]}` in item order; a refused item carries `ok:false`, `status` and `error` and is not written, the rest are | memory write |
 | `POST know-verify` | `key`, `author` | the entry still holds | memory write |
 | `POST know-supersede` | `old`, `new` | `old` is replaced by `new` (empty `new` clears it) | memory write |
 | `POST know-tag`, `know-untag` | `key`, `tag` | cross-cutting tags | memory write |

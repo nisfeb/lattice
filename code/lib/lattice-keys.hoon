@@ -133,6 +133,7 @@
     [%'GET' %know-read-at]    `[%memory %read]
     [%'GET' %know-lint]       `[%memory %read]
     [%'POST' %know-save]      `[%memory %write]
+    [%'POST' %know-save-batch]  `[%memory %write]
     [%'POST' %know-verify]    `[%memory %write]
     [%'POST' %know-supersede]  `[%memory %write]
     [%'POST' %know-tag]       `[%memory %write]

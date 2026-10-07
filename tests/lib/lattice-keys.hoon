@@ -27,11 +27,13 @@
   =/  ro  (row [%read %none & |])
   ;:  weld
     (expect-eq !>(&) !>((may rw 'POST' /know-save)))
+    (expect-eq !>(&) !>((may rw 'POST' /know-save-batch)))
     (expect-eq !>(&) !>((may rw 'GET' /page-source)))
     (expect-eq !>(|) !>((may rw 'POST' /page-save)))
     (expect-eq !>(|) !>((may rw 'GET' /fetch)))
     (expect-eq !>(&) !>((may ro 'GET' /know-recall)))
     (expect-eq !>(|) !>((may ro 'POST' /know-save)))
+    (expect-eq !>(|) !>((may ro 'POST' /know-save-batch)))
     (expect-eq !>(|) !>((may ro 'GET' /page-search)))
     (expect-eq !>(&) !>((may ro 'GET' /fetch)))
     ::  never: owner routes, other methods, deeper paths
