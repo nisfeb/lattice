@@ -90,6 +90,29 @@ is "know-restore" 200 "$(sc -X POST "$B/know-restore?key=$K-moved")"
 has "restored body" 'api matrix memory' "$(G "$B/know-read?key=$K-moved")"
 is "cleanup memory" 200 "$(sc -X POST "$B/know-delete?key=$K-moved")"
 
+echo "==> batch save"
+# two new notes, a bad key, and a third that repeats the first: one writer
+# poke, checked like single saves, including against earlier items
+BB="$(G -X POST "$B/know-save-batch" -H 'content-type: application/json' --data-binary "$(python3 -c "
+import json, sys
+k = sys.argv[1]
+body = 'batch matrix quokka lantern orchard ferry basalt meridian'
+print(json.dumps({'items': [
+  {'key': k + '/a', 'body': body, 'author': 'apimx'},
+  {'key': k + '/b', 'body': 'batch matrix second note, unrelated words entirely', 'author': 'apimx'},
+  {'key': 'Bad Key', 'body': 'x'},
+  {'key': k + '/c', 'body': body, 'author': 'apimx'}]}))" "$K-batch")")"
+batch_field() { printf '%s' "$BB" | python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1" 2>/dev/null; }
+is "batch saved two"            2   "$(batch_field "d['saved']")"
+is "batch results in order"     4   "$(batch_field "len(d['results'])")"
+is "batch: bad key refused"     400 "$(batch_field "d['results'][2]['status']")"
+is "batch: in-batch duplicate"  409 "$(batch_field "d['results'][3]['status']")"
+has "batch item landed"         'quokka lantern' "$(G "$B/know-read?key=$K-batch/a")"
+is "batch: refused not written" 404 "$(sc "$B/know-read?key=$K-batch/c")"
+is "batch: over 50 refused"     400 "$(sc -X POST "$B/know-save-batch" -H 'content-type: application/json' --data-binary "$(python3 -c "import json; print(json.dumps({'items': [{'key': '/x%d' % i, 'body': 'x'} for i in range(51)]}))")")"
+is "batch: bad shape refused"   400 "$(sc -X POST "$B/know-save-batch" -H 'content-type: application/json' --data-binary '{"items":[{"body":"no key"}]}')"
+for x in a b; do sc -o /dev/null -X POST "$B/know-delete?key=$K-batch/$x" >/dev/null; done
+
 echo "==> redirects"
 loc="$(curl -s -o /dev/null -w '%{redirect_url}' -H "$CK" "$B/edit?name=$P/note")"
 has "/edit redirects to /app with name" "app?name=$P/note" "$loc"

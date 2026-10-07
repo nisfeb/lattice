@@ -324,6 +324,7 @@
           ?:  =([/lattice %history-action] p.sage)  (pure:m ~)
           ?:  =([/lattice %key-action] p.sage)  (pure:m ~)
           ?:  =([/lattice %know-action] p.sage)  (bump-beacon %know now)
+          ?:  =([/lattice %know-batch] p.sage)  (bump-beacon %know now)
           (bump-beacon %rev now)
         $
       ::  /shares.sig: the cross-ship share-notice inbox. Foreign ships %add.
@@ -2906,64 +2907,49 @@
     ?~  k  (send-err eyre-id 400 'missing key')
     =/  ko=(unit path)  (know-key u.k)
     ?~  ko  (send-err eyre-id 400 'invalid key')
-    ::  a bodyless POST must not silently blank an existing note (merge-save would
-    ::  overwrite body with '' while keeping tags). Require a body, like /save.
     =/  bod=@t  (req-body req)
-    ?:  =('' bod)  (send-err eyre-id 400 'missing body')
-    ::  provenance (docs/agent-knowledge.md). A key always writes as its by,
-    ::  source agent, whatever the request says. The owner's saves stay
-    ::  verbatim unless they pass author=, source= or expected_updated=, so
-    ::  the editor's own front matter is never rewritten.
-    =/  author=@t  ?^(key by.u.key (~(gut by args) 'author' ''))
-    =/  source=@t  ?^(key 'agent' (~(gut by args) 'source' ''))
-    =/  expect=@t  (~(gut by args) 'expected_updated' '')
-    ::  sensitive=1 marks the entry; sensitive=0 clears it, owner only
-    =/  sarg=@t  (~(gut by args) 'sensitive' '')
-    ?.  |(=('' source) =('user' source) =('agent' source))
-      (send-err eyre-id 400 'source must be user or agent')
-    ?:  &(=('' author) =('' source) =('' expect) =('' sarg))
-      ;<  ~  bind:m  (poke-know [%save (spat u.ko) bod])
-      (send-ok eyre-id)
-    =/  prose=@t  rest:(front:lk bod)
-    ?:  =('' prose)  (send-err eyre-id 400 'empty body')
-    ;<  old=(unit know-entry:lk)  bind:m  (know-one u.ko)
-    ?:  &(?=(^ old) !(may-see key u.old))
-      (send-err eyre-id 403 'that key is not available to this agent key')
-    ::  a tainted key's new entries are sensitive, but an ordinary entry it
-    ::  edited would vanish for every other key, so that is refused
-    ?:  &(?=(^ key) ?=(^ old) !(sensitive:lk u.old) (tainted:ky u.key rnow))
-      (send-err eyre-id 403 tainted-msg)
-    ?:  &(!=('' expect) |(?=(~ old) !=(expect (scot %da updated.u.old))))
-      %^  send-err  eyre-id  409
-      ?~  old  'conflict: no such entry'
-      (crip "conflict: changed since you read it (now {(scow %da updated.u.old)}); read it again and merge")
+    ::  decided by +save-plan, as each item of /know-save-batch is
+    ;<  old=(unit know-entry:lk)  bind:m
+      ?:  (save-plain key args)  (pure:(fiber:fiber:nexus ,(unit know-entry:lk)) ~)
+      (know-one u.ko)
     ::  a new key: the duplicate check, the term cache ruling most out
     ;<  near=(list [o=@ud k=path])  bind:m
       =/  n  (fiber:fiber:nexus ,(list [o=@ud k=path]))
-      ?^  old  (pure:n ~)
+      ?.  (save-near key args bod old)  (pure:n ~)
       ;<  es=(map path know-entry:lk)  bind:n  read-know-map
       ;<  tc=term-cache:lk  bind:n  (current-terms es)
-      (pure:n (near:lk ~(tap by (listed key es tc)) tc prose))
-    ?:  &(?=(^ near) (gte o.i.near dup-at:lk) !=('1' (~(gut by args) 'force_new' '')))
-      %^  send-err  eyre-id  409
-      (crip "likely duplicate of {(spud k.i.near)} ({(a-co:co o.i.near)}% of terms shared): update that entry, or pass force_new=1 if this is a different fact")
-    ;<  now=@da  bind:m  ?~(key bowl-now (pure:(fiber:fiber:nexus ,@da) rnow))
-    ::  a key never lowers the mark, and a tainted key's saves are sensitive
-    =/  was=?  ?~(old | (sensitive:lk u.old))
-    =/  sens=?
-      ?~  key  ?:(=('0' sarg) | |(=('1' sarg) was))
-      |(=('1' sarg) was (tainted:ky u.key now))
-    ;<  ~  bind:m  (poke-know [%save (spat u.ko) (stamp:lk old prose author source now sens)])
+      (pure:n (near:lk ~(tap by (listed key es tc)) tc rest:(front:lk bod)))
+    ;<  bnow=@da  bind:m  bowl-now
+    =/  pl  (save-plan key rnow bnow u.ko bod args old near)
+    ?:  ?=(%| -.pl)  (send-err eyre-id code.p.pl msg.p.pl)
+    ;<  ~  bind:m  (poke-know act.p.pl)
+    (send-json eyre-id out.p.pl)
+  ::  many saves in one writer event: one store read, one duplicate pass,
+  ::  one term-cache write and one beacon bump, however many items. Body
+  ::  {"items":[{"key","body", and any of author, source, expected_updated,
+  ::  sensitive, force_new}]}, at most 50: the checks run unbroken, about a
+  ::  tenth of a second an item on a 1,000-memory store, and the ship takes
+  ::  nothing else meanwhile. Each item is decided exactly as
+  ::  /know-save decides one (+plan-batch). A refused item is reported in
+  ::  its place and not written; the rest are.
+      [%'POST' %know-save-batch]
+    =/  jon=(unit json)  (de:json:html (req-body req))
+    ?~  jon  (send-err eyre-id 400 'bad json')
+    =/  items=(unit (list [k=@t b=@t a=(map @t @t)]))
+      (mole |.((parse-save-batch u.jon)))
+    ?~  items
+      (send-err eyre-id 400 'bad batch: want {"items":[{"key":"...","body":"..."}]}')
+    ?:  (gth (lent u.items) 50)  (send-err eyre-id 400 'at most 50 items per batch')
+    ;<  es=(map path know-entry:lk)  bind:m  read-know-map
+    ;<  tc=term-cache:lk  bind:m  (current-terms es)
+    ;<  bnow=@da  bind:m  bowl-now
+    =/  [acts=(list know-action:lk) outs=(list json)]
+      (plan-batch key rnow bnow es tc u.items)
+    ;<  ~  bind:m  ?~(acts (pure:m ~) (poke-writer %know-batch acts))
     %+  send-json  eyre-id
     %-  pairs:enjs:format
-    :~  ['ok' b+&]
-        ['created' b+?=(~ old)]
-        ['sensitive' b+sens]
-        :-  'similar'
-        :-  %a
-        %+  turn  (scag 3 near)
-        |=  [o=@ud k=path]
-        (pairs:enjs:format ~[['key' s+(spat k)] ['shared' (numb:enjs:format o)]])
+    :~  ['saved' (numb:enjs:format (lent acts))]
+        ['results' a+outs]
     ==
   ::
       [%'POST' %know-delete]
@@ -3726,18 +3712,25 @@
   =/  kept=wall  (skip rendered |=(l=tape ?=(^ (find "app.hoon" l))))
   =/  out=wall  [(trip lab) ?~(kept rendered kept)]
   (crip (of-wall:format out))
-::  +terms-sync: /know/terms in step with the vault after one memory action,
-::  so the next search finds every row current. Only the keys the action
-::  touched are read. A row the sync misses is recomputed by its reader.
+::  +terms-sync: /know/terms in step with the vault after memory actions,
+::  so the next search finds every row current. Only the keys the actions
+::  touched are read, and the cache is read and written once for them all.
+::  A row the sync misses is recomputed by its reader.
 ::
 ++  terms-sync
-  |=  [root=@ud act=know-action:lk]
+  |=  [root=@ud acts=(list know-action:lk)]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   =/  tr=road:tarball  (rf root /know %terms)
   ;<  tc=term-cache:lk  bind:m  (read-terms tr)
-  =/  ks=(list path)
+  ::  each touched key, with the entry an import carries (so no read back)
+  =/  ks=(list [k=path imp=(unit know-entry:lk)])
+    %-  zing
+    %+  turn  acts
+    |=  act=know-action:lk
+    ^-  (list [k=path imp=(unit know-entry:lk)])
+    =/  imp=(unit know-entry:lk)  ?:(?=(%import -.act) `entry.act ~)
     %+  murn
       ?-  -.act
         %move  ~[from.act to.act]
@@ -3746,14 +3739,13 @@
         ?(%del %restore)  ~[key.act]
         ?(%save %tag %untag %import %import-trashed)  ~[key.act]
       ==
-    know-key
+    |=(t=@t (bind (know-key t) |=(p=path [p imp])))
   |-  ^-  form:m
   ?~  ks  (put-file tr [/lattice %know-terms] tc)
-  ::  an import carries the very entry it wrote, so no read back
   ;<  e=(unit know-entry:lk)  bind:m
-    ?:  ?=(%import -.act)  (pure:(fiber:fiber:nexus ,(unit know-entry:lk)) `entry.act)
-    (read-entry (entry-road up /know/vault i.ks))
-  $(ks t.ks, tc ?~(e (~(del by tc) i.ks) (~(put by tc) i.ks (row-of:lk i.ks u.e))))
+    ?^  imp.i.ks  (pure:(fiber:fiber:nexus ,(unit know-entry:lk)) imp.i.ks)
+    (read-entry (entry-road up /know/vault k.i.ks))
+  $(ks t.ks, tc ?~(e (~(del by tc) k.i.ks) (~(put by tc) k.i.ks (row-of:lk k.i.ks u.e))))
 ::  +read-terms: the term cache, ~ when absent or undecodable.
 ::
 ++  read-terms
@@ -3878,6 +3870,168 @@
 ++  tainted-msg
   ^-  @t
   'this key read sensitive memories in the last 12 hours, so until then its own words go only on sensitive memories'
+::  +save-plain: an owner's save with no provenance, written verbatim and
+::  unchecked, so the editor's own front matter is never rewritten
+++  save-plain
+  |=  [key=(unit key-row:ky) args=(map @t @t)]
+  ^-  ?
+  ?&  ?=(~ key)
+      =('' (~(gut by args) 'author' ''))
+      =('' (~(gut by args) 'source' ''))
+      =('' (~(gut by args) 'expected_updated' ''))
+      =('' (~(gut by args) 'sensitive' ''))
+  ==
+::  +save-near: does a save need the duplicate check? A new key that is no
+::  plain save and did not pass force_new=1, which skips the scan as well
+::  as its verdict.
+++  save-near
+  |=  [key=(unit key-row:ky) args=(map @t @t) bod=@t old=(unit know-entry:lk)]
+  ^-  ?
+  ?&  ?=(~ old)
+      !(save-plain key args)
+      !=('1' (~(gut by args) 'force_new' ''))
+      !=('' rest:(front:lk bod))
+  ==
+::  +save-plan: one memory save checked and stamped, or its refusal. Both
+::  /know-save and /know-save-batch decide here, so a batch gets exactly a
+::  single save's checks: the key's scope, the tainted-key rule, the
+::  expected_updated guard, the duplicate check and the sensitive mark.
+::  old is the entry under the key now, near its duplicate candidates
+::  (+save-near says when they are wanted). An owner's save is stamped
+::  bnow, a key's the request's own now.
+++  save-plan
+  |=  $:  key=(unit key-row:ky)  rnow=@da  bnow=@da  ko=path  bod=@t
+          args=(map @t @t)  old=(unit know-entry:lk)  near=(list [o=@ud k=path])
+      ==
+  ^-  (each [act=know-action:lk out=json] [code=@ud msg=@t])
+  ::  a bodyless save must not silently blank an existing note (merge-save
+  ::  would overwrite body with '' while keeping tags)
+  ?:  =('' bod)  [%| 400 'missing body']
+  ::  provenance (docs/agent-knowledge.md). A key always writes as its by,
+  ::  source agent, whatever the request says. The owner's saves stay
+  ::  verbatim unless they pass author=, source= or expected_updated=.
+  =/  author=@t  ?^(key by.u.key (~(gut by args) 'author' ''))
+  =/  source=@t  ?^(key 'agent' (~(gut by args) 'source' ''))
+  =/  expect=@t  (~(gut by args) 'expected_updated' '')
+  ::  sensitive=1 marks the entry; sensitive=0 clears it, owner only
+  =/  sarg=@t  (~(gut by args) 'sensitive' '')
+  ?.  |(=('' source) =('user' source) =('agent' source))
+    [%| 400 'source must be user or agent']
+  ?:  (save-plain key args)
+    [%& [%save (spat ko) bod] (pairs:enjs:format ~[['ok' b+&]])]
+  =/  prose=@t  rest:(front:lk bod)
+  ?:  =('' prose)  [%| 400 'empty body']
+  ?:  &(?=(^ old) !(may-see key u.old))
+    [%| 403 'that key is not available to this agent key']
+  ::  a tainted key's new entries are sensitive, but an ordinary entry it
+  ::  edited would vanish for every other key, so that is refused
+  ?:  &(?=(^ key) ?=(^ old) !(sensitive:lk u.old) (tainted:ky u.key rnow))
+    [%| 403 tainted-msg]
+  ?:  &(!=('' expect) |(?=(~ old) !=(expect (scot %da updated.u.old))))
+    :+  %|  409
+    ?~  old  'conflict: no such entry'
+    (crip "conflict: changed since you read it (now {(scow %da updated.u.old)}); read it again and merge")
+  ?:  &(?=(^ near) (gte o.i.near dup-at:lk) !=('1' (~(gut by args) 'force_new' '')))
+    :+  %|  409
+    (crip "likely duplicate of {(spud k.i.near)} ({(a-co:co o.i.near)}% of terms shared): update that entry, or pass force_new=1 if this is a different fact")
+  =/  now=@da  ?~(key bnow rnow)
+  ::  a key never lowers the mark, and a tainted key's saves are sensitive
+  =/  was=?  ?~(old | (sensitive:lk u.old))
+  =/  sens=?
+    ?~  key  ?:(=('0' sarg) | |(=('1' sarg) was))
+    |(=('1' sarg) was (tainted:ky u.key now))
+  :+  %&  [%save (spat ko) (stamp:lk old prose author source now sens)]
+  %-  pairs:enjs:format
+  :~  ['ok' b+&]
+      ['created' b+?=(~ old)]
+      ['sensitive' b+sens]
+      :-  'similar'
+      :-  %a
+      %+  turn  (scag 3 near)
+      |=  [o=@ud k=path]
+      (pairs:enjs:format ~[['key' s+(spat k)] ['shared' (numb:enjs:format o)]])
+  ==
+::  +plan-batch: /know-save-batch's items decided in order by +save-plan,
+::  each against the store as the earlier items left it, so two
+::  near-identical notes in one batch are caught like a note and an old
+::  one. Returns the writes to make, and one result per item in order.
+++  plan-batch
+  |=  $:  key=(unit key-row:ky)  rnow=@da  bnow=@da
+          es=(map path know-entry:lk)  tc=term-cache:lk
+          items=(list [k=@t b=@t a=(map @t @t)])
+      ==
+  ^-  [(list know-action:lk) (list json)]
+  ::  the duplicate candidates, as +listed gives them to this caller
+  =/  pool=(list [path know-entry:lk])  ~(tap by (listed key es tc))
+  =|  acts=(list know-action:lk)
+  =|  outs=(list json)
+  |-  ^-  [(list know-action:lk) (list json)]
+  ?~  items  [(flop acts) (flop outs)]
+  =/  ko=(unit path)  (know-key k.i.items)
+  ?~  ko  $(items t.items, outs [(batch-err k.i.items 400 'invalid key') outs])
+  =/  old=(unit know-entry:lk)  (~(get by es) u.ko)
+  =/  near=(list [o=@ud k=path])
+    ?.  (save-near key a.i.items b.i.items old)  ~
+    (near:lk pool tc rest:(front:lk b.i.items))
+  =/  pl  (save-plan key rnow bnow u.ko b.i.items a.i.items old near)
+  ?:  ?=(%| -.pl)  $(items t.items, outs [(batch-err k.i.items p.pl) outs])
+  ::  later items see this one: as the entry under its key, and as a
+  ::  candidate unless +listed would hide it from this caller
+  =/  e=know-entry:lk
+    (merge-save:lk old ?>(?=(%save -.act.p.pl) body.act.p.pl) bnow)
+  %=  $
+    items  t.items
+    acts   [act.p.pl acts]
+    outs   [(batch-ok k.i.items out.p.pl) outs]
+    es     (~(put by es) u.ko e)
+    tc     (~(put by tc) u.ko (row-of:lk u.ko e))
+    pool   ?:(&(?=(^ key) (sensitive:lk e)) pool [[u.ko e] pool])
+  ==
+::  +batch-ok, +batch-err: one /know-save-batch result, named by its key
+++  batch-ok
+  |=  [k=@t out=json]
+  ^-  json
+  ?.  ?=([%o *] out)  out
+  [%o (~(put by p.out) 'key' s+k)]
+++  batch-err
+  |=  [k=@t code=@ud msg=@t]
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['key' s+k]
+      ['ok' b+|]
+      ['status' (numb:enjs:format code)]
+      ['error' s+msg]
+  ==
+::  +parse-save-batch: {"items":[{"key":..,"body":.., and any /know-save
+::  option}]}. The options become the args the single route reads from its
+::  query string; true and false stand for "1" and "0".
+++  parse-save-batch
+  |=  jon=json
+  ^-  (list [k=@t b=@t a=(map @t @t)])
+  =/  opt
+    |=  j=json
+    ^-  @t
+    ?+  j  ~|(%bad-option !!)
+      [%s *]  p.j
+      [%n *]  p.j
+      [%b *]  ?:(p.j '1' '0')
+    ==
+  %.  jon
+  %-  ot:dejs:format
+  :~  :-  %items
+      %-  ar:dejs:format
+      |=  j=json
+      ^-  [k=@t b=@t a=(map @t @t)]
+      ?>  ?=([%o *] j)
+      :+  (so:dejs:format (~(got by p.j) 'key'))
+        (so:dejs:format (~(got by p.j) 'body'))
+      %-  malt
+      %+  murn  `(list @t)`~['author' 'source' 'expected_updated' 'sensitive' 'force_new']
+      |=  o=@t
+      ^-  (unit [@t @t])
+      =/  v=(unit json)  (~(get by p.j) o)
+      ?~(v ~ `[o (opt u.v)])
+  ==
 ::  +key-guard: for a keyed write to one entry, ~ to go ahead, or why not.
 ::  An entry the key may not see is not found. A tainted key may not put
 ::  its own words (words) on an entry other keys can read.
@@ -3940,7 +4094,23 @@
   ?:  =([/lattice %know-action] p.sage)
     =/  act=know-action:lk  !<(know-action:lk q.sage)
     ;<  ~  bind:m  (apply root now act)
-    (terms-sync root act)
+    (terms-sync root ~[act])
+  ::  many memory actions in one poke (POST /know-save-batch): each applied
+  ::  in order, then one term-cache sync for them all. Every tenth, the
+  ::  writer sleeps a moment so the ship takes what is waiting: unbroken,
+  ::  200 saves held it for over two minutes (~pyl, 1,000 memories). Pokes
+  ::  to the writer stay queued meanwhile (+take-wake-drain skips them).
+  ?:  =([/lattice %know-batch] p.sage)
+    =/  acts=(list know-action:lk)  !<((list know-action:lk) q.sage)
+    =/  todo=(list know-action:lk)  acts
+    =|  done=@ud
+    |-  ^-  form:m
+    ?~  todo  (terms-sync root acts)
+    ;<  ~  bind:m
+      ?.  &(!=(0 done) =(0 (mod done 10)))  (pure:m ~)
+      (sleep-draining (div ~s1 100))
+    ;<  ~  bind:m  (apply root now i.todo)
+    $(todo t.todo, done +(done))
   ?:  =([/lattice %pub-action] p.sage)
     (apply-pub root now !<(pub-action:lp q.sage))
   ?:  =([/lattice %sub-action] p.sage)
