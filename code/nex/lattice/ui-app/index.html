@@ -475,6 +475,13 @@ select, option { color-scheme: inherit; }
   .tree, .edwrap, .prevwrap, .ctl { grid-column: 1; grid-row: 3; display: none;
     border: 0; }
   .ws[data-mv="tree"] .tree { display: block; }
+  /* the document scrolls here, so these two panes must not. Still
+     overflow:auto from the desktop rules, each was a scroll container sized
+     to its own content, where a fraction of a pixel of rounding can leave an
+     invisible range. A swipe latches to the innermost scroller that can
+     move at all, so a sliver like that takes the first swipe from the top
+     and only the second moves the page. */
+  .tree, .ctl { overflow: visible; }
   .ws[data-mv="code"] .edwrap { display: block; min-height: 68vh; }
   .ws[data-mv="prev"] .prevwrap { display: block; min-height: 68vh; }
   .ws[data-mv="ctl"] .ctl { display: block; }
