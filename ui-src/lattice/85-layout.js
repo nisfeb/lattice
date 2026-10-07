@@ -140,3 +140,47 @@
       panes.ed = Math.round(lim((x - ed.left) / Math.max(60, pv.right - x), 0.25, 4) * 1000) / 1000;
     });
   }
+
+  // ── ?diag=1: a swipe readout for scroll bugs reported from phones ───────
+  // On with ?diag=1, off with ?diag=0. The setting is kept, and an installed
+  // PWA shares this storage with the browser, so turning it on in a Chrome
+  // tab shows it in the app too. After each touch it names what scrolled and
+  // by how much, and every scroller with room to move: a swipe latches to
+  // the innermost one that can move, however little. Read-only, so it
+  // cannot change the gesture it reports. Temporary: out once it has done
+  // its job, like the last one.
+  {
+    const q = location.search.match(/[?&]diag=([01])/);
+    try { if (q) localStorage.latDiag = q[1]; } catch {}
+    let diag = false;
+    try { diag = localStorage.latDiag === '1'; } catch {}
+    if (diag) {
+      const d = document.createElement('div');
+      d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99;'
+        + 'font:11px/1.3 ui-monospace,monospace;background:#000d;color:#0f0;'
+        + 'padding:4px 6px;pointer-events:none;white-space:pre-wrap';
+      document.body.append(d);
+      const name = (el) => el === document.scrollingElement ? 'ROOT'
+        : el.tagName.toLowerCase() + (el.id ? '#' + el.id : '')
+          + (typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\s+/)[0] : '');
+      const scrollers = () => [document.scrollingElement, ...[...document.querySelectorAll('*')]
+        .filter((el) => el.offsetParent !== null && /(auto|scroll)/.test(getComputedStyle(el).overflowY))];
+      let before = [];
+      const show = (moved) => {
+        const can = scrollers().filter((el) => el.scrollHeight > el.clientHeight)
+          .map((el) => `${name(el)} ${el.scrollTop.toFixed(2)}/${el.scrollHeight - el.clientHeight}`
+            + ` h=${el.getBoundingClientRect().height.toFixed(2)}`);
+        d.textContent = `last swipe moved: ${moved}\nscrollers (at/max): ${can.join(', ') || 'none'}`
+          + `\ninner=${innerHeight} vv=${window.visualViewport ? visualViewport.height.toFixed(1) : '-'}`
+          + ` ${navigator.userAgent.replace(/^.*Chrome\//, 'Chrome/').split(' ')[0]}`;
+      };
+      addEventListener('touchstart', () => { before = scrollers().map((el) => [el, el.scrollTop]); },
+        { passive: true, capture: true });
+      addEventListener('touchend', () => setTimeout(() => {
+        const moved = before.filter(([el, t]) => el.scrollTop !== t)
+          .map(([el, t]) => `${name(el)} ${(el.scrollTop - t).toFixed(2)}`);
+        show(moved.join(', ') || 'nothing');
+      }, 800), { passive: true, capture: true });
+      show('(no swipe yet)');
+    }
+  }
