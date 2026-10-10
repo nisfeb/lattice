@@ -8,6 +8,7 @@ Lattice keeps a **private, tagged knowledge store** on your ship: the memory you
 |---|---|---|
 | [Claude Code plugin](../plugins/claude/README.md) | Claude Code | an agent key |
 | [Hermes memory provider](../plugins/hermes/README.md) | Hermes | an agent key |
+| [The plugin's MCP server](#opencode-and-other-mcp-clients) | opencode, or any client that runs a local MCP server | an agent key |
 | HTTP routes under `/apps/lattice` | your own scripts and agents | an agent key, or your login cookie |
 | grubbery's MCP tools (`lattice-*`) | any MCP client without a plugin | your login cookie |
 
@@ -113,7 +114,38 @@ All under `/apps/lattice/`. GET reads, POST writes, parameters go in the query s
 
 [agent-guide.md](agent-guide.md) covers the rest of the HTTP API, the filesystem mount and search.
 
+## Where your memories live
+
+On your ship, in lattice's own store, not on any computer. Each memory is one entry under its key, with its tags, who saved it and when, every earlier revision, and a trash you can restore from. You read and edit them in lattice's knowledge view (`/apps/lattice/know`, or the knowledge mode in the editor's menu). Agents reach them only through their key, and only as its scope allows. They are not in the filesystem mount, which carries your pages only. `GET /apps/lattice/know-all` exports the lot as JSON (owner only), and `POST /know-import` reads such an export back.
+
+## opencode and other MCP clients
+
+The Claude Code plugin is two things: a small MCP server, `plugins/claude/server.mjs` (plain Node 16 or later, no dependencies), which offers the `memory_*` tools over lattice's HTTP routes with an agent key; and Claude-specific wrapping around it, hooks that load the index at session start and add strong matches to each prompt, plus a skill and commands. Any client that can run a local MCP server can use the server as it is, and the skill as its instructions.
+
+For opencode, copy `plugins/claude/` somewhere, make a key for it (Settings, Agent keys), and add to `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "lattice": {
+      "type": "local",
+      "command": ["node", "/path/to/lattice-plugin/server.mjs"],
+      "environment": { "LATTICE_URL": "https://your-ship.example.com", "LATTICE_KEY": "<the key>" },
+      "enabled": true
+    }
+  },
+  "instructions": ["/path/to/lattice-plugin/skills/memory/SKILL.md", "/path/to/lattice-plugin/skills/wiki/SKILL.md"]
+}
+```
+
+The skill tells an agent without hooks to start each session with `memory_index`. Recall before each task is the agent's own job there, as the skill says.
+
+ChatGPT cannot run a local server: it reaches MCP servers over HTTPS. That would need lattice to serve MCP itself, behind an agent key, which it does not do yet.
+
 ## grubbery's MCP tools
+
+**When you need this.** For memory and pages, use an agent key: a plugin, or the server above. grubbery's MCP endpoint is for operating the ship itself, with tools for its files, its dojo and its forge, and it runs on your login cookie. That cookie carries every power you have over the ship, including reading sensitive memories with no clearance, and expires after a week or a restart. Give it only to an agent you would hand the ship to. Its own tools are documented in nisfeb/grubbery. On newer grubbery kernels it is served at `<ship>/grubbery/tools`, with `<ship>/grubbery/mcp` kept as an alias.
 
 For an MCP client without a plugin, sixteen `lattice-*` tools live in grubbery's tool bundle (`desk/gub/lib/tool-bundle/` in nisfeb/grubbery), compile into the ship's `tools.tools` nexus and are served at `<ship>/grubbery/mcp`. They read the vault directly and write through lattice's writer, sharing the ranking and save code with the routes. `tools/list` advertises only `call_tool`, `echo` and `list_tools`, so call a lattice tool by its name, or through `call_tool`.
 

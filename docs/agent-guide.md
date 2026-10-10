@@ -57,6 +57,7 @@ This uses grubbery's generic ball API (`/grubbery/api/tree` + `/grubbery/api/fil
 
 **Things an agent must know about the mount:**
 
+- **It carries pages only.** Memories live in lattice's knowledge store ([agent-knowledge.md](agent-knowledge.md#where-your-memories-live)), and bookmarks on the reader's bookmarks page; neither is in the mount.
 - **Freshness is a 5-second poll.** External edits (browser, another client) show up within ~5s, on the next filesystem access. There is no push yet.
 - **Large files are lazy.** A page body over 256 KB is *not* in the warm dump. The first `cat` or `read` of it fetches on demand, in one round-trip. Small files are all resident.
 - **lick is single-connection.** One `fs.sig` port serves one mount at a time. A second lick mount will hang waiting for the socket. Use the HTTP transport for a concurrent mount.
