@@ -7,9 +7,11 @@
  *     themes, Talon's exact shape), so they follow the user to every device
  *   - an accent, as Talon's: off, the %contacts profile colour, or any
  *     colour, laid over whichever theme is in use (entry accent)
- *   - "use Talon's theme", on unless turned off: Talon's active custom theme
- *     and its accent, read from its own %settings bucket, win over lattice's
- *     wherever Talon has one.
+ *   - "use Talon's theme", on unless turned off (the settings page shows it
+ *     inverted, as "a lattice-specific theme"): lattice wears what Talon
+ *     does, read from Talon's own %settings bucket, its custom theme or the
+ *     built-in one, and its accent. Lattice's own theme and accent apply
+ *     only when it is off.
  *   - "use Talon's font", on unless turned off, apart from the theme: the
  *     font Talon sets its text in, for lattice's own text (the editor keeps
  *     its Typography choice). An installed one comes from the ship.
@@ -124,7 +126,6 @@
   const load = () => { try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.latTheme || '{}')); } catch { return Object.assign({}, DEFAULTS); } };
   let st = load();
   const activeOf = (ts) => (ts && Array.isArray(ts.themes) && ts.themes.find((t) => t.id === ts.activeId && valid(t))) || null;
-  const talonActive = () => (st.useTalon ? activeOf(st.talon) : null);
   // an accent's colour, when it is on and has one. Unset reads as off: Talon
   // turns it on by itself only for a multi-ship login, which we cannot see.
   // An unknown mode reads as Profile, as Talon reads it.
@@ -134,11 +135,14 @@
     const h = a.mode === 'Custom' ? a.customHex : st.profile;
     return hex6(h) ? rgb(h) : null;
   };
-  const talonAccent = () => (st.useTalon ? accentOf(st.talonAccent) : null);
+  // following Talon (the default), lattice wears what Talon wears: its theme,
+  // or the built-in one when Talon is on its own, and its accent. Lattice's
+  // own theme and accent apply only once "a lattice-specific theme" is on,
+  // the one time the settings page shows them, so nothing hidden applies.
   function resolve() {
-    const t = talonActive() || activeOf(st.mine);
+    const t = activeOf(st.useTalon ? st.talon : st.mine);
     let v = t ? themeVars(t) : FORCED[st.mode] || {};
-    const a = talonAccent() || accentOf(st.accent);
+    const a = accentOf(st.useTalon ? st.talonAccent : st.accent);
     if (a) v = tinted(v, a);
     const f = fontChoice();
     return f ? Object.assign({}, v, { '--font': fontStack(f.family) }) : v;
@@ -272,7 +276,7 @@
     // only when an accent wants it; a %contacts that cannot answer leaves the
     // last colour we had.
     next.profile = st.profile;
-    if ((next.useTalon && wantsProfile(next.talonAccent)) || wantsProfile(next.accent)) {
+    if (wantsProfile(next.useTalon ? next.talonAccent : next.accent)) {
       try {
         const c = ((await scry('contacts/v1/self')) || {}).color;
         const h = String((c && typeof c === 'object' ? c.value : c) || '').replace(/^(0x|#)/i, '').replace(/\./g, '');
@@ -340,19 +344,39 @@
       el.append(note('Light, dark, or whatever your system is set to. This browser only.'));
       el.append(row(...['system', 'light', 'dark'].map((m) =>
         btn(m[0].toUpperCase() + m.slice(1), () => { st.mode = m; commit(); }, st.mode === m))));
+      // lattice follows Talon unless this is on; it is stored as Talon's
+      // use-talon-theme, inverted. Turned off, go and get Talon's current
+      // theme, but only once the ship has the switch: asked sooner, it
+      // answers "on" and undoes the click
       const tl = document.createElement('label'), cb = document.createElement('input');
-      cb.type = 'checkbox'; cb.checked = st.useTalon;
-      // turned on, go and get Talon's current theme, but only once the ship
-      // has the switch: asked sooner, it answers "off" and undoes the click
+      cb.type = 'checkbox'; cb.checked = !st.useTalon;
       cb.onchange = () => {
-        st.useTalon = cb.checked; commit();
-        put('use-talon-theme', { enabled: cb.checked }).then(() => { if (st.useTalon) refresh(); });
+        st.useTalon = !cb.checked; commit();
+        put('use-talon-theme', { enabled: st.useTalon }).then(() => { if (st.useTalon) refresh(); });
       };
-      tl.append(cb, " Use Talon's theme");
+      tl.append(cb, ' Use a lattice-specific theme');
       el.append(row(tl));
-      el.append(note(!st.useTalon ? 'Talon’s theme is ignored here.'
-        : ta ? 'Talon is using “' + ta.name + '”, so lattice is too. Turn this off to use your own.'
-          : 'Talon is on its built-in theme, so lattice uses its own below.'));
+      el.append(note(!st.useTalon ? 'Lattice uses its own theme and accent, below, whatever Talon uses.'
+        : ta ? 'Lattice follows Talon, which is using “' + ta.name + '”.'
+          : 'Lattice follows Talon, which is on its built-in theme.'));
+      if (!st.useTalon) {
+        el.append(note('Your own themes: pick five colours and the rest is worked out. Saved to your ship, so they follow you to every device.'));
+        el.append(row(btn('Built-in', () => setMine(Object.assign({}, mine, { activeId: null })), !activeOf(mine)),
+          ...themes.map((t) => btn(t.name, () => setMine(Object.assign({}, mine, { activeId: t.id })), mine.activeId === t.id))));
+        const cur = activeOf(mine);
+        el.append(row(
+          btn('New theme', () => {
+            const d = isDark(), [bg, sf] = SEED_BG[d];
+            draft = Object.assign({ id: Math.random().toString(36).slice(2), name: '', dark: d }, SEED, { background: bg, surface: sf },
+              Object.fromEntries(MORE.map((k) => [k, ''])));
+            draw();
+          }),
+          ...(cur ? [btn('Edit', () => { draft = Object.assign({}, cur); draw(); }),
+            btn('Delete', () => setMine({ themes: themes.filter((t) => t.id !== cur.id), activeId: null }))] : [])));
+        if (draft) el.append(editor());
+        el.append(...accentSection());
+      }
+      // Talon's font is its own switch, below the theme's, whichever is on
       const fl = document.createElement('label'), fb = document.createElement('input');
       fb.type = 'checkbox'; fb.checked = st.useTalonFont;
       fb.onchange = () => {
@@ -366,21 +390,6 @@
         : !fam ? 'Talon uses the system’s font, and so does lattice.'
           : 'Talon sets its text in ' + ({ serif: 'a serif', monospace: 'monospace' }[fam] || fam)
             + ', so lattice does too. The editor keeps its own, under Typography.'));
-      el.append(note('Your own themes: pick five colours and the rest is worked out. Saved to your ship, so they follow you to every device.'));
-      el.append(row(btn('Built-in', () => setMine(Object.assign({}, mine, { activeId: null })), !activeOf(mine)),
-        ...themes.map((t) => btn(t.name, () => setMine(Object.assign({}, mine, { activeId: t.id })), mine.activeId === t.id))));
-      const cur = activeOf(mine);
-      el.append(row(
-        btn('New theme', () => {
-          const d = isDark(), [bg, sf] = SEED_BG[d];
-          draft = Object.assign({ id: Math.random().toString(36).slice(2), name: '', dark: d }, SEED, { background: bg, surface: sf },
-            Object.fromEntries(MORE.map((k) => [k, ''])));
-          draw();
-        }),
-        ...(cur ? [btn('Edit', () => { draft = Object.assign({}, cur); draw(); }),
-          btn('Delete', () => setMine({ themes: themes.filter((t) => t.id !== cur.id), activeId: null }))] : [])));
-      if (draft) el.append(editor());
-      el.append(...accentSection());
       if (status) { const s = note(status); s.className = 'err'; el.append(s); }
     };
     // Talon's accent: off, the profile colour, or any colour. A pick in the
@@ -410,7 +419,6 @@
       if (how === 'profile') {
         out.push(note(st.profile ? 'Your %contacts profile colour is ' + st.profile + '.' : 'Your %contacts profile has no colour.'));
       }
-      if (talonAccent()) out.push(note('Talon’s accent is on, so lattice wears it. Turn off “Use Talon’s theme” to use this one.'));
       return out;
     }
     function editor() {
@@ -494,9 +502,14 @@
   });
   const ui = document.getElementById('themeui');
   if (ui) mount(ui);
-  // ponytail: a page load asks the ship at most once a minute, so a theme or
-  // accent changed in Talon (or a new profile colour) shows up on the next
-  // page after that. The settings page
-  // always asks. Live updates would need a %settings subscription.
+  // A page load asks the ship at most once a minute; the settings page
+  // always asks. Coming back to lattice asks again, at most every five
+  // seconds, so a theme or accent changed in Talon meanwhile shows without
+  // a relaunch. ponytail: no %settings subscription, so a change made while
+  // lattice stays in front waits for the next return; subscribe if that
+  // ever matters.
   if (ui || Date.now() - st.at > 60000) refresh();
+  const back = () => { if (!document.hidden && Date.now() - st.at > 5000) refresh(); };
+  window.addEventListener('focus', back);
+  document.addEventListener('visibilitychange', back);
 })();

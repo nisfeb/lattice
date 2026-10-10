@@ -9278,6 +9278,8 @@
     "<label for=\"kweb\"><input type=\"checkbox\" id=\"kweb\" name=\"kweb\" checked> read other ships&rsquo; pages</label>"
     "<label for=\"ksen\"><input type=\"checkbox\" id=\"ksen\" name=\"ksen\"> read sensitive memories</label>"
     "<button class=\"btn\" type=\"submit\">Make key</button></form>"
+    ::  what the sensitive checkbox does, which its label alone never said
+    "<p class=\"muted\">Read sensitive memories: a memory with <code>sensitive: yes</code> in its front matter (health, money, family) is invisible to a key without this. A key with it can read them, but for 12 hours after reading one, everything it writes is marked sensitive too, so it cannot pass what it read to a key without clearance. Clearance is set here, when the key is made.</p>"
     "<p id=\"keytok\" hidden>Copy this key now. It is not shown again. <code></code></p>"
     "<p id=\"keyerr\" class=\"err\"></p>"
     "<ul id=\"keylist\" class=\"bklist\"></ul>"
