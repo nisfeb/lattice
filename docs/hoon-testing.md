@@ -9,7 +9,9 @@ scripts/hoon-test-kit/hoon-test.sh <pier>                    # every suite, ~13 
 MUTANT_T=30 DOJO_PANE=<pane> scripts/hoon-test-kit/hoon-mutate.py <pier> --only <arms>
 ```
 
-Test desk: `%lattice-test` on `~feb` (set up 2026-09-26).
+Test desk: `%lattice-test` on `~mec`, fleet set `lattice-dev` (see
+[TESTING.md](../TESTING.md)). Until 2026-10 it was on `~feb`, which the
+history below refers to.
 
 ## First mutation pass (boundary, conjunct), 2026-09-26
 

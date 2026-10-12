@@ -208,7 +208,7 @@ def touched_arms(rev):
     """The arms a git diff against rev touches, per lib: where a big lib's
     change is, so the expensive ops run there and not over every arm."""
     arms = set()
-    for path, lib in LIBS:
+    for path, _, lib in LIBS:
         diff = subprocess.run(['git', '-C', ROOT, 'diff', '-U0', rev, '--', path],
                               capture_output=True, text=True, check=True).stdout
         lines = open(path).readlines()
