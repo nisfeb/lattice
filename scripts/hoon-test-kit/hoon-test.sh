@@ -82,16 +82,21 @@ sync() {
 # No answer at all is exit 4, never a test verdict: a ship that crashed
 # mid-run must not read as a failing suite (or a killed mutant).
 ted() {
-  local hoon out; hoon=$(sed ':a;N;$!ba;s/\n/  /g')
-  out=$(printf '%s\n' "[0 %fyrd [%base %khan-eval %noun [%ted-eval '$hoon']]]" |
+  local hoon out cued; hoon=$(sed ':a;N;$!ba;s/\n/  /g')
+  # vere's --cue output is cut at 64 KiB when it writes into a pipe, so it
+  # writes into a file and the file is read back
+  cued=$(mktemp)
+  printf '%s\n' "[0 %fyrd [%base %khan-eval %noun [%ted-eval '$hoon']]]" |
     "$VERE" eval --jam -n 2>/dev/null |
-    socat -T "${T:-60}" -,ignoreeof UNIX-CONNECT:"$sock" 2>/dev/null |
-    "$VERE" eval --cue -n 2>/dev/null | tail -1 |
+    socat -T "${T:-600}" -,ignoreeof UNIX-CONNECT:"$sock" 2>/dev/null |
+    "$VERE" eval --cue -n >"$cued" 2>/dev/null || true
+  out=$(tail -1 "$cued" |
     sed -E 's/^\[0 %avow 0 %noun (.*)\]$/\1/' |
     # a failed thread's tang arrives as [%leaf <bytes> 0]: make it text
     perl -pe 's/\[%leaf ((?:\d+ )*)0\]/join "", map chr, split " ", $1/ge' |
     # and a product that is itself [%leaf tape] (the test report) arrives bare
     perl -pe 's/^%leaf ((?:\d+ )*)0$/join "", map chr, split " ", $1/e') || true
+  rm -f "$cued"
   [[ -n "$out" ]] || { echo "the ship at $pier did not answer" >&2; return 4; }
   echo "$out"
 }
@@ -233,4 +238,16 @@ passed=$(grep -c '^OK ' <<<"$report" || true)
 failed=$(grep -c '^\(FAILED\|CRASHED\)' <<<"$report" || true)
 if [[ "$failed" -gt 0 ]]; then echo "hoon tests FAILED: $failed failed, $passed passed"; exit 1; fi
 if [[ "$passed" -eq 0 ]]; then echo "no tests ran: $report"; exit 2; fi
+# A full run must have run every suite on disk. The thread lists the desk's
+# own tests/lib, so a run that starts before a sync's new files have landed
+# (or anything else that skips a file) would otherwise read as a pass with
+# whole suites missing (seen: "passed: 229" with three suites absent).
+if [[ $# -eq 0 ]]; then
+  missing=""
+  for f in "$root/$TESTS"/*.hoon; do
+    s=$(basename "$f" .hoon)
+    grep -q "/tests/lib/$s/" <<<"$report" || missing+=" $s"
+  done
+  if [[ -n "$missing" ]]; then echo "suites that did not run:$missing (rerun; if it persists, check the desk)"; exit 2; fi
+fi
 echo "hoon tests passed: $passed"
