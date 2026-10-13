@@ -34,7 +34,6 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
-use lattice_fs::default_cookie_path;
 
 /// the ship base the bridge currently relays to, and the port it listens on
 pub struct Bridge(pub Mutex<Option<(Arc<Mutex<String>>, u16)>>);
@@ -178,8 +177,12 @@ pub fn session_cookie(path: &str) -> Option<String> {
 /// The one place credentials go onto an outbound request. Read fresh every
 /// time: a reconnect rewrites the cookie file, and the next request must use
 /// the new session rather than one cached at startup.
+///
+/// The cookie is looked up by the request's OWN origin (session.rs), never
+/// by whichever ship the config names right now. So a request can only ever
+/// carry the cookie that origin issued.
 pub fn with_cookie(req: ureq::Request) -> ureq::Request {
-    match session_cookie(&default_cookie_path()) {
+    match crate::session::cookie_for(req.url()) {
         Some(c) => req.set("cookie", &c),
         None => req,
     }

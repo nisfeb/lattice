@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
-use lattice_fs::{default_cookie_path, projection_http};
+use lattice_fs::projection_http;
 use tauri::{AppHandle, State};
 
 use crate::config::{self, MountSpec};
@@ -90,7 +90,11 @@ pub fn projection_for(
     if cfg.url.is_empty() {
         return Err("connect to a ship first, or mount a ship running on this machine".into());
     }
-    let proj = projection_http(&cfg.url, &default_cookie_path(), root)?;
+    // the cookie for THIS url's origin, never another ship's
+    crate::session::check_ship_url(&cfg.url)?;
+    let cookie = crate::session::cookie_path_for(&cfg.url)
+        .ok_or_else(|| format!("no session slot for {}", cfg.url))?;
+    let proj = projection_http(&cfg.url, &cookie.to_string_lossy(), root)?;
     // The lick branch above proves the ship is there before ever building a
     // projection, by opening its socket. HTTP gets no such proof for free —
     // building the projection only parses the cookie file on disk, no
