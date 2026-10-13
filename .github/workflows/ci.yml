@@ -148,6 +148,7 @@ jobs:
         run: |
           node --check plugins/claude/server.mjs
           node --check plugins/claude/hooks/lattice-hook.mjs
+          node --check plugins/claude/url-rule.mjs
           python3 -m py_compile plugins/hermes/__init__.py
           for f in .claude-plugin/marketplace.json plugins/claude/.claude-plugin/plugin.json plugins/claude/.mcp.json plugins/claude/hooks/hooks.json; do python3 -m json.tool "$f" >/dev/null; done
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node plugins/claude/server.mjs | grep -q memory_recall
