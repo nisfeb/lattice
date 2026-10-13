@@ -320,6 +320,20 @@ fn exercise(mnt: &Path, ship: &Ship) {
     assert_eq!(read_to_string(&mnt.join("b.tmp")), "scratch\n");
     assert_eq!(ship.log()[before..].len(), 0, "temp -> temp must not reach the ship");
 
+    // an upper-case extension is still a page, and its bytes reach the ship.
+    // It used to count as scratch and be lost on unmount.
+    fs::write(mnt.join("Shouty.MD"), "loud\n").unwrap();
+    assert_eq!(ship.body("Shouty").unwrap(), b"loud\n");
+
+    // an unknown extension that is no editor temp would only live in RAM.
+    // Create refuses it, and so does a rename onto such a name.
+    let e = fs::write(mnt.join("data.xyz"), "lost?").unwrap_err();
+    assert_eq!(e.raw_os_error(), Some(libc::EINVAL), "data.xyz must be refused: {e}");
+    assert!(!names(mnt).contains(&"data.xyz".to_string()));
+    let e = fs::rename(mnt.join("b.tmp"), mnt.join("data.xyz")).unwrap_err();
+    assert_eq!(e.raw_os_error(), Some(libc::EINVAL), "a rename onto data.xyz must be refused");
+    assert_eq!(read_to_string(&mnt.join("b.tmp")), "scratch\n", "and the temp is untouched");
+
     // ---------- permissions ----------
 
     // a mode we report as read-only is enforced by the kernel (DefaultPermissions)

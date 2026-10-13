@@ -1,8 +1,7 @@
 //! Connect flow: one +code entry logs in both sides. The Rust login stores
-//! the shared fuse cookie, and open_workspace drives the webview through the
-//! ship's own /~/login form so eyre sets its session cookie first-party.
+//! the session cookie for that ship's origin (session.rs), and the localhost
+//! bridge attaches it to everything the webview sends.
 
-use lattice_fs::{default_cookie_path, EyreTransport, Transport};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -16,19 +15,25 @@ pub fn dlog(msg: &str) {
     }
 }
 
-/// Log the Rust side in (stores the shared fuse cookie), remember the url,
-/// open the workspace, get the manager out of the way. Async: the blocking
-/// login and the cookie-settle poll in open_workspace must run off the main
-/// thread (a main-thread wait would deadlock the webview's async cookie add).
+/// Log the Rust side in, remember the url, open the workspace, get the
+/// manager out of the way. Async: the blocking login and the cookie-settle
+/// poll in open_workspace must run off the main thread (a main-thread wait
+/// would deadlock the webview's async cookie add).
+///
+/// The URL rule runs before anything is sent, so the +code never goes over
+/// plain http to a public host. Nothing is stored until the login worked.
+/// The cookie then goes into the new origin's own file and only after that
+/// is the url switched. A failure at any step leaves the old ship's url and
+/// cookie exactly as they were, and since a cookie is only ever attached by
+/// its own origin, neither ship can be sent the other's.
 #[tauri::command]
 pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String, String> {
-    let url = url.trim().trim_end_matches('/').to_string();
-    let t = EyreTransport::new(&url, &default_cookie_path());
+    let url = crate::session::check_ship_url(&url)?;
     dlog(&format!("connect: logging in at {url}"));
-    t.login(Some(code.clone())).map_err(|e| e.msg)?;
-    dlog(&format!("connect: cookie stored at {}", default_cookie_path()));
-    let ship = t.ship().map_err(|e| e.msg)?;
-    dlog(&format!("connect: ship {ship}"));
+    let cookie = crate::session::login(&url, &code)?;
+    let ship = crate::session::ship_of(&cookie).ok_or("login: no urbauth cookie")?;
+    let at = crate::session::store(&url, &cookie)?;
+    dlog(&format!("connect: ship {ship}, cookie stored at {}", at.display()));
     let ship_for_cfg = ship.clone();
     config::update(&app, move |cfg| {
         //  a ship SWITCH must not inherit the previous ship's queue directory —
@@ -187,8 +192,8 @@ pub async fn connection_status(app: AppHandle) -> ConnStatus {
         Ok(true) => {
             // name the ship only when the session is real, so the page never
             // claims a ship it cannot actually reach
-            let t = EyreTransport::new(&cfg.url, &default_cookie_path());
-            let ship = t.ship().ok();
+            let ship = crate::session::cookie_for(&cfg.url)
+                .and_then(|c| crate::session::ship_of(&c));
             dlog(&format!("status: connected to {:?}", ship));
             ConnStatus { url: cfg.url, ship, connected: true, error: None }
         }
@@ -633,22 +638,29 @@ pub async fn pick_backup_dir(app: AppHandle) -> Result<String, String> {
 /// last_run is stamped only on SUCCESS. A failed write must leave the schedule
 /// due, or one unwritable evening silently costs a whole period.
 ///
+/// `complete` is false when the page could not read some pages, the memories
+/// or the share modes. That archive is written as -INCOMPLETE, nothing is
+/// pruned and last_run is not stamped, so the schedule stays due. A page
+/// served by an older ship does not send it, and is taken as complete, which
+/// is what every archive was before.
+///
 /// Async, like save_vault: the decode and the disk write handle whole
 /// multi-MB archives, and holding the main thread for that freezes the UI.
 #[tauri::command]
-pub async fn backup_write(app: AppHandle, id: String, b64: String) -> Result<String, String> {
+pub async fn backup_write(
+    app: AppHandle,
+    id: String,
+    b64: String,
+    complete: Option<bool>,
+) -> Result<String, String> {
     let bytes = decode_archive(&b64)?;
     let at = crate::backup::now();
+    let complete = complete.unwrap_or(true);
     // try_update, not update: a schedule that vanished out from under this
     // request, or an archive write that fails, must leave config.json
     // untouched rather than persist a last_run stamp for nothing written.
     let path = config::try_update(&app, move |cfg| {
-        let s = schedule(cfg, &id)?.clone();
-        let path = crate::backup::write_archive(&s, &bytes, at)?;
-        if let Some(slot) = cfg.backups.iter_mut().find(|s| s.id == id) {
-            slot.last_run = at;
-        }
-        Ok(path)
+        crate::backup::record(cfg, &id, &bytes, at, complete)
     })?;
     dlog(&format!("backup: wrote {}", path.display()));
     Ok(path.display().to_string())

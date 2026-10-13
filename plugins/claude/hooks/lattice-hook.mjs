@@ -14,11 +14,13 @@ import https from 'node:https';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { urlProblem } from '../url-rule.mjs';
 
 const mode = process.argv[2];
 const opt = (k) => process.env[`CLAUDE_PLUGIN_OPTION_${k}`] || '';
 const base = opt('SHIP_URL').replace(/\/$/, '') + '/apps/lattice';
 const key = opt('KEY');
+const urlError = opt('SHIP_URL') ? urlProblem(opt('SHIP_URL')) : '';
 const gate = Number(opt('RECALL_STRENGTH') || 50);
 // Strength alone lets noise through on short prompts: "are you on the new
 // system now?" covers all of a theming entry's matches (strength 100) at
@@ -116,6 +118,10 @@ async function session(n) {
     if (n === 0) say('SessionStart', 'lattice memory: the plugin has no ship URL or agent key yet. Tell the user to set them (/plugin, lattice, configure).');
     return;
   }
+  if (urlError) {
+    if (n === 0) say('SessionStart', `${urlError} Tell the user to fix the ship URL (/plugin, lattice, configure). Memory is unavailable until then.`);
+    return;
+  }
   try {
     const sid = (await stdin()).session_id;
     const part = parts(await indexFor(n, sid))[n];
@@ -132,7 +138,7 @@ async function session(n) {
 }
 
 async function prompt() {
-  if (!key || gate > 100) return;
+  if (!key || urlError || gate > 100) return;
   const input = await stdin();
   const text = String(input.user_message ?? input.prompt ?? '').trim();
   // slash commands and one-word replies ("yes", "go") carry nothing to recall

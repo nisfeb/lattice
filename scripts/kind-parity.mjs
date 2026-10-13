@@ -62,13 +62,14 @@ if (!kmap) {
   process.exit(1);
 }
 
-//  kind_for_ext's explicit match arms, between "match ext {" and the
+//  kind_for_ext's explicit match arms, between "match ext {" (or its
+//  lowercased form) and the
 //  ".to_string()" chained onto its closing brace. The wildcard arm
 //  (`_ => "hoon"`) is deliberately not captured here: see hoon in
 //  ACCEPTED_EXCEPTIONS below.
 const rs = readFileSync(projPath, 'utf8');
 const fn = rs.match(
-  /fn kind_for_ext\(&self, ext: &str\) -> String \{\s*match ext \{([\s\S]*?)\}\s*\.to_string\(\)/
+  /fn kind_for_ext\(&self, ext: &str\) -> String \{\s*match ext(?:\.to_ascii_lowercase\(\)\.as_str\(\))? \{([\s\S]*?)\}\s*\.to_string\(\)/
 );
 if (!fn) {
   console.log('  FAIL - could not find kind_for_ext in projection.rs');

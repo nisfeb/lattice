@@ -143,10 +143,12 @@ know.json the memories again, in the format /know-import reads.
 share.json  the share mode of every non-private page (path -> shared|clearweb).
 names.json  the display name of every page or folder that was named with
           capitals or spaces (path -> the name shown in the tree).
+manifest.json  how many pages and memories the export meant to write, and
+          anything it could not read.
 
 To put it all back, use "restore vault" in Settings and pick this file. Pages
 go back to the paths they came from, the memories go back with their tags and
-dates, and any shared or public pages are re-shared. Anything already there is
+dates, and any shared or public pages are re-shared once you confirm the list. Anything already there is
 overwritten, and the version being replaced stays in that page's history. An
 archive with no share.json restores everything private.
 
@@ -168,9 +170,11 @@ editor, or git will do if you only want to look.
     fetch(url, Object.assign({ credentials: 'same-origin' }, opts || {}));
 
   // ── self-contained restore upload (mirrors 70-upload.js's page-save-batch) ───
-  async function uploadPages(pages) {
+  // The archive's pages/ entries as the pages a restore would write. Split out
+  // of uploadPages so the confirm dialog can name what is about to be shared
+  // before anything is written.
+  function parsePages(pages) {
     const list = [];
-    const dirs = new Set();
     // skips are counted so the completion message can say the restore was
     // lossy, split by reason so an extension problem and a name problem don't
     // blur together. A silent skip once cost every tex page in the archive.
@@ -185,11 +189,62 @@ editor, or git will do if you only want to look.
       // /page-save-batch's plain mode is all-or-nothing.
       if (!name || !validName(name)) { skipName++; continue; }
       list.push({ name, kind, body: text });
+    }
+    return { list, skipExt, skipName };
+  }
+
+  // share.json and names.json are trusted only as far as the pages they
+  // describe. A share mode applies to a page this restore actually saved. A
+  // display name applies to a saved page, or to a folder holding one. So an
+  // archive cannot publish, or rename, something it did not bring back.
+  const covers = (saved, path) => {
+    if (saved.has(path)) return true;
+    const pre = path + '/';
+    for (const n of saved) if (n.startsWith(pre)) return true;
+    return false;
+  };
+  // 'urbit' is how /page-scopes labels ames-shared; the route's word is 'shared'
+  const wireMode = (m) => (m === 'urbit' ? 'shared' : m);
+  function restorePlan(share, names, saved) {
+    const shareOk = [], namesOk = [];
+    let dropped = 0;
+    for (const [name, mode] of Object.entries(share || {})) {
+      if (typeof mode !== 'string' || !mode) continue;
+      if (saved.has(name)) shareOk.push([name, wireMode(mode)]); else dropped++;
+    }
+    for (const [path, dname] of Object.entries(names || {})) {
+      if (typeof dname !== 'string' || !dname) continue;
+      if (covers(saved, path)) namesOk.push([path, dname]); else dropped++;
+    }
+    return { share: shareOk, names: namesOk, dropped };
+  }
+  // the confirm text. Every page the restore would make shared or clearweb is
+  // named with its mode, not counted: a count cannot tell you which of your
+  // pages is about to go public. The closing words are askPublish's own
+  // warning (ui-src/lattice/15-dialog.js).
+  function restoreMessage(npages, withKnow, publish) {
+    let msg = 'restore ' + npages + ' page(s)' + (withKnow ? ' and the memories' : '') + '?';
+    if (publish.length) {
+      msg += '\n\nThis will publish ' + publish.length + ' page(s):\n'
+        + publish.map(([n, m]) => '  ' + n + ' (' + m + ')').join('\n')
+        + '\n\nOnce published, deletion is not assured. Anyone who has read '
+        + 'these pages can keep a copy, and the network may go on serving them after '
+        + 'you unpublish or delete them.';
+    }
+    return msg;
+  }
+
+  // -> the counts, and `saved`: the Set of page names the ship actually took.
+  // Everything restored after the pages is filtered through that set.
+  async function uploadPages(list) {
+    const saved = new Set();
+    const dirs = new Set();
+    for (const { name } of list) {
       const pp = name.split('/'); pp.pop();
       for (let i = 1; i <= pp.length; i++) dirs.add(pp.slice(0, i).join('/'));
     }
     for (const d of [...dirs].sort()) {
-      try { await mutate(api + '/folder-new?name=' + encodeURIComponent(d)); } catch (e) {}
+      try { await mutate(api + '/folder-new?name=' + encodeURIComponent(d), { method: 'POST' }); } catch (e) {}
     }
     const CHUNK = 50;
     let ok = 0, bad = 0;
@@ -203,7 +258,7 @@ editor, or git will do if you only want to look.
           body: JSON.stringify(part.map((it) => ({ name: it.name, type: it.kind, body: it.body || '\n' }))),
         });
       } catch (e) {}
-      if (r && r.ok) { ok += part.length; continue; }
+      if (r && r.ok) { ok += part.length; for (const it of part) saved.add(it.name); continue; }
       // the chunk was refused whole, same all-or-nothing shape the offline
       // queue's drain hits on replay (08-offline.js ~509-549). Fall back to
       // the single-page route one page at a time, so only the record that
@@ -214,12 +269,12 @@ editor, or git will do if you only want to look.
           one = await mutate(api + '/page-save?name=' + encodeURIComponent(it.name) +
             '&type=' + it.kind, { method: 'POST', body: it.body || '\n' });
         } catch (e) {}
-        if (one && one.ok) { ok++; continue; }
+        if (one && one.ok) { ok++; saved.add(it.name); continue; }
         bad++;
         if (failed.length < 5) failed.push(it.name);
       }
     }
-    return { ok, bad, skipped: skipExt + skipName, skipExt, skipName, failed };
+    return { ok, bad, failed, saved };
   }
 
   async function restoreVault(file) {
@@ -240,38 +295,42 @@ editor, or git will do if you only want to look.
 
     let share = {};
     if (shareJson) { try { share = JSON.parse(shareJson) || {}; } catch (e) { st('share.json is unreadable — pages will come back private', false); } }
-    const shared = Object.keys(share).length;
     let names = {};
     if (namesJson) { try { names = JSON.parse(namesJson) || {}; } catch (e) { st('names.json is unreadable — display names will not come back', false); } }
 
-    const msg = 'restore ' + pages.length + ' page(s)' +
-      (knowJson ? ' and the memories' : '') +
-      (shared ? ' (' + shared + ' shared/public)' : '') + '?';
-    if (!window.confirm(msg)) return;
+    // what the confirm names: every share entry for a page this archive could
+    // put back. The pages are not written yet, so this is the most it can be.
+    const parsed = parsePages(pages);
+    const willShare = restorePlan(share, {}, new Set(parsed.list.map((it) => it.name))).share
+      .filter(([, m]) => m !== 'private');
+    if (!window.confirm(restoreMessage(pages.length, !!knowJson, willShare))) return;
 
+    let plan = restorePlan({}, {}, new Set());
     if (pages.length) {
       st('restoring pages…');
-      const u = await uploadPages(pages);
+      const u = await uploadPages(parsed.list);
+      plan = restorePlan(share, names, u.saved);
       // "restoring pages…" is the only status this leaves behind on a clean
       // run unless something replaces it below, so the summary paints every
       // time, not only when something went wrong.
       const bits = ['pages: ' + u.ok + ' restored'];
-      if (u.skipExt) bits.push(u.skipExt + ' skipped (unknown extension)');
-      if (u.skipName) bits.push(u.skipName + ' skipped (bad name)');
+      if (parsed.skipExt) bits.push(parsed.skipExt + ' skipped (unknown extension)');
+      if (parsed.skipName) bits.push(parsed.skipName + ' skipped (bad name)');
       if (u.bad) {
         const more = u.bad > u.failed.length ? ' and ' + (u.bad - u.failed.length) + ' more' : '';
         bits.push(u.bad + ' failed: ' + u.failed.join(', ') + more);
       }
+      if (plan.dropped) bits.push(plan.dropped + ' share mode or name entries ignored (no restored page)');
       st(bits.join(', '), !u.bad);
     }
 
-    if (shared) {
+    if (plan.share.length) {
       st('restoring share modes…');
       let ok = 0, bad = 0;
-      for (const [name, mode] of Object.entries(share)) {
+      for (const [name, mode] of plan.share) {
         try {
-          const wire = mode === 'urbit' ? 'shared' : mode;   // /page-scopes labels ames-shared 'urbit'; the route's word is 'shared'
-          const r = await mutate(api + '/page-share?name=' + encodeURIComponent(name) + '&mode=' + encodeURIComponent(wire));
+          const r = await mutate(api + '/page-share?name=' + encodeURIComponent(name) +
+            '&mode=' + encodeURIComponent(mode), { method: 'POST' });
           if (r && r.ok) ok++; else bad++;
         } catch (e) { bad++; }
       }
@@ -280,14 +339,13 @@ editor, or git will do if you only want to look.
 
     // display names go back through page-move to the same path, which the
     // ship treats as "set the display name" for a page or a folder
-    if (Object.keys(names).length) {
+    if (plan.names.length) {
       st('restoring display names…');
       let bad = 0;
-      for (const [path, dname] of Object.entries(names)) {
-        if (typeof dname !== 'string' || !dname) continue;
+      for (const [path, dname] of plan.names) {
         try {
           const r = await mutate(api + '/page-move?from=' + encodeURIComponent(path) +
-            '&to=' + encodeURIComponent(path) + '&dname=' + encodeURIComponent(dname));
+            '&to=' + encodeURIComponent(path) + '&dname=' + encodeURIComponent(dname), { method: 'POST' });
           if (!(r && r.ok)) bad++;
         } catch (e) { bad++; }
       }
@@ -370,6 +428,13 @@ editor, or git will do if you only want to look.
     if (Object.keys(names).length)
       files.push({ name: 'names.json', body: JSON.stringify(names, null, 1), mtime: now });
 
+    // manifest.json: what this export MEANT to write. The tar alone cannot
+    // say it is short, so the desktop's verify holds the archive to this.
+    files.push({ name: 'manifest.json', mtime: now, body: JSON.stringify({
+      pages: pages.length,
+      memories: know ? (know.items || []).length : null,
+      missing,
+    }, null, 1) });
     files.push({ name: 'README.txt', body: RESTORE, mtime: now });
 
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -389,7 +454,10 @@ editor, or git will do if you only want to look.
       const d = desk();
       if (!d) return;
       try {
-        const where = await d.invoke('backup_write', { id: autoId, b64: await blobToB64(blob) });
+        // complete: false keeps the archive out of retention and leaves the
+        // schedule due (desktop/src/backup.rs)
+        const where = await d.invoke('backup_write',
+          { id: autoId, b64: await blobToB64(blob), complete: missing.length === 0 });
         if (gaps) st('backed up ' + pages.length + ' page(s) to ' + where + gaps + ' — backup INCOMPLETE', false);
         else st('backed up ' + pages.length + ' page(s) to ' + where + skipped);
       } catch (e) { st('scheduled backup failed: ' + e, false); }

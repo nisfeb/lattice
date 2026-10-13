@@ -9,9 +9,11 @@
 import { createInterface } from 'node:readline';
 import http from 'node:http';
 import https from 'node:https';
+import { urlProblem } from './url-rule.mjs';
 
 const BASE = (process.env.LATTICE_URL || '').replace(/\/$/, '') + '/apps/lattice';
 const KEY = process.env.LATTICE_KEY || '';
+const URL_ERROR = process.env.LATTICE_URL ? urlProblem(process.env.LATTICE_URL) : '';
 
 // Text another ship or a website wrote reaches the model labelled, never as
 // instructions: memory poisoning is the attack every agent memory has to
@@ -24,6 +26,7 @@ const quoted = (from, text) =>
 // node:http(s), not fetch: the node on PATH may predate a global fetch
 function call(method, route, args = {}, body) {
   if (!process.env.LATTICE_URL || !KEY) return Promise.reject(new Error('lattice plugin: set the ship URL and agent key in the plugin settings'));
+  if (URL_ERROR) return Promise.reject(new Error(URL_ERROR));
   const qs = new URLSearchParams(Object.entries(args).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => [k, String(v)])).toString();
   const url = new URL(`${BASE}/${route}${qs ? '?' + qs : ''}`);
   const headers = { authorization: `Bearer ${KEY}` };
@@ -37,6 +40,7 @@ function call(method, route, args = {}, body) {
         if (res.statusCode < 300) return resolve(text);
         let msg = text;
         try { msg = JSON.parse(text).error || text; } catch {}
+        if (res.statusCode >= 300 && res.statusCode < 400) msg = `the ship redirected to ${res.headers.location}, and lattice does not follow redirects with the agent key. Set the ship URL to the final address.`;
         if (res.statusCode === 401) msg += ' (mint a new key in lattice Settings, Agent keys)';
         reject(new Error(`${res.statusCode}: ${msg}`));
       });

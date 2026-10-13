@@ -119,8 +119,11 @@ pub trait Projection: Send + Sync {
             _ => "hoon",
         }
     }
+    // Case-insensitive: Notes.MD is a markdown page like notes.md. A
+    // case-sensitive match sent it to the scratch map, and it was lost on
+    // unmount.
     fn kind_for_ext(&self, ext: &str) -> String {
-        match ext {
+        match ext.to_ascii_lowercase().as_str() {
             "md" => "md",
             "gmi" => "gmi",
             "html" => "html",
@@ -202,6 +205,10 @@ mod tests {
         assert_eq!(p.ext_for_kind("something-new"), "hoon");
         assert_eq!(p.kind_for_ext("hoon"), "hoon");
         assert_eq!(p.kind_for_ext("something-new"), "hoon");
+        // the ext is matched without case, so Notes.MD is still an md page
+        assert_eq!(p.kind_for_ext("MD"), "md");
+        assert_eq!(p.kind_for_ext("Txt"), "text");
+        assert_eq!(p.kind_for_ext("LATEX"), "tex");
     }
 
     #[test]

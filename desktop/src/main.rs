@@ -9,6 +9,7 @@ mod mounts;
 mod pandoc;
 mod proxy;
 mod queue;
+mod session;
 mod stack;
 #[cfg(test)]
 mod testutil;
@@ -301,6 +302,9 @@ fn main() {
             build_menu(app)?;
             let handle = app.handle().clone();
             let cfg = config::load(&handle);
+            // before anything reads a session: older builds kept it in the
+            // shared lattice-fs cookie file
+            session::migrate_legacy(&cfg);
             if cfg.url.is_empty() {
                 // first run: the single window opens on the connect page
                 commands::show_manager(&handle, None)?;
