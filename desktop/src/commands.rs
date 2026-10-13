@@ -73,7 +73,10 @@ pub fn show_manager(app: &AppHandle, section: Option<&str>) -> Result<(), String
     // on every platform, and the window is born there anyway, so: destroy
     // it, wait for the label to free (destroy is asynchronous), and make a
     // fresh one. The user is leaving the ship page either way.
-    if !created && !on_shell_page(&w) {
+    // macOS only: the origin confusion below is a macOS webview quirk. On
+    // other platforms navigating the existing window works, so rebuilding it
+    // just loses the window's position and icon and flashes a new window.
+    if cfg!(target_os = "macos") && !created && !on_shell_page(&w) {
         // destroying the ONLY window asks the app to exit; main.rs vetoes
         // that while this flag is up
         dlog("manager: the window is on the ship page, rebuilding it");
@@ -454,6 +457,13 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     if let Some(js) = probe {
         dlog("probe script injected into the workspace");
         b = b.initialization_script(js);
+    }
+    // Runtime-built windows carry no icon on Linux (config has no `windows`
+    // entry to inherit from), so the workspace showed GTK's generic app icon.
+    // The rebuild on opening settings made that obvious: a fresh, unbranded
+    // window. Reuse the bundle icon the config already declares.
+    if let Some(icon) = app.default_window_icon() {
+        b = b.icon(icon.clone()).map_err(|e| e.to_string())?;
     }
     let w = b
         // Tell the page this build HAS the File menu, so it can hide the
