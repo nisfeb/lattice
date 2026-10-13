@@ -479,6 +479,72 @@ impl GrubberyFs {
         publish(&mut s, &rel, &buf);
         Ok(())
     }
+
+    /// Atomic save: temp -> real page. Promote the scratch bytes. Create
+    /// only when the destination doesn't exist. An atomic save ONTO an
+    /// existing page is an overwrite (create=true would 409 on lattice /
+    /// EROFS on generic, failing every VS Code-style save).
+    ///
+    /// The temp stays in the scratch map until the ship accepts the write.
+    /// A failed write leaves the editor's bytes where they were, so the save
+    /// can be retried instead of lost.
+    fn promote(
+        &self,
+        src_path: &str,
+        dst_path: &str,
+        dst_rel: &str,
+        dst_kind: &str,
+        dst_exists: bool,
+    ) -> Result<(), PErr> {
+        let v = self
+            .st
+            .lock()
+            .unwrap()
+            .scratch
+            .get(src_path)
+            .cloned()
+            .ok_or_else(|| PErr::new(libc::ENOENT, "rename: no such temp"))?;
+        self.proj.write(dst_rel, dst_kind, &v, !dst_exists)?;
+        let mut s = self.st.lock().unwrap();
+        // the temp no longer exists under its old name
+        s.scratch.remove(src_path);
+        s.vt.remove(src_path);
+        s.recent.insert(dst_path.to_string(), (Instant::now(), true));
+        // an atomic save may CREATE the page. Seed an optimistic
+        // entry, as create() does, so the file the editor just
+        // wrote is stat-able before the re-dump lands.
+        s.vt.entry(dst_path.to_string()).or_insert_with(|| VEntry {
+            kind: VKind::File,
+            node: Some(Node {
+                rel: dst_rel.to_string(),
+                is_dir: false,
+                is_page: true,
+                kind: dst_kind.to_string(),
+                size: 0,
+                mtime: now_secs(),
+                readonly: false,
+                rev: None,
+            }),
+        });
+        // and the promoted bytes ARE that page now
+        publish(&mut s, dst_rel, &v);
+        remap_ino(&mut s, src_path, dst_path);
+        Ok(())
+    }
+
+    /// Backup-by-rename: page -> temp name. Snapshot the page's current body
+    /// into the scratch map and KEEP the page (the editor rewrites it next).
+    /// Never delete it, so there is no data-loss window. A body we cannot
+    /// read fails the rename. An empty backup would look like a good one.
+    fn backup(&self, src_path: &str, dst_path: &str, src_rel: &str) -> Result<(), PErr> {
+        let v = self.body(src_rel)?;
+        let mut s = self.st.lock().unwrap();
+        s.scratch.insert(dst_path.to_string(), v);
+        // the page stays. Refresh so the new content lands
+        s.vt_ts = None;
+        remap_ino(&mut s, src_path, dst_path);
+        Ok(())
+    }
 }
 
 /// The bytes just accepted by the ship ARE the page's content now. Republish
@@ -1476,54 +1542,9 @@ impl Filesystem for GrubberyFs {
                     Ok(())
                 }
                 EditorMove::Promote => {
-                    // atomic save: temp -> real page. Promote the scratch bytes.
-                    // create only when the destination doesn't exist. An atomic save
-                    // ONTO an existing page is an overwrite (create=true would 409 on
-                    // lattice / EROFS on generic, failing every VS Code-style save).
-                    let v = self.st.lock().unwrap().scratch.remove(&src_path).unwrap_or_default();
-                    match self.proj.write(&dst_rel, &dst_kind, &v, !dst_exists) {
-                        Ok(()) => {
-                            let mut s = self.st.lock().unwrap();
-                            // the temp no longer exists under its old name
-                            s.scratch.remove(&src_path);
-                            s.vt.remove(&src_path);
-                            s.recent.insert(dst_path.clone(), (Instant::now(), true));
-                            // an atomic save may CREATE the page. Seed an optimistic
-                            // entry, as create() does, so the file the editor just
-                            // wrote is stat-able before the re-dump lands.
-                            s.vt.entry(dst_path.clone()).or_insert_with(|| VEntry {
-                                kind: VKind::File,
-                                node: Some(Node {
-                                    rel: dst_rel.clone(),
-                                    is_dir: false,
-                                    is_page: true,
-                                    kind: dst_kind.clone(),
-                                    size: 0,
-                                    mtime: now_secs(),
-                                    readonly: false,
-                                    rev: None,
-                                }),
-                            });
-                            // and the promoted bytes ARE that page now
-                            publish(&mut s, &dst_rel, &v);
-                            remap_ino(&mut s, &src_path, &dst_path);
-                            Ok(())
-                        }
-                        Err(e) => Err(e),
-                    }
+                    self.promote(&src_path, &dst_path, &dst_rel, &dst_kind, dst_exists)
                 }
-                EditorMove::Backup => {
-                    // backup-by-rename: page -> temp name. Snapshot the page's current
-                    // body into the scratch map and KEEP the page (the editor rewrites
-                    // it next). Never delete it, so there is no data-loss window.
-                    let v = self.body(&src_rel).unwrap_or_default();
-                    let mut s = self.st.lock().unwrap();
-                    s.scratch.insert(dst_path.clone(), v);
-                    // the page stays. Refresh so the new content lands
-                    s.vt_ts = None;
-                    remap_ino(&mut s, &src_path, &dst_path);
-                    Ok(())
-                }
+                EditorMove::Backup => self.backup(&src_path, &dst_path, &src_rel),
             };
             match res {
                 Ok(()) => reply.ok(),
@@ -1754,6 +1775,7 @@ mod tests {
         beacon: Mutex<Option<String>>,    // what change_token() answers
         probes: AtomicUsize,
         hold_probe: AtomicBool, // stall change_token() mid-flight
+        fail_write: AtomicBool, // write() refuses, as an unreachable ship would
     }
 
     impl Fake {
@@ -1851,6 +1873,9 @@ mod tests {
             Ok(String::new())
         }
         fn write(&self, rel: &str, kind: &str, data: &[u8], create: bool) -> Result<(), PErr> {
+            if self.fail_write.load(Ordering::SeqCst) {
+                return Err(PErr::new(libc::EIO, "fake: write refused"));
+            }
             self.log.lock().unwrap().push(format!(
                 "write {rel} {kind} {} new={create}",
                 String::from_utf8_lossy(data)
@@ -2054,6 +2079,56 @@ mod tests {
             "accounting must match contents"
         );
         assert_eq!(s.write_gen, 2);
+    }
+
+    #[test]
+    fn a_failed_promote_keeps_the_editors_bytes() {
+        // An atomic save writes the temp, then renames it onto the page. The
+        // temp's bytes used to leave the scratch map BEFORE the ship write, so
+        // a failed write threw away the only copy of the user's save.
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        let fs = warm_fs(f.clone());
+        fs.st.lock().unwrap().scratch.insert("/.note.md.swp".into(), b"new body".to_vec());
+
+        f.fail_write.store(true, Ordering::SeqCst);
+        let e = fs.promote("/.note.md.swp", "/note.md", "note", "md", true).unwrap_err();
+        assert_eq!(e.errno, libc::EIO, "the ship's error reaches the editor");
+        {
+            let s = fs.st.lock().unwrap();
+            assert_eq!(s.scratch["/.note.md.swp"], b"new body", "the save was lost");
+            assert_eq!(s.read_cache["note"], b"old", "nothing was published");
+        }
+
+        // the editor retries, the ship takes it, and only now the temp goes
+        f.fail_write.store(false, Ordering::SeqCst);
+        fs.promote("/.note.md.swp", "/note.md", "note", "md", true).unwrap();
+        assert_eq!(f.log(), vec!["write note md new body new=false"]);
+        let s = fs.st.lock().unwrap();
+        assert!(!s.scratch.contains_key("/.note.md.swp"));
+        assert_eq!(s.read_cache["note"], b"new body");
+        drop(s);
+
+        // a temp that does not exist is ENOENT, not an empty page on the ship
+        let e = fs.promote("/.gone.md.swp", "/gone.md", "gone", "md", false).unwrap_err();
+        assert_eq!(e.errno, libc::ENOENT);
+        assert_eq!(f.log().len(), 1, "a missing temp must not write anything");
+    }
+
+    #[test]
+    fn a_backup_of_an_unreadable_page_fails_instead_of_saving_nothing() {
+        // backup-by-rename snapshots the page into scratch. If the body
+        // cannot be read, an empty "backup" would look like a good one.
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        let fs = warm_fs(f.clone());
+        fs.backup("/note.md", "/note.md~", "note").unwrap();
+        assert_eq!(fs.st.lock().unwrap().scratch["/note.md~"], b"old");
+
+        let e = fs.backup("/lost.md", "/lost.md~", "lost").unwrap_err();
+        assert_eq!(e.errno, libc::ENOENT);
+        assert!(
+            !fs.st.lock().unwrap().scratch.contains_key("/lost.md~"),
+            "a failed read must not leave an empty backup"
+        );
     }
 
     #[test]
