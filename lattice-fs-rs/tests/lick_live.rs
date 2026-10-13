@@ -1,7 +1,8 @@
 //! Live lick round-trip against a real pier. This is the only check that
 //! proves jam/cue still speak to vere, because the unit tests use synthetic
 //! vectors of our own making. It is opt-in: without LATTICE_SOCK the test
-//! skips, so CI (which has no pier) stays green.
+//! skips, so CI (which has no pier) stays green. REQUIRE_LICK=1 makes the
+//! skip a failure.
 //!
 //!   LATTICE_SOCK=<pier>/.urb/dev/grubbery/lattice/fs LATTICE_SHIP='~nec' \
 //!     cargo test --test lick_live -- --nocapture
@@ -14,6 +15,11 @@ fn lick_round_trips_against_a_real_pier() {
         std::env::var("LATTICE_SOCK"),
         std::env::var("LATTICE_SHIP"),
     ) else {
+        // REQUIRE_LICK=1 turns the skip into a failure, for a run that means
+        // to test against a pier and must not go green without one.
+        if std::env::var("REQUIRE_LICK").as_deref() == Ok("1") {
+            panic!("REQUIRE_LICK=1 but LATTICE_SOCK / LATTICE_SHIP are not set");
+        }
         eprintln!("skipped: set LATTICE_SOCK and LATTICE_SHIP to run");
         return;
     };

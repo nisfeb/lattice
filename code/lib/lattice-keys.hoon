@@ -168,6 +168,13 @@
   =/  n  (wants meth i.suffix)
   ?~  n  |
   (allows scope.k area.u.n lvl.u.n)
+::  +page-type-ok: may a key save a page of this ?type=? Only the kinds
+::  that render escaped. Hoon would run with lattice's own authority, and
+::  html or js would run in the owner's browser. An absent type is hoon.
+++  page-type-ok
+  |=  t=@t
+  ^-  ?
+  (~(has in (silt `(list @t)`~['md' 'gmi' 'text' 'tex' 'css' 'index'])) t)
 ::  ==  JSON
 ++  de-level
   |=  j=(unit json)

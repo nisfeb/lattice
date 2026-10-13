@@ -656,6 +656,19 @@
   ^-  ?
   =/  v=(unit @t)  (meta-get meta:(front body.e) 'sensitive')
   ?~(v | |(=('yes' u.v) =('true' u.v)))
+::  +is-core: tagged core, so every session loads it (+index-text). An
+::  agent key may add the tag. It may not rewrite, supersede or untag an
+::  entry that has it.
+++  is-core
+  |=  e=know-entry
+  ^-  ?
+  (~(has in tags.e) 'core')
+::  +core-tag: does a requested tag name core once the writer case-folds
+::  it? An untag drops the folded tag, so 'Core' removes 'core' too.
+++  core-tag
+  |=  t=@t
+  ^-  ?
+  =('core' (crip (cass (trip t))))
 ::  ==  Lint: what a periodic tidy would fix, proposed, never applied here.
 ::
 ::  stale is an entry that names code (a file, an arm, a port, a commit) and

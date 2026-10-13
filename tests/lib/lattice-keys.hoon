@@ -81,4 +81,19 @@
     (expect-eq !>(&) !>((tainted k(taint `~2026.1.1) ~2026.1.1..11.59.59)))
     (expect-eq !>(|) !>((tainted k(taint `~2026.1.1) ~2026.1.1..12.00.00)))
   ==
+::  a key saves only kinds that render escaped
+++  test-page-type-ok
+  ;:  weld
+    (expect-eq !>(&) !>((page-type-ok 'md')))
+    (expect-eq !>(&) !>((page-type-ok 'gmi')))
+    (expect-eq !>(&) !>((page-type-ok 'text')))
+    (expect-eq !>(&) !>((page-type-ok 'tex')))
+    (expect-eq !>(&) !>((page-type-ok 'css')))
+    (expect-eq !>(&) !>((page-type-ok 'index')))
+    (expect-eq !>(|) !>((page-type-ok 'hoon')))
+    (expect-eq !>(|) !>((page-type-ok 'html')))
+    (expect-eq !>(|) !>((page-type-ok 'js')))
+    (expect-eq !>(|) !>((page-type-ok '')))
+    (expect-eq !>(|) !>((page-type-ok 'MD')))
+  ==
 --

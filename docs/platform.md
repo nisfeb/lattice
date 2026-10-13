@@ -269,10 +269,11 @@ Each step ships something usable on ricsul, and each has a verification gate.
 
 ## Decisions (settled)
 
-- **Capped execution authority**: page code runs owner-of-its-own-subtree by
-  default (`%sand` an evaluator-scoped weir at page creation). Darts targeting
-  roads outside the page's subtree require an explicit weir edit by the owner.
-  Full-authority pages are an escalation, never a default.
+- **Capped execution authority**: no evaluator-scoped `%sand` weir exists. Page code compiles and runs inside lattice's own fiber, with lattice's authority, and returns no darts. These rules cap what it can reach instead:
+  - A dependency must sit under `/page/`. The evaluator drops any other dep path, so a page cannot read `/know`, `/keys` or any other part of the tree.
+  - A poke reaches only another page's `cmd` grub, with a decreasing budget.
+  - A page shared for edit with any group runs content only. Its source must be the exact shell the editor writes for a content kind (md, gmi, html, text, js, css, tex) or a generated folder index. Any other source is not compiled, and the page shows an error until the edit grant goes. Such a page, and its `/c/` and `/f/` copies when they are html, is served sandboxed: an iframe sandbox or a CSP sandbox header, never same-origin.
+  - An agent key saves md, gmi, text, tex, css or index pages only. It cannot save hoon, html or js.
 - **Explicit dependencies**: `.deps` is the contract. Auto-traced discovery is
   v2 at most, and only if declared deps prove annoying in practice.
 

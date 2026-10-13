@@ -285,6 +285,20 @@
     (expect-eq !>(|) !>((sensitive [off ~2026.1.1 ~ ~])))
     (expect-eq !>('a fact') !>(rest:(front on)))
   ==
+::  +is-core reads the stored tag exactly, as +index-text does. +core-tag
+::  folds case, as the writer folds a requested tag.
+++  test-core
+  =/  cor=know-entry  ['a rule' ~2026.1.1 (sy ~['core' 'ai']) ~]
+  ;:  weld
+    (expect-eq !>(&) !>((is-core cor)))
+    (expect-eq !>(|) !>((is-core e1)))
+    (expect-eq !>(|) !>((is-core (del-tag cor 'core'))))
+    (expect-eq !>(&) !>((core-tag 'core')))
+    (expect-eq !>(&) !>((core-tag 'Core')))
+    (expect-eq !>(&) !>((core-tag 'CORE')))
+    (expect-eq !>(|) !>((core-tag 'cores')))
+    (expect-eq !>(|) !>((core-tag '')))
+  ==
 ::  recall never links to a sensitive entry, even for a cleared reader
 ++  test-recall-hides-sensitive-links
   =/  es=(map path know-entry)

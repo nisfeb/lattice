@@ -16,6 +16,13 @@ on:
     - cron: '0 7 * * *'   # 07:00 UTC daily
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# Secrets are exposed only to the steps that use them, never at job scope,
+# so checkout, npm installs and the skip steps never see them. Each job gets
+# a non-secret boolean (HAS_SHIP) for its step `if:`s, since a
+# step `if:` cannot read the secrets context directly.
 # Runners are pinned to ubuntu-24.04, not ubuntu-latest: the latter moves to
 # Ubuntu 26 on 2026-10-19, and the desktop jobs install GTK, WebKit and FUSE
 # packages by name. Move to 26 deliberately, after a trial run.
@@ -24,32 +31,41 @@ jobs:
     name: e2e — HTTP round-trip vs a live ship
     runs-on: ubuntu-24.04
     env:
-      LATTICE_URL: ${{ secrets.LATTICE_URL }}
-      LATTICE_CODE: ${{ secrets.LATTICE_CODE }}
-      LATTICE_PEER_SHIP: ${{ secrets.LATTICE_PEER_SHIP }}
+      HAS_SHIP: ${{ secrets.LATTICE_URL != '' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: e2e.sh
-        if: ${{ env.LATTICE_URL != '' }}
+        if: ${{ env.HAS_SHIP == 'true' }}
+        env:
+          LATTICE_URL: ${{ secrets.LATTICE_URL }}
+          LATTICE_CODE: ${{ secrets.LATTICE_CODE }}
+          LATTICE_PEER_SHIP: ${{ secrets.LATTICE_PEER_SHIP }}
         run: ./scripts/e2e.sh
       - name: skipped
-        if: ${{ env.LATTICE_URL == '' }}
-        run: echo "LATTICE_URL secret not set — skipping e2e."
+        if: ${{ env.HAS_SHIP != 'true' }}
+        run: |
+          echo "::warning title=skipped::e2e not run: LATTICE_URL not set"
 
   nexus-tests:
     name: nexus — Hoon unit tests via dojo -test
     runs-on: ubuntu-24.04
     env:
-      LATTICE_URL: ${{ secrets.LATTICE_URL }}
-      LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
+      HAS_SHIP: ${{ secrets.LATTICE_URL != '' && secrets.LATTICE_MCP_COOKIE != '' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       # The in-ball run_tests tool 500s on current grubbery builds, so drive
       # the dojo -test thread per test file instead. ok=%.y is the pass signal
       # (per-test detail goes to the pier's terminal, which CI can't see).
       # Assumes the ship runs grubbery with the lattice overlay synced.
       - name: dojo -test per test file
-        if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
+        if: ${{ env.HAS_SHIP == 'true' }}
+        env:
+          LATTICE_URL: ${{ secrets.LATTICE_URL }}
+          LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
         run: |
           set -uo pipefail
           fail=0
@@ -77,8 +93,9 @@ jobs:
           done
           exit "$fail"
       - name: skipped
-        if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
-        run: echo "ship/cookie secrets not set — skipping nexus unit tests."
+        if: ${{ env.HAS_SHIP != 'true' }}
+        run: |
+          echo "::warning title=skipped::nexus unit tests not run: LATTICE_URL or LATTICE_MCP_COOKIE not set"
 
   # The ship suites that get a runner each, listed once. The ship job runs a
   # leg per entry and ui-rest skips them. A job output is the one place both
@@ -103,43 +120,60 @@ jobs:
       matrix:
         suite: ${{ fromJSON(needs.suites.outputs.list) }}
     env:
-      LATTICE_URL: ${{ secrets.LATTICE_URL }}
-      LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
+      HAS_SHIP: ${{ secrets.LATTICE_URL != '' && secrets.LATTICE_MCP_COOKIE != '' }}
       SUITE: ${{ matrix.suite }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # before the cookie touches disk, and with no install scripts: nothing
+      # npm fetches runs while the session cookie is readable. puppeteer-core
+      # downloads no browser; harness.mjs launches the runner's Chrome via
+      # executablePath ($CHROME).
+      - name: puppeteer-core
+        if: ${{ env.HAS_SHIP == 'true' && endsWith(matrix.suite, '.mjs') }}
+        run: npm i --no-save --no-audit --no-fund --ignore-scripts puppeteer-core@25.13.0
       - name: ${{ matrix.suite }}
-        if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
+        if: ${{ env.HAS_SHIP == 'true' }}
+        env:
+          LATTICE_URL: ${{ secrets.LATTICE_URL }}
+          LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
         run: |
           printf '%s' "$LATTICE_MCP_COOKIE" > /tmp/ship-cookie
           export LATTICE_COOKIE=/tmp/ship-cookie
           case "$SUITE" in
             *.sh) "./scripts/$SUITE" ;;
-            *) npm i --no-save --no-audit --no-fund puppeteer-core
-               CHROME="$(command -v google-chrome)" node "scripts/$SUITE" ;;
+            *) CHROME="$(command -v google-chrome)" node "scripts/$SUITE" ;;
           esac
       - name: skipped
-        if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
-        run: echo "ship/cookie secrets not set, skipping $SUITE."
+        if: ${{ env.HAS_SHIP != 'true' }}
+        run: |
+          echo "::warning title=skipped::$SUITE not run: LATTICE_URL or LATTICE_MCP_COOKIE not set"
 
   ui-rest:
     name: ui — remaining browser suites (drift guard)
     needs: suites
     runs-on: ubuntu-24.04
     env:
-      LATTICE_URL: ${{ secrets.LATTICE_URL }}
-      LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
+      HAS_SHIP: ${{ secrets.LATTICE_URL != '' && secrets.LATTICE_MCP_COOKIE != '' }}
       # the ship job's suites, plus ui-manager, which is ship-free (ci.yml)
       COVERED: ${{ join(fromJSON(needs.suites.outputs.list), ' ') }} ui-manager.mjs
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       # Every browser suite that is NOT a leg of the ship job, found by glob
       # so a new ui-*.mjs browser suite runs the day it lands instead of
       # being silently untested.
+      - name: puppeteer-core
+        if: ${{ env.HAS_SHIP == 'true' }}
+        run: npm i --no-save --no-audit --no-fund --ignore-scripts puppeteer-core@25.13.0
       - name: remaining ui harnesses
-        if: ${{ env.LATTICE_URL != '' && env.LATTICE_MCP_COOKIE != '' }}
+        if: ${{ env.HAS_SHIP == 'true' }}
+        env:
+          LATTICE_URL: ${{ secrets.LATTICE_URL }}
+          LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
         run: |
-          npm i --no-save --no-audit --no-fund puppeteer-core
           printf '%s' "$LATTICE_MCP_COOKIE" > /tmp/ship-cookie
           export LATTICE_COOKIE=/tmp/ship-cookie CHROME="$(command -v google-chrome)"
           covered=" $COVERED "
@@ -154,14 +188,17 @@ jobs:
           done
           exit $fail
       - name: skipped
-        if: ${{ env.LATTICE_URL == '' || env.LATTICE_MCP_COOKIE == '' }}
-        run: echo "ship/cookie secrets not set — skipping remaining ui suites."
+        if: ${{ env.HAS_SHIP != 'true' }}
+        run: |
+          echo "::warning title=skipped::remaining ui suites not run: LATTICE_URL or LATTICE_MCP_COOKIE not set"
 
   shuttle:
     name: lattice-fs — concurrency permutations
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: fuse build deps
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
       #  shuttle is RANDOMISED, not exhaustive, so one CI pass proves less than
@@ -179,12 +216,17 @@ jobs:
     name: lattice-fs — fsx torture
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: fuse build deps
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
       #  fsx keeps a shadow buffer and diffs it against the filesystem after
       #  every operation, so a mismatch names the exact op sequence. The script
       #  skips cleanly when there is no /dev/fuse, no compiler, or no network.
+      #  REQUIRE_FSX=1: here a skip is a failure, not a silent green.
       - name: fsx
         working-directory: lattice-fs-rs
+        env:
+          REQUIRE_FSX: "1"
         run: bash tests/fsx.sh

@@ -28,6 +28,8 @@ A key is for a client that does not hold your cookie. The design and the wire fo
   - Nothing else is reachable with a key. Publishing, sharing, deleting, moving, settings and the keys themselves stay yours, whatever the scope. `+wants` in `lib/lattice-keys.hoon` is the whole list.
 - **Identity.** A key writes as its `by`, with `source: agent`, whatever the request says, so an agent cannot sign a memory as you. Verifying stamps `verified-by` the same way.
 - **Private pages only.** A key may write a page only when that page is private and no sharing group reaches it, on the page or on a folder above it. Saving a published page republishes it, and a page made inside a shared folder is shared, so both are refused.
+- **No code pages.** A key saves md, gmi, text, tex, css and index pages. A save with `type` hoon, html or js, or with no `type`, is refused with a 403. Hoon would run with lattice's own authority, and html or js would run in your browser.
+- **Core is yours.** A key may tag a new entry `core`. It cannot edit, supersede or untag an entry that already has the `core` tag, since every session loads those. Those requests get a 403.
 - **Sensitive memories** stay out of reach of keys without clearance. See below.
 - **Revoking.** The list in Settings shows when each key was made and last used, to the hour. Revoke a key there, and its next request fails.
 
@@ -109,7 +111,7 @@ All under `/apps/lattice/`. GET reads, POST writes, parameters go in the query s
 | `POST know-delete`, `know-restore`, `know-move` | `key`, `from`, `to` | soft-delete, undo, rename | owner |
 | `GET page-search` | `q`, `k` (10) | the wiki ranked like memory, each hit labelled `private`, `urbit` or `clearweb` | pages read |
 | `GET page-source`, `page-tree`, `page-backlinks` | `name` | a page's source and `rev`; the tree; backlinks | pages read |
-| `POST page-save` | `name`, `type` (send it: `md`, `html`, ...), `base`, `new=1` | create or update a page. With a key, private pages only | pages write |
+| `POST page-save` | `name`, `type` (send it: `md`, `html`, ...), `base`, `new=1` | create or update a page. With a key, private pages only, and not hoon, html or js | pages write |
 | `GET fetch` | `url=urb://~ship/path` | a page another ship publishes | web |
 
 [agent-guide.md](agent-guide.md) covers the rest of the HTTP API, the filesystem mount and search.
