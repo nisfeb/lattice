@@ -14,8 +14,10 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# Read-only by default. Only the jobs that create the release or upload
+# assets into it (create-release, build) get contents: write.
 permissions:
-  contents: write        # needed to create the release and upload assets
+  contents: read
 
 # Runners are pinned to ubuntu-24.04, not ubuntu-latest: the latter moves to
 # Ubuntu 26 on 2026-10-19, and the desktop jobs install GTK, WebKit and FUSE
@@ -29,7 +31,9 @@ jobs:
     name: version + tests
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: tag matches tauri.conf.json
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -70,6 +74,8 @@ jobs:
   create-release:
     needs: verify
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write    # creates the draft release
     outputs:
       release_id: ${{ steps.mk.outputs.id }}
     steps:
@@ -78,7 +84,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('untagged-{0}', github.sha) }}
-          PRE: ${{ contains(github.ref_name, '-') }}
+          #  a hand-run build is never a real release: always a prerelease
+          PRE: ${{ github.event_name == 'workflow_dispatch' || contains(github.ref_name, '-') }}
         run: |
           set -euo pipefail
           body=$(cat <<'BODY'
@@ -100,6 +107,7 @@ jobs:
           if [ -z "$id" ]; then
             id=$(gh api "repos/${GITHUB_REPOSITORY}/releases" \
                    -f tag_name="${TAG}" \
+                   -f target_commitish="${GITHUB_SHA}" \
                    -f name="lattice ${TAG}" \
                    -F draft=true \
                    -F prerelease="${PRE}" \
@@ -114,6 +122,8 @@ jobs:
     needs: [verify, create-release]
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write    # tauri-action uploads the bundles into the release
     strategy:
       fail-fast: false     # one platform failing should not hide the others
       matrix:
@@ -137,14 +147,17 @@ jobs:
             label: macos-x86_64 (dmg, cross from arm64)
             target: x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: desktop -> target
 
@@ -173,7 +186,7 @@ jobs:
           }
 
       - name: build and upload
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # pkg-config refuses to answer when target != host unless told it is
