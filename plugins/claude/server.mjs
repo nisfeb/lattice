@@ -179,5 +179,11 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   if (!line.trim()) return;
   let m;
   try { m = JSON.parse(line); } catch { return; }
-  handle(m);
+  //  null, a number or a string is not a message. Reading m.id on null
+  //  would throw inside handle and kill the server.
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return;
+  handle(m).catch((e) => {
+    if (m.id === undefined) return;
+    send({ jsonrpc: '2.0', id: m.id, error: { code: -32603, message: String(e?.message || e) } });
+  });
 });
