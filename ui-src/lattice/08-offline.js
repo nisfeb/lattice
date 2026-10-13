@@ -259,6 +259,13 @@
   // eyre may say 504. Anything else means the ship SPOKE. That is a real
   // error, not an outage, and must never be queued over.
   const shipGone = (r) => !r || r.status === 502 || r.status === 504;
+  // replay uses a stricter rule. A queued record is the user's only copy, so
+  // it is dropped only when the ship rejects it in a way a retry cannot fix:
+  // a bad request, a missing target, a conflict, a body too large. Anything
+  // else keeps it queued. That covers no response, any 5xx, an expired login
+  // (401, 403), a timeout (408) and rate limiting (429).
+  const REPLAY_DROP = [400, 404, 409, 410, 413, 422];
+  const replayDrop = (r) => !!r && REPLAY_DROP.includes(r.status);
 
   let probeTimer = null;
   function setDegraded(on) {
@@ -410,7 +417,8 @@
   }
 
   //  Each drain phase returns FALSE when it could not finish. Usually that is
-  //  the ship going away mid-drain (shipGone). drainCreates also returns false
+  //  the ship going away mid-drain, or any answer that is not a deterministic
+  //  rejection (see replayDrop). drainCreates also returns false
   //  when the conflict-preservation write did not land for any other reason,
   //  because the alternative is dropping the user's only copy of a document.
   //  Either way everything the phase had not finished stays queued, in order,
@@ -423,11 +431,12 @@
   // landing afterwards is always a save the user still wants, under the name
   // they want it under.
   //
-  // An op the ship REJECTS is dropped, not retried. It means the intent was
-  // already satisfied some other way: deleting a page that only ever existed
-  // in this queue, or moving one whose source the queue never sent. Retrying
-  // that forever would wedge everything behind it, and there is nothing to
-  // recover because no content lives in an op.
+  // An op the ship REJECTS (see replayDrop) is dropped, not retried. It
+  // means the intent was already satisfied some other way: deleting a page
+  // that only ever existed in this queue, or moving one whose source the
+  // queue never sent. Retrying that forever would wedge everything behind
+  // it, and there is nothing to recover because no content lives in an op.
+  // Any other failure keeps the op queued and stops the drain.
   async function drainOps(ops) {
     for (const o of ops) {
       //  a record of any other shape is corrupt. Falling through to the move
@@ -442,7 +451,7 @@
             '&to=' + encodeURIComponent(o.to);
       let r = null;
       try { r = await tfetch(u, { method: 'POST' }, 30000); } catch {}
-      if (shipGone(r)) return false;
+      if (!(r && r.ok) && !replayDrop(r)) return false;
       if (!(r && r.ok)) {
         st('offline ' + o.op + ' no longer applies: ' +
           (o.name || o.from) + ' (skipped)', false);
@@ -468,7 +477,8 @@
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
       if (one && one.ok) { await offDel(q.name); continue; }
-      if (shipGone(one)) return false;
+      //  409 is in the drop set, so it falls through to its own branch below
+      if (!replayDrop(one)) return false;
       // 409: the name is taken on the ship. Do NOT drop the user's body — move
       // it out of the way as a conflict page so nothing is lost, then let them
       // rename. Overwriting is the one thing a create must never do. The alt
@@ -538,7 +548,10 @@
         for (const q of part) await offDel(q.name);
         continue;
       }
-      if (r && !shipGone(r)) {
+      //  a 5xx from the batch may be one poisoned record, so retry per item
+      //  to isolate it. No response, an outage, a lapsed login or a rate
+      //  limit would fail the same way per item, so stop and keep them all.
+      if (r && !shipGone(r) && (r.status >= 500 || replayDrop(r))) {
         for (const q of part) {
           let one = null;
           try {
@@ -554,7 +567,7 @@
             await offDel(q.name);
             continue;
           }
-          if (shipGone(one)) return false;
+          if (!replayDrop(one)) return false;
           st('dropped an unsyncable offline edit: ' + q.name, false);
           await offDel(q.name);
         }
@@ -575,7 +588,7 @@
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
       if (one && one.ok) { await offDel(q.name); continue; }
-      if (shipGone(one)) return false;
+      if (!replayDrop(one)) return false;
       st('dropped an unsyncable offline edit: ' + q.name, false);
       await offDel(q.name);
     }
