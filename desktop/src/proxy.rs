@@ -9,6 +9,26 @@
 //! ponytail: bound to 127.0.0.1 with same-user trust. Any local process
 //! could relay through it, but the same user can already read the cookie
 //! file it injects. Add a token handshake if multi-user hosts ever matter.
+//!
+//! Browsers are a different matter. Any page the user opens in any browser
+//! can aim requests at 127.0.0.1, and the bridge would sign them with the
+//! owner's cookie. So a request is refused with a 403, before the ship sees
+//! it, unless it looks like it came from the webview itself:
+//!
+//! - Host is `127.0.0.1:<port>` or `localhost:<port>`. A DNS rebinding page
+//!   reaches the socket under its own host name, so this check stops it.
+//! - Origin is absent or the bridge's own origin. A cross-site fetch or
+//!   form POST carries the attacker's origin.
+//! - Sec-Fetch-Site is not `cross-site`. That catches the cross-site GETs
+//!   (img, script, top-level navigation) that carry no Origin.
+//!
+//! One exception. The app renders untrusted pages in sandboxed frames, and
+//! those have an opaque origin. Their requests say `cross-site`, and some
+//! say `Origin: null`. A Referer on the bridge's own origin lets them
+//! through, since no other site can forge one.
+//!
+//! Lines, header count and body size are capped too, so a stray client
+//! cannot make a thread buffer without bound.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -109,7 +129,7 @@ pub fn ensure(state: &Bridge, ship_base: &str) -> Result<String, String> {
         for conn in listener.incoming().flatten() {
             let ship = ship.lock().unwrap().clone();
             std::thread::spawn(move || {
-                let _ = serve(conn, &ship);
+                let _ = serve(conn, &ship, port);
             });
         }
     });
@@ -214,6 +234,42 @@ fn drop_request_header(lower_name: &str) -> bool {
     )
 }
 
+/// Longest request line or header line we read, in bytes.
+const MAX_LINE: u64 = 8 * 1024;
+/// Most header lines one request may carry.
+const MAX_HEADERS: usize = 100;
+/// Largest request body we relay. Bigger is a 413.
+const MAX_BODY: usize = 64 * 1024 * 1024;
+
+/// Is `authority` (host:port) this bridge? Both spellings of loopback count.
+fn is_bridge(authority: &str, port: u16) -> bool {
+    authority.eq_ignore_ascii_case(&format!("127.0.0.1:{port}"))
+        || authority.eq_ignore_ascii_case(&format!("localhost:{port}"))
+}
+
+/// Did the webview send this, and not some other page in some browser?
+/// See the module comment for why each header matters.
+fn from_webview(
+    host: Option<&str>,
+    origin: Option<&str>,
+    site: Option<&str>,
+    referer: Option<&str>,
+    port: u16,
+) -> bool {
+    // a Referer on our own origin. Only a page the bridge served can send it.
+    let ours = referer
+        .and_then(|r| r.strip_prefix("http://"))
+        .and_then(|r| r.split(['/', '?', '#']).next())
+        .is_some_and(|a| is_bridge(a, port));
+    let origin_ok = match origin {
+        None => true,
+        Some("null") => ours,
+        Some(o) => o.strip_prefix("http://").is_some_and(|a| is_bridge(a, port)),
+    };
+    let site_ok = ours || !site.is_some_and(|s| s.eq_ignore_ascii_case("cross-site"));
+    host.is_some_and(|h| is_bridge(h, port)) && origin_ok && site_ok
+}
+
 /// One request off the wire, already filtered, ready to relay. An empty body
 /// means the request had none: that is what decides send_bytes vs call.
 struct Incoming {
@@ -223,18 +279,41 @@ struct Incoming {
     body: Vec<u8>,
 }
 
-/// Read one request. None is a request we will not serve: no request line at
-/// all, or a body that stopped short of what its Content-Length promised.
+/// What to do with one request off the wire.
+enum Request {
+    /// relay it to the ship
+    Relay(Incoming),
+    /// answer with this status line and never contact the ship
+    Refuse(&'static str),
+    /// say nothing: no request line, or a body cut short
+    Drop,
+}
+
+/// Read one line of at most MAX_LINE bytes into `out`. False means the line
+/// was longer, and the rest of it is still unread.
+fn read_capped(reader: &mut impl BufRead, out: &mut String) -> std::io::Result<bool> {
+    out.clear();
+    (&mut *reader).take(MAX_LINE + 1).read_line(out)?;
+    Ok(out.len() as u64 <= MAX_LINE)
+}
+
+/// Read one request for the bridge on `port`. Drop is a request we will not
+/// serve at all: no request line, or a body that stopped short of what its
+/// Content-Length promised. Refuse is one we answer without the ship: a
+/// browser that is not the webview, or a request over a size cap. Both are
+/// decided before the body is read.
 ///
 /// Split from serve so the interesting inputs (a lying Content-Length, a
 /// truncated body, a header line with no colon) can be fed in as bytes.
-fn read_request(reader: &mut impl BufRead) -> std::io::Result<Option<Incoming>> {
+fn read_request(reader: &mut impl BufRead, port: u16) -> std::io::Result<Request> {
     let mut line = String::new();
-    reader.read_line(&mut line)?;
+    if !read_capped(reader, &mut line)? {
+        return Ok(Request::Refuse("414 URI Too Long"));
+    }
     let mut parts = line.split_whitespace();
     let (method, target) = match (parts.next(), parts.next()) {
         (Some(m), Some(t)) => (m.to_string(), t.to_string()),
-        _ => return Ok(None),
+        _ => return Ok(Request::Drop),
     };
     // headers: keep what the page sent except hop-by-hop, host and cookies.
     // Accept-Encoding passes THROUGH. ureq (no gzip feature) hands us the
@@ -243,12 +322,19 @@ fn read_request(reader: &mut impl BufRead) -> std::io::Result<Option<Incoming>> 
     // which is a real tax on app.js and page-tree vs a plain browser.
     let mut headers: Vec<(String, String)> = Vec::new();
     let mut content_len = 0usize;
-    loop {
-        let mut h = String::new();
-        reader.read_line(&mut h)?;
+    // host is dropped from the relay, so keep it here for the check below
+    let mut host = None;
+    let mut h = String::new();
+    for n in 0.. {
+        if !read_capped(reader, &mut h)? {
+            return Ok(Request::Refuse("431 Request Header Fields Too Large"));
+        }
         let h = h.trim_end();
         if h.is_empty() {
             break;
+        }
+        if n == MAX_HEADERS {
+            return Ok(Request::Refuse("431 Request Header Fields Too Large"));
         }
         let Some((k, v)) = h.split_once(':') else { continue };
         let (k, v) = (k.trim(), v.trim());
@@ -256,10 +342,32 @@ fn read_request(reader: &mut impl BufRead) -> std::io::Result<Option<Incoming>> 
         if kl == "content-length" {
             content_len = v.parse().unwrap_or(0);
         }
+        if kl == "host" {
+            host = Some(v.to_string());
+        }
         if drop_request_header(&kl) {
             continue;
         }
         headers.push((k.to_string(), v.to_string()));
+    }
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    };
+    let webview = from_webview(
+        host.as_deref(),
+        header("origin"),
+        header("sec-fetch-site"),
+        header("referer"),
+        port,
+    );
+    if !webview {
+        return Ok(Request::Refuse("403 Forbidden"));
+    }
+    if content_len > MAX_BODY {
+        return Ok(Request::Refuse("413 Payload Too Large"));
     }
     // allocate as bytes actually arrive, never what the header claims: a
     // request lying "Content-Length: 10^18" was an instant OOM abort via
@@ -268,10 +376,26 @@ fn read_request(reader: &mut impl BufRead) -> std::io::Result<Option<Incoming>> 
     if content_len > 0 {
         (&mut *reader).take(content_len as u64).read_to_end(&mut body)?;
         if body.len() < content_len {
-            return Ok(None); // truncated body: drop it, same as a failed read_exact
+            return Ok(Request::Drop); // truncated body: same as a failed read_exact
         }
     }
-    Ok(Some(Incoming { method, target, headers, body }))
+    Ok(Request::Relay(Incoming { method, target, headers, body }))
+}
+
+/// Answer `status` with no ship involved, then close. The client may still
+/// be sending a request we never read. Closing on unread bytes makes the
+/// kernel send a reset, which can eat the reply, so half-close and drain a
+/// bounded amount first.
+fn refuse(mut c: TcpStream, reader: &mut impl Read, status: &str) -> std::io::Result<()> {
+    write!(
+        c,
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{status}",
+        status.len()
+    )?;
+    c.shutdown(std::net::Shutdown::Write).ok();
+    c.set_read_timeout(Some(std::time::Duration::from_secs(2))).ok();
+    let _ = std::io::copy(&mut reader.take(1 << 20), &mut std::io::sink());
+    Ok(())
 }
 
 /// Status line, filtered headers, then the body as it arrives.
@@ -299,10 +423,18 @@ fn relay_response(c: &mut TcpStream, resp: ureq::Response) -> std::io::Result<()
     Ok(())
 }
 
-fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
+/// Relay one request from the bridge on `port` to `ship`.
+fn serve(client: TcpStream, ship: &str, port: u16) -> std::io::Result<()> {
     client.set_nodelay(true).ok();
     let mut reader = BufReader::new(client.try_clone()?);
-    let Some(req) = read_request(&mut reader)? else { return Ok(()) };
+    let req = match read_request(&mut reader, port)? {
+        Request::Relay(req) => req,
+        Request::Refuse(status) => {
+            crate::commands::dlog(&format!("bridge: refused {status}"));
+            return refuse(client, &mut reader, status);
+        }
+        Request::Drop => return Ok(()),
+    };
     crate::commands::dlog(&format!("bridge: {} {}", req.method, req.target));
 
     let mut out = agent().request(&req.method, &format!("{ship}{}", req.target));
@@ -359,6 +491,10 @@ mod tests {
     /// Push raw bytes through a real serve() relaying to `ship` and collect
     /// whatever the client gets back. serve() runs to completion before this
     /// returns, so "the ship saw nothing" is a decision, not a race.
+    ///
+    /// serve() is told it is the bridge on PORT_BASE, whatever port the test
+    /// listener got. The Host check only reads headers, so requests here
+    /// name `127.0.0.1:{PORT_BASE}` like the webview would.
     fn through_bridge(req: &[u8], ship: &str) -> Vec<u8> {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
@@ -366,7 +502,9 @@ mod tests {
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(conn, &ship)));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                serve(conn, &ship, PORT_BASE)
+            }));
             let _ = done.send(r.is_ok());
         });
         // bounded, so a relay that stalls is a failure and not a hung suite:
@@ -396,8 +534,8 @@ mod tests {
     /// one plain GET straight at the bridge's own port, returning the body
     fn get_through_bridge(base: &str, path: &str) -> String {
         let addr = base.trim_start_matches("http://").to_string();
-        let mut c = TcpStream::connect(addr).unwrap();
-        write!(c, "GET {path} HTTP/1.1\r\nhost: bridge\r\n\r\n").unwrap();
+        let mut c = TcpStream::connect(&addr).unwrap();
+        write!(c, "GET {path} HTTP/1.1\r\nhost: {addr}\r\n\r\n").unwrap();
         c.shutdown(std::net::Shutdown::Write).ok();
         let mut out = String::new();
         c.read_to_string(&mut out).unwrap();
@@ -450,7 +588,11 @@ mod tests {
         // half-written save committed to the ship as a complete one
         let ship = Stub::new(|_| (200, "should not happen".to_string()));
         let back = through_bridge(
-            b"POST /apps/lattice/save HTTP/1.1\r\ncontent-length: 64\r\n\r\nhalf",
+            format!(
+                "POST /apps/lattice/save HTTP/1.1\r\nhost: 127.0.0.1:{PORT_BASE}\r\n\
+                 content-length: 64\r\n\r\nhalf"
+            )
+            .as_bytes(),
             &ship.base,
         );
         assert!(
@@ -464,9 +606,109 @@ mod tests {
     fn an_unreachable_ship_is_a_502_and_not_a_hang() {
         // the client's offline queue depends on failure arriving FAST and
         // looking like a failure, not like an empty success
-        let back = String::from_utf8_lossy(&poke_bridge(b"GET /apps/lattice/app HTTP/1.1\r\n\r\n"))
-            .into_owned();
+        let req = format!("GET /apps/lattice/app HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\n\r\n");
+        let back = String::from_utf8_lossy(&poke_bridge(req.as_bytes())).into_owned();
         assert!(back.starts_with("HTTP/1.1 502 Bad Gateway"), "{back}");
+    }
+
+    /// Send `req` to a live stub ship through the bridge. Returns the status
+    /// line the client got and how many requests reached the ship.
+    fn status_and_hits(req: &str) -> (String, usize) {
+        let ship = Stub::new(|_| (200, "relayed".to_string()));
+        let back = String::from_utf8_lossy(&through_bridge(req.as_bytes(), &ship.base)).into_owned();
+        let status = back.lines().next().unwrap_or_default().to_string();
+        (status, ship.requests().len())
+    }
+
+    #[test]
+    fn a_foreign_host_is_refused_before_the_ship_sees_it() {
+        // DNS rebinding: evil.example resolves to 127.0.0.1, so the page's
+        // requests reach the socket under evil.example's name. Signing those
+        // with the owner's cookie would hand that page the ship.
+        for host in ["evil.example", "evil.example:26500", "127.0.0.1:9", "127.0.0.2:26500"] {
+            let (status, hits) = status_and_hits(&format!(
+                "GET /apps/lattice/app HTTP/1.1\r\nHost: {host}\r\n\r\n"
+            ));
+            assert_eq!(status, "HTTP/1.1 403 Forbidden", "host {host}");
+            assert_eq!(hits, 0, "host {host} reached the ship");
+        }
+        // no Host at all is not the webview either
+        let (status, hits) = status_and_hits("GET /apps/lattice/app HTTP/1.1\r\n\r\n");
+        assert_eq!(status, "HTTP/1.1 403 Forbidden");
+        assert_eq!(hits, 0);
+    }
+
+    #[test]
+    fn a_cross_site_request_is_refused_before_the_ship_sees_it() {
+        // any page in any browser can aim at 127.0.0.1 with the right Host.
+        // Origin catches its fetches and form POSTs.
+        let (status, hits) = status_and_hits(&format!(
+            "POST /apps/lattice/save HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\n\
+             Origin: https://evil.example\r\nContent-Length: 2\r\n\r\nhi"
+        ));
+        assert_eq!(status, "HTTP/1.1 403 Forbidden");
+        assert_eq!(hits, 0, "a cross-site POST reached the ship");
+        // a same-host origin on another port is another site's origin
+        let (status, hits) = status_and_hits(&format!(
+            "GET /x HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\nOrigin: http://127.0.0.1:8080\r\n\r\n"
+        ));
+        assert_eq!((status.as_str(), hits), ("HTTP/1.1 403 Forbidden", 0));
+        // Sec-Fetch-Site catches a cross-site GET, which carries no Origin
+        let (status, hits) = status_and_hits(&format!(
+            "GET /apps/lattice/app HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\n\
+             Sec-Fetch-Site: cross-site\r\nReferer: https://evil.example/\r\n\r\n"
+        ));
+        assert_eq!((status.as_str(), hits), ("HTTP/1.1 403 Forbidden", 0));
+        // Origin: null is how a sandboxed attacker frame hides its origin
+        let (status, hits) = status_and_hits(&format!(
+            "GET /x HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\nOrigin: null\r\n\r\n"
+        ));
+        assert_eq!((status.as_str(), hits), ("HTTP/1.1 403 Forbidden", 0));
+    }
+
+    #[test]
+    fn the_webviews_own_requests_are_still_relayed() {
+        let good = [
+            // a plain local client: curl, or the app's own probes
+            format!("GET /x HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\n\r\n"),
+            format!("GET /x HTTP/1.1\r\nHost: localhost:{PORT_BASE}\r\n\r\n"),
+            // the webview's same-origin fetch
+            format!(
+                "POST /x HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\n\
+                 Origin: http://127.0.0.1:{PORT_BASE}\r\nSec-Fetch-Site: same-origin\r\n\
+                 Content-Length: 2\r\n\r\nhi"
+            ),
+            // the user typed the address
+            format!("GET /x HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\nSec-Fetch-Site: none\r\n\r\n"),
+            // a sandboxed preview frame: opaque origin, but our own Referer
+            format!(
+                "GET /x HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\nOrigin: null\r\n\
+                 Sec-Fetch-Site: cross-site\r\nReferer: http://127.0.0.1:{PORT_BASE}/apps/lattice/app\r\n\r\n"
+            ),
+        ];
+        for req in good {
+            let (status, hits) = status_and_hits(&req);
+            assert_eq!(status, "HTTP/1.1 200 OK", "{req}");
+            assert_eq!(hits, 1, "{req}");
+        }
+    }
+
+    #[test]
+    fn oversized_requests_are_refused_without_the_ship() {
+        let host = format!("Host: 127.0.0.1:{PORT_BASE}\r\n");
+        let long = "a".repeat(MAX_LINE as usize + 1);
+        let (status, hits) = status_and_hits(&format!("GET /{long} HTTP/1.1\r\n{host}\r\n"));
+        assert_eq!((status.as_str(), hits), ("HTTP/1.1 414 URI Too Long", 0));
+        let (status, hits) = status_and_hits(&format!("GET / HTTP/1.1\r\n{host}X-Big: {long}\r\n\r\n"));
+        assert_eq!((status.as_str(), hits), ("HTTP/1.1 431 Request Header Fields Too Large", 0));
+        let many = "X-A: 1\r\n".repeat(MAX_HEADERS);
+        let (status, hits) = status_and_hits(&format!("GET / HTTP/1.1\r\n{host}{many}\r\n"));
+        assert_eq!((status.as_str(), hits), ("HTTP/1.1 431 Request Header Fields Too Large", 0));
+        let (status, hits) = status_and_hits(&format!(
+            "POST / HTTP/1.1\r\n{host}Content-Length: {}\r\n\r\nhi",
+            MAX_BODY + 1
+        ));
+        assert_eq!((status.as_str(), hits), ("HTTP/1.1 413 Payload Too Large", 0));
     }
 
     #[test]
@@ -533,7 +775,9 @@ mod tests {
         // "Content-Length: 10^18" with no body was an instant OOM abort
         #[test]
         fn a_lying_content_length_cannot_oom(len in any::<u64>()) {
-            let req = format!("POST /x HTTP/1.1\r\ncontent-length: {len}\r\n\r\nhi");
+            let req = format!(
+                "POST /x HTTP/1.1\r\nhost: 127.0.0.1:{PORT_BASE}\r\ncontent-length: {len}\r\n\r\nhi"
+            );
             poke_bridge(req.as_bytes());
         }
 
