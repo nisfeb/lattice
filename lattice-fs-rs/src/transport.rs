@@ -4,6 +4,11 @@
 
 use serde_json::Value;
 
+/// The largest reply either transport will take into memory. A peer that
+/// sends more is refused, not obeyed. A page-dump carries every body in one
+/// reply, so this is sized to the body cache, not to one page.
+pub const MAX_BODY: usize = 256 * 1024 * 1024;
+
 /// A transport error carrying an HTTP-style status so the projection maps it to
 /// an errno identically regardless of transport (lick replies use the same codes).
 #[derive(Debug)]

@@ -274,15 +274,32 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     open_external(&url)
 }
 
+/// Extensions a page can be uploaded from. Mirrors EXT_KIND in
+/// ui-src/lattice/30-tree.js, and scripts/kind-parity.mjs checks the two agree.
+/// The page's own list is cut down to these, so a page cannot widen the pick
+/// to files that are not pages (a key file, a .env).
+const PAGE_EXTS: &[&str] = &["md", "gmi", "html", "htm", "txt", "text", "js", "css", "hoon", "tex", "latex"];
+
+/// How much one pick may read and hand the page. A folder pick reads every
+/// matching file under it, so picking a home directory must not pull the
+/// whole disk into memory and over IPC.
+const PICK_MAX_FILES: usize = 5000;
+const PICK_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Native upload picker for the ship-served workspace (webkit2gtk has no
 /// webkitdirectory, so the web folder picker is dead on Linux). Picks files
 /// or a folder, reads only extensions the UI supports, returns the text.
 /// The page never sees a path or fs handle. One user-driven dialog per call.
 /// Async so the blocking dialog runs off the main thread.
 #[tauri::command]
-pub async fn pick_upload(app: AppHandle, dir: bool, exts: Vec<String>) -> Vec<PickedFile> {
+pub async fn pick_upload(app: AppHandle, dir: bool, exts: Vec<String>) -> Result<Vec<PickedFile>, String> {
     use tauri_plugin_dialog::DialogExt;
+    let exts = page_exts(exts);
     let mut out = Vec::new();
+    if exts.is_empty() {
+        return Ok(out);
+    }
+    let mut bytes = 0;
     if dir {
         if let Some(folder) = app.dialog().file().blocking_pick_folder() {
             if let Ok(root) = folder.into_path() {
@@ -290,7 +307,7 @@ pub async fn pick_upload(app: AppHandle, dir: bool, exts: Vec<String>) -> Vec<Pi
                     .file_name()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                walk(&root, &base, &exts, &mut out);
+                walk(&root, &base, &exts, &mut out, &mut bytes)?;
             }
         }
     } else {
@@ -304,40 +321,77 @@ pub async fn pick_upload(app: AppHandle, dir: bool, exts: Vec<String>) -> Vec<Pi
             for f in files {
                 if let Ok(p) = f.into_path() {
                     if let Some(name) = p.file_name().map(|s| s.to_string_lossy().into_owned()) {
-                        push_file(&p, name, &mut out);
+                        if has_ext(&name, &exts) {
+                            push_file(&p, name, &mut out, &mut bytes)?;
+                        }
                     }
                 }
             }
         }
     }
-    out
+    Ok(out)
 }
 
-fn walk(dir: &std::path::Path, rel: &str, exts: &[String], out: &mut Vec<PickedFile>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+/// The caller's extensions that are also page extensions.
+fn page_exts(exts: Vec<String>) -> Vec<String> {
+    exts.into_iter()
+        .filter(|e| PAGE_EXTS.iter().any(|p| p.eq_ignore_ascii_case(e)))
+        .collect()
+}
+
+fn has_ext(name: &str, exts: &[String]) -> bool {
+    name.rsplit_once('.')
+        .is_some_and(|(_, x)| exts.iter().any(|e| e.eq_ignore_ascii_case(x)))
+}
+
+fn walk(
+    dir: &std::path::Path,
+    rel: &str,
+    exts: &[String],
+    out: &mut Vec<PickedFile>,
+    bytes: &mut u64,
+) -> Result<(), String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Ok(()) };
     for e in entries.flatten() {
         // no symlink following: a looped link must not hang the walk
         let Ok(ft) = e.file_type() else { continue };
         let name = e.file_name().to_string_lossy().into_owned();
+        // hidden files and dirs (.git, .ssh, .env) are never pages
+        if name.starts_with('.') {
+            continue;
+        }
         let child = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
         if ft.is_dir() {
-            walk(&e.path(), &child, exts, out);
-        } else if ft.is_file() {
-            let ok = name
-                .rsplit_once('.')
-                .is_some_and(|(_, x)| exts.iter().any(|e| e.eq_ignore_ascii_case(x)));
-            if ok {
-                push_file(&e.path(), child, out);
-            }
+            walk(&e.path(), &child, exts, out, bytes)?;
+        } else if ft.is_file() && has_ext(&name, exts) {
+            push_file(&e.path(), child, out, bytes)?;
         }
     }
+    Ok(())
 }
 
-fn push_file(path: &std::path::Path, rel: String, out: &mut Vec<PickedFile>) {
+fn push_file(path: &std::path::Path, rel: String, out: &mut Vec<PickedFile>, bytes: &mut u64) -> Result<(), String> {
+    use std::io::Read;
+    if out.len() >= PICK_MAX_FILES {
+        return Err(format!("too many files: the limit is {PICK_MAX_FILES}"));
+    }
+    // read one byte past what is left, so going over the cap is seen
+    // without reading the rest of a huge file
+    let left = PICK_MAX_BYTES - *bytes;
+    let mut raw = Vec::new();
+    let Ok(f) = std::fs::File::open(path) else { return Ok(()) };
+    if f.take(left + 1).read_to_end(&mut raw).is_err() {
+        return Ok(());
+    }
+    if raw.len() as u64 > left {
+        return Err(format!("too much data: the limit is {} MiB", PICK_MAX_BYTES >> 20));
+    }
     // non-UTF-8 (binary) files are skipped, same as the web KMAP filter
-    if let Ok(text) = std::fs::read_to_string(path) {
+    if let Ok(text) = String::from_utf8(raw) {
+        *bytes += text.len() as u64;
         out.push(PickedFile { rel, text });
     }
+    Ok(())
 }
 
 /// Open (or reuse) the workspace on the localhost bridge. The webview only
@@ -840,7 +894,7 @@ mod tests {
 
         let exts = vec!["md".to_string()];
         let mut out = Vec::new();
-        walk(&root, "notes", &exts, &mut out);
+        walk(&root, "notes", &exts, &mut out, &mut 0).unwrap();
         out.sort_by(|a, b| a.rel.cmp(&b.rel));
 
         let rels: Vec<&str> = out.iter().map(|f| f.rel.as_str()).collect();
@@ -854,11 +908,74 @@ mod tests {
 
         // a file pick names the file alone, no folder prefix
         let mut one = Vec::new();
-        push_file(&root.join("a.md"), "a.md".to_string(), &mut one);
+        push_file(&root.join("a.md"), "a.md".to_string(), &mut one, &mut 0).unwrap();
         assert_eq!(one.len(), 1);
         assert_eq!((one[0].rel.as_str(), one[0].text.as_str()), ("a.md", "alpha"));
 
         std::fs::remove_dir_all(&base).ok();
+    }
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::{page_exts, push_file, walk, PICK_MAX_BYTES, PICK_MAX_FILES};
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("lattice-pick-{}-{}", std::process::id(), tag));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn the_page_cannot_widen_the_extension_list() {
+        let asked = ["md", "TeX", "pem", "env", "", "sh", "html"].map(String::from).to_vec();
+        assert_eq!(page_exts(asked), ["md", "TeX", "html"]);
+    }
+
+    #[test]
+    fn a_folder_walk_skips_hidden_names() {
+        let root = tmp("dots");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        std::fs::write(root.join(".git/HEAD.md"), "x").unwrap();
+        std::fs::write(root.join(".secret.md"), "x").unwrap();
+        std::fs::write(root.join("notes/a.md"), "a").unwrap();
+        std::fs::write(root.join("notes/b.pem"), "b").unwrap();
+        let (mut out, mut bytes) = (Vec::new(), 0);
+        walk(&root, "pick", &["md".to_string()], &mut out, &mut bytes).unwrap();
+        let rels: Vec<_> = out.iter().map(|f| f.rel.as_str()).collect();
+        assert_eq!(rels, ["pick/notes/a.md"]);
+        assert_eq!(bytes, 1);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_folder_walk_stops_at_the_file_cap() {
+        let root = tmp("cap");
+        for i in 0..=PICK_MAX_FILES {
+            std::fs::write(root.join(format!("{i}.md")), "").unwrap();
+        }
+        let (mut out, mut bytes) = (Vec::new(), 0);
+        let e = walk(&root, "", &["md".to_string()], &mut out, &mut bytes).unwrap_err();
+        assert!(e.contains("too many files"), "{e}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_pick_stops_at_the_byte_cap() {
+        let root = tmp("bytes");
+        // sparse, so the test costs no disk
+        let big = root.join("big.md");
+        std::fs::File::create(&big).unwrap().set_len(PICK_MAX_BYTES).unwrap();
+        std::fs::write(root.join("one.md"), "x").unwrap();
+        let (mut out, mut bytes) = (Vec::new(), 0);
+        push_file(&big, "big.md".into(), &mut out, &mut bytes).unwrap();
+        assert_eq!(bytes, PICK_MAX_BYTES, "exactly the cap still fits");
+        let e = push_file(&root.join("one.md"), "one.md".into(), &mut out, &mut bytes).unwrap_err();
+        assert!(e.contains("too much data"), "{e}");
+        assert_eq!(out.len(), 1);
+        std::fs::remove_dir_all(&root).ok();
     }
 }
 

@@ -1344,7 +1344,11 @@
     =/  es=(map path know-entry:lk)
       ?:  =('0' (~(gut by args) 'sensitive' ''))  (listed key all tc)
       (searchable key all tc)
-    =/  hs=(list hit:lk)  (search:lk ~(tap by es) tc q old)
+    =/  hs=(list hit:lk)
+      %:  seen-hits  key  =('0' (~(gut by args) 'sensitive' ''))  es
+        (search:lk ~(tap by es) tc q old)
+        (max k 3)
+      ==
     ;<  ~  bind:m
       (taint-if key (lien (scag k hs) |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
     (send-json eyre-id (hits-json:lk es hs q k))
@@ -1359,7 +1363,11 @@
     =/  es=(map path know-entry:lk)
       ?:  =('0' (~(gut by args) 'sensitive' ''))  (listed key all tc)
       (searchable key all tc)
-    =/  hs=(list hit:lk)  (search:lk ~(tap by es) tc task |)
+    =/  hs=(list hit:lk)
+      %:  seen-hits  key  =('0' (~(gut by args) 'sensitive' ''))  es
+        (search:lk ~(tap by es) tc task |)
+        (max k 3)
+      ==
     ;<  ~  bind:m
       (taint-if key (lien (scag k hs) |=(h=hit:lk (sensitive:lk (~(got by es) key.h)))))
     (send-json eyre-id (recall-json:lk es hs task k))
@@ -2413,8 +2421,9 @@
   ::  That does leave it CSRF-reachable (an <img src=…/clip?url=> on a hostile
   ::  page would archive a page of the attacker's choosing), which is noise in
   ::  the owner's own tree, not disclosure. The fetched body never travels
-  ::  back to the attacker. +http-url is the real boundary. It keeps `file:`
-  ::  and friends away from iris on both the initial url and the redirect.
+  ::  back to the attacker. +http-url and +fetchable:lcl are the real
+  ::  boundary. They keep `file:` and friends, and loopback, private and
+  ::  local hosts, away from iris on the initial url and every redirect.
       [%'GET' %clip]
     =/  url=(unit @t)  (~(get by args) 'url')
     ?~  url  (send-err eyre-id 400 'missing url')
@@ -3542,6 +3551,10 @@
   |-  ^-  form:m
   ?:  (gth hops fetch-hops)
     (pure:m [%| 'that page redirects too many times'])
+  ::  every hop is checked, the first one too, so a redirect to a private
+  ::  or local address is refused like a direct request (+fetchable:lcl)
+  ?.  (fetchable:lcl cur)
+    (pure:m [%| local-refused])
   ;<  ~  bind:m  (send-request:io [%'GET' cur hed ~])
   ;<  res=client-response:iris  bind:m  take-client-response:io
   ?.  ?=(%finished -.res)
@@ -3573,6 +3586,7 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?.  (http-url url)  (send-err eyre-id 400 'url must be http:// or https://')
+  ?.  (fetchable:lcl url)  (send-err eyre-id 400 local-refused)
   ;<  got=(each @t @t)  bind:m  (fetch-url url)
   ?:  ?=(%| -.got)  (send-err eyre-id 502 p.got)
   (archive-html eyre-id url p.got)
@@ -3658,10 +3672,13 @@
     ?:  ?|(=(' ' i.s) =(`@tD`9 i.s) =(`@tD`10 i.s) =(`@tD`13 i.s))  ~
     [i.s $(s t.s)]
   ?~(run ~ `(crip `tape`run))
-::  +http-url: is this an http(s) url? The ship fetches whatever /clip is
-::  handed, so this is the trust boundary. It keeps `file:`, `data:` and any
+::  +http-url: is this an http(s) url? It keeps `file:`, `data:` and any
 ::  other iris-reachable scheme out, and it also gates the redirect target
 ::  (an http redirect to file:/// would otherwise walk right past the check).
+::  It checks the scheme only. Before anything is fetched, +fetch-url also
+::  checks the host of every hop with +fetchable:lcl, which refuses
+::  loopback, private and local hosts. /clip-html fetches nothing, so it
+::  needs only this check.
 ++  http-url
   |=  url=@t
   ^-  ?
@@ -3669,6 +3686,10 @@
   ?|  =("http://" (scag 7 t))
       =("https://" (scag 8 t))
   ==
+::  +local-refused: why a clip of a loopback, private or local host fails
+++  local-refused
+  ^-  @t
+  'that address is on this ship or a private network, so lattice will not fetch it'
 ::  +clip-slug: url -> a filename-safe slug. Host + path, lowercased, every run
 ::  of non-alphanumerics collapsed to a single hyphen.
 ++  clip-slug
@@ -3895,6 +3916,30 @@
   ^-  ?
   ?~  key  &
   |(sensitive.scope.u.key !(sensitive:lk e))
+::  +seen-hits: a key's ranked hits, each re-checked against its entry.
+::  +listed filtered on the term cache's sensitive mark, and a raw write
+::  that changes a body without bumping `updated` leaves that mark stale.
+::  es holds the entries this request just read from the vault, so the
+::  check needs no further peek. A hit passes +may-see, or with lst (the
+::  request's sensitive=0) it must not be sensitive at all, so a cleared
+::  key's automatic recall is not tainted either. Only the hits that will
+::  be shown are checked: the walk stops once k pass, and the rest follow
+::  unchecked, so `count` still counts them but none of their text is
+::  sent. Callers pass k of 3 at least, since recall follows the links of
+::  the best three hits. The owner sees everything, so the owner skips it.
+++  seen-hits
+  |=  [key=(unit key-row:ky) lst=? es=(map path know-entry:lk) hs=(list hit:lk) k=@ud]
+  ^-  (list hit:lk)
+  ?~  key  hs
+  ?:  &(sensitive.scope.u.key !lst)  hs
+  =|  out=(list hit:lk)
+  =|  n=@ud
+  |-  ^-  (list hit:lk)
+  ?~  hs  (flop out)
+  ?:  =(n k)  (weld (flop out) `(list hit:lk)`hs)
+  =/  e=(unit know-entry:lk)  (~(get by es) key.i.hs)
+  ?.  &(?=(^ e) ?:(lst !(sensitive:lk u.e) (may-see key u.e)))  $(hs t.hs)
+  $(hs t.hs, out [i.hs out], n +(n))
 ::  +taint-if: a key just received sensitive text. Stamped through the
 ::  writer, at most every ten minutes.
 ++  taint-if
@@ -4105,7 +4150,8 @@
   (pure:m &)
 ::  +granted: does a sharing group's read road reach this page, on it or
 ::  on a folder above it? Soft, like +move-grants: when lattice may not
-::  read the groups it cannot have granted one either.
+::  read the groups it cannot have granted one either. A group whose weir
+::  is there but will not decode counts as granted (+granted-via).
 ::
 ++  granted  |=(name=path (granted-via name |))
 ::  +edit-granted: the make-road twin of +granted. Does any sharing group
@@ -4117,6 +4163,14 @@
 ::  +granted-via: +granted (mak=|, peek roads) and +edit-granted (mak=&,
 ::  make roads). A make road under the page dir counts as well, since it
 ::  reaches the page's code grub too.
+::
+::  It fails closed on a group it cannot read. A how.weir that is present
+::  but will not decode might grant anything, so it counts as a grant. The
+::  cost is small: a keyed page save is refused, an own page is sandboxed,
+::  or a hoon page is edit-locked until the owner saves it. An unreadable
+::  usergroups dir stays soft (|). That is an install that refused the
+::  optional usergroup read, and failing closed there would lock and
+::  sandbox every page on it for good.
 ::
 ++  granted-via
   |=  [name=path mak=?]
@@ -4133,7 +4187,7 @@
   =/  hw  (~(get by fils) %'how.weir')
   ?~  hw  |
   =/  w=(unit weir:nexus)  (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hw))))
-  ?~  w  |
+  ?~  w  &
   %+  lien  ~(tap in ?:(mak make.u.w peek.u.w))
   |=  r=road:tarball
   ?.  ?=([%& %| *] r)  |
