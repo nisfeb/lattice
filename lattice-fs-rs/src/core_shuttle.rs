@@ -166,6 +166,7 @@ fn dirty_handle(rel: &str, body: &[u8]) -> Handle {
         kind: "md".into(),
         buf: body.to_vec(),
         dirty: true,
+        gen: 0,
         new: false,
         scratch: false,
     }

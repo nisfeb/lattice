@@ -32,6 +32,12 @@ const FILE_TTL: Duration = Duration::from_secs(0);
 const TREE_TTL: Duration = Duration::from_secs(5);
 const RECENT_TTL: Duration = Duration::from_secs(10); // grace window for the recent-mutation ledger // our vtree refresh floor (watch() is a no-op, so this is the only floor)
 const READ_CACHE_MAX: usize = 256 * 1024 * 1024; // body-cache ceiling. Past it, degrade to lazy read
+// The largest file a handle will hold. A page body sits whole in RAM here and
+// goes to the ship in one POST, so nothing real comes near it. Without a cap,
+// one pwrite at a huge offset makes resize abort the daemon, and every open
+// handle's unsaved buffer goes with it. Past the cap, write and truncate
+// answer EFBIG.
+const MAX_FILE: u64 = 64 * 1024 * 1024;
 // How long a body() miss waits for the dump already in flight before it gives
 // up and asks for the one page itself. A wedge-breaker, not a latency budget:
 // the dump is normally back in a second or two, and the page-source it would
@@ -58,6 +64,9 @@ struct Handle {
     kind: String,
     buf: Vec<u8>,
     dirty: bool,
+    // Bumped by every write and truncate. commit clears dirty only if gen did
+    // not move while its IO ran, so a write in that window is never dropped.
+    gen: u64,
     new: bool,
     scratch: bool, // an editor temp file: commit to the scratch map, never the ship
 }
@@ -452,10 +461,10 @@ impl GrubberyFs {
 
     /// Commit an fh's buffer through the projection (one POST), then invalidate.
     fn commit(&self, fh: u64) -> Result<(), PErr> {
-        let (rel, kind, buf, new, scratch) = {
+        let (rel, kind, buf, new, scratch, gen) = {
             let s = self.st.lock().unwrap();
             match s.handles.get(&fh) {
-                Some(h) if h.dirty => (h.rel.clone(), h.kind.clone(), h.buf.clone(), h.new, h.scratch),
+                Some(h) if h.dirty => (h.rel.clone(), h.kind.clone(), h.buf.clone(), h.new, h.scratch, h.gen),
                 _ => return Ok(()),
             }
         };
@@ -465,7 +474,7 @@ impl GrubberyFs {
             let mut s = self.st.lock().unwrap();
             s.scratch.insert(rel, buf);
             if let Some(h) = s.handles.get_mut(&fh) {
-                h.dirty = false;
+                h.dirty = h.gen != gen;
                 h.new = false;
             }
             return Ok(());
@@ -473,7 +482,7 @@ impl GrubberyFs {
         self.proj.write(&rel, &kind, &buf, new)?;
         let mut s = self.st.lock().unwrap();
         if let Some(h) = s.handles.get_mut(&fh) {
-            h.dirty = false;
+            h.dirty = h.gen != gen;
             h.new = false;
         }
         publish(&mut s, &rel, &buf);
@@ -1118,12 +1127,17 @@ impl Filesystem for GrubberyFs {
             return;
         };
         if let Some(sz) = size {
+            if sz > MAX_FILE {
+                reply.error(err(libc::EFBIG));
+                return;
+            }
             // 1) explicit fh -> truncate that buffer
             let mut done = false;
             if let Some(fhv) = fh {
                 if let Some(h) = s.handles.get_mut(&fhv.0) {
                     h.buf.resize(sz as usize, 0);
                     h.dirty = true;
+                    h.gen += 1;
                     done = true;
                 }
             }
@@ -1134,6 +1148,7 @@ impl Filesystem for GrubberyFs {
                     let h = s.handles.get_mut(&hfh).unwrap();
                     h.buf.resize(sz as usize, 0);
                     h.dirty = true;
+                    h.gen += 1;
                     done = true;
                 }
             }
@@ -1232,7 +1247,7 @@ impl Filesystem for GrubberyFs {
                 s.next_fh += 1;
                 s.handles.insert(
                     fh,
-                    Handle { rel: path, kind: String::new(), buf, dirty: false, new: false, scratch: true },
+                    Handle { rel: path, kind: String::new(), buf, dirty: false, gen: 0, new: false, scratch: true },
                 );
                 drop(s);
                 reply.opened(FileHandle(fh), FopenFlags::empty());
@@ -1280,7 +1295,7 @@ impl Filesystem for GrubberyFs {
         s.pending_trunc.remove(&ino.0);
         let fh = s.next_fh;
         s.next_fh += 1;
-        s.handles.insert(fh, Handle { rel, kind, buf, dirty, new: false, scratch: false });
+        s.handles.insert(fh, Handle { rel, kind, buf, dirty, gen: 0, new: false, scratch: false });
         drop(s);
         reply.opened(FileHandle(fh), FopenFlags::empty());
     }
@@ -1322,19 +1337,10 @@ impl Filesystem for GrubberyFs {
     ) {
         let mut s = self.st.lock().unwrap();
         match s.handles.get_mut(&fh.0) {
-            Some(h) => {
-                let off = offset as usize;
-                if off > h.buf.len() {
-                    h.buf.resize(off, 0);
-                }
-                let end = off + data.len();
-                if end > h.buf.len() {
-                    h.buf.resize(end, 0);
-                }
-                h.buf[off..end].copy_from_slice(data);
-                h.dirty = true;
-                reply.written(data.len() as u32);
-            }
+            Some(h) => match write_buf(h, offset, data) {
+                Ok(()) => reply.written(data.len() as u32),
+                Err(e) => reply.error(err(e)),
+            },
             None => reply.error(err(libc::EBADF)),
         }
     }
@@ -1408,6 +1414,7 @@ impl Filesystem for GrubberyFs {
                     kind: String::new(),
                     buf: Vec::new(),
                     dirty: true,
+                    gen: 0,
                     new: true,
                     scratch: true,
                 },
@@ -1428,6 +1435,7 @@ impl Filesystem for GrubberyFs {
                 kind: kind.clone(),
                 buf: Vec::new(),
                 dirty: true,
+                gen: 0,
                 new: true,
                 scratch: false,
             },
@@ -1652,6 +1660,22 @@ impl Filesystem for GrubberyFs {
 /// (which the rename just removed) and returns ENOENT. An editor that saves
 /// by writing a temp and renaming it into place (VS Code, `:w` with
 /// `backupcopy=no`) then sees the file it just wrote disappear.
+/// Apply one write to a handle's buffer. EFBIG past MAX_FILE, checked before
+/// the buffer grows, with the offset sum checked for overflow too.
+fn write_buf(h: &mut Handle, offset: u64, data: &[u8]) -> Result<(), i32> {
+    let end = match offset.checked_add(data.len() as u64) {
+        Some(end) if end <= MAX_FILE => end as usize,
+        _ => return Err(libc::EFBIG),
+    };
+    if end > h.buf.len() {
+        h.buf.resize(end, 0);
+    }
+    h.buf[offset as usize..end].copy_from_slice(data);
+    h.dirty = true;
+    h.gen += 1;
+    Ok(())
+}
+
 fn remap_ino(s: &mut State, src: &str, dst: &str) {
     if let Some(ino) = s.to_ino.remove(src) {
         s.to_ino.insert(dst.to_string(), ino);
@@ -1890,6 +1914,9 @@ mod tests {
         probes: AtomicUsize,
         hold_probe: AtomicBool, // stall change_token() mid-flight
         fail_write: AtomicBool, // write() refuses, as an unreachable ship would
+        // runs once inside the next write(), while commit holds no lock. That
+        // is where a second FUSE thread could land a write.
+        during_write: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     impl Fake {
@@ -1990,6 +2017,10 @@ mod tests {
             if self.fail_write.load(Ordering::SeqCst) {
                 return Err(PErr::new(libc::EIO, "fake: write refused"));
             }
+            let hook = self.during_write.lock().unwrap().take();
+            if let Some(f) = hook {
+                f();
+            }
             self.log.lock().unwrap().push(format!(
                 "write {rel} {kind} {} new={create}",
                 String::from_utf8_lossy(data)
@@ -2084,6 +2115,7 @@ mod tests {
             kind: kind.into(),
             buf: buf.to_vec(),
             dirty,
+            gen: 0,
             new: false,
             scratch,
         }
@@ -2193,6 +2225,48 @@ mod tests {
             "accounting must match contents"
         );
         assert_eq!(s.write_gen, 2);
+    }
+
+    #[test]
+    fn a_write_during_commit_io_keeps_the_handle_dirty() {
+        // commit snapshots the buffer, drops the lock for the POST, then marks
+        // the handle clean. A write landing during that POST is not in the
+        // snapshot. Marking clean anyway would drop it on release.
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        let fs = warm_fs(f.clone());
+        fs.st.lock().unwrap().handles.insert(7, handle("note", "md", b"first", true, false));
+        let st = fs.st.clone();
+        *f.during_write.lock().unwrap() = Some(Box::new(move || {
+            let mut s = st.lock().unwrap();
+            write_buf(s.handles.get_mut(&7).unwrap(), 5, b" second").unwrap();
+        }));
+        fs.commit(7).unwrap();
+        assert_eq!(f.log(), vec!["write note md first new=false"]);
+        assert!(fs.st.lock().unwrap().handles[&7].dirty, "the late write was dropped");
+
+        // the next commit sends it, and with nothing new the handle goes clean
+        fs.commit(7).unwrap();
+        assert_eq!(f.log()[1], "write note md first second new=false");
+        assert!(!fs.st.lock().unwrap().handles[&7].dirty);
+    }
+
+    #[test]
+    fn write_buf_refuses_past_max_file_before_growing() {
+        let mut h = handle("note", "md", b"abc", false, false);
+        // a sparse write zero-fills the gap and bumps gen
+        write_buf(&mut h, 5, b"z").unwrap();
+        assert_eq!(h.buf, b"abc\0\0z");
+        assert!(h.dirty);
+        assert_eq!(h.gen, 1);
+        // past the cap, and an offset whose sum overflows: EFBIG, buffer untouched
+        for (off, data) in [(MAX_FILE, &b"x"[..]), (MAX_FILE - 1, &b"xy"[..]), (u64::MAX, &b"x"[..])] {
+            assert_eq!(write_buf(&mut h, off, data), Err(libc::EFBIG), "offset {off}");
+        }
+        assert_eq!(h.buf.len(), 6, "a refused write must not grow the buffer");
+        assert_eq!(h.gen, 1, "a refused write is not a change");
+        // a write that ends exactly at the cap is allowed
+        write_buf(&mut h, MAX_FILE - 1, b"x").unwrap();
+        assert_eq!(h.buf.len() as u64, MAX_FILE);
     }
 
     #[test]

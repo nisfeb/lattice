@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use crate::transport::{TErr, Transport};
+use crate::transport::{TErr, Transport, MAX_BODY};
 
 /// How much of an HTTP error body a TErr message may carry. The whole body is
 /// what the ship wanted to say, but it can be an HTML error page, and this
@@ -19,12 +19,12 @@ const DETAIL_MAX: usize = 200;
 
 /// The agent every ordinary request goes through: pooled connections (so a
 /// mount's steady traffic isn't paying a fresh handshake per call), bounded
-/// on the CONNECT phase only. Without this, `ureq::request`'s bare default
-/// agent has no timeout at all, and a dead pier or a stale URL hangs at SYN
-/// forever — one FUSE call away from the uninterruptible wedge mounts.rs's
-/// own comment warns about. No read timeout: a slow-but-alive ship (a big
-/// page-dump, a busy pier) still has to be allowed to finish, the same
-/// reasoning as the beacon watch's agent and proxy.rs's shared one.
+/// on CONNECT and on each socket read and write. Without them a dead pier, a
+/// stale URL or a ship that stops mid-reply hangs a FUSE call forever: the
+/// uninterruptible wedge mounts.rs's own comment warns about. The read bound
+/// is per read, not per reply, so a slow-but-alive ship (a big page-dump, a
+/// busy pier) still finishes. It matches lick's 120s deadline. The beacon
+/// watch keeps its own agent with no read timeout, since it idles by design.
 ///
 /// Never follows a redirect. The +code login and every cookie-bearing
 /// request go through here, and a redirect could carry them to a host the
@@ -32,9 +32,12 @@ const DETAIL_MAX: usize = 200;
 fn req_agent() -> &'static ureq::Agent {
     static A: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
     A.get_or_init(|| {
+        let io = std::time::Duration::from_secs(120);
         ureq::AgentBuilder::new()
             .redirects(0)
             .timeout_connect(std::time::Duration::from_secs(10))
+            .timeout_read(io)
+            .timeout_write(io)
             .build()
     })
 }
@@ -359,10 +362,16 @@ impl EyreTransport {
                 Err(TErr::new(code, format!("http {code}: redirect to {to:?} not followed")))
             }
             Ok(r) => {
+                // Read one byte past the cap, so an oversized reply is an error
+                // and never a silently cut body.
                 let mut buf = Vec::new();
                 r.into_reader()
+                    .take(MAX_BODY as u64 + 1)
                     .read_to_end(&mut buf)
                     .map_err(|e| TErr::new(0, format!("read: {e}")))?;
+                if buf.len() > MAX_BODY {
+                    return Err(TErr::new(0, format!("read: reply over {MAX_BODY} bytes")));
+                }
                 Ok(buf)
             }
             Err(ureq::Error::Status(code, resp)) => {
