@@ -440,4 +440,248 @@
   ?:  &(=(' ' c) ?=(~ acc))
     $(t t.t)
   $(t t.t, acc [c acc], runs 0)
+::
+::  ── which urls the ship may fetch ─────────────────────────────────────
+::  /clip and /share make the SHIP send a GET to a url someone handed it.
+::  Left open, that reaches what only the ship can reach: its own ports, the
+::  LAN, a cloud metadata service. +fetchable refuses an http(s) url whose
+::  host names one of those as a literal. Each hop of a redirect is checked
+::  again by the caller.
+::
+::  DNS rebinding stays open. Iris resolves names itself, so a public name
+::  whose record points at 127.0.0.1 passes here. Only literals are caught.
+::
+::  The host is read the way the fetcher reads it, and anything this parser
+::  does not fully understand is refused: userinfo (`@`), percent escapes,
+::  backslashes, zone ids and non-ascii hosts never pass.
+++  fetchable
+  |=  url=@t
+  ^-  ?
+  =/  h=(unit [v6=? h=tape])  (url-host url)
+  ?~  h  |
+  !(local-host u.h)
+::  +url-host: the host of an http(s) url, lowercased, and whether it was a
+::  bracketed IPv6 literal. ~ for any other scheme, an empty host, or an
+::  authority holding a character outside [a-z0-9.-_:[]].
+++  url-host
+  |=  url=@t
+  ^-  (unit [v6=? h=tape])
+  =/  t=tape  (cass (trip url))
+  =/  r=(unit tape)
+    ?:  =("http://" (scag 7 t))  `(slag 7 t)
+    ?:  =("https://" (scag 8 t))  `(slag 8 t)
+    ~
+  ?~  r  ~
+  ::  the authority runs to the first / ? or #. Capped, since no real host
+  ::  is longer than 253 bytes.
+  =/  au=(unit tape)
+    =/  s=tape  u.r
+    =|  acc=tape
+    |-  ^-  (unit tape)
+    ?:  (gth (lent acc) 300)  ~
+    ?~  s  `(flop acc)
+    ?:  |(=('/' i.s) =('?' i.s) =('#' i.s))  `(flop acc)
+    $(s t.s, acc [i.s acc])
+  ?~  au  ~
+  ?.  (levy u.au host-char)  ~
+  ?:  =("[" (scag 1 u.au))
+    =/  e=(unit @ud)  (find "]" u.au)
+    ?~  e  ~
+    ?.  (port-ok (slag +(u.e) u.au))  ~
+    `[& (slag 1 (scag u.e u.au))]
+  =/  c=(unit @ud)  (find ":" u.au)
+  =/  h=tape  ?~(c u.au (scag u.c u.au))
+  ?.  (port-ok ?~(c ~ (slag u.c u.au)))  ~
+  ?:  |(=(~ h) ?=(^ (find "[" h)) ?=(^ (find "]" h)))  ~
+  `[| h]
+::  +host-char: may this byte appear in an authority we accept?
+++  host-char
+  |=  c=@tD
+  ^-  ?
+  ?|  &((gte c 'a') (lte c 'z'))
+      (is-dig c)
+      =('.' c)  =('-' c)  =('_' c)  =(':' c)  =('[' c)  =(']' c)
+  ==
+++  is-dig  |=(c=@tD &((gte c '0') (lte c '9')))
+::  +port-ok: what follows the host is nothing, or `:` and digits.
+++  port-ok
+  |=  t=tape
+  ^-  ?
+  ?~  t  &
+  &(=(':' i.t) (levy t.t is-dig))
+::  +local-host: does this host name the ship itself or a private network?
+::  A name is local when it has one label (a LAN or search-domain name), or
+::  is localhost, or ends in .localhost, .local or .internal. An all-number
+::  host is read as an address, the way inet_aton reads one, so 127.1,
+::  2130706433 and 0x7f000001 are all loopback. A host that is all numbers
+::  but no address, or has an empty label, is refused.
+++  local-host
+  |=  [v6=? h=tape]
+  ^-  ?
+  ?:  v6
+    =/  a=(unit @)  (ip6 h)
+    ?~(a & (local-6 u.a))
+  ::  one trailing dot is the same name, written absolute
+  =/  n=tape  ?:(=("." (scag 1 (flop h))) (snip h) h)
+  =/  ls=(list tape)  (split-on n '.')
+  ?:  (lien ls |=(l=tape ?=(~ l)))  &
+  =/  a=(unit (unit @))  (ip4 ls)
+  ?^  a  ?~(u.a & (local-4 u.u.a))
+  ?|  =(1 (lent ls))
+      (ends-with n ".localhost")
+      (ends-with n ".local")
+      (ends-with n ".internal")
+  ==
+::  +local-4: 0/8, 10/8, 127/8, 100.64/10 (CGNAT), 169.254/16 (link-local,
+::  where cloud metadata lives), 172.16/12, 192.168/16, and 224/3
+::  (multicast and reserved).
+++  local-4
+  |=  a=@
+  ^-  ?
+  =/  o1=@  (rsh [3 3] a)
+  =/  o2=@  (cut 3 [2 1] a)
+  ?|  =(0 o1)  =(10 o1)  =(127 o1)
+      (gte o1 224)
+      &(=(100 o1) (gte o2 64) (lte o2 127))
+      &(=(169 o1) =(254 o2))
+      &(=(172 o1) (gte o2 16) (lte o2 31))
+      &(=(192 o1) =(168 o2))
+  ==
+::  +local-6: :: and ::1, fc00::/7 (unique local), fe80::/10 (link-local),
+::  fec0::/10 (old site-local), ff00::/8 (multicast), and an IPv4 address
+::  carried in ::/96, ::ffff:0:0/96 (mapped) or 64:ff9b::/96 (NAT64) when
+::  that address is local.
+++  local-6
+  |=  a=@
+  ^-  ?
+  =/  hi=@  (rsh [5 1] a)
+  ?|  (lte a 1)
+      =(0x7e (rsh [0 121] a))
+      =(0x3fa (rsh [0 118] a))
+      =(0x3fb (rsh [0 118] a))
+      =(0xff (rsh [3 15] a))
+      ?&  |(=(0 hi) =(0xffff hi) =(0x64.ff9b.0000.0000.0000.0000 hi))
+          (local-4 (cut 5 [0 1] a))
+      ==
+  ==
+::  +ip4: a dotted host read as inet_aton reads it. ~ when some label is not
+::  a number, so the host is a name. [~ ~] when every label is a number but
+::  together they are no address. [~ ~ a] otherwise. 1 to 4 parts: every
+::  part but the last is a byte, and the last fills the remaining bytes.
+++  ip4
+  |=  ls=(list tape)
+  ^-  (unit (unit @))
+  ?.  (levy ls ip-numeric)  ~
+  :-  ~
+  =/  vs=(list @)  (murn ls ip-part)
+  =/  n=@ud  (lent vs)
+  ?.  =(n (lent ls))  ~
+  ?:  |(=(0 n) (gth n 4))  ~
+  =/  la=@  (rear vs)
+  ?.  (levy (snip vs) |=(x=@ (lte x 255)))  ~
+  ?:  (gte la (bex (mul 8 (sub 5 n))))  ~
+  =/  hi=@  (roll (snip vs) |=([x=@ acc=@] (add (lsh 3 acc) x)))
+  `(add (lsh [3 (sub 5 n)] hi) la)
+::  +ip-numeric: a label inet_aton would take as a number: digits, or 0x and
+::  hex digits.
+++  ip-numeric
+  |=  t=tape
+  ^-  ?
+  ?:  =("0x" (scag 2 t))
+    (levy (slag 2 t) |=(c=@tD |((is-dig c) &((gte c 'a') (lte c 'f')))))
+  &(!=(~ t) (levy t is-dig))
+::  +ip-part: one inet_aton part. 0x is hex, a leading 0 is octal, else
+::  decimal. ~ on a digit the base does not have. 12 bytes at most, so no
+::  part grows without bound.
+++  ip-part
+  |=  t=tape
+  ^-  (unit @)
+  ?:  (gth (lent t) 12)  ~
+  =/  b=@ud
+    ?:  =("0x" (scag 2 t))  16
+    ?:  &(=("0" (scag 1 t)) (gth (lent t) 1))  8
+    10
+  =/  ds=tape
+    ?:  =(16 b)  (slag 2 t)
+    ?:  =(8 b)  (slag 1 t)
+    t
+  =|  acc=@
+  |-  ^-  (unit @)
+  ?~  ds  `acc
+  =/  c=@  i.ds
+  =/  d=@
+    ?:  (is-dig c)  (sub c '0')
+    ?:  &((gte c 'a') (lte c 'f'))  (add 10 (sub c 'a'))
+    99
+  ?:  (gte d b)  ~
+  $(ds t.ds, acc (add (mul acc b) d))
+::  +ip6: an IPv6 literal (inside the brackets) as a 128-bit atom, ~ when it
+::  is not one. One `::` at most. A dotted IPv4 tail is allowed last.
+++  ip6
+  |=  h=tape
+  ^-  (unit @)
+  =/  i=(unit @ud)  (find "::" h)
+  =/  ws=(unit (list @))
+    ?~  i  (ip6-words h &)
+    =/  r=tape  (slag (add 2 u.i) h)
+    ?^  (find "::" r)  ~
+    =/  lw=(unit (list @))  (ip6-words (scag u.i h) |)
+    =/  rw=(unit (list @))  (ip6-words r &)
+    ?~  lw  ~
+    ?~  rw  ~
+    =/  k=@ud  (add (lent u.lw) (lent u.rw))
+    ?:  (gth k 7)  ~
+    `:(weld u.lw (reap (sub 8 k) `@`0) u.rw)
+  ?~  ws  ~
+  ?.  =(8 (lent u.ws))  ~
+  `(roll u.ws |=([w=@ acc=@] (add (lsh 4 acc) w)))
+::  +ip6-words: colon-separated hex groups -> 16-bit words. end: this run
+::  ends the address, so its last group may be a dotted IPv4 (two words).
+::  An empty run has no words.
+++  ip6-words
+  |=  [t=tape end=?]
+  ^-  (unit (list @))
+  ?~  t  `~
+  =/  gs=(list tape)  (split-on t ':')
+  =|  out=(list @)
+  |-  ^-  (unit (list @))
+  ?~  gs  `(flop out)
+  ?:  &(end ?=(~ t.gs) ?=(^ (find "." i.gs)))
+    =/  v=(unit @)  (ip-quad i.gs)
+    ?~  v  ~
+    `(flop [(cut 4 [0 1] u.v) (cut 4 [1 1] u.v) out])
+  ?:  |(=(~ i.gs) (gth (lent i.gs) 4))  ~
+  ?.  (levy i.gs |=(c=@tD |((is-dig c) &((gte c 'a') (lte c 'f')))))  ~
+  $(gs t.gs, out [(scan i.gs hex) out])
+::  +ip-quad: a strict dotted quad, four decimal bytes.
+++  ip-quad
+  |=  t=tape
+  ^-  (unit @)
+  =/  ls=(list tape)  (split-on t '.')
+  ?.  =(4 (lent ls))  ~
+  ?.  %+  levy  ls
+      |=  l=tape
+      ?&  !=(~ l)
+          (lte (lent l) 3)
+          (levy l is-dig)
+          (lte (scan l dem) 255)
+      ==
+    ~
+  `(roll ls |=([l=tape acc=@] (add (lsh 3 acc) (scan l dem))))
+::  +split-on: a tape cut at every c. "" gives one empty piece.
+++  split-on
+  |=  [t=tape c=@tD]
+  ^-  (list tape)
+  =|  cur=tape
+  =|  out=(list tape)
+  |-  ^-  (list tape)
+  ?~  t  (flop [(flop cur) out])
+  ?:  =(c i.t)  $(t t.t, cur ~, out [(flop cur) out])
+  $(t t.t, cur [i.t cur])
+::  +ends-with: does t end in s?
+++  ends-with
+  |=  [t=tape s=tape]
+  ^-  ?
+  ?:  (lth (lent t) (lent s))  |
+  =(s (slag (sub (lent t) (lent s)) t))
 --
