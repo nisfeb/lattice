@@ -127,4 +127,18 @@ check(
   'in kind_for_ext but not EXT_KIND: ' + JSON.stringify(projOrphans)
 );
 
+//  desktop's pick_upload cuts the page's extension list down to PAGE_EXTS,
+//  so a kind missing there can be picked in a browser but never in the app
+const cmdsPath = join(root, 'desktop/src/commands.rs');
+const pe = readFileSync(cmdsPath, 'utf8').match(/const PAGE_EXTS: &\[&str\] = &\[([^\]]*)\];/);
+const pageExts = pe ? [...pe[1].matchAll(/"(\w+)"/g)].map((m) => m[1]) : [];
+const peDrift = [...new Set([...Object.keys(extKind), ...pageExts])].filter(
+  (e) => !(e in extKind) || !pageExts.includes(e)
+);
+check(
+  'desktop PAGE_EXTS (commands.rs) matches EXT_KIND',
+  pe && peDrift.length === 0,
+  pe ? 'drifted: ' + JSON.stringify(peDrift) : 'could not find PAGE_EXTS in commands.rs'
+);
+
 check.done();
