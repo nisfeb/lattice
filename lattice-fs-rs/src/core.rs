@@ -695,15 +695,66 @@ fn invalidate(s: &mut State) {
 /// real answer for a literal `.hoon` page, so a bare "hoon" extension is
 /// checked directly rather than through the closure, which has no way to
 /// tell "recognized as hoon" apart from "fell through to hoon".
+///
+/// The extension is matched without case. `Notes.MD` is a real md page, not
+/// scratch, so its bytes reach the ship instead of being lost on unmount.
+///
+/// Two names with no extension are scratch too: vim's probe file `4913` (any
+/// all-digit name), and an emacs autosave like `#notes#`. Without this rule
+/// both became bare hoon pages on the ship.
 fn is_scratch(name: &str, kind_for: impl Fn(&str) -> String) -> bool {
-    if name.ends_with('~') {
+    if name.ends_with('~') || is_probe_or_autosave(name) {
         return true;
     }
     match name.rsplit_once('.') {
-        Some((_, "hoon")) => false,
-        Some((_, ext)) => kind_for(ext) == "hoon",
+        Some((_, ext)) if ext.eq_ignore_ascii_case("hoon") => false,
+        Some((_, ext)) => kind_for(&ext.to_ascii_lowercase()) == "hoon",
         None => false,
     }
+}
+
+/// vim's write probe (`4913`, any all-digit name) and an emacs autosave
+/// (`#name#`). Both are names an editor makes and then throws away.
+fn is_probe_or_autosave(name: &str) -> bool {
+    let digits = !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit());
+    let autosave = name.len() >= 2 && name.starts_with('#') && name.ends_with('#');
+    digits || autosave
+}
+
+/// Whether a name looks like a file an editor or a download tool makes for
+/// itself and throws away. Only these may live in the scratch map.
+///
+/// is_scratch says a name will not reach the ship. That is right for an
+/// editor temp. It is wrong for a real file with an extension we do not know,
+/// like `data.xyz`: that one would sit in RAM and be gone on unmount, with no
+/// error. So create and rename refuse a scratch name that is not on this
+/// list, and the user sees the failure at once.
+///
+/// The list: a trailing `~` (vim, emacs, VS Code backups); a leading `.`
+/// (vim swap files, emacs `.#lock`, gedit `.goutputstream-*`, VS Code
+/// `.name.ext.tmp`); `#name#` (emacs autosave); an all-digit name (vim's
+/// `4913` probe); a `.tmp.` anywhere in the name; and the temp extensions
+/// below.
+fn is_editor_temp(name: &str) -> bool {
+    const TEMP_EXTS: [&str; 8] = ["swp", "swx", "swo", "tmp", "bak", "orig", "part", "crdownload"];
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with('~') || lower.starts_with('.') || is_probe_or_autosave(&lower) {
+        return true;
+    }
+    if lower.contains(".tmp.") {
+        return true;
+    }
+    match lower.rsplit_once('.') {
+        Some((_, ext)) => TEMP_EXTS.contains(&ext),
+        None => false,
+    }
+}
+
+/// A name create or rename must refuse: it would be scratch, so it never
+/// reaches the ship, but it is not an editor temp, so nobody expects it to
+/// vanish. EINVAL tells the caller now, instead of losing the file later.
+fn refuse_as_scratch(name: &str, kind_for: impl Fn(&str) -> String) -> bool {
+    is_scratch(name, kind_for) && !is_editor_temp(name)
 }
 
 /// One editor-save pattern, named once, so the three cases a rename involving a
@@ -1338,6 +1389,12 @@ impl Filesystem for GrubberyFs {
             return;
         };
         let path = join(&parent_path, &name);
+        // an unknown extension that is not an editor temp would live only in
+        // RAM and be lost on unmount. Refuse it here instead.
+        if refuse_as_scratch(&name, |ext| self.proj.kind_for_ext(ext)) {
+            reply.error(err(libc::EINVAL));
+            return;
+        }
         // editor temp file: keep it entirely in the FUSE layer (never a page).
         if is_scratch(&name, |ext| self.proj.kind_for_ext(ext)) {
             let ino = ino_for(&mut s, &path);
@@ -1505,6 +1562,12 @@ impl Filesystem for GrubberyFs {
         let newname = newname.to_string_lossy().to_string();
         let src_scratch = is_scratch(&name, |ext| self.proj.kind_for_ext(ext));
         let dst_scratch = is_scratch(&newname, |ext| self.proj.kind_for_ext(ext));
+        // same rule as create: a rename may not land a file in RAM under a
+        // name nobody expects to vanish
+        if refuse_as_scratch(&newname, |ext| self.proj.kind_for_ext(ext)) {
+            reply.error(err(libc::EINVAL));
+            return;
+        }
         let (src_path, dst_path, src_rel, dst_rel, dst_kind, dst_exists) = {
             let s = self.st.lock().unwrap();
             let Some(pp) = path_of(&s, parent.0) else {
@@ -1603,7 +1666,7 @@ fn remap_ino(s: &mut State, src: &str, dst: &str) {
 // skips the shuttle module; `--cfg shuttle` does the reverse.
 #[cfg(all(test, not(shuttle)))]
 mod tests {
-    use super::{cap_bodies, is_scratch};
+    use super::{cap_bodies, is_editor_temp, is_scratch, refuse_as_scratch};
     use std::collections::HashMap;
 
     /// The real kind_for_ext, driven off `Fake` (defined further down in this
@@ -1632,6 +1695,57 @@ mod tests {
             "4913.tmp",
         ] {
             assert!(is_scratch(tmp, t_kind), "{tmp} should be an ephemeral scratch file");
+        }
+    }
+
+    #[test]
+    fn an_upper_case_extension_is_still_a_real_page() {
+        // Notes.MD used to miss the case-sensitive table, fall through to
+        // hoon, count as scratch, and be lost on unmount
+        for real in ["Notes.MD", "X.TXT", "a.Md", "page.HTML", "x.TeX", "Main.HOON"] {
+            assert!(!is_scratch(real, t_kind), "{real} should be a real page file");
+            assert!(!refuse_as_scratch(real, t_kind), "{real} must be creatable");
+        }
+    }
+
+    #[test]
+    fn an_unknown_extension_that_is_no_editor_temp_is_refused() {
+        // it would only ever live in RAM, so create must fail now rather
+        // than drop the file on unmount
+        for name in ["data.xyz", "photo.PNG", "archive.tar.gz"] {
+            assert!(is_scratch(name, t_kind), "{name} never reaches the ship");
+            assert!(!is_editor_temp(name), "{name} is no editor temp");
+            assert!(refuse_as_scratch(name, t_kind), "{name} must be refused at create");
+        }
+    }
+
+    #[test]
+    fn every_editor_temp_pattern_stays_scratch() {
+        for tmp in [
+            "foo.md~",                  // vim/emacs backup
+            "name.ext~",                // VS Code backup
+            ".foo.md.swp",              // vim swap
+            ".foo.md.swx",
+            ".foo.md.swo",
+            ".foo.swp",
+            ".goutputstream-AB12CD",    // gedit
+            ".name.ext.tmp",            // VS Code atomic write
+            "#notes.md#",               // emacs autosave
+            "#notes#",
+            "4913",                     // vim write probe
+            "12345",
+            "foo.tmp",
+            "foo.TMP",
+            "foo.bak",
+            "foo.orig",
+            "foo.part",
+            "foo.crdownload",
+            "foo.tmp.1234",             // atomic writers with a suffix
+            "foo.md.swp",
+        ] {
+            assert!(is_scratch(tmp, t_kind), "{tmp} should be scratch");
+            assert!(is_editor_temp(tmp), "{tmp} should be an editor temp");
+            assert!(!refuse_as_scratch(tmp, t_kind), "{tmp} must still be creatable");
         }
     }
 
