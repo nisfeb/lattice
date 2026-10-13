@@ -424,8 +424,10 @@
       ::  never kills the fiber (mule everything). ponytail: dep keeps are
       ::  armed and never dropped (a removed dep still ticks. save-file's
       ::  no-op suppression bounds it); page code gets the hoon stdlib only
-      ::  (..add) and returns NO darts yet. The capped-authority %sand
-      ::  plumbing lands with darts (platform decision). A divergent dep
+      ::  (..add) and returns NO darts. No capped-authority %sand weir exists.
+      ::  What bounds page code instead: deps outside /page are dropped
+      ::  (+page-dep), pokes reach only other pages' cmd grubs, and a page
+      ::  shared for edit runs content only (+plain-content). A divergent dep
       ::  cycle spins. A converging one terminates via no-op suppression.
           [[%page @ *] %code]
         ;<  ~  bind:m  (rise-later prod "lattice page evaluator" (spud path.rail))
@@ -466,7 +468,26 @@
         =/  err-shown=(unit @t)  ~
         |-
         ;<  src=@t  bind:m  (get-state-as:io ,@t)
+        ::  a page shared for EDIT runs content only. Its source must be the
+        ::  exact shell +wrap-content writes, or a folder index. Hand-written
+        ::  hoon there would be a peer's code compiled with lattice's own
+        ::  authority, so it is refused before the compile, every time the
+        ::  source changes.
+        ::  A lock also outlives the grant (+set-edit-lock): revoking the
+        ::  peer must not run what the peer wrote.
+        ;<  lock=?  bind:m
+          =/  n  (fiber:fiber:nexus ,?)
+          =/  rel=path  (slag 1 pdir)
+          ?:  =(src held)  (pure:n |)
+          ?:  (plain-content src rel)  (pure:n |)
+          ;<  lx=?  bind:n  (peek-exists:io (lock-road up rel))
+          ?:  lx  (pure:n &)
+          ;<  eg=?  bind:n  (edit-granted rel)
+          ?.  eg  (pure:n |)
+          ;<  ~  bind:n  (set-edit-lock up rel)
+          (pure:n &)
         =?  bild  !=(src held)
+          ?:  lock  [%| edit-lock-msg]
           ::  compile the page against the page stdlib (pg): its builders
           ::  (text/html/needs/every/sends/esc) and the +result mold are in
           ::  scope at the top, the full hoon/zuse stack beneath.
@@ -1249,8 +1270,13 @@
         ::  instead of rendering the source as gemtext. The comment box is a
         ::  form, which a sandboxed frame cannot submit, so it is gemtext-only.
         ?:  (looks-html:lgmi body)
+          ::  our own page is framed sandboxed too when it is shared for
+          ::  edit, since a peer may have written that markup
+          ;<  eg=?  bind:m
+            ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,?) |)
+            (edit-granted rel)
           =/  htm=@t
-            (render-browser-page canon body ~ ?!(=(ship.u.ref our)) rk rv (trip ttl))
+            (render-browser-page canon body ~ |(?!(=(ship.u.ref our)) eg) rk rv (trip ttl))
           ?:  =("" rk)  (send-view eyre-id htm)
           (send-view-long eyre-id htm)
         ?:  =("" rk)
@@ -1382,6 +1408,10 @@
     ?^  g  (send-err eyre-id code.u.g ?:(=(404 code.u.g) 'no such old entry' msg.u.g))
     ;<  e=(unit know-entry:lk)  bind:m  (know-one u.ok)
     ?~  e  (send-err eyre-id 404 'no such old entry')
+    ::  superseding drops an entry from the core every session loads, so a
+    ::  key may not do it to a core entry (as with +save-plan and untag)
+    ?:  &(?=(^ key) (is-core:lk u.e))
+      (send-err eyre-id 403 'an agent key cannot supersede a core entry: only the owner can')
     ;<  n=(unit know-entry:lk)  bind:m  (know-one (fall nk u.ok))
     ?:  &(?=(^ nk) ?=(~ n))  (send-err eyre-id 404 'no such new entry')
     ?:  &(?=(^ nk) ?=(^ n) !(may-see key u.n))  (send-err eyre-id 404 'no such new entry')
@@ -1842,6 +1872,11 @@
     ?~  key  (handle-page-save eyre-id req args)
     ::  pages are never sensitive, so a tainted key writes none
     ?:  (tainted:ky u.key rnow)  (send-err eyre-id 403 tainted-msg)
+    ::  a key writes content that renders escaped. Hoon (also an absent or
+    ::  unknown type) would run with lattice's own authority, and html or js
+    ::  would run in the owner's browser (+page-type-ok:ky).
+    ?.  (page-type-ok:ky (~(gut by args) 'type' 'hoon'))
+      (send-err eyre-id 403 'a key saves md, gmi, text, tex, css or index pages only')
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
@@ -2987,6 +3022,10 @@
     ?~  ko  (send-err eyre-id 400 'invalid key')
     ;<  g=(unit [code=@ud msg=@t])  bind:m  (key-guard key u.ko & rnow)
     ?^  g  (send-err eyre-id code.u.g msg.u.g)
+    ::  a key may add the core tag but never remove it: core is what every
+    ::  session loads, so only the owner takes an entry out of it
+    ?:  &(?=(^ key) (core-tag:lk u.tg))
+      (send-err eyre-id 403 'an agent key cannot remove the core tag: only the owner can')
     ;<  ~  bind:m  (poke-know [%untag (spat u.ko) u.tg])
     (send-ok eyre-id)
   ::
@@ -3923,6 +3962,10 @@
   ?:  =('' prose)  [%| 400 'empty body']
   ?:  &(?=(^ old) !(may-see key u.old))
     [%| 403 'that key is not available to this agent key']
+  ::  core entries are loaded by every session. A key may create an entry
+  ::  and tag it core, but may not rewrite one that already is.
+  ?:  &(?=(^ key) ?=(^ old) (is-core:lk u.old))
+    [%| 403 'an agent key cannot edit a core entry: only the owner can']
   ::  a tainted key's new entries are sensitive, but an ordinary entry it
   ::  edited would vanish for every other key, so that is refused
   ?:  &(?=(^ key) ?=(^ old) !(sensitive:lk u.old) (tainted:ky u.key rnow))
@@ -4064,8 +4107,19 @@
 ::  on a folder above it? Soft, like +move-grants: when lattice may not
 ::  read the groups it cannot have granted one either.
 ::
-++  granted
-  |=  name=path
+++  granted  |=(name=path (granted-via name |))
+::  +edit-granted: the make-road twin of +granted. Does any sharing group
+::  hold an edit grant on this page, on a folder above it, or on anything
+::  inside its dir? Such a page runs content only, and its own-page views
+::  are sandboxed. Soft the same way: no usergroup read means no grant.
+::
+++  edit-granted  |=(name=path (granted-via name &))
+::  +granted-via: +granted (mak=|, peek roads) and +edit-granted (mak=&,
+::  make roads). A make road under the page dir counts as well, since it
+::  reaches the page's code grub too.
+::
+++  granted-via
+  |=  [name=path mak=?]
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   ;<  sb=path  bind:m  self-base
@@ -4080,10 +4134,12 @@
   ?~  hw  |
   =/  w=(unit weir:nexus)  (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hw))))
   ?~  w  |
-  %+  lien  ~(tap in peek.u.w)
+  %+  lien  ~(tap in ?:(mak make.u.w peek.u.w))
   |=  r=road:tarball
   ?.  ?=([%& %| *] r)  |
-  =(p.p.r (scag (lent p.p.r) pg))
+  ?|  =(p.p.r (scag (lent p.p.r) pg))
+      &(mak =(pg (scag (lent pg) p.p.r)))
+  ==
 ::  +apply-action: the writer's action dispatch, split out of the take-poke loop
 ::  so every mutation runs through one place (and is followed by a +bump-beacon).
 ::
@@ -4729,6 +4785,11 @@
     ;<  ~  bind:m  (ensure-dirs up /page pax)
     ;<  ~  bind:m  (put-file (rf up pdir %cmd) [/lattice %eval-cmd] `eval-cmd:le`[0 '' 0])
     (put-file (rf up pdir %deps) [/lattice %eval-deps] `(list path)`~)
+  ::  an owner save is the owner's word on this source, so it lifts an edit
+  ::  lock (+set-edit-lock). Before the code write, so the evaluator it wakes
+  ::  no longer sees the lock.
+  ;<  lx=?  bind:m  (peek-exists:io (lock-road up pax))
+  ;<  ~  bind:m  ?.(lx (pure:m ~) (cull:io (lock-road up pax)))
   ;<  ~  bind:m  (put-file (rf up pdir %code) [/lattice %page] src)
   ::  gain the code grub so every save is a kept %firm revision. That is
   ::  what page-history / page-source-at read. Privacy is unchanged. gain
@@ -5090,6 +5151,12 @@
   ::  <ul class="nav"></ul> on a stock install.
   ?.  ?=([%page @ %view ~] pax)  ~
   `/page/[i.t.pax]
+::  +page-dep: may a page depend on this path? Only on the page tree. The
+::  evaluator peeks deps with lattice's own authority, so a dep on /know,
+::  /keys or anything else outside /page would hand that grub to page code.
+::  Both dep arms skip the rest.
+::
+++  page-dep  |=(pax=path ^-(? ?=([%page *] pax)))
 ::  +arm-eval-deps: keep any dep target not yet armed (one wire, /ev). Deps
 ::  name FILE paths; the last segment is the grub name. A view-dep instead
 ::  keeps on the source page's data+show grubs (re-render me when it changes).
@@ -5102,6 +5169,7 @@
   ?~  deps  (pure:m armed)
   ?:  (~(has in armed) i.deps)  $(deps t.deps)
   ?:  =(~ i.deps)  $(deps t.deps)
+  ?.  (page-dep i.deps)  $(deps t.deps)
   =/  src=(unit path)  (view-src i.deps)
   ?^  src
     ;<  *  bind:m  (keep:io /ev (rf up u.src %data) ~)
@@ -5132,6 +5200,9 @@
   ;<  up=@ud  bind:m  nexus-up
   ?~  deps  (pure:m ~)
   ?:  =(~ i.deps)  $(deps t.deps)
+  ::  a dep outside /page never resolves, so it is absent from the list
+  ::  the page receives (+page-dep)
+  ?.  (page-dep i.deps)  $(deps t.deps)
   =/  src=(unit path)  (view-src i.deps)
   ?^  src
     ;<  dsn=view:nexus       bind:m  (peek:io (rf up u.src %data) ~)
@@ -7783,18 +7854,26 @@
   ;<  sb=path  bind:m  self-base
   =/  keep=tape  (keep-url sb "beacon/rev")
   ;<  rev=tape  bind:m  ?:(local beacon-rev-tape (pure:(fiber:fiber:nexus ,tape) ""))
+  =/  rel=path  (slag 3 pax)
+  ::  eg: our own page, but shared for EDIT, so a peer may have written its
+  ::  markup. It is sandboxed like a peer's page: an attribute on the frame
+  ::  below, a CSP header on the bare embed.
+  ;<  eg=?  bind:m
+    ?.  local  (pure:(fiber:fiber:nexus ,?) |)
+    (edit-granted (fall (raw-name-pax name) rel))
   ?:  embed
     ::  bare preview: just the rendered data (+ any error) and the live stream.
     =/  data-html=tape  ?~(cd "<p>no data yet</p>" (render-shown u.cd vmode "/apps/lattice/app?name="))
     =/  errh=tape  ?:(=('' err) "" :(weld "<pre class=\"err\">" (esc (trip err)) "</pre>"))
-    (send-html eyre-id (render-bare :(weld errh "<section class=\"data\">" data-html "</section>" (sse-script keep rev))))
+    =/  bare=@t  (render-bare :(weld errh "<section class=\"data\">" data-html "</section>" (sse-script keep rev)))
+    ?:  eg  (send-sandboxed eyre-id 'text/html' bare)
+    (send-html eyre-id bare)
   ::  standalone browser view: the page rendered exactly as it would publish. For
   ::  our own page the nearest theme is inlined (owner-gated, so it need not be
   ::  clearweb-shared) and it gets an Edit button + live-reload. A peer's page is
   ::  sandboxed and unthemed. No sharing/command controls. Those live in the
   ::  editor. `rel` strips the app-base/page/ prefix to the page-relative path that
   ::  find-theme-css/clearweb-doc expect (the same shape serve-clearweb passes).
-  =/  rel=path  (slag 3 pax)
   ;<  head=tape  bind:m  (browser-head local vmode rel)
   ::  comments live in OUR tree, so only show them on OUR OWN pages. A peer's
   ::  page at a path that collides with one of ours must NOT surface our comments
@@ -7853,7 +7932,7 @@
     %^    render-browser-page
         canon
       doc
-    [?:(local `name ~) ?!(local) ?:(local keep "") ?:(local rev "") ttl]
+    [?:(local `name ~) |(?!(local) eg) ?:(local keep "") ?:(local rev "") ttl]
   ?:  local  (send-view-long eyre-id htm)
   (send-view eyre-id htm)
 ::  +preview-inner: the rendered-preview HTML fragment for a page kind, the
@@ -7949,6 +8028,12 @@
   =/  body=@t
     ?.  &(preview ?=(%html vmode))  p.res
     (cat 3 p.res preview-scrollbar-css)
+  ::  an html asset of a page shared for edit gets an opaque origin, as in
+  ::  +serve-clearweb
+  ;<  eg=?  bind:m
+    ?.  ?=(%html vmode)  (pure:(fiber:fiber:nexus ,?) |)
+    (edit-granted pax)
+  ?:  eg  (send-sandboxed eyre-id (mime-of vmode) body)
   (send-typed eyre-id (mime-of vmode) 'no-cache' body)
 ++  preview-scrollbar-css
   ^-  @t
@@ -8280,11 +8365,19 @@
   =/  cache=(unit sang:tarball)  (bind (~(get by fils) %'render.json') |=([=sang:tarball *] sang))
   ;<  shown=tape  bind:m
     (clearweb-body pdir sang.u.dat drev vmode "/apps/lattice/c/" cache)
-  %+  send-html  eyre-id
-  %:  clearweb-doc
-    pax  shown  vmode  head  ?=(^ tf)  home  cmts
-    (weld (clearweb-bar authed) nav-script)
-  ==
+  =/  doc=@t
+    %:  clearweb-doc
+      pax  shown  vmode  head  ?=(^ tf)  home  cmts
+      (weld (clearweb-bar authed) nav-script)
+    ==
+  ::  raw html served on our own origin runs with the owner's session when
+  ::  the owner opens it. A page shared for edit may hold a peer's markup,
+  ::  so it gets an opaque origin (+send-sandboxed). Only html pays the peek.
+  ;<  eg=?  bind:m
+    ?.  ?=(%html vmode)  (pure:(fiber:fiber:nexus ,?) |)
+    (edit-granted pax)
+  ?:  eg  (send-sandboxed eyre-id 'text/html' doc)
+  (send-html eyre-id doc)
 ::  +clearweb-body: the rendered body of a public page, from a per-page cache
 ::  keyed by the data grub's revision. The md and gmi renders are the costly
 ::  part of an unauthenticated hit (quadratic on hostile input, see
@@ -8752,6 +8845,27 @@
   %+  send-simple:srv  eyre-id
   :-  [200 ~[['content-type' ct] ['cache-control' cc]]]
   `(as-octs:mimes:html body)
+::  +send-sandboxed: +send-typed with a CSP sandbox and no-cache. The
+::  document gets an opaque origin, so its scripts still run but hold no
+::  cookie and cannot reach the app. For our own pages a peer may edit.
+::
+++  send-sandboxed
+  |=  [eyre-id=@ta ct=@t body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  :-  :-  200
+      :~  ['content-type' ct]
+          ['cache-control' 'no-cache']
+          ['content-security-policy' sandbox-csp]
+      ==
+  `(as-octs:mimes:html body)
+::  +sandbox-csp: the sandbox tokens. allow-same-origin is the one never
+::  given: with it the sandbox hands the session straight back.
+::
+++  sandbox-csp
+  ^-  @t
+  'sandbox allow-scripts allow-forms allow-popups allow-top-navigation-by-user-activation'
 ::  the service worker: extra Service-Worker-Allowed so its scope can be the
 ::  whole /apps/lattice prefix (it is served from .../sw.js, default scope
 ::  .../), and no-cache so an updated worker propagates.
@@ -9049,6 +9163,50 @@
     ?:  (lth c 32)  ;:(weld "\\" ~[(hx (div c 16))] ~[(hx (mod c 16))])
     ~[c]
   (crip ;:(weld content-env-pre (trip builder) " '" ec "')"))
+::  +plain-content: is this page source content only? True for the exact
+::  shell +wrap-content writes around a known builder, and for the folder
+::  index +make-folder-index generates for this page. +unwrap-content alone
+::  is not enough: it accepts any text before the quote as the builder and
+::  a bare quote in the body, and both are hoon. Re-wrapping and comparing
+::  rules them out. `pax` is the page's own path (no /page in front).
+::
+++  plain-content
+  |=  [src=@t pax=path]
+  ^-  ?
+  ?:  &(?=(^ pax) =(src (make-folder-index pax)))  &
+  =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
+  ?~  un  |
+  ?&  (~(has in content-builders) builder.u.un)
+      =(src (wrap-content builder.u.un body.u.un))
+  ==
+::  +lock-road: the edit-lock marker of page `rel`. It sits under /lock,
+::  outside the page dir, so a peer's make grant on the page cannot reach
+::  it.
+::
+++  lock-road
+  |=  [up=@ud rel=path]
+  ^-  road:tarball
+  (rf up (weld /lock rel) %lock)
+::  +set-edit-lock: lock page `rel`. The evaluator calls it when it refuses
+::  a non-content source on a page shared for edit. The lock stays when the
+::  grant goes, by any route, so the source a peer wrote never compiles.
+::  Only an owner save (+make-page) lifts it.
+::
+++  set-edit-lock
+  |=  [up=@ud rel=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m  (ensure-dirs up ~ (weld /lock rel))
+  (put-file (lock-road up rel) [/lattice %page] 'edit-locked')
+::  +edit-lock-msg: the /err text of an edit-shared page whose source is
+::  not content only.
+::
+++  edit-lock-msg
+  ^-  tang
+  :~  leaf+"this page was shared for editing, so it runs content only:"
+      leaf+"md, gmi, html, text, js, css, tex or a folder index."
+      leaf+"To run hoon here, stop sharing it for edit, then save it yourself."
+  ==
 ::  +unwrap-content: page source -> [builder body] if it matches the content
 ::  envelope, else ~ (a hand-written hoon page). Backward compatible with old
 ::  (md '...') notes. Fenced so a malformed body can't crash a read.

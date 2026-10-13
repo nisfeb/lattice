@@ -27,6 +27,8 @@ One fact per entry. Keys are path-like, and the first segment is the category:
 
 Write only the fact in `body`. Lattice records who saved it (your agent key) and when. Link related entries by key: `[[user/ai-models]]`. Tag `core` only a rule that applies to every task in every project.
 
+Core entries are the owner's. Your key may tag a new entry `core`, but once an entry has the tag your key cannot edit it, supersede it or remove the tag. Those requests are refused with a 403. If a core entry is wrong, tell the user.
+
 ## Update, don't duplicate
 
 - Recall or search before saving.
