@@ -18,9 +18,20 @@ OFFLINE_LIB_NAME=path overrides one import, e.g. OFFLINE_LIB_unix=x.hoon.
 """
 import glob, os, re, shlex, subprocess, sys
 
-VERE = os.environ.get('VERE') or sorted(
-    glob.glob(os.path.expanduser('~/software/vere-*-linux-x86_64')),
-    key=lambda p: [int(x) for x in re.findall(r'\d+', os.path.basename(p))])[-1]
+def find_vere():
+    """$VERE, else the newest ~/software/vere-*-linux-x86_64 by version."""
+    if os.environ.get('VERE'):
+        return os.environ['VERE']
+    pat = os.path.expanduser('~/software/vere-*-linux-x86_64')
+    found = sorted(glob.glob(pat),
+                   key=lambda p: [int(x) for x in re.findall(r'\d+', os.path.basename(p))])
+    if not found:
+        sys.exit(f'offline-test: no vere binary: set VERE=/path/to/vere, '
+                 f'or put one at {pat}')
+    return found[-1]
+
+
+VERE = find_vere()
 
 
 def conf():
