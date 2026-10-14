@@ -8,6 +8,10 @@
 <header class="bar">
   <!-- the icon-only controls carry aria-labels: their glyph is their whole
        text content, which is no accessible name at all -->
+  <!-- panel toggles sit on the side they control. The hamburger toggles the
+       LEFT (tree) panel, so it leads the bar at the left edge; the gear toggles
+       the RIGHT (controls) panel and trails it at the right edge, below. -->
+  <button id="treet" class="ico" title="toggle tree pane" aria-label="toggle tree pane">&#9776;</button>
   <a class="home" href="/apps/lattice" title="lattice home" aria-label="lattice home">&#8962;</a>
   <button id="modet" title="switch pages / knowledge">&#9998; pages</button>
   <input id="pname" placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
@@ -50,7 +54,6 @@
     <button id="viewsplit" class="ico" title="editor and preview">split</button>
     <button id="viewprev" class="ico" title="preview only">preview</button>
   </span>
-  <button id="treet" class="ico" title="toggle tree pane" aria-label="toggle tree pane">&#9776;</button>
   <button id="ctlt" class="ico" title="toggle controls pane" aria-label="toggle controls pane">&#9881;</button>
 </header>`;
       pname = $('pname'); pkind = $('pkind');
