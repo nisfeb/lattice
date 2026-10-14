@@ -2293,7 +2293,10 @@
         case "e": moved = wordEnd(vc, n); break;
         case "0": moved = lineStart(vc); break;
         case "^": moved = firstNonBlank(vc); break;
-        case "$": moved = lineEnd(vc); break;
+        // $ lands the head on the last real column, not on the newline, so
+        // visRange's inclusive +1 stops at the line end and v$d/v$y keep the
+        // line break instead of swallowing it and joining the next line.
+        case "$": moved = lineLastCol(vc); break;
         case "{": moved = paraBack(vc, n); break;
         case "}": moved = paraFwd(vc, n); break;
         case "G": moved = count ? gotoLine(n) : firstNonBlank(lastLineStart()); break;
@@ -2312,7 +2315,14 @@
           var sText = reg, sLine = regLinewise;
           deleteRange(a, b, a);
           reg = sText; regLinewise = sLine;
-          MODE = "normal"; setPos(a > 0 ? a - 1 : a); paste(true);
+          MODE = "normal";
+          // A charwise register fills the deleted hole exactly at `a`. The old
+          // `setPos(a-1); paste(true)` leaned on paste's after-offset, which
+          // cannot reach index 0, so a selection anchored at column 0 pasted
+          // one character late. Insert straight at `a`; a linewise register
+          // still goes through paste for its line-insert handling.
+          if(sLine){ setPos(a > 0 ? a - 1 : a); paste(true); }
+          else { insertAt(a, reg); setPos(normClamp(a + reg.length - 1)); }
           reset(); setInd(); return true;
         }
         case "v": MODE = "normal"; setPos(normClamp(visCaret)); reset(); setInd(); return true;
@@ -3071,40 +3081,50 @@
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return;
       }
-      current = name;
-      curKind = kind;
-      pname.readOnly = true;
-      if (src.value === sent) dirty = false;
-      history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
       if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
-      cerr.textContent = 'saved offline'; cerr.className = 'ok';
+      // same stillHere guard as the online path: only touch live editor state
+      // if the editor has not moved to another document during the round-trip.
+      const stillHere = current === name || (current === null && src.value === sent);
+      if (stillHere) {
+        current = name;
+        curKind = kind;
+        pname.readOnly = true;
+        if (src.value === sent) dirty = false;
+        history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
+        cerr.textContent = 'saved offline'; cerr.className = 'ok';
+      }
       flushPending();
       return;
     }
     if (r && r.status === 409) { st('that page already exists', false); return; }
     if (!r.ok) { st('save failed' + await errText(r), false); return; }
-    current = name;
-    curKind = kind;
-    pname.readOnly = true;
-    if (src.value === sent) dirty = false;
-    // the response carries the new revision (no re-read needed) and whether
-    // this save landed on top of a revision made elsewhere
+    // the response carries the new revision and whether this save landed
+    // on top of a revision made elsewhere; parse it regardless of focus.
     let vr = null;
     try { vr = await r.json(); } catch {}
-    if (vr && vr.rev) curRev = vr.rev;
-    if (vr && vr.conflicted) {
-      st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
-    } else if (dname) st('saved as ' + name + ' (shown as ' + dname + ')');
-    else st(CONTENT() ? 'saved' : 'compiling\u2026');
-    history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
-    // only a CREATE changes the tree. Refetching it after every save was a
-    // 2.3s pier round-trip to learn nothing. Patch the local copy on create.
+    // saved-document bookkeeping, applied whether or not the editor still
+    // shows it, so a New clicked mid-save keeps both documents. Only a
+    // CREATE changes the tree.
     if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent);
-    // the preview already shows this exact body (the input debounce rendered
-    // it). Re-POSTing it after the save was a duplicate 1.8s render.
-    if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
-    else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
+    // live-editor state ONLY if the editor still shows the saved document.
+    // A New or open during the round-trip moved it; rewriting current, the
+    // name field, dirty or the URL here would brand the new page as this save.
+    const stillHere = current === name || (current === null && src.value === sent);
+    if (stillHere) {
+      current = name;
+      curKind = kind;
+      pname.readOnly = true;
+      if (src.value === sent) dirty = false;
+      if (vr && vr.rev) curRev = vr.rev;
+      if (vr && vr.conflicted) {
+        st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
+      } else if (dname) st('saved as ' + name + ' (shown as ' + dname + ')');
+      else st(CONTENT() ? 'saved' : 'compiling\u2026');
+      history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
+      if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
+      else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
+    }
     flushPending();
     if (offCount) replayQueue(true);     // back online: drain the backlog
   }
@@ -3126,10 +3146,13 @@
     //  never over an explicit save already waiting: that one names its kind
     if (saving) { if (!savePending) savePending = true; return; }
     saving = true;
+    // the document this autosave owns. If the user navigates mid-flight,
+    // `current` moves; everything below acts on `target`, not the new current.
+    const target = current;
     const sent = src.value;
     const url = mode === 'know'
-      ? api + '/know-save?key=' + encodeURIComponent(current)
-      : api + '/page-save?name=' + encodeURIComponent(current) +
+      ? api + '/know-save?key=' + encodeURIComponent(target)
+      : api + '/page-save?name=' + encodeURIComponent(target) +
         '&type=' + (curKind || pkind.value);
     let w = { gone: true };
     try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
@@ -3139,31 +3162,33 @@
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
       if (mode === 'know') {
-        if (!(await enqueueKnow(current, sent))) return;
-        if (src.value === sent) dirty = false;
+        if (!(await enqueueKnow(target, sent))) return;
+        if (current === target && src.value === sent) dirty = false;
         flushPending();
         return;
       }
-      if (!(await enqueueSave(current, curKind || pkind.value, sent))) return;
-      if (src.value === sent) dirty = false;
+      if (!(await enqueueSave(target, curKind || pkind.value, sent))) return;
+      if (current === target && src.value === sent) dirty = false;
       flushPending();
       return;
     }
     if (!r.ok) { st('autosave failed' + await errText(r), false); return; }
-    if (src.value === sent) dirty = false;   // typed during the request? stay dirty
     let vr = null;
-    if (mode !== 'know') {
-      try { vr = await r.json(); } catch {}
-      if (vr && vr.rev) curRev = vr.rev;
+    if (mode !== 'know') { try { vr = await r.json(); } catch {} }
+    //  patch the saved doc's local cache regardless of focus. No kind: an
+    //  autosave writes the page's existing kind, it never sets one.
+    if (mode !== 'know') patchLocal(target, null, sent);
+    // live-editor state only if the editor is still on the doc we autosaved
+    if (current === target) {
+      if (src.value === sent) dirty = false;   // typed during the request? stay dirty
+      if (mode !== 'know' && vr && vr.rev) curRev = vr.rev;
+      // the conflict verdict must be the LAST word, not clobbered by the
+      // ordinary confirmation a line later
+      if (vr && vr.conflicted)
+        st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
+      else st('autosaved');
+      if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
     }
-    //  no kind: an autosave writes the page's existing kind, it never sets one
-    if (mode !== 'know') patchLocal(current, null, sent);
-    // the conflict verdict must be the LAST word, not clobbered by the
-    // ordinary confirmation a line later
-    if (vr && vr.conflicted)
-      st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
-    else st('autosaved');
-    if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
     flushPending();
     if (offCount) replayQueue(true);     // this autosave proves the ship is back too
   }

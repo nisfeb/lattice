@@ -100,7 +100,13 @@ pub fn show_manager(app: &AppHandle, section: Option<&str>) -> Result<(), String
             }
             let h2 = h.clone();
             h.run_on_main_thread(move || {
-                let made = new_workspace(&h2);
+                // retry once: the only window was already destroyed above, so a
+                // failed rebuild here would leave the app running with no UI. A
+                // transient webview-builder error must not strand the user.
+                let made = new_workspace(&h2).or_else(|e| {
+                    dlog(&format!("manager: rebuild failed ({e}); retrying once"));
+                    new_workspace(&h2)
+                });
                 REBUILDING.store(false, Ordering::SeqCst);
                 dlog(&format!("manager: rebuilt the window: {}", made.is_ok()));
                 match made {
@@ -112,7 +118,9 @@ pub fn show_manager(app: &AppHandle, section: Option<&str>) -> Result<(), String
                         }
                         w.set_focus().ok();
                     }
-                    Err(e) => dlog(&format!("manager: rebuilding the window failed: {e}")),
+                    Err(e) => {
+                        dlog(&format!("manager: rebuilding the window failed after retry: {e}"));
+                    }
                 }
             })
             .ok();

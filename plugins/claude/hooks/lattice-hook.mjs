@@ -72,9 +72,19 @@ function parts(index) {
   let p = 0;
   for (const e of entries) {
     const s = '\n## ' + e;
-    while (p < 2 && used[p] + s.length > LIMIT - 400) p++;
-    if (p < 2) { out[p].push(s); used[p] += s.length; }
-    else out[1].push('\n## ' + e.split('\n')[0] + ' (no room here: memory_read it)');
+    // Place in the first part, from p onward, that still has room. p is the
+    // lowest part not yet full and only ever rises. It must NOT latch to 2:
+    // the old `while (p < 2 && …) p++` advanced p past both parts for an
+    // oversized entry and never came back, so every LATER entry was dropped
+    // too, even ones that fit. Now only the entry that itself fits nowhere is
+    // named for memory_read; the ones after it still land.
+    let placed = false;
+    for (let q = p; q < 2; q++) {
+      if (used[q] + s.length <= LIMIT - 400) {
+        out[q].push(s); used[q] += s.length; p = q; placed = true; break;
+      }
+    }
+    if (!placed) out[1].push('\n## ' + e.split('\n')[0] + ' (no room here: memory_read it)');
   }
   return out.map((x) => x.join(''));
 }

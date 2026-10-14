@@ -11,7 +11,9 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -121,10 +123,35 @@ pub async fn convert_tex(src: String) -> Result<String, String> {
 /// costs that one conversion an error and the next one looks again.
 static FOUND: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+/// Cap concurrent conversions. convert_tex is granted to the ship page and the
+/// live preview fires one per keystroke, so a burst of input must not spawn an
+/// unbounded number of pandoc processes. The slot is released on drop, so every
+/// return path (success, error, timeout) frees it.
+static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+struct ConvertSlot;
+impl ConvertSlot {
+    fn acquire() -> Result<Self, String> {
+        const MAX: usize = 4;
+        if IN_FLIGHT.fetch_add(1, Ordering::SeqCst) >= MAX {
+            IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+            return Err("too many conversions in progress; try again".to_string());
+        }
+        Ok(ConvertSlot)
+    }
+}
+impl Drop for ConvertSlot {
+    fn drop(&mut self) {
+        IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// The conversion's actual work, sync so the tests need no runtime.
 fn convert(src: &str) -> Result<String, String> {
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::process::Stdio;
+
+    // cap concurrent conversions before doing any work; freed on return
+    let _slot = ConvertSlot::acquire()?;
 
     let cached = FOUND.lock().unwrap().clone();
     let exe = match cached {
@@ -143,21 +170,51 @@ fn convert(src: &str) -> Result<String, String> {
     *FOUND.lock().unwrap() = spawned.is_ok().then(|| exe.clone());
     let mut child = spawned.map_err(|e| format!("could not run pandoc: {e}"))?;
 
-    child
-        .stdin
-        .as_mut()
-        .ok_or("could not write to pandoc")?
-        .write_all(src.as_bytes())
-        .map_err(|e| format!("could not write to pandoc: {e}"))?;
+    // write the source and close stdin so pandoc sees EOF, then read its
+    // output on threads so a full pipe cannot deadlock the wait below.
+    {
+        let mut stdin = child.stdin.take().ok_or("could not write to pandoc")?;
+        stdin
+            .write_all(src.as_bytes())
+            .map_err(|e| format!("could not write to pandoc: {e}"))?;
+    }
+    let mut cout = child.stdout.take().ok_or("could not read from pandoc")?;
+    let mut cerr = child.stderr.take().ok_or("could not read from pandoc")?;
+    let out_h = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = cout.read_to_end(&mut v);
+        v
+    });
+    let err_h = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = cerr.read_to_end(&mut v);
+        v
+    });
 
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("pandoc failed: {e}"))?;
+    // bound the conversion: a hostile ship page can feed input that never
+    // terminates, so kill pandoc past a deadline rather than park a worker and
+    // a process forever.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait().map_err(|e| format!("pandoc failed: {e}"))? {
+            Some(s) => break s,
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("pandoc timed out after 10s".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    };
+    let stdout = out_h.join().unwrap_or_default();
+    let stderr = err_h.join().unwrap_or_default();
 
-    if !out.status.success() {
+    if !status.success() {
         //  pandoc's own message names the line and the construct it choked
         //  on, which is far more useful than an exit code.
-        let err = String::from_utf8_lossy(&out.stderr);
+        let err = String::from_utf8_lossy(&stderr);
         let msg = err.trim();
         return Err(if msg.is_empty() {
             "pandoc could not convert this document".to_string()
@@ -165,7 +222,7 @@ fn convert(src: &str) -> Result<String, String> {
             msg.chars().take(400).collect()
         });
     }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    Ok(String::from_utf8_lossy(&stdout).to_string())
 }
 
 #[cfg(test)]
