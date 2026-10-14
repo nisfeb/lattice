@@ -449,6 +449,13 @@
   function handleKey(e){
     var k = e.key;
 
+    // A bare modifier keydown must not touch pending state. `rD` is r, then
+    // Shift (to reach the capital), then D — Shift is its own keydown, and if
+    // it fell through to the r-consumer below it would clear pending, so D
+    // then ran as its own delete-to-end-of-line command. Swallow it and wait
+    // for the real key. Same for any r/f/t followed by a shifted character.
+    if(k === "Shift" || k === "Control" || k === "Alt" || k === "Meta") return true;
+
     // Esc / Ctrl-[ -> clear pending, drop to NORMAL from visual
     if(k === "Escape" || (e.ctrlKey && k === "[")){
       if(MODE === "visual"){ var c = pos(); MODE = "normal"; setPos(normClamp(c)); }

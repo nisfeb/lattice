@@ -467,6 +467,14 @@ select, option { color-scheme: inherit; }
   #lbtns button { font: 16px/1 var(--font, system-ui, sans-serif); padding: 8px 13px;
     border-radius: 999px; border: 1px solid var(--border);
     background: var(--bg); color: var(--muted); opacity: .85; }
+  /* #fullt and #lbtns are fixed over the editor's bottom corners. A textarea
+     reveals its caret flush to its own bottom edge, so typing on the last
+     lines parks the caret right under those buttons. End the editor layers a
+     button-row short of the container bottom — both layers identically, so the
+     highlight stays aligned and scroll-synced — and the caret can never land
+     beneath the buttons. (height:auto lets top:0 + bottom size the box; the
+     base rule's height:100% would otherwise over-constrain and win.) */
+  .ws[data-mv="code"] #src, .ws[data-mv="code"] #hl { height: auto; bottom: 56px; }
   .ws.full[data-mv="code"] .bar,
   .ws.full[data-mv="code"] .mtabs { display: none; }
   .ws.full[data-mv="code"] .edwrap { min-height: 100vh; min-height: 100dvh; }
