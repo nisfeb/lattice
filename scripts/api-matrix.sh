@@ -90,6 +90,22 @@ is "know-restore" 200 "$(sc -X POST "$B/know-restore?key=$K-moved")"
 has "restored body" 'api matrix memory' "$(G "$B/know-read?key=$K-moved")"
 is "cleanup memory" 200 "$(sc -X POST "$B/know-delete?key=$K-moved")"
 
+echo "==> expected_updated apply-and-flag (H1)"
+# A stale expected_updated no longer 409s: the save lands and is flagged
+# conflicted, with the replaced rev in prior. A matching expected is not
+# flagged. The losing body stays recoverable in history either way.
+KC="$K-conflict"
+is  "conflict seed"              200 "$(sc -X POST "$B/know-save?key=$KC" --data-binary 'seed body')"
+R1="$(G -X POST "$B/know-save?key=$KC&expected_updated=~2020.1.1" --data-binary 'stale body')"
+has "conflict stale flagged"     '"conflicted":true'  "$R1"
+has "conflict stale still saved" '"ok":true'          "$R1"
+has "conflict stale body landed" 'stale body'         "$(G "$B/know-read?key=$KC")"
+T1="$(G "$B/know-read?key=$KC" | python3 -c 'import json,sys;print(json.load(sys.stdin)["updated"])')"
+R2="$(G -X POST "$B/know-save?key=$KC&expected_updated=$T1" --data-binary 'fresh body')"
+has "conflict match not flagged" '"conflicted":false' "$R2"
+has "conflict match body landed" 'fresh body'         "$(G "$B/know-read?key=$KC")"
+is  "cleanup conflict key"       200 "$(sc -X POST "$B/know-delete?key=$KC")"
+
 echo "==> batch save"
 # two new notes, a bad key, and a third that repeats the first: one writer
 # poke, checked like single saves, including against earlier items
