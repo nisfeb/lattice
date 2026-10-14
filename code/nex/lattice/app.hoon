@@ -4015,10 +4015,13 @@
   ::  edited would vanish for every other key, so that is refused
   ?:  &(?=(^ key) ?=(^ old) !(sensitive:lk u.old) (tainted:ky u.key rnow))
     [%| 403 tainted-msg]
-  ?:  &(!=('' expect) |(?=(~ old) !=(expect (scot %da updated.u.old))))
-    :+  %|  409
-    ?~  old  'conflict: no such entry'
-    (crip "conflict: changed since you read it (now {(scow %da updated.u.old)}); read it again and merge")
+  ::  H1: expected_updated is apply-and-flag, like page-save, not refuse. A
+  ::  stale expected no longer 409s. The save lands, the result is flagged
+  ::  conflicted with the rev it replaced, and the replaced body stays
+  ::  recoverable in revision history. The pure concurrent race (two saves
+  ::  that both read the same rev) is invisible here and so unflagged, exactly
+  ::  page-save's accepted limitation (see +handle-page-save).
+  =/  conflicted=?  &(!=('' expect) |(?=(~ old) !=(expect (scot %da updated.u.old))))
   ?:  &(?=(^ near) (gte o.i.near dup-at:lk) !=('1' (~(gut by args) 'force_new' '')))
     :+  %|  409
     (crip "likely duplicate of {(spud k.i.near)} ({(a-co:co o.i.near)}% of terms shared): update that entry, or pass force_new=1 if this is a different fact")
@@ -4033,6 +4036,10 @@
   :~  ['ok' b+&]
       ['created' b+?=(~ old)]
       ['sensitive' b+sens]
+      ['conflicted' b+conflicted]
+      ::  the rev this save replaced, when it collided, so the client can send
+      ::  the user to the prior version in history
+      ['prior' ?.(conflicted ~ ?~(old ~ s+(scot %da updated.u.old)))]
       :-  'similar'
       :-  %a
       %+  turn  (scag 3 near)
