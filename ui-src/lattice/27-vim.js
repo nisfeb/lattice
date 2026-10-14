@@ -543,7 +543,10 @@
         case "e": moved = wordEnd(vc, n); break;
         case "0": moved = lineStart(vc); break;
         case "^": moved = firstNonBlank(vc); break;
-        case "$": moved = lineEnd(vc); break;
+        // $ lands the head on the last real column, not on the newline, so
+        // visRange's inclusive +1 stops at the line end and v$d/v$y keep the
+        // line break instead of swallowing it and joining the next line.
+        case "$": moved = lineLastCol(vc); break;
         case "{": moved = paraBack(vc, n); break;
         case "}": moved = paraFwd(vc, n); break;
         case "G": moved = count ? gotoLine(n) : firstNonBlank(lastLineStart()); break;
@@ -562,7 +565,14 @@
           var sText = reg, sLine = regLinewise;
           deleteRange(a, b, a);
           reg = sText; regLinewise = sLine;
-          MODE = "normal"; setPos(a > 0 ? a - 1 : a); paste(true);
+          MODE = "normal";
+          // A charwise register fills the deleted hole exactly at `a`. The old
+          // `setPos(a-1); paste(true)` leaned on paste's after-offset, which
+          // cannot reach index 0, so a selection anchored at column 0 pasted
+          // one character late. Insert straight at `a`; a linewise register
+          // still goes through paste for its line-insert handling.
+          if(sLine){ setPos(a > 0 ? a - 1 : a); paste(true); }
+          else { insertAt(a, reg); setPos(normClamp(a + reg.length - 1)); }
           reset(); setInd(); return true;
         }
         case "v": MODE = "normal"; setPos(normClamp(visCaret)); reset(); setInd(); return true;
