@@ -1177,7 +1177,15 @@ impl Filesystem for GrubberyFs {
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        self.ensure_fresh();
+        // Page a dir stream over ONE snapshot: refresh only on the first page
+        // (offset 0). The kernel always starts a stream at offset 0, so this
+        // still refreshes at stream start. A background vt refresh landing
+        // between offset 0 and a later page would reshape the sorted list
+        // under the offset index and drop or duplicate entries in a large
+        // directory.
+        if offset == 0 {
+            self.ensure_fresh();
+        }
         let mut s = self.st.lock().unwrap();
         let Some(base) = path_of(&s, ino.0) else {
             reply.error(err(libc::ENOENT));
