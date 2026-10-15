@@ -179,6 +179,9 @@
   =/  p=@p  ~zod
   =/  k-web-some=key-row
     (mk-key [%all %write] [%some (~(put by *(map @p paths)) p [(sy ~[/pub]) ~])] | ~)
+  ::  a %some web key WITH a per-ship write-set (read /pub, write /pub/out)
+  =/  k-web-some-w=key-row
+    (mk-key [%all %write] [%some (~(put by *(map @p paths)) p [(sy ~[/pub]) (sy ~[/pub/out])])] | ~)
   ;:  weld
     (expect !>(!(may-path k-off [%ship ~zod] /any %read)))
     ::  broad %all web is read-only across ships
@@ -189,6 +192,12 @@
     (expect !>(!(may-path k-web-some [%ship ~zod] /other %read)))
     ::  unknown ship denied
     (expect !>(!(may-path k-web-some [%ship ~wes] /pub/page %read)))
+    ::  %some WRITE: an empty write-set denies even a readable path
+    (expect !>(!(may-path k-web-some [%ship ~zod] /pub %write)))
+    ::  %some WRITE: a write-set grants only its own paths, that ship only
+    (expect !>((may-path k-web-some-w [%ship ~zod] /pub/out/f %write)))
+    (expect !>(!(may-path k-web-some-w [%ship ~zod] /pub/other %write)))
+    (expect !>(!(may-path k-web-some-w [%ship ~wes] /pub/out %write)))
   ==
 ::  a some scope survives en-scope then de-mint
 ++  test-en-scope-some-roundtrip
