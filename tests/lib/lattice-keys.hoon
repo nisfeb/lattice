@@ -112,4 +112,65 @@
     (expect-eq !>(|) !>((page-type-ok '')))
     (expect-eq !>(|) !>((page-type-ok 'MD')))
   ==
+::  mk-key: build a key-row with given pages/web/sensitive/origin
+++  mk-key
+  |=  [pgs=pages-scope wsc=web-scope sen=? org=(unit @p)]
+  ^-  key-row
+  :*  'mk'  'mk-key'  'test'
+      [%write pgs wsc sen org]
+      'salt'  (hash-token 'salt' 'sekrit')
+      ~2026.1.1  ~  ~
+  ==
+::  under: segment-prefix test (grant is a prefix of target at segment boundary)
+++  test-under-boundary  ^-  tang
+  ;:  weld
+    (expect !>((under /a/b /a/b)))          :: exact match
+    (expect !>((under /a/b /a/b/c)))        :: subtree
+    (expect !>(!(under /a/b /a/bc)))        :: NOT a sibling with shared string prefix
+    (expect !>(!(under /a/b /a)))           :: parent is not under child
+  ==
+::  may-path %some: read-set and write-set are independent
+++  test-may-path-some-write  ^-  tang
+  =/  k=key-row
+    (mk-key [%some [(sy ~[/notes]) (sy ~[/notes/out])]] [%off ~] | ~)
+  ;:  weld
+    (expect !>((may-path k %local /notes/out/x %write)))
+    (expect !>(!(may-path k %local /notes/other %write)))  :: not in write-set
+    (expect !>((may-path k %local /notes/other %read)))    :: in read-set
+    (expect !>(!(may-path k %local /elsewhere %read)))     :: ungranted
+  ==
+::  may-path %all: level-ok decides; %some: path membership decides
+++  test-may-path-all-vs-some  ^-  tang
+  =/  k-all=key-row
+    (mk-key [%all %write] [%off ~] | ~)
+  =/  k-none=key-row
+    (mk-key [%all %none] [%off ~] | ~)
+  =/  k-some=key-row
+    (mk-key [%some [(sy ~[/a]) ~]] [%off ~] | ~)
+  ;:  weld
+    (expect !>((may-path k-all %local /any/path %read)))
+    (expect !>((may-path k-all %local /any/path %write)))
+    (expect !>(!(may-path k-none %local /any/path %read)))
+    (expect !>(!(may-path k-none %local /any/path %write)))
+    (expect !>((may-path k-some %local /a/child %read)))
+    (expect !>(!(may-path k-some %local /b %read)))
+  ==
+::  may-path %ship: off=deny, all=read-only, some=consult per-ship path-sets
+++  test-may-path-web  ^-  tang
+  =/  k-off=key-row   (mk-key [%all %write] [%off ~] | ~)
+  =/  k-web-all=key-row  (mk-key [%all %write] [%all ~] | ~)
+  =/  p=@p  ~zod
+  =/  k-web-some=key-row
+    (mk-key [%all %write] [%some (~(put by *(map @p paths)) p [(sy ~[/pub]) ~])] | ~)
+  ;:  weld
+    (expect !>(!(may-path k-off [%ship ~zod] /any %read)))
+    ::  broad %all web is read-only across ships
+    (expect !>((may-path k-web-all [%ship ~zod] /any %read)))
+    (expect !>(!(may-path k-web-all [%ship ~zod] /any %write)))
+    ::  %some: per-ship read-set only
+    (expect !>((may-path k-web-some [%ship ~zod] /pub/page %read)))
+    (expect !>(!(may-path k-web-some [%ship ~zod] /other %read)))
+    ::  unknown ship denied
+    (expect !>(!(may-path k-web-some [%ship ~wes] /pub/page %read)))
+  ==
 --

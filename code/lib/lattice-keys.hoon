@@ -234,6 +234,39 @@
   =/  n  (wants meth i.suffix)
   ?~  n  |
   (allows scope.k area.u.n lvl.u.n)
+::  +under: is grant a segment-prefix of target?  /a/b matches /a/b (exact)
+::  and /a/b/c (subtree) but not /a/bc (different segment) or /a (parent).
+++  under
+  |=  [grant=path target=path]
+  ^-  ?
+  =/  n  (lent grant)
+  &((lte n (lent target)) =(grant (scag n target)))
+::  +may-path: may key k access target path at level lvl?
+::  %local consults pages-scope; [%ship p] consults the web-scope entry for p.
+::  %all delegates to level-ok; %some tests target against the relevant set.
+::  Broad web %all is read-only across ships; write is never granted that way.
+::  read-set and write-set are independent: granting write does NOT imply read.
+++  may-path
+  |=  [k=key-row realm=?(%local [%ship @p]) target=path lvl=?(%read %write)]
+  ^-  ?
+  =/  check
+    |=  =paths
+    (lien ~(tap in ?:(=(%write lvl) write.paths read.paths)) |=(g=path (under g target)))
+  ?-    realm
+      %local
+    ?-  -.pages.scope.k
+      %all   (level-ok lvl.pages.scope.k lvl)
+      %some  (check paths.pages.scope.k)
+    ==
+      [%ship *]
+    ?-  -.web.scope.k
+      %off   |
+      %all   &(=(%read lvl) &)
+      %some
+        =/  e  (~(get by ships.web.scope.k) +.realm)
+        ?~(e | (check u.e))
+    ==
+  ==
 ::  +page-type-ok: may a key save a page of this ?type=? Only the kinds
 ::  that render escaped. Hoon would run with lattice's own authority, and
 ::  html or js would run in the owner's browser. An absent type is hoon.
