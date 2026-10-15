@@ -372,16 +372,32 @@
 ++  en-scope
   |=  s=scope
   ^-  json
+  ::  a (set path) as a JSON array of path strings, in a stable order
+  =/  en-set
+    |=  ps=(set path)
+    ^-  json
+    :-  %a
+    %+  turn  (sort ~(tap in ps) aor)
+    |=(p=path s+(spat p))
+  =/  en-paths
+    |=  ps=paths
+    ^-  json
+    (pairs:enjs:format ~[['read' (en-set read.ps)] ['write' (en-set write.ps)]])
+  ::  same shapes +de-mint reads
   =/  pgs=json
     ?-  pages.s
-      [%all *]   (pairs:enjs:format ~[['level' s+lvl.pages.s]])
-      [%some *]  (pairs:enjs:format ~[['some' ~]])
+      [%all *]   (pairs:enjs:format ~[['all' s+lvl.pages.s]])
+      [%some *]  (pairs:enjs:format ~[['some' (en-paths paths.pages.s)]])
     ==
   =/  wsc=json
     ?-  web.s
-      [%off ~]   b+|
-      [%all ~]   b+&
-      [%some *]  b+&
+      [%off ~]   (pairs:enjs:format ~[['off' ~]])
+      [%all ~]   (pairs:enjs:format ~[['all' ~]])
+      [%some *]
+        %+  frond:enjs:format  'some'
+        %-  pairs:enjs:format
+        %+  turn  ~(tap by ships.web.s)
+        |=([w=@p ps=paths] [(scot %p w) (en-paths ps)])
     ==
   %-  pairs:enjs:format
   :~  ['memory' s+memory.s]

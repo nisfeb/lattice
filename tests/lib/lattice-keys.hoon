@@ -190,4 +190,21 @@
     ::  unknown ship denied
     (expect !>(!(may-path k-web-some [%ship ~wes] /pub/page %read)))
   ==
+::  a some scope survives en-scope then de-mint
+++  test-en-scope-some-roundtrip
+  =/  sc=scope
+    :*  %write
+        [%some (sy ~[/a /b]) (sy ~[/a/out])]
+        [%some (my ~[[~bus [(sy ~[/x]) (sy ~[/x/out])]]])]
+        %.y
+        ~
+    ==
+  =/  req=json
+    %-  pairs:enjs:format
+    :~  ['name' s+'k']
+        ['by' s+'b']
+        ['scope' (en-scope sc)]
+    ==
+  =/  want=(each [name=@t by=@t =scope] @t)  [%& 'k' 'b' sc]
+  (expect-eq !>(want) !>((de-mint req)))
 --
