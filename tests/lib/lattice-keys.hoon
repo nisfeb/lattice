@@ -70,6 +70,10 @@
   ;:  weld
     (expect-eq !>(`(unit @da)`~) !>(taint.k))
     (expect-eq !>(`(unit @da)``~2026.1.2) !>(used.k))
+    ::  the row's scope is [%write %read &]; upgrade-keys injects sensitive=|
+    ::  giving upgrade [%write %read & |]: memory=%write pages=[%all %read]
+    ::  web=[%all ~] sensitive=| origin=~
+    (expect-eq !>(`scope`[%write [%all %read] [%all ~] | ~]) !>(scope.k))
     (expect-eq !>(new) !>((upgrade-keys new)))
     (expect-eq !>(`keys`~) !>((upgrade-keys 42)))
   ==
