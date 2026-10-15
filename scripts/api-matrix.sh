@@ -463,6 +463,19 @@ is  "scoped write ungranted"   403 "$(BC -X POST "$B/page-save?name=$P/note&type
 has "tree hides ungranted"     "$P/out" "$(BG "$B/page-tree")"
 is  "tree omits other ns"      "" "$(BG "$B/page-tree" | python3 -c 'import json,sys;print("".join(n["path"] for n in json.load(sys.stdin).get("nodes",[]) if not n["path"].startswith(sys.argv[1])))' "$P")"
 is  "scoped write hoon refused" 403 "$(BC -X POST "$B/page-save?name=$P/out/x&type=hoon" --data-binary '|=(x=@ x)')"
+
+echo "==> sensitive pages"
+is "mark sensitive (owner)"          200 "$(sc -X POST "$B/page-sensitive?name=$P/note&on=1")"
+sleep 2
+# uncleared scoped key: sensitive page is hidden/refused
+is "sensitive read blocked (uncleared)"  403 "$(BC "$B/page-source?name=$P/note")"
+is "sensitive write blocked (uncleared)" 403 "$(BC -X POST "$B/page-save?name=$P/note&type=md" --data-binary 'nope')"
+is "tree hides sensitive (uncleared)"    "" "$(BG "$B/page-tree" | python3 -c 'import json,sys;print("".join(str(1) for n in json.load(sys.stdin).get("nodes",[]) if n["path"]==sys.argv[1]))' "$P/note")"
+# clear the mark and confirm access restored
+is "unmark sensitive (owner)"        200 "$(sc -X POST "$B/page-sensitive?name=$P/note&on=0")"
+sleep 2
+is "uncleared key reads after unmark" 200 "$(BC "$B/page-source?name=$P/note")"
+
 # revoke the test key
 KID="$(printf '%s' "$KEYJSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["key"]["id"])')"
 sc -o /dev/null -X POST "$B/key-revoke?id=$KID" >/dev/null

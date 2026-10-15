@@ -121,6 +121,23 @@
       'salt'  (hash-token 'salt' 'sekrit')
       ~2026.1.1  ~  ~
   ==
+::  mk-key-sensitive: a cleared key whose taint is set to `when`
+++  mk-key-sensitive
+  |=  when=@da
+  ^-  key-row
+  =/  k=key-row
+    (mk-key [%all %write] [%off ~] & ~)
+  k(taint `when)
+::  test-taint-cross-surface: reading a sensitive page taints a cleared key.
+::  Within the taint window the key is blocked from non-sensitive writes;
+::  past taint-for the key clears.
+++  test-taint-cross-surface  ^-  tang
+  =/  now  ~2026.1.1
+  =/  k=key-row  (mk-key-sensitive now)
+  ;:  weld
+    (expect !>((tainted k (add now ~h1))))     :: within window: tainted
+    (expect !>(!(tainted k (add now ~h13))))   :: past window: clear
+  ==
 ::  under: segment-prefix test (grant is a prefix of target at segment boundary)
 ++  test-under-boundary  ^-  tang
   ;:  weld

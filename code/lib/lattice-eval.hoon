@@ -39,6 +39,7 @@
       [%forms pax=path on=? cap=@ud gap=@dr]  ::  public forms: on/off + limits
       [%form-hit pax=path now=@da]      ::  record one accepted submission
       [%form-reset pax=path]            ::  zero a page's submission counter
+      [%page-sensitive pax=path on=?]   ::  mark/unmark a page (or folder) sensitive
       [%legacy-seen imported=@ud]       ::  retired %lattice agent dealt with
       [%legacy-pages rels=(list path)]  ::  page rels this migration triggered
   ==
