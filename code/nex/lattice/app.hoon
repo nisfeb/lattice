@@ -3839,7 +3839,7 @@
   ;<  kv=view:nexus  bind:m  (peek:io kr ~)
   ?.  ?=([%file *] kv)  (pure:m ~)
   ::  by noun, so a row stored before clearance (lattice 45) still reads
-  (pure:m (upgrade:ky (sang-noun:tarball sang.kv)))
+  (pure:m (upgrade-keys:ky (sang-noun:tarball sang.kv)))
 ::  +key-of: the agent key an Authorization header presents, or ~. Its
 ::  last use is stamped through the writer, at most hourly.
 ::

@@ -11,11 +11,24 @@
 ::
 |%
 +$  level  ?(%none %read %write)
-::  +$  scope: memory and pages each none, read or write; web is reading
-::  other ships' published pages; sensitive is clearance for memories
-::  marked sensitive. Publishing, sharing, bans, permissions, settings and
-::  the keys themselves are never in a scope.
-+$  scope  [memory=level pages=level web=? sensitive=?]
+::  +$  paths: the path sets a scope can restrict to
++$  paths   [read=(set path) write=(set path)]
+::  +$  pages-scope: none/read/write for all pages, or a specific path set
++$  pages-scope  $%([%all lvl=level] [%some =paths])
+::  +$  web-scope: off, all ships, or a per-ship path set
++$  web-scope    $%([%off ~] [%all ~] [%some ships=(map @p paths)])
+::  +$  scope: memory and pages each none/read/write; web controls
+::  reading other ships' published pages; sensitive is clearance for
+::  memories marked sensitive; origin pins the key to one ship when set.
+::  Publishing, sharing, bans, permissions, settings and the keys
+::  themselves are never in a scope.
++$  scope
+  $:  memory=level
+      pages=pages-scope
+      web=web-scope
+      sensitive=?
+      origin=(unit @p)
+  ==
 ::  taint: when the key last received sensitive text. For +taint-for after
 ::  it, everything the key writes is sensitive too (+tainted).
 +$  key-row
@@ -30,7 +43,7 @@
       taint=(unit @da)
   ==
 +$  keys  (map @t key-row)
-::  the row before clearance (lattice 45). +upgrade reads either.
+::  the row before clearance (lattice 45). +upgrade-keys reads any era.
 +$  key-row-0
   $:  id=@t
       name=@t
@@ -41,17 +54,61 @@
       made=@da
       used=(unit @da)
   ==
+::  the row after clearance (lattice 45) but before scoped molds (this task).
++$  key-row-1
+  $:  id=@t
+      name=@t
+      by=@t
+      scope=[memory=level pages=level web=? sensitive=?]
+      salt=@t
+      hash=@t
+      made=@da
+      used=(unit @da)
+      taint=(unit @da)
+  ==
+::  +upgrade: read any prior scope noun and return the new scope shape.
+::  Old flat scope was [memory=level pages=level web=? sensitive=?]; map
+::  pages=level to [%all level], web=& to [%all ~], web=| to [%off ~],
+::  carry sensitive, set origin=~. If already the new shape, pass through.
 ++  upgrade
+  |=  old=*
+  ^-  scope
+  ::  try the new shape first (pass-through for already-migrated scopes)
+  =/  new=(unit scope)  (mole |.(;;(scope old)))
+  ?^  new  u.new
+  ::  otherwise read as old flat 4-field shape [memory pages web sensitive]
+  =/  o  ;;([memory=level pages=* web=* sensitive=?] old)
+  =/  pgs=pages-scope
+    ?@(pages.o [%all ;;(level pages.o)] ;;(pages-scope pages.o))
+  =/  wsc=web-scope
+    ?@(web.o ?:(;;(? web.o) [%all ~] [%off ~]) ;;(web-scope web.o))
+  [memory.o pgs wsc sensitive.o ~]
+::  +upgrade-keys: read any stored keys noun and return current keys.
+::  Handles three storage eras: current keys, post-clearance (key-row-1)
+::  and pre-clearance (key-row-0).
+++  upgrade-keys
   |=  n=*
   ^-  keys
   =/  new=(unit keys)  (mole |.(;;(keys n)))
   ?^  new  u.new
-  =/  old=(unit (map @t key-row-0))  (mole |.(;;((map @t key-row-0) n)))
-  ?~  old  ~
-  %-  ~(run by u.old)
+  =/  v1=(unit (map @t key-row-1))  (mole |.(;;((map @t key-row-1) n)))
+  ?^  v1
+    %-  ~(run by u.v1)
+    |=  k=key-row-1
+    ^-  key-row
+    :*  id.k  name.k  by.k
+        (upgrade [memory.scope.k pages.scope.k web.scope.k sensitive.scope.k])
+        salt.k  hash.k  made.k  used.k  taint.k
+    ==
+  =/  v0=(unit (map @t key-row-0))  (mole |.(;;((map @t key-row-0) n)))
+  ?~  v0  ~
+  %-  ~(run by u.v0)
   |=  k=key-row-0
   ^-  key-row
-  [id.k name.k by.k [memory.scope.k pages.scope.k web.scope.k %.n] salt.k hash.k made.k used.k ~]
+  :*  id.k  name.k  by.k
+      (upgrade [memory.scope.k pages.scope.k web.scope.k |])
+      salt.k  hash.k  made.k  used.k  ~
+  ==
 ::  +taint-for: how long a key that received sensitive text writes only
 ::  sensitive things. A session's length, roughly.
 ++  taint-for  ~h12
@@ -149,9 +206,18 @@
   |=  [s=scope area=?(%memory %pages %web) lvl=?(%read %write)]
   ^-  ?
   ?-  area
-    %web     web.s
+    %web
+      ?-  web.s
+        [%off ~]   |
+        [%all ~]   &
+        [%some *]  &
+      ==
     %memory  (level-ok memory.s lvl)
-    %pages   (level-ok pages.s lvl)
+    %pages
+      ?-  pages.s
+        [%all *]   (level-ok lvl.pages.s lvl)
+        [%some *]  (level-ok %write lvl)
+      ==
   ==
 ++  level-ok
   |=  [have=level want=?(%read %write)]
@@ -201,7 +267,9 @@
     ?.(?=([~ %o *] s) ~ p.u.s)
   =/  web=?  ?=([~ %b %.y] (~(get by sc) 'web'))
   =/  sen=?  ?=([~ %b %.y] (~(get by sc) 'sensitive'))
-  &+[p.u.name p.u.who [(de-level (~(get by sc) 'memory')) (de-level (~(get by sc) 'pages')) web sen]]
+  =/  pgs=pages-scope  [%all (de-level (~(get by sc) 'pages'))]
+  =/  wsc=web-scope  ?:(web [%all ~] [%off ~])
+  &+[p.u.name p.u.who [(de-level (~(get by sc) 'memory')) pgs wsc sen ~]]
 ++  by-char
   |=  c=@t
   ^-  ?
@@ -213,10 +281,21 @@
 ++  en-scope
   |=  s=scope
   ^-  json
+  =/  pgs=json
+    ?-  pages.s
+      [%all *]   (pairs:enjs:format ~[['level' s+lvl.pages.s]])
+      [%some *]  (pairs:enjs:format ~[['some' ~]])
+    ==
+  =/  wsc=json
+    ?-  web.s
+      [%off ~]   b+|
+      [%all ~]   b+&
+      [%some *]  b+&
+    ==
   %-  pairs:enjs:format
   :~  ['memory' s+memory.s]
-      ['pages' s+pages.s]
-      ['web' b+web.s]
+      ['pages' pgs]
+      ['web' wsc]
       ['sensitive' b+sensitive.s]
   ==
 ::  +en-view: a key as the owner sees it: never the salt or the hash.

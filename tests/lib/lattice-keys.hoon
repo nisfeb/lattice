@@ -23,8 +23,8 @@
   ==
 ::  a key reaches only the one-segment routes its scope names
 ++  test-may
-  =/  rw  (row [%write %read | |])
-  =/  ro  (row [%read %none & |])
+  =/  rw  (row [%write [%all %read] [%off ~] | ~])
+  =/  ro  (row [%read [%all %none] [%all ~] | ~])
   ;:  weld
     (expect-eq !>(&) !>((may rw 'POST' /know-save)))
     (expect-eq !>(&) !>((may rw 'POST' /know-save-batch)))
@@ -48,8 +48,8 @@
   =/  ok  (de-mint (need (de:json:html '{"name":"laptop","by":"claude-laptop","scope":{"memory":"write","web":true}}')))
   =/  sen  (de-mint (need (de:json:html '{"name":"l","by":"b","scope":{"memory":"read","sensitive":true}}')))
   ;:  weld
-    (expect-eq !>(`(each [@t @t scope] @t)`&+['laptop' 'claude-laptop' [%write %none & |]]) !>(ok))
-    (expect-eq !>(`(each [@t @t scope] @t)`&+['l' 'b' [%read %none | &]]) !>(sen))
+    (expect-eq !>(`(each [@t @t scope] @t)`&+['laptop' 'claude-laptop' [%write [%all %none] [%all ~] | ~]]) !>(ok))
+    (expect-eq !>(`(each [@t @t scope] @t)`&+['l' 'b' [%read [%all %none] [%off ~] & ~]]) !>(sen))
     ::  by is one line of front matter: no newline, no colon
     (expect-eq !>(%|) !>(-:(de-mint (need (de:json:html '{"name":"a","by":"x\\nsuperseded-by: /y"}')))))
     (expect-eq !>(%|) !>(-:(de-mint (need (de:json:html '{"name":"a","by":""}')))))
@@ -62,18 +62,30 @@
     (expect-eq !>(&) !>((touch-due `~2026.1.1 ~2026.1.1..01.00.00)))
   ==
 ::  keys stored before clearance existed read back, uncleared and untainted
-++  test-upgrade
+++  test-upgrade-keys
   =/  old=(map @t key-row-0)
     (my ~[['abc' ['abc' 'n' 'b' [%write %read &] 's' 'h' ~2026.1.1 `~2026.1.2]]])
-  =/  new=keys  (upgrade old)
+  =/  new=keys  (upgrade-keys old)
   =/  k=key-row  (~(got by new) 'abc')
   ;:  weld
-    (expect-eq !>(`scope`[%write %read & |]) !>(scope.k))
     (expect-eq !>(`(unit @da)`~) !>(taint.k))
     (expect-eq !>(`(unit @da)``~2026.1.2) !>(used.k))
-    (expect-eq !>(new) !>((upgrade new)))
-    (expect-eq !>(`keys`~) !>((upgrade 42)))
+    (expect-eq !>(new) !>((upgrade-keys new)))
+    (expect-eq !>(`keys`~) !>((upgrade-keys 42)))
   ==
+++  test-upgrade-old-flat-scope  ^-  tang
+  :: old row scope was [memory=level pages=level web=? sensitive=?]
+  =/  old=*  [%read %write & |]
+  =/  new  (upgrade old)
+  ;:  weld
+    (expect-eq !>(pages.new) !>(`pages-scope`[%all %write]))
+    (expect-eq !>(web.new) !>(`web-scope`[%all ~]))
+    (expect-eq !>(sensitive.new) !>(|))
+    (expect-eq !>(origin.new) !>(`(unit @p)`~))
+  ==
+++  test-upgrade-web-off  ^-  tang
+  =/  new  (upgrade [%none %none | |])
+  (expect-eq !>(web.new) !>(`web-scope`[%off ~]))
 ++  test-tainted
   =/  k  (row *scope)
   ;:  weld
