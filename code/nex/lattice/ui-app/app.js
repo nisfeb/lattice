@@ -5679,13 +5679,17 @@
       const when = m && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]));
       const label = when && when.toLocaleString(undefined,
         { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
-      a.textContent = '#' + v.rev + (label ? ' \u00b7 ' + label : '');
+      // label by timestamp, not the raw clay revision id. prune-hist thins
+      // keystroke-scale autosaves, so the id skips (1, 2, 16) and the gaps
+      // read as missing versions. The id lives on dataset.rev for restore.
+      a.textContent = label || ('rev ' + v.rev);
+      a.dataset.rev = v.rev;
       a.className = v.rev === viewingRev ? 'on' : '';
-      a.onclick = () => openRev(v.rev);
+      a.onclick = () => openRev(v.rev, label);
       histList.appendChild(a);
     }
   }
-  async function openRev(rev) {
+  async function openRev(rev, lbl) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
@@ -5714,8 +5718,8 @@
     render(); sync();
     histView.hidden = false;
     for (const a of histList.children)
-      a.className = a.textContent.split(' ')[0] === '#' + rev ? 'on' : '';
-    st('viewing rev ' + rev + ' \u00b7 read-only');
+      a.className = +a.dataset.rev === rev ? 'on' : '';
+    st('viewing ' + (lbl || 'an earlier version') + ' \u00b7 read-only');
     if (mode !== 'know' && CONTENT()) refreshPreview();
   }
   $('hback').onclick = () => {
@@ -5734,7 +5738,7 @@
       if (!r.ok) { st('restore failed' + await errText(r), false); return; }
       knowGen++;
       await openKnow(current);   // repaints body + tags from the restored entry
-      st('restored rev ' + rev + ' as the newest revision');
+      st('restored that version as the newest revision');
       loadHistory();
       return;
     }
@@ -5744,7 +5748,7 @@
     await save(kind);      // under the revision's OWN kind, not the current select
     // save() reports its own failures and leaves dirty SET on every path
     // that did not durably hold the body — do not paint success over that
-    if (!dirty) st('restored rev ' + rev + ' as the newest revision');
+    if (!dirty) st('restored that version as the newest revision');
     loadHistory();
   };
 
