@@ -27,7 +27,7 @@ Node 16 or later must be on your `PATH`.
 
 ## What a key can do
 
-A key reaches only what its scope names. Publishing, sharing, deleting, settings and the keys themselves stay yours whatever the scope. Everything a key saves is signed with its name and `source: agent`, so you can always tell an agent's memory from yours. A key writes private pages only: never a published page, and never one inside a folder you share. Revoke a key in Settings, Agent keys, and its next request fails. See [docs/agent-knowledge.md](../../docs/agent-knowledge.md#agent-keys).
+A key reaches only what its scope names. Publishing, sharing, deleting, settings and the keys themselves stay yours whatever the scope. Everything a key saves is signed with its name and `source: agent`, so you can always tell an agent's memory from yours. A key writes pages only within the paths its write scope grants (a granted path may be a published one); it can never publish, share, move or delete. Revoke a key in Settings, Agent keys, and its next request fails. See [docs/agent-knowledge.md](../../docs/agent-knowledge.md#agent-keys).
 
 Pages from other ships, and pages you clipped from the web, come back to Claude labelled as quoted material, not instructions, and the memory skill tells it not to save their claims as fact without you.
 

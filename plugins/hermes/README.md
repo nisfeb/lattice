@@ -21,4 +21,4 @@ Optional, in `~/.hermes/lattice.json`: `"recall_strength": 50` sets how strong a
 
 ## What a key can do
 
-A key reaches only what its scope names. Publishing, sharing, deleting, settings and the keys themselves stay yours. Everything a key saves is signed with its name and `source: agent`. A key writes private pages only. Pages from other ships and clipped web pages come back labelled as quoted material, not instructions. See [docs/agent-knowledge.md](../../docs/agent-knowledge.md#agent-keys).
+A key reaches only what its scope names. Publishing, sharing, deleting, settings and the keys themselves stay yours. Everything a key saves is signed with its name and `source: agent`. A key writes pages only within the paths its write scope grants (a granted path may be published); it cannot publish, share, move or delete. Pages from other ships and clipped web pages come back labelled as quoted material, not instructions. See [docs/agent-knowledge.md](../../docs/agent-knowledge.md#agent-keys).

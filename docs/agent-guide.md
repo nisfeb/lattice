@@ -186,7 +186,7 @@ The cookie gives an MCP client every power you have, dojo included. For memory a
 
 ## 6. Auth quick reference
 
-- **Agent key (HTTP):** `Authorization: Bearer <id>.<secret>`. Made in Settings, Agent keys. It reaches only the memory and page routes its scope names, signs what it writes, never expires, and is revoked on its own. Use it for agents. See [agent-knowledge.md](agent-knowledge.md#agent-keys).
+- **Agent key (HTTP):** `Authorization: Bearer <id>.<secret>`. Made in Settings, Agent keys. It reaches only the routes its scope names (memory, your pages by path, and other ships' pages by ship and path), signs what it writes, never expires, and is revoked on its own. Use it for agents. See [agent-knowledge.md](agent-knowledge.md#agent-keys).
 - **lick (FUSE):** no cookie. Reaching the socket in the pier *is* authorization. Owner-only.
 - **HTTP / MCP:** a session cookie, with all your powers. Get one without echoing the `+code`:
   ```bash

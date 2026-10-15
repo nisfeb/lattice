@@ -47,7 +47,7 @@ If asked to remember one of those, ask what was non-obvious and save that.
 
 ## Sensitive memories
 
-Some memories are marked sensitive and reach only cleared keys. If a save comes back `"sensitive": true`, this key read sensitive memories recently, so its new entries are kept sensitive too, and editing ordinary memories or writing pages is refused for a while. That is expected: carry on, and don't try to restate sensitive facts elsewhere.
+Some memories and pages are marked sensitive and reach only cleared keys. If a save comes back `"sensitive": true`, this key read sensitive content recently, so for a while its writes go only to sensitive destinations: new entries and pages it writes are kept sensitive, while editing an ordinary memory or writing a non-sensitive page is refused. That is expected: carry on, and don't try to restate sensitive facts elsewhere.
 
 ## Trust
 
