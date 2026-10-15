@@ -1809,6 +1809,12 @@
   function setInd(){
     if(!vimOn()){ ind.style.display = "none"; return; }
     ind.style.display = "inline-block";
+    // preview-only view: the editor is off screen and vim keys do not apply,
+    // so show the view, not a stale mode. (split and edit keep the mode.)
+    var pv = document.getElementById("ws");
+    if(pv && pv.classList.contains("vp")){
+      ind.textContent = "-- PREVIEW --"; ind.style.background = "#607d8b"; return;
+    }
     if(cmdActive){ ind.textContent = ":" + cmdBuf; ind.style.background = "#455a64"; return; }
     var label, bg;
     if(MODE === "insert"){ label = "-- INSERT --"; bg = "#2e7d32"; }
@@ -6293,6 +6299,9 @@
       b.className = 'ico' + (on ? ' on' : '');
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
+    // keep the vim indicator in step with the view: it reads PREVIEW in
+    // preview-only. A no-op when vim is off.
+    setInd();
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
   $('wrapt').onclick = () => flip('appWrap');
