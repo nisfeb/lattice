@@ -149,8 +149,12 @@
     cb.disabled = false;
     try {
       const r = await fetch(api + '/page-sensitive?name=' + encodeURIComponent(target));
-      cb.checked = r.ok && (await r.json()).on === true;
-    } catch { cb.checked = false; }
+      const on = r.ok && (await r.json()).on === true;
+      // the target can change while this GET is in flight (same bug class the
+      // showShare comment documents): only apply if it is still current.
+      if ((curFolder || current) !== target) return;
+      cb.checked = on;
+    } catch { if ((curFolder || current) === target) cb.checked = false; }
   };
   $('shsens').onchange = async () => {
     const target = curFolder || current;

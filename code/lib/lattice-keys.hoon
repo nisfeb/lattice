@@ -266,7 +266,7 @@
       [%ship *]
     ?-  -.web.scope.k
       %off   |
-      %all   &(=(%read lvl) &)
+      %all   =(%read lvl)
       %some
         =/  e  (~(get by ships.web.scope.k) +.realm)
         ?~(e | (check u.e))

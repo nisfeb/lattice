@@ -1493,9 +1493,11 @@
       [%'GET' %page-source]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
+    ::  reject an invalid name up front, like page-history/backlinks, so a
+    ::  keyed request can never skip the scope gate on an unstabbable name.
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     ::  keyed: path must be read-scoped
     ?:  ?&  ?=(^ key)
-            (valid-name u.name)
             !(may-path:ky u.key %local (pax-of u.name) %read)
         ==
       (send-err eyre-id 403 'outside this key\'s scope')
@@ -1606,16 +1608,30 @@
     ::  sorted by path like the old walk. murn preserves input order
     =/  srt=(list [pax=path when=@da code=@t])
       (sort pages |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
-    =/  links=(list json)
-      %+  murn  srt
-      |=  [pax=path when=@da code=@t]
-      ^-  (unit json)
+    ::  build the links. An uncleared key must not even learn a sensitive
+    ::  linker's path exists, so drop sensitive linkers for it (like the tree
+    ::  and search sensitive filters). A cleared key or the owner sees all.
+    =/  cleared=?  |(?=(~ key) sensitive.scope.u.key)
+    ;<  links=(list json)  bind:m
+      =/  n  (fiber:fiber:nexus ,(list json))
+      =/  todo=(list [pax=path when=@da code=@t])  srt
+      =|  acc=(list json)
+      |-  ^-  form:n
+      ?~  todo  (pure:n (flop acc))
+      =/  pax=path  pax.i.todo
       ::  keyed: only include linker pages the key can read
-      ?:  &(?=(^ key) !(may-path:ky u.key %local pax %read))  ~
-      =/  un=(unit [builder=@tas body=@t])  (unwrap-content code)
-      =/  bod=@t  ?~(un code body.u.un)
-      ?~  (find needle (trip bod))  ~
-      `[%s (crip (pax-str pax))]
+      ?:  &(?=(^ key) !(may-path:ky u.key %local pax %read))
+        $(todo t.todo)
+      =/  un=(unit [builder=@tas body=@t])  (unwrap-content code.i.todo)
+      =/  bod=@t  ?~(un code.i.todo body.u.un)
+      ?~  (find needle (trip bod))
+        $(todo t.todo)
+      =/  entry=json  [%s (crip (pax-str pax))]
+      ?:  cleared
+        $(todo t.todo, acc [entry acc])
+      ;<  ps=?  bind:n  (page-sensitive pax)
+      ?:  ps  $(todo t.todo)
+      $(todo t.todo, acc [entry acc])
     (send-json eyre-id (pairs:enjs:format ~[['links' a+links]]))
   ::
   ::  page-errors: a page's latest evaluator error as plain text ('' = clean).
@@ -2065,6 +2081,20 @@
         (to-doc:lk r e(body b))
       q
     =/  best=@ud  ?~(hs 0 strength.i.hs)
+    ::  a cleared key that sees a sensitive page's snippet is tainted, exactly
+    ::  as know-search taints and page-source/history/backlinks do. Uncleared
+    ::  keys never reach here with a sensitive hit (filtered from `pages`).
+    ;<  hit-sens=?  bind:m
+      =/  n  (fiber:fiber:nexus ,?)
+      ?~  key  (pure:n |)
+      ?.  sensitive.scope.u.key  (pure:n |)
+      =/  todo=(list hit:lk)  (scag k hs)
+      |-  ^-  form:n
+      ?~  todo  (pure:n |)
+      ;<  ps=?  bind:n  (page-sensitive key.i.todo)
+      ?:  ps  (pure:n &)
+      $(todo t.todo)
+    ;<  ~  bind:m  (taint-if key hit-sens)
     %+  send-json  eyre-id
     %-  pairs:enjs:format
     :~  ['query' s+q]
@@ -4698,7 +4728,9 @@
   =/  fdir=path  (weld /page page)
   ;<  seen=view:nexus  bind:m  (peek:io (rf up fdir %sensitive) ~)
   ?:  ?=([%file *] seen)
-    (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.seen)))) %.n))
+    ::  a present marker that will not parse fails CLOSED (treat as sensitive):
+    ::  this gates a default-deny feature, so an unreadable flag must not open.
+    (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.seen)))) %.y))
   ?~  page  (pure:m %.n)
   $(page (snip `path`page))
 ::  +comments-on: is `page` comments-enabled? The nearest `comment-on` flag grub
