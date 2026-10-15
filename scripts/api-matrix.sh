@@ -471,6 +471,21 @@ sleep 2
 is "sensitive read blocked (uncleared)"  403 "$(BC "$B/page-source?name=$P/note")"
 is "sensitive write blocked (uncleared)" 403 "$(BC -X POST "$B/page-save?name=$P/note&type=md" --data-binary 'nope')"
 is "tree hides sensitive (uncleared)"    "" "$(BG "$B/page-tree" | python3 -c 'import json,sys;print("".join(str(1) for n in json.load(sys.stdin).get("nodes",[]) if n["path"]==sys.argv[1]))' "$P/note")"
+
+# cross-surface taint: a CLEARED key may read the sensitive page, but doing so
+# taints it, after which it may not write a non-sensitive page (the same
+# tainted check that already gates non-sensitive memory writes). $P/note is
+# still marked sensitive here.
+CKEYJSON="$(G -X POST "$B/key-mint" -H 'content-type: application/json' --data-binary "$(python3 -c "import json,sys;print(json.dumps({'name':'apimx-cleared','by':'apimx','scope':{'memory':'none','pages':{'some':{'read':['/'+sys.argv[1]],'write':['/'+sys.argv[1]+'/out']}},'web':{'off':None},'sensitive':True}}))" "$P")")"
+CTOK="$(printf '%s' "$CKEYJSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')"
+CC() { curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $CTOK" "$@"; }
+is "cleared plain write before taint" 200 "$(CC -X POST "$B/page-save?name=$P/out/pre&type=md" --data-binary 'ok')"
+is "cleared reads sensitive page"     200 "$(CC "$B/page-source?name=$P/note")"
+sleep 2
+is "tainted key plain write refused"  403 "$(CC -X POST "$B/page-save?name=$P/out/post&type=md" --data-binary 'blocked')"
+CKID="$(printf '%s' "$CKEYJSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["key"]["id"])')"
+sc -o /dev/null -X POST "$B/key-revoke?id=$CKID" >/dev/null
+
 # clear the mark and confirm access restored
 is "unmark sensitive (owner)"        200 "$(sc -X POST "$B/page-sensitive?name=$P/note&on=0")"
 sleep 2
