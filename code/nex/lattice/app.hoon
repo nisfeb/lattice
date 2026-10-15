@@ -9689,7 +9689,7 @@
     "<label for=\"kname\">Name</label><input id=\"kname\" name=\"kname\" required maxlength=\"200\" placeholder=\"laptop Claude\">"
     "<label for=\"kby\">Writes as</label><input id=\"kby\" name=\"kby\" required maxlength=\"64\" pattern=\"[A-Za-z0-9._-]+\" placeholder=\"claude-laptop\">"
     "<label for=\"kmem\">Memory</label><select id=\"kmem\" name=\"kmem\"><option value=\"write\">read and write</option><option value=\"read\">read</option><option value=\"none\">none</option></select>"
-    "<label for=\"kpages\">Pages</label><select id=\"kpages\" name=\"kpages\"><option value=\"write\">read, write private pages</option><option value=\"read\">read</option><option value=\"none\">none</option><option value=\"some\">scoped to paths</option></select>"
+    "<label for=\"kpages\">Pages</label><select id=\"kpages\" name=\"kpages\"><option value=\"read\">read</option><option value=\"write\">read, write private pages</option><option value=\"none\">none</option><option value=\"some\">scoped to paths</option></select>"
     "<label for=\"kpread\">Pages read paths</label><input id=\"kpread\" name=\"kpread\" placeholder=\"/notes, /projects (scoped only)\">"
     "<label for=\"kpwrite\">Pages write paths</label><input id=\"kpwrite\" name=\"kpwrite\" placeholder=\"/notes/agent (scoped only)\">"
     "<label for=\"kweb\">Other ships</label><select id=\"kweb\" name=\"kweb\"><option value=\"off\">none</option><option value=\"all\">read all ships</option><option value=\"some\">scoped to one ship</option></select>"
