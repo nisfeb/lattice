@@ -55,6 +55,23 @@
     (expect-eq !>(%|) !>(-:(de-mint (need (de:json:html '{"name":"a","by":""}')))))
     (expect-eq !>(%|) !>(-:(de-mint (need (de:json:html '{"by":"x"}')))))
   ==
+::  de-mint web %some: parses per-ship path maps; NOT [%all ~] (the old bug)
+++  test-de-mint-web-some  ^-  tang
+  =/  raw=@t
+    '{"name":"t","by":"t","scope":{"web":{"some":{"~bus":{"read":["/x"],"write":["/x/out"]}}}}}'
+  =/  res  (de-mint (need (de:json:html raw)))
+  ?:  ?=(%| -.res)
+    ~[leaf+"de-mint failed"]
+  =/  wsc=web-scope  web.scope.p.res
+  ::  the old bug parsed {some:...} as [%all ~]; it must now be %some
+  ?.  ?=([%some *] wsc)
+    ~[leaf+"web is not %some (the old bug over-granted [%all ~])"]
+  ;:  weld
+    ::  ~bus read-set = {/x}, write-set = {/x/out}
+    (expect-eq !>(`(unit paths)``[(sy ~[/x]) (sy ~[/x/out])]) !>((~(get by ships.wsc) ~bus)))
+    ::  a ship not in the map yields no entry (no grant)
+    (expect-eq !>(`(unit paths)`~) !>((~(get by ships.wsc) ~dev)))
+  ==
 ++  test-touch-due
   ;:  weld
     (expect-eq !>(&) !>((touch-due ~ ~2026.1.1)))

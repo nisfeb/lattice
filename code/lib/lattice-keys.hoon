@@ -203,6 +203,9 @@
     [%'POST' %page-save]      `[%pages %write]
     [%'POST' %page-save-batch]  `[%pages %write]
     [%'GET' %fetch]           `[%web %read]
+    [%'GET' %browse]          `[%web %read]
+    [%'GET' %browse-file]     `[%web %read]
+    [%'POST' %remote-save]    `[%web %write]
   ==
 ++  allows
   |=  [s=scope area=?(%memory %pages %web) lvl=?(%read %write)]
@@ -339,9 +342,23 @@
       [~ %b %.n]  [%off ~]
       [~ %o *]
         =/  wm=(map @t json)  p.u.webj
-        ?:  (~(has by wm) 'all')   [%all ~]
-        ?:  (~(has by wm) 'some')  [%all ~]
-        [%off ~]
+        ?:  (~(has by wm) 'all')  [%all ~]
+        =/  som=(unit json)  (~(get by wm) 'some')
+        ?~  som  [%off ~]
+        ?.  ?=([%o *] u.som)  [%off ~]
+        ::  parse {"~bus":{"read":[...],"write":[...]},...}
+        ::  into (map @p paths). Skip unparseable ship keys silently.
+        =/  ships=(map @p paths)
+          %-  ~(gas by *(map @p paths))
+          %+  murn  ~(tap by p.u.som)
+          |=  [shp-t=@t shp-j=json]
+          ^-  (unit [@p paths])
+          =/  sp=(unit @p)  (slaw %p shp-t)
+          ?~  sp  ~
+          ?.  ?=([%o *] shp-j)  ~
+          =/  sm=(map @t json)  p.shp-j
+          `[u.sp (de-paths (~(get by sm) 'read')) (de-paths (~(get by sm) 'write'))]
+        [%some ships]
     ==
   &+[p.u.name p.u.who [(de-level (~(get by sc) 'memory')) pgs wsc sen ~]]
 ++  by-char

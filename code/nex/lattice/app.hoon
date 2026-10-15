@@ -931,7 +931,7 @@
 ::  path (/grub-save) and is refused here rather than silently rerouted.
 ::
 ++  handle-remote-save
-  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t) our=@p]
+  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t) our=@p key=(unit key-row:ky) rnow=@da]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  shp-t=(unit @t)  (~(get by args) 'ship')
@@ -944,6 +944,14 @@
   =/  pp=(each path tang)  (mule |.((stab u.pt)))
   ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
   ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
+  ::  a tainted key (one that read sensitive content in the last 12h) cannot
+  ::  write to a foreign destination: we cannot verify a remote page's
+  ::  sensitivity, so it counts as a non-sensitive destination, like a local
+  ::  plain page-save (the same +tainted gate guards that path).
+  ?:  &(?=(^ key) (tainted:ky u.key rnow))  (send-err eyre-id 403 tainted-msg)
+  ::  key path-scope gate: when keyed, require write access to this ship+path
+  ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] p.pp %write))
+    (send-err eyre-id 403 'outside this key\'s scope')
   =/  n=@ud  (dec (lent p.pp))
   =/  dir=path  (scag n p.pp)
   =/  nam=@ta  (snag n p.pp)
@@ -1186,10 +1194,17 @@
   ?:  &(?=(^ key) !(may:ky u.key method.request.req suffix))
     (send-err eyre-id 403 'outside this key\'s scope')
   ::  a keyed request's src is not us, but of the routes a key reaches
-  ::  (+may:ky) only /fetch reads `our`, so only it pays the bowl read.
+  ::  (+may:ky) /fetch, /browse, /browse-file, and /remote-save all read
+  ::  `our` to compare or dispatch, so they pay the bowl read.
   ::  A route added to +wants:ky that reads `our` must be added here.
+  =/  needs-our=?
+    ?|  =(/fetch suffix)
+        =(/browse suffix)
+        =(/browse-file suffix)
+        =(/remote-save suffix)
+    ==
   ;<  our=@p  bind:m
-    ?:  |(?=(~ key) !=(/fetch suffix))  (pure:(fiber:fiber:nexus ,@p) src)
+    ?:  |(?=(~ key) !needs-our)  (pure:(fiber:fiber:nexus ,@p) src)
     bowl-our
   ::  /x/<ship>/<path...>: the server-rendered tree explorer (docs/platform.md,
   ::  build step 1). Consumes the rest of the path, so it dispatches before the
@@ -1682,6 +1697,9 @@
     ?~  raw  (send-err eyre-id 400 'missing url param')
     =/  pu=(unit [=ship =path])  (parse-urb-url:lu u.raw)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
+    ::  key path-scope gate: when keyed, require read access to this ship+path
+    ?:  &(?=(^ key) !(may-path:ky u.key [%ship ship.u.pu] path.u.pu %read))
+      (send-err eyre-id 403 'outside this key\'s scope')
     ;<  body=(unit @t)  bind:m  (read-page-body our ship.u.pu path.u.pu)
     ?^  body  (send-json eyre-id (mark-body-json 'gmi' u.body))
     ::  /manifest discovery fallback: the retired agent auto-published a manifest
@@ -1709,6 +1727,9 @@
     ?~  shp  (send-err eyre-id 400 'bad ship')
     =/  pp=(each path tang)  (mule |.((stab (~(gut by args) 'path' '/'))))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
+    ::  key path-scope gate: when keyed, require read access to this ship+path
+    ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] p.pp %read))
+      (send-err eyre-id 403 'outside this key\'s scope')
     =/  dir-road=road:tarball  [%& %| p.pp]
     ?:  =(u.shp our)
       ;<  sn=view:nexus  bind:m  (peek-shallow:io dir-road ~)
@@ -1733,6 +1754,9 @@
     ::  to the input type (^+), so the possibly-empty dir would nest-fail, the same
     ::  footgun key-to-rail documents. Split via lent/scag/snag on the un-narrowed path.
     ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
+    ::  key path-scope gate: when keyed, require read access to this ship+path
+    ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] p.pp %read))
+      (send-err eyre-id 403 'outside this key\'s scope')
     =/  n=@ud  (dec (lent p.pp))
     =/  file-road=road:tarball  [%& %& (scag n p.pp) (snag n p.pp)]
     ?:  =(u.shp our)
@@ -1752,7 +1776,7 @@
   ::  of lying "saved". (Content equality can't be the check. Their mark may
   ::  normalize the body, e.g. wain round-trips and trailing newlines.)
       [%'POST' %remote-save]
-    (handle-remote-save eyre-id req args our)
+    (handle-remote-save eyre-id req args our key rnow)
   ::  ── banlist ────────────────────────────────────────────────────────────
   ::  Deny cannot be expressed as a weir (see +$banned in /lib/lattice-share),
   ::  so it is this app's own list, enforced where a foreign ship's identity is
