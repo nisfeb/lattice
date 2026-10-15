@@ -1501,14 +1501,11 @@
             !(may-path:ky u.key %local (pax-of u.name) %read)
         ==
       (send-err eyre-id 403 'outside this key\'s scope')
-    ::  sensitive gate: a key without clearance sees nothing — treated as
+    ::  sensitive gate: a key without clearance sees nothing, treated as
     ::  not-found so an uncleared key cannot learn the page exists.
     ::  A cleared key that reads a sensitive page is tainted for taint-for.
-    ::  Guard: only run the grub check for valid names (invalid = bad name,
-    ::  handled inside fs-source-result below; never crashes on a bad name).
-    ;<  ps=?  bind:m
-      ?.  (valid-name u.name)  (pure:(fiber:fiber:nexus ,?) |)
-      (page-sensitive (pax-of u.name))
+    ::  (The name is already valid: rejected up front above.)
+    ;<  ps=?  bind:m  (page-sensitive (pax-of u.name))
     ?:  &(ps ?=(^ key) !sensitive.scope.u.key)
       (send-err eyre-id 403 'not found')
     ;<  ~  bind:m  (taint-if key &(ps ?=(^ key) sensitive.scope.u.key))
@@ -2021,7 +2018,9 @@
       [%'POST' %page-save]
     ::  owner path: no key, no scope check needed.
     ?~  key  (handle-page-save eyre-id req args)
-    ::  a tainted key cannot write non-sensitive pages (cross-surface taint)
+    ::  a tainted key (read sensitive content in the last 12h) is refused any
+    ::  page write here (stricter than the memory surface, which lets a tainted
+    ::  key write to a sensitive destination).
     ?:  (tainted:ky u.key rnow)  (send-err eyre-id 403 tainted-msg)
     ::  a key writes content that renders escaped. Hoon (also an absent or
     ::  unknown type) would run with lattice's own authority, and html or js

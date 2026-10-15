@@ -19,7 +19,8 @@
 +$  web-scope    $%([%off ~] [%all ~] [%some ships=(map @p paths)])
 ::  +$  scope: memory and pages each none/read/write; web controls
 ::  reading other ships' published pages; sensitive is clearance for
-::  memories marked sensitive; origin pins the key to one ship when set.
+::  memories marked sensitive; origin is a reserved hook (the source ship a
+::  key would be pinned to) that nothing reads or enforces yet.
 ::  Publishing, sharing, bans, permissions, settings and the keys
 ::  themselves are never in a scope.
 +$  scope
@@ -292,7 +293,8 @@
 ::  and the new nested objects: {"all":"read"|"write"} or
 ::  {"some":{"read":[path,...],"write":[path,...]}}.
 ::  web accepts the old bool (true=all, false=off) for back-compat, and the new
-::  objects: {"off":null}, {"all":null}, or {"some":{...}} (some=all for now).
+::  objects: {"off":null}, {"all":null}, or
+::  {"some":{"~ship":{"read":[path,...],"write":[path,...]}}}.
 ++  de-mint
   |=  j=json
   ^-  (each [name=@t by=@t =scope] @t)
