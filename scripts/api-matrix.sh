@@ -446,6 +446,27 @@ is "outer folder named"           "Alpha One" "$(field page-dump "$R/alpha-one" 
 is "inner folder named"           "Beta Two" "$(field page-dump "$R/alpha-one/beta-two" dname)"
 is "display-name pages deleted"   200 "$(sc -X POST "$B/page-del?name=$R")"
 
+echo "==> scoped agent key (pages)"
+# mint: read = $P (the test namespace), write = $P/out
+# seed the note and out folder before the recursive-delete block clears them
+is "seed note for scoped read" 200 "$(sc -X POST "$B/page-save?name=$P/note&type=md" --data-binary '# scope test')"
+is "seed out/s1 for scoped write" 200 "$(sc -X POST "$B/folder-new?name=$P/out")"
+KEYJSON="$(G -X POST "$B/key-mint" -H 'content-type: application/json' --data-binary "$(python3 -c "import json,sys;print(json.dumps({'name':'apimx-scoped','by':'apimx','scope':{'memory':'none','pages':{'some':{'read':['/'+sys.argv[1]],'write':['/'+sys.argv[1]+'/out']}},'web':{'off':None},'sensitive':False}}))" "$P")")"
+TOK="$(printf '%s' "$KEYJSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')"
+# keyed curl helpers: no cookie, only the Bearer token
+BG() { curl -s -H "Authorization: Bearer $TOK" "$@"; }
+BC() { curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK" "$@"; }
+is  "scoped read granted"      200 "$(BC "$B/page-source?name=$P/note")"
+is  "scoped read ungranted"    403 "$(BC "$B/page-source?name=other/page")"
+is  "scoped write granted"     200 "$(BC -X POST "$B/page-save?name=$P/out/s1&type=md" --data-binary 'scoped write')"
+is  "scoped write ungranted"   403 "$(BC -X POST "$B/page-save?name=$P/note&type=md" --data-binary 'nope')"
+has "tree hides ungranted"     "$P/out" "$(BG "$B/page-tree")"
+is  "tree omits other ns"      "" "$(BG "$B/page-tree" | python3 -c 'import json,sys;print("".join(n["path"] for n in json.load(sys.stdin).get("nodes",[]) if not n["path"].startswith(sys.argv[1])))' "$P")"
+is  "scoped write hoon refused" 403 "$(BC -X POST "$B/page-save?name=$P/out/x&type=hoon" --data-binary '|=(x=@ x)')"
+# revoke the test key
+KID="$(printf '%s' "$KEYJSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["key"]["id"])')"
+sc -o /dev/null -X POST "$B/key-revoke?id=$KID" >/dev/null
+
 echo "==> recursive folder delete"
 is "page-del on folder" 200 "$(sc -X POST "$B/page-del?name=$P")"
 sleep 2

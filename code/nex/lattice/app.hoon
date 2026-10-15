@@ -597,7 +597,7 @@
 ::  than the default.
 ::
 ++  handle-page-save-batch
-  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t)]
+  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t) key=(unit key-row:ky) rnow=@da]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  jon=(unit json)  (de:json:html (req-body req))
@@ -640,6 +640,18 @@
   ?:  (gth (lent items) 200)  (send-err eyre-id 400 'batch too large (max 200)')
   ?.  (levy items |=([nam=@t *] (valid-name nam)))
     (send-err eyre-id 400 'bad page name in batch')
+  ::  keyed requests: check taint, type allowlist and path scope per item.
+  ::  gate returns ~ if ok, or [err-code err-msg] to refuse early.
+  =/  key-check=(unit [code=@ud msg=@t])
+    ?~  key  ~
+    ?:  (tainted:ky u.key rnow)
+      `[403 tainted-msg]
+    ?.  (levy items |=([* typ=@t *] (page-type-ok:ky typ)))
+      `[403 'a key saves md, gmi, text, tex, css or index pages only']
+    ?.  (levy items |=([nam=@t *] (may-path:ky u.key %local (pax-of nam) %write)))
+      `[403 'outside this key\'s scope']
+    ~
+  ?^  key-check  (send-err eyre-id code.u.key-check msg.u.key-check)
   =/  pages=(list [pax=path src=@t])
     %+  turn  items
     |=  [nam=@t typ=@t bod=@t bas=@ud]
@@ -1452,6 +1464,12 @@
       [%'GET' %page-source]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
+    ::  keyed: path must be read-scoped
+    ?:  ?&  ?=(^ key)
+            (valid-name u.name)
+            !(may-path:ky u.key %local (pax-of u.name) %read)
+        ==
+      (send-err eyre-id 403 'outside this key\'s scope')
     ;<  r=(each json [code=@ud msg=@t])  bind:m
       (fs-source-result u.name =('1' (~(gut by args) 'render' '0')))
     ?-  -.r
@@ -1465,6 +1483,11 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ::  keyed: path must be read-scoped
+    ?:  ?&  ?=(^ key)
+            !(may-path:ky u.key %local (pax-of u.name) %read)
+        ==
+      (send-err eyre-id 403 'outside this key\'s scope')
     =/  pdir=path  (weld /page (pax-of u.name))
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io (rf up pdir %code) [%numb ~ ~])
@@ -1520,6 +1543,11 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ::  keyed: target page must be read-scoped
+    ?:  ?&  ?=(^ key)
+            !(may-path:ky u.key %local (pax-of u.name) %read)
+        ==
+      (send-err eyre-id 403 'outside this key\'s scope')
     =/  needle=tape  :(weld "[[" (trip u.name) "]]")
     ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
     ?.  ?=([%ball *] sn)
@@ -1532,6 +1560,8 @@
       %+  murn  srt
       |=  [pax=path when=@da code=@t]
       ^-  (unit json)
+      ::  keyed: only include linker pages the key can read
+      ?:  &(?=(^ key) !(may-path:ky u.key %local pax %read))  ~
       =/  un=(unit [builder=@tas body=@t])  (unwrap-content code)
       =/  bod=@t  ?~(un code body.u.un)
       ?~  (find needle (trip bod))  ~
@@ -1553,7 +1583,25 @@
   ::  O(pages) local peeks, one HTTP round-trip.
       [%'GET' %page-tree]
     ;<  j=json  bind:m  fs-tree-json
-    (send-json eyre-id j)
+    ::  keyed: filter nodes to paths within the key's read scope
+    ?~  key  (send-json eyre-id j)
+    ?.  ?=([%o *] j)  (send-json eyre-id j)
+    =/  nodes=(unit json)  (~(get by p.j) 'nodes')
+    ?.  ?=([~ %a *] nodes)  (send-json eyre-id j)
+    =/  filtered=(list json)
+      %+  skim  p.u.nodes
+      |=  node=json
+      ?.  ?=([%o *] node)  |
+      =/  pj=(unit json)  (~(get by p.node) 'path')
+      ?.  ?=([~ %s @] pj)  |
+      ::  tree paths are "seg/seg" (no leading /); stab needs a leading /
+      =/  np=(each path tang)
+        (mule |.((stab (crip (weld "/" (trip p.u.pj))))))
+      ?:  ?=(%| -.np)  |
+      (may-path:ky u.key %local p.np %read)
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    ~[['nodes' a+filtered]]
   ::
   ::  page-dump: page-tree PLUS every page's body inline, in ONE deep peek. Warms
   ::  a filesystem client's whole read-cache so rg/grep run from RAM. Heavier than
@@ -1871,12 +1919,10 @@
   ::  batch that half-applies and then rejects file 14 is worse than one that
   ::  refuses up front, because the client cannot tell what landed.
       [%'POST' %page-save-batch]
-    (handle-page-save-batch eyre-id req args)
+    (handle-page-save-batch eyre-id req args key rnow)
   ::
       [%'POST' %page-save]
-    ::  a key writes private pages only. A save to a published page
-    ::  republishes it, and a page inside a folder shared with a group is
-    ::  that group's to read, so both are refused.
+    ::  owner path: no key, no scope check needed.
     ?~  key  (handle-page-save eyre-id req args)
     ::  pages are never sensitive, so a tainted key writes none
     ?:  (tainted:ky u.key rnow)  (send-err eyre-id 403 tainted-msg)
@@ -1888,10 +1934,11 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    ;<  shr=share-mode:le  bind:m  (read-share (weld /page (pax-of u.name)))
-    ?.  =(%private shr)  (send-err eyre-id 403 'a key writes private pages only')
-    ;<  gr=?  bind:m  (granted (pax-of u.name))
-    ?:  gr  (send-err eyre-id 403 'a key writes private pages only: a group is granted this path')
+    ::  path-scoped gate: key must have write scope over this path. A write-
+    ::  scoped path is allowed even when published (shared/clearweb), since
+    ::  the key's write grant is explicit consent from the owner.
+    ?.  (may-path:ky u.key %local (pax-of u.name) %write)
+      (send-err eyre-id 403 'outside this key\'s scope')
     (handle-page-save eyre-id req args)
   ::  page-search: the wiki ranked the way memory is (+rank:lk: key words
   ::  count double), each hit labelled with where it lives. q= words, k= how
@@ -1905,7 +1952,10 @@
     ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
     =/  pages=(list [rel=path body=@t shr=share-mode:le])
       ?.  ?=([%ball *] sn)  ~
-      (index-walk ball.sn ~)
+      ::  keyed: filter to paths within the key's read scope
+      =/  all=(list [rel=path body=@t shr=share-mode:le])  (index-walk ball.sn ~)
+      ?~  key  all
+      (skip all |=([rel=path *] !(may-path:ky u.key %local rel %read)))
     =/  by-rel=(map path [body=@t shr=share-mode:le])
       (malt (turn pages |=([r=path b=@t s=share-mode:le] [r b s])))
     =/  hs=(list hit:lk)

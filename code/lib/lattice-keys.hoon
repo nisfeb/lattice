@@ -198,8 +198,10 @@
     [%'GET' %page-search]     `[%pages %read]
     [%'GET' %page-source]     `[%pages %read]
     [%'GET' %page-backlinks]  `[%pages %read]
+    [%'GET' %page-history]    `[%pages %read]
     [%'GET' %page-tree]       `[%pages %read]
     [%'POST' %page-save]      `[%pages %write]
+    [%'POST' %page-save-batch]  `[%pages %write]
     [%'GET' %fetch]           `[%web %read]
   ==
 ++  allows
@@ -283,6 +285,11 @@
   ?:  =('read' p.u.j)  %read
   %none
 ::  +de-mint: {name, by, scope: {memory, pages, web}} -> the request, or why
+::  pages accepts the old flat string ("read"/"write"/"none") for back-compat,
+::  and the new nested objects: {"all":"read"|"write"} or
+::  {"some":{"read":[path,...],"write":[path,...]}}.
+::  web accepts the old bool (true=all, false=off) for back-compat, and the new
+::  objects: {"off":null}, {"all":null}, or {"some":{...}} (some=all for now).
 ++  de-mint
   |=  j=json
   ^-  (each [name=@t by=@t =scope] @t)
@@ -298,10 +305,44 @@
   =/  sc=(map @t json)
     =/  s=(unit json)  (~(get by p.j) 'scope')
     ?.(?=([~ %o *] s) ~ p.u.s)
-  =/  web=?  ?=([~ %b %.y] (~(get by sc) 'web'))
   =/  sen=?  ?=([~ %b %.y] (~(get by sc) 'sensitive'))
-  =/  pgs=pages-scope  [%all (de-level (~(get by sc) 'pages'))]
-  =/  wsc=web-scope  ?:(web [%all ~] [%off ~])
+  ::  parse a JSON array of path strings into a (set path). Bad entries skipped.
+  =/  de-paths
+    |=  j=(unit json)
+    ^-  (set path)
+    ?.  ?=([~ %a *] j)  ~
+    %-  ~(gas in *(set path))
+    %+  murn  p.u.j
+    |=  jj=json
+    ?.  ?=([%s @] jj)  ~
+    (mole |.((stab p.jj)))
+  ::  parse pages: string (old flat) or object (new nested)
+  =/  pgsj=(unit json)  (~(get by sc) 'pages')
+  =/  pgs=pages-scope
+    ?+  pgsj  [%all %none]
+      [~ %s @]  [%all (de-level pgsj)]
+      [~ %o *]
+        =/  pm=(map @t json)  p.u.pgsj
+        =/  all=(unit json)  (~(get by pm) 'all')
+        =/  som=(unit json)  (~(get by pm) 'some')
+        ?^  all  [%all (de-level all)]
+        ?~  som  [%all %none]
+        ?.  ?=([%o *] u.som)  [%all %none]
+        =/  sm=(map @t json)  p.u.som
+        [%some (de-paths (~(get by sm) 'read')) (de-paths (~(get by sm) 'write'))]
+    ==
+  ::  parse web: bool (old flat) or object (new nested)
+  =/  webj=(unit json)  (~(get by sc) 'web')
+  =/  wsc=web-scope
+    ?+  webj  [%off ~]
+      [~ %b %.y]  [%all ~]
+      [~ %b %.n]  [%off ~]
+      [~ %o *]
+        =/  wm=(map @t json)  p.u.webj
+        ?:  (~(has by wm) 'all')   [%all ~]
+        ?:  (~(has by wm) 'some')  [%all ~]
+        [%off ~]
+    ==
   &+[p.u.name p.u.who [(de-level (~(get by sc) 'memory')) pgs wsc sen ~]]
 ++  by-char
   |=  c=@t
