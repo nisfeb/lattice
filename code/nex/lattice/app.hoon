@@ -597,7 +597,7 @@
 ::  than the default.
 ::
 ++  handle-page-save-batch
-  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t)]
+  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t) key=(unit key-row:ky) rnow=@da]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  jon=(unit json)  (de:json:html (req-body req))
@@ -640,6 +640,53 @@
   ?:  (gth (lent items) 200)  (send-err eyre-id 400 'batch too large (max 200)')
   ?.  (levy items |=([nam=@t *] (valid-name nam)))
     (send-err eyre-id 400 'bad page name in batch')
+  ::  keyed requests: check taint, type allowlist, path scope, and sensitive
+  ::  per item. gate returns ~ if ok, or [err-code err-msg] to refuse early.
+  ::  The synchronous checks run first; the sensitive check is fiber-based.
+  =/  key-sync=(unit [code=@ud msg=@t])
+    ?~  key  ~
+    ?.  (levy items |=([* typ=@t *] (page-type-ok:ky typ)))
+      `[403 'a key saves md, gmi, text, tex, css or index pages only']
+    ?.  (levy items |=([nam=@t *] (may-path:ky u.key %local (pax-of nam) %write)))
+      `[403 'outside this key\'s scope']
+    ~
+  ?^  key-sync  (send-err eyre-id code.u.key-sync msg.u.key-sync)
+  ::  sensitive + taint check (fiber-based). Returns an early refusal, plus the
+  ::  paths of a tainted key's NEW pages, which are marked sensitive before the
+  ::  write (the batch mirror of the single page-save taint alignment).
+  ;<  gate=[err=(unit [code=@ud msg=@t]) mark=(list path)]  bind:m
+    =/  n  (fiber:fiber:nexus ,[err=(unit [code=@ud msg=@t]) mark=(list path)])
+    ?~  key  (pure:n [~ ~])
+    =/  clr=?  sensitive.scope.u.key
+    =/  tnt=?  (tainted:ky u.key rnow)
+    ::  a cleared, untainted key needs no per-item grub walk
+    ?:  &(clr !tnt)  (pure:n [~ ~])
+    =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+    =|  mark=(list path)
+    |-  ^-  form:n
+    ?~  todo  (pure:n [~ (flop mark)])
+    =/  pax=path  (pax-of nam.i.todo)
+    ;<  ps=?  bind:n  (page-sensitive pax)
+    ?:  ps
+      ::  sensitive target: a cleared key (incl. tainted) may write it, an
+      ::  uncleared key may not.
+      ?:  clr  $(todo t.todo)
+      (pure:n [`[403 'that page is sensitive: a cleared key is required'] ~])
+    ::  non-sensitive target: an uncleared key writes it as before; a tainted
+    ::  key may create a NEW one (marked sensitive) but not flip an EXISTING.
+    ?.  tnt  $(todo t.todo)
+    ;<  exists=?  bind:n  (peek-exists:io (rv up (weld /page pax)))
+    ?:  exists  (pure:n [`[403 tainted-msg] ~])
+    $(todo t.todo, mark [pax mark])
+  ?^  err.gate  (send-err eyre-id code.u.err.gate msg.u.err.gate)
+  ::  mark a tainted key's new pages sensitive before the write lands
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    =/  todo=(list path)  mark.gate
+    |-  ^-  form:n
+    ?~  todo  (pure:n ~)
+    ;<  ~  bind:n  (poke-eval [%page-sensitive i.todo &])
+    $(todo t.todo)
   =/  pages=(list [pax=path src=@t])
     %+  turn  items
     |=  [nam=@t typ=@t bod=@t bas=@ud]
@@ -905,7 +952,7 @@
 ::  path (/grub-save) and is refused here rather than silently rerouted.
 ::
 ++  handle-remote-save
-  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t) our=@p]
+  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t) our=@p key=(unit key-row:ky) rnow=@da]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  shp-t=(unit @t)  (~(get by args) 'ship')
@@ -918,6 +965,14 @@
   =/  pp=(each path tang)  (mule |.((stab u.pt)))
   ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
   ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
+  ::  a tainted key (one that read sensitive content in the last 12h) cannot
+  ::  write to a foreign destination: we cannot verify a remote page's
+  ::  sensitivity, so it counts as a non-sensitive destination, like a local
+  ::  plain page-save (the same +tainted gate guards that path).
+  ?:  &(?=(^ key) (tainted:ky u.key rnow))  (send-err eyre-id 403 tainted-msg)
+  ::  key path-scope gate: when keyed, require write access to this ship+path
+  ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] p.pp %write))
+    (send-err eyre-id 403 'outside this key\'s scope')
   =/  n=@ud  (dec (lent p.pp))
   =/  dir=path  (scag n p.pp)
   =/  nam=@ta  (snag n p.pp)
@@ -1160,10 +1215,17 @@
   ?:  &(?=(^ key) !(may:ky u.key method.request.req suffix))
     (send-err eyre-id 403 'outside this key\'s scope')
   ::  a keyed request's src is not us, but of the routes a key reaches
-  ::  (+may:ky) only /fetch reads `our`, so only it pays the bowl read.
+  ::  (+may:ky) /fetch, /browse, /browse-file, and /remote-save all read
+  ::  `our` to compare or dispatch, so they pay the bowl read.
   ::  A route added to +wants:ky that reads `our` must be added here.
+  =/  needs-our=?
+    ?|  =(/fetch suffix)
+        =(/browse suffix)
+        =(/browse-file suffix)
+        =(/remote-save suffix)
+    ==
   ;<  our=@p  bind:m
-    ?:  |(?=(~ key) !=(/fetch suffix))  (pure:(fiber:fiber:nexus ,@p) src)
+    ?:  |(?=(~ key) !needs-our)  (pure:(fiber:fiber:nexus ,@p) src)
     bowl-our
   ::  /x/<ship>/<path...>: the server-rendered tree explorer (docs/platform.md,
   ::  build step 1). Consumes the rest of the path, so it dispatches before the
@@ -1452,6 +1514,22 @@
       [%'GET' %page-source]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
+    ::  reject an invalid name up front, like page-history/backlinks, so a
+    ::  keyed request can never skip the scope gate on an unstabbable name.
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ::  keyed: path must be read-scoped
+    ?:  ?&  ?=(^ key)
+            !(may-path:ky u.key %local (pax-of u.name) %read)
+        ==
+      (send-err eyre-id 403 'outside this key\'s scope')
+    ::  sensitive gate: a key without clearance sees nothing, treated as
+    ::  not-found so an uncleared key cannot learn the page exists.
+    ::  A cleared key that reads a sensitive page is tainted for taint-for.
+    ::  (The name is already valid: rejected up front above.)
+    ;<  ps=?  bind:m  (page-sensitive (pax-of u.name))
+    ?:  &(ps ?=(^ key) !sensitive.scope.u.key)
+      (send-err eyre-id 403 'not found')
+    ;<  ~  bind:m  (taint-if key &(ps ?=(^ key) sensitive.scope.u.key))
     ;<  r=(each json [code=@ud msg=@t])  bind:m
       (fs-source-result u.name =('1' (~(gut by args) 'render' '0')))
     ?-  -.r
@@ -1465,6 +1543,16 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ::  keyed: path must be read-scoped
+    ?:  ?&  ?=(^ key)
+            !(may-path:ky u.key %local (pax-of u.name) %read)
+        ==
+      (send-err eyre-id 403 'outside this key\'s scope')
+    ::  sensitive gate: uncleared key sees nothing; cleared key is tainted.
+    ;<  ps=?  bind:m  (page-sensitive (pax-of u.name))
+    ?:  &(ps ?=(^ key) !sensitive.scope.u.key)
+      (send-err eyre-id 403 'not found')
+    ;<  ~  bind:m  (taint-if key &(ps ?=(^ key) sensitive.scope.u.key))
     =/  pdir=path  (weld /page (pax-of u.name))
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io (rf up pdir %code) [%numb ~ ~])
@@ -1520,6 +1608,16 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ::  keyed: target page must be read-scoped
+    ?:  ?&  ?=(^ key)
+            !(may-path:ky u.key %local (pax-of u.name) %read)
+        ==
+      (send-err eyre-id 403 'outside this key\'s scope')
+    ::  sensitive gate on the TARGET page; taint cleared key reading it.
+    ;<  ps=?  bind:m  (page-sensitive (pax-of u.name))
+    ?:  &(ps ?=(^ key) !sensitive.scope.u.key)
+      (send-err eyre-id 403 'not found')
+    ;<  ~  bind:m  (taint-if key &(ps ?=(^ key) sensitive.scope.u.key))
     =/  needle=tape  :(weld "[[" (trip u.name) "]]")
     ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
     ?.  ?=([%ball *] sn)
@@ -1528,14 +1626,30 @@
     ::  sorted by path like the old walk. murn preserves input order
     =/  srt=(list [pax=path when=@da code=@t])
       (sort pages |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
-    =/  links=(list json)
-      %+  murn  srt
-      |=  [pax=path when=@da code=@t]
-      ^-  (unit json)
-      =/  un=(unit [builder=@tas body=@t])  (unwrap-content code)
-      =/  bod=@t  ?~(un code body.u.un)
-      ?~  (find needle (trip bod))  ~
-      `[%s (crip (pax-str pax))]
+    ::  build the links. An uncleared key must not even learn a sensitive
+    ::  linker's path exists, so drop sensitive linkers for it (like the tree
+    ::  and search sensitive filters). A cleared key or the owner sees all.
+    =/  cleared=?  |(?=(~ key) sensitive.scope.u.key)
+    ;<  links=(list json)  bind:m
+      =/  n  (fiber:fiber:nexus ,(list json))
+      =/  todo=(list [pax=path when=@da code=@t])  srt
+      =|  acc=(list json)
+      |-  ^-  form:n
+      ?~  todo  (pure:n (flop acc))
+      =/  pax=path  pax.i.todo
+      ::  keyed: only include linker pages the key can read
+      ?:  &(?=(^ key) !(may-path:ky u.key %local pax %read))
+        $(todo t.todo)
+      =/  un=(unit [builder=@tas body=@t])  (unwrap-content code.i.todo)
+      =/  bod=@t  ?~(un code.i.todo body.u.un)
+      ?~  (find needle (trip bod))
+        $(todo t.todo)
+      =/  entry=json  [%s (crip (pax-str pax))]
+      ?:  cleared
+        $(todo t.todo, acc [entry acc])
+      ;<  ps=?  bind:n  (page-sensitive pax)
+      ?:  ps  $(todo t.todo)
+      $(todo t.todo, acc [entry acc])
     (send-json eyre-id (pairs:enjs:format ~[['links' a+links]]))
   ::
   ::  page-errors: a page's latest evaluator error as plain text ('' = clean).
@@ -1553,7 +1667,47 @@
   ::  O(pages) local peeks, one HTTP round-trip.
       [%'GET' %page-tree]
     ;<  j=json  bind:m  fs-tree-json
-    (send-json eyre-id j)
+    ::  keyed: filter nodes to paths within the key's read scope
+    ?~  key  (send-json eyre-id j)
+    ?.  ?=([%o *] j)  (send-json eyre-id j)
+    =/  nodes=(unit json)  (~(get by p.j) 'nodes')
+    ?.  ?=([~ %a *] nodes)  (send-json eyre-id j)
+    ::  scope filter (synchronous — no grub reads needed)
+    =/  scope-ok=(list json)
+      %+  skim  p.u.nodes
+      |=  node=json
+      ?.  ?=([%o *] node)  |
+      =/  pj=(unit json)  (~(get by p.node) 'path')
+      ?.  ?=([~ %s @] pj)  |
+      ::  tree paths are "seg/seg" (no leading /); stab needs a leading /
+      =/  np=(each path tang)
+        (mule |.((stab (crip (weld "/" (trip p.u.pj))))))
+      ?:  ?=(%| -.np)  |
+      (may-path:ky u.key %local p.np %read)
+    ::  sensitive filter: remove nodes a key without clearance cannot see.
+    ::  page-sensitive reads grubs; use a recursive bind:m loop.
+    =/  todo=(list json)  scope-ok
+    =|  acc=(list json)
+    |-  ^-  form:m
+    ?~  todo
+      =/  filtered=(list json)  (flop acc)
+      %+  send-json  eyre-id
+      %-  pairs:enjs:format
+      ~[['nodes' a+filtered]]
+    =/  node=json  i.todo
+    =/  pj=(unit json)
+      ?.  ?=([%o *] node)  ~
+      (~(get by p.node) 'path')
+    ?.  ?=([~ %s @] pj)
+      $(todo t.todo, acc [node acc])
+    =/  np=(each path tang)
+      (mule |.((stab (crip (weld "/" (trip p.u.pj))))))
+    ?:  ?=(%| -.np)
+      $(todo t.todo, acc [node acc])
+    ;<  ps=?  bind:m  (page-sensitive p.np)
+    ?:  &(ps !sensitive.scope.u.key)
+      $(todo t.todo)
+    $(todo t.todo, acc [node acc])
   ::
   ::  page-dump: page-tree PLUS every page's body inline, in ONE deep peek. Warms
   ::  a filesystem client's whole read-cache so rg/grep run from RAM. Heavier than
@@ -1577,6 +1731,9 @@
     ?~  raw  (send-err eyre-id 400 'missing url param')
     =/  pu=(unit [=ship =path])  (parse-urb-url:lu u.raw)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
+    ::  key path-scope gate: when keyed, require read access to this ship+path
+    ?:  &(?=(^ key) !(may-path:ky u.key [%ship ship.u.pu] path.u.pu %read))
+      (send-err eyre-id 403 'outside this key\'s scope')
     ;<  body=(unit @t)  bind:m  (read-page-body our ship.u.pu path.u.pu)
     ?^  body  (send-json eyre-id (mark-body-json 'gmi' u.body))
     ::  /manifest discovery fallback: the retired agent auto-published a manifest
@@ -1604,6 +1761,9 @@
     ?~  shp  (send-err eyre-id 400 'bad ship')
     =/  pp=(each path tang)  (mule |.((stab (~(gut by args) 'path' '/'))))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
+    ::  key path-scope gate: when keyed, require read access to this ship+path
+    ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] p.pp %read))
+      (send-err eyre-id 403 'outside this key\'s scope')
     =/  dir-road=road:tarball  [%& %| p.pp]
     ?:  =(u.shp our)
       ;<  sn=view:nexus  bind:m  (peek-shallow:io dir-road ~)
@@ -1628,6 +1788,9 @@
     ::  to the input type (^+), so the possibly-empty dir would nest-fail, the same
     ::  footgun key-to-rail documents. Split via lent/scag/snag on the un-narrowed path.
     ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
+    ::  key path-scope gate: when keyed, require read access to this ship+path
+    ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] p.pp %read))
+      (send-err eyre-id 403 'outside this key\'s scope')
     =/  n=@ud  (dec (lent p.pp))
     =/  file-road=road:tarball  [%& %& (scag n p.pp) (snag n p.pp)]
     ?:  =(u.shp our)
@@ -1647,7 +1810,7 @@
   ::  of lying "saved". (Content equality can't be the check. Their mark may
   ::  normalize the body, e.g. wain round-trips and trailing newlines.)
       [%'POST' %remote-save]
-    (handle-remote-save eyre-id req args our)
+    (handle-remote-save eyre-id req args our key rnow)
   ::  ── banlist ────────────────────────────────────────────────────────────
   ::  Deny cannot be expressed as a weir (see +$banned in /lib/lattice-share),
   ::  so it is this app's own list, enforced where a foreign ship's identity is
@@ -1871,15 +2034,11 @@
   ::  batch that half-applies and then rejects file 14 is worse than one that
   ::  refuses up front, because the client cannot tell what landed.
       [%'POST' %page-save-batch]
-    (handle-page-save-batch eyre-id req args)
+    (handle-page-save-batch eyre-id req args key rnow)
   ::
       [%'POST' %page-save]
-    ::  a key writes private pages only. A save to a published page
-    ::  republishes it, and a page inside a folder shared with a group is
-    ::  that group's to read, so both are refused.
+    ::  owner path: no key, no scope check needed.
     ?~  key  (handle-page-save eyre-id req args)
-    ::  pages are never sensitive, so a tainted key writes none
-    ?:  (tainted:ky u.key rnow)  (send-err eyre-id 403 tainted-msg)
     ::  a key writes content that renders escaped. Hoon (also an absent or
     ::  unknown type) would run with lattice's own authority, and html or js
     ::  would run in the owner's browser (+page-type-ok:ky).
@@ -1888,10 +2047,26 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    ;<  shr=share-mode:le  bind:m  (read-share (weld /page (pax-of u.name)))
-    ?.  =(%private shr)  (send-err eyre-id 403 'a key writes private pages only')
-    ;<  gr=?  bind:m  (granted (pax-of u.name))
-    ?:  gr  (send-err eyre-id 403 'a key writes private pages only: a group is granted this path')
+    ::  path-scoped gate: key must have write scope over this path. A write-
+    ::  scoped path is allowed even when published (shared/clearweb), since
+    ::  the key's write grant is explicit consent from the owner.
+    ?.  (may-path:ky u.key %local (pax-of u.name) %write)
+      (send-err eyre-id 403 'outside this key\'s scope')
+    ;<  ps=?  bind:m  (page-sensitive (pax-of u.name))
+    ::  sensitive gate: an uncleared key cannot write to a sensitive page.
+    ?:  &(ps !sensitive.scope.u.key)
+      (send-err eyre-id 403 'that page is sensitive: a cleared key is required')
+    ::  cross-surface taint, aligned with the memory surface: a tainted key
+    ::  (read sensitive content in the last 12h, so necessarily cleared) may
+    ::  write only to a sensitive destination. An already-sensitive page is
+    ::  fine; a NEW page is created and marked sensitive; an EXISTING
+    ::  non-sensitive page must not be flipped to sensitive, so it is refused.
+    ?:  (tainted:ky u.key rnow)
+      ?:  ps  (handle-page-save eyre-id req args)
+      ;<  exists=?  bind:m  (peek-exists:io (rv up (weld /page (pax-of u.name))))
+      ?:  exists  (send-err eyre-id 403 tainted-msg)
+      ;<  ~  bind:m  (poke-eval [%page-sensitive (pax-of u.name) &])
+      (handle-page-save eyre-id req args)
     (handle-page-save eyre-id req args)
   ::  page-search: the wiki ranked the way memory is (+rank:lk: key words
   ::  count double), each hit labelled with where it lives. q= words, k= how
@@ -1903,9 +2078,26 @@
     ?:  =('' q)  (send-err eyre-id 400 'missing q')
     =/  k=@ud  (fall (rush (~(gut by args) 'k' '10') dem) 10)
     ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
-    =/  pages=(list [rel=path body=@t shr=share-mode:le])
+    =/  scope-pages=(list [rel=path body=@t shr=share-mode:le])
       ?.  ?=([%ball *] sn)  ~
-      (index-walk ball.sn ~)
+      ::  keyed: filter to paths within the key's read scope
+      =/  all=(list [rel=path body=@t shr=share-mode:le])  (index-walk ball.sn ~)
+      ?~  key  all
+      (skip all |=([rel=path *] !(may-path:ky u.key %local rel %read)))
+    ::  sensitive filter: an uncleared key never sees sensitive pages in search.
+    ::  For a cleared key or the owner, skip the grub walk entirely.
+    ;<  pages=(list [rel=path body=@t shr=share-mode:le])  bind:m
+      =/  n  (fiber:fiber:nexus ,(list [rel=path body=@t shr=share-mode:le]))
+      ?~  key  (pure:n scope-pages)
+      ?:  sensitive.scope.u.key  (pure:n scope-pages)
+      =/  todo=(list [rel=path body=@t shr=share-mode:le])  scope-pages
+      =|  acc=(list [rel=path body=@t shr=share-mode:le])
+      |-  ^-  form:n
+      ?~  todo  (pure:n (flop acc))
+      ;<  ps=?  bind:n  (page-sensitive rel.i.todo)
+      ?:  ps
+        $(todo t.todo)
+      $(todo t.todo, acc [i.todo acc])
     =/  by-rel=(map path [body=@t shr=share-mode:le])
       (malt (turn pages |=([r=path b=@t s=share-mode:le] [r b s])))
     =/  hs=(list hit:lk)
@@ -1916,6 +2108,20 @@
         (to-doc:lk r e(body b))
       q
     =/  best=@ud  ?~(hs 0 strength.i.hs)
+    ::  a cleared key that sees a sensitive page's snippet is tainted, exactly
+    ::  as know-search taints and page-source/history/backlinks do. Uncleared
+    ::  keys never reach here with a sensitive hit (filtered from `pages`).
+    ;<  hit-sens=?  bind:m
+      =/  n  (fiber:fiber:nexus ,?)
+      ?~  key  (pure:n |)
+      ?.  sensitive.scope.u.key  (pure:n |)
+      =/  todo=(list hit:lk)  (scag k hs)
+      |-  ^-  form:n
+      ?~  todo  (pure:n |)
+      ;<  ps=?  bind:n  (page-sensitive key.i.todo)
+      ?:  ps  (pure:n &)
+      $(todo t.todo)
+    ;<  ~  bind:m  (taint-if key hit-sens)
     %+  send-json  eyre-id
     %-  pairs:enjs:format
     :~  ['query' s+q]
@@ -2255,6 +2461,26 @@
     ?.  ex  (send-err eyre-id 404 'no such page or folder')
     ;<  ~  bind:m  (poke-eval [%comments (pax-of u.name) =('1' (~(gut by args) 'on' '0'))])
     (send-ok eyre-id)
+      ::  owner: mark or unmark a page (or folder) as sensitive. on=1 sets the
+      ::  marker; on=0 removes it. The +page-sensitive walk reads this grub and
+      ::  walks upward the same way +comments-on does.
+      [%'POST' %page-sensitive]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ;<  ex=?  bind:m  (peek-exists:io (rv up (weld /page (pax-of u.name))))
+    ?.  ex  (send-err eyre-id 404 'no such page or folder')
+    ;<  ~  bind:m  (poke-eval [%page-sensitive (pax-of u.name) =('1' (~(gut by args) 'on' '0'))])
+    (send-ok eyre-id)
+      ::  GET: the page's OWN sensitive flag (not the inherited walk), so the
+      ::  share panel checkbox reflects exactly what its own toggle controls.
+      [%'GET' %page-sensitive]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ;<  seen=view:nexus  bind:m
+      (peek:io (rf up (weld /page (pax-of u.name)) %sensitive) ~)
+    (send-json eyre-id (pairs:enjs:format ~[['on' b+?=([%file *] seen)]]))
       ::  owner commenting on their OWN page (author = us). Other ships comment
       ::  through the public inbox fiber. body is the raw POST body.
       [%'POST' %comment]
@@ -3839,7 +4065,7 @@
   ;<  kv=view:nexus  bind:m  (peek:io kr ~)
   ?.  ?=([%file *] kv)  (pure:m ~)
   ::  by noun, so a row stored before clearance (lattice 45) still reads
-  (pure:m (upgrade:ky (sang-noun:tarball sang.kv)))
+  (pure:m (upgrade-keys:ky (sang-noun:tarball sang.kv)))
 ::  +key-of: the agent key an Authorization header presents, or ~. Its
 ::  last use is stamped through the writer, at most hourly.
 ::
@@ -3953,7 +4179,7 @@
   (poke-keys [%taint id.u.key now])
 ++  tainted-msg
   ^-  @t
-  'this key read sensitive memories in the last 12 hours, so until then its own words go only on sensitive memories'
+  'this key read sensitive content in the last 12 hours, so until then its own writes go only to sensitive destinations'
 ::  +save-plain: an owner's save with no provenance, written verbatim and
 ::  unchecked, so the editor's own front matter is never rewritten
 ++  save-plain
@@ -4451,6 +4677,18 @@
     ;<  ex=?  bind:m  (peek-exists:io (rv up fdir))
     ?.  ex  (pure:m ~)
     (put-file (rf up fdir %forms-use) [/lattice %eval-data] `form-use:le`[0 *@da])
+      %page-sensitive
+    ::  mark or unmark a page (or folder) as sensitive. on=| removes the grub.
+    ::  Same nearest-flag-wins shape as %comments and %forms: a folder mark
+    ::  makes every page under it sensitive.
+    ::  No existence guard here: the owner POST route 404s a missing page
+    ::  before it pokes, and the page-save taint path marks a NEW page's path a
+    ::  beat before its content lands, so the marker must be writable ahead.
+    =/  fdir=path  (weld /page pax.act)
+    ?.  on.act
+      ;<  *  bind:m  (cull-soft:io (rf up fdir %sensitive))
+      (pure:m ~)
+    (put-file (rf up fdir %sensitive) [/lattice %comment-flag] &)
   ==
 ::  +apply-comment: store one comment under /comments/<page>/<id>. `author` is us
 ::  (owner writer) or the poking ship (public inbox), NEVER from the payload,
@@ -4505,6 +4743,24 @@
   ::  they cannot create anything new, and the badge reads the stamp as a
   ::  CHANGE detector, not a count.
   (put-file (rf root /beacon %comments) [/ %json] (numb:enjs:format `@ud`now))
+::  +page-sensitive: is `page` marked sensitive? The nearest `sensitive` flag
+::  grub AT or ABOVE it in /page wins. Absent everywhere = |. A folder mark
+::  makes every page under it sensitive; a page can carry its own mark too.
+::
+++  page-sensitive
+  |=  page=path
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  |-  ^-  form:m
+  =/  fdir=path  (weld /page page)
+  ;<  seen=view:nexus  bind:m  (peek:io (rf up fdir %sensitive) ~)
+  ?:  ?=([%file *] seen)
+    ::  a present marker that will not parse fails CLOSED (treat as sensitive):
+    ::  this gates a default-deny feature, so an unreadable flag must not open.
+    (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.seen)))) %.y))
+  ?~  page  (pure:m %.n)
+  $(page (snip `path`page))
 ::  +comments-on: is `page` comments-enabled? The nearest `comment-on` flag grub
 ::  AT or ABOVE it in /page wins (like find-theme). Absent everywhere = off. One
 ::  flag on a site folder enables all its pages; a page can override its own.
@@ -9493,8 +9749,13 @@
     "<label for=\"kname\">Name</label><input id=\"kname\" name=\"kname\" required maxlength=\"200\" placeholder=\"laptop Claude\">"
     "<label for=\"kby\">Writes as</label><input id=\"kby\" name=\"kby\" required maxlength=\"64\" pattern=\"[A-Za-z0-9._-]+\" placeholder=\"claude-laptop\">"
     "<label for=\"kmem\">Memory</label><select id=\"kmem\" name=\"kmem\"><option value=\"write\">read and write</option><option value=\"read\">read</option><option value=\"none\">none</option></select>"
-    "<label for=\"kpages\">Pages</label><select id=\"kpages\" name=\"kpages\"><option value=\"read\">read</option><option value=\"write\">read, write private pages</option><option value=\"none\">none</option></select>"
-    "<label for=\"kweb\"><input type=\"checkbox\" id=\"kweb\" name=\"kweb\" checked> read other ships&rsquo; pages</label>"
+    "<label for=\"kpages\">Pages</label><select id=\"kpages\" name=\"kpages\"><option value=\"read\">read</option><option value=\"write\">read, write private pages</option><option value=\"none\">none</option><option value=\"some\">scoped to paths</option></select>"
+    "<label for=\"kpread\">Pages read paths</label><input id=\"kpread\" name=\"kpread\" placeholder=\"/notes, /projects (scoped only)\">"
+    "<label for=\"kpwrite\">Pages write paths</label><input id=\"kpwrite\" name=\"kpwrite\" placeholder=\"/notes/agent (scoped only)\">"
+    "<label for=\"kweb\">Other ships</label><select id=\"kweb\" name=\"kweb\"><option value=\"off\">none</option><option value=\"all\">read all ships</option><option value=\"some\">scoped to one ship</option></select>"
+    "<label for=\"kwship\">Ship</label><input id=\"kwship\" name=\"kwship\" placeholder=\"~sampel-palnet (scoped)\">"
+    "<label for=\"kwread\">Its read paths</label><input id=\"kwread\" name=\"kwread\" placeholder=\"/x (scoped)\">"
+    "<label for=\"kwwrite\">Its write paths</label><input id=\"kwwrite\" name=\"kwwrite\" placeholder=\"/x/out (scoped)\">"
     "<label for=\"ksen\"><input type=\"checkbox\" id=\"ksen\" name=\"ksen\"> read sensitive memories</label>"
     "<button class=\"btn\" type=\"submit\">Make key</button></form>"
     ::  what the sensitive checkbox does, which its label alone never said
@@ -9503,7 +9764,7 @@
     "<p id=\"keyerr\" class=\"err\"></p>"
     "<ul id=\"keylist\" class=\"bklist\"></ul>"
     %-  trip
-    '<script>(function(){var L=document.getElementById("keylist"),F=document.getElementById("keyform"),T=document.getElementById("keytok"),E=document.getElementById("keyerr");function pad(n){return ("0"+n).slice(-2)}function day(da){var p=da.slice(1).split(".."),d=p[0].split("."),t=(p[1]||"").split(".");return d[0]+"-"+pad(d[1])+"-"+pad(d[2])+(p[1]?" "+pad(t[0])+":"+pad(t[1])+" UTC":"")}function row(k){var li=document.createElement("li"),a=document.createElement("div"),b=document.createElement("div"),x=document.createElement("button"),s=k.scope;a.textContent=k.name+" (writes as "+k.by+")";b.className="muted";b.textContent="memory "+s.memory+", pages "+s.pages+(s.web?", reads other ships":"")+(s.sensitive?", reads sensitive memories":"")+". Made "+day(k.made)+(k.used?", last used "+day(k.used):", never used")+(k.tainted_until?". It read sensitive memories, so until "+day(k.tainted_until)+" it writes only sensitive ones":"");x.type="button";x.className="btn";x.textContent="Revoke";x.onclick=function(){x.disabled=true;fetch("/apps/lattice/key-revoke?id="+encodeURIComponent(k.id),{method:"POST"}).then(load,load)};li.append(a,b,x);return li}function load(){fetch("/apps/lattice/keys").then(function(r){return r.json()}).then(function(ks){L.replaceChildren.apply(L,ks.map(row));if(!ks.length){var li=document.createElement("li");li.className="muted";li.textContent="No keys yet.";L.append(li)}}).catch(function(){E.textContent="could not load keys"})}F.onsubmit=function(ev){ev.preventDefault();E.textContent="";T.hidden=true;var f=F.elements;var body={name:f.kname.value.trim(),by:f.kby.value.trim(),scope:{memory:f.kmem.value,pages:f.kpages.value,web:f.kweb.checked,sensitive:f.ksen.checked}};fetch("/apps/lattice/key-mint",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||r.status);return j})}).then(function(j){T.querySelector("code").textContent=j.token;T.hidden=false;F.reset();load()}).catch(function(e){E.textContent="could not make the key: "+e.message})};load()})();</script>'
+    '<script>(function(){var L=document.getElementById("keylist"),F=document.getElementById("keyform"),T=document.getElementById("keytok"),E=document.getElementById("keyerr");function pad(n){return ("0"+n).slice(-2)}function day(da){var p=da.slice(1).split(".."),d=p[0].split("."),t=(p[1]||"").split(".");return d[0]+"-"+pad(d[1])+"-"+pad(d[2])+(p[1]?" "+pad(t[0])+":"+pad(t[1])+" UTC":"")}function paths(v){return v.split(",").map(function(s){return s.trim()}).filter(function(s){return s}).map(function(s){return s.charAt(0)==="/"?s:"/"+s})}function pagesText(p){if(!p)return "none";if(p.all!==undefined)return p.all;if(p.some)return "scoped (read "+(p.some.read||[]).join(" ")+"; write "+(p.some.write||[]).join(" ")+")";return "none"}function webText(w){if(!w||w.off!==undefined)return "none";if(w.all!==undefined)return "all ships (read)";if(w.some){return Object.keys(w.some).map(function(k){var e=w.some[k];return k+" (read "+(e.read||[]).join(" ")+"; write "+(e.write||[]).join(" ")+")"}).join(", ")}return "none"}function row(k){var li=document.createElement("li"),a=document.createElement("div"),b=document.createElement("div"),x=document.createElement("button"),s=k.scope;a.textContent=k.name+" (writes as "+k.by+")";b.className="muted";b.textContent="memory "+s.memory+", pages "+pagesText(s.pages)+", other ships "+webText(s.web)+(s.sensitive?", reads sensitive memories":"")+". Made "+day(k.made)+(k.used?", last used "+day(k.used):", never used")+(k.tainted_until?". Read sensitive content, so until "+day(k.tainted_until)+" it writes only sensitive":"");x.type="button";x.className="btn";x.textContent="Revoke";x.onclick=function(){x.disabled=true;fetch("/apps/lattice/key-revoke?id="+encodeURIComponent(k.id),{method:"POST"}).then(load,load)};li.append(a,b,x);return li}function load(){fetch("/apps/lattice/keys").then(function(r){return r.json()}).then(function(ks){L.replaceChildren.apply(L,ks.map(row));if(!ks.length){var li=document.createElement("li");li.className="muted";li.textContent="No keys yet.";L.append(li)}}).catch(function(){E.textContent="could not load keys"})}function pagesScope(f){var m=f.kpages.value;if(m==="some")return {some:{read:paths(f.kpread.value),write:paths(f.kpwrite.value)}};return {all:m}}function webScope(f){var m=f.kweb.value;if(m==="all")return {all:null};if(m==="some"){var sh=f.kwship.value.trim();if(!sh)return {off:null};var o={};o[sh]={read:paths(f.kwread.value),write:paths(f.kwwrite.value)};return {some:o}}return {off:null}}F.onsubmit=function(ev){ev.preventDefault();E.textContent="";T.hidden=true;var f=F.elements;var body={name:f.kname.value.trim(),by:f.kby.value.trim(),scope:{memory:f.kmem.value,pages:pagesScope(f),web:webScope(f),sensitive:f.ksen.checked}};fetch("/apps/lattice/key-mint",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||r.status);return j})}).then(function(j){T.querySelector("code").textContent=j.token;T.hidden=false;F.reset();load()}).catch(function(e){E.textContent="could not make the key: "+e.message})};load()})();</script>'
     ::  backup: manual export/restore for everyone, plus (desktop only) the
     ::  scheduled backups. The whole UI is rendered by ui-app/vault.js's
     "<h2>Commons mirror</h2>"

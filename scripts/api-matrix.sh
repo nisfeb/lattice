@@ -446,6 +446,63 @@ is "outer folder named"           "Alpha One" "$(field page-dump "$R/alpha-one" 
 is "inner folder named"           "Beta Two" "$(field page-dump "$R/alpha-one/beta-two" dname)"
 is "display-name pages deleted"   200 "$(sc -X POST "$B/page-del?name=$R")"
 
+echo "==> scoped agent key (pages)"
+# mint: read = $P (the test namespace), write = $P/out
+# seed the note and out folder before the recursive-delete block clears them
+is "seed note for scoped read" 200 "$(sc -X POST "$B/page-save?name=$P/note&type=md" --data-binary '# scope test')"
+is "seed out/s1 for scoped write" 200 "$(sc -X POST "$B/folder-new?name=$P/out")"
+KEYJSON="$(G -X POST "$B/key-mint" -H 'content-type: application/json' --data-binary "$(python3 -c "import json,sys;print(json.dumps({'name':'apimx-scoped','by':'apimx','scope':{'memory':'none','pages':{'some':{'read':['/'+sys.argv[1]],'write':['/'+sys.argv[1]+'/out']}},'web':{'off':None},'sensitive':False}}))" "$P")")"
+TOK="$(printf '%s' "$KEYJSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')"
+# keyed curl helpers: no cookie, only the Bearer token
+BG() { curl -s -H "Authorization: Bearer $TOK" "$@"; }
+BC() { curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK" "$@"; }
+is  "scoped read granted"      200 "$(BC "$B/page-source?name=$P/note")"
+is  "scoped read ungranted"    403 "$(BC "$B/page-source?name=other/page")"
+is  "scoped write granted"     200 "$(BC -X POST "$B/page-save?name=$P/out/s1&type=md" --data-binary 'scoped write')"
+is  "scoped write ungranted"   403 "$(BC -X POST "$B/page-save?name=$P/note&type=md" --data-binary 'nope')"
+has "tree hides ungranted"     "$P/out" "$(BG "$B/page-tree")"
+is  "tree omits other ns"      "" "$(BG "$B/page-tree" | python3 -c 'import json,sys;print("".join(n["path"] for n in json.load(sys.stdin).get("nodes",[]) if not n["path"].startswith(sys.argv[1])))' "$P")"
+is  "scoped write hoon refused" 403 "$(BC -X POST "$B/page-save?name=$P/out/x&type=hoon" --data-binary '|=(x=@ x)')"
+
+echo "==> sensitive pages"
+is "mark sensitive (owner)"          200 "$(sc -X POST "$B/page-sensitive?name=$P/note&on=1")"
+sleep 2
+# uncleared scoped key: sensitive page is hidden/refused
+is "sensitive read blocked (uncleared)"  403 "$(BC "$B/page-source?name=$P/note")"
+is "sensitive write blocked (uncleared)" 403 "$(BC -X POST "$B/page-save?name=$P/note&type=md" --data-binary 'nope')"
+is "tree hides sensitive (uncleared)"    "" "$(BG "$B/page-tree" | python3 -c 'import json,sys;print("".join(str(1) for n in json.load(sys.stdin).get("nodes",[]) if n["path"]==sys.argv[1]))' "$P/note")"
+
+# cross-surface taint, aligned with the memory surface: reading the sensitive
+# page taints the CLEARED key, after which it may write only to a sensitive
+# destination. A NEW page is created and force-marked sensitive; an EXISTING
+# non-sensitive page is refused. $P/note is still marked sensitive here.
+CKEYJSON="$(G -X POST "$B/key-mint" -H 'content-type: application/json' --data-binary "$(python3 -c "import json,sys;print(json.dumps({'name':'apimx-cleared','by':'apimx','scope':{'memory':'none','pages':{'some':{'read':['/'+sys.argv[1]],'write':['/'+sys.argv[1]+'/out']}},'web':{'off':None},'sensitive':True}}))" "$P")")"
+CTOK="$(printf '%s' "$CKEYJSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')"
+CC() { curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $CTOK" "$@"; }
+# an existing, non-sensitive page written BEFORE the key is tainted
+is "cleared plain write before taint"   200 "$(CC -X POST "$B/page-save?name=$P/out/pre&type=md" --data-binary 'ok')"
+is "cleared reads sensitive page"        200 "$(CC "$B/page-source?name=$P/note")"
+sleep 2
+# tainted: flipping the existing non-sensitive page is refused
+is "tainted flip existing nonsensitive refused" 403 "$(CC -X POST "$B/page-save?name=$P/out/pre&type=md" --data-binary 'nope')"
+# tainted: a NEW page is allowed and force-marked sensitive
+is "tainted write to new page allowed"   200 "$(CC -X POST "$B/page-save?name=$P/out/post&type=md" --data-binary 'secret')"
+sleep 1
+is "tainted new page force-marked sensitive" '{"on":true}' "$(G "$B/page-sensitive?name=$P/out/post")"
+# the now-sensitive page may be rewritten by the tainted key
+is "tainted rewrite of sensitive page allowed" 200 "$(CC -X POST "$B/page-save?name=$P/out/post&type=md" --data-binary 'more')"
+CKID="$(printf '%s' "$CKEYJSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["key"]["id"])')"
+sc -o /dev/null -X POST "$B/key-revoke?id=$CKID" >/dev/null
+
+# clear the mark and confirm access restored
+is "unmark sensitive (owner)"        200 "$(sc -X POST "$B/page-sensitive?name=$P/note&on=0")"
+sleep 2
+is "uncleared key reads after unmark" 200 "$(BC "$B/page-source?name=$P/note")"
+
+# revoke the test key
+KID="$(printf '%s' "$KEYJSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["key"]["id"])')"
+sc -o /dev/null -X POST "$B/key-revoke?id=$KID" >/dev/null
+
 echo "==> recursive folder delete"
 is "page-del on folder" 200 "$(sc -X POST "$B/page-del?name=$P")"
 sleep 2

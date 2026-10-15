@@ -23,8 +23,8 @@
   ==
 ::  a key reaches only the one-segment routes its scope names
 ++  test-may
-  =/  rw  (row [%write %read | |])
-  =/  ro  (row [%read %none & |])
+  =/  rw  (row [%write [%all %read] [%off ~] | ~])
+  =/  ro  (row [%read [%all %none] [%all ~] | ~])
   ;:  weld
     (expect-eq !>(&) !>((may rw 'POST' /know-save)))
     (expect-eq !>(&) !>((may rw 'POST' /know-save-batch)))
@@ -48,12 +48,29 @@
   =/  ok  (de-mint (need (de:json:html '{"name":"laptop","by":"claude-laptop","scope":{"memory":"write","web":true}}')))
   =/  sen  (de-mint (need (de:json:html '{"name":"l","by":"b","scope":{"memory":"read","sensitive":true}}')))
   ;:  weld
-    (expect-eq !>(`(each [@t @t scope] @t)`&+['laptop' 'claude-laptop' [%write %none & |]]) !>(ok))
-    (expect-eq !>(`(each [@t @t scope] @t)`&+['l' 'b' [%read %none | &]]) !>(sen))
+    (expect-eq !>(`(each [@t @t scope] @t)`&+['laptop' 'claude-laptop' [%write [%all %none] [%all ~] | ~]]) !>(ok))
+    (expect-eq !>(`(each [@t @t scope] @t)`&+['l' 'b' [%read [%all %none] [%off ~] & ~]]) !>(sen))
     ::  by is one line of front matter: no newline, no colon
     (expect-eq !>(%|) !>(-:(de-mint (need (de:json:html '{"name":"a","by":"x\\nsuperseded-by: /y"}')))))
     (expect-eq !>(%|) !>(-:(de-mint (need (de:json:html '{"name":"a","by":""}')))))
     (expect-eq !>(%|) !>(-:(de-mint (need (de:json:html '{"by":"x"}')))))
+  ==
+::  de-mint web %some: parses per-ship path maps; NOT [%all ~] (the old bug)
+++  test-de-mint-web-some  ^-  tang
+  =/  raw=@t
+    '{"name":"t","by":"t","scope":{"web":{"some":{"~bus":{"read":["/x"],"write":["/x/out"]}}}}}'
+  =/  res  (de-mint (need (de:json:html raw)))
+  ?:  ?=(%| -.res)
+    ~[leaf+"de-mint failed"]
+  =/  wsc=web-scope  web.scope.p.res
+  ::  the old bug parsed {some:...} as [%all ~]; it must now be %some
+  ?.  ?=([%some *] wsc)
+    ~[leaf+"web is not %some (the old bug over-granted [%all ~])"]
+  ;:  weld
+    ::  ~bus read-set = {/x}, write-set = {/x/out}
+    (expect-eq !>(`(unit paths)``[(sy ~[/x]) (sy ~[/x/out])]) !>((~(get by ships.wsc) ~bus)))
+    ::  a ship not in the map yields no entry (no grant)
+    (expect-eq !>(`(unit paths)`~) !>((~(get by ships.wsc) ~dev)))
   ==
 ++  test-touch-due
   ;:  weld
@@ -62,18 +79,34 @@
     (expect-eq !>(&) !>((touch-due `~2026.1.1 ~2026.1.1..01.00.00)))
   ==
 ::  keys stored before clearance existed read back, uncleared and untainted
-++  test-upgrade
+++  test-upgrade-keys
   =/  old=(map @t key-row-0)
     (my ~[['abc' ['abc' 'n' 'b' [%write %read &] 's' 'h' ~2026.1.1 `~2026.1.2]]])
-  =/  new=keys  (upgrade old)
+  =/  new=keys  (upgrade-keys old)
   =/  k=key-row  (~(got by new) 'abc')
   ;:  weld
-    (expect-eq !>(`scope`[%write %read & |]) !>(scope.k))
     (expect-eq !>(`(unit @da)`~) !>(taint.k))
     (expect-eq !>(`(unit @da)``~2026.1.2) !>(used.k))
-    (expect-eq !>(new) !>((upgrade new)))
-    (expect-eq !>(`keys`~) !>((upgrade 42)))
+    ::  the row's scope is [%write %read &]; upgrade-keys injects sensitive=|
+    ::  giving upgrade [%write %read & |]: memory=%write pages=[%all %read]
+    ::  web=[%all ~] sensitive=| origin=~
+    (expect-eq !>(`scope`[%write [%all %read] [%all ~] | ~]) !>(scope.k))
+    (expect-eq !>(new) !>((upgrade-keys new)))
+    (expect-eq !>(`keys`~) !>((upgrade-keys 42)))
   ==
+++  test-upgrade-old-flat-scope  ^-  tang
+  :: old row scope was [memory=level pages=level web=? sensitive=?]
+  =/  old=*  [%read %write & |]
+  =/  new  (upgrade old)
+  ;:  weld
+    (expect-eq !>(pages.new) !>(`pages-scope`[%all %write]))
+    (expect-eq !>(web.new) !>(`web-scope`[%all ~]))
+    (expect-eq !>(sensitive.new) !>(|))
+    (expect-eq !>(origin.new) !>(`(unit @p)`~))
+  ==
+++  test-upgrade-web-off  ^-  tang
+  =/  new  (upgrade [%none %none | |])
+  (expect-eq !>(web.new) !>(`web-scope`[%off ~]))
 ++  test-tainted
   =/  k  (row *scope)
   ;:  weld
@@ -96,4 +129,82 @@
     (expect-eq !>(|) !>((page-type-ok '')))
     (expect-eq !>(|) !>((page-type-ok 'MD')))
   ==
+::  mk-key: build a key-row with given pages/web/sensitive/origin
+++  mk-key
+  |=  [pgs=pages-scope wsc=web-scope sen=? org=(unit @p)]
+  ^-  key-row
+  :*  'mk'  'mk-key'  'test'
+      [%write pgs wsc sen org]
+      'salt'  (hash-token 'salt' 'sekrit')
+      ~2026.1.1  ~  ~
+  ==
+::  under: segment-prefix test (grant is a prefix of target at segment boundary)
+++  test-under-boundary  ^-  tang
+  ;:  weld
+    (expect !>((under /a/b /a/b)))          :: exact match
+    (expect !>((under /a/b /a/b/c)))        :: subtree
+    (expect !>(!(under /a/b /a/bc)))        :: NOT a sibling with shared string prefix
+    (expect !>(!(under /a/b /a)))           :: parent is not under child
+  ==
+::  may-path %some: read-set and write-set are independent
+++  test-may-path-some-write  ^-  tang
+  =/  k=key-row
+    (mk-key [%some [(sy ~[/notes]) (sy ~[/notes/out])]] [%off ~] | ~)
+  ;:  weld
+    (expect !>((may-path k %local /notes/out/x %write)))
+    (expect !>(!(may-path k %local /notes/other %write)))  :: not in write-set
+    (expect !>((may-path k %local /notes/other %read)))    :: in read-set
+    (expect !>(!(may-path k %local /elsewhere %read)))     :: ungranted
+  ==
+::  may-path %all: level-ok decides; %some: path membership decides
+++  test-may-path-all-vs-some  ^-  tang
+  =/  k-all=key-row
+    (mk-key [%all %write] [%off ~] | ~)
+  =/  k-none=key-row
+    (mk-key [%all %none] [%off ~] | ~)
+  =/  k-some=key-row
+    (mk-key [%some [(sy ~[/a]) ~]] [%off ~] | ~)
+  ;:  weld
+    (expect !>((may-path k-all %local /any/path %read)))
+    (expect !>((may-path k-all %local /any/path %write)))
+    (expect !>(!(may-path k-none %local /any/path %read)))
+    (expect !>(!(may-path k-none %local /any/path %write)))
+    (expect !>((may-path k-some %local /a/child %read)))
+    (expect !>(!(may-path k-some %local /b %read)))
+  ==
+::  may-path %ship: off=deny, all=read-only, some=consult per-ship path-sets
+++  test-may-path-web  ^-  tang
+  =/  k-off=key-row   (mk-key [%all %write] [%off ~] | ~)
+  =/  k-web-all=key-row  (mk-key [%all %write] [%all ~] | ~)
+  =/  p=@p  ~zod
+  =/  k-web-some=key-row
+    (mk-key [%all %write] [%some (~(put by *(map @p paths)) p [(sy ~[/pub]) ~])] | ~)
+  ;:  weld
+    (expect !>(!(may-path k-off [%ship ~zod] /any %read)))
+    ::  broad %all web is read-only across ships
+    (expect !>((may-path k-web-all [%ship ~zod] /any %read)))
+    (expect !>(!(may-path k-web-all [%ship ~zod] /any %write)))
+    ::  %some: per-ship read-set only
+    (expect !>((may-path k-web-some [%ship ~zod] /pub/page %read)))
+    (expect !>(!(may-path k-web-some [%ship ~zod] /other %read)))
+    ::  unknown ship denied
+    (expect !>(!(may-path k-web-some [%ship ~wes] /pub/page %read)))
+  ==
+::  a some scope survives en-scope then de-mint
+++  test-en-scope-some-roundtrip
+  =/  sc=scope
+    :*  %write
+        [%some (sy ~[/a /b]) (sy ~[/a/out])]
+        [%some (my ~[[~bus [(sy ~[/x]) (sy ~[/x/out])]]])]
+        %.y
+        ~
+    ==
+  =/  req=json
+    %-  pairs:enjs:format
+    :~  ['name' s+'k']
+        ['by' s+'b']
+        ['scope' (en-scope sc)]
+    ==
+  =/  want=(each [name=@t by=@t =scope] @t)  [%& 'k' 'b' sc]
+  (expect-eq !>(want) !>((de-mint req)))
 --

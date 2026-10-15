@@ -731,4 +731,8 @@
     if(!e.key || e.key === LS) applyVim();
   });
   applyVim();
+  // setInd lives inside this IIFE, so the layout toggles (85-layout.js, in the
+  // outer shared scope) cannot see it directly. Expose it: a same-tab view
+  // change there must refresh the indicator (it reads PREVIEW in preview-only).
+  window.latVimSetInd = setInd;
 })();

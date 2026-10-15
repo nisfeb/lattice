@@ -2481,6 +2481,10 @@
     if(!e.key || e.key === LS) applyVim();
   });
   applyVim();
+  // setInd lives inside this IIFE, so the layout toggles (85-layout.js, in the
+  // outer shared scope) cannot see it directly. Expose it: a same-tab view
+  // change there must refresh the indicator (it reads PREVIEW in preview-only).
+  window.latVimSetInd = setInd;
 })();
 
 // ── src/30-tree.js ────────────────────────────────────────────────────────
@@ -4235,6 +4239,9 @@
 <div id="shres" class="muted"></div>
 <h3 class="grouphead">give a group access <a id="aclopen" title="create and edit groups">manage &rarr;</a></h3>
 <div id="grouplist" class="muted"></div>
+<h3>sensitive</h3>
+<label class="muted"><input type="checkbox" id="shsens"> mark sensitive &mdash; agents without clearance can't see or write it</label>
+<div id="shsensres" class="muted"></div>
 </div>
 <div id="orrsec" hidden><h3>orrery</h3><div id="orr"></div></div>`;
       cwurl = $('cwurl');
@@ -4253,6 +4260,7 @@
     // every-target-change hook the grant message does
     renderGroupAccess();
     orreryShow();
+    refreshSensitive(curFolder || current);
     const target = curFolder || current;
     const suffix = curFolder ? '/' : '';
     // Build the public link as DOM, never innerHTML: a page/folder name is
@@ -4350,6 +4358,40 @@
   };
   $('shread').onclick = () => shareWith('read');
   $('shedit').onclick = () => shareWith('edit');
+
+  // ── mark-sensitive: the OPEN page or folder's OWN sensitive flag ─────────
+  // A sensitive page (or folder, inherited by its pages) is invisible to an
+  // agent key without the sensitive clearance, and such a key cannot write it.
+  // The checkbox shows and sets this page's own marker; refreshed on every
+  // target change through showShare, like the grant row above.
+  const refreshSensitive = async (target) => {
+    const cb = $('shsens');
+    if (!cb) return;
+    $('shsensres').textContent = '';
+    if (!target) { cb.checked = false; cb.disabled = true; return; }
+    cb.disabled = false;
+    try {
+      const r = await fetch(api + '/page-sensitive?name=' + encodeURIComponent(target));
+      const on = r.ok && (await r.json()).on === true;
+      // the target can change while this GET is in flight (same bug class the
+      // showShare comment documents): only apply if it is still current.
+      if ((curFolder || current) !== target) return;
+      cb.checked = on;
+    } catch { if ((curFolder || current) === target) cb.checked = false; }
+  };
+  $('shsens').onchange = async () => {
+    const target = curFolder || current;
+    const cb = $('shsens');
+    if (!target) { st('open a page first', false); cb.checked = false; return; }
+    cb.disabled = true;
+    const r = await mutate(api + '/page-sensitive?name=' + encodeURIComponent(target) +
+      '&on=' + (cb.checked ? '1' : '0'));
+    cb.disabled = false;
+    if (!r || !r.ok) { cb.checked = !cb.checked; st('sensitive failed' + await errText(r), false); return; }
+    $('shsensres').textContent = cb.checked
+      ? target + ' is sensitive'
+      : target + ' is no longer sensitive';
+  };
 
   // ── per-file group access ────────────────────────────────────────────────
   // The same read/edit grant as the ship row above, but pointed at a group
@@ -6300,8 +6342,9 @@
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
     // keep the vim indicator in step with the view: it reads PREVIEW in
-    // preview-only. A no-op when vim is off.
-    setInd();
+    // preview-only. setInd is exposed by 27-vim.js (it lives in that file's
+    // own IIFE); guard in case that file is absent. A no-op when vim is off.
+    if (window.latVimSetInd) window.latVimSetInd();
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
   $('wrapt').onclick = () => flip('appWrap');

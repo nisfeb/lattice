@@ -29,8 +29,9 @@
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
     // keep the vim indicator in step with the view: it reads PREVIEW in
-    // preview-only. A no-op when vim is off.
-    setInd();
+    // preview-only. setInd is exposed by 27-vim.js (it lives in that file's
+    // own IIFE); guard in case that file is absent. A no-op when vim is off.
+    if (window.latVimSetInd) window.latVimSetInd();
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
   $('wrapt').onclick = () => flip('appWrap');
