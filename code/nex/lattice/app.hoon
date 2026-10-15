@@ -645,27 +645,48 @@
   ::  The synchronous checks run first; the sensitive check is fiber-based.
   =/  key-sync=(unit [code=@ud msg=@t])
     ?~  key  ~
-    ?:  (tainted:ky u.key rnow)
-      `[403 tainted-msg]
     ?.  (levy items |=([* typ=@t *] (page-type-ok:ky typ)))
       `[403 'a key saves md, gmi, text, tex, css or index pages only']
     ?.  (levy items |=([nam=@t *] (may-path:ky u.key %local (pax-of nam) %write)))
       `[403 'outside this key\'s scope']
     ~
   ?^  key-sync  (send-err eyre-id code.u.key-sync msg.u.key-sync)
-  ::  sensitive check (fiber-based; only when a key is present and uncleared)
-  ;<  key-check=(unit [code=@ud msg=@t])  bind:m
-    =/  n  (fiber:fiber:nexus ,(unit [code=@ud msg=@t]))
-    ?~  key  (pure:n ~)
-    ?:  sensitive.scope.u.key  (pure:n ~)
+  ::  sensitive + taint check (fiber-based). Returns an early refusal, plus the
+  ::  paths of a tainted key's NEW pages, which are marked sensitive before the
+  ::  write (the batch mirror of the single page-save taint alignment).
+  ;<  gate=[err=(unit [code=@ud msg=@t]) mark=(list path)]  bind:m
+    =/  n  (fiber:fiber:nexus ,[err=(unit [code=@ud msg=@t]) mark=(list path)])
+    ?~  key  (pure:n [~ ~])
+    =/  clr=?  sensitive.scope.u.key
+    =/  tnt=?  (tainted:ky u.key rnow)
+    ::  a cleared, untainted key needs no per-item grub walk
+    ?:  &(clr !tnt)  (pure:n [~ ~])
     =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+    =|  mark=(list path)
+    |-  ^-  form:n
+    ?~  todo  (pure:n [~ (flop mark)])
+    =/  pax=path  (pax-of nam.i.todo)
+    ;<  ps=?  bind:n  (page-sensitive pax)
+    ?:  ps
+      ::  sensitive target: a cleared key (incl. tainted) may write it, an
+      ::  uncleared key may not.
+      ?:  clr  $(todo t.todo)
+      (pure:n [`[403 'that page is sensitive: a cleared key is required'] ~])
+    ::  non-sensitive target: an uncleared key writes it as before; a tainted
+    ::  key may create a NEW one (marked sensitive) but not flip an EXISTING.
+    ?.  tnt  $(todo t.todo)
+    ;<  exists=?  bind:n  (peek-exists:io (rv up (weld /page pax)))
+    ?:  exists  (pure:n [`[403 tainted-msg] ~])
+    $(todo t.todo, mark [pax mark])
+  ?^  err.gate  (send-err eyre-id code.u.err.gate msg.u.err.gate)
+  ::  mark a tainted key's new pages sensitive before the write lands
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    =/  todo=(list path)  mark.gate
     |-  ^-  form:n
     ?~  todo  (pure:n ~)
-    ;<  ps=?  bind:n  (page-sensitive (pax-of nam.i.todo))
-    ?:  ps
-      (pure:n `[403 'that page is sensitive: a cleared key is required'])
+    ;<  ~  bind:n  (poke-eval [%page-sensitive i.todo &])
     $(todo t.todo)
-  ?^  key-check  (send-err eyre-id code.u.key-check msg.u.key-check)
   =/  pages=(list [pax=path src=@t])
     %+  turn  items
     |=  [nam=@t typ=@t bod=@t bas=@ud]
@@ -2018,10 +2039,6 @@
       [%'POST' %page-save]
     ::  owner path: no key, no scope check needed.
     ?~  key  (handle-page-save eyre-id req args)
-    ::  a tainted key (read sensitive content in the last 12h) is refused any
-    ::  page write here (stricter than the memory surface, which lets a tainted
-    ::  key write to a sensitive destination).
-    ?:  (tainted:ky u.key rnow)  (send-err eyre-id 403 tainted-msg)
     ::  a key writes content that renders escaped. Hoon (also an absent or
     ::  unknown type) would run with lattice's own authority, and html or js
     ::  would run in the owner's browser (+page-type-ok:ky).
@@ -2035,10 +2052,21 @@
     ::  the key's write grant is explicit consent from the owner.
     ?.  (may-path:ky u.key %local (pax-of u.name) %write)
       (send-err eyre-id 403 'outside this key\'s scope')
-    ::  sensitive gate: an uncleared key cannot write to a sensitive page.
     ;<  ps=?  bind:m  (page-sensitive (pax-of u.name))
+    ::  sensitive gate: an uncleared key cannot write to a sensitive page.
     ?:  &(ps !sensitive.scope.u.key)
       (send-err eyre-id 403 'that page is sensitive: a cleared key is required')
+    ::  cross-surface taint, aligned with the memory surface: a tainted key
+    ::  (read sensitive content in the last 12h, so necessarily cleared) may
+    ::  write only to a sensitive destination. An already-sensitive page is
+    ::  fine; a NEW page is created and marked sensitive; an EXISTING
+    ::  non-sensitive page must not be flipped to sensitive, so it is refused.
+    ?:  (tainted:ky u.key rnow)
+      ?:  ps  (handle-page-save eyre-id req args)
+      ;<  exists=?  bind:m  (peek-exists:io (rv up (weld /page (pax-of u.name))))
+      ?:  exists  (send-err eyre-id 403 tainted-msg)
+      ;<  ~  bind:m  (poke-eval [%page-sensitive (pax-of u.name) &])
+      (handle-page-save eyre-id req args)
     (handle-page-save eyre-id req args)
   ::  page-search: the wiki ranked the way memory is (+rank:lk: key words
   ::  count double), each hit labelled with where it lives. q= words, k= how
@@ -4653,9 +4681,10 @@
     ::  mark or unmark a page (or folder) as sensitive. on=| removes the grub.
     ::  Same nearest-flag-wins shape as %comments and %forms: a folder mark
     ::  makes every page under it sensitive.
+    ::  No existence guard here: the owner POST route 404s a missing page
+    ::  before it pokes, and the page-save taint path marks a NEW page's path a
+    ::  beat before its content lands, so the marker must be writable ahead.
     =/  fdir=path  (weld /page pax.act)
-    ;<  ex=?  bind:m  (peek-exists:io (rv up fdir))
-    ?.  ex  (pure:m ~)
     ?.  on.act
       ;<  *  bind:m  (cull-soft:io (rf up fdir %sensitive))
       (pure:m ~)
