@@ -697,6 +697,23 @@
   ?~  t  n
   ?:  =(']' i.t)  n
   $(t t.t, n +(n))
+::  +wiki-last-seg: the part of a page name after the final '/', so a bare
+::  [[a/b/c]] shows "c" (the filename people expect) not the whole path.
+::  Trailing slashes are stripped; a name that is only slashes falls back
+::  to itself. The href/target is unchanged, so backlinks and navigation
+::  are unaffected: only the shown label changes.
+++  wiki-last-seg
+  |=  nam=tape
+  ^-  tape
+  =|  cur=tape   :: the segment being scanned, held reversed
+  =|  last=tape  :: the last non-empty completed segment, reversed
+  |-  ^-  tape
+  ?~  nam
+    =/  out=tape  (flop ?~(cur last cur))
+    ?~(out nam out)
+  ?:  =('/' i.nam)
+    $(nam t.nam, last ?~(cur last cur), cur ~)
+  $(nam t.nam, cur [i.nam cur])
 ++  wikilinkify
   |=  [t=tape base=tape]
   ^-  tape
@@ -733,7 +750,7 @@
     =/  name=tape  (scag n aft)
     =/  rest=tape  (slag (add n 2) aft)
     =/  tail=tape  $(t rest)
-    :(weld "[" name "](" base name ")" tail)
+    :(weld "[" (wiki-last-seg name) "](" base name ")" tail)
   ::  a pipe after the name starts a label: [[target|shown text]]. Tested
   ::  with scag rather than a ?= on the head, since a ?= refinement inside
   ::  the irregular & does not survive mull and this file compiles as a lib.
