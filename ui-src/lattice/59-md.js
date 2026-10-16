@@ -72,10 +72,13 @@
     //  wikilinks, which lattice writes a lot of. The target is a page name, so
     //  it is URI-encoded into the query — a name carrying &, = or quotes must
     //  not smuggle extra params or break out of the href.
+    //  a bare [[a/b/c]] shows just the last segment ("c"), the filename people
+    //  expect, not the whole path. An explicit [[a/b/c|label]] still wins. The
+    //  href/target is unchanged, so navigation and backlinks are unaffected.
     s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
       (_, tgt, label) => '<a href="'
         + mdHref('/apps/lattice/app?name=' + encodeURIComponent(mdUnesc(tgt).trim())) + '">'
-        + (label || tgt) + '</a>');
+        + (label || tgt.trim().replace(/\/+$/, '').split('/').pop() || tgt) + '</a>');
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');
     s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');

@@ -57,8 +57,16 @@
 ++  test-foot-list  (yes (has "class=\"footnotes\"" (r 'x[^a] y\0a\0a[^a]: a note')))
 ::  wikilinks
 ++  wl  |=([t=tape base=tape] (wikilinkify:md t base))
+::  a bare [[path]] shows only its last segment (the filename), not the whole
+::  path; the link target is still the full path.
 ++  test-wiki-nolabel
-  (yes (has "[a/b](/w/a/b)" (wl "[[a/b]]" "/w/")))
+  (yes (has "[b](/w/a/b)" (wl "[[a/b]]" "/w/")))
+++  test-wiki-nolabel-bare
+  (yes (has "[x](/w/x)" (wl "[[x]]" "/w/")))
+++  test-wiki-nolabel-deep
+  (yes (has "[c](/w/a/b/c)" (wl "[[a/b/c]]" "/w/")))
+++  test-wiki-nolabel-trailing
+  (yes (has "[a](/w/a/)" (wl "[[a/]]" "/w/")))
 ++  test-wiki-label
   (yes (has "[Some Label](/w/a/b)" (wl "[[a/b|Some Label]]" "/w/")))
 ++  test-wiki-escape
