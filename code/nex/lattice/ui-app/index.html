@@ -417,6 +417,13 @@ select, option { color-scheme: inherit; }
      390px. Floor the item at 0 and the track stays at the viewport;
      the flex row then squeezes #mpath (its min-width is already 0). */
   .bar { flex-wrap: nowrap; position: relative; min-width: 0; }
+  /* Same grid-item min-content trap as .bar: the tree is the .ws grid's single
+     1fr item on mobile, and its min-content width (the nowrap .newbtns button
+     row, the file rows) grew the 1fr track past the viewport -> whole-page
+     horizontal scroll. Floor it at 0 so the track stays at the viewport; the
+     file rows then ellipsise within it and the button row wraps. */
+  .tree { min-width: 0; }
+  .tree .newbtns { flex-wrap: wrap; }
   #modet, #pname, #pkind, #qt, #cmt, #aclt { display: none; }
   /* .grow is also flex:1 — left in the row it takes half the free space and
      the path label ellipsises early with daylight sitting next to it (the

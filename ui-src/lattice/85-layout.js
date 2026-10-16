@@ -45,7 +45,11 @@
       // the preview skipped its renders while off screen (60-preview.js)
       if (hidden && v !== 'edit') refreshPreview();
     };
-  applyToggles();
+  // A throw in this boot-time layout pass must NOT halt the rest of app boot:
+  // the initial tree load and navigation wiring run in a later file (90-sync),
+  // so an uncaught error here blanks the whole app (that was the setInd bug).
+  // Contain it — a broken layout widget is survivable; a dead tree is not.
+  try { applyToggles(); } catch (e) { console.error('[lattice] layout init failed', e); }
 
   // ── mobile: full-screen editing ──────────────────────────────────────────
   // Created here rather than in <lat-bar>, and appended to #ws, because it has
@@ -73,7 +77,7 @@
   };
   fullt.onclick = () => setFull(!ws.classList.contains('full'));
   ws.appendChild(fullt);
-  setFull(localStorage.appFull === '1');
+  try { setFull(localStorage.appFull === '1'); } catch (e) { console.error('[lattice] full-screen init failed', e); }
 
   const isMobile = () => matchMedia('(max-width: 820px)').matches;
   const setMv = (v) => {
