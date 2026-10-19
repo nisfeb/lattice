@@ -714,6 +714,16 @@
   ?:  =('/' i.nam)
     $(nam t.nam, last ?~(cur last cur), cur ~)
   $(nam t.nam, cur [i.nam cur])
+::  +backlink-hit: does `body` wikilink to page `name`? True for the plain
+::  [[name]] and for a labelled [[name|label]]. The closing "]]" or "|"
+::  in the needle keeps [[name2]] from counting as a link to name.
+::
+++  backlink-hit
+  |=  [name=tape body=tape]
+  ^-  ?
+  ?|  ?=(^ (find :(weld "[[" name "]]") body))
+      ?=(^ (find :(weld "[[" name "|") body))
+  ==
 ++  wikilinkify
   |=  [t=tape base=tape]
   ^-  tape

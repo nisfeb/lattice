@@ -109,6 +109,7 @@
     st.textContent = '.orr{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-width:0}'
       + '.orr a{overflow-wrap:anywhere}'
       + '.bar .orr a{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:24rem}'
+      + '.orrfacts{padding:6px 12px;font-size:.85rem;border-bottom:1px solid #8884}.orrname{font-weight:600}'
       + '.orrnote{color:var(--muted,#8a8a8a)}.orrbad{color:var(--error,#c0392b)}';
     document.head.append(st);
   }
@@ -143,6 +144,44 @@
   }
   const unmount = (el) => { el.orrGen = (el.orrGen || 0) + 1; };
 
+  // a body's facts, for a page whose path is a body id (<kind>/<slug>, two
+  // segments). Orrery answers 200 with the body and 404 for a path that is
+  // not one (journal/2026.10.19 is two segments too), so anything but 200
+  // draws nothing and says nothing. Not cached: the facts are live.
+  const OPEN = ['proposed', 'approved', 'claimed'];
+  const txt = (v) => (v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v));
+  async function facts(path) {
+    if (!/^[^/]+\/[^/]+$/.test(path) || !(await present())) return;
+    let b;
+    try {
+      const r = await fetch(API + '/body/' + path.split('/').map(encodeURIComponent).join('/'));
+      if (r.status !== 200) return;
+      b = await r.json();
+    } catch { return; }
+    if (!b || typeof b !== 'object') return;
+    const rows = [];
+    const at = b.attrs && typeof b.attrs === 'object' ? b.attrs : {};
+    for (const k of Object.keys(at)) {
+      const vs = (Array.isArray(at[k]) ? at[k] : [at[k]])
+        .map((x) => (x && typeof x === 'object' ? x.value : x))
+        .filter((v) => v !== undefined && v !== null && v !== '');
+      if (vs.length) rows.push(k + ': ' + vs.map(txt).join(', '));
+    }
+    const acts = (Array.isArray(b.actions) ? b.actions : [])
+      .filter((a) => a && a.title && OPEN.includes(a.status)).map((a) => a.title);
+    const bar = document.querySelector('.bar');
+    if (!bar || (!b.name && !rows.length && !acts.length)) return;
+    style();
+    const box = document.createElement('div');
+    box.id = 'orfacts';
+    box.className = 'orrfacts';
+    const line = (t, cls) => { const e = document.createElement('div'); e.textContent = t; if (cls) e.className = cls; box.append(e); };
+    if (b.name) line(txt(b.name), 'orrname');
+    rows.slice(0, 5).forEach((t) => line(t));
+    acts.slice(0, 5).forEach((t) => line('open: ' + t, 'orrnote'));
+    bar.after(box);
+  }
+
   // the reader: #orw sits in the bar of a page view. Only the owner's own
   // pages: the address is urb://<our ship>/<path>.
   async function reader(el) {
@@ -155,6 +194,7 @@
     }
     if (ship !== m[1]) return;
     const path = m[2].replace(/\/+$/, '');
+    facts(path);
     mount(el, path, async () => {
       // the page's own source, or, for a page only ever published, its body
       let text = '';

@@ -113,4 +113,9 @@
 ++  test-wiki-name-edges  (yes (has "[az09](/w/az09)" (wl "[[az09]]" "/w/")))
 ::  a space is below '0' and not a name byte
 ++  test-wiki-name-space  (yes (has "[[a b]]" (wl "[[a b]]" "/w/")))
+::  backlink-hit: plain and labelled wikilinks count, a longer name does not
+++  test-backlink-plain  (yes (backlink-hit:md "a/b" "see [[a/b]] here"))
+++  test-backlink-label  (yes (backlink-hit:md "a/b" "see [[a/b|Sarah]] here"))
+++  test-backlink-miss   (yes !(backlink-hit:md "a/b" "see [[a/bc]] here"))
+++  test-backlink-none   (yes !(backlink-hit:md "a/b" "no links"))
 --

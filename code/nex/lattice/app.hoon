@@ -47,6 +47,7 @@
 /<  gfm  /lib/lattice-md.hoon
 /<  tpl  /lib/lattice-templates.hoon
 /<  lkv  /lib/lattice-know-view.hoon
+/<  lo   /lib/lattice-orrery.hoon
 ::  imports resolve relative to THIS file's dir (/nex/lattice), not /nex.
 ::  guestbook writes `guestbook/icon.svg` only because its source sits AT /nex.
 /<  icon  icon.svg
@@ -250,6 +251,12 @@
             [%fall %& [/mirror %'mirror.sig'] [[/ %sig] ~]]
             [%fall %& [/mirror %cursor] [[/lattice %mirror-cursor] *mirror-cursor:lm]]
             [%fall %& [/mirror %'config.json'] [[/ %json] (pairs:enjs:format ~[['enabled' b+|]])]]
+        ::  /journal-synced.json: the orrery journal mirror's memory, a json
+        ::  object mapping day -> the last brief/review `at` already written as
+        ::  a /journal page. +orrery-journal-pass reads it to skip days it has
+        ::  mirrored and rewrite only when orrery's record moved forward. Root
+        ::  grub, owner-only, no beacon. %fall so it survives reload.
+            [%fall %& [/ %'journal-synced.json'] [[/ %json] `json`[%o ~]]]
         ::  /shared: notices other ships sent about files they granted us (see
         ::  /lib/lattice-share: claims, not capabilities). /shares.sig is the
         ::  inbox fiber that takes those pokes. The /public usergroup carries a
@@ -1441,7 +1448,24 @@
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
     =/  brief=?  =('1' (~(gut by args) 'brief' '0'))
     =/  cap=@ud  (fall (rush (~(gut by args) 'cap' '') dem) core-cap:lk)
-    (send-typed eyre-id 'text/plain; charset=utf-8' 'no-store' (index-text:lk (listed key es ~) brief cap))
+    ::  the world block rides along only for the owner or a sensitivity-cleared
+    ::  key, and only while orrery's digest is under a day old.
+    ;<  wj=(unit json)  bind:m  orrery-world
+    ;<  now=@da  bind:m  bowl-now
+    =/  cleared=?  |(?=(~ key) sensitive.scope.u.key)
+    =/  jo=(unit (map @t json))  ?:(?=([~ %o *] wj) `p.u.wj ~)
+    =/  tx=(unit json)  ?~(jo ~ (~(get by u.jo) 'text'))
+    =/  at=(unit json)  ?~(jo ~ (~(get by u.jo) 'at'))
+    =/  world=(unit @t)
+      ?.  cleared  ~
+      ?.  ?=([~ %s *] tx)  ~
+      ::  an empty text would render a bare "## World, from orrery" header with
+      ::  no body, so treat it as absent (no world block at all).
+      ?:  =('' p.u.tx)  ~
+      ?.  ?=([~ %s *] at)  ~
+      ?.  (fresh-world:lo p.u.at now ~d1)  ~
+      `p.u.tx
+    (send-typed eyre-id 'text/plain; charset=utf-8' 'no-store' (index-text:lk (listed key es ~) brief cap world))
   ::  know-lint: what a tidy would fix (+lint-run:lk), proposed and never
   ::  applied. Computed when asked, so always current. /know?lint=1 reviews it.
       [%'GET' %know-lint]
@@ -1618,7 +1642,6 @@
     ?:  &(ps ?=(^ key) !sensitive.scope.u.key)
       (send-err eyre-id 403 'not found')
     ;<  ~  bind:m  (taint-if key &(ps ?=(^ key) sensitive.scope.u.key))
-    =/  needle=tape  :(weld "[[" (trip u.name) "]]")
     ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
     ?.  ?=([%ball *] sn)
       (send-json eyre-id (pairs:enjs:format ~[['links' a+~]]))
@@ -1642,7 +1665,7 @@
         $(todo t.todo)
       =/  un=(unit [builder=@tas body=@t])  (unwrap-content code.i.todo)
       =/  bod=@t  ?~(un code.i.todo body.u.un)
-      ?~  (find needle (trip bod))
+      ?.  (backlink-hit:gfm (trip u.name) (trip bod))
         $(todo t.todo)
       =/  entry=json  [%s (crip (pax-str pax))]
       ?:  cleared
@@ -3743,6 +3766,13 @@
         ::  later version once the road is granted.
           %+  line  '/apps/lattice.lattice_app/'
           'copy your existing pages, memories and bookmarks across from where lattice used to live. This is read-only, happens once, and the old copy is left untouched. Refuse it and this install simply starts empty'
+        ::  orrery, if it is installed on this ship, through its instance
+        ::  dir under shell: lattice reads its world digest, daily briefs
+        ::  and weekly reviews, the same ambient same-ship read orrery
+        ::  already makes of lattice. Automatic: there is no prompt, and
+        ::  with orrery absent the readers fold to empty and nothing breaks.
+          %+  line  '/apps/shell.shell/desks/orrery.desk/'
+          'read orrery on this ship, its daily brief, weekly review and world digest, so your agents and journal pages stay current. Refuse it and lattice is unaffected; you just lose the orrery mirror'
       ==
     ::  sharing with ships IS writing usergroups: who.ships and how.weir,
     ::  from the share box, the ACL pane and a ban. The registry has no
@@ -6771,6 +6801,165 @@
         %|  [%& %| (weld prefix p.p.road)]
       ==
   ==
+::  +orrery-base: where orrery is installed on this ship, if at all. The
+::  first %| lane in /sys/link/orrery/dest.lanes IS orrery's instance base
+::  dir, and the four readers below build absolute roads from it. A mirror
+::  of orrery's own +find-base: the lanes are a list on develop's kernel
+::  and a set on the dist kernel's, so read as either and lattice runs on
+::  both. ~ when the road is refused or the registry has no row, which is
+::  also what an uninstalled orrery looks like, so every reader folds soft.
+::
+++  orrery-base
+  =/  m  (fiber:fiber:nexus ,(unit path))
+  ^-  form:m
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %& /sys/link/orrery %'dest.lanes'] ~)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  =/  vas=(unit vase)  (mole |.((need-vase:tarball sang.u.vw)))
+  ?~  vas  (pure:m ~)
+  =/  lanes=(list lane:tarball)
+    =/  as-list=(unit (list lane:tarball))  (mole |.(!<((list lane:tarball) u.vas)))
+    ?^  as-list  u.as-list
+    =/  as-set=(unit (set lane:tarball))  (mole |.(!<((set lane:tarball) u.vas)))
+    ?~(as-set ~ ~(tap in u.as-set))
+  =/  dirs=(list path)
+    (murn lanes |=(=lane:tarball ?:(?=(%| -.lane) `p.lane ~)))
+  ?~  dirs  (pure:m ~)
+  ::  the earliest claimant on develop's kernel; an arbitrary one on the
+  ::  dist kernel's, where two orreries claiming the name are alike
+  (pure:m `i.dirs)
+::  +orrery-world: orrery's world digest, read whole as the json grub
+::  <base>/world.json. ~ when orrery is absent or the grub will not decode.
+::
+++  orrery-world
+  =/  m  (fiber:fiber:nexus ,(unit json))
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  orrery-base
+  ?~  base  (pure:m ~)
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %& u.base %'world.json'] ~)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  (pure:m (mole |.(!<(json (need-vase:tarball sang.u.vw)))))
+::  +orrery-days: the day grubs under <base>/briefs or <base>/reviews,
+::  sorted oldest first. A cross-desk listing of the directory grub: its
+::  ball's own file node holds the days as named contents, the way orrery
+::  lists its own browsing days. ~ when orrery is absent or the dir empty.
+::
+++  orrery-days
+  |=  dir=@tas
+  =/  m  (fiber:fiber:nexus ,(list @ta))
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  orrery-base
+  ?~  base  (pure:m ~)
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| (snoc u.base dir)] ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  ?~  fil.ball.u.vw  (pure:m ~)
+  (pure:m (sort (turn ~(tap by contents.u.fil.ball.u.vw) head) aor))
+::  +orrery-doc: one day's record, the json grub <base>/<dir>/<day>. ~ when
+::  orrery is absent, the grub is missing, or it will not decode.
+::
+++  orrery-doc
+  |=  [dir=@tas day=@ta]
+  =/  m  (fiber:fiber:nexus ,(unit json))
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  orrery-base
+  ?~  base  (pure:m ~)
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %& (snoc u.base dir) day] ~)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  (pure:m (mole |.(!<(json (need-vase:tarball sang.u.vw)))))
+::  +orrery-journal-pass: mirror orrery's briefs and reviews into private
+::  /journal pages. A no-op when orrery is absent, so a ship without it pays
+::  one soft peek and writes nothing. Otherwise, for each day
+::  under briefs then reviews, write /journal/<day> (reviews: /journal/week-
+::  <day>) when orrery's record `at` is new or moved forward, mark the page
+::  sensitive, and remember the `at`. Idempotent: a day whose stored `at`
+::  still matches is left untouched, so a hand-edit survives a re-run until
+::  orrery itself advances. The synced map is written once at the end.
+::
+++  orrery-journal-pass
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  orrery-base
+  ?~  base  (pure:m ~)
+  ;<  synced=(map @t @t)  bind:m  read-journal-synced
+  ;<  synced=(map @t @t)  bind:m  (orrery-journal-sync synced %briefs "Brief")
+  ;<  synced=(map @t @t)  bind:m  (orrery-journal-sync synced %reviews "Review")
+  (write-journal-synced synced)
+::  +orrery-journal-sync: mirror one directory (briefs or reviews), folding
+::  the synced map through each day. A review's page is named week-<day> so
+::  it cannot collide with a brief of the same date.
+::
+++  orrery-journal-sync
+  |=  [synced=(map @t @t) dir=@tas head=tape]
+  =/  m  (fiber:fiber:nexus ,(map @t @t))
+  ^-  form:m
+  =/  rev=?  =(%reviews dir)
+  ;<  days=(list @ta)  bind:m  (orrery-days dir)
+  |-  ^-  form:m
+  ?~  days  (pure:m synced)
+  ;<  doc=(unit json)  bind:m  (orrery-doc dir i.days)
+  =/  rec=(unit [at=@t text=@t])  ?~(doc ~ (orrery-rec u.doc))
+  ?~  rec  $(days t.days)
+  ::  the page name and the synced-map key are the SAME namespaced segment, so
+  ::  a brief and a review that share a day never collide on either the page
+  ::  tree or the synced map. Orrery stores both under one local-day string, so
+  ::  keying the synced map on the bare day would make a review silently lose to
+  ::  a later-stamped brief of the same date (and vice versa). Reviews take the
+  ::  week- prefix the page path already uses.
+  =/  name=@ta  ?:(rev (crip (weld "week-" (trip `@t`i.days))) i.days)
+  =/  stored=(unit @t)  (~(get by synced) `@t`name)
+  ::  rewrite when nothing is stored, or the stored `at` sorts strictly
+  ::  before orrery's (ISO timestamps are fixed width, so aor is chronological)
+  =/  move=?
+    ?|  ?=(~ stored)
+        &(!=(u.stored at.u.rec) (aor u.stored at.u.rec))
+    ==
+  ?.  move  $(days t.days)
+  =/  pax=path  ~[%journal name]
+  =/  body=@t  (journal-body:lo head `@t`i.days text.u.rec)
+  ;<  ~  bind:m  (poke-eval [%make pax (wrap-content %md body)])
+  ;<  ~  bind:m  (poke-eval [%page-sensitive pax &])
+  $(days t.days, synced (~(put by synced) `@t`name at.u.rec))
+::  +orrery-rec: pull the `at` and `text` strings out of one orrery day
+::  record. ~ when the json is not an object or either field is missing or
+::  not a string.
+::
+++  orrery-rec
+  |=  j=json
+  ^-  (unit [at=@t text=@t])
+  ?.  ?=([%o *] j)  ~
+  =/  at=(unit json)  (~(get by p.j) 'at')
+  =/  tx=(unit json)  (~(get by p.j) 'text')
+  ?.  ?&(?=([~ %s *] at) ?=([~ %s *] tx))  ~
+  `[p.u.at p.u.tx]
+::  +read-journal-synced: the day -> last-synced-`at` map, the root json grub
+::  /journal-synced.json. Empty when absent or not a string-valued object.
+::
+++  read-journal-synced
+  =/  m  (fiber:fiber:nexus ,(map @t @t))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=view:nexus  bind:m  (peek:io (rf up / %'journal-synced.json') ~)
+  ?.  ?=([%file *] vw)  (pure:m ~)
+  =/  jon=json  (fall (mole |.(!<(json (need-vase:tarball sang.vw)))) ~)
+  ?.  ?=([%o *] jon)  (pure:m ~)
+  %-  pure:m
+  %-  ~(gas by *(map @t @t))
+  %+  murn  ~(tap by p.jon)
+  |=  [k=@t v=json]
+  ^-  (unit [@t @t])
+  ?.(?=([%s *] v) ~ `[k p.v])
+::  +write-journal-synced: persist the day -> `at` map as the root json grub.
+::
+++  write-journal-synced
+  |=  synced=(map @t @t)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  jon=json
+    :-  %o
+    %-  ~(gas by *(map @t json))
+    %+  turn  ~(tap by synced)
+    |=([k=@t v=@t] [k s+v])
+  (put-file (rf up / %'journal-synced.json') [/ %json] jon)
 ::  +peer-base-cached: +peer-base, remembered. The probe asks the peer for
 ::  its /pub/index to learn which layout it runs: a remote round trip, and
 ::  the whole index, before every page read from that peer. The answer only
@@ -12607,6 +12796,11 @@
   ::  is switched on. A fresh install gets its dependency unattended.
   ;<  ~  bind:m  obelisk-ensure
   |-
+  ::  piggyback the orrery journal mirror on this behn-driven loop: it runs
+  ::  on the first iteration (a boot catch-up) and on every wake thereafter,
+  ::  independent of obelisk's state. A no-op (one soft peek) when orrery is
+  ::  absent, so a ship without it pays almost nothing.
+  ;<  ~  bind:m  orrery-journal-pass
   ;<  on=?  bind:m  mirror-enabled
   ?.  on
     ::  a short disabled tick (one local config read) so the settings
