@@ -3742,6 +3742,13 @@
         ::  later version once the road is granted.
           %+  line  '/apps/lattice.lattice_app/'
           'copy your existing pages, memories and bookmarks across from where lattice used to live. This is read-only, happens once, and the old copy is left untouched. Refuse it and this install simply starts empty'
+        ::  orrery, if it is installed on this ship, through its instance
+        ::  dir under shell: lattice reads its world digest, daily briefs
+        ::  and weekly reviews, the same ambient same-ship read orrery
+        ::  already makes of lattice. Automatic: there is no prompt, and
+        ::  with orrery absent the readers fold to empty and nothing breaks.
+          %+  line  '/apps/shell.shell/desks/orrery.desk/'
+          'read orrery on this ship, its daily brief, weekly review and world digest, so your agents and journal pages stay current. Refuse it and lattice is unaffected; you just lose the orrery mirror'
       ==
     ::  sharing with ships IS writing usergroups: who.ships and how.weir,
     ::  from the share box, the ACL pane and a ban. The registry has no
@@ -6770,6 +6777,70 @@
         %|  [%& %| (weld prefix p.p.road)]
       ==
   ==
+::  +orrery-base: where orrery is installed on this ship, if at all. The
+::  first %| lane in /sys/link/orrery/dest.lanes IS orrery's instance base
+::  dir, and the four readers below build absolute roads from it. A mirror
+::  of orrery's own +find-base: the lanes are a list on develop's kernel
+::  and a set on the dist kernel's, so read as either and lattice runs on
+::  both. ~ when the road is refused or the registry has no row, which is
+::  also what an uninstalled orrery looks like, so every reader folds soft.
+::
+++  orrery-base
+  =/  m  (fiber:fiber:nexus ,(unit path))
+  ^-  form:m
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %& /sys/link/orrery %'dest.lanes'] ~)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  =/  vas=(unit vase)  (mole |.((need-vase:tarball sang.u.vw)))
+  ?~  vas  (pure:m ~)
+  =/  lanes=(list lane:tarball)
+    =/  as-list=(unit (list lane:tarball))  (mole |.(!<((list lane:tarball) u.vas)))
+    ?^  as-list  u.as-list
+    =/  as-set=(unit (set lane:tarball))  (mole |.(!<((set lane:tarball) u.vas)))
+    ?~(as-set ~ ~(tap in u.as-set))
+  =/  dirs=(list path)
+    (murn lanes |=(=lane:tarball ?:(?=(%| -.lane) `p.lane ~)))
+  ?~  dirs  (pure:m ~)
+  ::  the earliest claimant on develop's kernel; an arbitrary one on the
+  ::  dist kernel's, where two orreries claiming the name are alike
+  (pure:m `i.dirs)
+::  +orrery-world: orrery's world digest, read whole as the json grub
+::  <base>/world.json. ~ when orrery is absent or the grub will not decode.
+::
+++  orrery-world
+  =/  m  (fiber:fiber:nexus ,(unit json))
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  orrery-base
+  ?~  base  (pure:m ~)
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %& u.base %'world.json'] ~)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  (pure:m (mole |.(!<(json (need-vase:tarball sang.u.vw)))))
+::  +orrery-days: the day grubs under <base>/briefs or <base>/reviews,
+::  sorted oldest first. A cross-desk listing of the directory grub: its
+::  ball's own file node holds the days as named contents, the way orrery
+::  lists its own browsing days. ~ when orrery is absent or the dir empty.
+::
+++  orrery-days
+  |=  dir=@tas
+  =/  m  (fiber:fiber:nexus ,(list @ta))
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  orrery-base
+  ?~  base  (pure:m ~)
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| (snoc u.base dir)] ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  ?~  fil.ball.u.vw  (pure:m ~)
+  (pure:m (sort (turn ~(tap by contents.u.fil.ball.u.vw) head) aor))
+::  +orrery-doc: one day's record, the json grub <base>/<dir>/<day>. ~ when
+::  orrery is absent, the grub is missing, or it will not decode.
+::
+++  orrery-doc
+  |=  [dir=@tas day=@ta]
+  =/  m  (fiber:fiber:nexus ,(unit json))
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  orrery-base
+  ?~  base  (pure:m ~)
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %& (snoc u.base dir) day] ~)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  (pure:m (mole |.(!<(json (need-vase:tarball sang.u.vw)))))
 ::  +peer-base-cached: +peer-base, remembered. The probe asks the peer for
 ::  its /pub/index to learn which layout it runs: a remote round trip, and
 ::  the whole index, before every page read from that peer. The answer only
