@@ -249,8 +249,8 @@
         [/project/x/y ['plain' ~2026.1.1 ~ ~]]
         [/feedback/old ['---\0asuperseded-by: /feedback/a\0a---\0agone' ~2026.1.1 ~ ~]]
     ==
-  =/  full=tape  (trip (index-text es | 100))
-  =/  brief=tape  (trip (index-text es & 10))
+  =/  full=tape  (trip (index-text es | 100 ~))
+  =/  brief=tape  (trip (index-text es & 10 ~))
   ;:  weld
     (expect !>(?=(^ (find "feedback (2): a, b" full))))
     (expect !>(?=(^ (find "project/x (1): y" full))))
@@ -260,6 +260,19 @@
     (expect !>(?=(^ (find "## /feedback/a\0arule one" brief))))
     (expect !>(?=(^ (find "## /feedback/b (over the cap: read it)" brief))))
   ==
+::  a world block leads the index when given, and is absent when not
+++  test-index-world-present
+  =/  es=(map path know-entry)  (malt ^-((list [path know-entry]) ~[[/project/x ['plain' ~2026.1.1 ~ ~]]]))
+  =/  out=tape  (trip (index-text es | 100 `'Today is Sunday.'))
+  ;:  weld
+    (expect !>(?=(^ (find "World, from orrery" out))))
+    (expect !>(?=(^ (find "Today is Sunday." out))))
+    (expect-eq !>(0) !>(`@ud`(need (find "## World" out))))
+  ==
+++  test-index-world-absent
+  =/  es=(map path know-entry)  (malt ^-((list [path know-entry]) ~[[/project/x ['plain' ~2026.1.1 ~ ~]]]))
+  =/  out=tape  (trip (index-text es | 100 ~))
+  (expect !>(?=(~ (find "World, from orrery" out))))
 ::  a save keeps created, sets author and source, and stamps verified
 ++  test-stamp
   =/  old=know-entry  ['---\0acreated: 2025-01-02\0aauthor: someone\0a---\0aold fact' ~2026.1.1 ~ ~]
