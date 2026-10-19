@@ -1618,7 +1618,6 @@
     ?:  &(ps ?=(^ key) !sensitive.scope.u.key)
       (send-err eyre-id 403 'not found')
     ;<  ~  bind:m  (taint-if key &(ps ?=(^ key) sensitive.scope.u.key))
-    =/  needle=tape  :(weld "[[" (trip u.name) "]]")
     ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
     ?.  ?=([%ball *] sn)
       (send-json eyre-id (pairs:enjs:format ~[['links' a+~]]))
@@ -1642,7 +1641,7 @@
         $(todo t.todo)
       =/  un=(unit [builder=@tas body=@t])  (unwrap-content code.i.todo)
       =/  bod=@t  ?~(un code.i.todo body.u.un)
-      ?~  (find needle (trip bod))
+      ?.  (backlink-hit:gfm (trip u.name) (trip bod))
         $(todo t.todo)
       =/  entry=json  [%s (crip (pax-str pax))]
       ?:  cleared
