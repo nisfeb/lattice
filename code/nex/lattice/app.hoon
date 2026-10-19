@@ -1459,6 +1459,9 @@
     =/  world=(unit @t)
       ?.  cleared  ~
       ?.  ?=([~ %s *] tx)  ~
+      ::  an empty text would render a bare "## World, from orrery" header with
+      ::  no body, so treat it as absent (no world block at all).
+      ?:  =('' p.u.tx)  ~
       ?.  ?=([~ %s *] at)  ~
       ?.  (fresh-world:lo p.u.at now ~d1)  ~
       `p.u.tx
