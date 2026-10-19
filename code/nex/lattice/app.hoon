@@ -6863,8 +6863,8 @@
   ?.  ?=([~ %file *] vw)  (pure:m ~)
   (pure:m (mole |.(!<(json (need-vase:tarball sang.u.vw)))))
 ::  +orrery-journal-pass: mirror orrery's briefs and reviews into private
-::  /journal pages (docs/orrery.md). A no-op when orrery is absent, so a ship
-::  without it pays one soft peek and writes nothing. Otherwise, for each day
+::  /journal pages. A no-op when orrery is absent, so a ship without it pays
+::  one soft peek and writes nothing. Otherwise, for each day
 ::  under briefs then reviews, write /journal/<day> (reviews: /journal/week-
 ::  <day>) when orrery's record `at` is new or moved forward, mark the page
 ::  sensitive, and remember the `at`. Idempotent: a day whose stored `at`
@@ -6895,7 +6895,14 @@
   ;<  doc=(unit json)  bind:m  (orrery-doc dir i.days)
   =/  rec=(unit [at=@t text=@t])  ?~(doc ~ (orrery-rec u.doc))
   ?~  rec  $(days t.days)
-  =/  stored=(unit @t)  (~(get by synced) `@t`i.days)
+  ::  the page name and the synced-map key are the SAME namespaced segment, so
+  ::  a brief and a review that share a day never collide on either the page
+  ::  tree or the synced map. Orrery stores both under one local-day string, so
+  ::  keying the synced map on the bare day would make a review silently lose to
+  ::  a later-stamped brief of the same date (and vice versa). Reviews take the
+  ::  week- prefix the page path already uses.
+  =/  name=@ta  ?:(rev (crip (weld "week-" (trip `@t`i.days))) i.days)
+  =/  stored=(unit @t)  (~(get by synced) `@t`name)
   ::  rewrite when nothing is stored, or the stored `at` sorts strictly
   ::  before orrery's (ISO timestamps are fixed width, so aor is chronological)
   =/  move=?
@@ -6903,13 +6910,11 @@
         &(!=(u.stored at.u.rec) (aor u.stored at.u.rec))
     ==
   ?.  move  $(days t.days)
-  =/  pax=path
-    ?:  rev  ~[%journal `@ta`(crip (weld "week-" (trip `@t`i.days)))]
-    ~[%journal i.days]
+  =/  pax=path  ~[%journal name]
   =/  body=@t  (journal-body:lo head `@t`i.days text.u.rec)
   ;<  ~  bind:m  (poke-eval [%make pax (wrap-content %md body)])
   ;<  ~  bind:m  (poke-eval [%page-sensitive pax &])
-  $(days t.days, synced (~(put by synced) `@t`i.days at.u.rec))
+  $(days t.days, synced (~(put by synced) `@t`name at.u.rec))
 ::  +orrery-rec: pull the `at` and `text` strings out of one orrery day
 ::  record. ~ when the json is not an object or either field is missing or
 ::  not a string.
@@ -12791,7 +12796,7 @@
   ::  piggyback the orrery journal mirror on this behn-driven loop: it runs
   ::  on the first iteration (a boot catch-up) and on every wake thereafter,
   ::  independent of obelisk's state. A no-op (one soft peek) when orrery is
-  ::  absent, so a ship without it pays almost nothing. See docs/orrery.md.
+  ::  absent, so a ship without it pays almost nothing.
   ;<  ~  bind:m  orrery-journal-pass
   ;<  on=?  bind:m  mirror-enabled
   ?.  on
