@@ -14,7 +14,10 @@ await seed(env, [['person/zzztest', '# not a body'], ['journal/2026.10.19', '# a
 const browser = await launchBrowser();
 const p = await openPage(browser, env);
 const errs = [];
-p.on('console', (m) => { if (m.type() === 'error') errs.push(m.text() + ' ' + (m.location().url || '')); });
+// JS-originated errors only: an uncaught exception or a console.error call.
+// A fetch that 404s is logged by the browser as "Failed to load resource"
+// and cannot be suppressed, so those lines are expected and ignored.
+p.on('console', (m) => { if (m.type() === 'error' && !/^Failed to load resource/.test(m.text())) errs.push(m.text()); });
 p.on('pageerror', (e) => errs.push(String(e)));
 const open = async (path) => {
   await p.goto(env.base + '/apps/lattice?url=' + encodeURIComponent('urb://' + SHIP + '/' + path), { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -28,9 +31,6 @@ if (process.env.BODY) {
   const t = await open(process.env.BODY);
   check('body page shows its name', !!t && t.includes(process.env.BODY_NAME || ''), String(t));
 }
-// the browser itself logs a 404 for the one-per-session /api/version probe
-// (existing behaviour) and for settings scries; those are not this block's
-const mine = errs.filter((e) => /orrery\/api\/body|TypeError|ReferenceError/.test(e));
-check('no console error from the facts block', mine.length === 0, mine.join(' | '));
+check('no JS error from the facts block', errs.length === 0, errs.join(' | '));
 await browser.close();
-check.done?.();
+check.done();
