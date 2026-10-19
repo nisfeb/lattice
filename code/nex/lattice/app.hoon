@@ -47,6 +47,7 @@
 /<  gfm  /lib/lattice-md.hoon
 /<  tpl  /lib/lattice-templates.hoon
 /<  lkv  /lib/lattice-know-view.hoon
+/<  lo   /lib/lattice-orrery.hoon
 ::  imports resolve relative to THIS file's dir (/nex/lattice), not /nex.
 ::  guestbook writes `guestbook/icon.svg` only because its source sits AT /nex.
 /<  icon  icon.svg
@@ -1441,7 +1442,21 @@
     ;<  es=(map path know-entry:lk)  bind:m  read-know-map
     =/  brief=?  =('1' (~(gut by args) 'brief' '0'))
     =/  cap=@ud  (fall (rush (~(gut by args) 'cap' '') dem) core-cap:lk)
-    (send-typed eyre-id 'text/plain; charset=utf-8' 'no-store' (index-text:lk (listed key es ~) brief cap ~))
+    ::  the world block rides along only for the owner or a sensitivity-cleared
+    ::  key, and only while orrery's digest is under a day old.
+    ;<  wj=(unit json)  bind:m  orrery-world
+    ;<  now=@da  bind:m  bowl-now
+    =/  cleared=?  |(?=(~ key) sensitive.scope.u.key)
+    =/  jo=(unit (map @t json))  ?:(?=([~ %o *] wj) `p.u.wj ~)
+    =/  tx=(unit json)  ?~(jo ~ (~(get by u.jo) 'text'))
+    =/  at=(unit json)  ?~(jo ~ (~(get by u.jo) 'at'))
+    =/  world=(unit @t)
+      ?.  cleared  ~
+      ?.  ?=([~ %s *] tx)  ~
+      ?.  ?=([~ %s *] at)  ~
+      ?.  (fresh-world:lo p.u.at now ~d1)  ~
+      `p.u.tx
+    (send-typed eyre-id 'text/plain; charset=utf-8' 'no-store' (index-text:lk (listed key es ~) brief cap world))
   ::  know-lint: what a tidy would fix (+lint-run:lk), proposed and never
   ::  applied. Computed when asked, so always current. /know?lint=1 reviews it.
       [%'GET' %know-lint]
