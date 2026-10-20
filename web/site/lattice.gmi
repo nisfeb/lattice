@@ -1,60 +1,62 @@
 # lattice
 
-Your pages, your knowledge, your ship.
+A knowledge base for you and your AI agents.
 
-A personal knowledge platform that runs on your own Urbit ship. Write pages in markdown, gemtext, or HTML, or in Hoon so they compute their own content. Keep a private, tagged knowledge store that you and your AI agents share. Search all of it. Everything you publish is addressed urb://~ship/path and travels peer-to-peer between ships, with no DNS, no web server, and no host in the middle.
+lattice gives your AI agents long-term memory and a library of reference they can read. It keeps your own notes and documents in one private store. And it publishes what you choose, peer-to-peer or on the open web. All of it runs on a personal server you control, so your data and your agents' memory never touch someone else's cloud.
 
 (You may well be reading this page through lattice right now.)
 
 ## How it works
 
-lattice's ship side is a nexus inside the grubbery framework. Your pages and your knowledge live in grubbery's vault on your ship, and the client is served by the ship too.
+lattice runs on your own server, an Urbit ship, and serves its own web client. There is nothing to host elsewhere and nobody to sign up with. Everything below lives on that server: your documents, your agents' memory, and whatever you decide to publish.
 
-* The ship: one command, one approval. |install ~ricsul-bilwyt %grubbery installs grubbery, which adds lattice. Approve its permissions and it binds /apps/lattice. New versions arrive on their own.
+* The server: lattice installs onto your Urbit ship, a personal server you run. Paste one command into its console and lattice is there at /apps/lattice. New versions arrive on their own.
 * The client: /apps/lattice to read, /apps/lattice/app to write. On a phone, add it to your home screen: it is a full PWA that works offline.
-* The surfaces: an optional desktop app for Linux and macOS, a FUSE mount that makes your pages plain files, and plugins that make it your AI assistants' memory. One store behind all of them.
+* The surfaces: a web app, an optional desktop app for Linux and macOS, a filesystem mount that turns your pages into plain files, and plugins that give Claude Code and Hermes memory. One store behind all of them.
+
+## Memory and knowledge for your agents
+
+Plugins for Claude Code and Hermes turn lattice into long-term memory for your agents. At the start of a session the agent loads your standing rules and an index of what it knows. With each task it recalls what bears on the work. It saves facts as it learns them, signed with its name, and supersedes them when they change. Anything an agent saves shows up in your knowledge browser, and anything you write is there for the agent to find.
+
+Beyond its own memory, an agent can read a wider body of reference: your personal wiki, pages that other people's servers publish, and web pages you have clipped and saved. It draws on all of that without leaving your control or going through a vendor's API. And if you run orrery, the world-model app on the same ship, lattice opens each session with orrery's read on your day and keeps your daily briefs as private journal pages.
+
+Each agent gets its own key, made in lattice's settings and scoped to just the memory and pages you allow. Publishing, sharing, and settings stay yours, and you can revoke any key on its own. Your agents' memory lives on your server.
+
+=> https://github.com/nisfeb/lattice/blob/main/docs/agent-knowledge.md Details, and the HTTP routes behind the plugins
 
 ## What it does
 
-* Pages, not just gemtext: markdown, gemtext, HTML, plain text, JS, CSS, or Hoon pages that compute their content, with commands, state, and dependencies on other pages.
-* Knowledge store: a private, tagged note store with per-entry history and a trash. Browse it with folders and tag filters; drive it from the web app, HTTP, MCP, or the filesystem mount.
-* Search: a term index over pages and knowledge, from the reader's omnibar, every hit badged with its scope.
-* A real filesystem: lattice-fs mounts your pages as local files, so grep and cat run from RAM and your editor's backup files never touch the ship.
-* Publish: every saved page is a signed value in the Urbit namespace, readable as urb://~you/that/path. Pages and folders can also go clearweb-public over plain HTTP. Share a folder and you've published a site.
-* Editor: highlighting for every page kind, live preview, compile errors for Hoon pages, templates, folder-level share, move and delete, drag-and-drop upload of files or directories. A page named "My Page" keeps that name in the tree.
-* Works offline: saves, deletes, moves and renames queue locally and replay in order when the ship returns; an overwritten concurrent edit is kept as a real page under conflicts/.
-* Export and restore: every page and memory as one tar of plain files; restore puts them back with paths, tags and dates intact. The desktop app schedules backups to a folder on your machine.
-* Sharing that scales: named groups of ships with per-path read and edit grants, per-file grants, a banlist that revokes on ban, and comments from readers with a moderation inbox.
-* Follow and subscribe: follow ships, or subscribe to one file and get each edit as it happens over a live namespace subscription.
-* Browse urb://: read what any ship publishes, bookmark it, fetch urb://~ship/manifest for a stranger's index, or copy a remote file onto your own ship.
+* Documents in any format: markdown, HTML, plain text, or a page written in Hoon (the server's own language) that computes its own content, with commands, state, and references to other pages.
+* Private notes: a private, tagged note store with full history and a trash. Browse by folder and tag; drive it from the web app, an HTTP API, the agent plugins, or the filesystem mount.
+* Search: a full-text index over your documents and notes, from the reader's search bar, every hit badged with its scope.
+* Your pages as files: lattice-fs mounts every page as a local file, so grep and cat run from memory and your editor's backup files never touch the server.
+* Publish on your terms: every saved page gets an address other servers can fetch directly, peer-to-peer. Pages and folders can also go public on the open web. Share a folder and you have published a site.
+* Editor: highlighting for every format, live preview, inline errors for programmable pages, templates, folder-level share, move and delete, drag-and-drop upload of files or directories. A page named "My Page" keeps that name in the tree.
+* Works offline: saves, deletes, moves and renames queue locally and replay in order when the connection returns; an overwritten concurrent edit is kept as a real page under conflicts/.
+* Export and restore: every page and memory as one archive of plain files; restore puts them back with paths, tags and dates intact. The desktop app schedules backups to a folder on your machine.
+* Sharing that scales: named groups with per-path read and edit grants, per-file grants, a banlist that revokes on ban, and comments from readers with a moderation inbox.
+* Follow and subscribe: follow other servers, or subscribe to one file and get each edit as it happens over a live subscription.
+* Browse the network: read what any server publishes, bookmark it, pull up a stranger's full index, or copy a remote file onto your own server.
 * Light and dark, following your system.
-
-## Memory for your AI agents
-
-Plugins for Claude Code and Hermes make the knowledge store your assistants' memory. At the start of a session the agent loads your core rules and an index of what it knows. With each prompt it recalls what bears on the task. It saves facts signed with its name, and supersedes them when they change. It can search and read your wiki and pages other ships publish, and write private pages such as reports.
-
-Each agent gets its own key, made in lattice's settings. A key reaches only memory and pages, as far as its scope says. Publishing, sharing and settings stay yours, and you can revoke a key on its own. Your assistant's memory lives on your ship.
-
-=> https://github.com/nisfeb/lattice/blob/main/docs/agent-knowledge.md Details, and moving an agent off the cookie setup
 
 ## What it isn't
 
-* Not a host. Bring your own ship.
-* Not the HTTP web, except for what you choose to publish clearweb, which your ship serves itself.
-* Not an app to install. The client is served by your ship; the desktop app and the filesystem mount are optional extras.
+* Not a hosted service. You run it on your own server (an Urbit ship): yours, a friend's, or a hosted one.
+* Not just a website, except for what you choose to publish on the open web, which your own server serves.
+* Not an app to install. The web client is served by your server; the desktop app and the filesystem mount are optional extras.
 
 ## Install
 
-In your dojo:
+Paste into your server's console:
 
 ```
 |install ~ricsul-bilwyt %grubbery
 ```
 
-On first boot grubbery adds lattice. Approve its permissions at /apps/grubbery/permits, where it says what it needs and why. Then log into your ship's web login with your +code and open /apps/lattice. New versions arrive on their own. The optional desktop app for Linux and macOS is on the releases page:
+lattice installs through grubbery, the small app platform it runs on. Approve its permissions at /apps/grubbery/permits, where it says what it needs and why. Then log into your server's web login with its access code (+code) and open /apps/lattice. New versions arrive on their own. The optional desktop app for Linux and macOS is on the releases page:
 
 => https://github.com/nisfeb/lattice/releases/latest  Releases
 => https://github.com/nisfeb/lattice  Source on GitHub
-=> https://urbit.org/overview/running-urbit  New to Urbit? Boot a ship
+=> https://urbit.org/overview/running-urbit  Don't have a server yet? Boot one
 
 PolyForm Noncommercial licensed. Built by ~nisfeb.

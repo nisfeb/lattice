@@ -66,3 +66,50 @@ Rule, with no call to lattice: peek `R/page/<P>/data`, and if it is absent,
   follow at the new path; no row means a delete.
 - **Weir:** orrery asks peek (with keep) on `R/page/`, `R/pub/vault/` and
   `R/moves.json`.
+
+# What lattice reads from orrery (release 67)
+
+The reverse direction, the mirror of "Send to orrery" above: lattice reads
+orrery's own data over a same-ship peek road. Orrery is unchanged by this.
+Lattice declares the road in its own `weir-json`, and on the same ship the
+owner's grant is automatic. It is all read-only. Lattice never writes into
+orrery.
+
+Lattice resolves orrery's instance the way orrery resolves lattice's: the
+first `%|` lane in `/sys/link/orrery/dest.lanes` is orrery's instance base,
+R_orr (`+orrery-base`, a mirror of orrery's `+find-base`). Every read fails
+soft, so no orrery, a missing grub, or a stale one all degrade to nothing.
+
+What it reads (orrery version 117), all `[/ %json]`:
+
+| grub | used for |
+|---|---|
+| `R_orr/world.json` | the world digest: `{at, day, time, zone, away, today[], late[], situations[], proposed, text}` |
+| `R_orr/briefs/<day>` | a day's brief: `{day, at, sent, tags, text, today[], said, map, notes}` |
+| `R_orr/reviews/<day>` | a Sunday review: `{day, at, sent, text, line, notes}` |
+
+Three features use them:
+
+- **World at session start.** `+index-text` leads the agent's session index
+  with a `## World, from orrery` block carrying `world.json`'s `text`, but
+  only when the reader is cleared and the digest is fresh (its `at` within a
+  day). The gate is `|(?=(~ key) sensitive.scope.u.key)`: the owner session,
+  or a sensitivity-cleared agent key. An uncleared key sees nothing, since the
+  digest carries the owner's private day (calendar, open situations). An `at`
+  older than a day, no digest, or no orrery all yield no block.
+- **Journal pages.** A pass on the mirror-loop (every wake, and on boot)
+  mirrors each `briefs/<day>` into a private page `journal/<day>` and each
+  `reviews/<day>` into `journal/week-<day>`, body `# Brief, <day>` or
+  `# Review, <day>` then the record's `text`. Each page is marked sensitive
+  (a `%page-sensitive` poke after the `%make`), so an uncleared key cannot
+  read it. A day is written again only when that record's `at` moves, so a
+  hand edit survives. `[situation/x]` in the text becomes `[[situation/x]]`.
+  The last-synced `at` per page lives in `journal-synced.json`, reviews keyed
+  `week-<day>` so a shared Sunday never collides with its brief.
+- **Body facts.** On a reader page whose path is a two-segment orrery body id
+  (`person/sarah`), `ui-app/orrery.js` fetches
+  `GET /apps/orrery/api/body/<kind>/<slug>` and shows a compact block (name, a
+  few attrs, open actions). A non-body path (`journal/2026.10.19`) gets a 404
+  and shows nothing.
+
+Weir: lattice asks peek on `/apps/shell.shell/desks/orrery.desk/`.
