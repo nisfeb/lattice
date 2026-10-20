@@ -9413,6 +9413,14 @@
   ::  identity, and changing it would orphan every existing home-screen icon.
   ::  NB WebAPK lag: Android applies manifest changes on its own schedule.
   ::  Remove + re-add to the home screen picks this up immediately.
+  ::  background_color is #1a1a1a (the dark app bg), NOT #fafafa, on purpose.
+  ::  Chromium before 156 paints a standalone PWA's bottom system-nav bar from
+  ::  background_color, ignoring both viewport-fit=cover (edge-to-edge is 156+)
+  ::  and the per-scheme <meta theme-color> that drives the top bar. A manifest
+  ::  colour cannot track the theme, so one value must serve both: the dark bg
+  ::  makes the bar vanish in dark mode (where a #fafafa bar was a glaring white
+  ::  strip) at the cost of a dark strip under a light app. 156+ restores the
+  ::  theme-aware behaviour on its own. Reported on Brave/Chromium 155.
   ::  share_target makes the installed PWA appear in the mobile share sheet.
   ::  Sharing a page to Lattice archives it, same as the bookmarklet. GET (not
   ::  POST) deliberately: the OS then performs a top-level NAVIGATION, which
@@ -9420,7 +9428,7 @@
   ::  cross-site form post and arrive unauthenticated. The action must sit
   ::  inside `scope`. All three params are declared because senders disagree
   ::  about which one carries the url (see +first-url).
-  '{"id":"/apps/lattice","name":"Lattice","short_name":"Lattice","description":"Programmable pages and markdown notes on Urbit.","start_url":"/apps/lattice/app","scope":"/apps/lattice","display":"standalone","theme_color":"#101541","background_color":"#fafafa","share_target":{"action":"/apps/lattice/share","method":"GET","params":{"title":"title","text":"text","url":"url"}},"icons":[{"src":"/apps/lattice/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/apps/lattice/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"},{"src":"/apps/lattice/icon-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"},{"src":"/apps/lattice/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}'
+  '{"id":"/apps/lattice","name":"Lattice","short_name":"Lattice","description":"Programmable pages and markdown notes on Urbit.","start_url":"/apps/lattice/app","scope":"/apps/lattice","display":"standalone","theme_color":"#101541","background_color":"#1a1a1a","share_target":{"action":"/apps/lattice/share","method":"GET","params":{"title":"title","text":"text","url":"url"}},"icons":[{"src":"/apps/lattice/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/apps/lattice/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"},{"src":"/apps/lattice/icon-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"},{"src":"/apps/lattice/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}'
 ++  icon-svg
   ^-  @t
   '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs><radialGradient id="bg" cx="50%" cy="50%" r="72%"><stop offset="0" stop-color="#171c52"/><stop offset="0.6" stop-color="#101541"/><stop offset="1" stop-color="#080b25"/></radialGradient></defs><rect width="512" height="512" fill="url(#bg)"/><g stroke="#f9a804" stroke-width="14" stroke-linecap="round" fill="#f9a804"><line x1="140" y1="140" x2="372" y2="140"/><line x1="140" y1="256" x2="372" y2="256"/><line x1="140" y1="372" x2="372" y2="372"/><line x1="140" y1="140" x2="140" y2="372"/><line x1="256" y1="140" x2="256" y2="372"/><line x1="372" y1="140" x2="372" y2="372"/><line x1="140" y1="140" x2="372" y2="372"/><line x1="372" y1="140" x2="140" y2="372"/><circle cx="140" cy="140" r="26"/><circle cx="256" cy="140" r="26"/><circle cx="372" cy="140" r="26"/><circle cx="140" cy="256" r="26"/><circle cx="256" cy="256" r="30"/><circle cx="372" cy="256" r="26"/><circle cx="140" cy="372" r="26"/><circle cx="256" cy="372" r="26"/><circle cx="372" cy="372" r="26"/></g></svg>'
