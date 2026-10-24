@@ -9966,7 +9966,10 @@
 ::
 ::  The sender is the article page, so its origin is arbitrary and cannot be
 ::  whitelisted. What IS checked is that the message came from window.opener,
-::  and the payload shape. Worth being clear about the residual exposure: a
+::  and the payload shape. The archive is filed under the claimed url only
+::  when that url has the sender's real origin, else under the sender's
+::  origin, so a page cannot file its content as another site's. Worth
+::  being clear about the residual exposure: a
 ::  hostile page the user clicks the bookmarklet on could send content other
 ::  than what is displayed. That is the same trust as /clip (junk in your own
 ::  tree, nothing disclosed), but here the content is arbitrary rather than
@@ -9982,7 +9985,7 @@
     "<div id=\"pst\" class=\"muted\">waiting for the page&hellip;</div>"
     "<script>"
     %-  trip
-    '(function(){var out=document.getElementById("pst");var p=new URLSearchParams(location.search);var u=p.get("url")||"";var done=false;function show(m,bad){out.textContent=m;out.className=bad?"err":"";}function send(html){if(done)return; done=true;show("archiving…");fetch("/apps/lattice/clip-html?url="+encodeURIComponent(u),{method:"POST",body:html}).then(function(r){if(r.ok){return r.text().then(function(t){document.open();document.write(t);document.close();});}return r.json().catch(function(){return{}}).then(function(j){show("could not archive"+(j.error?": "+j.error:" ("+r.status+")"),true);});}).catch(function(){show("could not archive (network error)",true);});}window.addEventListener("message",function(e){if(e.source!==window.opener)return;var d=e.data;if(!d||d.lattice!==1||typeof d.html!=="string")return;send(d.html);});try{if(window.opener)window.opener.postMessage({lattice:"ready"},"*");}catch(x){}setTimeout(function(){if(!done)show("nothing arrived from the page — try the bookmarklet again",true);},15000);})();'
+    '(function(){var out=document.getElementById("pst");var p=new URLSearchParams(location.search);var u=p.get("url")||"";var done=false;function show(m,bad){out.textContent=m;out.className=bad?"err":"";}function send(html,src){if(done)return; done=true;show("archiving…");fetch("/apps/lattice/clip-html?url="+encodeURIComponent(src),{method:"POST",body:html}).then(function(r){if(r.ok){return r.text().then(function(t){document.open();document.write(t);document.close();});}return r.json().catch(function(){return{}}).then(function(j){show("could not archive"+(j.error?": "+j.error:" ("+r.status+")"),true);});}).catch(function(){show("could not archive (network error)",true);});}window.addEventListener("message",function(e){if(e.source!==window.opener)return;var d=e.data;if(!d||d.lattice!==1||typeof d.html!=="string")return;var o=e.origin;if(!/^https?:/.test(o)){show("only an http or https page can be archived",true);return;}var c="";try{c=new URL(u).origin}catch(x){}send(d.html,c===o?u:o+"/");});try{if(window.opener)window.opener.postMessage({lattice:"ready"},"*");}catch(x){}setTimeout(function(){if(!done)show("nothing arrived from the page — try the bookmarklet again",true);},15000);})();'
     "</script>"
   ==
 ::  +settings-html: the settings page. Search-index maintenance, the browser
