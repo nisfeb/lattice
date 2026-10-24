@@ -15,7 +15,7 @@ Every line goes through `+say` in `nex/lattice/app.hoon`, which takes a level.
 |---|---|---|
 | 3 | `>>>` | nothing. A road lattice needs that is refused is the kernel's one `>>>` line (below) |
 | 2 | `>>` | a kind of fiber started crashing and retries by itself; a request crashed; the old app's data could not be carried |
-| 1 | `>` | carrying the old app's data; installing `%obelisk` unattended |
+| 1 | `>` | carrying the old app's data |
 | — | none | nothing. Debug output would use it, behind `+dbg` |
 
 Each line names its source first (`lattice /main.sig: …`), says what to do,

@@ -13288,28 +13288,6 @@
   ;<  vis=[ok=? cur=mirror-cursor:lm]  bind:m  (mirror-visits cur.fol)
   ;<  ~  bind:m  (write-mirror-cursor cur.vis)
   (pure:m [&(ok.pag ok.kno ok.fol ok.vis) cur.vis])
-::  +obelisk-ensure: install %obelisk from its publisher when the agent
-::  is not running here. Presence is a gall liveness scry, never a poke
-::  at the agent: a poke at an absent agent is neither acked nor refused
-::  and would wedge this fiber. The install poke is the one the settings
-::  button fires; kiln makes it a no-op while a sync already exists, so
-::  a slow first download and a later boot do not fight. A desk that
-::  has a source from another ship is never touched (see below).
-::
-++  obelisk-ensure
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  running=?  bind:m  (typed-scry:io ? %loob /gu/obelisk/$)
-  ?:  running  (pure:m ~)
-  ::  not running is not the same as absent. A desk installed from any
-  ::  publisher and merely suspended has a kiln source, and a kiln
-  ::  install would REPLACE that source with ours. Leave it alone.
-  =/  sources-mold  (map @tas (pair @p @tas))
-  ;<  srcs=(map @tas (pair @p @tas))  bind:m
-    (typed-scry:io sources-mold %noun /gx/hood/kiln/sources/noun)
-  ?:  (~(has by srcs) %obelisk)  (pure:m ~)
-  %-  (say 1 ~[leaf+"lattice: installing %obelisk for the commons mirror, from ~dister-nomryg-nilref"])
-  (gall-poke-fire %hood [%kiln-install [%obelisk ~dister-nomryg-nilref %obelisk]])
 ::  +mirror-loop: the reconciler's life. Wake, check the enabled flag,
 ::  find whether anything changed (the beacon for content, a local
 ::  history diff for visits, which deliberately never bump the
@@ -13320,10 +13298,9 @@
 ++  mirror-loop
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ::  once per fiber life, before anything else: make sure obelisk is
-  ::  on this ship, so the mirror has a desk to talk to the moment it
-  ::  is switched on. A fresh install gets its dependency unattended.
-  ;<  ~  bind:m  obelisk-ensure
+  ::  %obelisk is installed only from the settings button, which the
+  ::  /sys/gall consent text promises. Until it is, the mirror's switch
+  ::  stays hidden and the loop below idles.
   |-
   ::  piggyback the orrery journal mirror on this behn-driven loop: it runs
   ::  on the first iteration (a boot catch-up) and on every wake thereafter,
