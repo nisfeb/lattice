@@ -1196,6 +1196,22 @@
     (send-png eyre-id icon-192-b64)
   ?:  &(=(%'GET' method.request.req) =(`path`[%'icon-512.png' ~] suffix))
     (send-png eyre-id icon-512-b64)
+  ::  cross-site request forgery. The owner's cookie has no SameSite, so
+  ::  another site can make the owner's browser send it on a POST that plants
+  ::  a core memory, shares a page or mints a key (security audit run-1).
+  ::  Refuse any authenticated write another site sent (+cross-site:lu).
+  ::  GET and HEAD stay open: the only owner GET writes are the documented
+  ::  /clip and /share links. Agent keys are untouched: a Bearer header is
+  ::  not ambient, so another site cannot make a browser send one.
+  ?:  ?&  authenticated.req
+          !?=(?(%'GET' %'HEAD') method.request.req)
+          %:  cross-site:lu
+            (get-header:http 'sec-fetch-site' header-list.request.req)
+            (get-header:http 'origin' header-list.request.req)
+            (get-header:http 'host' header-list.request.req)
+          ==
+      ==
+    (send-err eyre-id 403 'cross-site request refused')
   ::  owner gate. Eyre stamps a request authenticated to our web login with
   ::  src=our, so `authenticated` (already in hand, synchronous) IS the src==our
   ::  check. Reading `our` via a /sys/bowl round trip (bowl-our) just to compare
