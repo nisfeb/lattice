@@ -106,12 +106,8 @@ jobs:
       # the token cookie rides on page, SSE and service-worker requests and
       # not on a sandboxed frame or another local process. The app runs under
       # xvfb against a stub ship, so no ship is needed.
-      # WebKitGTK sandboxes its web process with bubblewrap, which needs
-      # unprivileged user namespaces. Ubuntu 24.04 restricts them through
-      # AppArmor, so without this the page never loads.
       - name: the webview carries the bridge token
         run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           cargo build --manifest-path desktop/Cargo.toml
           scripts/desktop-bridge-check.sh
 

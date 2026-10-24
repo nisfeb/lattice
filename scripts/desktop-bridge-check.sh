@@ -33,7 +33,10 @@ printf '{"url":"http://127.0.0.1:%s","mounts":[],"ship":"","queue_key":"","backu
   > "$T/home/.config/org.lattice.desktop/config.json"
 
 echo "==> lattice desktop against a stub ship on 127.0.0.1:$PORT"
-( export HOME="$T/home" LATTICE_LOG=1; timeout 45 xvfb-run -a "$BIN" > "$T/app.log" 2>&1 ) &
+# the XDG dirs too: CI runners set XDG_CONFIG_HOME, which outranks HOME
+( export HOME="$T/home" XDG_CONFIG_HOME="$T/home/.config" XDG_DATA_HOME="$T/home/.local/share" \
+    XDG_CACHE_HOME="$T/home/.cache" LATTICE_LOG=1
+  timeout 45 xvfb-run -a "$BIN" > "$T/app.log" 2>&1 ) &
 APP=$!
 sleep 30
 # the port comes from THIS app's log: on a machine running the real app, the
