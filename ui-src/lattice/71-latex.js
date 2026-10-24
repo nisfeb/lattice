@@ -18,6 +18,35 @@
   //  as paper-web.html without either name carrying an extension itself.
   const texOut = (name) => name + '-web';
 
+  //  pandoc copies \href and \includegraphics targets through as written,
+  //  and the output is saved as an html page of OUR OWN, which runs as the
+  //  owner. A .tex a peer may edit could carry a javascript: link or a
+  //  remote media source. Links keep http(s), mailto and relative targets.
+  //  Media keeps relative sources only, so viewing the page tells no other
+  //  host. Anything that embeds or runs is dropped. A <template> parses
+  //  inertly: nothing in it loads or runs while it is cleaned.
+  const TEX_DROP = 'script,style,iframe,frame,object,embed,video,audio,source,track,form,base,meta,link,svg';
+  const TEX_SRC = ['src', 'srcset', 'poster', 'action', 'formaction', 'data', 'background'];
+  function cleanTexHtml(html) {
+    const t = document.createElement('template');
+    t.innerHTML = html;
+    t.content.querySelectorAll(TEX_DROP).forEach((e) => e.remove());
+    for (const e of t.content.querySelectorAll('*')) {
+      for (const a of [...e.attributes]) {
+        const n = a.name.toLowerCase();
+        //  browsers drop these characters inside a scheme ("java\tscript:")
+        //  and read a backslash as a slash ("\\host" is "//host")
+        const v = a.value.replace(/[\u0000-\u0020]/g, '').replace(/\\/g, '/');
+        const abs = /^[a-z][a-z0-9+.-]*:|^\/\//i.test(v);
+        const bad = n.startsWith('on')
+          || ((n === 'href' || n === 'xlink:href') && abs && !/^(https?|mailto):/i.test(v))
+          || (TEX_SRC.includes(n) && abs);
+        if (bad) e.removeAttribute(a.name);
+      }
+    }
+    return t.innerHTML;
+  }
+
   let texProbe = null;         // last probe result, per page open
 
   const texBtn = () => $('texconv');
@@ -104,7 +133,7 @@
     const out = texOut(current);
     stWork('converting with pandoc…');
     let html = null;
-    try { html = await rust.invoke('convert_tex', { src: src.value }); }
+    try { html = cleanTexHtml(await rust.invoke('convert_tex', { src: src.value })); }
     catch (e) {
       //  pandoc names the line and the construct it choked on. Show that,
       //  not a generic failure.
@@ -182,7 +211,7 @@
     texBusy = true;
     let html = null;
     let err = null;
-    try { html = await rust.invoke('convert_tex', { src: body }); }
+    try { html = cleanTexHtml(await rust.invoke('convert_tex', { src: body })); }
     catch (e) { err = String(e && e.message ? e.message : e); }
     texBusy = false;
     //  A broken document must SAY so. Freezing the last good render would
