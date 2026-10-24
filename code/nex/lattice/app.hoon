@@ -1541,10 +1541,14 @@
     =/  brief=?  =('1' (~(gut by args) 'brief' '0'))
     =/  cap=@ud  (fall (rush (~(gut by args) 'cap' '') dem) core-cap:lk)
     ::  the world block rides along only for the owner or a sensitivity-cleared
-    ::  key, and only while orrery's digest is under a day old.
+    ::  key, and only while orrery's digest is under a day old. It is
+    ::  sensitive, so a key gets it only by asking (world=1), and asking
+    ::  taints the key like any other sensitive read.
     ;<  wj=(unit json)  bind:m  orrery-world
     ;<  now=@da  bind:m  bowl-now
-    =/  cleared=?  |(?=(~ key) sensitive.scope.u.key)
+    =/  cleared=?
+      ?~  key  &
+      &(sensitive.scope.u.key =('1' (~(gut by args) 'world' '0')))
     =/  jo=(unit (map @t json))  ?:(?=([~ %o *] wj) `p.u.wj ~)
     =/  tx=(unit json)  ?~(jo ~ (~(get by u.jo) 'text'))
     =/  at=(unit json)  ?~(jo ~ (~(get by u.jo) 'at'))
@@ -1557,6 +1561,7 @@
       ?.  ?=([~ %s *] at)  ~
       ?.  (fresh-world:lo p.u.at now ~d1)  ~
       `p.u.tx
+    ;<  ~  bind:m  (taint-if key ?=(^ world))
     (send-typed eyre-id 'text/plain; charset=utf-8' 'no-store' (index-text:lk (listed key es ~) brief cap world))
   ::  know-lint: what a tidy would fix (+lint-run:lk), proposed and never
   ::  applied. Computed when asked, so always current. /know?lint=1 reviews it.
