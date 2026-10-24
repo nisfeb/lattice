@@ -406,7 +406,9 @@ fn push_file(path: &std::path::Path, rel: String, out: &mut Vec<PickedFile>, byt
 /// ever talks to 127.0.0.1. The bridge relays to the ship with the fuse
 /// session cookie attached Rust-side, so no webkit cookie behavior (site
 /// pinning, third-party policy, SW-mediated fetch) can ever unauthenticate
-/// a view again. `fresh` (a new connect) also clears browsing data so stale
+/// a view again. The one cookie the webview holds is the bridge's own
+/// first-party token, which tells the bridge this window from any other
+/// local process. `fresh` (a new connect) also clears browsing data so stale
 /// service workers and caches from earlier sessions cannot linger.
 pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
     let cfg = config::load(app);
@@ -427,8 +429,14 @@ pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
     if fresh {
         dlog(&format!("clear browsing data: {:?}", w.clear_all_browsing_data()));
     }
+    // through the bridge's bootstrap first: it hands this window the
+    // launch's token as an HttpOnly cookie, without which the bridge relays
+    // nothing with the ship session, then redirects to the editor
     dlog(&format!("navigate: {home}"));
-    w.navigate(home).map_err(|e| e.to_string())?;
+    let boot: tauri::Url = crate::proxy::bootstrap_url(&local, home.path())
+        .parse()
+        .map_err(|e| format!("{e}"))?;
+    w.navigate(boot).map_err(|e| e.to_string())?;
     w.set_focus().ok();
     Ok(())
 }

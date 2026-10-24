@@ -75,9 +75,6 @@ pub fn store(url: &str, cookie: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Write `text` so only the owner can read it. The dir is made 0700 if new.
-/// The bytes go to a fresh 0600 temp file (create_new, so a symlink planted
-/// there is refused, not followed) and are renamed over `path`.
 /// Write `bytes` to `path` so nobody else can read or redirect it: a fresh
 /// 0600 temp file opened with create_new (never through a planted symlink),
 /// synced, then renamed over the target. A missing parent is made 0700.

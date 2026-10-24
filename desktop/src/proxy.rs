@@ -6,9 +6,15 @@
 //! cookies at all. One request per connection (Connection: close), bodies
 //! streamed both ways, so eyre's SSE beacon works.
 //!
-//! ponytail: bound to 127.0.0.1 with same-user trust. Any local process
-//! could relay through it, but the same user can already read the cookie
-//! file it injects. Add a token handshake if multi-user hosts ever matter.
+//! Loopback is not a boundary. Another account on this machine, or a
+//! same-user app sandboxed away from the home directory but allowed the
+//! network, can reach 127.0.0.1 without being able to read the cookie file.
+//! So the session goes only to a request that carries this launch's bridge
+//! token: 256 random bits, handed to the workspace webview once as an
+//! HttpOnly cookie on the bridge origin (see `bootstrap_url`). Everything
+//! else the bridge still relays, but with no session, which gives the caller
+//! nothing it could not get by asking the ship directly (security audit
+//! run-1). The port, and so the webview's origin, stays fixed.
 //!
 //! Browsers are a different matter. Any page the user opens in any browser
 //! can aim requests at 127.0.0.1, and the bridge would sign them with the
@@ -113,6 +119,7 @@ pub fn ensure(state: &Bridge, ship_base: &str) -> Result<String, String> {
         return Ok(format!("http://127.0.0.1:{port}"));
     }
     let (listener, port) = bind_stable()?;
+    crate::commands::dlog(&format!("bridge: listening on 127.0.0.1:{port}"));
     if port != PORT_BASE {
         // Not a cosmetic detail. Web storage is keyed by origin, so this
         // window cannot see the offline queue, tree snapshot or resume
@@ -254,6 +261,54 @@ fn is_bridge(authority: &str, port: u16) -> bool {
         || authority.eq_ignore_ascii_case(&format!("localhost:{port}"))
 }
 
+/// The cookie that carries this launch's bridge token.
+const TOKEN_COOKIE: &str = "lattice-bridge";
+/// Where the workspace's first navigation lands to pick up the token.
+const BOOT_PATH: &str = "/.lattice-bridge/start";
+
+/// This launch's bridge token: 32 bytes from the OS, hex. Made once, never
+/// written to disk, gone when the app exits.
+pub fn token() -> &'static str {
+    static T: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let mut b = [0u8; 32];
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut f| f.read_exact(&mut b))
+            .expect("no OS randomness for the bridge token");
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    })
+}
+
+/// The url the workspace opens first: the bridge sets the token cookie and
+/// redirects to `to`, a path on the bridge. Only open_workspace calls it.
+pub fn bootstrap_url(local: &str, to: &str) -> String {
+    format!("{local}{BOOT_PATH}?k={}&to={to}", token())
+}
+
+/// Compare without stopping at the first difference.
+fn same_secret(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Does this Cookie header carry this launch's token?
+fn has_token(cookie: Option<&str>) -> bool {
+    cookie.is_some_and(|c| {
+        c.split(';').any(|kv| {
+            kv.trim()
+                .strip_prefix(TOKEN_COOKIE)
+                .and_then(|v| v.strip_prefix('='))
+                .is_some_and(|v| same_secret(v.as_bytes(), token().as_bytes()))
+        })
+    })
+}
+
+/// A redirect target the bootstrap will accept: a plain path on the bridge.
+fn plain_path(to: &str) -> bool {
+    to.starts_with('/')
+        && !to.starts_with("//")
+        && to.bytes().all(|b| b.is_ascii_alphanumeric() || b"/_.-".contains(&b))
+}
+
 /// How the bridge may relay one request. See the module comment.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Trust {
@@ -267,12 +322,15 @@ enum Trust {
 }
 
 /// Did the webview send this, and not some other page in some browser?
-/// And if it did, may the request carry the owner's session?
+/// And if it did, may the request carry the owner's session? Only with this
+/// launch's token (`token`): without it a same-origin request is relayed
+/// anonymously, because loopback alone proves nothing about the caller.
 fn from_webview(
     host: Option<&str>,
     origin: Option<&str>,
     site: Option<&str>,
     referer: Option<&str>,
+    token: bool,
     port: u16,
 ) -> Trust {
     if !host.is_some_and(|h| is_bridge(h, port)) {
@@ -284,7 +342,7 @@ fn from_webview(
     let same_origin = origin.is_none_or(bridge_origin)
         && site.is_none_or(|s| s.eq_ignore_ascii_case("same-origin") || s.eq_ignore_ascii_case("none"));
     if same_origin {
-        return Trust::Session;
+        return if token { Trust::Session } else { Trust::Anonymous };
     }
     // a Referer on our own origin. Only a page the bridge served can send it.
     let ours = referer
@@ -312,6 +370,8 @@ struct Incoming {
 enum Request {
     /// relay it to the ship
     Relay(Incoming),
+    /// the workspace's first navigation: set the token cookie, go here
+    Bootstrap(String),
     /// answer with this status line and never contact the ship
     Refuse(&'static str),
     /// say nothing: no request line, or a body cut short
@@ -353,6 +413,8 @@ fn read_request(reader: &mut impl BufRead, port: u16) -> std::io::Result<Request
     let mut content_len = 0usize;
     // host is dropped from the relay, so keep it here for the check below
     let mut host = None;
+    // cookie is never relayed either, but the bridge token rides in it
+    let mut cookie = None;
     let mut h = String::new();
     for n in 0.. {
         if !read_capped(reader, &mut h)? {
@@ -374,6 +436,9 @@ fn read_request(reader: &mut impl BufRead, port: u16) -> std::io::Result<Request
         if kl == "host" {
             host = Some(v.to_string());
         }
+        if kl == "cookie" {
+            cookie = Some(v.to_string());
+        }
         if drop_request_header(&kl) {
             continue;
         }
@@ -390,10 +455,22 @@ fn read_request(reader: &mut impl BufRead, port: u16) -> std::io::Result<Request
         header("origin"),
         header("sec-fetch-site"),
         header("referer"),
+        has_token(cookie.as_deref()),
         port,
     );
     if trust == Trust::Refuse {
         return Ok(Request::Refuse("403 Forbidden"));
+    }
+    if let Some(q) = target.strip_prefix(BOOT_PATH).and_then(|r| r.strip_prefix('?')) {
+        let arg = |name: &str| {
+            q.split('&').find_map(|kv| kv.strip_prefix(name).and_then(|v| v.strip_prefix('=')))
+        };
+        return Ok(match (arg("k"), arg("to")) {
+            (Some(k), Some(to)) if method == "GET"
+                && same_secret(k.as_bytes(), token().as_bytes())
+                && plain_path(to) => Request::Bootstrap(to.to_string()),
+            _ => Request::Refuse("403 Forbidden"),
+        });
     }
     if content_len > MAX_BODY {
         return Ok(Request::Refuse("413 Payload Too Large"));
@@ -463,6 +540,17 @@ fn serve(client: TcpStream, ship: &str, port: u16) -> std::io::Result<()> {
             return refuse(client, &mut reader, status);
         }
         Request::Drop => return Ok(()),
+        Request::Bootstrap(to) => {
+            crate::commands::dlog("bridge: workspace token handed over");
+            let mut c = client;
+            return write!(
+                c,
+                "HTTP/1.1 302 Found\r\nLocation: {to}\r\n\
+                 Set-Cookie: {TOKEN_COOKIE}={}; Path=/; HttpOnly; SameSite=Strict\r\n\
+                 Cache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                token()
+            );
+        }
     };
     crate::commands::dlog(&format!("bridge: {} {}", req.method, req.target));
 
@@ -698,7 +786,8 @@ mod tests {
     #[test]
     fn the_webviews_own_requests_are_still_relayed() {
         let good = [
-            // a plain local client: curl, or the app's own probes
+            // a plain local client: still relayed, but with no session unless
+            // it holds the workspace token (only_the_workspace_token_...)
             format!("GET /x HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\n\r\n"),
             format!("GET /x HTTP/1.1\r\nHost: localhost:{PORT_BASE}\r\n\r\n"),
             // the webview's same-origin fetch
@@ -732,7 +821,7 @@ mod tests {
         let ours = format!("http://127.0.0.1:{PORT_BASE}/apps/lattice/app");
         let bridge = format!("http://127.0.0.1:{PORT_BASE}");
         let t = |origin: Option<&str>, site: Option<&str>, referer: Option<&str>| {
-            from_webview(Some(&host), origin, site, referer, PORT_BASE)
+            from_webview(Some(&host), origin, site, referer, true, PORT_BASE)
         };
         // sandboxed frames: opaque origin, our own Referer
         assert_eq!(t(Some("null"), Some("cross-site"), Some(&ours)), Trust::Anonymous);
@@ -755,12 +844,75 @@ mod tests {
         }
         let req = format!(
             "GET /apps/lattice/x HTTP/1.1\r\nHost: {host}\r\nOrigin: {bridge}\r\n\
-             Sec-Fetch-Site: same-origin\r\n\r\n"
+             Sec-Fetch-Site: same-origin\r\nCookie: {TOKEN_COOKIE}={}\r\n\r\n",
+            token()
         );
         match read_request(&mut std::io::Cursor::new(req.into_bytes()), PORT_BASE).unwrap() {
             Request::Relay(r) => assert!(r.session, "the webview's own request keeps the session"),
             _ => panic!("the webview's own request must be relayed"),
         }
+    }
+
+    #[test]
+    fn only_the_workspace_token_carries_the_session() {
+        // Loopback is not a boundary: another account, or a sandboxed app
+        // with network but no home directory, reaches 127.0.0.1 without the
+        // cookie file. A bare local request used to be signed with the
+        // owner's session (security audit run-1). Now it is relayed with
+        // none, and only this launch's token earns the session.
+        let host = format!("127.0.0.1:{PORT_BASE}");
+        let bridge = format!("http://127.0.0.1:{PORT_BASE}");
+        let t = |origin: Option<&str>, site: Option<&str>, tok: bool| {
+            from_webview(Some(&host), origin, site, None, tok, PORT_BASE)
+        };
+        // curl, or any other local process: relayed, but anonymously
+        assert_eq!(t(None, None, false), Trust::Anonymous);
+        assert_eq!(t(Some(&bridge), Some("same-origin"), false), Trust::Anonymous);
+        // the workspace, holding its token
+        assert_eq!(t(None, None, true), Trust::Session);
+        assert_eq!(t(Some(&bridge), Some("same-origin"), true), Trust::Session);
+        // the token only counts by exact value, under its own name
+        let tok = token();
+        assert_eq!(tok.len(), 64, "256 bits, hex");
+        assert!(has_token(Some(&format!("a=b; {TOKEN_COOKIE}={tok}"))));
+        assert!(!has_token(Some(&format!("{TOKEN_COOKIE}={}", &tok[1..]))));
+        assert!(!has_token(Some(&format!("{TOKEN_COOKIE}x={tok}"))));
+        assert!(!has_token(Some(&format!("{TOKEN_COOKIE}={}0", tok))));
+        assert!(!has_token(None));
+    }
+
+    #[test]
+    fn the_bootstrap_hands_over_the_token_and_nothing_else() {
+        let ship = Stub::new(|_| (200, "relayed".to_string()));
+        let host = format!("127.0.0.1:{PORT_BASE}");
+        let get = |target: &str| {
+            String::from_utf8_lossy(&through_bridge(
+                format!("GET {target} HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes(),
+                &ship.base,
+            ))
+            .into_owned()
+        };
+        let ok = get(&format!("{BOOT_PATH}?k={}&to=/apps/lattice/app", token()));
+        assert!(ok.starts_with("HTTP/1.1 302 Found"), "{ok}");
+        assert!(ok.contains("\r\nLocation: /apps/lattice/app\r\n"), "{ok}");
+        assert!(
+            ok.contains(&format!("Set-Cookie: {TOKEN_COOKIE}={}; Path=/; HttpOnly; SameSite=Strict", token())),
+            "{ok}"
+        );
+        // a wrong token, or a redirect off the bridge, gets nothing
+        for bad in [
+            format!("{BOOT_PATH}?k=00&to=/apps/lattice/app"),
+            format!("{BOOT_PATH}?to=/apps/lattice/app"),
+            format!("{BOOT_PATH}?k={}&to=//evil.example/", token()),
+            format!("{BOOT_PATH}?k={}&to=https://evil.example/", token()),
+            format!("{BOOT_PATH}?k={}&to=/a%0d%0aSet-Cookie:x", token()),
+        ] {
+            let back = get(&bad);
+            assert!(back.starts_with("HTTP/1.1 403 Forbidden"), "{bad}: {back}");
+            assert!(!back.contains("Set-Cookie"), "{bad}");
+        }
+        // and the ship never saw any of it
+        assert_eq!(ship.requests().len(), 0);
     }
 
     #[test]
