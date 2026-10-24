@@ -4739,11 +4739,21 @@
     ::  cull tombs the CURRENT revision but leaves every stored %firm one, so
     ::  a deleted page's bodies stayed readable via page-history and could be
     ::  resurrected onto the next page created with the same name. Drop them
-    ::  first. (A folder delete culls the subtree; each page's own delete
-    ::  prunes its own history, so this covers the page case exactly.)
+    ::  first, for every page under the deleted path: a folder delete and a
+    ::  move each send one %del for the whole folder, so the nested pages'
+    ::  history used to survive the cull.
     ::  keep=0 drops everything, so the window is irrelevant here
-    ;<  ~  bind:m  (prune-hist (rf up pdir %code) 0 ~s0)
-    ;<  ~  bind:m  (prune-hist (rf up pdir %data) 0 ~s0)
+    ;<  dv=view:nexus  bind:m  (peek:io (rv up pdir) ~)
+    =/  rels=(list path)
+      ?.  ?=([%ball *] dv)  ~[/]
+      (murn (collect-tree ball.dv ~) |=([pax=path page=?] ?:(page `pax ~)))
+    ;<  ~  bind:m
+      |-  ^-  form:m
+      ?~  rels  (pure:m ~)
+      =/  d=path  (weld pdir i.rels)
+      ;<  ~  bind:m  (prune-hist (rf up d %code) 0 ~s0)
+      ;<  ~  bind:m  (prune-hist (rf up d %data) 0 ~s0)
+      $(rels t.rels)
     ;<  *  bind:m  (cull-soft:io (rv up pdir))
     ::  re-send the public grant act AFTER the cull, so the walk inside
     ::  +send-public-how sees the deletion and the dead page's data road
@@ -11317,6 +11327,9 @@
     ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
     ::  cull tombs the grub (gain=%.y keeps the body in born history). Drop its
     ::  index row so it's no longer live. No trash row. Pages have no restore.
+    ::  The history goes first: the /public peek grant covers this path, and
+    ::  a peek at an old case read the last published body after the cull.
+    ;<  ~  bind:m  (prune-hist road 0 ~s0)
     ;<  ~  bind:m  (cull:io road)
     ::  No tombstone binding: a subscriber learns of the delete from the
     ::  page leaving the revision list (+sub-apply-wave).
