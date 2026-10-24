@@ -4710,11 +4710,20 @@
     ::  The saving is the ~0.5s pier floor an upload used to pay per FILE. The
     ::  per-page darts are unchanged, so a batch is exactly as durable as the
     ::  saves it replaces. Bounded by the route, not here.
+    ::
+    ::  Every tenth page the writer sleeps a moment, as %know-batch does, so
+    ::  the ship takes what is waiting. Unbroken, a key's 200-page batch held
+    ::  the ship for as long as every write and compile took (security audit
+    ::  run-1). Pokes to the writer stay queued meanwhile.
+    =|  done=@ud
     |-  ^-  form:m
     ?~  pages.act  (pure:m ~)
+    ;<  ~  bind:m
+      ?.  &(!=(0 done) =(0 (mod done 10)))  (pure:m ~)
+      (sleep-draining (div ~s1 100))
     ;<  ~  bind:m  (make-page root pax.i.pages.act src.i.pages.act)
     ;<  ~  bind:m  (republish-if-shared root now pax.i.pages.act src.i.pages.act)
-    $(pages.act t.pages.act)
+    $(pages.act t.pages.act, done +(done))
       %tmpl-save
     ::  save a page-tree as a template: copy every page's CODE under
     ::  /template/<name>, rewriting its own root path to the template root, and
