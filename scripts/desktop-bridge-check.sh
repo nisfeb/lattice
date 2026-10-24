@@ -41,6 +41,7 @@ sleep 30
 bport=$(grep -o "bridge: listening on 127.0.0.1:[0-9]*" "$T/app.log" | head -1 | sed 's/.*://')
 [ -n "$bport" ] && curl -s -o /dev/null "http://127.0.0.1:$bport/apps/lattice/owner?via=other-local-process"
 wait "$APP"
+[ -s "$T/stub.log" ] || { echo "the stub saw no request. The app said:"; tail -40 "$T/app.log"; }
 
 # session <via> -> yes, no, mixed or absent
 session() {
