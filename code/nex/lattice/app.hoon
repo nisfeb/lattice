@@ -313,6 +313,8 @@
         ::  self-healing on every writer start. know/ needs nothing. Foreign
         ::  access is deny-by-default.
         ;<  ~  bind:m  (send-public-how root)
+        ::  page grants made before they were file roads (+narrow-page-grants)
+        ;<  ~  bind:m  narrow-page-grants
         ::  lay down the built-in page-tree templates (idempotent; skips if the
         ::  user already has them). Users instantiate a copy under /page.
         ;<  ~  bind:m  (ensure-shipped-templates root)
@@ -952,14 +954,12 @@
   ::  relative road there is relative to the peer's dir and grants
   ::  nothing. Only the registry's %how resolves relative roads, and it
   ::  confines them to the sender's prefix, which this editor is not.
-  =/  to-roads
-    |=  ps=(list path)
-    ^-  (set road:tarball)
-    (~(gas in *(set road:tarball)) (turn ps |=(p=path [%& %| p])))
+  ;<  mkr=(set road:tarball)  bind:m  (page-roads u.mkp)
+  ;<  pkr=(set road:tarball)  bind:m  (page-roads u.pkp)
   =/  =weir:nexus
-    :+  (~(uni in (ug-keep make.old)) (to-roads u.mkp))
+    :+  (~(uni in (ug-keep make.old)) mkr)
       poke.old
-    (~(uni in (ug-keep peek.old)) (to-roads u.pkp))
+    (~(uni in (ug-keep peek.old)) pkr)
   ;<  bans=banned:ls  bind:m  read-banned
   =/  who=(set @p)  (~(gas in *(set @p)) (murn ships same))
   ::  a group save must not smuggle a banned ship back in. Reject rather than
@@ -1959,17 +1959,20 @@
     ;<  pe=?  bind:m  (peek-exists:io (rv up pdir))
     ?.  pe  (send-err eyre-id 404 'no such page')
     ::  absolute, the road the ACL pane shows and the peer's weir matches
-    ::  (see +handle-share-group-save)
+    ::  (see +handle-share-group-save). The page's code grub only, which is
+    ::  all the peer opens. A grant on the dir also handed the peer the
+    ::  page's owner-only grubs (share, show, forms, the render cache) and
+    ::  every page nested under it (security audit run-1, +page-roads).
     ;<  sb=path  bind:m  self-base
-    =/  droad=road:tarball  [%& %| (weld sb pdir)]
+    =/  croad=road:tarball  [%& %& (weld sb pdir) %code]
     =/  gname=@t  (crip (slag 1 (scow %p u.shp)))
     ;<  ok=?  bind:m
       %-  ug-merge
       :^    gname
           (~(gas in *(set @p)) ~[u.shp])
-        (~(gas in *(set road:tarball)) ~[droad])
+        (~(gas in *(set road:tarball)) ~[croad])
       ?.  =('edit' mode)  ~
-      (~(gas in *(set road:tarball)) ~[droad])
+      (~(gas in *(set road:tarball)) ~[croad])
     ?.  ok  (ug-refused eyre-id)
     ::  what the peer should OPEN: the page's code grub, not the dir. By its
     ::  absolute path: they peek it on our ship, and +apply-share-notice
@@ -4491,12 +4494,18 @@
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   ;<  sb=path  bind:m  self-base
-  =/  pg=path  (weld sb (weld /page name))
+  ::  the page at every place this instance may live. A road on any of
+  ::  them counts, so a wrong guess about where we are cannot answer |.
+  =/  pgs=(list path)
+    %+  turn  ~(tap in (~(gas in *(set path)) [sb peer-bases:lu]))
+    |=(b=path (weld b (weld /page name)))
   ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
   ?.  ?=([~ %ball *] vw)  (pure:m |)
   %-  pure:m
-  %+  lien  ~(tap by dir.ball.u.vw)
-  |=  [nom=@ta gb=ball:tarball]
+  ::  every group, nested ones too, and file roads as well as dir roads:
+  ::  grubbery honours both (+grant-covers:ls)
+  %+  lien  (all-groups / ball.u.vw)
+  |=  [rel=path gb=ball:tarball]
   =/  fils  ?~(fil.gb ~ contents.u.fil.gb)
   =/  hw  (~(get by fils) %'how.weir')
   ?~  hw  |
@@ -4504,10 +4513,7 @@
   ?~  w  &
   %+  lien  ~(tap in ?:(mak make.u.w peek.u.w))
   |=  r=road:tarball
-  ?.  ?=([%& %| *] r)  |
-  ?|  =(p.p.r (scag (lent p.p.r) pg))
-      &(mak =(pg (scag (lent pg) p.p.r)))
-  ==
+  (lien pgs |=(pg=path (grant-covers:ls r pg mak)))
 ::  +apply-action: the writer's action dispatch, split out of the take-poke loop
 ::  so every mutation runs through one place (and is followed by a +bump-beacon).
 ::
@@ -7109,6 +7115,79 @@
 ::  exposed. A poke grant on main.sig is full eval power, not "edit a file".
 ::
 ++  ug-base  `path`/sys/ames/usergroups
+::  +all-groups: every usergroup in a usergroups ball, found the way
+::  grubbery's +find-groups finds them: a child named *.grp is a group, and
+::  any other child is a folder that may hold more. Each comes back as its
+::  dir relative to the ball, ending in the .grp segment, with its ball.
+++  all-groups
+  |=  [pax=path ug=ball:tarball]
+  ^-  (list [rel=path gb=ball:tarball])
+  =/  kids=(list [@ta ball:tarball])  ~(tap by dir.ug)
+  =|  acc=(list [rel=path gb=ball:tarball])
+  |-  ^-  (list [rel=path gb=ball:tarball])
+  ?~  kids  acc
+  =/  [nom=@ta kid=ball:tarball]  i.kids
+  ?:  (grp-name:ls nom)
+    $(kids t.kids, acc [[(snoc pax nom) kid] acc])
+  $(kids t.kids, acc (weld acc (all-groups (snoc pax nom) kid)))
+::  +page-roads: grant paths as roads. A page is granted by a file road on
+::  its code grub, which is all a grantee opens (+share-file), so the grant
+::  reaches neither the page's owner-only grubs (share, show, forms, the
+::  render cache) nor pages nested under it. Anything else, a folder, is
+::  a dir road: granting a folder is granting what is in it.
+++  page-roads
+  |=  ps=(list path)
+  =/  m  (fiber:fiber:nexus ,(set road:tarball))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sb=path  bind:m  self-base
+  =/  pre=path  (weld sb /page)
+  =|  out=(set road:tarball)
+  |-  ^-  form:m
+  ?~  ps  (pure:m out)
+  =/  rel=path  (slag (lent pre) i.ps)
+  ;<  pe=?  bind:m
+    ?.  &(?=(^ rel) =(pre (scag (lent pre) i.ps)))
+      (pure:(fiber:fiber:nexus ,?) |)
+    (peek-exists:io (rf up (weld /page rel) %code))
+  =/  r=road:tarball  ?:(pe [%& %& i.ps %code] [%& %| i.ps])
+  $(ps t.ps, out (~(put in out) r))
+::  +narrow-page-grants: a page grant used to be a dir road on the page's
+::  dir, which also reached its owner-only grubs and the pages nested under
+::  it. On every writer start each dir road on one of our pages becomes the
+::  file road on its code grub (+page-roads), in every group. It only ever
+::  narrows: a folder's road stays, and so does every other road. Soft, so
+::  an install that refused the usergroup roads keeps its grants as they
+::  were.
+++  narrow-page-grants
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  =/  gs=(list [rel=path gb=ball:tarball])  (all-groups / ball.u.vw)
+  =/  dirs
+    |=  rs=(set road:tarball)
+    ^-  (list path)
+    (murn ~(tap in rs) |=(r=road:tarball ?.(?=([%& %| *] r) ~ `p.p.r)))
+  =/  rest
+    |=  rs=(set road:tarball)
+    ^-  (set road:tarball)
+    (~(gas in *(set road:tarball)) (skip ~(tap in rs) |=(r=road:tarball ?=([%& %| *] r))))
+  |-  ^-  form:m
+  ?~  gs  (pure:m ~)
+  =/  fils  ?~(fil.gb.i.gs ~ contents.u.fil.gb.i.gs)
+  =/  hw  (~(get by fils) %'how.weir')
+  =/  w=(unit weir:nexus)
+    ?~  hw  ~
+    (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hw))))
+  ?~  w  $(gs t.gs)
+  ;<  mk=(set road:tarball)  bind:m  (page-roads (dirs make.u.w))
+  ;<  pk=(set road:tarball)  bind:m  (page-roads (dirs peek.u.w))
+  =/  nw=weir:nexus  [(~(uni in (rest make.u.w)) mk) poke.u.w (~(uni in (rest peek.u.w)) pk)]
+  ?:  =(nw u.w)  $(gs t.gs)
+  ;<  *  bind:m
+    (ug-over [%& %& (weld ug-base rel.i.gs) %'how.weir'] [[/ %weir] nw])
+  $(gs t.gs)
 ::  +ug-dirfold-paths: the roads a UI can render (absolute dir folds), plus a
 ::  count of the ones it can't. The count matters. The editor must SAY it is
 ::  preserving rules it doesn't show, or a user auditing their ACL is misled.
@@ -7118,6 +7197,9 @@
   %+  roll  ~(tap in rs)
   |=  [r=road:tarball acc=[ps=(list @t) opaque=@ud]]
   ?:  ?=([%& %| *] r)  [[(spat p.p.r) ps.acc] opaque.acc]
+  ::  a page grant is a file road on the page's code grub (+page-roads),
+  ::  and the editor speaks of it as the page
+  ?:  &(?=([%& %& *] r) =(%code name.p.p.r))  [[(spat path.p.p.r) ps.acc] opaque.acc]
   [ps.acc +(opaque.acc)]
 ::  +ug-keep: the roads the UI does NOT manage, carried through a save
 ::  verbatim. Silently dropping an ACL rule the editor couldn't render would
@@ -7126,7 +7208,9 @@
   |=  rs=(set road:tarball)
   ^-  (set road:tarball)
   %-  ~(gas in *(set road:tarball))
-  (skip ~(tap in rs) |=(r=road:tarball ?=([%& %| *] r)))
+  %+  skip  ~(tap in rs)
+  |=  r=road:tarball
+  |(?=([%& %| *] r) &(?=([%& %& *] r) =(%code name.p.p.r)))
 ::  +ug-over: write one usergroup grub, SOFT. %.n = not written. A hard
 ::  over:io on a road this install was not granted parks the request
 ::  fiber, and the browser waits on an answer that never comes.
@@ -7167,27 +7251,34 @@
   ;<  sb=path  bind:m  self-base
   =/  old=path  (weld sb (weld /page from))
   =/  n=@ud  (lent old)
-  =/  under  |=(r=road:tarball &(?=([%& %| *] r) =(old (scag n p.p.r))))
+  ::  dir roads and file roads alike (a page grant is a file road on its
+  ::  code grub, +share-file)
+  =/  under
+    |=  r=road:tarball
+    ?+  r  |
+      [%& %| *]  =(old (scag n p.p.r))
+      [%& %& *]  =(old (scag n path.p.p.r))
+    ==
   =/  re
     |=  rs=(set road:tarball)
     ^-  (set road:tarball)
     ?~  to  (~(gas in *(set road:tarball)) (skip ~(tap in rs) under))
+    =/  new=path  (weld sb (weld /page u.to))
     %-  ~(run in rs)
     |=  r=road:tarball
     ?.  (under r)  r
-    ?>  ?=([%& %| *] r)
-    [%& %| (weld (weld sb (weld /page u.to)) (slag n p.p.r))]
+    ?+  r  r
+      [%& %| *]  [%& %| (weld new (slag n p.p.r))]
+      [%& %& *]  [%& %& (weld new (slag n path.p.p.r)) name.p.p.r]
+    ==
   ::  one SOFT deep read of every group. The usergroup read is optional
   ::  (weir.json), and this runs on every move and delete: a hard peek
   ::  there would park each one on an install that refused it.
   ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
   ?.  ?=([~ %ball *] vw)  (pure:m ~)
-  =/  gs=(list [nom=@ta gb=ball:tarball])  ~(tap by dir.ball.u.vw)
+  =/  gs=(list [rel=path gb=ball:tarball])  (all-groups / ball.u.vw)
   |-  ^-  form:m
   ?~  gs  (pure:m ~)
-  =/  nt=tape  (trip nom.i.gs)
-  ?.  &((gth (lent nt) 4) =(".grp" (slag (sub (lent nt) 4) nt)))
-    $(gs t.gs)
   =/  fils  ?~(fil.gb.i.gs ~ contents.u.fil.gb.i.gs)
   =/  hw  (~(get by fils) %'how.weir')
   =/  w=(unit weir:nexus)
@@ -7197,7 +7288,7 @@
   =/  nw=weir:nexus  [(re make.u.w) poke.u.w (re peek.u.w)]
   ?:  =(nw u.w)  $(gs t.gs)
   ;<  *  bind:m
-    (ug-over [%& %& (snoc ug-base nom.i.gs) %'how.weir'] [[/ %weir] nw])
+    (ug-over [%& %& (weld ug-base rel.i.gs) %'how.weir'] [[/ %weir] nw])
   $(gs t.gs)
 ::  +ug-refused: the answer when lattice may not write usergroups.
 ++  ug-refused
@@ -7216,17 +7307,18 @@
 ++  share-groups-json
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
-  ;<  dn=view:nexus  bind:m  (peek-shallow:io [%& %| ug-base] ~)
+  ;<  dn=view:nexus  bind:m  (peek:io [%& %| ug-base] ~)
   ?.  ?=([%ball *] dn)  (pure:m a+~)
-  =/  names=(list @ta)  (sort ~(tap in ~(key by dir.ball.dn)) aor)
+  ::  nested groups too (+all-groups), named by their path, so the owner
+  ::  sees every grant. The editor saves and deletes by a plain name only,
+  ::  so it refuses to change a nested one, which is the safe failure.
+  =/  names=(list path)  (sort (turn (all-groups / ball.dn) head) aor)
   =|  out=(list json)
   |-  ^-  form:m
   ?~  names  (pure:m a+(flop out))
-  =/  nt=tape  (trip i.names)
-  ?.  &((gth (lent nt) 4) =(".grp" (slag (sub (lent nt) 4) nt)))
-    $(names t.names)
-  =/  base=@t  (crip (scag (sub (lent nt) 4) nt))
-  =/  gdir=path  (snoc ug-base i.names)
+  =/  nt=tape  (trip (spat i.names))
+  =/  base=@t  (crip (slag 1 (scag (sub (lent nt) 4) nt)))
+  =/  gdir=path  (weld ug-base i.names)
   ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
   =/  ships=(list @p)
     ?.  ?=([%file *] wv)  ~
@@ -7320,26 +7412,25 @@
   |=  who=@p
   =/  m  (fiber:fiber:nexus ,(unit @ud))
   ^-  form:m
-  ;<  dn=view:nexus  bind:m  (peek-shallow:io [%& %| ug-base] ~)
+  ;<  dn=view:nexus  bind:m  (peek:io [%& %| ug-base] ~)
   ?.  ?=([%ball *] dn)  (pure:m `0)
-  =/  names=(list @ta)  (sort ~(tap in ~(key by dir.ball.dn)) aor)
+  ::  nested groups too (+all-groups): a ban that missed one left the ship
+  ::  its grants there
+  =/  gs=(list path)  (sort (turn (all-groups / ball.dn) head) aor)
   =|  hit=@ud
   |-  ^-  form:m
-  ?~  names  (pure:m `hit)
-  =/  nt=tape  (trip i.names)
-  ?.  &((gth (lent nt) 4) =(".grp" (slag (sub (lent nt) 4) nt)))
-    $(names t.names)
-  =/  gdir=path  (snoc ug-base i.names)
+  ?~  gs  (pure:m `hit)
+  =/  gdir=path  (weld ug-base i.gs)
   ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
   =/  ships=(set @p)
     ?.  ?=([%file *] wv)  ~
     (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
   ?.  (~(has in ships) who)
-    $(names t.names)
+    $(gs t.gs)
   ;<  ok=?  bind:m
     (ug-over [%& %& gdir %'who.ships'] [[/ %ships] (~(del in ships) who)])
   ?.  ok  (pure:m ~)
-  $(names t.names, hit +(hit))
+  $(gs t.gs, hit +(hit))
 ::  +ban-road: where the banlist lives.
 ++  ban-road  |=(up=@ud ^-(road:tarball (rf up / %banned)))
 ::  +read-banned: the banlist, empty if never written. Every enforcement point

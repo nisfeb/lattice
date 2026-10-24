@@ -84,4 +84,35 @@
   =/  b=entry:ls  [zod /apps/y 'read' ~2024.1.1]
   =/  both=shared:ls  (put-entry:ls (put-entry:ls ~ a) b)
   (expect-eq !>(`(list path)`~[/apps/y]) !>((turn (del-entry:ls both zod /apps/x) |=(e=entry:ls pax.e))))
+::  a grant road names a page by its dir, a folder above it, or a file in
+::  it. Roads come in as nouns, the shapes tarball gives them.
+++  pg  `path`/apps/lat/page/a
+++  test-grant-covers-dir-roads
+  ;:  weld
+    (expect-eq !>(&) !>((grant-covers:ls [%& %| /apps/lat/page/a] pg |)))
+    (expect-eq !>(&) !>((grant-covers:ls [%& %| /apps/lat/page] pg |)))
+    (expect-eq !>(|) !>((grant-covers:ls [%& %| /apps/lat/page/ab] pg |)))
+    (expect-eq !>(|) !>((grant-covers:ls [%& %| /apps/lat/page/a/b] pg |)))
+    (expect-eq !>(&) !>((grant-covers:ls [%& %| /apps/lat/page/a/b] pg &)))
+  ==
+++  test-grant-covers-file-roads
+  ;:  weld
+    (expect-eq !>(&) !>((grant-covers:ls [%& %& /apps/lat/page/a %code] pg |)))
+    (expect-eq !>(&) !>((grant-covers:ls [%& %& /apps/lat/page/a %code] pg &)))
+    (expect-eq !>(&) !>((grant-covers:ls [%& %& /apps/lat/page/a/b %code] pg &)))
+    (expect-eq !>(|) !>((grant-covers:ls [%& %& /apps/lat/page %a] pg &)))
+    (expect-eq !>(|) !>((grant-covers:ls [%& %& /apps/lat/page/b %code] pg &)))
+  ==
+::  a relative road grants nothing in a group weir, and junk is no road
+++  test-grant-covers-other-shapes
+  ;:  weld
+    (expect-eq !>(|) !>((grant-covers:ls [%| 0 %| /page/a] pg &)))
+    (expect-eq !>(|) !>((grant-covers:ls 42 pg &)))
+  ==
+++  test-grp-name
+  ;:  weld
+    (expect-eq !>(&) !>((grp-name:ls 'bus.grp')))
+    (expect-eq !>(|) !>((grp-name:ls '.grp')))
+    (expect-eq !>(|) !>((grp-name:ls 'team')))
+  ==
 --
