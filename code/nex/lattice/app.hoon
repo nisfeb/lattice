@@ -496,11 +496,15 @@
         ::  mark on content pages too, which still compile. A peer's write
         ::  never passed +make-page either, so its history is held to our
         ::  caps here.
+        ::  a content page's body, when its source is exactly that shell.
+        ::  It runs as data below, and it is the edit-grant check's answer.
+        =/  pb=(unit [builder=@tas body=@t])
+          ?:(=(src held) ~ (plain-body src))
         ;<  lock=?  bind:m
           =/  n  (fiber:fiber:nexus ,?)
           =/  rel=path  (slag 1 pdir)
           ?:  =(src held)  (pure:n |)
-          =/  pc=?  (plain-content src rel)
+          =/  pc=?  |(?=(^ pb) (folder-index-src src rel))
           ;<  lx=?  bind:n  (peek-exists:io (lock-road up rel))
           ?:  &(lx !pc)  (pure:n &)
           ;<  eg=?  bind:n  (edit-granted rel)
@@ -510,6 +514,13 @@
           (pure:n !pc)
         =?  bild  !=(src held)
           ?:  lock  [%| edit-lock-msg]
+          ::  a content page never parses its body as hoon. Parsing it as
+          ::  one cord literal took time growing with the square of its
+          ::  size, about an hour at 2 MiB with the ship stalled. A small
+          ::  shell for its builder is compiled and slammed with the body.
+          ?^  pb
+            %-  mule  |.
+            (slam (slap !>(pg) (ream (content-shell builder.u.pb))) !>(body.u.pb))
           ::  compile the page against the page stdlib (pg): its builders
           ::  (text/html/needs/every/sends/esc) and the +result mold are in
           ::  scope at the top, the full hoon/zuse stack beneath.
@@ -1530,10 +1541,14 @@
     =/  brief=?  =('1' (~(gut by args) 'brief' '0'))
     =/  cap=@ud  (fall (rush (~(gut by args) 'cap' '') dem) core-cap:lk)
     ::  the world block rides along only for the owner or a sensitivity-cleared
-    ::  key, and only while orrery's digest is under a day old.
+    ::  key, and only while orrery's digest is under a day old. It is
+    ::  sensitive, so a key gets it only by asking (world=1), and asking
+    ::  taints the key like any other sensitive read.
     ;<  wj=(unit json)  bind:m  orrery-world
     ;<  now=@da  bind:m  bowl-now
-    =/  cleared=?  |(?=(~ key) sensitive.scope.u.key)
+    =/  cleared=?
+      ?~  key  &
+      &(sensitive.scope.u.key =('1' (~(gut by args) 'world' '0')))
     =/  jo=(unit (map @t json))  ?:(?=([~ %o *] wj) `p.u.wj ~)
     =/  tx=(unit json)  ?~(jo ~ (~(get by u.jo) 'text'))
     =/  at=(unit json)  ?~(jo ~ (~(get by u.jo) 'at'))
@@ -1546,6 +1561,7 @@
       ?.  ?=([~ %s *] at)  ~
       ?.  (fresh-world:lo p.u.at now ~d1)  ~
       `p.u.tx
+    ;<  ~  bind:m  (taint-if key ?=(^ world))
     (send-typed eyre-id 'text/plain; charset=utf-8' 'no-store' (index-text:lk (listed key es ~) brief cap world))
   ::  know-lint: what a tidy would fix (+lint-run:lk), proposed and never
   ::  applied. Computed when asked, so always current. /know?lint=1 reviews it.
@@ -10135,12 +10151,30 @@
 ++  plain-content
   |=  [src=@t pax=path]
   ^-  ?
-  ?:  &(?=(^ pax) =(src (make-folder-index pax)))  &
+  |((folder-index-src src pax) ?=(^ (plain-body src)))
+++  folder-index-src
+  |=  [src=@t pax=path]
+  ^-  ?
+  &(?=(^ pax) =(src (make-folder-index pax)))
+::  +plain-body: the builder and body of a content page, when its source
+::  is exactly the shell +wrap-content writes around a known builder.
+::
+++  plain-body
+  |=  src=@t
+  ^-  (unit [builder=@tas body=@t])
   =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
-  ?~  un  |
-  ?&  (~(has in content-builders) builder.u.un)
-      =(src (wrap-content builder.u.un body.u.un))
-  ==
+  ?~  un  ~
+  ?.  (~(has in content-builders) builder.u.un)  ~
+  ?.  =(src (wrap-content builder.u.un body.u.un))  ~
+  un
+::  +content-shell: the page gate of a content page with the body as its
+::  outer sample, so the evaluator compiles a few lines whatever the size.
+::  The inner gate is +content-env-pre, the same gate the stored source is.
+::
+++  content-shell
+  |=  builder=@tas
+  ^-  @t
+  (crip :(weld "|=  body=@t  " content-env-pre (trip builder) " body)"))
 ::  +lock-road: the edit-lock marker of page `rel`. It sits under /lock,
 ::  outside the page dir, so a peer's make grant on the page cannot reach
 ::  it.
@@ -10375,12 +10409,14 @@
 ::  whitelisted. What IS checked is that the message came from window.opener,
 ::  and the payload shape. The archive is filed under the claimed url only
 ::  when that url has the sender's real origin, else under the sender's
-::  origin, so a page cannot file its content as another site's. Worth
-::  being clear about the residual exposure: a
-::  hostile page the user clicks the bookmarklet on could send content other
-::  than what is displayed. That is the same trust as /clip (junk in your own
-::  tree, nothing disclosed), but here the content is arbitrary rather than
-::  fetched, so it is a step further.
+::  origin, so a page cannot file its content as another site's.
+::
+::  Any site can open this page, so nothing is saved until the owner clicks
+::  Archive under the sender's origin and size. The first message is the
+::  one shown. The bookmarklet repeats it until this page answers, and the
+::  repeats are ignored, so the body cannot change under the click. A
+::  hostile page the user does send could still send content other than
+::  what is displayed: junk in your own tree, nothing disclosed.
 ++  clip-paste-html
   |=  url=@t
   ^-  @t
@@ -10392,7 +10428,7 @@
     "<div id=\"pst\" class=\"muted\">waiting for the page&hellip;</div>"
     "<script>"
     %-  trip
-    '(function(){var out=document.getElementById("pst");var p=new URLSearchParams(location.search);var u=p.get("url")||"";var done=false;function show(m,bad){out.textContent=m;out.className=bad?"err":"";}function send(html,src){if(done)return; done=true;show("archiving…");fetch("/apps/lattice/clip-html?url="+encodeURIComponent(src),{method:"POST",body:html}).then(function(r){if(r.ok){return r.text().then(function(t){document.open();document.write(t);document.close();});}return r.json().catch(function(){return{}}).then(function(j){show("could not archive"+(j.error?": "+j.error:" ("+r.status+")"),true);});}).catch(function(){show("could not archive (network error)",true);});}window.addEventListener("message",function(e){if(e.source!==window.opener)return;var d=e.data;if(!d||d.lattice!==1||typeof d.html!=="string")return;var o=e.origin;if(!/^https?:/.test(o)){show("only an http or https page can be archived",true);return;}var c="";try{c=new URL(u).origin}catch(x){}send(d.html,c===o?u:o+"/");});try{if(window.opener)window.opener.postMessage({lattice:"ready"},"*");}catch(x){}setTimeout(function(){if(!done)show("nothing arrived from the page — try the bookmarklet again",true);},15000);})();'
+    '(function(){var out=document.getElementById("pst");var p=new URLSearchParams(location.search);var u=p.get("url")||"";var done=false;var got=false;var tm;function show(m,bad){out.textContent=m;out.className=bad?"err":"";}function send(html,src){if(done)return; done=true;show("archiving…");fetch("/apps/lattice/clip-html?url="+encodeURIComponent(src),{method:"POST",body:html}).then(function(r){if(r.ok){return r.text().then(function(t){document.open();document.write(t);document.close();});}return r.json().catch(function(){return{}}).then(function(j){show("could not archive"+(j.error?": "+j.error:" ("+r.status+")"),true);});}).catch(function(){show("could not archive (network error)",true);});}function ask(html,src,o){got=true;clearTimeout(tm);show("");var q=document.createElement("p");q.textContent=o+" sent a page ("+Math.ceil(html.length/1024)+" KB). Archive it?";var y=document.createElement("button");y.type="button";y.className="btn";y.textContent="Archive";var n=document.createElement("button");n.type="button";n.className="btn";n.textContent="Cancel";y.onclick=function(){y.disabled=true;n.disabled=true;send(html,src);};n.onclick=function(){done=true;y.disabled=true;n.disabled=true;show("not archived");};out.appendChild(q);out.appendChild(y);out.appendChild(document.createTextNode(" "));out.appendChild(n);}window.addEventListener("message",function(e){if(got||e.source!==window.opener)return;var d=e.data;if(!d||d.lattice!==1||typeof d.html!=="string")return;var o=e.origin;if(!/^https?:/.test(o)){show("only an http or https page can be archived",true);return;}var c="";try{c=new URL(u).origin}catch(x){}ask(d.html,c===o?u:o+"/",o);});try{if(window.opener)window.opener.postMessage({lattice:"ready"},"*");}catch(x){}tm=setTimeout(function(){if(!got)show("nothing arrived from the page — try the bookmarklet again",true);},15000);})();'
     "</script>"
   ==
 ::  +settings-html: the settings page. Search-index maintenance, the browser
@@ -13252,28 +13288,6 @@
   ;<  vis=[ok=? cur=mirror-cursor:lm]  bind:m  (mirror-visits cur.fol)
   ;<  ~  bind:m  (write-mirror-cursor cur.vis)
   (pure:m [&(ok.pag ok.kno ok.fol ok.vis) cur.vis])
-::  +obelisk-ensure: install %obelisk from its publisher when the agent
-::  is not running here. Presence is a gall liveness scry, never a poke
-::  at the agent: a poke at an absent agent is neither acked nor refused
-::  and would wedge this fiber. The install poke is the one the settings
-::  button fires; kiln makes it a no-op while a sync already exists, so
-::  a slow first download and a later boot do not fight. A desk that
-::  has a source from another ship is never touched (see below).
-::
-++  obelisk-ensure
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  running=?  bind:m  (typed-scry:io ? %loob /gu/obelisk/$)
-  ?:  running  (pure:m ~)
-  ::  not running is not the same as absent. A desk installed from any
-  ::  publisher and merely suspended has a kiln source, and a kiln
-  ::  install would REPLACE that source with ours. Leave it alone.
-  =/  sources-mold  (map @tas (pair @p @tas))
-  ;<  srcs=(map @tas (pair @p @tas))  bind:m
-    (typed-scry:io sources-mold %noun /gx/hood/kiln/sources/noun)
-  ?:  (~(has by srcs) %obelisk)  (pure:m ~)
-  %-  (say 1 ~[leaf+"lattice: installing %obelisk for the commons mirror, from ~dister-nomryg-nilref"])
-  (gall-poke-fire %hood [%kiln-install [%obelisk ~dister-nomryg-nilref %obelisk]])
 ::  +mirror-loop: the reconciler's life. Wake, check the enabled flag,
 ::  find whether anything changed (the beacon for content, a local
 ::  history diff for visits, which deliberately never bump the
@@ -13284,10 +13298,9 @@
 ++  mirror-loop
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ::  once per fiber life, before anything else: make sure obelisk is
-  ::  on this ship, so the mirror has a desk to talk to the moment it
-  ::  is switched on. A fresh install gets its dependency unattended.
-  ;<  ~  bind:m  obelisk-ensure
+  ::  %obelisk is installed only from the settings button, which the
+  ::  /sys/gall consent text promises. Until it is, the mirror's switch
+  ::  stays hidden and the loop below idles.
   |-
   ::  piggyback the orrery journal mirror on this behn-driven loop: it runs
   ::  on the first iteration (a boot catch-up) and on every wake thereafter,
