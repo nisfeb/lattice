@@ -25,7 +25,11 @@
 //! One exception. The app renders untrusted pages in sandboxed frames, and
 //! those have an opaque origin. Their requests say `cross-site`, and some
 //! say `Origin: null`. A Referer on the bridge's own origin lets them
-//! through, since no other site can forge one.
+//! through, since no other site can forge one, but WITHOUT the owner's
+//! session. A browser gives an opaque-origin frame no cookies, and the ship
+//! relies on that: public assets load, owner routes answer 403. Signing those
+//! requests would hand peer-written script in a sandboxed frame the owner's
+//! session, which is exactly what the sandbox is there to withhold.
 //!
 //! Lines, header count and body size are capped too, so a stray client
 //! cannot make a thread buffer without bound.
@@ -250,27 +254,47 @@ fn is_bridge(authority: &str, port: u16) -> bool {
         || authority.eq_ignore_ascii_case(&format!("localhost:{port}"))
 }
 
+/// How the bridge may relay one request. See the module comment.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum Trust {
+    /// not the webview: refused before the ship sees it
+    Refuse,
+    /// a sandboxed frame, let through on our own Referer but relayed with no
+    /// session, the way a browser treats an opaque origin
+    Anonymous,
+    /// the webview's own same-origin request, relayed with the owner's session
+    Session,
+}
+
 /// Did the webview send this, and not some other page in some browser?
-/// See the module comment for why each header matters.
+/// And if it did, may the request carry the owner's session?
 fn from_webview(
     host: Option<&str>,
     origin: Option<&str>,
     site: Option<&str>,
     referer: Option<&str>,
     port: u16,
-) -> bool {
+) -> Trust {
+    if !host.is_some_and(|h| is_bridge(h, port)) {
+        return Trust::Refuse;
+    }
+    let bridge_origin = |o: &str| o.strip_prefix("http://").is_some_and(|a| is_bridge(a, port));
+    // same-origin, or a navigation the user made. same-site is NOT enough:
+    // another server on 127.0.0.1 is same-site with the bridge.
+    let same_origin = origin.is_none_or(bridge_origin)
+        && site.is_none_or(|s| s.eq_ignore_ascii_case("same-origin") || s.eq_ignore_ascii_case("none"));
+    if same_origin {
+        return Trust::Session;
+    }
     // a Referer on our own origin. Only a page the bridge served can send it.
     let ours = referer
         .and_then(|r| r.strip_prefix("http://"))
         .and_then(|r| r.split(['/', '?', '#']).next())
         .is_some_and(|a| is_bridge(a, port));
-    let origin_ok = match origin {
-        None => true,
-        Some("null") => ours,
-        Some(o) => o.strip_prefix("http://").is_some_and(|a| is_bridge(a, port)),
-    };
-    let site_ok = ours || !site.is_some_and(|s| s.eq_ignore_ascii_case("cross-site"));
-    host.is_some_and(|h| is_bridge(h, port)) && origin_ok && site_ok
+    if ours && origin.is_none_or(|o| o == "null" || bridge_origin(o)) {
+        return Trust::Anonymous;
+    }
+    Trust::Refuse
 }
 
 /// One request off the wire, already filtered, ready to relay. An empty body
@@ -280,6 +304,8 @@ struct Incoming {
     target: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    /// relay with the owner's session (false: a sandboxed frame's request)
+    session: bool,
 }
 
 /// What to do with one request off the wire.
@@ -359,14 +385,14 @@ fn read_request(reader: &mut impl BufRead, port: u16) -> std::io::Result<Request
             .find(|(k, _)| k.eq_ignore_ascii_case(name))
             .map(|(_, v)| v.as_str())
     };
-    let webview = from_webview(
+    let trust = from_webview(
         host.as_deref(),
         header("origin"),
         header("sec-fetch-site"),
         header("referer"),
         port,
     );
-    if !webview {
+    if trust == Trust::Refuse {
         return Ok(Request::Refuse("403 Forbidden"));
     }
     if content_len > MAX_BODY {
@@ -382,7 +408,7 @@ fn read_request(reader: &mut impl BufRead, port: u16) -> std::io::Result<Request
             return Ok(Request::Drop); // truncated body: same as a failed read_exact
         }
     }
-    Ok(Request::Relay(Incoming { method, target, headers, body }))
+    Ok(Request::Relay(Incoming { method, target, headers, body, session: trust == Trust::Session }))
 }
 
 /// Answer `status` with no ship involved, then close. The client may still
@@ -444,7 +470,7 @@ fn serve(client: TcpStream, ship: &str, port: u16) -> std::io::Result<()> {
     for (k, v) in &req.headers {
         out = out.set(k, v);
     }
-    let out = with_cookie(out);
+    let out = if req.session { with_cookie(out) } else { out };
     let resp = if !req.body.is_empty() { out.send_bytes(&req.body) } else { out.call() };
     let mut c = client;
     let resp = match resp {
@@ -693,6 +719,47 @@ mod tests {
             let (status, hits) = status_and_hits(&req);
             assert_eq!(status, "HTTP/1.1 200 OK", "{req}");
             assert_eq!(hits, 1, "{req}");
+        }
+    }
+
+    #[test]
+    fn a_sandboxed_frame_is_relayed_without_the_owners_session() {
+        // The Referer exception lets an opaque-origin frame load what the ship
+        // serves publicly. The owner's cookie must not ride along: a browser
+        // gives that frame no cookies, and the ship's sandbox depends on it
+        // (audit finding desktop-bridge-referer-exception, lattice run-1).
+        let host = format!("127.0.0.1:{PORT_BASE}");
+        let ours = format!("http://127.0.0.1:{PORT_BASE}/apps/lattice/app");
+        let bridge = format!("http://127.0.0.1:{PORT_BASE}");
+        let t = |origin: Option<&str>, site: Option<&str>, referer: Option<&str>| {
+            from_webview(Some(&host), origin, site, referer, PORT_BASE)
+        };
+        // sandboxed frames: opaque origin, our own Referer
+        assert_eq!(t(Some("null"), Some("cross-site"), Some(&ours)), Trust::Anonymous);
+        assert_eq!(t(None, Some("cross-site"), Some(&ours)), Trust::Anonymous);
+        // the webview itself keeps its session
+        assert_eq!(t(Some(&bridge), Some("same-origin"), Some(&ours)), Trust::Session);
+        assert_eq!(t(None, Some("none"), None), Trust::Session);
+        assert_eq!(t(None, None, None), Trust::Session);
+        // another server on 127.0.0.1 is same-site, not same-origin
+        assert_eq!(t(None, Some("same-site"), Some("http://127.0.0.1:8080/")), Trust::Refuse);
+        assert_eq!(t(Some("http://127.0.0.1:8080"), Some("same-site"), None), Trust::Refuse);
+        // and the decision reaches the relay
+        let req = format!(
+            "GET /apps/lattice/x HTTP/1.1\r\nHost: {host}\r\nOrigin: null\r\n\
+             Sec-Fetch-Site: cross-site\r\nReferer: {ours}\r\n\r\n"
+        );
+        match read_request(&mut std::io::Cursor::new(req.into_bytes()), PORT_BASE).unwrap() {
+            Request::Relay(r) => assert!(!r.session, "a sandboxed frame must not carry the session"),
+            _ => panic!("a sandboxed frame's request should still be relayed"),
+        }
+        let req = format!(
+            "GET /apps/lattice/x HTTP/1.1\r\nHost: {host}\r\nOrigin: {bridge}\r\n\
+             Sec-Fetch-Site: same-origin\r\n\r\n"
+        );
+        match read_request(&mut std::io::Cursor::new(req.into_bytes()), PORT_BASE).unwrap() {
+            Request::Relay(r) => assert!(r.session, "the webview's own request keeps the session"),
+            _ => panic!("the webview's own request must be relayed"),
         }
     }
 
