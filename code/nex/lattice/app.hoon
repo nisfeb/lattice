@@ -7062,8 +7062,10 @@
   ?.  move  $(days t.days)
   =/  pax=path  ~[%journal name]
   =/  body=@t  (journal-body:lo head `@t`i.days text.u.rec)
-  ;<  ~  bind:m  (poke-eval [%make pax (wrap-content %md body)])
+  ::  marked first: between a make and a later mark, a key without
+  ::  clearance could read the new brief
   ;<  ~  bind:m  (poke-eval [%page-sensitive pax &])
+  ;<  ~  bind:m  (poke-eval [%make pax (wrap-content %md body)])
   $(days t.days, synced (~(put by synced) `@t`name at.u.rec))
 ::  +orrery-rec: pull the `at` and `text` strings out of one orrery day
 ::  record. ~ when the json is not an object or either field is missing or
