@@ -276,6 +276,11 @@
         ::  local FUSE client (lattice-fs), the native-transport twin of the
         ::  HTTP page-tree/page-source/page-save routes.
             [%fall %& [/ %'fs.sig'] [[/ %sig] ~]]
+        ::  /lock (+set-edit-lock) and /banned (+ban-road) are enforcement
+        ::  state. Uncovered, every reload dropped them, which compiled a
+        ::  revoked grantee's hoon and let banned ships back in.
+            [%fall %| /lock empty-dir:loader]
+            [%fall %& [/ %banned] [[/lattice %banned] *banned:ls]]
         ==
     ::
     ++  on-file
