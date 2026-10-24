@@ -542,7 +542,9 @@
         =/  cmd=(unit @t)  ?:(fresh `txt.cur ~)
         ::  poke budget for this run: a command carries one (a page reached via
         ::  a poke got a decremented budget). A dep/timer tick starts fresh.
-        =/  run-bud=@ud  ?:(fresh bud.cur poke-budget-max)
+        ::  Clamped: the command grub sits in the page dir, so a writer other
+        ::  than ours could carry any budget.
+        =/  run-bud=@ud  ?:(fresh (min bud.cur poke-budget-max) poke-budget-max)
         ::  eval-run answers its error text ('' on success) and any timer the
         ::  page asked for (clamped, or ~ for none or a failed run)
         ;<  [err=@t wake=(unit @dr)]  bind:m
