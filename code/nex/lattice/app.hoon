@@ -496,11 +496,15 @@
         ::  mark on content pages too, which still compile. A peer's write
         ::  never passed +make-page either, so its history is held to our
         ::  caps here.
+        ::  a content page's body, when its source is exactly that shell.
+        ::  It runs as data below, and it is the edit-grant check's answer.
+        =/  pb=(unit [builder=@tas body=@t])
+          ?:(=(src held) ~ (plain-body src))
         ;<  lock=?  bind:m
           =/  n  (fiber:fiber:nexus ,?)
           =/  rel=path  (slag 1 pdir)
           ?:  =(src held)  (pure:n |)
-          =/  pc=?  (plain-content src rel)
+          =/  pc=?  |(?=(^ pb) (folder-index-src src rel))
           ;<  lx=?  bind:n  (peek-exists:io (lock-road up rel))
           ?:  &(lx !pc)  (pure:n &)
           ;<  eg=?  bind:n  (edit-granted rel)
@@ -510,6 +514,13 @@
           (pure:n !pc)
         =?  bild  !=(src held)
           ?:  lock  [%| edit-lock-msg]
+          ::  a content page never parses its body as hoon. Parsing it as
+          ::  one cord literal took time growing with the square of its
+          ::  size, about an hour at 2 MiB with the ship stalled. A small
+          ::  shell for its builder is compiled and slammed with the body.
+          ?^  pb
+            %-  mule  |.
+            (slam (slap !>(pg) (ream (content-shell builder.u.pb))) !>(body.u.pb))
           ::  compile the page against the page stdlib (pg): its builders
           ::  (text/html/needs/every/sends/esc) and the +result mold are in
           ::  scope at the top, the full hoon/zuse stack beneath.
@@ -10135,12 +10146,30 @@
 ++  plain-content
   |=  [src=@t pax=path]
   ^-  ?
-  ?:  &(?=(^ pax) =(src (make-folder-index pax)))  &
+  |((folder-index-src src pax) ?=(^ (plain-body src)))
+++  folder-index-src
+  |=  [src=@t pax=path]
+  ^-  ?
+  &(?=(^ pax) =(src (make-folder-index pax)))
+::  +plain-body: the builder and body of a content page, when its source
+::  is exactly the shell +wrap-content writes around a known builder.
+::
+++  plain-body
+  |=  src=@t
+  ^-  (unit [builder=@tas body=@t])
   =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
-  ?~  un  |
-  ?&  (~(has in content-builders) builder.u.un)
-      =(src (wrap-content builder.u.un body.u.un))
-  ==
+  ?~  un  ~
+  ?.  (~(has in content-builders) builder.u.un)  ~
+  ?.  =(src (wrap-content builder.u.un body.u.un))  ~
+  un
+::  +content-shell: the page gate of a content page with the body as its
+::  outer sample, so the evaluator compiles a few lines whatever the size.
+::  The inner gate is +content-env-pre, the same gate the stored source is.
+::
+++  content-shell
+  |=  builder=@tas
+  ^-  @t
+  (crip :(weld "|=  body=@t  " content-env-pre (trip builder) " body)"))
 ::  +lock-road: the edit-lock marker of page `rel`. It sits under /lock,
 ::  outside the page dir, so a peer's make grant on the page cannot reach
 ::  it.

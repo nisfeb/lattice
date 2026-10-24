@@ -131,9 +131,7 @@
 ::
 ::  A key's writes are bounded in bytes: +req-cap per request, and +day-cap
 ::  per key per day across all of them. Without these a key could store
-::  an unbounded volume in the owner's ship (security audit run-1). They
-::  bound volume only: a content page's compile time still grows faster
-::  than its size, which compiling content through a fixed shell would end.
+::  an unbounded volume in the owner's ship (security audit run-1).
 ::
 +$  ledger  (map @t [day=@da n=@ud])
 ++  req-cap  ^~((mul 2 (bex 20)))
