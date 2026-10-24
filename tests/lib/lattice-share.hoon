@@ -115,4 +115,16 @@
     (expect-eq !>(|) !>((grp-name:ls '.grp')))
     (expect-eq !>(|) !>((grp-name:ls 'team')))
   ==
+::  a moon answers for its planet, every comet for all comets, and a
+::  banned planet's moons are banned with it
+++  test-family
+  =/  moon=@p  (cat 5 ~sampel-palnet 7)
+  ;:  weld
+    (expect-eq !>(`@`~sampel-palnet) !>((family:ls ~sampel-palnet)))
+    (expect-eq !>(`@`~sampel-palnet) !>((family:ls moon)))
+    (expect-eq !>(`@`~zod) !>((family:ls ~zod)))
+    (expect-eq !>((bex 128)) !>((family:ls (cat 7 ~sampel-palnet 3))))
+    (expect-eq !>(&) !>((is-banned:ls (sy ~[~sampel-palnet]) moon)))
+    (expect-eq !>(|) !>((is-banned:ls (sy ~[moon]) ~sampel-palnet)))
+  ==
 --

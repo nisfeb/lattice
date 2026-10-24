@@ -139,6 +139,18 @@ try {
   ok('save: new md page appears in tree');
   check('highlight: Prism overlay rendered',
     await page.evaluate(() => document.querySelectorAll('#hl .token').length > 0));
+  // a hostile body must not freeze the editor. Prism runs in a worker now;
+  // on the main thread 32 KiB of '[' held the frame for about five seconds
+  const stall = await page.evaluate(async () => {
+    const s = document.getElementById('src');
+    const t0 = performance.now();
+    s.value = '['.repeat(32768); s.dispatchEvent(new Event('input'));
+    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+    const ms = performance.now() - t0;
+    s.value = '# ui matrix probe'; s.dispatchEvent(new Event('input'));
+    return ms;
+  });
+  check('highlight: a hostile body does not freeze the editor', stall < 1000, Math.round(stall) + 'ms');
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.length > 0);
   check('open: body round-trips',

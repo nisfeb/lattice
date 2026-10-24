@@ -30,7 +30,9 @@
 ++  to-md
   |=  html=@t
   ^-  @t
-  =/  t=tape  (scag cap (trip html))
+  ::  cut the atom, then trip: a tape is many times the bytes, so tripping
+  ::  a huge body first expanded all of it before the cap applied
+  =/  t=tape  (trip (end [3 cap] html))
   =/  out=tape  (squeeze (walk (region t)))
   (crip out)
 ::
@@ -38,7 +40,7 @@
 ++  page-title
   |=  html=@t
   ^-  (unit @t)
-  =/  raw=tape  (scag cap (trip html))
+  =/  raw=tape  (trip (end [3 cap] html))
   =/  low=tape  (cass raw)
   =/  o=(unit @ud)  (find "<title" low)
   ?~  o  ~
@@ -111,6 +113,38 @@
     ?:  ?|(=(' ' i.raw) =(`@tD`9 i.raw) =(`@tD`10 i.raw) =('/' i.raw))  ~
     [i.raw $(raw t.raw)]
   [(cass nam) cls (slag (lent nam) raw) rest]
+::
+::  +tag-start: may a tag name begin here?
+++  tag-start
+  |=  t=tape
+  ^-  ?
+  ?~  t  |
+  =/  c=@tD  i.t
+  ?|  &((gte c 'a') (lte c 'z'))
+      &((gte c 'A') (lte c 'Z'))
+      =('!' c)
+      =('?' c)
+  ==
+::
+::  +find-ci: where `pat` (lowercase) first occurs in `hay`, matched without
+::  regard to case. It stops at the first match, so a walk that resumes
+::  after it never scans the same bytes twice.
+++  find-ci
+  |=  [pat=tape hay=tape]
+  ^-  (unit @ud)
+  =/  n=@ud  0
+  |-  ^-  (unit @ud)
+  ?~  hay  ~
+  =/  h=tape  hay
+  =/  p=tape  pat
+  =/  hit=?
+    |-  ^-  ?
+    ?~  p  &
+    ?~  h  |
+    ?.  =(i.p ?:(&((gte i.h 'A') (lte i.h 'Z')) (add i.h 32) i.h))  |
+    $(p t.p, h t.h)
+  ?:  hit  `n
+  $(hay t.hay, n +(n))
 ::
 ::  +attr: an attribute's value. Quoted or bare. The name is matched
 ::  case-insensitively but the value keeps its case (urls are case-sensitive).
@@ -188,6 +222,8 @@
   =/  pre=?  |
   =/  quo=?  |
   =/  sp=?   |
+  ::  ng: no '>' is left in the input, so no later '<' can open a tag
+  =/  ng=?   |
   =|  lnk=(unit tape)
   |-  ^-  tape
   ?~  t  (flop acc)
@@ -217,14 +253,25 @@
     ?:  =(" " c.u.d)  $(t rest.u.d, sp &)
     $(t rest.u.d, acc (emit a2 c.u.d), sp |)
   ?:  =('<' c)
+    ::  a '<' opens a tag only before a letter, '!' or '?' (after a '/' for
+    ::  a closing tag). Any other '<' is prose, and so is every '<' once no
+    ::  '>' is left: looking for one again at each '<' made a page of them
+    ::  quadratic (security audit run-1).
+    ::  a literal '<' is text, so it flushes a pending space as '&' does
+    =/  lt=tape  (emit ?:(&(sp ?=(^ acc)) (emit acc " ") acc) "<")
+    =/  nx=tape  (slag 1 tt)
+    ?:  |(ng !(tag-start ?:(=("/" (scag 1 nx)) (slag 1 nx) nx)))
+      $(t t.t, acc lt, sp |)
     =/  g  (tag tt)
     ?~  nam.g
-      ::  a '<' that never closes is prose, not markup
-      $(t t.t, acc (emit acc "<"), sp |)
+      ::  a '<' that never closes is prose, not markup, and no '>' follows
+      $(t t.t, acc lt, sp |, ng &)
     =/  n=tape  nam.g
     ::  drop the tag AND its content
     ?:  &(!cls.g (drop-tag n))
-      =/  e=(unit @ud)  (find (weld "</" n) (cass `tape`rest.g))
+      ::  scan for the closer without lowercasing the whole remainder,
+      ::  which every dropped tag used to do (+find-ci)
+      =/  e=(unit @ud)  (find-ci (weld "</" n) rest.g)
       ?~  e  (flop acc)
       =/  aft=tape  (slag u.e `tape`rest.g)
       =/  g2=(unit @ud)  (find ">" aft)

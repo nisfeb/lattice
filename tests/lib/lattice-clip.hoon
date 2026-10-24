@@ -200,4 +200,21 @@
 ++  test-nofetch-no-path  (no (f 'http://169.254.169.254'))
 ++  test-nofetch-bad-port  (no (f 'http://example.com:80x/'))
 ++  test-nofetch-v6-nat64  (no (f 'http://[64:ff9b::7f00:1]/'))
+::
+::  hostile pages that were quadratic: each must come back in about a
+::  second, not a minute. 64 KB of dropped tags, of '<' with no '>', and of
+::  '<' before a non-letter. The outputs pin that the text is still right.
+++  test-many-dropped-tags
+  =/  t=@t  (crip (zing (reap 6.000 "<svg></svg>")))
+  (no (has "svg" (m (cat 3 t '<p>after</p>'))))
+++  test-many-dropped-tags-keep-text
+  =/  t=@t  (crip (zing (reap 6.000 "<NAV>x</nav>")))
+  (yes (has "after" (m (cat 3 t '<p>after</p>'))))
+++  test-many-open-angles
+  =/  t=@t  (crip (reap 64.000 '<'))
+  (expect-eq !>(64.000) !>((met 3 (m t))))
+++  test-angles-before-a-non-letter
+  =/  t=@t  (crip (zing (reap 16.000 "a <1 ")))
+  (yes (has "a <1 a <1" (m (cat 3 t '>'))))
+++  test-angle-before-space-is-text  (yes (has "1 < 2" (m '<p>1 < 2</p>')))
 --

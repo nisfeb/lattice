@@ -73,4 +73,15 @@
     !>((json-revs:lp [%o (malt `(list [@t json])`~[['/a' good] ['/x' n+'3'] ['/y' (pairs:enjs:format ~[['rev' n+'1'] ['id' s+'zz']])]])]))
     (expect-eq !>(`(map @t [rev=@ud id=@uv])`~) !>((json-revs:lp s+'nope')))
   ==
+::  +small-noun counts cells as a clam walks them, sharing included, and
+::  answers past the cap without walking the rest
+++  test-small-noun
+  =/  a=*  [1 2]
+  =/  d=*  =/  x=*  a  =+  i=0  |-  ?:  =(i 60)  x  $(x [x x], i +(i))
+  ;:  weld
+    (expect-eq !>(&) !>((small-noun:lp ~[1 2 3] 10)))
+    (expect-eq !>(|) !>((small-noun:lp ~[1 2 3] 2)))
+    (expect-eq !>(&) !>((small-noun:lp 42 0)))
+    (expect-eq !>(|) !>((small-noun:lp d 1.000)))
+  ==
 --
