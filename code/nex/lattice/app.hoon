@@ -762,14 +762,19 @@
     ::  and nothing to disagree with. Not a conflict
     ?~  old  $(todo t.todo, ps more, pg pgm, dups [& dups])
     ?:  =(u.old wsrc)  $(todo t.todo, ps more, pg pgm, dups [& dups])
-    ::  the losing body may be a peer's: its copy keeps the mark
+    ::  the losing body may be a peer's: its copy keeps the mark. A
+    ::  sensitive page's copy is marked sensitive before its body lands.
     ;<  pw=?  bind:n  (peer-written (pax-of nam.i.todo))
+    =/  kpax=path  (pax-of (conflict-name nam.i.todo pv))
+    ;<  sv=?  bind:n  (page-sensitive (pax-of nam.i.todo))
+    ;<  ~  bind:n
+      ?.(sv (pure:(fiber:fiber:nexus ,~) ~) (poke-eval [%page-sensitive kpax &]))
     %=  $
       todo   t.todo
       ps     more
       pg     pgm
       dups   [| dups]
-      keeps  [[(pax-of (conflict-name nam.i.todo pv)) u.old pw] keeps]
+      keeps  [[kpax u.old pw] keeps]
     ==
   =/  plain=(list [pax=path src=@t])
     (murn keeps.kd |=([pax=path src=@t pw=?] ?:(pw ~ `[pax src])))
@@ -884,8 +889,12 @@
     =/  n  (fiber:fiber:nexus ,~)
     ?.  conflicted  (pure:n ~)
     ?~  old  (pure:n ~)
-    ::  the losing body may be a peer's: the copy keeps the mark
+    ::  the losing body may be a peer's: the copy keeps the mark. And a
+    ::  sensitive page's copy is marked sensitive before its body lands,
+    ::  since conflicts/ is under no folder mark of the page's.
     ;<  pw=?  bind:n  (peer-written (pax-of u.name))
+    ;<  ps=?  bind:n  (page-sensitive (pax-of u.name))
+    ;<  ~  bind:n  ?.(ps (pure:n ~) (poke-eval [%page-sensitive (pax-of kept) &]))
     (poke-eval ?:(pw [%make-marked (pax-of kept) u.old] [%make (pax-of kept) u.old]))
   ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
   ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
@@ -5376,11 +5385,24 @@
   ::  Display names of the root and every subfolder ride along after the
   ::  mkdirs (pages carry theirs in the per-page loop below).
   =/  dacts=(list eval-action:le)  (dname-acts bl to [`path`~ dirs])
+  ::  sensitivity goes with what moves, and lands before any content: the
+  ::  root as it reads where it was (its own mark or a folder's above it),
+  ::  and each page and folder under it by its own mark. The %del below
+  ::  culls the old marks, so a move used to leave the content unmarked.
+  ;<  rs=?  bind:m  (page-sensitive from)
+  =/  own=(list path)
+    %+  murn  all
+    |=([pax=path *] ?.((~(has by (ball-fils bl pax)) %sensitive) ~ `pax))
+  =/  sacts=(list eval-action:le)
+    %+  turn  (weld ?:(rs ~[`path`~] ~) own)
+    |=(p=path `eval-action:le`[%page-sensitive (weld to p) &])
   =/  todo=(list eval-action:le)
-    %+  weld
+    ;:  weld
+      sacts
       ^-  (list eval-action:le)
       [[%mkdir to] (turn dirs |=(p=path `eval-action:le`[%mkdir (weld to p)]))]
-    dacts
+      dacts
+    ==
   =/  count=@ud  0
   |-  ^-  form:m
   ?^  todo
@@ -6327,14 +6349,18 @@
     =/  kw=wave:nexus  (fall (~(get by dir.w) nom) *wave:nexus)
     (dump-walk kb kw (weld rel /[nom]) since)
   =/  drow=(list [@t json])  (dname-row fils)
+  ::  this node's own sensitive mark, so a vault export can carry it
+  =/  srow=(list [@t json])
+    ?.((~(has by fils) %sensitive) ~ ~[['sensitive' b+&]])
   ?.  (~(has by fils) %code)
     ?~  rel  kids
     :_  kids
     :-  rel
     %-  pairs:enjs:format
-    %+  weld  drow
-    ^-  (list [@t json])
-    ~[['path' s+(crip (pax-str rel))] ['page' b+|]]
+    ;:  weld  drow  srow
+      ^-  (list [@t json])
+      ~[['path' s+(crip (pax-str rel))] ['page' b+|]]
+    ==
   =/  cd  (~(got by fils) %code)
   =/  cs=cass:clay  (fall (~(get by wfil) %code) *cass:clay)
   =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) '')
@@ -6365,7 +6391,7 @@
     ==
   :_  kids
   :-  rel
-  (pairs:enjs:format :(weld drow head body-row share-row tail))
+  (pairs:enjs:format :(weld drow srow head body-row share-row tail))
 ::  +dname-row: the `dname` field of a tree node, from the %name grub in the
 ::  same ball as its %code (or, for a folder, its flags). Absent -> no field:
 ::  the client shows the path segment, and a valid name is never stored twice.
