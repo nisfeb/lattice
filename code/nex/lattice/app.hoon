@@ -2473,14 +2473,27 @@
     ?~  pas
       (send-json eyre-id (pairs:enjs:format ~[['ok' b+|] ['reason' s+'no key for that ship at that life']]))
     =/  good=?  (verify-with:lsg u.pas sig.rq dig.rq)
+    ::  a key the ship has since replaced still made the signature, but it
+    ::  is no longer the ship's word: rotating keys after a compromise must
+    ::  show here. A key at the next life means this one is superseded.
+    ;<  nxt=(unit pass)  bind:m  (peer-pass who.rq +(lyf.rq))
+    =/  cur=?  ?=(~ nxt)
     ::  a version 1 record is still checked, and flagged: its 128-bit
     ::  digest can be matched by a second document at feasible cost
+    =/  why=(list @t)
+      %+  weld
+        ?:  cur  ~
+        ~['signed under a key the ship has since replaced']
+      ?.  =(1 ver)  ~
+      ~['a version 1 record binds only a 128-bit digest: re-sign to bind the content fully']
+    ::  bound with its type: zing inline in a weld is a fuse-loop
+    =/  rs=tape  (zing (join "; " (turn why trip)))
     %+  send-json  eyre-id
     %-  pairs:enjs:format
-    ?.  =(1 ver)  ~[['ok' b+good]]
-    :~  ['ok' b+good]
-        ['legacy' b+&]
-        ['reason' s+'a version 1 record binds only a 128-bit digest: re-sign to bind the content fully']
+    ;:  weld
+      ^-  (list [@t json])  ~[['ok' b+good] ['current' b+cur]]
+      ^-  (list [@t json])  ?.(=(1 ver) ~ ~[['legacy' b+&]])
+      ^-  (list [@t json])  ?~(why ~ ~[['reason' s+(crip rs)]])
     ==
       [%'POST' %page-share]
     =/  name=(unit @t)  (~(get by args) 'name')
