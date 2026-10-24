@@ -8319,11 +8319,15 @@
   =/  q=(unit @ud)  (find "?" t)
   ?~(q t (scag u.q t))
 ::  +send-redirect: a 301 to `to` (used to force trailing slashes on dirs).
+::  Both redirects refuse a target holding a control character, since the
+::  target is built from request text and a CR or LF would split the
+::  Location header.
 ::
 ++  send-redirect
   |=  [eyre-id=@ta to=tape]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ?:  (lien to |=(c=@tD (lth c 32)))  (send-err eyre-id 400 'bad redirect')
   %+  send-simple:srv  eyre-id
   [[301 ['location' (crip to)]~] ~]
 ::  +send-see-other: a 303 (POST -> GET redirect, for form command submits).
@@ -8337,6 +8341,7 @@
   |=  [eyre-id=@ta to=tape]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ?:  (lien to |=(c=@tD (lth c 32)))  (send-err eyre-id 400 'bad redirect')
   ;<  now=@da  bind:m  bowl-now
   =/  sep=tape  ?:(?=(^ (find "?" to)) "&" "?")
   =/  bust=tape  :(weld to sep "u=" (scow %ud (mod now 1.000.000.000)))
