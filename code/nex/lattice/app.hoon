@@ -9407,12 +9407,17 @@
 ::  same-origin script when a page loads it as one, so a key that may write
 ::  text over a js page ran script as the owner (security audit run-1).
 ::
+::  An html body also keeps no cross-origin opener, so a page that opened
+::  an owner view cannot count its frames. /clip-paste needs its opener and
+::  goes out through +send-html instead.
+::
 ++  send-typed
   |=  [eyre-id=@ta ct=@t cc=@t body=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  heds=(list [@t @t])
     ~[['content-type' ct] ['cache-control' cc] ['x-content-type-options' 'nosniff']]
+  =?  heds  =("text/html" (scag 9 (trip ct)))  [['cross-origin-opener-policy' 'same-origin'] heds]
   %+  send-simple:srv  eyre-id
   :-  [200 heds]
   `(as-octs:mimes:html body)
