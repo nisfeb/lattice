@@ -1360,8 +1360,18 @@
           ;<  eg=?  bind:m
             ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,?) |)
             (edit-granted rel)
+          ::  and our own page is framed raw only when it IS an html page.
+          ::  This branch sniffs the body, and a key may write md, text or
+          ::  css: a body that merely starts with '<' ran as the owner
+          ::  (security audit run-1).
+          ;<  vm=view-mode:pg  bind:m
+            ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,view-mode:pg) %text)
+            (read-show-mode (weld /page rel))
           =/  htm=@t
-            (render-browser-page canon body ~ |(?!(=(ship.u.ref our)) eg) rk rv (trip ttl))
+            %:  render-browser-page  canon  body  ~
+              |(?!(=(ship.u.ref our)) eg ?!(?=(%html vm)))
+              rk  rv  (trip ttl)
+            ==
           ?:  =("" rk)  (send-view eyre-id htm)
           (send-view-long eyre-id htm)
         ?:  =("" rk)
