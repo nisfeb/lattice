@@ -62,10 +62,24 @@
 ++  ban-cap  ^-(@ud 500)
 ::  +is-banned: the single predicate every enforcement point calls, so a new
 ::  call site cannot invent its own subtly different rule.
+::  A moon is banned with its planet, since a planet mints moons at will.
 ++  is-banned
   |=  [bans=banned who=@p]
   ^-  ?
-  (~(has in bans) who)
+  ?|  (~(has in bans) who)
+      (~(has in bans) (family who))
+  ==
+::  +family: whom a ship answers for in a quota or a ban. A moon answers
+::  for its planet (its low 32 bits), and every comet for all comets: both
+::  are minted at will, so a limit on one alone binds nothing. Any other
+::  ship answers for itself. Sized by bytes, so no jael is needed.
+++  family
+  |=  who=@p
+  ^-  @
+  =/  w=@ud  (met 3 who)
+  ?:  (gth w 8)  (bex 128)
+  ?:  (gth w 4)  (end 5 who)
+  who
 ::
 ::  ==  grant roads  ==
 ::

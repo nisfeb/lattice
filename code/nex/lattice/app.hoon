@@ -1941,6 +1941,9 @@
       (send-err eyre-id 400 'banlist is full')
     ;<  ~  bind:m
       (over:io (ban-road up) [[/lattice %banned] (~(put in bans) u.who)])
+    ::  and what the ship already wrote goes too, its moons' as well: a ban
+    ::  that freed no slots left the page full (security audit run-1)
+    ;<  *  bind:m  (cull-comments-of u.who)
     ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
     ::  the ban is written; the revocation is not. Say so: a ban that left
     ::  the grants in place is the label this route exists not to be.
@@ -4962,6 +4965,17 @@
     ?~  fil.ball.cv  0
     ~(wyt by contents.u.fil.ball.cv)
   ?:  (gte stored 200)  (pure:m ~)
+  ;<  our=@p  bind:m  bowl-our
+  =/  fam=@  (family:ls author)
+  =/  mine=@ud
+    ?.  ?=([%ball *] cv)  0
+    ?~  fil.ball.cv  0
+    %-  lent
+    %+  skim  ~(val by contents.u.fil.ball.cv)
+    |=  [=sang:tarball *]
+    =/  c  (mole |.(;;(comment:lc (sang-noun:tarball sang))))
+    &(?=(^ c) =(fam (family:ls author.u.c)))
+  ?:  &(!=(author our) (gte mine per-author:lc))  (pure:m ~)
   =/  body=@t
     ?:((gth (met 3 body.act) max-body:lc) (end [3 max-body:lc] body.act) body.act)
   =/  =comment:lc  [author now body]
@@ -9008,20 +9022,38 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ?.  on  (pure:m "")
-  ;<  seen=view:nexus  bind:m  (peek:io (rv up (weld /comments page)) ~)
-  =/  cs=(list comment:lc)
+  ::  shallow: only this page's own comments render, not those of the
+  ::  pages under it
+  ;<  seen=view:nexus  bind:m  (peek-shallow:io (rv up (weld /comments page)) ~)
+  =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
     ?.  ?=([%ball *] seen)  ~
-    =/  b=ball:tarball  ball.seen
-    =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
-      ?~(fil.b ~ contents.u.fil.b)
-    %+  murn  ~(val by fils)
-    |=  [s=sang:tarball gain=? bang=(unit tang)]
-    ^-  (unit comment:lc)
-    (mole |.(;;(comment:lc (sang-noun:tarball s))))
-  =/  sorted=(list comment:lc)
-    (sort cs |=([a=comment:lc b=comment:lc] (lth when.a when.b)))
-  ?:  &(?=(~ sorted) =("" box))  (pure:m "")
+    ?~(fil.ball.seen ~ contents.u.fil.ball.seen)
+  ?:  &(=(~ fils) =("" box))  (pure:m "")
+  ::  The rendered thread is cached by the set of comment ids. Each id is
+  ::  the hash of its comment, so the set fixes the thread, and an add or a
+  ::  delete changes it. An anonymous /c/ hit used to rebuild up to 200
+  ::  comments of 4 KB from any ship every time (security audit run-1). The
+  ::  cache sits outside /page, where no page grant reaches.
+  =/  key=@t  (scot %uv (sham ~(key by fils)))
+  =/  croad=road:tarball  (rf up (weld /comments-cache page) %thread)
+  ;<  cv=(unit view:nexus)  bind:m  (peek-soft:io croad ~)
+  =/  hit=(unit tape)
+    ?.  ?=([~ %file *] cv)  ~
+    =/  jon=json  (fall (mole |.(!<(json (need-vase:tarball sang.u.cv)))) ~)
+    ?.  ?=([%o *] jon)  ~
+    =/  k=(unit json)  (~(get by p.jon) 'key')
+    =/  h=(unit json)  (~(get by p.jon) 'html')
+    ?.  &(?=([~ %s *] k) ?=([~ %s *] h) =(p.u.k key))  ~
+    `(trip p.u.h)
   =/  thread=tape
+    ?^  hit  u.hit
+    =/  cs=(list comment:lc)
+      %+  murn  ~(val by fils)
+      |=  [s=sang:tarball gain=? bang=(unit tang)]
+      ^-  (unit comment:lc)
+      (mole |.(;;(comment:lc (sang-noun:tarball s))))
+    =/  sorted=(list comment:lc)
+      (sort cs |=([a=comment:lc b=comment:lc] (lth when.a when.b)))
     ?~  sorted  ""
     ;:  weld
       "<section class=\"comments\"><h3>"  (a-co:co (lent sorted))
@@ -9030,6 +9062,12 @@
       (zing (turn sorted comment-html))
       "</section>"
     ==
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    ?^  hit  (pure:n ~)
+    ;<  ~  bind:n  (ensure-dirs up /comments-cache page)
+    %^  put-file  croad  [/ %json]
+    (pairs:enjs:format ~[['key' s+key] ['html' s+(crip thread)]])
   ::  single-quote cord: a double-quote tape would interpolate the css { } braces.
   %-  pure:m
   ;:  weld
@@ -9038,6 +9076,39 @@
     thread
     box
   ==
+::  +cull-comments-of: drop every comment `who` wrote, and its moons', on
+::  every page. Soft: a cull refused leaves that comment in place.
+++  cull-comments-of
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io (rv up /comments) ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m 0)
+  =/  hits=(list [dir=path id=@ta])  (comments-by ball.u.vw / who)
+  =/  n=@ud  (lent hits)
+  |-  ^-  form:m
+  ?~  hits  (pure:m n)
+  ;<  *  bind:m  (cull-soft:io (rf up (weld /comments dir.i.hits) id.i.hits))
+  $(hits t.hits)
+::  +comments-by: where `who` (or one of its moons) commented, under a ball
+++  comments-by
+  |=  [b=ball:tarball rel=path who=@p]
+  ^-  (list [dir=path id=@ta])
+  =/  here=(list [dir=path id=@ta])
+    ?~  fil.b  ~
+    %+  murn  ~(tap by contents.u.fil.b)
+    |=  [id=@ta [=sang:tarball *]]
+    ^-  (unit [dir=path id=@ta])
+    =/  c  (mole |.(;;(comment:lc (sang-noun:tarball sang))))
+    ?~  c  ~
+    ?.  |(=(who author.u.c) =(`@`who (family:ls author.u.c)))  ~
+    `[rel id]
+  %+  weld  here
+  ^-  (list [dir=path id=@ta])
+  %-  zing
+  %+  turn  ~(tap by dir.b)
+  |=([nom=@ta kid=ball:tarball] (comments-by kid (snoc rel nom) who))
 ::  +comment-html: one stored comment as escaped html (author + body).
 ::
 ++  comment-html
