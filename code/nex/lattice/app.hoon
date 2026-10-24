@@ -2231,9 +2231,14 @@
     ::  bare HTML doc. Non-persisting. Nothing is written, so the editor can
     ::  preview a note as it is typed, before any save. Owner-gated like all
     ::  non-clearweb routes.
+    ::
+    ::  Sandboxed: with type=html the body comes back as html, so an
+    ::  unsandboxed answer reflected whatever was POSTed into a same-origin
+    ::  document (security audit run-1). Callers read the body, which the
+    ::  CSP does not change.
     =/  body=@t  (req-body req)
     =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'md')
-    (send-html eyre-id (render-bare (preview-inner ptype body)))
+    (send-sandboxed eyre-id 'text/html' (render-bare (preview-inner ptype body)))
       [%'POST' %page-cmd]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
