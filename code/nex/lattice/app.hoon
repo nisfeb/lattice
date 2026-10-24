@@ -8406,8 +8406,12 @@
     (peek-remote-wait [%& %& (weld u.base /pub) %revs] shp)
   ?.  ?=([~ %file *] ms)  (pure:m ~)
   ::  cross-ship content is a raw noun: clam it in a mole, so a hostile or
-  ::  malformed list reads as empty instead of crashing the reader
-  (pure:m (fall (mole |.((json-revs:lp ;;(json (sang-noun:tarball sang.u.ms))))) ~))
+  ::  malformed list reads as empty instead of crashing the reader. And
+  ::  bound it first: shared structure can make a small noun vast to the
+  ::  clam, which the mole does not stop (+small-noun:lp).
+  =/  rn=*  (sang-noun:tarball sang.u.ms)
+  ?.  (small-noun:lp rn 200.000)  (pure:m ~)
+  (pure:m (fall (mole |.((json-revs:lp ;;(json rn)))) ~))
 ::  +drop-peer-revs: forget a peer's list after one of its ids missed, so
 ::  the next view fetches it again.
 ::
@@ -11081,9 +11085,11 @@
   ^-  (unit @t)
   =/  nd  (~(get by fils) %name)
   ?~  nd  ~
-  =/  j=(unit json)  (mole |.(;;(json (sang-noun:tarball sang.u.nd))))
-  ?.  ?=([~ %s *] j)  ~
-  `p.u.j
+  ::  the shape alone, with no json clam: a name is [%s cord], and a noun a
+  ::  peer wrote here could be vast to a clam yet small on the wire
+  =/  n=*  (sang-noun:tarball sang.u.nd)
+  ?.  ?=([%s @] n)  ~
+  `(@t +.n)
 ::  +fils-share: a page's share mode from its dir's grubs, %private when it
 ::  has none or it does not read (a boom is no grant).
 ++  fils-share
