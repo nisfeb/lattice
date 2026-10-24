@@ -345,7 +345,11 @@
       ~[old-lat old-lon old-acc old-until old-trail]
     =/  nlat=tape  (snag 0 parts)
     =/  nlon=tape  (snag 1 parts)
-    =/  acc=tape   ?:((gte (lent parts) 3) (snag 2 parts) "")
+    ::  the accuracy is written into the state comment, which "-->" ends
+    ::  and "|" and ";" split. It takes the coordinate alphabet or nothing.
+    =/  acc=tape
+      =/  a=tape  ?:((gte (lent parts) 3) (snag 2 parts) "")
+      ?:((coordy a) a "")
     =/  mins=@ud
       ?.  (gte (lent parts) 4)  60
       =/  n=(unit @ud)  (rush (crip (snag 3 parts)) dem:ag)

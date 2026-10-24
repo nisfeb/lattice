@@ -107,6 +107,15 @@
     (expect-eq !>(&) !>((on "accurate to about 10 m" (ll 'cmd=51.5,7.25,10' ~ t0))))
     (expect-eq !>(`(unit @dr)`[~ ~m15]) !>(wake:(ll 'cmd=51.5,7.25,10,15' ~ t0)))
   ==
+::  the accuracy lands in the state comment, so one that could end it or
+::  split its fields is dropped and the position still shows
+++  test-loc-accuracy-alphabet
+  =/  r  (ll 'cmd=51.5,7.25,1--><b>x|9;' ~ t0)
+  ;:  weld
+    (expect-eq !>(&) !>((on "51.5, 7.25" r)))
+    (expect-eq !>(|) !>((on "<b>x" r)))
+    (expect-eq !>(|) !>((on "accurate to about" r)))
+  ==
 ::  a share ends AT its deadline, not a moment after
 ++  test-loc-deadline
   =/  b1=tape  (body (ll 'cmd=51.5,7.25,10,15' ~ t0))
