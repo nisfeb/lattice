@@ -638,7 +638,8 @@ pub async fn save_vault(app: AppHandle, name: String, b64: String) -> Result<Str
         return Ok(String::new());
     };
     let path = target.into_path().map_err(|e| e.to_string())?;
-    std::fs::write(&path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    // the whole vault: written 0600 through a fresh temp file, like backups
+    crate::session::write_private(&path, &bytes).map_err(|e| format!("could not write {e}"))?;
     Ok(path.display().to_string())
 }
 
