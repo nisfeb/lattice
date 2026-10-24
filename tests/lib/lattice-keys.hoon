@@ -216,4 +216,18 @@
     ==
   =/  want=(each [name=@t by=@t =scope] @t)  [%& 'k' 'b' sc]
   (expect-eq !>(want) !>((de-mint req)))
+::  a key's daily bytes: charged per day, refused past the cap, and a new
+::  day starts from nothing
+++  test-spend
+  =/  d1=@da  ~2026.10.24..10.00.00
+  =/  d2=@da  ~2026.10.25..01.00.00
+  =/  a  (spend ~ 'k' d1 100)
+  =/  full  (spend ~ 'k' d1 day-cap)
+  ;:  weld
+    (expect-eq !>(`[@da @ud]`[~2026.10.24 100]) !>((~(got by (need a)) 'k')))
+    (expect-eq !>(`?`|) !>(?=(~ full)))
+    (expect-eq !>(`?`&) !>(?=(~ (spend (need full) 'k' d1 1))))
+    (expect-eq !>(`[@da @ud]`[~2026.10.25 1]) !>((~(got by (need (spend (need full) 'k' d2 1))) 'k')))
+    (expect-eq !>(`?`&) !>(?=(~ (spend ~ 'k' d1 +(day-cap)))))
+  ==
 --

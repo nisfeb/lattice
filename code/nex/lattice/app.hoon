@@ -281,6 +281,8 @@
         ::  revoked grantee's hoon and let banned ships back in.
             [%fall %| /lock empty-dir:loader]
             [%fall %& [/ %banned] [[/lattice %banned] *banned:ls]]
+        ::  /key-bytes: each agent key's bytes written today (+spend:ky)
+            [%fall %& [/ %'key-bytes'] [[/ %noun] *ledger:ky]]
         ==
     ::
     ++  on-file
@@ -1280,6 +1282,16 @@
     (send-err eyre-id 401 'invalid or revoked key')
   ?:  &(?=(^ key) !(may:ky u.key method.request.req suffix))
     (send-err eyre-id 403 'outside this key\'s scope')
+  ::  a key's writes are bounded in bytes, per request and per day
+  ::  (+req-cap:ky, +day-cap:ky)
+  =/  blen=@ud  ?~(body.request.req 0 p.u.body.request.req)
+  ?:  &(?=(^ key) (gth blen req-cap:ky))
+    (send-err eyre-id 413 'too large for an agent key')
+  ;<  roomy=?  bind:m
+    ?.  &(?=(^ key) !=(%'GET' method.request.req) !=(0 blen))
+      (pure:(fiber:fiber:nexus ,?) &)
+    (key-spend id.u.key rnow blen)
+  ?.  roomy  (send-err eyre-id 429 'this key has written its bytes for today')
   ::  a keyed request's src is not us, but of the routes a key reaches
   ::  (+may:ky) /fetch, /browse, /browse-file, and /remote-save all read
   ::  `our` to compare or dispatch, so they pay the bowl read.
@@ -4241,6 +4253,25 @@
     ?.  (touch-due:ky used.u.k now)  (pure:(fiber:fiber:nexus ,~) ~)
     (poke-keys [%touch id.u.k now])
   (pure:m `[u.k now])
+::  +read-ledger: each key's bytes written today (+spend:ky), empty if never
+::  written or unreadable.
+++  read-ledger
+  =/  m  (fiber:fiber:nexus ,ledger:ky)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:io (rf up / %'key-bytes') ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  (pure:m (fall (mole |.(;;(ledger:ky (sang-noun:tarball sang.v)))) ~))
+::  +key-spend: may this key write `len` more bytes today? Charges them when
+::  it may.
+++  key-spend
+  |=  [id=@t now=@da len=@ud]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  led=ledger:ky  bind:m  read-ledger
+  ?~  (spend:ky led id now len)  (pure:m |)
+  ;<  ~  bind:m  (poke-keys [%spend id now len])
+  (pure:m &)
 ++  poke-keys
   |=  act=key-action:ky
   =/  m  (fiber:fiber:nexus ,~)
@@ -4253,6 +4284,15 @@
   |=  [root=@ud act=key-action:ky]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ::  a write's bytes go on the key's ledger, not in the keys grub. Charged
+  ::  here in arrival order, so two requests that both passed the gate on
+  ::  one stale read are both counted.
+  ?:  ?=(%spend -.act)
+    ;<  led=ledger:ky  bind:m  read-ledger
+    =/  day=@da  (sub when.act (mod when.act ~d1))
+    =/  e  (~(get by led) id.act)
+    =/  used=@ud  ?~(e 0 ?:(=(day day.u.e) n.u.e 0))
+    (put-file (rf root / %'key-bytes') [/ %noun] (~(put by led) id.act [day (add used len.act)]))
   =/  kr=road:tarball  (rf root / %keys)
   ;<  ks=keys:ky  bind:m  (read-keys kr)
   =.  ks
