@@ -5691,7 +5691,7 @@
 ::  own html). render-shown runs on our OWN page data only (view-src is own-tree).
 ::
 ++  read-dep-vals
-  |=  deps=(list path)
+  |=  [lim=[mode=share-mode:le sens=?] deps=(list path)]
   =/  m  (fiber:fiber:nexus ,(list [path *]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -5711,7 +5711,7 @@
       ?.  ?=(%html vmode)  (pure:(fiber:fiber:nexus ,?) |)
       (peer-written (slag 1 u.src))
     =?  vmode  eg  %text
-    ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
+    ;<  rest=(list [path *])  bind:m  (read-dep-vals lim t.deps)
     =/  frag=@t
       ?.  ?=([%file *] dsn)  ''
       ::  a composed view fragment is rendered ONCE at eval time and stored in
@@ -5725,14 +5725,20 @@
   ;<  sn=view:nexus  bind:m  (peek:io (rf up (scag n i.deps) (snag n i.deps)) ~)
   ?:  ?=([%file *] sn)
     ::  a file grub -> its raw noun.
-    ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
+    ;<  rest=(list [path *])  bind:m  (read-dep-vals lim t.deps)
     (pure:m [[i.deps (sang-noun:tarball sang.sn)] rest])
   ::  not a file -> a DIRECTORY dep resolves to its tree listing (a
   ::  (list [pax=path page=?]) of pages+folders under it, paths relative to the
   ::  dir), so a page can enumerate a structured subtree. ~ if it is neither.
   ;<  dn=view:nexus  bind:m  (peek:io (rv up i.deps) ~)
-  ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
-  =/  val=*  ?.(?=([%ball *] dn) ~ (collect-tree ball.dn ~))
+  ;<  rest=(list [path *])  bind:m  (read-dep-vals lim t.deps)
+  ::  the listing is the composing page's data, read by whoever reads that
+  ::  page: only what it may show (+collect-visible)
+  ;<  dsens=?  bind:m  (page-sensitive (slag 1 i.deps))
+  =/  val=*
+    ?.  ?=([%ball *] dn)  ~
+    ?:  &(dsens !sens.lim)  ~
+    (collect-visible ball.dn ~ mode.lim sens.lim)
   (pure:m [[i.deps val] rest])
 ::  +eval-run: one run of a compiled page: build the env vase (typed via
 ::  slop, so the gate's declared sample nest-checks), slam inside mule,
@@ -5749,7 +5755,13 @@
   ;<  dsn=view:nexus  bind:m  (peek:io (rf up pdir %data) ~)
   =/  dat=(unit *)
     ?.(?=([%file *] dsn) ~ `(sang-noun:tarball sang.dsn))
-  ;<  dvs=(list [path *])  bind:m  (read-dep-vals deps)
+  ::  what this page may show of others (+collect-visible)
+  ;<  shv=view:nexus  bind:m  (peek:io (rf up pdir %share) ~)
+  =/  mode=share-mode:le
+    ?.  ?=([%file *] shv)  %private
+    (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.shv)))) %private)
+  ;<  sens=?  bind:m  (page-sensitive (slag 1 pdir))
+  ;<  dvs=(list [path *])  bind:m  (read-dep-vals [mode sens] deps)
   =/  env=vase
     ;:  slop
       !>(`(unit @t)`cmd)
@@ -10129,6 +10141,33 @@
   ?:  (~(has by fils) %code)  [[rel &] kids]
   ?~  rel  kids
   [[rel |] kids]
+::  +collect-visible: +collect-tree for a listing that others read, as the
+::  data of the page that lists it. A page is listed only when it is shared
+::  at least as widely as that page, and nothing marked sensitive is
+::  listed unless that page is sensitive too. A folder is listed when
+::  something under it is, or in a private listing, which only the owner
+::  and keys read. An index on a published page used to name every private
+::  and sensitive page under its folder (security audit run-1).
+++  collect-visible
+  |=  [b=ball:tarball rel=path mode=share-mode:le sens=?]
+  ^-  (list [pax=path page=?])
+  =/  fils  ?~(fil.b ~ contents.u.fil.b)
+  ?:  &(!sens (~(has by fils) %sensitive))  ~
+  =/  kids=(list [pax=path page=?])
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=  [nom=@ta kid=ball:tarball]
+    (collect-visible kid (weld rel /[nom]) mode sens)
+  ?:  (~(has by fils) %code)
+    ?.  (gte (share-rank (fils-share fils)) (share-rank mode))  kids
+    [[rel &] kids]
+  ?~  rel  kids
+  ?:  |(?=(%private mode) ?=(^ kids))  [[rel |] kids]
+  kids
+++  share-rank
+  |=  s=share-mode:le
+  ^-  @ud
+  ?-(s %private 0, %shared 1, %clearweb 2)
 ::  +home-css: styling for the landing (nav cards + lists).
 ::
 ++  home-css
