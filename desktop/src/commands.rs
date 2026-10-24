@@ -513,10 +513,13 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     // did and which meant the harness could not run against a ship it did not
     // own.
     //
-    // Test-only and inert unless the variable is set. Setting it requires
-    // already controlling this process's environment.
-    let probe = std::env::var("LATTICE_PROBE_JS")
-        .ok()
+    // Test-only and inert unless the variable is set, and compiled into
+    // debug builds only (the harness drives target/debug). In a release
+    // build an environment variable could put script into the privileged
+    // workspace window, which a test hook has no business doing.
+    let probe = cfg!(debug_assertions)
+        .then(|| std::env::var("LATTICE_PROBE_JS").ok())
+        .flatten()
         .and_then(|p| std::fs::read_to_string(p).ok());
     let mut b = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("manager.html".into()))
         .title("lattice — workspace")
