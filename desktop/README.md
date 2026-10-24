@@ -100,6 +100,8 @@ Ubuntu 22.04 rather than the newest runner, on purpose. A bundle's glibc
 floor is whatever it was built against, so building on the newest image
 silently drops every older distro.
 
-macOS bundles are unsigned unless the `APPLE_*` signing secrets are set.
-They work, but need right-click → Open the first time. Windows is not built
-(see above). It would fail at compile, not at bundling.
+macOS bundles are signed with a Developer ID Application certificate and notarized. A tagged build fails without the signing secrets, so a release never ships unsigned by accident. A hand-run build without them stays unsigned. The secrets are `APPLE_CERTIFICATE` (the `.p12`, base64), `APPLE_CERTIFICATE_PASSWORD` and `APPLE_SIGNING_IDENTITY`, plus either `APPLE_API_ISSUER`, `APPLE_API_KEY` (the key ID) and `APPLE_API_KEY_P8` (the `.p8` file's text) for an App Store Connect key, or `APPLE_ID`, `APPLE_PASSWORD` (app-specific) and `APPLE_TEAM_ID`. `Entitlements.plist` lets the hardened runtime load macFUSE's libfuse, which another team signs.
+
+Each build job attaches a `SHA256SUMS-<target>.txt` and records a build provenance attestation, so a download can be checked with `gh attestation verify <file> -R nisfeb/lattice`.
+
+Windows is not built (see above). It would fail at compile, not at bundling.
