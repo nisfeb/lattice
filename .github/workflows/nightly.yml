@@ -126,13 +126,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      # before the cookie touches disk, and with no install scripts: nothing
-      # npm fetches runs while the session cookie is readable. puppeteer-core
-      # downloads no browser; harness.mjs launches the runner's Chrome via
-      # executablePath ($CHROME).
+      # before the cookie touches disk, and with no install scripts. The
+      # harness imports puppeteer-core in the same process that reads the
+      # cookie, so what npm installs does run beside it: the lockfile in
+      # scripts/ pins every package to a reviewed version (security audit
+      # run-1). puppeteer-core downloads no browser; harness.mjs launches
+      # the runner's Chrome via executablePath ($CHROME).
       - name: puppeteer-core
         if: ${{ env.HAS_SHIP == 'true' && endsWith(matrix.suite, '.mjs') }}
-        run: npm i --no-save --no-audit --no-fund --ignore-scripts puppeteer-core@25.13.0
+        run: npm ci --prefix scripts --no-audit --no-fund --ignore-scripts
       - name: ${{ matrix.suite }}
         if: ${{ env.HAS_SHIP == 'true' }}
         env:
@@ -167,7 +169,7 @@ jobs:
       # being silently untested.
       - name: puppeteer-core
         if: ${{ env.HAS_SHIP == 'true' }}
-        run: npm i --no-save --no-audit --no-fund --ignore-scripts puppeteer-core@25.13.0
+        run: npm ci --prefix scripts --no-audit --no-fund --ignore-scripts
       - name: remaining ui harnesses
         if: ${{ env.HAS_SHIP == 'true' }}
         env:

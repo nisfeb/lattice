@@ -165,7 +165,7 @@ jobs:
       # in nightly.yml. fast-check is for the property harness.
       - name: pure-function unit + property tests
         run: |
-          npm i --no-save --no-audit --no-fund fast-check
+          npm ci --prefix scripts --no-audit --no-fund --ignore-scripts
           for f in scripts/ui-*.mjs; do
             grep -qE 'puppeteer|lib/harness\.mjs' "$f" && continue
             echo "--- $(basename "$f") ---"
@@ -199,5 +199,5 @@ jobs:
       # with the rest here. The ubuntu runner ships google-chrome.
       - name: browser unit test — manager page (no ship)
         run: |
-          npm i --no-save --no-audit --no-fund --ignore-scripts puppeteer-core@25.13.0
+          npm ci --prefix scripts --no-audit --no-fund --ignore-scripts
           CHROME="$(command -v google-chrome)" node scripts/ui-manager.mjs
