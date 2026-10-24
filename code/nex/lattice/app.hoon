@@ -489,17 +489,23 @@
         ::  source changes.
         ::  A lock also outlives the grant (+set-edit-lock): revoking the
         ::  peer must not run what the peer wrote.
+        ::  The lock is also the page's peer-written mark (+peer-written).
+        ::  Any source change under a grant may be a peer's, so it sets the
+        ::  mark on content pages too, which still compile. A peer's write
+        ::  never passed +make-page either, so its history is held to our
+        ::  caps here.
         ;<  lock=?  bind:m
           =/  n  (fiber:fiber:nexus ,?)
           =/  rel=path  (slag 1 pdir)
           ?:  =(src held)  (pure:n |)
-          ?:  (plain-content src rel)  (pure:n |)
+          =/  pc=?  (plain-content src rel)
           ;<  lx=?  bind:n  (peek-exists:io (lock-road up rel))
-          ?:  lx  (pure:n &)
+          ?:  &(lx !pc)  (pure:n &)
           ;<  eg=?  bind:n  (edit-granted rel)
           ?.  eg  (pure:n |)
-          ;<  ~  bind:n  (set-edit-lock up rel)
-          (pure:n &)
+          ;<  ~  bind:n  ?:(lx (pure:(fiber:fiber:nexus ,~) ~) (set-edit-lock up rel))
+          ;<  ~  bind:n  (prune-hist (rf up pdir %code) history-keep history-window)
+          (pure:n !pc)
         =?  bild  !=(src held)
           ?:  lock  [%| edit-lock-msg]
           ::  compile the page against the page stdlib (pg): its builders
@@ -733,13 +739,13 @@
   ::  ship already holds, a replay racing its own timed-out-but-landed
   ::  write. Not a conflict (see page-save). Aligned with items for the
   ::  report below.
-  ;<  kd=[keeps=(list [pax=path src=@t]) dups=(list ?)]  bind:m
-    =/  n  (fiber:fiber:nexus ,[keeps=(list [pax=path src=@t]) dups=(list ?)])
+  ;<  kd=[keeps=(list [pax=path src=@t pw=?]) dups=(list ?)]  bind:m
+    =/  n  (fiber:fiber:nexus ,[keeps=(list [pax=path src=@t pw=?]) dups=(list ?)])
     ?.  report  (pure:n [~ ~])
     =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
     =/  ps=(list [rev=@ud src=(unit @t)])  codes
     =/  pg=(list [pax=path src=@t])  pages
-    =|  keeps=(list [pax=path src=@t])
+    =|  keeps=(list [pax=path src=@t pw=?])
     =|  dups=(list ?)
     |-  ^-  form:n
     ?~  todo  (pure:n [(flop keeps) (flop dups)])
@@ -756,15 +762,25 @@
     ::  and nothing to disagree with. Not a conflict
     ?~  old  $(todo t.todo, ps more, pg pgm, dups [& dups])
     ?:  =(u.old wsrc)  $(todo t.todo, ps more, pg pgm, dups [& dups])
+    ::  the losing body may be a peer's: its copy keeps the mark
+    ;<  pw=?  bind:n  (peer-written (pax-of nam.i.todo))
     %=  $
       todo   t.todo
       ps     more
       pg     pgm
       dups   [| dups]
-      keeps  [[(pax-of (conflict-name nam.i.todo pv)) u.old] keeps]
+      keeps  [[(pax-of (conflict-name nam.i.todo pv)) u.old pw] keeps]
     ==
-  =/  keeps=(list [pax=path src=@t])  keeps.kd
-  ;<  ~  bind:m  (poke-eval [%make-many (weld keeps pages)])
+  =/  plain=(list [pax=path src=@t])
+    (murn keeps.kd |=([pax=path src=@t pw=?] ?:(pw ~ `[pax src])))
+  =/  marked=(list [pax=path src=@t])
+    (murn keeps.kd |=([pax=path src=@t pw=?] ?.(pw ~ `[pax src])))
+  ;<  ~  bind:m  (poke-eval [%make-many (weld plain pages)])
+  ;<  ~  bind:m
+    |-  ^-  form:m
+    ?~  marked  (pure:m ~)
+    ;<  ~  bind:m  (poke-eval [%make-marked i.marked])
+    $(marked t.marked)
   ?.  report
     %+  send-json  eyre-id
     (pairs:enjs:format ~[['ok' b+&] ['saved' (numb:enjs:format (lent items))]])
@@ -868,7 +884,9 @@
     =/  n  (fiber:fiber:nexus ,~)
     ?.  conflicted  (pure:n ~)
     ?~  old  (pure:n ~)
-    (poke-eval [%make (pax-of kept) u.old])
+    ::  the losing body may be a peer's: the copy keeps the mark
+    ;<  pw=?  bind:n  (peer-written (pax-of u.name))
+    (poke-eval ?:(pw [%make-marked (pax-of kept) u.old] [%make (pax-of kept) u.old]))
   ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
   ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
   ::  client only when the typed name was not a valid path and the path is
@@ -1375,7 +1393,7 @@
           ::  edit, since a peer may have written that markup
           ;<  eg=?  bind:m
             ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,?) |)
-            (edit-granted rel)
+            (peer-written rel)
           ::  and our own page is framed raw only when it IS an html page.
           ::  This branch sniffs the body, and a key may write md, text or
           ::  css: a body that merely starts with '<' ran as the owner
@@ -2803,6 +2821,22 @@
     ?~  nm    (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.from)  (send-err eyre-id 400 'bad from')
     ?.  ((sane %tas) u.nm)   (send-err eyre-id 400 'bad template name')
+    ::  a template carries no peer-written mark, so a page a peer may have
+    ::  written would come back out of it as the owner's (+peer-written)
+    ;<  tv=view:nexus  bind:m  (peek:io (rv up (weld /page (pax-of u.from))) ~)
+    =/  rels=(list path)
+      :-  /
+      ?.  ?=([%ball *] tv)  ~
+      (murn (collect-tree ball.tv ~) |=([pax=path page=?] ?:(page `pax ~)))
+    ;<  pw=?  bind:m
+      =/  n  (fiber:fiber:nexus ,?)
+      |-  ^-  form:n
+      ?~  rels  (pure:n |)
+      ;<  w=?  bind:n  (peer-written (weld (pax-of u.from) i.rels))
+      ?:  w  (pure:n &)
+      $(rels t.rels)
+    ?:  pw
+      (send-err eyre-id 409 'a page there is shared for edit, or was: save it yourself first')
     ;<  ~  bind:m  (poke-eval [%tmpl-save (pax-of u.from) `@tas`u.nm])
     (send-ok eyre-id)
       [%'POST' %template-del]
@@ -4477,6 +4511,20 @@
 ::  are sandboxed. Soft the same way: no usergroup read means no grant.
 ::
 ++  edit-granted  |=(name=path (granted-via name &))
+::  +peer-written: may a peer have written this page's source? While the
+::  page is shared for edit, yes. After the grant goes, the edit lock stays
+::  as the mark: the evaluator sets it on any source change under a grant,
+::  content pages included, and only an owner save lifts it. The sandbox
+::  decisions read this, so revoking a grant does not hand a peer's markup
+::  the owner's origin (security audit run-1).
+++  peer-written
+  |=  name=path
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  lx=?  bind:m  (peek-exists:io (lock-road up name))
+  ?:  lx  (pure:m &)
+  (edit-granted name)
 ::  +granted-via: +granted (mak=|, peek roads) and +edit-granted (mak=&,
 ::  make roads). A make road under the page dir counts as well, since it
 ::  reaches the page's code grub too.
@@ -4614,6 +4662,9 @@
       %make
     ;<  ~  bind:m  (make-page root pax.act src.act)
     ::  a shared page's vault copy follows every write, not just the share click
+    (republish-if-shared root now pax.act src.act)
+      %make-marked
+    ;<  ~  bind:m  (make-page-as root pax.act src.act |)
     (republish-if-shared root now pax.act src.act)
       %make-many
     ::  Same work as %make, once per page, but inside ONE writer transaction.
@@ -5175,6 +5226,12 @@
   (lose:io road [%numb ~ `(dec cut)])
 ++  make-page
   |=  [root=@ud pax=path src=@t]
+  (make-page-as root pax src &)
+::  +make-page-as: with trust=|, the write is a copy of a page a peer may
+::  have written (+peer-written), so it sets the mark rather than lifting
+::  it: a move or a conflict copy must not turn a peer's source into ours.
+++  make-page-as
+  |=  [root=@ud pax=path src=@t trust=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -5193,7 +5250,9 @@
   ::  lock (+set-edit-lock). Before the code write, so the evaluator it wakes
   ::  no longer sees the lock.
   ;<  lx=?  bind:m  (peek-exists:io (lock-road up pax))
-  ;<  ~  bind:m  ?.(lx (pure:m ~) (cull:io (lock-road up pax)))
+  ;<  ~  bind:m
+    ?.  trust  (set-edit-lock up pax)
+    ?.(lx (pure:m ~) (cull:io (lock-road up pax)))
   ;<  ~  bind:m  (put-file (rf up pdir %code) [/lattice %page] src)
   ::  gain the code grub so every save is a kept %firm revision. That is
   ::  what page-history / page-source-at read. Privacy is unchanged. gain
@@ -5343,8 +5402,10 @@
         (rewrite-root (trip code) from-str to-str)
       from-bare
     to-bare
+  ::  a peer-written page stays marked where it lands (+make-page-as)
+  ;<  pw=?  bind:m  (peer-written (weld from i.rels))
   =/  acts=(list eval-action:le)
-    :-  [%make dst newcode]
+    :-  ?:(pw [%make-marked dst newcode] [%make dst newcode])
     %+  weld
       ^-  (list eval-action:le)  ?~(dn ~ [%dname dst u.dn]~)
     ^-  (list eval-action:le)
@@ -5616,7 +5677,7 @@
     ::  Such a fragment is shown as text.
     ;<  eg=?  bind:m
       ?.  ?=(%html vmode)  (pure:(fiber:fiber:nexus ,?) |)
-      (edit-granted (slag 1 u.src))
+      (peer-written (slag 1 u.src))
     =?  vmode  eg  %text
     ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
     =/  frag=@t
@@ -8520,7 +8581,7 @@
   ::  below, a CSP header on the bare embed.
   ;<  eg=?  bind:m
     ?.  local  (pure:(fiber:fiber:nexus ,?) |)
-    (edit-granted (fall (raw-name-pax name) rel))
+    (peer-written (fall (raw-name-pax name) rel))
   ?:  embed
     ::  bare preview: just the rendered data (+ any error) and the live stream.
     =/  data-html=tape  ?~(cd "<p>no data yet</p>" (render-shown u.cd vmode "/apps/lattice/app?name="))
@@ -8695,7 +8756,7 @@
   ::  owner's origin whatever headers it came with (security audit run-1).
   ;<  eg=?  bind:m
     ?.  ?=(?(%html %js) vmode)  (pure:(fiber:fiber:nexus ,?) |)
-    (edit-granted pax)
+    (peer-written pax)
   ?:  &(eg ?=(%html vmode))  (send-sandboxed eyre-id (mime-of vmode) body)
   ?:  eg  (send-typed eyre-id 'text/plain; charset=utf-8' 'no-cache' body)
   (send-typed eyre-id (mime-of vmode) 'no-cache' body)
@@ -9015,7 +9076,7 @@
     ::  a peer's js is not ours to run: text/plain, as in +serve-asset
     ;<  eg=?  bind:m
       ?.  ?=(%js vmode)  (pure:(fiber:fiber:nexus ,?) |)
-      (edit-granted pax)
+      (peer-written pax)
     ?:  eg  (send-typed eyre-id 'text/plain; charset=utf-8' 'no-cache' p.res)
     (send-typed eyre-id (mime-of vmode) 'no-cache' p.res)
   ::  Every rendered/html page auto-wears the nearest `theme` css up the folder
@@ -9046,7 +9107,7 @@
   ::  so it gets an opaque origin (+send-sandboxed). Only html pays the peek.
   ;<  eg=?  bind:m
     ?.  ?=(%html vmode)  (pure:(fiber:fiber:nexus ,?) |)
-    (edit-granted pax)
+    (peer-written pax)
   ?:  eg  (send-sandboxed eyre-id 'text/html' doc)
   (send-html eyre-id doc)
 ::  +clearweb-body: the rendered body of a public page, from a per-page cache
