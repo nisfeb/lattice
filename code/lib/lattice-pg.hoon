@@ -119,16 +119,20 @@
 ++  folder-index
   |=  [deps=(list [path *]) dir=path]
   ^-  result
-  =/  title=tape  ?~(dir "index" (trip (rear `path`dir)))
+  ::  every name is escaped: an edit-granted peer can create a node whose
+  ::  name is markup, and this index renders as html on the owner's own
+  ::  page (security audit run-1)
+  =/  e=$-(tape tape)  |=(t=tape (trip (esc (crip t))))
+  =/  title=tape  ?~(dir "index" (e (trip (rear `path`dir))))
   =/  items=(list entry)
     %+  skim  (tree-in deps dir)
-    |=(e=entry &(page.e ?!(=(/index pax.e))))
+    |=(i=entry &(page.i ?!(=(/index pax.i))))
   =/  cards=tape
     %-  zing
     %+  turn  items
-    |=  e=entry
+    |=  i=entry
     ;:  weld
-      "<li><a href=\""  (pub-of (weld dir pax.e))  "\">"  (slag 1 (spud pax.e))  "</a></li>"
+      "<li><a href=\""  (e (pub-of (weld dir pax.i)))  "\">"  (e (slag 1 (spud pax.i)))  "</a></li>"
     ==
   =/  body=@t
     %-  crip
@@ -596,4 +600,19 @@
     %'>'  "&gt;"
     %'"'  "&quot;"
   ==
+::  +style-text: css made safe to inline between <style> and </style>.
+::  Only "</" can end the element early (an html parser closes it at
+::  "</style"), so it becomes "<\/", which css reads as the same two
+::  characters. A theme a key or a peer wrote used to break out of the
+::  style element into script on the owner's page (security audit run-1).
+::
+++  style-text
+  |=  css=@t
+  ^-  tape
+  =/  t=tape  (trip css)
+  |-  ^-  tape
+  ?~  t  ~
+  ?:  &(=('<' i.t) ?=([%'/' *] t.t))
+    ['<' '\\' $(t t.t)]
+  [i.t $(t t.t)]
 --

@@ -136,4 +136,26 @@
     (expect-eq !>(&) !>((on "cy=\"100\"" (ll 'cmd=51.508000,7.25' `b1 t0))))
     (expect-eq !>(&) !>(?=(~ (find "<circle" (body (ll 'cmd=51.508000,7.25' `b1x t0))))))
   ==
+::  +style-text: a theme cannot end its own <style> element
+++  test-style-text
+  ;:  weld
+    %+  expect-eq  !>("body\{color:red}")
+      !>((style-text:pg 'body{color:red}'))
+    %+  expect-eq  !>("a\{}<\\/style><script>x<\\/script>")
+      !>((style-text:pg 'a{}</style><script>x</script>'))
+    %+  expect-eq  !>('a::after{content:"<\\/"}')
+      !>((crip (style-text:pg 'a::after{content:"</"}')))
+    (expect-eq !>(|) !>(?=(^ (find "</" (style-text:pg 'x</STYLE></style</')))))
+  ==
+::  +folder-index: node names are markup-escaped, not spliced raw
+++  test-folder-index-escapes-names
+  =/  deps=(list [path *])
+    ~[[/page/site `(list entry:pg)`~[[/ok %.y] [/'x"><b id=v02>' %.y]]]]
+  =/  r  (folder-index:pg deps /site)
+  =/  out=tape  (trip ;;(@t (need dat.r)))
+  ;:  weld
+    (expect-eq !>(&) !>(?=(^ (find "/ok\">ok</a>" out))))
+    (expect-eq !>(|) !>(?=(^ (find "<b id=v02>" out))))
+    (expect-eq !>(&) !>(?=(^ (find "&lt;b id=v02&gt;" out))))
+  ==
 --

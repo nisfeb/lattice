@@ -8760,7 +8760,9 @@
   =/  dflt=tape  ?:(?=(%html vmode) "" :(weld "<style>" web-css "</style>"))
   ?.  local  (pure:m dflt)
   ;<  tcss=(unit @t)  bind:m  (find-theme-css rel)
-  (pure:m ?^(tcss :(weld "<style>" (trip u.tcss) "</style>") dflt))
+  ::  +style-text:pg: a key or an edit-granted peer can write the theme, and
+  ::  raw it could close the <style> into script on every page it themes
+  (pure:m ?^(tcss :(weld "<style>" (style-text:pg u.tcss) "</style>") dflt))
 ::  +forms-on: is public form submission enabled at or above this page? Same
 ::  nearest-flag-wins walk as +comments-on, so a folder opts in a whole site.
 ::
