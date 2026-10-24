@@ -10464,8 +10464,12 @@
   ;<  vw=(unit view:nexus)  bind:m
     (peek-soft:io [%& %& /sys/link/lattice %'dest.lanes'] ~)
   ?.  ?=([~ %file *] vw)  (pure:m app-base:lu)
-  ::  our own row is a DIRECTORY lane; a file lane is ignored
-  =/  dirs=(list path)  (lane-dirs:lu (sang-noun:tarball sang.u.vw))
+  ::  our own row is a DIRECTORY lane; a file lane is ignored. Any app may
+  ::  claim the name lattice, and the head of the list is whoever claimed
+  ::  it first, so only a place lattice installs at is taken.
+  =/  dirs=(list path)
+    %+  skim  (lane-dirs:lu (sang-noun:tarball sang.u.vw))
+    |=(d=path ?=(^ (find ~[d] peer-bases:lu)))
   ?~  dirs  (pure:m app-base:lu)
   (pure:m i.dirs)
 ::  +keep-url: grubbery's native keep-SSE endpoint for one of our grubs.
