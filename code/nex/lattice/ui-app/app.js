@@ -1720,8 +1720,12 @@
   // run-1). One job in flight, the newest text queued behind it. A job slow
   // to answer leaves plain text painted, and past the deadline the worker
   // is killed and the text stays plain.
-  const HL_PLAIN = 50, HL_DEADLINE = 1500;
-  let hlWorker = null, hlCur = null, hlNext = null, hlPlain = 0, hlKill = 0;
+  // A fresh worker first fetches prism.js, which on the desktop goes through
+  // the bridge to the ship and can take seconds, so its first job gets a
+  // startup allowance on top of the deadline. Without it every new worker
+  // was killed before it could answer, and the editor never highlighted.
+  const HL_PLAIN = 50, HL_DEADLINE = 1500, HL_STARTUP = 10000;
+  let hlWorker = null, hlFresh = false, hlCur = null, hlNext = null, hlPlain = 0, hlKill = 0;
   const hlDone = () => {
     clearTimeout(hlPlain); clearTimeout(hlKill); hlCur = null;
     if (hlNext) { const j = hlNext; hlNext = null; hlRun(j); }
@@ -1732,7 +1736,9 @@
     if (hlCur) { hlNext = job; hlPaint(job.body); return; }
     if (!hlWorker) {
       try { hlWorker = new Worker('/apps/lattice/prism.js'); } catch { hlPaint(job.body); return; }
+      hlFresh = true;
       hlWorker.onmessage = (e) => {
+        hlFresh = false;
         const j = hlCur;
         if (j && j.body === src.value && j.lang === LMAP[pkind.value]) {
           hl.innerHTML = e.data + '\n'; sync();
@@ -1746,7 +1752,7 @@
     hlKill = setTimeout(() => {
       if (hlWorker) hlWorker.terminate();
       hlWorker = null; hlDone();
-    }, HL_DEADLINE);
+    }, HL_DEADLINE + (hlFresh ? HL_STARTUP : 0));
     hlWorker.postMessage(JSON.stringify({ language: job.lang, code: job.body }));
   };
   const render = () => {
