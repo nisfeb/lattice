@@ -19,6 +19,9 @@
 ::
 +$  eval-action
   $%  [%make pax=path src=@t]           ::  create a page / replace its code
+      ::  +make, for a copy of a page a peer may have written (a move, a
+      ::  conflict copy). The copy keeps the original's peer-written mark.
+      [%make-marked pax=path src=@t]
       ::  N pages in ONE writer transaction. An upload used to be one HTTP
       ::  request (and one poke) per file, and every request pays the pier's
       ::  ~0.5s floor serially. A 20-file drop was ~20 round-trips of pure
