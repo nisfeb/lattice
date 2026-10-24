@@ -936,6 +936,15 @@
   =/  mkp=(unit (list path))  (parse-paths make.p.pr)
   ?:  |(?=(~ pkp) ?=(~ mkp))
     (send-err eyre-id 400 'grant paths must be absolute and under /apps')
+  ::  a make road at or above the request intake lets a member make a
+  ::  request grub, and the owner gate takes its authenticated flag at its
+  ::  word (security audit run-1). Every place we may live is checked.
+  ;<  sb=path  bind:m  self-base
+  =/  intake=(list path)
+    (turn [sb peer-bases:lu] |=(b=path (weld b /ui/requests)))
+  ?:  %+  lien  u.mkp
+      |=(p=path (lien intake |=(i=path =(p (scag (lent p) i)))))
+    (send-err eyre-id 400 'a make grant there would reach lattice\'s request intake')
   =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
   ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
   ::  ABSOLUTE, as the grantee's weir matches them. A group weir is read
