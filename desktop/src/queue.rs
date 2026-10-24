@@ -145,7 +145,23 @@ fn root(app: &AppHandle) -> Result<PathBuf, String> {
         .path()
         .app_data_dir()
         .map_err(|e| format!("no app data dir: {e}"))?;
-    Ok(base.join("queue").join(key_dir_name(&queue_key(app))))
+    let q = base.join("queue");
+    private_dir(&q)?;
+    Ok(q.join(key_dir_name(&queue_key(app))))
+}
+
+/// The queue holds unsent page and memory bodies, sensitive ones included,
+/// so its top directory is 0700: nobody else can reach anything below it.
+/// Set on every use, which also closes up a queue an older build made with
+/// the umask's 0755 (security audit run-1).
+fn private_dir(d: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(d)
+        .and_then(|_| std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700)))
+        .map_err(|e| format!("{}: {e}", d.display()))
 }
 
 fn saves_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -162,11 +178,11 @@ fn ops_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 /// Write via a temp file and rename. A half-written record is a corrupt
 /// backup of somebody's only copy, and rename is the one cheap way to make a
-/// reader see either all of it or none.
+/// reader see either all of it or none. write_private also makes the record
+/// 0600, since it is the body of a page or memory that has not reached the
+/// ship yet.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    crate::session::write_private(path, bytes)
 }
 
 pub fn list_saves_at(dir: &Path) -> Vec<Value> {
@@ -322,6 +338,27 @@ mod tests {
         assert_eq!(got[0]["name"], "notes/todo");
         assert_eq!(got[0]["body"], "# hi");
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn queued_bodies_are_private_to_this_user() {
+        // An unsent body can be a sensitive page. Under the usual umask the
+        // queue wrote it 0644 in 0755 directories, readable by every local
+        // account (security audit run-1).
+        use std::os::unix::fs::PermissionsExt;
+        let q = tmp("modes").join("queue");
+        std::fs::create_dir_all(&q).unwrap();
+        std::fs::set_permissions(&q, std::fs::Permissions::from_mode(0o755)).unwrap();
+        private_dir(&q).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&q), 0o700, "an older build's 0755 queue dir is closed up");
+        let d = q.join("ship").join("saves");
+        std::fs::create_dir_all(&d).unwrap();
+        put_save_at(&d, &json!({"name": "private/diary", "kind": "md", "body": "secret"})).unwrap();
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            assert_eq!(mode(&e.path()), 0o600, "{} is readable by others", e.path().display());
+        }
+        std::fs::remove_dir_all(q.parent().unwrap()).ok();
     }
 
     #[test]
