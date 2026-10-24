@@ -5589,6 +5589,13 @@
   ?^  src
     ;<  dsn=view:nexus       bind:m  (peek:io (rf up u.src %data) ~)
     ;<  vmode=view-mode:pg   bind:m  (read-show-mode u.src)
+    ::  an edit-granted source may hold a peer's markup, and its fragment
+    ::  is welded raw into a composing page that is not sandboxed itself.
+    ::  Such a fragment is shown as text.
+    ;<  eg=?  bind:m
+      ?.  ?=(%html vmode)  (pure:(fiber:fiber:nexus ,?) |)
+      (edit-granted (slag 1 u.src))
+    =?  vmode  eg  %text
     ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
     =/  frag=@t
       ?.  ?=([%file *] dsn)  ''
