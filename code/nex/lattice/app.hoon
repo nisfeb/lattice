@@ -8560,11 +8560,15 @@
     ?.  &(preview ?=(%html vmode))  p.res
     (cat 3 p.res preview-scrollbar-css)
   ::  an html asset of a page shared for edit gets an opaque origin, as in
-  ::  +serve-clearweb
+  ::  +serve-clearweb. Its js is served as text/plain, which nosniff
+  ::  (+send-typed) stops any page from running as a script: a CSP on the
+  ::  response cannot, since a <script src> on an owner page runs it in the
+  ::  owner's origin whatever headers it came with (security audit run-1).
   ;<  eg=?  bind:m
-    ?.  ?=(%html vmode)  (pure:(fiber:fiber:nexus ,?) |)
+    ?.  ?=(?(%html %js) vmode)  (pure:(fiber:fiber:nexus ,?) |)
     (edit-granted pax)
-  ?:  eg  (send-sandboxed eyre-id (mime-of vmode) body)
+  ?:  &(eg ?=(%html vmode))  (send-sandboxed eyre-id (mime-of vmode) body)
+  ?:  eg  (send-typed eyre-id 'text/plain; charset=utf-8' 'no-cache' body)
   (send-typed eyre-id (mime-of vmode) 'no-cache' body)
 ++  preview-scrollbar-css
   ^-  @t
@@ -8877,6 +8881,11 @@
   ?:  ?=(?(%css %js) vmode)
     =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.u.dat))))
     ?:  ?=(%| -.res)  (send-err eyre-id 415 'not servable')
+    ::  a peer's js is not ours to run: text/plain, as in +serve-asset
+    ;<  eg=?  bind:m
+      ?.  ?=(%js vmode)  (pure:(fiber:fiber:nexus ,?) |)
+      (edit-granted pax)
+    ?:  eg  (send-typed eyre-id 'text/plain; charset=utf-8' 'no-cache' p.res)
     (send-typed eyre-id (mime-of vmode) 'no-cache' p.res)
   ::  Every rendered/html page auto-wears the nearest `theme` css up the folder
   ::  tree, LINKED IN THE HEAD (render-blocking -> no white flash on nav, browser-
@@ -9171,7 +9180,9 @@
   ::  grubs get a mark-derived type; anything foreign is forced to an inert
   ::  download (octet-stream + attachment + nosniff).
   =/  heads=(list [@t @t])
-    ?:  local  ['content-type' (mark-mime mk)]~
+    ::  own grubs too get nosniff, so the type is the one served (see
+    ::  +send-typed)
+    ?:  local  ~[['content-type' (mark-mime mk)] ['x-content-type-options' 'nosniff']]
     :~  ['content-type' 'application/octet-stream']
         ['content-disposition' 'attachment']
         ['x-content-type-options' 'nosniff']
@@ -9186,7 +9197,7 @@
       (send-err eyre-id 413 'too large')
     =/  mheads=(list [@t @t])
       ?.  local  heads
-      ['content-type' (mite-type p.p.mime-res)]~
+      ~[['content-type' (mite-type p.p.mime-res)] ['x-content-type-options' 'nosniff']]
     (send-simple:srv eyre-id [[200 mheads] `q.p.mime-res])
   ::  %json: re-encode the noun so ?data yields actual JSON text
   ?:  =(%json mk)
@@ -9367,14 +9378,19 @@
 ::  private app (install is offered only inside an authed session).
 ::
 ::  +send-typed: a 200 with an explicit content-type and cache-control. The PWA
-::  routes and both +send-view tiers send through it.
+::  routes, both +send-view tiers and the raw /f/ and /c/ assets send through
+::  it. nosniff: without it a browser runs a text, markdown or css body as a
+::  same-origin script when a page loads it as one, so a key that may write
+::  text over a js page ran script as the owner (security audit run-1).
 ::
 ++  send-typed
   |=  [eyre-id=@ta ct=@t cc=@t body=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  =/  heds=(list [@t @t])
+    ~[['content-type' ct] ['cache-control' cc] ['x-content-type-options' 'nosniff']]
   %+  send-simple:srv  eyre-id
-  :-  [200 ~[['content-type' ct] ['cache-control' cc]]]
+  :-  [200 heds]
   `(as-octs:mimes:html body)
 ::  +send-sandboxed: +send-typed with a CSP sandbox and no-cache. The
 ::  document gets an opaque origin, so its scripts still run but hold no
