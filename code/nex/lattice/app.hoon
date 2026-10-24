@@ -762,14 +762,19 @@
     ::  and nothing to disagree with. Not a conflict
     ?~  old  $(todo t.todo, ps more, pg pgm, dups [& dups])
     ?:  =(u.old wsrc)  $(todo t.todo, ps more, pg pgm, dups [& dups])
-    ::  the losing body may be a peer's: its copy keeps the mark
+    ::  the losing body may be a peer's: its copy keeps the mark. A
+    ::  sensitive page's copy is marked sensitive before its body lands.
     ;<  pw=?  bind:n  (peer-written (pax-of nam.i.todo))
+    =/  kpax=path  (pax-of (conflict-name nam.i.todo pv))
+    ;<  sv=?  bind:n  (page-sensitive (pax-of nam.i.todo))
+    ;<  ~  bind:n
+      ?.(sv (pure:(fiber:fiber:nexus ,~) ~) (poke-eval [%page-sensitive kpax &]))
     %=  $
       todo   t.todo
       ps     more
       pg     pgm
       dups   [| dups]
-      keeps  [[(pax-of (conflict-name nam.i.todo pv)) u.old pw] keeps]
+      keeps  [[kpax u.old pw] keeps]
     ==
   =/  plain=(list [pax=path src=@t])
     (murn keeps.kd |=([pax=path src=@t pw=?] ?:(pw ~ `[pax src])))
@@ -884,8 +889,12 @@
     =/  n  (fiber:fiber:nexus ,~)
     ?.  conflicted  (pure:n ~)
     ?~  old  (pure:n ~)
-    ::  the losing body may be a peer's: the copy keeps the mark
+    ::  the losing body may be a peer's: the copy keeps the mark. And a
+    ::  sensitive page's copy is marked sensitive before its body lands,
+    ::  since conflicts/ is under no folder mark of the page's.
     ;<  pw=?  bind:n  (peer-written (pax-of u.name))
+    ;<  ps=?  bind:n  (page-sensitive (pax-of u.name))
+    ;<  ~  bind:n  ?.(ps (pure:n ~) (poke-eval [%page-sensitive (pax-of kept) &]))
     (poke-eval ?:(pw [%make-marked (pax-of kept) u.old] [%make (pax-of kept) u.old]))
   ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
   ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
@@ -4730,11 +4739,21 @@
     ::  cull tombs the CURRENT revision but leaves every stored %firm one, so
     ::  a deleted page's bodies stayed readable via page-history and could be
     ::  resurrected onto the next page created with the same name. Drop them
-    ::  first. (A folder delete culls the subtree; each page's own delete
-    ::  prunes its own history, so this covers the page case exactly.)
+    ::  first, for every page under the deleted path: a folder delete and a
+    ::  move each send one %del for the whole folder, so the nested pages'
+    ::  history used to survive the cull.
     ::  keep=0 drops everything, so the window is irrelevant here
-    ;<  ~  bind:m  (prune-hist (rf up pdir %code) 0 ~s0)
-    ;<  ~  bind:m  (prune-hist (rf up pdir %data) 0 ~s0)
+    ;<  dv=view:nexus  bind:m  (peek:io (rv up pdir) ~)
+    =/  rels=(list path)
+      ?.  ?=([%ball *] dv)  ~[/]
+      (murn (collect-tree ball.dv ~) |=([pax=path page=?] ?:(page `pax ~)))
+    ;<  ~  bind:m
+      |-  ^-  form:m
+      ?~  rels  (pure:m ~)
+      =/  d=path  (weld pdir i.rels)
+      ;<  ~  bind:m  (prune-hist (rf up d %code) 0 ~s0)
+      ;<  ~  bind:m  (prune-hist (rf up d %data) 0 ~s0)
+      $(rels t.rels)
     ;<  *  bind:m  (cull-soft:io (rv up pdir))
     ::  re-send the public grant act AFTER the cull, so the walk inside
     ::  +send-public-how sees the deletion and the dead page's data road
@@ -5376,11 +5395,24 @@
   ::  Display names of the root and every subfolder ride along after the
   ::  mkdirs (pages carry theirs in the per-page loop below).
   =/  dacts=(list eval-action:le)  (dname-acts bl to [`path`~ dirs])
+  ::  sensitivity goes with what moves, and lands before any content: the
+  ::  root as it reads where it was (its own mark or a folder's above it),
+  ::  and each page and folder under it by its own mark. The %del below
+  ::  culls the old marks, so a move used to leave the content unmarked.
+  ;<  rs=?  bind:m  (page-sensitive from)
+  =/  own=(list path)
+    %+  murn  all
+    |=([pax=path *] ?.((~(has by (ball-fils bl pax)) %sensitive) ~ `pax))
+  =/  sacts=(list eval-action:le)
+    %+  turn  (weld ?:(rs ~[`path`~] ~) own)
+    |=(p=path `eval-action:le`[%page-sensitive (weld to p) &])
   =/  todo=(list eval-action:le)
-    %+  weld
+    ;:  weld
+      sacts
       ^-  (list eval-action:le)
       [[%mkdir to] (turn dirs |=(p=path `eval-action:le`[%mkdir (weld to p)]))]
-    dacts
+      dacts
+    ==
   =/  count=@ud  0
   |-  ^-  form:m
   ?^  todo
@@ -5659,7 +5691,7 @@
 ::  own html). render-shown runs on our OWN page data only (view-src is own-tree).
 ::
 ++  read-dep-vals
-  |=  deps=(list path)
+  |=  [lim=[mode=share-mode:le sens=?] deps=(list path)]
   =/  m  (fiber:fiber:nexus ,(list [path *]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -5679,7 +5711,7 @@
       ?.  ?=(%html vmode)  (pure:(fiber:fiber:nexus ,?) |)
       (peer-written (slag 1 u.src))
     =?  vmode  eg  %text
-    ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
+    ;<  rest=(list [path *])  bind:m  (read-dep-vals lim t.deps)
     =/  frag=@t
       ?.  ?=([%file *] dsn)  ''
       ::  a composed view fragment is rendered ONCE at eval time and stored in
@@ -5693,14 +5725,20 @@
   ;<  sn=view:nexus  bind:m  (peek:io (rf up (scag n i.deps) (snag n i.deps)) ~)
   ?:  ?=([%file *] sn)
     ::  a file grub -> its raw noun.
-    ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
+    ;<  rest=(list [path *])  bind:m  (read-dep-vals lim t.deps)
     (pure:m [[i.deps (sang-noun:tarball sang.sn)] rest])
   ::  not a file -> a DIRECTORY dep resolves to its tree listing (a
   ::  (list [pax=path page=?]) of pages+folders under it, paths relative to the
   ::  dir), so a page can enumerate a structured subtree. ~ if it is neither.
   ;<  dn=view:nexus  bind:m  (peek:io (rv up i.deps) ~)
-  ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
-  =/  val=*  ?.(?=([%ball *] dn) ~ (collect-tree ball.dn ~))
+  ;<  rest=(list [path *])  bind:m  (read-dep-vals lim t.deps)
+  ::  the listing is the composing page's data, read by whoever reads that
+  ::  page: only what it may show (+collect-visible)
+  ;<  dsens=?  bind:m  (page-sensitive (slag 1 i.deps))
+  =/  val=*
+    ?.  ?=([%ball *] dn)  ~
+    ?:  &(dsens !sens.lim)  ~
+    (collect-visible ball.dn ~ mode.lim sens.lim)
   (pure:m [[i.deps val] rest])
 ::  +eval-run: one run of a compiled page: build the env vase (typed via
 ::  slop, so the gate's declared sample nest-checks), slam inside mule,
@@ -5717,7 +5755,13 @@
   ;<  dsn=view:nexus  bind:m  (peek:io (rf up pdir %data) ~)
   =/  dat=(unit *)
     ?.(?=([%file *] dsn) ~ `(sang-noun:tarball sang.dsn))
-  ;<  dvs=(list [path *])  bind:m  (read-dep-vals deps)
+  ::  what this page may show of others (+collect-visible)
+  ;<  shv=view:nexus  bind:m  (peek:io (rf up pdir %share) ~)
+  =/  mode=share-mode:le
+    ?.  ?=([%file *] shv)  %private
+    (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.shv)))) %private)
+  ;<  sens=?  bind:m  (page-sensitive (slag 1 pdir))
+  ;<  dvs=(list [path *])  bind:m  (read-dep-vals [mode sens] deps)
   =/  env=vase
     ;:  slop
       !>(`(unit @t)`cmd)
@@ -6327,14 +6371,18 @@
     =/  kw=wave:nexus  (fall (~(get by dir.w) nom) *wave:nexus)
     (dump-walk kb kw (weld rel /[nom]) since)
   =/  drow=(list [@t json])  (dname-row fils)
+  ::  this node's own sensitive mark, so a vault export can carry it
+  =/  srow=(list [@t json])
+    ?.((~(has by fils) %sensitive) ~ ~[['sensitive' b+&]])
   ?.  (~(has by fils) %code)
     ?~  rel  kids
     :_  kids
     :-  rel
     %-  pairs:enjs:format
-    %+  weld  drow
-    ^-  (list [@t json])
-    ~[['path' s+(crip (pax-str rel))] ['page' b+|]]
+    ;:  weld  drow  srow
+      ^-  (list [@t json])
+      ~[['path' s+(crip (pax-str rel))] ['page' b+|]]
+    ==
   =/  cd  (~(got by fils) %code)
   =/  cs=cass:clay  (fall (~(get by wfil) %code) *cass:clay)
   =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) '')
@@ -6365,7 +6413,7 @@
     ==
   :_  kids
   :-  rel
-  (pairs:enjs:format :(weld drow head body-row share-row tail))
+  (pairs:enjs:format :(weld drow srow head body-row share-row tail))
 ::  +dname-row: the `dname` field of a tree node, from the %name grub in the
 ::  same ball as its %code (or, for a folder, its flags). Absent -> no field:
 ::  the client shows the path segment, and a valid name is never stored twice.
@@ -7036,8 +7084,10 @@
   ?.  move  $(days t.days)
   =/  pax=path  ~[%journal name]
   =/  body=@t  (journal-body:lo head `@t`i.days text.u.rec)
-  ;<  ~  bind:m  (poke-eval [%make pax (wrap-content %md body)])
+  ::  marked first: between a make and a later mark, a key without
+  ::  clearance could read the new brief
   ;<  ~  bind:m  (poke-eval [%page-sensitive pax &])
+  ;<  ~  bind:m  (poke-eval [%make pax (wrap-content %md body)])
   $(days t.days, synced (~(put by synced) `@t`name at.u.rec))
 ::  +orrery-rec: pull the `at` and `text` strings out of one orrery day
 ::  record. ~ when the json is not an object or either field is missing or
@@ -9744,6 +9794,11 @@
   ::  network request is the browser's own, cookies and all. The ?u= guard
   ::  also keeps command 303s (send-see-other's buster) network-fresh, and
   ::  activate-time eviction spares this cache: its freshness is rev-based.
+  ::
+  ::  A 401 or 403 on the app shell means the session is gone. The answer
+  ::  goes through as it is, as it would with no worker, and the pages cache
+  ::  is dropped. Only a failed fetch (offline) falls back to the cached
+  ::  shell. Owner content used to outlive the session in this browser.
   =/  ver=@t
     (scot %ux (mug [uih uij vjs tjs ojs icon pjs manifest-json icon-192-b64 icon-512-b64]))
   ::  PV versions the RENDERED reader documents (their inline css + scripts).
@@ -9758,7 +9813,7 @@
       ver
       '";var PV="'
       pv
-      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){e.waitUntil(caches.open(V).then(function(c){return Promise.all(SHELL.map(function(u){return c.add(u).catch(function(){})}))}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var nu=(u.pathname==="/apps/lattice/app/app.js")?(u.origin+u.pathname+"?v="+V):q;return fetch(nu).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone());return r}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=q.url+(q.url.indexOf("?")<0?"?":"&")+"u=sw"+Date.now();e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){e.waitUntil(caches.open(V).then(function(c){return Promise.all(SHELL.map(function(u){return c.add(u).catch(function(){})}))}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var nu=(u.pathname==="/apps/lattice/app/app.js")?(u.origin+u.pathname+"?v="+V):q;return fetch(nu).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=q.url+(q.url.indexOf("?")<0?"?":"&")+"u=sw"+Date.now();e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
@@ -9803,10 +9858,12 @@
 ::  fresh — the regime's rule is that only a first-ever view, or the first
 ::  after eviction, is slow.
 ::
+::  A refetch answered 401 or 403 means the session is gone, and the whole
+::  pages cache goes with it, not only this document.
 ++  page-cache-script
   ^-  tape
   %-  trip
-  '<script>(function(){if(!("caches"in window)||!window.indexedDB)return;var PN=location.pathname;if(PN==="/apps/lattice/clip"||PN==="/apps/lattice/share")return;var BUDGET=(+localStorage.latCacheBudget)||200*1024*1024;var canon=(function(){var h=location.href.split("#")[0];var i=h.indexOf("?");if(i<0)return h;var q=h.slice(i+1).split("&").filter(function(s){return s.slice(0,2)!=="u="});return q.length?h.slice(0,i)+"?"+q.join("&"):h.slice(0,i)})();function idb(){return new Promise(function(res,rej){var r=indexedDB.open("lattice-lru",1);r.onupgradeneeded=function(){r.result.createObjectStore("e",{keyPath:"url"})};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}function tx(db,mode,fn){return new Promise(function(res,rej){var t=db.transaction("e",mode);fn(t.objectStore("e"));t.oncomplete=function(){res()};t.onerror=function(){rej(t.error)}})}function touch(url,size){return idb().then(function(db){return tx(db,"readwrite",function(st){var g=st.get(url);g.onsuccess=function(){var e=g.result||{url:url,size:0};e.at=Date.now();if(size)e.size=size;st.put(e)}})}).catch(function(x){})}function evict(){return idb().then(function(db){var all=[];return tx(db,"readonly",function(st){st.openCursor().onsuccess=function(ev){var c=ev.target.result;if(c){all.push(c.value);c.continue()}}}).then(function(){var total=all.reduce(function(a,e){return a+(e.size||0)},0);if(total<=BUDGET)return;all.sort(function(a,b){return(a.at||0)-(b.at||0)});return caches.open("lattice-pages").then(function(c){var i=0;function step(){if(i>=all.length||total<=BUDGET)return;var e=all[i++];total-=(e.size||0);return c.delete(e.url).then(function(){return tx(db,"readwrite",function(st){st.delete(e.url)})}).then(step)}return step()})})}).catch(function(x){})}var swReady=("serviceWorker"in navigator)?Promise.race([navigator.serviceWorker.ready.catch(function(){}),new Promise(function(r){setTimeout(r,3000)})]):Promise.resolve();var shown=null;caches.open("lattice-pages").then(function(c){return c.match(canon)}).then(function(r){return r?r.text():null}).then(function(t){shown=t}).catch(function(x){});function strip(t){return t.replace(/var REV="[^"]*"/,"")}function drop(){return caches.open("lattice-pages").then(function(c){return c.delete(canon)}).then(function(){return idb()}).then(function(db){return tx(db,"readwrite",function(st){st.delete(canon)})}).catch(function(x){})}var inflight=null;function refresh(force){if(inflight&&!force)return inflight;var p=swReady.then(function(){return fetch(location.href,{credentials:"same-origin",cache:"no-store",headers:{"x-lattice-bg":"1"}}).then(function(r){if(r.redirected||r.status===403||r.status===404||r.status===410){return drop().then(function(){return false})}if(!r.ok)return false;return r.blob().then(function(body){return caches.open("lattice-pages").then(function(c){return body.text().then(function(nt){var chg=shown===null||strip(shown)!==strip(nt);if(shown===null)shown=nt;return c.put(canon,new Response(body,{status:200,headers:{"content-type":r.headers.get("content-type")||"text/html"}})).then(function(){return touch(canon,body.size)}).then(evict).then(function(){return{ok:true,chg:chg}})})})})})}).catch(function(x){return false}).then(function(ok){if(inflight===p)inflight=null;return ok});inflight=p;return p}window.__latRefresh=refresh;window.__latCanon=canon;touch(canon,0);var last=Date.now();addEventListener("pointerdown",function(){last=Date.now()},true);addEventListener("keydown",function(){last=Date.now()},true);var nav0=performance.getEntriesByType("navigation")[0];var fresh=!!(nav0&&nav0.transferSize>0);var IDLE=fresh?12000:8000;var CAP=fresh?45000:20000;var t0=Date.now();var iv=setInterval(function(){if(Date.now()-last>IDLE||Date.now()-t0>CAP){clearInterval(iv);refresh()}},500);var oic=/Chrome\//.test(navigator.userAgent);if(fresh&&oic){swReady.then(function(){return fetch(location.href,{cache:"only-if-cached",mode:"same-origin",credentials:"same-origin"})}).then(function(r){if(!r.ok||r.redirected)throw 0;return r.blob()}).then(function(body){return body.text().then(function(nt){shown=nt;return caches.open("lattice-pages").then(function(c){return c.put(canon,new Response(body,{status:200,headers:{"content-type":"text/html"}}))}).then(function(){return touch(canon,body.size)})})}).then(function(){clearInterval(iv)}).catch(function(x){})}})();</script>'
+  '<script>(function(){if(!("caches"in window)||!window.indexedDB)return;var PN=location.pathname;if(PN==="/apps/lattice/clip"||PN==="/apps/lattice/share")return;var BUDGET=(+localStorage.latCacheBudget)||200*1024*1024;var canon=(function(){var h=location.href.split("#")[0];var i=h.indexOf("?");if(i<0)return h;var q=h.slice(i+1).split("&").filter(function(s){return s.slice(0,2)!=="u="});return q.length?h.slice(0,i)+"?"+q.join("&"):h.slice(0,i)})();function idb(){return new Promise(function(res,rej){var r=indexedDB.open("lattice-lru",1);r.onupgradeneeded=function(){r.result.createObjectStore("e",{keyPath:"url"})};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}function tx(db,mode,fn){return new Promise(function(res,rej){var t=db.transaction("e",mode);fn(t.objectStore("e"));t.oncomplete=function(){res()};t.onerror=function(){rej(t.error)}})}function touch(url,size){return idb().then(function(db){return tx(db,"readwrite",function(st){var g=st.get(url);g.onsuccess=function(){var e=g.result||{url:url,size:0};e.at=Date.now();if(size)e.size=size;st.put(e)}})}).catch(function(x){})}function evict(){return idb().then(function(db){var all=[];return tx(db,"readonly",function(st){st.openCursor().onsuccess=function(ev){var c=ev.target.result;if(c){all.push(c.value);c.continue()}}}).then(function(){var total=all.reduce(function(a,e){return a+(e.size||0)},0);if(total<=BUDGET)return;all.sort(function(a,b){return(a.at||0)-(b.at||0)});return caches.open("lattice-pages").then(function(c){var i=0;function step(){if(i>=all.length||total<=BUDGET)return;var e=all[i++];total-=(e.size||0);return c.delete(e.url).then(function(){return tx(db,"readwrite",function(st){st.delete(e.url)})}).then(step)}return step()})})}).catch(function(x){})}var swReady=("serviceWorker"in navigator)?Promise.race([navigator.serviceWorker.ready.catch(function(){}),new Promise(function(r){setTimeout(r,3000)})]):Promise.resolve();var shown=null;caches.open("lattice-pages").then(function(c){return c.match(canon)}).then(function(r){return r?r.text():null}).then(function(t){shown=t}).catch(function(x){});function strip(t){return t.replace(/var REV="[^"]*"/,"")}function drop(){return caches.open("lattice-pages").then(function(c){return c.delete(canon)}).then(function(){return idb()}).then(function(db){return tx(db,"readwrite",function(st){st.delete(canon)})}).catch(function(x){})}function wipe(){return caches.delete("lattice-pages").then(function(){try{indexedDB.deleteDatabase("lattice-lru")}catch(x){}}).catch(function(x){})}var inflight=null;function refresh(force){if(inflight&&!force)return inflight;var p=swReady.then(function(){return fetch(location.href,{credentials:"same-origin",cache:"no-store",headers:{"x-lattice-bg":"1"}}).then(function(r){if(r.status===401||r.status===403){return wipe().then(function(){return false})}if(r.redirected||r.status===404||r.status===410){return drop().then(function(){return false})}if(!r.ok)return false;return r.blob().then(function(body){return caches.open("lattice-pages").then(function(c){return body.text().then(function(nt){var chg=shown===null||strip(shown)!==strip(nt);if(shown===null)shown=nt;return c.put(canon,new Response(body,{status:200,headers:{"content-type":r.headers.get("content-type")||"text/html"}})).then(function(){return touch(canon,body.size)}).then(evict).then(function(){return{ok:true,chg:chg}})})})})})}).catch(function(x){return false}).then(function(ok){if(inflight===p)inflight=null;return ok});inflight=p;return p}window.__latRefresh=refresh;window.__latCanon=canon;touch(canon,0);var last=Date.now();addEventListener("pointerdown",function(){last=Date.now()},true);addEventListener("keydown",function(){last=Date.now()},true);var nav0=performance.getEntriesByType("navigation")[0];var fresh=!!(nav0&&nav0.transferSize>0);var IDLE=fresh?12000:8000;var CAP=fresh?45000:20000;var t0=Date.now();var iv=setInterval(function(){if(Date.now()-last>IDLE||Date.now()-t0>CAP){clearInterval(iv);refresh()}},500);var oic=/Chrome\//.test(navigator.userAgent);if(fresh&&oic){swReady.then(function(){return fetch(location.href,{cache:"only-if-cached",mode:"same-origin",credentials:"same-origin"})}).then(function(r){if(!r.ok||r.redirected)throw 0;return r.blob()}).then(function(body){return body.text().then(function(nt){shown=nt;return caches.open("lattice-pages").then(function(c){return c.put(canon,new Response(body,{status:200,headers:{"content-type":"text/html"}}))}).then(function(){return touch(canon,body.size)})})}).then(function(){clearInterval(iv)}).catch(function(x){})}})();</script>'
 ::  +nav-script: contextual back/forward + the hamburger. The stack is the
 ::  TAB's own (sessionStorage), indexed by a latI stamped into history.state
 ::  so a traversal is told apart from a new navigation: a load carrying latI
@@ -10091,6 +10148,33 @@
   ?:  (~(has by fils) %code)  [[rel &] kids]
   ?~  rel  kids
   [[rel |] kids]
+::  +collect-visible: +collect-tree for a listing that others read, as the
+::  data of the page that lists it. A page is listed only when it is shared
+::  at least as widely as that page, and nothing marked sensitive is
+::  listed unless that page is sensitive too. A folder is listed when
+::  something under it is, or in a private listing, which only the owner
+::  and keys read. An index on a published page used to name every private
+::  and sensitive page under its folder (security audit run-1).
+++  collect-visible
+  |=  [b=ball:tarball rel=path mode=share-mode:le sens=?]
+  ^-  (list [pax=path page=?])
+  =/  fils  ?~(fil.b ~ contents.u.fil.b)
+  ?:  &(!sens (~(has by fils) %sensitive))  ~
+  =/  kids=(list [pax=path page=?])
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=  [nom=@ta kid=ball:tarball]
+    (collect-visible kid (weld rel /[nom]) mode sens)
+  ?:  (~(has by fils) %code)
+    ?.  (gte (share-rank (fils-share fils)) (share-rank mode))  kids
+    [[rel &] kids]
+  ?~  rel  kids
+  ?:  |(?=(%private mode) ?=(^ kids))  [[rel |] kids]
+  kids
+++  share-rank
+  |=  s=share-mode:le
+  ^-  @ud
+  ?-(s %private 0, %shared 1, %clearweb 2)
 ::  +home-css: styling for the landing (nav cards + lists).
 ::
 ++  home-css
@@ -11289,6 +11373,9 @@
     ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
     ::  cull tombs the grub (gain=%.y keeps the body in born history). Drop its
     ::  index row so it's no longer live. No trash row. Pages have no restore.
+    ::  The history goes first: the /public peek grant covers this path, and
+    ::  a peek at an old case read the last published body after the cull.
+    ;<  ~  bind:m  (prune-hist road 0 ~s0)
     ;<  ~  bind:m  (cull:io road)
     ::  No tombstone binding: a subscriber learns of the delete from the
     ::  page leaving the revision list (+sub-apply-wave).
