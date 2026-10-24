@@ -161,8 +161,13 @@ fn convert(src: &str) -> Result<String, String> {
         })?,
     };
 
+    // --sandbox: the tex comes from the ship, so a key or an edit-granted
+    // peer may have written it. Without the flag, \input and
+    // \lstinputlisting read any file this user can read into the page
+    // (security audit run-1). pandoc older than 2.15 refuses the flag, and
+    // failing then is right: never convert unsandboxed.
     let spawned = Command::new(&exe)
-        .args(["-f", "latex", "-t", "html5", "--mathml"])
+        .args(["-f", "latex", "-t", "html5", "--mathml", "--sandbox"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -216,6 +221,9 @@ fn convert(src: &str) -> Result<String, String> {
         //  on, which is far more useful than an exit code.
         let err = String::from_utf8_lossy(&stderr);
         let msg = err.trim();
+        if msg.contains("--sandbox") {
+            return Err("pandoc 2.15 or later is needed to convert safely".to_string());
+        }
         return Err(if msg.is_empty() {
             "pandoc could not convert this document".to_string()
         } else {
@@ -269,6 +277,30 @@ mod tests {
         //  library loaded into the lattice bundle to be readable.
         assert!(html.contains("<math"), "math should be MathML: {html}");
         assert!(!html.contains("<script"), "no script belongs in the output: {html}");
+    }
+
+    //  The tex is written on the ship, possibly by an agent key or an
+    //  edit-granted peer, so it must not be able to read this machine's files
+    //  into the page. Without --sandbox, \input and \lstinputlisting did.
+    #[test]
+    fn tex_cannot_read_host_files() {
+        if locate().is_none() {
+            eprintln!("pandoc absent, skipping");
+            return;
+        }
+        let marker = format!("hostsecret{}x", std::process::id());
+        let p = std::env::temp_dir().join(format!("lattice-pandoc-{}.txt", std::process::id()));
+        std::fs::write(&p, &marker).unwrap();
+        let path = p.to_string_lossy();
+        for src in [
+            format!("\\documentclass{{article}}\\begin{{document}}\\input{{{path}}}\\end{{document}}"),
+            format!("\\documentclass{{article}}\\usepackage{{listings}}\\begin{{document}}\\lstinputlisting{{{path}}}\\end{{document}}"),
+        ] {
+            if let Ok(html) = convert(&src) {
+                assert!(!html.contains(&marker), "pandoc read a host file into the page: {html}");
+            }
+        }
+        std::fs::remove_file(&p).ok();
     }
 
     //  A LaTeX error must come back as pandoc's own message, which names the
