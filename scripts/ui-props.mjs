@@ -19,7 +19,7 @@
 // as scripts/ui-listedit.mjs, so this needs no browser and no ship.
 //
 // Usage:  node scripts/ui-props.mjs
-// Setup:  npm i --no-save fast-check     (nothing is added to a manifest)
+// Setup:  npm ci --prefix scripts     (fast-check is locked in scripts/)
 
 import { makeCheck, read, cut } from './lib/check.mjs';
 

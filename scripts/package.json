@@ -1,0 +1,9 @@
+{
+  "name": "lattice-scripts",
+  "private": true,
+  "description": "The npm packages the test harnesses import. CI installs them with npm ci --ignore-scripts, so only the locked versions run beside a ship cookie.",
+  "devDependencies": {
+    "fast-check": "4.10.2",
+    "puppeteer-core": "25.13.0"
+  }
+}
