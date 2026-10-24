@@ -832,6 +832,40 @@ pub async fn pick_vault(app: AppHandle) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    //  The ship-served client gets native commands only at the bridge
+    //  origin. Any-host patterns granted them to every page the workspace
+    //  window could reach (security audit run-1). A pattern that stopped
+    //  matching the bridge would deny every command, and that failure reads
+    //  as "Command not found", so pin both directions.
+    #[test]
+    fn workspace_commands_are_granted_only_at_the_bridge() {
+        use tauri::utils::acl::RemoteUrlPattern;
+        let cap: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/workspace-remote.json")).unwrap();
+        let pats: Vec<RemoteUrlPattern> = cap["remote"]["urls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u.as_str().unwrap().parse().unwrap())
+            .collect();
+        let hit = |u: &str| pats.iter().any(|p| p.test(&u.parse().unwrap()));
+        for u in [
+            "http://127.0.0.1:26500/apps/lattice/app",
+            "http://127.0.0.1:26503/apps/lattice/app?name=notes#top",
+            "http://127.0.0.1:26500/apps/lattice",
+        ] {
+            assert!(hit(u), "the client at {u} must keep its commands");
+        }
+        for u in [
+            "https://evil.example/",
+            "http://evil.example:26500/apps/lattice/app",
+            "https://sampel-palnet.arvo.network/apps/lattice/app",
+            "http://localhost:26500/apps/lattice/app",
+        ] {
+            assert!(!hit(u), "{u} must not get native commands");
+        }
+    }
+
     use super::openable;
 
     //  This allowlist is the only thing standing between a ship-served page
