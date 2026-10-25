@@ -143,4 +143,19 @@
   =/  id=(unit @uv)  (slaw %uv p.u.d)
   ?.  &(?=(^ rev) ?=(^ id))  ~
   `[k u.rev u.id]
+::  +small-noun: does `n` have at most `cap` cells, counting a shared
+::  subtree each time it is reached, the way a clam walks it? It stops once
+::  past `cap`, so it costs at most `cap` steps whatever `n` claims. A
+::  peer's noun can share structure so that it is small on the wire and
+::  vast to a ;;(json ...) clam, which the mole around the clam cannot stop.
+++  small-noun
+  |=  [n=* cap=@ud]
+  ^-  ?
+  =/  todo=(list *)  ~[n]
+  =|  seen=@ud
+  |-  ^-  ?
+  ?~  todo  &
+  ?:  (gth seen cap)  |
+  ?@  i.todo  $(todo t.todo)
+  $(todo [-.i.todo +.i.todo t.todo], seen +(seen))
 --

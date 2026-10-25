@@ -62,8 +62,62 @@
 ++  ban-cap  ^-(@ud 500)
 ::  +is-banned: the single predicate every enforcement point calls, so a new
 ::  call site cannot invent its own subtly different rule.
+::  A moon is banned with its planet, since a planet mints moons at will.
 ++  is-banned
   |=  [bans=banned who=@p]
   ^-  ?
-  (~(has in bans) who)
+  ?|  (~(has in bans) who)
+      (~(has in bans) (family who))
+  ==
+::  +family: whom a ship answers for in a quota or a ban. A moon answers
+::  for its planet (its low 32 bits), and every comet for all comets: both
+::  are minted at will, so a limit on one alone binds nothing. Any other
+::  ship answers for itself. Sized by bytes, so no jael is needed.
+++  family
+  |=  who=@p
+  ^-  @
+  =/  w=@ud  (met 3 who)
+  ?:  (gth w 8)  (bex 128)
+  ?:  (gth w 4)  (end 5 who)
+  who
+::
+::  ==  grant roads  ==
+::
+::  A grant is a road in a usergroup's weir. Roads are taken as nouns here,
+::  as +lane-dirs:lattice-urls takes lanes, so the lib needs no tarball
+::  types and runs offline. An absolute road is [%& lane], and a lane is
+::  [%& path name] (a file) or [%| path] (a dir). A relative road grants
+::  nothing in a group weir, which is read as written into each member's.
+::
+::  +grp-name: is this usergroups child a group? Grubbery's +find-groups
+::  takes a child named *.grp as a group and recurses into any other.
+++  grp-name
+  |=  n=@ta
+  ^-  ?
+  =/  t=tape  (trip n)
+  &((gth (lent t) 4) =(".grp" (slag (sub (lent t) 4) t)))
+::  +road-lane: an absolute road's lane, as a file path or a dir path.
+::  ~ for a relative road or any other shape.
+++  road-lane
+  |=  r=*
+  ^-  (unit (each path path))
+  =/  f  (mole |.(;;([%& %& p=path n=@ta] r)))
+  ?^  f  `[%& (snoc p.u.f n.u.f)]
+  =/  d  (mole |.(;;([%& %| p=path] r)))
+  ?^  d  `[%| p.u.d]
+  ~
+::  +grant-covers: does road `r` grant the page whose dir is `pg`? A dir
+::  road at or above the page does, and so does a file road on a file in
+::  the page's dir or below. With mak (the make side), a dir road below
+::  the page counts too, since it reaches the page's own grubs.
+++  grant-covers
+  |=  [r=* pg=path mak=?]
+  ^-  ?
+  =/  l  (road-lane r)
+  ?~  l  |
+  ?:  ?=(%& -.u.l)
+    &((gth (lent p.u.l) (lent pg)) =(pg (scag (lent pg) p.u.l)))
+  ?|  =(p.u.l (scag (lent p.u.l) pg))
+      &(mak =(pg (scag (lent pg) p.u.l)))
+  ==
 --

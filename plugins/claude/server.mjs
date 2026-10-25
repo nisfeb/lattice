@@ -9,9 +9,11 @@
 import { createInterface } from 'node:readline';
 import http from 'node:http';
 import https from 'node:https';
+import { urlProblem } from './url-rule.mjs';
 
 const BASE = (process.env.LATTICE_URL || '').replace(/\/$/, '') + '/apps/lattice';
 const KEY = process.env.LATTICE_KEY || '';
+const URL_ERROR = process.env.LATTICE_URL ? urlProblem(process.env.LATTICE_URL) : '';
 
 // Text another ship or a website wrote reaches the model labelled, never as
 // instructions: memory poisoning is the attack every agent memory has to
@@ -24,6 +26,7 @@ const quoted = (from, text) =>
 // node:http(s), not fetch: the node on PATH may predate a global fetch
 function call(method, route, args = {}, body) {
   if (!process.env.LATTICE_URL || !KEY) return Promise.reject(new Error('lattice plugin: set the ship URL and agent key in the plugin settings'));
+  if (URL_ERROR) return Promise.reject(new Error(URL_ERROR));
   const qs = new URLSearchParams(Object.entries(args).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => [k, String(v)])).toString();
   const url = new URL(`${BASE}/${route}${qs ? '?' + qs : ''}`);
   const headers = { authorization: `Bearer ${KEY}` };
@@ -37,6 +40,7 @@ function call(method, route, args = {}, body) {
         if (res.statusCode < 300) return resolve(text);
         let msg = text;
         try { msg = JSON.parse(text).error || text; } catch {}
+        if (res.statusCode >= 300 && res.statusCode < 400) msg = `the ship redirected to ${res.headers.location}, and lattice does not follow redirects with the agent key. Set the ship URL to the final address.`;
         if (res.statusCode === 401) msg += ' (mint a new key in lattice Settings, Agent keys)';
         reject(new Error(`${res.statusCode}: ${msg}`));
       });
@@ -53,9 +57,9 @@ const num = (d) => ({ type: 'integer', description: d });
 
 const TOOLS = {
   memory_index: {
-    description: 'Every memory key by area, plus the core rules in full. Load once per session (the session hook usually has).',
-    props: {}, req: [],
-    run: () => get('know-index'),
+    description: "Every memory key by area, plus the core rules in full. Load once per session (the session hook usually has). world: true adds orrery's digest of the owner's day, which is sensitive: it needs a cleared key, and for 12 hours after, this key's saves are kept sensitive.",
+    props: { world: { type: 'boolean' } }, req: [],
+    run: (a) => get('know-index', { world: a.world ? 1 : undefined }),
   },
   memory_recall: {
     description: 'What lattice remembers that bears on a task: ranked entries with snippets, and entries they link to. "weak": true means probably nothing stored. Run before starting a task.',
@@ -179,5 +183,11 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   if (!line.trim()) return;
   let m;
   try { m = JSON.parse(line); } catch { return; }
-  handle(m);
+  //  null, a number or a string is not a message. Reading m.id on null
+  //  would throw inside handle and kill the server.
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return;
+  handle(m).catch((e) => {
+    if (m.id === undefined) return;
+    send({ jsonrpc: '2.0', id: m.id, error: { code: -32603, message: String(e?.message || e) } });
+  });
 });

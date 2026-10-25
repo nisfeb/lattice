@@ -14,11 +14,13 @@ import https from 'node:https';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { urlProblem } from '../url-rule.mjs';
 
 const mode = process.argv[2];
 const opt = (k) => process.env[`CLAUDE_PLUGIN_OPTION_${k}`] || '';
 const base = opt('SHIP_URL').replace(/\/$/, '') + '/apps/lattice';
 const key = opt('KEY');
+const urlError = opt('SHIP_URL') ? urlProblem(opt('SHIP_URL')) : '';
 const gate = Number(opt('RECALL_STRENGTH') || 50);
 // Strength alone lets noise through on short prompts: "are you on the new
 // system now?" covers all of a theming entry's matches (strength 100) at
@@ -70,9 +72,19 @@ function parts(index) {
   let p = 0;
   for (const e of entries) {
     const s = '\n## ' + e;
-    while (p < 2 && used[p] + s.length > LIMIT - 400) p++;
-    if (p < 2) { out[p].push(s); used[p] += s.length; }
-    else out[1].push('\n## ' + e.split('\n')[0] + ' (no room here: memory_read it)');
+    // Place in the first part, from p onward, that still has room. p is the
+    // lowest part not yet full and only ever rises. It must NOT latch to 2:
+    // the old `while (p < 2 && …) p++` advanced p past both parts for an
+    // oversized entry and never came back, so every LATER entry was dropped
+    // too, even ones that fit. Now only the entry that itself fits nowhere is
+    // named for memory_read; the ones after it still land.
+    let placed = false;
+    for (let q = p; q < 2; q++) {
+      if (used[q] + s.length <= LIMIT - 400) {
+        out[q].push(s); used[q] += s.length; p = q; placed = true; break;
+      }
+    }
+    if (!placed) out[1].push('\n## ' + e.split('\n')[0] + ' (no room here: memory_read it)');
   }
   return out.map((x) => x.join(''));
 }
@@ -81,15 +93,38 @@ function parts(index) {
 // build the whole index on the ship. The first saves the index it fetched
 // for this session; the second waits for that file instead of asking
 // again. A file older than this run is a previous start's, never used.
-const shared = (sid) => path.join(os.tmpdir(), `lattice-index-${String(sid).replace(/[^\w-]/g, '')}.txt`);
+//
+// The file lives in a directory of this user's own (0700, checked before
+// use), not in the shared temp dir: there, anyone could plant a file at the
+// predictable name or a symlink for the write to follow, and the second
+// hook read it back as this session's core rules (security audit run-1).
+const uid = process.getuid ? process.getuid() : null;
+const ownedBy = (st) => uid === null || st.uid === uid;
+function handoffDir() {
+  const d = path.join(os.tmpdir(), `lattice-${uid ?? 'user'}`);
+  try { fs.mkdirSync(d, { mode: 0o700 }); } catch {}
+  try {
+    const st = fs.lstatSync(d);
+    if (!st.isDirectory() || !ownedBy(st) || (uid !== null && (st.mode & 0o077))) return null;
+  } catch { return null; }
+  return d;
+}
+const shared = (sid) => {
+  const d = handoffDir();
+  return d && path.join(d, `index-${String(sid).replace(/[^\w-]/g, '')}.txt`);
+};
 async function indexFor(n, sid) {
   if (n === 0) {
     const text = await get('know-index', { brief: '1', cap: '50000' });
-    if (sid) {
+    const f = sid && shared(sid);
+    if (f) {
       try {
-        const f = shared(sid);
-        fs.writeFileSync(f + '.tmp', text, { mode: 0o600 });
-        fs.renameSync(f + '.tmp', f);
+        // a fresh file only, never through a link
+        const t = `${f}.${process.pid}.tmp`;
+        const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants;
+        const fd = fs.openSync(t, O_WRONLY | O_CREAT | O_EXCL | (O_NOFOLLOW ?? 0), 0o600);
+        try { fs.writeSync(fd, text); } finally { fs.closeSync(fd); }
+        fs.renameSync(t, f);
       } catch {}
     }
     return text;
@@ -100,7 +135,8 @@ async function indexFor(n, sid) {
   // dropped if the first never saves (it reports the failure itself)
   while (f && Date.now() - started < 20000) {
     try {
-      if (fs.statSync(f).mtimeMs >= started - 1000) {
+      const st = fs.lstatSync(f);
+      if (st.isFile() && ownedBy(st) && st.mtimeMs >= started - 1000) {
         const text = fs.readFileSync(f, 'utf8');
         fs.rmSync(f, { force: true });
         return text;
@@ -114,6 +150,10 @@ async function indexFor(n, sid) {
 async function session(n) {
   if (!key || base === '/apps/lattice') {
     if (n === 0) say('SessionStart', 'lattice memory: the plugin has no ship URL or agent key yet. Tell the user to set them (/plugin, lattice, configure).');
+    return;
+  }
+  if (urlError) {
+    if (n === 0) say('SessionStart', `${urlError} Tell the user to fix the ship URL (/plugin, lattice, configure). Memory is unavailable until then.`);
     return;
   }
   try {
@@ -132,7 +172,7 @@ async function session(n) {
 }
 
 async function prompt() {
-  if (!key || gate > 100) return;
+  if (!key || urlError || gate > 100) return;
   const input = await stdin();
   const text = String(input.user_message ?? input.prompt ?? '').trim();
   // slash commands and one-word replies ("yes", "go") carry nothing to recall

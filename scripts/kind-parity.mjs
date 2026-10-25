@@ -62,13 +62,14 @@ if (!kmap) {
   process.exit(1);
 }
 
-//  kind_for_ext's explicit match arms, between "match ext {" and the
+//  kind_for_ext's explicit match arms, between "match ext {" (or its
+//  lowercased form) and the
 //  ".to_string()" chained onto its closing brace. The wildcard arm
 //  (`_ => "hoon"`) is deliberately not captured here: see hoon in
 //  ACCEPTED_EXCEPTIONS below.
 const rs = readFileSync(projPath, 'utf8');
 const fn = rs.match(
-  /fn kind_for_ext\(&self, ext: &str\) -> String \{\s*match ext \{([\s\S]*?)\}\s*\.to_string\(\)/
+  /fn kind_for_ext\(&self, ext: &str\) -> String \{\s*match ext(?:\.to_ascii_lowercase\(\)\.as_str\(\))? \{([\s\S]*?)\}\s*\.to_string\(\)/
 );
 if (!fn) {
   console.log('  FAIL - could not find kind_for_ext in projection.rs');
@@ -124,6 +125,20 @@ check(
   'projection.rs kind_for_ext names no extension EXT_KIND lacks',
   projOrphans.length === 0,
   'in kind_for_ext but not EXT_KIND: ' + JSON.stringify(projOrphans)
+);
+
+//  desktop's pick_upload cuts the page's extension list down to PAGE_EXTS,
+//  so a kind missing there can be picked in a browser but never in the app
+const cmdsPath = join(root, 'desktop/src/commands.rs');
+const pe = readFileSync(cmdsPath, 'utf8').match(/const PAGE_EXTS: &\[&str\] = &\[([^\]]*)\];/);
+const pageExts = pe ? [...pe[1].matchAll(/"(\w+)"/g)].map((m) => m[1]) : [];
+const peDrift = [...new Set([...Object.keys(extKind), ...pageExts])].filter(
+  (e) => !(e in extKind) || !pageExts.includes(e)
+);
+check(
+  'desktop PAGE_EXTS (commands.rs) matches EXT_KIND',
+  pe && peDrift.length === 0,
+  pe ? 'drifted: ' + JSON.stringify(peDrift) : 'could not find PAGE_EXTS in commands.rs'
 );
 
 check.done();

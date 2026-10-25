@@ -6,15 +6,44 @@
 //! cookies at all. One request per connection (Connection: close), bodies
 //! streamed both ways, so eyre's SSE beacon works.
 //!
-//! ponytail: bound to 127.0.0.1 with same-user trust. Any local process
-//! could relay through it, but the same user can already read the cookie
-//! file it injects. Add a token handshake if multi-user hosts ever matter.
+//! Loopback is not a boundary. Another account on this machine, or a
+//! same-user app sandboxed away from the home directory but allowed the
+//! network, can reach 127.0.0.1 without being able to read the cookie file.
+//! So the session goes only to a request that carries this launch's bridge
+//! token: 256 random bits, handed to the workspace webview once as an
+//! HttpOnly cookie on the bridge origin (see `bootstrap_url`). Everything
+//! else the bridge still relays, but with no session, which gives the caller
+//! nothing it could not get by asking the ship directly (security audit
+//! run-1). The port, and so the webview's origin, stays fixed.
+//!
+//! Browsers are a different matter. Any page the user opens in any browser
+//! can aim requests at 127.0.0.1, and the bridge would sign them with the
+//! owner's cookie. So a request is refused with a 403, before the ship sees
+//! it, unless it looks like it came from the webview itself:
+//!
+//! - Host is `127.0.0.1:<port>` or `localhost:<port>`. A DNS rebinding page
+//!   reaches the socket under its own host name, so this check stops it.
+//! - Origin is absent or the bridge's own origin. A cross-site fetch or
+//!   form POST carries the attacker's origin.
+//! - Sec-Fetch-Site is not `cross-site`. That catches the cross-site GETs
+//!   (img, script, top-level navigation) that carry no Origin.
+//!
+//! One exception. The app renders untrusted pages in sandboxed frames, and
+//! those have an opaque origin. Their requests say `cross-site`, and some
+//! say `Origin: null`. A Referer on the bridge's own origin lets them
+//! through, since no other site can forge one, but WITHOUT the owner's
+//! session. A browser gives an opaque-origin frame no cookies, and the ship
+//! relies on that: public assets load, owner routes answer 403. Signing those
+//! requests would hand peer-written script in a sandboxed frame the owner's
+//! session, which is exactly what the sandbox is there to withhold.
+//!
+//! Lines, header count and body size are capped too, so a stray client
+//! cannot make a thread buffer without bound.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
-use lattice_fs::default_cookie_path;
 
 /// the ship base the bridge currently relays to, and the port it listens on
 pub struct Bridge(pub Mutex<Option<(Arc<Mutex<String>>, u16)>>);
@@ -90,6 +119,7 @@ pub fn ensure(state: &Bridge, ship_base: &str) -> Result<String, String> {
         return Ok(format!("http://127.0.0.1:{port}"));
     }
     let (listener, port) = bind_stable()?;
+    crate::commands::dlog(&format!("bridge: listening on 127.0.0.1:{port}"));
     if port != PORT_BASE {
         // Not a cosmetic detail. Web storage is keyed by origin, so this
         // window cannot see the offline queue, tree snapshot or resume
@@ -109,7 +139,7 @@ pub fn ensure(state: &Bridge, ship_base: &str) -> Result<String, String> {
         for conn in listener.incoming().flatten() {
             let ship = ship.lock().unwrap().clone();
             std::thread::spawn(move || {
-                let _ = serve(conn, &ship);
+                let _ = serve(conn, &ship, port);
             });
         }
     });
@@ -158,8 +188,12 @@ pub fn session_cookie(path: &str) -> Option<String> {
 /// The one place credentials go onto an outbound request. Read fresh every
 /// time: a reconnect rewrites the cookie file, and the next request must use
 /// the new session rather than one cached at startup.
+///
+/// The cookie is looked up by the request's OWN origin (session.rs), never
+/// by whichever ship the config names right now. So a request can only ever
+/// carry the cookie that origin issued.
 pub fn with_cookie(req: ureq::Request) -> ureq::Request {
-    match session_cookie(&default_cookie_path()) {
+    match crate::session::cookie_for(req.url()) {
         Some(c) => req.set("cookie", &c),
         None => req,
     }
@@ -214,6 +248,113 @@ fn drop_request_header(lower_name: &str) -> bool {
     )
 }
 
+/// Longest request line or header line we read, in bytes.
+const MAX_LINE: u64 = 8 * 1024;
+/// Most header lines one request may carry.
+const MAX_HEADERS: usize = 100;
+/// Largest request body we relay. Bigger is a 413.
+const MAX_BODY: usize = 64 * 1024 * 1024;
+
+/// Is `authority` (host:port) this bridge? Both spellings of loopback count.
+fn is_bridge(authority: &str, port: u16) -> bool {
+    authority.eq_ignore_ascii_case(&format!("127.0.0.1:{port}"))
+        || authority.eq_ignore_ascii_case(&format!("localhost:{port}"))
+}
+
+/// The cookie that carries this launch's bridge token.
+const TOKEN_COOKIE: &str = "lattice-bridge";
+/// Where the workspace's first navigation lands to pick up the token.
+const BOOT_PATH: &str = "/.lattice-bridge/start";
+
+/// This launch's bridge token: 32 bytes from the OS, hex. Made once, never
+/// written to disk, gone when the app exits.
+pub fn token() -> &'static str {
+    static T: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let mut b = [0u8; 32];
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut f| f.read_exact(&mut b))
+            .expect("no OS randomness for the bridge token");
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    })
+}
+
+/// The url the workspace opens first: the bridge sets the token cookie and
+/// redirects to `to`, a path on the bridge. Only open_workspace calls it.
+pub fn bootstrap_url(local: &str, to: &str) -> String {
+    format!("{local}{BOOT_PATH}?k={}&to={to}", token())
+}
+
+/// Compare without stopping at the first difference.
+fn same_secret(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Does this Cookie header carry this launch's token?
+fn has_token(cookie: Option<&str>) -> bool {
+    cookie.is_some_and(|c| {
+        c.split(';').any(|kv| {
+            kv.trim()
+                .strip_prefix(TOKEN_COOKIE)
+                .and_then(|v| v.strip_prefix('='))
+                .is_some_and(|v| same_secret(v.as_bytes(), token().as_bytes()))
+        })
+    })
+}
+
+/// A redirect target the bootstrap will accept: a plain path on the bridge.
+fn plain_path(to: &str) -> bool {
+    to.starts_with('/')
+        && !to.starts_with("//")
+        && to.bytes().all(|b| b.is_ascii_alphanumeric() || b"/_.-".contains(&b))
+}
+
+/// How the bridge may relay one request. See the module comment.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum Trust {
+    /// not the webview: refused before the ship sees it
+    Refuse,
+    /// a sandboxed frame, let through on our own Referer but relayed with no
+    /// session, the way a browser treats an opaque origin
+    Anonymous,
+    /// the webview's own same-origin request, relayed with the owner's session
+    Session,
+}
+
+/// Did the webview send this, and not some other page in some browser?
+/// And if it did, may the request carry the owner's session? Only with this
+/// launch's token (`token`): without it a same-origin request is relayed
+/// anonymously, because loopback alone proves nothing about the caller.
+fn from_webview(
+    host: Option<&str>,
+    origin: Option<&str>,
+    site: Option<&str>,
+    referer: Option<&str>,
+    token: bool,
+    port: u16,
+) -> Trust {
+    if !host.is_some_and(|h| is_bridge(h, port)) {
+        return Trust::Refuse;
+    }
+    let bridge_origin = |o: &str| o.strip_prefix("http://").is_some_and(|a| is_bridge(a, port));
+    // same-origin, or a navigation the user made. same-site is NOT enough:
+    // another server on 127.0.0.1 is same-site with the bridge.
+    let same_origin = origin.is_none_or(bridge_origin)
+        && site.is_none_or(|s| s.eq_ignore_ascii_case("same-origin") || s.eq_ignore_ascii_case("none"));
+    if same_origin {
+        return if token { Trust::Session } else { Trust::Anonymous };
+    }
+    // a Referer on our own origin. Only a page the bridge served can send it.
+    let ours = referer
+        .and_then(|r| r.strip_prefix("http://"))
+        .and_then(|r| r.split(['/', '?', '#']).next())
+        .is_some_and(|a| is_bridge(a, port));
+    if ours && origin.is_none_or(|o| o == "null" || bridge_origin(o)) {
+        return Trust::Anonymous;
+    }
+    Trust::Refuse
+}
+
 /// One request off the wire, already filtered, ready to relay. An empty body
 /// means the request had none: that is what decides send_bytes vs call.
 struct Incoming {
@@ -221,20 +362,47 @@ struct Incoming {
     target: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    /// relay with the owner's session (false: a sandboxed frame's request)
+    session: bool,
 }
 
-/// Read one request. None is a request we will not serve: no request line at
-/// all, or a body that stopped short of what its Content-Length promised.
+/// What to do with one request off the wire.
+enum Request {
+    /// relay it to the ship
+    Relay(Incoming),
+    /// the workspace's first navigation: set the token cookie, go here
+    Bootstrap(String),
+    /// answer with this status line and never contact the ship
+    Refuse(&'static str),
+    /// say nothing: no request line, or a body cut short
+    Drop,
+}
+
+/// Read one line of at most MAX_LINE bytes into `out`. False means the line
+/// was longer, and the rest of it is still unread.
+fn read_capped(reader: &mut impl BufRead, out: &mut String) -> std::io::Result<bool> {
+    out.clear();
+    (&mut *reader).take(MAX_LINE + 1).read_line(out)?;
+    Ok(out.len() as u64 <= MAX_LINE)
+}
+
+/// Read one request for the bridge on `port`. Drop is a request we will not
+/// serve at all: no request line, or a body that stopped short of what its
+/// Content-Length promised. Refuse is one we answer without the ship: a
+/// browser that is not the webview, or a request over a size cap. Both are
+/// decided before the body is read.
 ///
 /// Split from serve so the interesting inputs (a lying Content-Length, a
 /// truncated body, a header line with no colon) can be fed in as bytes.
-fn read_request(reader: &mut impl BufRead) -> std::io::Result<Option<Incoming>> {
+fn read_request(reader: &mut impl BufRead, port: u16) -> std::io::Result<Request> {
     let mut line = String::new();
-    reader.read_line(&mut line)?;
+    if !read_capped(reader, &mut line)? {
+        return Ok(Request::Refuse("414 URI Too Long"));
+    }
     let mut parts = line.split_whitespace();
     let (method, target) = match (parts.next(), parts.next()) {
         (Some(m), Some(t)) => (m.to_string(), t.to_string()),
-        _ => return Ok(None),
+        _ => return Ok(Request::Drop),
     };
     // headers: keep what the page sent except hop-by-hop, host and cookies.
     // Accept-Encoding passes THROUGH. ureq (no gzip feature) hands us the
@@ -243,12 +411,21 @@ fn read_request(reader: &mut impl BufRead) -> std::io::Result<Option<Incoming>> 
     // which is a real tax on app.js and page-tree vs a plain browser.
     let mut headers: Vec<(String, String)> = Vec::new();
     let mut content_len = 0usize;
-    loop {
-        let mut h = String::new();
-        reader.read_line(&mut h)?;
+    // host is dropped from the relay, so keep it here for the check below
+    let mut host = None;
+    // cookie is never relayed either, but the bridge token rides in it
+    let mut cookie = None;
+    let mut h = String::new();
+    for n in 0.. {
+        if !read_capped(reader, &mut h)? {
+            return Ok(Request::Refuse("431 Request Header Fields Too Large"));
+        }
         let h = h.trim_end();
         if h.is_empty() {
             break;
+        }
+        if n == MAX_HEADERS {
+            return Ok(Request::Refuse("431 Request Header Fields Too Large"));
         }
         let Some((k, v)) = h.split_once(':') else { continue };
         let (k, v) = (k.trim(), v.trim());
@@ -256,10 +433,47 @@ fn read_request(reader: &mut impl BufRead) -> std::io::Result<Option<Incoming>> 
         if kl == "content-length" {
             content_len = v.parse().unwrap_or(0);
         }
+        if kl == "host" {
+            host = Some(v.to_string());
+        }
+        if kl == "cookie" {
+            cookie = Some(v.to_string());
+        }
         if drop_request_header(&kl) {
             continue;
         }
         headers.push((k.to_string(), v.to_string()));
+    }
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    };
+    let trust = from_webview(
+        host.as_deref(),
+        header("origin"),
+        header("sec-fetch-site"),
+        header("referer"),
+        has_token(cookie.as_deref()),
+        port,
+    );
+    if trust == Trust::Refuse {
+        return Ok(Request::Refuse("403 Forbidden"));
+    }
+    if let Some(q) = target.strip_prefix(BOOT_PATH).and_then(|r| r.strip_prefix('?')) {
+        let arg = |name: &str| {
+            q.split('&').find_map(|kv| kv.strip_prefix(name).and_then(|v| v.strip_prefix('=')))
+        };
+        return Ok(match (arg("k"), arg("to")) {
+            (Some(k), Some(to)) if method == "GET"
+                && same_secret(k.as_bytes(), token().as_bytes())
+                && plain_path(to) => Request::Bootstrap(to.to_string()),
+            _ => Request::Refuse("403 Forbidden"),
+        });
+    }
+    if content_len > MAX_BODY {
+        return Ok(Request::Refuse("413 Payload Too Large"));
     }
     // allocate as bytes actually arrive, never what the header claims: a
     // request lying "Content-Length: 10^18" was an instant OOM abort via
@@ -268,10 +482,26 @@ fn read_request(reader: &mut impl BufRead) -> std::io::Result<Option<Incoming>> 
     if content_len > 0 {
         (&mut *reader).take(content_len as u64).read_to_end(&mut body)?;
         if body.len() < content_len {
-            return Ok(None); // truncated body: drop it, same as a failed read_exact
+            return Ok(Request::Drop); // truncated body: same as a failed read_exact
         }
     }
-    Ok(Some(Incoming { method, target, headers, body }))
+    Ok(Request::Relay(Incoming { method, target, headers, body, session: trust == Trust::Session }))
+}
+
+/// Answer `status` with no ship involved, then close. The client may still
+/// be sending a request we never read. Closing on unread bytes makes the
+/// kernel send a reset, which can eat the reply, so half-close and drain a
+/// bounded amount first.
+fn refuse(mut c: TcpStream, reader: &mut impl Read, status: &str) -> std::io::Result<()> {
+    write!(
+        c,
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{status}",
+        status.len()
+    )?;
+    c.shutdown(std::net::Shutdown::Write).ok();
+    c.set_read_timeout(Some(std::time::Duration::from_secs(2))).ok();
+    let _ = std::io::copy(&mut reader.take(1 << 20), &mut std::io::sink());
+    Ok(())
 }
 
 /// Status line, filtered headers, then the body as it arrives.
@@ -299,17 +529,36 @@ fn relay_response(c: &mut TcpStream, resp: ureq::Response) -> std::io::Result<()
     Ok(())
 }
 
-fn serve(client: TcpStream, ship: &str) -> std::io::Result<()> {
+/// Relay one request from the bridge on `port` to `ship`.
+fn serve(client: TcpStream, ship: &str, port: u16) -> std::io::Result<()> {
     client.set_nodelay(true).ok();
     let mut reader = BufReader::new(client.try_clone()?);
-    let Some(req) = read_request(&mut reader)? else { return Ok(()) };
+    let req = match read_request(&mut reader, port)? {
+        Request::Relay(req) => req,
+        Request::Refuse(status) => {
+            crate::commands::dlog(&format!("bridge: refused {status}"));
+            return refuse(client, &mut reader, status);
+        }
+        Request::Drop => return Ok(()),
+        Request::Bootstrap(to) => {
+            crate::commands::dlog("bridge: workspace token handed over");
+            let mut c = client;
+            return write!(
+                c,
+                "HTTP/1.1 302 Found\r\nLocation: {to}\r\n\
+                 Set-Cookie: {TOKEN_COOKIE}={}; Path=/; HttpOnly; SameSite=Strict\r\n\
+                 Cache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                token()
+            );
+        }
+    };
     crate::commands::dlog(&format!("bridge: {} {}", req.method, req.target));
 
     let mut out = agent().request(&req.method, &format!("{ship}{}", req.target));
     for (k, v) in &req.headers {
         out = out.set(k, v);
     }
-    let out = with_cookie(out);
+    let out = if req.session { with_cookie(out) } else { out };
     let resp = if !req.body.is_empty() { out.send_bytes(&req.body) } else { out.call() };
     let mut c = client;
     let resp = match resp {
@@ -359,6 +608,10 @@ mod tests {
     /// Push raw bytes through a real serve() relaying to `ship` and collect
     /// whatever the client gets back. serve() runs to completion before this
     /// returns, so "the ship saw nothing" is a decision, not a race.
+    ///
+    /// serve() is told it is the bridge on PORT_BASE, whatever port the test
+    /// listener got. The Host check only reads headers, so requests here
+    /// name `127.0.0.1:{PORT_BASE}` like the webview would.
     fn through_bridge(req: &[u8], ship: &str) -> Vec<u8> {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
@@ -366,7 +619,9 @@ mod tests {
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(conn, &ship)));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                serve(conn, &ship, PORT_BASE)
+            }));
             let _ = done.send(r.is_ok());
         });
         // bounded, so a relay that stalls is a failure and not a hung suite:
@@ -396,8 +651,8 @@ mod tests {
     /// one plain GET straight at the bridge's own port, returning the body
     fn get_through_bridge(base: &str, path: &str) -> String {
         let addr = base.trim_start_matches("http://").to_string();
-        let mut c = TcpStream::connect(addr).unwrap();
-        write!(c, "GET {path} HTTP/1.1\r\nhost: bridge\r\n\r\n").unwrap();
+        let mut c = TcpStream::connect(&addr).unwrap();
+        write!(c, "GET {path} HTTP/1.1\r\nhost: {addr}\r\n\r\n").unwrap();
         c.shutdown(std::net::Shutdown::Write).ok();
         let mut out = String::new();
         c.read_to_string(&mut out).unwrap();
@@ -450,7 +705,11 @@ mod tests {
         // half-written save committed to the ship as a complete one
         let ship = Stub::new(|_| (200, "should not happen".to_string()));
         let back = through_bridge(
-            b"POST /apps/lattice/save HTTP/1.1\r\ncontent-length: 64\r\n\r\nhalf",
+            format!(
+                "POST /apps/lattice/save HTTP/1.1\r\nhost: 127.0.0.1:{PORT_BASE}\r\n\
+                 content-length: 64\r\n\r\nhalf"
+            )
+            .as_bytes(),
             &ship.base,
         );
         assert!(
@@ -464,9 +723,214 @@ mod tests {
     fn an_unreachable_ship_is_a_502_and_not_a_hang() {
         // the client's offline queue depends on failure arriving FAST and
         // looking like a failure, not like an empty success
-        let back = String::from_utf8_lossy(&poke_bridge(b"GET /apps/lattice/app HTTP/1.1\r\n\r\n"))
-            .into_owned();
+        let req = format!("GET /apps/lattice/app HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\n\r\n");
+        let back = String::from_utf8_lossy(&poke_bridge(req.as_bytes())).into_owned();
         assert!(back.starts_with("HTTP/1.1 502 Bad Gateway"), "{back}");
+    }
+
+    /// Send `req` to a live stub ship through the bridge. Returns the status
+    /// line the client got and how many requests reached the ship.
+    fn status_and_hits(req: &str) -> (String, usize) {
+        let ship = Stub::new(|_| (200, "relayed".to_string()));
+        let back = String::from_utf8_lossy(&through_bridge(req.as_bytes(), &ship.base)).into_owned();
+        let status = back.lines().next().unwrap_or_default().to_string();
+        (status, ship.requests().len())
+    }
+
+    #[test]
+    fn a_foreign_host_is_refused_before_the_ship_sees_it() {
+        // DNS rebinding: evil.example resolves to 127.0.0.1, so the page's
+        // requests reach the socket under evil.example's name. Signing those
+        // with the owner's cookie would hand that page the ship.
+        for host in ["evil.example", "evil.example:26500", "127.0.0.1:9", "127.0.0.2:26500"] {
+            let (status, hits) = status_and_hits(&format!(
+                "GET /apps/lattice/app HTTP/1.1\r\nHost: {host}\r\n\r\n"
+            ));
+            assert_eq!(status, "HTTP/1.1 403 Forbidden", "host {host}");
+            assert_eq!(hits, 0, "host {host} reached the ship");
+        }
+        // no Host at all is not the webview either
+        let (status, hits) = status_and_hits("GET /apps/lattice/app HTTP/1.1\r\n\r\n");
+        assert_eq!(status, "HTTP/1.1 403 Forbidden");
+        assert_eq!(hits, 0);
+    }
+
+    #[test]
+    fn a_cross_site_request_is_refused_before_the_ship_sees_it() {
+        // any page in any browser can aim at 127.0.0.1 with the right Host.
+        // Origin catches its fetches and form POSTs.
+        let (status, hits) = status_and_hits(&format!(
+            "POST /apps/lattice/save HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\n\
+             Origin: https://evil.example\r\nContent-Length: 2\r\n\r\nhi"
+        ));
+        assert_eq!(status, "HTTP/1.1 403 Forbidden");
+        assert_eq!(hits, 0, "a cross-site POST reached the ship");
+        // a same-host origin on another port is another site's origin
+        let (status, hits) = status_and_hits(&format!(
+            "GET /x HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\nOrigin: http://127.0.0.1:8080\r\n\r\n"
+        ));
+        assert_eq!((status.as_str(), hits), ("HTTP/1.1 403 Forbidden", 0));
+        // Sec-Fetch-Site catches a cross-site GET, which carries no Origin
+        let (status, hits) = status_and_hits(&format!(
+            "GET /apps/lattice/app HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\n\
+             Sec-Fetch-Site: cross-site\r\nReferer: https://evil.example/\r\n\r\n"
+        ));
+        assert_eq!((status.as_str(), hits), ("HTTP/1.1 403 Forbidden", 0));
+        // Origin: null is how a sandboxed attacker frame hides its origin
+        let (status, hits) = status_and_hits(&format!(
+            "GET /x HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\nOrigin: null\r\n\r\n"
+        ));
+        assert_eq!((status.as_str(), hits), ("HTTP/1.1 403 Forbidden", 0));
+    }
+
+    #[test]
+    fn the_webviews_own_requests_are_still_relayed() {
+        let good = [
+            // a plain local client: still relayed, but with no session unless
+            // it holds the workspace token (only_the_workspace_token_...)
+            format!("GET /x HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\n\r\n"),
+            format!("GET /x HTTP/1.1\r\nHost: localhost:{PORT_BASE}\r\n\r\n"),
+            // the webview's same-origin fetch
+            format!(
+                "POST /x HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\n\
+                 Origin: http://127.0.0.1:{PORT_BASE}\r\nSec-Fetch-Site: same-origin\r\n\
+                 Content-Length: 2\r\n\r\nhi"
+            ),
+            // the user typed the address
+            format!("GET /x HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\nSec-Fetch-Site: none\r\n\r\n"),
+            // a sandboxed preview frame: opaque origin, but our own Referer
+            format!(
+                "GET /x HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\nOrigin: null\r\n\
+                 Sec-Fetch-Site: cross-site\r\nReferer: http://127.0.0.1:{PORT_BASE}/apps/lattice/app\r\n\r\n"
+            ),
+        ];
+        for req in good {
+            let (status, hits) = status_and_hits(&req);
+            assert_eq!(status, "HTTP/1.1 200 OK", "{req}");
+            assert_eq!(hits, 1, "{req}");
+        }
+    }
+
+    #[test]
+    fn a_sandboxed_frame_is_relayed_without_the_owners_session() {
+        // The Referer exception lets an opaque-origin frame load what the ship
+        // serves publicly. The owner's cookie must not ride along: a browser
+        // gives that frame no cookies, and the ship's sandbox depends on it
+        // (audit finding desktop-bridge-referer-exception, lattice run-1).
+        let host = format!("127.0.0.1:{PORT_BASE}");
+        let ours = format!("http://127.0.0.1:{PORT_BASE}/apps/lattice/app");
+        let bridge = format!("http://127.0.0.1:{PORT_BASE}");
+        let t = |origin: Option<&str>, site: Option<&str>, referer: Option<&str>| {
+            from_webview(Some(&host), origin, site, referer, true, PORT_BASE)
+        };
+        // sandboxed frames: opaque origin, our own Referer
+        assert_eq!(t(Some("null"), Some("cross-site"), Some(&ours)), Trust::Anonymous);
+        assert_eq!(t(None, Some("cross-site"), Some(&ours)), Trust::Anonymous);
+        // the webview itself keeps its session
+        assert_eq!(t(Some(&bridge), Some("same-origin"), Some(&ours)), Trust::Session);
+        assert_eq!(t(None, Some("none"), None), Trust::Session);
+        assert_eq!(t(None, None, None), Trust::Session);
+        // another server on 127.0.0.1 is same-site, not same-origin
+        assert_eq!(t(None, Some("same-site"), Some("http://127.0.0.1:8080/")), Trust::Refuse);
+        assert_eq!(t(Some("http://127.0.0.1:8080"), Some("same-site"), None), Trust::Refuse);
+        // and the decision reaches the relay
+        let req = format!(
+            "GET /apps/lattice/x HTTP/1.1\r\nHost: {host}\r\nOrigin: null\r\n\
+             Sec-Fetch-Site: cross-site\r\nReferer: {ours}\r\n\r\n"
+        );
+        match read_request(&mut std::io::Cursor::new(req.into_bytes()), PORT_BASE).unwrap() {
+            Request::Relay(r) => assert!(!r.session, "a sandboxed frame must not carry the session"),
+            _ => panic!("a sandboxed frame's request should still be relayed"),
+        }
+        let req = format!(
+            "GET /apps/lattice/x HTTP/1.1\r\nHost: {host}\r\nOrigin: {bridge}\r\n\
+             Sec-Fetch-Site: same-origin\r\nCookie: {TOKEN_COOKIE}={}\r\n\r\n",
+            token()
+        );
+        match read_request(&mut std::io::Cursor::new(req.into_bytes()), PORT_BASE).unwrap() {
+            Request::Relay(r) => assert!(r.session, "the webview's own request keeps the session"),
+            _ => panic!("the webview's own request must be relayed"),
+        }
+    }
+
+    #[test]
+    fn only_the_workspace_token_carries_the_session() {
+        // Loopback is not a boundary: another account, or a sandboxed app
+        // with network but no home directory, reaches 127.0.0.1 without the
+        // cookie file. A bare local request used to be signed with the
+        // owner's session (security audit run-1). Now it is relayed with
+        // none, and only this launch's token earns the session.
+        let host = format!("127.0.0.1:{PORT_BASE}");
+        let bridge = format!("http://127.0.0.1:{PORT_BASE}");
+        let t = |origin: Option<&str>, site: Option<&str>, tok: bool| {
+            from_webview(Some(&host), origin, site, None, tok, PORT_BASE)
+        };
+        // curl, or any other local process: relayed, but anonymously
+        assert_eq!(t(None, None, false), Trust::Anonymous);
+        assert_eq!(t(Some(&bridge), Some("same-origin"), false), Trust::Anonymous);
+        // the workspace, holding its token
+        assert_eq!(t(None, None, true), Trust::Session);
+        assert_eq!(t(Some(&bridge), Some("same-origin"), true), Trust::Session);
+        // the token only counts by exact value, under its own name
+        let tok = token();
+        assert_eq!(tok.len(), 64, "256 bits, hex");
+        assert!(has_token(Some(&format!("a=b; {TOKEN_COOKIE}={tok}"))));
+        assert!(!has_token(Some(&format!("{TOKEN_COOKIE}={}", &tok[1..]))));
+        assert!(!has_token(Some(&format!("{TOKEN_COOKIE}x={tok}"))));
+        assert!(!has_token(Some(&format!("{TOKEN_COOKIE}={}0", tok))));
+        assert!(!has_token(None));
+    }
+
+    #[test]
+    fn the_bootstrap_hands_over_the_token_and_nothing_else() {
+        let ship = Stub::new(|_| (200, "relayed".to_string()));
+        let host = format!("127.0.0.1:{PORT_BASE}");
+        let get = |target: &str| {
+            String::from_utf8_lossy(&through_bridge(
+                format!("GET {target} HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes(),
+                &ship.base,
+            ))
+            .into_owned()
+        };
+        let ok = get(&format!("{BOOT_PATH}?k={}&to=/apps/lattice/app", token()));
+        assert!(ok.starts_with("HTTP/1.1 302 Found"), "{ok}");
+        assert!(ok.contains("\r\nLocation: /apps/lattice/app\r\n"), "{ok}");
+        assert!(
+            ok.contains(&format!("Set-Cookie: {TOKEN_COOKIE}={}; Path=/; HttpOnly; SameSite=Strict", token())),
+            "{ok}"
+        );
+        // a wrong token, or a redirect off the bridge, gets nothing
+        for bad in [
+            format!("{BOOT_PATH}?k=00&to=/apps/lattice/app"),
+            format!("{BOOT_PATH}?to=/apps/lattice/app"),
+            format!("{BOOT_PATH}?k={}&to=//evil.example/", token()),
+            format!("{BOOT_PATH}?k={}&to=https://evil.example/", token()),
+            format!("{BOOT_PATH}?k={}&to=/a%0d%0aSet-Cookie:x", token()),
+        ] {
+            let back = get(&bad);
+            assert!(back.starts_with("HTTP/1.1 403 Forbidden"), "{bad}: {back}");
+            assert!(!back.contains("Set-Cookie"), "{bad}");
+        }
+        // and the ship never saw any of it
+        assert_eq!(ship.requests().len(), 0);
+    }
+
+    #[test]
+    fn oversized_requests_are_refused_without_the_ship() {
+        let host = format!("Host: 127.0.0.1:{PORT_BASE}\r\n");
+        let long = "a".repeat(MAX_LINE as usize + 1);
+        let (status, hits) = status_and_hits(&format!("GET /{long} HTTP/1.1\r\n{host}\r\n"));
+        assert_eq!((status.as_str(), hits), ("HTTP/1.1 414 URI Too Long", 0));
+        let (status, hits) = status_and_hits(&format!("GET / HTTP/1.1\r\n{host}X-Big: {long}\r\n\r\n"));
+        assert_eq!((status.as_str(), hits), ("HTTP/1.1 431 Request Header Fields Too Large", 0));
+        let many = "X-A: 1\r\n".repeat(MAX_HEADERS);
+        let (status, hits) = status_and_hits(&format!("GET / HTTP/1.1\r\n{host}{many}\r\n"));
+        assert_eq!((status.as_str(), hits), ("HTTP/1.1 431 Request Header Fields Too Large", 0));
+        let (status, hits) = status_and_hits(&format!(
+            "POST / HTTP/1.1\r\n{host}Content-Length: {}\r\n\r\nhi",
+            MAX_BODY + 1
+        ));
+        assert_eq!((status.as_str(), hits), ("HTTP/1.1 413 Payload Too Large", 0));
     }
 
     #[test]
@@ -533,7 +997,9 @@ mod tests {
         // "Content-Length: 10^18" with no body was an instant OOM abort
         #[test]
         fn a_lying_content_length_cannot_oom(len in any::<u64>()) {
-            let req = format!("POST /x HTTP/1.1\r\ncontent-length: {len}\r\n\r\nhi");
+            let req = format!(
+                "POST /x HTTP/1.1\r\nhost: 127.0.0.1:{PORT_BASE}\r\ncontent-length: {len}\r\n\r\nhi"
+            );
             poke_bridge(req.as_bytes());
         }
 

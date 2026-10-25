@@ -57,8 +57,16 @@
 ++  test-foot-list  (yes (has "class=\"footnotes\"" (r 'x[^a] y\0a\0a[^a]: a note')))
 ::  wikilinks
 ++  wl  |=([t=tape base=tape] (wikilinkify:md t base))
+::  a bare [[path]] shows only its last segment (the filename), not the whole
+::  path; the link target is still the full path.
 ++  test-wiki-nolabel
-  (yes (has "[a/b](/w/a/b)" (wl "[[a/b]]" "/w/")))
+  (yes (has "[b](/w/a/b)" (wl "[[a/b]]" "/w/")))
+++  test-wiki-nolabel-bare
+  (yes (has "[x](/w/x)" (wl "[[x]]" "/w/")))
+++  test-wiki-nolabel-deep
+  (yes (has "[c](/w/a/b/c)" (wl "[[a/b/c]]" "/w/")))
+++  test-wiki-nolabel-trailing
+  (yes (has "[a](/w/a/)" (wl "[[a/]]" "/w/")))
 ++  test-wiki-label
   (yes (has "[Some Label](/w/a/b)" (wl "[[a/b|Some Label]]" "/w/")))
 ++  test-wiki-escape
@@ -105,4 +113,31 @@
 ++  test-wiki-name-edges  (yes (has "[az09](/w/az09)" (wl "[[az09]]" "/w/")))
 ::  a space is below '0' and not a name byte
 ++  test-wiki-name-space  (yes (has "[[a b]]" (wl "[[a b]]" "/w/")))
+::  backlink-hit: plain and labelled wikilinks count, a longer name does not
+++  test-backlink-plain  (yes (backlink-hit:md "a/b" "see [[a/b]] here"))
+++  test-backlink-label  (yes (backlink-hit:md "a/b" "see [[a/b|Sarah]] here"))
+++  test-backlink-miss   (yes !(backlink-hit:md "a/b" "see [[a/bc]] here"))
+++  test-backlink-none   (yes !(backlink-hit:md "a/b" "no links"))
+::
+::  shapes that were quadratic: each renders in about a second now, and the
+::  text around them still renders right
+++  test-nested-brackets-bounded
+  =/  t=@t  (crip (weld (reap 6.000 '[') (reap 6.000 ']')))
+  (yes (has "[[[" (r t)))
+++  test-link-after-a-capped-scan
+  =/  t=@t  (crip :(weld "[" (reap 3.000 'a') "] then [x](http://u.example)"))
+  (yes (has "<a href=\"http://u.example\"" (r t)))
+++  test-link-after-deep-nesting
+  (yes (has "<a href=\"http://u.example\"" (r '[[[a]]] then [x](http://u.example)')))
+++  test-many-label-openers
+  =/  t=tape  (zing (reap 8.000 "[[a|b "))
+  (expect-eq !>(t) !>((wl t "/")))
+++  test-label-after-many-openers
+  =/  o=tape  (zing (reap 8.000 "[[a|b "))
+  =/  t=tape  (weld o "]] [[c|d]]")
+  (yes (has "[d](/c)" (wl t "/")))
+++  test-spaced-quote-depth
+  =/  q=tape  (zing (reap 4.000 "> "))
+  =/  t=@t  (crip (weld q "x"))
+  (expect-eq !>(32) !>((lent (fand "<blockquote>" (r t)))))
 --

@@ -4,9 +4,11 @@
 //!   lattice-fs mount <dir>       mount the page tree at <dir> (foreground)
 //!   lattice-fs errors <page>     print a page's latest evaluator error
 //!
-//! Config (env): LATTICE_URL (default http://localhost:8080),
+//! Config (env): LATTICE_URL (default http://localhost:8080; https, or
+//!               plain http to a loopback/LAN address only),
 //!               LATTICE_CODE (+code for unattended auth),
-//!               cookie at ~/.config/lattice-fs/cookie (mode 600).
+//!               cookie at ~/.config/lattice-fs/cookie-<scheme>-<host>-<port>
+//!               (mode 600, one per ship).
 //!
 //! The projections, transports, and mount helpers live in the lattice_fs
 //! library (src/lib.rs). This binary is CLI parsing plus the lick branch.
@@ -18,12 +20,15 @@ use lattice_fs::projection::Projection;
 use lattice_fs::transport::Transport;
 use lattice_fs::vfs::GrubberyFs;
 use lattice_fs::{
-    default_cookie_path as cookie_path, mount_config, projection_http, projection_lick,
+    cookie_path_for, eyre::check_ship_url, mount_config, projection_http, projection_lick,
     resolve_root, Root,
 };
 
-fn base_url() -> String {
-    std::env::var("LATTICE_URL").unwrap_or_else(|_| "http://localhost:8080".into())
+/// LATTICE_URL, held to the ship URL rule before anything is sent to it.
+fn base_url() -> Result<String, String> {
+    let url = std::env::var("LATTICE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+    check_ship_url(&url)?;
+    Ok(url)
 }
 
 /// lick when LATTICE_SOCK is set (native local IPC, no cookie), else Eyre
@@ -36,12 +41,16 @@ fn make_projection(root: &str) -> Result<Arc<dyn Projection>, String> {
                 .map_err(|_| "LATTICE_SOCK set but LATTICE_SHIP missing (e.g. ~tyr)".to_string())?;
             projection_lick(&sock, &ship, root)
         }
-        _ => projection_http(&base_url(), &cookie_path(), root),
+        _ => {
+            let url = base_url()?;
+            projection_http(&url, &cookie_path_for(&url)?, root)
+        }
     }
 }
 
 fn cmd_auth() -> Result<(), String> {
-    let t = EyreTransport::new(&base_url(), &cookie_path());
+    let url = base_url()?;
+    let t = EyreTransport::new(&url, &cookie_path_for(&url)?);
     t.login(read_code()).map_err(|e| e.msg)?;
     println!("logged in as {}; cookie stored.", t.ship().map_err(|e| e.msg)?);
     Ok(())

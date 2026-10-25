@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- installed-PWA status bar. The manifest's theme_color is the icon's blue,
      which matches nothing on screen. The app bar is --bg, so standalone mode
      showed a blue band above an off-white bar. These win over the manifest at
@@ -390,8 +390,17 @@ select, option { color-scheme: inherit; }
   /* dvh, not vh: vh is sized to the browser with its URL bar HIDDEN, so a
      100vh min-height overshoots the visible viewport by the bar's height and
      leaves the tab strip scrolled half off. Plain vh stays as the fallback. */
+  /* viewport-fit=cover (set on the viewport meta) lets html's --bg paint the
+     whole screen, including behind Android's edge-to-edge gesture-nav area, so
+     the bottom bar is the theme background rather than the manifest's off-white
+     background_color. These insets then keep the top bar and the fixed bottom
+     buttons out from under the system bars. box-sizing is border-box, so the
+     100dvh min-height already includes the padding; both insets are 0 on
+     desktop and on phones that are not edge-to-edge, so nothing moves there. */
   .ws, .ws.nt, .ws.nc, .ws.nt.nc { grid-template-columns: 1fr;
-    height: auto; min-height: 100vh; min-height: 100dvh; }
+    height: auto; min-height: 100vh; min-height: 100dvh;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom); }
   .psplit { display: none; }
   /* iOS zooms the viewport when a control under 16px takes focus and never
      zooms back out. The omnibar (.bar input) and the editor (#src/#hl) were
@@ -419,6 +428,13 @@ select, option { color-scheme: inherit; }
      390px. Floor the item at 0 and the track stays at the viewport;
      the flex row then squeezes #mpath (its min-width is already 0). */
   .bar { flex-wrap: nowrap; position: relative; min-width: 0; }
+  /* Same grid-item min-content trap as .bar: the tree is the .ws grid's single
+     1fr item on mobile, and its min-content width (the nowrap .newbtns button
+     row, the file rows) grew the 1fr track past the viewport -> whole-page
+     horizontal scroll. Floor it at 0 so the track stays at the viewport; the
+     file rows then ellipsise within it and the button row wraps. */
+  .tree { min-width: 0; }
+  .tree .newbtns { flex-wrap: wrap; }
   #modet, #pname, #pkind, #qt, #cmt, #aclt { display: none; }
   /* .grow is also flex:1 — left in the row it takes half the free space and
      the path label ellipsises early with daylight sitting next to it (the
@@ -455,20 +471,29 @@ select, option { color-scheme: inherit; }
      It moves to the top when full: the bar is gone, so that corner is free,
      and the bottom of a phone is where the keyboard comes up. */
   .ws[data-mv="code"] #fullt {
-    display: block; position: fixed; right: 10px; bottom: 12px; z-index: 30;
+    display: block; position: fixed; right: 10px; z-index: 30;
+    bottom: calc(12px + env(safe-area-inset-bottom));
     font: 12px/1 var(--font, system-ui, sans-serif); padding: 7px 11px; border-radius: 999px;
     border: 1px solid var(--border); background: var(--bg); color: var(--muted);
     opacity: .8;
   }
-  .ws.full[data-mv="code"] #fullt { top: 10px; bottom: auto; }
+  .ws.full[data-mv="code"] #fullt { top: calc(10px + env(safe-area-inset-top)); bottom: auto; }
   /* the list pair sits opposite #fullt, and only when it can act. Fixed for
      the same reason #fullt is: it must survive full-screen hiding the bar.
      Above the keyboard by being bottom-anchored in the visual viewport. */
   .ws[data-mv="code"] #lbtns.on { display: flex; gap: 8px; position: fixed;
-    left: 10px; bottom: 12px; z-index: 30; }
+    left: 10px; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 30; }
   #lbtns button { font: 16px/1 var(--font, system-ui, sans-serif); padding: 8px 13px;
     border-radius: 999px; border: 1px solid var(--border);
     background: var(--bg); color: var(--muted); opacity: .85; }
+  /* #fullt and #lbtns are fixed over the editor's bottom corners. A textarea
+     reveals its caret flush to its own bottom edge, so typing on the last
+     lines parks the caret right under those buttons. End the editor layers a
+     button-row short of the container bottom — both layers identically, so the
+     highlight stays aligned and scroll-synced — and the caret can never land
+     beneath the buttons. (height:auto lets top:0 + bottom size the box; the
+     base rule's height:100% would otherwise over-constrain and win.) */
+  .ws[data-mv="code"] #src, .ws[data-mv="code"] #hl { height: auto; bottom: 56px; }
   .ws.full[data-mv="code"] .bar,
   .ws.full[data-mv="code"] .mtabs { display: none; }
   .ws.full[data-mv="code"] .edwrap { min-height: 100vh; min-height: 100dvh; }

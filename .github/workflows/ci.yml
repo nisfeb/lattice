@@ -9,6 +9,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -27,8 +30,10 @@ jobs:
       matrix:
         crate: [lattice-fs-rs, desktop]
     steps:
-      - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           manifest-path: ${{ matrix.crate }}/Cargo.toml
           command: check
@@ -37,7 +42,9 @@ jobs:
     name: lattice-fs — cargo test
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: fuse build deps
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
       #  --release for speed, but with overflow checks: the overflow
@@ -61,7 +68,9 @@ jobs:
     name: desktop — cargo test
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       # tauri pulls the webkit stack in at COMPILE time, so the deps are needed
       # even though every test here is pure logic (pier detection, ship-name
       # shape, config round-trip, eyre binding classification).
@@ -70,7 +79,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libfuse3-dev pkg-config libgtk-3-dev \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
-            libsoup-3.0-dev
+            libsoup-3.0-dev pandoc xvfb
       # A tauri command is registered in three places and missing any one of
       # them denies it at runtime with "not allowed. Command not found". That
       # has shipped three times here: save_vault, the whole offline queue, and
@@ -93,13 +102,23 @@ jobs:
         run: |
           rustup component add clippy
           cargo clippy --all-targets -- -D warnings
+      # The bridge's token rule is unit-tested, but only a real WebKit shows
+      # the token cookie rides on page, SSE and service-worker requests and
+      # not on a sandboxed frame or another local process. The app runs under
+      # xvfb against a stub ship, so no ship is needed.
+      - name: the webview carries the bridge token
+        run: |
+          cargo build --manifest-path desktop/Cargo.toml
+          scripts/desktop-bridge-check.sh
 
   nix:
     name: nix — flake build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@2cb76beab460be7e44442c7ebdcbc30b638416df # main
       # No magic-nix-cache: it authenticates against FlakeHub and hard-fails
       # without an account. Builds are uncached and slower. Correctness first.
       # `nix flake check` also evaluates the devShells, so a typo'd package
@@ -117,7 +136,9 @@ jobs:
     name: web client + scripts — static checks
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: UI builds and the served artifact is current
         run: |
           node scripts/build-ui.mjs
@@ -135,6 +156,7 @@ jobs:
         run: |
           node --check plugins/claude/server.mjs
           node --check plugins/claude/hooks/lattice-hook.mjs
+          node --check plugins/claude/url-rule.mjs
           python3 -m py_compile plugins/hermes/__init__.py
           for f in .claude-plugin/marketplace.json plugins/claude/.claude-plugin/plugin.json plugins/claude/.mcp.json plugins/claude/hooks/hooks.json; do python3 -m json.tool "$f" >/dev/null; done
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node plugins/claude/server.mjs | grep -q memory_recall
@@ -151,7 +173,7 @@ jobs:
       # in nightly.yml. fast-check is for the property harness.
       - name: pure-function unit + property tests
         run: |
-          npm i --no-save --no-audit --no-fund fast-check
+          npm ci --prefix scripts --no-audit --no-fund --ignore-scripts
           for f in scripts/ui-*.mjs; do
             grep -qE 'puppeteer|lib/harness\.mjs' "$f" && continue
             echo "--- $(basename "$f") ---"
@@ -185,5 +207,5 @@ jobs:
       # with the rest here. The ubuntu runner ships google-chrome.
       - name: browser unit test — manager page (no ship)
         run: |
-          npm i --no-save --no-audit --no-fund puppeteer-core
+          npm ci --prefix scripts --no-audit --no-fund --ignore-scripts
           CHROME="$(command -v google-chrome)" node scripts/ui-manager.mjs

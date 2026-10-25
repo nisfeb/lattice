@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Every `uses:` is pinned to a commit SHA with a `# vX` comment; this keeps
+  # the pins moving (dependabot bumps the SHA and the comment together).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  # the harnesses' npm packages, locked in scripts/package-lock.json
+  - package-ecosystem: npm
+    directory: /scripts
+    schedule:
+      interval: weekly

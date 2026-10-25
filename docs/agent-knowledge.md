@@ -12,7 +12,7 @@ Lattice keeps a **private, tagged knowledge store** on your ship: the memory you
 | HTTP routes under `/apps/lattice` | your own scripts and agents | an agent key, or your login cookie |
 | grubbery's MCP tools (`lattice-*`) | any MCP client without a plugin | your login cookie |
 
-Use a plugin with an agent key where you can. A key reaches memory and pages and nothing else, and you can revoke it on its own. It never expires. Everything it saves is signed with its name. Your login cookie is meant for you. It carries every power you have over the ship and expires after a week or on a ship restart, which suits your own tools better than an agent. Coming from the cookie setup? See [Migrating](#migrating-from-the-cookie-and-mcp-setup).
+Use a plugin with an agent key where you can. A key reaches only what its scope grants (memory, your pages, other ships' pages) and nothing else, and you can revoke it on its own. It never expires. Everything it saves is signed with its name. Your login cookie is meant for you. It carries every power you have over the ship and expires after a week or on a ship restart, which suits your own tools better than an agent. Coming from the cookie setup? See [Migrating](#migrating-from-the-cookie-and-mcp-setup).
 
 ## Agent keys
 
@@ -20,27 +20,31 @@ A key is for a client that does not hold your cookie. The design and the wire fo
 
 - **Making one.** In lattice, Settings, then Agent keys. Give it a name (where it runs, such as "laptop Claude"), the identity it writes as (`by`, such as `claude-laptop`: letters, digits, `-`, `_` and `.`), and a scope. The key is shown once. Lattice keeps only a salted SHA-256 of it, at `/keys`, outside `/pub`, where no other ship can read it.
 - **Using it.** Send `Authorization: Bearer <id>.<secret>`, with no cookie. A bad or revoked key gets a 401. A route outside the key's scope gets a 403.
-- **Scope.**
+- **Scope.** Read and write are independent, and it is default-deny: a key reaches only what its scope grants. Build it in Settings, or send the JSON shape below.
   - `memory`: `none`; `read` (search, recall, index, read, list, explore, tags, history, lint); or `write` (also save, verify, supersede, tag, untag).
-  - `pages`: `none`; `read` (page-search, page-source, page-backlinks, page-tree); or `write` (also page-save, private pages only).
-  - `web`: reading pages other ships publish, through `fetch`.
-  - `sensitive`: clearance to read memories marked sensitive ([Sensitive memories](#sensitive-memories)). Off unless you tick it.
+  - `pages`: `none`, or `read`/`write` over **all** pages, or **scoped** to named path subtrees with independent read and write sets. Read covers page-search, page-source, page-backlinks, page-tree; write adds page-save. A read-scoped key sees only its paths (the tree, search and backlinks are filtered to them).
+  - `web` (other ships' pages): `off`; read **all** ships (through `fetch`, `browse`, `browse-file`); or **scoped** per ship, each with its own read and write path sets. Write means `remote-save` to a page a peer shared to you for editing.
+  - `sensitive`: clearance for content marked sensitive, both memories and pages ([Sensitive content](#sensitive-content)). Off unless you tick it.
+  - `origin`: reserved. A source-ship hook in the mold that nothing reads or enforces yet.
   - Nothing else is reachable with a key. Publishing, sharing, deleting, moving, settings and the keys themselves stay yours, whatever the scope. `+wants` in `lib/lattice-keys.hoon` is the whole list.
 - **Identity.** A key writes as its `by`, with `source: agent`, whatever the request says, so an agent cannot sign a memory as you. Verifying stamps `verified-by` the same way.
-- **Private pages only.** A key may write a page only when that page is private and no sharing group reaches it, on the page or on a folder above it. Saving a published page republishes it, and a page made inside a shared folder is shared, so both are refused.
-- **Sensitive memories** stay out of reach of keys without clearance. See below.
+- **Writes land where the scope grants, published or not.** A key writes a page when its write scope covers that path. A write grant covers a published or shared page too, since granting the path is your explicit consent (this replaces the earlier blanket "private pages only" rule). A key still cannot publish a page, change its sharing, or move or delete it.
+- **No code pages.** A key saves md, gmi, text, tex, css and index pages. A save with `type` hoon, html or js, or with no `type`, is refused with a 403. Hoon would run with lattice's own authority, and html or js would run in your browser.
+- **Core is yours.** A key may tag a new entry `core`. It cannot edit, supersede or untag an entry that already has the `core` tag, since every session loads those. Those requests get a 403.
+- **Sensitive content** (memories and pages) stays out of reach of keys without clearance. See below.
 - **Revoking.** The list in Settings shows when each key was made and last used, to the hour. Revoke a key there, and its next request fails.
 
-Owner routes: `GET /keys`, `POST /key-mint` (JSON `{name, by, scope: {memory, pages, web, sensitive}}`), `POST /key-revoke?id=`.
+Owner routes: `GET /keys`, `POST /key-mint`, `POST /key-revoke?id=`. The mint JSON is `{name, by, scope}`, where `scope` is `{memory, pages, web, sensitive}`: `memory` is `"none"|"read"|"write"`; `pages` is `{"all":"none|read|write"}` or `{"some":{"read":[path,...],"write":[path,...]}}`; `web` is `{"off":null}`, `{"all":null}` or `{"some":{"~ship":{"read":[...],"write":[...]}}}`; `sensitive` is a bool. The scope builder in Settings writes exactly this.
 
-## Sensitive memories
+## Sensitive content
 
-Some memories should reach only the agents you trust with them: health, money, a family matter. Mark such an entry sensitive, and only you and keys cleared for sensitive memories can read it.
+Some things should reach only the agents you trust with them: health, money, a family matter. This covers both **memories** and **pages**. Mark a memory sensitive, or mark a page or folder sensitive, and only you and keys cleared for sensitive content can see it.
 
 - **Marking.** Put `sensitive: yes` in the entry's front matter (edit it in the knowledge view), or save it with `sensitive=1`. Any key may mark an entry sensitive. Only you can clear the mark (remove the line, or save with `sensitive=0`). A key's save never lowers it.
 - **A key without clearance** never sees a sensitive entry. It is absent from the index, lists, tags, explore and the tidy, from search and recall results, from the entries recall links to, and from duplicate warnings. Reading, history, tagging, verifying or superseding it answers "not found". Saving over its key is refused.
-- **A cleared key** finds sensitive entries only by asking: search, recall, or reading one by key. Listings never show them, so loading the index at session start exposes nothing, and a core rule marked sensitive does not load at session start for any key. The plugins' automatic recall passes `sensitive=0`, which leaves sensitive entries out, so it never taints a key either.
-- **No passing it on.** When a cleared key receives sensitive text, lattice records it, and for the next 12 hours that key's own words go only on sensitive memories. New entries it saves are sensitive and come back marked (`"sensitive": true`). It may not edit, tag or supersede ordinary entries, since an edited one would silently disappear for every other key, and it may not write pages, since pages are never sensitive. So an agent cannot copy or paraphrase a sensitive memory into a place a key without clearance can read. The key list in Settings shows when the window ends.
+- **A cleared key** finds sensitive entries only by asking: search, recall, or reading one by key. Listings never show them, so loading the index at session start exposes nothing, and a core rule marked sensitive does not load at session start for any key. Orrery's digest of your day is sensitive too: a cleared key gets it in the index only by asking with `world=1`, which taints the key. The plugins' automatic recall passes `sensitive=0`, which leaves sensitive entries out, so it never taints a key either.
+- **Sensitive pages** work the same way, by path. Mark a page or a folder sensitive (the share panel's checkbox, or `POST /page-sensitive?name=&on=1`); a folder mark covers every page under it. A key without clearance never sees a sensitive page: it is filtered from the tree, search and backlinks, and page-source and history answer 403. Such a key cannot write a sensitive page either, even when the path is in its write scope. A cleared key reads them normally, and reading one taints the key just as a sensitive memory does.
+- **No passing it on.** When a cleared key reads sensitive content, lattice records it, and for the next 12 hours that key's writes go only to sensitive destinations. A new memory it saves is sensitive and comes back marked (`"sensitive": true`); it may not edit, tag or supersede an ordinary memory, since an edited one would silently disappear for every other key. Its page writes follow the same rule: an already-sensitive page is fine, a new page it creates is marked sensitive, and flipping an existing non-sensitive page is refused. A foreign `remote-save` is refused outright, since a peer's page cannot be verified sensitive. So an agent cannot copy or paraphrase sensitive content into a place a key without clearance can read. The key list in Settings shows when the window ends.
 - **Clearance is set when a key is made.** To clear an agent that already has a key, make a new key with clearance and give it to the agent.
 - **What it does not do.** It decides what a key can read and where its writes land, which lattice enforces itself. It cannot stop a cleared agent from repeating what it read in its reply to you, or in an outside tool such as email. The text also reaches the agent's model provider, like everything an agent reads. Your login cookie, and grubbery's MCP tools that use it, see everything.
 
@@ -108,9 +112,12 @@ All under `/apps/lattice/`. GET reads, POST writes, parameters go in the query s
 | `POST know-tag`, `know-untag` | `key`, `tag` | cross-cutting tags | memory write |
 | `POST know-delete`, `know-restore`, `know-move` | `key`, `from`, `to` | soft-delete, undo, rename | owner |
 | `GET page-search` | `q`, `k` (10) | the wiki ranked like memory, each hit labelled `private`, `urbit` or `clearweb` | pages read |
-| `GET page-source`, `page-tree`, `page-backlinks` | `name` | a page's source and `rev`; the tree; backlinks | pages read |
-| `POST page-save` | `name`, `type` (send it: `md`, `html`, ...), `base`, `new=1` | create or update a page. With a key, private pages only | pages write |
-| `GET fetch` | `url=urb://~ship/path` | a page another ship publishes | web |
+| `GET page-source`, `page-tree`, `page-backlinks` | `name` | a page's source and `rev`; the tree; backlinks. Filtered to the key's read paths, and sensitive pages hidden from an uncleared key | pages read |
+| `POST page-save` | `name`, `type` (send it: `md`, `html`, ...), `base`, `new=1` | create or update a page. With a key: within its write scope, published or not, and not hoon, html or js | pages write |
+| `POST page-save-batch` | JSON `[{name, type, body}]` | many page saves in one request, gated per item | pages write |
+| `GET fetch` | `url=urb://~ship/path` | a page another ship publishes | web read |
+| `GET browse`, `browse-file` | `ship`, `path` | a peer's shared tree, or one file in it | web read |
+| `POST remote-save` | `ship`, `path`, body | save to a page a peer shared to you for editing | web write |
 
 [agent-guide.md](agent-guide.md) covers the rest of the HTTP API, the filesystem mount and search.
 

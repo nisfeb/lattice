@@ -32,6 +32,12 @@ const FILE_TTL: Duration = Duration::from_secs(0);
 const TREE_TTL: Duration = Duration::from_secs(5);
 const RECENT_TTL: Duration = Duration::from_secs(10); // grace window for the recent-mutation ledger // our vtree refresh floor (watch() is a no-op, so this is the only floor)
 const READ_CACHE_MAX: usize = 256 * 1024 * 1024; // body-cache ceiling. Past it, degrade to lazy read
+// The largest file a handle will hold. A page body sits whole in RAM here and
+// goes to the ship in one POST, so nothing real comes near it. Without a cap,
+// one pwrite at a huge offset makes resize abort the daemon, and every open
+// handle's unsaved buffer goes with it. Past the cap, write and truncate
+// answer EFBIG.
+const MAX_FILE: u64 = 64 * 1024 * 1024;
 // How long a body() miss waits for the dump already in flight before it gives
 // up and asks for the one page itself. A wedge-breaker, not a latency budget:
 // the dump is normally back in a second or two, and the page-source it would
@@ -58,6 +64,9 @@ struct Handle {
     kind: String,
     buf: Vec<u8>,
     dirty: bool,
+    // Bumped by every write and truncate. commit clears dirty only if gen did
+    // not move while its IO ran, so a write in that window is never dropped.
+    gen: u64,
     new: bool,
     scratch: bool, // an editor temp file: commit to the scratch map, never the ship
 }
@@ -452,10 +461,10 @@ impl GrubberyFs {
 
     /// Commit an fh's buffer through the projection (one POST), then invalidate.
     fn commit(&self, fh: u64) -> Result<(), PErr> {
-        let (rel, kind, buf, new, scratch) = {
+        let (rel, kind, buf, new, scratch, gen) = {
             let s = self.st.lock().unwrap();
             match s.handles.get(&fh) {
-                Some(h) if h.dirty => (h.rel.clone(), h.kind.clone(), h.buf.clone(), h.new, h.scratch),
+                Some(h) if h.dirty => (h.rel.clone(), h.kind.clone(), h.buf.clone(), h.new, h.scratch, h.gen),
                 _ => return Ok(()),
             }
         };
@@ -465,7 +474,7 @@ impl GrubberyFs {
             let mut s = self.st.lock().unwrap();
             s.scratch.insert(rel, buf);
             if let Some(h) = s.handles.get_mut(&fh) {
-                h.dirty = false;
+                h.dirty = h.gen != gen;
                 h.new = false;
             }
             return Ok(());
@@ -473,10 +482,76 @@ impl GrubberyFs {
         self.proj.write(&rel, &kind, &buf, new)?;
         let mut s = self.st.lock().unwrap();
         if let Some(h) = s.handles.get_mut(&fh) {
-            h.dirty = false;
+            h.dirty = h.gen != gen;
             h.new = false;
         }
         publish(&mut s, &rel, &buf);
+        Ok(())
+    }
+
+    /// Atomic save: temp -> real page. Promote the scratch bytes. Create
+    /// only when the destination doesn't exist. An atomic save ONTO an
+    /// existing page is an overwrite (create=true would 409 on lattice /
+    /// EROFS on generic, failing every VS Code-style save).
+    ///
+    /// The temp stays in the scratch map until the ship accepts the write.
+    /// A failed write leaves the editor's bytes where they were, so the save
+    /// can be retried instead of lost.
+    fn promote(
+        &self,
+        src_path: &str,
+        dst_path: &str,
+        dst_rel: &str,
+        dst_kind: &str,
+        dst_exists: bool,
+    ) -> Result<(), PErr> {
+        let v = self
+            .st
+            .lock()
+            .unwrap()
+            .scratch
+            .get(src_path)
+            .cloned()
+            .ok_or_else(|| PErr::new(libc::ENOENT, "rename: no such temp"))?;
+        self.proj.write(dst_rel, dst_kind, &v, !dst_exists)?;
+        let mut s = self.st.lock().unwrap();
+        // the temp no longer exists under its old name
+        s.scratch.remove(src_path);
+        s.vt.remove(src_path);
+        s.recent.insert(dst_path.to_string(), (Instant::now(), true));
+        // an atomic save may CREATE the page. Seed an optimistic
+        // entry, as create() does, so the file the editor just
+        // wrote is stat-able before the re-dump lands.
+        s.vt.entry(dst_path.to_string()).or_insert_with(|| VEntry {
+            kind: VKind::File,
+            node: Some(Node {
+                rel: dst_rel.to_string(),
+                is_dir: false,
+                is_page: true,
+                kind: dst_kind.to_string(),
+                size: 0,
+                mtime: now_secs(),
+                readonly: false,
+                rev: None,
+            }),
+        });
+        // and the promoted bytes ARE that page now
+        publish(&mut s, dst_rel, &v);
+        remap_ino(&mut s, src_path, dst_path);
+        Ok(())
+    }
+
+    /// Backup-by-rename: page -> temp name. Snapshot the page's current body
+    /// into the scratch map and KEEP the page (the editor rewrites it next).
+    /// Never delete it, so there is no data-loss window. A body we cannot
+    /// read fails the rename. An empty backup would look like a good one.
+    fn backup(&self, src_path: &str, dst_path: &str, src_rel: &str) -> Result<(), PErr> {
+        let v = self.body(src_rel)?;
+        let mut s = self.st.lock().unwrap();
+        s.scratch.insert(dst_path.to_string(), v);
+        // the page stays. Refresh so the new content lands
+        s.vt_ts = None;
+        remap_ino(&mut s, src_path, dst_path);
         Ok(())
     }
 }
@@ -629,15 +704,66 @@ fn invalidate(s: &mut State) {
 /// real answer for a literal `.hoon` page, so a bare "hoon" extension is
 /// checked directly rather than through the closure, which has no way to
 /// tell "recognized as hoon" apart from "fell through to hoon".
+///
+/// The extension is matched without case. `Notes.MD` is a real md page, not
+/// scratch, so its bytes reach the ship instead of being lost on unmount.
+///
+/// Two names with no extension are scratch too: vim's probe file `4913` (any
+/// all-digit name), and an emacs autosave like `#notes#`. Without this rule
+/// both became bare hoon pages on the ship.
 fn is_scratch(name: &str, kind_for: impl Fn(&str) -> String) -> bool {
-    if name.ends_with('~') {
+    if name.ends_with('~') || is_probe_or_autosave(name) {
         return true;
     }
     match name.rsplit_once('.') {
-        Some((_, "hoon")) => false,
-        Some((_, ext)) => kind_for(ext) == "hoon",
+        Some((_, ext)) if ext.eq_ignore_ascii_case("hoon") => false,
+        Some((_, ext)) => kind_for(&ext.to_ascii_lowercase()) == "hoon",
         None => false,
     }
+}
+
+/// vim's write probe (`4913`, any all-digit name) and an emacs autosave
+/// (`#name#`). Both are names an editor makes and then throws away.
+fn is_probe_or_autosave(name: &str) -> bool {
+    let digits = !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit());
+    let autosave = name.len() >= 2 && name.starts_with('#') && name.ends_with('#');
+    digits || autosave
+}
+
+/// Whether a name looks like a file an editor or a download tool makes for
+/// itself and throws away. Only these may live in the scratch map.
+///
+/// is_scratch says a name will not reach the ship. That is right for an
+/// editor temp. It is wrong for a real file with an extension we do not know,
+/// like `data.xyz`: that one would sit in RAM and be gone on unmount, with no
+/// error. So create and rename refuse a scratch name that is not on this
+/// list, and the user sees the failure at once.
+///
+/// The list: a trailing `~` (vim, emacs, VS Code backups); a leading `.`
+/// (vim swap files, emacs `.#lock`, gedit `.goutputstream-*`, VS Code
+/// `.name.ext.tmp`); `#name#` (emacs autosave); an all-digit name (vim's
+/// `4913` probe); a `.tmp.` anywhere in the name; and the temp extensions
+/// below.
+fn is_editor_temp(name: &str) -> bool {
+    const TEMP_EXTS: [&str; 8] = ["swp", "swx", "swo", "tmp", "bak", "orig", "part", "crdownload"];
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with('~') || lower.starts_with('.') || is_probe_or_autosave(&lower) {
+        return true;
+    }
+    if lower.contains(".tmp.") {
+        return true;
+    }
+    match lower.rsplit_once('.') {
+        Some((_, ext)) => TEMP_EXTS.contains(&ext),
+        None => false,
+    }
+}
+
+/// A name create or rename must refuse: it would be scratch, so it never
+/// reaches the ship, but it is not an editor temp, so nobody expects it to
+/// vanish. EINVAL tells the caller now, instead of losing the file later.
+fn refuse_as_scratch(name: &str, kind_for: impl Fn(&str) -> String) -> bool {
+    is_scratch(name, kind_for) && !is_editor_temp(name)
 }
 
 /// One editor-save pattern, named once, so the three cases a rename involving a
@@ -1001,12 +1127,17 @@ impl Filesystem for GrubberyFs {
             return;
         };
         if let Some(sz) = size {
+            if sz > MAX_FILE {
+                reply.error(err(libc::EFBIG));
+                return;
+            }
             // 1) explicit fh -> truncate that buffer
             let mut done = false;
             if let Some(fhv) = fh {
                 if let Some(h) = s.handles.get_mut(&fhv.0) {
                     h.buf.resize(sz as usize, 0);
                     h.dirty = true;
+                    h.gen += 1;
                     done = true;
                 }
             }
@@ -1017,6 +1148,7 @@ impl Filesystem for GrubberyFs {
                     let h = s.handles.get_mut(&hfh).unwrap();
                     h.buf.resize(sz as usize, 0);
                     h.dirty = true;
+                    h.gen += 1;
                     done = true;
                 }
             }
@@ -1045,7 +1177,15 @@ impl Filesystem for GrubberyFs {
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        self.ensure_fresh();
+        // Page a dir stream over ONE snapshot: refresh only on the first page
+        // (offset 0). The kernel always starts a stream at offset 0, so this
+        // still refreshes at stream start. A background vt refresh landing
+        // between offset 0 and a later page would reshape the sorted list
+        // under the offset index and drop or duplicate entries in a large
+        // directory.
+        if offset == 0 {
+            self.ensure_fresh();
+        }
         let mut s = self.st.lock().unwrap();
         let Some(base) = path_of(&s, ino.0) else {
             reply.error(err(libc::ENOENT));
@@ -1115,7 +1255,7 @@ impl Filesystem for GrubberyFs {
                 s.next_fh += 1;
                 s.handles.insert(
                     fh,
-                    Handle { rel: path, kind: String::new(), buf, dirty: false, new: false, scratch: true },
+                    Handle { rel: path, kind: String::new(), buf, dirty: false, gen: 0, new: false, scratch: true },
                 );
                 drop(s);
                 reply.opened(FileHandle(fh), FopenFlags::empty());
@@ -1163,7 +1303,7 @@ impl Filesystem for GrubberyFs {
         s.pending_trunc.remove(&ino.0);
         let fh = s.next_fh;
         s.next_fh += 1;
-        s.handles.insert(fh, Handle { rel, kind, buf, dirty, new: false, scratch: false });
+        s.handles.insert(fh, Handle { rel, kind, buf, dirty, gen: 0, new: false, scratch: false });
         drop(s);
         reply.opened(FileHandle(fh), FopenFlags::empty());
     }
@@ -1205,19 +1345,10 @@ impl Filesystem for GrubberyFs {
     ) {
         let mut s = self.st.lock().unwrap();
         match s.handles.get_mut(&fh.0) {
-            Some(h) => {
-                let off = offset as usize;
-                if off > h.buf.len() {
-                    h.buf.resize(off, 0);
-                }
-                let end = off + data.len();
-                if end > h.buf.len() {
-                    h.buf.resize(end, 0);
-                }
-                h.buf[off..end].copy_from_slice(data);
-                h.dirty = true;
-                reply.written(data.len() as u32);
-            }
+            Some(h) => match write_buf(h, offset, data) {
+                Ok(()) => reply.written(data.len() as u32),
+                Err(e) => reply.error(err(e)),
+            },
             None => reply.error(err(libc::EBADF)),
         }
     }
@@ -1272,6 +1403,12 @@ impl Filesystem for GrubberyFs {
             return;
         };
         let path = join(&parent_path, &name);
+        // an unknown extension that is not an editor temp would live only in
+        // RAM and be lost on unmount. Refuse it here instead.
+        if refuse_as_scratch(&name, |ext| self.proj.kind_for_ext(ext)) {
+            reply.error(err(libc::EINVAL));
+            return;
+        }
         // editor temp file: keep it entirely in the FUSE layer (never a page).
         if is_scratch(&name, |ext| self.proj.kind_for_ext(ext)) {
             let ino = ino_for(&mut s, &path);
@@ -1285,6 +1422,7 @@ impl Filesystem for GrubberyFs {
                     kind: String::new(),
                     buf: Vec::new(),
                     dirty: true,
+                    gen: 0,
                     new: true,
                     scratch: true,
                 },
@@ -1305,6 +1443,7 @@ impl Filesystem for GrubberyFs {
                 kind: kind.clone(),
                 buf: Vec::new(),
                 dirty: true,
+                gen: 0,
                 new: true,
                 scratch: false,
             },
@@ -1439,6 +1578,12 @@ impl Filesystem for GrubberyFs {
         let newname = newname.to_string_lossy().to_string();
         let src_scratch = is_scratch(&name, |ext| self.proj.kind_for_ext(ext));
         let dst_scratch = is_scratch(&newname, |ext| self.proj.kind_for_ext(ext));
+        // same rule as create: a rename may not land a file in RAM under a
+        // name nobody expects to vanish
+        if refuse_as_scratch(&newname, |ext| self.proj.kind_for_ext(ext)) {
+            reply.error(err(libc::EINVAL));
+            return;
+        }
         let (src_path, dst_path, src_rel, dst_rel, dst_kind, dst_exists) = {
             let s = self.st.lock().unwrap();
             let Some(pp) = path_of(&s, parent.0) else {
@@ -1476,54 +1621,9 @@ impl Filesystem for GrubberyFs {
                     Ok(())
                 }
                 EditorMove::Promote => {
-                    // atomic save: temp -> real page. Promote the scratch bytes.
-                    // create only when the destination doesn't exist. An atomic save
-                    // ONTO an existing page is an overwrite (create=true would 409 on
-                    // lattice / EROFS on generic, failing every VS Code-style save).
-                    let v = self.st.lock().unwrap().scratch.remove(&src_path).unwrap_or_default();
-                    match self.proj.write(&dst_rel, &dst_kind, &v, !dst_exists) {
-                        Ok(()) => {
-                            let mut s = self.st.lock().unwrap();
-                            // the temp no longer exists under its old name
-                            s.scratch.remove(&src_path);
-                            s.vt.remove(&src_path);
-                            s.recent.insert(dst_path.clone(), (Instant::now(), true));
-                            // an atomic save may CREATE the page. Seed an optimistic
-                            // entry, as create() does, so the file the editor just
-                            // wrote is stat-able before the re-dump lands.
-                            s.vt.entry(dst_path.clone()).or_insert_with(|| VEntry {
-                                kind: VKind::File,
-                                node: Some(Node {
-                                    rel: dst_rel.clone(),
-                                    is_dir: false,
-                                    is_page: true,
-                                    kind: dst_kind.clone(),
-                                    size: 0,
-                                    mtime: now_secs(),
-                                    readonly: false,
-                                    rev: None,
-                                }),
-                            });
-                            // and the promoted bytes ARE that page now
-                            publish(&mut s, &dst_rel, &v);
-                            remap_ino(&mut s, &src_path, &dst_path);
-                            Ok(())
-                        }
-                        Err(e) => Err(e),
-                    }
+                    self.promote(&src_path, &dst_path, &dst_rel, &dst_kind, dst_exists)
                 }
-                EditorMove::Backup => {
-                    // backup-by-rename: page -> temp name. Snapshot the page's current
-                    // body into the scratch map and KEEP the page (the editor rewrites
-                    // it next). Never delete it, so there is no data-loss window.
-                    let v = self.body(&src_rel).unwrap_or_default();
-                    let mut s = self.st.lock().unwrap();
-                    s.scratch.insert(dst_path.clone(), v);
-                    // the page stays. Refresh so the new content lands
-                    s.vt_ts = None;
-                    remap_ino(&mut s, &src_path, &dst_path);
-                    Ok(())
-                }
+                EditorMove::Backup => self.backup(&src_path, &dst_path, &src_rel),
             };
             match res {
                 Ok(()) => reply.ok(),
@@ -1568,6 +1668,22 @@ impl Filesystem for GrubberyFs {
 /// (which the rename just removed) and returns ENOENT. An editor that saves
 /// by writing a temp and renaming it into place (VS Code, `:w` with
 /// `backupcopy=no`) then sees the file it just wrote disappear.
+/// Apply one write to a handle's buffer. EFBIG past MAX_FILE, checked before
+/// the buffer grows, with the offset sum checked for overflow too.
+fn write_buf(h: &mut Handle, offset: u64, data: &[u8]) -> Result<(), i32> {
+    let end = match offset.checked_add(data.len() as u64) {
+        Some(end) if end <= MAX_FILE => end as usize,
+        _ => return Err(libc::EFBIG),
+    };
+    if end > h.buf.len() {
+        h.buf.resize(end, 0);
+    }
+    h.buf[offset as usize..end].copy_from_slice(data);
+    h.dirty = true;
+    h.gen += 1;
+    Ok(())
+}
+
 fn remap_ino(s: &mut State, src: &str, dst: &str) {
     if let Some(ino) = s.to_ino.remove(src) {
         s.to_ino.insert(dst.to_string(), ino);
@@ -1582,7 +1698,7 @@ fn remap_ino(s: &mut State, src: &str, dst: &str) {
 // skips the shuttle module; `--cfg shuttle` does the reverse.
 #[cfg(all(test, not(shuttle)))]
 mod tests {
-    use super::{cap_bodies, is_scratch};
+    use super::{cap_bodies, is_editor_temp, is_scratch, refuse_as_scratch};
     use std::collections::HashMap;
 
     /// The real kind_for_ext, driven off `Fake` (defined further down in this
@@ -1611,6 +1727,57 @@ mod tests {
             "4913.tmp",
         ] {
             assert!(is_scratch(tmp, t_kind), "{tmp} should be an ephemeral scratch file");
+        }
+    }
+
+    #[test]
+    fn an_upper_case_extension_is_still_a_real_page() {
+        // Notes.MD used to miss the case-sensitive table, fall through to
+        // hoon, count as scratch, and be lost on unmount
+        for real in ["Notes.MD", "X.TXT", "a.Md", "page.HTML", "x.TeX", "Main.HOON"] {
+            assert!(!is_scratch(real, t_kind), "{real} should be a real page file");
+            assert!(!refuse_as_scratch(real, t_kind), "{real} must be creatable");
+        }
+    }
+
+    #[test]
+    fn an_unknown_extension_that_is_no_editor_temp_is_refused() {
+        // it would only ever live in RAM, so create must fail now rather
+        // than drop the file on unmount
+        for name in ["data.xyz", "photo.PNG", "archive.tar.gz"] {
+            assert!(is_scratch(name, t_kind), "{name} never reaches the ship");
+            assert!(!is_editor_temp(name), "{name} is no editor temp");
+            assert!(refuse_as_scratch(name, t_kind), "{name} must be refused at create");
+        }
+    }
+
+    #[test]
+    fn every_editor_temp_pattern_stays_scratch() {
+        for tmp in [
+            "foo.md~",                  // vim/emacs backup
+            "name.ext~",                // VS Code backup
+            ".foo.md.swp",              // vim swap
+            ".foo.md.swx",
+            ".foo.md.swo",
+            ".foo.swp",
+            ".goutputstream-AB12CD",    // gedit
+            ".name.ext.tmp",            // VS Code atomic write
+            "#notes.md#",               // emacs autosave
+            "#notes#",
+            "4913",                     // vim write probe
+            "12345",
+            "foo.tmp",
+            "foo.TMP",
+            "foo.bak",
+            "foo.orig",
+            "foo.part",
+            "foo.crdownload",
+            "foo.tmp.1234",             // atomic writers with a suffix
+            "foo.md.swp",
+        ] {
+            assert!(is_scratch(tmp, t_kind), "{tmp} should be scratch");
+            assert!(is_editor_temp(tmp), "{tmp} should be an editor temp");
+            assert!(!refuse_as_scratch(tmp, t_kind), "{tmp} must still be creatable");
         }
     }
 
@@ -1754,6 +1921,10 @@ mod tests {
         beacon: Mutex<Option<String>>,    // what change_token() answers
         probes: AtomicUsize,
         hold_probe: AtomicBool, // stall change_token() mid-flight
+        fail_write: AtomicBool, // write() refuses, as an unreachable ship would
+        // runs once inside the next write(), while commit holds no lock. That
+        // is where a second FUSE thread could land a write.
+        during_write: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     impl Fake {
@@ -1851,6 +2022,13 @@ mod tests {
             Ok(String::new())
         }
         fn write(&self, rel: &str, kind: &str, data: &[u8], create: bool) -> Result<(), PErr> {
+            if self.fail_write.load(Ordering::SeqCst) {
+                return Err(PErr::new(libc::EIO, "fake: write refused"));
+            }
+            let hook = self.during_write.lock().unwrap().take();
+            if let Some(f) = hook {
+                f();
+            }
             self.log.lock().unwrap().push(format!(
                 "write {rel} {kind} {} new={create}",
                 String::from_utf8_lossy(data)
@@ -1945,6 +2123,7 @@ mod tests {
             kind: kind.into(),
             buf: buf.to_vec(),
             dirty,
+            gen: 0,
             new: false,
             scratch,
         }
@@ -2054,6 +2233,98 @@ mod tests {
             "accounting must match contents"
         );
         assert_eq!(s.write_gen, 2);
+    }
+
+    #[test]
+    fn a_write_during_commit_io_keeps_the_handle_dirty() {
+        // commit snapshots the buffer, drops the lock for the POST, then marks
+        // the handle clean. A write landing during that POST is not in the
+        // snapshot. Marking clean anyway would drop it on release.
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        let fs = warm_fs(f.clone());
+        fs.st.lock().unwrap().handles.insert(7, handle("note", "md", b"first", true, false));
+        let st = fs.st.clone();
+        *f.during_write.lock().unwrap() = Some(Box::new(move || {
+            let mut s = st.lock().unwrap();
+            write_buf(s.handles.get_mut(&7).unwrap(), 5, b" second").unwrap();
+        }));
+        fs.commit(7).unwrap();
+        assert_eq!(f.log(), vec!["write note md first new=false"]);
+        assert!(fs.st.lock().unwrap().handles[&7].dirty, "the late write was dropped");
+
+        // the next commit sends it, and with nothing new the handle goes clean
+        fs.commit(7).unwrap();
+        assert_eq!(f.log()[1], "write note md first second new=false");
+        assert!(!fs.st.lock().unwrap().handles[&7].dirty);
+    }
+
+    #[test]
+    fn write_buf_refuses_past_max_file_before_growing() {
+        let mut h = handle("note", "md", b"abc", false, false);
+        // a sparse write zero-fills the gap and bumps gen
+        write_buf(&mut h, 5, b"z").unwrap();
+        assert_eq!(h.buf, b"abc\0\0z");
+        assert!(h.dirty);
+        assert_eq!(h.gen, 1);
+        // past the cap, and an offset whose sum overflows: EFBIG, buffer untouched
+        for (off, data) in [(MAX_FILE, &b"x"[..]), (MAX_FILE - 1, &b"xy"[..]), (u64::MAX, &b"x"[..])] {
+            assert_eq!(write_buf(&mut h, off, data), Err(libc::EFBIG), "offset {off}");
+        }
+        assert_eq!(h.buf.len(), 6, "a refused write must not grow the buffer");
+        assert_eq!(h.gen, 1, "a refused write is not a change");
+        // a write that ends exactly at the cap is allowed
+        write_buf(&mut h, MAX_FILE - 1, b"x").unwrap();
+        assert_eq!(h.buf.len() as u64, MAX_FILE);
+    }
+
+    #[test]
+    fn a_failed_promote_keeps_the_editors_bytes() {
+        // An atomic save writes the temp, then renames it onto the page. The
+        // temp's bytes used to leave the scratch map BEFORE the ship write, so
+        // a failed write threw away the only copy of the user's save.
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        let fs = warm_fs(f.clone());
+        fs.st.lock().unwrap().scratch.insert("/.note.md.swp".into(), b"new body".to_vec());
+
+        f.fail_write.store(true, Ordering::SeqCst);
+        let e = fs.promote("/.note.md.swp", "/note.md", "note", "md", true).unwrap_err();
+        assert_eq!(e.errno, libc::EIO, "the ship's error reaches the editor");
+        {
+            let s = fs.st.lock().unwrap();
+            assert_eq!(s.scratch["/.note.md.swp"], b"new body", "the save was lost");
+            assert_eq!(s.read_cache["note"], b"old", "nothing was published");
+        }
+
+        // the editor retries, the ship takes it, and only now the temp goes
+        f.fail_write.store(false, Ordering::SeqCst);
+        fs.promote("/.note.md.swp", "/note.md", "note", "md", true).unwrap();
+        assert_eq!(f.log(), vec!["write note md new body new=false"]);
+        let s = fs.st.lock().unwrap();
+        assert!(!s.scratch.contains_key("/.note.md.swp"));
+        assert_eq!(s.read_cache["note"], b"new body");
+        drop(s);
+
+        // a temp that does not exist is ENOENT, not an empty page on the ship
+        let e = fs.promote("/.gone.md.swp", "/gone.md", "gone", "md", false).unwrap_err();
+        assert_eq!(e.errno, libc::ENOENT);
+        assert_eq!(f.log().len(), 1, "a missing temp must not write anything");
+    }
+
+    #[test]
+    fn a_backup_of_an_unreadable_page_fails_instead_of_saving_nothing() {
+        // backup-by-rename snapshots the page into scratch. If the body
+        // cannot be read, an empty "backup" would look like a good one.
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        let fs = warm_fs(f.clone());
+        fs.backup("/note.md", "/note.md~", "note").unwrap();
+        assert_eq!(fs.st.lock().unwrap().scratch["/note.md~"], b"old");
+
+        let e = fs.backup("/lost.md", "/lost.md~", "lost").unwrap_err();
+        assert_eq!(e.errno, libc::ENOENT);
+        assert!(
+            !fs.st.lock().unwrap().scratch.contains_key("/lost.md~"),
+            "a failed read must not leave an empty backup"
+        );
     }
 
     #[test]

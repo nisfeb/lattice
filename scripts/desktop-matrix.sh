@@ -50,6 +50,15 @@ BK="$T/archives"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/home/.config/lattice-fs" "$T/home/.config/org.lattice.desktop" "$BK"
 cp "$CKF" "$T/home/.config/lattice-fs/cookie"
+# Since release 55 the desktop keeps one session per ship origin
+# (session.rs cookie_path_for), and the global file above is only the CLI's.
+# Without this copy the app ran with no session at all.
+okf=$(python3 -c 'import sys, urllib.parse as u
+p = u.urlsplit(sys.argv[1])
+o = "%s://%s:%d" % (p.scheme, p.hostname.lower(), p.port or {"http": 80, "https": 443}[p.scheme])
+print("cookie-" + "".join(c if c.isascii() and (c.isalnum() or c in ".-") else "_%02x" % ord(c) for c in o))' "$URL")
+mkdir -p "$T/home/.config/lattice-fs/desktop"
+cp "$CKF" "$T/home/.config/lattice-fs/desktop/$okf"
 
 # A schedule that is due immediately (last_run 0), so one tick backs up.
 cat > "$T/home/.config/org.lattice.desktop/config.json" <<JSON
@@ -74,6 +83,12 @@ cat > "$T/probe.js" <<'JS'
     if (seen || !document.getElementById('treelist')) return;
     seen = true;
     say('filemenuflag', window.__LATTICE_FILE_MENU__ ? 1 : 0);
+    // the bridge hands the session only to requests carrying the window's
+    // token cookie, so an owner route answering 200 here proves the webview
+    // sends it (and the service worker, when one controls the page)
+    fetch('/apps/lattice/legacy-status').then(function (r) { say('owner', r.status); },
+                                              function () { say('owner', 'failed'); });
+    say('sw', navigator.serviceWorker && navigator.serviceWorker.controller ? 1 : 0);
     ['newfile', 'newfolder', 'newtmpl', 'upfiles', 'updir', 'save'].forEach(function (id) {
       var el = document.getElementById(id);
       say('hidden.' + id, (el && (el.hidden || el.offsetParent === null)) ? 1 : (el ? 0 : 'missing'));
@@ -108,7 +123,20 @@ LOG="$T/app.log"
   export LATTICE_LOG=1
   export LATTICE_PROBE_JS="$T/probe.js"
   timeout "$RUNFOR" xvfb-run -a "$BIN" > "$LOG" 2>&1
-)
+) &
+APP=$!
+# Mid-run, a request straight at the bridge from another process: no token,
+# so the ship must see it without the owner's session. The port comes from
+# THIS app's own log, never a guess: on a machine running the real app, the
+# canonical port belongs to it and relays to a real ship.
+(
+  sleep 40
+  port=$(grep -o "bridge: listening on 127.0.0.1:[0-9]*" "$LOG" | head -1 | sed 's/.*://')
+  [ -n "$port" ] && curl -s -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:$port/apps/lattice/legacy-status" > "$T/anon.code" 2>/dev/null
+) &
+wait "$APP"
+wait
 echo "    ran for ${RUNFOR}s"
 
 probe() {  # probe <key> -> value, or empty
@@ -122,6 +150,15 @@ echo "==> the shell reaches the page"
 booted=$(grep -c "bridge: GET /apps/lattice/app/app.js" "$LOG")
 chk "the workspace loaded the ship's client through the bridge" \
   "$([ "$booted" -ge 1 ] && echo 1 || echo 0)" "no app.js request in the log"
+
+echo "==> the bridge session goes only to the window that holds the token"
+own=$(probe owner)
+chk "the workspace's own owner request is signed (token cookie sent)" \
+  "$([ "$own" = "200" ] && echo 1 || echo 0)" "owner=${own:-<none>}"
+echo "    service worker controlling the page: $(probe sw)"
+anon=$(cat "$T/anon.code" 2>/dev/null)
+chk "another local process gets no session through the bridge" \
+  "$([ -n "$anon" ] && [ "$anon" != "200" ] && echo 1 || echo 0)" "status=${anon:-<no request made>}"
 
 echo "==> the File menu contract"
 flag=$(probe filemenuflag)

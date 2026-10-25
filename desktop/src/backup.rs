@@ -93,6 +93,13 @@ pub fn archive_name(s: &BackupSchedule, at: u64) -> String {
     format!("lattice-{}-{}.tar", slug(&s.label), stamp(at))
 }
 
+/// The name for an archive the page said is INCOMPLETE. The suffix keeps
+/// it out of is_ours, so retention never counts it as a good backup, never
+/// deletes it, and verify_newest never mistakes it for the newest one.
+pub fn incomplete_name(s: &BackupSchedule, at: u64) -> String {
+    format!("lattice-{}-{}-INCOMPLETE.tar", slug(&s.label), stamp(at))
+}
+
 /// Does this filename belong to this schedule?
 ///
 /// Deliberately strict, because the answer decides what gets DELETED. Only
@@ -109,20 +116,38 @@ pub fn is_ours(s: &BackupSchedule, fname: &str) -> bool {
 }
 
 /// This schedule's archives in `dir`, oldest first.
+///
+/// The name alone is not enough, because the answer decides what prune
+/// DELETES and what verify reads. A backup directory can be shared or
+/// writable by someone else, and anyone who can write there can plant a
+/// name. A future-stamped one sorts newest, so a few of them pushed every
+/// real archive out of retention and became what verify checked (security
+/// audit run-1). So an archive must also be a regular file (not a symlink),
+/// owned by this user, with one link, and stamped no later than tomorrow.
 pub fn existing(s: &BackupSchedule, dir: &Path) -> Vec<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
     let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    // SAFETY: geteuid has no preconditions and cannot fail
+    let me = unsafe { libc::geteuid() };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // the stamp is fixed width, so comparing names compares times
+    let latest = format!("lattice-{}-{}.tar", slug(&s.label), stamp(now + 86_400));
     let mut v: Vec<PathBuf> = rd
         .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|n| is_ours(s, n))
-                    .unwrap_or(false)
+        .filter(|e| {
+            let Some(n) = e.file_name().to_str().map(str::to_string) else { return false };
+            let Ok(m) = std::fs::symlink_metadata(e.path()) else { return false };
+            is_ours(s, &n)
+                && n <= latest
+                && m.file_type().is_file()
+                && m.uid() == me
+                && m.nlink() == 1
         })
+        .map(|e| e.path())
         .collect();
-    // the stamp is fixed width, so the name sorts by age
     v.sort();
     v
 }
@@ -151,22 +176,54 @@ pub fn prune(s: &BackupSchedule, dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Write one archive and prune, returning where it landed.
-pub fn write_archive(s: &BackupSchedule, bytes: &[u8], at: u64) -> Result<PathBuf, String> {
+///
+/// An incomplete archive is still written, because some of a store is better
+/// than none of it. But it gets the -INCOMPLETE name and nothing is pruned:
+/// a partial archive must never push a good one out of retention.
+pub fn write_archive(
+    s: &BackupSchedule,
+    bytes: &[u8],
+    at: u64,
+    complete: bool,
+) -> Result<PathBuf, String> {
     if s.dir.trim().is_empty() {
         return Err("this schedule has no directory set".into());
     }
     let dir = PathBuf::from(&s.dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let path = dir.join(archive_name(s, at));
+    let name = if complete { archive_name(s, at) } else { incomplete_name(s, at) };
+    let path = dir.join(&name);
     // via a temp file in the same directory: a backup half written when the
     // power goes is worse than no backup, because it still looks like one.
-    let tmp = dir.join(format!(".{}.part", archive_name(s, at)));
-    std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("{}: {e}", path.display())
-    })?;
-    prune(s, &dir);
+    // write_private makes that temp file fresh and 0600. A fixed temp name
+    // opened with a plain write followed any symlink planted there and left
+    // the whole vault readable to others under a loose umask (audit run-1).
+    crate::session::write_private(&path, bytes)?;
+    if complete {
+        prune(s, &dir);
+    }
+    Ok(path)
+}
+
+/// What backup_write does to the config: write the archive for schedule `id`
+/// and, only for a COMPLETE archive, stamp last_run. An incomplete run leaves
+/// the schedule due, so the next tick tries again instead of waiting a whole
+/// period on a backup that is missing pages.
+pub fn record(
+    cfg: &mut crate::config::Config,
+    id: &str,
+    bytes: &[u8],
+    at: u64,
+    complete: bool,
+) -> Result<PathBuf, String> {
+    let slot = cfg
+        .backups
+        .iter_mut()
+        .find(|s| s.id == id)
+        .ok_or_else(|| format!("no backup schedule {id}"))?;
+    let path = write_archive(slot, bytes, at, complete)?;
+    if complete {
+        slot.last_run = at;
+    }
     Ok(path)
 }
 
@@ -193,6 +250,9 @@ pub struct Report {
     pub has_readme: bool,
     pub has_share: bool,
     pub has_know: bool,
+    /// manifest.json was present. Archives from before it existed have none,
+    /// and they still verify on everything else.
+    pub has_manifest: bool,
     /// empty means the archive read cleanly
     pub problems: Vec<String>,
 }
@@ -239,6 +299,7 @@ pub fn verify_bytes(name: &str, data: &[u8]) -> Report {
         ..Default::default()
     };
     let mut names: Vec<String> = Vec::new();
+    let mut manifest: Option<Vec<u8>> = None;
     let mut pos = 0usize;
     let mut pending_long: Option<String> = None;
     let mut saw_end = false;
@@ -272,6 +333,9 @@ pub fn verify_bytes(name: &str, data: &[u8]) -> Report {
             pending_long = Some(cstr(&data[pos..body_end]));
         } else {
             let n = pending_long.take().unwrap_or_else(|| cstr(&h[0..100]));
+            if n == "manifest.json" {
+                manifest = Some(data[pos..body_end].to_vec());
+            }
             names.push(n);
         }
         pos = body_end + ((512 - (size % 512)) % 512);
@@ -286,6 +350,10 @@ pub fn verify_bytes(name: &str, data: &[u8]) -> Report {
     r.has_readme = names.iter().any(|n| n == "README.txt");
     r.has_share = names.iter().any(|n| n == "share.json");
     r.has_know = names.iter().any(|n| n == "know.json");
+    r.has_manifest = manifest.is_some();
+    if let Some(m) = manifest {
+        check_manifest(&mut r, &m);
+    }
 
     // Missing manifests are not fatal to reading the tar, and that is exactly
     // why they are worth saying out loud: an archive without share.json
@@ -303,6 +371,38 @@ pub fn verify_bytes(name: &str, data: &[u8]) -> Report {
             .push("no know.json — a restore would bring back no memories".into());
     }
     r
+}
+
+/// Hold the archive to its own manifest. The page writes manifest.json with
+/// how many pages it meant to write and what it could not read. The tar can
+/// read clean and still be short, and only the manifest knows that.
+fn check_manifest(r: &mut Report, raw: &[u8]) {
+    let Ok(m) = serde_json::from_slice::<serde_json::Value>(raw) else {
+        r.problems.push("manifest.json is unreadable".into());
+        return;
+    };
+    match m.get("pages").and_then(|v| v.as_u64()) {
+        Some(want) if want != r.pages as u64 => r.problems.push(format!(
+            "the manifest expects {want} page(s) but the archive holds {}",
+            r.pages
+        )),
+        Some(_) => {}
+        None => r.problems.push("manifest.json has no page count".into()),
+    }
+    if let Some(miss) = m.get("missing").and_then(|v| v.as_array()) {
+        if !miss.is_empty() {
+            let named: Vec<String> = miss
+                .iter()
+                .take(5)
+                .map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))
+                .collect();
+            r.problems.push(format!(
+                "the export could not read {} item(s): {}",
+                miss.len(),
+                named.join(", ")
+            ));
+        }
+    }
 }
 
 /// Verify a schedule's newest archive.
@@ -461,17 +561,68 @@ mod tests {
         let dir = tmpdir("write");
         let s = sched("daily", 24, 2, dir.to_str().unwrap());
         for i in 0..3u64 {
-            write_archive(&s, format!("archive {i}").as_bytes(), 1_700_000_000 + i * 86_400).unwrap();
+            write_archive(&s, format!("archive {i}").as_bytes(), 1_700_000_000 + i * 86_400, true)
+                .unwrap();
         }
         let left = existing(&s, &dir);
         assert_eq!(left.len(), 2, "keep=2 applied as they were written");
         assert_eq!(std::fs::read_to_string(left.last().unwrap()).unwrap(), "archive 2");
-        // no .part left behind
+        // no temp file left behind
         assert!(
             std::fs::read_dir(&dir).unwrap().flatten()
-                .all(|e| !e.file_name().to_str().unwrap().ends_with(".part")),
+                .all(|e| !e.file_name().to_str().unwrap().starts_with('.')),
             "a temp file survived"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn planted_files_cannot_push_real_archives_out_of_retention() {
+        // Anyone who can write the backup directory can plant names. A
+        // future-stamped one sorts newest, so with only the name to go on,
+        // three of them evicted every real archive and became what verify
+        // read (security audit run-1).
+        use std::os::unix::fs::symlink;
+        let dir = tmpdir("planted");
+        let s = sched("daily", 24, 2, dir.to_str().unwrap());
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"keep me").unwrap();
+        for y in 0..3u64 {
+            let far = 4_102_444_800 + y * 86_400; // 2100
+            std::fs::write(dir.join(archive_name(&s, far)), b"planted").unwrap();
+        }
+        // a symlink and a hard link with real-looking past names
+        symlink(&victim, dir.join(archive_name(&s, 1_600_000_000))).unwrap();
+        std::fs::hard_link(&victim, dir.join(archive_name(&s, 1_600_086_400))).unwrap();
+        for i in 0..3u64 {
+            write_archive(&s, format!("real {i}").as_bytes(), 1_700_000_000 + i * 86_400, true).unwrap();
+        }
+        let left = existing(&s, &dir);
+        assert_eq!(left.len(), 2, "only our own archives count: {left:?}");
+        assert_eq!(std::fs::read_to_string(left.last().unwrap()).unwrap(), "real 2");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_archive_write_never_follows_a_planted_symlink() {
+        // The temp file had a fixed, predictable name and was opened with a
+        // plain write, so a symlink planted there redirected the whole vault
+        // onto any file the user could write (security audit run-1).
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tmpdir("symlink");
+        let s = sched("daily", 24, 2, dir.to_str().unwrap());
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"keep me").unwrap();
+        let name = archive_name(&s, 1_700_000_000);
+        symlink(&victim, dir.join(format!(".{name}.part"))).unwrap();
+        symlink(&victim, dir.join(format!(".{name}.{}.tmp", std::process::id()))).unwrap();
+        let path = write_archive(&s, b"vault bytes", 1_700_000_000, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+        let m = std::fs::symlink_metadata(&path).unwrap();
+        assert!(m.file_type().is_file(), "the archive must be a regular file");
+        assert_eq!(m.permissions().mode() & 0o777, 0o600, "the archive must be private");
+        assert_eq!(std::fs::read(&path).unwrap(), b"vault bytes");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -722,6 +873,102 @@ mod tests {
         assert_eq!(r.pages, 1, "{:?}", r.problems);
         // and the L record names the next entry; it is not an entry itself
         assert_eq!(r.entries, 3, "{:?}", r.problems);
+        assert!(r.ok(), "{:?}", r.problems);
+    }
+
+    // ── incomplete archives and the manifest ──────────────────────────────
+
+    #[test]
+    fn an_incomplete_name_is_never_ours() {
+        // is_ours decides what retention deletes and what verify_newest
+        // reads. An incomplete archive must be invisible to both.
+        let s = sched("daily", 24, 1, "/tmp");
+        assert!(is_ours(&s, &archive_name(&s, 1_700_000_000)));
+        assert!(!is_ours(&s, &incomplete_name(&s, 1_700_000_000)));
+    }
+
+    #[test]
+    fn an_incomplete_write_neither_prunes_nor_stamps() {
+        let dir = tmpdir("incomplete");
+        let mut cfg = crate::config::Config {
+            backups: vec![sched("daily", 24, 1, dir.to_str().unwrap())],
+            ..Default::default()
+        };
+        // one good archive already there, at keep = 1
+        let good = record(&mut cfg, "id", b"good", 1_700_000_000, true).unwrap();
+        assert_eq!(cfg.backups[0].last_run, 1_700_000_000, "a complete write stamps");
+
+        let part = record(&mut cfg, "id", b"partial", 1_700_086_400, false).unwrap();
+        assert!(part.to_str().unwrap().ends_with("-INCOMPLETE.tar"), "{}", part.display());
+        assert!(part.exists(), "the partial archive is still written");
+        assert!(good.exists(), "an incomplete write pruned the good archive");
+        assert_eq!(cfg.backups[0].last_run, 1_700_000_000, "an incomplete write stamped last_run");
+        // and verify still reads the good one, not the partial one
+        assert_eq!(existing(&cfg.backups[0], &dir), vec![good.clone()]);
+
+        // the next complete write prunes the old good one, and leaves the
+        // incomplete one alone because it is not ours to delete
+        let next = record(&mut cfg, "id", b"good2", 1_700_172_800, true).unwrap();
+        assert!(!good.exists(), "keep = 1 applies to complete archives");
+        assert!(next.exists() && part.exists());
+        assert_eq!(cfg.backups[0].last_run, 1_700_172_800);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_vanished_schedule_writes_nothing() {
+        let mut cfg = crate::config::Config::default();
+        assert!(record(&mut cfg, "gone", b"x", 1, true).is_err());
+    }
+
+    fn with_manifest(m: &str) -> Vec<u8> {
+        tar_of(&[
+            ("pages/notes/todo.md", b"# todo\n"),
+            ("pages/index.md", b"# hello\n"),
+            ("share.json", b"{}"),
+            ("know.json", b"{}"),
+            ("manifest.json", m.as_bytes()),
+            ("README.txt", b"lattice vault export\n"),
+        ])
+    }
+
+    #[test]
+    fn a_manifest_that_agrees_reads_clean() {
+        let r = verify_bytes("t.tar", &with_manifest(r#"{"pages":2,"memories":0,"missing":[]}"#));
+        assert!(r.has_manifest);
+        assert!(r.ok(), "{:?}", r.problems);
+    }
+
+    #[test]
+    fn verify_catches_a_page_count_short_of_the_manifest() {
+        let r = verify_bytes("t.tar", &with_manifest(r#"{"pages":3,"memories":0,"missing":[]}"#));
+        assert!(!r.ok());
+        assert!(
+            r.problems.iter().any(|p| p.contains("expects 3") && p.contains("holds 2")),
+            "{:?}",
+            r.problems
+        );
+    }
+
+    #[test]
+    fn a_manifest_naming_missing_items_is_a_problem() {
+        let r = verify_bytes(
+            "t.tar",
+            &with_manifest(r#"{"pages":2,"memories":0,"missing":["the memories"]}"#),
+        );
+        assert!(r.problems.iter().any(|p| p.contains("the memories")), "{:?}", r.problems);
+    }
+
+    #[test]
+    fn a_broken_manifest_is_reported() {
+        let r = verify_bytes("t.tar", &with_manifest("not json"));
+        assert!(r.problems.iter().any(|p| p.contains("unreadable")), "{:?}", r.problems);
+    }
+
+    #[test]
+    fn an_old_archive_without_a_manifest_still_verifies() {
+        let r = verify_bytes("t.tar", &full_archive());
+        assert!(!r.has_manifest);
         assert!(r.ok(), "{:?}", r.problems);
     }
 }

@@ -21,7 +21,7 @@ VERE=${VERE:-$(ls -d "$(dirname "$pier")"/vere-*-linux-x86_64 2>/dev/null | sort
 hoon='=/  m  (strand ,vase)  ;<  =bowl  bind:m  get-bowl  ;<  c=@p  bind:m  (scry @p [%j %code (scot %p our.bowl) ~])  (pure:m !>((rap 3 ~[(scot %p our.bowl) (scot %p c)])))'
 out=$(printf '%s\n' "[0 %fyrd [%base %khan-eval %noun [%ted-eval '$hoon']]]" |
   "$VERE" eval --jam -n 2>/dev/null |
-  socat -T 20 -,ignoreeof UNIX-CONNECT:"$pier/.urb/conn.sock" 2>/dev/null |
+  socat -T 600 -,ignoreeof UNIX-CONNECT:"$pier/.urb/conn.sock" 2>/dev/null |
   "$VERE" eval --cue -n 2>/dev/null | tail -1) || true
 [[ -n "$out" ]] || { echo "the ship at $pier did not answer" >&2; exit 4; }
 ship=$(grep -oE "'~[a-z-]+~" <<<"$out" | tr -d "'" | sed 's/~$//')

@@ -13,6 +13,7 @@ in LATTICE_TOKEN (.env). Standard library only.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import urllib.error
@@ -35,13 +36,60 @@ MIN_SCORE = 10000
 INDEX_CAP = 20000      # bytes of core rules in the system prompt (no 10,000-char hook cap here)
 
 
+# The agent key goes in every request, so the ship URL must be https, or
+# plain http only to a loopback or LAN address. The Claude plugin has the
+# same rule in plugins/claude/url-rule.mjs: keep the two in step.
+_PRIVATE = [ipaddress.ip_network(n) for n in
+            ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
+             "::1/128", "fc00::/7")]
+
+
+def _url_problem(url: str) -> str:
+    """Empty when the ship URL is allowed, else why it is refused."""
+    # urlsplit keeps a backslash, a space or a control character inside the
+    # host, where other parsers end it or drop it. Refuse them, so this rule
+    # and the client never disagree about which host they mean.
+    if any(c == "\\" or c.isspace() or ord(c) < 32 for c in url):
+        return f"lattice: the ship URL {url!r} may not hold a backslash, a space or a control character"
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = (parts.hostname or "").rstrip(".")
+    except ValueError:
+        return f"lattice: the ship URL {url!r} is not a valid URL"
+    scheme = parts.scheme.lower()
+    if scheme == "https" and host:
+        return ""
+    if scheme == "http" and host:
+        try:
+            if any(ipaddress.ip_address(host) in n for n in _PRIVATE):
+                return ""
+        except ValueError:
+            # a name, not an address
+            if host == "localhost" or host.endswith((".localhost", ".local", ".ts.net")):
+                return ""
+    return (f"lattice: the ship URL {url!r} would send the agent key unencrypted. "
+            "Use https, or a loopback or LAN address.")
+
+
 def _config() -> Dict[str, Any]:
     cfg = read_json_or_empty(get_hermes_home() / "lattice.json") or {}
+    url = (cfg.get("url") or get_secret("LATTICE_URL", "") or "").rstrip("/")
     return {
-        "url": (cfg.get("url") or get_secret("LATTICE_URL", "") or "").rstrip("/"),
+        "url": url,
+        "url_error": _url_problem(url) if url else "",
         "token": get_secret("LATTICE_TOKEN", "") or "",
         "recall_strength": int(cfg.get("recall_strength", RECALL_STRENGTH)),
     }
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    # A redirect would resend the Bearer key to wherever the 3xx points.
+    # Refusing it turns the 3xx into an HTTPError.
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_opener = urllib.request.build_opener(_NoRedirect)
 
 
 def _quoted(source: str, text: str) -> str:
@@ -110,14 +158,19 @@ class LatticeMemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         cfg = _config()
-        return bool(cfg["url"] and cfg["token"])
+        return bool(cfg["url"] and cfg["token"] and not cfg["url_error"])
 
     def unavailable_reason(self) -> str:
+        url_error = _config()["url_error"]
+        if url_error:
+            return url_error
         return "set the ship URL (hermes memory setup) and LATTICE_TOKEN, an agent key from lattice's Settings"
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._cfg = _config()
         self._index = None
+        if self._cfg["url_error"]:
+            logger.error("%s", self._cfg["url_error"])
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return [
@@ -138,6 +191,8 @@ class LatticeMemoryProvider(MemoryProvider):
     def _call(self, method: str, route: str, args: Dict[str, Any] | None = None,
               body: str | None = None, timeout: float = 60) -> str:
         cfg = self._cfg or _config()
+        if cfg["url_error"]:
+            raise RuntimeError(cfg["url_error"])
         args = {k: str(v) for k, v in (args or {}).items() if v not in (None, "", False)}
         url = f"{cfg['url']}/apps/lattice/{route}" + (f"?{urllib.parse.urlencode(args)}" if args else "")
         headers = {"authorization": f"Bearer {cfg['token']}"}
@@ -146,7 +201,7 @@ class LatticeMemoryProvider(MemoryProvider):
             data, headers["content-type"] = body.encode("utf-8"), "text/plain; charset=utf-8"
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as res:
+            with _opener.open(req, timeout=timeout) as res:
                 return res.read().decode("utf-8")
         except urllib.error.HTTPError as e:
             text = e.read().decode("utf-8", "replace")
@@ -154,6 +209,9 @@ class LatticeMemoryProvider(MemoryProvider):
                 text = json.loads(text).get("error", text)
             except ValueError:
                 pass
+            if 300 <= e.code < 400:
+                text = (f"the ship redirected to {e.headers.get('location')}, and lattice does not "
+                        "follow redirects with the agent key. Set the ship URL to the final address.")
             if e.code == 401:
                 text += " (make a new agent key in lattice Settings, Agent keys, and set LATTICE_TOKEN)"
             raise RuntimeError(f"{e.code}: {text}") from None

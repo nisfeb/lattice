@@ -11,7 +11,7 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 
-use crate::transport::{TErr, Transport};
+use crate::transport::{TErr, Transport, MAX_BODY};
 
 // ---------- nouns ----------
 
@@ -270,6 +270,10 @@ pub fn cue(data: &[u8]) -> Result<Noun, TErr> {
 
 // ---------- framing ----------
 
+/// The largest frame recv_frame accepts: one MAX_BODY reply plus room for its
+/// mark and status.
+const MAX_FRAME: usize = MAX_BODY + 64 * 1024;
+
 fn send_frame(sock: &mut UnixStream, mark: &str, noun: &Noun) -> std::io::Result<()> {
     let body = jam(&cell(cord(mark), noun.clone()));
     let mut frame = Vec::with_capacity(5 + body.len());
@@ -288,6 +292,11 @@ fn recv_frame(sock: &mut UnixStream) -> Result<Noun, TErr> {
         return Err(TErr::new(500, "lick: bad frame version"));
     }
     let len = u32::from_le_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]) as usize;
+    // The length comes from the peer. Check it before allocating, or one bad
+    // header asks for 4 GiB. The margin covers the jam framing around a body.
+    if len > MAX_FRAME {
+        return Err(TErr::new(500, format!("lick: frame of {len} bytes is over the cap")));
+    }
     let mut body = vec![0u8; len];
     sock.read_exact(&mut body)
         .map_err(|e| TErr::new(0, format!("lick read body: {e}")))?;
@@ -349,7 +358,12 @@ impl LickTransport {
                 drop(guard);
                 self.call(req, false)
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                // a failed read can leave half a frame on the wire. Start the
+                // next call on a fresh socket.
+                *guard = None;
+                Err(e)
+            }
         }
     }
 
@@ -487,6 +501,10 @@ mod tests {
         // and a wrong version byte is rejected, not misread as a length
         a.write_all(&[1, 0, 0, 0, 0]).unwrap();
         assert!(recv_frame(&mut b).is_err());
+        // and a length past the cap is refused before anything is allocated
+        a.write_all(&[0, 0xff, 0xff, 0xff, 0xff]).unwrap();
+        let e = recv_frame(&mut b).unwrap_err();
+        assert!(e.msg.contains("over the cap"), "{}", e.msg);
     }
 
     #[test]

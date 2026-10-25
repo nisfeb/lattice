@@ -52,6 +52,16 @@ mod common;
 use common::Ship;
 
 
+/// A skip passes, so a plain `cargo test` needs no fsx and no FUSE. With
+/// REQUIRE_FSX=1 (the nightly fsx job) it panics instead: there a skip means
+/// the torture test silently stopped running.
+fn skip(why: &str) {
+    if std::env::var("REQUIRE_FSX").as_deref() == Ok("1") {
+        panic!("REQUIRE_FSX=1 but fsx was skipped: {why}");
+    }
+    eprintln!("skipped: {why}");
+}
+
 fn fsx_bin() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("FSX_BIN") {
         let p = PathBuf::from(p);
@@ -68,7 +78,7 @@ fn fsx_finds_no_read_write_truncate_mismatch() {
     let ops: usize = env_or("FSX_OPS", OPS);
     let seed: u32 = env_or("FSX_SEED", SEED);
     let Some(fsx) = fsx_bin() else {
-        eprintln!("skipped: no fsx binary (run tests/fsx.sh, or set FSX_BIN)");
+        skip("no fsx binary (run tests/fsx.sh, or set FSX_BIN)");
         return;
     };
 
@@ -86,8 +96,8 @@ fn fsx_finds_no_read_write_truncate_mismatch() {
     {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("skipped: no usable FUSE here ({e})");
             let _ = fs::remove_dir_all(&tmp);
+            skip(&format!("no usable FUSE here ({e})"));
             return;
         }
     };

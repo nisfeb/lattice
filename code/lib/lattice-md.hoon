@@ -94,15 +94,21 @@
   ?:  =(nedl (scag (lent nedl) `tape`hay))  `i
   $(hay t.hay, i +(i))
 ::  +match-bracket: index of the ] that closes the [ at position 0 (t is after
-::  the opening [), honoring one level of nested []. Capped by +scan-cap.
+::  the opening [), honoring one level of nested []. %| when there is none:
+::  %| %.n when the scan reached the end, which holds for every suffix too,
+::  and %| %.y when it gave up past +scan-cap characters or a second level
+::  of nesting, which says nothing about the rest. Uncapped and at any depth,
+::  a paragraph of nested brackets was rescanned at every '[' (security
+::  audit run-1). Now each scan stops at the cap or the second '[' after it.
 ++  match-bracket
   |=  t=tape
-  ^-  (unit @ud)
+  ^-  (each @ud ?)
   =|  [i=@ud d=@ud]
-  |-  ^-  (unit @ud)
-  ?~  t  ~
-  ?:  =('[' i.t)  $(t t.t, i +(i), d +(d))
-  ?:  =(']' i.t)  ?:(=(0 d) `i $(t t.t, i +(i), d (dec d)))
+  |-  ^-  (each @ud ?)
+  ?:  (gth i scan-cap)  [%| &]
+  ?~  t  [%| |]
+  ?:  =('[' i.t)  ?:((gte d 1) [%| &] $(t t.t, i +(i), d +(d)))
+  ?:  =(']' i.t)  ?:(=(0 d) [%& i] $(t t.t, i +(i), d (dec d)))
   $(t t.t, i +(i))
 ::  +take-paren: parse (url "title") starting at t (after the [text]). Returns
 ::  [url title rest] where rest is after the closing ).
@@ -181,9 +187,9 @@
     ?:  (~(has in no) ']')  (weld "!" (ib-in t.t refs no))
     =/  aft=tape  (sl 2 t)          :: after ![
     =/  mb  (match-bracket aft)
-    ?~  mb  (weld "!" (ib-in t.t refs (~(put in no) ']')))
-    =/  alt=tape  (sc u.mb aft)
-    =/  post=tape  (sl +(u.mb) aft)  :: after ]
+    ?.  ?=(%& -.mb)  (weld "!" (ib-in t.t refs ?:(p.mb no (~(put in no) ']'))))
+    =/  alt=tape  (sc p.mb aft)
+    =/  post=tape  (sl +(p.mb) aft)  :: after ]
     =/  p  (take-paren post)
     ?^  p
       (weld (img-html alt url.u.p title.u.p) (ib-in rest.u.p refs no))
@@ -202,9 +208,9 @@
   ?:  =('[' c)
     ?:  (~(has in no) ']')  (weld "[" (ib-in t.t refs no))
     =/  mb  (match-bracket t.t)
-    ?~  mb  (weld "[" (ib-in t.t refs (~(put in no) ']')))
-    =/  txt=tape  (sc u.mb t.t)
-    =/  post=tape  (sl +(u.mb) t.t)
+    ?.  ?=(%& -.mb)  (weld "[" (ib-in t.t refs ?:(p.mb no (~(put in no) ']'))))
+    =/  txt=tape  (sc p.mb t.t)
+    =/  post=tape  (sl +(p.mb) t.t)
     =/  p  (take-paren post)
     ?^  p
       (weld (a-html (ib-in txt refs no) url.u.p title.u.p) (ib-in rest.u.p refs no))
@@ -654,13 +660,18 @@
 ::  ONE '>' per full re-render pass, so an adversarial 20KB line of '>' was
 ::  ~400M steps (quadratic in depth) on the unauthenticated render. Capping
 ::  the depth bounds it at 32 passes and is byte-identical below the cap.
+::  Spaced markers nest too ("> > >" is three levels), so spaces and tabs
+::  between them are skipped. Counting only an unbroken run let spaced
+::  nesting through uncapped (security audit run-1).
 ++  cap-quote-depth
   |=  l=tape
   ^-  tape
   =/  n=@ud  0
   =/  s=tape  l
   |-  ^-  tape
-  ?:  &(?=(^ s) =('>' i.s))  $(s t.s, n +(n))
+  =/  w=tape  s
+  =.  w  |-(^-(tape ?~(w w ?:(|(=(' ' i.w) =(`@tD`9 i.w)) $(w t.w) w))))
+  ?:  &(?=(^ w) =('>' i.w))  $(s t.w, n +(n))
   ?:  (lte n 32)  l
   (weld `tape`(reap 32 '>') `tape`s)
 ::  ── wikilinks ──────────────────────────────────────────────────────────────
@@ -697,9 +708,44 @@
   ?~  t  n
   ?:  =(']' i.t)  n
   $(t t.t, n +(n))
+::  +wiki-last-seg: the part of a page name after the final '/', so a bare
+::  [[a/b/c]] shows "c" (the filename people expect) not the whole path.
+::  Trailing slashes are stripped; a name that is only slashes falls back
+::  to itself. The href/target is unchanged, so backlinks and navigation
+::  are unaffected: only the shown label changes.
+++  wiki-last-seg
+  |=  nam=tape
+  ^-  tape
+  =|  cur=tape   :: the segment being scanned, held reversed
+  =|  last=tape  :: the last non-empty completed segment, reversed
+  |-  ^-  tape
+  ?~  nam
+    =/  out=tape  (flop ?~(cur last cur))
+    ?~(out nam out)
+  ?:  =('/' i.nam)
+    $(nam t.nam, last ?~(cur last cur), cur ~)
+  $(nam t.nam, cur [i.nam cur])
+::  +backlink-hit: does `body` wikilink to page `name`? True for the plain
+::  [[name]] and for a labelled [[name|label]]. The closing "]]" or "|"
+::  in the needle keeps [[name2]] from counting as a link to name.
+::
+++  backlink-hit
+  |=  [name=tape body=tape]
+  ^-  ?
+  ?|  ?=(^ (find :(weld "[[" name "]]") body))
+      ?=(^ (find :(weld "[[" name "|") body))
+  ==
 ++  wikilinkify
   |=  [t=tape base=tape]
   ^-  tape
+  ::  len: what is left of the input. rb: the `len` at which the next ']'
+  ::  sits, as far as a label scan has looked. nob: no ']' is left at all.
+  ::  A label runs to the first ']', so a scan from anywhere before a known
+  ::  ']' ends at that one, and each stretch is scanned once. Scanning
+  ::  again at every [[name| opener was quadratic (security audit run-1).
+  =/  len=@ud  (lent t)
+  =|  rb=(unit @ud)
+  =/  nob=?  |
   |-  ^-  tape
   ?~  t  ~
   ::  code is verbatim: skip a ``` fence or a ` span whole, so a wikilink
@@ -710,14 +756,14 @@
     =/  end=(unit @ud)  (find "```" aft)
     ?~  end  t
     =/  n=@ud  (add u.end 3)
-    (weld (scag 3 `tape`t) (weld (scag n aft) $(t (slag n aft))))
+    (weld (scag 3 `tape`t) (weld (scag n aft) $(t (slag n aft), len (sub len (add 3 n)))))
   ?:  =('`' i.t)
     =/  aft=tape  (slag 1 `tape`t)
     =/  end=(unit @ud)  (find "`" aft)
-    ?~  end  [i.t $(t t.t)]
+    ?~  end  [i.t $(t t.t, len (dec len))]
     =/  n=@ud  (add u.end 1)
-    (weld "`" (weld (scag n aft) $(t (slag n aft))))
-  ?.  =("[[" (scag 2 `tape`t))  [i.t $(t t.t)]
+    (weld "`" (weld (scag n aft) $(t (slag n aft), len (sub len +(n)))))
+  ?.  =("[[" (scag 2 `tape`t))  [i.t $(t t.t, len (dec len))]
   ::  scan ONLY the legal-charset run, then require "]]" (or "|label]]")
   ::  immediately after, so a candidate costs the length of its name. The
   ::  previous version searched the whole remaining document for "]]" at
@@ -728,24 +774,31 @@
   ::  and byte-identical on every edge case tested.
   =/  aft=tape  (slag 2 `tape`t)
   =/  n=@ud  (wiki-name-len aft)
-  ?:  =(0 n)  [i.t $(t t.t)]
+  ?:  =(0 n)  [i.t $(t t.t, len (dec len))]
   ?:  =("]]" (scag 2 (slag n aft)))
     =/  name=tape  (scag n aft)
     =/  rest=tape  (slag (add n 2) aft)
-    =/  tail=tape  $(t rest)
-    :(weld "[" name "](" base name ")" tail)
+    =/  tail=tape  $(t rest, len (sub len (add n 4)))
+    :(weld "[" (wiki-last-seg name) "](" base name ")" tail)
   ::  a pipe after the name starts a label: [[target|shown text]]. Tested
   ::  with scag rather than a ?= on the head, since a ?= refinement inside
   ::  the irregular & does not survive mull and this file compiles as a lib.
-  ?.  =("|" (scag 1 (slag n aft)))  [i.t $(t t.t)]
+  ?.  =("|" (scag 1 (slag n aft)))  [i.t $(t t.t, len (dec len))]
+  ?:  nob  [i.t $(t t.t, len (dec len))]
   =/  laft=tape  (slag +(n) aft)
-  =/  ln=@ud  (wiki-label-len laft)
-  ?:  =(0 ln)  [i.t $(t t.t)]
-  ?.  =("]]" (scag 2 (slag ln laft)))  [i.t $(t t.t)]
+  =/  ll=@ud  (sub len (add n 3))
+  =/  ln=@ud
+    ?:  &(?=(^ rb) (lte u.rb ll))  (sub ll u.rb)
+    (wiki-label-len laft)
+  ::  a scan that ran out found no ']' anywhere after here
+  =.  nob  =(ln ll)
+  =.  rb   ?:(nob rb `(sub ll ln))
+  ?:  =(0 ln)  [i.t $(t t.t, len (dec len))]
+  ?.  =("]]" (scag 2 (slag ln laft)))  [i.t $(t t.t, len (dec len))]
   =/  name=tape  (scag n aft)
   =/  label=tape  (scag ln laft)
   =/  rest=tape  (slag (add ln 2) laft)
-  =/  tail=tape  $(t rest)
+  =/  tail=tape  $(t rest, len (sub len :(add n ln 5)))
   :(weld "[" label "](" base name ")" tail)
 ++  render-md
   |=  body=@t

@@ -166,9 +166,9 @@ Three presets, all per-directory, all one poke:
 | **shared** | copy in the published vault, bound in the scry namespace, data grub gained, data road added to the `/public` peek set | any ship that knows the address, over ames, **live** (remote keeps) |
 | **clearweb** | shared + page tagged `clearweb` → included in public eyre binding | anyone with the URL |
 
-A per-ship grant (`POST /share-file`) is separate from the presets. It gives one ship read or edit access to one page, through an auto-usergroup named after that ship, and sends that ship a notice. Their editor lists the page in its files tree under "shared with me", in a folder named after the sharing ship, by the page's name there (`site/logging`). Opening it reads the page's prose, and saving wraps the edit back in the page's envelope.
+A per-ship grant (`POST /share-file`) is separate from the presets. It gives one ship read or edit access to one page, through an auto-usergroup named after that ship, and sends that ship a notice. The grant is a file road on the page's code grub, which is all the peer opens. It reaches none of the page's own settings (sharing, show mode, forms, comments, the render cache) and no page nested under it. Their editor lists the page in its files tree under "shared with me", in a folder named after the sharing ship, by the page's name there (`site/logging`). Opening it reads the page's prose, and saving wraps the edit back in the page's envelope.
 
-Lattice writes the usergroup itself, so it declares `make /sys/ames/usergroups/`. That road can change any sharing group on the ship; grubbery has no narrower membership action. Refuse it and sharing with ships answers 403, saying so, and nothing else changes. Grant roads in a group are absolute (`<install path>/page/<name>/`): the kernel copies a group's weir into each member's weir as written, so a relative road there would grant nothing. A grant follows its page: moving a page or a folder rewrites every group road on it or under it to the new path, and deleting one drops them, so a page made later at the same name is not shared by accident.
+Lattice writes the usergroup itself, so it declares `make /sys/ames/usergroups/`. That road can change any sharing group on the ship; grubbery has no narrower membership action. Refuse it and sharing with ships answers 403, saying so, and nothing else changes. Grant roads in a group are absolute: the kernel copies a group's weir into each member's weir as written, so a relative road there would grant nothing. A page is granted by a file road on its code grub (`<install path>/page/<name>/code`), and a folder by a dir road on the folder. The sharing editor shows both as the page or folder path. A page grant made before this was a dir road on the page, and the writer narrows each one to the code grub when it starts. The editor refuses a make grant at or above lattice's request intake (`<install path>/ui/requests`). A grant follows its page: moving a page or a folder rewrites every group road on it or under it to the new path, and deleting one drops them, so a page made later at the same name is not shared by accident.
 
 Notes:
 
@@ -269,10 +269,11 @@ Each step ships something usable on ricsul, and each has a verification gate.
 
 ## Decisions (settled)
 
-- **Capped execution authority**: page code runs owner-of-its-own-subtree by
-  default (`%sand` an evaluator-scoped weir at page creation). Darts targeting
-  roads outside the page's subtree require an explicit weir edit by the owner.
-  Full-authority pages are an escalation, never a default.
+- **Capped execution authority**: no evaluator-scoped `%sand` weir exists. Page code compiles and runs inside lattice's own fiber, with lattice's authority, and returns no darts. These rules cap what it can reach instead:
+  - A dependency must sit under `/page/`. The evaluator drops any other dep path, so a page cannot read `/know`, `/keys` or any other part of the tree.
+  - A poke reaches only another page's `cmd` grub, with a decreasing budget.
+  - A page shared for edit with any group runs content only. Its source must be the exact shell the editor writes for a content kind (md, gmi, html, text, js, css, tex) or a generated folder index. Any other source is not compiled, and the page shows an error until the edit grant goes. Such a page, and its `/c/` and `/f/` copies when they are html, is served sandboxed: an iframe sandbox or a CSP sandbox header, never same-origin. Any source change while the grant stands also marks the page as one a peer may have written (the edit lock). The mark outlives the grant and follows the page through a move or a conflict copy, so the page stays sandboxed, and its hoon stays refused, until the owner saves it after the grant is gone. A page tree holding such a page cannot be saved as a template.
+  - An agent key saves md, gmi, text, tex, css or index pages only. It cannot save hoon, html or js.
 - **Explicit dependencies**: `.deps` is the contract. Auto-traced discovery is
   v2 at most, and only if declared deps prove annoying in practice.
 

@@ -1,8 +1,7 @@
 //! Connect flow: one +code entry logs in both sides. The Rust login stores
-//! the shared fuse cookie, and open_workspace drives the webview through the
-//! ship's own /~/login form so eyre sets its session cookie first-party.
+//! the session cookie for that ship's origin (session.rs), and the localhost
+//! bridge attaches it to everything the webview sends.
 
-use lattice_fs::{default_cookie_path, EyreTransport, Transport};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -16,19 +15,25 @@ pub fn dlog(msg: &str) {
     }
 }
 
-/// Log the Rust side in (stores the shared fuse cookie), remember the url,
-/// open the workspace, get the manager out of the way. Async: the blocking
-/// login and the cookie-settle poll in open_workspace must run off the main
-/// thread (a main-thread wait would deadlock the webview's async cookie add).
+/// Log the Rust side in, remember the url, open the workspace, get the
+/// manager out of the way. Async: the blocking login and the cookie-settle
+/// poll in open_workspace must run off the main thread (a main-thread wait
+/// would deadlock the webview's async cookie add).
+///
+/// The URL rule runs before anything is sent, so the +code never goes over
+/// plain http to a public host. Nothing is stored until the login worked.
+/// The cookie then goes into the new origin's own file and only after that
+/// is the url switched. A failure at any step leaves the old ship's url and
+/// cookie exactly as they were, and since a cookie is only ever attached by
+/// its own origin, neither ship can be sent the other's.
 #[tauri::command]
 pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String, String> {
-    let url = url.trim().trim_end_matches('/').to_string();
-    let t = EyreTransport::new(&url, &default_cookie_path());
+    let url = crate::session::check_ship_url(&url)?;
     dlog(&format!("connect: logging in at {url}"));
-    t.login(Some(code.clone())).map_err(|e| e.msg)?;
-    dlog(&format!("connect: cookie stored at {}", default_cookie_path()));
-    let ship = t.ship().map_err(|e| e.msg)?;
-    dlog(&format!("connect: ship {ship}"));
+    let cookie = crate::session::login(&url, &code)?;
+    let ship = crate::session::ship_of(&cookie).ok_or("login: no urbauth cookie")?;
+    let at = crate::session::store(&url, &cookie)?;
+    dlog(&format!("connect: ship {ship}, cookie stored at {}", at.display()));
     let ship_for_cfg = ship.clone();
     config::update(&app, move |cfg| {
         //  a ship SWITCH must not inherit the previous ship's queue directory —
@@ -73,7 +78,10 @@ pub fn show_manager(app: &AppHandle, section: Option<&str>) -> Result<(), String
     // on every platform, and the window is born there anyway, so: destroy
     // it, wait for the label to free (destroy is asynchronous), and make a
     // fresh one. The user is leaving the ship page either way.
-    if !created && !on_shell_page(&w) {
+    // macOS only: the origin confusion below is a macOS webview quirk. On
+    // other platforms navigating the existing window works, so rebuilding it
+    // just loses the window's position and icon and flashes a new window.
+    if cfg!(target_os = "macos") && !created && !on_shell_page(&w) {
         // destroying the ONLY window asks the app to exit; main.rs vetoes
         // that while this flag is up
         dlog("manager: the window is on the ship page, rebuilding it");
@@ -92,7 +100,13 @@ pub fn show_manager(app: &AppHandle, section: Option<&str>) -> Result<(), String
             }
             let h2 = h.clone();
             h.run_on_main_thread(move || {
-                let made = new_workspace(&h2);
+                // retry once: the only window was already destroyed above, so a
+                // failed rebuild here would leave the app running with no UI. A
+                // transient webview-builder error must not strand the user.
+                let made = new_workspace(&h2).or_else(|e| {
+                    dlog(&format!("manager: rebuild failed ({e}); retrying once"));
+                    new_workspace(&h2)
+                });
                 REBUILDING.store(false, Ordering::SeqCst);
                 dlog(&format!("manager: rebuilt the window: {}", made.is_ok()));
                 match made {
@@ -104,7 +118,9 @@ pub fn show_manager(app: &AppHandle, section: Option<&str>) -> Result<(), String
                         }
                         w.set_focus().ok();
                     }
-                    Err(e) => dlog(&format!("manager: rebuilding the window failed: {e}")),
+                    Err(e) => {
+                        dlog(&format!("manager: rebuilding the window failed after retry: {e}"));
+                    }
                 }
             })
             .ok();
@@ -184,8 +200,8 @@ pub async fn connection_status(app: AppHandle) -> ConnStatus {
         Ok(true) => {
             // name the ship only when the session is real, so the page never
             // claims a ship it cannot actually reach
-            let t = EyreTransport::new(&cfg.url, &default_cookie_path());
-            let ship = t.ship().ok();
+            let ship = crate::session::cookie_for(&cfg.url)
+                .and_then(|c| crate::session::ship_of(&c));
             dlog(&format!("status: connected to {:?}", ship));
             ConnStatus { url: cfg.url, ship, connected: true, error: None }
         }
@@ -266,15 +282,32 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     open_external(&url)
 }
 
+/// Extensions a page can be uploaded from. Mirrors EXT_KIND in
+/// ui-src/lattice/30-tree.js, and scripts/kind-parity.mjs checks the two agree.
+/// The page's own list is cut down to these, so a page cannot widen the pick
+/// to files that are not pages (a key file, a .env).
+const PAGE_EXTS: &[&str] = &["md", "gmi", "html", "htm", "txt", "text", "js", "css", "hoon", "tex", "latex"];
+
+/// How much one pick may read and hand the page. A folder pick reads every
+/// matching file under it, so picking a home directory must not pull the
+/// whole disk into memory and over IPC.
+const PICK_MAX_FILES: usize = 5000;
+const PICK_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Native upload picker for the ship-served workspace (webkit2gtk has no
 /// webkitdirectory, so the web folder picker is dead on Linux). Picks files
 /// or a folder, reads only extensions the UI supports, returns the text.
 /// The page never sees a path or fs handle. One user-driven dialog per call.
 /// Async so the blocking dialog runs off the main thread.
 #[tauri::command]
-pub async fn pick_upload(app: AppHandle, dir: bool, exts: Vec<String>) -> Vec<PickedFile> {
+pub async fn pick_upload(app: AppHandle, dir: bool, exts: Vec<String>) -> Result<Vec<PickedFile>, String> {
     use tauri_plugin_dialog::DialogExt;
+    let exts = page_exts(exts);
     let mut out = Vec::new();
+    if exts.is_empty() {
+        return Ok(out);
+    }
+    let mut bytes = 0;
     if dir {
         if let Some(folder) = app.dialog().file().blocking_pick_folder() {
             if let Ok(root) = folder.into_path() {
@@ -282,7 +315,7 @@ pub async fn pick_upload(app: AppHandle, dir: bool, exts: Vec<String>) -> Vec<Pi
                     .file_name()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                walk(&root, &base, &exts, &mut out);
+                walk(&root, &base, &exts, &mut out, &mut bytes)?;
             }
         }
     } else {
@@ -296,47 +329,86 @@ pub async fn pick_upload(app: AppHandle, dir: bool, exts: Vec<String>) -> Vec<Pi
             for f in files {
                 if let Ok(p) = f.into_path() {
                     if let Some(name) = p.file_name().map(|s| s.to_string_lossy().into_owned()) {
-                        push_file(&p, name, &mut out);
+                        if has_ext(&name, &exts) {
+                            push_file(&p, name, &mut out, &mut bytes)?;
+                        }
                     }
                 }
             }
         }
     }
-    out
+    Ok(out)
 }
 
-fn walk(dir: &std::path::Path, rel: &str, exts: &[String], out: &mut Vec<PickedFile>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+/// The caller's extensions that are also page extensions.
+fn page_exts(exts: Vec<String>) -> Vec<String> {
+    exts.into_iter()
+        .filter(|e| PAGE_EXTS.iter().any(|p| p.eq_ignore_ascii_case(e)))
+        .collect()
+}
+
+fn has_ext(name: &str, exts: &[String]) -> bool {
+    name.rsplit_once('.')
+        .is_some_and(|(_, x)| exts.iter().any(|e| e.eq_ignore_ascii_case(x)))
+}
+
+fn walk(
+    dir: &std::path::Path,
+    rel: &str,
+    exts: &[String],
+    out: &mut Vec<PickedFile>,
+    bytes: &mut u64,
+) -> Result<(), String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Ok(()) };
     for e in entries.flatten() {
         // no symlink following: a looped link must not hang the walk
         let Ok(ft) = e.file_type() else { continue };
         let name = e.file_name().to_string_lossy().into_owned();
+        // hidden files and dirs (.git, .ssh, .env) are never pages
+        if name.starts_with('.') {
+            continue;
+        }
         let child = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
         if ft.is_dir() {
-            walk(&e.path(), &child, exts, out);
-        } else if ft.is_file() {
-            let ok = name
-                .rsplit_once('.')
-                .is_some_and(|(_, x)| exts.iter().any(|e| e.eq_ignore_ascii_case(x)));
-            if ok {
-                push_file(&e.path(), child, out);
-            }
+            walk(&e.path(), &child, exts, out, bytes)?;
+        } else if ft.is_file() && has_ext(&name, exts) {
+            push_file(&e.path(), child, out, bytes)?;
         }
     }
+    Ok(())
 }
 
-fn push_file(path: &std::path::Path, rel: String, out: &mut Vec<PickedFile>) {
+fn push_file(path: &std::path::Path, rel: String, out: &mut Vec<PickedFile>, bytes: &mut u64) -> Result<(), String> {
+    use std::io::Read;
+    if out.len() >= PICK_MAX_FILES {
+        return Err(format!("too many files: the limit is {PICK_MAX_FILES}"));
+    }
+    // read one byte past what is left, so going over the cap is seen
+    // without reading the rest of a huge file
+    let left = PICK_MAX_BYTES - *bytes;
+    let mut raw = Vec::new();
+    let Ok(f) = std::fs::File::open(path) else { return Ok(()) };
+    if f.take(left + 1).read_to_end(&mut raw).is_err() {
+        return Ok(());
+    }
+    if raw.len() as u64 > left {
+        return Err(format!("too much data: the limit is {} MiB", PICK_MAX_BYTES >> 20));
+    }
     // non-UTF-8 (binary) files are skipped, same as the web KMAP filter
-    if let Ok(text) = std::fs::read_to_string(path) {
+    if let Ok(text) = String::from_utf8(raw) {
+        *bytes += text.len() as u64;
         out.push(PickedFile { rel, text });
     }
+    Ok(())
 }
 
 /// Open (or reuse) the workspace on the localhost bridge. The webview only
 /// ever talks to 127.0.0.1. The bridge relays to the ship with the fuse
 /// session cookie attached Rust-side, so no webkit cookie behavior (site
 /// pinning, third-party policy, SW-mediated fetch) can ever unauthenticate
-/// a view again. `fresh` (a new connect) also clears browsing data so stale
+/// a view again. The one cookie the webview holds is the bridge's own
+/// first-party token, which tells the bridge this window from any other
+/// local process. `fresh` (a new connect) also clears browsing data so stale
 /// service workers and caches from earlier sessions cannot linger.
 pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
     let cfg = config::load(app);
@@ -357,8 +429,14 @@ pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
     if fresh {
         dlog(&format!("clear browsing data: {:?}", w.clear_all_browsing_data()));
     }
+    // through the bridge's bootstrap first: it hands this window the
+    // launch's token as an HttpOnly cookie, without which the bridge relays
+    // nothing with the ship session, then redirects to the editor
     dlog(&format!("navigate: {home}"));
-    w.navigate(home).map_err(|e| e.to_string())?;
+    let boot: tauri::Url = crate::proxy::bootstrap_url(&local, home.path())
+        .parse()
+        .map_err(|e| format!("{e}"))?;
+    w.navigate(boot).map_err(|e| e.to_string())?;
     w.set_focus().ok();
     Ok(())
 }
@@ -443,10 +521,13 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     // did and which meant the harness could not run against a ship it did not
     // own.
     //
-    // Test-only and inert unless the variable is set. Setting it requires
-    // already controlling this process's environment.
-    let probe = std::env::var("LATTICE_PROBE_JS")
-        .ok()
+    // Test-only and inert unless the variable is set, and compiled into
+    // debug builds only (the harness drives target/debug). In a release
+    // build an environment variable could put script into the privileged
+    // workspace window, which a test hook has no business doing.
+    let probe = cfg!(debug_assertions)
+        .then(|| std::env::var("LATTICE_PROBE_JS").ok())
+        .flatten()
         .and_then(|p| std::fs::read_to_string(p).ok());
     let mut b = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("manager.html".into()))
         .title("lattice — workspace")
@@ -454,6 +535,13 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     if let Some(js) = probe {
         dlog("probe script injected into the workspace");
         b = b.initialization_script(js);
+    }
+    // Runtime-built windows carry no icon on Linux (config has no `windows`
+    // entry to inherit from), so the workspace showed GTK's generic app icon.
+    // The rebuild on opening settings made that obvious: a fresh, unbranded
+    // window. Reuse the bundle icon the config already declares.
+    if let Some(icon) = app.default_window_icon() {
+        b = b.icon(icon.clone()).map_err(|e| e.to_string())?;
     }
     let w = b
         // Tell the page this build HAS the File menu, so it can hide the
@@ -561,7 +649,8 @@ pub async fn save_vault(app: AppHandle, name: String, b64: String) -> Result<Str
         return Ok(String::new());
     };
     let path = target.into_path().map_err(|e| e.to_string())?;
-    std::fs::write(&path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    // the whole vault: written 0600 through a fresh temp file, like backups
+    crate::session::write_private(&path, &bytes).map_err(|e| format!("could not write {e}"))?;
     Ok(path.display().to_string())
 }
 
@@ -623,22 +712,29 @@ pub async fn pick_backup_dir(app: AppHandle) -> Result<String, String> {
 /// last_run is stamped only on SUCCESS. A failed write must leave the schedule
 /// due, or one unwritable evening silently costs a whole period.
 ///
+/// `complete` is false when the page could not read some pages, the memories
+/// or the share modes. That archive is written as -INCOMPLETE, nothing is
+/// pruned and last_run is not stamped, so the schedule stays due. A page
+/// served by an older ship does not send it, and is taken as complete, which
+/// is what every archive was before.
+///
 /// Async, like save_vault: the decode and the disk write handle whole
 /// multi-MB archives, and holding the main thread for that freezes the UI.
 #[tauri::command]
-pub async fn backup_write(app: AppHandle, id: String, b64: String) -> Result<String, String> {
+pub async fn backup_write(
+    app: AppHandle,
+    id: String,
+    b64: String,
+    complete: Option<bool>,
+) -> Result<String, String> {
     let bytes = decode_archive(&b64)?;
     let at = crate::backup::now();
+    let complete = complete.unwrap_or(true);
     // try_update, not update: a schedule that vanished out from under this
     // request, or an archive write that fails, must leave config.json
     // untouched rather than persist a last_run stamp for nothing written.
     let path = config::try_update(&app, move |cfg| {
-        let s = schedule(cfg, &id)?.clone();
-        let path = crate::backup::write_archive(&s, &bytes, at)?;
-        if let Some(slot) = cfg.backups.iter_mut().find(|s| s.id == id) {
-            slot.last_run = at;
-        }
-        Ok(path)
+        crate::backup::record(cfg, &id, &bytes, at, complete)
     })?;
     dlog(&format!("backup: wrote {}", path.display()));
     Ok(path.display().to_string())
@@ -747,6 +843,40 @@ pub async fn pick_vault(app: AppHandle) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    //  The ship-served client gets native commands only at the bridge
+    //  origin. Any-host patterns granted them to every page the workspace
+    //  window could reach (security audit run-1). A pattern that stopped
+    //  matching the bridge would deny every command, and that failure reads
+    //  as "Command not found", so pin both directions.
+    #[test]
+    fn workspace_commands_are_granted_only_at_the_bridge() {
+        use tauri::utils::acl::RemoteUrlPattern;
+        let cap: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/workspace-remote.json")).unwrap();
+        let pats: Vec<RemoteUrlPattern> = cap["remote"]["urls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u.as_str().unwrap().parse().unwrap())
+            .collect();
+        let hit = |u: &str| pats.iter().any(|p| p.test(&u.parse().unwrap()));
+        for u in [
+            "http://127.0.0.1:26500/apps/lattice/app",
+            "http://127.0.0.1:26503/apps/lattice/app?name=notes#top",
+            "http://127.0.0.1:26500/apps/lattice",
+        ] {
+            assert!(hit(u), "the client at {u} must keep its commands");
+        }
+        for u in [
+            "https://evil.example/",
+            "http://evil.example:26500/apps/lattice/app",
+            "https://sampel-palnet.arvo.network/apps/lattice/app",
+            "http://localhost:26500/apps/lattice/app",
+        ] {
+            assert!(!hit(u), "{u} must not get native commands");
+        }
+    }
+
     use super::openable;
 
     //  This allowlist is the only thing standing between a ship-served page
@@ -818,7 +948,7 @@ mod tests {
 
         let exts = vec!["md".to_string()];
         let mut out = Vec::new();
-        walk(&root, "notes", &exts, &mut out);
+        walk(&root, "notes", &exts, &mut out, &mut 0).unwrap();
         out.sort_by(|a, b| a.rel.cmp(&b.rel));
 
         let rels: Vec<&str> = out.iter().map(|f| f.rel.as_str()).collect();
@@ -832,11 +962,74 @@ mod tests {
 
         // a file pick names the file alone, no folder prefix
         let mut one = Vec::new();
-        push_file(&root.join("a.md"), "a.md".to_string(), &mut one);
+        push_file(&root.join("a.md"), "a.md".to_string(), &mut one, &mut 0).unwrap();
         assert_eq!(one.len(), 1);
         assert_eq!((one[0].rel.as_str(), one[0].text.as_str()), ("a.md", "alpha"));
 
         std::fs::remove_dir_all(&base).ok();
+    }
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::{page_exts, push_file, walk, PICK_MAX_BYTES, PICK_MAX_FILES};
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("lattice-pick-{}-{}", std::process::id(), tag));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn the_page_cannot_widen_the_extension_list() {
+        let asked = ["md", "TeX", "pem", "env", "", "sh", "html"].map(String::from).to_vec();
+        assert_eq!(page_exts(asked), ["md", "TeX", "html"]);
+    }
+
+    #[test]
+    fn a_folder_walk_skips_hidden_names() {
+        let root = tmp("dots");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        std::fs::write(root.join(".git/HEAD.md"), "x").unwrap();
+        std::fs::write(root.join(".secret.md"), "x").unwrap();
+        std::fs::write(root.join("notes/a.md"), "a").unwrap();
+        std::fs::write(root.join("notes/b.pem"), "b").unwrap();
+        let (mut out, mut bytes) = (Vec::new(), 0);
+        walk(&root, "pick", &["md".to_string()], &mut out, &mut bytes).unwrap();
+        let rels: Vec<_> = out.iter().map(|f| f.rel.as_str()).collect();
+        assert_eq!(rels, ["pick/notes/a.md"]);
+        assert_eq!(bytes, 1);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_folder_walk_stops_at_the_file_cap() {
+        let root = tmp("cap");
+        for i in 0..=PICK_MAX_FILES {
+            std::fs::write(root.join(format!("{i}.md")), "").unwrap();
+        }
+        let (mut out, mut bytes) = (Vec::new(), 0);
+        let e = walk(&root, "", &["md".to_string()], &mut out, &mut bytes).unwrap_err();
+        assert!(e.contains("too many files"), "{e}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_pick_stops_at_the_byte_cap() {
+        let root = tmp("bytes");
+        // sparse, so the test costs no disk
+        let big = root.join("big.md");
+        std::fs::File::create(&big).unwrap().set_len(PICK_MAX_BYTES).unwrap();
+        std::fs::write(root.join("one.md"), "x").unwrap();
+        let (mut out, mut bytes) = (Vec::new(), 0);
+        push_file(&big, "big.md".into(), &mut out, &mut bytes).unwrap();
+        assert_eq!(bytes, PICK_MAX_BYTES, "exactly the cap still fits");
+        let e = push_file(&root.join("one.md"), "one.md".into(), &mut out, &mut bytes).unwrap_err();
+        assert!(e.contains("too much data"), "{e}");
+        assert_eq!(out.len(), 1);
+        std::fs::remove_dir_all(&root).ok();
     }
 }
 

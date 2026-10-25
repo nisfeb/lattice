@@ -27,6 +27,8 @@ One fact per entry. Keys are path-like, and the first segment is the category:
 
 Write only the fact in `body`. Lattice records who saved it (your agent key) and when. Link related entries by key: `[[user/ai-models]]`. Tag `core` only a rule that applies to every task in every project.
 
+Core entries are the owner's. Your key may tag a new entry `core`, but once an entry has the tag your key cannot edit it, supersede it or remove the tag. Those requests are refused with a 403. If a core entry is wrong, tell the user.
+
 ## Update, don't duplicate
 
 - Recall or search before saving.
@@ -45,7 +47,7 @@ If asked to remember one of those, ask what was non-obvious and save that.
 
 ## Sensitive memories
 
-Some memories are marked sensitive and reach only cleared keys. If a save comes back `"sensitive": true`, this key read sensitive memories recently, so its new entries are kept sensitive too, and editing ordinary memories or writing pages is refused for a while. That is expected: carry on, and don't try to restate sensitive facts elsewhere.
+Some memories and pages are marked sensitive and reach only cleared keys. If a save comes back `"sensitive": true`, this key read sensitive content recently, so for a while its writes go only to sensitive destinations: new entries and pages it writes are kept sensitive, while editing an ordinary memory or writing a non-sensitive page is refused. That is expected: carry on, and don't try to restate sensitive facts elsewhere.
 
 ## Trust
 

@@ -59,6 +59,12 @@
   function setInd(){
     if(!vimOn()){ ind.style.display = "none"; return; }
     ind.style.display = "inline-block";
+    // preview-only view: the editor is off screen and vim keys do not apply,
+    // so show the view, not a stale mode. (split and edit keep the mode.)
+    var pv = document.getElementById("ws");
+    if(pv && pv.classList.contains("vp")){
+      ind.textContent = "-- PREVIEW --"; ind.style.background = "#607d8b"; return;
+    }
     if(cmdActive){ ind.textContent = ":" + cmdBuf; ind.style.background = "#455a64"; return; }
     var label, bg;
     if(MODE === "insert"){ label = "-- INSERT --"; bg = "#2e7d32"; }
@@ -449,6 +455,13 @@
   function handleKey(e){
     var k = e.key;
 
+    // A bare modifier keydown must not touch pending state. `rD` is r, then
+    // Shift (to reach the capital), then D — Shift is its own keydown, and if
+    // it fell through to the r-consumer below it would clear pending, so D
+    // then ran as its own delete-to-end-of-line command. Swallow it and wait
+    // for the real key. Same for any r/f/t followed by a shifted character.
+    if(k === "Shift" || k === "Control" || k === "Alt" || k === "Meta") return true;
+
     // Esc / Ctrl-[ -> clear pending, drop to NORMAL from visual
     if(k === "Escape" || (e.ctrlKey && k === "[")){
       if(MODE === "visual"){ var c = pos(); MODE = "normal"; setPos(normClamp(c)); }
@@ -536,7 +549,10 @@
         case "e": moved = wordEnd(vc, n); break;
         case "0": moved = lineStart(vc); break;
         case "^": moved = firstNonBlank(vc); break;
-        case "$": moved = lineEnd(vc); break;
+        // $ lands the head on the last real column, not on the newline, so
+        // visRange's inclusive +1 stops at the line end and v$d/v$y keep the
+        // line break instead of swallowing it and joining the next line.
+        case "$": moved = lineLastCol(vc); break;
         case "{": moved = paraBack(vc, n); break;
         case "}": moved = paraFwd(vc, n); break;
         case "G": moved = count ? gotoLine(n) : firstNonBlank(lastLineStart()); break;
@@ -555,7 +571,14 @@
           var sText = reg, sLine = regLinewise;
           deleteRange(a, b, a);
           reg = sText; regLinewise = sLine;
-          MODE = "normal"; setPos(a > 0 ? a - 1 : a); paste(true);
+          MODE = "normal";
+          // A charwise register fills the deleted hole exactly at `a`. The old
+          // `setPos(a-1); paste(true)` leaned on paste's after-offset, which
+          // cannot reach index 0, so a selection anchored at column 0 pasted
+          // one character late. Insert straight at `a`; a linewise register
+          // still goes through paste for its line-insert handling.
+          if(sLine){ setPos(a > 0 ? a - 1 : a); paste(true); }
+          else { insertAt(a, reg); setPos(normClamp(a + reg.length - 1)); }
           reset(); setInd(); return true;
         }
         case "v": MODE = "normal"; setPos(normClamp(visCaret)); reset(); setInd(); return true;
@@ -708,4 +731,8 @@
     if(!e.key || e.key === LS) applyVim();
   });
   applyVim();
+  // setInd lives inside this IIFE, so the layout toggles (85-layout.js, in the
+  // outer shared scope) cannot see it directly. Expose it: a same-tab view
+  // change there must refresh the indicator (it reads PREVIEW in preview-only).
+  window.latVimSetInd = setInd;
 })();

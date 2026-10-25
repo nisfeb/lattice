@@ -20,6 +20,9 @@ const env = shipEnv();
 const NAME = 'texpreview-probe-' + process.pid;
 const TEX = '\\documentclass{article}\n\\begin{document}\nHello $x^2$.\n\\end{document}';
 const RENDERED = '<p>STUB RENDERED OUTPUT</p>';
+//  what a hostile .tex can make pandoc emit: the editor must clean it
+const HOSTILE = '<a href="java\tscript:alert(1)">j</a><img src="https://evil.example/x.png">' +
+  '<embed src="x.swf"><a href="https://ok.example/">ok</a><img src="fig.png">';
 
 const check = makeCheck();
 const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
@@ -47,7 +50,7 @@ await page.evaluateOnNewDocument((out) => {
       },
     },
   };
-}, RENDERED);
+}, RENDERED + HOSTILE);
 
 try {
   await page.goto(env.app, { waitUntil: 'networkidle2', timeout: 90000 });
@@ -81,6 +84,10 @@ try {
   const rendered = await frameHtml();
   check('the conversion replaces it once it lands',
     rendered.includes('STUB RENDERED OUTPUT'), rendered.slice(0, 160));
+  check('the conversion is cleaned: no script link, remote media or embed',
+    !/script:|evil\.example|<embed/.test(rendered), rendered.slice(0, 400));
+  check('the cleaning keeps a web link and a local figure',
+    rendered.includes('https://ok.example/') && rendered.includes('src="fig.png"'), rendered.slice(0, 400));
 
   //  the property that matters most: a process per keystroke would be a fork
   //  bomb, so typing must coalesce into far fewer conversions than characters

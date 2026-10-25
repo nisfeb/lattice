@@ -171,4 +171,28 @@
     %+  expect-eq  !>(`(list path)`~)
       !>((lane-dirs:lu ~))
   ==
+::  +cross-site: Fetch Metadata decides when present; otherwise Origin
+::  against Host; neither is a non-browser client
+++  test-cross-site
+  =/  y  |=([s=(unit @t) o=(unit @t) h=(unit @t)] (cross-site:lu s o h))
+  ;:  weld
+    ::  the owner's own page, a typed navigation, a granted extension
+    (expect-eq !>(|) !>((y `'same-origin' `'https://sampel.arvo.network' `'sampel.arvo.network')))
+    (expect-eq !>(|) !>((y `'none' ~ `'sampel.arvo.network')))
+    (expect-eq !>(|) !>((y `'none' `'chrome-extension://abc' `'sampel.arvo.network')))
+    (expect-eq !>(|) !>((y `'Same-Origin' ~ ~)))
+    ::  another site, or another origin on the same site
+    (expect-eq !>(&) !>((y `'cross-site' `'https://evil.example' `'sampel.arvo.network')))
+    (expect-eq !>(&) !>((y `'same-site' `'https://other.arvo.network' `'sampel.arvo.network')))
+    ::  plain http to a LAN host: no Fetch Metadata, so Origin decides
+    (expect-eq !>(|) !>((y ~ `'http://192.168.1.5:8080' `'192.168.1.5:8080')))
+    (expect-eq !>(|) !>((y ~ `'HTTP://Ship.Local:8080' `'ship.local:8080')))
+    (expect-eq !>(&) !>((y ~ `'http://evil.example' `'192.168.1.5:8080')))
+    (expect-eq !>(&) !>((y ~ `'http://192.168.1.5:9999' `'192.168.1.5:8080')))
+    (expect-eq !>(&) !>((y ~ `'null' `'192.168.1.5:8080')))
+    (expect-eq !>(&) !>((y ~ `'http://192.168.1.5:8080' ~)))
+    ::  a non-browser client sends neither
+    (expect-eq !>(|) !>((y ~ ~ `'sampel.arvo.network')))
+    (expect-eq !>(|) !>((y ~ ~ ~)))
+  ==
 --

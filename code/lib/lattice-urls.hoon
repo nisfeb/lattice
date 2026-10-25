@@ -168,4 +168,31 @@
     ?:  =(1 (met 3 i.rel))  (crip :(weld pre "/n" (seg rel)))
     (crip :(weld pre (seg rel)))
   (crip :(weld pre "/t" (seg pax)))
+::  +cross-site: did another site send this request?
+::
+::    The owner's eyre cookie carries no SameSite, so a page on another site
+::    can make the owner's browser send it on a top-level POST (security
+::    audit run-1). Fetch Metadata answers directly whenever the browser
+::    sends it: every https origin and loopback. Only same-origin and none
+::    (the user's own navigation, or an extension the owner granted the
+::    host) are ours. A browser on plain http to any other host sends no
+::    Fetch Metadata, so then an Origin naming another host:port than the
+::    one the request was sent to is another site, and so is Origin null.
+::    No Origin and no Fetch Metadata is not a browser's cross-site write:
+::    the CLI, Talon and the desktop bridge's relays look like that.
+::
+++  cross-site
+  |=  [site=(unit @t) origin=(unit @t) host=(unit @t)]
+  ^-  ?
+  ?^  site
+    =/  s=tape  (cass (trip u.site))
+    !|(=("same-origin" s) =("none" s))
+  ?~  origin  |
+  ?~  host  &
+  =/  o=tape  (cass (trip u.origin))
+  =/  a=tape
+    ?:  =("https://" (scag 8 o))  (slag 8 o)
+    ?:  =("http://" (scag 7 o))  (slag 7 o)
+    o
+  !=(a (cass (trip u.host)))
 --

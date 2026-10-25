@@ -249,8 +249,8 @@
         [/project/x/y ['plain' ~2026.1.1 ~ ~]]
         [/feedback/old ['---\0asuperseded-by: /feedback/a\0a---\0agone' ~2026.1.1 ~ ~]]
     ==
-  =/  full=tape  (trip (index-text es | 100))
-  =/  brief=tape  (trip (index-text es & 10))
+  =/  full=tape  (trip (index-text es | 100 ~))
+  =/  brief=tape  (trip (index-text es & 10 ~))
   ;:  weld
     (expect !>(?=(^ (find "feedback (2): a, b" full))))
     (expect !>(?=(^ (find "project/x (1): y" full))))
@@ -260,6 +260,36 @@
     (expect !>(?=(^ (find "## /feedback/a\0arule one" brief))))
     (expect !>(?=(^ (find "## /feedback/b (over the cap: read it)" brief))))
   ==
+::  an agent's core cannot push the owner's past the cap: the owner's
+::  comes first whatever the keys, the agent's after it in key order
+++  test-index-text-owner-core-first
+  =/  big=@t  (crip (reap 80 'x'))
+  =/  es=(map path know-entry)
+    %-  malt
+    ^-  (list [path know-entry])
+    :~  [/a/agent1 [(rap 3 '---\0asource: agent\0a---\0a' big ~) ~2026.1.1 (sy 'core' ~) ~]]
+        [/a/agent2 ['---\0asource: agent\0a---\0ashort' ~2026.1.1 (sy 'core' ~) ~]]
+        [/z/owner ['owner rule' ~2026.1.1 (sy 'core' ~) ~]]
+    ==
+  =/  out=tape  (trip (index-text es & 50 ~))
+  ;:  weld
+    (expect !>(?=(^ (find "## /z/owner\0aowner rule" out))))
+    (expect !>(?=(^ (find "## /a/agent1 (over the cap: read it)" out))))
+    (expect !>((lth (need (find "/z/owner" out)) (need (find "/a/agent2" out)))))
+  ==
+::  a world block leads the index when given, and is absent when not
+++  test-index-world-present
+  =/  es=(map path know-entry)  (malt ^-((list [path know-entry]) ~[[/project/x ['plain' ~2026.1.1 ~ ~]]]))
+  =/  out=tape  (trip (index-text es | 100 `'Today is Sunday.'))
+  ;:  weld
+    (expect !>(?=(^ (find "World, from orrery" out))))
+    (expect !>(?=(^ (find "Today is Sunday." out))))
+    (expect-eq !>(0) !>(`@ud`(need (find "## World" out))))
+  ==
+++  test-index-world-absent
+  =/  es=(map path know-entry)  (malt ^-((list [path know-entry]) ~[[/project/x ['plain' ~2026.1.1 ~ ~]]]))
+  =/  out=tape  (trip (index-text es | 100 ~))
+  (expect !>(?=(~ (find "World, from orrery" out))))
 ::  a save keeps created, sets author and source, and stamps verified
 ++  test-stamp
   =/  old=know-entry  ['---\0acreated: 2025-01-02\0aauthor: someone\0a---\0aold fact' ~2026.1.1 ~ ~]
@@ -284,6 +314,20 @@
     (expect-eq !>(&) !>((sensitive [on ~2026.1.1 ~ ~])))
     (expect-eq !>(|) !>((sensitive [off ~2026.1.1 ~ ~])))
     (expect-eq !>('a fact') !>(rest:(front on)))
+  ==
+::  +is-core reads the stored tag exactly, as +index-text does. +core-tag
+::  folds case, as the writer folds a requested tag.
+++  test-core
+  =/  cor=know-entry  ['a rule' ~2026.1.1 (sy ~['core' 'ai']) ~]
+  ;:  weld
+    (expect-eq !>(&) !>((is-core cor)))
+    (expect-eq !>(|) !>((is-core e1)))
+    (expect-eq !>(|) !>((is-core (del-tag cor 'core'))))
+    (expect-eq !>(&) !>((core-tag 'core')))
+    (expect-eq !>(&) !>((core-tag 'Core')))
+    (expect-eq !>(&) !>((core-tag 'CORE')))
+    (expect-eq !>(|) !>((core-tag 'cores')))
+    (expect-eq !>(|) !>((core-tag '')))
   ==
 ::  recall never links to a sensitive entry, even for a cleared reader
 ++  test-recall-hides-sensitive-links

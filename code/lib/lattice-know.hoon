@@ -585,11 +585,12 @@
 ::  area (the first segment, or two for a key three deep), then the core
 ::  entries in full, up to cap bytes; past it they are listed only. brief
 ::  gives each area's count instead of its keys, for a session hook, whose
-::  added context Claude Code caps at 10,000 characters. The index tool and
+::  added context Claude Code caps at 10,000 characters. A given world leads
+::  the text, so the agent sees the day first. The index tool and
 ::  the /know-index route both answer this.
 ++  core-cap  ^-(@ud 14.000)
 ++  index-text
-  |=  [es=(map path know-entry) brief=? cap=@ud]
+  |=  [es=(map path know-entry) brief=? cap=@ud world=(unit @t)]
   ^-  @t
   =/  live=(list [k=path e=know-entry])
     (skim ~(tap by es) |=([* e=know-entry] =(~ (superseded e))))
@@ -614,8 +615,19 @@
     ::  bound with its type: zing inline in a weld is a fuse-loop
     =/  joined=tape  (zing (join ", " names))
     :(weld head ": " joined)
+  ::  the owner's core first, then core an agent wrote, each in key order.
+  ::  Keys may add core, but a key's entries filling the cap used to turn
+  ::  every owner rule into a pointer. A key cannot forge the source:
+  ::  +stamp writes source agent for every keyed save.
+  =/  by-agent
+    |=(e=know-entry =(`'agent' (meta-get meta:(front body.e) 'source')))
   =/  core=(list [k=path e=know-entry])
-    (sort (skim live |=([* e=know-entry] (~(has in tags.e) 'core'))) |=([a=[k=path *] b=[k=path *]] (aor k.a k.b)))
+    %+  sort  (skim live |=([* e=know-entry] (~(has in tags.e) 'core')))
+    |=  [a=[k=path e=know-entry] b=[k=path e=know-entry]]
+    =/  aa=?  (by-agent e.a)
+    =/  ba=?  (by-agent e.b)
+    ?.  =(aa ba)  ba
+    (aor k.a k.b)
   =/  core-text=tape
     =|  [out=tape used=@ud]
     |-  ^-  tape
@@ -628,6 +640,7 @@
   =/  index=tape  (zing (join "\0a" lines))
   %-  crip
   ;:  weld
+    ?~(world "" :(weld "## World, from orrery\0a" (trip u.world) "\0a\0a"))
     (a-co:co (lent live))  " memories"
     ?:(brief " in these areas. Recall finds them by task; the full index lists every key.\0a\0a" ". Recall finds them by task; read opens one by key.\0a\0a")
     index
@@ -656,6 +669,19 @@
   ^-  ?
   =/  v=(unit @t)  (meta-get meta:(front body.e) 'sensitive')
   ?~(v | |(=('yes' u.v) =('true' u.v)))
+::  +is-core: tagged core, so every session loads it (+index-text). An
+::  agent key may add the tag. It may not rewrite, supersede or untag an
+::  entry that has it.
+++  is-core
+  |=  e=know-entry
+  ^-  ?
+  (~(has in tags.e) 'core')
+::  +core-tag: does a requested tag name core once the writer case-folds
+::  it? An untag drops the folded tag, so 'Core' removes 'core' too.
+++  core-tag
+  |=  t=@t
+  ^-  ?
+  =('core' (crip (cass (trip t))))
 ::  ==  Lint: what a periodic tidy would fix, proposed, never applied here.
 ::
 ::  stale is an entry that names code (a file, an arm, a port, a commit) and

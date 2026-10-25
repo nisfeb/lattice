@@ -19,6 +19,9 @@
 ::
 +$  eval-action
   $%  [%make pax=path src=@t]           ::  create a page / replace its code
+      ::  +make, for a copy of a page a peer may have written (a move, a
+      ::  conflict copy). The copy keeps the original's peer-written mark.
+      [%make-marked pax=path src=@t]
       ::  N pages in ONE writer transaction. An upload used to be one HTTP
       ::  request (and one poke) per file, and every request pays the pier's
       ::  ~0.5s floor serially. A 20-file drop was ~20 round-trips of pure
@@ -39,6 +42,7 @@
       [%forms pax=path on=? cap=@ud gap=@dr]  ::  public forms: on/off + limits
       [%form-hit pax=path now=@da]      ::  record one accepted submission
       [%form-reset pax=path]            ::  zero a page's submission counter
+      [%page-sensitive pax=path on=?]   ::  mark/unmark a page (or folder) sensitive
       [%legacy-seen imported=@ud]       ::  retired %lattice agent dealt with
       [%legacy-pages rels=(list path)]  ::  page rels this migration triggered
   ==

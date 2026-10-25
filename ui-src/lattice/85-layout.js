@@ -28,6 +28,10 @@
       b.className = 'ico' + (on ? ' on' : '');
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
+    // keep the vim indicator in step with the view: it reads PREVIEW in
+    // preview-only. setInd is exposed by 27-vim.js (it lives in that file's
+    // own IIFE); guard in case that file is absent. A no-op when vim is off.
+    if (window.latVimSetInd) window.latVimSetInd();
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
   $('wrapt').onclick = () => flip('appWrap');
@@ -39,9 +43,13 @@
       localStorage.appView = v;
       applyToggles();
       // the preview skipped its renders while off screen (60-preview.js)
-      if (hidden && v !== 'edit') refreshPreview();
+      if (hidden && v !== 'edit') showPreview();
     };
-  applyToggles();
+  // A throw in this boot-time layout pass must NOT halt the rest of app boot:
+  // the initial tree load and navigation wiring run in a later file (90-sync),
+  // so an uncaught error here blanks the whole app (that was the setInd bug).
+  // Contain it — a broken layout widget is survivable; a dead tree is not.
+  try { applyToggles(); } catch (e) { console.error('[lattice] layout init failed', e); }
 
   // ── mobile: full-screen editing ──────────────────────────────────────────
   // Created here rather than in <lat-bar>, and appended to #ws, because it has
@@ -69,14 +77,14 @@
   };
   fullt.onclick = () => setFull(!ws.classList.contains('full'));
   ws.appendChild(fullt);
-  setFull(localStorage.appFull === '1');
+  try { setFull(localStorage.appFull === '1'); } catch (e) { console.error('[lattice] full-screen init failed', e); }
 
   const isMobile = () => matchMedia('(max-width: 820px)').matches;
   const setMv = (v) => {
     ws.dataset.mv = v;
     for (const x of document.querySelectorAll('.mtabs button'))
       x.className = x.dataset.mv === v ? 'on' : '';
-    if (v === 'prev') refreshPreview();
+    if (v === 'prev') showPreview();
   };
   for (const b of document.querySelectorAll('.mtabs button'))
     b.onclick = () => setMv(b.dataset.mv);

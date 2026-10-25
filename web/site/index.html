@@ -3,10 +3,10 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>lattice — a personal knowledge platform on your Urbit ship</title>
-    <meta name="description" content="Pages in markdown, gemtext, HTML, or programmable Hoon; a private knowledge store shared with your AI agents; full-text search; a filesystem mount; peer-to-peer publishing as urb://~ship/path. All of it served from your own Urbit ship.">
-    <meta property="og:title" content="lattice — a personal knowledge platform on your Urbit ship">
-    <meta property="og:description" content="Pages, a private knowledge store, search, a filesystem mount and memory for AI agents. Published peer-to-peer as urb://~ship/path, served from your own ship.">
+    <title>lattice: a private knowledge base for you and your AI agents</title>
+    <meta name="description" content="A self-hosted knowledge base. Long-term memory and reference for your AI agents, a home for your own notes and documents, and peer-to-peer publishing. It runs on a personal server you control, not in someone else's cloud.">
+    <meta property="og:title" content="lattice: a private knowledge base for you and your AI agents">
+    <meta property="og:description" content="Long-term memory and reference for your AI agents, a home for your own documents, and peer-to-peer publishing. All of it on a personal server you control.">
     <meta property="og:image" content="https://lattice.nisfeb.com/lattice.png">
     <meta name="theme-color" content="#101541">
     <link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="%23101541"/><g stroke="%23f9a804" stroke-width="3" stroke-linecap="round" fill="none"><path d="M8 24 24 8M8 40 40 8M8 56 56 8M24 56 56 24M40 56 56 40"/><path d="M40 8 56 24M24 8 56 40M8 8 56 56M8 24 40 56M8 40 24 56"/></g></svg>'>
@@ -136,27 +136,27 @@
             <span class="wordmark">lattice</span>
         </div>
 
-        <h1>Your pages, your knowledge,<br><span class="accent">your ship</span>.</h1>
+        <h1>A knowledge base for you<br>and your <span class="accent">AI agents</span>.</h1>
 
         <p class="lede">
-            A personal knowledge platform that runs on your own Urbit ship. Write pages in
-            markdown, gemtext, or HTML, or in Hoon so they compute their own content. Keep a
-            private, tagged knowledge store that you and your AI agents share. Search all of it.
-            Everything you publish is addressed <span class="url">urb://~ship/path</span> and
-            travels peer-to-peer between ships, with no DNS, no web server, and no host in the middle.
+            lattice gives your AI agents long-term memory and a library of reference they
+            can read. It keeps your own notes and documents in one private store. And it
+            publishes what you choose, peer-to-peer or on the open web. All of it runs on a
+            personal server you control, so your data and your agents' memory never touch
+            someone else's cloud.
         </p>
 
         <div class="ctas">
-            <a class="btn btn-primary" href="#install">Install on your ship</a>
+            <a class="btn btn-primary" href="#install">Install it</a>
             <a class="btn btn-secondary" href="https://github.com/nisfeb/lattice">Source&nbsp;on&nbsp;GitHub</a>
         </div>
 
         <div class="meta-row">
-            <span><strong>Web + PWA</strong> · served by your ship</span>
-            <span><strong>Desktop</strong> · Linux, macOS</span>
+            <span><strong>Agent memory</strong> · Claude Code + Hermes</span>
+            <span><strong>Private notes &amp; docs</strong></span>
+            <span><strong>Peer-to-peer publishing</strong></span>
             <span><strong>Filesystem mount</strong></span>
-            <span><strong>Claude Code + Hermes</strong> · memory for AI agents</span>
-            <span><strong>Source available</strong> · PolyForm Noncommercial</span>
+            <span><strong>Self-hosted</strong> · your server</span>
         </div>
     </div>
 </header>
@@ -165,16 +165,16 @@
     <div class="wrap">
         <h2>How it works</h2>
         <p>
-            lattice's ship side is a <em>nexus</em> inside the
-            <a href="https://github.com/gwbtc/grubbery">grubbery</a> framework. Your pages and
-            your knowledge live in grubbery's vault on your ship. The client is served by the ship
-            too, so there is nothing to install beyond one dojo command.
+            lattice runs on your own server and serves its own web client, so there is
+            nothing to host elsewhere and nobody to sign up with. One command installs it.
+            Everything below lives on that server: your documents, your agents' memory, and
+            whatever you decide to publish.
         </p>
         <div class="steps">
             <div class="step">
-                <div class="n">the ship</div>
-                <div class="t">one command, one approval</div>
-                <div class="d"><code>|install ~ricsul-bilwyt %grubbery</code> installs grubbery, which adds lattice. Approve its permissions and it binds <code>/apps/lattice</code>. New versions arrive on their own.</div>
+                <div class="n">the server</div>
+                <div class="t">one command to install</div>
+                <div class="d">lattice installs onto your Urbit ship, a personal server you run. Paste one command into its console and lattice is there, reachable at <code>/apps/lattice</code>. New versions arrive on their own.</div>
             </div>
             <div class="step">
                 <div class="n">the client</div>
@@ -183,16 +183,50 @@
             </div>
             <div class="step">
                 <div class="n">the surfaces</div>
-                <div class="t">desktop, filesystem, agents</div>
-                <div class="d">An optional desktop app, a FUSE mount that makes your pages plain files, and plugins that make it your AI assistants' memory. One store behind all of them.</div>
+                <div class="t">web, desktop, files, agents</div>
+                <div class="d">A web app, an optional desktop app, a filesystem mount that turns your pages into plain files, and plugins that give Claude Code and Hermes memory. One store behind all of them.</div>
             </div>
         </div>
 
-        <div class="code" aria-label="what a published page looks like from another ship">
-<span class="h">urb://~nisfeb/notes/urbit</span>        <span class="c">a page, straight from ~nisfeb's ship</span>
+        <div class="code" aria-label="what a published page looks like from elsewhere">
+<span class="h">urb://~nisfeb/notes/urbit</span>        <span class="c">one page, fetched straight from ~nisfeb's server</span>
 <span class="h">urb://~nisfeb/manifest</span>           <span class="c">everything ~nisfeb has published</span>
-<span class="lnk">https://…/apps/lattice/c/site</span>  <span class="c">the same page, if you choose to put it on the clearweb</span>
+<span class="lnk">https://…/apps/lattice/c/site</span>  <span class="c">the same page on the open web, if you put it there</span>
         </div>
+    </div>
+</section>
+
+<section>
+    <div class="wrap">
+        <h2>Memory and knowledge for your agents</h2>
+        <p>
+            Plugins for Claude Code and Hermes turn lattice into long-term memory for your
+            agents. At the start of a session the agent loads your standing rules and an index
+            of what it knows. With each task it recalls what bears on the work. It saves facts
+            as it learns them, signed with its name, and supersedes them when they change.
+            Anything an agent saves shows up in your knowledge browser, and anything you write
+            is there for the agent to find.
+        </p>
+        <p>
+            Beyond its own memory, an agent can read a wider body of reference: your personal
+            wiki, pages that other people's servers publish, and web pages you have clipped and
+            saved. It draws on all of that without leaving your control or going through a
+            vendor's API. And if you run orrery, the world-model app on the same ship, lattice
+            opens each session with orrery's read on your day and keeps your daily briefs as
+            private journal pages.
+        </p>
+        <div class="code" aria-label="Installing the Claude Code plugin">
+<span class="c">// in Claude Code</span>
+/plugin marketplace add nisfeb/lattice
+/plugin install lattice@lattice
+        </div>
+        <p style="margin-top:16px;">
+            Each agent gets its own key, made in lattice's settings and scoped to just the
+            memory and pages you allow. Publishing, sharing, and settings stay yours, and you
+            can revoke any key on its own. Your agents' memory lives on your server, not in a
+            vendor's cloud.
+            <a href="https://github.com/nisfeb/lattice/blob/main/docs/agent-knowledge.md">Details in the docs.</a>
+        </p>
     </div>
 </section>
 
@@ -201,48 +235,48 @@
         <h2>What it does</h2>
         <ul class="features">
             <li>
-                <span class="name">Pages, not just gemtext</span>
-                <span class="desc">Markdown, gemtext, HTML, plain text, JS, or CSS. Or write a page in Hoon and it <em>computes</em> its content: programmable pages with commands, state, and dependencies on other pages.</span>
+                <span class="name">Documents in any format</span>
+                <span class="desc">Write in markdown, HTML, or plain text. Or write a page in Hoon, the server's own language, and it <em>computes</em> its content: live pages with commands, state, and references to other pages.</span>
             </li>
             <li>
-                <span class="name">Knowledge store</span>
-                <span class="desc">A private, tagged note store with per-entry history and a trash you can restore from. Browse it with folders, tag filters, and live updates; drive it from the web app, HTTP, MCP, or the filesystem mount.</span>
+                <span class="name">Private notes</span>
+                <span class="desc">A private, tagged note store with full history and a trash you can restore from. Browse by folder or tag, with live updates. Drive it from the web app, an HTTP API, the agent plugins, or the filesystem mount.</span>
             </li>
             <li>
                 <span class="name">Search</span>
-                <span class="desc">A term index over your pages and your knowledge store, queried from the reader's omnibar. Every hit is badged with its scope, so a published page never reads like a private note.</span>
+                <span class="desc">A full-text index over your documents and notes, from the reader's search bar. Every hit is badged with its scope, so a published page never reads like a private note.</span>
             </li>
             <li>
-                <span class="name">A real filesystem</span>
-                <span class="desc"><code>lattice-fs</code> mounts your pages as local files, over HTTP or grubbery's local IPC. A cold mount warms in one round-trip, so <code>grep</code> and <code>cat</code> run from RAM, and editor backup files never touch the ship.</span>
+                <span class="name">Your pages as files</span>
+                <span class="desc"><code>lattice-fs</code> mounts every page as a local file. A cold mount warms in one round-trip, so <code>grep</code> and <code>cat</code> run from memory, and your editor's backup files never touch the server.</span>
             </li>
             <li>
-                <span class="name">Publish</span>
-                <span class="desc">Every page you save is a signed value in the Urbit namespace, readable by anyone as <span class="mono">urb://~you/that/path</span>. Pages and whole folders can also go clearweb-public over plain HTTP. Share a folder and you've published a site.</span>
+                <span class="name">Publish on your terms</span>
+                <span class="desc">Every page you save gets an address other servers can fetch directly, peer-to-peer, with no host in the middle. Pages and whole folders can also go public on the open web. Share a folder and you have published a site.</span>
             </li>
             <li>
                 <span class="name">Editor</span>
-                <span class="desc">Syntax highlighting for every page kind, live preview, compile errors for Hoon pages, templates, folder-level share, move, and delete, and drag-and-drop upload of files or whole directories. Name a page "My Page" and it keeps that name in the tree.</span>
+                <span class="desc">Syntax highlighting for every format, live preview, inline errors for programmable pages, templates, folder-level share, move, and delete, and drag-and-drop upload of files or whole directories. Name a page "My Page" and it keeps that name in the tree.</span>
             </li>
             <li>
                 <span class="name">Works offline</span>
-                <span class="desc">Lose the ship mid-session and saves queue locally, then replay when it returns. Deletes, moves, and renames queue too, in order. Concurrent edits are never lost: the overwritten version is kept as a real page under <code>conflicts/</code>.</span>
+                <span class="desc">Lose the connection mid-session and your saves queue locally, then replay when it returns. Deletes, moves, and renames queue too, in order. A concurrent edit is never lost: the overwritten version is kept as a real page under <code>conflicts/</code>.</span>
             </li>
             <li>
                 <span class="name">Export and restore</span>
-                <span class="desc">One button downloads every page and every memory as a single tar of plain files you can read, grep, or put in git without lattice. Restore takes an archive back, paths, tags, and dates intact, and says what it will overwrite before it acts. The desktop app schedules these backups to a folder on your machine.</span>
+                <span class="desc">One button downloads every page and every memory as a single archive of plain files you can read, grep, or commit to git without lattice. Restore takes an archive back with paths, tags, and dates intact, and says what it will overwrite before it acts. The desktop app schedules these backups to a folder on your machine.</span>
             </li>
             <li>
                 <span class="name">Sharing that scales</span>
-                <span class="desc">Named groups of ships with per-path read and edit grants, per-file grants from the editor, and a banlist that revokes on ban. Readers can leave comments on the pages you publish; a moderation inbox lists and removes them.</span>
+                <span class="desc">Named groups with per-path read and edit grants, per-file grants from the editor, and a banlist that revokes access on ban. Readers can leave comments on the pages you publish; a moderation inbox lists and removes them.</span>
             </li>
             <li>
                 <span class="name">Follow &amp; subscribe</span>
-                <span class="desc">Follow ships to keep track of what they publish, or subscribe to a single file and get the edit the moment it happens, over a live namespace subscription rather than a timer.</span>
+                <span class="desc">Follow other servers to track what they publish, or subscribe to a single file and get each edit the moment it lands, over a live subscription rather than a polling timer.</span>
             </li>
             <li>
-                <span class="name">Browse <code>urb://</code></span>
-                <span class="desc">Read anything any ship publishes, peer-to-peer over remote scry, from the web reader. Star pages as bookmarks; fetch <code>urb://~ship/manifest</code> to see a stranger's index; copy a remote file onto your own ship at a path you choose.</span>
+                <span class="name">Browse the network</span>
+                <span class="desc">Read anything any server publishes, peer-to-peer, right in the web reader. Bookmark pages as stars, pull up a stranger's full index, or copy a remote file onto your own server at a path you choose.</span>
             </li>
             <li>
                 <span class="name">Light and dark</span>
@@ -254,40 +288,12 @@
 
 <section>
     <div class="wrap">
-        <h2>Memory for your AI agents</h2>
-        <p>
-            Plugins for Claude Code and Hermes make the knowledge store your assistants' memory.
-            At the start of a session the agent loads your core rules and an index of what it
-            knows. With each prompt it recalls what bears on the task. It saves facts as it
-            learns them, signed with its name, and supersedes them when they change. It can
-            search and read your wiki and pages other ships publish, and write private pages
-            such as reports. Anything an agent saves shows up in the knowledge browser, and
-            vice-versa.
-        </p>
-        <div class="code" aria-label="Installing the Claude Code plugin">
-<span class="c">// in Claude Code</span>
-/plugin marketplace add nisfeb/lattice
-/plugin install lattice@lattice
-        </div>
-        <p style="margin-top:16px;">
-            Each agent gets its own key, made in lattice's settings. A key reaches only memory
-            and pages, as far as its scope says. Publishing, sharing and settings stay yours,
-            and you can revoke a key on its own. Other clients use the same HTTP routes, or
-            grubbery's MCP tools. Your assistant's memory lives on your ship, not in someone's
-            cloud.
-            <a href="https://github.com/nisfeb/lattice/blob/main/docs/agent-knowledge.md">Details in the docs.</a>
-        </p>
-    </div>
-</section>
-
-<section>
-    <div class="wrap">
         <h2>What it isn't</h2>
         <ul class="disclaimers">
-            <li>Not a host. <a href="https://urbit.org/overview/running-urbit">Bring your own ship</a>: yours, a friend's, or a hosted one.</li>
-            <li>Not the HTTP web. Pages are Urbit-native (<span class="mono">urb://~ship/path</span>) and move between ships over remote scry. The exception is what you <em>choose</em> to publish clearweb, which your ship serves itself.</li>
-            <li>Not an app to install. The client is served by your ship. The desktop app and the filesystem mount are optional extras.</li>
-            <li>Desktop builds are unsigned for now: Gatekeeper will warn on first launch on macOS.</li>
+            <li>Not a hosted service. You run it on your own server, an <a href="https://urbit.org/overview/running-urbit">Urbit ship</a>: yours, a friend's, or a hosted one.</li>
+            <li>Not just a website. Pages are addressed and move server-to-server, peer-to-peer. Putting one on the open web is something you opt into, and your own server serves it.</li>
+            <li>Not an app to install, mostly. The web client is served by your server. The desktop app and the filesystem mount are optional extras.</li>
+            <li>Desktop builds are unsigned for now, so macOS Gatekeeper warns on first launch.</li>
         </ul>
     </div>
 </section>
@@ -296,16 +302,16 @@
     <div class="wrap">
         <h2>Privacy</h2>
         <div class="privacy-card">
-            <h3>The only server lattice talks to is your ship.</h3>
+            <h3>The only server lattice talks to is your own.</h3>
             <p>
-                No analytics, no third-party SDKs, no telemetry. The client is served by your ship
-                and speaks only to it. Access is enforced by grubbery's per-directory ACLs: the
-                knowledge store is owner-only, the HTTP API and the MCP tools require a valid ship
-                session or a scoped agent key, and shared pages are readable only by the ships and groups you grant.
+                No analytics, no third-party SDKs, no telemetry. The web client is served by
+                your server and speaks only to it. Access is enforced per directory: your notes
+                are owner-only, the HTTP API and the agent plugins need a valid session or a
+                scoped key, and shared pages are readable only by the people and groups you grant.
             </p>
             <p>
-                What you publish is public by design, in the Urbit namespace and, if you choose,
-                on the clearweb. Nothing else leaves your ship.
+                What you publish is public by design, addressed on the network and, if you
+                choose, on the open web. Nothing else leaves your server.
             </p>
         </div>
     </div>
@@ -315,20 +321,22 @@
     <div class="wrap">
         <h2>Under the hood</h2>
         <p>
-            The ship side is Hoon: a grubbery nexus whose pages and memories are grubs in the
-            vault, published into the Urbit namespace and served to other ships over remote
-            scry. The web client is served by the same nexus, with live updates over an Eyre
-            SSE channel and a service worker that keeps the shell and your last-known tree
-            at hand offline. The filesystem client is Rust, the desktop app is Tauri, and the
-            agent plugins are small Node and Python clients of the ship's HTTP routes.
+            lattice is built on <a href="https://urbit.org">Urbit</a>, a personal server that
+            is also a peer-to-peer network. The server side is written in Hoon and stores your
+            pages and memories as content-addressed values, published into Urbit's shared
+            namespace and served to other servers directly. The web client is served by that
+            same server, with live updates over an event stream and a service worker that keeps
+            the shell and your last-known tree at hand offline. The filesystem client is Rust,
+            the desktop app is Tauri, and the agent plugins are small Node and Python clients of
+            the server's HTTP API.
         </p>
         <div class="tech-grid">
-            <div class="cell"><div class="k">ship side</div><div class="v">grubbery nexus · Hoon</div></div>
-            <div class="cell"><div class="k">web</div><div class="v">Reader, workspace, PWA · served by the ship</div></div>
+            <div class="cell"><div class="k">server</div><div class="v">Urbit · Hoon</div></div>
+            <div class="cell"><div class="k">web</div><div class="v">Reader, workspace, PWA · served by the server</div></div>
             <div class="cell"><div class="k">desktop</div><div class="v">Tauri · Linux, macOS</div></div>
             <div class="cell"><div class="k">filesystem</div><div class="v">lattice-fs · Rust FUSE</div></div>
             <div class="cell"><div class="k">agents</div><div class="v">Claude Code, Hermes · scoped keys</div></div>
-            <div class="cell"><div class="k">transport</div><div class="v">Remote scry · peer-to-peer</div></div>
+            <div class="cell"><div class="k">transport</div><div class="v">Peer-to-peer</div></div>
         </div>
     </div>
 </section>
@@ -336,31 +344,32 @@
 <section id="install">
     <div class="wrap">
         <h2>Install</h2>
-        <h3>1. On your ship</h3>
-        <div class="code" aria-label="dojo install command">
-<span class="c">:: in your dojo</span>
+        <h3>1. On your server</h3>
+        <div class="code" aria-label="install command">
+<span class="c">:: paste into your ship's console</span>
 |install ~ricsul-bilwyt %grubbery
         </div>
         <p style="margin-top:16px;font-size:14px;color:var(--on-surf-var);">
-            On first boot grubbery adds lattice, with the other apps <span class="patp">~ricsul-bilwyt</span>
-            publishes. Approve lattice's permissions at <code>/apps/grubbery/permits</code>. It stays
-            unavailable until you do. New versions arrive on their own, and one that needs a new
-            permission asks first. If you already run grubbery from another publisher, read the
+            lattice installs through grubbery, the small app platform it runs on, alongside the
+            other apps <span class="patp">~ricsul-bilwyt</span> publishes. Approve lattice's
+            permissions at <code>/apps/grubbery/permits</code> and it binds <code>/apps/lattice</code>.
+            It stays unavailable until you do. New versions arrive on their own, and one that needs
+            a new permission asks first. If you already run grubbery from another publisher, read the
             <a href="https://github.com/nisfeb/lattice/blob/main/docs/grubbery-ops.md">notes on switching</a> first.
         </p>
 
         <h3>2. Open it</h3>
         <p style="font-size:14px;color:var(--on-surf-var);">
-            Log into your ship's web login with your <span class="mono">+code</span>, then open
-            <code>/apps/lattice</code> to read and <code>/apps/lattice/app</code> to write. On a phone,
-            use your browser's <em>Add to Home Screen</em>: lattice is a full PWA with its own icon
-            and standalone window.
+            Log into your server's web login with its access code (<span class="mono">+code</span>),
+            then open <code>/apps/lattice</code> to read and <code>/apps/lattice/app</code> to write.
+            On a phone, use your browser's <em>Add to Home Screen</em>: lattice is a full PWA with its
+            own icon and standalone window.
         </p>
 
         <h3>3. Optional: the desktop app</h3>
         <p style="font-size:14px;color:var(--on-surf-var);">
-            The same ship-served client in its own window, plus managed filesystem mounts,
-            scheduled backups, and auto-detection of piers running on the same machine.
+            The same server-served client in its own window, plus managed filesystem mounts,
+            scheduled backups, and auto-detection of servers running on the same machine.
             Direct links resolve to the latest release; the
             <a href="https://github.com/nisfeb/lattice/releases/latest">releases page</a> has older
             versions and notes.
@@ -393,14 +402,14 @@
         </p>
 
         <p style="margin-top:32px;">
-            New to Urbit?
+            Don't have a server yet?
             <a href="https://urbit.org/overview/running-urbit">urbit.org/overview/running-urbit</a>
-            walks you through booting a ship.
+            walks you through booting one.
         </p>
 
         <div class="ctas" style="margin-top:24px;">
             <a class="btn btn-secondary" href="https://github.com/nisfeb/lattice">Source&nbsp;&amp;&nbsp;issues</a>
-            <a class="btn btn-secondary" href="lattice">Gemtext edition</a>
+            <a class="btn btn-secondary" href="lattice">Plain-text edition</a>
         </div>
     </div>
 </section>
@@ -429,7 +438,7 @@
 
 <footer>
     <div class="wrap footer-row">
-        <span>© lattice — built by <span class="patp">~nisfeb</span>. PolyForm Noncommercial licensed.</span>
+        <span>© lattice. Built by <span class="patp">~nisfeb</span>. PolyForm Noncommercial licensed.</span>
         <span><a href="https://github.com/nisfeb/lattice">github.com/nisfeb/lattice</a></span>
     </div>
 </footer>

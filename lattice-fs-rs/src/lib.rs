@@ -42,9 +42,23 @@ pub fn resolve_root(val: &str) -> Root {
     Root::Lattice(rel.strip_prefix("page/").unwrap_or(rel).to_string())
 }
 
+/// The one global cookie file older builds used for every ship. The desktop
+/// shell still passes it. EyreTransport sends what is in it only when the
+/// origin record next to it names the same ship (see eyre::load_cookie).
 pub fn default_cookie_path() -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     format!("{home}/.config/lattice-fs/cookie")
+}
+
+/// The cookie file for one ship URL: `cookie-<scheme>-<host>-<port>` in the
+/// same dir as the global file. One session per origin, so pointing
+/// LATTICE_URL somewhere new never sends it the old ship's cookie. Fails when
+/// the URL breaks the ship URL rule.
+pub fn cookie_path_for(url: &str) -> Result<String, String> {
+    let o = eyre::check_ship_url(url)?;
+    let global = default_cookie_path();
+    let path = std::path::Path::new(&global).with_file_name(o.cookie_file_name());
+    Ok(path.to_string_lossy().into_owned())
 }
 
 /// Build a projection over the Eyre (HTTP) transport, used by the desktop
@@ -54,6 +68,7 @@ pub fn projection_http(
     cookie_path: &str,
     root: &str,
 ) -> Result<Arc<dyn Projection>, String> {
+    eyre::check_ship_url(url)?;
     let t = Box::new(EyreTransport::new(url, cookie_path));
     match resolve_root(root) {
         Root::Lattice(sub) => {
@@ -146,6 +161,34 @@ mod tests {
         // directory the process happened to start in
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
         assert_eq!(default_cookie_path(), format!("{home}/.config/lattice-fs/cookie"));
+    }
+
+    #[test]
+    fn each_ship_origin_gets_its_own_cookie_file() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let dir = format!("{home}/.config/lattice-fs");
+        assert_eq!(
+            cookie_path_for("http://localhost:8080").unwrap(),
+            format!("{dir}/cookie-http-localhost-8080")
+        );
+        assert_eq!(
+            cookie_path_for("https://Ship.Example.com/").unwrap(),
+            format!("{dir}/cookie-https-ship.example.com-443")
+        );
+        assert_eq!(
+            cookie_path_for("http://[::1]:80").unwrap(),
+            format!("{dir}/cookie-http-__1-80")
+        );
+        // a URL the rule refuses gets no cookie file at all
+        assert!(cookie_path_for("http://ship.example.com").is_err());
+    }
+
+    #[test]
+    fn projection_http_refuses_plain_http_to_a_public_host() {
+        let e = projection_http("http://ship.example.com", "/nonexistent/cookie", "")
+            .err()
+            .expect("plain http to a public host must be refused");
+        assert!(e.to_lowercase().contains("use https, or a loopback/lan address"), "{e}");
     }
 
     use proptest::prelude::*;

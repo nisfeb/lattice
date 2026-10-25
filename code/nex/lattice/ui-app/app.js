@@ -296,6 +296,13 @@
   // eyre may say 504. Anything else means the ship SPOKE. That is a real
   // error, not an outage, and must never be queued over.
   const shipGone = (r) => !r || r.status === 502 || r.status === 504;
+  // replay uses a stricter rule. A queued record is the user's only copy, so
+  // it is dropped only when the ship rejects it in a way a retry cannot fix:
+  // a bad request, a missing target, a conflict, a body too large. Anything
+  // else keeps it queued. That covers no response, any 5xx, an expired login
+  // (401, 403), a timeout (408) and rate limiting (429).
+  const REPLAY_DROP = [400, 404, 409, 410, 413, 422];
+  const replayDrop = (r) => !!r && REPLAY_DROP.includes(r.status);
 
   let probeTimer = null;
   function setDegraded(on) {
@@ -447,7 +454,8 @@
   }
 
   //  Each drain phase returns FALSE when it could not finish. Usually that is
-  //  the ship going away mid-drain (shipGone). drainCreates also returns false
+  //  the ship going away mid-drain, or any answer that is not a deterministic
+  //  rejection (see replayDrop). drainCreates also returns false
   //  when the conflict-preservation write did not land for any other reason,
   //  because the alternative is dropping the user's only copy of a document.
   //  Either way everything the phase had not finished stays queued, in order,
@@ -460,11 +468,12 @@
   // landing afterwards is always a save the user still wants, under the name
   // they want it under.
   //
-  // An op the ship REJECTS is dropped, not retried. It means the intent was
-  // already satisfied some other way: deleting a page that only ever existed
-  // in this queue, or moving one whose source the queue never sent. Retrying
-  // that forever would wedge everything behind it, and there is nothing to
-  // recover because no content lives in an op.
+  // An op the ship REJECTS (see replayDrop) is dropped, not retried. It
+  // means the intent was already satisfied some other way: deleting a page
+  // that only ever existed in this queue, or moving one whose source the
+  // queue never sent. Retrying that forever would wedge everything behind
+  // it, and there is nothing to recover because no content lives in an op.
+  // Any other failure keeps the op queued and stops the drain.
   async function drainOps(ops) {
     for (const o of ops) {
       //  a record of any other shape is corrupt. Falling through to the move
@@ -479,7 +488,7 @@
             '&to=' + encodeURIComponent(o.to);
       let r = null;
       try { r = await tfetch(u, { method: 'POST' }, 30000); } catch {}
-      if (shipGone(r)) return false;
+      if (!(r && r.ok) && !replayDrop(r)) return false;
       if (!(r && r.ok)) {
         st('offline ' + o.op + ' no longer applies: ' +
           (o.name || o.from) + ' (skipped)', false);
@@ -505,7 +514,8 @@
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
       if (one && one.ok) { await offDel(q.name); continue; }
-      if (shipGone(one)) return false;
+      //  409 is in the drop set, so it falls through to its own branch below
+      if (!replayDrop(one)) return false;
       // 409: the name is taken on the ship. Do NOT drop the user's body — move
       // it out of the way as a conflict page so nothing is lost, then let them
       // rename. Overwriting is the one thing a create must never do. The alt
@@ -575,7 +585,10 @@
         for (const q of part) await offDel(q.name);
         continue;
       }
-      if (r && !shipGone(r)) {
+      //  a 5xx from the batch may be one poisoned record, so retry per item
+      //  to isolate it. No response, an outage, a lapsed login or a rate
+      //  limit would fail the same way per item, so stop and keep them all.
+      if (r && !shipGone(r) && (r.status >= 500 || replayDrop(r))) {
         for (const q of part) {
           let one = null;
           try {
@@ -591,7 +604,7 @@
             await offDel(q.name);
             continue;
           }
-          if (shipGone(one)) return false;
+          if (!replayDrop(one)) return false;
           st('dropped an unsyncable offline edit: ' + q.name, false);
           await offDel(q.name);
         }
@@ -612,7 +625,7 @@
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
       if (one && one.ok) { await offDel(q.name); continue; }
-      if (shipGone(one)) return false;
+      if (!replayDrop(one)) return false;
       st('dropped an unsyncable offline edit: ' + q.name, false);
       await offDel(q.name);
     }
@@ -785,6 +798,27 @@
     if (r) { try { const j = await r.json(); if (j && j.error) msg = ': ' + j.error; } catch {} }
     return msg;
   };
+  // the eyre session is gone: an owner route answered 401, or 403 with the
+  // gate's bare "forbidden" (every other refusal says why). What this browser
+  // keeps of the owner's content goes, so whoever uses it next sees none of
+  // it: the tree snapshot (every page body), the last page, the pages cache
+  // and its index. The offline queue stays. It holds edits not sent yet,
+  // and dropping it would lose them.
+  const sessionGone = async (r) => {
+    if (!r || (r.status !== 401 && r.status !== 403)) return false;
+    if (r.status === 403) {
+      let e = '';
+      try { e = (await r.clone().json()).error; } catch {}
+      if (e !== 'forbidden') return false;
+    }
+    try { localStorage.removeItem('appPage'); } catch {}
+    try { await kvPut('tree', []); } catch {}
+    try { if ('caches' in window) await caches.delete('lattice-pages'); } catch {}
+    try { indexedDB.deleteDatabase('lattice-lru'); } catch {}
+    nodes = []; pageCache.clear(); renderTree();
+    st('the session has ended: log in to the ship again', false);
+    return true;
+  };
   // bulk writes (vault restore, drag-drop upload, know-import) name their
   // targets only in the POST body — no per-name bust is possible from the
   // URL, and a restore legitimately invalidates everything. Drop the whole
@@ -910,6 +944,10 @@
 <header class="bar">
   <!-- the icon-only controls carry aria-labels: their glyph is their whole
        text content, which is no accessible name at all -->
+  <!-- panel toggles sit on the side they control. The hamburger toggles the
+       LEFT (tree) panel, so it leads the bar at the left edge; the gear toggles
+       the RIGHT (controls) panel and trails it at the right edge, below. -->
+  <button id="treet" class="ico" title="toggle tree pane" aria-label="toggle tree pane">&#9776;</button>
   <a class="home" href="/apps/lattice" title="lattice home" aria-label="lattice home">&#8962;</a>
   <button id="modet" title="switch pages / knowledge">&#9998; pages</button>
   <input id="pname" placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
@@ -952,7 +990,6 @@
     <button id="viewsplit" class="ico" title="editor and preview">split</button>
     <button id="viewprev" class="ico" title="preview only">preview</button>
   </span>
-  <button id="treet" class="ico" title="toggle tree pane" aria-label="toggle tree pane">&#9776;</button>
   <button id="ctlt" class="ico" title="toggle controls pane" aria-label="toggle controls pane">&#9881;</button>
 </header>`;
       pname = $('pname'); pkind = $('pkind');
@@ -1676,10 +1713,53 @@
   const LMAP = { md: 'markdown', gmi: 'gemtext', html: 'markup',
                  js: 'javascript', css: 'css', hoon: 'hoon', tex: 'latex' };
   const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  // Prism runs in a worker (prism.js installs a message handler there).
+  // Some grammars scan to the end of the input from every start position
+  // when a construct is unterminated, so 32 KiB of '[' took five seconds on
+  // the main thread and froze the editor on every keystroke (security audit
+  // run-1). One job in flight, the newest text queued behind it. A job slow
+  // to answer leaves plain text painted, and past the deadline the worker
+  // is killed and the text stays plain.
+  // A fresh worker first fetches prism.js, which on the desktop goes through
+  // the bridge to the ship and can take seconds, so its first job gets a
+  // startup allowance on top of the deadline. Without it every new worker
+  // was killed before it could answer, and the editor never highlighted.
+  const HL_PLAIN = 50, HL_DEADLINE = 1500, HL_STARTUP = 10000;
+  let hlWorker = null, hlFresh = false, hlCur = null, hlNext = null, hlPlain = 0, hlKill = 0;
+  const hlDone = () => {
+    clearTimeout(hlPlain); clearTimeout(hlKill); hlCur = null;
+    if (hlNext) { const j = hlNext; hlNext = null; hlRun(j); }
+  };
+  const hlPaint = (body) => { hl.innerHTML = esc(body) + '\n'; sync(); };
+  const hlRun = (job) => {
+    // newer text while a job runs shows plain until its own turn
+    if (hlCur) { hlNext = job; hlPaint(job.body); return; }
+    if (!hlWorker) {
+      try { hlWorker = new Worker('/apps/lattice/prism.js'); } catch { hlPaint(job.body); return; }
+      hlFresh = true;
+      hlWorker.onmessage = (e) => {
+        hlFresh = false;
+        const j = hlCur;
+        if (j && j.body === src.value && j.lang === LMAP[pkind.value]) {
+          hl.innerHTML = e.data + '\n'; sync();
+        }
+        hlDone();
+      };
+      hlWorker.onerror = () => { hlWorker = null; hlDone(); };
+    }
+    hlCur = job;
+    hlPlain = setTimeout(() => hlPaint(job.body), HL_PLAIN);
+    hlKill = setTimeout(() => {
+      if (hlWorker) hlWorker.terminate();
+      hlWorker = null; hlDone();
+    }, HL_DEADLINE + (hlFresh ? HL_STARTUP : 0));
+    hlWorker.postMessage(JSON.stringify({ language: job.lang, code: job.body }));
+  };
   const render = () => {
     const lang = LMAP[pkind.value];
     const g = window.Prism && lang && Prism.languages[lang];
-    hl.innerHTML = (g ? Prism.highlight(src.value, g, lang) : esc(src.value)) + '\n';
+    if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; return; }
+    hlRun({ body: src.value, lang });
   };
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
   // per-keystroke highlight throttle: Prism re-tokenizes the WHOLE document on
@@ -1793,6 +1873,12 @@
   function setInd(){
     if(!vimOn()){ ind.style.display = "none"; return; }
     ind.style.display = "inline-block";
+    // preview-only view: the editor is off screen and vim keys do not apply,
+    // so show the view, not a stale mode. (split and edit keep the mode.)
+    var pv = document.getElementById("ws");
+    if(pv && pv.classList.contains("vp")){
+      ind.textContent = "-- PREVIEW --"; ind.style.background = "#607d8b"; return;
+    }
     if(cmdActive){ ind.textContent = ":" + cmdBuf; ind.style.background = "#455a64"; return; }
     var label, bg;
     if(MODE === "insert"){ label = "-- INSERT --"; bg = "#2e7d32"; }
@@ -2183,6 +2269,13 @@
   function handleKey(e){
     var k = e.key;
 
+    // A bare modifier keydown must not touch pending state. `rD` is r, then
+    // Shift (to reach the capital), then D — Shift is its own keydown, and if
+    // it fell through to the r-consumer below it would clear pending, so D
+    // then ran as its own delete-to-end-of-line command. Swallow it and wait
+    // for the real key. Same for any r/f/t followed by a shifted character.
+    if(k === "Shift" || k === "Control" || k === "Alt" || k === "Meta") return true;
+
     // Esc / Ctrl-[ -> clear pending, drop to NORMAL from visual
     if(k === "Escape" || (e.ctrlKey && k === "[")){
       if(MODE === "visual"){ var c = pos(); MODE = "normal"; setPos(normClamp(c)); }
@@ -2270,7 +2363,10 @@
         case "e": moved = wordEnd(vc, n); break;
         case "0": moved = lineStart(vc); break;
         case "^": moved = firstNonBlank(vc); break;
-        case "$": moved = lineEnd(vc); break;
+        // $ lands the head on the last real column, not on the newline, so
+        // visRange's inclusive +1 stops at the line end and v$d/v$y keep the
+        // line break instead of swallowing it and joining the next line.
+        case "$": moved = lineLastCol(vc); break;
         case "{": moved = paraBack(vc, n); break;
         case "}": moved = paraFwd(vc, n); break;
         case "G": moved = count ? gotoLine(n) : firstNonBlank(lastLineStart()); break;
@@ -2289,7 +2385,14 @@
           var sText = reg, sLine = regLinewise;
           deleteRange(a, b, a);
           reg = sText; regLinewise = sLine;
-          MODE = "normal"; setPos(a > 0 ? a - 1 : a); paste(true);
+          MODE = "normal";
+          // A charwise register fills the deleted hole exactly at `a`. The old
+          // `setPos(a-1); paste(true)` leaned on paste's after-offset, which
+          // cannot reach index 0, so a selection anchored at column 0 pasted
+          // one character late. Insert straight at `a`; a linewise register
+          // still goes through paste for its line-insert handling.
+          if(sLine){ setPos(a > 0 ? a - 1 : a); paste(true); }
+          else { insertAt(a, reg); setPos(normClamp(a + reg.length - 1)); }
           reset(); setInd(); return true;
         }
         case "v": MODE = "normal"; setPos(normClamp(visCaret)); reset(); setInd(); return true;
@@ -2442,6 +2545,10 @@
     if(!e.key || e.key === LS) applyVim();
   });
   applyVim();
+  // setInd lives inside this IIFE, so the layout toggles (85-layout.js, in the
+  // outer shared scope) cannot see it directly. Expose it: a same-tab view
+  // change there must refresh the indicator (it reads PREVIEW in preview-only).
+  window.latVimSetInd = setInd;
 })();
 
 // ── src/30-tree.js ────────────────────────────────────────────────────────
@@ -2538,7 +2645,10 @@
     // already report theirs. Offline is a state this app is built for.
     try {
       const r = await fetch(api + '/page-dump');
-      if (!r.ok) { st('tree failed' + await errText(r), false); return; }
+      if (!r.ok) {
+        if (await sessionGone(r)) return;
+        st('tree failed' + await errText(r), false); return;
+      }
       d = await r.json();
     } catch { st('tree failed (network)', false); return; }
     if (gen !== treeGen) return;   // a local patch superseded this response
@@ -3049,40 +3159,50 @@
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return;
       }
-      current = name;
-      curKind = kind;
-      pname.readOnly = true;
-      if (src.value === sent) dirty = false;
-      history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
       if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
-      cerr.textContent = 'saved offline'; cerr.className = 'ok';
+      // same stillHere guard as the online path: only touch live editor state
+      // if the editor has not moved to another document during the round-trip.
+      const stillHere = current === name || (current === null && src.value === sent);
+      if (stillHere) {
+        current = name;
+        curKind = kind;
+        pname.readOnly = true;
+        if (src.value === sent) dirty = false;
+        history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
+        cerr.textContent = 'saved offline'; cerr.className = 'ok';
+      }
       flushPending();
       return;
     }
     if (r && r.status === 409) { st('that page already exists', false); return; }
     if (!r.ok) { st('save failed' + await errText(r), false); return; }
-    current = name;
-    curKind = kind;
-    pname.readOnly = true;
-    if (src.value === sent) dirty = false;
-    // the response carries the new revision (no re-read needed) and whether
-    // this save landed on top of a revision made elsewhere
+    // the response carries the new revision and whether this save landed
+    // on top of a revision made elsewhere; parse it regardless of focus.
     let vr = null;
     try { vr = await r.json(); } catch {}
-    if (vr && vr.rev) curRev = vr.rev;
-    if (vr && vr.conflicted) {
-      st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
-    } else if (dname) st('saved as ' + name + ' (shown as ' + dname + ')');
-    else st(CONTENT() ? 'saved' : 'compiling\u2026');
-    history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
-    // only a CREATE changes the tree. Refetching it after every save was a
-    // 2.3s pier round-trip to learn nothing. Patch the local copy on create.
+    // saved-document bookkeeping, applied whether or not the editor still
+    // shows it, so a New clicked mid-save keeps both documents. Only a
+    // CREATE changes the tree.
     if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent);
-    // the preview already shows this exact body (the input debounce rendered
-    // it). Re-POSTing it after the save was a duplicate 1.8s render.
-    if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
-    else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
+    // live-editor state ONLY if the editor still shows the saved document.
+    // A New or open during the round-trip moved it; rewriting current, the
+    // name field, dirty or the URL here would brand the new page as this save.
+    const stillHere = current === name || (current === null && src.value === sent);
+    if (stillHere) {
+      current = name;
+      curKind = kind;
+      pname.readOnly = true;
+      if (src.value === sent) dirty = false;
+      if (vr && vr.rev) curRev = vr.rev;
+      if (vr && vr.conflicted) {
+        st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
+      } else if (dname) st('saved as ' + name + ' (shown as ' + dname + ')');
+      else st(CONTENT() ? 'saved' : 'compiling\u2026');
+      history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
+      if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
+      else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
+    }
     flushPending();
     if (offCount) replayQueue(true);     // back online: drain the backlog
   }
@@ -3104,10 +3224,13 @@
     //  never over an explicit save already waiting: that one names its kind
     if (saving) { if (!savePending) savePending = true; return; }
     saving = true;
+    // the document this autosave owns. If the user navigates mid-flight,
+    // `current` moves; everything below acts on `target`, not the new current.
+    const target = current;
     const sent = src.value;
     const url = mode === 'know'
-      ? api + '/know-save?key=' + encodeURIComponent(current)
-      : api + '/page-save?name=' + encodeURIComponent(current) +
+      ? api + '/know-save?key=' + encodeURIComponent(target)
+      : api + '/page-save?name=' + encodeURIComponent(target) +
         '&type=' + (curKind || pkind.value);
     let w = { gone: true };
     try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
@@ -3117,31 +3240,33 @@
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
       if (mode === 'know') {
-        if (!(await enqueueKnow(current, sent))) return;
-        if (src.value === sent) dirty = false;
+        if (!(await enqueueKnow(target, sent))) return;
+        if (current === target && src.value === sent) dirty = false;
         flushPending();
         return;
       }
-      if (!(await enqueueSave(current, curKind || pkind.value, sent))) return;
-      if (src.value === sent) dirty = false;
+      if (!(await enqueueSave(target, curKind || pkind.value, sent))) return;
+      if (current === target && src.value === sent) dirty = false;
       flushPending();
       return;
     }
     if (!r.ok) { st('autosave failed' + await errText(r), false); return; }
-    if (src.value === sent) dirty = false;   // typed during the request? stay dirty
     let vr = null;
-    if (mode !== 'know') {
-      try { vr = await r.json(); } catch {}
-      if (vr && vr.rev) curRev = vr.rev;
+    if (mode !== 'know') { try { vr = await r.json(); } catch {} }
+    //  patch the saved doc's local cache regardless of focus. No kind: an
+    //  autosave writes the page's existing kind, it never sets one.
+    if (mode !== 'know') patchLocal(target, null, sent);
+    // live-editor state only if the editor is still on the doc we autosaved
+    if (current === target) {
+      if (src.value === sent) dirty = false;   // typed during the request? stay dirty
+      if (mode !== 'know' && vr && vr.rev) curRev = vr.rev;
+      // the conflict verdict must be the LAST word, not clobbered by the
+      // ordinary confirmation a line later
+      if (vr && vr.conflicted)
+        st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
+      else st('autosaved');
+      if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
     }
-    //  no kind: an autosave writes the page's existing kind, it never sets one
-    if (mode !== 'know') patchLocal(current, null, sent);
-    // the conflict verdict must be the LAST word, not clobbered by the
-    // ordinary confirmation a line later
-    if (vr && vr.conflicted)
-      st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
-    else st('autosaved');
-    if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
     flushPending();
     if (offCount) replayQueue(true);     // this autosave proves the ship is back too
   }
@@ -3658,10 +3783,13 @@
     //  wikilinks, which lattice writes a lot of. The target is a page name, so
     //  it is URI-encoded into the query — a name carrying &, = or quotes must
     //  not smuggle extra params or break out of the href.
+    //  a bare [[a/b/c]] shows just the last segment ("c"), the filename people
+    //  expect, not the whole path. An explicit [[a/b/c|label]] still wins. The
+    //  href/target is unchanged, so navigation and backlinks are unaffected.
     s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
       (_, tgt, label) => '<a href="'
         + mdHref('/apps/lattice/app?name=' + encodeURIComponent(mdUnesc(tgt).trim())) + '">'
-        + (label || tgt) + '</a>');
+        + (label || tgt.trim().replace(/\/+$/, '').split('/').pop() || tgt) + '</a>');
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');
     s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
@@ -4053,6 +4181,19 @@
       prev.src = api + '/f/' + current + '?preview=1&t=' + Date.now();
     }
   }
+  // The way back into view for the pane (the phone's preview tab, or a
+  // desktop view that shows it again). Chromium never paints a sandboxed
+  // frame whose first document loaded while its pane was display:none, or
+  // was replaced by a second write before it painted. Later documents, even
+  // written back to back, paint fine once one has. A phone hides the pane
+  // from boot (the tree tab comes first), so the preview tab stayed blank.
+  // So: a fresh frame, written exactly once while the pane is visible.
+  function showPreview() {
+    const n = prev.cloneNode(false);
+    n.removeAttribute('srcdoc'); n.removeAttribute('src'); n.style.minHeight = '';
+    prev.replaceWith(n); prev = n; fitCur = null;
+    if (CONTENT() || current) refreshPreview(); else prevBlank();
+  }
   let localTimer = null;
   src.addEventListener('input', () => {
     if (!CONTENT()) return;
@@ -4182,6 +4323,9 @@
 <div id="shres" class="muted"></div>
 <h3 class="grouphead">give a group access <a id="aclopen" title="create and edit groups">manage &rarr;</a></h3>
 <div id="grouplist" class="muted"></div>
+<h3>sensitive</h3>
+<label class="muted"><input type="checkbox" id="shsens"> mark sensitive &mdash; agents without clearance can't see or write it</label>
+<div id="shsensres" class="muted"></div>
 </div>
 <div id="orrsec" hidden><h3>orrery</h3><div id="orr"></div></div>`;
       cwurl = $('cwurl');
@@ -4200,6 +4344,7 @@
     // every-target-change hook the grant message does
     renderGroupAccess();
     orreryShow();
+    refreshSensitive(curFolder || current);
     const target = curFolder || current;
     const suffix = curFolder ? '/' : '';
     // Build the public link as DOM, never innerHTML: a page/folder name is
@@ -4297,6 +4442,40 @@
   };
   $('shread').onclick = () => shareWith('read');
   $('shedit').onclick = () => shareWith('edit');
+
+  // ── mark-sensitive: the OPEN page or folder's OWN sensitive flag ─────────
+  // A sensitive page (or folder, inherited by its pages) is invisible to an
+  // agent key without the sensitive clearance, and such a key cannot write it.
+  // The checkbox shows and sets this page's own marker; refreshed on every
+  // target change through showShare, like the grant row above.
+  const refreshSensitive = async (target) => {
+    const cb = $('shsens');
+    if (!cb) return;
+    $('shsensres').textContent = '';
+    if (!target) { cb.checked = false; cb.disabled = true; return; }
+    cb.disabled = false;
+    try {
+      const r = await fetch(api + '/page-sensitive?name=' + encodeURIComponent(target));
+      const on = r.ok && (await r.json()).on === true;
+      // the target can change while this GET is in flight (same bug class the
+      // showShare comment documents): only apply if it is still current.
+      if ((curFolder || current) !== target) return;
+      cb.checked = on;
+    } catch { if ((curFolder || current) === target) cb.checked = false; }
+  };
+  $('shsens').onchange = async () => {
+    const target = curFolder || current;
+    const cb = $('shsens');
+    if (!target) { st('open a page first', false); cb.checked = false; return; }
+    cb.disabled = true;
+    const r = await mutate(api + '/page-sensitive?name=' + encodeURIComponent(target) +
+      '&on=' + (cb.checked ? '1' : '0'));
+    cb.disabled = false;
+    if (!r || !r.ok) { cb.checked = !cb.checked; st('sensitive failed' + await errText(r), false); return; }
+    $('shsensres').textContent = cb.checked
+      ? target + ' is sensitive'
+      : target + ' is no longer sensitive';
+  };
 
   // ── per-file group access ────────────────────────────────────────────────
   // The same read/edit grant as the ship row above, but pointed at a group
@@ -4712,6 +4891,35 @@
   //  as paper-web.html without either name carrying an extension itself.
   const texOut = (name) => name + '-web';
 
+  //  pandoc copies \href and \includegraphics targets through as written,
+  //  and the output is saved as an html page of OUR OWN, which runs as the
+  //  owner. A .tex a peer may edit could carry a javascript: link or a
+  //  remote media source. Links keep http(s), mailto and relative targets.
+  //  Media keeps relative sources only, so viewing the page tells no other
+  //  host. Anything that embeds or runs is dropped. A <template> parses
+  //  inertly: nothing in it loads or runs while it is cleaned.
+  const TEX_DROP = 'script,style,iframe,frame,object,embed,video,audio,source,track,form,base,meta,link,svg';
+  const TEX_SRC = ['src', 'srcset', 'poster', 'action', 'formaction', 'data', 'background'];
+  function cleanTexHtml(html) {
+    const t = document.createElement('template');
+    t.innerHTML = html;
+    t.content.querySelectorAll(TEX_DROP).forEach((e) => e.remove());
+    for (const e of t.content.querySelectorAll('*')) {
+      for (const a of [...e.attributes]) {
+        const n = a.name.toLowerCase();
+        //  browsers drop these characters inside a scheme ("java\tscript:")
+        //  and read a backslash as a slash ("\\host" is "//host")
+        const v = a.value.replace(/[\u0000-\u0020]/g, '').replace(/\\/g, '/');
+        const abs = /^[a-z][a-z0-9+.-]*:|^\/\//i.test(v);
+        const bad = n.startsWith('on')
+          || ((n === 'href' || n === 'xlink:href') && abs && !/^(https?|mailto):/i.test(v))
+          || (TEX_SRC.includes(n) && abs);
+        if (bad) e.removeAttribute(a.name);
+      }
+    }
+    return t.innerHTML;
+  }
+
   let texProbe = null;         // last probe result, per page open
 
   const texBtn = () => $('texconv');
@@ -4798,7 +5006,7 @@
     const out = texOut(current);
     stWork('converting with pandoc…');
     let html = null;
-    try { html = await rust.invoke('convert_tex', { src: src.value }); }
+    try { html = cleanTexHtml(await rust.invoke('convert_tex', { src: src.value })); }
     catch (e) {
       //  pandoc names the line and the construct it choked on. Show that,
       //  not a generic failure.
@@ -4876,7 +5084,7 @@
     texBusy = true;
     let html = null;
     let err = null;
-    try { html = await rust.invoke('convert_tex', { src: body }); }
+    try { html = cleanTexHtml(await rust.invoke('convert_tex', { src: body })); }
     catch (e) { err = String(e && e.message ? e.message : e); }
     texBusy = false;
     //  A broken document must SAY so. Freezing the last good render would
@@ -5632,13 +5840,17 @@
       const when = m && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]));
       const label = when && when.toLocaleString(undefined,
         { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
-      a.textContent = '#' + v.rev + (label ? ' \u00b7 ' + label : '');
+      // label by timestamp, not the raw clay revision id. prune-hist thins
+      // keystroke-scale autosaves, so the id skips (1, 2, 16) and the gaps
+      // read as missing versions. The id lives on dataset.rev for restore.
+      a.textContent = label || ('rev ' + v.rev);
+      a.dataset.rev = v.rev;
       a.className = v.rev === viewingRev ? 'on' : '';
-      a.onclick = () => openRev(v.rev);
+      a.onclick = () => openRev(v.rev, label);
       histList.appendChild(a);
     }
   }
-  async function openRev(rev) {
+  async function openRev(rev, lbl) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
@@ -5667,8 +5879,8 @@
     render(); sync();
     histView.hidden = false;
     for (const a of histList.children)
-      a.className = a.textContent.split(' ')[0] === '#' + rev ? 'on' : '';
-    st('viewing rev ' + rev + ' \u00b7 read-only');
+      a.className = +a.dataset.rev === rev ? 'on' : '';
+    st('viewing ' + (lbl || 'an earlier version') + ' \u00b7 read-only');
     if (mode !== 'know' && CONTENT()) refreshPreview();
   }
   $('hback').onclick = () => {
@@ -5687,7 +5899,7 @@
       if (!r.ok) { st('restore failed' + await errText(r), false); return; }
       knowGen++;
       await openKnow(current);   // repaints body + tags from the restored entry
-      st('restored rev ' + rev + ' as the newest revision');
+      st('restored that version as the newest revision');
       loadHistory();
       return;
     }
@@ -5697,7 +5909,7 @@
     await save(kind);      // under the revision's OWN kind, not the current select
     // save() reports its own failures and leaves dirty SET on every path
     // that did not durably hold the body — do not paint success over that
-    if (!dirty) st('restored rev ' + rev + ' as the newest revision');
+    if (!dirty) st('restored that version as the newest revision');
     loadHistory();
   };
 
@@ -6242,6 +6454,10 @@
       b.className = 'ico' + (on ? ' on' : '');
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
+    // keep the vim indicator in step with the view: it reads PREVIEW in
+    // preview-only. setInd is exposed by 27-vim.js (it lives in that file's
+    // own IIFE); guard in case that file is absent. A no-op when vim is off.
+    if (window.latVimSetInd) window.latVimSetInd();
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
   $('wrapt').onclick = () => flip('appWrap');
@@ -6253,9 +6469,13 @@
       localStorage.appView = v;
       applyToggles();
       // the preview skipped its renders while off screen (60-preview.js)
-      if (hidden && v !== 'edit') refreshPreview();
+      if (hidden && v !== 'edit') showPreview();
     };
-  applyToggles();
+  // A throw in this boot-time layout pass must NOT halt the rest of app boot:
+  // the initial tree load and navigation wiring run in a later file (90-sync),
+  // so an uncaught error here blanks the whole app (that was the setInd bug).
+  // Contain it — a broken layout widget is survivable; a dead tree is not.
+  try { applyToggles(); } catch (e) { console.error('[lattice] layout init failed', e); }
 
   // ── mobile: full-screen editing ──────────────────────────────────────────
   // Created here rather than in <lat-bar>, and appended to #ws, because it has
@@ -6283,14 +6503,14 @@
   };
   fullt.onclick = () => setFull(!ws.classList.contains('full'));
   ws.appendChild(fullt);
-  setFull(localStorage.appFull === '1');
+  try { setFull(localStorage.appFull === '1'); } catch (e) { console.error('[lattice] full-screen init failed', e); }
 
   const isMobile = () => matchMedia('(max-width: 820px)').matches;
   const setMv = (v) => {
     ws.dataset.mv = v;
     for (const x of document.querySelectorAll('.mtabs button'))
       x.className = x.dataset.mv === v ? 'on' : '';
-    if (v === 'prev') refreshPreview();
+    if (v === 'prev') showPreview();
   };
   for (const b of document.querySelectorAll('.mtabs button'))
     b.onclick = () => setMv(b.dataset.mv);

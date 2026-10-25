@@ -107,6 +107,15 @@
     (expect-eq !>(&) !>((on "accurate to about 10 m" (ll 'cmd=51.5,7.25,10' ~ t0))))
     (expect-eq !>(`(unit @dr)`[~ ~m15]) !>(wake:(ll 'cmd=51.5,7.25,10,15' ~ t0)))
   ==
+::  the accuracy lands in the state comment, so one that could end it or
+::  split its fields is dropped and the position still shows
+++  test-loc-accuracy-alphabet
+  =/  r  (ll 'cmd=51.5,7.25,1--><b>x|9;' ~ t0)
+  ;:  weld
+    (expect-eq !>(&) !>((on "51.5, 7.25" r)))
+    (expect-eq !>(|) !>((on "<b>x" r)))
+    (expect-eq !>(|) !>((on "accurate to about" r)))
+  ==
 ::  a share ends AT its deadline, not a moment after
 ++  test-loc-deadline
   =/  b1=tape  (body (ll 'cmd=51.5,7.25,10,15' ~ t0))
@@ -135,5 +144,27 @@
   ;:  weld
     (expect-eq !>(&) !>((on "cy=\"100\"" (ll 'cmd=51.508000,7.25' `b1 t0))))
     (expect-eq !>(&) !>(?=(~ (find "<circle" (body (ll 'cmd=51.508000,7.25' `b1x t0))))))
+  ==
+::  +style-text: a theme cannot end its own <style> element
+++  test-style-text
+  ;:  weld
+    %+  expect-eq  !>("body\{color:red}")
+      !>((style-text:pg 'body{color:red}'))
+    %+  expect-eq  !>("a\{}<\\/style><script>x<\\/script>")
+      !>((style-text:pg 'a{}</style><script>x</script>'))
+    %+  expect-eq  !>('a::after{content:"<\\/"}')
+      !>((crip (style-text:pg 'a::after{content:"</"}')))
+    (expect-eq !>(|) !>(?=(^ (find "</" (style-text:pg 'x</STYLE></style</')))))
+  ==
+::  +folder-index: node names are markup-escaped, not spliced raw
+++  test-folder-index-escapes-names
+  =/  deps=(list [path *])
+    ~[[/page/site `(list entry:pg)`~[[/ok %.y] [/'x"><b id=v02>' %.y]]]]
+  =/  r  (folder-index:pg deps /site)
+  =/  out=tape  (trip ;;(@t (need dat.r)))
+  ;:  weld
+    (expect-eq !>(&) !>(?=(^ (find "/ok\">ok</a>" out))))
+    (expect-eq !>(|) !>(?=(^ (find "<b id=v02>" out))))
+    (expect-eq !>(&) !>(?=(^ (find "&lt;b id=v02&gt;" out))))
   ==
 --

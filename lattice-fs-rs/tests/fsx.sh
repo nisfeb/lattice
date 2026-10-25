@@ -14,7 +14,9 @@
 # last self-contained revision, and it is the classic NeXT/Apple fsx.
 #
 # Exits 0 and prints a reason when it cannot run (no cc, no network, no FUSE),
-# so it stays usable as a CI step on a box that lacks any of those.
+# so it stays usable as a CI step on a box that lacks any of those. The reason
+# is a GitHub Actions ::warning:: so a skip shows on the run summary. With
+# REQUIRE_FSX=1 (the nightly job) a skip exits 1 instead, here and in fsx.rs.
 
 set -eu
 
@@ -26,22 +28,26 @@ url=https://raw.githubusercontent.com/linux-test-project/ltp/20230127/testcases/
 
 mkdir -p "$root/target"
 
+skip() {
+	echo "::warning::fsx skipped: $1"
+	[ "${REQUIRE_FSX:-}" = 1 ] && exit 1
+	exit 0
+}
+
 if [ ! -x "$bin" ]; then
-	command -v cc >/dev/null 2>&1 || { echo "skipped: no cc to build fsx"; exit 0; }
+	command -v cc >/dev/null 2>&1 || skip "no cc to build fsx"
 	if [ ! -f "$src" ]; then
 		echo "fetching fsx from LTP 20230127..."
 		curl -fsSL -o "$src.tmp" "$url" || {
 			rm -f "$src.tmp"
-			echo "skipped: could not fetch fsx (no network?)"
-			exit 0
+			skip "could not fetch fsx (no network?)"
 		}
 		mv "$src.tmp" "$src"
 	fi
 	# -include libgen.h: the 2023 source calls basename() without including it,
 	# which is a hard error under a C99-or-later default (clang 15+, gcc 14+).
 	cc -O1 -w -include libgen.h -o "$bin" "$src" || {
-		echo "skipped: fsx did not compile here"
-		exit 0
+		skip "fsx did not compile here"
 	}
 fi
 

@@ -2,11 +2,14 @@
 //! login cookie, reusing the +code -> cookie flow (read once, keep only the
 //! cookie, mode 600). Freshness uses the core's TTL poll (watch is a no-op).
 
-use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use crate::transport::{TErr, Transport};
+use crate::transport::{TErr, Transport, MAX_BODY};
 
 /// How much of an HTTP error body a TErr message may carry. The whole body is
 /// what the ship wanted to say, but it can be an HTML error page, and this
@@ -16,47 +19,280 @@ const DETAIL_MAX: usize = 200;
 
 /// The agent every ordinary request goes through: pooled connections (so a
 /// mount's steady traffic isn't paying a fresh handshake per call), bounded
-/// on the CONNECT phase only. Without this, `ureq::request`'s bare default
-/// agent has no timeout at all, and a dead pier or a stale URL hangs at SYN
-/// forever — one FUSE call away from the uninterruptible wedge mounts.rs's
-/// own comment warns about. No read timeout: a slow-but-alive ship (a big
-/// page-dump, a busy pier) still has to be allowed to finish, the same
-/// reasoning as the beacon watch's agent and proxy.rs's shared one.
+/// on CONNECT and on each socket read and write. Without them a dead pier, a
+/// stale URL or a ship that stops mid-reply hangs a FUSE call forever: the
+/// uninterruptible wedge mounts.rs's own comment warns about. The read bound
+/// is per read, not per reply, so a slow-but-alive ship (a big page-dump, a
+/// busy pier) still finishes. It matches lick's 120s deadline. The beacon
+/// watch keeps its own agent with no read timeout, since it idles by design.
+///
+/// Never follows a redirect. The +code login and every cookie-bearing
+/// request go through here, and a redirect could carry them to a host the
+/// URL rule never checked. A 3xx comes back to do_req as an error instead.
 fn req_agent() -> &'static ureq::Agent {
     static A: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
     A.get_or_init(|| {
+        let io = std::time::Duration::from_secs(120);
         ureq::AgentBuilder::new()
+            .redirects(0)
             .timeout_connect(std::time::Duration::from_secs(10))
+            .timeout_read(io)
+            .timeout_write(io)
             .build()
     })
 }
 
+/// Where a ship URL points: scheme, host and port. The host is lower case,
+/// with no IPv6 brackets and no trailing dot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    pub scheme: String,
+    pub host: String,
+    pub port: u16,
+}
+
+impl Origin {
+    /// The cookie file for this origin: `cookie-<scheme>-<host>-<port>`. Any
+    /// byte that is not safe in a file name becomes `_`.
+    pub fn cookie_file_name(&self) -> String {
+        let raw = format!("cookie-{}-{}-{}", self.scheme, self.host, self.port);
+        raw.chars()
+            .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+            .collect()
+    }
+}
+
+impl std::fmt::Display for Origin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.host.contains(':') {
+            write!(f, "{}://[{}]:{}", self.scheme, self.host, self.port)
+        } else {
+            write!(f, "{}://{}:{}", self.scheme, self.host, self.port)
+        }
+    }
+}
+
+/// Split a ship URL into its origin. Only http and https are accepted.
+pub fn origin_of(url: &str) -> Result<Origin, String> {
+    let url = url.trim();
+    // a browser or the url crate drops tab, CR and LF inside a URL, and
+    // reads a backslash as a slash, so the host it connects to is not the
+    // one a plain split sees: "http://8.8.8.8\x.local" went to 8.8.8.8 with
+    // the +code in the clear (security audit run-1)
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(format!("{url:?}: a ship URL may not hold spaces or control characters"));
+    }
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| format!("{url:?} is not a ship URL (want https://host or http://host:port)"))?;
+    let scheme = scheme.to_ascii_lowercase();
+    let default_port = match scheme.as_str() {
+        "https" => 443,
+        "http" => 80,
+        _ => return Err(format!("{url:?}: the scheme must be http or https")),
+    };
+    let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or("");
+    if authority.contains('@') {
+        return Err(format!("{url:?}: a ship URL may not carry a user name or password"));
+    }
+    let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
+        let (h, after) = v6
+            .split_once(']')
+            .ok_or_else(|| format!("{url:?}: unclosed [ in the host"))?;
+        match after {
+            "" => (h, None),
+            p => match p.strip_prefix(':') {
+                Some(p) => (h, Some(p)),
+                None => return Err(format!("{url:?}: junk after the IPv6 host")),
+            },
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (authority, None),
+        }
+    };
+    let port = match port {
+        None | Some("") => default_port,
+        Some(p) => p.parse().map_err(|_| format!("{url:?}: bad port {p:?}"))?,
+    };
+    let host = host.to_ascii_lowercase();
+    let host = host.strip_suffix('.').unwrap_or(&host).to_string();
+    if host.is_empty() {
+        return Err(format!("{url:?}: no host"));
+    }
+    Ok(Origin { scheme, host, port })
+}
+
+/// Whether plain http to this host stays on this machine or the local net:
+/// loopback, a private or CGNAT (Tailscale) range, a ULA, or a `.local`,
+/// `.localhost` or `.ts.net` name.
+fn host_is_local(host: &str) -> bool {
+    if host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".ts.net")
+    {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<Ipv4Addr>() {
+        let [a, b, ..] = ip.octets();
+        let cgnat = a == 100 && (b & 0xc0) == 64;
+        return ip.is_loopback() || ip.is_private() || cgnat;
+    }
+    if let Ok(ip) = host.parse::<Ipv6Addr>() {
+        let ula = (ip.segments()[0] & 0xfe00) == 0xfc00;
+        return ip == Ipv6Addr::LOCALHOST || ula;
+    }
+    false
+}
+
+/// The ship URL rule, the same in every lattice client. https is always
+/// fine. Plain http is fine only to a loopback or LAN host, because over
+/// http the +code and the session cookie cross the wire in the clear.
+pub fn check_ship_url(url: &str) -> Result<Origin, String> {
+    let o = origin_of(url)?;
+    if o.scheme == "https" || host_is_local(&o.host) {
+        return Ok(o);
+    }
+    Err(format!(
+        "refusing {url}: plain http to {} would send the +code and session cookie in the clear. \
+         Use https, or a loopback/LAN address (localhost, 127.x, 10.x, 172.16-31.x, 192.168.x, \
+         100.64-127.x, ::1, fc00::/7, *.local, *.ts.net)",
+        o.host
+    ))
+}
+
+/// The origin record that sits next to a cookie file. It names the one
+/// origin the cookie belongs to.
+fn record_path(cookie_path: &str) -> String {
+    format!("{cookie_path}.origin")
+}
+
+/// The global cookie file name older builds used for every ship.
+const LEGACY_NAME: &str = "cookie";
+
+/// The cookie at `path`, if it may go to `o`. A record for another origin
+/// always says no. With no record at all, a per-origin file is trusted,
+/// since its caller chose it for this origin (the desktop shell keeps its
+/// own per-origin files without records). The legacy global file is not:
+/// with no record, nothing says which ship it came from.
+fn read_cookie_for(path: &str, o: &Origin) -> Option<String> {
+    match std::fs::read_to_string(record_path(path)) {
+        Ok(rec) if rec.trim() != o.to_string() => return None,
+        Ok(_) => {}
+        Err(_) if Path::new(path).file_name()? == LEGACY_NAME => return None,
+        Err(_) => {}
+    }
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Load the cookie for origin `o`.
+///
+/// Migration. Older builds kept one global `cookie` file, whatever ship it
+/// came from, so a changed URL sent one ship's session to another. Now each
+/// origin has its own file, and store() writes an origin record next to
+/// every cookie. If `path` has no usable cookie, the global `cookie` beside
+/// it is read, but only when its record names this same origin. A global
+/// cookie left by an older build has no record, so it is never reused. The
+/// next `auth`, or a LATTICE_CODE re-login, writes a fresh one.
+fn load_cookie(path: &str, o: &Origin) -> Option<String> {
+    if let Some(c) = read_cookie_for(path, o) {
+        return Some(c);
+    }
+    let legacy = Path::new(path).with_file_name(LEGACY_NAME);
+    let legacy = legacy.to_str()?;
+    if legacy == path {
+        return None;
+    }
+    read_cookie_for(legacy, o)
+}
+
+/// Write `data` to `path` so that only the owner can ever read it.
+///
+/// The dir is made 0700 if it is new. The bytes go to a fresh temp file
+/// (0600, O_NOFOLLOW, never an existing file), which is then renamed over
+/// `path`. A reader sees the old file or the new one, never half of one, and
+/// a symlink planted at `path` is replaced, not followed. Every error is
+/// returned, so a cookie we could not lock down is never reported as stored.
+fn write_private(path: &Path, data: &str) -> std::io::Result<()> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "no file name"))?;
+    let tmp = dir.join(format!(
+        ".{}.{}.{}.tmp",
+        name.to_string_lossy(),
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let res = (|| {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&tmp)?;
+        // the umask can only narrow the mode above, but pin it anyway, the
+        // same 0600 an older build set on a file that was already there
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(data.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
 pub struct EyreTransport {
     base: String, // bare Eyre base. Login is at /~/login
+    // the URL rule's verdict on `base`. Every request checks it first, so a
+    // refused URL never sees the +code or the cookie.
+    origin: Result<Origin, String>,
     cookie: Mutex<Option<String>>,
     cookie_path: String,
 }
 
 impl EyreTransport {
     pub fn new(base: &str, cookie_path: &str) -> Self {
-        let cookie = std::fs::read_to_string(cookie_path)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+        let origin = check_ship_url(base);
+        let cookie = origin.as_ref().ok().and_then(|o| load_cookie(cookie_path, o));
         Self {
             base: base.trim_end_matches('/').to_string(),
+            origin,
             cookie: Mutex::new(cookie),
             cookie_path: cookie_path.to_string(),
         }
     }
 
+    fn checked(&self) -> Result<&Origin, TErr> {
+        self.origin.as_ref().map_err(|e| TErr::new(0, e.clone()))
+    }
+
     /// POST /~/login with the +code. Keep only the derived urbauth cookie.
+    ///
+    /// Refused outright when the URL fails the ship URL rule. That also
+    /// covers the silent re-login in do_req, so LATTICE_CODE is only ever
+    /// sent to a URL that passed it. The agent follows no redirects, so the
+    /// +code goes to this one URL and nowhere else.
     pub fn login(&self, code: Option<String>) -> Result<(), TErr> {
+        self.checked()?;
         let code = code
             .or_else(|| std::env::var("LATTICE_CODE").ok())
             .ok_or_else(|| TErr::new(401, "no +code (set LATTICE_CODE or run `auth` on a tty)"))?;
         let body = format!("password={}", urlencode(code.trim()));
-        let resp = ureq::post(&format!("{}/~/login", self.base))
+        let resp = req_agent()
+            .post(&format!("{}/~/login", self.base))
             .set("Content-Type", "application/x-www-form-urlencoded")
             .send_string(&body);
         let resp = match resp {
@@ -77,12 +313,19 @@ impl EyreTransport {
     }
 
     fn store(&self, ck: &str) -> Result<(), TErr> {
-        if let Some(dir) = std::path::Path::new(&self.cookie_path).parent() {
-            let _ = std::fs::create_dir_all(dir);
+        let origin = self.checked()?.to_string();
+        let werr = |e: std::io::Error| TErr::new(500, format!("cookie write: {e}"));
+        // Drop the old origin record first. If we die part way, the new
+        // cookie is left with no record, and so it is never sent. It is never
+        // left under a record that names some other origin.
+        let rec = record_path(&self.cookie_path);
+        match std::fs::remove_file(&rec) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(werr(e)),
         }
-        std::fs::write(&self.cookie_path, ck)
-            .map_err(|e| TErr::new(500, format!("cookie write: {e}")))?;
-        let _ = std::fs::set_permissions(&self.cookie_path, std::fs::Permissions::from_mode(0o600));
+        write_private(Path::new(&self.cookie_path), ck).map_err(werr)?;
+        write_private(Path::new(&rec), &origin).map_err(werr)?;
         *self.cookie.lock().unwrap() = Some(ck.to_string());
         Ok(())
     }
@@ -108,6 +351,7 @@ impl EyreTransport {
         body: Option<&[u8]>,
         retry: bool,
     ) -> Result<Vec<u8>, TErr> {
+        self.checked()?;
         let url = self.url(path, query);
         let cookie = self.cookie.lock().unwrap().clone().unwrap_or_default();
         let req = req_agent().request(method, &url).set("Cookie", &cookie);
@@ -116,11 +360,25 @@ impl EyreTransport {
             None => req.call(),
         };
         match resp {
+            // the agent follows no redirects, so a 3xx lands here. Following
+            // it by hand would send the cookie somewhere the URL rule never
+            // looked, so it is an error.
+            Ok(r) if (300..400).contains(&r.status()) => {
+                let code = r.status();
+                let to = r.header("location").unwrap_or("").to_string();
+                Err(TErr::new(code, format!("http {code}: redirect to {to:?} not followed")))
+            }
             Ok(r) => {
+                // Read one byte past the cap, so an oversized reply is an error
+                // and never a silently cut body.
                 let mut buf = Vec::new();
                 r.into_reader()
+                    .take(MAX_BODY as u64 + 1)
                     .read_to_end(&mut buf)
                     .map_err(|e| TErr::new(0, format!("read: {e}")))?;
+                if buf.len() > MAX_BODY {
+                    return Err(TErr::new(0, format!("read: reply over {MAX_BODY} bytes")));
+                }
                 Ok(buf)
             }
             Err(ureq::Error::Status(code, resp)) => {
@@ -193,6 +451,11 @@ impl Transport for EyreTransport {
     fn watch(&self, on_event: &(dyn Fn(crate::transport::WatchEvent) + Send + Sync)) {
         use crate::transport::WatchEvent as W;
         use std::io::BufRead;
+        // a refused URL gets no stream and no cookie. The TTL poll still
+        // runs, and every request it makes fails with the rule's message.
+        if self.origin.is_err() {
+            return;
+        }
         let url = format!(
             "{}/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev",
             self.base
@@ -293,7 +556,6 @@ fn pages_changed(name: Option<&str>) -> bool {
 mod tests {
     use super::*;
     use proptest::prelude::*;
-    use std::io::Write as _;
     use std::net::TcpListener;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -405,17 +667,24 @@ mod tests {
         // process full owner authority.
         let dir = tmpdir("store");
         let p = dir.join("nested").join("cookie");
-        let t = EyreTransport::new("http://host", p.to_str().unwrap());
+        let t = EyreTransport::new("http://localhost", p.to_str().unwrap());
         assert!(t.ship().is_err(), "no cookie yet means no ship, not an empty name");
 
         t.store("urbauth-~tyr=0v1.abcde").unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "urbauth-~tyr=0v1.abcde");
         let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "a session cookie must not be readable by anyone else");
+        let dmode = std::fs::metadata(p.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dmode, 0o700, "a new cookie dir is the owner's alone");
+        assert_eq!(
+            std::fs::read_to_string(format!("{}.origin", p.display())).unwrap(),
+            "http://localhost:80",
+            "the cookie is tagged with the one origin it belongs to"
+        );
         assert_eq!(t.ship().unwrap(), "~tyr");
         // and it is picked back up on the next run
         assert_eq!(
-            EyreTransport::new("http://host", p.to_str().unwrap()).ship().unwrap(),
+            EyreTransport::new("http://localhost", p.to_str().unwrap()).ship().unwrap(),
             "~tyr"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -499,6 +768,180 @@ mod tests {
         // test caught a login only when it happened to fail for want of
         // LATTICE_CODE, which another test sets for the whole process
         assert_eq!(s.seen().len(), 1, "one request, no login: {:?}", s.seen());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_ship_url_rule_allows_https_and_local_http_only() {
+        for ok in [
+            "https://ship.example.com",
+            "HTTPS://Ship.Example.com:8443/x",
+            "http://localhost:8080",
+            "http://LOCALHOST",
+            "http://ship.localhost",
+            "http://127.0.0.1:8080",
+            "http://127.9.9.9",
+            "http://10.1.2.3",
+            "http://172.16.0.1",
+            "http://172.31.255.255",
+            "http://192.168.1.10:8080",
+            "http://100.64.0.1",
+            "http://100.127.255.255",
+            "http://[::1]:8080",
+            "http://[fc00::1]",
+            "http://[FD12:3456::1]:80",
+            "http://pier.local",
+            "http://pier.local.",
+            "http://ship.tail1234.ts.net",
+        ] {
+            assert!(check_ship_url(ok).is_ok(), "{ok} should pass: {:?}", check_ship_url(ok));
+        }
+        for bad in [
+            "http://ship.example.com",
+            "http://8.8.8.8",
+            "http://172.32.0.1",
+            "http://100.128.0.1",
+            "http://[2001:db8::1]",
+            "http://[::ffff:127.0.0.1]",
+            "http://local",
+            "http://evil.com/.local",
+            "http://localhost.evil.com",
+            "http://user@localhost",
+            "ftp://localhost",
+            "localhost:8080",
+            "http://",
+            "http://localhost:99999",
+            // a backslash ends the host for a browser and the url crate
+            "http://8.8.8.8\\x.local",
+            "http://8.8.8.8:80\\x.local",
+            "http://ship.example.com\\.local",
+            "http://localhost\t.evil.com",
+            "http://8.8.8.8\n.local",
+            "http://8.8.8.8\r.local",
+            "http://8.8.8.8 .local",
+        ] {
+            assert!(check_ship_url(bad).is_err(), "{bad:?} must be refused");
+        }
+        let e = check_ship_url("http://ship.example.com").unwrap_err();
+        assert!(e.contains("Use https, or a loopback/LAN address"), "{e}");
+    }
+
+    // the host and port the rule judges must be the ones ureq connects to,
+    // which come from the url crate. Every URL the rule accepts parses the
+    // same way there.
+    #[test]
+    fn the_rule_reads_a_url_as_the_url_crate_does() {
+        for u in [
+            "https://ship.example.com",
+            "HTTPS://Ship.Example.com:8443/x",
+            "http://localhost:8080/apps",
+            "http://127.0.0.1:8080?x",
+            "http://[::1]:8080#f",
+            "http://pier.local",
+            "http://localhost\\x.example.com",
+            "https://ship.example.com\\x",
+        ] {
+            let ours = check_ship_url(u).unwrap_or_else(|e| panic!("{u}: {e}"));
+            let theirs = url::Url::parse(u).unwrap();
+            let host = theirs.host_str().unwrap().trim_start_matches('[').trim_end_matches(']');
+            assert_eq!(ours.host, host, "{u}");
+            assert_eq!(ours.port, theirs.port_or_known_default().unwrap(), "{u}");
+        }
+    }
+
+    #[test]
+    fn a_refused_url_never_sees_the_code_or_the_cookie() {
+        // no server behind it: the rule must refuse before any connect
+        let dir = tmpdir("refused");
+        let t = EyreTransport::new("http://ship.example.com", dir.join("cookie").to_str().unwrap());
+        let e = t.login(Some("lidlut-tabwed".into())).unwrap_err();
+        assert!(e.msg.contains("Use https"), "{}", e.msg);
+        let e = t.get_bytes("/x", &[]).unwrap_err();
+        assert!(e.msg.contains("Use https"), "{}", e.msg);
+        assert!(t.store("urbauth-~tyr=0v1").is_err(), "and no cookie is ever stored for it");
+        assert!(!dir.join("cookie").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cookie_is_only_sent_to_the_origin_that_minted_it() {
+        let dir = tmpdir("origin");
+        let p = dir.join("cookie-http-localhost-8080");
+        let a = EyreTransport::new("http://localhost:8080", p.to_str().unwrap());
+        a.store("urbauth-~tyr=0v1").unwrap();
+        // the same file under another origin: its record says no
+        let b = EyreTransport::new("http://127.0.0.1:8080", p.to_str().unwrap());
+        assert!(b.ship().is_err(), "another origin must not pick the cookie up");
+
+        // an old global cookie with no record is never reused
+        let legacy = dir.join("cookie");
+        std::fs::write(&legacy, "urbauth-~zod=0vold").unwrap();
+        let c = EyreTransport::new("http://localhost:9090", dir.join("cookie-x").to_str().unwrap());
+        assert!(c.ship().is_err(), "a legacy cookie with no origin record is not trusted");
+        let g = EyreTransport::new("http://localhost:9090", legacy.to_str().unwrap());
+        assert!(g.ship().is_err(), "not even through its own path");
+
+        // but a global cookie whose record names this origin is reused, and
+        // only by that origin
+        g.store("urbauth-~zod=0vnew").unwrap();
+        let d = EyreTransport::new("http://localhost:9090", dir.join("cookie-y").to_str().unwrap());
+        assert_eq!(d.ship().unwrap(), "~zod", "the same origin may reuse the global cookie");
+        let e = EyreTransport::new("http://localhost:9091", dir.join("cookie-z").to_str().unwrap());
+        assert!(e.ship().is_err(), "a different port is a different origin");
+
+        // a per-origin file with no record was picked for this origin by its
+        // caller (the desktop shell writes these), so it is used
+        let own = dir.join("cookie-http-localhost-7070");
+        std::fs::write(&own, "urbauth-~nec=0v7").unwrap();
+        let f = EyreTransport::new("http://localhost:7070", own.to_str().unwrap());
+        assert_eq!(f.ship().unwrap(), "~nec");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_symlink_at_the_cookie_path_is_replaced_not_followed() {
+        let dir = tmpdir("symlink");
+        let target = dir.join("victim");
+        std::fs::write(&target, "keep me").unwrap();
+        let p = dir.join("cookie");
+        std::os::unix::fs::symlink(&target, &p).unwrap();
+        let t = EyreTransport::new("http://localhost", p.to_str().unwrap());
+        t.store("urbauth-~tyr=0v1").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me", "the link target is untouched");
+        assert!(!std::fs::symlink_metadata(&p).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "urbauth-~tyr=0v1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unwritable_cookie_dir_is_an_error_not_a_silent_success() {
+        let dir = tmpdir("ro");
+        let sub = dir.join("locked");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let t = EyreTransport::new("http://localhost", sub.join("cookie").to_str().unwrap());
+        let r = t.store("urbauth-~tyr=0v1");
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // root ignores the mode bits, so only a normal user can see the error
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(r.is_err(), "a cookie we could not write must not count as stored");
+            assert!(t.ship().is_err());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_redirect_is_never_followed_with_the_cookie() {
+        // one reply only: if the agent followed the Location, it would hang
+        // on a second connect that nobody answers, or reach another host
+        let s = stub(vec![(302, "", Some("x=y\r\nLocation: /elsewhere"))]);
+        let dir = tmpdir("redirect");
+        let t = EyreTransport::new(&s.base, dir.join("cookie").to_str().unwrap());
+        t.store("urbauth-~tyr=0v1").unwrap();
+        let e = t.get_bytes("/x", &[]).unwrap_err();
+        assert_eq!(e.code, 302, "{}", e.msg);
+        assert!(e.msg.contains("not followed"), "{}", e.msg);
+        assert_eq!(s.seen().len(), 1, "exactly one request: {:?}", s.seen());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

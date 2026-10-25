@@ -11,7 +11,9 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -121,10 +123,35 @@ pub async fn convert_tex(src: String) -> Result<String, String> {
 /// costs that one conversion an error and the next one looks again.
 static FOUND: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+/// Cap concurrent conversions. convert_tex is granted to the ship page and the
+/// live preview fires one per keystroke, so a burst of input must not spawn an
+/// unbounded number of pandoc processes. The slot is released on drop, so every
+/// return path (success, error, timeout) frees it.
+static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+struct ConvertSlot;
+impl ConvertSlot {
+    fn acquire() -> Result<Self, String> {
+        const MAX: usize = 4;
+        if IN_FLIGHT.fetch_add(1, Ordering::SeqCst) >= MAX {
+            IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+            return Err("too many conversions in progress; try again".to_string());
+        }
+        Ok(ConvertSlot)
+    }
+}
+impl Drop for ConvertSlot {
+    fn drop(&mut self) {
+        IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// The conversion's actual work, sync so the tests need no runtime.
 fn convert(src: &str) -> Result<String, String> {
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::process::Stdio;
+
+    // cap concurrent conversions before doing any work; freed on return
+    let _slot = ConvertSlot::acquire()?;
 
     let cached = FOUND.lock().unwrap().clone();
     let exe = match cached {
@@ -134,8 +161,13 @@ fn convert(src: &str) -> Result<String, String> {
         })?,
     };
 
+    // --sandbox: the tex comes from the ship, so a key or an edit-granted
+    // peer may have written it. Without the flag, \input and
+    // \lstinputlisting read any file this user can read into the page
+    // (security audit run-1). pandoc older than 2.15 refuses the flag, and
+    // failing then is right: never convert unsandboxed.
     let spawned = Command::new(&exe)
-        .args(["-f", "latex", "-t", "html5", "--mathml"])
+        .args(["-f", "latex", "-t", "html5", "--mathml", "--sandbox"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -143,29 +175,62 @@ fn convert(src: &str) -> Result<String, String> {
     *FOUND.lock().unwrap() = spawned.is_ok().then(|| exe.clone());
     let mut child = spawned.map_err(|e| format!("could not run pandoc: {e}"))?;
 
-    child
-        .stdin
-        .as_mut()
-        .ok_or("could not write to pandoc")?
-        .write_all(src.as_bytes())
-        .map_err(|e| format!("could not write to pandoc: {e}"))?;
+    // write the source and close stdin so pandoc sees EOF, then read its
+    // output on threads so a full pipe cannot deadlock the wait below.
+    {
+        let mut stdin = child.stdin.take().ok_or("could not write to pandoc")?;
+        stdin
+            .write_all(src.as_bytes())
+            .map_err(|e| format!("could not write to pandoc: {e}"))?;
+    }
+    let mut cout = child.stdout.take().ok_or("could not read from pandoc")?;
+    let mut cerr = child.stderr.take().ok_or("could not read from pandoc")?;
+    let out_h = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = cout.read_to_end(&mut v);
+        v
+    });
+    let err_h = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = cerr.read_to_end(&mut v);
+        v
+    });
 
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("pandoc failed: {e}"))?;
+    // bound the conversion: a hostile ship page can feed input that never
+    // terminates, so kill pandoc past a deadline rather than park a worker and
+    // a process forever.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait().map_err(|e| format!("pandoc failed: {e}"))? {
+            Some(s) => break s,
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("pandoc timed out after 10s".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    };
+    let stdout = out_h.join().unwrap_or_default();
+    let stderr = err_h.join().unwrap_or_default();
 
-    if !out.status.success() {
+    if !status.success() {
         //  pandoc's own message names the line and the construct it choked
         //  on, which is far more useful than an exit code.
-        let err = String::from_utf8_lossy(&out.stderr);
+        let err = String::from_utf8_lossy(&stderr);
         let msg = err.trim();
+        if msg.contains("--sandbox") {
+            return Err("pandoc 2.15 or later is needed to convert safely".to_string());
+        }
         return Err(if msg.is_empty() {
             "pandoc could not convert this document".to_string()
         } else {
             msg.chars().take(400).collect()
         });
     }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    Ok(String::from_utf8_lossy(&stdout).to_string())
 }
 
 #[cfg(test)]
@@ -212,6 +277,30 @@ mod tests {
         //  library loaded into the lattice bundle to be readable.
         assert!(html.contains("<math"), "math should be MathML: {html}");
         assert!(!html.contains("<script"), "no script belongs in the output: {html}");
+    }
+
+    //  The tex is written on the ship, possibly by an agent key or an
+    //  edit-granted peer, so it must not be able to read this machine's files
+    //  into the page. Without --sandbox, \input and \lstinputlisting did.
+    #[test]
+    fn tex_cannot_read_host_files() {
+        if locate().is_none() {
+            eprintln!("pandoc absent, skipping");
+            return;
+        }
+        let marker = format!("hostsecret{}x", std::process::id());
+        let p = std::env::temp_dir().join(format!("lattice-pandoc-{}.txt", std::process::id()));
+        std::fs::write(&p, &marker).unwrap();
+        let path = p.to_string_lossy();
+        for src in [
+            format!("\\documentclass{{article}}\\begin{{document}}\\input{{{path}}}\\end{{document}}"),
+            format!("\\documentclass{{article}}\\usepackage{{listings}}\\begin{{document}}\\lstinputlisting{{{path}}}\\end{{document}}"),
+        ] {
+            if let Ok(html) = convert(&src) {
+                assert!(!html.contains(&marker), "pandoc read a host file into the page: {html}");
+            }
+        }
+        std::fs::remove_file(&p).ok();
     }
 
     //  A LaTeX error must come back as pandoc's own message, which names the

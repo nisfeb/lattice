@@ -232,7 +232,7 @@ box markup is raw.
 
 ### doubler: a derived page (dependencies)
 ```hoon
-=/  tgt=path  /apps/lattice.lattice_app/page/counter/data
+=/  tgt=path  (data-of %counter)
 ?~  deps  (needs same ~[tgt])
 =/  v=@ud  (fall (rush ;;(@t +.i.deps) dim:ag) 0)
 (needs (text (crip (a-co:co (mul 2 v)))) ~[tgt])
@@ -380,9 +380,15 @@ and the platform sends each as a command to that page, bumping its `cmd`. A
 page reached via a poke gets a **decremented budget**, so a poke chain,
 cycles included, terminates after a fixed depth (`poke-budget-max`)
 regardless of timing. One run emits at most `poke-cap` pokes. See
-relay/sink. This is the capped-authority dart. A page can drive other
-*pages*, but still can't poke arbitrary agents, make HTTP requests, or write
-outside the page tree.
+relay/sink. A page can drive other *pages*, but can't poke arbitrary agents, make HTTP requests, or write outside the page tree.
+
+## What page code can reach
+
+There is no sandbox weir around page code. It compiles and runs with lattice's own authority. The evaluator bounds it with three rules instead.
+
+- **Dependencies stay under `/page/`.** A dep path outside the page tree is dropped and never read, so it is missing from `deps`. Build dep paths with `data-of`, `view-of` and `dir-of`.
+- **Edit-shared pages are content only.** If any sharing group holds an edit grant on a page, or on a folder above it, the page must be plain content: md, gmi, html, text, js, css, tex, or a folder index. Hand-written hoon there is not compiled, and the page's error says why. Its own views are sandboxed, so a peer's html cannot run with your session. That holds after the grant goes too: remove the edit grant, then save the page yourself to trust its source and run hoon again.
+- **Agent keys cannot save code.** A key may save md, gmi, text, tex, css and index pages. It cannot save hoon, html or js.
 
 ## Known limits (today)
 
