@@ -14,7 +14,11 @@
 import { shipEnv, launchBrowser, openPage, makeCheck, seed } from './lib/harness.mjs';
 
 const env = shipEnv();
-await seed(env, [['harnessdir/one', '# one']]);
+//  and a folder and page with names far wider than a phone, which must
+//  truncate rather than widen the page (the + stays in reach)
+const LONGDIR = 'harnessdir-with-a-folder-name-far-wider-than-any-phone-screen';
+await seed(env, [['harnessdir/one', '# one'],
+  [LONGDIR + '/a-page-name-that-is-also-far-wider-than-any-phone-screen', '# long']]);
 const check = makeCheck();
 const browser = await launchBrowser();
 
@@ -106,7 +110,7 @@ await m.evaluate(() => document.querySelector('.mtabs button[data-mv="code"]').c
 // a longer status. By this point in the run a page has opened and a dialog
 // has cycled, so the status carries real text; nothing may stick out.
 const over = await m.evaluate(() => {
-  const vw = window.innerWidth;
+  const vw = 390;   // the device width: innerWidth stretches to fit overflow
   let n = 0;
   for (const el of document.querySelectorAll('body *'))
     if (el.getBoundingClientRect().right > vw + 1) n++;
@@ -114,6 +118,19 @@ const over = await m.evaluate(() => {
 });
 check('phone: nothing reaches past the right edge (no horizontal scroll)',
   over.scrollW <= over.vw && over.past === 0, JSON.stringify(over));
+await m.evaluate(() => document.querySelector('.mtabs button[data-mv="tree"]').click());
+const longRow = await m.evaluate((dir) => {
+  const f = [...document.querySelectorAll('#treelist .fld')].find((x) => x.textContent.includes(dir));
+  const a = f && f.querySelector('.addf');
+  const r = a && a.getBoundingClientRect();
+  return { plus: r && r.width ? Math.round(r.right) : null, scrollW: document.documentElement.scrollWidth };
+}, LONGDIR);
+//  against the device width, not innerWidth: a phone's layout viewport
+//  stretches to fit content that overflows, so innerWidth grows with the bug
+longRow.vw = 390;
+check('phone: a long folder name truncates and keeps its + on screen',
+  longRow.plus !== null && longRow.plus <= longRow.vw && longRow.scrollW <= longRow.vw, JSON.stringify(longRow));
+await m.evaluate(() => document.querySelector('.mtabs button[data-mv="code"]').click());
 
 // ── list indent/outdent by thumb ───────────────────────────────────────────
 // Phones have no Tab key, so the editor grows a fixed button pair while the
