@@ -254,3 +254,11 @@ Fake ships derive every keypair from the `@p`, so anything key-dependent
 behaves differently there than on a real ship. The v31 signing work compiled
 and passed 13/13 unit tests on wex and still had to be re-verified on ricsul,
 where `%j /vein` returns a real ring.
+
+##  8. Lattice only: a protected main and a pinned plugin
+
+This section is lattice's own and is not mirrored in calendar or auspex.
+
+- **main is protected.** No force-push or deletion, and the required CI checks must pass. So the `code/version.json` bump lands through a pull request like every other change, not as a direct push.
+- **The Claude plugin is pinned.** `.claude-plugin/marketplace.json` names the plugin by commit (`sha`), not by whatever main holds, so a push to main does not change the hooks that run on every prompt. A release moves the pin in the same pull request as the version bump, to the main commit that holds the plugin being released, and bumps `version` in `plugins/claude/.claude-plugin/plugin.json` when the plugin changed.
+- **Desktop releases are signed and attested.** See `desktop/README.md`, Releases.
