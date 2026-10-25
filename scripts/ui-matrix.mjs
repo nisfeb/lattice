@@ -355,7 +355,9 @@ try {
     await page.evaluate(() => document.getElementById('ac').hidden));
   // a scripted edit must behave exactly like typing. Preview refreshes and
   // the buffer is dirty so autosave persists it
-  await wait((s) => (document.getElementById('prev').srcdoc || '').includes(s), sibling);
+  //  a bare wikilink shows only its last segment, and the path rides in
+  //  the href URI-encoded (release 65)
+  await wait((s) => (document.getElementById('prev').srcdoc || '').includes(encodeURIComponent(s)), sibling);
   ok('autocomplete: completion refreshes the preview');
   // Tab-indent is the other scripted edit. It used to show in the editor and
   // never reach the ship. Autosave firing is the observable proof it is now
@@ -1336,9 +1338,11 @@ try {
   // allow-scripts WITHOUT allow-same-origin: scripts still run, so the ship's
   // footnote-anchor handler keeps working, but the frame has an opaque origin.
   // Adding allow-same-origin back would hand the sandbox straight over.
-  check('sandbox: the preview frame is sandboxed',
-    await page.evaluate(() => document.getElementById('prev').getAttribute('sandbox')) === 'allow-scripts',
-    String(await page.evaluate(() => document.getElementById('prev').getAttribute('sandbox'))));
+  //  allow-top-navigation-by-user-activation is deliberate: a clicked
+  //  wikilink leaves for the top page (60-preview.js)
+  const sbx = String(await page.evaluate(() => document.getElementById('prev').getAttribute('sandbox')));
+  check('sandbox: the preview frame is sandboxed, without allow-same-origin',
+    sbx.split(/\s+/).includes('allow-scripts') && !sbx.includes('allow-same-origin'), sbx);
 
   await page.evaluate(() => {
     document.getElementById('newfile').click();

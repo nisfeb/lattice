@@ -1196,6 +1196,22 @@
     (send-png eyre-id icon-192-b64)
   ?:  &(=(%'GET' method.request.req) =(`path`[%'icon-512.png' ~] suffix))
     (send-png eyre-id icon-512-b64)
+  ::  cross-site request forgery. The owner's cookie has no SameSite, so
+  ::  another site can make the owner's browser send it on a POST that plants
+  ::  a core memory, shares a page or mints a key (security audit run-1).
+  ::  Refuse any authenticated write another site sent (+cross-site:lu).
+  ::  GET and HEAD stay open: the only owner GET writes are the documented
+  ::  /clip and /share links. Agent keys are untouched: a Bearer header is
+  ::  not ambient, so another site cannot make a browser send one.
+  ?:  ?&  authenticated.req
+          !?=(?(%'GET' %'HEAD') method.request.req)
+          %:  cross-site:lu
+            (get-header:http 'sec-fetch-site' header-list.request.req)
+            (get-header:http 'origin' header-list.request.req)
+            (get-header:http 'host' header-list.request.req)
+          ==
+      ==
+    (send-err eyre-id 403 'cross-site request refused')
   ::  owner gate. Eyre stamps a request authenticated to our web login with
   ::  src=our, so `authenticated` (already in hand, synchronous) IS the src==our
   ::  check. Reading `our` via a /sys/bowl round trip (bowl-our) just to compare
@@ -1344,8 +1360,18 @@
           ;<  eg=?  bind:m
             ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,?) |)
             (edit-granted rel)
+          ::  and our own page is framed raw only when it IS an html page.
+          ::  This branch sniffs the body, and a key may write md, text or
+          ::  css: a body that merely starts with '<' ran as the owner
+          ::  (security audit run-1).
+          ;<  vm=view-mode:pg  bind:m
+            ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,view-mode:pg) %text)
+            (read-show-mode (weld /page rel))
           =/  htm=@t
-            (render-browser-page canon body ~ |(?!(=(ship.u.ref our)) eg) rk rv (trip ttl))
+            %:  render-browser-page  canon  body  ~
+              |(?!(=(ship.u.ref our)) eg ?!(?=(%html vm)))
+              rk  rv  (trip ttl)
+            ==
           ?:  =("" rk)  (send-view eyre-id htm)
           (send-view-long eyre-id htm)
         ?:  =("" rk)
@@ -2215,9 +2241,14 @@
     ::  bare HTML doc. Non-persisting. Nothing is written, so the editor can
     ::  preview a note as it is typed, before any save. Owner-gated like all
     ::  non-clearweb routes.
+    ::
+    ::  Sandboxed: with type=html the body comes back as html, so an
+    ::  unsandboxed answer reflected whatever was POSTed into a same-origin
+    ::  document (security audit run-1). Callers read the body, which the
+    ::  CSP does not change.
     =/  body=@t  (req-body req)
     =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'md')
-    (send-html eyre-id (render-bare (preview-inner ptype body)))
+    (send-sandboxed eyre-id 'text/html' (render-bare (preview-inner ptype body)))
       [%'POST' %page-cmd]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -5558,6 +5589,13 @@
   ?^  src
     ;<  dsn=view:nexus       bind:m  (peek:io (rf up u.src %data) ~)
     ;<  vmode=view-mode:pg   bind:m  (read-show-mode u.src)
+    ::  an edit-granted source may hold a peer's markup, and its fragment
+    ::  is welded raw into a composing page that is not sandboxed itself.
+    ::  Such a fragment is shown as text.
+    ;<  eg=?  bind:m
+      ?.  ?=(%html vmode)  (pure:(fiber:fiber:nexus ,?) |)
+      (edit-granted (slag 1 u.src))
+    =?  vmode  eg  %text
     ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
     =/  frag=@t
       ?.  ?=([%file *] dsn)  ''
@@ -8281,11 +8319,15 @@
   =/  q=(unit @ud)  (find "?" t)
   ?~(q t (scag u.q t))
 ::  +send-redirect: a 301 to `to` (used to force trailing slashes on dirs).
+::  Both redirects refuse a target holding a control character, since the
+::  target is built from request text and a CR or LF would split the
+::  Location header.
 ::
 ++  send-redirect
   |=  [eyre-id=@ta to=tape]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ?:  (lien to |=(c=@tD (lth c 32)))  (send-err eyre-id 400 'bad redirect')
   %+  send-simple:srv  eyre-id
   [[301 ['location' (crip to)]~] ~]
 ::  +send-see-other: a 303 (POST -> GET redirect, for form command submits).
@@ -8299,6 +8341,7 @@
   |=  [eyre-id=@ta to=tape]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ?:  (lien to |=(c=@tD (lth c 32)))  (send-err eyre-id 400 'bad redirect')
   ;<  now=@da  bind:m  bowl-now
   =/  sep=tape  ?:(?=(^ (find "?" to)) "&" "?")
   =/  bust=tape  :(weld to sep "u=" (scow %ud (mod now 1.000.000.000)))
@@ -8539,11 +8582,15 @@
     ?.  &(preview ?=(%html vmode))  p.res
     (cat 3 p.res preview-scrollbar-css)
   ::  an html asset of a page shared for edit gets an opaque origin, as in
-  ::  +serve-clearweb
+  ::  +serve-clearweb. Its js is served as text/plain, which nosniff
+  ::  (+send-typed) stops any page from running as a script: a CSP on the
+  ::  response cannot, since a <script src> on an owner page runs it in the
+  ::  owner's origin whatever headers it came with (security audit run-1).
   ;<  eg=?  bind:m
-    ?.  ?=(%html vmode)  (pure:(fiber:fiber:nexus ,?) |)
+    ?.  ?=(?(%html %js) vmode)  (pure:(fiber:fiber:nexus ,?) |)
     (edit-granted pax)
-  ?:  eg  (send-sandboxed eyre-id (mime-of vmode) body)
+  ?:  &(eg ?=(%html vmode))  (send-sandboxed eyre-id (mime-of vmode) body)
+  ?:  eg  (send-typed eyre-id 'text/plain; charset=utf-8' 'no-cache' body)
   (send-typed eyre-id (mime-of vmode) 'no-cache' body)
 ++  preview-scrollbar-css
   ^-  @t
@@ -8735,7 +8782,9 @@
   =/  dflt=tape  ?:(?=(%html vmode) "" :(weld "<style>" web-css "</style>"))
   ?.  local  (pure:m dflt)
   ;<  tcss=(unit @t)  bind:m  (find-theme-css rel)
-  (pure:m ?^(tcss :(weld "<style>" (trip u.tcss) "</style>") dflt))
+  ::  +style-text:pg: a key or an edit-granted peer can write the theme, and
+  ::  raw it could close the <style> into script on every page it themes
+  (pure:m ?^(tcss :(weld "<style>" (style-text:pg u.tcss) "</style>") dflt))
 ::  +forms-on: is public form submission enabled at or above this page? Same
 ::  nearest-flag-wins walk as +comments-on, so a folder opts in a whole site.
 ::
@@ -8856,6 +8905,11 @@
   ?:  ?=(?(%css %js) vmode)
     =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.u.dat))))
     ?:  ?=(%| -.res)  (send-err eyre-id 415 'not servable')
+    ::  a peer's js is not ours to run: text/plain, as in +serve-asset
+    ;<  eg=?  bind:m
+      ?.  ?=(%js vmode)  (pure:(fiber:fiber:nexus ,?) |)
+      (edit-granted pax)
+    ?:  eg  (send-typed eyre-id 'text/plain; charset=utf-8' 'no-cache' p.res)
     (send-typed eyre-id (mime-of vmode) 'no-cache' p.res)
   ::  Every rendered/html page auto-wears the nearest `theme` css up the folder
   ::  tree, LINKED IN THE HEAD (render-blocking -> no white flash on nav, browser-
@@ -9150,7 +9204,9 @@
   ::  grubs get a mark-derived type; anything foreign is forced to an inert
   ::  download (octet-stream + attachment + nosniff).
   =/  heads=(list [@t @t])
-    ?:  local  ['content-type' (mark-mime mk)]~
+    ::  own grubs too get nosniff, so the type is the one served (see
+    ::  +send-typed)
+    ?:  local  ~[['content-type' (mark-mime mk)] ['x-content-type-options' 'nosniff']]
     :~  ['content-type' 'application/octet-stream']
         ['content-disposition' 'attachment']
         ['x-content-type-options' 'nosniff']
@@ -9165,7 +9221,7 @@
       (send-err eyre-id 413 'too large')
     =/  mheads=(list [@t @t])
       ?.  local  heads
-      ['content-type' (mite-type p.p.mime-res)]~
+      ~[['content-type' (mite-type p.p.mime-res)] ['x-content-type-options' 'nosniff']]
     (send-simple:srv eyre-id [[200 mheads] `q.p.mime-res])
   ::  %json: re-encode the noun so ?data yields actual JSON text
   ?:  =(%json mk)
@@ -9346,14 +9402,24 @@
 ::  private app (install is offered only inside an authed session).
 ::
 ::  +send-typed: a 200 with an explicit content-type and cache-control. The PWA
-::  routes and both +send-view tiers send through it.
+::  routes, both +send-view tiers and the raw /f/ and /c/ assets send through
+::  it. nosniff: without it a browser runs a text, markdown or css body as a
+::  same-origin script when a page loads it as one, so a key that may write
+::  text over a js page ran script as the owner (security audit run-1).
+::
+::  An html body also keeps no cross-origin opener, so a page that opened
+::  an owner view cannot count its frames. /clip-paste needs its opener and
+::  goes out through +send-html instead.
 ::
 ++  send-typed
   |=  [eyre-id=@ta ct=@t cc=@t body=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  =/  heds=(list [@t @t])
+    ~[['content-type' ct] ['cache-control' cc] ['x-content-type-options' 'nosniff']]
+  =?  heds  =("text/html" (scag 9 (trip ct)))  [['cross-origin-opener-policy' 'same-origin'] heds]
   %+  send-simple:srv  eyre-id
-  :-  [200 ~[['content-type' ct] ['cache-control' cc]]]
+  :-  [200 heds]
   `(as-octs:mimes:html body)
 ::  +send-sandboxed: +send-typed with a CSP sandbox and no-cache. The
 ::  document gets an opaque origin, so its scripts still run but hold no
@@ -9900,7 +9966,10 @@
 ::
 ::  The sender is the article page, so its origin is arbitrary and cannot be
 ::  whitelisted. What IS checked is that the message came from window.opener,
-::  and the payload shape. Worth being clear about the residual exposure: a
+::  and the payload shape. The archive is filed under the claimed url only
+::  when that url has the sender's real origin, else under the sender's
+::  origin, so a page cannot file its content as another site's. Worth
+::  being clear about the residual exposure: a
 ::  hostile page the user clicks the bookmarklet on could send content other
 ::  than what is displayed. That is the same trust as /clip (junk in your own
 ::  tree, nothing disclosed), but here the content is arbitrary rather than
@@ -9916,7 +9985,7 @@
     "<div id=\"pst\" class=\"muted\">waiting for the page&hellip;</div>"
     "<script>"
     %-  trip
-    '(function(){var out=document.getElementById("pst");var p=new URLSearchParams(location.search);var u=p.get("url")||"";var done=false;function show(m,bad){out.textContent=m;out.className=bad?"err":"";}function send(html){if(done)return; done=true;show("archiving…");fetch("/apps/lattice/clip-html?url="+encodeURIComponent(u),{method:"POST",body:html}).then(function(r){if(r.ok){return r.text().then(function(t){document.open();document.write(t);document.close();});}return r.json().catch(function(){return{}}).then(function(j){show("could not archive"+(j.error?": "+j.error:" ("+r.status+")"),true);});}).catch(function(){show("could not archive (network error)",true);});}window.addEventListener("message",function(e){if(e.source!==window.opener)return;var d=e.data;if(!d||d.lattice!==1||typeof d.html!=="string")return;send(d.html);});try{if(window.opener)window.opener.postMessage({lattice:"ready"},"*");}catch(x){}setTimeout(function(){if(!done)show("nothing arrived from the page — try the bookmarklet again",true);},15000);})();'
+    '(function(){var out=document.getElementById("pst");var p=new URLSearchParams(location.search);var u=p.get("url")||"";var done=false;function show(m,bad){out.textContent=m;out.className=bad?"err":"";}function send(html,src){if(done)return; done=true;show("archiving…");fetch("/apps/lattice/clip-html?url="+encodeURIComponent(src),{method:"POST",body:html}).then(function(r){if(r.ok){return r.text().then(function(t){document.open();document.write(t);document.close();});}return r.json().catch(function(){return{}}).then(function(j){show("could not archive"+(j.error?": "+j.error:" ("+r.status+")"),true);});}).catch(function(){show("could not archive (network error)",true);});}window.addEventListener("message",function(e){if(e.source!==window.opener)return;var d=e.data;if(!d||d.lattice!==1||typeof d.html!=="string")return;var o=e.origin;if(!/^https?:/.test(o)){show("only an http or https page can be archived",true);return;}var c="";try{c=new URL(u).origin}catch(x){}send(d.html,c===o?u:o+"/");});try{if(window.opener)window.opener.postMessage({lattice:"ready"},"*");}catch(x){}setTimeout(function(){if(!done)show("nothing arrived from the page — try the bookmarklet again",true);},15000);})();'
     "</script>"
   ==
 ::  +settings-html: the settings page. Search-index maintenance, the browser
