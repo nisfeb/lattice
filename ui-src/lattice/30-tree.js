@@ -198,6 +198,7 @@
     cx.className = 'cx';
     cx.textContent = folded ? '▸' : '▾';
     const lb = document.createElement('span');
+    lb.className = 'fln';
     lb.innerHTML = ico(folded ? 'folder' : 'open');
     lb.append(label);
     row.append(cx, lb);
