@@ -285,9 +285,9 @@
   ==
 ::  visits mirror the history grub, which keeps ONE entry per url with
 ::  its last visit time and hit count (lib/lattice-history), so a visit
-::  row is a doc-id-keyed upsert, not an append-only event. Rows whose
-::  source entry has expired out of the history window persist under
-::  the best-effort stance the doc gives the seen tables.
+::  row is a doc-id-keyed upsert, not an append-only event. A url that
+::  leaves the window, by expiry, the cap, a forget or a clear, has its
+::  row deleted (+visit-deletes).
 ::
 ++  visit-lits
   |=  r=visit-row
@@ -314,6 +314,46 @@
   %-  zing
   :~  "INSERT INTO lattice-visits (doc-id, ship, pax, title, last, hits) VALUES ("
       id  ", "  sp  ", "  px  ", "  tt  ", "  ls  ", "  ht  ");"
+  ==
+::  +visit-deletes: the rows of urls that left the history window. gone
+::  is the last window's urls that this one lacks, keep is this one's.
+::  Two urls can name one document, so a document a current row still
+::  holds stays. A DELETE that matches nothing answers "no rows
+::  deleted", so these ride a batch. obelisk keeps a deleted row for AS
+::  OF reads, as it keeps every tombstone, until the database is
+::  dropped (+drop-db-urql).
+::
+++  visit-deletes
+  |=  [gone=(list [@p path]) keep=(list [@p path])]
+  ^-  (list tape)
+  %+  turn  ~(tap in (~(dif in (silt gone)) (silt keep)))
+  |=  [s=@p pax=path]
+  ^-  tape
+  :(weld "DELETE FROM lattice-visits WHERE doc-id = " (doc-id s pax) ";")
+::  +drop-db-urql: the database and its history. The only urQL that
+::  leaves nothing for AS OF. Run when the owner turns the mirror off.
+::  FORCE, since its tables hold rows.
+::
+++  drop-db-urql  ^-  tape  "DROP DATABASE FORCE lattice;"
+::  +fresh-of: the tables the bootstrap may treat as wiped, by index.
+::  missing is the first probe, %.y where the engine said no table.
+::  errored holds the tables whose CREATE then failed outright. A failed
+::  create says the table was there all along, so its probe's "missing"
+::  was an error meant for someone else, and zeroing its cursor would
+::  strand every pending tombstone as live (security audit run-1). A
+::  create that went unanswered proves nothing either way.
+::
+++  fresh-of
+  |=  [missing=(list ?) errored=(set @ud)]
+  ^-  (set @ud)
+  =|  s=(set @ud)
+  =/  i=@ud  0
+  |-  ^-  (set @ud)
+  ?~  missing  s
+  %=  $
+    missing  t.missing
+    i        +(i)
+    s        ?:(&(i.missing !(~(has in errored) i)) (~(put in s) i) s)
   ==
 ::  +batch: join statements into one multi-statement script. Every
 ::  builder already ends its statement with a semicolon, so this is a

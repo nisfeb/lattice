@@ -257,6 +257,8 @@
             [%fall %& [/mirror %'mirror.sig'] [[/ %sig] ~]]
             [%fall %& [/mirror %cursor] [[/lattice %mirror-cursor] *mirror-cursor:lm]]
             [%fall %& [/mirror %'config.json'] [[/ %json] (pairs:enjs:format ~[['enabled' b+|]])]]
+            ::  purge.json: the copy is to be dropped (+mirror-purge)
+            [%fall %& [/mirror %'purge.json'] [[/ %json] `json`[%b %.n]]]
         ::  /journal-synced.json: the orrery journal mirror's memory, a json
         ::  object mapping day -> the last brief/review `at` already written as
         ::  a /journal page. +orrery-journal-pass reads it to skip days it has
@@ -3151,6 +3153,10 @@
       %^  put-file  (rf up /mirror %'config.json')
         [/ %json]
       (pairs:enjs:format ~[['enabled' b+=('true' u.en)]])
+    ::  turning it off drops what it copied (+mirror-purge)
+    ;<  ~  bind:m
+      ?:  =('true' u.en)  (pure:(fiber:fiber:nexus ,~) ~)
+      (put-file (rf up /mirror %'purge.json') [/ %json] `json`[%b %.y])
     (send-ok eyre-id)
       [%'GET' %marks]
     ;<  bms=bookmarks:lb  bind:m  read-bookmarks
@@ -10492,7 +10498,7 @@
     ::  backup: manual export/restore for everyone, plus (desktop only) the
     ::  scheduled backups. The whole UI is rendered by ui-app/vault.js's
     "<h2>Commons mirror</h2>"
-    "<p class=\"muted\">Mirrors your pages, notes, tags and follows into the %obelisk database, where you (and your agents) can query across apps with urQL. Optional: without %obelisk everything else works unchanged.</p>"
+    "<p class=\"muted\">Mirrors your pages, notes, tags, follows and browsing history into the %obelisk database, where you (and your agents) can query across apps with urQL. Turning it off deletes that copy. Optional: without %obelisk everything else works unchanged.</p>"
     "<p><span id=\"obst\" class=\"muted\">checking&hellip;</span></p>"
     "<p><button type=\"button\" id=\"obinst\" class=\"btn\" hidden>Install %obelisk</button> "
     "<label for=\"obon\" id=\"obonl\" hidden><input type=\"checkbox\" id=\"obon\"> mirror enabled</label></p>"
@@ -13009,11 +13015,23 @@
   ?~  v  (pure:m %.n)
   ?.  ?=([%b *] u.v)  (pure:m %.n)
   (pure:m p.u.v)
+::  +read-beacon-val: the content beacon and the memory beacon in one
+::  number, so a memory delete wakes a pass as a page delete does.
+::  Memory actions bump only /beacon/know, which readers do not reload
+::  on.
+::
 ++  read-beacon-val
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
+  ;<  rev=@ud  bind:m  (read-beacon %rev)
+  ;<  kno=@ud  bind:m  (read-beacon %know)
+  (pure:m (add rev (lsh [3 16] kno)))
+++  read-beacon
+  |=  sub=@ta
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  vw=view:nexus  bind:m  (peek:io (rf up /beacon %rev) ~)
+  ;<  vw=view:nexus  bind:m  (peek:io (rf up /beacon sub) ~)
   ?.  ?=([%file *] vw)  (pure:m 0)
   =/  jon=json  (fall (mole |.(!<(json (need-vase:tarball sang.vw)))) ~)
   ?.  ?=([%n *] jon)  (pure:m 0)
@@ -13128,7 +13146,7 @@
   ?:  (levy first |=(f=probe-verdict =(%yes f)))  (pure:m [%ok *(set @ud)])
   ?:  (lien first |=(f=probe-verdict =(%dunno f)))  (pure:m [%unclear ~])
   ;<  *  bind:m  (mirror-run create-db-urql:lm)
-  ;<  ~  bind:m  (run-creates create-list:lm)
+  ;<  bad=(set @ud)  bind:m  (run-creates create-list:lm)
   ;<  again=(list probe-verdict)  bind:m  probe-tables
   ::  every table still missing after the creates reads as an absent
   ::  or unresponsive desk. A MIXED re-probe is a partial recovery:
@@ -13146,17 +13164,13 @@
   ::  present, zeroed nothing, and left the freshly created tables
   ::  permanently empty with no tick able to notice. Carry the set
   ::  through and let a failed write set the retry flag instead.
-  ::  zero only what the FIRST probe positively found missing. %dunno
-  ::  cannot reach here (the guard above returned), so this is a real
-  ::  engine "no such table".
-  =/  fresh=(set @ud)
-    =|  s=(set @ud)
-    =/  fl=(list probe-verdict)  first
-    =/  i=@ud  0
-    |-  ^-  (set @ud)
-    ?~  fl  s
-    $(fl t.fl, i +(i), s ?:(=(%no i.fl) (~(put in s) i) s))
-  (pure:m [%ok fresh])
+  ::  zero only what the FIRST probe found missing and its CREATE did not
+  ::  find present. %dunno cannot reach here (the guard above returned).
+  ::  An engine error on a probe is not proof on its own: another
+  ::  caller's error can land on our subscription, and zeroing a live
+  ::  table's cursor strands its pending tombstones (+fresh-of:lm).
+  %-  pure:m
+  [%ok (fresh-of:lm (turn first |=(f=probe-verdict =(%no f))) bad)]
 ::  v1 cleanup is a RUNBOOK STEP, not resident code: the automated
 ::  version crashed the reconciler into a respawn storm and a
 ::  once-per-ship cleanup never earned that risk. The statements live
@@ -13183,13 +13197,21 @@
   ?:  live  (pure:m %.y)
   ;<  r=obk-out:lm  bind:m  (obelisk-run-tries mirror-db:lm "SELECT 1;" 40)
   (pure:m ?=(%& -.r))
+::  +run-creates: the indices whose CREATE failed outright, which says
+::  the table was there (+fresh-of:lm). An unanswered create is not
+::  counted.
+::
 ++  run-creates
   |=  creates=(list tape)
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,(set @ud))
   ^-  form:m
-  ?~  creates  (pure:m ~)
-  ;<  *  bind:m  (mirror-run i.creates)
-  (run-creates t.creates)
+  =/  i=@ud  0
+  =|  bad=(set @ud)
+  |-  ^-  form:m
+  ?~  creates  (pure:m bad)
+  ;<  r=obk-out:lm  bind:m  (mirror-run i.creates)
+  =?  bad  &(?=(%| -.r) !(is-silent r))  (~(put in bad) i)
+  $(creates t.creates, i +(i))
 ::  +zero-fresh: reset the cursor state of tables that were missing at
 ::  probe time, so the pass backfills them. Index order matches
 ::  +probe-urqls: pages knows tags follows visits docs.
@@ -13374,16 +13396,23 @@
   ^-  form:m
   ;<  rows=(list [url=@t stamp=@ r=visit-row:lm])  bind:m  visit-rows
   ::  the cursor keeps ONLY the current history window, so it stays
-  ::  bounded by the history cap. A url that rotated out and comes back
-  ::  reads as new: its INSERT fails quietly on the surviving row and
-  ::  the UPDATE beside it (changed includes new) repairs the values.
-  ::  Rows already mirrored for rotated-out entries persist untouched,
-  ::  the best-effort stance of the seen tables.
+  ::  bounded by the history cap. A url that left the window since the
+  ::  last landed pass, by expiry, the cap, a forget or a clear, has its
+  ::  row deleted, so the copy keeps no more history than the owner does
+  ::  (security audit run-1).
   =/  nxt=(map @t @)
     (malt (turn rows |=([url=@t stamp=@ *] [url stamp])))
+  =/  dels=(list tape)
+    %+  visit-deletes:lm
+      %+  murn  ~(tap in ~(key by visits.cur))
+      |=  u=@t
+      ?:  (~(has by nxt) u)  ~
+      (parse-urb-url:lu u)
+    (turn rows |=([* * r=visit-row:lm] [ship.r pax.r]))
   =/  changed=(list [url=@t stamp=@ r=visit-row:lm])
     (skim rows |=([url=@t stamp=@ *] !=(`(unit @)`[~ stamp] (~(get by visits.cur) url))))
   =/  ups=(list tape)
+    %+  weld  dels
     (turn changed |=([* * r=visit-row:lm] (visit-update:lm r)))
   =/  ins=(list tape)
     %+  turn
@@ -13405,6 +13434,34 @@
   ;<  vis=[ok=? cur=mirror-cursor:lm]  bind:m  (mirror-visits cur.fol)
   ;<  ~  bind:m  (write-mirror-cursor cur.vis)
   (pure:m [&(ok.pag ok.kno ok.fol ok.vis) cur.vis])
+::  +mirror-purge: drop the copy once the owner has turned the mirror
+::  off. DROP DATABASE is the only urQL that leaves nothing for AS OF
+::  reads, where a DELETE or a tombstone keeps every row. The cursor is
+::  zeroed with it, so turning the mirror back on copies everything
+::  afresh. Nothing mirrored, nothing to drop. %obelisk not running or
+::  no answer: the flag stays and the next tick tries again. Its own
+::  running check, since the loop's comes after the enabled flag.
+::
+++  mirror-purge
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  pj=(unit json)  bind:m  (peek-as:io (rf up /mirror %'purge.json') ,json)
+  ?.  ?=([~ %b %.y] pj)  (pure:m ~)
+  ;<  cur=mirror-cursor:lm  bind:m  read-mirror-cursor
+  ;<  running=?  bind:m  (typed-scry:io ? %loob /gu/obelisk/$)
+  ?:  &(!=(cur *mirror-cursor:lm) !running)  (pure:m ~)
+  ;<  gone=?  bind:m
+    =/  n  (fiber:fiber:nexus ,?)
+    ?:  =(cur *mirror-cursor:lm)  (pure:n &)
+    ;<  r=obk-out:lm  bind:n  (mirror-run drop-db-urql:lm)
+    ?:  ?=(%& -.r)  (pure:n &)
+    ::  already gone counts. Any other error leaves the flag for a retry.
+    (pure:n ?=(^ (find "does not exist" (trip (render-tang '' p.r)))))
+  ?.  gone  (pure:m ~)
+  ;<  ~  bind:m  (write-mirror-cursor *mirror-cursor:lm)
+  ;<  ~  bind:m  (mirror-trace %purged)
+  (put-file (rf up /mirror %'purge.json') [/ %json] `json`[%b %.n])
 ::  +mirror-loop: the reconciler's life. Wake, check the enabled flag,
 ::  find whether anything changed (the beacon for content, a local
 ::  history diff for visits, which deliberately never bump the
@@ -13424,6 +13481,7 @@
   ::  independent of obelisk's state. A no-op (one soft peek) when orrery is
   ::  absent, so a ship without it pays almost nothing.
   ;<  ~  bind:m  orrery-journal-pass
+  ;<  ~  bind:m  mirror-purge
   ;<  on=?  bind:m  mirror-enabled
   ?.  on
     ::  a short disabled tick (one local config read) so the settings
@@ -13439,9 +13497,13 @@
   ;<  bv=@ud  bind:m  read-beacon-val
   ;<  cur=mirror-cursor:lm  bind:m  read-mirror-cursor
   ;<  vrows=(list [url=@t stamp=@ r=visit-row:lm])  bind:m  visit-rows
+  ::  idle: every row as last mirrored, and none gone, so a forget or an
+  ::  expiry wakes a pass to delete the row
   =/  visits-idle=?
-    %+  levy  vrows
-    |=([url=@t stamp=@ *] =(`(unit @)`[~ stamp] (~(get by visits.cur) url)))
+    ?&  =((lent vrows) ~(wyt by visits.cur))
+        %+  levy  vrows
+        |=([url=@t stamp=@ *] =(`(unit @)`[~ stamp] (~(get by visits.cur) url)))
+    ==
   ?:  &(=(bv beacon.cur) visits-idle !retry.cur)
     ;<  ~  bind:m  (sleep-draining ~m5)
     $
