@@ -281,6 +281,8 @@
         ::  revoked grantee's hoon and let banned ships back in.
             [%fall %| /lock empty-dir:loader]
             [%fall %& [/ %banned] [[/lattice %banned] *banned:ls]]
+        ::  /key-bytes: each agent key's bytes written today (+spend:ky)
+            [%fall %& [/ %'key-bytes'] [[/ %noun] *ledger:ky]]
         ==
     ::
     ++  on-file
@@ -1280,6 +1282,16 @@
     (send-err eyre-id 401 'invalid or revoked key')
   ?:  &(?=(^ key) !(may:ky u.key method.request.req suffix))
     (send-err eyre-id 403 'outside this key\'s scope')
+  ::  a key's writes are bounded in bytes, per request and per day
+  ::  (+req-cap:ky, +day-cap:ky)
+  =/  blen=@ud  ?~(body.request.req 0 p.u.body.request.req)
+  ?:  &(?=(^ key) (gth blen req-cap:ky))
+    (send-err eyre-id 413 'too large for an agent key')
+  ;<  roomy=?  bind:m
+    ?.  &(?=(^ key) !=(%'GET' method.request.req) !=(0 blen))
+      (pure:(fiber:fiber:nexus ,?) &)
+    (key-spend id.u.key rnow blen)
+  ?.  roomy  (send-err eyre-id 429 'this key has written its bytes for today')
   ::  a keyed request's src is not us, but of the routes a key reaches
   ::  (+may:ky) /fetch, /browse, /browse-file, and /remote-save all read
   ::  `our` to compare or dispatch, so they pay the bowl read.
@@ -1929,6 +1941,9 @@
       (send-err eyre-id 400 'banlist is full')
     ;<  ~  bind:m
       (over:io (ban-road up) [[/lattice %banned] (~(put in bans) u.who)])
+    ::  and what the ship already wrote goes too, its moons' as well: a ban
+    ::  that freed no slots left the page full (security audit run-1)
+    ;<  *  bind:m  (cull-comments-of u.who)
     ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
     ::  the ban is written; the revocation is not. Say so: a ban that left
     ::  the grants in place is the label this route exists not to be.
@@ -2473,14 +2488,27 @@
     ?~  pas
       (send-json eyre-id (pairs:enjs:format ~[['ok' b+|] ['reason' s+'no key for that ship at that life']]))
     =/  good=?  (verify-with:lsg u.pas sig.rq dig.rq)
+    ::  a key the ship has since replaced still made the signature, but it
+    ::  is no longer the ship's word: rotating keys after a compromise must
+    ::  show here. A key at the next life means this one is superseded.
+    ;<  nxt=(unit pass)  bind:m  (peer-pass who.rq +(lyf.rq))
+    =/  cur=?  ?=(~ nxt)
     ::  a version 1 record is still checked, and flagged: its 128-bit
     ::  digest can be matched by a second document at feasible cost
+    =/  why=(list @t)
+      %+  weld
+        ?:  cur  ~
+        ~['signed under a key the ship has since replaced']
+      ?.  =(1 ver)  ~
+      ~['a version 1 record binds only a 128-bit digest: re-sign to bind the content fully']
+    ::  bound with its type: zing inline in a weld is a fuse-loop
+    =/  rs=tape  (zing (join "; " (turn why trip)))
     %+  send-json  eyre-id
     %-  pairs:enjs:format
-    ?.  =(1 ver)  ~[['ok' b+good]]
-    :~  ['ok' b+good]
-        ['legacy' b+&]
-        ['reason' s+'a version 1 record binds only a 128-bit digest: re-sign to bind the content fully']
+    ;:  weld
+      ^-  (list [@t json])  ~[['ok' b+good] ['current' b+cur]]
+      ^-  (list [@t json])  ?.(=(1 ver) ~ ~[['legacy' b+&]])
+      ^-  (list [@t json])  ?~(why ~ ~[['reason' s+(crip rs)]])
     ==
       [%'POST' %page-share]
     =/  name=(unit @t)  (~(get by args) 'name')
@@ -4228,6 +4256,25 @@
     ?.  (touch-due:ky used.u.k now)  (pure:(fiber:fiber:nexus ,~) ~)
     (poke-keys [%touch id.u.k now])
   (pure:m `[u.k now])
+::  +read-ledger: each key's bytes written today (+spend:ky), empty if never
+::  written or unreadable.
+++  read-ledger
+  =/  m  (fiber:fiber:nexus ,ledger:ky)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:io (rf up / %'key-bytes') ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  (pure:m (fall (mole |.(;;(ledger:ky (sang-noun:tarball sang.v)))) ~))
+::  +key-spend: may this key write `len` more bytes today? Charges them when
+::  it may.
+++  key-spend
+  |=  [id=@t now=@da len=@ud]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  led=ledger:ky  bind:m  read-ledger
+  ?~  (spend:ky led id now len)  (pure:m |)
+  ;<  ~  bind:m  (poke-keys [%spend id now len])
+  (pure:m &)
 ++  poke-keys
   |=  act=key-action:ky
   =/  m  (fiber:fiber:nexus ,~)
@@ -4240,6 +4287,15 @@
   |=  [root=@ud act=key-action:ky]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ::  a write's bytes go on the key's ledger, not in the keys grub. Charged
+  ::  here in arrival order, so two requests that both passed the gate on
+  ::  one stale read are both counted.
+  ?:  ?=(%spend -.act)
+    ;<  led=ledger:ky  bind:m  read-ledger
+    =/  day=@da  (sub when.act (mod when.act ~d1))
+    =/  e  (~(get by led) id.act)
+    =/  used=@ud  ?~(e 0 ?:(=(day day.u.e) n.u.e 0))
+    (put-file (rf root / %'key-bytes') [/ %noun] (~(put by led) id.act [day (add used len.act)]))
   =/  kr=road:tarball  (rf root / %keys)
   ;<  ks=keys:ky  bind:m  (read-keys kr)
   =.  ks
@@ -4697,11 +4753,20 @@
     ::  The saving is the ~0.5s pier floor an upload used to pay per FILE. The
     ::  per-page darts are unchanged, so a batch is exactly as durable as the
     ::  saves it replaces. Bounded by the route, not here.
+    ::
+    ::  Every tenth page the writer sleeps a moment, as %know-batch does, so
+    ::  the ship takes what is waiting. Unbroken, a key's 200-page batch held
+    ::  the ship for as long as every write and compile took (security audit
+    ::  run-1). Pokes to the writer stay queued meanwhile.
+    =|  done=@ud
     |-  ^-  form:m
     ?~  pages.act  (pure:m ~)
+    ;<  ~  bind:m
+      ?.  &(!=(0 done) =(0 (mod done 10)))  (pure:m ~)
+      (sleep-draining (div ~s1 100))
     ;<  ~  bind:m  (make-page root pax.i.pages.act src.i.pages.act)
     ;<  ~  bind:m  (republish-if-shared root now pax.i.pages.act src.i.pages.act)
-    $(pages.act t.pages.act)
+    $(pages.act t.pages.act, done +(done))
       %tmpl-save
     ::  save a page-tree as a template: copy every page's CODE under
     ::  /template/<name>, rewriting its own root path to the template root, and
@@ -4900,6 +4965,17 @@
     ?~  fil.ball.cv  0
     ~(wyt by contents.u.fil.ball.cv)
   ?:  (gte stored 200)  (pure:m ~)
+  ;<  our=@p  bind:m  bowl-our
+  =/  fam=@  (family:ls author)
+  =/  mine=@ud
+    ?.  ?=([%ball *] cv)  0
+    ?~  fil.ball.cv  0
+    %-  lent
+    %+  skim  ~(val by contents.u.fil.ball.cv)
+    |=  [=sang:tarball *]
+    =/  c  (mole |.(;;(comment:lc (sang-noun:tarball sang))))
+    &(?=(^ c) =(fam (family:ls author.u.c)))
+  ?:  &(!=(author our) (gte mine per-author:lc))  (pure:m ~)
   =/  body=@t
     ?:((gth (met 3 body.act) max-body:lc) (end [3 max-body:lc] body.act) body.act)
   =/  =comment:lc  [author now body]
@@ -8406,8 +8482,12 @@
     (peek-remote-wait [%& %& (weld u.base /pub) %revs] shp)
   ?.  ?=([~ %file *] ms)  (pure:m ~)
   ::  cross-ship content is a raw noun: clam it in a mole, so a hostile or
-  ::  malformed list reads as empty instead of crashing the reader
-  (pure:m (fall (mole |.((json-revs:lp ;;(json (sang-noun:tarball sang.u.ms))))) ~))
+  ::  malformed list reads as empty instead of crashing the reader. And
+  ::  bound it first: shared structure can make a small noun vast to the
+  ::  clam, which the mole does not stop (+small-noun:lp).
+  =/  rn=*  (sang-noun:tarball sang.u.ms)
+  ?.  (small-noun:lp rn 200.000)  (pure:m ~)
+  (pure:m (fall (mole |.((json-revs:lp ;;(json rn)))) ~))
 ::  +drop-peer-revs: forget a peer's list after one of its ids missed, so
 ::  the next view fetches it again.
 ::
@@ -8942,20 +9022,38 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ?.  on  (pure:m "")
-  ;<  seen=view:nexus  bind:m  (peek:io (rv up (weld /comments page)) ~)
-  =/  cs=(list comment:lc)
+  ::  shallow: only this page's own comments render, not those of the
+  ::  pages under it
+  ;<  seen=view:nexus  bind:m  (peek-shallow:io (rv up (weld /comments page)) ~)
+  =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
     ?.  ?=([%ball *] seen)  ~
-    =/  b=ball:tarball  ball.seen
-    =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
-      ?~(fil.b ~ contents.u.fil.b)
-    %+  murn  ~(val by fils)
-    |=  [s=sang:tarball gain=? bang=(unit tang)]
-    ^-  (unit comment:lc)
-    (mole |.(;;(comment:lc (sang-noun:tarball s))))
-  =/  sorted=(list comment:lc)
-    (sort cs |=([a=comment:lc b=comment:lc] (lth when.a when.b)))
-  ?:  &(?=(~ sorted) =("" box))  (pure:m "")
+    ?~(fil.ball.seen ~ contents.u.fil.ball.seen)
+  ?:  &(=(~ fils) =("" box))  (pure:m "")
+  ::  The rendered thread is cached by the set of comment ids. Each id is
+  ::  the hash of its comment, so the set fixes the thread, and an add or a
+  ::  delete changes it. An anonymous /c/ hit used to rebuild up to 200
+  ::  comments of 4 KB from any ship every time (security audit run-1). The
+  ::  cache sits outside /page, where no page grant reaches.
+  =/  key=@t  (scot %uv (sham ~(key by fils)))
+  =/  croad=road:tarball  (rf up (weld /comments-cache page) %thread)
+  ;<  cv=(unit view:nexus)  bind:m  (peek-soft:io croad ~)
+  =/  hit=(unit tape)
+    ?.  ?=([~ %file *] cv)  ~
+    =/  jon=json  (fall (mole |.(!<(json (need-vase:tarball sang.u.cv)))) ~)
+    ?.  ?=([%o *] jon)  ~
+    =/  k=(unit json)  (~(get by p.jon) 'key')
+    =/  h=(unit json)  (~(get by p.jon) 'html')
+    ?.  &(?=([~ %s *] k) ?=([~ %s *] h) =(p.u.k key))  ~
+    `(trip p.u.h)
   =/  thread=tape
+    ?^  hit  u.hit
+    =/  cs=(list comment:lc)
+      %+  murn  ~(val by fils)
+      |=  [s=sang:tarball gain=? bang=(unit tang)]
+      ^-  (unit comment:lc)
+      (mole |.(;;(comment:lc (sang-noun:tarball s))))
+    =/  sorted=(list comment:lc)
+      (sort cs |=([a=comment:lc b=comment:lc] (lth when.a when.b)))
     ?~  sorted  ""
     ;:  weld
       "<section class=\"comments\"><h3>"  (a-co:co (lent sorted))
@@ -8964,6 +9062,12 @@
       (zing (turn sorted comment-html))
       "</section>"
     ==
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    ?^  hit  (pure:n ~)
+    ;<  ~  bind:n  (ensure-dirs up /comments-cache page)
+    %^  put-file  croad  [/ %json]
+    (pairs:enjs:format ~[['key' s+key] ['html' s+(crip thread)]])
   ::  single-quote cord: a double-quote tape would interpolate the css { } braces.
   %-  pure:m
   ;:  weld
@@ -8972,6 +9076,39 @@
     thread
     box
   ==
+::  +cull-comments-of: drop every comment `who` wrote, and its moons', on
+::  every page. Soft: a cull refused leaves that comment in place.
+++  cull-comments-of
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io (rv up /comments) ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m 0)
+  =/  hits=(list [dir=path id=@ta])  (comments-by ball.u.vw / who)
+  =/  n=@ud  (lent hits)
+  |-  ^-  form:m
+  ?~  hits  (pure:m n)
+  ;<  *  bind:m  (cull-soft:io (rf up (weld /comments dir.i.hits) id.i.hits))
+  $(hits t.hits)
+::  +comments-by: where `who` (or one of its moons) commented, under a ball
+++  comments-by
+  |=  [b=ball:tarball rel=path who=@p]
+  ^-  (list [dir=path id=@ta])
+  =/  here=(list [dir=path id=@ta])
+    ?~  fil.b  ~
+    %+  murn  ~(tap by contents.u.fil.b)
+    |=  [id=@ta [=sang:tarball *]]
+    ^-  (unit [dir=path id=@ta])
+    =/  c  (mole |.(;;(comment:lc (sang-noun:tarball sang))))
+    ?~  c  ~
+    ?.  |(=(who author.u.c) =(`@`who (family:ls author.u.c)))  ~
+    `[rel id]
+  %+  weld  here
+  ^-  (list [dir=path id=@ta])
+  %-  zing
+  %+  turn  ~(tap by dir.b)
+  |=([nom=@ta kid=ball:tarball] (comments-by kid (snoc rel nom) who))
 ::  +comment-html: one stored comment as escaped html (author + body).
 ::
 ++  comment-html
@@ -11081,9 +11218,11 @@
   ^-  (unit @t)
   =/  nd  (~(get by fils) %name)
   ?~  nd  ~
-  =/  j=(unit json)  (mole |.(;;(json (sang-noun:tarball sang.u.nd))))
-  ?.  ?=([~ %s *] j)  ~
-  `p.u.j
+  ::  the shape alone, with no json clam: a name is [%s cord], and a noun a
+  ::  peer wrote here could be vast to a clam yet small on the wire
+  =/  n=*  (sang-noun:tarball sang.u.nd)
+  ?.  ?=([%s @] n)  ~
+  `(@t +.n)
 ::  +fils-share: a page's share mode from its dir's grubs, %private when it
 ::  has none or it does not read (a boom is no grant).
 ++  fils-share

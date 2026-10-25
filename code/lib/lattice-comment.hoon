@@ -20,4 +20,9 @@
 ::  commenter, like the peer-page data cap.
 ::
 ++  max-body  ^-(@ud 4.096)
+::  +per-author: of a page's 200 slots, how many one author may hold, its
+::  moons counted with it and all comets as one (+family:lattice-share).
+::  The owner is exempt. One pool for everyone let a single sender fill a
+::  page and lock everyone else out (security audit run-1).
+++  per-author  ^-(@ud 20)
 --
