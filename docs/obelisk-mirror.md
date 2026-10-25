@@ -330,10 +330,7 @@ sequenceDiagram
    (or `|install ~dister-nomryg-nilref %obelisk`) and enable the
    mirror there; the next pass finds a zeroed cursor and backfills.
    Turning the mirror off drops the `lattice` database with its history (`DROP DATABASE FORCE`) and zeroes the cursor, so turning it on again copies everything afresh.
-2. Obelisk is reinstalled empty. Every working pass starts with the
-   bootstrap's per-table probes, one `SELECT` of the primary key
-   column per mirrored table, before any schema poke, so a wiped
-   store still shows its missing tables. A table found missing gets
+2. Obelisk is reinstalled empty. Every working pass starts with a `CREATE DATABASE` poke, then the bootstrap's per-table probes, one `SELECT` of the primary key column per mirrored table, before any table is created, so a wiped store still shows its missing tables. The database comes first because a probe against a missing database fails with the same error for every table, and the round trip reads a repeat of the last answer as no answer, so every probe would time out. A table found missing gets
    its cursor state zeroed before the pass writes, unless its `CREATE TABLE` then fails outright, which says the table was there and the probe's error belonged to another caller. The
    `CREATE DATABASE` poke rides alone and its expected already-exists
    error is swallowed, never read as a failure, and the

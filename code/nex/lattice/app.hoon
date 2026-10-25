@@ -13071,9 +13071,17 @@
 ::  cursor state must zero: a missing table that now exists is a wipe
 ::  or a first run, and either way its rows need a backfill). ~ = the
 ::  desk is absent or unresponsive; the loop sleeps long. Probes run
-::  BEFORE creates so a wiped store still shows its missing tables.
-::  Creates ride ONE POKE EACH, expected already-exists errors
+::  BEFORE the table creates so a wiped store still shows its missing
+::  tables. Creates ride ONE POKE EACH, expected already-exists errors
 ::  swallowed (a joined script would abort at the first live table).
+::  The database is created FIRST, before any probe. Without it every
+::  probe fails with the same "database does not exist" error, and
+::  +poll-nonce sees a repeat of the slot's last answer as no answer,
+::  so each probe timed out and the bootstrap read %unclear forever.
+::  Turning the mirror off drops the database (+mirror-purge), so that
+::  was every off and on. A missing TABLE's error names the table.
+::  ponytail: one extra poke per pass. Probe the database alone if
+::  passes ever get frequent.
 ::
 ::  +probe-verdict: what one probe learned. %yes = the table answered.
 ::  %no = the engine rejected the statement, which for a bare SELECT
@@ -13142,10 +13150,10 @@
 ++  mirror-bootstrap
   =/  m  (fiber:fiber:nexus ,boot-verdict)
   ^-  form:m
+  ;<  *  bind:m  (mirror-run create-db-urql:lm)
   ;<  first=(list probe-verdict)  bind:m  probe-tables
   ?:  (levy first |=(f=probe-verdict =(%yes f)))  (pure:m [%ok *(set @ud)])
   ?:  (lien first |=(f=probe-verdict =(%dunno f)))  (pure:m [%unclear ~])
-  ;<  *  bind:m  (mirror-run create-db-urql:lm)
   ;<  bad=(set @ud)  bind:m  (run-creates create-list:lm)
   ;<  again=(list probe-verdict)  bind:m  probe-tables
   ::  every table still missing after the creates reads as an absent
