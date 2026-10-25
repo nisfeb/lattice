@@ -8,7 +8,7 @@
         "source": "git-subdir",
         "url": "nisfeb/lattice",
         "path": "plugins/claude",
-        "sha": "33d82b6d043defb4047b2382b9db7795848a4e65"
+        "sha": "ed5d09f5c2e6568726c18b6b078a9a40d7ff9fc0"
       },
       "description": "Lattice on your Urbit ship as Claude's memory, and your wiki and other ships' pages as its knowledge."
     }
