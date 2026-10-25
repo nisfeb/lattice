@@ -101,6 +101,7 @@ console.log('\nrestoreVault end to end');
     { name: 'pages/bad.md', body: 'x\n', mtime: MT },
     { name: 'share.json', body: JSON.stringify({ 'notes/todo': 'clearweb', bad: 'clearweb', ghost: 'urbit' }), mtime: MT },
     { name: 'names.json', body: JSON.stringify({ notes: 'Notes', ghost: 'Ghost' }), mtime: MT },
+    { name: 'sensitive.json', body: JSON.stringify(['notes', 'notes/todo', 'ghost', 'bad']), mtime: MT },
   ]).arrayBuffer();
   const ship = fakeShip({ refuse: ['bad'] });
   let asked = '';
@@ -119,6 +120,17 @@ console.log('\nrestoreVault end to end');
   eq('one display name: the folder of a saved page', moves.length, 1);
   eq('page-move is a POST', moves.every((r) => r.method === 'POST'), true);
   eq('nothing at all went out as GET', ship.log.some((r) => r.method === 'GET'), false);
+  // sensitive marks come back for a saved page and the folder holding it,
+  // and before any share mode, so nothing is published unmarked
+  const marks = ship.log.filter((r) => r.url.includes('/page-sensitive?'));
+  eq('a mark for the saved page and its folder only',
+    JSON.stringify(marks.map((r) => new URL(r.url, 'http://s').searchParams.get('name')).sort()),
+    '["notes","notes/todo"]');
+  eq('each mark turns it on, as a POST',
+    marks.every((r) => r.method === 'POST' && r.url.includes('on=1')), true);
+  const at = (f) => ship.log.findIndex(f);
+  eq('marks land before share modes',
+    at((r) => r.url.includes('/page-sensitive?')) < at((r) => r.url.includes('/page-share?')), true);
 }
 
 console.log('\nrestoreVault: cancelling the confirm writes nothing');
@@ -162,7 +174,7 @@ console.log('\nexportVault: a complete scheduled backup');
   const ship = fakeShip({
     dump: { nodes: [
       { page: true, path: 'a', kind: 'md', body: 'a' },
-      { page: true, path: 'b', kind: 'md', body: 'b' },
+      { page: true, path: 'b', kind: 'md', body: 'b', sensitive: true },
       { page: true, path: 'dir', kind: 'index', body: 'gen' },
     ] },
     know: { items: [{ key: 'k', body: 'v' }] },
@@ -174,6 +186,7 @@ console.log('\nexportVault: a complete scheduled backup');
   eq('the manifest counts the pages it meant to write', m && m.pages, 2);
   eq('and the memories', m && m.memories, 1);
   eq('and names nothing missing', m && m.missing.length, 0);
+  eq('sensitive.json lists what the dump marks', files.get('sensitive.json'), JSON.stringify(['b'], null, 1));
 }
 
 console.log('\nexportVault: an incomplete scheduled backup');

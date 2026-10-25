@@ -143,6 +143,7 @@ know.json the memories again, in the format /know-import reads.
 share.json  the share mode of every non-private page (path -> shared|clearweb).
 names.json  the display name of every page or folder that was named with
           capitals or spaces (path -> the name shown in the tree).
+sensitive.json  every page or folder marked sensitive (a list of paths).
 manifest.json  how many pages and memories the export meant to write, and
           anything it could not read.
 
@@ -216,7 +217,7 @@ editor, or git will do if you only want to look.
       if (typeof dname !== 'string' || !dname) continue;
       if (covers(saved, path)) namesOk.push([path, dname]); else dropped++;
     }
-    return { share: shareOk, names: namesOk, dropped };
+    return { share: shareOk, names: namesOk, dropped, saved };
   }
   // the confirm text. Every page the restore would make shared or clearweb is
   // named with its mode, not counted: a count cannot tell you which of your
@@ -284,11 +285,12 @@ editor, or git will do if you only want to look.
     catch (e) { st('not a readable archive: ' + e.message, false); return; }
 
     const pages = [];
-    let knowJson = null, shareJson = null, namesJson = null;
+    let knowJson = null, shareJson = null, namesJson = null, sensJson = null;
     for (const e of entries) {
       if (e.name === 'know.json') knowJson = e.text;
       else if (e.name === 'share.json') shareJson = e.text;
       else if (e.name === 'names.json') namesJson = e.text;
+      else if (e.name === 'sensitive.json') sensJson = e.text;
       else if (e.name.startsWith('pages/')) pages.push({ rel: e.name.slice(6), text: e.text });
     }
     if (!pages.length && !knowJson) { st('that archive has no pages/ and no know.json in it', false); return; }
@@ -297,6 +299,8 @@ editor, or git will do if you only want to look.
     if (shareJson) { try { share = JSON.parse(shareJson) || {}; } catch (e) { st('share.json is unreadable — pages will come back private', false); } }
     let names = {};
     if (namesJson) { try { names = JSON.parse(namesJson) || {}; } catch (e) { st('names.json is unreadable — display names will not come back', false); } }
+    let sens = [];
+    if (sensJson) { try { sens = JSON.parse(sensJson) || []; } catch (e) { st('sensitive.json is unreadable — sensitive marks will not come back', false); } }
 
     // what the confirm names: every share entry for a page this archive could
     // put back. The pages are not written yet, so this is the most it can be.
@@ -322,6 +326,23 @@ editor, or git will do if you only want to look.
       }
       if (plan.dropped) bits.push(plan.dropped + ' share mode or name entries ignored (no restored page)');
       st(bits.join(', '), !u.bad);
+    }
+
+    // sensitive marks before share modes, and as soon as the pages are in,
+    // for any restored page or a folder holding one (the same trust rule as
+    // names.json)
+    const marks = Array.isArray(sens)
+      ? sens.filter((p) => typeof p === 'string' && p && covers(plan.saved, p)) : [];
+    if (marks.length) {
+      st('restoring sensitive marks…');
+      let bad = 0;
+      for (const path of marks) {
+        try {
+          const r = await mutate(api + '/page-sensitive?name=' + encodeURIComponent(path) + '&on=1', { method: 'POST' });
+          if (!(r && r.ok)) bad++;
+        } catch (e) { bad++; }
+      }
+      if (bad) st('sensitive marks: ' + bad + ' failed', false);
     }
 
     if (plan.share.length) {
@@ -425,6 +446,10 @@ editor, or git will do if you only want to look.
     // pages and folders alike, straight off the dump the pages came from
     const names = {};
     for (const n of (dump.nodes || [])) if (n.dname) names[n.path] = n.dname;
+    // sensitive.json: the pages and folders carrying their own sensitive mark.
+    // Without it a restore brought them back readable by uncleared keys.
+    const sensitive = (dump.nodes || []).filter((n) => n.sensitive).map((n) => n.path);
+    files.push({ name: 'sensitive.json', body: JSON.stringify(sensitive, null, 1), mtime: now });
     if (Object.keys(names).length)
       files.push({ name: 'names.json', body: JSON.stringify(names, null, 1), mtime: now });
 

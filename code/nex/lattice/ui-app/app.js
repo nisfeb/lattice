@@ -798,6 +798,27 @@
     if (r) { try { const j = await r.json(); if (j && j.error) msg = ': ' + j.error; } catch {} }
     return msg;
   };
+  // the eyre session is gone: an owner route answered 401, or 403 with the
+  // gate's bare "forbidden" (every other refusal says why). What this browser
+  // keeps of the owner's content goes, so whoever uses it next sees none of
+  // it: the tree snapshot (every page body), the last page, the pages cache
+  // and its index. The offline queue stays. It holds edits not sent yet,
+  // and dropping it would lose them.
+  const sessionGone = async (r) => {
+    if (!r || (r.status !== 401 && r.status !== 403)) return false;
+    if (r.status === 403) {
+      let e = '';
+      try { e = (await r.clone().json()).error; } catch {}
+      if (e !== 'forbidden') return false;
+    }
+    try { localStorage.removeItem('appPage'); } catch {}
+    try { await kvPut('tree', []); } catch {}
+    try { if ('caches' in window) await caches.delete('lattice-pages'); } catch {}
+    try { indexedDB.deleteDatabase('lattice-lru'); } catch {}
+    nodes = []; pageCache.clear(); renderTree();
+    st('the session has ended: log in to the ship again', false);
+    return true;
+  };
   // bulk writes (vault restore, drag-drop upload, know-import) name their
   // targets only in the POST body — no per-name bust is possible from the
   // URL, and a restore legitimately invalidates everything. Drop the whole
@@ -2581,7 +2602,10 @@
     // already report theirs. Offline is a state this app is built for.
     try {
       const r = await fetch(api + '/page-dump');
-      if (!r.ok) { st('tree failed' + await errText(r), false); return; }
+      if (!r.ok) {
+        if (await sessionGone(r)) return;
+        st('tree failed' + await errText(r), false); return;
+      }
       d = await r.json();
     } catch { st('tree failed (network)', false); return; }
     if (gen !== treeGen) return;   // a local patch superseded this response
