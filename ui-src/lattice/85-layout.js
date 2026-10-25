@@ -43,7 +43,7 @@
       localStorage.appView = v;
       applyToggles();
       // the preview skipped its renders while off screen (60-preview.js)
-      if (hidden && v !== 'edit') refreshPreview();
+      if (hidden && v !== 'edit') showPreview();
     };
   // A throw in this boot-time layout pass must NOT halt the rest of app boot:
   // the initial tree load and navigation wiring run in a later file (90-sync),
@@ -84,7 +84,7 @@
     ws.dataset.mv = v;
     for (const x of document.querySelectorAll('.mtabs button'))
       x.className = x.dataset.mv === v ? 'on' : '';
-    if (v === 'prev') refreshPreview();
+    if (v === 'prev') showPreview();
   };
   for (const b of document.querySelectorAll('.mtabs button'))
     b.onclick = () => setMv(b.dataset.mv);
