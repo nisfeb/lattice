@@ -75,6 +75,13 @@ impl std::fmt::Display for Origin {
 /// Split a ship URL into its origin. Only http and https are accepted.
 pub fn origin_of(url: &str) -> Result<Origin, String> {
     let url = url.trim();
+    // a browser or the url crate drops tab, CR and LF inside a URL, and
+    // reads a backslash as a slash, so the host it connects to is not the
+    // one a plain split sees: "http://8.8.8.8\x.local" went to 8.8.8.8 with
+    // the +code in the clear (security audit run-1)
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(format!("{url:?}: a ship URL may not hold spaces or control characters"));
+    }
     let (scheme, rest) = url
         .split_once("://")
         .ok_or_else(|| format!("{url:?} is not a ship URL (want https://host or http://host:port)"))?;
@@ -84,7 +91,7 @@ pub fn origin_of(url: &str) -> Result<Origin, String> {
         "http" => 80,
         _ => return Err(format!("{url:?}: the scheme must be http or https")),
     };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or("");
     if authority.contains('@') {
         return Err(format!("{url:?}: a ship URL may not carry a user name or password"));
     }
@@ -804,11 +811,42 @@ mod tests {
             "localhost:8080",
             "http://",
             "http://localhost:99999",
+            // a backslash ends the host for a browser and the url crate
+            "http://8.8.8.8\\x.local",
+            "http://8.8.8.8:80\\x.local",
+            "http://ship.example.com\\.local",
+            "http://localhost\t.evil.com",
+            "http://8.8.8.8\n.local",
+            "http://8.8.8.8\r.local",
+            "http://8.8.8.8 .local",
         ] {
-            assert!(check_ship_url(bad).is_err(), "{bad} must be refused");
+            assert!(check_ship_url(bad).is_err(), "{bad:?} must be refused");
         }
         let e = check_ship_url("http://ship.example.com").unwrap_err();
         assert!(e.contains("Use https, or a loopback/LAN address"), "{e}");
+    }
+
+    // the host and port the rule judges must be the ones ureq connects to,
+    // which come from the url crate. Every URL the rule accepts parses the
+    // same way there.
+    #[test]
+    fn the_rule_reads_a_url_as_the_url_crate_does() {
+        for u in [
+            "https://ship.example.com",
+            "HTTPS://Ship.Example.com:8443/x",
+            "http://localhost:8080/apps",
+            "http://127.0.0.1:8080?x",
+            "http://[::1]:8080#f",
+            "http://pier.local",
+            "http://localhost\\x.example.com",
+            "https://ship.example.com\\x",
+        ] {
+            let ours = check_ship_url(u).unwrap_or_else(|e| panic!("{u}: {e}"));
+            let theirs = url::Url::parse(u).unwrap();
+            let host = theirs.host_str().unwrap().trim_start_matches('[').trim_end_matches(']');
+            assert_eq!(ours.host, host, "{u}");
+            assert_eq!(ours.port, theirs.port_or_known_default().unwrap(), "{u}");
+        }
     }
 
     #[test]

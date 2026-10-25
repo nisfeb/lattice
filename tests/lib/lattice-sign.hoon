@@ -86,14 +86,37 @@
 ::  life because a signature must outlive key rotation: a record made
 ::  under life 3 stays checkable after the ship rotates to life 4.
 ++  test-record-carries-signer-and-life
-  =/  r  (record:ls who 3 (fake-ring who) 'content')
+  =/  r  (record:ls who 3 (fake-ring who) 7 'content')
   ;:  weld
     (expect-eq !>(who) !>(ship.r))
     (expect-eq !>(`@ud`3) !>(life.r))
-    (expect-eq !>((digest:ls 'content')) !>(digest.r))
+    (expect-eq !>(`@ud`2) !>(v.r))
+    (expect-eq !>((digest-2:ls 7 'content')) !>(digest.r))
   ==
 ::
 ++  test-record-verifies
-  =/  r  (record:ls who 1 (fake-ring who) 'content')
+  =/  r  (record:ls who 1 (fake-ring who) 7 'content')
   (expect !>((verify-with:ls (fake-pass who) sig.r digest.r)))
+::
+::  ==  version 2
+::
+::  full width, salted apart from version 1 and from auspex, and bound to
+::  the byte length, so a trailing NUL changes it
+++  test-digest-2
+  =/  d  (digest-2:ls 5 'hello')
+  ;:  weld
+    (expect-eq !>((shas %lattice-2 (jam [5 'hello']))) !>(d))
+    (expect !>((gth (met 0 d) 128)))
+    (expect !>(!=(d (digest:ls 'hello'))))
+    (expect !>(!=(d (shas %auspex (jam [5 'hello'])))))
+    (expect !>(!=(d (digest-2:ls 6 'hello'))))
+    (expect !>(!=(d (digest-2:ls 5 'hellp'))))
+  ==
+::
+::  a verifier picks the construction by the record's version
+++  test-digest-of
+  ;:  weld
+    (expect-eq !>((digest-2:ls 3 'abc')) !>((digest-of:ls 2 3 'abc')))
+    (expect-eq !>((digest:ls 'abc')) !>((digest-of:ls 1 3 'abc')))
+  ==
 --

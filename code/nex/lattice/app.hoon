@@ -2393,7 +2393,9 @@
     ?:  =('' content)  (send-err eyre-id 400 'nothing to sign: body is empty')
     ;<  lyf=@ud  bind:m  (our-life our)
     ;<  rng=ring  bind:m  (our-ring lyf)
-    =/  rec=signed:lsg  (record:lsg our lyf rng content)
+    ::  the byte length from the request, which the cord alone loses
+    =/  len=@ud  ?~(body.request.req 0 p.u.body.request.req)
+    =/  rec=signed:lsg  (record:lsg our lyf rng len content)
     =/  jon=json  (signed-json rec)
     =/  save=(unit @t)  (~(get by args) 'save')
     ?~  save  (send-json eyre-id jon)
@@ -2453,18 +2455,33 @@
       ?~  got  ~
       ?.  ?=([%s *] u.got)  ~
       `p.u.got
+    ::  the digest construction: `v` 2 since records carried it, absent
+    ::  (version 1) before (+digest-2:lsg)
+    =/  ver=@ud
+      ?.  ?=([%o *] u.jon)  1
+      =/  got=(unit json)  (~(get by p.u.jon) 'v')
+      ?.  ?=([~ %n *] got)  1
+      (fall (rush p.u.got dem) 1)
     ::  content given: the digest must be the digest OF that content, or
     ::  the record is internally inconsistent and no signature check on it
     ::  means anything.
     ?:  ?&  ?=(^ con)
-            !=(dig.rq (digest:lsg u.con))
+            !=(dig.rq (digest-of:lsg ver (met 3 u.con) u.con))
         ==
       (send-json eyre-id (pairs:enjs:format ~[['ok' b+|] ['reason' s+'digest does not match content']]))
     ;<  pas=(unit pass)  bind:m  (peer-pass who.rq lyf.rq)
     ?~  pas
       (send-json eyre-id (pairs:enjs:format ~[['ok' b+|] ['reason' s+'no key for that ship at that life']]))
     =/  good=?  (verify-with:lsg u.pas sig.rq dig.rq)
-    (send-json eyre-id (pairs:enjs:format ~[['ok' b+good]]))
+    ::  a version 1 record is still checked, and flagged: its 128-bit
+    ::  digest can be matched by a second document at feasible cost
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    ?.  =(1 ver)  ~[['ok' b+good]]
+    :~  ['ok' b+good]
+        ['legacy' b+&]
+        ['reason' s+'a version 1 record binds only a 128-bit digest: re-sign to bind the content fully']
+    ==
       [%'POST' %page-share]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -6043,8 +6060,9 @@
   %-  pairs:enjs:format
   :~  ['ship' s+(scot %p ship.rec)]
       ['life' (numb:enjs:format life.rec)]
+      ['v' (numb:enjs:format v.rec)]
       ['alg' s+'ed25519']
-      ['salt' s+'lattice']
+      ['salt' s+?:(=(2 v.rec) 'lattice-2' 'lattice')]
       ['digest' (numb:enjs:format digest.rec)]
       ['sig' (numb:enjs:format sig.rec)]
   ==

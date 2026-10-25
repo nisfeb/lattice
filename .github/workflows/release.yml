@@ -157,9 +157,13 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: desktop -> target
+      # No rust-cache here. Push-to-main CI runs npm and test code and
+      # saves the same default-branch cache, so a release built from it
+      # could link whatever that code left in target/ (security audit
+      # run-1). A release builds clean, and slower. The lockfile must be
+      # current, so cargo cannot resolve anew.
+      - name: lockfile is current
+        run: cargo fetch --locked --manifest-path desktop/Cargo.toml
 
       - name: linux build deps
         if: runner.os == 'Linux'

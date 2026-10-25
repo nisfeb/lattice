@@ -615,8 +615,19 @@
     ::  bound with its type: zing inline in a weld is a fuse-loop
     =/  joined=tape  (zing (join ", " names))
     :(weld head ": " joined)
+  ::  the owner's core first, then core an agent wrote, each in key order.
+  ::  Keys may add core, but a key's entries filling the cap used to turn
+  ::  every owner rule into a pointer. A key cannot forge the source:
+  ::  +stamp writes source agent for every keyed save.
+  =/  by-agent
+    |=(e=know-entry =(`'agent' (meta-get meta:(front body.e) 'source')))
   =/  core=(list [k=path e=know-entry])
-    (sort (skim live |=([* e=know-entry] (~(has in tags.e) 'core'))) |=([a=[k=path *] b=[k=path *]] (aor k.a k.b)))
+    %+  sort  (skim live |=([* e=know-entry] (~(has in tags.e) 'core')))
+    |=  [a=[k=path e=know-entry] b=[k=path e=know-entry]]
+    =/  aa=?  (by-agent e.a)
+    =/  ba=?  (by-agent e.b)
+    ?.  =(aa ba)  ba
+    (aor k.a k.b)
   =/  core-text=tape
     =|  [out=tape used=@ud]
     |-  ^-  tape

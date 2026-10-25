@@ -260,6 +260,23 @@
     (expect !>(?=(^ (find "## /feedback/a\0arule one" brief))))
     (expect !>(?=(^ (find "## /feedback/b (over the cap: read it)" brief))))
   ==
+::  an agent's core cannot push the owner's past the cap: the owner's
+::  comes first whatever the keys, the agent's after it in key order
+++  test-index-text-owner-core-first
+  =/  big=@t  (crip (reap 80 'x'))
+  =/  es=(map path know-entry)
+    %-  malt
+    ^-  (list [path know-entry])
+    :~  [/a/agent1 [(rap 3 '---\0asource: agent\0a---\0a' big ~) ~2026.1.1 (sy 'core' ~) ~]]
+        [/a/agent2 ['---\0asource: agent\0a---\0ashort' ~2026.1.1 (sy 'core' ~) ~]]
+        [/z/owner ['owner rule' ~2026.1.1 (sy 'core' ~) ~]]
+    ==
+  =/  out=tape  (trip (index-text es & 50 ~))
+  ;:  weld
+    (expect !>(?=(^ (find "## /z/owner\0aowner rule" out))))
+    (expect !>(?=(^ (find "## /a/agent1 (over the cap: read it)" out))))
+    (expect !>((lth (need (find "/z/owner" out)) (need (find "/a/agent2" out)))))
+  ==
 ::  a world block leads the index when given, and is absent when not
 ++  test-index-world-present
   =/  es=(map path know-entry)  (malt ^-((list [path know-entry]) ~[[/project/x ['plain' ~2026.1.1 ~ ~]]]))
