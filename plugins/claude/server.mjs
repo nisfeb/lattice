@@ -57,9 +57,9 @@ const num = (d) => ({ type: 'integer', description: d });
 
 const TOOLS = {
   memory_index: {
-    description: 'Every memory key by area, plus the core rules in full. Load once per session (the session hook usually has).',
-    props: {}, req: [],
-    run: () => get('know-index'),
+    description: "Every memory key by area, plus the core rules in full. Load once per session (the session hook usually has). world: true adds orrery's digest of the owner's day, which is sensitive: it needs a cleared key, and for 12 hours after, this key's saves are kept sensitive.",
+    props: { world: { type: 'boolean' } }, req: [],
+    run: (a) => get('know-index', { world: a.world ? 1 : undefined }),
   },
   memory_recall: {
     description: 'What lattice remembers that bears on a task: ranked entries with snippets, and entries they link to. "weak": true means probably nothing stored. Run before starting a task.',

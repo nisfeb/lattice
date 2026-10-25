@@ -90,18 +90,12 @@ What it reads (orrery version 117), all `[/ %json]`:
 
 Three features use them:
 
-- **World at session start.** `+index-text` leads the agent's session index
-  with a `## World, from orrery` block carrying `world.json`'s `text`, but
-  only when the reader is cleared and the digest is fresh (its `at` within a
-  day). The gate is `|(?=(~ key) sensitive.scope.u.key)`: the owner session,
-  or a sensitivity-cleared agent key. An uncleared key sees nothing, since the
-  digest carries the owner's private day (calendar, open situations). An `at`
-  older than a day, no digest, or no orrery all yield no block.
+- **World at session start.** `+index-text` leads the session index with a `## World, from orrery` block carrying `world.json`'s `text`, when the digest is fresh (its `at` within a day). The owner session always gets it. An agent key gets it only when the key is cleared for sensitive content and asks with `world=1` (the `memory_index` tool's `world` option), and getting it taints the key for 12 hours like any sensitive read, because the digest carries the owner's private day (calendar, open situations). The session hooks do not ask, so an agent's session starts without it. An `at` older than a day, no digest, or no orrery all yield no block.
 - **Journal pages.** A pass on the mirror-loop (every wake, and on boot)
   mirrors each `briefs/<day>` into a private page `journal/<day>` and each
   `reviews/<day>` into `journal/week-<day>`, body `# Brief, <day>` or
   `# Review, <day>` then the record's `text`. Each page is marked sensitive
-  (a `%page-sensitive` poke after the `%make`), so an uncleared key cannot
+  (a `%page-sensitive` poke before the `%make`), so an uncleared key cannot
   read it. A day is written again only when that record's `at` moves, so a
   hand edit survives. `[situation/x]` in the text becomes `[[situation/x]]`.
   The last-synced `at` per page lives in `journal-synced.json`, reviews keyed

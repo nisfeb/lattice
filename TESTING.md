@@ -83,9 +83,7 @@ lattice stops serving.
 
 How `compiled` was made, from the golden: `dev-deploy.py ... --add` (which
 also POSTs `/apps/grubbery/desks/add`), the approval above, then the test
-desk. On a fresh ship lattice tries to install `%obelisk` from
-`~dister-nomryg-nilref`; a fake ship cannot reach it and nothing depends on
-it.
+desk.
 
 ## Looking inside with u
 
