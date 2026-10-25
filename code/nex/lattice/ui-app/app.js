@@ -4180,6 +4180,19 @@
       prev.src = api + '/f/' + current + '?preview=1&t=' + Date.now();
     }
   }
+  // The way back into view for the pane (the phone's preview tab, or a
+  // desktop view that shows it again). Chromium never paints a sandboxed
+  // frame whose first document loaded while its pane was display:none, or
+  // was replaced by a second write before it painted. Later documents, even
+  // written back to back, paint fine once one has. A phone hides the pane
+  // from boot (the tree tab comes first), so the preview tab stayed blank.
+  // So: a fresh frame, written exactly once while the pane is visible.
+  function showPreview() {
+    const n = prev.cloneNode(false);
+    n.removeAttribute('srcdoc'); n.removeAttribute('src'); n.style.minHeight = '';
+    prev.replaceWith(n); prev = n; fitCur = null;
+    if (CONTENT() || current) refreshPreview(); else prevBlank();
+  }
   let localTimer = null;
   src.addEventListener('input', () => {
     if (!CONTENT()) return;
@@ -6455,7 +6468,7 @@
       localStorage.appView = v;
       applyToggles();
       // the preview skipped its renders while off screen (60-preview.js)
-      if (hidden && v !== 'edit') refreshPreview();
+      if (hidden && v !== 'edit') showPreview();
     };
   // A throw in this boot-time layout pass must NOT halt the rest of app boot:
   // the initial tree load and navigation wiring run in a later file (90-sync),
@@ -6496,7 +6509,7 @@
     ws.dataset.mv = v;
     for (const x of document.querySelectorAll('.mtabs button'))
       x.className = x.dataset.mv === v ? 'on' : '';
-    if (v === 'prev') refreshPreview();
+    if (v === 'prev') showPreview();
   };
   for (const b of document.querySelectorAll('.mtabs button'))
     b.onclick = () => setMv(b.dataset.mv);

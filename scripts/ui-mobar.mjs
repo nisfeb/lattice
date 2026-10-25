@@ -79,6 +79,27 @@ const seeded = await m.evaluate(() => document.getElementById('dlginput').value)
 check('pre-filled with the current name', seeded === label, JSON.stringify(seeded));
 await m.evaluate(() => document.getElementById('dlgcancel').click());
 
+// the preview tab paints. Its pane is display:none from boot, and Chromium
+// never paints a sandboxed frame that loaded while hidden, so the tab
+// flashed and stayed blank (60-preview.js, showPreview). Painted means the
+// frame's text is on screen: hiding that text must change the pixels.
+await m.evaluate(() => {
+  const s = document.getElementById('src');
+  s.value = '# painted\n\nThe preview tab shows this.';
+  s.dispatchEvent(new Event('input'));
+  document.querySelector('.mtabs button[data-mv="prev"]').click();
+});
+await new Promise((r) => setTimeout(r, 1500));
+const pbox = await m.evaluate(() => {
+  const r = document.getElementById('prev').getBoundingClientRect();
+  return { x: r.x, y: r.y, width: r.width, height: Math.min(r.height, 160) };
+});
+const shown = await m.screenshot({ clip: pbox });
+await (await (await m.$('#prev')).contentFrame()).evaluate(() => { document.body.style.visibility = 'hidden'; });
+const blank = await m.screenshot({ clip: pbox });
+check('phone: the preview tab paints the page', !shown.equals(blank));
+await m.evaluate(() => document.querySelector('.mtabs button[data-mv="code"]').click());
+
 // the bar is an item of a 1fr grid track whose floor is min-content, so a
 // long status line once pushed the whole layout 12px past the viewport —
 // horizontal scroll that only appeared AFTER the first pier response wrote
