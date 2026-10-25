@@ -36,12 +36,18 @@ echo "==> lattice desktop against a stub ship on 127.0.0.1:$PORT"
 # the XDG dirs too: CI runners set XDG_CONFIG_HOME, which outranks HOME
 ( export HOME="$T/home" XDG_CONFIG_HOME="$T/home/.config" XDG_DATA_HOME="$T/home/.local/share" \
     XDG_CACHE_HOME="$T/home/.cache" LATTICE_LOG=1
-  timeout 45 xvfb-run -a "$BIN" > "$T/app.log" 2>&1 ) &
+  timeout 60 xvfb-run -a "$BIN" > "$T/app.log" 2>&1 ) &
 APP=$!
-sleep 30
 # the port comes from THIS app's log: on a machine running the real app, the
-# canonical port belongs to it and relays to a real ship
-bport=$(grep -o "bridge: listening on 127.0.0.1:[0-9]*" "$T/app.log" | head -1 | sed 's/.*://')
+# canonical port belongs to it and relays to a real ship. Poll for it: a slow
+# CI runner can take more than 30 s to log it, and a fixed sleep then sent no
+# request at all, so the last check read "absent" instead of "no".
+bport=
+for _ in $(seq 50); do
+  bport=$(grep -o "bridge: listening on 127.0.0.1:[0-9]*" "$T/app.log" | head -1 | sed 's/.*://')
+  [ -n "$bport" ] && break
+  sleep 1
+done
 [ -n "$bport" ] && curl -s -o /dev/null "http://127.0.0.1:$bport/apps/lattice/owner?via=other-local-process"
 wait "$APP"
 [ -s "$T/stub.log" ] || { echo "the stub saw no request. The app said:"; tail -40 "$T/app.log"; }
