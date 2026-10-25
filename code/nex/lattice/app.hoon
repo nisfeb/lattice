@@ -150,6 +150,12 @@
             ::  undeclared grub does not, which is the lesson /mirror/tr
             ::  taught. See +carry-old-data.
             [%fall %& [/ %'carried.json'] [[/ %json] `json`[%b %.n]]]
+            ::  retired.json: has the old instance been retired, and
+            ::  /retired/old-app the snapshot kept of it. See
+            ::  +retire-old-app.
+            [%fall %& [/ %'retired.json'] [[/ %json] `json`[%b %.n]]]
+            [%fall %| /retired empty-dir:loader]
+            [%fall %& [/retired %'old-app'] [[/ %noun] ~]]
             ::  faults.json: the fault record (+fault). Declared, so a fault
             ::  that stands across a reload is not printed again for it.
             [%fall %& [/ %'faults.json'] [[/ %json] `json`[%o ~]]]
@@ -309,6 +315,7 @@
         ::  happens exactly when this app can first run, which is the only
         ::  moment it could have happened anyway.
         ;<  ~  bind:m  (carry-old-data root)
+        ;<  ~  bind:m  retire-old-app
         ::  lay lattice's COMPLETE public grant set through the registry's
         ::  %how action: /pub for foreign readers, every shared page's data
         ::  road, and the share/comment inboxes. One act, server-side merged,
@@ -3911,15 +3918,16 @@
           'read the pages other ships publish, and follow them as they change. Refuse this and your own pages are unaffected; you just cannot read what other ships publish'
         ::  THE CARRY ROAD, and it is temporary. Lattice used to live at
         ::  /apps/lattice.lattice_app; this reads that dormant instance once,
-        ::  on the first writer rise after the move, and copies the data
-        ::  across. +carry-old-data marks itself done and never reads it
-        ::  again, and the release after this one drops this line.
+        ::  on the first writer rise after the move, copies the data across
+        ::  (+carry-old-data), then keeps a snapshot of it before the make
+        ::  road below deletes it (+retire-old-app). A later release drops
+        ::  both roads, once installs have retired the old copy.
         ::
         ::  Refusing it is safe and loses nothing that is not still there:
         ::  the old instance keeps its data, so the carry can be re-run by a
         ::  later version once the road is granted.
           %+  line  '/apps/lattice.lattice_app/'
-          'copy your existing pages, memories and bookmarks across from where lattice used to live. This is read-only, happens once, and the old copy is left untouched. Refuse it and this install simply starts empty'
+          'copy your existing pages, memories and bookmarks across from where lattice used to live, and keep a snapshot of that old copy. Refuse it and this install simply starts empty'
         ::  orrery, if it is installed on this ship, through its instance
         ::  dir under shell: lattice reads its world digest, daily briefs
         ::  and weekly reviews, the same ambient same-ship read orrery
@@ -3937,6 +3945,11 @@
       :-  %a
       :~  %+  line  '/sys/ames/usergroups/'
           'share pages with other ships: add a ship to a sharing group and grant the group read or edit on your pages, and take a banned ship out of every group. This road can change any sharing group on this ship. Refuse it and lattice works fully for you; you just cannot share pages with other ships'
+        ::  the retire road (+retire-old-app): the old app-tier copy is
+        ::  deleted once it is carried and a snapshot of it is kept, so
+        ::  grants made on it stop reaching anything.
+          %+  line  '/apps/lattice.lattice_app/'
+          'delete the old copy from where lattice used to live, after its pages and notes are carried across and a snapshot of it is kept here. Grants made on the old copy stop working. Refuse it and the old copy stays where it is'
       ==
   ==
 ::
@@ -10889,24 +10902,24 @@
 ::  back to +app-base, which is wrong for a desk install (clearweb links,
 ::  public forms and live reload all went to the wrong path).
 ::
-::  Veto-tolerant, falling back to +app-base. An install that refuses the
-::  /sys/link road keeps every local feature and loses only live reload and
-::  clearweb links, and an app-tier install gets the right answer from the
-::  fallback alone.
+::  Veto-tolerant, falling back to +desk-base, where lattice installs. An
+::  install that refuses the /sys/link road keeps every local feature. The
+::  fallback was +app-base, the old app-tier place, which is retired now
+::  (+retire-old-app), so grants made there would reach a tree that is gone.
 ::
 ++  self-base
   =/  m  (fiber:fiber:nexus ,path)
   ^-  form:m
   ;<  vw=(unit view:nexus)  bind:m
     (peek-soft:io [%& %& /sys/link/lattice %'dest.lanes'] ~)
-  ?.  ?=([~ %file *] vw)  (pure:m app-base:lu)
+  ?.  ?=([~ %file *] vw)  (pure:m desk-base:lu)
   ::  our own row is a DIRECTORY lane; a file lane is ignored. Any app may
   ::  claim the name lattice, and the head of the list is whoever claimed
   ::  it first, so only a place lattice installs at is taken.
   =/  dirs=(list path)
     %+  skim  (lane-dirs:lu (sang-noun:tarball sang.u.vw))
     |=(d=path ?=(^ (find ~[d] peer-bases:lu)))
-  ?~  dirs  (pure:m app-base:lu)
+  ?~  dirs  (pure:m desk-base:lu)
   (pure:m i.dirs)
 ::  +keep-url: grubbery's native keep-SSE endpoint for one of our grubs.
 ::  Takes the base because it is a URL, not a road - see +self-base.
@@ -11107,6 +11120,110 @@
   ?~  fil.dst  fil.src
   ?~  fil.src  fil.dst
   `u.fil.dst(contents (~(uni by contents.u.fil.dst) contents.u.fil.src))
+::  +retire-old-app: the old app-tier instance, retired once it is carried.
+::
+::    The tree at /apps/lattice.lattice_app outlived the move to a desk, and
+::    so did every grant made on it. Unshare, delete, unpublish and a ban
+::    act on the desk's paths, so a peer kept whatever the old tree gave it
+::    (security audit run-1, owner decision 2). Once the carry has run, this
+::    keeps a snapshot of the old tree here, takes every road under the old
+::    place out of every sharing group, deletes the old tree, and marks
+::    itself done.
+::
+::    The snapshot is one noun grub, never pages, so nothing in it compiles.
+::    It is written once, so a second try after a partial delete cannot
+::    replace it with less. Each step is soft. A refused road leaves a
+::    fault saying so and the marker unset, so granting it and reloading
+::    finishes the job.
+::
+++  retire-old-app
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  done=(unit json)  bind:m  (peek-as:io (rf up / %'retired.json') ,json)
+  ?:  ?=([~ %b %.y] done)  (pure:m ~)
+  ;<  carried=(unit json)  bind:m  (peek-as:io (rf up / %'carried.json') ,json)
+  ?.  ?=([~ %b %.y] carried)  (pure:m ~)
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| app-base:lu] ~)
+  ?~  vw
+    %:  fault  'retire-road'  2
+      "lattice: the old copy at {(spud app-base:lu)} cannot be read, so it is not retired; grant lattice's permits, then reload"
+      ~
+    ==
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    ?.  ?=([%ball *] u.vw)  (pure:n ~)
+    ;<  had=(unit *)  bind:n  (peek-as:io (rf up /retired %'old-app') ,*)
+    ?:  ?=([~ ^] had)  (pure:n ~)
+    (over:io (rf up /retired %'old-app') [[/ %noun] (ball-to-bole:tarball ball.u.vw)])
+  ;<  rok=?  bind:m  revoke-old-roads
+  ;<  cok=?  bind:m
+    ?.  ?=([%ball *] u.vw)  (pure:(fiber:fiber:nexus ,?) &)
+    (cull-old-app ball.u.vw)
+  ?.  &(rok cok)
+    %:  fault  'retire-road'  2
+      "lattice: the old copy at {(spud app-base:lu)} is not fully retired: {?:(rok "" "its grants could not all be revoked. ")}{?:(cok "" "it could not be deleted. ")}Grant lattice's permits, then reload"
+      ~
+    ==
+  ;<  ~  bind:m  (fault-clear ~['retire-road'])
+  %-  (say 1 ~[leaf+"lattice: retired the old copy at {(spud app-base:lu)}, keeping a snapshot at /retired/old-app"])
+  (over:io (rf up / %'retired.json') [[/ %json] `json`[%b %.y]])
+::  +revoke-old-roads: drop every road under +app-base from every sharing
+::  group's weir. %.n when a group could not be read or written.
+::
+++  revoke-old-roads
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
+  ?~  vw  (pure:m |)
+  ?.  ?=([%ball *] u.vw)  (pure:m &)
+  =/  gs=(list [rel=path gb=ball:tarball])  (all-groups / ball.u.vw)
+  =/  old
+    |=  r=road:tarball
+    ^-  ?
+    ?.  ?=(%& -.r)  |
+    =/  pax=path  ?:(?=(%| -.p.r) p.p.r path.p.p.r)
+    =(app-base:lu (scag (lent app-base:lu) pax))
+  =/  keep
+    |=  rs=(set road:tarball)
+    ^-  (set road:tarball)
+    (~(gas in *(set road:tarball)) (skip ~(tap in rs) old))
+  =/  ok=?  &
+  |-  ^-  form:m
+  ?~  gs  (pure:m ok)
+  =/  fils  ?~(fil.gb.i.gs ~ contents.u.fil.gb.i.gs)
+  =/  hw  (~(get by fils) %'how.weir')
+  =/  w=(unit weir:nexus)
+    ?~  hw  ~
+    (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hw))))
+  ?~  w  $(gs t.gs)
+  =/  nw=weir:nexus  [(keep make.u.w) (keep poke.u.w) (keep peek.u.w)]
+  ?:  =(nw u.w)  $(gs t.gs)
+  ;<  wrote=?  bind:m
+    (ug-over [%& %& (weld ug-base rel.i.gs) %'how.weir'] [[/ %weir] nw])
+  $(gs t.gs, ok &(ok wrote))
+::  +cull-old-app: delete the old tree. The whole tree in one cull when our
+::  road covers it, else what is in it: its root's grubs one by one and
+::  each subtree in one cull, since a directory's own entry belongs to its
+::  parent (see +carry-old-data). An empty directory left behind holds
+::  nothing and grants nothing.
+::
+++  cull-old-app
+  |=  old=ball:tarball
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  e=(unit tang)  bind:m  (cull-soft:io [%& %| app-base:lu])
+  ?~  e  (pure:m &)
+  =/  fis=(list @ta)  ?~(fil.old ~ ~(tap in ~(key by contents.u.fil.old)))
+  =/  dis=(list @ta)  ~(tap in ~(key by dir.old))
+  =/  ok=?  &
+  |-  ^-  form:m
+  ?^  fis
+    ;<  f=(unit tang)  bind:m  (cull-soft:io [%& %& app-base:lu i.fis])
+    $(fis t.fis, ok &(ok ?=(~ f)))
+  ?~  dis  (pure:m ok)
+  ;<  d=(unit tang)  bind:m  (cull-soft:io [%& %| (snoc app-base:lu i.dis)])
+  $(dis t.dis, ok &(ok ?=(~ d)))
 ::  +mark-carried: flip the marker, so this never runs twice.
 ::
 ++  mark-carried
