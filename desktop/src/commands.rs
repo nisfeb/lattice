@@ -406,7 +406,9 @@ fn push_file(path: &std::path::Path, rel: String, out: &mut Vec<PickedFile>, byt
 /// ever talks to 127.0.0.1. The bridge relays to the ship with the fuse
 /// session cookie attached Rust-side, so no webkit cookie behavior (site
 /// pinning, third-party policy, SW-mediated fetch) can ever unauthenticate
-/// a view again. `fresh` (a new connect) also clears browsing data so stale
+/// a view again. The one cookie the webview holds is the bridge's own
+/// first-party token, which tells the bridge this window from any other
+/// local process. `fresh` (a new connect) also clears browsing data so stale
 /// service workers and caches from earlier sessions cannot linger.
 pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
     let cfg = config::load(app);
@@ -427,8 +429,14 @@ pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
     if fresh {
         dlog(&format!("clear browsing data: {:?}", w.clear_all_browsing_data()));
     }
+    // through the bridge's bootstrap first: it hands this window the
+    // launch's token as an HttpOnly cookie, without which the bridge relays
+    // nothing with the ship session, then redirects to the editor
     dlog(&format!("navigate: {home}"));
-    w.navigate(home).map_err(|e| e.to_string())?;
+    let boot: tauri::Url = crate::proxy::bootstrap_url(&local, home.path())
+        .parse()
+        .map_err(|e| format!("{e}"))?;
+    w.navigate(boot).map_err(|e| e.to_string())?;
     w.set_focus().ok();
     Ok(())
 }
@@ -513,10 +521,13 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     // did and which meant the harness could not run against a ship it did not
     // own.
     //
-    // Test-only and inert unless the variable is set. Setting it requires
-    // already controlling this process's environment.
-    let probe = std::env::var("LATTICE_PROBE_JS")
-        .ok()
+    // Test-only and inert unless the variable is set, and compiled into
+    // debug builds only (the harness drives target/debug). In a release
+    // build an environment variable could put script into the privileged
+    // workspace window, which a test hook has no business doing.
+    let probe = cfg!(debug_assertions)
+        .then(|| std::env::var("LATTICE_PROBE_JS").ok())
+        .flatten()
         .and_then(|p| std::fs::read_to_string(p).ok());
     let mut b = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("manager.html".into()))
         .title("lattice — workspace")
@@ -638,7 +649,8 @@ pub async fn save_vault(app: AppHandle, name: String, b64: String) -> Result<Str
         return Ok(String::new());
     };
     let path = target.into_path().map_err(|e| e.to_string())?;
-    std::fs::write(&path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    // the whole vault: written 0600 through a fresh temp file, like backups
+    crate::session::write_private(&path, &bytes).map_err(|e| format!("could not write {e}"))?;
     Ok(path.display().to_string())
 }
 
@@ -831,6 +843,40 @@ pub async fn pick_vault(app: AppHandle) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    //  The ship-served client gets native commands only at the bridge
+    //  origin. Any-host patterns granted them to every page the workspace
+    //  window could reach (security audit run-1). A pattern that stopped
+    //  matching the bridge would deny every command, and that failure reads
+    //  as "Command not found", so pin both directions.
+    #[test]
+    fn workspace_commands_are_granted_only_at_the_bridge() {
+        use tauri::utils::acl::RemoteUrlPattern;
+        let cap: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/workspace-remote.json")).unwrap();
+        let pats: Vec<RemoteUrlPattern> = cap["remote"]["urls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u.as_str().unwrap().parse().unwrap())
+            .collect();
+        let hit = |u: &str| pats.iter().any(|p| p.test(&u.parse().unwrap()));
+        for u in [
+            "http://127.0.0.1:26500/apps/lattice/app",
+            "http://127.0.0.1:26503/apps/lattice/app?name=notes#top",
+            "http://127.0.0.1:26500/apps/lattice",
+        ] {
+            assert!(hit(u), "the client at {u} must keep its commands");
+        }
+        for u in [
+            "https://evil.example/",
+            "http://evil.example:26500/apps/lattice/app",
+            "https://sampel-palnet.arvo.network/apps/lattice/app",
+            "http://localhost:26500/apps/lattice/app",
+        ] {
+            assert!(!hit(u), "{u} must not get native commands");
+        }
+    }
+
     use super::openable;
 
     //  This allowlist is the only thing standing between a ship-served page

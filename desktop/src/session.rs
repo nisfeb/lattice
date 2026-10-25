@@ -71,23 +71,24 @@ pub fn ship_of(cookie: &str) -> Option<String> {
 /// reader never sees half a cookie.
 pub fn store(url: &str, cookie: &str) -> Result<PathBuf, String> {
     let path = cookie_path_for(url).ok_or_else(|| format!("no cookie slot for {url}"))?;
-    write_private(&path, cookie)?;
+    write_private(&path, cookie.as_bytes())?;
     Ok(path)
 }
 
-/// Write `text` so only the owner can read it. The dir is made 0700 if new.
-/// The bytes go to a fresh 0600 temp file (create_new, so a symlink planted
-/// there is refused, not followed) and are renamed over `path`.
-fn write_private(path: &std::path::Path, text: &str) -> Result<(), String> {
+/// Write `bytes` to `path` so nobody else can read or redirect it: a fresh
+/// 0600 temp file opened with create_new (never through a planted symlink),
+/// synced, then renamed over the target. A missing parent is made 0700.
+/// The cookie file, backup archives and vault exports all go through here.
+pub(crate) fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let dir = path.parent().ok_or("no cookie dir")?;
+    let dir = path.parent().ok_or("no parent directory")?;
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?;
-    let name = path.file_name().ok_or("no cookie file name")?.to_string_lossy();
+    let name = path.file_name().ok_or("no file name")?.to_string_lossy();
     let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     let res = std::fs::OpenOptions::new()
@@ -95,7 +96,7 @@ fn write_private(path: &std::path::Path, text: &str) -> Result<(), String> {
         .create_new(true)
         .mode(0o600)
         .open(&tmp)
-        .and_then(|mut f| f.write_all(text.as_bytes()).and_then(|_| f.sync_all()))
+        .and_then(|mut f| f.write_all(bytes).and_then(|_| f.sync_all()))
         .and_then(|_| std::fs::rename(&tmp, path));
     res.map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
@@ -271,8 +272,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lattice-session-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let p = dir.join("sub").join("cookie-x");
-        write_private(&p, "urbauth-~zod=1").unwrap();
-        write_private(&p, "urbauth-~zod=2").unwrap();
+        write_private(&p, b"urbauth-~zod=1").unwrap();
+        write_private(&p, b"urbauth-~zod=2").unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "urbauth-~zod=2");
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(
