@@ -219,6 +219,30 @@ try {
   check('bare launch resumes the last open page', res.body === BODY && res.name === PAGE,
     JSON.stringify(res).slice(0, 90));
   check('and lands in the editor pane on mobile', res.mv === 'code', res.mv);
+
+  // ── 6. a reload resumes the pane the user moved to ──────────────────────
+  // The service-worker takeover reloads the editor a few seconds into every
+  // session to drop stale code. It used to land back in the editor on the
+  // snapshot page, yanking the user off whatever they had navigated to. A
+  // reload (what the takeover does) must resume the pane AND keep the page.
+  step = 'pane survives reload';
+  await page.goto(APP + '?name=' + encodeURIComponent(PAGE),
+    { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait((b) => document.getElementById('src').value === b, BODY);
+  await page.evaluate(() => [...document.querySelectorAll('.mtabs button')]
+    .find((x) => x.dataset.mv === 'tree').click());
+  await wait(() => document.getElementById('ws').dataset.mv === 'tree');
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait((b) => document.getElementById('src').value === b, BODY);
+  await sleep(1500);
+  const resumed = await page.evaluate(() => ({
+    mv: document.getElementById('ws').dataset.mv,
+    body: document.getElementById('src').value,
+  }));
+  check('a reload resumes the tree pane, not the snapshot page in the editor',
+    resumed.mv === 'tree', JSON.stringify(resumed).slice(0, 90));
+  check('and the resumed page is still there underneath', resumed.body === BODY,
+    JSON.stringify(resumed).slice(0, 90));
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 140), false);
 } finally {

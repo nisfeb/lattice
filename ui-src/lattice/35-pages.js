@@ -62,14 +62,30 @@
     // and nothing changed on screen — on a slow pier that silence lasts
     // seconds and reads as a dead click. Say the open is happening; every
     // exit below already replaces this status.
-    if (!painted) stWork('opening ' + name + '\u2026');
+    let fromUrl = null;
+    if (!painted) {
+      stWork('opening ' + name + '\u2026');
+      // commit the address NOW, before the fetch. A reload mid-open (the
+      // service-worker takeover) must resume THIS page. Painted opens already
+      // set the address synchronously via applyPage; this fetch lands seconds
+      // later on a slow pier, and until it did the address still named the
+      // page open before the click, so a reload resumed the wrong document.
+      // Remember the old address so a FAILED open puts it back: without that,
+      // a reload after a 404 would strand on the bad name instead of resuming
+      // the document the editor is still showing.
+      fromUrl = location.pathname + location.search;
+      history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
+    }
+    //  undo the speculative address on a failed open, but only if no later
+    //  open has run meanwhile (that one owns the address now, so leave it).
+    const unwind = () => { if (fromUrl && my === openSeq) history.replaceState(null, '', fromUrl); };
     const shown = src.value;
     let d = null;
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
-      if (!r.ok) { if (!painted) st('open failed' + await errText(r), false); return; }
+      if (!r.ok) { if (!painted) { st('open failed' + await errText(r), false); unwind(); } return; }
       d = await r.json();
-    } catch { if (!painted) st('open failed', false); return; }
+    } catch { if (!painted) { st('open failed', false); unwind(); } return; }
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
     // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
