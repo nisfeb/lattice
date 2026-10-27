@@ -186,6 +186,10 @@
         ::  crash on it, killing the writer fiber and hanging every publish.
         ::  The counter is one bare atom and /mar/ud.hoon already is that mark.
             [%fall %& [/pub %meta] [[/ %ud] 0]]
+        ::  /pub/marks-migrated: the version of the one-time re-grow of every
+        ::  published page under its view-mode mark (+migrate-pub-marks). 0
+        ::  until it has run. Covered, so the stamp survives reload.
+            [%fall %& [/pub %'marks-migrated'] [[/ %ud] 0]]
         ::  /salt: the private salt behind every published revision's scry
         ::  id (+page-id:lp). Outside /pub, so no peer can read it; 0 until
         ::  +ensure-pub-ids mints it. Covered, because a new salt renames
@@ -331,6 +335,8 @@
         ;<  ~  bind:m  (ensure-shipped-templates root)
         ::  the salt and the revision list peers read (+ensure-pub-ids)
         ;<  ~  bind:m  (ensure-pub-ids root)
+        ::  pages published before per-format marks were grown as gmi
+        ;<  ~  bind:m  (migrate-pub-marks root)
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
         ;<  now=@da  bind:m  bowl-now
@@ -12002,6 +12008,46 @@
   ::  them until a page's next real edit wave.
   ;<  *  bind:m  (grow-pub-index up ix)
   (pure:m n)
+::  +marks-version: bump to make +migrate-pub-marks run again on upgrade.
+::
+++  marks-version  1
+::  +migrate-pub-marks: ONE-TIME, stamp-guarded. Pages published before the
+::  per-format marks were all grown as gmi. Re-grow the LATEST rev of each
+::  own published page at the same spur under its real mark, so a peer
+::  reads the right format without waiting for a re-edit. Never touches
+::  /pub/index or /pub/meta: the index and the ids stay valid. The stamp is
+::  written LAST, so a crash mid-batch re-runs rather than skips (a re-grow
+::  only appends a case with the same body).
+::
+++  migrate-pub-marks
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  sr=road:tarball  (rf root /pub %'marks-migrated')
+  ;<  done=@ud  bind:m  (read-pub-seq sr)
+  ?:  (gte done marks-version)  (pure:m ~)
+  ;<  ix=pub-index:lp  bind:m  (read-pub-index (rf root /pub %index))
+  ;<  salt=@  bind:m  pub-salt
+  ::  no salt means no ids yet: nothing is grown to correct
+  ?:  =(0 salt)  (pure:m ~)
+  ;<  ~  bind:m  (migrate-pub-marks-loop salt ~(tap in ~(key by ix)))
+  (put-file sr [/ %ud] marks-version)
+++  migrate-pub-marks-loop
+  |=  [salt=@ keys=(list path)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  keys  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  =/  or=(unit vrail:lp)  (key-to-rail:lp /pub/vault i.keys)
+  ?~  or  (migrate-pub-marks-loop salt t.keys)
+  ;<  seen=view:nexus  bind:m  (peek:io (rf up pax.u.or nom.u.or) ~)
+  ?.  ?=([%file *] seen)  (migrate-pub-marks-loop salt t.keys)
+  =/  body=(unit @t)  (mole |.(!<(@t (need-vase:tarball sang.seen))))
+  ?~  body  (migrate-pub-marks-loop salt t.keys)
+  ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
+  ;<  mode=view-mode:pg  bind:m  (published-mode (snip (strip-pub:lp i.keys)))
+  ;<  ~  bind:m  (grow-pub-page salt i.keys u.body rev mode)
+  (migrate-pub-marks-loop salt t.keys)
 ++  pub-regrow-loop
   |=  [salt=@ keys=(list path) cnt=@ud revs=(map @t [rev=@ud id=@uv])]
   =/  m  (fiber:fiber:nexus ,[@ud (map @t [rev=@ud id=@uv])])
