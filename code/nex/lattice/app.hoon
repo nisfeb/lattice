@@ -5702,6 +5702,26 @@
   ;<  sn=view:nexus  bind:m  (peek:io (rf up pdir %show) ~)
   ?.  ?=([%file *] sn)  (pure:m %text)
   (pure:m (fall (mole |.(;;(view-mode:pg (sang-noun:tarball sang.sn)))) %text))
+::  +mode-mark: the mark a published page of this view-mode carries. The
+::  single place the view-mode to mark mapping lives; identity on the tags.
+::
+++  mode-mark
+  |=  m=view-mode:pg
+  ^-  @tas
+  m
+::  +published-mode: the view-mode a page publishes as. Reads the show grub
+::  directly (not via +read-show-mode, which answers %text for both an absent
+::  grub and an explicit %text, so the two could not be told apart). An absent
+::  or malformed show grub resolves to %gmi; an explicit %text stays %text.
+::
+++  published-mode
+  |=  rel=path
+  =/  m  (fiber:fiber:nexus ,view-mode:pg)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sn=view:nexus  bind:m  (peek:io (rf up (weld /page rel) %show) ~)
+  ?.  ?=([%file *] sn)  (pure:m %gmi)
+  (pure:m (fall (mole |.(;;(view-mode:pg (sang-noun:tarball sang.sn)))) %gmi))
 ::  +read-eval-cmd / +read-eval-deps: tolerant grub reads (absent or
 ::  malformed -> the zero value; a page never crashes its evaluator).
 ::
