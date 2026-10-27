@@ -139,6 +139,18 @@ try {
   ok('save: new md page appears in tree');
   check('highlight: Prism overlay rendered',
     await page.evaluate(() => document.querySelectorAll('#hl .token').length > 0));
+  // a hostile body must not freeze the editor. Prism runs in a worker now;
+  // on the main thread 32 KiB of '[' held the frame for about five seconds
+  const stall = await page.evaluate(async () => {
+    const s = document.getElementById('src');
+    const t0 = performance.now();
+    s.value = '['.repeat(32768); s.dispatchEvent(new Event('input'));
+    await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+    const ms = performance.now() - t0;
+    s.value = '# ui matrix probe'; s.dispatchEvent(new Event('input'));
+    return ms;
+  });
+  check('highlight: a hostile body does not freeze the editor', stall < 1000, Math.round(stall) + 'ms');
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.length > 0);
   check('open: body round-trips',
@@ -355,7 +367,9 @@ try {
     await page.evaluate(() => document.getElementById('ac').hidden));
   // a scripted edit must behave exactly like typing. Preview refreshes and
   // the buffer is dirty so autosave persists it
-  await wait((s) => (document.getElementById('prev').srcdoc || '').includes(s), sibling);
+  //  a bare wikilink shows only its last segment, and the path rides in
+  //  the href URI-encoded (release 65)
+  await wait((s) => (document.getElementById('prev').srcdoc || '').includes(encodeURIComponent(s)), sibling);
   ok('autocomplete: completion refreshes the preview');
   // Tab-indent is the other scripted edit. It used to show in the editor and
   // never reach the ship. Autosave firing is the observable proof it is now
@@ -1336,9 +1350,11 @@ try {
   // allow-scripts WITHOUT allow-same-origin: scripts still run, so the ship's
   // footnote-anchor handler keeps working, but the frame has an opaque origin.
   // Adding allow-same-origin back would hand the sandbox straight over.
-  check('sandbox: the preview frame is sandboxed',
-    await page.evaluate(() => document.getElementById('prev').getAttribute('sandbox')) === 'allow-scripts',
-    String(await page.evaluate(() => document.getElementById('prev').getAttribute('sandbox'))));
+  //  allow-top-navigation-by-user-activation is deliberate: a clicked
+  //  wikilink leaves for the top page (60-preview.js)
+  const sbx = String(await page.evaluate(() => document.getElementById('prev').getAttribute('sandbox')));
+  check('sandbox: the preview frame is sandboxed, without allow-same-origin',
+    sbx.split(/\s+/).includes('allow-scripts') && !sbx.includes('allow-same-origin'), sbx);
 
   await page.evaluate(() => {
     document.getElementById('newfile').click();

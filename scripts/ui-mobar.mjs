@@ -14,7 +14,11 @@
 import { shipEnv, launchBrowser, openPage, makeCheck, seed } from './lib/harness.mjs';
 
 const env = shipEnv();
-await seed(env, [['harnessdir/one', '# one']]);
+//  and a folder and page with names far wider than a phone, which must
+//  truncate rather than widen the page (the + stays in reach)
+const LONGDIR = 'harnessdir-with-a-folder-name-far-wider-than-any-phone-screen';
+await seed(env, [['harnessdir/one', '# one'],
+  [LONGDIR + '/a-page-name-that-is-also-far-wider-than-any-phone-screen', '# long']]);
 const check = makeCheck();
 const browser = await launchBrowser();
 
@@ -79,13 +83,34 @@ const seeded = await m.evaluate(() => document.getElementById('dlginput').value)
 check('pre-filled with the current name', seeded === label, JSON.stringify(seeded));
 await m.evaluate(() => document.getElementById('dlgcancel').click());
 
+// the preview tab paints. Its pane is display:none from boot, and Chromium
+// never paints a sandboxed frame that loaded while hidden, so the tab
+// flashed and stayed blank (60-preview.js, showPreview). Painted means the
+// frame's text is on screen: hiding that text must change the pixels.
+await m.evaluate(() => {
+  const s = document.getElementById('src');
+  s.value = '# painted\n\nThe preview tab shows this.';
+  s.dispatchEvent(new Event('input'));
+  document.querySelector('.mtabs button[data-mv="prev"]').click();
+});
+await new Promise((r) => setTimeout(r, 1500));
+const pbox = await m.evaluate(() => {
+  const r = document.getElementById('prev').getBoundingClientRect();
+  return { x: r.x, y: r.y, width: r.width, height: Math.min(r.height, 160) };
+});
+const shown = await m.screenshot({ clip: pbox });
+await (await (await m.$('#prev')).contentFrame()).evaluate(() => { document.body.style.visibility = 'hidden'; });
+const blank = await m.screenshot({ clip: pbox });
+check('phone: the preview tab paints the page', !shown.equals(blank));
+await m.evaluate(() => document.querySelector('.mtabs button[data-mv="code"]').click());
+
 // the bar is an item of a 1fr grid track whose floor is min-content, so a
 // long status line once pushed the whole layout 12px past the viewport —
 // horizontal scroll that only appeared AFTER the first pier response wrote
 // a longer status. By this point in the run a page has opened and a dialog
 // has cycled, so the status carries real text; nothing may stick out.
 const over = await m.evaluate(() => {
-  const vw = window.innerWidth;
+  const vw = 390;   // the device width: innerWidth stretches to fit overflow
   let n = 0;
   for (const el of document.querySelectorAll('body *'))
     if (el.getBoundingClientRect().right > vw + 1) n++;
@@ -93,6 +118,19 @@ const over = await m.evaluate(() => {
 });
 check('phone: nothing reaches past the right edge (no horizontal scroll)',
   over.scrollW <= over.vw && over.past === 0, JSON.stringify(over));
+await m.evaluate(() => document.querySelector('.mtabs button[data-mv="tree"]').click());
+const longRow = await m.evaluate((dir) => {
+  const f = [...document.querySelectorAll('#treelist .fld')].find((x) => x.textContent.includes(dir));
+  const a = f && f.querySelector('.addf');
+  const r = a && a.getBoundingClientRect();
+  return { plus: r && r.width ? Math.round(r.right) : null, scrollW: document.documentElement.scrollWidth };
+}, LONGDIR);
+//  against the device width, not innerWidth: a phone's layout viewport
+//  stretches to fit content that overflows, so innerWidth grows with the bug
+longRow.vw = 390;
+check('phone: a long folder name truncates and keeps its + on screen',
+  longRow.plus !== null && longRow.plus <= longRow.vw && longRow.scrollW <= longRow.vw, JSON.stringify(longRow));
+await m.evaluate(() => document.querySelector('.mtabs button[data-mv="code"]').click());
 
 // ── list indent/outdent by thumb ───────────────────────────────────────────
 // Phones have no Tab key, so the editor grows a fixed button pair while the

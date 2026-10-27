@@ -125,7 +125,27 @@
       [%del id=@t]
       [%touch id=@t when=@da]
       [%taint id=@t when=@da]
+      [%spend id=@t when=@da len=@ud]   ::  bytes a key wrote (+spend)
   ==
+::  ==  write volume
+::
+::  A key's writes are bounded in bytes: +req-cap per request, and +day-cap
+::  per key per day across all of them. Without these a key could store
+::  an unbounded volume in the owner's ship (security audit run-1).
+::
++$  ledger  (map @t [day=@da n=@ud])
+++  req-cap  ^~((mul 2 (bex 20)))
+++  day-cap  ^~((mul 64 (bex 20)))
+::  +spend: charge `len` bytes to key `id` on the day of `now`. ~ when that
+::  passes the day's cap, else the ledger with the charge.
+++  spend
+  |=  [led=ledger id=@t now=@da len=@ud]
+  ^-  (unit ledger)
+  =/  day=@da  (sub now (mod now ~d1))
+  =/  e  (~(get by led) id)
+  =/  used=@ud  ?~(e 0 ?:(=(day day.u.e) n.u.e 0))
+  ?:  (gth (add used len) day-cap)  ~
+  `(~(put by led) id [day (add used len)])
 ++  max-keys  50
 ::  +hash-token: a salted sha-256 as text
 ++  hash-token

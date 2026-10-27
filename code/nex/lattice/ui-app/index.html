@@ -270,6 +270,8 @@ select, option { color-scheme: inherit; }
 .tree .fld { display: flex; align-items: center; gap: 4px; padding: 4px 8px;
   color: var(--muted); font-weight: 600; cursor: pointer; white-space: nowrap; }
 .tree .fld .cx { width: .9em; font-size: .7rem; flex: none; user-select: none; }
+/* a long folder name truncates like a long page name, leaving the + */
+.tree .fld .fln { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tree .fld .addf { margin-left: auto; color: var(--green); font-weight: 700;
   padding: 0 6px; border-radius: 4px; text-decoration: none; flex: none; }
 .tree .fld .addf:hover { background: var(--accent-tint, #4a7c5922); }
@@ -505,8 +507,12 @@ select, option { color-scheme: inherit; }
      to its own content, where a fraction of a pixel of rounding can leave an
      invisible range. A swipe latches to the innermost scroller that can
      move at all, so a sliver like that takes the first swipe from the top
-     and only the second moves the page. */
-  .tree, .ctl { overflow: visible; }
+     and only the second moves the page. min-width: 0 keeps their column
+     at the screen's width: a grid item's automatic minimum is its
+     content's width, which overflow:auto used to zero, so without it one
+     long file name widened the column and the page scrolled sideways
+     instead of the name truncating. */
+  .tree, .ctl { overflow: visible; min-width: 0; }
   .ws[data-mv="code"] .edwrap { display: block; min-height: 68vh; }
   .ws[data-mv="prev"] .prevwrap { display: block; min-height: 68vh; }
   .ws[data-mv="ctl"] .ctl { display: block; }

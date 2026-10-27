@@ -92,9 +92,13 @@ jobs:
           Desktop builds of the lattice client.
 
           - **Linux**: `.deb` or `.AppImage` (x86_64). Needs `fuse3` for mounting.
-          - **macOS**: `.dmg` for Apple Silicon and Intel. Needs
-            [macFUSE](https://macfuse.github.io) for mounting. Unsigned
-            builds need right-click → Open the first time.
+          - **macOS**: `.dmg` for Apple Silicon and Intel, signed and
+            notarized. Needs [macFUSE](https://macfuse.github.io) for
+            mounting.
+
+          Each platform's `SHA256SUMS-*.txt` lists its files. To check a
+          download came from this repository's release workflow, run
+          `gh attestation verify <file> -R nisfeb/lattice`.
 
           Windows is not built: mounting needs a WinFsp backend that does not
           exist yet — see `desktop/README.md`.
@@ -123,7 +127,9 @@ jobs:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     permissions:
-      contents: write    # tauri-action uploads the bundles into the release
+      contents: write      # tauri-action uploads the bundles into the release
+      id-token: write      # the provenance attestation's signing identity
+      attestations: write  # and storing it on the repository
     strategy:
       fail-fast: false     # one platform failing should not hide the others
       matrix:
@@ -157,9 +163,13 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: desktop -> target
+      # No rust-cache here. Push-to-main CI runs npm and test code and
+      # saves the same default-branch cache, so a release built from it
+      # could link whatever that code left in target/ (security audit
+      # run-1). A release builds clean, and slower. The lockfile must be
+      # current, so cargo cannot resolve anew.
+      - name: lockfile is current
+        run: cargo fetch --locked --manifest-path desktop/Cargo.toml
 
       - name: linux build deps
         if: runner.os == 'Linux'
@@ -185,7 +195,55 @@ jobs:
             exit 1
           }
 
+      # Signing and notarization. The secrets go into the environment only
+      # when they exist, because an empty APPLE_CERTIFICATE makes tauri try
+      # to import it and fail (see the note on the build step). A tagged
+      # release without them fails here instead, so it never ships unsigned
+      # by accident. A hand-run build without them stays unsigned.
+      - name: macos signing
+        if: runner.os == 'macOS'
+        env:
+          CERT: ${{ secrets.APPLE_CERTIFICATE }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          API_KEY: ${{ secrets.APPLE_API_KEY }}
+          API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          ID: ${{ secrets.APPLE_ID }}
+          ID_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CERT" ]; then
+            if [ "$GITHUB_REF_TYPE" = tag ]; then
+              echo "::error::no APPLE_CERTIFICATE secret, and a tagged release must be signed" >&2
+              exit 1
+            fi
+            echo "no APPLE_CERTIFICATE secret, so this hand-run build is unsigned"
+            exit 0
+          fi
+          d="EOF$(openssl rand -hex 8)"
+          put() { printf '%s<<%s\n%s\n%s\n' "$1" "$d" "$2" "$d" >> "$GITHUB_ENV"; }
+          put APPLE_CERTIFICATE "$CERT"
+          put APPLE_CERTIFICATE_PASSWORD "$CERT_PASSWORD"
+          put APPLE_SIGNING_IDENTITY "$IDENTITY"
+          if [ -n "$API_KEY" ]; then
+            p8="$RUNNER_TEMP/AuthKey_$API_KEY.p8"
+            printf '%s\n' "$API_KEY_P8" > "$p8"
+            put APPLE_API_ISSUER "$API_ISSUER"
+            put APPLE_API_KEY "$API_KEY"
+            put APPLE_API_KEY_PATH "$p8"
+          elif [ -n "$ID" ]; then
+            put APPLE_ID "$ID"
+            put APPLE_PASSWORD "$ID_PASSWORD"
+            put APPLE_TEAM_ID "$TEAM_ID"
+          else
+            echo "::error::APPLE_CERTIFICATE is set but nothing to notarize with: set APPLE_API_KEY, APPLE_API_ISSUER and APPLE_API_KEY_P8, or APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID" >&2
+            exit 1
+          fi
+
       - name: build and upload
+        id: tauri
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -199,13 +257,8 @@ jobs:
           # that does not exist renders an EMPTY STRING, which is not the same
           # as not setting the variable. tauri saw APPLE_CERTIFICATE present,
           # tried to import it, and the first v0.8.0-rc1 macOS build died with
-          # "failed to run command security import". Passing nothing produces
-          # an unsigned bundle, which is the intended default.
-          #
-          # To sign later, add the block below AND the matching repo secrets.
-          # Both, or the same failure returns:
-          #   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD
-          #   APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+          # "failed to run command security import". The signing step above
+          # sets them only when they exist.
         with:
           projectPath: desktop
           args: --target ${{ matrix.target }}
@@ -216,3 +269,32 @@ jobs:
           # It stays a DRAFT until a human publishes it: a release is
           # outward-facing and irreversible once people have the URL.
           releaseId: ${{ needs.create-release.outputs.release_id }}
+
+      # SHA-256 sums of what this job built, attached to the release, and a
+      # signed build provenance attestation for each file. Anyone can check
+      # a download with `gh attestation verify <file> -R nisfeb/lattice`.
+      - name: checksums
+        id: sums
+        env:
+          PATHS: ${{ steps.tauri.outputs.artifactPaths }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RID: ${{ needs.create-release.outputs.release_id }}
+          LABEL: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          sums="$RUNNER_TEMP/SHA256SUMS-$LABEL.txt"
+          node -e 'for (const p of JSON.parse(process.env.PATHS)) console.log(p)' |
+            while IFS= read -r f; do
+              [ -f "$f" ] && (cd "$(dirname "$f")" && shasum -a 256 "$(basename "$f")")
+            done > "$sums"
+          cat "$sums"
+          [ -s "$sums" ] || { echo "::error::no bundle files to sum" >&2; exit 1; }
+          gh api -X POST -H 'content-type: text/plain' \
+            "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RID/assets?name=$(basename "$sums")" \
+            --input "$sums" > /dev/null
+          echo "file=$sums" >> "$GITHUB_OUTPUT"
+
+      - name: provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ${{ steps.sums.outputs.file }}

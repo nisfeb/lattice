@@ -150,6 +150,12 @@
             ::  undeclared grub does not, which is the lesson /mirror/tr
             ::  taught. See +carry-old-data.
             [%fall %& [/ %'carried.json'] [[/ %json] `json`[%b %.n]]]
+            ::  retired.json: has the old instance been retired, and
+            ::  /retired/old-app the snapshot kept of it. See
+            ::  +retire-old-app.
+            [%fall %& [/ %'retired.json'] [[/ %json] `json`[%b %.n]]]
+            [%fall %| /retired empty-dir:loader]
+            [%fall %& [/retired %'old-app'] [[/ %noun] ~]]
             ::  faults.json: the fault record (+fault). Declared, so a fault
             ::  that stands across a reload is not printed again for it.
             [%fall %& [/ %'faults.json'] [[/ %json] `json`[%o ~]]]
@@ -251,6 +257,8 @@
             [%fall %& [/mirror %'mirror.sig'] [[/ %sig] ~]]
             [%fall %& [/mirror %cursor] [[/lattice %mirror-cursor] *mirror-cursor:lm]]
             [%fall %& [/mirror %'config.json'] [[/ %json] (pairs:enjs:format ~[['enabled' b+|]])]]
+            ::  purge.json: the copy is to be dropped (+mirror-purge)
+            [%fall %& [/mirror %'purge.json'] [[/ %json] `json`[%b %.n]]]
         ::  /journal-synced.json: the orrery journal mirror's memory, a json
         ::  object mapping day -> the last brief/review `at` already written as
         ::  a /journal page. +orrery-journal-pass reads it to skip days it has
@@ -276,6 +284,13 @@
         ::  local FUSE client (lattice-fs), the native-transport twin of the
         ::  HTTP page-tree/page-source/page-save routes.
             [%fall %& [/ %'fs.sig'] [[/ %sig] ~]]
+        ::  /lock (+set-edit-lock) and /banned (+ban-road) are enforcement
+        ::  state. Uncovered, every reload dropped them, which compiled a
+        ::  revoked grantee's hoon and let banned ships back in.
+            [%fall %| /lock empty-dir:loader]
+            [%fall %& [/ %banned] [[/lattice %banned] *banned:ls]]
+        ::  /key-bytes: each agent key's bytes written today (+spend:ky)
+            [%fall %& [/ %'key-bytes'] [[/ %noun] *ledger:ky]]
         ==
     ::
     ++  on-file
@@ -302,12 +317,15 @@
         ::  happens exactly when this app can first run, which is the only
         ::  moment it could have happened anyway.
         ;<  ~  bind:m  (carry-old-data root)
+        ;<  ~  bind:m  retire-old-app
         ::  lay lattice's COMPLETE public grant set through the registry's
         ::  %how action: /pub for foreign readers, every shared page's data
         ::  road, and the share/comment inboxes. One act, server-side merged,
         ::  self-healing on every writer start. know/ needs nothing. Foreign
         ::  access is deny-by-default.
         ;<  ~  bind:m  (send-public-how root)
+        ::  page grants made before they were file roads (+narrow-page-grants)
+        ;<  ~  bind:m  narrow-page-grants
         ::  lay down the built-in page-tree templates (idempotent; skips if the
         ::  user already has them). Users instantiate a copy under /page.
         ;<  ~  bind:m  (ensure-shipped-templates root)
@@ -482,19 +500,36 @@
         ::  source changes.
         ::  A lock also outlives the grant (+set-edit-lock): revoking the
         ::  peer must not run what the peer wrote.
+        ::  The lock is also the page's peer-written mark (+peer-written).
+        ::  Any source change under a grant may be a peer's, so it sets the
+        ::  mark on content pages too, which still compile. A peer's write
+        ::  never passed +make-page either, so its history is held to our
+        ::  caps here.
+        ::  a content page's body, when its source is exactly that shell.
+        ::  It runs as data below, and it is the edit-grant check's answer.
+        =/  pb=(unit [builder=@tas body=@t])
+          ?:(=(src held) ~ (plain-body src))
         ;<  lock=?  bind:m
           =/  n  (fiber:fiber:nexus ,?)
           =/  rel=path  (slag 1 pdir)
           ?:  =(src held)  (pure:n |)
-          ?:  (plain-content src rel)  (pure:n |)
+          =/  pc=?  |(?=(^ pb) (folder-index-src src rel))
           ;<  lx=?  bind:n  (peek-exists:io (lock-road up rel))
-          ?:  lx  (pure:n &)
+          ?:  &(lx !pc)  (pure:n &)
           ;<  eg=?  bind:n  (edit-granted rel)
           ?.  eg  (pure:n |)
-          ;<  ~  bind:n  (set-edit-lock up rel)
-          (pure:n &)
+          ;<  ~  bind:n  ?:(lx (pure:(fiber:fiber:nexus ,~) ~) (set-edit-lock up rel))
+          ;<  ~  bind:n  (prune-hist (rf up pdir %code) history-keep history-window)
+          (pure:n !pc)
         =?  bild  !=(src held)
           ?:  lock  [%| edit-lock-msg]
+          ::  a content page never parses its body as hoon. Parsing it as
+          ::  one cord literal took time growing with the square of its
+          ::  size, about an hour at 2 MiB with the ship stalled. A small
+          ::  shell for its builder is compiled and slammed with the body.
+          ?^  pb
+            %-  mule  |.
+            (slam (slap !>(pg) (ream (content-shell builder.u.pb))) !>(body.u.pb))
           ::  compile the page against the page stdlib (pg): its builders
           ::  (text/html/needs/every/sends/esc) and the +result mold are in
           ::  scope at the top, the full hoon/zuse stack beneath.
@@ -537,7 +572,9 @@
         =/  cmd=(unit @t)  ?:(fresh `txt.cur ~)
         ::  poke budget for this run: a command carries one (a page reached via
         ::  a poke got a decremented budget). A dep/timer tick starts fresh.
-        =/  run-bud=@ud  ?:(fresh bud.cur poke-budget-max)
+        ::  Clamped: the command grub sits in the page dir, so a writer other
+        ::  than ours could carry any budget.
+        =/  run-bud=@ud  ?:(fresh (min bud.cur poke-budget-max) poke-budget-max)
         ::  eval-run answers its error text ('' on success) and any timer the
         ::  page asked for (clamped, or ~ for none or a failed run)
         ;<  [err=@t wake=(unit @dr)]  bind:m
@@ -724,13 +761,13 @@
   ::  ship already holds, a replay racing its own timed-out-but-landed
   ::  write. Not a conflict (see page-save). Aligned with items for the
   ::  report below.
-  ;<  kd=[keeps=(list [pax=path src=@t]) dups=(list ?)]  bind:m
-    =/  n  (fiber:fiber:nexus ,[keeps=(list [pax=path src=@t]) dups=(list ?)])
+  ;<  kd=[keeps=(list [pax=path src=@t pw=?]) dups=(list ?)]  bind:m
+    =/  n  (fiber:fiber:nexus ,[keeps=(list [pax=path src=@t pw=?]) dups=(list ?)])
     ?.  report  (pure:n [~ ~])
     =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
     =/  ps=(list [rev=@ud src=(unit @t)])  codes
     =/  pg=(list [pax=path src=@t])  pages
-    =|  keeps=(list [pax=path src=@t])
+    =|  keeps=(list [pax=path src=@t pw=?])
     =|  dups=(list ?)
     |-  ^-  form:n
     ?~  todo  (pure:n [(flop keeps) (flop dups)])
@@ -747,15 +784,30 @@
     ::  and nothing to disagree with. Not a conflict
     ?~  old  $(todo t.todo, ps more, pg pgm, dups [& dups])
     ?:  =(u.old wsrc)  $(todo t.todo, ps more, pg pgm, dups [& dups])
+    ::  the losing body may be a peer's: its copy keeps the mark. A
+    ::  sensitive page's copy is marked sensitive before its body lands.
+    ;<  pw=?  bind:n  (peer-written (pax-of nam.i.todo))
+    =/  kpax=path  (pax-of (conflict-name nam.i.todo pv))
+    ;<  sv=?  bind:n  (page-sensitive (pax-of nam.i.todo))
+    ;<  ~  bind:n
+      ?.(sv (pure:(fiber:fiber:nexus ,~) ~) (poke-eval [%page-sensitive kpax &]))
     %=  $
       todo   t.todo
       ps     more
       pg     pgm
       dups   [| dups]
-      keeps  [[(pax-of (conflict-name nam.i.todo pv)) u.old] keeps]
+      keeps  [[kpax u.old pw] keeps]
     ==
-  =/  keeps=(list [pax=path src=@t])  keeps.kd
-  ;<  ~  bind:m  (poke-eval [%make-many (weld keeps pages)])
+  =/  plain=(list [pax=path src=@t])
+    (murn keeps.kd |=([pax=path src=@t pw=?] ?:(pw ~ `[pax src])))
+  =/  marked=(list [pax=path src=@t])
+    (murn keeps.kd |=([pax=path src=@t pw=?] ?.(pw ~ `[pax src])))
+  ;<  ~  bind:m  (poke-eval [%make-many (weld plain pages)])
+  ;<  ~  bind:m
+    |-  ^-  form:m
+    ?~  marked  (pure:m ~)
+    ;<  ~  bind:m  (poke-eval [%make-marked i.marked])
+    $(marked t.marked)
   ?.  report
     %+  send-json  eyre-id
     (pairs:enjs:format ~[['ok' b+&] ['saved' (numb:enjs:format (lent items))]])
@@ -859,7 +911,13 @@
     =/  n  (fiber:fiber:nexus ,~)
     ?.  conflicted  (pure:n ~)
     ?~  old  (pure:n ~)
-    (poke-eval [%make (pax-of kept) u.old])
+    ::  the losing body may be a peer's: the copy keeps the mark. And a
+    ::  sensitive page's copy is marked sensitive before its body lands,
+    ::  since conflicts/ is under no folder mark of the page's.
+    ;<  pw=?  bind:n  (peer-written (pax-of u.name))
+    ;<  ps=?  bind:n  (page-sensitive (pax-of u.name))
+    ;<  ~  bind:n  ?.(ps (pure:n ~) (poke-eval [%page-sensitive (pax-of kept) &]))
+    (poke-eval ?:(pw [%make-marked (pax-of kept) u.old] [%make (pax-of kept) u.old]))
   ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
   ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
   ::  client only when the typed name was not a valid path and the path is
@@ -929,6 +987,15 @@
   =/  mkp=(unit (list path))  (parse-paths make.p.pr)
   ?:  |(?=(~ pkp) ?=(~ mkp))
     (send-err eyre-id 400 'grant paths must be absolute and under /apps')
+  ::  a make road at or above the request intake lets a member make a
+  ::  request grub, and the owner gate takes its authenticated flag at its
+  ::  word (security audit run-1). Every place we may live is checked.
+  ;<  sb=path  bind:m  self-base
+  =/  intake=(list path)
+    (turn [sb peer-bases:lu] |=(b=path (weld b /ui/requests)))
+  ?:  %+  lien  u.mkp
+      |=(p=path (lien intake |=(i=path =(p (scag (lent p) i)))))
+    (send-err eyre-id 400 'a make grant there would reach lattice\'s request intake')
   =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
   ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
   ::  ABSOLUTE, as the grantee's weir matches them. A group weir is read
@@ -936,14 +1003,12 @@
   ::  relative road there is relative to the peer's dir and grants
   ::  nothing. Only the registry's %how resolves relative roads, and it
   ::  confines them to the sender's prefix, which this editor is not.
-  =/  to-roads
-    |=  ps=(list path)
-    ^-  (set road:tarball)
-    (~(gas in *(set road:tarball)) (turn ps |=(p=path [%& %| p])))
+  ;<  mkr=(set road:tarball)  bind:m  (page-roads u.mkp)
+  ;<  pkr=(set road:tarball)  bind:m  (page-roads u.pkp)
   =/  =weir:nexus
-    :+  (~(uni in (ug-keep make.old)) (to-roads u.mkp))
+    :+  (~(uni in (ug-keep make.old)) mkr)
       poke.old
-    (~(uni in (ug-keep peek.old)) (to-roads u.pkp))
+    (~(uni in (ug-keep peek.old)) pkr)
   ;<  bans=banned:ls  bind:m  read-banned
   =/  who=(set @p)  (~(gas in *(set @p)) (murn ships same))
   ::  a group save must not smuggle a banned ship back in. Reject rather than
@@ -1196,6 +1261,22 @@
     (send-png eyre-id icon-192-b64)
   ?:  &(=(%'GET' method.request.req) =(`path`[%'icon-512.png' ~] suffix))
     (send-png eyre-id icon-512-b64)
+  ::  cross-site request forgery. The owner's cookie has no SameSite, so
+  ::  another site can make the owner's browser send it on a POST that plants
+  ::  a core memory, shares a page or mints a key (security audit run-1).
+  ::  Refuse any authenticated write another site sent (+cross-site:lu).
+  ::  GET and HEAD stay open: the only owner GET writes are the documented
+  ::  /clip and /share links. Agent keys are untouched: a Bearer header is
+  ::  not ambient, so another site cannot make a browser send one.
+  ?:  ?&  authenticated.req
+          !?=(?(%'GET' %'HEAD') method.request.req)
+          %:  cross-site:lu
+            (get-header:http 'sec-fetch-site' header-list.request.req)
+            (get-header:http 'origin' header-list.request.req)
+            (get-header:http 'host' header-list.request.req)
+          ==
+      ==
+    (send-err eyre-id 403 'cross-site request refused')
   ::  owner gate. Eyre stamps a request authenticated to our web login with
   ::  src=our, so `authenticated` (already in hand, synchronous) IS the src==our
   ::  check. Reading `our` via a /sys/bowl round trip (bowl-our) just to compare
@@ -1221,6 +1302,16 @@
     (send-err eyre-id 401 'invalid or revoked key')
   ?:  &(?=(^ key) !(may:ky u.key method.request.req suffix))
     (send-err eyre-id 403 'outside this key\'s scope')
+  ::  a key's writes are bounded in bytes, per request and per day
+  ::  (+req-cap:ky, +day-cap:ky)
+  =/  blen=@ud  ?~(body.request.req 0 p.u.body.request.req)
+  ?:  &(?=(^ key) (gth blen req-cap:ky))
+    (send-err eyre-id 413 'too large for an agent key')
+  ;<  roomy=?  bind:m
+    ?.  &(?=(^ key) !=(%'GET' method.request.req) !=(0 blen))
+      (pure:(fiber:fiber:nexus ,?) &)
+    (key-spend id.u.key rnow blen)
+  ?.  roomy  (send-err eyre-id 429 'this key has written its bytes for today')
   ::  a keyed request's src is not us, but of the routes a key reaches
   ::  (+may:ky) /fetch, /browse, /browse-file, and /remote-save all read
   ::  `our` to compare or dispatch, so they pay the bowl read.
@@ -1343,9 +1434,19 @@
           ::  edit, since a peer may have written that markup
           ;<  eg=?  bind:m
             ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,?) |)
-            (edit-granted rel)
+            (peer-written rel)
+          ::  and our own page is framed raw only when it IS an html page.
+          ::  This branch sniffs the body, and a key may write md, text or
+          ::  css: a body that merely starts with '<' ran as the owner
+          ::  (security audit run-1).
+          ;<  vm=view-mode:pg  bind:m
+            ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,view-mode:pg) %text)
+            (read-show-mode (weld /page rel))
           =/  htm=@t
-            (render-browser-page canon body ~ |(?!(=(ship.u.ref our)) eg) rk rv (trip ttl))
+            %:  render-browser-page  canon  body  ~
+              |(?!(=(ship.u.ref our)) eg ?!(?=(%html vm)))
+              rk  rv  (trip ttl)
+            ==
           ?:  =("" rk)  (send-view eyre-id htm)
           (send-view-long eyre-id htm)
         ?:  =("" rk)
@@ -1449,10 +1550,14 @@
     =/  brief=?  =('1' (~(gut by args) 'brief' '0'))
     =/  cap=@ud  (fall (rush (~(gut by args) 'cap' '') dem) core-cap:lk)
     ::  the world block rides along only for the owner or a sensitivity-cleared
-    ::  key, and only while orrery's digest is under a day old.
+    ::  key, and only while orrery's digest is under a day old. It is
+    ::  sensitive, so a key gets it only by asking (world=1), and asking
+    ::  taints the key like any other sensitive read.
     ;<  wj=(unit json)  bind:m  orrery-world
     ;<  now=@da  bind:m  bowl-now
-    =/  cleared=?  |(?=(~ key) sensitive.scope.u.key)
+    =/  cleared=?
+      ?~  key  &
+      &(sensitive.scope.u.key =('1' (~(gut by args) 'world' '0')))
     =/  jo=(unit (map @t json))  ?:(?=([~ %o *] wj) `p.u.wj ~)
     =/  tx=(unit json)  ?~(jo ~ (~(get by u.jo) 'text'))
     =/  at=(unit json)  ?~(jo ~ (~(get by u.jo) 'at'))
@@ -1465,6 +1570,7 @@
       ?.  ?=([~ %s *] at)  ~
       ?.  (fresh-world:lo p.u.at now ~d1)  ~
       `p.u.tx
+    ;<  ~  bind:m  (taint-if key ?=(^ world))
     (send-typed eyre-id 'text/plain; charset=utf-8' 'no-store' (index-text:lk (listed key es ~) brief cap world))
   ::  know-lint: what a tidy would fix (+lint-run:lk), proposed and never
   ::  applied. Computed when asked, so always current. /know?lint=1 reviews it.
@@ -1860,6 +1966,9 @@
       (send-err eyre-id 400 'banlist is full')
     ;<  ~  bind:m
       (over:io (ban-road up) [[/lattice %banned] (~(put in bans) u.who)])
+    ::  and what the ship already wrote goes too, its moons' as well: a ban
+    ::  that freed no slots left the page full (security audit run-1)
+    ;<  *  bind:m  (cull-comments-of u.who)
     ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
     ::  the ban is written; the revocation is not. Say so: a ban that left
     ::  the grants in place is the label this route exists not to be.
@@ -1917,17 +2026,20 @@
     ;<  pe=?  bind:m  (peek-exists:io (rv up pdir))
     ?.  pe  (send-err eyre-id 404 'no such page')
     ::  absolute, the road the ACL pane shows and the peer's weir matches
-    ::  (see +handle-share-group-save)
+    ::  (see +handle-share-group-save). The page's code grub only, which is
+    ::  all the peer opens. A grant on the dir also handed the peer the
+    ::  page's owner-only grubs (share, show, forms, the render cache) and
+    ::  every page nested under it (security audit run-1, +page-roads).
     ;<  sb=path  bind:m  self-base
-    =/  droad=road:tarball  [%& %| (weld sb pdir)]
+    =/  croad=road:tarball  [%& %& (weld sb pdir) %code]
     =/  gname=@t  (crip (slag 1 (scow %p u.shp)))
     ;<  ok=?  bind:m
       %-  ug-merge
       :^    gname
           (~(gas in *(set @p)) ~[u.shp])
-        (~(gas in *(set road:tarball)) ~[droad])
+        (~(gas in *(set road:tarball)) ~[croad])
       ?.  =('edit' mode)  ~
-      (~(gas in *(set road:tarball)) ~[droad])
+      (~(gas in *(set road:tarball)) ~[croad])
     ?.  ok  (ug-refused eyre-id)
     ::  what the peer should OPEN: the page's code grub, not the dir. By its
     ::  absolute path: they peek it on our ship, and +apply-share-notice
@@ -2215,9 +2327,14 @@
     ::  bare HTML doc. Non-persisting. Nothing is written, so the editor can
     ::  preview a note as it is typed, before any save. Owner-gated like all
     ::  non-clearweb routes.
+    ::
+    ::  Sandboxed: with type=html the body comes back as html, so an
+    ::  unsandboxed answer reflected whatever was POSTed into a same-origin
+    ::  document (security audit run-1). Callers read the body, which the
+    ::  CSP does not change.
     =/  body=@t  (req-body req)
     =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'md')
-    (send-html eyre-id (render-bare (preview-inner ptype body)))
+    (send-sandboxed eyre-id 'text/html' (render-bare (preview-inner ptype body)))
       [%'POST' %page-cmd]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -2316,7 +2433,9 @@
     ?:  =('' content)  (send-err eyre-id 400 'nothing to sign: body is empty')
     ;<  lyf=@ud  bind:m  (our-life our)
     ;<  rng=ring  bind:m  (our-ring lyf)
-    =/  rec=signed:lsg  (record:lsg our lyf rng content)
+    ::  the byte length from the request, which the cord alone loses
+    =/  len=@ud  ?~(body.request.req 0 p.u.body.request.req)
+    =/  rec=signed:lsg  (record:lsg our lyf rng len content)
     =/  jon=json  (signed-json rec)
     =/  save=(unit @t)  (~(get by args) 'save')
     ?~  save  (send-json eyre-id jon)
@@ -2376,18 +2495,46 @@
       ?~  got  ~
       ?.  ?=([%s *] u.got)  ~
       `p.u.got
+    ::  the digest construction: `v` 2 since records carried it, absent
+    ::  (version 1) before (+digest-2:lsg)
+    =/  ver=@ud
+      ?.  ?=([%o *] u.jon)  1
+      =/  got=(unit json)  (~(get by p.u.jon) 'v')
+      ?.  ?=([~ %n *] got)  1
+      (fall (rush p.u.got dem) 1)
     ::  content given: the digest must be the digest OF that content, or
     ::  the record is internally inconsistent and no signature check on it
     ::  means anything.
     ?:  ?&  ?=(^ con)
-            !=(dig.rq (digest:lsg u.con))
+            !=(dig.rq (digest-of:lsg ver (met 3 u.con) u.con))
         ==
       (send-json eyre-id (pairs:enjs:format ~[['ok' b+|] ['reason' s+'digest does not match content']]))
     ;<  pas=(unit pass)  bind:m  (peer-pass who.rq lyf.rq)
     ?~  pas
       (send-json eyre-id (pairs:enjs:format ~[['ok' b+|] ['reason' s+'no key for that ship at that life']]))
     =/  good=?  (verify-with:lsg u.pas sig.rq dig.rq)
-    (send-json eyre-id (pairs:enjs:format ~[['ok' b+good]]))
+    ::  a key the ship has since replaced still made the signature, but it
+    ::  is no longer the ship's word: rotating keys after a compromise must
+    ::  show here. A key at the next life means this one is superseded.
+    ;<  nxt=(unit pass)  bind:m  (peer-pass who.rq +(lyf.rq))
+    =/  cur=?  ?=(~ nxt)
+    ::  a version 1 record is still checked, and flagged: its 128-bit
+    ::  digest can be matched by a second document at feasible cost
+    =/  why=(list @t)
+      %+  weld
+        ?:  cur  ~
+        ~['signed under a key the ship has since replaced']
+      ?.  =(1 ver)  ~
+      ~['a version 1 record binds only a 128-bit digest: re-sign to bind the content fully']
+    ::  bound with its type: zing inline in a weld is a fuse-loop
+    =/  rs=tape  (zing (join "; " (turn why trip)))
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    ;:  weld
+      ^-  (list [@t json])  ~[['ok' b+good] ['current' b+cur]]
+      ^-  (list [@t json])  ?.(=(1 ver) ~ ~[['legacy' b+&]])
+      ^-  (list [@t json])  ?~(why ~ ~[['reason' s+(crip rs)]])
+    ==
       [%'POST' %page-share]
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
@@ -2753,6 +2900,22 @@
     ?~  nm    (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.from)  (send-err eyre-id 400 'bad from')
     ?.  ((sane %tas) u.nm)   (send-err eyre-id 400 'bad template name')
+    ::  a template carries no peer-written mark, so a page a peer may have
+    ::  written would come back out of it as the owner's (+peer-written)
+    ;<  tv=view:nexus  bind:m  (peek:io (rv up (weld /page (pax-of u.from))) ~)
+    =/  rels=(list path)
+      :-  /
+      ?.  ?=([%ball *] tv)  ~
+      (murn (collect-tree ball.tv ~) |=([pax=path page=?] ?:(page `pax ~)))
+    ;<  pw=?  bind:m
+      =/  n  (fiber:fiber:nexus ,?)
+      |-  ^-  form:n
+      ?~  rels  (pure:n |)
+      ;<  w=?  bind:n  (peer-written (weld (pax-of u.from) i.rels))
+      ?:  w  (pure:n &)
+      $(rels t.rels)
+    ?:  pw
+      (send-err eyre-id 409 'a page there is shared for edit, or was: save it yourself first')
     ;<  ~  bind:m  (poke-eval [%tmpl-save (pax-of u.from) `@tas`u.nm])
     (send-ok eyre-id)
       [%'POST' %template-del]
@@ -2990,6 +3153,10 @@
       %^  put-file  (rf up /mirror %'config.json')
         [/ %json]
       (pairs:enjs:format ~[['enabled' b+=('true' u.en)]])
+    ::  turning it off drops what it copied (+mirror-purge)
+    ;<  ~  bind:m
+      ?:  =('true' u.en)  (pure:(fiber:fiber:nexus ,~) ~)
+      (put-file (rf up /mirror %'purge.json') [/ %json] `json`[%b %.y])
     (send-ok eyre-id)
       [%'GET' %marks]
     ;<  bms=bookmarks:lb  bind:m  read-bookmarks
@@ -3757,15 +3924,16 @@
           'read the pages other ships publish, and follow them as they change. Refuse this and your own pages are unaffected; you just cannot read what other ships publish'
         ::  THE CARRY ROAD, and it is temporary. Lattice used to live at
         ::  /apps/lattice.lattice_app; this reads that dormant instance once,
-        ::  on the first writer rise after the move, and copies the data
-        ::  across. +carry-old-data marks itself done and never reads it
-        ::  again, and the release after this one drops this line.
+        ::  on the first writer rise after the move, copies the data across
+        ::  (+carry-old-data), then keeps a snapshot of it before the make
+        ::  road below deletes it (+retire-old-app). A later release drops
+        ::  both roads, once installs have retired the old copy.
         ::
         ::  Refusing it is safe and loses nothing that is not still there:
         ::  the old instance keeps its data, so the carry can be re-run by a
         ::  later version once the road is granted.
           %+  line  '/apps/lattice.lattice_app/'
-          'copy your existing pages, memories and bookmarks across from where lattice used to live. This is read-only, happens once, and the old copy is left untouched. Refuse it and this install simply starts empty'
+          'copy your existing pages, memories and bookmarks across from where lattice used to live, and keep a snapshot of that old copy. Refuse it and this install simply starts empty'
         ::  orrery, if it is installed on this ship, through its instance
         ::  dir under shell: lattice reads its world digest, daily briefs
         ::  and weekly reviews, the same ambient same-ship read orrery
@@ -3783,6 +3951,11 @@
       :-  %a
       :~  %+  line  '/sys/ames/usergroups/'
           'share pages with other ships: add a ship to a sharing group and grant the group read or edit on your pages, and take a banned ship out of every group. This road can change any sharing group on this ship. Refuse it and lattice works fully for you; you just cannot share pages with other ships'
+        ::  the retire road (+retire-old-app): the old app-tier copy is
+        ::  deleted once it is carried and a snapshot of it is kept, so
+        ::  grants made on it stop reaching anything.
+          %+  line  '/apps/lattice.lattice_app/'
+          'delete the old copy from where lattice used to live, after its pages and notes are carried across and a snapshot of it is kept here. Grants made on the old copy stop working. Refuse it and the old copy stays where it is'
       ==
   ==
 ::
@@ -4118,6 +4291,25 @@
     ?.  (touch-due:ky used.u.k now)  (pure:(fiber:fiber:nexus ,~) ~)
     (poke-keys [%touch id.u.k now])
   (pure:m `[u.k now])
+::  +read-ledger: each key's bytes written today (+spend:ky), empty if never
+::  written or unreadable.
+++  read-ledger
+  =/  m  (fiber:fiber:nexus ,ledger:ky)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:io (rf up / %'key-bytes') ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  (pure:m (fall (mole |.(;;(ledger:ky (sang-noun:tarball sang.v)))) ~))
+::  +key-spend: may this key write `len` more bytes today? Charges them when
+::  it may.
+++  key-spend
+  |=  [id=@t now=@da len=@ud]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  led=ledger:ky  bind:m  read-ledger
+  ?~  (spend:ky led id now len)  (pure:m |)
+  ;<  ~  bind:m  (poke-keys [%spend id now len])
+  (pure:m &)
 ++  poke-keys
   |=  act=key-action:ky
   =/  m  (fiber:fiber:nexus ,~)
@@ -4130,6 +4322,15 @@
   |=  [root=@ud act=key-action:ky]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ::  a write's bytes go on the key's ledger, not in the keys grub. Charged
+  ::  here in arrival order, so two requests that both passed the gate on
+  ::  one stale read are both counted.
+  ?:  ?=(%spend -.act)
+    ;<  led=ledger:ky  bind:m  read-ledger
+    =/  day=@da  (sub when.act (mod when.act ~d1))
+    =/  e  (~(get by led) id.act)
+    =/  used=@ud  ?~(e 0 ?:(=(day day.u.e) n.u.e 0))
+    (put-file (rf root / %'key-bytes') [/ %noun] (~(put by led) id.act [day (add used len.act)]))
   =/  kr=road:tarball  (rf root / %keys)
   ;<  ks=keys:ky  bind:m  (read-keys kr)
   =.  ks
@@ -4427,6 +4628,20 @@
 ::  are sandboxed. Soft the same way: no usergroup read means no grant.
 ::
 ++  edit-granted  |=(name=path (granted-via name &))
+::  +peer-written: may a peer have written this page's source? While the
+::  page is shared for edit, yes. After the grant goes, the edit lock stays
+::  as the mark: the evaluator sets it on any source change under a grant,
+::  content pages included, and only an owner save lifts it. The sandbox
+::  decisions read this, so revoking a grant does not hand a peer's markup
+::  the owner's origin (security audit run-1).
+++  peer-written
+  |=  name=path
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  lx=?  bind:m  (peek-exists:io (lock-road up name))
+  ?:  lx  (pure:m &)
+  (edit-granted name)
 ::  +granted-via: +granted (mak=|, peek roads) and +edit-granted (mak=&,
 ::  make roads). A make road under the page dir counts as well, since it
 ::  reaches the page's code grub too.
@@ -4444,12 +4659,18 @@
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   ;<  sb=path  bind:m  self-base
-  =/  pg=path  (weld sb (weld /page name))
+  ::  the page at every place this instance may live. A road on any of
+  ::  them counts, so a wrong guess about where we are cannot answer |.
+  =/  pgs=(list path)
+    %+  turn  ~(tap in (~(gas in *(set path)) [sb peer-bases:lu]))
+    |=(b=path (weld b (weld /page name)))
   ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
   ?.  ?=([~ %ball *] vw)  (pure:m |)
   %-  pure:m
-  %+  lien  ~(tap by dir.ball.u.vw)
-  |=  [nom=@ta gb=ball:tarball]
+  ::  every group, nested ones too, and file roads as well as dir roads:
+  ::  grubbery honours both (+grant-covers:ls)
+  %+  lien  (all-groups / ball.u.vw)
+  |=  [rel=path gb=ball:tarball]
   =/  fils  ?~(fil.gb ~ contents.u.fil.gb)
   =/  hw  (~(get by fils) %'how.weir')
   ?~  hw  |
@@ -4457,10 +4678,7 @@
   ?~  w  &
   %+  lien  ~(tap in ?:(mak make.u.w peek.u.w))
   |=  r=road:tarball
-  ?.  ?=([%& %| *] r)  |
-  ?|  =(p.p.r (scag (lent p.p.r) pg))
-      &(mak =(pg (scag (lent pg) p.p.r)))
-  ==
+  (lien pgs |=(pg=path (grant-covers:ls r pg mak)))
 ::  +apply-action: the writer's action dispatch, split out of the take-poke loop
 ::  so every mutation runs through one place (and is followed by a +bump-beacon).
 ::
@@ -4562,16 +4780,28 @@
     ;<  ~  bind:m  (make-page root pax.act src.act)
     ::  a shared page's vault copy follows every write, not just the share click
     (republish-if-shared root now pax.act src.act)
+      %make-marked
+    ;<  ~  bind:m  (make-page-as root pax.act src.act |)
+    (republish-if-shared root now pax.act src.act)
       %make-many
     ::  Same work as %make, once per page, but inside ONE writer transaction.
     ::  The saving is the ~0.5s pier floor an upload used to pay per FILE. The
     ::  per-page darts are unchanged, so a batch is exactly as durable as the
     ::  saves it replaces. Bounded by the route, not here.
+    ::
+    ::  Every tenth page the writer sleeps a moment, as %know-batch does, so
+    ::  the ship takes what is waiting. Unbroken, a key's 200-page batch held
+    ::  the ship for as long as every write and compile took (security audit
+    ::  run-1). Pokes to the writer stay queued meanwhile.
+    =|  done=@ud
     |-  ^-  form:m
     ?~  pages.act  (pure:m ~)
+    ;<  ~  bind:m
+      ?.  &(!=(0 done) =(0 (mod done 10)))  (pure:m ~)
+      (sleep-draining (div ~s1 100))
     ;<  ~  bind:m  (make-page root pax.i.pages.act src.i.pages.act)
     ;<  ~  bind:m  (republish-if-shared root now pax.i.pages.act src.i.pages.act)
-    $(pages.act t.pages.act)
+    $(pages.act t.pages.act, done +(done))
       %tmpl-save
     ::  save a page-tree as a template: copy every page's CODE under
     ::  /template/<name>, rewriting its own root path to the template root, and
@@ -4626,11 +4856,21 @@
     ::  cull tombs the CURRENT revision but leaves every stored %firm one, so
     ::  a deleted page's bodies stayed readable via page-history and could be
     ::  resurrected onto the next page created with the same name. Drop them
-    ::  first. (A folder delete culls the subtree; each page's own delete
-    ::  prunes its own history, so this covers the page case exactly.)
+    ::  first, for every page under the deleted path: a folder delete and a
+    ::  move each send one %del for the whole folder, so the nested pages'
+    ::  history used to survive the cull.
     ::  keep=0 drops everything, so the window is irrelevant here
-    ;<  ~  bind:m  (prune-hist (rf up pdir %code) 0 ~s0)
-    ;<  ~  bind:m  (prune-hist (rf up pdir %data) 0 ~s0)
+    ;<  dv=view:nexus  bind:m  (peek:io (rv up pdir) ~)
+    =/  rels=(list path)
+      ?.  ?=([%ball *] dv)  ~[/]
+      (murn (collect-tree ball.dv ~) |=([pax=path page=?] ?:(page `pax ~)))
+    ;<  ~  bind:m
+      |-  ^-  form:m
+      ?~  rels  (pure:m ~)
+      =/  d=path  (weld pdir i.rels)
+      ;<  ~  bind:m  (prune-hist (rf up d %code) 0 ~s0)
+      ;<  ~  bind:m  (prune-hist (rf up d %data) 0 ~s0)
+      $(rels t.rels)
     ;<  *  bind:m  (cull-soft:io (rv up pdir))
     ::  re-send the public grant act AFTER the cull, so the walk inside
     ::  +send-public-how sees the deletion and the dead page's data road
@@ -4760,6 +5000,17 @@
     ?~  fil.ball.cv  0
     ~(wyt by contents.u.fil.ball.cv)
   ?:  (gte stored 200)  (pure:m ~)
+  ;<  our=@p  bind:m  bowl-our
+  =/  fam=@  (family:ls author)
+  =/  mine=@ud
+    ?.  ?=([%ball *] cv)  0
+    ?~  fil.ball.cv  0
+    %-  lent
+    %+  skim  ~(val by contents.u.fil.ball.cv)
+    |=  [=sang:tarball *]
+    =/  c  (mole |.(;;(comment:lc (sang-noun:tarball sang))))
+    &(?=(^ c) =(fam (family:ls author.u.c)))
+  ?:  &(!=(author our) (gte mine per-author:lc))  (pure:m ~)
   =/  body=@t
     ?:((gth (met 3 body.act) max-body:lc) (end [3 max-body:lc] body.act) body.act)
   =/  =comment:lc  [author now body]
@@ -5122,6 +5373,12 @@
   (lose:io road [%numb ~ `(dec cut)])
 ++  make-page
   |=  [root=@ud pax=path src=@t]
+  (make-page-as root pax src &)
+::  +make-page-as: with trust=|, the write is a copy of a page a peer may
+::  have written (+peer-written), so it sets the mark rather than lifting
+::  it: a move or a conflict copy must not turn a peer's source into ours.
+++  make-page-as
+  |=  [root=@ud pax=path src=@t trust=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -5140,7 +5397,9 @@
   ::  lock (+set-edit-lock). Before the code write, so the evaluator it wakes
   ::  no longer sees the lock.
   ;<  lx=?  bind:m  (peek-exists:io (lock-road up pax))
-  ;<  ~  bind:m  ?.(lx (pure:m ~) (cull:io (lock-road up pax)))
+  ;<  ~  bind:m
+    ?.  trust  (set-edit-lock up pax)
+    ?.(lx (pure:m ~) (cull:io (lock-road up pax)))
   ;<  ~  bind:m  (put-file (rf up pdir %code) [/lattice %page] src)
   ::  gain the code grub so every save is a kept %firm revision. That is
   ::  what page-history / page-source-at read. Privacy is unchanged. gain
@@ -5264,11 +5523,24 @@
   ::  Display names of the root and every subfolder ride along after the
   ::  mkdirs (pages carry theirs in the per-page loop below).
   =/  dacts=(list eval-action:le)  (dname-acts bl to [`path`~ dirs])
+  ::  sensitivity goes with what moves, and lands before any content: the
+  ::  root as it reads where it was (its own mark or a folder's above it),
+  ::  and each page and folder under it by its own mark. The %del below
+  ::  culls the old marks, so a move used to leave the content unmarked.
+  ;<  rs=?  bind:m  (page-sensitive from)
+  =/  own=(list path)
+    %+  murn  all
+    |=([pax=path *] ?.((~(has by (ball-fils bl pax)) %sensitive) ~ `pax))
+  =/  sacts=(list eval-action:le)
+    %+  turn  (weld ?:(rs ~[`path`~] ~) own)
+    |=(p=path `eval-action:le`[%page-sensitive (weld to p) &])
   =/  todo=(list eval-action:le)
-    %+  weld
+    ;:  weld
+      sacts
       ^-  (list eval-action:le)
       [[%mkdir to] (turn dirs |=(p=path `eval-action:le`[%mkdir (weld to p)]))]
-    dacts
+      dacts
+    ==
   =/  count=@ud  0
   |-  ^-  form:m
   ?^  todo
@@ -5290,8 +5562,10 @@
         (rewrite-root (trip code) from-str to-str)
       from-bare
     to-bare
+  ::  a peer-written page stays marked where it lands (+make-page-as)
+  ;<  pw=?  bind:m  (peer-written (weld from i.rels))
   =/  acts=(list eval-action:le)
-    :-  [%make dst newcode]
+    :-  ?:(pw [%make-marked dst newcode] [%make dst newcode])
     %+  weld
       ^-  (list eval-action:le)  ?~(dn ~ [%dname dst u.dn]~)
     ^-  (list eval-action:le)
@@ -5545,7 +5819,7 @@
 ::  own html). render-shown runs on our OWN page data only (view-src is own-tree).
 ::
 ++  read-dep-vals
-  |=  deps=(list path)
+  |=  [lim=[mode=share-mode:le sens=?] deps=(list path)]
   =/  m  (fiber:fiber:nexus ,(list [path *]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -5558,7 +5832,14 @@
   ?^  src
     ;<  dsn=view:nexus       bind:m  (peek:io (rf up u.src %data) ~)
     ;<  vmode=view-mode:pg   bind:m  (read-show-mode u.src)
-    ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
+    ::  an edit-granted source may hold a peer's markup, and its fragment
+    ::  is welded raw into a composing page that is not sandboxed itself.
+    ::  Such a fragment is shown as text.
+    ;<  eg=?  bind:m
+      ?.  ?=(%html vmode)  (pure:(fiber:fiber:nexus ,?) |)
+      (peer-written (slag 1 u.src))
+    =?  vmode  eg  %text
+    ;<  rest=(list [path *])  bind:m  (read-dep-vals lim t.deps)
     =/  frag=@t
       ?.  ?=([%file *] dsn)  ''
       ::  a composed view fragment is rendered ONCE at eval time and stored in
@@ -5572,14 +5853,20 @@
   ;<  sn=view:nexus  bind:m  (peek:io (rf up (scag n i.deps) (snag n i.deps)) ~)
   ?:  ?=([%file *] sn)
     ::  a file grub -> its raw noun.
-    ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
+    ;<  rest=(list [path *])  bind:m  (read-dep-vals lim t.deps)
     (pure:m [[i.deps (sang-noun:tarball sang.sn)] rest])
   ::  not a file -> a DIRECTORY dep resolves to its tree listing (a
   ::  (list [pax=path page=?]) of pages+folders under it, paths relative to the
   ::  dir), so a page can enumerate a structured subtree. ~ if it is neither.
   ;<  dn=view:nexus  bind:m  (peek:io (rv up i.deps) ~)
-  ;<  rest=(list [path *])  bind:m  (read-dep-vals t.deps)
-  =/  val=*  ?.(?=([%ball *] dn) ~ (collect-tree ball.dn ~))
+  ;<  rest=(list [path *])  bind:m  (read-dep-vals lim t.deps)
+  ::  the listing is the composing page's data, read by whoever reads that
+  ::  page: only what it may show (+collect-visible)
+  ;<  dsens=?  bind:m  (page-sensitive (slag 1 i.deps))
+  =/  val=*
+    ?.  ?=([%ball *] dn)  ~
+    ?:  &(dsens !sens.lim)  ~
+    (collect-visible ball.dn ~ mode.lim sens.lim)
   (pure:m [[i.deps val] rest])
 ::  +eval-run: one run of a compiled page: build the env vase (typed via
 ::  slop, so the gate's declared sample nest-checks), slam inside mule,
@@ -5596,7 +5883,13 @@
   ;<  dsn=view:nexus  bind:m  (peek:io (rf up pdir %data) ~)
   =/  dat=(unit *)
     ?.(?=([%file *] dsn) ~ `(sang-noun:tarball sang.dsn))
-  ;<  dvs=(list [path *])  bind:m  (read-dep-vals deps)
+  ::  what this page may show of others (+collect-visible)
+  ;<  shv=view:nexus  bind:m  (peek:io (rf up pdir %share) ~)
+  =/  mode=share-mode:le
+    ?.  ?=([%file *] shv)  %private
+    (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.shv)))) %private)
+  ;<  sens=?  bind:m  (page-sensitive (slag 1 pdir))
+  ;<  dvs=(list [path *])  bind:m  (read-dep-vals [mode sens] deps)
   =/  env=vase
     ;:  slop
       !>(`(unit @t)`cmd)
@@ -5878,8 +6171,9 @@
   %-  pairs:enjs:format
   :~  ['ship' s+(scot %p ship.rec)]
       ['life' (numb:enjs:format life.rec)]
+      ['v' (numb:enjs:format v.rec)]
       ['alg' s+'ed25519']
-      ['salt' s+'lattice']
+      ['salt' s+?:(=(2 v.rec) 'lattice-2' 'lattice')]
       ['digest' (numb:enjs:format digest.rec)]
       ['sig' (numb:enjs:format sig.rec)]
   ==
@@ -6206,14 +6500,18 @@
     =/  kw=wave:nexus  (fall (~(get by dir.w) nom) *wave:nexus)
     (dump-walk kb kw (weld rel /[nom]) since)
   =/  drow=(list [@t json])  (dname-row fils)
+  ::  this node's own sensitive mark, so a vault export can carry it
+  =/  srow=(list [@t json])
+    ?.((~(has by fils) %sensitive) ~ ~[['sensitive' b+&]])
   ?.  (~(has by fils) %code)
     ?~  rel  kids
     :_  kids
     :-  rel
     %-  pairs:enjs:format
-    %+  weld  drow
-    ^-  (list [@t json])
-    ~[['path' s+(crip (pax-str rel))] ['page' b+|]]
+    ;:  weld  drow  srow
+      ^-  (list [@t json])
+      ~[['path' s+(crip (pax-str rel))] ['page' b+|]]
+    ==
   =/  cd  (~(got by fils) %code)
   =/  cs=cass:clay  (fall (~(get by wfil) %code) *cass:clay)
   =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) '')
@@ -6244,7 +6542,7 @@
     ==
   :_  kids
   :-  rel
-  (pairs:enjs:format :(weld drow head body-row share-row tail))
+  (pairs:enjs:format :(weld drow srow head body-row share-row tail))
 ::  +dname-row: the `dname` field of a tree node, from the %name grub in the
 ::  same ball as its %code (or, for a folder, its flags). Absent -> no field:
 ::  the client shows the path segment, and a valid name is never stored twice.
@@ -6915,8 +7213,10 @@
   ?.  move  $(days t.days)
   =/  pax=path  ~[%journal name]
   =/  body=@t  (journal-body:lo head `@t`i.days text.u.rec)
-  ;<  ~  bind:m  (poke-eval [%make pax (wrap-content %md body)])
+  ::  marked first: between a make and a later mark, a key without
+  ::  clearance could read the new brief
   ;<  ~  bind:m  (poke-eval [%page-sensitive pax &])
+  ;<  ~  bind:m  (poke-eval [%make pax (wrap-content %md body)])
   $(days t.days, synced (~(put by synced) `@t`name at.u.rec))
 ::  +orrery-rec: pull the `at` and `text` strings out of one orrery day
 ::  record. ~ when the json is not an object or either field is missing or
@@ -7055,6 +7355,79 @@
 ::  exposed. A poke grant on main.sig is full eval power, not "edit a file".
 ::
 ++  ug-base  `path`/sys/ames/usergroups
+::  +all-groups: every usergroup in a usergroups ball, found the way
+::  grubbery's +find-groups finds them: a child named *.grp is a group, and
+::  any other child is a folder that may hold more. Each comes back as its
+::  dir relative to the ball, ending in the .grp segment, with its ball.
+++  all-groups
+  |=  [pax=path ug=ball:tarball]
+  ^-  (list [rel=path gb=ball:tarball])
+  =/  kids=(list [@ta ball:tarball])  ~(tap by dir.ug)
+  =|  acc=(list [rel=path gb=ball:tarball])
+  |-  ^-  (list [rel=path gb=ball:tarball])
+  ?~  kids  acc
+  =/  [nom=@ta kid=ball:tarball]  i.kids
+  ?:  (grp-name:ls nom)
+    $(kids t.kids, acc [[(snoc pax nom) kid] acc])
+  $(kids t.kids, acc (weld acc (all-groups (snoc pax nom) kid)))
+::  +page-roads: grant paths as roads. A page is granted by a file road on
+::  its code grub, which is all a grantee opens (+share-file), so the grant
+::  reaches neither the page's owner-only grubs (share, show, forms, the
+::  render cache) nor pages nested under it. Anything else, a folder, is
+::  a dir road: granting a folder is granting what is in it.
+++  page-roads
+  |=  ps=(list path)
+  =/  m  (fiber:fiber:nexus ,(set road:tarball))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sb=path  bind:m  self-base
+  =/  pre=path  (weld sb /page)
+  =|  out=(set road:tarball)
+  |-  ^-  form:m
+  ?~  ps  (pure:m out)
+  =/  rel=path  (slag (lent pre) i.ps)
+  ;<  pe=?  bind:m
+    ?.  &(?=(^ rel) =(pre (scag (lent pre) i.ps)))
+      (pure:(fiber:fiber:nexus ,?) |)
+    (peek-exists:io (rf up (weld /page rel) %code))
+  =/  r=road:tarball  ?:(pe [%& %& i.ps %code] [%& %| i.ps])
+  $(ps t.ps, out (~(put in out) r))
+::  +narrow-page-grants: a page grant used to be a dir road on the page's
+::  dir, which also reached its owner-only grubs and the pages nested under
+::  it. On every writer start each dir road on one of our pages becomes the
+::  file road on its code grub (+page-roads), in every group. It only ever
+::  narrows: a folder's road stays, and so does every other road. Soft, so
+::  an install that refused the usergroup roads keeps its grants as they
+::  were.
+++  narrow-page-grants
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  =/  gs=(list [rel=path gb=ball:tarball])  (all-groups / ball.u.vw)
+  =/  dirs
+    |=  rs=(set road:tarball)
+    ^-  (list path)
+    (murn ~(tap in rs) |=(r=road:tarball ?.(?=([%& %| *] r) ~ `p.p.r)))
+  =/  rest
+    |=  rs=(set road:tarball)
+    ^-  (set road:tarball)
+    (~(gas in *(set road:tarball)) (skip ~(tap in rs) |=(r=road:tarball ?=([%& %| *] r))))
+  |-  ^-  form:m
+  ?~  gs  (pure:m ~)
+  =/  fils  ?~(fil.gb.i.gs ~ contents.u.fil.gb.i.gs)
+  =/  hw  (~(get by fils) %'how.weir')
+  =/  w=(unit weir:nexus)
+    ?~  hw  ~
+    (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hw))))
+  ?~  w  $(gs t.gs)
+  ;<  mk=(set road:tarball)  bind:m  (page-roads (dirs make.u.w))
+  ;<  pk=(set road:tarball)  bind:m  (page-roads (dirs peek.u.w))
+  =/  nw=weir:nexus  [(~(uni in (rest make.u.w)) mk) poke.u.w (~(uni in (rest peek.u.w)) pk)]
+  ?:  =(nw u.w)  $(gs t.gs)
+  ;<  *  bind:m
+    (ug-over [%& %& (weld ug-base rel.i.gs) %'how.weir'] [[/ %weir] nw])
+  $(gs t.gs)
 ::  +ug-dirfold-paths: the roads a UI can render (absolute dir folds), plus a
 ::  count of the ones it can't. The count matters. The editor must SAY it is
 ::  preserving rules it doesn't show, or a user auditing their ACL is misled.
@@ -7064,6 +7437,9 @@
   %+  roll  ~(tap in rs)
   |=  [r=road:tarball acc=[ps=(list @t) opaque=@ud]]
   ?:  ?=([%& %| *] r)  [[(spat p.p.r) ps.acc] opaque.acc]
+  ::  a page grant is a file road on the page's code grub (+page-roads),
+  ::  and the editor speaks of it as the page
+  ?:  &(?=([%& %& *] r) =(%code name.p.p.r))  [[(spat path.p.p.r) ps.acc] opaque.acc]
   [ps.acc +(opaque.acc)]
 ::  +ug-keep: the roads the UI does NOT manage, carried through a save
 ::  verbatim. Silently dropping an ACL rule the editor couldn't render would
@@ -7072,7 +7448,9 @@
   |=  rs=(set road:tarball)
   ^-  (set road:tarball)
   %-  ~(gas in *(set road:tarball))
-  (skip ~(tap in rs) |=(r=road:tarball ?=([%& %| *] r)))
+  %+  skip  ~(tap in rs)
+  |=  r=road:tarball
+  |(?=([%& %| *] r) &(?=([%& %& *] r) =(%code name.p.p.r)))
 ::  +ug-over: write one usergroup grub, SOFT. %.n = not written. A hard
 ::  over:io on a road this install was not granted parks the request
 ::  fiber, and the browser waits on an answer that never comes.
@@ -7113,27 +7491,34 @@
   ;<  sb=path  bind:m  self-base
   =/  old=path  (weld sb (weld /page from))
   =/  n=@ud  (lent old)
-  =/  under  |=(r=road:tarball &(?=([%& %| *] r) =(old (scag n p.p.r))))
+  ::  dir roads and file roads alike (a page grant is a file road on its
+  ::  code grub, +share-file)
+  =/  under
+    |=  r=road:tarball
+    ?+  r  |
+      [%& %| *]  =(old (scag n p.p.r))
+      [%& %& *]  =(old (scag n path.p.p.r))
+    ==
   =/  re
     |=  rs=(set road:tarball)
     ^-  (set road:tarball)
     ?~  to  (~(gas in *(set road:tarball)) (skip ~(tap in rs) under))
+    =/  new=path  (weld sb (weld /page u.to))
     %-  ~(run in rs)
     |=  r=road:tarball
     ?.  (under r)  r
-    ?>  ?=([%& %| *] r)
-    [%& %| (weld (weld sb (weld /page u.to)) (slag n p.p.r))]
+    ?+  r  r
+      [%& %| *]  [%& %| (weld new (slag n p.p.r))]
+      [%& %& *]  [%& %& (weld new (slag n path.p.p.r)) name.p.p.r]
+    ==
   ::  one SOFT deep read of every group. The usergroup read is optional
   ::  (weir.json), and this runs on every move and delete: a hard peek
   ::  there would park each one on an install that refused it.
   ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
   ?.  ?=([~ %ball *] vw)  (pure:m ~)
-  =/  gs=(list [nom=@ta gb=ball:tarball])  ~(tap by dir.ball.u.vw)
+  =/  gs=(list [rel=path gb=ball:tarball])  (all-groups / ball.u.vw)
   |-  ^-  form:m
   ?~  gs  (pure:m ~)
-  =/  nt=tape  (trip nom.i.gs)
-  ?.  &((gth (lent nt) 4) =(".grp" (slag (sub (lent nt) 4) nt)))
-    $(gs t.gs)
   =/  fils  ?~(fil.gb.i.gs ~ contents.u.fil.gb.i.gs)
   =/  hw  (~(get by fils) %'how.weir')
   =/  w=(unit weir:nexus)
@@ -7143,7 +7528,7 @@
   =/  nw=weir:nexus  [(re make.u.w) poke.u.w (re peek.u.w)]
   ?:  =(nw u.w)  $(gs t.gs)
   ;<  *  bind:m
-    (ug-over [%& %& (snoc ug-base nom.i.gs) %'how.weir'] [[/ %weir] nw])
+    (ug-over [%& %& (weld ug-base rel.i.gs) %'how.weir'] [[/ %weir] nw])
   $(gs t.gs)
 ::  +ug-refused: the answer when lattice may not write usergroups.
 ++  ug-refused
@@ -7162,17 +7547,18 @@
 ++  share-groups-json
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
-  ;<  dn=view:nexus  bind:m  (peek-shallow:io [%& %| ug-base] ~)
+  ;<  dn=view:nexus  bind:m  (peek:io [%& %| ug-base] ~)
   ?.  ?=([%ball *] dn)  (pure:m a+~)
-  =/  names=(list @ta)  (sort ~(tap in ~(key by dir.ball.dn)) aor)
+  ::  nested groups too (+all-groups), named by their path, so the owner
+  ::  sees every grant. The editor saves and deletes by a plain name only,
+  ::  so it refuses to change a nested one, which is the safe failure.
+  =/  names=(list path)  (sort (turn (all-groups / ball.dn) head) aor)
   =|  out=(list json)
   |-  ^-  form:m
   ?~  names  (pure:m a+(flop out))
-  =/  nt=tape  (trip i.names)
-  ?.  &((gth (lent nt) 4) =(".grp" (slag (sub (lent nt) 4) nt)))
-    $(names t.names)
-  =/  base=@t  (crip (scag (sub (lent nt) 4) nt))
-  =/  gdir=path  (snoc ug-base i.names)
+  =/  nt=tape  (trip (spat i.names))
+  =/  base=@t  (crip (slag 1 (scag (sub (lent nt) 4) nt)))
+  =/  gdir=path  (weld ug-base i.names)
   ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
   =/  ships=(list @p)
     ?.  ?=([%file *] wv)  ~
@@ -7266,26 +7652,25 @@
   |=  who=@p
   =/  m  (fiber:fiber:nexus ,(unit @ud))
   ^-  form:m
-  ;<  dn=view:nexus  bind:m  (peek-shallow:io [%& %| ug-base] ~)
+  ;<  dn=view:nexus  bind:m  (peek:io [%& %| ug-base] ~)
   ?.  ?=([%ball *] dn)  (pure:m `0)
-  =/  names=(list @ta)  (sort ~(tap in ~(key by dir.ball.dn)) aor)
+  ::  nested groups too (+all-groups): a ban that missed one left the ship
+  ::  its grants there
+  =/  gs=(list path)  (sort (turn (all-groups / ball.dn) head) aor)
   =|  hit=@ud
   |-  ^-  form:m
-  ?~  names  (pure:m `hit)
-  =/  nt=tape  (trip i.names)
-  ?.  &((gth (lent nt) 4) =(".grp" (slag (sub (lent nt) 4) nt)))
-    $(names t.names)
-  =/  gdir=path  (snoc ug-base i.names)
+  ?~  gs  (pure:m `hit)
+  =/  gdir=path  (weld ug-base i.gs)
   ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
   =/  ships=(set @p)
     ?.  ?=([%file *] wv)  ~
     (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
   ?.  (~(has in ships) who)
-    $(names t.names)
+    $(gs t.gs)
   ;<  ok=?  bind:m
     (ug-over [%& %& gdir %'who.ships'] [[/ %ships] (~(del in ships) who)])
   ?.  ok  (pure:m ~)
-  $(names t.names, hit +(hit))
+  $(gs t.gs, hit +(hit))
 ::  +ban-road: where the banlist lives.
 ++  ban-road  |=(up=@ud ^-(road:tarball (rf up / %banned)))
 ::  +read-banned: the banlist, empty if never written. Every enforcement point
@@ -8132,8 +8517,12 @@
     (peek-remote-wait [%& %& (weld u.base /pub) %revs] shp)
   ?.  ?=([~ %file *] ms)  (pure:m ~)
   ::  cross-ship content is a raw noun: clam it in a mole, so a hostile or
-  ::  malformed list reads as empty instead of crashing the reader
-  (pure:m (fall (mole |.((json-revs:lp ;;(json (sang-noun:tarball sang.u.ms))))) ~))
+  ::  malformed list reads as empty instead of crashing the reader. And
+  ::  bound it first: shared structure can make a small noun vast to the
+  ::  clam, which the mole does not stop (+small-noun:lp).
+  =/  rn=*  (sang-noun:tarball sang.u.ms)
+  ?.  (small-noun:lp rn 200.000)  (pure:m ~)
+  (pure:m (fall (mole |.((json-revs:lp ;;(json rn)))) ~))
 ::  +drop-peer-revs: forget a peer's list after one of its ids missed, so
 ::  the next view fetches it again.
 ::
@@ -8281,11 +8670,15 @@
   =/  q=(unit @ud)  (find "?" t)
   ?~(q t (scag u.q t))
 ::  +send-redirect: a 301 to `to` (used to force trailing slashes on dirs).
+::  Both redirects refuse a target holding a control character, since the
+::  target is built from request text and a CR or LF would split the
+::  Location header.
 ::
 ++  send-redirect
   |=  [eyre-id=@ta to=tape]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ?:  (lien to |=(c=@tD (lth c 32)))  (send-err eyre-id 400 'bad redirect')
   %+  send-simple:srv  eyre-id
   [[301 ['location' (crip to)]~] ~]
 ::  +send-see-other: a 303 (POST -> GET redirect, for form command submits).
@@ -8299,6 +8692,7 @@
   |=  [eyre-id=@ta to=tape]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ?:  (lien to |=(c=@tD (lth c 32)))  (send-err eyre-id 400 'bad redirect')
   ;<  now=@da  bind:m  bowl-now
   =/  sep=tape  ?:(?=(^ (find "?" to)) "&" "?")
   =/  bust=tape  :(weld to sep "u=" (scow %ud (mod now 1.000.000.000)))
@@ -8370,7 +8764,7 @@
   ::  below, a CSP header on the bare embed.
   ;<  eg=?  bind:m
     ?.  local  (pure:(fiber:fiber:nexus ,?) |)
-    (edit-granted (fall (raw-name-pax name) rel))
+    (peer-written (fall (raw-name-pax name) rel))
   ?:  embed
     ::  bare preview: just the rendered data (+ any error) and the live stream.
     =/  data-html=tape  ?~(cd "<p>no data yet</p>" (render-shown u.cd vmode "/apps/lattice/app?name="))
@@ -8539,11 +8933,15 @@
     ?.  &(preview ?=(%html vmode))  p.res
     (cat 3 p.res preview-scrollbar-css)
   ::  an html asset of a page shared for edit gets an opaque origin, as in
-  ::  +serve-clearweb
+  ::  +serve-clearweb. Its js is served as text/plain, which nosniff
+  ::  (+send-typed) stops any page from running as a script: a CSP on the
+  ::  response cannot, since a <script src> on an owner page runs it in the
+  ::  owner's origin whatever headers it came with (security audit run-1).
   ;<  eg=?  bind:m
-    ?.  ?=(%html vmode)  (pure:(fiber:fiber:nexus ,?) |)
-    (edit-granted pax)
-  ?:  eg  (send-sandboxed eyre-id (mime-of vmode) body)
+    ?.  ?=(?(%html %js) vmode)  (pure:(fiber:fiber:nexus ,?) |)
+    (peer-written pax)
+  ?:  &(eg ?=(%html vmode))  (send-sandboxed eyre-id (mime-of vmode) body)
+  ?:  eg  (send-typed eyre-id 'text/plain; charset=utf-8' 'no-cache' body)
   (send-typed eyre-id (mime-of vmode) 'no-cache' body)
 ++  preview-scrollbar-css
   ^-  @t
@@ -8659,20 +9057,38 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ?.  on  (pure:m "")
-  ;<  seen=view:nexus  bind:m  (peek:io (rv up (weld /comments page)) ~)
-  =/  cs=(list comment:lc)
+  ::  shallow: only this page's own comments render, not those of the
+  ::  pages under it
+  ;<  seen=view:nexus  bind:m  (peek-shallow:io (rv up (weld /comments page)) ~)
+  =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
     ?.  ?=([%ball *] seen)  ~
-    =/  b=ball:tarball  ball.seen
-    =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
-      ?~(fil.b ~ contents.u.fil.b)
-    %+  murn  ~(val by fils)
-    |=  [s=sang:tarball gain=? bang=(unit tang)]
-    ^-  (unit comment:lc)
-    (mole |.(;;(comment:lc (sang-noun:tarball s))))
-  =/  sorted=(list comment:lc)
-    (sort cs |=([a=comment:lc b=comment:lc] (lth when.a when.b)))
-  ?:  &(?=(~ sorted) =("" box))  (pure:m "")
+    ?~(fil.ball.seen ~ contents.u.fil.ball.seen)
+  ?:  &(=(~ fils) =("" box))  (pure:m "")
+  ::  The rendered thread is cached by the set of comment ids. Each id is
+  ::  the hash of its comment, so the set fixes the thread, and an add or a
+  ::  delete changes it. An anonymous /c/ hit used to rebuild up to 200
+  ::  comments of 4 KB from any ship every time (security audit run-1). The
+  ::  cache sits outside /page, where no page grant reaches.
+  =/  key=@t  (scot %uv (sham ~(key by fils)))
+  =/  croad=road:tarball  (rf up (weld /comments-cache page) %thread)
+  ;<  cv=(unit view:nexus)  bind:m  (peek-soft:io croad ~)
+  =/  hit=(unit tape)
+    ?.  ?=([~ %file *] cv)  ~
+    =/  jon=json  (fall (mole |.(!<(json (need-vase:tarball sang.u.cv)))) ~)
+    ?.  ?=([%o *] jon)  ~
+    =/  k=(unit json)  (~(get by p.jon) 'key')
+    =/  h=(unit json)  (~(get by p.jon) 'html')
+    ?.  &(?=([~ %s *] k) ?=([~ %s *] h) =(p.u.k key))  ~
+    `(trip p.u.h)
   =/  thread=tape
+    ?^  hit  u.hit
+    =/  cs=(list comment:lc)
+      %+  murn  ~(val by fils)
+      |=  [s=sang:tarball gain=? bang=(unit tang)]
+      ^-  (unit comment:lc)
+      (mole |.(;;(comment:lc (sang-noun:tarball s))))
+    =/  sorted=(list comment:lc)
+      (sort cs |=([a=comment:lc b=comment:lc] (lth when.a when.b)))
     ?~  sorted  ""
     ;:  weld
       "<section class=\"comments\"><h3>"  (a-co:co (lent sorted))
@@ -8681,6 +9097,12 @@
       (zing (turn sorted comment-html))
       "</section>"
     ==
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    ?^  hit  (pure:n ~)
+    ;<  ~  bind:n  (ensure-dirs up /comments-cache page)
+    %^  put-file  croad  [/ %json]
+    (pairs:enjs:format ~[['key' s+key] ['html' s+(crip thread)]])
   ::  single-quote cord: a double-quote tape would interpolate the css { } braces.
   %-  pure:m
   ;:  weld
@@ -8689,6 +9111,39 @@
     thread
     box
   ==
+::  +cull-comments-of: drop every comment `who` wrote, and its moons', on
+::  every page. Soft: a cull refused leaves that comment in place.
+++  cull-comments-of
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io (rv up /comments) ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m 0)
+  =/  hits=(list [dir=path id=@ta])  (comments-by ball.u.vw / who)
+  =/  n=@ud  (lent hits)
+  |-  ^-  form:m
+  ?~  hits  (pure:m n)
+  ;<  *  bind:m  (cull-soft:io (rf up (weld /comments dir.i.hits) id.i.hits))
+  $(hits t.hits)
+::  +comments-by: where `who` (or one of its moons) commented, under a ball
+++  comments-by
+  |=  [b=ball:tarball rel=path who=@p]
+  ^-  (list [dir=path id=@ta])
+  =/  here=(list [dir=path id=@ta])
+    ?~  fil.b  ~
+    %+  murn  ~(tap by contents.u.fil.b)
+    |=  [id=@ta [=sang:tarball *]]
+    ^-  (unit [dir=path id=@ta])
+    =/  c  (mole |.(;;(comment:lc (sang-noun:tarball sang))))
+    ?~  c  ~
+    ?.  |(=(who author.u.c) =(`@`who (family:ls author.u.c)))  ~
+    `[rel id]
+  %+  weld  here
+  ^-  (list [dir=path id=@ta])
+  %-  zing
+  %+  turn  ~(tap by dir.b)
+  |=([nom=@ta kid=ball:tarball] (comments-by kid (snoc rel nom) who))
 ::  +comment-html: one stored comment as escaped html (author + body).
 ::
 ++  comment-html
@@ -8735,7 +9190,9 @@
   =/  dflt=tape  ?:(?=(%html vmode) "" :(weld "<style>" web-css "</style>"))
   ?.  local  (pure:m dflt)
   ;<  tcss=(unit @t)  bind:m  (find-theme-css rel)
-  (pure:m ?^(tcss :(weld "<style>" (trip u.tcss) "</style>") dflt))
+  ::  +style-text:pg: a key or an edit-granted peer can write the theme, and
+  ::  raw it could close the <style> into script on every page it themes
+  (pure:m ?^(tcss :(weld "<style>" (style-text:pg u.tcss) "</style>") dflt))
 ::  +forms-on: is public form submission enabled at or above this page? Same
 ::  nearest-flag-wins walk as +comments-on, so a folder opts in a whole site.
 ::
@@ -8856,6 +9313,11 @@
   ?:  ?=(?(%css %js) vmode)
     =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.u.dat))))
     ?:  ?=(%| -.res)  (send-err eyre-id 415 'not servable')
+    ::  a peer's js is not ours to run: text/plain, as in +serve-asset
+    ;<  eg=?  bind:m
+      ?.  ?=(%js vmode)  (pure:(fiber:fiber:nexus ,?) |)
+      (peer-written pax)
+    ?:  eg  (send-typed eyre-id 'text/plain; charset=utf-8' 'no-cache' p.res)
     (send-typed eyre-id (mime-of vmode) 'no-cache' p.res)
   ::  Every rendered/html page auto-wears the nearest `theme` css up the folder
   ::  tree, LINKED IN THE HEAD (render-blocking -> no white flash on nav, browser-
@@ -8885,7 +9347,7 @@
   ::  so it gets an opaque origin (+send-sandboxed). Only html pays the peek.
   ;<  eg=?  bind:m
     ?.  ?=(%html vmode)  (pure:(fiber:fiber:nexus ,?) |)
-    (edit-granted pax)
+    (peer-written pax)
   ?:  eg  (send-sandboxed eyre-id 'text/html' doc)
   (send-html eyre-id doc)
 ::  +clearweb-body: the rendered body of a public page, from a per-page cache
@@ -9150,7 +9612,9 @@
   ::  grubs get a mark-derived type; anything foreign is forced to an inert
   ::  download (octet-stream + attachment + nosniff).
   =/  heads=(list [@t @t])
-    ?:  local  ['content-type' (mark-mime mk)]~
+    ::  own grubs too get nosniff, so the type is the one served (see
+    ::  +send-typed)
+    ?:  local  ~[['content-type' (mark-mime mk)] ['x-content-type-options' 'nosniff']]
     :~  ['content-type' 'application/octet-stream']
         ['content-disposition' 'attachment']
         ['x-content-type-options' 'nosniff']
@@ -9165,7 +9629,7 @@
       (send-err eyre-id 413 'too large')
     =/  mheads=(list [@t @t])
       ?.  local  heads
-      ['content-type' (mite-type p.p.mime-res)]~
+      ~[['content-type' (mite-type p.p.mime-res)] ['x-content-type-options' 'nosniff']]
     (send-simple:srv eyre-id [[200 mheads] `q.p.mime-res])
   ::  %json: re-encode the noun so ?data yields actual JSON text
   ?:  =(%json mk)
@@ -9346,14 +9810,24 @@
 ::  private app (install is offered only inside an authed session).
 ::
 ::  +send-typed: a 200 with an explicit content-type and cache-control. The PWA
-::  routes and both +send-view tiers send through it.
+::  routes, both +send-view tiers and the raw /f/ and /c/ assets send through
+::  it. nosniff: without it a browser runs a text, markdown or css body as a
+::  same-origin script when a page loads it as one, so a key that may write
+::  text over a js page ran script as the owner (security audit run-1).
+::
+::  An html body also keeps no cross-origin opener, so a page that opened
+::  an owner view cannot count its frames. /clip-paste needs its opener and
+::  goes out through +send-html instead.
 ::
 ++  send-typed
   |=  [eyre-id=@ta ct=@t cc=@t body=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  =/  heds=(list [@t @t])
+    ~[['content-type' ct] ['cache-control' cc] ['x-content-type-options' 'nosniff']]
+  =?  heds  =("text/html" (scag 9 (trip ct)))  [['cross-origin-opener-policy' 'same-origin'] heds]
   %+  send-simple:srv  eyre-id
-  :-  [200 ~[['content-type' ct] ['cache-control' cc]]]
+  :-  [200 heds]
   `(as-octs:mimes:html body)
 ::  +send-sandboxed: +send-typed with a CSP sandbox and no-cache. The
 ::  document gets an opaque origin, so its scripts still run but hold no
@@ -9510,6 +9984,11 @@
   ::  network request is the browser's own, cookies and all. The ?u= guard
   ::  also keeps command 303s (send-see-other's buster) network-fresh, and
   ::  activate-time eviction spares this cache: its freshness is rev-based.
+  ::
+  ::  A 401 or 403 on the app shell means the session is gone. The answer
+  ::  goes through as it is, as it would with no worker, and the pages cache
+  ::  is dropped. Only a failed fetch (offline) falls back to the cached
+  ::  shell. Owner content used to outlive the session in this browser.
   =/  ver=@t
     (scot %ux (mug [uih uij vjs tjs ojs icon pjs manifest-json icon-192-b64 icon-512-b64]))
   ::  PV versions the RENDERED reader documents (their inline css + scripts).
@@ -9524,7 +10003,7 @@
       ver
       '";var PV="'
       pv
-      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){e.waitUntil(caches.open(V).then(function(c){return Promise.all(SHELL.map(function(u){return c.add(u).catch(function(){})}))}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var nu=(u.pathname==="/apps/lattice/app/app.js")?(u.origin+u.pathname+"?v="+V):q;return fetch(nu).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone());return r}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=q.url+(q.url.indexOf("?")<0?"?":"&")+"u=sw"+Date.now();e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){e.waitUntil(caches.open(V).then(function(c){return Promise.all(SHELL.map(function(u){return c.add(u).catch(function(){})}))}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var nu=(u.pathname==="/apps/lattice/app/app.js")?(u.origin+u.pathname+"?v="+V):q;return fetch(nu).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=q.url+(q.url.indexOf("?")<0?"?":"&")+"u=sw"+Date.now();e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
@@ -9569,10 +10048,12 @@
 ::  fresh — the regime's rule is that only a first-ever view, or the first
 ::  after eviction, is slow.
 ::
+::  A refetch answered 401 or 403 means the session is gone, and the whole
+::  pages cache goes with it, not only this document.
 ++  page-cache-script
   ^-  tape
   %-  trip
-  '<script>(function(){if(!("caches"in window)||!window.indexedDB)return;var PN=location.pathname;if(PN==="/apps/lattice/clip"||PN==="/apps/lattice/share")return;var BUDGET=(+localStorage.latCacheBudget)||200*1024*1024;var canon=(function(){var h=location.href.split("#")[0];var i=h.indexOf("?");if(i<0)return h;var q=h.slice(i+1).split("&").filter(function(s){return s.slice(0,2)!=="u="});return q.length?h.slice(0,i)+"?"+q.join("&"):h.slice(0,i)})();function idb(){return new Promise(function(res,rej){var r=indexedDB.open("lattice-lru",1);r.onupgradeneeded=function(){r.result.createObjectStore("e",{keyPath:"url"})};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}function tx(db,mode,fn){return new Promise(function(res,rej){var t=db.transaction("e",mode);fn(t.objectStore("e"));t.oncomplete=function(){res()};t.onerror=function(){rej(t.error)}})}function touch(url,size){return idb().then(function(db){return tx(db,"readwrite",function(st){var g=st.get(url);g.onsuccess=function(){var e=g.result||{url:url,size:0};e.at=Date.now();if(size)e.size=size;st.put(e)}})}).catch(function(x){})}function evict(){return idb().then(function(db){var all=[];return tx(db,"readonly",function(st){st.openCursor().onsuccess=function(ev){var c=ev.target.result;if(c){all.push(c.value);c.continue()}}}).then(function(){var total=all.reduce(function(a,e){return a+(e.size||0)},0);if(total<=BUDGET)return;all.sort(function(a,b){return(a.at||0)-(b.at||0)});return caches.open("lattice-pages").then(function(c){var i=0;function step(){if(i>=all.length||total<=BUDGET)return;var e=all[i++];total-=(e.size||0);return c.delete(e.url).then(function(){return tx(db,"readwrite",function(st){st.delete(e.url)})}).then(step)}return step()})})}).catch(function(x){})}var swReady=("serviceWorker"in navigator)?Promise.race([navigator.serviceWorker.ready.catch(function(){}),new Promise(function(r){setTimeout(r,3000)})]):Promise.resolve();var shown=null;caches.open("lattice-pages").then(function(c){return c.match(canon)}).then(function(r){return r?r.text():null}).then(function(t){shown=t}).catch(function(x){});function strip(t){return t.replace(/var REV="[^"]*"/,"")}function drop(){return caches.open("lattice-pages").then(function(c){return c.delete(canon)}).then(function(){return idb()}).then(function(db){return tx(db,"readwrite",function(st){st.delete(canon)})}).catch(function(x){})}var inflight=null;function refresh(force){if(inflight&&!force)return inflight;var p=swReady.then(function(){return fetch(location.href,{credentials:"same-origin",cache:"no-store",headers:{"x-lattice-bg":"1"}}).then(function(r){if(r.redirected||r.status===403||r.status===404||r.status===410){return drop().then(function(){return false})}if(!r.ok)return false;return r.blob().then(function(body){return caches.open("lattice-pages").then(function(c){return body.text().then(function(nt){var chg=shown===null||strip(shown)!==strip(nt);if(shown===null)shown=nt;return c.put(canon,new Response(body,{status:200,headers:{"content-type":r.headers.get("content-type")||"text/html"}})).then(function(){return touch(canon,body.size)}).then(evict).then(function(){return{ok:true,chg:chg}})})})})})}).catch(function(x){return false}).then(function(ok){if(inflight===p)inflight=null;return ok});inflight=p;return p}window.__latRefresh=refresh;window.__latCanon=canon;touch(canon,0);var last=Date.now();addEventListener("pointerdown",function(){last=Date.now()},true);addEventListener("keydown",function(){last=Date.now()},true);var nav0=performance.getEntriesByType("navigation")[0];var fresh=!!(nav0&&nav0.transferSize>0);var IDLE=fresh?12000:8000;var CAP=fresh?45000:20000;var t0=Date.now();var iv=setInterval(function(){if(Date.now()-last>IDLE||Date.now()-t0>CAP){clearInterval(iv);refresh()}},500);var oic=/Chrome\//.test(navigator.userAgent);if(fresh&&oic){swReady.then(function(){return fetch(location.href,{cache:"only-if-cached",mode:"same-origin",credentials:"same-origin"})}).then(function(r){if(!r.ok||r.redirected)throw 0;return r.blob()}).then(function(body){return body.text().then(function(nt){shown=nt;return caches.open("lattice-pages").then(function(c){return c.put(canon,new Response(body,{status:200,headers:{"content-type":"text/html"}}))}).then(function(){return touch(canon,body.size)})})}).then(function(){clearInterval(iv)}).catch(function(x){})}})();</script>'
+  '<script>(function(){if(!("caches"in window)||!window.indexedDB)return;var PN=location.pathname;if(PN==="/apps/lattice/clip"||PN==="/apps/lattice/share")return;var BUDGET=(+localStorage.latCacheBudget)||200*1024*1024;var canon=(function(){var h=location.href.split("#")[0];var i=h.indexOf("?");if(i<0)return h;var q=h.slice(i+1).split("&").filter(function(s){return s.slice(0,2)!=="u="});return q.length?h.slice(0,i)+"?"+q.join("&"):h.slice(0,i)})();function idb(){return new Promise(function(res,rej){var r=indexedDB.open("lattice-lru",1);r.onupgradeneeded=function(){r.result.createObjectStore("e",{keyPath:"url"})};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}function tx(db,mode,fn){return new Promise(function(res,rej){var t=db.transaction("e",mode);fn(t.objectStore("e"));t.oncomplete=function(){res()};t.onerror=function(){rej(t.error)}})}function touch(url,size){return idb().then(function(db){return tx(db,"readwrite",function(st){var g=st.get(url);g.onsuccess=function(){var e=g.result||{url:url,size:0};e.at=Date.now();if(size)e.size=size;st.put(e)}})}).catch(function(x){})}function evict(){return idb().then(function(db){var all=[];return tx(db,"readonly",function(st){st.openCursor().onsuccess=function(ev){var c=ev.target.result;if(c){all.push(c.value);c.continue()}}}).then(function(){var total=all.reduce(function(a,e){return a+(e.size||0)},0);if(total<=BUDGET)return;all.sort(function(a,b){return(a.at||0)-(b.at||0)});return caches.open("lattice-pages").then(function(c){var i=0;function step(){if(i>=all.length||total<=BUDGET)return;var e=all[i++];total-=(e.size||0);return c.delete(e.url).then(function(){return tx(db,"readwrite",function(st){st.delete(e.url)})}).then(step)}return step()})})}).catch(function(x){})}var swReady=("serviceWorker"in navigator)?Promise.race([navigator.serviceWorker.ready.catch(function(){}),new Promise(function(r){setTimeout(r,3000)})]):Promise.resolve();var shown=null;caches.open("lattice-pages").then(function(c){return c.match(canon)}).then(function(r){return r?r.text():null}).then(function(t){shown=t}).catch(function(x){});function strip(t){return t.replace(/var REV="[^"]*"/,"")}function drop(){return caches.open("lattice-pages").then(function(c){return c.delete(canon)}).then(function(){return idb()}).then(function(db){return tx(db,"readwrite",function(st){st.delete(canon)})}).catch(function(x){})}function wipe(){return caches.delete("lattice-pages").then(function(){try{indexedDB.deleteDatabase("lattice-lru")}catch(x){}}).catch(function(x){})}var inflight=null;function refresh(force){if(inflight&&!force)return inflight;var p=swReady.then(function(){return fetch(location.href,{credentials:"same-origin",cache:"no-store",headers:{"x-lattice-bg":"1"}}).then(function(r){if(r.status===401||r.status===403){return wipe().then(function(){return false})}if(r.redirected||r.status===404||r.status===410){return drop().then(function(){return false})}if(!r.ok)return false;return r.blob().then(function(body){return caches.open("lattice-pages").then(function(c){return body.text().then(function(nt){var chg=shown===null||strip(shown)!==strip(nt);if(shown===null)shown=nt;return c.put(canon,new Response(body,{status:200,headers:{"content-type":r.headers.get("content-type")||"text/html"}})).then(function(){return touch(canon,body.size)}).then(evict).then(function(){return{ok:true,chg:chg}})})})})})}).catch(function(x){return false}).then(function(ok){if(inflight===p)inflight=null;return ok});inflight=p;return p}window.__latRefresh=refresh;window.__latCanon=canon;touch(canon,0);var last=Date.now();addEventListener("pointerdown",function(){last=Date.now()},true);addEventListener("keydown",function(){last=Date.now()},true);var nav0=performance.getEntriesByType("navigation")[0];var fresh=!!(nav0&&nav0.transferSize>0);var IDLE=fresh?12000:8000;var CAP=fresh?45000:20000;var t0=Date.now();var iv=setInterval(function(){if(Date.now()-last>IDLE||Date.now()-t0>CAP){clearInterval(iv);refresh()}},500);var oic=/Chrome\//.test(navigator.userAgent);if(fresh&&oic){swReady.then(function(){return fetch(location.href,{cache:"only-if-cached",mode:"same-origin",credentials:"same-origin"})}).then(function(r){if(!r.ok||r.redirected)throw 0;return r.blob()}).then(function(body){return body.text().then(function(nt){shown=nt;return caches.open("lattice-pages").then(function(c){return c.put(canon,new Response(body,{status:200,headers:{"content-type":"text/html"}}))}).then(function(){return touch(canon,body.size)})})}).then(function(){clearInterval(iv)}).catch(function(x){})}})();</script>'
 ::  +nav-script: contextual back/forward + the hamburger. The stack is the
 ::  TAB's own (sessionStorage), indexed by a latI stamped into history.state
 ::  so a traversal is told apart from a new navigation: a load carrying latI
@@ -9689,12 +10170,30 @@
 ++  plain-content
   |=  [src=@t pax=path]
   ^-  ?
-  ?:  &(?=(^ pax) =(src (make-folder-index pax)))  &
+  |((folder-index-src src pax) ?=(^ (plain-body src)))
+++  folder-index-src
+  |=  [src=@t pax=path]
+  ^-  ?
+  &(?=(^ pax) =(src (make-folder-index pax)))
+::  +plain-body: the builder and body of a content page, when its source
+::  is exactly the shell +wrap-content writes around a known builder.
+::
+++  plain-body
+  |=  src=@t
+  ^-  (unit [builder=@tas body=@t])
   =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
-  ?~  un  |
-  ?&  (~(has in content-builders) builder.u.un)
-      =(src (wrap-content builder.u.un body.u.un))
-  ==
+  ?~  un  ~
+  ?.  (~(has in content-builders) builder.u.un)  ~
+  ?.  =(src (wrap-content builder.u.un body.u.un))  ~
+  un
+::  +content-shell: the page gate of a content page with the body as its
+::  outer sample, so the evaluator compiles a few lines whatever the size.
+::  The inner gate is +content-env-pre, the same gate the stored source is.
+::
+++  content-shell
+  |=  builder=@tas
+  ^-  @t
+  (crip :(weld "|=  body=@t  " content-env-pre (trip builder) " body)"))
 ::  +lock-road: the edit-lock marker of page `rel`. It sits under /lock,
 ::  outside the page dir, so a peer's make grant on the page cannot reach
 ::  it.
@@ -9857,6 +10356,33 @@
   ?:  (~(has by fils) %code)  [[rel &] kids]
   ?~  rel  kids
   [[rel |] kids]
+::  +collect-visible: +collect-tree for a listing that others read, as the
+::  data of the page that lists it. A page is listed only when it is shared
+::  at least as widely as that page, and nothing marked sensitive is
+::  listed unless that page is sensitive too. A folder is listed when
+::  something under it is, or in a private listing, which only the owner
+::  and keys read. An index on a published page used to name every private
+::  and sensitive page under its folder (security audit run-1).
+++  collect-visible
+  |=  [b=ball:tarball rel=path mode=share-mode:le sens=?]
+  ^-  (list [pax=path page=?])
+  =/  fils  ?~(fil.b ~ contents.u.fil.b)
+  ?:  &(!sens (~(has by fils) %sensitive))  ~
+  =/  kids=(list [pax=path page=?])
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=  [nom=@ta kid=ball:tarball]
+    (collect-visible kid (weld rel /[nom]) mode sens)
+  ?:  (~(has by fils) %code)
+    ?.  (gte (share-rank (fils-share fils)) (share-rank mode))  kids
+    [[rel &] kids]
+  ?~  rel  kids
+  ?:  |(?=(%private mode) ?=(^ kids))  [[rel |] kids]
+  kids
+++  share-rank
+  |=  s=share-mode:le
+  ^-  @ud
+  ?-(s %private 0, %shared 1, %clearweb 2)
 ::  +home-css: styling for the landing (nav cards + lists).
 ::
 ++  home-css
@@ -9900,11 +10426,16 @@
 ::
 ::  The sender is the article page, so its origin is arbitrary and cannot be
 ::  whitelisted. What IS checked is that the message came from window.opener,
-::  and the payload shape. Worth being clear about the residual exposure: a
-::  hostile page the user clicks the bookmarklet on could send content other
-::  than what is displayed. That is the same trust as /clip (junk in your own
-::  tree, nothing disclosed), but here the content is arbitrary rather than
-::  fetched, so it is a step further.
+::  and the payload shape. The archive is filed under the claimed url only
+::  when that url has the sender's real origin, else under the sender's
+::  origin, so a page cannot file its content as another site's.
+::
+::  Any site can open this page, so nothing is saved until the owner clicks
+::  Archive under the sender's origin and size. The first message is the
+::  one shown. The bookmarklet repeats it until this page answers, and the
+::  repeats are ignored, so the body cannot change under the click. A
+::  hostile page the user does send could still send content other than
+::  what is displayed: junk in your own tree, nothing disclosed.
 ++  clip-paste-html
   |=  url=@t
   ^-  @t
@@ -9916,7 +10447,7 @@
     "<div id=\"pst\" class=\"muted\">waiting for the page&hellip;</div>"
     "<script>"
     %-  trip
-    '(function(){var out=document.getElementById("pst");var p=new URLSearchParams(location.search);var u=p.get("url")||"";var done=false;function show(m,bad){out.textContent=m;out.className=bad?"err":"";}function send(html){if(done)return; done=true;show("archiving…");fetch("/apps/lattice/clip-html?url="+encodeURIComponent(u),{method:"POST",body:html}).then(function(r){if(r.ok){return r.text().then(function(t){document.open();document.write(t);document.close();});}return r.json().catch(function(){return{}}).then(function(j){show("could not archive"+(j.error?": "+j.error:" ("+r.status+")"),true);});}).catch(function(){show("could not archive (network error)",true);});}window.addEventListener("message",function(e){if(e.source!==window.opener)return;var d=e.data;if(!d||d.lattice!==1||typeof d.html!=="string")return;send(d.html);});try{if(window.opener)window.opener.postMessage({lattice:"ready"},"*");}catch(x){}setTimeout(function(){if(!done)show("nothing arrived from the page — try the bookmarklet again",true);},15000);})();'
+    '(function(){var out=document.getElementById("pst");var p=new URLSearchParams(location.search);var u=p.get("url")||"";var done=false;var got=false;var tm;function show(m,bad){out.textContent=m;out.className=bad?"err":"";}function send(html,src){if(done)return; done=true;show("archiving…");fetch("/apps/lattice/clip-html?url="+encodeURIComponent(src),{method:"POST",body:html}).then(function(r){if(r.ok){return r.text().then(function(t){document.open();document.write(t);document.close();});}return r.json().catch(function(){return{}}).then(function(j){show("could not archive"+(j.error?": "+j.error:" ("+r.status+")"),true);});}).catch(function(){show("could not archive (network error)",true);});}function ask(html,src,o){got=true;clearTimeout(tm);show("");var q=document.createElement("p");q.textContent=o+" sent a page ("+Math.ceil(html.length/1024)+" KB). Archive it?";var y=document.createElement("button");y.type="button";y.className="btn";y.textContent="Archive";var n=document.createElement("button");n.type="button";n.className="btn";n.textContent="Cancel";y.onclick=function(){y.disabled=true;n.disabled=true;send(html,src);};n.onclick=function(){done=true;y.disabled=true;n.disabled=true;show("not archived");};out.appendChild(q);out.appendChild(y);out.appendChild(document.createTextNode(" "));out.appendChild(n);}window.addEventListener("message",function(e){if(got||e.source!==window.opener)return;var d=e.data;if(!d||d.lattice!==1||typeof d.html!=="string")return;var o=e.origin;if(!/^https?:/.test(o)){show("only an http or https page can be archived",true);return;}var c="";try{c=new URL(u).origin}catch(x){}ask(d.html,c===o?u:o+"/",o);});try{if(window.opener)window.opener.postMessage({lattice:"ready"},"*");}catch(x){}tm=setTimeout(function(){if(!got)show("nothing arrived from the page — try the bookmarklet again",true);},15000);})();'
     "</script>"
   ==
 ::  +settings-html: the settings page. Search-index maintenance, the browser
@@ -9967,7 +10498,7 @@
     ::  backup: manual export/restore for everyone, plus (desktop only) the
     ::  scheduled backups. The whole UI is rendered by ui-app/vault.js's
     "<h2>Commons mirror</h2>"
-    "<p class=\"muted\">Mirrors your pages, notes, tags and follows into the %obelisk database, where you (and your agents) can query across apps with urQL. Optional: without %obelisk everything else works unchanged.</p>"
+    "<p class=\"muted\">Mirrors your pages, notes, tags, follows and browsing history into the %obelisk database, where you (and your agents) can query across apps with urQL. Turning it off deletes that copy. Optional: without %obelisk everything else works unchanged.</p>"
     "<p><span id=\"obst\" class=\"muted\">checking&hellip;</span></p>"
     "<p><button type=\"button\" id=\"obinst\" class=\"btn\" hidden>Install %obelisk</button> "
     "<label for=\"obon\" id=\"obonl\" hidden><input type=\"checkbox\" id=\"obon\"> mirror enabled</label></p>"
@@ -10377,20 +10908,24 @@
 ::  back to +app-base, which is wrong for a desk install (clearweb links,
 ::  public forms and live reload all went to the wrong path).
 ::
-::  Veto-tolerant, falling back to +app-base. An install that refuses the
-::  /sys/link road keeps every local feature and loses only live reload and
-::  clearweb links, and an app-tier install gets the right answer from the
-::  fallback alone.
+::  Veto-tolerant, falling back to +desk-base, where lattice installs. An
+::  install that refuses the /sys/link road keeps every local feature. The
+::  fallback was +app-base, the old app-tier place, which is retired now
+::  (+retire-old-app), so grants made there would reach a tree that is gone.
 ::
 ++  self-base
   =/  m  (fiber:fiber:nexus ,path)
   ^-  form:m
   ;<  vw=(unit view:nexus)  bind:m
     (peek-soft:io [%& %& /sys/link/lattice %'dest.lanes'] ~)
-  ?.  ?=([~ %file *] vw)  (pure:m app-base:lu)
-  ::  our own row is a DIRECTORY lane; a file lane is ignored
-  =/  dirs=(list path)  (lane-dirs:lu (sang-noun:tarball sang.u.vw))
-  ?~  dirs  (pure:m app-base:lu)
+  ?.  ?=([~ %file *] vw)  (pure:m desk-base:lu)
+  ::  our own row is a DIRECTORY lane; a file lane is ignored. Any app may
+  ::  claim the name lattice, and the head of the list is whoever claimed
+  ::  it first, so only a place lattice installs at is taken.
+  =/  dirs=(list path)
+    %+  skim  (lane-dirs:lu (sang-noun:tarball sang.u.vw))
+    |=(d=path ?=(^ (find ~[d] peer-bases:lu)))
+  ?~  dirs  (pure:m desk-base:lu)
   (pure:m i.dirs)
 ::  +keep-url: grubbery's native keep-SSE endpoint for one of our grubs.
 ::  Takes the base because it is a URL, not a road - see +self-base.
@@ -10591,6 +11126,110 @@
   ?~  fil.dst  fil.src
   ?~  fil.src  fil.dst
   `u.fil.dst(contents (~(uni by contents.u.fil.dst) contents.u.fil.src))
+::  +retire-old-app: the old app-tier instance, retired once it is carried.
+::
+::    The tree at /apps/lattice.lattice_app outlived the move to a desk, and
+::    so did every grant made on it. Unshare, delete, unpublish and a ban
+::    act on the desk's paths, so a peer kept whatever the old tree gave it
+::    (security audit run-1, owner decision 2). Once the carry has run, this
+::    keeps a snapshot of the old tree here, takes every road under the old
+::    place out of every sharing group, deletes the old tree, and marks
+::    itself done.
+::
+::    The snapshot is one noun grub, never pages, so nothing in it compiles.
+::    It is written once, so a second try after a partial delete cannot
+::    replace it with less. Each step is soft. A refused road leaves a
+::    fault saying so and the marker unset, so granting it and reloading
+::    finishes the job.
+::
+++  retire-old-app
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  done=(unit json)  bind:m  (peek-as:io (rf up / %'retired.json') ,json)
+  ?:  ?=([~ %b %.y] done)  (pure:m ~)
+  ;<  carried=(unit json)  bind:m  (peek-as:io (rf up / %'carried.json') ,json)
+  ?.  ?=([~ %b %.y] carried)  (pure:m ~)
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| app-base:lu] ~)
+  ?~  vw
+    %:  fault  'retire-road'  2
+      "lattice: the old copy at {(spud app-base:lu)} cannot be read, so it is not retired; grant lattice's permits, then reload"
+      ~
+    ==
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    ?.  ?=([%ball *] u.vw)  (pure:n ~)
+    ;<  had=(unit *)  bind:n  (peek-as:io (rf up /retired %'old-app') ,*)
+    ?:  ?=([~ ^] had)  (pure:n ~)
+    (over:io (rf up /retired %'old-app') [[/ %noun] (ball-to-bole:tarball ball.u.vw)])
+  ;<  rok=?  bind:m  revoke-old-roads
+  ;<  cok=?  bind:m
+    ?.  ?=([%ball *] u.vw)  (pure:(fiber:fiber:nexus ,?) &)
+    (cull-old-app ball.u.vw)
+  ?.  &(rok cok)
+    %:  fault  'retire-road'  2
+      "lattice: the old copy at {(spud app-base:lu)} is not fully retired: {?:(rok "" "its grants could not all be revoked. ")}{?:(cok "" "it could not be deleted. ")}Grant lattice's permits, then reload"
+      ~
+    ==
+  ;<  ~  bind:m  (fault-clear ~['retire-road'])
+  %-  (say 1 ~[leaf+"lattice: retired the old copy at {(spud app-base:lu)}, keeping a snapshot at /retired/old-app"])
+  (over:io (rf up / %'retired.json') [[/ %json] `json`[%b %.y]])
+::  +revoke-old-roads: drop every road under +app-base from every sharing
+::  group's weir. %.n when a group could not be read or written.
+::
+++  revoke-old-roads
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
+  ?~  vw  (pure:m |)
+  ?.  ?=([%ball *] u.vw)  (pure:m &)
+  =/  gs=(list [rel=path gb=ball:tarball])  (all-groups / ball.u.vw)
+  =/  old
+    |=  r=road:tarball
+    ^-  ?
+    ?.  ?=(%& -.r)  |
+    =/  pax=path  ?:(?=(%| -.p.r) p.p.r path.p.p.r)
+    =(app-base:lu (scag (lent app-base:lu) pax))
+  =/  keep
+    |=  rs=(set road:tarball)
+    ^-  (set road:tarball)
+    (~(gas in *(set road:tarball)) (skip ~(tap in rs) old))
+  =/  ok=?  &
+  |-  ^-  form:m
+  ?~  gs  (pure:m ok)
+  =/  fils  ?~(fil.gb.i.gs ~ contents.u.fil.gb.i.gs)
+  =/  hw  (~(get by fils) %'how.weir')
+  =/  w=(unit weir:nexus)
+    ?~  hw  ~
+    (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hw))))
+  ?~  w  $(gs t.gs)
+  =/  nw=weir:nexus  [(keep make.u.w) (keep poke.u.w) (keep peek.u.w)]
+  ?:  =(nw u.w)  $(gs t.gs)
+  ;<  wrote=?  bind:m
+    (ug-over [%& %& (weld ug-base rel.i.gs) %'how.weir'] [[/ %weir] nw])
+  $(gs t.gs, ok &(ok wrote))
+::  +cull-old-app: delete the old tree. The whole tree in one cull when our
+::  road covers it, else what is in it: its root's grubs one by one and
+::  each subtree in one cull, since a directory's own entry belongs to its
+::  parent (see +carry-old-data). An empty directory left behind holds
+::  nothing and grants nothing.
+::
+++  cull-old-app
+  |=  old=ball:tarball
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  e=(unit tang)  bind:m  (cull-soft:io [%& %| app-base:lu])
+  ?~  e  (pure:m &)
+  =/  fis=(list @ta)  ?~(fil.old ~ ~(tap in ~(key by contents.u.fil.old)))
+  =/  dis=(list @ta)  ~(tap in ~(key by dir.old))
+  =/  ok=?  &
+  |-  ^-  form:m
+  ?^  fis
+    ;<  f=(unit tang)  bind:m  (cull-soft:io [%& %& app-base:lu i.fis])
+    $(fis t.fis, ok &(ok ?=(~ f)))
+  ?~  dis  (pure:m ok)
+  ;<  d=(unit tang)  bind:m  (cull-soft:io [%& %| (snoc app-base:lu i.dis)])
+  $(dis t.dis, ok &(ok ?=(~ d)))
 ::  +mark-carried: flip the marker, so this never runs twice.
 ::
 ++  mark-carried
@@ -10738,9 +11377,11 @@
   ^-  (unit @t)
   =/  nd  (~(get by fils) %name)
   ?~  nd  ~
-  =/  j=(unit json)  (mole |.(;;(json (sang-noun:tarball sang.u.nd))))
-  ?.  ?=([~ %s *] j)  ~
-  `p.u.j
+  ::  the shape alone, with no json clam: a name is [%s cord], and a noun a
+  ::  peer wrote here could be vast to a clam yet small on the wire
+  =/  n=*  (sang-noun:tarball sang.u.nd)
+  ?.  ?=([%s @] n)  ~
+  `(@t +.n)
 ::  +fils-share: a page's share mode from its dir's grubs, %private when it
 ::  has none or it does not read (a boom is no grant).
 ++  fils-share
@@ -11048,6 +11689,9 @@
     ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
     ::  cull tombs the grub (gain=%.y keeps the body in born history). Drop its
     ::  index row so it's no longer live. No trash row. Pages have no restore.
+    ::  The history goes first: the /public peek grant covers this path, and
+    ::  a peek at an old case read the last published body after the cull.
+    ;<  ~  bind:m  (prune-hist road 0 ~s0)
     ;<  ~  bind:m  (cull:io road)
     ::  No tombstone binding: a subscriber learns of the delete from the
     ::  page leaving the revision list (+sub-apply-wave).
@@ -12371,11 +13015,23 @@
   ?~  v  (pure:m %.n)
   ?.  ?=([%b *] u.v)  (pure:m %.n)
   (pure:m p.u.v)
+::  +read-beacon-val: the content beacon and the memory beacon in one
+::  number, so a memory delete wakes a pass as a page delete does.
+::  Memory actions bump only /beacon/know, which readers do not reload
+::  on.
+::
 ++  read-beacon-val
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
+  ;<  rev=@ud  bind:m  (read-beacon %rev)
+  ;<  kno=@ud  bind:m  (read-beacon %know)
+  (pure:m (add rev (lsh [3 16] kno)))
+++  read-beacon
+  |=  sub=@ta
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  vw=view:nexus  bind:m  (peek:io (rf up /beacon %rev) ~)
+  ;<  vw=view:nexus  bind:m  (peek:io (rf up /beacon sub) ~)
   ?.  ?=([%file *] vw)  (pure:m 0)
   =/  jon=json  (fall (mole |.(!<(json (need-vase:tarball sang.vw)))) ~)
   ?.  ?=([%n *] jon)  (pure:m 0)
@@ -12415,9 +13071,17 @@
 ::  cursor state must zero: a missing table that now exists is a wipe
 ::  or a first run, and either way its rows need a backfill). ~ = the
 ::  desk is absent or unresponsive; the loop sleeps long. Probes run
-::  BEFORE creates so a wiped store still shows its missing tables.
-::  Creates ride ONE POKE EACH, expected already-exists errors
+::  BEFORE the table creates so a wiped store still shows its missing
+::  tables. Creates ride ONE POKE EACH, expected already-exists errors
 ::  swallowed (a joined script would abort at the first live table).
+::  The database is created FIRST, before any probe. Without it every
+::  probe fails with the same "database does not exist" error, and
+::  +poll-nonce sees a repeat of the slot's last answer as no answer,
+::  so each probe timed out and the bootstrap read %unclear forever.
+::  Turning the mirror off drops the database (+mirror-purge), so that
+::  was every off and on. A missing TABLE's error names the table.
+::  ponytail: one extra poke per pass. Probe the database alone if
+::  passes ever get frequent.
 ::
 ::  +probe-verdict: what one probe learned. %yes = the table answered.
 ::  %no = the engine rejected the statement, which for a bare SELECT
@@ -12486,11 +13150,11 @@
 ++  mirror-bootstrap
   =/  m  (fiber:fiber:nexus ,boot-verdict)
   ^-  form:m
+  ;<  *  bind:m  (mirror-run create-db-urql:lm)
   ;<  first=(list probe-verdict)  bind:m  probe-tables
   ?:  (levy first |=(f=probe-verdict =(%yes f)))  (pure:m [%ok *(set @ud)])
   ?:  (lien first |=(f=probe-verdict =(%dunno f)))  (pure:m [%unclear ~])
-  ;<  *  bind:m  (mirror-run create-db-urql:lm)
-  ;<  ~  bind:m  (run-creates create-list:lm)
+  ;<  bad=(set @ud)  bind:m  (run-creates create-list:lm)
   ;<  again=(list probe-verdict)  bind:m  probe-tables
   ::  every table still missing after the creates reads as an absent
   ::  or unresponsive desk. A MIXED re-probe is a partial recovery:
@@ -12508,17 +13172,13 @@
   ::  present, zeroed nothing, and left the freshly created tables
   ::  permanently empty with no tick able to notice. Carry the set
   ::  through and let a failed write set the retry flag instead.
-  ::  zero only what the FIRST probe positively found missing. %dunno
-  ::  cannot reach here (the guard above returned), so this is a real
-  ::  engine "no such table".
-  =/  fresh=(set @ud)
-    =|  s=(set @ud)
-    =/  fl=(list probe-verdict)  first
-    =/  i=@ud  0
-    |-  ^-  (set @ud)
-    ?~  fl  s
-    $(fl t.fl, i +(i), s ?:(=(%no i.fl) (~(put in s) i) s))
-  (pure:m [%ok fresh])
+  ::  zero only what the FIRST probe found missing and its CREATE did not
+  ::  find present. %dunno cannot reach here (the guard above returned).
+  ::  An engine error on a probe is not proof on its own: another
+  ::  caller's error can land on our subscription, and zeroing a live
+  ::  table's cursor strands its pending tombstones (+fresh-of:lm).
+  %-  pure:m
+  [%ok (fresh-of:lm (turn first |=(f=probe-verdict =(%no f))) bad)]
 ::  v1 cleanup is a RUNBOOK STEP, not resident code: the automated
 ::  version crashed the reconciler into a respawn storm and a
 ::  once-per-ship cleanup never earned that risk. The statements live
@@ -12545,13 +13205,21 @@
   ?:  live  (pure:m %.y)
   ;<  r=obk-out:lm  bind:m  (obelisk-run-tries mirror-db:lm "SELECT 1;" 40)
   (pure:m ?=(%& -.r))
+::  +run-creates: the indices whose CREATE failed outright, which says
+::  the table was there (+fresh-of:lm). An unanswered create is not
+::  counted.
+::
 ++  run-creates
   |=  creates=(list tape)
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,(set @ud))
   ^-  form:m
-  ?~  creates  (pure:m ~)
-  ;<  *  bind:m  (mirror-run i.creates)
-  (run-creates t.creates)
+  =/  i=@ud  0
+  =|  bad=(set @ud)
+  |-  ^-  form:m
+  ?~  creates  (pure:m bad)
+  ;<  r=obk-out:lm  bind:m  (mirror-run i.creates)
+  =?  bad  &(?=(%| -.r) !(is-silent r))  (~(put in bad) i)
+  $(creates t.creates, i +(i))
 ::  +zero-fresh: reset the cursor state of tables that were missing at
 ::  probe time, so the pass backfills them. Index order matches
 ::  +probe-urqls: pages knows tags follows visits docs.
@@ -12736,16 +13404,23 @@
   ^-  form:m
   ;<  rows=(list [url=@t stamp=@ r=visit-row:lm])  bind:m  visit-rows
   ::  the cursor keeps ONLY the current history window, so it stays
-  ::  bounded by the history cap. A url that rotated out and comes back
-  ::  reads as new: its INSERT fails quietly on the surviving row and
-  ::  the UPDATE beside it (changed includes new) repairs the values.
-  ::  Rows already mirrored for rotated-out entries persist untouched,
-  ::  the best-effort stance of the seen tables.
+  ::  bounded by the history cap. A url that left the window since the
+  ::  last landed pass, by expiry, the cap, a forget or a clear, has its
+  ::  row deleted, so the copy keeps no more history than the owner does
+  ::  (security audit run-1).
   =/  nxt=(map @t @)
     (malt (turn rows |=([url=@t stamp=@ *] [url stamp])))
+  =/  dels=(list tape)
+    %+  visit-deletes:lm
+      %+  murn  ~(tap in ~(key by visits.cur))
+      |=  u=@t
+      ?:  (~(has by nxt) u)  ~
+      (parse-urb-url:lu u)
+    (turn rows |=([* * r=visit-row:lm] [ship.r pax.r]))
   =/  changed=(list [url=@t stamp=@ r=visit-row:lm])
     (skim rows |=([url=@t stamp=@ *] !=(`(unit @)`[~ stamp] (~(get by visits.cur) url))))
   =/  ups=(list tape)
+    %+  weld  dels
     (turn changed |=([* * r=visit-row:lm] (visit-update:lm r)))
   =/  ins=(list tape)
     %+  turn
@@ -12767,28 +13442,34 @@
   ;<  vis=[ok=? cur=mirror-cursor:lm]  bind:m  (mirror-visits cur.fol)
   ;<  ~  bind:m  (write-mirror-cursor cur.vis)
   (pure:m [&(ok.pag ok.kno ok.fol ok.vis) cur.vis])
-::  +obelisk-ensure: install %obelisk from its publisher when the agent
-::  is not running here. Presence is a gall liveness scry, never a poke
-::  at the agent: a poke at an absent agent is neither acked nor refused
-::  and would wedge this fiber. The install poke is the one the settings
-::  button fires; kiln makes it a no-op while a sync already exists, so
-::  a slow first download and a later boot do not fight. A desk that
-::  has a source from another ship is never touched (see below).
+::  +mirror-purge: drop the copy once the owner has turned the mirror
+::  off. DROP DATABASE is the only urQL that leaves nothing for AS OF
+::  reads, where a DELETE or a tombstone keeps every row. The cursor is
+::  zeroed with it, so turning the mirror back on copies everything
+::  afresh. Nothing mirrored, nothing to drop. %obelisk not running or
+::  no answer: the flag stays and the next tick tries again. Its own
+::  running check, since the loop's comes after the enabled flag.
 ::
-++  obelisk-ensure
+++  mirror-purge
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  pj=(unit json)  bind:m  (peek-as:io (rf up /mirror %'purge.json') ,json)
+  ?.  ?=([~ %b %.y] pj)  (pure:m ~)
+  ;<  cur=mirror-cursor:lm  bind:m  read-mirror-cursor
   ;<  running=?  bind:m  (typed-scry:io ? %loob /gu/obelisk/$)
-  ?:  running  (pure:m ~)
-  ::  not running is not the same as absent. A desk installed from any
-  ::  publisher and merely suspended has a kiln source, and a kiln
-  ::  install would REPLACE that source with ours. Leave it alone.
-  =/  sources-mold  (map @tas (pair @p @tas))
-  ;<  srcs=(map @tas (pair @p @tas))  bind:m
-    (typed-scry:io sources-mold %noun /gx/hood/kiln/sources/noun)
-  ?:  (~(has by srcs) %obelisk)  (pure:m ~)
-  %-  (say 1 ~[leaf+"lattice: installing %obelisk for the commons mirror, from ~dister-nomryg-nilref"])
-  (gall-poke-fire %hood [%kiln-install [%obelisk ~dister-nomryg-nilref %obelisk]])
+  ?:  &(!=(cur *mirror-cursor:lm) !running)  (pure:m ~)
+  ;<  gone=?  bind:m
+    =/  n  (fiber:fiber:nexus ,?)
+    ?:  =(cur *mirror-cursor:lm)  (pure:n &)
+    ;<  r=obk-out:lm  bind:n  (mirror-run drop-db-urql:lm)
+    ?:  ?=(%& -.r)  (pure:n &)
+    ::  already gone counts. Any other error leaves the flag for a retry.
+    (pure:n ?=(^ (find "does not exist" (trip (render-tang '' p.r)))))
+  ?.  gone  (pure:m ~)
+  ;<  ~  bind:m  (write-mirror-cursor *mirror-cursor:lm)
+  ;<  ~  bind:m  (mirror-trace %purged)
+  (put-file (rf up /mirror %'purge.json') [/ %json] `json`[%b %.n])
 ::  +mirror-loop: the reconciler's life. Wake, check the enabled flag,
 ::  find whether anything changed (the beacon for content, a local
 ::  history diff for visits, which deliberately never bump the
@@ -12799,16 +13480,16 @@
 ++  mirror-loop
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ::  once per fiber life, before anything else: make sure obelisk is
-  ::  on this ship, so the mirror has a desk to talk to the moment it
-  ::  is switched on. A fresh install gets its dependency unattended.
-  ;<  ~  bind:m  obelisk-ensure
+  ::  %obelisk is installed only from the settings button, which the
+  ::  /sys/gall consent text promises. Until it is, the mirror's switch
+  ::  stays hidden and the loop below idles.
   |-
   ::  piggyback the orrery journal mirror on this behn-driven loop: it runs
   ::  on the first iteration (a boot catch-up) and on every wake thereafter,
   ::  independent of obelisk's state. A no-op (one soft peek) when orrery is
   ::  absent, so a ship without it pays almost nothing.
   ;<  ~  bind:m  orrery-journal-pass
+  ;<  ~  bind:m  mirror-purge
   ;<  on=?  bind:m  mirror-enabled
   ?.  on
     ::  a short disabled tick (one local config read) so the settings
@@ -12824,9 +13505,13 @@
   ;<  bv=@ud  bind:m  read-beacon-val
   ;<  cur=mirror-cursor:lm  bind:m  read-mirror-cursor
   ;<  vrows=(list [url=@t stamp=@ r=visit-row:lm])  bind:m  visit-rows
+  ::  idle: every row as last mirrored, and none gone, so a forget or an
+  ::  expiry wakes a pass to delete the row
   =/  visits-idle=?
-    %+  levy  vrows
-    |=([url=@t stamp=@ *] =(`(unit @)`[~ stamp] (~(get by visits.cur) url)))
+    ?&  =((lent vrows) ~(wyt by visits.cur))
+        %+  levy  vrows
+        |=([url=@t stamp=@ *] =(`(unit @)`[~ stamp] (~(get by visits.cur) url)))
+    ==
   ?:  &(=(bv beacon.cur) visits-idle !retry.cur)
     ;<  ~  bind:m  (sleep-draining ~m5)
     $

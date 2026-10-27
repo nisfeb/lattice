@@ -91,7 +91,10 @@
     // already report theirs. Offline is a state this app is built for.
     try {
       const r = await fetch(api + '/page-dump');
-      if (!r.ok) { st('tree failed' + await errText(r), false); return; }
+      if (!r.ok) {
+        if (await sessionGone(r)) return;
+        st('tree failed' + await errText(r), false); return;
+      }
       d = await r.json();
     } catch { st('tree failed (network)', false); return; }
     if (gen !== treeGen) return;   // a local patch superseded this response
@@ -195,6 +198,7 @@
     cx.className = 'cx';
     cx.textContent = folded ? '▸' : '▾';
     const lb = document.createElement('span');
+    lb.className = 'fln';
     lb.innerHTML = ico(folded ? 'folder' : 'open');
     lb.append(label);
     row.append(cx, lb);

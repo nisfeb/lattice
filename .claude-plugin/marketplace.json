@@ -4,7 +4,12 @@
   "plugins": [
     {
       "name": "lattice",
-      "source": "./plugins/claude",
+      "source": {
+        "source": "git-subdir",
+        "url": "nisfeb/lattice",
+        "path": "plugins/claude",
+        "sha": "ed5d09f5c2e6568726c18b6b078a9a40d7ff9fc0"
+      },
       "description": "Lattice on your Urbit ship as Claude's memory, and your wiki and other ships' pages as its knowledge."
     }
   ]

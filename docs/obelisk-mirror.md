@@ -144,13 +144,12 @@ an API. The conventions come first, then the tables.
    publishing into the commons prefixes its own name the same way.
 2. Ships are `@p` columns, moments are `@da` columns, synthetic keys are
    sham hashes as `@ud` decimals.
-3. Row deletion through urQL is unverified, so nothing depends on it.
-   The curated tables (`lattice-pages`, `lattice-knows`,
+3. The curated tables (`lattice-pages`, `lattice-knows`,
    `lattice-know-tags`, `lattice-follows`) carry a `live` column
    (`@ud`, 1 or 0), dead rows are tombstoned by update, and consumers
    of those tables filter `WHERE live = 1`. The seen tables
    (`lattice-docs`, `lattice-visits`) carry no `live` column, because
-   no writer can compute one (section 5, point 3).
+   no writer can compute one for `lattice-docs` (section 5, point 3). A visit row whose url leaves the history window is deleted instead (`DELETE FROM`, which answers "no rows deleted" when nothing matches). obelisk keeps every past state for `AS OF` reads, so a tombstoned or deleted row stays readable that way. Only `DROP DATABASE` leaves nothing, and turning the mirror off runs it.
 4. The database is `%lattice`. One database per publishing app keeps
    the `CREATE DATABASE` bootstrap isolated per app, on top of what the
    table prefixes already prevent.
@@ -171,8 +170,7 @@ Phase 1 and 2 tables:
    history grub (`lib/lattice-history.hoon`) keeps ONE entry per url
    with its latest visit time and hit count, capped at 500 with a two
    week ttl, so a visit row is a per-document upsert rather than an
-   event log. Rows whose source entry has expired out of the window
-   persist under the same best-effort stance as `lattice-docs`.
+   event log. A url that leaves the window, by expiry, the cap, a forget or a clear, has its row deleted on the next pass, and that removal alone wakes the pass.
 3. `lattice-knows`: `know-key` (`@t`, primary key), `updated` (`@da`),
    `live` (`@ud`). Memory bodies never leave grubs.
 4. `lattice-know-tags`: `tag-id` (`@ud`, primary key, sham of key and
@@ -241,7 +239,7 @@ change.
    domains, where the cursor's key map says exactly what was mirrored
    before: a pass diffs current keys against the map and tombstones
    the difference. The seen tables get no tombstones, as section 4
-   states.
+   states. `lattice-visits` gets deletes instead, for the urls the cursor holds that the history no longer does, and they ride the update chunks.
 4. If a chunk's `UPDATE` poke fails, the fiber replays its updates one
    row at a time, so one poisoned row costs one row. This copies the
    drip's per-item fallback, and it is required by the all-or-nothing
@@ -331,11 +329,9 @@ sequenceDiagram
    lattice feature is unaffected. Install it from the settings page
    (or `|install ~dister-nomryg-nilref %obelisk`) and enable the
    mirror there; the next pass finds a zeroed cursor and backfills.
-2. Obelisk is reinstalled empty. Every working pass starts with the
-   bootstrap's per-table probes, one `SELECT` of the primary key
-   column per mirrored table, before any schema poke, so a wiped
-   store still shows its missing tables. A table found missing gets
-   its cursor state zeroed before the pass writes. The
+   Turning the mirror off drops the `lattice` database with its history (`DROP DATABASE FORCE`) and zeroes the cursor, so turning it on again copies everything afresh.
+2. Obelisk is reinstalled empty. Every working pass starts with a `CREATE DATABASE` poke, then the bootstrap's per-table probes, one `SELECT` of the primary key column per mirrored table, before any table is created, so a wiped store still shows its missing tables. The database comes first because a probe against a missing database fails with the same error for every table, and the round trip reads a repeat of the last answer as no answer, so every probe would time out. A table found missing gets
+   its cursor state zeroed before the pass writes, unless its `CREATE TABLE` then fails outright, which says the table was there and the probe's error belonged to another caller. The
    `CREATE DATABASE` poke rides alone and its expected already-exists
    error is swallowed, never read as a failure, and the
    `CREATE TABLE` poke is a no-op against live tables (section 2,

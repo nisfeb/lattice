@@ -93,15 +93,38 @@ function parts(index) {
 // build the whole index on the ship. The first saves the index it fetched
 // for this session; the second waits for that file instead of asking
 // again. A file older than this run is a previous start's, never used.
-const shared = (sid) => path.join(os.tmpdir(), `lattice-index-${String(sid).replace(/[^\w-]/g, '')}.txt`);
+//
+// The file lives in a directory of this user's own (0700, checked before
+// use), not in the shared temp dir: there, anyone could plant a file at the
+// predictable name or a symlink for the write to follow, and the second
+// hook read it back as this session's core rules (security audit run-1).
+const uid = process.getuid ? process.getuid() : null;
+const ownedBy = (st) => uid === null || st.uid === uid;
+function handoffDir() {
+  const d = path.join(os.tmpdir(), `lattice-${uid ?? 'user'}`);
+  try { fs.mkdirSync(d, { mode: 0o700 }); } catch {}
+  try {
+    const st = fs.lstatSync(d);
+    if (!st.isDirectory() || !ownedBy(st) || (uid !== null && (st.mode & 0o077))) return null;
+  } catch { return null; }
+  return d;
+}
+const shared = (sid) => {
+  const d = handoffDir();
+  return d && path.join(d, `index-${String(sid).replace(/[^\w-]/g, '')}.txt`);
+};
 async function indexFor(n, sid) {
   if (n === 0) {
     const text = await get('know-index', { brief: '1', cap: '50000' });
-    if (sid) {
+    const f = sid && shared(sid);
+    if (f) {
       try {
-        const f = shared(sid);
-        fs.writeFileSync(f + '.tmp', text, { mode: 0o600 });
-        fs.renameSync(f + '.tmp', f);
+        // a fresh file only, never through a link
+        const t = `${f}.${process.pid}.tmp`;
+        const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants;
+        const fd = fs.openSync(t, O_WRONLY | O_CREAT | O_EXCL | (O_NOFOLLOW ?? 0), 0o600);
+        try { fs.writeSync(fd, text); } finally { fs.closeSync(fd); }
+        fs.renameSync(t, f);
       } catch {}
     }
     return text;
@@ -112,7 +135,8 @@ async function indexFor(n, sid) {
   // dropped if the first never saves (it reports the failure itself)
   while (f && Date.now() - started < 20000) {
     try {
-      if (fs.statSync(f).mtimeMs >= started - 1000) {
+      const st = fs.lstatSync(f);
+      if (st.isFile() && ownedBy(st) && st.mtimeMs >= started - 1000) {
         const text = fs.readFileSync(f, 'utf8');
         fs.rmSync(f, { force: true });
         return text;

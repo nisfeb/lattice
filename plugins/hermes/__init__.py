@@ -46,6 +46,11 @@ _PRIVATE = [ipaddress.ip_network(n) for n in
 
 def _url_problem(url: str) -> str:
     """Empty when the ship URL is allowed, else why it is refused."""
+    # urlsplit keeps a backslash, a space or a control character inside the
+    # host, where other parsers end it or drop it. Refuse them, so this rule
+    # and the client never disagree about which host they mean.
+    if any(c == "\\" or c.isspace() or ord(c) < 32 for c in url):
+        return f"lattice: the ship URL {url!r} may not hold a backslash, a space or a control character"
     try:
         parts = urllib.parse.urlsplit(url)
         host = (parts.hostname or "").rstrip(".")

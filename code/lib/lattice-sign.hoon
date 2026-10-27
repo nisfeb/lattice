@@ -30,6 +30,27 @@
   ^-  @
   (shaf %lattice (sham content))
 ::
+::  +digest-2: the preimage of a version 2 record, which /sign makes now.
+::
+::    Full width: salted SHA-256 over the content's byte length and its
+::    bytes, jammed together. Version 1 (+digest) is a 128-bit fold of a
+::    128-bit sham, so two documents with one digest cost about 2^64
+::    trials to find, and an owner who signed one had signed both
+::    (security audit run-1). The length binds trailing NUL bytes, which
+::    an atom alone does not hold. +digest stays, to check old records.
+::
+++  digest-2
+  |=  [len=@ud content=@]
+  ^-  @
+  (shas %lattice-2 (jam [len content]))
+::
+::  +digest-of: the digest a record of version `v` covers.
+::
+++  digest-of
+  |=  [v=@ud len=@ud content=@]
+  ^-  @
+  ?:(=(2 v) (digest-2 len content) (digest content))
+::
 ::  +sign-with: sign a digest with a ring. The ring never leaves the
 ::  caller; nothing here stores or logs it.
 ::
@@ -57,18 +78,22 @@
 ::    so a verifier that DOES re-derive it can catch a record whose
 ::    stated digest disagrees with its stated content.
 ::
+::    `v` is the digest construction: 2 for +digest-2, 1 for a record
+::    made before it (+digest), which carried no version.
+::
 +$  signed
   $:  =ship
       life=@ud
+      v=@ud
       digest=@
       sig=@ux
   ==
 ::
-::  +record: build the signed record for `content`.
+::  +record: build the signed record for `len` bytes of `content`.
 ::
 ++  record
-  |=  [=ship life=@ud =ring content=@]
+  |=  [=ship life=@ud =ring len=@ud content=@]
   ^-  signed
-  =/  d=@  (digest content)
-  [ship life d (sign-with ring d)]
+  =/  d=@  (digest-2 len content)
+  [ship life 2 d (sign-with ring d)]
 --

@@ -27,6 +27,9 @@ libc = "0.2"
 # property tests only. Never in a release build.
 proptest = "1.7"
 shuttle = "0.9.1"
+# the parser ureq uses, for a parity test of the ship URL rule. Already in
+# the lock through ureq.
+url = "2"
 
 # `shuttle` is a custom cfg (RUSTFLAGS='--cfg shuttle'), not a feature, so the
 # concurrency harness can never be compiled into a release build. See src/sync.rs.

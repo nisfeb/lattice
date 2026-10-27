@@ -387,7 +387,7 @@ relay/sink. A page can drive other *pages*, but can't poke arbitrary agents, mak
 There is no sandbox weir around page code. It compiles and runs with lattice's own authority. The evaluator bounds it with three rules instead.
 
 - **Dependencies stay under `/page/`.** A dep path outside the page tree is dropped and never read, so it is missing from `deps`. Build dep paths with `data-of`, `view-of` and `dir-of`.
-- **Edit-shared pages are content only.** If any sharing group holds an edit grant on a page, or on a folder above it, the page must be plain content: md, gmi, html, text, js, css, tex, or a folder index. Hand-written hoon there is not compiled, and the page's error says why. Remove the edit grant to run hoon again. Its own views are sandboxed, so a peer's html cannot run with your session.
+- **Edit-shared pages are content only.** If any sharing group holds an edit grant on a page, or on a folder above it, the page must be plain content: md, gmi, html, text, js, css, tex, or a folder index. Hand-written hoon there is not compiled, and the page's error says why. Its own views are sandboxed, so a peer's html cannot run with your session. That holds after the grant goes too: remove the edit grant, then save the page yourself to trust its source and run hoon again.
 - **Agent keys cannot save code.** A key may save md, gmi, text, tex, css and index pages. It cannot save hoon, html or js.
 
 ## Known limits (today)

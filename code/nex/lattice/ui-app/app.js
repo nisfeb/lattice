@@ -798,6 +798,27 @@
     if (r) { try { const j = await r.json(); if (j && j.error) msg = ': ' + j.error; } catch {} }
     return msg;
   };
+  // the eyre session is gone: an owner route answered 401, or 403 with the
+  // gate's bare "forbidden" (every other refusal says why). What this browser
+  // keeps of the owner's content goes, so whoever uses it next sees none of
+  // it: the tree snapshot (every page body), the last page, the pages cache
+  // and its index. The offline queue stays. It holds edits not sent yet,
+  // and dropping it would lose them.
+  const sessionGone = async (r) => {
+    if (!r || (r.status !== 401 && r.status !== 403)) return false;
+    if (r.status === 403) {
+      let e = '';
+      try { e = (await r.clone().json()).error; } catch {}
+      if (e !== 'forbidden') return false;
+    }
+    try { localStorage.removeItem('appPage'); } catch {}
+    try { await kvPut('tree', []); } catch {}
+    try { if ('caches' in window) await caches.delete('lattice-pages'); } catch {}
+    try { indexedDB.deleteDatabase('lattice-lru'); } catch {}
+    nodes = []; pageCache.clear(); renderTree();
+    st('the session has ended: log in to the ship again', false);
+    return true;
+  };
   // bulk writes (vault restore, drag-drop upload, know-import) name their
   // targets only in the POST body — no per-name bust is possible from the
   // URL, and a restore legitimately invalidates everything. Drop the whole
@@ -1692,10 +1713,53 @@
   const LMAP = { md: 'markdown', gmi: 'gemtext', html: 'markup',
                  js: 'javascript', css: 'css', hoon: 'hoon', tex: 'latex' };
   const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  // Prism runs in a worker (prism.js installs a message handler there).
+  // Some grammars scan to the end of the input from every start position
+  // when a construct is unterminated, so 32 KiB of '[' took five seconds on
+  // the main thread and froze the editor on every keystroke (security audit
+  // run-1). One job in flight, the newest text queued behind it. A job slow
+  // to answer leaves plain text painted, and past the deadline the worker
+  // is killed and the text stays plain.
+  // A fresh worker first fetches prism.js, which on the desktop goes through
+  // the bridge to the ship and can take seconds, so its first job gets a
+  // startup allowance on top of the deadline. Without it every new worker
+  // was killed before it could answer, and the editor never highlighted.
+  const HL_PLAIN = 50, HL_DEADLINE = 1500, HL_STARTUP = 10000;
+  let hlWorker = null, hlFresh = false, hlCur = null, hlNext = null, hlPlain = 0, hlKill = 0;
+  const hlDone = () => {
+    clearTimeout(hlPlain); clearTimeout(hlKill); hlCur = null;
+    if (hlNext) { const j = hlNext; hlNext = null; hlRun(j); }
+  };
+  const hlPaint = (body) => { hl.innerHTML = esc(body) + '\n'; sync(); };
+  const hlRun = (job) => {
+    // newer text while a job runs shows plain until its own turn
+    if (hlCur) { hlNext = job; hlPaint(job.body); return; }
+    if (!hlWorker) {
+      try { hlWorker = new Worker('/apps/lattice/prism.js'); } catch { hlPaint(job.body); return; }
+      hlFresh = true;
+      hlWorker.onmessage = (e) => {
+        hlFresh = false;
+        const j = hlCur;
+        if (j && j.body === src.value && j.lang === LMAP[pkind.value]) {
+          hl.innerHTML = e.data + '\n'; sync();
+        }
+        hlDone();
+      };
+      hlWorker.onerror = () => { hlWorker = null; hlDone(); };
+    }
+    hlCur = job;
+    hlPlain = setTimeout(() => hlPaint(job.body), HL_PLAIN);
+    hlKill = setTimeout(() => {
+      if (hlWorker) hlWorker.terminate();
+      hlWorker = null; hlDone();
+    }, HL_DEADLINE + (hlFresh ? HL_STARTUP : 0));
+    hlWorker.postMessage(JSON.stringify({ language: job.lang, code: job.body }));
+  };
   const render = () => {
     const lang = LMAP[pkind.value];
     const g = window.Prism && lang && Prism.languages[lang];
-    hl.innerHTML = (g ? Prism.highlight(src.value, g, lang) : esc(src.value)) + '\n';
+    if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; return; }
+    hlRun({ body: src.value, lang });
   };
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
   // per-keystroke highlight throttle: Prism re-tokenizes the WHOLE document on
@@ -2581,7 +2645,10 @@
     // already report theirs. Offline is a state this app is built for.
     try {
       const r = await fetch(api + '/page-dump');
-      if (!r.ok) { st('tree failed' + await errText(r), false); return; }
+      if (!r.ok) {
+        if (await sessionGone(r)) return;
+        st('tree failed' + await errText(r), false); return;
+      }
       d = await r.json();
     } catch { st('tree failed (network)', false); return; }
     if (gen !== treeGen) return;   // a local patch superseded this response
@@ -2685,6 +2752,7 @@
     cx.className = 'cx';
     cx.textContent = folded ? '▸' : '▾';
     const lb = document.createElement('span');
+    lb.className = 'fln';
     lb.innerHTML = ico(folded ? 'folder' : 'open');
     lb.append(label);
     row.append(cx, lb);
@@ -4129,6 +4197,19 @@
       prev.src = api + '/f/' + current + '?preview=1&t=' + Date.now();
     }
   }
+  // The way back into view for the pane (the phone's preview tab, or a
+  // desktop view that shows it again). Chromium never paints a sandboxed
+  // frame whose first document loaded while its pane was display:none, or
+  // was replaced by a second write before it painted. Later documents, even
+  // written back to back, paint fine once one has. A phone hides the pane
+  // from boot (the tree tab comes first), so the preview tab stayed blank.
+  // So: a fresh frame, written exactly once while the pane is visible.
+  function showPreview() {
+    const n = prev.cloneNode(false);
+    n.removeAttribute('srcdoc'); n.removeAttribute('src'); n.style.minHeight = '';
+    prev.replaceWith(n); prev = n; fitCur = null;
+    if (CONTENT() || current) refreshPreview(); else prevBlank();
+  }
   let localTimer = null;
   src.addEventListener('input', () => {
     if (!CONTENT()) return;
@@ -4826,6 +4907,35 @@
   //  as paper-web.html without either name carrying an extension itself.
   const texOut = (name) => name + '-web';
 
+  //  pandoc copies \href and \includegraphics targets through as written,
+  //  and the output is saved as an html page of OUR OWN, which runs as the
+  //  owner. A .tex a peer may edit could carry a javascript: link or a
+  //  remote media source. Links keep http(s), mailto and relative targets.
+  //  Media keeps relative sources only, so viewing the page tells no other
+  //  host. Anything that embeds or runs is dropped. A <template> parses
+  //  inertly: nothing in it loads or runs while it is cleaned.
+  const TEX_DROP = 'script,style,iframe,frame,object,embed,video,audio,source,track,form,base,meta,link,svg';
+  const TEX_SRC = ['src', 'srcset', 'poster', 'action', 'formaction', 'data', 'background'];
+  function cleanTexHtml(html) {
+    const t = document.createElement('template');
+    t.innerHTML = html;
+    t.content.querySelectorAll(TEX_DROP).forEach((e) => e.remove());
+    for (const e of t.content.querySelectorAll('*')) {
+      for (const a of [...e.attributes]) {
+        const n = a.name.toLowerCase();
+        //  browsers drop these characters inside a scheme ("java\tscript:")
+        //  and read a backslash as a slash ("\\host" is "//host")
+        const v = a.value.replace(/[\u0000-\u0020]/g, '').replace(/\\/g, '/');
+        const abs = /^[a-z][a-z0-9+.-]*:|^\/\//i.test(v);
+        const bad = n.startsWith('on')
+          || ((n === 'href' || n === 'xlink:href') && abs && !/^(https?|mailto):/i.test(v))
+          || (TEX_SRC.includes(n) && abs);
+        if (bad) e.removeAttribute(a.name);
+      }
+    }
+    return t.innerHTML;
+  }
+
   let texProbe = null;         // last probe result, per page open
 
   const texBtn = () => $('texconv');
@@ -4912,7 +5022,7 @@
     const out = texOut(current);
     stWork('converting with pandoc…');
     let html = null;
-    try { html = await rust.invoke('convert_tex', { src: src.value }); }
+    try { html = cleanTexHtml(await rust.invoke('convert_tex', { src: src.value })); }
     catch (e) {
       //  pandoc names the line and the construct it choked on. Show that,
       //  not a generic failure.
@@ -4990,7 +5100,7 @@
     texBusy = true;
     let html = null;
     let err = null;
-    try { html = await rust.invoke('convert_tex', { src: body }); }
+    try { html = cleanTexHtml(await rust.invoke('convert_tex', { src: body })); }
     catch (e) { err = String(e && e.message ? e.message : e); }
     texBusy = false;
     //  A broken document must SAY so. Freezing the last good render would
@@ -6375,7 +6485,7 @@
       localStorage.appView = v;
       applyToggles();
       // the preview skipped its renders while off screen (60-preview.js)
-      if (hidden && v !== 'edit') refreshPreview();
+      if (hidden && v !== 'edit') showPreview();
     };
   // A throw in this boot-time layout pass must NOT halt the rest of app boot:
   // the initial tree load and navigation wiring run in a later file (90-sync),
@@ -6422,7 +6532,7 @@
     try { localStorage.appMv = v; } catch {}
     for (const x of document.querySelectorAll('.mtabs button'))
       x.className = x.dataset.mv === v ? 'on' : '';
-    if (v === 'prev') refreshPreview();
+    if (v === 'prev') showPreview();
   };
   for (const b of document.querySelectorAll('.mtabs button'))
     b.onclick = () => setMv(b.dataset.mv);

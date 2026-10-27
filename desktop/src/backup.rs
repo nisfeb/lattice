@@ -116,20 +116,38 @@ pub fn is_ours(s: &BackupSchedule, fname: &str) -> bool {
 }
 
 /// This schedule's archives in `dir`, oldest first.
+///
+/// The name alone is not enough, because the answer decides what prune
+/// DELETES and what verify reads. A backup directory can be shared or
+/// writable by someone else, and anyone who can write there can plant a
+/// name. A future-stamped one sorts newest, so a few of them pushed every
+/// real archive out of retention and became what verify checked (security
+/// audit run-1). So an archive must also be a regular file (not a symlink),
+/// owned by this user, with one link, and stamped no later than tomorrow.
 pub fn existing(s: &BackupSchedule, dir: &Path) -> Vec<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
     let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    // SAFETY: geteuid has no preconditions and cannot fail
+    let me = unsafe { libc::geteuid() };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // the stamp is fixed width, so comparing names compares times
+    let latest = format!("lattice-{}-{}.tar", slug(&s.label), stamp(now + 86_400));
     let mut v: Vec<PathBuf> = rd
         .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|n| is_ours(s, n))
-                    .unwrap_or(false)
+        .filter(|e| {
+            let Some(n) = e.file_name().to_str().map(str::to_string) else { return false };
+            let Ok(m) = std::fs::symlink_metadata(e.path()) else { return false };
+            is_ours(s, &n)
+                && n <= latest
+                && m.file_type().is_file()
+                && m.uid() == me
+                && m.nlink() == 1
         })
+        .map(|e| e.path())
         .collect();
-    // the stamp is fixed width, so the name sorts by age
     v.sort();
     v
 }
@@ -172,17 +190,14 @@ pub fn write_archive(
         return Err("this schedule has no directory set".into());
     }
     let dir = PathBuf::from(&s.dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let name = if complete { archive_name(s, at) } else { incomplete_name(s, at) };
     let path = dir.join(&name);
     // via a temp file in the same directory: a backup half written when the
     // power goes is worse than no backup, because it still looks like one.
-    let tmp = dir.join(format!(".{name}.part"));
-    std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("{}: {e}", path.display())
-    })?;
+    // write_private makes that temp file fresh and 0600. A fixed temp name
+    // opened with a plain write followed any symlink planted there and left
+    // the whole vault readable to others under a loose umask (audit run-1).
+    crate::session::write_private(&path, bytes)?;
     if complete {
         prune(s, &dir);
     }
@@ -552,12 +567,62 @@ mod tests {
         let left = existing(&s, &dir);
         assert_eq!(left.len(), 2, "keep=2 applied as they were written");
         assert_eq!(std::fs::read_to_string(left.last().unwrap()).unwrap(), "archive 2");
-        // no .part left behind
+        // no temp file left behind
         assert!(
             std::fs::read_dir(&dir).unwrap().flatten()
-                .all(|e| !e.file_name().to_str().unwrap().ends_with(".part")),
+                .all(|e| !e.file_name().to_str().unwrap().starts_with('.')),
             "a temp file survived"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn planted_files_cannot_push_real_archives_out_of_retention() {
+        // Anyone who can write the backup directory can plant names. A
+        // future-stamped one sorts newest, so with only the name to go on,
+        // three of them evicted every real archive and became what verify
+        // read (security audit run-1).
+        use std::os::unix::fs::symlink;
+        let dir = tmpdir("planted");
+        let s = sched("daily", 24, 2, dir.to_str().unwrap());
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"keep me").unwrap();
+        for y in 0..3u64 {
+            let far = 4_102_444_800 + y * 86_400; // 2100
+            std::fs::write(dir.join(archive_name(&s, far)), b"planted").unwrap();
+        }
+        // a symlink and a hard link with real-looking past names
+        symlink(&victim, dir.join(archive_name(&s, 1_600_000_000))).unwrap();
+        std::fs::hard_link(&victim, dir.join(archive_name(&s, 1_600_086_400))).unwrap();
+        for i in 0..3u64 {
+            write_archive(&s, format!("real {i}").as_bytes(), 1_700_000_000 + i * 86_400, true).unwrap();
+        }
+        let left = existing(&s, &dir);
+        assert_eq!(left.len(), 2, "only our own archives count: {left:?}");
+        assert_eq!(std::fs::read_to_string(left.last().unwrap()).unwrap(), "real 2");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_archive_write_never_follows_a_planted_symlink() {
+        // The temp file had a fixed, predictable name and was opened with a
+        // plain write, so a symlink planted there redirected the whole vault
+        // onto any file the user could write (security audit run-1).
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tmpdir("symlink");
+        let s = sched("daily", 24, 2, dir.to_str().unwrap());
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"keep me").unwrap();
+        let name = archive_name(&s, 1_700_000_000);
+        symlink(&victim, dir.join(format!(".{name}.part"))).unwrap();
+        symlink(&victim, dir.join(format!(".{name}.{}.tmp", std::process::id()))).unwrap();
+        let path = write_archive(&s, b"vault bytes", 1_700_000_000, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+        let m = std::fs::symlink_metadata(&path).unwrap();
+        assert!(m.file_type().is_file(), "the archive must be a regular file");
+        assert_eq!(m.permissions().mode() & 0o777, 0o600, "the archive must be private");
+        assert_eq!(std::fs::read(&path).unwrap(), b"vault bytes");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

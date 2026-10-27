@@ -6,3 +6,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  # the harnesses' npm packages, locked in scripts/package-lock.json
+  - package-ecosystem: npm
+    directory: /scripts
+    schedule:
+      interval: weekly
