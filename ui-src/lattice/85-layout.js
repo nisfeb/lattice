@@ -80,19 +80,34 @@
   try { setFull(localStorage.appFull === '1'); } catch (e) { console.error('[lattice] full-screen init failed', e); }
 
   const isMobile = () => matchMedia('(max-width: 820px)').matches;
+  const MV = ['tree', 'code', 'prev', 'ctl'];
   const setMv = (v) => {
     ws.dataset.mv = v;
+    // remember the pane so a reload resumes it. The service-worker takeover
+    // reloads the editor a few seconds into every session to drop stale code,
+    // and without this it landed back in 'code' on the snapshot page, yanking
+    // the user off whatever tree, preview or page they had moved to.
+    try { localStorage.appMv = v; } catch {}
     for (const x of document.querySelectorAll('.mtabs button'))
       x.className = x.dataset.mv === v ? 'on' : '';
     if (v === 'prev') refreshPreview();
   };
   for (const b of document.querySelectorAll('.mtabs button'))
     b.onclick = () => setMv(b.dataset.mv);
-  // On a phone the code pane is the wrong place to land. With no file open it
-  // is an empty box, and the tree is how you get anywhere. Start on the tree
-  // and let opening a file move us. applyPage switches to 'code' on mobile,
-  // so a remembered or ?name page still lands in the editor. Desktop shows
-  // every pane at once, so 'code' remains right there.
+  // On a phone the code pane is the wrong place to land with nothing open. It
+  // is an empty box, and the tree is how you get anywhere. Default to the
+  // tree and let opening a file move us. applyPage switches to 'code' on
+  // mobile, so a remembered or ?name page still lands in the editor. Desktop
+  // shows every pane at once, so 'code' remains right there.
+  //
+  // The last pane the user saw wins over that default WHEN a page resumes, so
+  // a reload lands them back where they were instead of forcing the editor
+  // over the tree or preview. Captured ONCE here, before boot's snapshot
+  // paint runs applyPage (which jumps to 'code' and would overwrite it); boot
+  // re-applies bootMv after the paint, and only then (see 99-boot.js). The
+  // initial pane stays the plain default, so a cold start with nothing open
+  // still lands on the tree, not an empty editor.
+  const bootMv = isMobile() ? (MV.includes(localStorage.appMv) ? localStorage.appMv : 'tree') : 'code';
   setMv(isMobile() ? 'tree' : 'code');
 
   // ── pane resize: drag a boundary, double-click it to reset ───────────────

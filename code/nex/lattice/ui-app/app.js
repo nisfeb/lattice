@@ -2858,14 +2858,30 @@
     // and nothing changed on screen — on a slow pier that silence lasts
     // seconds and reads as a dead click. Say the open is happening; every
     // exit below already replaces this status.
-    if (!painted) stWork('opening ' + name + '\u2026');
+    let fromUrl = null;
+    if (!painted) {
+      stWork('opening ' + name + '\u2026');
+      // commit the address NOW, before the fetch. A reload mid-open (the
+      // service-worker takeover) must resume THIS page. Painted opens already
+      // set the address synchronously via applyPage; this fetch lands seconds
+      // later on a slow pier, and until it did the address still named the
+      // page open before the click, so a reload resumed the wrong document.
+      // Remember the old address so a FAILED open puts it back: without that,
+      // a reload after a 404 would strand on the bad name instead of resuming
+      // the document the editor is still showing.
+      fromUrl = location.pathname + location.search;
+      history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
+    }
+    //  undo the speculative address on a failed open, but only if no later
+    //  open has run meanwhile (that one owns the address now, so leave it).
+    const unwind = () => { if (fromUrl && my === openSeq) history.replaceState(null, '', fromUrl); };
     const shown = src.value;
     let d = null;
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
-      if (!r.ok) { if (!painted) st('open failed' + await errText(r), false); return; }
+      if (!r.ok) { if (!painted) { st('open failed' + await errText(r), false); unwind(); } return; }
       d = await r.json();
-    } catch { if (!painted) st('open failed', false); return; }
+    } catch { if (!painted) { st('open failed', false); unwind(); } return; }
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
     // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
@@ -6396,19 +6412,34 @@
   try { setFull(localStorage.appFull === '1'); } catch (e) { console.error('[lattice] full-screen init failed', e); }
 
   const isMobile = () => matchMedia('(max-width: 820px)').matches;
+  const MV = ['tree', 'code', 'prev', 'ctl'];
   const setMv = (v) => {
     ws.dataset.mv = v;
+    // remember the pane so a reload resumes it. The service-worker takeover
+    // reloads the editor a few seconds into every session to drop stale code,
+    // and without this it landed back in 'code' on the snapshot page, yanking
+    // the user off whatever tree, preview or page they had moved to.
+    try { localStorage.appMv = v; } catch {}
     for (const x of document.querySelectorAll('.mtabs button'))
       x.className = x.dataset.mv === v ? 'on' : '';
     if (v === 'prev') refreshPreview();
   };
   for (const b of document.querySelectorAll('.mtabs button'))
     b.onclick = () => setMv(b.dataset.mv);
-  // On a phone the code pane is the wrong place to land. With no file open it
-  // is an empty box, and the tree is how you get anywhere. Start on the tree
-  // and let opening a file move us. applyPage switches to 'code' on mobile,
-  // so a remembered or ?name page still lands in the editor. Desktop shows
-  // every pane at once, so 'code' remains right there.
+  // On a phone the code pane is the wrong place to land with nothing open. It
+  // is an empty box, and the tree is how you get anywhere. Default to the
+  // tree and let opening a file move us. applyPage switches to 'code' on
+  // mobile, so a remembered or ?name page still lands in the editor. Desktop
+  // shows every pane at once, so 'code' remains right there.
+  //
+  // The last pane the user saw wins over that default WHEN a page resumes, so
+  // a reload lands them back where they were instead of forcing the editor
+  // over the tree or preview. Captured ONCE here, before boot's snapshot
+  // paint runs applyPage (which jumps to 'code' and would overwrite it); boot
+  // re-applies bootMv after the paint, and only then (see 99-boot.js). The
+  // initial pane stays the plain default, so a cold start with nothing open
+  // still lands on the tree, not an empty editor.
+  const bootMv = isMobile() ? (MV.includes(localStorage.appMv) ? localStorage.appMv : 'tree') : 'code';
   setMv(isMobile() ? 'tree' : 'code');
 
   // ── pane resize: drag a boundary, double-click it to reset ───────────────
@@ -7571,6 +7602,12 @@
     loadPanels();
   } else {
     const painted = bootSnap();
+    // bootSnap's applyPage jumped the mobile pane to 'code'. Put it back to
+    // the pane the user last saw (bootMv, captured in 85-layout before this
+    // ran), so resuming a snapshot page on reload does not force the editor
+    // over the tree or preview they had open. Only on a real resume: a fresh
+    // ?name open below legitimately lands in the editor.
+    if (painted) setMv(bootMv);
     bootTree();
     // what the snapshot painted, if anything. The baseline for "did the USER
     // do something while the dump was in flight?"
