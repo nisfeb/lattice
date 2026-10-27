@@ -1949,13 +1949,17 @@
       ::  a folder's address reads its index, the way the bare ship reads
       ::  /index, and the bar then names the index so its relative links
       ::  resolve under the folder
-      ;<  got=(unit [rel=path body=@t])  bind:m
+      ;<  got=(unit [rel=path mode=view-mode:pg body=@t])  bind:m
         (read-page-or-index our ship.u.ref rel.u.ref)
       =/  rel=path  ?~(got rel.u.ref rel.u.got)
       =/  canon=tape  (trip (en-urb:lu ship.u.ref (weld pub-prefix:lu rel)))
       ?~  got
         (send-view eyre-id (render-page canon "" "" "<p class=\"err\">not published here</p>"))
       =/  body=@t  body.u.got
+      ::  the page's resolved view-mode: the mark it published under (own page:
+      ::  from +published-mode; peer: from the keened mark; slow-peek / legacy:
+      ::  floored at %gmi). The reader renders by this, not by sniffing body.
+      =/  mode=view-mode:pg  mode.u.got
       ::  own pages get a live reader (keep /pub/index: its per-page hash changes
       ::  on every edit). Remote pages stay static (can't keep a peer's grub).
       ;<  sb=path  bind:m  self-base
@@ -1978,33 +1982,64 @@
       =/  ttl=@t  (page-title-of body u.raw)
       ;<  ~  bind:m
         ;<  rv=tape  bind:m  ?:(=("" rk) (pure:(fiber:fiber:nexus ,tape) "") beacon-rev-tape)
-        ::  an html page's published copy is its markup: frame it like the
-        ::  /p/ view does (sandboxed for a peer, whose markup is untrusted),
-        ::  instead of rendering the source as gemtext. The comment box is a
-        ::  form, which a sandboxed frame cannot submit, so it is gemtext-only.
-        ?:  (looks-html:lgmi body)
-          ::  our own page is framed sandboxed too when it is shared for
-          ::  edit, since a peer may have written that markup
+        ::  render by the page's RESOLVED view-mode, not by sniffing the body.
+        ::  %gmi keeps the legacy body-sniff below so a plain-gmi page (an old
+        ::  revision, an un-upgraded peer, or a modeless own page) renders
+        ::  exactly as it did before. Every other mode renders by its mark.
+        ?:  ?=(%gmi mode)
+          ::  legacy %gmi: a published gemtext body that is actually markup
+          ::  frames like the /p/ view does (sandboxed for a peer, whose
+          ::  markup is untrusted), instead of rendering the source as
+          ::  gemtext. The comment box is a form a sandboxed frame cannot
+          ::  submit, so it is gemtext-only. Behavior identical to before.
+          ?:  (looks-html:lgmi body)
+            ::  our own page is framed sandboxed too when it is shared for
+            ::  edit, since a peer may have written that markup
+            ;<  eg=?  bind:m
+              ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,?) |)
+              (peer-written rel)
+            ::  and our own page is framed raw only when it IS an html page.
+            ::  This branch sniffs the body, and a key may write md, text or
+            ::  css: a body that merely starts with '<' ran as the owner
+            ::  (security audit run-1).
+            ;<  vm=view-mode:pg  bind:m
+              ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,view-mode:pg) %text)
+              (read-show-mode (weld /page rel))
+            =/  htm=@t
+              %:  render-browser-page  canon  body  ~
+                |(?!(=(ship.u.ref our)) eg ?!(?=(%html vm)))
+                rk  rv  (trip ttl)
+              ==
+            ?:  =("" rk)  (send-view eyre-id htm)
+            (send-view-long eyre-id htm)
+          ?:  =("" rk)
+            (send-view eyre-id (render-page-titled canon rk "" (trip ttl) (weld (render-gmi body) cbox)))
+          (send-view-long eyre-id (render-page-titled canon rk rv (trip ttl) (weld (render-gmi body) cbox)))
+        ::  a %html page's published copy is its markup: frame it, NEVER inline
+        ::  it (inlining a peer's markup is stored XSS). The resolved mode already
+        ::  says it is html, so no body sniff is needed. A PEER's markup is always
+        ::  sandboxed; our OWN is framed raw only when WE wrote it, sandboxed when
+        ::  a peer may have (peer-written), exactly the old +html gate. The comment
+        ::  box is form-only and a sandboxed frame cannot submit it, so it is omitted.
+        ?:  ?=(%html mode)
           ;<  eg=?  bind:m
             ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,?) |)
             (peer-written rel)
-          ::  and our own page is framed raw only when it IS an html page.
-          ::  This branch sniffs the body, and a key may write md, text or
-          ::  css: a body that merely starts with '<' ran as the owner
-          ::  (security audit run-1).
-          ;<  vm=view-mode:pg  bind:m
-            ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,view-mode:pg) %text)
-            (read-show-mode (weld /page rel))
           =/  htm=@t
             %:  render-browser-page  canon  body  ~
-              |(?!(=(ship.u.ref our)) eg ?!(?=(%html vm)))
+              |(?!(=(ship.u.ref our)) eg)
               rk  rv  (trip ttl)
             ==
           ?:  =("" rk)  (send-view eyre-id htm)
           (send-view-long eyre-id htm)
+        ::  md / text / js / css / noun: +preview-inner escapes or safe-renders
+        ::  each one (raw HTML inside a peer's markdown is escaped by +render-md,
+        ::  and text/js/css become an escaped <pre>), so the fragment is safe to
+        ::  inline in our own chrome, with the comment box, like a gemtext page.
+        =/  inner=tape  (weld (preview-inner mode body) cbox)
         ?:  =("" rk)
-          (send-view eyre-id (render-page-titled canon rk "" (trip ttl) (weld (render-gmi body) cbox)))
-        (send-view-long eyre-id (render-page-titled canon rk rv (trip ttl) (weld (render-gmi body) cbox)))
+          (send-view eyre-id (render-page-titled canon rk "" (trip ttl) inner))
+        (send-view-long eyre-id (render-page-titled canon rk rv (trip ttl) inner))
       ::  the background self-refetch and SSE-forced refreshes re-run this
       ::  handler; they are machinery, not reading, and they mark themselves
       ::  (x-lattice-bg). Counting them double-counted every cold view and
@@ -10032,7 +10067,8 @@
   |=  [our=@p shp=@p rel=path]
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
-  ;<  pr=(unit [rev=@ud body=@t])  bind:m  (read-page-body-rev our shp rel)
+  ;<  pr=(unit [rev=@ud mode=view-mode:pg body=@t])  bind:m
+    (read-page-body-rev our shp rel)
   (pure:m ?~(pr ~ `body.u.pr))
 ::  +read-page-or-index: a published page, or, when `rel` names none, the
 ::  index under it: urb://~ship/site reads /site/index the way urb://~ship
@@ -10042,7 +10078,7 @@
 ::
 ++  read-page-or-index
   |=  [our=@p shp=@p rel=path]
-  =/  m  (fiber:fiber:nexus ,(unit [rel=path body=@t]))
+  =/  m  (fiber:fiber:nexus ,(unit [rel=path mode=view-mode:pg body=@t]))
   ^-  form:m
   =/  dex=path  (snoc rel %index)
   ;<  revs=(map @t [rev=@ud id=@uv])  bind:m
@@ -10060,8 +10096,9 @@
     ~[rel dex]
   |-
   ?~  try  (pure:m ~)
-  ;<  body=(unit @t)  bind:m  (read-page-body our shp i.try)
-  ?^  body  (pure:m `[i.try u.body])
+  ;<  got=(unit [rev=@ud mode=view-mode:pg body=@t])  bind:m
+    (read-page-body-rev our shp i.try)
+  ?^  got  (pure:m `[i.try mode.u.got body.u.got])
   $(try t.try)
 ::  +read-page-body-rev: +read-page-body, but it also hands back the REVISION
 ::  the body came from. The peek view already carries the grub's cass ([%file
@@ -10077,7 +10114,7 @@
 ::
 ++  read-page-body-rev
   |=  [our=@p shp=@p rel=path]
-  =/  m  (fiber:fiber:nexus ,(unit [rev=@ud body=@t]))
+  =/  m  (fiber:fiber:nexus ,(unit [rev=@ud mode=view-mode:pg body=@t]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ::  `our` is a parameter, not a bowl-our bind. Callers already hold it (the
@@ -10097,38 +10134,50 @@
   ?:  =(shp our)
     ;<  seen=view:nexus  bind:m  (peek:io road ~)
     ?.  ?=([%file *] seen)  (pure:m ~)
-    (pure:m `[ud.cass.seen !<(@t (need-vase:tarball sang.seen))])
+    ::  the vault is %gmi-keyed, so its mark is NOT the page's mode. Resolve
+    ::  the mode from the page's show grub (+published-mode, the single source
+    ::  of truth); the vault body is the own-format source for it to render.
+    ;<  mode=view-mode:pg  bind:m  (published-mode rel)
+    (pure:m `[ud.cass.seen mode !<(@t (need-vase:tarball sang.seen))])
   ;<  ent=(unit [rev=@ud id=@uv])  bind:m  (peer-page-id shp (spat rel))
   ?~  ent  (peek-peer-page shp rel)
   ::  the full +mesa-timeout. The id comes from the list, so it is almost
   ::  always bound, and a big page can take seconds to arrive: a 3 s wait
   ::  cut a 198 KB page off mid-transfer, then paid a peek on top.
   ;<  kp=(unit [p=@tas q=@t])  bind:m  (keen-page-raw shp rel id.u.ent)
-  ?:  ?=([~ %gmi *] kp)  (pure:m `[rev.u.ent q.u.kp])
+  ::  the publisher grows a page under its view-mode mark (+mode-mark), so a
+  ::  peer's keened mark IS its render mode. Accept ANY content mark in the
+  ::  view-mode set and carry it up. A miss, a %del tombstone, or a mark we do
+  ::  not know drops the stale revision list and falls to the slow peek.
+  ?:  ?&(?=(^ kp) ?=(view-mode:pg p.u.kp))
+    (pure:m `[rev.u.ent p.u.kp q.u.kp])
   ;<  ~  bind:m  (drop-peer-revs shp)
   (peek-peer-page shp rel)
 ::  +peek-peer-page: a peer's published page by remote peek, the slow path.
 ::
 ++  peek-peer-page
   |=  [shp=@p rel=path]
-  =/  m  (fiber:fiber:nexus ,(unit [rev=@ud body=@t]))
+  =/  m  (fiber:fiber:nexus ,(unit [rev=@ud mode=view-mode:pg body=@t]))
   ^-  form:m
   ::  a peer's page: `road` is relative to THIS nexus and +remote-road
   ::  passes relative roads through untouched, so it never reached the
   ::  peer. Absolute, at wherever the peer runs lattice, remembered from
   ::  the last ask (+peer-base-cached) so a page read is one round trip.
+  ::  The peek hits the peer's %gmi-keyed vault, which carries no render
+  ::  mark, so the mode floors at %gmi (the legacy body-sniff still runs on
+  ::  it at the reader): an un-upgraded peer renders exactly as before.
   ;<  base=(unit path)  bind:m  (peer-base-cached shp)
   ?~  base  (pure:m ~)
   ;<  got=(unit (unit [rev=@ud body=@t]))  bind:m  (peek-page-at u.base shp rel)
   ::  ~ is no answer (unreachable, or refused): nothing learned, cache kept
   ?~  got  (pure:m ~)
-  ?^  u.got  (pure:m u.got)
+  ?^  u.got  (pure:m `[rev.u.u.got %gmi body.u.u.got])
   ::  answered, nothing there. A peer that moved leaves a stale entry, so
   ::  ask where it is now, once, and read again only if that changed
   ;<  fresh=(unit path)  bind:m  (peer-base-remember shp)
   ?:  |(?=(~ fresh) =(fresh base))  (pure:m ~)
   ;<  again=(unit (unit [rev=@ud body=@t]))  bind:m  (peek-page-at u.fresh shp rel)
-  (pure:m ?~(again ~ u.again))
+  (pure:m ?~(again ~ ?~(u.again ~ `[rev.u.u.again %gmi body.u.u.again])))
 ::  +peer-page-id: a page's current revision and id in the peer's
 ::  published revision list ([/pub %revs]), from the cache, fetched when
 ::  stale.
