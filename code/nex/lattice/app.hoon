@@ -13978,7 +13978,8 @@
     ::  the salt is a constant: read once here for the grow, the revision
     ::  list and the predecessor cull below
     ;<  salt=@  bind:m  pub-salt
-    ;<  ~  bind:m  (grow-pub-page salt key body.act rev)
+    ;<  mode=view-mode:pg  bind:m  (published-mode (snip (strip-pub:lp key)))
+    ;<  ~  bind:m  (grow-pub-page salt key body.act rev mode)
     ::  the revision list peers read to %keen this exact revision
     ;<  ~  bind:m  (set-pub-rev root salt key `rev)
     ::  keep-only-current INVARIANT: at most one rev spur per page is ever
@@ -14164,13 +14165,14 @@
 ::  key is the canonical pub key (/pub/<name…>/gmi, already validated by the
 ::  caller's key-to-rail). The spur drops the pub/gmi wrapping and rides the
 ::  rev as its last segment, so every revision is its own immutable binding.
-::  The page rides the %gmi mark. The vault body IS rendered gemtext.
+::  The page rides its view-mode mark (+mode-mark of mode); the vault body is
+::  the page's own-format source (md, html, gmi, ...), not rendered gemtext.
 ::
 ++  grow-pub-page
-  |=  [salt=@ key=path body=@t rev=@ud]
+  |=  [salt=@ key=path body=@t rev=@ud mode=view-mode:pg]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (grow:io (page-spur salt (snip (strip-pub:lp key)) rev) [%gmi body])
+  (grow:io (page-spur salt (snip (strip-pub:lp key)) rev) [(mode-mark mode) body])
 ::  +pub-salt: the private salt behind every +page-id:lp, [/ %salt] at the
 ::  nexus root. 0 until +ensure-pub-ids mints it.
 ::
@@ -14299,7 +14301,8 @@
   =/  body=(unit @t)  (mole |.(!<(@t (need-vase:tarball sang.seen))))
   ?~  body  (pub-regrow-loop salt t.keys cnt revs)
   ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
-  ;<  ~  bind:m  (grow-pub-page salt i.keys u.body rev)
+  ;<  mode=view-mode:pg  bind:m  (published-mode (snip (strip-pub:lp i.keys)))
+  ;<  ~  bind:m  (grow-pub-page salt i.keys u.body rev mode)
   =/  nam=@t  (page-name:lp i.keys)
   (pub-regrow-loop salt t.keys +(cnt) (~(put by revs) nam rev (page-id:lp salt nam rev)))
 ::  +set-pub-rev: one page's row in the revision list, [/pub %revs]: its
