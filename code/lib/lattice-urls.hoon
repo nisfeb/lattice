@@ -88,9 +88,14 @@
 ++  pub-prefix   ^-(path (weld app-base /pub/vault))
 ++  know-prefix  ^-(path (weld app-base /know/vault))
 ::  +referent: what a urb:// url resolves to. %pub reads gemtext (rel under the
-::  pub vault); %tree names a grubbery node served by the explorer (absolute).
+::  pub vault); %tree names a grubbery node served by the explorer (absolute);
+::  %forum names a public forum board (or one post) on that ship.
 ::
-++  referent  $%([%pub =ship rel=path] [%tree =ship pax=path])
+++  referent
+  $%  [%pub =ship rel=path]
+      [%tree =ship pax=path]
+      [%forum =ship board=@ta post=(unit @ud)]
+  ==
 ::  +strip-prefix: p with `base` removed, or ~ if p is not under base.
 ::
 ++  strip-prefix
@@ -137,6 +142,13 @@
   ?:  ?=(%| -.parsed)  ~
   =/  segs=path  p.parsed
   ?~  segs  `[%pub u.shp /index]
+  ::  forum/<board>[/<post>] -> a public forum board (or one post). Matched
+  ::  BEFORE the legacy fallback; any other shape under forum/ stays legacy pub.
+  ?:  &(=(%forum i.segs) ?=(^ t.segs))
+    ?~  t.t.segs  `[%forum u.shp i.t.segs ~]
+    =/  pn=(unit @ud)  (slaw %ud i.t.t.segs)
+    ?.  &(?=(^ pn) ?=(~ t.t.t.segs))  `[%pub u.shp segs]
+    `[%forum u.shp i.t.segs pn]
   ?.  =(1 (met 3 i.segs))
     ::  multi-char first component -> frozen legacy pub form.
     `[%pub u.shp segs]

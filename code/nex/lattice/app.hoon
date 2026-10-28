@@ -1467,6 +1467,24 @@
       =/  to=path  (unfold-base:lu u.pb pax.u.ref)
       (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p ship.u.ref) (spud to) slash))
     ::
+        %forum
+      ::  a peer's public board: redirect to the local remote-forum route.
+      ::  sort/page carry over for a board view. Host is the @p text.
+      =/  post=tape  ?~(post.u.ref "" (weld "/" (a-co:co u.post.u.ref)))
+      =/  kv
+        |=  k=@t
+        ^-  tape
+        =/  v=(unit @t)  (~(get by args) k)
+        ?~  v  ""
+        :(weld (trip k) "=" (en-urlt:html (trip u.v)))
+      =/  srt=tape  (kv 'sort')
+      =/  pgt=tape  (kv 'page')
+      =/  pairs=tape
+        ?:  &(!=("" srt) !=("" pgt))  :(weld srt "&" pgt)
+        (weld srt pgt)
+      =/  q=tape  ?:(|(=("" pairs) !=("" post)) "" (weld "?" pairs))
+      (send-redirect eyre-id :(weld "/apps/lattice/forum-remote/" (scow %p ship.u.ref) "/" (trip board.u.ref) post q))
+    ::
         %pub
       ::  a folder's address reads its index, the way the bare ship reads
       ::  /index, and the bar then names the index so its relative links

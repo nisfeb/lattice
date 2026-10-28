@@ -25,6 +25,10 @@
   |=  r=referent:lu
   ^-  @t
   ?:  ?=([%tree *] r)  (en-urb:lu ship.r pax.r)
+  ?:  ?=([%forum *] r)
+    =/  base=tape  :(weld "urb://" (scow %p ship.r) "/forum/" (trip board.r))
+    ?~  post.r  (crip base)
+    (crip :(weld base "/" (a-co:co u.post.r)))
   (en-urb:lu ship.r (weld pub-prefix:lu rel.r))
 ::
 ::  +gen-node: a [ship path] to encode. The path is drawn from the safe knots
