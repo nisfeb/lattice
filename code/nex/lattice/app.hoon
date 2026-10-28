@@ -261,6 +261,11 @@
         ::  a lightweight live-update signal that doesn't stream a page's heavy
         ::  compiled grub, and works where grubbery's ?blot=/txt keep does not.
             [%fall %& [/beacon %rev] [[/ %json] (numb:enjs:format 0)]]
+        ::  /beacon/forum: the forum's own stamp, bumped by +apply-forum on any
+        ::  forum change (the owner route and the cross-ship inbox both land
+        ::  there), so an open board page reloads without every page edit
+        ::  waking it. Nested under /beacon like /rev (keep-SSE needs that).
+            [%fall %& [/beacon %forum] [[/ %json] (numb:enjs:format 0)]]
         ::  /idx: the grub-native term index (docs/native-index.md). 256 bucket
         ::  grubs, each term -> (key -> [scope tf]). ONE covering %fall row. A
         ::  nexus reload rewrites its whole covered subtree, so without a row
@@ -316,6 +321,9 @@
         ::  are owner-only: a remote src is never our, so +apply-forum refuses
         ::  them. Refusals ride this same road back to the poster as a note.
             [%fall %& [/ %'forum.sig'] [[/ %sig] ~]]
+        ::  /forum-sweep.sig: the forum prune timer. Behn-woken on a six-hour
+        ::  grid; deletes through the one writer (+forum-sweep).
+            [%fall %& [/ %'forum-sweep.sig'] [[/ %sig] ~]]
         ::  /fs.sig: a lick (unix-socket) port exposing the filesystem ops to a
         ::  local FUSE client (lattice-fs), the native-transport twin of the
         ::  HTTP page-tree/page-source/page-save routes.
@@ -425,6 +433,10 @@
         ;<  now=@da  bind:m  bowl-now
         ;<  ~  bind:m  (apply-forum-notice from sage now)
         $
+      ::  /forum-sweep.sig: the forum prune timer (see +forum-sweep-loop).
+          [~ %'forum-sweep.sig']
+        ;<  ~  bind:m  (rise-later prod "lattice /forum-sweep.sig" "")
+        forum-sweep-loop
       ::  /ui/main.sig: bind the HTTP endpoint and dispatch each request into a
       ::  per-request fiber under /ui/requests (same pattern as counter).
           [[%ui ~] %'main.sig']
@@ -2032,6 +2044,7 @@
     ::  and what the ship already wrote goes too, its moons' as well: a ban
     ::  that freed no slots left the page full (security audit run-1)
     ;<  *  bind:m  (cull-comments-of u.who)
+    ;<  *  bind:m  (cull-forum-of u.who)
     ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
     ::  the ban is written; the revocation is not. Say so: a ban that left
     ::  the grants in place is the label this route exists not to be.
@@ -2198,6 +2211,7 @@
         :~  ['know' s+(crip (weld base "know/vault?blot=/json"))]
             ['pub' s+(crip (weld base "pub/vault?blot=/json"))]
             ['follows' s+(crip (weld base "sub/follows?blot=/json"))]
+            ['forum' s+(crip (weld base "beacon/forum?blot=/json"))]
         ==
         :-  'protocol'
         :-  %s
@@ -4986,17 +5000,145 @@
       ==
     =/  brd=board:ft  [info ~ 1 ~ ~ ~ ~ '' ~]
     ;<  ~  bind:m  (forum-put up bdir ~(tap by (grubs:fb brd)) ~)
+    ;<  ~  bind:m  (bump-beacon %forum now)
     (pure:m ~)
   ?~  gs  (pure:m `(crip "forum: no such board: {(trip nom)}"))
   ?:  ?=(%delete-board -.act)
     ;<  *  bind:m  (cull-soft:io (rv up bdir))
+    ;<  ~  bind:m  (bump-beacon %forum now)
     (pure:m ~)
   =/  lod=(each board:ft @t)  (load:fb u.gs)
   ?:  ?=(%| -.lod)  (pure:m `(crip "forum: board unreadable: {(trip p.lod)}"))
   =/  res=(each [brd=board:ft puts=(list grub:fb)] @t)  (act:fa p.lod src now act)
   ?:  ?=(%| -.res)  (pure:m `(crip "forum: refused: {(trip p.res)}"))
   ;<  ~  bind:m  (forum-put up bdir puts.p.res (gone:fb p.lod brd.p.res))
+  ;<  ~  bind:m  (bump-beacon %forum now)
   (pure:m ~)
+::  +forum-boards: the names of every board on this ship.
+::
+++  forum-boards
+  =/  m  (fiber:fiber:nexus ,(list @ta))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io (rv up /forum/boards) ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  (pure:m ~(tap in ~(key by dir.ball.u.vw)))
+::  +forum-poke-all: send each [src action] to the writer, in order.
+::
+++  forum-poke-all
+  |=  acts=(list [src=@p act=action:ft])
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  acts  (pure:m ~)
+  ;<  ~  bind:m  (poke-eval [%forum src.i.acts act.i.acts])
+  $(acts t.acts)
+::  +forum-cull-actions: the actions that remove everything `who` (or its
+::  moons) left on one board: its posts (with their threads), its comments
+::  elsewhere, and its votes on what stays. Posts and comments are deleted as
+::  the host (a mod); a vote is removed as its own voter, which is the only
+::  author +act:fa lets remove it.
+::
+++  forum-cull-actions
+  |=  [who=@p brd=board:ft]
+  ^-  (list [src=@p act=action:ft])
+  =/  mine=$-(@p ?)  |=(a=@p |(=(who a) =(`@`who (family:ls a))))
+  =/  nom=board-name:ft  name.info.brd
+  =/  dead=(set post-id:ft)
+    %-  ~(gas in *(set post-id:ft))
+    (murn ~(tap by posts.brd) |=([id=post-id:ft p=post:ft] ?.((mine author.p) ~ `id)))
+  =/  out=(list [src=@p act=action:ft])  ~
+  ::  votes first, on every surviving post and comment
+  =.  out
+    %+  roll  ~(tap by posts.brd)
+    |=  [[id=post-id:ft p=post:ft] acc=_out]
+    ?:  (~(has in dead) id)  acc
+    =/  vs=(list @p)  (skim ~(tap in (~(uni in up-votes.p) down-votes.p)) mine)
+    %+  roll  vs
+    |=  [v=@p a=_acc]
+    [[v [%remove-vote nom [%post id]]] a]
+  =.  out
+    %+  roll  ~(tap by comments.brd)
+    |=  [[pid=post-id:ft cs=(map comment-id:ft comment:ft)] acc=_out]
+    ?:  (~(has in dead) pid)  acc
+    %+  roll  ~(tap by cs)
+    |=  [[cid=comment-id:ft c=comment:ft] a=_acc]
+    =/  vs=(list @p)  (skim ~(tap in (~(uni in up-votes.c) down-votes.c)) mine)
+    =.  a  (roll vs |=([v=@p b=_a] [[v [%remove-vote nom [%comment pid cid]]] b]))
+    ?.  (mine author.c)  a
+    [[host.info.brd [%delete-comment nom pid cid]] a]
+  %+  roll  ~(tap in dead)
+  |=  [id=post-id:ft acc=_out]
+  [[host.info.brd [%delete-post nom id]] acc]
+::  +cull-forum-of: the forum twin of +cull-comments-of, run from POST /ban.
+::  Every board, every post, comment and vote of `who` and its moons. Writes
+::  go to the one writer as ordinary %forum actions (no second writer), so
+::  each bumps /beacon/forum. A board that will not load is skipped, as a
+::  refused cull leaves a comment in place. Answers how many actions it sent.
+::
+++  cull-forum-of
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  noms=(list @ta)  bind:m  forum-boards
+  =/  n=@ud  0
+  |-  ^-  form:m
+  ?~  noms  (pure:m n)
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[i.noms])
+  ?~  gs  $(noms t.noms)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  $(noms t.noms)
+  =/  acts=(list [src=@p act=action:ft])  (forum-cull-actions who p.lod)
+  ;<  ~  bind:m  (forum-poke-all acts)
+  $(noms t.noms, n (add n (lent acts)))
+::  +forum-prune-ids: the posts a board's prune config drops: older than
+::  `after`, scoring under `min-score` (net votes, as +hot-score:fr counts
+::  them), and not pinned.
+::
+++  forum-prune-ids
+  |=  [now=@da brd=board:ft]
+  ^-  (list post-id:ft)
+  ?~  prune.brd  ~
+  %+  murn  ~(tap by posts.brd)
+  |=  [id=post-id:ft p=post:ft]
+  ^-  (unit post-id:ft)
+  ?:  (~(has in pinned.brd) id)  ~
+  ?.  (gte (sub now created.p) after.u.prune.brd)  ~
+  ?.  (lth n:(hot-score:fr now p) min-score.u.prune.brd)  ~
+  `id
+::  +forum-sweep: prune every board once. Deletes ride the one writer as the
+::  host's %delete-post. Answers how many posts it asked to drop.
+::
+++  forum-sweep
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  our=@p  bind:m  bowl-our
+  ;<  now=@da  bind:m  bowl-now
+  ;<  noms=(list @ta)  bind:m  forum-boards
+  =/  n=@ud  0
+  |-  ^-  form:m
+  ?~  noms  (pure:m n)
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[i.noms])
+  ?~  gs  $(noms t.noms)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  $(noms t.noms)
+  =/  ids=(list post-id:ft)  (forum-prune-ids now p.lod)
+  ;<  ~  bind:m
+    (forum-poke-all (turn ids |=(id=post-id:ft [our [%delete-post i.noms id]])))
+  $(noms t.noms, n (add n (lent ids)))
+::  +forum-sweep-loop: the timer fiber. Sweeps, then sleeps to the next
+::  six-hour grid line (so a restart does not shift the schedule), forever.
+::
+++  forum-sweep-loop
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  |-
+  ;<  *  bind:m  forum-sweep
+  ;<  now=@da  bind:m  bowl-now
+  =/  grid=@dr  ~h6
+  ;<  ~  bind:m  (sleep-draining (sub grid (mod now grid)))
+  $
 ::  +forum-group-name: the usergroup that carries a private board's read road.
 ::
 ++  forum-group-name
