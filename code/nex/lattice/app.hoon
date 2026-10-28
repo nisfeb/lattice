@@ -10082,6 +10082,42 @@
     (peer-written pax)
   ?:  eg  (send-sandboxed eyre-id 'text/html' doc)
   (send-html eyre-id doc)
+::  +forum-doc: assemble a whole forum page from the lib's BODY manx. The
+::  body carries no chrome; here it gets the themed head (+pwa-head's first-
+::  paint theme line + deferred theme.js + manifest/icons/metas, the forum-css
+::  <style>, then the optional clearweb `theme` <link>) and the shared reader
+::  bar in a <form class="bar">, exactly as +render-page-titled wraps its bar,
+::  then +nav-script (which wires the hamburger and back/forward). The OWNER
+::  gets the full bar (history, home, omnibar + autocomplete, hamburger); an
+::  anonymous PUBLIC reader gets history only, matching +clearweb-bar's tiering
+::  (the omnibar and the hamburger's destinations are owner-gated routes that
+::  would only bounce a visitor to a login). No Edit, no bookmark star, no
+::  orrery slot. `theme-link` is the <link> tape (or "") the caller built from
+::  +find-theme; `current` seeds the omnibar input ("" on a forum page: it has
+::  no urb:// address and its http path is not meaningful to the omnibar).
+::
+++  forum-doc
+  |=  [body=manx current=tape theme-link=tape authed=?]
+  ^-  @t
+  =/  bar-tail=tape
+    ?.  authed  "</form>"
+    :(weld (nav-controls current) nav-hamburger "</form>")
+  %-  crip
+  ;:  weld
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+    pwa-head
+    "<style>"  (trip forum-css:fre)  "</style>"
+    theme-link
+    "</head><body>"
+    "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
+    nav-history
+    bar-tail
+    (en-xml:html body)
+    ?:(authed omni-autocomplete "")
+    nav-script
+    "</body></html>"
+  ==
 ::  +serve-forum-public: the anonymous read of a PUBLIC forum board
 ::  (/forum/<board>) or one of its threads (/forum/<board>/<post>), through
 ::  the same renderer as the owner's view with authed off, so no form shows.
@@ -10112,6 +10148,9 @@
     (send-err eyre-id 404 'not found')
   ;<  tf=(unit path)  bind:m  (find-theme /forum/[nom]/index)
   ;<  now=@da  bind:m  bowl-now
+  =/  theme-link=tape
+    ?~  tf  ""
+    :(weld "<link rel=\"stylesheet\" href=\"/apps/lattice/c" (spud (weld u.tf /theme)) "\">")
   =/  c=ctx:fre
     :*  `@p`0
         %.n
@@ -10122,7 +10161,7 @@
   =/  doc=manx
     ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
     (render-thread:fre c brd u.pid)
-  (send-html eyre-id (crip (en-xml:html doc)))
+  (send-html eyre-id (forum-doc doc "" theme-link %.n))
 ::  +forum-load-board: a board by name, or ~ if missing or unreadable.
 ::
 ++  forum-load-board
@@ -10167,10 +10206,10 @@
   =/  root=tape  "/apps/lattice/forum"
   ?~  pax
     ;<  bl=(list [name=board-name:ft title=@t public=?])  bind:m  (forum-board-list up)
-    (send-html eyre-id (crip (en-xml:html (render-boards:fre [our %.y now root ""] bl))))
+    (send-html eyre-id (forum-doc (render-boards:fre [our %.y now root ""] bl) "" "" %.y))
   ?:  =('_new' i.pax)
     ?.  ?=(~ t.pax)  (send-err eyre-id 404 'not found')
-    (send-html eyre-id (crip (en-xml:html (render-create:fre [our %.y now root ""]))))
+    (send-html eyre-id (forum-doc (render-create:fre [our %.y now root ""]) "" "" %.y))
   ?.  &(?=(?(~ [@ ~]) t.pax) ((sane %tas) i.pax))
     (send-err eyre-id 404 'not found')
   =/  nom=@ta  i.pax
@@ -10178,6 +10217,9 @@
   ?~  bo  (send-err eyre-id 404 'not found')
   =/  brd=board:ft  u.bo
   ;<  tf=(unit path)  bind:m  (find-theme /forum/[nom]/index)
+  =/  theme-link=tape
+    ?~  tf  ""
+    :(weld "<link rel=\"stylesheet\" href=\"/apps/lattice/c" (spud (weld u.tf /theme)) "\">")
   =/  c=ctx:fre
     :*  our
         %.y
@@ -10188,15 +10230,15 @@
   ?~  t.pax
     %-  send-html
     :-  eyre-id
-    (crip (en-xml:html (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))))
+    (forum-doc (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args)) "" theme-link %.y)
   ?:  =('submit' i.t.pax)
-    (send-html eyre-id (crip (en-xml:html (render-submit:fre c nom))))
+    (send-html eyre-id (forum-doc (render-submit:fre c nom) "" theme-link %.y))
   ?:  =('mod' i.t.pax)
-    (send-html eyre-id (crip (en-xml:html (render-mod:fre c brd))))
+    (send-html eyre-id (forum-doc (render-mod:fre c brd) "" theme-link %.y))
   =/  pid=(unit @ud)  ((slat %ud) i.t.pax)
   ?:  |(?=(~ pid) !(~(has by posts.brd) u.pid))
     (send-err eyre-id 404 'not found')
-  (send-html eyre-id (crip (en-xml:html (render-thread:fre c brd u.pid))))
+  (send-html eyre-id (forum-doc (render-thread:fre c brd u.pid) "" theme-link %.y))
 ::  +forum-role-of / +forum-target-of: parse a form field.
 ::
 ++  forum-role-of
@@ -11728,6 +11770,21 @@
 ::  +render-page-titled: +render-page with an explicit tab/history title
 ::  instead of the bare "lattice" fallback.
 ::
+::  +omni-autocomplete: the omnibar's STYLED completion dropdown (a
+::  <datalist> renders OS-drawn and ignores every style here). Shared by
+::  +render-page-titled and the forum wrapper (+forum-doc) so both get a
+::  working omnibar; the three elements concatenate exactly as before.
+::
+++  omni-autocomplete
+  ^-  tape
+  ;:  weld
+    %-  trip
+    '<style>.bar{position:relative}.omni{position:absolute;left:8px;right:8px;top:100%;z-index:40;background:var(--pop,var(--bg));border:1px solid #8886;border-radius:8px;overflow:hidden;box-shadow:0 6px 24px #0003;max-height:60vh;overflow-y:auto}.omnirow{display:flex;align-items:baseline;gap:.6em;padding:7px 10px;cursor:pointer;border-bottom:1px solid #8882}.omnirow:last-child{border-bottom:0}.omnirow:hover,.omnirow.on{background:var(--accent-tint,#1a6ed822)}.omnisrc{flex:none;font-size:.7rem;padding:1px 6px;border-radius:999px;border:1px solid #8886;opacity:.8}.omnisrc.bookmark{border-color:var(--accent,#1a6ed8);color:var(--accent,#1a6ed8)}.omnittl{flex:none;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.omniurl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.6;font-size:.85rem}@media(max-width:520px){.omnittl{max-width:50%}.omniurl{display:none}}</style>'
+    "<script>"
+    %-  trip
+    '(function(){var bar=document.querySelector(".bar");var inp=bar?bar.querySelector("input[name=url]"):null;if(!inp)return;var box=document.createElement("div");box.className="omni";box.hidden=true;bar.appendChild(box);var items=[],sel=-1,timer=null,seq=0;function hide(){box.hidden=true;sel=-1;}function pick(i){if(i<0||i>=items.length)return;inp.value=items[i].url;hide();bar.submit();}function draw(){box.textContent="";if(!items.length){hide();return}items.forEach(function(it,i){var row=document.createElement("div");row.className="omnirow"+(i===sel?" on":"");var b=document.createElement("span");b.className="omnisrc "+it.source;b.textContent=it.source==="bookmark"?"saved":"visited";var t=document.createElement("span");t.className="omnittl";t.textContent=it.title||it.url;var u=document.createElement("span");u.className="omniurl";u.textContent=it.url;row.appendChild(b);row.appendChild(t);row.appendChild(u);row.addEventListener("mousedown",function(e){e.preventDefault();pick(i)});box.appendChild(row);});box.hidden=false;}function fetchSug(){var q=inp.value.trim();var my=++seq;fetch("/apps/lattice/omni-suggest?q="+encodeURIComponent(q)).then(function(r){return r.ok?r.json():{items:[]}}).then(function(j){if(my!==seq)return;items=(j.items||[]);sel=-1;draw();}).catch(function(){if(my===seq){items=[];hide()}});}inp.addEventListener("input",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("focus",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("blur",function(){setTimeout(hide,120)});inp.addEventListener("keydown",function(e){if(box.hidden)return;if(e.key==="ArrowDown"){e.preventDefault();sel=Math.min(sel+1,items.length-1);draw()}else if(e.key==="ArrowUp"){e.preventDefault();sel=Math.max(sel-1,-1);draw()}else if(e.key==="Enter"){if(sel>=0){e.preventDefault();pick(sel)}}else if(e.key==="Escape"){hide()}});})();'
+    "</script>"
+  ==
 ++  render-page-titled
   |=  [current=tape keep=tape rev=tape title=tape inner=tape]
   ^-  @t
@@ -11760,12 +11817,7 @@
     ::  omnibar completions. A STYLED list, deliberately. <datalist> is the
     ::  one-line version and renders as an OS-drawn dropdown that ignores every
     ::  style here, which is not acceptable in this UI.
-    %-  trip
-    '<style>.bar{position:relative}.omni{position:absolute;left:8px;right:8px;top:100%;z-index:40;background:var(--pop,var(--bg));border:1px solid #8886;border-radius:8px;overflow:hidden;box-shadow:0 6px 24px #0003;max-height:60vh;overflow-y:auto}.omnirow{display:flex;align-items:baseline;gap:.6em;padding:7px 10px;cursor:pointer;border-bottom:1px solid #8882}.omnirow:last-child{border-bottom:0}.omnirow:hover,.omnirow.on{background:var(--accent-tint,#1a6ed822)}.omnisrc{flex:none;font-size:.7rem;padding:1px 6px;border-radius:999px;border:1px solid #8886;opacity:.8}.omnisrc.bookmark{border-color:var(--accent,#1a6ed8);color:var(--accent,#1a6ed8)}.omnittl{flex:none;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.omniurl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.6;font-size:.85rem}@media(max-width:520px){.omnittl{max-width:50%}.omniurl{display:none}}</style>'
-    "<script>"
-    %-  trip
-    '(function(){var bar=document.querySelector(".bar");var inp=bar?bar.querySelector("input[name=url]"):null;if(!inp)return;var box=document.createElement("div");box.className="omni";box.hidden=true;bar.appendChild(box);var items=[],sel=-1,timer=null,seq=0;function hide(){box.hidden=true;sel=-1;}function pick(i){if(i<0||i>=items.length)return;inp.value=items[i].url;hide();bar.submit();}function draw(){box.textContent="";if(!items.length){hide();return}items.forEach(function(it,i){var row=document.createElement("div");row.className="omnirow"+(i===sel?" on":"");var b=document.createElement("span");b.className="omnisrc "+it.source;b.textContent=it.source==="bookmark"?"saved":"visited";var t=document.createElement("span");t.className="omnittl";t.textContent=it.title||it.url;var u=document.createElement("span");u.className="omniurl";u.textContent=it.url;row.appendChild(b);row.appendChild(t);row.appendChild(u);row.addEventListener("mousedown",function(e){e.preventDefault();pick(i)});box.appendChild(row);});box.hidden=false;}function fetchSug(){var q=inp.value.trim();var my=++seq;fetch("/apps/lattice/omni-suggest?q="+encodeURIComponent(q)).then(function(r){return r.ok?r.json():{items:[]}}).then(function(j){if(my!==seq)return;items=(j.items||[]);sel=-1;draw();}).catch(function(){if(my===seq){items=[];hide()}});}inp.addEventListener("input",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("focus",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("blur",function(){setTimeout(hide,120)});inp.addEventListener("keydown",function(e){if(box.hidden)return;if(e.key==="ArrowDown"){e.preventDefault();sel=Math.min(sel+1,items.length-1);draw()}else if(e.key==="ArrowUp"){e.preventDefault();sel=Math.max(sel-1,-1);draw()}else if(e.key==="Enter"){if(sel>=0){e.preventDefault();pick(sel)}}else if(e.key==="Escape"){hide()}});})();'
-    "</script>"
+    omni-autocomplete
     bm-script
     (sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
   ==

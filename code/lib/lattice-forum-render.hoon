@@ -339,7 +339,14 @@
     %reader  'reader'
   ==
 ::
-::  +page-shell: the full html page. Links the caller's theme stylesheet.
+::  +page-shell: the forum page's BODY content (the ".ct" block). The whole
+::  html document, themed head and shared reader bar are reassembled in
+::  app.hoon (+forum-doc): the reader chrome, +pwa-head and +nav-script all
+::  live there as tape, and a library cannot call app.hoon arms nor inject
+::  their tape into a manx without +en-xml escaping it. So this arm answers
+::  only the body manx; app.hoon serializes it and wraps it. `forum-css`
+::  stays owned here, exposed for the app.hoon wrapper to inline. `c` and
+::  `title` are kept in the sample so the render arms call this unchanged.
 ::
 ++  page-shell
   |=  [c=ctx title=@t content=marl nav=(unit [href=tape label=tape])]
@@ -350,24 +357,12 @@
       ;+  ;/("  |  ")
       ;a(href href.u.nav): {label.u.nav}
     ==
-  ;html
-    ;head
-      ;meta(charset "utf-8");
-      ;meta(name "viewport", content "width=device-width, initial-scale=1");
-      ;title: {(trip title)}
-      ;*  ?~  theme.c  ~
-          ~[;link(rel "stylesheet", href theme.c);]
-      ;style: {(trip forum-css)}
+  ;div.ct
+    ;div.faint
+      ;+  ;/("forum")
+      ;+  nav-node
     ==
-    ;body
-      ;div.ct
-        ;div.faint
-          ;+  ;/("forum")
-          ;+  nav-node
-        ==
-        ;*  content
-      ==
-    ==
+    ;*  content
   ==
 ::
 ::  +vote-form: the up-arrow form for a post or comment target value
