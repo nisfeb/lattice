@@ -2144,6 +2144,16 @@
     ;<  e=(unit tang)  bind:m  (cull-soft:io [%& %| gdir])
     ?^  e  (ug-refused eyre-id)
     (send-ok eyre-id)
+  ::  ── private forum boards: invite and revoke (owner) ──
+  ::  A private board's members are a per-board usergroup, forum-<board>, whose
+  ::  peek roads are the board's pub and content dirs (so the grubbery weir
+  ::  does the read gate), plus the /forum/members/<board> roster that
+  ::  +apply-forum-notice checks before it lets a post land. Invite lays both
+  ::  and sends the invitee a share notice; revoke takes the ship out of both.
+      [%'POST' %forum-invite]
+    (handle-forum-invite eyre-id args our up %.y)
+      [%'POST' %forum-revoke]
+    (handle-forum-invite eyre-id args our up %.n)
   ::  ── follows (the ship-level follow list) ──
       [%'GET' %follows]
     ;<  fs=follows:lp  bind:m  read-follows
@@ -4976,6 +4986,93 @@
   ?:  ?=(%| -.res)  (pure:m `(crip "forum: refused: {(trip p.res)}"))
   ;<  ~  bind:m  (forum-put up bdir puts.p.res (gone:fb p.lod brd.p.res))
   (pure:m ~)
+::  +forum-group-name: the usergroup that carries a private board's read road.
+::
+++  forum-group-name
+  |=  nom=@ta
+  ^-  @t
+  (crip (weld "forum-" (trip nom)))
+::  +read-forum-members / +write-forum-members: the /forum/members/<board>
+::  roster, stored [%1 (set @p)]. Empty when never written. The owner is never
+::  listed; +apply-forum-notice lets src==our through regardless.
+::
+++  read-forum-members
+  |=  nom=@ta
+  =/  m  (fiber:fiber:nexus ,(set @p))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:io (rf up /forum/members nom) ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  =/  raw=(unit [%1 (set @p)])
+    (mole |.(;;([%1 (set @p)] (sang-noun:tarball sang.v))))
+  (pure:m ?~(raw ~ +.u.raw))
+++  write-forum-members
+  |=  [nom=@ta who=(set @p)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  (put-file (rf up /forum/members nom) [/ %noun] [%1 who])
+::  +handle-forum-invite: POST /forum-invite and /forum-revoke ?board=&ship=.
+::  add=%.y invites, %.n revokes. Owner-only (the owner session is the route's
+::  gate, as for /share-file). Only a PRIVATE board has members to manage.
+::
+::  Invite writes the group first (it can be refused: lattice may not own
+::  usergroups), then the roster, then pokes the invitee's /shares.sig with a
+::  read notice for the board's content dir. Revoke removes the ship from the
+::  group's who.ships and the roster; the road set stays on the group (the
+::  remaining members still need it). Reads are cut by the weir the moment the
+::  group loses the ship, posts by the roster check on the next poke.
+::
+++  handle-forum-invite
+  |=  [eyre-id=@ta args=(map @t @t) our=@p up=@ud add=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  bd=(unit @t)  (~(get by args) 'board')
+  ?~  bd  (send-err eyre-id 400 'missing board')
+  ?.  ((sane %tas) u.bd)  (send-err eyre-id 400 'bad board')
+  =/  nom=@ta  u.bd
+  =/  shp-t=(unit @t)  (~(get by args) 'ship')
+  ?~  shp-t  (send-err eyre-id 400 'missing ship')
+  =/  shp=(unit @p)  (slaw %p u.shp-t)
+  ?~  shp  (send-err eyre-id 400 'bad ship')
+  ?:  =(u.shp our)  (send-err eyre-id 400 'that is you')
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[nom])
+  ?~  gs  (send-err eyre-id 404 'no such board')
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  (send-err eyre-id 500 'board unreadable')
+  ?:  public.info.p.lod  (send-err eyre-id 400 'a public board has no members to manage')
+  =/  gname=@t  (forum-group-name nom)
+  =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
+  ;<  cur=(set @p)  bind:m  (read-forum-members nom)
+  ?.  add
+    ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
+    =/  ships=(set @p)
+      ?.  ?=([%file *] wv)  ~
+      (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
+    ;<  ok=?  bind:m
+      ?.  (~(has in ships) u.shp)  (pure:(fiber:fiber:nexus ,?) %.y)
+      (ug-over [%& %& gdir %'who.ships'] [[/ %ships] (~(del in ships) u.shp)])
+    ?.  ok  (ug-refused eyre-id)
+    ;<  ~  bind:m  (write-forum-members nom (~(del in cur) u.shp))
+    (send-ok eyre-id)
+  ;<  bans=banned:ls  bind:m  read-banned
+  ?:  (is-banned:ls bans u.shp)
+    (send-err eyre-id 403 'that ship is banned, unban it first')
+  ;<  sb=path  bind:m  self-base
+  =/  bpath=path  (weld sb /forum/boards/[nom])
+  =/  roads=(set road:tarball)
+    (~(gas in *(set road:tarball)) ~[[%& %| (snoc bpath %pub)] [%& %| (snoc bpath %content)]])
+  ;<  ok=?  bind:m  (ug-merge gname (~(gas in *(set @p)) ~[u.shp]) roads ~)
+  ?.  ok  (ug-refused eyre-id)
+  ;<  ~  bind:m  (write-forum-members nom (~(put in cur) u.shp))
+  ;<  base=(unit path)  bind:m  (peer-base-cached u.shp)
+  ;<  told=?  bind:m
+    %^  remote-load-poke-wait  u.shp
+      :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
+      [%poke [/lattice %share-notice] `action:ls`[%add (snoc bpath %content) 'read']]
+    ~s15
+  %+  send-json  eyre-id
+  (pairs:enjs:format ~[['ok' b+&] ['notified' b+told]])
 ::  +apply-forum-notice: a forum action poked by ANOTHER ship over /forum.sig.
 ::  Everything that decides whether it lands is read here, never from the
 ::  payload: the author is the transport source (+get-poke-src), the banlist
@@ -5034,32 +5131,48 @@
   ?:  ?=(%| -.lod)
     (forum-note-send u.src name (crip "forum: board unreadable: {(trip p.lod)}"))
   =/  brd=board:ft  p.lod
+  ::  a PRIVATE board takes content only from its roster (/forum/members).
+  ::  The poke road is public, so any ship can send one; this is the gate.
+  ::  u.src is always a foreign transport sender here (a local poke returned
+  ::  at the top), so the owner needs no exemption in this arm.
+  ;<  mem=(set @p)  bind:m  (read-forum-members name)
+  ?:  &(!public.info.brd !(~(has in mem) u.src))
+    (forum-note-send u.src name 'forum: this board is private; you are not a member')
+  (forum-inbox-content u.src name brd act now)
+::  +forum-inbox-content: the role, caps, rate and apply steps of a content or
+::  mod action from a foreign ship (split out so the private-board member gate
+::  in +apply-forum-notice runs first).
+::
+++  forum-inbox-content
+  |=  [src=@p name=board-name:ft brd=board:ft act=action:ft now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
   ::  role and caps for a post or a comment (votes need neither, as in +act)
   =/  need=(unit @t)
     ?+  -.act  ~
         %new-post
-      ?.  (can-post:fr u.src brd)  `'forum: your role on this board cannot post'
+      ?.  (can-post:fr src brd)  `'forum: your role on this board cannot post'
       ?.  (sane-post:fr title.act url.act body.act)
         `'forum: a post needs a title (300 bytes), a url (2,048) and a body (40,000)'
       ~
     ::
         %new-comment
-      ?.  (can-post:fr u.src brd)  `'forum: your role on this board cannot comment'
+      ?.  (can-post:fr src brd)  `'forum: your role on this board cannot comment'
       ?.  (sane-comment:fr body.act)  `'forum: a comment holds 1 to 10,000 bytes'
       ~
     ==
-  ?^  need  (forum-note-send u.src name u.need)
+  ?^  need  (forum-note-send src name u.need)
   ::  the rate limit, per [ship board], against /forum/limits (mods exempt)
   ;<  lim=limits:fr  bind:m  read-forum-limits
-  ?.  (rate-ok:fr u.src name brd now lim)
-    (forum-note-send u.src name 'forum: you are acting too fast, slow down and retry')
+  ?.  (rate-ok:fr src name brd now lim)
+    (forum-note-send src name 'forum: you are acting too fast, slow down and retry')
   ::  apply through the one writer arm. src is the transport sender.
-  ;<  reason=(unit @t)  bind:m  (apply-forum now u.src act)
-  ?^  reason  (forum-note-send u.src name u.reason)
+  ;<  reason=(unit @t)  bind:m  (apply-forum now src act)
+  ?^  reason  (forum-note-send src name u.reason)
   ::  it landed. record the rate slot, unless the actor is a mod (whose
   ::  actions +rate-ok ignores anyway; skipping keeps the map from growing).
-  ?:  (is-mod:fr u.src brd)  (pure:m ~)
-  (write-forum-limits (rate-update:fr u.src name now lim))
+  ?:  (is-mod:fr src brd)  (pure:m ~)
+  (write-forum-limits (rate-update:fr src name now lim))
 ::  +forum-note-send: tell a poster why their cross-ship action was refused.
 ::  Best-effort, bounded: the note rides the poster's own /forum.sig back to
 ::  it (same code, same road). We do not wait on the result; an offline poster
@@ -5136,6 +5249,16 @@
     ::  a board made, deleted or flipped public/private changes what /public
     ::  may peek; re-lay the whole set (a no-op for every other action)
     ?.  ?=(?(%create-board %delete-board %set-public) -.act.act)  (pure:m ~)
+    ::  a board made or deleted starts with no members: drop the old roster
+    ::  and member group so a re-created name does not inherit them. Soft.
+    ;<  ~  bind:m
+      ?.  ?=(?(%create-board %delete-board) -.act.act)  (pure:m ~)
+      =/  nom=@ta  ?:(?=(%create-board -.act.act) name.act.act +.act.act)
+      ;<  *  bind:m  (cull-soft:io (rf root /forum/members nom))
+      ;<  *  bind:m
+        %-  cull-soft:io
+        [%& %| (snoc ug-base (crip (weld (trip (forum-group-name nom)) ".grp")))]
+      (pure:m ~)
     (send-public-how root)
       %make
     ;<  ~  bind:m  (make-page root pax.act src.act)
