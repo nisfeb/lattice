@@ -85,7 +85,11 @@
   function draw(el, s, act) {
     el.textContent = '';
     const span = (t, cls) => { const e = document.createElement('span'); e.textContent = t; if (cls) e.className = cls; return e; };
-    const button = (t) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = t; b.title = TIP; b.onclick = act; return b; };
+    // an icon, not a label: the send control sits in the reader's bar, where
+    // a full "Send to orrery" string crowded out the page. The action name is
+    // the aria-label; TIP (what leaves the ship) stays the hover tooltip.
+    const SEND = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>';
+    const button = (t) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'orrsend'; b.innerHTML = SEND; b.title = TIP; b.setAttribute('aria-label', t); b.onclick = act; return b; };
     if (s.status === 'queued') { el.append(span('orrery is reading…', 'orrnote')); return; }
     if (s.status === 'following') {
       const a = document.createElement('a');
@@ -110,6 +114,8 @@
       + '.orr a{overflow-wrap:anywhere}'
       + '.bar .orr a{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:24rem}'
       + '.orrfacts{padding:6px 12px;font-size:.85rem;border-bottom:1px solid #8884}.orrname{font-weight:600}'
+      + '.orrsend{display:inline-flex;align-items:center;justify-content:center;padding:2px 6px;line-height:1}'
+      + '.orrsend svg{width:1.15em;height:1.15em;display:block}'
       + '.orrnote{color:var(--muted,#8a8a8a)}.orrbad{color:var(--error,#c0392b)}';
     document.head.append(st);
   }
