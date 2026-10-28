@@ -2165,7 +2165,7 @@
       %^  remote-load-poke-wait  u.shp
         :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
         [%poke [/lattice %share-notice] `action:ls`[%add npax mode]]
-      ~s15
+      ~s5
     %+  send-json  eyre-id
     (pairs:enjs:format ~[['ok' b+&] ['notified' b+told]])
   ::  shared-with-me: the notices other ships sent us. Claims, not
@@ -2828,7 +2828,7 @@
       %^  remote-load-poke-wait  u.shp
         :-  [/comment-notice %& (fall base desk-base:lu) %'comments.sig']
         [%poke [/lattice %comment-action] `comment-action:lc`[(pax-of u.page) body]]
-      ~s15
+      ~s5
     ::  303 back to the reader view of the page just commented on, the same
     ::  shape /comment uses for its own redirect. A plain form submit here
     ::  used to land on this route's raw JSON body, replacing the whole
@@ -2890,7 +2890,7 @@
       %^  remote-load-poke-wait  u.shp
         :-  [/forum-post %& (fall base desk-base:lu) %'forum.sig']
         [%poke [/lattice %forum-action] `action:ft`u.act]
-      ~s15
+      ~s5
     (send-json eyre-id (pairs:enjs:format ~[['ok' b+&] ['sent' b+sent]]))
       ::  bookmark the current browser url (title defaults to the url). Newest
       ::  first, deduped by url. Shown under Browser on the home page.
@@ -5395,7 +5395,7 @@
     %^  remote-load-poke-wait  u.shp
       :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
       [%poke [/lattice %share-notice] `action:ls`[%add (snoc bpath %content) 'read']]
-    ~s15
+    ~s5
   %+  send-json  eyre-id
   (pairs:enjs:format ~[['ok' b+&] ['notified' b+told]])
 ::  +apply-forum-notice: a forum action poked by ANOTHER ship over /forum.sig.
@@ -8080,16 +8080,26 @@
   =/  bases=(list path)  peer-bases:lu
   |-  ^-  form:m
   ?~  bases  (pure:m ~)
+  ::  a short per-base bound: a peer running lattice answers /pub/index in a
+  ::  few seconds, so do not sit on the full remote-timeout for a wrong layout
+  ::  or an unreachable peer, which blocks the user's request (a cross-ship
+  ::  comment/share send) long enough for eyre to drop the channel.
   ;<  ms=(unit view:nexus)  bind:m
-    (peek-remote-wait [%& %& (weld i.bases /pub) %index] shp)
+    (peek-remote-wait-in [%& %& (weld i.bases /pub) %index] shp ~s8)
   ?:  ?&(?=(^ ms) ?=([%file *] u.ms))  (pure:m `i.bases)
   $(bases t.bases)
 ++  peek-remote-wait
   |=  [=road:tarball shp=@p]
+  (peek-remote-wait-in road shp remote-timeout)
+::  +peek-remote-wait-in: peek-remote-wait with a caller-chosen deadline, so a
+::  probe that only needs a fast answer (peer-base) is not stuck behind the full
+::  remote-timeout when a base is the wrong layout or the peer is unreachable.
+++  peek-remote-wait-in
+  |=  [=road:tarball shp=@p wait=@dr]
   =/  m  (fiber:fiber:nexus ,(unit view:nexus))
   ^-  form:m
   ;<  now=@da  bind:m  bowl-now
-  =/  until=@da  (add now remote-timeout)
+  =/  until=@da  (add now wait)
   ;<  pw=wire  bind:m  (nonce:io /peek)
   ;<  ~  bind:m  (send-dart:io %node pw (remote-road road shp) %peek ~ ~ %.y)
   ;<  ~  bind:m  (send-wait-dated until)
