@@ -68,6 +68,10 @@
 ::  the commons mirror (docs/obelisk-mirror.md). lm builds the urQL and
 ::  carries the result-type vocabulary matched to %obelisk the DESK.
 /<  lm   /lib/lattice-mirror.hoon
+::  the forum: types, board grubs, the pure state transition (docs/superpowers/specs).
+/<  ft   /lib/lattice-forum-types.hoon
+/<  fb   /lib/lattice-forum-board.hoon
+/<  fa   /lib/lattice-forum-act.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -186,6 +190,22 @@
         ::  crash on it, killing the writer fiber and hanging every publish.
         ::  The counter is one bare atom and /mar/ud.hoon already is that mark.
             [%fall %& [/pub %meta] [[/ %ud] 0]]
+        ::  /forum: the forum (docs/superpowers/specs, State layout). A
+        ::  board is a directory of [/ %noun] grubs, each [%1 shape], laid
+        ::  by +apply-forum:
+        ::    /forum/boards/<name>/pub/{card,roles,conf}
+        ::    /forum/boards/<name>/content/{posts,threads,votes}/b<k>
+        ::    /forum/boards/<name>/content/{pins,sidebar}
+        ::  Boards are made at runtime, so the covering row is the boards
+        ::  DIRECTORY (as /know/vault is): it carries every board's grubs
+        ::  through a reload. /forum/members/<name> is a (set @p) roster
+        ::  per board, /forum/seen the unread high-water per board, and
+        ::  /forum/limits the rate-limit state per [ship board]; the last
+        ::  two start as an empty [%1 ~] map.
+            [%fall %| /forum/boards empty-dir:loader]
+            [%fall %| /forum/members empty-dir:loader]
+            [%fall %& [/forum %seen] [[/ %noun] [%1 ~]]]
+            [%fall %& [/forum %limits] [[/ %noun] [%1 ~]]]
         ::  /salt: the private salt behind every published revision's scry
         ::  id (+page-id:lp). Outside /pub, so no peer can read it; 0 until
         ::  +ensure-pub-ids mints it. Covered, because a new salt renames
@@ -4766,6 +4786,100 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   (poke-writer %history-action act)
+::  +forum-owner-only: the board-level actions. +act:fa has no owner guard
+::  (it only checks roles), so +apply-forum refuses these unless the sender
+::  is us. Nothing else may be added to the cross-ship inbox's reach: a
+::  caller with a foreign src gets this refusal from the one writer.
+::
+++  forum-owner-only
+  |=  act=action:ft
+  ^-  ?
+  ?=(?(%create-board %delete-board %set-role %set-public %set-prune %edit-board-info) -.act)
+::  +forum-read-grubs: every grub under a board's directory, relative to it
+::  (pax last = grub name), or ~ if there is no such board. Read by noun,
+::  so a boomed grub still reaches +load:fb, which names what it cannot read.
+::
+++  forum-read-grubs
+  |=  [up=@ud bdir=path]
+  =/  m  (fiber:fiber:nexus ,(unit (list grub:fb)))
+  ^-  form:m
+  ;<  v=view:nexus  bind:m  (peek:io (rv up bdir) ~)
+  ?.  ?=([%ball *] v)  (pure:m ~)
+  (pure:m `(forum-ball-grubs ball.v ~))
+++  forum-ball-grubs
+  |=  [b=ball:tarball rel=path]
+  ^-  (list grub:fb)
+  =/  fils  ?~(fil.b ~ contents.u.fil.b)
+  =/  here=(list grub:fb)
+    %+  turn  ~(tap in ~(key by fils))
+    |=  nom=@ta
+    [(weld rel /[nom]) (sang-noun:tarball sang:(~(got by fils) nom))]
+  =/  kids=(list grub:fb)
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=  [nom=@ta kid=ball:tarball]
+    (forum-ball-grubs kid (weld rel /[nom]))
+  (weld here kids)
+::  +forum-put: put the changed grubs of a board and cull the gone ones.
+::
+++  forum-put
+  |=  [up=@ud bdir=path puts=(list grub:fb) dels=(list path)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m  (ensure-dirs up /forum/boards (slag 2 bdir))
+  ;<  ~  bind:m
+    |-  ^-  form:m
+    ?~  puts  (pure:m ~)
+    ;<  ~  bind:m  (ensure-dirs up bdir (snip pax.i.puts))
+    ;<  ~  bind:m
+      (put-file (rf up (weld bdir (snip pax.i.puts)) (rear pax.i.puts)) [/ %noun] val.i.puts)
+    $(puts t.puts)
+  |-  ^-  form:m
+  ?~  dels  (pure:m ~)
+  ;<  *  bind:m  (cull-soft:io (rf up (weld bdir (snip i.dels)) (rear i.dels)))
+  $(dels t.dels)
+::  +apply-forum: one forum action by `src`, in the writer. A board-level
+::  action from anyone but us is refused here. Create and delete make and cull
+::  the whole directory (not in +act:fa); every other action deep-peeks the
+::  board, runs +act:fa, writes only the grubs it changed and culls the ones
+::  it removed (+gone:fb, as after delete-post).
+::
+++  apply-forum
+  |=  [now=@da src=@p act=action:ft]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  our=@p  bind:m  bowl-our
+  ?:  &((forum-owner-only act) !=(src our))
+    (refuse "forum: {<-.act>} is owner-only")
+  =/  tail  +.act
+  =/  nom=@ta  ?@(tail tail ;;(@ta -.tail))
+  ?:  |(=('' nom) !((sane %tas) nom))  (refuse "forum: bad board name")
+  =/  bdir=path  /forum/boards/[nom]
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up bdir)
+  ?:  ?=(%create-board -.act)
+    ?^  gs  (refuse "forum: board exists: {(trip nom)}")
+    ?:  =('' title.act)  (refuse "forum: a board needs a title")
+    =/  info=board-info:ft
+      :*  nom
+          (crip (scag 200 (trip title.act)))
+          (crip (scag 2.000 (trip description.act)))
+          our
+          now
+          default-role.act
+          %.y
+      ==
+    =/  brd=board:ft  [info ~ 1 ~ ~ ~ ~ '' ~]
+    (forum-put up bdir ~(tap by (grubs:fb brd)) ~)
+  ?~  gs  (refuse "forum: no such board: {(trip nom)}")
+  ?:  ?=(%delete-board -.act)
+    ;<  *  bind:m  (cull-soft:io (rv up bdir))
+    (pure:m ~)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  (refuse "forum: board unreadable: {(trip p.lod)}")
+  =/  res=(each [brd=board:ft puts=(list grub:fb)] @t)  (act:fa p.lod src now act)
+  ?:  ?=(%| -.res)  (refuse "forum: refused: {(trip p.res)}")
+  (forum-put up bdir puts.p.res (gone:fb p.lod brd.p.res))
 ::  +apply-eval: page create/command/delete, in the writer fiber.
 ::
 ++  apply-eval
@@ -4776,6 +4890,8 @@
   ::  name.act only resolves after ?- narrows the fork (%del is a 2-cell,
   ::  the others 3-cells. The face sits at different axes).
   ?-  -.act
+      %forum
+    (apply-forum now src.act act.act)
       %make
     ;<  ~  bind:m  (make-page root pax.act src.act)
     ::  a shared page's vault copy follows every write, not just the share click

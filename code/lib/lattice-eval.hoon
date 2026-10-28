@@ -14,6 +14,7 @@
 ::    [dat=(unit *) dep=(list path)]
 ::  ~ dat means "no change". dep is the FULL dependency list each run.
 ::
+/<  ft  /lib/lattice-forum-types.hoon
 |%
 ::  +$  eval-action: page writes poked at the writer fiber (main.sig).
 ::
@@ -45,6 +46,10 @@
       [%page-sensitive pax=path on=?]   ::  mark/unmark a page (or folder) sensitive
       [%legacy-seen imported=@ud]       ::  retired %lattice agent dealt with
       [%legacy-pages rels=(list path)]  ::  page rels this migration triggered
+      ::  one forum action by `src`. The writer is the only place a forum
+      ::  board is written. A board-level action (create/delete board, set
+      ::  role/public/prune, edit info) is refused unless src is our.
+      [%forum src=@p act=action:ft]
   ==
 ::  +$  form-cfg: a page's public-form limits. cap=0 means no absolute limit.
 ::  gap=0 means no cooldown. Set by the owner (page-forms), read by serve-form
