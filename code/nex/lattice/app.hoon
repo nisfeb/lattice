@@ -9585,16 +9585,22 @@
     head
     "</head><body>"  bar  inner  "</body></html>"
   ==
-::  +nav-controls: the reader bar's shared left half, back/forward (+nav-script
-::  drives them), home, the omnibar input holding `current`, and Go. Per-surface
+::  +nav-history: the back/forward buttons (+nav-script drives them). Split
+::  out because the anonymous clearweb tier gets these and nothing else.
+::
+++  nav-history
+  ^-  tape
+  ;:  weld
+    "<button type=\"button\" class=\"navb\" id=\"navb\" title=\"back\" disabled>&#8592;</button>"
+    "<button type=\"button\" class=\"navb\" id=\"navf\" title=\"forward\" disabled>&#8594;</button>"
+  ==
+::  +nav-controls: the reader bar's shared controls, home, the omnibar input holding `current`, and Go. Per-surface
 ::  extras (edit, star, orrery slot, autocomplete) stay at the call sites.
 ::
 ++  nav-controls
   |=  current=tape
   ^-  tape
   ;:  weld
-    "<button type=\"button\" class=\"navb\" id=\"navb\" title=\"back\" disabled>&#8592;</button>"
-    "<button type=\"button\" class=\"navb\" id=\"navf\" title=\"forward\" disabled>&#8594;</button>"
     "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
     "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search your pages\">"
     "<button type=\"submit\">Go</button>"
@@ -9626,14 +9632,16 @@
   |=  authed=?
   ^-  tape
   ::  single-quote cords: braces in a double-quoted tape INTERPOLATE.
-  %+  weld
+  ;:  weld
     %-  trip
     '<style>.cbar{display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid #8884}.cbar button,.cbar a.home{font:inherit;padding:4px 12px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer;text-decoration:none}.cbar button[disabled]{opacity:.35;cursor:default}.cbar input{flex:1;font:inherit;padding:5px 8px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbar .hamw{position:relative;margin-left:auto;display:flex}#hammenu{position:absolute;right:0;top:100%;z-index:60;background:#fff;border:1px solid #8886;border-radius:6px;min-width:160px;display:flex;flex-direction:column;padding:4px;box-shadow:0 4px 14px #0003}@media(prefers-color-scheme:dark){#hammenu{background:#1a1a1a}}#hammenu a{padding:7px 10px;text-decoration:none;color:inherit;border-radius:4px}#hammenu a:hover{background:#8882}#hammenu[hidden]{display:none}</style><form class="cbar" action="/apps/lattice" method="get">'
-  ?.  authed  "</form>"
-  ;:  weld
-    (nav-controls "")
-    nav-hamburger
-    "</form>"
+    nav-history
+    ?.  authed  "</form>"
+    ;:  weld
+      (nav-controls "")
+      nav-hamburger
+      "</form>"
+    ==
   ==
 ::  `preview`: the editor's preview frame asked (?preview=1). An html answer
 ::  gets the editor's flat scrollbar rules appended, because a document that
@@ -11744,6 +11752,7 @@
     ::  a row of nav links lives in the hamburger now — including the editor,
     ::  the knowledge store, bookmarks and settings — because an authored
     ::  /index takes over the home view and the bar is what survives it.
+    nav-history
     (nav-controls current)
     bmbtn
     nav-hamburger
@@ -11803,6 +11812,7 @@
     (trip 'html,body{height:100%}body.bp{display:flex;flex-direction:column;margin:0}.bp main{max-width:none;margin:0;padding:0;flex:1;display:flex}.bp .pf{flex:1;width:100%;border:0}.bar .eb,.bar .bm{display:flex;align-items:center;gap:.3em;padding:0 12px;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;background:transparent;cursor:pointer;font-size:1rem}.bar .eb:hover,.bar .bm:hover{border-color:var(--accent,#1a6ed8)}')
     "</style></head><body class=\"bp\">"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
+    nav-history
     (nav-controls current)
     editbtn
     "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
