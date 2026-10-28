@@ -1400,6 +1400,11 @@
   ::  (rear suffix) route table below.
   ?:  &(?=([%x *] suffix) =(%'GET' method.request.req))
     (explore eyre-id our t.suffix args url.request.req)
+  ::  cross-ship forum read: GET /forum-remote/<host>/<board>[/<post>]. Owner-
+  ::  only (gated above; a key never reaches it, it is not in +wants:ky), the
+  ::  viewer browsing a peer's PUBLIC board over scry. POST is Task 3.
+  ?:  &(?=([%'forum-remote' *] suffix) =(%'GET' method.request.req))
+    (serve-forum-remote eyre-id t.suffix args)
   ::  the owner's forum action forms: POST /forum/... (behind the owner gate
   ::  and the CSRF refusal above; a key never reaches here, it is not
   ::  `authenticated`). Each pokes the one writer, then 303s back.
@@ -4966,6 +4971,36 @@
     |=  [nom=@ta kid=ball:tarball]
     (forum-ball-grubs kid (weld rel /[nom]))
   (weld here kids)
+::  +forum-read-grubs-remote: the remote analogue of +forum-read-grubs. A
+::  peer's public board is granted as two dirs in its /public usergroup:
+::  /forum/boards/<board>/pub and /content (+send-public-how, line 12448).
+::  Resolve the host's lattice base (+peer-base-cached), deep-peek each dir
+::  built the same way +peek-page-at builds a remote road (an absolute %|
+::  dir road; +peek-remote-wait adds the ames prefix), turn each ball to
+::  grubs with its own /pub or /content prefix, and weld. The result is
+::  exactly the grub set a local single-dir read of /forum/boards/<board>
+::  produces, so load:fb assembles the same board.
+::
+::  ~ when the host is unreachable, not running lattice, timed out, or the
+::  board is not granted (private, deleted, or missing): a peek resolves to
+::  ~ or a non-ball, and the caller surfaces a 504, never a half page.
+::
+++  forum-read-grubs-remote
+  |=  [host=@p board=@ta]
+  =/  m  (fiber:fiber:nexus ,(unit (list grub:fb)))
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  (peer-base-cached host)
+  ?~  base  (pure:m ~)
+  =/  bdir=path  (weld u.base /forum/boards/[board])
+  ;<  pv=(unit view:nexus)  bind:m
+    (peek-remote-wait [%& %| (weld bdir /pub)] host)
+  ?.  ?=([~ %ball *] pv)  (pure:m ~)
+  ;<  cv=(unit view:nexus)  bind:m
+    (peek-remote-wait [%& %| (weld bdir /content)] host)
+  ?.  ?=([~ %ball *] cv)  (pure:m ~)
+  =/  pg=(list grub:fb)  (forum-ball-grubs ball.u.pv /pub)
+  =/  cg=(list grub:fb)  (forum-ball-grubs ball.u.cv /content)
+  (pure:m `(weld pg cg))
 ::  +forum-put: put the changed grubs of a board and cull the gone ones.
 ::
 ++  forum-put
@@ -10182,6 +10217,57 @@
     ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
     (render-thread:fre c brd u.pid)
   (send-html eyre-id (forum-doc page "" theme-link %.n))
+::  +serve-forum-remote: GET /apps/lattice/forum-remote/<host>/<board>[/<post>]
+::  (owner-gated; see the route at the /x explorer). Render a peer's PUBLIC
+::  board or thread through the same renderer as the local view, with the
+::  action forms ENABLED (authed=%.y, who=our): a viewer who is a mod or
+::  author on the host's board sees the delete/pin controls, and every form
+::  posts to the matching forum-remote POST path (Task 3). The renderer bakes
+::  the board into `base`, so every href and form action hangs off
+::  /apps/lattice/forum-remote/<host>/<board> and re-enters this route.
+::
+::  An unreachable host, a non-lattice peer, a timeout, or a private/missing/
+::  deleted board all read as ~ from +forum-read-grubs-remote and surface as
+::  the 504 "unreachable or denied" response, the same clean error the
+::  cross-ship /browse read gives (line 1999), never a crash or half page.
+::  A board that loads but is not public is denied the same way: the host
+::  never grants a private board, so this is belt-and-braces.
+::
+++  serve-forum-remote
+  |=  [eyre-id=@ta pax=path args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  ?=([host=@ta board=@ta *] pax)  (send-err eyre-id 404 'not found')
+  =/  host=(unit @p)  (slaw %p i.pax)
+  ?~  host  (send-err eyre-id 404 'not found')
+  =/  board=@ta  i.t.pax
+  ?.  ((sane %tas) board)  (send-err eyre-id 404 'not found')
+  ?.  ?=(?(~ [@ ~]) t.t.pax)  (send-err eyre-id 404 'not found')
+  =/  pid=(unit @ud)  ?~(t.t.pax ~ ((slat %ud) i.t.t.pax))
+  ?:  &(?=(^ t.t.pax) ?=(~ pid))  (send-err eyre-id 404 'not found')
+  ;<  our=@p  bind:m  bowl-our
+  ;<  now=@da  bind:m  bowl-now
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs-remote u.host board)
+  ?~  gs  (send-err eyre-id 504 'unreachable or denied')
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  (send-err eyre-id 504 'unreachable or denied')
+  =/  brd=board:ft  p.lod
+  ?.  public.info.brd  (send-err eyre-id 504 'unreachable or denied')
+  ?:  &(?=(^ pid) !(~(has by posts.brd) u.pid))
+    (send-err eyre-id 404 'not found')
+  =/  base=tape
+    "/apps/lattice/forum-remote/{(scow %p u.host)}/{(trip board)}"
+  =/  c=ctx:fre
+    :*  our
+        %.y
+        now
+        base
+        ""
+    ==
+  =/  page=[title=@t body=manx]
+    ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
+    (render-thread:fre c brd u.pid)
+  (send-html eyre-id (forum-doc page "" "" %.y))
 ::  +forum-load-board: a board by name, or ~ if missing or unreadable.
 ::
 ++  forum-load-board
