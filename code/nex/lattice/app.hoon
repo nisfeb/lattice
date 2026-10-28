@@ -2041,11 +2041,16 @@
       (send-err eyre-id 400 'banlist is full')
     ;<  ~  bind:m
       (over:io (ban-road up) [[/lattice %banned] (~(put in bans) u.who)])
-    ::  and what the ship already wrote goes too, its moons' as well: a ban
-    ::  that freed no slots left the page full (security audit run-1)
+    ::  REVOKE FIRST. The group revocation is the security-critical half of a
+    ::  ban: it cuts the banned ship's private-board READ grants. The culls are
+    ::  best-effort cleanup and can fault (a deep board peek, a missing grub);
+    ::  if one did, running it before the revocation would kill this fiber with
+    ::  the grants still in place. So strip the groups (after the banned-flag
+    ::  write above, also durable), THEN cull what the ship wrote, its moons'
+    ::  too: a ban that freed no slots left the page full (security audit run-1).
+    ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
     ;<  *  bind:m  (cull-comments-of u.who)
     ;<  *  bind:m  (cull-forum-of u.who)
-    ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
     ::  the ban is written; the revocation is not. Say so: a ban that left
     ::  the grants in place is the label this route exists not to be.
     ?~  n
@@ -2171,8 +2176,8 @@
   ::  ── private forum boards: invite and revoke (owner) ──
   ::  A private board's members are a per-board usergroup, forum-<board>, whose
   ::  peek roads are the board's pub and content dirs (so the grubbery weir
-  ::  does the read gate), plus the /forum/members/<board> roster that
-  ::  +apply-forum-notice checks before it lets a post land. Invite lays both
+  ::  does the read gate), plus the /forum/members/<board> roster that the
+  ::  writer (+forum-remote-apply) checks before it lets a post land. Invite lays both
   ::  and sends the invitee a share notice; revoke takes the ship out of both.
       [%'POST' %forum-invite]
     (handle-forum-invite eyre-id args our up %.y)
@@ -4961,19 +4966,36 @@
   ?~  dels  (pure:m ~)
   ;<  *  bind:m  (cull-soft:io (rf up (weld bdir (snip i.dels)) (rear i.dels)))
   $(dels t.dels)
-::  +apply-forum: one forum action by `src`, in the writer. A board-level
-::  action from anyone but us is refused here. Create and delete make and cull
-::  the whole directory (not in +act:fa); every other action deep-peeks the
-::  board, runs +act:fa, writes only the grubs it changed and culls the ones
-::  it removed (+gone:fb, as after delete-post).
+::  +apply-forum: route one forum action to the writer. The OWNER route (src
+::  is our) applies directly and a refusal faults in +apply-eval. A CROSS-SHIP
+::  route (src a remote ship, stamped from the transport by the /forum.sig
+::  inbox) runs every gate HERE in the one writer -- ban-drop, rate limit,
+::  owner-gate, private-board membership, role and caps -- applies on success,
+::  and sends the poster a refusal note on failure. The inbox fiber never
+::  writes /forum, so /main.sig is the sole writer and no second fiber can
+::  race the board grubs (next-post-id, buckets). This is Task 4's single
+::  writer, held across the trust boundary.
 ::
-::  Returns ~ when it landed, or `reason when it refused. The caller decides
-::  what to do with a reason: the owner writer (+apply-eval) records it as a
-::  fault; the cross-ship inbox (+apply-forum-notice) sends it back to the
-::  poster as a note. Either way the gate is identical, so a remote poke can
-::  never do more than our own owner route can.
+::  Returns ~ when it landed OR when it was a remote action (whose refusal is
+::  already a note, never a fault), or `reason for an OWNER refusal, which
+::  +apply-eval records as a fault. A board-level action only ever lands for
+::  the owner, so +apply-eval gates its /public re-lay on src==our.
 ::
 ++  apply-forum
+  |=  [now=@da src=@p act=action:ft]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  our=@p  bind:m  bowl-our
+  ?:  =(src our)  (apply-forum-core now src act)
+  (apply-forum-remote now src act)
+::  +apply-forum-core: apply one forum action by `src`, in the writer. Create
+::  and delete make and cull the whole board directory (not in +act:fa); every
+::  other action deep-peeks the board, runs +act:fa, writes only the grubs it
+::  changed and culls the ones it removed (+gone:fb, as after delete-post).
+::  Returns ~ on success or `reason on refusal. The owner-only gate is defence
+::  in depth: the cross-ship path refuses board-level actions before here.
+::
+++  apply-forum-core
   |=  [now=@da src=@p act=action:ft]
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
@@ -5014,6 +5036,92 @@
   ;<  ~  bind:m  (forum-put up bdir puts.p.res (gone:fb p.lod brd.p.res))
   ;<  ~  bind:m  (bump-beacon %forum now)
   (pure:m ~)
+::  +apply-forum-remote: a forum action from a REMOTE ship, author stamped from
+::  the transport. Runs, in the ONE writer, the gates the inbox used to run: a
+::  banned ship is dropped silently; the per-[ship board] rate limit is
+::  consulted BEFORE any refusal note and a cooldown is accrued on every
+::  attempt that clears the limit (success OR refusal), so a ship streaming
+::  refused pokes backs off; a refusal (bad board, owner-only, private, role,
+::  caps, or +act) rides back to the poster as a best-effort note. Always
+::  returns ~: a remote refusal is a note, never a fault.
+::
+++  apply-forum-remote
+  |=  [now=@da src=@p act=action:ft]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ::  a banned ship is dropped silently: a refusal note would just confirm the
+  ::  address is live, the same reasoning the comment and share inboxes use.
+  ;<  bans=banned:ls  bind:m  read-banned
+  ?:  (is-banned:ls bans src)  (pure:m ~)
+  =/  tail  +.act
+  =/  nom=@ta  ?@(tail tail ;;(@ta -.tail))
+  =/  name=board-name:ft  ;;(board-name:ft nom)
+  =/  valid-name=?  &(!=('' nom) ((sane %tas) nom))
+  ::  load the board (for the mod rate-exemption and the member gate) when the
+  ::  payload names a valid, existing one; otherwise there is no board to load.
+  ;<  gs=(unit (list grub:fb))  bind:m
+    ?.  valid-name  (pure:(fiber:fiber:nexus ,(unit (list grub:fb))) ~)
+    (forum-read-grubs up /forum/boards/[nom])
+  =/  obrd=(unit board:ft)
+    ?~  gs  ~
+    =/  lod=(each board:ft @t)  (load:fb u.gs)
+    ?:(?=(%| -.lod) ~ `p.lod)
+  ::  the rate gate, FIRST, before any refusal note. A mod (owner or an
+  ::  explicit board mod) is exempt; with no board there is no mod to exempt,
+  ::  so the plain cooldown applies (this is +rate-ok:fr for the no-board case).
+  ;<  lim=limits:fr  bind:m  read-forum-limits
+  =/  mod=?  ?~(obrd %.n (is-mod:fr src u.obrd))
+  =/  entry  (~(get by lim) [src name])
+  =/  ratek=?
+    ?:  mod  %.y
+    ?~  entry  %.y
+    (gte (sub now last.u.entry) cooldown.u.entry)
+  ?.  ratek
+    (forum-note-send src name 'forum: you are acting too fast, slow down and retry')
+  ::  run the gates and the apply, collecting any refusal reason.
+  ;<  reason=(unit @t)  bind:m  (forum-remote-apply now src name act obrd)
+  ::  accrue backoff on success AND on refusal (mods excepted), so a stream of
+  ::  refused pokes keeps lengthening the cooldown.
+  ;<  ~  bind:m
+    ?:  mod  (pure:(fiber:fiber:nexus ,~) ~)
+    (write-forum-limits (rate-update:fr src name now lim))
+  ?~  reason  (pure:m ~)
+  (forum-note-send src name u.reason)
+::  +forum-remote-apply: the per-action gates for a REMOTE forum action -- bad
+::  board name, owner-only, board-exists, private-board membership, then role
+::  and caps so the refusal names itself -- then +apply-forum-core. +act:fa
+::  re-checks role and caps; these run here only to make the note specific.
+::
+++  forum-remote-apply
+  |=  [now=@da src=@p name=board-name:ft act=action:ft obrd=(unit board:ft)]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ?:  |(=('' name) !((sane %tas) name))  (pure:m `'forum: bad board name')
+  ::  board-level actions are owner-only; a remote src is never our.
+  ?:  (forum-owner-only act)
+    (pure:m `(crip "forum: {<-.act>} is owner-only"))
+  ?~  obrd  (pure:m `(crip "forum: no such board: {(trip name)}"))
+  ::  a PRIVATE board takes content only from its roster (/forum/members).
+  ;<  mem=(set @p)  bind:m  (read-forum-members name)
+  ?:  &(!public.info.u.obrd !(~(has in mem) src))
+    (pure:m `'forum: this board is private; you are not a member')
+  ::  role and caps for a post or a comment (votes need neither, as in +act).
+  =/  need=(unit @t)
+    ?+  -.act  ~
+        %new-post
+      ?.  (can-post:fr src u.obrd)  `'forum: your role on this board cannot post'
+      ?.  (sane-post:fr title.act url.act body.act)
+        `'forum: a post needs a title (300 bytes), a url (2,048) and a body (40,000)'
+      ~
+    ::
+        %new-comment
+      ?.  (can-post:fr src u.obrd)  `'forum: your role on this board cannot comment'
+      ?.  (sane-comment:fr body.act)  `'forum: a comment holds 1 to 10,000 bytes'
+      ~
+    ==
+  ?^  need  (pure:m need)
+  (apply-forum-core now src act)
 ::  +forum-boards: the names of every board on this ship.
 ::
 ++  forum-boards
@@ -5147,7 +5255,8 @@
   (crip (weld "forum-" (trip nom)))
 ::  +read-forum-members / +write-forum-members: the /forum/members/<board>
 ::  roster, stored [%1 (set @p)]. Empty when never written. The owner is never
-::  listed; +apply-forum-notice lets src==our through regardless.
+::  listed; the owner route (+apply-forum-core, src==our) never reaches the
+::  member gate, which is only run on the remote path (+forum-remote-apply).
 ::
 ++  read-forum-members
   |=  nom=@ta
@@ -5227,17 +5336,13 @@
   %+  send-json  eyre-id
   (pairs:enjs:format ~[['ok' b+&] ['notified' b+told]])
 ::  +apply-forum-notice: a forum action poked by ANOTHER ship over /forum.sig.
-::  Everything that decides whether it lands is read here, never from the
-::  payload: the author is the transport source (+get-poke-src), the banlist
-::  is ours, and the role/caps/rate checks and +act run against OUR board
-::  state. A payload can only ever name WHICH board and WHAT content.
-::
-::  This is not a second writer: it forwards to +apply-forum (the one writer
-::  arm) with src stamped from the transport, so the Task 6 owner gate still
-::  refuses every board-level action from a remote src. It adds only the two
-::  things the inbox owns: the banlist drop and the per-ship rate limit (+act
-::  leaves the rate to the caller), and it turns a refusal into a note back to
-::  the poster rather than a fault.
+::  The inbox fiber does the minimum: read the author from the TRANSPORT (never
+::  the payload), ignore a sourceless (local) poke, and hand the action to the
+::  ONE writer with the author stamped. It never reads board state and never
+::  writes /forum. Every gate -- ban-drop, rate limit, owner-gate, private-board
+::  membership, role, caps -- and the refusal note live in the writer
+::  (+apply-forum-remote), so /main.sig is the sole writer of /forum and no
+::  second fiber can race the board grubs (Task 4).
 ::
 ++  apply-forum-notice
   |=  [=from:fiber:nexus =sage:tarball now=@da]
@@ -5246,102 +5351,40 @@
   =/  src=(unit @p)  (get-poke-src:io from)
   ::  a sourceless (local) poke belongs to the owner writer, not here
   ?~  src  (pure:m ~)
-  ;<  bans=banned:ls  bind:m  read-banned
-  ::  a banned ship is dropped silently: a refusal note would just confirm the
-  ::  address is live, the same reasoning the comment and share inboxes use.
-  ?:  (is-banned:ls bans u.src)  (pure:m ~)
-  ::  a host telling US one of our cross-ship posts was refused: store it.
+  ::  a host telling US one of our cross-ship posts was refused: route the
+  ::  store through the one writer, so the inbox fiber never writes /forum.
   ?:  =([/lattice %forum-note] p.sage)
-    (store-forum-note u.src now q.q.sage)
+    (poke-eval [%forum-note-store u.src q.q.sage])
   ::  otherwise the one shape we accept is a forum action. Gate on the blot
   ::  before parsing so a stray poke of another mark is ignored not misread.
   ?.  =([/lattice %forum-action] p.sage)  (pure:m ~)
   ::  clam under mule. A payload that is not an action (bad shape, oversize,
-  ::  anything) is a refusal, not a fault and never a crash. With no board to
-  ::  name we drop it silently, as the comment inbox drops an unparseable one.
+  ::  anything) is dropped silently here; a well-formed action goes to the
+  ::  writer, which checks everything and notes any refusal to the poster.
   =/  na=(unit action:ft)  (mole |.(;;(action:ft q.q.sage)))
   ?~  na  (pure:m ~)
-  =/  act=action:ft  u.na
-  =/  tail  +.act
-  =/  nom=@ta  ?@(tail tail ;;(@ta -.tail))
-  =/  name=board-name:ft  ;;(board-name:ft nom)
-  ?:  |(=('' name) !((sane %tas) name))
-    (forum-note-send u.src name 'forum: bad board name')
-  ::  board-level actions are owner-only. A remote src is never our, so
-  ::  +apply-forum refuses via +forum-owner-only; we relay that as a note.
-  ::  This is the Task 6 gate holding across the trust boundary.
-  ?:  (forum-owner-only act)
-    ;<  reason=(unit @t)  bind:m  (apply-forum now u.src act)
-    ?~  reason  (pure:m ~)
-    (forum-note-send u.src name u.reason)
-  ::  a content or mod action. Load the board for the role, caps and rate
-  ::  checks. +act re-checks role and caps, but running them here lets the
-  ::  refusal come back as a note; the rate limit is ours alone to enforce.
-  ;<  up=@ud  bind:m  nexus-up
-  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[name])
-  ?~  gs  (forum-note-send u.src name (crip "forum: no such board: {(trip name)}"))
-  =/  lod=(each board:ft @t)  (load:fb u.gs)
-  ?:  ?=(%| -.lod)
-    (forum-note-send u.src name (crip "forum: board unreadable: {(trip p.lod)}"))
-  =/  brd=board:ft  p.lod
-  ::  a PRIVATE board takes content only from its roster (/forum/members).
-  ::  The poke road is public, so any ship can send one; this is the gate.
-  ::  u.src is always a foreign transport sender here (a local poke returned
-  ::  at the top), so the owner needs no exemption in this arm.
-  ;<  mem=(set @p)  bind:m  (read-forum-members name)
-  ?:  &(!public.info.brd !(~(has in mem) u.src))
-    (forum-note-send u.src name 'forum: this board is private; you are not a member')
-  (forum-inbox-content u.src name brd act now)
-::  +forum-inbox-content: the role, caps, rate and apply steps of a content or
-::  mod action from a foreign ship (split out so the private-board member gate
-::  in +apply-forum-notice runs first).
-::
-++  forum-inbox-content
-  |=  [src=@p name=board-name:ft brd=board:ft act=action:ft now=@da]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ::  role and caps for a post or a comment (votes need neither, as in +act)
-  =/  need=(unit @t)
-    ?+  -.act  ~
-        %new-post
-      ?.  (can-post:fr src brd)  `'forum: your role on this board cannot post'
-      ?.  (sane-post:fr title.act url.act body.act)
-        `'forum: a post needs a title (300 bytes), a url (2,048) and a body (40,000)'
-      ~
-    ::
-        %new-comment
-      ?.  (can-post:fr src brd)  `'forum: your role on this board cannot comment'
-      ?.  (sane-comment:fr body.act)  `'forum: a comment holds 1 to 10,000 bytes'
-      ~
-    ==
-  ?^  need  (forum-note-send src name u.need)
-  ::  the rate limit, per [ship board], against /forum/limits (mods exempt)
-  ;<  lim=limits:fr  bind:m  read-forum-limits
-  ?.  (rate-ok:fr src name brd now lim)
-    (forum-note-send src name 'forum: you are acting too fast, slow down and retry')
-  ::  apply through the one writer arm. src is the transport sender.
-  ;<  reason=(unit @t)  bind:m  (apply-forum now src act)
-  ?^  reason  (forum-note-send src name u.reason)
-  ::  it landed. record the rate slot, unless the actor is a mod (whose
-  ::  actions +rate-ok ignores anyway; skipping keeps the map from growing).
-  ?:  (is-mod:fr src brd)  (pure:m ~)
-  (write-forum-limits (rate-update:fr src name now lim))
+  (poke-eval [%forum u.src u.na])
 ::  +forum-note-send: tell a poster why their cross-ship action was refused.
-::  Best-effort, bounded: the note rides the poster's own /forum.sig back to
-::  it (same code, same road). We do not wait on the result; an offline poster
-::  simply never gets the note, exactly as a share notice is best-effort.
+::  FIRE-AND-FORGET: the note rides the poster's own /forum.sig back to it (same
+::  code, same road), emitted as a bare gall-poke effect that does NOT bind this
+::  fiber on the round trip. The writer runs this; it must never serialise
+::  behind a ~s15 remote wait, or a ship that never succeeds could force
+::  unbounded serialized outbound sends through the one writer. The ack/nack
+::  returns unawaited and is dropped, exactly as the local notice pokes are.
+::  An offline poster simply never gets the note, as a share notice is
+::  best-effort. (+remote-load-poke-wait is the owner route's variant that does
+::  wait, because an owner action has an HTTP response to carry the result.)
 ::
 ++  forum-note-send
   |=  [to=@p board=board-name:ft reason=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  base=(unit path)  bind:m  (peer-base-cached to)
-  ;<  sent=?  bind:m
-    %^  remote-load-poke-wait  to
-      :-  [/forum-note %& (fall base desk-base:lu) %'forum.sig']
-      [%poke [/lattice %forum-note] `[board-name:ft @t]`[board reason]]
-    ~s15
-  (pure:m ~)
+  =/  req=load:remo:nexus
+    :-  [/forum-note %& (fall base desk-base:lu) %'forum.sig']
+    [%poke [/lattice %forum-note] `[board-name:ft @t]`[board reason]]
+  %+  poke:io  &+&+[/sys/gall %'main.sig']
+  [[/ %gall-poke] [[to %grubbery] grubbery-load+req]]
 ::  +store-forum-note: a refusal note a host sent back about one of OUR posts.
 ::  The host is the transport sender, the payload names the board and reason.
 ::  Bounded like the comment store (this road is public); drop when full, the
@@ -5395,13 +5438,20 @@
   ::  the others 3-cells. The face sits at different axes).
   ?-  -.act
       %forum
-    ::  the owner route. A refusal reason is recorded as a fault here (the
-    ::  cross-ship inbox notes it to the poster instead; same +apply-forum).
+    ::  the one writer for both routes. An OWNER refusal (src is our) faults
+    ::  here; a REMOTE refusal was already noted to the poster inside
+    ::  +apply-forum-remote, which always returns ~, so this never faults for a
+    ::  remote src.
+    ;<  our=@p  bind:m  bowl-our
     ;<  reason=(unit @t)  bind:m  (apply-forum now src.act act.act)
     ?^  reason  (refuse (trip u.reason))
     ::  a board made, deleted or flipped public/private changes what /public
-    ::  may peek; re-lay the whole set (a no-op for every other action)
-    ?.  ?=(?(%create-board %delete-board %set-public) -.act.act)  (pure:m ~)
+    ::  may peek; re-lay the whole set (a no-op for every other action). Only
+    ::  the OWNER can land a board-level action (a remote one is always
+    ::  refused), so gate on src==our: a refused remote board op returns ~ with
+    ::  -.act.act still %create-board etc., and must not re-lay grants.
+    ?.  &(=(src.act our) ?=(?(%create-board %delete-board %set-public) -.act.act))
+      (pure:m ~)
     ::  a board made or deleted starts with no members: drop the old roster
     ::  and member group so a re-created name does not inherit them. Soft.
     ;<  ~  bind:m
@@ -5413,6 +5463,11 @@
         [%& %| (snoc ug-base (crip (weld (trip (forum-group-name nom)) ".grp")))]
       (pure:m ~)
     (send-public-how root)
+      %forum-note-store
+    ::  store a refusal note a host sent back about one of our cross-ship
+    ::  posts. Routed here from the /forum.sig inbox so /main.sig is the sole
+    ::  writer of /forum (the inbox fiber never writes).
+    (store-forum-note host.act now payload.act)
       %make
     ;<  ~  bind:m  (make-page root pax.act src.act)
     ::  a shared page's vault copy follows every write, not just the share click

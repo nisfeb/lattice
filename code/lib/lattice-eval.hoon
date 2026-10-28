@@ -50,6 +50,11 @@
       ::  board is written. A board-level action (create/delete board, set
       ::  role/public/prune, edit info) is refused unless src is our.
       [%forum src=@p act=action:ft]
+      ::  a refusal note a HOST sent back about one of our cross-ship posts,
+      ::  stored under /forum/notes. Routed through the writer so the forum
+      ::  inbox fiber (/forum.sig) never writes /forum itself: /main.sig is
+      ::  the single writer of the whole /forum tree.
+      [%forum-note-store host=@p payload=*]
   ==
 ::  +$  form-cfg: a page's public-form limits. cap=0 means no absolute limit.
 ::  gap=0 means no cooldown. Set by the owner (page-forms), read by serve-form
