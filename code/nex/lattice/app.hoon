@@ -10491,8 +10491,9 @@
 ::  ship (POST /forum-remote/<host>/<board>/...). Decodes the suffix and form
 ::  into an action:ft exactly as +serve-forum-post does, but pokes it at the
 ::  host (the /forum-post-remote send path) instead of the local writer, then
-::  303s back to the GET view so the page re-scries. It does not await a
-::  result: the host applies or refuses asynchronously (a refusal is a note).
+::  303s back to the GET view so the page re-scries. A best-effort poke with a
+::  short bounded delivery wait (~s5); the result, applied or refused, is
+::  asynchronous and surfaces as a note under /forum/notes.
 ::  The host stamps authorship from the transport; the payload carries none.
 ::  Owner-only/board actions (create, delete-board, mod/*) never appear as
 ::  forms on a remote board; such a suffix just redirects back unsent.
@@ -10566,11 +10567,11 @@
   ?~  res  (send-err eyre-id 400 'bad or missing forum form fields')
   ?~  act.u.res  (send-see-other eyre-id to.u.res)
   ;<  hbase=(unit path)  bind:m  (peer-base-cached u.host)
-  ;<  sent=?  bind:m
+  ;<  ?  bind:m
     %^  remote-load-poke-wait  u.host
       :-  [/forum-post %& (fall hbase desk-base:lu) %'forum.sig']
       [%poke [/lattice %forum-action] `action:ft`u.act.u.res]
-    ~s15
+    ~s5
   (send-see-other eyre-id to.u.res)
 ::  +clearweb-body: the rendered body of a public page, from a per-page cache
 ::  keyed by the data grub's revision. The md and gmi renders are the costly
