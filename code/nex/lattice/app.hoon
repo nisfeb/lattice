@@ -75,6 +75,7 @@
 ::  fr: the forum's role, caps and rate-limit rules. The cross-ship inbox
 ::  (/forum.sig) runs the rate limit, which +act leaves to the caller.
 /<  fr   /lib/lattice-forum-rules.hoon
+/<  fre  /lib/lattice-forum-render.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -1283,6 +1284,10 @@
   ::  sibling grubs, no command form. Everything else requires the owner.
   ?:  &(?=([%c ^] suffix) =(%'GET' method.request.req))
     (serve-clearweb eyre-id t.suffix authenticated.req)
+  ::  public forum boards: GET /forum/<board>[/<post>], read-only, the same
+  ::  anonymous surface as /c/. A private board 404s (+serve-forum-public).
+  ?:  &(?=([%forum ^] suffix) =(%'GET' method.request.req))
+    (serve-forum-public eyre-id t.suffix args)
   ::  public form submissions: POST /f/<page>. The ONLY unauthenticated WRITE,
   ::  and it is opt-in twice over. The page must be %clearweb AND carry a
   ::  /forms-on flag (owner-set). The body becomes one command to that page,
@@ -5127,8 +5132,11 @@
     ::  the owner route. A refusal reason is recorded as a fault here (the
     ::  cross-ship inbox notes it to the poster instead; same +apply-forum).
     ;<  reason=(unit @t)  bind:m  (apply-forum now src.act act.act)
-    ?~  reason  (pure:m ~)
-    (refuse (trip u.reason))
+    ?^  reason  (refuse (trip u.reason))
+    ::  a board made, deleted or flipped public/private changes what /public
+    ::  may peek; re-lay the whole set (a no-op for every other action)
+    ?.  ?=(?(%create-board %delete-board %set-public) -.act.act)  (pure:m ~)
+    (send-public-how root)
       %make
     ;<  ~  bind:m  (make-page root pax.act src.act)
     ::  a shared page's vault copy follows every write, not just the share click
@@ -9703,6 +9711,47 @@
     (peer-written pax)
   ?:  eg  (send-sandboxed eyre-id 'text/html' doc)
   (send-html eyre-id doc)
+::  +serve-forum-public: the anonymous read of a PUBLIC forum board
+::  (/forum/<board>) or one of its threads (/forum/<board>/<post>), through
+::  the same renderer as the owner's view with authed off, so no form shows.
+::  A private, missing or unreadable board is the same flat 404, so a private
+::  board's existence does not leak. The nearest clearweb `theme` at or above
+::  /page/forum/<board> is linked in the head, as on a clearweb page.
+::
+++  serve-forum-public
+  |=  [eyre-id=@ta pax=path args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  pax  (send-err eyre-id 404 'not found')
+  ?.  (levy `path`pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
+    (send-err eyre-id 404 'not found')
+  ?.  &((lte (lent pax) 2) ((sane %tas) i.pax))
+    (send-err eyre-id 404 'not found')
+  =/  nom=@ta  i.pax
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[nom])
+  ?~  gs  (send-err eyre-id 404 'not found')
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  (send-err eyre-id 404 'not found')
+  =/  brd=board:ft  p.lod
+  ?.  public.info.brd  (send-err eyre-id 404 'not found')
+  =/  pid=(unit @ud)
+    ?~(t.pax ~ ((slat %ud) i.t.pax))
+  ?:  &(?=(^ t.pax) |(?=(~ pid) !(~(has by posts.brd) u.pid)))
+    (send-err eyre-id 404 'not found')
+  ;<  tf=(unit path)  bind:m  (find-theme /forum/[nom]/index)
+  ;<  now=@da  bind:m  bowl-now
+  =/  c=ctx:fre
+    :*  `@p`0
+        %.n
+        now
+        "/apps/lattice/forum/{(trip nom)}"
+        ?~(tf "" :(weld "/apps/lattice/c" (spud (weld u.tf /theme))))
+    ==
+  =/  doc=manx
+    ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
+    (render-thread:fre c brd u.pid)
+  (send-html eyre-id (crip (en-xml:html doc)))
 ::  +clearweb-body: the rendered body of a public page, from a per-page cache
 ::  keyed by the data grub's revision. The md and gmi renders are the costly
 ::  part of an unauthenticated hit (quadratic on hostile input, see
@@ -11690,10 +11739,41 @@
     ?.  ?=([%ball *] sn)  ~
     %-  silt
     (turn (shared-rels ball.sn ~) |=(r=path (rf up (weld /page r) %data)))
+  ::  a PUBLIC board's pub (card, roles, conf) and content (posts, threads,
+  ::  votes, pins, sidebar) dirs, so its grubs read over peer scry. A private
+  ::  board is never listed, and one made private or deleted drops out here
+  ::  because %how replaces the whole set.
+  ;<  fv=view:nexus  bind:m  (peek:io (rv root /forum/boards) ~)
+  =/  brds=(list @ta)  ?.(?=([%ball *] fv) ~ (public-boards ball.fv))
+  =/  bpeeks=(set road:tarball)
+    %-  ~(gas in *(set road:tarball))
+    %-  zing
+    %+  turn  brds
+    |=  nom=@ta
+    ^-  (list road:tarball)
+    :~  (rv root /forum/boards/[nom]/pub)
+        (rv root /forum/boards/[nom]/content)
+    ==
   ;<  how=(unit tang)  bind:m
-    (reg-how-soft:io /public [make=~ poke=pokes peek=(~(put in peeks) pubdir)])
+    %+  reg-how-soft:io  /public
+    [make=~ poke=pokes peek=(~(uni in (~(put in peeks) pubdir)) bpeeks)]
   ?~  how  (fault-clear ~['public-group' 'registry-road' 'public-grant'])
   (fault 'public-grant' 0 "lattice: published pages stay on this ship: the registry refused the public grant" ~)
+::  +public-boards: the names of the boards under a /forum/boards ball whose
+::  card says public. An unreadable card is not public. Pure.
+::
+++  public-boards
+  |=  b=ball:tarball
+  ^-  (list @ta)
+  %+  murn  ~(tap by dir.b)
+  |=  [nom=@ta kb=ball:tarball]
+  ^-  (unit @ta)
+  =/  cd  (~(get by (ball-fils kb /pub)) %card)
+  ?~  cd  ~
+  =/  car=(unit [@ info=board-info:ft])
+    (mole |.(;;([@ board-info:ft] (sang-noun:tarball sang.u.cd))))
+  ?~  car  ~
+  ?:(public.info.u.car `nom ~)
 ::  +shared-rels: every page under a /page ball whose share mode is not
 ::  %private, read from the ball. Pure.
 ++  shared-rels
