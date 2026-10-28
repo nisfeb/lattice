@@ -156,7 +156,7 @@
 ++  safe-knots
   ^-  (list @ta)
   :~  'a'  'b'  'foo'  'bar'  'notes'  'index'  'x'  'p'  'n'  'k'  't'
-      '2026'  'a.b'  'a_b'  'a-b'  'counter'  'lattice.lattice_app'  'q'
+      '2026'  'a.b'  'a_b'  'a-b'  'counter'  'lattice.lattice_app'  'q'  'forum'
   ==
 ::
 ++  pick-knot

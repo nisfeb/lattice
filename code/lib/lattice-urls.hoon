@@ -177,7 +177,9 @@
   ?^  mn
     =/  rel=path  u.mn
     ?:  ?|(=(/index rel) ?=(~ rel))  (crip pre)
-    ?:  =(1 (met 3 i.rel))  (crip :(weld pre "/n" (seg rel)))
+    ::  a single-char or `forum` top segment takes the explicit /n/ form: the bare
+    ::  urb://<ship>/forum/<board> names a board, never a page.
+    ?:  |(=(1 (met 3 i.rel)) =(%forum i.rel))  (crip :(weld pre "/n" (seg rel)))
     (crip :(weld pre (seg rel)))
   (crip :(weld pre "/t" (seg pax)))
 ::  +cross-site: did another site send this request?

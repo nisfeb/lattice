@@ -72,6 +72,20 @@
       !>  `(unit referent:lu)``[%pub zod /notes/todo]
       !>  (de-urb:lu 'urb://~zod/notes/todo')
   ==
+::  a published page under forum/ keeps its /n/ escape, so it never aliases a board.
+::
+++  test-forum-page-escapes
+  ;:  weld
+    %+  expect-eq
+      !>  'urb://~zod/n/forum/x'
+      !>  (en-urb:lu zod (weld pub-prefix:lu /forum/x))
+    %+  expect-eq
+      !>  `(unit referent:lu)``[%pub zod /forum/x]
+      !>  (de-urb:lu (en-urb:lu zod (weld pub-prefix:lu /forum/x)))
+    %+  expect-eq
+      !>  `(unit referent:lu)``[%forum zod %x ~]
+      !>  (de-urb:lu 'urb://~zod/forum/x')
+  ==
 ::  +en-urb canonical choices: pages -> /p/, know -> /k/, pub bare (or /n/ when
 ::  a single-char top segment forces the explicit form), raw tree -> /t/.
 ::
