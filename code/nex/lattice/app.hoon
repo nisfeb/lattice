@@ -10283,8 +10283,14 @@
 ::  deleted board all read as ~ from +forum-read-grubs-remote and surface as
 ::  the 504 "unreachable or denied" response, the same clean error the
 ::  cross-ship /browse read gives (line 1999), never a crash or half page.
-::  A board that loads but is not public is denied the same way: the host
-::  never grants a private board, so this is belt-and-braces.
+::  A board that loads is one the host granted this peer the dirs for: a
+::  public board (granted to everyone in the /public usergroup) or a private
+::  board this peer is an invited member of (the invite grants the pub and
+::  content dirs in the per-board usergroup). A non-member is never granted,
+::  so its peek reads as ~ above and 504s. We therefore do NOT re-check the
+::  public flag here: a loaded non-public board implies membership, and a
+::  board flipped private re-lays /public without it, so no stale public
+::  grant survives the flip.
 ::
 ++  serve-forum-remote
   |=  [eyre-id=@ta pax=path args=(map @t @t)]
@@ -10305,7 +10311,6 @@
   =/  lod=(each board:ft @t)  (load:fb u.gs)
   ?:  ?=(%| -.lod)  (send-err eyre-id 504 'unreachable or denied')
   =/  brd=board:ft  p.lod
-  ?.  public.info.brd  (send-err eyre-id 504 'unreachable or denied')
   ?:  &(?=(^ pid) !(~(has by posts.brd) u.pid))
     (send-err eyre-id 404 'not found')
   =/  base=tape
