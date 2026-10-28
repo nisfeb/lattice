@@ -72,6 +72,9 @@
 /<  ft   /lib/lattice-forum-types.hoon
 /<  fb   /lib/lattice-forum-board.hoon
 /<  fa   /lib/lattice-forum-act.hoon
+::  fr: the forum's role, caps and rate-limit rules. The cross-ship inbox
+::  (/forum.sig) runs the rate limit, which +act leaves to the caller.
+/<  fr   /lib/lattice-forum-rules.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -201,9 +204,12 @@
         ::  through a reload. /forum/members/<name> is a (set @p) roster
         ::  per board, /forum/seen the unread high-water per board, and
         ::  /forum/limits the rate-limit state per [ship board]; the last
-        ::  two start as an empty [%1 ~] map.
+        ::  two start as an empty [%1 ~] map. /forum/notes holds the refusal
+        ::  notes a host sent back about OUR cross-ship posts (one grub each,
+        ::  capped), landed by the /forum.sig inbox from the transport sender.
             [%fall %| /forum/boards empty-dir:loader]
             [%fall %| /forum/members empty-dir:loader]
+            [%fall %| /forum/notes empty-dir:loader]
             [%fall %& [/forum %seen] [[/ %noun] [%1 ~]]]
             [%fall %& [/forum %limits] [[/ %noun] [%1 ~]]]
         ::  /salt: the private salt behind every published revision's scry
@@ -300,6 +306,15 @@
         ::  The road reaches only this fiber, and this fiber writes only under
         ::  /comments, so a commenter structurally cannot touch a page.
             [%fall %& [/ %'comments.sig'] [[/ %sig] ~]]
+        ::  /forum.sig: the cross-ship FORUM inbox. Same shape and reasoning as
+        ::  comments.sig: /public carries a poke road for it (laid by
+        ::  +send-public-how) so any ship running lattice may post, comment or
+        ::  vote on a board hosted here, and the author is taken from the
+        ::  transport (+get-poke-src), never the payload. Board-level actions
+        ::  (create/delete, set-role, set-public, set-prune, edit-board-info)
+        ::  are owner-only: a remote src is never our, so +apply-forum refuses
+        ::  them. Refusals ride this same road back to the poster as a note.
+            [%fall %& [/ %'forum.sig'] [[/ %sig] ~]]
         ::  /fs.sig: a lick (unix-socket) port exposing the filesystem ops to a
         ::  local FUSE client (lattice-fs), the native-transport twin of the
         ::  HTTP page-tree/page-source/page-save routes.
@@ -396,6 +411,18 @@
         ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
         ;<  now=@da  bind:m  bowl-now
         ;<  ~  bind:m  (apply-comment-notice root from sage now)
+        $
+      ::  /forum.sig: the cross-ship forum inbox. Foreign ships poke a
+      ::  forum action (post/comment/vote); we take the author from the
+      ::  TRANSPORT, never the payload, so it cannot be forged. A host's
+      ::  refusal note rides the same road back here. Same take-poke loop as
+      ::  /comments.sig.
+          [~ %'forum.sig']
+        ;<  ~  bind:m  (rise-later prod "lattice /forum.sig" "")
+        |-
+        ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
+        ;<  now=@da  bind:m  bowl-now
+        ;<  ~  bind:m  (apply-forum-notice from sage now)
         $
       ::  /ui/main.sig: bind the HTTP endpoint and dispatch each request into a
       ::  per-request fiber under /ui/requests (same pattern as counter).
@@ -2731,6 +2758,62 @@
     %+  send-see-other  eyre-id
     %+  weld  "/apps/lattice?url="
     (url-enc (trip (en-urb:lu u.shp (weld pub-prefix:lu (pax-of u.page)))))
+  ::  post, comment or vote on a board hosted on ANOTHER ship. Owner-gated
+  ::  like /comment-remote and for the same reasons: this is us, on our own
+  ::  session, choosing to act on a board we read. The host decides whether it
+  ::  lands (its banlist, roles, caps, rate) and stamps us as the author from
+  ::  the transport, so nothing we send can claim to be someone else.
+  ::
+  ::  op=post|comment|upvote|downvote|unvote. `sent` reports only that the
+  ::  poke was ACCEPTED for delivery; a refusal comes back asynchronously as a
+  ::  note on our /forum.sig (stored under /forum/notes), not in this response.
+      [%'POST' %forum-post-remote]
+    =/  hs=(unit @t)  (~(get by args) 'host')
+    ?~  hs  (send-err eyre-id 400 'missing host')
+    =/  shp=(unit @p)  (slaw %p u.hs)
+    ?~  shp  (send-err eyre-id 400 'bad host')
+    =/  bd=(unit @t)  (~(get by args) 'board')
+    ?~  bd  (send-err eyre-id 400 'missing board')
+    ?.  ((sane %tas) u.bd)  (send-err eyre-id 400 'bad board')
+    =/  name=board-name:ft  ;;(board-name:ft u.bd)
+    ::  text fields ride the POST body (like /comment-remote); ids and flags
+    ::  may come in either the query or the body.
+    =/  fargs=(map @t @t)
+      (malt args:(parse-url:http-utils (crip (weld "/?" (trip (req-body req))))))
+    =/  grab=$-(@t (unit @t))
+      |=  k=@t  ^-  (unit @t)
+      =/  v=@t  (~(gut by fargs) k (~(gut by args) k ''))
+      ?:(=('' v) ~ `v)
+    =/  op=@t  (fall (grab 'op') 'post')
+    =/  act=(unit action:ft)
+      ?:  =('post' op)
+        ?~  title=(grab 'title')  ~
+        `[%new-post name u.title (grab 'url') (grab 'body')]
+      ?:  =('comment' op)
+        ?~  pid=(grab 'post')  ~
+        ?~  id=(slaw %ud u.pid)  ~
+        ?~  body=(grab 'body')  ~
+        =/  par=(unit comment-id:ft)
+          ?~(p=(grab 'parent') ~ (slaw %ud u.p))
+        `[%new-comment name u.id par u.body]
+      ?.  ?|(=('upvote' op) =('downvote' op) =('unvote' op))  ~
+      =/  tgt=(unit vote-target:ft)
+        ?~  pid=(grab 'post')  ~
+        ?~  pn=(slaw %ud u.pid)  ~
+        ?~  cid=(grab 'comment')  `[%post u.pn]
+        ?~(cn=(slaw %ud u.cid) ~ `[%comment u.pn u.cn])
+      ?~  tgt  ~
+      ?:  =('upvote' op)    `[%upvote name u.tgt]
+      ?:  =('downvote' op)  `[%downvote name u.tgt]
+      `[%remove-vote name u.tgt]
+    ?~  act  (send-err eyre-id 400 'bad or missing forum action fields')
+    ;<  base=(unit path)  bind:m  (peer-base-cached u.shp)
+    ;<  sent=?  bind:m
+      %^  remote-load-poke-wait  u.shp
+        :-  [/forum-post %& (fall base desk-base:lu) %'forum.sig']
+        [%poke [/lattice %forum-action] `action:ft`u.act]
+      ~s15
+    (send-json eyre-id (pairs:enjs:format ~[['ok' b+&] ['sent' b+sent]]))
       ::  bookmark the current browser url (title defaults to the url). Newest
       ::  first, deduped by url. Shown under Browser on the home page.
       [%'POST' %bookmark]
@@ -4844,22 +4927,28 @@
 ::  board, runs +act:fa, writes only the grubs it changed and culls the ones
 ::  it removed (+gone:fb, as after delete-post).
 ::
+::  Returns ~ when it landed, or `reason when it refused. The caller decides
+::  what to do with a reason: the owner writer (+apply-eval) records it as a
+::  fault; the cross-ship inbox (+apply-forum-notice) sends it back to the
+::  poster as a note. Either way the gate is identical, so a remote poke can
+::  never do more than our own owner route can.
+::
 ++  apply-forum
   |=  [now=@da src=@p act=action:ft]
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  our=@p  bind:m  bowl-our
   ?:  &((forum-owner-only act) !=(src our))
-    (refuse "forum: {<-.act>} is owner-only")
+    (pure:m `(crip "forum: {<-.act>} is owner-only"))
   =/  tail  +.act
   =/  nom=@ta  ?@(tail tail ;;(@ta -.tail))
-  ?:  |(=('' nom) !((sane %tas) nom))  (refuse "forum: bad board name")
+  ?:  |(=('' nom) !((sane %tas) nom))  (pure:m `'forum: bad board name')
   =/  bdir=path  /forum/boards/[nom]
   ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up bdir)
   ?:  ?=(%create-board -.act)
-    ?^  gs  (refuse "forum: board exists: {(trip nom)}")
-    ?:  =('' title.act)  (refuse "forum: a board needs a title")
+    ?^  gs  (pure:m `(crip "forum: board exists: {(trip nom)}"))
+    ?:  =('' title.act)  (pure:m `'forum: a board needs a title')
     =/  info=board-info:ft
       :*  nom
           (crip (scag 200 (trip title.act)))
@@ -4870,16 +4959,160 @@
           %.y
       ==
     =/  brd=board:ft  [info ~ 1 ~ ~ ~ ~ '' ~]
-    (forum-put up bdir ~(tap by (grubs:fb brd)) ~)
-  ?~  gs  (refuse "forum: no such board: {(trip nom)}")
+    ;<  ~  bind:m  (forum-put up bdir ~(tap by (grubs:fb brd)) ~)
+    (pure:m ~)
+  ?~  gs  (pure:m `(crip "forum: no such board: {(trip nom)}"))
   ?:  ?=(%delete-board -.act)
     ;<  *  bind:m  (cull-soft:io (rv up bdir))
     (pure:m ~)
   =/  lod=(each board:ft @t)  (load:fb u.gs)
-  ?:  ?=(%| -.lod)  (refuse "forum: board unreadable: {(trip p.lod)}")
+  ?:  ?=(%| -.lod)  (pure:m `(crip "forum: board unreadable: {(trip p.lod)}"))
   =/  res=(each [brd=board:ft puts=(list grub:fb)] @t)  (act:fa p.lod src now act)
-  ?:  ?=(%| -.res)  (refuse "forum: refused: {(trip p.res)}")
-  (forum-put up bdir puts.p.res (gone:fb p.lod brd.p.res))
+  ?:  ?=(%| -.res)  (pure:m `(crip "forum: refused: {(trip p.res)}"))
+  ;<  ~  bind:m  (forum-put up bdir puts.p.res (gone:fb p.lod brd.p.res))
+  (pure:m ~)
+::  +apply-forum-notice: a forum action poked by ANOTHER ship over /forum.sig.
+::  Everything that decides whether it lands is read here, never from the
+::  payload: the author is the transport source (+get-poke-src), the banlist
+::  is ours, and the role/caps/rate checks and +act run against OUR board
+::  state. A payload can only ever name WHICH board and WHAT content.
+::
+::  This is not a second writer: it forwards to +apply-forum (the one writer
+::  arm) with src stamped from the transport, so the Task 6 owner gate still
+::  refuses every board-level action from a remote src. It adds only the two
+::  things the inbox owns: the banlist drop and the per-ship rate limit (+act
+::  leaves the rate to the caller), and it turns a refusal into a note back to
+::  the poster rather than a fault.
+::
+++  apply-forum-notice
+  |=  [=from:fiber:nexus =sage:tarball now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  src=(unit @p)  (get-poke-src:io from)
+  ::  a sourceless (local) poke belongs to the owner writer, not here
+  ?~  src  (pure:m ~)
+  ;<  bans=banned:ls  bind:m  read-banned
+  ::  a banned ship is dropped silently: a refusal note would just confirm the
+  ::  address is live, the same reasoning the comment and share inboxes use.
+  ?:  (is-banned:ls bans u.src)  (pure:m ~)
+  ::  a host telling US one of our cross-ship posts was refused: store it.
+  ?:  =([/lattice %forum-note] p.sage)
+    (store-forum-note u.src now q.q.sage)
+  ::  otherwise the one shape we accept is a forum action. Gate on the blot
+  ::  before parsing so a stray poke of another mark is ignored not misread.
+  ?.  =([/lattice %forum-action] p.sage)  (pure:m ~)
+  ::  clam under mule. A payload that is not an action (bad shape, oversize,
+  ::  anything) is a refusal, not a fault and never a crash. With no board to
+  ::  name we drop it silently, as the comment inbox drops an unparseable one.
+  =/  na=(unit action:ft)  (mole |.(;;(action:ft q.q.sage)))
+  ?~  na  (pure:m ~)
+  =/  act=action:ft  u.na
+  =/  tail  +.act
+  =/  nom=@ta  ?@(tail tail ;;(@ta -.tail))
+  =/  name=board-name:ft  ;;(board-name:ft nom)
+  ?:  |(=('' name) !((sane %tas) name))
+    (forum-note-send u.src name 'forum: bad board name')
+  ::  board-level actions are owner-only. A remote src is never our, so
+  ::  +apply-forum refuses via +forum-owner-only; we relay that as a note.
+  ::  This is the Task 6 gate holding across the trust boundary.
+  ?:  (forum-owner-only act)
+    ;<  reason=(unit @t)  bind:m  (apply-forum now u.src act)
+    ?~  reason  (pure:m ~)
+    (forum-note-send u.src name u.reason)
+  ::  a content or mod action. Load the board for the role, caps and rate
+  ::  checks. +act re-checks role and caps, but running them here lets the
+  ::  refusal come back as a note; the rate limit is ours alone to enforce.
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[name])
+  ?~  gs  (forum-note-send u.src name (crip "forum: no such board: {(trip name)}"))
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)
+    (forum-note-send u.src name (crip "forum: board unreadable: {(trip p.lod)}"))
+  =/  brd=board:ft  p.lod
+  ::  role and caps for a post or a comment (votes need neither, as in +act)
+  =/  need=(unit @t)
+    ?+  -.act  ~
+        %new-post
+      ?.  (can-post:fr u.src brd)  `'forum: your role on this board cannot post'
+      ?.  (sane-post:fr title.act url.act body.act)
+        `'forum: a post needs a title (300 bytes), a url (2,048) and a body (40,000)'
+      ~
+    ::
+        %new-comment
+      ?.  (can-post:fr u.src brd)  `'forum: your role on this board cannot comment'
+      ?.  (sane-comment:fr body.act)  `'forum: a comment holds 1 to 10,000 bytes'
+      ~
+    ==
+  ?^  need  (forum-note-send u.src name u.need)
+  ::  the rate limit, per [ship board], against /forum/limits (mods exempt)
+  ;<  lim=limits:fr  bind:m  read-forum-limits
+  ?.  (rate-ok:fr u.src name brd now lim)
+    (forum-note-send u.src name 'forum: you are acting too fast, slow down and retry')
+  ::  apply through the one writer arm. src is the transport sender.
+  ;<  reason=(unit @t)  bind:m  (apply-forum now u.src act)
+  ?^  reason  (forum-note-send u.src name u.reason)
+  ::  it landed. record the rate slot, unless the actor is a mod (whose
+  ::  actions +rate-ok ignores anyway; skipping keeps the map from growing).
+  ?:  (is-mod:fr u.src brd)  (pure:m ~)
+  (write-forum-limits (rate-update:fr u.src name now lim))
+::  +forum-note-send: tell a poster why their cross-ship action was refused.
+::  Best-effort, bounded: the note rides the poster's own /forum.sig back to
+::  it (same code, same road). We do not wait on the result; an offline poster
+::  simply never gets the note, exactly as a share notice is best-effort.
+::
+++  forum-note-send
+  |=  [to=@p board=board-name:ft reason=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  (peer-base-cached to)
+  ;<  sent=?  bind:m
+    %^  remote-load-poke-wait  to
+      :-  [/forum-note %& (fall base desk-base:lu) %'forum.sig']
+      [%poke [/lattice %forum-note] `[board-name:ft @t]`[board reason]]
+    ~s15
+  (pure:m ~)
+::  +store-forum-note: a refusal note a host sent back about one of OUR posts.
+::  The host is the transport sender, the payload names the board and reason.
+::  Bounded like the comment store (this road is public); drop when full, the
+::  owner clears /forum/notes.
+::
+++  store-forum-note
+  |=  [host=@p now=@da payload=*]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  nn=(unit [board=board-name:ft reason=@t])
+    (mole |.(;;([board-name:ft @t] payload)))
+  ?~  nn  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:io (rv up /forum/notes) ~)
+  =/  stored=@ud
+    ?.  ?=([%ball *] v)  0
+    ?~  fil.ball.v  0
+    ~(wyt by contents.u.fil.ball.v)
+  ?:  (gte stored 100)  (pure:m ~)
+  =/  note=[host=@p board=board-name:ft reason=@t at=@da]
+    [host board.u.nn reason.u.nn now]
+  =/  id=@ta  (scot %uv (sham note))
+  ;<  ~  bind:m  (ensure-dirs up /forum /notes)
+  (put-file (rf up /forum/notes id) [/lattice %forum-note] note)
+::  +read-forum-limits / +write-forum-limits: the /forum/limits rate state,
+::  stored [%1 limits]. Empty when never written.
+::
+++  read-forum-limits
+  =/  m  (fiber:fiber:nexus ,limits:fr)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:io (rf up /forum %limits) ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  =/  raw=(unit [%1 limits:fr])
+    (mole |.(;;([%1 limits:fr] (sang-noun:tarball sang.v))))
+  (pure:m ?~(raw ~ +.u.raw))
+++  write-forum-limits
+  |=  lim=limits:fr
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  (put-file (rf up /forum %limits) [/ %noun] [%1 lim])
 ::  +apply-eval: page create/command/delete, in the writer fiber.
 ::
 ++  apply-eval
@@ -4891,7 +5124,11 @@
   ::  the others 3-cells. The face sits at different axes).
   ?-  -.act
       %forum
-    (apply-forum now src.act act.act)
+    ::  the owner route. A refusal reason is recorded as a fault here (the
+    ::  cross-ship inbox notes it to the poster instead; same +apply-forum).
+    ;<  reason=(unit @t)  bind:m  (apply-forum now src.act act.act)
+    ?~  reason  (pure:m ~)
+    (refuse (trip u.reason))
       %make
     ;<  ~  bind:m  (make-page root pax.act src.act)
     ::  a shared page's vault copy follows every write, not just the share click
@@ -11444,6 +11681,7 @@
     %-  silt
     :~  `road:tarball`(rf up / %'shares.sig')
         `road:tarball`(rf up / %'comments.sig')
+        `road:tarball`(rf up / %'forum.sig')
     ==
   ::  the share modes are in the deep peek's ball already, so one peek
   ::  covers every page, where a read-share per page was a dart each
