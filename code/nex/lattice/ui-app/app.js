@@ -50,7 +50,7 @@
   // autosave would queue the OLD body back (review gap 1 in the design doc).
   let degraded = false;      // a save failed like the ship was unreachable
   let offCount = 0;          // queued page edits, drives the status text
-  let offbadge = null;       // assigned by <lat-bar> (12-bar.js)
+  let offbadge = null;       // assigned by <lat-statusbar> (13-frame.js)
   // The persistent offline indicator. The status line reports EVENTS and the
   // next one overwrites it, so "saved offline" scrolls away while you are
   // still offline and still queueing. This reports the CONDITION and stays up
@@ -718,6 +718,7 @@
     pin: ['0 0 24 24', 'M9 3h6l-1 6 3 4H7l3-4zM12 13v8', 'stroke'],
     mark: ['0 0 24 24', 'M6 3h12v18l-6-4-6 4z', 'stroke'],
     know: ['0 0 24 24', 'M12 3l8 9-8 9-8-9z', 'stroke'],
+    doc: ['0 0 24 24', 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5', 'stroke'],
     md: ['4 4 24 24', 'M20.7 6.7v9.9h3.8c-2.9 3-5.8 5.9-8.7 8.8-2.7-2.8-5.6-5.8-8.4-8.7h3.5V6.6c1.3.9 4.4 3.1 5 3.1.6 0 3.6-2.2 4.8-3z'],
     tex: ['4 4 24 24', 'M7.9 17.5H6.5v1.3h4.4v-1.3H9.6V11h.4c1.2 0 1.4.1 1.6 1h1.2l-.2-2.3H4.8l-.3 3.6h1.2v-.5c.2-1.7.3-1.8 1.8-1.8h.4v6.5zM15.8 21.1h-1.7v-2.8h.6c.7 0 .7 0 .7.9v.5h1.2v-4.1h-1.2v.5c0 .9 0 .9-.7.9h-.6v-2.4h1.6c1.5 0 1.6.4 1.7 1.8h1.2l-.3-3.2h-7v1.3h1v6.4h-1v1.3h7.1l.4-2.6h-1.3c0 1.1-.4 1.5-1.7 1.5zM21.7 17.6h-.5l1.5-2.2 1.5 2.2h-.3v1.1h3.6v-1.2H27c-.6 0-.6 0-.7-.2l-2.4-3.5 1.6-2.3c.2-.2.4-.6 1.1-.6h.5V9.6H24v1.2h.5l-.1.1-1.2 1.7-1.3-1.6h.3V9.6h-3.6V11h.5c.6 0 .6 0 .7.2l2.1 3.1-1.8 2.7-.3.3c-.2.2-.5.3-.8.3h-.5v1.2h3.2v-1.2z'],
     html: ['4 4 24 24', 'M8 15l6-5.6V12l-4.5 4 4.5 4v2.6L8 17v-2zm16 2.1l-6 5.6V20l4.6-4-4.6-4V9.3l6 5.6v2.2z'],
@@ -871,7 +872,8 @@
         await (await caches.open('lattice-pages')).put('/__pv', new Response(pv));
     }).catch(() => {});
   };
-  let pname, pkind, status, spinner;   // assigned by <lat-bar>   (12-bar.js)
+  let pname, pkind;                    // assigned by <lat-bar>   (12-bar.js)
+  let status, spinner;                 // assigned by <lat-statusbar> (13-frame.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)
   // blank preview: about:blank defaults to light color-scheme, which
   // mismatches the app's declared scheme and makes the iframe an opaque
@@ -969,23 +971,21 @@
 
 // ── src/12-bar.js ─────────────────────────────────────────────────────────
   // ── top bar + mobile tabs: <lat-bar>, <lat-tabs> ─────────────────────────
-  // The spinner is part of the bar's own markup now (its CSS lives in the
-  // shell stylesheet). The old inject-styles-and-synthesize-elements guards
-  // existed only because the shell and JS could cache-skew apart.
+  // The shell frame (13-frame.js) took the bar's job on desktop: the corner
+  // toggles, the status line and its spinner live there now, and this bar
+  // shows only at phone width. Its other controls stay in the DOM, hidden,
+  // until later steps give each one its home, because handlers and the
+  // desktop menu still find them by id.
   customElements.define('lat-bar', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
 <header class="bar">
   <!-- the icon-only controls carry aria-labels: their glyph is their whole
        text content, which is no accessible name at all -->
-  <!-- panel toggles sit on the side they control. The hamburger toggles the
-       LEFT (tree) panel, so it leads the bar at the left edge; the gear toggles
-       the RIGHT (controls) panel and trails it at the right edge, below. -->
-  <button id="treet" class="ico" title="toggle tree pane" aria-label="toggle tree pane">&#9776;</button>
   <a class="home" href="/apps/lattice" title="lattice home" aria-label="lattice home">&#8962;</a>
-  <button id="modet" title="switch pages / knowledge">&#9998; pages</button>
-  <input id="pname" placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
-  <select id="pkind" title="page kind">
+  <button id="modet" hidden title="switch pages / knowledge">&#9998; pages</button>
+  <input id="pname" hidden placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
+  <select id="pkind" hidden title="page kind">
     <option value="md">md</option>
     <option value="gmi">gmi</option>
     <option value="html">html</option>
@@ -999,36 +999,26 @@
   <!-- LaTeX conversion runs on the user's own machine (71-latex.js),
        so this is hidden on the web and on non-tex pages. -->
   <button id="texconv" hidden>convert to html</button>
-  <!-- role=status so "saved" and every failure are announced, not just
-       painted onto a line a screen reader never revisits -->
-  <span id="spin"></span><span id="status" class="muted" role="status" aria-live="polite"></span>
-  <!-- Offline state is a CONDITION, not an event, so it cannot live in the
-       status line: the next save, render or refresh overwrites that. This
-       badge stays up for as long as the condition holds. -->
-  <span id="offbadge" class="offbadge" role="status" aria-live="polite" hidden></span>
   <span class="grow"></span>
-  <button id="wrapt" class="ico" title="toggle line wrap" aria-label="toggle line wrap">&#8617;</button>
-  <button id="qt" class="ico" title="search your pages and notes (ctrl-K)" aria-label="search your pages and notes (ctrl-K)">${ico('search')}</button>
-  <button id="cmt" class="ico" title="comments from other ships" aria-label="comments from other ships">${ico('comment')}</button>
+  <button id="wrapt" class="ico" hidden title="toggle line wrap" aria-label="toggle line wrap">&#8617;</button>
+  <button id="qt" class="ico" hidden title="search your pages and notes (ctrl-K)" aria-label="search your pages and notes (ctrl-K)">${ico('search')}</button>
+  <button id="cmt" class="ico" hidden title="comments from other ships" aria-label="comments from other ships">${ico('comment')}</button>
   <!-- a save that replaced an edit from elsewhere keeps the losing body as a
        conflicts/ page. Those are invisible unless you already know to look,
        which is the one failure a conflict design must not have. This badge
        counts them and opens the resolve pane. -->
   <button id="cflt" class="ico" title="sync conflicts to resolve" aria-label="sync conflicts to resolve" hidden>&#9873;</button>
-  <button id="aclt" class="ico" title="access control &mdash; groups, sharing, banned ships" aria-label="access control &mdash; groups, sharing, banned ships">${ico('key')}</button>
+  <button id="aclt" class="ico" hidden title="access control &mdash; groups, sharing, banned ships" aria-label="access control &mdash; groups, sharing, banned ships">${ico('key')}</button>
   <!-- edit | split | preview is ONE three-way choice, not two toggles: an
        editor-less, preview-less layout is not a layout. State and handlers
        in 85-layout.js; the desktop View menu clicks these very buttons. -->
-  <span id="viewseg" role="group" aria-label="editor layout">
+  <span id="viewseg" hidden role="group" aria-label="editor layout">
     <button id="viewedit" class="ico" title="editor only">edit</button>
     <button id="viewsplit" class="ico" title="editor and preview">split</button>
     <button id="viewprev" class="ico" title="preview only">preview</button>
   </span>
-  <button id="ctlt" class="ico" title="toggle controls pane" aria-label="toggle controls pane">&#9881;</button>
 </header>`;
       pname = $('pname'); pkind = $('pkind');
-      status = $('status'); spinner = $('spin'); offbadge = $('offbadge');
-      renderOffline();   // a queue can outlive a session, so show it at boot
     }
   });
   customElements.define('lat-tabs', class extends HTMLElement {
@@ -1042,6 +1032,176 @@
 </nav>`;
     }
   });
+
+// ── src/13-frame.js ───────────────────────────────────────────────────────
+  // ── shell frame: <lat-ribbon>, <lat-lpane>, <lat-rpane>, <lat-statusbar> ──
+  // The ribbon down the left edge, a tabbed pane either side of the editor,
+  // the status bar along the bottom and a corner toggle above each pane.
+  // The panes render the old components (lat-tree, lat-ctl, lat-history,
+  // lat-links) as children, so those upgrade into their sections when their
+  // own files run, with every id intact.
+  //
+  // Every icon button is titled "Name (shortcut)" with an identical
+  // aria-label: the glyph is its whole content, so the title is its name.
+  const tip = (b, name, keys) => {
+    const t = keys ? name + ' (' + keys + ')' : name;
+    b.title = t;
+    b.setAttribute('aria-label', t);
+    return b;
+  };
+  const sbtn = (attrs, icon, name, keys) =>
+    `<button type="button" class="sbtn" ${attrs} title="${name}${keys ? ' (' + keys + ')' : ''}"`
+    + ` aria-label="${name}${keys ? ' (' + keys + ')' : ''}">${ico(icon)}</button>`;
+
+  // [id, icon, name, keys] per pane tab. Their sections are filled by the
+  // components below and, for the empty ones, by later steps.
+  const PANES = {
+    l: [['files', 'doc', 'Files'], ['know', 'know', 'Knowledge'],
+      ['search', 'search', 'Search', 'Ctrl+K'], ['marks', 'mark', 'Bookmarks']],
+    r: [['page', 'gear', 'Page'], ['out', 'out', 'Outgoing links'],
+      ['back', 'back', 'Backlinks'], ['outline', 'list', 'Outline'],
+      ['comments', 'comment', 'Comments'], ['hist', 'hist', 'History']],
+  };
+  const FILL = {
+    files: '<lat-tree></lat-tree>', page: '<lat-ctl></lat-ctl>',
+    back: '<lat-links></lat-links>', hist: '<lat-history></lat-history>',
+  };
+  const paneHtml = (side, label) => `
+<nav id="${side}tabs" class="ptabs" role="tablist" aria-label="${label}">
+  ${PANES[side].map(([id, icon, name, keys]) =>
+    sbtn(`role="tab" data-pt="${id}" aria-selected="false"`, icon, name, keys)).join('\n  ')}
+</nav>
+<div id="${side}body" class="pbody">
+  ${PANES[side].map(([id]) =>
+    `<section data-pane="${id}" role="tabpanel" hidden>${FILL[id] || ''}</section>`).join('\n  ')}
+</div>`;
+
+  customElements.define('lat-ribbon', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<div class="corner" id="lcorner">${sbtn('id="treet" aria-pressed="true"', 'pl', 'Left pane')}</div>
+<nav class="ribbon" id="ribbon" aria-label="Ribbon">
+  <div class="rtop"></div>
+  <div class="rbot"></div>
+</nav>`;
+    }
+  });
+  customElements.define('lat-lpane', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `<aside class="pane lp" id="lpane">${paneHtml('l', 'Left pane')}</aside>`;
+    }
+  });
+  customElements.define('lat-rpane', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<div class="corner" id="rcorner">${sbtn('id="ctlt" aria-pressed="true"', 'pr', 'Right pane')}</div>
+<aside class="pane rp" id="rpane">${paneHtml('r', 'Right pane')}</aside>`;
+    }
+  });
+  customElements.define('lat-statusbar', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<footer class="statusbar" id="statusbar">
+  <!-- role=status so "saved" and every failure are announced, not just
+       painted onto a line a screen reader never revisits -->
+  <span id="spin"></span><span id="status" class="muted" role="status" aria-live="polite"></span>
+  <!-- Offline state is a CONDITION, not an event, so it cannot live in the
+       status line: the next save, render or refresh overwrites that. This
+       badge stays up for as long as the condition holds. -->
+  <span id="offbadge" class="offbadge" role="status" aria-live="polite" hidden></span>
+  <span class="grow"></span>
+  <button type="button" id="errchip" class="errchip" hidden></button>
+</footer>`;
+      status = $('status'); spinner = $('spin'); offbadge = $('offbadge');
+      renderOffline();   // a queue can outlive a session, so show it at boot
+    }
+  });
+
+  // ── pane tabs and the corner toggles ────────────────────────────────────
+  // One section per pane is shown. The choice persists per side, and an id
+  // this build does not know (an older or newer layout) falls back to the
+  // default rather than leaving the pane blank.
+  const TABKEY = { l: 'appLTab', r: 'appRTab' };
+  const TABDEF = { l: 'files', r: 'page' };
+  function paneTab(side, id) {
+    if (!PANES[side].some((p) => p[0] === id)) id = TABDEF[side];
+    for (const b of document.querySelectorAll('#' + side + 'tabs [data-pt]')) {
+      const on = b.dataset.pt === id;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    }
+    for (const s of document.querySelectorAll('#' + side + 'body > section'))
+      s.hidden = s.dataset.pane !== id;
+    try { localStorage[TABKEY[side]] = id; } catch {}
+  }
+  // The stored keys still mean HIDDEN ('1'), as they always have, so a
+  // layout saved before the frame comes back the same. The buttons say
+  // whether the pane is OPEN: pressed means showing.
+  const OPENKEY = { l: 'appNT', r: 'appNC' };
+  function paintPanes() {
+    const ws = $('ws');
+    for (const [side, cls, id] of [['l', 'nt', 'treet'], ['r', 'nc', 'ctlt']]) {
+      const shut = localStorage[OPENKEY[side]] === '1';
+      ws.classList.toggle(cls, shut);
+      const b = $(id);
+      b.classList.toggle('on', !shut);
+      b.setAttribute('aria-pressed', shut ? 'false' : 'true');
+    }
+  }
+  function paneOpen(side, open) {
+    if (open === undefined) open = localStorage[OPENKEY[side]] === '1';
+    try { localStorage[OPENKEY[side]] = open ? '0' : '1'; } catch {}
+    paintPanes();
+    return open;
+  }
+  for (const side of ['l', 'r']) {
+    for (const b of document.querySelectorAll('#' + side + 'tabs [data-pt]'))
+      b.onclick = () => paneTab(side, b.dataset.pt);
+    paneTab(side, localStorage[TABKEY[side]]);
+  }
+  $('treet').onclick = () => paneOpen('l');
+  $('ctlt').onclick = () => paneOpen('r');
+  paintPanes();
+
+  // ── ribbon ──────────────────────────────────────────────────────────────
+  // Items are registered here by the feature that owns them, never written
+  // into the markup, so each one has exactly one home. bottom puts it in the
+  // lower group (settings).
+  function ribbonAdd({ id, icon, name, keys, run, bottom }) {
+    const b = tip(document.createElement('button'), name, keys);
+    b.type = 'button';
+    b.className = 'sbtn';
+    b.id = 'rb-' + id;
+    b.dataset.rb = id;
+    b.innerHTML = ico(icon);
+    b.onclick = (ev) => run(ev);
+    document.querySelector('#ribbon ' + (bottom ? '.rbot' : '.rtop')).append(b);
+    return b;
+  }
+
+  // ── compile error chip ──────────────────────────────────────────────────
+  // The error itself lives in the Page tab (#cerr), which may be closed or
+  // behind another tab. While it holds an error the status bar says so, and
+  // a click brings the Page tab forward. Watched rather than called from
+  // each writer, since four files set #cerr. The watch is on the Page
+  // section because #cerr does not exist yet: <lat-ctl> upgrades later.
+  {
+    const chip = $('errchip');
+    chip.title = 'Show the error in the Page tab';
+    const sync = () => {
+      const c = $('cerr');
+      const t = c && c.className === 'err' ? c.textContent.trim() : '';
+      chip.hidden = !t;
+      chip.textContent = t.split('\n')[0];
+    };
+    new MutationObserver(sync).observe(document.querySelector('#rbody > [data-pane=page]'),
+      { childList: true, characterData: true, subtree: true, attributes: true });
+    chip.onclick = () => { paneOpen('r', true); paneTab('r', 'page'); };
+    sync();
+  }
+
+  // for the browser suites, which cannot reach this scope
+  window.latShell = { paneTab, paneOpen, ribbonAdd };
 
 // ── src/15-dialog.js ──────────────────────────────────────────────────────
   // ── in-app dialogs, NEVER browser-native prompt/confirm/alert ────────────
@@ -4281,8 +4441,8 @@
 
 // ── src/65-ctl.js ─────────────────────────────────────────────────────────
   // ── controls pane: <lat-ctl> frame ───────────────────────────────────────
-  // Renders the pane skeleton with one tag per panel. The panel components
-  // (lat-knowtags 68, lat-share 66, lat-history/lat-links 77) upgrade when
+  // Renders the Page tab's skeleton with one tag per panel. The panel
+  // components (lat-knowtags 68, lat-share 66) upgrade when
   // NB: no lat-perms. Group EDITING lives in the full-window ACL pane now.
   // This column only points existing groups at the open file (66-share).
   // their own files run, in file order. Button handlers wired below in this
@@ -4297,8 +4457,6 @@
   <div id="cerr" class="ok">&nbsp;</div>
   <lat-knowtags></lat-knowtags>
   <lat-share></lat-share>
-  <lat-history></lat-history>
-  <lat-links></lat-links>
   <button id="mv" class="mvbtn">move / rename</button>
   <button id="del" class="del">delete page</button>
 </aside>`;
@@ -6486,8 +6644,7 @@
   const VIEWS = ['edit', 'split', 'prev'];
   const view = () => (VIEWS.includes(localStorage.appView) ? localStorage.appView : 'split');
   const applyToggles = () => {
-    ws.classList.toggle('nt', localStorage.appNT === '1');
-    ws.classList.toggle('nc', localStorage.appNC === '1');
+    paintPanes();   // the side panes and their corner toggles (13-frame.js)
     ws.classList.toggle('wrap', localStorage.appWrap === '1');
     ws.classList.toggle('ve', view() === 'edit');
     ws.classList.toggle('vp', view() === 'prev');
@@ -6498,9 +6655,9 @@
     }
     //  the on class is paint alone, so mirror the state in aria-pressed the
     //  way setFull below does
-    for (const [id, key] of [['wrapt', 'appWrap'], ['treet', 'appNT'], ['ctlt', 'appNC']]) {
-      const on = localStorage[key] === '1';
-      const b = $(id);
+    {
+      const on = localStorage.appWrap === '1';
+      const b = $('wrapt');
       b.className = 'ico' + (on ? ' on' : '');
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
@@ -6511,8 +6668,6 @@
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
   $('wrapt').onclick = () => flip('appWrap');
-  $('treet').onclick = () => flip('appNT');
-  $('ctlt').onclick = () => flip('appNC');
   for (const v of VIEWS)
     $('view' + v).onclick = () => {
       const hidden = view() === 'edit';
@@ -6588,15 +6743,13 @@
 
   // ── pane resize: drag a boundary, double-click it to reset ───────────────
   // Widths live in CSS custom properties on #ws (see .psplit in the shell
-  // css). Outer panes store px. The editor/preview boundary stores the
-  // editor's fr share against the preview's fixed 1fr, so it keeps meaning
-  // when the window or the outer panes change size.
+  // css), in px. The left pane's handle measures from the ribbon's edge, so
+  // the stored width is the pane's own.
   {
     let panes = {};
     try { panes = JSON.parse(localStorage.appPanes || '{}'); } catch {}
     const applyPanes = () => {
       ws.style.setProperty('--wtree', panes.tree ? panes.tree + 'px' : '');
-      ws.style.setProperty('--wed', panes.ed ? panes.ed + 'fr' : '');
       ws.style.setProperty('--wctl', panes.ctl ? panes.ctl + 'px' : '');
     };
     applyPanes();
@@ -6631,13 +6784,10 @@
         h.addEventListener('pointerup', up, { once: true });
       });
     };
-    wire('ph1', 'tree', (x) => { panes.tree = Math.round(lim(x, 130, 480)); });
-    wire('ph3', 'ctl', (x) => { panes.ctl = Math.round(lim(innerWidth - x, 190, 520)); });
-    wire('ph2', 'ed', (x) => {
-      const ed = document.querySelector('.edwrap').getBoundingClientRect();
-      const pv = document.querySelector('.prev').getBoundingClientRect();
-      panes.ed = Math.round(lim((x - ed.left) / Math.max(60, pv.right - x), 0.25, 4) * 1000) / 1000;
+    wire('ph1', 'tree', (x) => {
+      panes.tree = Math.round(lim(x - $('ribbon').getBoundingClientRect().right, 130, 480));
     });
+    wire('ph3', 'ctl', (x) => { panes.ctl = Math.round(lim(innerWidth - x, 190, 520)); });
   }
 
   // ── ?diag=1: a swipe readout for scroll bugs reported from phones ───────
@@ -7354,8 +7504,7 @@
       label.title = v ? v + ' · ' + (pkind.value || '') : '';
       // The label floats over the bar's centre, so its width is measured,
       // not guessed: as wide as it can be while centred and clear of the
-      // right-hand buttons and of the status line's start. The status line,
-      // growing in the flow beside it, then stops where the label begins.
+      // buttons on either side.
       const bar = label.parentElement.getBoundingClientRect();
       const mid = bar.left + bar.width / 2;
       let right = bar.right;
@@ -7363,11 +7512,11 @@
         const r = e.getBoundingClientRect();
         if (r.width) right = Math.min(right, r.left);
       }
-      const left = status.getBoundingClientRect().left;
+      // the status line moved to the status bar (13-frame.js), so the
+      // left limit is the home link now
+      const left = label.parentElement.querySelector('.home').getBoundingClientRect().right;
       const half = Math.max(0, Math.min(mid - left, right - mid) - 12);
       label.style.maxWidth = 'min(' + (2 * half) + 'px, 60ch)';
-      const room = label.getBoundingClientRect().left - left - 12;
-      status.style.maxWidth = Math.max(0, room) + 'px';
     };
     addEventListener('resize', paint);
     paint();

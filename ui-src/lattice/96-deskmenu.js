@@ -54,8 +54,7 @@
       label.title = v ? v + ' · ' + (pkind.value || '') : '';
       // The label floats over the bar's centre, so its width is measured,
       // not guessed: as wide as it can be while centred and clear of the
-      // right-hand buttons and of the status line's start. The status line,
-      // growing in the flow beside it, then stops where the label begins.
+      // buttons on either side.
       const bar = label.parentElement.getBoundingClientRect();
       const mid = bar.left + bar.width / 2;
       let right = bar.right;
@@ -63,11 +62,11 @@
         const r = e.getBoundingClientRect();
         if (r.width) right = Math.min(right, r.left);
       }
-      const left = status.getBoundingClientRect().left;
+      // the status line moved to the status bar (13-frame.js), so the
+      // left limit is the home link now
+      const left = label.parentElement.querySelector('.home').getBoundingClientRect().right;
       const half = Math.max(0, Math.min(mid - left, right - mid) - 12);
       label.style.maxWidth = 'min(' + (2 * half) + 'px, 60ch)';
-      const room = label.getBoundingClientRect().left - left - 12;
-      status.style.maxWidth = Math.max(0, room) + 'px';
     };
     addEventListener('resize', paint);
     paint();

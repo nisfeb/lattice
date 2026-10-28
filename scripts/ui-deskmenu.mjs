@@ -23,6 +23,10 @@ const check = makeCheck();
 
 // ── 2. behaviour, against a ship ──────────────────────────────────────────
 const MOVED = ['newfile', 'newfolder', 'newtmpl', 'upfiles', 'updir', 'save'];
+//  #save left the web's screen with the old bar (the shell frame): pages
+//  autosave and Ctrl+S saves, so on web it is only the menu's to click, and
+//  the visibility checks below leave it out
+const ONWEB = MOVED.filter((id) => id !== 'save');
 
 const browser = await launchBrowser();
 
@@ -55,7 +59,21 @@ const shown = (p) => p.evaluate((list) => Object.fromEntries(list.map((id) => {
 const web = await boot(false);
 const onWeb = await shown(web);
 check('web: every moved command is still a visible button',
-  MOVED.every((id) => onWeb[id]), JSON.stringify(onWeb));
+  ONWEB.every((id) => onWeb[id]), JSON.stringify(onWeb));
+//  View > Tree pane and View > Controls pane click these two (main.rs)
+const panes = await web.evaluate(() => {
+  const ws = document.getElementById('ws');
+  const r = [];
+  for (const [id, cls] of [['treet', 'nt'], ['ctlt', 'nc']]) {
+    const before = ws.classList.contains(cls);
+    document.getElementById(id).click();
+    const flipped = ws.classList.contains(cls) !== before;
+    document.getElementById(id).click();
+    r.push(flipped && ws.classList.contains(cls) === before);
+  }
+  return r;
+});
+check('the View menu pane toggles still toggle', panes.every(Boolean), JSON.stringify(panes));
 await web.close();
 
 // an OLDER desktop build: __TAURI__ is there, the File menu is not. The UI
@@ -65,7 +83,7 @@ await web.close();
 const old = await boot(true);
 const onOld = await shown(old);
 check('a desktop build with no File menu keeps its buttons',
-  MOVED.every((id) => onOld[id]), JSON.stringify(onOld));
+  ONWEB.every((id) => onOld[id]), JSON.stringify(onOld));
 await old.close();
 
 // desktop: hidden, but still present and still clickable

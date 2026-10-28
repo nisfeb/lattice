@@ -13,7 +13,7 @@
   // autosave would queue the OLD body back (review gap 1 in the design doc).
   let degraded = false;      // a save failed like the ship was unreachable
   let offCount = 0;          // queued page edits, drives the status text
-  let offbadge = null;       // assigned by <lat-bar> (12-bar.js)
+  let offbadge = null;       // assigned by <lat-statusbar> (13-frame.js)
   // The persistent offline indicator. The status line reports EVENTS and the
   // next one overwrites it, so "saved offline" scrolls away while you are
   // still offline and still queueing. This reports the CONDITION and stays up

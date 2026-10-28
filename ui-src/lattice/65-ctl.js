@@ -1,6 +1,6 @@
   // ── controls pane: <lat-ctl> frame ───────────────────────────────────────
-  // Renders the pane skeleton with one tag per panel. The panel components
-  // (lat-knowtags 68, lat-share 66, lat-history/lat-links 77) upgrade when
+  // Renders the Page tab's skeleton with one tag per panel. The panel
+  // components (lat-knowtags 68, lat-share 66) upgrade when
   // NB: no lat-perms. Group EDITING lives in the full-window ACL pane now.
   // This column only points existing groups at the open file (66-share).
   // their own files run, in file order. Button handlers wired below in this
@@ -15,8 +15,6 @@
   <div id="cerr" class="ok">&nbsp;</div>
   <lat-knowtags></lat-knowtags>
   <lat-share></lat-share>
-  <lat-history></lat-history>
-  <lat-links></lat-links>
   <button id="mv" class="mvbtn">move / rename</button>
   <button id="del" class="del">delete page</button>
 </aside>`;

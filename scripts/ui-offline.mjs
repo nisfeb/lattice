@@ -183,21 +183,24 @@ try {
   // reachable read, not merely a dead one.
   step = 'know offline';
   const K = 'test/' + RUN;
-  await page.click('#modet');
+  //  #modet and #save left the screen with the old bar (the shell frame);
+  //  they stay in the DOM, so these clicks go to the elements directly
+  const tap = (id) => page.evaluate((i) => document.getElementById(i).click(), id);
+  await tap('modet');
   await wait(() => document.getElementById('ws').className.includes('know'));
   await page.evaluate((k) => {
     document.getElementById('pname').value = k;
     const s = document.getElementById('src');
     s.value = 'memory v1'; s.dispatchEvent(new Event('input'));
   }, K);
-  await page.click('#save');
+  await tap('save');
   await wait(() => (document.getElementById('status').textContent || '').includes('memory saved'));
   shipDown = true;
   await page.evaluate(() => {
     const s = document.getElementById('src');
     s.value = 'memory OFFLINE'; s.dispatchEvent(new Event('input'));
   });
-  await page.click('#save');
+  await tap('save');
   await wait(() => (document.getElementById('status').textContent || '').includes('waiting to sync'));
   check('a know save queues while the ship is down', true);
   check('the know queue holds one record', await qCount() === 1, 'count=' + await qCount());

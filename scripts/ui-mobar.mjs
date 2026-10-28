@@ -101,7 +101,7 @@ const pbox = await m.evaluate(() => {
 const shown = await m.screenshot({ clip: pbox });
 await (await (await m.$('#prev')).contentFrame()).evaluate(() => { document.body.style.visibility = 'hidden'; });
 const blank = await m.screenshot({ clip: pbox });
-check('phone: the preview tab paints the page', !shown.equals(blank));
+check('phone: the preview tab paints the page', !Buffer.from(shown).equals(Buffer.from(blank)));
 await m.evaluate(() => document.querySelector('.mtabs button[data-mv="code"]').click());
 
 // the bar is an item of a 1fr grid track whose floor is min-content, so a
@@ -196,7 +196,10 @@ await m.close();
 
 // ── desktop web: untouched ─────────────────────────────────────────────────
 const d = await boot(1400, 900);
-check('desktop web: the name input is still there', await vis(d, 'pname'));
+//  the shell frame took the old bar off the desktop screen; the field stays
+//  in the DOM as the store everything reads
+check('desktop web: the name input is still there',
+  await d.evaluate(() => !!document.getElementById('pname')));
 check('desktop web: no phone label', !(await vis(d, 'mpath')));
 check('desktop web: no ⋯', !(await vis(d, 'mmore')));
 await d.close();

@@ -10,8 +10,7 @@
   const VIEWS = ['edit', 'split', 'prev'];
   const view = () => (VIEWS.includes(localStorage.appView) ? localStorage.appView : 'split');
   const applyToggles = () => {
-    ws.classList.toggle('nt', localStorage.appNT === '1');
-    ws.classList.toggle('nc', localStorage.appNC === '1');
+    paintPanes();   // the side panes and their corner toggles (13-frame.js)
     ws.classList.toggle('wrap', localStorage.appWrap === '1');
     ws.classList.toggle('ve', view() === 'edit');
     ws.classList.toggle('vp', view() === 'prev');
@@ -22,9 +21,9 @@
     }
     //  the on class is paint alone, so mirror the state in aria-pressed the
     //  way setFull below does
-    for (const [id, key] of [['wrapt', 'appWrap'], ['treet', 'appNT'], ['ctlt', 'appNC']]) {
-      const on = localStorage[key] === '1';
-      const b = $(id);
+    {
+      const on = localStorage.appWrap === '1';
+      const b = $('wrapt');
       b.className = 'ico' + (on ? ' on' : '');
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
@@ -35,8 +34,6 @@
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
   $('wrapt').onclick = () => flip('appWrap');
-  $('treet').onclick = () => flip('appNT');
-  $('ctlt').onclick = () => flip('appNC');
   for (const v of VIEWS)
     $('view' + v).onclick = () => {
       const hidden = view() === 'edit';
@@ -112,15 +109,13 @@
 
   // ── pane resize: drag a boundary, double-click it to reset ───────────────
   // Widths live in CSS custom properties on #ws (see .psplit in the shell
-  // css). Outer panes store px. The editor/preview boundary stores the
-  // editor's fr share against the preview's fixed 1fr, so it keeps meaning
-  // when the window or the outer panes change size.
+  // css), in px. The left pane's handle measures from the ribbon's edge, so
+  // the stored width is the pane's own.
   {
     let panes = {};
     try { panes = JSON.parse(localStorage.appPanes || '{}'); } catch {}
     const applyPanes = () => {
       ws.style.setProperty('--wtree', panes.tree ? panes.tree + 'px' : '');
-      ws.style.setProperty('--wed', panes.ed ? panes.ed + 'fr' : '');
       ws.style.setProperty('--wctl', panes.ctl ? panes.ctl + 'px' : '');
     };
     applyPanes();
@@ -155,13 +150,10 @@
         h.addEventListener('pointerup', up, { once: true });
       });
     };
-    wire('ph1', 'tree', (x) => { panes.tree = Math.round(lim(x, 130, 480)); });
-    wire('ph3', 'ctl', (x) => { panes.ctl = Math.round(lim(innerWidth - x, 190, 520)); });
-    wire('ph2', 'ed', (x) => {
-      const ed = document.querySelector('.edwrap').getBoundingClientRect();
-      const pv = document.querySelector('.prev').getBoundingClientRect();
-      panes.ed = Math.round(lim((x - ed.left) / Math.max(60, pv.right - x), 0.25, 4) * 1000) / 1000;
+    wire('ph1', 'tree', (x) => {
+      panes.tree = Math.round(lim(x - $('ribbon').getBoundingClientRect().right, 130, 480));
     });
+    wire('ph3', 'ctl', (x) => { panes.ctl = Math.round(lim(innerWidth - x, 190, 520)); });
   }
 
   // ── ?diag=1: a swipe readout for scroll bugs reported from phones ───────

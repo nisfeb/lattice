@@ -31,9 +31,11 @@ const boot = async (width, pre) => {
     { timeout: 90000 });
   return p;
 };
-// pane widths, 0 for anything not on screen
+// pane widths, 0 for anything not on screen. The editor/preview handle
+// (#ph2) went with the shell frame, and its view control left the screen
+// for the tab header to replace, so neither is asserted here any more.
 const widths = (p) => p.evaluate(() => Object.fromEntries(
-  [['ed', '.edwrap'], ['pv', '.prevwrap'], ['h2', '#ph2'], ['tree', '.tree'], ['ctl', '.ctl']]
+  [['ed', '.edwrap'], ['pv', '.prevwrap'], ['tree', '.tree'], ['ctl', '.ctl']]
     .map(([k, s]) => [k, Math.round(document.querySelector(s).getBoundingClientRect().width)])));
 const pressed = (p) => p.evaluate(() => Object.fromEntries(
   ['viewedit', 'viewsplit', 'viewprev'].map((id) =>
@@ -42,13 +44,13 @@ const click = (p, id) => p.evaluate((i) => document.getElementById(i).click(), i
 
 const desk = await boot(1400);
 const split = await widths(desk);
-check('split (the default): editor and preview both on screen, with a handle between',
-  split.ed > 0 && split.pv > 0 && split.h2 > 0, JSON.stringify(split));
+check('split (the default): editor and preview both on screen',
+  split.ed > 0 && split.pv > 0, JSON.stringify(split));
 check('split is the pressed button', (await pressed(desk)).viewsplit === 'true');
 
 await click(desk, 'viewedit');
 const edit = await widths(desk);
-check('edit: the preview and its handle are gone', edit.pv === 0 && edit.h2 === 0, JSON.stringify(edit));
+check('edit: the preview is gone', edit.pv === 0, JSON.stringify(edit));
 check('edit: the editor took the preview’s room', edit.ed >= split.ed + split.pv - 2,
   JSON.stringify({ split, edit }));
 check('edit: the side panes are untouched', edit.tree === split.tree && edit.ctl === split.ctl);
@@ -56,7 +58,7 @@ check('edit is the pressed button', (await pressed(desk)).viewedit === 'true');
 
 await click(desk, 'viewprev');
 const prev = await widths(desk);
-check('preview: the editor is gone', prev.ed === 0 && prev.h2 === 0, JSON.stringify(prev));
+check('preview: the editor is gone', prev.ed === 0, JSON.stringify(prev));
 check('preview: the preview took the editor’s room', prev.pv >= split.ed + split.pv - 2,
   JSON.stringify({ split, prev }));
 
@@ -73,8 +75,8 @@ const pages = await desk.evaluate(() => [...document.querySelectorAll('#treelist
 await click(desk, 'modet');
 const know = await widths(desk);
 check('knowledge mode: preview-only holds', know.ed === 0 && know.pv > 0, JSON.stringify(know));
-check('knowledge mode: the view control is still in the bar',
-  await desk.evaluate(() => document.getElementById('viewseg').getBoundingClientRect().width > 0));
+check('knowledge mode: the view buttons the desktop menu clicks still exist',
+  await desk.evaluate(() => ['viewedit', 'viewsplit', 'viewprev'].every((id) => document.getElementById(id))));
 await desk.waitForFunction((pg) => document.getElementById('treesec').textContent === 'memories'
   && ([...document.querySelectorAll('#treelist a.pg')].some((a) => !pg.includes(a.textContent))
       || /no memories yet/.test(document.getElementById('treelist').textContent)),
@@ -115,8 +117,8 @@ check('pages mode again: preview-only resumes', back.ed === 0 && back.pv > 0, JS
 
 await click(desk, 'viewsplit');
 const restored = await widths(desk);
-check('split again: both panes and the handle return',
-  restored.ed > 0 && restored.pv > 0 && restored.h2 > 0, JSON.stringify(restored));
+check('split again: both panes return',
+  restored.ed > 0 && restored.pv > 0, JSON.stringify(restored));
 await desk.close();
 
 // a phone has tabs, not a view; a desktop preference must not reach it
