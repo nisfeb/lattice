@@ -55,6 +55,8 @@
       ::  inbox fiber (/forum.sig) never writes /forum itself: /main.sig is
       ::  the single writer of the whole /forum tree.
       [%forum-note-store host=@p payload=*]
+      ::  the owner clears every stored refusal note (frees the 100-note cap).
+      [%forum-notes-clear ~]
   ==
 ::  +$  form-cfg: a page's public-form limits. cap=0 means no absolute limit.
 ::  gap=0 means no cooldown. Set by the owner (page-forms), read by serve-form

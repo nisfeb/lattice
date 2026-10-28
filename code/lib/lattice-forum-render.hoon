@@ -854,6 +854,10 @@
   %^  page-shell  c  'forum - refusals'
   :_  ~
   :*  ;h3: Refused posts
+      ?~  notes  ;span;
+      ;form(method "post", action "/apps/lattice/forum-notes/clear")
+        ;button(type "submit"): Clear
+      ==
       rows
   ==
 ::

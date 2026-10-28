@@ -1415,6 +1415,9 @@
   ::  the owner's forum action forms: POST /forum/... (behind the owner gate
   ::  and the CSRF refusal above; a key never reaches here, it is not
   ::  `authenticated`). Each pokes the one writer, then 303s back.
+  ?:  &(?=([%'forum-notes' %clear ~] suffix) =(%'POST' method.request.req) authenticated.req)
+    ;<  ~  bind:m  (poke-eval [%forum-notes-clear ~])
+    (send-see-other eyre-id "/apps/lattice/forum-notes")
   ?:  &(?=([%forum *] suffix) =(%'POST' method.request.req) authenticated.req)
     (serve-forum-post eyre-id our t.suffix (req-body req))
   ::  /f/<name>: serve a file's raw data as an asset, Content-Type from its
@@ -5528,6 +5531,15 @@
     ::  posts. Routed here from the /forum.sig inbox so /main.sig is the sole
     ::  writer of /forum (the inbox fiber never writes).
     (store-forum-note host.act now payload.act)
+      %forum-notes-clear
+    ;<  v=view:nexus  bind:m  (peek:io (rv up /forum/notes) ~)
+    ?.  ?=([%ball *] v)  (pure:m ~)
+    ?~  fil.ball.v  (pure:m ~)
+    =/  ids=(list @ta)  ~(tap in ~(key by contents.u.fil.ball.v))
+    |-  ^-  form:m
+    ?~  ids  (pure:m ~)
+    ;<  *  bind:m  (cull-soft:io (rf up /forum/notes i.ids))
+    $(ids t.ids)
       %make
     ;<  ~  bind:m  (make-page root pax.act src.act)
     ::  a shared page's vault copy follows every write, not just the share click
