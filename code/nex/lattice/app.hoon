@@ -1286,6 +1286,12 @@
     (serve-clearweb eyre-id t.suffix authenticated.req)
   ::  public forum boards: GET /forum/<board>[/<post>], read-only, the same
   ::  anonymous surface as /c/. A private board 404s (+serve-forum-public).
+  ::  An authenticated GET (the owner's cookie; `authenticated` IS the owner
+  ::  gate, as below) gets the owner's forum views instead: every board, private
+  ::  ones included, with the action forms. An anonymous GET falls through to
+  ::  the public read, which is unchanged.
+  ?:  &(?=([%forum *] suffix) =(%'GET' method.request.req) authenticated.req)
+    (serve-forum-owner eyre-id t.suffix args)
   ?:  &(?=([%forum ^] suffix) =(%'GET' method.request.req))
     (serve-forum-public eyre-id t.suffix args)
   ::  public form submissions: POST /f/<page>. The ONLY unauthenticated WRITE,
@@ -1382,6 +1388,11 @@
   ::  (rear suffix) route table below.
   ?:  &(?=([%x *] suffix) =(%'GET' method.request.req))
     (explore eyre-id our t.suffix args url.request.req)
+  ::  the owner's forum action forms: POST /forum/... (behind the owner gate
+  ::  and the CSRF refusal above; a key never reaches here, it is not
+  ::  `authenticated`). Each pokes the one writer, then 303s back.
+  ?:  &(?=([%forum *] suffix) =(%'POST' method.request.req) authenticated.req)
+    (serve-forum-post eyre-id our t.suffix (req-body req))
   ::  /f/<name>: serve a file's raw data as an asset, Content-Type from its
   ::  render mode (js -> text/javascript, css -> text/css, ...), so an html file
   ::  can import a js/css file by URL. Owner-gated (fetched with the session).
@@ -9875,6 +9886,217 @@
     ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
     (render-thread:fre c brd u.pid)
   (send-html eyre-id (crip (en-xml:html doc)))
+::  +forum-load-board: a board by name, or ~ if missing or unreadable.
+::
+++  forum-load-board
+  |=  [up=@ud nom=@ta]
+  =/  m  (fiber:fiber:nexus ,(unit board:ft))
+  ^-  form:m
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[nom])
+  ?~  gs  (pure:m ~)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  (pure:m ~)
+  (pure:m `p.lod)
+::  +forum-board-list: [name title public] of every readable board, by name.
+::
+++  forum-board-list
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(list [name=board-name:ft title=@t public=?]))
+  ^-  form:m
+  ;<  v=view:nexus  bind:m  (peek:io (rv up /forum/boards) ~)
+  ?.  ?=([%ball *] v)  (pure:m ~)
+  =/  noms=(list @ta)  (sort ~(tap in ~(key by dir.ball.v)) aor)
+  |-  ^-  form:m
+  ?~  noms  (pure:m ~)
+  ;<  brd=(unit board:ft)  bind:m  (forum-load-board up i.noms)
+  ;<  rest=(list [name=board-name:ft title=@t public=?])  bind:m  $(noms t.noms)
+  ?~  brd  (pure:m rest)
+  (pure:m [[;;(board-name:ft i.noms) title.info.u.brd public.info.u.brd] rest])
+::  +serve-forum-owner: the owner's forum views (an authenticated GET under
+::  /forum): the board list, create form, a board's ranked list, a thread, the
+::  submit form and the mod page. The same renderer as the public read, with
+::  authed on and who=our. Unlike +serve-forum-public a private board is served:
+::  only the owner's cookie reaches this arm.
+::
+++  serve-forum-owner
+  |=  [eyre-id=@ta pax=path args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  (levy `path`pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
+    (send-err eyre-id 404 'not found')
+  ;<  our=@p  bind:m  bowl-our
+  ;<  now=@da  bind:m  bowl-now
+  ;<  up=@ud  bind:m  nexus-up
+  =/  root=tape  "/apps/lattice/forum"
+  ?~  pax
+    ;<  bl=(list [name=board-name:ft title=@t public=?])  bind:m  (forum-board-list up)
+    (send-html eyre-id (crip (en-xml:html (render-boards:fre [our %.y now root ""] bl))))
+  ?:  =('_new' i.pax)
+    ?.  ?=(~ t.pax)  (send-err eyre-id 404 'not found')
+    (send-html eyre-id (crip (en-xml:html (render-create:fre [our %.y now root ""]))))
+  ?.  &(?=(?(~ [@ ~]) t.pax) ((sane %tas) i.pax))
+    (send-err eyre-id 404 'not found')
+  =/  nom=@ta  i.pax
+  ;<  bo=(unit board:ft)  bind:m  (forum-load-board up nom)
+  ?~  bo  (send-err eyre-id 404 'not found')
+  =/  brd=board:ft  u.bo
+  ;<  tf=(unit path)  bind:m  (find-theme /forum/[nom]/index)
+  =/  c=ctx:fre
+    :*  our
+        %.y
+        now
+        "{root}/{(trip nom)}"
+        ?~(tf "" :(weld "/apps/lattice/c" (spud (weld u.tf /theme))))
+    ==
+  ?~  t.pax
+    %-  send-html
+    :-  eyre-id
+    (crip (en-xml:html (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))))
+  ?:  =('submit' i.t.pax)
+    (send-html eyre-id (crip (en-xml:html (render-submit:fre c nom))))
+  ?:  =('mod' i.t.pax)
+    (send-html eyre-id (crip (en-xml:html (render-mod:fre c brd))))
+  =/  pid=(unit @ud)  ((slat %ud) i.t.pax)
+  ?:  |(?=(~ pid) !(~(has by posts.brd) u.pid))
+    (send-err eyre-id 404 'not found')
+  (send-html eyre-id (crip (en-xml:html (render-thread:fre c brd u.pid))))
+::  +forum-role-of / +forum-target-of: parse a form field.
+::
+++  forum-role-of
+  |=  r=@t
+  ^-  (unit role:ft)
+  ?:  =('mod' r)  `%mod
+  ?:  =('poster' r)  `%poster
+  ?:  =('reader' r)  `%reader
+  ~
+++  forum-target-of
+  |=  t=@t
+  ^-  (unit vote-target:ft)
+  %+  rust  (trip t)
+  ;~  pose
+    (stag %post ;~(pfix (jest 'post-') dim:ag))
+    ;~(plug (cold %comment (jest 'comment-')) dim:ag ;~(pfix hep dim:ag))
+  ==
+::  +serve-forum-post: the owner's forum action forms (POST /forum/...). Each
+::  becomes one action poked at the writer as the %forum eval-action with
+::  src=our, so +apply-forum is the only writer and its role checks still
+::  apply; then a 303 to the view. A refused action (the writer faults) still
+::  redirects: the page shows the unchanged state.
+::
+::    /_new                       create a board
+::    /<b>/vote /submit /sidebar  upvote, new post, set sidebar
+::    /<b>/<id>/comment|pin|delete|delete-comment
+::    /<b>/mod/role|remove-role|edit-info|public|prune|delete
+::
+++  serve-forum-post
+  |=  [eyre-id=@ta our=@p pax=path body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  (levy `path`pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
+    (send-err eyre-id 404 'not found')
+  ?~  pax  (send-err eyre-id 404 'not found')
+  =/  form=(map @t @t)
+    (malt args:(parse-url:http-utils (crip (weld "/?" (trip body)))))
+  =/  grab=$-(@t (unit @t))
+    |=  k=@t  ^-  (unit @t)
+    =/  v=@t  (~(gut by form) k '')
+    ?:(=('' v) ~ `v)
+  =/  root=tape  "/apps/lattice/forum"
+  ?:  =('_new' i.pax)
+    ?.  ?=(~ t.pax)  (send-err eyre-id 404 'not found')
+    =/  nm=(unit @t)  (grab 'name')
+    =/  ti=(unit @t)  (grab 'title')
+    ?:  |(?=(~ nm) ?=(~ ti))  (send-err eyre-id 400 'a board needs a name and a title')
+    ?.  ((sane %tas) u.nm)  (send-err eyre-id 400 'bad board name')
+    =/  rl=(unit role:ft)  (forum-role-of (fall (grab 'role') 'poster'))
+    ?~  rl  (send-err eyre-id 400 'bad role')
+    ;<  ~  bind:m
+      %-  poke-eval
+      [%forum our [%create-board u.nm u.ti (fall (grab 'description') '') u.rl]]
+    (send-see-other eyre-id "{root}/{(trip u.nm)}")
+  ?.  &(?=(^ t.pax) ((sane %tas) i.pax))  (send-err eyre-id 404 'not found')
+  =/  nom=@tas  i.pax
+  =/  base=tape  "{root}/{(trip nom)}"
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  bo=(unit board:ft)  bind:m  (forum-load-board up nom)
+  ?~  bo  (send-err eyre-id 404 'no such board')
+  =/  brd=board:ft  u.bo
+  =/  tl=path  t.pax
+  =/  res=(unit [act=action:ft to=tape])
+    ?+  tl  ~
+        [%vote ~]
+      =/  tg=(unit @t)  (grab 'target')
+      ?~  tg  ~
+      =/  vt=(unit vote-target:ft)  (forum-target-of u.tg)
+      ?~  vt  ~
+      :-  ~
+      :-  [%upvote nom u.vt]
+      ?-(-.u.vt %post base, %comment "{base}/{(a-co:co post.u.vt)}")
+    ::
+        [%submit ~]
+      =/  ti=(unit @t)  (grab 'title')
+      ?~  ti  ~
+      `[[%new-post nom u.ti (grab 'url') (grab 'body')] base]
+    ::
+        [%sidebar ~]
+      `[[%set-sidebar nom (fall (grab 'sidebar') '')] "{base}/mod"]
+    ::
+        [%mod %role ~]
+      =/  who=(unit @p)  (biff (grab 'who') (slat %p))
+      =/  rl=(unit role:ft)  (forum-role-of (fall (grab 'role') ''))
+      ?:  |(?=(~ who) ?=(~ rl))  ~
+      `[[%set-role nom u.who u.rl] "{base}/mod"]
+    ::
+        [%mod %remove-role ~]
+      =/  who=(unit @p)  (biff (grab 'who') (slat %p))
+      ?~  who  ~
+      `[[%set-role nom u.who default-role.info.brd] "{base}/mod"]
+    ::
+        [%mod %edit-info ~]
+      =/  ti=(unit @t)  (grab 'title')
+      ?~  ti  ~
+      `[[%edit-board-info nom u.ti (fall (grab 'description') '')] "{base}/mod"]
+    ::
+        [%mod %public ~]
+      `[[%set-public nom !public.info.brd] "{base}/mod"]
+    ::
+        [%mod %prune ~]
+      ?.  ?=(^ (grab 'prune-enabled'))
+        `[[%set-prune nom ~] "{base}/mod"]
+      =/  ms=(unit @ud)  (biff (grab 'min-score') (slat %ud))
+      =/  ad=(unit @ud)  (biff (grab 'after-days') (slat %ud))
+      ?:  |(?=(~ ms) ?=(~ ad) =(0 u.ad))  ~
+      `[[%set-prune nom `[u.ms (mul u.ad ~d1)]] "{base}/mod"]
+    ::
+        [%mod %delete ~]
+      `[[%delete-board nom] root]
+    ::
+        [@ @ ~]
+      =/  pid=(unit @ud)  ((slat %ud) i.tl)
+      ?~  pid  ~
+      =/  thread=tape  "{base}/{(a-co:co u.pid)}"
+      ?+  i.t.tl  ~
+          %comment
+        =/  bd=(unit @t)  (grab 'body')
+        ?~  bd  ~
+        =/  par=(unit comment-id:ft)  (biff (grab 'parent') (slat %ud))
+        `[[%new-comment nom u.pid par u.bd] thread]
+      ::
+          %pin
+        `[[%pin-post nom u.pid =(`'true' (grab 'pinned'))] base]
+      ::
+          %delete
+        `[[%delete-post nom u.pid] base]
+      ::
+          %delete-comment
+        =/  cid=(unit @ud)  (biff (grab 'comment-id') (slat %ud))
+        ?~  cid  ~
+        `[[%delete-comment nom u.pid u.cid] thread]
+      ==
+    ==
+  ?~  res  (send-err eyre-id 400 'bad or missing forum form fields')
+  ;<  ~  bind:m  (poke-eval [%forum our act.u.res])
+  (send-see-other eyre-id to.u.res)
 ::  +clearweb-body: the rendered body of a public page, from a per-page cache
 ::  keyed by the data grub's revision. The md and gmi renders are the costly
 ::  part of an unauthenticated hit (quadratic on hostile input, see
@@ -11130,7 +11352,8 @@
     home-css
     "<h1>Lattice</h1>"
     "<p class=\"muted\">Programmable pages &amp; published notes &middot; "  ship
-    " &middot; <a href=\"/apps/lattice/settings\">settings</a></p>"
+    " &middot; <a href=\"/apps/lattice/settings\">settings</a>"
+    " &middot; <a href=\"/apps/lattice/forum\">forum</a></p>"
     ::  two columns: each app card with its quick links below it.
     "<div class=\"apps\">"
     "<div class=\"col\">"

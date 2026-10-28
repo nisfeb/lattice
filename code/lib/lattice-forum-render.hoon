@@ -803,4 +803,75 @@
       role-section
       delete-section
   ==
+::
+::  +render-boards: the owner's board list, with a link to make one. Each
+::  entry is [name title public]; base.c is the forum root, not a board.
+::
+++  render-boards
+  |=  [c=ctx boards=(list [name=board-name title=@t public=?])]
+  ^-  manx
+  =/  rows=marl
+    ?~  boards
+      :~  ;p.me: No boards yet.
+      ==
+    %+  turn  boards
+    |=  [name=board-name title=@t public=?]
+    ^-  manx
+    ;div.rw
+      ;div
+        ;span.ti
+          ;a(href "{base.c}/{(trip name)}"): {(trip title)}
+        ==
+        ;span.me: {(trip name)}, {?:(public "public" "private")}
+      ==
+    ==
+  %^  page-shell  c  'forum - boards'
+  :_  ~
+  :*  ;h3: Boards
+      ;p.me
+        ;a(href "{base.c}/_new"): create a board
+      ==
+      rows
+  ==
+::
+::  +render-create: the new-board form (base.c is the forum root)
+::
+++  render-create
+  |=  c=ctx
+  ^-  manx
+  %^  page-shell  c  'forum - create a board'
+  :_  `[base.c "boards"]
+  :~  ;h3: Create a board
+      ;form(method "post", action "{base.c}/_new")
+        ;div
+          ;label: name (lowercase letters, digits, hyphens)
+          ;br;
+          ;input(type "text", name "name", required "", pattern "[a-z][a-z0-9-]*");
+        ==
+        ;br;
+        ;div
+          ;label: title
+          ;br;
+          ;input(type "text", name "title", required "");
+        ==
+        ;br;
+        ;div
+          ;label: description
+          ;br;
+          ;textarea(name "description", rows "3", cols "60");
+        ==
+        ;br;
+        ;div
+          ;label: default role
+          ;br;
+          ;select(name "role")
+            ;option(value "poster"): poster
+            ;option(value "reader"): reader
+            ;option(value "mod"): moderator
+          ==
+        ==
+        ;br;
+        ;input.btn(type "submit", value "create");
+      ==
+  ==
 --
