@@ -10108,6 +10108,7 @@
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
     pwa-head
     "<style>"  (trip forum-css:fre)  "</style>"
+    "<style>"  bar-css  "</style>"
     theme-link
     "</head><body>"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
@@ -10156,7 +10157,7 @@
         %.n
         now
         "/apps/lattice/forum/{(trip nom)}"
-        ?~(tf "" :(weld "/apps/lattice/c" (spud (weld u.tf /theme))))
+        ""
     ==
   =/  doc=manx
     ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
@@ -10225,7 +10226,7 @@
         %.y
         now
         "{root}/{(trip nom)}"
-        ?~(tf "" :(weld "/apps/lattice/c" (spud (weld u.tf /theme))))
+        ""
     ==
   ?~  t.pax
     %-  send-html
@@ -11744,11 +11745,68 @@
   '<script>document.addEventListener("input",function(e){if(e.target.id!=="bmq")return;var q=e.target.value.toLowerCase();document.querySelectorAll(".bmgrp").forEach(function(g){var vis=0;g.querySelectorAll("li").forEach(function(li){var on=li.dataset.t.toLowerCase().indexOf(q)>=0;li.hidden=!on;if(on)vis++;});g.hidden=!vis;});});document.addEventListener("click",async function(e){var b=e.target.closest("button[data-act]");if(!b)return;e.preventDefault();var u=encodeURIComponent(b.dataset.url);if(b.dataset.act==="del"){if(!confirm("remove this bookmark?"))return;await fetch("/apps/lattice/unbookmark?url="+u,{method:"POST"});}else{var f=b.parentElement.querySelector("input").value.trim();await fetch("/apps/lattice/bookmark-move?url="+u+"&folder="+encodeURIComponent(f),{method:"POST"});}location.reload();});</script>'
 ::  +web-css: minimal reader styling (single-quoted cord so braces are literal).
 ::
+::  +bar-css: the reader bar's STRUCTURAL rules (.navb/.hamw/#hammenu
+::  dropdown, .bar flex row, home/input/button, the narrow flex-wrap). One
+::  definition, shared: +web-css welds these same fragments in at their
+::  original positions so its output is byte-identical, and +forum-doc
+::  includes +bar-css so the forum bar lays out and the hamburger drops
+::  down (the forum head carries forum-css, not web-css). Single-quote
+::  cords: braces are literal, a double-quoted tape would interpolate them.
+::
+++  bar-css-nav
+  ^-  tape
+  %-  trip
+  '.navb{font-size:1.05em}.navb[disabled]{opacity:.35;cursor:default}.hamw{position:relative;margin-left:auto;display:flex}.hamw>button{font-size:1.1em}#hammenu{position:absolute;right:0;top:100%;z-index:60;background:var(--pop,var(--bg));border:1px solid #8886;border-radius:6px;min-width:160px;display:flex;flex-direction:column;padding:4px;box-shadow:0 4px 14px #0003}#hammenu a{padding:7px 10px;text-decoration:none;color:inherit;border-radius:4px}#hammenu a:hover{background:#8882}#hammenu[hidden]{display:none}'
+++  bar-css-bar
+  ^-  tape
+  %-  trip
+  '.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:var(--accent,#1a6ed8)}.bar a.nav{display:flex;align-items:center;padding:0 11px;font-size:1.05rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap}.bar a.nav:hover{border-color:var(--accent,#1a6ed8)}'
+++  bar-css-io
+  ^-  tape
+  %-  trip
+  '.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}.bar button:hover{border-color:var(--accent,#1a6ed8)}'
+++  bar-css-safe
+  ^-  tape
+  %-  trip
+  '.bar{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}'
+++  bar-css-narrow
+  ^-  tape
+  %-  trip
+  '.bar{flex-wrap:wrap}.bar input{flex:1 1 100%;order:3}'
+++  bar-css
+  ^-  tape
+  ;:  weld
+    bar-css-nav  bar-css-bar  bar-css-io  bar-css-safe
+    (trip '@media(max-width:520px){')  bar-css-narrow  (trip '}')
+  ==
+::  +web-css: the reader chrome css. The bar/nav rules come from +bar-css's
+::  fragments, welded back at their original spots so this is byte-for-byte
+::  what it was before the bar rules were factored out.
+::
 ++  web-css
   ^-  tape
-  %+  weld  know-css
-  %-  trip
-  ':root{color-scheme:light dark;--bg:#fafafa;--text:#111}.navb{font-size:1.05em}.navb[disabled]{opacity:.35;cursor:default}.hamw{position:relative;margin-left:auto;display:flex}.hamw>button{font-size:1.1em}#hammenu{position:absolute;right:0;top:100%;z-index:60;background:var(--pop,var(--bg));border:1px solid #8886;border-radius:6px;min-width:160px;display:flex;flex-direction:column;padding:4px;box-shadow:0 4px 14px #0003}#hammenu a{padding:7px 10px;text-decoration:none;color:inherit;border-radius:4px}#hammenu a:hover{background:#8882}#hammenu[hidden]{display:none}*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{background:var(--bg)}body{margin:0;font:16px/1.6 var(--font,system-ui,sans-serif);color:var(--text);background:var(--bg)}@media(prefers-color-scheme:dark){:root{--bg:#1a1a1a;--text:#e6e6e6}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:var(--accent,#1a6ed8)}.bar a.nav{display:flex;align-items:center;padding:0 11px;font-size:1.05rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap}.bar a.nav:hover{border-color:var(--accent,#1a6ed8)}.rawf{width:100%;height:70vh;border:1px solid #8886;border-radius:6px;background:#fff}.muted{color:var(--muted,#8a8a8a);font-size:.9em}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}.bar button:hover{border-color:var(--accent,#1a6ed8)}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:var(--link,var(--accent,#1a6ed8))}.err{color:var(--error,#c0392b)}:root[style*="--selection"] ::selection{background:var(--selection)}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:var(--muted,#8a8a8a)}pre{background:var(--raised,#8881);padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}code{background:var(--raised,#8881);padding:.1em .3em;border-radius:4px;font-size:.9em}pre code{background:0;padding:0}table{border-collapse:collapse;margin:.7rem 0;display:block;overflow-x:auto;max-width:100%}th,td{border:1px solid #8887;padding:6px 11px}th{background:var(--raised,#8881);font-weight:600;text-align:left}img{max-width:100%;height:auto}del{opacity:.7}ul,ol{padding-left:1.5rem}li{margin:.15rem 0}sup.fnref{font-size:.72em}sup.fnref a{text-decoration:none}hr.fn-sep{margin-top:2rem}.footnotes{font-size:.88em;color:var(--muted,#8a8a8a)}.footnotes li{margin:.25rem 0}.bar{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}@media(max-width:520px){.bar{flex-wrap:wrap}.bar input{flex:1 1 100%;order:3}main{padding-top:12px;padding-bottom:12px}}'
+  ;:  weld
+    know-css
+    %-  trip
+    ':root{color-scheme:light dark;--bg:#fafafa;--text:#111}'
+    bar-css-nav
+    %-  trip
+    '*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{background:var(--bg)}body{margin:0;font:16px/1.6 var(--font,system-ui,sans-serif);color:var(--text);background:var(--bg)}@media(prefers-color-scheme:dark){:root{--bg:#1a1a1a;--text:#e6e6e6}}'
+    bar-css-bar
+    %-  trip
+    '.rawf{width:100%;height:70vh;border:1px solid #8886;border-radius:6px;background:#fff}.muted{color:var(--muted,#8a8a8a);font-size:.9em}'
+    bar-css-io
+    %-  trip
+    'main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:var(--link,var(--accent,#1a6ed8))}.err{color:var(--error,#c0392b)}:root[style*="--selection"] ::selection{background:var(--selection)}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:var(--muted,#8a8a8a)}pre{background:var(--raised,#8881);padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}code{background:var(--raised,#8881);padding:.1em .3em;border-radius:4px;font-size:.9em}pre code{background:0;padding:0}table{border-collapse:collapse;margin:.7rem 0;display:block;overflow-x:auto;max-width:100%}th,td{border:1px solid #8887;padding:6px 11px}th{background:var(--raised,#8881);font-weight:600;text-align:left}img{max-width:100%;height:auto}del{opacity:.7}ul,ol{padding-left:1.5rem}li{margin:.15rem 0}sup.fnref{font-size:.72em}sup.fnref a{text-decoration:none}hr.fn-sep{margin-top:2rem}.footnotes{font-size:.88em;color:var(--muted,#8a8a8a)}.footnotes li{margin:.25rem 0}'
+    bar-css-safe
+    %-  trip
+    'main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}'
+    (trip '@media(max-width:520px){')
+    bar-css-narrow
+    %-  trip
+    'main{padding-top:12px;padding-bottom:12px}'
+    (trip '}')
+  ==
 ::  +know-css: styles for the knowledge view (single-quote cord: braces literal).
 ::
 ++  know-css
