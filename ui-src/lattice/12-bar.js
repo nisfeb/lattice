@@ -13,6 +13,7 @@
        the RIGHT (controls) panel and trails it at the right edge, below. -->
   <button id="treet" class="ico" title="toggle tree pane" aria-label="toggle tree pane">&#9776;</button>
   <a class="home" href="/apps/lattice" title="lattice home" aria-label="lattice home">&#8962;</a>
+  <a class="home forumlink" href="/apps/lattice/forum" title="forum" aria-label="forum">forum</a>
   <button id="modet" title="switch pages / knowledge">&#9998; pages</button>
   <input id="pname" placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
   <select id="pkind" title="page kind">
