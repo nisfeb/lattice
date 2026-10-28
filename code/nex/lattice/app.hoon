@@ -1302,6 +1302,8 @@
   ::  gate, as below) gets the owner's forum views instead: every board, private
   ::  ones included, with the action forms. An anonymous GET falls through to
   ::  the public read, which is unchanged.
+  ?:  &(?=([%'forum-notes' ~] suffix) =(%'GET' method.request.req) authenticated.req)
+    (serve-forum-notes eyre-id)
   ?:  &(?=([%forum *] suffix) =(%'GET' method.request.req) authenticated.req)
     (serve-forum-owner eyre-id t.suffix args)
   ?:  &(?=([%forum ^] suffix) =(%'GET' method.request.req))
@@ -10155,11 +10157,11 @@
 ::  no urb:// address and its http path is not meaningful to the omnibar).
 ::
 ++  forum-doc
-  |=  [page=[title=@t body=manx] current=tape theme-link=tape authed=?]
+  |=  [page=[title=@t body=manx] current=tape theme-link=tape authed=? notes=@ud]
   ^-  @t
   =/  bar-tail=tape
     ?.  authed  "</form>"
-    :(weld (nav-controls current) nav-hamburger "</form>")
+    :(weld (nav-controls current) nav-hamburger (forum-notes-badge notes) "</form>")
   %-  crip
   ;:  weld
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -10178,6 +10180,40 @@
     nav-script
     "</body></html>"
   ==
+::  +forum-read-notes: the refusal notes under /forum/notes, newest first.
+::  Unparseable grubs are skipped.
+::
+++  forum-read-notes
+  =/  m  (fiber:fiber:nexus ,(list [host=@p board=@t reason=@t at=@da]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:io (rv up /forum/notes) ~)
+  ?.  ?=([%ball *] v)  (pure:m ~)
+  ?~  fil.ball.v  (pure:m ~)
+  =/  all=(list [host=@p board=@t reason=@t at=@da])
+    %+  murn  ~(val by contents.u.fil.ball.v)
+    |=  [=sang:tarball *]
+    ^-  (unit [host=@p board=@t reason=@t at=@da])
+    (mole |.(;;([host=@p board=@t reason=@t at=@da] (sang-noun:tarball sang))))
+  (pure:m (sort all |=([a=[@p @t @t at=@da] b=[@p @t @t at=@da]] (gth at.a at.b))))
+::  +forum-notes-badge: the bar link to the refusal notes, empty at zero.
+::
+++  forum-notes-badge
+  |=  n=@ud
+  ^-  tape
+  ?:  =(0 n)  ""
+  %+  weld  "<a href=\"/apps/lattice/forum-notes\" title=\"refused forum posts\" style=\"color:#c33;font-weight:bold\">"
+  "{(a-co:co n)} refused</a>"
+::  +serve-forum-notes: GET /forum-notes (owner-gated): why remote posts were refused.
+::
+++  serve-forum-notes
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  our=@p  bind:m  bowl-our
+  ;<  now=@da  bind:m  bowl-now
+  ;<  ns=(list [host=@p board=@t reason=@t at=@da])  bind:m  forum-read-notes
+  (send-html eyre-id (forum-doc (render-notes:fre [our %.y now "/apps/lattice/forum" ""] ns) "" "" %.y (lent ns)))
 ::  +serve-forum-public: the anonymous read of a PUBLIC forum board
 ::  (/forum/<board>) or one of its threads (/forum/<board>/<post>), through
 ::  the same renderer as the owner's view with authed off, so no form shows.
@@ -10221,7 +10257,7 @@
   =/  page=[title=@t body=manx]
     ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
     (render-thread:fre c brd u.pid)
-  (send-html eyre-id (forum-doc page "" theme-link %.n))
+  (send-html eyre-id (forum-doc page "" theme-link %.n 0))
 ::  +serve-forum-remote: GET /apps/lattice/forum-remote/<host>/<board>[/<post>]
 ::  (owner-gated; see the route at the /x explorer). Render a peer's PUBLIC
 ::  board or thread through the same renderer as the local view, with the
@@ -10262,6 +10298,8 @@
     (send-err eyre-id 404 'not found')
   =/  base=tape
     "/apps/lattice/forum-remote/{(scow %p u.host)}/{(trip board)}"
+  ;<  ns=(list [host=@p board=@t reason=@t at=@da])  bind:m  forum-read-notes
+  =/  nn=@ud  (lent ns)
   =/  c=ctx:fre
     :*  our
         %.y
@@ -10272,7 +10310,7 @@
   =/  page=[title=@t body=manx]
     ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
     (render-thread:fre c brd u.pid)
-  (send-html eyre-id (forum-doc page "" "" %.y))
+  (send-html eyre-id (forum-doc page "" "" %.y nn))
 ::  +forum-load-board: a board by name, or ~ if missing or unreadable.
 ::
 ++  forum-load-board
@@ -10314,13 +10352,15 @@
   ;<  our=@p  bind:m  bowl-our
   ;<  now=@da  bind:m  bowl-now
   ;<  up=@ud  bind:m  nexus-up
+  ;<  ns=(list [host=@p board=@t reason=@t at=@da])  bind:m  forum-read-notes
+  =/  nn=@ud  (lent ns)
   =/  root=tape  "/apps/lattice/forum"
   ?~  pax
     ;<  bl=(list [name=board-name:ft title=@t public=?])  bind:m  (forum-board-list up)
-    (send-html eyre-id (forum-doc (render-boards:fre [our %.y now root ""] bl) "" "" %.y))
+    (send-html eyre-id (forum-doc (render-boards:fre [our %.y now root ""] bl) "" "" %.y nn))
   ?:  =('_new' i.pax)
     ?.  ?=(~ t.pax)  (send-err eyre-id 404 'not found')
-    (send-html eyre-id (forum-doc (render-create:fre [our %.y now root ""]) "" "" %.y))
+    (send-html eyre-id (forum-doc (render-create:fre [our %.y now root ""]) "" "" %.y nn))
   ?.  &(?=(?(~ [@ ~]) t.pax) ((sane %tas) i.pax))
     (send-err eyre-id 404 'not found')
   =/  nom=@ta  i.pax
@@ -10341,15 +10381,15 @@
   ?~  t.pax
     %-  send-html
     :-  eyre-id
-    (forum-doc (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args)) "" theme-link %.y)
+    (forum-doc (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args)) "" theme-link %.y nn)
   ?:  =('submit' i.t.pax)
-    (send-html eyre-id (forum-doc (render-submit:fre c nom) "" theme-link %.y))
+    (send-html eyre-id (forum-doc (render-submit:fre c nom) "" theme-link %.y nn))
   ?:  =('mod' i.t.pax)
-    (send-html eyre-id (forum-doc (render-mod:fre c brd) "" theme-link %.y))
+    (send-html eyre-id (forum-doc (render-mod:fre c brd) "" theme-link %.y nn))
   =/  pid=(unit @ud)  ((slat %ud) i.t.pax)
   ?:  |(?=(~ pid) !(~(has by posts.brd) u.pid))
     (send-err eyre-id 404 'not found')
-  (send-html eyre-id (forum-doc (render-thread:fre c brd u.pid) "" theme-link %.y))
+  (send-html eyre-id (forum-doc (render-thread:fre c brd u.pid) "" theme-link %.y nn))
 ::  +forum-role-of / +forum-target-of: parse a form field.
 ::
 ++  forum-role-of

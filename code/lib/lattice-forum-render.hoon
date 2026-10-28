@@ -832,6 +832,31 @@
       rows
   ==
 ::
+::  +render-notes: refusal notes hosts sent back about our posts, newest
+::  first. Each entry is [host board reason at]. base.c is the forum root.
+::
+++  render-notes
+  |=  [c=ctx notes=(list [host=@p board=@t reason=@t at=@da])]
+  ^-  [title=@t body=manx]
+  =/  rows=marl
+    ?~  notes
+      :~  ;p.me: No refusals.
+      ==
+    %+  turn  notes
+    |=  [host=@p board=@t reason=@t at=@da]
+    ^-  manx
+    ;div.rw
+      ;div
+        ;span.ti: {(trip reason)}
+        ;span.me: {(scow %p host)}/{(trip board)}, {(time-ago now.c at)}
+      ==
+    ==
+  %^  page-shell  c  'forum - refusals'
+  :_  ~
+  :*  ;h3: Refused posts
+      rows
+  ==
+::
 ::  +render-create: the new-board form (base.c is the forum root)
 ::
 ++  render-create
