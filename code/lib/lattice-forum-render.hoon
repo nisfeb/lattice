@@ -50,10 +50,10 @@
   .rk { min-width: 24px; text-align: right; margin-right: 6px;
         color: var(--muted,#8a8a8a); font-size: 15px; flex-shrink: 0; }
   .rw > div { min-width: 0; flex: 1; }
-  textarea, input[type=text], input[type=url], input[type=number], select {
+  .ct textarea, .ct input[type=text], .ct input[type=url], .ct input[type=number], .ct select {
     background: var(--raised,#8881); color: var(--text,#111); border: 1px solid var(--border,#8886); }
-  textarea { width: 100%; max-width: 540px; height: 160px; font-family: monospace; font-size: 16px; }
-  input[type=text], input[type=url] { width: 100%; max-width: 440px; font-size: 16px; padding: 5px; }
+  .ct textarea { width: 100%; max-width: 540px; height: 160px; font-family: monospace; font-size: 16px; }
+  .ct input[type=text], .ct input[type=url] { width: 100%; max-width: 440px; font-size: 16px; padding: 5px; }
   .btn { margin-top: 10px; padding: 8px 24px; cursor: pointer;
          background: var(--accent,#1a6ed8); color: var(--on-accent,#fff); border: none; font-size: 16px; }
   .post-body { padding: 12px 0; white-space: pre-wrap; line-height: 1.6; }
@@ -345,18 +345,21 @@
 ::  live there as tape, and a library cannot call app.hoon arms nor inject
 ::  their tape into a manx without +en-xml escaping it. So this arm answers
 ::  only the body manx; app.hoon serializes it and wraps it. `forum-css`
-::  stays owned here, exposed for the app.hoon wrapper to inline. `c` and
-::  `title` are kept in the sample so the render arms call this unchanged.
+::  stays owned here, exposed for the app.hoon wrapper to inline. It returns
+::  the already-computed page `title` alongside the body so +forum-doc can
+::  emit a real <title> in the head; `c` is unused now (the theme link is
+::  built app-side from find-theme).
 ::
 ++  page-shell
   |=  [c=ctx title=@t content=marl nav=(unit [href=tape label=tape])]
-  ^-  manx
+  ^-  [title=@t body=manx]
   =/  nav-node=manx
     ?~  nav  ;span;
     ;span
       ;+  ;/("  |  ")
       ;a(href href.u.nav): {label.u.nav}
     ==
+  :-  title
   ;div.ct
     ;div.faint
       ;+  ;/("forum")
@@ -468,7 +471,7 @@
 ::
 ++  render-board
   |=  [c=ctx brd=board mode=sort-mode page=@ud]
-  ^-  manx
+  ^-  [title=@t body=manx]
   =/  info=board-info  info.brd
   =/  can-mod=?  |(=(who.c host.info) (is-mod:fr who.c brd))
   =/  sort-link
@@ -523,7 +526,7 @@
 ::
 ++  render-thread
   |=  [c=ctx brd=board id=post-id]
-  ^-  manx
+  ^-  [title=@t body=manx]
   =/  info=board-info  info.brd
   =/  nav=(unit [href=tape label=tape])  `[base.c (trip title.info)]
   =/  got=(unit post)  (~(get by posts.brd) id)
@@ -620,7 +623,7 @@
 ::
 ++  render-submit
   |=  [c=ctx name=board-name]
-  ^-  manx
+  ^-  [title=@t body=manx]
   %^  page-shell  c  'forum - submit'
   :_  `[base.c (trip name)]
   :~  ;h3: Submit to {(trip name)}
@@ -652,7 +655,7 @@
 ::
 ++  render-mod
   |=  [c=ctx brd=board]
-  ^-  manx
+  ^-  [title=@t body=manx]
   =/  info=board-info  info.brd
   =/  is-host=?  =(who.c host.info)
   =/  role-section=manx
@@ -804,7 +807,7 @@
 ::
 ++  render-boards
   |=  [c=ctx boards=(list [name=board-name title=@t public=?])]
-  ^-  manx
+  ^-  [title=@t body=manx]
   =/  rows=marl
     ?~  boards
       :~  ;p.me: No boards yet.
@@ -833,7 +836,7 @@
 ::
 ++  render-create
   |=  c=ctx
-  ^-  manx
+  ^-  [title=@t body=manx]
   %^  page-shell  c  'forum - create a board'
   :_  `[base.c "boards"]
   :~  ;h3: Create a board

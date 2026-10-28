@@ -10097,7 +10097,7 @@
 ::  no urb:// address and its http path is not meaningful to the omnibar).
 ::
 ++  forum-doc
-  |=  [body=manx current=tape theme-link=tape authed=?]
+  |=  [page=[title=@t body=manx] current=tape theme-link=tape authed=?]
   ^-  @t
   =/  bar-tail=tape
     ?.  authed  "</form>"
@@ -10107,6 +10107,7 @@
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
     pwa-head
+    "<title>"  (esc (trip title.page))  "</title>"
     "<style>"  (trip forum-css:fre)  "</style>"
     "<style>"  bar-css  "</style>"
     theme-link
@@ -10114,7 +10115,7 @@
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
     nav-history
     bar-tail
-    (en-xml:html body)
+    (en-xml:html body.page)
     ?:(authed omni-autocomplete "")
     nav-script
     "</body></html>"
@@ -10159,10 +10160,10 @@
         "/apps/lattice/forum/{(trip nom)}"
         ""
     ==
-  =/  doc=manx
+  =/  page=[title=@t body=manx]
     ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
     (render-thread:fre c brd u.pid)
-  (send-html eyre-id (forum-doc doc "" theme-link %.n))
+  (send-html eyre-id (forum-doc page "" theme-link %.n))
 ::  +forum-load-board: a board by name, or ~ if missing or unreadable.
 ::
 ++  forum-load-board
