@@ -88,6 +88,7 @@
       [%delete-board name=board-name]
       ::  moderation
       [%set-role name=board-name who=@p =role]
+      [%edit-board-info name=board-name title=@t description=@t]
       ::  content
       [%new-post name=board-name title=@t url=(unit @t) body=(unit @t)]
       [%edit-post name=board-name id=post-id title=@t body=(unit @t)]

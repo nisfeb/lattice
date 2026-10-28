@@ -27,7 +27,9 @@
 ++  test-action-mold
   =/  a=action:ft  [%upvote %main [%comment 1 2]]
   =/  d=action:ft  [%set-prune %main `[3 ~d7]]
+  =/  e=action:ft  [%edit-board-info %main 'T' 'D']
   ;:  weld
+    (expect-eq !>(%edit-board-info) !>(-.e))
     (expect-eq !>(%upvote) !>(-.a))
     (expect-eq !>(%set-prune) !>(-.d))
   ==
