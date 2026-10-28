@@ -9585,6 +9585,35 @@
     head
     "</head><body>"  bar  inner  "</body></html>"
   ==
+::  +nav-controls: the reader bar's shared left half, back/forward (+nav-script
+::  drives them), home, the omnibar input holding `current`, and Go. Per-surface
+::  extras (edit, star, orrery slot, autocomplete) stay at the call sites.
+::
+++  nav-controls
+  |=  current=tape
+  ^-  tape
+  ;:  weld
+    "<button type=\"button\" class=\"navb\" id=\"navb\" title=\"back\" disabled>&#8592;</button>"
+    "<button type=\"button\" class=\"navb\" id=\"navf\" title=\"forward\" disabled>&#8594;</button>"
+    "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
+    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search your pages\">"
+    "<button type=\"submit\">Go</button>"
+  ==
+::  +nav-hamburger: the bar's last control, the menu button and its entries.
+::  One copy for every reader surface (page, browser view, clearweb).
+::
+++  nav-hamburger
+  ^-  tape
+  ;:  weld
+    "<span class=\"hamw\"><button type=\"button\" id=\"ham\" title=\"menu\">&#9776;</button>"
+    "<div id=\"hammenu\" hidden>"
+    "<a href=\"/apps/lattice/app\">&#9998; editor</a>"
+    "<a href=\"/apps/lattice/know\">&#9670; knowledge</a>"
+    "<a href=\"/apps/lattice/marks\">&#9733; bookmarks</a>"
+    "<a href=\"/apps/lattice/forum\">&#9993; forum</a>"
+    "<a href=\"/apps/lattice/settings\">&#9881; settings</a>"
+    "</div></span>"
+  ==
 ::  +clearweb-bar: the /c/ navigation affordance, in two tiers. EVERYONE
 ::  gets contextual back/forward — pure history traversal, no auth, so an
 ::  anonymous visitor is never stranded on a bare page. The authenticated
@@ -9599,10 +9628,13 @@
   ::  single-quote cords: braces in a double-quoted tape INTERPOLATE.
   %+  weld
     %-  trip
-    '<style>.cbar{display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid #8884}.cbar button,.cbar a.home{font:inherit;padding:4px 12px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer;text-decoration:none}.cbar button[disabled]{opacity:.35;cursor:default}.cbar input{flex:1;font:inherit;padding:5px 8px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbar .hamw{position:relative;margin-left:auto;display:flex}#hammenu{position:absolute;right:0;top:100%;z-index:60;background:#fff;border:1px solid #8886;border-radius:6px;min-width:160px;display:flex;flex-direction:column;padding:4px;box-shadow:0 4px 14px #0003}@media(prefers-color-scheme:dark){#hammenu{background:#1a1a1a}}#hammenu a{padding:7px 10px;text-decoration:none;color:inherit;border-radius:4px}#hammenu a:hover{background:#8882}#hammenu[hidden]{display:none}</style><form class="cbar" action="/apps/lattice" method="get"><button type="button" class="navb" id="navb" title="back" disabled>&#8592;</button><button type="button" class="navb" id="navf" title="forward" disabled>&#8594;</button>'
+    '<style>.cbar{display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid #8884}.cbar button,.cbar a.home{font:inherit;padding:4px 12px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer;text-decoration:none}.cbar button[disabled]{opacity:.35;cursor:default}.cbar input{flex:1;font:inherit;padding:5px 8px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbar .hamw{position:relative;margin-left:auto;display:flex}#hammenu{position:absolute;right:0;top:100%;z-index:60;background:#fff;border:1px solid #8886;border-radius:6px;min-width:160px;display:flex;flex-direction:column;padding:4px;box-shadow:0 4px 14px #0003}@media(prefers-color-scheme:dark){#hammenu{background:#1a1a1a}}#hammenu a{padding:7px 10px;text-decoration:none;color:inherit;border-radius:4px}#hammenu a:hover{background:#8882}#hammenu[hidden]{display:none}</style><form class="cbar" action="/apps/lattice" method="get">'
   ?.  authed  "</form>"
-  %-  trip
-  '<a class="home" href="/apps/lattice" title="lattice home">&#8962;</a><input name="url" value="" autocomplete="off" placeholder="urb:// address or search your pages"><button type="submit">Go</button><span class="hamw"><button type="button" id="ham" title="menu">&#9776;</button><div id="hammenu" hidden><a href="/apps/lattice/app">&#9998; editor</a><a href="/apps/lattice/know">&#9670; knowledge</a><a href="/apps/lattice/marks">&#9733; bookmarks</a><a href="/apps/lattice/settings">&#9881; settings</a></div></span></form>'
+  ;:  weld
+    (nav-controls "")
+    nav-hamburger
+    "</form>"
+  ==
 ::  `preview`: the editor's preview frame asked (?preview=1). An html answer
 ::  gets the editor's flat scrollbar rules appended, because a document that
 ::  styles no scrollbars gets the engine's native, window-theme-following ones
@@ -11712,19 +11744,9 @@
     ::  a row of nav links lives in the hamburger now — including the editor,
     ::  the knowledge store, bookmarks and settings — because an authored
     ::  /index takes over the home view and the bar is what survives it.
-    "<button type=\"button\" class=\"navb\" id=\"navb\" title=\"back\" disabled>&#8592;</button>"
-    "<button type=\"button\" class=\"navb\" id=\"navf\" title=\"forward\" disabled>&#8594;</button>"
-    "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
-    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search your pages\">"
-    "<button type=\"submit\">Go</button>"
+    (nav-controls current)
     bmbtn
-    "<span class=\"hamw\"><button type=\"button\" id=\"ham\" title=\"menu\">&#9776;</button>"
-    "<div id=\"hammenu\" hidden>"
-    "<a href=\"/apps/lattice/app\">&#9998; editor</a>"
-    "<a href=\"/apps/lattice/know\">&#9670; knowledge</a>"
-    "<a href=\"/apps/lattice/marks\">&#9733; bookmarks</a>"
-    "<a href=\"/apps/lattice/settings\">&#9881; settings</a>"
-    "</div></span>"
+    nav-hamburger
     "</form><main>"  inner  "</main>"
     ::  omnibar completions. A STYLED list, deliberately. <datalist> is the
     ::  one-line version and renders as an OS-drawn dropdown that ignores every
@@ -11781,21 +11803,11 @@
     (trip 'html,body{height:100%}body.bp{display:flex;flex-direction:column;margin:0}.bp main{max-width:none;margin:0;padding:0;flex:1;display:flex}.bp .pf{flex:1;width:100%;border:0}.bar .eb,.bar .bm{display:flex;align-items:center;gap:.3em;padding:0 12px;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;background:transparent;cursor:pointer;font-size:1rem}.bar .eb:hover,.bar .bm:hover{border-color:var(--accent,#1a6ed8)}')
     "</style></head><body class=\"bp\">"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
-    "<button type=\"button\" class=\"navb\" id=\"navb\" title=\"back\" disabled>&#8592;</button>"
-    "<button type=\"button\" class=\"navb\" id=\"navf\" title=\"forward\" disabled>&#8594;</button>"
-    "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
-    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search your pages\">"
-    "<button type=\"submit\">Go</button>"
+    (nav-controls current)
     editbtn
     "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
     orrery-slot
-    "<span class=\"hamw\"><button type=\"button\" id=\"ham\" title=\"menu\">&#9776;</button>"
-    "<div id=\"hammenu\" hidden>"
-    "<a href=\"/apps/lattice/app\">&#9998; editor</a>"
-    "<a href=\"/apps/lattice/know\">&#9670; knowledge</a>"
-    "<a href=\"/apps/lattice/marks\">&#9733; bookmarks</a>"
-    "<a href=\"/apps/lattice/settings\">&#9881; settings</a>"
-    "</div></span>"
+    nav-hamburger
     "</form>"
     "<main><iframe class=\"pf\""  ?:(sandbox " sandbox=\"\"" "")
     " srcdoc=\""  (esc (trip doc))  "\"></iframe></main>"

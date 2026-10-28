@@ -39,9 +39,9 @@ let s = await st();
 check('back is disabled on a fresh tab', s.b === true, JSON.stringify(s.b));
 check('forward is disabled on a fresh tab', s.f === true, JSON.stringify(s.f));
 check('the hamburger exists and starts closed', s.ham && s.menuHidden === true);
-check('the hamburger holds editor/knowledge/bookmarks/settings',
+check('the hamburger holds editor/knowledge/bookmarks/forum/settings',
   JSON.stringify(s.links) === JSON.stringify([
-    '/apps/lattice/app', '/apps/lattice/know', '/apps/lattice/marks', '/apps/lattice/settings']),
+    '/apps/lattice/app', '/apps/lattice/know', '/apps/lattice/marks', '/apps/lattice/forum', '/apps/lattice/settings']),
   JSON.stringify(s.links));
 check('Go sits just right of the omnibar', s.goNext === 'Go', s.goNext);
 check('the hamburger is the last thing in the bar', s.lastEl === 'hamw', s.lastEl);
