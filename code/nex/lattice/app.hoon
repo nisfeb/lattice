@@ -1405,6 +1405,11 @@
   ::  viewer browsing a peer's PUBLIC board over scry. POST is Task 3.
   ?:  &(?=([%'forum-remote' *] suffix) =(%'GET' method.request.req))
     (serve-forum-remote eyre-id t.suffix args)
+  ::  cross-ship forum write: POST /forum-remote/<host>/<board>/... decodes
+  ::  the same forms as the local forum and pokes the action at <host>. Behind
+  ::  the same CSRF refusal and owner gate as the local forum POST above.
+  ?:  &(?=([%'forum-remote' *] suffix) =(%'POST' method.request.req) authenticated.req)
+    (serve-forum-remote-post eyre-id t.suffix (req-body req))
   ::  the owner's forum action forms: POST /forum/... (behind the owner gate
   ::  and the CSRF refusal above; a key never reaches here, it is not
   ::  `authenticated`). Each pokes the one writer, then 303s back.
@@ -10481,6 +10486,91 @@
     ==
   ?~  res  (send-err eyre-id 400 'bad or missing forum form fields')
   ;<  ~  bind:m  (poke-eval [%forum our act.u.res])
+  (send-see-other eyre-id to.u.res)
+::  +serve-forum-remote-post: the owner's forms on a board hosted on ANOTHER
+::  ship (POST /forum-remote/<host>/<board>/...). Decodes the suffix and form
+::  into an action:ft exactly as +serve-forum-post does, but pokes it at the
+::  host (the /forum-post-remote send path) instead of the local writer, then
+::  303s back to the GET view so the page re-scries. It does not await a
+::  result: the host applies or refuses asynchronously (a refusal is a note).
+::  The host stamps authorship from the transport; the payload carries none.
+::  Owner-only/board actions (create, delete-board, mod/*) never appear as
+::  forms on a remote board; such a suffix just redirects back unsent.
+::
+++  serve-forum-remote-post
+  |=  [eyre-id=@ta pax=path body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  (levy `path`pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
+    (send-err eyre-id 404 'not found')
+  ?.  ?=([host=@ta board=@ta *] pax)  (send-err eyre-id 404 'not found')
+  =/  host=(unit @p)  (slaw %p i.pax)
+  ?~  host  (send-err eyre-id 404 'not found')
+  =/  nom=@tas  i.t.pax
+  ?.  ((sane %tas) nom)  (send-err eyre-id 404 'not found')
+  =/  form=(map @t @t)
+    (malt args:(parse-url:http-utils (crip (weld "/?" (trip body)))))
+  =/  grab=$-(@t (unit @t))
+    |=  k=@t  ^-  (unit @t)
+    =/  v=@t  (~(gut by form) k '')
+    ?:(=('' v) ~ `v)
+  =/  base=tape
+    "/apps/lattice/forum-remote/{(scow %p u.host)}/{(trip nom)}"
+  =/  tl=path  t.t.pax
+  ::  ~ act = bad fields; act is ~ with a to = a refused suffix (no send)
+  =/  res=(unit [act=(unit action:ft) to=tape])
+    ?+  tl  ~
+        [%vote ~]
+      =/  tg=(unit @t)  (grab 'target')
+      ?~  tg  ~
+      =/  vt=(unit vote-target:ft)  (forum-target-of u.tg)
+      ?~  vt  ~
+      :-  ~
+      :-  `[%upvote nom u.vt]
+      ?-(-.u.vt %post base, %comment "{base}/{(a-co:co post.u.vt)}")
+    ::
+        [%submit ~]
+      =/  ti=(unit @t)  (grab 'title')
+      ?~  ti  ~
+      `[`[%new-post nom u.ti (grab 'url') (grab 'body')] base]
+    ::
+        [%sidebar ~]
+      `[`[%set-sidebar nom (fall (grab 'sidebar') '')] base]
+    ::
+        [%mod *]
+      `[~ base]
+    ::
+        [@ @ ~]
+      =/  pid=(unit @ud)  ((slat %ud) i.tl)
+      ?~  pid  ~
+      =/  thread=tape  "{base}/{(a-co:co u.pid)}"
+      ?+  i.t.tl  ~
+          %comment
+        =/  bd=(unit @t)  (grab 'body')
+        ?~  bd  ~
+        =/  par=(unit comment-id:ft)  (biff (grab 'parent') (slat %ud))
+        `[`[%new-comment nom u.pid par u.bd] thread]
+      ::
+          %pin
+        `[`[%pin-post nom u.pid =(`'true' (grab 'pinned'))] base]
+      ::
+          %delete
+        `[`[%delete-post nom u.pid] base]
+      ::
+          %delete-comment
+        =/  cid=(unit @ud)  (biff (grab 'comment-id') (slat %ud))
+        ?~  cid  ~
+        `[`[%delete-comment nom u.pid u.cid] thread]
+      ==
+    ==
+  ?~  res  (send-err eyre-id 400 'bad or missing forum form fields')
+  ?~  act.u.res  (send-see-other eyre-id to.u.res)
+  ;<  hbase=(unit path)  bind:m  (peer-base-cached u.host)
+  ;<  sent=?  bind:m
+    %^  remote-load-poke-wait  u.host
+      :-  [/forum-post %& (fall hbase desk-base:lu) %'forum.sig']
+      [%poke [/lattice %forum-action] `action:ft`u.act.u.res]
+    ~s15
   (send-see-other eyre-id to.u.res)
 ::  +clearweb-body: the rendered body of a public page, from a per-page cache
 ::  keyed by the data grub's revision. The md and gmi renders are the costly
