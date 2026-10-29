@@ -334,6 +334,8 @@ select, option { color-scheme: inherit; }
   padding: 0 6px; border-radius: 4px; text-decoration: none; flex: none; }
 .tree .fld .addf:hover { background: var(--accent-tint, #4a7c5922); }
 .tree .ind { margin-left: 14px; }
+/* the row the arrow keys are on (treeKeys, 30-tree.js) */
+.tree [role=treeitem]:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
 /*  flat icons (ico in 10-shell.js), sized by the text around them. A page
     kind has its devicons colour; folders and the bar's icons take the
     text's, so a current folder's icon goes green with its label. */

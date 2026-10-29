@@ -35,7 +35,7 @@
   // [id, icon, name, keys] per pane tab. Their sections are filled by the
   // components below and, for the empty ones, by later steps.
   const PANES = {
-    l: [['files', 'doc', 'Files'], ['know', 'know', 'Knowledge'],
+    l: [['files', 'doc', 'Files', 'Ctrl+Shift+E'], ['know', 'know', 'Knowledge'],
       ['search', 'search', 'Search', 'Ctrl+K'], ['marks', 'mark', 'Bookmarks']],
     r: [['page', 'gear', 'Page'], ['out', 'out', 'Outgoing links'],
       ['back', 'back', 'Backlinks'], ['outline', 'list', 'Outline'],
@@ -179,7 +179,13 @@
       const aid = 'pt-' + id;
       action({ id: aid, name: 'Show ' + name, home: side === 'l' ? 'Left pane' : 'Right pane', keys,
         run: id === 'search' ? () => qOpen()
-          : () => { paneOpen(side, true); const b = actionHome(aid); if (b) b.click(); } });
+          : () => {
+            paneOpen(side, true);
+            const b = actionHome(aid);
+            if (b) b.click();
+            // Files' shortcut lands in its tree (30-tree.js)
+            if (id === 'files') treeFocus();
+          } });
     }
   }
 

@@ -1012,7 +1012,7 @@
   // [id, icon, name, keys] per pane tab. Their sections are filled by the
   // components below and, for the empty ones, by later steps.
   const PANES = {
-    l: [['files', 'doc', 'Files'], ['know', 'know', 'Knowledge'],
+    l: [['files', 'doc', 'Files', 'Ctrl+Shift+E'], ['know', 'know', 'Knowledge'],
       ['search', 'search', 'Search', 'Ctrl+K'], ['marks', 'mark', 'Bookmarks']],
     r: [['page', 'gear', 'Page'], ['out', 'out', 'Outgoing links'],
       ['back', 'back', 'Backlinks'], ['outline', 'list', 'Outline'],
@@ -1156,7 +1156,13 @@
       const aid = 'pt-' + id;
       action({ id: aid, name: 'Show ' + name, home: side === 'l' ? 'Left pane' : 'Right pane', keys,
         run: id === 'search' ? () => qOpen()
-          : () => { paneOpen(side, true); const b = actionHome(aid); if (b) b.click(); } });
+          : () => {
+            paneOpen(side, true);
+            const b = actionHome(aid);
+            if (b) b.click();
+            // Files' shortcut lands in its tree (30-tree.js)
+            if (id === 'files') treeFocus();
+          } });
     }
   }
 
@@ -4188,6 +4194,7 @@
   <div id="treelist"></div>
 </aside>`;
       treeList = $('treelist');
+      treeKeys(treeList, 'Files');
     }
   });
   // page-dump, not page-tree: it returns the same nodes PLUS every page's body
@@ -4321,10 +4328,16 @@
   // by depth. `fold` folds or unfolds it and repaints. A click anywhere on
   // the row folds, unless the row has a `pick` of its own (the files tree
   // selects the folder): then the row picks and only the arrow folds.
-  function folderRow(label, depth, folded, fold, pick) {
+  // `key`, in a tree that treeKeys drives, makes the row one of its items.
+  function folderRow(label, depth, folded, fold, pick, key) {
     const row = document.createElement('div');
     row.className = 'fld';
     row.style.marginLeft = (depth * 14) + 'px';
+    if (key !== undefined) {
+      treeItem(row, depth, key);
+      row.setAttribute('aria-expanded', folded ? 'false' : 'true');
+      row.latFold = fold;
+    }
     const cx = document.createElement('span');
     cx.className = 'cx';
     cx.textContent = folded ? '▸' : '▾';
@@ -4339,6 +4352,97 @@
     } else row.onclick = fold;
     return row;
   }
+
+  // ── keyboard: the files and memory trees as ARIA trees ──────────────────
+  // The rows are flat siblings indented by depth, so the shape is read from
+  // aria-level: a folder's children are the shown rows after it with a
+  // deeper level, and its parent the nearest shown row before it with a
+  // shallower one. One row at a time is in the tab order (roving tabindex).
+  // Enter is the row's own click, with Ctrl/Cmd carried, so a page opens
+  // through openIn (tabLink) and Ctrl+Enter gives it a new tab.
+  // treeItem marks up one row. `key` names it across a repaint: a fold
+  // rebuilds the whole list, and the focus has to land on the same row.
+  function treeItem(row, depth, key) {
+    row.setAttribute('role', 'treeitem');
+    row.setAttribute('aria-level', depth + 1);
+    row.tabIndex = -1;
+    row.dataset.tk = key;
+    return row;
+  }
+  const treeRows = (list) => [...list.querySelectorAll('[role=treeitem]')]
+    .filter((r) => r.style.display !== 'none');
+  // after a paint: the row last focused, else the open one, else the first,
+  // is the one Tab reaches. `refocus` when the focus was in the list before
+  // the paint took its rows away.
+  function treeRove(list, refocus) {
+    const rows = treeRows(list);
+    const to = rows.find((r) => r.dataset.tk === list.latKey)
+      || rows.find((r) => r.classList.contains('cur')) || rows[0];
+    if (!to) return;
+    to.tabIndex = 0;
+    if (refocus) to.focus();
+  }
+  function treeKeys(list, label) {
+    list.setAttribute('role', 'tree');
+    list.setAttribute('aria-label', label);
+    const lv = (r) => +r.getAttribute('aria-level');
+    list.addEventListener('focusin', (e) => {
+      const row = e.target.closest('[role=treeitem]');
+      if (!row) return;
+      for (const r of list.querySelectorAll('[role=treeitem][tabindex="0"]')) r.tabIndex = -1;
+      row.tabIndex = 0;
+      list.latKey = row.dataset.tk;
+    });
+    list.addEventListener('keydown', (e) => {
+      const row = e.target.closest('[role=treeitem]');
+      if (!row || e.altKey) return;
+      const rows = treeRows(list);
+      const i = rows.indexOf(row);
+      const open = row.getAttribute('aria-expanded');
+      const mod = e.ctrlKey || e.metaKey;
+      let to = null;
+      if (e.key === 'Enter') {
+        row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true,
+          ctrlKey: e.ctrlKey, metaKey: e.metaKey }));
+      } else if (mod || (e.shiftKey && e.key.length > 1)) return;
+      else if (e.key === 'ArrowDown') to = rows[i + 1];
+      else if (e.key === 'ArrowUp') to = rows[i - 1];
+      else if (e.key === 'Home') to = rows[0];
+      else if (e.key === 'End') to = rows[rows.length - 1];
+      // a fold repaints, and treeRove puts the focus back on this row
+      else if (e.key === 'ArrowRight') {
+        if (open === 'false') row.latFold();
+        else if (open === 'true' && rows[i + 1] && lv(rows[i + 1]) > lv(row)) to = rows[i + 1];
+      } else if (e.key === 'ArrowLeft') {
+        if (open === 'true') row.latFold();
+        else for (let j = i - 1; j >= 0 && !to; j--) if (lv(rows[j]) < lv(row)) to = rows[j];
+      } else if (e.key.length === 1 && e.key !== ' ') {
+        // type-ahead: the next row whose name starts with the letter
+        const k = e.key.toLowerCase();
+        for (let n = 1; n <= rows.length && !to; n++) {
+          const r = rows[(i + n) % rows.length];
+          if (r.textContent.trim().toLowerCase().startsWith(k)) to = r;
+        }
+      } else return;
+      e.preventDefault();
+      if (to) to.focus();
+    });
+  }
+  // Ctrl+Shift+E: the Files tab (the pane opened if shut), its tree focused.
+  // Registered on the Files tab's own action (13-frame.js), so the tab's
+  // tooltip and the palette both show it.
+  function treeFocus() {
+    treeRove(treeList, false);
+    const r = treeList.querySelector('[role=treeitem][tabindex="0"]');
+    if (r) r.focus();
+  }
+  addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === 'KeyE') {
+      e.preventDefault();
+      e.stopPropagation();
+      ACTIONS.find((a) => a.id === 'pt-files').run();
+    }
+  }, true);
 
   // ── sort order and collapse all ─────────────────────────────────────────
   // Siblings sort by name, folders first, ascending or descending
@@ -4382,6 +4486,7 @@
   function renderTree() {
     const coll = paneColl.get();
     const byPath = treeOrder(nodes);
+    const had = treeList.contains(document.activeElement);
     treeList.textContent = '';
     rowByPath = new Map();
     for (const n of byPath) {
@@ -4399,6 +4504,7 @@
         row.innerHTML = ico(kindExt(n.kind));
         row.append(document.createTextNode((n.dname || n.path.split('/').pop()) + '.' + kindExt(n.kind)));
         if (n.dname) row.title = n.path;
+        treeItem(row, depth, 'p:' + n.path);
         if (n.share === 'clearweb') {
           const cw = document.createElement('span');
           cw.className = 'cw';
@@ -4409,7 +4515,7 @@
         tabLink(row, 'page', n.path);
       } else {
         row = folderRow(n.dname || n.path.split('/').pop(), depth, coll.includes(n.path),
-          () => { paneColl.flip(n.path); renderTree(); }, () => pickFolder(n.path));
+          () => { paneColl.flip(n.path); renderTree(); }, () => pickFolder(n.path), 'f:' + n.path);
         if (n.path === curFolder) row.classList.add('cur');
         if (n.dname) row.lastChild.title = n.path;     // the label's tip
         if (treeShare(n.path) === 'clearweb') {
@@ -4424,6 +4530,7 @@
         add.textContent = '+';
         add.title = 'new file in ' + n.path;
         add.href = '#';
+        add.tabIndex = -1;          // the tree is one tab stop; New page does this
         add.onclick = async (e) => {
           e.preventDefault(); e.stopPropagation();
           if (await guardDirty()) newFile(n.path);
@@ -4435,6 +4542,7 @@
       treeList.appendChild(row);
     }
     if (sharedWithMe.length) renderShared(coll);
+    treeRove(treeList, had);
     // the conflict badge is a count of conflicts/ pages in this very tree, so
     // it repaints exactly when the tree does. Defined in 80-conflicts.js.
     renderConfBadge();
@@ -6681,7 +6789,7 @@
   function renderShared(coll) {
     const fold = (key, label, depth) => {
       treeList.appendChild(folderRow(label, depth, coll.includes(key),
-        () => { paneColl.flip(key); renderTree(); }));
+        () => { paneColl.flip(key); renderTree(); }, undefined, key));
       return !coll.includes(key);
     };
     if (!fold(SWM, 'shared with me', 0)) return;
@@ -6715,6 +6823,7 @@
           loadShared();
         };
         a.append(nm, md, x);
+        treeItem(a, 2, SWM + '/' + host + '/' + it.path);
         // a grub tab; openGrub (by way of enterGrub) sets the address
         tabLink(a, 'grub', it.path, { ship: host });
         treeList.appendChild(a);
@@ -9185,6 +9294,7 @@
   let knowHave = false;     // a know-list has landed this session
   const chipsEl = $('chips'), knowMeta = $('knowmeta'), ktagsEl = $('ktags');
   const knowList = $('knowlist');
+  treeKeys(knowList, 'Memories');
   // folded by default and remembered, like the other layout choices
   const tagSec = $('tagsec'), tagSum = $('tagsh');
   tagSec.open = localStorage.knowTagsOpen === '1';
@@ -9234,6 +9344,7 @@
   function renderKnowTree() {
     const shown = knowTag ? knowKeys.filter((k) => k.tags.includes(knowTag)) : knowKeys;
     const keys = shown.map((k) => k.key.replace(/^\//, '')).sort();
+    const had = knowList.contains(document.activeElement);
     knowList.textContent = '';
     knowRows = new Map();
     if (!keys.length) {
@@ -9256,7 +9367,7 @@
         if (seen.has(dir)) continue;
         seen.add(dir);
         const row = folderRow(parts[d], d, coll.includes(dir),
-          () => { knowColl.flip(dir); renderKnowTree(); });
+          () => { knowColl.flip(dir); renderKnowTree(); }, undefined, 'f:' + dir);
         if (folded(dir)) row.style.display = 'none';
         knowList.appendChild(row);
       }
@@ -9267,9 +9378,11 @@
       row.href = '/apps/lattice/app?view=know&key=' + encodeURIComponent(key);
       row.textContent = parts[parts.length - 1];
       tabLink(row, 'know', key);
+      treeItem(row, parts.length - 1, 'p:' + key);
       knowRows.set(key, row);
       knowList.appendChild(row);
     }
+    treeRove(knowList, had);
   }
   // one knowKeys entry by (normalized) key. Keys may carry a leading slash
   const knowEntry = (key) =>

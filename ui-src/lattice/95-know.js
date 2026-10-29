@@ -32,6 +32,7 @@
   let knowHave = false;     // a know-list has landed this session
   const chipsEl = $('chips'), knowMeta = $('knowmeta'), ktagsEl = $('ktags');
   const knowList = $('knowlist');
+  treeKeys(knowList, 'Memories');
   // folded by default and remembered, like the other layout choices
   const tagSec = $('tagsec'), tagSum = $('tagsh');
   tagSec.open = localStorage.knowTagsOpen === '1';
@@ -81,6 +82,7 @@
   function renderKnowTree() {
     const shown = knowTag ? knowKeys.filter((k) => k.tags.includes(knowTag)) : knowKeys;
     const keys = shown.map((k) => k.key.replace(/^\//, '')).sort();
+    const had = knowList.contains(document.activeElement);
     knowList.textContent = '';
     knowRows = new Map();
     if (!keys.length) {
@@ -103,7 +105,7 @@
         if (seen.has(dir)) continue;
         seen.add(dir);
         const row = folderRow(parts[d], d, coll.includes(dir),
-          () => { knowColl.flip(dir); renderKnowTree(); });
+          () => { knowColl.flip(dir); renderKnowTree(); }, undefined, 'f:' + dir);
         if (folded(dir)) row.style.display = 'none';
         knowList.appendChild(row);
       }
@@ -114,9 +116,11 @@
       row.href = '/apps/lattice/app?view=know&key=' + encodeURIComponent(key);
       row.textContent = parts[parts.length - 1];
       tabLink(row, 'know', key);
+      treeItem(row, parts.length - 1, 'p:' + key);
       knowRows.set(key, row);
       knowList.appendChild(row);
     }
+    treeRove(knowList, had);
   }
   // one knowKeys entry by (normalized) key. Keys may carry a leading slash
   const knowEntry = (key) =>

@@ -13,11 +13,16 @@ import { makeCheck, read, cut } from './lib/check.mjs';
 const L = 'ui-src/lattice/';
 const src = cut(L + '20-state.js', /const collStore = [\s\S]*?\n {2}const paneColl = .*/, 'collStore') + '\n'
   + cut(L + '30-tree.js', /function folderRow\([\s\S]*?\n {2}\}/, 'folderRow') + '\n'
+  + cut(L + '30-tree.js', /function treeItem\([\s\S]*?\n {2}\}/, 'treeItem') + '\n'
   + cut(L + '21-tabs.js', /const tabLink = [\s\S]*?\n {2}\};/, 'tabLink') + '\n'
   + read(L + '69-shared.js');
 const check = makeCheck();
 
-function El(tag) { this.tag = tag; this.kids = []; this.style = {}; this.className = ''; this.text = ''; }
+function El(tag) {
+  this.tag = tag; this.kids = []; this.style = {}; this.className = ''; this.text = '';
+  this.dataset = {}; this.attrs = {};
+}
+El.prototype.setAttribute = function (k, v) { this.attrs[k] = String(v); };
 Object.defineProperty(El.prototype, 'textContent', {
   get() { return this.text + this.kids.map((k) => k.textContent).join(''); },
   set(v) { this.text = v; this.kids = []; },

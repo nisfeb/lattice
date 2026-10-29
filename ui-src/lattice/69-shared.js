@@ -26,7 +26,7 @@
   function renderShared(coll) {
     const fold = (key, label, depth) => {
       treeList.appendChild(folderRow(label, depth, coll.includes(key),
-        () => { paneColl.flip(key); renderTree(); }));
+        () => { paneColl.flip(key); renderTree(); }, undefined, key));
       return !coll.includes(key);
     };
     if (!fold(SWM, 'shared with me', 0)) return;
@@ -60,6 +60,7 @@
           loadShared();
         };
         a.append(nm, md, x);
+        treeItem(a, 2, SWM + '/' + host + '/' + it.path);
         // a grub tab; openGrub (by way of enterGrub) sets the address
         tabLink(a, 'grub', it.path, { ship: host });
         treeList.appendChild(a);
