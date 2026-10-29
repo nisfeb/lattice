@@ -7,8 +7,9 @@
   // the front tab or, with Ctrl/Cmd held, opens a new one.
   //
   // Every action must have a home in the DOM: its element carries
-  // data-action="<id>" (the suite checks each one). PALETTE_ONLY would name
-  // the exceptions, and it is empty by design.
+  // data-action="<id>" (the suite checks each one). A home that is built
+  // on demand is checked while its when() says it applies. PALETTE_ONLY
+  // would name the exceptions, and it is empty by design.
   const PALETTE_ONLY = [];
   const pal = document.createElement('div');
   pal.id = 'palette';
@@ -180,4 +181,7 @@
   }, true);
 
   // for the browser suites, which cannot reach this scope
-  window.latPalette = { ids: () => ACTIONS.map((a) => a.id), only: PALETTE_ONLY };
+  //  `applies`: a home built on demand (a page menu item, a row's own
+  //  control) says by its when() whether it is there to be found now
+  window.latPalette = { ids: () => ACTIONS.map((a) => a.id), only: PALETTE_ONLY,
+    applies: (id) => { const a = ACTIONS.find((x) => x.id === id); return !!a && (!a.when || !!a.when()); } };

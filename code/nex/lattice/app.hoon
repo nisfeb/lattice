@@ -2220,7 +2220,19 @@
     ?:  ?=([~ [%ship *] *] lk)
       =/  l=link:ll  l.u.lk
       ;<  rd=(each [body=@t rev=@ud kind=@ta] @t)  bind:m  (link-read (pax-of u.name) l)
-      ?:  ?=(%| -.rd)  (send-err eyre-id 504 p.rd)
+      ::  failed: the owner's editor also gets the last-known copy, to show
+      ::  read-only under the badge. A key gets the failure alone: the cache
+      ::  is a copy only the owner keeps.
+      ?:  ?=(%| -.rd)
+        ?^  key  (send-err eyre-id 504 p.rd)
+        ?.  ?=(%ship -.l)  (send-err eyre-id 504 p.rd)
+        %+  send-simple:srv  eyre-id
+        :-  [504 ['content-type' 'application/json']~]
+        %-  some  %-  as-octs:mimes:html  %-  en:json:html
+        %-  pairs:enjs:format
+        :~  ['error' s+p.rd]
+            ['cached' (link-source-json l body.l rev.l at.u.lk |)]
+        ==
       ;<  now=@da  bind:m  bowl-now
       (send-json eyre-id (link-source-json l body.p.rd rev.p.rd now render))
     ;<  r=(each json [code=@ud msg=@t])  bind:m

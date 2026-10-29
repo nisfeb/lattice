@@ -315,17 +315,26 @@ select, option { color-scheme: inherit; }
 .tree .swrm:hover { color: var(--text); background: var(--accent-tint, #4a7c5922); }
 /*  Move into my pages, ahead of the x. A link row shows the badge on a
     line of its own under the name, so a phone's narrow drawer keeps it. */
-.tree .swmv { flex: none; margin-left: auto; color: var(--muted); padding: 0 4px;
-  border-radius: 4px; cursor: pointer; }
+.tree .swrow { display: flex; align-items: center; gap: 2px; }
+.tree .swrow a.pg.swm { flex: 1; min-width: 0; }
+.tree .swmv { flex: none; color: var(--muted); padding: 2px 4px; border: 0; background: none;
+  font: inherit; line-height: 1; border-radius: 4px; cursor: pointer; }
 .tree .swmv .ic { margin-right: 0; }
-.tree .swmv + .swrm { margin-left: 0; }
-.tree .swmv:hover { color: var(--text); background: var(--accent-tint); }
+.tree .swmv:hover { color: var(--text);
+  background: var(--accent-tint, color-mix(in srgb, var(--accent) 16%, transparent)); }
 .tree a.pg.lnk .ic-link { color: var(--accent); }
-.tree a.pg.lnk .lbad { display: block; white-space: normal; font-size: .75em; margin-left: 1.35em; }
+.tree a.pg.lnk .lbadw { display: block; white-space: normal; font-size: .75em; margin-left: 1.35em; }
 .lbad { color: var(--err); }
+.lbsince { color: var(--muted); }
 .tree .fld.drop { outline: 2px dashed var(--accent); outline-offset: -2px; border-radius: 6px; }
 #lnkrow { margin-bottom: 12px; }
-#lnkrow button { margin-top: 6px; }
+/*  the stale-save bar over a link's document (35-pages.js) */
+.lnkcf { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 12px;
+  border-bottom: 1px solid var(--err-soft); color: var(--err); }
+.lnkcf span { flex: 1 1 14em; }
+.lnkcf button { background: none; color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 10px; font: inherit; font-size: .9em; cursor: pointer; }
+.lnkcf button:hover { background: var(--accent-tint, color-mix(in srgb, var(--accent) 16%, transparent)); }
 @keyframes latpend {
   0%, 100% { background: transparent; }
   50%      { background: color-mix(in srgb, currentColor 16%, transparent); }

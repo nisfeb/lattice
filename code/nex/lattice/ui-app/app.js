@@ -605,6 +605,23 @@
             continue;
           }
           if (!replayDrop(one)) return false;
+          // 409: refused as stale or as nothing-goes-there (a link's host
+          // moved on, a link where a page was). The body is the user's only
+          // copy, so it is kept as a page of its own first, as a create's
+          // collision is; if that write fails the record stays queued.
+          if (one && one.status === 409) {
+            const alt = 'conflicts/offline-edit-' + q.name.replace(/\//g, '-');
+            let two = null;
+            try {
+              two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
+                '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
+            } catch {}
+            if (!(two && two.ok)) return false;
+            conflicts.push(alt);
+            await offDel(q.name);
+            st('offline edit refused: ' + q.name + ', your version is kept at ' + alt, false);
+            continue;
+          }
           st('dropped an unsyncable offline edit: ' + q.name, false);
           await offDel(q.name);
         }
@@ -2813,7 +2830,7 @@
     if (has.has('raw')) item('raw', 'Open raw', done(() =>
       window.open(api + '/page-source?name=' + encodeURIComponent(current), '_blank', 'noopener')));
     if (has.has('linkback'))
-      item('linkback', 'Move back to shared with me', done(() => $('linkback').click()));
+      item('linkback', 'Move back to shared with me', done(() => linkBack(current)));
     if (has.has('del')) item('del', 'Delete', done(() => $('del').click()));
     const r = $('tmenu').getBoundingClientRect();
     m.style.top = r.bottom + 4 + 'px';
@@ -2830,7 +2847,7 @@
   // only in the desktop app.
   for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'],
     ['dup', 'Duplicate page'], ['download', 'Download'], ['tex', 'Convert to HTML'],
-    ['raw', 'Open raw'], ['del', 'Delete']]) {
+    ['raw', 'Open raw'], ['linkback', 'Move back to shared with me'], ['del', 'Delete']]) {
     if (id === 'tex' && !window.__TAURI__) continue;
     action({ id: 'pm-' + id, name, home: 'Page menu',
       when: () => docFront() && pmenuHas().has(id),
@@ -2841,11 +2858,6 @@
         if (b) b.click();
       } });
   }
-  // a link's way back out. Its home is the button in the Page tab's link
-  // section (65-ctl.js), which is always there; the menu item clicks it.
-  action({ id: 'linkback', name: 'Move back to shared with me', home: 'Page menu',
-    when: () => docFront() && pmenuHas().has('linkback'),
-    run: () => $('linkback').click() });
   addEventListener('mousedown', (e) => {
     if (pmenuEl && !pmenuEl.contains(e.target) && !$('tmenu').contains(e.target)) pmenuClose();
   }, true);
@@ -3229,8 +3241,9 @@
   // the front tab or, with Ctrl/Cmd held, opens a new one.
   //
   // Every action must have a home in the DOM: its element carries
-  // data-action="<id>" (the suite checks each one). PALETTE_ONLY would name
-  // the exceptions, and it is empty by design.
+  // data-action="<id>" (the suite checks each one). A home that is built
+  // on demand is checked while its when() says it applies. PALETTE_ONLY
+  // would name the exceptions, and it is empty by design.
   const PALETTE_ONLY = [];
   const pal = document.createElement('div');
   pal.id = 'palette';
@@ -3402,7 +3415,10 @@
   }, true);
 
   // for the browser suites, which cannot reach this scope
-  window.latPalette = { ids: () => ACTIONS.map((a) => a.id), only: PALETTE_ONLY };
+  //  `applies`: a home built on demand (a page menu item, a row's own
+  //  control) says by its when() whether it is there to be found now
+  window.latPalette = { ids: () => ACTIONS.map((a) => a.id), only: PALETTE_ONLY,
+    applies: (id) => { const a = ACTIONS.find((x) => x.id === id); return !!a && (!a.when || !!a.when()); } };
 
 // ── src/27-vim.js ─────────────────────────────────────────────────────────
   // ── vim mode ─────────────────────────────────────────────────────────────
@@ -4310,17 +4326,39 @@
     return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])).toLocaleString(undefined,
       { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
   }
-  // the badge for a link whose last read failed. The owner's ship cannot
-  // tell a revoke from being offline, so it says both. `at` is when a read
-  // first failed: the last good read was before it.
+  // the badge for a link whose last read failed: {copy, since}, or null.
+  // The owner's ship cannot tell a revoke from being offline, so it says
+  // both. `at` is when a read first failed, which the ship keeps as is
+  // while reads go on failing.
   function linkBadge(lk) {
     if (!lk.seen || lk.seen.ok !== false) return null;
+    const at = daLocal(lk.seen.at);
+    return { copy: lk.host + ' unreachable or no longer sharing', since: at ? 'since ' + at : '' };
+  }
+  // the badge as a tree row shows it, on a line of its own under the name
+  function linkBadgeEl(bad) {
+    const w = document.createElement('span');
+    w.className = 'lbadw';
     const b = document.createElement('span');
     b.className = 'lbad';
-    b.textContent = lk.host + ' unreachable or no longer sharing';
-    const at = daLocal(lk.seen.at);
-    if (at) b.title = 'not reached since ' + at;
-    return b;
+    b.textContent = bad.copy;
+    w.append(b);
+    if (bad.since) {
+      const s = document.createElement('span');
+      s.className = 'lbsince';
+      s.textContent = bad.since;
+      w.append(' ', s);
+    }
+    return w;
+  }
+  // the links this editor must not write to just now: a conflicted one
+  // (35-pages.js, its save was refused as stale) and a stale one (its open
+  // fell back on the last-known copy). A read grant is locked always.
+  const linkCf = new Set();
+  const linkStale = new Set();
+  function linkRO(name) {
+    const lk = linkOf(name);
+    return !!lk && (lk.mode === 'read' || linkStale.has(name));
   }
   // what a live read through a link just found. The ship records it too
   // (the badge survives a reload); this repaints without waiting for that.
@@ -4584,7 +4622,7 @@
           row.dataset.path = n.path;
           row.title = linkFrom(lk);
           const bad = linkBadge(lk);
-          if (bad) row.append(bad);
+          if (bad) row.append(linkBadgeEl(bad));
         }
         treeItem(row, depth, 'p:' + n.path);
         if (n.share === 'clearweb') {
@@ -4909,9 +4947,27 @@
     let d = null;
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
+      // a link whose host did not answer: its badge from now, and the last
+      // copy read, which the ship sends its owner along with the failure.
+      // Shown locked (linkStale): a save from it would claim a rev the host
+      // may have moved past, and there is no host to save to anyway.
+      if (r.status === 504 && linkOf(name)) {
+        linkSeen(name, false);
+        let j = null;
+        try { j = await r.json(); } catch {}
+        if (my !== openSeq) return;
+        const why = (j && j.error) || linkOf(name).host + ' is unreachable or no longer shares this page';
+        if (j && j.cached && typeof j.cached.body === 'string') {
+          linkStale.add(name);
+          applyPage(name, j.cached);
+          st(why + '. Showing the last copy read, read-only', false);
+          return true;
+        }
+        if (painted) return true;
+        st('open failed: ' + why, false); unwind();
+        return false;
+      }
       if (!r.ok) {
-        // a link whose host did not answer: its badge, from now
-        if (r.status === 504) linkSeen(name, false);
         if (painted) return true;
         st('open failed' + await errText(r), false); unwind();
         return my === openSeq ? false : undefined;
@@ -4924,7 +4980,9 @@
     }
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
-    if (d.link) linkSeen(name, true);
+    // a live read: the badge, the lock on a last-known copy and a conflict
+    // latched on this link all end here
+    if (d.link) { linkSeen(name, true); linkStale.delete(name); linkCf.delete(name); }
     // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
     // typed while it was in flight. On a busy pier this fetch lands many
     // seconds after the paint, and it carries the PRE-edit body: applying it
@@ -4960,8 +5018,6 @@
     curRev = d.rev || 0;
     refreshTexButton();
     src.value = d.body;
-    // a link with a read grant: the owner's page, shown, not editable
-    src.readOnly = !!d.readonly;
     dirty = false;
     // A fresh editor state begins here. everTyped answers "did the user type
     // since this view was established?" for boot's reconcile guard; carrying
@@ -4971,6 +5027,10 @@
     markCurrent();
     st(d.kind + ' · rev ' + d.rev);
     exitRev();
+    // after exitRev, which unlocks: a link with a read grant, or one shown
+    // from its last-known copy, stays locked (30-tree.js linkRO). The tab
+    // restore comes through here too.
+    src.readOnly = linkRO(name);
     resetPanels();
     showShare(d.share || 'private');
     cmtShow(name, d.comments);
@@ -5186,17 +5246,22 @@
   //  what this editor read, or the host did not answer (a 502 or 504 the
   //  ship itself sent, never queued: the queue is for this ship being
   //  away). The text stays here, unsaved. -> true when it was one of those.
-  async function linkSaveFail(name, r) {
+  //  And a link save is NEVER queued for later, also when this ship is the
+  //  one away: a replay could only claim a base the host may have moved
+  //  past, and the queue drops what is refused. The text stays here.
+  async function linkSaveFail(name, w) {
     const lk = linkOf(name);
-    if (!lk || !r) return false;
-    if (r.status === 409) {
-      st('not saved: ' + lk.host + ' changed this page since you opened it. ' +
-        'Copy your text, then reopen it', false);
-    } else if (r.status === 502 || r.status === 504) {
-      if (r.status === 504) linkSeen(name, false);
-      st('not saved' + await errText(r), false);
+    const r = w.r;
+    if (!lk) return false;
+    if (r && r.status === 409) {
+      linkCf.add(name);           // autosave stands down; the bar offers the ways out
+      st('not saved: ' + lk.host + ' changed this page since you opened it', false);
+    } else if (w.gone) {
+      if (r && r.status === 504) linkSeen(name, false);
+      st('not saved: ' + lk.host + ' is unreachable or no longer shares this page', false);
     } else return false;
     if (current === name) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
+    paintLinkCf(current);
     return true;
   }
 
@@ -5306,7 +5371,7 @@
     try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
     finally { saving = false; }
     const r = w.r;
-    if (await linkSaveFail(name, r)) return failed();
+    if (await linkSaveFail(name, w)) return failed();
     if (w.gone) {
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
@@ -5364,6 +5429,7 @@
       if (src.value === sent) dirty = false;
       else if (!savePending) savePending = true;   // flushPending below saves it
       if (vr && vr.rev) curRev = vr.rev;
+      if (linkCf.delete(name)) paintLinkCf(name);   // a retried link save landed
       if (vr && vr.conflicted) {
         st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
       } else if (dname) st('saved as ' + name + ' (shown as ' + dname + ')');
@@ -5395,6 +5461,12 @@
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
+    // a link whose save was refused as stale: no more writes until the
+    // user picks one of the bar's ways out, or saves on purpose (Ctrl+S)
+    if (mode !== 'know' && linkCf.has(current) && linkOf(current)) {
+      st('not saved: ' + linkOf(current).host + ' changed this page since you opened it', false);
+      return;
+    }
     // Settings > Editor > Autosave pages, off: manual only. This debounce
     // stops, and so do the flushes a tab switch or a navigation makes
     // (flushNoAsk and guardDirty, 20-state.js, which ask instead). Only
@@ -5418,7 +5490,7 @@
     try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
     finally { saving = false; }
     const r = w.r;
-    if (mode !== 'know' && await linkSaveFail(target, r)) { flushPending(); return; }
+    if (mode !== 'know' && await linkSaveFail(target, w)) { flushPending(); return; }
     if (w.gone) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
@@ -5453,6 +5525,66 @@
     flushPending();
     if (offCount) replayQueue(true);     // this autosave proves the ship is back too
   }
+
+  // ── a link whose save was refused as stale ──────────────────────────────
+  // The host's page moved on past the rev this editor read, so the text
+  // here was not written and is the only copy. A bar over the document
+  // offers the two ways out; until one is taken autosave stands down for
+  // that link (linkCf, 30-tree.js) and only Ctrl+S tries again.
+  const lcfBar = document.createElement('div');
+  lcfBar.id = 'lnkcf';
+  lcfBar.className = 'lnkcf';
+  lcfBar.hidden = true;
+  lcfBar.setAttribute('role', 'alert');
+  lcfBar.innerHTML = '<span id="lnkcfmsg"></span>' +
+    '<button type="button" id="lnkcfre">Reload theirs</button>' +
+    '<button type="button" id="lnkcfkeep">Keep mine as a copy</button>';
+  $('center').insertBefore(lcfBar, $('docarea'));
+  //  by id, not lcfBar: paintLink (65-ctl.js) can run before this file has
+  function paintLinkCf(name) {
+    const bar = $('lnkcf');
+    if (!bar) return;
+    const lk = name && name === current && linkCf.has(name) ? linkOf(name) : null;
+    bar.hidden = !lk;
+    if (lk) $('lnkcfmsg').textContent = lk.host + ' changed this page since you opened it. ' +
+      'Your text here is not saved.';
+  }
+  // drop what is here and read theirs again
+  async function linkReload() {
+    const name = current;
+    if (!linkOf(name)) return;
+    dirty = false;
+    clearTimeout(autoTimer);
+    linkCf.delete(name);
+    paintLinkCf(name);
+    await openPage(name);
+  }
+  // what is here becomes a page of my own beside the link (<name>-mine, or
+  // -mine-2 and on when that is taken), then theirs is read again
+  async function linkKeepMine() {
+    const name = current;
+    const lk = linkOf(name);
+    if (!lk) return;
+    const body = src.value;
+    const kind = curKind || pkind.value;
+    for (let i = 1; i < 100; i++) {
+      const copy = name + '-mine' + (i > 1 ? '-' + i : '');
+      if (nodes.some((n) => n.path === copy)) continue;
+      const r = await fetch(api + '/page-save?name=' + encodeURIComponent(copy) + '&type=' + kind +
+        '&new=1', { method: 'POST', body: body || '\n' }).catch(() => null);
+      if (r && r.status === 409) continue;
+      if (!r || !r.ok) { st('copy failed' + await errText(r) + ', your text is still here', false); return; }
+      if (current !== name) return;
+      addTreeNode(copy, kind, false);
+      snapTree();
+      renderTree();
+      await linkReload();
+      st('your text is kept at ' + copy + '; ' + name + ' shows ' + lk.host + '\u2019s again');
+      return;
+    }
+  }
+  $('lnkcfre').onclick = linkReload;
+  $('lnkcfkeep').onclick = linkKeepMine;
 
 // ── src/40-grub.js ────────────────────────────────────────────────────────
   // ── editing an arbitrary grub (?grub=<ball path>) ────────────────────────
@@ -6473,7 +6605,6 @@
     <div id="lnkmode" class="muted"></div>
     <div id="lnkbad" class="lbad" hidden></div>
     <div id="lnkat" class="muted" hidden></div>
-    <button type="button" id="linkback" data-action="linkback">Move back to shared with me</button>
   </div>
   <div id="cmtrow" hidden>
     <h3>comments</h3>
@@ -6502,21 +6633,20 @@
       : (!grubPath && mode !== 'know' && curFolder === null ? current : null);
     const lk = linkOf(name);
     row.hidden = !lk;
+    paintLinkCf(current);
     const sh = document.querySelector('lat-share');
     if (sh) sh.hidden = !!lk;
     if (lk) $('cmtrow').hidden = true;      // rpPaint shows it for a page
     if (!lk) return;
-    row.dataset.name = name;
     $('lnkfrom').textContent = 'Linked from ' + linkFrom(lk);
     $('lnkmode').textContent = lk.mode === 'read' ? 'read only'
       : lk.mode === 'edit' ? 'can edit' : lk.mode;
     const bad = linkBadge(lk);
     $('lnkbad').hidden = !bad;
-    $('lnkbad').textContent = bad ? bad.textContent : '';
-    $('lnkat').hidden = !bad || !bad.title;
-    $('lnkat').textContent = bad ? bad.title : '';
+    $('lnkbad').textContent = bad ? bad.copy : '';
+    $('lnkat').hidden = !bad || !bad.since;
+    $('lnkat').textContent = bad ? bad.since : '';
   }
-  $('linkback').onclick = () => linkBack($('lnkrow').dataset.name);
 
   // ── comments on this page ────────────────────────────────────────────────
   // Comments from other ships are opt-in per page (or per folder: the
@@ -7018,7 +7148,6 @@
       for (const it of mine) {
         const a = document.createElement('a');
         a.className = 'pg swm';
-        a.style.marginLeft = '28px';
         a.href = '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
           '&ship=' + encodeURIComponent(host);
         a.title = host + ' ' + it.path;
@@ -7040,14 +7169,7 @@
           if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
           loadShared();
         };
-        // into my own tree as a link: this, or a drag onto a folder
-        const mv = document.createElement('span');
-        mv.className = 'swmv';
-        mv.setAttribute('role', 'button');
-        tip(mv, 'Move into my pages');
-        mv.innerHTML = ico('link');
-        mv.onclick = (e) => { e.preventDefault(); e.stopPropagation(); askMoveIn(it); };
-        a.append(nm, md, mv, x);
+        a.append(nm, md, x);
         a.draggable = true;
         a.ondragstart = (e) => {
           swmDrag = it;
@@ -7058,7 +7180,21 @@
         treeItem(a, 2, SWM + '/' + host + '/' + it.path);
         // a grub tab; openGrub (by way of enterGrub) sets the address
         tabLink(a, 'grub', it.path, { ship: host });
-        treeList.appendChild(a);
+        // into my own tree as a link: this, or a drag onto a folder. A
+        // button of its own beside the row (a button cannot sit in a link),
+        // so a keyboard reaches it too
+        const mv = document.createElement('button');
+        mv.type = 'button';
+        mv.className = 'swmv';
+        mv.dataset.action = 'swm-move';
+        tip(mv, 'Move into my pages');
+        mv.innerHTML = ico('link');
+        mv.onclick = () => askMoveIn(it);
+        const w = document.createElement('div');
+        w.className = 'swrow';
+        w.style.marginLeft = '28px';
+        w.append(a, mv);
+        treeList.appendChild(w);
       }
     }
   }
@@ -7083,11 +7219,14 @@
     try { n = await r.json(); } catch {}
     sharedWithMe = sharedWithMe.filter((s) => !(s.host === it.host && s.path === it.path));
     if (to.includes('/')) addFolderNodes(to.slice(0, to.lastIndexOf('/')));
-    dropTreeNodes(to);
-    nodes.push(n && n.path === to ? n : { path: to, page: true, kind: 'md',
-      link: { host: it.host, path: it.path, mode: it.mode, seen: { ok: true } } });
-    snapTree();
-    renderTree();
+    // the ship's node, kind and all (frozen at the host's). Without one,
+    // the tree is fetched rather than guessed at.
+    if (n && n.path === to) {
+      dropTreeNodes(to);
+      nodes.push(n);
+      snapTree();
+      renderTree();
+    } else await loadTree();
     st('moved into ' + to + ', linked from ' + it.host);
     return true;
   }
@@ -7120,45 +7259,39 @@
       if (!it || ![...e.dataTransfer.types].includes(SWM_DRAG)) return;
       e.preventDefault();
       swmDrag = null;
-      moveIn(it, folder + '/' + swmLeaf(it));
+      // refused (a name already there, the host away): the dialog, as the
+      // button gives, seeded with this folder
+      moveIn(it, folder + '/' + swmLeaf(it)).then((ok) => { if (!ok) askMoveIn(it, folder); });
     });
   }
-  // the link at `name` back to shared with me. What is open on it closes
-  // the way a deleted page's does.
+  // the link at `name` back to shared with me. Every tab on it closes
+  // first, through closeTab, so one holding unsaved text (in front or
+  // not) asks, and keeping it stops the move.
   async function linkBack(name) {
     const lk = linkOf(name);
     if (!lk) return;
-    if (current === name && !(await guardDirty())) return;
+    for (const t of tabs.filter((x) => x.kind === 'page' && x.key === name))
+      if ((await closeTab(t.id)) === false) return;
     const r = await fetch(api + '/link-unmake?name=' + encodeURIComponent(name),
       { method: 'POST' }).catch(() => null);
     if (!r || !r.ok) { st('move failed' + await errText(r), false); return; }
     dropTreeNodes(name);
+    linkCf.delete(name);
+    linkStale.delete(name);
     snapTree();
-    if (current === name || (activeTab && activeTab.kind === 'page' && activeTab.key === name)) {
-      dirty = false;
-      newFile('', false);
-    }
     renderTree();
     await loadShared();
     st('moved ' + name + ' back to shared with me');
   }
-  // the palette's way in: which shared page, then the move dialog. Its
-  // home is out of sight in the Files pane; the rows' own buttons are the
-  // way a pointer goes.
-  const swmHold = document.createElement('div');
-  swmHold.hidden = true;
-  swmHold.innerHTML = '<button type="button" id="swmmv" data-action="swm-move">Move into my pages</button>';
-  $('tree').append(swmHold);
-  $('swmmv').onclick = async () => {
-    if (!sharedWithMe.length) { st('nothing is shared with you', false); return; }
-    const label = (it) => it.host + '/' + sharedName(it.path);
-    const pick = sharedWithMe.length === 1 ? label(sharedWithMe[0])
-      : await askChoice('move which page into my pages?', sharedWithMe.map(label), 'pick');
-    const it = sharedWithMe.find((x) => label(x) === pick);
-    if (it) askMoveIn(it);
-  };
+  // the palette's way in is the rows' own buttons: with one shared page
+  // it is that page's, with several it goes to the first, to pick there
   action({ id: 'swm-move', name: 'Move into my pages', home: 'Files \u203a shared with me',
-    when: () => sharedWithMe.length > 0, run: () => $('swmmv').click() });
+    when: () => !!actionHome('swm-move'),
+    run: () => {
+      const all = document.querySelectorAll('[data-action="swm-move"]');
+      if (all.length === 1) { all[0].click(); return; }
+      if (all[0]) { all[0].focus(); st('pick the page to move: its Move into my pages button'); }
+    } });
   // deferred to boot, same reason as loadPerms. See 67-perms.js.
 
 // ── src/70-upload.js ──────────────────────────────────────────────────────
@@ -9405,6 +9538,9 @@
       }
       return;
     }
+    // a link shown from its last-known copy, read live again: open it
+    // properly, which lifts the lock and the badge
+    if (d.link && linkStale.has(wasCurrent)) { openPage(wasCurrent); return; }
     // A KIND change with an UNCHANGED body still needs handling. Retagging a
     // page (gmi -> md, say) leaves the text byte-identical, so the body check
     // below returns early and the preview keeps rendering with the old builder.

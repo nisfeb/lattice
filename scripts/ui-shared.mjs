@@ -44,14 +44,16 @@ function boot(items, coll = []) {
     openIn: (kind, p, o) => opened.push([kind, p, o.ship]), ico: () => '',
     // the move in and out (Task 5 of shared page links): its palette home
     // and its registration, stubbed
-    $: () => new El('div'), action: () => {},
+    action: () => {},
     tip: (b, name) => { b.title = name; b.setAttribute('aria-label', name); return b; },
     document: { createElement: (t) => new El(t), createTextNode: (t) => ({ textContent: t }) },
   };
   vm.runInNewContext(src, ctx);
   ctx.renderShared(coll);
-  const rows = () => treeList.kids.map((r) => (r.className.includes('pg') ? 'page ' : 'fold ') + r.textContent);
-  return { ctx, treeList, rows, opened };
+  //  a page row sits in a wrapper beside its Move into my pages button
+  const pages = () => treeList.kids.map((r) => (r.className === 'swrow' ? r.kids[0] : r));
+  const rows = () => pages().map((r) => (r.className.includes('pg') ? 'page ' : 'fold ') + r.textContent);
+  return { ctx, treeList, rows, opened, pages };
 }
 // ~nec's arrive unsorted, and not merely reversed
 const items = [
@@ -81,8 +83,8 @@ const items = [
   check('the top folder collapses to one row', rows().length === 1, JSON.stringify(rows()));
 }
 {
-  const { treeList, opened } = boot(items);
-  const row = treeList.kids.find((r) => r.textContent.startsWith('site/logging'));
+  const { pages, opened } = boot(items);
+  const row = pages().find((r) => r.textContent.startsWith('site/logging'));
   if (row) row.onclick({ preventDefault() {} });
   await new Promise((r) => setTimeout(r, 0));
   check('a row opens the page on its own ship',
@@ -90,10 +92,12 @@ const items = [
 }
 {
   const { treeList } = boot(items);
-  const row = treeList.kids.find((r) => r.textContent.startsWith('site/logging'));
-  const mv = row && row.kids.find((k) => k.className === 'swmv');
-  check('a row drags, and has Move into my pages',
-    !!row && row.draggable === true && !!mv && mv.title === 'Move into my pages'
+  const w = treeList.kids.find((r) => r.className === 'swrow' && r.kids[0].textContent.startsWith('site/logging'));
+  const row = w && w.kids[0];
+  const mv = w && w.kids[1];
+  check('a row drags, and has Move into my pages beside it, a button',
+    !!row && row.draggable === true && !!mv && mv.tag === 'button' && mv.className === 'swmv'
+      && mv.dataset.action === 'swm-move' && mv.title === 'Move into my pages'
       && mv.attrs['aria-label'] === mv.title,
     JSON.stringify(row && { draggable: row.draggable, mv: mv && mv.title }));
 }

@@ -21,7 +21,6 @@
     <div id="lnkmode" class="muted"></div>
     <div id="lnkbad" class="lbad" hidden></div>
     <div id="lnkat" class="muted" hidden></div>
-    <button type="button" id="linkback" data-action="linkback">Move back to shared with me</button>
   </div>
   <div id="cmtrow" hidden>
     <h3>comments</h3>
@@ -50,21 +49,20 @@
       : (!grubPath && mode !== 'know' && curFolder === null ? current : null);
     const lk = linkOf(name);
     row.hidden = !lk;
+    paintLinkCf(current);
     const sh = document.querySelector('lat-share');
     if (sh) sh.hidden = !!lk;
     if (lk) $('cmtrow').hidden = true;      // rpPaint shows it for a page
     if (!lk) return;
-    row.dataset.name = name;
     $('lnkfrom').textContent = 'Linked from ' + linkFrom(lk);
     $('lnkmode').textContent = lk.mode === 'read' ? 'read only'
       : lk.mode === 'edit' ? 'can edit' : lk.mode;
     const bad = linkBadge(lk);
     $('lnkbad').hidden = !bad;
-    $('lnkbad').textContent = bad ? bad.textContent : '';
-    $('lnkat').hidden = !bad || !bad.title;
-    $('lnkat').textContent = bad ? bad.title : '';
+    $('lnkbad').textContent = bad ? bad.copy : '';
+    $('lnkat').hidden = !bad || !bad.since;
+    $('lnkat').textContent = bad ? bad.since : '';
   }
-  $('linkback').onclick = () => linkBack($('lnkrow').dataset.name);
 
   // ── comments on this page ────────────────────────────────────────────────
   // Comments from other ships are opt-in per page (or per folder: the

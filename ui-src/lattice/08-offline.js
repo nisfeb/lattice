@@ -568,6 +568,23 @@
             continue;
           }
           if (!replayDrop(one)) return false;
+          // 409: refused as stale or as nothing-goes-there (a link's host
+          // moved on, a link where a page was). The body is the user's only
+          // copy, so it is kept as a page of its own first, as a create's
+          // collision is; if that write fails the record stays queued.
+          if (one && one.status === 409) {
+            const alt = 'conflicts/offline-edit-' + q.name.replace(/\//g, '-');
+            let two = null;
+            try {
+              two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
+                '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
+            } catch {}
+            if (!(two && two.ok)) return false;
+            conflicts.push(alt);
+            await offDel(q.name);
+            st('offline edit refused: ' + q.name + ', your version is kept at ' + alt, false);
+            continue;
+          }
           st('dropped an unsyncable offline edit: ' + q.name, false);
           await offDel(q.name);
         }

@@ -163,17 +163,39 @@
     return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])).toLocaleString(undefined,
       { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
   }
-  // the badge for a link whose last read failed. The owner's ship cannot
-  // tell a revoke from being offline, so it says both. `at` is when a read
-  // first failed: the last good read was before it.
+  // the badge for a link whose last read failed: {copy, since}, or null.
+  // The owner's ship cannot tell a revoke from being offline, so it says
+  // both. `at` is when a read first failed, which the ship keeps as is
+  // while reads go on failing.
   function linkBadge(lk) {
     if (!lk.seen || lk.seen.ok !== false) return null;
+    const at = daLocal(lk.seen.at);
+    return { copy: lk.host + ' unreachable or no longer sharing', since: at ? 'since ' + at : '' };
+  }
+  // the badge as a tree row shows it, on a line of its own under the name
+  function linkBadgeEl(bad) {
+    const w = document.createElement('span');
+    w.className = 'lbadw';
     const b = document.createElement('span');
     b.className = 'lbad';
-    b.textContent = lk.host + ' unreachable or no longer sharing';
-    const at = daLocal(lk.seen.at);
-    if (at) b.title = 'not reached since ' + at;
-    return b;
+    b.textContent = bad.copy;
+    w.append(b);
+    if (bad.since) {
+      const s = document.createElement('span');
+      s.className = 'lbsince';
+      s.textContent = bad.since;
+      w.append(' ', s);
+    }
+    return w;
+  }
+  // the links this editor must not write to just now: a conflicted one
+  // (35-pages.js, its save was refused as stale) and a stale one (its open
+  // fell back on the last-known copy). A read grant is locked always.
+  const linkCf = new Set();
+  const linkStale = new Set();
+  function linkRO(name) {
+    const lk = linkOf(name);
+    return !!lk && (lk.mode === 'read' || linkStale.has(name));
   }
   // what a live read through a link just found. The ship records it too
   // (the badge survives a reload); this repaints without waiting for that.
@@ -437,7 +459,7 @@
           row.dataset.path = n.path;
           row.title = linkFrom(lk);
           const bad = linkBadge(lk);
-          if (bad) row.append(bad);
+          if (bad) row.append(linkBadgeEl(bad));
         }
         treeItem(row, depth, 'p:' + n.path);
         if (n.share === 'clearweb') {

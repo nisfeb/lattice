@@ -319,6 +319,12 @@ section_proxy() {
   s=$(A_ -w '\n%{http_code}' "$A/page-source?name=notes/doc")
   is "HTTP read with B stopped: 504" 504 "$(tail -1 <<<"$s")"
   is "  ...with the read-failure copy" "$CR" "$(head -n -1 <<<"$s" | jq -r .error)"
+  is "  ...and the owner gets the last copy read" "# via key" "$(head -n -1 <<<"$s" | jq -r .cached.body)"
+  local T3; read -r id T3 < <(mint "{\"some\":{\"$BSHIP\":{\"read\":[\"/apps\"],\"write\":[\"/apps\"]}}}"); KEYS="$id"
+  s=$(curl -s -m 60 -w '\n%{http_code}' -H "Authorization: Bearer $T3" "$A/page-source?name=notes/doc")
+  is "  ...a key gets the 504" 504 "$(tail -1 <<<"$s")"
+  is "  ...but never the cached copy" false "$(head -n -1 <<<"$s" | jq 'has("cached")')"
+  A_ -o /dev/null -X POST "$A/key-revoke?id=$id"; KEYS=
   is "save with B stopped: 504" 504 "$(code -H "$AK" -X POST "$A/page-save?name=notes/doc&type=md" --data-binary '# offline')"
   eval "$B_START" >/dev/null 2>&1
   b_up && ok "B back up" || { fail "B back up"; return; }

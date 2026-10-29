@@ -90,9 +90,27 @@
     let d = null;
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
+      // a link whose host did not answer: its badge from now, and the last
+      // copy read, which the ship sends its owner along with the failure.
+      // Shown locked (linkStale): a save from it would claim a rev the host
+      // may have moved past, and there is no host to save to anyway.
+      if (r.status === 504 && linkOf(name)) {
+        linkSeen(name, false);
+        let j = null;
+        try { j = await r.json(); } catch {}
+        if (my !== openSeq) return;
+        const why = (j && j.error) || linkOf(name).host + ' is unreachable or no longer shares this page';
+        if (j && j.cached && typeof j.cached.body === 'string') {
+          linkStale.add(name);
+          applyPage(name, j.cached);
+          st(why + '. Showing the last copy read, read-only', false);
+          return true;
+        }
+        if (painted) return true;
+        st('open failed: ' + why, false); unwind();
+        return false;
+      }
       if (!r.ok) {
-        // a link whose host did not answer: its badge, from now
-        if (r.status === 504) linkSeen(name, false);
         if (painted) return true;
         st('open failed' + await errText(r), false); unwind();
         return my === openSeq ? false : undefined;
@@ -105,7 +123,9 @@
     }
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
-    if (d.link) linkSeen(name, true);
+    // a live read: the badge, the lock on a last-known copy and a conflict
+    // latched on this link all end here
+    if (d.link) { linkSeen(name, true); linkStale.delete(name); linkCf.delete(name); }
     // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
     // typed while it was in flight. On a busy pier this fetch lands many
     // seconds after the paint, and it carries the PRE-edit body: applying it
@@ -141,8 +161,6 @@
     curRev = d.rev || 0;
     refreshTexButton();
     src.value = d.body;
-    // a link with a read grant: the owner's page, shown, not editable
-    src.readOnly = !!d.readonly;
     dirty = false;
     // A fresh editor state begins here. everTyped answers "did the user type
     // since this view was established?" for boot's reconcile guard; carrying
@@ -152,6 +170,10 @@
     markCurrent();
     st(d.kind + ' · rev ' + d.rev);
     exitRev();
+    // after exitRev, which unlocks: a link with a read grant, or one shown
+    // from its last-known copy, stays locked (30-tree.js linkRO). The tab
+    // restore comes through here too.
+    src.readOnly = linkRO(name);
     resetPanels();
     showShare(d.share || 'private');
     cmtShow(name, d.comments);
@@ -367,17 +389,22 @@
   //  what this editor read, or the host did not answer (a 502 or 504 the
   //  ship itself sent, never queued: the queue is for this ship being
   //  away). The text stays here, unsaved. -> true when it was one of those.
-  async function linkSaveFail(name, r) {
+  //  And a link save is NEVER queued for later, also when this ship is the
+  //  one away: a replay could only claim a base the host may have moved
+  //  past, and the queue drops what is refused. The text stays here.
+  async function linkSaveFail(name, w) {
     const lk = linkOf(name);
-    if (!lk || !r) return false;
-    if (r.status === 409) {
-      st('not saved: ' + lk.host + ' changed this page since you opened it. ' +
-        'Copy your text, then reopen it', false);
-    } else if (r.status === 502 || r.status === 504) {
-      if (r.status === 504) linkSeen(name, false);
-      st('not saved' + await errText(r), false);
+    const r = w.r;
+    if (!lk) return false;
+    if (r && r.status === 409) {
+      linkCf.add(name);           // autosave stands down; the bar offers the ways out
+      st('not saved: ' + lk.host + ' changed this page since you opened it', false);
+    } else if (w.gone) {
+      if (r && r.status === 504) linkSeen(name, false);
+      st('not saved: ' + lk.host + ' is unreachable or no longer shares this page', false);
     } else return false;
     if (current === name) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
+    paintLinkCf(current);
     return true;
   }
 
@@ -487,7 +514,7 @@
     try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
     finally { saving = false; }
     const r = w.r;
-    if (await linkSaveFail(name, r)) return failed();
+    if (await linkSaveFail(name, w)) return failed();
     if (w.gone) {
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
@@ -545,6 +572,7 @@
       if (src.value === sent) dirty = false;
       else if (!savePending) savePending = true;   // flushPending below saves it
       if (vr && vr.rev) curRev = vr.rev;
+      if (linkCf.delete(name)) paintLinkCf(name);   // a retried link save landed
       if (vr && vr.conflicted) {
         st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
       } else if (dname) st('saved as ' + name + ' (shown as ' + dname + ')');
@@ -576,6 +604,12 @@
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
+    // a link whose save was refused as stale: no more writes until the
+    // user picks one of the bar's ways out, or saves on purpose (Ctrl+S)
+    if (mode !== 'know' && linkCf.has(current) && linkOf(current)) {
+      st('not saved: ' + linkOf(current).host + ' changed this page since you opened it', false);
+      return;
+    }
     // Settings > Editor > Autosave pages, off: manual only. This debounce
     // stops, and so do the flushes a tab switch or a navigation makes
     // (flushNoAsk and guardDirty, 20-state.js, which ask instead). Only
@@ -599,7 +633,7 @@
     try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
     finally { saving = false; }
     const r = w.r;
-    if (mode !== 'know' && await linkSaveFail(target, r)) { flushPending(); return; }
+    if (mode !== 'know' && await linkSaveFail(target, w)) { flushPending(); return; }
     if (w.gone) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
@@ -634,3 +668,63 @@
     flushPending();
     if (offCount) replayQueue(true);     // this autosave proves the ship is back too
   }
+
+  // ── a link whose save was refused as stale ──────────────────────────────
+  // The host's page moved on past the rev this editor read, so the text
+  // here was not written and is the only copy. A bar over the document
+  // offers the two ways out; until one is taken autosave stands down for
+  // that link (linkCf, 30-tree.js) and only Ctrl+S tries again.
+  const lcfBar = document.createElement('div');
+  lcfBar.id = 'lnkcf';
+  lcfBar.className = 'lnkcf';
+  lcfBar.hidden = true;
+  lcfBar.setAttribute('role', 'alert');
+  lcfBar.innerHTML = '<span id="lnkcfmsg"></span>' +
+    '<button type="button" id="lnkcfre">Reload theirs</button>' +
+    '<button type="button" id="lnkcfkeep">Keep mine as a copy</button>';
+  $('center').insertBefore(lcfBar, $('docarea'));
+  //  by id, not lcfBar: paintLink (65-ctl.js) can run before this file has
+  function paintLinkCf(name) {
+    const bar = $('lnkcf');
+    if (!bar) return;
+    const lk = name && name === current && linkCf.has(name) ? linkOf(name) : null;
+    bar.hidden = !lk;
+    if (lk) $('lnkcfmsg').textContent = lk.host + ' changed this page since you opened it. ' +
+      'Your text here is not saved.';
+  }
+  // drop what is here and read theirs again
+  async function linkReload() {
+    const name = current;
+    if (!linkOf(name)) return;
+    dirty = false;
+    clearTimeout(autoTimer);
+    linkCf.delete(name);
+    paintLinkCf(name);
+    await openPage(name);
+  }
+  // what is here becomes a page of my own beside the link (<name>-mine, or
+  // -mine-2 and on when that is taken), then theirs is read again
+  async function linkKeepMine() {
+    const name = current;
+    const lk = linkOf(name);
+    if (!lk) return;
+    const body = src.value;
+    const kind = curKind || pkind.value;
+    for (let i = 1; i < 100; i++) {
+      const copy = name + '-mine' + (i > 1 ? '-' + i : '');
+      if (nodes.some((n) => n.path === copy)) continue;
+      const r = await fetch(api + '/page-save?name=' + encodeURIComponent(copy) + '&type=' + kind +
+        '&new=1', { method: 'POST', body: body || '\n' }).catch(() => null);
+      if (r && r.status === 409) continue;
+      if (!r || !r.ok) { st('copy failed' + await errText(r) + ', your text is still here', false); return; }
+      if (current !== name) return;
+      addTreeNode(copy, kind, false);
+      snapTree();
+      renderTree();
+      await linkReload();
+      st('your text is kept at ' + copy + '; ' + name + ' shows ' + lk.host + '\u2019s again');
+      return;
+    }
+  }
+  $('lnkcfre').onclick = linkReload;
+  $('lnkcfkeep').onclick = linkKeepMine;

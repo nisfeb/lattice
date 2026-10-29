@@ -233,7 +233,7 @@
     if (has.has('raw')) item('raw', 'Open raw', done(() =>
       window.open(api + '/page-source?name=' + encodeURIComponent(current), '_blank', 'noopener')));
     if (has.has('linkback'))
-      item('linkback', 'Move back to shared with me', done(() => $('linkback').click()));
+      item('linkback', 'Move back to shared with me', done(() => linkBack(current)));
     if (has.has('del')) item('del', 'Delete', done(() => $('del').click()));
     const r = $('tmenu').getBoundingClientRect();
     m.style.top = r.bottom + 4 + 'px';
@@ -250,7 +250,7 @@
   // only in the desktop app.
   for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'],
     ['dup', 'Duplicate page'], ['download', 'Download'], ['tex', 'Convert to HTML'],
-    ['raw', 'Open raw'], ['del', 'Delete']]) {
+    ['raw', 'Open raw'], ['linkback', 'Move back to shared with me'], ['del', 'Delete']]) {
     if (id === 'tex' && !window.__TAURI__) continue;
     action({ id: 'pm-' + id, name, home: 'Page menu',
       when: () => docFront() && pmenuHas().has(id),
@@ -261,11 +261,6 @@
         if (b) b.click();
       } });
   }
-  // a link's way back out. Its home is the button in the Page tab's link
-  // section (65-ctl.js), which is always there; the menu item clicks it.
-  action({ id: 'linkback', name: 'Move back to shared with me', home: 'Page menu',
-    when: () => docFront() && pmenuHas().has('linkback'),
-    run: () => $('linkback').click() });
   addEventListener('mousedown', (e) => {
     if (pmenuEl && !pmenuEl.contains(e.target) && !$('tmenu').contains(e.target)) pmenuClose();
   }, true);

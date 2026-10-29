@@ -54,6 +54,9 @@
       }
       return;
     }
+    // a link shown from its last-known copy, read live again: open it
+    // properly, which lifts the lock and the badge
+    if (d.link && linkStale.has(wasCurrent)) { openPage(wasCurrent); return; }
     // A KIND change with an UNCHANGED body still needs handling. Retagging a
     // page (gmi -> md, say) leaves the text byte-identical, so the body check
     // below returns early and the preview keeps rendering with the old builder.

@@ -37,7 +37,6 @@
       for (const it of mine) {
         const a = document.createElement('a');
         a.className = 'pg swm';
-        a.style.marginLeft = '28px';
         a.href = '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
           '&ship=' + encodeURIComponent(host);
         a.title = host + ' ' + it.path;
@@ -59,14 +58,7 @@
           if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
           loadShared();
         };
-        // into my own tree as a link: this, or a drag onto a folder
-        const mv = document.createElement('span');
-        mv.className = 'swmv';
-        mv.setAttribute('role', 'button');
-        tip(mv, 'Move into my pages');
-        mv.innerHTML = ico('link');
-        mv.onclick = (e) => { e.preventDefault(); e.stopPropagation(); askMoveIn(it); };
-        a.append(nm, md, mv, x);
+        a.append(nm, md, x);
         a.draggable = true;
         a.ondragstart = (e) => {
           swmDrag = it;
@@ -77,7 +69,21 @@
         treeItem(a, 2, SWM + '/' + host + '/' + it.path);
         // a grub tab; openGrub (by way of enterGrub) sets the address
         tabLink(a, 'grub', it.path, { ship: host });
-        treeList.appendChild(a);
+        // into my own tree as a link: this, or a drag onto a folder. A
+        // button of its own beside the row (a button cannot sit in a link),
+        // so a keyboard reaches it too
+        const mv = document.createElement('button');
+        mv.type = 'button';
+        mv.className = 'swmv';
+        mv.dataset.action = 'swm-move';
+        tip(mv, 'Move into my pages');
+        mv.innerHTML = ico('link');
+        mv.onclick = () => askMoveIn(it);
+        const w = document.createElement('div');
+        w.className = 'swrow';
+        w.style.marginLeft = '28px';
+        w.append(a, mv);
+        treeList.appendChild(w);
       }
     }
   }
@@ -102,11 +108,14 @@
     try { n = await r.json(); } catch {}
     sharedWithMe = sharedWithMe.filter((s) => !(s.host === it.host && s.path === it.path));
     if (to.includes('/')) addFolderNodes(to.slice(0, to.lastIndexOf('/')));
-    dropTreeNodes(to);
-    nodes.push(n && n.path === to ? n : { path: to, page: true, kind: 'md',
-      link: { host: it.host, path: it.path, mode: it.mode, seen: { ok: true } } });
-    snapTree();
-    renderTree();
+    // the ship's node, kind and all (frozen at the host's). Without one,
+    // the tree is fetched rather than guessed at.
+    if (n && n.path === to) {
+      dropTreeNodes(to);
+      nodes.push(n);
+      snapTree();
+      renderTree();
+    } else await loadTree();
     st('moved into ' + to + ', linked from ' + it.host);
     return true;
   }
@@ -139,43 +148,37 @@
       if (!it || ![...e.dataTransfer.types].includes(SWM_DRAG)) return;
       e.preventDefault();
       swmDrag = null;
-      moveIn(it, folder + '/' + swmLeaf(it));
+      // refused (a name already there, the host away): the dialog, as the
+      // button gives, seeded with this folder
+      moveIn(it, folder + '/' + swmLeaf(it)).then((ok) => { if (!ok) askMoveIn(it, folder); });
     });
   }
-  // the link at `name` back to shared with me. What is open on it closes
-  // the way a deleted page's does.
+  // the link at `name` back to shared with me. Every tab on it closes
+  // first, through closeTab, so one holding unsaved text (in front or
+  // not) asks, and keeping it stops the move.
   async function linkBack(name) {
     const lk = linkOf(name);
     if (!lk) return;
-    if (current === name && !(await guardDirty())) return;
+    for (const t of tabs.filter((x) => x.kind === 'page' && x.key === name))
+      if ((await closeTab(t.id)) === false) return;
     const r = await fetch(api + '/link-unmake?name=' + encodeURIComponent(name),
       { method: 'POST' }).catch(() => null);
     if (!r || !r.ok) { st('move failed' + await errText(r), false); return; }
     dropTreeNodes(name);
+    linkCf.delete(name);
+    linkStale.delete(name);
     snapTree();
-    if (current === name || (activeTab && activeTab.kind === 'page' && activeTab.key === name)) {
-      dirty = false;
-      newFile('', false);
-    }
     renderTree();
     await loadShared();
     st('moved ' + name + ' back to shared with me');
   }
-  // the palette's way in: which shared page, then the move dialog. Its
-  // home is out of sight in the Files pane; the rows' own buttons are the
-  // way a pointer goes.
-  const swmHold = document.createElement('div');
-  swmHold.hidden = true;
-  swmHold.innerHTML = '<button type="button" id="swmmv" data-action="swm-move">Move into my pages</button>';
-  $('tree').append(swmHold);
-  $('swmmv').onclick = async () => {
-    if (!sharedWithMe.length) { st('nothing is shared with you', false); return; }
-    const label = (it) => it.host + '/' + sharedName(it.path);
-    const pick = sharedWithMe.length === 1 ? label(sharedWithMe[0])
-      : await askChoice('move which page into my pages?', sharedWithMe.map(label), 'pick');
-    const it = sharedWithMe.find((x) => label(x) === pick);
-    if (it) askMoveIn(it);
-  };
+  // the palette's way in is the rows' own buttons: with one shared page
+  // it is that page's, with several it goes to the first, to pick there
   action({ id: 'swm-move', name: 'Move into my pages', home: 'Files \u203a shared with me',
-    when: () => sharedWithMe.length > 0, run: () => $('swmmv').click() });
+    when: () => !!actionHome('swm-move'),
+    run: () => {
+      const all = document.querySelectorAll('[data-action="swm-move"]');
+      if (all.length === 1) { all[0].click(); return; }
+      if (all[0]) { all[0].focus(); st('pick the page to move: its Move into my pages button'); }
+    } });
   // deferred to boot, same reason as loadPerms. See 67-perms.js.

@@ -590,7 +590,10 @@ try {
     if (!P) return null;
     return { n: P.ids().length, only: P.only.length,
       //  shtest is the ribbonAdd probe above, whose button the suite removed
-      missing: P.ids().filter((id) => id !== 'shtest' && !P.only.includes(id)
+      //  a home rendered on demand (the page menu's items, a shared row's
+      //  control) is there exactly while its when() holds, so one whose
+      //  when() is false counts as homed. Never a hidden stand-in.
+      missing: P.ids().filter((id) => id !== 'shtest' && !P.only.includes(id) && P.applies(id)
         && !document.querySelector('[data-action="' + CSS.escape(id) + '"]')) };
   });
   await page.evaluate(() => document.getElementById('tmenu').click());
