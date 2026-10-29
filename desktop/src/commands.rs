@@ -55,13 +55,32 @@ pub fn go_home(app: AppHandle) -> Result<(), String> {
     open_workspace(&app, false)
 }
 
-/// Settings > "Connection and mounts" in the ship page: the same page the
-/// Preferences menu's "connection && mounts…" opens. The ship page may call
-/// it (capabilities/workspace-remote.json), and the worst it can do is show
-/// the user this app's own connection and mounts page.
+/// The sections of the manager page the ship page may ask for by name.
+const MANAGER_SECTIONS: &[&str] = &["backups"];
+
+/// The section open_manager lands on: none, or one of MANAGER_SECTIONS.
+/// Anything else is refused rather than passed into the page URL.
+fn manager_section(section: Option<&str>) -> Result<Option<&'static str>, String> {
+    match section {
+        None => Ok(None),
+        Some(s) => MANAGER_SECTIONS
+            .iter()
+            .find(|k| **k == s)
+            .map(|k| Some(*k))
+            .ok_or_else(|| format!("no manager section {s}")),
+    }
+}
+
+/// Settings > "Connection and mounts" and Settings > Backup > "Scheduled
+/// backups" in the ship page. The ship page may call this
+/// (capabilities/workspace-remote.json), and all it does is what the
+/// Preferences menu does: show this app's own manager page, at its top or
+/// at a named section. That page is a local origin, so the ship page
+/// cannot script it. The editor asks about unsaved work before calling it
+/// (latOpenManager in 24-tools.js).
 #[tauri::command]
-pub fn open_manager(app: AppHandle) -> Result<(), String> {
-    show_manager(&app, None)
+pub fn open_manager(app: AppHandle, section: Option<String>) -> Result<(), String> {
+    show_manager(&app, manager_section(section.as_deref())?)
 }
 
 /// Show the connection & mounts page IN the workspace window (single-window
@@ -669,19 +688,9 @@ pub fn backup_schedules(app: AppHandle) -> Vec<crate::config::BackupSchedule> {
     config::load(&app).backups
 }
 
-/// Folders the user chose in pick_backup_dir's native dialog while the app
-/// has been running. See set_backup_schedules.
-static PICKED_DIRS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
 /// Replace the whole schedule list.
 ///
-/// The ship page calls this (Settings > Backup), so a schedule may only
-/// write where the user has said it may: a folder an existing schedule
-/// already has, or one picked in the native dialog. Otherwise anything the
-/// ship serves could aim a schedule at any folder, a synced or shared one
-/// included, and backup_write would fill it with the whole store.
-///
-/// Whole-list rather than per-schedule edits: the settings form owns the table,
+/// Whole-list rather than per-schedule edits: the manager form owns the table,
 /// and a partial update racing the scheduler's last_run write is how a backup
 /// silently stops running. last_run is preserved from the stored copy by id,
 /// so editing a schedule's keep or directory does not make it immediately due
@@ -691,14 +700,6 @@ pub fn set_backup_schedules(
     app: AppHandle,
     schedules: Vec<crate::config::BackupSchedule>,
 ) -> Result<(), String> {
-    let picked = PICKED_DIRS.lock().map(|g| g.clone()).unwrap_or_default();
-    let have = config::load(&app).backups;
-    if let Some(s) = schedules
-        .iter()
-        .find(|s| !have.iter().any(|o| o.dir == s.dir) && !picked.contains(&s.dir))
-    {
-        return Err(format!("choose the folder for {} with \"choose…\"", s.label));
-    }
     config::update(&app, move |cfg| {
         let mut next = schedules;
         for s in next.iter_mut() {
@@ -730,11 +731,7 @@ pub async fn pick_backup_dir(app: AppHandle) -> Result<String, String> {
     let Some(picked) = app.dialog().file().blocking_pick_folder() else {
         return Ok(String::new());
     };
-    let dir = picked.into_path().map_err(|e| e.to_string())?.display().to_string();
-    if let Ok(mut g) = PICKED_DIRS.lock() {
-        g.push(dir.clone());
-    }
-    Ok(dir)
+    Ok(picked.into_path().map_err(|e| e.to_string())?.display().to_string())
 }
 
 /// The page hands back an archive it built for a schedule. Write it, prune
@@ -870,6 +867,19 @@ pub async fn pick_vault(app: AppHandle) -> Result<String, String> {
     let bytes =
         std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
     Ok(encode_archive(&bytes))
+}
+
+#[cfg(test)]
+mod manager_section_tests {
+    use super::manager_section;
+
+    #[test]
+    fn only_known_sections_pass() {
+        assert_eq!(manager_section(None), Ok(None));
+        assert_eq!(manager_section(Some("backups")), Ok(Some("backups")));
+        assert!(manager_section(Some("backups\"><script>")).is_err());
+        assert!(manager_section(Some("")).is_err());
+    }
 }
 
 #[cfg(test)]

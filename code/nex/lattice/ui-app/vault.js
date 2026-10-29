@@ -164,13 +164,7 @@ editor, or git will do if you only want to look.
     isDegraded: () => false,
   };
   const api = '/apps/lattice';
-  // Tauri injects its bridge into the top document only, and the settings
-  // page usually runs in a frame of the editor (its Settings tab). The
-  // frame is same-origin, so it borrows the editor's bridge.
-  const desk = () => {
-    if (window.__TAURI__ && window.__TAURI__.core) return window.__TAURI__.core;
-    try { const t = window.top.__TAURI__; return (t && t.core) || null; } catch (e) { return null; }
-  };
+  const desk = () => (window.__TAURI__ && window.__TAURI__.core) || null;
   function configure(o) { Object.assign(cfg, o || {}); }
   const st = (m, ok) => cfg.status(m, ok !== false);
   const mutate = (url, opts) =>
@@ -515,34 +509,16 @@ editor, or git will do if you only want to look.
 
   // ── settings-page UI ─────────────────────────────────────────────────────────
   // Renders into the Backup section of settings-html: the manual export/restore
-  // buttons for everyone, and — only in the desktop shell, where a scheduler and
-  // a place to write to both exist — the automated-backup schedules. The schedule
-  // list is the same one the old "scheduled backups…" manager page drove, moved
-  // here so backup lives in one place.
+  // buttons for everyone. The automated-backup schedules live on the desktop
+  // app's own manager page (desktop/ui/manager.html), which only the user's
+  // clicks there can change. settings-html links to it with a desktop-only
+  // "Scheduled backups" button.
   const el = (tag, props, kids) => {
     const n = document.createElement(tag);
     if (props) for (const k in props) { if (k === 'class') n.className = props[k]; else if (k === 'text') n.textContent = props[k]; else n[k] = props[k]; }
     for (const c of (kids || [])) n.append(c);
     return n;
   };
-  const period = (h) => (h === 24 ? 'daily' : h === 168 ? 'weekly' : h === 720 ? 'every 30 days' : h === 1 ? 'hourly' : 'every ' + h + 'h');
-  const ago = (t) => {
-    if (!t) return 'never run';
-    const s = Math.max(0, Math.floor(Date.now() / 1000) - t);
-    if (s < 3600) return 'last run ' + Math.floor(s / 60) + 'm ago';
-    if (s < 86400) return 'last run ' + Math.floor(s / 3600) + 'h ago';
-    return 'last run ' + Math.floor(s / 86400) + 'd ago';
-  };
-  // The scheduler itself (desktop/src/backup.rs:46) fires at elapsed >=
-  // every_hours * 3600. Overdue here is one missed firing past that plus an
-  // hour of slack for the app being asleep or closed right at the edge:
-  // elapsed > (every_hours + 1) * 3600. A schedule that has never run is
-  // exempt: `ago` already says "never run" plainly, and a brand-new schedule
-  // is not overdue, it just has not had its first turn.
-  const overdue = (s) =>
-    s.enabled && s.last_run > 0
-    && (Math.floor(Date.now() / 1000) - s.last_run) > (s.every_hours + 1) * 3600;
-  const bkId = () => 'bk' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
   // manual export and restore: the browser (download / file input) and the
   // desktop shell (native save / open dialog, chosen inside exportVault/desk())
@@ -576,90 +552,16 @@ editor, or git will do if you only want to look.
 
   // the scheduled-backup CRUD: list, verify, add. Desktop only, and it talks
   // to the shell rather than to the ship.
-  function mountSchedules(root, invoke) {
-    root.append(el('h3', { text: 'Automatic backups' }));
-    root.append(el('p', { class: 'muted', text: 'Whole-store archives written to this machine on a schedule — the same tar as export above. They run while lattice is open; one that came due while it was closed runs shortly after you next open it.' }));
-    const listEl = el('ul', { class: 'bklist' });
-    const bkStatus = el('span', { class: 'err' });
-    let backups = [];
-    // a refused write (a folder not picked in the dialog) is shown, and the
-    // redraw re-reads the stored list either way, dropping the edit it refused
-    const save = async () => {
-      try { await invoke('set_backup_schedules', { schedules: backups }); } catch (e) { bkStatus.textContent = String(e); }
-      await refresh();
-    };
-    async function refresh() {
-      try { backups = await invoke('backup_schedules'); } catch (e) { backups = []; }
-      listEl.innerHTML = '';
-      for (const s of backups) {
-        const keep = s.keep ? 'keeping ' + s.keep : 'keeping every one';
-        const head = el('div', { text: s.label + ' — ' + period(s.every_hours) + ', ' + keep + (s.enabled ? '' : ' (paused)') });
-        const late = overdue(s);
-        const sub = el('div', {
-          class: late ? 'err' : 'muted',
-          text: s.dir + ' · ' + ago(s.last_run) + (late ? ' — the last run did not complete' : ''),
-        });
-        const now = el('button', { type: 'button', class: 'btn', text: 'back up now' });
-        now.onclick = async () => { bkStatus.textContent = ''; try { await invoke('run_backup_now', { id: s.id }); bkStatus.textContent = 'building…'; } catch (e) { bkStatus.textContent = String(e); } };
-        const pause = el('button', { type: 'button', class: 'btn', text: s.enabled ? 'pause' : 'resume' });
-        pause.onclick = async () => { s.enabled = !s.enabled; await save(); };
-        const ver = el('button', { type: 'button', class: 'btn', text: 'verify latest' });
-        ver.onclick = async () => {
-          sub.textContent = 'reading the newest archive…'; sub.className = 'muted';
-          try {
-            const r = await invoke('verify_backup', { id: s.id });
-            const bits = [r.pages + ' page(s)'];
-            bits.push(r.has_share ? 'share modes' : 'NO share.json');
-            bits.push(r.has_know ? 'memories' : 'NO know.json');
-            sub.textContent = (r.problems.length ? '✗ ' : '✓ ') + bits.join(', ') + ' · ' + Math.round(r.bytes / 1024) + ' KB' + (r.problems.length ? ' — ' + r.problems.join('; ') : ' — reads clean');
-            sub.className = r.problems.length ? 'err' : 'muted';
-          } catch (e) { sub.textContent = String(e); sub.className = 'err'; }
-        };
-        const del = el('button', { type: 'button', class: 'btn', text: 'remove', title: 'stops the schedule — the archives already written stay' });
-        del.onclick = async () => { backups = backups.filter((x) => x.id !== s.id); await save(); };
-        listEl.append(el('li', null, [head, sub, el('div', { class: 'bkrow' }, [now, ver, pause, del])]));
-      }
-      if (!backups.length) listEl.append(el('li', { class: 'muted', text: 'no scheduled backups yet' }));
-    }
-    const inLabel = el('input', { placeholder: 'name (e.g. daily)' });
-    const inEvery = el('select', null, [
-      el('option', { value: '24', text: 'every day' }), el('option', { value: '168', text: 'every week' }),
-      el('option', { value: '720', text: 'every 30 days' }), el('option', { value: '1', text: 'every hour' })]);
-    const inKeep = el('input', { type: 'number', min: '0', max: '999', value: '7', title: 'how many to keep — 0 keeps every one' });
-    inKeep.style.width = '5rem';
-    // read-only: the desktop app takes a new folder only from its own picker
-    // (set_backup_schedules in desktop/src/commands.rs), so a typed path
-    // would be refused anyway
-    const inDir = el('input', { placeholder: 'choose a folder', readOnly: true });
-    const pickDir = el('button', { type: 'button', class: 'btn', text: 'choose…' });
-    pickDir.onclick = async () => { try { const dir = await invoke('pick_backup_dir'); if (dir) inDir.value = dir; } catch (e) { bkStatus.textContent = String(e); } };
-    const addBtn = el('button', { type: 'button', class: 'btn', text: 'add schedule' });
-    addBtn.onclick = async () => {
-      bkStatus.textContent = '';
-      const label = inLabel.value.trim(), dir = inDir.value.trim();
-      if (!label || !dir) { bkStatus.textContent = 'a name and a folder are both needed'; return; }
-      if (backups.some((b) => b.label.toLowerCase() === label.toLowerCase())) { bkStatus.textContent = 'there is already a schedule called ' + label; return; }
-      backups.push({ id: bkId(), label, every_hours: Number(inEvery.value), keep: Math.max(0, Number(inKeep.value) || 0), dir, last_run: 0, enabled: true });
-      await save();
-      inLabel.value = '';
-    };
-    root.append(listEl,
-      el('div', { class: 'bkrow' }, [inLabel, inEvery, inKeep]),
-      el('div', { class: 'bkrow' }, [inDir, pickDir]),
-      el('div', { class: 'bkrow' }, [addBtn, bkStatus]));
-    refresh();
-  }
-
   function mountSettings(root) {
     mountManual(root);
     // automated: desktop only. In a browser there is no scheduler and nowhere on
     // the machine to write to, so say that rather than showing dead controls.
-    const d = desk();
-    if (!d) {
-      root.append(el('p', { class: 'muted', text: 'Automatic scheduled backups run in the lattice desktop app. Open lattice on your computer to set them up.' }));
-      return;
-    }
-    mountSchedules(root, d.invoke);
+    // On the desktop (this page is usually a frame of the editor, so its
+    // bridge is the top window's) the Scheduled backups button says the rest.
+    let onDesk = !!desk();
+    try { onDesk = onDesk || !!window.top.__TAURI__; } catch (e) {}
+    if (onDesk) return;
+    root.append(el('p', { class: 'muted', text: 'Automatic scheduled backups run in the lattice desktop app. Open lattice on your computer to set them up.' }));
   }
 
   //  the editor (78-export.js) configures and runs exportVault for the

@@ -11821,6 +11821,13 @@
     '<script src="/apps/lattice/app/vault.js"></script>'
     %-  trip
     '<script>window.LatticeVault&&LatticeVault.mountSettings(document.getElementById("vaultui"))</script>'
+    ::  desktop only: the schedules live on the app's own manager page, where
+    ::  only the user's clicks can change them, so this is a way there and
+    ::  not a second copy. Same bridge and same questions as Connection below.
+    "<p id=\"bksched\" hidden><button type=\"button\" id=\"bkschedbtn\" class=\"btn\">Scheduled backups</button> "
+    "<span class=\"muted\">set up and check the automatic backups this computer writes.</span></p>"
+    %-  trip
+    '<script>(function(){var p=document.getElementById("bksched"),w=null;try{w=window.top}catch(x){}var t=w&&w.__TAURI__;if(!t||!t.core)return;p.hidden=false;document.getElementById("bkschedbtn").onclick=function(){if(w.latOpenManager)w.latOpenManager("backups");else t.core.invoke("open_manager",{section:"backups"})}})();</script>'
     ::  theme: ui-app/theme.js (loaded by +pwa-head) renders into #themeui
     "<h2>Theme</h2>"
     "<div id=\"themeui\"></div>"
@@ -11885,10 +11892,12 @@
     "<p><span id=\"legst\" class=\"muted\">checking&hellip;</span></p>"
     "<p><button type=\"button\" id=\"legbtn\" class=\"btn\" hidden>Import from the old editor</button></p>"
     %-  trip
-    '<script>(function(){var s=document.getElementById("legst"),b=document.getElementById("legbtn");function load(msg){fetch("/apps/lattice/legacy-status").then(function(r){return r.json()}).then(function(d){b.hidden=!d.prompt;s.textContent=msg||(d.prompt?"An older lattice agent is still installed on this ship, from before this store existed. Importing copies what it holds here. Anything already here is left as it is, and nothing is removed from the old agent.":d.reason==="resolved"?"The older lattice agent has been imported, or its import was turned down.":"No older lattice agent is installed on this ship.")}).catch(function(){s.textContent=msg||"status unavailable"})}b.onclick=function(){b.disabled=true;s.textContent="importing from the old agent, this can take a few minutes...";fetch("/apps/lattice/legacy-migrate",{method:"POST"}).then(function(r){if(!r.ok)return r.json().catch(function(){return {}}).then(function(j){throw new Error(j.error||"http "+r.status)});return r.json()}).then(function(j){var n=j.imported||0,p=j.pagesImported||0;if(j.complete)try{localStorage.latLegacy="done"}catch(x){}b.disabled=false;load("Imported "+n+(n===1?" memory":" memories")+(j.skipped?" ("+j.skipped+" already here, left untouched)":"")+" and "+p+(p===1?" page. ":" pages. ")+(j.complete?"Everything it held is now here.":"Not everything moved, and the old agent still holds the only copy of the rest, so do not uninstall it. Run the import again to finish."))}).catch(function(e){b.disabled=false;load("import failed: "+e.message+". Nothing was removed from the old agent, and a re-run skips what already landed.")})};load()})();</script>'
+    '<script>(function(){var s=document.getElementById("legst"),b=document.getElementById("legbtn");function load(msg){fetch("/apps/lattice/legacy-status").then(function(r){return r.json()}).then(function(d){b.hidden=!d.prompt;s.textContent=msg||(d.prompt?"An older lattice agent is still installed on this ship, from before this store existed. Importing copies what it holds here. Anything already here is left as it is, and nothing is removed from the old agent.":d.reason==="resolved"?"This ship has closed the import from the older lattice agent: it either finished, or the offer was dismissed with never ask again.":"No older lattice agent is installed on this ship.")}).catch(function(){s.textContent=msg||"status unavailable"})}b.onclick=function(){b.disabled=true;s.textContent="importing from the old agent, this can take a few minutes...";fetch("/apps/lattice/legacy-migrate",{method:"POST"}).then(function(r){if(r.status===409){b.disabled=false;load("Nothing to import: the import was already closed on this ship, by another tab or device.");return null}if(!r.ok)return r.json().catch(function(){return {}}).then(function(j){throw new Error(j.error||"http "+r.status)});return r.json()}).then(function(j){if(!j)return;var n=j.imported||0,p=j.pagesImported||0;if(j.complete)try{localStorage.latLegacy="done"}catch(x){}b.disabled=false;load("Imported "+n+(n===1?" memory":" memories")+(j.skipped?" ("+j.skipped+" already here, left untouched)":"")+" and "+p+(p===1?" page. ":" pages. ")+(j.complete?"Everything it held is now here.":"Not everything moved, and the old agent still holds the only copy of the rest, so do not uninstall it. Run the import again to finish."))}).catch(function(e){b.disabled=false;load("import failed: "+e.message+". Nothing was removed from the old agent, and a re-run skips what already landed.")})};load()})();</script>'
     ::  desktop only: the shell's own connection and mounts page. This page
     ::  sits in a frame of the editor, so the Tauri bridge is the top
-    ::  window's. latOpenManager there asks about unsaved work first.
+    ::  window's. latOpenManager there asks about unsaved work first. The
+    ::  bare invoke is for this page opened on its own, with no editor
+    ::  around it and so no unsaved work to ask about.
     "<div id=\"connection\" hidden><h2>Connection and mounts</h2>"
     "<p class=\"muted\">Which ship this app talks to, and the folders mounted from it.</p>"
     "<p><button type=\"button\" id=\"connbtn\" class=\"btn\">Connection and mounts</button></p></div>"

@@ -108,26 +108,31 @@ for (const [item, arg] of [['view-editor', 'false'], ['view-preview', 'true']]) 
 }
 check('the shipped UI exposes window.latSetRead', appJs.includes('window.latSetRead'));
 
-//  Preferences > scheduled backups opens the Settings tab at its Backup
-//  section, which needs the page to expose the opener and settings-html to
-//  carry the anchor
-check('menu backups calls latOpenSettings(\'backup\')',
-  /"backups"\s*=>\s*\{[^}]*latOpenSettings\('backup'\)/.test(main));
+//  Preferences > scheduled backups lands on the manager page's backups
+//  section from any page the window is on, as the Preferences menu always has
+check('menu backups opens the manager at its backups section',
+  /"backups"\s*=>\s*\{\s*commands::show_manager\(app, Some\("backups"\)\)/.test(main));
 check('the shipped UI exposes window.latOpenSettings', appJs.includes('window.latOpenSettings'));
-const hoon = readFileSync(join(here, '..', 'code', 'nex', 'lattice', 'app.hoon'), 'utf8');
-check('settings-html has the backup anchor', hoon.includes('<h2 id=\\"backup\\">'));
 
 //  The settings page is ship-served, so on the desktop it runs at the
-//  bridge origin and only workspace-remote applies to it. Every command its
-//  Backup section (vault.js) and its connection button invoke must be
-//  granted there, or the one home for scheduled backups is a dead one.
+//  bridge origin and only workspace-remote applies to it. The schedule
+//  commands must stay off that list: with them, anything the ship serves
+//  could delete or pause the schedules and wipe the archives with no
+//  dialog. They live on the local manager page, which the settings page
+//  reaches only through open_manager.
 const remote = new Set(JSON.parse(readFileSync(join(capDir, 'workspace-remote.json'), 'utf8'))
   .permissions.filter((p) => typeof p === 'string' && p.startsWith('allow-')).map((p) => p.slice(6)));
+const scheduleCmds = ['backup_schedules', 'set_backup_schedules', 'pick_backup_dir', 'run_backup_now', 'verify_backup'];
+const leaked = scheduleCmds.filter((c) => remote.has(kebab(c)));
+check('no schedule command is granted to the ship page', leaked.length === 0, JSON.stringify(leaked));
+const hoon = readFileSync(join(here, '..', 'code', 'nex', 'lattice', 'app.hoon'), 'utf8');
 const vaultJs = readFileSync(join(here, '..', 'code', 'nex', 'lattice', 'ui-app', 'vault.js'), 'utf8');
 const shipCalls = new Set([...(vaultJs + hoon).matchAll(/invoke\(\s*["']([a-z_]+)["']/g)].map((m) => m[1]));
 const notRemote = [...shipCalls].filter((c) => !remote.has(kebab(c)));
 check('every command the settings page invokes is granted to the ship page',
-  shipCalls.size >= 6 && notRemote.length === 0,
+  shipCalls.has('open_manager') && notRemote.length === 0,
   JSON.stringify({ calls: [...shipCalls], notRemote }));
+check('settings-html opens the manager at its backups section',
+  hoon.includes('open_manager",{section:"backups"}') && hoon.includes('latOpenManager("backups")'));
 
 check.done();

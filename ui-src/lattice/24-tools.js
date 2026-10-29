@@ -182,11 +182,14 @@
     await go();
   });
   const leaveTo = (url) => leaveThen(() => { location.href = url; });
-  // Settings > Connection and mounts on the desktop. The shell rebuilds the
-  // window onto its own page (show_manager in desktop/src/commands.rs), and
-  // no unload guard sees a window go, so the same questions come first.
-  window.latOpenManager = () => leaveThen(async () => {
-    try { await window.__TAURI__.core.invoke('open_manager'); } catch (e) { st('could not open connection and mounts: ' + e, false); }
+  // Settings > Connection and mounts, and Settings > Backup > Scheduled
+  // backups (section 'backups'), on the desktop. The shell rebuilds the
+  // window onto its own manager page (open_manager in
+  // desktop/src/commands.rs), and no unload guard sees a window go, so the
+  // same questions come first.
+  window.latOpenManager = (section) => leaveThen(async () => {
+    try { await window.__TAURI__.core.invoke('open_manager', { section: section || null }); }
+    catch (e) { st('could not open the desktop settings: ' + e, false); }
   });
 
   // the Settings tab, opened or focused, with its frame scrolled to the

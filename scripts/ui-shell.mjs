@@ -645,11 +645,13 @@ try {
     return { vim: !!d.querySelector('#editor #vimsel'), wrap: !!d.querySelector('#editor #wrapdef'),
       auto: !!d.querySelector('#editor #autosave'), pub: !!d.getElementById('publishing'),
       legacy: !!d.getElementById('legacy'), backup: !!d.querySelector('#backup ~ #vaultui'),
-      conn: d.getElementById('connection') ? d.getElementById('connection').hidden : 'absent' };
+      conn: d.getElementById('connection') ? d.getElementById('connection').hidden : 'absent',
+      sched: !d.getElementById('bksched') || d.getElementById('bksched').hidden,
+      schedNote: /desktop app/.test(d.getElementById('vaultui').textContent) };
   });
   check('settings has editor, publishing, legacy anchors',
     !!anchors && anchors.vim && anchors.wrap && anchors.auto && anchors.pub && anchors.legacy
-      && anchors.backup && anchors.conn === true,
+      && anchors.backup && anchors.conn === true && anchors.sched && anchors.schedNote,
     JSON.stringify(anchors));
   //  already open: no second tab, and the frame scrolls to the new section
   const nSet = (await front()).n;

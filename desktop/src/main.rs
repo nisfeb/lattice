@@ -49,11 +49,11 @@ fn remount(handle: &tauri::AppHandle, cfg: &config::Config) {
 fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     // one menu, one item: mounts lived in an unreachable window once
     // the manager auto-hid after connect
-    // "backups" opens the ship page's Settings tab at its Backup section,
-    // where the schedules live with export and restore. It gets its own
-    // item because a scheduled backup is not something you go looking
-    // for under "connection && mounts", and an entry that is not in the
-    // menubar is, for this purpose, not there at all.
+    // "backups" opens the same manager page as "connection" — the
+    // settings all live there. It gets its own item anyway, because a
+    // scheduled backup is not something you go looking for under
+    // "connection && mounts", and an entry that is not in the menubar
+    // is, for this purpose, not there at all.
     let prefs = tauri::menu::SubmenuBuilder::new(app, "Preferences")
         .text("manager", "connection && mounts…")
         .text("backups", "scheduled backups…")
@@ -250,19 +250,18 @@ fn main() {
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
         .manage(proxy::Bridge(Mutex::new(None)))
         .on_menu_event(|app, ev| {
-            // single-window app: the manager is a page in the workspace.
-            // "backups" is Settings > Backup in the ship page, opened as a
-            // tab and scrolled to the section (24-tools.js). On the manager
-            // page there is no such function, and the item does nothing.
+            // single-window app: the manager is a page in the workspace, and
+            // both of these items are ways of asking for it. "backups" lands
+            // on its section: the item exists because scheduled backups are
+            // not something you go looking for under connection && mounts,
+            // and that reasoning covers the scroll past ship and mounts too
             match ev.id().as_ref() {
                 "manager" => {
                     commands::show_manager(app, None).ok();
                     return;
                 }
                 "backups" => {
-                    if let Some(w) = app.get_webview_window("workspace") {
-                        let _ = w.eval("if(window.latOpenSettings)latOpenSettings('backup')");
-                    }
+                    commands::show_manager(app, Some("backups")).ok();
                     return;
                 }
                 _ => {}
