@@ -84,7 +84,7 @@
   =/  p=post:ft  (mk-post 1 0 `'the body')
   =/  top=comment:ft  [1 ~ ~zod 'top-level' (sub now ~m5) ~ ~]
   =/  kid=comment:ft  [2 `1 ~zod 'child-reply' (sub now ~m4) ~ ~]
-  =/  h=tape  (to-html (render-thread:rn c (mk-board ~[p] ~[top kid]) 1))
+  =/  h=tape  (to-html body:(render-thread:rn c (mk-board ~[p] ~[top kid]) 1))
   ;:  weld
     (expect-eq !>(&) !>((has h "margin-left: 0px")))
     (expect-eq !>(&) !>((has h "margin-left: 20px")))
@@ -97,23 +97,27 @@
 ++  test-escapes
   =/  p=post:ft  (mk-post 1 0 `'<script>alert(1)</script>')
   =/  evil=comment:ft  [1 ~ ~zod '<img onerror=x>' (sub now ~m5) ~ ~]
-  =/  h=tape  (to-html (render-thread:rn c (mk-board ~[p] ~[evil]) 1))
+  =/  h=tape  (to-html body:(render-thread:rn c (mk-board ~[p] ~[evil]) 1))
   ;:  weld
     (expect-eq !>(|) !>((has h "<script>alert")))
     (expect-eq !>(&) !>((has h "&lt;script&gt;")))
     (expect-eq !>(|) !>((has h "<img onerror")))
   ==
-++  test-theme-and-unsafe-url
+::  the theme link is app.hoon's now (+forum-doc); a page answers its
+::  title beside the body, for the head's <title>
+::
+++  test-title-and-unsafe-url
   =/  p=post:ft  [1 ~zod 'x' `'javascript:alert(1)' ~ now ~ ~ 0]
   =/  h=tape  (to-html (render-list:rn c (mk-board ~[p] ~) %hot 1))
-  =/  page=tape  (to-html (render-board:rn c (mk-board ~[p] ~) %hot 1))
+  =/  page  (render-board:rn c (mk-board ~[p] ~) %hot 1)
   ;:  weld
     (expect-eq !>(|) !>((has h "href=\"javascript")))
-    (expect-eq !>(&) !>((has page "/theme.css")))
+    (expect-eq !>('forum - Main') !>(title.page))
+    (expect-eq !>(|) !>((has (to-html body.page) "href=\"javascript")))
   ==
 ++  test-submit-and-mod
-  =/  s=tape  (to-html (render-submit:rn c %main))
-  =/  m=tape  (to-html (render-mod:rn c (mk-board ~ ~)))
+  =/  s=tape  (to-html body:(render-submit:rn c %main))
+  =/  m=tape  (to-html body:(render-mod:rn c (mk-board ~ ~)))
   ;:  weld
     (expect-eq !>(&) !>((has s "/b/main/submit")))
     (expect-eq !>(&) !>((has m "/b/main/mod/role")))
