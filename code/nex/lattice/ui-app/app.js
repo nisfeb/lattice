@@ -4873,6 +4873,13 @@
   // the realName() split the create dialog (newFile) made before seeding
   // #pname with the real path; save() consumes it on create
   let newRn = null;
+  // a create that lands with nothing else opened meanwhile: nothing is
+  // named yet, and the buffer is the one sent, or the one still under the
+  // name being created. Text typed during the round trip changes the first
+  // and not the second. Matching the body alone left such a page unnamed,
+  // and its typing was never autosaved (autosave needs `current`).
+  const createdHere = (creating, name, sent) => current === null
+    && (src.value === sent || (creating && pname.value === name));
   async function save(kindOverride) {
     if (curFolder) { st('folder selected — open a page to edit', false); return; }
     if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
@@ -4935,13 +4942,14 @@
       if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
       // same stillHere guard as the online path: only touch live editor state
       // if the editor has not moved to another document during the round-trip.
-      const stillHere = current === name || (current === null && src.value === sent);
+      const stillHere = current === name || createdHere(creating, name, sent);
       if (stillHere) {
         current = name;
         tabFollow();         // a new page's tab is named now (21-tabs.js)
         curKind = kind;
         pname.readOnly = true;
         if (src.value === sent) dirty = false;
+        else if (!savePending) savePending = true;
         history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
         cerr.textContent = 'saved offline'; cerr.className = 'ok';
       }
@@ -4962,13 +4970,14 @@
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
     // name field, dirty or the URL here would brand the new page as this save.
-    const stillHere = current === name || (current === null && src.value === sent);
+    const stillHere = current === name || createdHere(creating, name, sent);
     if (stillHere) {
       current = name;
       tabFollow();           // a new page's tab is named now (21-tabs.js)
       curKind = kind;
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
+      else if (!savePending) savePending = true;   // flushPending below saves it
       if (vr && vr.rev) curRev = vr.rev;
       if (vr && vr.conflicted) {
         st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
