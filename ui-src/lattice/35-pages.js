@@ -211,9 +211,10 @@
     if (!focusName) return blankPage(into);
     (async () => {
       //  a folder's + pre-fills that folder; the toolbar keeps offering the
-      //  open page's path. Read it BEFORE the reset below, which clears the
-      //  field it comes from.
-      const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
+      //  open page's path (never a memory's key: that names no page). Read
+      //  it BEFORE the reset below, which clears the field it comes from.
+      const seed = into ? into.replace(/\/+$/, '') + '/'
+        : mode === 'know' ? '' : (pname.value || '');
       const picked = await askNameKind('page name (e.g. notes/todo)', seed,
         'create', pkind.value);
       if (!picked) return;

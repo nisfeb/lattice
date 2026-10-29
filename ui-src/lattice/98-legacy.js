@@ -83,7 +83,9 @@
     else delete sessionStorage.latLegacyAsked;
     knowGen++;
     st('imported ' + res.imported + ' memories from the old agent');
+    // the import can bring pages too, so Files refreshes as it always did
     if (knowLive()) loadKnow();
+    loadTree();
     // NEVER advise retiring the old agent while it still holds pages. This
     // import moves knowledge only (the agent exposes no arm for page bodies),
     // so an uninstall on that advice would destroy them permanently.

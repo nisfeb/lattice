@@ -305,7 +305,7 @@
     // knowFresh in 90-sync.js), never to learn nothing.
     if (m === 'know') { if (!knowFresh(knowAt)) loadKnow(); }
     else if (!revFresh(treeAt)) loadTree();
-    st(m === 'know' ? 'knowledge \u00b7 new memory' : 'pages');
+    st(m === 'know' ? 'knowledge' : 'pages');
   }
 
   // ── the Knowledge tab: lazy listing ─────────────────────────────────────
@@ -339,7 +339,25 @@
       seed = key;
       note = 'a key is lowercase letters, digits and - . _ ~ (no spaces). ';
     }
-    if (knowEntry(key)) { openIn('know', key, { ev }); return; }
+    // the key must be free, and the ship is the one to ask: knowKeys is
+    // empty until the lazy list lands, or if it failed, and /know-save has
+    // no create-only form, so a write here would put a newline over an
+    // existing memory. A key that exists opens instead; a check that cannot
+    // complete creates nothing.
+    if (!knowEntry(key)) {
+      let r = null;
+      try { r = await fetch(api + '/know-read?key=' + encodeURIComponent(key)); } catch {}
+      if (!r || (!r.ok && r.status !== 404)) {
+        st('could not check whether ' + key + ' exists' + (r ? await errText(r) : ' (offline)')
+          + ', so nothing was created', false);
+        return;
+      }
+      if (r.ok) {
+        await openIn('know', key, { ev });
+        st(key + ' already exists, so it is open instead');
+        return;
+      }
+    } else { openIn('know', key, { ev }); return; }
     await openIn('know', '', { ev });
     if (!activeTab || activeTab.kind !== 'know' || activeTab.key || current !== null) return;
     setOpen(null, { shown: key });

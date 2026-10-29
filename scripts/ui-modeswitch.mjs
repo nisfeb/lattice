@@ -19,7 +19,9 @@ import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harnes
 const env = shipEnv();
 //  generous against a remote pier: the round trip is seconds; a paint is not
 const BUDGET = +(process.env.BUDGET || 250);
-const MEM = 'test/modeswitch-' + process.pid;
+//  a fixed key, restored and reused: know-delete is a soft delete with no
+//  purge route, so a per-run key would leave one in the trash every run
+const MEM = 'test/modeswitch-suite';
 const leaf = MEM.split('/').pop();
 const post = (path, body) => fetch(env.base + '/apps/lattice/' + path,
   { method: 'POST', headers: { Cookie: env.cookie }, body });
@@ -33,6 +35,7 @@ const memories = () => p.evaluate(() => document.getElementById('knowlist').text
 const inKnow = () => p.evaluate(() => document.getElementById('ws').classList.contains('know'));
 
 try {
+  await post('know-restore?key=' + encodeURIComponent(MEM)).catch(() => {});
   await post('know-save?key=' + encodeURIComponent(MEM), 'modeswitch memory');
   await p.goto(env.app + '/no-such-asset', { timeout: 30000 });
   await p.evaluate(() => { localStorage.removeItem('appTabs'); localStorage.removeItem('appLTab'); });

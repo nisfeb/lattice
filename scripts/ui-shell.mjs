@@ -19,7 +19,11 @@ import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harnes
 
 const env = shipEnv();
 const check = makeCheck();
-const MEM = 'test/shell-' + process.pid;
+//  fixed keys, not per run: know-delete is a soft delete with no purge
+//  route, so each run restores and reuses these instead of leaving a new
+//  memory in the trash every time
+const MEM = 'test/shell-suite';
+const FRESH = 'test/shell-suite-new';
 const MARK = 'https://example.com/shell-' + process.pid;
 const post = (path, body) => fetch(env.base + '/apps/lattice/' + path,
   { method: 'POST', headers: { Cookie: env.cookie }, body });
@@ -49,13 +53,51 @@ const width = (sel) => page.evaluate((s) => {
 const pressed = (sel) => page.evaluate((s) => document.querySelector(s)?.getAttribute('aria-pressed'), sel);
 
 try {
+  await post('know-restore?key=' + encodeURIComponent(MEM)).catch(() => {});
   await post('know-save?key=' + encodeURIComponent(MEM), 'shell suite memory');
+  await post('know-restore?key=' + encodeURIComponent(FRESH)).catch(() => {});
+  await post('know-delete?key=' + encodeURIComponent(FRESH)).catch(() => {});
   await post('bookmark?url=' + encodeURIComponent(MARK) + '&title=shell%20mark&folder=shellf');
   await page.goto(env.app + '/no-such-asset', { timeout: 30000 });
   await page.evaluate(() => {
-    for (const k of ['appNT', 'appNC', 'appLTab', 'appRTab', 'appPanes']) localStorage.removeItem(k);
+    for (const k of ['appNT', 'appNC', 'appLTab', 'appRTab', 'appPanes', 'appTabs']) localStorage.removeItem(k);
   });
   await boot();
+
+  // ── New memory never writes over an existing key ───────────────────────
+  //  Files is in front and no memory tab is open, so the memory list has
+  //  not been fetched: the client cannot know MEM exists
+  const knew = async (key) => {
+    await page.evaluate(() => document.getElementById('knew').click());
+    await page.waitForFunction(() => !document.getElementById('dlg').hidden, { timeout: 5000 });
+    await page.evaluate((k) => {
+      document.getElementById('dlginput').value = k;
+      document.getElementById('dlgok').click();
+    }, key);
+  };
+  const readMem = async (k) => {
+    const r = await fetch(env.base + '/apps/lattice/know-read?key=' + encodeURIComponent(k),
+      { headers: { Cookie: env.cookie } });
+    return r.ok ? (await r.json()).body : null;
+  };
+  const unloaded = await page.evaluate(() => !document.querySelector('#knowlist a.pg'));
+  await knew(MEM);
+  const opened = await page.waitForFunction((k) => {
+    const s = window.latTabs.state();
+    return s.tabs[s.active].kind === 'know' && s.tabs[s.active].key === k && s.shows;
+  }, { timeout: 30000 }, MEM).then(() => true, () => false);
+  await sleep(1500);
+  const kept = await readMem(MEM);
+  check('new memory on an existing key opens it and leaves its body intact',
+    unloaded && opened && kept === 'shell suite memory', JSON.stringify({ unloaded, opened, kept }));
+  await knew(FRESH);
+  const made = await page.waitForFunction((k) => {
+    const s = window.latTabs.state();
+    return s.tabs[s.active].kind === 'know' && s.tabs[s.active].key === k;
+  }, { timeout: 30000 }, FRESH).then(() => true, () => false);
+  check('new memory on a free key creates it', made && (await readMem(FRESH)) !== null,
+    JSON.stringify({ made }));
+  await page.evaluate(() => localStorage.removeItem('appTabs'));
 
   // ── the frame is on screen ─────────────────────────────────────────────
   const parts = {};
@@ -262,6 +304,7 @@ try {
   }).catch(() => {});
   await browser.close();
   await post('know-delete?key=' + encodeURIComponent(MEM)).catch(() => {});
+  await post('know-delete?key=' + encodeURIComponent(FRESH)).catch(() => {});
   await post('unbookmark?url=' + encodeURIComponent(MARK)).catch(() => {});
 }
 check.done();
