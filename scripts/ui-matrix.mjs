@@ -1392,11 +1392,15 @@ try {
   check('sandbox: the preview frame is sandboxed, without allow-same-origin',
     sbx.split(/\s+/).includes('allow-scripts') && !sbx.includes('allow-same-origin'), sbx);
 
-  //  in Read, where the preview renders the page (Edit skips it)
+  //  a new html page through the create dialog, then Read, where the
+  //  preview renders it (Edit skips it). The end-of-run sweep removes it.
+  await page.click('#newfile');
+  await page.evaluate(() => { document.getElementById('dlgkind').value = 'html'; });
+  await dialog(RUN + '/pwn');
+  await wait((n) => document.getElementById('pname').value === n
+    && document.getElementById('pname').readOnly, RUN + '/pwn');
   await page.evaluate(() => {
-    document.getElementById('newfile').click();
     window.latSetRead(true);
-    document.getElementById('pkind').value = 'html';
     const s = document.getElementById('src');
     //  the assignment THROWS a SecurityError once the frame is sandboxed,
     //  which is the proof it works — but an uncaught one would trip the

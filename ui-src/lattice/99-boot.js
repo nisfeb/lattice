@@ -82,6 +82,9 @@
     // what the snapshot painted, if anything. The baseline for "did the USER
     // do something while the dump was in flight?"
     const bootCurrent = current;
+    // and what the name field said: a new page named in the dialog has no
+    // `current` until its create lands, but it is the user's all the same
+    const bootShown = pname.value;
     loadTree().then(() => {
       // The tree paints from localStorage at 0ms, so it is clickable long
       // before this resolves. Anything boot does by default would then land on
@@ -94,7 +97,7 @@
       // from the dump's PRE-edit copy. Typing is a user action whether or not
       // it has since been saved. Going to another tab is a user action too.
       const touched = current !== bootCurrent || curFolder !== null || dirty || everTyped
-        || activeTab !== bootTab;
+        || activeTab !== bootTab || pname.value !== bootShown;
       if (touched) {
         legacyCheck();
         loadPanels();

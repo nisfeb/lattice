@@ -96,46 +96,53 @@ const open = async (name) => {
 //  the preview is drawn in Read (Edit skips its renders, 60-preview.js), and
 //  Read is the tab's, so the opens below, in place, keep it. Autosave goes
 //  off so the typing check can never write into these real pages.
-await p.evaluate(() => { localStorage.latAutosave = '0'; window.latSetRead(true); });
-check('the tree lists both pages', await open(A));
-await p.waitForFunction((w) => (document.getElementById('prev').getAttribute('srcdoc') || '').includes(w),
-  { timeout: BUDGET }, pair.wa).catch(() => {});
-check('opening the first page paints it without the ship', (await srcdoc()).includes(pair.wa),
-  (await srcdoc()).slice(0, 80));
-
-//  the real test: with the previous document on screen, open another one
-const t0 = Date.now();
-await open(B);
-let painted = false;
 try {
+  await p.evaluate(() => { localStorage.latAutosave = '0'; window.latSetRead(true); });
+  check('the tree lists both pages', await open(A));
   await p.waitForFunction((w) => (document.getElementById('prev').getAttribute('srcdoc') || '').includes(w),
-    { timeout: BUDGET }, pair.wb);
-  painted = true;
-} catch {}
-const dt = Date.now() - t0;
-check('switching documents repaints the preview locally (' + dt + 'ms, ship held ' + SHIP_DELAY + 'ms)', painted,
-  'pane still showed: ' + (await srcdoc()).slice(0, 80));
-//  whole-word: the srcdoc shell wraps every render in script text, and a
-//  marker can be a prefix of an identifier there ("scroll" in scrollHeight)
-check('and it is the NEW document, not the one left behind', !new RegExp('\\b' + pair.wa + '\\b').test(await srcdoc()));
+    { timeout: BUDGET }, pair.wa).catch(() => {});
+  check('opening the first page paints it without the ship', (await srcdoc()).includes(pair.wa),
+    (await srcdoc()).slice(0, 80));
 
-//  typing must still be instant — the path that already worked
-await p.evaluate(() => {
-  const s = document.getElementById('src');
-  s.value = '# TYPEDMARKER\n'; s.dispatchEvent(new Event('input'));
-});
-let typed = false;
-try {
-  await p.waitForFunction(() => (document.getElementById('prev').getAttribute('srcdoc') || '').includes('TYPEDMARKER'),
-    { timeout: BUDGET });
-  typed = true;
-} catch {}
-check('typing still paints locally', typed);
+  //  the real test: with the previous document on screen, open another one
+  const t0 = Date.now();
+  await open(B);
+  let painted = false;
+  try {
+    await p.waitForFunction((w) => (document.getElementById('prev').getAttribute('srcdoc') || '').includes(w),
+      { timeout: BUDGET }, pair.wb);
+    painted = true;
+  } catch {}
+  const dt = Date.now() - t0;
+  check('switching documents repaints the preview locally (' + dt + 'ms, ship held ' + SHIP_DELAY + 'ms)', painted,
+    'pane still showed: ' + (await srcdoc()).slice(0, 80));
+  //  whole-word: the srcdoc shell wraps every render in script text, and a
+  //  marker can be a prefix of an identifier there ("scroll" in scrollHeight)
+  check('and it is the NEW document, not the one left behind', !new RegExp('\\b' + pair.wa + '\\b').test(await srcdoc()));
 
-p.off('request', hold);
-await p.setRequestInterception(false);
-//  nothing to clean up: this drives existing pages and never writes. The typing
-//  check edits the textarea only, with autosave off, and no save is issued.
-await p.evaluate(() => { localStorage.removeItem('latAutosave'); window.latSetRead(false); });
-await b.close();
+  //  typing must still be instant — the path that already worked
+  await p.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = '# TYPEDMARKER\n'; s.dispatchEvent(new Event('input'));
+  });
+  let typed = false;
+  try {
+    await p.waitForFunction(() => (document.getElementById('prev').getAttribute('srcdoc') || '').includes('TYPEDMARKER'),
+      { timeout: BUDGET });
+    typed = true;
+  } catch {}
+  check('typing still paints locally', typed);
+
+  p.off('request', hold);
+  await p.setRequestInterception(false);
+  //  nothing to clean up: this drives existing pages and never writes. The typing
+  //  check edits the textarea only, with autosave off, and no save is issued.
+} catch (e) {
+  check('suite crashed: ' + e.message, false);
+} finally {
+  //  autosave back on whatever happened, so a kept profile is not left without it
+  await p.evaluate(() => { localStorage.removeItem('latAutosave'); window.latSetRead(false); })
+    .catch(() => {});
+  await b.close();
+}
 check.done();

@@ -35,9 +35,6 @@ const create = async (name) => {
     document.getElementById('dlgok').click();
   }, name);
   await page.waitForFunction(() => document.getElementById('dlg').hidden, { timeout: 30000 });
-  //  the create is a pier round trip; the next one starts once it is in
-  await page.waitForFunction(() => !/saving/.test(document.getElementById('status').textContent)
-    && !document.querySelector('#treelist a.pg.pend'), { timeout: 60000 });
 };
 
 // a page typed with capitals and a space
@@ -52,7 +49,8 @@ const tip = await page.evaluate((n) => {
   return a ? a.title : null;
 }, RUN);
 check('the row tooltip is the real path', tip === RUN + '/my-page', tip);
-const status = await page.evaluate(() => document.getElementById('status') ? document.getElementById('status').textContent : '');
+await wait(() => /shown as My Page/.test(document.getElementById('status').textContent));
+const status = await page.evaluate(() => document.getElementById('status').textContent);
 check('the status says what happened', /shown as My Page/.test(status), status);
 
 // a valid name shows as itself and carries no display name
@@ -81,6 +79,40 @@ await page.reload({ waitUntil: 'domcontentloaded' });
 await page.waitForSelector('#treelist', { timeout: 30000 });
 check('after reload the tree still shows "My Page.md"', await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
   .some((a) => a.textContent === 'My Page.md' && a.href.includes(encodeURIComponent(n + '/my-page'))), RUN));
+
+// two creates back to back, no wait between them: both pages land under
+// their own names, and what is typed after the second goes into the second
+const TA = RUN + '/twin-a', TB = RUN + '/twin-b';
+const src = async (n) => {
+  const r = await fetch(env.base + '/apps/lattice/page-source?name=' + encodeURIComponent(n),
+    { headers: { Cookie: env.cookie } });
+  return r.ok ? ((await r.json()).body || '') : null;
+};
+await create(TA);
+await create(TB);
+//  type only once the first create has landed: that landing is what used
+//  to take the second page's blank buffer for its own
+for (let i = 0; i < 60 && (await src(TA)) === null; i++) await sleep(500);
+await sleep(1500);
+await page.evaluate(() => {
+  const s = document.getElementById('src');
+  s.value = 'TWINB typed'; s.dispatchEvent(new Event('input'));
+});
+let twins = null;
+for (let i = 0; i < 60; i++) {
+  twins = { a: await src(TA), b: await src(TB) };
+  if (twins.a !== null && twins.b !== null && twins.b.includes('TWINB')) break;
+  await sleep(1000);
+}
+check('back-to-back creates: both pages exist on the ship', twins.a !== null && twins.b !== null,
+  JSON.stringify(twins));
+check('and the typing went into the second, not the first',
+  (twins.b || '').includes('TWINB') && !(twins.a || '').includes('TWINB'), JSON.stringify(twins));
+const front = await page.evaluate(() => {
+  const s = window.latTabs.state();
+  return [s.tabs[s.active].key, document.getElementById('pname').value];
+});
+check('and the editor names the second', front[0] === TB && front[1] === TB, JSON.stringify(front));
 
 check('no uncaught exceptions in the app', errors.length === 0, errors.join(' | '));
 await page.evaluate(async (n) => { await fetch('/apps/lattice/page-del?name=' + n, { method: 'POST' }); }, RUN);

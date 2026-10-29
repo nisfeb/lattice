@@ -4847,7 +4847,7 @@
     if (!savePending) return;
     const pending = savePending;
     savePending = false;
-    if (!dirty) return;
+    if (!dirty && !pending.create) return;
     if (typeof pending === 'function') pending(); else autosave();
   };
   //  we know exactly what we just wrote. Patch the local copies so reopening
@@ -4874,12 +4874,12 @@
   // #pname with the real path; save() consumes it on create
   let newRn = null;
   // a create that lands with nothing else opened meanwhile: nothing is
-  // named yet, and the buffer is the one sent, or the one still under the
-  // name being created. Text typed during the round trip changes the first
-  // and not the second. Matching the body alone left such a page unnamed,
-  // and its typing was never autosaved (autosave needs `current`).
-  const createdHere = (creating, name, sent) => current === null
-    && (src.value === sent || (creating && pname.value === name));
+  // named yet and the name field still names this page. Not the body:
+  // text typed during the round trip changes it, which left the page
+  // unnamed and its typing never autosaved (autosave needs `current`), and
+  // two empty pages have the same one, so a create landing under a second
+  // New took the second page's blank buffer for its own.
+  const createdHere = (creating, name) => creating && current === null && pname.value === name;
   async function save(kindOverride) {
     if (curFolder) { st('folder selected — open a page to edit', false); return; }
     if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
@@ -4889,7 +4889,12 @@
     // carry kindOverride into the re-arm: a bare `true` here forgot which
     // kind THIS call wanted, and the trailing run picked whatever the
     // picker happened to show by the time it fired
-    if (saving) { savePending = () => save(kindOverride); return; }
+    //  a create queued here runs even when the buffer is clean by then (an
+    //  empty new page is clean from the start): flushPending sees `create`
+    if (saving) {
+      savePending = Object.assign(() => save(kindOverride), { create: creating });
+      return;
+    }
     saving = true;
     st('saving…');
     // capture the exact body being sent: keystrokes landing during the round-trip
@@ -4942,7 +4947,7 @@
       if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
       // same stillHere guard as the online path: only touch live editor state
       // if the editor has not moved to another document during the round-trip.
-      const stillHere = current === name || createdHere(creating, name, sent);
+      const stillHere = current === name || createdHere(creating, name);
       if (stillHere) {
         current = name;
         tabFollow();         // a new page's tab is named now (21-tabs.js)
@@ -4970,7 +4975,7 @@
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
     // name field, dirty or the URL here would brand the new page as this save.
-    const stillHere = current === name || createdHere(creating, name, sent);
+    const stillHere = current === name || createdHere(creating, name);
     if (stillHere) {
       current = name;
       tabFollow();           // a new page's tab is named now (21-tabs.js)
@@ -9774,6 +9779,9 @@
     // what the snapshot painted, if anything. The baseline for "did the USER
     // do something while the dump was in flight?"
     const bootCurrent = current;
+    // and what the name field said: a new page named in the dialog has no
+    // `current` until its create lands, but it is the user's all the same
+    const bootShown = pname.value;
     loadTree().then(() => {
       // The tree paints from localStorage at 0ms, so it is clickable long
       // before this resolves. Anything boot does by default would then land on
@@ -9786,7 +9794,7 @@
       // from the dump's PRE-edit copy. Typing is a user action whether or not
       // it has since been saved. Going to another tab is a user action too.
       const touched = current !== bootCurrent || curFolder !== null || dirty || everTyped
-        || activeTab !== bootTab;
+        || activeTab !== bootTab || pname.value !== bootShown;
       if (touched) {
         legacyCheck();
         loadPanels();
