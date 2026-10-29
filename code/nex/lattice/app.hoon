@@ -338,6 +338,12 @@
         ::  /link-reads: one short-lived fiber per background read of a link
         ::  (+link-read-later), gone when its read is done
             [%fall %| /link-reads empty-dir:loader]
+        ::  /links/<path>/link: the links in the page tree (/lib/lattice-link),
+        ::  kept out of /page so no grant or publish there can reach one. A
+        ::  folder grant is a dir road, and grubbery's weirs only ever allow,
+        ::  so a link grub under the folder went to every ship granted it.
+        ::  Only the owner's listings put them back in place (+graft-links).
+            [%fall %| /links empty-dir:loader]
             [%fall %& [/ %banned] [[/lattice %banned] *banned:ls]]
         ::  /key-bytes: each agent key's bytes written today (+spend:ky)
             [%fall %& [/ %'key-bytes'] [[/ %noun] *ledger:ky]]
@@ -803,7 +809,7 @@
   ?^  err.gate  (send-err eyre-id code.u.err.gate msg.u.err.gate)
   ::  a link (/lib/lattice-link) saves through its host, one page at a
   ::  time (/page-save). Refused before anything is written, never left to
-  ::  land as a %code grub inside the link's dir.
+  ::  land as a %code grub at the link's path.
   ;<  onto=(unit @t)  bind:m
     =/  n  (fiber:fiber:nexus ,(unit @t))
     =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
@@ -1139,7 +1145,7 @@
   ?.  ok  (ug-refused eyre-id)
   (send-ok eyre-id)
 ::  +handle-link-make: POST /link-make?host=&path=&to=. The shared-with-me
-::  entry [host path] becomes a link at /page/<to>. The host is peeked once,
+::  entry [host path] becomes a link at <to>. The host is peeked once,
 ::  with a short deadline, for the page's kind, body and rev: kind is frozen
 ::  here, so a link is never made with a kind it guessed. Offline, nothing is
 ::  written. The entry goes once the link is in (one home), and the answer is
@@ -1161,14 +1167,17 @@
   ?~  to  (send-err eyre-id 400 'missing to')
   ?.  (valid-name u.to)  (send-err eyre-id 400 'bad name')
   =/  tp=path  (pax-of u.to)
+  ;<  la=(unit path)  bind:m  (link-above tp)
+  ?^  la  (send-err eyre-id 409 (link-above-msg u.la))
   ;<  sh=shared:ls  bind:m  read-shared
   =/  en=(unit entry:ls)
     =/  hit  (skim sh |=(e=entry:ls &(=(host.e u.hp) =(pax.e u.pp))))
     ?~(hit ~ `i.hit)
   ?~  en  (send-err eyre-id 404 'not shared with you')
-  ::  a page, a folder or a link: each is a dir under /page
+  ::  a page or a folder (a dir under /page), or a link (under /links)
   ;<  ex=?  bind:m  (peek-exists:io (rv up (weld /page tp)))
-  ?:  ex  (send-err eyre-id 409 'destination exists')
+  ;<  lx=?  bind:m  (peek-exists:io (link-road up tp))
+  ?:  |(ex lx)  (send-err eyre-id 409 'destination exists')
   ;<  got=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek u.hp u.pp)
   ?~  got
     %^  send-err  eyre-id  504
@@ -1184,8 +1193,9 @@
     [[/lattice %share-notice] `action:ls`[%del u.hp u.pp]]
   (send-json eyre-id (pairs:enjs:format (link-rows tp l [0 now])))
 ::  +handle-link-unmake: POST /link-unmake?name=. The link goes back to
-::  shared with me, with the mode it last knew, and its dir is deleted. The
-::  owner's grant is never touched.
+::  shared with me, with the mode it last knew, and is deleted. The owner's
+::  grant is never touched. The entry goes back through /shares.sig, the
+::  one writer of /shared: a write from here raced a notice landing there.
 ++  handle-link-unmake
   |=  [eyre-id=@ta args=(map @t @t)]
   =/  m  (fiber:fiber:nexus ,~)
@@ -1194,16 +1204,13 @@
   ?~  name  (send-err eyre-id 400 'missing name')
   ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
   =/  pax=path  (pax-of u.name)
-  ;<  lv=view:nexus  bind:m  (peek:io (rf up (weld /page pax) %link) ~)
-  =/  l=(unit link:ll)
-    ?.  ?=([%file *] lv)  ~
-    (mole |.(;;(link:ll (sang-noun:tarball sang.lv))))
-  ?.  ?=([~ %ship *] l)  (send-err eyre-id 404 'no such link')
-  ;<  now=@da  bind:m  bowl-now
-  ;<  sh=shared:ls  bind:m  read-shared
+  ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at pax)
+  ?.  ?=([~ [%ship *] *] lk)  (send-err eyre-id 404 'no such link')
+  =/  l=link:ll  l.u.lk
+  ?.  ?=(%ship -.l)  (send-err eyre-id 404 'no such link')
   ;<  ~  bind:m
-    %^  put-file  (rf up / %shared)  [/lattice %shared]
-    (put-entry:ls sh [host.u.l pax.u.l mode.u.l now])
+    %+  poke:io  (rf up / %'shares.sig')
+    [[/lattice %share-notice] `action:ls`[%put host.l pax.l mode.l]]
   ;<  ~  bind:m  (poke-eval [%del pax])
   (send-ok eyre-id)
 ::  +read-shared: the shared-with-me list, ~ when absent or unreadable.
@@ -1236,14 +1243,40 @@
   :+  ?~(un %hoon builder.u.un)
     ?~(un u.txt body.u.un)
   ud.cass.u.ms
-::  +link-at: the link at /page/<pax> and its grub's time, ~ if there is none
-::  (a page, a folder, nothing) or it does not read as one.
+::  +link-road: where the link at page path pax lives. Never under /page:
+::  see the /links row of the loader.
+++  link-road
+  |=  [up=@ud pax=path]
+  ^-  road:tarball
+  (rf up (weld /links pax) %link)
+::  +link-above: the nearest folder above pax that is a link, ~ if there is
+::  none. A link holds no pages, so nothing is made or moved under one: it
+::  would list as the link and vanish, and a move of the link would leave
+::  it behind.
+++  link-above
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,(unit path))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  i=@ud  1
+  |-  ^-  form:m
+  ?:  (gte i (lent pax))  (pure:m ~)
+  ;<  ex=?  bind:m  (peek-exists:io (link-road up (scag i pax)))
+  ?:  ex  (pure:m `(scag i pax))
+  $(i +(i))
+::  +link-above-msg: the refusal for a path under the link at `at`.
+++  link-above-msg
+  |=  at=path
+  ^-  @t
+  (crip "{(pax-str at)} is a link: nothing goes under one")
+::  +link-at: the link at page path pax and its grub's time, ~ if there is
+::  none (a page, a folder, nothing) or it does not read as one.
 ++  link-at
   |=  pax=path
   =/  m  (fiber:fiber:nexus ,(unit [l=link:ll at=@da]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  lv=view:nexus  bind:m  (peek:io (rf up (weld /page pax) %link) ~)
+  ;<  lv=view:nexus  bind:m  (peek:io (link-road up pax) ~)
   ?.  ?=([%file *] lv)  (pure:m ~)
   =/  l=(unit link:ll)  (mole |.(;;(link:ll (sang-noun:tarball sang.lv))))
   (pure:m ?~(l ~ `[u.l da.cass.lv]))
@@ -1353,13 +1386,13 @@
     %+  make-soft:io  (rf up /link-reads (scot %uv (sham pax)))
     |+[[[/ %noun] `*`pax] ~]
   (pure:m ~)
-::  +links-to: every link under /page naming `pax` on `host`, by its path
-::  under /page. One deep peek: a share notice is rare.
+::  +links-to: every link naming `pax` on `host`, by its page path. One deep
+::  peek of /links: a share notice is rare.
 ++  links-to
   |=  [host=@p pax=path]
   =/  m  (fiber:fiber:nexus ,(list [rel=path l=link:ll]))
   ^-  form:m
-  ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
+  ;<  sn=view:nexus  bind:m  (peek:io (rv up /links) ~)
   ?.  ?=([%ball *] sn)  (pure:m ~)
   %-  pure:m
   %+  skim  (find-links ball.sn ~)
@@ -5998,6 +6031,13 @@
       (fall (mole |.(;;(eval-cmd:le (sang-noun:tarball sang.sn)))) [0 '' 0])
     (put-file (rf up pdir %cmd) [/lattice %eval-cmd] `eval-cmd:le`[+(seq.cur) txt.act bud.act])
       %del
+    ::  the links at or under pax first (they are ours, and live apart
+    ::  under /links). Never contacts a host.
+    =/  ldir=path  (weld /links pax.act)
+    ;<  lex=?  bind:m  (peek-exists:io (rv up ldir))
+    ;<  *  bind:m
+      ?.  lex  (pure:(fiber:fiber:nexus ,(unit tang)) ~)
+      (cull-soft:io (rv up ldir))
     ::  cull-soft on an absent dir veto-crashes the writer (as apply-sub's
     ::  %unsub-page guards against). No-op a delete of a gone page. Also
     ::  drop the data road from the public weir so a deleted page leaves no
@@ -6066,16 +6106,19 @@
     ::  idempotent, so mkdir over an existing page/folder is a harmless no-op.
     (ensure-dirs up /page pax.act)
       %link-put
-    ::  a link (/lib/lattice-link): its dir, then the link grub. No %code, so
-    ::  no evaluator spawns on it.
-    ;<  ~  bind:m  (ensure-dirs up /page pax.act)
-    (put-file (rf up (weld /page pax.act) %link) [/lattice %link] link.act)
+    ::  a link (/lib/lattice-link): under /links, never /page (see the
+    ::  loader), so no evaluator spawns on it and no grant reaches it. Its
+    ::  folders are made under /page too, where the tree, moves and deletes
+    ::  find them, and they hold nothing of the link.
+    ;<  ~  bind:m  (ensure-dirs up /page (snip pax.act))
+    ;<  ~  bind:m  (ensure-dirs up /links pax.act)
+    (put-file (link-road up pax.act) [/lattice %link] link.act)
       %link-seen
     ::  a live read's result, onto the cache (+refresh:ll, +fail:ll). Only
     ::  while the same link is still at pax, and only when something moved,
     ::  so a background refresh never revives a link or rewrites a cache
     ::  that is already right.
-    =/  lr=road:tarball  (rf up (weld /page pax.act) %link)
+    =/  lr=road:tarball  (link-road up pax.act)
     ;<  lv=view:nexus  bind:m  (peek:io lr ~)
     =/  l=(unit link:ll)
       ?.  ?=([%file *] lv)  ~
@@ -6569,12 +6612,12 @@
   ::  3+ wasted darts on every autosave. A half-created page (crash between
   ::  scaffold and code) just re-runs the scaffold. put-file is idempotent.
   ;<  ex=?  bind:m  (peek-exists:io (rf up pdir %code))
-  ::  never a %code grub in a link's dir (/lib/lattice-link): its saves go
+  ::  never a %code grub at a link's path (/lib/lattice-link): its saves go
   ::  to its host. Every route refuses or proxies first, so this is the
   ::  backstop, paid only on a create.
   ;<  isl=?  bind:m
     ?:  ex  (pure:(fiber:fiber:nexus ,?) |)
-    (peek-exists:io (rf up pdir %link))
+    (peek-exists:io (link-road up pax))
   ?:  isl
     %-  (slog leaf+"lattice: not saving over the link at {(spud pax)}" ~)
     (pure:m ~)
@@ -6700,13 +6743,20 @@
   =/  from-bare=tape  (pax-str from)
   =/  to-bare=tape    (pax-str to)
   ;<  dv=view:nexus  bind:m  (peek:io (rv up sdir) ~)
-  ?.  ?=([%ball *] dv)  (pure:m ~)
+  ;<  lv=view:nexus  bind:m  (peek:io (rv up (weld /links from)) ~)
+  ?.  |(?=([%ball *] dv) ?=([%ball *] lv))  (pure:m ~)
   ::  the deep peek holds every page's code, share and name already: each
-  ::  is read from this ball, not peeked again per page
-  =/  bl=ball:tarball  ball.dv
+  ::  is read from this ball, not peeked again per page. The links at or
+  ::  under `from` (they live under /links) go in at their paths.
+  =/  bl=ball:tarball
+    =/  pb=ball:tarball  ?:(?=([%ball *] dv) ball.dv *ball:tarball)
+    ?.  ?=([%ball *] lv)  pb
+    -:(graft-links pb *wave:nexus ball.lv wave.lv)
   =/  all=(list [pax=path page=?])  (collect-tree bl ~)
+  ::  a link's dir is not made under /page: +link-put keeps it in /links
+  =/  isl  |=(p=path (~(has by (ball-fils bl p)) %link))
   =/  dirs=(list path)
-    (sort (murn all |=([pax=path page=?] ?:(page ~ `pax))) aor)
+    (sort (murn all |=([pax=path page=?] ?:(|(page (isl pax)) ~ `pax))) aor)
   =/  rels=(list path)
     (sort (murn all |=([pax=path page=?] ?:(page `pax ~))) aor)
   ::  structure first, parents before children, preserves empty subfolders.
@@ -6736,7 +6786,8 @@
     ;:  weld
       sacts
       ^-  (list eval-action:le)
-      [[%mkdir to] (turn dirs |=(p=path `eval-action:le`[%mkdir (weld to p)]))]
+      =/  mk  (turn dirs |=(p=path `eval-action:le`[%mkdir (weld to p)]))
+      ?:((isl ~) mk [[%mkdir to] mk])
       lacts
       dacts
     ==
@@ -7426,9 +7477,53 @@
   ;<  up=@ud  bind:m  nexus-up
   ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
   ?.  ?=([%ball *] sn)  (pure:m (pairs:enjs:format ~[['nodes' a+~]]))
-  =/  nodes=(list [pax=path j=json])  (tree-walk ball.sn wave.sn ~)
+  ;<  [b=ball:tarball w=wave:nexus]  bind:m  (with-links ball.sn wave.sn)
+  =/  nodes=(list [pax=path j=json])  (tree-walk b w ~)
   =/  srt  (sort nodes |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
   (pure:m (pairs:enjs:format ~[['nodes' a+(turn srt |=([* j=json] j))]]))
+::  +with-links: the /page ball and wave with each link (/links) put back
+::  at its page path, for the owner's own listings: tree and dump. Every
+::  walk others read (publishing, search, indexes, the reader) takes /page
+::  alone, so a link never reaches them.
+++  with-links
+  |=  [b=ball:tarball w=wave:nexus]
+  =/  m  (fiber:fiber:nexus ,[ball:tarball wave:nexus])
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  ln=view:nexus  bind:m  (peek:io (rv up /links) ~)
+  ?.  ?=([%ball *] ln)  (pure:m [b w])
+  (pure:m (graft-links b w ball.ln wave.ln))
+::  +graft-links: +with-links' pure half. Each link grub, and its cass (the
+::  node's mtime), lands in the dir at its path, made if there is none.
+++  graft-links
+  |=  [b=ball:tarball w=wave:nexus lb=ball:tarball lw=wave:nexus]
+  ^-  [ball:tarball wave:nexus]
+  =/  ls=(list [rel=path g=[=sang:tarball gain=? bang=(unit tang)] cs=cass:clay])
+    (link-grubs lb lw ~)
+  |-  ^-  [ball:tarball wave:nexus]
+  ?~  ls  [b w]
+  =/  lp=lump:tarball  (fall (~(get of b) rel.i.ls) *lump:tarball)
+  =/  wl=[fold=cass:clay file=(map @ta cass:clay)]
+    (fall (~(get of w) rel.i.ls) *[fold=cass:clay file=(map @ta cass:clay)])
+  %=  $
+    ls  t.ls
+    b   (~(put of b) rel.i.ls lp(contents (~(put by contents.lp) %link g.i.ls)))
+    w   (~(put of w) rel.i.ls wl(file (~(put by file.wl) %link cs.i.ls)))
+  ==
+::  +link-grubs: every link grub in a /links ball, with its path and cass.
+++  link-grubs
+  |=  [lb=ball:tarball lw=wave:nexus rel=path]
+  ^-  (list [rel=path g=[=sang:tarball gain=? bang=(unit tang)] cs=cass:clay])
+  =/  kids=(list [rel=path g=[=sang:tarball gain=? bang=(unit tang)] cs=cass:clay])
+    %-  zing
+    %+  turn  ~(tap by dir.lb)
+    |=  [nom=@ta kb=ball:tarball]
+    (link-grubs kb (fall (~(get by dir.lw) nom) *wave:nexus) (snoc rel nom))
+  =/  g  ?~(fil.lb ~ (~(get by contents.u.fil.lb) %link))
+  ?~  g  kids
+  =/  cs=cass:clay
+    ?~(fil.lw *cass:clay (fall (~(get by file.u.fil.lw) %link) *cass:clay))
+  [[rel u.g cs] kids]
 ::  +index-walk: every page in the ball as [rel body share], from the SAME single
 ::  deep peek +tree-walk uses. That ball already carries each page's code and
 ::  share grub, so indexing the whole tree costs one dart, not two per page.
@@ -7444,7 +7539,7 @@
     |=  [nom=@ta kb=ball:tarball]
     (index-walk kb (weld rel /[nom]))
   ?~  rel  kids
-  ::  a link dir has no %code, so its cached body (another ship's page) is
+  ::  links live under /links, so a cached body (another ship's page) is
   ::  never indexed here
   ?.  (~(has by fils) %code)  kids
   =/  cd  (~(got by fils) %code)
@@ -7669,7 +7764,8 @@
   ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
   ?.  ?=([%ball *] sn)
     (pure:m (pairs:enjs:format ~[['nodes' a+~] ['rev' rev] ['since' tok]]))
-  =/  nodes=(list [pax=path j=json])  (dump-walk ball.sn wave.sn ~ since)
+  ;<  [b=ball:tarball w=wave:nexus]  bind:m  (with-links ball.sn wave.sn)
+  =/  nodes=(list [pax=path j=json])  (dump-walk b w ~ since)
   =/  srt  (sort nodes |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
   =/  js=(list json)  (turn srt |=([* j=json] j))
   (pure:m (pairs:enjs:format ~[['nodes' a+js] ['rev' rev] ['since' tok]]))
@@ -7882,11 +7978,12 @@
   (pure:m (fall (mole |.(;;(@t (sang-noun:tarball sang.en)))) ''))
 ::  +fs-save: create/overwrite a page (POST /page-save + lick %page-save). The
 ::  name and body rules are +save-src, the same front half the HTTP route runs.
-::  ?new rejects an existing page with 409. The route's ?base= conflict protocol
-::  is HTTP-only: this surface answers [status body] and has nowhere to report a
-::  conflicted write or name the body it kept.
+::  ?new rejects an existing page with 409. On a local page the route's ?base=
+::  conflict protocol is HTTP-only: this surface answers [status body] and has
+::  nowhere to report a conflicted write or name the body it kept. On a link,
+::  `base` is the refusal rule below.
 ++  fs-save
-  |=  [name=@t ptype=@tas new=? raw=@t]
+  |=  [name=@t ptype=@tas new=? base=(unit @ud) raw=@t]
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -7895,8 +7992,10 @@
   ::  serves one request at a time, so a slow or offline owner must not hold
   ::  it: a link last seen failing answers 503 at once and reads again in
   ::  the background, and a live one gets 2s deadlines. The base is the
-  ::  cached rev, the one the mount read: an owner's newer text is a 409,
-  ::  never overwritten, and a fresh read is started so the mount sees it.
+  ::  rev the mount read (?base=), or the cached rev from a mount that does
+  ::  not send one: an owner's newer text is a 409, never overwritten, and
+  ::  a fresh read is started so the mount sees it. The cache alone was not
+  ::  enough: a background read moves it past the text the mount holds.
   ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at (pax-of name))
   ?^  lk
     ?:  new  (pure:m [409 'page exists'])
@@ -7904,9 +8003,9 @@
     ?:  &(?=(%ship -.l) !ok.seen.l)
       ;<  ~  bind:m  (link-read-later (pax-of name))
       (pure:m [503 (link-fail-msg host.l)])
-    =/  base=(unit @ud)  ?.(?=(%ship -.l) ~ `rev.l)
+    =/  bas=(unit @ud)  ?.(?=(%ship -.l) ~ ?^(base base `rev.l))
     ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
-      (link-write (pax-of name) l raw base ~s2)
+      (link-write (pax-of name) l raw bas ~s2)
     ?:  ?=(%& -.r)  (pure:m [200 ''])
     ;<  ~  bind:m
       ?.  =(409 code.p.r)  (pure:(fiber:fiber:nexus ,~) ~)
@@ -7959,9 +8058,13 @@
   =/  dbase=path  (weld /page pt)
   ;<  dpg=?  bind:m  (peek-exists:io (rf up dbase %code))
   ?:  dpg  (pure:m |+[409 'destination exists'])
-  ::  a folder, or a link (its dir holds the link grub)
+  ::  a folder, or a link (under /links)
   ;<  ddr=?  bind:m  (peek-exists:io (rv up dbase))
   ?:  ddr  (pure:m |+[409 'destination exists'])
+  ;<  dlk=?  bind:m  (peek-exists:io (link-road up pt))
+  ?:  dlk  (pure:m |+[409 'destination exists'])
+  ;<  la=(unit path)  bind:m  (link-above pt)
+  ?^  la  (pure:m |+[409 (link-above-msg u.la)])
   ;<  n=(unit @ud)  bind:m  (move-pages pf pt)
   ?~  n  (pure:m |+[404 'no such page or folder'])
   (pure:m &+u.n)
@@ -7998,7 +8101,10 @@
     =/  name=(unit @t)  (~(get by q) 'name')
     ?~  name  (pure:m [400 'missing name'])
     =/  ptype=@tas  `@tas`(~(gut by q) 'type' 'hoon')
-    (fs-save u.name ptype (~(has by q) 'new') body)
+    ::  ?base= (a link's save, the rev the mount read): an older client
+    ::  sends none, and an older ship ignores it
+    =/  base=(unit @ud)  (rush (~(gut by q) 'base' '') dim:ag)
+    (fs-save u.name ptype (~(has by q) 'new') base body)
       %folder-new
     =/  name=(unit @t)  (~(get by q) 'name')
     ?~  name  (pure:m [400 'missing name'])
@@ -8910,6 +9016,13 @@
       |=([rel=path l=link:ll] [rel (fail:ll l now)])
     %^  put-file  (rf root / %shared)  [/lattice %shared]
     (del-entry:ls cur host.u.na pax.u.na)
+  ::
+      %put
+    ::  a link going back to shared with me (+handle-link-unmake). Ours
+    ::  alone: a foreign ship naming any host would forge an entry.
+    ?^  src  (pure:m ~)
+    %^  put-file  (rf root / %shared)  [/lattice %shared]
+    (put-entry:ls cur [host.u.na pax.u.na mode.u.na now])
   ==
 ::  +strip-ship-from-groups: remove one ship from every usergroup's who.ships,
 ::  returning how many groups changed. This is what makes a ban a revocation
@@ -12220,10 +12333,10 @@
 ::  other non-root dir is a folder. Recurse through pages too (a page can also be
 ::  a parent of nested pages). Paths are relative to /page.
 ::
-::  A link dir (/lib/lattice-link) comes back as a folder: it has no code, so
-::  every caller that reads, publishes or copies page code passes it by,
-::  while a move still makes its dir and a delete still culls it. +move-pages
-::  copies its link grub from the same ball.
+::  A link (/lib/lattice-link), where a ball has one grafted in
+::  (+graft-links), comes back as a folder: it has no code, so every caller
+::  that reads, publishes or copies page code passes it by. +move-pages
+::  copies its link grub from the same ball and makes no dir for it.
 ::
 ++  collect-tree
   |=  [b=ball:tarball rel=path]
@@ -12254,7 +12367,8 @@
     %+  turn  ~(tap by dir.b)
     |=  [nom=@ta kid=ball:tarball]
     (collect-visible kid (weld rel /[nom]) mode sens)
-  ::  a link is another ship's page, never listed to anyone reading ours
+  ::  a link is another ship's page, never listed to anyone reading ours.
+  ::  /page holds none (see +with-links): this is the backstop.
   ?:  (~(has by fils) %link)  kids
   ?:  (~(has by fils) %code)
     ?.  (gte (share-rank (fils-share fils)) (share-rank mode))  kids

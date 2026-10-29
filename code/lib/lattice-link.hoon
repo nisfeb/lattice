@@ -1,9 +1,11 @@
 ::  /lib/lattice-link, a page shared with you, moved into your own tree.
 ::
-::  A link is a page-tree dir holding a `link` grub instead of a `code`
-::  grub. It is not %code, since the evaluator spawns on any code grub
-::  under /page, and not grubbery's %symlink, which can only name a local
-::  path. The union leaves room for a local symlink later (%local).
+::  A link is a `link` grub at /links/<path>, shown in the page tree at
+::  <path>. It is not under /page, where any folder grant or publish would
+::  hand it (and its cached copy of another ship's page) to others. It is
+::  not %code, since the evaluator spawns on any code grub under /page, and
+::  not grubbery's %symlink, which can only name a local path. The union
+::  leaves room for a local symlink later (%local).
 ::
 ::  A %ship link names the host's absolute code-grub path, as the
 ::  shared-with-me entry carries it. `mode` is the last-known grant, a

@@ -77,6 +77,8 @@ BSUF=/page/x/doc/code     # the end of B's absolute code-grub path for x/doc
 cleanup() {
   eval "$B_START" >/dev/null 2>&1   # never leave B frozen
   for id in ${KEYS:-}; do A_ -o /dev/null -X POST "$A/key-revoke?id=$id"; done
+  A_ -o /dev/null -X POST "$A/page-share-tree?name=notes&mode=private"
+  A_ -o /dev/null -X POST "$A/share-group-del?name=${BSHIP#\~}"
   for p in notes notes2; do A_ -o /dev/null -X POST "$A/page-del?name=$p"; done
   local e; e=$(entry)
   if [ -n "$e" ] && [ "$e" != null ]; then
@@ -140,6 +142,11 @@ section_make() {
   is "  ...the link is at notes2/doc" "$BSHIP" "$(node page-tree notes2/doc | jq -r .link.host)"
   is "  ...and none at notes/doc" null "$(node page-tree notes/doc)"
   is "move onto an existing link: 409" 409 "$(code -H "$AK" -X POST "$A/page-move?from=notes2/taken&to=notes2/doc")"
+  is "move the link alone to notes2/moved" 200 "$(code -H "$AK" -X POST "$A/page-move?from=notes2/doc&to=notes2/moved")"
+  is "  ...it is a link there" "$BSHIP" "$(node page-dump notes2/moved | jq -r .link.host)"
+  is "  ...and not a folder too" 1 "$(A_ "$A/page-tree" | jq '[.nodes[] | select(.path=="notes2/moved")] | length')"
+  is "  ...and gone from notes2/doc" null "$(node page-tree notes2/doc)"
+  is "move it back" 200 "$(code -H "$AK" -X POST "$A/page-move?from=notes2/moved&to=notes2/doc")"
 
   is "unmake notes2/doc" 200 "$(code -H "$AK" -X POST "$A/link-unmake?name=notes2/doc")"
   is "  ...the entry is back" "$PAX" "$(entry | jq -r .path)"
@@ -147,6 +154,12 @@ section_make() {
   is "  ...and the link is gone" null "$(node page-tree notes2/doc)"
 
   is "re-make to notes2/doc" 200 "$(mk notes2/doc)"
+  # a link holds no pages, so nothing goes under one
+  is "make under a link: 409" 409 "$(mk notes2/doc/inner)"
+  is "  ...and nothing there" null "$(node page-tree notes2/doc/inner)"
+  is "A makes notes2/real" 200 "$(code -H "$AK" -X POST "$A/page-save?name=notes2/real&type=md&new=1" --data-binary 'real')"
+  is "move a page under a link: 409" 409 "$(code -H "$AK" -X POST "$A/page-move?from=notes2/real&to=notes2/doc/real")"
+  is "  ...the page stays" true "$(node page-tree notes2/real | jq -r .page)"
   is "B re-shares it, read" true "$(share read | jq -r .ok)"
   ro() { local v; v=$(node page-tree notes2/doc | jq -r .readonly); [ "$v" = true ] && echo "$v"; }
   is "  ...the link turns readonly" true "$(wait_for 30 ro)"
@@ -203,9 +216,22 @@ section_proxy() {
   is "lick save over B's newer text: 409" 409 "$(sed -n 's/^LICK_SAVED=//p' <<<"$sv" | cut -d' ' -f1)"
   is "  ...B's text survives" "# B again" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
 
-  # each lick read starts a background read, also after an earlier one ended
+  # the mount reads, B edits, a background read pulls that in, and the
+  # mount saves the text it read: it claims the rev it read, so 409
   brev() { B_ "$B/page-source?name=x/doc" | jq -r .rev; }
   at_rev() { local v; v=$(node page-dump notes/doc | jq -r .rev); [ "$v" = "$1" ] && echo "$v"; }
+  local between
+  between="curl -s -m 60 -o /dev/null -H '$BK' -X POST '$B/page-save?name=x/doc&type=md' --data-binary '# B newer'"
+  between="$between && for i in \$(seq 1 20); do r=\$(curl -s -m 60 -H '$BK' '$B/page-source?name=x/doc' | jq -r .rev); curl -s -m 60 -o /dev/null -H '$AK' '$A/page-source?name=notes/doc'; [ \"\$(curl -s -m 60 -H '$AK' '$A/page-dump' | jq -r '[.nodes[] | select(.path==\"notes/doc\")][0].rev')\" = \"\$r\" ] && exit 0; sleep 1; done; exit 1"
+  sv=$( cd "$(dirname "$0")/../lattice-fs-rs" && LATTICE_SOCK="$A_SOCK" LATTICE_SHIP="$ASHIP" \
+      LICK_STALE=notes/doc LICK_SAVE='# B again' LICK_BETWEEN="$between" \
+      cargo test -q --test lick_live lick_stale_save -- --nocapture 2>/dev/null )
+  is "mount read B's text" "# B again" "$(sed -n 's/^LICK_READ=//p' <<<"$sv")"
+  is "  ...B edits and A's cache takes it" true "$(sed -n 's/^LICK_BETWEEN=//p' <<<"$sv")"
+  is "  ...the mount's stale save is refused (EEXIST)" 17 "$(sed -n 's/^LICK_STALE_SAVED=//p' <<<"$sv" | cut -d' ' -f1)"
+  is "  ...B's newer text survives" "# B newer" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
+
+  # each lick read starts a background read, also after an earlier one ended
   local want
   want=$(brev); lick_read notes/doc >/dev/null
   is "a lick read refreshes the cache to B's rev" "$want" "$(wait_for 20 at_rev "$want")"
@@ -277,9 +303,72 @@ section_proxy() {
   is "  ...B is unchanged" "# via key" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
 }
 
+# share_a <name>: A shares one of its own pages with B, read
+share_a() { A_ -X POST "$A/share-file?name=$1&ship=$BSHIP&mode=read"; }
+# mcp <tool> <json args>: one tools/call to the lattice MCP server, as key $T
+mcp() {
+  printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}" \
+    | LATTICE_URL="$A_URL" LATTICE_KEY="$T" command node "$(dirname "$0")/../plugins/claude/server.mjs" \
+    | jq -r '.result.content[0].text'
+}
+
+section_exposure() {
+  echo "==> exposure (a link of $ASHIP's, to $BSHIP's x/doc, reaches no one else)"
+  cleanup
+  is "B makes x/doc" 200 "$(code -H "$BK" -X POST "$B/page-save?name=x/doc&type=md&new=1" --data-binary '# secret of B')"
+  is "B shares it with A, edit" true "$(share edit | jq -r .ok)"
+  local e; e=$(wait_for 30 entry)
+  [ -n "$e" ] || { fail "A has the shared-with-me entry"; return; }
+  is "A links it at notes/doc" 200 "$(code -H "$AK" -X POST -G --data-urlencode "host=$BSHIP" --data-urlencode "path=$(jq -r .path <<<"$e")" --data-urlencode "to=notes/doc" "$A/link-make")"
+  is "A makes notes/real" 200 "$(code -H "$AK" -X POST "$A/page-save?name=notes/real&type=md&new=1" --data-binary 'real page')"
+
+  # A grants B the whole notes/ folder (a dir road, the ACL editor's way).
+  # Its absolute base comes from the page grant share-file makes.
+  is "A shares notes/real with B" true "$(share_a notes/real | jq -r .ok)"
+  local AB
+  AB=$(A_ "$A/share-groups" | jq -r --arg g "${BSHIP#\~}" \
+    '[.[] | select(.name==$g) | .peek[] | select(endswith("/page/notes/real"))][0] | sub("/page/notes/real$"; "")')
+  [ -n "$AB" ] && [ "$AB" != null ] || { fail "A's base from its grant"; return; }
+  is "A grants B notes/" 200 "$(code -H "$AK" -X POST "$A/share-group-save?name=${BSHIP#\~}" \
+    --data-binary "{\"ships\":[\"$BSHIP\"],\"peek\":[\"$AB/page/notes\"],\"make\":[]}")"
+  bb() { B_ -G --data-urlencode "ship=$ASHIP" --data-urlencode "path=$1" "$B/$2"; }
+  local ls; ls=$(bb "$AB/page/notes" browse)
+  is "B lists A's notes/: the real page" 1 "$(jq '[.children[] | select(.name=="real")] | length' <<<"$ls")"
+  is "  ...and not the link" 0 "$(jq '[.children[] | select(.name=="doc")] | length' <<<"$ls")"
+  is "B reads A's real page (the grant works)" "real page" "$(bb "$AB/page/notes/real/code" browse-file | jq -r .body)"
+  local c
+  c=$(curl -s -m 60 -o /dev/null -w '%{http_code}' -H "$BK" -G --data-urlencode "ship=$ASHIP" --data-urlencode "path=$AB/page/notes/doc" "$B/browse")
+  is "B can't list the link's dir" yes "$( [ "$c" = 404 ] || [ "$c" = 504 ] && echo yes || echo "no, $c")"
+  c=$(curl -s -m 60 -o /dev/null -w '%{http_code}' -H "$BK" -G --data-urlencode "ship=$ASHIP" --data-urlencode "path=$AB/page/notes/doc/link" "$B/browse-file")
+  is "B can't peek the link grub" yes "$( [ "$c" = 404 ] || [ "$c" = 504 ] && echo yes || echo "no, $c")"
+  c=$(curl -s -m 60 -o /dev/null -w '%{http_code}' -H "$BK" -G --data-urlencode "ship=$ASHIP" --data-urlencode "path=$AB/links/notes/doc/link" "$B/browse-file")
+  is "B can't peek A's link store" yes "$( [ "$c" = 404 ] || [ "$c" = 504 ] && echo yes || echo "no, $c")"
+  is "  ...and A still has the link" "$BSHIP" "$(node page-tree notes/doc | jq -r .link.host)"
+
+  # published as a site, the folder publishes its real pages only
+  is "A publishes notes/ clearweb" 200 "$(code -H "$AK" -X POST "$A/page-share-tree?name=notes&mode=clearweb")"
+  is "clearweb notes/real 200" 200 "$(code "$A/c/notes/real")"
+  is "clearweb notes/doc 404" 404 "$(code "$A/c/notes/doc")"
+  is "  ...with no trace of B's text" 0 "$(curl -s -m 60 "$A/c/notes/doc" | grep -c 'secret of B')"
+  is "/list has notes/real" 1 "$(A_ "$A/list" | grep -c 'notes/real')"
+  is "/list has no notes/doc" 0 "$(A_ "$A/list" | grep -c 'notes/doc')"
+  is "A unpublishes notes/" 200 "$(code -H "$AK" -X POST "$A/page-share-tree?name=notes&mode=private")"
+
+  # agents: a key's search never lists it, and a read comes back quoted
+  local T id; KEYS=
+  read -r id T < <(mint "{\"some\":{\"$BSHIP\":{\"read\":[\"/apps\"],\"write\":[\"/apps\"]}}}"); KEYS="$id"
+  is "key search: no hit on the link" 0 "$(curl -s -m 60 -H "Authorization: Bearer $T" "$A/page-search?q=secret" | grep -c 'notes/doc')"
+  local r; r=$(mcp wiki_read '{"name":"notes/doc"}')
+  is "wiki_read of the link: quoted" 1 "$(grep -c "<quoted from=\"$BSHIP" <<<"$r")"
+  is "  ...holding B's text" 1 "$(grep -c 'secret of B' <<<"$r")"
+  is "  ...closed" 1 "$(grep -c '^</quoted>$' <<<"$r")"
+  is "wiki_read of a real page: not quoted" 0 "$(mcp wiki_read '{"name":"notes/real"}' | grep -c '<quoted')"
+  for id in $KEYS; do A_ -o /dev/null -X POST "$A/key-revoke?id=$id"; done; KEYS=
+}
+
 trap cleanup EXIT
 cleanup
-sections=("$@"); [ ${#sections[@]} -eq 0 ] && sections=(make proxy)
+sections=("$@"); [ ${#sections[@]} -eq 0 ] && sections=(make proxy exposure)
 for s in "${sections[@]}"; do "section_$s"; done
 echo
 [ "$fails" -eq 0 ] && echo "two-ship-links: all passed" || echo "two-ship-links: $fails failed"

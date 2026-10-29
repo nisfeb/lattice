@@ -83,3 +83,37 @@ fn lick_source() {
         Err(e) => println!("LICK_ERR={} {}", e.code, e.msg),
     }
 }
+
+/// The mount's stale save, for scripts/two-ship-links.sh: the projection
+/// reads LICK_STALE over lick, LICK_BETWEEN runs (the script has the host
+/// edit the page and waits for this ship's cache to take it), then the
+/// projection saves LICK_SAVE, the text it read before. It must claim the
+/// rev it read, so the host's newer text survives. Prints `LICK_READ=` and
+/// `LICK_STALE_SAVED=ok` or `LICK_STALE_SAVED=<errno> <msg>`. Opt-in like
+/// the tests above.
+#[test]
+fn lick_stale_save() {
+    use lattice_fs::lattice::LatticeProjection;
+    use lattice_fs::projection::Projection;
+    let (Ok(sock), Ok(ship), Ok(name), Ok(body)) = (
+        std::env::var("LATTICE_SOCK"),
+        std::env::var("LATTICE_SHIP"),
+        std::env::var("LICK_STALE"),
+        std::env::var("LICK_SAVE"),
+    ) else {
+        eprintln!("skipped: set LATTICE_SOCK, LATTICE_SHIP, LICK_STALE and LICK_SAVE to run");
+        return;
+    };
+    let p = LatticeProjection::new(Box::new(LickTransport::new(&sock, &ship)), "")
+        .expect("projection over lick");
+    let got = p.read(&name).expect("read through the link");
+    println!("LICK_READ={}", String::from_utf8_lossy(&got));
+    if let Ok(cmd) = std::env::var("LICK_BETWEEN") {
+        let st = std::process::Command::new("sh").arg("-c").arg(&cmd).status();
+        println!("LICK_BETWEEN={}", st.map(|s| s.success()).unwrap_or(false));
+    }
+    match p.write(&name, "md", body.as_bytes(), false) {
+        Ok(()) => println!("LICK_STALE_SAVED=ok"),
+        Err(e) => println!("LICK_STALE_SAVED={} {}", e.errno, e.msg),
+    }
+}
