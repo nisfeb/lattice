@@ -725,6 +725,8 @@
     mark: ['0 0 24 24', 'M6 3h12v18l-6-4-6 4z', 'stroke'],
     know: ['0 0 24 24', 'M12 3l8 9-8 9-8-9z', 'stroke'],
     doc: ['0 0 24 24', 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5', 'stroke'],
+    // a link to a page on another ship: a box with an arrow out of it
+    link: ['0 0 24 24', 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5', 'stroke'],
     md: ['4 4 24 24', 'M20.7 6.7v9.9h3.8c-2.9 3-5.8 5.9-8.7 8.8-2.7-2.8-5.6-5.8-8.4-8.7h3.5V6.6c1.3.9 4.4 3.1 5 3.1.6 0 3.6-2.2 4.8-3z'],
     tex: ['4 4 24 24', 'M7.9 17.5H6.5v1.3h4.4v-1.3H9.6V11h.4c1.2 0 1.4.1 1.6 1h1.2l-.2-2.3H4.8l-.3 3.6h1.2v-.5c.2-1.7.3-1.8 1.8-1.8h.4v6.5zM15.8 21.1h-1.7v-2.8h.6c.7 0 .7 0 .7.9v.5h1.2v-4.1h-1.2v.5c0 .9 0 .9-.7.9h-.6v-2.4h1.6c1.5 0 1.6.4 1.7 1.8h1.2l-.3-3.2h-7v1.3h1v6.4h-1v1.3h7.1l.4-2.6h-1.3c0 1.1-.4 1.5-1.7 1.5zM21.7 17.6h-.5l1.5-2.2 1.5 2.2h-.3v1.1h3.6v-1.2H27c-.6 0-.6 0-.7-.2l-2.4-3.5 1.6-2.3c.2-.2.4-.6 1.1-.6h.5V9.6H24v1.2h.5l-.1.1-1.2 1.7-1.3-1.6h.3V9.6h-3.6V11h.5c.6 0 .6 0 .7.2l2.1 3.1-1.8 2.7-.3.3c-.2.2-.5.3-.8.3h-.5v1.2h3.2v-1.2z'],
     html: ['4 4 24 24', 'M8 15l6-5.6V12l-4.5 4 4.5 4v2.6L8 17v-2zm16 2.1l-6 5.6V20l4.6-4-4.6-4V9.3l6 5.6v2.2z'],
@@ -1665,7 +1667,8 @@
       if (saveFlight === req) saveFlight = null;
       echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
     }
-    if (shipGone(r)) return { gone: true };
+    // `r` too: a 504 can be a link's host (35-pages.js), not this ship
+    if (shipGone(r)) return { gone: true, r };
     if (r.ok) {
       echo.n++;                         // one bump is ours; consume it on arrival
       // every write names its target the same way; a move dirties both ends
@@ -1845,8 +1848,10 @@
   //   icon, label    for the strip. icon is a name, or a function of the tab
   const TAB_KINDS = {
     page: {
-      icon: 'doc',
-      label: (t) => t.key ? t.key.split('/').pop() : 'new page',
+      // a link (30-tree.js) is titled with its whole local path: its name
+      // alone would read as a page of my own
+      icon: (t) => (linkOf(t.key) ? 'link' : 'doc'),
+      label: (t) => !t.key ? 'new page' : linkOf(t.key) ? t.key : t.key.split('/').pop(),
       open: async (t) => {
         if (t.key) return openPage(t.key);
         exitRev();
@@ -2695,6 +2700,7 @@
     paintPath();
     applyRead();
     toolSync();
+    paintLink();      // the Page tab's link section follows the tab in front
   }
 
   // ── the page menu ────────────────────────────────────────────────────────
@@ -2749,6 +2755,7 @@
     if (page) has.add('kind');
     if (page && current) { has.add('dup'); has.add('raw'); }
     if (doc && current) { has.add('download'); has.add('del'); }
+    if (page && linkOf(current)) has.add('linkback');
     // a folder view: Delete is #del's folder branch, its own confirm and all
     if (!grubPath && curFolder !== null) has.add('del');
     if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex')) has.add('tex');
@@ -2805,6 +2812,8 @@
       $('texconv').title;
     if (has.has('raw')) item('raw', 'Open raw', done(() =>
       window.open(api + '/page-source?name=' + encodeURIComponent(current), '_blank', 'noopener')));
+    if (has.has('linkback'))
+      item('linkback', 'Move back to shared with me', done(() => $('linkback').click()));
     if (has.has('del')) item('del', 'Delete', done(() => $('del').click()));
     const r = $('tmenu').getBoundingClientRect();
     m.style.top = r.bottom + 4 + 'px';
@@ -2832,6 +2841,11 @@
         if (b) b.click();
       } });
   }
+  // a link's way back out. Its home is the button in the Page tab's link
+  // section (65-ctl.js), which is always there; the menu item clicks it.
+  action({ id: 'linkback', name: 'Move back to shared with me', home: 'Page menu',
+    when: () => docFront() && pmenuHas().has('linkback'),
+    run: () => $('linkback').click() });
   addEventListener('mousedown', (e) => {
     if (pmenuEl && !pmenuEl.contains(e.target) && !$('tmenu').contains(e.target)) pmenuClose();
   }, true);
@@ -4272,6 +4286,53 @@
       row.classList.toggle('cur', row.classList.contains('pg')
         ? mode !== 'know' && p === current : p === curFolder);
     for (const [k, row] of knowRows) row.classList.toggle('cur', mode === 'know' && k === current);
+    paintLink();
+  }
+
+  // ── links: another ship's page in this tree ─────────────────────────────
+  // A node with `link` is a link the owner made from shared with me. It
+  // opens as a page tab: page-source and page-save go through it to the
+  // host, conflict-checked. linkOf names the open link, or null.
+  function linkOf(name) {
+    const n = name ? nodes.find((x) => x.page && x.path === name) : null;
+    return n && n.link && n.link.host ? n.link : null;
+  }
+  // where a link points, as ~host/<their page>. The path names the page's
+  // code grub under wherever lattice is installed there, so only the tail
+  // is read (the same rule as sharedName, 69-shared.js).
+  function linkFrom(lk) {
+    const m = /\/page\/(.+)\/code$/.exec(lk.path || '');
+    return lk.host + '/' + (m ? m[1] : String(lk.path || '').replace(/^\/+/, ''));
+  }
+  // @da (ship UTC) in the viewer's own zone, as the history list shows it
+  function daLocal(da) {
+    const m = /^~(\d+)\.(\d+)\.(\d+)\.\.(\d+)\.(\d+)\.(\d+)/.exec(da || '');
+    return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])).toLocaleString(undefined,
+      { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+  }
+  // the badge for a link whose last read failed. The owner's ship cannot
+  // tell a revoke from being offline, so it says both. `at` is when a read
+  // first failed: the last good read was before it.
+  function linkBadge(lk) {
+    if (!lk.seen || lk.seen.ok !== false) return null;
+    const b = document.createElement('span');
+    b.className = 'lbad';
+    b.textContent = lk.host + ' unreachable or no longer sharing';
+    const at = daLocal(lk.seen.at);
+    if (at) b.title = 'not reached since ' + at;
+    return b;
+  }
+  // what a live read through a link just found. The ship records it too
+  // (the badge survives a reload); this repaints without waiting for that.
+  function linkSeen(name, ok) {
+    const lk = linkOf(name);
+    if (!lk || !lk.seen || lk.seen.ok === ok) return;
+    const t = new Date();
+    const p = (v) => String(v).padStart(2, '0');
+    lk.seen = { ok, at: '~' + t.getUTCFullYear() + '.' + (t.getUTCMonth() + 1) + '.' + t.getUTCDate()
+      + '..' + p(t.getUTCHours()) + '.' + p(t.getUTCMinutes()) + '.' + p(t.getUTCSeconds()) };
+    snapTree();
+    renderTree();
   }
 
   // local `nodes` patching: this client performed the write, so it already
@@ -4507,14 +4568,24 @@
       if (n.page) {
         row = document.createElement('a');
         row.style.marginLeft = (depth * 14) + 'px';
-        row.className = 'pg' + (mode !== 'know' && n.path === current ? ' cur' : '')
+        const lk = n.link && n.link.host ? n.link : null;
+        row.className = 'pg' + (lk ? ' lnk' : '') + (mode !== 'know' && n.path === current ? ' cur' : '')
           + (n.pending ? ' pend' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
         // the display name when there is one (a typed name that was not a
         // valid path), the path segment otherwise; the real path in the tip
-        row.innerHTML = ico(kindExt(n.kind));
+        row.innerHTML = ico(lk ? 'link' : kindExt(n.kind));
         row.append(document.createTextNode((n.dname || n.path.split('/').pop()) + '.' + kindExt(n.kind)));
         if (n.dname) row.title = n.path;
+        // a link to another ship's page: whose it is on hover, and the
+        // badge once a read through it has failed
+        if (lk) {
+          row.dataset.host = lk.host;
+          row.dataset.path = n.path;
+          row.title = linkFrom(lk);
+          const bad = linkBadge(lk);
+          if (bad) row.append(bad);
+        }
         treeItem(row, depth, 'p:' + n.path);
         if (n.share === 'clearweb') {
           const cw = document.createElement('span');
@@ -4527,6 +4598,7 @@
       } else {
         row = folderRow(n.dname || n.path.split('/').pop(), depth, coll.includes(n.path),
           () => { paneColl.flip(n.path); renderTree(); }, () => pickFolder(n.path), 'f:' + n.path);
+        linkDrop(row, n.path);       // a shared-with-me row dropped here (69-shared.js)
         if (n.path === curFolder) row.classList.add('cur');
         if (n.dname) row.lastChild.title = n.path;     // the label's tip
         if (treeShare(n.path) === 'clearweb') {
@@ -4554,6 +4626,7 @@
     }
     if (sharedWithMe.length) renderShared(coll);
     treeRove(treeList, had);
+    paintLink();                 // the Page tab's link section (65-ctl.js)
     // the Published pages list (72-acl.js) reads these share modes
     const aw = $('aclwrap');
     if (aw && !aw.hidden) renderPublished();
@@ -4791,7 +4864,9 @@
       snapPage(name, d);
       return true;
     }
-    const hit = pageCache.get(name);
+    // a link reads live from its host every time (the spec's rule), so the
+    // session cache never answers for one
+    const hit = !linkOf(name) && pageCache.get(name);
     if (hit) { applyPage(name, hit); snapPage(name, hit); return true; }
     const node = nodes.find((n) => n.page && n.path === name);
     const painted = !!node && typeof node.body === 'string';
@@ -4835,6 +4910,8 @@
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
       if (!r.ok) {
+        // a link whose host did not answer: its badge, from now
+        if (r.status === 504) linkSeen(name, false);
         if (painted) return true;
         st('open failed' + await errText(r), false); unwind();
         return my === openSeq ? false : undefined;
@@ -4847,6 +4924,7 @@
     }
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
+    if (d.link) linkSeen(name, true);
     // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
     // typed while it was in flight. On a busy pier this fetch lands many
     // seconds after the paint, and it carries the PRE-edit body: applying it
@@ -4868,7 +4946,7 @@
     // the guard protected the editor but not the cache, so switching away and
     // back repainted the old text — the same data loss through a different
     // door. Only a response that is actually applied may be remembered.
-    pageCache.set(name, d);
+    if (!d.link) pageCache.set(name, d);
     snapPage(name, d);
     applyPage(name, d);
     return true;
@@ -4882,6 +4960,8 @@
     curRev = d.rev || 0;
     refreshTexButton();
     src.value = d.body;
+    // a link with a read grant: the owner's page, shown, not editable
+    src.readOnly = !!d.readonly;
     dirty = false;
     // A fresh editor state begins here. everTyped answers "did the user type
     // since this view was established?" for boot's reconcile guard; carrying
@@ -5082,7 +5162,9 @@
   const patchLocal = (name, kind, sent) => {
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
-    if (nd) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
+    // not a link's: its text is the host's, read live, and the rev beside
+    // a body here would be a base the next save claims falsely
+    if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
   };
   // an accidental tab close is the same data-loss shape as the grub-discard
   // guard up in openPage: a dirty edit, grub or page, exists only here
@@ -5094,6 +5176,29 @@
     e.preventDefault();
     e.returnValue = '';
   });
+
+  //  A save through a link (30-tree.js) claims the owner's rev this editor
+  //  read, as ?base=. Unlike a page of our own, a link has nowhere to keep
+  //  a replaced body, so a stale claim is refused (409) and nothing is
+  //  written. linkBase is that claim for a save of `name`, '' for a page.
+  const linkBase = (name) => (linkOf(name) ? '&base=' + (curRev || 0) : '');
+  //  a save through a link that did not land: the host's page moved on past
+  //  what this editor read, or the host did not answer (a 502 or 504 the
+  //  ship itself sent, never queued: the queue is for this ship being
+  //  away). The text stays here, unsaved. -> true when it was one of those.
+  async function linkSaveFail(name, r) {
+    const lk = linkOf(name);
+    if (!lk || !r) return false;
+    if (r.status === 409) {
+      st('not saved: ' + lk.host + ' changed this page since you opened it. ' +
+        'Copy your text, then reopen it', false);
+    } else if (r.status === 502 || r.status === 504) {
+      if (r.status === 504) linkSeen(name, false);
+      st('not saved' + await errText(r), false);
+    } else return false;
+    if (current === name) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
+    return true;
+  }
 
   // the realName() split the create dialog (newFile) made before seeding
   // #pname with the real path; save() consumes it on create
@@ -5196,11 +5301,12 @@
       flushPending();
     };
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
-      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc);
+      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc) + (creating ? '' : linkBase(name));
     let w = { gone: true };
     try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
     finally { saving = false; }
     const r = w.r;
+    if (await linkSaveFail(name, r)) return failed();
     if (w.gone) {
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
@@ -5307,11 +5413,12 @@
     const url = mode === 'know'
       ? api + '/know-save?key=' + encodeURIComponent(target)
       : api + '/page-save?name=' + encodeURIComponent(target) +
-        '&type=' + (curKind || pkind.value);
+        '&type=' + (curKind || pkind.value) + linkBase(target);
     let w = { gone: true };
     try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
     finally { saving = false; }
     const r = w.r;
+    if (mode !== 'know' && await linkSaveFail(target, r)) { flushPending(); return; }
     if (w.gone) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
@@ -6359,6 +6466,15 @@
   <h3>status</h3>
   <div id="cerr" class="ok">&nbsp;</div>
   <lat-knowtags></lat-knowtags>
+  <!-- a link to another ship's page (paintLink, below) -->
+  <div id="lnkrow" hidden>
+    <h3>linked</h3>
+    <div id="lnkfrom"></div>
+    <div id="lnkmode" class="muted"></div>
+    <div id="lnkbad" class="lbad" hidden></div>
+    <div id="lnkat" class="muted" hidden></div>
+    <button type="button" id="linkback" data-action="linkback">Move back to shared with me</button>
+  </div>
   <div id="cmtrow" hidden>
     <h3>comments</h3>
     <!-- the box alone toggles, as with mark sensitive (66-share.js) -->
@@ -6373,6 +6489,34 @@
       cerr = $('cerr');
     }
   });
+
+  // ── a link: whose page this is ──────────────────────────────────────────
+  // For a link in front (its tab, open or failed to open): where it points,
+  // the grant, and the badge once a read failed. Comments and sharing are
+  // the owner's, so this page's own controls for them stand down.
+  function paintLink() {
+    const row = $('lnkrow');
+    if (!row) return;
+    const t = activeTab;
+    const name = t ? (t.kind === 'page' ? t.key : null)
+      : (!grubPath && mode !== 'know' && curFolder === null ? current : null);
+    const lk = linkOf(name);
+    row.hidden = !lk;
+    const sh = document.querySelector('lat-share');
+    if (sh) sh.hidden = !!lk;
+    if (lk) $('cmtrow').hidden = true;      // rpPaint shows it for a page
+    if (!lk) return;
+    row.dataset.name = name;
+    $('lnkfrom').textContent = 'Linked from ' + linkFrom(lk);
+    $('lnkmode').textContent = lk.mode === 'read' ? 'read only'
+      : lk.mode === 'edit' ? 'can edit' : lk.mode;
+    const bad = linkBadge(lk);
+    $('lnkbad').hidden = !bad;
+    $('lnkbad').textContent = bad ? bad.textContent : '';
+    $('lnkat').hidden = !bad || !bad.title;
+    $('lnkat').textContent = bad ? bad.title : '';
+  }
+  $('linkback').onclick = () => linkBack($('lnkrow').dataset.name);
 
   // ── comments on this page ────────────────────────────────────────────────
   // Comments from other ships are opt-in per page (or per folder: the
@@ -6896,7 +7040,21 @@
           if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
           loadShared();
         };
-        a.append(nm, md, x);
+        // into my own tree as a link: this, or a drag onto a folder
+        const mv = document.createElement('span');
+        mv.className = 'swmv';
+        mv.setAttribute('role', 'button');
+        tip(mv, 'Move into my pages');
+        mv.innerHTML = ico('link');
+        mv.onclick = (e) => { e.preventDefault(); e.stopPropagation(); askMoveIn(it); };
+        a.append(nm, md, mv, x);
+        a.draggable = true;
+        a.ondragstart = (e) => {
+          swmDrag = it;
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData(SWM_DRAG, it.host + ' ' + it.path);
+        };
+        a.ondragend = () => { swmDrag = null; };
         treeItem(a, 2, SWM + '/' + host + '/' + it.path);
         // a grub tab; openGrub (by way of enterGrub) sets the address
         tabLink(a, 'grub', it.path, { ship: host });
@@ -6904,6 +7062,103 @@
       }
     }
   }
+
+  // ── moving in and out: a shared page becomes a link in my tree ──────────
+  // One home at a time: /link-make writes the link and drops the
+  // shared-with-me entry, /link-unmake puts the entry back and drops the
+  // link. Neither touches the owner's grant. Both need the host's page to
+  // have a kind, so a make with the host offline is refused, not queued.
+  const SWM_DRAG = 'application/x-lattice-shared';
+  let swmDrag = null;          // the entry being dragged, for the drop
+  // the link's local name: the folder it lands in, then the page's own name
+  const swmLeaf = (it) => sharedName(it.path).split('/').pop();
+  // -> true once the link is in, after saying why when it is not
+  async function moveIn(it, to) {
+    stWork('moving ' + swmLeaf(it) + ' into ' + to + '\u2026');
+    const r = await fetch(api + '/link-make?host=' + encodeURIComponent(it.host) +
+      '&path=' + encodeURIComponent(it.path) + '&to=' + encodeURIComponent(to),
+    { method: 'POST' }).catch(() => null);
+    if (!r || !r.ok) { st('move failed' + await errText(r), false); return false; }
+    let n = null;
+    try { n = await r.json(); } catch {}
+    sharedWithMe = sharedWithMe.filter((s) => !(s.host === it.host && s.path === it.path));
+    if (to.includes('/')) addFolderNodes(to.slice(0, to.lastIndexOf('/')));
+    dropTreeNodes(to);
+    nodes.push(n && n.path === to ? n : { path: to, page: true, kind: 'md',
+      link: { host: it.host, path: it.path, mode: it.mode, seen: { ok: true } } });
+    snapTree();
+    renderTree();
+    st('moved into ' + to + ', linked from ' + it.host);
+    return true;
+  }
+  // the move dialog, seeded with the page's name (or <folder>/<name>), and
+  // back into it seeded with what was typed when the ship refuses
+  async function askMoveIn(it, folder) {
+    let seed = (folder ? folder + '/' : '') + swmLeaf(it);
+    for (;;) {
+      const typed = await askName('move ' + it.host + '/' + sharedName(it.path) +
+        ' into my pages as:', seed, 'move');
+      if (!typed) return;
+      const rn = realName(typed);
+      if (await moveIn(it, rn.name)) return;
+      seed = typed;
+    }
+  }
+  // a folder row in Files takes a dragged shared-with-me row: the link
+  // goes in under that folder by the page's own name
+  function linkDrop(row, folder) {
+    row.addEventListener('dragover', (e) => {
+      if (!swmDrag || ![...e.dataTransfer.types].includes(SWM_DRAG)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      row.classList.add('drop');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drop'));
+    row.addEventListener('drop', (e) => {
+      row.classList.remove('drop');
+      const it = swmDrag;
+      if (!it || ![...e.dataTransfer.types].includes(SWM_DRAG)) return;
+      e.preventDefault();
+      swmDrag = null;
+      moveIn(it, folder + '/' + swmLeaf(it));
+    });
+  }
+  // the link at `name` back to shared with me. What is open on it closes
+  // the way a deleted page's does.
+  async function linkBack(name) {
+    const lk = linkOf(name);
+    if (!lk) return;
+    if (current === name && !(await guardDirty())) return;
+    const r = await fetch(api + '/link-unmake?name=' + encodeURIComponent(name),
+      { method: 'POST' }).catch(() => null);
+    if (!r || !r.ok) { st('move failed' + await errText(r), false); return; }
+    dropTreeNodes(name);
+    snapTree();
+    if (current === name || (activeTab && activeTab.kind === 'page' && activeTab.key === name)) {
+      dirty = false;
+      newFile('', false);
+    }
+    renderTree();
+    await loadShared();
+    st('moved ' + name + ' back to shared with me');
+  }
+  // the palette's way in: which shared page, then the move dialog. Its
+  // home is out of sight in the Files pane; the rows' own buttons are the
+  // way a pointer goes.
+  const swmHold = document.createElement('div');
+  swmHold.hidden = true;
+  swmHold.innerHTML = '<button type="button" id="swmmv" data-action="swm-move">Move into my pages</button>';
+  $('tree').append(swmHold);
+  $('swmmv').onclick = async () => {
+    if (!sharedWithMe.length) { st('nothing is shared with you', false); return; }
+    const label = (it) => it.host + '/' + sharedName(it.path);
+    const pick = sharedWithMe.length === 1 ? label(sharedWithMe[0])
+      : await askChoice('move which page into my pages?', sharedWithMe.map(label), 'pick');
+    const it = sharedWithMe.find((x) => label(x) === pick);
+    if (it) askMoveIn(it);
+  };
+  action({ id: 'swm-move', name: 'Move into my pages', home: 'Files \u203a shared with me',
+    when: () => sharedWithMe.length > 0, run: () => $('swmmv').click() });
   // deferred to boot, same reason as loadPerms. See 67-perms.js.
 
 // ── src/70-upload.js ──────────────────────────────────────────────────────
@@ -8127,7 +8382,8 @@
         else loadPageComments();
       }
     }
-    $('cmtrow').hidden = !(d && d.kind === 'page' && d.key);
+    // a link's comments are its owner's (paintLink, 65-ctl.js)
+    $('cmtrow').hidden = !(d && d.kind === 'page' && d.key && !linkOf(d.key));
     // the post box follows the flag, which can land after the list did
     if (rpApplies('comments', d)) paintCmBox();
   }

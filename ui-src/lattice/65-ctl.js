@@ -14,6 +14,15 @@
   <h3>status</h3>
   <div id="cerr" class="ok">&nbsp;</div>
   <lat-knowtags></lat-knowtags>
+  <!-- a link to another ship's page (paintLink, below) -->
+  <div id="lnkrow" hidden>
+    <h3>linked</h3>
+    <div id="lnkfrom"></div>
+    <div id="lnkmode" class="muted"></div>
+    <div id="lnkbad" class="lbad" hidden></div>
+    <div id="lnkat" class="muted" hidden></div>
+    <button type="button" id="linkback" data-action="linkback">Move back to shared with me</button>
+  </div>
   <div id="cmtrow" hidden>
     <h3>comments</h3>
     <!-- the box alone toggles, as with mark sensitive (66-share.js) -->
@@ -28,6 +37,34 @@
       cerr = $('cerr');
     }
   });
+
+  // ── a link: whose page this is ──────────────────────────────────────────
+  // For a link in front (its tab, open or failed to open): where it points,
+  // the grant, and the badge once a read failed. Comments and sharing are
+  // the owner's, so this page's own controls for them stand down.
+  function paintLink() {
+    const row = $('lnkrow');
+    if (!row) return;
+    const t = activeTab;
+    const name = t ? (t.kind === 'page' ? t.key : null)
+      : (!grubPath && mode !== 'know' && curFolder === null ? current : null);
+    const lk = linkOf(name);
+    row.hidden = !lk;
+    const sh = document.querySelector('lat-share');
+    if (sh) sh.hidden = !!lk;
+    if (lk) $('cmtrow').hidden = true;      // rpPaint shows it for a page
+    if (!lk) return;
+    row.dataset.name = name;
+    $('lnkfrom').textContent = 'Linked from ' + linkFrom(lk);
+    $('lnkmode').textContent = lk.mode === 'read' ? 'read only'
+      : lk.mode === 'edit' ? 'can edit' : lk.mode;
+    const bad = linkBadge(lk);
+    $('lnkbad').hidden = !bad;
+    $('lnkbad').textContent = bad ? bad.textContent : '';
+    $('lnkat').hidden = !bad || !bad.title;
+    $('lnkat').textContent = bad ? bad.title : '';
+  }
+  $('linkback').onclick = () => linkBack($('lnkrow').dataset.name);
 
   // ── comments on this page ────────────────────────────────────────────────
   // Comments from other ships are opt-in per page (or per folder: the

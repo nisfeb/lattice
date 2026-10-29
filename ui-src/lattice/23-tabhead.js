@@ -120,6 +120,7 @@
     paintPath();
     applyRead();
     toolSync();
+    paintLink();      // the Page tab's link section follows the tab in front
   }
 
   // ── the page menu ────────────────────────────────────────────────────────
@@ -174,6 +175,7 @@
     if (page) has.add('kind');
     if (page && current) { has.add('dup'); has.add('raw'); }
     if (doc && current) { has.add('download'); has.add('del'); }
+    if (page && linkOf(current)) has.add('linkback');
     // a folder view: Delete is #del's folder branch, its own confirm and all
     if (!grubPath && curFolder !== null) has.add('del');
     if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex')) has.add('tex');
@@ -230,6 +232,8 @@
       $('texconv').title;
     if (has.has('raw')) item('raw', 'Open raw', done(() =>
       window.open(api + '/page-source?name=' + encodeURIComponent(current), '_blank', 'noopener')));
+    if (has.has('linkback'))
+      item('linkback', 'Move back to shared with me', done(() => $('linkback').click()));
     if (has.has('del')) item('del', 'Delete', done(() => $('del').click()));
     const r = $('tmenu').getBoundingClientRect();
     m.style.top = r.bottom + 4 + 'px';
@@ -257,6 +261,11 @@
         if (b) b.click();
       } });
   }
+  // a link's way back out. Its home is the button in the Page tab's link
+  // section (65-ctl.js), which is always there; the menu item clicks it.
+  action({ id: 'linkback', name: 'Move back to shared with me', home: 'Page menu',
+    when: () => docFront() && pmenuHas().has('linkback'),
+    run: () => $('linkback').click() });
   addEventListener('mousedown', (e) => {
     if (pmenuEl && !pmenuEl.contains(e.target) && !$('tmenu').contains(e.target)) pmenuClose();
   }, true);

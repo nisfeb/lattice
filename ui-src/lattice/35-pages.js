@@ -45,7 +45,9 @@
       snapPage(name, d);
       return true;
     }
-    const hit = pageCache.get(name);
+    // a link reads live from its host every time (the spec's rule), so the
+    // session cache never answers for one
+    const hit = !linkOf(name) && pageCache.get(name);
     if (hit) { applyPage(name, hit); snapPage(name, hit); return true; }
     const node = nodes.find((n) => n.page && n.path === name);
     const painted = !!node && typeof node.body === 'string';
@@ -89,6 +91,8 @@
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
       if (!r.ok) {
+        // a link whose host did not answer: its badge, from now
+        if (r.status === 504) linkSeen(name, false);
         if (painted) return true;
         st('open failed' + await errText(r), false); unwind();
         return my === openSeq ? false : undefined;
@@ -101,6 +105,7 @@
     }
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
+    if (d.link) linkSeen(name, true);
     // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
     // typed while it was in flight. On a busy pier this fetch lands many
     // seconds after the paint, and it carries the PRE-edit body: applying it
@@ -122,7 +127,7 @@
     // the guard protected the editor but not the cache, so switching away and
     // back repainted the old text — the same data loss through a different
     // door. Only a response that is actually applied may be remembered.
-    pageCache.set(name, d);
+    if (!d.link) pageCache.set(name, d);
     snapPage(name, d);
     applyPage(name, d);
     return true;
@@ -136,6 +141,8 @@
     curRev = d.rev || 0;
     refreshTexButton();
     src.value = d.body;
+    // a link with a read grant: the owner's page, shown, not editable
+    src.readOnly = !!d.readonly;
     dirty = false;
     // A fresh editor state begins here. everTyped answers "did the user type
     // since this view was established?" for boot's reconcile guard; carrying
@@ -336,7 +343,9 @@
   const patchLocal = (name, kind, sent) => {
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
-    if (nd) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
+    // not a link's: its text is the host's, read live, and the rev beside
+    // a body here would be a base the next save claims falsely
+    if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
   };
   // an accidental tab close is the same data-loss shape as the grub-discard
   // guard up in openPage: a dirty edit, grub or page, exists only here
@@ -348,6 +357,29 @@
     e.preventDefault();
     e.returnValue = '';
   });
+
+  //  A save through a link (30-tree.js) claims the owner's rev this editor
+  //  read, as ?base=. Unlike a page of our own, a link has nowhere to keep
+  //  a replaced body, so a stale claim is refused (409) and nothing is
+  //  written. linkBase is that claim for a save of `name`, '' for a page.
+  const linkBase = (name) => (linkOf(name) ? '&base=' + (curRev || 0) : '');
+  //  a save through a link that did not land: the host's page moved on past
+  //  what this editor read, or the host did not answer (a 502 or 504 the
+  //  ship itself sent, never queued: the queue is for this ship being
+  //  away). The text stays here, unsaved. -> true when it was one of those.
+  async function linkSaveFail(name, r) {
+    const lk = linkOf(name);
+    if (!lk || !r) return false;
+    if (r.status === 409) {
+      st('not saved: ' + lk.host + ' changed this page since you opened it. ' +
+        'Copy your text, then reopen it', false);
+    } else if (r.status === 502 || r.status === 504) {
+      if (r.status === 504) linkSeen(name, false);
+      st('not saved' + await errText(r), false);
+    } else return false;
+    if (current === name) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
+    return true;
+  }
 
   // the realName() split the create dialog (newFile) made before seeding
   // #pname with the real path; save() consumes it on create
@@ -450,11 +482,12 @@
       flushPending();
     };
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
-      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc);
+      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc) + (creating ? '' : linkBase(name));
     let w = { gone: true };
     try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
     finally { saving = false; }
     const r = w.r;
+    if (await linkSaveFail(name, r)) return failed();
     if (w.gone) {
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
@@ -561,11 +594,12 @@
     const url = mode === 'know'
       ? api + '/know-save?key=' + encodeURIComponent(target)
       : api + '/page-save?name=' + encodeURIComponent(target) +
-        '&type=' + (curKind || pkind.value);
+        '&type=' + (curKind || pkind.value) + linkBase(target);
     let w = { gone: true };
     try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
     finally { saving = false; }
     const r = w.r;
+    if (mode !== 'know' && await linkSaveFail(target, r)) { flushPending(); return; }
     if (w.gone) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor

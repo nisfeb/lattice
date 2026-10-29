@@ -100,8 +100,10 @@
   //   icon, label    for the strip. icon is a name, or a function of the tab
   const TAB_KINDS = {
     page: {
-      icon: 'doc',
-      label: (t) => t.key ? t.key.split('/').pop() : 'new page',
+      // a link (30-tree.js) is titled with its whole local path: its name
+      // alone would read as a page of my own
+      icon: (t) => (linkOf(t.key) ? 'link' : 'doc'),
+      label: (t) => !t.key ? 'new page' : linkOf(t.key) ? t.key : t.key.split('/').pop(),
       open: async (t) => {
         if (t.key) return openPage(t.key);
         exitRev();

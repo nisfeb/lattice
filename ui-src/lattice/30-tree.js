@@ -139,6 +139,53 @@
       row.classList.toggle('cur', row.classList.contains('pg')
         ? mode !== 'know' && p === current : p === curFolder);
     for (const [k, row] of knowRows) row.classList.toggle('cur', mode === 'know' && k === current);
+    paintLink();
+  }
+
+  // ── links: another ship's page in this tree ─────────────────────────────
+  // A node with `link` is a link the owner made from shared with me. It
+  // opens as a page tab: page-source and page-save go through it to the
+  // host, conflict-checked. linkOf names the open link, or null.
+  function linkOf(name) {
+    const n = name ? nodes.find((x) => x.page && x.path === name) : null;
+    return n && n.link && n.link.host ? n.link : null;
+  }
+  // where a link points, as ~host/<their page>. The path names the page's
+  // code grub under wherever lattice is installed there, so only the tail
+  // is read (the same rule as sharedName, 69-shared.js).
+  function linkFrom(lk) {
+    const m = /\/page\/(.+)\/code$/.exec(lk.path || '');
+    return lk.host + '/' + (m ? m[1] : String(lk.path || '').replace(/^\/+/, ''));
+  }
+  // @da (ship UTC) in the viewer's own zone, as the history list shows it
+  function daLocal(da) {
+    const m = /^~(\d+)\.(\d+)\.(\d+)\.\.(\d+)\.(\d+)\.(\d+)/.exec(da || '');
+    return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])).toLocaleString(undefined,
+      { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+  }
+  // the badge for a link whose last read failed. The owner's ship cannot
+  // tell a revoke from being offline, so it says both. `at` is when a read
+  // first failed: the last good read was before it.
+  function linkBadge(lk) {
+    if (!lk.seen || lk.seen.ok !== false) return null;
+    const b = document.createElement('span');
+    b.className = 'lbad';
+    b.textContent = lk.host + ' unreachable or no longer sharing';
+    const at = daLocal(lk.seen.at);
+    if (at) b.title = 'not reached since ' + at;
+    return b;
+  }
+  // what a live read through a link just found. The ship records it too
+  // (the badge survives a reload); this repaints without waiting for that.
+  function linkSeen(name, ok) {
+    const lk = linkOf(name);
+    if (!lk || !lk.seen || lk.seen.ok === ok) return;
+    const t = new Date();
+    const p = (v) => String(v).padStart(2, '0');
+    lk.seen = { ok, at: '~' + t.getUTCFullYear() + '.' + (t.getUTCMonth() + 1) + '.' + t.getUTCDate()
+      + '..' + p(t.getUTCHours()) + '.' + p(t.getUTCMinutes()) + '.' + p(t.getUTCSeconds()) };
+    snapTree();
+    renderTree();
   }
 
   // local `nodes` patching: this client performed the write, so it already
@@ -374,14 +421,24 @@
       if (n.page) {
         row = document.createElement('a');
         row.style.marginLeft = (depth * 14) + 'px';
-        row.className = 'pg' + (mode !== 'know' && n.path === current ? ' cur' : '')
+        const lk = n.link && n.link.host ? n.link : null;
+        row.className = 'pg' + (lk ? ' lnk' : '') + (mode !== 'know' && n.path === current ? ' cur' : '')
           + (n.pending ? ' pend' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
         // the display name when there is one (a typed name that was not a
         // valid path), the path segment otherwise; the real path in the tip
-        row.innerHTML = ico(kindExt(n.kind));
+        row.innerHTML = ico(lk ? 'link' : kindExt(n.kind));
         row.append(document.createTextNode((n.dname || n.path.split('/').pop()) + '.' + kindExt(n.kind)));
         if (n.dname) row.title = n.path;
+        // a link to another ship's page: whose it is on hover, and the
+        // badge once a read through it has failed
+        if (lk) {
+          row.dataset.host = lk.host;
+          row.dataset.path = n.path;
+          row.title = linkFrom(lk);
+          const bad = linkBadge(lk);
+          if (bad) row.append(bad);
+        }
         treeItem(row, depth, 'p:' + n.path);
         if (n.share === 'clearweb') {
           const cw = document.createElement('span');
@@ -394,6 +451,7 @@
       } else {
         row = folderRow(n.dname || n.path.split('/').pop(), depth, coll.includes(n.path),
           () => { paneColl.flip(n.path); renderTree(); }, () => pickFolder(n.path), 'f:' + n.path);
+        linkDrop(row, n.path);       // a shared-with-me row dropped here (69-shared.js)
         if (n.path === curFolder) row.classList.add('cur');
         if (n.dname) row.lastChild.title = n.path;     // the label's tip
         if (treeShare(n.path) === 'clearweb') {
@@ -421,6 +479,7 @@
     }
     if (sharedWithMe.length) renderShared(coll);
     treeRove(treeList, had);
+    paintLink();                 // the Page tab's link section (65-ctl.js)
     // the Published pages list (72-acl.js) reads these share modes
     const aw = $('aclwrap');
     if (aw && !aw.hidden) renderPublished();

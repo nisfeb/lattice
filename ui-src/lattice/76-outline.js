@@ -113,7 +113,8 @@
         else loadPageComments();
       }
     }
-    $('cmtrow').hidden = !(d && d.kind === 'page' && d.key);
+    // a link's comments are its owner's (paintLink, 65-ctl.js)
+    $('cmtrow').hidden = !(d && d.kind === 'page' && d.key && !linkOf(d.key));
     // the post box follows the flag, which can land after the list did
     if (rpApplies('comments', d)) paintCmBox();
   }

@@ -59,7 +59,21 @@
           if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
           loadShared();
         };
-        a.append(nm, md, x);
+        // into my own tree as a link: this, or a drag onto a folder
+        const mv = document.createElement('span');
+        mv.className = 'swmv';
+        mv.setAttribute('role', 'button');
+        tip(mv, 'Move into my pages');
+        mv.innerHTML = ico('link');
+        mv.onclick = (e) => { e.preventDefault(); e.stopPropagation(); askMoveIn(it); };
+        a.append(nm, md, mv, x);
+        a.draggable = true;
+        a.ondragstart = (e) => {
+          swmDrag = it;
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData(SWM_DRAG, it.host + ' ' + it.path);
+        };
+        a.ondragend = () => { swmDrag = null; };
         treeItem(a, 2, SWM + '/' + host + '/' + it.path);
         // a grub tab; openGrub (by way of enterGrub) sets the address
         tabLink(a, 'grub', it.path, { ship: host });
@@ -67,4 +81,101 @@
       }
     }
   }
+
+  // ── moving in and out: a shared page becomes a link in my tree ──────────
+  // One home at a time: /link-make writes the link and drops the
+  // shared-with-me entry, /link-unmake puts the entry back and drops the
+  // link. Neither touches the owner's grant. Both need the host's page to
+  // have a kind, so a make with the host offline is refused, not queued.
+  const SWM_DRAG = 'application/x-lattice-shared';
+  let swmDrag = null;          // the entry being dragged, for the drop
+  // the link's local name: the folder it lands in, then the page's own name
+  const swmLeaf = (it) => sharedName(it.path).split('/').pop();
+  // -> true once the link is in, after saying why when it is not
+  async function moveIn(it, to) {
+    stWork('moving ' + swmLeaf(it) + ' into ' + to + '\u2026');
+    const r = await fetch(api + '/link-make?host=' + encodeURIComponent(it.host) +
+      '&path=' + encodeURIComponent(it.path) + '&to=' + encodeURIComponent(to),
+    { method: 'POST' }).catch(() => null);
+    if (!r || !r.ok) { st('move failed' + await errText(r), false); return false; }
+    let n = null;
+    try { n = await r.json(); } catch {}
+    sharedWithMe = sharedWithMe.filter((s) => !(s.host === it.host && s.path === it.path));
+    if (to.includes('/')) addFolderNodes(to.slice(0, to.lastIndexOf('/')));
+    dropTreeNodes(to);
+    nodes.push(n && n.path === to ? n : { path: to, page: true, kind: 'md',
+      link: { host: it.host, path: it.path, mode: it.mode, seen: { ok: true } } });
+    snapTree();
+    renderTree();
+    st('moved into ' + to + ', linked from ' + it.host);
+    return true;
+  }
+  // the move dialog, seeded with the page's name (or <folder>/<name>), and
+  // back into it seeded with what was typed when the ship refuses
+  async function askMoveIn(it, folder) {
+    let seed = (folder ? folder + '/' : '') + swmLeaf(it);
+    for (;;) {
+      const typed = await askName('move ' + it.host + '/' + sharedName(it.path) +
+        ' into my pages as:', seed, 'move');
+      if (!typed) return;
+      const rn = realName(typed);
+      if (await moveIn(it, rn.name)) return;
+      seed = typed;
+    }
+  }
+  // a folder row in Files takes a dragged shared-with-me row: the link
+  // goes in under that folder by the page's own name
+  function linkDrop(row, folder) {
+    row.addEventListener('dragover', (e) => {
+      if (!swmDrag || ![...e.dataTransfer.types].includes(SWM_DRAG)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      row.classList.add('drop');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drop'));
+    row.addEventListener('drop', (e) => {
+      row.classList.remove('drop');
+      const it = swmDrag;
+      if (!it || ![...e.dataTransfer.types].includes(SWM_DRAG)) return;
+      e.preventDefault();
+      swmDrag = null;
+      moveIn(it, folder + '/' + swmLeaf(it));
+    });
+  }
+  // the link at `name` back to shared with me. What is open on it closes
+  // the way a deleted page's does.
+  async function linkBack(name) {
+    const lk = linkOf(name);
+    if (!lk) return;
+    if (current === name && !(await guardDirty())) return;
+    const r = await fetch(api + '/link-unmake?name=' + encodeURIComponent(name),
+      { method: 'POST' }).catch(() => null);
+    if (!r || !r.ok) { st('move failed' + await errText(r), false); return; }
+    dropTreeNodes(name);
+    snapTree();
+    if (current === name || (activeTab && activeTab.kind === 'page' && activeTab.key === name)) {
+      dirty = false;
+      newFile('', false);
+    }
+    renderTree();
+    await loadShared();
+    st('moved ' + name + ' back to shared with me');
+  }
+  // the palette's way in: which shared page, then the move dialog. Its
+  // home is out of sight in the Files pane; the rows' own buttons are the
+  // way a pointer goes.
+  const swmHold = document.createElement('div');
+  swmHold.hidden = true;
+  swmHold.innerHTML = '<button type="button" id="swmmv" data-action="swm-move">Move into my pages</button>';
+  $('tree').append(swmHold);
+  $('swmmv').onclick = async () => {
+    if (!sharedWithMe.length) { st('nothing is shared with you', false); return; }
+    const label = (it) => it.host + '/' + sharedName(it.path);
+    const pick = sharedWithMe.length === 1 ? label(sharedWithMe[0])
+      : await askChoice('move which page into my pages?', sharedWithMe.map(label), 'pick');
+    const it = sharedWithMe.find((x) => label(x) === pick);
+    if (it) askMoveIn(it);
+  };
+  action({ id: 'swm-move', name: 'Move into my pages', home: 'Files \u203a shared with me',
+    when: () => sharedWithMe.length > 0, run: () => $('swmmv').click() });
   // deferred to boot, same reason as loadPerms. See 67-perms.js.

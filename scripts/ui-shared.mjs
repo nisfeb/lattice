@@ -42,6 +42,10 @@ function boot(items, coll = []) {
     guardDirty: async () => true, history: { replaceState() {} },
     // a row opens through the tab model (21-tabs.js) as a grub tab
     openIn: (kind, p, o) => opened.push([kind, p, o.ship]), ico: () => '',
+    // the move in and out (Task 5 of shared page links): its palette home
+    // and its registration, stubbed
+    $: () => new El('div'), action: () => {},
+    tip: (b, name) => { b.title = name; b.setAttribute('aria-label', name); return b; },
     document: { createElement: (t) => new El(t), createTextNode: (t) => ({ textContent: t }) },
   };
   vm.runInNewContext(src, ctx);
@@ -83,6 +87,15 @@ const items = [
   await new Promise((r) => setTimeout(r, 0));
   check('a row opens the page on its own ship',
     JSON.stringify(opened) === JSON.stringify([['grub', D + '/page/site/logging/code', '~nec']]), JSON.stringify(opened));
+}
+{
+  const { treeList } = boot(items);
+  const row = treeList.kids.find((r) => r.textContent.startsWith('site/logging'));
+  const mv = row && row.kids.find((k) => k.className === 'swmv');
+  check('a row drags, and has Move into my pages',
+    !!row && row.draggable === true && !!mv && mv.title === 'Move into my pages'
+      && mv.attrs['aria-label'] === mv.title,
+    JSON.stringify(row && { draggable: row.draggable, mv: mv && mv.title }));
 }
 
 check.done();

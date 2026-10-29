@@ -249,7 +249,8 @@
       if (saveFlight === req) saveFlight = null;
       echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
     }
-    if (shipGone(r)) return { gone: true };
+    // `r` too: a 504 can be a link's host (35-pages.js), not this ship
+    if (shipGone(r)) return { gone: true, r };
     if (r.ok) {
       echo.n++;                         // one bump is ours; consume it on arrival
       // every write names its target the same way; a move dirties both ends
