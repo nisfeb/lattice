@@ -34,6 +34,7 @@ const RP = 'rpane-' + process.pid;
 const LINKER = 'rplink-' + process.pid;
 const LINKED = 'x-' + process.pid + '/a';
 const UNSEEDED = 'x-' + process.pid + '/never';
+const FRAMEP = 'x-' + process.pid + '/framed';
 const post = (path, body) => fetch(env.base + '/apps/lattice/' + path,
   { method: 'POST', headers: { Cookie: env.cookie }, body });
 const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
@@ -426,7 +427,8 @@ try {
 
   // ── the ribbon and tool tabs ───────────────────────────────────────────
   const names = await page.evaluate(() => [...document.querySelectorAll('#ribbon button')]
-    .map((b) => (b.title === b.getAttribute('aria-label') ? b.title : '!' + b.title)));
+    .map((b) => (b.title === b.getAttribute('aria-label') ? b.title : '!' + b.title)
+      .replace(/^(Comments inbox), \S+ unread$/, '$1')));
   check('ribbon order and tooltips', JSON.stringify(names) === JSON.stringify([
     "Today's brief", 'Browser', 'Forum', 'Comments inbox', 'Access & groups', 'Explorer',
     'Sync conflicts', 'Command palette (Ctrl+P)', 'Settings']), JSON.stringify(names));
@@ -494,7 +496,10 @@ try {
     return !!(d && d.getElementById('themeui') && bar && getComputedStyle(bar).display === 'none');
   });
   check('settings frame hides reader bar', setTab && framed, JSON.stringify({ setTab, framed }));
-  //  a link to the editor inside the frame opens in the shell, not the frame
+  //  a link to the editor inside the frame opens in a new shell tab, not
+  //  in the frame and not over the Settings tab
+  await seed(env, [[FRAMEP, '# from the frame\n']]);
+  const nf = (await front()).n;
   await page.evaluate((n) => {
     const d = document.querySelector('#toolhost iframe:not([hidden])').contentDocument;
     const a = d.createElement('a');
@@ -502,15 +507,18 @@ try {
     a.textContent = 'to the editor';
     d.body.append(a);
     a.click();
-  }, RP);
-  const shelled = await isFront('page', RP);
+  }, FRAMEP);
+  const shelled = await isFront('page', FRAMEP);
   await sleep(500);
   const frameAt = await page.evaluate(() => {
     const f = document.querySelector('#toolhost iframe');
     return f ? f.contentWindow.location.pathname : null;
   });
-  check('an editor link in the frame opens in the shell',
-    shelled && frameAt === '/apps/lattice/settings', JSON.stringify({ shelled, frameAt }));
+  const afterF = await page.evaluate(() => window.latTabs.state().tabs.map((t) => t.key));
+  check('an editor link in the frame opens in a new shell tab',
+    shelled && frameAt === '/apps/lattice/settings' && afterF.length === nf + 1
+      && afterF.includes('frame:/apps/lattice/settings'),
+    JSON.stringify({ shelled, frameAt, nf, afterF }));
 
   //  today's brief: the unpadded day, when that page exists
   const today = await page.evaluate(() => {
@@ -529,7 +537,12 @@ try {
   await boot();
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   const unread = await until(() => document.getElementById('rb-inbox').classList.contains('has-unread'), null, 45000);
-  check('inbox badge moved', unread);
+  const named = await page.evaluate(() => {
+    const b = document.getElementById('rb-inbox');
+    return { t: b.title, l: b.getAttribute('aria-label') };
+  });
+  check('inbox badge moved', unread && named.t === named.l && /^Comments inbox, \S+ unread$/.test(named.l),
+    JSON.stringify({ unread, named }));
   await page.evaluate(() => document.getElementById('rb-inbox').click());
   const inTab = await isFront('tool', 'inbox');
   const read = await until(() => !document.getElementById('rb-inbox').classList.contains('has-unread')
@@ -544,12 +557,40 @@ try {
 
   //  the ribbon's ways off the editor ask about unsaved work first. A grub
   //  never autosaves, so its edit is still unsaved when Browser is clicked.
+  //  the grub's body lands after its tab shows, and repaints a clean
+  //  editor, so the edit waits for it and then must read as unsaved
   await openDoc('grub', sbase + '/page/' + RP + '/code');
+  await until(() => document.getElementById('src').value.length > 0);
+  await sleep(2000);
   await page.evaluate(() => {
     const s = document.getElementById('src');
-    s.value += '\n';
+    s.value += 'unsaved probe\n';
     s.dispatchEvent(new Event('input'));
   });
+  await until(() => document.querySelector('.dtab.on.dirty') !== null, null, 5000);
+  //  Save does nothing while a tool tab is in front: the dirty grub parked
+  //  under it is not written from a screen that does not show it. Watched
+  //  as the request itself, since the ship may refuse or delay the body.
+  let grubSaves = 0;
+  const onReq = (r) => { if (/\/(grub|remote)-save\b/.test(r.url())) grubSaves++; };
+  page.on('request', onReq);
+
+  const grubTab = await page.evaluate(() => { const s = window.latTabs.state(); return s.tabs[s.active].id; });
+  await page.evaluate(() => document.getElementById('rb-access').click());
+  const underTool = await isFront('tool', 'access');
+  await page.keyboard.down('Control');
+  await page.keyboard.press('KeyS');
+  await page.keyboard.up('Control');
+  await page.evaluate(() => document.getElementById('save').click());
+  await sleep(3000);
+  page.off('request', onReq);
+  await page.evaluate((id) => window.latTabs.switchTab(id), grubTab);
+  const stillDirty = await until(() => {
+    const s = window.latTabs.state();
+    return s.tabs[s.active].kind === 'grub' && document.querySelector('.dtab.on.dirty') !== null;
+  }, null, 5000);
+  check('save under a tool tab leaves the hidden grub alone',
+    underTool && grubSaves === 0 && stillDirty, JSON.stringify({ underTool, grubSaves, stillDirty }));
   await page.evaluate(() => document.getElementById('rb-browser').click());
   const asked = await until(() => !document.getElementById('dlg').hidden, null, 5000);
   await page.evaluate(() => document.getElementById('dlgcancel').click());

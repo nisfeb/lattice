@@ -23,9 +23,9 @@
   for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
   $('tback').onclick = () => tabBack();
   $('tfwd').onclick = () => tabFwd();
-  // the move / rename flow of the controls pane, unchanged. A tool tab's
-  // path is only its title.
-  $('tpath').onclick = () => { if (!(activeTab && activeTab.kind === 'tool')) $('mv').click(); };
+  // the move / rename flow of the controls pane, unchanged. A tab that is
+  // not a document shows only its title there.
+  $('tpath').onclick = () => { if (docFront()) $('mv').click(); };
 
   // Read for the tab in front. Entering it shows the preview, which skipped
   // its renders while off screen (60-preview.js)
@@ -44,7 +44,7 @@
     if (window.latVimSetInd) window.latVimSetInd();
   }
   function setRead(on) {
-    if (!activeTab || activeTab.kind === 'tool') return;
+    if (!activeTab || !docFront()) return;
     activeTab.read = !!on;
     tabsSave();
     applyRead();
@@ -64,10 +64,10 @@
   }, true);
 
   function paintPath() {
-    const tool = activeTab && activeTab.kind === 'tool';
-    const v = tool ? TAB_KINDS.tool.label(activeTab) : (pname.value || '').trim();
+    const tool = !docFront();
+    const v = tool ? TAB_KINDS[activeTab.kind].label(activeTab) : (pname.value || '').trim();
     const p = $('tpath');
-    p.disabled = !!tool;
+    p.disabled = tool;
     p.textContent = v || 'no page open';
     p.classList.toggle('muted', !v);
     p.title = v && !tool ? v + ' · ' + (pkind.value || '') : '';
@@ -77,10 +77,11 @@
   pname.addEventListener('input', paintPath);
   pkind.addEventListener('change', paintPath);
 
-  // called by paintTabs: the tab in front changed, or its stacks did. A
-  // tool tab (24-tools.js) has no Edit / Read and no page menu.
+  // called by paintTabs: the tab in front changed, or its stacks did. A tab
+  // that is not a document (a tool, 24-tools.js) has no Edit / Read and no
+  // page menu.
   function paintHead() {
-    const tool = !!activeTab && activeTab.kind === 'tool';
+    const tool = !docFront();
     $('tread').hidden = tool;
     $('tmenu').hidden = tool;
     if (pmenuEl && pmenuTab !== activeTab) pmenuClose();

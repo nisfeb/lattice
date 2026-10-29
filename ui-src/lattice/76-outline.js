@@ -93,9 +93,10 @@
     rpForce = null;
     const d = rpDoc();
     const key = d && d.key ? d.kind + ':' + d.key : null;
-    // the Page tab is the controls of the document underneath, which a tool
-    // tab in front is not. A folder (d null) keeps them: they act on it.
-    const tool = !!activeTab && activeTab.kind === 'tool';
+    // the Page tab is the controls of the document underneath, which a tab
+    // that is not a document (a tool) is not. A folder (d null) keeps them:
+    // they act on it.
+    const tool = !docFront();
     rpSec('page').querySelector('.rpnone').hidden = !tool;
     rpSec('page').querySelector('lat-ctl').hidden = tool;
     for (const id of Object.keys(RP_BODY)) {

@@ -1750,6 +1750,10 @@
     }
     return null;
   };
+  // whether the tab in front is a document in the editor: its kind has
+  // live(). A tool tab is not, so the controls of the editor (Save, Edit /
+  // Read, rename, the Page tab) leave the document underneath alone.
+  const docFront = () => !activeTab || !!TAB_KINDS[activeTab.kind].live;
   // shows(t) for every editor kind: the live editor is this tab's document
   const showsLive = (t) => { const d = liveDoc(); return !!d && sameDoc(t, d); };
 
@@ -2521,9 +2525,9 @@
   for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
   $('tback').onclick = () => tabBack();
   $('tfwd').onclick = () => tabFwd();
-  // the move / rename flow of the controls pane, unchanged. A tool tab's
-  // path is only its title.
-  $('tpath').onclick = () => { if (!(activeTab && activeTab.kind === 'tool')) $('mv').click(); };
+  // the move / rename flow of the controls pane, unchanged. A tab that is
+  // not a document shows only its title there.
+  $('tpath').onclick = () => { if (docFront()) $('mv').click(); };
 
   // Read for the tab in front. Entering it shows the preview, which skipped
   // its renders while off screen (60-preview.js)
@@ -2542,7 +2546,7 @@
     if (window.latVimSetInd) window.latVimSetInd();
   }
   function setRead(on) {
-    if (!activeTab || activeTab.kind === 'tool') return;
+    if (!activeTab || !docFront()) return;
     activeTab.read = !!on;
     tabsSave();
     applyRead();
@@ -2562,10 +2566,10 @@
   }, true);
 
   function paintPath() {
-    const tool = activeTab && activeTab.kind === 'tool';
-    const v = tool ? TAB_KINDS.tool.label(activeTab) : (pname.value || '').trim();
+    const tool = !docFront();
+    const v = tool ? TAB_KINDS[activeTab.kind].label(activeTab) : (pname.value || '').trim();
     const p = $('tpath');
-    p.disabled = !!tool;
+    p.disabled = tool;
     p.textContent = v || 'no page open';
     p.classList.toggle('muted', !v);
     p.title = v && !tool ? v + ' · ' + (pkind.value || '') : '';
@@ -2575,10 +2579,11 @@
   pname.addEventListener('input', paintPath);
   pkind.addEventListener('change', paintPath);
 
-  // called by paintTabs: the tab in front changed, or its stacks did. A
-  // tool tab (24-tools.js) has no Edit / Read and no page menu.
+  // called by paintTabs: the tab in front changed, or its stacks did. A tab
+  // that is not a document (a tool, 24-tools.js) has no Edit / Read and no
+  // page menu.
   function paintHead() {
-    const tool = !!activeTab && activeTab.kind === 'tool';
+    const tool = !docFront();
     $('tread').hidden = tool;
     $('tmenu').hidden = tool;
     if (pmenuEl && pmenuTab !== activeTab) pmenuClose();
@@ -2732,10 +2737,14 @@
     '/apps/lattice/know?lint=1': ['Memory review', 'tidy'],
   };
   const SETTINGS = 'frame:/apps/lattice/settings';
-  // only a path on this origin: a frame is dressed by reaching into it
+  // only a lattice path on this origin, whatever the key says: a frame is
+  // dressed by reaching into it, and a key can come from typed input
   const frameUrl = (key) => {
-    const u = key.startsWith('frame:') ? key.slice(6) : null;
-    return u && /^\/(?!\/)/.test(u) ? u : null;
+    if (!key.startsWith('frame:')) return null;
+    let u;
+    try { u = new URL(key.slice(6), location.origin); } catch { return null; }
+    if (u.origin !== location.origin || !/^\/apps\/lattice(\/|$)/.test(u.pathname)) return null;
+    return u.pathname + u.search;
   };
   const toolMeta = (key) => {
     if (TOOLS[key]) return [TOOLS[key].name, TOOLS[key].icon];
@@ -2743,8 +2752,13 @@
     return u ? FRAMES[u] || [u, 'globe'] : [key, 'gear'];
   };
   // every way into a tool. A tool gets a tab of its own rather than
-  // replacing the document in front, and an open one is focused.
-  const toolOpen = (id) => openIn('tool', id === 'settings' ? SETTINGS : id, { newTab: true });
+  // replacing the document in front, and an open one is focused. A phone
+  // shows the center only in its code view, so it goes there, also when the
+  // tool was in front already.
+  const toolOpen = async (id) => {
+    await openIn('tool', id === 'settings' ? SETTINGS : id, { newTab: true });
+    if (isMobile()) setMv('code');
+  };
 
   // which tool the host shows, null while a document is in front
   let toolShown = null;
@@ -2754,8 +2768,6 @@
     open: async (t) => {
       toolSync();
       if (TOOLS[t.key]) TOOLS[t.key].load();
-      // a phone shows the center only in its code view
-      if (isMobile()) setMv('code');
       return true;
     },
     // a tool has no buffer, so nothing to park and nothing to restore
@@ -2801,9 +2813,10 @@
     toolHost.append(f);
   }
   // Each load of a frame: the reader's own bar is hidden, since the shell
-  // around it is the chrome now. A link in it to the editor opens in the
-  // shell rather than nesting a second editor in the frame. Any other link
-  // navigates the frame as usual.
+  // around it is the chrome now. A link in it to a document in the editor
+  // opens that document in a new tab of the shell, never over the frame's
+  // own tab and never as a second editor nested in the frame. Any other
+  // link navigates the frame as usual.
   function frameDress(f) {
     let d = null;
     try { d = f.contentDocument; } catch {}
@@ -2817,11 +2830,13 @@
       let u;
       try { u = new URL(a.href); } catch { return; }
       if (u.origin !== location.origin || !/^\/apps\/lattice\/app\/?$/.test(u.pathname)) return;
-      e.preventDefault();
       const q = u.searchParams;
-      if (q.get('grub')) openIn('grub', q.get('grub'), { ship: q.get('ship') || null, ev: e });
-      else if (q.get('view') === 'know') openIn('know', q.get('key') || '', { ev: e });
-      else if (q.get('name')) openIn('page', q.get('name'), { ev: e });
+      const go = q.get('grub') ? ['grub', q.get('grub'), q.get('ship') || null]
+        : q.get('view') === 'know' ? ['know', q.get('key') || '', null]
+          : q.get('name') ? ['page', q.get('name'), null] : null;
+      if (!go) return;
+      e.preventDefault();
+      openIn(go[0], go[1], { ship: go[2], newTab: true });
     });
   }
   // Escape used to close the overlays. A tab is closed by its own close,
@@ -2835,16 +2850,29 @@
   // orrery writes the brief to journal/<day>. Whether that day is padded is
   // not settled, so the first of the two forms that exists wins, and with
   // neither the unpadded one is the name a new page starts with.
-  function briefKey(d) {
+  const briefForms = (d) => {
     const y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate();
     const p2 = (n) => String(n).padStart(2, '0');
-    const forms = ['journal/' + y + '.' + m + '.' + day, 'journal/' + y + '.' + p2(m) + '.' + p2(day)];
-    return forms.find((k) => nodes.some((n) => n.page && n.path === k)) || forms[0];
+    return ['journal/' + y + '.' + m + '.' + day, 'journal/' + y + '.' + p2(m) + '.' + p2(day)];
+  };
+  const hasPage = (k) => nodes.some((n) => n.page && n.path === k);
+  function briefKey(d) {
+    const forms = briefForms(d);
+    return forms.find(hasPage) || forms[0];
   }
   async function openBrief(ev) {
-    const key = briefKey(new Date());
-    // an empty tree has not loaded yet, and only the ship knows
-    if (!nodes.length || nodes.some((n) => n.page && n.path === key)) return openIn('page', key, { ev });
+    const d = new Date();
+    let key = briefKey(d);
+    let found = hasPage(key);
+    // an empty tree has not loaded yet, so the ship says which form exists.
+    // Opening a missing page would leave the tab blank and locked.
+    if (!nodes.length) {
+      for (const k of briefForms(d)) {
+        const r = await fetch(api + '/page-source?name=' + encodeURIComponent(k)).catch(() => null);
+        if (r && r.ok) { key = k; found = true; break; }
+      }
+    }
+    if (found) return openIn('page', key, { ev });
     await openIn('page', '', { ev });
     if (activeTab && activeTab.kind === 'page' && !activeTab.key && current === null)
       setOpen(null, { shown: key });
@@ -4853,8 +4881,20 @@
   }
 
 // ── src/45-templates.js ───────────────────────────────────────────────────
-  $('save').onclick = () =>
-    (grubPath ? saveGrub() : mode === 'know' ? saveKnow() : save());
+  // Save, the button and Cmd+S alike. Nothing while the tab in front is not
+  // a document (a tool tab): what the editor holds then is a parked tab's
+  // buffer, and writing it from a screen that does not show it would leave
+  // that tab's snap claiming unsaved work the ship already has.
+  // grubPath first: it is the only mode with no `current`, and page save()
+  // would write to the wrong place (or nowhere) while a grub is open.
+  // Cmd+S matters more there than elsewhere, since grub mode has no autosave.
+  const saveFront = () => {
+    if (!docFront()) return;
+    if (grubPath) saveGrub();
+    else if (mode === 'know') saveKnow();
+    else save();
+  };
+  $('save').onclick = saveFront;
   // ── new page-tree from a template ────────────────────────────────────────
   // Templates stamp out a whole tree (the `site` template is four pages), and
   // each page is its own writer round-trip, so this is deliberately slow and
@@ -4907,12 +4947,7 @@
   window.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {
       e.preventDefault();
-      // grubPath first: it is the only mode with no `current`, and page save()
-      // would write to the wrong place (or nowhere) while a grub is open.
-      // Cmd+S matters more here than elsewhere, since grub mode has no autosave.
-      if (grubPath) saveGrub();
-      else if (mode === 'know') saveKnow();
-      else save();
+      saveFront();
     }
   });
   // Applies the list-continuation edit if the caret is in a list. Shared by
@@ -7059,13 +7094,14 @@
   const lastSeen = () => { try { return localStorage[seenKey] || ''; } catch { return ''; } };
   const markSeen = (when) => { try { if (when) localStorage[seenKey] = when; } catch {} };
 
-  // on the ribbon's inbox button. Its title stays the button's name, as
-  // every ribbon title does; the count is the badge.
+  // on the ribbon's inbox button: the badge, and the count in its name, so
+  // a screen reader hears it too (title and label stay identical)
   function paintUnread(n) {
     const b = $('rb-inbox');
     if (!b) return;
     if (n > 0) { b.dataset.n = n > 99 ? '99+' : String(n); b.classList.add('has-unread'); }
     else { delete b.dataset.n; b.classList.remove('has-unread'); }
+    tip(b, n > 0 ? 'Comments inbox, ' + b.dataset.n + ' unread' : 'Comments inbox');
   }
 
   // Counts without rendering, so it can run on a refresh without the pane open.
@@ -7319,9 +7355,10 @@
     rpForce = null;
     const d = rpDoc();
     const key = d && d.key ? d.kind + ':' + d.key : null;
-    // the Page tab is the controls of the document underneath, which a tool
-    // tab in front is not. A folder (d null) keeps them: they act on it.
-    const tool = !!activeTab && activeTab.kind === 'tool';
+    // the Page tab is the controls of the document underneath, which a tab
+    // that is not a document (a tool) is not. A folder (d null) keeps them:
+    // they act on it.
+    const tool = !docFront();
     rpSec('page').querySelector('.rpnone').hidden = !tool;
     rpSec('page').querySelector('lat-ctl').hidden = tool;
     for (const id of Object.keys(RP_BODY)) {

@@ -82,6 +82,18 @@ try {
   aclShown = true;
 } catch {}
 check('sheet > access opens the access tab', aclShown);
+// again from the tree view, with that tab already in front: the tap
+// still brings the access tab on screen rather than doing nothing
+await m.evaluate(() => document.querySelector('.mtabs button[data-mv="tree"]').click());
+await m.evaluate(() => document.getElementById('mmore').click());
+await m.evaluate(() => document.getElementById('ms-acl').click());
+let aclAgain = false;
+try {
+  await m.waitForFunction(() => document.getElementById('ws').dataset.mv === 'code'
+    && document.getElementById('aclwrap').getBoundingClientRect().height > 0, { timeout: 15000 });
+  aclAgain = true;
+} catch {}
+check('a second access tap from the tree view shows it again', aclAgain);
 await m.evaluate(() => {
   const s = window.latTabs.state();
   return window.latTabs.closeTab(s.tabs[s.active].id);

@@ -129,13 +129,14 @@
   const lastSeen = () => { try { return localStorage[seenKey] || ''; } catch { return ''; } };
   const markSeen = (when) => { try { if (when) localStorage[seenKey] = when; } catch {} };
 
-  // on the ribbon's inbox button. Its title stays the button's name, as
-  // every ribbon title does; the count is the badge.
+  // on the ribbon's inbox button: the badge, and the count in its name, so
+  // a screen reader hears it too (title and label stay identical)
   function paintUnread(n) {
     const b = $('rb-inbox');
     if (!b) return;
     if (n > 0) { b.dataset.n = n > 99 ? '99+' : String(n); b.classList.add('has-unread'); }
     else { delete b.dataset.n; b.classList.remove('has-unread'); }
+    tip(b, n > 0 ? 'Comments inbox, ' + b.dataset.n + ' unread' : 'Comments inbox');
   }
 
   // Counts without rendering, so it can run on a refresh without the pane open.

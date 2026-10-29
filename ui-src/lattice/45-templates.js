@@ -1,5 +1,17 @@
-  $('save').onclick = () =>
-    (grubPath ? saveGrub() : mode === 'know' ? saveKnow() : save());
+  // Save, the button and Cmd+S alike. Nothing while the tab in front is not
+  // a document (a tool tab): what the editor holds then is a parked tab's
+  // buffer, and writing it from a screen that does not show it would leave
+  // that tab's snap claiming unsaved work the ship already has.
+  // grubPath first: it is the only mode with no `current`, and page save()
+  // would write to the wrong place (or nowhere) while a grub is open.
+  // Cmd+S matters more there than elsewhere, since grub mode has no autosave.
+  const saveFront = () => {
+    if (!docFront()) return;
+    if (grubPath) saveGrub();
+    else if (mode === 'know') saveKnow();
+    else save();
+  };
+  $('save').onclick = saveFront;
   // ── new page-tree from a template ────────────────────────────────────────
   // Templates stamp out a whole tree (the `site` template is four pages), and
   // each page is its own writer round-trip, so this is deliberately slow and
@@ -52,12 +64,7 @@
   window.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {
       e.preventDefault();
-      // grubPath first: it is the only mode with no `current`, and page save()
-      // would write to the wrong place (or nowhere) while a grub is open.
-      // Cmd+S matters more here than elsewhere, since grub mode has no autosave.
-      if (grubPath) saveGrub();
-      else if (mode === 'know') saveKnow();
-      else save();
+      saveFront();
     }
   });
   // Applies the list-continuation edit if the caret is in a list. Shared by

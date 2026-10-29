@@ -44,6 +44,10 @@
     }
     return null;
   };
+  // whether the tab in front is a document in the editor: its kind has
+  // live(). A tool tab is not, so the controls of the editor (Save, Edit /
+  // Read, rename, the Page tab) leave the document underneath alone.
+  const docFront = () => !activeTab || !!TAB_KINDS[activeTab.kind].live;
   // shows(t) for every editor kind: the live editor is this tab's document
   const showsLive = (t) => { const d = liveDoc(); return !!d && sameDoc(t, d); };
 

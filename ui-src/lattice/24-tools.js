@@ -25,10 +25,14 @@
     '/apps/lattice/know?lint=1': ['Memory review', 'tidy'],
   };
   const SETTINGS = 'frame:/apps/lattice/settings';
-  // only a path on this origin: a frame is dressed by reaching into it
+  // only a lattice path on this origin, whatever the key says: a frame is
+  // dressed by reaching into it, and a key can come from typed input
   const frameUrl = (key) => {
-    const u = key.startsWith('frame:') ? key.slice(6) : null;
-    return u && /^\/(?!\/)/.test(u) ? u : null;
+    if (!key.startsWith('frame:')) return null;
+    let u;
+    try { u = new URL(key.slice(6), location.origin); } catch { return null; }
+    if (u.origin !== location.origin || !/^\/apps\/lattice(\/|$)/.test(u.pathname)) return null;
+    return u.pathname + u.search;
   };
   const toolMeta = (key) => {
     if (TOOLS[key]) return [TOOLS[key].name, TOOLS[key].icon];
@@ -36,8 +40,13 @@
     return u ? FRAMES[u] || [u, 'globe'] : [key, 'gear'];
   };
   // every way into a tool. A tool gets a tab of its own rather than
-  // replacing the document in front, and an open one is focused.
-  const toolOpen = (id) => openIn('tool', id === 'settings' ? SETTINGS : id, { newTab: true });
+  // replacing the document in front, and an open one is focused. A phone
+  // shows the center only in its code view, so it goes there, also when the
+  // tool was in front already.
+  const toolOpen = async (id) => {
+    await openIn('tool', id === 'settings' ? SETTINGS : id, { newTab: true });
+    if (isMobile()) setMv('code');
+  };
 
   // which tool the host shows, null while a document is in front
   let toolShown = null;
@@ -47,8 +56,6 @@
     open: async (t) => {
       toolSync();
       if (TOOLS[t.key]) TOOLS[t.key].load();
-      // a phone shows the center only in its code view
-      if (isMobile()) setMv('code');
       return true;
     },
     // a tool has no buffer, so nothing to park and nothing to restore
@@ -94,9 +101,10 @@
     toolHost.append(f);
   }
   // Each load of a frame: the reader's own bar is hidden, since the shell
-  // around it is the chrome now. A link in it to the editor opens in the
-  // shell rather than nesting a second editor in the frame. Any other link
-  // navigates the frame as usual.
+  // around it is the chrome now. A link in it to a document in the editor
+  // opens that document in a new tab of the shell, never over the frame's
+  // own tab and never as a second editor nested in the frame. Any other
+  // link navigates the frame as usual.
   function frameDress(f) {
     let d = null;
     try { d = f.contentDocument; } catch {}
@@ -110,11 +118,13 @@
       let u;
       try { u = new URL(a.href); } catch { return; }
       if (u.origin !== location.origin || !/^\/apps\/lattice\/app\/?$/.test(u.pathname)) return;
-      e.preventDefault();
       const q = u.searchParams;
-      if (q.get('grub')) openIn('grub', q.get('grub'), { ship: q.get('ship') || null, ev: e });
-      else if (q.get('view') === 'know') openIn('know', q.get('key') || '', { ev: e });
-      else if (q.get('name')) openIn('page', q.get('name'), { ev: e });
+      const go = q.get('grub') ? ['grub', q.get('grub'), q.get('ship') || null]
+        : q.get('view') === 'know' ? ['know', q.get('key') || '', null]
+          : q.get('name') ? ['page', q.get('name'), null] : null;
+      if (!go) return;
+      e.preventDefault();
+      openIn(go[0], go[1], { ship: go[2], newTab: true });
     });
   }
   // Escape used to close the overlays. A tab is closed by its own close,
@@ -128,16 +138,29 @@
   // orrery writes the brief to journal/<day>. Whether that day is padded is
   // not settled, so the first of the two forms that exists wins, and with
   // neither the unpadded one is the name a new page starts with.
-  function briefKey(d) {
+  const briefForms = (d) => {
     const y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate();
     const p2 = (n) => String(n).padStart(2, '0');
-    const forms = ['journal/' + y + '.' + m + '.' + day, 'journal/' + y + '.' + p2(m) + '.' + p2(day)];
-    return forms.find((k) => nodes.some((n) => n.page && n.path === k)) || forms[0];
+    return ['journal/' + y + '.' + m + '.' + day, 'journal/' + y + '.' + p2(m) + '.' + p2(day)];
+  };
+  const hasPage = (k) => nodes.some((n) => n.page && n.path === k);
+  function briefKey(d) {
+    const forms = briefForms(d);
+    return forms.find(hasPage) || forms[0];
   }
   async function openBrief(ev) {
-    const key = briefKey(new Date());
-    // an empty tree has not loaded yet, and only the ship knows
-    if (!nodes.length || nodes.some((n) => n.page && n.path === key)) return openIn('page', key, { ev });
+    const d = new Date();
+    let key = briefKey(d);
+    let found = hasPage(key);
+    // an empty tree has not loaded yet, so the ship says which form exists.
+    // Opening a missing page would leave the tab blank and locked.
+    if (!nodes.length) {
+      for (const k of briefForms(d)) {
+        const r = await fetch(api + '/page-source?name=' + encodeURIComponent(k)).catch(() => null);
+        if (r && r.ok) { key = k; found = true; break; }
+      }
+    }
+    if (found) return openIn('page', key, { ev });
     await openIn('page', '', { ev });
     if (activeTab && activeTab.kind === 'page' && !activeTab.key && current === null)
       setOpen(null, { shown: key });
