@@ -31,39 +31,54 @@
   // ── what each mode does, said where it is picked ─────────────────────────
   // The three read as a set, and each says who can read the page and where
   // (apply-share in app.hoon): private is in no published copy at all;
-  // shared puts a copy in the vault that any ship reads over ames at its
-  // urb:// address; clearweb is shared plus the unauthenticated /c/ route.
-  // A ship or group granted below reads a private page too (share-file
-  // grants the code grub itself), so private says so.
+  // shared puts a copy under /pub, which is publicly granted, so any ship
+  // reads it over ames at its urb:// address; clearweb is shared plus the
+  // unauthenticated /c/ route. A ship or group granted below reads a
+  // private page too (share-file grants the code grub itself), so private
+  // says so.
   //
   // The addresses are the real ones for the target. cwUrl is the one the
   // public link below shows and the Published pages list (72-acl.js)
-  // copies, so the two can never disagree.
+  // copies, so the two can never disagree. urb:// has no folder form, so a
+  // folder's copy points at its pages instead of printing one.
   const cwUrl = (target) => location.origin + api + '/c/' + target;
-  const urbUrl = (target) => 'urb://' + (ourShip || '~yourship') + '/' + target;
-  // our own ship, for the urb:// address: Eyre's /~/host, asked once
+  // our own ship, for the urb:// address: Eyre's /~/host, asked once. ''
+  // while it is on its way, null if it failed. Until then there is no
+  // address, never a made-up one: nothing shows or copies a placeholder.
   let ourShip = '';
+  const urbUrl = (target) => (ourShip ? 'urb://' + ourShip + '/' + target : null);
+  const urbMissing = () => (ourShip === null ? 'address unavailable' : 'loading address');
   let shareShown = null;
-  fetch('/~/host').then((r) => (r.ok ? r.text() : '')).then((t) => {
-    ourShip = t.trim();
+  fetch('/~/host').then((r) => (r.ok ? r.text() : '')).catch(() => '').then((t) => {
+    ourShip = t.trim() || null;
     if (shareShown) paintShareCopy(shareShown);
     renderPublished();
-  }).catch(() => {});
+  });
+  const at = (u) => (u ? 'at ' + u : '(' + urbMissing() + ')');
   const SHARE_COPY = {
     private: () => 'Private: only you, and any ship or group you give access below. '
       + 'Not published anywhere.',
-    shared: (u) => 'Shared: published over Urbit. Any ship running lattice can open it at '
-      + u + '. Not on the web.',
-    clearweb: (u, w) => 'Clearweb: public on the web. Anyone with the link can read it at '
-      + w + ', no login needed. Also shared over Urbit at ' + u + '.',
+    shared: (u) => 'Shared: any ship can read it over Urbit ' + at(u) + '. Not on the web.',
+    clearweb: (u, w) => 'Clearweb: anyone with the link can read it on the web at '
+      + w + ', no login needed. Any ship can also read it over Urbit ' + at(u) + '.',
+  };
+  const FOLDER_COPY = {
+    private: SHARE_COPY.private,
+    shared: () => 'Shared: any ship can read every page in it over Urbit, each at its '
+      + 'own urb:// address (Access & groups lists them). Not on the web.',
+    clearweb: (u, w) => 'Clearweb: anyone with the link can read it on the web at '
+      + w + ', no login needed. Any ship can also read every page in it over Urbit.',
+    mixed: () => 'Mixed: the pages in this folder are not all shared the same way. '
+      + 'Access & groups lists the published ones.',
   };
   function paintShareCopy(m) {
     shareShown = m;
     const target = curFolder || current;
+    const copy = curFolder ? FOLDER_COPY : SHARE_COPY;
     const t = target ? target + (curFolder ? '/' : '') : 'this-page';
-    const u = urbUrl(t), w = cwUrl(t);
-    for (const b of document.querySelectorAll('.share button')) b.title = SHARE_COPY[b.dataset.m](u, w);
-    $('sharewhat').textContent = SHARE_COPY[m] ? SHARE_COPY[m](u, w) : '';
+    const u = curFolder ? null : urbUrl(t), w = cwUrl(t);
+    for (const b of document.querySelectorAll('.share button')) b.title = copy[b.dataset.m](u, w);
+    $('sharewhat').textContent = copy[m] ? copy[m](u, w) : '';
   }
 
   function showShare(m) {

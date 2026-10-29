@@ -31,9 +31,9 @@
     <div id="aclgrid" class="aclgrid"></div>
     <section class="aclpub" id="aclpub" data-action="published" aria-labelledby="aclpubh">
       <h4 id="aclpubh">published pages</h4>
-      <p class="aclnote">Pages anyone can read without a grant. Shared pages open
-      in lattice on any ship, at their urb:// address. Clearweb pages open in any
-      browser, at their https link.</p>
+      <p class="aclnote">Pages anyone can read without a grant. Any ship can read
+      a shared page over Urbit at its urb:// address. Anyone can read a clearweb
+      page in a browser at its https link.</p>
       <div id="publist"></div>
     </section>
     <div class="aclban">
@@ -102,15 +102,36 @@
         row.className = 'pubrow';
         row.dataset.share = mode;
         row.dataset.page = n.path;
-        // a urb:// address opens in the reader, a clearweb one in a new window
-        const a = document.createElement('a');
-        a.textContent = u;
-        if (mode === 'clearweb') { a.href = u; a.target = '_blank'; a.rel = 'noopener'; }
-        else a.href = api + '?url=' + encodeURIComponent(u);
         const b = tip(document.createElement('button'), 'Copy address');
         b.type = 'button';
         b.className = 'sbtn';
         b.innerHTML = ico('copy');
+        // no ship name yet (or none to be had): no address, and nothing to copy
+        if (!u) {
+          const m = document.createElement('span');
+          m.className = 'aclnote';
+          m.textContent = n.path + ': ' + urbMissing();
+          b.disabled = true;
+          row.append(m, b);
+          host.appendChild(row);
+          continue;
+        }
+        // a clearweb link opens in a new window. A urb:// address opens in
+        // the reader (/apps/lattice?url=), which leaves the editor, so a
+        // plain click goes the way the ribbon's Browser does (leaveTo,
+        // 24-tools.js): unsaved work is asked about first. A new-tab click
+        // leaves nothing behind and goes as it is.
+        const a = document.createElement('a');
+        a.textContent = u;
+        if (mode === 'clearweb') { a.href = u; a.target = '_blank'; a.rel = 'noopener'; }
+        else {
+          a.href = api + '?url=' + encodeURIComponent(u);
+          a.onclick = (e) => {
+            if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+            e.preventDefault();
+            leaveTo(a.href);
+          };
+        }
         b.onclick = async () => {
           try { await navigator.clipboard.writeText(u); st('copied ' + u); }
           catch { st('could not copy ' + u, false); }

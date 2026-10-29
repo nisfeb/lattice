@@ -2,7 +2,9 @@
 //  ui-reins-small.mjs: five small fixes to the editor shell, one block each.
 //
 //    the Files and Knowledge trees are ARIA trees the arrow keys walk, Enter
-//      opens a page (Ctrl+Enter in a new tab) and Ctrl+Shift+E focuses Files
+//      opens a page (Ctrl+Enter in a new tab) and Ctrl+Shift+F focuses Files
+//      (not from behind the palette); type-ahead finds folders, and Enter on
+//      a folder's + is the +
 //    the discard dialog for a long grub path (a shared page's) wraps the
 //      path and keeps its buttons inside the box, at desktop and phone width
 //    the share buttons say what each mode does, with the page's real
@@ -25,6 +27,7 @@ const LONG = RUN + '/a-really-long-page-name-that-keeps-going-and-going-past-the
 const PS = RUN + '/zpub/shared-one';
 const PC = RUN + '/zpub/web-one';
 const made = [PA, PB, LONG, PS, PC];
+const MEM = 'test/reins-suite';
 //  screenshots for the report, when asked for
 const SHOTS = process.env.REINS_SHOTS || '';
 const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
@@ -59,6 +62,12 @@ const press = async (k, mods = []) => {
 
 try {
   await seed(env, [[PA, '# a\n'], [PB, '# b\n'], [LONG, 'long\n']]);
+  // a fixed key, restored and reused: know-delete is a soft delete with
+  // no purge, so a per-run key would leave one in the trash every run
+  const kpost = (q, body) => fetch(env.base + '/apps/lattice/' + q,
+    { method: 'POST', headers: { Cookie: env.cookie }, body });
+  await kpost('know-restore?key=' + encodeURIComponent(MEM)).catch(() => {});
+  await kpost('know-save?key=' + encodeURIComponent(MEM), 'reins suite memory');
   await seed(env, [[PS, '# shared\n']], { share: 'shared' });
   await seed(env, [[PC, '# web\n']], { share: 'clearweb' });
   await page.goto(env.app + '/no-such-asset', { timeout: 30000 });
@@ -79,18 +88,36 @@ try {
     };
   });
   check('the Files list is an ARIA tree', aria.tree === 'tree' && aria.items > 2, JSON.stringify(aria));
-  check('the Knowledge list is an ARIA tree', aria.know === 'tree', JSON.stringify(aria));
+  // the memories load when their tab is first shown; until a row exists
+  // the list carries no tree role (a tree must own treeitems)
+  await page.evaluate(() => window.latShell.paneTab('l', 'know'));
+  await page.waitForFunction(() => document.querySelector('#knowlist [role=treeitem]'), { timeout: 30000 })
+    .catch(() => {});
+  const know = await page.evaluate(() => document.getElementById('knowlist').getAttribute('role'));
+  check('the Knowledge list is an ARIA tree once it has rows', know === 'tree', know);
+  check('it was not a tree while it held only the loading note', aria.know === null, String(aria.know));
   check('the Files tree is one tab stop', aria.stops === 1, JSON.stringify(aria));
-  check('the Files tab tooltip names Ctrl+Shift+E', aria.tip === 'Files (Ctrl+Shift+E)', aria.tip);
+  check('the Files tab tooltip names Ctrl+Shift+F', aria.tip === 'Files (Ctrl+Shift+F)', aria.tip);
 
   await page.evaluate(() => window.latShell.paneTab('l', 'know'));
   await page.evaluate(() => document.body.focus());
-  await press('E', ['Control', 'Shift']);
+  await press('F', ['Control', 'Shift']);
   const viaKey = await page.evaluate(() => ({
     files: !document.querySelector('#lbody > [data-pane=files]').hidden,
     inTree: document.getElementById('treelist').contains(document.activeElement),
   }));
-  check('Ctrl+Shift+E shows Files and focuses its tree', viaKey.files && viaKey.inTree, JSON.stringify(viaKey));
+  check('Ctrl+Shift+F shows Files and focuses its tree', viaKey.files && viaKey.inTree, JSON.stringify(viaKey));
+  // not from behind a modal: the palette keeps the focus
+  await page.evaluate(() => document.getElementById('rb-palette').click());
+  await sleep(300);
+  await press('F', ['Control', 'Shift']);
+  const behind = await page.evaluate(() => ({
+    open: !document.getElementById('palette').hidden,
+    inTree: document.getElementById('treelist').contains(document.activeElement),
+  }));
+  check('Ctrl+Shift+F does nothing while the palette is open', behind.open && !behind.inTree,
+    JSON.stringify(behind));
+  await press('Escape');
 
   const F = 'f:' + RUN, SUB = 'f:' + RUN + '/sub', A = 'p:' + PA, B = 'p:' + PB;
   await focusRow(F);
@@ -125,6 +152,21 @@ try {
     return r[r.length - 1].dataset.tk;
   });
   check('End goes to the last row', await focusKey() === last, await focusKey());
+  await focusRow(F);
+  await press('z');
+  check('type-ahead lands on a folder by its name', await focusKey() === 'f:' + RUN + '/zpub', await focusKey());
+
+  // Enter on a folder's + makes a page there, it does not select the folder
+  await page.evaluate((k) => document.querySelector('#treelist [data-tk="' + CSS.escape(k) + '"] .addf').focus(), SUB);
+  await press('Enter');
+  await sleep(800);
+  const plus = await page.evaluate(() => ({
+    dlg: !document.getElementById('dlg').hidden, seed: document.getElementById('dlginput').value,
+  }));
+  check('Enter on a folder\'s + opens the new page dialog in it',
+    plus.dlg && plus.seed.startsWith(RUN + '/sub'), JSON.stringify(plus));
+  if (plus.dlg) await page.evaluate(() => document.getElementById('dlgcancel').click());
+  await sleep(300);
 
   await focusRow(A);
   await press('Enter');
@@ -192,15 +234,25 @@ try {
       t: Object.fromEntries([...document.querySelectorAll('.share button')].map((b) => [b.dataset.m, b.title])),
       what: document.getElementById('sharewhat') ? document.getElementById('sharewhat').textContent : '',
     }));
-    check('shared says it publishes over Urbit to any lattice ship',
-      /published over Urbit/.test(c.t.shared) && /Any ship running lattice can open it/.test(c.t.shared)
-      && c.t.shared.includes('urb://' + ship + '/' + PA), JSON.stringify(c.t.shared));
-    check('clearweb gives the https address and says it is public',
-      /public on the web/.test(c.t.clearweb) && c.t.clearweb.includes(env.base + '/apps/lattice/c/' + PA),
-      JSON.stringify(c.t.clearweb));
+    check('shared says any ship can read it over Urbit, at its address',
+      c.t.shared.startsWith('Shared: any ship can read it over Urbit at urb://' + ship + '/' + PA + '.'),
+      JSON.stringify(c.t.shared));
+    check('clearweb gives the https address and says anyone can read it',
+      /^Clearweb: anyone with the link can read it on the web at /.test(c.t.clearweb)
+      && c.t.clearweb.includes(env.base + '/apps/lattice/c/' + PA), JSON.stringify(c.t.clearweb));
     check('private says who can read it', /^Private: only you/.test(c.t.private || ''), JSON.stringify(c.t.private));
     check('the open page\'s mode is described under the buttons', /^Private: /.test(c.what), c.what);
     check('no em-dash in the share copy', !JSON.stringify(c).includes('\u2014'), '');
+    // a folder has no urb:// address, and a mixed one still says something
+    await page.evaluate((k) => document.querySelector('#treelist [data-tk="' + CSS.escape(k) + '"]').click(),
+      'f:' + RUN + '/zpub');
+    await sleep(1200);
+    const f = await page.evaluate(() => ({
+      t: [...document.querySelectorAll('.share button')].map((b) => b.title),
+      what: document.getElementById('sharewhat').textContent,
+    }));
+    check('a mixed folder is described, not left blank', /^Mixed: /.test(f.what), f.what);
+    check('no folder gets a urb:// address', !/urb:\/\/~/.test(JSON.stringify(f)), JSON.stringify(f));
   }
 
   // ── 4. Published pages in Access & groups ──────────────────────────────
@@ -263,6 +315,28 @@ try {
     }
   }
 
+  // ── 4b. no ship name, no address: never a placeholder ─────────────────
+  {
+    const p = await openPage(browser, env, { viewport: { width: 1400, height: 900 } });
+    await p.setRequestInterception(true);
+    p.on('request', (r) => (r.url().endsWith('/~/host') ? r.abort() : r.continue()));
+    await boot(p);
+    await p.evaluate(() => document.getElementById('rb-access').click());
+    await sleep(1200);
+    const r = await p.evaluate((k) => {
+      const row = document.querySelector('#publist .pubrow[data-page="' + k + '"]');
+      return row ? { text: row.textContent, off: row.querySelector('button').disabled } : null;
+    }, PS);
+    check('without the ship name a shared row says so, and cannot copy',
+      r && /address unavailable/.test(r.text) && !r.text.includes('urb://') && r.off, JSON.stringify(r));
+    await p.evaluate((k) => window.latTabs.openIn('page', k, {}), PS);
+    await sleep(1500);
+    const t = await p.evaluate(() => document.querySelector('.share button[data-m=shared]').title);
+    check('and the share copy says the address is unavailable',
+      /\(address unavailable\)/.test(t) && !t.includes('urb://'), t);
+    await p.close();
+  }
+
   // ── 5. only the checkbox toggles, not the words beside it ──────────────
   {
     await page.evaluate((k) => window.latTabs.openIn('page', k, {}), PA);
@@ -316,6 +390,38 @@ try {
       check(id + ' keeps an accessible name', named, '');
     }
   }
+
+  // ── 4c. a urb:// row leaves the editor through the unsaved-work guard ──
+  {
+    const base = await page.evaluate(() => localStorage.latBase);
+    const ship = (await (await fetch(env.base + '/~/host')).text()).trim();
+    await page.evaluate(async (g, sh) => window.latTabs.openIn('grub', g, { ship: sh }),
+      base + '/page/' + LONG + '/code', ship);
+    await sleep(2500);
+    await page.evaluate(() => {
+      const s = document.getElementById('src');
+      s.value += 'y';
+      s.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.evaluate(() => document.getElementById('rb-access').click());
+    await sleep(1200);
+    const before = page.url();
+    await page.evaluate((k) =>
+      document.querySelector('#publist .pubrow[data-page="' + k + '"] a').click(), PS);
+    await sleep(800);
+    const asked = await page.evaluate(() => ({
+      dlg: !document.getElementById('dlg').hidden, msg: document.getElementById('dlgmsg').textContent,
+    }));
+    check('a urb:// row asks about unsaved work before leaving', asked.dlg && page.url() === before,
+      JSON.stringify(asked));
+    await Promise.all([
+      page.waitForNavigation({ timeout: 30000 }).catch(() => null),
+      page.evaluate(() => document.getElementById('dlgok').click()),
+    ]);
+    const u = new URL(page.url());
+    check('and then opens the page in the reader',
+      u.pathname === '/apps/lattice' && u.searchParams.get('url') === 'urb://' + ship + '/' + PS, page.url());
+  }
 } catch (e) {
   check('threw: ' + String(e.message).slice(0, 140), false);
 } finally {
@@ -324,6 +430,8 @@ try {
       { method: 'POST', headers: { Cookie: env.cookie } }).catch(() => {});
   }
   await fetch(env.base + '/apps/lattice/page-del?name=' + encodeURIComponent(RUN),
+    { method: 'POST', headers: { Cookie: env.cookie } }).catch(() => {});
+  await fetch(env.base + '/apps/lattice/know-delete?key=' + encodeURIComponent(MEM),
     { method: 'POST', headers: { Cookie: env.cookie } }).catch(() => {});
   await browser.close();
 }
