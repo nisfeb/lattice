@@ -1482,50 +1482,28 @@ try {
     encodeURIComponent(n), { method: 'POST' }), SQ);
 
   step = 'mobile';
-  // ── 10. mobile: toggle reveals the tree, opening jumps to the editor ─────
+  // ── 10. mobile: search opens the left drawer, opening a page shuts it ──
   await page.setViewport({ width: 390, height: 780, isMobile: true });
   await page.goto(APP, { waitUntil: 'domcontentloaded' });
-  // at phone width search lives in the ⋯ sheet (97-mobar.js) and lands on
-  // the left pane's Search tab, in the tree view
-  await page.click('#mmore');
-  await page.click('#ms-q');
-  await wait(() => document.getElementById('ws').dataset.mv === 'tree');
-  check('mobile: search (via ⋯) jumps to the tree view',
+  // at phone width search is the bottom bar's (97-mobar.js), and it lands
+  // on the left drawer's Search tab
+  await page.click('#mb-search');
+  await wait(() => document.getElementById('ws').classList.contains('ldraw'));
+  check('mobile: search (bottom bar) opens the left drawer on Search',
     await page.evaluate(() => getComputedStyle(document.getElementById('qpane')).display) !== 'none');
   await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
   await wait(() => document.querySelector('#treelist a.pg'));
   await page.evaluate(() => document.querySelector('#treelist a.pg').click());
-  await wait(() => document.getElementById('ws').dataset.mv === 'code');
-  ok('mobile: opening a page jumps to the editor pane');
-
-  // full-screen editing. The trap this guards against is losing the way back:
-  // full screen hides the bar and the tabs, so if the control went with them
-  // the only exit would be a reload.
-  const vis = (id) => page.evaluate((i) => {
-    const e = document.getElementById(i);
-    return !!e && getComputedStyle(e).display !== 'none';
-  }, id);
-  check('mobile: the full-screen control is offered while editing', await vis('fullt'));
-  await page.click('#fullt');
-  await wait(() => document.getElementById('ws').classList.contains('full'));
-  //  read the real element, never a missing one: a selector that matches
-  //  nothing would make "it is hidden" pass for the wrong reason
-  const shown = (sel) => page.evaluate((s) => {
-    const e = document.querySelector(s);
-    if (!e) throw new Error('no element for ' + s);
-    return getComputedStyle(e).display !== 'none';
-  }, sel);
-  check('mobile: full screen hides the bar', !(await shown('.bar')));
-  check('mobile: full screen hides the tab strip', !(await shown('.mtabs')));
-  check('mobile: and the editor is still there', await vis('src'));
-  // the one that matters
-  check('mobile: the way OUT is still on screen', await vis('fullt'));
-  await page.click('#fullt');
-  await wait(() => !document.getElementById('ws').classList.contains('full'));
-  check('mobile: leaving full screen brings the tabs back', await shown('.mtabs'));
-  // desktop shows every pane at once, so the control has nothing to reveal
+  await wait(() => !document.getElementById('ws').classList.contains('ldraw'));
+  ok('mobile: opening a page shuts the drawer');
+  // the drawers and the tab header replaced full-screen editing
+  check('mobile: no full-screen control', await page.evaluate(() => !document.getElementById('fullt')));
+  // a drawer left open across the breakpoint would hide nothing on desktop,
+  // but its toggle would read pressed for a column that is shut
+  await page.evaluate(() => document.getElementById('treet').click());
   await page.setViewport({ width: 1400, height: 900 });
-  check('desktop: no full-screen control', !(await vis('fullt')));
+  await wait(() => !document.getElementById('ws').classList.contains('ldraw'));
+  ok('desktop: crossing the breakpoint shuts the drawer');
   await page.setViewport({ width: 390, height: 780, isMobile: true });
 
   step = 'dark theme';

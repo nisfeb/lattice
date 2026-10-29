@@ -160,8 +160,8 @@
   // ── the same two moves, reachable by thumb ────────────────────────────────
   // A soft keyboard has no Tab key at all — the keydown branch above simply
   // never fires on a phone, the same hole Enter had before beforeinput. There
-  // is no beforeinput for Tab, so mobile gets buttons: a small fixed pair
-  // (like #fullt) that exists only while the caret sits somewhere listTab
+  // is no beforeinput for Tab, so mobile gets buttons: a small floating pair
+  // that exists only while the caret sits somewhere listTab
   // would actually act. The predicate IS listTab: the cluster shows exactly
   // when a tap would do something, fences and gemtext included, because it
   // asks the same function the tap will call.
@@ -187,8 +187,8 @@
     b.addEventListener('pointerdown', (e) => { e.preventDefault(); ltab(dir); });
     lbtns.appendChild(b);
   }
-  // inside .ws, not body: the show rule is scoped by the workspace's
-  // data-mv, and a descendant selector needs the descendant part. By id,
+  // inside .ws, not body: at phone width it is a grid item laid over the
+  // center's bottom corner (the 820px block). By id,
   // not the `ws` binding — that const lives in 85-layout.js, which
   // evaluates AFTER this file (TDZ: reaching it here killed the bundle).
   $('ws').appendChild(lbtns);

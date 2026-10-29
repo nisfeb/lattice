@@ -719,6 +719,7 @@
     menu: ['0 0 24 24', 'M4 6h16M4 12h16M4 18h16', 'stroke'],
     plus: ['0 0 24 24', 'M12 5v14M5 12h14', 'stroke'],
     pin: ['0 0 24 24', 'M9 3h6l-1 6 3 4H7l3-4zM12 13v8', 'stroke'],
+    tabs: ['0 0 24 24', 'M8 8h12v12H8zM4 16V4h12', 'stroke'],
     mark: ['0 0 24 24', 'M6 3h12v18l-6-4-6 4z', 'stroke'],
     know: ['0 0 24 24', 'M12 3l8 9-8 9-8-9z', 'stroke'],
     doc: ['0 0 24 24', 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5', 'stroke'],
@@ -973,7 +974,7 @@
     });
 
 // ── src/12-bar.js ─────────────────────────────────────────────────────────
-  // ── top bar + mobile tabs: <lat-bar>, <lat-tabs> ─────────────────────────
+  // ── top bar: <lat-bar> ───────────────────────────────────────────────────
   // The shell frame (13-frame.js) took the bar's job on desktop: the corner
   // toggles, the status line and its spinner live there now, and this bar
   // shows only at phone width. Its other controls stay in the DOM, hidden,
@@ -1005,17 +1006,6 @@
   <button id="wrapt" class="ico" hidden title="toggle line wrap" aria-label="toggle line wrap">&#8617;</button>
 </header>`;
       pname = $('pname'); pkind = $('pkind');
-    }
-  });
-  customElements.define('lat-tabs', class extends HTMLElement {
-    connectedCallback() {
-      this.innerHTML = `
-<nav class="mtabs" id="mtabs">
-  <button data-mv="tree">tree</button>
-  <button data-mv="code" class="on">code</button>
-  <button data-mv="prev">preview</button>
-  <button data-mv="ctl">controls</button>
-</nav>`;
     }
   });
 
@@ -1147,18 +1137,37 @@
   // The stored keys still mean HIDDEN ('1'), as they always have, so a
   // layout saved before the frame comes back the same. The buttons say
   // whether the pane is OPEN: pressed means showing.
+  //
+  // On a phone the panes are drawers over the document instead (97-mobar.js
+  // has the scrim and the swipe), one at a time, and the same calls drive
+  // them: a corner toggle, a pane tab's action, search. Whether a drawer is
+  // open is not kept, and the desktop columns' stored state is left alone.
   const OPENKEY = { l: 'appNT', r: 'appNC' };
+  const isMobile = () => matchMedia('(max-width: 820px)').matches;
   function paintPanes() {
     const ws = $('ws');
+    const phone = isMobile();
     for (const [side, cls, id] of [['l', 'nt', 'treet'], ['r', 'nc', 'ctlt']]) {
       const shut = localStorage[OPENKEY[side]] === '1';
       ws.classList.toggle(cls, shut);
+      const on = phone ? ws.classList.contains(side + 'draw') : !shut;
       const b = $(id);
-      b.classList.toggle('on', !shut);
-      b.setAttribute('aria-pressed', shut ? 'false' : 'true');
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
   }
+  function drawer(side, open) {
+    const ws = $('ws');
+    if (open === undefined) open = !ws.classList.contains(side + 'draw');
+    ws.classList.toggle('ldraw', open && side === 'l');
+    ws.classList.toggle('rdraw', open && side === 'r');
+    paintPanes();
+    return open;
+  }
+  // opening a document puts both drawers away
+  const drawersClose = () => drawer('l', false);
   function paneOpen(side, open) {
+    if (isMobile()) return drawer(side, open);
     if (open === undefined) open = localStorage[OPENKEY[side]] === '1';
     try { localStorage[OPENKEY[side]] = open ? '0' : '1'; } catch {}
     paintPanes();
@@ -1226,7 +1235,7 @@
   }
 
   // for the browser suites, which cannot reach this scope
-  window.latShell = { paneTab, paneOpen, ribbonAdd };
+  window.latShell = { paneTab, paneOpen, ribbonAdd, drawer };
 
 // ── src/15-dialog.js ──────────────────────────────────────────────────────
   // ── in-app dialogs, NEVER browser-native prompt/confirm/alert ────────────
@@ -2817,12 +2826,12 @@
     return u ? FRAMES[u] || [u, 'globe'] : [key, 'gear'];
   };
   // every way into a tool. A tool gets a tab of its own rather than
-  // replacing the document in front, and an open one is focused. A phone
-  // shows the center only in its code view, so it goes there, also when the
-  // tool was in front already.
+  // replacing the document in front, and an open one is focused. On a phone
+  // the drawer it was opened from goes away, also when the tool was in
+  // front already.
   const toolOpen = async (id) => {
     await openIn('tool', id === 'settings' ? SETTINGS : id, { newTab: true });
-    if (isMobile()) setMv('code');
+    drawersClose();
   };
 
   // which tool the host shows, null while a document is in front
@@ -3232,7 +3241,7 @@
     palClose();
     if (r.kind === 'action') { r.a.run(ev); return; }
     openIn(r.kind, r.key, { ev });
-    if (isMobile()) setMv('code');
+    drawersClose();
   }
   paletteOpen = palShow;   // the ribbon's button (24-tools.js)
 
@@ -4673,7 +4682,7 @@
     // Paint locally now; the fetch still corrects it when it arrives.
     else paintLocal();
     if (!CONTENT() && !quiet) checkErrors();
-    if (isMobile()) setMv('code');
+    drawersClose();
   }
 
   // blankPage: the editor reset a new page starts from. Nothing named is
@@ -5299,8 +5308,8 @@
   // ── the same two moves, reachable by thumb ────────────────────────────────
   // A soft keyboard has no Tab key at all — the keydown branch above simply
   // never fires on a phone, the same hole Enter had before beforeinput. There
-  // is no beforeinput for Tab, so mobile gets buttons: a small fixed pair
-  // (like #fullt) that exists only while the caret sits somewhere listTab
+  // is no beforeinput for Tab, so mobile gets buttons: a small floating pair
+  // that exists only while the caret sits somewhere listTab
   // would actually act. The predicate IS listTab: the cluster shows exactly
   // when a tap would do something, fences and gemtext included, because it
   // asks the same function the tap will call.
@@ -5326,8 +5335,8 @@
     b.addEventListener('pointerdown', (e) => { e.preventDefault(); ltab(dir); });
     lbtns.appendChild(b);
   }
-  // inside .ws, not body: the show rule is scoped by the workspace's
-  // data-mv, and a descendant selector needs the descendant part. By id,
+  // inside .ws, not body: at phone width it is a grid item laid over the
+  // center's bottom corner (the 820px block). By id,
   // not the `ws` binding — that const lives in 85-layout.js, which
   // evaluates AFTER this file (TDZ: reaching it here killed the bundle).
   $('ws').appendChild(lbtns);
@@ -5863,11 +5872,9 @@
     if (root) return html.slice(0, root.index + root[0].length) + fit + html.slice(root.index + root[0].length);
     return fit + html;
   };
-  // nobody sees the preview on a phone off its tab, or on a desktop in the
-  // editor-only view (85-layout.js); the view buttons refresh it on the way
-  // back, the tab strip likewise
-  const previewHidden = () =>
-    (isMobile() ? ws.dataset.mv !== 'prev' : ws.classList.contains('ve'));
+  // nobody sees the preview in Edit (23-tabhead.js), on a phone or not;
+  // Read refreshes it on the way back
+  const previewHidden = () => ws.classList.contains('ve');
   const paintLocal = () => {
     if (!CONTENT() || document.hidden) return;
     if (previewHidden()) return;
@@ -8309,7 +8316,6 @@
   const qOpen = () => {
     paneOpen('l', true);
     paneTab('l', 'search');
-    if (isMobile()) setMv('tree');
     const i = $('qinput');
     i.focus();
     i.select();
@@ -8474,7 +8480,7 @@
   const cfOpen = () => toolOpen('conflicts');
 
 // ── src/85-layout.js ──────────────────────────────────────────────────────
-  // ── layout toggles + mobile tabs ─────────────────────────────────────────
+  // ── layout toggles ────────────────────────────────────────────────────────
   const ws = $('ws');
   // soft-wrap is the default (long lines running off-screen are unusable on
   // mobile). The toggle still turns it off, and a saved preference wins.
@@ -8482,11 +8488,9 @@
   const applyToggles = () => {
     paintPanes();   // the side panes and their corner toggles (13-frame.js)
     ws.classList.toggle('wrap', localStorage.appWrap === '1');
-    // Edit or Read, per tab (23-tabhead.js). Desktop only: the phone's tab
-    // strip is already one pane at a time, and its CSS never sees these classes
+    // Edit or Read, per tab (23-tabhead.js)
     applyRead();
-    //  the on class is paint alone, so mirror the state in aria-pressed the
-    //  way setFull below does
+    //  the on class is paint alone, so mirror the state in aria-pressed
     {
       const on = localStorage.appWrap === '1';
       const b = $('wrapt');
@@ -8506,64 +8510,9 @@
   // Contain it — a broken layout widget is survivable; a dead tree is not.
   try { applyToggles(); } catch (e) { console.error('[lattice] layout init failed', e); }
 
-  // ── mobile: full-screen editing ──────────────────────────────────────────
-  // Created here rather than in <lat-bar>, and appended to #ws, because it has
-  // to survive the state it creates: full screen hides the bar, so a button
-  // inside the bar would take the only way out with it.
-  //
-  // Labelled in words, not an icon. There is no full-screen glyph with broad
-  // font coverage, and this codebase has already shipped an invisible button
-  // once — the access-control key was U+26BF and drew as an empty box, which
-  // every existence check passed. Two short words always render.
-  //
-  // The state persists: it reads as a preference ("I write full screen"),
-  // matching the other layout toggles, and the way back is on screen the whole
-  // time so a remembered full screen cannot trap anyone.
-  const fullt = document.createElement('button');
-  fullt.id = 'fullt';
-  fullt.type = 'button';
-  const setFull = (on) => {
-    ws.classList.toggle('full', on);
-    localStorage.appFull = on ? '1' : '0';
-    fullt.textContent = on ? 'exit' : 'full';
-    fullt.title = on ? 'leave full-screen editing' : 'full-screen editing';
-    fullt.setAttribute('aria-label', fullt.title);
-    fullt.setAttribute('aria-pressed', on ? 'true' : 'false');
-  };
-  fullt.onclick = () => setFull(!ws.classList.contains('full'));
-  ws.appendChild(fullt);
-  try { setFull(localStorage.appFull === '1'); } catch (e) { console.error('[lattice] full-screen init failed', e); }
-
-  const isMobile = () => matchMedia('(max-width: 820px)').matches;
-  const MV = ['tree', 'code', 'prev', 'ctl'];
-  const setMv = (v) => {
-    ws.dataset.mv = v;
-    // remember the pane so a reload resumes it. The service-worker takeover
-    // reloads the editor a few seconds into every session to drop stale code,
-    // and without this it landed back in 'code' on the snapshot page, yanking
-    // the user off whatever tree, preview or page they had moved to.
-    try { localStorage.appMv = v; } catch {}
-    for (const x of document.querySelectorAll('.mtabs button'))
-      x.className = x.dataset.mv === v ? 'on' : '';
-    if (v === 'prev') showPreview();
-  };
-  for (const b of document.querySelectorAll('.mtabs button'))
-    b.onclick = () => setMv(b.dataset.mv);
-  // On a phone the code pane is the wrong place to land with nothing open. It
-  // is an empty box, and the tree is how you get anywhere. Default to the
-  // tree and let opening a file move us. applyPage switches to 'code' on
-  // mobile, so a remembered or ?name page still lands in the editor. Desktop
-  // shows every pane at once, so 'code' remains right there.
-  //
-  // The last pane the user saw wins over that default WHEN a page resumes, so
-  // a reload lands them back where they were instead of forcing the editor
-  // over the tree or preview. Captured ONCE here, before boot's snapshot
-  // paint runs applyPage (which jumps to 'code' and would overwrite it); boot
-  // re-applies bootMv after the paint, and only then (see 99-boot.js). The
-  // initial pane stays the plain default, so a cold start with nothing open
-  // still lands on the tree, not an empty editor.
-  const bootMv = isMobile() ? (MV.includes(localStorage.appMv) ? localStorage.appMv : 'tree') : 'code';
-  setMv(isMobile() ? 'tree' : 'code');
+  // The phone's old one-pane switcher and its full-screen mode are gone
+  // (the drawers in 97-mobar.js replaced them). Their stored state goes too.
+  try { localStorage.removeItem('appMv'); localStorage.removeItem('appFull'); } catch {}
 
   // ── pane resize: drag a boundary, double-click it to reset ───────────────
   // Widths live in CSS custom properties on #ws (see .psplit in the shell
@@ -9151,7 +9100,7 @@
     exitRev();
     resetPanels();
     st('memory · ' + (d.tags || []).map((t) => '#' + t).join(' '));
-    if (isMobile()) setMv('code');
+    drawersClose();
   }
 
   function renderKnowTags(tags) {
@@ -9457,94 +9406,133 @@
   }
 
 // ── src/97-mobar.js ───────────────────────────────────────────────────────
-  // ── mobile: one bar row + a ⋯ sheet ──────────────────────────────────────
-  // At phone width the bar used to wrap into three rows — the icon cluster
-  // was flex-wrap overflow, and the name input held a full-width row for a
-  // once-per-page action — 184px of chrome before the tab strip's content.
+  // ── phone: drawers and the bottom bar ────────────────────────────────────
+  // At phone width (the 820px block) the side panes are drawers over the
+  // document. Every way into a pane opens its drawer (paneOpen, 13-frame.js:
+  // the corner toggles, a pane tab's action, search), and so does a swipe in
+  // from that edge. The scrim, Escape or opening a document shuts them. The
+  // ribbon rides at the top of the left drawer by CSS alone, so its buttons
+  // stay the one set they are.
   //
-  // Same doctrine as the desktop deskbar (96-deskmenu.js): nothing is
-  // removed, and the ⋯ sheet CLICKS the page's own hidden buttons (or calls
-  // the one function behind them), so there is exactly one implementation
-  // of search/comments/access and nothing to drift. Everything here is
-  // built unconditionally and shown or hidden by the 820px CSS block, so a
-  // resize across the breakpoint just works, with no load-time isMobile
-  // branching to go stale.
+  // The bottom bar holds what a thumb reaches for most: a new page, search,
+  // today's brief and the open tabs. Like the drawers it is built always and
+  // shown only by the 820px block, so a resize across the breakpoint just
+  // works, with no load-time isMobile branching to go stale.
   {
-    const bar = document.querySelector('.bar');
+    const drawn = () => ws.classList.contains('ldraw') || ws.classList.contains('rdraw');
+    const scrim = document.createElement('div');
+    scrim.id = 'scrim';
+    scrim.onclick = drawersClose;
+    ws.append(scrim);
+    addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawn()) drawersClose(); });
+    // across the breakpoint the drawers start shut, and the corner toggles
+    // repaint for the layout that is now showing
+    matchMedia('(max-width: 820px)').addEventListener('change', drawersClose);
 
-    // the label: which page is open. Sits where the name input was; the
-    // input stays in the DOM with its value (everything reads pname.value).
-    const mpath = document.createElement('div');
-    mpath.id = 'mpath';
-    mpath.setAttribute('aria-live', 'polite');
-    pname.after(mpath);
-    // the name it last showed, so a repaint with nothing new never rewrites
-    // the aria-live label with the text it already holds
-    let mshown = null;
-    const mpaint = () => {
-      const v = (pname.value || '').trim();
-      if (v === mshown) return;
-      mshown = v;
-      mpath.textContent = v || 'no page open';
-      mpath.className = v ? '' : 'muted';
-    };
-    mpaint();
-    // setOpen (20-state.js) dispatches 'input' whenever what is open
-    // changes, and typing fires it natively, so this needs no poll
-    pname.addEventListener('input', mpaint);
+    // the edge swipe: it starts within EDGE px of a screen edge and travels
+    // EDGE px inward, more across than down. Never while text in the editor
+    // is selected, where dragging a handle to the edge means the selection.
+    const EDGE = 24;
+    const selecting = () => document.activeElement === src && src.selectionStart !== src.selectionEnd;
+    let sw = null;
+    addEventListener('touchstart', (e) => {
+      sw = null;
+      if (!isMobile() || e.touches.length !== 1 || drawn() || selecting()
+        || document.querySelector('.dlg:not([hidden])')) return;
+      const { clientX: x, clientY: y } = e.touches[0];
+      const side = x <= EDGE ? 'l' : x >= innerWidth - EDGE ? 'r' : null;
+      if (side) sw = { side, x, y };
+    }, { passive: true });
+    addEventListener('touchmove', (e) => {
+      if (!sw) return;
+      if (selecting()) { sw = null; return; }
+      const t = e.touches[0];
+      const dx = (t.clientX - sw.x) * (sw.side === 'l' ? 1 : -1);
+      const dy = Math.abs(t.clientY - sw.y);
+      if (dy > EDGE && dy >= dx) { sw = null; return; }   // a scroll, not a swipe
+      if (dx >= EDGE && dx > dy) { const s = sw.side; sw = null; drawer(s, true); }
+    }, { passive: true });
+    addEventListener('touchend', () => { sw = null; }, { passive: true });
 
-    // tap: rename what is open (the controls pane's own move/rename flow),
-    // or start a page when nothing is. Both are existing buttons.
-    mpath.addEventListener('click', () => {
-      if (current || curFolder) { $('mv').click(); return; }
-      // current===null with text in the box is grub mode or an unsaved new
-      // page — the reset newFile() does would throw that work away
-      if (src.value.trim()) return;
-      newFile('');
-    });
-
-    // the ⋯ button and its sheet
-    const more = document.createElement('button');
-    more.id = 'mmore';
-    more.className = 'ico';
-    more.title = 'more';
-    more.innerHTML = '&#8943;';
-    bar.appendChild(more);
+    // the open-tabs sheet: one row per tab, the tab in front marked. A row
+    // switches to its tab; its x closes it, asking first as the strip's does.
     const sheet = document.createElement('div');
-    sheet.id = 'msheet';
+    sheet.id = 'mtsheet';
+    sheet.className = 'mtsheet';
+    sheet.setAttribute('role', 'menu');
+    sheet.setAttribute('aria-label', 'Open tabs');
     sheet.hidden = true;
-    // [sheet row id to create, what it does, icon, label]. Search is the
-    // left pane's tab (qOpen, 79-search.js); memories are its Knowledge tab,
-    // reached from the tree view's own tab row, so there is no mode row.
-    const rows = [
-      ['ms-q', () => qOpen(), 'search', 'search'],
-      ['ms-cm', () => cmOpen(), 'comment', 'comments'],
-      ['ms-acl', () => aclOpen(), 'key', 'access'],
-    ];
-    for (const [rid, run, icon, label] of rows) {
-      const b = document.createElement('button');
-      b.id = rid;
-      if (icon) b.innerHTML = ico(icon) + ' ';
-      b.append(label);
-      b.onclick = () => { sheet.hidden = true; run(); };
-      sheet.appendChild(b);
-    }
-    bar.appendChild(sheet);
-    more.onclick = () => { sheet.hidden = !sheet.hidden; };
-    // tapping anywhere else puts it away
-    document.addEventListener('click', (e) => {
-      if (!sheet.hidden && !sheet.contains(e.target) && e.target !== more) sheet.hidden = true;
-    });
+    const sheetPaint = () => {
+      sheet.textContent = '';
+      for (const t of tabs) {
+        const k = TAB_KINDS[t.kind];
+        const name = k.label(t);
+        const row = document.createElement('div');
+        row.className = 'mtrow' + (t === activeTab ? ' on' : '');
+        row.dataset.key = t.key;
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'mtname';
+        b.setAttribute('role', 'menuitem');
+        b.innerHTML = ico(t.pinned ? 'pin' : typeof k.icon === 'function' ? k.icon(t) : k.icon)
+          + '<span></span>';
+        b.lastChild.textContent = name;
+        b.onclick = () => { sheet.hidden = true; switchTab(t.id); };
+        const x = tip(document.createElement('button'), 'Close ' + name);
+        x.type = 'button';
+        x.className = 'sbtn mtx';
+        x.innerHTML = ico('x');
+        x.onclick = async () => { await closeTab(t.id); if (!sheet.hidden) sheetPaint(); };
+        row.append(b, x);
+        sheet.append(row);
+      }
+    };
 
-    // the unread-comments badge lives on the ribbon's inbox, which a phone
-    // does not show; mirror it onto ⋯ and the sheet row so the signal stays.
+    // the bottom bar. Each button is its own home in the palette, listed
+    // only while the bar is on screen.
+    const mbar = document.createElement('nav');
+    mbar.id = 'mbar';
+    mbar.className = 'mbar';
+    mbar.setAttribute('aria-label', 'Bottom bar');
+    const mitem = (id, icon, name, run) => {
+      const b = tip(document.createElement('button'), name);
+      b.type = 'button';
+      b.className = 'sbtn';
+      b.id = id;
+      b.dataset.action = id;
+      b.innerHTML = ico(icon);
+      b.onclick = (ev) => run(ev);
+      action({ id, name, home: 'Bottom bar', run, when: isMobile });
+      mbar.append(b);
+      return b;
+    };
+    // the Files toolbar's new page does the same: newFile paints over the
+    // editor, so what is unsaved there goes through guardDirty first
+    mitem('mb-new', 'plus', 'New page', async () => { if (await guardDirty()) newFile(''); });
+    mitem('mb-search', 'search', 'Search', () => qOpen());
+    mitem('mb-brief', 'cal', "Today's brief", (ev) => openBrief(ev));
+    const tabsw = mitem('mtabsw', 'tabs', 'Open tabs', () => {
+      if (sheet.hidden) sheetPaint();
+      sheet.hidden = !sheet.hidden;
+    });
+    ws.append(mbar, sheet);
+    // tapping anywhere else puts the sheet away
+    document.addEventListener('click', (e) => {
+      if (!sheet.hidden && !sheet.contains(e.target) && !tabsw.contains(e.target)) sheet.hidden = true;
+    });
+    // the button carries the tab count, read off the strip it summarises
+    const count = () => { tabsw.dataset.n = String(tabs.length); };
+    count();
+    new MutationObserver(count).observe(tabList, { childList: true });
+
+    // the unread badge lives on the ribbon's inbox, which a phone shows
+    // only with the left drawer open; mirror it onto that drawer's toggle
     const mirror = () => {
-      const un = $('rb-inbox').classList.contains('has-unread');
-      more.classList.toggle('has-unread', un);
-      $('ms-cm').classList.toggle('has-unread', un);
+      const n = $('rb-inbox').dataset.n;
+      if (n) $('treet').dataset.n = n; else delete $('treet').dataset.n;
     };
     mirror();
-    new MutationObserver(mirror).observe($('rb-inbox'), { attributes: true, attributeFilter: ['class'] });
+    new MutationObserver(mirror).observe($('rb-inbox'), { attributes: true, attributeFilter: ['data-n'] });
   }
 
 // ── src/98-legacy.js ──────────────────────────────────────────────────────
@@ -9745,12 +9733,6 @@
     const into = qs.get('into');
     const name = into && !qs.get('name') ? null : bootTab.key || null;
     const painted = bootSnap(name, bootFresh && !into);
-    // bootSnap's applyPage jumped the mobile pane to 'code'. Put it back to
-    // the pane the user last saw (bootMv, captured in 85-layout before this
-    // ran), so resuming a snapshot page on reload does not force the editor
-    // over the tree or preview they had open. Only on a real resume: a fresh
-    // ?name open below legitimately lands in the editor.
-    if (painted) setMv(bootMv);
     bootTree();
     // what the snapshot painted, if anything. The baseline for "did the USER
     // do something while the dump was in flight?"

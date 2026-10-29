@@ -145,7 +145,7 @@
     palClose();
     if (r.kind === 'action') { r.a.run(ev); return; }
     openIn(r.kind, r.key, { ev });
-    if (isMobile()) setMv('code');
+    drawersClose();
   }
   paletteOpen = palShow;   // the ribbon's button (24-tools.js)
 

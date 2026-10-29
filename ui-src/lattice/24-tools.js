@@ -40,12 +40,12 @@
     return u ? FRAMES[u] || [u, 'globe'] : [key, 'gear'];
   };
   // every way into a tool. A tool gets a tab of its own rather than
-  // replacing the document in front, and an open one is focused. A phone
-  // shows the center only in its code view, so it goes there, also when the
-  // tool was in front already.
+  // replacing the document in front, and an open one is focused. On a phone
+  // the drawer it was opened from goes away, also when the tool was in
+  // front already.
   const toolOpen = async (id) => {
     await openIn('tool', id === 'settings' ? SETTINGS : id, { newTab: true });
-    if (isMobile()) setMv('code');
+    drawersClose();
   };
 
   // which tool the host shows, null while a document is in front

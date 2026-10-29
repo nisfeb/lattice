@@ -164,7 +164,7 @@
     exitRev();
     resetPanels();
     st('memory · ' + (d.tags || []).map((t) => '#' + t).join(' '));
-    if (isMobile()) setMv('code');
+    drawersClose();
   }
 
   function renderKnowTags(tags) {

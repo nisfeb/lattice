@@ -125,18 +125,37 @@
   // The stored keys still mean HIDDEN ('1'), as they always have, so a
   // layout saved before the frame comes back the same. The buttons say
   // whether the pane is OPEN: pressed means showing.
+  //
+  // On a phone the panes are drawers over the document instead (97-mobar.js
+  // has the scrim and the swipe), one at a time, and the same calls drive
+  // them: a corner toggle, a pane tab's action, search. Whether a drawer is
+  // open is not kept, and the desktop columns' stored state is left alone.
   const OPENKEY = { l: 'appNT', r: 'appNC' };
+  const isMobile = () => matchMedia('(max-width: 820px)').matches;
   function paintPanes() {
     const ws = $('ws');
+    const phone = isMobile();
     for (const [side, cls, id] of [['l', 'nt', 'treet'], ['r', 'nc', 'ctlt']]) {
       const shut = localStorage[OPENKEY[side]] === '1';
       ws.classList.toggle(cls, shut);
+      const on = phone ? ws.classList.contains(side + 'draw') : !shut;
       const b = $(id);
-      b.classList.toggle('on', !shut);
-      b.setAttribute('aria-pressed', shut ? 'false' : 'true');
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
   }
+  function drawer(side, open) {
+    const ws = $('ws');
+    if (open === undefined) open = !ws.classList.contains(side + 'draw');
+    ws.classList.toggle('ldraw', open && side === 'l');
+    ws.classList.toggle('rdraw', open && side === 'r');
+    paintPanes();
+    return open;
+  }
+  // opening a document puts both drawers away
+  const drawersClose = () => drawer('l', false);
   function paneOpen(side, open) {
+    if (isMobile()) return drawer(side, open);
     if (open === undefined) open = localStorage[OPENKEY[side]] === '1';
     try { localStorage[OPENKEY[side]] = open ? '0' : '1'; } catch {}
     paintPanes();
@@ -204,4 +223,4 @@
   }
 
   // for the browser suites, which cannot reach this scope
-  window.latShell = { paneTab, paneOpen, ribbonAdd };
+  window.latShell = { paneTab, paneOpen, ribbonAdd, drawer };

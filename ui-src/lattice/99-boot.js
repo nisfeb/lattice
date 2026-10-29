@@ -78,12 +78,6 @@
     const into = qs.get('into');
     const name = into && !qs.get('name') ? null : bootTab.key || null;
     const painted = bootSnap(name, bootFresh && !into);
-    // bootSnap's applyPage jumped the mobile pane to 'code'. Put it back to
-    // the pane the user last saw (bootMv, captured in 85-layout before this
-    // ran), so resuming a snapshot page on reload does not force the editor
-    // over the tree or preview they had open. Only on a real resume: a fresh
-    // ?name open below legitimately lands in the editor.
-    if (painted) setMv(bootMv);
     bootTree();
     // what the snapshot painted, if anything. The baseline for "did the USER
     // do something while the dump was in flight?"

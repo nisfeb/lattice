@@ -7,8 +7,8 @@
 //  and Ctrl+E flip it, the choice survives a reload (it rides in appTabs),
 //  the path opens the move dialog, the page menu changes the kind and the
 //  page saves as that kind, Back and Forward are disabled with nothing to
-//  step to, and a phone, which has its own one-pane-at-a-time tabs, never
-//  sees the header.
+//  step to, and a phone shows the same header (its drawers and bottom bar
+//  are scripts/ui-mobar.mjs).
 //
 //  The desktop View menu's contract is checked ship-free in
 //  scripts/desktop-commands.mjs.
@@ -148,10 +148,13 @@ try {
   check('escape closes the menu', closed);
   await desk.close();
 
-  // ── a phone has tabs, not a header ──────────────────────────────────────
+  // ── a phone has the same header ─────────────────────────────────────────
   const phone = await boot(400, url);
-  check('phone: the tab header is not on screen',
-    await phone.evaluate(() => document.getElementById('tabhead').getBoundingClientRect().width === 0));
+  check('phone: the tab header is on screen, Edit / Read with it',
+    await phone.evaluate(() => {
+      const r = document.getElementById('tread').getBoundingClientRect();
+      return r.width > 0 && r.right <= 400;
+    }));
   await phone.close();
 } catch (e) {
   check('suite crashed: ' + e.message, false);

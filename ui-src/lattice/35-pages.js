@@ -172,7 +172,7 @@
     // Paint locally now; the fetch still corrects it when it arrives.
     else paintLocal();
     if (!CONTENT() && !quiet) checkErrors();
-    if (isMobile()) setMv('code');
+    drawersClose();
   }
 
   // blankPage: the editor reset a new page starts from. Nothing named is

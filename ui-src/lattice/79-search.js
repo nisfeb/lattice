@@ -251,7 +251,6 @@
   const qOpen = () => {
     paneOpen('l', true);
     paneTab('l', 'search');
-    if (isMobile()) setMv('tree');
     const i = $('qinput');
     i.focus();
     i.select();

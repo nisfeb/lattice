@@ -1,4 +1,4 @@
-  // ── top bar + mobile tabs: <lat-bar>, <lat-tabs> ─────────────────────────
+  // ── top bar: <lat-bar> ───────────────────────────────────────────────────
   // The shell frame (13-frame.js) took the bar's job on desktop: the corner
   // toggles, the status line and its spinner live there now, and this bar
   // shows only at phone width. Its other controls stay in the DOM, hidden,
@@ -30,16 +30,5 @@
   <button id="wrapt" class="ico" hidden title="toggle line wrap" aria-label="toggle line wrap">&#8617;</button>
 </header>`;
       pname = $('pname'); pkind = $('pkind');
-    }
-  });
-  customElements.define('lat-tabs', class extends HTMLElement {
-    connectedCallback() {
-      this.innerHTML = `
-<nav class="mtabs" id="mtabs">
-  <button data-mv="tree">tree</button>
-  <button data-mv="code" class="on">code</button>
-  <button data-mv="prev">preview</button>
-  <button data-mv="ctl">controls</button>
-</nav>`;
     }
   });

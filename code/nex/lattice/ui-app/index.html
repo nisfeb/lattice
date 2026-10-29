@@ -191,8 +191,6 @@ select, option { color-scheme: inherit; }
 .tmenu .tsub { display: flex; flex-direction: column; padding-left: 12px; }
 .tmenu .tsub[hidden] { display: none; }
 .tmenu [aria-checked="true"]::after { content: " \2713"; color: var(--muted); }
-/* a phone shows one document at a time; its own switcher comes later */
-@media (max-width: 820px) { .doctabs, .tabhead { display: none; } }
 /* the shell's icon buttons: the ribbon, the pane tabs, the corners */
 .sbtn { display: inline-flex; align-items: center; justify-content: center;
   flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px;
@@ -219,33 +217,21 @@ select, option { color-scheme: inherit; }
 .psplit:hover, .psplit.drag { background: var(--green); opacity: .35; }
 .ws.nt #ph1, .ws.nc #ph3 { display: none; }
 /* Edit / Read (23-tabhead.js): .ve is the editor only, .vp the preview only.
-   Pages and memories alike: a memory previews as markdown (60-preview.js).
-   Desktop only, like the shell's own bar: at phone width the tab strip shows
-   one pane at a time, and the old bar is the phone's. This media query is the
-   exact complement of the 820px block below. */
-@media not all and (max-width: 820px) {
-  .ws.ve .prevwrap, .ws.vp .edwrap { display: none; }
-  .ws .bar { display: none; }
-}
+   Pages and memories alike: a memory previews as markdown (60-preview.js). */
+.ws.ve .prevwrap, .ws.vp .edwrap { display: none; }
+/* the old bar is the phone's alone. This media query is the exact
+   complement of the 820px block below. */
+@media not all and (max-width: 820px) { .ws .bar { display: none; } }
 .bar .ico { padding: 5px 9px; }
 .bar .ico.on { border-color: var(--green); color: var(--green); }
-/* the full-screen control is mobile-only; the desktop shows every pane at
-   once, so there is nothing for it to reveal. Shown by the 820px block. */
-#fullt { display: none; }
 /* list indent/outdent touch pair (45-templates.js): phones have no Tab key,
    so these exist at phone width only, and only while the caret is where
    listTab would act. Desktop has the real keys. */
 #lbtns { display: none; }
-/* phone bar (97-mobar.js): built always, shown only by the 820px block */
-#mpath, #mmore, #msheet { display: none; }
+/* the phone's scrim and bottom bar (97-mobar.js): built always, shown only
+   by the 820px block */
+#scrim, .mbar { display: none; }
 .ws.deskbar #pname, .ws.deskbar #pkind { display: none; }
-.mtabs { display: none; grid-column: 1 / -1; grid-row: 2;
-  border-bottom: 1px solid var(--border-soft); }
-.mtabs button { flex: 1; padding: 10px; border: 0; background: none;
-  color: inherit; font: inherit; border-bottom: 2px solid transparent;
-  cursor: pointer; }
-.mtabs button.on { border-bottom-color: var(--green); color: var(--green);
-  font-weight: 600; }
 .bar { grid-row: 1; grid-column: 1 / -1; display: flex; gap: 8px; align-items: center;
   padding: 7px 10px; border-bottom: 1px solid var(--border-soft); }
 /* NB: select is deliberately excluded. The global `select` rule owns its
@@ -488,36 +474,29 @@ select, option { color-scheme: inherit; }
 .ws.wrap #src, .ws.wrap #hl { white-space: pre-wrap; overflow-wrap: break-word; }
 
 @media (max-width: 820px) {
-  /* the document itself scrolls here, so an overscroll at the top is Chrome's
-     pull-to-refresh, which RELOADS the app. Page edits survive (2s autosave),
-     but grub mode has none. A stray downward swipe threw away typed template
-     source. `contain` keeps the gesture inside the page. */
-  html { overflow: auto; height: auto; overscroll-behavior-y: contain; }
-  /* body must NOT be a scroll container. With overflow:auto on both, html
-     stops propagating body's overflow to the viewport and body becomes a
-     scroller in its own right, one with nothing to scroll (its height is
-     its content). A touch that lands in it latches onto body, and the
-     `contain` above, inherited here, forbids chaining up to the viewport
-     that actually has the range. Chrome 152 enforces that on
-     non-overflowing scrollers (older builds chained anyway): the expanded
-     tree reached past the screen and would not move, while html reported
-     a 430px range and scrollY stayed 0. Diagnosed with ?diag=1. */
-  body { overflow: visible; height: auto; }
-  /* dvh, not vh: vh is sized to the browser with its URL bar HIDDEN, so a
-     100vh min-height overshoots the visible viewport by the bar's height and
-     leaves the tab strip scrolled half off. Plain vh stays as the fallback. */
-  /* viewport-fit=cover (set on the viewport meta) lets html's --bg paint the
-     whole screen, including behind Android's edge-to-edge gesture-nav area, so
-     the bottom bar is the theme background rather than the manifest's off-white
-     background_color. These insets then keep the top bar and the fixed bottom
-     buttons out from under the system bars. box-sizing is border-box, so the
-     100dvh min-height already includes the padding; both insets are 0 on
-     desktop and on phones that are not edge-to-edge, so nothing moves there. */
-  .ws, .ws.nt, .ws.nc, .ws.nt.nc { grid-template-columns: 1fr;
-    grid-template-rows: auto auto 1fr auto;
-    height: auto; min-height: 100vh; min-height: 100dvh;
-    padding-top: env(safe-area-inset-top);
-    padding-bottom: env(safe-area-inset-bottom); }
+  /* ── the phone shell (97-mobar.js) ─────────────────────────────────────
+     One column: a top row (the left drawer's toggle, the old bar, the right
+     drawer's toggle), the center (tab strip, tab header, the document), the
+     status bar and the bottom bar. The side panes are drawers over it.
+
+     The document does not scroll here. The editor, the preview and each
+     drawer scroll inside themselves, as on desktop. `contain` still keeps an
+     overscroll at the top from being Chrome's pull-to-refresh, which RELOADS
+     the app, and grub mode has no autosave.
+
+     dvh, not vh: vh is sized to the browser with its URL bar HIDDEN, so 100vh
+     overshoots the visible viewport by the bar's height. Plain vh stays as
+     the fallback. viewport-fit=cover (set on the viewport meta) lets html's
+     --bg paint the whole screen, including behind Android's edge-to-edge
+     gesture-nav area. The insets keep the top row and the bottom bar out
+     from under the system bars; both are 0 on desktop and on phones that
+     are not edge-to-edge. */
+  html { overscroll-behavior-y: contain; }
+  .ws, .ws.nt, .ws.nc, .ws.nt.nc { --dw: min(320px, 86vw); --rib: 44px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    height: 100vh; height: 100dvh;
+    padding-top: env(safe-area-inset-top); }
   .psplit { display: none; }
   /* iOS zooms the viewport when a control under 16px takes focus and never
      zooms back out. The omnibar (.bar input) and the editor (#src/#hl) were
@@ -529,123 +508,100 @@ select, option { color-scheme: inherit; }
      (#dlginput is declared below this block, so source order beats us there;
      it gets its own rule next to its definition.) */
   .ctl input, select, textarea { font-size: 16px; }
-  /* ── one bar row (97-mobar.js) ──────────────────────────────────────────
-     The bar used to flex-wrap into three rows here: the icon cluster was
-     overflow, and the name input held a full-width row for a once-per-page
-     action. Everything it drops stays in the DOM — the ⋯ sheet clicks the
-     real hidden buttons, the label mirrors the real name field — so no
-     behaviour forks by width, only what is on screen. */
-  /* min-width: 0 is the load-bearing half. The bar is an item of the .ws
-     grid's single 1fr column, and a grid item's automatic minimum is its
-     min-content size — for a nowrap flex row that is the SUM of the
-     children's text widths. The first long status line (st() after an
-     open or save) pushed that past the viewport, the 1fr track grew to
-     match, and every row (tabs, tree) stretched with it: horizontal
-     scroll that appears only after the first pier response, ~12px at
-     390px. Floor the item at 0 and the track stays at the viewport;
-     the flex row then squeezes #mpath (its min-width is already 0). */
-  .bar { flex-wrap: nowrap; position: relative; min-width: 0; }
-  /* Same grid-item min-content trap as .bar: the tree is the .ws grid's single
-     1fr item on mobile, and its min-content width (the nowrap .newbtns button
-     row, the file rows) grew the 1fr track past the viewport -> whole-page
-     horizontal scroll. Floor it at 0 so the track stays at the viewport; the
-     file rows then ellipsise within it and the button row wraps. */
-  .tree { min-width: 0; }
-  .tree .newbtns { flex-wrap: wrap; }
+
+  /* the top row. The bar keeps #save, the one way to save a grub without a
+     keyboard. min-width: 0 is load-bearing: a grid item's automatic minimum
+     is its min-content size, which for a nowrap flex row is the SUM of its
+     children's widths, and a track grown to that scrolls the page sideways. */
+  .ws .corner, .ws.nc #rcorner { grid-row: 1; height: auto; z-index: auto;
+    justify-self: stretch; background: none; border-bottom: 1px solid var(--border-soft); }
+  #lcorner { grid-column: 1; }
+  .ws #rcorner, .ws.nc #rcorner { grid-column: 3; }
+  .ws .corner .sbtn { width: 36px; height: 36px; }
+  .bar { grid-row: 1; grid-column: 2; flex-wrap: nowrap; position: relative; min-width: 0; }
   #pname, #pkind { display: none; }
-  /* .grow is also flex:1 — left in the row it takes half the free space and
-     the path label ellipsises early with daylight sitting next to it (the
-     exact bug the desktop label had). The ⋯ is appended last, so nothing
-     needs pushing right. */
-  .bar .grow { display: none; }
-  #status { max-width: 30vw; overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; }
-  #mpath { display: block; flex: 1; min-width: 0; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap;
-    font: 15px/1.3 ui-monospace, Menlo, Consolas, monospace; padding: 6px 2px; }
-  #mpath.muted { font-style: italic; }
-  #mmore { display: flex; }
-  #msheet { position: absolute; right: 8px; top: 100%; z-index: 40;
-    display: flex; flex-direction: column; min-width: 13rem;
-    background: var(--pop, var(--bg)); border: 1px solid var(--border); border-radius: 8px;
-    overflow: hidden; box-shadow: 0 6px 24px #0003; }
-  #msheet button { font: 16px/1 inherit; font-size: 16px; text-align: left;
-    padding: 12px 14px; border: 0; background: none; color: inherit;
-    border-bottom: 1px solid var(--border-soft); cursor: pointer; }
-  #msheet button:last-child { border-bottom: 0; }
-  /* the unread dot the ribbon's inbox carries, mirrored where it can be seen */
-  #mmore.has-unread, #msheet .has-unread { border-color: var(--green); color: var(--green); }
-  /* the desktop shell squeezed narrow keeps its own label and menu */
-  .ws.deskbar #mpath, .ws.deskbar #mmore, .ws.deskbar #msheet { display: none; }
-  /* full-screen editing. The bar and the tab strip cost about a third of a
-     phone screen; this hands it to the text and back.
+  /* the unread count the ribbon's inbox carries, on the left drawer's
+     toggle, since the ribbon is in that drawer */
+  #treet[data-n] { position: relative; color: var(--text); }
+  #treet[data-n]::after { content: attr(data-n); position: absolute; top: 1px; right: 0;
+    min-width: 1.05em; padding: 0 .25em; border-radius: 999px;
+    background: var(--green); color: var(--on-accent, var(--bg));
+    font-size: .6rem; font-weight: 700; line-height: 1.35; text-align: center;
+    pointer-events: none; }
 
-     Scoped to the code pane on purpose: "full screen" for the tree or the
-     controls means nothing, and hiding the tabs there would strand you with
-     no way to move. The control itself is FIXED and sits outside .bar,
-     because it has to stay reachable in the exact state that hides the bar.
-
-     It moves to the top when full: the bar is gone, so that corner is free,
-     and the bottom of a phone is where the keyboard comes up. */
-  .ws[data-mv="code"] #fullt {
-    display: block; position: fixed; right: 10px; z-index: 30;
-    bottom: calc(12px + env(safe-area-inset-bottom));
-    font: 12px/1 var(--font, system-ui, sans-serif); padding: 7px 11px; border-radius: 999px;
-    border: 1px solid var(--border); background: var(--bg); color: var(--muted);
-    opacity: .8;
-  }
-  .ws.full[data-mv="code"] #fullt { top: calc(10px + env(safe-area-inset-top)); bottom: auto; }
-  /* the list pair sits opposite #fullt, and only when it can act. Fixed for
-     the same reason #fullt is: it must survive full-screen hiding the bar.
-     Above the keyboard by being bottom-anchored in the visual viewport. */
-  .ws[data-mv="code"] #lbtns.on { display: flex; gap: 8px; position: fixed;
-    left: 10px; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 30; }
+  /* the center: the tab strip scrolls sideways within itself */
+  .ws .center { grid-row: 2; grid-column: 1 / -1; }
+  .ws.nc .doctabs { padding-right: 6px; }
+  .statusbar { grid-row: 3; }
+  /* the list pair (45-templates.js) floats over the editor's bottom-left
+     corner, and only when it can act. A grid item in the center's own cell,
+     so it sits above the status and bottom bars without measuring them. */
+  #lbtns.on { display: flex; gap: 8px; grid-row: 2; grid-column: 1 / -1;
+    align-self: end; justify-self: start; margin: 0 0 12px 10px; z-index: 30; }
   #lbtns button { font: 16px/1 var(--font, system-ui, sans-serif); padding: 8px 13px;
     border-radius: 999px; border: 1px solid var(--border);
     background: var(--bg); color: var(--muted); opacity: .85; }
-  /* #fullt and #lbtns are fixed over the editor's bottom corners. A textarea
-     reveals its caret flush to its own bottom edge, so typing on the last
-     lines parks the caret right under those buttons. End the editor layers a
-     button-row short of the container bottom — both layers identically, so the
-     highlight stays aligned and scroll-synced — and the caret can never land
-     beneath the buttons. (height:auto lets top:0 + bottom size the box; the
-     base rule's height:100% would otherwise over-constrain and win.) */
-  .ws[data-mv="code"] #src, .ws[data-mv="code"] #hl { height: auto; bottom: 56px; }
-  .ws.full[data-mv="code"] .bar,
-  .ws.full[data-mv="code"] .mtabs { display: none; }
-  .ws.full[data-mv="code"] .edwrap { min-height: 100vh; min-height: 100dvh; }
-  #wrapt, #treet, #ctlt { display: none; }
-  .mtabs { display: flex; }
-  .tree, .edwrap, .prevwrap, .ctl { grid-column: 1; grid-row: 3; display: none;
-    border: 0; }
-  /* the shell frame keeps the phone's one-pane-at-a-time switching until
-     the drawers land: no ribbon or corners, and the pane holding the
-     chosen view takes the row. They scroll with the document here. */
-  .ribbon, .corner { display: none; }
-  .ws .pane, .ws .center { grid-column: 1; grid-row: 3; display: none; border: 0;
-    overflow: visible; }
-  .pbody { overflow: visible; }
-  .statusbar { grid-row: 4; }
-  .ws[data-mv="tree"] #lpane, .ws[data-mv="ctl"] #rpane,
-  .ws[data-mv="code"] .center, .ws[data-mv="prev"] .center { display: flex; }
-  .ws[data-mv="tree"] .tree { display: block; }
-  /* the document scrolls here, so these two panes must not. Still
-     overflow:auto from the desktop rules, each was a scroll container sized
-     to its own content, where a fraction of a pixel of rounding can leave an
-     invisible range. A swipe latches to the innermost scroller that can
-     move at all, so a sliver like that takes the first swipe from the top
-     and only the second moves the page. min-width: 0 keeps their column
-     at the screen's width: a grid item's automatic minimum is its
-     content's width, which overflow:auto used to zero, so without it one
-     long file name widened the column and the page scrolled sideways
-     instead of the name truncating. */
-  .tree, .ctl { overflow: visible; min-width: 0; }
-  .ws[data-mv="code"] .edwrap { display: block; min-height: 68vh; }
-  .ws[data-mv="prev"] .prevwrap { display: block; min-height: 68vh; }
-  .ws[data-mv="ctl"] .ctl { display: block; }
+  /* a textarea reveals its caret flush to its own bottom edge, so typing on
+     the last lines would park the caret under the list pair. End the editor
+     layers a button-row short of the container bottom, both layers alike so
+     the highlight stays aligned. (height:auto lets top:0 + bottom size the
+     box; the base rule's height:100% would otherwise win.) */
+  #src, #hl { height: auto; bottom: 56px; }
   /* never below 16px on mobile. A smaller textarea font makes iOS zoom on
      focus. Still one rule for both layers, so the metrics stay identical. */
   #src, #hl { font-size: max(16px, var(--ed-size)); }
+
+  /* the bottom bar */
+  .mbar { display: flex; grid-row: 4; grid-column: 1 / -1; justify-content: space-around;
+    padding: 4px 8px calc(4px + env(safe-area-inset-bottom));
+    background: var(--pane); border-top: 1px solid var(--border-soft); }
+  .mbar .sbtn { width: 48px; height: 40px; }
+  .mbar .sbtn .ic { width: 20px; height: 20px; }
+  /* the open-tab count, quiet: it is a number, not an alert */
+  #mtabsw[data-n] { position: relative; }
+  #mtabsw[data-n]::after { content: attr(data-n); position: absolute; top: 3px; right: 6px;
+    font-size: .6rem; font-weight: 700; line-height: 1; pointer-events: none; }
+  .mtsheet { position: fixed; right: 8px; bottom: calc(56px + env(safe-area-inset-bottom));
+    z-index: 42; display: flex; flex-direction: column; gap: 1px;
+    width: min(320px, calc(100vw - 16px)); max-height: 60vh; overflow: auto; padding: 4px;
+    background: var(--pop, var(--bg)); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 6px 24px color-mix(in srgb, var(--text) 20%, transparent); }
+  .mtrow { display: flex; align-items: center; gap: 2px; border-radius: 6px; }
+  .mtrow.on { background: color-mix(in srgb, var(--text) 10%, transparent); }
+  .mtname { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+    padding: 10px; border: 0; background: none; color: inherit; font: inherit;
+    font-size: 16px; text-align: left; cursor: pointer; }
+  .mtname span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mtrow .mtx { width: 40px; height: 40px; }
+
+  /* the drawers. Shut, each sits just off its edge and is not drawn at all
+     (visibility, once the slide is over), so nothing in it takes a tap or
+     the keyboard's focus. The ribbon is the left drawer's top row: the same
+     buttons, laid out across instead of down, sliding with the pane. */
+  .ws .pane, .ws.nt #lpane, .ws.nc #rpane { display: flex; position: fixed; z-index: 41;
+    top: env(safe-area-inset-top); bottom: 0; width: var(--dw);
+    padding-bottom: env(safe-area-inset-bottom);
+    visibility: hidden; transition: transform .2s ease, visibility 0s .2s; }
+  .ws #lpane { left: 0; top: calc(env(safe-area-inset-top) + var(--rib)); transform: translateX(-100%); }
+  .ws #rpane { right: 0; transform: translateX(100%); }
+  .ribbon { position: fixed; z-index: 41; left: 0; top: env(safe-area-inset-top);
+    width: var(--dw); height: var(--rib); flex-direction: row; gap: 3px; padding: 0 8px;
+    overflow: auto hidden; border-bottom: 1px solid var(--border-soft);
+    transform: translateX(-100%); visibility: hidden;
+    transition: transform .2s ease, visibility 0s .2s; }
+  .ribbon .rtop, .ribbon .rbot { flex-direction: row; }
+  .ribbon .rbot { margin: 0 0 0 auto; }
+  .ws.ldraw #lpane, .ws.ldraw .ribbon, .ws.rdraw #rpane { transform: none; visibility: visible;
+    transition: transform .2s ease; }
+  .ws.ldraw #scrim, .ws.rdraw #scrim { display: block; position: fixed; inset: 0; z-index: 40;
+    background: color-mix(in srgb, var(--bg) 55%, transparent); }
+  @media (prefers-reduced-motion: reduce) {
+    .ws .pane, .ribbon, .ws.ldraw #lpane, .ws.ldraw .ribbon, .ws.rdraw #rpane { transition: none; }
+  }
+  /* a long file name in the Files tab truncates within the drawer, and
+     the button row wraps rather than widening it */
+  .tree { min-width: 0; }
+  .tree .newbtns { flex-wrap: wrap; }
 }
 
 #hl .token.comment, #hl .token.blockquote, #hl .token.pre, #hl .token.prolog,
@@ -784,7 +740,7 @@ select, option { color-scheme: inherit; }
 /* custom-element wrappers are invisible to layout. Their inner divs stay
    direct grid items of .ws (and .dlg stays a fixed overlay). Without this,
    custom elements default to display:inline and break the grid. */
-lat-dialog, lat-bar, lat-tabs, lat-tree, lat-editor, lat-preview, lat-ctl,
+lat-dialog, lat-bar, lat-tree, lat-editor, lat-preview, lat-ctl,
 lat-share, lat-history, lat-links, lat-knowtags, lat-acl,
 lat-comments, lat-ribbon, lat-lpane, lat-rpane, lat-statusbar,
 lat-know, lat-marks { display: contents; }
@@ -828,7 +784,6 @@ ul.qlist a:hover { background: var(--surface); }
 <body>
 <div class="ws" id="ws">
   <lat-bar></lat-bar>
-  <lat-tabs></lat-tabs>
   <lat-ribbon></lat-ribbon>
   <lat-lpane></lat-lpane>
   <!-- a flex column: the tab strip, tab header and tool host of later
