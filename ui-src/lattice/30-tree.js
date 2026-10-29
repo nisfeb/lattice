@@ -242,8 +242,11 @@
   // after a paint: the row last focused, else the open one, else the first,
   // is the one Tab reaches. `refocus` when the focus was in the list before
   // the paint took its rows away.
+  // A list with no rows (loading, or an empty-state note) is not a tree:
+  // a tree has to own treeitems, so the role comes and goes with them.
   function treeRove(list, refocus) {
     const rows = treeRows(list);
+    if (rows.length) list.setAttribute('role', 'tree'); else list.removeAttribute('role');
     const to = rows.find((r) => r.dataset.tk === list.latKey)
       || rows.find((r) => r.classList.contains('cur')) || rows[0];
     if (!to) return;
@@ -251,7 +254,6 @@
     if (refocus) to.focus();
   }
   function treeKeys(list, label) {
-    list.setAttribute('role', 'tree');
     list.setAttribute('aria-label', label);
     const lv = (r) => +r.getAttribute('aria-level');
     list.addEventListener('focusin', (e) => {
@@ -270,7 +272,9 @@
       const mod = e.ctrlKey || e.metaKey;
       let to = null;
       if (e.key === 'Enter') {
-        row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true,
+        // on a control inside the row (a folder's +), that control acts
+        const hit = e.target !== row && e.target.closest('a, button') ? e.target : row;
+        hit.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true,
           ctrlKey: e.ctrlKey, metaKey: e.metaKey }));
       } else if (mod || (e.shiftKey && e.key.length > 1)) return;
       else if (e.key === 'ArrowDown') to = rows[i + 1];
@@ -285,18 +289,23 @@
         if (open === 'true') row.latFold();
         else for (let j = i - 1; j >= 0 && !to; j--) if (lv(rows[j]) < lv(row)) to = rows[j];
       } else if (e.key.length === 1 && e.key !== ' ') {
-        // type-ahead: the next row whose name starts with the letter
+        // type-ahead: the next row whose name starts with the letter. A
+        // folder's name is its label, not the fold arrow ahead of it.
         const k = e.key.toLowerCase();
+        const name = (r) => (r.querySelector('.fln') || r).textContent.trim().toLowerCase();
         for (let n = 1; n <= rows.length && !to; n++) {
           const r = rows[(i + n) % rows.length];
-          if (r.textContent.trim().toLowerCase().startsWith(k)) to = r;
+          if (name(r).startsWith(k)) to = r;
         }
       } else return;
       e.preventDefault();
       if (to) to.focus();
     });
   }
-  // Ctrl+Shift+E: the Files tab (the pane opened if shut), its tree focused.
+  // Ctrl+Shift+F: the Files tab (the pane opened if shut), its tree focused.
+  // F for Files; Ctrl+Shift+E was Firefox's network monitor, which a page
+  // cannot take back. By e.key, so it is the F on the keyboard's own layout.
+  // Not while a dialog or the palette is up: focus behind a modal is lost.
   // Registered on the Files tab's own action (13-frame.js), so the tab's
   // tooltip and the palette both show it.
   function treeFocus() {
@@ -305,7 +314,8 @@
     if (r) r.focus();
   }
   addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === 'KeyE') {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f'
+      && !document.querySelector('.dlg:not([hidden])')) {
       e.preventDefault();
       e.stopPropagation();
       ACTIONS.find((a) => a.id === 'pt-files').run();

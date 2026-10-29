@@ -662,17 +662,18 @@ select, option { color-scheme: inherit; }
 /* in-app dialog (no browser-native popups, ever) */
 .dlg { position: fixed; inset: 0; background: #0008; display: grid;
   place-items: center; z-index: 50; }
-/* The box never outgrows the screen, whatever it is asked to hold: one
-   column that may shrink below its content (minmax 0, where a grid track
-   otherwise grows to its widest unbreakable word), a path that breaks
-   anywhere, and buttons that wrap onto a second row. Shared by every
-   dialog: the prompts here and the palette below. */
 .dlgbox { background: var(--pop, var(--bg)); border: 1px solid var(--border);
   border-radius: 10px; padding: 18px; width: min(400px, 92vw);
-  box-sizing: border-box; max-height: 92vh; max-height: 92dvh; overflow-y: auto;
-  grid-template-columns: minmax(0, 1fr);
   display: grid; gap: 12px; box-shadow: 0 8px 30px #0004; }
-.dlgbox > * { min-width: 0; overflow-wrap: anywhere; }
+/* The prompt box never outgrows the screen, whatever it is asked to hold:
+   one column that may shrink below its content (minmax 0, where a grid
+   track otherwise grows to its widest unbreakable word), a path that
+   breaks anywhere, and buttons that wrap onto a second row. Every prompt
+   (15-dialog.js) is this one form. The palette borrows .dlgbox but sizes
+   and scrolls itself, so this stays off it. */
+#dlgform { box-sizing: border-box; max-height: 92vh; max-height: 92dvh; overflow-y: auto;
+  grid-template-columns: minmax(0, 1fr); }
+#dlgform > * { min-width: 0; overflow-wrap: anywhere; }
 #dlgmsg { white-space: pre-wrap; }
 #dlginput { font: inherit; padding: 6px 9px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--surface); color: inherit; width: 100%; }

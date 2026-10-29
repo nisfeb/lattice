@@ -93,6 +93,7 @@
         ? 'no memories tagged #' + knowTag
         : 'no memories yet. New memory starts one.';
       knowList.appendChild(empty);
+      treeRove(knowList, false);      // no rows, so no tree role either
       return;
     }
     const coll = knowColl.get();
