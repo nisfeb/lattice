@@ -109,9 +109,18 @@ for (const [item, arg] of [['view-editor', 'false'], ['view-preview', 'true']]) 
 check('the shipped UI exposes window.latSetRead', appJs.includes('window.latSetRead'));
 
 //  Preferences > scheduled backups lands on the manager page's backups
-//  section from any page the window is on, as the Preferences menu always has
-check('menu backups opens the manager at its backups section',
-  /"backups"\s*=>\s*\{\s*commands::show_manager\(app, Some\("backups"\)\)/.test(main));
+//  section from any page the window is on, as the Preferences menu always
+//  has. On the ship page the page goes first (latOpenManager), so the
+//  unsaved-work questions run before the window leaves; elsewhere the menu
+//  calls show_manager itself.
+check('menu backups names the backups section',
+  /"backups"\s*=>\s*Some\(Some\("backups"\)\)/.test(main));
+check('menu Preferences asks the ship page first, via latOpenManager',
+  /Some\(w\) if !commands::on_shell_page\(&w\) => \{\s*let _ = w\.eval\(manager_menu_js\(section\)\)/.test(main)
+  && /if\(window\.latOpenManager\)window\.latOpenManager\(s\)/.test(main));
+check('menu Preferences falls back to show_manager off the ship page',
+  /_ => \{\s*commands::show_manager\(app, section\)/.test(main));
+check('the shipped UI exposes window.latOpenManager', appJs.includes('window.latOpenManager'));
 check('the shipped UI exposes window.latOpenSettings', appJs.includes('window.latOpenSettings'));
 
 //  The settings page is ship-served, so on the desktop it runs at the

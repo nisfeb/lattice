@@ -216,6 +216,18 @@ fn prefers_dark() -> bool {
     false
 }
 
+/// The Preferences items, run in the ship page. latOpenManager asks about
+/// unsaved work, then invokes open_manager itself. A ship build without it
+/// (older than the shell) gets open_manager directly, as the menu did before.
+/// `section` comes only from the menu's own constants, never from the page.
+fn manager_menu_js(section: Option<&str>) -> String {
+    let arg = section.map(|s| format!("\"{s}\"")).unwrap_or_else(|| "null".into());
+    format!(
+        "(function(){{var s={arg};if(window.latOpenManager)window.latOpenManager(s);\
+         else if(window.__TAURI__)window.__TAURI__.core.invoke('open_manager',{{section:s}});}})()"
+    )
+}
+
 fn main() {
     // webkit2gtk's dmabuf renderer crashes some Wayland stacks outright
     // ("Error 71 (Protocol error) dispatching to Wayland display"). Opt out
@@ -255,16 +267,26 @@ fn main() {
             // on its section: the item exists because scheduled backups are
             // not something you go looking for under connection && mounts,
             // and that reasoning covers the scroll past ship and mounts too
-            match ev.id().as_ref() {
-                "manager" => {
-                    commands::show_manager(app, None).ok();
-                    return;
+            //
+            // On the ship page, the page goes first: latOpenManager asks about
+            // unsaved work (the front document and parked tabs) before the
+            // window leaves, which a direct show_manager skips. The manager
+            // page itself, or no window yet, has nothing to ask about.
+            let section = match ev.id().as_ref() {
+                "manager" => Some(None),
+                "backups" => Some(Some("backups")),
+                _ => None,
+            };
+            if let Some(section) = section {
+                match app.get_webview_window("workspace") {
+                    Some(w) if !commands::on_shell_page(&w) => {
+                        let _ = w.eval(manager_menu_js(section));
+                    }
+                    _ => {
+                        commands::show_manager(app, section).ok();
+                    }
                 }
-                "backups" => {
-                    commands::show_manager(app, Some("backups")).ok();
-                    return;
-                }
-                _ => {}
+                return;
             }
             // The File menu drives the ship UI's OWN buttons instead of
             // reimplementing them here. The workspace webview is the lattice
@@ -388,4 +410,17 @@ fn main() {
                 app.state::<mounts::MountMap>().0.lock().unwrap().clear();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::manager_menu_js;
+
+    #[test]
+    fn preferences_go_through_the_page_first() {
+        let js = manager_menu_js(Some("backups"));
+        assert!(js.contains("var s=\"backups\";if(window.latOpenManager)window.latOpenManager(s);"));
+        assert!(js.contains("invoke('open_manager',{section:s})"));
+        assert!(manager_menu_js(None).contains("var s=null;"));
+    }
 }
