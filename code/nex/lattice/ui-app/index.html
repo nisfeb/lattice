@@ -624,6 +624,16 @@ select, option { color-scheme: inherit; }
 .aclcard button:hover { border-color: var(--green); }
 .aclnote { color: var(--muted); font-size: .8rem; }
 .aclempty { color: var(--muted); text-align: center; padding: 2rem; }
+/* published pages: one address per row, the copy button beside it */
+.aclpub { max-width: 1100px; margin: 22px auto 0; padding-top: 16px;
+  border-top: 1px solid var(--border-soft); }
+.aclpub h4, .aclpub h5 { margin: 0 0 4px; font-size: .7rem; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.aclpub h5 { margin-top: 12px; text-transform: none; letter-spacing: 0; font-size: .8rem; }
+.aclpub .aclnote { max-width: 60ch; margin: 0 0 6px; }
+.pubrow { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+.pubrow a { min-width: 0; overflow-wrap: anywhere; color: var(--link, inherit); }
+.pubrow .sbtn { flex: none; }
 .aclban { max-width: 1100px; margin: 22px auto 0; padding-top: 16px;
   border-top: 1px solid var(--border-soft); }
 .aclban h4 { margin: 0 0 4px; font-size: .7rem; text-transform: uppercase;

@@ -411,6 +411,9 @@
     }
     if (sharedWithMe.length) renderShared(coll);
     treeRove(treeList, had);
+    // the Published pages list (72-acl.js) reads these share modes
+    const aw = $('aclwrap');
+    if (aw && !aw.hidden) renderPublished();
     // the conflict badge is a count of conflicts/ pages in this very tree, so
     // it repaints exactly when the tree does. Defined in 80-conflicts.js.
     renderConfBadge();

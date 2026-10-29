@@ -44,6 +44,7 @@
   fetch('/~/host').then((r) => (r.ok ? r.text() : '')).then((t) => {
     ourShip = t.trim();
     if (shareShown) paintShareCopy(shareShown);
+    renderPublished();
   }).catch(() => {});
   const SHARE_COPY = {
     private: () => 'Private: only you, and any ship or group you give access below. '

@@ -7,6 +7,8 @@
 //      path and keeps its buttons inside the box, at desktop and phone width
 //    the share buttons say what each mode does, with the page's real
 //      urb:// and https addresses, and no em-dash
+//    Access & groups lists every published page by its full address, shared
+//      by urb:// and clearweb by the Page tab's https link, each copyable
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           node scripts/ui-reins-small.mjs
@@ -18,7 +20,9 @@ const RUN = 'reins-' + process.pid;
 const PA = RUN + '/a';
 const PB = RUN + '/sub/b';
 const LONG = RUN + '/a-really-long-page-name-that-keeps-going-and-going-past-the-dialog-edge';
-const made = [PA, PB, LONG];
+const PS = RUN + '/zpub/shared-one';
+const PC = RUN + '/zpub/web-one';
+const made = [PA, PB, LONG, PS, PC];
 //  screenshots for the report, when asked for
 const SHOTS = process.env.REINS_SHOTS || '';
 const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
@@ -53,6 +57,8 @@ const press = async (k, mods = []) => {
 
 try {
   await seed(env, [[PA, '# a\n'], [PB, '# b\n'], [LONG, 'long\n']]);
+  await seed(env, [[PS, '# shared\n']], { share: 'shared' });
+  await seed(env, [[PC, '# web\n']], { share: 'clearweb' });
   await page.goto(env.app + '/no-such-asset', { timeout: 30000 });
   await page.evaluate(() => {
     for (const k of ['appNT', 'appNC', 'appLTab', 'appRTab', 'appTabs', 'appColl']) localStorage.removeItem(k);
@@ -98,7 +104,9 @@ try {
   check('Left on an open folder collapses it, focus kept',
     shut === 'false' && await focusKey() === SUB, shut + ' ' + await focusKey());
   await press('ArrowDown');
-  check('Down skips the collapsed folder\'s rows', await focusKey() === A, await focusKey());
+  const past = await focusKey();
+  check('Down skips the collapsed folder\'s rows',
+    past && past !== SUB && !past.includes(RUN + '/sub/'), past);
   await press('ArrowUp');
   await press('ArrowRight');
   const opened = await page.evaluate((k) =>
@@ -191,6 +199,66 @@ try {
     check('private says who can read it', /^Private: only you/.test(c.t.private || ''), JSON.stringify(c.t.private));
     check('the open page\'s mode is described under the buttons', /^Private: /.test(c.what), c.what);
     check('no em-dash in the share copy', !JSON.stringify(c).includes('\u2014'), '');
+  }
+
+  // ── 4. Published pages in Access & groups ──────────────────────────────
+  {
+    const ship = (await (await fetch(env.base + '/~/host')).text()).trim();
+    // the Page tab's own link for the clearweb page, to match against
+    await page.evaluate((k) => window.latTabs.openIn('page', k, {}), PC);
+    await sleep(1500);
+    const pageLink = await page.evaluate(() => {
+      const a = document.querySelector('#cwurl a');
+      return a ? a.href : '';
+    });
+    check('the palette lists Published pages', await page.evaluate(() =>
+      window.latPalette.ids().includes('published')), '');
+    await page.evaluate(() => document.getElementById('rb-access').click());
+    await sleep(1200);
+    const pub = await page.evaluate((run) => {
+      const rows = [...document.querySelectorAll('#publist .pubrow')];
+      const mine = rows.filter((r) => r.dataset.page.startsWith(run + '/'));
+      const grp = (m) => rows.filter((r) => r.dataset.share === m).map((r) => r.dataset.page);
+      return {
+        shown: !document.getElementById('aclpub').closest('[hidden]'),
+        mine: mine.map((r) => [r.dataset.share, r.dataset.page, r.querySelector('a').textContent]),
+        sorted: ['shared', 'clearweb'].every((m) => {
+          const g = grp(m);
+          return g.every((x, i) => !i || g[i - 1].localeCompare(x) <= 0);
+        }),
+        tips: mine.map((r) => r.querySelector('button').title),
+      };
+    }, RUN);
+    check('the list is in the Access & groups tab', pub.shown, JSON.stringify(pub));
+    const sh = pub.mine.find((r) => r[1] === PS), cw = pub.mine.find((r) => r[1] === PC);
+    check('the shared page is listed by its urb:// address',
+      sh && sh[0] === 'shared' && sh[2] === 'urb://' + ship + '/' + PS, JSON.stringify(pub.mine));
+    check('the clearweb page is listed by its https link',
+      cw && cw[0] === 'clearweb' && cw[2] === env.base + '/apps/lattice/c/' + PC, JSON.stringify(pub.mine));
+    check('the same link the Page tab shows', cw && cw[2] === pageLink, pageLink);
+    check('private pages are not listed', pub.mine.length === 2, JSON.stringify(pub.mine));
+    check('each group is sorted by path', pub.sorted, '');
+    check('the copy button is named', pub.tips.every((t) => t === 'Copy address'), JSON.stringify(pub.tips));
+    await page.evaluate(() => {
+      window.__clip = [];
+      Object.defineProperty(navigator, 'clipboard', { configurable: true,
+        value: { writeText: async (t) => { window.__clip.push(t); } } });
+    });
+    await page.evaluate((k) => document.querySelector('#publist .pubrow[data-page="' + k + '"] button').click(), PS);
+    await sleep(200);
+    const clip = await page.evaluate(() => window.__clip);
+    check('copy puts the address on the clipboard', clip[0] === 'urb://' + ship + '/' + PS, JSON.stringify(clip));
+    if (SHOTS) {
+      await page.evaluate(() => document.getElementById('aclpub').scrollIntoView());
+      await page.screenshot({ path: SHOTS + '/published-desktop.png' });
+      const p = await openPage(browser, env, { viewport: { width: 390, height: 844, isMobile: true, hasTouch: true } });
+      await boot(p);
+      await p.evaluate(() => window.latTabs.openIn('tool', 'access', { newTab: true }));
+      await sleep(1500);
+      await p.evaluate(() => document.getElementById('aclpub').scrollIntoView());
+      await p.screenshot({ path: SHOTS + '/published-phone.png' });
+      await p.close();
+    }
   }
 } catch (e) {
   check('threw: ' + String(e.message).slice(0, 140), false);

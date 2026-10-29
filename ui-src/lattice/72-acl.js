@@ -29,6 +29,13 @@
       <button id="aclnewbtn">create group</button>
     </div>
     <div id="aclgrid" class="aclgrid"></div>
+    <section class="aclpub" id="aclpub" data-action="published" aria-labelledby="aclpubh">
+      <h4 id="aclpubh">published pages</h4>
+      <p class="aclnote">Pages anyone can read without a grant. Shared pages open
+      in lattice on any ship, at their urb:// address. Clearweb pages open in any
+      browser, at their https link.</p>
+      <div id="publist"></div>
+    </section>
     <div class="aclban">
       <h4>banned ships</h4>
       <p class="aclnote">A banned ship cannot share anything with you and
@@ -58,7 +65,64 @@
     // forever for exactly that ship. 66-share.js already made this call.
     if (!permsLoaded) loadPerms(); else renderAcl();
     loadBans();
+    renderPublished();
   };
+
+  // ── published pages: every address worth handing out ─────────────────────
+  // Each shared page by its urb:// address and each clearweb page by its
+  // https link, the very strings the Page tab gives (urbUrl and cwUrl,
+  // 66-share.js), each with a copy button. Read off the tree's share modes,
+  // which page-dump already carries: no request of its own. renderTree
+  // repaints it while this tab is in front, so a page shared or made
+  // private elsewhere comes and goes here too.
+  function renderPublished() {
+    const host = $('publist');
+    if (!host) return;
+    host.textContent = '';
+    const note = (t) => {
+      const e = document.createElement('div');
+      e.className = 'aclnote';
+      e.textContent = t;
+      host.appendChild(e);
+    };
+    if (!treeShares) { note('share modes are not known yet: they come with the file tree.'); return; }
+    const pages = nodes.filter((n) => n.page).sort((a, b) => a.path.localeCompare(b.path));
+    const groups = [['shared over Urbit', 'shared', urbUrl], ['clearweb', 'clearweb', cwUrl]];
+    let any = false;
+    for (const [title, mode, addr] of groups) {
+      const mine = pages.filter((n) => n.share === mode);
+      if (!mine.length) continue;
+      any = true;
+      const h = document.createElement('h5');
+      h.textContent = title + ' (' + mine.length + ')';
+      host.appendChild(h);
+      for (const n of mine) {
+        const u = addr(n.path);
+        const row = document.createElement('div');
+        row.className = 'pubrow';
+        row.dataset.share = mode;
+        row.dataset.page = n.path;
+        // a urb:// address opens in the reader, a clearweb one in a new window
+        const a = document.createElement('a');
+        a.textContent = u;
+        if (mode === 'clearweb') { a.href = u; a.target = '_blank'; a.rel = 'noopener'; }
+        else a.href = api + '?url=' + encodeURIComponent(u);
+        const b = tip(document.createElement('button'), 'Copy address');
+        b.type = 'button';
+        b.className = 'sbtn';
+        b.innerHTML = ico('copy');
+        b.onclick = async () => {
+          try { await navigator.clipboard.writeText(u); st('copied ' + u); }
+          catch { st('could not copy ' + u, false); }
+        };
+        row.append(a, b);
+        host.appendChild(row);
+      }
+    }
+    if (!any) note('nothing is published. Share a page from its Page tab and it shows here.');
+  }
+  action({ id: 'published', name: 'Published pages', home: 'Ribbon › Access & groups',
+    run: async () => { await aclOpen(); $('aclpub').scrollIntoView({ block: 'start' }); } });
 
   // suggest the grantable paths this client already knows about, so a grant is
   // a pick rather than a hand-typed ball path. Built from the tree we have.
