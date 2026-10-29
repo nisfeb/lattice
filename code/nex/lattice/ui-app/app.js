@@ -2750,7 +2750,11 @@
     }, HL_DEADLINE + (hlFresh ? HL_STARTUP : 0));
     hlWorker.postMessage(JSON.stringify({ language: job.lang, code: job.body }));
   };
+  // the right pane's Outline and Outgoing read the text, so every paint of
+  // it, typed or scripted, tells them (rpSoon, 76-outline.js, set there)
+  let rpHook = null;
   const render = () => {
+    if (rpHook) rpHook();
     const lang = LMAP[pkind.value];
     const g = window.Prism && lang && Prism.languages[lang];
     if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; return; }
@@ -3881,8 +3885,6 @@
     curKind = null;
     exitGrub();
     exitRev();
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
     folderCtx = path;
     setOpen(null, { shown: path, readOnly: true,
       url: '/apps/lattice/app?into=' + encodeURIComponent(path) });
@@ -4176,6 +4178,7 @@
     exitRev();
     resetPanels();
     showShare(d.share || 'private');
+    cmtShow(name, d.comments);
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
     //  a tex page's server render is its SOURCE as escaped text, because the
     //  ship has no LaTeX and is not getting one. The local conversion is the
@@ -4216,8 +4219,6 @@
     refreshTexButton();
     exitGrub();
     exitRev();
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
     setCtlLabels();
     setOpen(null, { shown: into ? into + '/' : '', url: '/apps/lattice/app' });
     src.value = '';
@@ -4627,8 +4628,6 @@
     setOpen(null, { shown: grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p, readOnly: true,
       url: '/apps/lattice/app?grub=' + encodeURIComponent(p) +
         (grubShip ? '&ship=' + encodeURIComponent(grubShip) : '') });
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
   }
   async function saveGrub() {
     if (!grubPath || src.readOnly) return;
@@ -5541,13 +5540,51 @@
   <h3>status</h3>
   <div id="cerr" class="ok">&nbsp;</div>
   <lat-knowtags></lat-knowtags>
+  <div id="cmtrow" hidden>
+    <h3>comments</h3>
+    <label class="muted"><input type="checkbox" id="cmton"> Comments on this page</label>
+  </div>
   <lat-share></lat-share>
-  <button id="mv" class="mvbtn">move / rename</button>
-  <button id="del" class="del">delete page</button>
+  <!-- move and delete are reached from the tab header's path and the page
+       menu (23-tabhead.js), which click these. They stay, out of sight. -->
+  <div hidden><button id="mv">move / rename</button><button id="del">delete page</button></div>
 </aside>`;
       cerr = $('cerr');
     }
   });
+
+  // ── comments on this page ────────────────────────────────────────────────
+  // Comments from other ships are opt-in per page (or per folder: the
+  // nearest flag at or above a page wins). page-source reports the answer
+  // for the open page as `comments`, and this box shows it. An open painted
+  // from the tree dump has no answer yet; the box waits, disabled, for the
+  // page-source fetch that follows. cmtOn is what the Comments tab goes by.
+  let cmtOn = null;
+  let cmtFor = null;
+  function cmtShow(name, on) {
+    const cb = $('cmton');
+    cmtFor = name;
+    cmtOn = typeof on === 'boolean' ? on : null;
+    cb.checked = cmtOn === true;
+    cb.disabled = !name || cmtOn === null;
+  }
+  $('cmton').onchange = async () => {
+    const cb = $('cmton');
+    const name = cmtFor;
+    if (!name) return;
+    const on = cb.checked;
+    cb.disabled = true;
+    const r = await mutate(api + '/page-comments?name=' + encodeURIComponent(name) +
+      '&on=' + (on ? '1' : '0'));
+    if (cmtFor !== name) return;
+    cb.disabled = false;
+    if (!r || !r.ok) { cb.checked = !on; st('comments switch failed' + await errText(r), false); return; }
+    cmtOn = on;
+    const hit = pageCache.get(name);
+    if (hit) hit.comments = on;
+    st(on ? 'comments on for ' + name : 'comments off for ' + name);
+    rpSoon();
+  };
 
   // NB: the command box is gone from this panel. It POSTed to /page-cmd, the
   // input channel for a programmable page. The ROUTE stays, since public form
@@ -6753,26 +6790,34 @@
     renderComments(d.total || inbox.length);
   }
 
-  function renderComments(total) {
-    const host = $('cmlist');
+  // The inbox by default. The Comments tab (76-outline.js) passes one
+  // page's share of it, its own host and empty line, and its own reload,
+  // and leaves out the page link, which would only point at itself.
+  function renderComments(total, {
+    host = $('cmlist'), items = inbox, sum = $('cmsum'), reload = loadComments,
+    // say WHY it might be empty. Comments are opt-in per page, so "none yet"
+    // and "never enabled anywhere" look identical and mean different things
+    empty = 'No comments. They are opt-in per page: switch them on in a '
+      + 'page\'s Page tab.',
+    pageLink = true,
+  } = {}) {
     if (!host) return;
     host.textContent = '';
     host.className = '';
-    $('cmsum').textContent = inbox.length
-      ? inbox.length + (total > inbox.length ? ' of ' + total : '') + ' comment'
-        + (total === 1 ? '' : 's')
-      : '';
-    if (!inbox.length) {
+    if (sum) {
+      sum.textContent = items.length
+        ? items.length + (total > items.length ? ' of ' + total : '') + ' comment'
+          + (total === 1 ? '' : 's')
+        : '';
+    }
+    if (!items.length) {
       host.className = 'aclempty';
-      // say WHY it might be empty. Comments are opt-in per page, so "none yet"
-      // and "never enabled anywhere" look identical and mean different things
-      host.textContent = 'No comments. They are opt-in per page, and this app '
-        + 'has no switch for that yet.';
+      host.textContent = empty;
       return;
     }
     const grid = document.createElement('div');
     grid.className = 'aclgrid';
-    for (const c of inbox) {
+    for (const c of items) {
       const card = document.createElement('div');
       card.className = 'aclcard';
       const head = document.createElement('header');
@@ -6787,19 +6832,21 @@
           '&id=' + encodeURIComponent(c.id), { method: 'POST' }).catch(() => null);
         if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
         st('comment removed');
-        loadComments();
+        reload();
       };
       head.appendChild(who); head.appendChild(del);
       card.appendChild(head);
 
       // the page it landed on, clickable. The point of an inbox is getting
       // to the thing being talked about
-      const on = document.createElement('a');
-      on.className = 'gname';
-      on.textContent = c.page;
-      on.style.cursor = 'pointer';
-      on.onclick = (e) => { cmClose(); openIn('page', c.page, { ev: e }); };
-      card.appendChild(on);
+      if (pageLink) {
+        const on = document.createElement('a');
+        on.className = 'gname';
+        on.textContent = c.page;
+        on.style.cursor = 'pointer';
+        on.onclick = (e) => { cmClose(); openIn('page', c.page, { ev: e }); };
+        card.appendChild(on);
+      }
 
       const body = document.createElement('div');
       body.style.whiteSpace = 'pre-wrap';
@@ -7002,15 +7049,269 @@
     }
   }
 
+// ── src/76-outline.js ─────────────────────────────────────────────────────
+  // ── right pane: Outgoing, Outline, Comments, and what follows the document ─
+  // The right pane's tabs are about the document in front. Outgoing and
+  // Outline read its text, the rest fetch, and all of them repaint when the
+  // document changes: setOpen (every open, tab switch and mode change goes
+  // through it) fires 'input' on the name field, resetPanels runs on every
+  // fresh paint of a page or memory, and the editor's render tells them the
+  // text moved. A tab that does not apply to what is in front says so in
+  // one line, and never hides: a tab strip that changes shape under the
+  // pointer is worse than one that is sometimes empty.
+
+  // The link targets the preview renderer (59-md.js) makes of a document,
+  // deduped, in order. Read off its own output, so a link here is exactly a
+  // link there: fences, images, unsafe schemes and escaping all come out the
+  // same. A page link comes back as its page name, a urb:// link as itself.
+  function outLinks(body, kind) {
+    const html = kind === 'md' ? mdToHtml(body) : kind === 'gmi' ? gmiToHtml(body) : '';
+    const out = [];
+    for (const m of html.matchAll(/<a href="([^"]*)"/g)) {
+      let t = mdUnesc(m[1]);
+      const pg = /^\/apps\/lattice\/app\?name=([^&#]*)$/.exec(t);
+      const urb = /^\/apps\/lattice\?url=(urb:\/\/.*)$/.exec(t);
+      if (pg) { try { t = decodeURIComponent(pg[1]); } catch { continue; } }
+      else if (urb) t = urb[1];
+      else if (t.startsWith('#')) continue;      // an anchor in the page itself
+      if (t && !out.includes(t)) out.push(t);
+    }
+    return out;
+  }
+
+  // The headings of a document, by the rules the same renderer uses: md
+  // #..###### with a space, gmi #..### with one, nothing inside a fence.
+  // `line` counts from 1.
+  function outline(body, kind) {
+    const out = [];
+    if (kind !== 'md' && kind !== 'gmi') return out;
+    const lines = String(body == null ? '' : body).split('\n');
+    let fence = null;
+    for (let i = 0; i < lines.length; i++) {
+      const ln = lines[i];
+      if (kind === 'gmi') {
+        if (ln.trimEnd() === '```') { fence = fence ? null : '```'; continue; }
+        if (fence) continue;
+      } else {
+        if (fence) { if (ln.trimStart().startsWith(fence)) fence = null; continue; }
+        const f = ln.match(/^\s*(```|~~~)/);
+        if (f) { fence = f[1]; continue; }
+      }
+      const h = ln.match(kind === 'gmi' ? /^(#{1,3}) (.*)$/ : /^(#{1,6})\s+(.*)$/);
+      if (h) out.push({ level: h[1].length, text: h[2].trim(), line: i + 1 });
+    }
+    return out;
+  }
+
+  const rpSec = (id) => document.querySelector('#rbody > [data-pane=' + id + ']');
+  const NONE = '<p class="rpnone muted" hidden>Nothing here for this tab.</p>';
+  rpSec('out').innerHTML = NONE + '<div id="outsec"><h3>outgoing links</h3><div id="outlist"></div></div>';
+  rpSec('outline').innerHTML = NONE + '<div id="olsec"><h3>outline</h3><div id="ollist"></div></div>';
+  rpSec('comments').innerHTML = NONE + `<div id="rpcmsec">
+  <h3>comments on this page</h3>
+  <div id="rpcmlist"></div>
+  <textarea id="rpcmbody" rows="3" placeholder="Write a comment"></textarea>
+  <div class="row"><span id="rpcmnote" class="muted grow"></span><button id="rpcmpost">Post</button></div>
+</div>`;
+  for (const id of ['back', 'hist']) rpSec(id).insertAdjacentHTML('afterbegin', NONE);
+
+  // What is in front, as the pane sees it: a page (named or not yet), a
+  // memory, a grub, or nothing it has tabs for (a folder, an empty editor
+  // after a close, a tab kind with no document such as a tool).
+  const rpDoc = () => {
+    if (activeTab && !['page', 'know', 'grub'].includes(activeTab.kind)) return null;
+    if (grubPath) return { kind: 'grub', key: grubPath };
+    if (curFolder !== null) return null;
+    return { kind: mode === 'know' ? 'know' : 'page', key: current };
+  };
+  // Outgoing and Outline need text a renderer reads. History needs a
+  // document with revisions, so a saved page or memory. Backlinks and
+  // Comments are about pages.
+  const rpApplies = (id, d) => !!d && (
+    id === 'out' || id === 'outline' ? d.kind !== 'grub'
+      : id === 'hist' ? d.kind !== 'grub' && !!d.key
+        : d.kind === 'page' && !!d.key);
+  const RP_BODY = { out: 'outsec', outline: 'olsec', back: 'linksec', comments: 'rpcmsec', hist: 'histsec' };
+  const rpText = () => (mode === 'know' ? 'md' : pkind.value);
+
+  // which fetched tab holds which document ('page:a/b'). A tab whose entry
+  // differs from what is in front loads when it is next seen.
+  const rpLoaded = {};
+  let rpTimer = 0;
+  let rpForce = null;
+  function rpPaint() {
+    rpTimer = 0;
+    const force = rpForce;
+    rpForce = null;
+    const d = rpDoc();
+    const key = d && d.key ? d.kind + ':' + d.key : null;
+    for (const id of Object.keys(RP_BODY)) {
+      const ok = rpApplies(id, d);
+      rpSec(id).querySelector('.rpnone').hidden = ok;
+      $(RP_BODY[id]).hidden = !ok;
+      if (!ok || !paneShows('r', id)) continue;
+      if (id === 'out') paintOut();
+      else if (id === 'outline') paintOutline();
+      else if (force === id || rpLoaded[id] !== key) {
+        rpLoaded[id] = key;
+        if (id === 'back') loadBacklinks();
+        else if (id === 'hist') loadHistory();
+        else loadPageComments();
+      }
+    }
+    $('cmtrow').hidden = !(d && d.kind === 'page' && d.key);
+  }
+  // Always deferred: the callers are mid-paint (setOpen comes before the
+  // body lands), and some run while later files are still loading.
+  function rpSoon(ms = 30) {
+    clearTimeout(rpTimer);
+    rpTimer = setTimeout(rpPaint, ms);
+  }
+  pname.addEventListener('input', () => rpSoon());
+  // typing repaints Outgoing and Outline once it pauses
+  rpHook = () => rpSoon(300);
+  // a tab brought forward shows its document now, and a fetched one fresh
+  document.addEventListener('lat-pane', (e) => {
+    if (e.detail.side !== 'r') return;
+    rpForce = e.detail.id;
+    rpSoon(0);
+  });
+  rpSoon(0);
+
+  // ── Outgoing ─────────────────────────────────────────────────────────────
+  // A page target opens through the tab model, so Ctrl/Cmd and the middle
+  // button open it in a new tab. A page not in the tree is muted: following
+  // it creates it. A web or urb:// target is an ordinary link.
+  function paintOut() {
+    const host = $('outlist');
+    host.textContent = '';
+    const links = outLinks(src.value, rpText());
+    if (!links.length) {
+      host.innerHTML = '<div class="muted">no outgoing links</div>';
+      return;
+    }
+    for (const t of links) {
+      const a = document.createElement('a');
+      a.className = 'olrow';
+      a.textContent = t;
+      if (/^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith('/')) {
+        a.href = t.startsWith('urb://') ? '/apps/lattice?url=' + t : t;
+        if (/^https?:/i.test(t)) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+      } else {
+        a.href = '/apps/lattice/app?name=' + encodeURIComponent(t);
+        if (!nodes.some((n) => n.page && n.path === t)) {
+          a.classList.add('muted');
+          a.title = t + ' does not exist yet';
+        }
+        tabLink(a, 'page', t);
+      }
+      host.append(a);
+    }
+  }
+
+  // ── Outline ──────────────────────────────────────────────────────────────
+  // A click puts the caret on that heading's line and brings it into view.
+  // In Read the preview scrolls instead, to the heading of the same index.
+  function paintOutline() {
+    const host = $('ollist');
+    host.textContent = '';
+    const hs = outline(src.value, rpText());
+    if (!hs.length) {
+      host.innerHTML = '<div class="muted">no headings</div>';
+      return;
+    }
+    hs.forEach((h, i) => {
+      const a = document.createElement('a');
+      a.className = 'olrow';
+      a.href = '#';
+      a.style.paddingLeft = (h.level - 1) * 12 + 'px';
+      a.textContent = h.text || '(untitled)';
+      a.onclick = (e) => { e.preventDefault(); goHeading(h.line, i); };
+      host.append(a);
+    });
+  }
+  function goHeading(line, idx) {
+    if ($('ws').classList.contains('vp')) {
+      let doc = null;
+      try { doc = prev.contentDocument; } catch {}
+      const el = doc && doc.querySelectorAll('h1, h2, h3, h4, h5, h6')[idx];
+      if (el) el.scrollIntoView({ block: 'start' });
+      return;
+    }
+    const lines = src.value.split('\n');
+    let off = 0;
+    for (let i = 0; i < line - 1 && i < lines.length; i++) off += lines[i].length + 1;
+    src.focus();
+    src.setSelectionRange(off, off);
+    // the textarea soft-wraps, so this is near the line, not on it. A third
+    // of the way down leaves room for the error of a few wrapped lines.
+    const lh = parseFloat(getComputedStyle(src).lineHeight) || 20;
+    src.scrollTop = Math.max(0, (line - 1) * lh - src.clientHeight / 3);
+    sync();
+  }
+
+  // ── Comments ─────────────────────────────────────────────────────────────
+  // This page's share of the inbox (73-comments.js), with remove as there,
+  // and a box to post one as the owner. A post only lands while comments
+  // are on for the page (the ship drops it otherwise), so the box says so
+  // and stays shut while they are off.
+  async function loadPageComments() {
+    const host = $('rpcmlist');
+    const want = current;
+    paintCmBox();
+    host.className = 'muted';
+    host.textContent = 'loading…';
+    let d = null;
+    try {
+      const r = await fetch(api + '/comments-inbox');
+      if (!r.ok) { host.textContent = ''; st('comments failed' + await errText(r), false); return; }
+      d = await r.json();
+    } catch { host.textContent = ''; st('comments failed', false); return; }
+    if (current !== want) return;
+    const items = (d.items || []).filter((c) => c.page === want);
+    renderComments(items.length, {
+      host, items, sum: null, pageLink: false,
+      reload: () => { rpForce = 'comments'; rpSoon(0); },
+      empty: 'No comments on this page.',
+    });
+  }
+  function paintCmBox() {
+    const off = cmtFor !== current || cmtOn !== true;
+    $('rpcmbody').disabled = off;
+    $('rpcmpost').disabled = off;
+    $('rpcmnote').textContent = cmtFor === current && cmtOn === false
+      ? 'Comments are off for this page. Switch them on in the Page tab.' : '';
+  }
+  $('rpcmpost').onclick = async () => {
+    const page = current;
+    const body = $('rpcmbody').value.trim();
+    if (!page || !body) return;
+    $('rpcmpost').disabled = true;
+    // the route answers a form post with a redirect to the reader. Not
+    // followed: landing is all this needs to know.
+    const r = await fetch(api + '/comment?page=' + encodeURIComponent(page), {
+      method: 'POST', redirect: 'manual',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'body=' + encodeURIComponent(body),
+    }).catch(() => null);
+    $('rpcmpost').disabled = false;
+    if (!r || !(r.ok || r.type === 'opaqueredirect')) { st('comment failed' + await errText(r), false); return; }
+    if (current === page) $('rpcmbody').value = '';
+    st('comment posted');
+    // the write is its own transaction behind the answer
+    setTimeout(() => { if (current === page) { rpForce = 'comments'; rpSoon(0); } }, 1500);
+  };
+
 // ── src/77-history.js ─────────────────────────────────────────────────────
   // ── history + backlinks panels: <lat-history>, <lat-links> ───────────────
-  // Defined here (before this file's own $-lookups). They upgrade inside the
-  // <lat-ctl> frame rendered at 65.
+  // Defined here (before this file's own $-lookups). They upgrade inside
+  // their right pane tabs (13-frame.js), which load them when shown and
+  // when the document changes under them (76-outline.js, rpPaint).
   customElements.define('lat-history', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
 <div id="histsec" hidden>
-  <h3 id="histh">history &#9656;</h3>
+  <h3 id="histh">history</h3>
   <div id="histview" class="row" hidden>
     <button id="hrestore">restore</button>
     <button id="hback">back to latest</button>
@@ -7023,27 +7324,31 @@
     connectedCallback() {
       this.innerHTML = `
 <div id="linksec" hidden>
-  <h3 id="linkh">linked from &#9656;</h3>
+  <h3 id="linkh">linked from</h3>
   <div id="linklist" class="chips"></div>
 </div>`;
     }
   });
 
   // ── backlinks: pages that wikilink [[this page]] ─────────────────────────
-  // fetched ONLY when the panel is expanded. This and history were two more
-  // ~2s round-trips paid on every page open whether or not anyone looked.
-  const linkSec = $('linksec'), linkList = $('linklist');
+  // fetched ONLY while the Backlinks tab is in front. This and history were
+  // two more ~2s round-trips paid on every page open whether or not anyone
+  // looked.
+  const linkList = $('linklist');
   async function loadBacklinks() {
     linkList.textContent = '';
     if (!current || mode === 'know') return;
+    const want = current;
     let j = null;
     // a panel nobody can see is not worth a rejection: an unreachable ship
     // leaves the list empty, the same as a refused request already does
     try {
-      const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(current));
+      const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(want));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
+    // the document changed while this was in flight: its own load follows
+    if (current !== want) return;
     const links = (j.links || []).filter((p) => p !== current);
     if (!links.length) {
       const d = document.createElement('div');
@@ -7060,39 +7365,19 @@
     }
   }
 
-  // collapsed-by-default panels. First expand does the fetch
-  let histOpen = false, linksOpen = false;
-  const panelArrow = (el, base, open) => { el.textContent = base + (open ? ' ▾' : ' ▸'); };
+  // A page or memory was painted fresh. rpPaint reloads whichever of these
+  // tabs is in front if it was about another document, and the other one
+  // when it is next shown. The same document painted again (the upgrade
+  // after a quiet open) costs nothing. History covers memories too.
+  // Backlinks stay pages-only, since a wikilink search over the vault is a
+  // different feature nobody asked for (rpApplies).
   function resetPanels() {
-    histOpen = false; linksOpen = false;
-    histList.textContent = ''; linkList.textContent = '';
-    histList.hidden = true; linkList.hidden = true;
     histView.hidden = true;
-    // history now covers memories too. Backlinks stay pages-only, since a
-    // wikilink search over the vault is a different feature nobody asked for
-    histSec.hidden = !current;
-    linkSec.hidden = !current || mode === 'know';
-    panelArrow($('histh'), 'history', false);
-    panelArrow($('linkh'), 'linked from', false);
+    rpSoon();
   }
-  $('histh').onclick = () => {
-    if (histSec.hidden) return;
-    histOpen = !histOpen;
-    panelArrow($('histh'), 'history', histOpen);
-    histList.hidden = !histOpen;
-    if (!histOpen) histView.hidden = true;
-    else if (!histList.childElementCount) loadHistory();
-  };
-  $('linkh').onclick = () => {
-    if (linkSec.hidden) return;
-    linksOpen = !linksOpen;
-    panelArrow($('linkh'), 'linked from', linksOpen);
-    linkList.hidden = !linksOpen;
-    if (linksOpen && !linkList.childElementCount) loadBacklinks();
-  };
 
   // ── version history (born keeps every save; autosave makes it dense) ────
-  const histSec = $('histsec'), histList = $('histlist'), histView = $('histview');
+  const histList = $('histlist'), histView = $('histview');
   let revKind = null;
   const exitRev = () => {
     viewingRev = null;
@@ -7103,15 +7388,18 @@
   async function loadHistory() {
     histList.textContent = '';
     if (!current) return;
+    const want = current;
     let j = null;
-    // same rule as loadBacklinks: an unreachable ship leaves the panel empty
+    // same rules as loadBacklinks: an unreachable ship leaves the panel
+    // empty, and an answer about a document no longer open is dropped
     try {
       const r = await fetch(mode === 'know'
-        ? api + '/know-history?key=' + encodeURIComponent(current)
-        : api + '/page-history?name=' + encodeURIComponent(current));
+        ? api + '/know-history?key=' + encodeURIComponent(want)
+        : api + '/page-history?name=' + encodeURIComponent(want));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
+    if (current !== want) return;
     const revs = j.revisions || [];
     if (revs.length < 2) {               // a single revision is just "now"
       const d = document.createElement('div');
@@ -7977,6 +8265,7 @@
     } else {
       snapPage(current, d);
       showShare(d.share || 'private');
+      if (typeof d.comments === 'boolean') cmtShow(current, d.comments);
       refreshPreview();
       st('updated from ship \u00b7 rev ' + d.rev);
     }
@@ -8509,8 +8798,6 @@
     curKind = null;
     exitGrub();                      // Save must stop pointing at an app file
     exitRev();                       // else readOnly leaks into the memory editor
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
     ws.classList.toggle('know', m === 'know');
     knowMeta.hidden = m !== 'know';
     curFolder = null;

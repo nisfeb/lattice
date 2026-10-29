@@ -142,6 +142,7 @@
     exitRev();
     resetPanels();
     showShare(d.share || 'private');
+    cmtShow(name, d.comments);
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
     //  a tex page's server render is its SOURCE as escaped text, because the
     //  ship has no LaTeX and is not getting one. The local conversion is the
@@ -182,8 +183,6 @@
     refreshTexButton();
     exitGrub();
     exitRev();
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
     setCtlLabels();
     setOpen(null, { shown: into ? into + '/' : '', url: '/apps/lattice/app' });
     src.value = '';

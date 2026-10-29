@@ -14,13 +14,51 @@
   <h3>status</h3>
   <div id="cerr" class="ok">&nbsp;</div>
   <lat-knowtags></lat-knowtags>
+  <div id="cmtrow" hidden>
+    <h3>comments</h3>
+    <label class="muted"><input type="checkbox" id="cmton"> Comments on this page</label>
+  </div>
   <lat-share></lat-share>
-  <button id="mv" class="mvbtn">move / rename</button>
-  <button id="del" class="del">delete page</button>
+  <!-- move and delete are reached from the tab header's path and the page
+       menu (23-tabhead.js), which click these. They stay, out of sight. -->
+  <div hidden><button id="mv">move / rename</button><button id="del">delete page</button></div>
 </aside>`;
       cerr = $('cerr');
     }
   });
+
+  // ── comments on this page ────────────────────────────────────────────────
+  // Comments from other ships are opt-in per page (or per folder: the
+  // nearest flag at or above a page wins). page-source reports the answer
+  // for the open page as `comments`, and this box shows it. An open painted
+  // from the tree dump has no answer yet; the box waits, disabled, for the
+  // page-source fetch that follows. cmtOn is what the Comments tab goes by.
+  let cmtOn = null;
+  let cmtFor = null;
+  function cmtShow(name, on) {
+    const cb = $('cmton');
+    cmtFor = name;
+    cmtOn = typeof on === 'boolean' ? on : null;
+    cb.checked = cmtOn === true;
+    cb.disabled = !name || cmtOn === null;
+  }
+  $('cmton').onchange = async () => {
+    const cb = $('cmton');
+    const name = cmtFor;
+    if (!name) return;
+    const on = cb.checked;
+    cb.disabled = true;
+    const r = await mutate(api + '/page-comments?name=' + encodeURIComponent(name) +
+      '&on=' + (on ? '1' : '0'));
+    if (cmtFor !== name) return;
+    cb.disabled = false;
+    if (!r || !r.ok) { cb.checked = !on; st('comments switch failed' + await errText(r), false); return; }
+    cmtOn = on;
+    const hit = pageCache.get(name);
+    if (hit) hit.comments = on;
+    st(on ? 'comments on for ' + name : 'comments off for ' + name);
+    rpSoon();
+  };
 
   // NB: the command box is gone from this panel. It POSTed to /page-cmd, the
   // input channel for a programmable page. The ROUTE stays, since public form

@@ -7392,6 +7392,9 @@
   ;<  cn=view:nexus  bind:m  (peek:io (rf up pdir %code) ~)
   ?.  ?=([%file *] cn)  (pure:m [%| 404 'no such page'])
   ;<  mode=share-mode:le  bind:m  (read-share pdir)
+  ::  whether other ships may comment here: the nearest flag at or above the
+  ::  page, the same walk the comment inbox applies (+comments-on)
+  ;<  con=?  bind:m  (comments-on pax)
   =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cn)))) '')
   =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
   =/  gen=?  =((make-folder-index pax) src)
@@ -7414,6 +7417,7 @@
         ['rev' (numb:enjs:format ud.cass.cn)]
         ['mtime' s+(scot %da da.cass.cn)]
         ['share' s+mode]
+        ['comments' b+con]
     ==
   html-row
 ::  +fs-err-text: a page's latest evaluator error ('' = clean or no such page).

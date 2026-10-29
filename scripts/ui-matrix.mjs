@@ -176,10 +176,10 @@ try {
   // lists them, viewing one is read-only, restoring re-saves it as newest.
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => !document.getElementById('histsec').hidden);
-  // history is lazy now. Revisions fetch on first header expand
-  await page.click('#histh');
+  // history is lazy. Revisions fetch when the History tab is in front
+  await page.evaluate(() => document.querySelector('#rtabs [data-pt=hist]').click());
   await wait(() => document.querySelectorAll('#histlist a').length >= 2);
-  ok('history: panel lists revisions after expanding');
+  ok('history: the tab lists revisions');
   await page.evaluate(() => {                      // open the OLDEST revision
     const chips = document.querySelectorAll('#histlist a');
     chips[chips.length - 1].click();
@@ -221,7 +221,7 @@ try {
   // F4/F13: while viewing a revision, save is refused and Tab cannot edit
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => !document.getElementById('histsec').hidden);
-  await page.click('#histh');
+  await page.evaluate(() => document.querySelector('#rtabs [data-pt=hist]').click());
   await wait(() => document.querySelectorAll('#histlist a').length >= 2);
   await page.evaluate(() => document.querySelectorAll('#histlist a')[document.querySelectorAll('#histlist a').length - 1].click());
   await wait(() => document.getElementById('src').readOnly);
@@ -282,7 +282,8 @@ try {
   ok('wikilinks: preview renders [[x]] as an editor link');
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => !document.getElementById('linksec').hidden);
-  await page.click('#linkh');                       // backlinks fetch lazily on expand
+  //  backlinks fetch when their tab is in front
+  await page.evaluate(() => document.querySelector('#rtabs [data-pt=back]').click());
   await wait(() => !!document.querySelector('#linklist a'));
   check('backlinks: panel lists the linking page',
     (await page.evaluate(() => document.querySelector('#linklist a').textContent)) === RUN + '/linker');
@@ -490,7 +491,7 @@ try {
 
   step = 'folder rename';
   // ── 6. folder rename via dialog ──────────────────────────────────────────
-  await page.click('#mv');
+  await page.evaluate(() => document.getElementById('mv').click());
   await dialog(RUN + '-moved');
   await wait((n) => [...document.querySelectorAll('#treelist .fld')]
     .some((f) => f.textContent.includes(n)), RUN + '-moved');
@@ -801,7 +802,7 @@ try {
   await wait(() => document.getElementById('src').value.length > 0);
   check('know: body round-trips',
     (await page.evaluate(() => document.getElementById('src').value)) === 'ui matrix memory');
-  await page.click('#del');
+  await page.evaluate(() => document.getElementById('del').click());
   await dialog(null);   // confirm dialog, no input
   await wait((n) => ![...document.querySelectorAll('#knowlist a.pg')]
     .some((a) => a.textContent === n), RUN);
@@ -889,7 +890,7 @@ try {
   // ── 9. delete the test page + folder via dialogs ─────────────────────────
   await page.goto(APP + '?name=' + RUN + '-moved/hello', { waitUntil: 'domcontentloaded' });
   await wait(() => document.getElementById('src').value.length > 0);
-  await page.click('#del');
+  await page.evaluate(() => document.getElementById('del').click());
   await dialog(null);
   await wait((n) => ![...document.querySelectorAll('#treelist a.pg')]
     .some((a) => a.href.includes(n + '%2Fhello')), RUN + '-moved');
@@ -899,7 +900,7 @@ try {
   if (frow.asElement()) {
     await frow.asElement().click();
     await wait(() => document.getElementById('del').textContent === 'delete folder');
-    await page.click('#del');
+    await page.evaluate(() => document.getElementById('del').click());
     await dialog(null);
   }
   // conflicts/ is excluded deliberately. A save that outruns the client's 10s
@@ -958,7 +959,7 @@ try {
   //  which is what keeps the app in offline mode across a restart.
   await page.goto(APP + '?name=' + OFF + '/gone', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.length > 0);
-  await page.click('#del');
+  await page.evaluate(() => document.getElementById('del').click());
   await dialog(null);
   //  the leaf is matched on its LABEL and the namespace on the href: a tree
   //  link percent-encodes the slash, so href.includes('ns/leaf') never matches
@@ -971,7 +972,7 @@ try {
   await page.goto(APP + '?name=' + OFF + '/here', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value === '# edited while offline');
   ok('offline: the queued edit outranks the ship copy on reopen');
-  await page.click('#mv');
+  await page.evaluate(() => document.getElementById('mv').click());
   await dialog(OFF + '/moved');
   await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
     .some((a) => a.textContent === 'moved.md' && a.href.includes(n)), OFF);

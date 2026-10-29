@@ -85,8 +85,6 @@
     setOpen(null, { shown: grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p, readOnly: true,
       url: '/apps/lattice/app?grub=' + encodeURIComponent(p) +
         (grubShip ? '&ship=' + encodeURIComponent(grubShip) : '') });
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
   }
   async function saveGrub() {
     if (!grubPath || src.readOnly) return;

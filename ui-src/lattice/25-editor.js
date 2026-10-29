@@ -45,7 +45,11 @@
     }, HL_DEADLINE + (hlFresh ? HL_STARTUP : 0));
     hlWorker.postMessage(JSON.stringify({ language: job.lang, code: job.body }));
   };
+  // the right pane's Outline and Outgoing read the text, so every paint of
+  // it, typed or scripted, tells them (rpSoon, 76-outline.js, set there)
+  let rpHook = null;
   const render = () => {
+    if (rpHook) rpHook();
     const lang = LMAP[pkind.value];
     const g = window.Prism && lang && Prism.languages[lang];
     if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; return; }

@@ -332,8 +332,6 @@
     curKind = null;
     exitGrub();
     exitRev();
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
     folderCtx = path;
     setOpen(null, { shown: path, readOnly: true,
       url: '/apps/lattice/app?into=' + encodeURIComponent(path) });

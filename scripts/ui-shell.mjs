@@ -15,7 +15,7 @@
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           node scripts/ui-shell.mjs
-import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, seed, makeCheck, sleep } from './lib/harness.mjs';
 
 const env = shipEnv();
 const check = makeCheck();
@@ -25,6 +25,10 @@ const check = makeCheck();
 const MEM = 'test/shell-suite';
 const FRESH = 'test/shell-suite-new';
 const MARK = 'https://example.com/shell-' + process.pid;
+//  the right pane's pages: headings, a link, and the page it links to
+const RP = 'rpane-' + process.pid;
+const LINKER = 'rplink-' + process.pid;
+const LINKED = 'x-' + process.pid + '/a';
 const post = (path, body) => fetch(env.base + '/apps/lattice/' + path,
   { method: 'POST', headers: { Cookie: env.cookie }, body });
 const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
@@ -273,6 +277,102 @@ try {
     JSON.stringify({ ...bj, nrows }));
   await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
 
+  // ── right pane tabs follow the document ────────────────────────────────
+  await seed(env, [[RP, '# One\n## Two\ntext\n'], [LINKER, 'see [[' + LINKED + ']]\n'],
+    [LINKED, 'linked page\n']]);
+  const openDoc = async (kind, key) => {
+    await page.evaluate((k, n) => window.latTabs.openIn(k, n), kind, key);
+    return until(([k, n]) => {
+      const s = window.latTabs.state();
+      const t = s.tabs[s.active];
+      return t && t.kind === k && t.key === n && s.shows;
+    }, [kind, key]);
+  };
+  const rtab = (id) => page.evaluate((i) => document.querySelector('#rtabs [data-pt=' + i + ']').click(), id);
+  const paneText = (id) => page.evaluate((i) =>
+    document.querySelector('#rbody > [data-pane=' + i + ']').innerText.trim(), id);
+
+  const rpOpen = await openDoc('page', RP);
+  await rtab('outline');
+  const olRows = await until(() => document.querySelectorAll('[data-pane=outline] .olrow').length === 2);
+  await page.evaluate(() => [...document.querySelectorAll('[data-pane=outline] .olrow')]
+    .find((a) => a.textContent.trim() === 'Two')?.click());
+  await sleep(200);
+  const caret = await page.evaluate(() => document.getElementById('src').selectionStart);
+  check('outline lists headings', rpOpen && olRows && caret === '# One\n'.length,
+    JSON.stringify({ rpOpen, olRows, caret, text: await paneText('outline') }));
+
+  //  the pane follows the tab in front, in both directions, with no click
+  await openDoc('page', LINKER);
+  const gone1 = await until(() => !document.querySelector('[data-pane=outline] .olrow'));
+  await openDoc('page', RP);
+  const back1 = await until(() => document.querySelectorAll('[data-pane=outline] .olrow').length === 2);
+  check('the outline follows a tab switch', gone1 && back1, JSON.stringify({ gone1, back1 }));
+  //  and the text as it is typed
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value += '### Three\n';
+    s.dispatchEvent(new Event('input'));
+  });
+  const typed = await until(() => [...document.querySelectorAll('[data-pane=outline] .olrow')]
+    .some((a) => a.textContent === 'Three'));
+  check('the outline follows typing', typed);
+
+  //  history applies to a memory, backlinks do not
+  await openDoc('know', MEM);
+  await rtab('hist');
+  const memHist = await until(() => !document.getElementById('histsec').hidden);
+  await rtab('back');
+  await sleep(300);
+  const memBack = await paneText('back');
+  check('a memory has history and no backlinks',
+    memHist && memBack === 'Nothing here for this tab.', JSON.stringify({ memHist, memBack }));
+
+  await openDoc('page', LINKER);
+  await rtab('out');
+  const outRow = await until((n) => [...document.querySelectorAll('[data-pane=out] .olrow')]
+    .some((a) => a.textContent.trim() === n), LINKED);
+  await page.evaluate((n) => [...document.querySelectorAll('[data-pane=out] .olrow')]
+    .find((a) => a.textContent.trim() === n)?.click(), LINKED);
+  const followed = await until((n) => {
+    const s = window.latTabs.state();
+    return s.tabs[s.active].key === n;
+  }, LINKED);
+  check('outgoing lists links', outRow && followed,
+    JSON.stringify({ outRow, followed, text: await paneText('out') }));
+
+  const cmtSrc = async () => {
+    const res = await fetch(env.base + '/apps/lattice/page-source?name=' + encodeURIComponent(RP),
+      { headers: { Cookie: env.cookie } });
+    return res.ok ? (await res.json()).comments : 'http ' + res.status;
+  };
+  await openDoc('page', RP);
+  await rtab('page');
+  const cmtShown = await until(() => {
+    const c = document.getElementById('cmton');
+    return !!c && c.getBoundingClientRect().width > 0 && !c.disabled;
+  });
+  const flipCmt = async (want) => {
+    await page.evaluate(() => document.getElementById('cmton').click());
+    let got;
+    for (let i = 0; i < 30 && (got = await cmtSrc()) !== want; i++) await sleep(500);
+    return got;
+  };
+  const cmOn = await flipCmt(true);
+  const cmOff = await flipCmt(false);
+  check('comments toggle round-trips', cmtShown && cmOn === true && cmOff === false,
+    JSON.stringify({ cmtShown, cmOn, cmOff }));
+
+  const sbase = (await (await fetch(env.base + '/apps/lattice/streams',
+    { headers: { Cookie: env.cookie } })).json()).base;
+  const grubOpen = await openDoc('grub', sbase + '/page/' + RP + '/code');
+  await rtab('comments');
+  await sleep(300);
+  const none = await paneText('comments');
+  check('inapplicable tab says so', grubOpen && none === 'Nothing here for this tab.',
+    JSON.stringify({ grubOpen, none }));
+  await rtab('page');
+
   // ── compile error chip ─────────────────────────────────────────────────
   await page.evaluate(() => {
     localStorage.appNC = '1';
@@ -306,5 +406,7 @@ try {
   await post('know-delete?key=' + encodeURIComponent(MEM)).catch(() => {});
   await post('know-delete?key=' + encodeURIComponent(FRESH)).catch(() => {});
   await post('unbookmark?url=' + encodeURIComponent(MARK)).catch(() => {});
+  for (const n of [RP, LINKER, 'x-' + process.pid])
+    await post('page-del?name=' + encodeURIComponent(n)).catch(() => {});
 }
 check.done();

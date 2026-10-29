@@ -1,11 +1,12 @@
   // ── history + backlinks panels: <lat-history>, <lat-links> ───────────────
-  // Defined here (before this file's own $-lookups). They upgrade inside the
-  // <lat-ctl> frame rendered at 65.
+  // Defined here (before this file's own $-lookups). They upgrade inside
+  // their right pane tabs (13-frame.js), which load them when shown and
+  // when the document changes under them (76-outline.js, rpPaint).
   customElements.define('lat-history', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
 <div id="histsec" hidden>
-  <h3 id="histh">history &#9656;</h3>
+  <h3 id="histh">history</h3>
   <div id="histview" class="row" hidden>
     <button id="hrestore">restore</button>
     <button id="hback">back to latest</button>
@@ -18,27 +19,31 @@
     connectedCallback() {
       this.innerHTML = `
 <div id="linksec" hidden>
-  <h3 id="linkh">linked from &#9656;</h3>
+  <h3 id="linkh">linked from</h3>
   <div id="linklist" class="chips"></div>
 </div>`;
     }
   });
 
   // ── backlinks: pages that wikilink [[this page]] ─────────────────────────
-  // fetched ONLY when the panel is expanded. This and history were two more
-  // ~2s round-trips paid on every page open whether or not anyone looked.
-  const linkSec = $('linksec'), linkList = $('linklist');
+  // fetched ONLY while the Backlinks tab is in front. This and history were
+  // two more ~2s round-trips paid on every page open whether or not anyone
+  // looked.
+  const linkList = $('linklist');
   async function loadBacklinks() {
     linkList.textContent = '';
     if (!current || mode === 'know') return;
+    const want = current;
     let j = null;
     // a panel nobody can see is not worth a rejection: an unreachable ship
     // leaves the list empty, the same as a refused request already does
     try {
-      const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(current));
+      const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(want));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
+    // the document changed while this was in flight: its own load follows
+    if (current !== want) return;
     const links = (j.links || []).filter((p) => p !== current);
     if (!links.length) {
       const d = document.createElement('div');
@@ -55,39 +60,19 @@
     }
   }
 
-  // collapsed-by-default panels. First expand does the fetch
-  let histOpen = false, linksOpen = false;
-  const panelArrow = (el, base, open) => { el.textContent = base + (open ? ' ▾' : ' ▸'); };
+  // A page or memory was painted fresh. rpPaint reloads whichever of these
+  // tabs is in front if it was about another document, and the other one
+  // when it is next shown. The same document painted again (the upgrade
+  // after a quiet open) costs nothing. History covers memories too.
+  // Backlinks stay pages-only, since a wikilink search over the vault is a
+  // different feature nobody asked for (rpApplies).
   function resetPanels() {
-    histOpen = false; linksOpen = false;
-    histList.textContent = ''; linkList.textContent = '';
-    histList.hidden = true; linkList.hidden = true;
     histView.hidden = true;
-    // history now covers memories too. Backlinks stay pages-only, since a
-    // wikilink search over the vault is a different feature nobody asked for
-    histSec.hidden = !current;
-    linkSec.hidden = !current || mode === 'know';
-    panelArrow($('histh'), 'history', false);
-    panelArrow($('linkh'), 'linked from', false);
+    rpSoon();
   }
-  $('histh').onclick = () => {
-    if (histSec.hidden) return;
-    histOpen = !histOpen;
-    panelArrow($('histh'), 'history', histOpen);
-    histList.hidden = !histOpen;
-    if (!histOpen) histView.hidden = true;
-    else if (!histList.childElementCount) loadHistory();
-  };
-  $('linkh').onclick = () => {
-    if (linkSec.hidden) return;
-    linksOpen = !linksOpen;
-    panelArrow($('linkh'), 'linked from', linksOpen);
-    linkList.hidden = !linksOpen;
-    if (linksOpen && !linkList.childElementCount) loadBacklinks();
-  };
 
   // ── version history (born keeps every save; autosave makes it dense) ────
-  const histSec = $('histsec'), histList = $('histlist'), histView = $('histview');
+  const histList = $('histlist'), histView = $('histview');
   let revKind = null;
   const exitRev = () => {
     viewingRev = null;
@@ -98,15 +83,18 @@
   async function loadHistory() {
     histList.textContent = '';
     if (!current) return;
+    const want = current;
     let j = null;
-    // same rule as loadBacklinks: an unreachable ship leaves the panel empty
+    // same rules as loadBacklinks: an unreachable ship leaves the panel
+    // empty, and an answer about a document no longer open is dropped
     try {
       const r = await fetch(mode === 'know'
-        ? api + '/know-history?key=' + encodeURIComponent(current)
-        : api + '/page-history?name=' + encodeURIComponent(current));
+        ? api + '/know-history?key=' + encodeURIComponent(want)
+        : api + '/page-history?name=' + encodeURIComponent(want));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
+    if (current !== want) return;
     const revs = j.revisions || [];
     if (revs.length < 2) {               // a single revision is just "now"
       const d = document.createElement('div');

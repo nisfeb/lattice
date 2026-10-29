@@ -327,8 +327,7 @@ select, option { color-scheme: inherit; }
   font-size: .78rem; text-decoration: none; color: inherit; background: var(--surface);
   cursor: pointer; }
 .chips a.on, .chips a:hover { border-color: var(--green); color: var(--green); }
-.ws.know #sharesec, .ws.know #pkind,
-.ws.know #histsec, .ws.know #linksec { display: none; }
+.ws.know #sharesec, .ws.know #pkind { display: none; }
 #histview { margin-bottom: 8px; }
 .uppanel { margin: 8px 0; padding: 9px 10px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--surface); font-size: .78rem;
@@ -414,6 +413,17 @@ select, option { color-scheme: inherit; }
 .rp button:where(:not(.sbtn)) { font: inherit; padding: 6px 10px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--surface); color: inherit; cursor: pointer; }
 .rp button:where(:not(.sbtn)):hover { border-color: var(--green); }
+/* Outgoing and Outline rows, and the Comments tab's thread and box */
+.rp .olrow { display: block; padding: 3px 0; color: inherit; text-decoration: none;
+  cursor: pointer; overflow-wrap: anywhere; font-size: .85rem; }
+.rp .olrow:hover { color: var(--green); }
+.rp .olrow.muted { color: var(--muted); }
+.rp .rpnone { margin: 0; }
+#rpcmlist .aclgrid { grid-template-columns: 1fr; gap: 8px; }
+#rpcmbody { width: 100%; box-sizing: border-box; margin: 10px 0 6px; font: inherit;
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: inherit; resize: vertical; }
+#rpcmsec .grow { flex: 1; font-size: .78rem; }
 #cerr.err { color: var(--err); white-space: pre-wrap;
   font: 11px/1.4 ui-monospace, monospace; max-height: 9rem; overflow: auto; }
 #cerr.ok { color: #27ae60; font-size: .85rem; }
@@ -435,9 +445,6 @@ select, option { color-scheme: inherit; }
 .grow-row button.on { border-color: var(--green); color: var(--green);
   background: var(--accent-tint, #4a7c5922); }
 #cwurl { font-size: .85rem; margin-top: 6px; word-break: break-all; }
-.mvbtn { margin-top: 18px; width: 100%; }
-.del { margin-top: 8px; color: var(--err); border-color: var(--err-soft) !important;
-  width: 100%; }
 /* wikilink autocomplete. #acmirror is an offscreen clone of the textarea's
    text geometry used only to locate the caret. The editor soft-wraps, so a
    monospace column calculation would be wrong on any wrapped line. */
@@ -740,10 +747,6 @@ select, option { color-scheme: inherit; }
 .tree .fld { cursor: pointer; }
 .tree .fld.cur > span:nth-child(2) { color: var(--green); font-weight: 600; }
 .tree .fld .cw { color: var(--accent, #1a6ed8); margin-left: 5px; font-size: .85em; }
-
-/* lazy control panels: header is the toggle, content loads on first expand */
-#histh, #linkh { cursor: pointer; user-select: none; }
-#histh:hover, #linkh:hover { color: var(--green); }
 
 /* custom-element wrappers are invisible to layout. Their inner divs stay
    direct grid items of .ws (and .dlg stays a fixed overlay). Without this,

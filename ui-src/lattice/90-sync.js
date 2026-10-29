@@ -81,6 +81,7 @@
     } else {
       snapPage(current, d);
       showShare(d.share || 'private');
+      if (typeof d.comments === 'boolean') cmtShow(current, d.comments);
       refreshPreview();
       st('updated from ship \u00b7 rev ' + d.rev);
     }

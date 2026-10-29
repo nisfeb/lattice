@@ -288,8 +288,6 @@
     curKind = null;
     exitGrub();                      // Save must stop pointing at an app file
     exitRev();                       // else readOnly leaks into the memory editor
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
     ws.classList.toggle('know', m === 'know');
     knowMeta.hidden = m !== 'know';
     curFolder = null;

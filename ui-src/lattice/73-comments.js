@@ -41,26 +41,34 @@
     renderComments(d.total || inbox.length);
   }
 
-  function renderComments(total) {
-    const host = $('cmlist');
+  // The inbox by default. The Comments tab (76-outline.js) passes one
+  // page's share of it, its own host and empty line, and its own reload,
+  // and leaves out the page link, which would only point at itself.
+  function renderComments(total, {
+    host = $('cmlist'), items = inbox, sum = $('cmsum'), reload = loadComments,
+    // say WHY it might be empty. Comments are opt-in per page, so "none yet"
+    // and "never enabled anywhere" look identical and mean different things
+    empty = 'No comments. They are opt-in per page: switch them on in a '
+      + 'page\'s Page tab.',
+    pageLink = true,
+  } = {}) {
     if (!host) return;
     host.textContent = '';
     host.className = '';
-    $('cmsum').textContent = inbox.length
-      ? inbox.length + (total > inbox.length ? ' of ' + total : '') + ' comment'
-        + (total === 1 ? '' : 's')
-      : '';
-    if (!inbox.length) {
+    if (sum) {
+      sum.textContent = items.length
+        ? items.length + (total > items.length ? ' of ' + total : '') + ' comment'
+          + (total === 1 ? '' : 's')
+        : '';
+    }
+    if (!items.length) {
       host.className = 'aclempty';
-      // say WHY it might be empty. Comments are opt-in per page, so "none yet"
-      // and "never enabled anywhere" look identical and mean different things
-      host.textContent = 'No comments. They are opt-in per page, and this app '
-        + 'has no switch for that yet.';
+      host.textContent = empty;
       return;
     }
     const grid = document.createElement('div');
     grid.className = 'aclgrid';
-    for (const c of inbox) {
+    for (const c of items) {
       const card = document.createElement('div');
       card.className = 'aclcard';
       const head = document.createElement('header');
@@ -75,19 +83,21 @@
           '&id=' + encodeURIComponent(c.id), { method: 'POST' }).catch(() => null);
         if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
         st('comment removed');
-        loadComments();
+        reload();
       };
       head.appendChild(who); head.appendChild(del);
       card.appendChild(head);
 
       // the page it landed on, clickable. The point of an inbox is getting
       // to the thing being talked about
-      const on = document.createElement('a');
-      on.className = 'gname';
-      on.textContent = c.page;
-      on.style.cursor = 'pointer';
-      on.onclick = (e) => { cmClose(); openIn('page', c.page, { ev: e }); };
-      card.appendChild(on);
+      if (pageLink) {
+        const on = document.createElement('a');
+        on.className = 'gname';
+        on.textContent = c.page;
+        on.style.cursor = 'pointer';
+        on.onclick = (e) => { cmClose(); openIn('page', c.page, { ev: e }); };
+        card.appendChild(on);
+      }
 
       const body = document.createElement('div');
       body.style.whiteSpace = 'pre-wrap';
