@@ -370,6 +370,15 @@
     await openIn('page', '', { newTab: true });
     if (activeTab && activeTab.kind === 'page' && !activeTab.key) newFile('');
   };
+  // a tool tab in front hides the editor. Anything about to paint the
+  // editor (a new page, a folder) first gets a document tab of its own,
+  // as the strip's + gives one, so it never lands unseen under the tool.
+  // false: no document tab came to the front.
+  const docTab = async () => {
+    if (docFront()) return true;
+    await openIn('page', '', { newTab: true });
+    return docFront() && !!activeTab && activeTab.kind === 'page' && !activeTab.key;
+  };
 
   // tabFollow: the editor moved to another document by a road that did not
   // come through openIn (a rename, a delete, the mode pill, a template, a

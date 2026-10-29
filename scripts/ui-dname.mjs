@@ -65,7 +65,15 @@ check('the page shows as "Deep Page.md" at sub-folder/deep-page', await wait((n)
 check('the folder the save made shows as "Sub Folder"', await wait((n) => [...document.querySelectorAll('#treelist .fld')]
   .some((f) => f.textContent.includes('Sub Folder') && f.querySelector('[title="' + n + '/sub-folder"]')), RUN));
 
-// the ship agrees: dump carries dname for one and not the other
+// the ship agrees: dump carries dname for one and not the other. The tree
+// row shows (pulsing) before the ship confirms, and on a slow pier the
+// deep page's create queues behind plain's, so wait for it to land first.
+for (let i = 0; i < 60; i++) {
+  const r = await fetch(env.base + '/apps/lattice/page-source?name=' + encodeURIComponent(RUN + '/sub-folder/deep-page'),
+    { headers: { Cookie: env.cookie } });
+  if (r.ok) break;
+  await sleep(500);
+}
 const dump = await page.evaluate(async () => (await (await fetch('/apps/lattice/page-dump')).json()).nodes);
 const sf = dump.find((n) => n.path === RUN + '/sub-folder');
 check('page-dump carries the folder dname', sf && sf.dname === 'Sub Folder', JSON.stringify(sf));

@@ -45,7 +45,7 @@
         const has = (p) => nodes.some((n) => n.page && n.path === p);
         if (has(name)) await openIn('page', name);
         else if (has(name + '/index')) await openIn('page', name + '/index');
-        else if (nodes.some((n) => !n.page && n.path === name)) selectFolder(name);
+        else if (nodes.some((n) => !n.page && n.path === name)) await pickFolder(name);
         st('created ' + name + ' from ' + tmpl);
         return;
       }

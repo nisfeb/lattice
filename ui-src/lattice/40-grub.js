@@ -88,7 +88,12 @@
   }
   async function saveGrub() {
     if (!grubPath || src.readOnly) return;
-    if (saving) { savePending = true; return; }
+    //  queued for this grub: a page or memory in front by then is not it
+    if (saving) {
+      const p = grubPath, s = grubShip;
+      queueSave(() => { if (grubPath === p && grubShip === s) return saveGrub(); });
+      return;
+    }
     saving = true;
     st('saving…');
     const sent = src.value;
@@ -109,10 +114,12 @@
       // the mark's opinion of the content. Grub edits have nowhere to queue
       // the way page saves do, so the text just stays here until Save runs
       // again with the ship back.
-      if (shipGone(r)) { st('ship unreachable — grub edits do not queue', false); return; }
+      // the save queued behind this one still runs (flushPending, 35-pages.js)
+      if (shipGone(r)) { st('ship unreachable — grub edits do not queue', false); flushPending(); return; }
       // the mark can reject the source. Show ITS error, since the stored grub
       // still holds the previous content and the user needs to know why
       st('save rejected' + await errText(r), false);
+      flushPending();
       return;
     }
     if (src.value === sent) dirty = false;
@@ -120,6 +127,6 @@
     // bust the page DIRECTORY, not the grub: the cached views are the /x/
     // dir listing and page view, and none of their URLs name '/code'
     bustPages(String(grubPath).replace(/\/[^/]*$/, ''));
-    if (savePending) { savePending = false; if (dirty) saveGrub(); }
+    flushPending();
   }
 

@@ -32,4 +32,12 @@
     for (const row of document.querySelectorAll('#tree .newbtns')) {
       if ([...row.children].every((c) => c.hidden)) row.hidden = true;
     }
+    // The palette indexes every action, so these stay listed, homed in the
+    // File menu. A hidden button would drop them (palUsable), and running
+    // one clicks it, which is exactly what the menu item does.
+    for (const a of ACTIONS) {
+      if (!['newfile', 'newfolder', 'newtmpl', 'upfiles', 'updir'].includes(a.id)) continue;
+      a.home = 'File menu';
+      a.when = () => true;
+    }
   }

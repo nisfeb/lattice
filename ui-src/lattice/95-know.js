@@ -203,10 +203,15 @@
     renderKnowChips();
   };
 
+  const knowField = () => pname.value.trim().replace(/^\/+|\/+$/g, '');
+  //  the editor still shows memory `key`: its own, or the new one the name
+  //  field names (the rule save() keeps for a page create, 35-pages.js)
+  const knowHere = (key) => mode === 'know' && !grubPath &&
+    (current === key || (current === null && knowField() === key));
   // `create`: New memory writes the key before anything is typed, so an
   // empty body is sent as a newline (as a new page is) rather than refused
   async function saveKnow(create) {
-    const key = pname.value.trim().replace(/^\/+|\/+$/g, '');
+    const key = knowField();
     if (!key) { st('key required', false); return; }
     if (!validName(key)) {
       st('bad key — lowercase letters, digits, and - . _ ~ (no spaces)', false);
@@ -218,7 +223,12 @@
     // or page (see save()/autosave()/saveGrub()). Without this guard,
     // guardDirty's flush against a memory whose autosave was already mid-
     // flight fired a second, fully concurrent POST to the same /know-save key.
-    if (saving) { savePending = () => saveKnow(create); return; }
+    //  queued for this memory: it runs only if the editor still shows it,
+    //  and a create runs even on a clean buffer, as a page create does
+    if (saving) {
+      queueSave(() => { if (knowHere(key)) return saveKnow(create); }, create);
+      return;
+    }
     saving = true;
     const sent = src.value || '\n';
     let w = { gone: true };
@@ -227,24 +237,28 @@
         { method: 'POST', body: sent }, { save: true });
     } finally { saving = false; }
     const r = w.r;
+    //  the editor may have moved during the round trip (a page opened, New
+    //  memory again). Only the memory still shown takes the key and its
+    //  tab, never whatever is in front now.
+    const claim = () => {
+      if (!knowHere(key)) return;
+      current = key;
+      tabFollow();             // a new memory's tab is named now (21-tabs.js)
+      pname.readOnly = true;
+      if (src.value === sent) dirty = false;
+    };
     if (w.gone) {
       //  if the queue would not take it, it is NOT saved: leave the editor
       //  dirty and the key still editable, so the text under the cursor is not
       //  presented as stored. Same rule the page paths enforce (35-pages.js),
       //  and enqueueKnow has already said why it refused.
-      if (!(await enqueueKnow(key, sent))) return;
-      current = key;
-      tabFollow();             // a new memory's tab is named now (21-tabs.js)
-      pname.readOnly = true;
-      if (src.value === sent) dirty = false;
+      if (!(await enqueueKnow(key, sent))) { flushPending(); return; }
+      claim();
       flushPending();
       return;
     }
-    if (!r.ok) { st('save failed' + await errText(r), false); return; }
-    current = key;
-    tabFollow();
-    pname.readOnly = true;
-    if (src.value === sent) dirty = false;
+    if (!r.ok) { st('save failed' + await errText(r), false); flushPending(); return; }
+    claim();
     st('memory saved');
     knowGen++;
     const k = knowEntry(key);

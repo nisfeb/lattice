@@ -199,7 +199,10 @@
       // same path with a display name is still a rename (My Page over my-page)
       if (newName === current && !(mode !== 'know' && rn.dname)) return;
       if (mode === 'know') {
-        const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
+        //  the memory this move is for. A tab switch during the round trip
+        //  moves `current`, and only this memory is renamed or relabeled.
+        const from = current;
+        const r = await mutate(api + '/know-move?from=' + encodeURIComponent(from) +
           '&to=' + encodeURIComponent(newName));
         if (!(r.ok || r.offline)) {
           // the server refused this name — loop back into askName seeded with
@@ -210,19 +213,22 @@
         }
         // the body is already in the editor. Rename in place, no refetch
         knowGen++;
-        const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
+        const k = knowKeys.find((x) => x.key.replace(/^\//, '') === from);
         if (k) k.key = newName;
-        tabsRemap('know', current, newName);
-        setOpen(newName, { readOnly: true });
+        tabsRemap('know', from, newName);
+        if (mode === 'know' && current === from) setOpen(newName, { readOnly: true });
         renderKnowChips();
         renderKnowTree();
         st('moved to ' + newName);
         return;
       }
-      const mv = await movePage(current, newName, rn);
+      const from = current;
+      const mv = await movePage(from, newName, rn);
       if (mv) {
         st('moved to ' + newName + (mv.offline ? ' offline' : ''));
-        openPage(newName);
+        //  same rule as the memory move: only the page still in front
+        //  reopens under its new name
+        if (mode !== 'know' && !grubPath && current === from) openPage(newName);
         return;
       }
       // movePage already reported the cause — loop back into askName seeded

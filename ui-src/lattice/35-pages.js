@@ -217,13 +217,16 @@
       //  a folder's + pre-fills that folder; the toolbar keeps offering the
       //  open page's path (never a memory's key: that names no page). Read
       //  it BEFORE the reset below, which clears the field it comes from.
+      //  A tool tab in front hides the editor, so its name field is no seed.
       const seed = into ? into.replace(/\/+$/, '') + '/'
-        : mode === 'know' ? '' : (pname.value || '');
+        : mode === 'know' || !docFront() ? '' : (pname.value || '');
       const picked = await askNameKind('page name (e.g. notes/todo)', seed,
         'create', pkind.value);
       if (!picked) return;
       //  reset the editor only once the create is confirmed, so a cancel
-      //  leaves the open page exactly as it was
+      //  leaves the open page exactly as it was. Under a tool tab the page
+      //  gets a document tab of its own first (docTab, 21-tabs.js).
+      if (!(await docTab())) return;
       blankPage(into);
       let name = picked.name;
       let kind = picked.kind;
@@ -254,8 +257,10 @@
       //  and leaving it unwritten read as a create that did nothing. save()
       //  owns the whole create: 409, the offline queue, the tree patch and
       //  the url, so this must not reimplement any of it.
-      await save();
-      if (!already) {
+      //  queued behind another save, the create has not happened yet: the
+      //  row keeps pulsing, and save() settles it when the create runs
+      const queued = (await save()) === 'queued';
+      if (!already && !queued) {
         //  save() sets `current` on any outcome it considers a success,
         //  including a queued offline write, which IS a success here.
         if (current === name) setTreePending(name, false);
@@ -313,6 +318,17 @@
     if (!dirty && !pending.create) return;
     if (typeof pending === 'function') pending(); else autosave();
   };
+  //  queue `fn` behind the save in flight, replacing what waits there,
+  //  except a create: that is a page the user asked for and nothing else
+  //  would write it, so it is kept and runs first. `create` runs even on a
+  //  clean buffer (flushPending).
+  const queueSave = (fn, create) => {
+    const prev = savePending;
+    const keep = typeof prev === 'function' && prev.create;
+    savePending = Object.assign(keep
+      ? async () => { await prev(); if (create || dirty) return fn(); } : fn,
+    { create: !!create || keep });
+  };
   //  we know exactly what we just wrote. Patch the local copies so reopening
   //  this page paints the saved text, not the dump's pre-save body. The
   //  cached render is stale by definition. Drop it and let it re-render.
@@ -343,28 +359,45 @@
   // two empty pages have the same one, so a create landing under a second
   // New took the second page's blank buffer for its own.
   const createdHere = (creating, name) => creating && current === null && pname.value === name;
-  async function save(kindOverride) {
-    if (curFolder) { st('folder selected — open a page to edit', false); return; }
-    if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
-    let name = pname.value.trim().replace(/^\/+|\/+$/g, '');
+  //  `fixed`: a queued create whose page the editor no longer shows (see
+  //  below). It names what to write, and the editor is left alone.
+  async function save(kindOverride, fixed) {
+    if (!fixed && curFolder) { st('folder selected — open a page to edit', false); return; }
+    if (!fixed && viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
+    let name = fixed ? fixed.name : pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!name) { st('name required', false); return; }
-    const creating = current === null;
+    const creating = !!fixed || current === null;
     // carry kindOverride into the re-arm: a bare `true` here forgot which
     // kind THIS call wanted, and the trailing run picked whatever the
     // picker happened to show by the time it fired
     //  a create queued here runs even when the buffer is clean by then (an
     //  empty new page is clean from the start): flushPending sees `create`
+    //  It is queued for THIS document. By the time it runs the editor may
+    //  show another, and save() writes whatever name and buffer it finds
+    //  then, so it runs from the editor only if the editor still shows
+    //  this one. A create carries what it creates (name, body, kind, the
+    //  dialog's split), so a second New during the round trip still gets
+    //  the first page written. 'queued' tells newFile it has not run yet.
     if (saving) {
-      savePending = Object.assign(() => save(kindOverride), { create: creating });
-      return;
+      const doc = current, shown = pname.value;
+      const own = fixed || (creating ? { name, body: src.value,
+        kind: kindOverride || curKind || pkind.value, rn: newRn } : null);
+      if (creating && !fixed) newRn = null;
+      queueSave(() => {
+        const here = !fixed && mode !== 'know' && !grubPath && current === doc
+          && (doc !== null || pname.value === shown);
+        if (here) { if (own) newRn = own.rn; return save(kindOverride); }
+        if (own) return save(kindOverride, own);
+      }, creating);
+      return 'queued';
     }
     saving = true;
     st('saving…');
     // capture the exact body being sent: keystrokes landing during the round-trip
     // must NOT be marked clean, or the next refresh swaps the stale server copy
     // in and the typed text is lost (same guard autosave has always had).
-    const sent = src.value;
-    const kind = kindOverride || curKind || pkind.value;
+    const sent = fixed ? fixed.body : src.value;
+    const kind = fixed ? fixed.kind : kindOverride || curKind || pkind.value;
     // NO base on live saves, deliberately: base is the OFFLINE queue's tool,
     // where the divergence window is real. Online, any dirty-blocked refresh
     // or panel-driven save can leave curRev one step behind, and every stale
@@ -380,15 +413,25 @@
     // the typed text as display names (the tree shows those, the name
     // field shows the real path). newRn is the create dialog's copy of
     // the same split, made before it seeded the field with the slug.
-    const rnc = !creating ? null : rn.dnames ? rn : newRn;
-    newRn = null;
+    const rnc = !creating ? null : rn.dnames ? rn : fixed ? fixed.rn : newRn;
+    if (!fixed) newRn = null;
     const dname = rnc ? rnc.dname : '';
     //  the field shows the slug from here on; nothing else about what is
     //  open changes, so `current` and the lock are passed through as they are
     if (rn.name !== name) {
       name = rn.name;
-      setOpen(current, { shown: name, readOnly: pname.readOnly });
+      if (!fixed) setOpen(current, { shown: name, readOnly: pname.readOnly });
     }
+    //  a write that did not land: a create's pulsing row goes (newFile put
+    //  it there, and a create that ran from the queue settles its own row),
+    //  and the save queued behind this one still runs. It checks what it
+    //  was queued for, so it never writes another document.
+    const failed = () => {
+      if (creating && nodes.some((n) => n.page && n.path === name && n.pending)) {
+        dropTreeNodes(name); snapTree(); renderTree();
+      }
+      flushPending();
+    };
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc);
     let w = { gone: true };
@@ -405,12 +448,12 @@
       // the page keeps behaving as unsaved. enqueueSave has already said so.
       if (!(await enqueueSave(name, kind, sent, creating, rnc))) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
-        return;
+        return failed();
       }
-      if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
+      if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
       // same stillHere guard as the online path: only touch live editor state
       // if the editor has not moved to another document during the round-trip.
-      const stillHere = current === name || createdHere(creating, name);
+      const stillHere = !fixed && (current === name || createdHere(creating, name));
       if (stillHere) {
         current = name;
         tabFollow();         // a new page's tab is named now (21-tabs.js)
@@ -424,21 +467,21 @@
       flushPending();
       return;
     }
-    if (r && r.status === 409) { st('that page already exists', false); return; }
-    if (!r.ok) { st('save failed' + await errText(r), false); return; }
+    if (r && r.status === 409) { st('that page already exists', false); return failed(); }
+    if (!r.ok) { st('save failed' + await errText(r), false); return failed(); }
     // the response carries the new revision and whether this save landed
     // on top of a revision made elsewhere; parse it regardless of focus.
     let vr = null;
     try { vr = await r.json(); } catch {}
     // saved-document bookkeeping, applied whether or not the editor still
     // shows it, so a New clicked mid-save keeps both documents. Only a
-    // CREATE changes the tree.
-    if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
+    // CREATE changes the tree, and it confirms a row newFile left pulsing.
+    if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent);
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
     // name field, dirty or the URL here would brand the new page as this save.
-    const stillHere = current === name || createdHere(creating, name);
+    const stillHere = !fixed && (current === name || createdHere(creating, name));
     if (stillHere) {
       current = name;
       tabFollow();           // a new page's tab is named now (21-tabs.js)
@@ -504,17 +547,17 @@
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
       if (mode === 'know') {
-        if (!(await enqueueKnow(target, sent))) return;
+        if (!(await enqueueKnow(target, sent))) { flushPending(); return; }
         if (current === target && src.value === sent) dirty = false;
         flushPending();
         return;
       }
-      if (!(await enqueueSave(target, curKind || pkind.value, sent))) return;
+      if (!(await enqueueSave(target, curKind || pkind.value, sent))) { flushPending(); return; }
       if (current === target && src.value === sent) dirty = false;
       flushPending();
       return;
     }
-    if (!r.ok) { st('autosave failed' + await errText(r), false); return; }
+    if (!r.ok) { st('autosave failed' + await errText(r), false); flushPending(); return; }
     let vr = null;
     if (mode !== 'know') { try { vr = await r.json(); } catch {} }
     //  patch the saved doc's local cache regardless of focus. No kind: an

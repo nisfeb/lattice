@@ -174,6 +174,8 @@
     if (page) has.add('kind');
     if (page && current) { has.add('dup'); has.add('raw'); }
     if (doc && current) { has.add('download'); has.add('del'); }
+    // a folder view: Delete is #del's folder branch, its own confirm and all
+    if (!grubPath && curFolder !== null) has.add('del');
     if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex')) has.add('tex');
     return has;
   }

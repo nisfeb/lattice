@@ -283,7 +283,7 @@
         tabLink(row, 'page', n.path);
       } else {
         row = folderRow(n.dname || n.path.split('/').pop(), depth, coll.includes(n.path),
-          () => { paneColl.flip(n.path); renderTree(); }, () => selectFolder(n.path));
+          () => { paneColl.flip(n.path); renderTree(); }, () => pickFolder(n.path));
         if (n.path === curFolder) row.classList.add('cur');
         if (n.dname) row.lastChild.title = n.path;     // the label's tip
         if (treeShare(n.path) === 'clearweb') {
@@ -333,6 +333,15 @@
     $('mv').textContent = t === 'page' ? 'move / rename' : 'move / rename ' + t;
   };
 
+  // a folder picked by the user: it paints over the editor, so it gets a
+  // document tab if a tool is in front, and what is unsaved there goes
+  // through guardDirty first, like any other way off a document
+  async function pickFolder(path) {
+    if (!(await docTab()) || !(await guardDirty())) return;
+    dirty = false;
+    clearTimeout(autoTimer);
+    selectFolder(path);
+  }
   function selectFolder(path) {
     curFolder = path;
     curKind = null;
