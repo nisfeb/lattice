@@ -48,7 +48,8 @@ fn lick_round_trips_against_a_real_pier() {
 /// link's read must answer from its cache even with the host offline. Opt-in
 /// like the test above: it runs only when LICK_SOURCE names a page, and
 /// prints `LICK_MS=<n>` and `LICK_BODY=<json>` lines for the script to read.
-/// With LICK_SAVE set it saves that body to the page first (`LICK_SAVED=`).
+/// With LICK_SAVE set it saves that body to the page first (`LICK_SAVED=`,
+/// `LICK_SAVE_MS=`).
 ///
 ///   LATTICE_SOCK=<pier>/.urb/dev/grubbery/lattice/fs LATTICE_SHIP='~mec' \
 ///     LICK_SOURCE=notes/doc cargo test --test lick_live lick_source -- --nocapture
@@ -66,7 +67,10 @@ fn lick_source() {
     // LICK_SAVE=<body>: save that body first, as the mount does on a flush
     if let Ok(body) = std::env::var("LICK_SAVE") {
         let q = [("name", name.as_str()), ("type", "md")];
-        match t.post("/apps/lattice/page-save", &q, body.as_bytes()) {
+        let at = std::time::Instant::now();
+        let r = t.post("/apps/lattice/page-save", &q, body.as_bytes());
+        println!("LICK_SAVE_MS={}", at.elapsed().as_millis());
+        match r {
             Ok(_) => println!("LICK_SAVED=ok"),
             Err(e) => println!("LICK_SAVED={} {}", e.code, e.msg),
         }

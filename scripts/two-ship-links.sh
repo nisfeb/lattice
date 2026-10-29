@@ -106,6 +106,7 @@ section_make() {
 
   is "A makes notes/taken" 200 "$(code -H "$AK" -X POST "$A/page-save?name=notes/taken&type=md&new=1" --data-binary 'mine')"
   is "make onto an existing page: 409" 409 "$(mk notes/taken)"
+  is "make naming our own ship: 400" 400 "$(code -H "$AK" -X POST -G --data-urlencode "host=$ASHIP" --data-urlencode "path=$PAX" --data-urlencode "to=notes/self" "$A/link-make")"
   is "make with no such entry: 404" 404 "$(code -H "$AK" -X POST -G --data-urlencode "host=$BSHIP" --data-urlencode "path=/apps/nope/code" --data-urlencode "to=notes/nope" "$A/link-make")"
 
   # B offline: refused with the exact copy, and nothing written
@@ -196,6 +197,22 @@ section_proxy() {
   is "lick save through the link" ok "$(sed -n 's/^LICK_SAVED=//p' <<<"$sv")"
   is "  ...lands on B" "# via lick" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
   is "  ...still no code grub in the link dir" 0 "$(A_ "$A/page-history?name=notes/doc" | jq '.revisions // [] | length')"
+  # the mount's save carries the rev it read: the owner's newer text wins
+  is "B edits x/doc itself" 200 "$(code -H "$BK" -X POST "$B/page-save?name=x/doc&type=md" --data-binary '# B again')"
+  sv=$(LICK_SAVE='# lick over B' lick_read notes/doc)
+  is "lick save over B's newer text: 409" 409 "$(sed -n 's/^LICK_SAVED=//p' <<<"$sv" | cut -d' ' -f1)"
+  is "  ...B's text survives" "# B again" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
+
+  # each lick read starts a background read, also after an earlier one ended
+  brev() { B_ "$B/page-source?name=x/doc" | jq -r .rev; }
+  at_rev() { local v; v=$(node page-dump notes/doc | jq -r .rev); [ "$v" = "$1" ] && echo "$v"; }
+  local want
+  want=$(brev); lick_read notes/doc >/dev/null
+  is "a lick read refreshes the cache to B's rev" "$want" "$(wait_for 20 at_rev "$want")"
+  is "B edits again" 200 "$(code -H "$BK" -X POST "$B/page-save?name=x/doc&type=md" --data-binary '# B three')"
+  want=$(brev); lick_read notes/doc >/dev/null
+  is "  ...the next lick read refreshes it again" "$want" "$(wait_for 20 at_rev "$want")"
+  is "  ...with B's body" "# B three" "$(lick_read notes/doc | sed -n 's/^LICK_BODY=//p' | jq -r .body)"
 
   # keys: notes/ scope alone never reaches the other ship
   local T1 T2 id; KEYS=
@@ -204,7 +221,7 @@ section_proxy() {
   is "key, pages only: read 403" 403 "$(K1 "$A/page-source?name=notes/doc")"
   is "key, pages only: save 403" 403 "$(K1 -X POST "$A/page-save?name=notes/doc&type=md" --data-binary '# key1')"
   is "  ...no code grub in the link dir" 0 "$(A_ "$A/page-history?name=notes/doc" | jq '.revisions // [] | length')"
-  is "  ...B is unchanged" "# via lick" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
+  is "  ...B is unchanged" "# B three" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
   is "key, pages only: tree omits the link" null "$(curl -s -m 60 -H "Authorization: Bearer $T1" "$A/page-tree" | jq -c '[.nodes[] | select(.path=="notes/doc")][0]')"
   is "  ...and names no host" 0 "$(curl -s -m 60 -H "Authorization: Bearer $T1" "$A/page-tree" | grep -c "$BSHIP")"
   read -r id T2 < <(mint "{\"some\":{\"$BSHIP\":{\"read\":[\"/apps\"],\"write\":[\"/apps\"]}}}"); KEYS="$KEYS $id"
@@ -235,6 +252,11 @@ section_proxy() {
   ms=$(lick_read notes/doc | sed -n 's/^LICK_MS=//p')
   is "  ...a second read too, the refresh runs apart (${ms:-?}ms)" yes "$( [ -n "$ms" ] && [ "$ms" -lt 2000 ] && echo yes || echo "no, ${ms:-no answer}ms")"
   is "  ...and its background read marks seen.ok=false" false "$(wait_for 15 nok)"
+  sv=$(LICK_SAVE='# offline lick' lick_read notes/doc)
+  is "lick save with B known offline: 503" 503 "$(sed -n 's/^LICK_SAVED=//p' <<<"$sv" | cut -d' ' -f1)"
+  is "  ...with the read-failure copy" "$CR" "$(sed -n 's/^LICK_SAVED=[0-9]* //p' <<<"$sv")"
+  ms=$(sed -n 's/^LICK_SAVE_MS=//p' <<<"$sv")
+  is "  ...within 1s (${ms:-?}ms)" yes "$( [ -n "$ms" ] && [ "$ms" -lt 1000 ] && echo yes || echo "no, ${ms:-no answer}ms")"
   s=$(A_ -w '\n%{http_code}' "$A/page-source?name=notes/doc")
   is "HTTP read with B stopped: 504" 504 "$(tail -1 <<<"$s")"
   is "  ...with the read-failure copy" "$CR" "$(head -n -1 <<<"$s" | jq -r .error)"

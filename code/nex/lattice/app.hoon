@@ -1046,7 +1046,7 @@
   ?:  =('' body)  (send-err eyre-id 400 'missing body')
   =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
   ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
-    (link-write lpath l body base)
+    (link-write lpath l body base ~s5)
   ?:  ?=(%| -.r)  (send-err eyre-id code.p.r msg.p.r)
   %+  send-json  eyre-id
   %-  pairs:enjs:format
@@ -1145,11 +1145,14 @@
 ::  written. The entry goes once the link is in (one home), and the answer is
 ::  the new tree node.
 ++  handle-link-make
-  |=  [eyre-id=@ta args=(map @t @t)]
+  |=  [eyre-id=@ta args=(map @t @t) our=@p]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  hp=(unit @p)  (biff (~(get by args) 'host') (cury slaw %p))
   ?~  hp  (send-err eyre-id 400 'bad host')
+  ::  owner only, so `our` is the request's own src. A link names another
+  ::  ship: one to ourselves would write local pages outside page-save.
+  ?:  =(u.hp our)  (send-err eyre-id 400 'that is you: a link names another ship')
   =/  pp=(unit path)
     (biff (~(get by args) 'path') |=(t=@t (mole |.((stab t)))))
   ?~  pp  (send-err eyre-id 400 'bad path')
@@ -1287,18 +1290,24 @@
 ::  read: a write against a page that moved past it is a 409, and nothing is
 ::  sent. A read grant is refused here before the host would refuse it. A
 ::  host that does not answer is the read failure, and marks the link so.
-::  Success answers [old new] revs and refreshes the cache.
+::  Success answers [old new] revs and refreshes the cache. `wait` bounds
+::  each step: 5s on HTTP, less on the lick port (+fs-save).
 ++  link-write
-  |=  [lpath=path l=link:ll body=@t base=(unit @ud)]
+  |=  [lpath=path l=link:ll body=@t base=(unit @ud) wait=@dr]
   =/  m  (fiber:fiber:nexus ,(each [old=@ud new=@ud] [code=@ud msg=@t]))
   ^-  form:m
   ?.  ?=(%ship -.l)  (pure:m |+[400 'not a link to another ship'])
   ?:  =('read' mode.l)  (pure:m |+[403 'this page is shared with you read-only'])
   ?~  pax.l  (pure:m |+[400 'bad link'])
+  ::  a link to ourselves would be a local write outside the local write
+  ::  path (and its key scope). /link-make refuses one; this is the
+  ::  backstop, as /remote-save refuses its own ship.
+  ;<  our=@p  bind:m  bowl-our
+  ?:  =(our host.l)  (pure:m |+[400 'that is you: a link names another ship'])
   ::  0 claims nothing, as on a local page-save
   =?  base  =(`0 base)  ~
   ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
-    (remote-write host.l pax.l body base `~s5)
+    (remote-write host.l pax.l body base `wait)
   ?:  ?=(%| -.r)
     ?.  =(504 code.p.r)  (pure:m r)
     ;<  ~  bind:m  (link-note lpath l ~)
@@ -1429,7 +1438,11 @@
   ?.  ?=([%file *] u.ms)  (pure:m |+[404 'no such file on that ship'])
   =/  ud0=@ud  ud.cass.u.ms
   ::  the writer's base is behind the owner's page: refuse, so nothing
-  ::  overwrites text the writer never saw
+  ::  overwrites text the writer never saw. Not a compare-and-swap: a third
+  ::  party's write landing between this peek and our make is overwritten,
+  ::  and the re-peek's rev below may already include a write after ours,
+  ::  which the writer then carries as its next base. The window is one
+  ::  round trip, the same apply-then-check caveat as a local page-save.
   ?:  &(?=(^ base) !=(u.base ud0))  (pure:m |+[409 'conflict'])
   ::  a lattice content page was handed out as its prose (+browse-file-
   ::  respond): the edit goes back in that page's own envelope
@@ -2551,7 +2564,7 @@
   ::  as a link (/lib/lattice-link), and back out. Owner only: neither is in
   ::  +wants:ky, so no key reaches them.
       [%'POST' %link-make]
-    (handle-link-make eyre-id args)
+    (handle-link-make eyre-id args our)
       [%'POST' %link-unmake]
     (handle-link-unmake eyre-id args)
       [%'POST' %share-group-del]
@@ -6069,6 +6082,9 @@
       (mole |.(;;(link:ll (sang-noun:tarball sang.lv))))
     ?.  ?=([~ %ship *] l)  (pure:m ~)
     ?.  &(=(host.u.l host.act) =(pax.u.l rpax.act))  (pure:m ~)
+    ::  a slow read that lands after a newer save or read never rolls the
+    ::  cache back: the mount keys its cache on rev
+    ?:  &(?=(^ got.act) (lth rev.u.got.act rev.u.l))  (pure:m ~)
     =/  nl=link:ll
       ?~  got.act  (fail:ll u.l now)
       (refresh:ll u.l kind.u.got.act body.u.got.act rev.u.got.act now)
@@ -7875,15 +7891,27 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ?.  (valid-name name)  (pure:m [400 'bad name'])
-  ::  a link (/lib/lattice-link) saves on its host (+link-write). This
-  ::  surface has no ?base=, so the save carries none.
+  ::  a link (/lib/lattice-link) saves on its host (+link-write). The port
+  ::  serves one request at a time, so a slow or offline owner must not hold
+  ::  it: a link last seen failing answers 503 at once and reads again in
+  ::  the background, and a live one gets 2s deadlines. The base is the
+  ::  cached rev, the one the mount read: an owner's newer text is a 409,
+  ::  never overwritten, and a fresh read is started so the mount sees it.
   ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at (pax-of name))
   ?^  lk
     ?:  new  (pure:m [409 'page exists'])
+    =/  l=link:ll  l.u.lk
+    ?:  &(?=(%ship -.l) !ok.seen.l)
+      ;<  ~  bind:m  (link-read-later (pax-of name))
+      (pure:m [503 (link-fail-msg host.l)])
+    =/  base=(unit @ud)  ?.(?=(%ship -.l) ~ `rev.l)
     ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
-      (link-write (pax-of name) l.u.lk raw ~)
-    ?:  ?=(%| -.r)  (pure:m p.r)
-    (pure:m [200 ''])
+      (link-write (pax-of name) l raw base ~s2)
+    ?:  ?=(%& -.r)  (pure:m [200 ''])
+    ;<  ~  bind:m
+      ?.  =(409 code.p.r)  (pure:(fiber:fiber:nexus ,~) ~)
+      (link-read-later (pax-of name))
+    (pure:m p.r)
   =/  sr  (save-src name ptype raw)
   ?:  ?=(%| -.sr)  (pure:m [code.p.sr msg.p.sr])
   =/  src=@t  p.sr
@@ -9015,12 +9043,33 @@
     %-  send-dart:io
     :^  %node  wire  &+&+[/sys/gall %'main.sig']
     [%poke [/ %gall-poke] [[target %grubbery] grubbery-load+req]]
-  ;<  ~  bind:m  (take-pack:io wire)
+  ::  a local veto or a pack error is a nack, as in +remote-load-poke:
+  ::  take-pack:io would fail the fiber, and on the lick port that
+  ::  restarts the mount's serve loop
+  ;<  pe=(unit tang)  bind:m  (take-pack-soft wire)
+  ?^  pe  (pure:m ``u.pe)
   ;<  ~  bind:m  (send-wait-dated until)
   ;<  r=(unit (unit tang))  bind:m  (take-ack-or-wake wire until)
   ::  quiet, as +peek-remote-quiet: no late wake left behind
   ;<  ~  bind:m  (cancel-timer:io /wait/(scot %da until))
   (pure:m r)
+::  +take-pack-soft: the %pack on `wire`, its error, or a veto of our dart
+::  as an error. Never fails the fiber.
+++  take-pack-soft
+  |=  =wire
+  =/  m  (fiber:fiber:nexus ,(unit tang))
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %veto %node * * *]
+    ?.  =(wire wire.dart.u.in)  [%skip ~]
+    [%done `~[leaf+"vetoed locally"]]
+      [~ %pack * *]
+    ?.  =(wire wire.u.in)  [%skip ~]
+    [%done err.u.in]
+  ==
 ::  +take-ack-or-wake: +remote-load-ack's wait, the %poke-ack on `wire` or
 ::  the wake at `until` (~).
 ++  take-ack-or-wake
