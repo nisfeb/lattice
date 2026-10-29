@@ -108,6 +108,8 @@
       }
     }
     $('cmtrow').hidden = !(d && d.kind === 'page' && d.key);
+    // the post box follows the flag, which can land after the list did
+    if (rpApplies('comments', d)) paintCmBox();
   }
   // Always deferred: the callers are mid-paint (setOpen comes before the
   // body lands), and some run while later files are still loading.
@@ -143,7 +145,7 @@
       a.className = 'olrow';
       a.textContent = t;
       if (/^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith('/')) {
-        a.href = t.startsWith('urb://') ? '/apps/lattice?url=' + t : t;
+        a.href = t.startsWith('urb://') ? '/apps/lattice?url=' + encodeURIComponent(t) : t;
         if (/^https?:/i.test(t)) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
       } else {
         a.href = '/apps/lattice/app?name=' + encodeURIComponent(t);

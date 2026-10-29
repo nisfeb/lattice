@@ -29,6 +29,7 @@ const MARK = 'https://example.com/shell-' + process.pid;
 const RP = 'rpane-' + process.pid;
 const LINKER = 'rplink-' + process.pid;
 const LINKED = 'x-' + process.pid + '/a';
+const UNSEEDED = 'x-' + process.pid + '/never';
 const post = (path, body) => fetch(env.base + '/apps/lattice/' + path,
   { method: 'POST', headers: { Cookie: env.cookie }, body });
 const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
@@ -278,7 +279,7 @@ try {
   await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
 
   // ── right pane tabs follow the document ────────────────────────────────
-  await seed(env, [[RP, '# One\n## Two\ntext\n'], [LINKER, 'see [[' + LINKED + ']]\n'],
+  await seed(env, [[RP, '# One\n## Two\ntext\n'], [LINKER, 'see [[' + LINKED + ']] and [[' + UNSEEDED + ']]\n'],
     [LINKED, 'linked page\n']]);
   const openDoc = async (kind, key) => {
     await page.evaluate((k, n) => window.latTabs.openIn(k, n), kind, key);
@@ -340,6 +341,13 @@ try {
   }, LINKED);
   check('outgoing lists links', outRow && followed,
     JSON.stringify({ outRow, followed, text: await paneText('out') }));
+  await openDoc('page', LINKER);
+  const muted = await until(([a, b]) => {
+    const rows = [...document.querySelectorAll('[data-pane=out] .olrow')];
+    const row = (n) => rows.find((r) => r.textContent.trim() === n);
+    return row(a) && row(b) && !row(a).classList.contains('muted') && row(b).classList.contains('muted');
+  }, [LINKED, UNSEEDED]);
+  check('an outgoing link to no page is muted', muted, await paneText('out'));
 
   const cmtSrc = async () => {
     const res = await fetch(env.base + '/apps/lattice/page-source?name=' + encodeURIComponent(RP),
@@ -365,6 +373,21 @@ try {
 
   const sbase = (await (await fetch(env.base + '/apps/lattice/streams',
     { headers: { Cookie: env.cookie } })).json()).base;
+  //  the post box follows the flag with the Comments tab in front: it is
+  //  off now, and switching it on (from the hidden Page tab) opens the box
+  await rtab('comments');
+  const boxOff = await until(() => document.getElementById('rpcmpost').disabled
+    && /off for this page/.test(document.getElementById('rpcmnote').textContent));
+  await page.evaluate(() => document.getElementById('cmton').click());
+  const boxOn = await until(() => !document.getElementById('rpcmpost').disabled
+    && !document.getElementById('rpcmbody').disabled);
+  const stayed = await page.evaluate(() =>
+    !document.querySelector('#rbody > [data-pane=comments]').hidden);
+  check('the comment box opens when comments turn on', boxOff && boxOn && stayed,
+    JSON.stringify({ boxOff, boxOn, stayed, on: await cmtSrc() }));
+  await page.evaluate(() => document.getElementById('cmton').click());
+  for (let i = 0; i < 30 && (await cmtSrc()) !== false; i++) await sleep(500);
+
   const grubOpen = await openDoc('grub', sbase + '/page/' + RP + '/code');
   await rtab('comments');
   await sleep(300);

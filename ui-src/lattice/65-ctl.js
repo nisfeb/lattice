@@ -41,6 +41,7 @@
     cmtOn = typeof on === 'boolean' ? on : null;
     cb.checked = cmtOn === true;
     cb.disabled = !name || cmtOn === null;
+    rpSoon();            // the Comments tab's post box goes by it too
   }
   $('cmton').onchange = async () => {
     const cb = $('cmton');

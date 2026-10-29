@@ -4147,7 +4147,12 @@
     // window, which is how the old dirty-guards kept failing to catch it.
     // The !painted arm stays unconditional on purpose — there the fetch IS the
     // open, and an explicit open must always land (see the head comment).
-    if (painted && src.value !== shown) return true;
+    // The flag is not the body, though: the comments switch takes it from
+    // this answer whatever was typed meanwhile, or it stays unknown.
+    if (painted && src.value !== shown) {
+      if (current === name && typeof d.comments === 'boolean') cmtShow(name, d.comments);
+      return true;
+    }
     // Cache and snapshot BELOW the guards, not above. A stale or superseded
     // response that reached the cache here poisoned it with the pre-edit body:
     // the guard protected the editor but not the cache, so switching away and
@@ -5567,6 +5572,7 @@
     cmtOn = typeof on === 'boolean' ? on : null;
     cb.checked = cmtOn === true;
     cb.disabled = !name || cmtOn === null;
+    rpSoon();            // the Comments tab's post box goes by it too
   }
   $('cmton').onchange = async () => {
     const cb = $('cmton');
@@ -7160,6 +7166,8 @@
       }
     }
     $('cmtrow').hidden = !(d && d.kind === 'page' && d.key);
+    // the post box follows the flag, which can land after the list did
+    if (rpApplies('comments', d)) paintCmBox();
   }
   // Always deferred: the callers are mid-paint (setOpen comes before the
   // body lands), and some run while later files are still loading.
@@ -7195,7 +7203,7 @@
       a.className = 'olrow';
       a.textContent = t;
       if (/^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith('/')) {
-        a.href = t.startsWith('urb://') ? '/apps/lattice?url=' + t : t;
+        a.href = t.startsWith('urb://') ? '/apps/lattice?url=' + encodeURIComponent(t) : t;
         if (/^https?:/i.test(t)) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
       } else {
         a.href = '/apps/lattice/app?name=' + encodeURIComponent(t);
