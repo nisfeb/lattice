@@ -9,10 +9,12 @@
 #         A_COOKIE  file holding A's raw cookie (urbauth-~mec=...)
 #         B_URL     ship B base, e.g. http://localhost:8135 (~mun)
 #         B_COOKIE  file holding B's raw cookie (urbauth-~mun=...)
-#         B_STOP    command that stops B   (default: fleet down grubbery)
-#         B_START   command that starts B  (default: fleet up grubbery)
-#         B_CLAIM   the fleet claim on B's set, for those two (default
-#                   shared-links-task2)
+#         B_PIER    B's pier (default ~/fleet/piers/mun)
+#         B_STOP    command that takes B offline (default: SIGSTOP its vere
+#                   serf, which needs no fleet claim)
+#         B_START   command that brings B back (default: SIGCONT them)
+#         A_SOCK    A's lick socket, for the lattice-fs read (default
+#                   ~/fleet/piers/mec/.urb/dev/grubbery/lattice/fs)
 #
 # The set used so far (Task 2): A = ~mec on 8120, cookie /tmp/mec-cookie.txt;
 # B = ~mun, fleet set `grubbery`, on 8135, cookie /tmp/mun-cookie.txt. B got
@@ -25,10 +27,14 @@
 set -uo pipefail
 
 : "${A_URL:?A_URL}" "${A_COOKIE:?A_COOKIE}" "${B_URL:?B_URL}" "${B_COOKIE:?B_COOKIE}"
-FLEET=${FLEET:-$HOME/software/personal/hoon-development/fleet/fleet}
-B_CLAIM=${B_CLAIM:-shared-links-task2}   # who holds the fleet claim on B's set
-B_STOP=${B_STOP:-"$FLEET --as $B_CLAIM down grubbery"}
-B_START=${B_START:-"$FLEET --as $B_CLAIM up grubbery"}
+B_PIER=${B_PIER:-$HOME/fleet/piers/mun}
+A_SOCK=${A_SOCK:-$HOME/fleet/piers/mec/.urb/dev/grubbery/lattice/fs}
+# B's serf, the vere process that names its pier. Frozen, B answers
+# nothing, which is all "offline" means to its peers. Not the king: it is
+# tmux's child, and tmux continues a stopped child at once.
+b_pids() { pgrep -f -- "--snap-dir $B_PIER( |\$)" | head -1; }
+B_STOP=${B_STOP:-'kill -STOP $(b_pids)'}
+B_START=${B_START:-'kill -CONT $(b_pids)'}
 A="${A_URL%/}/apps/lattice"; B="${B_URL%/}/apps/lattice"
 AK="Cookie: $(cat "$A_COOKIE")"; BK="Cookie: $(cat "$B_COOKIE")"
 fails=0
@@ -69,6 +75,8 @@ BSHIP=$(curl -s -m 30 -H "$BK" "${B_URL%/}/~/host")
 BSUF=/page/x/doc/code     # the end of B's absolute code-grub path for x/doc
 
 cleanup() {
+  eval "$B_START" >/dev/null 2>&1   # never leave B frozen
+  for id in ${KEYS:-}; do A_ -o /dev/null -X POST "$A/key-revoke?id=$id"; done
   for p in notes notes2; do A_ -o /dev/null -X POST "$A/page-del?name=$p"; done
   local e; e=$(entry)
   if [ -n "$e" ] && [ "$e" != null ]; then
@@ -148,9 +156,108 @@ section_make() {
   is "  ...takes the link" null "$(node page-tree notes2/doc)"
 }
 
+# mint <web-scope json>: a key reading and writing notes/ on A, with the
+# given web scope. Prints "<id> <token>"; the caller puts the id on KEYS.
+mint() {
+  local j; j=$(A_ -X POST "$A/key-mint" -H 'content-type: application/json' --data-binary \
+    "{\"name\":\"links-proxy\",\"by\":\"two-ship-links\",\"scope\":{\"memory\":\"none\",\"pages\":{\"some\":{\"read\":[\"/notes\"],\"write\":[\"/notes\"]}},\"web\":$1,\"sensitive\":false}}")
+  jq -r '"\(.key.id) \(.token)"' <<<"$j"
+}
+# lick_read <name>: one page-source over A's lick port, timed (lick_live.rs)
+lick_read() {
+  ( cd "$(dirname "$0")/../lattice-fs-rs" && LATTICE_SOCK="$A_SOCK" LATTICE_SHIP="$ASHIP" \
+      LICK_SOURCE="$1" cargo test -q --test lick_live lick_source -- --nocapture 2>/dev/null )
+}
+
+section_proxy() {
+  echo "==> proxy ($ASHIP reads and writes $BSHIP's x/doc through notes/doc)"
+  cleanup   # the make section leaves its own x/doc behind
+  is "B makes x/doc" 200 "$(code -H "$BK" -X POST "$B/page-save?name=x/doc&type=md&new=1" --data-binary '# from B')"
+  is "B shares it with A, edit" true "$(share edit | jq -r .ok)"
+  local e; e=$(wait_for 30 entry)
+  [ -n "$e" ] || { fail "A has the shared-with-me entry"; return; }
+  is "A links it at notes/doc" 200 "$(code -H "$AK" -X POST -G --data-urlencode "host=$BSHIP" --data-urlencode "path=$(jq -r .path <<<"$e")" --data-urlencode "to=notes/doc" "$A/link-make")"
+  local CR="$BSHIP is unreachable or no longer shares this page"
+
+  local s; s=$(A_ "$A/page-source?name=notes/doc")
+  is "read: B's body" "# from B" "$(jq -r .body <<<"$s")"
+  is "read: link.host" "$BSHIP" "$(jq -r .link.host <<<"$s")"
+  is "read: kind" md "$(jq -r .kind <<<"$s")"
+  local rev; rev=$(jq -r .rev <<<"$s")
+  is "save with the right base" 200 "$(code -H "$AK" -X POST "$A/page-save?name=notes/doc&type=md&base=$rev" --data-binary '# via A')"
+  is "  ...lands on B" "# via A" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
+  is "  ...and A reads it back" "# via A" "$(A_ "$A/page-source?name=notes/doc" | jq -r .body)"
+  is "save with a stale base: 409" 409 "$(code -H "$AK" -X POST "$A/page-save?name=notes/doc&type=md&base=$rev" --data-binary '# stale')"
+  is "  ...B is unchanged" "# via A" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
+  is "no code grub in the link dir" 0 "$(A_ "$A/page-history?name=notes/doc" | jq '.revisions // [] | length')"
+  is "dump: still a link" "$BSHIP" "$(node page-dump notes/doc | jq -r .link.host)"
+  is "batch save onto the link: 409" 409 "$(code -H "$AK" -X POST "$A/page-save-batch" --data-binary '[{"name":"notes/doc","type":"md","body":"# batch"}]')"
+  local sv; sv=$(LICK_SAVE='# via lick' lick_read notes/doc)
+  is "lick save through the link" ok "$(sed -n 's/^LICK_SAVED=//p' <<<"$sv")"
+  is "  ...lands on B" "# via lick" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
+  is "  ...still no code grub in the link dir" 0 "$(A_ "$A/page-history?name=notes/doc" | jq '.revisions // [] | length')"
+
+  # keys: notes/ scope alone never reaches the other ship
+  local T1 T2 id; KEYS=
+  read -r id T1 < <(mint '{"off":null}'); KEYS="$id"
+  K1() { code -H "Authorization: Bearer $T1" "$@"; }
+  is "key, pages only: read 403" 403 "$(K1 "$A/page-source?name=notes/doc")"
+  is "key, pages only: save 403" 403 "$(K1 -X POST "$A/page-save?name=notes/doc&type=md" --data-binary '# key1')"
+  is "  ...no code grub in the link dir" 0 "$(A_ "$A/page-history?name=notes/doc" | jq '.revisions // [] | length')"
+  is "  ...B is unchanged" "# via lick" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
+  is "key, pages only: tree omits the link" null "$(curl -s -m 60 -H "Authorization: Bearer $T1" "$A/page-tree" | jq -c '[.nodes[] | select(.path=="notes/doc")][0]')"
+  is "  ...and names no host" 0 "$(curl -s -m 60 -H "Authorization: Bearer $T1" "$A/page-tree" | grep -c "$BSHIP")"
+  read -r id T2 < <(mint "{\"some\":{\"$BSHIP\":{\"read\":[\"/apps\"],\"write\":[\"/apps\"]}}}"); KEYS="$KEYS $id"
+  K2() { code -H "Authorization: Bearer $T2" "$@"; }
+  is "key, pages and web: read 200" 200 "$(K2 "$A/page-source?name=notes/doc")"
+  is "  ...tree lists the link" "$BSHIP" "$(curl -s -m 60 -H "Authorization: Bearer $T2" "$A/page-tree" | jq -r '[.nodes[] | select(.path=="notes/doc")][0].link.host')"
+  rev=$(A_ "$A/page-source?name=notes/doc" | jq -r .rev)
+  is "  ...save 200" 200 "$(K2 -X POST "$A/page-save?name=notes/doc&type=md&base=$rev" --data-binary '# via key')"
+  is "  ...lands on B" "# via key" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
+  is "  ...stale base 409" 409 "$(K2 -X POST "$A/page-save?name=notes/doc&type=md&base=$rev" --data-binary '# stale key')"
+  for id in $KEYS; do A_ -o /dev/null -X POST "$A/key-revoke?id=$id"; done; KEYS=
+  is "  ...both keys revoked" 0 "$(A_ "$A/keys" | jq '[.[] | select(.name=="links-proxy")] | length')"
+
+  # B offline: the dump and the mount answer at once, from the cache
+  A_ "$A/page-source?name=notes/doc" >/dev/null   # the cache holds '# via key'
+  eval "$B_STOP" >/dev/null 2>&1
+  is "B is stopped" 000 "$(code -m 3 "$B_URL")"
+  local t0 t1; t0=$(date +%s%N)
+  is "dump with B stopped answers" 200 "$(code -m 10 -H "$AK" "$A/page-dump")"
+  t1=$(date +%s%N)
+  local dms=$(( (t1-t0)/1000000 ))
+  is "  ...within 2s (${dms}ms)" yes "$( [ "$dms" -lt 2000 ] && echo yes || echo "no, ${dms}ms")"
+  nok() { local v; v=$(node page-dump notes/doc | jq -r .link.seen.ok); [ "$v" = false ] && echo "$v"; }
+  local lk; lk=$(lick_read notes/doc)
+  is "lick read with B stopped: cached body" "# via key" "$(sed -n 's/^LICK_BODY=//p' <<<"$lk" | jq -r .body 2>/dev/null)"
+  local ms; ms=$(sed -n 's/^LICK_MS=//p' <<<"$lk")
+  is "  ...within 2s (${ms:-?}ms)" yes "$( [ -n "$ms" ] && [ "$ms" -lt 2000 ] && echo yes || echo "no, ${ms:-no answer}ms")"
+  ms=$(lick_read notes/doc | sed -n 's/^LICK_MS=//p')
+  is "  ...a second read too, the refresh runs apart (${ms:-?}ms)" yes "$( [ -n "$ms" ] && [ "$ms" -lt 2000 ] && echo yes || echo "no, ${ms:-no answer}ms")"
+  is "  ...and its background read marks seen.ok=false" false "$(wait_for 15 nok)"
+  s=$(A_ -w '\n%{http_code}' "$A/page-source?name=notes/doc")
+  is "HTTP read with B stopped: 504" 504 "$(tail -1 <<<"$s")"
+  is "  ...with the read-failure copy" "$CR" "$(head -n -1 <<<"$s" | jq -r .error)"
+  is "save with B stopped: 504" 504 "$(code -H "$AK" -X POST "$A/page-save?name=notes/doc&type=md" --data-binary '# offline')"
+  eval "$B_START" >/dev/null 2>&1
+  b_up && ok "B back up" || { fail "B back up"; return; }
+  okb() { local v; v=$(node page-dump notes/doc | jq -r .link.seen.ok); [ "$v" = true ] && echo "$v"; }
+  A_ "$A/page-source?name=notes/doc" >/dev/null
+  is "a read with B back marks seen.ok" true "$(wait_for 20 okb)"
+
+  # B revokes: the read fails with the copy, and the dump says so
+  is "B revokes A's grant" 200 "$(code -H "$BK" -X POST "$B/share-group-del?name=${ASHIP#\~}")"
+  s=$(A_ -w '\n%{http_code}' "$A/page-source?name=notes/doc")
+  is "read after revoke: 504" 504 "$(tail -1 <<<"$s")"
+  is "  ...with the read-failure copy" "$CR" "$(head -n -1 <<<"$s" | jq -r .error)"
+  is "  ...and page-dump shows seen.ok=false" false "$(wait_for 20 nok)"
+  is "save after revoke: refused" yes "$(c=$(code -H "$AK" -X POST "$A/page-save?name=notes/doc&type=md" --data-binary '# revoked'); [ "$c" -ge 400 ] && echo yes || echo "no, $c")"
+  is "  ...B is unchanged" "# via key" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
+}
+
 trap cleanup EXIT
 cleanup
-sections=("$@"); [ ${#sections[@]} -eq 0 ] && sections=(make)
+sections=("$@"); [ ${#sections[@]} -eq 0 ] && sections=(make proxy)
 for s in "${sections[@]}"; do "section_$s"; done
 echo
 [ "$fails" -eq 0 ] && echo "two-ship-links: all passed" || echo "two-ship-links: $fails failed"

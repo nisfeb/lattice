@@ -62,6 +62,11 @@
       ::  dir. Through the writer like every page-tree write, so it lands
       ::  in order with a move's mkdirs and bumps the change beacon.
       [%link-put pax=path =link:ll]
+      ::  a live read of the link at /page/<pax> naming `rpax` on `host`:
+      ::  `got` its [kind body rev], ~ when it failed. Applied in the writer
+      ::  only while that same link is still there, so a read that finishes
+      ::  after a move or delete never brings it back.
+      [%link-seen pax=path host=@p rpax=path got=(unit [kind=@ta body=@t rev=@ud])]
   ==
 ::  +$  form-cfg: a page's public-form limits. cap=0 means no absolute limit.
 ::  gap=0 means no cooldown. Set by the owner (page-forms), read by serve-form

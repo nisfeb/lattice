@@ -43,3 +43,39 @@ fn lick_round_trips_against_a_real_pier() {
     );
     eprintln!("lick ok: {} bytes of page-dump decoded", text.len());
 }
+
+/// One page-source read over lick, timed, for scripts/two-ship-links.sh: a
+/// link's read must answer from its cache even with the host offline. Opt-in
+/// like the test above: it runs only when LICK_SOURCE names a page, and
+/// prints `LICK_MS=<n>` and `LICK_BODY=<json>` lines for the script to read.
+/// With LICK_SAVE set it saves that body to the page first (`LICK_SAVED=`).
+///
+///   LATTICE_SOCK=<pier>/.urb/dev/grubbery/lattice/fs LATTICE_SHIP='~mec' \
+///     LICK_SOURCE=notes/doc cargo test --test lick_live lick_source -- --nocapture
+#[test]
+fn lick_source() {
+    let (Ok(sock), Ok(ship), Ok(name)) = (
+        std::env::var("LATTICE_SOCK"),
+        std::env::var("LATTICE_SHIP"),
+        std::env::var("LICK_SOURCE"),
+    ) else {
+        eprintln!("skipped: set LATTICE_SOCK, LATTICE_SHIP and LICK_SOURCE to run");
+        return;
+    };
+    let t = LickTransport::new(&sock, &ship);
+    // LICK_SAVE=<body>: save that body first, as the mount does on a flush
+    if let Ok(body) = std::env::var("LICK_SAVE") {
+        let q = [("name", name.as_str()), ("type", "md")];
+        match t.post("/apps/lattice/page-save", &q, body.as_bytes()) {
+            Ok(_) => println!("LICK_SAVED=ok"),
+            Err(e) => println!("LICK_SAVED={} {}", e.code, e.msg),
+        }
+    }
+    let at = std::time::Instant::now();
+    let r = t.get_bytes("/apps/lattice/page-source", &[("name", name.as_str())]);
+    println!("LICK_MS={}", at.elapsed().as_millis());
+    match r {
+        Ok(b) => println!("LICK_BODY={}", String::from_utf8_lossy(&b)),
+        Err(e) => println!("LICK_ERR={} {}", e.code, e.msg),
+    }
+}

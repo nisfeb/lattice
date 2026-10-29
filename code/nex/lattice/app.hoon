@@ -335,6 +335,9 @@
         ::  state. Uncovered, every reload dropped them, which compiled a
         ::  revoked grantee's hoon and let banned ships back in.
             [%fall %| /lock empty-dir:loader]
+        ::  /link-reads: one short-lived fiber per background read of a link
+        ::  (+link-read-later), gone when its read is done
+            [%fall %| /link-reads empty-dir:loader]
             [%fall %& [/ %banned] [[/lattice %banned] *banned:ls]]
         ::  /key-bytes: each agent key's bytes written today (+spend:ky)
             [%fall %& [/ %'key-bytes'] [[/ %noun] *ledger:ky]]
@@ -678,6 +681,18 @@
           [~ %'fs.sig']
         ;<  ~  bind:m  (rise-later prod "lattice /fs.sig" "")
         (lick-serve:io fs-port fs-op)
+      ::  /link-reads/<id>: a live read of one link (+link-read-later), for a
+      ::  lattice-fs read that answered from the link's cache. The grub holds
+      ::  the link's path. The fiber ends with the read, and grubbery deletes
+      ::  its grub; a restart (prod) just ends it, the next read starts another.
+          [[%link-reads ~] @]
+        ;<  ~  bind:m  take-kick
+        ?^  prod  (pure:m ~)
+        ;<  pax=path  bind:m  (get-state-as:io ,path)
+        ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at pax)
+        ?~  lk  (pure:m ~)
+        ;<  *  bind:m  (link-read pax l.u.lk)
+        (pure:m ~)
       ::  /mirror/mirror.sig: the commons reconciler (docs/obelisk-mirror.md
       ::  section 5). The loop lives in +mirror-loop.
           [[%mirror ~] %'mirror.sig']
@@ -786,6 +801,19 @@
     ?:  exists  (pure:n [`[403 tainted-msg] ~])
     $(todo t.todo, mark [pax mark])
   ?^  err.gate  (send-err eyre-id code.u.err.gate msg.u.err.gate)
+  ::  a link (/lib/lattice-link) saves through its host, one page at a
+  ::  time (/page-save). Refused before anything is written, never left to
+  ::  land as a %code grub inside the link's dir.
+  ;<  onto=(unit @t)  bind:m
+    =/  n  (fiber:fiber:nexus ,(unit @t))
+    =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+    |-  ^-  form:n
+    ?~  todo  (pure:n ~)
+    ;<  lk=(unit [l=link:ll at=@da])  bind:n  (link-at (pax-of nam.i.todo))
+    ?^  lk  (pure:n `nam.i.todo)
+    $(todo t.todo)
+  ?^  onto
+    (send-err eyre-id 409 (crip "{(trip u.onto)} is a link: save it with page-save"))
   ::  mark a tainted key's new pages sensitive before the write lands
   ;<  ~  bind:m
     =/  n  (fiber:fiber:nexus ,~)
@@ -938,6 +966,11 @@
   ;<  up=@ud  bind:m  nexus-up
   =/  name=(unit @t)  (~(get by args) 'name')
   ?~  name  (send-err eyre-id 400 'missing name')
+  ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+  ::  a link (/lib/lattice-link) saves on its host, never as a %code grub
+  ::  here. A key reaching this has passed both scopes (the route above).
+  ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at (pax-of u.name))
+  ?^  lk  (link-save-respond eyre-id (pax-of u.name) l.u.lk args (req-body req))
   =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'hoon')
   =/  sr  (save-src u.name ptype (req-body req))
   ?:  ?=(%| -.sr)  (send-err eyre-id code.p.sr msg.p.sr)
@@ -999,6 +1032,29 @@
       ['prev-rev' (numb:enjs:format prev)]
       ['conflicted' b+conflicted]
       ['kept' s+kept]
+  ==
+::  +link-save-respond: POST /page-save onto a link (+link-write), with
+::  page-save's answer. ?base= is the owner's rev the writer read, and a
+::  write against a page that moved past it is a 409: the owner's newer
+::  text is never overwritten, and there is no local copy to keep it in.
+::
+++  link-save-respond
+  |=  [eyre-id=@ta lpath=path l=link:ll args=(map @t @t) body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  (~(has by args) 'new')  (send-err eyre-id 409 'page exists')
+  ?:  =('' body)  (send-err eyre-id 400 'missing body')
+  =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
+  ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
+    (link-write lpath l body base)
+  ?:  ?=(%| -.r)  (send-err eyre-id code.p.r msg.p.r)
+  %+  send-json  eyre-id
+  %-  pairs:enjs:format
+  :~  ['ok' b+&]
+      ['rev' (numb:enjs:format new.p.r)]
+      ['prev-rev' (numb:enjs:format old.p.r)]
+      ['conflicted' b+|]
+      ['kept' s+'']
   ==
 ::  +handle-share-group-save: POST /share-group-save. Write one usergroup's
 ::  members and the weir that grants them access. A group naming a banned ship
@@ -1165,7 +1221,7 @@
   ?~  pax  (pure:m ~)
   =/  n=@ud  (dec (lent `path`pax))
   ;<  ms=(unit view:nexus)  bind:m
-    (peek-remote-wait-in [%& %& (scag n `path`pax) (snag n `path`pax)] host ~s5)
+    (peek-remote-quiet [%& %& (scag n `path`pax) (snag n `path`pax)] host ~s5)
   ?.  ?=([~ %file *] ms)  (pure:m ~)
   =/  txt=(unit @t)  (grub-text sang.u.ms)
   ?~  txt  (pure:m ~)
@@ -1177,6 +1233,117 @@
   :+  ?~(un %hoon builder.u.un)
     ?~(un u.txt body.u.un)
   ud.cass.u.ms
+::  +link-at: the link at /page/<pax> and its grub's time, ~ if there is none
+::  (a page, a folder, nothing) or it does not read as one.
+++  link-at
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,(unit [l=link:ll at=@da]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  lv=view:nexus  bind:m  (peek:io (rf up (weld /page pax) %link) ~)
+  ?.  ?=([%file *] lv)  (pure:m ~)
+  =/  l=(unit link:ll)  (mole |.(;;(link:ll (sang-noun:tarball sang.lv))))
+  (pure:m ?~(l ~ `[u.l da.cass.lv]))
+::  +link-fail-msg: what a failed read through a link says. The host can't
+::  tell us whether it is offline or has revoked the grant, so it says both.
+++  link-fail-msg
+  |=  host=@p
+  ^-  @t
+  (crip "{(scow %p host)} is unreachable or no longer shares this page")
+::  +link-same: two states of one link that would list the same. The time a
+::  read was seen does not count, so reading an unchanged page, or failing
+::  again, rewrites nothing and bumps no beacon.
+++  link-same
+  |=  [a=link:ll b=link:ll]
+  ^-  ?
+  ?.  &(?=(%ship -.a) ?=(%ship -.b))  =(a b)
+  =(a b(at.seen at.seen.a))
+::  +link-note: put a live read's result (`got`, ~ for a failure) on the
+::  link's cache, through the writer, when it changes anything.
+++  link-note
+  |=  [lpath=path l=link:ll got=(unit [kind=@ta body=@t rev=@ud])]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  ?=(%ship -.l)  (pure:m ~)
+  ;<  now=@da  bind:m  bowl-now
+  =/  nl=link:ll
+    ?~(got (fail:ll l now) (refresh:ll l kind.u.got body.u.got rev.u.got now))
+  ?:  (link-same l nl)  (pure:m ~)
+  (poke-eval [%link-seen lpath host.l pax.l got])
+::  +link-read: a live read through the link at lpath, 5s at most: its body,
+::  the owner's rev and its kind (frozen at create), or the failure copy.
+::  Either way the cache learns the result.
+++  link-read
+  |=  [lpath=path l=link:ll]
+  =/  m  (fiber:fiber:nexus ,(each [body=@t rev=@ud kind=@ta] @t))
+  ^-  form:m
+  ?.  ?=(%ship -.l)  (pure:m |+'not a link to another ship')
+  ;<  got=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek host.l pax.l)
+  ;<  ~  bind:m  (link-note lpath l got)
+  ?~  got  (pure:m |+(link-fail-msg host.l))
+  (pure:m &+[body.u.got rev.u.got kind.l])
+::  +link-write: a save through the link at lpath, the /remote-save write
+::  (+remote-write) with 5s deadlines. `base` is the owner's rev the writer
+::  read: a write against a page that moved past it is a 409, and nothing is
+::  sent. A read grant is refused here before the host would refuse it. A
+::  host that does not answer is the read failure, and marks the link so.
+::  Success answers [old new] revs and refreshes the cache.
+++  link-write
+  |=  [lpath=path l=link:ll body=@t base=(unit @ud)]
+  =/  m  (fiber:fiber:nexus ,(each [old=@ud new=@ud] [code=@ud msg=@t]))
+  ^-  form:m
+  ?.  ?=(%ship -.l)  (pure:m |+[400 'not a link to another ship'])
+  ?:  =('read' mode.l)  (pure:m |+[403 'this page is shared with you read-only'])
+  ?~  pax.l  (pure:m |+[400 'bad link'])
+  ::  0 claims nothing, as on a local page-save
+  =?  base  =(`0 base)  ~
+  ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
+    (remote-write host.l pax.l body base `~s5)
+  ?:  ?=(%| -.r)
+    ?.  =(504 code.p.r)  (pure:m r)
+    ;<  ~  bind:m  (link-note lpath l ~)
+    (pure:m |+[504 (link-fail-msg host.l)])
+  ;<  ~  bind:m  (link-note lpath l `[kind.l body new.p.r])
+  (pure:m r)
+::  +link-source-json: page-source's answer for a link: a page's fields
+::  plus `link`, so a client (and the MCP server, which quotes it as foreign
+::  text) knows whose page it is. No share or comments: those are the
+::  owner's.
+++  link-source-json
+  |=  [l=link:ll body=@t rev=@ud mtime=@da render=?]
+  ^-  json
+  ?.  ?=(%ship -.l)  ~
+  =/  html-row=(list [@t json])
+    ?.  &(render (~(has in content-builders) kind.l))  ~
+    ~[['html' s+(render-bare (preview-inner kind.l body))]]
+  %-  pairs:enjs:format
+  %+  weld
+    ^-  (list [@t json])
+    :~  ['kind' s+kind.l]  ['body' s+body]
+        ['size' (numb:enjs:format (met 3 body))]
+        ['rev' (numb:enjs:format rev)]
+        ['mtime' s+(scot %da mtime)]
+        ['share' s+%private]
+        ['comments' b+|]
+        ['readonly' b+=('read' mode.l)]
+        :-  'link'
+        (pairs:enjs:format ~[['host' s+(scot %p host.l)] ['path' s+(spat pax.l)]])
+    ==
+  html-row
+::  +link-read-later: start a live read of the link at pax in its own fiber
+::  (/link-reads/<id>) and return at once. The lick port serves one request
+::  at a time, so it answers from the cache and must never wait on a host.
+::  The id is the path's, so a read already running for it is not doubled
+::  (the make is refused, softly).
+++  link-read-later
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  *  bind:m
+    %+  make-soft:io  (rf up /link-reads (scot %uv (sham pax)))
+    |+[[[/ %noun] `*`pax] ~]
+  (pure:m ~)
 ::  +links-to: every link under /page naming `pax` on `host`, by its path
 ::  under /page. One deep peek: a share notice is rare.
 ++  links-to
@@ -1234,16 +1401,36 @@
   ::  key path-scope gate: when keyed, require write access to this ship+path
   ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] p.pp %write))
     (send-err eyre-id 403 'outside this key\'s scope')
-  =/  n=@ud  (dec (lent p.pp))
-  =/  dir=path  (scag n p.pp)
-  =/  nam=@ta  (snag n p.pp)
-  =/  body=@t  (req-body req)
+  ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
+    (remote-write u.shp p.pp (req-body req) ~ ~)
+  ?:  ?=(%| -.r)  (send-err eyre-id code.p.r msg.p.r)
+  (send-ok eyre-id)
+::  +remote-write: the write behind /remote-save and a save through a link
+::  (+link-write): put `body` in the grub at pax on shp, an EXISTING one,
+::  and answer its [old new] revs. `base`, when set, is the rev the writer
+::  read, and a grub that has moved past it is a 409 with nothing sent.
+::  `wait` bounds each peek and the poke's ack; ~ is /remote-save's own
+::  remote-timeout on the peeks and no bound on the ack, as it always was.
+::
+++  remote-write
+  |=  [shp=@p pax=path body=@t base=(unit @ud) wait=(unit @dr)]
+  =/  m  (fiber:fiber:nexus ,(each [old=@ud new=@ud] [code=@ud msg=@t]))
+  ^-  form:m
+  ?~  pax  (pure:m |+[400 'empty path'])
+  =/  n=@ud  (dec (lent `path`pax))
+  =/  dir=path  (scag n `path`pax)
+  =/  nam=@ta  (snag n `path`pax)
   =/  file-road=road:tarball  [%& %& dir nam]
-  ;<  ms=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
-  ?~  ms  (send-err eyre-id 504 'unreachable or denied')
+  =/  dl=@dr  (fall wait remote-timeout)
+  ;<  ms=(unit view:nexus)  bind:m  (peek-remote-quiet file-road shp dl)
+  ?~  ms  (pure:m |+[504 'unreachable or denied'])
   ::  v1 edits EXISTING files only. Remote create needs a make grant plus a
   ::  blot decision the client can't make for a tree it doesn't own.
-  ?.  ?=([%file *] u.ms)  (send-err eyre-id 404 'no such file on that ship')
+  ?.  ?=([%file *] u.ms)  (pure:m |+[404 'no such file on that ship'])
+  =/  ud0=@ud  ud.cass.u.ms
+  ::  the writer's base is behind the owner's page: refuse, so nothing
+  ::  overwrites text the writer never saw
+  ?:  &(?=(^ base) !=(u.base ud0))  (pure:m |+[409 'conflict'])
   ::  a lattice content page was handed out as its prose (+browse-file-
   ::  respond): the edit goes back in that page's own envelope
   =/  cur=(unit @t)  (grub-text sang.u.ms)
@@ -1254,8 +1441,7 @@
   ?:  =(cur `body)
     ::  no-op save: nothing to send, and grubbery skips unchanged writes
     ::  anyway, so the revision check below would misread it as a denial.
-    (send-ok eyre-id)
-  =/  ud0=@ud  ud.cass.u.ms
+    (pure:m &+[ud0 ud0])
   ::  rebuild the noun in the grub's OWN shape (cord / wain / mime) and send
   ::  it under its OWN blot, with NO destination conversion. Converting
   ::  mime->blot at the destination needs the target marc to carry a mime
@@ -1266,7 +1452,7 @@
   =/  dst=blot:tarball  p.sang.u.ms
   =/  nn=*  (sang-noun:tarball sang.u.ms)
   ?:  &(?=(~ (mole |.(;;(@t nn)))) ?=(~ (mole |.(;;(wain nn)))) !=([/ %mime] dst))
-    (send-err eyre-id 415 'grub shape not editable as text')
+    (pure:m |+[415 'grub shape not editable as text'])
   =/  bd=[b=bask:tarball d=(unit blot:tarball)]
     ?:  ?=(^ (mole |.(;;(@t nn))))
       [[dst `*`body] ~]
@@ -1274,18 +1460,23 @@
       [[dst `*`(to-wain:format body)] ~]
     =/  mt=path  (fall (grub-mime-type sang.u.ms) /text/plain)
     [[[/ %mime] `*``mime`[mt (as-octs:mimes:html body)]] ~]
-  ;<  nak=(unit tang)  bind:m
-    (remote-load-poke u.shp [[/remote-save %& dir nam] %make %.y %.n |+[b.bd d.bd]])
-  ?^  nak
-    (send-err eyre-id 502 'remote rejected the write')
-  ;<  vs=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
-  =/  landed=?
-    ?~  vs  |
-    ?.  ?=([%file *] u.vs)  |
-    (gth ud.cass.u.vs ud0)
-  ?.  landed
-    (send-err eyre-id 403 'write did not land — no make permission on that path?')
-  (send-ok eyre-id)
+  =/  req=load:remo:nexus  [[/remote-save %& dir nam] %make %.y %.n |+[b.bd d.bd]]
+  ;<  ack=(unit (unit tang))  bind:m
+    ?~  wait
+      ;<  nak=(unit tang)  bind:(fiber:fiber:nexus ,(unit (unit tang)))
+        (remote-load-poke shp req)
+      (pure:(fiber:fiber:nexus ,(unit (unit tang))) `nak)
+    (remote-load-ack shp req u.wait)
+  ?~  ack  (pure:m |+[504 'unreachable or denied'])
+  ?^  u.ack  (pure:m |+[502 'remote rejected the write'])
+  ;<  vs=(unit view:nexus)  bind:m  (peek-remote-quiet file-road shp dl)
+  =/  ud1=@ud
+    ?~  vs  0
+    ?.  ?=([%file *] u.vs)  0
+    ud.cass.u.vs
+  ?.  (gth ud1 ud0)
+    (pure:m |+[403 'write did not land — no make permission on that path?'])
+  (pure:m &+[ud0 ud1])
 ::  +handle-legacy-migrate: POST /legacy-migrate. Import the pages and memories
 ::  of a retired %lattice gall agent, once. It takes only eyre-id because it
 ::  reads everything it needs from the old agent rather than the request, and
@@ -1889,6 +2080,13 @@
             !(may-path:ky u.key %local (pax-of u.name) %read)
         ==
       (send-err eyre-id 403 'outside this key\'s scope')
+    ::  a link (/lib/lattice-link) is another ship's page: a key needs that
+    ::  ship in its scope too, so notes/ alone never reaches ~host's page
+    ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at (pax-of u.name))
+    ?:  ?&  ?=([~ [%ship *] *] lk)  ?=(^ key)
+            !(may-path:ky u.key [%ship host.l.u.lk] pax.l.u.lk %read)
+        ==
+      (send-err eyre-id 403 'outside this key\'s scope')
     ::  sensitive gate: a key without clearance sees nothing, treated as
     ::  not-found so an uncleared key cannot learn the page exists.
     ::  A cleared key that reads a sensitive page is tainted for taint-for.
@@ -1897,8 +2095,16 @@
     ?:  &(ps ?=(^ key) !sensitive.scope.u.key)
       (send-err eyre-id 403 'not found')
     ;<  ~  bind:m  (taint-if key &(ps ?=(^ key) sensitive.scope.u.key))
+    =/  render=?  =('1' (~(gut by args) 'render' '0'))
+    ::  a link reads live from its host, 5s at most
+    ?:  ?=([~ [%ship *] *] lk)
+      =/  l=link:ll  l.u.lk
+      ;<  rd=(each [body=@t rev=@ud kind=@ta] @t)  bind:m  (link-read (pax-of u.name) l)
+      ?:  ?=(%| -.rd)  (send-err eyre-id 504 p.rd)
+      ;<  now=@da  bind:m  bowl-now
+      (send-json eyre-id (link-source-json l body.p.rd rev.p.rd now render))
     ;<  r=(each json [code=@ud msg=@t])  bind:m
-      (fs-source-result u.name =('1' (~(gut by args) 'render' '0')))
+      (fs-source-result u.name render)
     ?-  -.r
       %&  (send-json eyre-id p.r)
       %|  (send-err eyre-id code.p.r msg.p.r)
@@ -2049,7 +2255,21 @@
       =/  np=(each path tang)
         (mule |.((stab (crip (weld "/" (trip p.u.pj))))))
       ?:  ?=(%| -.np)  |
-      (may-path:ky u.key %local p.np %read)
+      ?.  (may-path:ky u.key %local p.np %read)  |
+      ::  a link (/lib/lattice-link) is listed only to a key that may read
+      ::  it, which takes the host's web scope too. Without it the node
+      ::  goes: its host, path, size and rev all describe another ship's
+      ::  page, and the key could neither read nor write it anyway.
+      =/  lj=(unit json)  (~(get by p.node) 'link')
+      ?~  lj  &
+      ?.  ?=([%o *] u.lj)  |
+      =/  hj=(unit json)  (~(get by p.u.lj) 'host')
+      =/  rj=(unit json)  (~(get by p.u.lj) 'path')
+      ?.  &(?=([~ %s @] hj) ?=([~ %s @] rj))  |
+      =/  hp=(unit @p)  (slaw %p p.u.hj)
+      =/  rp=(unit path)  (mole |.((stab p.u.rj)))
+      ?:  |(?=(~ hp) ?=(~ rp))  |
+      (may-path:ky u.key [%ship u.hp] u.rp %read)
     ::  a cleared key sees sensitive pages, so the per-node grub walk below
     ::  would never drop a node: skip it. Owner (key=~) already returned above.
     ?:  sensitive.scope.u.key
@@ -2456,6 +2676,20 @@
     ::  sensitive gate: an uncleared key cannot write to a sensitive page.
     ?:  &(ps !sensitive.scope.u.key)
       (send-err eyre-id 403 'that page is sensitive: a cleared key is required')
+    ::  a link (/lib/lattice-link) writes to another ship's page, so a key
+    ::  needs that ship's write scope as well, and /remote-save's taint
+    ::  rule: a tainted key writes nowhere foreign. The page's own kind
+    ::  (frozen at create) is held to the same escaped-only rule as ?type=.
+    ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at (pax-of u.name))
+    ?:  ?=([~ [%ship *] *] lk)
+      =/  l=link:ll  l.u.lk
+      ?.  ?=(%ship -.l)  (send-err eyre-id 404 'no such page')
+      ?.  (may-path:ky u.key [%ship host.l] pax.l %write)
+        (send-err eyre-id 403 'outside this key\'s scope')
+      ?:  (tainted:ky u.key rnow)  (send-err eyre-id 403 tainted-msg)
+      ?.  (page-type-ok:ky kind.l)
+        (send-err eyre-id 403 'a key saves md, gmi, text, tex, css or index pages only')
+      (link-save-respond eyre-id (pax-of u.name) l args (req-body req))
     ::  cross-surface taint, aligned with the memory surface: a tainted key
     ::  (read sensitive content in the last 12h, so necessarily cleared) may
     ::  write only to a sensitive destination. An already-sensitive page is
@@ -5823,6 +6057,23 @@
     ::  no evaluator spawns on it.
     ;<  ~  bind:m  (ensure-dirs up /page pax.act)
     (put-file (rf up (weld /page pax.act) %link) [/lattice %link] link.act)
+      %link-seen
+    ::  a live read's result, onto the cache (+refresh:ll, +fail:ll). Only
+    ::  while the same link is still at pax, and only when something moved,
+    ::  so a background refresh never revives a link or rewrites a cache
+    ::  that is already right.
+    =/  lr=road:tarball  (rf up (weld /page pax.act) %link)
+    ;<  lv=view:nexus  bind:m  (peek:io lr ~)
+    =/  l=(unit link:ll)
+      ?.  ?=([%file *] lv)  ~
+      (mole |.(;;(link:ll (sang-noun:tarball sang.lv))))
+    ?.  ?=([~ %ship *] l)  (pure:m ~)
+    ?.  &(=(host.u.l host.act) =(pax.u.l rpax.act))  (pure:m ~)
+    =/  nl=link:ll
+      ?~  got.act  (fail:ll u.l now)
+      (refresh:ll u.l kind.u.got.act body.u.got.act rev.u.got.act now)
+    ?:  (link-same u.l nl)  (pure:m ~)
+    (put-file lr [/lattice %link] nl)
       %dname
     ::  the display name sits beside a page's %code or a folder's flags, as
     ::  a %name grub. '' clears it: the name typed at a rename was a valid
@@ -6302,6 +6553,15 @@
   ::  3+ wasted darts on every autosave. A half-created page (crash between
   ::  scaffold and code) just re-runs the scaffold. put-file is idempotent.
   ;<  ex=?  bind:m  (peek-exists:io (rf up pdir %code))
+  ::  never a %code grub in a link's dir (/lib/lattice-link): its saves go
+  ::  to its host. Every route refuses or proxies first, so this is the
+  ::  backstop, paid only on a create.
+  ;<  isl=?  bind:m
+    ?:  ex  (pure:(fiber:fiber:nexus ,?) |)
+    (peek-exists:io (rf up pdir %link))
+  ?:  isl
+    %-  (slog leaf+"lattice: not saving over the link at {(spud pax)}" ~)
+    (pure:m ~)
   ;<  ~  bind:m
     ?:  ex  (pure:m ~)
     ;<  ~  bind:m  (ensure-dirs up /page pax)
@@ -7553,7 +7813,17 @@
   =/  pax=path  (pax-of name)
   =/  pdir=path  (weld /page pax)
   ;<  cn=view:nexus  bind:m  (peek:io (rf up pdir %code) ~)
-  ?.  ?=([%file *] cn)  (pure:m [%| 404 'no such page'])
+  ?.  ?=([%file *] cn)
+    ::  a link (/lib/lattice-link): its cached copy, now, and a live read in
+    ::  a fiber of its own. The lick port is this one, serving a request at
+    ::  a time, and a wait on an offline host would stall the whole mount.
+    ::  (HTTP page-source reads a link live before it gets here.)
+    ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at pax)
+    ?.  ?=([~ [%ship *] *] lk)  (pure:m [%| 404 'no such page'])
+    =/  l=link:ll  l.u.lk
+    ?.  ?=(%ship -.l)  (pure:m [%| 404 'no such page'])
+    ;<  ~  bind:m  (link-read-later pax)
+    (pure:m [%& (link-source-json l body.l rev.l at.u.lk render)])
   ;<  mode=share-mode:le  bind:m  (read-share pdir)
   ::  whether other ships may comment here: the nearest flag at or above the
   ::  page, the same walk the comment inbox applies (+comments-on)
@@ -7604,6 +7874,16 @@
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
+  ?.  (valid-name name)  (pure:m [400 'bad name'])
+  ::  a link (/lib/lattice-link) saves on its host (+link-write). This
+  ::  surface has no ?base=, so the save carries none.
+  ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at (pax-of name))
+  ?^  lk
+    ?:  new  (pure:m [409 'page exists'])
+    ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
+      (link-write (pax-of name) l.u.lk raw ~)
+    ?:  ?=(%| -.r)  (pure:m p.r)
+    (pure:m [200 ''])
   =/  sr  (save-src name ptype raw)
   ?:  ?=(%| -.sr)  (pure:m [code.p.sr msg.p.sr])
   =/  src=@t  p.sr
@@ -8281,6 +8561,23 @@
   ;<  ~  bind:m  (send-dart:io %node pw (remote-road road shp) %peek ~ ~ %.y)
   ;<  ~  bind:m  (send-wait-dated until)
   (take-peek-or-wake pw until)
+::  +peek-remote-quiet: +peek-remote-wait-in that also takes its timer down
+::  once the peek has answered. A long-lived fiber (the lick port, writing
+::  through a link) would otherwise keep every late wake in its skip queue,
+::  and each one is fed through again on every later step: the port slowed
+::  with each save. Request fibers end before their timers fire.
+++  peek-remote-quiet
+  |=  [=road:tarball shp=@p wait=@dr]
+  =/  m  (fiber:fiber:nexus ,(unit view:nexus))
+  ^-  form:m
+  ;<  now=@da  bind:m  bowl-now
+  =/  until=@da  (add now wait)
+  ;<  pw=wire  bind:m  (nonce:io /peek)
+  ;<  ~  bind:m  (send-dart:io %node pw (remote-road road shp) %peek ~ ~ %.y)
+  ;<  ~  bind:m  (send-wait-dated until)
+  ;<  ms=(unit view:nexus)  bind:m  (take-peek-or-wake pw until)
+  ;<  ~  bind:m  (cancel-timer:io /wait/(scot %da until))
+  (pure:m ms)
 ::  +peek-remote-shallow-wait: peek-remote-wait but deep=%.n, one directory level
 ::  (files here + subdir names, no recursion). Used by the cross-ship browser: a
 ::  deep (%.y) peek of a foreign DIR would materialize its whole subtree, so a huge
@@ -8700,6 +8997,51 @@
     =/  wak=path  !<(path q.sage.u.in)
     ?.  ?&(?=([%wait @ ~] wak) =(until (slav %da i.t.wak)))  [%skip ~]
     [%done %.n]
+  ==
+::  +remote-load-ack: +remote-load-poke with a deadline, waiting for the
+::  gall ack itself. The /sys/gall grub answers our poke with a %pack as
+::  soon as it takes it, and the target's ack comes later, as a %poke-ack
+::  poke on our own wire (+gall-poke:io), so that is what this waits for.
+::  `~ acked, ``tang nacked, ~ no answer before the deadline.
+::
+++  remote-load-ack
+  |=  [target=@p req=load:remo:nexus timeout=@dr]
+  =/  m  (fiber:fiber:nexus ,(unit (unit tang)))
+  ^-  form:m
+  ;<  now=@da  bind:m  bowl-now
+  =/  until=@da  (add now timeout)
+  ;<  =wire  bind:m  (nonce:io /gall-poke)
+  ;<  ~  bind:m
+    %-  send-dart:io
+    :^  %node  wire  &+&+[/sys/gall %'main.sig']
+    [%poke [/ %gall-poke] [[target %grubbery] grubbery-load+req]]
+  ;<  ~  bind:m  (take-pack:io wire)
+  ;<  ~  bind:m  (send-wait-dated until)
+  ;<  r=(unit (unit tang))  bind:m  (take-ack-or-wake wire until)
+  ::  quiet, as +peek-remote-quiet: no late wake left behind
+  ;<  ~  bind:m  (cancel-timer:io /wait/(scot %da until))
+  (pure:m r)
+::  +take-ack-or-wake: +remote-load-ack's wait, the %poke-ack on `wire` or
+::  the wake at `until` (~).
+++  take-ack-or-wake
+  |=  [=wire until=@da]
+  =/  m  (fiber:fiber:nexus ,(unit (unit tang)))
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %poke * *]
+    ?:  =([/ %poke-ack] p.sage.u.in)
+      =/  ack=(unit [w=^wire err=(unit tang)])
+        (mole |.(!<([^wire (unit tang)] q.sage.u.in)))
+      ?~  ack  [%skip ~]
+      ?.  =(wire w.u.ack)  [%skip ~]
+      [%done `err.u.ack]
+    ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
+    =/  wak=path  !<(path q.sage.u.in)
+    ?.  ?&(?=([%wait @ ~] wak) =(until (slav %da i.t.wak)))  [%skip ~]
+    [%done ~]
   ==
 ::  +remote-load-poke: send a %grubbery-load to another ship and wait for the
 ::  gall ack. Modeled on +gall-poke-or-nack (fiberio), which is our-ship-only;
