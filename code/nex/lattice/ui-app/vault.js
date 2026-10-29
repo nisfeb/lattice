@@ -164,7 +164,13 @@ editor, or git will do if you only want to look.
     isDegraded: () => false,
   };
   const api = '/apps/lattice';
-  const desk = () => (window.__TAURI__ && window.__TAURI__.core) || null;
+  // Tauri injects its bridge into the top document only, and the settings
+  // page usually runs in a frame of the editor (its Settings tab). The
+  // frame is same-origin, so it borrows the editor's bridge.
+  const desk = () => {
+    if (window.__TAURI__ && window.__TAURI__.core) return window.__TAURI__.core;
+    try { const t = window.top.__TAURI__; return (t && t.core) || null; } catch (e) { return null; }
+  };
   function configure(o) { Object.assign(cfg, o || {}); }
   const st = (m, ok) => cfg.status(m, ok !== false);
   const mutate = (url, opts) =>
@@ -530,9 +536,7 @@ editor, or git will do if you only want to look.
   // The scheduler itself (desktop/src/backup.rs:46) fires at elapsed >=
   // every_hours * 3600. Overdue here is one missed firing past that plus an
   // hour of slack for the app being asleep or closed right at the edge:
-  // elapsed > (every_hours + 1) * 3600. manager.html's Preferences panel
-  // reads the same schedules and must use this identical formula, or the two
-  // panels disagree about the same backup. A schedule that has never run is
+  // elapsed > (every_hours + 1) * 3600. A schedule that has never run is
   // exempt: `ago` already says "never run" plainly, and a brand-new schedule
   // is not overdue, it just has not had its first turn.
   const overdue = (s) =>
@@ -578,7 +582,12 @@ editor, or git will do if you only want to look.
     const listEl = el('ul', { class: 'bklist' });
     const bkStatus = el('span', { class: 'err' });
     let backups = [];
-    const save = async () => { await invoke('set_backup_schedules', { schedules: backups }); await refresh(); };
+    // a refused write (a folder not picked in the dialog) is shown, and the
+    // redraw re-reads the stored list either way, dropping the edit it refused
+    const save = async () => {
+      try { await invoke('set_backup_schedules', { schedules: backups }); } catch (e) { bkStatus.textContent = String(e); }
+      await refresh();
+    };
     async function refresh() {
       try { backups = await invoke('backup_schedules'); } catch (e) { backups = []; }
       listEl.innerHTML = '';
@@ -618,7 +627,10 @@ editor, or git will do if you only want to look.
       el('option', { value: '720', text: 'every 30 days' }), el('option', { value: '1', text: 'every hour' })]);
     const inKeep = el('input', { type: 'number', min: '0', max: '999', value: '7', title: 'how many to keep — 0 keeps every one' });
     inKeep.style.width = '5rem';
-    const inDir = el('input', { placeholder: 'folder on this machine' });
+    // read-only: the desktop app takes a new folder only from its own picker
+    // (set_backup_schedules in desktop/src/commands.rs), so a typed path
+    // would be refused anyway
+    const inDir = el('input', { placeholder: 'choose a folder', readOnly: true });
     const pickDir = el('button', { type: 'button', class: 'btn', text: 'choose…' });
     pickDir.onclick = async () => { try { const dir = await invoke('pick_backup_dir'); if (dir) inDir.value = dir; } catch (e) { bkStatus.textContent = String(e); } };
     const addBtn = el('button', { type: 'button', class: 'btn', text: 'add schedule' });
@@ -647,7 +659,7 @@ editor, or git will do if you only want to look.
       root.append(el('p', { class: 'muted', text: 'Automatic scheduled backups run in the lattice desktop app. Open lattice on your computer to set them up.' }));
       return;
     }
-    mountSchedules(root, window.__TAURI__.core.invoke);
+    mountSchedules(root, d.invoke);
   }
 
   //  the editor (78-export.js) configures and runs exportVault for the

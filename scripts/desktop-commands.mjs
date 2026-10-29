@@ -108,4 +108,26 @@ for (const [item, arg] of [['view-editor', 'false'], ['view-preview', 'true']]) 
 }
 check('the shipped UI exposes window.latSetRead', appJs.includes('window.latSetRead'));
 
+//  Preferences > scheduled backups opens the Settings tab at its Backup
+//  section, which needs the page to expose the opener and settings-html to
+//  carry the anchor
+check('menu backups calls latOpenSettings(\'backup\')',
+  /"backups"\s*=>\s*\{[^}]*latOpenSettings\('backup'\)/.test(main));
+check('the shipped UI exposes window.latOpenSettings', appJs.includes('window.latOpenSettings'));
+const hoon = readFileSync(join(here, '..', 'code', 'nex', 'lattice', 'app.hoon'), 'utf8');
+check('settings-html has the backup anchor', hoon.includes('<h2 id=\\"backup\\">'));
+
+//  The settings page is ship-served, so on the desktop it runs at the
+//  bridge origin and only workspace-remote applies to it. Every command its
+//  Backup section (vault.js) and its connection button invoke must be
+//  granted there, or the one home for scheduled backups is a dead one.
+const remote = new Set(JSON.parse(readFileSync(join(capDir, 'workspace-remote.json'), 'utf8'))
+  .permissions.filter((p) => typeof p === 'string' && p.startsWith('allow-')).map((p) => p.slice(6)));
+const vaultJs = readFileSync(join(here, '..', 'code', 'nex', 'lattice', 'ui-app', 'vault.js'), 'utf8');
+const shipCalls = new Set([...(vaultJs + hoon).matchAll(/invoke\(\s*["']([a-z_]+)["']/g)].map((m) => m[1]));
+const notRemote = [...shipCalls].filter((c) => !remote.has(kebab(c)));
+check('every command the settings page invokes is granted to the ship page',
+  shipCalls.size >= 6 && notRemote.length === 0,
+  JSON.stringify({ calls: [...shipCalls], notRemote }));
+
 check.done();

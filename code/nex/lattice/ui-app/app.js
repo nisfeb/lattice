@@ -2957,7 +2957,7 @@
   // guardDirty, and the parked tabs holding unsaved work get one question
   // naming them. Once the user has said discard, nothing is owed, so the
   // unload guard (35-pages.js) does not ask a second time.
-  const leaveTo = (url) => tabSerial(async () => {
+  const leaveThen = (go) => tabSerial(async () => {
     if (!(await guardDirty())) return;
     const bg = tabs.filter((t) => t !== activeTab && t.snap && t.snap.dirty);
     if (bg.length && !(await askConfirm('discard unsaved changes to '
@@ -2965,8 +2965,45 @@
     dirty = false;
     clearTimeout(autoTimer);
     for (const t of bg) t.snap.dirty = false;
-    location.href = url;
+    await go();
   });
+  const leaveTo = (url) => leaveThen(() => { location.href = url; });
+  // Settings > Connection and mounts on the desktop. The shell rebuilds the
+  // window onto its own page (show_manager in desktop/src/commands.rs), and
+  // no unload guard sees a window go, so the same questions come first.
+  window.latOpenManager = () => leaveThen(async () => {
+    try { await window.__TAURI__.core.invoke('open_manager'); } catch (e) { st('could not open connection and mounts: ' + e, false); }
+  });
+
+  // the Settings tab, opened or focused, with its frame scrolled to the
+  // section #anchor. Preferences > scheduled backups on the desktop
+  // (desktop/src/main.rs) lands on #backup this way. A frame still loading
+  // scrolls once it has. Sections above the anchor fill in after load (the
+  // key list, the backup schedules), so the anchor is held at the top while
+  // the page settles, until the user scrolls or clicks or two seconds pass.
+  function frameScroll(f, anchor) {
+    let d = null;
+    try { d = f.contentDocument; } catch {}
+    const e = d && d.getElementById(anchor);
+    if (!e) return false;
+    e.scrollIntoView({ block: 'start' });
+    const ro = new f.contentWindow.ResizeObserver(() => e.scrollIntoView({ block: 'start' }));
+    ro.observe(d.body);
+    const stop = () => ro.disconnect();
+    setTimeout(stop, 2000);
+    for (const t of ['wheel', 'keydown', 'pointerdown', 'touchstart'])
+      d.addEventListener(t, stop, { once: true });
+    return true;
+  }
+  window.latOpenSettings = async (anchor) => {
+    await toolOpen('settings');
+    const f = [...toolHost.querySelectorAll('iframe')].find((x) => x.dataset.tool === SETTINGS);
+    if (!f || !anchor) return;
+    let ready = false;
+    try { ready = f.contentDocument.readyState === 'complete' && f.contentDocument.URL !== 'about:blank'; } catch {}
+    if (ready && frameScroll(f, anchor)) return;
+    f.addEventListener('load', () => frameScroll(f, anchor), { once: true });
+  };
 
   // the command palette (26-palette.js) sets this to its opener
   let paletteOpen = () => {};
@@ -4956,6 +4993,14 @@
   }
 
   let autoTimer = null;
+  const autosaveOn = () => { try { return localStorage.latAutosave !== '0'; } catch { return true; } };
+  // turned back on in Settings (another document) while text waits unsaved:
+  // it goes out on the usual debounce, as if just typed
+  window.addEventListener('storage', (e) => {
+    if (e.key !== 'latAutosave' || !autosaveOn() || !dirty) return;
+    clearTimeout(autoTimer);
+    autoTimer = setTimeout(autosave, 2000);
+  });
   async function autosave() {
     // GRUB MODE IS EXPLICIT-SAVE ONLY. Autosaving a lattice page is fine. It is
     // your own note and the editor has always worked that way. Autosaving
@@ -4966,6 +5011,10 @@
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved — press Save or Cmd+S'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
+    // Settings > Editor > Autosave pages, off. Only this debounce stops: an
+    // explicit save and the flush a tab switch or a navigation makes go
+    // through save() and saveKnow(), never through here, so they still write.
+    if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
     // never overlap saves. The pier serializes, so a second in-flight save is
     // 3.7s of stale-body work queued behind the first, delaying every preview
     // behind it. Coalesce to one trailing save instead.
@@ -8509,6 +8558,12 @@
   // so an uncaught error here blanks the whole app (that was the setInd bug).
   // Contain it — a broken layout widget is survivable; a dead tree is not.
   try { applyToggles(); } catch (e) { console.error('[lattice] layout init failed', e); }
+  // Settings > Editor writes the wrap default from its own document (the
+  // Settings tab is a frame), and this window hears it as a storage event,
+  // the same way 05-prefs.js hears the font
+  window.addEventListener('storage', (e) => {
+    if (!e.key || e.key === 'appWrap') try { applyToggles(); } catch {}
+  });
 
   // The phone's old one-pane switcher and its full-screen mode are gone
   // (the drawers in 97-mobar.js replaced them). Their stored state goes too.

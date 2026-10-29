@@ -40,6 +40,7 @@ const UNSEEDED = 'x-' + process.pid + '/never';
 const FRAMEP = 'x-' + process.pid + '/framed';
 const PALP = 'x-' + process.pid + '/access-palette';
 const PALQ = 'x-' + process.pid + '/palette-newtab';
+const AUTOP = 'x-' + process.pid + '/autosave-off';
 const post = (path, body) => fetch(env.base + '/apps/lattice/' + path,
   { method: 'POST', headers: { Cookie: env.cookie }, body });
 const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
@@ -625,6 +626,106 @@ try {
       && afterF.includes('frame:/apps/lattice/settings'),
     JSON.stringify({ shelled, frameAt, nf, afterF }));
 
+  // ── settings: editor, publishing, legacy, connection ───────────────────
+  //  latOpenSettings opens the Settings tab (or focuses the open one) and
+  //  brings the named section to the top of the frame
+  await openDoc('page', RP);
+  await page.evaluate(() => window.latOpenSettings && window.latOpenSettings('legacy'));
+  const atLegacy = await until(() => {
+    const f = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]');
+    const d = f && f.contentDocument;
+    const e = d && d.getElementById('legacy');
+    if (!e) return false;
+    const top = e.getBoundingClientRect().top;
+    return f.contentWindow.scrollY > 0 && top >= 0 && top < f.contentWindow.innerHeight - 40;
+  });
+  const anchors = await page.evaluate(() => {
+    const d = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]')?.contentDocument;
+    if (!d) return null;
+    return { vim: !!d.querySelector('#editor #vimsel'), wrap: !!d.querySelector('#editor #wrapdef'),
+      auto: !!d.querySelector('#editor #autosave'), pub: !!d.getElementById('publishing'),
+      legacy: !!d.getElementById('legacy'), backup: !!d.querySelector('#backup ~ #vaultui'),
+      conn: d.getElementById('connection') ? d.getElementById('connection').hidden : 'absent' };
+  });
+  check('settings has editor, publishing, legacy anchors',
+    !!anchors && anchors.vim && anchors.wrap && anchors.auto && anchors.pub && anchors.legacy
+      && anchors.backup && anchors.conn === true,
+    JSON.stringify(anchors));
+  //  already open: no second tab, and the frame scrolls to the new section
+  const nSet = (await front()).n;
+  await page.evaluate(() => window.latOpenSettings && window.latOpenSettings('backup'));
+  const atBackup = await until(() => {
+    const d = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]')?.contentDocument;
+    const e = d && d.getElementById('backup');
+    return !!e && Math.abs(e.getBoundingClientRect().top) < 40;
+  });
+  check('latOpenSettings scrolls to its section, also when Settings is open',
+    atLegacy && atBackup && (await front()).n === nSet, JSON.stringify({ atLegacy, atBackup }));
+
+  //  the reset shows only while the key is set, and follows a change made
+  //  in the shell through the storage event
+  const pubGone = await page.evaluate(() => { localStorage.removeItem('latPubOk'); return true; });
+  const pubHidden = await until(() => document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]')
+    ?.contentDocument.getElementById('pubreset')?.hidden === true, null, 5000);
+  await page.evaluate(() => { localStorage.latPubOk = '1'; });
+  const pubShown = await until(() => document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]')
+    ?.contentDocument.getElementById('pubreset')?.hidden === false, null, 5000);
+  await page.evaluate(() => document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]')
+    .contentDocument.getElementById('pubreset').click());
+  const pubReset = await page.evaluate(() => !('latPubOk' in localStorage));
+  check('pubOk reset', pubGone && pubHidden && pubShown && pubReset,
+    JSON.stringify({ pubHidden, pubShown, pubReset }));
+
+  //  wrap default: the frame writes appWrap and the shell repaints from it
+  const wrap0 = await page.evaluate(() => localStorage.appWrap);
+  await page.evaluate(() => document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]')
+    .contentDocument.getElementById('wrapdef').click());
+  const wrapped = await until((w) => localStorage.appWrap !== w
+    && document.getElementById('ws').classList.contains('wrap') === (localStorage.appWrap === '1'), wrap0, 5000);
+  await page.evaluate(() => document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]')
+    .contentDocument.getElementById('wrapdef').click());
+  const wrapBack = await until((w) => localStorage.appWrap === w
+    && document.getElementById('ws').classList.contains('wrap') === (w === '1'), wrap0, 5000);
+  check('wrap default in settings reaches the open editor', wrapped && wrapBack,
+    JSON.stringify({ wrap0, wrapped, wrapBack }));
+
+  //  autosave off: typing waits for Ctrl+S, and the tab says it is unsaved
+  await seed(env, [[AUTOP, 'autosave base\n']]);
+  const autoOn = await page.evaluate(() => document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]')
+    .contentDocument.getElementById('autosave').checked);
+  await page.evaluate(() => document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]')
+    .contentDocument.getElementById('autosave').click());
+  const autoOff = await page.evaluate(() => localStorage.latAutosave === '0');
+  await openDoc('page', AUTOP);
+  await until(() => document.getElementById('src').value.startsWith('autosave base'));
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.focus();
+    s.value += 'typed with autosave off\n';
+    s.dispatchEvent(new Event('input'));
+  });
+  await sleep(4000);
+  const shipBody = async () => {
+    const r = await fetch(env.base + '/apps/lattice/page-source?name=' + encodeURIComponent(AUTOP),
+      { headers: { Cookie: env.cookie } });
+    return r.ok ? r.text() : null;
+  };
+  const held = await shipBody();
+  const stillD = await page.evaluate(() => !!document.querySelector('.dtab.on.dirty'));
+  await page.keyboard.down('Control');
+  await page.keyboard.press('KeyS');
+  await page.keyboard.up('Control');
+  let landed = null;
+  for (let i = 0; i < 20 && !(landed || '').includes('typed with autosave off'); i++) {
+    await sleep(500);
+    landed = await shipBody();
+  }
+  const cleanAfter = await until(() => !document.querySelector('.dtab.on.dirty'), null, 10000);
+  check('autosave off', autoOn && autoOff && held !== null && !held.includes('typed with autosave off')
+    && stillD && (landed || '').includes('typed with autosave off') && cleanAfter,
+    JSON.stringify({ autoOn, autoOff, held: held && held.slice(0, 60), stillD, cleanAfter }));
+  await page.evaluate(() => localStorage.removeItem('latAutosave'));
+
   //  today's brief: the unpadded day, when that page exists
   const today = await page.evaluate(() => {
     const d = new Date();
@@ -717,7 +818,8 @@ try {
   check('threw: ' + String(e.message).slice(0, 140), false);
 } finally {
   await page.evaluate(() => {
-    for (const k of ['appNT', 'appNC', 'appLTab', 'appRTab', 'appTabs', 'appSort']) localStorage.removeItem(k);
+    for (const k of ['appNT', 'appNC', 'appLTab', 'appRTab', 'appTabs', 'appSort', 'latAutosave', 'latPubOk'])
+      localStorage.removeItem(k);
   }).catch(() => {});
   await browser.close();
   await post('know-delete?key=' + encodeURIComponent(MEM)).catch(() => {});

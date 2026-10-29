@@ -55,6 +55,15 @@ pub fn go_home(app: AppHandle) -> Result<(), String> {
     open_workspace(&app, false)
 }
 
+/// Settings > "Connection and mounts" in the ship page: the same page the
+/// Preferences menu's "connection && mounts…" opens. The ship page may call
+/// it (capabilities/workspace-remote.json), and the worst it can do is show
+/// the user this app's own connection and mounts page.
+#[tauri::command]
+pub fn open_manager(app: AppHandle) -> Result<(), String> {
+    show_manager(&app, None)
+}
+
 /// Show the connection & mounts page IN the workspace window (single-window
 /// app: the manager is a page, not a second window). Local shell pages live
 /// at tauri://localhost on macOS but http://tauri.localhost on Linux.
@@ -660,9 +669,19 @@ pub fn backup_schedules(app: AppHandle) -> Vec<crate::config::BackupSchedule> {
     config::load(&app).backups
 }
 
+/// Folders the user chose in pick_backup_dir's native dialog while the app
+/// has been running. See set_backup_schedules.
+static PICKED_DIRS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 /// Replace the whole schedule list.
 ///
-/// Whole-list rather than per-schedule edits: the manager form owns the table,
+/// The ship page calls this (Settings > Backup), so a schedule may only
+/// write where the user has said it may: a folder an existing schedule
+/// already has, or one picked in the native dialog. Otherwise anything the
+/// ship serves could aim a schedule at any folder, a synced or shared one
+/// included, and backup_write would fill it with the whole store.
+///
+/// Whole-list rather than per-schedule edits: the settings form owns the table,
 /// and a partial update racing the scheduler's last_run write is how a backup
 /// silently stops running. last_run is preserved from the stored copy by id,
 /// so editing a schedule's keep or directory does not make it immediately due
@@ -672,6 +691,14 @@ pub fn set_backup_schedules(
     app: AppHandle,
     schedules: Vec<crate::config::BackupSchedule>,
 ) -> Result<(), String> {
+    let picked = PICKED_DIRS.lock().map(|g| g.clone()).unwrap_or_default();
+    let have = config::load(&app).backups;
+    if let Some(s) = schedules
+        .iter()
+        .find(|s| !have.iter().any(|o| o.dir == s.dir) && !picked.contains(&s.dir))
+    {
+        return Err(format!("choose the folder for {} with \"choose…\"", s.label));
+    }
     config::update(&app, move |cfg| {
         let mut next = schedules;
         for s in next.iter_mut() {
@@ -703,7 +730,11 @@ pub async fn pick_backup_dir(app: AppHandle) -> Result<String, String> {
     let Some(picked) = app.dialog().file().blocking_pick_folder() else {
         return Ok(String::new());
     };
-    Ok(picked.into_path().map_err(|e| e.to_string())?.display().to_string())
+    let dir = picked.into_path().map_err(|e| e.to_string())?.display().to_string();
+    if let Ok(mut g) = PICKED_DIRS.lock() {
+        g.push(dir.clone());
+    }
+    Ok(dir)
 }
 
 /// The page hands back an archive it built for a schedule. Write it, prune

@@ -69,6 +69,12 @@ check('connected: a close button exists and is shown', st.exists && st.hidden ==
 check('connected: it is labelled "close", like the in-app panes', st.label === 'close', st.label);
 check('connected: it sits after the title, not buried in the ship panel', st.rightOfTitle === true);
 check('the old "open lattice" button is gone', st.openGone);
+//  scheduled backups live in Settings > Backup now (vault.js), so the
+//  manager no longer carries a second copy or asks for the schedules
+const bk = await on.evaluate(() => ({ section: !!document.getElementById('backups'),
+  list: !!document.getElementById('backup-list'),
+  asked: window.__CALLS__.includes('backup_schedules') }));
+check('manager has no backups section', !bk.section && !bk.list && !bk.asked, JSON.stringify(bk));
 const clicked = await on.evaluate(() => { const n = window.__CALLS__.length;
   document.getElementById('close').click(); return window.__CALLS__.slice(n); });
 check('clicking it calls go_home', JSON.stringify(clicked) === '["go_home"]', JSON.stringify(clicked));

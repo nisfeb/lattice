@@ -446,6 +446,14 @@
   }
 
   let autoTimer = null;
+  const autosaveOn = () => { try { return localStorage.latAutosave !== '0'; } catch { return true; } };
+  // turned back on in Settings (another document) while text waits unsaved:
+  // it goes out on the usual debounce, as if just typed
+  window.addEventListener('storage', (e) => {
+    if (e.key !== 'latAutosave' || !autosaveOn() || !dirty) return;
+    clearTimeout(autoTimer);
+    autoTimer = setTimeout(autosave, 2000);
+  });
   async function autosave() {
     // GRUB MODE IS EXPLICIT-SAVE ONLY. Autosaving a lattice page is fine. It is
     // your own note and the editor has always worked that way. Autosaving
@@ -456,6 +464,10 @@
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved — press Save or Cmd+S'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
+    // Settings > Editor > Autosave pages, off. Only this debounce stops: an
+    // explicit save and the flush a tab switch or a navigation makes go
+    // through save() and saveKnow(), never through here, so they still write.
+    if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
     // never overlap saves. The pier serializes, so a second in-flight save is
     // 3.7s of stale-body work queued behind the first, delaying every preview
     // behind it. Coalesce to one trailing save instead.

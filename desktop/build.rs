@@ -11,6 +11,8 @@ fn main() {
             "install_grubbery",
             "connection_status",
             "go_home",
+            // Settings > Connection and mounts, from the ship page
+            "open_manager",
             "pick_upload",
             "open_external_url",
             "status",
@@ -26,9 +28,10 @@ fn main() {
             // never invoke at all.
             "save_vault",
             "pick_vault",
-            // scheduled backups: the four config commands are manager-only
-            // (capabilities/local.json), backup_write is the one the ship page
-            // itself needs (capabilities/workspace-remote.json).
+            // scheduled backups. The schedules live in the ship page's
+            // Settings > Backup, so all of these are granted to it
+            // (capabilities/workspace-remote.json). set_backup_schedules
+            // takes a new folder only from pick_backup_dir's dialog.
             "backup_schedules",
             "set_backup_schedules",
             "pick_backup_dir",

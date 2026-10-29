@@ -11754,8 +11754,11 @@
     "</script>"
   ==
 ::  +settings-html: the settings page. Search-index maintenance, the browser
-::  bookmarklets and the vault backup UI. Single-quote cords so the css and js
-::  braces stay literal (no ' or \ inside).
+::  bookmarklets, the vault backup UI, the editor and publishing preferences,
+::  the legacy import and (desktop only) connection and mounts. The editor
+::  opens it in a tab and scrolls it to a section by id (24-tools.js
+::  latOpenSettings), so every section a link can name carries one. Single-
+::  quote cords so the css and js braces stay literal (no ' or \ inside).
 ::
 ++  settings-html
   ^-  tape
@@ -11812,7 +11815,7 @@
     ::  exports are the same file. This page is a separate document from the
     ::  editor bundle, so it loads vault.js on its own; the external script is
     ::  parser-blocking, so LatticeVault exists by the time the wiring runs.
-    "<h2>Backup</h2>"
+    "<h2 id=\"backup\">Backup</h2>"
     "<div id=\"vaultui\"></div>"
     %-  trip
     '<script src="/apps/lattice/app/vault.js"></script>'
@@ -11827,18 +11830,34 @@
     ::  open in another tab updates through the storage event, no reload.
     "<h2>Typography</h2>"
     "<p class=\"muted\">Font and size for the editor. Saved in this browser only &mdash; it never touches your ship, so it costs no round-trip. An editor open in another tab picks the change up immediately.</p>"
-    ::  vim mode. Same shape as the typography controls above: this page is a
-    ::  separate document, so it only writes localStorage and the editor picks
-    ::  the change up through the storage event. Off unless explicitly on.
-    "<p><label for=\"vimsel\"><input type=\"checkbox\" id=\"vimsel\"> vim mode in the editor</label> "
-    "<span class=\"muted\">modal editing: Esc for normal, i to insert, :w to save.</span></p>"
     "<p><label for=\"fontsel\">Font </label><select id=\"fontsel\"><option value=\"mono\">Monospace (default)</option><option value=\"system\">System sans</option><option value=\"serif\">Serif</option><option value=\"humanist\">Coding (Iosevka, JetBrains Mono)</option></select> <label for=\"fontsize\">Size </label><input type=\"range\" id=\"fontsize\" min=\"9\" max=\"32\" step=\"1\"> <span id=\"fontsizeo\" class=\"muted\"></span> <button type=\"button\" id=\"fontreset\" class=\"btn\">Reset</button></p>"
     ::  NB: no curly braces in this tape. hoon interpolates "{...}" inside a
     ::  double-quoted tape, so a literal brace is a syntax error here. (The
     ::  script below is a single-quoted cord, which is literal, braces and all.)
     "<p id=\"fontsample\" style=\"border:1px solid #8886;border-radius:8px;padding:12px\">The quick brown fox jumps over the lazy dog &middot; 0123456789 &middot; il1 O0 &middot; |= ^- @ud</p>"
     %-  trip
-    '<script>(function(){var f=document.getElementById("fontsel"),s=document.getElementById("fontsize"),o=document.getElementById("fontsizeo"),p=document.getElementById("fontsample");var M={mono:"ui-monospace, Menlo, Consolas, monospace",system:"system-ui, sans-serif",serif:"Georgia, Times New Roman, serif",humanist:"Iosevka, JetBrains Mono, Fira Code, ui-monospace, monospace"};function draw(){p.style.fontFamily=M[f.value]||M.mono;p.style.fontSize=s.value+"px";o.textContent=s.value+"px"}function save(){try{localStorage.latFont=f.value;localStorage.latFontSize=s.value}catch(e){}draw()}try{f.value=localStorage.latFont||"mono";s.value=localStorage.latFontSize||"13"}catch(e){}if(!M[f.value])f.value="mono";if(!(s.value>=9))s.value="13";draw();f.onchange=save;s.oninput=save;var v=document.getElementById("vimsel");try{v.checked=localStorage.edVim==="1"}catch(e){}v.onchange=function(){try{localStorage.edVim=v.checked?"1":"0"}catch(e){}};document.getElementById("fontreset").onclick=function(){try{localStorage.removeItem("latFont");localStorage.removeItem("latFontSize")}catch(e){}f.value="mono";s.value="13";draw()}})();</script>'
+    '<script>(function(){var f=document.getElementById("fontsel"),s=document.getElementById("fontsize"),o=document.getElementById("fontsizeo"),p=document.getElementById("fontsample");var M={mono:"ui-monospace, Menlo, Consolas, monospace",system:"system-ui, sans-serif",serif:"Georgia, Times New Roman, serif",humanist:"Iosevka, JetBrains Mono, Fira Code, ui-monospace, monospace"};function draw(){p.style.fontFamily=M[f.value]||M.mono;p.style.fontSize=s.value+"px";o.textContent=s.value+"px"}function save(){try{localStorage.latFont=f.value;localStorage.latFontSize=s.value}catch(e){}draw()}try{f.value=localStorage.latFont||"mono";s.value=localStorage.latFontSize||"13"}catch(e){}if(!M[f.value])f.value="mono";if(!(s.value>=9))s.value="13";draw();f.onchange=save;s.oninput=save;document.getElementById("fontreset").onclick=function(){try{localStorage.removeItem("latFont");localStorage.removeItem("latFontSize")}catch(e){}f.value="mono";s.value="13";draw()}})();</script>'
+    ::  editor: client-only preferences, the same shape as typography. This
+    ::  page only writes localStorage and the editor picks each change up
+    ::  through the storage event. Vim is off unless explicitly on. Wrap and
+    ::  autosave are on unless explicitly off, as the editor reads them
+    ::  (85-layout.js, 35-pages.js).
+    "<section id=\"editor\"><h2>Editor</h2>"
+    "<p class=\"muted\">Saved in this browser only. An editor open in another tab picks a change up immediately.</p>"
+    "<p><label for=\"vimsel\"><input type=\"checkbox\" id=\"vimsel\"> vim mode in the editor</label> "
+    "<span class=\"muted\">modal editing: Esc for normal, i to insert, :w to save.</span></p>"
+    "<p><label for=\"wrapdef\"><input type=\"checkbox\" id=\"wrapdef\"> Wrap long lines by default</label></p>"
+    "<p><label for=\"autosave\"><input type=\"checkbox\" id=\"autosave\"> Autosave pages</label> "
+    "<span class=\"muted\">pages and memories save two seconds after you stop typing. Off, they wait for Ctrl+S. App files always wait for Ctrl+S.</span></p></section>"
+    %-  trip
+    '<script>(function(){function bind(id,k,on){var e=document.getElementById(id);function rd(){var v=null;try{v=localStorage.getItem(k)}catch(x){}e.checked=on?v!=="0":v==="1"}rd();e.onchange=function(){try{localStorage.setItem(k,e.checked?"1":"0")}catch(x){}};addEventListener("storage",function(ev){if(!ev.key||ev.key===k)rd()})}bind("vimsel","edVim",false);bind("wrapdef","appWrap",true);bind("autosave","latAutosave",true)})();</script>'
+    ::  publishing: the share dialog (15-dialog.js) skips its question once
+    ::  "do not ask again" is ticked, and this is the way back. The button
+    ::  shows only while that key is set.
+    "<h2 id=\"publishing\">Publishing</h2>"
+    "<p><span id=\"pubst\" class=\"muted\"></span> <button type=\"button\" id=\"pubreset\" class=\"btn\" hidden>Ask before making a page public</button></p>"
+    %-  trip
+    '<script>(function(){var b=document.getElementById("pubreset"),s=document.getElementById("pubst");function rd(){var on=false;try{on=localStorage.getItem("latPubOk")!==null}catch(x){}b.hidden=!on;s.textContent=on?"Making a page public does not ask first in this browser.":"Making a page public asks first."}b.onclick=function(){try{localStorage.removeItem("latPubOk")}catch(x){}rd()};addEventListener("storage",function(ev){if(!ev.key||ev.key==="latPubOk")rd()});rd()})();</script>'
     "<h2>Archive a web page</h2>"
     "<p class=\"muted\">Drag this to your bookmarks bar. On any web page, click it and your ship fetches that page, converts it to markdown and files it privately under <code>clips/</code> &mdash; a real lattice page you can edit, search and share.</p>"
     "<p><a id=\"clipbm\" class=\"btn\" href=\"#\">Clip to lattice</a></p>"
@@ -11858,6 +11877,23 @@
     ::  reverse proxy). location.origin is the only thing that knows.
     %-  trip
     '<script>(function(){var a=document.getElementById("clipbm");a.href="javascript:(function(){location.href=\'"+location.origin+"/apps/lattice/clip?url=\'+encodeURIComponent(location.href)})()";a.onclick=function(e){e.preventDefault()}})();</script>'
+    ::  legacy import: the same POST /legacy-migrate the editor offers once
+    ::  (98-legacy.js), here for as long as the old agent is waiting, whatever
+    ::  this browser was told. A server marker (dismissed or imported) ends it
+    ::  here too, since /legacy-migrate refuses once it is written.
+    "<h2 id=\"legacy\">Import from the old editor</h2>"
+    "<p><span id=\"legst\" class=\"muted\">checking&hellip;</span></p>"
+    "<p><button type=\"button\" id=\"legbtn\" class=\"btn\" hidden>Import from the old editor</button></p>"
+    %-  trip
+    '<script>(function(){var s=document.getElementById("legst"),b=document.getElementById("legbtn");function load(msg){fetch("/apps/lattice/legacy-status").then(function(r){return r.json()}).then(function(d){b.hidden=!d.prompt;s.textContent=msg||(d.prompt?"An older lattice agent is still installed on this ship, from before this store existed. Importing copies what it holds here. Anything already here is left as it is, and nothing is removed from the old agent.":d.reason==="resolved"?"The older lattice agent has been imported, or its import was turned down.":"No older lattice agent is installed on this ship.")}).catch(function(){s.textContent=msg||"status unavailable"})}b.onclick=function(){b.disabled=true;s.textContent="importing from the old agent, this can take a few minutes...";fetch("/apps/lattice/legacy-migrate",{method:"POST"}).then(function(r){if(!r.ok)return r.json().catch(function(){return {}}).then(function(j){throw new Error(j.error||"http "+r.status)});return r.json()}).then(function(j){var n=j.imported||0,p=j.pagesImported||0;if(j.complete)try{localStorage.latLegacy="done"}catch(x){}b.disabled=false;load("Imported "+n+(n===1?" memory":" memories")+(j.skipped?" ("+j.skipped+" already here, left untouched)":"")+" and "+p+(p===1?" page. ":" pages. ")+(j.complete?"Everything it held is now here.":"Not everything moved, and the old agent still holds the only copy of the rest, so do not uninstall it. Run the import again to finish."))}).catch(function(e){b.disabled=false;load("import failed: "+e.message+". Nothing was removed from the old agent, and a re-run skips what already landed.")})};load()})();</script>'
+    ::  desktop only: the shell's own connection and mounts page. This page
+    ::  sits in a frame of the editor, so the Tauri bridge is the top
+    ::  window's. latOpenManager there asks about unsaved work first.
+    "<div id=\"connection\" hidden><h2>Connection and mounts</h2>"
+    "<p class=\"muted\">Which ship this app talks to, and the folders mounted from it.</p>"
+    "<p><button type=\"button\" id=\"connbtn\" class=\"btn\">Connection and mounts</button></p></div>"
+    %-  trip
+    '<script>(function(){var c=document.getElementById("connection"),w=null;try{w=window.top}catch(x){}var t=w&&w.__TAURI__;if(!t||!t.core)return;c.hidden=false;document.getElementById("connbtn").onclick=function(){if(w.latOpenManager)w.latOpenManager();else t.core.invoke("open_manager")}})();</script>'
   ==
 ::  +home-index-html: the landing page. Always shows navigation (Pages,
 ::  Explorer) plus a live list of your programmable pages and any published

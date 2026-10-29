@@ -27,6 +27,12 @@
   // so an uncaught error here blanks the whole app (that was the setInd bug).
   // Contain it — a broken layout widget is survivable; a dead tree is not.
   try { applyToggles(); } catch (e) { console.error('[lattice] layout init failed', e); }
+  // Settings > Editor writes the wrap default from its own document (the
+  // Settings tab is a frame), and this window hears it as a storage event,
+  // the same way 05-prefs.js hears the font
+  window.addEventListener('storage', (e) => {
+    if (!e.key || e.key === 'appWrap') try { applyToggles(); } catch {}
+  });
 
   // The phone's old one-pane switcher and its full-screen mode are gone
   // (the drawers in 97-mobar.js replaced them). Their stored state goes too.
