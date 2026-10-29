@@ -10,6 +10,7 @@
   <button data-m="shared" data-action="share-shared">shared</button>
   <button data-m="clearweb" data-action="share-clearweb">clearweb</button>
 </div>
+<div id="sharewhat" class="muted sharewhat"></div>
 <div id="cwurl" class="muted"></div>
 <h3>give a ship access</h3>
 <div class="row"><input id="shwith" placeholder="~ship" autocomplete="off"><button id="shread">read</button><button id="shedit">edit</button></div>
@@ -24,6 +25,43 @@
       cwurl = $('cwurl');
     }
   });
+  // ── what each mode does, said where it is picked ─────────────────────────
+  // The three read as a set, and each says who can read the page and where
+  // (apply-share in app.hoon): private is in no published copy at all;
+  // shared puts a copy in the vault that any ship reads over ames at its
+  // urb:// address; clearweb is shared plus the unauthenticated /c/ route.
+  // A ship or group granted below reads a private page too (share-file
+  // grants the code grub itself), so private says so.
+  //
+  // The addresses are the real ones for the target. cwUrl is the one the
+  // public link below shows and the Published pages list (72-acl.js)
+  // copies, so the two can never disagree.
+  const cwUrl = (target) => location.origin + api + '/c/' + target;
+  const urbUrl = (target) => 'urb://' + (ourShip || '~yourship') + '/' + target;
+  // our own ship, for the urb:// address: Eyre's /~/host, asked once
+  let ourShip = '';
+  let shareShown = null;
+  fetch('/~/host').then((r) => (r.ok ? r.text() : '')).then((t) => {
+    ourShip = t.trim();
+    if (shareShown) paintShareCopy(shareShown);
+  }).catch(() => {});
+  const SHARE_COPY = {
+    private: () => 'Private: only you, and any ship or group you give access below. '
+      + 'Not published anywhere.',
+    shared: (u) => 'Shared: published over Urbit. Any ship running lattice can open it at '
+      + u + '. Not on the web.',
+    clearweb: (u, w) => 'Clearweb: public on the web. Anyone with the link can read it at '
+      + w + ', no login needed. Also shared over Urbit at ' + u + '.',
+  };
+  function paintShareCopy(m) {
+    shareShown = m;
+    const target = curFolder || current;
+    const t = target ? target + (curFolder ? '/' : '') : 'this-page';
+    const u = urbUrl(t), w = cwUrl(t);
+    for (const b of document.querySelectorAll('.share button')) b.title = SHARE_COPY[b.dataset.m](u, w);
+    $('sharewhat').textContent = SHARE_COPY[m] ? SHARE_COPY[m](u, w) : '';
+  }
+
   function showShare(m) {
     // the grant result names "this page", so it MUST NOT outlive the page it
     // was about. Every target change (page open, new file, folder select,
@@ -36,6 +74,7 @@
     // the group toggles are about THIS file, so they follow the same
     // every-target-change hook the grant message does
     renderGroupAccess();
+    paintShareCopy(m);
     orreryShow();
     refreshSensitive(curFolder || current);
     const target = curFolder || current;
@@ -45,7 +84,7 @@
     // markup makes this sink depend on every name source staying sane-%ta.
     cwurl.textContent = '';
     if (m === 'clearweb' && target) {
-      const url = api + '/c/' + target + suffix;
+      const url = cwUrl(target + suffix);
       cwurl.appendChild(document.createTextNode('public: '));
       const a = document.createElement('a');
       a.href = url;
@@ -54,7 +93,7 @@
       a.textContent = '/c/' + target + suffix;   // textContent: names are content
       cwurl.appendChild(a);
     } else if (m === 'mixed') {
-      cwurl.textContent = 'mixed — pages under this folder differ';
+      cwurl.textContent = 'mixed: pages under this folder differ';
     }
   }
   for (const b of document.querySelectorAll('.share button')) {

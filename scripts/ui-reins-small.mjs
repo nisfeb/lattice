@@ -5,6 +5,8 @@
 //      opens a page (Ctrl+Enter in a new tab) and Ctrl+Shift+E focuses Files
 //    the discard dialog for a long grub path (a shared page's) wraps the
 //      path and keeps its buttons inside the box, at desktop and phone width
+//    the share buttons say what each mode does, with the page's real
+//      urb:// and https addresses, and no em-dash
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           node scripts/ui-reins-small.mjs
@@ -167,6 +169,28 @@ try {
     await p.evaluate(() => document.getElementById('dlgok').click());
     await sleep(500);
     await p.close();
+  }
+
+  // ── 3. the sharing control says what each mode means ───────────────────
+  {
+    const ship = (await (await fetch(env.base + '/~/host')).text()).trim();
+    await page.evaluate((k) => window.latTabs.openIn('page', k, {}), PA);
+    await sleep(1500);
+    await page.evaluate(() => { window.latShell.paneOpen('r', true); window.latShell.paneTab('r', 'page'); });
+    await sleep(300);
+    const c = await page.evaluate(() => ({
+      t: Object.fromEntries([...document.querySelectorAll('.share button')].map((b) => [b.dataset.m, b.title])),
+      what: document.getElementById('sharewhat') ? document.getElementById('sharewhat').textContent : '',
+    }));
+    check('shared says it publishes over Urbit to any lattice ship',
+      /published over Urbit/.test(c.t.shared) && /Any ship running lattice can open it/.test(c.t.shared)
+      && c.t.shared.includes('urb://' + ship + '/' + PA), JSON.stringify(c.t.shared));
+    check('clearweb gives the https address and says it is public',
+      /public on the web/.test(c.t.clearweb) && c.t.clearweb.includes(env.base + '/apps/lattice/c/' + PA),
+      JSON.stringify(c.t.clearweb));
+    check('private says who can read it', /^Private: only you/.test(c.t.private || ''), JSON.stringify(c.t.private));
+    check('the open page\'s mode is described under the buttons', /^Private: /.test(c.what), c.what);
+    check('no em-dash in the share copy', !JSON.stringify(c).includes('\u2014'), '');
   }
 } catch (e) {
   check('threw: ' + String(e.message).slice(0, 140), false);
