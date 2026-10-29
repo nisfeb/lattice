@@ -15,6 +15,7 @@
 ::  ~ dat means "no change". dep is the FULL dependency list each run.
 ::
 /<  ft  /lib/lattice-forum-types.hoon
+/<  ll  /lib/lattice-link.hoon
 |%
 ::  +$  eval-action: page writes poked at the writer fiber (main.sig).
 ::
@@ -57,6 +58,10 @@
       [%forum-note-store host=@p payload=*]
       ::  the owner clears every stored refusal note (frees the 100-note cap).
       [%forum-notes-clear ~]
+      ::  write a link (/lib/lattice-link) at /page/<pax>/link, making its
+      ::  dir. Through the writer like every page-tree write, so it lands
+      ::  in order with a move's mkdirs and bumps the change beacon.
+      [%link-put pax=path =link:ll]
   ==
 ::  +$  form-cfg: a page's public-form limits. cap=0 means no absolute limit.
 ::  gap=0 means no cooldown. Set by the owner (page-forms), read by serve-form

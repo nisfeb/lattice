@@ -63,6 +63,9 @@
 /<  lcl  /lib/lattice-clip.hoon
 /<  li   /lib/lattice-index.hoon
 /<  ls   /lib/lattice-share.hoon
+::  a page shared with us, moved into our tree. `ll` and not `lk`: that face
+::  is lattice-know above.
+/<  ll   /lib/lattice-link.hoon
 ::  signing. `lsg` and not `ls`: that face is lattice-share above.
 /<  lsg  /lib/lattice-sign.hoon
 ::  the commons mirror (docs/obelisk-mirror.md). lm builds the urQL and
@@ -1079,6 +1082,132 @@
   ;<  ok=?  bind:m  (ug-put gdir who weir)
   ?.  ok  (ug-refused eyre-id)
   (send-ok eyre-id)
+::  +handle-link-make: POST /link-make?host=&path=&to=. The shared-with-me
+::  entry [host path] becomes a link at /page/<to>. The host is peeked once,
+::  with a short deadline, for the page's kind, body and rev: kind is frozen
+::  here, so a link is never made with a kind it guessed. Offline, nothing is
+::  written. The entry goes once the link is in (one home), and the answer is
+::  the new tree node.
+++  handle-link-make
+  |=  [eyre-id=@ta args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  hp=(unit @p)  (biff (~(get by args) 'host') (cury slaw %p))
+  ?~  hp  (send-err eyre-id 400 'bad host')
+  =/  pp=(unit path)
+    (biff (~(get by args) 'path') |=(t=@t (mole |.((stab t)))))
+  ?~  pp  (send-err eyre-id 400 'bad path')
+  ?:  =(~ u.pp)  (send-err eyre-id 400 'bad path')
+  =/  to=(unit @t)  (~(get by args) 'to')
+  ?~  to  (send-err eyre-id 400 'missing to')
+  ?.  (valid-name u.to)  (send-err eyre-id 400 'bad name')
+  =/  tp=path  (pax-of u.to)
+  ;<  sh=shared:ls  bind:m  read-shared
+  =/  en=(unit entry:ls)
+    =/  hit  (skim sh |=(e=entry:ls &(=(host.e u.hp) =(pax.e u.pp))))
+    ?~(hit ~ `i.hit)
+  ?~  en  (send-err eyre-id 404 'not shared with you')
+  ::  a page, a folder or a link: each is a dir under /page
+  ;<  ex=?  bind:m  (peek-exists:io (rv up (weld /page tp)))
+  ?:  ex  (send-err eyre-id 409 'destination exists')
+  ;<  got=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek u.hp u.pp)
+  ?~  got
+    %^  send-err  eyre-id  504
+    (crip "{(scow %p u.hp)} is unreachable, try again when it's online")
+  ;<  now=@da  bind:m  bowl-now
+  =/  l=link:ll
+    :*  %ship  u.hp  u.pp  mode.u.en
+        kind.u.got  body.u.got  rev.u.got  (met 3 body.u.got)  [& now]
+    ==
+  ;<  ~  bind:m  (poke-eval [%link-put tp l])
+  ;<  ~  bind:m
+    %+  poke:io  (rf up / %'shares.sig')
+    [[/lattice %share-notice] `action:ls`[%del u.hp u.pp]]
+  (send-json eyre-id (pairs:enjs:format (link-rows tp l [0 now])))
+::  +handle-link-unmake: POST /link-unmake?name=. The link goes back to
+::  shared with me, with the mode it last knew, and its dir is deleted. The
+::  owner's grant is never touched.
+++  handle-link-unmake
+  |=  [eyre-id=@ta args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  name=(unit @t)  (~(get by args) 'name')
+  ?~  name  (send-err eyre-id 400 'missing name')
+  ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+  =/  pax=path  (pax-of u.name)
+  ;<  lv=view:nexus  bind:m  (peek:io (rf up (weld /page pax) %link) ~)
+  =/  l=(unit link:ll)
+    ?.  ?=([%file *] lv)  ~
+    (mole |.(;;(link:ll (sang-noun:tarball sang.lv))))
+  ?.  ?=([~ %ship *] l)  (send-err eyre-id 404 'no such link')
+  ;<  now=@da  bind:m  bowl-now
+  ;<  sh=shared:ls  bind:m  read-shared
+  ;<  ~  bind:m
+    %^  put-file  (rf up / %shared)  [/lattice %shared]
+    (put-entry:ls sh [host.u.l pax.u.l mode.u.l now])
+  ;<  ~  bind:m  (poke-eval [%del pax])
+  (send-ok eyre-id)
+::  +read-shared: the shared-with-me list, ~ when absent or unreadable.
+++  read-shared
+  =/  m  (fiber:fiber:nexus ,shared:ls)
+  ^-  form:m
+  ;<  sn=view:nexus  bind:m  (peek:io (rf up / %shared) ~)
+  %-  pure:m
+  ?.  ?=([%file *] sn)  ~
+  (fall (mole |.(;;(shared:ls (sang-noun:tarball sang.sn)))) ~)
+::  +link-peek: one read of a linked page on its host, with a 5s deadline:
+::  [kind body rev], or ~ when the host is offline or no longer grants it.
+::  A lattice page reads as its prose and builder, as /browse-file reads it.
+++  link-peek
+  |=  [host=@p pax=path]
+  =/  m  (fiber:fiber:nexus ,(unit [kind=@ta body=@t rev=@ud]))
+  ^-  form:m
+  ?~  pax  (pure:m ~)
+  =/  n=@ud  (dec (lent `path`pax))
+  ;<  ms=(unit view:nexus)  bind:m
+    (peek-remote-wait-in [%& %& (scag n `path`pax) (snag n `path`pax)] host ~s5)
+  ?.  ?=([~ %file *] ms)  (pure:m ~)
+  =/  txt=(unit @t)  (grub-text sang.u.ms)
+  ?~  txt  (pure:m ~)
+  =/  un=(unit [builder=@tas body=@t])
+    ?.  =([/lattice %page] p.sang.u.ms)  ~
+    (unwrap-content u.txt)
+  %-  pure:m
+  :-  ~
+  :+  ?~(un %hoon builder.u.un)
+    ?~(un u.txt body.u.un)
+  ud.cass.u.ms
+::  +links-to: every link under /page naming `pax` on `host`, by its path
+::  under /page. One deep peek: a share notice is rare.
+++  links-to
+  |=  [host=@p pax=path]
+  =/  m  (fiber:fiber:nexus ,(list [rel=path l=link:ll]))
+  ^-  form:m
+  ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
+  ?.  ?=([%ball *] sn)  (pure:m ~)
+  %-  pure:m
+  %+  skim  (find-links ball.sn ~)
+  |=  [* l=link:ll]
+  &(?=(%ship -.l) =(host host.l) =(pax pax.l))
+::  +find-links: every link grub in a page-tree ball, with its rel path.
+++  find-links
+  |=  [b=ball:tarball rel=path]
+  ^-  (list [rel=path l=link:ll])
+  =/  kids=(list [rel=path l=link:ll])
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=  [nom=@ta kb=ball:tarball]
+    (find-links kb (weld rel /[nom]))
+  =/  l=(unit link:ll)  (fils-link ?~(fil.b ~ contents.u.fil.b))
+  ?~(l kids [[rel u.l] kids])
+::  +put-links: write each link back through the writer.
+++  put-links
+  |=  lks=(list [rel=path l=link:ll])
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  lks  (pure:m ~)
+  ;<  ~  bind:m  (poke-eval [%link-put rel.i.lks l.i.lks])
+  $(lks t.lks)
 ::  +handle-remote-save: POST /remote-save. Write a grub onto ANOTHER ship's
 ::  grubbery, which is why it takes `our`: saving to yourself is a different
 ::  path (/grub-save) and is refused here rather than silently rerouted.
@@ -2198,6 +2327,13 @@
       %+  poke:io  (rf up / %'shares.sig')
       [[/lattice %share-notice] `action:ls`[%del u.hp p.pp]]
     (send-ok eyre-id)
+  ::  link-make / link-unmake: move a page shared with us into our own tree
+  ::  as a link (/lib/lattice-link), and back out. Owner only: neither is in
+  ::  +wants:ky, so no key reaches them.
+      [%'POST' %link-make]
+    (handle-link-make eyre-id args)
+      [%'POST' %link-unmake]
+    (handle-link-unmake eyre-id args)
       [%'POST' %share-group-del]
     =/  gname=(unit @t)  (~(get by args) 'name')
     ?~  gname  (send-err eyre-id 400 'missing name')
@@ -5682,6 +5818,11 @@
     ::  create an empty folder (and any missing parents). ensure-dirs is
     ::  idempotent, so mkdir over an existing page/folder is a harmless no-op.
     (ensure-dirs up /page pax.act)
+      %link-put
+    ::  a link (/lib/lattice-link): its dir, then the link grub. No %code, so
+    ::  no evaluator spawns on it.
+    ;<  ~  bind:m  (ensure-dirs up /page pax.act)
+    (put-file (rf up (weld /page pax.act) %link) [/lattice %link] link.act)
       %dname
     ::  the display name sits beside a page's %code or a folder's flags, as
     ::  a %name grub. '' clears it: the name typed at a rename was a valid
@@ -6265,12 +6406,12 @@
   (weld (weld pre (weld "[[" to)) $(hay aft))
 ::  +move-pages: move a page or a whole folder subtree under /page from src to
 ::  dst. Copies each page's code (share mode carried over, wikilink
-::  self-references rewritten like template instantiation rewrites its root),
-::  then deletes the source. Runs in a REQUEST fiber with one writer poke per
+::  self-references rewritten like template instantiation rewrites its root)
+::  and each link grub as it is, then deletes the source. Runs in a REQUEST fiber with one writer poke per
 ::  action. The same reasoning as +instantiate-template: a batch make in one
 ::  writer transaction arms dep-keeps that never establish. Returns ~ when
-::  nothing exists at src. `count is the number of pages moved (0 = an empty
-::  folder, still a successful move).
+::  nothing exists at src. `count is the number of pages and links moved (0 =
+::  an empty folder, still a successful move).
 ::
 ++  move-pages
   |=  [from=path to=path]
@@ -6307,14 +6448,23 @@
   =/  sacts=(list eval-action:le)
     %+  turn  (weld ?:(rs ~[`path`~] ~) own)
     |=(p=path `eval-action:le`[%page-sensitive (weld to p) &])
+  ::  links (+collect-tree lists them as folders) carry their link grub
+  ::  over whole, the root too when it is one. Nothing in one is rewritten:
+  ::  it names another ship's page.
+  =/  lacts=(list eval-action:le)
+    %+  murn  ^-((list path) [~ (turn all head)])
+    |=  p=path
+    ^-  (unit eval-action:le)
+    (bind (fils-link (ball-fils bl p)) |=(l=link:ll [%link-put (weld to p) l]))
   =/  todo=(list eval-action:le)
     ;:  weld
       sacts
       ^-  (list eval-action:le)
       [[%mkdir to] (turn dirs |=(p=path `eval-action:le`[%mkdir (weld to p)]))]
+      lacts
       dacts
     ==
-  =/  count=@ud  0
+  =/  count=@ud  (lent lacts)
   |-  ^-  form:m
   ?^  todo
     ;<  ~  bind:m  (poke-eval i.todo)
@@ -7018,6 +7168,8 @@
     |=  [nom=@ta kb=ball:tarball]
     (index-walk kb (weld rel /[nom]))
   ?~  rel  kids
+  ::  a link dir has no %code, so its cached body (another ship's page) is
+  ::  never indexed here
   ?.  (~(has by fils) %code)  kids
   =/  cd  (~(got by fils) %code)
   =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) '')
@@ -7170,6 +7322,11 @@
     =/  kw=wave:nexus  (fall (~(get by dir.w) nom) *wave:nexus)
     (tree-walk kb kw (weld rel /[nom]))
   =/  drow=(list [@t json])  (dname-row fils)
+  ::  a link: a page, listed by its cache (+link-rows)
+  =/  lnk=(unit link:ll)  (fils-link fils)
+  ?:  &(?=(^ lnk) ?=(^ rel))
+    =/  lcs=cass:clay  (fall (~(get by wfil) %link) *cass:clay)
+    [[rel (pairs:enjs:format (weld drow (link-rows rel u.lnk lcs)))] kids]
   ?.  (~(has by fils) %code)
     ?~  rel  kids
     :_  kids
@@ -7276,6 +7433,12 @@
   ::  this node's own sensitive mark, so a vault export can carry it
   =/  srow=(list [@t json])
     ?.((~(has by fils) %sensitive) ~ ~[['sensitive' b+&]])
+  ::  a link: +tree-walk's node, and never its body. Reads go through the
+  ::  link, not the dump.
+  =/  lnk=(unit link:ll)  (fils-link fils)
+  ?:  &(?=(^ lnk) ?=(^ rel))
+    =/  lcs=cass:clay  (fall (~(get by wfil) %link) *cass:clay)
+    [[rel (pairs:enjs:format :(weld drow srow (link-rows rel u.lnk lcs)))] kids]
   ?.  (~(has by fils) %code)
     ?~  rel  kids
     :_  kids
@@ -7488,6 +7651,7 @@
   =/  dbase=path  (weld /page pt)
   ;<  dpg=?  bind:m  (peek-exists:io (rf up dbase %code))
   ?:  dpg  (pure:m |+[409 'destination exists'])
+  ::  a folder, or a link (its dir holds the link grub)
   ;<  ddr=?  bind:m  (peek-exists:io (rv up dbase))
   ?:  ddr  (pure:m |+[409 'destination exists'])
   ;<  n=(unit @ud)  bind:m  (move-pages pf pt)
@@ -8396,11 +8560,29 @@
     ?:  (is-banned:ls bans u.src)  (pure:m ~)
     ?.  ?=([%apps *] pax.u.na)  (pure:m ~)
     ?.  |(=('read' mode.u.na) =('edit' mode.u.na))  (pure:m ~)
+    ::  a page we already linked into our tree (/lib/lattice-link): the
+    ::  link takes the new mode, and the page does not come back to shared
+    ::  with me, which would give it two homes
+    ;<  hits=(list [rel=path l=link:ll])  bind:m  (links-to u.src pax.u.na)
+    ?^  hits
+      %-  put-links
+      %+  turn  `(list [rel=path l=link:ll])`hits
+      |=  [rel=path l=link:ll]
+      [rel ?:(?=(%local -.l) l l(mode mode.u.na))]
     %^  put-file  (rf root / %shared)  [/lattice %shared]
     (put-entry:ls cur [u.src pax.u.na mode.u.na now])
   ::
       %del
-    ?^  src  (pure:m ~)                      ::  curation is owner-only
+    ::  from the host itself, about a page we linked: the link stays, marked
+    ::  as failed (+fail:ll), until the owner removes it. Any other foreign
+    ::  %del is dropped: curation is owner-only.
+    ?^  src
+      ?.  =(u.src host.u.na)  (pure:m ~)
+      ?:  (is-banned:ls bans u.src)  (pure:m ~)
+      ;<  hits=(list [rel=path l=link:ll])  bind:m  (links-to u.src pax.u.na)
+      %-  put-links
+      %+  turn  hits
+      |=([rel=path l=link:ll] [rel (fail:ll l now)])
     %^  put-file  (rf root / %shared)  [/lattice %shared]
     (del-entry:ls cur host.u.na pax.u.na)
   ==
@@ -11647,6 +11829,11 @@
 ::  other non-root dir is a folder. Recurse through pages too (a page can also be
 ::  a parent of nested pages). Paths are relative to /page.
 ::
+::  A link dir (/lib/lattice-link) comes back as a folder: it has no code, so
+::  every caller that reads, publishes or copies page code passes it by,
+::  while a move still makes its dir and a delete still culls it. +move-pages
+::  copies its link grub from the same ball.
+::
 ++  collect-tree
   |=  [b=ball:tarball rel=path]
   ^-  (list [pax=path page=?])
@@ -11676,6 +11863,8 @@
     %+  turn  ~(tap by dir.b)
     |=  [nom=@ta kid=ball:tarball]
     (collect-visible kid (weld rel /[nom]) mode sens)
+  ::  a link is another ship's page, never listed to anyone reading ours
+  ?:  (~(has by fils) %link)  kids
   ?:  (~(has by fils) %code)
     ?.  (gte (share-rank (fils-share fils)) (share-rank mode))  kids
     [[rel &] kids]
@@ -12820,6 +13009,30 @@
   =/  sd  (~(get by fils) %share)
   ?~  sd  %private
   (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.u.sd)))) %private)
+::  +fils-link: a dir's link grub (/lib/lattice-link), ~ if it has none or
+::  it does not read as one.
+++  fils-link
+  |=  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+  ^-  (unit link:ll)
+  =/  lg  (~(get by fils) %link)
+  ?~  lg  ~
+  (mole |.(;;(link:ll (sang-noun:tarball sang.u.lg))))
+::  +link-rows: a link's tree and dump node. A page in the owner's kind
+::  (frozen at create), never with its body, readonly when the grant was
+::  read, with the cached size and the owner's rev. mtime is the link
+::  grub's own, which moves when a read refreshes the cache.
+++  link-rows
+  |=  [rel=path l=link:ll cs=cass:clay]
+  ^-  (list [@t json])
+  ?:  ?=(%local -.l)
+    :~  ['path' s+(crip (pax-str rel))]  ['page' b+&]  ['link' (en-link:ll l)]  ==
+  :~  ['path' s+(crip (pax-str rel))]  ['page' b+&]  ['kind' s+kind.l]
+      ['link' (en-link:ll l)]
+      ['readonly' b+=('read' mode.l)]
+      ['size' (numb:enjs:format size.l)]
+      ['rev' (numb:enjs:format rev.l)]
+      ['mtime' s+(scot %da da.cs)]
+  ==
 ::  +apply: dispatch one knowledge action. root is the nexus dir (/lattice).
 ::
 ++  apply
