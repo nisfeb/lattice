@@ -358,6 +358,19 @@ try {
   await d.keyboard.type('zz');
   check('  ...nor after a tab switch away and back', await d.evaluate(() =>
     document.getElementById('src').readOnly && document.getElementById('src').value === '# ro'));
+  // a reload paints the front tab from its snapshot before the tree knows
+  // the page is a link: the lock must land once the tree loads
+  await d.reload({ waitUntil: 'domcontentloaded', timeout: 90000 });
+  await d.waitForFunction(() => document.querySelectorAll('#treelist a.pg').length > 0, { timeout: 90000 });
+  await until(d, () => document.getElementById('src').value === '# ro');
+  await sleep(1500);
+  await d.focus('#src');
+  await d.keyboard.type('zz');
+  check('  ...nor after a reload with it in front', await d.evaluate(() =>
+    document.querySelector('.dtab.on')?.dataset.key === 'notes/ro'
+    && document.getElementById('src').readOnly && document.getElementById('src').value === '# ro'),
+  await d.evaluate(() => document.querySelector('.dtab.on')?.dataset.key + ' '
+    + document.getElementById('src').readOnly + ' ' + JSON.stringify(document.getElementById('src').value)));
 
   // Move back, from the page menu, its one home
   await d.click(LP('notes/doc'));

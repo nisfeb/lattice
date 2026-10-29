@@ -130,7 +130,7 @@ const TOOLS = {
     },
   },
   wiki_write: {
-    description: 'Create or update a private page, such as a report or notes. Pages that are published, or in a folder shared with others, are refused: publishing and sharing are the owner\'s. Pass base (the rev you read) when editing, so a concurrent edit is kept, not overwritten.',
+    description: 'Create or update a private page, such as a report or notes. Pages that are published, or in a folder shared with others, are refused: publishing and sharing are the owner\'s. Pass base (the rev you read) when editing, so a concurrent edit is kept, not overwritten. A link (another ship\'s page) without base claims the rev this ship last read; a 409 means the owner changed it: read it again first.',
     props: {
       name: str('page name, e.g. reports/2026-10-04-deploy'), body: str('the page'),
       type: str('md (default), html, txt, ...'), base: num('the rev you read, when editing'),

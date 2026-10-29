@@ -690,6 +690,7 @@
       ::  filesystem-presence. The socket lives in the pier.
           [~ %'fs.sig']
         ;<  ~  bind:m  (rise-later prod "lattice /fs.sig" "")
+        ;<  ~  bind:m  sweep-link-done
         fs-serve
       ::  /link-reads/<id>: a live read of one link (+link-read-later), for a
       ::  lattice-fs read that answered from the link's cache. The grub holds
@@ -1074,9 +1075,10 @@
       ['kept' s+kept]
   ==
 ::  +link-save-respond: POST /page-save onto a link (+link-write), with
-::  page-save's answer. ?base= is the owner's rev the writer read, and a
-::  write against a page that moved past it is a 409: the owner's newer
-::  text is never overwritten, and there is no local copy to keep it in.
+::  page-save's answer. ?base= is the owner's rev the writer read (absent
+::  or 0: the cached rev, +link-write), and a write against a page that
+::  moved past it is a 409: the owner's newer text is never overwritten,
+::  and there is no local copy to keep it in.
 ::
 ++  link-save-respond
   |=  [eyre-id=@ta lpath=path l=link:ll args=(map @t @t) body=@t]
@@ -1382,8 +1384,11 @@
   ::  backstop, as /remote-save refuses its own ship.
   ;<  our=@p  bind:m  bowl-our
   ?:  =(our host.l)  (pure:m |+[400 'that is you: a link names another ship'])
-  ::  0 claims nothing, as on a local page-save
-  =?  base  =(`0 base)  ~
+  ::  no base (or 0) claims the cached rev, the owner's text this ship
+  ::  last read, as the lick port does. A link has no local copy to keep
+  ::  an overwritten page in, so a write never goes unchecked: a writer
+  ::  that skipped the read gets a 409 once the owner has moved on.
+  =?  base  |(?=(~ base) =(`0 base))  `rev.l
   ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
     (remote-write host.l pax.l body base `wait)
   ?:  ?=(%| -.r)
@@ -6707,7 +6712,7 @@
     ?:  ex  (pure:(fiber:fiber:nexus ,?) |)
     (peek-exists:io (link-road up pax))
   ?:  isl
-    %-  (slog leaf+"lattice: not saving over the link at {(spud pax)}" ~)
+    %-  (say 2 ~[leaf+"lattice: not saving over the link at {(spud pax)}"])
     (pure:m ~)
   ;<  ~  bind:m
     ?:  ex  (pure:m ~)
@@ -8231,6 +8236,22 @@
     ?:  ?=(%| -.r)  (pure:m p.r)
     (pure:m [200 (en:json:html (pairs:enjs:format ~[['moved' (numb:enjs:format p.r)]]))])
   ==
+::  +sweep-link-done: delete every /link-done answer as the port starts.
+::  The port that polled for them is gone, so none has a reader. Each
+::  save fiber deletes its own a minute on, but a reload inside that
+::  minute ends the fiber first and leaves the answer for good.
+++  sweep-link-done
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:io (rv up /link-done) ~)
+  ?.  ?=([%ball *] v)  (pure:m ~)
+  ?~  fil.ball.v  (pure:m ~)
+  =/  ids=(list @ta)  ~(tap in ~(key by contents.u.fil.ball.v))
+  |-  ^-  form:m
+  ?~  ids  (pure:m ~)
+  ;<  *  bind:m  (cull-soft:io (rf up /link-done i.ids))
+  $(ids t.ids)
 ::  +fs-serve: +lick-serve:io for the lattice-fs port, but waiting for the
 ::  next request with +take-in-drain, which eats strays instead of skipping
 ::  them. The port fiber lives until the next reload, and a reload keeps

@@ -15,6 +15,9 @@
 #         B_START   command that brings B back (default: SIGCONT them)
 #         A_SOCK    A's lick socket, for the lattice-fs read (default
 #                   ~/fleet/piers/mec/.urb/dev/grubbery/lattice/fs)
+#         A_INST    A's lattice instance in the ball (default
+#                   /apps/shell.shell/desks/lattice.desk/desk/data/
+#                   lattice.lattice_app), for the sweep section
 #
 # The set used so far (Task 2): A = ~mec on 8120, cookie /tmp/mec-cookie.txt;
 # B = ~mun, fleet set `grubbery`, on 8135, cookie /tmp/mun-cookie.txt. B got
@@ -227,6 +230,15 @@ section_proxy() {
   is "  ...and A reads it back" "# via A" "$(A_ "$A/page-source?name=notes/doc" | jq -r .body)"
   is "save with a stale base: 409" 409 "$(code -H "$AK" -X POST "$A/page-save?name=notes/doc&type=md&base=$rev" --data-binary '# stale')"
   is "  ...B is unchanged" "# via A" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
+  # a save that names no base (an agent's wiki_write, a queued edit) claims
+  # the rev A last read, never nothing: B's newer text is a 409
+  is "B edits x/doc first" 200 "$(code -H "$BK" -X POST "$B/page-save?name=x/doc&type=md" --data-binary '# B first')"
+  is "save with no base over it: 409" 409 "$(code -H "$AK" -X POST "$A/page-save?name=notes/doc&type=md" --data-binary '# blind')"
+  is "save with base=0 over it: 409" 409 "$(code -H "$AK" -X POST "$A/page-save?name=notes/doc&type=md&base=0" --data-binary '# blind0')"
+  is "  ...B's text survives" "# B first" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
+  is "  ...and A reads it" "# B first" "$(A_ "$A/page-source?name=notes/doc" | jq -r .body)"
+  is "save with no base once read" 200 "$(code -H "$AK" -X POST "$A/page-save?name=notes/doc&type=md" --data-binary '# via A')"
+  is "  ...lands on B" "# via A" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
   is "no code grub in the link dir" 0 "$(A_ "$A/page-history?name=notes/doc" | jq '.revisions // [] | length')"
   is "dump: still a link" "$BSHIP" "$(node page-dump notes/doc | jq -r .link.host)"
   is "batch save onto the link: 409" 409 "$(code -H "$AK" -X POST "$A/page-save-batch" --data-binary '[{"name":"notes/doc","type":"md","body":"# batch"}]')"
@@ -401,9 +413,22 @@ section_exposure() {
   for id in $KEYS; do A_ -o /dev/null -X POST "$A/key-revoke?id=$id"; done; KEYS=
 }
 
+# A's lick port sweeps /link-done as it starts: an answer a reload left
+# behind (its save fiber ended inside the minute it waits) has no reader
+section_sweep() {
+  echo "==> sweep (/link-done on $ASHIP, across a reload of lattice)"
+  local inst="${A_URL%/}/grubbery/ball${A_INST:-/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app}"
+  done_ls() { A_ "$inst/link-done?list=1" | jq -c '[.children[].name]'; }
+  A_ -o /dev/null -X POST --data 'action=create-file&filename=orphan&blot=/noun' "$inst/link-done"
+  is "an orphan answer sits in /link-done" '["orphan"]' "$(done_ls)"
+  is "lattice reloads" yes "$(c=$(code -H "$AK" -X POST --data 'action=reload-nexus' "$inst"); [ "$c" = 200 ] || [ "$c" = 303 ] && echo yes || echo "no, $c")"
+  empty() { [ "$(done_ls)" = "[]" ] && echo "[]"; }
+  is "  ...and the port sweeps it" '[]' "$(wait_for 60 empty)"
+}
+
 trap cleanup EXIT
 cleanup
-sections=("$@"); [ ${#sections[@]} -eq 0 ] && sections=(make proxy exposure)
+sections=("$@"); [ ${#sections[@]} -eq 0 ] && sections=(make proxy exposure sweep)
 for s in "${sections[@]}"; do "section_$s"; done
 echo
 [ "$fails" -eq 0 ] && echo "two-ship-links: all passed" || echo "two-ship-links: $fails failed"

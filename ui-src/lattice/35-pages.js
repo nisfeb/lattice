@@ -383,8 +383,10 @@
   //  A save through a link (30-tree.js) claims the owner's rev this editor
   //  read, as ?base=. Unlike a page of our own, a link has nowhere to keep
   //  a replaced body, so a stale claim is refused (409) and nothing is
-  //  written. linkBase is that claim for a save of `name`, '' for a page.
-  const linkBase = (name) => (linkOf(name) ? '&base=' + (curRev || 0) : '');
+  //  written. linkBase is that claim for a save of `name`, '' for a page
+  //  (and for a link with no rev read yet: the ship then claims its cached
+  //  rev, never nothing).
+  const linkBase = (name) => (linkOf(name) && curRev ? '&base=' + curRev : '');
   //  a save through a link that did not land: the host's page moved on past
   //  what this editor read, or the host did not answer (a 502 or 504 the
   //  ship itself sent, never queued: the queue is for this ship being

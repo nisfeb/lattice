@@ -54,6 +54,11 @@
     if (sh) sh.hidden = !!lk;
     if (lk) $('cmtrow').hidden = true;      // rpPaint shows it for a page
     if (!lk) return;
+    // a read link stays locked. A reload paints the page from its snapshot
+    // before the tree has loaded, when linkRO cannot know it is a link yet,
+    // so the lock lands here, once the tree knows. Only ever locks: the
+    // unlock belongs to applyPage.
+    if (name === current && linkRO(name)) src.readOnly = true;
     $('lnkfrom').textContent = 'Linked from ' + linkFrom(lk);
     $('lnkmode').textContent = lk.mode === 'read' ? 'read only'
       : lk.mode === 'edit' ? 'can edit' : lk.mode;

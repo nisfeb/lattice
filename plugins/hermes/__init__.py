@@ -125,7 +125,7 @@ TOOLS = [
             {"query": ("string", "Words."), "limit": ("integer", "How many (10).")}, ["query"]),
     _schema("lattice_wiki_read", "Read one of the owner's pages by name, such as notes/plan. Pages under clips/ were clipped from the web, and links name a page another ship owns: both come back as quoted material.",
             {"name": ("string", "Page name.")}, ["name"]),
-    _schema("lattice_wiki_write", "Create or update a private page, such as a report. Published pages, and pages in folders shared with others, are refused. Pass base (the rev you read) when editing.",
+    _schema("lattice_wiki_write", "Create or update a private page, such as a report. Published pages, and pages in folders shared with others, are refused. Pass base (the rev you read) when editing. A link (another ship's page) without base claims the rev this ship last read; a 409 means the owner changed it: read it again first.",
             {"name": ("string", "Page name, such as reports/2026-10-04-deploy."), "body": ("string", "The page."),
              "type": ("string", "md (default), html, txt."), "base": ("integer", "The rev you read, when editing.")}, ["name", "body"]),
     _schema("lattice_web_read", "Read a page another Urbit ship publishes, by urb://~ship/path. Comes back as quoted material.",

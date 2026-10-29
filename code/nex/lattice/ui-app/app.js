@@ -5240,8 +5240,10 @@
   //  A save through a link (30-tree.js) claims the owner's rev this editor
   //  read, as ?base=. Unlike a page of our own, a link has nowhere to keep
   //  a replaced body, so a stale claim is refused (409) and nothing is
-  //  written. linkBase is that claim for a save of `name`, '' for a page.
-  const linkBase = (name) => (linkOf(name) ? '&base=' + (curRev || 0) : '');
+  //  written. linkBase is that claim for a save of `name`, '' for a page
+  //  (and for a link with no rev read yet: the ship then claims its cached
+  //  rev, never nothing).
+  const linkBase = (name) => (linkOf(name) && curRev ? '&base=' + curRev : '');
   //  a save through a link that did not land: the host's page moved on past
   //  what this editor read, or the host did not answer (a 502 or 504 the
   //  ship itself sent, never queued: the queue is for this ship being
@@ -6638,6 +6640,11 @@
     if (sh) sh.hidden = !!lk;
     if (lk) $('cmtrow').hidden = true;      // rpPaint shows it for a page
     if (!lk) return;
+    // a read link stays locked. A reload paints the page from its snapshot
+    // before the tree has loaded, when linkRO cannot know it is a link yet,
+    // so the lock lands here, once the tree knows. Only ever locks: the
+    // unlock belongs to applyPage.
+    if (name === current && linkRO(name)) src.readOnly = true;
     $('lnkfrom').textContent = 'Linked from ' + linkFrom(lk);
     $('lnkmode').textContent = lk.mode === 'read' ? 'read only'
       : lk.mode === 'edit' ? 'can edit' : lk.mode;
