@@ -34,14 +34,18 @@
   const tabEnc = (t) => JSON.stringify([t.kind, t.key, t.ship || null]);
   const tabDec = (s) => { const [kind, key, ship] = JSON.parse(s); return { kind, key, ship }; };
 
-  // what the live editor shows, as a tab would name it. null for a folder,
-  // which is a view in a tab and not a document of its own.
+  // what the live editor shows, as a tab would name it: the one editor kind
+  // whose live() claims it. null for a folder, which is a view in a tab and
+  // not a document of its own.
   const liveDoc = () => {
-    if (grubPath) return { kind: 'grub', key: grubPath, ship: grubShip || null };
-    if (mode === 'know') return { kind: 'know', key: current || '', ship: null };
-    if (curFolder !== null) return null;
-    return { kind: 'page', key: current || '', ship: null };
+    for (const [kind, k] of Object.entries(TAB_KINDS)) {
+      const d = k.live && k.live();
+      if (d) return { kind, key: d.key, ship: d.ship || null };
+    }
+    return null;
   };
+  // shows(t) for every editor kind: the live editor is this tab's document
+  const showsLive = (t) => { const d = liveDoc(); return !!d && sameDoc(t, d); };
 
   // Park: the editor's state for this tab goes into its snap, and the
   // editor is released for the next one. A page or memory first gets the
@@ -52,10 +56,19 @@
   // Only a tab whose document really is in the editor owns what is there.
   // While a slow open is still loading, the editor shows the document
   // before it, and filing that text under this tab would hand one
-  // document's words to another's autosave.
+  // document's words to another's autosave. When such text is still unsaved
+  // after the flush (a page deleted elsewhere and not yet recreated, typing
+  // in a load window), it belongs to no tab, so it gets guardDirty's
+  // question, and a cancel keeps it and the switch does not happen.
+  // Answers false then.
   async function parkDoc(t) {
+    const label = current || pname.value.trim() || 'this';
     await flushNoAsk();
-    t.snap = TAB_KINDS[t.kind].shows(t) ? {
+    const mine = TAB_KINDS[t.kind].shows(t);
+    if (dirty && !mine &&
+        !(await askConfirm('discard unsaved changes to ' + label + '?', 'discard')))
+      return false;
+    t.snap = mine ? {
       body: src.value, dirty, everTyped,
       sel: [src.selectionStart, src.selectionEnd], scroll: src.scrollTop,
       kind: curKind, pkind: pkind.value, rev: curRev, shown: pname.value,
@@ -65,19 +78,20 @@
     // whatever document comes next (autosave reads `current` when it fires).
     dirty = false;
     clearTimeout(autoTimer);
+    return true;
   }
-  const editorShows = {
-    page: (t) => !grubPath && mode !== 'know' && curFolder === null && (current || '') === t.key,
-    know: (t) => !grubPath && mode === 'know' && (current || '') === t.key,
-    grub: (t) => grubPath === t.key && (grubShip || null) === (t.ship || null),
-  };
   // The kinds of tab. switchTab and openIn only ever look a kind up here,
   // so a new kind is a new entry and nothing else.
   //   open(t)        show the document fresh, from the ship or a cache.
   //                  Answers false when that failed with nothing shown.
   //   restore(t, s)  paint a parked unsaved buffer back, with no fetch
-  //   park(t)        hand the editor back, keeping what is unsaved in t.snap
+  //   park(t)        hand the editor back, keeping what is unsaved in t.snap.
+  //                  Answers false when the user chose to stay.
   //   shows(t)       whether the editor is showing this tab's document
+  //   live()         editor kinds only: {key, ship} when the live editor
+  //                  holds a document of this kind, else null. The editor
+  //                  kinds claim mutually exclusive states. A kind without
+  //                  live() is never rewritten by tabFollow.
   //   icon, label    for the strip
   const TAB_KINDS = {
     page: {
@@ -107,7 +121,9 @@
           share: (n && n.share) || 'private' }, true);
       },
       park: parkDoc,
-      shows: editorShows.page,
+      shows: showsLive,
+      live: () => (!grubPath && mode !== 'know' && curFolder === null
+        ? { key: current || '' } : null),
     },
     know: {
       icon: 'know',
@@ -129,7 +145,8 @@
           updated: 'unsaved here' });
       },
       park: parkDoc,
-      shows: editorShows.know,
+      shows: showsLive,
+      live: () => (!grubPath && mode === 'know' ? { key: current || '' } : null),
     },
     grub: {
       icon: 'file',
@@ -157,7 +174,8 @@
         st('unsaved · press Save or Cmd+S');
       },
       park: parkDoc,
-      shows: editorShows.grub,
+      shows: showsLive,
+      live: () => (grubPath ? { key: grubPath, ship: grubShip } : null),
     },
   };
 
@@ -246,14 +264,15 @@
     } finally { tabNav--; }
   }
 
-  // park whatever is in front and bring `t` there
+  // park whatever is in front and bring `t` there. false: the user stayed
   async function tabTo(t) {
     const from = activeTab;
     if (from === t) {
       if (!TAB_KINDS[t.kind].shows(t)) showTab(t);
       return;
     }
-    if (from && tabs.includes(from)) await TAB_KINDS[from.kind].park(from);
+    if (from && tabs.includes(from) && (await TAB_KINDS[from.kind].park(from)) === false)
+      return false;
     activeTab = t;
     tabsChanged();
     showTab(t);
@@ -275,7 +294,8 @@
       if (fresh) {
         const t = mkTab(kind, key, ship);
         tabs.splice(activeTab ? tabs.indexOf(activeTab) + 1 : tabs.length, 0, t);
-        return tabTo(t);
+        if ((await tabTo(t)) === false) { tabs.splice(tabs.indexOf(t), 1); tabsChanged(); }
+        return;
       }
       if (!(await guardDirty())) return;
       // flushed, or the user said discard: either way nothing here is owed
@@ -298,7 +318,7 @@
   const closeTab = (id) => tabSerial(async () => {
     const t = tabs.find((x) => x.id === id);
     if (!t) return false;
-    if (t !== activeTab && t.snap && t.snap.dirty) await tabTo(t);
+    if (t !== activeTab && t.snap && t.snap.dirty && (await tabTo(t)) === false) return false;
     if (t === activeTab) {
       if (!(await guardDirty())) return false;
       dirty = false;
@@ -354,6 +374,8 @@
   function tabFollow() {
     if (tabNav || !activeTab) return;
     const t = activeTab;
+    // a tab that is not an editor document (no live()) keeps its identity
+    if (!TAB_KINDS[t.kind].live) return;
     if (tabLoading === t) {
       if (TAB_KINDS[t.kind].shows(t)) tabLoading = null;
       return;
@@ -436,45 +458,59 @@
   $('tabfwd').onclick = () => tabFwd();
   $('tabnew').onclick = () => tabNew();
 
+  // Each tab is two buttons side by side in one wrapper: the tab itself
+  // and its close, so the close is a real button a keyboard can reach (a
+  // button cannot sit inside another). The state classes (on, dirty,
+  // pinned) go on both: the wrapper draws the tab, the tab button is what
+  // scripts and suites address.
   function paintTabs() {
     tabList.textContent = '';
     for (const t of tabs) {
       const k = TAB_KINDS[t.kind];
+      const name = k.label(t);
+      const w = document.createElement('div');
+      w.setAttribute('role', 'presentation');
       const b = document.createElement('button');
       b.type = 'button';
-      b.className = 'dtab' + (t === activeTab ? ' on' : '') + (t.pinned ? ' pinned' : '');
+      for (const [el, base] of [[w, 'dtw'], [b, 'dtab']])
+        el.className = base + (t === activeTab ? ' on' : '') + (t.pinned ? ' pinned' : '');
       b.setAttribute('role', 'tab');
       b.setAttribute('aria-selected', t === activeTab ? 'true' : 'false');
       b.dataset.id = t.id;
       b.dataset.kind = t.kind;
       b.dataset.key = t.key;
-      b.title = (t.ship ? t.ship + ' ' : '') + (t.key || k.label(t));
+      b.title = (t.ship ? t.ship + ' ' : '') + (t.key || name);
       b.innerHTML = ico(t.pinned ? 'pin' : k.icon) + '<span class="dtn"></span>'
-        + '<span class="dtdot" aria-hidden="true"></span>'
-        + '<span class="dtx" title="Close (Ctrl+W)" aria-hidden="true">' + ico('x') + '</span>';
-      b.querySelector('.dtn').textContent = k.label(t);
-      b.onclick = (e) => {
-        if (e.target.closest('.dtx')) closeTab(t.id); else switchTab(t.id);
-      };
+        + '<span class="dtdot" aria-hidden="true"></span>';
+      b.querySelector('.dtn').textContent = name;
+      b.onclick = () => switchTab(t.id);
+      const x = tip(document.createElement('button'), 'Close ' + name);
+      x.type = 'button';
+      x.className = 'dtx';
+      x.innerHTML = ico('x');
+      x.onclick = () => closeTab(t.id);
       // a middle click closes, and must not start the browser's autoscroll
-      b.onmousedown = (e) => { if (e.button === 1) e.preventDefault(); };
-      b.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(t.id); } };
-      b.oncontextmenu = (e) => { e.preventDefault(); tabMenu(t, e.clientX, e.clientY); };
-      tabList.append(b);
+      w.onmousedown = (e) => { if (e.button === 1) e.preventDefault(); };
+      w.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(t.id); } };
+      w.oncontextmenu = (e) => { e.preventDefault(); tabMenu(t, e.clientX, e.clientY); };
+      w.append(b, x);
+      tabList.append(w);
     }
     $('tabback').disabled = !activeTab || !activeTab.back.length;
     $('tabfwd').disabled = !activeTab || !activeTab.fwd.length;
     paintTabDirty();
-    const on = tabList.querySelector('.dtab.on');
+    const on = tabList.querySelector('.dtw.on');
     if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
   // The dot. `dirty` is set by typing and cleared by four save paths, so the
   // dot is read off the state on a short beat instead of from each of them.
   function paintTabDirty() {
-    for (const b of tabList.children) {
+    for (const w of tabList.children) {
+      const b = w.firstChild;
       const t = tabs.find((x) => x.id === b.dataset.id);
-      b.classList.toggle('dirty', !!t &&
-        (t === activeTab ? dirty === true : !!(t.snap && t.snap.dirty)));
+      const on = !!t && (t === activeTab ? dirty === true : !!(t.snap && t.snap.dirty));
+      w.classList.toggle('dirty', on);
+      b.classList.toggle('dirty', on);
     }
   }
   setInterval(paintTabDirty, 400);

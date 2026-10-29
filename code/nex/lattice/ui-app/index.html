@@ -127,21 +127,27 @@ select, option { color-scheme: inherit; }
 .doctabs > .sbtn { align-self: center; }
 .doctabs > .sbtn:disabled { opacity: .35; cursor: default; background: none; }
 .dtlist { display: flex; gap: 2px; min-width: 0; overflow: auto hidden; scrollbar-width: none; }
-.dtab { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto;
-  min-width: 64px; max-width: 200px; margin-top: 4px; padding: 0 5px 0 9px;
-  border: 0; border-radius: 6px 6px 0 0; background: none; color: var(--muted);
-  font: inherit; font-size: .85rem; cursor: pointer; }
-.dtab:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
-.dtab.on { color: var(--text); background: var(--bg); }
-.dtab:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
+/* a tab is .dtw holding two buttons, the tab (.dtab) and its close (.dtx) */
+.dtw { display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 64px;
+  max-width: 200px; margin-top: 4px; padding-right: 4px; border-radius: 6px 6px 0 0;
+  color: var(--muted); }
+.dtw:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.dtw.on { color: var(--text); background: var(--bg); }
+.dtab { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0;
+  height: 100%; padding: 0 5px 0 9px; border: 0; border-radius: 6px 6px 0 0;
+  background: none; color: inherit; font: inherit; font-size: .85rem; cursor: pointer; }
+.dtab:focus-visible, .dtx:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
 .dtab .ic { width: 14px; height: 14px; flex: none; }
 .dtn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dtdot { display: none; flex: none; width: 7px; height: 7px; border-radius: 50%;
   background: var(--green); }
 .dtab.dirty .dtdot { display: inline-block; }
-.dtx { display: inline-flex; flex: none; padding: 2px; border-radius: 4px; visibility: hidden; }
-.dtab:hover .dtx, .dtab.on .dtx { visibility: visible; }
-.dtab.pinned .dtx { display: none; }
+/* faded, not hidden, off the front tab: a hidden button could not take focus */
+.dtx { display: inline-flex; flex: none; padding: 2px; border: 0; border-radius: 4px;
+  background: none; color: inherit; cursor: pointer; opacity: 0; }
+.dtx .ic { width: 14px; height: 14px; }
+.dtw:hover .dtx, .dtw.on .dtx, .dtx:focus-visible { opacity: 1; }
+.dtw.pinned .dtx { display: none; }
 .dtx:hover { background: color-mix(in srgb, var(--text) 13%, transparent); }
 .dtmenu { position: fixed; z-index: 60; display: flex; flex-direction: column;
   min-width: 150px; padding: 4px; background: var(--pane); border: 1px solid var(--border);

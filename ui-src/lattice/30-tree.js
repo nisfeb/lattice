@@ -123,7 +123,10 @@
       if (!n || (typeof n.rev === 'number' && n.rev > c.rev)) pageCache.delete(name);
     }
     snapTree();
-    renderTree();
+    // the files listing only. In knowledge mode #treelist holds the memory
+    // tree, and a dump landing late (boot with a memory tab in front loads
+    // both) must not paint pages over it. setMode('pages') paints `nodes`.
+    if (mode !== 'know') renderTree();
   }
 
   // selection changes only move the `cur` class. Never rebuild the pane's DOM

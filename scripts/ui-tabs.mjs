@@ -10,6 +10,11 @@
 //    the tab list comes back after a reload, and a corrupt one falls back to
 //      a single tab with the tree still drawn
 //    each tab's Back steps through what that tab has shown
+//    closing a dirty page tab flushes it without asking, and its close is a
+//      real, named button
+//    a dirty memory keeps its text across a switch and reaches the ship
+//    a reload with a memory tab in front shows the memory tree, never the
+//      page tree painted over it by the dump that boot also loads
 //
 //  The grub is the code grub of a page this suite seeds, so it is a real
 //  grub under the lattice desk that nothing else uses, and page-del removes
@@ -22,6 +27,7 @@ import { shipEnv, launchBrowser, openPage, makeCheck, seed, sleep } from './lib/
 const env = shipEnv();
 const RUN = 'x-' + process.pid;
 const A = RUN + '/a', B = RUN + '/b', G = RUN + '/g';
+const K = RUN + '/m';   // a memory
 
 const check = makeCheck();
 const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
@@ -68,6 +74,8 @@ const typeEnd = async (text) => {
 let grub = null;
 try {
   await seed(env, [[A, 'page a\n'], [B, 'page b\n'], [G, 'scratch grub\n']]);
+  await fetch(env.base + '/apps/lattice/know-save?key=' + encodeURIComponent(K),
+    { method: 'POST', headers: { Cookie: env.cookie }, body: 'memory m\n' });
   const base = (await (await fetch(env.base + '/apps/lattice/streams',
     { headers: { Cookie: env.cookie } })).json()).base;
   grub = base + '/page/' + G + '/code';
@@ -216,6 +224,56 @@ try {
   await sleep(800);
   s = await state();
   check('a middle click closes a tab', s.tabs.length === 1 && s.tabs[0].key === B, JSON.stringify(s));
+
+  // ── closing a dirty page tab flushes it, and nothing is lost ──────────
+  await page.keyboard.down('Control');
+  await page.click(row(A));
+  await page.keyboard.up('Control');
+  await waitOn('page', A);
+  const xb = await page.evaluate((k) => {
+    const x = document.querySelector(`#doctabs .dtab[data-key="${k}"] + button.dtx`);
+    return x && { label: x.getAttribute('aria-label'), title: x.title, focusable: x.tabIndex >= 0 };
+  }, A);
+  check('the close is a real button named for its tab',
+    !!xb && xb.label === 'Close a' && xb.title === xb.label && xb.focusable, JSON.stringify(xb));
+  await typeEnd('CCC');
+  await page.click(`#doctabs .dtab[data-key="${A}"] + button.dtx`);
+  //  the close waits for the flush, one save round trip
+  await page.waitForFunction(() => window.latTabs.state().tabs.length === 1, { timeout: 40000 })
+    .catch(() => {});
+  s = await state();
+  const askedA = await page.evaluate(() => !document.getElementById('dlg').hidden);
+  const ca = await body(A);
+  check('closing a dirty page tab flushes it, without asking',
+    !askedA && s.tabs.length === 1 && ca.includes('CCC'), JSON.stringify({ s, ca, askedA }));
+
+  // ── a dirty memory across a switch ─────────────────────────────────────
+  await page.evaluate((k) => window.latTabs.openIn('know', k, { newTab: true }), K);
+  check('a memory opens in its own tab', await waitOn('know', K), JSON.stringify(await state()));
+  await typeEnd('MMM');
+  await sleep(150);
+  await page.click(tabSel('page', B));
+  await waitOn('page', B);
+  await page.click(tabSel('know', K));
+  await waitOn('know', K);
+  const mtext = await page.evaluate(() => document.getElementById('src').value);
+  await sleep(2000);
+  const mship = ((await shipGet('know-read?key=' + encodeURIComponent(K))) || {}).body || '';
+  check('a dirty memory keeps its text across a switch, and it is saved',
+    mtext.includes('MMM') && mship.includes('MMM'), JSON.stringify({ mtext, mship }));
+
+  // ── a reload with a memory tab in front shows memories ────────────────
+  await sleep(2500);
+  await boot(page.url());
+  await waitOn('know', K);
+  await sleep(8000);   // past the page dump boot also loads
+  const tree = await page.evaluate(() => ({
+    sec: document.getElementById('treesec').textContent,
+    pages: document.querySelectorAll('#treelist a.pg[href*="name="]').length,
+    mem: [...document.querySelectorAll('#treelist a.pg')].some((a) => a.textContent === 'm'),
+  }));
+  check('reload with a memory tab in front shows the memory tree',
+    tree.sec === 'memories' && tree.pages === 0 && tree.mem, JSON.stringify(tree));
 } catch (e) {
   check('suite crashed: ' + e.message, false);
 } finally {
@@ -225,5 +283,7 @@ try {
   for (const n of [A, B, G, RUN])
     await fetch(env.base + '/apps/lattice/page-del?name=' + encodeURIComponent(n),
       { method: 'POST', headers: { Cookie: env.cookie } }).catch(() => {});
+  await fetch(env.base + '/apps/lattice/know-delete?key=' + encodeURIComponent(K),
+    { method: 'POST', headers: { Cookie: env.cookie } }).catch(() => {});
 }
 check.done();
