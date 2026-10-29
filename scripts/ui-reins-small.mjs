@@ -3,6 +3,8 @@
 //
 //    the Files and Knowledge trees are ARIA trees the arrow keys walk, Enter
 //      opens a page (Ctrl+Enter in a new tab) and Ctrl+Shift+E focuses Files
+//    the discard dialog for a long grub path (a shared page's) wraps the
+//      path and keeps its buttons inside the box, at desktop and phone width
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           node scripts/ui-reins-small.mjs
@@ -13,7 +15,10 @@ const check = makeCheck();
 const RUN = 'reins-' + process.pid;
 const PA = RUN + '/a';
 const PB = RUN + '/sub/b';
-const made = [PA, PB];
+const LONG = RUN + '/a-really-long-page-name-that-keeps-going-and-going-past-the-dialog-edge';
+const made = [PA, PB, LONG];
+//  screenshots for the report, when asked for
+const SHOTS = process.env.REINS_SHOTS || '';
 const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
 const page = await openPage(browser, env, {
   viewport: { width: 1400, height: 900 },
@@ -45,7 +50,7 @@ const press = async (k, mods = []) => {
 };
 
 try {
-  await seed(env, [[PA, '# a\n'], [PB, '# b\n']]);
+  await seed(env, [[PA, '# a\n'], [PB, '# b\n'], [LONG, 'long\n']]);
   await page.goto(env.app + '/no-such-asset', { timeout: 30000 });
   await page.evaluate(() => {
     for (const k of ['appNT', 'appNC', 'appLTab', 'appRTab', 'appTabs', 'appColl']) localStorage.removeItem(k);
@@ -121,6 +126,48 @@ try {
   const st2 = await page.evaluate(() => window.latTabs.state());
   check('Ctrl+Enter opens it in a new tab',
     st2.tabs.length === n1 + 1 && st2.tabs[st2.active].key === PB, JSON.stringify(st2));
+
+  // ── 2. the discard dialog stays inside the viewport ────────────────────
+  // A grub opened by ship, the way a shared-with-me page opens, made
+  // dirty, then left: guardDirty asks with the whole grub path.
+  for (const vp of [{ width: 1400, height: 900, tag: 'desktop' },
+    { width: 390, height: 844, isMobile: true, hasTouch: true, tag: 'phone' }]) {
+    const p = await openPage(browser, env, { viewport: vp });
+    await boot(p);
+    const base = await p.evaluate(() => localStorage.latBase);
+    await p.evaluate(async (g) => window.latTabs.openIn('grub', g,
+      { ship: (await (await fetch('/~/host')).text()).trim() }), base + '/page/' + LONG + '/code');
+    await sleep(2500);
+    await p.evaluate(() => {
+      const s = document.getElementById('src');
+      s.value += 'x';
+      s.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await sleep(300);
+    p.evaluate(() => window.latTabs.openIn('page', '', {}));
+    await sleep(1200);
+    const g = await p.evaluate(() => {
+      const r = (s) => document.querySelector(s).getBoundingClientRect();
+      const box = r('.dlgbox'), msg = r('#dlgmsg'), ok = r('#dlgok'), no = r('#dlgcancel');
+      const inside = (x) => x.left >= box.left - 0.5 && x.right <= box.right + 0.5
+        && x.top >= box.top - 0.5 && x.bottom <= box.bottom + 0.5;
+      return {
+        shown: !document.getElementById('dlg').hidden,
+        long: document.getElementById('dlgmsg').textContent.length > 120,
+        inView: box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight,
+        msgIn: inside(msg), okIn: inside(ok), noIn: inside(no),
+        box: [box.left, box.right, innerWidth].map(Math.round),
+      };
+    });
+    if (SHOTS) await p.screenshot({ path: SHOTS + '/dialog-' + vp.tag + '.png' });
+    check('the discard dialog asks with the long path (' + vp.tag + ')', g.shown && g.long, JSON.stringify(g));
+    check('the dialog fits the viewport (' + vp.tag + ')', g.inView, JSON.stringify(g));
+    check('the path wraps inside the box (' + vp.tag + ')', g.msgIn, JSON.stringify(g));
+    check('both buttons sit inside the box (' + vp.tag + ')', g.okIn && g.noIn, JSON.stringify(g));
+    await p.evaluate(() => document.getElementById('dlgok').click());
+    await sleep(500);
+    await p.close();
+  }
 } catch (e) {
   check('threw: ' + String(e.message).slice(0, 140), false);
 } finally {
