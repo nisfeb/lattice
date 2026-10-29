@@ -392,7 +392,7 @@
       const doc = current, shown = pname.value;
       const own = fixed || (creating ? { name, body: src.value,
         kind: kindOverride || curKind || pkind.value, rn: newRn,
-        existed: madePage(name) } : null);
+        existed: madePage(name), tab: activeTab && activeTab.id } : null);
       if (creating && !fixed) newRn = null;
       queueSave(() => {
         if (own && !own.existed && madePage(own.name)) {
@@ -470,7 +470,8 @@
       if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
       // same stillHere guard as the online path: only touch live editor state
       // if the editor has not moved to another document during the round-trip.
-      const stillHere = !fixed && (current === name || createdHere(creating, name));
+      const stillHere = fixed ? tabAdopt(fixed, name)
+        : current === name || createdHere(creating, name);
       if (stillHere) {
         current = name;
         tabFollow();         // a new page's tab is named now (21-tabs.js)
@@ -480,7 +481,7 @@
         else if (!savePending) savePending = true;
         history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
         cerr.textContent = 'saved offline'; cerr.className = 'ok';
-      } else if (fixed) tabAdopt(fixed.name, name);
+      }
       flushPending();
       return;
     }
@@ -498,7 +499,11 @@
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
     // name field, dirty or the URL here would brand the new page as this save.
-    const stillHere = !fixed && (current === name || createdHere(creating, name));
+    //  A create run from the queue (`fixed`) is still here only when its
+    //  own tab came back to the front, unnamed, during the round trip;
+    //  in the background that tab is named for it instead (tabAdopt).
+    const stillHere = fixed ? tabAdopt(fixed, name)
+      : current === name || createdHere(creating, name);
     if (stillHere) {
       current = name;
       tabFollow();           // a new page's tab is named now (21-tabs.js)
@@ -514,7 +519,7 @@
       history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
       if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
       else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
-    } else if (fixed) tabAdopt(fixed.name, name);   // the tab it was made in (21-tabs.js)
+    }
     flushPending();
     if (offCount) replayQueue(true);     // back online: drain the backlog
   }

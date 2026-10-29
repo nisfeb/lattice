@@ -48,7 +48,19 @@
       ['save', 'discard']);
     if (pick === 'discard') return true;
     if (pick !== 'save') return false;
-    if (!saving) { if (mode === 'know') await saveKnow(); else await save(); }
+    return saveNow();
+  }
+  // saveNow: the save an answer of "save" asks for. A save already in
+  // flight is waited out first (it may be this very text), then the front
+  // document's own explicit save runs. Answers whether the buffer is clean.
+  // Never a silent no-op: a failed save has said why, and a flight still
+  // running past the cap says so here.
+  async function saveNow() {
+    await waitSave();
+    if (!dirty) return true;
+    if (saving) { st('a save is still running, try again', false); return false; }
+    if (grubPath) await saveGrub(); else if (mode === 'know') await saveKnow(); else await save();
+    await waitSave();
     return !dirty;
   }
   // flushNoAsk: guardDirty's flush without its question, answering whether
@@ -77,9 +89,7 @@
     //  `dirty`, and waking in that gap offered to discard a save that was
     //  about to succeed. Capped past tfetch's 30s, since a grub save holds
     //  `saving` with no timeout of its own.
-    const t0 = Date.now();
-    while (saving && Date.now() - t0 < 35000)
-      await (saveFlight || new Promise((r) => setTimeout(r, 50)));
+    await waitSave();
     if (!dirty) return true;
     // still dirty and nothing is in flight: the wait either never started or
     // timed out with the buffer untouched. Only now is a flush worth trying.
@@ -87,6 +97,11 @@
       if (mode === 'know') await saveKnow(); else await save();
     }
     return !dirty;
+  }
+  async function waitSave() {
+    const t0 = Date.now();
+    while (saving && Date.now() - t0 < 35000)
+      await (saveFlight || new Promise((r) => setTimeout(r, 50)));
   }
   // setOpen: what the tab header says is open, set in one place. `name` becomes
   // `current`, the open page or memory, or null when nothing named is open

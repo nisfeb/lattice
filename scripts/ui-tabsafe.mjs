@@ -387,6 +387,84 @@ try {
     };
     check('F1: Ctrl+S twice during a queued create says nothing about a page existing',
       f1b.created && f1b.tab.key === F1D && !f1b.sts.length, JSON.stringify(f1b));
+
+    //  the tab comes back while its queued create is still on the wire
+    await boot();
+    await page.evaluate((q) => { window.latTabs.openIn('page', q, { newTab: true }); }, Q);
+    await waitOn('page', Q);
+    await page.evaluate((p) => { window.latTabs.openIn('page', p, { newTab: true }); }, P);
+    await waitOn('page', P);
+    await stWatch();
+    const F1E = RUN + '/f1-e', F1F = RUN + '/f1-f';
+    cleanup.push(F1E, F1F);
+    rule = (r) => (!/\/page-save\?/.test(r.url()) ? null
+      : r.url().includes(encodeURIComponent(F1E)) ? 3000
+      : r.url().includes(encodeURIComponent(F1F)) ? 5000 : null);
+    seen.length = 0;
+    await newPage(F1E);
+    await newPage(F1F);
+    const fid = (await front()).id;
+    await page.click(tabSel('page', Q));
+    await waitOn('page', Q);
+    for (let i = 0; i < 60 && !seen.some((u) => u.includes(encodeURIComponent(F1F))); i++) await sleep(250);
+    const inFlight = seen.some((u) => u.includes(encodeURIComponent(F1F)));
+    await page.evaluate((id) => window.latTabs.switchTab(id), fid);
+    await until((n) => document.getElementById('pname').value === n, F1F, 10000);
+    let f = null;
+    for (let i = 0; i < 40 && f === null; i++) { await sleep(500); f = await pageBody(F1F); }
+    await sleep(1500);
+    rule = null;
+    const tabF = await front();
+    await typeEnd('F1CTYPED');
+    await page.keyboard.down('Control');
+    await page.keyboard.press('KeyS');
+    await page.keyboard.up('Control');
+    await sleep(4000);
+    const f1c = {
+      inFlight, created: f !== null, tab: tabF, body: await pageBody(F1F),
+      sts: await page.evaluate(() => window.__sts.filter((s) => /already exists/.test(s))),
+    };
+    check('F1: a tab back in front while its queued create lands is named, and saves update it',
+      f1c.inFlight && f1c.created && tabF.id === fid && tabF.key === F1F
+      && (f1c.body || '').includes('F1CTYPED') && !f1c.sts.length, JSON.stringify(f1c));
+
+    //  two unnamed tabs showing the same name: only the one the create was
+    //  queued from becomes the page's tab
+    await boot();
+    await page.evaluate((q) => { window.latTabs.openIn('page', q, { newTab: true }); }, Q);
+    await waitOn('page', Q);
+    const F1G = RUN + '/f1-g', F1H = RUN + '/f1-h';
+    cleanup.push(F1G, F1H);
+    await page.evaluate(() => document.getElementById('tabnew').click());
+    await dlgUp();
+    await page.evaluate(() => document.getElementById('dlgcancel').click());
+    await until(() => { const s = window.latTabs.state(); return s.tabs[s.active].kind === 'page'
+      && !s.tabs[s.active].key; });
+    const t2 = (await front()).id;
+    await page.evaluate((n) => {
+      const f = document.getElementById('pname');
+      f.value = n;
+      f.dispatchEvent(new Event('input'));
+    }, F1G);
+    rule = (r) => (/\/page-save\?/.test(r.url()) && r.url().includes(encodeURIComponent(F1H)) ? 4000 : null);
+    await page.evaluate(() => document.getElementById('tabnew').click());
+    await dlgUp();
+    await dlgAnswer(F1H, 'md');
+    await until(() => document.getElementById('dlg').hidden, null, 8000);
+    await newPage(F1G);
+    const t1 = (await front()).id;
+    await page.click(tabSel('page', Q));
+    await waitOn('page', Q);
+    let g = null;
+    for (let i = 0; i < 40 && g === null; i++) { await sleep(500); g = await pageBody(F1G); }
+    await sleep(1000);
+    rule = null;
+    const sg = await state();
+    const f1d = { created: g !== null, t1: sg.tabs.find((t) => t.id === t1),
+      t2: sg.tabs.find((t) => t.id === t2), t1id: t1, t2id: t2 };
+    check('F1: the create names the tab it was queued from, not another showing its name',
+      f1d.created && t1 !== t2 && f1d.t1 && f1d.t1.key === F1G && f1d.t2 && f1d.t2.key === '',
+      JSON.stringify(f1d));
   }
 
   if (on('F2')) {
@@ -467,6 +545,28 @@ try {
       asked2 && (more || '').includes('F2MORE') && gone,
       JSON.stringify({ asked2, more: (more || '').slice(0, 40), gone }));
     rule = null;
+
+    //  leaving with a dirty tab parked offers save all, which saves it
+    await page.evaluate((p) => { window.latTabs.openIn('page', p, { newTab: true }); }, P);
+    await waitOn('page', P);
+    await typeEnd('F2ALL');
+    await page.click(tabSel('page', Q));
+    await waitOn('page', Q);
+    await page.evaluate(() => document.getElementById('rb-browser').click());
+    const aAsk = await dlgUp();
+    const aOpts = await page.evaluate(() => (document.getElementById('dlgopts').hidden ? []
+      : [...document.querySelectorAll('#dlgopts [data-val]')].map((b) => b.dataset.val)));
+    await page.evaluate(() => {
+      const b = document.querySelector('#dlgopts [data-val="save all"]');
+      if (b) b.click(); else document.getElementById('dlgcancel').click();
+    });
+    //  the url, not waitForNavigation: that also fires on replaceState
+    let left = false;
+    for (let i = 0; i < 160 && !left; i++) { await sleep(250); left = !page.url().includes('/apps/lattice/app'); }
+    const all = await pageBody(P);
+    check('F2: leaving with a parked dirty tab offers save all, which saves it, then leaves',
+      aAsk && aOpts.includes('save all') && aOpts.includes('discard') && left
+      && (all || '').includes('F2ALL'), JSON.stringify({ aAsk, aOpts, left, url: page.url(), all: (all || '').slice(-20) }));
     await page.evaluate(() => localStorage.removeItem('latAutosave'));
   }
 } catch (e) {

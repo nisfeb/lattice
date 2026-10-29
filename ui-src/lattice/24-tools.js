@@ -171,14 +171,30 @@
   // guardDirty, and the parked tabs holding unsaved work get one question
   // naming them. Once the user has said discard, nothing is owed, so the
   // unload guard (35-pages.js) does not ask a second time.
+  // With autosave off the parked tabs hold ordinary unsaved pages, so the
+  // question offers to save them all, each brought forward and saved in
+  // turn. One that does not save stops the leaving, with it in front.
   const leaveThen = (go) => tabSerial(async () => {
     if (!(await guardDirty())) return;
     const bg = tabs.filter((t) => t !== activeTab && t.snap && t.snap.dirty);
-    if (bg.length && !(await askConfirm('discard unsaved changes to '
-      + bg.map((t) => TAB_KINDS[t.kind].label(t)).join(', ') + '?', 'discard'))) return;
+    const names = bg.map((t) => TAB_KINDS[t.kind].label(t)).join(', ');
+    if (bg.length && autosaveOn()) {
+      if (!(await askConfirm('discard unsaved changes to ' + names + '?', 'discard'))) return;
+    } else if (bg.length) {
+      const pick = await askChoice('unsaved changes to ' + names + '. save them?',
+        ['save all', 'discard']);
+      if (pick === null) return;
+      if (pick === 'save all') {
+        for (const t of bg) {
+          if ((await tabTo(t)) === false) return;
+          if (!(await saveNow())) return;
+        }
+      }
+    }
     dirty = false;
     clearTimeout(autoTimer);
-    for (const t of bg) t.snap.dirty = false;
+    //  a saved tab came to the front, where it has no snap
+    for (const t of bg) if (t.snap) t.snap.dirty = false;
     await go();
   });
   const leaveTo = (url) => leaveThen(() => { location.href = url; });

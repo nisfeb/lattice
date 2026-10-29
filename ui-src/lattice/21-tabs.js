@@ -408,18 +408,24 @@
     tabsChanged();
   }
   // a create that ran from the queue after its tab was left (save(),
-  // 35-pages.js): the new-page tab parked under the name it was created
-  // as is that page's tab now. Named, it opens the page when it comes back
+  // 35-pages.js). `own.tab` is the tab it was queued from, and only that
+  // tab, still unnamed and still showing the name it was created as, is
+  // the page's tab now. Named, it opens the page when it comes back
   // (current set), so its later saves update the page instead of creating
   // it again, which the ship refuses as a page that already exists.
-  function tabAdopt(typed, name) {
+  // true: that tab is in front again, so the editor is on the page and
+  // save() takes it as still here.
+  function tabAdopt(own, name) {
     const trim = (v) => v.trim().replace(/^\/+|\/+$/g, '');
-    const t = tabs.find((x) => x !== activeTab && x.kind === 'page' && !x.key
-      && x.snap && trim(x.snap.shown || '') === typed);
-    if (!t) return;
+    const t = tabs.find((x) => x.id === own.tab);
+    if (!t || t.kind !== 'page' || t.key) return false;
+    if (t === activeTab)
+      return showsLive(t) && current === null && trim(pname.value) === own.name;
+    if (!t.snap || trim(t.snap.shown || '') !== own.name) return false;
     t.key = name;
     t.snap.shown = name;
     tabsChanged();
+    return false;
   }
   // a move or rename: tabs naming the old path, or anything under it, name
   // the new one, so a parked buffer is never saved back to where it was

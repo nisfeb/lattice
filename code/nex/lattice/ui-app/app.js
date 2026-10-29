@@ -1457,7 +1457,19 @@
       ['save', 'discard']);
     if (pick === 'discard') return true;
     if (pick !== 'save') return false;
-    if (!saving) { if (mode === 'know') await saveKnow(); else await save(); }
+    return saveNow();
+  }
+  // saveNow: the save an answer of "save" asks for. A save already in
+  // flight is waited out first (it may be this very text), then the front
+  // document's own explicit save runs. Answers whether the buffer is clean.
+  // Never a silent no-op: a failed save has said why, and a flight still
+  // running past the cap says so here.
+  async function saveNow() {
+    await waitSave();
+    if (!dirty) return true;
+    if (saving) { st('a save is still running, try again', false); return false; }
+    if (grubPath) await saveGrub(); else if (mode === 'know') await saveKnow(); else await save();
+    await waitSave();
     return !dirty;
   }
   // flushNoAsk: guardDirty's flush without its question, answering whether
@@ -1486,9 +1498,7 @@
     //  `dirty`, and waking in that gap offered to discard a save that was
     //  about to succeed. Capped past tfetch's 30s, since a grub save holds
     //  `saving` with no timeout of its own.
-    const t0 = Date.now();
-    while (saving && Date.now() - t0 < 35000)
-      await (saveFlight || new Promise((r) => setTimeout(r, 50)));
+    await waitSave();
     if (!dirty) return true;
     // still dirty and nothing is in flight: the wait either never started or
     // timed out with the buffer untouched. Only now is a flush worth trying.
@@ -1496,6 +1506,11 @@
       if (mode === 'know') await saveKnow(); else await save();
     }
     return !dirty;
+  }
+  async function waitSave() {
+    const t0 = Date.now();
+    while (saving && Date.now() - t0 < 35000)
+      await (saveFlight || new Promise((r) => setTimeout(r, 50)));
   }
   // setOpen: what the tab header says is open, set in one place. `name` becomes
   // `current`, the open page or memory, or null when nothing named is open
@@ -2131,18 +2146,24 @@
     tabsChanged();
   }
   // a create that ran from the queue after its tab was left (save(),
-  // 35-pages.js): the new-page tab parked under the name it was created
-  // as is that page's tab now. Named, it opens the page when it comes back
+  // 35-pages.js). `own.tab` is the tab it was queued from, and only that
+  // tab, still unnamed and still showing the name it was created as, is
+  // the page's tab now. Named, it opens the page when it comes back
   // (current set), so its later saves update the page instead of creating
   // it again, which the ship refuses as a page that already exists.
-  function tabAdopt(typed, name) {
+  // true: that tab is in front again, so the editor is on the page and
+  // save() takes it as still here.
+  function tabAdopt(own, name) {
     const trim = (v) => v.trim().replace(/^\/+|\/+$/g, '');
-    const t = tabs.find((x) => x !== activeTab && x.kind === 'page' && !x.key
-      && x.snap && trim(x.snap.shown || '') === typed);
-    if (!t) return;
+    const t = tabs.find((x) => x.id === own.tab);
+    if (!t || t.kind !== 'page' || t.key) return false;
+    if (t === activeTab)
+      return showsLive(t) && current === null && trim(pname.value) === own.name;
+    if (!t.snap || trim(t.snap.shown || '') !== own.name) return false;
     t.key = name;
     t.snap.shown = name;
     tabsChanged();
+    return false;
   }
   // a move or rename: tabs naming the old path, or anything under it, name
   // the new one, so a parked buffer is never saved back to where it was
@@ -2985,14 +3006,30 @@
   // guardDirty, and the parked tabs holding unsaved work get one question
   // naming them. Once the user has said discard, nothing is owed, so the
   // unload guard (35-pages.js) does not ask a second time.
+  // With autosave off the parked tabs hold ordinary unsaved pages, so the
+  // question offers to save them all, each brought forward and saved in
+  // turn. One that does not save stops the leaving, with it in front.
   const leaveThen = (go) => tabSerial(async () => {
     if (!(await guardDirty())) return;
     const bg = tabs.filter((t) => t !== activeTab && t.snap && t.snap.dirty);
-    if (bg.length && !(await askConfirm('discard unsaved changes to '
-      + bg.map((t) => TAB_KINDS[t.kind].label(t)).join(', ') + '?', 'discard'))) return;
+    const names = bg.map((t) => TAB_KINDS[t.kind].label(t)).join(', ');
+    if (bg.length && autosaveOn()) {
+      if (!(await askConfirm('discard unsaved changes to ' + names + '?', 'discard'))) return;
+    } else if (bg.length) {
+      const pick = await askChoice('unsaved changes to ' + names + '. save them?',
+        ['save all', 'discard']);
+      if (pick === null) return;
+      if (pick === 'save all') {
+        for (const t of bg) {
+          if ((await tabTo(t)) === false) return;
+          if (!(await saveNow())) return;
+        }
+      }
+    }
     dirty = false;
     clearTimeout(autoTimer);
-    for (const t of bg) t.snap.dirty = false;
+    //  a saved tab came to the front, where it has no snap
+    for (const t of bg) if (t.snap) t.snap.dirty = false;
     await go();
   });
   const leaveTo = (url) => leaveThen(() => { location.href = url; });
@@ -4979,7 +5016,7 @@
       const doc = current, shown = pname.value;
       const own = fixed || (creating ? { name, body: src.value,
         kind: kindOverride || curKind || pkind.value, rn: newRn,
-        existed: madePage(name) } : null);
+        existed: madePage(name), tab: activeTab && activeTab.id } : null);
       if (creating && !fixed) newRn = null;
       queueSave(() => {
         if (own && !own.existed && madePage(own.name)) {
@@ -5057,7 +5094,8 @@
       if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
       // same stillHere guard as the online path: only touch live editor state
       // if the editor has not moved to another document during the round-trip.
-      const stillHere = !fixed && (current === name || createdHere(creating, name));
+      const stillHere = fixed ? tabAdopt(fixed, name)
+        : current === name || createdHere(creating, name);
       if (stillHere) {
         current = name;
         tabFollow();         // a new page's tab is named now (21-tabs.js)
@@ -5067,7 +5105,7 @@
         else if (!savePending) savePending = true;
         history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
         cerr.textContent = 'saved offline'; cerr.className = 'ok';
-      } else if (fixed) tabAdopt(fixed.name, name);
+      }
       flushPending();
       return;
     }
@@ -5085,7 +5123,11 @@
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
     // name field, dirty or the URL here would brand the new page as this save.
-    const stillHere = !fixed && (current === name || createdHere(creating, name));
+    //  A create run from the queue (`fixed`) is still here only when its
+    //  own tab came back to the front, unnamed, during the round trip;
+    //  in the background that tab is named for it instead (tabAdopt).
+    const stillHere = fixed ? tabAdopt(fixed, name)
+      : current === name || createdHere(creating, name);
     if (stillHere) {
       current = name;
       tabFollow();           // a new page's tab is named now (21-tabs.js)
@@ -5101,7 +5143,7 @@
       history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
       if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
       else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
-    } else if (fixed) tabAdopt(fixed.name, name);   // the tab it was made in (21-tabs.js)
+    }
     flushPending();
     if (offCount) replayQueue(true);     // back online: drain the backlog
   }
