@@ -105,6 +105,23 @@ try {
   check('plain click focuses the tab already showing it', back && s.tabs.length === 2,
     JSON.stringify(s));
 
+  // ── Edit / Read is per tab ─────────────────────────────────────────────
+  const vis = () => page.evaluate(() => {
+    const w = (s) => Math.round(document.querySelector(s).getBoundingClientRect().width);
+    return { ed: w('.edwrap'), pv: w('.prevwrap') };
+  });
+  await page.click('#tread button[data-r="1"]');
+  await sleep(300);
+  await page.click(tabSel('page', B));
+  await waitOn('page', B);
+  const vb = await vis();
+  await page.click(tabSel('page', A));
+  await waitOn('page', A);
+  const va = await vis();
+  check('edit/read per tab: B is still in Edit, A kept Read',
+    vb.ed > 0 && vb.pv === 0 && va.ed === 0 && va.pv > 0, JSON.stringify({ va, vb }));
+  await page.click('#tread button[data-r="0"]');
+
   // ── switching inside the autosave window keeps both ───────────────────
   await typeEnd('AAA');
   await sleep(150);

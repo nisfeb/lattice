@@ -32,52 +32,16 @@
       if ([...row.children].every((c) => c.hidden)) row.hidden = true;
     }
 
-    // ── the bar's name field becomes a label ────────────────────────────────
+    // ── the name field gives way to the tab header's path ───────────────────
     // Typing a path into a text box is how you named a page when there was
-    // nowhere else to do it. Creation lives in the File menu now, so the bar
-    // can just say which page is open — centred, and not something you can
-    // edit by accident mid-sentence.
+    // nowhere else to do it. Creation lives in the File menu now, and the tab
+    // header (23-tabhead.js) says which page is open and moves it.
     //
-    // Both controls stay in the DOM and keep their values. Everything reads
-    // pname.value and pkind.value — save, applyPage, the share flow, the
-    // matrix — and rewriting all of that to read from somewhere else would be
-    // a much larger change than this is worth.
+    // The field and the picker stay in the DOM and keep their values.
+    // Everything reads pname.value and pkind.value, and rewriting all of that
+    // to read from somewhere else would be a much larger change than this is
+    // worth.
     ws.classList.add('deskbar');
-    const label = document.createElement('div');
-    label.id = 'pathlabel';
-    label.setAttribute('aria-live', 'polite');
-    pname.after(label);
-    const paint = () => {
-      const v = (pname.value || '').trim();
-      label.textContent = v || 'no page open';
-      label.className = v ? '' : 'muted';
-      label.title = v ? v + ' · ' + (pkind.value || '') : '';
-      // The label floats over the bar's centre, so its width is measured,
-      // not guessed: as wide as it can be while centred and clear of the
-      // buttons on either side.
-      const bar = label.parentElement.getBoundingClientRect();
-      const mid = bar.left + bar.width / 2;
-      let right = bar.right;
-      for (let e = label.parentElement.querySelector('.grow')?.nextElementSibling; e; e = e.nextElementSibling) {
-        const r = e.getBoundingClientRect();
-        if (r.width) right = Math.min(right, r.left);
-      }
-      // the status line moved to the status bar (13-frame.js), so the
-      // left limit is the home link now
-      const left = label.parentElement.querySelector('.home').getBoundingClientRect().right;
-      const half = Math.max(0, Math.min(mid - left, right - mid) - 12);
-      label.style.maxWidth = 'min(' + (2 * half) + 'px, 60ch)';
-    };
-    addEventListener('resize', paint);
-    paint();
-    // No poll. Assigning pname.value fires no event, which is why this used
-    // to check twice a second, but every writer now goes through setOpen
-    // (20-state.js), which dispatches 'input' on the field, and typing
-    // fires it natively. The kind in the tip changes by hand ('change' on
-    // the picker), inside setOpen, or just before one; openGrub, which
-    // learns its kind only after the fetch, dispatches the same event.
-    pname.addEventListener('input', paint);
-    pkind.addEventListener('change', paint);
   }
 
   // ── naming a new page when the name field is not on screen ───────────────

@@ -91,11 +91,21 @@ check('capabilities grant no command the handler lacks', ghostGrants.length === 
 //  ship, so in practice it never ran.)
 const appJs = readFileSync(join(here, '..', 'code', 'nex', 'lattice', 'ui-app', 'app.js'), 'utf8');
 const menu = [...main.matchAll(/"((?:file|view)-[a-z-]+)" => "([a-z]+)"/g)];
-check('the native menu maps its items to page elements', menu.length >= 11,
+check('the native menu maps its items to page elements', menu.length >= 8,
   'found ' + menu.length + ' mappings in src/main.rs');
 for (const [, item, id] of menu) {
   check('menu ' + item + ' clicks #' + id + ', which the shipped UI has',
     appJs.includes('id="' + id + '"'));
 }
+
+//  The view menu has no split: Edit and Read are the tab header's two
+//  states (23-tabhead.js). Those two items call latSetRead instead of
+//  clicking a button, and the page must expose that function.
+check('the view menu has no split item', !main.includes('view-split'));
+for (const [item, arg] of [['view-editor', 'false'], ['view-preview', 'true']]) {
+  const m = main.match(new RegExp('"' + item + '"\\s*=>\\s*\\{?\\s*[^;]*latSetRead\\(' + arg + '\\)'));
+  check('menu ' + item + ' calls latSetRead(' + arg + ')', !!m);
+}
+check('the shipped UI exposes window.latSetRead', appJs.includes('window.latSetRead'));
 
 check.done();

@@ -1,0 +1,181 @@
+  // ── tab header ───────────────────────────────────────────────────────────
+  // Between the tab strip and the document: Back and Forward, the path of
+  // what is open, Edit / Read, and the page menu. The old bar's controls
+  // stay in the DOM, hidden, because they are the stores and the handlers
+  // these buttons call (#pname, #pkind, #mv, #del, #texconv).
+  //
+  // Edit and Read are one choice per tab, kept on the tab (`read`, which
+  // 21-tabs.js persists). There is no split: Edit hides the preview, Read
+  // hides the editor.
+  const tabHead = document.createElement('div');
+  tabHead.id = 'tabhead';
+  tabHead.className = 'tabhead';
+  tabHead.innerHTML =
+    sbtn('id="tback"', 'left', 'Back', 'Alt+Left') +
+    sbtn('id="tfwd"', 'right', 'Forward', 'Alt+Right') +
+    '<button type="button" id="tpath" class="tpath"></button>' +
+    '<div id="tread" class="tread" role="group" aria-label="Edit or Read">' +
+      '<button type="button" data-r="0">' + ico('pen') + 'Edit</button>' +
+      '<button type="button" data-r="1">' + ico('eye') + 'Read</button>' +
+    '</div>' +
+    sbtn('id="tmenu" aria-haspopup="menu"', 'dots', 'Page menu');
+  $('center').insertBefore(tabHead, $('docarea'));
+  for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
+  $('tback').onclick = () => tabBack();
+  $('tfwd').onclick = () => tabFwd();
+  // the move / rename flow of the controls pane, unchanged
+  $('tpath').onclick = () => $('mv').click();
+
+  // Read for the tab in front. Entering it shows the preview, which skipped
+  // its renders while off screen (60-preview.js)
+  function applyRead() {
+    const on = !!(activeTab && activeTab.read);
+    const was = ws.classList.contains('ve');
+    ws.classList.toggle('ve', !on);
+    ws.classList.toggle('vp', on);
+    for (const b of $('tread').children) {
+      const p = (b.dataset.r === '1') === on;
+      b.classList.toggle('on', p);
+      b.setAttribute('aria-pressed', p ? 'true' : 'false');
+    }
+    if (on && was) showPreview();
+    // the vim indicator reads PREVIEW in Read
+    if (window.latVimSetInd) window.latVimSetInd();
+  }
+  function setRead(on) {
+    if (!activeTab) return;
+    activeTab.read = !!on;
+    tabsSave();
+    applyRead();
+  }
+  for (const b of $('tread').children) b.onclick = () => setRead(b.dataset.r === '1');
+  const toggleRead = () => setRead(!(activeTab && activeTab.read));
+  // the desktop View menu evals these (desktop/src/main.rs)
+  window.latSetRead = setRead;
+  addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'e' || e.key === 'E')
+      && !isMobile()) {
+      e.preventDefault();
+      toggleRead();
+    }
+  }, true);
+
+  function paintPath() {
+    const v = (pname.value || '').trim();
+    const p = $('tpath');
+    p.textContent = v || 'no page open';
+    p.classList.toggle('muted', !v);
+    p.title = v ? v + ' · ' + (pkind.value || '') : '';
+  }
+  // every writer of the name goes through setOpen (20-state.js), which fires
+  // 'input' on the field, and typing fires it natively
+  pname.addEventListener('input', paintPath);
+  pkind.addEventListener('change', paintPath);
+
+  // called by paintTabs: the tab in front changed, or its stacks did
+  function paintHead() {
+    for (const [id, st_] of [['tback', 'back'], ['tfwd', 'fwd']]) {
+      const off = !activeTab || !activeTab[st_].length;
+      const b = $(id);
+      b.disabled = off;
+      b.setAttribute('aria-disabled', off ? 'true' : 'false');
+    }
+    paintPath();
+    applyRead();
+  }
+
+  // ── the page menu ────────────────────────────────────────────────────────
+  // Each item calls the handler that already exists. An item that does not
+  // apply to what is open is left out, not greyed: a grub has no kind, a
+  // memory has no raw source.
+  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'hoon'];
+  let pmenuEl = null;
+  const pmenuClose = () => { if (pmenuEl) { pmenuEl.remove(); pmenuEl = null; } };
+
+  // Duplicate: a new page beside this one, same kind and body, named
+  // <name>-copy until the user says otherwise
+  async function dupPage() {
+    if (!current || grubPath || mode === 'know' || curFolder !== null) return;
+    const body = src.value;
+    const kind = pkind.value;
+    const picked = await askName('duplicate ' + current + ' as:', current + '-copy', 'create');
+    if (!picked) return;
+    const rn = realName(picked);
+    if (!rn) { st('bad name — use at least one letter or digit', false); return; }
+    if (!(await guardDirty())) return;
+    newFile('', false);
+    newRn = rn;
+    pkind.value = kind;
+    setOpen(null, { shown: rn.name });
+    src.value = body;
+    render();
+    await save();
+  }
+
+  function pageMenu() {
+    if (pmenuEl) { pmenuClose(); return; }
+    const t = activeTab;
+    if (!t) return;
+    const doc = !grubPath && curFolder === null;       // a page or a memory
+    const page = doc && mode !== 'know';
+    const m = document.createElement('div');
+    m.className = 'dtmenu tmenu';
+    m.setAttribute('role', 'menu');
+    const item = (id, label, run, checked) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('role', checked === undefined ? 'menuitem' : 'menuitemcheckbox');
+      if (checked !== undefined) b.setAttribute('aria-checked', checked ? 'true' : 'false');
+      b.dataset.mi = id;
+      b.textContent = label;
+      b.onclick = () => run(b);
+      m.append(b);
+      return b;
+    };
+    const done = (fn) => () => { pmenuClose(); fn(); };
+    if (page) {
+      const sub = document.createElement('div');
+      sub.className = 'tsub';
+      sub.hidden = true;
+      for (const k of KINDS) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.setAttribute('role', 'menuitemradio');
+        b.setAttribute('aria-checked', k === pkind.value ? 'true' : 'false');
+        b.dataset.kind = k;
+        b.textContent = k;
+        b.onclick = () => {
+          pmenuClose();
+          if (pkind.value === k) return;
+          pkind.value = k;
+          pkind.dispatchEvent(new Event('change'));
+        };
+        sub.append(b);
+      }
+      item('kind', 'Kind ▸', () => { sub.hidden = !sub.hidden; });
+      m.append(sub);
+    }
+    item('wrap', 'Line wrap', done(() => flip('appWrap')), localStorage.appWrap === '1');
+    if (page && current) item('dup', 'Duplicate', done(dupPage));
+    item('export', 'Export vault', done(() => {
+      if (window.LatticeVault) LatticeVault.exportVault();
+    }));
+    if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex'))
+      item('tex', 'Convert to HTML', done(() => $('texconv').click()));
+    if (page && current) item('raw', 'Open raw', done(() =>
+      window.open(api + '/page-source?name=' + encodeURIComponent(current), '_blank', 'noopener')));
+    if (doc && current) item('del', 'Delete', done(() => $('del').click()));
+    const r = $('tmenu').getBoundingClientRect();
+    m.style.top = r.bottom + 4 + 'px';
+    m.style.right = Math.max(4, innerWidth - r.right) + 'px';
+    document.body.append(m);
+    pmenuEl = m;
+    m.querySelector('button').focus();
+  }
+  $('tmenu').onclick = pageMenu;
+  addEventListener('mousedown', (e) => {
+    if (pmenuEl && !pmenuEl.contains(e.target) && !$('tmenu').contains(e.target)) pmenuClose();
+  }, true);
+  addEventListener('keydown', (e) => {
+    if (pmenuEl && e.key === 'Escape') { pmenuClose(); $('tmenu').focus(); }
+  });

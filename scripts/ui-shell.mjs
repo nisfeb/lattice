@@ -124,7 +124,7 @@ try {
     spin: !!document.querySelector('#statusbar #spin'),
     off: !!document.querySelector('#statusbar #offbadge'),
     editor: !!document.querySelector('#center #src') && !!document.querySelector('#center #prev'),
-    keptHidden: ['pname', 'pkind', 'modet', 'viewseg', 'qt', 'cmt', 'aclt', 'wrapt', 'save']
+    keptHidden: ['pname', 'pkind', 'modet', 'qt', 'cmt', 'aclt', 'wrapt', 'save']
       .filter((id) => { const e = document.getElementById(id); return !e || e.getBoundingClientRect().width > 0; }),
   }));
   check('tree and status moved',

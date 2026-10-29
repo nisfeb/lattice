@@ -1009,14 +1009,6 @@
        counts them and opens the resolve pane. -->
   <button id="cflt" class="ico" title="sync conflicts to resolve" aria-label="sync conflicts to resolve" hidden>&#9873;</button>
   <button id="aclt" class="ico" hidden title="access control &mdash; groups, sharing, banned ships" aria-label="access control &mdash; groups, sharing, banned ships">${ico('key')}</button>
-  <!-- edit | split | preview is ONE three-way choice, not two toggles: an
-       editor-less, preview-less layout is not a layout. State and handlers
-       in 85-layout.js; the desktop View menu clicks these very buttons. -->
-  <span id="viewseg" hidden role="group" aria-label="editor layout">
-    <button id="viewedit" class="ico" title="editor only">edit</button>
-    <button id="viewsplit" class="ico" title="editor and preview">split</button>
-    <button id="viewprev" class="ico" title="preview only">preview</button>
-  </span>
 </header>`;
       pname = $('pname'); pkind = $('pkind');
     }
@@ -2205,6 +2197,7 @@
     $('tabback').disabled = !activeTab || !activeTab.back.length;
     $('tabfwd').disabled = !activeTab || !activeTab.fwd.length;
     paintTabDirty();
+    paintHead();   // the header under the strip (23-tabhead.js)
     const on = tabList.querySelector('.dtw.on');
     if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
@@ -2498,6 +2491,189 @@
     // a multi-line selection stays a selection over the moved lines
     return { from: lineStart, to: spanEnd, text, caret: lineStart, caretEnd: lineStart + text.length };
   };
+
+// ── src/23-tabhead.js ─────────────────────────────────────────────────────
+  // ── tab header ───────────────────────────────────────────────────────────
+  // Between the tab strip and the document: Back and Forward, the path of
+  // what is open, Edit / Read, and the page menu. The old bar's controls
+  // stay in the DOM, hidden, because they are the stores and the handlers
+  // these buttons call (#pname, #pkind, #mv, #del, #texconv).
+  //
+  // Edit and Read are one choice per tab, kept on the tab (`read`, which
+  // 21-tabs.js persists). There is no split: Edit hides the preview, Read
+  // hides the editor.
+  const tabHead = document.createElement('div');
+  tabHead.id = 'tabhead';
+  tabHead.className = 'tabhead';
+  tabHead.innerHTML =
+    sbtn('id="tback"', 'left', 'Back', 'Alt+Left') +
+    sbtn('id="tfwd"', 'right', 'Forward', 'Alt+Right') +
+    '<button type="button" id="tpath" class="tpath"></button>' +
+    '<div id="tread" class="tread" role="group" aria-label="Edit or Read">' +
+      '<button type="button" data-r="0">' + ico('pen') + 'Edit</button>' +
+      '<button type="button" data-r="1">' + ico('eye') + 'Read</button>' +
+    '</div>' +
+    sbtn('id="tmenu" aria-haspopup="menu"', 'dots', 'Page menu');
+  $('center').insertBefore(tabHead, $('docarea'));
+  for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
+  $('tback').onclick = () => tabBack();
+  $('tfwd').onclick = () => tabFwd();
+  // the move / rename flow of the controls pane, unchanged
+  $('tpath').onclick = () => $('mv').click();
+
+  // Read for the tab in front. Entering it shows the preview, which skipped
+  // its renders while off screen (60-preview.js)
+  function applyRead() {
+    const on = !!(activeTab && activeTab.read);
+    const was = ws.classList.contains('ve');
+    ws.classList.toggle('ve', !on);
+    ws.classList.toggle('vp', on);
+    for (const b of $('tread').children) {
+      const p = (b.dataset.r === '1') === on;
+      b.classList.toggle('on', p);
+      b.setAttribute('aria-pressed', p ? 'true' : 'false');
+    }
+    if (on && was) showPreview();
+    // the vim indicator reads PREVIEW in Read
+    if (window.latVimSetInd) window.latVimSetInd();
+  }
+  function setRead(on) {
+    if (!activeTab) return;
+    activeTab.read = !!on;
+    tabsSave();
+    applyRead();
+  }
+  for (const b of $('tread').children) b.onclick = () => setRead(b.dataset.r === '1');
+  const toggleRead = () => setRead(!(activeTab && activeTab.read));
+  // the desktop View menu evals these (desktop/src/main.rs)
+  window.latSetRead = setRead;
+  addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'e' || e.key === 'E')
+      && !isMobile()) {
+      e.preventDefault();
+      toggleRead();
+    }
+  }, true);
+
+  function paintPath() {
+    const v = (pname.value || '').trim();
+    const p = $('tpath');
+    p.textContent = v || 'no page open';
+    p.classList.toggle('muted', !v);
+    p.title = v ? v + ' · ' + (pkind.value || '') : '';
+  }
+  // every writer of the name goes through setOpen (20-state.js), which fires
+  // 'input' on the field, and typing fires it natively
+  pname.addEventListener('input', paintPath);
+  pkind.addEventListener('change', paintPath);
+
+  // called by paintTabs: the tab in front changed, or its stacks did
+  function paintHead() {
+    for (const [id, st_] of [['tback', 'back'], ['tfwd', 'fwd']]) {
+      const off = !activeTab || !activeTab[st_].length;
+      const b = $(id);
+      b.disabled = off;
+      b.setAttribute('aria-disabled', off ? 'true' : 'false');
+    }
+    paintPath();
+    applyRead();
+  }
+
+  // ── the page menu ────────────────────────────────────────────────────────
+  // Each item calls the handler that already exists. An item that does not
+  // apply to what is open is left out, not greyed: a grub has no kind, a
+  // memory has no raw source.
+  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'hoon'];
+  let pmenuEl = null;
+  const pmenuClose = () => { if (pmenuEl) { pmenuEl.remove(); pmenuEl = null; } };
+
+  // Duplicate: a new page beside this one, same kind and body, named
+  // <name>-copy until the user says otherwise
+  async function dupPage() {
+    if (!current || grubPath || mode === 'know' || curFolder !== null) return;
+    const body = src.value;
+    const kind = pkind.value;
+    const picked = await askName('duplicate ' + current + ' as:', current + '-copy', 'create');
+    if (!picked) return;
+    const rn = realName(picked);
+    if (!rn) { st('bad name — use at least one letter or digit', false); return; }
+    if (!(await guardDirty())) return;
+    newFile('', false);
+    newRn = rn;
+    pkind.value = kind;
+    setOpen(null, { shown: rn.name });
+    src.value = body;
+    render();
+    await save();
+  }
+
+  function pageMenu() {
+    if (pmenuEl) { pmenuClose(); return; }
+    const t = activeTab;
+    if (!t) return;
+    const doc = !grubPath && curFolder === null;       // a page or a memory
+    const page = doc && mode !== 'know';
+    const m = document.createElement('div');
+    m.className = 'dtmenu tmenu';
+    m.setAttribute('role', 'menu');
+    const item = (id, label, run, checked) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('role', checked === undefined ? 'menuitem' : 'menuitemcheckbox');
+      if (checked !== undefined) b.setAttribute('aria-checked', checked ? 'true' : 'false');
+      b.dataset.mi = id;
+      b.textContent = label;
+      b.onclick = () => run(b);
+      m.append(b);
+      return b;
+    };
+    const done = (fn) => () => { pmenuClose(); fn(); };
+    if (page) {
+      const sub = document.createElement('div');
+      sub.className = 'tsub';
+      sub.hidden = true;
+      for (const k of KINDS) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.setAttribute('role', 'menuitemradio');
+        b.setAttribute('aria-checked', k === pkind.value ? 'true' : 'false');
+        b.dataset.kind = k;
+        b.textContent = k;
+        b.onclick = () => {
+          pmenuClose();
+          if (pkind.value === k) return;
+          pkind.value = k;
+          pkind.dispatchEvent(new Event('change'));
+        };
+        sub.append(b);
+      }
+      item('kind', 'Kind ▸', () => { sub.hidden = !sub.hidden; });
+      m.append(sub);
+    }
+    item('wrap', 'Line wrap', done(() => flip('appWrap')), localStorage.appWrap === '1');
+    if (page && current) item('dup', 'Duplicate', done(dupPage));
+    item('export', 'Export vault', done(() => {
+      if (window.LatticeVault) LatticeVault.exportVault();
+    }));
+    if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex'))
+      item('tex', 'Convert to HTML', done(() => $('texconv').click()));
+    if (page && current) item('raw', 'Open raw', done(() =>
+      window.open(api + '/page-source?name=' + encodeURIComponent(current), '_blank', 'noopener')));
+    if (doc && current) item('del', 'Delete', done(() => $('del').click()));
+    const r = $('tmenu').getBoundingClientRect();
+    m.style.top = r.bottom + 4 + 'px';
+    m.style.right = Math.max(4, innerWidth - r.right) + 'px';
+    document.body.append(m);
+    pmenuEl = m;
+    m.querySelector('button').focus();
+  }
+  $('tmenu').onclick = pageMenu;
+  addEventListener('mousedown', (e) => {
+    if (pmenuEl && !pmenuEl.contains(e.target) && !$('tmenu').contains(e.target)) pmenuClose();
+  }, true);
+  addEventListener('keydown', (e) => {
+    if (pmenuEl && e.key === 'Escape') { pmenuClose(); $('tmenu').focus(); }
+  });
 
 // ── src/25-editor.js ──────────────────────────────────────────────────────
   // ── editor pane: <lat-editor> + highlighting (Prism overlay) ─────────────
@@ -7284,22 +7460,12 @@
   // soft-wrap is the default (long lines running off-screen are unusable on
   // mobile). The toggle still turns it off, and a saved preference wins.
   if (!('appWrap' in localStorage)) localStorage.appWrap = '1';
-  // the view: edit | split | prev. Three buttons, one pressed. It persists
-  // like the other layout toggles, and the way back is always in the bar.
-  // Desktop only: the phone's tab strip is already one pane at a time, and
-  // its CSS block never sees these classes.
-  const VIEWS = ['edit', 'split', 'prev'];
-  const view = () => (VIEWS.includes(localStorage.appView) ? localStorage.appView : 'split');
   const applyToggles = () => {
     paintPanes();   // the side panes and their corner toggles (13-frame.js)
     ws.classList.toggle('wrap', localStorage.appWrap === '1');
-    ws.classList.toggle('ve', view() === 'edit');
-    ws.classList.toggle('vp', view() === 'prev');
-    for (const v of VIEWS) {
-      const b = $('view' + v);
-      b.className = 'ico' + (v === view() ? ' on' : '');
-      b.setAttribute('aria-pressed', v === view() ? 'true' : 'false');
-    }
+    // Edit or Read, per tab (23-tabhead.js). Desktop only: the phone's tab
+    // strip is already one pane at a time, and its CSS never sees these classes
+    applyRead();
     //  the on class is paint alone, so mirror the state in aria-pressed the
     //  way setFull below does
     {
@@ -7315,14 +7481,6 @@
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
   $('wrapt').onclick = () => flip('appWrap');
-  for (const v of VIEWS)
-    $('view' + v).onclick = () => {
-      const hidden = view() === 'edit';
-      localStorage.appView = v;
-      applyToggles();
-      // the preview skipped its renders while off screen (60-preview.js)
-      if (hidden && v !== 'edit') showPreview();
-    };
   // A throw in this boot-time layout pass must NOT halt the rest of app boot:
   // the initial tree load and navigation wiring run in a later file (90-sync),
   // so an uncaught error here blanks the whole app (that was the setInd bug).
@@ -8146,52 +8304,16 @@
       if ([...row.children].every((c) => c.hidden)) row.hidden = true;
     }
 
-    // ── the bar's name field becomes a label ────────────────────────────────
+    // ── the name field gives way to the tab header's path ───────────────────
     // Typing a path into a text box is how you named a page when there was
-    // nowhere else to do it. Creation lives in the File menu now, so the bar
-    // can just say which page is open — centred, and not something you can
-    // edit by accident mid-sentence.
+    // nowhere else to do it. Creation lives in the File menu now, and the tab
+    // header (23-tabhead.js) says which page is open and moves it.
     //
-    // Both controls stay in the DOM and keep their values. Everything reads
-    // pname.value and pkind.value — save, applyPage, the share flow, the
-    // matrix — and rewriting all of that to read from somewhere else would be
-    // a much larger change than this is worth.
+    // The field and the picker stay in the DOM and keep their values.
+    // Everything reads pname.value and pkind.value, and rewriting all of that
+    // to read from somewhere else would be a much larger change than this is
+    // worth.
     ws.classList.add('deskbar');
-    const label = document.createElement('div');
-    label.id = 'pathlabel';
-    label.setAttribute('aria-live', 'polite');
-    pname.after(label);
-    const paint = () => {
-      const v = (pname.value || '').trim();
-      label.textContent = v || 'no page open';
-      label.className = v ? '' : 'muted';
-      label.title = v ? v + ' · ' + (pkind.value || '') : '';
-      // The label floats over the bar's centre, so its width is measured,
-      // not guessed: as wide as it can be while centred and clear of the
-      // buttons on either side.
-      const bar = label.parentElement.getBoundingClientRect();
-      const mid = bar.left + bar.width / 2;
-      let right = bar.right;
-      for (let e = label.parentElement.querySelector('.grow')?.nextElementSibling; e; e = e.nextElementSibling) {
-        const r = e.getBoundingClientRect();
-        if (r.width) right = Math.min(right, r.left);
-      }
-      // the status line moved to the status bar (13-frame.js), so the
-      // left limit is the home link now
-      const left = label.parentElement.querySelector('.home').getBoundingClientRect().right;
-      const half = Math.max(0, Math.min(mid - left, right - mid) - 12);
-      label.style.maxWidth = 'min(' + (2 * half) + 'px, 60ch)';
-    };
-    addEventListener('resize', paint);
-    paint();
-    // No poll. Assigning pname.value fires no event, which is why this used
-    // to check twice a second, but every writer now goes through setOpen
-    // (20-state.js), which dispatches 'input' on the field, and typing
-    // fires it natively. The kind in the tip changes by hand ('change' on
-    // the picker), inside setOpen, or just before one; openGrub, which
-    // learns its kind only after the fetch, dispatches the same event.
-    pname.addEventListener('input', paint);
-    pkind.addEventListener('change', paint);
   }
 
   // ── naming a new page when the name field is not on screen ───────────────

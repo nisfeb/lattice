@@ -156,8 +156,32 @@ select, option { color-scheme: inherit; }
   color: var(--text); font: inherit; font-size: .85rem; text-align: left; cursor: pointer; }
 .dtmenu button:hover, .dtmenu button:focus-visible {
   background: color-mix(in srgb, var(--text) 10%, transparent); outline: none; }
+/* the tab header (23-tabhead.js): back, forward, the path, Edit / Read, the
+   page menu. The path is the one part that grows. */
+.tabhead { flex: none; display: flex; align-items: center; gap: 2px; min-width: 0;
+  height: var(--strip); padding: 0 6px; box-sizing: border-box; background: var(--bg);
+  border-bottom: 1px solid var(--border-soft); }
+.tabhead > .sbtn:disabled { opacity: .35; cursor: default; background: none; }
+.tpath { flex: 1; min-width: 0; margin: 0 6px; padding: 4px 8px; border: 0; border-radius: 5px;
+  background: none; color: var(--text); font: .85rem ui-monospace, Menlo, Consolas, monospace;
+  text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: pointer; }
+.tpath:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.tpath.muted { color: var(--muted); font-style: italic; }
+.tpath:focus-visible, .tread button:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
+.tread { display: inline-flex; flex: none; margin: 0 4px; border: 1px solid var(--border);
+  border-radius: 6px; overflow: hidden; }
+.tread button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px;
+  border: 0; background: none; color: var(--muted); font: inherit; font-size: .8rem; cursor: pointer; }
+.tread button + button { border-left: 1px solid var(--border); }
+.tread button .ic { width: 13px; height: 13px; }
+.tread button:hover { color: var(--text); }
+.tread button.on { color: var(--text); background: color-mix(in srgb, var(--text) 13%, transparent); }
+.tmenu .tsub { display: flex; flex-direction: column; padding-left: 12px; }
+.tmenu .tsub[hidden] { display: none; }
+.tmenu [aria-checked="true"]::after { content: " \2713"; color: var(--muted); }
 /* a phone shows one document at a time; its own switcher comes later */
-@media (max-width: 820px) { .doctabs { display: none; } }
+@media (max-width: 820px) { .doctabs, .tabhead { display: none; } }
 /* the shell's icon buttons: the ribbon, the pane tabs, the corners */
 .sbtn { display: inline-flex; align-items: center; justify-content: center;
   flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px;
@@ -183,29 +207,20 @@ select, option { color-scheme: inherit; }
 #ph3 { grid-column: 4; }
 .psplit:hover, .psplit.drag { background: var(--green); opacity: .35; }
 .ws.nt #ph1, .ws.nc #ph3 { display: none; }
-/* the view (85-layout.js): .ve is editor only, .vp preview only, neither is
-   split. Pages and memories alike: a memory previews as markdown
-   (60-preview.js). Desktop only, like the shell's own bar: at phone width
-   the tab strip shows one pane at a time, and the old bar is the phone's.
-   This media query is the exact complement of the 820px block below. */
+/* Edit / Read (23-tabhead.js): .ve is the editor only, .vp the preview only.
+   Pages and memories alike: a memory previews as markdown (60-preview.js).
+   Desktop only, like the shell's own bar: at phone width the tab strip shows
+   one pane at a time, and the old bar is the phone's. This media query is the
+   exact complement of the 820px block below. */
 @media not all and (max-width: 820px) {
   .ws.ve .prevwrap, .ws.vp .edwrap { display: none; }
   .ws .bar { display: none; }
 }
-#viewseg { display: inline-flex; }
-#viewseg .ico { border-radius: 0; margin-left: -1px; }
-#viewseg .ico:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
-#viewseg .ico:last-child { border-radius: 0 6px 6px 0; }
-#viewseg .ico.on { position: relative; }   /* its green border over the neighbour's */
 .bar .ico { padding: 5px 9px; }
 .bar .ico.on { border-color: var(--green); color: var(--green); }
 /* the full-screen control is mobile-only; the desktop shows every pane at
    once, so there is nothing for it to reveal. Shown by the 820px block. */
 #fullt { display: none; }
-/* desktop shell only: the name field and kind picker give way to a centred
-   label saying which page is open. Set by 96-deskmenu.js, which also adds the
-   name prompt that replaces typing into the field. */
-#pathlabel { display: none; }
 /* list indent/outdent touch pair (45-templates.js): phones have no Tab key,
    so these exist at phone width only, and only while the caret is where
    listTab would act. Desktop has the real keys. */
@@ -213,27 +228,6 @@ select, option { color-scheme: inherit; }
 /* phone bar (97-mobar.js): built always, shown only by the 820px block */
 #mpath, #mmore, #msheet { display: none; }
 .ws.deskbar #pname, .ws.deskbar #pkind { display: none; }
-/* Centred on the BAR, not on whatever space is left between its two button
-   clusters. `flex: 1` here did the latter and looked off-centre, because
-   .bar .grow is also flex:1 — two growing siblings split the free space, so
-   the label's box only spanned half of it and its centred text landed left
-   of centre.
-   Out of flow, so: the label adds no gap of its own to the flex row, and
-   #status growing mid-save cannot shove the filename sideways. Clamped and
-   ellipsised so a long path cannot reach the buttons, and pointer-events
-   none because this is a label lying on top of a row of them. */
-.ws.deskbar .bar { position: relative; }
-.ws.deskbar #pathlabel {
-  display: block; position: absolute; top: 50%; left: 50%;
-  transform: translate(-50%, -50%);
-  /* a fallback only: 96-deskmenu.js measures the room on each side and
-     sets the real limit, since the button clusters change width */
-  max-width: min(38%, 60ch); pointer-events: none;
-  text-align: center; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font: 14px/1 ui-monospace, Menlo, Consolas, monospace;
-}
-.ws.deskbar #pathlabel.muted { color: var(--muted); font-style: italic; }
 .mtabs { display: none; grid-column: 1 / -1; grid-row: 2;
   border-bottom: 1px solid var(--border-soft); }
 .mtabs button { flex: 1; padding: 10px; border: 0; background: none;
@@ -258,7 +252,7 @@ select, option { color-scheme: inherit; }
    shrinks and ends in an ellipsis (st() puts the full text in its title),
    and no button or the home link is ever squeezed into its neighbour */
 @media (min-width: 821px) {
-  .bar > button, .bar > .home, .bar > select, #viewseg { flex-shrink: 0; }
+  .bar > button, .bar > .home, .bar > select { flex-shrink: 0; }
 }
 /* the convert button with no converter behind it: pandoc is missing, or the
    desktop build predates LaTeX support. Dashed reads as "needs something",
@@ -590,7 +584,7 @@ select, option { color-scheme: inherit; }
   .ws.full[data-mv="code"] .bar,
   .ws.full[data-mv="code"] .mtabs { display: none; }
   .ws.full[data-mv="code"] .edwrap { min-height: 100vh; min-height: 100dvh; }
-  #wrapt, #treet, #ctlt, #viewseg { display: none; }
+  #wrapt, #treet, #ctlt { display: none; }
   .mtabs { display: flex; }
   .tree, .edwrap, .prevwrap, .ctl { grid-column: 1; grid-row: 3; display: none;
     border: 0; }

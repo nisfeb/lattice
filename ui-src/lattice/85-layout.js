@@ -3,22 +3,12 @@
   // soft-wrap is the default (long lines running off-screen are unusable on
   // mobile). The toggle still turns it off, and a saved preference wins.
   if (!('appWrap' in localStorage)) localStorage.appWrap = '1';
-  // the view: edit | split | prev. Three buttons, one pressed. It persists
-  // like the other layout toggles, and the way back is always in the bar.
-  // Desktop only: the phone's tab strip is already one pane at a time, and
-  // its CSS block never sees these classes.
-  const VIEWS = ['edit', 'split', 'prev'];
-  const view = () => (VIEWS.includes(localStorage.appView) ? localStorage.appView : 'split');
   const applyToggles = () => {
     paintPanes();   // the side panes and their corner toggles (13-frame.js)
     ws.classList.toggle('wrap', localStorage.appWrap === '1');
-    ws.classList.toggle('ve', view() === 'edit');
-    ws.classList.toggle('vp', view() === 'prev');
-    for (const v of VIEWS) {
-      const b = $('view' + v);
-      b.className = 'ico' + (v === view() ? ' on' : '');
-      b.setAttribute('aria-pressed', v === view() ? 'true' : 'false');
-    }
+    // Edit or Read, per tab (23-tabhead.js). Desktop only: the phone's tab
+    // strip is already one pane at a time, and its CSS never sees these classes
+    applyRead();
     //  the on class is paint alone, so mirror the state in aria-pressed the
     //  way setFull below does
     {
@@ -34,14 +24,6 @@
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
   $('wrapt').onclick = () => flip('appWrap');
-  for (const v of VIEWS)
-    $('view' + v).onclick = () => {
-      const hidden = view() === 'edit';
-      localStorage.appView = v;
-      applyToggles();
-      // the preview skipped its renders while off screen (60-preview.js)
-      if (hidden && v !== 'edit') showPreview();
-    };
   // A throw in this boot-time layout pass must NOT halt the rest of app boot:
   // the initial tree load and navigation wiring run in a later file (90-sync),
   // so an uncaught error here blanks the whole app (that was the setInd bug).

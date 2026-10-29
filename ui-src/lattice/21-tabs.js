@@ -499,6 +499,7 @@
     $('tabback').disabled = !activeTab || !activeTab.back.length;
     $('tabfwd').disabled = !activeTab || !activeTab.fwd.length;
     paintTabDirty();
+    paintHead();   // the header under the strip (23-tabhead.js)
     const on = tabList.querySelector('.dtw.on');
     if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }

@@ -107,20 +107,18 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         .paste()
         .select_all()
         .build()?;
-    // View: which panes are on screen. Editor / split / preview is one
-    // three-way choice (85-layout.js), because an editor-less, preview-less
-    // layout is not a layout; the tree and controls panes are toggles. Like
-    // File, every item clicks the page's own button, so the state lives in
-    // the page and the menu has nothing to drift from it. Accelerators: the
-    // page owns ctrl-S and ctrl-K (and vim mode ctrl-R, ctrl-[); none of
+    // View: Edit or Read for the open tab (23-tabhead.js), and which side
+    // panes are on screen. Like File, the pane items click the page's own
+    // button, so the state lives in the page and the menu has nothing to
+    // drift from it; Edit and Read call latSetRead. Accelerators: the page
+    // owns ctrl-S, ctrl-K and ctrl-E (and vim mode ctrl-R, ctrl-[); none of
     // these collide.
     let view_item = |id: &str, label: &str, key: &str| {
         tauri::menu::MenuItemBuilder::with_id(id, label).accelerator(key).build(app)
     };
     let view = tauri::menu::SubmenuBuilder::new(app, "View")
-        .item(&view_item("view-editor", "Editor only", "CmdOrCtrl+1")?)
-        .item(&view_item("view-split", "Editor and preview", "CmdOrCtrl+2")?)
-        .item(&view_item("view-preview", "Preview only", "CmdOrCtrl+3")?)
+        .item(&view_item("view-editor", "Edit", "CmdOrCtrl+1")?)
+        .item(&view_item("view-preview", "Read", "CmdOrCtrl+3")?)
         .separator()
         .item(&view_item("view-tree", "Tree pane", "CmdOrCtrl+B")?)
         .item(&view_item("view-controls", "Controls pane", "CmdOrCtrl+Shift+B")?)
@@ -274,6 +272,18 @@ fn main() {
             // frame it), so a click on the real element runs the real handler
             // — one code path, and the upload picker, template dialog and
             // dirty-state logic keep working with no Rust counterpart to drift.
+            // Edit and Read are state in the page, not a button to click
+            let read = match ev.id().as_ref() {
+                "view-editor" => Some("latSetRead(false)"),
+                "view-preview" => Some("latSetRead(true)"),
+                _ => None,
+            };
+            if let Some(call) = read {
+                if let Some(w) = app.get_webview_window("workspace") {
+                    let _ = w.eval(format!("if(window.latSetRead){call}"));
+                }
+                return;
+            }
             let btn = match ev.id().as_ref() {
                 "file-new" => "newfile",
                 "file-new-folder" => "newfolder",
@@ -281,9 +291,6 @@ fn main() {
                 "file-upload-files" => "upfiles",
                 "file-upload-folder" => "updir",
                 "file-save" => "save",
-                "view-editor" => "viewedit",
-                "view-split" => "viewsplit",
-                "view-preview" => "viewprev",
                 "view-tree" => "treet",
                 "view-controls" => "ctlt",
                 _ => return,
