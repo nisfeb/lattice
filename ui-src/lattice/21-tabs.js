@@ -55,7 +55,8 @@
   // editor is released for the next one. A page or memory first gets the
   // same flush guardDirty gives it, minus the question: whatever the flush
   // cannot save simply stays in the snap, unsaved and counted. A grub never
-  // autosaves, so its buffer goes straight into the snap.
+  // autosaves, so its buffer goes straight into the snap, and so does every
+  // buffer with autosave off (flushNoAsk writes nothing then).
   //
   // Only a tab whose document really is in the editor owns what is there.
   // While a slow open is still loading, the editor shows the document
@@ -218,17 +219,20 @@
     const gen = ++tabShown;
     src.readOnly = false;   // a blank or a binary grub left it locked
     openSeq++;              // an open still loading for the tab left behind may not land
-    if (s && s.dirty) {
+    // a new page or memory already named (its create may still be queued,
+    // and runs here once the name is back in the field) comes back named
+    // even when clean. Opened fresh it would be a blank, nameless page.
+    if (s && (s.dirty || (!t.key && s.shown))) {
       tabLoading = null;
       tabNav++;
       try {
         k.restore(t, s);
-        dirty = true;
+        dirty = s.dirty;
         everTyped = s.everTyped;
         // a page or memory whose flush failed tries again on the usual
         // debounce, exactly as if it had just been typed
         clearTimeout(autoTimer);
-        autoTimer = setTimeout(autosave, 2000);
+        if (dirty) autoTimer = setTimeout(autosave, 2000);
         tabCaret(s);
       } finally { tabNav--; }
       paintTabs();
@@ -401,6 +405,20 @@
     // one tab per document: a clean twin elsewhere is now redundant
     const twin = d.key && tabs.find((x) => x !== t && sameDoc(x, d) && !(x.snap && x.snap.dirty));
     if (twin) tabs.splice(tabs.indexOf(twin), 1);
+    tabsChanged();
+  }
+  // a create that ran from the queue after its tab was left (save(),
+  // 35-pages.js): the new-page tab parked under the name it was created
+  // as is that page's tab now. Named, it opens the page when it comes back
+  // (current set), so its later saves update the page instead of creating
+  // it again, which the ship refuses as a page that already exists.
+  function tabAdopt(typed, name) {
+    const trim = (v) => v.trim().replace(/^\/+|\/+$/g, '');
+    const t = tabs.find((x) => x !== activeTab && x.kind === 'page' && !x.key
+      && x.snap && trim(x.snap.shown || '') === typed);
+    if (!t) return;
+    t.key = name;
+    t.snap.shown = name;
     tabsChanged();
   }
   // a move or rename: tabs naming the old path, or anything under it, name

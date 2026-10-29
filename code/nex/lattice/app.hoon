@@ -11855,7 +11855,7 @@
     "<span class=\"muted\">modal editing: Esc for normal, i to insert, :w to save.</span></p>"
     "<p><label for=\"wrapdef\"><input type=\"checkbox\" id=\"wrapdef\"> Wrap long lines by default</label></p>"
     "<p><label for=\"autosave\"><input type=\"checkbox\" id=\"autosave\"> Autosave pages</label> "
-    "<span class=\"muted\">pages and memories save two seconds after you stop typing. Off, they save when you press Ctrl+S, switch or close a tab, or leave the editor. App files always wait for Ctrl+S.</span></p></section>"
+    "<span class=\"muted\">pages and memories save two seconds after you stop typing. Off, pages save only when you press Ctrl+S, and closing a tab or leaving the editor asks about unsaved text. App files always wait for Ctrl+S.</span></p></section>"
     %-  trip
     '<script>(function(){function bind(id,k,on){var e=document.getElementById(id);function rd(){var v=null;try{v=localStorage.getItem(k)}catch(x){}e.checked=on?v!=="0":v==="1"}rd();e.onchange=function(){try{localStorage.setItem(k,e.checked?"1":"0")}catch(x){}};addEventListener("storage",function(ev){if(!ev.key||ev.key===k)rd()})}bind("vimsel","edVim",false);bind("wrapdef","appWrap",true);bind("autosave","latAutosave",true)})();</script>'
     ::  publishing: the share dialog (15-dialog.js) skips its question once

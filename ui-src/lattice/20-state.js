@@ -32,19 +32,31 @@
   // save path this mode already owns, and stay silent when it lands. Only a
   // flush that leaves the buffer dirty anyway (the offline queue refused it,
   // the ship rejected the write) falls back to naming what would be lost.
+  //
+  // With Settings > Editor > Autosave off, pages and memories save only when
+  // asked to, so nothing here writes on its own: after any save already in
+  // flight, unsaved text gets the question, with save as one answer.
   async function guardDirty() {
     if (!dirty) return true;
     if (grubPath)
       return askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard');
     const label = current || pname.value.trim() || 'this';
     if (await flushNoAsk()) return true;
-    return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+    if (autosaveOn())
+      return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+    const pick = await askChoice('unsaved changes to ' + label + '. save them?',
+      ['save', 'discard']);
+    if (pick === 'discard') return true;
+    if (pick !== 'save') return false;
+    if (!saving) { if (mode === 'know') await saveKnow(); else await save(); }
+    return !dirty;
   }
   // flushNoAsk: guardDirty's flush without its question, answering whether
   // the buffer is clean afterwards. A tab switch (21-tabs.js) uses it on its
   // own: the tab it leaves keeps whatever is still unsaved, so there is
   // nothing to ask about. A dirty grub has no flush (explicit save only) and
-  // answers false at once.
+  // answers false at once, and so does everything with autosave off, after
+  // waiting out a save already in flight (an explicit one, still landing).
   async function flushNoAsk() {
     if (!dirty) return true;
     if (grubPath) return false;
@@ -71,7 +83,7 @@
     if (!dirty) return true;
     // still dirty and nothing is in flight: the wait either never started or
     // timed out with the buffer untouched. Only now is a flush worth trying.
-    if (!saving) {
+    if (!saving && autosaveOn()) {
       if (mode === 'know') await saveKnow(); else await save();
     }
     return !dirty;

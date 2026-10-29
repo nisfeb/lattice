@@ -1441,19 +1441,31 @@
   // save path this mode already owns, and stay silent when it lands. Only a
   // flush that leaves the buffer dirty anyway (the offline queue refused it,
   // the ship rejected the write) falls back to naming what would be lost.
+  //
+  // With Settings > Editor > Autosave off, pages and memories save only when
+  // asked to, so nothing here writes on its own: after any save already in
+  // flight, unsaved text gets the question, with save as one answer.
   async function guardDirty() {
     if (!dirty) return true;
     if (grubPath)
       return askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard');
     const label = current || pname.value.trim() || 'this';
     if (await flushNoAsk()) return true;
-    return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+    if (autosaveOn())
+      return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+    const pick = await askChoice('unsaved changes to ' + label + '. save them?',
+      ['save', 'discard']);
+    if (pick === 'discard') return true;
+    if (pick !== 'save') return false;
+    if (!saving) { if (mode === 'know') await saveKnow(); else await save(); }
+    return !dirty;
   }
   // flushNoAsk: guardDirty's flush without its question, answering whether
   // the buffer is clean afterwards. A tab switch (21-tabs.js) uses it on its
   // own: the tab it leaves keeps whatever is still unsaved, so there is
   // nothing to ask about. A dirty grub has no flush (explicit save only) and
-  // answers false at once.
+  // answers false at once, and so does everything with autosave off, after
+  // waiting out a save already in flight (an explicit one, still landing).
   async function flushNoAsk() {
     if (!dirty) return true;
     if (grubPath) return false;
@@ -1480,7 +1492,7 @@
     if (!dirty) return true;
     // still dirty and nothing is in flight: the wait either never started or
     // timed out with the buffer untouched. Only now is a flush worth trying.
-    if (!saving) {
+    if (!saving && autosaveOn()) {
       if (mode === 'know') await saveKnow(); else await save();
     }
     return !dirty;
@@ -1766,7 +1778,8 @@
   // editor is released for the next one. A page or memory first gets the
   // same flush guardDirty gives it, minus the question: whatever the flush
   // cannot save simply stays in the snap, unsaved and counted. A grub never
-  // autosaves, so its buffer goes straight into the snap.
+  // autosaves, so its buffer goes straight into the snap, and so does every
+  // buffer with autosave off (flushNoAsk writes nothing then).
   //
   // Only a tab whose document really is in the editor owns what is there.
   // While a slow open is still loading, the editor shows the document
@@ -1929,17 +1942,20 @@
     const gen = ++tabShown;
     src.readOnly = false;   // a blank or a binary grub left it locked
     openSeq++;              // an open still loading for the tab left behind may not land
-    if (s && s.dirty) {
+    // a new page or memory already named (its create may still be queued,
+    // and runs here once the name is back in the field) comes back named
+    // even when clean. Opened fresh it would be a blank, nameless page.
+    if (s && (s.dirty || (!t.key && s.shown))) {
       tabLoading = null;
       tabNav++;
       try {
         k.restore(t, s);
-        dirty = true;
+        dirty = s.dirty;
         everTyped = s.everTyped;
         // a page or memory whose flush failed tries again on the usual
         // debounce, exactly as if it had just been typed
         clearTimeout(autoTimer);
-        autoTimer = setTimeout(autosave, 2000);
+        if (dirty) autoTimer = setTimeout(autosave, 2000);
         tabCaret(s);
       } finally { tabNav--; }
       paintTabs();
@@ -2112,6 +2128,20 @@
     // one tab per document: a clean twin elsewhere is now redundant
     const twin = d.key && tabs.find((x) => x !== t && sameDoc(x, d) && !(x.snap && x.snap.dirty));
     if (twin) tabs.splice(tabs.indexOf(twin), 1);
+    tabsChanged();
+  }
+  // a create that ran from the queue after its tab was left (save(),
+  // 35-pages.js): the new-page tab parked under the name it was created
+  // as is that page's tab now. Named, it opens the page when it comes back
+  // (current set), so its later saves update the page instead of creating
+  // it again, which the ship refuses as a page that already exists.
+  function tabAdopt(typed, name) {
+    const trim = (v) => v.trim().replace(/^\/+|\/+$/g, '');
+    const t = tabs.find((x) => x !== activeTab && x.kind === 'page' && !x.key
+      && x.snap && trim(x.snap.shown || '') === typed);
+    if (!t) return;
+    t.key = name;
+    t.snap.shown = name;
     tabsChanged();
   }
   // a move or rename: tabs naming the old path, or anything under it, name
@@ -4916,6 +4946,12 @@
   // two empty pages have the same one, so a create landing under a second
   // New took the second page's blank buffer for its own.
   const createdHere = (creating, name) => creating && current === null && pname.value === name;
+  //  the page `name` (as typed) is on the ship, or queued for it, and not
+  //  a create's pulsing row still waiting for its answer
+  const madePage = (name) => {
+    const rn = realName(name);
+    return !!rn && nodes.some((n) => n.page && n.path === rn.name && !n.pending);
+  };
   //  `fixed`: a queued create whose page the editor no longer shows (see
   //  below). It names what to write, and the editor is left alone.
   async function save(kindOverride, fixed) {
@@ -4935,12 +4971,23 @@
     //  this one. A create carries what it creates (name, body, kind, the
     //  dialog's split), so a second New during the round trip still gets
     //  the first page written. 'queued' tells newFile it has not run yet.
+    //  A create also waits behind the create before it for the same page (a
+    //  second Ctrl+S during the round trip). Once that one has made the page
+    //  it skips itself: a second create is a 409 about our own page. A page
+    //  that was already there when it was queued still gets its honest 409.
     if (saving) {
       const doc = current, shown = pname.value;
       const own = fixed || (creating ? { name, body: src.value,
-        kind: kindOverride || curKind || pkind.value, rn: newRn } : null);
+        kind: kindOverride || curKind || pkind.value, rn: newRn,
+        existed: madePage(name) } : null);
       if (creating && !fixed) newRn = null;
       queueSave(() => {
+        if (own && !own.existed && madePage(own.name)) {
+          const rn = realName(own.name);
+          if (!fixed && mode !== 'know' && !grubPath && rn && current === rn.name && dirty)
+            return save(kindOverride);
+          return;
+        }
         const here = !fixed && mode !== 'know' && !grubPath && current === doc
           && (doc !== null || pname.value === shown);
         if (here) { if (own) newRn = own.rn; return save(kindOverride); }
@@ -5020,7 +5067,7 @@
         else if (!savePending) savePending = true;
         history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
         cerr.textContent = 'saved offline'; cerr.className = 'ok';
-      }
+      } else if (fixed) tabAdopt(fixed.name, name);
       flushPending();
       return;
     }
@@ -5054,7 +5101,7 @@
       history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
       if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
       else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
-    }
+    } else if (fixed) tabAdopt(fixed.name, name);   // the tab it was made in (21-tabs.js)
     flushPending();
     if (offCount) replayQueue(true);     // back online: drain the backlog
   }
@@ -5078,9 +5125,10 @@
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
-    // Settings > Editor > Autosave pages, off. Only this debounce stops: an
-    // explicit save and the flush a tab switch or a navigation makes go
-    // through save() and saveKnow(), never through here, so they still write.
+    // Settings > Editor > Autosave pages, off: manual only. This debounce
+    // stops, and so do the flushes a tab switch or a navigation makes
+    // (flushNoAsk and guardDirty, 20-state.js, which ask instead). Only
+    // Ctrl+S, the save button and :w write.
     if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
     // never overlap saves. The pier serializes, so a second in-flight save is
     // 3.7s of stale-body work queued behind the first, delaying every preview

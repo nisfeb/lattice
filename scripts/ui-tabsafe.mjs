@@ -13,6 +13,11 @@
 //    New page with a tool tab in front opens the page in a document tab
 //    a memory moved while another tab comes forward renames only its own
 //      tab, and the document in front keeps its name
+//    a create that runs after its tab was left names that tab, so typing
+//      there later updates the page, and a second Ctrl+S during a queued
+//      create is no false "already exists"
+//    with autosave off a tab switch writes nothing and keeps the text
+//      unsaved, closing or leaving asks, and Ctrl+S saves
 //
 //  The slow and failing writes are made by holding or answering the
 //  request in the browser (request interception), so every race here is
@@ -96,6 +101,13 @@ const dlgAnswer = (value, kind) => page.evaluate((v, k) => {
   if (k) document.getElementById('dlgkind').value = k;
   document.getElementById('dlgok').click();
 }, value, kind);
+//  every status line this page shows, from here on, in window.__sts
+const stWatch = () => page.evaluate(() => {
+  window.__sts = [];
+  const s = document.getElementById('status');
+  new MutationObserver(() => window.__sts.push(s.textContent))
+    .observe(s, { childList: true, characterData: true, subtree: true });
+});
 const row = (name) => '#treelist a.pg[href$="name=' + encodeURIComponent(name) + '"]';
 const tabSel = (kind, key) => `#doctabs .dtab[data-kind="${kind}"][data-key="${key}"]`;
 const typeEnd = async (text) => {
@@ -312,9 +324,155 @@ try {
       i6.know.includes(K6B) && !i6.know.includes(K6) && (i6.q || '').includes('I6TYPED')
       && i6.stray === null, JSON.stringify(i6));
   }
+  if (on('F1')) {
+    // ── F1: a create that runs after its tab was left names that tab ─────
+    await boot();
+    await page.evaluate((q) => { window.latTabs.openIn('page', q, { newTab: true }); }, Q);
+    await waitOn('page', Q);
+    await page.evaluate((p) => { window.latTabs.openIn('page', p, { newTab: true }); }, P);
+    await waitOn('page', P);
+    await stWatch();
+    const F1A = RUN + '/f1-a', F1B = RUN + '/f1-b', F1C = RUN + '/f1-c', F1D = RUN + '/f1-d';
+    cleanup.push(F1A, F1B, F1C, F1D);
+    //  F1A's create is held 4s, so F1B's waits behind it, and F1B's tab is
+    //  left (clean) for Q before it runs
+    rule = (r) => (/\/page-save\?/.test(r.url()) && r.url().includes(encodeURIComponent(F1A)) ? 4000 : null);
+    await newPage(F1A);
+    await newPage(F1B);
+    const bid = (await front()).id;
+    await page.click(tabSel('page', Q));
+    await waitOn('page', Q);
+    let b = null;
+    for (let i = 0; i < 40 && b === null; i++) { await sleep(500); b = await pageBody(F1B); }
+    rule = null;
+    await sleep(1000);
+    await page.evaluate((id) => window.latTabs.switchTab(id), bid);
+    await until(() => !document.getElementById('src').readOnly
+      && document.getElementById('pname').value !== '', null, 15000);
+    await sleep(1500);
+    const tabB = await front();
+    await typeEnd('F1ATYPED');
+    await sleep(4500);
+    const f1a = {
+      created: b !== null, tab: tabB, body: await pageBody(F1B),
+      pname: await page.evaluate(() => document.getElementById('pname').value),
+      sts: await page.evaluate(() => window.__sts.filter((s) => /already exists/.test(s))),
+    };
+    check('F1: a create run after its tab was left names that tab, and its typing saves',
+      f1a.created && tabB.id === bid && tabB.key === F1B && f1a.pname === F1B
+      && (f1a.body || '').includes('F1ATYPED') && !f1a.sts.length, JSON.stringify(f1a));
+
+    //  Ctrl+S twice while F1D's create waits behind F1C's: no false 409
+    await boot();
+    await page.evaluate((p) => { window.latTabs.openIn('page', p, { newTab: true }); }, P);
+    await waitOn('page', P);
+    await stWatch();
+    rule = (r) => (/\/page-save\?/.test(r.url()) && r.url().includes(encodeURIComponent(F1C)) ? 4000 : null);
+    await newPage(F1C);
+    await newPage(F1D);
+    await page.focus('#src');
+    for (let i = 0; i < 2; i++) {
+      await page.keyboard.down('Control');
+      await page.keyboard.press('KeyS');
+      await page.keyboard.up('Control');
+      await sleep(150);
+    }
+    let d = null;
+    for (let i = 0; i < 40 && d === null; i++) { await sleep(500); d = await pageBody(F1D); }
+    await sleep(5000);
+    rule = null;
+    const f1b = {
+      created: d !== null, tab: await front(),
+      sts: await page.evaluate(() => window.__sts.filter((s) => /already exists|failed/.test(s))),
+    };
+    check('F1: Ctrl+S twice during a queued create says nothing about a page existing',
+      f1b.created && f1b.tab.key === F1D && !f1b.sts.length, JSON.stringify(f1b));
+  }
+
+  if (on('F2')) {
+    // ── F2: autosave off means only an explicit save writes ──────────────
+    await boot();
+    await page.evaluate(() => { localStorage.latAutosave = '0'; });
+    await page.evaluate((q) => { window.latTabs.openIn('page', q, { newTab: true }); }, Q);
+    await waitOn('page', Q);
+    await page.evaluate((p) => { window.latTabs.openIn('page', p, { newTab: true }); }, P);
+    await waitOn('page', P);
+    seen.length = 0;
+    rule = (r) => (/\/(page|know)-save\?/.test(r.url()) ? 'seen' : null);
+    await typeEnd('F2TYPED');
+    await page.click(tabSel('page', Q));
+    await waitOn('page', Q);
+    await sleep(3500);
+    const sw = {
+      sent: seen.length, pDirty: (await state()).tabs.find((t) => t.key === P)?.dirty,
+      ship: await pageBody(P),
+    };
+    await page.click(tabSel('page', P));
+    sw.back = await until(() => document.getElementById('src').value.includes('F2TYPED'), null, 10000);
+    sw.dot = await until(() => !!document.querySelector('.dtab.on.dirty'), null, 3000);
+    check('F2: autosave off, a tab switch sends no save, and the tab keeps its text, unsaved',
+      sw.sent === 0 && sw.pDirty && !(sw.ship || '').includes('F2TYPED') && sw.back && sw.dot,
+      JSON.stringify(sw));
+
+    //  closing the dirty tab asks, and cancel keeps it
+    await page.evaluate(() => document.querySelector('.dtw.on .dtx').click());
+    const asked = await dlgUp();
+    const opts = await page.evaluate(() => (document.getElementById('dlgopts').hidden ? []
+      : [...document.querySelectorAll('#dlgopts [data-val]')].map((b) => b.dataset.val)));
+    await page.evaluate(() => document.getElementById('dlgcancel').click());
+    await sleep(800);
+    const kept = {
+      asked, opts, sent: seen.length, tab: (await front()).key,
+      text: await page.evaluate(() => document.getElementById('src').value.includes('F2TYPED')),
+      dot: await page.evaluate(() => !!document.querySelector('.dtab.on.dirty')),
+    };
+    check('F2: closing a dirty tab asks save or discard, and cancel keeps it',
+      asked && opts.includes('save') && opts.includes('discard') && kept.sent === 0
+      && kept.tab === P && kept.text && kept.dot, JSON.stringify(kept));
+
+    //  leaving the editor asks too, and cancel stays
+    await page.evaluate(() => document.getElementById('rb-browser').click());
+    const lAsk = await dlgUp();
+    await page.evaluate(() => document.getElementById('dlgcancel').click());
+    await sleep(800);
+    const stay = await page.evaluate(() => location.pathname === '/apps/lattice/app'
+      && document.getElementById('src').value.includes('F2TYPED'));
+    check('F2: leaving the editor with autosave off asks, and cancel stays', lAsk && stay
+      && seen.length === 0, JSON.stringify({ lAsk, stay, sent: seen.length }));
+
+    //  Ctrl+S saves
+    await page.focus('#src');
+    await page.keyboard.down('Control');
+    await page.keyboard.press('KeyS');
+    await page.keyboard.up('Control');
+    let saved = null;
+    for (let i = 0; i < 30 && !(saved || '').includes('F2TYPED'); i++) { await sleep(500); saved = await pageBody(P); }
+    const clean = await until(() => !document.querySelector('.dtab.on.dirty'), null, 5000);
+    check('F2: Ctrl+S saves with autosave off', (saved || '').includes('F2TYPED') && clean,
+      JSON.stringify({ saved: (saved || '').slice(0, 40), clean }));
+
+    //  and the close dialog's save writes before the tab goes
+    await typeEnd('F2MORE');
+    await page.evaluate(() => document.querySelector('.dtw.on .dtx').click());
+    const asked2 = await dlgUp();
+    await page.evaluate(() => {
+      const b = document.querySelector('#dlgopts [data-val="save"]');
+      if (b) b.click(); else document.getElementById('dlgcancel').click();
+    });
+    let more = null;
+    for (let i = 0; i < 30 && !(more || '').includes('F2MORE'); i++) { await sleep(500); more = await pageBody(P); }
+    await sleep(500);
+    const gone = !(await state()).tabs.some((t) => t.key === P);
+    check('F2: the close dialog\'s save writes the page, then closes the tab',
+      asked2 && (more || '').includes('F2MORE') && gone,
+      JSON.stringify({ asked2, more: (more || '').slice(0, 40), gone }));
+    rule = null;
+    await page.evaluate(() => localStorage.removeItem('latAutosave'));
+  }
 } catch (e) {
   check('suite crashed: ' + e.message, false);
 } finally {
+  await page.evaluate(() => localStorage.removeItem('latAutosave')).catch(() => {});
   await browser.close();
   for (const n of [P, Q, G, D, A1, B1, N4, K1, K6B, ...cleanup, RUN])
     await fetch(env.base + '/apps/lattice/page-del?name=' + encodeURIComponent(n),

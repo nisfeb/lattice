@@ -359,6 +359,12 @@
   // two empty pages have the same one, so a create landing under a second
   // New took the second page's blank buffer for its own.
   const createdHere = (creating, name) => creating && current === null && pname.value === name;
+  //  the page `name` (as typed) is on the ship, or queued for it, and not
+  //  a create's pulsing row still waiting for its answer
+  const madePage = (name) => {
+    const rn = realName(name);
+    return !!rn && nodes.some((n) => n.page && n.path === rn.name && !n.pending);
+  };
   //  `fixed`: a queued create whose page the editor no longer shows (see
   //  below). It names what to write, and the editor is left alone.
   async function save(kindOverride, fixed) {
@@ -378,12 +384,23 @@
     //  this one. A create carries what it creates (name, body, kind, the
     //  dialog's split), so a second New during the round trip still gets
     //  the first page written. 'queued' tells newFile it has not run yet.
+    //  A create also waits behind the create before it for the same page (a
+    //  second Ctrl+S during the round trip). Once that one has made the page
+    //  it skips itself: a second create is a 409 about our own page. A page
+    //  that was already there when it was queued still gets its honest 409.
     if (saving) {
       const doc = current, shown = pname.value;
       const own = fixed || (creating ? { name, body: src.value,
-        kind: kindOverride || curKind || pkind.value, rn: newRn } : null);
+        kind: kindOverride || curKind || pkind.value, rn: newRn,
+        existed: madePage(name) } : null);
       if (creating && !fixed) newRn = null;
       queueSave(() => {
+        if (own && !own.existed && madePage(own.name)) {
+          const rn = realName(own.name);
+          if (!fixed && mode !== 'know' && !grubPath && rn && current === rn.name && dirty)
+            return save(kindOverride);
+          return;
+        }
         const here = !fixed && mode !== 'know' && !grubPath && current === doc
           && (doc !== null || pname.value === shown);
         if (here) { if (own) newRn = own.rn; return save(kindOverride); }
@@ -463,7 +480,7 @@
         else if (!savePending) savePending = true;
         history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
         cerr.textContent = 'saved offline'; cerr.className = 'ok';
-      }
+      } else if (fixed) tabAdopt(fixed.name, name);
       flushPending();
       return;
     }
@@ -497,7 +514,7 @@
       history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
       if (CONTENT()) { cerr.textContent = 'saved'; cerr.className = 'ok'; }
       else { setTimeout(checkErrors, 800); setTimeout(checkErrors, 2200); }
-    }
+    } else if (fixed) tabAdopt(fixed.name, name);   // the tab it was made in (21-tabs.js)
     flushPending();
     if (offCount) replayQueue(true);     // back online: drain the backlog
   }
@@ -521,9 +538,10 @@
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
-    // Settings > Editor > Autosave pages, off. Only this debounce stops: an
-    // explicit save and the flush a tab switch or a navigation makes go
-    // through save() and saveKnow(), never through here, so they still write.
+    // Settings > Editor > Autosave pages, off: manual only. This debounce
+    // stops, and so do the flushes a tab switch or a navigation makes
+    // (flushNoAsk and guardDirty, 20-state.js, which ask instead). Only
+    // Ctrl+S, the save button and :w write.
     if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
     // never overlap saves. The pier serializes, so a second in-flight save is
     // 3.7s of stale-body work queued behind the first, delaying every preview
