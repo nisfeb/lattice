@@ -106,6 +106,17 @@ select, option { color-scheme: inherit; }
   background: var(--ribbon); border-right: 1px solid var(--border-soft); }
 .ribbon .rtop, .ribbon .rbot { display: flex; flex-direction: column; gap: 3px; }
 .ribbon .rbot { margin-top: auto; }
+/* a count on a ribbon button: unread comments, conflicts to resolve */
+.ribbon .sbtn[data-n] { position: relative; color: var(--text); }
+.ribbon .sbtn[data-n]::after { content: attr(data-n); position: absolute; top: 0; right: -2px;
+  min-width: 1.05em; padding: 0 .25em; border-radius: 999px;
+  background: var(--green); color: var(--on-accent, var(--bg));
+  font-size: .6rem; font-weight: 700; line-height: 1.35; text-align: center;
+  pointer-events: none; }
+/* a tool tab (24-tools.js) takes the document area's place in the center */
+.toolhost { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.toolhost > * { flex: 1; min-height: 0; }
+.toolframe { width: 100%; border: 0; background: var(--bg); }
 .pane { grid-row: 2; display: flex; flex-direction: column; min-width: 0;
   min-height: 0; overflow: hidden; background: var(--pane); }
 .pane.lp { grid-column: 2; border-right: 1px solid var(--border-soft); }
@@ -167,6 +178,7 @@ select, option { color-scheme: inherit; }
   cursor: pointer; }
 .tpath:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
 .tpath.muted { color: var(--muted); font-style: italic; }
+.tpath:disabled { cursor: default; background: none; }
 .tpath:focus-visible, .tread button:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
 .tread { display: inline-flex; flex: none; margin: 0 4px; border: 1px solid var(--border);
   border-radius: 6px; overflow: hidden; }
@@ -236,9 +248,6 @@ select, option { color-scheme: inherit; }
   font-weight: 600; }
 .bar { grid-row: 1; grid-column: 1 / -1; display: flex; gap: 8px; align-items: center;
   padding: 7px 10px; border-bottom: 1px solid var(--border-soft); }
-.bar .home { display: flex; align-items: center; padding: 3px 11px;
-  font-size: 1.15rem; border: 1px solid var(--border); border-radius: 6px;
-  text-decoration: none; color: inherit; }
 /* NB: select is deliberately excluded. The global `select` rule owns its
    padding (it reserves room for the chevron) and `background` shorthand here
    would wipe the chevron image. */
@@ -249,9 +258,9 @@ select, option { color-scheme: inherit; }
 .bar button { cursor: pointer; }
 /* when the bar runs out of room the status line gives way first: it
    shrinks and ends in an ellipsis (st() puts the full text in its title),
-   and no button or the home link is ever squeezed into its neighbour */
+   and no button is ever squeezed into its neighbour */
 @media (min-width: 821px) {
-  .bar > button, .bar > .home, .bar > select { flex-shrink: 0; }
+  .bar > button, .bar > select { flex-shrink: 0; }
 }
 /* the convert button with no converter behind it: pandoc is missing, or the
    desktop build predates LaTeX support. Dashed reads as "needs something",
@@ -259,7 +268,7 @@ select, option { color-scheme: inherit; }
    holds in both themes. */
 .bar button.needsdep { border-style: dashed; border-color: var(--muted);
   color: var(--muted); }
-.bar button:hover, .bar .home:hover { border-color: var(--green); }
+.bar button:hover { border-color: var(--green); }
 .bar .grow { flex: 1; }
 #status { font-size: .85rem; flex: 0 5 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -543,7 +552,7 @@ select, option { color-scheme: inherit; }
      file rows then ellipsise within it and the button row wraps. */
   .tree { min-width: 0; }
   .tree .newbtns { flex-wrap: wrap; }
-  #pname, #pkind, #cmt, #aclt { display: none; }
+  #pname, #pkind { display: none; }
   /* .grow is also flex:1 — left in the row it takes half the free space and
      the path label ellipsises early with daylight sitting next to it (the
      exact bug the desktop label had). The ⋯ is appended last, so nothing
@@ -564,7 +573,7 @@ select, option { color-scheme: inherit; }
     padding: 12px 14px; border: 0; background: none; color: inherit;
     border-bottom: 1px solid var(--border-soft); cursor: pointer; }
   #msheet button:last-child { border-bottom: 0; }
-  /* the unread dot #cmt carries, mirrored where it can be seen */
+  /* the unread dot the ribbon's inbox carries, mirrored where it can be seen */
   #mmore.has-unread, #msheet .has-unread { border-color: var(--green); color: var(--green); }
   /* the desktop shell squeezed narrow keeps its own label and menu */
   .ws.deskbar #mpath, .ws.deskbar #mmore, .ws.deskbar #msheet { display: none; }
@@ -658,9 +667,11 @@ select, option { color-scheme: inherit; }
 
 /* access-control pane: the peers panel given room to work in. A full-window
    overlay rather than a third setMode branch. setMode is wired into the
-   tree/editor lifecycle, and access control has nothing to do with either. */
+   tree/editor lifecycle, and access control has nothing to do with either.
+   In a tool tab (.intab, which they all are now) it sits in the center. */
 .aclwrap { position: fixed; inset: 0; z-index: 45; background: var(--bg);
   display: flex; flex-direction: column; }
+.aclwrap.intab { position: static; z-index: auto; }
 .aclbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
   border-bottom: 1px solid var(--border-soft); }
 .aclbar h2 { font-size: 1.05rem; margin: 0; }

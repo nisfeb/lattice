@@ -92,7 +92,7 @@
   //                  holds a document of this kind, else null. The editor
   //                  kinds claim mutually exclusive states. A kind without
   //                  live() is never rewritten by tabFollow.
-  //   icon, label    for the strip
+  //   icon, label    for the strip. icon is a name, or a function of the tab
   const TAB_KINDS = {
     page: {
       icon: 'doc',
@@ -476,7 +476,8 @@
       b.dataset.kind = t.kind;
       b.dataset.key = t.key;
       b.title = (t.ship ? t.ship + ' ' : '') + (t.key || name);
-      b.innerHTML = ico(t.pinned ? 'pin' : k.icon) + '<span class="dtn"></span>'
+      b.innerHTML = ico(t.pinned ? 'pin' : typeof k.icon === 'function' ? k.icon(t) : k.icon)
+        + '<span class="dtn"></span>'
         + '<span class="dtdot" aria-hidden="true"></span>';
       b.querySelector('.dtn').textContent = name;
       b.onclick = () => switchTab(t.id);

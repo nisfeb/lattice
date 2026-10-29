@@ -59,8 +59,8 @@
     // reached from the tree view's own tab row, so there is no mode row.
     const rows = [
       ['ms-q', () => qOpen(), 'search', 'search'],
-      ['ms-cm', () => $('cmt').click(), 'comment', 'comments'],
-      ['ms-acl', () => $('aclt').click(), 'key', 'access'],
+      ['ms-cm', () => cmOpen(), 'comment', 'comments'],
+      ['ms-acl', () => aclOpen(), 'key', 'access'],
     ];
     for (const [rid, run, icon, label] of rows) {
       const b = document.createElement('button');
@@ -77,13 +77,13 @@
       if (!sheet.hidden && !sheet.contains(e.target) && e.target !== more) sheet.hidden = true;
     });
 
-    // the unread-comments badge lives on the hidden #cmt; mirror it onto ⋯
-    // and the sheet row so hiding the button does not hide the signal.
+    // the unread-comments badge lives on the ribbon's inbox, which a phone
+    // does not show; mirror it onto ⋯ and the sheet row so the signal stays.
     const mirror = () => {
-      const un = $('cmt').classList.contains('has-unread');
+      const un = $('rb-inbox').classList.contains('has-unread');
       more.classList.toggle('has-unread', un);
       $('ms-cm').classList.toggle('has-unread', un);
     };
     mirror();
-    new MutationObserver(mirror).observe($('cmt'), { attributes: true, attributeFilter: ['class'] });
+    new MutationObserver(mirror).observe($('rb-inbox'), { attributes: true, attributeFilter: ['class'] });
   }

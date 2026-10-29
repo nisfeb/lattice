@@ -3,14 +3,14 @@
   // toggles, the status line and its spinner live there now, and this bar
   // shows only at phone width. Its other controls stay in the DOM, hidden,
   // until later steps give each one its home, because handlers and the
-  // desktop menu still find them by id.
+  // desktop menu still find them by id. Home, comments, conflicts and
+  // access are the ribbon's now (24-tools.js).
   customElements.define('lat-bar', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
 <header class="bar">
   <!-- the icon-only controls carry aria-labels: their glyph is their whole
        text content, which is no accessible name at all -->
-  <a class="home" href="/apps/lattice" title="lattice home" aria-label="lattice home">&#8962;</a>
   <input id="pname" hidden placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
   <select id="pkind" hidden title="page kind">
     <option value="md">md</option>
@@ -28,13 +28,6 @@
   <button id="texconv" hidden>convert to html</button>
   <span class="grow"></span>
   <button id="wrapt" class="ico" hidden title="toggle line wrap" aria-label="toggle line wrap">&#8617;</button>
-  <button id="cmt" class="ico" hidden title="comments from other ships" aria-label="comments from other ships">${ico('comment')}</button>
-  <!-- a save that replaced an edit from elsewhere keeps the losing body as a
-       conflicts/ page. Those are invisible unless you already know to look,
-       which is the one failure a conflict design must not have. This badge
-       counts them and opens the resolve pane. -->
-  <button id="cflt" class="ico" title="sync conflicts to resolve" aria-label="sync conflicts to resolve" hidden>&#9873;</button>
-  <button id="aclt" class="ico" hidden title="access control &mdash; groups, sharing, banned ships" aria-label="access control &mdash; groups, sharing, banned ships">${ico('key')}</button>
 </header>`;
       pname = $('pname'); pkind = $('pkind');
     }

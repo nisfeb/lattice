@@ -362,12 +362,8 @@
     await saveKnow(true);
     src.focus();
   };
-  // Tidy: the memory review (/know?lint=1) as a tool tab, once tool tabs
-  // exist (24-tools.js). Until then it opens beside the editor.
-  $('ktidy').onclick = (ev) => {
-    if (TAB_KINDS.tool) openIn('tool', 'frame:/apps/lattice/know?lint=1', { ev });
-    else window.open('/apps/lattice/know?lint=1', '_blank');
-  };
+  // Tidy: the memory review (/know?lint=1) as a tool tab (24-tools.js)
+  $('ktidy').onclick = () => toolOpen('frame:/apps/lattice/know?lint=1');
   // Trash: the soft-deleted memories (GET /know-trash), each with Restore
   const trashList = $('ktrashlist');
   const kmuted = (t) => {

@@ -1,8 +1,8 @@
   // ── access control pane: <lat-acl>, the peers panel with room to work ────
   // Same data and same endpoints as the narrow editor panel (67-perms.js).
-  // This is a full-window overlay for organising it. Deliberately NOT a third
-  // setMode branch. setMode is wired into the tree/editor lifecycle and access
-  // control has nothing to do with either (same reasoning as 40-grub.js).
+  // This is a tool tab for organising it (24-tools.js). Deliberately NOT a
+  // third setMode branch. setMode is wired into the tree/editor lifecycle and
+  // access control has nothing to do with either (same reasoning as 40-grub.js).
   //
   // Costs no boot requests. It renders permGroups, which boot already loads
   // off the critical path, and only fetches if the pane is opened before that
@@ -16,13 +16,12 @@
   customElements.define('lat-acl', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="aclwrap" id="aclwrap" hidden role="dialog" aria-modal="true" aria-label="access control">
+<div class="aclwrap" id="aclwrap" hidden role="region" aria-label="access control">
   <div class="aclbar">
     <h2>Access control</h2>
     <span class="muted" id="aclsum"></span>
     <span class="grow"></span>
     <button id="aclreload" class="ico" title="reload from ship">&#8635;</button>
-    <button id="aclclose">close</button>
   </div>
   <div class="aclbody">
     <div class="row">
@@ -48,8 +47,10 @@
     }
   });
 
-  const aclOpen = () => {
-    $('aclwrap').hidden = false;
+  // every way in (#aclopen in the Page tab, the ribbon, the phone's sheet)
+  // lands on the one Access & groups tab, and its coming forward loads it
+  const aclOpen = () => toolOpen('access');
+  const aclLoad = () => {
     // permGroups is populated by boot's deferred load. Only pay a request if
     // the pane was opened before that landed. Guard on permsLoaded, not the
     // array's length: a ship with zero groups is a real, load-complete
@@ -58,7 +59,6 @@
     if (!permsLoaded) loadPerms(); else renderAcl();
     loadBans();
   };
-  const aclClose = () => { $('aclwrap').hidden = true; };
 
   // suggest the grantable paths this client already knows about, so a grant is
   // a pick rather than a hand-typed ball path. Built from the tree we have.
@@ -301,7 +301,6 @@
     if (e.key === 'Enter') { e.preventDefault(); $('banadd').click(); }
   };
 
-  $('aclclose').onclick = aclClose;
   $('aclreload').onclick = () => { loadPerms(); loadBans(); };
   $('aclnewbtn').onclick = async () => {
     const v = $('aclnew').value.trim();
@@ -312,8 +311,3 @@
   $('aclnew').onkeydown = (e) => {
     if (e.key === 'Enter') { e.preventDefault(); $('aclnewbtn').click(); }
   };
-  $('aclt').onclick = aclOpen;
-  // Escape closes, matching the in-app dialog's behaviour
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('aclwrap').hidden) aclClose();
-  });

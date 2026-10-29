@@ -978,14 +978,14 @@
   // toggles, the status line and its spinner live there now, and this bar
   // shows only at phone width. Its other controls stay in the DOM, hidden,
   // until later steps give each one its home, because handlers and the
-  // desktop menu still find them by id.
+  // desktop menu still find them by id. Home, comments, conflicts and
+  // access are the ribbon's now (24-tools.js).
   customElements.define('lat-bar', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
 <header class="bar">
   <!-- the icon-only controls carry aria-labels: their glyph is their whole
        text content, which is no accessible name at all -->
-  <a class="home" href="/apps/lattice" title="lattice home" aria-label="lattice home">&#8962;</a>
   <input id="pname" hidden placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
   <select id="pkind" hidden title="page kind">
     <option value="md">md</option>
@@ -1003,13 +1003,6 @@
   <button id="texconv" hidden>convert to html</button>
   <span class="grow"></span>
   <button id="wrapt" class="ico" hidden title="toggle line wrap" aria-label="toggle line wrap">&#8617;</button>
-  <button id="cmt" class="ico" hidden title="comments from other ships" aria-label="comments from other ships">${ico('comment')}</button>
-  <!-- a save that replaced an edit from elsewhere keeps the losing body as a
-       conflicts/ page. Those are invisible unless you already know to look,
-       which is the one failure a conflict design must not have. This badge
-       counts them and opens the resolve pane. -->
-  <button id="cflt" class="ico" title="sync conflicts to resolve" aria-label="sync conflicts to resolve" hidden>&#9873;</button>
-  <button id="aclt" class="ico" hidden title="access control &mdash; groups, sharing, banned ships" aria-label="access control &mdash; groups, sharing, banned ships">${ico('key')}</button>
 </header>`;
       pname = $('pname'); pkind = $('pkind');
     }
@@ -1805,7 +1798,7 @@
   //                  holds a document of this kind, else null. The editor
   //                  kinds claim mutually exclusive states. A kind without
   //                  live() is never rewritten by tabFollow.
-  //   icon, label    for the strip
+  //   icon, label    for the strip. icon is a name, or a function of the tab
   const TAB_KINDS = {
     page: {
       icon: 'doc',
@@ -2189,7 +2182,8 @@
       b.dataset.kind = t.kind;
       b.dataset.key = t.key;
       b.title = (t.ship ? t.ship + ' ' : '') + (t.key || name);
-      b.innerHTML = ico(t.pinned ? 'pin' : k.icon) + '<span class="dtn"></span>'
+      b.innerHTML = ico(t.pinned ? 'pin' : typeof k.icon === 'function' ? k.icon(t) : k.icon)
+        + '<span class="dtn"></span>'
         + '<span class="dtdot" aria-hidden="true"></span>';
       b.querySelector('.dtn').textContent = name;
       b.onclick = () => switchTab(t.id);
@@ -2527,8 +2521,9 @@
   for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
   $('tback').onclick = () => tabBack();
   $('tfwd').onclick = () => tabFwd();
-  // the move / rename flow of the controls pane, unchanged
-  $('tpath').onclick = () => $('mv').click();
+  // the move / rename flow of the controls pane, unchanged. A tool tab's
+  // path is only its title.
+  $('tpath').onclick = () => { if (!(activeTab && activeTab.kind === 'tool')) $('mv').click(); };
 
   // Read for the tab in front. Entering it shows the preview, which skipped
   // its renders while off screen (60-preview.js)
@@ -2547,7 +2542,7 @@
     if (window.latVimSetInd) window.latVimSetInd();
   }
   function setRead(on) {
-    if (!activeTab) return;
+    if (!activeTab || activeTab.kind === 'tool') return;
     activeTab.read = !!on;
     tabsSave();
     applyRead();
@@ -2567,19 +2562,25 @@
   }, true);
 
   function paintPath() {
-    const v = (pname.value || '').trim();
+    const tool = activeTab && activeTab.kind === 'tool';
+    const v = tool ? TAB_KINDS.tool.label(activeTab) : (pname.value || '').trim();
     const p = $('tpath');
+    p.disabled = !!tool;
     p.textContent = v || 'no page open';
     p.classList.toggle('muted', !v);
-    p.title = v ? v + ' · ' + (pkind.value || '') : '';
+    p.title = v && !tool ? v + ' · ' + (pkind.value || '') : '';
   }
   // every writer of the name goes through setOpen (20-state.js), which fires
   // 'input' on the field, and typing fires it natively
   pname.addEventListener('input', paintPath);
   pkind.addEventListener('change', paintPath);
 
-  // called by paintTabs: the tab in front changed, or its stacks did
+  // called by paintTabs: the tab in front changed, or its stacks did. A
+  // tool tab (24-tools.js) has no Edit / Read and no page menu.
   function paintHead() {
+    const tool = !!activeTab && activeTab.kind === 'tool';
+    $('tread').hidden = tool;
+    $('tmenu').hidden = tool;
     if (pmenuEl && pmenuTab !== activeTab) pmenuClose();
     for (const [id, st_] of [['tback', 'back'], ['tfwd', 'fwd']]) {
       const off = !activeTab || !activeTab[st_].length;
@@ -2589,6 +2590,7 @@
     }
     paintPath();
     applyRead();
+    toolSync();
   }
 
   // ── the page menu ────────────────────────────────────────────────────────
@@ -2701,6 +2703,185 @@
   addEventListener('keydown', (e) => {
     if (pmenuEl && e.key === 'Escape') { pmenuClose(); $('tmenu').focus(); }
   });
+
+// ── src/24-tools.js ───────────────────────────────────────────────────────
+  // ── tool tabs and the ribbon ─────────────────────────────────────────────
+  // A tool tab holds no document: the comments inbox, access & groups, the
+  // sync conflicts, or a same-origin page in a frame (Settings, the memory
+  // review). Its key names the tool ('inbox', 'access', 'conflicts') or the
+  // frame ('frame:/apps/lattice/settings'). While one is in front the
+  // document area is hidden and #toolhost takes the center. The editor
+  // underneath keeps whatever the parked tab left there, untouched: the
+  // tool kind has no live(), so nothing a tool does is ever filed under a
+  // document's tab.
+  const toolHost = document.createElement('div');
+  toolHost.id = 'toolhost';
+  toolHost.className = 'toolhost';
+  toolHost.hidden = true;
+  $('docarea').after(toolHost);
+
+  // the client tools: their name, icon, the overlay element each one used
+  // to be (72-acl.js, 73-comments.js, 80-conflicts.js) and what fills it
+  const TOOLS = {
+    inbox: { name: 'Comments inbox', icon: 'inbox', wrap: 'cmwrap', load: () => cmLoad() },
+    access: { name: 'Access & groups', icon: 'key', wrap: 'aclwrap', load: () => aclLoad() },
+    conflicts: { name: 'Sync conflicts', icon: 'conflict', wrap: 'cfwrap', load: () => renderConflicts() },
+  };
+  const FRAMES = {
+    '/apps/lattice/settings': ['Settings', 'gear'],
+    '/apps/lattice/know?lint=1': ['Memory review', 'tidy'],
+  };
+  const SETTINGS = 'frame:/apps/lattice/settings';
+  // only a path on this origin: a frame is dressed by reaching into it
+  const frameUrl = (key) => {
+    const u = key.startsWith('frame:') ? key.slice(6) : null;
+    return u && /^\/(?!\/)/.test(u) ? u : null;
+  };
+  const toolMeta = (key) => {
+    if (TOOLS[key]) return [TOOLS[key].name, TOOLS[key].icon];
+    const u = frameUrl(key);
+    return u ? FRAMES[u] || [u, 'globe'] : [key, 'gear'];
+  };
+  // every way into a tool. A tool gets a tab of its own rather than
+  // replacing the document in front, and an open one is focused.
+  const toolOpen = (id) => openIn('tool', id === 'settings' ? SETTINGS : id, { newTab: true });
+
+  // which tool the host shows, null while a document is in front
+  let toolShown = null;
+  TAB_KINDS.tool = {
+    icon: (t) => toolMeta(t.key)[1],
+    label: (t) => toolMeta(t.key)[0],
+    open: async (t) => {
+      toolSync();
+      if (TOOLS[t.key]) TOOLS[t.key].load();
+      // a phone shows the center only in its code view
+      if (isMobile()) setMv('code');
+      return true;
+    },
+    // a tool has no buffer, so nothing to park and nothing to restore
+    restore: () => {},
+    park: async () => true,
+    shows: (t) => t === activeTab && toolShown === t.key,
+  };
+
+  // Called by paintHead on every change of the tab in front. Shows the host
+  // or the document area, and in the host only the front tool. A wrap that
+  // is not in front is hidden, which is how 90-sync.js knows the inbox is
+  // not being read. A frame whose tab has closed goes away.
+  function toolSync() {
+    const t = activeTab && activeTab.kind === 'tool' ? activeTab : null;
+    const was = toolShown;
+    toolShown = t ? t.key : null;
+    $('docarea').hidden = !!t;
+    toolHost.hidden = !t;
+    if (t) toolMount(t.key);
+    for (const f of [...toolHost.querySelectorAll('iframe')])
+      if (!tabs.some((x) => x.kind === 'tool' && x.key === f.dataset.tool)) f.remove();
+    for (const c of toolHost.children) c.hidden = c.dataset.tool !== toolShown;
+    // the right pane goes by what is in front (76-outline.js)
+    if (was !== toolShown) rpSoon();
+  }
+  function toolMount(key) {
+    if (TOOLS[key]) {
+      const w = $(TOOLS[key].wrap);
+      if (!w || w.parentNode === toolHost) return;
+      w.classList.add('intab');
+      w.dataset.tool = key;
+      toolHost.append(w);
+      return;
+    }
+    const url = frameUrl(key);
+    if (!url || [...toolHost.querySelectorAll('iframe')].some((f) => f.dataset.tool === key)) return;
+    const f = document.createElement('iframe');
+    f.className = 'toolframe';
+    f.dataset.tool = key;
+    f.title = toolMeta(key)[0];
+    f.onload = () => frameDress(f);
+    f.src = url;
+    toolHost.append(f);
+  }
+  // Each load of a frame: the reader's own bar is hidden, since the shell
+  // around it is the chrome now. A link in it to the editor opens in the
+  // shell rather than nesting a second editor in the frame. Any other link
+  // navigates the frame as usual.
+  function frameDress(f) {
+    let d = null;
+    try { d = f.contentDocument; } catch {}
+    if (!d || !d.head) return;
+    const s = d.createElement('style');
+    s.textContent = 'form.bar{display:none}';
+    d.head.append(s);
+    d.addEventListener('click', (e) => {
+      const a = e.target.closest && e.target.closest('a[href]');
+      if (!a || e.defaultPrevented) return;
+      let u;
+      try { u = new URL(a.href); } catch { return; }
+      if (u.origin !== location.origin || !/^\/apps\/lattice\/app\/?$/.test(u.pathname)) return;
+      e.preventDefault();
+      const q = u.searchParams;
+      if (q.get('grub')) openIn('grub', q.get('grub'), { ship: q.get('ship') || null, ev: e });
+      else if (q.get('view') === 'know') openIn('know', q.get('key') || '', { ev: e });
+      else if (q.get('name')) openIn('page', q.get('name'), { ev: e });
+    });
+  }
+  // Escape used to close the overlays. A tab is closed by its own close,
+  // so here Escape only lets go of a field.
+  addEventListener('keydown', (e) => {
+    const a = document.activeElement;
+    if (e.key === 'Escape' && a && a !== document.body && toolHost.contains(a)) a.blur();
+  });
+
+  // ── today's brief ────────────────────────────────────────────────────────
+  // orrery writes the brief to journal/<day>. Whether that day is padded is
+  // not settled, so the first of the two forms that exists wins, and with
+  // neither the unpadded one is the name a new page starts with.
+  function briefKey(d) {
+    const y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate();
+    const p2 = (n) => String(n).padStart(2, '0');
+    const forms = ['journal/' + y + '.' + m + '.' + day, 'journal/' + y + '.' + p2(m) + '.' + p2(day)];
+    return forms.find((k) => nodes.some((n) => n.page && n.path === k)) || forms[0];
+  }
+  async function openBrief(ev) {
+    const key = briefKey(new Date());
+    // an empty tree has not loaded yet, and only the ship knows
+    if (!nodes.length || nodes.some((n) => n.page && n.path === key)) return openIn('page', key, { ev });
+    await openIn('page', '', { ev });
+    if (activeTab && activeTab.kind === 'page' && !activeTab.key && current === null)
+      setOpen(null, { shown: key });
+  }
+
+  // ── leaving the editor ───────────────────────────────────────────────────
+  // Browser, Forum and Explorer navigate the window. The front document gets
+  // guardDirty, and the parked tabs holding unsaved work get one question
+  // naming them. Once the user has said discard, nothing is owed, so the
+  // unload guard (35-pages.js) does not ask a second time.
+  const leaveTo = (url) => tabSerial(async () => {
+    if (!(await guardDirty())) return;
+    const bg = tabs.filter((t) => t !== activeTab && t.snap && t.snap.dirty);
+    if (bg.length && !(await askConfirm('discard unsaved changes to '
+      + bg.map((t) => TAB_KINDS[t.kind].label(t)).join(', ') + '?', 'discard'))) return;
+    dirty = false;
+    clearTimeout(autoTimer);
+    for (const t of bg) t.snap.dirty = false;
+    location.href = url;
+  });
+
+  // the command palette is the next step's; until then it says so
+  let paletteOpen = () => st('the command palette is not here yet');
+
+  // top to bottom, with Settings in the lower group
+  ribbonAdd({ id: 'brief', icon: 'cal', name: "Today's brief", run: (ev) => openBrief(ev) });
+  ribbonAdd({ id: 'browser', icon: 'globe', name: 'Browser', run: () => leaveTo('/apps/lattice') });
+  ribbonAdd({ id: 'forum', icon: 'forum', name: 'Forum', run: () => leaveTo('/apps/lattice/forum') });
+  // the unread badge (73-comments.js) and the conflict count
+  // (80-conflicts.js) are painted onto these two
+  ribbonAdd({ id: 'inbox', icon: 'inbox', name: 'Comments inbox', run: () => toolOpen('inbox') });
+  ribbonAdd({ id: 'access', icon: 'key', name: 'Access & groups', run: () => toolOpen('access') });
+  ribbonAdd({ id: 'explorer', icon: 'tree', name: 'Explorer', run: () => leaveTo('/apps/lattice/x') });
+  ribbonAdd({ id: 'conflicts', icon: 'conflict', name: 'Sync conflicts', run: () => toolOpen('conflicts') })
+    .hidden = true;
+  ribbonAdd({ id: 'palette', icon: 'term', name: 'Command palette', keys: 'Ctrl+P', run: () => paletteOpen() });
+  ribbonAdd({ id: 'settings', icon: 'gear', name: 'Settings', bottom: true, run: () => toolOpen('settings') });
 
 // ── src/25-editor.js ──────────────────────────────────────────────────────
   // ── editor pane: <lat-editor> + highlighting (Prism overlay) ─────────────
@@ -6434,9 +6615,9 @@
 // ── src/72-acl.js ─────────────────────────────────────────────────────────
   // ── access control pane: <lat-acl>, the peers panel with room to work ────
   // Same data and same endpoints as the narrow editor panel (67-perms.js).
-  // This is a full-window overlay for organising it. Deliberately NOT a third
-  // setMode branch. setMode is wired into the tree/editor lifecycle and access
-  // control has nothing to do with either (same reasoning as 40-grub.js).
+  // This is a tool tab for organising it (24-tools.js). Deliberately NOT a
+  // third setMode branch. setMode is wired into the tree/editor lifecycle and
+  // access control has nothing to do with either (same reasoning as 40-grub.js).
   //
   // Costs no boot requests. It renders permGroups, which boot already loads
   // off the critical path, and only fetches if the pane is opened before that
@@ -6450,13 +6631,12 @@
   customElements.define('lat-acl', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="aclwrap" id="aclwrap" hidden role="dialog" aria-modal="true" aria-label="access control">
+<div class="aclwrap" id="aclwrap" hidden role="region" aria-label="access control">
   <div class="aclbar">
     <h2>Access control</h2>
     <span class="muted" id="aclsum"></span>
     <span class="grow"></span>
     <button id="aclreload" class="ico" title="reload from ship">&#8635;</button>
-    <button id="aclclose">close</button>
   </div>
   <div class="aclbody">
     <div class="row">
@@ -6482,8 +6662,10 @@
     }
   });
 
-  const aclOpen = () => {
-    $('aclwrap').hidden = false;
+  // every way in (#aclopen in the Page tab, the ribbon, the phone's sheet)
+  // lands on the one Access & groups tab, and its coming forward loads it
+  const aclOpen = () => toolOpen('access');
+  const aclLoad = () => {
     // permGroups is populated by boot's deferred load. Only pay a request if
     // the pane was opened before that landed. Guard on permsLoaded, not the
     // array's length: a ship with zero groups is a real, load-complete
@@ -6492,7 +6674,6 @@
     if (!permsLoaded) loadPerms(); else renderAcl();
     loadBans();
   };
-  const aclClose = () => { $('aclwrap').hidden = true; };
 
   // suggest the grantable paths this client already knows about, so a grant is
   // a pick rather than a hand-typed ball path. Built from the tree we have.
@@ -6735,7 +6916,6 @@
     if (e.key === 'Enter') { e.preventDefault(); $('banadd').click(); }
   };
 
-  $('aclclose').onclick = aclClose;
   $('aclreload').onclick = () => { loadPerms(); loadBans(); };
   $('aclnewbtn').onclick = async () => {
     const v = $('aclnew').value.trim();
@@ -6746,11 +6926,6 @@
   $('aclnew').onkeydown = (e) => {
     if (e.key === 'Enter') { e.preventDefault(); $('aclnewbtn').click(); }
   };
-  $('aclt').onclick = aclOpen;
-  // Escape closes, matching the in-app dialog's behaviour
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('aclwrap').hidden) aclClose();
-  });
 
 // ── src/73-comments.js ────────────────────────────────────────────────────
   // ── comments inbox: <lat-comments> ───────────────────────────────────────
@@ -6759,18 +6934,17 @@
   // replied meant visiting each published page. This is the owner's side: what
   // came in, across every page, newest first, with a way to remove one.
   //
-  // Reuses the .aclwrap/.aclbar/.aclbody overlay styles rather than growing a
-  // second set that would drift from them.
+  // Reuses the .aclwrap/.aclbar/.aclbody styles rather than growing a second
+  // set that would drift from them. It shows in a tool tab (24-tools.js).
   customElements.define('lat-comments', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="aclwrap" id="cmwrap" hidden role="dialog" aria-modal="true" aria-label="comments">
+<div class="aclwrap" id="cmwrap" hidden role="region" aria-label="comments">
   <div class="aclbar">
     <h2>Comments</h2>
     <span class="muted" id="cmsum"></span>
     <span class="grow"></span>
     <button id="cmreload" class="ico" title="reload from ship">&#8635;</button>
-    <button id="cmclose">close</button>
   </div>
   <div class="aclbody">
     <div id="cmlist"></div>
@@ -6850,7 +7024,7 @@
         on.className = 'gname';
         on.textContent = c.page;
         on.style.cursor = 'pointer';
-        on.onclick = (e) => { cmClose(); openIn('page', c.page, { ev: e }); };
+        on.onclick = (e) => openIn('page', c.page, { ev: e });
         card.appendChild(on);
       }
 
@@ -6885,14 +7059,13 @@
   const lastSeen = () => { try { return localStorage[seenKey] || ''; } catch { return ''; } };
   const markSeen = (when) => { try { if (when) localStorage[seenKey] = when; } catch {} };
 
+  // on the ribbon's inbox button. Its title stays the button's name, as
+  // every ribbon title does; the count is the badge.
   function paintUnread(n) {
-    const b = $('cmt');
+    const b = $('rb-inbox');
     if (!b) return;
     if (n > 0) { b.dataset.n = n > 99 ? '99+' : String(n); b.classList.add('has-unread'); }
     else { delete b.dataset.n; b.classList.remove('has-unread'); }
-    b.title = n > 0
-      ? n + ' new comment' + (n === 1 ? '' : 's') + ' from other ships'
-      : 'comments from other ships';
   }
 
   // Counts without rendering, so it can run on a refresh without the pane open.
@@ -6939,9 +7112,10 @@
     paintUnread(unreadSeen);
   }
 
-  const cmOpen = () => {
-    $('cmwrap').hidden = false;
-    // opening IS reading: mark everything currently in the inbox as seen
+  const cmOpen = () => toolOpen('inbox');
+  // the inbox's tab came forward (24-tools.js). Opening IS reading: mark
+  // everything currently in the inbox as seen
+  const cmLoad = () => {
     loadComments().then(() => {
       const newest = inbox.reduce(
         (a, c) => (daKey(c.when) > daKey(a) ? String(c.when) : a), lastSeen());
@@ -6953,13 +7127,7 @@
       paintUnread(0);
     });
   };
-  const cmClose = () => { $('cmwrap').hidden = true; };
-  $('cmclose').onclick = cmClose;
   $('cmreload').onclick = loadComments;
-  $('cmt').onclick = cmOpen;
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('cmwrap').hidden) cmClose();
-  });
 
 // ── src/74-orrery.js ──────────────────────────────────────────────────────
   // ── send the open page to orrery (ui-app/orrery.js, docs/orrery.md) ──────
@@ -7119,7 +7287,7 @@
   <textarea id="rpcmbody" rows="3" placeholder="Write a comment"></textarea>
   <div class="row"><span id="rpcmnote" class="muted grow"></span><button id="rpcmpost">Post</button></div>
 </div>`;
-  for (const id of ['back', 'hist']) rpSec(id).insertAdjacentHTML('afterbegin', NONE);
+  for (const id of ['back', 'hist', 'page']) rpSec(id).insertAdjacentHTML('afterbegin', NONE);
 
   // What is in front, as the pane sees it: a page (named or not yet), a
   // memory, a grub, or nothing it has tabs for (a folder, an empty editor
@@ -7151,6 +7319,11 @@
     rpForce = null;
     const d = rpDoc();
     const key = d && d.key ? d.kind + ':' + d.key : null;
+    // the Page tab is the controls of the document underneath, which a tool
+    // tab in front is not. A folder (d null) keeps them: they act on it.
+    const tool = !!activeTab && activeTab.kind === 'tool';
+    rpSec('page').querySelector('.rpnone').hidden = !tool;
+    rpSec('page').querySelector('lat-ctl').hidden = tool;
     for (const id of Object.keys(RP_BODY)) {
       const ok = rpApplies(id, d);
       rpSec(id).querySelector('.rpnone').hidden = ok;
@@ -7894,12 +8067,11 @@
   customElements.define('lat-conflicts', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="aclwrap" id="cfwrap" hidden role="dialog" aria-modal="true" aria-label="sync conflicts">
+<div class="aclwrap" id="cfwrap" hidden role="region" aria-label="sync conflicts">
   <div class="aclbar">
     <h2>Conflicts</h2>
     <span class="muted" id="cfsum"></span>
     <span class="grow"></span>
-    <button id="cfclose">close</button>
   </div>
   <div class="aclbody">
     <p class="aclnote">Each of these is a version that lost a sync race: your
@@ -7927,15 +8099,16 @@
   };
 
   // the badge: a CONDITION (unresolved conflicts exist), so like the offline
-  // badge it stays up rather than living in the scrolling status line
+  // badge it stays up rather than living in the scrolling status line. The
+  // ribbon's Sync conflicts button (24-tools.js) shows only while there are
+  // any, with their count.
   function renderConfBadge() {
-    const b = $('cflt');
+    const b = $('rb-conflicts');
     if (!b) return;
     const n = cfList().length;
     b.hidden = n === 0;
-    b.textContent = '⚑ ' + n;
-    b.title = n + ' unresolved conflict' + (n === 1 ? '' : 's') +
-      ' — a save replaced an edit from elsewhere';
+    if (n) b.dataset.n = n > 99 ? '99+' : String(n);
+    else delete b.dataset.n;
   }
 
   function renderConflicts() {
@@ -7967,13 +8140,13 @@
         live.textContent = 'open live (' + orig + ')';
         live.title = 'open the page this conflicted with';
         live.style.cursor = 'pointer';
-        live.onclick = (e) => { cfClose(); openIn('page', orig, { ev: e }); };
+        live.onclick = (e) => openIn('page', orig, { ev: e });
         head.appendChild(live);
       }
 
       const view = document.createElement('button');
       view.textContent = 'read it';
-      view.onclick = (e) => { cfClose(); openIn('page', path, { ev: e }); };
+      view.onclick = (e) => openIn('page', path, { ev: e });
       head.appendChild(view);
 
       const del = document.createElement('button');
@@ -7996,13 +8169,8 @@
     }
   }
 
-  const cfOpen = () => { $('cfwrap').hidden = false; renderConflicts(); };
-  const cfClose = () => { $('cfwrap').hidden = true; };
-  $('cfclose').onclick = cfClose;
-  $('cflt').onclick = cfOpen;
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('cfwrap').hidden) cfClose();
-  });
+  // its tab's coming forward renders it (24-tools.js)
+  const cfOpen = () => toolOpen('conflicts');
 
 // ── src/85-layout.js ──────────────────────────────────────────────────────
   // ── layout toggles + mobile tabs ─────────────────────────────────────────
@@ -8880,12 +9048,8 @@
     await saveKnow(true);
     src.focus();
   };
-  // Tidy: the memory review (/know?lint=1) as a tool tab, once tool tabs
-  // exist (24-tools.js). Until then it opens beside the editor.
-  $('ktidy').onclick = (ev) => {
-    if (TAB_KINDS.tool) openIn('tool', 'frame:/apps/lattice/know?lint=1', { ev });
-    else window.open('/apps/lattice/know?lint=1', '_blank');
-  };
+  // Tidy: the memory review (/know?lint=1) as a tool tab (24-tools.js)
+  $('ktidy').onclick = () => toolOpen('frame:/apps/lattice/know?lint=1');
   // Trash: the soft-deleted memories (GET /know-trash), each with Restore
   const trashList = $('ktrashlist');
   const kmuted = (t) => {
@@ -9050,8 +9214,8 @@
     // reached from the tree view's own tab row, so there is no mode row.
     const rows = [
       ['ms-q', () => qOpen(), 'search', 'search'],
-      ['ms-cm', () => $('cmt').click(), 'comment', 'comments'],
-      ['ms-acl', () => $('aclt').click(), 'key', 'access'],
+      ['ms-cm', () => cmOpen(), 'comment', 'comments'],
+      ['ms-acl', () => aclOpen(), 'key', 'access'],
     ];
     for (const [rid, run, icon, label] of rows) {
       const b = document.createElement('button');
@@ -9068,15 +9232,15 @@
       if (!sheet.hidden && !sheet.contains(e.target) && e.target !== more) sheet.hidden = true;
     });
 
-    // the unread-comments badge lives on the hidden #cmt; mirror it onto ⋯
-    // and the sheet row so hiding the button does not hide the signal.
+    // the unread-comments badge lives on the ribbon's inbox, which a phone
+    // does not show; mirror it onto ⋯ and the sheet row so the signal stays.
     const mirror = () => {
-      const un = $('cmt').classList.contains('has-unread');
+      const un = $('rb-inbox').classList.contains('has-unread');
       more.classList.toggle('has-unread', un);
       $('ms-cm').classList.toggle('has-unread', un);
     };
     mirror();
-    new MutationObserver(mirror).observe($('cmt'), { attributes: true, attributeFilter: ['class'] });
+    new MutationObserver(mirror).observe($('rb-inbox'), { attributes: true, attributeFilter: ['class'] });
   }
 
 // ── src/98-legacy.js ──────────────────────────────────────────────────────

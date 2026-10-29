@@ -23,8 +23,9 @@
   for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
   $('tback').onclick = () => tabBack();
   $('tfwd').onclick = () => tabFwd();
-  // the move / rename flow of the controls pane, unchanged
-  $('tpath').onclick = () => $('mv').click();
+  // the move / rename flow of the controls pane, unchanged. A tool tab's
+  // path is only its title.
+  $('tpath').onclick = () => { if (!(activeTab && activeTab.kind === 'tool')) $('mv').click(); };
 
   // Read for the tab in front. Entering it shows the preview, which skipped
   // its renders while off screen (60-preview.js)
@@ -43,7 +44,7 @@
     if (window.latVimSetInd) window.latVimSetInd();
   }
   function setRead(on) {
-    if (!activeTab) return;
+    if (!activeTab || activeTab.kind === 'tool') return;
     activeTab.read = !!on;
     tabsSave();
     applyRead();
@@ -63,19 +64,25 @@
   }, true);
 
   function paintPath() {
-    const v = (pname.value || '').trim();
+    const tool = activeTab && activeTab.kind === 'tool';
+    const v = tool ? TAB_KINDS.tool.label(activeTab) : (pname.value || '').trim();
     const p = $('tpath');
+    p.disabled = !!tool;
     p.textContent = v || 'no page open';
     p.classList.toggle('muted', !v);
-    p.title = v ? v + ' · ' + (pkind.value || '') : '';
+    p.title = v && !tool ? v + ' · ' + (pkind.value || '') : '';
   }
   // every writer of the name goes through setOpen (20-state.js), which fires
   // 'input' on the field, and typing fires it natively
   pname.addEventListener('input', paintPath);
   pkind.addEventListener('change', paintPath);
 
-  // called by paintTabs: the tab in front changed, or its stacks did
+  // called by paintTabs: the tab in front changed, or its stacks did. A
+  // tool tab (24-tools.js) has no Edit / Read and no page menu.
   function paintHead() {
+    const tool = !!activeTab && activeTab.kind === 'tool';
+    $('tread').hidden = tool;
+    $('tmenu').hidden = tool;
     if (pmenuEl && pmenuTab !== activeTab) pmenuClose();
     for (const [id, st_] of [['tback', 'back'], ['tfwd', 'fwd']]) {
       const off = !activeTab || !activeTab[st_].length;
@@ -85,6 +92,7 @@
     }
     paintPath();
     applyRead();
+    toolSync();
   }
 
   // ── the page menu ────────────────────────────────────────────────────────

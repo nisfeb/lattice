@@ -12,6 +12,10 @@
 //      opens as a know tab beside a still-rendered Files tree, Ctrl+K
 //      focuses the Search tab, sort flips the root order, the trash
 //      restores a deleted memory, and Bookmarks lists /bookmarks-json
+//    the ribbon, top to bottom, and its tool tabs: Access & groups and the
+//      inbox render in a tab (the inbox carries the unread badge), Settings
+//      frames the settings page without its reader bar, the brief opens
+//      today's journal page, and Browser asks before leaving unsaved work
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           node scripts/ui-shell.mjs
@@ -181,7 +185,7 @@ try {
     spin: !!document.querySelector('#statusbar #spin'),
     off: !!document.querySelector('#statusbar #offbadge'),
     editor: !!document.querySelector('#center #src') && !!document.querySelector('#center #prev'),
-    keptHidden: ['pname', 'pkind', 'cmt', 'aclt', 'wrapt', 'save']
+    keptHidden: ['pname', 'pkind', 'wrapt', 'save']
       .filter((id) => { const e = document.getElementById(id); return !e || e.getBoundingClientRect().width > 0; }),
   }));
   check('tree and status moved',
@@ -419,6 +423,150 @@ try {
   check('a compile error raises the status chip', chip.shown && /syntax error/.test(chip.text || ''), JSON.stringify(chip));
   check('the chip opens the Page tab', !after.nc && after.page, JSON.stringify(after));
   check('the chip leaves with the error', gone);
+
+  // ── the ribbon and tool tabs ───────────────────────────────────────────
+  const names = await page.evaluate(() => [...document.querySelectorAll('#ribbon button')]
+    .map((b) => (b.title === b.getAttribute('aria-label') ? b.title : '!' + b.title)));
+  check('ribbon order and tooltips', JSON.stringify(names) === JSON.stringify([
+    "Today's brief", 'Browser', 'Forum', 'Comments inbox', 'Access & groups', 'Explorer',
+    'Sync conflicts', 'Command palette (Ctrl+P)', 'Settings']), JSON.stringify(names));
+
+  const front = () => page.evaluate(() => {
+    const s = window.latTabs.state();
+    const t = s.tabs[s.active];
+    return t ? { kind: t.kind, key: t.key, shows: s.shows, n: s.tabs.length } : null;
+  });
+  const isFront = (kind, key) => until(([k, n]) => {
+    const s = window.latTabs.state();
+    const t = s.tabs[s.active];
+    return t && t.kind === k && t.key === n && s.shows;
+  }, [kind, key]);
+  await openDoc('page', RP);
+  const n0 = (await front()).n;
+  await page.evaluate(() => document.getElementById('rb-access').click());
+  const accTab = await isFront('tool', 'access');
+  const acc = await page.evaluate(() => {
+    const w = document.getElementById('aclwrap');
+    const r = w.getBoundingClientRect();
+    const host = document.getElementById('toolhost');
+    return {
+      inHost: !!host && host.contains(document.getElementById('aclgrid')),
+      shown: r.width > 0 && r.height > 0,
+      fixed: getComputedStyle(w).position === 'fixed',
+      doc: document.getElementById('docarea').getBoundingClientRect().height,
+      head: document.getElementById('tpath').textContent,
+      tread: document.getElementById('tread').getBoundingClientRect().width,
+    };
+  });
+  const n1 = (await front()).n;
+  check('access opens as a tab',
+    accTab && acc.inHost && acc.shown && !acc.fixed && acc.doc === 0 && n1 === n0 + 1
+      && acc.head === 'Access & groups' && acc.tread === 0,
+    JSON.stringify({ accTab, acc, n0, n1 }));
+  await rtab('page');
+  await sleep(300);
+  const pgNone = await paneText('page');
+  check('a tool tab leaves the Page tab empty', pgNone === 'Nothing here for this tab.', pgNone);
+  await page.focus('#aclnew');
+  await page.keyboard.press('Escape');
+  await sleep(300);
+  const esc = await front();
+  check('escape in a tool tab keeps the tab',
+    esc.kind === 'tool' && esc.key === 'access' && esc.n === n1, JSON.stringify(esc));
+  await openDoc('page', RP);
+  await sleep(300);
+  const back2 = await page.evaluate(() => ({
+    doc: document.getElementById('docarea').getBoundingClientRect().height,
+    host: document.getElementById('toolhost').getBoundingClientRect().height,
+  }));
+  await page.evaluate(() => document.getElementById('aclopen').click());
+  const refocus = await isFront('tool', 'access');
+  const n2 = (await front()).n;
+  check('#aclopen focuses the same access tab',
+    back2.doc > 0 && back2.host === 0 && refocus && n2 === n1, JSON.stringify({ back2, refocus, n1, n2 }));
+
+  await page.evaluate(() => document.getElementById('rb-settings').click());
+  const setTab = await isFront('tool', 'frame:/apps/lattice/settings');
+  const framed = await until(() => {
+    const f = document.querySelector('#toolhost iframe:not([hidden])');
+    const d = f && f.contentDocument;
+    const bar = d && d.querySelector('form.bar');
+    return !!(d && d.getElementById('themeui') && bar && getComputedStyle(bar).display === 'none');
+  });
+  check('settings frame hides reader bar', setTab && framed, JSON.stringify({ setTab, framed }));
+  //  a link to the editor inside the frame opens in the shell, not the frame
+  await page.evaluate((n) => {
+    const d = document.querySelector('#toolhost iframe:not([hidden])').contentDocument;
+    const a = d.createElement('a');
+    a.href = '/apps/lattice/app?name=' + encodeURIComponent(n);
+    a.textContent = 'to the editor';
+    d.body.append(a);
+    a.click();
+  }, RP);
+  const shelled = await isFront('page', RP);
+  await sleep(500);
+  const frameAt = await page.evaluate(() => {
+    const f = document.querySelector('#toolhost iframe');
+    return f ? f.contentWindow.location.pathname : null;
+  });
+  check('an editor link in the frame opens in the shell',
+    shelled && frameAt === '/apps/lattice/settings', JSON.stringify({ shelled, frameAt }));
+
+  //  today's brief: the unpadded day, when that page exists
+  const today = await page.evaluate(() => {
+    const d = new Date();
+    return 'journal/' + d.getFullYear() + '.' + (d.getMonth() + 1) + '.' + d.getDate();
+  });
+  const had = (await fetch(env.base + '/apps/lattice/page-source?name=' + encodeURIComponent(today),
+    { headers: { Cookie: env.cookie } })).ok;
+  if (!had) await seed(env, [[today, '# brief\n']]);
+  //  a comment on RP, unseen, for the inbox badge after the reload
+  await post('page-comments?name=' + encodeURIComponent(RP) + '&on=1');
+  await sleep(2000);
+  await post('comment?page=' + encodeURIComponent(RP), 'body=shell+inbox+probe');
+  await sleep(2000);
+  await page.evaluate(() => localStorage.removeItem('cmtSeen'));
+  await boot();
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  const unread = await until(() => document.getElementById('rb-inbox').classList.contains('has-unread'), null, 45000);
+  check('inbox badge moved', unread);
+  await page.evaluate(() => document.getElementById('rb-inbox').click());
+  const inTab = await isFront('tool', 'inbox');
+  const read = await until(() => !document.getElementById('rb-inbox').classList.contains('has-unread')
+    && document.getElementById('toolhost').contains(document.getElementById('cmlist'))
+    && !!document.querySelector('#cmlist .aclcard'));
+  check('the inbox opens as a tab and clears the badge', inTab && read, JSON.stringify({ inTab, read }));
+
+  await page.evaluate(() => document.getElementById('rb-brief').click());
+  const brief = await isFront('page', today);
+  check('brief opens journal', brief, JSON.stringify({ today, front: await front() }));
+  if (!had) await post('page-del?name=' + encodeURIComponent(today)).catch(() => {});
+
+  //  the ribbon's ways off the editor ask about unsaved work first. A grub
+  //  never autosaves, so its edit is still unsaved when Browser is clicked.
+  await openDoc('grub', sbase + '/page/' + RP + '/code');
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value += '\n';
+    s.dispatchEvent(new Event('input'));
+  });
+  await page.evaluate(() => document.getElementById('rb-browser').click());
+  const asked = await until(() => !document.getElementById('dlg').hidden, null, 5000);
+  await page.evaluate(() => document.getElementById('dlgcancel').click());
+  await sleep(500);
+  const stayed2 = await page.evaluate(() => location.pathname);
+  let unloadAsk = false;
+  page.on('dialog', (d) => { if (d.type() === 'beforeunload') unloadAsk = true; d.accept(); });
+  await page.evaluate(() => document.getElementById('rb-browser').click());
+  await until(() => !document.getElementById('dlg').hidden, null, 5000);
+  await Promise.all([
+    page.waitForNavigation({ timeout: 30000 }).catch(() => null),
+    page.evaluate(() => document.getElementById('dlgok').click()),
+  ]);
+  const left = await page.evaluate(() => location.pathname).catch(() => null);
+  check('browser asks before leaving unsaved work',
+    asked && stayed2 === '/apps/lattice/app' && left === '/apps/lattice' && !unloadAsk,
+    JSON.stringify({ asked, stayed2, left, unloadAsk }));
 } catch (e) {
   check('threw: ' + String(e.message).slice(0, 140), false);
 } finally {

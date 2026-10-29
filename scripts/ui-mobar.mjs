@@ -46,7 +46,7 @@ check('one bar row: bar is under 60px (was 138)', chrome.bar < 60, chrome.bar + 
 check('total chrome under 110px (was 184)', chrome.bar + chrome.tabs < 110,
   (chrome.bar + chrome.tabs) + 'px');
 
-for (const id of ['pname', 'pkind', 'cmt', 'aclt'])
+for (const id of ['pname', 'pkind'])
   check('phone: #' + id + ' is off the bar', !(await vis(m, id)));
 for (const id of ['mpath', 'mmore', 'save'])
   check('phone: #' + id + ' is on the bar', await vis(m, id));
@@ -68,6 +68,24 @@ try {
 check('sheet > search opens the search tab', qOpened && (await vis(m, 'qinput')));
 check('and the sheet is away again', !(await vis(m, 'msheet')));
 await m.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
+
+// the access row opens the Access & groups tool tab, on screen
+await m.evaluate(() => document.getElementById('mmore').click());
+await m.evaluate(() => document.getElementById('ms-acl').click());
+let aclShown = false;
+try {
+  await m.waitForFunction(() => {
+    const w = document.getElementById('aclwrap');
+    return document.getElementById('toolhost').contains(w)
+      && w.getBoundingClientRect().height > 0;
+  }, { timeout: 15000 });
+  aclShown = true;
+} catch {}
+check('sheet > access opens the access tab', aclShown);
+await m.evaluate(() => {
+  const s = window.latTabs.state();
+  return window.latTabs.closeTab(s.tabs[s.active].id);
+});
 
 // label: open a page, the label says so, tapping it is rename
 await m.evaluate(() => { document.querySelector('.mtabs button[data-mv="tree"]').click(); });

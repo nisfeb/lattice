@@ -61,7 +61,7 @@
   <textarea id="rpcmbody" rows="3" placeholder="Write a comment"></textarea>
   <div class="row"><span id="rpcmnote" class="muted grow"></span><button id="rpcmpost">Post</button></div>
 </div>`;
-  for (const id of ['back', 'hist']) rpSec(id).insertAdjacentHTML('afterbegin', NONE);
+  for (const id of ['back', 'hist', 'page']) rpSec(id).insertAdjacentHTML('afterbegin', NONE);
 
   // What is in front, as the pane sees it: a page (named or not yet), a
   // memory, a grub, or nothing it has tabs for (a folder, an empty editor
@@ -93,6 +93,11 @@
     rpForce = null;
     const d = rpDoc();
     const key = d && d.key ? d.kind + ':' + d.key : null;
+    // the Page tab is the controls of the document underneath, which a tool
+    // tab in front is not. A folder (d null) keeps them: they act on it.
+    const tool = !!activeTab && activeTab.kind === 'tool';
+    rpSec('page').querySelector('.rpnone').hidden = !tool;
+    rpSec('page').querySelector('lat-ctl').hidden = tool;
     for (const id of Object.keys(RP_BODY)) {
       const ok = rpApplies(id, d);
       rpSec(id).querySelector('.rpnone').hidden = ok;

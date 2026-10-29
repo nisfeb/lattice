@@ -19,6 +19,11 @@ const page = await openPage(browser, env, {
   onPageError: (e) => check('page threw: ' + e.message.slice(0, 90), false),
 });
 const wait = (fn, ...args) => page.waitForFunction(fn, { timeout: 90000 }, ...args);
+//  the access pane is a tool tab: its tab's close puts it away
+const closeFront = () => {
+  const s = window.latTabs.state();
+  return window.latTabs.closeTab(s.tabs[s.active].id);
+};
 
 let step = 'settings';
 try {
@@ -83,10 +88,13 @@ try {
 
   // ── 3. the access-control pane ───────────────────────────────────────────
   step = 'acl pane';
-  check('acl: bar button present', await page.$('#aclt') !== null);
+  check('acl: ribbon button present', await page.$('#rb-access') !== null);
   check('acl: pane starts hidden', await page.evaluate(() => document.getElementById('aclwrap').hidden));
-  await page.click('#aclt');
-  check('acl: opens', await page.evaluate(() => !document.getElementById('aclwrap').hidden));
+  await page.click('#rb-access');
+  await wait(() => !document.getElementById('aclwrap').hidden);
+  check('acl: opens in a tool tab', await page.evaluate(() =>
+    document.getElementById('toolhost').contains(document.getElementById('aclwrap'))
+    && window.latTabs.state().tabs[window.latTabs.state().active].kind === 'tool'));
   await wait(() => document.querySelectorAll('#aclgrid .aclcard').length > 0
     || /No groups yet/.test(document.getElementById('aclgrid').textContent));
 
@@ -116,7 +124,8 @@ try {
   // rather than offer toggles that would have no target. (That the list shows
   // the group once a page IS open is asserted by the per-file test below.)
   step = 'share panel with no page open';
-  await page.evaluate(() => document.getElementById('aclclose').click());
+  await page.evaluate(closeFront);
+  await wait(() => document.getElementById('aclwrap').hidden);
   const idle = await page.evaluate(() =>
     document.getElementById('grouplist').textContent);
   check('share panel asks for a page before offering group toggles',
@@ -156,7 +165,7 @@ try {
   check('and the toggle reads back as on', /on/.test(lit), lit);
   // ── short paths: grants show a tail, not the whole ball path ────────────
   step = 'short paths';
-  await page.evaluate(() => document.getElementById('aclt').click());
+  await page.evaluate(() => document.getElementById('rb-access').click());
   await page.waitForFunction(() => !document.getElementById('aclwrap').hidden, { timeout: 30000 });
   const fullPath = base + '/page/' + GROUP + '/target';
   const chip = await page.evaluate((full) => {
@@ -169,7 +178,7 @@ try {
   check('acl: grant paths are shortened to an unambiguous tail',
     !!chip && !chip.includes('lattice_app') && /target ×$/.test(chip),
     JSON.stringify(chip));
-  await page.evaluate(() => document.getElementById('aclclose').click());
+  await page.evaluate(closeFront);
 
   // ── pane resize: drag a boundary, persist, double-click reset ───────────
   step = 'pane resize';

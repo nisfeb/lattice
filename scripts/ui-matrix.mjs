@@ -116,7 +116,7 @@ try {
     const control = draw('\u{10FFFF}');   // unassigned forever: always .notdef
     const blank = draw(' ');
     const bad = [];
-    for (const b of document.querySelectorAll('.bar button.ico, .bar a.home, .bar a.nav')) {
+    for (const b of document.querySelectorAll('.bar button.ico, .bar a.nav')) {
       const t = (b.textContent || '').trim();
       if (!t) continue;
       const px = draw(t);
@@ -592,7 +592,7 @@ try {
   step = 'comment notifications';
   const CN = RUN + '-notify';
   const unread = () => page.evaluate(() => {
-    const b = document.getElementById('cmt');
+    const b = document.getElementById('rb-inbox');
     return { n: b.dataset.n || null, marked: b.classList.contains('has-unread') };
   });
   await page.evaluate(async (n) => {
@@ -618,27 +618,30 @@ try {
   //  and how we prove the mark survives a reload, which is the point of it.
   const reloadApp = async () => {
     await page.reload({ waitUntil: 'networkidle2', timeout: 90000 });
-    await wait(() => !!document.getElementById('cmt'));
+    await wait(() => !!document.getElementById('rb-inbox'));
     await sleep(2000);
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   };
   await reloadApp();
-  await wait(() => document.getElementById('cmt').classList.contains('has-unread'));
+  await wait(() => document.getElementById('rb-inbox').classList.contains('has-unread'));
   const u1 = await unread();
   check('comments: an arrival marks the button unread', u1.marked, JSON.stringify(u1));
   check('comments: and carries a count', u1.n && Number(u1.n) >= 1, JSON.stringify(u1));
 
   //  opening the inbox IS reading it
-  await page.click('#cmt');
+  await page.evaluate(() => document.getElementById('rb-inbox').click());
   await wait(() => !document.getElementById('cmwrap').hidden);
   //  clearing is asynchronous by nature: opening has to LOAD the inbox before
   //  it can know what the newest comment is. A fixed sleep raced that fetch
   //  and blamed the badge. Waiting on the condition still fails if it never
   //  clears, which is the thing actually worth asserting.
-  await wait(() => !document.getElementById('cmt').classList.contains('has-unread'));
+  await wait(() => !document.getElementById('rb-inbox').classList.contains('has-unread'));
   const u2 = await unread();
   check('comments: opening the inbox clears the badge', !u2.marked, JSON.stringify(u2));
-  await page.click('#cmclose');
+  await page.evaluate(() => {
+    const s = window.latTabs.state();
+    return window.latTabs.closeTab(s.tabs[s.active].id);
+  });
   await sleep(500);
   //  and it stays cleared across a reload, which recounts from scratch against
   //  the mark opening the inbox just wrote. A refresh alone would be throttled
