@@ -88,7 +88,8 @@ fn lick_source() {
 /// reads LICK_STALE over lick, LICK_BETWEEN runs (the script has the host
 /// edit the page and waits for this ship's cache to take it), then the
 /// projection saves LICK_SAVE, the text it read before. It must claim the
-/// rev it read, so the host's newer text survives. Prints `LICK_READ=` and
+/// rev it read (or LICK_FIRST's save made), so the host's newer text
+/// survives. Prints `LICK_READ=`, `LICK_FIRST_SAVED=` and
 /// `LICK_STALE_SAVED=ok` or `LICK_STALE_SAVED=<errno> <msg>`. Opt-in like
 /// the tests above.
 #[test]
@@ -108,6 +109,14 @@ fn lick_stale_save() {
         .expect("projection over lick");
     let got = p.read(&name).expect("read through the link");
     println!("LICK_READ={}", String::from_utf8_lossy(&got));
+    // LICK_FIRST=<body>: a save that lands first, so the stale one below
+    // rides the claim that save answered, not the read's
+    if let Ok(first) = std::env::var("LICK_FIRST") {
+        match p.write(&name, "md", first.as_bytes(), false) {
+            Ok(()) => println!("LICK_FIRST_SAVED=ok"),
+            Err(e) => println!("LICK_FIRST_SAVED={} {}", e.errno, e.msg),
+        }
+    }
     if let Ok(cmd) = std::env::var("LICK_BETWEEN") {
         let st = std::process::Command::new("sh").arg("-c").arg(&cmd).status();
         println!("LICK_BETWEEN={}", st.map(|s| s.success()).unwrap_or(false));

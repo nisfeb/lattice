@@ -74,6 +74,22 @@ BSHIP=$(curl -s -m 30 -H "$BK" "${B_URL%/}/~/host")
 [ -n "$ASHIP" ] && [ -n "$BSHIP" ] || { echo "FAIL  ships answer /~/host"; exit 1; }
 BSUF=/page/x/doc/code     # the end of B's absolute code-grub path for x/doc
 
+# share_a <name>: A shares one of its own pages with B, read
+share_a() { A_ -X POST "$A/share-file?name=$1&ship=$BSHIP&mode=read"; }
+# grant_base <page>: A's absolute base, from the road a grant of <page> made
+grant_base() {
+  A_ "$A/share-groups" | jq -r --arg g "${BSHIP#\~}" --arg p "/page/$1" \
+    '[.[] | select(.name==$g) | .peek[] | select(endswith($p))][0] | sub($p + "$"; "")'
+}
+# abase: A's absolute base, from a page shared with B for the purpose
+abase() {
+  A_ -o /dev/null -X POST "$A/page-save?name=t4base&type=md&new=1" --data-binary 'b'
+  share_a t4base >/dev/null
+  grant_base t4base
+  A_ -o /dev/null -X POST "$A/share-group-del?name=${BSHIP#\~}"
+  A_ -o /dev/null -X POST "$A/page-del?name=t4base"
+}
+
 cleanup() {
   eval "$B_START" >/dev/null 2>&1   # never leave B frozen
   for id in ${KEYS:-}; do A_ -o /dev/null -X POST "$A/key-revoke?id=$id"; done
@@ -96,6 +112,8 @@ share() {
 
 section_make() {
   echo "==> make ($ASHIP links $BSHIP's x/doc)"
+  local AB; AB=$(abase)
+  [ -n "$AB" ] && [ "$AB" != null ] || { fail "A's base from a grant"; return; }
   is "B makes x/doc" 200 "$(code -H "$BK" -X POST "$B/page-save?name=x/doc&type=md&new=1" --data-binary '# from B')"
   # the notice is best-effort (share-file's `notified` can read false on
   # a slow pier and still land), so the checks wait for its effect instead
@@ -144,7 +162,7 @@ section_make() {
   is "move onto an existing link: 409" 409 "$(code -H "$AK" -X POST "$A/page-move?from=notes2/taken&to=notes2/doc")"
   is "move the link alone to notes2/moved" 200 "$(code -H "$AK" -X POST "$A/page-move?from=notes2/doc&to=notes2/moved")"
   is "  ...it is a link there" "$BSHIP" "$(node page-dump notes2/moved | jq -r .link.host)"
-  is "  ...and not a folder too" 1 "$(A_ "$A/page-tree" | jq '[.nodes[] | select(.path=="notes2/moved")] | length')"
+  is "  ...and no /page dir beside it" 0 "$(A_ -G --data-urlencode "ship=$ASHIP" --data-urlencode "path=$AB/page/notes2" "$A/browse" | jq '[.children[] | select(.name=="moved")] | length')"
   is "  ...and gone from notes2/doc" null "$(node page-tree notes2/doc)"
   is "move it back" 200 "$(code -H "$AK" -X POST "$A/page-move?from=notes2/moved&to=notes2/doc")"
 
@@ -154,6 +172,12 @@ section_make() {
   is "  ...and the link is gone" null "$(node page-tree notes2/doc)"
 
   is "re-make to notes2/doc" 200 "$(mk notes2/doc)"
+  is "  ...no /page dir for it" 0 "$(A_ -G --data-urlencode "ship=$ASHIP" --data-urlencode "path=$AB/page/notes2" "$A/browse" | jq '[.children[] | select(.name=="doc")] | length')"
+  is "new page under a link: 409" 409 "$(code -H "$AK" -X POST "$A/page-save?name=notes2/doc/sub&type=md" --data-binary 'x')"
+  is "batch page under a link: 409" 409 "$(code -H "$AK" -X POST "$A/page-save-batch" --data-binary '[{"name":"notes2/doc/sub","type":"md","body":"x"}]')"
+  is "folder under a link: 409" 409 "$(code -H "$AK" -X POST "$A/folder-new?name=notes2/doc/sub")"
+  is "folder at a link: 409" 409 "$(code -H "$AK" -X POST "$A/folder-new?name=notes2/doc")"
+  is "  ...nothing made" null "$(node page-tree notes2/doc/sub)"
   # a link holds no pages, so nothing goes under one
   is "make under a link: 409" 409 "$(mk notes2/doc/inner)"
   is "  ...and nothing there" null "$(node page-tree notes2/doc/inner)"
@@ -230,6 +254,15 @@ section_proxy() {
   is "  ...B edits and A's cache takes it" true "$(sed -n 's/^LICK_BETWEEN=//p' <<<"$sv")"
   is "  ...the mount's stale save is refused (EEXIST)" 17 "$(sed -n 's/^LICK_STALE_SAVED=//p' <<<"$sv" | cut -d' ' -f1)"
   is "  ...B's newer text survives" "# B newer" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
+  # again after a save that landed: the claim is the rev that save made
+  local between2="${between//B newer/B newest}"
+  sv=$( cd "$(dirname "$0")/../lattice-fs-rs" && LATTICE_SOCK="$A_SOCK" LATTICE_SHIP="$ASHIP" \
+      LICK_STALE=notes/doc LICK_FIRST='# mount first' LICK_SAVE='# mount second' LICK_BETWEEN="$between2" \
+      cargo test -q --test lick_live lick_stale_save -- --nocapture 2>/dev/null )
+  is "mount saves once" ok "$(sed -n 's/^LICK_FIRST_SAVED=//p' <<<"$sv")"
+  is "  ...B edits and A's cache takes it" true "$(sed -n 's/^LICK_BETWEEN=//p' <<<"$sv")"
+  is "  ...the mount's second, stale save is refused (EEXIST)" 17 "$(sed -n 's/^LICK_STALE_SAVED=//p' <<<"$sv" | cut -d' ' -f1)"
+  is "  ...B's newest text survives" "# B newest" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
 
   # each lick read starts a background read, also after an earlier one ended
   local want
@@ -303,8 +336,6 @@ section_proxy() {
   is "  ...B is unchanged" "# via key" "$(B_ "$B/page-source?name=x/doc" | jq -r .body)"
 }
 
-# share_a <name>: A shares one of its own pages with B, read
-share_a() { A_ -X POST "$A/share-file?name=$1&ship=$BSHIP&mode=read"; }
 # mcp <tool> <json args>: one tools/call to the lattice MCP server, as key $T
 mcp() {
   printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}" \
@@ -325,9 +356,7 @@ section_exposure() {
   # A grants B the whole notes/ folder (a dir road, the ACL editor's way).
   # Its absolute base comes from the page grant share-file makes.
   is "A shares notes/real with B" true "$(share_a notes/real | jq -r .ok)"
-  local AB
-  AB=$(A_ "$A/share-groups" | jq -r --arg g "${BSHIP#\~}" \
-    '[.[] | select(.name==$g) | .peek[] | select(endswith("/page/notes/real"))][0] | sub("/page/notes/real$"; "")')
+  local AB; AB=$(grant_base notes/real)
   [ -n "$AB" ] && [ "$AB" != null ] || { fail "A's base from its grant"; return; }
   is "A grants B notes/" 200 "$(code -H "$AK" -X POST "$A/share-group-save?name=${BSHIP#\~}" \
     --data-binary "{\"ships\":[\"$BSHIP\"],\"peek\":[\"$AB/page/notes\"],\"make\":[]}")"

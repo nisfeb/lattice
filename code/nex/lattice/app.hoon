@@ -338,6 +338,11 @@
         ::  /link-reads: one short-lived fiber per background read of a link
         ::  (+link-read-later), gone when its read is done
             [%fall %| /link-reads empty-dir:loader]
+        ::  /link-writes/<id>: one short-lived fiber per lick save through a
+        ::  link (+link-write-apart), and /link-done/<id> its answer, which
+        ::  the lick port takes and deletes (or the fiber does, later)
+            [%fall %| /link-writes empty-dir:loader]
+            [%fall %| /link-done empty-dir:loader]
         ::  /links/<path>/link: the links in the page tree (/lib/lattice-link),
         ::  kept out of /page so no grant or publish there can reach one. A
         ::  folder grant is a dir road, and grubbery's weirs only ever allow,
@@ -679,14 +684,13 @@
         ;<  ~  bind:m  (send-wait-dated until)
         ;<  *  bind:m  (take-news-or-wake-until /ev until)
         $
-      ::  /fs.sig: the lick (local IPC) port for the FUSE client. The serve-loop
-      ::  is generic. +lick-serve:io (fiberio) spins the socket, decodes each
-      ::  [verb path query body] frame, and spits back [status body]. The only
-      ::  lattice-specific part is the +fs-op handler. Auth is filesystem-presence.
-      ::  The socket lives in the pier.
+      ::  /fs.sig: the lick (local IPC) port for the FUSE client. +fs-serve
+      ::  spins the socket, decodes each [verb path query body] frame, and
+      ::  spits back [status body] from the +fs-op handler. Auth is
+      ::  filesystem-presence. The socket lives in the pier.
           [~ %'fs.sig']
         ;<  ~  bind:m  (rise-later prod "lattice /fs.sig" "")
-        (lick-serve:io fs-port fs-op)
+        fs-serve
       ::  /link-reads/<id>: a live read of one link (+link-read-later), for a
       ::  lattice-fs read that answered from the link's cache. The grub holds
       ::  the link's path. The fiber ends with the read, and grubbery deletes
@@ -698,6 +702,30 @@
         ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at pax)
         ?~  lk  (pure:m ~)
         ;<  *  bind:m  (link-read pax l.u.lk)
+        (pure:m ~)
+      ::  /link-writes/<id>: a lick save through a link (+link-write-apart).
+      ::  The remote peeks and pokes run here, never in the lick port's own
+      ::  fiber: one that times out leaves its late answer to a fiber that
+      ::  is gone, where the port would %skip it forever and slow every
+      ::  later request. The answer goes to /link-done/<id>, and is deleted
+      ::  a while later if the port gave up on it.
+          [[%link-writes ~] @]
+        ;<  ~  bind:m  take-kick
+        ?^  prod  (pure:m ~)
+        ;<  up=@ud  bind:m  nexus-up
+        ;<  [pax=path body=@t base=(unit @ud)]  bind:m
+          (get-state-as:io ,[path @t (unit @ud)])
+        ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at pax)
+        ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
+          =/  n  (fiber:fiber:nexus ,(each [old=@ud new=@ud] [code=@ud msg=@t]))
+          ?~  lk  (pure:n |+[404 'no such page'])
+          (link-write pax l.u.lk body base ~s3)
+        =/  done=road:tarball  (rf up /link-done name.rail)
+        ;<  ~  bind:m  (put-file done [/ %noun] r)
+        ;<  ~  bind:m  (sleep:io ~m1)
+        ;<  ex=?  bind:m  (peek-exists:io done)
+        ?.  ex  (pure:m ~)
+        ;<  *  bind:m  (cull-soft:io done)
         (pure:m ~)
       ::  /mirror/mirror.sig: the commons reconciler (docs/obelisk-mirror.md
       ::  section 5). The loop lives in +mirror-loop.
@@ -816,10 +844,11 @@
     |-  ^-  form:n
     ?~  todo  (pure:n ~)
     ;<  lk=(unit [l=link:ll at=@da])  bind:n  (link-at (pax-of nam.i.todo))
-    ?^  lk  (pure:n `nam.i.todo)
+    ?^  lk  (pure:n `(crip "{(trip nam.i.todo)} is a link: save it with page-save"))
+    ;<  la=(unit path)  bind:n  (link-above (pax-of nam.i.todo))
+    ?^  la  (pure:n `(link-above-msg u.la))
     $(todo t.todo)
-  ?^  onto
-    (send-err eyre-id 409 (crip "{(trip u.onto)} is a link: save it with page-save"))
+  ?^  onto  (send-err eyre-id 409 u.onto)
   ::  mark a tainted key's new pages sensitive before the write lands
   ;<  ~  bind:m
     =/  n  (fiber:fiber:nexus ,~)
@@ -998,6 +1027,11 @@
   ::  is safe where refuse-and-block would need true writer-side CAS.
   =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
   ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of u.name))
+  ::  a new page under a link is refused: a link holds no pages
+  ;<  la=(unit path)  bind:m
+    ?^  src.pc  (pure:(fiber:fiber:nexus ,(unit path)) ~)
+    (link-above (pax-of u.name))
+  ?^  la  (send-err eyre-id 409 (link-above-msg u.la))
   =/  prev=@ud  rev.pc
   =/  stale=?  &(?=(^ base) !=(u.base 0) !=(u.base prev))
   =/  old=(unit @t)  ?.(stale ~ src.pc)
@@ -1264,6 +1298,17 @@
   ;<  ex=?  bind:m  (peek-exists:io (link-road up (scag i pax)))
   ?:  ex  (pure:m `(scag i pax))
   $(i +(i))
+::  +link-in-way: why a folder can't be made at pax, ~ if it can: a link is
+::  there, or above it.
+++  link-in-way
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  lx=?  bind:m  (peek-exists:io (link-road up pax))
+  ?:  lx  (pure:m `(crip "{(pax-str pax)} is a link"))
+  ;<  la=(unit path)  bind:m  (link-above pax)
+  (pure:m (bind la link-above-msg))
 ::  +link-above-msg: the refusal for a path under the link at `at`.
 ++  link-above-msg
   |=  at=path
@@ -1347,6 +1392,35 @@
     (pure:m |+[504 (link-fail-msg host.l)])
   ;<  ~  bind:m  (link-note lpath l `[kind.l body new.p.r])
   (pure:m r)
+::  +link-write-apart: +link-write for the lick port, in a fiber of its own
+::  (/link-writes/<id>), polled with the port's own timer until it answers
+::  or `wait` runs out (a 504; the write may still land). Every remote
+::  answer, late ones included, goes to that fiber and dies with it.
+++  link-write-apart
+  |=  [lpath=path body=@t base=(unit @ud) wait=@dr]
+  =/  m  (fiber:fiber:nexus ,(each [old=@ud new=@ud] [code=@ud msg=@t]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  now=@da  bind:m  bowl-now
+  =/  id=@ta  (scot %uv (sham lpath body now))
+  ;<  err=(unit tang)  bind:m
+    %+  make-soft:io  (rf up /link-writes id)
+    |+[[[/ %noun] `*`[lpath body base]] ~]
+  ?^  err  (pure:m |+[500 'could not start the save'])
+  =/  done=road:tarball  (rf up /link-done id)
+  =/  until=@da  (add now wait)
+  |-  ^-  form:m
+  ;<  dv=view:nexus  bind:m  (peek:io done ~)
+  ?:  ?=([%file *] dv)
+    ;<  *  bind:m  (cull-soft:io done)
+    =/  r
+      %-  mole  |.
+      ;;((each [old=@ud new=@ud] [code=@ud msg=@t]) (sang-noun:tarball sang.dv))
+    (pure:m ?~(r |+[500 'unreadable save result'] u.r))
+  ;<  t=@da  bind:m  bowl-now
+  ?:  (gte t until)  (pure:m |+[504 'the save did not answer in time'])
+  ;<  ~  bind:m  (sleep:io (div ~s1 20))
+  $
 ::  +link-source-json: page-source's answer for a link: a page's fields
 ::  plus `link`, so a client (and the MCP server, which quotes it as foreign
 ::  text) knows whose page it is. No share or comments: those are the
@@ -2859,6 +2933,8 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ;<  lm=(unit @t)  bind:m  (link-in-way (pax-of u.name))
+    ?^  lm  (send-err eyre-id 409 u.lm)
     ;<  ~  bind:m  (poke-eval [%mkdir (pax-of u.name)])
     ;<  ~  bind:m  (poke-dnames args (pax-of u.name))
     (send-ok eyre-id)
@@ -6772,7 +6848,8 @@
     %+  murn  all
     |=([pax=path *] ?.((~(has by (ball-fils bl pax)) %sensitive) ~ `pax))
   =/  sacts=(list eval-action:le)
-    %+  turn  (weld ?:(rs ~[`path`~] ~) own)
+    ::  not a link root's: its mark would make a /page dir beside it
+    %+  turn  (weld ?:(&(rs !(isl ~)) ~[`path`~] ~) own)
     |=(p=path `eval-action:le`[%page-sensitive (weld to p) &])
   ::  links (+collect-tree lists them as folders) carry their link grub
   ::  over whole, the root too when it is one. Nothing in one is rewritten:
@@ -7991,9 +8068,10 @@
   ::  a link (/lib/lattice-link) saves on its host (+link-write). The port
   ::  serves one request at a time, so a slow or offline owner must not hold
   ::  it: a link last seen failing answers 503 at once and reads again in
-  ::  the background, and a live one gets 2s deadlines. The base is the
-  ::  rev the mount read (?base=), or the cached rev from a mount that does
-  ::  not send one: an owner's newer text is a 409, never overwritten, and
+  ::  the background, and a live one gets 3s deadlines, in a fiber of its
+  ::  own (+link-write-apart), so a late answer never lands here. The base
+  ::  is the rev the mount read (?base=), or the cached rev from a mount that
+  ::  does not send one: an owner's newer text is a 409, never overwritten, and
   ::  a fresh read is started so the mount sees it. The cache alone was not
   ::  enough: a background read moves it past the text the mount holds.
   ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at (pax-of name))
@@ -8004,9 +8082,14 @@
       ;<  ~  bind:m  (link-read-later (pax-of name))
       (pure:m [503 (link-fail-msg host.l)])
     =/  bas=(unit @ud)  ?.(?=(%ship -.l) ~ ?^(base base `rev.l))
+    ::  three remote steps of 3s each at most, and a little for the hop
     ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
-      (link-write (pax-of name) l raw bas ~s2)
-    ?:  ?=(%& -.r)  (pure:m [200 ''])
+      (link-write-apart (pax-of name) raw bas ~s10)
+    ::  the owner's new rev, so the mount claims it on its next save
+    ?:  ?=(%& -.r)
+      %-  pure:m
+      :-  200
+      (en:json:html (pairs:enjs:format ~[['ok' b+&] ['rev' (numb:enjs:format new.p.r)]]))
     ;<  ~  bind:m
       ?.  =(409 code.p.r)  (pure:(fiber:fiber:nexus ,~) ~)
       (link-read-later (pax-of name))
@@ -8020,6 +8103,15 @@
     ?.  new  (pure:(fiber:fiber:nexus ,?) |)
     (peek-exists:io (rf up (weld /page (pax-of name)) %code))
   ?:  ex  (pure:m [409 'page exists'])
+  ::  a new page under a link is refused: a link holds no pages. An
+  ::  overwrite (most saves) pays one peek to learn it is not new.
+  ;<  cx=?  bind:m
+    ?:  new  (pure:(fiber:fiber:nexus ,?) |)
+    (peek-exists:io (rf up (weld /page (pax-of name)) %code))
+  ;<  la=(unit path)  bind:m
+    ?:  cx  (pure:(fiber:fiber:nexus ,(unit path)) ~)
+    (link-above (pax-of name))
+  ?^  la  (pure:m [409 (link-above-msg u.la)])
   ;<  ~  bind:m  (poke-eval [%make (pax-of name) src])
   (pure:m [200 ''])
 ::  +fs-mkdir / +fs-del: folder create / page-or-folder delete.
@@ -8028,6 +8120,8 @@
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
   ^-  form:m
   ?.  (valid-name name)  (pure:m [400 'bad name'])
+  ;<  lm=(unit @t)  bind:m  (link-in-way (pax-of name))
+  ?^  lm  (pure:m [409 u.lm])
   ;<  ~  bind:m  (poke-eval [%mkdir (pax-of name)])
   (pure:m [200 ''])
 ++  fs-del
@@ -8124,6 +8218,64 @@
     ;<  r=(each @ud [code=@ud msg=@t])  bind:m  (fs-move u.from u.to)
     ?:  ?=(%| -.r)  (pure:m p.r)
     (pure:m [200 (en:json:html (pairs:enjs:format ~[['moved' (numb:enjs:format p.r)]]))])
+  ==
+::  +fs-serve: +lick-serve:io for the lattice-fs port, but waiting for the
+::  next request with +take-in-drain, which eats strays instead of skipping
+::  them. The port fiber lives until the next reload, and a reload keeps
+::  its skip queue (grubbery +spawn-proc), so every late answer to a remote
+::  read or poke it ever gave up on stayed there, re-offered on each take:
+::  the port slowed with every timeout, to seconds for a local page. Remote
+::  work now runs in fibers of its own (+link-write-apart, +link-read-later),
+::  and this drains what an older build left, and anything else that slips.
+++  fs-serve
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  name=path  fs-port
+  ;<  ~  bind:m  (lick-spin:io name |)
+  ;<  *  bind:m  (keep:io /in [%& %& (weld /sys/lick name) %in] ~)
+  |-
+  ;<  got=?  bind:m  take-in-drain
+  ?.  got  $
+  ;<  =view:nexus  bind:m  (peek:io [%& %& (weld /sys/lick name) %in] ~)
+  ?.  ?=([%file *] view)  $
+  =/  raw=(unit [seq=@ud mark=@tas noun=*])
+    (mole |.(!<([seq=@ud mark=@tas noun=*] (need-vase:tarball sang.view))))
+  ?~  raw  $
+  =/  req=(unit [verb=@t path=@t query=@t body=@t])
+    (mole |.(;;([@t @t @t @t] noun.u.raw)))
+  ?~  req  $
+  ;<  [status=@ud rbody=@t]  bind:m  (fs-op u.req)
+  ::  a client gone (killed, timed out) gets no spit: /live is advisory, so
+  ::  only a definitive %.n suppresses it
+  ;<  live=view:nexus  bind:m  (peek:io [%& %& (weld /sys/lick name) %live] ~)
+  =/  gone=?
+    ?.  ?=([%file *] live)  |
+    =(| (fall (mole |.(!<(? (need-vase:tarball sang.live)))) &))
+  ?:  gone  $
+  ;<  ~  bind:m  (lick-spit:io name %res [status rbody])
+  $
+::  +take-in-drain: the port's next request (& on news on /in), or a stray
+::  eaten (|): a late remote %peek or %veto, a timer wake, a keen answer or
+::  a poke-ack that nothing here awaits any more.
+++  take-in-drain
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %news * *]
+    ?:  =(/in wire.u.in)  [%done &]
+    [%skip ~]
+      [~ %peek * *]  [%done |]
+      [~ %veto *]    [%done |]
+      [~ %poke * *]
+    ?:  ?|  =([/ %timer-wake] p.sage.u.in)
+            =([/ %keen-response] p.sage.u.in)
+            =([/ %poke-ack] p.sage.u.in)
+        ==
+      [%done |]
+    [%skip ~]
   ==
 ::  +fs-port: the lick unix-socket port; vere serves it at the pier path
 ::  .urb/dev/grubbery/lattice/fs.

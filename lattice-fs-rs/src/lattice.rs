@@ -63,6 +63,20 @@ impl LatticeProjection {
         self.bases.lock().unwrap().retain(|k, _| k != name && !k.starts_with(&under));
     }
 
+    /// A move: the claims of `from` and everything under it go to `to`,
+    /// since the text the mount holds moved with them.
+    fn carry(&self, from: &str, to: &str) {
+        let under = format!("{from}/");
+        let mut bs = self.bases.lock().unwrap();
+        let moved: Vec<(String, u64)> = bs
+            .iter()
+            .filter(|(k, _)| *k == from || k.starts_with(&under))
+            .map(|(k, r)| (format!("{to}{}", &k[from.len()..]), *r))
+            .collect();
+        bs.retain(|k, _| k != from && !k.starts_with(&under));
+        bs.extend(moved);
+    }
+
     /// Filter a full-tree dump down to the mounted sub-root, stripping the prefix
     /// from both node rels and body keys. No-op when the whole tree is mounted.
     fn remap_dump(
@@ -128,12 +142,15 @@ impl Projection for LatticeProjection {
             .get("body")
             .and_then(|b| b.as_str())
             .ok_or_else(|| PErr::new(libc::EIO, "page-source: no body"))?;
-        // a link's page-source names its host: remember the rev it served
-        if v.get("link").is_some() {
-            if let Some(r) = v.get("rev").and_then(|r| r.as_u64()) {
-                self.bases.lock().unwrap().insert(name, r);
-            }
-        }
+        // a link's page-source names its host: remember the rev it served.
+        // Anything else holds no claim, whatever was there before (a link
+        // unmade, or replaced by a local page, outside the mount).
+        let rev = v.get("rev").and_then(|r| r.as_u64());
+        let mut bs = self.bases.lock().unwrap();
+        match (v.get("link").is_some(), rev) {
+            (true, Some(r)) => bs.insert(name, r),
+            _ => bs.remove(&name),
+        };
         Ok(body.as_bytes().to_vec())
     }
 
@@ -219,10 +236,11 @@ impl Projection for LatticeProjection {
             }
         }
         let r = self.t.post("/apps/lattice/page-save", &q, &body)?;
-        // landed: the next save claims the rev this one made. HTTP answers
-        // it; the lick port answers '' and the server falls back to its
-        // cached rev, which the write just moved. A refused save keeps its
-        // claim, so a retry of the same stale text is refused too.
+        // landed: the next save claims the rev this one made, which HTTP and
+        // the lick port both answer. An older ship's lick port answers '':
+        // the claim goes, and that ship falls back to its cached rev. A
+        // refused save keeps its claim, so a retry of the same stale text is
+        // refused too.
         if base.is_some() {
             let next = serde_json::from_slice::<Value>(&r)
                 .ok()
@@ -257,7 +275,7 @@ impl Projection for LatticeProjection {
         let q = [("from", self.full(src)), ("to", self.full(dst))];
         let q: Vec<(&str, &str)> = q.iter().map(|(k, v)| (*k, v.as_str())).collect();
         self.t.post("/apps/lattice/page-move", &q, b"")?;
-        self.forget(&self.full(src));
+        self.carry(&self.full(src), &self.full(dst));
         Ok(())
     }
 
@@ -908,7 +926,15 @@ mod tests {
             "link":{"host":"~nec","path":"/apps/x/page/d/code","mode":"edit"}}]}"#;
         let (rec, p) = lp(
             "n",
-            vec![ok(src), ok(dump), bad(409), ok(r#"{"ok":true,"rev":12}"#), ok(""), ok("{}")],
+            vec![
+                ok(src),
+                ok(dump),
+                bad(409),
+                ok(r#"{"ok":true,"rev":12}"#),
+                ok(r#"{"ok":true,"rev":13}"#),
+                ok(""),
+                ok("{}"),
+            ],
         );
         assert_eq!(p.read("l").unwrap(), b"old");
         p.dump().unwrap();
@@ -917,8 +943,12 @@ mod tests {
         // a failed write keeps the claim; a landed one takes the new rev
         p.write("l", "md", b"stale", false).unwrap();
         p.write("l", "md", b"next", false).unwrap();
-        // the lick port answers '' with no rev: the next write sends none,
-        // and the server falls back to its cached rev
+        // every landed save answers its rev (HTTP and lick alike), so the
+        // claim survives it: a background read after it can't let a later
+        // stale save through
+        p.write("l", "md", b"then", false).unwrap();
+        // that one answered '' (an older ship's lick port): the claim goes,
+        // and that ship falls back to its cached rev
         p.write("l", "md", b"last", false).unwrap();
         assert_eq!(
             rec.log(),
@@ -928,9 +958,34 @@ mod tests {
                 r#"POST /apps/lattice/page-save?name=n/l&type=md&base=7 "stale""#,
                 r#"POST /apps/lattice/page-save?name=n/l&type=md&base=7 "stale""#,
                 r#"POST /apps/lattice/page-save?name=n/l&type=md&base=12 "next""#,
+                r#"POST /apps/lattice/page-save?name=n/l&type=md&base=13 "then""#,
                 r#"POST /apps/lattice/page-save?name=n/l&type=md "last""#,
             ]
         );
+    }
+
+    #[test]
+    fn a_move_carries_the_claim_and_a_plain_read_clears_it() {
+        let src = r#"{"kind":"md","body":"b","rev":5,"link":{"host":"~nec","path":"/x"}}"#;
+        let (rec, p) = lp(
+            "",
+            vec![
+                ok(src),
+                ok(r#"{"moved":1}"#),
+                ok("{}"),
+                // the page at d/l is no longer a link (unmade in the web UI)
+                ok(r#"{"kind":"md","body":"b","rev":2}"#),
+                ok("{}"),
+            ],
+        );
+        p.read("a/l").unwrap();
+        p.mv("a", "d").unwrap();
+        p.write("d/l", "md", b"x", false).unwrap();
+        p.read("d/l").unwrap();
+        p.write("d/l", "md", b"y", false).unwrap();
+        let log = rec.log();
+        assert_eq!(log[2], r#"POST /apps/lattice/page-save?name=d/l&type=md&base=5 "x""#);
+        assert_eq!(log[4], r#"POST /apps/lattice/page-save?name=d/l&type=md "y""#);
     }
 
     #[test]
