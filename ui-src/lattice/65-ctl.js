@@ -16,7 +16,9 @@
   <lat-knowtags></lat-knowtags>
   <div id="cmtrow" hidden>
     <h3>comments</h3>
-    <label class="muted"><input type="checkbox" id="cmton" data-action="cmton"> Comments on this page</label>
+    <!-- the box alone toggles, as with mark sensitive (66-share.js) -->
+    <div class="chk"><input type="checkbox" id="cmton" data-action="cmton" aria-label="Comments on this page">
+    <span class="muted">Comments on this page</span></div>
   </div>
   <lat-share></lat-share>
   <!-- move and delete are reached from the tab header's path and the page

@@ -408,6 +408,9 @@ select, option { color-scheme: inherit; }
 #cwurl { font-size: .85rem; margin-top: 6px; word-break: break-all; }
 /* what the picked share mode does (66-share.js) */
 .sharewhat { font-size: .85rem; margin-top: 6px; overflow-wrap: anywhere; }
+/* a checkbox and the words beside it, which are not its label (65-ctl.js) */
+.ctl .chk { display: flex; gap: 6px; align-items: baseline; }
+.ctl .chk input { flex: none; cursor: pointer; }
 /* wikilink autocomplete. #acmirror is an offscreen clone of the textarea's
    text geometry used only to locate the caret. The editor soft-wraps, so a
    monospace column calculation would be wrong on any wrapped line. */

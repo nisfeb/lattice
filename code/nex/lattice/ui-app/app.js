@@ -6351,7 +6351,9 @@
   <lat-knowtags></lat-knowtags>
   <div id="cmtrow" hidden>
     <h3>comments</h3>
-    <label class="muted"><input type="checkbox" id="cmton" data-action="cmton"> Comments on this page</label>
+    <!-- the box alone toggles, as with mark sensitive (66-share.js) -->
+    <div class="chk"><input type="checkbox" id="cmton" data-action="cmton" aria-label="Comments on this page">
+    <span class="muted">Comments on this page</span></div>
   </div>
   <lat-share></lat-share>
   <!-- move and delete are reached from the tab header's path and the page
@@ -6466,7 +6468,10 @@
 <h3 class="grouphead">give a group access <a id="aclopen" data-action="aclopen" title="create and edit groups">manage &rarr;</a></h3>
 <div id="grouplist" class="muted"></div>
 <h3>sensitive</h3>
-<label class="muted"><input type="checkbox" id="shsens" data-action="shsens"> mark sensitive &mdash; agents without clearance can't see or write it</label>
+<!-- only the box toggles: the words beside it are plain text, not a label
+     around both, so a click on them changes nothing. They describe it. -->
+<div class="chk"><input type="checkbox" id="shsens" data-action="shsens" aria-label="Mark sensitive" aria-describedby="shsensd">
+<span id="shsensd" class="muted">mark sensitive: agents without clearance can't see or write it</span></div>
 <div id="shsensres" class="muted"></div>
 </div>
 <div id="orrsec" hidden><h3>orrery</h3><div id="orr"></div></div>`;

@@ -9,6 +9,8 @@
 //      urb:// and https addresses, and no em-dash
 //    Access & groups lists every published page by its full address, shared
 //      by urb:// and clearweb by the Page tab's https link, each copyable
+//    clicking the words beside "mark sensitive" or "Comments on this page"
+//      leaves the box alone; only the box itself toggles
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           node scripts/ui-reins-small.mjs
@@ -258,6 +260,60 @@ try {
       await p.evaluate(() => document.getElementById('aclpub').scrollIntoView());
       await p.screenshot({ path: SHOTS + '/published-phone.png' });
       await p.close();
+    }
+  }
+
+  // ── 5. only the checkbox toggles, not the words beside it ──────────────
+  {
+    await page.evaluate((k) => window.latTabs.openIn('page', k, {}), PA);
+    await sleep(1500);
+    await page.evaluate(() => { window.latShell.paneOpen('r', true); window.latShell.paneTab('r', 'page'); });
+    await page.waitForFunction(() => !document.getElementById('shsens').disabled
+      && !document.getElementById('cmton').disabled, { timeout: 20000 });
+    await sleep(800);
+    // a real click on the middle of the words, wherever they are drawn
+    const clickText = async (needle) => {
+      const at = await page.evaluate((n) => {
+        const w = document.createTreeWalker(document.querySelector('aside.ctl'), NodeFilter.SHOW_TEXT);
+        for (let t = w.nextNode(); t; t = w.nextNode()) {
+          const i = t.data.indexOf(n);
+          if (i < 0) continue;
+          const r = document.createRange();
+          r.setStart(t, i); r.setEnd(t, i + n.length);
+          // the first line's box: a phrase that wraps has a bounding box
+          // whose middle can fall between the words
+          const b = r.getClientRects()[0];
+          if (b && b.width) return [b.left + b.width / 2, b.top + b.height / 2];
+        }
+        return null;
+      }, needle);
+      if (at) await page.mouse.click(at[0], at[1]);
+      await sleep(600);
+      return !!at;
+    };
+    const box = async (id) => {
+      const b = await page.evaluate((x) => {
+        const r = document.getElementById(x).getBoundingClientRect();
+        return [r.left + r.width / 2, r.top + r.height / 2];
+      }, id);
+      await page.mouse.click(b[0], b[1]);
+    };
+    const checked = (id) => page.evaluate((x) => document.getElementById(x).checked, id);
+    for (const [id, words] of [['shsens', 'without clearance'], ['cmton', 'Comments on this page']]) {
+      const was = await checked(id);
+      const hit = await clickText(words);
+      check('clicking the words beside ' + id + ' leaves it alone', hit && await checked(id) === was,
+        JSON.stringify({ hit, was, now: await checked(id) }));
+      await box(id);
+      await page.waitForFunction((x) => !document.getElementById(x).disabled, { timeout: 20000 }, id);
+      check('clicking the ' + id + ' box toggles it', await checked(id) === !was, '');
+      await box(id);       // and back, so the page is left as it was
+      await page.waitForFunction((x) => !document.getElementById(x).disabled, { timeout: 20000 }, id);
+      const named = await page.evaluate((x) => {
+        const e = document.getElementById(x);
+        return !!(e.getAttribute('aria-label') || e.labels.length);
+      }, id);
+      check(id + ' keeps an accessible name', named, '');
     }
   }
 } catch (e) {
