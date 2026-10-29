@@ -628,6 +628,6 @@
     } else st('offline edits synced');
     // reconcile ONLY after the drain. refreshAll on reconnect would repaint
     // queued pages from the server dump before their edits landed (gap 4)
-    if (knows.length && mode === 'know') loadKnow();
+    if (knows.length && knowLive()) loadKnow();
     loadTree();
   }

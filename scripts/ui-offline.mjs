@@ -183,10 +183,11 @@ try {
   // reachable read, not merely a dead one.
   step = 'know offline';
   const K = 'test/' + RUN;
-  //  #modet and #save left the screen with the old bar (the shell frame);
-  //  they stay in the DOM, so these clicks go to the elements directly
+  //  #save left the screen with the old bar (the shell frame); it stays in
+  //  the DOM, so the click goes to the element directly. A blank memory is
+  //  a know tab now, not a mode toggle.
   const tap = (id) => page.evaluate((i) => document.getElementById(i).click(), id);
-  await tap('modet');
+  await page.evaluate(() => window.latTabs.openIn('know', '', { newTab: true }));
   await wait(() => document.getElementById('ws').className.includes('know'));
   await page.evaluate((k) => {
     document.getElementById('pname').value = k;
@@ -204,7 +205,7 @@ try {
   await wait(() => (document.getElementById('status').textContent || '').includes('waiting to sync'));
   check('a know save queues while the ship is down', true);
   check('the know queue holds one record', await qCount() === 1, 'count=' + await qCount());
-  await page.evaluate((n) => [...document.querySelectorAll('#treelist a.pg')]
+  await page.evaluate((n) => [...document.querySelectorAll('#knowlist a.pg')]
     .find((a) => a.textContent === n).click(), RUN);
   await sleep(1500);
   check('reopening a queued memory shows the QUEUED body, beating a live know-read',

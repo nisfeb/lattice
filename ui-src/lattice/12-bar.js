@@ -11,7 +11,6 @@
   <!-- the icon-only controls carry aria-labels: their glyph is their whole
        text content, which is no accessible name at all -->
   <a class="home" href="/apps/lattice" title="lattice home" aria-label="lattice home">&#8962;</a>
-  <button id="modet" hidden title="switch pages / knowledge">&#9998; pages</button>
   <input id="pname" hidden placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
   <select id="pkind" hidden title="page kind">
     <option value="md">md</option>
@@ -29,7 +28,6 @@
   <button id="texconv" hidden>convert to html</button>
   <span class="grow"></span>
   <button id="wrapt" class="ico" hidden title="toggle line wrap" aria-label="toggle line wrap">&#8617;</button>
-  <button id="qt" class="ico" hidden title="search your pages and notes (ctrl-K)" aria-label="search your pages and notes (ctrl-K)">${ico('search')}</button>
   <button id="cmt" class="ico" hidden title="comments from other ships" aria-label="comments from other ships">${ico('comment')}</button>
   <!-- a save that replaced an edit from elsewhere keeps the losing body as a
        conflicts/ page. Those are invisible unless you already know to look,

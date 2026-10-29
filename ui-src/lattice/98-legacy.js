@@ -48,7 +48,7 @@
       if (after && after.reason === 'resolved') {
         localStorage.latLegacy = 'done';
         knowGen++;
-        if (mode === 'know') loadKnow();
+        if (knowLive()) loadKnow();
         st('legacy import completed');
         return;
       }
@@ -83,7 +83,7 @@
     else delete sessionStorage.latLegacyAsked;
     knowGen++;
     st('imported ' + res.imported + ' memories from the old agent');
-    if (mode === 'know') loadKnow(); else loadTree();
+    if (knowLive()) loadKnow();
     // NEVER advise retiring the old agent while it still holds pages. This
     // import moves knowledge only (the agent exposes no arm for page bodies),
     // so an uninstall on that advice would destroy them permanently.

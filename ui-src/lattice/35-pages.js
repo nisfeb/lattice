@@ -169,11 +169,12 @@
     if (isMobile()) setMv('code');
   }
 
-  // focusName: only when the USER asked for a new file. Boot calls this to
-  // land on an empty page, and focusing the name field there summons the
-  // phone keyboard before you have done anything. You arrive at the app
-  // already typing a filename you did not ask to type.
-  function newFile(into, focusName = true) {
+  // blankPage: the editor reset a new page starts from. Nothing named is
+  // open, the field (where shown) is editable, and `into` is the folder an
+  // upload or a save lands in. A page is never written in memory mode: the
+  // autosave there goes to /know-save, so a memory in front leaves it first.
+  function blankPage(into) {
+    if (mode === 'know') setMode('pages');
     openSeq++;           // an open still in flight must not land over this
     folderCtx = into || '';
     curFolder = null;
@@ -190,11 +191,73 @@
     everTyped = false;   // a new file is a fresh editor state, like applyPage
     render();
     renderTree();
-    if (focusName) pname.focus();
     st('new page — name it, write, save');
     prevBlank();
     showShare('private');
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
+  }
+
+  // ── new page: one name and kind dialog for web, desktop and phone ────────
+  //  Everything user-initiated routes through newFile: the toolbar
+  //  (newFile('')), the desktop File menu (which clicks it), the green + on
+  //  every tree folder (newFile(path)), the strip's + and the phone bar's
+  //  label. The name field left the screen with the old bar, so the dialog
+  //  is the one way a page gets its name, and its kind.
+  //
+  //  focusName false is boot and the tab model landing on an empty page.
+  //  That must not be interrupted by a dialog, and they are the callers that
+  //  say so: a plain reset, nothing asked.
+  function newFile(into, focusName = true) {
+    if (!focusName) return blankPage(into);
+    (async () => {
+      //  a folder's + pre-fills that folder; the toolbar keeps offering the
+      //  open page's path. Read it BEFORE the reset below, which clears the
+      //  field it comes from.
+      const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
+      const picked = await askNameKind('page name (e.g. notes/todo)', seed,
+        'create', pkind.value);
+      if (!picked) return;
+      //  reset the editor only once the create is confirmed, so a cancel
+      //  leaves the open page exactly as it was
+      blankPage(into);
+      let name = picked.name;
+      let kind = picked.kind;
+      //  a typed extension still wins, because typing notes/todo.md and being
+      //  given a page called "todo.md" would be absurd. The table is EXT_KIND
+      //  in 30-tree.js, the same one the uploader files by.
+      const dot = name.lastIndexOf('.');
+      const typed = dot > 0 ? extKind(name.slice(dot + 1)) : null;
+      if (typed) { kind = typed; name = name.slice(0, dot); }
+      //  the field is seeded with the REAL path; the typed leaf, when it was
+      //  not a valid path, rides to save() as the display name
+      const rn = realName(name);
+      if (!rn) return;
+      name = rn.name;
+      newRn = rn;
+      pkind.value = kind;
+      //  blankPage above left nothing open; this names the buffer, and
+      //  setOpen's event repaints the labels
+      setOpen(null, { shown: name });
+      //  Show it in the tree NOW, pulsing, before the ship has agreed. The
+      //  write is a pier round trip and the tree sitting unchanged through it
+      //  reads as nothing having happened. The pulse is the honest part: it
+      //  says recorded, not yet confirmed. Cleared on success, and the row is
+      //  dropped on failure so a page that does not exist is never left there.
+      const already = nodes.some((n) => n.page && n.path === name);
+      if (!already) { addTreeNode(name, kind, true); applyDnames(rn); snapTree(); renderTree(); }
+      //  the button says create, so write the page here. Naming the buffer
+      //  and leaving it unwritten read as a create that did nothing. save()
+      //  owns the whole create: 409, the offline queue, the tree patch and
+      //  the url, so this must not reimplement any of it.
+      await save();
+      if (!already) {
+        //  save() sets `current` on any outcome it considers a success,
+        //  including a queued offline write, which IS a success here.
+        if (current === name) setTreePending(name, false);
+        else { dropTreeNodes(name); snapTree(); renderTree(); }
+      }
+      src.focus();
+    })();
   }
 
   async function newFolder() {
@@ -265,7 +328,7 @@
     e.returnValue = '';
   });
 
-  // the realName() split the desktop create dialog made before seeding
+  // the realName() split the create dialog (newFile) made before seeding
   // #pname with the real path; save() consumes it on create
   let newRn = null;
   async function save(kindOverride) {
@@ -298,7 +361,7 @@
     }
     // a typed name that is not a valid path saves under its slug and keeps
     // the typed text as display names (the tree shows those, the name
-    // field shows the real path). newRn is the desktop dialog's copy of
+    // field shows the real path). newRn is the create dialog's copy of
     // the same split, made before it seeded the field with the slug.
     const rnc = !creating ? null : rn.dnames ? rn : newRn;
     newRn = null;

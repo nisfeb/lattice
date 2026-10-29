@@ -8,6 +8,10 @@
 //    every chrome button carries a tooltip equal to its accessible name
 //    the tree and the status line moved into the frame with their ids
 //    the status bar raises a chip for a compile error, which opens Page
+//    the left pane: Knowledge lists memories with no mode switch, a memory
+//      opens as a know tab beside a still-rendered Files tree, Ctrl+K
+//      focuses the Search tab, sort flips the root order, the trash
+//      restores a deleted memory, and Bookmarks lists /bookmarks-json
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           node scripts/ui-shell.mjs
@@ -15,6 +19,10 @@ import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harnes
 
 const env = shipEnv();
 const check = makeCheck();
+const MEM = 'test/shell-' + process.pid;
+const MARK = 'https://example.com/shell-' + process.pid;
+const post = (path, body) => fetch(env.base + '/apps/lattice/' + path,
+  { method: 'POST', headers: { Cookie: env.cookie }, body });
 const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
 const page = await openPage(browser, env, {
   viewport: { width: 1400, height: 900 },
@@ -41,6 +49,8 @@ const width = (sel) => page.evaluate((s) => {
 const pressed = (sel) => page.evaluate((s) => document.querySelector(s)?.getAttribute('aria-pressed'), sel);
 
 try {
+  await post('know-save?key=' + encodeURIComponent(MEM), 'shell suite memory');
+  await post('bookmark?url=' + encodeURIComponent(MARK) + '&title=shell%20mark&folder=shellf');
   await page.goto(env.app + '/no-such-asset', { timeout: 30000 });
   await page.evaluate(() => {
     for (const k of ['appNT', 'appNC', 'appLTab', 'appRTab', 'appPanes']) localStorage.removeItem(k);
@@ -108,7 +118,7 @@ try {
   check('ribbonAdd adds a working button',
     !!added && added.inRibbon && added.ran && added.title === 'Shell test (Ctrl+Y)', JSON.stringify(added));
   const bad = await page.evaluate(() =>
-    [...document.querySelectorAll('#ribbon button, #ltabs button, #rtabs button, #treet, #ctlt')]
+    [...document.querySelectorAll('#ribbon button, #ltabs button, #rtabs button, #treet, #ctlt, #lpane .ptool button')]
       .filter((b) => !b.title || b.title !== b.getAttribute('aria-label'))
       .map((b) => b.id || b.dataset.pt || b.outerHTML.slice(0, 60)));
   const count = await page.evaluate(() =>
@@ -124,7 +134,7 @@ try {
     spin: !!document.querySelector('#statusbar #spin'),
     off: !!document.querySelector('#statusbar #offbadge'),
     editor: !!document.querySelector('#center #src') && !!document.querySelector('#center #prev'),
-    keptHidden: ['pname', 'pkind', 'modet', 'qt', 'cmt', 'aclt', 'wrapt', 'save']
+    keptHidden: ['pname', 'pkind', 'cmt', 'aclt', 'wrapt', 'save']
       .filter((id) => { const e = document.getElementById(id); return !e || e.getBoundingClientRect().width > 0; }),
   }));
   check('tree and status moved',
@@ -132,6 +142,94 @@ try {
     JSON.stringify(moved));
   check('the old bar controls exist but are off screen', moved.keptHidden.length === 0,
     JSON.stringify(moved.keptHidden));
+
+  // ── left pane tabs ─────────────────────────────────────────────────────
+  const until = (fn, arg, ms = 30000) => page.waitForFunction(fn, { timeout: ms }, arg)
+    .then(() => true, () => false);
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=know]')?.click());
+  const listed = await until((k) => [...document.querySelectorAll('[data-pane=know] #knowlist a.pg')]
+    .some((a) => a.textContent === k.split('/').pop()), MEM);
+  const noMode = await page.evaluate(() => !document.getElementById('modet'));
+  check('knowledge tab lists memories without a mode switch', listed && noMode,
+    JSON.stringify({ listed, noMode }));
+
+  await page.evaluate((k) => [...document.querySelectorAll('#knowlist a.pg')]
+    .find((a) => a.textContent === k.split('/').pop())?.click(), MEM);
+  const knowTab = await until((k) => {
+    const s = window.latTabs?.state();
+    if (!s) return false;
+    const t = s.tabs[s.active];
+    return t && t.kind === 'know' && t.key === k && s.shows;
+  }, MEM);
+  await sleep(500);
+  const files = await page.evaluate(() => ({
+    pages: document.querySelectorAll('[data-pane=files] #treelist a.pg[href*="name="]').length,
+    mem: document.querySelectorAll('#treelist a.pg:not([href*="name="])').length,
+  }));
+  check('opening a memory makes a know tab', knowTab && files.pages > 0 && files.mem === 0,
+    JSON.stringify({ knowTab, files }));
+
+  await page.evaluate(() => { localStorage.appNT = '1'; window.latShell.paneOpen('l', false); });
+  await page.focus('#src');
+  await page.keyboard.down('Control');
+  await page.keyboard.press('KeyK');
+  await page.keyboard.up('Control');
+  await sleep(300);
+  const ck = await page.evaluate(() => ({
+    focus: document.activeElement && document.activeElement.id,
+    tab: !document.querySelector('section[data-pane=search]').hidden,
+  }));
+  const lpaneUp = await shown('#lpane');
+  check('ctrl+k focuses search pane', ck.focus === 'qinput' && ck.tab && lpaneUp,
+    JSON.stringify({ ...ck, lpaneUp }));
+
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
+  const roots = () => page.evaluate(() => [...document.querySelectorAll('#treelist > *')]
+    .filter((r) => (parseInt(r.style.marginLeft, 10) || 0) === 0 && r.style.display !== 'none'
+      && (r.matches('a.pg[href*="name="]') || r.matches('.fld')))
+    .slice(0, 400).map((r) => (r.matches('.fld') ? 'd:' : 'p:') + r.textContent));
+  const r0 = await roots();
+  await page.evaluate(() => document.getElementById('tsort')?.click());
+  await sleep(200);
+  const r1 = await roots();
+  const fo = (l) => l.filter((x) => x.startsWith('d:'));
+  const pg = (l) => l.filter((x) => x.startsWith('p:'));
+  const flipped = r0.length > 1
+    && JSON.stringify(fo(r1)) === JSON.stringify(fo(r0).reverse())
+    && JSON.stringify(pg(r1)) === JSON.stringify(pg(r0).reverse())
+    && (!fo(r1).length || r1[0].startsWith('d:'));
+  check('sort toggles', flipped, JSON.stringify({ r0: r0.slice(0, 4), r1: r1.slice(0, 4) }));
+  if (flipped) await page.evaluate(() => document.getElementById('tsort')?.click());
+
+  await post('know-delete?key=' + encodeURIComponent(MEM));
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=know]')?.click());
+  await page.evaluate(() => document.getElementById('ktrash')?.click());
+  const inTrash = await until((k) => [...document.querySelectorAll('#ktrashlist [data-key]')]
+    .some((r) => r.dataset.key.replace(/^\//, '') === k), MEM);
+  await page.evaluate((k) => [...document.querySelectorAll('#ktrashlist [data-key]')]
+    .find((r) => r.dataset.key.replace(/^\//, '') === k)?.querySelector('button')?.click(), MEM);
+  let back = 0;
+  for (let i = 0; i < 20 && back !== 200; i++) {
+    await sleep(500);
+    back = (await fetch(env.base + '/apps/lattice/know-read?key=' + encodeURIComponent(MEM),
+      { headers: { Cookie: env.cookie } })).status;
+  }
+  check('trash restore', inTrash && back === 200, JSON.stringify({ inTrash, back }));
+
+  const bj = await page.evaluate(async () => {
+    const r = await fetch('/apps/lattice/bookmarks-json');
+    let d = null;
+    try { d = await r.json(); } catch {}
+    return { status: r.status, arr: Array.isArray(d), n: Array.isArray(d) ? d.length : -1,
+      has: Array.isArray(d) && d.some((b) => b.folder === 'shellf' && b.title === 'shell mark') };
+  });
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=marks]').click());
+  const rows = await until((n) => document.querySelectorAll('[data-pane=marks] a.pg').length === n
+    && n > 0, bj.n);
+  const nrows = await page.evaluate(() => document.querySelectorAll('[data-pane=marks] a.pg').length);
+  check('bookmarks json', bj.status === 200 && bj.arr && bj.has && rows,
+    JSON.stringify({ ...bj, nrows }));
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
 
   // ── compile error chip ─────────────────────────────────────────────────
   await page.evaluate(() => {
@@ -160,8 +258,10 @@ try {
   check('threw: ' + String(e.message).slice(0, 140), false);
 } finally {
   await page.evaluate(() => {
-    for (const k of ['appNT', 'appNC', 'appLTab', 'appRTab']) localStorage.removeItem(k);
+    for (const k of ['appNT', 'appNC', 'appLTab', 'appRTab', 'appTabs', 'appSort']) localStorage.removeItem(k);
   }).catch(() => {});
   await browser.close();
+  await post('know-delete?key=' + encodeURIComponent(MEM)).catch(() => {});
+  await post('unbookmark?url=' + encodeURIComponent(MARK)).catch(() => {});
 }
 check.done();

@@ -665,7 +665,7 @@
     } else st('offline edits synced');
     // reconcile ONLY after the drain. refreshAll on reconnect would repaint
     // queued pages from the server dump before their edits landed (gap 4)
-    if (knows.length && mode === 'know') loadKnow();
+    if (knows.length && knowLive()) loadKnow();
     loadTree();
   }
 
@@ -702,6 +702,9 @@
     fplus: ['0 0 24 24', 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM12 10v6M9 13h6', 'stroke'],
     tpl: ['0 0 24 24', 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM3 9h18M9 9v12', 'stroke'],
     upload: ['0 0 24 24', 'M12 16V4M7 9l5-5 5 5M4 20h16', 'stroke'],
+    updir: ['0 0 24 24', 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM12 16v-6M9 13l3-3 3 3', 'stroke'],
+    trash: ['0 0 24 24', 'M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4h6v3', 'stroke'],
+    tidy: ['0 0 24 24', 'M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z', 'stroke'],
     sort: ['0 0 24 24', 'M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4', 'stroke'],
     fold: ['0 0 24 24', 'M7 15l5 5 5-5M7 9l5-5 5 5', 'stroke'],
     out: ['0 0 24 24', 'M7 17L17 7M8 7h9v9', 'stroke'],
@@ -983,7 +986,6 @@
   <!-- the icon-only controls carry aria-labels: their glyph is their whole
        text content, which is no accessible name at all -->
   <a class="home" href="/apps/lattice" title="lattice home" aria-label="lattice home">&#8962;</a>
-  <button id="modet" hidden title="switch pages / knowledge">&#9998; pages</button>
   <input id="pname" hidden placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
   <select id="pkind" hidden title="page kind">
     <option value="md">md</option>
@@ -1001,7 +1003,6 @@
   <button id="texconv" hidden>convert to html</button>
   <span class="grow"></span>
   <button id="wrapt" class="ico" hidden title="toggle line wrap" aria-label="toggle line wrap">&#8617;</button>
-  <button id="qt" class="ico" hidden title="search your pages and notes (ctrl-K)" aria-label="search your pages and notes (ctrl-K)">${ico('search')}</button>
   <button id="cmt" class="ico" hidden title="comments from other ships" aria-label="comments from other ships">${ico('comment')}</button>
   <!-- a save that replaced an edit from elsewhere keeps the losing body as a
        conflicts/ page. Those are invisible unless you already know to look,
@@ -1055,7 +1056,9 @@
       ['comments', 'comment', 'Comments'], ['hist', 'hist', 'History']],
   };
   const FILL = {
-    files: '<lat-tree></lat-tree>', page: '<lat-ctl></lat-ctl>',
+    files: '<lat-tree></lat-tree>', know: '<lat-know></lat-know>',
+    search: '<lat-search></lat-search>', marks: '<lat-marks></lat-marks>',
+    page: '<lat-ctl></lat-ctl>',
     back: '<lat-links></lat-links>', hist: '<lat-history></lat-history>',
   };
   const paneHtml = (side, label) => `
@@ -1112,7 +1115,9 @@
   // ── pane tabs and the corner toggles ────────────────────────────────────
   // One section per pane is shown. The choice persists per side, and an id
   // this build does not know (an older or newer layout) falls back to the
-  // default rather than leaving the pane blank.
+  // default rather than leaving the pane blank. Showing a section announces
+  // it (lat-pane on document, detail {side, id}), so a section that loads
+  // its list lazily (Knowledge, Bookmarks) fetches when it is first seen.
   const TABKEY = { l: 'appLTab', r: 'appRTab' };
   const TABDEF = { l: 'files', r: 'page' };
   function paneTab(side, id) {
@@ -1125,7 +1130,12 @@
     for (const s of document.querySelectorAll('#' + side + 'body > section'))
       s.hidden = s.dataset.pane !== id;
     try { localStorage[TABKEY[side]] = id; } catch {}
+    document.dispatchEvent(new CustomEvent('lat-pane', { detail: { side, id } }));
   }
+  // the section a pane shows right now, for a file whose listener was added
+  // after the boot-time paneTab below had already announced it
+  const paneShows = (side, id) =>
+    !document.querySelector('#' + side + 'body > [data-pane=' + id + ']').hidden;
   // The stored keys still mean HIDDEN ('1'), as they always have, so a
   // layout saved before the frame comes back the same. The buttons say
   // whether the pane is OPEN: pressed means showing.
@@ -1239,12 +1249,14 @@
   //  place they could not say what it was, and everything arrived as md.
   //
   //  Options are cloned from the bar's own picker rather than restated, so a
-  //  kind added there (tex was) appears here with no second edit.
-  const askNameKind = async (msg, value, okLabel, kind) => {
+  //  kind added there (tex was) appears here with no second edit. `fixed`
+  //  shows the kind without letting it change: a new memory is always md.
+  const askNameKind = async (msg, value, okLabel, kind, fixed) => {
     dlgKind.textContent = '';
     const src = $('pkind');
     if (src) for (const o of src.options) dlgKind.appendChild(o.cloneNode(true));
     dlgKind.value = kind || (src && src.value) || 'md';
+    dlgKind.disabled = !!fixed;
     let seed = value || '';
     let note = '';
     for (;;) {
@@ -1400,6 +1412,7 @@
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits. Auto-refresh never clobbers them
+  let mode = 'pages';      // 'know' while a memory is in front (95-know.js)
   // read by the service-worker registration script, which lives in its own
   // inline <script> and cannot see this scope. It reloads the page when a new
   // worker takes over, and must never do that over typed work.
@@ -1678,9 +1691,10 @@
   const forgetBase = () => { basePr = null; try { delete localStorage.latBase; } catch {} };
 
   // a tree's folded folders, remembered under one localStorage key: get()
-  // reads the list, flip(key) folds or unfolds one folder in it. The files
-  // tree (with its shared-with-me folder) keeps appColl; memories keep
-  // knowColl (95-know.js).
+  // reads the list, flip(key) folds or unfolds one folder in it, set(list)
+  // replaces it (collapse all). The files tree (with its shared-with-me
+  // folder) keeps appColl; memories keep knowColl (95-know.js) and
+  // bookmarks marksColl (31-marks.js).
   const collStore = (k) => {
     const get = () => {
       try { return JSON.parse(localStorage[k] || '[]'); } catch { return []; }
@@ -1691,7 +1705,8 @@
       if (i >= 0) c.splice(i, 1); else c.push(key);
       localStorage[k] = JSON.stringify(c);
     };
-    return { get, flip };
+    const set = (list) => { localStorage[k] = JSON.stringify(list); };
+    return { get, flip, set };
   };
   const paneColl = collStore('appColl');
 
@@ -3562,7 +3577,9 @@
   // ── tree pane: <lat-tree> ────────────────────────────────────────────────
   // The pane's buttons are wired where their handlers live (45-templates,
   // 70-upload). Those files run after this component upgrades, so their
-  // $-lookups find the rendered elements.
+  // $-lookups find the rendered elements. The create and upload buttons sit
+  // in their own .newbtns group because the desktop File menu takes them
+  // over and hides that group (96-deskmenu.js); sort and collapse stay.
   let treeList;
   // pages other ships shared with us (/shared-with-me), drawn as a folder
   // after the pages. Filled by 69-shared.js.
@@ -3571,14 +3588,17 @@
     connectedCallback() {
       this.innerHTML = `
 <aside class="tree" id="tree">
-  <div class="newbtns">
-    <button class="nf" id="newfile">+ file</button>
-    <button class="nf" id="newfolder">+ folder</button>
-    <button class="nf" id="newtmpl">+ template</button>
-  </div>
-  <div class="newbtns">
-    <button class="nf" id="upfiles">&#8613; files</button>
-    <button class="nf" id="updir">&#8613; dir</button>
+  <div class="ptool" role="toolbar" aria-label="Files">
+    <div class="newbtns">
+      ${sbtn('id="newfile"', 'plus', 'New page')}
+      ${sbtn('id="newfolder"', 'fplus', 'New folder')}
+      ${sbtn('id="newtmpl"', 'tpl', 'New from template')}
+      ${sbtn('id="upfiles"', 'upload', 'Upload files')}
+      ${sbtn('id="updir"', 'updir', 'Upload a folder')}
+    </div>
+    <span class="grow"></span>
+    ${sbtn('id="tsort"', 'sort', 'Sort: name')}
+    ${sbtn('id="tcoll"', 'fold', 'Collapse all')}
   </div>
   <input type="file" id="fpick" multiple hidden>
   <input type="file" id="dpick" webkitdirectory hidden>
@@ -3587,13 +3607,6 @@
     <div class="upbar"><div id="upfill"></div></div>
     <div id="uperr" class="uperr"></div>
   </div>
-  <!-- the tag chips outgrew the pane top (one row per dozen tags), so they
-       fold under a heading like history does. Native details: the fold,
-       the keyboard and the marker come free. 95-know.js fills and labels it. -->
-  <details id="tagsec" hidden>
-    <summary class="sec" id="tagsh">tags</summary>
-    <div id="chips" class="chips"></div>
-  </details>
   <div class="sec" id="treesec">files</div>
   <div id="treelist"></div>
 </aside>`;
@@ -3657,19 +3670,23 @@
       if (!n || (typeof n.rev === 'number' && n.rev > c.rev)) pageCache.delete(name);
     }
     snapTree();
-    // the files listing only. In knowledge mode #treelist holds the memory
-    // tree, and a dump landing late (boot with a memory tab in front loads
-    // both) must not paint pages over it. setMode('pages') paints `nodes`.
-    if (mode !== 'know') renderTree();
+    // always: #treelist holds only the files tree (the memory tree has its
+    // own #knowlist), so a memory tab in front is no reason to leave Files
+    // stale behind the Knowledge tab
+    renderTree();
   }
 
   // selection changes only move the `cur` class. Never rebuild the pane's DOM
-  // for that. rowByPath is rebuilt by renderTree/renderKnowTree.
+  // for that. rowByPath is rebuilt by renderTree, knowRows by renderKnowTree
+  // (95-know.js). `current` names a page or a memory by the mode, so each
+  // tree marks it only in its own mode.
   let rowByPath = new Map();
+  let knowRows = new Map();
   function markCurrent() {
     for (const [p, row] of rowByPath)
-      row.classList.toggle('cur',
-        row.classList.contains('pg') ? p === current : p === curFolder);
+      row.classList.toggle('cur', row.classList.contains('pg')
+        ? mode !== 'know' && p === current : p === curFolder);
+    for (const [k, row] of knowRows) row.classList.toggle('cur', mode === 'know' && k === current);
   }
 
   // local `nodes` patching: this client performed the write, so it already
@@ -3746,9 +3763,42 @@
     return row;
   }
 
+  // ── sort order and collapse all ─────────────────────────────────────────
+  // Siblings sort by name, folders first, ascending or descending
+  // (localStorage.appSort). The order is per level, so a folder's pages stay
+  // under it whichever way its siblings run.
+  const SORTS = { name: 'Sort: name', 'name-desc': 'Sort: name, descending' };
+  const treeSort = () => (localStorage.appSort === 'name-desc' ? 'name-desc' : 'name');
+  function treeOrder(list) {
+    const dir = treeSort() === 'name-desc' ? -1 : 1;
+    return list.map((n) => ({ n, s: n.path.split('/') })).sort((a, b) => {
+      const m = Math.min(a.s.length, b.s.length);
+      for (let i = 0; i < m; i++) {
+        if (a.s[i] === b.s[i]) continue;
+        const fa = i < a.s.length - 1 || !a.n.page;
+        const fb = i < b.s.length - 1 || !b.n.page;
+        if (fa !== fb) return fa ? -1 : 1;
+        return dir * a.s[i].localeCompare(b.s[i]);
+      }
+      return (a.s.length - b.s.length) || (a.n.page - b.n.page);
+    }).map((x) => x.n);
+  }
+  const paintSort = () => tip($('tsort'), SORTS[treeSort()]);
+  paintSort();
+  $('tsort').onclick = () => {
+    try { localStorage.appSort = treeSort() === 'name' ? 'name-desc' : 'name'; } catch {}
+    paintSort();
+    renderTree();
+  };
+  $('tcoll').onclick = () => {
+    paneColl.set([...new Set([...paneColl.get(),
+      ...nodes.filter((n) => !n.page).map((n) => n.path)])]);
+    renderTree();
+  };
+
   function renderTree() {
     const coll = paneColl.get();
-    const byPath = [...nodes].sort((a, b) => a.path.localeCompare(b.path));
+    const byPath = treeOrder(nodes);
     treeList.textContent = '';
     rowByPath = new Map();
     for (const n of byPath) {
@@ -3758,7 +3808,7 @@
       if (n.page) {
         row = document.createElement('a');
         row.style.marginLeft = (depth * 14) + 'px';
-        row.className = 'pg' + (n.path === current ? ' cur' : '')
+        row.className = 'pg' + (mode !== 'know' && n.path === current ? ' cur' : '')
           + (n.pending ? ' pend' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
         // the display name when there is one (a typed name that was not a
@@ -3846,6 +3896,140 @@
     const c = pageCount(path);
     st('folder · ' + c + ' page' + (c === 1 ? '' : 's'));
   }
+
+// ── src/31-marks.js ───────────────────────────────────────────────────────
+  // ── bookmarks: <lat-marks> ───────────────────────────────────────────────
+  // The left pane's Bookmarks tab: the urb:// and web bookmarks the reader
+  // keeps (GET /bookmarks-json, newest first), grouped by folder, with a
+  // filter, and per bookmark a refile and a remove. A click opens the
+  // bookmark in the reader, in this window for now (the reader becomes a
+  // tab later), so it leaves the editor through guardDirty like any other
+  // navigation. Ctrl/Cmd or a middle click is the browser's own new tab and
+  // leaves nothing.
+  customElements.define('lat-marks', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<aside class="tree" id="markpane">
+  <input id="mfilter" type="search" placeholder="filter bookmarks" aria-label="Filter bookmarks" autocomplete="off" spellcheck="false">
+  <div id="marklist"><div class="muted kwait">loading bookmarks…</div></div>
+</aside>`;
+    }
+  });
+  let marks = null;                      // [{url, title, folder}], null until loaded
+  let marksSeq = 0;
+  const marksColl = collStore('marksColl');
+  const markList = $('marklist');
+  const readerUrl = (url) => '/apps/lattice/?q=' + encodeURIComponent(url);
+
+  async function loadMarks() {
+    const my = ++marksSeq;
+    let d = null;
+    try {
+      const r = await fetch(api + '/bookmarks-json');
+      if (r.ok) d = await r.json();
+    } catch {}
+    if (my !== marksSeq) return;
+    if (!Array.isArray(d)) {
+      if (!marks) markList.replaceChildren(marksNote('bookmarks did not load'));
+      return;
+    }
+    marks = d;
+    renderMarks();
+  }
+  const marksNote = (t) => {
+    const e = document.createElement('div');
+    e.className = 'muted';
+    e.style.padding = '4px 8px';
+    e.textContent = t;
+    return e;
+  };
+
+  // leaving the editor for the reader: the same question every other way
+  // out asks. guardDirty flushes the front document or asks about it, and a
+  // parked tab's unsaved buffer still gets beforeunload (35-pages.js).
+  async function markGo(e, url) {
+    if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+    e.preventDefault();
+    if (!(await guardDirty())) return;
+    dirty = false;                       // flushed, or the user said discard
+    clearTimeout(autoTimer);
+    location.href = readerUrl(url);
+  }
+  async function markMove(b) {
+    const f = await ask('move ' + (b.title || b.url) + ' to folder (empty for none):',
+      b.folder, 'move');
+    if (f === null) return;
+    const r = await mutate(api + '/bookmark-move?url=' + encodeURIComponent(b.url)
+      + '&folder=' + encodeURIComponent(f.trim()));
+    if (!r.ok) { st('move failed' + await errText(r), false); return; }
+    st(f.trim() ? 'moved to ' + f.trim() : 'moved out of its folder');
+    loadMarks();
+  }
+  async function markDrop(b) {
+    if (!(await askConfirm('remove bookmark ' + (b.title || b.url) + '?', 'remove'))) return;
+    const r = await mutate(api + '/unbookmark?url=' + encodeURIComponent(b.url));
+    if (!r.ok) { st('remove failed' + await errText(r), false); return; }
+    st('bookmark removed');
+    loadMarks();
+  }
+
+  function markRow(b, depth) {
+    const row = document.createElement('div');
+    row.className = 'mrow';
+    row.style.marginLeft = (depth * 14) + 'px';
+    const a = document.createElement('a');
+    a.className = 'pg';
+    a.href = readerUrl(b.url);
+    a.title = b.url;
+    a.textContent = b.title || b.url;    // titles are content: textContent
+    a.onclick = (e) => markGo(e, b.url);
+    const mv = tip(document.createElement('button'), 'Move to folder');
+    const rm = tip(document.createElement('button'), 'Remove bookmark');
+    for (const [x, icon, run] of [[mv, 'folder', markMove], [rm, 'x', markDrop]]) {
+      x.type = 'button';
+      x.className = 'sbtn';
+      x.innerHTML = ico(icon);
+      x.onclick = () => run(b);
+    }
+    row.append(a, mv, rm);
+    return row;
+  }
+
+  // folders first by name, then the unfiled ones, each newest first as the
+  // ship keeps them. A filter shows every match, folded folder or not.
+  function renderMarks() {
+    if (!marks) return;
+    const q = $('mfilter').value.trim().toLowerCase();
+    const hit = (b) => !q || [b.title, b.url, b.folder]
+      .some((x) => String(x || '').toLowerCase().includes(q));
+    const shown = marks.filter(hit);
+    markList.textContent = '';
+    if (!shown.length) {
+      markList.append(marksNote(q ? 'no bookmark matches that'
+        : 'no bookmarks yet. The reader’s star keeps one.'));
+      return;
+    }
+    const byFolder = new Map();
+    for (const b of shown) {
+      const f = b.folder || '';
+      if (!byFolder.has(f)) byFolder.set(f, []);
+      byFolder.get(f).push(b);
+    }
+    const coll = marksColl.get();
+    for (const f of [...byFolder.keys()].filter(Boolean).sort((a, b) => a.localeCompare(b))) {
+      const folded = !q && coll.includes(f);
+      markList.append(folderRow(f, 0, folded, () => { marksColl.flip(f); renderMarks(); }));
+      if (!folded) for (const b of byFolder.get(f)) markList.append(markRow(b, 1));
+    }
+    for (const b of byFolder.get('') || []) markList.append(markRow(b, 0));
+  }
+  $('mfilter').oninput = renderMarks;
+  // fetched each time the tab is shown: the reader adds and removes
+  // bookmarks in other windows, and this is one small request
+  document.addEventListener('lat-pane', (e) => {
+    if (e.detail.side === 'l' && e.detail.id === 'marks') loadMarks();
+  });
+  if (paneShows('l', 'marks')) loadMarks();
 
 // ── src/35-pages.js ───────────────────────────────────────────────────────
   // ── open / new / save ────────────────────────────────────────────────────
@@ -4019,11 +4203,12 @@
     if (isMobile()) setMv('code');
   }
 
-  // focusName: only when the USER asked for a new file. Boot calls this to
-  // land on an empty page, and focusing the name field there summons the
-  // phone keyboard before you have done anything. You arrive at the app
-  // already typing a filename you did not ask to type.
-  function newFile(into, focusName = true) {
+  // blankPage: the editor reset a new page starts from. Nothing named is
+  // open, the field (where shown) is editable, and `into` is the folder an
+  // upload or a save lands in. A page is never written in memory mode: the
+  // autosave there goes to /know-save, so a memory in front leaves it first.
+  function blankPage(into) {
+    if (mode === 'know') setMode('pages');
     openSeq++;           // an open still in flight must not land over this
     folderCtx = into || '';
     curFolder = null;
@@ -4040,11 +4225,73 @@
     everTyped = false;   // a new file is a fresh editor state, like applyPage
     render();
     renderTree();
-    if (focusName) pname.focus();
     st('new page — name it, write, save');
     prevBlank();
     showShare('private');
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
+  }
+
+  // ── new page: one name and kind dialog for web, desktop and phone ────────
+  //  Everything user-initiated routes through newFile: the toolbar
+  //  (newFile('')), the desktop File menu (which clicks it), the green + on
+  //  every tree folder (newFile(path)), the strip's + and the phone bar's
+  //  label. The name field left the screen with the old bar, so the dialog
+  //  is the one way a page gets its name, and its kind.
+  //
+  //  focusName false is boot and the tab model landing on an empty page.
+  //  That must not be interrupted by a dialog, and they are the callers that
+  //  say so: a plain reset, nothing asked.
+  function newFile(into, focusName = true) {
+    if (!focusName) return blankPage(into);
+    (async () => {
+      //  a folder's + pre-fills that folder; the toolbar keeps offering the
+      //  open page's path. Read it BEFORE the reset below, which clears the
+      //  field it comes from.
+      const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
+      const picked = await askNameKind('page name (e.g. notes/todo)', seed,
+        'create', pkind.value);
+      if (!picked) return;
+      //  reset the editor only once the create is confirmed, so a cancel
+      //  leaves the open page exactly as it was
+      blankPage(into);
+      let name = picked.name;
+      let kind = picked.kind;
+      //  a typed extension still wins, because typing notes/todo.md and being
+      //  given a page called "todo.md" would be absurd. The table is EXT_KIND
+      //  in 30-tree.js, the same one the uploader files by.
+      const dot = name.lastIndexOf('.');
+      const typed = dot > 0 ? extKind(name.slice(dot + 1)) : null;
+      if (typed) { kind = typed; name = name.slice(0, dot); }
+      //  the field is seeded with the REAL path; the typed leaf, when it was
+      //  not a valid path, rides to save() as the display name
+      const rn = realName(name);
+      if (!rn) return;
+      name = rn.name;
+      newRn = rn;
+      pkind.value = kind;
+      //  blankPage above left nothing open; this names the buffer, and
+      //  setOpen's event repaints the labels
+      setOpen(null, { shown: name });
+      //  Show it in the tree NOW, pulsing, before the ship has agreed. The
+      //  write is a pier round trip and the tree sitting unchanged through it
+      //  reads as nothing having happened. The pulse is the honest part: it
+      //  says recorded, not yet confirmed. Cleared on success, and the row is
+      //  dropped on failure so a page that does not exist is never left there.
+      const already = nodes.some((n) => n.page && n.path === name);
+      if (!already) { addTreeNode(name, kind, true); applyDnames(rn); snapTree(); renderTree(); }
+      //  the button says create, so write the page here. Naming the buffer
+      //  and leaving it unwritten read as a create that did nothing. save()
+      //  owns the whole create: 409, the offline queue, the tree patch and
+      //  the url, so this must not reimplement any of it.
+      await save();
+      if (!already) {
+        //  save() sets `current` on any outcome it considers a success,
+        //  including a queued offline write, which IS a success here.
+        if (current === name) setTreePending(name, false);
+        else { dropTreeNodes(name); snapTree(); renderTree(); }
+      }
+      src.focus();
+    })();
   }
 
   async function newFolder() {
@@ -4115,7 +4362,7 @@
     e.returnValue = '';
   });
 
-  // the realName() split the desktop create dialog made before seeding
+  // the realName() split the create dialog (newFile) made before seeding
   // #pname with the real path; save() consumes it on create
   let newRn = null;
   async function save(kindOverride) {
@@ -4148,7 +4395,7 @@
     }
     // a typed name that is not a valid path saves under its slug and keeps
     // the typed text as display names (the tree shows those, the name
-    // field shows the real path). newRn is the desktop dialog's copy of
+    // field shows the real path). newRn is the create dialog's copy of
     // the same split, made before it seeded the field with the slug.
     const rnc = !creating ? null : rn.dnames ? rn : newRn;
     newRn = null;
@@ -5681,7 +5928,7 @@
     try { r = await (bg ? bgFetch : fetch)(api + '/shared-with-me'); } catch {}
     if (!r || !r.ok) return;           // the folder just stays as it was
     sharedWithMe = await r.json();
-    if (mode !== 'know') renderTree();
+    renderTree();
   }
   // keys for the collapsed list: a leading space is in no page name, so a
   // page can never share a fold with this folder
@@ -7063,33 +7310,30 @@
   // looking identical, on a screen someone may be sharing. That badge is a
   // safety signal, so a tree that may not carry share modes (treeShares,
   // 30-tree.js) still asks /page-scopes rather than call a page private.
+  //
+  // It is the left pane's Search tab (13-frame.js renders <lat-search> into
+  // that section), so results sit beside the document they open rather than
+  // over it, and stay there for the next pick.
   customElements.define('lat-search', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="aclwrap" id="qwrap" hidden role="dialog" aria-modal="true" aria-label="search">
-  <div class="aclbar">
-    <h2>Search</h2>
-    <input id="qinput" placeholder="search your pages and notes" autocomplete="off" spellcheck="false">
-    <span class="muted" id="qsum"></span>
-    <span class="grow"></span>
-    <button id="qclose">close</button>
-  </div>
-  <div class="aclbody">
-    <div id="qlist"></div>
-  </div>
+<div class="tree qpane" id="qpane" role="search" aria-label="Search">
+  <input id="qinput" type="search" placeholder="search your pages and notes" aria-label="Search your pages and notes" autocomplete="off" spellcheck="false">
+  <div class="muted" id="qsum"></div>
+  <div id="qlist" class="aclempty">type at least two characters</div>
 </div>`;
     }
   });
 
-  // Loaded when the panel opens, not per keystroke: the scopes and the
+  // Loaded when the tab is shown, not per keystroke: the scopes and the
   // memories are two requests, and then every keystroke is local.
   let qScopes = null;          // path -> 'private' | 'urbit' | 'clearweb'
   let qKnow = [];              // [{key, body}]
-  let qKnowFailed = false;     // /know-all never answered this panel-open
+  let qKnowFailed = false;     // /know-all never answered this visit
   let qLoading = null;         // in-flight load, shared
   let qAt = '';                // both beacons when both last loaded (bothAt)
   // never-loaded and load-failed are different states. qCtxAttempts counts
-  // how many times qLoadContextOnce has actually run since the panel opened,
+  // how many times qLoadContextOnce has actually run since the tab was shown,
   // capped at two: the open-time load and one retry. A failure short of that
   // cap is worth trying again; past it, every keystroke would otherwise fire
   // the same doomed pair of requests forever.
@@ -7099,7 +7343,7 @@
   let qResults = [];
   let qRows = [];
   let qSel = -1;
-  //  Opening the panel starts this, and the first keystroke wants it too. The
+  //  Showing the tab starts this, and the first keystroke wants it too. The
   //  pier serialises, so letting both fire meant four queued requests and a
   //  wait long enough to look like a hang. One load, both await it.
   function qLoadContext() {
@@ -7187,10 +7431,7 @@
 
   // opening a hit is the same move whether the mouse clicked it or Enter
   // picked it off the highlighted row
-  const qOpenResult = (h, ev) => {
-    qClose();
-    openIn(h.know ? 'know' : 'page', h.key, { ev });
-  };
+  const qOpenResult = (h, ev) => openIn(h.know ? 'know' : 'page', h.key, { ev });
 
   // the highlighted row alone, no rebuild: an inline background rather than
   // a class, since the app's .on styling is defined per-component and this
@@ -7269,7 +7510,7 @@
     // keystroke a slow or unreachable pier ever gets typed at.
     if (!qScopes && qCtxAttempts < 2) {
       //  the exposure map and the memories are fetched once per open, and on a
-      //  slow pier that is seconds. Say so, rather than showing an empty panel
+      //  slow pier that is seconds. Say so, rather than showing an empty list
       //  that reads as "no results".
       host.className = 'aclempty';
       host.textContent = 'searching\u2026';
@@ -7280,24 +7521,27 @@
     qPaint(host, sum, out, skipped);
   }
 
-  const qClose = () => { $('qwrap').hidden = true; };
-  const qOpen = () => {
-    $('qwrap').hidden = false;
-    const i = $('qinput');
-    i.value = '';
-    i.focus();
-    $('qlist').className = 'aclempty';
-    $('qlist').textContent = 'type at least two characters';
-    $('qsum').textContent = '';
-    qResults = [];
-    qRows = [];
-    qSel = -1;
-    //  the exposure map and the memories are refetched only when a beacon
-    //  moved since they loaded (90-sync.js), not on every ctrl-K
+  // qPrime: what showing the tab owes, however it was shown (Ctrl+K, the
+  // tab button, the phone sheet). The exposure map and the memories are
+  // refetched only when a beacon moved since they loaded (90-sync.js), not
+  // on every visit.
+  const qPrime = () => {
     if (streamLive && qAt && qAt === bothAt()) return;
     qScopes = null;                          // refresh exposure
-    qCtxAttempts = 0;                        // this open gets its own retry
+    qCtxAttempts = 0;                        // this visit gets its own retry
     qLoadContext();
+  };
+  document.addEventListener('lat-pane', (e) => {
+    if (e.detail.side === 'l' && e.detail.id === 'search') qPrime();
+  });
+  // the query stays in the box between visits; selected, so typing replaces it
+  const qOpen = () => {
+    paneOpen('l', true);
+    paneTab('l', 'search');
+    if (isMobile()) setMv('tree');
+    const i = $('qinput');
+    i.focus();
+    i.select();
   };
 
   // Local now, so this can be short. It exists to avoid rescanning on every
@@ -7327,18 +7571,15 @@
       runSearch($('qinput').value);
     }
   };
-  $('qclose').onclick = qClose;
-  $('qt').onclick = qOpen;
 
   // CAPTURE phase on window, so nothing downstream can swallow it. Vim mode's
   // handler is capture-phase on the textarea and consumes normal-mode keys
   // whole; being ahead of it is more robust than listing exemptions there.
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('qwrap').hidden) { qClose(); return; }
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'k' || e.key === 'K')) {
       e.preventDefault();
       e.stopPropagation();
-      if ($('qwrap').hidden) qOpen(); else qClose();
+      qOpen();
     }
   }, true);
 
@@ -7747,7 +7988,11 @@
     // NB: stale cached renders are dropped by loadTree, which prunes against
     // the revs in the fresh dump. Clearing the whole cache here instead meant
     // one page's edit cost every other page its cache.
-    if (mode === 'know') loadKnow(); else loadTree();
+    // Files and Knowledge both stay painted in their tabs, so neither is
+    // skipped for the other: the one the front document works on always
+    // reloads, the other when its beacon moved since it loaded
+    if (mode !== 'know' || !revFresh(treeAt)) loadTree();
+    if (mode === 'know' || (knowLive() && !knowFresh(knowAt))) loadKnow();
     refreshOpen();
     // a catch-up call, not the primary path: the stream now wakes the badge
     // directly on its own /comments event (see commentBumped below). This
@@ -7863,20 +8108,20 @@
             // never touching lastRev. (Historical note: the pre-raw
             // EventSource listened for a literal 'upd' event, which never
             // existed — live refresh was ALWAYS the 30s poll.)
-            // /know: a memory changed. Only the memory mode shows them, so
-            // only it refreshes. Elsewhere the moved beacon is enough to
-            // mark the memory listing stale (knowFresh).
+            // /know: a memory changed. A listing loaded into the Knowledge
+            // tab (knowLive) refreshes. One never loaded only needs the moved
+            // beacon, which marks it stale for when it is first shown.
             if (name.slice(-6) === ' /know') {
               if (name.slice(0, 3) === 'old') {
                 echoes.know.n = 0;
-                if (lastKnow && data && data !== lastKnow && mode === 'know') bumped();
+                if (lastKnow && data && data !== lastKnow && knowLive()) bumped();
                 noteKnow(data);
                 continue;
               }
               noteKnow(data);
               if (echoes.know.n > 0) { echoes.know.n--; continue; }
               if (Date.now() < echoes.know.until) continue;
-              if (mode === 'know') bumped();
+              if (knowLive()) bumped();
               continue;
             }
             if (name.slice(-5) !== ' /rev') {
@@ -7973,13 +8218,40 @@
   setInterval(() => { if (!streamLive && !document.hidden) refreshOpen(); }, 30000);
 
 // ── src/95-know.js ────────────────────────────────────────────────────────
-  // ── knowledge mode ───────────────────────────────────────────────────────
-  // The same workspace, pointed at the private memory store: browse keys as a
-  // tree, filter by tag chips, read/edit/save entries, tag/untag, delete.
-  let mode = 'pages';
+  // ── knowledge: <lat-know>, the memories and the editor's memory mode ────
+  // The Knowledge tab lists the private memory store as a tree, filtered by
+  // tag chips, with its own toolbar. `mode` is the editor's state for the
+  // document tab in front (21-tabs.js): a memory tab sets it to 'know', so
+  // read, edit, save, tag and delete go to the memory routes. Nothing else
+  // switches it any more, and the listing never depends on it. (`mode`
+  // itself is declared in 20-state.js, since the files tree reads it.)
+  customElements.define('lat-know', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<aside class="tree" id="knowpane">
+  <div class="ptool" role="toolbar" aria-label="Knowledge">
+    ${sbtn('id="knew"', 'plus', 'New memory')}
+    ${sbtn('id="ktidy"', 'tidy', 'Tidy memories')}
+    ${sbtn('id="ktrash" aria-pressed="false"', 'trash', 'Trash')}
+  </div>
+  <div id="ktrashlist" class="ktrash" hidden></div>
+  <!-- the tag chips outgrew the pane top (one row per dozen tags), so they
+       fold under a heading like history does. Native details: the fold,
+       the keyboard and the marker come free. -->
+  <details id="tagsec">
+    <summary class="sec" id="tagsh">tags</summary>
+    <div id="chips" class="chips"></div>
+  </details>
+  <div class="sec">memories</div>
+  <div id="knowlist"><div class="muted kwait">loading memories\u2026</div></div>
+</aside>`;
+    }
+  });
   let knowKeys = [];        // [{key, tags, updated, bytes}] from know-list
   let knowTag = '';         // active tag filter ('' = all)
+  let knowHave = false;     // a know-list has landed this session
   const chipsEl = $('chips'), knowMeta = $('knowmeta'), ktagsEl = $('ktags');
+  const knowList = $('knowlist');
   // folded by default and remembered, like the other layout choices
   const tagSec = $('tagsec'), tagSum = $('tagsh');
   tagSec.open = localStorage.knowTagsOpen === '1';
@@ -8002,6 +8274,7 @@
     if (gen !== knowGen) return;   // a local patch superseded this response
     knowKeys = d.keys;
     knowAt = at;
+    knowHave = true;
     renderKnowChips();
     renderKnowTree();
   }
@@ -8028,16 +8301,16 @@
   function renderKnowTree() {
     const shown = knowTag ? knowKeys.filter((k) => k.tags.includes(knowTag)) : knowKeys;
     const keys = shown.map((k) => k.key.replace(/^\//, '')).sort();
-    treeList.textContent = '';
-    rowByPath = new Map();
+    knowList.textContent = '';
+    knowRows = new Map();
     if (!keys.length) {
       const empty = document.createElement('div');
       empty.className = 'muted';
       empty.style.padding = '4px 8px';
       empty.textContent = knowTag
         ? 'no memories tagged #' + knowTag
-        : 'no memories yet — name one above and save';
-      treeList.appendChild(empty);
+        : 'no memories yet. New memory starts one.';
+      knowList.appendChild(empty);
       return;
     }
     const coll = knowColl.get();
@@ -8052,17 +8325,17 @@
         const row = folderRow(parts[d], d, coll.includes(dir),
           () => { knowColl.flip(dir); renderKnowTree(); });
         if (folded(dir)) row.style.display = 'none';
-        treeList.appendChild(row);
+        knowList.appendChild(row);
       }
       const row = document.createElement('a');
-      row.className = 'pg' + (key === current ? ' cur' : '');
+      row.className = 'pg' + (mode === 'know' && key === current ? ' cur' : '');
       row.style.marginLeft = ((parts.length - 1) * 14) + 'px';
       if (folded(key)) row.style.display = 'none';
-      row.href = '#';
+      row.href = '/apps/lattice/app?view=know&key=' + encodeURIComponent(key);
       row.textContent = parts[parts.length - 1];
       tabLink(row, 'know', key);
-      rowByPath.set(key, row);
-      treeList.appendChild(row);
+      knowRows.set(key, row);
+      knowList.appendChild(row);
     }
   }
   // one knowKeys entry by (normalized) key. Keys may carry a leading slash
@@ -8150,22 +8423,24 @@
     renderKnowChips();
   };
 
-  async function saveKnow() {
+  // `create`: New memory writes the key before anything is typed, so an
+  // empty body is sent as a newline (as a new page is) rather than refused
+  async function saveKnow(create) {
     const key = pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!key) { st('key required', false); return; }
     if (!validName(key)) {
       st('bad key — lowercase letters, digits, and - . _ ~ (no spaces)', false);
       return;
     }
-    if (!src.value) { st('empty body', false); return; }
+    if (!src.value && !create) { st('empty body', false); return; }
     if (viewingRev !== null) { st('viewing a revision — use restore', false); return; }
     // the pier serializes every write behind one shared `saving` flag, know
     // or page (see save()/autosave()/saveGrub()). Without this guard,
     // guardDirty's flush against a memory whose autosave was already mid-
     // flight fired a second, fully concurrent POST to the same /know-save key.
-    if (saving) { savePending = () => saveKnow(); return; }
+    if (saving) { savePending = () => saveKnow(create); return; }
     saving = true;
-    const sent = src.value;
+    const sent = src.value || '\n';
     let w = { gone: true };
     try {
       w = await shipWrite(api + '/know-save?key=' + encodeURIComponent(key),
@@ -8223,6 +8498,11 @@
     renderKnowTree();
   }
 
+  // The editor's mode, set by what the front tab opens: openKnow and the
+  // know tab kind to 'know', openPage and the page and grub kinds back to
+  // 'pages'. Each of those has already passed guardDirty, so this does not
+  // ask again. It resets the editor to a blank document of that mode; the
+  // open that called it then paints its document.
   function setMode(m) {
     mode = m;
     curKind = null;
@@ -8231,11 +8511,7 @@
     $('histsec').hidden = true;
     $('linksec').hidden = true;
     ws.classList.toggle('know', m === 'know');
-    $('modet').className = m === 'know' ? 'on' : '';
-    $('modet').innerHTML = m === 'know' ? '\u25c6 knowledge' : '\u270e pages';
-    tagSec.hidden = m !== 'know';
     knowMeta.hidden = m !== 'know';
-    $('treesec').textContent = m === 'know' ? 'memories' : 'files';
     curFolder = null;
     setCtlLabels();
     setOpen(null, { url: '/apps/lattice/app' + (m === 'know' ? '?view=know' : '') });
@@ -8243,42 +8519,111 @@
     src.value = '';
     render();
     prevBlank();
-    // paint what is already in memory NOW, and let the fetch correct it.
-    // Both listings used to paint only when their round trip returned, so
-    // the OTHER mode's listing sat under this mode's heading for as long as
-    // the pier took: seconds on ricsul, longer through the desktop proxy.
-    // The page tree is always in memory after boot. Memories are, after the
-    // first visit; before it the honest paint is a placeholder, not the
-    // pages listing and not "no memories yet".
-    //
-    // The fetch itself is skipped when the listing in memory was fetched at
-    // the beacon rev the live stream still reports (revFresh, 90-sync.js):
-    // flipping between the modes used to cost a pier round-trip each way
-    // to learn nothing.
-    if (m === 'know') {
-      if (knowKeys.length) { renderKnowChips(); renderKnowTree(); }
-      else {
-        const wait = document.createElement('div');
-        wait.className = 'muted';
-        wait.style.padding = '4px 8px';
-        wait.textContent = 'loading memories\u2026';
-        treeList.replaceChildren(wait);
-      }
-      if (!knowFresh(knowAt)) loadKnow();
-    } else { renderTree(); if (!revFresh(treeAt)) loadTree(); }
-    // the toggle's visible result is the tree listing. Make sure it can be
-    // seen: un-hide the pane on desktop, jump to the tree tab on mobile.
-    if (localStorage.appNT === '1') { localStorage.appNT = '0'; applyToggles(); }
-    if (isMobile()) setMv('tree');
-    st(m === 'know' ? 'knowledge — pick a memory from the tree' : 'pages');
+    markCurrent();
+    // both listings are always painted in their own tabs. Refetch the one
+    // this mode works on only when the beacon says it moved (revFresh,
+    // knowFresh in 90-sync.js), never to learn nothing.
+    if (m === 'know') { if (!knowFresh(knowAt)) loadKnow(); }
+    else if (!revFresh(treeAt)) loadTree();
+    st(m === 'know' ? 'knowledge \u00b7 new memory' : 'pages');
   }
-  // the pill itself is the entry point a user clicks, so it guards. setMode
-  // is the applier openPage/openKnow also call once THEIR guard already
-  // passed, and guarding inside setMode too would ask twice, or ask about
-  // work guardDirty already flushed a moment earlier.
-  $('modet').onclick = async () => {
-    if (!(await guardDirty())) return;
-    setMode(mode === 'know' ? 'pages' : 'know');
+
+  // ── the Knowledge tab: lazy listing ─────────────────────────────────────
+  // Fetched the first time the tab is seen, and again when the memory
+  // beacon has moved since (knowFresh). Memories are one request the editor
+  // does not otherwise need, so a session that never looks never pays it.
+  const knowShow = () => { if (!knowHave || !knowFresh(knowAt)) loadKnow(); };
+  // whether the memory listing is worth keeping current: in memory mode, or
+  // once it has been loaded and is sitting in its tab (90-sync.js, the drain)
+  const knowLive = () => mode === 'know' || knowHave;
+  document.addEventListener('lat-pane', (e) => {
+    if (e.detail.side === 'l' && e.detail.id === 'know') knowShow();
+  });
+  if (paneShows('l', 'know')) knowShow();
+
+  // ── toolbar ─────────────────────────────────────────────────────────────
+  // New memory: the page create dialog, its kind fixed at md (a memory has
+  // no other), then a fresh memory tab named with the key and written at
+  // once, the way a new page is (newFile, 35-pages.js). The dialog comes
+  // first, so a cancel leaves the front tab exactly as it was.
+  $('knew').onclick = async (ev) => {
+    let seed = '';
+    let note = '';
+    let key = '';
+    for (;;) {
+      const picked = await askNameKind(note + 'memory key (e.g. user/preferences)', seed,
+        'create', 'md', true);
+      if (!picked) return;
+      key = picked.name.replace(/\.md$/i, '');
+      if (validName(key)) break;
+      seed = key;
+      note = 'a key is lowercase letters, digits and - . _ ~ (no spaces). ';
+    }
+    if (knowEntry(key)) { openIn('know', key, { ev }); return; }
+    await openIn('know', '', { ev });
+    if (!activeTab || activeTab.kind !== 'know' || activeTab.key || current !== null) return;
+    setOpen(null, { shown: key });
+    await saveKnow(true);
+    src.focus();
+  };
+  // Tidy: the memory review (/know?lint=1) as a tool tab, once tool tabs
+  // exist (24-tools.js). Until then it opens beside the editor.
+  $('ktidy').onclick = (ev) => {
+    if (TAB_KINDS.tool) openIn('tool', 'frame:/apps/lattice/know?lint=1', { ev });
+    else window.open('/apps/lattice/know?lint=1', '_blank');
+  };
+  // Trash: the soft-deleted memories (GET /know-trash), each with Restore
+  const trashList = $('ktrashlist');
+  const kmuted = (t) => {
+    const d = document.createElement('div');
+    d.className = 'muted';
+    d.style.padding = '4px 8px';
+    d.textContent = t;
+    return d;
+  };
+  async function loadTrash() {
+    trashList.replaceChildren(kmuted('loading trash\u2026'));
+    let d = null;
+    try {
+      const r = await fetch(api + '/know-trash');
+      if (r.ok) d = await r.json();
+    } catch {}
+    if (trashList.hidden) return;
+    if (!d) { trashList.replaceChildren(kmuted('the trash did not load')); return; }
+    const keys = (d.keys || []).map((k) => String(k.key || '').replace(/^\//, '')).sort();
+    const head = document.createElement('div');
+    head.className = 'sec';
+    head.textContent = 'trash \u00b7 ' + keys.length;
+    trashList.replaceChildren(head);
+    if (!keys.length) { trashList.append(kmuted('nothing in the trash')); return; }
+    for (const key of keys) {
+      const row = document.createElement('div');
+      row.className = 'ktr';
+      row.dataset.key = key;
+      const n = document.createElement('span');
+      n.className = 'ktn';
+      n.textContent = key;           // keys are content: textContent
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = 'restore';
+      b.onclick = async () => {
+        b.disabled = true;
+        const r = await mutate(api + '/know-restore?key=' + encodeURIComponent(key));
+        if (!r.ok) { b.disabled = false; st('restore failed' + await errText(r), false); return; }
+        st('restored ' + key);
+        loadKnow();
+        loadTrash();
+      };
+      row.append(n, b);
+      trashList.append(row);
+    }
+  }
+  $('ktrash').onclick = () => {
+    const on = trashList.hidden;
+    trashList.hidden = !on;
+    $('ktrash').classList.toggle('on', on);
+    $('ktrash').setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (on) loadTrash();
   };
 
 // ── src/96-deskmenu.js ────────────────────────────────────────────────────
@@ -8294,6 +8639,7 @@
   //
   // Web and mobile are untouched: without the desktop shell there is no
   // menubar to move anything into, and the buttons are the only affordance.
+  // Naming the new page is the same dialog everywhere (newFile, 35-pages.js).
   //
   // The flag is set by the desktop build that HAS the menu (commands.rs, an
   // initialization_script), not inferred from __TAURI__. This UI ships from
@@ -8308,9 +8654,9 @@
       const el = document.getElementById(id);
       if (el) el.hidden = true;
     }
-    // Both button rows are now empty, and an empty flex row still draws its
-    // gap and margin — a blank band above the tree that reads as a rendering
-    // fault. Hide a row only when everything in it went, so a row that keeps
+    // The create and upload group is now empty, and an empty flex row still
+    // draws its gap: a blank band in the toolbar that reads as a rendering
+    // fault. Hide a group only when everything in it went, so one that keeps
     // a button (a later one added to it) still shows.
     for (const row of document.querySelectorAll('#tree .newbtns')) {
       if ([...row.children].every((c) => c.hidden)) row.hidden = true;
@@ -8328,86 +8674,6 @@
     ws.classList.add('deskbar');
   }
 
-  // ── naming a new page when the name field is not on screen ───────────────
-  //  Wrap +newFile itself rather than any one button. Hooking the toolbar
-  //  button covered File > New page and missed the green + on every tree
-  //  folder, which calls newFile(path) straight — so it set a name into a
-  //  hidden field, focused something display:none, and looked like a dead
-  //  button. Everything user-initiated routes through here: the toolbar
-  //  (newFile('')), the File menu (which clicks it), the tree, and the
-  //  mobile bar's label.
-  //
-  //  The field is hidden in two independent states — the desktop shell
-  //  (deskbar, set above) and phone width (the 820px CSS block) — and a
-  //  resize crosses the second one live, so the decision is made per call,
-  //  not at load.
-  //
-  //  Boot also calls newFile, with focusName false, to land on an empty
-  //  page. That must not be interrupted by a dialog, and it is the one
-  //  caller that says so.
-  const nameFieldHidden = () =>
-    ws.classList.contains('deskbar') || matchMedia('(max-width: 820px)').matches;
-  const baseNewFile = newFile;
-  newFile = function (into, focusName = true) {
-    if (!focusName || !nameFieldHidden()) return baseNewFile(into, focusName);
-    (async () => {
-      //  a folder's + pre-fills that folder; the toolbar keeps offering the
-      //  open page's path, which is what it did before this existed. Read it
-      //  BEFORE the reset below, which clears the field it comes from.
-      const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
-      //  the kind is picked IN the dialog. The bar carries that control and
-      //  the desktop shell hides the bar, so this was the one place a desktop
-      //  user could name a file and the one place they could not say what it
-      //  was. Everything arrived as md.
-      const picked = await askNameKind('page name (e.g. notes/todo)', seed,
-        'create', pkind.value);
-      if (!picked) return;
-      //  reset the editor only once the create is confirmed, so a cancel
-      //  leaves the open page exactly as it was. The false skips the focus
-      //  that cannot land on a hidden name field.
-      baseNewFile(into, false);
-      let name = picked.name;
-      let kind = picked.kind;
-      //  a typed extension still wins, because typing notes/todo.md and being
-      //  given a page called "todo.md" would be absurd. The table is EXT_KIND
-      //  in 30-tree.js, the same one the uploader files by.
-      const dot = name.lastIndexOf('.');
-      const typed = dot > 0 ? extKind(name.slice(dot + 1)) : null;
-      if (typed) { kind = typed; name = name.slice(0, dot); }
-      //  the field is seeded with the REAL path; the typed leaf, when it was
-      //  not a valid path, rides to save() as the display name
-      const rn = realName(name);
-      if (!rn) return;
-      name = rn.name;
-      newRn = rn;
-      pkind.value = kind;
-      //  newFile above left nothing open and the field editable; this names
-      //  the buffer, and setOpen's event repaints both labels
-      setOpen(null, { shown: name });
-      //  Show it in the tree NOW, pulsing, before the ship has agreed. The
-      //  write is a pier round trip and the tree sitting unchanged through it
-      //  reads as nothing having happened, which is the report that started
-      //  all of this. The pulse is the honest part: it says recorded, not yet
-      //  confirmed. Cleared on success, and the row is dropped on failure so
-      //  a page that does not exist is never left sitting there.
-      const already = nodes.some((n) => n.page && n.path === name);
-      if (!already) { addTreeNode(name, kind, true); applyDnames(rn); snapTree(); renderTree(); }
-      //  the button says create, so write the page here. Naming the buffer
-      //  and leaving it unwritten read as a create that did nothing, and a
-      //  page abandoned before its first keystroke left no trace at all.
-      //  save() owns the whole create: 409, the offline queue, the tree
-      //  patch and the url, so this must not reimplement any of it.
-      await save();
-      if (!already) {
-        //  save() sets `current` on any outcome it considers a success,
-        //  including a queued offline write, which IS a success here.
-        if (current === name) setTreePending(name, false);
-        else { dropTreeNodes(name); snapTree(); renderTree(); }
-      }
-      src.focus();
-    })();
-  };
-
 // ── src/97-mobar.js ───────────────────────────────────────────────────────
   // ── mobile: one bar row + a ⋯ sheet ──────────────────────────────────────
   // At phone width the bar used to wrap into three rows — the icon cluster
@@ -8415,11 +8681,12 @@
   // once-per-page action — 184px of chrome before the tab strip's content.
   //
   // Same doctrine as the desktop deskbar (96-deskmenu.js): nothing is
-  // removed, and the ⋯ sheet CLICKS the page's own hidden buttons, so there
-  // is exactly one implementation of search/comments/access/mode and nothing
-  // to drift. Everything here is built unconditionally and shown or hidden
-  // by the 820px CSS block, so a resize across the breakpoint just works —
-  // no load-time isMobile branching to go stale.
+  // removed, and the ⋯ sheet CLICKS the page's own hidden buttons (or calls
+  // the one function behind them), so there is exactly one implementation
+  // of search/comments/access and nothing to drift. Everything here is
+  // built unconditionally and shown or hidden by the 820px CSS block, so a
+  // resize across the breakpoint just works, with no load-time isMobile
+  // branching to go stale.
   {
     const bar = document.querySelector('.bar');
 
@@ -8464,27 +8731,24 @@
     const sheet = document.createElement('div');
     sheet.id = 'msheet';
     sheet.hidden = true;
-    // [sheet row id to create, real button id to click, icon, label]
+    // [sheet row id to create, what it does, icon, label]. Search is the
+    // left pane's tab (qOpen, 79-search.js); memories are its Knowledge tab,
+    // reached from the tree view's own tab row, so there is no mode row.
     const rows = [
-      ['ms-q', 'qt', 'search', 'search'],
-      ['ms-cm', 'cmt', 'comment', 'comments'],
-      ['ms-acl', 'aclt', 'key', 'access'],
-      ['ms-mode', 'modet', '', ''],   // label mirrors the live mode button
+      ['ms-q', () => qOpen(), 'search', 'search'],
+      ['ms-cm', () => $('cmt').click(), 'comment', 'comments'],
+      ['ms-acl', () => $('aclt').click(), 'key', 'access'],
     ];
-    for (const [rid, target, icon, label] of rows) {
+    for (const [rid, run, icon, label] of rows) {
       const b = document.createElement('button');
       b.id = rid;
       if (icon) b.innerHTML = ico(icon) + ' ';
       b.append(label);
-      b.onclick = () => { sheet.hidden = true; $(target).click(); };
+      b.onclick = () => { sheet.hidden = true; run(); };
       sheet.appendChild(b);
     }
     bar.appendChild(sheet);
-    more.onclick = () => {
-      // the mode row's label is whatever the real button says right now
-      $('ms-mode').textContent = $('modet').textContent;
-      sheet.hidden = !sheet.hidden;
-    };
+    more.onclick = () => { sheet.hidden = !sheet.hidden; };
     // tapping anywhere else puts it away
     document.addEventListener('click', (e) => {
       if (!sheet.hidden && !sheet.contains(e.target) && e.target !== more) sheet.hidden = true;
@@ -8552,7 +8816,7 @@
       if (after && after.reason === 'resolved') {
         localStorage.latLegacy = 'done';
         knowGen++;
-        if (mode === 'know') loadKnow();
+        if (knowLive()) loadKnow();
         st('legacy import completed');
         return;
       }
@@ -8587,7 +8851,7 @@
     else delete sessionStorage.latLegacyAsked;
     knowGen++;
     st('imported ' + res.imported + ' memories from the old agent');
-    if (mode === 'know') loadKnow(); else loadTree();
+    if (knowLive()) loadKnow();
     // NEVER advise retiring the old agent while it still holds pages. This
     // import moves knowledge only (the agent exposes no arm for page bodies),
     // so an uninstall on that advice would destroy them permanently.

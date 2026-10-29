@@ -272,11 +272,27 @@ select, option { color-scheme: inherit; }
 @media (prefers-reduced-motion: reduce) { #spin { animation-duration: 2.4s; } }
 
 .tree { min-height: 100%; padding: 10px; }
-.tree .newbtns { display: flex; gap: 6px; margin-bottom: 8px; }
-.tree .nf { flex: 1; padding: 5px 8px; font: inherit; font-weight: 600;
-  font-size: .82rem; border: 1px solid var(--border); border-radius: 6px;
+.tree .ptool { display: flex; align-items: center; gap: 2px; margin: -4px -4px 6px; }
+.tree .ptool .grow { flex: 1; }
+.tree .newbtns { display: flex; gap: 2px; }
+/* the Knowledge trash, the bookmark rows and the search box */
+.ktrash { margin: 0 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-soft); }
+.ktr { display: flex; align-items: center; gap: 6px; padding: 2px 8px; }
+.ktr .ktn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ktr button, .tree .mrow button:where(:not(.sbtn)) { font: inherit; font-size: .78rem;
+  padding: 2px 8px; border: 1px solid var(--border); border-radius: 5px;
   background: var(--surface); color: inherit; cursor: pointer; }
-.tree .nf:hover { border-color: var(--green); }
+.ktr button:hover { border-color: var(--green); }
+.tree .mrow { display: flex; align-items: center; gap: 2px; }
+.tree .mrow a.pg { flex: 1; min-width: 0; }
+.tree .mrow .sbtn { width: 24px; height: 24px; visibility: hidden; }
+.tree .mrow:hover .sbtn, .tree .mrow .sbtn:focus-visible { visibility: visible; }
+@media (hover: none) { .tree .mrow .sbtn { visibility: visible; } }
+#qinput, #mfilter { width: 100%; box-sizing: border-box; margin: 0 0 6px; padding: 5px 8px;
+  font: inherit; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: inherit; }
+#qsum { font-size: .78rem; margin: 0 2px 4px; }
+.qpane #qlist.aclempty { padding: 1rem .5rem; }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
 /* Offline indicator. Amber for "the ship is gone", green for "back, still
    draining", because those are different situations for the person editing:
@@ -314,7 +330,6 @@ select, option { color-scheme: inherit; }
 .ws.know #sharesec, .ws.know #pkind,
 .ws.know #histsec, .ws.know #linksec { display: none; }
 #histview { margin-bottom: 8px; }
-#modet.on { border-color: var(--green); color: var(--green); }
 .uppanel { margin: 8px 0; padding: 9px 10px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--surface); font-size: .78rem;
   word-break: break-all; }
@@ -521,7 +536,7 @@ select, option { color-scheme: inherit; }
      file rows then ellipsise within it and the button row wraps. */
   .tree { min-width: 0; }
   .tree .newbtns { flex-wrap: wrap; }
-  #modet, #pname, #pkind, #qt, #cmt, #aclt { display: none; }
+  #pname, #pkind, #cmt, #aclt { display: none; }
   /* .grow is also flex:1 — left in the row it takes half the free space and
      the path label ellipsises early with daylight sitting next to it (the
      exact bug the desktop label had). The ⋯ is appended last, so nothing
@@ -735,13 +750,13 @@ select, option { color-scheme: inherit; }
    custom elements default to display:inline and break the grid. */
 lat-dialog, lat-bar, lat-tabs, lat-tree, lat-editor, lat-preview, lat-ctl,
 lat-share, lat-history, lat-links, lat-knowtags, lat-acl,
-lat-comments, lat-ribbon, lat-lpane, lat-rpane, lat-statusbar { display: contents; }
+lat-comments, lat-ribbon, lat-lpane, lat-rpane, lat-statusbar,
+lat-know, lat-marks { display: contents; }
 lat-search, lat-conflicts { display: contents; }
 
 /*  search results. The badge states each hit's exposure, because this list
     puts private notes next to things published on the open web and the
     difference is not something to make people infer from the path. */
-#qinput { flex: 1 1 22em; min-width: 10em; }
 ul.qlist { list-style: none; margin: 0; padding: 0; }
 ul.qlist li { border-bottom: 1px solid var(--border-soft); }
 ul.qlist a {
@@ -795,7 +810,6 @@ ul.qlist a:hover { background: var(--surface); }
 </div>
 <lat-acl></lat-acl>
 <lat-comments></lat-comments>
-<lat-search></lat-search>
 <lat-conflicts></lat-conflicts>
 <lat-dialog></lat-dialog>
 <script src="/apps/lattice/prism.js"></script>

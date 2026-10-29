@@ -28,7 +28,9 @@
   // ── tree pane: <lat-tree> ────────────────────────────────────────────────
   // The pane's buttons are wired where their handlers live (45-templates,
   // 70-upload). Those files run after this component upgrades, so their
-  // $-lookups find the rendered elements.
+  // $-lookups find the rendered elements. The create and upload buttons sit
+  // in their own .newbtns group because the desktop File menu takes them
+  // over and hides that group (96-deskmenu.js); sort and collapse stay.
   let treeList;
   // pages other ships shared with us (/shared-with-me), drawn as a folder
   // after the pages. Filled by 69-shared.js.
@@ -37,14 +39,17 @@
     connectedCallback() {
       this.innerHTML = `
 <aside class="tree" id="tree">
-  <div class="newbtns">
-    <button class="nf" id="newfile">+ file</button>
-    <button class="nf" id="newfolder">+ folder</button>
-    <button class="nf" id="newtmpl">+ template</button>
-  </div>
-  <div class="newbtns">
-    <button class="nf" id="upfiles">&#8613; files</button>
-    <button class="nf" id="updir">&#8613; dir</button>
+  <div class="ptool" role="toolbar" aria-label="Files">
+    <div class="newbtns">
+      ${sbtn('id="newfile"', 'plus', 'New page')}
+      ${sbtn('id="newfolder"', 'fplus', 'New folder')}
+      ${sbtn('id="newtmpl"', 'tpl', 'New from template')}
+      ${sbtn('id="upfiles"', 'upload', 'Upload files')}
+      ${sbtn('id="updir"', 'updir', 'Upload a folder')}
+    </div>
+    <span class="grow"></span>
+    ${sbtn('id="tsort"', 'sort', 'Sort: name')}
+    ${sbtn('id="tcoll"', 'fold', 'Collapse all')}
   </div>
   <input type="file" id="fpick" multiple hidden>
   <input type="file" id="dpick" webkitdirectory hidden>
@@ -53,13 +58,6 @@
     <div class="upbar"><div id="upfill"></div></div>
     <div id="uperr" class="uperr"></div>
   </div>
-  <!-- the tag chips outgrew the pane top (one row per dozen tags), so they
-       fold under a heading like history does. Native details: the fold,
-       the keyboard and the marker come free. 95-know.js fills and labels it. -->
-  <details id="tagsec" hidden>
-    <summary class="sec" id="tagsh">tags</summary>
-    <div id="chips" class="chips"></div>
-  </details>
   <div class="sec" id="treesec">files</div>
   <div id="treelist"></div>
 </aside>`;
@@ -123,19 +121,23 @@
       if (!n || (typeof n.rev === 'number' && n.rev > c.rev)) pageCache.delete(name);
     }
     snapTree();
-    // the files listing only. In knowledge mode #treelist holds the memory
-    // tree, and a dump landing late (boot with a memory tab in front loads
-    // both) must not paint pages over it. setMode('pages') paints `nodes`.
-    if (mode !== 'know') renderTree();
+    // always: #treelist holds only the files tree (the memory tree has its
+    // own #knowlist), so a memory tab in front is no reason to leave Files
+    // stale behind the Knowledge tab
+    renderTree();
   }
 
   // selection changes only move the `cur` class. Never rebuild the pane's DOM
-  // for that. rowByPath is rebuilt by renderTree/renderKnowTree.
+  // for that. rowByPath is rebuilt by renderTree, knowRows by renderKnowTree
+  // (95-know.js). `current` names a page or a memory by the mode, so each
+  // tree marks it only in its own mode.
   let rowByPath = new Map();
+  let knowRows = new Map();
   function markCurrent() {
     for (const [p, row] of rowByPath)
-      row.classList.toggle('cur',
-        row.classList.contains('pg') ? p === current : p === curFolder);
+      row.classList.toggle('cur', row.classList.contains('pg')
+        ? mode !== 'know' && p === current : p === curFolder);
+    for (const [k, row] of knowRows) row.classList.toggle('cur', mode === 'know' && k === current);
   }
 
   // local `nodes` patching: this client performed the write, so it already
@@ -212,9 +214,42 @@
     return row;
   }
 
+  // ── sort order and collapse all ─────────────────────────────────────────
+  // Siblings sort by name, folders first, ascending or descending
+  // (localStorage.appSort). The order is per level, so a folder's pages stay
+  // under it whichever way its siblings run.
+  const SORTS = { name: 'Sort: name', 'name-desc': 'Sort: name, descending' };
+  const treeSort = () => (localStorage.appSort === 'name-desc' ? 'name-desc' : 'name');
+  function treeOrder(list) {
+    const dir = treeSort() === 'name-desc' ? -1 : 1;
+    return list.map((n) => ({ n, s: n.path.split('/') })).sort((a, b) => {
+      const m = Math.min(a.s.length, b.s.length);
+      for (let i = 0; i < m; i++) {
+        if (a.s[i] === b.s[i]) continue;
+        const fa = i < a.s.length - 1 || !a.n.page;
+        const fb = i < b.s.length - 1 || !b.n.page;
+        if (fa !== fb) return fa ? -1 : 1;
+        return dir * a.s[i].localeCompare(b.s[i]);
+      }
+      return (a.s.length - b.s.length) || (a.n.page - b.n.page);
+    }).map((x) => x.n);
+  }
+  const paintSort = () => tip($('tsort'), SORTS[treeSort()]);
+  paintSort();
+  $('tsort').onclick = () => {
+    try { localStorage.appSort = treeSort() === 'name' ? 'name-desc' : 'name'; } catch {}
+    paintSort();
+    renderTree();
+  };
+  $('tcoll').onclick = () => {
+    paneColl.set([...new Set([...paneColl.get(),
+      ...nodes.filter((n) => !n.page).map((n) => n.path)])]);
+    renderTree();
+  };
+
   function renderTree() {
     const coll = paneColl.get();
-    const byPath = [...nodes].sort((a, b) => a.path.localeCompare(b.path));
+    const byPath = treeOrder(nodes);
     treeList.textContent = '';
     rowByPath = new Map();
     for (const n of byPath) {
@@ -224,7 +259,7 @@
       if (n.page) {
         row = document.createElement('a');
         row.style.marginLeft = (depth * 14) + 'px';
-        row.className = 'pg' + (n.path === current ? ' cur' : '')
+        row.className = 'pg' + (mode !== 'know' && n.path === current ? ' cur' : '')
           + (n.pending ? ' pend' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
         // the display name when there is one (a typed name that was not a

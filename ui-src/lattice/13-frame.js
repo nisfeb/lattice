@@ -27,7 +27,9 @@
       ['comments', 'comment', 'Comments'], ['hist', 'hist', 'History']],
   };
   const FILL = {
-    files: '<lat-tree></lat-tree>', page: '<lat-ctl></lat-ctl>',
+    files: '<lat-tree></lat-tree>', know: '<lat-know></lat-know>',
+    search: '<lat-search></lat-search>', marks: '<lat-marks></lat-marks>',
+    page: '<lat-ctl></lat-ctl>',
     back: '<lat-links></lat-links>', hist: '<lat-history></lat-history>',
   };
   const paneHtml = (side, label) => `
@@ -84,7 +86,9 @@
   // ── pane tabs and the corner toggles ────────────────────────────────────
   // One section per pane is shown. The choice persists per side, and an id
   // this build does not know (an older or newer layout) falls back to the
-  // default rather than leaving the pane blank.
+  // default rather than leaving the pane blank. Showing a section announces
+  // it (lat-pane on document, detail {side, id}), so a section that loads
+  // its list lazily (Knowledge, Bookmarks) fetches when it is first seen.
   const TABKEY = { l: 'appLTab', r: 'appRTab' };
   const TABDEF = { l: 'files', r: 'page' };
   function paneTab(side, id) {
@@ -97,7 +101,12 @@
     for (const s of document.querySelectorAll('#' + side + 'body > section'))
       s.hidden = s.dataset.pane !== id;
     try { localStorage[TABKEY[side]] = id; } catch {}
+    document.dispatchEvent(new CustomEvent('lat-pane', { detail: { side, id } }));
   }
+  // the section a pane shows right now, for a file whose listener was added
+  // after the boot-time paneTab below had already announced it
+  const paneShows = (side, id) =>
+    !document.querySelector('#' + side + 'body > [data-pane=' + id + ']').hidden;
   // The stored keys still mean HIDDEN ('1'), as they always have, so a
   // layout saved before the frame comes back the same. The buttons say
   // whether the pane is OPEN: pressed means showing.

@@ -1,6 +1,7 @@
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits. Auto-refresh never clobbers them
+  let mode = 'pages';      // 'know' while a memory is in front (95-know.js)
   // read by the service-worker registration script, which lives in its own
   // inline <script> and cannot see this scope. It reloads the page when a new
   // worker takes over, and must never do that over typed work.
@@ -279,9 +280,10 @@
   const forgetBase = () => { basePr = null; try { delete localStorage.latBase; } catch {} };
 
   // a tree's folded folders, remembered under one localStorage key: get()
-  // reads the list, flip(key) folds or unfolds one folder in it. The files
-  // tree (with its shared-with-me folder) keeps appColl; memories keep
-  // knowColl (95-know.js).
+  // reads the list, flip(key) folds or unfolds one folder in it, set(list)
+  // replaces it (collapse all). The files tree (with its shared-with-me
+  // folder) keeps appColl; memories keep knowColl (95-know.js) and
+  // bookmarks marksColl (31-marks.js).
   const collStore = (k) => {
     const get = () => {
       try { return JSON.parse(localStorage[k] || '[]'); } catch { return []; }
@@ -292,6 +294,7 @@
       if (i >= 0) c.splice(i, 1); else c.push(key);
       localStorage[k] = JSON.stringify(c);
     };
-    return { get, flip };
+    const set = (list) => { localStorage[k] = JSON.stringify(list); };
+    return { get, flip, set };
   };
   const paneColl = collStore('appColl');

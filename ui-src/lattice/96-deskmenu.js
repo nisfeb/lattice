@@ -10,6 +10,7 @@
   //
   // Web and mobile are untouched: without the desktop shell there is no
   // menubar to move anything into, and the buttons are the only affordance.
+  // Naming the new page is the same dialog everywhere (newFile, 35-pages.js).
   //
   // The flag is set by the desktop build that HAS the menu (commands.rs, an
   // initialization_script), not inferred from __TAURI__. This UI ships from
@@ -24,9 +25,9 @@
       const el = document.getElementById(id);
       if (el) el.hidden = true;
     }
-    // Both button rows are now empty, and an empty flex row still draws its
-    // gap and margin — a blank band above the tree that reads as a rendering
-    // fault. Hide a row only when everything in it went, so a row that keeps
+    // The create and upload group is now empty, and an empty flex row still
+    // draws its gap: a blank band in the toolbar that reads as a rendering
+    // fault. Hide a group only when everything in it went, so one that keeps
     // a button (a later one added to it) still shows.
     for (const row of document.querySelectorAll('#tree .newbtns')) {
       if ([...row.children].every((c) => c.hidden)) row.hidden = true;
@@ -43,83 +44,3 @@
     // worth.
     ws.classList.add('deskbar');
   }
-
-  // ── naming a new page when the name field is not on screen ───────────────
-  //  Wrap +newFile itself rather than any one button. Hooking the toolbar
-  //  button covered File > New page and missed the green + on every tree
-  //  folder, which calls newFile(path) straight — so it set a name into a
-  //  hidden field, focused something display:none, and looked like a dead
-  //  button. Everything user-initiated routes through here: the toolbar
-  //  (newFile('')), the File menu (which clicks it), the tree, and the
-  //  mobile bar's label.
-  //
-  //  The field is hidden in two independent states — the desktop shell
-  //  (deskbar, set above) and phone width (the 820px CSS block) — and a
-  //  resize crosses the second one live, so the decision is made per call,
-  //  not at load.
-  //
-  //  Boot also calls newFile, with focusName false, to land on an empty
-  //  page. That must not be interrupted by a dialog, and it is the one
-  //  caller that says so.
-  const nameFieldHidden = () =>
-    ws.classList.contains('deskbar') || matchMedia('(max-width: 820px)').matches;
-  const baseNewFile = newFile;
-  newFile = function (into, focusName = true) {
-    if (!focusName || !nameFieldHidden()) return baseNewFile(into, focusName);
-    (async () => {
-      //  a folder's + pre-fills that folder; the toolbar keeps offering the
-      //  open page's path, which is what it did before this existed. Read it
-      //  BEFORE the reset below, which clears the field it comes from.
-      const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
-      //  the kind is picked IN the dialog. The bar carries that control and
-      //  the desktop shell hides the bar, so this was the one place a desktop
-      //  user could name a file and the one place they could not say what it
-      //  was. Everything arrived as md.
-      const picked = await askNameKind('page name (e.g. notes/todo)', seed,
-        'create', pkind.value);
-      if (!picked) return;
-      //  reset the editor only once the create is confirmed, so a cancel
-      //  leaves the open page exactly as it was. The false skips the focus
-      //  that cannot land on a hidden name field.
-      baseNewFile(into, false);
-      let name = picked.name;
-      let kind = picked.kind;
-      //  a typed extension still wins, because typing notes/todo.md and being
-      //  given a page called "todo.md" would be absurd. The table is EXT_KIND
-      //  in 30-tree.js, the same one the uploader files by.
-      const dot = name.lastIndexOf('.');
-      const typed = dot > 0 ? extKind(name.slice(dot + 1)) : null;
-      if (typed) { kind = typed; name = name.slice(0, dot); }
-      //  the field is seeded with the REAL path; the typed leaf, when it was
-      //  not a valid path, rides to save() as the display name
-      const rn = realName(name);
-      if (!rn) return;
-      name = rn.name;
-      newRn = rn;
-      pkind.value = kind;
-      //  newFile above left nothing open and the field editable; this names
-      //  the buffer, and setOpen's event repaints both labels
-      setOpen(null, { shown: name });
-      //  Show it in the tree NOW, pulsing, before the ship has agreed. The
-      //  write is a pier round trip and the tree sitting unchanged through it
-      //  reads as nothing having happened, which is the report that started
-      //  all of this. The pulse is the honest part: it says recorded, not yet
-      //  confirmed. Cleared on success, and the row is dropped on failure so
-      //  a page that does not exist is never left sitting there.
-      const already = nodes.some((n) => n.page && n.path === name);
-      if (!already) { addTreeNode(name, kind, true); applyDnames(rn); snapTree(); renderTree(); }
-      //  the button says create, so write the page here. Naming the buffer
-      //  and leaving it unwritten read as a create that did nothing, and a
-      //  page abandoned before its first keystroke left no trace at all.
-      //  save() owns the whole create: 409, the offline queue, the tree
-      //  patch and the url, so this must not reimplement any of it.
-      await save();
-      if (!already) {
-        //  save() sets `current` on any outcome it considers a success,
-        //  including a queued offline write, which IS a success here.
-        if (current === name) setTreePending(name, false);
-        else { dropTreeNodes(name); snapTree(); renderTree(); }
-      }
-      src.focus();
-    })();
-  };

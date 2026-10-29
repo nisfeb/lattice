@@ -227,6 +227,11 @@ try {
   const made = await waitOn('page', '');
   s = await state();
   check('+ opens a new page tab', made && s.tabs.length === 2, JSON.stringify(s));
+  //  ...and asks for its name, in the one create dialog every shell uses
+  const named = await page.waitForFunction(() => !document.getElementById('dlg').hidden,
+    { timeout: 5000 }).then(() => true, () => false);
+  check('+ asks for the new page\'s name', named);
+  await page.evaluate(() => document.getElementById('dlgcancel')?.click());
   await page.keyboard.down('Control');
   await page.keyboard.press('w');
   await page.keyboard.up('Control');
@@ -284,13 +289,17 @@ try {
   await boot(page.url());
   await waitOn('know', K);
   await sleep(8000);   // past the page dump boot also loads
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=know]').click());
+  await page.waitForFunction(() => [...document.querySelectorAll('#knowlist a.pg')]
+    .some((a) => a.textContent === 'm'), { timeout: 30000 }).catch(() => {});
   const tree = await page.evaluate(() => ({
-    sec: document.getElementById('treesec').textContent,
     pages: document.querySelectorAll('#treelist a.pg[href*="name="]').length,
-    mem: [...document.querySelectorAll('#treelist a.pg')].some((a) => a.textContent === 'm'),
+    stray: [...document.querySelectorAll('#treelist a.pg')].some((a) => a.textContent === 'm'),
+    mem: [...document.querySelectorAll('#knowlist a.pg')].some((a) => a.textContent === 'm'),
   }));
-  check('reload with a memory tab in front shows the memory tree',
-    tree.sec === 'memories' && tree.pages === 0 && tree.mem, JSON.stringify(tree));
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
+  check('reload with a memory tab in front: Knowledge lists it, Files keeps the pages',
+    tree.pages > 0 && !tree.stray && tree.mem, JSON.stringify(tree));
 } catch (e) {
   check('suite crashed: ' + e.message, false);
 } finally {

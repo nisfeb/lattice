@@ -17,7 +17,7 @@
     try { r = await (bg ? bgFetch : fetch)(api + '/shared-with-me'); } catch {}
     if (!r || !r.ok) return;           // the folder just stays as it was
     sharedWithMe = await r.json();
-    if (mode !== 'know') renderTree();
+    renderTree();
   }
   // keys for the collapsed list: a leading space is in no page name, so a
   // page can never share a fold with this folder

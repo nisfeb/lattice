@@ -46,7 +46,7 @@ check('one bar row: bar is under 60px (was 138)', chrome.bar < 60, chrome.bar + 
 check('total chrome under 110px (was 184)', chrome.bar + chrome.tabs < 110,
   (chrome.bar + chrome.tabs) + 'px');
 
-for (const id of ['modet', 'pname', 'pkind', 'qt', 'cmt', 'aclt'])
+for (const id of ['pname', 'pkind', 'cmt', 'aclt'])
   check('phone: #' + id + ' is off the bar', !(await vis(m, id)));
 for (const id of ['mpath', 'mmore', 'save'])
   check('phone: #' + id + ' is on the bar', await vis(m, id));
@@ -55,14 +55,19 @@ for (const id of ['mpath', 'mmore', 'save'])
 // buttons — search must actually open the search pane
 await m.evaluate(() => document.getElementById('mmore').click());
 check('⋯ opens the sheet', await vis(m, 'msheet'));
-const modeLabel = await m.evaluate(() => document.getElementById('ms-mode').textContent);
-check('the mode row mirrors the live mode button', modeLabel.length > 0, JSON.stringify(modeLabel));
+check('no mode row: memories are the Knowledge tab',
+  await m.evaluate(() => !document.getElementById('ms-mode')));
 await m.evaluate(() => document.getElementById('ms-q').click());
 let qOpened = false;
-try { await m.waitForFunction(() => !document.getElementById('qwrap').hidden, { timeout: 5000 }); qOpened = true; } catch {}
-check('sheet > search opens the search pane', qOpened);
+try {
+  await m.waitForFunction(() => document.getElementById('ws').dataset.mv === 'tree'
+    && !document.querySelector('section[data-pane=search]').hidden
+    && document.activeElement && document.activeElement.id === 'qinput', { timeout: 5000 });
+  qOpened = true;
+} catch {}
+check('sheet > search opens the search tab', qOpened && (await vis(m, 'qinput')));
 check('and the sheet is away again', !(await vis(m, 'msheet')));
-await m.evaluate(() => document.getElementById('qclose').click());
+await m.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
 
 // label: open a page, the label says so, tapping it is rename
 await m.evaluate(() => { document.querySelector('.mtabs button[data-mv="tree"]').click(); });

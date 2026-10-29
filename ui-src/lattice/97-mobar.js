@@ -4,11 +4,12 @@
   // once-per-page action — 184px of chrome before the tab strip's content.
   //
   // Same doctrine as the desktop deskbar (96-deskmenu.js): nothing is
-  // removed, and the ⋯ sheet CLICKS the page's own hidden buttons, so there
-  // is exactly one implementation of search/comments/access/mode and nothing
-  // to drift. Everything here is built unconditionally and shown or hidden
-  // by the 820px CSS block, so a resize across the breakpoint just works —
-  // no load-time isMobile branching to go stale.
+  // removed, and the ⋯ sheet CLICKS the page's own hidden buttons (or calls
+  // the one function behind them), so there is exactly one implementation
+  // of search/comments/access and nothing to drift. Everything here is
+  // built unconditionally and shown or hidden by the 820px CSS block, so a
+  // resize across the breakpoint just works, with no load-time isMobile
+  // branching to go stale.
   {
     const bar = document.querySelector('.bar');
 
@@ -53,27 +54,24 @@
     const sheet = document.createElement('div');
     sheet.id = 'msheet';
     sheet.hidden = true;
-    // [sheet row id to create, real button id to click, icon, label]
+    // [sheet row id to create, what it does, icon, label]. Search is the
+    // left pane's tab (qOpen, 79-search.js); memories are its Knowledge tab,
+    // reached from the tree view's own tab row, so there is no mode row.
     const rows = [
-      ['ms-q', 'qt', 'search', 'search'],
-      ['ms-cm', 'cmt', 'comment', 'comments'],
-      ['ms-acl', 'aclt', 'key', 'access'],
-      ['ms-mode', 'modet', '', ''],   // label mirrors the live mode button
+      ['ms-q', () => qOpen(), 'search', 'search'],
+      ['ms-cm', () => $('cmt').click(), 'comment', 'comments'],
+      ['ms-acl', () => $('aclt').click(), 'key', 'access'],
     ];
-    for (const [rid, target, icon, label] of rows) {
+    for (const [rid, run, icon, label] of rows) {
       const b = document.createElement('button');
       b.id = rid;
       if (icon) b.innerHTML = ico(icon) + ' ';
       b.append(label);
-      b.onclick = () => { sheet.hidden = true; $(target).click(); };
+      b.onclick = () => { sheet.hidden = true; run(); };
       sheet.appendChild(b);
     }
     bar.appendChild(sheet);
-    more.onclick = () => {
-      // the mode row's label is whatever the real button says right now
-      $('ms-mode').textContent = $('modet').textContent;
-      sheet.hidden = !sheet.hidden;
-    };
+    more.onclick = () => { sheet.hidden = !sheet.hidden; };
     // tapping anywhere else puts it away
     document.addEventListener('click', (e) => {
       if (!sheet.hidden && !sheet.contains(e.target) && e.target !== more) sheet.hidden = true;

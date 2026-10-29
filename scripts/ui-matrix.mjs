@@ -44,6 +44,9 @@ await page.evaluateOnNewDocument(() => {
 // per page), so integration waits get a generous budget
 const wait = (fn, ...args) => page.waitForFunction(fn, { timeout: 90000 }, ...args);
 // The in-app dialog: fill (optional) and submit / cancel.
+//  the old bar's controls (#save, #wrapt) left the screen with the shell
+//  frame and stay in the DOM, so they are clicked as elements
+const tap = (sel) => page.evaluate((x) => document.querySelector(x).click(), sel);
 const dialog = async (value, submit = true) => {
   await wait(() => !document.getElementById('dlg').hidden);
   if (value !== null) await page.evaluate((v) => { document.getElementById('dlginput').value = v; }, value);
@@ -126,14 +129,17 @@ try {
 
   step = 'new page';
   // ── 2. new page: type, save, appears in tree, round-trips ────────────────
+  //  + file asks for the name and kind, and writes the page at once
   await page.click('#newfile');
-  await page.evaluate((n) => {
-    document.getElementById('pname').value = n;
-    const k = document.getElementById('pkind'); k.value = 'md';
+  await page.evaluate(() => { document.getElementById('dlgkind').value = 'md'; });
+  await dialog(RUN + '/hello');
+  await wait((n) => document.getElementById('pname').value === n
+    && document.getElementById('pname').readOnly, RUN + '/hello');
+  await page.evaluate(() => {
     const s = document.getElementById('src');
     s.value = '# ui matrix probe'; s.dispatchEvent(new Event('input'));
-  }, RUN + '/hello');
-  await page.click('#save');
+  });
+  await tap('#save');
   await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
     .some((a) => a.textContent === 'hello.md' && a.href.includes(n)), RUN);
   ok('save: new md page appears in tree');
@@ -229,14 +235,15 @@ try {
   check('F13: Tab cannot edit the read-only historical view',
     (await page.evaluate(() => document.getElementById('src').value)) === revBody);
 
-  // F12: leaving to knowledge mode must not leak readOnly into the memory editor
-  await page.click('#modet');
+  // F12: leaving for a memory must not leak readOnly into the memory editor
+  //  (a blank memory is a know tab; the mode follows the front tab)
+  await page.evaluate(() => window.latTabs.openIn('know', ''));
   await wait(() => document.getElementById('ws').className.includes('know'));
   check('F12: knowledge editor is not left read-only after a revision view',
     !(await page.evaluate(() => document.getElementById('src').readOnly)));
   check('F12: stale history panel hidden after mode switch',
     await page.evaluate(() => document.getElementById('histsec').hidden));
-  await page.click('#modet');
+  await page.evaluate(() => window.latTabs.openIn('page', ''));
   await wait(() => !document.getElementById('ws').className.includes('know'));
   // setMode clears the open page, so reopen it for the autosave check below
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -321,20 +328,17 @@ try {
   // the geometries are compared mid-reflow and disagree for a frame.
   await sleep(300);
   check('overlay parity: wrap (default)', await parity());
-  await page.click('#wrapt');
+  await tap('#wrapt');
   await sleep(300);
   check('overlay parity: nowrap', await parity());
-  await page.click('#wrapt');
+  await tap('#wrapt');
   await sleep(300);
 
   // empty file: saving with no content must succeed (the UI stands in a
   // newline for the body the backend refuses to take empty).
   await page.click('#newfile');
-  await page.evaluate((n) => {
-    document.getElementById('pname').value = n;
-    document.getElementById('pkind').value = 'md';
-  }, RUN + '/empty');
-  await page.click('#save');
+  await page.evaluate(() => { document.getElementById('dlgkind').value = 'md'; });
+  await dialog(RUN + '/empty');
   await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
     .some((a) => a.textContent === 'empty.md' && a.href.includes(n)), RUN);
   ok('save: empty file saves without manual content');
@@ -774,13 +778,12 @@ try {
   }, LIST);
 
   step = 'mode toggle';
-  // ── 7. mode toggle: label shows current view, chips clean up ─────────────
-  const label0 = await page.evaluate(() => document.getElementById('modet').textContent.trim());
-  check('mode label: pages view says pages', label0.includes('pages'), label0);
-  await page.click('#modet');
+  // ── 7. knowledge: the Knowledge tab, and a memory tab sets the mode ──────
+  check('mode: no pages/knowledge toggle', await page.evaluate(() => !document.getElementById('modet')));
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=know]').click());
+  await page.evaluate(() => window.latTabs.openIn('know', ''));
   await wait(() => document.getElementById('ws').className.includes('know'));
-  const label1 = await page.evaluate(() => document.getElementById('modet').textContent.trim());
-  check('mode label: knowledge view says knowledge', label1.includes('knowledge'), label1);
+  ok('mode: a blank memory tab puts the editor in knowledge mode');
 
   step = 'knowledge';
   // ── 8. knowledge: save, read back, delete via dialog ─────────────────────
@@ -789,27 +792,27 @@ try {
     const s = document.getElementById('src');
     s.value = 'ui matrix memory'; s.dispatchEvent(new Event('input'));
   }, RUN);
-  await page.click('#save');
-  await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
+  await tap('#save');
+  await wait((n) => [...document.querySelectorAll('#knowlist a.pg')]
     .some((a) => a.textContent === n), RUN);
   ok('know: memory saved and listed');
-  await page.evaluate((n) => [...document.querySelectorAll('#treelist a.pg')]
+  await page.evaluate((n) => [...document.querySelectorAll('#knowlist a.pg')]
     .find((a) => a.textContent === n).click(), RUN);
   await wait(() => document.getElementById('src').value.length > 0);
   check('know: body round-trips',
     (await page.evaluate(() => document.getElementById('src').value)) === 'ui matrix memory');
   await page.click('#del');
   await dialog(null);   // confirm dialog, no input
-  await wait((n) => ![...document.querySelectorAll('#treelist a.pg')]
+  await wait((n) => ![...document.querySelectorAll('#knowlist a.pg')]
     .some((a) => a.textContent === n), RUN);
   ok('know: delete via in-app confirm');
 
-  // back to pages: chips gone
-  await page.click('#modet');
+  // back to pages: a page tab leaves knowledge mode, and the chips stay in
+  // the Knowledge tab, out of sight behind Files
+  await page.evaluate(() => window.latTabs.openIn('page', ''));
   await wait(() => !document.getElementById('ws').className.includes('know'));
-  // the chips sit in the tag section, which is what hides; an element under
-  // a hidden ancestor keeps its own computed display, so ask the layout
-  check('mode round-trip: tag chips hidden again',
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
+  check('mode round-trip: tag chips hidden with the Knowledge tab',
     await page.evaluate(() => document.getElementById('chips').getClientRects().length === 0));
 
   // ── batch upload: N files in ONE request, all-or-nothing ────────────────
@@ -947,7 +950,7 @@ try {
     const s = document.getElementById('src');
     s.value = '# edited while offline'; s.dispatchEvent(new Event('input'));
   });
-  await page.click('#save');
+  await tap('#save');
   await wait(() => !document.getElementById('offbadge').hidden);
   ok('offline: a failed save raises the offline badge');
 
@@ -1037,7 +1040,7 @@ try {
     const s2 = document.getElementById('src');
     s2.value = '# work that must not vanish'; s2.dispatchEvent(new Event('input'));
   }, DUR);
-  await page.click('#save');
+  await tap('#save');
   await wait(() => /NOT SAVED|not saved/i.test(document.getElementById('status').textContent));
   ok('durability: a failed queue write says NOT SAVED rather than claiming success');
   //  and the text is still in the editor, which is the only copy left
@@ -1397,12 +1400,13 @@ try {
   await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
 
-  check('search: the button is in the bar', await page.evaluate(() => !!document.getElementById('qt')));
+  const qShown = () => !document.querySelector('section[data-pane=search]').hidden
+    && document.activeElement && document.activeElement.id === 'qinput';
   await page.keyboard.down('Control');
   await page.keyboard.press('KeyK');
   await page.keyboard.up('Control');
-  await wait(() => !document.getElementById('qwrap').hidden);
-  ok('search: ctrl-K opens the panel');
+  await wait(qShown);
+  ok('search: ctrl-K opens the Search tab');
   check('search: the input takes focus',
     await page.evaluate(() => document.activeElement && document.activeElement.id === 'qinput'));
 
@@ -1442,9 +1446,7 @@ try {
   await page.type('#qinput', 'zzqqxxwwvvnothing');
   await wait(() => /nothing matches/.test(document.getElementById('qlist').textContent));
   ok('search: a term with no hits says so');
-  await page.keyboard.press('Escape');
-  await wait(() => document.getElementById('qwrap').hidden);
-  ok('search: escape closes the panel');
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
 
   // From INSIDE the editor, which is where you are when you want to find
   // something, and with vim on: vim's handler is capture-phase on the textarea
@@ -1463,13 +1465,10 @@ try {
     await page.keyboard.press('KeyK');
     await page.keyboard.up('Control');
     let opened = true;
-    try { await page.waitForFunction(() => !document.getElementById('qwrap').hidden, { timeout: 8000 }); }
+    try { await page.waitForFunction(qShown, { timeout: 8000 }); }
     catch { opened = false; }
     check('search: ctrl-K works from the editor with vim ' + (vim ? 'ON' : 'off'), opened);
-    if (opened) {
-      await page.keyboard.press('Escape');
-      await wait(() => document.getElementById('qwrap').hidden);
-    }
+    await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
   }
   await page.evaluate(() => {
     localStorage.edVim = '0';
@@ -1482,18 +1481,14 @@ try {
   // ── 10. mobile: toggle reveals the tree, opening jumps to the editor ─────
   await page.setViewport({ width: 390, height: 780, isMobile: true });
   await page.goto(APP, { waitUntil: 'domcontentloaded' });
-  // at phone width the mode toggle lives in the ⋯ sheet (97-mobar.js); the
-  // sheet clicks the real hidden #modet, so this drives it the way a thumb
-  // does rather than reaching around the UI
-  const toggleMode = async () => {
-    await page.click('#mmore');
-    await page.click('#ms-mode');
-  };
-  await toggleMode();
+  // at phone width search lives in the ⋯ sheet (97-mobar.js) and lands on
+  // the left pane's Search tab, in the tree view
+  await page.click('#mmore');
+  await page.click('#ms-q');
   await wait(() => document.getElementById('ws').dataset.mv === 'tree');
-  check('mobile: mode toggle (via ⋯) jumps to the tree pane',
-    await page.evaluate(() => getComputedStyle(document.getElementById('tree')).display) !== 'none');
-  await toggleMode();   // back to pages, still on tree pane
+  check('mobile: search (via ⋯) jumps to the tree view',
+    await page.evaluate(() => getComputedStyle(document.getElementById('qpane')).display) !== 'none');
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
   await wait(() => document.querySelector('#treelist a.pg'));
   await page.evaluate(() => document.querySelector('#treelist a.pg').click());
   await wait(() => document.getElementById('ws').dataset.mv === 'code');

@@ -1,10 +1,37 @@
-  // ── knowledge mode ───────────────────────────────────────────────────────
-  // The same workspace, pointed at the private memory store: browse keys as a
-  // tree, filter by tag chips, read/edit/save entries, tag/untag, delete.
-  let mode = 'pages';
+  // ── knowledge: <lat-know>, the memories and the editor's memory mode ────
+  // The Knowledge tab lists the private memory store as a tree, filtered by
+  // tag chips, with its own toolbar. `mode` is the editor's state for the
+  // document tab in front (21-tabs.js): a memory tab sets it to 'know', so
+  // read, edit, save, tag and delete go to the memory routes. Nothing else
+  // switches it any more, and the listing never depends on it. (`mode`
+  // itself is declared in 20-state.js, since the files tree reads it.)
+  customElements.define('lat-know', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<aside class="tree" id="knowpane">
+  <div class="ptool" role="toolbar" aria-label="Knowledge">
+    ${sbtn('id="knew"', 'plus', 'New memory')}
+    ${sbtn('id="ktidy"', 'tidy', 'Tidy memories')}
+    ${sbtn('id="ktrash" aria-pressed="false"', 'trash', 'Trash')}
+  </div>
+  <div id="ktrashlist" class="ktrash" hidden></div>
+  <!-- the tag chips outgrew the pane top (one row per dozen tags), so they
+       fold under a heading like history does. Native details: the fold,
+       the keyboard and the marker come free. -->
+  <details id="tagsec">
+    <summary class="sec" id="tagsh">tags</summary>
+    <div id="chips" class="chips"></div>
+  </details>
+  <div class="sec">memories</div>
+  <div id="knowlist"><div class="muted kwait">loading memories\u2026</div></div>
+</aside>`;
+    }
+  });
   let knowKeys = [];        // [{key, tags, updated, bytes}] from know-list
   let knowTag = '';         // active tag filter ('' = all)
+  let knowHave = false;     // a know-list has landed this session
   const chipsEl = $('chips'), knowMeta = $('knowmeta'), ktagsEl = $('ktags');
+  const knowList = $('knowlist');
   // folded by default and remembered, like the other layout choices
   const tagSec = $('tagsec'), tagSum = $('tagsh');
   tagSec.open = localStorage.knowTagsOpen === '1';
@@ -27,6 +54,7 @@
     if (gen !== knowGen) return;   // a local patch superseded this response
     knowKeys = d.keys;
     knowAt = at;
+    knowHave = true;
     renderKnowChips();
     renderKnowTree();
   }
@@ -53,16 +81,16 @@
   function renderKnowTree() {
     const shown = knowTag ? knowKeys.filter((k) => k.tags.includes(knowTag)) : knowKeys;
     const keys = shown.map((k) => k.key.replace(/^\//, '')).sort();
-    treeList.textContent = '';
-    rowByPath = new Map();
+    knowList.textContent = '';
+    knowRows = new Map();
     if (!keys.length) {
       const empty = document.createElement('div');
       empty.className = 'muted';
       empty.style.padding = '4px 8px';
       empty.textContent = knowTag
         ? 'no memories tagged #' + knowTag
-        : 'no memories yet — name one above and save';
-      treeList.appendChild(empty);
+        : 'no memories yet. New memory starts one.';
+      knowList.appendChild(empty);
       return;
     }
     const coll = knowColl.get();
@@ -77,17 +105,17 @@
         const row = folderRow(parts[d], d, coll.includes(dir),
           () => { knowColl.flip(dir); renderKnowTree(); });
         if (folded(dir)) row.style.display = 'none';
-        treeList.appendChild(row);
+        knowList.appendChild(row);
       }
       const row = document.createElement('a');
-      row.className = 'pg' + (key === current ? ' cur' : '');
+      row.className = 'pg' + (mode === 'know' && key === current ? ' cur' : '');
       row.style.marginLeft = ((parts.length - 1) * 14) + 'px';
       if (folded(key)) row.style.display = 'none';
-      row.href = '#';
+      row.href = '/apps/lattice/app?view=know&key=' + encodeURIComponent(key);
       row.textContent = parts[parts.length - 1];
       tabLink(row, 'know', key);
-      rowByPath.set(key, row);
-      treeList.appendChild(row);
+      knowRows.set(key, row);
+      knowList.appendChild(row);
     }
   }
   // one knowKeys entry by (normalized) key. Keys may carry a leading slash
@@ -175,22 +203,24 @@
     renderKnowChips();
   };
 
-  async function saveKnow() {
+  // `create`: New memory writes the key before anything is typed, so an
+  // empty body is sent as a newline (as a new page is) rather than refused
+  async function saveKnow(create) {
     const key = pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!key) { st('key required', false); return; }
     if (!validName(key)) {
       st('bad key — lowercase letters, digits, and - . _ ~ (no spaces)', false);
       return;
     }
-    if (!src.value) { st('empty body', false); return; }
+    if (!src.value && !create) { st('empty body', false); return; }
     if (viewingRev !== null) { st('viewing a revision — use restore', false); return; }
     // the pier serializes every write behind one shared `saving` flag, know
     // or page (see save()/autosave()/saveGrub()). Without this guard,
     // guardDirty's flush against a memory whose autosave was already mid-
     // flight fired a second, fully concurrent POST to the same /know-save key.
-    if (saving) { savePending = () => saveKnow(); return; }
+    if (saving) { savePending = () => saveKnow(create); return; }
     saving = true;
-    const sent = src.value;
+    const sent = src.value || '\n';
     let w = { gone: true };
     try {
       w = await shipWrite(api + '/know-save?key=' + encodeURIComponent(key),
@@ -248,6 +278,11 @@
     renderKnowTree();
   }
 
+  // The editor's mode, set by what the front tab opens: openKnow and the
+  // know tab kind to 'know', openPage and the page and grub kinds back to
+  // 'pages'. Each of those has already passed guardDirty, so this does not
+  // ask again. It resets the editor to a blank document of that mode; the
+  // open that called it then paints its document.
   function setMode(m) {
     mode = m;
     curKind = null;
@@ -256,11 +291,7 @@
     $('histsec').hidden = true;
     $('linksec').hidden = true;
     ws.classList.toggle('know', m === 'know');
-    $('modet').className = m === 'know' ? 'on' : '';
-    $('modet').innerHTML = m === 'know' ? '\u25c6 knowledge' : '\u270e pages';
-    tagSec.hidden = m !== 'know';
     knowMeta.hidden = m !== 'know';
-    $('treesec').textContent = m === 'know' ? 'memories' : 'files';
     curFolder = null;
     setCtlLabels();
     setOpen(null, { url: '/apps/lattice/app' + (m === 'know' ? '?view=know' : '') });
@@ -268,40 +299,109 @@
     src.value = '';
     render();
     prevBlank();
-    // paint what is already in memory NOW, and let the fetch correct it.
-    // Both listings used to paint only when their round trip returned, so
-    // the OTHER mode's listing sat under this mode's heading for as long as
-    // the pier took: seconds on ricsul, longer through the desktop proxy.
-    // The page tree is always in memory after boot. Memories are, after the
-    // first visit; before it the honest paint is a placeholder, not the
-    // pages listing and not "no memories yet".
-    //
-    // The fetch itself is skipped when the listing in memory was fetched at
-    // the beacon rev the live stream still reports (revFresh, 90-sync.js):
-    // flipping between the modes used to cost a pier round-trip each way
-    // to learn nothing.
-    if (m === 'know') {
-      if (knowKeys.length) { renderKnowChips(); renderKnowTree(); }
-      else {
-        const wait = document.createElement('div');
-        wait.className = 'muted';
-        wait.style.padding = '4px 8px';
-        wait.textContent = 'loading memories\u2026';
-        treeList.replaceChildren(wait);
-      }
-      if (!knowFresh(knowAt)) loadKnow();
-    } else { renderTree(); if (!revFresh(treeAt)) loadTree(); }
-    // the toggle's visible result is the tree listing. Make sure it can be
-    // seen: un-hide the pane on desktop, jump to the tree tab on mobile.
-    if (localStorage.appNT === '1') { localStorage.appNT = '0'; applyToggles(); }
-    if (isMobile()) setMv('tree');
-    st(m === 'know' ? 'knowledge — pick a memory from the tree' : 'pages');
+    markCurrent();
+    // both listings are always painted in their own tabs. Refetch the one
+    // this mode works on only when the beacon says it moved (revFresh,
+    // knowFresh in 90-sync.js), never to learn nothing.
+    if (m === 'know') { if (!knowFresh(knowAt)) loadKnow(); }
+    else if (!revFresh(treeAt)) loadTree();
+    st(m === 'know' ? 'knowledge \u00b7 new memory' : 'pages');
   }
-  // the pill itself is the entry point a user clicks, so it guards. setMode
-  // is the applier openPage/openKnow also call once THEIR guard already
-  // passed, and guarding inside setMode too would ask twice, or ask about
-  // work guardDirty already flushed a moment earlier.
-  $('modet').onclick = async () => {
-    if (!(await guardDirty())) return;
-    setMode(mode === 'know' ? 'pages' : 'know');
+
+  // ── the Knowledge tab: lazy listing ─────────────────────────────────────
+  // Fetched the first time the tab is seen, and again when the memory
+  // beacon has moved since (knowFresh). Memories are one request the editor
+  // does not otherwise need, so a session that never looks never pays it.
+  const knowShow = () => { if (!knowHave || !knowFresh(knowAt)) loadKnow(); };
+  // whether the memory listing is worth keeping current: in memory mode, or
+  // once it has been loaded and is sitting in its tab (90-sync.js, the drain)
+  const knowLive = () => mode === 'know' || knowHave;
+  document.addEventListener('lat-pane', (e) => {
+    if (e.detail.side === 'l' && e.detail.id === 'know') knowShow();
+  });
+  if (paneShows('l', 'know')) knowShow();
+
+  // ── toolbar ─────────────────────────────────────────────────────────────
+  // New memory: the page create dialog, its kind fixed at md (a memory has
+  // no other), then a fresh memory tab named with the key and written at
+  // once, the way a new page is (newFile, 35-pages.js). The dialog comes
+  // first, so a cancel leaves the front tab exactly as it was.
+  $('knew').onclick = async (ev) => {
+    let seed = '';
+    let note = '';
+    let key = '';
+    for (;;) {
+      const picked = await askNameKind(note + 'memory key (e.g. user/preferences)', seed,
+        'create', 'md', true);
+      if (!picked) return;
+      key = picked.name.replace(/\.md$/i, '');
+      if (validName(key)) break;
+      seed = key;
+      note = 'a key is lowercase letters, digits and - . _ ~ (no spaces). ';
+    }
+    if (knowEntry(key)) { openIn('know', key, { ev }); return; }
+    await openIn('know', '', { ev });
+    if (!activeTab || activeTab.kind !== 'know' || activeTab.key || current !== null) return;
+    setOpen(null, { shown: key });
+    await saveKnow(true);
+    src.focus();
+  };
+  // Tidy: the memory review (/know?lint=1) as a tool tab, once tool tabs
+  // exist (24-tools.js). Until then it opens beside the editor.
+  $('ktidy').onclick = (ev) => {
+    if (TAB_KINDS.tool) openIn('tool', 'frame:/apps/lattice/know?lint=1', { ev });
+    else window.open('/apps/lattice/know?lint=1', '_blank');
+  };
+  // Trash: the soft-deleted memories (GET /know-trash), each with Restore
+  const trashList = $('ktrashlist');
+  const kmuted = (t) => {
+    const d = document.createElement('div');
+    d.className = 'muted';
+    d.style.padding = '4px 8px';
+    d.textContent = t;
+    return d;
+  };
+  async function loadTrash() {
+    trashList.replaceChildren(kmuted('loading trash\u2026'));
+    let d = null;
+    try {
+      const r = await fetch(api + '/know-trash');
+      if (r.ok) d = await r.json();
+    } catch {}
+    if (trashList.hidden) return;
+    if (!d) { trashList.replaceChildren(kmuted('the trash did not load')); return; }
+    const keys = (d.keys || []).map((k) => String(k.key || '').replace(/^\//, '')).sort();
+    const head = document.createElement('div');
+    head.className = 'sec';
+    head.textContent = 'trash \u00b7 ' + keys.length;
+    trashList.replaceChildren(head);
+    if (!keys.length) { trashList.append(kmuted('nothing in the trash')); return; }
+    for (const key of keys) {
+      const row = document.createElement('div');
+      row.className = 'ktr';
+      row.dataset.key = key;
+      const n = document.createElement('span');
+      n.className = 'ktn';
+      n.textContent = key;           // keys are content: textContent
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = 'restore';
+      b.onclick = async () => {
+        b.disabled = true;
+        const r = await mutate(api + '/know-restore?key=' + encodeURIComponent(key));
+        if (!r.ok) { b.disabled = false; st('restore failed' + await errText(r), false); return; }
+        st('restored ' + key);
+        loadKnow();
+        loadTrash();
+      };
+      row.append(n, b);
+      trashList.append(row);
+    }
+  }
+  $('ktrash').onclick = () => {
+    const on = trashList.hidden;
+    trashList.hidden = !on;
+    $('ktrash').classList.toggle('on', on);
+    $('ktrash').setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (on) loadTrash();
   };

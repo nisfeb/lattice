@@ -3342,6 +3342,15 @@
       [%'GET' %marks]
     ;<  bms=bookmarks:lb  bind:m  read-bookmarks
     (send-view eyre-id (render-page-titled "" "" "" "marks" (marks-html bms)))
+  ::  the same list as a bare array, for the editor's Bookmarks tab
+      [%'GET' %bookmarks-json]
+    ;<  bms=bookmarks:lb  bind:m  read-bookmarks
+    %+  send-json  eyre-id
+    :-  %a
+    %+  turn  bms
+    |=  b=bookmark:lb
+    %-  pairs:enjs:format
+    ~[['url' s+url.b] ['title' s+title.b] ['folder' s+folder.b]]
   ::  ── editing arbitrary grubs (write apps in the editor) ──────────────────
   ::  grub-source: any grub's editable text. `editable` is false for a binary
   ::  or opaque grub. The client shows it read-only rather than offering a save

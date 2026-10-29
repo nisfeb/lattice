@@ -23,33 +23,30 @@
   // looking identical, on a screen someone may be sharing. That badge is a
   // safety signal, so a tree that may not carry share modes (treeShares,
   // 30-tree.js) still asks /page-scopes rather than call a page private.
+  //
+  // It is the left pane's Search tab (13-frame.js renders <lat-search> into
+  // that section), so results sit beside the document they open rather than
+  // over it, and stay there for the next pick.
   customElements.define('lat-search', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="aclwrap" id="qwrap" hidden role="dialog" aria-modal="true" aria-label="search">
-  <div class="aclbar">
-    <h2>Search</h2>
-    <input id="qinput" placeholder="search your pages and notes" autocomplete="off" spellcheck="false">
-    <span class="muted" id="qsum"></span>
-    <span class="grow"></span>
-    <button id="qclose">close</button>
-  </div>
-  <div class="aclbody">
-    <div id="qlist"></div>
-  </div>
+<div class="tree qpane" id="qpane" role="search" aria-label="Search">
+  <input id="qinput" type="search" placeholder="search your pages and notes" aria-label="Search your pages and notes" autocomplete="off" spellcheck="false">
+  <div class="muted" id="qsum"></div>
+  <div id="qlist" class="aclempty">type at least two characters</div>
 </div>`;
     }
   });
 
-  // Loaded when the panel opens, not per keystroke: the scopes and the
+  // Loaded when the tab is shown, not per keystroke: the scopes and the
   // memories are two requests, and then every keystroke is local.
   let qScopes = null;          // path -> 'private' | 'urbit' | 'clearweb'
   let qKnow = [];              // [{key, body}]
-  let qKnowFailed = false;     // /know-all never answered this panel-open
+  let qKnowFailed = false;     // /know-all never answered this visit
   let qLoading = null;         // in-flight load, shared
   let qAt = '';                // both beacons when both last loaded (bothAt)
   // never-loaded and load-failed are different states. qCtxAttempts counts
-  // how many times qLoadContextOnce has actually run since the panel opened,
+  // how many times qLoadContextOnce has actually run since the tab was shown,
   // capped at two: the open-time load and one retry. A failure short of that
   // cap is worth trying again; past it, every keystroke would otherwise fire
   // the same doomed pair of requests forever.
@@ -59,7 +56,7 @@
   let qResults = [];
   let qRows = [];
   let qSel = -1;
-  //  Opening the panel starts this, and the first keystroke wants it too. The
+  //  Showing the tab starts this, and the first keystroke wants it too. The
   //  pier serialises, so letting both fire meant four queued requests and a
   //  wait long enough to look like a hang. One load, both await it.
   function qLoadContext() {
@@ -147,10 +144,7 @@
 
   // opening a hit is the same move whether the mouse clicked it or Enter
   // picked it off the highlighted row
-  const qOpenResult = (h, ev) => {
-    qClose();
-    openIn(h.know ? 'know' : 'page', h.key, { ev });
-  };
+  const qOpenResult = (h, ev) => openIn(h.know ? 'know' : 'page', h.key, { ev });
 
   // the highlighted row alone, no rebuild: an inline background rather than
   // a class, since the app's .on styling is defined per-component and this
@@ -229,7 +223,7 @@
     // keystroke a slow or unreachable pier ever gets typed at.
     if (!qScopes && qCtxAttempts < 2) {
       //  the exposure map and the memories are fetched once per open, and on a
-      //  slow pier that is seconds. Say so, rather than showing an empty panel
+      //  slow pier that is seconds. Say so, rather than showing an empty list
       //  that reads as "no results".
       host.className = 'aclempty';
       host.textContent = 'searching\u2026';
@@ -240,24 +234,27 @@
     qPaint(host, sum, out, skipped);
   }
 
-  const qClose = () => { $('qwrap').hidden = true; };
-  const qOpen = () => {
-    $('qwrap').hidden = false;
-    const i = $('qinput');
-    i.value = '';
-    i.focus();
-    $('qlist').className = 'aclempty';
-    $('qlist').textContent = 'type at least two characters';
-    $('qsum').textContent = '';
-    qResults = [];
-    qRows = [];
-    qSel = -1;
-    //  the exposure map and the memories are refetched only when a beacon
-    //  moved since they loaded (90-sync.js), not on every ctrl-K
+  // qPrime: what showing the tab owes, however it was shown (Ctrl+K, the
+  // tab button, the phone sheet). The exposure map and the memories are
+  // refetched only when a beacon moved since they loaded (90-sync.js), not
+  // on every visit.
+  const qPrime = () => {
     if (streamLive && qAt && qAt === bothAt()) return;
     qScopes = null;                          // refresh exposure
-    qCtxAttempts = 0;                        // this open gets its own retry
+    qCtxAttempts = 0;                        // this visit gets its own retry
     qLoadContext();
+  };
+  document.addEventListener('lat-pane', (e) => {
+    if (e.detail.side === 'l' && e.detail.id === 'search') qPrime();
+  });
+  // the query stays in the box between visits; selected, so typing replaces it
+  const qOpen = () => {
+    paneOpen('l', true);
+    paneTab('l', 'search');
+    if (isMobile()) setMv('tree');
+    const i = $('qinput');
+    i.focus();
+    i.select();
   };
 
   // Local now, so this can be short. It exists to avoid rescanning on every
@@ -287,17 +284,14 @@
       runSearch($('qinput').value);
     }
   };
-  $('qclose').onclick = qClose;
-  $('qt').onclick = qOpen;
 
   // CAPTURE phase on window, so nothing downstream can swallow it. Vim mode's
   // handler is capture-phase on the textarea and consumes normal-mode keys
   // whole; being ahead of it is more robust than listing exemptions there.
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('qwrap').hidden) { qClose(); return; }
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'k' || e.key === 'K')) {
       e.preventDefault();
       e.stopPropagation();
-      if ($('qwrap').hidden) qOpen(); else qClose();
+      qOpen();
     }
   }, true);
