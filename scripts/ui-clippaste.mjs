@@ -87,4 +87,8 @@ try {
   check.bad('threw during ' + step, e.message);
 }
 await browser.close();
+//  the archived clip is this run's (its name carries RUN)
+for (const n of await tree().catch(() => []))
+  await fetch(env.base + '/apps/lattice/page-del?name=' + encodeURIComponent(n),
+    { method: 'POST', headers: { cookie: env.cookie } }).catch(() => {});
 check.done();

@@ -1,5 +1,6 @@
 // Display names in the real UI: type a name with capitals and spaces into
-// #pname, save, and the tree shows the typed name over the slug path.
+// the new-page dialog, create, and the tree shows the typed name over the
+// slug path.
 //   LATTICE_URL=http://localhost:8080 LATTICE_COOKIE=~/.config/lattice-fs/cookie node scripts/ui-dname.mjs
 import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harness.mjs';
 
@@ -24,15 +25,23 @@ const wait = async (fn, arg, tries = 40) => {
   return false;
 };
 
+// + file asks for the name and kind and writes the page at once
+const create = async (name) => {
+  await page.evaluate(() => document.getElementById('newfile').click());
+  await page.waitForFunction(() => !document.getElementById('dlg').hidden, { timeout: 30000 });
+  await page.evaluate((n) => {
+    document.getElementById('dlginput').value = n;
+    document.getElementById('dlgkind').value = 'md';
+    document.getElementById('dlgok').click();
+  }, name);
+  await page.waitForFunction(() => document.getElementById('dlg').hidden, { timeout: 30000 });
+  //  the create is a pier round trip; the next one starts once it is in
+  await page.waitForFunction(() => !/saving/.test(document.getElementById('status').textContent)
+    && !document.querySelector('#treelist a.pg.pend'), { timeout: 60000 });
+};
+
 // a page typed with capitals and a space
-await page.evaluate(() => document.getElementById('newfile').click());
-await page.evaluate((n) => {
-  document.getElementById('pname').value = n;
-  const k = document.getElementById('pkind'); k.value = 'md';
-  const s = document.getElementById('src');
-  s.value = '# display name probe'; s.dispatchEvent(new Event('input'));
-}, RUN + '/My Page');
-await page.evaluate(() => document.getElementById('save').click());
+await create(RUN + '/My Page');
 const shown = await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
   .some((a) => a.textContent === 'My Page.md' && a.href.includes(encodeURIComponent(n + '/my-page'))), RUN);
 check('the tree shows "My Page.md" for the page saved at my-page', shown);
@@ -47,26 +56,12 @@ const status = await page.evaluate(() => document.getElementById('status') ? doc
 check('the status says what happened', /shown as My Page/.test(status), status);
 
 // a valid name shows as itself and carries no display name
-await page.evaluate(() => document.getElementById('newfile').click());
-await page.evaluate((n) => {
-  document.getElementById('pname').value = n;
-  document.getElementById('pkind').value = 'md';
-  const s = document.getElementById('src');
-  s.value = '# plain'; s.dispatchEvent(new Event('input'));
-}, RUN + '/plain');
-await page.evaluate(() => document.getElementById('save').click());
+await create(RUN + '/plain');
 check('a valid name shows as itself', await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
   .some((a) => a.textContent === 'plain.md' && a.href.includes(encodeURIComponent(n + '/plain'))), RUN));
 
 // a nested typed name names the folder it creates as well
-await page.evaluate(() => document.getElementById('newfile').click());
-await page.evaluate((n) => {
-  document.getElementById('pname').value = n;
-  document.getElementById('pkind').value = 'md';
-  const s = document.getElementById('src');
-  s.value = '# deep'; s.dispatchEvent(new Event('input'));
-}, RUN + '/Sub Folder/Deep Page');
-await page.evaluate(() => document.getElementById('save').click());
+await create(RUN + '/Sub Folder/Deep Page');
 check('the page shows as "Deep Page.md" at sub-folder/deep-page', await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
   .some((a) => a.textContent === 'Deep Page.md' && a.href.includes(encodeURIComponent(n + '/sub-folder/deep-page'))), RUN));
 check('the folder the save made shows as "Sub Folder"', await wait((n) => [...document.querySelectorAll('#treelist .fld')]

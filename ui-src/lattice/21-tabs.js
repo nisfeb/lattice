@@ -175,7 +175,7 @@
         curKind = s.kind;
         render();
         pname.dispatchEvent(new Event('input'));
-        st('unsaved · press Save or Cmd+S');
+        st('unsaved, Ctrl+S to save');
       },
       park: parkDoc,
       shows: showsLive,

@@ -193,11 +193,11 @@
   });
 
   // the Settings tab, opened or focused, with its frame scrolled to the
-  // section #anchor. Preferences > scheduled backups on the desktop
-  // (desktop/src/main.rs) lands on #backup this way. A frame still loading
-  // scrolls once it has. Sections above the anchor fill in after load (the
-  // key list, the backup schedules), so the anchor is held at the top while
-  // the page settles, until the user scrolls or clicks or two seconds pass.
+  // section #anchor. A frame still loading scrolls once it has. Sections
+  // above the anchor fill in after load (the key list), so the anchor is
+  // held at the top while the page settles, until the user scrolls or
+  // clicks or two seconds pass. Preferences on the desktop does not come
+  // here: it opens the manager page (latOpenManager above).
   function frameScroll(f, anchor) {
     let d = null;
     try { d = f.contentDocument; } catch {}

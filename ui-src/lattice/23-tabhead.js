@@ -1,12 +1,22 @@
   // ── tab header ───────────────────────────────────────────────────────────
   // Between the tab strip and the document: Back and Forward, the path of
-  // what is open, Edit / Read, and the page menu. The old bar's controls
-  // stay in the DOM, hidden, because they are the stores and the handlers
-  // these buttons call (#pname, #pkind, #mv, #del, #texconv).
+  // what is open, Edit / Read, Save and the page menu. The name field, the
+  // kind picker and the LaTeX convert button sit here in a hidden holder:
+  // nothing shows them, but they are the stores and the handlers these
+  // buttons call (#pname, #pkind, #texconv), as #mv and #del in the Page tab
+  // are.
+  //
+  // Save is an icon on a phone while a grub is in front, the one document
+  // with no autosave and, there, no keyboard for Ctrl+S. Everywhere else it
+  // is hidden: pages and memories autosave, and the desktop has Ctrl+S and
+  // the File menu, which clicks #save, as vim's :w does.
   //
   // Edit and Read are one choice per tab, kept on the tab (`read`, which
   // 21-tabs.js persists). There is no split: Edit hides the preview, Read
   // hides the editor.
+
+  // the page kinds: the hidden picker's options and the page menu's Kind list
+  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'hoon'];
   const tabHead = document.createElement('div');
   tabHead.id = 'tabhead';
   tabHead.className = 'tabhead';
@@ -18,8 +28,17 @@
       '<button type="button" data-r="0" data-action="edit">' + ico('pen') + 'Edit</button>' +
       '<button type="button" data-r="1" data-action="read">' + ico('eye') + 'Read</button>' +
     '</div>' +
-    sbtn('id="tmenu" data-action="tmenu" aria-haspopup="menu"', 'dots', 'Page menu');
+    sbtn('id="save"', 'save', 'Save', 'Ctrl+S') +
+    sbtn('id="tmenu" data-action="tmenu" aria-haspopup="menu"', 'dots', 'Page menu') +
+    `<span id="tholder" hidden>
+  <input id="pname" autocomplete="off" spellcheck="false">
+  <select id="pkind">${KINDS.map((k) => `<option value="${k}">${k}</option>`).join('')}</select>
+  <!-- LaTeX conversion runs on the user's own machine (71-latex.js); the
+       page menu's Convert to HTML clicks this -->
+  <button type="button" id="texconv" hidden>convert to html</button>
+</span>`;
   $('center').insertBefore(tabHead, $('docarea'));
+  pname = $('pname'); pkind = $('pkind');
   for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
   $('tback').onclick = () => tabBack();
   $('tfwd').onclick = () => tabFwd();
@@ -61,7 +80,6 @@
   window.latSetRead = setRead;
   addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'e' || e.key === 'E')
-      && !isMobile()
       // vim keeps Ctrl+E (scroll) while the editor has focus
       && !(localStorage.edVim === '1' && document.activeElement === src)) {
       e.preventDefault();
@@ -90,6 +108,8 @@
     const tool = !docFront();
     $('tread').hidden = tool;
     $('tmenu').hidden = tool;
+    // Save's one showing, on a phone (the 820px block): a grub in front
+    $('ws').classList.toggle('grubfront', !!activeTab && activeTab.kind === 'grub');
     if (pmenuEl && pmenuTab !== activeTab) pmenuClose();
     for (const [id, st_] of [['tback', 'back'], ['tfwd', 'fwd']]) {
       const off = !activeTab || !activeTab[st_].length;
@@ -106,7 +126,6 @@
   // Each item calls the handler that already exists. An item that does not
   // apply to what is open is left out, not greyed: a grub has no kind, a
   // memory has no raw source.
-  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'hoon'];
   let pmenuEl = null;
   let pmenuTab = null;   // the tab the open menu was made for
   const pmenuClose = () => { if (pmenuEl) { pmenuEl.remove(); pmenuEl = null; } };
@@ -204,7 +223,9 @@
     item('wrap', 'Line wrap', done(() => flip('appWrap')), localStorage.appWrap === '1');
     if (has.has('dup')) item('dup', 'Duplicate', done(dupPage));
     if (has.has('download')) item('download', 'Download', done(downloadDoc));
-    if (has.has('tex')) item('tex', 'Convert to HTML', done(() => $('texconv').click()));
+    // the hidden button's title says whether pandoc is there (71-latex.js)
+    if (has.has('tex')) item('tex', 'Convert to HTML', done(() => $('texconv').click())).title =
+      $('texconv').title;
     if (has.has('raw')) item('raw', 'Open raw', done(() =>
       window.open(api + '/page-source?name=' + encodeURIComponent(current), '_blank', 'noopener')));
     if (has.has('del')) item('del', 'Delete', done(() => $('del').click()));

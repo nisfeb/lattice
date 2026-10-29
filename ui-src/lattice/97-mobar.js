@@ -23,14 +23,16 @@
 
     // the edge swipe: it starts within EDGE px of a screen edge and travels
     // EDGE px inward, more across than down. Never while text in the editor
-    // is selected, where dragging a handle to the edge means the selection.
+    // is selected, where dragging a handle to the edge means the selection,
+    // and never from the tab strip, where a sideways drag scrolls the tabs.
     const EDGE = 24;
     const selecting = () => document.activeElement === src && src.selectionStart !== src.selectionEnd;
     let sw = null;
     addEventListener('touchstart', (e) => {
       sw = null;
       if (!isMobile() || e.touches.length !== 1 || drawn() || selecting()
-        || document.querySelector('.dlg:not([hidden])')) return;
+        || document.querySelector('.dlg:not([hidden])')
+        || (e.target.closest && e.target.closest('.dtlist'))) return;
       const { clientX: x, clientY: y } = e.touches[0];
       const side = x <= EDGE ? 'l' : x >= innerWidth - EDGE ? 'r' : null;
       if (side) sw = { side, x, y };

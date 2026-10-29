@@ -48,9 +48,9 @@ from the desk. The ball never sees the source files.
 | file | owns |
 |---|---|
 | 10-shell.js | `$`, `api`, `st`/`stWork`, `prevBlank`, shared bar/preview refs |
-| 12-bar.js | `<lat-bar>` (name/kind/save/status/toggles), `<lat-tabs>` |
 | 15-dialog.js | `<lat-dialog>`, `ask`/`askConfirm`/`askChoice` |
 | 20-state.js | shared state lets, `mutate()`, gen counters, snapshots |
+| 23-tabhead.js | tab header, page menu, `#save`, hidden `#pname`/`#pkind`/`#texconv` |
 | 25-editor.js | `<lat-editor>`, Prism render/sync/scheduleRender, `edited` |
 | 30-tree.js | `<lat-tree>`, renderTree, node patch helpers, folder select |
 | 35-pages.js | openPage/applyPage/newFile/newFolder/save/autosave |

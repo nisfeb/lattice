@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- resizes-content: a phone's soft keyboard shrinks the layout rather than
+     covering it, so the bottom bar and the list pair stay above the keys -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <!-- installed-PWA status bar. The manifest's theme_color is the icon's blue,
      which matches nothing on screen. The app bar is --bg, so standalone mode
      showed a blue band above an off-white bar. These win over the manifest at
@@ -188,6 +190,8 @@ select, option { color-scheme: inherit; }
 .tread button .ic { width: 13px; height: 13px; }
 .tread button:hover { color: var(--text); }
 .tread button.on { color: var(--text); background: color-mix(in srgb, var(--text) 13%, transparent); }
+/* Save shows only on a phone, while a grub is in front (the 820px block) */
+#save { display: none; }
 .tmenu .tsub { display: flex; flex-direction: column; padding-left: 12px; }
 .tmenu .tsub[hidden] { display: none; }
 .tmenu [aria-checked="true"]::after { content: " \2713"; color: var(--muted); }
@@ -219,11 +223,6 @@ select, option { color-scheme: inherit; }
 /* Edit / Read (23-tabhead.js): .ve is the editor only, .vp the preview only.
    Pages and memories alike: a memory previews as markdown (60-preview.js). */
 .ws.ve .prevwrap, .ws.vp .edwrap { display: none; }
-/* the old bar is the phone's alone. This media query is the exact
-   complement of the 820px block below. */
-@media not all and (max-width: 820px) { .ws .bar { display: none; } }
-.bar .ico { padding: 5px 9px; }
-.bar .ico.on { border-color: var(--green); color: var(--green); }
 /* list indent/outdent touch pair (45-templates.js): phones have no Tab key,
    so these exist at phone width only, and only while the caret is where
    listTab would act. Desktop has the real keys. */
@@ -231,31 +230,8 @@ select, option { color-scheme: inherit; }
 /* the phone's scrim and bottom bar (97-mobar.js): built always, shown only
    by the 820px block */
 #scrim, .mbar { display: none; }
-.ws.deskbar #pname, .ws.deskbar #pkind { display: none; }
-.bar { grid-row: 1; grid-column: 1 / -1; display: flex; gap: 8px; align-items: center;
-  padding: 7px 10px; border-bottom: 1px solid var(--border-soft); }
-/* NB: select is deliberately excluded. The global `select` rule owns its
-   padding (it reserves room for the chevron) and `background` shorthand here
-   would wipe the chevron image. */
-.bar input, .bar button { font: inherit; padding: 5px 9px;
-  border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
-  color: inherit; }
-.bar input { flex: 0 1 18rem; min-width: 8rem; cursor: text; }
-.bar button { cursor: pointer; }
-/* when the bar runs out of room the status line gives way first: it
-   shrinks and ends in an ellipsis (st() puts the full text in its title),
-   and no button is ever squeezed into its neighbour */
-@media (min-width: 821px) {
-  .bar > button, .bar > select { flex-shrink: 0; }
-}
-/* the convert button with no converter behind it: pandoc is missing, or the
-   desktop build predates LaTeX support. Dashed reads as "needs something",
-   and the button stays clickable to explain itself (71-latex.js). The var
-   holds in both themes. */
-.bar button.needsdep { border-style: dashed; border-color: var(--muted);
-  color: var(--muted); }
-.bar button:hover { border-color: var(--green); }
-.bar .grow { flex: 1; }
+/* the status line gives way first when the status bar runs out of room:
+   it shrinks and ends in an ellipsis (st() puts the full text in its title) */
 #status { font-size: .85rem; flex: 0 5 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @keyframes latspin { to { transform: rotate(360deg); } }
@@ -305,24 +281,12 @@ select, option { color-scheme: inherit; }
   .offbadge { border-color: #d4a017; color: #d4a017; background: #d4a01722; }
   .offbadge.syncing { border-color: #7fb08a; color: #7fb08a; background: #7fb08a22; }
 }
-/* Unread comment count, drawn on the comments button itself. Position is
-   relative to the button so the count rides its corner rather than taking
-   space in a bar that is already tight on a phone. */
-.bar button.has-unread { position: relative; border-color: var(--green); }
-.bar button.has-unread::after {
-  content: attr(data-n);
-  position: absolute; top: -5px; right: -5px;
-  min-width: 1.05em; padding: 0 .25em;
-  border-radius: 999px; background: var(--green); color: var(--on-accent, #fff);
-  font-size: .62rem; font-weight: 700; line-height: 1.35;
-  text-align: center; pointer-events: none;
-}
 #tagsh { cursor: pointer; }
 .chips a { padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px;
   font-size: .78rem; text-decoration: none; color: inherit; background: var(--surface);
   cursor: pointer; }
 .chips a.on, .chips a:hover { border-color: var(--green); color: var(--green); }
-.ws.know #sharesec, .ws.know #pkind { display: none; }
+.ws.know #sharesec { display: none; }
 #histview { margin-bottom: 8px; }
 .uppanel { margin: 8px 0; padding: 9px 10px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--surface); font-size: .78rem;
@@ -475,9 +439,9 @@ select, option { color-scheme: inherit; }
 
 @media (max-width: 820px) {
   /* ── the phone shell (97-mobar.js) ─────────────────────────────────────
-     One column: a top row (the left drawer's toggle, the old bar, the right
-     drawer's toggle), the center (tab strip, tab header, the document), the
-     status bar and the bottom bar. The side panes are drawers over it.
+     One column: a top row (the two drawers' toggles), the center (tab
+     strip, tab header, the document), the status bar and the bottom bar.
+     The side panes are drawers over it.
 
      The document does not scroll here. The editor, the preview and each
      drawer scroll inside themselves, as on desktop. `contain` still keeps an
@@ -499,27 +463,24 @@ select, option { color-scheme: inherit; }
     padding-top: env(safe-area-inset-top); }
   .psplit { display: none; }
   /* iOS zooms the viewport when a control under 16px takes focus and never
-     zooms back out. The omnibar (.bar input) and the editor (#src/#hl) were
-     each fixed once already. These are the rest: the controls pane and the
-     rename/new-page dialog. Listed by their existing selectors on purpose. A
-     bare `input` rule loses the cascade to `.ctl input` and `#dlginput`,
-     which set `font: inherit` at higher specificity. So a NEWLY added input
+     zooms back out. The editor (#src/#hl) was fixed once already. These
+     are the rest: the controls pane and the rename/new-page dialog. Listed
+     by their existing selectors on purpose. A bare `input` rule loses the
+     cascade to `.ctl input` and `#dlginput`, which set `font: inherit` at
+     higher specificity. So a NEWLY added input
      still needs adding here. The base font is 15px, under the threshold.
      (#dlginput is declared below this block, so source order beats us there;
      it gets its own rule next to its definition.) */
   .ctl input, select, textarea { font-size: 16px; }
 
-  /* the top row. The bar keeps #save, the one way to save a grub without a
-     keyboard. min-width: 0 is load-bearing: a grid item's automatic minimum
-     is its min-content size, which for a nowrap flex row is the SUM of its
-     children's widths, and a track grown to that scrolls the page sideways. */
+  /* the top row: the drawers' toggles at either end */
   .ws .corner, .ws.nc #rcorner { grid-row: 1; height: auto; z-index: auto;
     justify-self: stretch; background: none; border-bottom: 1px solid var(--border-soft); }
   #lcorner { grid-column: 1; }
   .ws #rcorner, .ws.nc #rcorner { grid-column: 3; }
   .ws .corner .sbtn { width: 36px; height: 36px; }
-  .bar { grid-row: 1; grid-column: 2; flex-wrap: nowrap; position: relative; min-width: 0; }
-  #pname, #pkind { display: none; }
+  /* Save, the one way to save a grub without a keyboard (23-tabhead.js) */
+  .ws.grubfront #save { display: inline-flex; }
   /* the unread count the ribbon's inbox carries, on the left drawer's
      toggle, since the ribbon is in that drawer */
   #treet[data-n] { position: relative; color: var(--text); }
@@ -740,7 +701,7 @@ select, option { color-scheme: inherit; }
 /* custom-element wrappers are invisible to layout. Their inner divs stay
    direct grid items of .ws (and .dlg stays a fixed overlay). Without this,
    custom elements default to display:inline and break the grid. */
-lat-dialog, lat-bar, lat-tree, lat-editor, lat-preview, lat-ctl,
+lat-dialog, lat-tree, lat-editor, lat-preview, lat-ctl,
 lat-share, lat-history, lat-links, lat-knowtags, lat-acl,
 lat-comments, lat-ribbon, lat-lpane, lat-rpane, lat-statusbar,
 lat-know, lat-marks { display: contents; }
@@ -783,7 +744,6 @@ ul.qlist a:hover { background: var(--surface); }
 </head>
 <body>
 <div class="ws" id="ws">
-  <lat-bar></lat-bar>
   <lat-ribbon></lat-ribbon>
   <lat-lpane></lat-lpane>
   <!-- a flex column: the tab strip, tab header and tool host of later

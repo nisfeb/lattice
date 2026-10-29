@@ -44,8 +44,8 @@ await page.evaluateOnNewDocument(() => {
 // per page), so integration waits get a generous budget
 const wait = (fn, ...args) => page.waitForFunction(fn, { timeout: 90000 }, ...args);
 // The in-app dialog: fill (optional) and submit / cancel.
-//  the old bar's controls (#save, #wrapt) left the screen with the shell
-//  frame and stay in the DOM, so they are clicked as elements
+//  #save shows only on a phone with a grub in front and stays in the DOM
+//  (the desktop menu and vim click it), so it is clicked as an element
 const tap = (sel) => page.evaluate((x) => document.querySelector(x).click(), sel);
 const dialog = async (value, submit = true) => {
   await wait(() => !document.getElementById('dlg').hidden);
@@ -116,7 +116,7 @@ try {
     const control = draw('\u{10FFFF}');   // unassigned forever: always .notdef
     const blank = draw(' ');
     const bad = [];
-    for (const b of document.querySelectorAll('.bar button.ico, .bar a.nav')) {
+    for (const b of document.querySelectorAll('#ws button.ico, #ws a.nav')) {
       const t = (b.textContent || '').trim();
       if (!t) continue;
       const px = draw(t);
@@ -126,6 +126,10 @@ try {
   });
   check('boot: every bar icon renders a real glyph (no tofu)',
     tofu.length === 0, tofu.join(', '));
+  // the shell's icon buttons are drawn, never typed: each holds an svg
+  const bare = await page.evaluate(() => [...document.querySelectorAll('.sbtn')]
+    .filter((b) => !b.querySelector('svg path')).map((b) => b.id || b.className));
+  check('boot: every shell icon button draws an svg', bare.length === 0, bare.join(', '));
 
   step = 'new page';
   // ── 2. new page: type, save, appears in tree, round-trips ────────────────
@@ -172,14 +176,24 @@ try {
   await wait(() => document.getElementById('src').value === '# updated elsewhere');
   ok('live: open page updates when edited elsewhere');
 
-  // version history: the earlier remote edit left ≥2 revisions. The panel
-  // lists them, viewing one is read-only, restoring re-saves it as newest.
+  // version history: the page has been written three times (created empty
+  // by + file, the probe, the remote edit). The ship keeps one revision per
+  // five-minute window (prune-hist), so the probe, between the other two,
+  // was merged away: what it guarantees is the oldest and the newest. The
+  // panel lists them, viewing the oldest is read-only and shows what the
+  // ship has for it, restoring re-saves that as newest.
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => !document.getElementById('histsec').hidden);
   // history is lazy. Revisions fetch when the History tab is in front
   await page.evaluate(() => document.querySelector('#rtabs [data-pt=hist]').click());
   await wait(() => document.querySelectorAll('#histlist a').length >= 2);
   ok('history: the tab lists revisions');
+  const oldest = await page.evaluate(async (n) => {
+    const chips = document.querySelectorAll('#histlist a');
+    const rev = chips[chips.length - 1].dataset.rev;
+    const r = await fetch('/apps/lattice/page-source-at?name=' + encodeURIComponent(n) + '&rev=' + rev);
+    return (await r.json()).body;
+  }, RUN + '/hello');
   await page.evaluate(() => {                      // open the OLDEST revision
     const chips = document.querySelectorAll('#histlist a');
     chips[chips.length - 1].click();
@@ -187,17 +201,18 @@ try {
   await wait(() => document.getElementById('src').readOnly);
   const histBody = await page.evaluate(() => document.getElementById('src').value);
   check('history: viewing a revision is read-only and shows old content',
-    histBody === '# ui matrix probe', JSON.stringify(histBody).slice(0, 40));
+    typeof oldest === 'string' && histBody === oldest && histBody !== '# updated elsewhere',
+    JSON.stringify({ histBody, oldest }).slice(0, 80));
   await page.click('#hrestore');
   await wait(() => !document.getElementById('src').readOnly);
-  await page.waitForFunction(async (n) => {
+  await page.waitForFunction(async (n, old) => {
     const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n));
-    return (await r.json()).body === '# ui matrix probe';
+    return (await r.json()).body.trim() === old.trim();
   //  90s, the same budget as every other integration wait here. This was the
   //  file's only bespoke timeout, tuned when a perf fork made the pier faster
   //  than upstream; on plain grubbery develop it is the one thing that ends a
   //  run, and it ends it on a clock rather than on a behaviour.
-  }, { timeout: 90000 }, RUN + '/hello');
+  }, { timeout: 90000 }, RUN + '/hello', oldest);
   ok('history: restore re-saves the old revision as newest');
 
   // REGRESSION GUARDS for the adversarial review's findings.
@@ -241,8 +256,10 @@ try {
   await wait(() => document.getElementById('ws').className.includes('know'));
   check('F12: knowledge editor is not left read-only after a revision view',
     !(await page.evaluate(() => document.getElementById('src').readOnly)));
+  //  the right pane repaints on a short deferral (rpSoon, 76-outline.js)
   check('F12: stale history panel hidden after mode switch',
-    await page.evaluate(() => document.getElementById('histsec').hidden));
+    await page.waitForFunction(() => document.getElementById('histsec').hidden, { timeout: 5000 })
+      .then(() => true, () => false));
   await page.evaluate(() => window.latTabs.openIn('page', ''));
   await wait(() => !document.getElementById('ws').className.includes('know'));
   // setMode clears the open page, so reopen it for the autosave check below
@@ -329,11 +346,15 @@ try {
   // the geometries are compared mid-reflow and disagree for a frame.
   await sleep(300);
   check('overlay parity: wrap (default)', await parity());
-  await tap('#wrapt');
-  await sleep(300);
+  //  line wrap is a page menu item
+  const wrapFlip = async () => {
+    await page.click('#tmenu');
+    await page.click('.tmenu [data-mi=wrap]');
+    await sleep(300);
+  };
+  await wrapFlip();
   check('overlay parity: nowrap', await parity());
-  await tap('#wrapt');
-  await sleep(300);
+  await wrapFlip();
 
   // empty file: saving with no content must succeed (the UI stands in a
   // newline for the body the backend refuses to take empty).
@@ -374,8 +395,11 @@ try {
   // the buffer is dirty so autosave persists it
   //  a bare wikilink shows only its last segment, and the path rides in
   //  the href URI-encoded (release 65)
+  //  the preview renders in Read (Edit skips it), so look there
+  await page.evaluate(() => window.latSetRead(true));
   await wait((s) => (document.getElementById('prev').srcdoc || '').includes(encodeURIComponent(s)), sibling);
   ok('autocomplete: completion refreshes the preview');
+  await page.evaluate(() => window.latSetRead(false));
   // Tab-indent is the other scripted edit. It used to show in the editor and
   // never reach the ship. Autosave firing is the observable proof it is now
   // treated as a real edit (asserting ship state here races the slow pier).
@@ -433,8 +457,10 @@ try {
   await wait(() => !document.getElementById('dlginput').hidden);
   await page.evaluate((v) => { document.getElementById('dlginput').value = v; }, RUN + '/gb');
   await page.click('#dlgok');
-  await wait((n) => (document.getElementById('status').textContent || '').includes('created ' + n),
-    RUN + '/gb');
+  //  opened is the name field naming it. The status line said "created"
+  //  only until the open's own compile check wrote over it
+  await wait((n) => document.getElementById('pname').value === n
+    && document.getElementById('src').value.includes('/' + n), RUN + '/gb');
   check('template: instantiates and opens the new page',
     (await page.evaluate(() => document.getElementById('pname').value)) === RUN + '/gb',
     'pname=' + JSON.stringify(await page.evaluate(() => document.getElementById('pname').value)) +
@@ -1238,6 +1264,8 @@ try {
   }, PV);
   await page.goto(APP + '?name=' + PV, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.length > 0);
+  //  the preview renders in Read (Edit skips it); a scripted edit still lands
+  await page.evaluate(() => window.latSetRead(true));
   await sleep(2500);
 
   const inPreview = (needle) => page.evaluate((m) => {
@@ -1287,6 +1315,7 @@ try {
   await sleep(15000);
   check('preview: the ship\'s render still arrives and holds', await inPreview(MARK2));
 
+  await page.evaluate(() => window.latSetRead(false));
   await page.evaluate((n) => fetch('/apps/lattice/page-del?name=' +
     encodeURIComponent(n), { method: 'POST' }), PV);
 
@@ -1363,8 +1392,10 @@ try {
   check('sandbox: the preview frame is sandboxed, without allow-same-origin',
     sbx.split(/\s+/).includes('allow-scripts') && !sbx.includes('allow-same-origin'), sbx);
 
+  //  in Read, where the preview renders the page (Edit skips it)
   await page.evaluate(() => {
     document.getElementById('newfile').click();
+    window.latSetRead(true);
     document.getElementById('pkind').value = 'html';
     const s = document.getElementById('src');
     //  the assignment THROWS a SecurityError once the frame is sandboxed,
@@ -1381,6 +1412,7 @@ try {
     !(await page.evaluate(() => {
       try { return !!document.getElementById('prev').contentDocument; } catch { return false; }
     })));
+  await page.evaluate(() => window.latSetRead(false));
 
   step = 'search';
   // ── 9e. finding your own writing from the editor ─────────────────────────
@@ -1511,6 +1543,9 @@ try {
   await page.setViewport({ width: 1200, height: 800 });
   await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
   await page.goto(APP, { waitUntil: 'domcontentloaded' });
+  //  the preview is on screen in Read
+  await page.waitForFunction(() => !!window.latSetRead, { timeout: 30000 });
+  await page.evaluate(() => window.latSetRead(true));
   await sleep(600);
   const shot = await page.screenshot({ encoding: 'base64' });
   const px = await page.evaluate(async (b64) => {
@@ -1526,7 +1561,9 @@ try {
   check('dark theme: blank preview is the theme background',
     px[0] < 60 && px[1] < 60 && px[2] < 60, 'pixel ' + px.join(','));
 } catch (e) {
-  bad('matrix aborted at [' + step + ']: ' + e.message.slice(0, 120));
+  const at = await page.evaluate(() => [document.getElementById('status').textContent,
+    document.getElementById('pname').value, location.search]).catch(() => []);
+  bad('matrix aborted at [' + step + ']: ' + e.message.slice(0, 120), JSON.stringify(at));
 }
 
 //  A save that outruns the client's 10s deadline is queued as offline and
@@ -1555,8 +1592,10 @@ try {
   const tree = await (await fetch(`${env.base}/apps/lattice/page-tree`,
     { headers: { cookie: env.cookie } })).json();
   for (const node of tree.nodes || []) {
-    if (node.path.includes(RUN) &&
-        (node.path.startsWith('conflicts/') || node.path.includes('-lists'))) {
+    //  and whatever this run left at the top level (RUN, RUN-moved, ...)
+    //  after an abort, which skipped the dialog-driven deletes
+    if (node.path.includes(RUN) && (node.path.startsWith('conflicts/')
+        || node.path.includes('-lists') || !node.path.includes('/'))) {
       await fetch(`${env.base}/apps/lattice/page-del?name=${encodeURIComponent(node.path)}`,
         { method: 'POST', headers: { cookie: env.cookie } });
     }

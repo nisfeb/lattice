@@ -4,7 +4,9 @@
 //    Ctrl+click opens a second tab, and a plain click on a document that is
 //      already open focuses its tab instead of opening it twice
 //    switching tabs inside the autosave window keeps what was typed in both
-//    a dirty grub (no autosave) survives being switched away from and back,
+//    a grub never autosaves: past the debounce the ship still has the old
+//      text and the status bar says "unsaved, Ctrl+S"
+//    a dirty grub survives being switched away from and back,
 //      shows its dot, counts as unsaved from the background, and closing it
 //      asks first; cancel keeps it
 //    the tab list comes back after a reload, and a corrupt one falls back to
@@ -137,7 +139,13 @@ try {
   await page.evaluate((p) => window.latTabs.openIn('grub', p, { newTab: true }), grub);
   check('a grub opens in its own tab', await waitOn('grub', grub), JSON.stringify(await state()));
   await typeEnd('GGG');
-  await sleep(300);
+  // ── grub autosave stays off: past the 2s debounce nothing is written,
+  //    and the status bar says what to press ────────────────────────────
+  await sleep(4000);
+  const gsrc = ((await shipGet('grub-source?path=' + encodeURIComponent(grub))) || {}).text || '';
+  const gst = await page.evaluate(() => document.getElementById('status').textContent);
+  check('grub autosave stays off', !gsrc.includes('GGG') && gst.includes('unsaved, Ctrl+S'),
+    JSON.stringify({ gsrc: gsrc.slice(0, 40), gst }));
   await page.click(tabSel('page', A));
   await waitOn('page', A);
   await page.click(tabSel('grub', grub));

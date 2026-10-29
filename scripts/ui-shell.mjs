@@ -192,14 +192,19 @@ try {
     spin: !!document.querySelector('#statusbar #spin'),
     off: !!document.querySelector('#statusbar #offbadge'),
     editor: !!document.querySelector('#center #src') && !!document.querySelector('#center #prev'),
-    keptHidden: ['pname', 'pkind', 'wrapt', 'save']
+    keptHidden: ['pname', 'pkind', 'texconv', 'save']
       .filter((id) => { const e = document.getElementById(id); return !e || e.getBoundingClientRect().width > 0; }),
+    holder: ['pname', 'pkind', 'texconv']
+      .every((id) => !!document.querySelector('#tabhead #tholder[hidden] #' + id)),
+    barGone: !document.querySelector('lat-bar, .bar, #wrapt'),
   }));
   check('tree and status moved',
     moved.tree && moved.ctl && moved.status && moved.spin && moved.off && moved.editor,
     JSON.stringify(moved));
   check('the old bar controls exist but are off screen', moved.keptHidden.length === 0,
     JSON.stringify(moved.keptHidden));
+  check('the old bar is gone; its stores sit in the tab header\'s hidden holder',
+    moved.holder && moved.barGone, JSON.stringify(moved));
 
   // ── left pane tabs ─────────────────────────────────────────────────────
   const until = (fn, arg, ms = 30000) => page.waitForFunction(fn, { timeout: ms }, arg)

@@ -462,7 +462,7 @@
     // kept a revision fine-grained enough to step back to. Save/Cmd+S only.
     // The 2s debounce still fires. It just reports instead of writing, so the
     // moment you stop typing you can see the edit is not yet on the ship.
-    if (grubPath) { if (dirty) st('unsaved — press Save or Cmd+S'); return; }
+    if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
     // Settings > Editor > Autosave pages, off. Only this debounce stops: an
     // explicit save and the flush a tab switch or a navigation makes go

@@ -93,6 +93,10 @@ const open = async (name) => {
   return r.ok;
 };
 
+//  the preview is drawn in Read (Edit skips its renders, 60-preview.js), and
+//  Read is the tab's, so the opens below, in place, keep it. Autosave goes
+//  off so the typing check can never write into these real pages.
+await p.evaluate(() => { localStorage.latAutosave = '0'; window.latSetRead(true); });
 check('the tree lists both pages', await open(A));
 await p.waitForFunction((w) => (document.getElementById('prev').getAttribute('srcdoc') || '').includes(w),
   { timeout: BUDGET }, pair.wa).catch(() => {});
@@ -131,6 +135,7 @@ check('typing still paints locally', typed);
 p.off('request', hold);
 await p.setRequestInterception(false);
 //  nothing to clean up: this drives existing pages and never writes. The typing
-//  check edits the textarea only, and no save is issued.
+//  check edits the textarea only, with autosave off, and no save is issued.
+await p.evaluate(() => { localStorage.removeItem('latAutosave'); window.latSetRead(false); });
 await b.close();
 check.done();

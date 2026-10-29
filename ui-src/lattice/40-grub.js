@@ -60,7 +60,7 @@
     curKind = mk;
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'on ' + grubShip + ': saves need its permission'
-       : 'grub ' + blot + ' — manual save (Cmd+S), no autosave here');
+       : 'grub ' + blot + ', no autosave here: Ctrl+S to save');
     return true;
   }
   // grub mode on, for `p` (on `ship`, or here), with its label and address,

@@ -76,7 +76,7 @@
     }
     return !dirty;
   }
-  // setOpen: what the bar says is open, set in one place. `name` becomes
+  // setOpen: what the tab header says is open, set in one place. `name` becomes
   // `current`, the open page or memory, or null when nothing named is open
   // (a new page, a folder, a grub, a fresh mode). The name field shows
   // `name` unless `shown` says otherwise (a folder's path, a grub's road, a

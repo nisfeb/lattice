@@ -32,15 +32,4 @@
     for (const row of document.querySelectorAll('#tree .newbtns')) {
       if ([...row.children].every((c) => c.hidden)) row.hidden = true;
     }
-
-    // ── the name field gives way to the tab header's path ───────────────────
-    // Typing a path into a text box is how you named a page when there was
-    // nowhere else to do it. Creation lives in the File menu now, and the tab
-    // header (23-tabhead.js) says which page is open and moves it.
-    //
-    // The field and the picker stay in the DOM and keep their values.
-    // Everything reads pname.value and pkind.value, and rewriting all of that
-    // to read from somewhere else would be a much larger change than this is
-    // worth.
-    ws.classList.add('deskbar');
   }

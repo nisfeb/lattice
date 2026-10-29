@@ -8,20 +8,12 @@
     ws.classList.toggle('wrap', localStorage.appWrap === '1');
     // Edit or Read, per tab (23-tabhead.js)
     applyRead();
-    //  the on class is paint alone, so mirror the state in aria-pressed
-    {
-      const on = localStorage.appWrap === '1';
-      const b = $('wrapt');
-      b.className = 'ico' + (on ? ' on' : '');
-      b.setAttribute('aria-pressed', on ? 'true' : 'false');
-    }
     // keep the vim indicator in step with the view: it reads PREVIEW in
     // preview-only. setInd is exposed by 27-vim.js (it lives in that file's
     // own IIFE); guard in case that file is absent. A no-op when vim is off.
     if (window.latVimSetInd) window.latVimSetInd();
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
-  $('wrapt').onclick = () => flip('appWrap');
   // A throw in this boot-time layout pass must NOT halt the rest of app boot:
   // the initial tree load and navigation wiring run in a later file (90-sync),
   // so an uncaught error here blanks the whole app (that was the setInd bug).

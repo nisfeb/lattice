@@ -3,8 +3,8 @@
   const api = '/apps/lattice';
   // ── flat icons ───────────────────────────────────────────────────────────
   // One-colour glyphs in place of colour emoji: the tree's folders and page
-  // kinds (NERDTree with devicons), and the bar's search, comments and
-  // access. folder/open/search/comment/key are GitHub's Octicons, the page
+  // kinds (NERDTree with devicons), and the shell's buttons.
+  // folder/open/search/comment/key are GitHub's Octicons, the page
   // kinds Seti-UI's, the set NERDTree's devicons draw on; both MIT. Each is
   // [viewBox, path]; Seti's boxes are cropped to match the Octicons' size.
   // The colour is CSS (.ic-md and so on), currentColor where it has none.
@@ -46,6 +46,7 @@
     dots: ['0 0 24 24', 'M12 5h.01M12 12h.01M12 19h.01', 'stroke'],
     menu: ['0 0 24 24', 'M4 6h16M4 12h16M4 18h16', 'stroke'],
     plus: ['0 0 24 24', 'M12 5v14M5 12h14', 'stroke'],
+    save: ['0 0 24 24', 'M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 3v5h7V3M7 21v-7h10v7', 'stroke'],
     pin: ['0 0 24 24', 'M9 3h6l-1 6 3 4H7l3-4zM12 13v8', 'stroke'],
     tabs: ['0 0 24 24', 'M8 8h12v12H8zM4 16V4h12', 'stroke'],
     mark: ['0 0 24 24', 'M6 3h12v18l-6-4-6 4z', 'stroke'],
@@ -204,7 +205,7 @@
         await (await caches.open('lattice-pages')).put('/__pv', new Response(pv));
     }).catch(() => {});
   };
-  let pname, pkind;                    // assigned by <lat-bar>   (12-bar.js)
+  let pname, pkind;                    // assigned by the tab header (23-tabhead.js)
   let status, spinner;                 // assigned by <lat-statusbar> (13-frame.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)
   // blank preview: about:blank defaults to light color-scheme, which

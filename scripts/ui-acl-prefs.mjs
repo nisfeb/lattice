@@ -264,7 +264,8 @@ try {
       await fetch('/apps/lattice/unban?ship=' + encodeURIComponent('~zod'), { method: 'POST' });
       await fetch('/apps/lattice/share-group-del?name=' + encodeURIComponent(g + '-ban'), { method: 'POST' });
       await fetch('/apps/lattice/share-group-del?name=' + encodeURIComponent(g), { method: 'POST' });
-      await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(g + '/target'), { method: 'POST' });
+      //  the folder, which takes the page under it (page-del culls a subtree)
+      await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(g), { method: 'POST' });
       localStorage.removeItem('latFont'); localStorage.removeItem('latFontSize');
       localStorage.removeItem('appPanes');
     }, GROUP);

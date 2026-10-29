@@ -675,8 +675,8 @@
   const api = '/apps/lattice';
   // ── flat icons ───────────────────────────────────────────────────────────
   // One-colour glyphs in place of colour emoji: the tree's folders and page
-  // kinds (NERDTree with devicons), and the bar's search, comments and
-  // access. folder/open/search/comment/key are GitHub's Octicons, the page
+  // kinds (NERDTree with devicons), and the shell's buttons.
+  // folder/open/search/comment/key are GitHub's Octicons, the page
   // kinds Seti-UI's, the set NERDTree's devicons draw on; both MIT. Each is
   // [viewBox, path]; Seti's boxes are cropped to match the Octicons' size.
   // The colour is CSS (.ic-md and so on), currentColor where it has none.
@@ -718,6 +718,7 @@
     dots: ['0 0 24 24', 'M12 5h.01M12 12h.01M12 19h.01', 'stroke'],
     menu: ['0 0 24 24', 'M4 6h16M4 12h16M4 18h16', 'stroke'],
     plus: ['0 0 24 24', 'M12 5v14M5 12h14', 'stroke'],
+    save: ['0 0 24 24', 'M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 3v5h7V3M7 21v-7h10v7', 'stroke'],
     pin: ['0 0 24 24', 'M9 3h6l-1 6 3 4H7l3-4zM12 13v8', 'stroke'],
     tabs: ['0 0 24 24', 'M8 8h12v12H8zM4 16V4h12', 'stroke'],
     mark: ['0 0 24 24', 'M6 3h12v18l-6-4-6 4z', 'stroke'],
@@ -876,7 +877,7 @@
         await (await caches.open('lattice-pages')).put('/__pv', new Response(pv));
     }).catch(() => {});
   };
-  let pname, pkind;                    // assigned by <lat-bar>   (12-bar.js)
+  let pname, pkind;                    // assigned by the tab header (23-tabhead.js)
   let status, spinner;                 // assigned by <lat-statusbar> (13-frame.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)
   // blank preview: about:blank defaults to light color-scheme, which
@@ -972,42 +973,6 @@
       if (ext) window.__TAURI__.core.invoke('open_external_url', { url: a.href });
       else location.href = a.href;
     });
-
-// ── src/12-bar.js ─────────────────────────────────────────────────────────
-  // ── top bar: <lat-bar> ───────────────────────────────────────────────────
-  // The shell frame (13-frame.js) took the bar's job on desktop: the corner
-  // toggles, the status line and its spinner live there now, and this bar
-  // shows only at phone width. Its other controls stay in the DOM, hidden,
-  // until later steps give each one its home, because handlers and the
-  // desktop menu still find them by id. Home, comments, conflicts and
-  // access are the ribbon's now (24-tools.js).
-  customElements.define('lat-bar', class extends HTMLElement {
-    connectedCallback() {
-      this.innerHTML = `
-<header class="bar">
-  <!-- the icon-only controls carry aria-labels: their glyph is their whole
-       text content, which is no accessible name at all -->
-  <input id="pname" hidden placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
-  <select id="pkind" hidden title="page kind">
-    <option value="md">md</option>
-    <option value="gmi">gmi</option>
-    <option value="html">html</option>
-    <option value="text">txt</option>
-    <option value="js">js</option>
-    <option value="css">css</option>
-    <option value="tex">tex</option>
-    <option value="hoon">hoon</option>
-  </select>
-  <button id="save">save</button>
-  <!-- LaTeX conversion runs on the user's own machine (71-latex.js),
-       so this is hidden on the web and on non-tex pages. -->
-  <button id="texconv" hidden>convert to html</button>
-  <span class="grow"></span>
-  <button id="wrapt" class="ico" hidden title="toggle line wrap" aria-label="toggle line wrap">&#8617;</button>
-</header>`;
-      pname = $('pname'); pkind = $('pkind');
-    }
-  });
 
 // ── src/13-frame.js ───────────────────────────────────────────────────────
   // ── shell frame: <lat-ribbon>, <lat-lpane>, <lat-rpane>, <lat-statusbar> ──
@@ -1280,9 +1245,10 @@
   //  hides. So the one place a desktop user names a file was also the one
   //  place they could not say what it was, and everything arrived as md.
   //
-  //  Options are cloned from the bar's own picker rather than restated, so a
-  //  kind added there (tex was) appears here with no second edit. `fixed`
-  //  shows the kind without letting it change: a new memory is always md.
+  //  Options are cloned from the hidden kind picker (#pkind, 23-tabhead.js)
+  //  rather than restated, so a kind added there (tex was) appears here with
+  //  no second edit. `fixed` shows the kind without letting it change: a new
+  //  memory is always md.
   const askNameKind = async (msg, value, okLabel, kind, fixed) => {
     dlgKind.textContent = '';
     const src = $('pkind');
@@ -1519,7 +1485,7 @@
     }
     return !dirty;
   }
-  // setOpen: what the bar says is open, set in one place. `name` becomes
+  // setOpen: what the tab header says is open, set in one place. `name` becomes
   // `current`, the open page or memory, or null when nothing named is open
   // (a new page, a folder, a grub, a fresh mode). The name field shows
   // `name` unless `shown` says otherwise (a folder's path, a grub's road, a
@@ -1920,7 +1886,7 @@
         curKind = s.kind;
         render();
         pname.dispatchEvent(new Event('input'));
-        st('unsaved · press Save or Cmd+S');
+        st('unsaved, Ctrl+S to save');
       },
       park: parkDoc,
       shows: showsLive,
@@ -2542,13 +2508,23 @@
 // ── src/23-tabhead.js ─────────────────────────────────────────────────────
   // ── tab header ───────────────────────────────────────────────────────────
   // Between the tab strip and the document: Back and Forward, the path of
-  // what is open, Edit / Read, and the page menu. The old bar's controls
-  // stay in the DOM, hidden, because they are the stores and the handlers
-  // these buttons call (#pname, #pkind, #mv, #del, #texconv).
+  // what is open, Edit / Read, Save and the page menu. The name field, the
+  // kind picker and the LaTeX convert button sit here in a hidden holder:
+  // nothing shows them, but they are the stores and the handlers these
+  // buttons call (#pname, #pkind, #texconv), as #mv and #del in the Page tab
+  // are.
+  //
+  // Save is an icon on a phone while a grub is in front, the one document
+  // with no autosave and, there, no keyboard for Ctrl+S. Everywhere else it
+  // is hidden: pages and memories autosave, and the desktop has Ctrl+S and
+  // the File menu, which clicks #save, as vim's :w does.
   //
   // Edit and Read are one choice per tab, kept on the tab (`read`, which
   // 21-tabs.js persists). There is no split: Edit hides the preview, Read
   // hides the editor.
+
+  // the page kinds: the hidden picker's options and the page menu's Kind list
+  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'hoon'];
   const tabHead = document.createElement('div');
   tabHead.id = 'tabhead';
   tabHead.className = 'tabhead';
@@ -2560,8 +2536,17 @@
       '<button type="button" data-r="0" data-action="edit">' + ico('pen') + 'Edit</button>' +
       '<button type="button" data-r="1" data-action="read">' + ico('eye') + 'Read</button>' +
     '</div>' +
-    sbtn('id="tmenu" data-action="tmenu" aria-haspopup="menu"', 'dots', 'Page menu');
+    sbtn('id="save"', 'save', 'Save', 'Ctrl+S') +
+    sbtn('id="tmenu" data-action="tmenu" aria-haspopup="menu"', 'dots', 'Page menu') +
+    `<span id="tholder" hidden>
+  <input id="pname" autocomplete="off" spellcheck="false">
+  <select id="pkind">${KINDS.map((k) => `<option value="${k}">${k}</option>`).join('')}</select>
+  <!-- LaTeX conversion runs on the user's own machine (71-latex.js); the
+       page menu's Convert to HTML clicks this -->
+  <button type="button" id="texconv" hidden>convert to html</button>
+</span>`;
   $('center').insertBefore(tabHead, $('docarea'));
+  pname = $('pname'); pkind = $('pkind');
   for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
   $('tback').onclick = () => tabBack();
   $('tfwd').onclick = () => tabFwd();
@@ -2603,7 +2588,6 @@
   window.latSetRead = setRead;
   addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'e' || e.key === 'E')
-      && !isMobile()
       // vim keeps Ctrl+E (scroll) while the editor has focus
       && !(localStorage.edVim === '1' && document.activeElement === src)) {
       e.preventDefault();
@@ -2632,6 +2616,8 @@
     const tool = !docFront();
     $('tread').hidden = tool;
     $('tmenu').hidden = tool;
+    // Save's one showing, on a phone (the 820px block): a grub in front
+    $('ws').classList.toggle('grubfront', !!activeTab && activeTab.kind === 'grub');
     if (pmenuEl && pmenuTab !== activeTab) pmenuClose();
     for (const [id, st_] of [['tback', 'back'], ['tfwd', 'fwd']]) {
       const off = !activeTab || !activeTab[st_].length;
@@ -2648,7 +2634,6 @@
   // Each item calls the handler that already exists. An item that does not
   // apply to what is open is left out, not greyed: a grub has no kind, a
   // memory has no raw source.
-  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'hoon'];
   let pmenuEl = null;
   let pmenuTab = null;   // the tab the open menu was made for
   const pmenuClose = () => { if (pmenuEl) { pmenuEl.remove(); pmenuEl = null; } };
@@ -2746,7 +2731,9 @@
     item('wrap', 'Line wrap', done(() => flip('appWrap')), localStorage.appWrap === '1');
     if (has.has('dup')) item('dup', 'Duplicate', done(dupPage));
     if (has.has('download')) item('download', 'Download', done(downloadDoc));
-    if (has.has('tex')) item('tex', 'Convert to HTML', done(() => $('texconv').click()));
+    // the hidden button's title says whether pandoc is there (71-latex.js)
+    if (has.has('tex')) item('tex', 'Convert to HTML', done(() => $('texconv').click())).title =
+      $('texconv').title;
     if (has.has('raw')) item('raw', 'Open raw', done(() =>
       window.open(api + '/page-source?name=' + encodeURIComponent(current), '_blank', 'noopener')));
     if (has.has('del')) item('del', 'Delete', done(() => $('del').click()));
@@ -2979,11 +2966,11 @@
   });
 
   // the Settings tab, opened or focused, with its frame scrolled to the
-  // section #anchor. Preferences > scheduled backups on the desktop
-  // (desktop/src/main.rs) lands on #backup this way. A frame still loading
-  // scrolls once it has. Sections above the anchor fill in after load (the
-  // key list, the backup schedules), so the anchor is held at the top while
-  // the page settles, until the user scrolls or clicks or two seconds pass.
+  // section #anchor. A frame still loading scrolls once it has. Sections
+  // above the anchor fill in after load (the key list), so the anchor is
+  // held at the top while the page settles, until the user scrolls or
+  // clicks or two seconds pass. Preferences on the desktop does not come
+  // here: it opens the manager page (latOpenManager above).
   function frameScroll(f, anchor) {
     let d = null;
     try { d = f.contentDocument; } catch {}
@@ -4046,7 +4033,7 @@
   //  The toggle lives on the settings page, which is a SEPARATE document on
   //  this origin, exactly like the font and size preferences. It writes the
   //  flag and the storage event brings it here, so no button is injected into
-  //  the bar (which is managed markup now). An unset flag is off: vimOn()
+  //  the shell (which is managed markup). An unset flag is off: vimOn()
   //  and the settings checkbox both test for "1".
   window.addEventListener("storage", function(e){
     if(!e.key || e.key === LS) applyVim();
@@ -5012,7 +4999,7 @@
     // kept a revision fine-grained enough to step back to. Save/Cmd+S only.
     // The 2s debounce still fires. It just reports instead of writing, so the
     // moment you stop typing you can see the edit is not yet on the ship.
-    if (grubPath) { if (dirty) st('unsaved — press Save or Cmd+S'); return; }
+    if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
     // Settings > Editor > Autosave pages, off. Only this debounce stops: an
     // explicit save and the flush a tab switch or a navigation makes go
@@ -5134,7 +5121,7 @@
     curKind = mk;
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'on ' + grubShip + ': saves need its permission'
-       : 'grub ' + blot + ' — manual save (Cmd+S), no autosave here');
+       : 'grub ' + blot + ', no autosave here: Ctrl+S to save');
     return true;
   }
   // grub mode on, for `p` (on `ship`, or here), with its label and address,
@@ -8542,20 +8529,12 @@
     ws.classList.toggle('wrap', localStorage.appWrap === '1');
     // Edit or Read, per tab (23-tabhead.js)
     applyRead();
-    //  the on class is paint alone, so mirror the state in aria-pressed
-    {
-      const on = localStorage.appWrap === '1';
-      const b = $('wrapt');
-      b.className = 'ico' + (on ? ' on' : '');
-      b.setAttribute('aria-pressed', on ? 'true' : 'false');
-    }
     // keep the vim indicator in step with the view: it reads PREVIEW in
     // preview-only. setInd is exposed by 27-vim.js (it lives in that file's
     // own IIFE); guard in case that file is absent. A no-op when vim is off.
     if (window.latVimSetInd) window.latVimSetInd();
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
-  $('wrapt').onclick = () => flip('appWrap');
   // A throw in this boot-time layout pass must NOT halt the rest of app boot:
   // the initial tree load and navigation wiring run in a later file (90-sync),
   // so an uncaught error here blanks the whole app (that was the setInd bug).
@@ -9450,17 +9429,6 @@
     for (const row of document.querySelectorAll('#tree .newbtns')) {
       if ([...row.children].every((c) => c.hidden)) row.hidden = true;
     }
-
-    // ── the name field gives way to the tab header's path ───────────────────
-    // Typing a path into a text box is how you named a page when there was
-    // nowhere else to do it. Creation lives in the File menu now, and the tab
-    // header (23-tabhead.js) says which page is open and moves it.
-    //
-    // The field and the picker stay in the DOM and keep their values.
-    // Everything reads pname.value and pkind.value, and rewriting all of that
-    // to read from somewhere else would be a much larger change than this is
-    // worth.
-    ws.classList.add('deskbar');
   }
 
 // ── src/97-mobar.js ───────────────────────────────────────────────────────
@@ -9489,14 +9457,16 @@
 
     // the edge swipe: it starts within EDGE px of a screen edge and travels
     // EDGE px inward, more across than down. Never while text in the editor
-    // is selected, where dragging a handle to the edge means the selection.
+    // is selected, where dragging a handle to the edge means the selection,
+    // and never from the tab strip, where a sideways drag scrolls the tabs.
     const EDGE = 24;
     const selecting = () => document.activeElement === src && src.selectionStart !== src.selectionEnd;
     let sw = null;
     addEventListener('touchstart', (e) => {
       sw = null;
       if (!isMobile() || e.touches.length !== 1 || drawn() || selecting()
-        || document.querySelector('.dlg:not([hidden])')) return;
+        || document.querySelector('.dlg:not([hidden])')
+        || (e.target.closest && e.target.closest('.dtlist'))) return;
       const { clientX: x, clientY: y } = e.touches[0];
       const side = x <= EDGE ? 'l' : x >= innerWidth - EDGE ? 'r' : null;
       if (side) sw = { side, x, y };

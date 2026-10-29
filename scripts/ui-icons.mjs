@@ -25,7 +25,7 @@ check('stroke icons render fill none', svg.includes('fill="none"') && svg.includ
 check('stroke icons use width 1.5', svg.includes('stroke-width="1.5"'));
 check('fill icons are unchanged', ico('folder').includes('fill="currentColor"') && !ico('folder').includes('stroke'));
 
-const want = 'pl pr cal globe forum inbox key tree conflict term gear pen fplus tpl upload sort fold out back list hist eye x left right dots menu plus pin mark know'.split(' ');
+const want = 'pl pr cal globe forum inbox key tree conflict term gear pen fplus tpl upload sort fold out back list hist eye x left right dots menu plus pin mark know save'.split(' ');
 const lack = want.filter((n) => !ICON[n] || ICON[n][2] !== 'stroke');
 check('every shell icon is a stroke icon', !lack.length, lack.join(' '));
 
