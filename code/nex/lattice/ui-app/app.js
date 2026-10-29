@@ -2140,20 +2140,16 @@
   const tabShowBoot = (t) => tabSerial(() => showTab(t));
 
   // ── the strip ────────────────────────────────────────────────────────
-  // First in the center column, level with the corner toggles. Back and
-  // Forward at its start, the tabs, then + for a new page.
+  // First in the center column, level with the corner toggles. The tabs,
+  // then + for a new page (Back and Forward are in the tab header).
   const tabStrip = document.createElement('div');
   tabStrip.id = 'doctabs';
   tabStrip.className = 'doctabs';
   tabStrip.innerHTML =
-    sbtn('id="tabback"', 'left', 'Back', 'Alt+Left') +
-    sbtn('id="tabfwd"', 'right', 'Forward', 'Alt+Right') +
     '<div class="dtlist" role="tablist" aria-label="Open documents"></div>' +
     sbtn('id="tabnew"', 'plus', 'New page');
   $('center').prepend(tabStrip);
   const tabList = tabStrip.querySelector('.dtlist');
-  $('tabback').onclick = () => tabBack();
-  $('tabfwd').onclick = () => tabFwd();
   $('tabnew').onclick = () => tabNew();
 
   // Each tab is two buttons side by side in one wrapper: the tab itself
@@ -2194,8 +2190,6 @@
       w.append(b, x);
       tabList.append(w);
     }
-    $('tabback').disabled = !activeTab || !activeTab.back.length;
-    $('tabfwd').disabled = !activeTab || !activeTab.fwd.length;
     paintTabDirty();
     paintHead();   // the header under the strip (23-tabhead.js)
     const on = tabList.querySelector('.dtw.on');
@@ -2549,7 +2543,9 @@
   window.latSetRead = setRead;
   addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'e' || e.key === 'E')
-      && !isMobile()) {
+      && !isMobile()
+      // vim keeps Ctrl+E (scroll) while the editor has focus
+      && !(localStorage.edVim === '1' && document.activeElement === src)) {
       e.preventDefault();
       toggleRead();
     }
@@ -2569,6 +2565,7 @@
 
   // called by paintTabs: the tab in front changed, or its stacks did
   function paintHead() {
+    if (pmenuEl && pmenuTab !== activeTab) pmenuClose();
     for (const [id, st_] of [['tback', 'back'], ['tfwd', 'fwd']]) {
       const off = !activeTab || !activeTab[st_].length;
       const b = $(id);
@@ -2585,6 +2582,7 @@
   // memory has no raw source.
   const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'hoon'];
   let pmenuEl = null;
+  let pmenuTab = null;   // the tab the open menu was made for
   const pmenuClose = () => { if (pmenuEl) { pmenuEl.remove(); pmenuEl = null; } };
 
   // Duplicate: a new page beside this one, same kind and body, named
@@ -2605,6 +2603,21 @@
     src.value = body;
     render();
     await save();
+  }
+
+  // Download: what is in the editor now, as a file named for the last path
+  // segment. A memory is markdown.
+  const DLEXT = { text: 'txt' };
+  function downloadDoc() {
+    if (!current || grubPath || curFolder !== null) return;
+    const kind = mode === 'know' ? 'md' : (pkind.value || 'md');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([src.value], { type: 'text/plain' }));
+    a.download = current.split('/').pop() + '.' + (DLEXT[kind] || kind);
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
   function pageMenu() {
@@ -2652,9 +2665,7 @@
     }
     item('wrap', 'Line wrap', done(() => flip('appWrap')), localStorage.appWrap === '1');
     if (page && current) item('dup', 'Duplicate', done(dupPage));
-    item('export', 'Export vault', done(() => {
-      if (window.LatticeVault) LatticeVault.exportVault();
-    }));
+    if (doc && current) item('download', 'Download', done(downloadDoc));
     if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex'))
       item('tex', 'Convert to HTML', done(() => $('texconv').click()));
     if (page && current) item('raw', 'Open raw', done(() =>
@@ -2665,6 +2676,7 @@
     m.style.right = Math.max(4, innerWidth - r.right) + 'px';
     document.body.append(m);
     pmenuEl = m;
+    pmenuTab = t;
     m.querySelector('button').focus();
   }
   $('tmenu').onclick = pageMenu;

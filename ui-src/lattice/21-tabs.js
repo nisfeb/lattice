@@ -442,20 +442,16 @@
   const tabShowBoot = (t) => tabSerial(() => showTab(t));
 
   // ── the strip ────────────────────────────────────────────────────────
-  // First in the center column, level with the corner toggles. Back and
-  // Forward at its start, the tabs, then + for a new page.
+  // First in the center column, level with the corner toggles. The tabs,
+  // then + for a new page (Back and Forward are in the tab header).
   const tabStrip = document.createElement('div');
   tabStrip.id = 'doctabs';
   tabStrip.className = 'doctabs';
   tabStrip.innerHTML =
-    sbtn('id="tabback"', 'left', 'Back', 'Alt+Left') +
-    sbtn('id="tabfwd"', 'right', 'Forward', 'Alt+Right') +
     '<div class="dtlist" role="tablist" aria-label="Open documents"></div>' +
     sbtn('id="tabnew"', 'plus', 'New page');
   $('center').prepend(tabStrip);
   const tabList = tabStrip.querySelector('.dtlist');
-  $('tabback').onclick = () => tabBack();
-  $('tabfwd').onclick = () => tabFwd();
   $('tabnew').onclick = () => tabNew();
 
   // Each tab is two buttons side by side in one wrapper: the tab itself
@@ -496,8 +492,6 @@
       w.append(b, x);
       tabList.append(w);
     }
-    $('tabback').disabled = !activeTab || !activeTab.back.length;
-    $('tabfwd').disabled = !activeTab || !activeTab.fwd.length;
     paintTabDirty();
     paintHead();   // the header under the strip (23-tabhead.js)
     const on = tabList.querySelector('.dtw.on');

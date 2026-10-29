@@ -215,11 +215,11 @@ try {
   await waitOn('page', A);
   await page.click(row(B));
   await waitOn('page', B);
-  await page.click('#tabback');
+  await page.click('#tback');
   const stepped = await waitOn('page', A);
   s = await state();
   check('per-tab back', stepped && s.tabs.length === 1, JSON.stringify(s));
-  await page.click('#tabfwd');
+  await page.click('#tfwd');
   check('and forward', await waitOn('page', B), JSON.stringify(await state()));
 
   // ── the strip's own controls ───────────────────────────────────────────

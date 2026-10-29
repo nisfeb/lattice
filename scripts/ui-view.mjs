@@ -126,7 +126,11 @@ try {
   const items = await desk.evaluate(() =>
     [...document.querySelectorAll('.tmenu [data-mi]')].map((b) => b.dataset.mi));
   check('the menu lists its items',
-    ['kind', 'wrap', 'dup', 'export', 'raw', 'del'].every((i) => items.includes(i)), JSON.stringify(items));
+    ['kind', 'wrap', 'dup', 'download', 'raw', 'del'].every((i) => items.includes(i)), JSON.stringify(items));
+  const labels = await desk.evaluate(() =>
+    [...document.querySelectorAll('.tmenu [data-mi]')].map((b) => b.textContent));
+  check('the menu has Download and no Export vault',
+    labels.includes('Download') && !labels.some((l) => /export/i.test(l)), JSON.stringify(labels));
   check('convert to html is not offered off the desktop app and off tex', !items.includes('tex'),
     JSON.stringify(items));
   await desk.click('.tmenu [data-mi="kind"]');
