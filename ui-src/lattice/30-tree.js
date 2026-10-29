@@ -41,15 +41,15 @@
 <aside class="tree" id="tree">
   <div class="ptool" role="toolbar" aria-label="Files">
     <div class="newbtns">
-      ${sbtn('id="newfile"', 'plus', 'New page')}
-      ${sbtn('id="newfolder"', 'fplus', 'New folder')}
-      ${sbtn('id="newtmpl"', 'tpl', 'New from template')}
-      ${sbtn('id="upfiles"', 'upload', 'Upload files')}
-      ${sbtn('id="updir"', 'updir', 'Upload a folder')}
+      ${sbtn('id="newfile" data-action="newfile"', 'plus', 'New page')}
+      ${sbtn('id="newfolder" data-action="newfolder"', 'fplus', 'New folder')}
+      ${sbtn('id="newtmpl" data-action="newtmpl"', 'tpl', 'New from template')}
+      ${sbtn('id="upfiles" data-action="upfiles"', 'upload', 'Upload files')}
+      ${sbtn('id="updir" data-action="updir"', 'updir', 'Upload a folder')}
     </div>
     <span class="grow"></span>
-    ${sbtn('id="tsort"', 'sort', 'Sort: name')}
-    ${sbtn('id="tcoll"', 'fold', 'Collapse all')}
+    ${sbtn('id="tsort" data-action="tsort"', 'sort', 'Sort: name')}
+    ${sbtn('id="tcoll" data-action="tcoll"', 'fold', 'Collapse all')}
   </div>
   <input type="file" id="fpick" multiple hidden>
   <input type="file" id="dpick" webkitdirectory hidden>
@@ -246,6 +246,12 @@
       ...nodes.filter((n) => !n.page).map((n) => n.path)])]);
     renderTree();
   };
+  // the toolbar's palette actions. The create and upload buttons are wired
+  // in 45-templates.js and 70-upload.js; a click reaches those handlers.
+  for (const [id, name] of [['newfile', 'New page'], ['newfolder', 'New folder'],
+    ['newtmpl', 'New from template'], ['upfiles', 'Upload files'], ['updir', 'Upload a folder'],
+    ['tsort', 'Flip sort order'], ['tcoll', 'Collapse all folders']])
+    clickAction(id, name, 'Files toolbar');
 
   function renderTree() {
     const coll = paneColl.get();

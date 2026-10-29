@@ -10,9 +10,9 @@
       this.innerHTML = `
 <aside class="tree" id="knowpane">
   <div class="ptool" role="toolbar" aria-label="Knowledge">
-    ${sbtn('id="knew"', 'plus', 'New memory')}
-    ${sbtn('id="ktidy"', 'tidy', 'Tidy memories')}
-    ${sbtn('id="ktrash" aria-pressed="false"', 'trash', 'Trash')}
+    ${sbtn('id="knew" data-action="knew"', 'plus', 'New memory')}
+    ${sbtn('id="ktidy" data-action="ktidy"', 'tidy', 'Tidy memories')}
+    ${sbtn('id="ktrash" data-action="ktrash" aria-pressed="false"', 'trash', 'Trash')}
   </div>
   <div id="ktrashlist" class="ktrash" hidden></div>
   <!-- the tag chips outgrew the pane top (one row per dozen tags), so they
@@ -417,3 +417,6 @@
     $('ktrash').setAttribute('aria-pressed', on ? 'true' : 'false');
     if (on) loadTrash();
   };
+  clickAction('knew', 'New memory', 'Knowledge toolbar');
+  clickAction('ktidy', 'Tidy memories', 'Knowledge toolbar');
+  clickAction('ktrash', 'Memory trash', 'Knowledge toolbar');

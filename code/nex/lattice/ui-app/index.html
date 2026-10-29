@@ -754,6 +754,28 @@ select, option { color-scheme: inherit; }
   border-radius: 6px; background: var(--surface); color: inherit; cursor: pointer; }
 #dlgok { background: var(--green); border-color: var(--green); color: var(--on-accent, #fff); }
 
+/* the command palette (26-palette.js): the dialog's backdrop and box, set
+   near the top like a search field, the full width of a phone */
+.palette { place-items: start center; padding-top: 12vh; }
+.palbox { width: min(560px, 94vw); padding: 10px; gap: 8px; }
+#palin { font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: inherit; width: 100%; box-sizing: border-box; }
+.pallist { max-height: min(420px, 60vh); overflow-y: auto; display: grid; gap: 1px; }
+.palrow { display: flex; align-items: baseline; gap: 10px; padding: 6px 8px;
+  border-radius: 5px; cursor: pointer; min-width: 0; }
+.palrow.on, .palrow:hover { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.palname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palhome { flex: none; font-size: .8rem; }
+.palkeys { flex: none; font: inherit; font-size: .75rem; padding: 0 5px;
+  border: 1px solid var(--border); border-radius: 4px; color: var(--muted); }
+.palnone { padding: 6px 8px; }
+@media (max-width: 820px) {
+  .palette { padding-top: 0; }
+  .palbox { width: 100vw; max-width: none; border-radius: 0; box-sizing: border-box; }
+  .pallist { max-height: 70vh; }
+  #palin { font-size: 16px; }
+}
+
 /* folder selection + clearweb indicator */
 .tree .fld { cursor: pointer; }
 .tree .fld.cur > span:nth-child(2) { color: var(--green); font-weight: 600; }

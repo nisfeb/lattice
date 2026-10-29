@@ -16,6 +16,9 @@
 //      inbox render in a tab (the inbox carries the unread badge), Settings
 //      frames the settings page without its reader bar, the brief opens
 //      today's journal page, and Browser asks before leaving unsaved work
+//    the command palette: Ctrl+P and the ribbon open it, actions match
+//      first with their home, pages after them open with Enter (Ctrl+Enter
+//      in a new tab), and every action it lists has a home in the DOM
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           node scripts/ui-shell.mjs
@@ -35,6 +38,8 @@ const LINKER = 'rplink-' + process.pid;
 const LINKED = 'x-' + process.pid + '/a';
 const UNSEEDED = 'x-' + process.pid + '/never';
 const FRAMEP = 'x-' + process.pid + '/framed';
+const PALP = 'x-' + process.pid + '/access-palette';
+const PALQ = 'x-' + process.pid + '/palette-newtab';
 const post = (path, body) => fetch(env.base + '/apps/lattice/' + path,
   { method: 'POST', headers: { Cookie: env.cookie }, body });
 const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
@@ -486,6 +491,106 @@ try {
   const n2 = (await front()).n;
   check('#aclopen focuses the same access tab',
     back2.doc > 0 && back2.host === 0 && refocus && n2 === n1, JSON.stringify({ back2, refocus, n1, n2 }));
+
+  // ── the command palette ────────────────────────────────────────────────
+  await seed(env, [[PALP, '# palette target\n'], [PALQ, '# palette new tab\n']]);
+  //  no access tab open, so running the action makes one
+  await page.evaluate(async () => {
+    for (const t of window.latTabs.state().tabs.filter((x) => x.kind === 'tool'))
+      await window.latTabs.closeTab(t.id);
+  });
+  await boot();
+  await openDoc('page', RP);
+  const palRows = () => page.evaluate(() => [...document.querySelectorAll('#pallist .palrow')]
+    .map((r) => ({ kind: r.dataset.kind, name: r.querySelector('.palname')?.textContent,
+      home: r.querySelector('.palhome')?.textContent || '', key: r.dataset.key || '' })));
+  const palType = async (q) => {
+    await page.evaluate(() => { const i = document.getElementById('palin'); if (i) i.value = ''; });
+    await page.keyboard.type(q);
+    await sleep(250);
+  };
+  const ctrl = async (code) => {
+    await page.keyboard.down('Control');
+    await page.keyboard.press(code);
+    await page.keyboard.up('Control');
+  };
+  //  the print dialog is the browser default for Ctrl+P: watched as
+  //  defaultPrevented on the way out of the page
+  await page.evaluate(() => {
+    window.__pPrevented = null;
+    addEventListener('keydown', (e) => { if (e.key === 'p') window.__pPrevented = e.defaultPrevented; });
+  });
+  await page.evaluate(() => document.activeElement && document.activeElement.blur());
+  await ctrl('KeyP');
+  const palUp = await until(() => {
+    const p = document.getElementById('palette');
+    return !!p && !p.hidden && document.activeElement === document.getElementById('palin');
+  }, null, 5000);
+  await palType('acc');
+  const accRows = await palRows();
+  const n3 = (await front()).n;
+  await page.keyboard.press('Enter');
+  const palAcc = await isFront('tool', 'access');
+  const palGone = await page.evaluate(() => document.getElementById('palette')?.hidden === true);
+  check('ctrl+p opens palette',
+    palUp && accRows[0]?.name === 'Access & groups' && accRows[0]?.home === 'Ribbon'
+      && palAcc && palGone && (await front()).n === n3 + 1
+      && (await page.evaluate(() => window.__pPrevented)) === true,
+    JSON.stringify({ palUp, first: accRows[0], palAcc, palGone }));
+
+  //  the ribbon button opens the same palette, and Esc closes it
+  await page.evaluate(() => document.getElementById('rb-palette').click());
+  const viaRib = await until(() => document.getElementById('palette')?.hidden === false, null, 5000);
+  await page.keyboard.press('Escape');
+  const escShut = await until(() => document.getElementById('palette')?.hidden === true, null, 5000);
+  check('the ribbon opens the palette and esc closes it', viaRib && escShut,
+    JSON.stringify({ viaRib, escShut }));
+
+  //  typed text is text: nothing it holds becomes markup
+  await openDoc('page', RP);
+  await ctrl('KeyP');
+  await palType('<img src=x onerror="window.__palx=1">');
+  const inert = await page.evaluate(() => !document.querySelector('#pallist img') && !window.__palx);
+  check('palette input never becomes markup', inert);
+
+  await palType('access');
+  const mixed = await palRows();
+  const lastAct = mixed.map((r) => r.kind).lastIndexOf('action');
+  const firstDoc = mixed.findIndex((r) => r.kind !== 'action');
+  const pRow = mixed.findIndex((r) => r.kind === 'page' && r.key === PALP);
+  await palType(PALP);
+  const only = await palRows();
+  const n4 = (await front()).n;
+  await page.keyboard.press('Enter');
+  const palPage = await isFront('page', PALP);
+  const n5 = (await front()).n;
+  check('pages listed after actions',
+    lastAct >= 0 && pRow > lastAct && firstDoc > lastAct && only[0]?.key === PALP && palPage && n5 === n4,
+    JSON.stringify({ lastAct, firstDoc, pRow, first: only[0], palPage, n4, n5 }));
+  await ctrl('KeyP');
+  await palType(PALQ);
+  await page.keyboard.down('Control');
+  await page.keyboard.press('Enter');
+  await page.keyboard.up('Control');
+  const palNew = await isFront('page', PALQ);
+  const n6 = (await front()).n;
+  check('ctrl+enter opens a page in a new tab', palNew && n6 === n5 + 1, JSON.stringify({ palNew, n5, n6 }));
+
+  //  the page menu builds its items when it opens, so it is opened first
+  await page.evaluate(() => document.getElementById('tmenu').click());
+  await sleep(200);
+  const homeless = await page.evaluate(() => {
+    const P = window.latPalette;
+    if (!P) return null;
+    return { n: P.ids().length, only: P.only.length,
+      //  shtest is the ribbonAdd probe above, whose button the suite removed
+      missing: P.ids().filter((id) => id !== 'shtest' && !P.only.includes(id)
+        && !document.querySelector('[data-action="' + CSS.escape(id) + '"]')) };
+  });
+  await page.evaluate(() => document.getElementById('tmenu').click());
+  check('every action has a home in the DOM',
+    !!homeless && homeless.n >= 30 && homeless.only === 0 && homeless.missing.length === 0,
+    JSON.stringify(homeless));
 
   await page.evaluate(() => document.getElementById('rb-settings').click());
   const setTab = await isFront('tool', 'frame:/apps/lattice/settings');

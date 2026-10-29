@@ -453,10 +453,11 @@
   tabStrip.className = 'doctabs';
   tabStrip.innerHTML =
     '<div class="dtlist" role="tablist" aria-label="Open documents"></div>' +
-    sbtn('id="tabnew"', 'plus', 'New page');
+    sbtn('id="tabnew" data-action="tabnew"', 'plus', 'New page');
   $('center').prepend(tabStrip);
   const tabList = tabStrip.querySelector('.dtlist');
   $('tabnew').onclick = () => tabNew();
+  clickAction('tabnew', 'New page in a new tab', 'Tab strip');
 
   // Each tab is two buttons side by side in one wrapper: the tab itself
   // and its close, so the close is a real button a keyboard can reach (a

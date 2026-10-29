@@ -17,6 +17,21 @@
     `<button type="button" class="sbtn" ${attrs} title="${name}${keys ? ' (' + keys + ')' : ''}"`
     + ` aria-label="${name}${keys ? ' (' + keys + ')' : ''}">${ico(icon)}</button>`;
 
+  // ── actions ─────────────────────────────────────────────────────────────
+  // Every command the palette (26-palette.js) lists is registered by the
+  // file that builds its home, with the home's element carrying
+  // data-action="<id>". The palette is an index over those homes and holds
+  // no feature of its own: run does what clicking the home does. Declared
+  // here, ahead of every home, since files load in filename order.
+  // {id, name, home, keys?, run, when?}: `when`, for a home that exists
+  // only while it is open (the page menu), says whether it applies now.
+  const ACTIONS = [];
+  const action = (a) => { ACTIONS.push(a); };
+  const actionHome = (id) => document.querySelector('[data-action="' + CSS.escape(id) + '"]');
+  // the common case: the home is one element, and running is clicking it
+  const clickAction = (id, name, home, keys) => action({ id, name, home, keys,
+    run: () => { const b = actionHome(id); if (b) b.click(); } });
+
   // [id, icon, name, keys] per pane tab. Their sections are filled by the
   // components below and, for the empty ones, by later steps.
   const PANES = {
@@ -35,7 +50,7 @@
   const paneHtml = (side, label) => `
 <nav id="${side}tabs" class="ptabs" role="tablist" aria-label="${label}">
   ${PANES[side].map(([id, icon, name, keys]) =>
-    sbtn(`role="tab" data-pt="${id}" aria-selected="false"`, icon, name, keys)).join('\n  ')}
+    sbtn(`role="tab" data-pt="${id}" data-action="pt-${id}" aria-selected="false"`, icon, name, keys)).join('\n  ')}
 </nav>
 <div id="${side}body" class="pbody">
   ${PANES[side].map(([id]) =>
@@ -45,7 +60,7 @@
   customElements.define('lat-ribbon', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="corner" id="lcorner">${sbtn('id="treet" aria-pressed="true"', 'pl', 'Left pane')}</div>
+<div class="corner" id="lcorner">${sbtn('id="treet" data-action="treet" aria-pressed="true"', 'pl', 'Left pane')}</div>
 <nav class="ribbon" id="ribbon" aria-label="Ribbon">
   <div class="rtop"></div>
   <div class="rbot"></div>
@@ -60,7 +75,7 @@
   customElements.define('lat-rpane', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="corner" id="rcorner">${sbtn('id="ctlt" aria-pressed="true"', 'pr', 'Right pane')}</div>
+<div class="corner" id="rcorner">${sbtn('id="ctlt" data-action="ctlt" aria-pressed="true"', 'pr', 'Right pane')}</div>
 <aside class="pane rp" id="rpane">${paneHtml('r', 'Right pane')}</aside>`;
     }
   });
@@ -135,17 +150,32 @@
   $('treet').onclick = () => paneOpen('l');
   $('ctlt').onclick = () => paneOpen('r');
   paintPanes();
+  clickAction('treet', 'Toggle left pane', 'Top-left corner');
+  clickAction('ctlt', 'Toggle right pane', 'Top-right corner');
+  // A pane tab's action also opens its pane, which is what reaching the
+  // tab takes by hand. Search is Ctrl+K's qOpen (79-search.js), which
+  // does the same and focuses the field.
+  for (const side of ['l', 'r']) {
+    for (const [id, , name, keys] of PANES[side]) {
+      const aid = 'pt-' + id;
+      action({ id: aid, name: 'Show ' + name, home: side === 'l' ? 'Left pane' : 'Right pane', keys,
+        run: id === 'search' ? () => qOpen()
+          : () => { paneOpen(side, true); const b = actionHome(aid); if (b) b.click(); } });
+    }
+  }
 
   // ── ribbon ──────────────────────────────────────────────────────────────
   // Items are registered here by the feature that owns them, never written
   // into the markup, so each one has exactly one home. bottom puts it in the
-  // lower group (settings).
+  // lower group (settings). Each one is also a palette action.
   function ribbonAdd({ id, icon, name, keys, run, bottom }) {
     const b = tip(document.createElement('button'), name, keys);
     b.type = 'button';
     b.className = 'sbtn';
     b.id = 'rb-' + id;
     b.dataset.rb = id;
+    b.dataset.action = id;
+    action({ id, name, home: 'Ribbon', keys, run });
     b.innerHTML = ico(icon);
     b.onclick = (ev) => run(ev);
     document.querySelector('#ribbon ' + (bottom ? '.rbot' : '.rtop')).append(b);

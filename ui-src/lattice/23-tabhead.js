@@ -11,14 +11,14 @@
   tabHead.id = 'tabhead';
   tabHead.className = 'tabhead';
   tabHead.innerHTML =
-    sbtn('id="tback"', 'left', 'Back', 'Alt+Left') +
-    sbtn('id="tfwd"', 'right', 'Forward', 'Alt+Right') +
-    '<button type="button" id="tpath" class="tpath"></button>' +
+    sbtn('id="tback" data-action="tback"', 'left', 'Back', 'Alt+Left') +
+    sbtn('id="tfwd" data-action="tfwd"', 'right', 'Forward', 'Alt+Right') +
+    '<button type="button" id="tpath" class="tpath" data-action="tpath"></button>' +
     '<div id="tread" class="tread" role="group" aria-label="Edit or Read">' +
-      '<button type="button" data-r="0">' + ico('pen') + 'Edit</button>' +
-      '<button type="button" data-r="1">' + ico('eye') + 'Read</button>' +
+      '<button type="button" data-r="0" data-action="edit">' + ico('pen') + 'Edit</button>' +
+      '<button type="button" data-r="1" data-action="read">' + ico('eye') + 'Read</button>' +
     '</div>' +
-    sbtn('id="tmenu" aria-haspopup="menu"', 'dots', 'Page menu');
+    sbtn('id="tmenu" data-action="tmenu" aria-haspopup="menu"', 'dots', 'Page menu');
   $('center').insertBefore(tabHead, $('docarea'));
   for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
   $('tback').onclick = () => tabBack();
@@ -26,6 +26,12 @@
   // the move / rename flow of the controls pane, unchanged. A tab that is
   // not a document shows only its title there.
   $('tpath').onclick = () => { if (docFront()) $('mv').click(); };
+  clickAction('tback', 'Back', 'Tab header', 'Alt+Left');
+  clickAction('tfwd', 'Forward', 'Tab header', 'Alt+Right');
+  clickAction('tpath', 'Move or rename', 'Tab header');
+  clickAction('edit', 'Edit', 'Tab header', 'Ctrl+E');
+  clickAction('read', 'Read', 'Tab header', 'Ctrl+E');
+  clickAction('tmenu', 'Page menu', 'Tab header');
 
   // Read for the tab in front. Entering it shows the preview, which skipped
   // its renders while off screen (60-preview.js)
@@ -140,12 +146,23 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
+  // which items apply to what is open. The menu shows these and the
+  // palette lists these, so the two never disagree.
+  function pmenuHas() {
+    const doc = !grubPath && curFolder === null;       // a page or a memory
+    const page = doc && mode !== 'know';
+    const has = new Set(['wrap']);
+    if (page) has.add('kind');
+    if (page && current) { has.add('dup'); has.add('raw'); }
+    if (doc && current) { has.add('download'); has.add('del'); }
+    if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex')) has.add('tex');
+    return has;
+  }
   function pageMenu() {
     if (pmenuEl) { pmenuClose(); return; }
     const t = activeTab;
     if (!t) return;
-    const doc = !grubPath && curFolder === null;       // a page or a memory
-    const page = doc && mode !== 'know';
+    const has = pmenuHas();
     const m = document.createElement('div');
     m.className = 'dtmenu tmenu';
     m.setAttribute('role', 'menu');
@@ -155,13 +172,14 @@
       b.setAttribute('role', checked === undefined ? 'menuitem' : 'menuitemcheckbox');
       if (checked !== undefined) b.setAttribute('aria-checked', checked ? 'true' : 'false');
       b.dataset.mi = id;
+      b.dataset.action = 'pm-' + id;
       b.textContent = label;
       b.onclick = () => run(b);
       m.append(b);
       return b;
     };
     const done = (fn) => () => { pmenuClose(); fn(); };
-    if (page) {
+    if (has.has('kind')) {
       const sub = document.createElement('div');
       sub.className = 'tsub';
       sub.hidden = true;
@@ -184,13 +202,12 @@
       m.append(sub);
     }
     item('wrap', 'Line wrap', done(() => flip('appWrap')), localStorage.appWrap === '1');
-    if (page && current) item('dup', 'Duplicate', done(dupPage));
-    if (doc && current) item('download', 'Download', done(downloadDoc));
-    if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex'))
-      item('tex', 'Convert to HTML', done(() => $('texconv').click()));
-    if (page && current) item('raw', 'Open raw', done(() =>
+    if (has.has('dup')) item('dup', 'Duplicate', done(dupPage));
+    if (has.has('download')) item('download', 'Download', done(downloadDoc));
+    if (has.has('tex')) item('tex', 'Convert to HTML', done(() => $('texconv').click()));
+    if (has.has('raw')) item('raw', 'Open raw', done(() =>
       window.open(api + '/page-source?name=' + encodeURIComponent(current), '_blank', 'noopener')));
-    if (doc && current) item('del', 'Delete', done(() => $('del').click()));
+    if (has.has('del')) item('del', 'Delete', done(() => $('del').click()));
     const r = $('tmenu').getBoundingClientRect();
     m.style.top = r.bottom + 4 + 'px';
     m.style.right = Math.max(4, innerWidth - r.right) + 'px';
@@ -200,6 +217,23 @@
     m.querySelector('button').focus();
   }
   $('tmenu').onclick = pageMenu;
+  // The items are built when the menu opens, so a palette action opens it
+  // and clicks the item, which is the menu's own path. Kind opens the menu
+  // with its list unfolded, as clicking Kind does. Convert to HTML exists
+  // only in the desktop app.
+  for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'],
+    ['dup', 'Duplicate page'], ['download', 'Download'], ['tex', 'Convert to HTML'],
+    ['raw', 'Open raw'], ['del', 'Delete']]) {
+    if (id === 'tex' && !window.__TAURI__) continue;
+    action({ id: 'pm-' + id, name, home: 'Page menu',
+      when: () => docFront() && pmenuHas().has(id),
+      run: () => {
+        pmenuClose();
+        pageMenu();
+        const b = pmenuEl && pmenuEl.querySelector('[data-mi="' + id + '"]');
+        if (b) b.click();
+      } });
+  }
   addEventListener('mousedown', (e) => {
     if (pmenuEl && !pmenuEl.contains(e.target) && !$('tmenu').contains(e.target)) pmenuClose();
   }, true);

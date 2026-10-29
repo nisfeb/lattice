@@ -1039,6 +1039,21 @@
     `<button type="button" class="sbtn" ${attrs} title="${name}${keys ? ' (' + keys + ')' : ''}"`
     + ` aria-label="${name}${keys ? ' (' + keys + ')' : ''}">${ico(icon)}</button>`;
 
+  // ── actions ─────────────────────────────────────────────────────────────
+  // Every command the palette (26-palette.js) lists is registered by the
+  // file that builds its home, with the home's element carrying
+  // data-action="<id>". The palette is an index over those homes and holds
+  // no feature of its own: run does what clicking the home does. Declared
+  // here, ahead of every home, since files load in filename order.
+  // {id, name, home, keys?, run, when?}: `when`, for a home that exists
+  // only while it is open (the page menu), says whether it applies now.
+  const ACTIONS = [];
+  const action = (a) => { ACTIONS.push(a); };
+  const actionHome = (id) => document.querySelector('[data-action="' + CSS.escape(id) + '"]');
+  // the common case: the home is one element, and running is clicking it
+  const clickAction = (id, name, home, keys) => action({ id, name, home, keys,
+    run: () => { const b = actionHome(id); if (b) b.click(); } });
+
   // [id, icon, name, keys] per pane tab. Their sections are filled by the
   // components below and, for the empty ones, by later steps.
   const PANES = {
@@ -1057,7 +1072,7 @@
   const paneHtml = (side, label) => `
 <nav id="${side}tabs" class="ptabs" role="tablist" aria-label="${label}">
   ${PANES[side].map(([id, icon, name, keys]) =>
-    sbtn(`role="tab" data-pt="${id}" aria-selected="false"`, icon, name, keys)).join('\n  ')}
+    sbtn(`role="tab" data-pt="${id}" data-action="pt-${id}" aria-selected="false"`, icon, name, keys)).join('\n  ')}
 </nav>
 <div id="${side}body" class="pbody">
   ${PANES[side].map(([id]) =>
@@ -1067,7 +1082,7 @@
   customElements.define('lat-ribbon', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="corner" id="lcorner">${sbtn('id="treet" aria-pressed="true"', 'pl', 'Left pane')}</div>
+<div class="corner" id="lcorner">${sbtn('id="treet" data-action="treet" aria-pressed="true"', 'pl', 'Left pane')}</div>
 <nav class="ribbon" id="ribbon" aria-label="Ribbon">
   <div class="rtop"></div>
   <div class="rbot"></div>
@@ -1082,7 +1097,7 @@
   customElements.define('lat-rpane', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="corner" id="rcorner">${sbtn('id="ctlt" aria-pressed="true"', 'pr', 'Right pane')}</div>
+<div class="corner" id="rcorner">${sbtn('id="ctlt" data-action="ctlt" aria-pressed="true"', 'pr', 'Right pane')}</div>
 <aside class="pane rp" id="rpane">${paneHtml('r', 'Right pane')}</aside>`;
     }
   });
@@ -1157,17 +1172,32 @@
   $('treet').onclick = () => paneOpen('l');
   $('ctlt').onclick = () => paneOpen('r');
   paintPanes();
+  clickAction('treet', 'Toggle left pane', 'Top-left corner');
+  clickAction('ctlt', 'Toggle right pane', 'Top-right corner');
+  // A pane tab's action also opens its pane, which is what reaching the
+  // tab takes by hand. Search is Ctrl+K's qOpen (79-search.js), which
+  // does the same and focuses the field.
+  for (const side of ['l', 'r']) {
+    for (const [id, , name, keys] of PANES[side]) {
+      const aid = 'pt-' + id;
+      action({ id: aid, name: 'Show ' + name, home: side === 'l' ? 'Left pane' : 'Right pane', keys,
+        run: id === 'search' ? () => qOpen()
+          : () => { paneOpen(side, true); const b = actionHome(aid); if (b) b.click(); } });
+    }
+  }
 
   // ── ribbon ──────────────────────────────────────────────────────────────
   // Items are registered here by the feature that owns them, never written
   // into the markup, so each one has exactly one home. bottom puts it in the
-  // lower group (settings).
+  // lower group (settings). Each one is also a palette action.
   function ribbonAdd({ id, icon, name, keys, run, bottom }) {
     const b = tip(document.createElement('button'), name, keys);
     b.type = 'button';
     b.className = 'sbtn';
     b.id = 'rb-' + id;
     b.dataset.rb = id;
+    b.dataset.action = id;
+    action({ id, name, home: 'Ribbon', keys, run });
     b.innerHTML = ico(icon);
     b.onclick = (ev) => run(ev);
     document.querySelector('#ribbon ' + (bottom ? '.rbot' : '.rtop')).append(b);
@@ -2159,10 +2189,11 @@
   tabStrip.className = 'doctabs';
   tabStrip.innerHTML =
     '<div class="dtlist" role="tablist" aria-label="Open documents"></div>' +
-    sbtn('id="tabnew"', 'plus', 'New page');
+    sbtn('id="tabnew" data-action="tabnew"', 'plus', 'New page');
   $('center').prepend(tabStrip);
   const tabList = tabStrip.querySelector('.dtlist');
   $('tabnew').onclick = () => tabNew();
+  clickAction('tabnew', 'New page in a new tab', 'Tab strip');
 
   // Each tab is two buttons side by side in one wrapper: the tab itself
   // and its close, so the close is a real button a keyboard can reach (a
@@ -2513,14 +2544,14 @@
   tabHead.id = 'tabhead';
   tabHead.className = 'tabhead';
   tabHead.innerHTML =
-    sbtn('id="tback"', 'left', 'Back', 'Alt+Left') +
-    sbtn('id="tfwd"', 'right', 'Forward', 'Alt+Right') +
-    '<button type="button" id="tpath" class="tpath"></button>' +
+    sbtn('id="tback" data-action="tback"', 'left', 'Back', 'Alt+Left') +
+    sbtn('id="tfwd" data-action="tfwd"', 'right', 'Forward', 'Alt+Right') +
+    '<button type="button" id="tpath" class="tpath" data-action="tpath"></button>' +
     '<div id="tread" class="tread" role="group" aria-label="Edit or Read">' +
-      '<button type="button" data-r="0">' + ico('pen') + 'Edit</button>' +
-      '<button type="button" data-r="1">' + ico('eye') + 'Read</button>' +
+      '<button type="button" data-r="0" data-action="edit">' + ico('pen') + 'Edit</button>' +
+      '<button type="button" data-r="1" data-action="read">' + ico('eye') + 'Read</button>' +
     '</div>' +
-    sbtn('id="tmenu" aria-haspopup="menu"', 'dots', 'Page menu');
+    sbtn('id="tmenu" data-action="tmenu" aria-haspopup="menu"', 'dots', 'Page menu');
   $('center').insertBefore(tabHead, $('docarea'));
   for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
   $('tback').onclick = () => tabBack();
@@ -2528,6 +2559,12 @@
   // the move / rename flow of the controls pane, unchanged. A tab that is
   // not a document shows only its title there.
   $('tpath').onclick = () => { if (docFront()) $('mv').click(); };
+  clickAction('tback', 'Back', 'Tab header', 'Alt+Left');
+  clickAction('tfwd', 'Forward', 'Tab header', 'Alt+Right');
+  clickAction('tpath', 'Move or rename', 'Tab header');
+  clickAction('edit', 'Edit', 'Tab header', 'Ctrl+E');
+  clickAction('read', 'Read', 'Tab header', 'Ctrl+E');
+  clickAction('tmenu', 'Page menu', 'Tab header');
 
   // Read for the tab in front. Entering it shows the preview, which skipped
   // its renders while off screen (60-preview.js)
@@ -2642,12 +2679,23 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
+  // which items apply to what is open. The menu shows these and the
+  // palette lists these, so the two never disagree.
+  function pmenuHas() {
+    const doc = !grubPath && curFolder === null;       // a page or a memory
+    const page = doc && mode !== 'know';
+    const has = new Set(['wrap']);
+    if (page) has.add('kind');
+    if (page && current) { has.add('dup'); has.add('raw'); }
+    if (doc && current) { has.add('download'); has.add('del'); }
+    if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex')) has.add('tex');
+    return has;
+  }
   function pageMenu() {
     if (pmenuEl) { pmenuClose(); return; }
     const t = activeTab;
     if (!t) return;
-    const doc = !grubPath && curFolder === null;       // a page or a memory
-    const page = doc && mode !== 'know';
+    const has = pmenuHas();
     const m = document.createElement('div');
     m.className = 'dtmenu tmenu';
     m.setAttribute('role', 'menu');
@@ -2657,13 +2705,14 @@
       b.setAttribute('role', checked === undefined ? 'menuitem' : 'menuitemcheckbox');
       if (checked !== undefined) b.setAttribute('aria-checked', checked ? 'true' : 'false');
       b.dataset.mi = id;
+      b.dataset.action = 'pm-' + id;
       b.textContent = label;
       b.onclick = () => run(b);
       m.append(b);
       return b;
     };
     const done = (fn) => () => { pmenuClose(); fn(); };
-    if (page) {
+    if (has.has('kind')) {
       const sub = document.createElement('div');
       sub.className = 'tsub';
       sub.hidden = true;
@@ -2686,13 +2735,12 @@
       m.append(sub);
     }
     item('wrap', 'Line wrap', done(() => flip('appWrap')), localStorage.appWrap === '1');
-    if (page && current) item('dup', 'Duplicate', done(dupPage));
-    if (doc && current) item('download', 'Download', done(downloadDoc));
-    if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex'))
-      item('tex', 'Convert to HTML', done(() => $('texconv').click()));
-    if (page && current) item('raw', 'Open raw', done(() =>
+    if (has.has('dup')) item('dup', 'Duplicate', done(dupPage));
+    if (has.has('download')) item('download', 'Download', done(downloadDoc));
+    if (has.has('tex')) item('tex', 'Convert to HTML', done(() => $('texconv').click()));
+    if (has.has('raw')) item('raw', 'Open raw', done(() =>
       window.open(api + '/page-source?name=' + encodeURIComponent(current), '_blank', 'noopener')));
-    if (doc && current) item('del', 'Delete', done(() => $('del').click()));
+    if (has.has('del')) item('del', 'Delete', done(() => $('del').click()));
     const r = $('tmenu').getBoundingClientRect();
     m.style.top = r.bottom + 4 + 'px';
     m.style.right = Math.max(4, innerWidth - r.right) + 'px';
@@ -2702,6 +2750,23 @@
     m.querySelector('button').focus();
   }
   $('tmenu').onclick = pageMenu;
+  // The items are built when the menu opens, so a palette action opens it
+  // and clicks the item, which is the menu's own path. Kind opens the menu
+  // with its list unfolded, as clicking Kind does. Convert to HTML exists
+  // only in the desktop app.
+  for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'],
+    ['dup', 'Duplicate page'], ['download', 'Download'], ['tex', 'Convert to HTML'],
+    ['raw', 'Open raw'], ['del', 'Delete']]) {
+    if (id === 'tex' && !window.__TAURI__) continue;
+    action({ id: 'pm-' + id, name, home: 'Page menu',
+      when: () => docFront() && pmenuHas().has(id),
+      run: () => {
+        pmenuClose();
+        pageMenu();
+        const b = pmenuEl && pmenuEl.querySelector('[data-mi="' + id + '"]');
+        if (b) b.click();
+      } });
+  }
   addEventListener('mousedown', (e) => {
     if (pmenuEl && !pmenuEl.contains(e.target) && !$('tmenu').contains(e.target)) pmenuClose();
   }, true);
@@ -2894,8 +2959,8 @@
     location.href = url;
   });
 
-  // the command palette is the next step's; until then it says so
-  let paletteOpen = () => st('the command palette is not here yet');
+  // the command palette (26-palette.js) sets this to its opener
+  let paletteOpen = () => {};
 
   // top to bottom, with Settings in the lower group
   ribbonAdd({ id: 'brief', icon: 'cal', name: "Today's brief", run: (ev) => openBrief(ev) });
@@ -3018,6 +3083,191 @@
     if (current) edited();
     refreshTexButton();
   });
+
+// ── src/26-palette.js ─────────────────────────────────────────────────────
+  // ── command palette: Ctrl/Cmd+P and the ribbon ───────────────────────────
+  // An index over the homes, never a home itself (spec, principle 3). It
+  // lists the actions their homes registered (13-frame.js, action()), then
+  // pages and memories by name. An action row names its home and shortcut,
+  // so the palette also teaches where a thing lives. Running a row does what
+  // its home does: an action's run, or openIn for a document, which replaces
+  // the front tab or, with Ctrl/Cmd held, opens a new one.
+  //
+  // Every action must have a home in the DOM: its element carries
+  // data-action="<id>" (the suite checks each one). PALETTE_ONLY would name
+  // the exceptions, and it is empty by design.
+  const PALETTE_ONLY = [];
+  const pal = document.createElement('div');
+  pal.id = 'palette';
+  pal.className = 'dlg palette';
+  pal.hidden = true;
+  pal.setAttribute('role', 'dialog');
+  pal.setAttribute('aria-modal', 'true');
+  pal.setAttribute('aria-label', 'Command palette');
+  pal.innerHTML = '<div class="dlgbox palbox">'
+    + '<input id="palin" type="text" role="combobox" aria-expanded="true" aria-controls="pallist"'
+    + ' aria-autocomplete="list" aria-label="Command palette" placeholder="run an action or open a page"'
+    + ' autocomplete="off" spellcheck="false">'
+    + '<div id="pallist" class="pallist" role="listbox" aria-label="Results"></div></div>';
+  document.body.append(pal);
+  const palIn = $('palin'), palList = $('pallist');
+  let palRows = [];      // what is on screen: {kind, a?, key?}
+  let palSel = 0;
+  let palFrom = null;    // focus to hand back on close
+
+  // Subsequence match, case-insensitive. Lower is better: the query as a
+  // word start, then anywhere as one run, then spread out (tighter first).
+  // null is no match.
+  function palScore(q, s) {
+    const t = s.toLowerCase();
+    const at = t.indexOf(q);
+    if (at === 0 || (at > 0 && /[^a-z0-9]/.test(t[at - 1]))) return at / 1e4;
+    if (at > 0) return 1 + at / 1e4;
+    let i = 0, first = -1, last = -1;
+    for (let j = 0; j < t.length && i < q.length; j++) {
+      if (t[j] !== q[i]) continue;
+      if (first < 0) first = j;
+      last = j;
+      i++;
+    }
+    return i === q.length ? 2 + (last - first) / 1e4 : null;
+  }
+  // an action is listed while its home is there to use: present, not
+  // hidden (a pane tab's own section does not count), not disabled. A home
+  // built only while open says so itself (when).
+  const palUsable = (a) => {
+    if (a.when) return a.when();
+    const el = actionHome(a.id);
+    return !!el && !el.disabled && !el.closest('[hidden]:not([data-pane])');
+  };
+  const ranked = (q, items, name) => items
+    .map((x, i) => ({ x, i, s: palScore(q, name(x)) }))
+    .filter((r) => r.s !== null)
+    .sort((a, b) => a.s - b.s || a.i - b.i)
+    .map((r) => r.x);
+
+  function palPaint() {
+    const q = palIn.value.trim().toLowerCase();
+    const acts = ACTIONS.filter(palUsable);
+    palRows = (q ? ranked(q, acts, (a) => a.name) : acts).map((a) => ({ kind: 'action', a }));
+    if (q) {
+      const docs = nodes.filter((n) => n.page).map((n) => ({ kind: 'page', key: n.path }))
+        .concat(knowKeys.map((k) => ({ kind: 'know', key: k.key.replace(/^\//, '') })));
+      palRows = palRows.concat(ranked(q, docs, (d) => d.key).slice(0, 50));
+    }
+    palSel = 0;
+    palList.textContent = '';
+    palRows.forEach((r, i) => {
+      const row = document.createElement('div');
+      row.className = 'palrow';
+      row.id = 'palr' + i;
+      row.setAttribute('role', 'option');
+      row.dataset.kind = r.kind;
+      const name = document.createElement('span');
+      name.className = 'palname';
+      const home = document.createElement('span');
+      home.className = 'palhome muted';
+      if (r.kind === 'action') {
+        name.textContent = r.a.name;
+        home.textContent = r.a.home;
+      } else {
+        row.dataset.key = r.key;
+        name.textContent = r.key;
+        home.textContent = r.kind === 'page' ? 'Page' : 'Memory';
+      }
+      row.append(name, home);
+      if (r.kind === 'action' && r.a.keys) {
+        const k = document.createElement('kbd');
+        k.className = 'palkeys';
+        k.textContent = r.a.keys;
+        row.append(k);
+      }
+      // mousedown, so the input keeps focus until the row runs
+      row.onmousedown = (e) => e.preventDefault();
+      row.onclick = (e) => palRun(i, e);
+      palList.append(row);
+    });
+    if (!palRows.length) {
+      const none = document.createElement('div');
+      none.className = 'muted palnone';
+      none.textContent = 'nothing matches';
+      palList.append(none);
+    }
+    palMark();
+  }
+  function palMark() {
+    palRows.forEach((_, i) => {
+      const row = $('palr' + i);
+      const on = i === palSel;
+      row.classList.toggle('on', on);
+      row.setAttribute('aria-selected', on ? 'true' : 'false');
+      if (on) row.scrollIntoView({ block: 'nearest' });
+    });
+    if (palRows.length) palIn.setAttribute('aria-activedescendant', 'palr' + palSel);
+    else palIn.removeAttribute('aria-activedescendant');
+  }
+
+  function palShow() {
+    if (!pal.hidden) { palIn.select(); return; }
+    palFrom = document.activeElement;
+    pal.hidden = false;
+    palIn.value = '';
+    palPaint();
+    palIn.focus();
+    // the memory list loads when its tab is first shown (95-know.js), and
+    // the palette lists memories too
+    if (!knowHave) loadKnow().then(() => { if (!pal.hidden) palPaint(); });
+  }
+  function palClose() {
+    if (pal.hidden) return;
+    pal.hidden = true;
+    const f = palFrom; palFrom = null;
+    if (f && f.isConnected) f.focus();
+  }
+  // closed first, so what the row opens (a menu, a dialog, a tab) gets
+  // the focus, not the palette's leftover
+  function palRun(i, ev) {
+    const r = palRows[i];
+    if (!r) return;
+    palClose();
+    if (r.kind === 'action') { r.a.run(ev); return; }
+    openIn(r.kind, r.key, { ev });
+    if (isMobile()) setMv('code');
+  }
+  paletteOpen = palShow;   // the ribbon's button (24-tools.js)
+
+  palIn.oninput = palPaint;
+  palIn.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!palRows.length) return;
+      palSel = (palSel + (e.key === 'ArrowDown' ? 1 : -1) + palRows.length) % palRows.length;
+      palMark();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      palRun(palSel, e);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      palClose();
+    }
+  });
+  // a click on the backdrop, outside the box, closes it
+  pal.addEventListener('mousedown', (e) => { if (e.target === pal) palClose(); });
+
+  // Ctrl/Cmd+P never reaches the print dialog. Vim keeps the chord while
+  // the editor has focus, the rule Ctrl+E follows (23-tabhead.js), and an
+  // open dialog is left to finish first.
+  addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || (e.key !== 'p' && e.key !== 'P')) return;
+    e.preventDefault();
+    if (localStorage.edVim === '1' && document.activeElement === src) return;
+    if (!$('dlg').hidden) return;
+    palShow();
+  }, true);
+
+  // for the browser suites, which cannot reach this scope
+  window.latPalette = { ids: () => ACTIONS.map((a) => a.id), only: PALETTE_ONLY };
 
 // ── src/27-vim.js ─────────────────────────────────────────────────────────
   // ── vim mode ─────────────────────────────────────────────────────────────
@@ -3803,15 +4053,15 @@
 <aside class="tree" id="tree">
   <div class="ptool" role="toolbar" aria-label="Files">
     <div class="newbtns">
-      ${sbtn('id="newfile"', 'plus', 'New page')}
-      ${sbtn('id="newfolder"', 'fplus', 'New folder')}
-      ${sbtn('id="newtmpl"', 'tpl', 'New from template')}
-      ${sbtn('id="upfiles"', 'upload', 'Upload files')}
-      ${sbtn('id="updir"', 'updir', 'Upload a folder')}
+      ${sbtn('id="newfile" data-action="newfile"', 'plus', 'New page')}
+      ${sbtn('id="newfolder" data-action="newfolder"', 'fplus', 'New folder')}
+      ${sbtn('id="newtmpl" data-action="newtmpl"', 'tpl', 'New from template')}
+      ${sbtn('id="upfiles" data-action="upfiles"', 'upload', 'Upload files')}
+      ${sbtn('id="updir" data-action="updir"', 'updir', 'Upload a folder')}
     </div>
     <span class="grow"></span>
-    ${sbtn('id="tsort"', 'sort', 'Sort: name')}
-    ${sbtn('id="tcoll"', 'fold', 'Collapse all')}
+    ${sbtn('id="tsort" data-action="tsort"', 'sort', 'Sort: name')}
+    ${sbtn('id="tcoll" data-action="tcoll"', 'fold', 'Collapse all')}
   </div>
   <input type="file" id="fpick" multiple hidden>
   <input type="file" id="dpick" webkitdirectory hidden>
@@ -4008,6 +4258,12 @@
       ...nodes.filter((n) => !n.page).map((n) => n.path)])]);
     renderTree();
   };
+  // the toolbar's palette actions. The create and upload buttons are wired
+  // in 45-templates.js and 70-upload.js; a click reaches those handlers.
+  for (const [id, name] of [['newfile', 'New page'], ['newfolder', 'New folder'],
+    ['newtmpl', 'New from template'], ['upfiles', 'Upload files'], ['updir', 'Upload a folder'],
+    ['tsort', 'Flip sort order'], ['tcoll', 'Collapse all folders']])
+    clickAction(id, name, 'Files toolbar');
 
   function renderTree() {
     const coll = paneColl.get();
@@ -5763,7 +6019,7 @@
   <lat-knowtags></lat-knowtags>
   <div id="cmtrow" hidden>
     <h3>comments</h3>
-    <label class="muted"><input type="checkbox" id="cmton"> Comments on this page</label>
+    <label class="muted"><input type="checkbox" id="cmton" data-action="cmton"> Comments on this page</label>
   </div>
   <lat-share></lat-share>
   <!-- move and delete are reached from the tab header's path and the page
@@ -5807,6 +6063,7 @@
     st(on ? 'comments on for ' + name : 'comments off for ' + name);
     rpSoon();
   };
+  clickAction('cmton', 'Comments on this page', 'Right pane › Page');
 
   // NB: the command box is gone from this panel. It POSTed to /page-cmd, the
   // input channel for a programmable page. The ROUTE stays, since public form
@@ -5865,18 +6122,18 @@
 <div id="sharesec">
 <h3>sharing</h3>
 <div class="share" id="share">
-  <button data-m="private">private</button>
-  <button data-m="shared">shared</button>
-  <button data-m="clearweb">clearweb</button>
+  <button data-m="private" data-action="share-private">private</button>
+  <button data-m="shared" data-action="share-shared">shared</button>
+  <button data-m="clearweb" data-action="share-clearweb">clearweb</button>
 </div>
 <div id="cwurl" class="muted"></div>
 <h3>give a ship access</h3>
 <div class="row"><input id="shwith" placeholder="~ship" autocomplete="off"><button id="shread">read</button><button id="shedit">edit</button></div>
 <div id="shres" class="muted"></div>
-<h3 class="grouphead">give a group access <a id="aclopen" title="create and edit groups">manage &rarr;</a></h3>
+<h3 class="grouphead">give a group access <a id="aclopen" data-action="aclopen" title="create and edit groups">manage &rarr;</a></h3>
 <div id="grouplist" class="muted"></div>
 <h3>sensitive</h3>
-<label class="muted"><input type="checkbox" id="shsens"> mark sensitive &mdash; agents without clearance can't see or write it</label>
+<label class="muted"><input type="checkbox" id="shsens" data-action="shsens"> mark sensitive &mdash; agents without clearance can't see or write it</label>
 <div id="shsensres" class="muted"></div>
 </div>
 <div id="orrsec" hidden><h3>orrery</h3><div id="orr"></div></div>`;
@@ -6100,6 +6357,13 @@
     }
   }
   $('aclopen').onclick = () => aclOpen();
+  // the panel's palette actions. Going public still asks (askPublish),
+  // since the action is the button's own click.
+  clickAction('share-private', 'Make private', 'Right pane › Page');
+  clickAction('share-shared', 'Share over Urbit', 'Right pane › Page');
+  clickAction('share-clearweb', 'Publish to the clearweb', 'Right pane › Page');
+  clickAction('shsens', 'Mark sensitive', 'Right pane › Page');
+  clickAction('aclopen', 'Manage groups', 'Right pane › Page');
 
 // ── src/67-perms.js ───────────────────────────────────────────────────────
   // ── usergroups: the shared data layer ────────────────────────────────────
@@ -8733,9 +8997,9 @@
       this.innerHTML = `
 <aside class="tree" id="knowpane">
   <div class="ptool" role="toolbar" aria-label="Knowledge">
-    ${sbtn('id="knew"', 'plus', 'New memory')}
-    ${sbtn('id="ktidy"', 'tidy', 'Tidy memories')}
-    ${sbtn('id="ktrash" aria-pressed="false"', 'trash', 'Trash')}
+    ${sbtn('id="knew" data-action="knew"', 'plus', 'New memory')}
+    ${sbtn('id="ktidy" data-action="ktidy"', 'tidy', 'Tidy memories')}
+    ${sbtn('id="ktrash" data-action="ktrash" aria-pressed="false"', 'trash', 'Trash')}
   </div>
   <div id="ktrashlist" class="ktrash" hidden></div>
   <!-- the tag chips outgrew the pane top (one row per dozen tags), so they
@@ -9140,6 +9404,9 @@
     $('ktrash').setAttribute('aria-pressed', on ? 'true' : 'false');
     if (on) loadTrash();
   };
+  clickAction('knew', 'New memory', 'Knowledge toolbar');
+  clickAction('ktidy', 'Tidy memories', 'Knowledge toolbar');
+  clickAction('ktrash', 'Memory trash', 'Knowledge toolbar');
 
 // ── src/96-deskmenu.js ────────────────────────────────────────────────────
   // ── desktop: these commands live in the native File menu ─────────────────

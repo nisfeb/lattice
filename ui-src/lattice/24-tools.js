@@ -182,8 +182,8 @@
     location.href = url;
   });
 
-  // the command palette is the next step's; until then it says so
-  let paletteOpen = () => st('the command palette is not here yet');
+  // the command palette (26-palette.js) sets this to its opener
+  let paletteOpen = () => {};
 
   // top to bottom, with Settings in the lower group
   ribbonAdd({ id: 'brief', icon: 'cal', name: "Today's brief", run: (ev) => openBrief(ev) });

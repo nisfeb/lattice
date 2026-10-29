@@ -16,7 +16,7 @@
   <lat-knowtags></lat-knowtags>
   <div id="cmtrow" hidden>
     <h3>comments</h3>
-    <label class="muted"><input type="checkbox" id="cmton"> Comments on this page</label>
+    <label class="muted"><input type="checkbox" id="cmton" data-action="cmton"> Comments on this page</label>
   </div>
   <lat-share></lat-share>
   <!-- move and delete are reached from the tab header's path and the page
@@ -60,6 +60,7 @@
     st(on ? 'comments on for ' + name : 'comments off for ' + name);
     rpSoon();
   };
+  clickAction('cmton', 'Comments on this page', 'Right pane › Page');
 
   // NB: the command box is gone from this panel. It POSTed to /page-cmd, the
   // input channel for a programmable page. The ROUTE stays, since public form

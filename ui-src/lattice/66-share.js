@@ -6,18 +6,18 @@
 <div id="sharesec">
 <h3>sharing</h3>
 <div class="share" id="share">
-  <button data-m="private">private</button>
-  <button data-m="shared">shared</button>
-  <button data-m="clearweb">clearweb</button>
+  <button data-m="private" data-action="share-private">private</button>
+  <button data-m="shared" data-action="share-shared">shared</button>
+  <button data-m="clearweb" data-action="share-clearweb">clearweb</button>
 </div>
 <div id="cwurl" class="muted"></div>
 <h3>give a ship access</h3>
 <div class="row"><input id="shwith" placeholder="~ship" autocomplete="off"><button id="shread">read</button><button id="shedit">edit</button></div>
 <div id="shres" class="muted"></div>
-<h3 class="grouphead">give a group access <a id="aclopen" title="create and edit groups">manage &rarr;</a></h3>
+<h3 class="grouphead">give a group access <a id="aclopen" data-action="aclopen" title="create and edit groups">manage &rarr;</a></h3>
 <div id="grouplist" class="muted"></div>
 <h3>sensitive</h3>
-<label class="muted"><input type="checkbox" id="shsens"> mark sensitive &mdash; agents without clearance can't see or write it</label>
+<label class="muted"><input type="checkbox" id="shsens" data-action="shsens"> mark sensitive &mdash; agents without clearance can't see or write it</label>
 <div id="shsensres" class="muted"></div>
 </div>
 <div id="orrsec" hidden><h3>orrery</h3><div id="orr"></div></div>`;
@@ -241,3 +241,10 @@
     }
   }
   $('aclopen').onclick = () => aclOpen();
+  // the panel's palette actions. Going public still asks (askPublish),
+  // since the action is the button's own click.
+  clickAction('share-private', 'Make private', 'Right pane › Page');
+  clickAction('share-shared', 'Share over Urbit', 'Right pane › Page');
+  clickAction('share-clearweb', 'Publish to the clearweb', 'Right pane › Page');
+  clickAction('shsens', 'Mark sensitive', 'Right pane › Page');
+  clickAction('aclopen', 'Manage groups', 'Right pane › Page');
