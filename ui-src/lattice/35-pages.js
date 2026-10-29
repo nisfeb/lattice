@@ -15,12 +15,17 @@
   // `current` had not been set yet. Guarding on those meant an explicit open
   // was silently dropped. After an unsaved edit, clicking another file did
   // nothing, and a page absent from the local tree never applied at all.
+  // openKnow and openGrub take a number from the same sequence, and so does
+  // a tab switch (21-tabs.js), so any later open supersedes this one.
+  //
+  // Answers false when the open failed with nothing painted, which the tab
+  // model tells apart from an open that a later one superseded.
   let openSeq = 0;
   async function openPage(name) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
-    if (!(await guardDirty())) return;
+    if (!(await guardDirty())) return false;
     const my = ++openSeq;
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
@@ -38,10 +43,10 @@
       const d = { body: q.body, kind: q.kind, rev: q.baseRev || 0, share: 'private' };
       applyPage(name, d, true);
       snapPage(name, d);
-      return;
+      return true;
     }
     const hit = pageCache.get(name);
-    if (hit) { applyPage(name, hit); snapPage(name, hit); return; }
+    if (hit) { applyPage(name, hit); snapPage(name, hit); return true; }
     const node = nodes.find((n) => n.page && n.path === name);
     const painted = !!node && typeof node.body === 'string';
     // `quiet`: the render=1 request below carries the preview and the error
@@ -83,9 +88,17 @@
     let d = null;
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
-      if (!r.ok) { if (!painted) { st('open failed' + await errText(r), false); unwind(); } return; }
+      if (!r.ok) {
+        if (painted) return true;
+        st('open failed' + await errText(r), false); unwind();
+        return my === openSeq ? false : undefined;
+      }
       d = await r.json();
-    } catch { if (!painted) { st('open failed', false); unwind(); } return; }
+    } catch {
+      if (painted) return true;
+      st('open failed', false); unwind();
+      return my === openSeq ? false : undefined;
+    }
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
     // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
@@ -98,7 +111,7 @@
     // window, which is how the old dirty-guards kept failing to catch it.
     // The !painted arm stays unconditional on purpose — there the fetch IS the
     // open, and an explicit open must always land (see the head comment).
-    if (painted && src.value !== shown) return;
+    if (painted && src.value !== shown) return true;
     // Cache and snapshot BELOW the guards, not above. A stale or superseded
     // response that reached the cache here poisoned it with the pre-edit body:
     // the guard protected the editor but not the cache, so switching away and
@@ -107,6 +120,7 @@
     pageCache.set(name, d);
     snapPage(name, d);
     applyPage(name, d);
+    return true;
   }
   function applyPage(name, d, quiet) {
     curFolder = null;
@@ -160,6 +174,7 @@
   // phone keyboard before you have done anything. You arrive at the app
   // already typing a filename you did not ask to type.
   function newFile(into, focusName = true) {
+    openSeq++;           // an open still in flight must not land over this
     folderCtx = into || '';
     curFolder = null;
     curKind = null;
@@ -243,8 +258,9 @@
   // guard up in openPage: a dirty edit, grub or page, exists only here
   // until it is saved. That guard catches deliberate in-app navigation. This
   // one catches the close and reload that never go through openPage at all.
+  // A parked tab's buffer counts too (__latUnsaved, 20-state.js).
   window.addEventListener('beforeunload', (e) => {
-    if (!dirty) return;
+    if (!window.__latUnsaved()) return;
     e.preventDefault();
     e.returnValue = '';
   });
@@ -317,6 +333,7 @@
       const stillHere = current === name || (current === null && src.value === sent);
       if (stillHere) {
         current = name;
+        tabFollow();         // a new page's tab is named now (21-tabs.js)
         curKind = kind;
         pname.readOnly = true;
         if (src.value === sent) dirty = false;
@@ -343,6 +360,7 @@
     const stillHere = current === name || (current === null && src.value === sent);
     if (stillHere) {
       current = name;
+      tabFollow();           // a new page's tab is named now (21-tabs.js)
       curKind = kind;
       pname.readOnly = true;
       if (src.value === sent) dirty = false;

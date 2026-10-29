@@ -19,12 +19,6 @@
     sharedWithMe = await r.json();
     if (mode !== 'know') renderTree();
   }
-  async function openShared(it) {
-    if (!(await guardDirty())) return;
-    history.replaceState(null, '', '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
-      '&ship=' + encodeURIComponent(it.host));
-    openGrub(it.path, it.host);
-  }
   // keys for the collapsed list: a leading space is in no page name, so a
   // page can never share a fold with this folder
   const SWM = ' shared';
@@ -66,7 +60,8 @@
           loadShared();
         };
         a.append(nm, md, x);
-        a.onclick = (e) => { e.preventDefault(); openShared(it); };
+        // a grub tab; openGrub (by way of enterGrub) sets the address
+        tabLink(a, 'grub', it.path, { ship: host });
         treeList.appendChild(a);
       }
     }

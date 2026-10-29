@@ -13,6 +13,7 @@ import { makeCheck, read, cut } from './lib/check.mjs';
 const L = 'ui-src/lattice/';
 const src = cut(L + '20-state.js', /const collStore = [\s\S]*?\n {2}const paneColl = .*/, 'collStore') + '\n'
   + cut(L + '30-tree.js', /function folderRow\([\s\S]*?\n {2}\}/, 'folderRow') + '\n'
+  + cut(L + '21-tabs.js', /const tabLink = [\s\S]*?\n {2}\};/, 'tabLink') + '\n'
   + read(L + '69-shared.js');
 const check = makeCheck();
 
@@ -34,7 +35,8 @@ function boot(items, coll = []) {
     treeList, sharedWithMe: items, mode: 'pages', api: '/apps/lattice', localStorage,
     renderTree: () => { treeList.kids = []; ctx.renderShared(JSON.parse(localStorage.appColl)); },
     guardDirty: async () => true, history: { replaceState() {} },
-    openGrub: (p, s) => opened.push([p, s]), ico: () => '',
+    // a row opens through the tab model (21-tabs.js) as a grub tab
+    openIn: (kind, p, o) => opened.push([kind, p, o.ship]), ico: () => '',
     document: { createElement: (t) => new El(t), createTextNode: (t) => ({ textContent: t }) },
   };
   vm.runInNewContext(src, ctx);
@@ -75,7 +77,7 @@ const items = [
   if (row) row.onclick({ preventDefault() {} });
   await new Promise((r) => setTimeout(r, 0));
   check('a row opens the page on its own ship',
-    JSON.stringify(opened) === JSON.stringify([[D + '/page/site/logging/code', '~nec']]), JSON.stringify(opened));
+    JSON.stringify(opened) === JSON.stringify([['grub', D + '/page/site/logging/code', '~nec']]), JSON.stringify(opened));
 }
 
 check.done();

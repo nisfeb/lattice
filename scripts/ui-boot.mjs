@@ -176,8 +176,9 @@ try {
   // the tree-landing rule applies when NOTHING is remembered. With a
   // snapshot, resuming the page wins (that is the other half of the same
   // request: "default to the tree UNLESS it remembers a recent file"). Clear
-  // only the page snapshot so this asserts the no-memory case.
-  await page.evaluate(() => localStorage.removeItem('appPage'));
+  // only the page snapshot so this asserts the no-memory case. The open tabs
+  // (21-tabs.js) remember the file too, so they go with it.
+  await page.evaluate(() => { localStorage.removeItem('appPage'); localStorage.removeItem('appTabs'); });
   await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
   await sleep(2500);

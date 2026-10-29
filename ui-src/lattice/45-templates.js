@@ -31,8 +31,8 @@
         // a multi-page template lands as a folder. Open its index if it made
         // one, else the page itself, else just select the new folder.
         const has = (p) => nodes.some((n) => n.page && n.path === p);
-        if (has(name)) await openPage(name);
-        else if (has(name + '/index')) await openPage(name + '/index');
+        if (has(name)) await openIn('page', name);
+        else if (has(name + '/index')) await openIn('page', name + '/index');
         else if (nodes.some((n) => !n.page && n.path === name)) selectFolder(name);
         st('created ' + name + ' from ' + tmpl);
         return;
@@ -45,7 +45,9 @@
     }
   }
   $('newtmpl').onclick = newFromTemplate;
-  $('newfile').onclick = () => newFile('');
+  // newFile paints over the editor, so whatever is unsaved there goes
+  // through guardDirty first, like any other way off a document
+  $('newfile').onclick = async () => { if (await guardDirty()) newFile(''); };
   $('newfolder').onclick = newFolder;
   window.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {

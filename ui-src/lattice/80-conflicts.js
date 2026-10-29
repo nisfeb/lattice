@@ -84,13 +84,13 @@
         live.textContent = 'open live (' + orig + ')';
         live.title = 'open the page this conflicted with';
         live.style.cursor = 'pointer';
-        live.onclick = () => { cfClose(); openPage(orig); };
+        live.onclick = (e) => { cfClose(); openIn('page', orig, { ev: e }); };
         head.appendChild(live);
       }
 
       const view = document.createElement('button');
       view.textContent = 'read it';
-      view.onclick = () => { cfClose(); openPage(path); };
+      view.onclick = (e) => { cfClose(); openIn('page', path, { ev: e }); };
       head.appendChild(view);
 
       const del = document.createElement('button');

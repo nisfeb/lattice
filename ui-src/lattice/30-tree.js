@@ -236,7 +236,7 @@
           cw.title = n.path + ' is clearweb public';
           row.append(cw);
         }
-        row.onclick = (e) => { e.preventDefault(); openPage(n.path); };
+        tabLink(row, 'page', n.path);
       } else {
         row = folderRow(n.dname || n.path.split('/').pop(), depth, coll.includes(n.path),
           () => { paneColl.flip(n.path); renderTree(); }, () => selectFolder(n.path));
@@ -254,7 +254,10 @@
         add.textContent = '+';
         add.title = 'new file in ' + n.path;
         add.href = '#';
-        add.onclick = (e) => { e.preventDefault(); e.stopPropagation(); newFile(n.path); };
+        add.onclick = async (e) => {
+          e.preventDefault(); e.stopPropagation();
+          if (await guardDirty()) newFile(n.path);
+        };
         row.append(add);
       }
       if (hidden) row.style.display = 'none';

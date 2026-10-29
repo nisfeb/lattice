@@ -86,7 +86,7 @@
       on.className = 'gname';
       on.textContent = c.page;
       on.style.cursor = 'pointer';
-      on.onclick = () => { cmClose(); openPage(c.page); };
+      on.onclick = (e) => { cmClose(); openIn('page', c.page, { ev: e }); };
       card.appendChild(on);
 
       const body = document.createElement('div');

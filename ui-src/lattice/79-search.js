@@ -147,9 +147,9 @@
 
   // opening a hit is the same move whether the mouse clicked it or Enter
   // picked it off the highlighted row
-  const qOpenResult = (h) => {
+  const qOpenResult = (h, ev) => {
     qClose();
-    if (h.know) openKnow(h.key); else openPage(h.key);
+    openIn(h.know ? 'know' : 'page', h.key, { ev });
   };
 
   // the highlighted row alone, no rebuild: an inline background rather than
@@ -202,7 +202,8 @@
         s.textContent = h.snip;              // and so are bodies
         a.appendChild(s);
       }
-      a.onclick = (e) => { e.preventDefault(); qOpenResult(h); };
+      a.onclick = (e) => { e.preventDefault(); qOpenResult(h, e); };
+      a.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); qOpenResult(h, e); } };
       qRows.push(a);
       li.appendChild(a);
       ul.appendChild(li);
@@ -282,7 +283,7 @@
     }
     if (e.key === 'Enter') {
       clearTimeout(qTimer);
-      if (qSel >= 0 && qResults[qSel]) { e.preventDefault(); qOpenResult(qResults[qSel]); return; }
+      if (qSel >= 0 && qResults[qSel]) { e.preventDefault(); qOpenResult(qResults[qSel], e); return; }
       runSearch($('qinput').value);
     }
   };

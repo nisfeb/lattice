@@ -1411,7 +1411,9 @@
   // read by the service-worker registration script, which lives in its own
   // inline <script> and cannot see this scope. It reloads the page when a new
   // worker takes over, and must never do that over typed work.
-  window.__latUnsaved = () => dirty === true;
+  // A parked tab (21-tabs.js) holds its own dirty buffer, so the live flag
+  // alone misses work typed into any tab that is not in front.
+  window.__latUnsaved = () => dirty === true || tabs.some((t) => t !== activeTab && t.snap && t.snap.dirty);
   // Whether the user has typed since the current editor view was established.
   // Cleared by applyPage/newFile (a fresh view), NEVER by autosave — and that
   // is the point: `dirty` cannot answer "did the user do something while
@@ -1441,6 +1443,17 @@
     if (grubPath)
       return askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard');
     const label = current || pname.value.trim() || 'this';
+    if (await flushNoAsk()) return true;
+    return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+  }
+  // flushNoAsk: guardDirty's flush without its question, answering whether
+  // the buffer is clean afterwards. A tab switch (21-tabs.js) uses it on its
+  // own: the tab it leaves keeps whatever is still unsaved, so there is
+  // nothing to ask about. A dirty grub has no flush (explicit save only) and
+  // answers false at once.
+  async function flushNoAsk() {
+    if (!dirty) return true;
+    if (grubPath) return false;
     // save() coalesces concurrent calls by design. A save already in flight
     // just arms savePending and returns on the spot, so calling save() here
     // answered nothing while dirty stayed set. That read like a flush that
@@ -1466,9 +1479,8 @@
     // timed out with the buffer untouched. Only now is a flush worth trying.
     if (!saving) {
       if (mode === 'know') await saveKnow(); else await save();
-      if (!dirty) return true;
     }
-    return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+    return !dirty;
   }
   // setOpen: what the bar says is open, set in one place. `name` becomes
   // `current`, the open page or memory, or null when nothing named is open
@@ -1478,7 +1490,8 @@
   // when readOnly. `kind` moves the kind picker when it has that option.
   // `url`, when given, replaces the address. Assigning .value fires no
   // event, so this ends by dispatching 'input' on the field: the desktop
-  // and phone labels (96-deskmenu.js, 97-mobar.js) repaint on it.
+  // and phone labels (96-deskmenu.js, 97-mobar.js) repaint on it. Then the
+  // active document tab learns what it now shows (tabFollow, 21-tabs.js).
   function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
     current = name;
     pname.value = shown === undefined ? (name || '') : shown;
@@ -1486,6 +1499,7 @@
     if (kind && [...pkind.options].some((o) => o.value === kind)) pkind.value = kind;
     if (url) history.replaceState(null, '', url);
     pname.dispatchEvent(new Event('input'));
+    tabFollow();
   }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
@@ -1688,6 +1702,554 @@
     return { get, flip };
   };
   const paneColl = collStore('appColl');
+
+// ── src/21-tabs.js ────────────────────────────────────────────────────────
+  // ── document tabs ───────────────────────────────────────────────────────
+  // Many documents open at once over ONE live editor. The editor's globals
+  // (current, dirty, everTyped, grubPath, mode, src) stay the truth for the
+  // tab in front. A tab that is not in front holds `snap`: what the editor
+  // held for it when it was last in front, and above all whether that was
+  // unsaved. A parked tab's unsaved buffer exists nowhere else, so
+  // __latUnsaved and beforeunload count it (20-state.js, 35-pages.js).
+  //
+  // One tab per document: opening one that is already open focuses its tab,
+  // so a document has one buffer, one dirty flag and one autosave, and two
+  // tabs can never write over each other's typing.
+  let tabs = [];
+  let activeTab = null;
+  let tabSeq = 0;
+  // >0 while the tab model itself is painting the editor. setOpen calls
+  // tabFollow on every paint, and these paints are the tab model's own steps,
+  // not the user going somewhere.
+  let tabNav = 0;
+  // the tab whose open is still on its way in. Until its document lands the
+  // paints are the open's own steps (openKnow's setMode passes through "no
+  // memory" on its way to the key), so tabFollow leaves this tab alone. Only
+  // until it lands, though: an open's promise can run on for seconds after
+  // the paint (openPage's upgrade fetch), and what the user does meanwhile
+  // must still be followed.
+  let tabLoading = null;
+
+  const mkTab = (kind, key, ship, { pinned = false, read = false } = {}) =>
+    ({ id: 't' + (++tabSeq), kind, key, ship: ship || null, pinned, read,
+       back: [], fwd: [], snap: null });
+  const sameDoc = (t, d) =>
+    t.kind === d.kind && t.key === d.key && (t.ship || null) === (d.ship || null);
+  // a Back or Forward entry. Kind and ship ride along, since one tab can go
+  // from a page to a memory to a grub.
+  const tabEnc = (t) => JSON.stringify([t.kind, t.key, t.ship || null]);
+  const tabDec = (s) => { const [kind, key, ship] = JSON.parse(s); return { kind, key, ship }; };
+
+  // what the live editor shows, as a tab would name it. null for a folder,
+  // which is a view in a tab and not a document of its own.
+  const liveDoc = () => {
+    if (grubPath) return { kind: 'grub', key: grubPath, ship: grubShip || null };
+    if (mode === 'know') return { kind: 'know', key: current || '', ship: null };
+    if (curFolder !== null) return null;
+    return { kind: 'page', key: current || '', ship: null };
+  };
+
+  // Park: the editor's state for this tab goes into its snap, and the
+  // editor is released for the next one. A page or memory first gets the
+  // same flush guardDirty gives it, minus the question: whatever the flush
+  // cannot save simply stays in the snap, unsaved and counted. A grub never
+  // autosaves, so its buffer goes straight into the snap.
+  //
+  // Only a tab whose document really is in the editor owns what is there.
+  // While a slow open is still loading, the editor shows the document
+  // before it, and filing that text under this tab would hand one
+  // document's words to another's autosave.
+  async function parkDoc(t) {
+    await flushNoAsk();
+    t.snap = TAB_KINDS[t.kind].shows(t) ? {
+      body: src.value, dirty, everTyped,
+      sel: [src.selectionStart, src.selectionEnd], scroll: src.scrollTop,
+      kind: curKind, pkind: pkind.value, rev: curRev, shown: pname.value,
+    } : null;
+    // the buffer lives in the snap now. The next open's own guardDirty must
+    // not ask about it again, and its debounce must not save it under
+    // whatever document comes next (autosave reads `current` when it fires).
+    dirty = false;
+    clearTimeout(autoTimer);
+  }
+  const editorShows = {
+    page: (t) => !grubPath && mode !== 'know' && curFolder === null && (current || '') === t.key,
+    know: (t) => !grubPath && mode === 'know' && (current || '') === t.key,
+    grub: (t) => grubPath === t.key && (grubShip || null) === (t.ship || null),
+  };
+  // The kinds of tab. switchTab and openIn only ever look a kind up here,
+  // so a new kind is a new entry and nothing else.
+  //   open(t)        show the document fresh, from the ship or a cache.
+  //                  Answers false when that failed with nothing shown.
+  //   restore(t, s)  paint a parked unsaved buffer back, with no fetch
+  //   park(t)        hand the editor back, keeping what is unsaved in t.snap
+  //   shows(t)       whether the editor is showing this tab's document
+  //   icon, label    for the strip
+  const TAB_KINDS = {
+    page: {
+      icon: 'doc',
+      label: (t) => t.key ? t.key.split('/').pop() : 'new page',
+      open: async (t) => {
+        if (t.key) return openPage(t.key);
+        exitRev();
+        newFile('', false);
+        return true;
+      },
+      restore: (t, s) => {
+        exitRev();
+        if (!t.key) {
+          newFile('', false);
+          setOpen(null, { shown: s.shown });
+          if (s.pkind) pkind.value = s.pkind;
+          src.value = s.body;
+          render();
+          return;
+        }
+        exitGrub();
+        if (mode === 'know') setMode('pages');
+        setFolderCtx(t.key);
+        const n = nodes.find((x) => x.page && x.path === t.key);
+        applyPage(t.key, { body: s.body, kind: s.kind || s.pkind, rev: s.rev,
+          share: (n && n.share) || 'private' }, true);
+      },
+      park: parkDoc,
+      shows: editorShows.page,
+    },
+    know: {
+      icon: 'know',
+      label: (t) => t.key ? t.key.split('/').pop() : 'new memory',
+      open: async (t) => {
+        if (t.key) return openKnow(t.key);
+        setMode('know');
+        return true;
+      },
+      restore: (t, s) => {
+        if (mode !== 'know') setMode('know');
+        if (!t.key) {
+          setOpen(null, { shown: s.shown });
+          src.value = s.body;
+          render();
+          return;
+        }
+        applyKnow(t.key, { body: s.body, tags: (knowEntry(t.key) || { tags: [] }).tags,
+          updated: 'unsaved here' });
+      },
+      park: parkDoc,
+      shows: editorShows.know,
+    },
+    grub: {
+      icon: 'file',
+      label: (t) => {
+        const pg = /\/page\/(.+)\/code$/.exec(t.key);
+        const n = pg ? pg[1] : t.key.split('/').pop();
+        return t.ship ? t.ship + ': ' + n : n;
+      },
+      open: async (t) => {
+        // grub mode is an overlay on the pages view (40-grub.js)
+        if (mode === 'know') setMode('pages');
+        exitRev();
+        return openGrub(t.key, t.ship);
+      },
+      restore: (t, s) => {
+        if (mode === 'know') setMode('pages');
+        exitRev();
+        enterGrub(t.key, t.ship);
+        src.value = s.body;
+        src.readOnly = false;
+        if (s.pkind) pkind.value = s.pkind;
+        curKind = s.kind;
+        render();
+        pname.dispatchEvent(new Event('input'));
+        st('unsaved · press Save or Cmd+S');
+      },
+      park: parkDoc,
+      shows: editorShows.grub,
+    },
+  };
+
+  // ── persistence ──────────────────────────────────────────────────────
+  // Which documents are open, never their bodies: a body in localStorage
+  // could come back in another window as if it were that window's work.
+  const tabsSave = () => {
+    try {
+      localStorage.appTabs = JSON.stringify({
+        tabs: tabs.map(({ kind, key, ship, pinned, read }) => ({ kind, key, ship, pinned, read })),
+        active: tabs.indexOf(activeTab),
+      });
+    } catch {}
+  };
+  const tabsChanged = () => { tabsSave(); paintTabs(); };
+
+  // ── showing a tab ────────────────────────────────────────────────────
+  // Every switch, close and in-place open runs through one queue, so two
+  // quick clicks can never park the same buffer twice or interleave their
+  // halves. The queue waits for the park and for the paint to begin, not
+  // for a slow fetch: the next switch supersedes an open still loading
+  // (openSeq), and parks nothing for it, since nothing of it is shown yet.
+  let tabQ = Promise.resolve();
+  let tabShown = 0;         // counts showTab calls, so a late landing knows it is late
+  const tabSerial = (fn) => {
+    const run = tabQ.then(fn, fn);
+    tabQ = run.catch(() => {});
+    return run;
+  };
+
+  // show `t`, already the active tab, in the editor
+  function showTab(t) {
+    const k = TAB_KINDS[t.kind];
+    const s = t.snap;
+    t.snap = null;          // in front, the live editor is its state
+    const gen = ++tabShown;
+    src.readOnly = false;   // a blank or a binary grub left it locked
+    openSeq++;              // an open still loading for the tab left behind may not land
+    if (s && s.dirty) {
+      tabLoading = null;
+      tabNav++;
+      try {
+        k.restore(t, s);
+        dirty = true;
+        everTyped = s.everTyped;
+        // a page or memory whose flush failed tries again on the usual
+        // debounce, exactly as if it had just been typed
+        clearTimeout(autoTimer);
+        autoTimer = setTimeout(autosave, 2000);
+        tabCaret(s);
+      } finally { tabNav--; }
+      paintTabs();
+      return Promise.resolve(true);
+    }
+    tabLoading = t;
+    const settle = () => { if (gen === tabShown && tabLoading === t) tabLoading = null; };
+    let p;
+    try { p = Promise.resolve(k.open(t)); } catch (e) { p = Promise.reject(e); }
+    return p.then((ok) => {
+      settle();
+      if (activeTab !== t || gen !== tabShown) return ok;
+      // failed with nothing shown: an empty, locked editor under this tab's
+      // name, never the previous document wearing this tab's title
+      if (ok === false && !k.shows(t)) tabBlank(t);
+      else if (!k.shows(t)) tabFollow();   // something else opened over it
+      else if (s && !dirty) tabCaret(s);
+      paintTabs();
+      return ok;
+    }, (e) => { settle(); throw e; });
+  }
+  const tabCaret = (s) => {
+    try { src.setSelectionRange(s.sel[0], s.sel[1]); } catch {}
+    src.scrollTop = s.scroll;
+    sync();
+  };
+  function tabBlank(t) {
+    tabNav++;
+    try {
+      exitGrub();
+      setOpen(null, { shown: TAB_KINDS[t.kind].label(t), readOnly: true });
+      src.value = '';
+      src.readOnly = true;
+      dirty = false;
+      render();
+      prevBlank();
+    } finally { tabNav--; }
+  }
+
+  // park whatever is in front and bring `t` there
+  async function tabTo(t) {
+    const from = activeTab;
+    if (from === t) {
+      if (!TAB_KINDS[t.kind].shows(t)) showTab(t);
+      return;
+    }
+    if (from && tabs.includes(from)) await TAB_KINDS[from.kind].park(from);
+    activeTab = t;
+    tabsChanged();
+    showTab(t);
+  }
+
+  // ── the entry points ─────────────────────────────────────────────────
+  // openIn: how every click on a document opens it. An open document
+  // focuses its tab. A new tab comes from Ctrl/Cmd+click, a middle click,
+  // opts.newTab, or a pinned tab in front. Anything else replaces the
+  // document in the front tab, after guardDirty, and that tab's Back
+  // remembers what it replaced.
+  function openIn(kind, key, { ev, ship, newTab } = {}) {
+    return tabSerial(async () => {
+      const want = { kind, key, ship: ship || null };
+      const hit = key ? tabs.find((t) => sameDoc(t, want)) : null;
+      if (hit) return tabTo(hit);
+      const fresh = newTab || (ev && (ev.ctrlKey || ev.metaKey || ev.button === 1))
+        || !activeTab || activeTab.pinned;
+      if (fresh) {
+        const t = mkTab(kind, key, ship);
+        tabs.splice(activeTab ? tabs.indexOf(activeTab) + 1 : tabs.length, 0, t);
+        return tabTo(t);
+      }
+      if (!(await guardDirty())) return;
+      // flushed, or the user said discard: either way nothing here is owed
+      dirty = false;
+      const t = activeTab;
+      if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
+      Object.assign(t, want);
+      t.snap = null;
+      tabsChanged();
+      showTab(t);
+    });
+  }
+  const switchTab = (id) => tabSerial(async () => {
+    const t = tabs.find((x) => x.id === id);
+    if (t) await tabTo(t);
+  });
+  // closeTab: false when the user kept it. guardDirty runs on the tab being
+  // closed, in front, the one place it can flush or ask, so a background tab
+  // holding unsaved work comes forward first.
+  const closeTab = (id) => tabSerial(async () => {
+    const t = tabs.find((x) => x.id === id);
+    if (!t) return false;
+    if (t !== activeTab && t.snap && t.snap.dirty) await tabTo(t);
+    if (t === activeTab) {
+      if (!(await guardDirty())) return false;
+      dirty = false;
+      clearTimeout(autoTimer);
+    }
+    const i = tabs.indexOf(t);
+    tabs.splice(i, 1);
+    if (t !== activeTab) { tabsChanged(); return true; }
+    activeTab = null;
+    let next = tabs[i] || tabs[i - 1];
+    if (!next) { next = mkTab('page', ''); tabs.push(next); }
+    activeTab = next;
+    tabsChanged();
+    showTab(next);
+    return true;
+  });
+  // Back and Forward within the front tab. A step is an in-place open, so
+  // it guards like one. A step onto a document open in another tab goes
+  // to that tab instead.
+  const tabStep = (from, to) => tabSerial(async () => {
+    const t = activeTab;
+    if (!t || !t[from].length) return;
+    if (!(await guardDirty())) return;
+    dirty = false;
+    const d = tabDec(t[from].pop());
+    const twin = d.key && tabs.find((x) => x !== t && sameDoc(x, d));
+    if (twin) { tabsChanged(); return tabTo(twin); }
+    if (t.key) t[to].push(tabEnc(t));
+    Object.assign(t, d);
+    t.snap = null;
+    tabsChanged();
+    showTab(t);
+  });
+  const tabBack = () => tabStep('back', 'fwd');
+  const tabFwd = () => tabStep('fwd', 'back');
+  const tabCycle = (dir) => {
+    if (tabs.length < 2) return;
+    const i = tabs.indexOf(activeTab);
+    switchTab(tabs[(i + dir + tabs.length) % tabs.length].id);
+  };
+  // a new tab with a new page in it: the strip's +. Then newFile again, the
+  // way the + file button calls it, so the page gets named (the name field,
+  // or the create dialog where that field is hidden, 96-deskmenu.js)
+  const tabNew = async () => {
+    await openIn('page', '', { newTab: true });
+    if (activeTab && activeTab.kind === 'page' && !activeTab.key) newFile('');
+  };
+
+  // tabFollow: the editor moved to another document by a road that did not
+  // come through openIn (a rename, a delete, the mode pill, a template, a
+  // new page in place, the live sync). The front tab follows, so the tab
+  // and what it parks always name the document that is really shown.
+  function tabFollow() {
+    if (tabNav || !activeTab) return;
+    const t = activeTab;
+    if (tabLoading === t) {
+      if (TAB_KINDS[t.kind].shows(t)) tabLoading = null;
+      return;
+    }
+    const d = liveDoc();
+    if (!d || sameDoc(t, d)) return;
+    if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
+    Object.assign(t, d);
+    t.snap = null;
+    // one tab per document: a clean twin elsewhere is now redundant
+    const twin = d.key && tabs.find((x) => x !== t && sameDoc(x, d) && !(x.snap && x.snap.dirty));
+    if (twin) tabs.splice(tabs.indexOf(twin), 1);
+    tabsChanged();
+  }
+  // a move or rename: tabs naming the old path, or anything under it, name
+  // the new one, so a parked buffer is never saved back to where it was
+  function tabsRemap(kind, from, to) {
+    for (const t of tabs) {
+      if (t.kind !== kind || !t.key) continue;
+      if (t.key === from) t.key = to;
+      else if (t.key.startsWith(from + '/')) t.key = to + t.key.slice(from.length);
+    }
+    tabsChanged();
+  }
+
+  // ── boot ─────────────────────────────────────────────────────────────
+  // The saved list, and then the address on top of it: a ?name, ?grub or
+  // ?view=know&key names a document, which gets its tab focused or a new
+  // one. An entry that does not parse as a tab is dropped, and nothing at
+  // all leaves one new page. Nothing is opened here; boot (99-boot.js) shows
+  // the tab this returns. `fresh` says the list was made up rather than
+  // restored, which is when a bare launch may resume the last page.
+  function tabsBoot() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.appTabs || 'null'); } catch {}
+    const list = saved && Array.isArray(saved.tabs) ? saved.tabs : [];
+    for (const e of list) {
+      if (!e || !TAB_KINDS[e.kind] || typeof e.key !== 'string') continue;
+      if (e.ship != null && typeof e.ship !== 'string') continue;
+      if (e.key && tabs.some((t) => sameDoc(t, e))) continue;
+      tabs.push(mkTab(e.kind, e.key, e.ship, { pinned: e.pinned === true, read: e.read === true }));
+    }
+    activeTab = (Number.isInteger(saved && saved.active) && tabs[saved.active]) || tabs[0] || null;
+    const want = qs.get('grub') ? { kind: 'grub', key: qs.get('grub'), ship: qs.get('ship') || null }
+      : qs.get('view') === 'know' ? { kind: 'know', key: qs.get('key') || '', ship: null }
+      : qs.get('name') ? { kind: 'page', key: qs.get('name'), ship: null } : null;
+    if (want) {
+      const hit = activeTab && sameDoc(activeTab, want) ? activeTab
+        : tabs.find((t) => sameDoc(t, want));
+      if (hit) activeTab = hit;
+      else {
+        const t = mkTab(want.kind, want.key, want.ship);
+        tabs.splice(activeTab ? tabs.indexOf(activeTab) + 1 : 0, 0, t);
+        activeTab = t;
+      }
+    }
+    const fresh = !activeTab;
+    if (fresh) { activeTab = mkTab('page', ''); tabs.push(activeTab); }
+    tabsChanged();
+    return { tab: activeTab, fresh };
+  }
+  // boot showing a tab through the tab model, for every kind without a
+  // boot path of its own
+  const tabShowBoot = (t) => tabSerial(() => showTab(t));
+
+  // ── the strip ────────────────────────────────────────────────────────
+  // First in the center column, level with the corner toggles. Back and
+  // Forward at its start, the tabs, then + for a new page.
+  const tabStrip = document.createElement('div');
+  tabStrip.id = 'doctabs';
+  tabStrip.className = 'doctabs';
+  tabStrip.innerHTML =
+    sbtn('id="tabback"', 'left', 'Back', 'Alt+Left') +
+    sbtn('id="tabfwd"', 'right', 'Forward', 'Alt+Right') +
+    '<div class="dtlist" role="tablist" aria-label="Open documents"></div>' +
+    sbtn('id="tabnew"', 'plus', 'New page');
+  $('center').prepend(tabStrip);
+  const tabList = tabStrip.querySelector('.dtlist');
+  $('tabback').onclick = () => tabBack();
+  $('tabfwd').onclick = () => tabFwd();
+  $('tabnew').onclick = () => tabNew();
+
+  function paintTabs() {
+    tabList.textContent = '';
+    for (const t of tabs) {
+      const k = TAB_KINDS[t.kind];
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'dtab' + (t === activeTab ? ' on' : '') + (t.pinned ? ' pinned' : '');
+      b.setAttribute('role', 'tab');
+      b.setAttribute('aria-selected', t === activeTab ? 'true' : 'false');
+      b.dataset.id = t.id;
+      b.dataset.kind = t.kind;
+      b.dataset.key = t.key;
+      b.title = (t.ship ? t.ship + ' ' : '') + (t.key || k.label(t));
+      b.innerHTML = ico(t.pinned ? 'pin' : k.icon) + '<span class="dtn"></span>'
+        + '<span class="dtdot" aria-hidden="true"></span>'
+        + '<span class="dtx" title="Close (Ctrl+W)" aria-hidden="true">' + ico('x') + '</span>';
+      b.querySelector('.dtn').textContent = k.label(t);
+      b.onclick = (e) => {
+        if (e.target.closest('.dtx')) closeTab(t.id); else switchTab(t.id);
+      };
+      // a middle click closes, and must not start the browser's autoscroll
+      b.onmousedown = (e) => { if (e.button === 1) e.preventDefault(); };
+      b.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(t.id); } };
+      b.oncontextmenu = (e) => { e.preventDefault(); tabMenu(t, e.clientX, e.clientY); };
+      tabList.append(b);
+    }
+    $('tabback').disabled = !activeTab || !activeTab.back.length;
+    $('tabfwd').disabled = !activeTab || !activeTab.fwd.length;
+    paintTabDirty();
+    const on = tabList.querySelector('.dtab.on');
+    if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+  // The dot. `dirty` is set by typing and cleared by four save paths, so the
+  // dot is read off the state on a short beat instead of from each of them.
+  function paintTabDirty() {
+    for (const b of tabList.children) {
+      const t = tabs.find((x) => x.id === b.dataset.id);
+      b.classList.toggle('dirty', !!t &&
+        (t === activeTab ? dirty === true : !!(t.snap && t.snap.dirty)));
+    }
+  }
+  setInterval(paintTabDirty, 400);
+
+  // the context menu: pin, close, close the others
+  let tabMenuEl = null;
+  const tabMenuClose = () => { if (tabMenuEl) { tabMenuEl.remove(); tabMenuEl = null; } };
+  function tabMenu(t, x, y) {
+    tabMenuClose();
+    const m = document.createElement('div');
+    m.className = 'dtmenu';
+    m.setAttribute('role', 'menu');
+    const item = (label, run) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('role', 'menuitem');
+      b.textContent = label;
+      b.onclick = () => { tabMenuClose(); run(); };
+      m.append(b);
+    };
+    item(t.pinned ? 'Unpin' : 'Pin', () => { t.pinned = !t.pinned; tabsChanged(); });
+    item('Close', () => closeTab(t.id));
+    item('Close others', async () => {
+      for (const o of tabs.filter((x) => x !== t)) await closeTab(o.id);
+    });
+    m.style.left = x + 'px';
+    m.style.top = y + 'px';
+    document.body.append(m);
+    tabMenuEl = m;
+    m.querySelector('button').focus();
+  }
+  addEventListener('mousedown', (e) => {
+    if (tabMenuEl && !tabMenuEl.contains(e.target)) tabMenuClose();
+  }, true);
+  addEventListener('keydown', (e) => {
+    if (tabMenuEl && e.key === 'Escape') { tabMenuClose(); return; }
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && !e.shiftKey && !e.altKey && (e.key === 'w' || e.key === 'W')) {
+      e.preventDefault();
+      if (activeTab) closeTab(activeTab.id);
+    } else if (e.ctrlKey && e.key === 'Tab') {
+      e.preventDefault();
+      tabCycle(e.shiftKey ? -1 : 1);
+    } else if (e.altKey && !mod && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')
+      // in a text field Alt+Arrow moves by word on a Mac, and that wins
+      && !(e.target.closest && e.target.closest('input, textarea, select, [contenteditable]'))) {
+      e.preventDefault();
+      if (e.key === 'ArrowLeft') tabBack(); else tabFwd();
+    }
+  });
+  // a link to a document: a click goes through openIn with its event, so
+  // Ctrl/Cmd and the middle button open a new tab
+  const tabLink = (el, kind, key, opts = {}) => {
+    const go = (e) => { e.preventDefault(); openIn(kind, key, { ...opts, ev: e }); };
+    el.onclick = go;
+    el.onauxclick = (e) => { if (e.button === 1) go(e); };
+  };
+
+  // for the browser suites, which cannot reach this scope
+  window.latTabs = {
+    openIn, switchTab, closeTab, tabBack, tabFwd,
+    list: () => tabs.map(({ id, kind, key, ship, pinned }) => ({ id, kind, key, ship, pinned })),
+    state: () => ({
+      tabs: tabs.map(({ id, kind, key, ship, pinned, snap }) =>
+        ({ id, kind, key, ship, pinned, dirty: !!(snap && snap.dirty) })),
+      active: tabs.indexOf(activeTab),
+      shows: !!activeTab && TAB_KINDS[activeTab.kind].shows(activeTab),
+    }),
+  };
 
 // ── src/22-listedit.js ────────────────────────────────────────────────────
   // ── smart list continuation ──────────────────────────────────────────────
@@ -2984,7 +3546,7 @@
           cw.title = n.path + ' is clearweb public';
           row.append(cw);
         }
-        row.onclick = (e) => { e.preventDefault(); openPage(n.path); };
+        tabLink(row, 'page', n.path);
       } else {
         row = folderRow(n.dname || n.path.split('/').pop(), depth, coll.includes(n.path),
           () => { paneColl.flip(n.path); renderTree(); }, () => selectFolder(n.path));
@@ -3002,7 +3564,10 @@
         add.textContent = '+';
         add.title = 'new file in ' + n.path;
         add.href = '#';
-        add.onclick = (e) => { e.preventDefault(); e.stopPropagation(); newFile(n.path); };
+        add.onclick = async (e) => {
+          e.preventDefault(); e.stopPropagation();
+          if (await guardDirty()) newFile(n.path);
+        };
         row.append(add);
       }
       if (hidden) row.style.display = 'none';
@@ -3073,12 +3638,17 @@
   // `current` had not been set yet. Guarding on those meant an explicit open
   // was silently dropped. After an unsaved edit, clicking another file did
   // nothing, and a page absent from the local tree never applied at all.
+  // openKnow and openGrub take a number from the same sequence, and so does
+  // a tab switch (21-tabs.js), so any later open supersedes this one.
+  //
+  // Answers false when the open failed with nothing painted, which the tab
+  // model tells apart from an open that a later one superseded.
   let openSeq = 0;
   async function openPage(name) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
-    if (!(await guardDirty())) return;
+    if (!(await guardDirty())) return false;
     const my = ++openSeq;
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
@@ -3096,10 +3666,10 @@
       const d = { body: q.body, kind: q.kind, rev: q.baseRev || 0, share: 'private' };
       applyPage(name, d, true);
       snapPage(name, d);
-      return;
+      return true;
     }
     const hit = pageCache.get(name);
-    if (hit) { applyPage(name, hit); snapPage(name, hit); return; }
+    if (hit) { applyPage(name, hit); snapPage(name, hit); return true; }
     const node = nodes.find((n) => n.page && n.path === name);
     const painted = !!node && typeof node.body === 'string';
     // `quiet`: the render=1 request below carries the preview and the error
@@ -3141,9 +3711,17 @@
     let d = null;
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
-      if (!r.ok) { if (!painted) { st('open failed' + await errText(r), false); unwind(); } return; }
+      if (!r.ok) {
+        if (painted) return true;
+        st('open failed' + await errText(r), false); unwind();
+        return my === openSeq ? false : undefined;
+      }
       d = await r.json();
-    } catch { if (!painted) { st('open failed', false); unwind(); } return; }
+    } catch {
+      if (painted) return true;
+      st('open failed', false); unwind();
+      return my === openSeq ? false : undefined;
+    }
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
     // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
@@ -3156,7 +3734,7 @@
     // window, which is how the old dirty-guards kept failing to catch it.
     // The !painted arm stays unconditional on purpose — there the fetch IS the
     // open, and an explicit open must always land (see the head comment).
-    if (painted && src.value !== shown) return;
+    if (painted && src.value !== shown) return true;
     // Cache and snapshot BELOW the guards, not above. A stale or superseded
     // response that reached the cache here poisoned it with the pre-edit body:
     // the guard protected the editor but not the cache, so switching away and
@@ -3165,6 +3743,7 @@
     pageCache.set(name, d);
     snapPage(name, d);
     applyPage(name, d);
+    return true;
   }
   function applyPage(name, d, quiet) {
     curFolder = null;
@@ -3218,6 +3797,7 @@
   // phone keyboard before you have done anything. You arrive at the app
   // already typing a filename you did not ask to type.
   function newFile(into, focusName = true) {
+    openSeq++;           // an open still in flight must not land over this
     folderCtx = into || '';
     curFolder = null;
     curKind = null;
@@ -3301,8 +3881,9 @@
   // guard up in openPage: a dirty edit, grub or page, exists only here
   // until it is saved. That guard catches deliberate in-app navigation. This
   // one catches the close and reload that never go through openPage at all.
+  // A parked tab's buffer counts too (__latUnsaved, 20-state.js).
   window.addEventListener('beforeunload', (e) => {
-    if (!dirty) return;
+    if (!window.__latUnsaved()) return;
     e.preventDefault();
     e.returnValue = '';
   });
@@ -3375,6 +3956,7 @@
       const stillHere = current === name || (current === null && src.value === sent);
       if (stillHere) {
         current = name;
+        tabFollow();         // a new page's tab is named now (21-tabs.js)
         curKind = kind;
         pname.readOnly = true;
         if (src.value === sent) dirty = false;
@@ -3401,6 +3983,7 @@
     const stillHere = current === name || (current === null && src.value === sent);
     if (stillHere) {
       current = name;
+      tabFollow();           // a new page's tab is named now (21-tabs.js)
       curKind = kind;
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
@@ -3503,17 +4086,10 @@
     grubPath = null; grubShip = null;
     if (grubPrevKind !== null) { pkind.value = grubPrevKind; grubPrevKind = null; }
   };
+  // Answers false when the open failed, like openPage (35-pages.js).
   async function openGrub(p, ship) {
-    grubPath = p;
-    grubShip = ship || null;
-    if (grubPrevKind === null) grubPrevKind = pkind.value;
-    curFolder = null;
-    // a shared lattice page reads as "~ship: its/name", not its whole ball
-    // path; the name field is only a label here (Save goes by grubPath)
-    const pg = /\/page\/(.+)\/code$/.exec(p);
-    setOpen(null, { shown: grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p, readOnly: true });
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
+    const my = ++openSeq;
+    enterGrub(p, ship);
     st('loading ' + p + '…');
     // remote files ride /browse-file (bounded cross-ship peek). Its JSON says
     // body/mark where grub-source says text/blot. Normalize here, not there,
@@ -3523,8 +4099,14 @@
       : api + '/grub-source?path=' + encodeURIComponent(p);
     let r = null;
     try { r = await fetch(url); } catch {}
-    if (!r || !r.ok) { st('could not open ' + p + (r ? ' (' + r.status + ')' : ''), false); return; }
+    if (my !== openSeq) return;
+    if (!r || !r.ok) {
+      // the editor stays as enterGrub left it, empty and locked
+      st('could not open ' + p + (r ? ' (' + r.status + ')' : ''), false);
+      return false;
+    }
     const d = await r.json();
+    if (my !== openSeq) return;
     src.value = d.text || d.body || '';
     // a binary/opaque grub has no text form. Show it, never offer to save it
     src.readOnly = !d.editable;
@@ -3546,6 +4128,32 @@
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'on ' + grubShip + ': saves need its permission'
        : 'grub ' + blot + ' — manual save (Cmd+S), no autosave here');
+    return true;
+  }
+  // grub mode on, for `p` (on `ship`, or here), with its label and address,
+  // and an empty locked editor until its text is in: openGrub's first half,
+  // and all a tab's own unsaved grub buffer needs to come back (21-tabs.js).
+  // Empty, because grubPath is what Save and the tab model go by. Left
+  // showing the document before it while the grub loaded, the editor
+  // offered that text to Save as this grub's, and a tab switch in that
+  // window filed it as the grub's unsaved buffer.
+  function enterGrub(p, ship) {
+    src.value = '';
+    src.readOnly = true;
+    dirty = false;
+    render();
+    grubPath = p;
+    grubShip = ship || null;
+    if (grubPrevKind === null) grubPrevKind = pkind.value;
+    curFolder = null;
+    // a shared lattice page reads as "~ship: its/name", not its whole ball
+    // path; the name field is only a label here (Save goes by grubPath)
+    const pg = /\/page\/(.+)\/code$/.exec(p);
+    setOpen(null, { shown: grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p, readOnly: true,
+      url: '/apps/lattice/app?grub=' + encodeURIComponent(p) +
+        (grubShip ? '&ship=' + encodeURIComponent(grubShip) : '') });
+    $('histsec').hidden = true;
+    $('linksec').hidden = true;
   }
   async function saveGrub() {
     if (!grubPath || src.readOnly) return;
@@ -3618,8 +4226,8 @@
         // a multi-page template lands as a folder. Open its index if it made
         // one, else the page itself, else just select the new folder.
         const has = (p) => nodes.some((n) => n.page && n.path === p);
-        if (has(name)) await openPage(name);
-        else if (has(name + '/index')) await openPage(name + '/index');
+        if (has(name)) await openIn('page', name);
+        else if (has(name + '/index')) await openIn('page', name + '/index');
         else if (nodes.some((n) => !n.page && n.path === name)) selectFolder(name);
         st('created ' + name + ' from ' + tmpl);
         return;
@@ -3632,7 +4240,9 @@
     }
   }
   $('newtmpl').onclick = newFromTemplate;
-  $('newfile').onclick = () => newFile('');
+  // newFile paints over the editor, so whatever is unsaved there goes
+  // through guardDirty first, like any other way off a document
+  $('newfile').onclick = async () => { if (await guardDirty()) newFile(''); };
   $('newfolder').onclick = newFolder;
   window.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {
@@ -4846,12 +5456,6 @@
     sharedWithMe = await r.json();
     if (mode !== 'know') renderTree();
   }
-  async function openShared(it) {
-    if (!(await guardDirty())) return;
-    history.replaceState(null, '', '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
-      '&ship=' + encodeURIComponent(it.host));
-    openGrub(it.path, it.host);
-  }
   // keys for the collapsed list: a leading space is in no page name, so a
   // page can never share a fold with this folder
   const SWM = ' shared';
@@ -4893,7 +5497,8 @@
           loadShared();
         };
         a.append(nm, md, x);
-        a.onclick = (e) => { e.preventDefault(); openShared(it); };
+        // a grub tab; openGrub (by way of enterGrub) sets the address
+        tabLink(a, 'grub', it.path, { ship: host });
         treeList.appendChild(a);
       }
     }
@@ -5718,7 +6323,7 @@
       on.className = 'gname';
       on.textContent = c.page;
       on.style.cursor = 'pointer';
-      on.onclick = () => { cmClose(); openPage(c.page); };
+      on.onclick = (e) => { cmClose(); openIn('page', c.page, { ev: e }); };
       card.appendChild(on);
 
       const body = document.createElement('div');
@@ -5870,6 +6475,7 @@
   // suffix-preserving remap, as does the offline queue's own move
   // reconciliation. Returns how many pages moved.
   const remapMoved = (from, to, rn) => {
+    tabsRemap('page', from, to);       // and the tabs naming them (21-tabs.js)
     let moved = 0;
     for (const n of nodes)
       if (n.path === from || n.path.startsWith(from + '/')) {
@@ -5974,7 +6580,7 @@
     for (const pth of links) {
       const a = document.createElement('a');
       a.textContent = pth;
-      a.onclick = () => openPage(pth);
+      tabLink(a, 'page', pth);
       linkList.appendChild(a);
     }
   }
@@ -6148,6 +6754,7 @@
         knowGen++;
         const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
         if (k) k.key = newName;
+        tabsRemap('know', current, newName);
         setOpen(newName, { readOnly: true });
         renderKnowChips();
         renderKnowTree();
@@ -6353,9 +6960,9 @@
 
   // opening a hit is the same move whether the mouse clicked it or Enter
   // picked it off the highlighted row
-  const qOpenResult = (h) => {
+  const qOpenResult = (h, ev) => {
     qClose();
-    if (h.know) openKnow(h.key); else openPage(h.key);
+    openIn(h.know ? 'know' : 'page', h.key, { ev });
   };
 
   // the highlighted row alone, no rebuild: an inline background rather than
@@ -6408,7 +7015,8 @@
         s.textContent = h.snip;              // and so are bodies
         a.appendChild(s);
       }
-      a.onclick = (e) => { e.preventDefault(); qOpenResult(h); };
+      a.onclick = (e) => { e.preventDefault(); qOpenResult(h, e); };
+      a.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); qOpenResult(h, e); } };
       qRows.push(a);
       li.appendChild(a);
       ul.appendChild(li);
@@ -6488,7 +7096,7 @@
     }
     if (e.key === 'Enter') {
       clearTimeout(qTimer);
-      if (qSel >= 0 && qResults[qSel]) { e.preventDefault(); qOpenResult(qResults[qSel]); return; }
+      if (qSel >= 0 && qResults[qSel]) { e.preventDefault(); qOpenResult(qResults[qSel], e); return; }
       runSearch($('qinput').value);
     }
   };
@@ -6594,13 +7202,13 @@
         live.textContent = 'open live (' + orig + ')';
         live.title = 'open the page this conflicted with';
         live.style.cursor = 'pointer';
-        live.onclick = () => { cfClose(); openPage(orig); };
+        live.onclick = (e) => { cfClose(); openIn('page', orig, { ev: e }); };
         head.appendChild(live);
       }
 
       const view = document.createElement('button');
       view.textContent = 'read it';
-      view.onclick = () => { cfClose(); openPage(path); };
+      view.onclick = (e) => { cfClose(); openIn('page', path, { ev: e }); };
       head.appendChild(view);
 
       const del = document.createElement('button');
@@ -7243,7 +7851,7 @@
       if (folded(key)) row.style.display = 'none';
       row.href = '#';
       row.textContent = parts[parts.length - 1];
-      row.onclick = (e) => { e.preventDefault(); openKnow(key); };
+      tabLink(row, 'know', key);
       rowByPath.set(key, row);
       treeList.appendChild(row);
     }
@@ -7252,11 +7860,17 @@
   const knowEntry = (key) =>
     knowKeys.find((x) => x.key.replace(/^\//, '') === key);
 
+  // false when the open failed and nothing was painted, so the tab model
+  // (21-tabs.js) can tell a failure from an open a later one superseded
   async function openKnow(key) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
-    if (!(await guardDirty())) return;
+    if (!(await guardDirty())) return false;
+    // the same sequence openPage keeps: a later open of anything supersedes
+    // this one, so a slow answer cannot paint a memory over the page (or
+    // the other memory) opened after it
+    const my = ++openSeq;
     if (mode !== 'know') setMode('know');
     // a queued edit outranks the ship's copy, same rule as pages
     const q = await offGet('know:' + key);
@@ -7265,10 +7879,19 @@
     else {
       let r = null;
       try { r = await fetch(api + '/know-read?key=' + encodeURIComponent(key)); } catch {}
-      if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return; }
+      if (my !== openSeq) return;
+      if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return false; }
       d = await r.json();
     }
-    setOpen(key, { readOnly: true });
+    if (my !== openSeq) return;
+    applyKnow(key, d);
+    return true;
+  }
+  // paint a memory that is already in hand: openKnow's answer, or a tab's
+  // own unsaved buffer coming back to the front (21-tabs.js)
+  function applyKnow(key, d) {
+    setOpen(key, { readOnly: true,
+      url: '/apps/lattice/app?view=know&key=' + encodeURIComponent(key) });
     src.value = d.body;
     dirty = false;
     render(); sync();
@@ -7347,6 +7970,7 @@
       //  and enqueueKnow has already said why it refused.
       if (!(await enqueueKnow(key, sent))) return;
       current = key;
+      tabFollow();             // a new memory's tab is named now (21-tabs.js)
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
       flushPending();
@@ -7354,6 +7978,7 @@
     }
     if (!r.ok) { st('save failed' + await errText(r), false); return; }
     current = key;
+    tabFollow();
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
     st('memory saved');
@@ -7829,16 +8454,18 @@
   // (phase 3), whose read is async but single-digit ms, imperceptible next
   // to the ~0.5s network floor. It also frees the tree (which carries every
   // page body) from localStorage's ~5MB ceiling.
-  function bootSnap() {
+  // `name` is the page the front tab names, null for a new page. Only a
+  // `fresh` tab list (nothing saved, so a first run or a corrupt one) may
+  // resume the snapshot without a name: a restored new-page tab is a new page.
+  function bootSnap(name, fresh) {
     let p = null;
     try { p = JSON.parse(localStorage.appPage || 'null'); } catch {}
     if (!p || !p.name) return false;
-    const name = qs.get('name');
-    // No ?name means a bare launch, above all the PWA, whose start_url can
+    // No name means a bare launch, above all the PWA, whose start_url can
     // never carry one. Resume the snapshot page instead of landing on an
     // empty editor. "opens where I left off" is what an installed app means.
-    // A ?name that does not match the snapshot still defers to the network.
-    if (name && p.name !== name) return false;
+    // A name that does not match the snapshot still defers to the network.
+    if (name ? p.name !== name : !fresh) return false;
     applyPage(p.name, p);
     // openPage sets the upload-target folder. The snapshot path must too,
     // or uploads land at the root until the next explicit open
@@ -7884,17 +8511,19 @@
   // and can push the save past the offline timeout, which is a real failure
   // traded for a badge nobody is waiting on.
   setTimeout(() => { refreshCommentBadge(); }, 20000);
-  if (qs.get('grub')) {
-    // arrived from the explorer's edit link. Open that ball path directly. The
-    // tree still lists lattice pages, so clicking one leaves grub mode.
-    loadTree().then(loadPanels);
-    openGrub(qs.get('grub'), qs.get('ship'));
-  } else if (qs.get('view') === 'know') {
-    setMode('know');
-    legacyCheck();
-    loadPanels();
+  // The tabs come back first (21-tabs.js) and boot shows the front one. A
+  // page has the snapshot-first path below; every other kind shows through
+  // the tab model, with the tree and the panels loading beside it.
+  const { tab: bootTab, fresh: bootFresh } = tabsBoot();
+  if (bootTab.kind !== 'page') {
+    loadTree().then(() => { legacyCheck(); loadPanels(); });
+    tabShowBoot(bootTab);
   } else {
-    const painted = bootSnap();
+    // a folder in the address (?into=, a reload while one was selected)
+    // outranks the tab's page, as it did before tabs
+    const into = qs.get('into');
+    const name = into && !qs.get('name') ? null : bootTab.key || null;
+    const painted = bootSnap(name, bootFresh && !into);
     // bootSnap's applyPage jumped the mobile pane to 'code'. Put it back to
     // the pane the user last saw (bootMv, captured in 85-layout before this
     // ran), so resuming a snapshot page on reload does not force the editor
@@ -7906,8 +8535,6 @@
     // do something while the dump was in flight?"
     const bootCurrent = current;
     loadTree().then(() => {
-      const name = qs.get('name');
-      const into = qs.get('into');
       // The tree paints from localStorage at 0ms, so it is clickable long
       // before this resolves. Anything boot does by default would then land on
       // top of the user's own action, opening a page and having it close a
@@ -7917,8 +8544,9 @@
       // everTyped, not dirty. A keystroke followed by an autosave clears dirty
       // before a slow dump lands, and this branch then repainted the editor
       // from the dump's PRE-edit copy. Typing is a user action whether or not
-      // it has since been saved.
-      const touched = current !== bootCurrent || curFolder !== null || dirty || everTyped;
+      // it has since been saved. Going to another tab is a user action too.
+      const touched = current !== bootCurrent || curFolder !== null || dirty || everTyped
+        || activeTab !== bootTab;
       if (touched) {
         legacyCheck();
         loadPanels();

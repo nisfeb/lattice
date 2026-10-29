@@ -50,7 +50,7 @@
     for (const pth of links) {
       const a = document.createElement('a');
       a.textContent = pth;
-      a.onclick = () => openPage(pth);
+      tabLink(a, 'page', pth);
       linkList.appendChild(a);
     }
   }
@@ -224,6 +224,7 @@
         knowGen++;
         const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
         if (k) k.key = newName;
+        tabsRemap('know', current, newName);
         setOpen(newName, { readOnly: true });
         renderKnowChips();
         renderKnowTree();

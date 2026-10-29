@@ -85,7 +85,7 @@
       if (folded(key)) row.style.display = 'none';
       row.href = '#';
       row.textContent = parts[parts.length - 1];
-      row.onclick = (e) => { e.preventDefault(); openKnow(key); };
+      tabLink(row, 'know', key);
       rowByPath.set(key, row);
       treeList.appendChild(row);
     }
@@ -94,11 +94,17 @@
   const knowEntry = (key) =>
     knowKeys.find((x) => x.key.replace(/^\//, '') === key);
 
+  // false when the open failed and nothing was painted, so the tab model
+  // (21-tabs.js) can tell a failure from an open a later one superseded
   async function openKnow(key) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
-    if (!(await guardDirty())) return;
+    if (!(await guardDirty())) return false;
+    // the same sequence openPage keeps: a later open of anything supersedes
+    // this one, so a slow answer cannot paint a memory over the page (or
+    // the other memory) opened after it
+    const my = ++openSeq;
     if (mode !== 'know') setMode('know');
     // a queued edit outranks the ship's copy, same rule as pages
     const q = await offGet('know:' + key);
@@ -107,10 +113,19 @@
     else {
       let r = null;
       try { r = await fetch(api + '/know-read?key=' + encodeURIComponent(key)); } catch {}
-      if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return; }
+      if (my !== openSeq) return;
+      if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return false; }
       d = await r.json();
     }
-    setOpen(key, { readOnly: true });
+    if (my !== openSeq) return;
+    applyKnow(key, d);
+    return true;
+  }
+  // paint a memory that is already in hand: openKnow's answer, or a tab's
+  // own unsaved buffer coming back to the front (21-tabs.js)
+  function applyKnow(key, d) {
+    setOpen(key, { readOnly: true,
+      url: '/apps/lattice/app?view=know&key=' + encodeURIComponent(key) });
     src.value = d.body;
     dirty = false;
     render(); sync();
@@ -189,6 +204,7 @@
       //  and enqueueKnow has already said why it refused.
       if (!(await enqueueKnow(key, sent))) return;
       current = key;
+      tabFollow();             // a new memory's tab is named now (21-tabs.js)
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
       flushPending();
@@ -196,6 +212,7 @@
     }
     if (!r.ok) { st('save failed' + await errText(r), false); return; }
     current = key;
+    tabFollow();
     pname.readOnly = true;
     if (src.value === sent) dirty = false;
     st('memory saved');

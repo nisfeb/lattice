@@ -4,7 +4,9 @@
   // read by the service-worker registration script, which lives in its own
   // inline <script> and cannot see this scope. It reloads the page when a new
   // worker takes over, and must never do that over typed work.
-  window.__latUnsaved = () => dirty === true;
+  // A parked tab (21-tabs.js) holds its own dirty buffer, so the live flag
+  // alone misses work typed into any tab that is not in front.
+  window.__latUnsaved = () => dirty === true || tabs.some((t) => t !== activeTab && t.snap && t.snap.dirty);
   // Whether the user has typed since the current editor view was established.
   // Cleared by applyPage/newFile (a fresh view), NEVER by autosave — and that
   // is the point: `dirty` cannot answer "did the user do something while
@@ -34,6 +36,17 @@
     if (grubPath)
       return askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard');
     const label = current || pname.value.trim() || 'this';
+    if (await flushNoAsk()) return true;
+    return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+  }
+  // flushNoAsk: guardDirty's flush without its question, answering whether
+  // the buffer is clean afterwards. A tab switch (21-tabs.js) uses it on its
+  // own: the tab it leaves keeps whatever is still unsaved, so there is
+  // nothing to ask about. A dirty grub has no flush (explicit save only) and
+  // answers false at once.
+  async function flushNoAsk() {
+    if (!dirty) return true;
+    if (grubPath) return false;
     // save() coalesces concurrent calls by design. A save already in flight
     // just arms savePending and returns on the spot, so calling save() here
     // answered nothing while dirty stayed set. That read like a flush that
@@ -59,9 +72,8 @@
     // timed out with the buffer untouched. Only now is a flush worth trying.
     if (!saving) {
       if (mode === 'know') await saveKnow(); else await save();
-      if (!dirty) return true;
     }
-    return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+    return !dirty;
   }
   // setOpen: what the bar says is open, set in one place. `name` becomes
   // `current`, the open page or memory, or null when nothing named is open
@@ -71,7 +83,8 @@
   // when readOnly. `kind` moves the kind picker when it has that option.
   // `url`, when given, replaces the address. Assigning .value fires no
   // event, so this ends by dispatching 'input' on the field: the desktop
-  // and phone labels (96-deskmenu.js, 97-mobar.js) repaint on it.
+  // and phone labels (96-deskmenu.js, 97-mobar.js) repaint on it. Then the
+  // active document tab learns what it now shows (tabFollow, 21-tabs.js).
   function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
     current = name;
     pname.value = shown === undefined ? (name || '') : shown;
@@ -79,6 +92,7 @@
     if (kind && [...pkind.options].some((o) => o.value === kind)) pkind.value = kind;
     if (url) history.replaceState(null, '', url);
     pname.dispatchEvent(new Event('input'));
+    tabFollow();
   }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
