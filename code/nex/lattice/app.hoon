@@ -7454,11 +7454,13 @@
   ::  a later re-publish (cass r+1 and up) still registers. An empty list
   ::  is no answer (unreachable reads the same), so it retries instead.
   ?:  &(?=(~ ent) !=(~ revs))  (pure:m r)
-  ;<  pg=(unit [p=@tas q=@t])  bind:m
+  ;<  kp=(unit [p=@tas q=@t])  bind:m
     ?:  |(?=(~ ent) (lth rev.u.ent r))
       (pure:(fiber:fiber:nexus ,(unit [p=@tas q=@t])) ~)
     (keen-page-raw pub rel id.u.ent)
-  ?.  ?=([~ %gmi *] pg)
+  ::  a page is grown under its view-mode mark (+mode-mark), so any mark in
+  ::  that set is a real body, as the reader takes it (+read-page-body-rev)
+  ?.  ?&(?=(^ kp) ?=(view-mode:pg p.u.kp))
     ?:  (gte try 1)  (pure:m lrev)
     ;<  ~  bind:m  (sleep-draining ~s2)
     $(try +(try))
