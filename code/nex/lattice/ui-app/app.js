@@ -4589,9 +4589,18 @@
   // or one restored from before it did, does not, and absent there means
   // unknown, not private.
   let treeShares = false;
+  // the `since` token of the last dump this session applied. The next dump
+  // hands it back and carries only the bodies written since: every node
+  // still comes (so deletes, moves and share modes land), and a node whose
+  // body stayed home keeps the one this tab holds when its rev is the same.
+  // Not persisted: a session's first dump is whole, so the bodies it keeps
+  // are ones this session saw arrive.
+  let treeSince = '';
+  // Answers whether a dump was applied.
   async function loadTree() {
     const gen = treeGen;
     const at = lastRev;
+    const since = treeSince;
     let d = null;
     // this one RESOLVES, always. Boot chains its whole reconcile off it
     // (99-boot.js) with no .catch, so a rejection here would silently cancel
@@ -4599,14 +4608,27 @@
     // A dead pier is a reportable condition, the way openPage and loadPerms
     // already report theirs. Offline is a state this app is built for.
     try {
-      const r = await fetch(api + '/page-dump');
+      const r = await fetch(api + '/page-dump' + (since ? '?since=' + since : ''));
       if (!r.ok) {
-        if (await sessionGone(r)) return;
-        st('tree failed' + await errText(r), false); return;
+        if (await sessionGone(r)) return false;
+        st('tree failed' + await errText(r), false); return false;
       }
       d = await r.json();
-    } catch { st('tree failed (network)', false); return; }
-    if (gen !== treeGen) return;   // a local patch superseded this response
+    } catch { st('tree failed (network)', false); return false; }
+    if (gen !== treeGen) return false;   // a local patch superseded this response
+    // a since-dump left out the bodies this tab already holds: keep each
+    // one whose rev did not move. A moved rev without a body (it cannot
+    // happen, but a client must not trust a token with text) stays bodiless
+    // and opens through page-source like an oversized page.
+    if (since) {
+      const had = new Map();
+      for (const n of nodes) if (n.page && typeof n.body === 'string') had.set(n.path, n);
+      for (const n of d.nodes) {
+        if (!n.page || n.link || typeof n.body === 'string') continue;
+        const o = had.get(n.path);
+        if (o && !o.link && o.rev === n.rev && o.size === n.size) n.body = o.body;
+      }
+    }
     // the dump's beacon rev is the baseline for a FIRST-EVER session: the
     // stream only reports from registration onward, and with nothing
     // remembered the registration comparison had nothing to catch a bump
@@ -4621,6 +4643,7 @@
     if (!lastRev && typeof d.since === 'string') noteRev(d.since);
     nodes = d.nodes;
     treeShares = typeof d.since === 'string';
+    treeSince = treeShares ? d.since : '';
     treeAt = at;
     // drop only the cached renders the dump says have moved FORWARD. Blanket-
     // clearing on every change cost every other page its cache. Comparing
@@ -4636,6 +4659,7 @@
     // own #knowlist), so a memory tab in front is no reason to leave Files
     // stale behind the Knowledge tab
     renderTree();
+    return true;
   }
 
   // selection changes only move the `cur` class. Never rebuild the pane's DOM
@@ -5941,6 +5965,9 @@
   // button, its own two endpoints.
   let grubPath = null;
   let grubShip = null;   // '~ship' when the grub lives on ANOTHER ship; null = local
+  // the host's rev this editor read (or last wrote), a remote save's base:
+  // a host page that moved past it answers a conflict, never an overwrite
+  let grubRev = null;
   // the picker's value before a grub took it over, restored on exitGrub. Set
   // only on the FIRST entry (see the guard in openGrub), so browsing straight
   // from one grub to another still remembers the page kind that came before.
@@ -5951,7 +5978,7 @@
   // overwrite wearing a 'saved' status. openPage clears inline; newFile,
   // selectFolder and setMode route through here.
   const exitGrub = () => {
-    grubPath = null; grubShip = null;
+    grubPath = null; grubShip = null; grubRev = null;
     if (grubPrevKind !== null) { pkind.value = grubPrevKind; grubPrevKind = null; }
   };
   // Answers false when the open failed, like openPage (35-pages.js).
@@ -5976,6 +6003,7 @@
     const d = await r.json();
     if (my !== openSeq) return;
     src.value = d.text || d.body || '';
+    if (grubShip && typeof d.rev === 'number') grubRev = d.rev;
     // a binary/opaque grub has no text form. Show it, never offer to save it
     src.readOnly = !d.editable;
     dirty = false;
@@ -6012,6 +6040,7 @@
     render();
     grubPath = p;
     grubShip = ship || null;
+    grubRev = null;
     if (grubPrevKind === null) grubPrevKind = pkind.value;
     curFolder = null;
     // a shared lattice page reads as "~ship: its/name", not its whole ball
@@ -6032,36 +6061,65 @@
     saving = true;
     st('saving…');
     const sent = src.value;
+    const p = grubPath, s = grubShip;
     let r = null;
     try {
       // a remote save is verified server-side by revision bump. A peer that
       // never granted make ACKS the poke and silently drops the write, and
       // "saved" on a dropped write is the one lie an editor must not tell.
-      r = await fetch(grubShip
-        ? api + '/remote-save?ship=' + encodeURIComponent(grubShip) +
-          '&path=' + encodeURIComponent(grubPath)
-        : api + '/grub-save?path=' + encodeURIComponent(grubPath),
-        { method: 'POST', body: sent });
+      // Bounded: the ship answers a remote save within ~30s (three ~10s
+      // steps at worst), and one that never answers must not hold `saving`
+      // and every save queued behind it.
+      r = await tfetch(s
+        ? api + '/remote-save?ship=' + encodeURIComponent(s) +
+          '&path=' + encodeURIComponent(p) +
+          (grubRev !== null ? '&base=' + grubRev : '')
+        : api + '/grub-save?path=' + encodeURIComponent(p),
+        { method: 'POST', body: sent }, s ? 45000 : 30000);
     } catch {}
     saving = false;
+    // a remote save names its outcome (+remote-save-respond); one with an
+    // outcome is our ship's answer about the HOST, never our ship's absence
+    let j = null;
+    if (s && r) { try { j = await r.clone().json(); } catch {} }
+    const out = j && j.outcome;
+    const here = grubPath === p && grubShip === s;
+    if (out && out !== 'landed') {
+      const say = {
+        unverified: 'sent — ' + s + ' took it but did not confirm; reload to check',
+        conflict: 'not saved — ' + s + ' changed this page since you opened it; copy your text and reopen',
+        unreachable: 'not saved — ' + (j.error || s + ' did not answer'),
+        refused: 'not saved — ' + s + ' refused the write' + (j.error ? ': ' + j.error : ''),
+      }[out] || 'save rejected: ' + (j.error || r.status);
+      if (here) st(say, false);
+      flushPending();
+      return;
+    }
     if (!r || !r.ok) {
       // 'rejected' is the mark's word, and a 502 is the ship's absence, not
       // the mark's opinion of the content. Grub edits have nowhere to queue
       // the way page saves do, so the text just stays here until Save runs
       // again with the ship back.
       // the save queued behind this one still runs (flushPending, 35-pages.js)
-      if (shipGone(r)) { st('ship unreachable — grub edits do not queue', false); flushPending(); return; }
+      if (shipGone(r)) {
+        // no answer at all: the request may still have reached the ship
+        st(r ? 'ship unreachable — grub edits do not queue'
+          : 'no answer — the save may still land; Ctrl+S to try again', false);
+        flushPending();
+        return;
+      }
       // the mark can reject the source. Show ITS error, since the stored grub
       // still holds the previous content and the user needs to know why
       st('save rejected' + await errText(r), false);
       flushPending();
       return;
     }
-    if (src.value === sent) dirty = false;
-    st('saved');
+    if (here && j && typeof j.rev === 'number') grubRev = j.rev;
+    if (here && src.value === sent) dirty = false;
+    if (here) st('saved');
     // bust the page DIRECTORY, not the grub: the cached views are the /x/
     // dir listing and page view, and none of their URLs name '/code'
-    bustPages(String(grubPath).replace(/\/[^/]*$/, ''));
+    bustPages(String(p).replace(/\/[^/]*$/, ''));
     flushPending();
   }
 
@@ -9926,6 +9984,14 @@
       st('updated from ship \u00b7 rev ' + d.rev);
     }
   }
+  // whether the dump just applied says the open page is not what the
+  // editor holds: gone, a link, a rev or kind other than the editor's
+  const openMoved = () => {
+    if (!current || curFolder) return false;
+    const n = nodes.find((x) => x.page && x.path === current);
+    return !n || !!n.link || typeof n.rev !== 'number' || n.rev !== curRev ||
+      (!!n.kind && n.kind !== curKind);
+  };
   const refreshAll = () => {
     if (document.hidden) return;
     // replay WINS the reconnect race. loadTree would repaint queued pages
@@ -9937,9 +10003,14 @@
     // Files and Knowledge both stay painted in their tabs, so neither is
     // skipped for the other: the one the front document works on always
     // reloads, the other when its beacon moved since it loaded
-    if (mode !== 'know' || !revFresh(treeAt)) loadTree();
+    const tree = (mode !== 'know' || !revFresh(treeAt)) ? loadTree() : null;
     if (mode === 'know' || (knowLive() && !knowFresh(knowAt))) loadKnow();
-    refreshOpen();
+    // the open page re-reads only when the fresh dump says it moved: a save
+    // of some other page then costs this tab one small since-dump and
+    // nothing else. A memory, a link (read live from its host) and a dump
+    // that failed still re-read as before.
+    if (mode === 'know' || !tree) refreshOpen();
+    else tree.then((ok) => { if (!ok || openMoved()) refreshOpen(); });
     // a catch-up call, not the primary path: the stream now wakes the badge
     // directly on its own /comments event (see commentBumped below). This
     // covers the tab that was HIDDEN while a comment landed, since the SSE

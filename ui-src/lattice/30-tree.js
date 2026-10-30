@@ -79,9 +79,18 @@
   // or one restored from before it did, does not, and absent there means
   // unknown, not private.
   let treeShares = false;
+  // the `since` token of the last dump this session applied. The next dump
+  // hands it back and carries only the bodies written since: every node
+  // still comes (so deletes, moves and share modes land), and a node whose
+  // body stayed home keeps the one this tab holds when its rev is the same.
+  // Not persisted: a session's first dump is whole, so the bodies it keeps
+  // are ones this session saw arrive.
+  let treeSince = '';
+  // Answers whether a dump was applied.
   async function loadTree() {
     const gen = treeGen;
     const at = lastRev;
+    const since = treeSince;
     let d = null;
     // this one RESOLVES, always. Boot chains its whole reconcile off it
     // (99-boot.js) with no .catch, so a rejection here would silently cancel
@@ -89,14 +98,27 @@
     // A dead pier is a reportable condition, the way openPage and loadPerms
     // already report theirs. Offline is a state this app is built for.
     try {
-      const r = await fetch(api + '/page-dump');
+      const r = await fetch(api + '/page-dump' + (since ? '?since=' + since : ''));
       if (!r.ok) {
-        if (await sessionGone(r)) return;
-        st('tree failed' + await errText(r), false); return;
+        if (await sessionGone(r)) return false;
+        st('tree failed' + await errText(r), false); return false;
       }
       d = await r.json();
-    } catch { st('tree failed (network)', false); return; }
-    if (gen !== treeGen) return;   // a local patch superseded this response
+    } catch { st('tree failed (network)', false); return false; }
+    if (gen !== treeGen) return false;   // a local patch superseded this response
+    // a since-dump left out the bodies this tab already holds: keep each
+    // one whose rev did not move. A moved rev without a body (it cannot
+    // happen, but a client must not trust a token with text) stays bodiless
+    // and opens through page-source like an oversized page.
+    if (since) {
+      const had = new Map();
+      for (const n of nodes) if (n.page && typeof n.body === 'string') had.set(n.path, n);
+      for (const n of d.nodes) {
+        if (!n.page || n.link || typeof n.body === 'string') continue;
+        const o = had.get(n.path);
+        if (o && !o.link && o.rev === n.rev && o.size === n.size) n.body = o.body;
+      }
+    }
     // the dump's beacon rev is the baseline for a FIRST-EVER session: the
     // stream only reports from registration onward, and with nothing
     // remembered the registration comparison had nothing to catch a bump
@@ -111,6 +133,7 @@
     if (!lastRev && typeof d.since === 'string') noteRev(d.since);
     nodes = d.nodes;
     treeShares = typeof d.since === 'string';
+    treeSince = treeShares ? d.since : '';
     treeAt = at;
     // drop only the cached renders the dump says have moved FORWARD. Blanket-
     // clearing on every change cost every other page its cache. Comparing
@@ -126,6 +149,7 @@
     // own #knowlist), so a memory tab in front is no reason to leave Files
     // stale behind the Knowledge tab
     renderTree();
+    return true;
   }
 
   // selection changes only move the `cur` class. Never rebuild the pane's DOM
