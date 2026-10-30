@@ -197,6 +197,15 @@
         ::  crash on it, killing the writer fiber and hanging every publish.
         ::  The counter is one bare atom and /mar/ud.hoon already is that mark.
             [%fall %& [/pub %meta] [[/ %ud] 0]]
+        ::  /pub/revs: each page's current rev and id, the list peers read
+        ::  (+set-pub-rev). /pub/reconciled: the one-shot marker of
+        ::  +pub-reconcile. Both are %stay, not %fall: each is read by its
+        ::  PRESENCE (+ensure-pub-ids lays revs and every binding when it is
+        ::  absent; a present marker refuses a second sweep), and a %fall
+        ::  default would read as present. Uncovered, a reload dropped revs,
+        ::  so every reload re-grew every page and the index.
+            [%stay %& [/pub %revs]]
+            [%stay %& [/pub %reconciled]]
         ::  /forum: the forum (docs/superpowers/specs, State layout). A
         ::  board is a directory of [/ %noun] grubs, each [%1 shape], laid
         ::  by +apply-forum:
