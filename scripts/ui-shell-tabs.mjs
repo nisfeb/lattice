@@ -23,6 +23,7 @@
 //    A frame tab is sandboxed without top navigation, so its script cannot
 //      replace the editor window
 //    A target=_top added to a frame after load still lands in the frame
+//    Closing a frame tab with typed text asks, and keeps it on cancel
 //
 //  SHOTS=1 saves the forum and browser tabs at 1400x900 under /tmp.
 //  PARTS=streams,nested runs only the parts named.
@@ -520,6 +521,41 @@ try {
     check('a form aimed at _top added after load lands in its frame',
       late && (await page.evaluate(() => location.href)) === appAt,
       JSON.stringify({ late, at: await frameAt(fk) }));
+  });
+
+  //  closing a frame tab holding typed text asks first
+  await part('closeask', async () => {
+    const fk = 'frame:/apps/lattice/settings';
+    await page.evaluate(() => document.getElementById('rb-settings').click());
+    await frontLoaded();
+    await sleep(1500);
+    const dlgUp = () => page.evaluate(() => document.getElementById('dlg')?.hidden === false);
+    const tabOpen = () => page.evaluate((k) => window.latTabs.state().tabs.some((t) => t.key === k), fk);
+    //  untouched: it closes without a word
+    await page.evaluate((k) => { window.latTabs.closeTab(window.latTabs.state().tabs.find((t) => t.key === k).id); }, fk);
+    await sleep(800);
+    const clean = { dlg: await dlgUp(), open: await tabOpen() };
+    await page.evaluate(() => document.getElementById('rb-settings').click());
+    await frontLoaded();
+    await sleep(1500);
+    await page.evaluate((s) => {
+      const i = document.querySelector(s).contentDocument.getElementById('kname');
+      i.value = 'half typed';
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+    }, frameOf(fk));
+    await page.evaluate((k) => { window.latTabs.closeTab(window.latTabs.state().tabs.find((t) => t.key === k).id); }, fk);
+    await sleep(800);
+    const asked = { dlg: await dlgUp(), open: await tabOpen() };
+    if (asked.dlg) await page.evaluate(() => document.getElementById('dlgcancel').click());
+    await sleep(500);
+    const kept = await tabOpen();
+    await page.evaluate((k) => { window.latTabs.closeTab(window.latTabs.state().tabs.find((t) => t.key === k).id); }, fk);
+    await sleep(800);
+    if (await dlgUp()) await page.evaluate(() => document.getElementById('dlgok').click());
+    await sleep(800);
+    const gone = !(await tabOpen());
+    check('closing a frame tab with typed text asks, and keeps it on cancel',
+      !clean.dlg && !clean.open && asked.dlg && kept && gone, JSON.stringify({ clean, asked, kept, gone }));
   });
 
   await part('chords', async () => {

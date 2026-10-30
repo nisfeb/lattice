@@ -2121,11 +2121,18 @@
   });
   // closeTab: false when the user kept it. guardDirty runs on the tab being
   // closed, in front, the one place it can flush or ask, so a background tab
-  // holding unsaved work comes forward first.
+  // holding unsaved work comes forward first. A kind with no buffer may
+  // still hold typing of its own (held: a frame's half-written post),
+  // which also comes forward and is asked about.
   const closeTab = (id) => tabSerial(async () => {
     const t = tabs.find((x) => x.id === id);
     if (!t) return false;
     if (t !== activeTab && t.snap && t.snap.dirty && (await tabTo(t)) === false) return false;
+    const k = TAB_KINDS[t.kind];
+    if (k.held && k.held(t)) {
+      if (t !== activeTab && (await tabTo(t)) === false) return false;
+      if (!(await askConfirm('discard what you typed in ' + k.label(t) + '?', 'discard'))) return false;
+    }
     if (t === activeTab) {
       if (!(await guardDirty())) return false;
       dirty = false;
@@ -2992,7 +2999,29 @@
     restore: () => {},
     park: async () => true,
     shows: (t) => t === activeTab && toolShown === t.key,
+    // a frame holding text typed and not sent (a forum post, a settings
+    // field) is not closed unasked (closeTab, 21-tabs.js)
+    held: (t) => frameTyped(t.key),
   };
+  // Whether a frame tab's page, or a same-origin frame in it (the reader's
+  // comment box), holds a text field the user has typed into: not empty,
+  // and not what the page put there. The reader's bar is left out, since
+  // its omnibar always holds the address.
+  const TEXTY = ['text', 'search', 'url', 'email', 'tel', 'number'];
+  function frameTyped(key) {
+    const f = [...toolHost.querySelectorAll('iframe')].find((x) => x.dataset.tool === key);
+    let d = null;
+    try { d = f && f.contentDocument; } catch {}
+    if (!d) return false;
+    const docs = [d];
+    for (const i of d.querySelectorAll('iframe')) {
+      try { if (i.contentDocument) docs.push(i.contentDocument); } catch {}
+    }
+    return docs.some((doc) => [...doc.querySelectorAll('textarea, input')].some((el) =>
+      !el.closest('form.bar') && !el.disabled && !el.readOnly
+      && (el.tagName === 'TEXTAREA' || TEXTY.includes(el.type))
+      && el.value.trim() !== '' && el.value !== el.defaultValue));
+  }
 
   // Called by paintHead on every change of the tab in front. Shows the host
   // or the document area, and in the host only the front tool. A wrap that
